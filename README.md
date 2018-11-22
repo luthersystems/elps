@@ -9,6 +9,11 @@ go get -d ./...
 make
 ```
 
+## Try it out
+
+An example WASM build is available on [github
+pages](https://luthersystems.github.io/elps/) ([source](_examples/wasm/)).
+
 ## Usage
 
 Launch an interactive REPL

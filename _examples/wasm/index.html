@@ -30,9 +30,13 @@
 				});
 			};
 
-			WebAssembly.instantiateStreaming(fetch("app.wasm"), go.importObject).then((result) => {
-					go.run(result.instance);
-				});
+			// Safari does not have support the function
+			// WebAssembly.instantiateStreaming so this hack performs
+			// inefficient, non-streaming compilation and instatiation.
+			var appWasm = fetch("app.wasm")
+				.then((source) => { return source.arrayBuffer(); })
+				.then((buffer) => { return WebAssembly.instantiate(buffer, go.importObject); })
+				.then((result) => { go.run(result.instance); });
 		</script>
 	</head>
 	<body>
