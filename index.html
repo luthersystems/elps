@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<script src="wasm_exec.js"></script>
+		<script>
+			const go = new Go();
+
+			function setLispOutput(result, err) {
+					var output = document.getElementById("lisp-output");
+					output.innerHTML = result;
+					var error = document.getElementById("lisp-error");
+					error.innerHTML = err;
+			};
+
+			function loadTextarea() {
+				var textarea = document.getElementById("lisp-source");
+				var value = textarea.value;
+				var result = new Promise(function(resolve, reject) {
+					var context = {
+						resolve: resolve,
+						reject: reject
+					};
+					LoadString(value, context);
+				});
+				result.then(function(value) {
+					setLispOutput(value, "")
+				}).catch(function(err) {
+					setLispOutput("", err)
+				});
+			};
+
+			WebAssembly.instantiateStreaming(fetch("app.wasm"), go.importObject).then((result) => {
+					go.run(result.instance);
+				});
+		</script>
+	</head>
+	<body>
+		<div class="input">
+			<div class="source">
+				<textarea id="lisp-source" style="min-width: 500px; min-height: 100px;"></textarea>
+			</div>
+			<button onclick="javascript:loadTextarea();">(load-string ...)</button>
+		</div>
+		<div class="output">
+			<pre id="lisp-output">
+			</pre>
+		</div>
+		<div class="error">
+			<pre id="lisp-error" style="color: red;">
+			</pre>
+		</div>
+	</body>
+</html>
