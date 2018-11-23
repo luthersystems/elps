@@ -2,6 +2,8 @@
 
 An embedded lisp system for Go programs.
 
+[![CircleCI](https://circleci.com/gh/luthersystems/elps.svg?style=svg)](https://circleci.com/gh/luthersystems/elps)
+
 ## Build
 
 ```
