@@ -45,7 +45,7 @@ func newScannerBuf(file string, r io.Reader, buf []byte) *Scanner {
 
 // NewScanner initializes and returns a new Scanner.
 func NewScanner(file string, r io.Reader) *Scanner {
-	buf := make([]byte, 8<<10)
+	buf := make([]byte, 128<<10)
 	return newScannerBuf(file, r, buf)
 }
 
