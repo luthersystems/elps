@@ -11,6 +11,7 @@ import (
 
 var userSpecialOps []*langBuiltin
 var langSpecialOps = []*langBuiltin{
+	{"function", Formals("name"), opFunction},
 	{"set!", Formals("name", "expr"), opSetUpdate},
 	{"assert", Formals("expr", VarArgSymbol, "message-format-args"), opAssert},
 	{"quote", Formals("expr"), opQuote},
@@ -51,6 +52,11 @@ func DefaultSpecialOps() []LBuiltinDef {
 		ops[offset+i] = langSpecialOps[i]
 	}
 	return ops
+}
+
+func opFunction(env *LEnv, args *LVal) *LVal {
+	name := args.Cells[0]
+	return env.GetFun(name)
 }
 
 func opSetUpdate(env *LEnv, args *LVal) *LVal {

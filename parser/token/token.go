@@ -51,6 +51,7 @@ const (
 	NEGATIVE // arithmetic negation is parsed specially
 	QUOTE
 	UNBOUND
+	FUN_REF
 
 	// Delimiters
 	PAREN_L
@@ -80,6 +81,7 @@ func (typ Type) String() string {
 		NEGATIVE:        "-",
 		QUOTE:           "'",
 		UNBOUND:         "#^",
+		FUN_REF:         "#'",
 		PAREN_L:         "(",
 		PAREN_R:         ")",
 		BRACE_L:         "[",

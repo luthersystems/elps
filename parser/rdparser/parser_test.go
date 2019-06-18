@@ -81,6 +81,8 @@ func TestParser(t *testing.T) {
 		{`#^12.25`, `(lisp:expr 12.25)`},
 		{`#^()`, `(lisp:expr ())`},
 		{`#^(cons %1 %&rest)`, `(lisp:expr (cons %1 %&rest))`},
+		{`#'myfun`, `(lisp:function myfun)`},
+		{`#'mypkg:myfun`, `(lisp:function mypkg:myfun)`},
 	}
 
 	for i, test := range tests {
