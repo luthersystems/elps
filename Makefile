@@ -17,7 +17,7 @@ citest: go-test
 .PHONY: go-test
 test: go-test
 go-test:
-	GOCACHE=off go test -cover ./...
+	go test -cover ./...
 
 .PHONY: examples
 examples:
