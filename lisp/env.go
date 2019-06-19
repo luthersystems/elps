@@ -270,14 +270,31 @@ func (env *LEnv) Get(k *LVal) *LVal {
 
 // GetFun returns a function referenced by the given LVal.  If fun is already
 // an LFun, then fun is returned.  If fun is a symbol then GetFun looks for a
-// function bound to the symbol.  If fun does reference a symbol then an error
-// is returned.
+// function bound to the symbol.  If fun does not reference a symbol then an
+// error is returned.
 //
 // GetFun is a suitable for backing an implementation of functional programing
 // constructs, like funcall, map, reduce, etc.
 func (env *LEnv) GetFun(fun *LVal) *LVal {
 	if fun.Type == LSymbol {
 		f := env.Get(fun)
+		if f.Type == LError {
+			return f
+		}
+		if f.Type != LFun {
+			return env.Errorf("symbol %s not bound to a function: %v", fun, f.Type)
+		}
+		return f
+	} else if fun.Type != LFun {
+		return env.Errorf("first argument is not a function: %v", fun.Type)
+	}
+	return fun
+}
+
+// GetFunGlobal is like GetFun but only accesses the global package environment.
+func (env *LEnv) GetFunGlobal(fun *LVal) *LVal {
+	if fun.Type == LSymbol {
+		f := env.GetGlobal(fun)
 		if f.Type == LError {
 			return f
 		}
@@ -302,26 +319,26 @@ func (env *LEnv) get(k *LVal) *LVal {
 	if k.Str == FalseSymbol {
 		return Symbol(FalseSymbol)
 	}
-	pieces := strings.Split(k.Str, ":")
-	switch len(pieces) {
-	case 1:
-		break
-	case 2:
-		if pieces[0] == "" {
+	pieces := SplitSymbol(k)
+	if pieces.Type == LError {
+		env.ErrorAssociate(pieces)
+		return pieces
+	}
+	if pieces.Len() == 2 {
+		ns := pieces.Cells[0].Str
+		if ns == "" {
 			// keyword
 			return k
 		}
-		pkg := env.Runtime.Registry.Packages[pieces[0]]
+		pkg := env.Runtime.Registry.Packages[ns]
 		if pkg == nil {
-			return env.Errorf("unknown package: %q", pieces[0])
+			return env.Errorf("unknown package: %q", ns)
 		}
-		lerr := pkg.Get(Symbol(pieces[1]))
+		lerr := pkg.Get(pieces.Cells[1])
 		if lerr.Type == LError {
 			env.ErrorAssociate(lerr)
 		}
 		return lerr
-	default:
-		return env.Errorf("illegal symbol: %q", k.Str)
 	}
 	v, ok := env.Scope[k.Str]
 	if ok {
@@ -420,16 +437,53 @@ func (env *LEnv) update(k, v *LVal) *LVal {
 // GetGlobal takes LSymbol k and returns the value it is bound to in the
 // current package.
 func (env *LEnv) GetGlobal(k *LVal) *LVal {
-	lval := env.Runtime.Package.Get(k)
-	if lval.Type == LError {
-		env.ErrorAssociate(lval)
-		return lval
+	pieces := SplitSymbol(k)
+	if pieces.Type == LError {
+		env.ErrorAssociate(pieces)
+		return pieces
 	}
-	return lval
+	if pieces.Len() == 2 {
+		ns := pieces.Cells[0].Str
+		if ns == "" {
+			// keyword
+			return k
+		}
+		pkg := env.Runtime.Registry.Packages[ns]
+		if pkg == nil {
+			return env.Errorf("unknown package: %q", ns)
+		}
+		lerr := pkg.Get(pieces.Cells[1])
+		if lerr.Type == LError {
+			env.ErrorAssociate(lerr)
+		}
+		return lerr
+	}
+	return env.packageGet(k)
 }
 
 // PutGlobal takes an LSymbol k and binds it to v in current package.
 func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
+	pieces := SplitSymbol(k)
+	if pieces.Type == LError {
+		env.ErrorAssociate(pieces)
+		return pieces
+	}
+	if pieces.Len() == 2 {
+		ns := pieces.Cells[0].Str
+		if ns == "" {
+			return env.Errorf("value cannot be assigned to a keyword: %s", k.Str)
+		}
+		pkg := env.Runtime.Registry.Packages[ns]
+		if pkg == nil {
+			return env.Errorf("unknown package: %q", ns)
+		}
+		lerr := pkg.Put(pieces.Cells[1], v)
+		if lerr.Type == LError {
+			env.ErrorAssociate(lerr)
+		}
+		return lerr
+	}
+
 	lerr := env.Runtime.Package.Put(k, v)
 	if lerr.Type == LError {
 		env.ErrorAssociate(lerr)

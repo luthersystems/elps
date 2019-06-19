@@ -158,6 +158,26 @@ string"""`, `"\"\"a raw\nstring"`, ""},
 			{`(funcall (lambda (&rest xs) (cdr xs)) 1 2 3)`, `'(2 3)`, ""},
 			{`(funcall '+ 1 2 3)`, `6`, ""},
 			{`(funcall 'lisp:+ 1 2 3)`, `6`, ""},
+			{`(defun f () "outer")`, `()`, ""},
+			{`(defun inner ()
+				(labels ((f () "innermost"))
+					#^(apply 'f %&rest)))`, `()`, ""},
+			{`(defun middle ()
+				(let ([one (inner)])
+					(labels ((f () "middle"))
+						#^(apply one %&rest))))`, `()`, ""},
+			{`(funcall (inner))`, `"outer"`, ""},
+			{`(funcall (middle))`, `"outer"`, ""},
+			{`(defun inner ()
+				(labels ((f () "innermost"))
+					#^(apply f %&rest)))`, `()`, ""},
+			{`(funcall (inner))`, `"innermost"`, ""},
+			{`(funcall (middle))`, `"innermost"`, ""},
+			{`(defun inner ()
+				(labels ((f () "innermost"))
+					(lambda (&rest args) (apply #'f args))))`, `()`, ""},
+			{`(funcall (inner))`, `"innermost"`, ""},
+			{`(funcall (middle))`, `"innermost"`, ""},
 		}},
 		{"apply", elpstest.TestSequence{
 			{`(apply (lambda () 1) '())`, `1`, ""},

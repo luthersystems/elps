@@ -248,6 +248,21 @@ func Bytes(b []byte) *LVal {
 	}
 }
 
+func SplitSymbol(sym *LVal) *LVal {
+	if sym.Type != LSymbol {
+		return Errorf("not a symbol")
+	}
+	pieces := strings.Split(sym.Str, ":")
+	switch len(pieces) {
+	case 1:
+		return QExpr([]*LVal{Symbol(pieces[0])})
+	case 2:
+		return QExpr([]*LVal{Symbol(pieces[0]), Symbol(pieces[1])})
+	default:
+		return Errorf("illegal symbol: %q", sym.Str)
+	}
+}
+
 // Symbol returns an LVal resprenting the symbol s
 func Symbol(s string) *LVal {
 	return &LVal{

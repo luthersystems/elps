@@ -135,6 +135,8 @@ func (p *Parser) parseExpression() func(p *Parser) *lisp.LVal {
 		return (*Parser).ParseQuote
 	case token.UNBOUND:
 		return (*Parser).ParseUnbound
+	case token.FUN_REF:
+		return (*Parser).ParseFunRef
 	case token.SYMBOL:
 		return (*Parser).ParseSymbol
 	case token.PAREN_L:
@@ -259,6 +261,18 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 		}
 	}
 	return p.SExpr([]*lisp.LVal{sym, expr})
+}
+
+func (p *Parser) ParseFunRef() *lisp.LVal {
+	op := lisp.Symbol("lisp:function")
+	if !p.Accept(token.FUN_REF) {
+		return p.errorf("parse-error", "invalid quote: %v", p.PeekType())
+	}
+	name := p.ParseSymbol()
+	if name.Type == lisp.LError {
+		return name
+	}
+	return p.SExpr([]*lisp.LVal{op, name})
 }
 
 func (p *Parser) ParseNegative() *lisp.LVal {

@@ -74,6 +74,10 @@ func (lex *Lexer) readToken() []*token.Token {
 			tok := lex.emitText(token.HASH_BANG)
 			lex.lex = (*Lexer).readHashBang
 			return lex.emitMacroChar(tok)
+		case '\'':
+			tok := lex.emitText(token.FUN_REF)
+			lex.lex = (*Lexer).readFunRef
+			return lex.emitMacroChar(tok)
 		case '^':
 			tok := lex.emitText(token.UNBOUND)
 			return lex.emitMacroChar(tok)
@@ -197,6 +201,17 @@ func (lex *Lexer) readHashBang() []*token.Token {
 	lex.resetState()
 	lex.scanner.AcceptSeq(func(c rune) bool { return c != '\n' })
 	return lex.emitText(token.COMMENT)
+}
+
+func (lex *Lexer) readFunRef() []*token.Token {
+	lex.resetState()
+	lex.scanner.AcceptSeq(isWord)
+	if lex.scanner.AcceptRune(':') {
+		// This may produce an invalid symbol that should be detected during
+		// parsing.
+		return lex.readSymbol()
+	}
+	return lex.emitText(token.SYMBOL)
 }
 
 func (lex *Lexer) readSymbol() []*token.Token {

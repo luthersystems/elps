@@ -367,7 +367,7 @@ func macroExpand1(env *LEnv, mac *LVal, args *LVal) (*LVal, bool) {
 
 func builtinFunCall(env *LEnv, args *LVal) *LVal {
 	fun, fargs := args.Cells[0], args.Cells[1:]
-	fun = env.GetFun(fun)
+	fun = env.GetFunGlobal(fun)
 	if fun.Type == LError {
 		return fun
 	}
@@ -389,7 +389,7 @@ func builtinApply(env *LEnv, args *LVal) *LVal {
 	argtail := fargs[len(fargs)-1]
 	fargs = fargs[:len(fargs)-1]
 
-	fun = env.GetFun(fun)
+	fun = env.GetFunGlobal(fun)
 	if fun.Type == LError {
 		return fun
 	}
@@ -598,7 +598,7 @@ func builtinMap(env *LEnv, args *LVal) *LVal {
 	} else if typespec.Type != LSymbol {
 		return env.Errorf("first argument is not a valid type specification: %v", typespec.Type)
 	}
-	f = env.GetFun(f)
+	f = env.GetFunGlobal(f)
 	if f.Type == LError {
 		return f
 	}
@@ -642,7 +642,7 @@ func builtinMap(env *LEnv, args *LVal) *LVal {
 
 func builtinFoldLeft(env *LEnv, args *LVal) *LVal {
 	f := args.Cells[0]
-	f = env.GetFun(f)
+	f = env.GetFunGlobal(f)
 	if f.Type == LError {
 		return f
 	}
@@ -674,7 +674,7 @@ func builtinFoldLeft(env *LEnv, args *LVal) *LVal {
 
 func builtinFoldRight(env *LEnv, args *LVal) *LVal {
 	f := args.Cells[0]
-	f = env.GetFun(f)
+	f = env.GetFunGlobal(f)
 	if f.Type == LError {
 		return f
 	}
@@ -709,7 +709,7 @@ func builtinFoldRight(env *LEnv, args *LVal) *LVal {
 // NOTE: Compose requires concat and unpack in order to work with varargs.
 func builtinCompose(env *LEnv, args *LVal) *LVal {
 	f, g := args.Cells[0], args.Cells[1]
-	f = env.GetFun(f)
+	f = env.GetFunGlobal(f)
 	if f.Type == LError {
 		return f
 	}
@@ -719,7 +719,7 @@ func builtinCompose(env *LEnv, args *LVal) *LVal {
 	if f.IsSpecialFun() {
 		return env.Errorf("first argument is not a regular function: %v", f.FunType)
 	}
-	g = env.GetFun(g)
+	g = env.GetFunGlobal(g)
 	if g.Type == LError {
 		return f
 	}
@@ -772,7 +772,7 @@ func builtinUnpack(env *LEnv, args *LVal) *LVal {
 
 func builtinFlip(env *LEnv, args *LVal) *LVal {
 	fun := args.Cells[0]
-	fun = env.GetFun(fun)
+	fun = env.GetFunGlobal(fun)
 	if fun.Type == LError {
 		return fun
 	}
@@ -1041,7 +1041,7 @@ func builtinConcatSeq(env *LEnv, args *LVal) *LVal {
 func builtinSortStable(env *LEnv, args *LVal) *LVal {
 	less, list, optArgs := args.Cells[0], args.Cells[1], args.Cells[2:]
 	var keyFun *LVal
-	less = env.GetFun(less)
+	less = env.GetFunGlobal(less)
 	if less.Type == LError {
 		return less
 	}
@@ -1056,7 +1056,7 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 	}
 	if len(optArgs) > 0 {
 		keyFun = optArgs[0]
-		keyFun = env.GetFun(keyFun)
+		keyFun = env.GetFunGlobal(keyFun)
 		if keyFun.Type == LError {
 			return less
 		}
@@ -1169,7 +1169,7 @@ func builtinInsertSorted(env *LEnv, args *LVal) *LVal {
 	}
 	if len(optArgs) > 0 {
 		keyFun = optArgs[0]
-		keyFun = env.GetFun(keyFun)
+		keyFun = env.GetFunGlobal(keyFun)
 		if keyFun.Type == LError {
 			return keyFun
 		}
@@ -1229,7 +1229,7 @@ func builtinSearchSorted(env *LEnv, args *LVal) *LVal {
 	if n.Type != LInt {
 		return env.Errorf("first argument is not an integer: %v", n.Type)
 	}
-	p = env.GetFun(p)
+	p = env.GetFunGlobal(p)
 	if p.Type == LError {
 		return p
 	}
@@ -1257,7 +1257,7 @@ func builtinSelect(env *LEnv, args *LVal) *LVal {
 	if typespec.Type != LSymbol {
 		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
 	}
-	pred = env.GetFun(pred)
+	pred = env.GetFunGlobal(pred)
 	if pred.Type == LError {
 		return pred
 	}
@@ -1304,7 +1304,7 @@ func builtinReject(env *LEnv, args *LVal) *LVal {
 	if typespec.Type != LSymbol {
 		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
 	}
-	pred = env.GetFun(pred)
+	pred = env.GetFunGlobal(pred)
 	if pred.Type == LError {
 		return pred
 	}
@@ -1744,7 +1744,7 @@ func builtinEqual(env *LEnv, args *LVal) *LVal {
 
 func builtinAllP(env *LEnv, args *LVal) *LVal {
 	pred, list := args.Cells[0], args.Cells[1]
-	pred = env.GetFun(pred)
+	pred = env.GetFunGlobal(pred)
 	if pred.Type == LError {
 		return pred
 	}
@@ -1769,7 +1769,7 @@ func builtinAllP(env *LEnv, args *LVal) *LVal {
 
 func builtinAnyP(env *LEnv, args *LVal) *LVal {
 	pred, list := args.Cells[0], args.Cells[1]
-	pred = env.GetFun(pred)
+	pred = env.GetFunGlobal(pred)
 	if pred.Type == LError {
 		return pred
 	}
