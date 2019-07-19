@@ -633,7 +633,10 @@ func opIf(env *LEnv, s *LVal) *LVal {
 
 func opOr(env *LEnv, s *LVal) *LVal {
 	if len(s.Cells) == 0 {
-		return Nil()
+		// Common lisp returns a nil value here. But logical operators
+		// operating on booleans should return booleans.  And here all
+		// arguments are booleans (vacuously true without any arguments).
+		return Bool(false)
 	}
 	term := s.Cells[len(s.Cells)-1]
 	for _, c := range s.Cells[:len(s.Cells)-1] {
@@ -655,12 +658,11 @@ func opOr(env *LEnv, s *LVal) *LVal {
 
 func opAnd(env *LEnv, s *LVal) *LVal {
 	if len(s.Cells) == 0 {
-		// The identity for and is a true value.
+		// The identity for ``and'' is a true value.
 		return Bool(true)
 	}
-	// NOTE:  Because the value of the last evaluation may not be returned
-	// directly (unlike ``or'').  The and operation cannot use a Terminal
-	// expression.
+	// NOTE:  Because it is unknown which argument will be the last one
+	// evaluated ``and'' cannot use a Terminal expression (unlike ``or'').
 	var r *LVal
 	for _, c := range s.Cells {
 		r = env.Eval(c)
@@ -668,10 +670,7 @@ func opAnd(env *LEnv, s *LVal) *LVal {
 			return r
 		}
 		if !True(r) {
-			// In the common lisp standard short circuiting the ``and''
-			// function always causes a nil return, even if r is the symbol
-			// false.
-			return Nil()
+			return r
 		}
 	}
 	// In the common lisp standard the ``and'' function returns the evaluated
