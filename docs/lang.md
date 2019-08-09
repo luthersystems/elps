@@ -88,7 +88,7 @@ bound to a value through [expression
 evaluation](#markdown-header-expression-evaluation).
 
 ```lisp
-((lambda (x) (- x)) 3)  ; evaluates to -3 
+((lambda (x) (- x)) 3)  ; evaluates to -3
 ```
 
 The builtin macro `defun` is provided to bind names to functions.
@@ -147,11 +147,11 @@ symbols are bound to the value nil.
 (add 2 0) ; evaluates to 2
 ```
 
-There is no limit to the number of optional arguments a function can have. But 
-if the number of optional arguments is too large it may be better to use 
-keyward arguments instead.
+There is no limit to the number of optional arguments a function can have. But
+if the number of optional arguments is too large it may be better to use
+keyword arguments instead.
 
-### Variable argument functions
+### Variable argument (variadic) functions
 
 A function's formal argument list may use the special symbol `&rest` before
 the final argument to denote that the final argument should be bound to a list
@@ -175,7 +175,7 @@ confusing semantics when mixing the two styles.  When keyword arguments are
 needed avoid using `&rest` and just pass the variable argument as an
 additional keyword argument.
 
-### Keyward arguments
+### Keyword arguments
 
 If a function's formal argument list contains the special symbol `&key` the
 following symbols are keyword arguments.  Keyword arguments are like optional
@@ -199,7 +199,7 @@ values for both, one, or neither.
 ```
 
 Keyword arguments are useful but they can also lead to some confusing errors.
-Keywords are values.  And as values keywards can be passed to functions as
+Keywords are values.  And as values keywords can be passed to functions as
 normal, required arguments.
 
 ```lisp
@@ -208,7 +208,7 @@ normal, required arguments.
 ```
 
 This unavoidable property of keyword arguments can lead to confusing runtime
-errors when accidentally omitting required arguments or mixing keyword arguments 
+errors when accidentally omitting required arguments or mixing keyword arguments
 and optional arguments.
 
 **NOTE**: Due to the properties of keyword arguments it follows that a
