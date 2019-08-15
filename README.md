@@ -42,7 +42,7 @@ env := lisp.NewEnv(nil)
 env.Reader = parser.NewReader()
 lerr := lisp.InitializeUserEnv(env)
 if !lerr.IsNil() {
-   log.Panicf("initialization error: %v", lerr) 
+   log.Panicf("initialization error: %v", lerr)
 }
 lerr = lisplib.LoadLibrary(env)
 if !lerr.IsNil() {
