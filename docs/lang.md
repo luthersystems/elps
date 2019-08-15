@@ -62,7 +62,7 @@ equivalent to nil.
 An expression containing sub-expressions is typically evaluated by evaluating
 all its sub-expressions from left to right (top-down).  And then evaluating the
 main expression by invoking the function resulting from the first
-sub-experssion with arguments bound the results of remaining sub-expressions.
+sub-expression with arguments bound the results of remaining sub-expressions.
 
 ```lisp
 (expr1 expr2 expr3)
@@ -91,7 +91,7 @@ evaluation](#markdown-header-expression-evaluation).
 ((lambda (x) (- x)) 3)  ; evaluates to -3
 ```
 
-The builtin macro `defun` is provided to bind names to functions.
+The built-in macro `defun` is provided to bind names to functions.
 
 ```lisp
 (defun neg (x) (- x))
@@ -218,7 +218,7 @@ arguments.
 
 ### Unbound expressions
 
-The builtin `expr` function allows for compact construction of simple
+The built-in `expr` function allows for compact construction of simple
 functions.
 
 ```lisp
@@ -230,7 +230,7 @@ functions.
 ```
 
 The special symbol `%` indicates an anonymous function argument.  Functions of
-muiltple arguments can be defined by using the anonymous argument symbols `%1`,
+multiple arguments can be defined by using the anonymous argument symbols `%1`,
 `%2`, ... or the variadic anonymous argument `%&rest`.
 
 ```lisp
@@ -241,7 +241,7 @@ muiltple arguments can be defined by using the anonymous argument symbols `%1`,
 ## Macros
 
 A macro is a special function which receives unevaluated arguments (values are
-not quoted, they just arn't evaluated). A macro function returns a quoted
+not quoted, they just aren't evaluated). A macro function returns a quoted
 expression which is subsequently evaluated in the scope of the original call.
 
 When writing macros the `macroexpand` and `macroexpand-1` functions help debug
@@ -269,7 +269,7 @@ no facility within the language for defining special operators.
 ## Scope
 
 All symbol expressions are lexically scoped and resolve to the deepest binding
-of that symbol.  Functions natually create a lexical scope that binds their
+of that symbol.  Functions naturally create a lexical scope that binds their
 argument symbols.  The other way to create a lexical scope is through the use
 of `let` and `let*` which take as their first argument a list of bindings
 following by expressions which are executed in a nested scope containing those
@@ -311,7 +311,7 @@ their arguments or by the let which contains the function definition
 ```
 
 Macros must take care if they directly evaluate an argument that contains a
-lambda (outside of qausiquote/unquote) because the resulting function will
+lambda (outside of quasiquote/unquote) because the resulting function will
 inherit the scope of the macro and not the scope of the caller, which is
 probably not desired.
 
@@ -319,7 +319,7 @@ probably not desired.
 
 ### Lists
 
-The most primative data structure is a list, a quoted s-expression.
+The most primitive data structure is a list, a quoted s-expression.
 
 ```lisp
 '(1 2 3 4 "hello" ok)
@@ -400,7 +400,7 @@ which merely return new sorted-map objects without modifying their arguments.
 
 ## Packages
 
-Packages allow namespace isolation for components of a codebase as its
+Packages allow namespace isolation for components of a code base as its
 complexity increases.
 
 ### Basics
@@ -463,8 +463,8 @@ would be possible by using a qualified symbol.
 ```
 
 **NOTE:** All packages use the "lisp" package, which defines all of the
-language builtin functions and macros.  It is not currently possible to change
-this behavior for packages defined by lisp code.  Embedded lisp isntances are
+language built-in functions and macros.  It is not currently possible to change
+this behavior for packages defined by lisp code.  Embedded lisp instances are
 able change this behavior globally -- something outside the scope of this
 document.
 
@@ -494,20 +494,20 @@ URL format for organizational clarity and to avoid package name collisions.
 
 Sometimes an improper invocation of a function will cause an error at runtime.
 Programmers can also trigger errors from lisp code by using the `error`
-builtin.
+built-in.
 
 ```lisp
 (error 'my-type-of-error "Things are messed up right now")
 ```
 
-The above code will unwind the function call stack, permaturely terminating any
+The above code will unwind the function call stack, prematurely terminating any
 functions executing or awaiting execution.  If there is no code to handle the
 error it will eventually be returned to the application embedding the lisp
-interpreter.  However lisp code has a few builtin ways to detect and deal with
+interpreter.  However lisp code has a few built-in ways to detect and deal with
 errors before the entire pending evaluation is terminated.
 
 When a function call is understood to trigger non-fatal error conditions of a
-certain kind it may use the `handler-bind` builtin to intercept and correct
+certain kind it may use the `handler-bind` built-in to intercept and correct
 that type of error.  For an example, consider the above error in a broader
 context.
 
@@ -528,7 +528,7 @@ expression inside handler-bind calls double, it raises an error condition.  The
 error inside double terminates the function call as it unwinds the stack until
 it hits the handler-bind.  The list of condition handlers in handler-bind
 specifies a function to call when a 'double-not-number error is found.  That
-handler function receives the arguments passed to the `error` builtin and
+handler function receives the arguments passed to the `error` built-in and
 returns them in this scenario, producing the result `'('double-not-number
 "value to double is not a number")` which is returned by handler-bind.
 
