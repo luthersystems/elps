@@ -860,6 +860,9 @@ func builtinDissocMutate(env *LEnv, args *LVal) *LVal {
 
 func builtinGet(env *LEnv, args *LVal) *LVal {
 	m, k := args.Cells[0], args.Cells[1]
+	if m.IsNil() {
+		return Nil()
+	}
 	if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	}

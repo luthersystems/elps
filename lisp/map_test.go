@@ -18,6 +18,7 @@ func TestMaps(t *testing.T) {
 			{"(assoc! m 'a 0)", "(sorted-map 'a 0 'b 1)", ""},
 			{"(assoc m 'b 2)", "(sorted-map 'a 0 'b 2)", ""},
 			{"(get (assoc m 'b 2) 'b)", "2", ""},
+			{"(get () 'a)", "()", ""},
 			{`(get m "b")`, "1", ""},
 			{`(assoc! m "abc" 2)`, `(sorted-map 'a 0 "abc" 2 'b 1)`, ""},
 			{`(get m 'a)`, "0", ""},
@@ -33,7 +34,7 @@ func TestMaps(t *testing.T) {
 			{"(dissoc! m 'a)", "(sorted-map 'b 1)", ""},
 			{"(dissoc m 'b)", "(sorted-map)", ""},
 			{`(get m 'b)`, "1", ""},
-        }},
+		}},
 		{"order", elpstest.TestSequence{
 			// Test that the default representation of a map always has sorted
 			// keys and that the ``keys'' builtin returns a properly sorted
