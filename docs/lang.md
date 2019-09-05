@@ -398,6 +398,10 @@ which merely return new sorted-map objects without modifying their arguments.
     m2)      ; evaluates to (sorted-map 'bob 1 'carol 2)
 ```
 
+It is a peculiarity of elps that `assoc` on `()` will return a new sorted-map
+with the corresponding key and value set.
+Similarly, `get` on `()` will return `()`.
+
 ## Packages
 
 Packages allow namespace isolation for components of a code base as its
