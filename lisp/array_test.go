@@ -19,6 +19,7 @@ func TestArray(t *testing.T) {
 			{`(ignore-errors (aref (vector 1 2 3) 3))`, "()", ""},
 			{`(ignore-errors (aref (vector 1 2 3) -1))`, "()", ""},
 			{"(ignore-errors (nth (vector) -1))", "()", ""},
+			{"(length (vector))", "0", ""},
 			{"(nth (vector) 0)", "()", ""},
 			{"(nth (vector) 1)", "()", ""},
 			{"(nth (vector) 2)", "()", ""},
