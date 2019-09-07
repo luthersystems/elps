@@ -50,8 +50,9 @@ func GoValue(v *LVal) interface{} {
 		m, _ := GoMap(v)
 		return m
 	case LArray:
-		s, _ := GoSlice(SExpr(v.Cells[1:]))
-		switch v.Cells[0].Len() {
+		dims, storage := v.Cells[0], v.Cells[1]
+		s, _ := GoSlice(SExpr(storage.Cells))
+		switch dims.Len() {
 		case 0:
 			return s[0]
 		case 1:
