@@ -2029,11 +2029,7 @@ func builtinAdd(env *LEnv, v *LVal) *LVal {
 	}
 	sum := 0.0
 	for _, c := range v.Cells {
-		if c.Type == LInt {
-			sum += float64(c.Int)
-		} else {
-			sum += c.Float
-		}
+		sum += toFloat(c)
 	}
 	return Float(sum)
 }
@@ -2070,13 +2066,9 @@ func builtinSub(env *LEnv, v *LVal) *LVal {
 		}
 		return Int(diff)
 	}
-	diff := v.Cells[0].Float
+	diff := toFloat(v.Cells[0])
 	for _, c := range v.Cells[1:] {
-		if c.Type == LInt {
-			diff -= float64(c.Int)
-		} else {
-			diff -= c.Float
-		}
+		diff -= toFloat(c)
 	}
 	return Float(diff)
 }
