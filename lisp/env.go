@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"strings"
 	"sync/atomic"
 
@@ -803,7 +802,7 @@ func (env *LEnv) MacroCall(fun, args *LVal) *LVal {
 
 	r := env.call(fun, args)
 	if r == nil {
-		env.Runtime.Stack.DebugPrint(os.Stderr)
+		env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
 		panic("nil LVal returned from function call")
 	}
 	if r.Type == LError {
@@ -850,7 +849,7 @@ func (env *LEnv) SpecialOpCall(fun, args *LVal) *LVal {
 callf:
 	r := env.call(fun, args)
 	if r == nil {
-		env.Runtime.Stack.DebugPrint(os.Stderr)
+		env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
 		panic("nil LVal returned from function call")
 	}
 	if r.Type == LError {
@@ -907,7 +906,7 @@ func (env *LEnv) funCall(fun, args *LVal) *LVal {
 callf:
 	r := env.call(fun, args)
 	if r == nil {
-		env.Runtime.Stack.DebugPrint(os.Stderr)
+		env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
 		panic("nil LVal returned from function call")
 	}
 	if r.Type == LError {
@@ -977,7 +976,7 @@ func (env *LEnv) evalSExprCells(s *LVal) *LVal {
 		return env.Errorf("first element of expression is not a function: %v", f)
 	}
 	if f.Type == LMarkTailRec {
-		env.Runtime.Stack.DebugPrint(os.Stderr)
+		env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
 		log.Panicf("tail-recursion optimization attempted during argument evaluation: %v", f.Cells)
 	}
 
@@ -1006,7 +1005,7 @@ func (env *LEnv) evalSExprCells(s *LVal) *LVal {
 			return v
 		}
 		if v.Type == LMarkTailRec {
-			env.Runtime.Stack.DebugPrint(os.Stderr)
+			env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
 			log.Panicf("tail-recursion optimization attempted during argument evaluation: %v", v.Cells)
 		}
 	}
@@ -1197,9 +1196,14 @@ func (env *LEnv) bindFormalNext(fun, formals, args *LVal, put, putVarArgs bindfu
 		if len(formals.Cells) == 2 {
 			formals.Cells = nil
 		} else {
-			s := formals.Cells[0] // OptArgSymbol
-			formals.Cells = formals.Cells[1:]
-			formals.Cells[0] = s
+			// formals.Cells looks like {OptArgSymbol, x1, x2, ...}.  We are
+			// binding x1 and producing a new list of pending bindings
+			// {OptArgSymbol, x2, ...}.  This isn't very efficient but only
+			// affects functions with multiple optional arguments.
+			newFormals := make([]*LVal, len(formals.Cells)-1)
+			newFormals[0] = formals.Cells[0] // OptArgSymbol
+			copy(newFormals[1:], formals.Cells[2:])
+			formals.Cells = newFormals
 		}
 		if len(args.Cells) == 0 {
 			// No arguments left so we bind the optional arg to nil.

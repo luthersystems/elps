@@ -2201,12 +2201,12 @@ func builtinDebugPrint(env *LEnv, args *LVal) *LVal {
 	for i := range args.Cells {
 		fmtargs[i] = args.Cells[i]
 	}
-	fmt.Fprintln(env.Runtime.Stderr, fmtargs...)
+	fmt.Fprintln(env.Runtime.getStderr(), fmtargs...)
 	return Nil()
 }
 
 func builtinDebugStack(env *LEnv, args *LVal) *LVal {
-	_, err := env.Runtime.Stack.DebugPrint(env.Runtime.Stderr)
+	_, err := env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
 	if err != nil {
 		return env.Error(err)
 	}

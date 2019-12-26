@@ -41,6 +41,13 @@ func (r *Runtime) GenSym() string {
 	return fmt.Sprintf("gen%08d", r.gensym())
 }
 
+func (r *Runtime) getStderr() io.Writer {
+	if r.Stderr != nil {
+		return r.Stderr
+	}
+	return os.Stderr
+}
+
 func (r *Runtime) getEnvID() uint {
 	return r.numenv.Add(1)
 }
