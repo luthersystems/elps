@@ -1197,9 +1197,14 @@ func (env *LEnv) bindFormalNext(fun, formals, args *LVal, put, putVarArgs bindfu
 		if len(formals.Cells) == 2 {
 			formals.Cells = nil
 		} else {
-			s := formals.Cells[0] // OptArgSymbol
-			formals.Cells = formals.Cells[1:]
-			formals.Cells[0] = s
+			// formals.Cells looks like {OptArgSymbol, x1, x2, ...}.  We are
+			// binding x1 and producing a new list of pending bindings
+			// {OptArgSymbol, x2, ...}.  This isn't very efficient but only
+			// affects functions with multiple optional arguments.
+			newFormals := make([]*LVal, len(formals.Cells)-1)
+			newFormals[0] = formals.Cells[0] // OptArgSymbol
+			copy(newFormals[1:], formals.Cells[2:])
+			formals.Cells = newFormals
 		}
 		if len(args.Cells) == 0 {
 			// No arguments left so we bind the optional arg to nil.
