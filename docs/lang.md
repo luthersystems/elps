@@ -158,7 +158,7 @@ the final argument to denote that the final argument should be bound to a list
 containing all arguments not bound by previous argument symbols.
 
 ```lisp
-(defun cons-reverse (x &rest xs) (cons x (reverse xs)))
+(defun cons-reverse (x &rest xs) (cons x (reverse 'list xs)))
 ```
 
 The above function can evaluate with one or more arguments.  The symbol `x`
@@ -235,7 +235,7 @@ multiple arguments can be defined by using the anonymous argument symbols `%1`,
 
 ```lisp
 (expr (+ %1 %2))         ; evaluates to (lambda (%1 %2) (+ %1 %2))
-(expr (reverse %&rest))  ; evaluates to (lambda (&rest %&rest) (reverse %&rest))
+(expr (reverse 'list %&rest))  ; evaluates to (lambda (&rest %&rest) (reverse 'list %&rest))
 ```
 
 ## Macros
