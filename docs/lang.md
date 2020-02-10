@@ -12,7 +12,7 @@ parenthesis `(...)`.  An environment evaluates one expression at a time,
 evaluating each sub-expression before evaluating the main expression.
 Expressions may also be *quoted* by prefixing it with an single quote `'`.
 Quoted expressions are discussed in depth along with [expression
-evaluation](#markdown-header-expression-evaluation).
+evaluation](#expression-evaluation).
 
 ## Atoms
 
@@ -48,7 +48,7 @@ value (while anything non-nil represents a true boolean value).
 ### Atomic Expressions
 
 Symbols evaluate to the last value bound to that symbol at the deepest
-[scope](#markdown-header-scope) at which that symbol is bound.  Numbers and
+[scope](#scope) at which that symbol is bound.  Numbers and
 strings evaluate to themselves.
 
 ### Quoted Expressions
@@ -85,7 +85,7 @@ argument symbols.
 The above expression evaluates to an anonymous function (a lambda function)
 which has one argument `x` and evaluates to the expression `(- x)` when x is
 bound to a value through [expression
-evaluation](#markdown-header-expression-evaluation).
+evaluation](#expression-evaluation).
 
 ```lisp
 ((lambda (x) (- x)) 3)  ; evaluates to -3
