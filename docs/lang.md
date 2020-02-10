@@ -283,7 +283,7 @@ bindings.
     (+ x 1))        ; x evaluates to the value bound in the let's scope
 
 (let ((x 1))
-    (let ((y 2))
+    (let ((x 2))
         (+ x 1)))   ; x evaluates to the value bound in the first let
 ```
 
