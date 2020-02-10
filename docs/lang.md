@@ -307,7 +307,7 @@ their arguments or by the let which contains the function definition
 
 ```lisp
 (let ((x 10))
-    (add-x 3))      ; still evaluates to 3
+    (add-x 3))      ; still evaluates to 4
 ```
 
 Macros must take care if they directly evaluate an argument that contains a
