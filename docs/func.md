@@ -1,5 +1,39 @@
 # Function Reference
 
+*TODO: compose, flip, search-sorted*
+
+## `debug-print`
+
+Prints the supplied value(s).
+
+```Lisp
+elps> (set 'test (sorted-map "K" "V"))
+(sorted-map "K" "V")
+elps> (debug-print "Hello" test)
+"Hello" (sorted-map "K" "V")
+()
+```
+
+## `json:dump-string`
+
+JSON encodes a value, returning the JSON as a string.
+
+```Lisp
+elps> (json:dump-string (sorted-map "K" "V"))
+"{\"K\":\"V\"}"
+```
+
+## `json:dump-bytes`
+
+JSON encodes a value, returning the JSON as bytes.
+
+```Lisp
+elps> (json:dump-bytes (sorted-map "K" "V"))
+#<bytes 123 34 75 34 58 34 86 34 125>
+elps> (to-string (json:dump-bytes (sorted-map "K" "V")))
+"{\"K\":\"V\"}"
+```
+
 ## `to-string`
 
 Converts primitive values to their string representation.
@@ -139,4 +173,246 @@ evaluating from the right.
 ```Lisp
 elps> (foldr - 0 '(1 2 3))
 2 ; (1 - (2 - (3 - 0)))
+```
+
+## `unpack`
+
+Unpacks the list supplying the values as parameters to the given function.
+
+```Lisp
+elps> (unpack (lambda (x y) (+ x y)) '(2 7))
+9
+elps> (unpack (lambda (x y) (+ x y)) '(2 7 6))
+stdin:1: _fun16: invalid number of arguments: 3
+```
+
+## `assoc`
+
+Associates a new key and value to a map, returning a copy without mutating
+the source map.
+
+```Lisp
+elps> (set 'test (sorted-map))
+(sorted-map)
+elps> (assoc test "1" 1)
+(sorted-map "1" 1)
+elps> test
+(sorted-map)
+```
+
+## `assoc!`
+
+Associates a new key and value to a map, mutating the source map in-place.
+
+```Lisp
+elps> (set 'test (sorted-map))
+(sorted-map)
+elps> (assoc! test "1" 1)
+(sorted-map "1" 1)
+elps> test
+(sorted-map "1" 1)
+```
+
+## `dissoc`
+
+Disassociates a value from a map via a key, returning a copy without mutating
+the source map.
+
+```Lisp
+elps> (set 'test (sorted-map "A" 1 "B" 2))
+(sorted-map "A" 1 "B" 2)
+elps> (dissoc test "A")
+(sorted-map "B" 2)
+elps> test
+(sorted-map "A" 1 "B" 2)
+```
+
+## `dissoc`
+
+Disassociates a value from a map via a key, mutating the source map in-place.
+
+```Lisp
+elps> (set 'test (sorted-map "A" 1 "B" 2))
+(sorted-map "A" 1 "B" 2)
+elps> (dissoc! test "A")
+(sorted-map "B" 2)
+elps> test
+(sorted-map "B" 2)
+```
+
+## `get`
+
+Gets a map value by key.
+
+```Lisp
+elps> (set 'test (sorted-map "A" 1 "B" 2))
+(sorted-map "A" 1 "B" 2)
+elps> (get test "A")
+1
+```
+
+## `keys`
+
+Returns the key values of a map.
+
+```Lisp
+elps> (set 'test (sorted-map "A" 1 "B" 2))
+(sorted-map "A" 1 "B" 2)
+elps> (keys test)
+'("A" "B")
+```
+
+## `key?`
+
+Checks if the a key exists in a map.
+
+```Lisp
+elps> (set 'test (sorted-map "A" 1 "B" 2))
+(sorted-map "A" 1 "B" 2)
+elps> (key? test "X")
+false
+elps> (key? test "B")
+true
+```
+
+## `concat`
+
+Concatenates values.
+
+```Lisp
+elps> (concat 'string "A" "B" "C")
+"ABC"
+elps> (concat 'list '("A" "B" "C") '(1 2 3))
+'("A" "B" "C" 1 2 3)
+```
+
+## `insert-index`
+
+Inserts a value into a sequence at a specific index.
+
+```Lisp
+elps> (set 'test '(1 2 3))
+'(1 2 3)
+elps> (insert-index 'list test 0 999)
+'(999 1 2 3)
+elps> (insert-index 'list test 42 123)
+stdin:1: lisp:insert-index: index out of bounds
+```
+
+## `stable-sort`
+
+Performs a stable sort on a list using a predicate. The last argument can
+optionally be a function that takes the key and returns the comparison value.
+Mutates the list in-place.
+
+```
+elps> (set 'test '(1 2 3))
+'(1 2 3)
+elps> (stable-sort > test)
+'(3 2 1)
+elps> (set 'test '("C" "B" "A"))
+'("C" "B" "A")
+elps> (set 'lookup (sorted-map "A" 9 "B" 7 "C" 8))
+(sorted-map "A" 9 "B" 7 "C" 8)
+elps> (stable-sort > test (lambda (key) (get lookup key)))
+'("A" "C" "B")
+```
+
+## `insert-sorted`
+
+Inserts a value in its sort position.
+
+```Lisp
+elps> (set 'test '(1 2 4))
+'(1 2 4)
+elps> (insert-sorted 'list test < 3)
+'(1 2 3 4)
+```
+
+## `select`
+
+Selects values matching the predicate.
+
+```Lisp
+elps> (select 'list int? '("A" 1 "B" 2 "C" 3))
+'(1 2 3)
+```
+
+## `reject`
+
+Rejects values matching the predicate.
+
+```Lisp
+elps> (reject 'list int? '("A" 1 "B" 2 "C" 3))
+'("A" "B" "C")
+```
+
+## `zip`
+
+Zips one or more lists, composing a list of values from each input list. Tuples
+length is restricted to the smallest input list length.
+
+```Lisp
+elps> (zip 'list '(1 2 3))
+'('(1) '(2) '(3))
+elps> (zip 'list '(1 2 3) '("A" "B" "C") '(4 5 6))
+'('(1 "A" 4) '(2 "B" 5) '(3 "C" 6))
+elps> (zip 'list '(1 2 3) '("A" "B" "C") '(4 5))
+'('(1 "A" 4) '(2 "B" 5))
+```
+
+## `make-sequence`
+
+Generates a sequence, with an optional step value.
+
+```Lisp
+elps> (make-sequence 0 10)
+'(0 1 2 3 4 5 6 7 8 9)
+elps> (make-sequence 0 10 2)
+'(0 2 4 6 8)
+elps> (make-sequence 0 10 4)
+'(0 4 8)
+```
+
+## `format-string`
+
+Creates a string using format placeholders and values.
+
+```Lisp
+elps> (format-string "Hello {}, {} you?" "World" "how are")
+"Hello World, how are you?"
+```
+
+## `reverse`
+
+Reverses a sequence.
+
+```Lisp
+elps> (reverse 'list '(1 2 3))
+'(3 2 1)
+elps> (reverse 'list (reverse 'list '(1 2 3)))
+'(1 2 3)
+```
+
+
+## `slice`
+
+Returns the sub-slice of a sequence.
+
+```Lisp
+elps> (set 'test (make-sequence 0 10))
+'(0 1 2 3 4 5 6 7 8 9)
+elps> (slice 'list test 3 6)
+'(3 4 5)
+elps> (slice 'list test 3 0)
+stdin:1: lisp:slice: end before start
+```
+
+## `list`
+
+Returns a list compose of the supplied parameters.
+
+```Lisp
+elps> (list "A" 123 456 "B" '(0 1 2))
+'("A" 123 456 "B" '(0 1 2))
 ```
