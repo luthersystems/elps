@@ -227,7 +227,7 @@ elps> test
 (sorted-map "A" 1 "B" 2)
 ```
 
-## `dissoc`
+## `dissoc!`
 
 Disassociates a value from a map via a key, mutating the source map in-place.
 
