@@ -53,7 +53,10 @@ env.LoadString(`(debug-print "hello-world")`)
 
 ## Reference
 
-See the docs/ directory for more documentation:
+See the `docs/` directory for more documentation:
 
 - [Language reference](docs/lang.md)
 - [Embedding guide](docs/embed.md)
+
+See the `_examples/` directory for examples:
+- [SICP Examples](_examples/sicp)
