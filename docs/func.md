@@ -1,6 +1,6 @@
 # Function Reference
 
-*TODO: compose, flip, search-sorted*
+*TODO: compose, flip, search-sorted, aref*
 
 ## `debug-print`
 
@@ -394,7 +394,6 @@ elps> (reverse 'list (reverse 'list '(1 2 3)))
 '(1 2 3)
 ```
 
-
 ## `slice`
 
 Returns the sub-slice of a sequence.
@@ -415,4 +414,165 @@ Returns a list compose of the supplied parameters.
 ```Lisp
 elps> (list "A" 123 456 "B" '(0 1 2))
 '("A" 123 456 "B" '(0 1 2))
+```
+
+## `vector`
+
+Creates a vector (array) value.
+
+```Lisp
+elps> (vector)
+(vector)
+elps> (vector 1 "2" 'three)
+(vector 1 "2" 'three)
+```
+
+## `append`
+
+Appends to the vector, returning a copy without mutating the source vector.
+
+```Lisp
+elps> (set 'test (vector 1 2))
+(vector 1 2)
+elps> (append 'vector test 3)
+(vector 1 2 3)
+elps> test
+(vector 1 2)
+```
+
+## `append!`
+
+Appends to the vector, mutating the source vector in-place.
+
+```Lisp
+elps> (set 'test (vector 1 2))
+(vector 1 2)
+elps> (append! 'vector test 3)
+(vector 1 2 3)
+elps> test
+(vector 1 2 3)
+```
+
+## `append-bytes`
+
+Appends to the byte vector, returning a copy without mutating the source vector.
+
+```
+elps> (set 'test (to-bytes "hello world"))
+#<bytes 104 101 108 108 111 32 119 111 114 108 100>
+elps> (append-bytes! test "!")
+#<bytes 104 101 108 108 111 32 119 111 114 108 100 33>
+elps> (to-string test)
+"hello world"
+```
+
+## `append-bytes!`
+
+Appends to the byte vector, mutating the source vector in-place.
+
+```
+elps> (set 'test (to-bytes "hello world"))
+#<bytes 104 101 108 108 111 32 119 111 114 108 100>
+elps> (append-bytes! test "!")
+#<bytes 104 101 108 108 111 32 119 111 114 108 100 33>
+elps> (to-string test)
+"hello world!" ; Note exclamation mark
+```
+
+## `all?`
+
+Test all items in a sequence match against a function.
+
+```Lisp
+elps> (all? (lambda (x) (> x 0)) '(1 2 3 4 5))
+true
+elps> (all? (lambda (x) (> x 0)) '(1 2 3 4 -5))
+false
+```
+
+## `any?`
+
+Test if any item in a sequence matches against a function.
+
+```Lisp
+elps> (any? string? '(1 2 3 4 5))
+false
+elps> (any? string? '(1 2 "3" 4 -5))
+true
+```
+
+## `true?`
+
+Checks if a value is truthy.
+
+``Lisp
+elps> (true? ())
+false
+elps> (true? "")
+true
+elps> (true? false)
+false
+elps> (true? true)
+true
+```
+
+# Type Checking
+
+```Lisp
+elps> (nil? ())
+true
+elps> (nil? false)
+false
+elps> (list? '())
+true
+elps> (list? '(1 2 3))
+true
+elps> (list? "hello")
+false
+elps> (sorted-map? (sorted-map "hello" "world"))
+true
+elps> (sorted-map? "hello world")
+false
+elps> (array? (vector 1 2))
+true
+elps> (array? (list 1 2))
+false
+elps> (vector? (vector 1 2))
+true
+elps> (vector? (list 1 2))
+false
+elps> (bool? true)
+true
+elps> (bool? ())
+false
+elps> (number? 1.0)
+true
+elps> (number? 100)
+true
+elps> (number? "100")
+false
+elps> (int? 1)
+true
+elps> (int? -1)
+true
+elps> (int? -1.0)
+false
+elps> (float? 1)
+false
+elps> (float? 1.0)
+true
+elps> (symbol? 'hi)
+true
+elps> (symbol? "hi")
+false
+elps> (string? "")
+true
+elps> (string? "hi")
+true
+elps> (string? 'hi)
+false
+elps> (bytes? "hello")
+false
+elps> (bytes? (to-bytes "hello"))
+true
 ```
