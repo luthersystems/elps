@@ -505,7 +505,7 @@ true
 
 Checks if a value is truthy.
 
-``Lisp
+```Lisp
 elps> (true? ())
 false
 elps> (true? "")
