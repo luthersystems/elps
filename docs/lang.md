@@ -259,12 +259,176 @@ The macroexpand-1 function is just like macroexpand except it will not
 recursively expand macros when the result of the argument macro form is itself
 a macro form.
 
+The `gensym` builtin is used to generate a new symbol, which is most often used
+with macros to avoid avoid naming collisions.
+
+## Parens () and braces []
+
+Matching braces produce a quoted list.  As with parens, an open brace `[`
+must be closed using a close brace `]`. Using parens with braces can improve
+readability. Conventionally, braces are used with `let` to define the bindings.
+
+```lisp
+(let ([x 1]
+      [y 2])
+  (+ x y))      ; evaluates to 3
+```
+
 ## Special Operators
 
 A special operator is like a macro, in that it receives unevaluated arguments,
 but the result of a special operator will not be subsequently evaluated.
 Examples of special operators are `if`, `lambda`, and `quasiquote`.  There is
 no facility within the language for defining special operators.
+
+### cond
+`cond` takes an arbitrary number of arguments called clauses. A clause consists
+of a list of exactly two expressions. The first expression in a clause is a
+condition, and there can be any number of expressions following the condition
+in a cond branch which get wrapped by an implicit progn.
+
+For example,
+
+```lisp
+(cond (condition1 result1)
+	(condition2 result2)
+	...
+	(:else resultN))
+```
+
+The value returned by `cond` is computed as follows: if condition1 is `true?`,
+then return result1; else if condition2 is `true?` then return result2; else
+if ...; else return resultN.
+
+If none of the conditions are true (and there is no :else), then `()` is
+returned.
+
+### let vs let\*
+
+`let` and `let*` are used to create bindings for local variables within a
+new scope.  `let` bindings happens left-to-right/top-to-bottom and they can
+refer to previously bound symbols.  The result of the evaluation of the last
+expression within the `let` is returned.
+
+```lisp
+(let ((variable1 result1)
+      (variable2 result2) ; result2 cannot reference variable1
+      ...
+      (variable3 result3))
+  expr1 ; some expression that can use bound variables
+  ...
+  exprN ; exprN evaluation is returned
+  )
+```
+
+```lisp
+(set 'x 0)
+(let ([x (+ x 1)]
+      [x (+ x 1)])
+  x)                ; evaluates to 1
+```
+
+```lisp
+(set 'x 0)
+(let* ([x (+ x 1)]
+       [x (+ x 1)])
+  x)                ; evaluates to 2
+```
+
+### flet vs labels
+
+`flet` and `labels` are used to create bindings for local functions within a
+new scope.  `flet` bindings are not recursive and cannot refer to each other.
+`labels` bindings can be recursive and can refer to each other (left-to-right,
+top-to-bottom).
+
+```lisp
+(flet ((func1 (arg1 ... argn) expr1 ... exprN)
+       ...
+       (func2 (arg1 ... argn) expr1 ... exprN))
+  expr1 ; some expression that can use bound functions
+  ...
+  exprN
+  ) ; exprN evaluated and returned
+```
+
+```lisp
+(defun count () 0)
+(flet ([count () (+ (count) 1)]
+       [count () (+ (count) 1)])
+  (count)) ; evaluates to 1
+```
+
+```lisp
+(defun count () 0)
+(labels ([count0 () (+ (count) 1)]
+	 [count1 () (+ (count0) 1)])
+  (count1)) ;  to 2
+```
+
+### macrolet
+
+`macrolet` is used to create bindings for local macros within a new scope, in
+an analogous way as `flet` and `labels`.
+
+### assert
+
+`assert` takes an expression and optional string, and evalutes the expression.
+If the result of the evaluation is truthy then assert returns `()`, otherwise
+`assert` will output the assertion failure message to stderr and raise an
+error.
+
+### progn
+
+`progn` causes each of its arguments to be evaluated in sequence and then
+returns the value of the last one. The preceding expressions are evaluated
+only for the side effects they perform. The values produced by them are
+discarded.
+
+```lisp
+(progn
+  expr1
+  expr2
+  ...
+  exprN) ; exprN evaluation is returned
+```
+
+### thread-first, thread-last
+
+`thread-first` and `thread-last` help make nested function calls more readable,
+and function similar to the clojure `->` and `->>` macros.
+
+The word "thread" in this context (meaning passing a value through a pipeline
+of functions) is unrelated to the concept of concurrent threads of execution.
+
+`thread-first` takes the first argument and passes it as an argument to the
+function defined in the second argument. The result of evaluating this
+expression is then passed to the function defined in the third argument, and
+so on.
+
+```lisp
+(defun add1 (x) (+ x 1))
+(add1 (add1 2))                ; evaluates to 4
+(thread-first 2 (add1) (add1)) ; evaluates to 4
+```
+
+`thread-first` passes the threaded value as the first argument in the chain of
+functions, for example:
+
+```lisp
+(defun add1 (x) (+ x 1))
+(defun addXY (x y) (+ (* 2 x) y))
+(thread-first 10 (add1) (addXY 2)) ; evalutes to 24
+```
+
+`thread-last` passes the threaded value as the last argument in the chain of
+functions, for example:
+
+```lisp
+(defun add1 (x) (+ x 1))
+(defun addXY (x y) (+ (* 2 x) y))
+(thread-last 10 (add1) (addXY 2)) ; evalutes to 15
+```
 
 ## Scope
 
