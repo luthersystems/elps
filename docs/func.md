@@ -1,6 +1,6 @@
 # Function Reference
 
-*TODO: compose, flip, search-sorted, aref*
+*TODO: flip, search-sorted, aref*
 
 ## `debug-print`
 
@@ -173,6 +173,18 @@ evaluating from the right.
 ```Lisp
 elps> (foldr - 0 '(1 2 3))
 2 ; (1 - (2 - (3 - 0)))
+```
+
+## `compose`
+
+Returns a function that is the combination of two functions, with the first
+function using the product of the second function as its input.
+
+```Lisp
+elps> (set 'fn (compose (lambda (a) (+ a 1)) (lambda (b) (+ b 2))))
+(lambda (b) (lisp:funcall (lambda (a) (+ a 1)) (lisp:apply (lambda (b) (+ b 2)) b ())))
+elps> (fn 1)
+4
 ```
 
 ## `unpack`
