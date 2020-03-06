@@ -58,8 +58,8 @@ elps> (to-bytes "ABC123")
 
 ## `to-int`
 
-Converts string digits ([0-9]+) and floats to integers. For floats the mantissa
-is simply disgarded. Allows integer to pass through.
+Converts string digits ([0-9]+) and floats to integers. For floats the
+fractional part is discarded. Allows integer to pass through.
 
 ```Lisp
 elps> (to-int "42")
@@ -177,7 +177,8 @@ elps> (foldr - 0 '(1 2 3))
 
 ## `unpack`
 
-Unpacks the list supplying the values as parameters to the given function.
+Unpack is a special case of apply and is more cumbersome. Instead of using
+unpack it is better to use apply and funcall.
 
 ```Lisp
 elps> (unpack (lambda (x y) (+ x y)) '(2 7))
@@ -215,7 +216,7 @@ elps> test
 
 ## `dissoc`
 
-Disassociates a value from a map via a key, returning a copy without mutating
+Dissociate a value from a map via a key, returning a copy without mutating
 the source map.
 
 ```Lisp
@@ -229,7 +230,7 @@ elps> test
 
 ## `dissoc!`
 
-Disassociates a value from a map via a key, mutating the source map in-place.
+Dissociate a value from a map via a key, mutating the source map in-place.
 
 ```Lisp
 elps> (set 'test (sorted-map "A" 1 "B" 2))
