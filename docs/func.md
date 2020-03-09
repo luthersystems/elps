@@ -1,6 +1,6 @@
 # Function Reference
 
-*TODO: flip, search-sorted, aref*
+*TODO: search-sorted*
 
 ## `debug-print`
 
@@ -197,6 +197,18 @@ elps> (unpack (lambda (x y) (+ x y)) '(2 7))
 9
 elps> (unpack (lambda (x y) (+ x y)) '(2 7 6))
 stdin:1: _fun16: invalid number of arguments: 3
+```
+
+## `flip`
+
+Returns a function with the parameter order reversed, the input function must
+have two parameters.
+
+```Lisp
+elps> (set 'fn (flip (lambda (x y) (concat 'string x y))))
+(lambda (x y) ((lambda (x y) (concat 'string x y)) y x))
+elps> (fn "hello" "world")
+"worldhello"
 ```
 
 ## `assoc`
@@ -490,6 +502,21 @@ elps> (append-bytes! test "!")
 #<bytes 104 101 108 108 111 32 119 111 114 108 100 33>
 elps> (to-string test)
 "hello world!" ; Note exclamation mark
+```
+
+## `aref`
+
+Gets the array element at the given index (counted from zero).
+
+```Lisp
+elps> (aref (vector "A" "B" "C") 0)
+"A"
+elps> (aref (vector "A" "B" "C") 0)
+"A"
+elps> (aref (vector "A" "B" "C") 2)
+"C"
+elps> (aref (vector "A" "B" "C") 3)
+; Out of bounds error
 ```
 
 ## `all?`
