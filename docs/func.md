@@ -1,7 +1,5 @@
 # Function Reference
 
-*TODO: search-sorted*
-
 ## `debug-print`
 
 Prints the supplied value(s).
@@ -354,6 +352,19 @@ elps> (insert-sorted 'list test < 3)
 '(1 2 3 4)
 ```
 
+## `search-sorted`
+
+Search uses binary search to find and return the smallest index i in [0, n) at
+which f(i) is true, assuming that on the range [0, n), f(i) == true implies
+f(i+1) == true.
+
+```Lisp
+elps> (set 'test '(1 2 4))
+'(1 2 4)
+elps> (search-sorted (length test) (lambda (i) (= 4 (nth test i))))
+2
+```
+
 ## `select`
 
 Selects values matching the predicate.
@@ -616,3 +627,23 @@ false
 elps> (bytes? (to-bytes "hello"))
 true
 ```
+
+## empty?
+
+Determine if a sequence or string is empty.
+
+```Lisp
+elps> (empty? "")
+true
+elps> (nil? "")
+false
+elps> (empty? (vector))
+true
+elps> (empty? (list))
+true
+elps> (nil? (vector))
+false
+elps> (nil? (list))
+true
+```
+
