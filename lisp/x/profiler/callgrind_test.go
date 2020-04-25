@@ -1,17 +1,18 @@
-package lisp_test
+package profiler_test
 
 import (
 	"github.com/luthersystems/elps/lisp"
+	profiler2 "github.com/luthersystems/elps/lisp/x/profiler"
 	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )
 
-func TestNewProfiler(t *testing.T) {
+func TestNewCallgrind(t *testing.T) {
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
 	// Create a profiler
-	profiler := lisp.NewProfiler(env.Runtime)
+	profiler := profiler2.NewCallgrindProfiler(env.Runtime)
 	// Tell it what to do with the output
 	if err := profiler.SetFile("./callgrind.test_prof"); err != nil {
 		t.Fatal(err.Error())
