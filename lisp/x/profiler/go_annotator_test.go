@@ -30,33 +30,30 @@ func TestNewPprofAnnotator(t *testing.T) {
 	var testsrc *lisp.LVal
 	// Some spurious functions to check we get a profile out
 	testsrc = env.LoadString("test.lisp", `
-(defun printIt 
+(defun print-it 
 	('x)
 	(debug-print x)
 )
-(defun addIt
+(defun add-it
 	('x 'y)
 	(+ x y)
 )
-(defun recurseIt
+(defun recurse-it
 	('x)
 	(if 
 		(< x 4)
-		(recurseIt (- x 1))
-		(addIt x 3)
+		(recurse-it (- x 1))
+		(add-it x 3)
 	)
 )
 (
 	foldl
 	(lambda
 		('a 'x) 
-		(
-			printIt 
-			(
-				addIt 
-				(
-					recurseIt
-					(foldl addIt a (vector 
+		(print-it 
+			(add-it 
+				(recurse-it
+					(foldl add-it a (vector 
 						1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 2873 2 111 34 4555 22 12
 						93 83 12 12 2 2 3 845 83 3 2 4 59 92 1 34 888 38 2 8 4 2 8 4
 					))
@@ -64,12 +61,10 @@ func TestNewPprofAnnotator(t *testing.T) {
 				x
 			)
 		)
-		(
-			foldl 
+		(foldl 
 			(lambda
 				('m 'q)
-				(
-					foldl
+				(foldl
 					(lambda 
 						('j 'b) 
 						(* j b)

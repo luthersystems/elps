@@ -6,7 +6,6 @@ import (
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 	"os"
-	"regexp"
 	"runtime"
 	"sync"
 	"time"
@@ -62,7 +61,7 @@ func (p *callgrindProfiler) Enable() error {
 		return errors.New("No output set in profiler")
 	}
 	fmt.Fprintf(p.writer, "version: 1\ncreator: elps %s (Go %s)\n", lisp.ElpsVersion, runtime.Version())
-	fmt.Fprintf(p.writer, "cmd: %s\npart: 1\npositions: line\n\n", "TODO")
+	fmt.Fprintf(p.writer, "cmd: Eval\npart: 1\npositions: line\n\n")
 	fmt.Fprintf(p.writer, "events: Time_(ns) Memory_(bytes)\n\n")
 	p.callRefs = make(map[int32]*callRef)
 	p.startTime = time.Now()

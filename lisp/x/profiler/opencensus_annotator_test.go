@@ -25,24 +25,24 @@ func TestNewOpenCensusAnnotator(t *testing.T) {
 	}
 	var testsrc *lisp.LVal
 	testsrc = env.LoadString("test.lisp", `
-(defun printIt 
+(defun print-it 
 	('x)
 	(debug-print x)
 )
-(defun addIt
+(defun add-it
 	('x 'y)
 	(+ x y)
 )
-(defun recurseIt
+(defun recurse-it
 	('x)
 	(if 
 		(< x 4)
-		(recurseIt (- x 1))
-		(addIt x 3)
+		(recurse-it (- x 1))
+		(add-it x 3)
 	)
 )
-(printIt "Hello")
-(printIt (addIt (addIt 3 (recurseIt 5)) 8))`)
+(print-it "Hello")
+(print-it (add-it (add-it 3 (recurse-it 5)) 8))`)
 	lerr = env.Eval(testsrc)
 	assert.NotEqual(t, lisp.LError, lerr.Type)
 	// Mark the profile as complete and dump the rest of the profile
