@@ -19,6 +19,7 @@ type Runtime struct {
 	Stack    *CallStack
 	Reader   Reader
 	Library  SourceLibrary
+	Profiler Profiler
 	numenv   atomicCounter
 	numsym   atomicCounter
 }
