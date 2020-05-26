@@ -1,6 +1,7 @@
 package debugger
 
 import (
+	"github.com/go-delve/delve/service/api"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
@@ -16,6 +17,14 @@ func TestNewDebugger(t *testing.T) {
 	}
 	// Create a profiler
 	profiler := NewDebugger(env.Runtime, ":8883")
+	profiler.(*Debugger).CreateBreakpoint(&api.Breakpoint{
+		ID:            1,
+		Name:          "REUBEN TEST",
+		Addr:          0,
+		Addrs:         []uint64{},
+		File:          "test.lisp",
+		Line:          3,
+	})
 	var testsrc *lisp.LVal
 	// Some spurious functions to check we get a profile out
 	testsrc = env.LoadString("test.lisp", `

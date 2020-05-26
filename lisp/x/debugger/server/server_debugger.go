@@ -28,3 +28,4 @@ type ServerDebugger interface {
 	Complete() error
 	GetGoRoutine() *api.Goroutine
 }
+

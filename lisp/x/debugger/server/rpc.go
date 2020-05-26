@@ -28,7 +28,8 @@ func (s *RPCServer) Run() error {
 					// We were supposed to exit, do nothing and return
 					return
 				default:
-					panic(err)
+					logrus.Errorf("%s", err.Error())
+					return
 				}
 			}
 

@@ -2,13 +2,17 @@ package debugger
 
 import (
 	"errors"
+	"fmt"
 	"github.com/go-delve/delve/service/rpc2"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/x/debugger/server"
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/sirupsen/logrus"
 	"math/rand"
 	"reflect"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -24,8 +28,15 @@ type Debugger struct {
 	step         chan bool
 	run          chan bool
 	server       *server.RPCServer
-	currentOp    *lisp.LVal
+	currentOp    *op
 	logger       *logrus.Logger
+	pwd			 string
+}
+
+type op struct {
+	name string
+	source *token.Location
+	args map[string]*lisp.LVal
 }
 
 func NewDebugger(runtime *lisp.Runtime, address string) lisp.Profiler {
@@ -44,6 +55,10 @@ func NewDebugger(runtime *lisp.Runtime, address string) lisp.Profiler {
 	db.server = srv
 	runtime.Profiler = db
 	return db
+}
+
+func (d *Debugger) SetLispPath(path string) {
+	d.pwd = strings.ReplaceAll(path, `\`, `/`)
 }
 
 func (d *Debugger) IsEnabled() bool {
@@ -72,7 +87,30 @@ func (d *Debugger) Complete() error {
 }
 
 func (d *Debugger) Start(function *lisp.LVal) {
-	d.logger.Infof("Instr %v", function.Type)
+	// do we need to do this on SExpr rather than function? Would that make finding the parameters easier?
+	fname := ""
+	if function.FunData() != nil {
+		fname = function.FunData().FID
+	}
+	source := function.Source
+	if source == nil || source.File == "<native code>" {
+		for f := len(d.runtime.Stack.Frames) - 1; f >= 0; f-- {
+			frame := d.runtime.Stack.Frames[f]
+			if frame.Source != nil || frame.Source.File == "<native code>" {
+				continue
+			}
+			source = frame.Source
+			break
+		}
+	}
+	if source == nil {
+		source = &token.Location{
+			File: "Unknown",
+			Line: 0,
+		}
+	}
+	sourceStr := fmt.Sprintf("@%s:%d", source.File, source.Line)
+	d.logger.Infof("Instr %v %s params %v %s %d", function.Type, fname, function.Cells, sourceStr, len(d.runtime.Stack.Frames))
 	switch function.Type {
 	case lisp.LInt:
 		return
@@ -87,18 +125,32 @@ func (d *Debugger) Start(function *lisp.LVal) {
 	case lisp.LArray:
 		return
 	}
+	args := make(map[string]*lisp.LVal)
+	paramCounter := 0
+	fname = d.runtime.Package.FunNames[fname]
+	for _, v := range function.Cells {
+		args[d.runtime.Package.Symbols[fname].Cells[paramCounter].Str] = v
+	}
+	d.currentOp = &op{
+		name:  fname ,
+		source: source,
+		args: args,
+	}
 	if !d.stopped {
 		d.Lock()
-		for _, v := range d.breakpoints {
-			if v.File == function.Source.File && v.Line == function.Source.Line {
-				d.logger.Infof("BREAKPOINT")
-				d.stopped = true
-				d.Unlock()
-				d.Start(function)
-				return
+		if function.Source != nil {
+			for _, v := range d.breakpoints {
+				if (v.File == function.Source.File || fmt.Sprintf("%s/%s", d.pwd, function.Source.File) == v.File) && v.Line == function.Source.Line {
+					d.logger.Infof("BREAKPOINT")
+					d.stopped = true
+					d.Unlock()
+					d.Start(function)
+					return
+				}
 			}
 		}
 		d.Unlock()
+		runtime.Gosched()
 		return
 	}
 	select {
@@ -108,12 +160,15 @@ func (d *Debugger) Start(function *lisp.LVal) {
 	case <-d.step:
 		d.logger.Infof("STEP")
 	}
-	d.currentOp = function
+	// if we don't do this, ELPS' indomitable stack traces prevent the debugger receiving
+	// calls if we only have a few processor cores
+	runtime.Gosched()
 }
 
 func (d *Debugger) End(function *lisp.LVal) {
-	d.logger.Infof("End %v",function)
-	// no op for now
+	d.logger.Infof("End %v ", function.FunData().FID)
+	// no op for now except that we yield the CPU
+	runtime.Gosched()
 }
 
 func (d *Debugger) GetBreakpoint(id int) (*api.Breakpoint, error) {
@@ -137,29 +192,42 @@ func (d *Debugger) GetBreakpointByName(name string) (*api.Breakpoint, error) {
 }
 
 func (d *Debugger) GetStacktrace(st *rpc2.StacktraceOut) {
-	d.Lock()
-	defer d.Unlock()
+	d.logger.Info("Returning STACK")
 	st.Locations = make([]api.Stackframe, 0)
 	for _, frame := range d.runtime.Stack.Frames {
+		var source *token.Location = frame.Source
+		if source == nil {
+			source = &token.Location{
+				File: "Unknown file",
+				Path: "",
+				Pos:  0,
+				Line: 0,
+				Col:  0,
+			}
+		}
 		st.Locations = append(st.Locations, api.Stackframe{
 			Location: api.Location{
 				PC:   0,
-				File: frame.Source.File,
-				Line: frame.Source.Line,
+				File: fmt.Sprintf("%s/%s", d.pwd, source.File),
+				Line: source.Line,
 				Function: &api.Function{
-					Name_:     "",
+					Name_:     "f",
 					Value:     0,
 					Type:      0,
 					GoType:    0,
 					Optimized: false,
 				},
-				PCs: nil,
+				PCs: []uint64{},
 			},
-			Locals:             nil,
-			Arguments:          nil,
+			Locals:             []api.Variable{
+
+			},
+			Arguments:          []api.Variable{
+
+			},
 			FrameOffset:        0,
 			FramePointerOffset: 0,
-			Defers:             nil,
+			Defers:             []api.Defer{},
 			Bottom:             false,
 			Err:                "",
 		})
@@ -167,6 +235,7 @@ func (d *Debugger) GetStacktrace(st *rpc2.StacktraceOut) {
 }
 
 func (d *Debugger) GetAllBreakpoints() map[int]*api.Breakpoint {
+	d.logger.Info("Returning BREAKPOINTS")
 	d.Lock()
 	defer d.Unlock()
 	return d.breakpoints
@@ -208,17 +277,40 @@ func (d *Debugger) AmendBreakpoint(bp *api.Breakpoint) error {
 }
 
 func (d *Debugger) GetThread() *api.Thread {
-	return &api.Thread{
-		ID:             1,
-		PC:             0,
-		File:           "",
-		Line:           0,
-		Function:       nil,
-		GoroutineID:    0,
-		Breakpoint:     nil,
-		BreakpointInfo: nil,
-		ReturnValues:   nil,
+	d.logger.Info("Returning THREADS")
+	var loc *api.Thread
+	if d.currentOp != nil {
+		var source *token.Location = d.currentOp.source
+		if source == nil {
+			source = &token.Location{
+				File: "Unknown file",
+				Path: "",
+				Pos:  0,
+				Line: 0,
+				Col:  0,
+			}
+		}
+		loc = &api.Thread{
+			PC:   uint64(source.Pos),
+			File: fmt.Sprintf("%s/%s", d.pwd, source.File),
+			Line: source.Line,
+			Function: &api.Function{
+				Name_:     d.currentOp.name,
+				Value:     0,
+				Type:      0,
+				GoType:    0,
+				Optimized: false,
+			},
+			ID: 1,
+			GoroutineID: 1,
+		}
+	} else {
+		loc = &api.Thread{
+			ID: 1,
+			GoroutineID: 1,
+		}
 	}
+	return loc
 }
 
 func mapLispType(in lisp.LType) string {
@@ -288,13 +380,101 @@ func mapKind(in *lisp.LVal) reflect.Kind {
 	}
 }
 
+func mapValue(in *lisp.LVal) string {
+	switch in.Type {
+	case lisp.LFloat:
+		return strconv.FormatFloat(in.Float, 'f', 8, 64)
+	case lisp.LInt:
+		return strconv.FormatInt(int64(in.Int), 10)
+	case lisp.LString:
+		return in.Str
+	case lisp.LQSymbol:
+		return in.Str
+	case lisp.LSExpr:
+		return in.Str
+	case lisp.LSortMap:
+		return "map"
+	case lisp.LNative:
+		return fmt.Sprintf("%v", in.Native)
+	case lisp.LFun:
+		return in.FunData().FID
+	case lisp.LQuote:
+		return in.Str
+	case lisp.LArray:
+		return "array"
+	case lisp.LError:
+		return fmt.Sprintf("%v", lisp.GoError(in))
+	case lisp.LBytes:
+		return "array"
+	case lisp.LInvalid:
+		return "INVALID"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+func extractChildren(in *lisp.LVal) []api.Variable {
+	children := make([]api.Variable, 0)
+	switch in.Type {
+	case lisp.LSortMap:
+		for _, v := range in.Cells[:1] {
+			children = append(children, api.Variable{
+				Type: mapLispType(v.Type),
+				RealType: mapLispType(v.Type),
+				Value: mapValue(v),
+				Kind: mapKind(v),
+			})
+		}
+	case lisp.LArray:
+		for _, v := range in.Cells[:1] {
+			children = append(children, api.Variable{
+				Type: mapLispType(v.Type),
+				RealType: mapLispType(v.Type),
+				Value: mapValue(v),
+				Kind: mapKind(v),
+			})
+		}
+	case lisp.LBytes:
+		for _, v := range in.Bytes() {
+			children = append(children, api.Variable{
+				Type: "byte",
+				RealType: "byte",
+				Value: string(v),
+				Kind: reflect.Uint8,
+			})
+		}
+	}
+	return children
+}
+
 func (d *Debugger) GetVariables() []api.Variable {
+	d.logger.Info("Returning VARS")
 	d.Lock()
 	defer d.Unlock()
-	out := make([]api.Variable, len(d.runtime.Package.Symbols))
+	out := make([]api.Variable, 0)
 	count := 0
-	for k, v := range d.runtime.Package.Symbols {
-		out[count] = api.Variable{
+	// deliberate copy - prevents us having to stop
+	symbols := d.runtime.Package.Symbols
+	for k, v := range symbols {
+		if v.Type == lisp.LFun && v.FunData().Builtin != nil {
+			continue
+		}
+		var source *token.Location = v.Source
+		if source == nil {
+			source = &token.Location{
+				File: "Unknown file",
+				Path: "",
+				Pos:  0,
+				Line: 0,
+				Col:  0,
+			}
+		}
+		children := make([]api.Variable,0)
+		strVal := mapValue(v)
+		if strVal == "map" || strVal == "array" {
+			children = extractChildren(v)
+		}
+		out = append(out, api.Variable{
 			Name:         k,
 			Addr:         uintptr(count),
 			OnlyAddr:     false,
@@ -302,35 +482,47 @@ func (d *Debugger) GetVariables() []api.Variable {
 			RealType:     mapLispType(v.Type),
 			Flags:        0,
 			Kind:         mapKind(v),
-			Value:        v.Str,
-			Len:          0,
-			Cap:          0,
-			Children:     []api.Variable{},
+			Value:        strVal,
+			Len:          int64(len(children)),
+			Cap:          int64(len(children)),
+			Children:     children,
 			Base:         0,
 			Unreadable:   "",
 			LocationExpr: "",
-			DeclLine:     int64(v.Source.Line),
-		}
+			DeclLine:     int64(source.Line),
+		})
 		count++
 	}
 	return out
 }
 
 func (d *Debugger) GetFunctionArgs() []api.Variable {
+	d.logger.Info("Returning ARGS")
 	return []api.Variable{}
 }
 
 func (d *Debugger) GetGoRoutine() *api.Goroutine {
+	d.logger.Info("Returning GOROUTINE")
 	d.Lock()
 	defer d.Unlock()
 	var loc *api.Location
 	if d.currentOp != nil {
+		var source *token.Location = d.currentOp.source
+		if source == nil {
+			source = &token.Location{
+				File: "Unknown file",
+				Path: "",
+				Pos:  0,
+				Line: 0,
+				Col:  0,
+			}
+		}
 		loc = &api.Location{
-			PC:   uint64(d.currentOp.Source.Pos),
-			File: d.currentOp.Source.File,
-			Line: d.currentOp.Source.Line,
+			PC:   uint64(source.Pos),
+			File: fmt.Sprintf("%s/%s", d.pwd, source.File),
+			Line: source.Line,
 			Function: &api.Function{
-				Name_:     "",
+				Name_:     d.currentOp.name,
 				Value:     0,
 				Type:      0,
 				GoType:    0,
@@ -344,17 +536,18 @@ func (d *Debugger) GetGoRoutine() *api.Goroutine {
 		}
 	}
 	return &api.Goroutine{
-		ID:             0,
+		ID:             1,
 		CurrentLoc:     *loc,
 		UserCurrentLoc: *loc,
 		GoStatementLoc: *loc,
 		StartLoc:       api.Location{},
-		ThreadID:       0,
+		ThreadID:       1,
 		Unreadable:     "",
 	}
 }
 
 func (d *Debugger) SetVariableInScope(scope api.EvalScope, symbol string, value string) error {
+	d.logger.Infof("SETTING variable %s to %s", symbol, value)
 	d.Lock()
 	defer d.Unlock()
 	d.lastModified = time.Now()
@@ -384,17 +577,51 @@ func (d *Debugger) SetVariableInScope(scope api.EvalScope, symbol string, value 
 }
 
 func (d *Debugger) Sources(filter string) ([]string, error) {
-	return []string{}, nil
+	d.logger.Info("Returning SOURCES")
+	intermediate := make(map[string]bool)
+	for _, currPkg := range d.runtime.Registry.Packages {
+		d.appendSourcesToMap(intermediate, currPkg, filter)
+	}
+	out := make([]string, 0)
+	for k, _ := range intermediate {
+		out = append(out, k)
+	}
+ 	return out, nil
+}
+
+func (d *Debugger) getSourcesForPackage(currPkg *lisp.Package) []string {
+	intermediate := make(map[string]bool)
+	d.appendSourcesToMap(intermediate, currPkg, "")
+	out := make([]string, 0)
+	for k, _ := range intermediate {
+		out = append(out, k)
+	}
+	return out
+}
+
+func (d *Debugger) appendSourcesToMap(intermediate map[string]bool, currPkg *lisp.Package, filter string) {
+	for _, sym := range currPkg.Symbols {
+		if sym.Source == nil {
+			continue
+		}
+		if filter != "" && !strings.HasPrefix(fmt.Sprintf("%s/%s", d.pwd, sym.Source.File), filter) {
+			continue
+		}
+		intermediate[fmt.Sprintf("%s/%s", d.pwd, sym.Source.File)] = true
+	}
 }
 
 func (d *Debugger) Functions(filter string) ([]string, error) {
+	d.logger.Info("Returning FUNCTIONS")
 	d.Lock()
 	defer d.Unlock()
-	out := make([]string, len(d.runtime.Package.FunNames))
-	count := 0
+	out := make([]string, 0)
+	seen := make(map[string]bool)
 	for _, v := range d.runtime.Package.FunNames {
-		out[count] = v
-		count++
+		if seen[v] {
+			continue
+		}
+		out = append(out, v)
 	}
 	return out, nil
 }
@@ -404,6 +631,7 @@ func (d *Debugger) FindLocation(scope api.EvalScope, loc string, lines bool) ([]
 }
 
 func (d *Debugger) ListPackagesBuildInfo(files bool) []api.PackageBuildInfo {
+	d.logger.Info("Returning BUILD INFO")
 	d.Lock()
 	defer d.Unlock()
 	out := make([]api.PackageBuildInfo, 0)
@@ -411,19 +639,18 @@ func (d *Debugger) ListPackagesBuildInfo(files bool) []api.PackageBuildInfo {
 		out = append(out, api.PackageBuildInfo{
 			ImportPath:    k,
 			DirectoryPath: v.Name,
-			Files:         nil,
+			Files:         d.getSourcesForPackage(v),
 		})
 	}
 	return out
 }
 
 func (d *Debugger) State(blocking bool) (*api.DebuggerState, error) {
-	d.Lock()
-	defer d.Unlock()
+	d.logger.Info("Returning STATE")
 	state := &api.DebuggerState{
 		Running:           !d.stopped,
 		CurrentThread:     d.GetThread(),
-		SelectedGoroutine: nil,
+		SelectedGoroutine: d.GetGoRoutine(),
 		Threads:           []*api.Thread{d.GetThread()},
 		NextInProgress:    false,
 		Exited:            !d.enabled,
@@ -437,19 +664,26 @@ func (d *Debugger) State(blocking bool) (*api.DebuggerState, error) {
 func (d *Debugger) Command(a *api.DebuggerCommand) (*api.DebuggerState, error) {
 	d.logger.Infof("Command: %s", a.Name)
 	d.lastModified = time.Now()
+	started := false
 	switch a.Name {
 	case api.Halt:
 		d.stopped = true
 	case api.Continue:
-		go func(d *Debugger) {
-			d.run <- true
-		}(d)
+		started = true
+		if d.stopped {
+			go func(d *Debugger) {
+				d.run <- true
+			}(d)
+		}
 	case api.Next:
 		return nil, errors.New("Not implemented")
 	case api.Step:
-		go func(d *Debugger) {
-			d.step <- true
-		}(d)
+		started = true
+		if d.stopped {
+			go func(d *Debugger) {
+				d.step <- true
+			}(d)
+		}
 	case api.Call:
 		return nil, errors.New("Not implemented")
 	case api.ReverseStepInstruction:
@@ -461,7 +695,11 @@ func (d *Debugger) Command(a *api.DebuggerCommand) (*api.DebuggerState, error) {
 	case api.SwitchThread:
 		return nil, errors.New("Not implemented")
 	}
-	return d.State(false)
+	state, err :=  d.State(false)
+	if err != nil && started == true {
+		state.Running = true
+	}
+	return state, err
 }
 
 func (d *Debugger) LastModified() time.Time {
