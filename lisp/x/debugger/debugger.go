@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"github.com/go-delve/delve/service/rpc2"
 	"github.com/luthersystems/elps/lisp"
-	"github.com/luthersystems/elps/lisp/x/debugger/server"
+	"github.com/luthersystems/elps/lisp/x/debugger/dapserver"
+	"github.com/luthersystems/elps/lisp/x/debugger/delveserver"
+	"github.com/luthersystems/elps/lisp/x/debugger/events"
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/sirupsen/logrus"
 	"math/rand"
@@ -27,7 +29,7 @@ type Debugger struct {
 	stopped      bool
 	step         chan bool
 	run          chan bool
-	server       *server.RPCServer
+	server       DebugServer
 	currentOp    *op
 	logger       *logrus.Logger
 	pwd			 string
@@ -39,7 +41,18 @@ type op struct {
 	args map[string]*lisp.LVal
 }
 
-func NewDebugger(runtime *lisp.Runtime, address string) lisp.Profiler {
+type DebugServer interface {
+	Run() error
+	Stop() error
+	Event(events.EventType)
+}
+
+type DebugMode string
+const DebugModeDelve = DebugMode("delve")
+const DebugModeDAP = DebugMode("dap")
+
+
+func NewDebugger(runtime *lisp.Runtime, address string, mode DebugMode) lisp.Profiler {
 	db := &Debugger{
 		runtime:      runtime,
 		enabled:      true,
@@ -50,11 +63,24 @@ func NewDebugger(runtime *lisp.Runtime, address string) lisp.Profiler {
 		breakpoints:  make(map[int]*api.Breakpoint),
 		logger:       logrus.New(),
 	}
-	srv := server.NewServer(db, address)
+	var srv DebugServer
+	if mode == DebugModeDelve {
+		srv = delveserver.NewServer(db, address)
+	} else if mode == DebugModeDAP {
+		var err error
+		srv, err = dapserver.NewServer(db, address, 2)
+		if err != nil {
+			panic(err.Error())
+		}
+	}
 	srv.Run()
 	db.server = srv
 	runtime.Profiler = db
 	return db
+}
+
+func (d *Debugger) IsStopped() bool {
+	return d.stopped
 }
 
 func (d *Debugger) SetLispPath(path string) {
@@ -83,6 +109,7 @@ func (d *Debugger) Complete() error {
 	d.enabled = false
 	d.server.Stop()
 	d.run <- true
+	d.server.Event(events.EventTypeTerminated)
 	return nil
 }
 
@@ -145,6 +172,7 @@ func (d *Debugger) Start(function *lisp.LVal) {
 					d.stopped = true
 					d.Unlock()
 					d.Start(function)
+					d.server.Event(events.EventTypeStoppedBreakpoint)
 					return
 				}
 			}
@@ -155,9 +183,12 @@ func (d *Debugger) Start(function *lisp.LVal) {
 	}
 	select {
 	case <-d.run:
+		d.server.Event(events.EventTypeContinued)
 		d.logger.Infof("RUN")
 		d.stopped = false
 	case <-d.step:
+		d.server.Event(events.EventTypeContinued)
+		d.server.Event(events.EventTypeStoppedStep)
 		d.logger.Infof("STEP")
 	}
 	// if we don't do this, ELPS' indomitable stack traces prevent the debugger receiving
@@ -661,29 +692,42 @@ func (d *Debugger) State(blocking bool) (*api.DebuggerState, error) {
 	return state, nil
 }
 
+func (d *Debugger) Continue() {
+	if d.stopped {
+		go func(d *Debugger) {
+			d.run <- true
+		}(d)
+	}
+}
+
+func (d *Debugger) Step() {
+	if d.stopped {
+		go func(d *Debugger) {
+			d.step <- true
+		}(d)
+	}
+}
+
+func (d *Debugger) Halt() {
+	d.stopped = true
+}
+
 func (d *Debugger) Command(a *api.DebuggerCommand) (*api.DebuggerState, error) {
+	// TODO this is Delve specific
 	d.logger.Infof("Command: %s", a.Name)
 	d.lastModified = time.Now()
 	started := false
 	switch a.Name {
 	case api.Halt:
-		d.stopped = true
+		d.Halt()
 	case api.Continue:
 		started = true
-		if d.stopped {
-			go func(d *Debugger) {
-				d.run <- true
-			}(d)
-		}
+		d.Continue()
 	case api.Next:
 		return nil, errors.New("Not implemented")
 	case api.Step:
 		started = true
-		if d.stopped {
-			go func(d *Debugger) {
-				d.step <- true
-			}(d)
-		}
+		d.Step()
 	case api.Call:
 		return nil, errors.New("Not implemented")
 	case api.ReverseStepInstruction:

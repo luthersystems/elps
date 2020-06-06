@@ -1,4 +1,4 @@
-package server
+package delveserver
 
 import (
 	"github.com/go-delve/delve/service/api"
@@ -27,5 +27,9 @@ type ServerDebugger interface {
 	LastModified() time.Time
 	Complete() error
 	GetGoRoutine() *api.Goroutine
+	Step()
+	Continue()
+	Halt()
+	IsStopped() bool
 }
 

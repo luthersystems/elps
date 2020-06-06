@@ -1,4 +1,4 @@
-package server
+package delveserver
 
 import (
 	"bytes"
@@ -291,7 +291,7 @@ type RPCCallback struct {
 	req     rpc.Request
 }
 
-// Stop stops the JSON-RPC server.
+// Stop stops the JSON-RPC delveserver.
 func (s *RPCServer) Stop() error {
 	if s.stopChan != nil {
 		close(s.stopChan)

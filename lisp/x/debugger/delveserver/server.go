@@ -1,4 +1,4 @@
-package server
+package delveserver
 
 import (
 	"errors"
@@ -7,6 +7,7 @@ import (
 	"github.com/go-delve/delve/service"
 	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
+	"github.com/luthersystems/elps/lisp/x/debugger/events"
 	"github.com/sirupsen/logrus"
 	"net"
 )
@@ -46,6 +47,10 @@ func NewServer(debugger ServerDebugger, address string) *RPCServer {
 func (s *RPCServer) LastModified(arg rpc2.LastModifiedIn, out *rpc2.LastModifiedOut) error {
 	out.Time = s.debugger.LastModified()
 	return nil
+}
+
+func (s *RPCServer) Event(x events.EventType) {
+	// no-op
 }
 
 // Detach detaches the debugger, optionally killing the process.
