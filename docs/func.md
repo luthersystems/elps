@@ -483,7 +483,7 @@ Appends to the vector, mutating the source vector in-place.
 ```Lisp
 elps> (set 'test (vector 1 2))
 (vector 1 2)
-elps> (append! 'vector test 3)
+elps> (append! test 3)
 (vector 1 2 3)
 elps> test
 (vector 1 2 3)
@@ -646,4 +646,3 @@ false
 elps> (nil? (list))
 true
 ```
-
