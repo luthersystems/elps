@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/go-delve/delve/service/rpc2"
+	"github.com/google/go-dap"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/x/debugger/dapserver"
 	"github.com/luthersystems/elps/lisp/x/debugger/delveserver"
@@ -222,6 +223,47 @@ func (d *Debugger) GetBreakpointByName(name string) (*api.Breakpoint, error) {
 	return nil, errors.New("not found")
 }
 
+func (d *Debugger) GetDapStacktrace() []dap.StackFrame {
+	out := make([]dap.StackFrame, 0)
+	for _, frame := range d.runtime.Stack.Frames {
+		var source = frame.Source
+		if source == nil {
+			source = &token.Location{
+				File: "Unknown file",
+				Path: "",
+				Pos:  0,
+				Line: 0,
+				Col:  0,
+			}
+		}
+		hint := "normal"
+		origin := ""
+		if source.File == "Unknown file" || source.File == "<native code>" {
+			hint = "deemphasize"
+			origin = "internal module"
+		}
+		out = append(out, dap.StackFrame{
+			Id:                          0,
+			Name:                        frame.Name,
+			Source:                      dap.Source{
+				Name:             source.File,
+				Path:             source.Path,
+				PresentationHint: hint,
+				Origin:           origin,
+			},
+			Line:                        source.Line,
+			Column:                      0,
+			ModuleId:                    frame.Package,
+			PresentationHint:            hint,
+		})
+	}
+	for i := len(out)/2-1; i >= 0; i-- {
+		opp := len(out)-1-i
+		out[i], out[opp] = out[opp], out[i]
+	}
+	return out
+}
+
 func (d *Debugger) GetStacktrace(st *rpc2.StacktraceOut) {
 	d.logger.Info("Returning STACK")
 	st.Locations = make([]api.Stackframe, 0)
@@ -239,7 +281,7 @@ func (d *Debugger) GetStacktrace(st *rpc2.StacktraceOut) {
 		st.Locations = append(st.Locations, api.Stackframe{
 			Location: api.Location{
 				PC:   0,
-				File: fmt.Sprintf("%s/%s", d.pwd, source.File),
+				File: fmt.Sprintf("%s", source.Path),
 				Line: source.Line,
 				Function: &api.Function{
 					Name_:     "f",

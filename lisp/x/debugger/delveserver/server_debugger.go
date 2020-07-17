@@ -3,6 +3,7 @@ package delveserver
 import (
 	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
+	"github.com/google/go-dap"
 	"time"
 )
 
@@ -10,6 +11,7 @@ type ServerDebugger interface {
 	GetBreakpoint(id int) (*api.Breakpoint, error)
 	GetBreakpointByName(name string) (*api.Breakpoint, error)
 	GetStacktrace(st *rpc2.StacktraceOut)
+	GetDapStacktrace() []dap.StackFrame
 	GetAllBreakpoints() map[int]*api.Breakpoint
     CreateBreakpoint(breakpoint *api.Breakpoint) *api.Breakpoint
 	RemoveBreakpoint(id int) error
