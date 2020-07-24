@@ -9,12 +9,14 @@ package dapserver
 
 import (
 	"bufio"
+	"github.com/go-delve/delve/service/api"
 	"github.com/google/go-dap"
 	"github.com/luthersystems/elps/lisp/x/debugger/delveserver"
 	"github.com/luthersystems/elps/lisp/x/debugger/events"
 	log "github.com/sirupsen/logrus"
 	"io"
 	"net"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -48,7 +50,10 @@ func NewServer(debugger delveserver.ServerDebugger, address string, handlers int
 		connQueue:  make(chan net.Conn, 10),
 		sequence:   0,
 		wg:         new(sync.WaitGroup),
-		debugger:   &debuggerwrapper{debugger: debugger},
+		debugger: &debuggerwrapper{
+			debugger: debugger,
+			files:    make(map[string][]string),
+		},
 		EndChannel: make(chan bool),
 	}
 	server.connection.s = server
@@ -90,15 +95,50 @@ func (s *Server) Event(x events.EventType) {
 	}
 }
 
+func (s *Server) Breakpoint(bp *api.Breakpoint) {
+	log.Infof("Hit breakpoint %v", bp)
+	_, filename := filepath.Split(bp.File)
+	if s.connection.Connected {
+		go func(ch chan dap.Message, path string) {
+			s.connection.queue <- &dap.BreakpointEvent{
+				Event: dap.Event{
+					Event: "breakpoint",
+					ProtocolMessage: dap.ProtocolMessage{
+						Seq:  s.incSequence(),
+						Type: "event",
+					},
+				},
+				Body: dap.BreakpointEventBody{
+					Reason: "breakpoint",
+					Breakpoint: dap.Breakpoint{
+						Id:       bp.ID,
+						Verified: true,
+						Message:  "Stopped at breakpoint",
+						Source: dap.Source{
+							Path: bp.File,
+							Name: filename,
+						},
+						Line:      bp.Line,
+						Column:    1,
+						EndLine:   bp.Line,
+						EndColumn: 1,
+					},
+				},
+			}
+		}(s.connection.queue, filename)
+	}
+	runtime.Gosched()
+}
+
 func (s *Server) listen() {
 	defer s.listener.Close()
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
-			log.Errorf("Connection failed:", err)
+			log.Errorf("Connection failed: %v", err)
 			continue
 		}
-		log.Errorf("Accepted connection from", conn.RemoteAddr())
+		log.Infof("Accepted connection from %v", conn.RemoteAddr())
 		s.connection.start(conn)
 		return
 	}
@@ -160,7 +200,7 @@ func (h *connection) start(conn net.Conn) {
 		err := h.handleRequest()
 		if err != nil {
 			if err == io.EOF {
-				log.Errorf("Connection closed: ", err)
+				log.Errorf("Connection closed: %v", err)
 				h.s.EndChannel <- true
 				return
 			}
@@ -260,7 +300,7 @@ func (h *connection) dispatchRequest(request dap.Message) {
 	case *dap.EvaluateRequest:
 		h.s.debugger.onEvaluateRequest(request, h.queue, h.s.incSequence())
 	case *dap.StepInTargetsRequest:
-		h.s.debugger.onStepInTargetsRequest(request, h.queue)
+		h.s.debugger.onStepInTargetsRequest(request, h.queue, h.s.incSequence())
 	case *dap.GotoTargetsRequest:
 		h.s.debugger.onGotoTargetsRequest(request, h.queue, h.s.incSequence())
 	case *dap.CompletionsRequest:
@@ -289,7 +329,7 @@ func (h *connection) dispatchRequest(request dap.Message) {
 }
 
 func (h *connection) sendEventMessage(event events.EventType) {
-	log.Debugf("Sending event %s", event)
+	log.Infof("Sending event %s", event)
 	switch event {
 	case events.EventTypeContinued:
 		h.queue <- &dap.ContinuedEvent{
@@ -330,12 +370,13 @@ func (h *connection) sendEventMessage(event events.EventType) {
 			Body: dap.StoppedEventBody{
 				AllThreadsStopped: true,
 				ThreadId:          1,
-				Reason:            "pause", // we need to propagate this by using more reasons
+				Reason:            "pause",
 			},
 		}
 	case events.EventTypeStoppedBreakpoint:
 		h.queue <- &dap.StoppedEvent{
-			Event: dap.Event{Event: "stopped",
+			Event: dap.Event{
+				Event: "stopped",
 				ProtocolMessage: dap.ProtocolMessage{
 					Seq:  h.s.incSequence(),
 					Type: "event",
@@ -344,7 +385,7 @@ func (h *connection) sendEventMessage(event events.EventType) {
 			Body: dap.StoppedEventBody{
 				AllThreadsStopped: true,
 				ThreadId:          1,
-				Reason:            "breakpoint", // we need to propagate this by using more reasons
+				Reason:            "breakpoint",
 			},
 		}
 	case events.EventTypeStoppedEntry:
@@ -386,6 +427,16 @@ func (h *connection) sendEventMessage(event events.EventType) {
 			},
 			Body: dap.TerminatedEventBody{
 				Restart: false,
+			},
+		}
+	case events.EventTypeInitialized:
+		h.queue <- &dap.InitializedEvent{
+			Event: dap.Event{
+				Event: "initialized",
+				ProtocolMessage: dap.ProtocolMessage{
+					Seq:  h.s.incSequence(),
+					Type: "event",
+				},
 			},
 		}
 	}

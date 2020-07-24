@@ -13,6 +13,7 @@ import (
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/sirupsen/logrus"
 	"math/rand"
+	"os"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -54,6 +55,7 @@ type DebugServer interface {
 	Run() error
 	Stop() error
 	Event(events.EventType)
+	Breakpoint(v *api.Breakpoint)
 }
 
 type DebugMode string
@@ -222,15 +224,20 @@ func (d *Debugger) Start(expr *lisp.LVal, function *lisp.LVal) {
 	}
 	if !d.stopped {
 		d.Lock()
-		if function.Source != nil {
+		if expr.Source != nil {
+			fstat, _ := os.Stat(expr.Source.Path)
 			for _, v := range d.breakpoints {
-				if (v.File == function.Source.File || fmt.Sprintf("%s/%s", d.pwd, function.Source.File) == v.File) &&
-					v.Line == function.Source.Line {
+				vStat, _ := os.Stat(v.File)
+				if (os.SameFile(vStat, fstat) || fmt.Sprintf("%s%c%s", d.pwd, os.PathSeparator, expr.Source.File) == v.File) &&
+					v.Line == expr.Source.Line {
 					d.logger.Infof("BREAKPOINT")
 					d.stopped = true
 					d.Unlock()
 					d.Start(expr, function)
+					d.server.Breakpoint(v)
 					d.server.Event(events.EventTypeStoppedBreakpoint)
+					// or it won't yield...
+					runtime.Gosched()
 					return
 				}
 			}

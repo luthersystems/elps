@@ -44,6 +44,10 @@ func NewServer(debugger ServerDebugger, address string) *RPCServer {
 	return rpc
 }
 
+func (s *RPCServer) Breakpoint(v *api.Breakpoint) {
+	// no-op
+}
+
 func (s *RPCServer) LastModified(arg rpc2.LastModifiedIn, out *rpc2.LastModifiedOut) error {
 	out.Time = s.debugger.LastModified()
 	return nil

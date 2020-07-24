@@ -11,7 +11,7 @@ require (
 	github.com/golang-collections/collections v0.0.0-20130729185459-604e922904d3
 	github.com/google/go-dap v0.2.0
 	github.com/hashicorp/hcl v0.0.0-20180404174102-ef8a98b0bbce // indirect
-	github.com/magiconair/properties v1.8.0 // indirect
+	github.com/magiconair/properties v1.8.0
 	github.com/mitchellh/go-homedir v0.0.0-20180523094522-3864e76763d9
 	github.com/mitchellh/mapstructure v0.0.0-20180511142126-bb74f1db0675 // indirect
 	github.com/pelletier/go-toml v1.1.0 // indirect
