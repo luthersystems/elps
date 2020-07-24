@@ -53,7 +53,7 @@ var runCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		var profiler lisp.Profiler
+		var debugInst lisp.Debugger
 		if runDebugger {
 			var mode debugger.DebugMode
 			switch debugger.DebugMode(runDebuggerType) {
@@ -65,7 +65,7 @@ var runCmd = &cobra.Command{
 				fmt.Fprintln(os.Stderr, "Invalid debugger. Specify delve or dap")
 				os.Exit(1)
 			}
-			profiler = debugger.NewDebugger(env, fmt.Sprintf(":%d", runDebuggerPort), mode)
+			debugInst = debugger.NewDebugger(env, fmt.Sprintf(":%d", runDebuggerPort), mode)
 		}
 		for i := range args {
 			res := env.LoadFile(args[i])
@@ -75,7 +75,7 @@ var runCmd = &cobra.Command{
 			}
 		}
 		if runDebugger {
-			profiler.Complete()
+			debugInst.Complete()
 		}
 	},
 }

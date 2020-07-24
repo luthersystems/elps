@@ -18,12 +18,12 @@ func TestNewDebugger(t *testing.T) {
 	// Create a profiler
 	profiler := NewDebugger(env, ":8883", DebugModeDelve)
 	profiler.(*Debugger).CreateBreakpoint(&api.Breakpoint{
-		ID:            1,
-		Name:          "REUBEN TEST",
-		Addr:          0,
-		Addrs:         []uint64{},
-		File:          "test.lisp",
-		Line:          3,
+		ID:    1,
+		Name:  "REUBEN TEST",
+		Addr:  0,
+		Addrs: []uint64{},
+		File:  "test.lisp",
+		Line:  3,
 	})
 	var testsrc *lisp.LVal
 	// Some spurious functions to check we get a profile out

@@ -9,7 +9,6 @@ import (
 	"math/rand"
 )
 
-
 type debuggerwrapper struct {
 	debugger delveserver.ServerDebugger
 }
@@ -17,14 +16,14 @@ type debuggerwrapper struct {
 func (d *debuggerwrapper) onInitializeRequest(request *dap.InitializeRequest, handler *connection) {
 	handler.queue <- &dap.InitializeResponse{
 		Response: dap.Response{
-			Success: true,
+			Success:    true,
 			RequestSeq: request.Seq,
 			ProtocolMessage: dap.ProtocolMessage{
-				Seq: handler.s.incSequence(),
+				Seq:  handler.s.incSequence(),
 				Type: "response",
 			},
 		},
-		Body:     dap.Capabilities{
+		Body: dap.Capabilities{
 			SupportsConfigurationDoneRequest:   true,
 			SupportsFunctionBreakpoints:        true,
 			SupportsConditionalBreakpoints:     false,
@@ -60,7 +59,7 @@ func (d *debuggerwrapper) onInitializeRequest(request *dap.InitializeRequest, ha
 	}
 }
 
-func (d *debuggerwrapper) onLaunchRequest(request *dap.LaunchRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onLaunchRequest(request *dap.LaunchRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.LaunchResponse{
 		Response: dap.Response{
 			RequestSeq: request.GetSeq(),
@@ -74,12 +73,12 @@ func (d *debuggerwrapper) onLaunchRequest(request *dap.LaunchRequest , returncha
 	}
 }
 
-func (d *debuggerwrapper) onAttachRequest(request *dap.AttachRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onAttachRequest(request *dap.AttachRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 			ProtocolMessage: dap.ProtocolMessage{
 				Seq:  seq,
 				Type: "response",
@@ -88,7 +87,7 @@ func (d *debuggerwrapper) onAttachRequest(request *dap.AttachRequest , returncha
 	}
 }
 
-func (d *debuggerwrapper) onDisconnectRequest(request *dap.DisconnectRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onDisconnectRequest(request *dap.DisconnectRequest, returnchan chan dap.Message, seq int) {
 	if request.Arguments.TerminateDebuggee {
 		d.debugger.Complete()
 		panic("DONE")
@@ -100,13 +99,13 @@ func (d *debuggerwrapper) onDisconnectRequest(request *dap.DisconnectRequest , r
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: true,
-			Message: "Complete",
+			Success:    true,
+			Message:    "Complete",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onTerminateRequest(request *dap.TerminateRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onTerminateRequest(request *dap.TerminateRequest, returnchan chan dap.Message, seq int) {
 	d.debugger.Complete()
 	returnchan <- &dap.TerminateResponse{
 		Response: dap.Response{
@@ -115,14 +114,14 @@ func (d *debuggerwrapper) onTerminateRequest(request *dap.TerminateRequest , ret
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: true,
-			Message: "Complete",
+			Success:    true,
+			Message:    "Complete",
 		},
 	}
 	panic("DONE")
 }
 
-func (d *debuggerwrapper) onRestartRequest(request *dap.RestartRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onRestartRequest(request *dap.RestartRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -130,13 +129,13 @@ func (d *debuggerwrapper) onRestartRequest(request *dap.RestartRequest , returnc
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onSetBreakpointsRequest(request *dap.SetBreakpointsRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onSetBreakpointsRequest(request *dap.SetBreakpointsRequest, returnchan chan dap.Message, seq int) {
 	if request.Arguments.SourceModified {
 		returnchan <- &dap.ErrorResponse{
 			Response: dap.Response{
@@ -145,13 +144,13 @@ func (d *debuggerwrapper) onSetBreakpointsRequest(request *dap.SetBreakpointsReq
 					Type: "response",
 				},
 				RequestSeq: request.GetSeq(),
-				Success: false,
-				Message: "Cannot modify source whilst running",
+				Success:    false,
+				Message:    "Cannot modify source whilst running",
 			},
 		}
 		return
 	}
-	out:= make([]dap.Breakpoint, 0)
+	out := make([]dap.Breakpoint, 0)
 	for _, v := range request.Arguments.Breakpoints {
 		id := rand.Int()
 		d.debugger.CreateBreakpoint(&api.Breakpoint{
@@ -170,10 +169,10 @@ func (d *debuggerwrapper) onSetBreakpointsRequest(request *dap.SetBreakpointsReq
 			TotalHitCount: 0,
 		})
 		out = append(out, dap.Breakpoint{
-			Id: id,
-			Line: v.Line,
-			Column: 0,
-			Source: request.Arguments.Source,
+			Id:       id,
+			Line:     v.Line,
+			Column:   0,
+			Source:   request.Arguments.Source,
 			Verified: false,
 		})
 	}
@@ -183,14 +182,14 @@ func (d *debuggerwrapper) onSetBreakpointsRequest(request *dap.SetBreakpointsReq
 				Seq:  seq,
 				Type: "response",
 			},
-			Success: true,
+			Success:    true,
 			RequestSeq: request.GetSeq(),
 		},
-		Body:     dap.SetBreakpointsResponseBody{Breakpoints: out},
+		Body: dap.SetBreakpointsResponseBody{Breakpoints: out},
 	}
 }
 
-func (d *debuggerwrapper) onSetFunctionBreakpointsRequest(request *dap.SetFunctionBreakpointsRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onSetFunctionBreakpointsRequest(request *dap.SetFunctionBreakpointsRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -198,13 +197,13 @@ func (d *debuggerwrapper) onSetFunctionBreakpointsRequest(request *dap.SetFuncti
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onSetExceptionBreakpointsRequest(request *dap.SetExceptionBreakpointsRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onSetExceptionBreakpointsRequest(request *dap.SetExceptionBreakpointsRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -212,13 +211,13 @@ func (d *debuggerwrapper) onSetExceptionBreakpointsRequest(request *dap.SetExcep
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onConfigurationDoneRequest(request *dap.ConfigurationDoneRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onConfigurationDoneRequest(request *dap.ConfigurationDoneRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ConfigurationDoneResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -226,12 +225,12 @@ func (d *debuggerwrapper) onConfigurationDoneRequest(request *dap.ConfigurationD
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: true,
+			Success:    true,
 		},
 	}
 }
 
-func (d *debuggerwrapper) onContinueRequest(request *dap.ContinueRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onContinueRequest(request *dap.ContinueRequest, returnchan chan dap.Message, seq int) {
 	d.debugger.Continue()
 	returnchan <- &dap.ContinueResponse{
 		Response: dap.Response{
@@ -239,16 +238,16 @@ func (d *debuggerwrapper) onContinueRequest(request *dap.ContinueRequest , retur
 				Seq:  seq,
 				Type: "response",
 			},
-			Success: true,
+			Success:    true,
 			RequestSeq: request.GetSeq(),
 		},
-		Body:     dap.ContinueResponseBody{
+		Body: dap.ContinueResponseBody{
 			AllThreadsContinued: true,
 		},
 	}
 }
 
-func (d *debuggerwrapper) onNextRequest(request *dap.NextRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onNextRequest(request *dap.NextRequest, returnchan chan dap.Message, seq int) {
 	d.debugger.Step()
 	returnchan <- &dap.NextResponse{
 		Response: dap.Response{
@@ -256,13 +255,13 @@ func (d *debuggerwrapper) onNextRequest(request *dap.NextRequest , returnchan ch
 				Seq:  seq,
 				Type: "response",
 			},
-			Success: true,
+			Success:    true,
 			RequestSeq: request.GetSeq(),
 		},
 	}
 }
 
-func (d *debuggerwrapper) onStepInRequest(request *dap.StepInRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onStepInRequest(request *dap.StepInRequest, returnchan chan dap.Message, seq int) {
 	d.debugger.Step()
 	returnchan <- &dap.StepInResponse{
 		Response: dap.Response{
@@ -270,13 +269,13 @@ func (d *debuggerwrapper) onStepInRequest(request *dap.StepInRequest , returncha
 				Seq:  seq,
 				Type: "response",
 			},
-			Success: true,
+			Success:    true,
 			RequestSeq: request.GetSeq(),
 		},
 	}
 }
 
-func (d *debuggerwrapper) onStepOutRequest(request *dap.StepOutRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onStepOutRequest(request *dap.StepOutRequest, returnchan chan dap.Message, seq int) {
 	d.debugger.Step()
 	returnchan <- &dap.StepOutResponse{
 		Response: dap.Response{
@@ -284,13 +283,13 @@ func (d *debuggerwrapper) onStepOutRequest(request *dap.StepOutRequest , returnc
 				Seq:  seq,
 				Type: "response",
 			},
-			Success: true,
+			Success:    true,
 			RequestSeq: request.GetSeq(),
 		},
 	}
 }
 
-func (d *debuggerwrapper) onStepBackRequest(request *dap.StepBackRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onStepBackRequest(request *dap.StepBackRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -298,13 +297,13 @@ func (d *debuggerwrapper) onStepBackRequest(request *dap.StepBackRequest , retur
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onReverseContinueRequest(request *dap.ReverseContinueRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onReverseContinueRequest(request *dap.ReverseContinueRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -312,13 +311,13 @@ func (d *debuggerwrapper) onReverseContinueRequest(request *dap.ReverseContinueR
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onRestartFrameRequest(request *dap.RestartFrameRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onRestartFrameRequest(request *dap.RestartFrameRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -326,13 +325,13 @@ func (d *debuggerwrapper) onRestartFrameRequest(request *dap.RestartFrameRequest
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onGotoRequest(request *dap.GotoRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onGotoRequest(request *dap.GotoRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -340,13 +339,13 @@ func (d *debuggerwrapper) onGotoRequest(request *dap.GotoRequest , returnchan ch
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onPauseRequest(request *dap.PauseRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onPauseRequest(request *dap.PauseRequest, returnchan chan dap.Message, seq int) {
 	d.debugger.Halt()
 	returnchan <- &dap.PauseResponse{
 		Response: dap.Response{
@@ -354,13 +353,13 @@ func (d *debuggerwrapper) onPauseRequest(request *dap.PauseRequest , returnchan 
 				Seq:  seq,
 				Type: "response",
 			},
-			Success: true,
+			Success:    true,
 			RequestSeq: request.GetSeq(),
 		},
 	}
 }
 
-func (d *debuggerwrapper) onStackTraceRequest(request *dap.StackTraceRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onStackTraceRequest(request *dap.StackTraceRequest, returnchan chan dap.Message, seq int) {
 	st := &rpc2.StacktraceOut{}
 	d.debugger.GetStacktrace(st)
 	out := d.debugger.GetDapStacktrace()
@@ -370,65 +369,64 @@ func (d *debuggerwrapper) onStackTraceRequest(request *dap.StackTraceRequest , r
 				Seq:  seq,
 				Type: "response",
 			},
-			Success: true,
+			Success:    true,
 			RequestSeq: request.Seq,
 		},
-		Body:     dap.StackTraceResponseBody{
+		Body: dap.StackTraceResponseBody{
 			StackFrames: out,
 			TotalFrames: len(out),
 		},
 	}
 }
 
-func (d *debuggerwrapper) onScopesRequest(request *dap.ScopesRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onScopesRequest(request *dap.ScopesRequest, returnchan chan dap.Message, seq int) {
 	source := d.debugger.GetDapStacktrace()[0]
 	returnchan <- &dap.ScopesResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
-				Seq: seq,
+				Seq:  seq,
 				Type: "response",
 			},
-			RequestSeq:      request.GetSeq(),
-			Success:         true,
+			RequestSeq: request.GetSeq(),
+			Success:    true,
 		},
 		Body: dap.ScopesResponseBody{
 			Scopes: []dap.Scope{
 				{
 					VariablesReference: 2,
-					PresentationHint: "locals",
-					Name: "Scope",
+					PresentationHint:   "locals",
+					Name:               "Scope",
 				},
 				{
 					Name:               "Arguments",
 					PresentationHint:   "locals",
 					VariablesReference: 1,
 					Expensive:          false,
-					Source: source.Source,
+					Source:             source.Source,
 					Line:               source.Line,
 					Column:             source.Column,
 					EndLine:            source.EndLine,
 					EndColumn:          source.EndColumn,
 				},
-
 			},
 		},
 	}
 }
 
-func (d *debuggerwrapper) onVariablesRequest(request *dap.VariablesRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onVariablesRequest(request *dap.VariablesRequest, returnchan chan dap.Message, seq int) {
 	variables := make([]dap.Variable, 0)
 	if request.Arguments.VariablesReference == 1 {
 		variables := d.debugger.GetArguments()
 		returnchan <- &dap.VariablesResponse{
 			Response: dap.Response{
 				ProtocolMessage: dap.ProtocolMessage{
-					Seq: seq,
+					Seq:  seq,
 					Type: "response",
 				},
-				RequestSeq:      request.GetSeq(),
-				Success:         true,
+				RequestSeq: request.GetSeq(),
+				Success:    true,
 			},
-			Body:     dap.VariablesResponseBody{
+			Body: dap.VariablesResponseBody{
 				Variables: variables,
 			},
 		}
@@ -437,11 +435,11 @@ func (d *debuggerwrapper) onVariablesRequest(request *dap.VariablesRequest , ret
 
 	for _, vari := range d.debugger.GetVariables() {
 		outVar := dap.Variable{
-			Name:               vari.Name,
-			Value:              vari.Value,
-			Type:               vari.Type,
-			PresentationHint:   dap.VariablePresentationHint{
-				Kind: "data",
+			Name:  vari.Name,
+			Value: vari.Value,
+			Type:  vari.Type,
+			PresentationHint: dap.VariablePresentationHint{
+				Kind:       "data",
 				Visibility: "public",
 				Attributes: []string{},
 			},
@@ -452,32 +450,32 @@ func (d *debuggerwrapper) onVariablesRequest(request *dap.VariablesRequest , ret
 	returnchan <- &dap.VariablesResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
-				Seq: seq,
+				Seq:  seq,
 				Type: "response",
 			},
-			RequestSeq:      request.GetSeq(),
-			Success:         true,
+			RequestSeq: request.GetSeq(),
+			Success:    true,
 		},
-		Body:     dap.VariablesResponseBody{
+		Body: dap.VariablesResponseBody{
 			Variables: variables,
 		},
 	}
 }
 
-func (d *debuggerwrapper) onSetVariableRequest(request *dap.SetVariableRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onSetVariableRequest(request *dap.SetVariableRequest, returnchan chan dap.Message, seq int) {
 	err := d.debugger.SetVariableInScope(api.EvalScope{}, request.Arguments.Name, request.Arguments.Value)
 	if err != nil {
 		returnchan <- &dap.SetVariableResponse{
 			Response: dap.Response{
 				ProtocolMessage: dap.ProtocolMessage{
-					Seq: seq,
+					Seq:  seq,
 					Type: "response",
 				},
-				RequestSeq:      request.GetSeq(),
-				Success:         false,
-				Message: err.Error(),
+				RequestSeq: request.GetSeq(),
+				Success:    false,
+				Message:    err.Error(),
 			},
-			Body:     dap.SetVariableResponseBody{},
+			Body: dap.SetVariableResponseBody{},
 		}
 		return
 	}
@@ -492,12 +490,12 @@ func (d *debuggerwrapper) onSetVariableRequest(request *dap.SetVariableRequest ,
 		},
 		Body: dap.SetVariableResponseBody{
 			Value: request.Arguments.Value,
-			Type: "LVal",
+			Type:  "LVal",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onSetExpressionRequest(request *dap.SetExpressionRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onSetExpressionRequest(request *dap.SetExpressionRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -505,13 +503,13 @@ func (d *debuggerwrapper) onSetExpressionRequest(request *dap.SetExpressionReque
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onSourceRequest(request *dap.SourceRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onSourceRequest(request *dap.SourceRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -519,13 +517,13 @@ func (d *debuggerwrapper) onSourceRequest(request *dap.SourceRequest , returncha
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onThreadsRequest(request *dap.ThreadsRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onThreadsRequest(request *dap.ThreadsRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ThreadsResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -533,12 +531,12 @@ func (d *debuggerwrapper) onThreadsRequest(request *dap.ThreadsRequest , returnc
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: true,
+			Success:    true,
 		},
 		Body: dap.ThreadsResponseBody{
 			Threads: []dap.Thread{
 				{
-					Id: 1,
+					Id:   1,
 					Name: "Execution thread",
 				},
 			},
@@ -546,7 +544,7 @@ func (d *debuggerwrapper) onThreadsRequest(request *dap.ThreadsRequest , returnc
 	}
 }
 
-func (d *debuggerwrapper) onTerminateThreadsRequest(request *dap.TerminateThreadsRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onTerminateThreadsRequest(request *dap.TerminateThreadsRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -554,13 +552,13 @@ func (d *debuggerwrapper) onTerminateThreadsRequest(request *dap.TerminateThread
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onEvaluateRequest(request *dap.EvaluateRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onEvaluateRequest(request *dap.EvaluateRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.EvaluateResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -568,19 +566,20 @@ func (d *debuggerwrapper) onEvaluateRequest(request *dap.EvaluateRequest , retur
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: true,
+			Success:    true,
 		},
 		Body: dap.EvaluateResponseBody{
 			Result: d.debugger.Eval(request.Arguments.Expression),
-			Type: "LVal",
+			Type:   "LVal",
 			// TODO support children
 		},
 	}
 }
 
-func (d *debuggerwrapper) onStepInTargetsRequest(request *dap.StepInTargetsRequest , returnchan chan dap.Message) {}
+func (d *debuggerwrapper) onStepInTargetsRequest(request *dap.StepInTargetsRequest, returnchan chan dap.Message) {
+}
 
-func (d *debuggerwrapper) onGotoTargetsRequest(request *dap.GotoTargetsRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onGotoTargetsRequest(request *dap.GotoTargetsRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -588,13 +587,13 @@ func (d *debuggerwrapper) onGotoTargetsRequest(request *dap.GotoTargetsRequest ,
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onCompletionsRequest(request *dap.CompletionsRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onCompletionsRequest(request *dap.CompletionsRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -602,13 +601,13 @@ func (d *debuggerwrapper) onCompletionsRequest(request *dap.CompletionsRequest ,
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onExceptionInfoRequest(request *dap.ExceptionInfoRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onExceptionInfoRequest(request *dap.ExceptionInfoRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -616,13 +615,13 @@ func (d *debuggerwrapper) onExceptionInfoRequest(request *dap.ExceptionInfoReque
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onLoadedSourcesRequest(request *dap.LoadedSourcesRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onLoadedSourcesRequest(request *dap.LoadedSourcesRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.LoadedSourcesResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -630,10 +629,10 @@ func (d *debuggerwrapper) onLoadedSourcesRequest(request *dap.LoadedSourcesReque
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
-		Body:     dap.LoadedSourcesResponseBody{
+		Body: dap.LoadedSourcesResponseBody{
 			Sources: []dap.Source{
 
 			},
@@ -641,7 +640,7 @@ func (d *debuggerwrapper) onLoadedSourcesRequest(request *dap.LoadedSourcesReque
 	}
 }
 
-func (d *debuggerwrapper) onDataBreakpointInfoRequest(request *dap.DataBreakpointInfoRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onDataBreakpointInfoRequest(request *dap.DataBreakpointInfoRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -649,13 +648,13 @@ func (d *debuggerwrapper) onDataBreakpointInfoRequest(request *dap.DataBreakpoin
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onSetDataBreakpointsRequest(request *dap.SetDataBreakpointsRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onSetDataBreakpointsRequest(request *dap.SetDataBreakpointsRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -663,13 +662,13 @@ func (d *debuggerwrapper) onSetDataBreakpointsRequest(request *dap.SetDataBreakp
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onReadMemoryRequest(request *dap.ReadMemoryRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onReadMemoryRequest(request *dap.ReadMemoryRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -677,13 +676,13 @@ func (d *debuggerwrapper) onReadMemoryRequest(request *dap.ReadMemoryRequest , r
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onDisassembleRequest(request *dap.DisassembleRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onDisassembleRequest(request *dap.DisassembleRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -691,13 +690,13 @@ func (d *debuggerwrapper) onDisassembleRequest(request *dap.DisassembleRequest ,
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onCancelRequest(request *dap.CancelRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onCancelRequest(request *dap.CancelRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -705,13 +704,13 @@ func (d *debuggerwrapper) onCancelRequest(request *dap.CancelRequest , returncha
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success:    false,
+			Message:    "Not supported",
 		},
 	}
 }
 
-func (d *debuggerwrapper) onBreakpointLocationsRequest(request *dap.BreakpointLocationsRequest , returnchan chan dap.Message, seq int) {
+func (d *debuggerwrapper) onBreakpointLocationsRequest(request *dap.BreakpointLocationsRequest, returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.BreakpointLocationsResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -719,7 +718,7 @@ func (d *debuggerwrapper) onBreakpointLocationsRequest(request *dap.BreakpointLo
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: true,
+			Success:    true,
 		},
 		Body: dap.BreakpointLocationsResponseBody{
 			Breakpoints: []dap.BreakpointLocation{ // TODO HANDLE COLUMNS
@@ -743,12 +742,11 @@ func (d *debuggerwrapper) onModulesRequest(request *dap.ModulesRequest, returnch
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: true,
+			Success:    true,
 		},
-		Body:     dap.ModulesResponseBody{
-			Modules: modules,
+		Body: dap.ModulesResponseBody{
+			Modules:      modules,
 			TotalModules: len(modules),
 		},
 	}
 }
-

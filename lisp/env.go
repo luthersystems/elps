@@ -767,9 +767,13 @@ func (env *LEnv) EvalSExpr(s *LVal) *LVal {
 	fun := call.Cells[0] // call is not an empty expression -- fun is known LFun
 	args := call
 	args.Cells = args.Cells[1:]
-	if (env.Runtime.Profiler != nil) {
+	if env.Runtime.Profiler != nil {
 		env.Runtime.Profiler.Start(fun)
 		defer env.Runtime.Profiler.End(fun)
+	}
+	if env.Runtime.Debugger != nil {
+		env.Runtime.Debugger.Start(s, fun)
+		defer env.Runtime.Debugger.End(fun)
 	}
 	switch fun.FunType {
 	case LFunNone:

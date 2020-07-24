@@ -8,7 +8,7 @@ import (
 var builtinRegex = regexp.MustCompile("\\<(?:builtin|special)-[a-z]+ \\`\\`(.*)\\'\\'\\>")
 
 // Gets a canonical version of the function name suitable for viewing in KCacheGrind
-func getFunNameFromFID(rt *lisp.Runtime, in string) string {
+func GetFunNameFromFID(rt *lisp.Runtime, in string) string {
 	// Most of the time we can just look this up in FunNames
 	if name, ok := rt.Package.FunNames[in]; ok {
 		return name

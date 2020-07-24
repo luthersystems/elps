@@ -1,6 +1,7 @@
 package events
 
 type EventType string
+
 const EventTypeStarted = EventType("started")
 const EventTypeContinued = EventType("continued")
 const EventTypeExited = EventType("exited")

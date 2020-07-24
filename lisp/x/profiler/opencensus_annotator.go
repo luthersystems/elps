@@ -70,7 +70,7 @@ func (p *ocAnnotator) Start(function *lisp.LVal) {
 		// We don't need to profile these types. We could, but we're not that LISP :D
 		return
 	case lisp.LFun, lisp.LSymbol, lisp.LSExpr:
-		fName := fmt.Sprintf("%s:%s", function.FunData().Package, getFunNameFromFID(p.runtime, function.FunData().FID))
+		fName := fmt.Sprintf("%s:%s", function.FunData().Package, GetFunNameFromFID(p.runtime, function.FunData().FID))
 		p.contexts.Push(p.currentContext)
 		p.currentContext, p.currentSpan = trace.StartSpan(p.currentContext, fName)
 	default:

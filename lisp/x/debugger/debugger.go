@@ -9,6 +9,7 @@ import (
 	"github.com/luthersystems/elps/lisp/x/debugger/dapserver"
 	"github.com/luthersystems/elps/lisp/x/debugger/delveserver"
 	"github.com/luthersystems/elps/lisp/x/debugger/events"
+	"github.com/luthersystems/elps/lisp/x/profiler"
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/sirupsen/logrus"
 	"math/rand"
@@ -35,6 +36,12 @@ type Debugger struct {
 	currentOp    *op
 	logger       *logrus.Logger
 	pwd          string
+	callRefs     *callRef
+	isEvaling    bool
+}
+
+func (d *Debugger) Done() bool {
+	panic("implement me")
 }
 
 type op struct {
@@ -42,6 +49,7 @@ type op struct {
 	source *token.Location
 	args   map[string]*lisp.LVal
 }
+
 
 type DebugServer interface {
 	Run() error
@@ -54,7 +62,7 @@ type DebugMode string
 const DebugModeDelve = DebugMode("delve")
 const DebugModeDAP = DebugMode("dap")
 
-func NewDebugger(env *lisp.LEnv, address string, mode DebugMode) lisp.Profiler {
+func NewDebugger(env *lisp.LEnv, address string, mode DebugMode) lisp.Debugger {
 	db := &Debugger{
 		runtime:      env.Runtime,
 		env:          env,
@@ -76,7 +84,7 @@ func NewDebugger(env *lisp.LEnv, address string, mode DebugMode) lisp.Profiler {
 			panic(err.Error())
 		}
 		go func(end chan bool) {
-			die := <- end
+			die := <-end
 			if die {
 				panic("This is the end... the end my friend")
 			}
@@ -84,7 +92,7 @@ func NewDebugger(env *lisp.LEnv, address string, mode DebugMode) lisp.Profiler {
 	}
 	srv.Run()
 	db.server = srv
-	db.runtime.Profiler = db
+	db.runtime.Debugger = db
 	return db
 }
 
@@ -122,13 +130,15 @@ func (d *Debugger) Complete() error {
 	return nil
 }
 
-func (d *Debugger) Start(function *lisp.LVal) {
-	// do we need to do this on SExpr rather than function? Would that make finding the parameters easier?
+func (d *Debugger) Start(expr *lisp.LVal, function *lisp.LVal) {
+	if d.isEvaling {
+		return
+	}
 	fname := ""
 	if function.FunData() != nil {
 		fname = function.FunData().FID
 	}
-	source := function.Source
+	source := expr.Source
 	if source == nil || source.File == "<native code>" {
 		for f := len(d.runtime.Stack.Frames) - 1; f >= 0; f-- {
 			frame := d.runtime.Stack.Frames[f]
@@ -164,28 +174,58 @@ func (d *Debugger) Start(function *lisp.LVal) {
 	args := make(map[string]*lisp.LVal)
 	paramCounter := 0
 	fname = d.runtime.Package.FunNames[fname]
-	for k, v := range function.Cells {
-		argName := d.runtime.Package.Symbols[fname].Cells[paramCounter].String()
-		if argName == "" {
-			argName = strconv.Itoa(k)
+	if function.Type == lisp.LFun {
+		argList := function.Cells[0]
+		restMode := false
+		for count, argName := range argList.Cells {
+			if argName.Str == lisp.VarArgSymbol {
+				restMode = true
+				continue
+			}
+			if restMode {
+				for pos := count; pos < len(expr.Cells); pos++ {
+					args[fmt.Sprintf("%s[%d]", argName.Str, pos)] = expr.Cells[pos]
+				}
+				break
+			}
+			val := &lisp.LVal{
+				Type: lisp.LInvalid,
+			}
+			if len(expr.Cells) >= count {
+				val = expr.Cells[count+1]
+			}
+			args[argName.Str] = val
 		}
-		d.logger.Infof("Arg %s %v is %v", argName, d.runtime.Package.Symbols[fname].Cells[paramCounter], mapValue(v))
-		args[argName] = v
+	} else {
+		for k, v := range function.Cells {
+			argName := d.runtime.Package.Symbols[fname].Cells[paramCounter].String()
+			if argName == "" {
+				argName = strconv.Itoa(k)
+			}
+			d.logger.Infof("Arg %s %v is %v", argName, d.runtime.Package.Symbols[fname].Cells[paramCounter], mapValue(v))
+			if cell := expr.Cells[k+1]; cell != nil {
+				args[argName] = cell
+			} else {
+				args[argName] = v
+			}
+		}
 	}
 	d.currentOp = &op{
 		name:   fname,
 		source: source,
 		args:   args,
 	}
+	d.incrementCallRef(expr, function)
 	if !d.stopped {
 		d.Lock()
 		if function.Source != nil {
 			for _, v := range d.breakpoints {
-				if (v.File == function.Source.File || fmt.Sprintf("%s/%s", d.pwd, function.Source.File) == v.File) && v.Line == function.Source.Line {
+				if (v.File == function.Source.File || fmt.Sprintf("%s/%s", d.pwd, function.Source.File) == v.File) &&
+					v.Line == function.Source.Line {
 					d.logger.Infof("BREAKPOINT")
 					d.stopped = true
 					d.Unlock()
-					d.Start(function)
+					d.Start(expr, function)
 					d.server.Event(events.EventTypeStoppedBreakpoint)
 					return
 				}
@@ -210,8 +250,19 @@ func (d *Debugger) Start(function *lisp.LVal) {
 	runtime.Gosched()
 }
 
+func (p *Debugger) getFunctionParameters(function *lisp.LVal) (string, string) {
+	return profiler.GetFunNameFromFID(p.runtime, function.FunData().FID), function.FunData().Package
+}
+
 func (d *Debugger) End(function *lisp.LVal) {
+	if d.isEvaling {
+		return
+	}
 	d.logger.Infof("End %v ", function.FunData().FID)
+	switch function.Type {
+	case lisp.LFun, lisp.LSymbol, lisp.LSExpr, lisp.LQSymbol:
+		d.decrementCallRef()
+	}
 	// no op for now except that we yield the CPU
 	runtime.Gosched()
 }
@@ -248,69 +299,51 @@ func (d *Debugger) GetModules() []dap.Module {
 }
 
 func (d *Debugger) Eval(text string) string {
+	d.Lock()
+	d.isEvaling = true
+	defer func() {
+		d.isEvaling = false
+		d.Unlock()
+	}()
 	d.logger.Infof("Evaluating %s", text)
 	tEnv := lisp.NewEnv(nil)
 	tEnv.Runtime.Registry = d.runtime.Registry
 	tEnv.Runtime.Package = d.runtime.Package
 	tEnv.Runtime.Reader = d.runtime.Reader
-	tEnv.Parent = d.env
+	tEnv.Runtime.Debugger = nil
 	v := tEnv.LoadString("eval", text)
 	return mapValue(v)
 }
 
 func (d *Debugger) GetDapStacktrace() []dap.StackFrame {
+	current := d.callRefs
 	out := make([]dap.StackFrame, 0)
-	for _, frame := range d.runtime.Stack.Frames {
-		var source = frame.Source
-		if source == nil {
-			source = &token.Location{
-				File: "Unknown file",
-				Path: "",
-				Pos:  0,
-				Line: 0,
-				Col:  0,
-			}
+	for {
+		if current == nil {
+			break
 		}
+		d.logger.Infof("Line %s in %s line %d col %d", current.name, current.file, current.line, current.col)
 		hint := "normal"
 		origin := ""
-		if source.File == "Unknown file" || source.File == "<native code>" {
+		if current.file == "Unknown file" || current.file == "<native code>" {
 			hint = "deemphasize"
 			origin = "internal module"
 		}
 		out = append(out, dap.StackFrame{
 			Id:   0,
-			Name: frame.Name,
+			Name: current.name,
 			Source: dap.Source{
-				Name:             source.File,
-				Path:             source.Path,
+				Name:             current.file,
+				Path:             current.path,
 				PresentationHint: hint,
 				Origin:           origin,
 			},
-			Line:             source.Line,
-			Column:           source.Col,
-			ModuleId:         frame.Package,
+			Line:             current.line,
+			Column:           current.col,
+			ModuleId:         current.packageName,
 			PresentationHint: hint,
 		})
-	}
-	for i := len(out)/2 - 1; i >= 0; i-- {
-		opp := len(out) - 1 - i
-		out[i], out[opp] = out[opp], out[i]
-	}
-	if len(out) == 0 {
-		out = append(out, dap.StackFrame{
-			Id:   0,
-			Name: "Entrypoint",
-			Source: dap.Source{
-				Name:             "Native code",
-				Path:             "",
-				PresentationHint: "deemphasize",
-				Origin:           "internal module",
-			},
-			Line:             0,
-			Column:           0,
-			ModuleId:         "internal",
-			PresentationHint: "deemphasize",
-		})
+		current = current.prev
 	}
 	return out
 }
@@ -319,7 +352,7 @@ func (d *Debugger) GetStacktrace(st *rpc2.StacktraceOut) {
 	d.logger.Info("Returning STACK")
 	st.Locations = make([]api.Stackframe, 0)
 	for _, frame := range d.runtime.Stack.Frames {
-		var source *token.Location = frame.Source
+		var source = frame.Source
 		if source == nil {
 			source = &token.Location{
 				File: "Unknown file",
@@ -405,7 +438,7 @@ func (d *Debugger) GetThread() *api.Thread {
 	d.logger.Info("Returning THREADS")
 	var loc *api.Thread
 	if d.currentOp != nil {
-		var source *token.Location = d.currentOp.source
+		var source = d.currentOp.source
 		if source == nil {
 			source = &token.Location{
 				File: "Unknown file",
@@ -594,7 +627,7 @@ func (d *Debugger) GetVariables() []api.Variable {
 		if v.Type == lisp.LFun && v.FunData().Builtin != nil {
 			continue
 		}
-		var source *token.Location = v.Source
+		var source = v.Source
 		if source == nil {
 			source = &token.Location{
 				File: "Unknown file",
@@ -642,7 +675,7 @@ func (d *Debugger) GetGoRoutine() *api.Goroutine {
 	defer d.Unlock()
 	var loc *api.Location
 	if d.currentOp != nil {
-		var source *token.Location = d.currentOp.source
+		var source = d.currentOp.source
 		if source == nil {
 			source = &token.Location{
 				File: "Unknown file",
@@ -718,7 +751,7 @@ func (d *Debugger) Sources(filter string) ([]string, error) {
 		d.appendSourcesToMap(intermediate, currPkg, filter)
 	}
 	out := make([]string, 0)
-	for k, _ := range intermediate {
+	for k := range intermediate {
 		out = append(out, k)
 	}
 	return out, nil
@@ -728,7 +761,7 @@ func (d *Debugger) getSourcesForPackage(currPkg *lisp.Package) []string {
 	intermediate := make(map[string]bool)
 	d.appendSourcesToMap(intermediate, currPkg, "")
 	out := make([]string, 0)
-	for k, _ := range intermediate {
+	for k := range intermediate {
 		out = append(out, k)
 	}
 	return out
@@ -738,12 +771,11 @@ func (d *Debugger) GetArguments() []dap.Variable {
 	out := make([]dap.Variable, 0)
 	for k, v := range d.currentOp.args {
 		out = append(out, dap.Variable{
-			Name:               k,
-			Value:              mapValue(v),
-			Type:               mapLispType(v.Type),
-
+			Name:  k,
+			Value: mapValue(v),
+			Type:  mapLispType(v.Type),
 		})
-		d.logger.Infof("Sending arg %s as %s", out[len(out)-1].Name, out[len(out) - 1].Value)
+		d.logger.Infof("Sending arg %s as %s", out[len(out)-1].Name, out[len(out)-1].Value)
 	}
 	d.logger.Infof("Args: %v", out)
 	return out
@@ -867,4 +899,67 @@ func (d *Debugger) Command(a *api.DebuggerCommand) (*api.DebuggerState, error) {
 
 func (d *Debugger) LastModified() time.Time {
 	return d.lastModified
+}
+
+// Generates a call ref so the same item can be located again
+func (p *Debugger) incrementCallRef(expr, function *lisp.LVal) *callRef {
+	p.Lock()
+	defer p.Unlock()
+	name, module := p.getFunctionParameters(function)
+	frameRef := new(callRef)
+	frameRef.name = name
+	frameRef.children = make([]*callRef, 0)
+	if function.Source != nil {
+		frameRef.file = expr.Source.File
+		frameRef.line = expr.Source.Line
+		frameRef.col = expr.Source.Col
+		frameRef.path = expr.Source.Path
+		frameRef.packageName = module
+	}
+	if len(p.runtime.Stack.Frames) > 0 {
+		p.logger.Infof("Overriding...")
+		current := p.runtime.Stack.Frames[len(p.runtime.Stack.Frames) - 1]
+		if frameRef.file == "" {
+			p.logger.Infof("Overriding... file %s", current.Source.File)
+			frameRef.file = current.Source.File
+		}
+		if frameRef.path == "" {
+			p.logger.Infof("Overriding... path %s", current.Source.Path)
+			frameRef.path = current.Source.Path
+		}
+		if frameRef.line == 0 {
+			frameRef.line = current.Source.Line
+		}
+		if frameRef.col == 0 {
+			frameRef.col = current.Source.Col
+		}
+	}
+	current := p.callRefs
+	if current != nil {
+		frameRef.prev = current
+		frameRef.prev.children = append(frameRef.prev.children, frameRef)
+	}
+	frameRef.start = time.Now()
+	p.callRefs = frameRef
+	return frameRef
+}
+
+// Finds a call ref for the current scope
+func (p *Debugger) decrementCallRef() *callRef {
+	current := p.callRefs
+	p.callRefs = current.prev
+	return current
+}
+
+// Represents something that got called
+type callRef struct {
+	start       time.Time
+	prev        *callRef
+	name        string
+	children    []*callRef
+	file        string
+	path string
+	line        int
+	col			int
+	packageName string
 }
