@@ -289,7 +289,7 @@ func (h *connection) dispatchRequest(request dap.Message) {
 }
 
 func (h *connection) sendEventMessage(event events.EventType) {
-	log.Infof("Sending event %s", event)
+	log.Debugf("Sending event %s", event)
 	switch event {
 	case events.EventTypeContinued:
 		h.queue <- &dap.ContinuedEvent{

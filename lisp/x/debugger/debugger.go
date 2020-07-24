@@ -50,7 +50,6 @@ type op struct {
 	args   map[string]*lisp.LVal
 }
 
-
 type DebugServer interface {
 	Run() error
 	Stop() error
@@ -86,7 +85,7 @@ func NewDebugger(env *lisp.LEnv, address string, mode DebugMode) lisp.Debugger {
 		go func(end chan bool) {
 			die := <-end
 			if die {
-				panic("This is the end... the end my friend")
+				panic("Remote process terminated debuggee")
 			}
 		}(srv.(*dapserver.Server).EndChannel)
 	}
@@ -156,7 +155,7 @@ func (d *Debugger) Start(expr *lisp.LVal, function *lisp.LVal) {
 		}
 	}
 	sourceStr := fmt.Sprintf("@%s:%d", source.File, source.Line)
-	d.logger.Infof("Instr %v %s params %v %s %d", function.Type, fname, function.Cells, sourceStr, len(d.runtime.Stack.Frames))
+	d.logger.Debugf("Instr %v %s params %v %s %d", function.Type, fname, function.Cells, sourceStr, len(d.runtime.Stack.Frames))
 	switch function.Type {
 	case lisp.LInt:
 		return
@@ -202,7 +201,7 @@ func (d *Debugger) Start(expr *lisp.LVal, function *lisp.LVal) {
 			if argName == "" {
 				argName = strconv.Itoa(k)
 			}
-			d.logger.Infof("Arg %s %v is %v", argName, d.runtime.Package.Symbols[fname].Cells[paramCounter], mapValue(v))
+			d.logger.Debugf("Arg %s %v is %v", argName, d.runtime.Package.Symbols[fname].Cells[paramCounter], d.mapValue(v))
 			if cell := expr.Cells[k+1]; cell != nil {
 				args[argName] = cell
 			} else {
@@ -216,6 +215,11 @@ func (d *Debugger) Start(expr *lisp.LVal, function *lisp.LVal) {
 		args:   args,
 	}
 	d.incrementCallRef(expr, function)
+	// don't want to pause on code we can't see...
+	if source.File == "<native code>" {
+		runtime.Gosched()
+		return
+	}
 	if !d.stopped {
 		d.Lock()
 		if function.Source != nil {
@@ -258,7 +262,7 @@ func (d *Debugger) End(function *lisp.LVal) {
 	if d.isEvaling {
 		return
 	}
-	d.logger.Infof("End %v ", function.FunData().FID)
+	d.logger.Debugf("End %v ", function.FunData().FID)
 	switch function.Type {
 	case lisp.LFun, lisp.LSymbol, lisp.LSExpr, lisp.LQSymbol:
 		d.decrementCallRef()
@@ -305,14 +309,14 @@ func (d *Debugger) Eval(text string) string {
 		d.isEvaling = false
 		d.Unlock()
 	}()
-	d.logger.Infof("Evaluating %s", text)
+	d.logger.Debugf("Evaluating %s", text)
 	tEnv := lisp.NewEnv(nil)
 	tEnv.Runtime.Registry = d.runtime.Registry
 	tEnv.Runtime.Package = d.runtime.Package
 	tEnv.Runtime.Reader = d.runtime.Reader
 	tEnv.Runtime.Debugger = nil
 	v := tEnv.LoadString("eval", text)
-	return mapValue(v)
+	return d.mapValue(v)
 }
 
 func (d *Debugger) GetDapStacktrace() []dap.StackFrame {
@@ -322,7 +326,7 @@ func (d *Debugger) GetDapStacktrace() []dap.StackFrame {
 		if current == nil {
 			break
 		}
-		d.logger.Infof("Line %s in %s line %d col %d", current.name, current.file, current.line, current.col)
+		d.logger.Debugf("Line %s in %s line %d col %d", current.name, current.file, current.line, current.col)
 		hint := "normal"
 		origin := ""
 		if current.file == "Unknown file" || current.file == "<native code>" {
@@ -349,7 +353,7 @@ func (d *Debugger) GetDapStacktrace() []dap.StackFrame {
 }
 
 func (d *Debugger) GetStacktrace(st *rpc2.StacktraceOut) {
-	d.logger.Info("Returning STACK")
+	d.logger.Debug("Returning STACK")
 	st.Locations = make([]api.Stackframe, 0)
 	for _, frame := range d.runtime.Stack.Frames {
 		var source = frame.Source
@@ -392,7 +396,7 @@ func (d *Debugger) GetStacktrace(st *rpc2.StacktraceOut) {
 }
 
 func (d *Debugger) GetAllBreakpoints() map[int]*api.Breakpoint {
-	d.logger.Info("Returning BREAKPOINTS")
+	d.logger.Debug("Returning BREAKPOINTS")
 	d.Lock()
 	defer d.Unlock()
 	return d.breakpoints
@@ -435,7 +439,7 @@ func (d *Debugger) AmendBreakpoint(bp *api.Breakpoint) error {
 }
 
 func (d *Debugger) GetThread() *api.Thread {
-	d.logger.Info("Returning THREADS")
+	d.logger.Debug("Returning THREADS")
 	var loc *api.Thread
 	if d.currentOp != nil {
 		var source = d.currentOp.source
@@ -538,15 +542,15 @@ func mapKind(in *lisp.LVal) reflect.Kind {
 	}
 }
 
-func sexprAsString(in *lisp.LVal) string {
+func (d *Debugger) sexprAsString(in *lisp.LVal) string {
 	out := ""
 	for _, v := range in.Cells {
-		out += mapValue(v) + " "
+		out += d.mapValue(v) + " "
 	}
 	return out
 }
 
-func mapValue(in *lisp.LVal) string {
+func (d *Debugger) mapValue(in *lisp.LVal) string {
 	switch in.Type {
 	case lisp.LFloat:
 		return strconv.FormatFloat(in.Float, 'f', 8, 64)
@@ -559,7 +563,7 @@ func mapValue(in *lisp.LVal) string {
 	case lisp.LSymbol:
 		return in.Str
 	case lisp.LSExpr:
-		return sexprAsString(in)
+		return d.sexprAsString(in)
 	case lisp.LSortMap:
 		return "map"
 	case lisp.LNative:
@@ -581,7 +585,7 @@ func mapValue(in *lisp.LVal) string {
 	}
 }
 
-func extractChildren(in *lisp.LVal) []api.Variable {
+func (d *Debugger) extractChildren(in *lisp.LVal) []api.Variable {
 	children := make([]api.Variable, 0)
 	switch in.Type {
 	case lisp.LSortMap:
@@ -589,7 +593,7 @@ func extractChildren(in *lisp.LVal) []api.Variable {
 			children = append(children, api.Variable{
 				Type:     mapLispType(v.Type),
 				RealType: mapLispType(v.Type),
-				Value:    mapValue(v),
+				Value:    d.mapValue(v),
 				Kind:     mapKind(v),
 			})
 		}
@@ -598,7 +602,7 @@ func extractChildren(in *lisp.LVal) []api.Variable {
 			children = append(children, api.Variable{
 				Type:     mapLispType(v.Type),
 				RealType: mapLispType(v.Type),
-				Value:    mapValue(v),
+				Value:    d.mapValue(v),
 				Kind:     mapKind(v),
 			})
 		}
@@ -616,7 +620,7 @@ func extractChildren(in *lisp.LVal) []api.Variable {
 }
 
 func (d *Debugger) GetVariables() []api.Variable {
-	d.logger.Info("Returning VARS")
+	d.logger.Debug("Returning VARS")
 	d.Lock()
 	defer d.Unlock()
 	out := make([]api.Variable, 0)
@@ -638,9 +642,9 @@ func (d *Debugger) GetVariables() []api.Variable {
 			}
 		}
 		children := make([]api.Variable, 0)
-		strVal := mapValue(v)
+		strVal := d.mapValue(v)
 		if strVal == "map" || strVal == "array" {
-			children = extractChildren(v)
+			children = d.extractChildren(v)
 		}
 		out = append(out, api.Variable{
 			Name:         k,
@@ -665,12 +669,12 @@ func (d *Debugger) GetVariables() []api.Variable {
 }
 
 func (d *Debugger) GetFunctionArgs() []api.Variable {
-	d.logger.Info("Returning ARGS")
+	d.logger.Debug("Returning ARGS")
 	return []api.Variable{}
 }
 
 func (d *Debugger) GetGoRoutine() *api.Goroutine {
-	d.logger.Info("Returning GOROUTINE")
+	d.logger.Debug("Returning GOROUTINE")
 	d.Lock()
 	defer d.Unlock()
 	var loc *api.Location
@@ -745,7 +749,7 @@ func (d *Debugger) SetVariableInScope(scope api.EvalScope, symbol string, value 
 }
 
 func (d *Debugger) Sources(filter string) ([]string, error) {
-	d.logger.Info("Returning SOURCES")
+	d.logger.Debug("Returning SOURCES")
 	intermediate := make(map[string]bool)
 	for _, currPkg := range d.runtime.Registry.Packages {
 		d.appendSourcesToMap(intermediate, currPkg, filter)
@@ -770,14 +774,21 @@ func (d *Debugger) getSourcesForPackage(currPkg *lisp.Package) []string {
 func (d *Debugger) GetArguments() []dap.Variable {
 	out := make([]dap.Variable, 0)
 	for k, v := range d.currentOp.args {
+		argValue := d.mapValue(v)
+		if d.currentOp.name != "defun" && d.currentOp.name != "set" && d.currentOp.name != "let" && d.currentOp.name != "let*" && d.currentOp.name != "defmacro" {
+			if v.Type == lisp.LSymbol {
+				d.logger.Infof("Remapping %s", argValue)
+				argValue = d.Eval(argValue)
+			}
+		}
 		out = append(out, dap.Variable{
 			Name:  k,
-			Value: mapValue(v),
+			Value: argValue,
 			Type:  mapLispType(v.Type),
 		})
 		d.logger.Infof("Sending arg %s as %s", out[len(out)-1].Name, out[len(out)-1].Value)
 	}
-	d.logger.Infof("Args: %v", out)
+	d.logger.Debugf("Args: %v", out)
 	return out
 }
 
@@ -794,7 +805,7 @@ func (d *Debugger) appendSourcesToMap(intermediate map[string]bool, currPkg *lis
 }
 
 func (d *Debugger) Functions(filter string) ([]string, error) {
-	d.logger.Info("Returning FUNCTIONS")
+	d.logger.Debug("Returning FUNCTIONS")
 	d.Lock()
 	defer d.Unlock()
 	out := make([]string, 0)
@@ -813,7 +824,7 @@ func (d *Debugger) FindLocation(scope api.EvalScope, loc string, lines bool) ([]
 }
 
 func (d *Debugger) ListPackagesBuildInfo(files bool) []api.PackageBuildInfo {
-	d.logger.Info("Returning BUILD INFO")
+	d.logger.Debug("Returning BUILD INFO")
 	d.Lock()
 	defer d.Unlock()
 	out := make([]api.PackageBuildInfo, 0)
@@ -828,7 +839,7 @@ func (d *Debugger) ListPackagesBuildInfo(files bool) []api.PackageBuildInfo {
 }
 
 func (d *Debugger) State(blocking bool) (*api.DebuggerState, error) {
-	d.logger.Info("Returning STATE")
+	d.logger.Debug("Returning STATE")
 	state := &api.DebuggerState{
 		Running:           !d.stopped,
 		CurrentThread:     d.GetThread(),
@@ -865,7 +876,7 @@ func (d *Debugger) Halt() {
 
 func (d *Debugger) Command(a *api.DebuggerCommand) (*api.DebuggerState, error) {
 	// TODO this is Delve specific
-	d.logger.Infof("Command: %s", a.Name)
+	d.logger.Debug("Command: %s", a.Name)
 	d.lastModified = time.Now()
 	started := false
 	switch a.Name {
@@ -917,14 +928,14 @@ func (p *Debugger) incrementCallRef(expr, function *lisp.LVal) *callRef {
 		frameRef.packageName = module
 	}
 	if len(p.runtime.Stack.Frames) > 0 {
-		p.logger.Infof("Overriding...")
-		current := p.runtime.Stack.Frames[len(p.runtime.Stack.Frames) - 1]
+		p.logger.Debug("Overriding...")
+		current := p.runtime.Stack.Frames[len(p.runtime.Stack.Frames)-1]
 		if frameRef.file == "" {
-			p.logger.Infof("Overriding... file %s", current.Source.File)
+			p.logger.Debugf("Overriding... file %s", current.Source.File)
 			frameRef.file = current.Source.File
 		}
 		if frameRef.path == "" {
-			p.logger.Infof("Overriding... path %s", current.Source.Path)
+			p.logger.Debugf("Overriding... path %s", current.Source.Path)
 			frameRef.path = current.Source.Path
 		}
 		if frameRef.line == 0 {
@@ -958,8 +969,8 @@ type callRef struct {
 	name        string
 	children    []*callRef
 	file        string
-	path string
+	path        string
 	line        int
-	col			int
+	col         int
 	packageName string
 }
