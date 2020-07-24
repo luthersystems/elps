@@ -13,7 +13,7 @@ type ServerDebugger interface {
 	GetStacktrace(st *rpc2.StacktraceOut)
 	GetDapStacktrace() []dap.StackFrame
 	GetAllBreakpoints() map[int]*api.Breakpoint
-    CreateBreakpoint(breakpoint *api.Breakpoint) *api.Breakpoint
+	CreateBreakpoint(breakpoint *api.Breakpoint) *api.Breakpoint
 	RemoveBreakpoint(id int) error
 	AmendBreakpoint(bp *api.Breakpoint) error
 	GetThread() *api.Thread
@@ -21,7 +21,7 @@ type ServerDebugger interface {
 	GetFunctionArgs() []api.Variable
 	SetVariableInScope(scope api.EvalScope, symbol string, value string) error
 	Sources(filter string) ([]string, error)
-    Functions(filter string) ([]string, error)
+	Functions(filter string) ([]string, error)
 	FindLocation(scope api.EvalScope, loc string, lines bool) ([]api.Location, error)
 	ListPackagesBuildInfo(files bool) []api.PackageBuildInfo
 	State(blocking bool) (*api.DebuggerState, error)
@@ -33,5 +33,7 @@ type ServerDebugger interface {
 	Continue()
 	Halt()
 	IsStopped() bool
+	GetModules() []dap.Module
+	Eval(text string) string
+	GetArguments() []dap.Variable
 }
-

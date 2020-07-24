@@ -65,7 +65,7 @@ var runCmd = &cobra.Command{
 				fmt.Fprintln(os.Stderr, "Invalid debugger. Specify delve or dap")
 				os.Exit(1)
 			}
-			profiler = debugger.NewDebugger(env.Runtime, fmt.Sprintf(":%d", runDebuggerPort), mode)
+			profiler = debugger.NewDebugger(env, fmt.Sprintf(":%d", runDebuggerPort), mode)
 		}
 		for i := range args {
 			res := env.LoadFile(args[i])

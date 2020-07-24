@@ -16,7 +16,7 @@ func TestNewDebugger(t *testing.T) {
 		t.Fatal(lisp.GoError(lerr))
 	}
 	// Create a profiler
-	profiler := NewDebugger(env.Runtime, ":8883", DebugModeDelve)
+	profiler := NewDebugger(env, ":8883", DebugModeDelve)
 	profiler.(*Debugger).CreateBreakpoint(&api.Breakpoint{
 		ID:            1,
 		Name:          "REUBEN TEST",

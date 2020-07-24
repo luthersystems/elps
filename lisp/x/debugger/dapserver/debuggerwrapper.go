@@ -1,4 +1,5 @@
 package dapserver
+
 import (
 	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
@@ -28,21 +29,21 @@ func (d *debuggerwrapper) onInitializeRequest(request *dap.InitializeRequest, ha
 			SupportsFunctionBreakpoints:        true,
 			SupportsConditionalBreakpoints:     false,
 			SupportsHitConditionalBreakpoints:  false,
-			SupportsEvaluateForHovers:          false,
+			SupportsEvaluateForHovers:          true,
 			SupportsStepBack:                   false,
 			SupportsSetVariable:                true,
 			SupportsRestartFrame:               false,
 			SupportsGotoTargetsRequest:         false,
 			SupportsStepInTargetsRequest:       false,
 			SupportsCompletionsRequest:         false,
-			SupportsModulesRequest:             false,
+			SupportsModulesRequest:             true,
 			SupportsRestartRequest:             false,
 			SupportsExceptionOptions:           false,
 			SupportsValueFormattingOptions:     false,
 			SupportsExceptionInfoRequest:       false,
 			SupportTerminateDebuggee:           true,
 			SupportsDelayedStackTraceLoading:   false,
-			SupportsLoadedSourcesRequest:       true,
+			SupportsLoadedSourcesRequest:       false,
 			SupportsLogPoints:                  false,
 			SupportsTerminateThreadsRequest:    false,
 			SupportsSetExpression:              true,
@@ -90,6 +91,7 @@ func (d *debuggerwrapper) onAttachRequest(request *dap.AttachRequest , returncha
 func (d *debuggerwrapper) onDisconnectRequest(request *dap.DisconnectRequest , returnchan chan dap.Message, seq int) {
 	if request.Arguments.TerminateDebuggee {
 		d.debugger.Complete()
+		panic("DONE")
 	}
 	returnchan <- &dap.DisconnectResponse{
 		Response: dap.Response{
@@ -117,6 +119,7 @@ func (d *debuggerwrapper) onTerminateRequest(request *dap.TerminateRequest , ret
 			Message: "Complete",
 		},
 	}
+	panic("DONE")
 }
 
 func (d *debuggerwrapper) onRestartRequest(request *dap.RestartRequest , returnchan chan dap.Message, seq int) {
@@ -377,11 +380,122 @@ func (d *debuggerwrapper) onStackTraceRequest(request *dap.StackTraceRequest , r
 	}
 }
 
-func (d *debuggerwrapper) onScopesRequest(request *dap.ScopesRequest , returnchan chan dap.Message) {}
+func (d *debuggerwrapper) onScopesRequest(request *dap.ScopesRequest , returnchan chan dap.Message, seq int) {
+	source := d.debugger.GetDapStacktrace()[0]
+	returnchan <- &dap.ScopesResponse{
+		Response: dap.Response{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq: seq,
+				Type: "response",
+			},
+			RequestSeq:      request.GetSeq(),
+			Success:         true,
+		},
+		Body: dap.ScopesResponseBody{
+			Scopes: []dap.Scope{
+				{
+					VariablesReference: 2,
+					PresentationHint: "locals",
+					Name: "Scope",
+				},
+				{
+					Name:               "Arguments",
+					PresentationHint:   "locals",
+					VariablesReference: 1,
+					Expensive:          false,
+					Source: source.Source,
+					Line:               source.Line,
+					Column:             source.Column,
+					EndLine:            source.EndLine,
+					EndColumn:          source.EndColumn,
+				},
 
-func (d *debuggerwrapper) onVariablesRequest(request *dap.VariablesRequest , returnchan chan dap.Message) {}
+			},
+		},
+	}
+}
 
-func (d *debuggerwrapper) onSetVariableRequest(request *dap.SetVariableRequest , returnchan chan dap.Message) {}
+func (d *debuggerwrapper) onVariablesRequest(request *dap.VariablesRequest , returnchan chan dap.Message, seq int) {
+	variables := make([]dap.Variable, 0)
+	if request.Arguments.VariablesReference == 1 {
+		variables := d.debugger.GetArguments()
+		returnchan <- &dap.VariablesResponse{
+			Response: dap.Response{
+				ProtocolMessage: dap.ProtocolMessage{
+					Seq: seq,
+					Type: "response",
+				},
+				RequestSeq:      request.GetSeq(),
+				Success:         true,
+			},
+			Body:     dap.VariablesResponseBody{
+				Variables: variables,
+			},
+		}
+		return
+	}
+
+	for _, vari := range d.debugger.GetVariables() {
+		outVar := dap.Variable{
+			Name:               vari.Name,
+			Value:              vari.Value,
+			Type:               vari.Type,
+			PresentationHint:   dap.VariablePresentationHint{
+				Kind: "data",
+				Visibility: "public",
+				Attributes: []string{},
+			},
+			VariablesReference: 0, // TODO support children
+		}
+		variables = append(variables, outVar)
+	}
+	returnchan <- &dap.VariablesResponse{
+		Response: dap.Response{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq: seq,
+				Type: "response",
+			},
+			RequestSeq:      request.GetSeq(),
+			Success:         true,
+		},
+		Body:     dap.VariablesResponseBody{
+			Variables: variables,
+		},
+	}
+}
+
+func (d *debuggerwrapper) onSetVariableRequest(request *dap.SetVariableRequest , returnchan chan dap.Message, seq int) {
+	err := d.debugger.SetVariableInScope(api.EvalScope{}, request.Arguments.Name, request.Arguments.Value)
+	if err != nil {
+		returnchan <- &dap.SetVariableResponse{
+			Response: dap.Response{
+				ProtocolMessage: dap.ProtocolMessage{
+					Seq: seq,
+					Type: "response",
+				},
+				RequestSeq:      request.GetSeq(),
+				Success:         false,
+				Message: err.Error(),
+			},
+			Body:     dap.SetVariableResponseBody{},
+		}
+		return
+	}
+	returnchan <- &dap.SetVariableResponse{
+		Response: dap.Response{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq:  seq,
+				Type: "response",
+			},
+			RequestSeq: request.GetSeq(),
+			Success:    true,
+		},
+		Body: dap.SetVariableResponseBody{
+			Value: request.Arguments.Value,
+			Type: "LVal",
+		},
+	}
+}
 
 func (d *debuggerwrapper) onSetExpressionRequest(request *dap.SetExpressionRequest , returnchan chan dap.Message, seq int) {
 	returnchan <- &dap.ErrorResponse{
@@ -447,15 +561,19 @@ func (d *debuggerwrapper) onTerminateThreadsRequest(request *dap.TerminateThread
 }
 
 func (d *debuggerwrapper) onEvaluateRequest(request *dap.EvaluateRequest , returnchan chan dap.Message, seq int) {
-	returnchan <- &dap.ErrorResponse{
+	returnchan <- &dap.EvaluateResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
 				Seq:  seq,
 				Type: "response",
 			},
 			RequestSeq: request.GetSeq(),
-			Success: false,
-			Message: "Not supported",
+			Success: true,
+		},
+		Body: dap.EvaluateResponseBody{
+			Result: d.debugger.Eval(request.Arguments.Expression),
+			Type: "LVal",
+			// TODO support children
 		},
 	}
 }
@@ -505,7 +623,22 @@ func (d *debuggerwrapper) onExceptionInfoRequest(request *dap.ExceptionInfoReque
 }
 
 func (d *debuggerwrapper) onLoadedSourcesRequest(request *dap.LoadedSourcesRequest , returnchan chan dap.Message, seq int) {
+	returnchan <- &dap.LoadedSourcesResponse{
+		Response: dap.Response{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq:  seq,
+				Type: "response",
+			},
+			RequestSeq: request.GetSeq(),
+			Success: false,
+			Message: "Not supported",
+		},
+		Body:     dap.LoadedSourcesResponseBody{
+			Sources: []dap.Source{
 
+			},
+		},
+	}
 }
 
 func (d *debuggerwrapper) onDataBreakpointInfoRequest(request *dap.DataBreakpointInfoRequest , returnchan chan dap.Message, seq int) {
@@ -579,18 +712,6 @@ func (d *debuggerwrapper) onCancelRequest(request *dap.CancelRequest , returncha
 }
 
 func (d *debuggerwrapper) onBreakpointLocationsRequest(request *dap.BreakpointLocationsRequest , returnchan chan dap.Message, seq int) {
-	file := request.Arguments.Source.Name
-	breakpoints := make([]dap.BreakpointLocation, 0)
-	for _, v := range d.debugger.GetAllBreakpoints() {
-		if file == v.File {
-			breakpoints = append(breakpoints, dap.BreakpointLocation{
-				Line:      v.Line,
-				Column:    0,
-				EndLine:   0,
-				EndColumn: 0,
-			})
-		}
-	}
 	returnchan <- &dap.BreakpointLocationsResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -601,7 +722,32 @@ func (d *debuggerwrapper) onBreakpointLocationsRequest(request *dap.BreakpointLo
 			Success: true,
 		},
 		Body: dap.BreakpointLocationsResponseBody{
-			Breakpoints: breakpoints,
+			Breakpoints: []dap.BreakpointLocation{ // TODO HANDLE COLUMNS
+				{
+					Line:      request.Arguments.Line,
+					Column:    0,
+					EndLine:   0,
+					EndColumn: 0,
+				},
+			},
+		},
+	}
+}
+
+func (d *debuggerwrapper) onModulesRequest(request *dap.ModulesRequest, returnchan chan dap.Message, seq int) {
+	modules := d.debugger.GetModules()
+	returnchan <- &dap.ModulesResponse{
+		Response: dap.Response{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq:  seq,
+				Type: "response",
+			},
+			RequestSeq: request.GetSeq(),
+			Success: true,
+		},
+		Body:     dap.ModulesResponseBody{
+			Modules: modules,
+			TotalModules: len(modules),
 		},
 	}
 }

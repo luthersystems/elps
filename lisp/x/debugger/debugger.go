@@ -25,6 +25,7 @@ type Debugger struct {
 	sync.Mutex
 	enabled      bool
 	breakpoints  map[int]*api.Breakpoint
+	env          *lisp.LEnv
 	runtime      *lisp.Runtime
 	lastModified time.Time
 	stopped      bool
@@ -33,13 +34,13 @@ type Debugger struct {
 	server       DebugServer
 	currentOp    *op
 	logger       *logrus.Logger
-	pwd			 string
+	pwd          string
 }
 
 type op struct {
-	name string
+	name   string
 	source *token.Location
-	args map[string]*lisp.LVal
+	args   map[string]*lisp.LVal
 }
 
 type DebugServer interface {
@@ -49,13 +50,14 @@ type DebugServer interface {
 }
 
 type DebugMode string
+
 const DebugModeDelve = DebugMode("delve")
 const DebugModeDAP = DebugMode("dap")
 
-
-func NewDebugger(runtime *lisp.Runtime, address string, mode DebugMode) lisp.Profiler {
+func NewDebugger(env *lisp.LEnv, address string, mode DebugMode) lisp.Profiler {
 	db := &Debugger{
-		runtime:      runtime,
+		runtime:      env.Runtime,
+		env:          env,
 		enabled:      true,
 		stopped:      true,
 		run:          make(chan bool),
@@ -73,10 +75,16 @@ func NewDebugger(runtime *lisp.Runtime, address string, mode DebugMode) lisp.Pro
 		if err != nil {
 			panic(err.Error())
 		}
+		go func(end chan bool) {
+			die := <- end
+			if die {
+				panic("This is the end... the end my friend")
+			}
+		}(srv.(*dapserver.Server).EndChannel)
 	}
 	srv.Run()
 	db.server = srv
-	runtime.Profiler = db
+	db.runtime.Profiler = db
 	return db
 }
 
@@ -156,13 +164,18 @@ func (d *Debugger) Start(function *lisp.LVal) {
 	args := make(map[string]*lisp.LVal)
 	paramCounter := 0
 	fname = d.runtime.Package.FunNames[fname]
-	for _, v := range function.Cells {
-		args[d.runtime.Package.Symbols[fname].Cells[paramCounter].Str] = v
+	for k, v := range function.Cells {
+		argName := d.runtime.Package.Symbols[fname].Cells[paramCounter].String()
+		if argName == "" {
+			argName = strconv.Itoa(k)
+		}
+		d.logger.Infof("Arg %s %v is %v", argName, d.runtime.Package.Symbols[fname].Cells[paramCounter], mapValue(v))
+		args[argName] = v
 	}
 	d.currentOp = &op{
-		name:  fname ,
+		name:   fname,
 		source: source,
-		args: args,
+		args:   args,
 	}
 	if !d.stopped {
 		d.Lock()
@@ -223,6 +236,28 @@ func (d *Debugger) GetBreakpointByName(name string) (*api.Breakpoint, error) {
 	return nil, errors.New("not found")
 }
 
+func (d *Debugger) GetModules() []dap.Module {
+	modules := make([]dap.Module, 0)
+	for k := range d.runtime.Registry.Packages {
+		modules = append(modules, dap.Module{
+			Id:   k,
+			Name: k,
+		})
+	}
+	return modules
+}
+
+func (d *Debugger) Eval(text string) string {
+	d.logger.Infof("Evaluating %s", text)
+	tEnv := lisp.NewEnv(nil)
+	tEnv.Runtime.Registry = d.runtime.Registry
+	tEnv.Runtime.Package = d.runtime.Package
+	tEnv.Runtime.Reader = d.runtime.Reader
+	tEnv.Parent = d.env
+	v := tEnv.LoadString("eval", text)
+	return mapValue(v)
+}
+
 func (d *Debugger) GetDapStacktrace() []dap.StackFrame {
 	out := make([]dap.StackFrame, 0)
 	for _, frame := range d.runtime.Stack.Frames {
@@ -243,23 +278,39 @@ func (d *Debugger) GetDapStacktrace() []dap.StackFrame {
 			origin = "internal module"
 		}
 		out = append(out, dap.StackFrame{
-			Id:                          0,
-			Name:                        frame.Name,
-			Source:                      dap.Source{
+			Id:   0,
+			Name: frame.Name,
+			Source: dap.Source{
 				Name:             source.File,
 				Path:             source.Path,
 				PresentationHint: hint,
 				Origin:           origin,
 			},
-			Line:                        source.Line,
-			Column:                      0,
-			ModuleId:                    frame.Package,
-			PresentationHint:            hint,
+			Line:             source.Line,
+			Column:           source.Col,
+			ModuleId:         frame.Package,
+			PresentationHint: hint,
 		})
 	}
-	for i := len(out)/2-1; i >= 0; i-- {
-		opp := len(out)-1-i
+	for i := len(out)/2 - 1; i >= 0; i-- {
+		opp := len(out) - 1 - i
 		out[i], out[opp] = out[opp], out[i]
+	}
+	if len(out) == 0 {
+		out = append(out, dap.StackFrame{
+			Id:   0,
+			Name: "Entrypoint",
+			Source: dap.Source{
+				Name:             "Native code",
+				Path:             "",
+				PresentationHint: "deemphasize",
+				Origin:           "internal module",
+			},
+			Line:             0,
+			Column:           0,
+			ModuleId:         "internal",
+			PresentationHint: "deemphasize",
+		})
 	}
 	return out
 }
@@ -292,10 +343,10 @@ func (d *Debugger) GetStacktrace(st *rpc2.StacktraceOut) {
 				},
 				PCs: []uint64{},
 			},
-			Locals:             []api.Variable{
+			Locals: []api.Variable{
 
 			},
-			Arguments:          []api.Variable{
+			Arguments: []api.Variable{
 
 			},
 			FrameOffset:        0,
@@ -315,6 +366,7 @@ func (d *Debugger) GetAllBreakpoints() map[int]*api.Breakpoint {
 }
 
 func (d *Debugger) CreateBreakpoint(breakpoint *api.Breakpoint) *api.Breakpoint {
+	// TODO ADD COLUMNS
 	d.Lock()
 	defer d.Unlock()
 	d.lastModified = time.Now()
@@ -374,12 +426,12 @@ func (d *Debugger) GetThread() *api.Thread {
 				GoType:    0,
 				Optimized: false,
 			},
-			ID: 1,
+			ID:          1,
 			GoroutineID: 1,
 		}
 	} else {
 		loc = &api.Thread{
-			ID: 1,
+			ID:          1,
 			GoroutineID: 1,
 		}
 	}
@@ -453,6 +505,14 @@ func mapKind(in *lisp.LVal) reflect.Kind {
 	}
 }
 
+func sexprAsString(in *lisp.LVal) string {
+	out := ""
+	for _, v := range in.Cells {
+		out += mapValue(v) + " "
+	}
+	return out
+}
+
 func mapValue(in *lisp.LVal) string {
 	switch in.Type {
 	case lisp.LFloat:
@@ -463,8 +523,10 @@ func mapValue(in *lisp.LVal) string {
 		return in.Str
 	case lisp.LQSymbol:
 		return in.Str
-	case lisp.LSExpr:
+	case lisp.LSymbol:
 		return in.Str
+	case lisp.LSExpr:
+		return sexprAsString(in)
 	case lisp.LSortMap:
 		return "map"
 	case lisp.LNative:
@@ -482,7 +544,7 @@ func mapValue(in *lisp.LVal) string {
 	case lisp.LInvalid:
 		return "INVALID"
 	default:
-		return "UNKNOWN"
+		return in.Type.String()
 	}
 }
 
@@ -492,28 +554,28 @@ func extractChildren(in *lisp.LVal) []api.Variable {
 	case lisp.LSortMap:
 		for _, v := range in.Cells[:1] {
 			children = append(children, api.Variable{
-				Type: mapLispType(v.Type),
+				Type:     mapLispType(v.Type),
 				RealType: mapLispType(v.Type),
-				Value: mapValue(v),
-				Kind: mapKind(v),
+				Value:    mapValue(v),
+				Kind:     mapKind(v),
 			})
 		}
 	case lisp.LArray:
 		for _, v := range in.Cells[:1] {
 			children = append(children, api.Variable{
-				Type: mapLispType(v.Type),
+				Type:     mapLispType(v.Type),
 				RealType: mapLispType(v.Type),
-				Value: mapValue(v),
-				Kind: mapKind(v),
+				Value:    mapValue(v),
+				Kind:     mapKind(v),
 			})
 		}
 	case lisp.LBytes:
 		for _, v := range in.Bytes() {
 			children = append(children, api.Variable{
-				Type: "byte",
+				Type:     "byte",
 				RealType: "byte",
-				Value: string(v),
-				Kind: reflect.Uint8,
+				Value:    string(v),
+				Kind:     reflect.Uint8,
 			})
 		}
 	}
@@ -542,7 +604,7 @@ func (d *Debugger) GetVariables() []api.Variable {
 				Col:  0,
 			}
 		}
-		children := make([]api.Variable,0)
+		children := make([]api.Variable, 0)
 		strVal := mapValue(v)
 		if strVal == "map" || strVal == "array" {
 			children = extractChildren(v)
@@ -659,7 +721,7 @@ func (d *Debugger) Sources(filter string) ([]string, error) {
 	for k, _ := range intermediate {
 		out = append(out, k)
 	}
- 	return out, nil
+	return out, nil
 }
 
 func (d *Debugger) getSourcesForPackage(currPkg *lisp.Package) []string {
@@ -669,6 +731,21 @@ func (d *Debugger) getSourcesForPackage(currPkg *lisp.Package) []string {
 	for k, _ := range intermediate {
 		out = append(out, k)
 	}
+	return out
+}
+
+func (d *Debugger) GetArguments() []dap.Variable {
+	out := make([]dap.Variable, 0)
+	for k, v := range d.currentOp.args {
+		out = append(out, dap.Variable{
+			Name:               k,
+			Value:              mapValue(v),
+			Type:               mapLispType(v.Type),
+
+		})
+		d.logger.Infof("Sending arg %s as %s", out[len(out)-1].Name, out[len(out) - 1].Value)
+	}
+	d.logger.Infof("Args: %v", out)
 	return out
 }
 
@@ -781,7 +858,7 @@ func (d *Debugger) Command(a *api.DebuggerCommand) (*api.DebuggerState, error) {
 	case api.SwitchThread:
 		return nil, errors.New("Not implemented")
 	}
-	state, err :=  d.State(false)
+	state, err := d.State(false)
 	if err != nil && started == true {
 		state.Running = true
 	}

@@ -21,7 +21,7 @@ import (
 )
 
 type Server struct {
-	endChannel   chan bool
+	EndChannel   chan bool
 	Address      string
 	listener     net.Listener
 	connQueue    chan net.Conn
@@ -49,6 +49,7 @@ func NewServer(debugger delveserver.ServerDebugger, address string, handlers int
 		sequence:   0,
 		wg:         new(sync.WaitGroup),
 		debugger:   &debuggerwrapper{debugger: debugger},
+		EndChannel: make(chan bool),
 	}
 	server.connection.s = server
 	return server, nil
@@ -78,7 +79,7 @@ func startMonitor() {
 }
 
 func (s *Server) Stop() error {
-	s.endChannel <- true
+	s.EndChannel <- true
 	s.wg.Wait()
 	return nil
 }
@@ -160,7 +161,7 @@ func (h *connection) start(conn net.Conn) {
 		if err != nil {
 			if err == io.EOF {
 				log.Errorf("Connection closed: ", err)
-				h.s.endChannel <- true
+				h.s.EndChannel <- true
 				return
 			}
 			log.Fatal("Server error: ", err)
@@ -173,9 +174,15 @@ func (h *connection) handleRequest() error {
 	if err != nil {
 		return err
 	}
-	log.Infof("Received request\n\t%#v\n", request)
+	log.Debugf("Received request\n\t%#v\n", request)
 	h.s.wg.Add(1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Fatalf("PANIC! Quitting - %s", r)
+				h.kill <- true
+			}
+		}()
 		h.dispatchRequest(request)
 		h.s.wg.Done()
 	}()
@@ -184,7 +191,7 @@ func (h *connection) handleRequest() error {
 
 func (h *connection) sendHandler() {
 	for message := range h.queue {
-		log.Infof("Message: %s", message)
+		log.Debugf("Sending message: %s", message)
 		err := dap.WriteProtocolMessage(h.rw.Writer, message)
 		if err != nil {
 			log.Errorf("Error sending message: %s", err.Error())
@@ -237,11 +244,11 @@ func (h *connection) dispatchRequest(request dap.Message) {
 	case *dap.StackTraceRequest:
 		h.s.debugger.onStackTraceRequest(request, h.queue, h.s.incSequence())
 	case *dap.ScopesRequest:
-		h.s.debugger.onScopesRequest(request, h.queue)
+		h.s.debugger.onScopesRequest(request, h.queue, h.s.incSequence())
 	case *dap.VariablesRequest:
-		h.s.debugger.onVariablesRequest(request, h.queue)
+		h.s.debugger.onVariablesRequest(request, h.queue, h.s.incSequence())
 	case *dap.SetVariableRequest:
-		h.s.debugger.onSetVariableRequest(request, h.queue)
+		h.s.debugger.onSetVariableRequest(request, h.queue, h.s.incSequence())
 	case *dap.SetExpressionRequest:
 		h.s.debugger.onSetExpressionRequest(request, h.queue, h.s.incSequence())
 	case *dap.SourceRequest:
@@ -274,6 +281,8 @@ func (h *connection) dispatchRequest(request dap.Message) {
 		h.s.debugger.onCancelRequest(request, h.queue, h.s.incSequence())
 	case *dap.BreakpointLocationsRequest:
 		h.s.debugger.onBreakpointLocationsRequest(request, h.queue, h.s.incSequence())
+	case *dap.ModulesRequest:
+		h.s.debugger.onModulesRequest(request, h.queue, h.s.incSequence())
 	default:
 		log.Fatalf("Unable to process %#v", request)
 	}
@@ -383,7 +392,7 @@ func (h *connection) sendEventMessage(event events.EventType) {
 }
 
 func (h *connection) sendMessage(message dap.Message) {
-	log.Infof("Sending message over wire: %#v", message)
+	log.Debugf("Sending message over wire: %#v", message)
 	err := dap.WriteProtocolMessage(h.rw, message)
 	if err != nil {
 		log.Warnf("Error sending: %s", err.Error())
