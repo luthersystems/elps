@@ -25,20 +25,21 @@ import "github.com/go-delve/delve/service/api"
 
 type Debugger struct {
 	sync.Mutex
-	enabled      bool
-	breakpoints  map[int]*api.Breakpoint
-	env          *lisp.LEnv
-	runtime      *lisp.Runtime
-	lastModified time.Time
-	stopped      bool
-	step         chan bool
-	run          chan bool
-	server       DebugServer
-	currentOp    *op
-	logger       *logrus.Logger
-	pwd          string
-	callRefs     *callRef
-	isEvaling    bool
+	enabled         bool
+	breakpoints     map[int]*api.Breakpoint
+	env             *lisp.LEnv
+	runtime         *lisp.Runtime
+	lastModified    time.Time
+	stopped         bool
+	step            chan bool
+	run             chan bool
+	server          DebugServer
+	currentOp       *op
+	logger          *logrus.Logger
+	pwd             string
+	callRefs        *callRef
+	isEvaling       bool
+	reenteringStart bool
 }
 
 func (d *Debugger) Done() bool {
@@ -216,7 +217,11 @@ func (d *Debugger) Start(expr *lisp.LVal, function *lisp.LVal) {
 		source: source,
 		args:   args,
 	}
-	d.incrementCallRef(expr, function)
+	if !d.reenteringStart {
+		d.incrementCallRef(expr, function)
+	} else {
+		d.reenteringStart = false
+	}
 	// don't want to pause on code we can't see...
 	if source.File == "<native code>" {
 		runtime.Gosched()
@@ -233,11 +238,12 @@ func (d *Debugger) Start(expr *lisp.LVal, function *lisp.LVal) {
 					d.logger.Infof("BREAKPOINT")
 					d.stopped = true
 					d.Unlock()
-					d.Start(expr, function)
 					d.server.Breakpoint(v)
 					d.server.Event(events.EventTypeStoppedBreakpoint)
 					// or it won't yield...
 					runtime.Gosched()
+					d.reenteringStart = true
+					d.Start(expr, function)
 					return
 				}
 			}
