@@ -45,6 +45,10 @@ func TestFP(t *testing.T) {
 			{"(apply (curry-function zip 'list) (zip 'list '(1 2 3) '('a 'b 'c)))", "'('(1 2 3) '('a 'b 'c))", ""},
 			{"(zip 'vector '(1 2 3) '('a 'b 'c))", "(vector (vector 1 'a) (vector 2 'b) (vector 3 'c))", ""},
 			{"(apply (curry-function zip 'vector) (map 'list identity (zip 'vector '(1 2 3) '('a 'b 'c))))", "(vector (vector 1 2 3) (vector 'a 'b 'c))", ""},
+			{"(zip 'list '(1) '())", "'()", ""},
+			{"(zip 'list (vector 1) '())", "'()", ""},
+			{"(zip 'list '() '(1))", "'()", ""},
+			{"(zip 'vector '() '() '(1))", "(vector)", ""},
 		}},
 		{"simple composition", elpstest.TestSequence{
 			{"(defun f (y) (+ y 1))", "()", ""},
