@@ -1354,13 +1354,13 @@ func builtinZip(env *LEnv, args *LVal) *LVal {
 	if typespec.Type != LSymbol {
 		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
 	}
-	n := 0
+	n := lists[0].Len()
 	for _, list := range lists {
 		if !isSeq(list) {
 			return env.Errorf("argument is not a proper list: %v", list.Type)
 		}
 		m := list.Len()
-		if n == 0 || m < n {
+		if m < n {
 			n = m
 		}
 	}
