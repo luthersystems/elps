@@ -270,6 +270,9 @@ string"""`, `"\"\"a raw\nstring"`, ""},
 		{"make-sequence", elpstest.TestSequence{
 			{"(make-sequence 0 5)", "'(0 1 2 3 4)", ""},
 			{"(make-sequence 0 5 2)", "'(0 2 4)", ""},
+			{"(make-sequence 0 2 0.5)", "'(0 0.5 1 1.5)", ""},
+			{"(make-sequence 0 5 0)", "test:1: lisp:make-sequence: third argument is not positive", ""},
+			{"(make-sequence 10 5 2)", "'()", ""},
 		}},
 		{"filtering", elpstest.TestSequence{
 			{"(select 'list #^(< % 3) '())", "'()", ""},
