@@ -1420,8 +1420,8 @@ func builtinMakeSequence(env *LEnv, args *LVal) *LVal {
 		if !step.IsNumeric() {
 			return env.Errorf("third argument is not numeric: %v", step.Type)
 		}
-		if lessNumeric(step, Float(0)) {
-			return env.Errorf("third argument is negative")
+		if !lessNumeric(Float(0), step) {
+			return env.Errorf("third argument is not positive")
 		}
 	}
 	list := QExpr(nil)
