@@ -2,45 +2,83 @@
 <html>
 	<head>
 		<meta charset="utf-8">
+
+		<script src="//cdnjs.cloudflare.com/ajax/libs/codemirror/5.37.0/codemirror.js"></script>
+		<script src="//cdnjs.cloudflare.com/ajax/libs/codemirror/5.37.0/mode/scheme/scheme.js"></script>
+		<script src="//cdnjs.cloudflare.com/ajax/libs/codemirror/5.37.0/addon/edit/matchbrackets.js"></script>
+		<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/codemirror/5.37.0/codemirror.css" />
+		<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/codemirror/5.37.0/theme/neat.css" />
+
 		<script src="wasm_exec.js"></script>
 		<script>
 			const go = new Go();
 
-			function setLispOutput(result, err) {
+			function loadEditor() {
+				var timer = null;
+				var editor = null;
+
+				function editHook(cm, arg) {
+					if (timer) {
+						clearTimeout(timer);
+					}
+					timer = setTimeout(loadTextarea, 400);
+				}
+
+				function initHook(cm) {
+					cm.on("changes", editHook);
+					cm.on("update", editHook);
+				}
+
+				window.CodeMirror.defineInitHook(initHook);
+
+				editor = window.CodeMirror.fromTextArea(document.getElementById("lisp-source"), {
+					"lineNumbers": true,
+					"mode": "scheme",
+					"matchBrackets": true,
+					"indentUnit": 2,
+					"tabSize": 2,
+					"theme": "neat"});
+
+				function setLispOutput(result, err) {
 					var output = document.getElementById("lisp-output");
 					output.innerHTML = result;
 					var error = document.getElementById("lisp-error");
 					error.innerHTML = err;
-			};
+				}
 
-			function loadTextarea() {
-				var textarea = document.getElementById("lisp-source");
-				var value = textarea.value;
-				var result = new Promise(function(resolve, reject) {
-					var context = {
-						resolve: resolve,
-						reject: reject
-					};
-					LoadString(value, context);
-				});
-				result.then(function(value) {
-					setLispOutput(value, "")
-				}).catch(function(err) {
-					setLispOutput("", err)
-				});
-			};
+				function loadTextarea() {
+					var value = editor ? editor.getValue() : "";
+					var result = new Promise(function(resolve, reject) {
+						var context = {
+							resolve: resolve,
+							reject: reject
+						};
+						LoadString(value, context);
+					});
+					result.then(function(value) {
+						setLispOutput(value, "")
+					}).catch(function(err) {
+						setLispOutput("", err)
+					});
+				}
+			}
 
-			WebAssembly.instantiateStreaming(fetch("app.wasm"), go.importObject).then((result) => {
-					go.run(result.instance);
-				});
+			// Safari does not have support the function
+			// WebAssembly.instantiateStreaming so this hack performs
+			// inefficient, non-streaming compilation and instatiation.
+			var appWasm = fetch("app.wasm")
+				.then((source) => { return source.arrayBuffer(); })
+				.then((buffer) => { return WebAssembly.instantiate(buffer, go.importObject); })
+				.then((result) => { go.run(result.instance); loadEditor(); });
+
 		</script>
+
 	</head>
 	<body>
 		<div class="input">
 			<div class="source">
-				<textarea id="lisp-source" style="min-width: 500px; min-height: 100px;"></textarea>
+				<textarea id="lisp-source" style="min-width: 500px; min-height: 100px;">(+ 2 1)</textarea>
 			</div>
-			<button onclick="javascript:loadTextarea();">(load-string ...)</button>
 		</div>
 		<div class="output">
 			<pre id="lisp-output">
