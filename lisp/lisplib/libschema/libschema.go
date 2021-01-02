@@ -57,6 +57,12 @@ var builtins = []*libutil.Builtin{
 	libutil.Function("positive", lisp.Formals("&rest", "allowed-values"), builtinPositive),
 	libutil.Function("negative", lisp.Formals("&rest", "allowed-values"), builtinNegative),
 	libutil.Function("validate", lisp.Formals("type", "input"), builtinValidate),
+	libutil.Function("len", lisp.Formals("&rest", "allowed-values"), builtinLen),
+	libutil.Function("lengt", lisp.Formals("&rest", "allowed-values"), builtinLenGreaterThan),
+	libutil.Function("lengte", lisp.Formals("&rest", "allowed-values"), builtinLenGreaterThanOrEqual),
+	libutil.Function("lenlt", lisp.Formals("&rest", "allowed-values"), builtinLenLessThan),
+	libutil.Function("lenlte", lisp.Formals("&rest", "allowed-values"), builtinLenLessThanOrEqual),
+	libutil.Function("of", lisp.Formals("&rest", "allowed-values"), builtinArrayOf),
 }
 
 var symbols = []string{
@@ -93,25 +99,90 @@ func builtinDefType(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return lisp.ErrorConditionf(BadArgs, "Symbol %s is already defined", args.Cells[0])
 	}
 	lType, _ := lisp.GoString(args.Cells[1])
-	constraints := []*lisp.LVal{}
+	constraints := make([]*lisp.LVal, 0)
 	if len(args.Cells) > 2 {
 		constraints = args.Cells[2:]
 	}
-	var res *lisp.LVal
-	switch lType {
-	case String:
-		res = env.PutGlobal(lisp.Symbol(args.Cells[0].Str), builtinCheckString(name, constraints))
-	case Int:
-		res = env.PutGlobal(lisp.Symbol(args.Cells[0].Str), builtinCheckInt(name, constraints))
-	case Float:
-		res = env.PutGlobal(lisp.Symbol(args.Cells[0].Str), builtinCheckFloat(name, constraints))
-	case Number:
-		res = env.PutGlobal(lisp.Symbol(args.Cells[0].Str), builtinCheckNumber(name, constraints))
-	}
+	res := getHandler(lType, name, constraints)
 	if res != nil && res.Type == lisp.LError {
 		return res
 	}
+	if res != nil {
+		res = env.PutGlobal(lisp.Symbol(args.Cells[0].Str), res)
+		if res != nil && res.Type == lisp.LError {
+			return res
+		}
+	}
 	return lisp.Nil()
+}
+
+func getHandler(lType string, name string, constraints []*lisp.LVal) *lisp.LVal {
+	var res *lisp.LVal
+	switch lType {
+	case String:
+		res = builtinCheckString(name, constraints)
+	case Int:
+		res = builtinCheckInt(name, constraints)
+	case Float:
+		res = builtinCheckFloat(name, constraints)
+	case Number:
+		res = builtinCheckNumber(name, constraints)
+	case Array:
+		res = builtinCheckArray(name, constraints)
+	case SortedMap:
+		res = builtinCheckMap(name, constraints)
+	case Fun:
+		res = builtinCheckFun(name, constraints)
+	default:
+		// TODO handle nested types using env lookup
+		res = lisp.ErrorConditionf(BadArgs, "Bad input type")
+	}
+	return res
+}
+
+func builtinCheckFun(name string, constraints []*lisp.LVal) *lisp.LVal {
+	// NB these aren't normal functions - they aren't looking for an array of args
+	return lisp.Fun("allowed-values", lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
+		if input.Type != lisp.LFun {
+			return lisp.ErrorConditionf(WrongType, "Input was not a function for type %s", name)
+		}
+		for _, constraint := range constraints {
+			if v := constraint.FunData().Builtin(env, input); v.Type == lisp.LError {
+				return v
+			}
+		}
+		return lisp.Nil()
+	})
+}
+
+func builtinCheckMap(name string, constraints []*lisp.LVal) *lisp.LVal {
+	// NB these aren't normal functions - they aren't looking for an array of args
+	return lisp.Fun("allowed-values", lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
+		if input.Type != lisp.LSortMap {
+			return lisp.ErrorConditionf(WrongType, "Input was not a sorted map for type %s", name)
+		}
+		for _, constraint := range constraints {
+			if v := constraint.FunData().Builtin(env, input); v.Type == lisp.LError {
+				return v
+			}
+		}
+		return lisp.Nil()
+	})
+}
+
+func builtinCheckArray(name string, constraints []*lisp.LVal) *lisp.LVal {
+	// NB these aren't normal functions - they aren't looking for an array of args
+	return lisp.Fun("allowed-values", lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
+		if input.Type != lisp.LArray {
+			return lisp.ErrorConditionf(WrongType, "Input was not an array for type %s", name)
+		}
+		for _, constraint := range constraints {
+			if v := constraint.FunData().Builtin(env, input); v.Type == lisp.LError {
+				return v
+			}
+		}
+		return lisp.Nil()
+	})
 }
 
 func builtinCheckString(name string, constraints []*lisp.LVal) *lisp.LVal {
@@ -129,7 +200,7 @@ func builtinCheckString(name string, constraints []*lisp.LVal) *lisp.LVal {
 	})
 }
 
-func builtinAllowedValues(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+func builtinAllowedValues(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun("allowed-values", lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		for _, v := range args.Cells {
@@ -141,7 +212,132 @@ func builtinAllowedValues(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	})
 }
 
-func builtinGreaterThan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+func builtinLen(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	comparison, ok := lisp.GoInt(args.Cells[0])
+	if !ok {
+		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
+	}
+	// NB these aren't normal functions - they aren't looking for an array of args
+	return lisp.Fun("allowed-values", lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
+		switch input.Type {
+		case lisp.LString:
+			if len(input.Str) != comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		case lisp.LBytes:
+			if len(input.Bytes()) != comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		case lisp.LArray:
+			if input.Len() != comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		}
+		return lisp.Nil()
+	})
+}
+
+func builtinLenGreaterThan(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	comparison, ok := lisp.GoInt(args.Cells[0])
+	if !ok {
+		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
+	}
+	// NB these aren't normal functions - they aren't looking for an array of args
+	return lisp.Fun("allowed-values", lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
+		switch input.Type {
+		case lisp.LString:
+			if len(input.Str) <= comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		case lisp.LBytes:
+			if len(input.Bytes()) <= comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		case lisp.LArray:
+			if input.Len() <= comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		}
+		return lisp.Nil()
+	})
+}
+
+func builtinLenGreaterThanOrEqual(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	comparison, ok := lisp.GoInt(args.Cells[0])
+	if !ok {
+		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
+	}
+	// NB these aren't normal functions - they aren't looking for an array of args
+	return lisp.Fun("allowed-values", lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
+		switch input.Type {
+		case lisp.LString:
+			if len(input.Str) < comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		case lisp.LBytes:
+			if len(input.Bytes()) < comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		case lisp.LArray:
+			if input.Len() < comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		}
+		return lisp.Nil()
+	})
+}
+
+func builtinLenLessThan(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	comparison, ok := lisp.GoInt(args.Cells[0])
+	if !ok {
+		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
+	}
+	// NB these aren't normal functions - they aren't looking for an array of args
+	return lisp.Fun("allowed-values", lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
+		switch input.Type {
+		case lisp.LString:
+			if len(input.Str) >= comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		case lisp.LBytes:
+			if len(input.Bytes()) >= comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		case lisp.LArray:
+			if input.Len() >= comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		}
+		return lisp.Nil()
+	})
+}
+
+func builtinLenLessThanOrEqual(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	comparison, ok := lisp.GoInt(args.Cells[0])
+	if !ok {
+		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
+	}
+	// NB these aren't normal functions - they aren't looking for an array of args
+	return lisp.Fun("allowed-values", lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
+		switch input.Type {
+		case lisp.LString:
+			if len(input.Str) > comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		case lisp.LBytes:
+			if len(input.Bytes()) > comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		case lisp.LArray:
+			if input.Len() > comparison {
+				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
+			}
+		}
+		return lisp.Nil()
+	})
+}
+
+func builtinGreaterThan(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	comparison, ok := lisp.GoFloat64(args.Cells[0])
 	if !ok {
 		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
@@ -159,7 +355,7 @@ func builtinGreaterThan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	})
 }
 
-func builtinGreaterThanOrEqual(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+func builtinGreaterThanOrEqual(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	comparison, ok := lisp.GoFloat64(args.Cells[0])
 	if !ok {
 		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
@@ -177,7 +373,7 @@ func builtinGreaterThanOrEqual(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	})
 }
 
-func builtinLessThan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+func builtinLessThan(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	comparison, ok := lisp.GoFloat64(args.Cells[0])
 	if !ok {
 		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
@@ -195,7 +391,7 @@ func builtinLessThan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	})
 }
 
-func builtinLessThanOrEqual(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+func builtinLessThanOrEqual(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	comparison, ok := lisp.GoFloat64(args.Cells[0])
 	if !ok {
 		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
@@ -213,7 +409,39 @@ func builtinLessThanOrEqual(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	})
 }
 
-func builtinPositive(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+func builtinArrayOf(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	compares := make([]*lisp.LVal, 0)
+	for _, v := range args.Cells {
+		compares = append(compares, getHandler(v.Str, "x", []*lisp.LVal{}))
+	}
+	// NB these aren't normal functions - they aren't looking for an array of args
+	return lisp.Fun("allowed-values", lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
+		if input.Type != lisp.LArray {
+			return lisp.ErrorConditionf(WrongType, "Invalid input for 'of' - need an array")
+		}
+		for k, v := range input.Cells[1].Cells {
+			matched := false
+			for _, compare := range compares {
+				val := builtinValidate(env, &lisp.LVal{
+					Cells: []*lisp.LVal{
+						compare,
+						v,
+					},
+				})
+				if val.IsNil() {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return lisp.ErrorConditionf(WrongType, "Item %d was of wrong type", k)
+			}
+		}
+		return lisp.Nil()
+	})
+}
+
+func builtinPositive(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun("allowed-values", lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		compareTo, ok := lisp.GoFloat64(input)
@@ -227,7 +455,7 @@ func builtinPositive(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	})
 }
 
-func builtinNegative(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+func builtinNegative(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun("allowed-values", lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		compareTo, ok := lisp.GoFloat64(input)
