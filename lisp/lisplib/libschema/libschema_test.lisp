@@ -98,6 +98,8 @@
     (s:deftype "my4to6thingarray" s:array (s:lengte 4) (s:lenlt 7))
     (s:deftype "mystringarray" s:array (s:of s:string))
     (s:deftype "mystringorfunctionarray" s:array (s:of s:string s:fun))
+    (s:deftype "myint" s:int (s:gt 11))
+    (s:deftype "myfancyarray" s:array (s:of myint))
     (assert-nil (s:validate my4thingarray (vector 1 2 3 4)))
     (handler-bind (('failed-constraint (lambda (&rest e) "ERROR")))
         (assert-equal (s:validate my4thingarray (vector 1 2 3 4 5)) "ERROR"))
@@ -110,6 +112,9 @@
     (assert-nil (s:validate mystringorfunctionarray (vector "a" "b" "c" assert-nil)))
     (handler-bind (('wrong-type (lambda (&rest e) "ERROR")))
         (assert-equal (s:validate mystringorfunctionarray (vector 1 2 3 4 5 6 7)) "ERROR"))
+    (assert-nil (s:validate myfancyarray (vector 13 87 2222)))
+    (handler-bind (('failed-constraint (lambda (&rest e) "ERROR")))
+        (assert-equal (s:validate myfancyarray (vector 13 87 9)) "ERROR"))
 )
 
 (test "deftype-map"
