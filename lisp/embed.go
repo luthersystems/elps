@@ -147,8 +147,8 @@ func GoMap(v *LVal) (map[interface{}]interface{}, bool) {
 	for k, vlisp := range lmap {
 		vgo := GoValue(vlisp)
 		switch k.(type) {
-		case mapSymbol:
-			m[string(k.(mapSymbol))] = vgo
+		case MapSymbol:
+			m[string(k.(MapSymbol))] = vgo
 		default:
 			m[k] = vgo
 		}
