@@ -189,3 +189,10 @@
     (handler-bind (('failed-constraint (lambda (&rest e) "ERROR")))
         (assert-equal (s:validate myconditionalmap (sorted-map 'name "Reuben" 'id 5 'writer false)) "ERROR"))
 )
+
+(test "not"
+    (s:deftype "not-test" s:string (s:not (s:in "a" "b" "c")))
+    (assert-nil (s:validate not-test "x"))
+    (handler-bind (('failed-constraint (lambda (&rest e) "ERROR")))
+        (assert-equal (s:validate not-test "a") "ERROR"))
+)

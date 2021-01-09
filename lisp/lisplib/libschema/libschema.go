@@ -95,6 +95,7 @@ var builtins = []*libutil.Builtin{
 	libutil.Function("is-false", lisp.Formals(), builtinIsFalse),
 	libutil.Function("is-truthy", lisp.Formals(), builtinIsTruthy),
 	libutil.Function("is-falsy", lisp.Formals(), builtinIsFalsy),
+	libutil.Function("not", lisp.Formals("constraint"), builtinIsNot),
 }
 
 // This is the `s:validate` keyword. It checks its input matches the type specified
@@ -781,5 +782,21 @@ func builtinIsTruthy(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 		}
 		return lisp.ErrorConditionf(FailedConstraint, "Value %v is not truthy", input)
 
+	})
+}
+
+// Reverses a constraint
+func builtinIsNot(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	constraint := args.Cells[0]
+	if constraint.Type != lisp.LFun {
+		return lisp.ErrorConditionf(BadArgs, "Value is not a constraint")
+	}
+	// NB these aren't normal functions - they aren't looking for an array of args
+	return lisp.Fun(GenSymbol(), lisp.Formals(), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
+		val := constraint.FunData().Builtin(env, input)
+		if val.Type == lisp.LError {
+			return lisp.Nil()
+		}
+		return lisp.ErrorConditionf(FailedConstraint, "Inner constraint did not return an error")
 	})
 }
