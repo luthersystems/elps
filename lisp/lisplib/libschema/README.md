@@ -200,7 +200,7 @@ Requires the value to be one of those specified as arguments to the function.
   empty etc.
 
 
-* `(s:is-false)`
+* `(s:is-falsy)`
   Require the value to be equivalent to `false`. Literally `(s:not (s:is-truthy))`
   
 ### Gotchas
