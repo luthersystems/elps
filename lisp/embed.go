@@ -100,7 +100,7 @@ func SymbolName(v *LVal) (string, bool) {
 // with the value true.  If v does not represent a number GoInt returns a
 // false second argument
 func GoInt(v *LVal) (int, bool) {
-	if v.IsNumeric() {
+	if !v.IsNumeric() {
 		return 0, false
 	}
 	if v.Type == LFloat {
@@ -113,7 +113,7 @@ func GoInt(v *LVal) (int, bool) {
 // returns it with the value true.  If v does not represent a number GoFloat64
 // returns a false second argument
 func GoFloat64(v *LVal) (float64, bool) {
-	if v.IsNumeric() {
+	if !v.IsNumeric() {
 		return 0, false
 	}
 	if v.Type == LFloat {
@@ -147,8 +147,8 @@ func GoMap(v *LVal) (map[interface{}]interface{}, bool) {
 	for k, vlisp := range lmap {
 		vgo := GoValue(vlisp)
 		switch k.(type) {
-		case mapSymbol:
-			m[string(k.(mapSymbol))] = vgo
+		case MapSymbol:
+			m[string(k.(MapSymbol))] = vgo
 		default:
 			m[k] = vgo
 		}

@@ -11,6 +11,7 @@ import (
 	"github.com/luthersystems/elps/lisp/lisplib/libjson"
 	"github.com/luthersystems/elps/lisp/lisplib/libmath"
 	"github.com/luthersystems/elps/lisp/lisplib/libregexp"
+	"github.com/luthersystems/elps/lisp/lisplib/libschema"
 	"github.com/luthersystems/elps/lisp/lisplib/libstring"
 	"github.com/luthersystems/elps/lisp/lisplib/libtesting"
 	"github.com/luthersystems/elps/lisp/lisplib/libtime"
@@ -48,6 +49,10 @@ func LoadLibrary(env *lisp.LEnv) *lisp.LVal {
 		return e
 	}
 	e = libtesting.LoadPackage(env)
+	if !e.IsNil() {
+		return e
+	}
+	e = libschema.LoadPackage(env)
 	if !e.IsNil() {
 		return e
 	}

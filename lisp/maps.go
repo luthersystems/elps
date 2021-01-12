@@ -47,11 +47,11 @@ func mapHasKey(m *LVal, key *LVal) *LVal {
 		if v != nil {
 			return Bool(true)
 		}
-		v = mmap[mapSymbol(k)]
+		v = mmap[MapSymbol(k)]
 		if v != nil {
 			return Bool(true)
 		}
-	case mapSymbol:
+	case MapSymbol:
 		v := mmap[k]
 		if v != nil {
 			return Bool(true)
@@ -76,11 +76,11 @@ func mapGet(m, key, def *LVal) *LVal {
 		if v != nil {
 			return v
 		}
-		v = mmap[mapSymbol(k)]
+		v = mmap[MapSymbol(k)]
 		if v != nil {
 			return v
 		}
-	case mapSymbol:
+	case MapSymbol:
 		v := mmap[k]
 		if v != nil {
 			return v
@@ -104,15 +104,15 @@ func mapSet(m *LVal, key *LVal, val *LVal, coerce bool) *LVal {
 	mmap := m.Map()
 	switch _k := k.(type) {
 	case string:
-		_, ok := mmap[mapSymbol(_k)]
+		_, ok := mmap[MapSymbol(_k)]
 		if ok {
 			if coerce {
-				k = mapSymbol(_k)
+				k = MapSymbol(_k)
 			} else {
 				return Errorf("map contains both symbol and string key: %s", k)
 			}
 		}
-	case mapSymbol:
+	case MapSymbol:
 		_, ok := mmap[string(_k)]
 		if ok {
 			if coerce {
@@ -134,15 +134,15 @@ func mapDel(m *LVal, key *LVal, coerce bool) *LVal {
 	mmap := m.Map()
 	switch _k := k.(type) {
 	case string:
-		_, ok := mmap[mapSymbol(_k)]
+		_, ok := mmap[MapSymbol(_k)]
 		if ok {
 			if coerce {
-				k = mapSymbol(_k)
+				k = MapSymbol(_k)
 			} else {
 				return Errorf("map contains both symbol and string key: %s", k)
 			}
 		}
-	case mapSymbol:
+	case MapSymbol:
 		_, ok := mmap[string(_k)]
 		if ok {
 			if coerce {
@@ -169,7 +169,7 @@ func toSortedMapKey(v *LVal) interface{} {
 	case LString:
 		return v.Str
 	case LSymbol:
-		return mapSymbol(v.Str)
+		return MapSymbol(v.Str)
 	}
 	return nil
 }
@@ -182,13 +182,13 @@ func sortedMapKey(k interface{}) *LVal {
 	//	return Float(v)
 	case string:
 		return String(v)
-	case mapSymbol:
+	case MapSymbol:
 		return Quote(Symbol(string(v)))
 	}
 	return Error(fmt.Errorf("invalid key type: %T", k))
 }
 
-type mapSymbol string
+type MapSymbol string
 
 type mapKeys []*LVal
 

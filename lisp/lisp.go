@@ -263,7 +263,7 @@ func SplitSymbol(sym *LVal) *LVal {
 	}
 }
 
-// Symbol returns an LVal resprenting the symbol s
+// Symbol returns an LVal representing the symbol s
 func Symbol(s string) *LVal {
 	return &LVal{
 		Source: nativeSource(),
@@ -272,7 +272,7 @@ func Symbol(s string) *LVal {
 	}
 }
 
-// QSymbol returns an LVal resprenting the quoted symbol
+// QSymbol returns an LVal representing the quoted symbol
 func QSymbol(s string) *LVal {
 	return &LVal{
 		Source: nativeSource(),
