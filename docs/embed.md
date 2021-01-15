@@ -60,10 +60,11 @@ packages, bound under a given symbol.
 
 ## Testing Functions
 
-Use go package bitbucket.org/luthersystems/elps/elpstest and the lisp package
+Use go package github.com/luthersystems/elps/elpstest and the lisp package
 `testing` to write tests for custom packages.  See the standard library's tests
 for examples of how to use these packages together.
 
+`elpstest` piggybacks on the Go `testing` standard library.
 TODO -- example
 
 ## Working with lisp types
@@ -116,7 +117,17 @@ if lisp.True(ok) {  // equivalent to !ok.IsNil()
 
 ### Maps
 
-TODO
+Use `l := lisp.SortedMap()` to construct an empty sorted map LVal. Numeric
+keys are not supported. Symbol keys are coerced to string to avoid programming
+errors causing symbol and string keys with equal string values from existing in
+the same map.
+
+Use `l.MapSet(k,v)` to set keys on the map, which returns the mutated map.
+`v` must be an LVal.
+
+Use `l.MapGet(k)` to return the LVal corresponding to `k`.
+
+Use `l.MapKeys()` to return the LVal list of keys in hte map.
 
 ### Conversion functions
 

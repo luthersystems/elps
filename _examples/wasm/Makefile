@@ -41,7 +41,10 @@ serve: ${WASM_OUT}
 	$(MAKE) -C server
 	./server/server
 
-${WASM_OUT}: ${APP_DEPS} ${PROJECT_DEPS}
+wasm_exec.js: .go-version
+	cp "$(go env GOROOT)/misc/wasm/wasm_exec.js" .
+
+${WASM_OUT}: ${APP_DEPS} ${PROJECT_DEPS} ${WASM_RUNTIME}
 	${WASM_ENV} go build -o $@ ./app
 
 ${WASM_RUNTIME}:
