@@ -36,11 +36,11 @@ At the simplest level this can be referencing an inbuilt type, for example
 This type will require that the supplied value is a string. Not very useful in itself as this is the same as validating against 
 `s:string`. But let's say we want our string to have a length of at least eight characters. We can do
 ```lisp
-(s:deftype "mytype" s:string s:lengt(8)
+(s:deftype "mytype" s:string (s:lengt 8))
 ```
 Or, more usefully, if we want to define an enum, we can specify a list of permitted values like this
 ```lisp
-(s:deftype "title" s:string s:in("Mr","Mrs","Miss","Ms","Mx","Dr","Prof"))
+(s:deftype "title" s:string (s:in ("Mr","Mrs","Miss","Ms","Mx","Dr","Prof")))
 ```
 
 Where this really comes into its own is when we start defining more complex types. We can specify the keys, and their 
@@ -82,7 +82,7 @@ We can also perform conditional validation. Let's say we wanted to check if some
 adult (a silly example I know, but trying to keep it simple here). We can use the `s:when` predicate to return an error 
 if someone under 18 is marked as an adult like this:
 ```lisp
-(s:deftype "age-type" s:int s:positive)
+(s:deftype "age-type" s:int (s:positive))
 (s:deftype "mymap" s:sorted-map 
     (s:no-more-keys 
         (s:has-key "first-name" s:string) 
@@ -200,7 +200,7 @@ Requires the value to be one of those specified as arguments to the function.
   empty etc.
 
 
-* `(s:is-false)`
+* `(s:is-falsy)`
   Require the value to be equivalent to `false`. Literally `(s:not (s:is-truthy))`
   
 ### Gotchas
