@@ -35,7 +35,7 @@
                                     :string-numbers false))
   )
 
-(test "mashal"
+(test "marshal"
   (assert-string= """null"""
                   (json:dump-string ()))
   (assert-string= """true"""
