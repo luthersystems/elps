@@ -9,11 +9,26 @@
           (assert-equal (s:validate mystring y) "ERROR"))
       (s:deftype "myconditionalstring" s:string (s:in "x" "y" "z"))
       (handler-bind (('wrong-type (lambda (&rest e) "ERROR")))
-                (assert-equal (s:validate myconditionalstring y) "ERROR"))
+            (assert-equal (s:validate myconditionalstring y) "ERROR"))
       (handler-bind (('failed-constraint (lambda (&rest e) "ERROR")))
-                (assert-equal (s:validate myconditionalstring x) "ERROR"))
+            (assert-equal (s:validate myconditionalstring x) "ERROR"))
       (assert-nil (s:validate mystring "x"))
       (assert-nil (s:validate mystring "y"))
+)
+
+(test "deftype-regexp"
+      (s:deftype "mystring" s:string (s:regexp "^Hello"))
+      (assert-nil (s:validate mystring "Hello mum"))
+      (handler-bind (('failed-constraint (lambda (&rest e) "ERROR")))
+          (assert-equal (s:validate mystring "goodbye mum") "ERROR"))
+      (handler-bind (('failed-constraint (lambda (&rest e) "ERROR")))
+          (assert-equal (s:validate mystring "well hello there") "ERROR"))
+      (s:deftype "isodate" s:string (s:regexp "^([1-9][0-9]{3})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])?$"))
+      (assert-nil (s:validate isodate "2020-04-31"))
+      (handler-bind (('failed-constraint (lambda (&rest e) "ERROR")))
+          (assert-equal (s:validate isodate "3/4/21") "ERROR"))
+      (handler-bind (('bad-arguments (lambda (&rest e) "ERROR")))
+        (assert-equal (s:deftype "x" s:string (s:regexp "*")) "ERROR"))
 )
 
 (test "deftype-int"
