@@ -121,6 +121,10 @@ The following inbuilt types are available within the library:
 Requires the value to be one of those specified as arguments to the function.
 
 
+* `(s:regexp pattern)`
+Requires the value to match the supplied pattern. Any regular expression that can be parsed by go is acceptable - see https://github.com/google/re2/wiki/Syntax for syntax.
+  
+
 * `(s:len length)` 
   Requires the value to have the specified length.
   

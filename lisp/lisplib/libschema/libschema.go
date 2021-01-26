@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
+	"regexp"
 )
 
 // DeafultPackageName is the package name used by LoadPackage.
@@ -96,6 +97,7 @@ var builtins = []*libutil.Builtin{
 	libutil.Function("is-truthy", lisp.Formals(), builtinIsTruthy),
 	libutil.Function("is-falsy", lisp.Formals(), builtinIsFalsy),
 	libutil.Function("not", lisp.Formals("constraint"), builtinIsNot),
+	libutil.Function("regexp", lisp.Formals("pattern"), builtinRegexp),
 }
 
 // This is the `s:validate` keyword. It checks its input matches the type specified
@@ -265,6 +267,25 @@ func builtinAllowedValues(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			}
 		}
 		return lisp.ErrorConditionf(FailedConstraint, "Supplied value was not in the list of allowed values")
+	})
+}
+
+func builtinRegexp(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	pattern, ok := lisp.GoString(args.Cells[0])
+	if !ok {
+		return lisp.ErrorConditionf(BadArgs, "You must specify a pattern")
+	}
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return lisp.ErrorConditionf(BadArgs, "You must specify a valid pattern: %s", err.Error())
+	}
+	// NB these aren't normal functions - they aren't looking for an array of args
+	return lisp.Fun(GenSymbol(), lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
+		match, readable := lisp.GoString(input)
+		if readable && compiled.MatchString(match) {
+			return lisp.Nil()
+		}
+		return lisp.ErrorConditionf(FailedConstraint, "Supplied value did not match the pattern %s", pattern)
 	})
 }
 
