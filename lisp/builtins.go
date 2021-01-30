@@ -2289,10 +2289,10 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 			p = strings.Join(strings.Fields(p), "")
 			// TODO:  Allow non-empty formatting directives
 			if p != "{}" {
-				return env.Errorf("formatting direcives must be empty")
+				return env.Errorf("formatting directives must be empty")
 			}
 			if anonIndex >= len(fvals) {
-				return env.Errorf("too many formatting direcives for supplied values")
+				return env.Errorf("too many formatting directives for supplied values")
 			}
 			val := fvals[anonIndex]
 			if val.Type == LString && !val.Quoted {
@@ -2321,7 +2321,7 @@ func parseFormatString(f string) ([]string, error) {
 		}
 		if tok.typ == formatClose {
 			if len(tokens) == 0 || tokens[0].typ != formatClose {
-				return nil, fmt.Errorf("unexpected closing brace '}' outside of formatting direcive")
+				return nil, fmt.Errorf("unexpected closing brace '}' outside of formatting directive")
 			}
 			s = append(s, "}")
 			tokens = tokens[2:]
