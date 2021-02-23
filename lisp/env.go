@@ -1001,9 +1001,7 @@ func (env *LEnv) evalSExprCells(s *LVal) *LVal {
 	}
 	// Evaluate arguments before invoking f.
 	for _, expr := range cells {
-		newCells = append(newCells, env.Eval(expr))
-	}
-	for _, v := range newCells {
+		v := env.Eval(expr)
 		if v.Type == LError {
 			return v
 		}
@@ -1011,6 +1009,8 @@ func (env *LEnv) evalSExprCells(s *LVal) *LVal {
 			env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
 			log.Panicf("tail-recursion optimization attempted during argument evaluation: %v", v.Cells)
 		}
+
+		newCells = append(newCells, v)
 	}
 	return SExpr(newCells)
 }
@@ -1081,10 +1081,11 @@ func (env *LEnv) call(fun *LVal, args *LVal) *LVal {
 //
 // The bind function does not modify fun or args.
 func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
-	funenv := fun.Env().Copy()
-	args = QExpr(args.Cells)             // args.Cells will be modified (cell values will not)
-	formals := QExpr(fun.Cells[0].Cells) // formals.Cells will be modified
+	argsp := argParser{args: args.Cells}
+	formals := argParser{args: fun.Cells[0].Cells}
 	narg := len(args.Cells)
+
+	funenv := fun.Env().Copy()
 	putArg := func(k, v *LVal) {
 		funenv.Put(k, v)
 	}
@@ -1097,6 +1098,11 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 		// the cells for builtin functions.  A side effect of this is that
 		// bindFormalNext is required to make put() calls in the order args are
 		// defined.
+		if argsp.Len() > formals.Len() {
+			builtinArgs = make([]*LVal, 0, argsp.Len())
+		} else {
+			builtinArgs = make([]*LVal, 0, formals.Len())
+		}
 		putArg = func(k, v *LVal) {
 			builtinArgs = append(builtinArgs, v)
 		}
@@ -1104,9 +1110,9 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 			builtinArgs = append(builtinArgs, v.Cells...)
 		}
 	}
-	nformal := len(formals.Cells)
-	for len(formals.Cells) != 0 {
-		ret := env.bindFormalNext(fun, formals, args, putArg, putVarArg)
+	nformal := formals.Pos()
+	for !formals.IsEOF() {
+		ret := env.bindFormalNext(fun, &formals, &argsp, putArg, putVarArg)
 		if ret.Type == LError {
 			return nil, ret
 		}
@@ -1118,12 +1124,12 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 		if !ret.IsNil() {
 			panic("unexpected formal binding state")
 		}
-		if len(formals.Cells) == nformal {
+		if formals.Pos() == nformal {
 			panic("no progress binding")
 		}
-		nformal = len(formals.Cells)
+		nformal = formals.Pos()
 	}
-	if len(args.Cells) > 0 {
+	if !argsp.IsEOF() {
 		return nil, env.Errorf("invalid number of arguments: %d", narg)
 	}
 	if funenv == nil {
@@ -1134,22 +1140,22 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 
 type bindfunc func(k, v *LVal)
 
-func (env *LEnv) bindFormalNext(fun, formals, args *LVal, put, putVarArgs bindfunc) *LVal {
-	argSym := formals.Cells[0]
+func (env *LEnv) bindFormalNext(fun *LVal, formals, args *argParser, put, putVarArgs bindfunc) *LVal {
+	argSym := formals.Advance()
 	switch {
 	case argSym.Str == KeyArgSymbol:
-		if len(formals.Cells) < 2 {
+		if formals.IsEOF() {
 			return env.Errorf("function formal argument list contains a control symbol at an invalid location: %v", argSym.Str)
 		}
-		keyCells := formals.Cells[1:]
-		keymap := make(map[string]*LVal)
-		var keys []string
-		if len(args.Cells)%2 != 0 {
+		keyCells := formals.Rest()
+		keymap := make(map[string]*LVal, len(keyCells))
+		keys := make([]string, 0, len(keyCells))
+		if args.Rem()%2 != 0 {
 			return env.Errorf("function called with an odd number of keyword arguments")
 		}
-		for i := 0; i < len(args.Cells); i += 2 {
-			key := args.Cells[i]
-			val := args.Cells[i+1]
+		for !args.IsEOF() {
+			key := args.Advance()
+			val := args.Advance()
 			if key.Type != LSymbol {
 				return env.Errorf("argument is not a keyword: %v", key.Type)
 			}
@@ -1181,67 +1187,84 @@ func (env *LEnv) bindFormalNext(fun, formals, args *LVal, put, putVarArgs bindfu
 				}
 			}
 		}
-		formals.Cells = nil
-		args.Cells = nil
 		return Nil()
 	case argSym.Str == OptArgSymbol:
-		if len(formals.Cells) < 2 {
+		if formals.IsEOF() {
 			return env.Errorf("function formal argument list contains a control symbol at an invalid location: %v", argSym.Str)
 		}
-		if strings.HasPrefix(formals.Cells[1].Str, MetaArgPrefix) {
-			// The next formal is a control symbol so we want to just pop the
-			// OptArgSymbol off of formals and return without binding anything.
-			// We will deal with the control symbol in the next call.
-			formals.Cells = formals.Cells[1:]
-			return Nil()
+		for !formals.IsEOF() {
+			argSym = formals.Peek()
+			if strings.HasPrefix(argSym.Str, MetaArgPrefix) {
+				return Nil()
+			}
+			formals.Advance()
+			if args.IsEOF() {
+				// No arguments left so we bind the optional arg to nil.
+				put(argSym, Nil())
+			} else {
+				put(argSym, args.Advance())
+			}
 		}
-		argSym := formals.Cells[1]
-		if len(formals.Cells) == 2 {
-			formals.Cells = nil
-		} else {
-			// formals.Cells looks like {OptArgSymbol, x1, x2, ...}.  We are
-			// binding x1 and producing a new list of pending bindings
-			// {OptArgSymbol, x2, ...}.  This isn't very efficient but only
-			// affects functions with multiple optional arguments.
-			newFormals := make([]*LVal, len(formals.Cells)-1)
-			newFormals[0] = formals.Cells[0] // OptArgSymbol
-			copy(newFormals[1:], formals.Cells[2:])
-			formals.Cells = newFormals
-		}
-		if len(args.Cells) == 0 {
-			// No arguments left so we bind the optional arg to nil.
-			put(argSym, Nil())
-			return Nil()
-		}
-		put(argSym, args.Cells[0])
-		args.Cells = args.Cells[1:]
 		return Nil()
 	case argSym.Str == VarArgSymbol:
-		if len(formals.Cells) != 2 {
+		symbols := formals.Rest()
+		if len(symbols) != 1 {
 			return env.Errorf("function formal argument list contains a control symbol at an invalid location: %v", argSym.Str)
 		}
-		argSym := formals.Cells[1]
+		argSym = symbols[0]
 		if strings.HasPrefix(argSym.Str, MetaArgPrefix) {
 			return env.Errorf("function formal argument list contains a control symbol at an invalid location: %v", argSym.Str)
 		}
-		putVarArgs(argSym, QExpr(args.Cells))
-		formals.Cells = nil
-		args.Cells = nil
+		putVarArgs(argSym, QExpr(args.Rest()))
 		return Nil()
 	case strings.HasPrefix(argSym.Str, MetaArgPrefix):
 		return env.Errorf("function formal argument list contains invalid control symbol ``%s''", argSym.Str)
 	default:
-		if len(args.Cells) == 0 {
+		if args.IsEOF() {
 			return fun
 		}
-
 		// This is a normal (required) argument symbol.  Pull a value out of
 		// args and bind it.
-		formals.Cells = formals.Cells[1:]
-		put(argSym, args.Cells[0])
-		args.Cells = args.Cells[1:]
+		put(argSym, args.Advance())
 		return Nil()
 	}
+}
+
+type argParser struct {
+	args []*LVal
+	i    int
+}
+
+func (p *argParser) Pos() int {
+	return p.i
+}
+
+func (p *argParser) Len() int {
+	return len(p.args)
+}
+
+func (p *argParser) Rem() int {
+	return len(p.args) - p.i
+}
+
+func (p *argParser) IsEOF() bool {
+	return p.i >= len(p.args)
+}
+
+func (p *argParser) Advance() *LVal {
+	v := p.args[p.i]
+	p.i += 1
+	return v
+}
+
+func (p *argParser) Peek() *LVal {
+	return p.args[p.i]
+}
+
+func (p *argParser) Rest() []*LVal {
+	v := p.args[p.i:]
+	p.i = len(p.args)
+	return v
 }
 
 func isKeyword(sym string) bool {
