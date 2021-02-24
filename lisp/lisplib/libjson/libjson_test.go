@@ -15,3 +15,8 @@ func TestPackage(t *testing.T) {
 	r := &elpstest.Runner{}
 	r.RunTestFile(t, "libjson_test.lisp")
 }
+
+func BenchmarkPackage(b *testing.B) {
+	r := &elpstest.Runner{}
+	r.RunBenchmarkFile(b, "libjson_test.lisp")
+}

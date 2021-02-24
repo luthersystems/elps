@@ -49,7 +49,7 @@ type Runner struct {
 	logger *Logger
 }
 
-func (r *Runner) NewEnv(t *testing.T) (*lisp.LEnv, error) {
+func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
 	logger := NewLogger(t)
 	runtime := &lisp.Runtime{
 		Registry: lisp.NewRegistry(),
@@ -79,7 +79,7 @@ func (r *Runner) NewEnv(t *testing.T) (*lisp.LEnv, error) {
 	return env, nil
 }
 
-func (r *Runner) LoadTests(t *testing.T, path string, source io.Reader) []string {
+func (r *Runner) loadTestSuite(t testing.TB, path string, source io.Reader) *libtesting.TestSuite {
 	env, err := r.NewEnv(t)
 	if err != nil {
 		t.Fatal(err.Error())
@@ -95,11 +95,17 @@ func (r *Runner) LoadTests(t *testing.T, path string, source io.Reader) []string
 	if suite == nil {
 		t.Fatal("unable to locate test suite")
 	}
-	names := make([]string, suite.Len())
-	for i := range names {
-		names[i] = suite.Test(i).Name
-	}
-	return names
+	return suite
+}
+
+func (r *Runner) LoadTests(t *testing.T, path string, source io.Reader) []string {
+	suite := r.loadTestSuite(t, path, source)
+	return suite.Tests()
+}
+
+func (r *Runner) LoadBenchmarks(t *testing.B, path string, source io.Reader) []string {
+	suite := r.loadTestSuite(t, path, source)
+	return suite.Benchmarks()
 }
 
 // RunTest runs the test at index i read from source.  Path is only used to
@@ -161,7 +167,74 @@ func (r *Runner) RunTestFile(t *testing.T, path string) {
 	}
 }
 
-func (r *Runner) LispError(t *testing.T, err error) {
+// RunBenchmark runs the benchmark at index i read from source.  Path is only
+// used to determine a file basename to use in LEnv.Load().  RunBenchmark
+// returns true if the test, and any teardown function given, completed
+// successfully.
+func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader) {
+	b.StopTimer()
+	env, err := r.NewEnv(b)
+	if err != nil {
+		b.Error(err.Error())
+		return
+	}
+	defer env.Runtime.Stderr.(*Logger).Flush()
+
+	err = lisp.GoError(env.Load(filepath.Base(path), source))
+	if err != nil {
+		r.LispError(b, err)
+		return
+	}
+	if r.Teardown != nil {
+		defer func() {
+			b.StopTimer()
+			r.Teardown(env)
+			b.StartTimer()
+		}()
+	}
+	suite := libtesting.EnvTestSuite(env)
+	if suite == nil {
+		b.Errorf("unable to locate test suite")
+		return
+	}
+	ltest := suite.Benchmark(i)
+	b.StartTimer()
+	err = lisp.GoError(env.Eval(lisp.SExpr([]*lisp.LVal{ltest.Fun, lisp.Int(b.N)})))
+	if err != nil {
+		r.LispError(b, err)
+		return
+	}
+}
+
+func (r *Runner) RunBenchmarkFile(b *testing.B, path string) {
+	b.StopTimer()
+	source, err := ioutil.ReadFile(path)
+	if err != nil {
+		b.Errorf("Unable to read test file: %v", err)
+		return
+	}
+
+	var names []string
+	ok := b.Run("$load", func(b *testing.B) {
+		names = r.LoadBenchmarks(b, path, bytes.NewReader(source))
+	})
+	if !ok {
+		return
+	}
+
+	for i := range names {
+		// We don't check the result of t.Run here because we want all
+		// independent benchmarks to run during a single run of the suite.  An
+		// assertion failure within a tests prevents futher evaluation of
+		// expressions in that test, but does not halt the execution of the
+		// suite as a whole.
+		b.Run(names[i], func(b *testing.B) {
+			r.RunBenchmark(b, i, path, bytes.NewReader(source))
+		})
+	}
+}
+
+func (r *Runner) LispError(t testing.TB, err error) {
 	lerr, ok := err.(*lisp.ErrorVal)
 	if !ok {
 		t.Error(err)
@@ -197,12 +270,16 @@ func RunTestSuite(t *testing.T, tests TestSuite) {
 		log.Printf("test %d -- %s", i, test.Name)
 		env := lisp.NewEnv(nil)
 		var exprBuf bytes.Buffer
-		lisp.InitializeUserEnv(env,
+		err := lisp.GoError(lisp.InitializeUserEnv(env,
 			lisp.WithMaximumLogicalStackHeight(50000),
 			lisp.WithMaximumPhysicalStackHeight(25000),
 			lisp.WithReader(parser.NewReader()),
 			lisp.WithStderr(io.MultiWriter(os.Stderr, &exprBuf)),
-		)
+		))
+		if err != nil {
+			t.Errorf("test %d %q: %v", i, test.Name, err)
+			continue
+		}
 		for j, expr := range test.TestSequence {
 			exprBuf.Reset()
 			v, err := env.Runtime.Reader.Read("test", strings.NewReader(expr.Expr))
@@ -226,5 +303,36 @@ func RunTestSuite(t *testing.T, tests TestSuite) {
 				t.Errorf("test %d %q: expr %d: expected debug output %q (got %q)", i, test.Name, j, expr.Output, exprBuf.String())
 			}
 		}
+	}
+}
+
+// RunBenchmark runs a standard benchmark that executes expressions parsed from
+// source.
+func RunBenchmark(b *testing.B, source string) {
+	b.StopTimer()
+	p := parser.NewReader()
+	exprs, err := p.Read("benchmark", strings.NewReader(source))
+	if err != nil {
+		b.Fatalf("parse error: %v", err)
+	}
+	for i := 0; i < b.N; i++ {
+		env := lisp.NewEnv(nil)
+		err := lisp.GoError(lisp.InitializeUserEnv(env,
+			lisp.WithMaximumLogicalStackHeight(50000),
+			lisp.WithMaximumPhysicalStackHeight(25000),
+			lisp.WithReader(p),
+			lisp.WithStderr(ioutil.Discard),
+		))
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+		for i, expr := range exprs {
+			lerr := env.Eval(expr)
+			if lerr.Type == lisp.LError {
+				b.Fatalf("expr %d: %v", i, lerr)
+			}
+		}
+		b.StopTimer()
 	}
 }

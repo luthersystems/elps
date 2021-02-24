@@ -92,3 +92,30 @@
   (assert-string= "ok-json"
                   (handler-bind ([json:syntax-error (lambda (c _) "syntax-error")])
                     (json:load-string "\"ok-json\""))))
+
+(benchmark-simple "load-object"
+  (dotimes (n 1000)
+    (json:load-string """{"test1": 123, "test2": 456, "test3": 789}""")))
+
+(benchmark-simple "load-array"
+  (dotimes (n 1000)
+    (json:load-string """["test1", 123, "test2", 456, "test3", 789]""")))
+
+(benchmark-simple "load-nested"
+  (dotimes (n 1000)
+    (json:load-string """{"test1": 123, "test2": 456, "test3": {"test1": 123, "test2": 456, "test3": 789}}""")))
+
+(benchmark-simple "dump-object"
+  (let* ([val (sorted-map "test1" 123 "test2" 456 "test3" 789)])
+    (dotimes (n 1000)
+      (json:dump-string val))))
+
+(benchmark-simple "dump-array"
+  (let* ([val (list "test1" 123 "test2" 456 "test3" 789)])
+    (dotimes (n 1000)
+      (json:dump-string val))))
+
+(benchmark-simple "dump-nested"
+  (let* ([val (sorted-map "test1" 123 "test2" 456 "test3" (sorted-map "test1" 123 "test2" 456 "test3" 789))])
+    (dotimes (n 1000)
+      (json:dump-string val))))

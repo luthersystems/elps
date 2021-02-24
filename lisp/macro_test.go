@@ -100,3 +100,19 @@ func TestMacros(t *testing.T) {
 	}
 	elpstest.RunTestSuite(t, tests)
 }
+
+func BenchmarkMacroDefun(b *testing.B) {
+	elpstest.RunBenchmark(b, `
+		(defun benchmark () (debug-print 1 2 3))
+		(defun benchmark (a) (debug-print a))
+		(defun benchmark (a b) (debug-print a b))
+		(defun benchmark (a b c) (debug-print a b c))
+		(defun benchmark (a b &optional c) (debug-print a b c))
+		(defun benchmark (a &optional b c) (debug-print a b c))
+		(defun benchmark (&optional a b c) (debug-print a b c))
+		(defun benchmark (a b &key c) (debug-print a b c))
+		(defun benchmark (a &key b c) (debug-print a b c))
+		(defun benchmark (&key a b c) (debug-print a b c))
+		(defun benchmark (&rest a) (apply debug-print a))
+	`)
+}
