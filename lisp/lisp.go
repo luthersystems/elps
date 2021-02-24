@@ -155,7 +155,9 @@ type LVal struct {
 	// Type is the native type for a value in lisp.
 	Type LType
 
-	// Source is the values originating location in source code.
+	// Source is the values originating location in source code.  Programs
+	// should not modify the contents of Source as the reference may be shared
+	// by multiple LVals.
 	Source *token.Location
 
 	// Fields used for numeric types
@@ -1046,9 +1048,13 @@ func makeByteSeq(v *LVal) *LVal {
 	}
 }
 
+var defaultSourceLocation = &token.Location{
+	File: "<native code>",
+	Pos:  -1,
+}
+
+// TODO(elps2): make the LVal.Source "immutable" (possibly an interface or a
+// string) so it won't matter that nativeSource returns a shared reference.
 func nativeSource() *token.Location {
-	return &token.Location{
-		File: "<native code>",
-		Pos:  -1,
-	}
+	return defaultSourceLocation
 }
