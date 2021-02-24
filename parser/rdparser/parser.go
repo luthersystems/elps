@@ -411,7 +411,7 @@ func (p *Parser) QExpr(cells []*lisp.LVal) *lisp.LVal {
 }
 
 func (p *Parser) tokenLVal(v *lisp.LVal) *lisp.LVal {
-	*v.Source = *p.Location()
+	v.Source = p.Location()
 	return v
 }
 
