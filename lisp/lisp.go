@@ -1029,6 +1029,23 @@ func seqCells(v *LVal) []*LVal {
 	panic("type is not a sequence")
 }
 
+func makeByteSeq(v *LVal) *LVal {
+	switch v.Type {
+	case LString:
+		v = Bytes([]byte(v.Str))
+		fallthrough
+	case LBytes:
+		b := v.Bytes()
+		cells := make([]*LVal, len(b))
+		for i := range b {
+			cells[i] = Int(int(b[i]))
+		}
+		return QExpr(cells)
+	default:
+		panic("type is not a native byte sequence")
+	}
+}
+
 func nativeSource() *token.Location {
 	return &token.Location{
 		File: "<native code>",
