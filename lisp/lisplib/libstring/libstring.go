@@ -35,6 +35,11 @@ var builtins = []*libutil.Builtin{
 	libutil.Function("uppercase", lisp.Formals("str"), builtinUpper),
 	libutil.Function("split", lisp.Formals("str", "sep"), builtinSplit),
 	libutil.Function("join", lisp.Formals("list", "sep"), builtinJoin),
+	libutil.Function("repeat", lisp.Formals("str", "n"), builtinRepeat),
+	libutil.Function("trim-space", lisp.Formals("str"), builtinTrimSpace),
+	libutil.Function("trim", lisp.Formals("str", "cutset"), builtinTrim),
+	libutil.Function("trim-left", lisp.Formals("str", "cutset"), builtinTrimLeft),
+	libutil.Function("trim-right", lisp.Formals("str", "cutset"), builtinTrimRight),
 }
 
 func builtinLower(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -88,4 +93,63 @@ func builtinJoin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		}
 	}
 	return lisp.String(buf.String())
+}
+
+func builtinRepeat(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	str := args.Cells[0]
+	n := args.Cells[1]
+	if str.Type != lisp.LString {
+		return env.Errorf("first argument is not a string: %v", str.Type)
+	}
+	if n.Type != lisp.LInt {
+		return env.Errorf("second argument is not an int: %v", n.Type)
+	}
+	if n.Int < 0 {
+		return env.Errorf("count is negative: %v", n.Int)
+	}
+	return lisp.String(strings.Repeat(str.Str, n.Int))
+}
+
+func builtinTrimSpace(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	str := args.Cells[0]
+	if str.Type != lisp.LString {
+		return env.Errorf("first argument is not a string: %v", str.Type)
+	}
+	return lisp.String(strings.TrimSpace(str.Str))
+}
+
+func builtinTrim(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	str := args.Cells[0]
+	cutset := args.Cells[1]
+	if str.Type != lisp.LString {
+		return env.Errorf("first argument is not a string: %v", str.Type)
+	}
+	if cutset.Type != lisp.LString {
+		return env.Errorf("second argument is not a string: %v", cutset.Type)
+	}
+	return lisp.String(strings.Trim(str.Str, cutset.Str))
+}
+
+func builtinTrimLeft(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	str := args.Cells[0]
+	cutset := args.Cells[1]
+	if str.Type != lisp.LString {
+		return env.Errorf("first argument is not a string: %v", str.Type)
+	}
+	if cutset.Type != lisp.LString {
+		return env.Errorf("second argument is not a string: %v", cutset.Type)
+	}
+	return lisp.String(strings.TrimLeft(str.Str, cutset.Str))
+}
+
+func builtinTrimRight(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	str := args.Cells[0]
+	cutset := args.Cells[1]
+	if str.Type != lisp.LString {
+		return env.Errorf("first argument is not a string: %v", str.Type)
+	}
+	if cutset.Type != lisp.LString {
+		return env.Errorf("second argument is not a string: %v", cutset.Type)
+	}
+	return lisp.String(strings.TrimRight(str.Str, cutset.Str))
 }

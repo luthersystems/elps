@@ -1462,7 +1462,7 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 	if typespec.Type != LSymbol {
 		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
 	}
-	if !isSeq(list) {
+	if !isSeq(list) && list.Type != LString && list.Type != LBytes {
 		return env.Errorf("second argument is not a proper sequence: %v", list.Type)
 	}
 	if start.Type != LInt {
@@ -1489,12 +1489,63 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 	if i > j {
 		return env.Errorf("end before start")
 	}
+
+	// Create an intermediate sliced list with a similar type
+	switch list.Type {
+	case LString:
+		list = String(list.Str[i:j])
+	case LBytes:
+		list = Bytes(list.Bytes()[i:j])
+	default: // isSeq(list)
+		list = QExpr(seqCells(list)[i:j])
+	}
+
+	// Convert the intermediate sliced value into the desired type
 	switch typespec.Str {
+	case "string":
+		switch list.Type {
+		case LString:
+			return list
+		case LBytes:
+			return String(string(list.Bytes()))
+		default: // LSExpr
+			var b []byte
+			err := appendBytes(env, list, func(x byte) {
+				b = append(b, x)
+			})
+			if err != nil {
+				return env.Error(err)
+			}
+			return String(string(b))
+		}
+	case "bytes":
+		switch list.Type {
+		case LString:
+			return Bytes([]byte(list.Str))
+		case LBytes:
+			return list
+		default: // LSExpr
+			var b []byte
+			err := appendBytes(env, list, func(x byte) {
+				b = append(b, x)
+			})
+			if err != nil {
+				return env.Error(err)
+			}
+			return Bytes(b)
+		}
 	case "list":
-		return QExpr(seqCells(list)[i:j])
+		if list.Type == LString || list.Type == LBytes {
+			list = makeByteSeq(list)
+		}
+		// list is now known to be LSExpr
+		return QExpr(list.Cells)
 	case "vector":
-		cells := seqCells(list)[i:j]
-		return Array(QExpr([]*LVal{Int(len(cells))}), cells)
+		if list.Type == LString || list.Type == LBytes {
+			list = makeByteSeq(list)
+		}
+		// list is now known to be LSExpr
+		return Array(QExpr([]*LVal{Int(len(list.Cells))}), list.Cells)
 	default:
 		return env.Errorf("type specifier is not valid: %v", typespec)
 	}
