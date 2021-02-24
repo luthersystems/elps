@@ -20,6 +20,7 @@ var langSpecialOps = []*langBuiltin{
 	{"expr", Formals("pattern"), opExpr},
 	{"thread-first", Formals("value", VarArgSymbol, "exprs"), opThreadFirst},
 	{"thread-last", Formals("value", VarArgSymbol, "exprs"), opThreadLast},
+	{"dotimes", Formals("control-sequence", VarArgSymbol, "exprs"), opDoTimes},
 	{"labels", Formals("bindings", VarArgSymbol, "expr"), opLabels},
 	{"macrolet", Formals("bindings", VarArgSymbol, "expr"), opMacrolet},
 	{"flet", Formals("bindings", VarArgSymbol, "expr"), opFlet},
@@ -350,6 +351,60 @@ func opFlet(env *LEnv, args *LVal) *LVal {
 		}
 	}
 	return opProgn(fletenv, args)
+}
+
+func opDoTimes(env *LEnv, args *LVal) *LVal {
+	ctrlseq := args.Cells[0]
+	body := args.Cells[1:]
+	if ctrlseq.Type != LSExpr {
+		return env.Errorf("first argument is not a list: %v", ctrlseq.Type)
+	}
+	if ctrlseq.Len() > 3 {
+		return env.Errorf("too many elements in control-sequence: %d", ctrlseq.Len())
+	}
+	if ctrlseq.Len() == 0 {
+		return env.Errorf("missing symbol in control-sequence")
+	}
+	symbol := ctrlseq.Cells[0]
+	if symbol.Type != LSymbol {
+		return env.Errorf("control-sequence does not start with a symbol: %v", symbol.Type)
+	}
+	if ctrlseq.Len() < 2 {
+		return env.Errorf("missing iteration count in control-sequence")
+	}
+	countexpr := ctrlseq.Cells[1]
+	returnexpr := Nil()
+	if ctrlseq.Len() == 3 {
+		returnexpr = ctrlseq.Cells[2]
+	}
+
+	count := env.Eval(countexpr)
+	if count.Type == LError {
+		return count
+	}
+	if count.Type != LInt {
+		return env.Errorf("count did not evaluate to an int: %v", count.Type)
+	}
+	loopenv := NewEnv(env)
+	n := 0
+	for i := 0; i < count.Int; i++ {
+		n++
+		lerr := loopenv.Put(symbol, Int(i))
+		if lerr.Type == LError {
+			return lerr
+		}
+		for _, expr := range body {
+			result := loopenv.Eval(expr)
+			if result.Type == LError {
+				return result
+			}
+		}
+	}
+	lerr := loopenv.Put(symbol, Int(n))
+	if lerr.Type == LError {
+		return lerr
+	}
+	return loopenv.Terminal(returnexpr)
 }
 
 // NOTE: Labels is similar to what you might image a flet* being but flet* is

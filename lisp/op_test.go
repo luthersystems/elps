@@ -84,6 +84,24 @@ func TestSpecialOp(t *testing.T) {
 			{`(labels ([orig () 2] [f () (orig)]) (f))`, "2", ""},
 			{`(labels ([f () (orig)] [orig () 2]) (f))`, "2", ""},
 		}},
+		{"dotimes", elpstest.TestSequence{
+			{`(dotimes (n 5) (debug-print n))`, "()", "0\n1\n2\n3\n4\n"},
+			{`(dotimes (n 0) (debug-print n))`, "()", ""},
+			{`(dotimes (n -1) (debug-print n))`, "()", ""},
+			{`(dotimes (i 3)
+			    (set! i 2)
+			    (debug-print i))`, "()", "2\n2\n2\n"},
+			{`(dotimes (n 5))`, "()", ""},
+			{`(dotimes (n 5) 1)`, "()", ""}, // return doesn't depend on the body's result
+			{`(dotimes (n 5 n))`, "5", ""},
+			{`(dotimes (n -1 n))`, "0", ""},
+			{`(dotimes (n -1 n))`, "0", ""},
+			{`(set 'x 0)`, "0", ""},
+			{`(dotimes (i 5 x) (set 'x (+ x i)))`, "10", ""},
+			{`(let* ([n 10])
+			    (dotimes (n 5))
+			    n)`, "10", ""},
+		}},
 		{"cond", elpstest.TestSequence{
 			{`(cond)`, "()", ""},
 			{`(cond (else 1))`, "1", ""},
