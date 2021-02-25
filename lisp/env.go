@@ -54,12 +54,14 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 	return env.UsePackage(Symbol(env.Runtime.Registry.Lang))
 }
 
+// TODO(elps2): Remove the field LEnv.FunName
+
 // LEnv is a lisp environment.
 type LEnv struct {
 	ID      uint
 	Loc     *token.Location
 	Scope   map[string]*LVal
-	FunName map[string]string
+	FunName map[string]string // deprecated
 	Parent  *LEnv
 	Runtime *Runtime
 }
@@ -259,10 +261,10 @@ func (env *LEnv) Copy() *LEnv {
 func (env *LEnv) Get(k *LVal) *LVal {
 	v := env.get(k)
 	if v.Type == LFun {
-		// Set the function's name here in case the same function is defined
-		// with multiple names.  We want to try and use the name the programmer
-		// used.  The name may even come from a higher scope.
-		env.FunName[v.FID()] = k.Str
+		// Set the function's name here in case the same function is
+		// defined with multiple names.  We want to try and use the name
+		// the programmer used.
+		v = FunRef(k, v)
 	}
 	return v
 }
@@ -339,20 +341,21 @@ func (env *LEnv) get(k *LVal) *LVal {
 		}
 		return lerr
 	}
-	v, ok := env.Scope[k.Str]
-	if ok {
-		if v.Type == LFun {
-			// Set the function's name here in case the same function is
-			// defined with multiple names.  We want to try and use the name
-			// the programmer used.
-			env.FunName[v.FID()] = k.Str
+	return env.getSimple(k)
+}
+
+func (env *LEnv) getSimple(k *LVal) *LVal {
+	for {
+		v, ok := env.Scope[k.Str]
+		if ok {
+			return v
 		}
-		return v
+		if env.Parent != nil {
+			env = env.Parent
+			continue
+		}
+		return env.packageGet(k)
 	}
-	if env.Parent != nil {
-		return env.Parent.Get(k)
-	}
-	return env.packageGet(k)
 }
 
 func (env *LEnv) packageGet(k *LVal) *LVal {
@@ -364,8 +367,19 @@ func (env *LEnv) packageGet(k *LVal) *LVal {
 }
 
 // GetFunName returns the function name (if any) known to be bound to the given
-// FID.
+// function. If the function's FID is bound in its package then the global name
+// of the function is returned.  When the function is bound within a local
+// scope then the local name used to reference the function (if any) is
+// returned.
 func (env *LEnv) GetFunName(f *LVal) string {
+	name := env.pkgFunName(f)
+	if name != "" {
+		return name
+	}
+	return f.Str
+}
+
+func (env *LEnv) pkgFunName(f *LVal) string {
 	if f.Type != LFun {
 		panic("not a function: " + f.Type.String())
 	}
@@ -391,9 +405,6 @@ func (env *LEnv) Put(k, v *LVal) *LVal {
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
 		return env.Errorf("cannot rebind constant: %v", k.Str)
 	}
-	if v.Type == LFun {
-		env.FunName[v.FID()] = k.Str
-	}
 	env.Scope[k.Str] = v
 	return Nil()
 }
@@ -415,9 +426,6 @@ func (env *LEnv) update(k, v *LVal) *LVal {
 	for {
 		_, ok := env.Scope[k.Str]
 		if ok {
-			if v.Type == LFun {
-				env.FunName[v.FID()] = k.Str
-			}
 			env.Scope[k.Str] = v
 			return Nil()
 		}
@@ -501,7 +509,8 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	cells = append(cells, body...)
 	fenv := NewEnv(env)
 	fun := &LVal{
-		Type: LFun,
+		Type:   LFun,
+		Source: env.Loc,
 		Native: &LFunData{
 			FID:     fenv.getFID(),
 			Package: env.Runtime.Package.Name,

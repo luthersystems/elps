@@ -65,14 +65,7 @@ func TestSpecialOp(t *testing.T) {
 		{"flet", elpstest.TestSequence{
 			{`(flet [])`, `()`, ``},
 			{`(flet ([f (x) x]) (f 2))`, `2`, ``},
-			// BUG:  Anonymous functions bound locally do not get names in
-			// debug stacks and error messages.  Function names are mapped at
-			// the package level currently -- which may be the wrong thing to
-			// do.  LEnv objects could have a name mapping as well but you
-			// can't be guaranteed that a function was called using the that
-			// binds to it most tightly.  It is likely that the approach being
-			// used is flawed.
-			{`(flet ([f (x) (f (+ x 1))]) (f 0))`, `test:1: _fun8: unbound symbol: f`, ``},
+			{`(flet ([f (x) (f (+ x 1))]) (f 0))`, `test:1: f: unbound symbol: f`, ``},
 			{`(defun orig () 1)`, `()`, ``},
 			{`(flet ([orig () 2] [f () (orig)]) (f))`, `1`, ``},
 		}},

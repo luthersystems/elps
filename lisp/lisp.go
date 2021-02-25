@@ -41,15 +41,11 @@ const (
 	// LVal.Cells.
 	LSExpr
 	// LFun values use the following fields in an LVal:
-	// 		LVal.Str      a string containing a unique function identifier.
-	// 		LVal.Native   a reference to a native go function (LBuiltin) or a
-	// 				      lexical environment for a lisp-defined function.
-	// 		LVal.FunType  an enumerated value describing function evaluation
-	// 		              semantics (e.g. macro, special op, regular function).
-	//		LVal.Package  the package the function is defined in.
+	// 		LVal.Str      The local name used to reference the function (if any)
+	// 		LVal.Native   An LFunData object
 	//
 	// In addition to these fields, a function defined in lisp (with defun,
-	// lambda, defmacro, etc) use the LVal.Cells field to store the following
+	// lambda, defmacro, etc) uses the LVal.Cells field to store the following
 	// items:
 	//		[0]  a list describing the function's arguments
 	//		[1:] body expressions of the function (potentially no expressions)
@@ -257,7 +253,7 @@ func SplitSymbol(sym *LVal) *LVal {
 	pieces := strings.Split(sym.Str, ":")
 	switch len(pieces) {
 	case 1:
-		return QExpr([]*LVal{Symbol(pieces[0])})
+		return QExpr([]*LVal{sym})
 	case 2:
 		return QExpr([]*LVal{Symbol(pieces[0]), Symbol(pieces[1])})
 	default:
@@ -368,6 +364,20 @@ func SortedMap() *LVal {
 		Type:   LSortMap,
 		Native: make(map[interface{}]*LVal),
 	}
+}
+
+// FunRef returns a reference to fun that uses the local name symbol.
+func FunRef(symbol, fun *LVal) *LVal {
+	if symbol.Type != LSymbol {
+		return Errorf("argument is not a symbol: %v", symbol.Type)
+	}
+	if fun.Type != LFun {
+		return Errorf("argument is not a function: %v", fun.Type)
+	}
+	cp := &LVal{}
+	*cp = *fun
+	fun.Str = symbol.Str
+	return fun
 }
 
 // Fun returns an LVal representing a function
