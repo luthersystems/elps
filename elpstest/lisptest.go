@@ -216,7 +216,9 @@ func (r *Runner) RunBenchmarkFile(b *testing.B, path string) {
 
 	var names []string
 	ok := b.Run("$load", func(b *testing.B) {
-		names = r.LoadBenchmarks(b, path, bytes.NewReader(source))
+		for i := 0; i < b.N; i++ {
+			names = r.LoadBenchmarks(b, path, bytes.NewReader(source))
+		}
 	})
 	if !ok {
 		return
