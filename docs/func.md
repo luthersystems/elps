@@ -32,6 +32,89 @@ elps> (to-string (json:dump-bytes (sorted-map "K" "V")))
 "{\"K\":\"V\"}"
 ```
 
+## `string:lowercase`
+
+Convert letters in a string to lowercase
+
+```lisp
+elps> (string:lowercase "ABC123")
+"abc123"
+```
+
+## `string:uppercase`
+
+Convert letters in a string to uppercase
+
+```lisp
+elps> (string:uppercase "abc123")
+"ABC123"
+```
+
+## `string:split`
+
+Split a string on a substring
+
+```lisp
+elps> (string:split "hello world" " ")
+'("hello" "world")
+elps> (string:split "hello" " ")
+'("hello")
+```
+
+## `string:join`
+
+Join a list of strings with a separator
+
+```lisp
+elps> (string:join (list "hello" "world") " ")
+"hello world"
+```
+
+## `string:repeat`
+
+Repeat a string a given number of times
+
+```lisp
+elps> (string:repeat "1234" 2)
+"12341234"
+```
+
+## `string:trim-space`
+
+Remove leading and trailing whitespace from a string
+
+```lisp
+elps> (string:trim-space "\thello world \n")
+"hello world"
+```
+
+## `string:trim`
+
+Trim leading and trailing characters in a cutset from a string
+
+```lisp
+elps> (string:trim "${foo}" "${}")
+"foo"
+```
+
+## `string:trim-left`
+
+Trim leading characters in a cutset from a string
+
+```lisp
+elps> (string:trim-left "${foo}" "${}")
+"foo}"
+```
+
+## `string:trim-left`
+
+Trim trailing characters in a cutset from a string
+
+```lisp
+elps> (string:trim-right "${foo}" "${}")
+"${foo"
+```
+
 ## `to-string`
 
 Converts primitive values to their string representation.
@@ -130,6 +213,29 @@ elps> (nth '(1 2 3 4) 3)
 4
 elps> (nth '(1 2 3 4) 4)
 ()
+```
+
+## `dotimes`
+
+Iterate a specified number of times.  The first argument is a list that
+declares an indexing symbol, the number of iterations, and an optional result
+expression.  The remaining arguments for the iteration body and will be
+evaulated the specified number of times.
+
+```lisp
+elps> (set 'v (vector))
+(vector)
+elps> (dotimes (n 5) (append! v (* 2 n)))
+()
+elps> (dotimes (n (length v)) (debug-print n (nth v n)))
+0 0
+1 2
+2 4
+3 6
+4 8
+()
+elps> (dotimes (n 5 (length v)) (append! v (* 2 n)))
+10
 ```
 
 ## `map`
@@ -432,15 +538,23 @@ elps> (reverse 'list (reverse 'list '(1 2 3)))
 
 ## `slice`
 
-Returns the sub-slice of a sequence.
+Returns the sub-slice of a sequence.  The slice will be converted to the type
+specifier.  The function works with `list`, `vector`, `bytes` and `string`
+values.
 
 ```Lisp
 elps> (set 'test (make-sequence 0 10))
 '(0 1 2 3 4 5 6 7 8 9)
 elps> (slice 'list test 3 6)
 '(3 4 5)
-elps> (slice 'list test 3 0)
-stdin:1: lisp:slice: end before start
+elps> (slice 'vector test 3 6)
+(vector 3 4 5)
+elps> (slice 'string "hello" 1 4)
+"ell"
+elps> (slice 'bytes "hello" 1 4)
+#<bytes 101 108 108>
+elps> (slice 'vector "hello" 1 4)
+(vector 101 108 108)
 ```
 
 ## `list`
