@@ -16,11 +16,21 @@ Types are defined using the `s:deftype` keyword and validations are performed by
 We can validate that a value meets the required type by calling `s:validate` on it with the required value:
 ```lisp
 (set 'x "hello")
-(assert-nil (s:validate s:string x))
+(s:deftype "mystring" s:string)
+(assert-nil (s:validate mystring x))
 ```
 
 If the value does not have the required type, an error of type `"wrong-type"` will be returned. If a constraint (see below)
 fails, an error of type `"failed-constraint"` will be the result.
+
+If using `s:make-validator` to define a time then pass the validator it
+returned along with the value to be validated.
+
+```lisp
+(set 'x "hello")
+(let ([v (s:make-validator "mystring" s:string)])
+    (assert-nil (s:validate v x)))
+```
 
 #### Defining types
 
@@ -43,8 +53,44 @@ Or, more usefully, if we want to define an enum, we can specify a list of permit
 (s:deftype "title" s:string (s:in ("Mr","Mrs","Miss","Ms","Mx","Dr","Prof")))
 ```
 
-Where this really comes into its own is when we start defining more complex types. We can specify the keys, and their 
-types that a sorted map should have:
+If working with tagged-values (user-defined types created with the core
+language `deftype` macro) then `s:deftype` often will not be usable because
+both deftype operations attempt to bind the same symbol.  Instead of using
+`s:deftype` in those situations`s:make-validator` will return a validator which
+can be passed to `s:validate`.
+
+```
+(deftype abc (s) (to-string s))
+(set 'abc-validator (s:make-validator abc s:string (s:in '("a" "b" "c")))
+```
+
+When `s:make-validator` is passed the typedef `abc` it automatically creates a
+tagged-value validator which validates the type's string contents.
+
+If the structure of a tagged-value is known but its exact type is not then the
+`s:tagged-value` type can be used when calling `s:make-validator` with a string
+type name.  This can work with `s:deftype` depending on the type name.
+
+```
+(s:deftype "abc-like" s:tagged-value s:string (s:in "a" "b" "c")) 
+(deftype mystring (s) (to-string s))
+(s:validate abc-like (new mystring "b"))
+```
+
+The `s:make-validator` function works with any data type, not just
+tagged-values.  It can be used to create scoped validators with a limited
+lifetime.
+
+```lisp
+(let ([v (s:make-validator "sequence-elemeent" s:sorted-map)])
+    (map '() #^(s:validate v %) sequence))
+```
+
+#### Complex type schemas
+
+So far only simple type constraints have been discussed.  Where this really
+comes into its own is when we start defining more complex types. We can specify
+the keys, and their types that a sorted map should have:
 ```lisp
 (s:deftype "mymap" s:sorted-map 
     (s:has-key "first-name" s:string) 
@@ -111,6 +157,7 @@ The following inbuilt types are available within the library:
 |`s:any`|any ELPS value|
 |`s:array`|array|
 |`s:bool`|boolean|
+|`s:tagged-value`|tagged-value|
 |`s:error`|ELPS error|
 |`s:fun`|A function|
 |`s:sorted-map`|sorted map|

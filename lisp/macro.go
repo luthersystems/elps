@@ -8,6 +8,7 @@ var userMacros []*langBuiltin
 var langMacros = []*langBuiltin{
 	{"defmacro", Formals("name", "formals", "expr"), macroDefmacro},
 	{"defun", Formals("name", "formals", VarArgSymbol, "expr"), macroDefun},
+	{"deftype", Formals("name", "constructor-formals", VarArgSymbol, "constructor-exprs"), macroDeftype},
 	{"curry-function", Formals("fun", VarArgSymbol, "args"), macroCurryFun},
 	// get-default is a macro because we only want to evaluate the expression
 	// bound to default if the key doesn't exist in the map.
@@ -128,6 +129,51 @@ func macroGetDefault(env *LEnv, args *LVal) *LVal {
 		}),
 	})
 	return let
+}
+
+func macroDeftype(env *LEnv, args *LVal) *LVal {
+	pkg := env.Runtime.Registry.Lang
+	psymbol := func(s string) *LVal {
+		return Symbol(fmt.Sprintf("%s:%s", pkg, s))
+	}
+	name := args.Cells[0]
+	formals := args.Cells[1]
+	exprs := SExpr(args.Cells[2:])
+	if name.Type != LSymbol {
+		return env.Errorf("first argument is not a symbol: %v", GetType(name))
+	}
+	if formals.Type != LSExpr {
+		return env.Errorf("second argument is not a list: %v", GetType(formals))
+	}
+	fqname := env.GenSym()
+	lambda := SExpr([]*LVal{
+		psymbol("lambda"),
+		formals,
+	})
+	lambda.Cells = append(lambda.Cells, exprs.Cells...)
+	return QExpr([]*LVal{
+		psymbol("let*"),
+		SExpr([]*LVal{
+			QExpr([]*LVal{
+				fqname,
+				SExpr([]*LVal{
+					psymbol("qualified-symbol"),
+					name,
+				}),
+			}),
+		}),
+		SExpr([]*LVal{
+			psymbol("set"),
+			fqname,
+			SExpr([]*LVal{
+				psymbol("new"),
+				psymbol("typedef"),
+				fqname,
+				lambda,
+			}),
+		}),
+		fqname,
+	})
 }
 
 type unquoteType int

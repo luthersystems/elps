@@ -15,6 +15,13 @@ import (
 // LType is the type of an LVal
 type LType uint
 
+// TODO(elps2): Consider turning the following types into tagged-values:
+//	LBytes
+//	LSortMap
+//	LArray
+// Maybe allow for "tagged native values" that use LVal.Native to store the
+// tagged data as an alternative to LVal.Cells[0].
+
 // Possible LValType values
 const (
 	// LInvalid (0) is not a valid lisp type.
@@ -77,8 +84,13 @@ const (
 	//  	[1] a list containing row-major ordered array values
 	LArray
 	// LNative values store a Go value in the LVal.Native field and can be used
-	// by builtin functions store references to values of any type.
+	// by builtin functions to store values of any type.
 	LNative
+	// LTaggedVal is a user-defined type that uses the following fields in an
+	// LVal:
+	// 		LVal.Str      The user-defined type name
+	// 		LVal.Cells[0] The user-data for the typed-value
+	LTaggedVal
 	// Mark LVals are used to trasmit information down the stack through return
 	// values.  Because the LEnv does not evaluate expressions using a stack
 	// based virtual machine these Mark values, which often wrap other LVal
@@ -105,6 +117,7 @@ var lvalTypeStrings = []string{
 	LSortMap:       "sorted-map",
 	LArray:         "array",
 	LNative:        "native",
+	LTaggedVal:     "tagged-value",
 	LMarkTailRec:   "marker-tail-recursion",
 	LMarkMacExpand: "marker-macro-expansion",
 }
@@ -178,6 +191,16 @@ type LVal struct {
 
 	Quoted  bool // flag indicating a single level of quoting
 	Spliced bool // denote the value as needing to be spliced into a parent value
+}
+
+// GetType returns a quoted symbol denoting v's type.
+func GetType(v *LVal) *LVal {
+	t := Symbol(v.Str)
+	t.Quoted = true
+	if v.Type != LTaggedVal {
+		t.Str = v.Type.String()
+	}
+	return t
 }
 
 // Value conveniently converts v to an LVal.  Types which can be represented
@@ -629,6 +652,15 @@ func (v *LVal) Len() int {
 	}
 }
 
+// UserData returns the user-data associated with an LTaggedVal.
+// UserData panics if v is not an LTaggedVal.
+func (v *LVal) UserData() *LVal {
+	if v.Type != LTaggedVal {
+		panic("not tagged: " + v.Type.String())
+	}
+	return v.Cells[0]
+}
+
 // Bytes returns the []byte stored in v.  Bytes panics if v.Type is not LBytes.
 func (v *LVal) Bytes() []byte {
 	if v.Type != LBytes {
@@ -814,6 +846,11 @@ func (v *LVal) Equal(other *LVal) *LVal {
 			}
 		}
 		return Bool(true)
+	case LTaggedVal:
+		if v.Str != other.Str {
+			return Bool(false)
+		}
+		return v.Cells[0].Equal(other.Cells[0])
 	case LSortMap:
 		if len(v.Map()) != len(other.Map()) {
 			return Bool(false)
@@ -956,6 +993,8 @@ func (v *LVal) str(onTheRecord bool) string {
 		return fmt.Sprintf("#<array dims=%s>", v.Cells[0])
 	case LNative:
 		return fmt.Sprintf("#<native value: %T>", v.Native)
+	case LTaggedVal:
+		return fmt.Sprintf("#{%s %v}", v.Str, v.Cells[0])
 	case LMarkTerminal:
 		return quote + fmt.Sprintf("#<terminal-expression %s>", v.Cells[0])
 	case LMarkTailRec:
