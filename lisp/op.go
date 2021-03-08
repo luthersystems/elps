@@ -123,25 +123,14 @@ func opQuasiquote(env *LEnv, args *LVal) *LVal {
 	// We need to find and unquote values in expr (possibly expr itself).
 	expr := args.Cells[0]
 
-	// NOTE:  This isUnquote check is really strange.  But expressions like
-	// (quasiquote (unquote ...)) do not seem to evaluate correctly without it.
-	quote := !isUnquote(expr)
 	result := findAndUnquote(env, expr, 0)
 	if result.Type == LError {
 		return result
 	}
-	if quote {
-		return Quote(result)
-	}
-	// The below check used to be in CallSpecialOp but interfered with other
-	// ops.  It doesn't feel right and probably points to unsound behavior in
-	// findAndUnquote, but it is less disruptive here than in CallSpecialOp.
-	// And I'm not sure that I'm going to fix findAndUnquote soon -- it may
-	// just be rewritten if another problem is found.
-	if result.Type == LSExpr && !result.IsNil() && !result.Quoted {
-		result = Quote(result)
-	}
-	return result
+
+	// quasiquote will always return a quoted result.  It is a quoting
+	// operation overall.
+	return Quote(result)
 }
 
 func opLambda(env *LEnv, args *LVal) *LVal {

@@ -2,6 +2,8 @@
 
 package lisp
 
+import "fmt"
+
 var userMacros []*langBuiltin
 var langMacros = []*langBuiltin{
 	{"defmacro", Formals("name", "formals", "expr"), macroDefmacro},
@@ -128,70 +130,135 @@ func macroGetDefault(env *LEnv, args *LVal) *LVal {
 	return let
 }
 
-func isUnquote(v *LVal) bool {
+type unquoteType int
+
+const (
+	unquoteNone unquoteType = iota
+	unquoteValue
+	unquoteSpliced
+	unquoteInvalid
+)
+
+func getUnquoteType(v *LVal) (unquoteType, error) {
 	if v.Type != LSExpr {
-		return false
+		return unquoteNone, nil
 	}
 	if len(v.Cells) < 1 {
-		return false
+		return unquoteNone, nil
 	}
 	if v.Cells[0].Type != LSymbol {
-		return false
+		return unquoteNone, nil
 	}
-	return v.Cells[0].Str == "unquote" || v.Cells[0].Str == "unquote-splicing"
+	if v.Cells[0].Str == "unquote" {
+		if len(v.Cells) != 2 {
+			return unquoteValue, fmt.Errorf("%s: one argument expected (got %d)", v.Cells[0].Str, len(v.Cells)-1)
+		}
+		return unquoteValue, nil
+	}
+	if v.Cells[0].Str == "unquote-splicing" {
+		if len(v.Cells) != 2 {
+			return unquoteSpliced, fmt.Errorf("%s: one argument expected (got %d)", v.Cells[0].Str, len(v.Cells)-1)
+		}
+		return unquoteSpliced, nil
+	}
+	return unquoteNone, nil
 }
 
-// NOTE:  There are almost surely bugs with this implementation un unquoting,
-// especially when dealing with complex macros using multiple levels of
-// quasiquotes/unquotes.  I need to find these examples, understand how they
-// are supposed to work, and then fix these test cases.
 func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
-	if v.Type != LSExpr {
+	inner := v
+	quoteLevel := 0
+	if inner.Quoted {
+		quoteLevel += 1
+	}
+	for inner.Type == LQuote {
+		quoteLevel += 1
+		inner = inner.Cells[0]
+	}
+	if inner.Type != LSExpr {
+		// back out of the entire quote chain and return v to leave the value
+		// unchanged in the quasiquote.
 		return v
 	}
-	if isUnquote(v) {
-		spliceType := v.Cells[0].Str
-		if len(v.Cells) != 2 {
-			return env.Errorf("%v: one argument expected (got %d)", v.Cells[0].Str, len(v.Cells)-1)
+	v = inner
+
+	unquote, err := getUnquoteType(v)
+	if err != nil {
+		return env.Error(err)
+	}
+	if unquote == unquoteSpliced {
+		// v looks like ``(unquote-splicing expr)''
+		expr := v.Cells[1]
+		if depth == 0 || quoteLevel > 0 {
+			return env.Errorf("unquote-splicing used in an invalid context")
 		}
-		// The v looks like ``(unquote EXPR)'' or ``(unquote-splicing expr)''
-		x := env.Eval(v.Cells[1])
-		if spliceType == "unquote-splicing" {
-			if depth == 0 {
-				return env.Errorf("unquote-splicing used in an invalid context")
-			}
-			x = Splice(x)
-		}
+		return doUnquoteSpliced(env, expr)
+	}
+	if unquote == unquoteValue {
+		// v looks like ``(unquote expr)''
+		return doUnquoteValue(env, v.Cells[1], quoteLevel)
+	}
+	return doUnquoteSExpr(env, v, depth, quoteLevel)
+}
+
+func doUnquoteSpliced(env *LEnv, v *LVal) *LVal {
+	x := env.Eval(v)
+	if x.Type == LError {
 		return x
 	}
+	x = Splice(x)
+	return x
+}
+
+func doUnquoteValue(env *LEnv, v *LVal, quoteLevel int) *LVal {
+	x := env.Eval(v)
+	if x.Type == LError {
+		return x
+	}
+	for i := 0; i < quoteLevel; i++ {
+		x = Quote(x)
+	}
+	return x
+}
+
+func doUnquoteSExpr(env *LEnv, v *LVal, depth int, quoteLevel int) *LVal {
 	// findAndUnquote all child expressions
+	numSpliced := 0
+	numExtended := 0
 	cells := make([]*LVal, v.Len())
 	for i := range v.Cells {
 		cells[i] = findAndUnquote(env, v.Cells[i], depth+1)
 		if cells[i].Type == LError {
 			return cells[i]
 		}
-	}
-	// splice in grandchildren of children that were unquoted with
-	// ``unquote-splicing''
-	for i := len(cells) - 1; i >= 0; i-- {
 		if cells[i].Spliced {
-			splice := cells[i]
-			if splice.Type != LSExpr {
-				// TODO:  I believe it is incorrect to error out here.  But
-				// splicing non-lists is not a major concern at the moment.
-				return env.Errorf("%s: cannot splice non-list: %s", "unquote-splicing", splice.Type)
-			}
-			// TODO:  Be clever and don't force allocation here.  Grow newcells and shift v.Cells[i+1:]
-			newcells := make([]*LVal, 0, len(v.Cells)+len(splice.Cells)-1)
-			newcells = append(newcells, cells[:i]...)
-			newcells = append(newcells, splice.Cells...)
-			newcells = append(newcells, cells[i+1:]...)
-			cells = newcells
+			numSpliced += 1
+			numExtended += len(cells[i].Cells)
 		}
 	}
+	// splice in children of children that were unquoted with
+	// ``unquote-splicing''
+	if numSpliced > 0 {
+		newlen := len(cells) - numSpliced + numExtended
+		newcells := make([]*LVal, 0, newlen)
+		for _, v := range cells {
+			if v.Spliced {
+				if v.Type != LSExpr {
+					// TODO:  I believe it is incorrect to error out here.  But
+					// splicing non-lists is not a major concern at the moment.
+					return env.Errorf("%s: cannot splice non-list: %s", "unquote-splicing", v.Type)
+				}
+				newcells = append(newcells, v.Cells...)
+			} else {
+				newcells = append(newcells, v)
+			}
+		}
+		cells = newcells
+	}
 	expr := SExpr(cells)
-	expr.Quoted = v.Quoted
+	expr.Source = v.Source
+	for i := 0; i < quoteLevel; i++ {
+		expr = Quote(expr)
+	}
 	return expr
 }
 

@@ -1267,6 +1267,9 @@ func builtinSelect(env *LEnv, args *LVal) *LVal {
 	if pred.Type != LFun {
 		return env.Errorf("second argument is not a function: %v", pred.Type)
 	}
+	if pred.IsSpecialFun() {
+		return env.Errorf("second argument is not a regular function")
+	}
 	if !isSeq(list) {
 		return env.Errorf("third argument is not a proper sequence: %v", list.Type)
 	}
@@ -1283,8 +1286,7 @@ func builtinSelect(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("type specifier is invalid: %v", typespec)
 	}
 	for _, v := range seqCells(list) {
-		expr := SExpr([]*LVal{pred, v})
-		ok := env.Eval(expr)
+		ok := env.FunCall(pred, SExpr([]*LVal{v}))
 		if ok.Type == LError {
 			return ok
 		}
@@ -1314,6 +1316,9 @@ func builtinReject(env *LEnv, args *LVal) *LVal {
 	if pred.Type != LFun {
 		return env.Errorf("second argument is not a function: %v", pred.Type)
 	}
+	if pred.IsSpecialFun() {
+		return env.Errorf("second argument is not a regular function")
+	}
 	if !isSeq(list) {
 		return env.Errorf("third argument is not a proper sequence: %v", list.Type)
 	}
@@ -1330,8 +1335,7 @@ func builtinReject(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("type specifier is invalid: %v", typespec)
 	}
 	for _, v := range seqCells(list) {
-		expr := SExpr([]*LVal{pred, v})
-		ok := env.Eval(expr)
+		ok := env.FunCall(pred, SExpr([]*LVal{v}))
 		if ok.Type == LError {
 			return ok
 		}

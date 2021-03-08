@@ -56,10 +56,10 @@ const (
 	// implementation of the builtin ``let''.
 	LFun
 	// LQuote values are special values only used to represents two or more
-	// levels of quoting (e.g. ''3 or '''''''()).  The first level of quoting
-	// takes places by setting the LVal.Quoted field on a value with a normal
-	// value in LVal.Type.  LQuote values must always have a true LVal.Quoted
-	// field.
+	// levels of quoting (e.g. ''3 or '''''''()).  The quoted value is stored
+	// in LVals.Cells[0].  The first level of quoting takes places by setting
+	// the LVal.Quoted field on a value with a normal value in LVal.Type.
+	// LQuote values must always have a true LVal.Quoted field.
 	LQuote
 	// LString values store a string in the LVal.Str field.
 	LString
