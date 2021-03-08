@@ -306,6 +306,9 @@ string"""`, `"\"\"a raw\nstring"`, ""},
 			{"(reject 'vector (expr (< % 3)) '())", "(vector)", ""},
 			{"(reject 'vector (expr (< % 3)) '(0 1 2 3 4 5))", "(vector 3 4 5)", ""},
 			{"(reject 'vector (expr (< % 3)) '(0 1 1 -1 2 2))", "(vector)", ""},
+			{`(select 'list (lambda (x) (string= "b" (to-string x))) '(a b c))`, `'(b)`, ``},
+			{`(reject 'list (lambda (x) (string= "b" (to-string x))) '(a b c))`, `'(a c)`, ``},
+			{`(select 'list quote '(a b c))`, `test:1: lisp:select: second argument is not a regular function`, ``},
 		}},
 		{"defun", elpstest.TestSequence{
 			// defun macro
