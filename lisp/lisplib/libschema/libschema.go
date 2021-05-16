@@ -5,9 +5,10 @@ package libschema
 
 import (
 	"fmt"
+	"regexp"
+
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
-	"regexp"
 )
 
 // DeafultPackageName is the package name used by LoadPackage.
@@ -26,6 +27,7 @@ const (
 	SortedMap = "sorted-map"
 	Array     = "array"
 	Bool      = "bool"
+	TaggedVal = "tagged-value"
 	Any       = "any"
 )
 
@@ -40,6 +42,7 @@ var symbols = []string{
 	SortedMap,
 	Array,
 	Bool,
+	TaggedVal,
 	Any,
 }
 
@@ -73,7 +76,8 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 }
 
 var builtins = []*libutil.Builtin{
-	libutil.Function("deftype", lisp.Formals("name", "type", "&rest", "constraints"), builtinDefType),
+	libutil.Function("deftype", lisp.Formals("name", "type", lisp.VarArgSymbol, "constraints"), builtinDefType),
+	libutil.Function("make-validator", lisp.Formals("name", "type", lisp.VarArgSymbol, "constraints"), builtinMakeValidator),
 	libutil.Function("in", lisp.Formals("&rest", "allowed-values"), builtinAllowedValues),
 	libutil.Function("gt", lisp.Formals("allowed-value"), builtinGreaterThan),
 	libutil.Function("gte", lisp.Formals("allowed-value"), builtinGreaterThanOrEqual),
@@ -100,44 +104,95 @@ var builtins = []*libutil.Builtin{
 	libutil.Function("regexp", lisp.Formals("pattern"), builtinRegexp),
 }
 
-// This is the `s:validate` keyword. It checks its input matches the type specified
+// This is the `s:validate` keyword. It checks its input matches the type
+// validator specified.
 func builtinValidate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if len(args.Cells) < 2 {
 		return lisp.ErrorConditionf(BadArgs, "Not enough arguments")
 	}
-	if args.Cells[0].Type != lisp.LFun {
+	val := args.Cells[0]
+	input := args.Cells[1]
+	if val.Type != lisp.LFun {
 		return lisp.ErrorConditionf(BadArgs, "First argument is not a type")
 	}
-	return args.Cells[0].FunData().Builtin(env, args.Cells[1])
+	return val.FunData().Builtin(env, input)
 }
 
-// This is the `s:deftype` keyword. It defines a type and associated constraints
+// This is the `s:deftype` keyword. It defines a type and associated
+// constraints.  s:deftype creates a symbol binding for the type validator
+// which can be used with s:validate.
+//
+// s:deftype cannot be used with the core language deftype macro because they
+// would bind different values to the same symbol.  s:make-validator should be
+// used with tagged-values instead.
 func builtinDefType(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	lname := args.Cells[0]
+	typeValidator := args.Cells[1]
+	constraints := args.Cells[2:]
 	if len(args.Cells) < 2 {
 		return lisp.ErrorConditionf(BadArgs, "Not enough arguments")
 	}
-	name, ok := lisp.GoString(args.Cells[0])
-	if !ok {
+	var name string
+	switch lname.Type {
+	case lisp.LString:
+		name = lname.Str
+	default:
 		return lisp.ErrorConditionf(BadArgs, "First argument must resolve to a string")
 	}
-	if exists := env.Get(args.Cells[0]); !exists.IsNil() {
-		return lisp.ErrorConditionf(BadArgs, "Symbol %s is already defined", args.Cells[0])
+	exists := env.Get(lname)
+	if !exists.IsNil() {
+		return lisp.ErrorConditionf(BadArgs, "Symbol %s is already defined", lname)
 	}
-	constraints := make([]*lisp.LVal, 0)
-	if len(args.Cells) > 2 {
-		constraints = args.Cells[2:]
-	}
-	res := getHandler(env, args.Cells[1], name, constraints)
+	res := getHandler(env, typeValidator, name, constraints)
 	if res != nil && res.Type == lisp.LError {
 		return res
 	}
 	if res != nil {
-		res = env.PutGlobal(lisp.Symbol(args.Cells[0].Str), res)
+		// BUG:  A regular function should not call PutGlobal in this way
+		// because functions aren't supposed to operate in the caller's lexical
+		// environment, but builtins don't get a lexical environment currently.
+		res = env.PutGlobal(lisp.Symbol(lname.Str), res)
 		if res != nil && res.Type == lisp.LError {
 			return res
 		}
 	}
 	return lisp.Nil()
+}
+
+// This is the `s:make-validator` keyword.  It returns a reference to a
+// validation handler constructed from the given name, type, and constraints.
+// The type name may be a string or a typedef.  Passing a typedef implies the
+// "tagged-value" typename and in that case the typename argument is used to
+// constrain the user-data of validated objects.
+func builtinMakeValidator(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	lname := args.Cells[0]
+	typeValidator := args.Cells[1]
+	constraints := args.Cells[2:]
+	if len(args.Cells) < 2 {
+		return lisp.ErrorConditionf(BadArgs, "Not enough arguments")
+	}
+	var name string
+	switch lname.Type {
+	case lisp.LString:
+		name = lname.Str
+	case lisp.LTaggedVal:
+		if lname.Str != "lisp:typedef" {
+			return lisp.ErrorConditionf(BadArgs, "First argument must resolve to a string or typedef")
+		}
+		name = lname.UserData().Cells[0].Str
+		taggedConstraints := []*lisp.LVal{typeValidator}
+		taggedConstraints = append(taggedConstraints, constraints...)
+		constraints = taggedConstraints
+		typeValidator = lisp.String(TaggedVal)
+	default:
+		return lisp.ErrorConditionf(BadArgs, "First argument must resolve to a string or typedef")
+	}
+	res := getHandler(env, typeValidator, name, constraints)
+	if res != nil {
+		return res
+	}
+	return lisp.Nil()
+
 }
 
 // finds the correct validation handler for the type
@@ -146,24 +201,28 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 	var res *lisp.LVal
 	switch lType {
 	case String:
-		res = builtinCheckString(name, constraints)
+		res = builtinCheckString(env, name, constraints)
 	case Int:
-		res = builtinCheckInt(name, constraints)
+		res = builtinCheckInt(env, name, constraints)
 	case Float:
-		res = builtinCheckFloat(name, constraints)
+		res = builtinCheckFloat(env, name, constraints)
 	case Number:
-		res = builtinCheckNumber(name, constraints)
+		res = builtinCheckNumber(env, name, constraints)
 	case Array:
-		res = builtinCheckArray(name, constraints)
+		res = builtinCheckArray(env, name, constraints)
 	case SortedMap:
-		res = builtinCheckMap(name, constraints)
+		res = builtinCheckMap(env, name, constraints)
 	case Fun:
-		res = builtinCheckFun(name, constraints)
+		res = builtinCheckFun(env, name, constraints)
 	case Bool:
-		res = builtinCheckBool(name, constraints)
+		res = builtinCheckBool(env, name, constraints)
+	case TaggedVal:
+		res = builtinCheckTaggedVal(env, name, constraints)
 	case Any:
-		res = builtinCheckAny(constraints)
+		res = builtinCheckAny(env, constraints)
 	default:
+		// BUG:  It is not correct to evaluate `in` here, it has already been
+		// evaluated as part of the function application process.
 		if in.Type == lisp.LSExpr {
 			in = env.Eval(in)
 		}
@@ -187,18 +246,40 @@ func GenSymbol() string {
 }
 
 // Checks constraints and type for boolean values
-func builtinCheckBool(name string, constraints []*lisp.LVal) *lisp.LVal {
+func builtinCheckBool(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun(GenSymbol(), lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		if input.Str != lisp.TrueSymbol && input.Str != lisp.FalseSymbol {
 			return lisp.ErrorConditionf(WrongType, "Input was not a boolean for type %s", name)
 		}
-		return builtinCheckAny(constraints).FunData().Builtin(env, input)
+		return builtinCheckAny(env, constraints).FunData().Builtin(env, input)
+	})
+}
+
+// Checks constraints and type for values with a user-defined type.
+func builtinCheckTaggedVal(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
+	var rest *lisp.LVal
+	if len(constraints) == 0 || constraints[0].Type != lisp.LString {
+		rest = builtinCheckAny(env, constraints)
+	} else {
+		subtype := constraints[0]
+		constraints = constraints[1:]
+		rest = getHandler(env, subtype, name, constraints)
+		if rest.Type == lisp.LError {
+			return rest
+		}
+	}
+	// NB these aren't normal functions - they aren't looking for an array of args
+	return lisp.Fun(GenSymbol(), lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
+		if input.Type != lisp.LTaggedVal {
+			return lisp.ErrorConditionf(WrongType, "Input was not a tagged-value for type %s", name)
+		}
+		return rest.FunData().Builtin(env, input.UserData())
 	})
 }
 
 // Checks constraints and type for untyped values
-func builtinCheckAny(constraints []*lisp.LVal) *lisp.LVal {
+func builtinCheckAny(env *lisp.LEnv, constraints []*lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun(GenSymbol(), lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		for _, constraint := range constraints {
@@ -214,46 +295,50 @@ func builtinCheckAny(constraints []*lisp.LVal) *lisp.LVal {
 }
 
 // Checks constraints and type for functions
-func builtinCheckFun(name string, constraints []*lisp.LVal) *lisp.LVal {
+func builtinCheckFun(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
+	rest := builtinCheckAny(env, constraints)
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun(GenSymbol(), lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		if input.Type != lisp.LFun {
 			return lisp.ErrorConditionf(WrongType, "Input was not a function for type %s", name)
 		}
-		return builtinCheckAny(constraints).FunData().Builtin(env, input)
+		return rest.FunData().Builtin(env, input)
 	})
 }
 
 // Checks constraints and type for sorted-map values
-func builtinCheckMap(name string, constraints []*lisp.LVal) *lisp.LVal {
+func builtinCheckMap(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
+	rest := builtinCheckAny(env, constraints)
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun(GenSymbol(), lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		if input.Type != lisp.LSortMap {
 			return lisp.ErrorConditionf(WrongType, "Input was not a sorted map for type %s", name)
 		}
-		return builtinCheckAny(constraints).FunData().Builtin(env, input)
+		return rest.FunData().Builtin(env, input)
 	})
 }
 
 // Checks constraints and type for array values
-func builtinCheckArray(name string, constraints []*lisp.LVal) *lisp.LVal {
+func builtinCheckArray(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
+	rest := builtinCheckAny(env, constraints)
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun(GenSymbol(), lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		if input.Type != lisp.LArray {
 			return lisp.ErrorConditionf(WrongType, "Input was not an array for type %s", name)
 		}
-		return builtinCheckAny(constraints).FunData().Builtin(env, input)
+		return rest.FunData().Builtin(env, input)
 	})
 }
 
 // Checks constraints and type for string values
-func builtinCheckString(name string, constraints []*lisp.LVal) *lisp.LVal {
+func builtinCheckString(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
+	rest := builtinCheckAny(env, constraints)
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun(GenSymbol(), lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		if input.Type != lisp.LString {
 			return lisp.ErrorConditionf(WrongType, "Input was not a string for type %s", name)
 		}
-		return builtinCheckAny(constraints).FunData().Builtin(env, input)
+		return rest.FunData().Builtin(env, input)
 	})
 }
 
@@ -559,35 +644,38 @@ func builtinNegative(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 }
 
 // Checks type and constraints for integers
-func builtinCheckInt(name string, constraints []*lisp.LVal) *lisp.LVal {
+func builtinCheckInt(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
+	rest := builtinCheckAny(env, constraints)
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun(name, lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		if input.Type != lisp.LInt {
 			return lisp.ErrorConditionf(WrongType, "Input was not an integer for type %s", name)
 		}
-		return builtinCheckAny(constraints).FunData().Builtin(env, input)
+		return rest.FunData().Builtin(env, input)
 	})
 }
 
 // Checks type and constraints for floats
-func builtinCheckFloat(name string, constraints []*lisp.LVal) *lisp.LVal {
+func builtinCheckFloat(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
+	rest := builtinCheckAny(env, constraints)
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun(name, lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		if input.Type != lisp.LFloat {
 			return lisp.ErrorConditionf(WrongType, "Input was not a float for type %s", name)
 		}
-		return builtinCheckAny(constraints).FunData().Builtin(env, input)
+		return rest.FunData().Builtin(env, input)
 	})
 }
 
 // Checks type and constraints for numbers
-func builtinCheckNumber(name string, constraints []*lisp.LVal) *lisp.LVal {
+func builtinCheckNumber(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
+	rest := builtinCheckAny(env, constraints)
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun(name, lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		if input.Type != lisp.LInt && input.Type != lisp.LFloat {
 			return lisp.ErrorConditionf(WrongType, "Input was not a number for type %s", name)
 		}
-		return builtinCheckAny(constraints).FunData().Builtin(env, input)
+		return rest.FunData().Builtin(env, input)
 	})
 }
 

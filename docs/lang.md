@@ -566,6 +566,29 @@ It is a peculiarity of elps that `assoc` on `()` will return a new sorted-map
 with the corresponding key and value set.
 Similarly, `get` on `()` will return `()`.
 
+### User-Defined Types
+
+Programs can define new types with the `deftype` macro and instantiate types
+with the `new` function.  New types have their names bound within the current
+package.  User-defined types are represented as a "tagged-value" which
+associates the type symbol with user data which can be any value.
+
+```lisp
+(deftype rect (height width)
+    (sorted-map :height height
+                :width width))
+(set 'r (new rect 100 50))
+(type r)           ; evaluates to 'user:rect
+(type? rect r)     ; evaluates to true
+(sorted-map? r)    ; evaluates to false
+(tagged-value? r)  ; evaluates to true
+(user-data r)      ; evaluates to (sorted-map :height 100 :width 50)
+```
+
+The core language only provides low-level functionality for defining and
+working with custom types.  For the time being it is left it up to the
+application to create more powerful abstractions over typed data.
+
 ## Packages
 
 Packages allow namespace isolation for components of a code base as its

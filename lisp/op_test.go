@@ -136,6 +136,15 @@ func TestSpecialOp(t *testing.T) {
 			{`(map 'list (lambda (x) (thread-last x (+ 2) (< 2))) '(1 -1))`, `'(true false)`, ""},
 			{`(map 'list (lambda (x) (thread-first x (+ 2) (< 2))) '(1 -1))`, `'(false true)`, ""},
 		}},
+		{"qualified-symbol", elpstest.TestSequence{
+			{`(qualified-symbol 'x)`, `'user:x`, ``},
+			{`(qualified-symbol x)`, `'user:x`, ``},
+			{`(qualified-symbol 'lisp:x)`, `'lisp:x`, ``},
+			{`(qualified-symbol lisp:x)`, `'lisp:x`, ``},
+			{`(qualified-symbol 3)`, `test:1: lisp:qualified-symbol: argument is not a symbol: 'int`, ``},
+			{`(in-package 'other)`, `()`, ``},
+			{`(qualified-symbol 'x)`, `'other:x`, ``},
+		}},
 	}
 	elpstest.RunTestSuite(t, tests)
 }

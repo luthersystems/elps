@@ -107,6 +107,11 @@ var langBuiltins = []*langBuiltin{
 	{"not", Formals("expr"), builtinNot},
 	// true? is potentially needed as a boolean conversion function (for json)
 	{"true?", Formals("expr"), builtinIsTrue},
+	{"type", Formals("value"), builtinType},
+	{"type?", Formals("type-specifier", "value"), builtinIsType},
+	{"tagged-value?", Formals("value"), builtinIsTaggedVal},
+	{"user-data", Formals("value"), builtinUserData},
+	{"new", Formals("type-specifier", VarArgSymbol, "arguments"), builtinNew},
 	{"nil?", Formals("expr"), builtinIsNil},
 	{"list?", Formals("expr"), builtinIsList},
 	{"sorted-map?", Formals("expr"), builtinIsSortedMap},
@@ -1730,6 +1735,53 @@ func builtinNot(env *LEnv, args *LVal) *LVal {
 
 func builtinIsTrue(env *LEnv, args *LVal) *LVal {
 	return Bool(True(args.Cells[0]))
+}
+
+func builtinType(env *LEnv, args *LVal) *LVal {
+	v := args.Cells[0]
+	return GetType(v)
+}
+
+func builtinIsType(env *LEnv, args *LVal) *LVal {
+	typespec := args.Cells[0]
+	v := args.Cells[1]
+	if typespec.Type != LSymbol && typespec.Type != LTaggedVal {
+		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
+	}
+	typesym := typespec.Str
+	if typespec.Type == LTaggedVal {
+		if typesym != fmt.Sprintf("%s:typedef", env.Runtime.Registry.Lang) {
+			return env.Errorf("first argument is not a valid type specifier: %v", typesym)
+		}
+		typesym = typespec.Cells[0].Cells[0].Str
+	}
+	t := GetType(v)
+	return Bool(t.Str == typesym)
+}
+
+func builtinIsTaggedVal(env *LEnv, args *LVal) *LVal {
+	v := args.Cells[0]
+	return Bool(v.Type == LTaggedVal)
+}
+
+func builtinUserData(env *LEnv, args *LVal) *LVal {
+	v := args.Cells[0]
+	if v.Type != LTaggedVal {
+		return env.Errorf("argument is not a tagged value: %v", GetType(v))
+	}
+	return v.UserData()
+}
+
+func builtinNew(env *LEnv, args *LVal) *LVal {
+	typespec := args.Cells[0]
+	cargs := args.Cells[1:]
+	if typespec.Type == LSymbol {
+		typespec = env.GetGlobal(typespec)
+		if typespec.Type == LError {
+			return typespec
+		}
+	}
+	return env.New(typespec, SExpr(cargs))
 }
 
 func builtinIsNil(env *LEnv, args *LVal) *LVal {

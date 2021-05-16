@@ -40,8 +40,12 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 	env.AddMacros(true)
 	env.AddSpecialOps(true)
 	env.AddBuiltins(true)
+	rc := InitializeTypedef(env)
+	if GoError(rc) != nil {
+		return rc
+	}
 	env.Runtime.Registry.DefinePackage(DefaultUserPackage)
-	rc := env.InPackage(Symbol(DefaultUserPackage))
+	rc = env.InPackage(Symbol(DefaultUserPackage))
 	if GoError(rc) != nil {
 		return rc
 	}
@@ -52,6 +56,42 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 		}
 	}
 	return env.UsePackage(Symbol(env.Runtime.Registry.Lang))
+}
+
+// InitializeTypedef injects the meta-typedef object so `new` and `deftype` can
+// be used to create user-defined types.  The name of the injected typedef
+// object is not exported and it should not be handled without abstraction in
+// general because user error can break the type system.
+//
+// See LEnv.TaggedValue for more information about creating tagged-values.
+func InitializeTypedef(env *LEnv) *LVal {
+	ctor := env.builtin(&langBuiltin{"typedef-ctor", Formals("name", "ctor"), func(env *LEnv, args *LVal) *LVal {
+		sym := args.Cells[0]
+		ctor := args.Cells[1]
+		if sym.Type != LSymbol {
+			return env.Errorf("first argument is not a symbol: %v", GetType(sym))
+		}
+		if ctor.Type != LFun {
+			return env.Errorf("second argument is not a function: %v", GetType(ctor))
+		}
+		if ctor.IsSpecialFun() {
+			return env.Errorf("second argument is not a regular function")
+		}
+		return QExpr([]*LVal{sym, ctor})
+	}})
+	if ctor.Type == LError {
+		return ctor
+	}
+	// Create a typedef for the typedef type that will use ctor to create new
+	// typedefs. Pretty simple, really. *brain explosion*
+	pkg := env.Runtime.Registry.Lang
+	fqname := Symbol(fmt.Sprintf("%s:typedef", pkg))
+	typedef := env.TaggedValue(fqname, QExpr([]*LVal{fqname, ctor}))
+	if typedef.Type == LError {
+		return typedef
+	}
+	env.Runtime.Registry.Packages[pkg].Put(Symbol("typedef"), typedef)
+	return Nil()
 }
 
 // TODO(elps2): Remove the field LEnv.FunName
@@ -90,13 +130,17 @@ func NewEnvRuntime(rt *Runtime) *LEnv {
 // NewEnv returns initializes and returns a new LEnv.
 func NewEnv(parent *LEnv) *LEnv {
 	var runtime *Runtime
+	var loc *token.Location
 	if parent != nil {
 		runtime = parent.Runtime
+		loc = parent.Loc
 	} else {
 		runtime = StandardRuntime()
+		loc = nativeSource()
 	}
 	env := &LEnv{
 		ID:      runtime.GenEnvID(),
+		Loc:     loc,
 		Scope:   make(map[string]*LVal),
 		FunName: make(map[string]string),
 		Parent:  parent,
@@ -499,6 +543,53 @@ func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
 	return Nil()
 }
 
+// TaggedValue is a low-level function to create a tagged-value and should be
+// used with great care and testing.  The first argument must be a symbol and
+// is used as the type of the returned tagged-value.  The second argument is
+// the value being tagged.
+//
+// The type of a tagged-value should be a qualified symbol (e.g. 'lisp:mytype).
+// Unqualified type names can clash with primitive type symbols (e.g. 'string)
+// which can lead to program failures.
+func (env *LEnv) TaggedValue(typ *LVal, val *LVal) *LVal {
+	if typ.Type != LSymbol {
+		return env.Errorf("first argument is not a symbol: %v", GetType(typ))
+	}
+	return &LVal{
+		Source: env.Loc,
+		Type:   LTaggedVal,
+		Str:    typ.Str,
+		Cells:  []*LVal{val},
+	}
+}
+
+// New takes a typedef along with a list of constructor arguments and returns
+// an LTaggedValue containing the result of invoking the typedef's constructor
+// with the given arguments.  A typedef is an LTaggedVal itself that wraps a
+// list holding the defined type name along with a constructor.
+//
+// New requires that the system have typedef tagged-values.  Generally that
+// will be enabled by calling InitializeTypedef or InitializeUserEnv when
+// initializing the top-level enviornment.
+func (env *LEnv) New(typ *LVal, args *LVal) *LVal {
+	if typ.Type != LTaggedVal {
+		return env.Errorf("first argument is not a typedef: %v", GetType(typ))
+	}
+	if typ.Str != fmt.Sprintf("%s:typedef", env.Runtime.Registry.Lang) {
+		return env.Errorf("first argument is not a typedef: %v", GetType(typ))
+	}
+	if args.Type != LSExpr {
+		return env.Errorf("second argument is not a list: %v", GetType(args))
+	}
+	tname := typ.Cells[0].Cells[0]
+	ctor := typ.Cells[0].Cells[1]
+	v := env.FunCall(ctor, args)
+	if v.Type == LError {
+		return v
+	}
+	return env.TaggedValue(tname, v)
+}
+
 // Lambda returns a new Lambda with fun.Env and fun.Package set automatically.
 func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	if formals.Type != LSExpr {
@@ -519,6 +610,15 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 		Cells: cells,
 	}
 	return fun
+}
+
+// BUG:  Because Go-defined functions don't have a lexical enivroment this
+// method doesn't produce the expected behavior and can't be exported publicly
+// because of that.
+func (env *LEnv) builtin(f LBuiltinDef) *LVal {
+	v := Fun(NewEnv(env).getFID(), f.Formals(), f.Eval)
+	v.FunData().Package = env.Runtime.Package.Name
+	return v
 }
 
 func (env *LEnv) Terminal(expr *LVal) *LVal {

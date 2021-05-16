@@ -33,6 +33,7 @@ var langSpecialOps = []*langBuiltin{
 	{"if", Formals("condition", "then", "else"), opIf},
 	{"or", Formals(VarArgSymbol, "expr"), opOr},
 	{"and", Formals(VarArgSymbol, "expr"), opAnd},
+	{"qualified-symbol", Formals("symbol"), opQualifiedSymbol},
 }
 
 // RegisterDefaultSpecialOp adds the given function to the list returned by
@@ -727,4 +728,24 @@ func opAnd(env *LEnv, s *LVal) *LVal {
 	//		                       ...
 	//		                       (t xn))
 	return r
+}
+
+func opQualifiedSymbol(env *LEnv, args *LVal) *LVal {
+	sym := args.Cells[0]
+	if sym.Type != LSymbol {
+		return env.Errorf("argument is not a symbol: %v", GetType(sym))
+	}
+	pieces := SplitSymbol(sym)
+	if pieces.Type == LError {
+		env.ErrorAssociate(pieces)
+		return pieces
+	}
+	if pieces.Len() == 2 {
+		if sym.Quoted {
+			return sym
+		}
+		return Quote(sym)
+	}
+	pkg := env.Runtime.Package.Name
+	return Quote(Symbol(fmt.Sprintf("%v:%v", pkg, sym.Str)))
 }

@@ -681,6 +681,124 @@ elps> (true? true)
 true
 ```
 
+## `deftype`
+
+Defines a new type in the current package -- binding its name to a typedef.
+Along with the type name `deftype` takes a list of constructor arguments
+followed by constructor expressions which can reference constructor arguments
+and are executed by the type constructor as if wrapped in a `progn`.
+
+```lisp
+elps> (deftype myobject (x) x)
+'user:myobject
+elps> myobject
+#{lisp:typedef '('user:myobject (lambda (x) x))}
+```
+
+## `new`
+
+Instantiate a type that was previously defined with `deftype`.  If given a
+typedef its constructor is called and the resulting user data is placed in a
+tagged-value.  Otherwise, if given a symbol, `new` looks for a package-level
+symbol bound to a typedef.
+
+```lisp
+elps> (deftype myobject (x) x)
+user:myobject
+elps> (new myobject "hello")
+#{user:myobject "hello"}
+elps> (new 'myobject "hello")
+#{user:myobject "hello"}
+elps> (in-package 'other)
+()
+elps> (new user:myobject "hello")
+#{user:myobject "hello"}
+elps> (new 'user:myobject "hello")
+#{user:myobject "hello"}
+```
+
+## `tagged-value?`
+
+Returns a boolean value true iff the given value is a tagged-value (a
+user-defined type)
+
+```lisp
+elps> (tagged-value? "hello")
+false
+elps> (deftype myobject (x) x)
+'user:myobject
+elps> (tagged-value? myobject)
+true
+elps> (tagged-value? (new myobject "hello"))
+true
+```
+
+## `user-data`
+
+Returns the user data associated with the tagged-value.  It is an error if the
+argument is not a tagged-value.
+
+```lisp
+elps> (deftype myobject (x) x)
+'user:myobject
+elps> (user-data (new myobject "hello"))
+"hello"
+elps> (user-data "hello")
+stdin:1: lisp:user-data: argument is not a tagged value: string
+Stack Trace [1 frames -- entrypoint last]:
+  height 0: stdin:1: lisp:tagged-value
+```
+
+## `type`
+
+Returns the type of its argument as a symbol.  If the argument is a
+tagged-value then the user-defined type name is returned.
+
+```lisp
+elps> (type 1)
+int
+elps> (type '())
+list
+elps> (type (vector 1 2 3))
+array
+elps> (type (sorted-map "a" 1))
+sorted-map
+elps> (type "abc")
+string
+elps> (type (to-bytes "abc"))
+bytes
+elps> (deftype emptyobject ())
+'user:emptyobject
+elps> (type emptyobject)
+'lisp:typedef
+elps> (type (new emptyobject))
+'user:emptyobject
+```
+
+## `type?`
+
+Returns a boolean value true iff the given type specifier matches the given
+value.  A type specifier must either by a symbol or a typedef.  Symbols must be
+qualified with package names in order to match user-defined types and avoid
+confusion between primitive and user-defined data types.
+
+```lisp
+elps> (type? 'list '())
+true
+elps> (type? 'sorted-map '())
+false
+elps> (type? 'string "abc")
+true
+elps> (deftype myobject (x) x)
+'user:myobject
+elps> (type? 'user:myobject (new myobject "hello"))
+true
+elps> (type? myobject (new myobject "hello"))
+true
+elps> (type? 'myobject (new myobject "hello")) ; user types must be referenced with qualified names
+false
+```
+
 # Type Checking
 
 ```Lisp
