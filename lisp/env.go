@@ -880,6 +880,10 @@ func (env *LEnv) EvalSExpr(s *LVal) *LVal {
 		env.Runtime.Profiler.Start(fun)
 		defer env.Runtime.Profiler.End(fun)
 	}
+	if env.Runtime.Debugger != nil {
+		env.Runtime.Debugger.Start(s, fun)
+		defer env.Runtime.Debugger.End(fun)
+	}
 	switch fun.FunType {
 	case LFunNone:
 		return env.FunCall(fun, args)

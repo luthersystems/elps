@@ -20,6 +20,7 @@ type Runtime struct {
 	Reader   Reader
 	Library  SourceLibrary
 	Profiler Profiler
+	Debugger Debugger
 	numenv   atomicCounter
 	numsym   atomicCounter
 }

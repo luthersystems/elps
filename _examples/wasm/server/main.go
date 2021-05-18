@@ -1,6 +1,6 @@
 // Copyright © 2018 The ELPS authors
 
-// A basic HTTP server.
+// A basic HTTP delveserver.
 // By default, it serves the current working directory on port 8080.
 package main
 

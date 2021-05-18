@@ -196,7 +196,7 @@ func (p *callgrindProfiler) getFunctionParameters(function *lisp.LVal) (string, 
 		source = function.Source.File
 		line = function.Source.Line
 	}
-	fName := fmt.Sprintf("%s:%s", function.FunData().Package, getFunNameFromFID(p.runtime, function.FunData().FID))
+	fName := fmt.Sprintf("%s:%s", function.FunData().Package, GetFunNameFromFID(p.runtime, function.FunData().FID))
 	return source, line, fName
 }
 

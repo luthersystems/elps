@@ -18,3 +18,16 @@ type Profiler interface {
 	End(function *LVal)
 }
 
+// Interface for a debugger
+type Debugger interface {
+	// Is the profiler enabled?
+	IsEnabled() bool
+	// End the session and output summary lines
+	Complete() error
+	// Is done
+	Done() bool
+	// Marks the start of a process
+	Start(expr *LVal, function *LVal)
+	// Marks the end of a process
+	End(function *LVal)
+}

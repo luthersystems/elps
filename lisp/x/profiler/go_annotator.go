@@ -67,7 +67,7 @@ func (p *pprofAnnotator) Start(function *lisp.LVal) {
 		// and doing so would have a negative effect on users not profiling - it would either be an extra stack entry
 		// if we always ran inside a context, or a whole conditional code path and the added complication that brings
 		// if we did it that way.
-		fName := fmt.Sprintf("%s:%s", function.FunData().Package, getFunNameFromFID(p.runtime, function.FunData().FID))
+		fName := fmt.Sprintf("%s:%s", function.FunData().Package, GetFunNameFromFID(p.runtime, function.FunData().FID))
 		labels := pprof.Labels("function", fName)
 		p.contexts.Push(p.currentContext)
 		p.currentContext = pprof.WithLabels(p.currentContext, labels)
