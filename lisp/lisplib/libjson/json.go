@@ -7,9 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
-	"reflect"
-	"sort"
 	"strconv"
 
 	"github.com/luthersystems/elps/lisp"
@@ -101,49 +98,59 @@ func (s *Serializer) jsonDecode(b []byte, dst interface{}, stringNums bool) erro
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.UseNumber()
 	err := d.Decode(dst)
-	// Check for trailing bytes in b.  RawMessage is not ideal because it
-	// performs allocation when there is another object in b, but its OK for
-	// now.
-	var rest json.RawMessage
+	rest := failUnmarshal()
 	if d.Decode(&rest) != io.EOF {
 		return fmt.Errorf("not a valid json object")
 	}
 	return err
 }
 
+var errUnexpectedJSON = fmt.Errorf("unexpected json in stream")
+
+type unmarshalFailer struct{}
+
+func failUnmarshal() json.Unmarshaler {
+	return (*unmarshalFailer)(nil)
+}
+
+func (*unmarshalFailer) UnmarshalJSON([]byte) error {
+	return errUnexpectedJSON
+}
+
 func (s *Serializer) loadInterface(x interface{}) *lisp.LVal {
-	if x == nil {
-		return lisp.Nil()
-	}
+	// NOTE:  The order of types in this switch is deliberate to try and
+	// minimize the number of skipped branches.
 	switch x := x.(type) {
-	case bool:
-		return lisp.Bool(x)
 	case string:
 		return lisp.String(x)
+	case map[string]interface{}:
+		m := SortedMap(x)
+		for k, v := range m {
+			lval := s.loadInterface(v)
+			if lval.Type == lisp.LError {
+				return lval
+			}
+			m[k] = lval
+		}
+		return lisp.SortedMapFromData(&lisp.MapData{Map: m})
+	case []interface{}:
+		cells := make([]*lisp.LVal, len(x))
+		for i := range x {
+			cells[i] = s.loadInterface(x[i])
+			if cells[i].Type == lisp.LError {
+				return cells[i]
+			}
+		}
+		return lisp.Array(nil, cells)
+	case bool:
+		return lisp.Bool(x)
 	case float64:
 		return lisp.Float(x)
 	case json.Number:
 		// This can only show up if stringNums was true.
 		return lisp.String(string(x))
-	case map[string]interface{}:
-		m := lisp.SortedMap()
-		for k, v := range x {
-			err := m.MapSet(k, s.loadInterface(v))
-			if err.Type == lisp.LError {
-				return err
-			}
-		}
-		return m
-	case []interface{}:
-		lis := lisp.Array(lisp.QExpr([]*lisp.LVal{lisp.Int(len(x))}), nil)
-		cells := lis.Cells[1].Cells
-		for i, v := range x {
-			cells[i] = s.loadInterface(v)
-			if cells[i].Type == lisp.LError {
-				return cells[i]
-			}
-		}
-		return lis
+	case nil:
+		return lisp.Nil()
 	default:
 		return lisp.Errorf("unable to load json type: %T", x)
 	}
@@ -169,12 +176,11 @@ func (s *Serializer) useStringNumbers(env *lisp.LEnv) *lisp.LVal {
 
 // Dump serializes v as JSON and returns any error.
 func (s *Serializer) Dump(v *lisp.LVal, stringNums bool) ([]byte, error) {
-	m := s.GoValue(v, stringNums)
-	_, badnews := m.(*lisp.LVal)
-	if badnews {
-		return nil, fmt.Errorf("type cannot be converted to json: %v", v.Type)
+	enc := newEncoder(stringNums)
+	if err := enc.encode(v); err != nil {
+		return nil, err
 	}
-	return json.Marshal(m)
+	return enc.bytes(), nil
 }
 
 func (s *Serializer) MessageBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -276,6 +282,9 @@ func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 // GoValue converts v to its natural representation in Go.  Quotes are ignored
 // and all lists are turned into slices.  Symbols are converted to strings.
 // The value Nil() is converted to nil.  Functions are returned as is.
+//
+// Deprecated:  GoValue is no longer used internally for serialization and
+// should be avoided.
 func (s *Serializer) GoValue(v *lisp.LVal, stringNums bool) interface{} {
 	if v.IsNil() {
 		return nil
@@ -333,6 +342,9 @@ func (s *Serializer) GoValue(v *lisp.LVal, stringNums bool) interface{} {
 
 // GoError returns an error that represents v.  If v is not LError then nil is
 // returned.
+//
+// Deprecated:  GoError is no longer used internally for serialization and
+// should be avoided.
 func (s *Serializer) GoError(v *lisp.LVal) error {
 	if v.Type != lisp.LError {
 		return nil
@@ -342,6 +354,9 @@ func (s *Serializer) GoError(v *lisp.LVal) error {
 
 // GoString returns the string that v represents and the value true.  If v does
 // not represent a string GoString returns a false second argument
+//
+// Deprecated:  GoString is no longer used internally for serialization and
+// should be avoided.
 func (s *Serializer) GoString(v *lisp.LVal) (string, bool) {
 	if v.Type != lisp.LString {
 		return "", false
@@ -352,6 +367,9 @@ func (s *Serializer) GoString(v *lisp.LVal) (string, bool) {
 // SymbolName returns the name of the symbol that v represents and the value
 // true.  If v does not represent a symbol SymbolName returns a false second
 // argument
+//
+// Deprecated:  SymbolName is no longer used internally for serialization and
+// should be avoided.
 func (s *Serializer) SymbolName(v *lisp.LVal) (string, bool) {
 	if v.Type != lisp.LSymbol {
 		return "", false
@@ -362,6 +380,9 @@ func (s *Serializer) SymbolName(v *lisp.LVal) (string, bool) {
 // GoInt converts the numeric value that v represents to and int and returns it
 // with the value true.  If v does not represent a number GoInt returns a
 // false second argument
+//
+// Deprecated:  GoInt is no longer used internally for serialization and should
+// be avoided.
 func (s *Serializer) GoInt(v *lisp.LVal) (int, bool) {
 	if v.IsNumeric() {
 		return 0, false
@@ -375,6 +396,9 @@ func (s *Serializer) GoInt(v *lisp.LVal) (int, bool) {
 // GoFloat64 converts the numeric value that v represents to a float64 and
 // returns it with the value true.  If v does not represent a number GoFloat64
 // returns a false second argument
+//
+// Deprecated:  GoFloat64 is no longer used internally for serialization and
+// should be avoided.
 func (s *Serializer) GoFloat64(v *lisp.LVal) (float64, bool) {
 	if v.IsNumeric() {
 		return 0, false
@@ -387,6 +411,9 @@ func (s *Serializer) GoFloat64(v *lisp.LVal) (float64, bool) {
 
 // GoSlice returns the string that v represents and the value true.  If v does
 // not represent a string GoSlice returns a false second argument
+//
+// Deprecated:  GoSlice is no longer used internally for serialization and
+// should be avoided.
 func (s *Serializer) GoSlice(v *lisp.LVal, stringNums bool) ([]interface{}, bool) {
 	if v.Type != lisp.LSExpr {
 		return nil, false
@@ -401,53 +428,26 @@ func (s *Serializer) GoSlice(v *lisp.LVal, stringNums bool) ([]interface{}, bool
 // GoMap converts an LSortMap to its Go equivalent and returns it with a true
 // second argument.  If v does not represent a map json serializable map GoMap
 // returns a false second argument
+//
+// Deprecated:  GoMap is no longer used internally for serialization and should
+// be avoided.
 func (s *Serializer) GoMap(v *lisp.LVal, stringNums bool) (SortedMap, bool) {
 	if v.Type != lisp.LSortMap {
 		return nil, false
 	}
-	lmap := v.Map()
-	m := make(SortedMap, len(lmap))
-	for k, vlisp := range lmap {
-		vgo := s.GoValue(vlisp, stringNums)
-		kreflect := reflect.ValueOf(k)
-		// This is really shitty
-		switch kreflect.Kind() {
-		case reflect.String:
-			m[kreflect.String()] = vgo
-		default:
+	m := make(SortedMap, v.Len())
+	for _, pair := range v.MapEntries().Cells {
+		if pair.Type != lisp.LSExpr || len(pair.Cells) != 2 {
+			// invalid map
 			return nil, false
 		}
+		kgo := s.GoValue(pair.Cells[0], stringNums)
+		vgo := s.GoValue(pair.Cells[1], stringNums)
+		kstr, ok := kgo.(string)
+		if !ok {
+			return nil, false
+		}
+		m[kstr] = vgo
 	}
 	return m, true
-}
-
-type SortedMap map[string]interface{}
-
-func (m SortedMap) MarshalJSON() ([]byte, error) {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var buf bytes.Buffer
-	buf.WriteString("{")
-	for i, k := range keys {
-		b, err := json.Marshal(k)
-		if err != nil {
-			return nil, err
-		}
-		buf.Write(b)
-		buf.WriteString(":")
-		b, err = json.Marshal(m[k])
-		if err != nil {
-			log.Printf("bad value: %#v", m[k])
-			return nil, err
-		}
-		buf.Write(b)
-		if i < len(keys)-1 {
-			buf.WriteString(",")
-		}
-	}
-	buf.WriteString("}")
-	return buf.Bytes(), nil
 }

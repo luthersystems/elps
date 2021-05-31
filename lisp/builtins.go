@@ -804,10 +804,13 @@ func builtinAssoc(env *LEnv, args *LVal) *LVal {
 	} else if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	} else {
-		m = m.Copy()
-		m.Native = m.copyMap()
+		mdata, err := m.copyMapData()
+		if err != nil {
+			return env.Error(err)
+		}
+		m = SortedMapFromData(mdata)
 	}
-	err := mapSet(m, k, v, true)
+	err := m.Map().Set(k, v)
 	if !err.IsNil() {
 		return env.Errorf("%s", err)
 	}
@@ -823,7 +826,7 @@ func builtinAssocMutate(env *LEnv, args *LVal) *LVal {
 	} else if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	}
-	err := mapSet(m, k, v, true)
+	err := m.Map().Set(k, v)
 	if !err.IsNil() {
 		return env.Error(err.String())
 	}
@@ -838,10 +841,13 @@ func builtinDissoc(env *LEnv, args *LVal) *LVal {
 	} else if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	} else {
-		m = m.Copy()
-		m.Native = m.copyMap()
+		mdata, err := m.copyMapData()
+		if err != nil {
+			return env.Error(err)
+		}
+		m = SortedMapFromData(mdata)
 	}
-	err := mapDel(m, k, true)
+	err := m.Map().Del(k)
 	if !err.IsNil() {
 		return env.Errorf("%s", err)
 	}
@@ -856,7 +862,7 @@ func builtinDissocMutate(env *LEnv, args *LVal) *LVal {
 	} else if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	}
-	err := mapDel(m, k, true)
+	err := m.Map().Del(k)
 	if !err.IsNil() {
 		return env.Error(err.String())
 	}
@@ -871,7 +877,8 @@ func builtinGet(env *LEnv, args *LVal) *LVal {
 	if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	}
-	return mapGet(m, k, nil)
+	v, _ := m.Map().Get(k)
+	return v
 }
 
 func builtinKeys(env *LEnv, args *LVal) *LVal {
@@ -879,7 +886,7 @@ func builtinKeys(env *LEnv, args *LVal) *LVal {
 	if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	}
-	return m.MapKeys()
+	return m.Map().Keys()
 }
 
 func builtinIsKey(env *LEnv, args *LVal) *LVal {
@@ -887,11 +894,12 @@ func builtinIsKey(env *LEnv, args *LVal) *LVal {
 	if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	}
-	ok := mapHasKey(m, k)
-	if ok.Type == LError {
-		ok.SetCallStack(env.Runtime.Stack.Copy())
+	v, ok := m.Map().Get(k)
+	if v.Type == LError {
+		v.SetCallStack(env.Runtime.Stack.Copy())
+		return v
 	}
-	return ok
+	return Bool(ok)
 }
 
 func builtinSortedMap(env *LEnv, args *LVal) *LVal {
@@ -899,10 +907,11 @@ func builtinSortedMap(env *LEnv, args *LVal) *LVal {
 	if len(args.Cells)%2 != 0 {
 		return env.Errorf("uneven number of arguments: %d", len(args.Cells))
 	}
+	data := m.Map()
 	for len(args.Cells) >= 2 {
 		k := args.Cells[0]
 		v := args.Cells[1]
-		err := mapSet(m, k, v, false)
+		err := data.Set(k, v)
 		if !err.IsNil() {
 			return err
 		}

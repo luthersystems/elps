@@ -2,6 +2,8 @@
 
 package lisp
 
+import "reflect"
+
 // True interprets v as a boolean and returns the result.
 //
 // NOTE:  I don't like this name, really.  But I can't think of a better one.
@@ -135,23 +137,35 @@ func GoSlice(v *LVal) ([]interface{}, bool) {
 	return vs, true
 }
 
-// GoMap converts an LSortMap to its Go equivalent and returns it with a
-// true second argument.  If v does not represent a map GoMap returns a
-// false second argument
+// GoMap converts an LSortMap to its Go equivalent and returns it with a true
+// second argument.  If v does not represent a map GoMap returns a false second
+// argument.  Application's using custom Map implementations which allow
+// arbitrary keys may not be able to construct a native Go map, in which case
+// GoMap returns (nil, true).
 func GoMap(v *LVal) (map[interface{}]interface{}, bool) {
 	if v.Type != LSortMap {
 		return nil, false
 	}
-	lmap := v.Map()
-	m := make(map[interface{}]interface{}, len(lmap))
-	for k, vlisp := range lmap {
-		vgo := GoValue(vlisp)
-		switch k.(type) {
-		case MapSymbol:
-			m[string(k.(MapSymbol))] = vgo
-		default:
-			m[k] = vgo
+	data := v.Map()
+	m := make(gomap, data.Len())
+	for _, pair := range sortedMapEntries(data).Cells {
+		if !checkGoMapInsert(m, pair.Cells[0], pair.Cells[1]) {
+			return nil, true
 		}
 	}
 	return m, true
 }
+
+func checkGoMapInsert(m gomap, lk, lv *LVal) (ok bool) {
+	// k is definitely assignable to m's key type (interface{}) but map keys
+	// must also be comparable which is not known without reflection on k's
+	// type (or through recovering a failed map assignment).
+	k := GoValue(lk)
+	if reflect.TypeOf(k).Comparable() {
+		m[k] = GoValue(lv)
+		return true
+	}
+	return false
+}
+
+type gomap = map[interface{}]interface{}

@@ -695,8 +695,7 @@ func builtinHasKey(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			return lisp.ErrorConditionf(WrongType, "Input is not sorted map")
 		}
 		matched := false
-		lMap := input.Map()
-		val, ok := lMap[lisp.MapSymbol(key)]
+		val, ok := input.Map().Get(lisp.String(key))
 		if !ok {
 			return lisp.ErrorConditionf(FailedConstraint, "Map does not have key %s", key)
 		}
@@ -735,8 +734,7 @@ func builtinMayHaveKey(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			return lisp.ErrorConditionf(WrongType, "Input is not sorted map")
 		}
 		matched := false
-		lMap := input.Map()
-		val, ok := lMap[lisp.MapSymbol(key)]
+		val, ok := input.Map().Get(lisp.Symbol(key))
 		if !ok {
 			return lisp.String(key)
 		}
@@ -779,9 +777,11 @@ func builtinNoOtherKeys(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 				allowedKeys[val.Str] = true
 			}
 		}
-		lMap := input.Map()
-		for mapKey, _ := range lMap {
-			if _, ok := allowedKeys[string(mapKey.(lisp.MapSymbol))]; !ok {
+		for _, mapKey := range input.Map().Keys().Cells {
+			if mapKey.Type != lisp.LString && mapKey.Type != lisp.LSymbol {
+				return lisp.ErrorConditionf(FailedConstraint, "Map is not allowed to have key '%s'", mapKey)
+			}
+			if _, ok := allowedKeys[mapKey.Str]; !ok {
 				return lisp.ErrorConditionf(FailedConstraint, "Map is not allowed to have key '%s'", mapKey)
 			}
 		}
@@ -805,8 +805,8 @@ func builtinWhen(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun(GenSymbol(), lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		lMap := input.Map()
-		whenVal := lMap[lisp.MapSymbol(args.Cells[0].Str)]
-		testVal := lMap[lisp.MapSymbol(args.Cells[2].Str)]
+		whenVal, _ := lMap.Get(args.Cells[0])
+		testVal, _ := lMap.Get(args.Cells[2])
 		val := whenConstraint.FunData().Builtin(env, whenVal)
 		if val.Type == lisp.LError {
 			return lisp.Nil()

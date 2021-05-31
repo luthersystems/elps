@@ -100,6 +100,10 @@ const (
 	LMarkTerminal  // LEnv marks the frame as terminal and evaluates tho contained expr
 	LMarkTailRec   // LEnv resumes a call a set number of frames down the stack.
 	LMarkMacExpand // LEnv will evaluate the returned LVal a subsequent time.
+	// LTypeMax is not a real type but represents a value numerically greater
+	// than all valid LType values.  It also can be used to determine the
+	// number of valid LType values.
+	LTypeMax
 )
 
 var lvalTypeStrings = []string{
@@ -205,7 +209,8 @@ func GetType(v *LVal) *LVal {
 
 // Value conveniently converts v to an LVal.  Types which can be represented
 // directly in lisp will be converted to the appropriate LVal.  All other types
-// will be turned into a Native LVal.  Value is the GoValue function.
+// will be turned into a Native LVal.  Value is the inverse of the GoValue
+// function.
 func Value(v interface{}) *LVal {
 	switch v := v.(type) {
 	case bool:
@@ -380,12 +385,19 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 	}
 }
 
-// SortedMap returns an LVal represented a sorted map
+// SortedMap returns an LVal representing a sorted map
 func SortedMap() *LVal {
+	return SortedMapFromData(&MapData{newmap()})
+}
+
+// SortedMapFromData returns sorted-map with the given backing implementation.
+// Applications calling this function must make ensure the Map implementation
+// provided satisfies the semantics of Map methods.
+func SortedMapFromData(data *MapData) *LVal {
 	return &LVal{
 		Source: nativeSource(),
 		Type:   LSortMap,
-		Native: make(map[interface{}]*LVal),
+		Native: data,
 	}
 }
 
@@ -641,7 +653,7 @@ func (v *LVal) Len() int {
 	case LSExpr:
 		return len(v.Cells)
 	case LSortMap:
-		return len(v.Map())
+		return v.Map().Len()
 	case LArray:
 		if v.Cells[0].Len() == 1 {
 			return v.Cells[0].Cells[0].Int
@@ -671,11 +683,11 @@ func (v *LVal) Bytes() []byte {
 	return *v.Native.(*[]byte)
 }
 
-func (v *LVal) Map() map[interface{}]*LVal {
+func (v *LVal) Map() *MapData {
 	if v.Type != LSortMap {
 		panic("not sorted-map: " + v.Type.String())
 	}
-	return v.Native.(map[interface{}]*LVal)
+	return v.Native.(*MapData)
 }
 
 // MapKeys returns a list of keys in the map.  MapKeys panics if v.Type is not
@@ -684,11 +696,12 @@ func (v *LVal) Map() map[interface{}]*LVal {
 // called before MapSet(String("a"), Int(2)) then MapKey() will contain the
 // symbol and not the string.
 func (v *LVal) MapKeys() *LVal {
-	if v.Type != LSortMap {
-		panic("not sortmap: " + v.Type.String())
-	}
-	list := QExpr(sortedMapKeys(v))
-	return list
+	return v.Map().Keys()
+}
+
+// MapEntries returns a list of key-value pairs in the map.  MapEntries
+func (v *LVal) MapEntries() *LVal {
+	return sortedMapEntries(v.Map())
 }
 
 // ArrayDims returns the dimensions of an array.  ArrayDims panics if v.Type is
@@ -738,14 +751,13 @@ func (v *LVal) ArrayIndex(index ...*LVal) *LVal {
 // MapGet returns the value corresponding to k in v or an LError if k is not
 // present in v.  MapGet panics if v.Type is not LSortMap.
 func (v *LVal) MapGet(k interface{}) *LVal {
-	if v.Type != LSortMap {
-		panic("not sortmap: " + v.Type.String())
-	}
 	switch k := k.(type) {
 	case *LVal:
-		return mapGet(v, k, nil)
+		x, _ := v.Map().Get(k)
+		return x
 	case string:
-		return mapGet(v, String(k), nil)
+		x, _ := v.Map().Get(String(k))
+		return x
 	// numerics unsupported
 	default:
 		return Errorf("invalid key type: %T", k)
@@ -762,9 +774,9 @@ func (v *LVal) MapSet(k interface{}, val *LVal) *LVal {
 	}
 	switch k := k.(type) {
 	case *LVal:
-		return mapSet(v, k, val, true)
+		return v.Map().Set(k, val)
 	case string:
-		return mapSet(v, String(k), val, true)
+		return v.Map().Set(String(k), val)
 	// numerics unsupported
 	default:
 		return Errorf("invalid key type: %T", k)
@@ -852,7 +864,7 @@ func (v *LVal) Equal(other *LVal) *LVal {
 		}
 		return v.Cells[0].Equal(other.Cells[0])
 	case LSortMap:
-		if len(v.Map()) != len(other.Map()) {
+		if v.Map().Len() != other.Map().Len() {
 			return Bool(false)
 		}
 
@@ -895,18 +907,19 @@ func (v *LVal) Copy() *LVal {
 	return cp
 }
 
-func (v *LVal) copyMap() map[interface{}]*LVal {
+func (v *LVal) copyMapData() (*MapData, error) {
 	m0 := v.Map()
 	if m0 == nil {
-		return nil
+		return nil, nil
 	}
-	m := make(map[interface{}]*LVal, len(m0))
-	for k, v := range m0 {
-		// Is v.Copy() really necessary here? It seems like things get copied
-		// on mapGet anyway..
-		m[k] = v.Copy()
+	m := &MapData{newmap()}
+	for _, pair := range sortedMapEntries(m0).Cells {
+		lerr := m.Set(pair.Cells[0], pair.Cells[1])
+		if lerr.Type == LError {
+			return nil, fmt.Errorf("failed to copy map: %v", lerr)
+		}
 	}
-	return m
+	return m, nil
 }
 
 func (v *LVal) copyCells() []*LVal {

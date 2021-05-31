@@ -6,7 +6,16 @@ import (
 	"testing"
 
 	"github.com/luthersystems/elps/elpstest"
+	"github.com/luthersystems/elps/lisp"
 )
+
+func TestMapImpl(t *testing.T) {
+	m := lisp.SortedMap().Map()
+	m.Set(lisp.String("a"), lisp.Int(1))
+	m.Set(lisp.Symbol("b"), lisp.Int(2))
+	m.Set(lisp.String("c"), lisp.Int(3))
+	elpstest.AssertSortedMap(t, m)
+}
 
 func TestMaps(t *testing.T) {
 	tests := elpstest.TestSuite{

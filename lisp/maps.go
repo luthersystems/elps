@@ -4,223 +4,196 @@ package lisp
 
 import (
 	"bytes"
-	"fmt"
 	"sort"
 )
+
+type Map interface {
+	Len() int
+	// Get returns the value associated with the given key and a bool signaling
+	// if the key was found in the map.  The first value returned by Get may be
+	// an LError type if the implementation does not support the type of key
+	// given.
+	Get(key *LVal) (*LVal, bool)
+	// Set associates key with val in the map.  Set may return an LError value
+	// if the
+	Set(key *LVal, val *LVal) *LVal
+	// Del removes any association it has with key.  Del may return an LError
+	// value if key was not a supported type or if the map does not support
+	// dissociation.
+	Del(key *LVal) *LVal
+	// Keys returns a (sorted) list of keys with associated values in the map.
+	Keys() *LVal
+	// Entries copies its entries into the first Len() elements of buf.
+	// Entries are represented as lists with two elements.  Entries returns the
+	// number of elements written (i.e. Len) or an error if any was encountered.
+	Entries(buf []*LVal) *LVal
+}
+
+// MapData is a concrete type to store in an interface as to avoid expensive
+// runtime interface type checking
+type MapData struct {
+	Map
+}
+
+// a sentinal type used to describe string-like keys in a sortedmap.
+type keytype uint
+
+const (
+	stringkey keytype = iota
+	symbolkey
+)
+
+type typemap map[interface{}]keytype
+
+type typemapkey struct{}
+
+type sortedmap struct {
+	m  map[interface{}]*LVal
+	tm typemap
+}
+
+func newmap() sortedmap {
+	return sortedmap{
+		m:  make(map[interface{}]*LVal),
+		tm: make(typemap),
+	}
+}
+
+func (m sortedmap) typemap() typemap {
+	return m.tm
+}
+
+func (m sortedmap) keytype(k interface{}) keytype {
+	return m.typemap()[k]
+}
+
+func (m sortedmap) puttype(k interface{}, t keytype) {
+	m.typemap()[k] = t
+}
+
+func (m sortedmap) deltype(k interface{}) {
+	delete(m.typemap(), k)
+}
+
+func (m sortedmap) Len() int {
+	return len(m.m)
+}
+
+func (m sortedmap) Get(key *LVal) (*LVal, bool) {
+	switch key.Type {
+	case LString, LSymbol:
+		v := m.m[key.Str]
+		if v != nil {
+			return v, true
+		}
+		return Nil(), false
+	default:
+		return Errorf("unhashable type: %s", key.Type), false
+	}
+}
+
+func (m sortedmap) Del(key *LVal) *LVal {
+	switch key.Type {
+	case LString, LSymbol:
+		delete(m.m, key.Str)
+		m.deltype(key.Str)
+		return Nil()
+	default:
+		return Errorf("unhashable type: %s", key.Type)
+	}
+}
+
+func (m sortedmap) Set(key, val *LVal) *LVal {
+	switch key.Type {
+	case LString:
+		m.m[key.Str] = val
+		return Nil()
+	case LSymbol:
+		m.m[key.Str] = val
+		m.puttype(key.Str, symbolkey)
+		return Nil()
+	default:
+		return Errorf("unhashable type: %s", key.Type)
+	}
+}
+
+func (m sortedmap) Entries(buf []*LVal) *LVal {
+	if len(m.m) == 0 {
+		return Int(0)
+	}
+	if len(buf) < len(m.m) {
+		return Errorf("buffer has insufficient length")
+	}
+	i := 0
+	for k, v := range m.m {
+		switch k := k.(type) {
+		case string:
+			switch m.keytype(k) {
+			case stringkey:
+				buf[i] = mklist(String(k), v)
+			default:
+				buf[i] = mklist(Quote(Symbol(k)), v)
+			}
+		default:
+			return Errorf("unexpected map key: %v", k)
+		}
+		i++
+	}
+	sort.Sort(mapEntriesByKey(buf[:len(m.m)]))
+	return Int(len(m.m))
+}
+
+func (m sortedmap) Keys() *LVal {
+	keys := sortedMapEntries(m)
+	if keys.IsNil() || keys.Type == LError {
+		return keys
+	}
+	for i := range keys.Cells {
+		// Modifying lvals is shady in general but because they are generated
+		// internally we know their structure.
+		keys.Cells[i] = keys.Cells[i].Cells[0]
+	}
+	return keys
+}
+
+func sortedMapEntries(m Map) *LVal {
+	cells := make([]*LVal, m.Len())
+	lerr := m.Entries(cells)
+	if lerr.Type == LError {
+		return lerr
+	}
+	return QExpr(cells)
+}
 
 func sortedMapString(m *LVal) string {
 	var buf bytes.Buffer
 	buf.WriteString("(sorted-map")
-	keys := sortedMapKeys(m)
-	for _, key := range keys {
+	for _, pair := range sortedMapEntries(m.Map()).Cells {
 		buf.WriteString(" ")
-		buf.WriteString(key.String())
+		buf.WriteString(pair.Cells[0].String())
 		buf.WriteString(" ")
-		buf.WriteString(mapGet(m, key, nil).String())
+		buf.WriteString(pair.Cells[1].String())
 	}
 	buf.WriteString(")")
 	return buf.String()
 }
 
-func sortedMapKeys(m *LVal) []*LVal {
-	var ks mapKeys
-	for k := range m.Map() {
-		key := sortedMapKey(k)
-		if key == nil {
-			panic("unable to serialize hashmap key")
-		}
-		ks = append(ks, key)
-	}
-	sort.Sort(ks)
-	return ks
+// mapEntriesByKey are internally known to be a list of pairs containing keys
+// with valid types.
+type mapEntriesByKey []*LVal
+
+func (m mapEntriesByKey) Len() int {
+	return len(m)
 }
 
-func mapHasKey(m *LVal, key *LVal) *LVal {
-	k := toSortedMapKey(key)
-	if k == nil {
-		return Errorf("unhashable type: %v", key.Type)
-	}
-	mmap := m.Map()
-	switch k := k.(type) {
-	case string:
-		v := mmap[k]
-		if v != nil {
-			return Bool(true)
-		}
-		v = mmap[MapSymbol(k)]
-		if v != nil {
-			return Bool(true)
-		}
-	case MapSymbol:
-		v := mmap[k]
-		if v != nil {
-			return Bool(true)
-		}
-		v = mmap[string(k)]
-		if v != nil {
-			return Bool(true)
-		}
-	}
-	return Bool(false)
+func (m mapEntriesByKey) Less(i, j int) bool {
+	return m[i].Cells[0].Str < m[j].Cells[0].Str
 }
 
-func mapGet(m, key, def *LVal) *LVal {
-	k := toSortedMapKey(key)
-	if k == nil {
-		return Errorf("unhashable type: %s", key.Type)
-	}
-	mmap := m.Map()
-	switch k := k.(type) {
-	case string:
-		v := mmap[k]
-		if v != nil {
-			return v
-		}
-		v = mmap[MapSymbol(k)]
-		if v != nil {
-			return v
-		}
-	case MapSymbol:
-		v := mmap[k]
-		if v != nil {
-			return v
-		}
-		v = mmap[string(k)]
-		if v != nil {
-			return v
-		}
-	}
-	if def == nil {
-		return Nil()
-	}
-	return def
+func (m mapEntriesByKey) Swap(i, j int) {
+	m[i], m[j] = m[j], m[i]
 }
 
-func mapSet(m *LVal, key *LVal, val *LVal, coerce bool) *LVal {
-	k := toSortedMapKey(key)
-	if k == nil {
-		return Errorf("unhashable type: %s", key.Type)
-	}
-	mmap := m.Map()
-	switch _k := k.(type) {
-	case string:
-		_, ok := mmap[MapSymbol(_k)]
-		if ok {
-			if coerce {
-				k = MapSymbol(_k)
-			} else {
-				return Errorf("map contains both symbol and string key: %s", k)
-			}
-		}
-	case MapSymbol:
-		_, ok := mmap[string(_k)]
-		if ok {
-			if coerce {
-				k = string(_k)
-			} else {
-				return Errorf("map contains both symbol and string key: %s", k)
-			}
-		}
-	}
-	mmap[k] = val
-	return Nil()
-}
-
-func mapDel(m *LVal, key *LVal, coerce bool) *LVal {
-	k := toSortedMapKey(key)
-	if k == nil {
-		return Errorf("unhashable type: %s", key.Type)
-	}
-	mmap := m.Map()
-	switch _k := k.(type) {
-	case string:
-		_, ok := mmap[MapSymbol(_k)]
-		if ok {
-			if coerce {
-				k = MapSymbol(_k)
-			} else {
-				return Errorf("map contains both symbol and string key: %s", k)
-			}
-		}
-	case MapSymbol:
-		_, ok := mmap[string(_k)]
-		if ok {
-			if coerce {
-				k = string(_k)
-			} else {
-				return Errorf("map contains both symbol and string key: %s", k)
-			}
-		}
-	}
-	delete(mmap, k)
-	return Nil()
-}
-
-// BUG:  Numbers cannot be used as map keys because there is no simple way to
-// retain their input type while also checking for equality using a builtin
-// (golang) map.  This is not considered a limitation for now because it
-// doesn't hinder JSON serialization.
-func toSortedMapKey(v *LVal) interface{} {
-	switch v.Type {
-	//case LInt:
-	//	return v.Int
-	//case LFloat:
-	//	return v.Float
-	case LString:
-		return v.Str
-	case LSymbol:
-		return MapSymbol(v.Str)
-	}
-	return nil
-}
-
-func sortedMapKey(k interface{}) *LVal {
-	switch v := k.(type) {
-	//case int:
-	//	return Int(v)
-	//case float64:
-	//	return Float(v)
-	case string:
-		return String(v)
-	case MapSymbol:
-		return Quote(Symbol(string(v)))
-	}
-	return Error(fmt.Errorf("invalid key type: %T", k))
-}
-
-type MapSymbol string
-
-type mapKeys []*LVal
-
-func (ks mapKeys) Len() int { return len(ks) }
-
-func (ks mapKeys) Swap(i, j int) {
-	ks[i], ks[j] = ks[j], ks[i]
-}
-
-func (ks mapKeys) Less(i, j int) bool {
-	if ks[i].IsNumeric() && ks[j].IsNumeric() {
-		// TODO: Fall back to numeric sort here
-	}
-	if !ks.compatible(i, j) {
-		return ks[i].Type < ks[j].Type
-	}
-	switch ks[i].Type {
-	//case LInt:
-	//	return ks[i].Int < ks[j].Int
-	//case LFloat:
-	//	return ks[i].Float < ks[j].Float
-	case LString, LSymbol:
-		return ks[i].Str < ks[j].Str
-	}
-	// should not be reachable
-	return false
-}
-
-func (ks mapKeys) compatible(i, j int) bool {
-	switch ks[i].Type {
-	case LString, LSymbol:
-		return ks[j].Type == LString || ks[j].Type == LSymbol
-	}
-	return false
+func mklist(v ...*LVal) *LVal {
+	return QExpr(v)
 }
