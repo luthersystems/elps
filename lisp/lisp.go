@@ -344,6 +344,22 @@ func QExpr(cells []*LVal) *LVal {
 	}
 }
 
+// Vector returns an LVal representing a vector, a 1-dimensional array.
+// Provided cells are used as backing storage for the returned vector and are
+// not copied.
+func Vector(cells []*LVal) *LVal {
+	return Array(nil, cells)
+}
+
+// MakeVector returns a vector with n cells initialized to Nil.
+func MakeVector(n int) *LVal {
+	cells := make([]*LVal, n)
+	for i := range cells {
+		cells[i] = Nil()
+	}
+	return Vector(cells)
+}
+
 // Array returns an LVal representing an array reference.  The dims argument is
 // be a list of integers sizes for each dimension of the array.  If non-empty,
 // cells provides the backing storage for the array.  The dims argument may be

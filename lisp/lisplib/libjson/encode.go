@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"unicode/utf8"
 
@@ -27,9 +28,16 @@ func init() {
 
 var encoderFuncs [lisp.LTypeMax]func(enc *encoder, v *lisp.LVal) error
 
+type encodeInvalidNumberError float64
+
+func (e encodeInvalidNumberError) Error() string {
+	return fmt.Sprintf("unable to encode number %g", float64(e))
+}
+
 type encoder struct {
 	stringNums bool
 	buf        bytes.Buffer
+	scratch    [64]byte
 }
 
 func newEncoder(stringNums bool) *encoder {
@@ -146,10 +154,14 @@ func (enc *encoder) encodeLInt(v *lisp.LVal) error {
 }
 
 func (enc *encoder) encodeInt(x int) (err error) {
+	b := strconv.AppendInt(enc.scratch[:0], int64(x), 10)
 	if enc.stringNums {
-		return enc.encodeString(strconv.Itoa(x))
+		enc.buf.WriteByte('"')
+		enc.buf.Write(b)
+		enc.buf.WriteByte('"')
+	} else {
+		enc.buf.Write(b)
 	}
-	_, err = fmt.Fprint(&enc.buf, x)
 	return err
 }
 
@@ -158,17 +170,88 @@ func (enc *encoder) encodeLFloat(v *lisp.LVal) error {
 }
 
 func (enc *encoder) encodeFloat(x float64) error {
-	if enc.stringNums {
-		return enc.encodeString(strconv.FormatFloat(x, 'g', -1, 64))
+	if math.IsInf(x, 0) || math.IsNaN(x) {
+		return encodeInvalidNumberError(x)
 	}
-	b, err := json.Marshal(x)
-	enc.buf.Write(b)
-	return err
+	b := enc.scratchFloat(x)
+	if enc.stringNums {
+		enc.buf.WriteByte('"')
+		enc.buf.Write(b)
+		enc.buf.WriteByte('"')
+	} else {
+		enc.buf.Write(b)
+	}
+	return nil
+}
+
+// scratchFloat encodes x to enc.scratch and returns a slice of that array.
+//
+// NOTE:  scratchFloat is adapted from floatEncoder.encode in encoding/json,
+// simplified to only work with native float64 values.
+// https://cs.opensource.google/go/go/+/refs/tags/go1.16.4:src/encoding/json/encode.go;l=575
+func (enc *encoder) scratchFloat(x float64) []byte {
+	// Convert as if by ES6 number to string conversion.
+	// This matches most other JSON generators.
+	// See golang.org/issue/6384 and golang.org/issue/14135.
+	// Like fmt %g, but the exponent cutoffs are different
+	// and exponents themselves are not padded to two digits.
+	b := enc.scratch[:0]
+	abs := math.Abs(x)
+	fmt := byte('f')
+	// NOTE:   Because ELPS only natively supports float64 values the exponent
+	// check is simpler than in encoding/json
+	if abs != 0 && (abs < 1e-6 || abs >= 1e21) {
+		fmt = 'e'
+	}
+	b = strconv.AppendFloat(b, x, fmt, -1, 64)
+	if fmt == 'e' {
+		// clean up e-09 to e-9
+		n := len(b)
+		if n >= 4 && b[n-4] == 'e' && b[n-3] == '-' && b[n-2] == '0' {
+			b[n-2] = b[n-1]
+			b = b[:n-1]
+		}
+	}
+	return b
 }
 
 func (enc *encoder) encodeLBytes(v *lisp.LVal) (err error) {
-	// FIXME:  Reduce allocations here or use a fixed size buffer.
-	return enc.encodeString(base64.StdEncoding.EncodeToString(v.Bytes()))
+	return enc.encodeBytes(v.Bytes())
+}
+
+var enc64 = base64.StdEncoding
+
+func (enc *encoder) encodeBytes(b []byte) (err error) {
+	if b == nil {
+		// This is needed for backwards compatability with v1.13.0 which would
+		// use encoding/json to marshal all []byte values.
+		enc.buf.WriteString("null")
+		return nil
+	}
+	n := enc64.EncodedLen(len(b))
+	enc.buf.WriteByte('"')
+	if n < len(enc.scratch) {
+		dst := enc.scratch[:n]
+		enc64.Encode(dst, b)
+		enc.buf.Write(dst)
+	} else if n < 1024 {
+		// 1024 is the size of the internal buffer used by base64.NewEncoder so
+		// we allocate just that buffer size and avoid the extra overhead.
+		dst := make([]byte, n)
+		enc64.Encode(dst, b)
+		enc.buf.Write(dst)
+	} else {
+		w := base64.NewEncoder(enc64, &enc.buf)
+		for len(b) > 0 {
+			// This clobbers the variable we were using for encoded-len to save
+			// stack sapce but we don't need that anymore.
+			n, _ = w.Write(b)
+			b = b[n:]
+		}
+		w.Close()
+	}
+	enc.buf.WriteByte('"')
+	return nil
 }
 
 func (enc *encoder) encodeLSymbol(v *lisp.LVal) (err error) {
