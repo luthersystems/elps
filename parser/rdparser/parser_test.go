@@ -12,41 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestComments(t *testing.T) {
-	tests := []struct {
-		source string
-		output string
-	}{
-		{`(1 2 3) ; A comment`, `(1 2 3)`},
-		{`	; A comment
-			(1 "abc" '(x y z))`, `(1 "abc" '(x y z))`},
-		{`(1 "abc" ; A comment
-			'(x y z))`, `(1 "abc" '(x y z))`},
-		{`(1 "abc" ; A comment
-			)`, `(1 "abc")`},
-	}
-
-	for i, test := range tests {
-		name := fmt.Sprintf("test%d", i)
-		p := New(token.NewScanner(name, strings.NewReader(test.source)))
-		exprs, err := p.ParseProgram()
-		if err != nil {
-			t.Errorf("test %d: parse error: %v", i, err)
-			continue
-		}
-		for _, expr := range exprs {
-			t.Log(expr)
-		}
-		if len(exprs) != 1 {
-			t.Errorf("test %d: parsed %d expressions", i, len(exprs))
-			continue
-		}
-		if exprs[0].String() != test.output {
-			t.Errorf("test %d: expected output: %s", i, test.output)
-		}
-	}
-}
-
 func TestParser(t *testing.T) {
 	tests := []struct {
 		source string
@@ -87,7 +52,6 @@ func TestParser(t *testing.T) {
 
 	for i, test := range tests {
 		name := fmt.Sprintf("test%d", i)
-		t.Log(name)
 		s := token.NewScanner(name, strings.NewReader(test.source))
 		p := New(s)
 		exprs, err := p.ParseProgram()
@@ -103,6 +67,39 @@ func TestParser(t *testing.T) {
 			continue
 		}
 		testLValLocation(t, exprs[0])
+		assert.Equal(t, test.output, exprs[0].String(), "test %d", i)
+	}
+}
+
+func TestComments(t *testing.T) {
+	tests := []struct {
+		source string
+		output string
+	}{
+		{`(1 2 3) ; A comment`, `(1 2 3)`},
+		{`	; A comment
+			(1 "abc" '(x y z))`, `(1 "abc" '(x y z))`},
+		{`(1 "abc" ; A comment
+			'(x y z))`, `(1 "abc" '(x y z))`},
+		{`(1 "abc" ; A comment
+			)`, `(1 "abc")`},
+	}
+
+	for i, test := range tests {
+		name := fmt.Sprintf("test%d", i)
+		p := New(token.NewScanner(name, strings.NewReader(test.source)))
+		exprs, err := p.ParseProgram()
+		if err != nil {
+			t.Errorf("test %d: parse error: %v", i, err)
+			continue
+		}
+		for _, expr := range exprs {
+			t.Log(expr)
+		}
+		if len(exprs) != 1 {
+			t.Errorf("test %d: parsed %d expressions", i, len(exprs))
+			continue
+		}
 		if exprs[0].String() != test.output {
 			t.Errorf("test %d: expected output: %s", i, test.output)
 		}
@@ -130,14 +127,14 @@ func TestErrors(t *testing.T) {
 		#xabc
 		#o123
 		#o9
-`, `test1:6: invalid-octal-literal: invalid octal literal character: '9'`},
+`, `test1:6: invalid-o-literal: invalid octal literal character: '9'`},
 		{`(1 2 3)
 		0
 		#xABC
 		#xDEADBEEG
 		#o123
 		#o9
-`, `test2:4: invalid-hex-literal: invalid hexidecimal literal character: 'G'`},
+`, `test2:4: invalid-x-literal: invalid hexidecimal literal character: 'G'`},
 		{`(1 2 3)
 		134.
 		"abc"`, `test3:2: scan-error: invalid floating point literal starting: 134.`},

@@ -115,8 +115,7 @@ func (p *Interactive) Parse() (*lisp.LVal, error) {
 func (p *Interactive) ParseExpression() (*lisp.LVal, error) {
 	p.mut.Lock()
 	defer p.mut.Unlock()
-	lval := p.p.ParseExpression()
-	err := lisp.GoError(lval)
+	lval, err := p.p.ParseExpression()
 	if err != nil {
 		p.buf = nil
 		return nil, err

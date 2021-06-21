@@ -401,6 +401,23 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 	}
 }
 
+// TaggedValue is a low-level function to create a tagged-value and should be
+// used with great care and testing.  The first argument must be a symbol and
+// is used as the type of the returned tagged-value.  The second argument is
+// the value being tagged.
+//
+// The type of a tagged-value should be a qualified symbol (e.g. 'lisp:mytype).
+// Unqualified type names can clash with primitive type symbols (e.g. 'string)
+// which can lead to program failures.
+func TaggedValue(typ string, val *LVal) *LVal {
+	return &LVal{
+		Source: nativeSource(),
+		Type:   LTaggedVal,
+		Str:    typ,
+		Cells:  []*LVal{val},
+	}
+}
+
 // SortedMap returns an LVal representing a sorted map
 func SortedMap() *LVal {
 	return SortedMapFromData(&MapData{newmap()})
