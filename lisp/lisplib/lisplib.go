@@ -7,6 +7,7 @@ package lisplib
 import (
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/libbase64"
+	"github.com/luthersystems/elps/lisp/lisplib/libelpslang"
 	"github.com/luthersystems/elps/lisp/lisplib/libgolang"
 	"github.com/luthersystems/elps/lisp/lisplib/libjson"
 	"github.com/luthersystems/elps/lisp/lisplib/libmath"
@@ -17,48 +18,32 @@ import (
 	"github.com/luthersystems/elps/lisp/lisplib/libtime"
 )
 
+type loadfunc = func(*lisp.LEnv) *lisp.LVal
+
+// NOTE:  Please keep the following list sorted.
+var loaders = []loadfunc{
+	libbase64.LoadPackage,
+	libelpslang.LoadPackage,
+	libgolang.LoadPackage,
+	libjson.LoadPackage,
+	libmath.LoadPackage,
+	libregexp.LoadPackage,
+	libschema.LoadPackage,
+	libstring.LoadPackage,
+	libtesting.LoadPackage,
+	libtime.LoadPackage,
+	func(env *lisp.LEnv) *lisp.LVal {
+		return env.InPackage(lisp.Symbol(lisp.DefaultUserPackage))
+	},
+}
+
 // LoadLibrary loads the standard library into env and returns env to the
 // default user package.
 func LoadLibrary(env *lisp.LEnv) *lisp.LVal {
-	e := libtime.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libgolang.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libmath.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libstring.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libbase64.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libjson.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libregexp.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libtesting.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libschema.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = env.InPackage(lisp.Symbol(lisp.DefaultUserPackage))
-	if !e.IsNil() {
-		return e
+	for _, fn := range loaders {
+		if e := fn(env); !e.IsNil() {
+			return e
+		}
 	}
 	return lisp.Nil()
 }

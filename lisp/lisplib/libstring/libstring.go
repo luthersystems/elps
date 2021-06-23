@@ -40,6 +40,10 @@ var builtins = []*libutil.Builtin{
 	libutil.Function("trim", lisp.Formals("str", "cutset"), builtinTrim),
 	libutil.Function("trim-left", lisp.Formals("str", "cutset"), builtinTrimLeft),
 	libutil.Function("trim-right", lisp.Formals("str", "cutset"), builtinTrimRight),
+	libutil.Function("prefix?", lisp.Formals("str", "prefix"), builtinHasPrefix),
+	libutil.Function("suffix?", lisp.Formals("str", "suffix"), builtinHasSuffix),
+	libutil.Function("trim-prefix", lisp.Formals("str", "prefix"), builtinTrimPrefix),
+	libutil.Function("trim-suffix", lisp.Formals("str", "suffix"), builtinTrimSuffix),
 }
 
 func builtinLower(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -152,4 +156,52 @@ func builtinTrimRight(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Errorf("second argument is not a string: %v", cutset.Type)
 	}
 	return lisp.String(strings.TrimRight(str.Str, cutset.Str))
+}
+
+func builtinHasPrefix(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	str := args.Cells[0]
+	prefix := args.Cells[1]
+	if str.Type != lisp.LString {
+		return env.Errorf("first argument is not a string: %v", str.Type)
+	}
+	if prefix.Type != lisp.LString {
+		return env.Errorf("second argument is not a string: %v", prefix.Type)
+	}
+	return lisp.Bool(strings.HasPrefix(str.Str, prefix.Str))
+}
+
+func builtinHasSuffix(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	str := args.Cells[0]
+	prefix := args.Cells[1]
+	if str.Type != lisp.LString {
+		return env.Errorf("first argument is not a string: %v", str.Type)
+	}
+	if prefix.Type != lisp.LString {
+		return env.Errorf("second argument is not a string: %v", prefix.Type)
+	}
+	return lisp.Bool(strings.HasSuffix(str.Str, prefix.Str))
+}
+
+func builtinTrimPrefix(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	str := args.Cells[0]
+	prefix := args.Cells[1]
+	if str.Type != lisp.LString {
+		return env.Errorf("first argument is not a string: %v", str.Type)
+	}
+	if prefix.Type != lisp.LString {
+		return env.Errorf("second argument is not a string: %v", prefix.Type)
+	}
+	return lisp.String(strings.TrimPrefix(str.Str, prefix.Str))
+}
+
+func builtinTrimSuffix(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	str := args.Cells[0]
+	prefix := args.Cells[1]
+	if str.Type != lisp.LString {
+		return env.Errorf("first argument is not a string: %v", str.Type)
+	}
+	if prefix.Type != lisp.LString {
+		return env.Errorf("second argument is not a string: %v", prefix.Type)
+	}
+	return lisp.String(strings.TrimSuffix(str.Str, prefix.Str))
 }
