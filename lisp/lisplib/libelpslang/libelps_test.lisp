@@ -81,12 +81,15 @@
                           paren-left (
                             symbol a
                             symbol b
+                            paren-right )
                           comment ; a comment
                           string "a docstring"
                           paren-left (
                             symbol +
                             symbol a
                             symbol b
+                            paren-right )
+                          paren-right )
                         comment ;; add some numbers
                         paren-left (
                           symbol let
@@ -94,14 +97,19 @@
                             brace-left [
                               symbol x
                               int 1
+                              brace-right ]
                             brace-left [
                               symbol y
                               int 2
+                              brace-right ]
+                            paren-right )
                           paren-left (
                             symbol fn
                             symbol x
                             symbol y
-                        """) ;))))]]) right parens to match left parens in the test
+                            paren-right )
+                          paren-right )
+                        """)
                 (simple-format """
                                (defun fn (a b) ; a comment
                                  "a docstring"

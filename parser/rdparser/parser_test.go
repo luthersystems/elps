@@ -145,7 +145,7 @@ func TestErrors(t *testing.T) {
 		#!/usr/bin/env foo
 		#o123
 		#o9
-`, `test4:5: parse-error: unexpected token: #!`},
+`, `test4:5: parse-error: unexpected expression token: #!`},
 	}
 
 	for i, test := range tests {

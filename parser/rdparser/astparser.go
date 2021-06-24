@@ -238,7 +238,7 @@ func (p *astparser) parseExpression() func(p *astparser) error {
 	default:
 		return func(p *astparser) error {
 			p.ReadToken()
-			return p.errorf("parse-error", "unexpected token: %v", p.TokenType())
+			return p.errorf("parse-error", "unexpected expression token: %v", p.TokenType())
 		}
 	}
 }
@@ -540,7 +540,11 @@ func (p *astparser) parseConsExpression() error {
 		if p.src.IsEOF() {
 			return p.errorf("unmatched-syntax", "unmatched %s", open.Text)
 		}
-		if p.Accept(token.PAREN_R) {
+		ok, err := p.pushLiteralType(token.PAREN_R)
+		if err != nil {
+			return err
+		}
+		if ok {
 			break
 		}
 		err = p.parseExpression()(p)
@@ -572,7 +576,11 @@ func (p *astparser) parseConsExpressionFlat() error {
 		if p.src.IsEOF() {
 			return p.errorf("unmatched-syntax", "unmatched %s", open.Text)
 		}
-		if p.Accept(token.PAREN_R) {
+		ok, err := p.pushLiteralType(token.PAREN_R)
+		if err != nil {
+			return err
+		}
+		if ok {
 			break
 		}
 		err = p.parseExpressionFlat()(p)
@@ -605,7 +613,11 @@ func (p *astparser) parseList() error {
 		if p.src.IsEOF() {
 			return p.errorf("unmatched-syntax", "unmatched %s", open.Text)
 		}
-		if p.Accept(token.BRACE_R) {
+		ok, err := p.pushLiteralType(token.BRACE_R)
+		if err != nil {
+			return err
+		}
+		if ok {
 			break
 		}
 		err = p.parseExpression()(p)
@@ -638,7 +650,11 @@ func (p *astparser) parseListFlat() error {
 		if p.src.IsEOF() {
 			return p.errorf("unmatched-syntax", "unmatched %s", open.Text)
 		}
-		if p.Accept(token.BRACE_R) {
+		ok, err := p.pushLiteralType(token.BRACE_R)
+		if err != nil {
+			return err
+		}
+		if ok {
 			break
 		}
 		err = p.parseExpressionFlat()(p)

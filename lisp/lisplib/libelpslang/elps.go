@@ -33,7 +33,9 @@ var tokenTypeSymbols = map[token.Type]string{
 	token.UNBOUND:         "unbound-expression",
 	token.FUN_REF:         "function-ref",
 	token.BRACE_L:         "brace-left",
+	token.BRACE_R:         "brace-right",
 	token.PAREN_L:         "paren-left",
+	token.PAREN_R:         "paren-right",
 }
 
 func tokenTypeSymbol(typ token.Type) (sym string) {

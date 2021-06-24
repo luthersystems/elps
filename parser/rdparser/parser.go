@@ -155,10 +155,12 @@ func (p *Parser) parseVal(tok *token.Token, c []*lisp.LVal) (*lisp.LVal, error) 
 		return p.qexprVal(tok, c)
 	case token.PAREN_L:
 		return p.sexprVal(tok, c)
+	case token.BRACE_R, token.PAREN_R:
+		return lisp.Nil(), nil
 	default:
 		return lisp.Nil(), &invalidNodeError{
 			tok: tok,
-			msg: "expected token",
+			msg: "unexpected node token",
 		}
 	}
 }
@@ -351,14 +353,20 @@ func (p *Parser) funRefVal(tok *token.Token, c []*lisp.LVal) (*lisp.LVal, error)
 }
 
 func (p *Parser) sexprVal(tok *token.Token, c []*lisp.LVal) (*lisp.LVal, error) {
-	cells, err := copyCells(tok, c)
+	if len(c) < 1 {
+		panic("expected at least one child for s-expression")
+	}
+	cells, err := copyCells(tok, c[:len(c)-1])
 	v := lisp.SExpr(cells)
 	v.Source = tok.Source
 	return v, err
 }
 
 func (p *Parser) qexprVal(tok *token.Token, c []*lisp.LVal) (*lisp.LVal, error) {
-	cells, err := copyCells(tok, c)
+	if len(c) < 1 {
+		panic("expected at least one child for quoted s-expression")
+	}
+	cells, err := copyCells(tok, c[:len(c)-1])
 	v := lisp.QExpr(cells)
 	v.Source = tok.Source
 	return v, err
