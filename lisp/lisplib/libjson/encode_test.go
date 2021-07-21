@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	mathrand "math/rand"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -28,6 +29,7 @@ var stdEncodeTests = []encodeTest{
 	{lisp.String("\t"), `"\t"`},
 	{lisp.String("\x05"), `"\u0005"`},
 	{lisp.String("a\u2028\u2029"), `"a\u2028\u2029"`},
+	{lisp.String("a&<>"), `"a\u0026\u003c\u003e"`},
 	{lisp.String("hello"), `"hello"`},
 	{lisp.String("🤷🏽\u200d♀️"), `"🤷🏽‍♀️"`}, // Woman Shrugging: Medium Skin Tone
 	{lisp.Symbol(""), `""`},
@@ -133,4 +135,28 @@ func TestEncode_largeBytes(t *testing.T) {
 	decoded, err := base64.StdEncoding.DecodeString(s)
 	require.NoError(t, err)
 	require.Equal(t, data, decoded)
+}
+
+func TestEncoded_stringCompat(t *testing.T) {
+	rand := mathrand.New(mathrand.NewSource(1234))
+	for i := 0; i < 100; i++ {
+		s := string(randBytes(rand, 1024))
+		canonical, err := json.Marshal(s)
+		if !assert.NoError(t, err, "canonical encoding of %q", s) {
+			continue
+		}
+		enc := newEncoder(true)
+		if assert.NoError(t, enc.encode(lisp.String(s)), "elps encoding of %q", s) {
+			assert.Equal(t, enc.bytes(), canonical)
+		}
+	}
+}
+
+func randBytes(r *mathrand.Rand, maxLen int) []byte {
+	n := r.Intn(maxLen)
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = byte(r.Intn(256))
+	}
+	return b
 }
