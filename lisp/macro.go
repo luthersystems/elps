@@ -6,20 +6,21 @@ import "fmt"
 
 var userMacros []*langBuiltin
 var langMacros = []*langBuiltin{
-	{"defmacro", Formals("name", "formals", "expr"), macroDefmacro},
-	{"defun", Formals("name", "formals", VarArgSymbol, "expr"), macroDefun},
-	{"deftype", Formals("name", "constructor-formals", VarArgSymbol, "constructor-exprs"), macroDeftype},
-	{"curry-function", Formals("fun", VarArgSymbol, "args"), macroCurryFun},
+	{"defmacro", Formals("name", "formals", "expr"), macroDefmacro, ""},
+	{"defun", Formals("name", "formals", VarArgSymbol, "expr"), macroDefun,
+		`Defines a named function in the current package.`},
+	{"deftype", Formals("name", "constructor-formals", VarArgSymbol, "constructor-exprs"), macroDeftype, ""},
+	{"curry-function", Formals("fun", VarArgSymbol, "args"), macroCurryFun, ""},
 	// get-default is a macro because we only want to evaluate the expression
 	// bound to default if the key doesn't exist in the map.
-	{"get-default", Formals("map", "key", "default"), macroGetDefault},
-	{"trace", Formals("expr", OptArgSymbol, "message"), macroTrace},
+	{"get-default", Formals("map", "key", "default"), macroGetDefault, ""},
+	{"trace", Formals("expr", OptArgSymbol, "message"), macroTrace, ""},
 }
 
 // RegisterDefaultMacro adds the given function to the list returned by
 // DefaultMacros.
 func RegisterDefaultMacro(name string, formals *LVal, fn LBuiltin) {
-	userMacros = append(userMacros, &langBuiltin{name, formals.Copy(), fn})
+	userMacros = append(userMacros, &langBuiltin{name, formals.Copy(), fn, ""})
 }
 
 // DefaultMacros returns the default set of LBuiltinDef added to LEnv objects

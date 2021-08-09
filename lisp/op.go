@@ -11,35 +11,36 @@ import (
 
 var userSpecialOps []*langBuiltin
 var langSpecialOps = []*langBuiltin{
-	{"function", Formals("name"), opFunction},
-	{"set!", Formals("name", "expr"), opSetUpdate},
-	{"assert", Formals("expr", VarArgSymbol, "message-format-args"), opAssert},
-	{"quote", Formals("expr"), opQuote},
-	{"quasiquote", Formals("expr"), opQuasiquote},
-	{"lambda", Formals("formals", VarArgSymbol, "expr"), opLambda},
-	{"expr", Formals("pattern"), opExpr},
-	{"thread-first", Formals("value", VarArgSymbol, "exprs"), opThreadFirst},
-	{"thread-last", Formals("value", VarArgSymbol, "exprs"), opThreadLast},
-	{"dotimes", Formals("control-sequence", VarArgSymbol, "exprs"), opDoTimes},
-	{"labels", Formals("bindings", VarArgSymbol, "expr"), opLabels},
-	{"macrolet", Formals("bindings", VarArgSymbol, "expr"), opMacrolet},
-	{"flet", Formals("bindings", VarArgSymbol, "expr"), opFlet},
-	{"let*", Formals("bindings", VarArgSymbol, "expr"), opLetSeq},
-	{"let", Formals("bindings", VarArgSymbol, "expr"), opLet},
-	{"progn", Formals(VarArgSymbol, "expr"), opProgn},
-	{"handler-bind", Formals("bindings", VarArgSymbol, "forms"), opHandlerBind},
-	{"ignore-errors", Formals(VarArgSymbol, "exprs"), opIgnoreErrors},
-	{"cond", Formals(VarArgSymbol, "branch"), opCond},
-	{"if", Formals("condition", "then", "else"), opIf},
-	{"or", Formals(VarArgSymbol, "expr"), opOr},
-	{"and", Formals(VarArgSymbol, "expr"), opAnd},
-	{"qualified-symbol", Formals("symbol"), opQualifiedSymbol},
+	{"function", Formals("name"), opFunction, ""},
+	{"set!", Formals("name", "expr"), opSetUpdate, ""},
+	{"assert", Formals("expr", VarArgSymbol, "message-format-args"), opAssert, ""},
+	{"quote", Formals("expr"), opQuote, ""},
+	{"quasiquote", Formals("expr"), opQuasiquote, ""},
+	{"lambda", Formals("formals", VarArgSymbol, "expr"), opLambda,
+		`Returns an anonymous function.`},
+	{"expr", Formals("pattern"), opExpr, ""},
+	{"thread-first", Formals("value", VarArgSymbol, "exprs"), opThreadFirst, ""},
+	{"thread-last", Formals("value", VarArgSymbol, "exprs"), opThreadLast, ""},
+	{"dotimes", Formals("control-sequence", VarArgSymbol, "exprs"), opDoTimes, ""},
+	{"labels", Formals("bindings", VarArgSymbol, "expr"), opLabels, ""},
+	{"macrolet", Formals("bindings", VarArgSymbol, "expr"), opMacrolet, ""},
+	{"flet", Formals("bindings", VarArgSymbol, "expr"), opFlet, ""},
+	{"let*", Formals("bindings", VarArgSymbol, "expr"), opLetSeq, ""},
+	{"let", Formals("bindings", VarArgSymbol, "expr"), opLet, ""},
+	{"progn", Formals(VarArgSymbol, "expr"), opProgn, ""},
+	{"handler-bind", Formals("bindings", VarArgSymbol, "forms"), opHandlerBind, ""},
+	{"ignore-errors", Formals(VarArgSymbol, "exprs"), opIgnoreErrors, ""},
+	{"cond", Formals(VarArgSymbol, "branch"), opCond, ""},
+	{"if", Formals("condition", "then", "else"), opIf, ""},
+	{"or", Formals(VarArgSymbol, "expr"), opOr, ""},
+	{"and", Formals(VarArgSymbol, "expr"), opAnd, ""},
+	{"qualified-symbol", Formals("symbol"), opQualifiedSymbol, ""},
 }
 
 // RegisterDefaultSpecialOp adds the given function to the list returned by
 // DefaultSpecialOps.
 func RegisterDefaultSpecialOp(name string, formals *LVal, fn LBuiltin) {
-	userSpecialOps = append(userSpecialOps, &langBuiltin{name, formals.Copy(), fn})
+	userSpecialOps = append(userSpecialOps, &langBuiltin{name, formals.Copy(), fn, ""})
 }
 
 // DefaultSpecialOps returns the default set of LBuiltinDef added to LEnv

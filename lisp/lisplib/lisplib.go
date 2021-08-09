@@ -8,6 +8,7 @@ import (
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/libbase64"
 	"github.com/luthersystems/elps/lisp/lisplib/libgolang"
+	"github.com/luthersystems/elps/lisp/lisplib/libhelp"
 	"github.com/luthersystems/elps/lisp/lisplib/libjson"
 	"github.com/luthersystems/elps/lisp/lisplib/libmath"
 	"github.com/luthersystems/elps/lisp/lisplib/libregexp"
@@ -21,6 +22,10 @@ import (
 // default user package.
 func LoadLibrary(env *lisp.LEnv) *lisp.LVal {
 	e := libtime.LoadPackage(env)
+	if !e.IsNil() {
+		return e
+	}
+	e = libhelp.LoadPackage(env)
 	if !e.IsNil() {
 		return e
 	}
