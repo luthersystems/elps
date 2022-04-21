@@ -117,15 +117,15 @@ var langBuiltins = []*langBuiltin{
 	{"append!", Formals("vec", VarArgSymbol, "values"), builtinAppendMutate, ""},
 	{"append", Formals("type-specifier", "vec", VarArgSymbol, "values"), builtinAppend, ""},
 	{"append-bytes!", Formals("bytes", "values"), builtinAppendBytesMutate, ""},
-	// NOTE:  ``append-bytes'' does not accept a type-specifier argume, ""nt
-	// because 'string would be equivalent to (concat 'string .., "".)
+	// NOTE:  ``append-bytes'' does not accept a type-specifier argument
+	// because 'string would be equivalent to (concat 'string ...)
 	{"append-bytes", Formals("bytes", "byte-sequence"), builtinAppendBytes, ""},
 	{"aref", Formals("a", VarArgSymbol, "indices"), builtinARef, ""},
 	{"length", Formals("seq"), builtinLength, ""},
 	{"empty?", Formals("seq"), builtinIsEmpty, ""},
 	{"cons", Formals("head", "tail"), builtinCons, ""},
 	{"not", Formals("expr"), builtinNot, ""},
-	// true? is potentially needed as a boolean conversion function (for jso, ""n)
+	// true? is potentially needed as a boolean conversion function (for json)
 	{"true?", Formals("expr"), builtinIsTrue, ""},
 	{"type", Formals("value"), builtinType, ""},
 	{"type?", Formals("type-specifier", "value"), builtinIsType, ""},

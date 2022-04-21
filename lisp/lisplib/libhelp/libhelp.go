@@ -5,6 +5,7 @@ package libhelp
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/luthersystems/elps/lisp"
@@ -91,7 +92,7 @@ func opPackageSymbols(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Errorf("no package: %q", name)
 	}
 	if lisp.True(printAll) {
-		for sym := range pkg.Symbols {
+		for _, sym := range sortedSymbols(pkg.Symbols) {
 			_, err := fmt.Fprintln(env.Runtime.Stderr, sym)
 			if err != nil {
 				return env.Error(err)
@@ -109,7 +110,24 @@ func opPackageSymbols(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return lisp.Nil()
 }
 
+// NOTE:  A good symbol sorting function may want to specially handle
+// package-namespaced symbols (containing ":").  This function is sorting a
+// symbols within a single package so it uses a symbol lexical sort function.
+func sortedSymbols(smap map[string]*lisp.LVal) []string {
+	symbols := make([]string, 0, len(smap))
+	for s := range smap {
+		symbols = append(symbols, s)
+	}
+	sort.Strings(symbols)
+	return symbols
+}
+
+// FunDocstring returns the docstring of the function reference v.  If v is not
+// a function FunDocstring returns the empty string.
 func FunDocstring(v *lisp.LVal) string {
+	if v.Type != lisp.LFun {
+		return ""
+	}
 	if v.Builtin() != nil {
 		if len(v.Cells) > 1 {
 			return v.Cells[1].Str
@@ -125,6 +143,9 @@ func FunDocstring(v *lisp.LVal) string {
 	return ""
 }
 
+// RenderPkgExported writes to w formatted documentation for exported symbols
+// in the query package within env.  The exact formatting of the rendered
+// documentation is subject to change across elps versions.
 func RenderPkgExported(w io.Writer, env *lisp.LEnv, query string) error {
 	pkg := env.Runtime.Registry.Packages[query]
 	if pkg == nil {
@@ -142,7 +163,7 @@ func RenderPkgExported(w io.Writer, env *lisp.LEnv, query string) error {
 		if v.Type != lisp.LFun {
 			continue
 		}
-		err := RenderFun(w, exsym, v)
+		err := renderFun(w, exsym, v)
 		if err != nil {
 			return err
 		}
@@ -150,6 +171,9 @@ func RenderPkgExported(w io.Writer, env *lisp.LEnv, query string) error {
 	return nil
 }
 
+// RenderVar writes to w formatted documentation for the object referenced by
+// sym in the context of env.  The exact formatting of the rendered
+// documentation is subject to change across elps versions.
 func RenderVar(w io.Writer, env *lisp.LEnv, sym string) error {
 	v := env.Get(lisp.Symbol(sym))
 	err := lisp.GoError(v)
@@ -160,10 +184,10 @@ func RenderVar(w io.Writer, env *lisp.LEnv, sym string) error {
 		_, err := fmt.Fprintf(w, "%v %v\n", lisp.GetType(v).Str, v)
 		return err
 	}
-	return RenderFun(w, sym, v)
+	return renderFun(w, sym, v)
 }
 
-func RenderFun(w io.Writer, sym string, v *lisp.LVal) error {
+func renderFun(w io.Writer, sym string, v *lisp.LVal) error {
 	_, err := fmt.Fprintf(w, "%s ", v.FunType)
 	if err != nil {
 		return fmt.Errorf("rendering function type: %w", err)
