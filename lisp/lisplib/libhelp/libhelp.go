@@ -160,12 +160,19 @@ func RenderPkgExported(w io.Writer, env *lisp.LEnv, query string) error {
 			}
 		}
 		v := pkg.Get(lisp.Symbol(exsym))
-		if v.Type != lisp.LFun {
-			continue
-		}
-		err := renderFun(w, exsym, v)
-		if err != nil {
-			return err
+		switch v.Type {
+		case lisp.LError:
+			fmt.Fprintln(w, v)
+		case lisp.LFun:
+			err := renderFun(w, exsym, v)
+			if err != nil {
+				return fmt.Errorf("function %s: %w", exsym, err)
+			}
+		default:
+			err := renderVal(w, exsym, v)
+			if err != nil {
+				return fmt.Errorf("variable %s: %w", exsym, err)
+			}
 		}
 	}
 	return nil
@@ -181,10 +188,14 @@ func RenderVar(w io.Writer, env *lisp.LEnv, sym string) error {
 		return err
 	}
 	if v.Type != lisp.LFun {
-		_, err := fmt.Fprintf(w, "%v %v\n", lisp.GetType(v).Str, v)
-		return err
+		return renderVal(w, sym, v)
 	}
 	return renderFun(w, sym, v)
+}
+
+func renderVal(w io.Writer, sym string, v *lisp.LVal) error {
+	_, err := fmt.Fprintf(w, "%v %s %v\n", lisp.GetType(v).Str, sym, v)
+	return err
 }
 
 func renderFun(w io.Writer, sym string, v *lisp.LVal) error {
