@@ -78,7 +78,7 @@ func InitializeTypedef(env *LEnv) *LVal {
 			return env.Errorf("second argument is not a regular function")
 		}
 		return QExpr([]*LVal{sym, ctor})
-	}})
+	}, ""})
 	if ctor.Type == LError {
 		return ctor
 	}
@@ -651,6 +651,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 		}
 		id := fmt.Sprintf("<builtin-macro ``%s''>", mac.Name())
 		fn := Macro(id, mac.Formals(), mac.Eval)
+		fn.Cells[1] = String(builtinDocstring(mac))
 		fn.FunData().Package = pkg.Name
 		pkg.Put(k, fn)
 		if external {
@@ -674,6 +675,7 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 		}
 		id := fmt.Sprintf("<special-op ``%s''>", op.Name())
 		fn := SpecialOp(id, op.Formals(), op.Eval)
+		fn.Cells[1] = String(builtinDocstring(op))
 		fn.FunData().Package = pkg.Name
 		pkg.Put(k, fn)
 		if external {
@@ -697,6 +699,7 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 		}
 		id := fmt.Sprintf("<builtin-function ``%s''>", f.Name())
 		v := Fun(id, f.Formals(), f.Eval)
+		v.Cells[1] = String(builtinDocstring(f))
 		v.FunData().Package = pkg.Name
 		pkg.Put(k, v)
 		if external {

@@ -61,6 +61,12 @@ const (
 	// by default.  If a native function needs a lexical environment in order
 	// to evaluate further expressions it is expected to create one.  See the
 	// implementation of the builtin ``let''.
+	//
+	// NOTE: Cells[1] in an LFun may contain a string literal which contains a
+	// docstring.  To match common-lisp semantics and maintain backwards
+	// compatibility a function with a body consisting of only a string literal
+	// returns the string constant and is considered to have no documentation.
+	// A builtin function may also include a docstring in Cells[1].
 	LFun
 	// LQuote values are special values only used to represents two or more
 	// levels of quoting (e.g. ''3 or '''''''()).  The quoted value is stored
@@ -147,6 +153,13 @@ var lfunTypeStrings = []string{
 	LFunNone:      "function",
 	LFunMacro:     "macro",
 	LFunSpecialOp: "operator",
+}
+
+func (ft LFunType) String() string {
+	if ft >= LFunType(len(lfunTypeStrings)) {
+		return "invalid-function-type"
+	}
+	return lfunTypeStrings[ft]
 }
 
 type LFunData struct {
@@ -440,7 +453,7 @@ func Fun(fid string, formals *LVal, fn LBuiltin) *LVal {
 			FID:     fid,
 			Builtin: fn,
 		},
-		Cells: []*LVal{formals},
+		Cells: []*LVal{formals, String("")},
 	}
 }
 
@@ -454,7 +467,7 @@ func Macro(fid string, formals *LVal, fn LBuiltin) *LVal {
 			FID:     fid,
 			Builtin: fn,
 		},
-		Cells: []*LVal{formals},
+		Cells: []*LVal{formals, String("")},
 	}
 }
 
@@ -471,7 +484,7 @@ func SpecialOp(fid string, formals *LVal, fn LBuiltin) *LVal {
 			FID:     fid,
 			Builtin: fn,
 		},
-		Cells: []*LVal{formals},
+		Cells: []*LVal{formals, String("")},
 	}
 }
 

@@ -1,3 +1,6 @@
+(in-package 'option)
+(export 'x)
+(set 'x 1)
 (deftype none ())
 (defun nothing () (new none))
 (defun nothing? (v) (type? none v))
@@ -15,10 +18,19 @@
 (defun something-map (fn v)
   (something (funcall fn (get-something v))))
 
+(export 'optional?)
 (defun optional? (v) (or (nothing? v)
                          (something? v)))
 
+(export 'lookup)
 (defun lookup (m k)
+  """
+  returns an optional which contains the value of `k` in `m`.
+
+  returns none if k is not m.
+
+  also does other stuff?
+  """
   (if (key? m k)
     (something (get m k))
     (nothing)))

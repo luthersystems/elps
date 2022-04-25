@@ -9,13 +9,13 @@ import (
 	"os"
 	"strings"
 
+	"github.com/chzyer/readline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
 	"github.com/luthersystems/elps/parser/lexer"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
-	"github.com/chzyer/readline"
 )
 
 // RunRepl runs a simple repl in a vanilla elps environment.
@@ -36,6 +36,11 @@ func RunRepl(prompt string) {
 	rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
 	if !rc.IsNil() {
 		errlnf("No user package: %v", rc)
+		os.Exit(1)
+	}
+	rc = env.UsePackage(lisp.Symbol("help"))
+	if !rc.IsNil() {
+		errlnf("Use help package: %v", rc)
 		os.Exit(1)
 	}
 
