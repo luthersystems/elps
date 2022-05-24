@@ -2,8 +2,7 @@ version: 2
 jobs:
   build:
     docker:
-      - image: circleci/golang:1.13.5
-    working_directory: /go/src/github.com/luthersystems/elps
+      - image: cimg/go:1.16
     steps:
       - checkout
       - run: make citest
