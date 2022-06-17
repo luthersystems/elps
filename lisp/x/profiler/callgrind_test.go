@@ -1,11 +1,12 @@
 package profiler_test
 
 import (
+	"testing"
+
 	"github.com/luthersystems/elps/lisp"
 	profiler2 "github.com/luthersystems/elps/lisp/x/profiler"
 	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
-	"testing"
 )
 
 func TestNewCallgrind(t *testing.T) {
@@ -25,10 +26,9 @@ func TestNewCallgrind(t *testing.T) {
 	if lisp.GoError(lerr) != nil {
 		t.Fatal(lisp.GoError(lerr))
 	}
-	var testsrc *lisp.LVal
 	// Some spurious functions to check we get a profile out
-	testsrc = env.LoadString("test.lisp", `
-(defun print-it 
+	testsrc := env.LoadString("test.lisp", `
+(defun print-it
 	('x)
 	(debug-print x)
 )
@@ -38,7 +38,7 @@ func TestNewCallgrind(t *testing.T) {
 )
 (defun recurse-it
 	('x)
-	(if 
+	(if
 		(< x 4)
 		(recurse-it (- x 1))
 		(add-it x 3)
@@ -49,5 +49,5 @@ func TestNewCallgrind(t *testing.T) {
 	lerr = env.Eval(testsrc)
 	assert.NotEqual(t, lisp.LError, lerr.Type)
 	// Mark the profile as complete and dump the rest of the profile
-	profiler.Complete()
+	assert.NoError(t, profiler.Complete())
 }

@@ -172,9 +172,8 @@ func opExpr(env *LEnv, args *LVal) *LVal {
 	}
 	if nopt == 1 {
 		formals.Cells = append(formals.Cells, Symbol(OptArgSymbol), Symbol("%"+OptArgSymbol))
-	} else {
-		// multple optional args aren't supported currently
 	}
+	// multiple optional args aren't supported currently
 	if vargs {
 		formals.Cells = append(formals.Cells, Symbol(VarArgSymbol), Symbol("%"+VarArgSymbol))
 	}

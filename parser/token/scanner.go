@@ -201,10 +201,7 @@ func (s *Scanner) Accept(fn func(rune) bool) bool {
 	}
 	if fn(peek) {
 		err := s.ScanRune()
-		if err != nil {
-			return false
-		}
-		return true
+		return err == nil
 	}
 	return false
 }
@@ -216,10 +213,7 @@ func (s *Scanner) AcceptRune(c rune) bool {
 	}
 	if peek == c {
 		err := s.ScanRune()
-		if err != nil {
-			return false
-		}
-		return true
+		return err == nil
 	}
 	return false
 }
@@ -231,10 +225,7 @@ func (s *Scanner) AcceptDigit() bool {
 	}
 	if '0' <= peek && peek <= '9' {
 		err := s.ScanRune()
-		if err != nil {
-			return false
-		}
-		return true
+		return err == nil
 	}
 	return false
 }
@@ -246,10 +237,7 @@ func (s *Scanner) AcceptSpace() bool {
 	}
 	if unicode.IsSpace(peek) {
 		err := s.ScanRune()
-		if err != nil {
-			return false
-		}
-		return true
+		return err == nil
 	}
 	return false
 }
@@ -264,10 +252,7 @@ func (s *Scanner) AcceptAny(charset string) bool {
 	}
 	if strings.ContainsRune(charset, peek) {
 		err := s.ScanRune()
-		if err != nil {
-			return false
-		}
-		return true
+		return err == nil
 	}
 	return false
 }

@@ -48,10 +48,6 @@ func (enc *encoder) bytes() []byte {
 	return enc.buf.Bytes()
 }
 
-func (enc *encoder) reset() {
-	enc.buf.Reset()
-}
-
 func (enc *encoder) encode(v *lisp.LVal) error {
 	if v.IsNil() {
 		enc.buf.WriteString("null")
@@ -248,7 +244,7 @@ func (enc *encoder) encodeBytes(b []byte) (err error) {
 			n, _ = w.Write(b)
 			b = b[n:]
 		}
-		w.Close()
+		_ = w.Close()
 	}
 	enc.buf.WriteByte('"')
 	return nil

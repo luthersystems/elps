@@ -3,12 +3,13 @@ package profiler
 import (
 	"errors"
 	"fmt"
-	"github.com/luthersystems/elps/lisp"
-	"github.com/luthersystems/elps/parser/token"
 	"os"
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // A profiler implementation that builds Callgrind files.
@@ -17,14 +18,13 @@ import (
 // The resulting files can be opened in KCacheGrind or QCacheGrind.
 type callgrindProfiler struct {
 	sync.Mutex
-	writer      *os.File
-	runtime     *lisp.Runtime
-	enabled     bool
-	startTime   time.Time
-	refs        map[string]int
-	sourceCache map[int]*token.Location
-	refCounter  int
-	callRefs    map[int32]*callRef
+	writer     *os.File
+	runtime    *lisp.Runtime
+	enabled    bool
+	startTime  time.Time
+	refs       map[string]int
+	refCounter int
+	callRefs   map[int32]*callRef
 }
 
 // Returns a new Callgrind processor
@@ -55,10 +55,10 @@ func (p *callgrindProfiler) IsEnabled() bool {
 func (p *callgrindProfiler) Enable() error {
 	p.Lock()
 	if p.enabled {
-		return errors.New("Profiler already enabled")
+		return errors.New("profiler already enabled")
 	}
 	if p.writer == nil {
-		return errors.New("No output set in profiler")
+		return errors.New("no output set in profiler")
 	}
 	fmt.Fprintf(p.writer, "version: 1\ncreator: elps %s (Go %s)\n", lisp.ElpsVersion, runtime.Version())
 	fmt.Fprintf(p.writer, "cmd: Eval\npart: 1\npositions: line\n\n")
@@ -83,9 +83,9 @@ func (p *callgrindProfiler) SetFile(filename string) error {
 	p.Lock()
 	defer p.Unlock()
 	if p.enabled {
-		return errors.New("Profiler already enabled")
+		return errors.New("profiler already enabled")
 	}
-	pointer, err := os.Create(filename)
+	pointer, err := os.Create(filename) //#nosec G304
 	if err != nil {
 		return err
 	}
@@ -110,7 +110,7 @@ func (p *callgrindProfiler) Complete() error {
 		fmt.Fprintf(p.writer, "%d %d %d\n", entry.line, entry.duration, 0)
 	}
 	fmt.Fprint(p.writer, "\n")
-	duration := time.Now().Sub(p.startTime)
+	duration := time.Since(p.startTime)
 	ms := &runtime.MemStats{}
 	runtime.ReadMemStats(ms)
 	fmt.Fprintf(p.writer, "summary %d %d\n\n", duration.Nanoseconds(), ms.TotalAlloc)
@@ -148,8 +148,7 @@ func (p *callgrindProfiler) Start(function *lisp.LVal) {
 func (p *callgrindProfiler) incrementCallRef(name string, loc *token.Location) *callRef {
 	p.Lock()
 	defer p.Unlock()
-	var thread *int32
-	thread = &([]int32{1}[0])
+	thread := &([]int32{1}[0])
 	frameRef := new(callRef)
 	frameRef.name = name
 	frameRef.children = make([]*callRef, 0)
@@ -171,9 +170,8 @@ func (p *callgrindProfiler) incrementCallRef(name string, loc *token.Location) *
 
 // Finds a call ref for the current scope
 func (p *callgrindProfiler) getCallRefAndDecrement() *callRef {
-	var thread *int32
 	//C.GetGoId(thread)
-	thread = &([]int32{1}[0])
+	thread := &([]int32{1}[0])
 	if current, ok := p.callRefs[*thread]; ok {
 		p.callRefs[*thread] = current.prev
 		return current

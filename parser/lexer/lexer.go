@@ -19,9 +19,6 @@ const miscWordSymbols = "._+-*/=<>!&~%?$"
 type Lexer struct {
 	scanner *token.Scanner
 	lex     LexFn
-
-	// readErr is a reader from
-	readErr error
 }
 
 func New(s *token.Scanner) *Lexer {
@@ -64,7 +61,7 @@ func (lex *Lexer) readToken() []*token.Token {
 		lex.scanner.AcceptSeq(func(c rune) bool { return c != '\n' })
 		return lex.emitText(token.COMMENT)
 	case '#':
-		lex.readChar()
+		_ = lex.readChar()
 		err := lex.scanner.Err()
 		if err != nil {
 			return lex.emitError(err, false)
@@ -305,7 +302,7 @@ func (lex *Lexer) peekRune() rune {
 }
 
 func (lex *Lexer) readChar() error {
-	lex.scanner.ScanRune()
+	_ = lex.scanner.ScanRune()
 	return nil
 }
 

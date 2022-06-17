@@ -125,7 +125,7 @@ func (s *CallStack) TerminalFID(fid string) int {
 			// collapsed even if it is a terminal call.  This is not an
 			// expected state and signals a problem with the implementation of
 			// a builtin or the primary evaluation routine.
-			s.DebugPrint(os.Stderr)
+			_, _ = s.DebugPrint(os.Stderr)
 			// It's unclear if a panic is the correct action here.  While the
 			// existence of the TROBlock should prevent severe harm using the
 			// standard language builtins if someone wrote

@@ -246,9 +246,9 @@ func newAST(typ nodeType, nodes []parsec.ParsecNode) parsec.ParsecNode {
 		// We don't want terminal parsec nodes '(' and ')'
 		lval := lisp.SExpr(make([]*lisp.LVal, 0, len(nodes)-2))
 		for _, c := range nodes {
-			switch c.(type) {
+			switch c := c.(type) {
 			case *lisp.LVal:
-				lval.Cells = append(lval.Cells, c.(*lisp.LVal))
+				lval.Cells = append(lval.Cells, c)
 			}
 		}
 		return lval
@@ -257,9 +257,9 @@ func newAST(typ nodeType, nodes []parsec.ParsecNode) parsec.ParsecNode {
 		// NOTE:  Yeah.. The naming of nodeQExpr here is a little confusing.
 		lval := lisp.QExpr(make([]*lisp.LVal, 0, len(nodes)-2))
 		for _, c := range nodes {
-			switch c.(type) {
+			switch c := c.(type) {
 			case *lisp.LVal:
-				lval.Cells = append(lval.Cells, c.(*lisp.LVal))
+				lval.Cells = append(lval.Cells, c)
 			}
 		}
 		return lval
@@ -334,6 +334,7 @@ func cleanParsecNodeList(lis []parsec.ParsecNode) ([]parsec.ParsecNode, bool) {
 	return nodes, true
 }
 
+//lint:ignore U1000 Used for troubleshooting
 func dumpAST(t *ast, indent string) {
 	line := fmt.Sprintf("%sAST NODE type=%v", indent, t.typ)
 	fmt.Println(line)

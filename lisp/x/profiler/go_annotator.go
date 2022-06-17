@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/pprof"
+
 	"github.com/golang-collections/collections/stack"
 	"github.com/luthersystems/elps/lisp"
-	"runtime/pprof"
-	"time"
 )
 
 // This profiler type appends tags to pprof output if pprof is enabled.
@@ -18,7 +18,6 @@ import (
 type pprofAnnotator struct {
 	runtime        *lisp.Runtime
 	enabled        bool
-	startTime      time.Time
 	currentContext context.Context
 	contexts       *stack.Stack
 }
@@ -45,7 +44,7 @@ func (p *pprofAnnotator) Enable() error {
 }
 
 func (p *pprofAnnotator) SetFile(filename string) error {
-	return errors.New("No need to set a file for this profiler type")
+	return errors.New("no need to set a file for this profiler type")
 }
 
 func (p *pprofAnnotator) Complete() error {
@@ -74,7 +73,7 @@ func (p *pprofAnnotator) Start(function *lisp.LVal) {
 		// apply the selected labels to the current goroutine (NB this will propagate if the code branches further down...
 		pprof.SetGoroutineLabels(p.currentContext)
 	default:
-		panic(fmt.Sprintf("Missing type %d", function.Type))
+		panic(fmt.Sprintf("missing type %d", function.Type))
 	}
 
 }
@@ -91,7 +90,7 @@ func (p *pprofAnnotator) End(function *lisp.LVal) {
 		// And pop the current context back
 		p.currentContext = p.contexts.Pop().(context.Context)
 	default:
-		panic(fmt.Sprintf("Missing type %d", function.Type))
+		panic(fmt.Sprintf("missing type %d", function.Type))
 
 	}
 

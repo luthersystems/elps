@@ -87,6 +87,6 @@ func (lib *RelativeFileSystemLibrary) LoadSource(ctx SourceContext, loc string) 
 		loc = filepath.Join(filepath.Dir(ctx.Location()), loc)
 	}
 	name := filepath.Base(loc)
-	data, err := ioutil.ReadFile(loc)
+	data, err := ioutil.ReadFile(loc) //#nosec G304
 	return name, loc, data, err
 }

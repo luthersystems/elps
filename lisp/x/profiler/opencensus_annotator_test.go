@@ -2,13 +2,14 @@ package profiler_test
 
 import (
 	"context"
+	"log"
+	"testing"
+
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/x/profiler"
 	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
 	"go.opencensus.io/trace"
-	"log"
-	"testing"
 )
 
 func TestNewOpenCensusAnnotator(t *testing.T) {
@@ -23,9 +24,8 @@ func TestNewOpenCensusAnnotator(t *testing.T) {
 	if lisp.GoError(lerr) != nil {
 		t.Fatal(lisp.GoError(lerr))
 	}
-	var testsrc *lisp.LVal
-	testsrc = env.LoadString("test.lisp", `
-(defun print-it 
+	testsrc := env.LoadString("test.lisp", `
+(defun print-it
 	('x)
 	(debug-print x)
 )
@@ -35,7 +35,7 @@ func TestNewOpenCensusAnnotator(t *testing.T) {
 )
 (defun recurse-it
 	('x)
-	(if 
+	(if
 		(< x 4)
 		(recurse-it (- x 1))
 		(add-it x 3)
@@ -46,7 +46,7 @@ func TestNewOpenCensusAnnotator(t *testing.T) {
 	lerr = env.Eval(testsrc)
 	assert.NotEqual(t, lisp.LError, lerr.Type)
 	// Mark the profile as complete and dump the rest of the profile
-	ppa.Complete()
+	assert.NoError(t, ppa.Complete())
 }
 
 // a simple exporter that prints to the screen - in the real world, you'd go to one of the
