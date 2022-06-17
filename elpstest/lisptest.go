@@ -21,7 +21,7 @@ import (
 
 func BenchmarkParse(path string, r func() lisp.Reader) func(*testing.B) {
 	return func(b *testing.B) {
-		buf, err := ioutil.ReadFile(path)
+		buf, err := ioutil.ReadFile(path) //#nosec G304
 		if err != nil {
 			b.Fatalf("Unable to read source file %v: %v", path, err)
 		}
@@ -45,8 +45,6 @@ type Runner struct {
 	// in the testing package has been run.  Any error returned by the teardown
 	// function is reported as a test failure.
 	Teardown func(*lisp.LEnv) *lisp.LVal
-
-	logger *Logger
 }
 
 func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
@@ -60,7 +58,7 @@ func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
 	env := lisp.NewEnvRuntime(runtime)
 	err := lisp.GoError(lisp.InitializeUserEnv(env))
 	if err != nil {
-		return nil, fmt.Errorf("Failed to initialize lisp environment: %v", err)
+		return nil, fmt.Errorf("failed to initialize lisp environment: %v", err)
 	}
 	env.InPackage(lisp.String(lisp.DefaultUserPackage))
 	loader := r.Loader
@@ -69,11 +67,11 @@ func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
 	}
 	err = lisp.GoError(loader(env))
 	if err != nil {
-		return nil, fmt.Errorf("Failed to load package library: %v", err)
+		return nil, fmt.Errorf("failed to load package library: %v", err)
 	}
 	err = lisp.GoError(env.InPackage(lisp.String(lisp.DefaultUserPackage)))
 	if err != nil {
-		return nil, fmt.Errorf("Failed to switch into user package: %v", err)
+		return nil, fmt.Errorf("failed to switch into user package: %v", err)
 	}
 
 	return env, nil
@@ -141,7 +139,7 @@ func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
 }
 
 func (r *Runner) RunTestFile(t *testing.T, path string) {
-	source, err := ioutil.ReadFile(path)
+	source, err := ioutil.ReadFile(path) //#nosec G304
 	if err != nil {
 		t.Errorf("Unable to read test file: %v", err)
 		return
@@ -208,7 +206,8 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 
 func (r *Runner) RunBenchmarkFile(b *testing.B, path string) {
 	b.StopTimer()
-	source, err := ioutil.ReadFile(path)
+
+	source, err := ioutil.ReadFile(path) //#nosec G304
 	if err != nil {
 		b.Errorf("Unable to read test file: %v", err)
 		return

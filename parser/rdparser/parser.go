@@ -21,14 +21,14 @@ func NewReader() lisp.Reader {
 }
 
 // Read implements lisp.Reader.
-func (_ *reader) Read(name string, r io.Reader) ([]*lisp.LVal, error) {
+func (*reader) Read(name string, r io.Reader) ([]*lisp.LVal, error) {
 	s := token.NewScanner(name, r)
 	p := New(s)
 	return p.ParseProgram()
 }
 
 // ReadLocation implements lisp.LocationReader.
-func (_ *reader) ReadLocation(name string, loc string, r io.Reader) ([]*lisp.LVal, error) {
+func (*reader) ReadLocation(name string, loc string, r io.Reader) ([]*lisp.LVal, error) {
 	s := token.NewScanner(name, r)
 	s.SetPath(loc)
 	p := New(s)

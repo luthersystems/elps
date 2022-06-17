@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"strings"
-	"sync/atomic"
 
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -19,18 +18,6 @@ const DefaultLangPackage = "lisp"
 // DefaultUserPackage is the name of the entry point package for interpreting
 // user code.
 const DefaultUserPackage = "user"
-
-var envCount uint64
-
-func getEnvID() uint {
-	return uint(atomic.AddUint64(&envCount, 1))
-}
-
-var symCount uint64
-
-func gensym() uint {
-	return uint(atomic.AddUint64(&symCount, 1))
-}
 
 // InitializeUserEnv creates the default user environment.
 func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
@@ -917,7 +904,7 @@ func (env *LEnv) MacroCall(fun, args *LVal) *LVal {
 
 	r := env.call(fun, args)
 	if r == nil {
-		env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
+		_, _ = env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
 		panic("nil LVal returned from function call")
 	}
 	if r.Type == LError {
@@ -964,7 +951,7 @@ func (env *LEnv) SpecialOpCall(fun, args *LVal) *LVal {
 callf:
 	r := env.call(fun, args)
 	if r == nil {
-		env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
+		_, _ = env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
 		panic("nil LVal returned from function call")
 	}
 	if r.Type == LError {
@@ -1004,8 +991,7 @@ func (env *LEnv) funCall(fun, args *LVal) *LVal {
 	// Check for possible tail recursion before pushing to avoid hitting s when
 	// checking.  But push FID onto the stack before popping to simplify
 	// book-keeping.
-	var npop int
-	npop = env.Runtime.Stack.TerminalFID(fun.FID())
+	npop := env.Runtime.Stack.TerminalFID(fun.FID())
 
 	// Push a frame onto the stack to represent the function's execution.
 	err := env.Runtime.Stack.PushFID(env.Loc, fun.FID(), fun.Package(), env.GetFunName(fun))
@@ -1021,7 +1007,7 @@ func (env *LEnv) funCall(fun, args *LVal) *LVal {
 callf:
 	r := env.call(fun, args)
 	if r == nil {
-		env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
+		_, _ = env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
 		panic("nil LVal returned from function call")
 	}
 	if r.Type == LError {
@@ -1059,10 +1045,7 @@ func decrementMarkTailRec(mark *LVal) (done bool) {
 		panic("invalid mark")
 	}
 	mark.Cells[0].Int--
-	if mark.Cells[0].Int <= 0 {
-		return true
-	}
-	return false
+	return mark.Cells[0].Int <= 0
 }
 
 func (env *LEnv) evalSExprCells(s *LVal) *LVal {
@@ -1091,7 +1074,7 @@ func (env *LEnv) evalSExprCells(s *LVal) *LVal {
 		return env.Errorf("first element of expression is not a function: %v", f)
 	}
 	if f.Type == LMarkTailRec {
-		env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
+		_, _ = env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
 		log.Panicf("tail-recursion optimization attempted during argument evaluation: %v", f.Cells)
 	}
 
@@ -1118,7 +1101,7 @@ func (env *LEnv) evalSExprCells(s *LVal) *LVal {
 			return v
 		}
 		if v.Type == LMarkTailRec {
-			env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
+			_, _ = env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
 			log.Panicf("tail-recursion optimization attempted during argument evaluation: %v", v.Cells)
 		}
 

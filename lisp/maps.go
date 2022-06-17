@@ -45,8 +45,6 @@ const (
 
 type typemap map[interface{}]keytype
 
-type typemapkey struct{}
-
 type sortedmap struct {
 	m  map[interface{}]*LVal
 	tm typemap

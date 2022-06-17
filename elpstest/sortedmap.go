@@ -117,6 +117,7 @@ func testGetEntries(t *testing.T, m lisp.Map) bool {
 		key, val := pair.Cells[0], pair.Cells[1]
 		v, ok := m.Get(key)
 		if !assert.True(t, ok, "Entries %d was not found in map: %v", i, key) {
+			return false
 		}
 		eq := val.Equal(v)
 		err := lisp.GoError(eq)
@@ -137,10 +138,10 @@ func mapKeys(m lisp.Map) (*lisp.LVal, error) {
 		return nil, err
 	}
 	if v.Type != lisp.LSExpr {
-		return nil, fmt.Errorf("Keys did not return a list")
+		return nil, fmt.Errorf("keys did not return a list")
 	}
 	if v.Len() != m.Len() {
-		return nil, fmt.Errorf("Keys has an invalid length")
+		return nil, fmt.Errorf("keys has an invalid length")
 	}
 	return v, nil
 }
@@ -153,12 +154,12 @@ func mapEntries(m lisp.Map) (*lisp.LVal, error) {
 		return nil, err
 	}
 	if res.Type != lisp.LInt || res.Int != len(cells) {
-		err := fmt.Errorf("Entries returned %v (expected %d)", res, len(cells))
+		err := fmt.Errorf("entries returned %v (expected %d)", res, len(cells))
 		return nil, err
 	}
 	for i := range cells {
 		if cells[i].Type != lisp.LSExpr || cells[i].Len() != 2 {
-			return nil, fmt.Errorf("Entries index %d is not valid : %v", i, cells[i])
+			return nil, fmt.Errorf("entries index %d is not valid : %v", i, cells[i])
 		}
 	}
 	return lisp.QExpr(cells), nil

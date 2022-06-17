@@ -26,7 +26,7 @@ var docCmd = &cobra.Command{
 	Long:  `Show documentation for an elps package or function.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) != 1 {
-			cmd.Help()
+			_ = cmd.Help()
 			os.Exit(1)
 		}
 		err := docExec(args[0])
@@ -34,7 +34,7 @@ var docCmd = &cobra.Command{
 			fmt.Fprintln(os.Stderr, err)
 			lerr := &lisp.ErrorVal{}
 			if errors.As(err, &lerr) {
-				lerr.WriteTrace(os.Stderr)
+				_, _ = lerr.WriteTrace(os.Stderr)
 			}
 			os.Exit(1)
 		}
@@ -51,7 +51,7 @@ func docExec(query string) error {
 	// source files).
 	errbuf := &bytes.Buffer{}
 	env.Runtime.Stderr = errbuf
-	dumperr := func() { os.Stderr.Write(errbuf.Bytes()) }
+	dumperr := func() { _, _ = os.Stderr.Write(errbuf.Bytes()) }
 	rc := lisp.InitializeUserEnv(env)
 	if !rc.IsNil() {
 		dumperr()
@@ -71,7 +71,7 @@ func docExec(query string) error {
 		res := env.LoadFile(docSourceFile)
 		if res.Type == lisp.LError {
 			dumperr()
-			(*lisp.ErrorVal)(res).WriteTrace(os.Stderr)
+			_, _ = (*lisp.ErrorVal)(res).WriteTrace(os.Stderr)
 			os.Exit(1)
 		}
 	}

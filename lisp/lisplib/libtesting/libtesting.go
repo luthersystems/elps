@@ -36,8 +36,6 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	return lisp.Nil()
 }
 
-var builtins = []*libutil.Builtin{}
-
 // TestSuite is an ordered set of named tests.
 type TestSuite struct {
 	tests      map[string]*Test

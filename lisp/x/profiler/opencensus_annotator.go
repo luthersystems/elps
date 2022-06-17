@@ -4,16 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	"github.com/golang-collections/collections/stack"
 	"github.com/luthersystems/elps/lisp"
 	"go.opencensus.io/trace"
-	"time"
 )
 
 type ocAnnotator struct {
 	runtime        *lisp.Runtime
 	enabled        bool
-	startTime      time.Time
 	currentContext context.Context
 	currentSpan    *trace.Span
 	contexts       *stack.Stack
@@ -35,7 +34,7 @@ func (p *ocAnnotator) EnableWithContext(ctx context.Context) error {
 	p.runtime.Profiler = p
 	p.enabled = true
 	if ctx == nil {
-		return errors.New("Set a context to use this function")
+		return errors.New("set a context to use this function")
 	}
 	p.currentContext = ctx
 	return nil
@@ -45,13 +44,13 @@ func (p *ocAnnotator) Enable() error {
 	p.runtime.Profiler = p
 	p.enabled = true
 	if p.currentContext == nil {
-		return errors.New("We can only append spans to a context that is linked to opencensus")
+		return errors.New("we can only append spans to a context that is linked to opencensus")
 	}
 	return nil
 }
 
 func (p *ocAnnotator) SetFile(filename string) error {
-	return errors.New("No need to set a file for this profiler type")
+	return errors.New("no need to set a file for this profiler type")
 }
 
 func (p *ocAnnotator) Complete() error {
@@ -74,7 +73,7 @@ func (p *ocAnnotator) Start(function *lisp.LVal) {
 		p.contexts.Push(p.currentContext)
 		p.currentContext, p.currentSpan = trace.StartSpan(p.currentContext, fName)
 	default:
-		panic(fmt.Sprintf("Missing type %d", function.Type))
+		panic(fmt.Sprintf("missing type %d", function.Type))
 	}
 
 }

@@ -47,3 +47,7 @@ clean:
 
 ${BIN}: ${GO_FILES}
 	go build
+
+.PHONY: static-checks
+static-checks:
+	./scripts/static-checks.sh

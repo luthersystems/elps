@@ -2370,15 +2370,6 @@ func bothInt(a, b *LVal) bool {
 	return false
 }
 
-func allInt(vs []*LVal) bool {
-	for _, v := range vs {
-		if v.Type != LInt {
-			return false
-		}
-	}
-	return true
-}
-
 func numericListType(cells []*LVal) LType {
 	if len(cells) == 0 {
 		return LInvalid

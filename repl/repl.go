@@ -114,7 +114,7 @@ func RunEnv(env *lisp.LEnv, prompt, cont string) {
 		}
 		val := env.Eval(expr)
 		if val.Type == lisp.LError {
-			(*lisp.ErrorVal)(val).WriteTrace(os.Stderr)
+			_, _ = (*lisp.ErrorVal)(val).WriteTrace(os.Stderr)
 		} else {
 			fmt.Fprintln(env.Runtime.Stderr, val)
 		}
@@ -127,10 +127,6 @@ func errlnf(format string, v ...interface{}) {
 		return
 	}
 	errf(format+"\n", v...)
-}
-
-func errln(v ...interface{}) {
-	fmt.Fprintln(os.Stderr, v...)
 }
 
 func errf(format string, v ...interface{}) {

@@ -4,7 +4,6 @@ package cmd
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 
 	"github.com/luthersystems/elps/lisp"
@@ -46,29 +45,11 @@ var runCmd = &cobra.Command{
 		for i := range args {
 			res := env.LoadFile(args[i])
 			if res.Type == lisp.LError {
-				(*lisp.ErrorVal)(res).WriteTrace(os.Stderr)
+				_, _ = (*lisp.ErrorVal)(res).WriteTrace(os.Stderr)
 				os.Exit(1)
 			}
 		}
 	},
-}
-
-func runReadExpressions(args []string) ([][]byte, error) {
-	exprs := make([][]byte, len(args))
-	if runExpression {
-		for i := range args {
-			exprs[i] = []byte(args[i])
-		}
-		return exprs, nil
-	}
-	for i, path := range args {
-		b, err := ioutil.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		exprs[i] = b
-	}
-	return exprs, nil
 }
 
 func init() {

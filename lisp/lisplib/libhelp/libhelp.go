@@ -227,8 +227,6 @@ func cleanDocstring(doc string) string {
 		doc = doc[1:]
 	}
 	doc = indent.String(wordwrap.String(dedent.String(doc), 72), 2)
-	if strings.HasSuffix(doc, "\n") {
-		doc = doc[:len(doc)-1]
-	}
+	doc = strings.TrimSuffix(doc, "\n")
 	return doc
 }

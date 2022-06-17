@@ -183,7 +183,6 @@ const (
 	unquoteNone unquoteType = iota
 	unquoteValue
 	unquoteSpliced
-	unquoteInvalid
 )
 
 func getUnquoteType(v *LVal) (unquoteType, error) {

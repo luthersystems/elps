@@ -30,8 +30,7 @@ func TestRuntimeErrors(t *testing.T) {
 	if lisp.GoError(lerr) != nil {
 		t.Fatal(lisp.GoError(lerr))
 	}
-	var testsrc *lisp.LVal
-	testsrc = lisp.SExpr([]*lisp.LVal{
+	testsrc := lisp.SExpr([]*lisp.LVal{
 		lisp.Symbol("error"),
 		lisp.Quote(lisp.Symbol("test-error")),
 		lisp.String("test error message"),
