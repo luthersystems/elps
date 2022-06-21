@@ -6,11 +6,4 @@
 
 set -exuo pipefail
 
-go vet ./...
-
-GOSEC_EXCLUSIONS="${GOSEC_EXCLUSIONS:-}"
-# gosec can't handle vanilla fabric chaincode due to how fabric injects the
-# shim dynamically.
-gosec -exclude="$GOSEC_EXCLUSIONS" -exclude-dir _examples/wasm/app ./...
-
-staticcheck ./...
+golangci-lint run -v
