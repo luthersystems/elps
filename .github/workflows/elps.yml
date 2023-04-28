@@ -15,4 +15,5 @@ jobs:
       env:
         GOLANGCI_LINT_VERSION: 1.52.2
         BINDIR: /usr/local/bin
-    - run: make static-checks citest
+    - name: Run static checks and CI tests
+      run: make static-checks citest
