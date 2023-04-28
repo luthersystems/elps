@@ -1,4 +1,4 @@
-name: luthersystems/elps/luthersystems/elps
+name: CI Tests
 on:
   pull_request:
     branches:
