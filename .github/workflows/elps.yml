@@ -1,0 +1,14 @@
+name: luthersystems/elps/luthersystems/elps
+on:
+  push:
+    branches:
+    - main
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: golang:1.18
+    steps:
+    - uses: actions/checkout@v3.5.0
+    - run: wget -O- -nv https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s v1.46.2
+    - run: make static-checks citest
