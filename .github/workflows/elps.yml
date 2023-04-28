@@ -1,8 +1,8 @@
 name: luthersystems/elps/luthersystems/elps
 on:
-  push:
+  pull_request:
     branches:
-    - main
+      - main
 jobs:
   build:
     runs-on: ubuntu-latest

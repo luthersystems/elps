@@ -1,9 +1,0 @@
-version: 2
-jobs:
-  build:
-    docker:
-      - image: cimg/go:1.18
-    steps:
-      - checkout
-      - run: wget -O- -nv https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s v1.46.2
-      - run: make static-checks citest
