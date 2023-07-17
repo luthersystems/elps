@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -21,7 +20,7 @@ import (
 
 func BenchmarkParse(path string, r func() lisp.Reader) func(*testing.B) {
 	return func(b *testing.B) {
-		buf, err := ioutil.ReadFile(path) //#nosec G304
+		buf, err := os.ReadFile(path) //#nosec G304
 		if err != nil {
 			b.Fatalf("Unable to read source file %v: %v", path, err)
 		}
@@ -139,7 +138,7 @@ func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
 }
 
 func (r *Runner) RunTestFile(t *testing.T, path string) {
-	source, err := ioutil.ReadFile(path) //#nosec G304
+	source, err := os.ReadFile(path) //#nosec G304
 	if err != nil {
 		t.Errorf("Unable to read test file: %v", err)
 		return
@@ -207,7 +206,7 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 func (r *Runner) RunBenchmarkFile(b *testing.B, path string) {
 	b.StopTimer()
 
-	source, err := ioutil.ReadFile(path) //#nosec G304
+	source, err := os.ReadFile(path) //#nosec G304
 	if err != nil {
 		b.Errorf("Unable to read test file: %v", err)
 		return
@@ -322,7 +321,7 @@ func RunBenchmark(b *testing.B, source string) {
 			lisp.WithMaximumLogicalStackHeight(50000),
 			lisp.WithMaximumPhysicalStackHeight(25000),
 			lisp.WithReader(p),
-			lisp.WithStderr(ioutil.Discard),
+			lisp.WithStderr(io.Discard),
 		))
 		if err != nil {
 			b.Fatal(err)
