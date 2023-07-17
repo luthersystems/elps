@@ -16,7 +16,6 @@ package regexparser
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"strconv"
 	"strings"
 
@@ -33,7 +32,7 @@ type parsecReader struct {
 }
 
 func (p *parsecReader) Read(name string, r io.Reader) ([]*lisp.LVal, error) {
-	b, err := ioutil.ReadAll(r)
+	b, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
