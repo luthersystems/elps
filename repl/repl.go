@@ -95,13 +95,17 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 	p := rdparser.NewInteractive(nil)
 	p.SetPrompts(prompt, cont)
 
+	cfg := newConfig(opts...)
+	if cfg.stderr != nil {
+		env.Runtime.Stderr = cfg.stderr
+	}
+
 	rlCfg := &readline.Config{
 		Stdout: env.Runtime.Stderr,
 		Stderr: env.Runtime.Stderr,
 		Prompt: p.Prompt(),
 	}
 
-	cfg := newConfig(opts...)
 	if cfg.stdin != nil {
 		rlCfg.Stdin = cfg.stdin
 	}
