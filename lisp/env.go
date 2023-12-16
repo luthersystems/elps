@@ -867,8 +867,8 @@ func (env *LEnv) EvalSExpr(s *LVal) *LVal {
 	args := call
 	args.Cells = args.Cells[1:]
 	if env.Runtime.Profiler != nil {
-		env.Runtime.Profiler.Start(fun)
-		defer env.Runtime.Profiler.End(fun)
+		stop := env.Runtime.Profiler.Start(fun)
+		defer stop()
 	}
 	switch fun.FunType {
 	case LFunNone:

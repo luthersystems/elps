@@ -126,14 +126,14 @@ func (p *callgrindProfiler) getRef(name string) string {
 	return fmt.Sprintf("(%d) %s", p.refCounter, name)
 }
 
-func (p *callgrindProfiler) Start(function *lisp.LVal) {
+func (p *callgrindProfiler) Start(function *lisp.LVal) func() {
 	if !p.enabled {
-		return
+		return func() {}
 	}
 	switch function.Type {
 	case lisp.LInt, lisp.LString, lisp.LFloat, lisp.LBytes, lisp.LError, lisp.LArray, lisp.LQuote, lisp.LNative, lisp.LQSymbol, lisp.LSortMap:
 		// We don't need to profile these types. We could, but we're not that LISP :D
-		return
+		return func() {}
 	case lisp.LFun, lisp.LSymbol, lisp.LSExpr:
 		// Mark the time and point of entry. It feels like we're building the call stack in Runtime
 		// again, but we're not - it's called, not callers.
@@ -141,6 +141,10 @@ func (p *callgrindProfiler) Start(function *lisp.LVal) {
 		p.incrementCallRef(name, function.Source)
 	default:
 		panic(fmt.Sprintf("Missing type %d", function.Type))
+	}
+
+	return func() {
+		p.End(function)
 	}
 }
 
