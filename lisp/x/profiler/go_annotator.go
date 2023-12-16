@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"runtime/pprof"
 
-	"github.com/golang-collections/collections/stack"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -19,14 +18,12 @@ type pprofAnnotator struct {
 	runtime        *lisp.Runtime
 	enabled        bool
 	currentContext context.Context
-	contexts       *stack.Stack
 }
 
 func NewPprofAnnotator(runtime *lisp.Runtime, parentContext context.Context) lisp.Profiler {
 	return &pprofAnnotator{
 		runtime:        runtime,
 		currentContext: parentContext,
-		contexts:       stack.New(),
 	}
 }
 
@@ -52,14 +49,15 @@ func (p *pprofAnnotator) Complete() error {
 	return nil
 }
 
-func (p *pprofAnnotator) Start(function *lisp.LVal) {
+func (p *pprofAnnotator) Start(function *lisp.LVal) func() {
 	if !p.enabled {
-		return
+		return func() {}
 	}
+	oldContext := p.currentContext
 	switch function.Type {
 	case lisp.LInt, lisp.LString, lisp.LFloat, lisp.LBytes, lisp.LError, lisp.LArray, lisp.LQuote, lisp.LNative, lisp.LQSymbol, lisp.LSortMap:
 		// We don't need to profile these types. We could, but we're not that LISP :D
-		return
+		return func() {}
 	case lisp.LFun, lisp.LSymbol, lisp.LSExpr:
 		// We're keeping the context on a stack here rather than using the pprof.Do function for the simple
 		// reason that I would have had to make more changes to the lisp.EvalSExpr function to accommodate that,
@@ -68,7 +66,7 @@ func (p *pprofAnnotator) Start(function *lisp.LVal) {
 		// if we did it that way.
 		fName := fmt.Sprintf("%s:%s", function.FunData().Package, getFunNameFromFID(p.runtime, function.FunData().FID))
 		labels := pprof.Labels("function", fName)
-		p.contexts.Push(p.currentContext)
+		oldContext = p.currentContext
 		p.currentContext = pprof.WithLabels(p.currentContext, labels)
 		// apply the selected labels to the current goroutine (NB this will propagate if the code branches further down...
 		pprof.SetGoroutineLabels(p.currentContext)
@@ -76,22 +74,7 @@ func (p *pprofAnnotator) Start(function *lisp.LVal) {
 		panic(fmt.Sprintf("missing type %d", function.Type))
 	}
 
-}
-
-func (p *pprofAnnotator) End(function *lisp.LVal) {
-	if !p.enabled {
-		return
+	return func() {
+		p.currentContext = oldContext
 	}
-	switch function.Type {
-	case lisp.LInt, lisp.LString, lisp.LFloat, lisp.LBytes, lisp.LError, lisp.LArray, lisp.LQuote, lisp.LNative, lisp.LQSymbol, lisp.LSortMap:
-		// We don't need to profile these types. We could, but we're not that LISP :D
-		return
-	case lisp.LFun, lisp.LSymbol, lisp.LSExpr:
-		// And pop the current context back
-		p.currentContext = p.contexts.Pop().(context.Context)
-	default:
-		panic(fmt.Sprintf("missing type %d", function.Type))
-
-	}
-
 }

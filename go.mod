@@ -4,7 +4,6 @@ go 1.21
 
 require (
 	github.com/chzyer/readline v1.5.0
-	github.com/golang-collections/collections v0.0.0-20130729185459-604e922904d3
 	github.com/muesli/reflow v0.3.0
 	github.com/prataprc/goparsec v0.0.0-20211219142520-daac0e635e7e
 	github.com/spf13/cobra v1.8.0

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/golang-collections/collections/stack"
 	"github.com/luthersystems/elps/lisp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -22,14 +21,12 @@ type otelAnnotator struct {
 	enabled        bool
 	currentContext context.Context
 	currentSpan    trace.Span
-	contexts       *stack.Stack
 }
 
 func NewOpenTelemetryAnnotator(runtime *lisp.Runtime, parentContext context.Context) lisp.Profiler {
 	return &otelAnnotator{
 		runtime:        runtime,
 		currentContext: parentContext,
-		contexts:       stack.New(),
 	}
 }
 
@@ -75,41 +72,27 @@ func contextTracer(ctx context.Context) trace.Tracer {
 	return otel.GetTracerProvider().Tracer(tracerName)
 }
 
-func (p *otelAnnotator) Start(function *lisp.LVal) {
+func (p *otelAnnotator) Start(function *lisp.LVal) func() {
 	if !p.enabled {
-		return
+		return func() {}
 	}
+	oldContext := p.currentContext
 	switch function.Type {
 	case lisp.LInt, lisp.LString, lisp.LFloat, lisp.LBytes, lisp.LError, lisp.LArray, lisp.LQuote, lisp.LNative, lisp.LQSymbol, lisp.LSortMap:
 		// We don't need to profile these types. We could, but we're not that LISP :D
-		return
+		return func() {}
 	case lisp.LFun, lisp.LSymbol, lisp.LSExpr:
 		fName := fmt.Sprintf("%s:%s", function.FunData().Package, getFunNameFromFID(p.runtime, function.FunData().FID))
-		p.contexts.Push(p.currentContext)
 		p.currentContext, p.currentSpan = contextTracer(p.currentContext).Start(p.currentContext, fName)
 	default:
 		panic(fmt.Sprintf("missing type %d", function.Type))
 	}
-}
-
-func (p *otelAnnotator) End(function *lisp.LVal) {
-	if !p.enabled {
-		return
-	}
-	switch function.Type {
-	case lisp.LInt, lisp.LString, lisp.LFloat, lisp.LBytes, lisp.LError, lisp.LArray, lisp.LQuote, lisp.LNative, lisp.LQSymbol, lisp.LSortMap:
-		// We don't need to profile these types. We could, but we're not that LISP :D
-		return
-	case lisp.LFun, lisp.LSymbol, lisp.LSExpr:
+	return func() {
 		file, line := p.getSource(function)
 		p.currentSpan.AddEvent("source", trace.WithAttributes(attribute.Key("file").String(file), attribute.Key("line").Int64(int64(line))))
 		p.currentSpan.End()
-		// And pop the current context back
-		p.currentContext = p.contexts.Pop().(context.Context)
+		p.currentContext = oldContext
 		p.currentSpan = trace.SpanFromContext(p.currentContext)
-	default:
-		panic(fmt.Sprintf("Missing type %d", function.Type))
-
 	}
 }
 
