@@ -18,12 +18,50 @@ import (
 	"github.com/luthersystems/elps/parser/token"
 )
 
+type config struct {
+	stdin  io.ReadCloser
+	stderr io.WriteCloser
+}
+
+func newConfig(opts ...Option) *config {
+	config := &config{}
+	for _, opt := range opts {
+		opt(config)
+	}
+	return config
+}
+
+type Option func(*config)
+
+// WithStderr allows overriding the input to the REPL.
+func WithStdin(stdin io.ReadCloser) Option {
+	return func(c *config) {
+		c.stdin = stdin
+	}
+}
+
+// WithStderr allows overriding the output to the REPL.
+func WithStderr(stderr io.WriteCloser) Option {
+	return func(c *config) {
+		c.stderr = stderr
+	}
+}
+
 // RunRepl runs a simple repl in a vanilla elps environment.
-func RunRepl(prompt string) {
+func RunRepl(prompt string, opts ...Option) {
 	env := lisp.NewEnv(nil)
-	env.Runtime.Reader = parser.NewReader()
-	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
-	rc := lisp.InitializeUserEnv(env)
+
+	envOpts := []lisp.Config{
+		lisp.WithReader(parser.NewReader()),
+		lisp.WithLibrary(&lisp.RelativeFileSystemLibrary{}),
+	}
+
+	cfg := newConfig(opts...)
+	if cfg.stderr != nil {
+		envOpts = append(envOpts, lisp.WithStderr(cfg.stderr))
+	}
+
+	rc := lisp.InitializeUserEnv(env, envOpts...)
 	if !rc.IsNil() {
 		errlnf("Language initialization failure: %v", rc)
 		os.Exit(1)
@@ -44,11 +82,11 @@ func RunRepl(prompt string) {
 		os.Exit(1)
 	}
 
-	RunEnv(env, prompt, strings.Repeat(" ", len(prompt)))
+	RunEnv(env, prompt, strings.Repeat(" ", len(prompt)), opts...)
 }
 
 // RunEnv runs a simple repl with env as a root environment.
-func RunEnv(env *lisp.LEnv, prompt, cont string) {
+func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 	if env.Parent != nil {
 		errlnf("REPL environment is not a root environment.")
 		os.Exit(1)
@@ -56,9 +94,18 @@ func RunEnv(env *lisp.LEnv, prompt, cont string) {
 
 	p := rdparser.NewInteractive(nil)
 	p.SetPrompts(prompt, cont)
-	rl, err := readline.NewEx(&readline.Config{
+
+	rlCfg := &readline.Config{
+		Stdout: env.Runtime.Stderr,
+		Stderr: env.Runtime.Stderr,
 		Prompt: p.Prompt(),
-	})
+	}
+
+	cfg := newConfig(opts...)
+	if cfg.stdin != nil {
+		rlCfg.Stdin = cfg.stdin
+	}
+	rl, err := readline.NewEx(rlCfg)
 	if err != nil {
 		panic(err)
 	}
@@ -114,7 +161,7 @@ func RunEnv(env *lisp.LEnv, prompt, cont string) {
 		}
 		val := env.Eval(expr)
 		if val.Type == lisp.LError {
-			_, _ = (*lisp.ErrorVal)(val).WriteTrace(os.Stderr)
+			_, _ = (*lisp.ErrorVal)(val).WriteTrace(env.Runtime.Stderr)
 		} else {
 			fmt.Fprintln(env.Runtime.Stderr, val)
 		}

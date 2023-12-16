@@ -65,3 +65,12 @@ func WithStderr(w io.Writer) Config {
 		return Nil()
 	}
 }
+
+// WithLibrary returns a Config that makes environments use l
+// as a source library.
+func WithLibrary(l SourceLibrary) Config {
+	return func(env *LEnv) *LVal {
+		env.Runtime.Library = l
+		return Nil()
+	}
+}
