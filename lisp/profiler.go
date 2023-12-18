@@ -12,6 +12,6 @@ type Profiler interface {
 	SetFile(filename string) error
 	// Complete ends the profiling session and output summary lines
 	Complete() error
-	// Start the start of a process, and returns a function to stop.
+	// Start the process, and returns a function to stop.
 	Start(function *LVal) func()
 }

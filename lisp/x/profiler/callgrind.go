@@ -144,7 +144,7 @@ func (p *callgrindProfiler) Start(function *lisp.LVal) func() {
 	}
 
 	return func() {
-		p.End(function)
+		p.end(function)
 	}
 }
 
@@ -202,7 +202,7 @@ func (p *callgrindProfiler) getFunctionParameters(function *lisp.LVal) (string, 
 	return source, line, fName
 }
 
-func (p *callgrindProfiler) End(function *lisp.LVal) {
+func (p *callgrindProfiler) end(function *lisp.LVal) {
 	if !p.enabled {
 		return
 	}
