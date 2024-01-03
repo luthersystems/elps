@@ -61,8 +61,10 @@ func getFunNameFromFID(rt *lisp.Runtime, in string) string {
 }
 
 // prettyFunName constructs a pretty canonical name.
-// IMPORTANT: must be type with FunData()
 func prettyFunName(runtime *lisp.Runtime, fun *lisp.LVal) string {
+	if fun.Type != lisp.LFun {
+		return ""
+	}
 	funData := fun.FunData()
 	if funData == nil {
 		return ""
