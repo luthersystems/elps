@@ -3,51 +3,36 @@ package profiler
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/luthersystems/elps/lisp"
 	"go.opencensus.io/trace"
 )
 
 type ocAnnotator struct {
-	runtime        *lisp.Runtime
-	enabled        bool
+	profiler
 	currentContext context.Context
 	currentSpan    *trace.Span
 }
 
-func NewOpenCensusAnnotator(runtime *lisp.Runtime, parentContext context.Context) lisp.Profiler {
-	return &ocAnnotator{
-		runtime:        runtime,
+var _ lisp.Profiler = &ocAnnotator{}
+
+func NewOpenCensusAnnotator(runtime *lisp.Runtime, parentContext context.Context, opts ...Option) *ocAnnotator {
+	p := &ocAnnotator{
+		profiler: profiler{
+			runtime: runtime,
+		},
 		currentContext: parentContext,
 	}
-}
-
-func (p *ocAnnotator) IsEnabled() bool {
-	return p.enabled
-}
-
-func (p *ocAnnotator) EnableWithContext(ctx context.Context) error {
-	p.runtime.Profiler = p
-	p.enabled = true
-	if ctx == nil {
-		return errors.New("set a context to use this function")
-	}
-	p.currentContext = ctx
-	return nil
+	p.profiler.applyConfigs(opts...)
+	return p
 }
 
 func (p *ocAnnotator) Enable() error {
 	p.runtime.Profiler = p
-	p.enabled = true
 	if p.currentContext == nil {
 		return errors.New("we can only append spans to a context that is linked to opencensus")
 	}
-	return nil
-}
-
-func (p *ocAnnotator) SetFile(filename string) error {
-	return errors.New("no need to set a file for this profiler type")
+	return p.profiler.Enable()
 }
 
 func (p *ocAnnotator) Complete() error {
@@ -57,24 +42,14 @@ func (p *ocAnnotator) Complete() error {
 	return nil
 }
 
-func (p *ocAnnotator) Start(function *lisp.LVal) func() {
-	if !p.enabled {
+func (p *ocAnnotator) Start(fun *lisp.LVal) func() {
+	if p.skipTrace(fun) {
 		return func() {}
 	}
 	oldContext := p.currentContext
-	switch function.Type {
-	case lisp.LInt, lisp.LString, lisp.LFloat, lisp.LBytes, lisp.LError, lisp.LArray, lisp.LQuote, lisp.LNative, lisp.LQSymbol, lisp.LSortMap:
-		// We don't need to profile these types. We could, but we're not that LISP :D
-		return func() {}
-	case lisp.LFun, lisp.LSymbol, lisp.LSExpr:
-		fName := fmt.Sprintf("%s:%s", function.FunData().Package, getFunNameFromFID(p.runtime, function.FunData().FID))
-		p.currentContext, p.currentSpan = trace.StartSpan(p.currentContext, fName)
-	default:
-		panic(fmt.Sprintf("missing type %d", function.Type))
-	}
-
+	p.currentContext, p.currentSpan = trace.StartSpan(p.currentContext, prettyFunName(p.runtime, fun))
 	return func() {
-		file, line := p.getSource(function)
+		file, line := getSource(fun)
 		p.currentSpan.Annotate([]trace.Attribute{
 			trace.StringAttribute("file", file),
 			trace.Int64Attribute("line", int64(line)),
@@ -84,19 +59,4 @@ func (p *ocAnnotator) Start(function *lisp.LVal) func() {
 		p.currentContext = oldContext
 		p.currentSpan = trace.FromContext(p.currentContext)
 	}
-}
-
-func (p *ocAnnotator) getSource(function *lisp.LVal) (source string, line int) {
-	if function.Source == nil {
-		if cell := function.Cells[0]; cell != nil && cell.Source != nil {
-			source = cell.Source.File
-			line = cell.Source.Line
-		} else {
-			source = "no-source"
-		}
-		return
-	}
-	source = function.Source.File
-	line = function.Source.Line
-	return
 }

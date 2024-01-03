@@ -17,21 +17,24 @@ import (
 // I like PHP but because XDebug is very light
 // The resulting files can be opened in KCacheGrind or QCacheGrind.
 type callgrindProfiler struct {
+	profiler
 	sync.Mutex
 	writer     *os.File
-	runtime    *lisp.Runtime
-	enabled    bool
 	startTime  time.Time
 	refs       map[string]int
 	refCounter int
 	callRefs   map[int32]*callRef
 }
 
+var _ lisp.Profiler = &callgrindProfiler{}
+
 // Returns a new Callgrind processor
-func NewCallgrindProfiler(runtime *lisp.Runtime) lisp.Profiler {
+func NewCallgrindProfiler(runtime *lisp.Runtime, opts ...Option) *callgrindProfiler {
 	p := new(callgrindProfiler)
 	p.runtime = runtime
 	runtime.Profiler = p
+
+	p.profiler.applyConfigs(opts...)
 	return p
 }
 
@@ -48,15 +51,8 @@ type callRef struct {
 	line        int
 }
 
-func (p *callgrindProfiler) IsEnabled() bool {
-	return p.enabled
-}
-
 func (p *callgrindProfiler) Enable() error {
 	p.Lock()
-	if p.enabled {
-		return errors.New("profiler already enabled")
-	}
 	if p.writer == nil {
 		return errors.New("no output set in profiler")
 	}
@@ -67,7 +63,6 @@ func (p *callgrindProfiler) Enable() error {
 	p.startTime = time.Now()
 	p.refs = make(map[string]int)
 	p.refCounter = 0
-	p.enabled = true
 	p.Unlock()
 	p.incrementCallRef("ENTRYPOINT", &token.Location{
 		File: "-",
@@ -76,7 +71,7 @@ func (p *callgrindProfiler) Enable() error {
 		Line: 0,
 		Col:  0,
 	})
-	return nil
+	return p.profiler.Enable()
 }
 
 func (p *callgrindProfiler) SetFile(filename string) error {
@@ -114,7 +109,10 @@ func (p *callgrindProfiler) Complete() error {
 	ms := &runtime.MemStats{}
 	runtime.ReadMemStats(ms)
 	fmt.Fprintf(p.writer, "summary %d %d\n\n", duration.Nanoseconds(), ms.TotalAlloc)
-	return p.writer.Close()
+	if err := p.writer.Close(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (p *callgrindProfiler) getRef(name string) string {
@@ -126,25 +124,16 @@ func (p *callgrindProfiler) getRef(name string) string {
 	return fmt.Sprintf("(%d) %s", p.refCounter, name)
 }
 
-func (p *callgrindProfiler) Start(function *lisp.LVal) func() {
-	if !p.enabled {
+func (p *callgrindProfiler) Start(fun *lisp.LVal) func() {
+	if p.skipTrace(fun) {
 		return func() {}
 	}
-	switch function.Type {
-	case lisp.LInt, lisp.LString, lisp.LFloat, lisp.LBytes, lisp.LError, lisp.LArray, lisp.LQuote, lisp.LNative, lisp.LQSymbol, lisp.LSortMap:
-		// We don't need to profile these types. We could, but we're not that LISP :D
-		return func() {}
-	case lisp.LFun, lisp.LSymbol, lisp.LSExpr:
-		// Mark the time and point of entry. It feels like we're building the call stack in Runtime
-		// again, but we're not - it's called, not callers.
-		_, _, name := p.getFunctionParameters(function)
-		p.incrementCallRef(name, function.Source)
-	default:
-		panic(fmt.Sprintf("Missing type %d", function.Type))
-	}
+	// Mark the time and point of entry. It feels like we're building the call stack in Runtime
+	// again, but we're not - it's called, not callers.
+	p.incrementCallRef(prettyFunName(p.runtime, fun), fun.Source)
 
 	return func() {
-		p.end(function)
+		p.end(fun)
 	}
 }
 
@@ -183,67 +172,41 @@ func (p *callgrindProfiler) getCallRefAndDecrement() *callRef {
 	panic(fmt.Sprintf("Unset thread ref %d", *thread))
 }
 
-// Gets file parameters from the LVal
-func (p *callgrindProfiler) getFunctionParameters(function *lisp.LVal) (string, int, string) {
-	var source string
-	line := 0
-	if function.Source == nil {
-		if cell := function.Cells[0]; cell != nil && cell.Source != nil {
-			source = cell.Source.File
-			line = cell.Source.Line
-		} else {
-			source = "no-source"
-		}
-	} else {
-		source = function.Source.File
-		line = function.Source.Line
-	}
-	fName := fmt.Sprintf("%s:%s", function.FunData().Package, getFunNameFromFID(p.runtime, function.FunData().FID))
-	return source, line, fName
-}
-
-func (p *callgrindProfiler) end(function *lisp.LVal) {
+func (p *callgrindProfiler) end(fun *lisp.LVal) {
 	if !p.enabled {
 		return
 	}
 	p.Lock()
 	defer p.Unlock()
-	switch function.Type {
-	case lisp.LInt, lisp.LString, lisp.LFloat, lisp.LBytes, lisp.LError, lisp.LArray, lisp.LQuote, lisp.LNative, lisp.LSortMap:
-		// Again, we can ignore these as we never put them on the stack
-		return
-	case lisp.LFun, lisp.LSymbol, lisp.LSExpr, lisp.LQSymbol:
-		source, line, fName := p.getFunctionParameters(function)
-		// Write what function we've been observing and where to find it
-		fmt.Fprintf(p.writer, "fl=%s\n", p.getRef(source))
-		fmt.Fprintf(p.writer, "fn=%s\n", p.getRef(fName))
-		ref := p.getCallRefAndDecrement()
-		ref.duration = time.Since(ref.start)
-		if ref.duration == 0 {
-			ref.duration = 1
-		}
-		ms := &runtime.MemStats{}
-		runtime.ReadMemStats(ms)
-		ref.endMemory = ms.TotalAlloc
-		memory := ref.endMemory - ref.startMemory
-		// Cache the location - we won't be able to get it again when we build the maps for
-		// things that call this.
-		if ref.line == 0 && function.Source != nil {
-			ref.line = function.Source.Line
-			ref.file = function.Source.File
-		}
-		// Output timing and line ref
-		fmt.Fprintf(p.writer, "%d %d %d\n", line, ref.duration, memory)
-		// Output the things we called
-		for _, entry := range ref.children {
-			fmt.Fprintf(p.writer, "cfl=%s\n", p.getRef(entry.file))
-			fmt.Fprintf(p.writer, "cfn=%s\n", p.getRef(entry.name))
-			fmt.Fprint(p.writer, "calls=1 0 0\n")
-			fmt.Fprintf(p.writer, "%d %d %d\n", entry.line, entry.duration, memory)
-		}
-		// and end the entry
-		fmt.Fprint(p.writer, "\n")
-	default:
-		panic(fmt.Sprintf("Missing type %d", function.Type))
+	fName := prettyFunName(p.runtime, fun)
+	source, line := getSource(fun)
+	// Write what function we've been observing and where to find it
+	fmt.Fprintf(p.writer, "fl=%s\n", p.getRef(source))
+	fmt.Fprintf(p.writer, "fn=%s\n", p.getRef(fName))
+	ref := p.getCallRefAndDecrement()
+	ref.duration = time.Since(ref.start)
+	if ref.duration == 0 {
+		ref.duration = 1
 	}
+	ms := &runtime.MemStats{}
+	runtime.ReadMemStats(ms)
+	ref.endMemory = ms.TotalAlloc
+	memory := ref.endMemory - ref.startMemory
+	// Cache the location - we won't be able to get it again when we build the maps for
+	// things that call this.
+	if ref.line == 0 && fun.Source != nil {
+		ref.line = fun.Source.Line
+		ref.file = fun.Source.File
+	}
+	// Output timing and line ref
+	fmt.Fprintf(p.writer, "%d %d %d\n", line, ref.duration, memory)
+	// Output the things we called
+	for _, entry := range ref.children {
+		fmt.Fprintf(p.writer, "cfl=%s\n", p.getRef(entry.file))
+		fmt.Fprintf(p.writer, "cfn=%s\n", p.getRef(entry.name))
+		fmt.Fprint(p.writer, "calls=1 0 0\n")
+		fmt.Fprintf(p.writer, "%d %d %d\n", entry.line, entry.duration, memory)
+	}
+	// and end the entry
+	fmt.Fprint(p.writer, "\n")
 }

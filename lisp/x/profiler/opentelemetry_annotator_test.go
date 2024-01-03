@@ -2,7 +2,7 @@ package profiler_test
 
 import (
 	"context"
-	"log"
+	_ "embed"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -10,61 +10,62 @@ import (
 	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestNewOpenTelemetryAnnotator(t *testing.T) {
-	// Configure a stdout exporter to log the tracing data.
-	exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
-	if err != nil {
-		log.Fatalf("failed to initialize stdout export pipeline: %v", err)
-	}
+	exporter := tracetest.NewInMemoryExporter()
 
-	tp := sdktrace.NewTracerProvider(
-		// Use the custom exporter
-		sdktrace.WithBatcher(exporter),
-		// Always sample
-		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	tp := trace.NewTracerProvider(
+		trace.WithSyncer(exporter),
+		trace.WithSampler(trace.AlwaysSample()),
 	)
-	// Register the tracer provider using global API.
+	t.Cleanup(func() {
+		err := tp.Shutdown(context.Background())
+		assert.NoError(t, err, "TracerProvider shutdown")
+	})
 	otel.SetTracerProvider(tp)
 
-	// Ensure we're using the OpenTelemetry Annotator.
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
 	ppa := profiler.NewOpenTelemetryAnnotator(env.Runtime, context.Background())
 	assert.NoError(t, ppa.Enable())
 	lerr := lisp.InitializeUserEnv(env)
-	if lisp.GoError(lerr) != nil {
-		t.Fatal(lisp.GoError(lerr))
-	}
-	testsrc := env.LoadString("test.lisp", `
-(defun print-it
-	('x)
-	(debug-print x)
-)
-(defun add-it
-	('x 'y)
-	(+ x y)
-)
-(defun recurse-it
-	('x)
-	(if
-		(< x 4)
-		(recurse-it (- x 1))
-		(add-it x 3)
-	)
-)
-(print-it "Hello")
-(print-it (add-it (add-it 3 (recurse-it 5)) 8))`)
+	assert.NoError(t, lisp.GoError(lerr))
+	testsrc := env.LoadString("test.lisp", testLisp)
 	lerr = env.Eval(testsrc)
-	assert.NotEqual(t, lisp.LError, lerr.Type)
-	// Mark the profile as complete and dump the rest of the profile
+	assert.NotEqual(t, lisp.LError, lerr.Type, lerr.Str)
 	assert.NoError(t, ppa.Complete())
 
-	err = tp.Shutdown(context.Background())
-	if err != nil {
-		t.Errorf("Error during TracerProvider shutdown: %v", err)
-	}
+	spans := exporter.GetSpans()
+	assert.GreaterOrEqual(t, len(spans), 3, "Expected at least three spans")
+}
+
+func TestNewOpenTelemetryAnnotatorSkip(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+
+	tp := trace.NewTracerProvider(
+		trace.WithSyncer(exporter),
+		trace.WithSampler(trace.AlwaysSample()),
+	)
+	t.Cleanup(func() {
+		err := tp.Shutdown(context.Background())
+		assert.NoError(t, err, "TracerProvider shutdown")
+	})
+	otel.SetTracerProvider(tp)
+
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	ppa := profiler.NewOpenTelemetryAnnotator(env.Runtime, context.Background(), profiler.WithELPSDocFilter())
+	assert.NoError(t, ppa.Enable())
+	lerr := lisp.InitializeUserEnv(env)
+	assert.NoError(t, lisp.GoError(lerr))
+	testsrc := env.LoadString("test.lisp", testLisp)
+	lerr = env.Eval(testsrc)
+	assert.NotEqual(t, lisp.LError, lerr.Type, lerr.Str)
+	assert.NoError(t, ppa.Complete())
+
+	spans := exporter.GetSpans()
+	assert.LessOrEqual(t, len(spans), 3, "Expected selective spans")
 }

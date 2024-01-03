@@ -26,26 +26,7 @@ func TestNewCallgrind(t *testing.T) {
 	if lisp.GoError(lerr) != nil {
 		t.Fatal(lisp.GoError(lerr))
 	}
-	// Some spurious functions to check we get a profile out
-	testsrc := env.LoadString("test.lisp", `
-(defun print-it
-	('x)
-	(debug-print x)
-)
-(defun add-it
-	('x 'y)
-	(+ x y)
-)
-(defun recurse-it
-	('x)
-	(if
-		(< x 4)
-		(recurse-it (- x 1))
-		(add-it x 3)
-	)
-)
-(print-it "Hello")
-(print-it (add-it (add-it 3 (recurse-it 5)) 8))`)
+	testsrc := env.LoadString("test.lisp", testLisp)
 	lerr = env.Eval(testsrc)
 	assert.NotEqual(t, lisp.LError, lerr.Type)
 	// Mark the profile as complete and dump the rest of the profile
