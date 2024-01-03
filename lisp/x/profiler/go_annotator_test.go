@@ -28,7 +28,7 @@ func TestNewPprofAnnotator(t *testing.T) {
 		t.Fatal(lisp.GoError(lerr))
 	}
 	// Some spurious functions to check we get a profile out
-	testsrc := env.LoadString("test.lisp", longTestLisp)
+	testsrc := env.LoadString("longtest.lisp", longTestLisp)
 	lerr = env.Eval(testsrc)
 	assert.NotEqual(t, lisp.LError, lerr.Type, lerr.Str)
 	// Mark the profile as complete and dump the rest of the profile

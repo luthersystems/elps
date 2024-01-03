@@ -47,7 +47,7 @@ func (p *profiler) skipTrace(v *lisp.LVal) bool {
 
 var builtinRegex = regexp.MustCompile("\\<(?:builtin|special)-[a-z]+ \\`\\`(.*)\\'\\'\\>")
 
-// Gets a canonical version of the function name suitable for viewing in KCacheGrind
+// Gets a canonical version of the function name suitable for human viewing.
 func getFunNameFromFID(rt *lisp.Runtime, in string) string {
 	// Most of the time we can just look this up in FunNames
 	if name, ok := rt.Package.FunNames[in]; ok {
