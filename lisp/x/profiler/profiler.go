@@ -12,6 +12,7 @@ type profiler struct {
 	runtime    *lisp.Runtime
 	enabled    bool
 	skipFilter SkipFilter
+	funLabeler FunLabeler
 }
 
 var _ lisp.Profiler = &profiler{}
@@ -40,6 +41,17 @@ func (p *profiler) Start(fun *lisp.LVal) func() {
 	return func() {}
 }
 
+func (p *profiler) prettyFunName(fun *lisp.LVal) string {
+	label := ""
+	if p.funLabeler != nil {
+		label = p.funLabeler(p.runtime, fun)
+	}
+	if label == "" {
+		label = defaultFunName(p.runtime, fun)
+	}
+	return label
+}
+
 // skipTrace is a helper function to decide whether to skip tracing.
 func (p *profiler) skipTrace(v *lisp.LVal) bool {
 	return !p.enabled || defaultSkipFilter(v) || p.skipFilter != nil && p.skipFilter(v)
@@ -58,18 +70,6 @@ func getFunNameFromFID(rt *lisp.Runtime, in string) string {
 		return in
 	}
 	return builtinRegex.FindStringSubmatch(in)[1]
-}
-
-// prettyFunName constructs a pretty canonical name.
-func prettyFunName(runtime *lisp.Runtime, fun *lisp.LVal) string {
-	if fun.Type != lisp.LFun {
-		return ""
-	}
-	funData := fun.FunData()
-	if funData == nil {
-		return ""
-	}
-	return fmt.Sprintf("%s:%s", funData.Package, getFunNameFromFID(runtime, funData.FID))
 }
 
 func getSource(function *lisp.LVal) (string, int) {

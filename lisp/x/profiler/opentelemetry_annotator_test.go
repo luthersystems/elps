@@ -57,7 +57,9 @@ func TestNewOpenTelemetryAnnotatorSkip(t *testing.T) {
 
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
-	ppa := profiler.NewOpenTelemetryAnnotator(env.Runtime, context.Background(), profiler.WithELPSDocFilter())
+	ppa := profiler.NewOpenTelemetryAnnotator(env.Runtime, context.Background(),
+		profiler.WithELPSDocFilter(),
+		profiler.WithELPSDocLabeler())
 	assert.NoError(t, ppa.Enable())
 	lerr := lisp.InitializeUserEnv(env)
 	assert.NoError(t, lisp.GoError(lerr))
@@ -68,4 +70,5 @@ func TestNewOpenTelemetryAnnotatorSkip(t *testing.T) {
 
 	spans := exporter.GetSpans()
 	assert.LessOrEqual(t, len(spans), 3, "Expected selective spans")
+	assert.Equal(t, spans[0].Name, "Add_It", "Expected custom label")
 }
