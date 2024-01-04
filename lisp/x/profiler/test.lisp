@@ -2,7 +2,7 @@
   (debug-print x))
 
 (defun add-it (x y)
-  "@trace"
+  "@trace{ Add-It }"
   (+ x y))
 
 (defun recurse-it (x)

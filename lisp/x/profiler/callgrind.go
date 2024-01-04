@@ -130,7 +130,7 @@ func (p *callgrindProfiler) Start(fun *lisp.LVal) func() {
 	}
 	// Mark the time and point of entry. It feels like we're building the call stack in Runtime
 	// again, but we're not - it's called, not callers.
-	p.incrementCallRef(prettyFunName(p.runtime, fun), fun.Source)
+	p.incrementCallRef(p.prettyFunName(fun), fun.Source)
 
 	return func() {
 		p.end(fun)
@@ -178,7 +178,7 @@ func (p *callgrindProfiler) end(fun *lisp.LVal) {
 	}
 	p.Lock()
 	defer p.Unlock()
-	fName := prettyFunName(p.runtime, fun)
+	fName := p.prettyFunName(fun)
 	source, line := getSource(fun)
 	// Write what function we've been observing and where to find it
 	fmt.Fprintf(p.writer, "fl=%s\n", p.getRef(source))
