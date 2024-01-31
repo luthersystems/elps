@@ -25,7 +25,7 @@ func TestSanitizeLabel(t *testing.T) {
 		{
 			name:     "contains special characters",
 			label:    "Label@#$%^&",
-			expected: "Label",
+			expected: "Label_",
 		},
 		{
 			name:     "starts with a digit",
@@ -41,6 +41,11 @@ func TestSanitizeLabel(t *testing.T) {
 			name:     "starts with an underscore",
 			label:    "_Label",
 			expected: "Label",
+		},
+		{
+			name:     "label with underscores",
+			label:    "label__with__underscores",
+			expected: "label_with_underscores",
 		},
 		{
 			name:     "starts with a special character",
