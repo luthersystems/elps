@@ -41,7 +41,9 @@ const ELPSDocLabel = `@trace{([^}]+)}`
 
 var elpsDocLabelRegExp = regexp.MustCompile(ELPSDocLabel)
 var sanitizeRegExp = regexp.MustCompile(`[\W_]+`)
-var validLabelRegExp = regexp.MustCompile(`[a-zA-Z_][\w_]*`)
+
+//var validLabelRegExp = regexp.MustCompile(`[a-zA-Z_][\w_]*`)
+var validLabelRegExp = regexp.MustCompile(`[a-zA-Z][\w_]*`)
 
 func sanitizeLabel(userLabel string) string {
 	userLabel = strings.TrimSpace(userLabel)
@@ -52,16 +54,6 @@ func sanitizeLabel(userLabel string) string {
 	// Replace spaces with underscores
 	userLabel = sanitizeRegExp.ReplaceAllString(userLabel, "_")
 
-	// Eliminate duplicate underscores
-	parts := strings.Split(userLabel, "_")
-	var nonEmptyParts []string
-	for _, part := range parts {
-		if part != "" {
-			nonEmptyParts = append(nonEmptyParts, part)
-		}
-	}
-	userLabel = strings.Join(nonEmptyParts, "_")
-
 	// Find the first valid label match
 	matches := validLabelRegExp.FindStringSubmatch(userLabel)
 	if len(matches) > 0 {
@@ -69,7 +61,6 @@ func sanitizeLabel(userLabel string) string {
 	}
 
 	return ""
-
 }
 
 func elpsDocFunLabeler(runtime *lisp.Runtime, fun *lisp.LVal) string {
