@@ -30,7 +30,7 @@ func TestSanitizeLabel(t *testing.T) {
 		{
 			name:     "starts with a digit",
 			label:    "123Label",
-			expected: "label_123Label",
+			expected: "Label",
 		},
 		{
 			name:     "empty string",
@@ -38,19 +38,14 @@ func TestSanitizeLabel(t *testing.T) {
 			expected: "",
 		},
 		{
-			name:     "starts with a digit",
-			label:    "123Label",
-			expected: "label_123Label",
-		},
-		{
 			name:     "starts with an underscore",
 			label:    "_Label",
-			expected: "label_Label",
+			expected: "Label",
 		},
 		{
 			name:     "starts with a special character",
 			label:    "@Label",
-			expected: "label_Label",
+			expected: "Label",
 		},
 		{
 			name:     "starts with a space",

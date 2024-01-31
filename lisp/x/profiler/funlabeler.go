@@ -52,8 +52,8 @@ func sanitizeLabel(userLabel string) string {
 
 	userLabel = sanitizeRegExp.ReplaceAllString(userLabel, "_")
 	// Ensure the label doesn't start with a digit or special character
-	if len(userLabel) > 0 && !unicode.IsLetter(rune(userLabel[0])) {
-		userLabel = "label_" + userLabel
+	for len(userLabel) > 0 && !unicode.IsLetter(rune(userLabel[0])) {
+		userLabel = userLabel[1:]
 	}
 
 	// Eliminate duplicate underscores
