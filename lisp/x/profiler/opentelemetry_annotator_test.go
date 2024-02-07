@@ -69,6 +69,7 @@ func TestNewOpenTelemetryAnnotatorSkip(t *testing.T) {
 	assert.NoError(t, ppa.Complete())
 
 	spans := exporter.GetSpans()
-	assert.LessOrEqual(t, len(spans), 3, "Expected selective spans")
-	assert.Equal(t, spans[0].Name, "Add_It", "Expected custom label")
+	assert.Equal(t, len(spans), 4, "Expected selective spans")
+	assert.Equal(t, spans[0].Name, "Add_It", "Expected 1st custom label")
+	assert.Equal(t, spans[3].Name, "Add_It_Again", "Expected 2nd custom label")
 }

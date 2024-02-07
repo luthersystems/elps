@@ -12,3 +12,9 @@
 
 (print-it "Hello")
 (print-it (add-it (add-it 3 (recurse-it 5)) 8))
+
+(labels
+  ([add-it-again (x)
+                 "@trace { Add-It-Again }"
+                 (+ x 1)])
+  (add-it-again 2))
