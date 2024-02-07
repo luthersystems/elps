@@ -6,6 +6,31 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestDocLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		label    string
+		expected string
+	}{
+		{
+			name:     "normal case",
+			label:    "@trace{ Add-It }",
+			expected: "Add-It",
+		},
+		{
+			name:     "normal case (2)",
+			label:    "@trace{ Add-It-Again }",
+			expected: "Add-It-Again",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			actual := docLabel(tc.label)
+			assert.Equal(t, tc.expected, actual, "docLabel(%s)", tc.label)
+		})
+	}
+}
+
 func TestSanitizeLabel(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -56,6 +81,11 @@ func TestSanitizeLabel(t *testing.T) {
 			name:     "starts with a space",
 			label:    " Label",
 			expected: "Label",
+		},
+		{
+			name:     "dashes",
+			label:    "Add-It-Again",
+			expected: "Add_It_Again",
 		},
 	}
 
