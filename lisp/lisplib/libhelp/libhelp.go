@@ -122,27 +122,6 @@ func sortedSymbols(smap map[string]*lisp.LVal) []string {
 	return symbols
 }
 
-// FunDocstring returns the docstring of the function reference v.  If v is not
-// a function FunDocstring returns the empty string.
-func FunDocstring(v *lisp.LVal) string {
-	if v.Type != lisp.LFun {
-		return ""
-	}
-	if v.Builtin() != nil {
-		if len(v.Cells) > 1 {
-			return v.Cells[1].Str
-		}
-		return ""
-	}
-	// Functions of the form (lambda (x) "abc") are considered constant string
-	// functions without documentation so there must be a length check on the
-	// function body.
-	if len(v.Cells) > 2 && v.Cells[1].Type == lisp.LString {
-		return v.Cells[1].Str
-	}
-	return ""
-}
-
 // RenderPkgExported writes to w formatted documentation for exported symbols
 // in the query package within env.  The exact formatting of the rendered
 // documentation is subject to change across elps versions.
@@ -211,7 +190,7 @@ func renderFun(w io.Writer, sym string, v *lisp.LVal) error {
 	if err != nil {
 		return fmt.Errorf("rendering signature: %w", err)
 	}
-	doc := cleanDocstring(FunDocstring(v))
+	doc := cleanDocstring(v.Docstring())
 	if doc != "" {
 		_, err = fmt.Fprintln(w, doc)
 		return err

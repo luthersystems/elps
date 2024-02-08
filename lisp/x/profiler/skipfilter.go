@@ -4,7 +4,6 @@ import (
 	"regexp"
 
 	"github.com/luthersystems/elps/lisp"
-	"github.com/luthersystems/elps/lisp/lisplib/libhelp"
 )
 
 type SkipFilter func(fun *lisp.LVal) bool
@@ -41,7 +40,7 @@ const ELPSDocTrace = "@trace"
 var elpsDocTraceRegExp = regexp.MustCompile(ELPSDocTrace)
 
 func elpsDocSkipFilter(fun *lisp.LVal) bool {
-	docStr := libhelp.FunDocstring(fun)
+	docStr := fun.Docstring()
 	if docStr == "" {
 		return true
 	}

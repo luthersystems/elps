@@ -866,10 +866,7 @@ func (env *LEnv) EvalSExpr(s *LVal) *LVal {
 	fun := call.Cells[0] // call is not an empty expression -- fun is known LFun
 	args := call
 	args.Cells = args.Cells[1:]
-	if env.Runtime.Profiler != nil {
-		stop := env.Runtime.Profiler.Start(fun)
-		defer stop()
-	}
+
 	switch fun.FunType {
 	case LFunNone:
 		return env.FunCall(fun, args)
@@ -979,6 +976,15 @@ func (env *LEnv) FunCall(fun, args *LVal) *LVal {
 	return env.funCall(fun, args)
 }
 
+func (env *LEnv) trace(fun *LVal) func() {
+	if env.Runtime.Profiler != nil {
+		// fun might be an anon function, so we need to convert it to get the
+		// right type of LVal for filtering and labeling
+		return env.Runtime.Profiler.Start(fun)
+	}
+	return func() {}
+}
+
 // FunCall invokes regular function fun with the argument list args.
 func (env *LEnv) funCall(fun, args *LVal) *LVal {
 	if fun.Type != LFun {
@@ -987,6 +993,8 @@ func (env *LEnv) funCall(fun, args *LVal) *LVal {
 	if fun.IsSpecialFun() {
 		return env.Errorf("not a regular function: %v", fun.FunType)
 	}
+
+	defer env.trace(fun)()
 
 	// Check for possible tail recursion before pushing to avoid hitting s when
 	// checking.  But push FID onto the stack before popping to simplify

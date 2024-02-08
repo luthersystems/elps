@@ -7,7 +7,6 @@ import (
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
-	"github.com/luthersystems/elps/lisp/lisplib/libhelp"
 	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,8 +29,7 @@ func TestDocstring(t *testing.T) {
 	for _, name := range builtinSymbols {
 		fun := env.Get(lisp.Symbol(name))
 		if assert.Equal(t, lisp.LFun, fun.Type) {
-			docstring := libhelp.FunDocstring(fun)
-			assert.NotEqual(t, "", docstring)
+			assert.NotEqual(t, "", fun.Docstring())
 		}
 	}
 
@@ -43,12 +41,10 @@ func TestDocstring(t *testing.T) {
 
 	lisp1 := env.Get(lisp.Symbol("const-string1"))
 	if assert.Equal(t, lisp.LFun, lisp1.Type) {
-		docstring := libhelp.FunDocstring(lisp1)
-		assert.Equal(t, "", docstring)
+		assert.Equal(t, "", lisp1.Docstring())
 	}
 	lisp2 := env.Get(lisp.Symbol("const-string2"))
 	if assert.Equal(t, lisp.LFun, lisp2.Type) {
-		docstring := libhelp.FunDocstring(lisp2)
-		assert.Equal(t, "abc", docstring)
+		assert.Equal(t, "abc", lisp2.Docstring())
 	}
 }

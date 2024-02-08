@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/luthersystems/elps/lisp"
-	"github.com/luthersystems/elps/lisp/lisplib/libhelp"
 )
 
 // FunLabeler provides an alternative name for a function label in the trace.
@@ -33,7 +32,14 @@ func defaultFunName(runtime *lisp.Runtime, fun *lisp.LVal) string {
 	if funData == nil {
 		return ""
 	}
-	return fmt.Sprintf("%s:%s", funData.Package, getFunNameFromFID(runtime, funData.FID))
+	name := ""
+	if env := fun.Env(); env != nil {
+		name = env.GetFunName(fun)
+	}
+	if name == "" {
+		name = getFunNameFromFID(runtime, funData.FID)
+	}
+	return fmt.Sprintf("%s:%s", funData.Package, name)
 }
 
 // ELPSDocLabel is a magic string used to extract function labels.
@@ -74,7 +80,7 @@ func docLabel(docStr string) string {
 }
 
 func elpsDocFunLabeler(runtime *lisp.Runtime, fun *lisp.LVal) string {
-	docStr := libhelp.FunDocstring(fun)
+	docStr := fun.Docstring()
 	if docStr == "" {
 		return ""
 	}

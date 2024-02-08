@@ -970,6 +970,27 @@ func (v *LVal) String() string {
 	return v.str(false)
 }
 
+// Docstring returns the docstring of the function reference v.  If v is not
+// a function Docstring returns the empty string.
+func (v *LVal) Docstring() string {
+	if v.Type != LFun {
+		return ""
+	}
+	if v.Builtin() != nil {
+		if len(v.Cells) > 1 {
+			return v.Cells[1].Str
+		}
+		return ""
+	}
+	// Functions of the form (lambda (x) "abc") are considered constant string
+	// functions without documentation so there must be a length check on the
+	// function body.
+	if len(v.Cells) > 2 && v.Cells[1].Type == LString {
+		return v.Cells[1].Str
+	}
+	return ""
+}
+
 func (v *LVal) str(onTheRecord bool) string {
 	const QUOTE = `'`
 	// All types which may evaluate to things other than themselves must check
