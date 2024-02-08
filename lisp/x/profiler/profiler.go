@@ -41,8 +41,29 @@ func (p *profiler) Start(fun *lisp.LVal) func() {
 	return func() {}
 }
 
+// defaultFunName constructs a pretty canonical name using the function name.
+// The first return is the package name, and the second is the canonical name.
+func defaultFunName(runtime *lisp.Runtime, fun *lisp.LVal) (string, string) {
+	if fun.Type != lisp.LFun {
+		return "", ""
+	}
+	funData := fun.FunData()
+	if funData == nil {
+		return "", ""
+	}
+	name := ""
+	if env := fun.Env(); env != nil {
+		name = env.GetFunName(fun)
+	}
+	if name == "" {
+		name = getFunNameFromFID(runtime, funData.FID)
+	}
+	return funData.Package, name
+}
+
 // prettyFunName returns a pretty name and original name for a fun. If there is
-// no pretty name, then the pretty name is the original name.
+// no pretty name, then the pretty name is the original name. The pretty name
+// includes the package prefix, while the original name does not.
 func (p *profiler) prettyFunName(fun *lisp.LVal) (string, string) {
 	origPkg, origLabel := defaultFunName(p.runtime, fun)
 	if origLabel == "" {
@@ -57,7 +78,6 @@ func (p *profiler) prettyFunName(fun *lisp.LVal) (string, string) {
 	}
 	if origPkg != "" {
 		prettyLabel = fmt.Sprintf("%s:%s", origPkg, prettyLabel)
-		origLabel = fmt.Sprintf("%s:%s", origPkg, origLabel)
 	}
 
 	return prettyLabel, origLabel
