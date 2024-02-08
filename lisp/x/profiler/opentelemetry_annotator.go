@@ -62,7 +62,8 @@ func (p *otelAnnotator) Start(fun *lisp.LVal) func() {
 		return func() {}
 	}
 	oldContext := p.currentContext
-	p.currentContext, p.currentSpan = contextTracer(p.currentContext).Start(p.currentContext, p.prettyFunName(fun))
+	prettyLabel, _ := p.prettyFunName(fun)
+	p.currentContext, p.currentSpan = contextTracer(p.currentContext).Start(p.currentContext, prettyLabel)
 	return func() {
 		file, line := getSource(fun)
 		p.currentSpan.AddEvent("source", trace.WithAttributes(attribute.Key("file").String(file), attribute.Key("line").Int64(int64(line))))

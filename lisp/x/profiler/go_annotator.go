@@ -53,7 +53,8 @@ func (p *pprofAnnotator) Start(fun *lisp.LVal) func() {
 	// if we always ran inside a context, or a whole conditional code path and the added complication that brings
 	// if we did it that way.
 	oldContext := p.currentContext
-	p.currentContext = pprof.WithLabels(p.currentContext, pprof.Labels("function", p.prettyFunName(fun)))
+	prettyLabel, _ := p.prettyFunName(fun)
+	p.currentContext = pprof.WithLabels(p.currentContext, pprof.Labels("function", prettyLabel))
 	// apply the selected labels to the current goroutine (NB this will propagate if the code branches further down...
 	pprof.SetGoroutineLabels(p.currentContext)
 
