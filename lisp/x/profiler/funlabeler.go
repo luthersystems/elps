@@ -48,7 +48,7 @@ const ELPSDocLabel = `@trace\s*{([^}]+)}`
 var elpsDocLabelRegExp = regexp.MustCompile(ELPSDocLabel)
 var sanitizeRegExp = regexp.MustCompile(`[\W_]+`)
 
-var validLabelRegExp = regexp.MustCompile(`[a-zA-Z][\w_]*`)
+var validLabelRegExp = regexp.MustCompile(`[[:alpha:]][\w_]*`)
 
 func sanitizeLabel(userLabel string) string {
 	if userLabel == "" {
