@@ -22,26 +22,6 @@ func WithFunLabeler(funLabeler FunLabeler) Option {
 	}
 }
 
-// defaultFunName constructs a pretty canonical name using the function name.
-// The first return is the package name, and the second is the canonical name.
-func defaultFunName(runtime *lisp.Runtime, fun *lisp.LVal) (string, string) {
-	if fun.Type != lisp.LFun {
-		return "", ""
-	}
-	funData := fun.FunData()
-	if funData == nil {
-		return "", ""
-	}
-	name := ""
-	if env := fun.Env(); env != nil {
-		name = env.GetFunName(fun)
-	}
-	if name == "" {
-		name = getFunNameFromFID(runtime, funData.FID)
-	}
-	return funData.Package, name
-}
-
 // ELPSDocLabel is a magic string used to extract function labels.
 const ELPSDocLabel = `@trace\s*{([^}]+)}`
 
