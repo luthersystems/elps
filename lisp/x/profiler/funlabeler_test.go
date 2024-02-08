@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestDocLabel(t *testing.T) {
+func TestLabelDoc(t *testing.T) {
 	tests := []struct {
 		name     string
 		label    string
@@ -22,6 +22,11 @@ func TestDocLabel(t *testing.T) {
 			label:    "@trace{ Add-It-Again }",
 			expected: "Add-It-Again",
 		},
+		{
+			name:     "elps names",
+			label:    "@trace{ user-add! }",
+			expected: "user-add!",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -31,7 +36,7 @@ func TestDocLabel(t *testing.T) {
 	}
 }
 
-func TestSanitizeLabel(t *testing.T) {
+func TestLabelSanitize(t *testing.T) {
 	tests := []struct {
 		name     string
 		label    string
