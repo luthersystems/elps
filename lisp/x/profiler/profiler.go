@@ -44,11 +44,22 @@ func (p *profiler) Start(fun *lisp.LVal) func() {
 // prettyFunName returns a pretty name and original name for a fun. If there is
 // no pretty name, then the pretty name is the original name.
 func (p *profiler) prettyFunName(fun *lisp.LVal) (string, string) {
-	origLabel := defaultFunName(p.runtime, fun)
+	origPkg, origLabel := defaultFunName(p.runtime, fun)
+	if origLabel == "" {
+		return "", ""
+	}
 	prettyLabel := origLabel
 	if p.funLabeler != nil {
 		prettyLabel = p.funLabeler(p.runtime, fun)
 	}
+	if prettyLabel == "" {
+		prettyLabel = origLabel
+	}
+	if origPkg != "" {
+		prettyLabel = fmt.Sprintf("%s:%s", origPkg, prettyLabel)
+		origLabel = fmt.Sprintf("%s:%s", origPkg, origLabel)
+	}
+
 	return prettyLabel, origLabel
 }
 

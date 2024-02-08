@@ -1,7 +1,6 @@
 package profiler
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 
@@ -24,13 +23,14 @@ func WithFunLabeler(funLabeler FunLabeler) Option {
 }
 
 // defaultFunName constructs a pretty canonical name using the function name.
-func defaultFunName(runtime *lisp.Runtime, fun *lisp.LVal) string {
+// The first return is the package name, and the second is the canonical name.
+func defaultFunName(runtime *lisp.Runtime, fun *lisp.LVal) (string, string) {
 	if fun.Type != lisp.LFun {
-		return ""
+		return "", ""
 	}
 	funData := fun.FunData()
 	if funData == nil {
-		return ""
+		return "", ""
 	}
 	name := ""
 	if env := fun.Env(); env != nil {
@@ -39,7 +39,7 @@ func defaultFunName(runtime *lisp.Runtime, fun *lisp.LVal) string {
 	if name == "" {
 		name = getFunNameFromFID(runtime, funData.FID)
 	}
-	return fmt.Sprintf("%s:%s", funData.Package, name)
+	return funData.Package, name
 }
 
 // ELPSDocLabel is a magic string used to extract function labels.
