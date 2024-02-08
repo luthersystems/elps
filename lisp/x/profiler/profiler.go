@@ -41,15 +41,15 @@ func (p *profiler) Start(fun *lisp.LVal) func() {
 	return func() {}
 }
 
-func (p *profiler) prettyFunName(fun *lisp.LVal) string {
-	label := ""
+// prettyFunName returns a pretty name and original name for a fun. If there is
+// no pretty name, then the pretty name is the original name.
+func (p *profiler) prettyFunName(fun *lisp.LVal) (string, string) {
+	origLabel := defaultFunName(p.runtime, fun)
+	prettyLabel := origLabel
 	if p.funLabeler != nil {
-		label = p.funLabeler(p.runtime, fun)
+		prettyLabel = p.funLabeler(p.runtime, fun)
 	}
-	if label == "" {
-		label = defaultFunName(p.runtime, fun)
-	}
-	return label
+	return prettyLabel, origLabel
 }
 
 // skipTrace is a helper function to decide whether to skip tracing.

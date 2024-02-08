@@ -47,7 +47,8 @@ func (p *ocAnnotator) Start(fun *lisp.LVal) func() {
 		return func() {}
 	}
 	oldContext := p.currentContext
-	p.currentContext, p.currentSpan = trace.StartSpan(p.currentContext, p.prettyFunName(fun))
+	prettyLabel, _ := p.prettyFunName(fun)
+	p.currentContext, p.currentSpan = trace.StartSpan(p.currentContext, prettyLabel)
 	return func() {
 		file, line := getSource(fun)
 		p.currentSpan.Annotate([]trace.Attribute{
