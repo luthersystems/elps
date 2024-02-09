@@ -7,6 +7,7 @@ import (
 	"github.com/luthersystems/elps/lisp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -62,14 +63,29 @@ func (p *otelAnnotator) Start(fun *lisp.LVal) func() {
 		return func() {}
 	}
 	oldContext := p.currentContext
-	prettyLabel, _ := p.prettyFunName(fun)
+	prettyLabel, funName := p.prettyFunName(fun)
 	p.currentContext, p.currentSpan = contextTracer(p.currentContext).Start(p.currentContext, prettyLabel)
+	p.addCodeAttributes(fun, funName)
 	return func() {
-		file, line := getSource(fun)
-		p.currentSpan.AddEvent("source", trace.WithAttributes(attribute.Key("file").String(file), attribute.Key("line").Int64(int64(line))))
 		p.currentSpan.End()
 		// And pop the current context back
 		p.currentContext = oldContext
 		p.currentSpan = trace.SpanFromContext(p.currentContext)
 	}
+}
+
+func (p *otelAnnotator) addCodeAttributes(fun *lisp.LVal, funName string) {
+	loc := getSourceLoc(fun)
+	attrs := []attribute.KeyValue{
+		semconv.CodeNamespace(fun.Package()),
+		semconv.CodeFunction(funName),
+	}
+	if loc != nil {
+		attrs = append(attrs,
+			semconv.CodeColumn(loc.Col),
+			semconv.CodeFilepath(loc.File),
+			semconv.CodeLineNumber(loc.Line),
+		)
+	}
+	p.currentSpan.SetAttributes(attrs...)
 }

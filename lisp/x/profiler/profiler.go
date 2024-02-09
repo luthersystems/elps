@@ -5,6 +5,7 @@ import (
 	"regexp"
 
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // profiler is a minimal lisp.Profiler
@@ -95,16 +96,14 @@ func getFunNameFromFID(rt *lisp.Runtime, in string) string {
 	return builtinRegex.FindStringSubmatch(in)[1]
 }
 
-func getSource(function *lisp.LVal) (string, int) {
-	if function.Source != nil {
-		return function.Source.File, function.Source.Line
+func getSourceLoc(fun *lisp.LVal) *token.Location {
+	if len(fun.Cells) > 0 {
+		if cell := fun.Cells[0]; cell.Source != nil {
+			return cell.Source
+		}
 	}
-
-	source := "no-source"
-	line := 0
-	if cell := function.Cells[0]; cell != nil && cell.Source != nil {
-		source = cell.Source.File
-		line = cell.Source.Line
+	if fun.Source != nil {
+		return fun.Source
 	}
-	return source, line
+	return nil
 }
