@@ -25,10 +25,11 @@ func WithFunLabeler(funLabeler FunLabeler) Option {
 // ELPSDocLabel is a magic string used to extract function labels.
 const ELPSDocLabel = `@trace\s*{([^}]+)}`
 
-var elpsDocLabelRegExp = regexp.MustCompile(ELPSDocLabel)
-var sanitizeRegExp = regexp.MustCompile(`[\W_]+`)
-
-var validLabelRegExp = regexp.MustCompile(`[[:alpha:]][\w_]*`)
+var (
+	elpsDocLabelRegExp = regexp.MustCompile(ELPSDocLabel)
+	sanitizeRegExp     = regexp.MustCompile(`[\s_]+`)
+	validLabelRegExp   = regexp.MustCompile(`[[:graph:]]*`)
+)
 
 func sanitizeLabel(userLabel string) string {
 	if userLabel == "" {
@@ -47,7 +48,11 @@ func sanitizeLabel(userLabel string) string {
 	return ""
 }
 
-func docLabel(docStr string) string {
+func extractLabel(docStr string) string {
+	if docStr == "" {
+		return ""
+	}
+
 	matches := elpsDocLabelRegExp.FindAllStringSubmatch(docStr, -1)
 	label := ""
 	for _, match := range matches {
@@ -56,17 +61,14 @@ func docLabel(docStr string) string {
 			break
 		}
 	}
+
 	return strings.TrimSpace(label)
 }
 
+func cleanLabel(docStr string) string {
+	return sanitizeLabel(extractLabel(docStr))
+}
+
 func elpsDocFunLabeler(runtime *lisp.Runtime, fun *lisp.LVal) string {
-	docStr := fun.Docstring()
-	if docStr == "" {
-		return ""
-	}
-	label := docLabel(docStr)
-	if label == "" {
-		return ""
-	}
-	return sanitizeLabel(label)
+	return extractLabel(fun.Docstring())
 }
