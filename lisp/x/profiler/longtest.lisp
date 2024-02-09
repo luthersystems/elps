@@ -1,6 +1,3 @@
-(defun print-it (x)
-  (debug-print x))
-
 (defun add-it (x y)
   (+ x y))
 
@@ -11,15 +8,14 @@
 
 (foldl
   (lambda (a x)
-    (print-it
-      (add-it
-        (recurse-it
-          (foldl add-it
-                 a
-                 (vector
-                   1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 2873 2 111 34 4555 22 12
-                   93 83 12 12 2 2 3 845 83 3 2 4 59 92 1 34 888 38 2 8 4 2 8 4)))
-        x))
+    (add-it
+      (recurse-it
+        (foldl add-it
+               a
+               (vector
+                 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 2873 2 111 34 4555 22 12
+                 93 83 12 12 2 2 3 845 83 3 2 4 59 92 1 34 888 38 2 8 4 2 8 4)))
+      x)
     (foldl
       (lambda (m q)
         (foldl
