@@ -180,9 +180,11 @@ func (p *callgrindProfiler) end(fun *lisp.LVal) {
 	p.Lock()
 	defer p.Unlock()
 	fName, _ := p.prettyFunName(fun)
-	source, line := getSource(fun)
+	loc := getSourceLoc(fun)
 	// Write what function we've been observing and where to find it
-	fmt.Fprintf(p.writer, "fl=%s\n", p.getRef(source))
+	if loc != nil {
+		fmt.Fprintf(p.writer, "fl=%s\n", p.getRef(loc.File))
+	}
 	fmt.Fprintf(p.writer, "fn=%s\n", p.getRef(fName))
 	ref := p.getCallRefAndDecrement()
 	ref.duration = time.Since(ref.start)
@@ -195,11 +197,15 @@ func (p *callgrindProfiler) end(fun *lisp.LVal) {
 	memory := ref.endMemory - ref.startMemory
 	// Cache the location - we won't be able to get it again when we build the maps for
 	// things that call this.
-	if ref.line == 0 && fun.Source != nil {
-		ref.line = fun.Source.Line
-		ref.file = fun.Source.File
+	if ref.line == 0 && loc != nil {
+		ref.line = loc.Line
+		ref.file = loc.File
 	}
 	// Output timing and line ref
+	line := 0
+	if loc != nil {
+		line = loc.Line
+	}
 	fmt.Fprintf(p.writer, "%d %d %d\n", line, ref.duration, memory)
 	// Output the things we called
 	for _, entry := range ref.children {

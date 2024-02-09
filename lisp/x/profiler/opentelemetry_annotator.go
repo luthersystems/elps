@@ -7,12 +7,8 @@ import (
 	"github.com/luthersystems/elps/lisp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
-)
-
-const (
-	// ContextOpenTelemetryTracerKey looks up a parent tracer name from a context key.
-	ContextOpenTelemetryTracerKey = "otelParentTracer"
 )
 
 var _ lisp.Profiler = &otelAnnotator{}
@@ -21,6 +17,7 @@ type otelAnnotator struct {
 	profiler
 	currentContext context.Context
 	currentSpan    trace.Span
+	tracer         trace.Tracer
 }
 
 func NewOpenTelemetryAnnotator(runtime *lisp.Runtime, parentContext context.Context, opts ...Option) *otelAnnotator {
@@ -29,6 +26,7 @@ func NewOpenTelemetryAnnotator(runtime *lisp.Runtime, parentContext context.Cont
 			runtime: runtime,
 		},
 		currentContext: parentContext,
+		tracer:         otel.GetTracerProvider().Tracer("elps"),
 	}
 	p.profiler.applyConfigs(opts...)
 	return p
@@ -49,27 +47,34 @@ func (p *otelAnnotator) Complete() error {
 	return nil
 }
 
-func contextTracer(ctx context.Context) trace.Tracer {
-	tracerName, ok := ctx.Value(ContextOpenTelemetryTracerKey).(string)
-	if !ok {
-		tracerName = "elps"
-	}
-	return otel.GetTracerProvider().Tracer(tracerName)
-}
-
 func (p *otelAnnotator) Start(fun *lisp.LVal) func() {
 	if p.skipTrace(fun) {
 		return func() {}
 	}
 	oldContext := p.currentContext
-	prettyLabel, _ := p.prettyFunName(fun)
-	p.currentContext, p.currentSpan = contextTracer(p.currentContext).Start(p.currentContext, prettyLabel)
+	prettyLabel, funName := p.prettyFunName(fun)
+	p.currentContext, p.currentSpan = p.tracer.Start(p.currentContext, prettyLabel)
+	p.addCodeAttributes(fun, funName)
 	return func() {
-		file, line := getSource(fun)
-		p.currentSpan.AddEvent("source", trace.WithAttributes(attribute.Key("file").String(file), attribute.Key("line").Int64(int64(line))))
 		p.currentSpan.End()
 		// And pop the current context back
 		p.currentContext = oldContext
 		p.currentSpan = trace.SpanFromContext(p.currentContext)
 	}
+}
+
+func (p *otelAnnotator) addCodeAttributes(fun *lisp.LVal, funName string) {
+	loc := getSourceLoc(fun)
+	attrs := []attribute.KeyValue{
+		semconv.CodeNamespace(fun.Package()),
+		semconv.CodeFunction(funName),
+	}
+	if loc != nil {
+		attrs = append(attrs,
+			semconv.CodeColumn(loc.Col),
+			semconv.CodeFilepath(loc.File),
+			semconv.CodeLineNumber(loc.Line),
+		)
+	}
+	p.currentSpan.SetAttributes(attrs...)
 }
