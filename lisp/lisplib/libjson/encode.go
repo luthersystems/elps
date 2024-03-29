@@ -240,7 +240,7 @@ func (enc *encoder) encodeBytes(b []byte) (err error) {
 		w := base64.NewEncoder(enc64, &enc.buf)
 		for len(b) > 0 {
 			// This clobbers the variable we were using for encoded-len to save
-			// stack sapce but we don't need that anymore.
+			// stack space but we don't need that anymore.
 			n, _ = w.Write(b)
 			b = b[n:]
 		}
@@ -263,7 +263,7 @@ func (enc *encoder) encodeLString(v *lisp.LVal) error {
 }
 
 // NOTE:  encodeString adapted from the json package.
-// https://cs.opensource.google/go/go/+/refs/tags/go1.16.4:src/encoding/json/encode.go;l=1029
+// https://cs.opensource.google/go/go/+/refs/tags/go1.22.1:src/encoding/json/encode.go;l=956
 func (enc *encoder) encodeString(s string) error {
 	const hex = "0123456789abcdef"
 	enc.buf.WriteByte('"')
@@ -281,6 +281,10 @@ func (enc *encoder) encodeString(s string) error {
 			switch b {
 			case '\\', '"':
 				enc.buf.WriteByte(b)
+			case '\b':
+				enc.buf.WriteByte('b')
+			case '\f':
+				enc.buf.WriteByte('f')
 			case '\n':
 				enc.buf.WriteByte('n')
 			case '\r':
