@@ -14,9 +14,9 @@ import (
 
 // CallStack is a function call stack.
 type CallStack struct {
+	Frames            []CallFrame
 	MaxHeightLogical  int
 	MaxHeightPhysical int
-	Frames            []CallFrame
 }
 
 // CallFrame is one frame in the CallStack

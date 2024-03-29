@@ -163,10 +163,10 @@ func (ft LFunType) String() string {
 }
 
 type LFunData struct {
-	FID     string
-	Package string
 	Builtin LBuiltin
 	Env     *LEnv
+	FID     string
+	Package string
 }
 
 func (fd *LFunData) Copy() *LFunData {
@@ -178,17 +178,16 @@ func (fd *LFunData) Copy() *LFunData {
 
 // LVal is a lisp value
 type LVal struct {
-	// Type is the native type for a value in lisp.
-	Type LType
+	// Native is generic storage for data which cannot be represented as an
+	// LVal (and thus can't be stored in Cells).
+
+	Native interface{}
 
 	// Source is the values originating location in source code.  Programs
 	// should not modify the contents of Source as the reference may be shared
 	// by multiple LVals.
-	Source *token.Location
 
-	// Fields used for numeric types
-	Int   int
-	Float float64
+	Source *token.Location
 
 	// Str used by LSymbol and LString values
 	Str string
@@ -199,15 +198,21 @@ type LVal struct {
 	// the burden on the allocator/gc.
 	Cells []*LVal
 
-	// Native is generic storage for data which cannot be represented as an
-	// LVal (and thus can't be stored in Cells).
-	Native interface{}
+	// Type is the native type for a value in lisp.
+	Type LType
 
-	// FunType used to further classify LFun values
+	// Fields used for numeric types.
+	Int   int
+	Float float64
+
+	// FunType used to further classify LFun values.
 	FunType LFunType
 
-	Quoted  bool // flag indicating a single level of quoting
-	Spliced bool // denote the value as needing to be spliced into a parent value
+	// Quoted is a flag indicating a single level of quoting.
+	Quoted bool
+
+	// Spliced denotes the value as needing to be spliced into a parent value.
+	Spliced bool
 }
 
 // GetType returns a quoted symbol denoting v's type.
@@ -851,7 +856,7 @@ func (v *LVal) IsNumeric() bool {
 }
 
 // Equal returns a non-nil value if v and other are logically equal, under the
-// rules used by the ``equal?'' function.
+// rules used by the “equal?” function.
 //
 // BUG:  sorted-map comparison is not implemented
 func (v *LVal) Equal(other *LVal) *LVal {

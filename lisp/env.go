@@ -85,12 +85,12 @@ func InitializeTypedef(env *LEnv) *LVal {
 
 // LEnv is a lisp environment.
 type LEnv struct {
-	ID      uint
 	Loc     *token.Location
 	Scope   map[string]*LVal
-	FunName map[string]string // deprecated
+	FunName map[string]string
 	Parent  *LEnv
 	Runtime *Runtime
+	ID      uint
 }
 
 // NewEnvRuntime initializes a new LEnv, like NewEnv, but it explicitly
@@ -111,7 +111,6 @@ func NewEnvRuntime(rt *Runtime) *LEnv {
 		Runtime: rt,
 	}
 	return env
-
 }
 
 // NewEnv returns initializes and returns a new LEnv.
@@ -190,7 +189,7 @@ func (env *LEnv) LoadString(name, exprs string) *LVal {
 // evaluate expressions it contains.  Any error encountered will prevent
 // execution of loaded source and be returned.  After evaluating expressions
 // the current package is restored to the current package at the time Load was
-// called, in case loaded source made calls to ``in-package''.  If
+// called, in case loaded source made calls to “in-package”.  If
 // env.Runtime.Reader has not been set then an error will be returned by Load.
 func (env *LEnv) LoadFile(loc string) *LVal {
 	if env.Runtime.Library == nil {
@@ -207,7 +206,7 @@ func (env *LEnv) LoadFile(loc string) *LVal {
 // Load reads LVals from r and evaluates them as if in a progn.  The value
 // returned by the last evaluated LVal will be retured.  After evaluating
 // expressions the current package is restored to the current package at the
-// time Load was called, in case loaded source made calls to ``in-package''.
+// time Load was called, in case loaded source made calls to “in-package”.
 // If env.Runtime.Reader has not been set then an error will be returned by Load.
 func (env *LEnv) Load(name string, r io.Reader) *LVal {
 	if env.Runtime.Reader == nil {
@@ -230,7 +229,7 @@ func (env *LEnv) Load(name string, r io.Reader) *LVal {
 // Any error encountered will prevent execution of loaded source and
 // be returned.  After evaluating expressions the current package is restored
 // to the current package at the time Load was called, in case loaded source
-// made calls to ``in-package''.  If env.Runtime.Reader has not been set then
+// made calls to “in-package”.  If env.Runtime.Reader has not been set then
 // an error will be returned by Load.
 func (env *LEnv) LoadLocation(name string, loc string, r io.Reader) *LVal {
 	if env.Runtime.Reader == nil {
@@ -717,7 +716,7 @@ func (env *LEnv) Error(msg ...interface{}) *LVal {
 // Unlike the exported function, the ErrorCondition method returns an LVal with
 // a copy env.Runtime.Stack.
 func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
-	//log.Printf("stack %v", env.Runtime.Stack.Copy())
+	// log.Printf("stack %v", env.Runtime.Stack.Copy())
 
 	narg := len(v)
 	cells := make([]*LVal, 0, len(v))
@@ -796,7 +795,7 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) {
 // LVal.  Eval does not modify v.
 //
 // NOTE:  Eval shouldn't unquote v during evaluation -- a difference between
-// Eval and the ``eval'' builtin function, but it does.  For some reason macros
+// Eval and the “eval” builtin function, but it does.  For some reason macros
 // won't work without this unquoting.
 func (env *LEnv) Eval(v *LVal) *LVal {
 eval:

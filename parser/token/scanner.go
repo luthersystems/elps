@@ -12,23 +12,23 @@ import (
 
 // Scanner facilitates construction of tokens from a byte stream (io.Reader).
 type Scanner struct {
-	file         string
-	path         string
-	totalPos     int
-	linePos      int // totalPos at the first byte of the line
-	line         int // line number at linePos
-	startLinePos int // totalPos at the starting byte of the token
-	startLine    int // line nuber at startLinePos
-
 	r       io.Reader
 	readErr error
+	path    string
+	file    string
+	peek    []Rune
+	buf     []byte
+	c       Rune
 
-	buf   []byte
-	start int // start of the current token
-	pos   int // index of ch, a utf-8 rune in input
-	next  int // index of the rune following pos
-	c     Rune
-	peek  []Rune
+	linePos      int // totalPos at the first byte of the line
+	startLine    int // line nuber at startLinePos
+	startLinePos int // totalPos at the starting byte of the token
+	start        int // start of the current token
+	pos          int // index of ch, a utf-8 rune in input
+	next         int // index of the rune following pos
+	line         int // line number at linePos
+
+	totalPos int
 }
 
 func newScannerBuf(file string, r io.Reader, buf []byte) *Scanner {

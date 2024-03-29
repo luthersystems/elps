@@ -192,7 +192,6 @@ func builtinMakeValidator(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return res
 	}
 	return lisp.Nil()
-
 }
 
 // finds the correct validation handler for the type
@@ -246,7 +245,7 @@ func GenSymbol() string {
 }
 
 // Checks constraints and type for boolean values
-func builtinCheckBool(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
+func builtinCheckBool(_ *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun(GenSymbol(), lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		if input.Str != lisp.TrueSymbol && input.Str != lisp.FalseSymbol {
@@ -279,7 +278,7 @@ func builtinCheckTaggedVal(env *lisp.LEnv, name string, constraints []*lisp.LVal
 }
 
 // Checks constraints and type for untyped values
-func builtinCheckAny(env *lisp.LEnv, constraints []*lisp.LVal) *lisp.LVal {
+func builtinCheckAny(_ *lisp.LEnv, constraints []*lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return lisp.Fun(GenSymbol(), lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
 		for _, constraint := range constraints {
@@ -890,7 +889,6 @@ func builtinIsTruthy(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 			}
 		}
 		return lisp.ErrorConditionf(FailedConstraint, "Value %v is not truthy", input)
-
 	})
 }
 

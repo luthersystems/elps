@@ -33,7 +33,7 @@ func TokenChannel(c <-chan []*token.Token) TokenStream {
 	return TokenGenerator(func() []*token.Token {
 		tok, ok := <-c
 		if !ok {
-			return []*token.Token{&token.Token{
+			return []*token.Token{{
 				Type:   token.EOF,
 				Source: pos,
 			}}

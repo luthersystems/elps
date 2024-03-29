@@ -13,12 +13,12 @@ import (
 // and defers to a TokenGenerator function when it is necessary to read more
 // tokens.
 type Interactive struct {
+	Read       TokenGenerator
+	p          *Parser
 	prompt     string
 	promptCont string
-	Read       TokenGenerator
 	buf        []*token.Token
 	mut        sync.RWMutex
-	p          *Parser
 }
 
 // NewInteractive initializes and returns a new Interactive parser.
@@ -45,7 +45,6 @@ func (p *Interactive) Prompt() string {
 		return p.promptCont
 	}
 	return p.prompt
-
 }
 
 // IsParsing returns true if p is in the middle of parsing an expression.

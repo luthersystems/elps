@@ -28,8 +28,7 @@ func NewReader() lisp.Reader {
 	return &parsecReader{}
 }
 
-type parsecReader struct {
-}
+type parsecReader struct{}
 
 func (p *parsecReader) Read(name string, r io.Reader) ([]*lisp.LVal, error) {
 	b, err := io.ReadAll(r)
@@ -128,10 +127,10 @@ func newParsecParser() parsec.Parser {
 	rawstring := parsec.Token(`"""(?:[^"]|"[^"]|""[^"])*"""`, "RAWSTRING")
 	comment := parsec.Token(`;([^\n]*[^\s])?`, "COMMENT")
 	decimal := parsec.Token(`[+-]?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?`, "DECIMAL")
-	//symbol := parsec.Token(`[^\s()']+`, "SYMBOL")
+	// symbol := parsec.Token(`[^\s()']+`, "SYMBOL")
 	// TODO:  Fix the parsing of symbols.  This regexp is fucking gross.
 	symbol := parsec.Token(`(?:(?:\pL|[._+\-*/\=<>!&~%?$])(?:\pL|[0-9]|[._+\-*/\=<>!&~%?$])*)?[:]?(?:\pL|[._+\-*/\=<>!&~%?$])(?:\pL|[0-9]|[._+\-*/\=<>!&~%?$])*`, "SYMBOL")
-	//qsymbol := parsec.And(nil, q, symbol)
+	// qsymbol := parsec.And(nil, q, symbol)
 	term := parsec.OrdChoice(astNode(nodeTerm), // terminal token
 		rawstring,
 		parsec.String(),
@@ -179,8 +178,8 @@ func (t nodeType) String() string {
 }
 
 type ast struct {
-	typ      nodeType
 	children []parsec.ParsecNode
+	typ      nodeType
 }
 
 func newAST(typ nodeType, nodes []parsec.ParsecNode) parsec.ParsecNode {

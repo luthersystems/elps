@@ -31,9 +31,9 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 }
 
 type builtin struct {
-	name    string
 	formals *lisp.LVal
 	fun     lisp.LBuiltin
+	name    string
 }
 
 func (fun *builtin) Name() string {
@@ -49,10 +49,10 @@ func (fun *builtin) Eval(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 }
 
 var builtins = []*builtin{
-	{"string", lisp.Formals("native-value"), BuiltinString},
-	{"int", lisp.Formals("native-value"), BuiltinInt},
-	{"float", lisp.Formals("native-value"), BuiltinFloat},
-	{"struct-field", lisp.Formals("native-struct", "field-name"), BuiltinStructField},
+	{lisp.Formals("native-value"), BuiltinString, "string"},
+	{lisp.Formals("native-value"), BuiltinInt, "int"},
+	{lisp.Formals("native-value"), BuiltinFloat, "float"},
+	{lisp.Formals("native-struct", "field-name"), BuiltinStructField, "struct-field"},
 }
 
 // BuiltinString returns a string held by the native value (it does not convert
@@ -158,7 +158,6 @@ func nameIsExported(name string) bool {
 		return true
 	}
 	return false
-
 }
 
 func derefPtr(v reflect.Value) reflect.Value {
