@@ -147,9 +147,7 @@ func TestEncoded_stringCompat(t *testing.T) {
 		}
 		enc := newEncoder(true)
 		if assert.NoError(t, enc.encode(lisp.String(s)), "elps encoding of %q", s) {
-			if !assert.Equal(t, enc.bytes(), canonical) {
-				panic(0)
-			}
+			assert.Equal(t, enc.bytes(), canonical)
 		}
 	}
 }
