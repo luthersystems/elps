@@ -13,8 +13,10 @@ import (
 
 type LexFn func(*Lexer) []*token.Token
 
-const miscWordRunes = "0123456789" + miscWordSymbols
-const miscWordSymbols = "._+-*/=<>!&~%?$"
+const (
+	miscWordRunes   = "0123456789" + miscWordSymbols
+	miscWordSymbols = "._+-*/=<>!&~%?$"
+)
 
 type Lexer struct {
 	scanner *token.Scanner
@@ -162,7 +164,7 @@ func (lex *Lexer) emitMacroChar(tok []*token.Token) []*token.Token {
 }
 
 func (lex *Lexer) emit(typ token.Type, text string) []*token.Token {
-	tok := []*token.Token{&token.Token{
+	tok := []*token.Token{{
 		Type:   typ,
 		Text:   text,
 		Source: lex.scanner.LocStart(),

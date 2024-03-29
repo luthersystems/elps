@@ -360,8 +360,8 @@ func (s *TestSuite) OpBenchmark(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 }
 
 type Test struct {
-	Name string
 	Fun  *lisp.LVal
+	Name string
 }
 
 func EnvTestSuite(env *lisp.LEnv) *TestSuite {

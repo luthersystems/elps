@@ -6,14 +6,14 @@ import (
 
 // Function is a helper to construct builtins.
 func Function(name string, formals *lisp.LVal, fun lisp.LBuiltin) *Builtin {
-	return &Builtin{name, formals, fun}
+	return &Builtin{formals, fun, name}
 }
 
 // Builtin captures Go functions that are callable from elps.
 type Builtin struct {
-	name    string
 	formals *lisp.LVal
 	fun     lisp.LBuiltin
+	name    string
 }
 
 // Name returns the name of a function.
@@ -37,7 +37,7 @@ func (fun *Builtin) Eval(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // package.
 //
 // A chain of loaders may be formed to load a library.
-type Loader func(env *lisp.LEnv) *lisp.LVal
+type Loader = lisp.Loader
 
 func nopLoader(env *lisp.LEnv) *lisp.LVal {
 	return lisp.Nil()

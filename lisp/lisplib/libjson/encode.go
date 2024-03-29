@@ -35,9 +35,9 @@ func (e encodeInvalidNumberError) Error() string {
 }
 
 type encoder struct {
-	stringNums bool
 	buf        bytes.Buffer
 	scratch    [64]byte
+	stringNums bool
 }
 
 func newEncoder(stringNums bool) *encoder {

@@ -68,10 +68,10 @@ func Load(b []byte, stringNums bool) *lisp.LVal {
 
 // Serializer defines JSON serialization rules for lisp values.
 type Serializer struct {
-	UseStringNumbers bool
 	True             *lisp.LVal
 	False            *lisp.LVal
 	Null             *lisp.LVal
+	UseStringNumbers bool
 }
 
 // Load parses b and returns an LVal representing its structure.
@@ -170,7 +170,7 @@ func (s *Serializer) UseStringNumbersBuiltin(env *lisp.LEnv, args *lisp.LVal) *l
 	return lisp.Nil()
 }
 
-func (s *Serializer) useStringNumbers(env *lisp.LEnv) *lisp.LVal {
+func (s *Serializer) useStringNumbers(_ *lisp.LEnv) *lisp.LVal {
 	return lisp.Bool(s.UseStringNumbers)
 }
 

@@ -121,7 +121,7 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 			var line []byte
 			line, err = rl.ReadSlice()
 			if err != nil && err != readline.ErrInterrupt {
-				return []*token.Token{&token.Token{
+				return []*token.Token{{
 					Type: token.EOF,
 					Text: "",
 				}}
