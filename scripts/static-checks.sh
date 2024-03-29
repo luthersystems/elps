@@ -6,4 +6,7 @@
 
 set -exuo pipefail
 
+# work around for golangci-lint -buildvcs=false
+git config --global --add safe.directory $PWD
+golangci-lint version
 golangci-lint run -v
