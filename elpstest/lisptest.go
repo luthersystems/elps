@@ -48,6 +48,9 @@ type Runner struct {
 	// in the testing package has been run.  Any error returned by the teardown
 	// function is reported as a test failure.
 	Teardown func(*lisp.LEnv) *lisp.LVal
+
+	// Close cleans up any resources allocated by the runner.
+	Close func()
 }
 
 func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
