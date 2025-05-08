@@ -1,4 +1,4 @@
-// Copyright © 2018 The ELPS authors
+// Copyright © 2025 The ELPS authors
 
 package elpstest
 
@@ -39,6 +39,10 @@ type Runner struct {
 	// Loader is the package loader used to initialize the test environment.
 	// When Loader is nil lisplib.LoadLibrary is used.
 	Loader func(*lisp.LEnv) *lisp.LVal
+
+	// Setup runs code to setup a loaded environment after before the test
+	// is run.
+	Setup func(*lisp.LEnv) *lisp.LVal
 
 	// Teardown runs code to teardown an environment after each test declared
 	// in the testing package has been run.  Any error returned by the teardown
@@ -116,6 +120,10 @@ func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
 	}
 	defer env.Runtime.Stderr.(*Logger).Flush()
 
+	if r.Setup != nil {
+		r.Setup(env)
+	}
+
 	err = lisp.GoError(env.Load(filepath.Base(path), source))
 	if err != nil {
 		r.LispError(t, err)
@@ -176,6 +184,10 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 		return
 	}
 	defer env.Runtime.Stderr.(*Logger).Flush()
+
+	if r.Setup != nil {
+		r.Teardown(env)
+	}
 
 	err = lisp.GoError(env.Load(filepath.Base(path), source))
 	if err != nil {
