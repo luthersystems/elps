@@ -15,7 +15,7 @@ import (
 type ErrorVal LVal
 
 // Error implements the error interface.  When the error condition is not
-// ``error'' it wil be printed preceding the error message.  Otherwise, the
+// “error” it wil be printed preceding the error message.  Otherwise, the
 // name of the function that generated the error will be printed preceding the
 // error, if the function can be determined.
 func (e *ErrorVal) Error() string {
@@ -52,12 +52,14 @@ func (e *ErrorVal) FunName() string {
 
 // ErrorMessage returns the underlying message in the error.
 func (e *ErrorVal) ErrorMessage() string {
-	switch v := e.Cells[0].Native.(type) {
-	case error:
-		return v.Error()
-	default:
-		return errorCellMessage(e.Cells)
+	if len(e.Cells) > 0 {
+		switch v := e.Cells[0].Native.(type) {
+		case error:
+			return v.Error()
+		}
 	}
+
+	return errorCellMessage(e.Cells)
 }
 
 // WriteTrace writes the error and a stack trace to w
