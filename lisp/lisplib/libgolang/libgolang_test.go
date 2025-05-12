@@ -15,8 +15,10 @@ import (
 )
 
 func TestPackage(t *testing.T) {
-	r := &elpstest.Runner{}
-	r.Loader = loadPackages
+	r := &elpstest.Runner{
+		LoaderFn: loadPackages,
+	}
+	defer r.Close()
 	r.RunTestFile(t, "libgolang_test.lisp")
 }
 
