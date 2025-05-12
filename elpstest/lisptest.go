@@ -86,7 +86,7 @@ func (r *Runner) Close() {
 		return
 	}
 
-	r.Close()
+	r.CloseFn()
 }
 
 func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
