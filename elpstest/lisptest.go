@@ -225,7 +225,9 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 	defer env.Runtime.Stderr.(*Logger).Flush()
 
 	if r.SetupFn != nil {
+		b.StopTimer()
 		r.SetupFn(env)
+		b.StartTimer()
 	}
 
 	err = lisp.GoError(env.Load(filepath.Base(path), source))
