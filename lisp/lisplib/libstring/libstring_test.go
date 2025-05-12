@@ -13,5 +13,6 @@ import (
 
 func TestPackage(t *testing.T) {
 	r := &elpstest.Runner{}
+	defer r.Close()
 	r.RunTestFile(t, "libstring_test.lisp")
 }

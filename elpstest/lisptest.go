@@ -36,21 +36,57 @@ func BenchmarkParse(path string, r func() lisp.Reader) func(*testing.B) {
 
 // Runner is a test runner.
 type Runner struct {
-	// Loader is the package loader used to initialize the test environment.
-	// When Loader is nil lisplib.LoadLibrary is used.
-	Loader func(*lisp.LEnv) *lisp.LVal
+	// LoaderFn is the package loader used to initialize the test environment.
+	// When LoaderFn is nil lisplib.LoadLibrary is used.
+	LoaderFn func(*lisp.LEnv) *lisp.LVal
 
-	// Setup runs code to setup a loaded environment after before the test
+	// SetupFn runs code to setup a loaded environment after before the test
 	// is run.
-	Setup func(*lisp.LEnv) *lisp.LVal
+	SetupFn func(*lisp.LEnv) *lisp.LVal
 
-	// Teardown runs code to teardown an environment after each test declared
+	// TeardownFn runs code to teardown an environment after each test declared
 	// in the testing package has been run.  Any error returned by the teardown
 	// function is reported as a test failure.
-	Teardown func(*lisp.LEnv) *lisp.LVal
+	TeardownFn func(*lisp.LEnv) *lisp.LVal
 
-	// Close cleans up any resources allocated by the runner.
-	Close func()
+	// CloseFn cleans up any resources allocated by the runner.
+	CloseFn func()
+}
+
+// Load safely callss LoadFn.
+func (r *Runner) Loader(env *lisp.LEnv) *lisp.LVal {
+	if r == nil || r.LoaderFn == nil {
+		return lisp.Nil()
+	}
+
+	return r.LoaderFn(env)
+}
+
+// Setup safely callss SetupFn.
+func (r *Runner) Setup(env *lisp.LEnv) *lisp.LVal {
+	if r == nil || r.SetupFn == nil {
+		return lisp.Nil()
+	}
+
+	return r.SetupFn(env)
+}
+
+// Teardown safely callss TeardownFn.
+func (r *Runner) Teardown(env *lisp.LEnv) *lisp.LVal {
+	if r == nil || r.TeardownFn == nil {
+		return lisp.Nil()
+	}
+
+	return r.TeardownFn(env)
+}
+
+// Close safely callss CloseFn.
+func (r *Runner) Close() {
+	if r == nil || r.CloseFn == nil {
+		return
+	}
+
+	r.Close()
 }
 
 func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
@@ -67,7 +103,7 @@ func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
 		return nil, fmt.Errorf("failed to initialize lisp environment: %v", err)
 	}
 	env.InPackage(lisp.String(lisp.DefaultUserPackage))
-	loader := r.Loader
+	loader := r.LoaderFn
 	if loader == nil {
 		loader = lisplib.LoadLibrary
 	}
@@ -123,18 +159,18 @@ func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
 	}
 	defer env.Runtime.Stderr.(*Logger).Flush()
 
-	if r.Setup != nil {
-		r.Setup(env)
-	}
+	_ = r.Setup(env)
 
 	err = lisp.GoError(env.Load(filepath.Base(path), source))
 	if err != nil {
 		r.LispError(t, err)
 		return
 	}
-	if r.Teardown != nil {
-		defer r.Teardown(env)
-	}
+
+	defer func() {
+		_ = r.Teardown(env)
+	}()
+
 	suite := libtesting.EnvTestSuite(env)
 	if suite == nil {
 		t.Errorf("unable to locate test suite")
@@ -188,8 +224,8 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 	}
 	defer env.Runtime.Stderr.(*Logger).Flush()
 
-	if r.Setup != nil {
-		r.Setup(env)
+	if r.SetupFn != nil {
+		r.SetupFn(env)
 	}
 
 	err = lisp.GoError(env.Load(filepath.Base(path), source))
@@ -197,10 +233,10 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 		r.LispError(b, err)
 		return
 	}
-	if r.Teardown != nil {
+	if r.TeardownFn != nil {
 		defer func() {
 			b.StopTimer()
-			r.Teardown(env)
+			r.TeardownFn(env)
 			b.StartTimer()
 		}()
 	}
