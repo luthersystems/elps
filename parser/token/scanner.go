@@ -33,10 +33,11 @@ type Scanner struct {
 
 func newScannerBuf(file string, r io.Reader, buf []byte) *Scanner {
 	s := &Scanner{
-		file: file,
-		r:    r,
-		buf:  buf,
-		line: 1,
+		file:      file,
+		r:         r,
+		buf:       buf,
+		line:      1,
+		startLine: 1,
 	}
 	s.fill(0)
 
@@ -325,7 +326,7 @@ func (s *Scanner) LocStart() *Location {
 	return &Location{
 		File: s.file,
 		Path: s.path,
-		Line: s.line,
+		Line: s.startLine,
 		Pos:  startPos,
 	}
 }

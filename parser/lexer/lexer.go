@@ -19,8 +19,10 @@ const (
 )
 
 type Lexer struct {
-	scanner *token.Scanner
-	lex     LexFn
+	scanner           *token.Scanner
+	lex               LexFn
+	precedingNewlines int
+	precedingSpaces   int
 }
 
 func New(s *token.Scanner) *Lexer {
@@ -165,16 +167,21 @@ func (lex *Lexer) emitMacroChar(tok []*token.Token) []*token.Token {
 
 func (lex *Lexer) emit(typ token.Type, text string) []*token.Token {
 	tok := []*token.Token{{
-		Type:   typ,
-		Text:   text,
-		Source: lex.scanner.LocStart(),
+		Type:              typ,
+		Text:              text,
+		Source:            lex.scanner.LocStart(),
+		PrecedingNewlines: lex.precedingNewlines,
+		PrecedingSpaces:   lex.precedingSpaces,
 	}}
 	lex.scanner.Ignore()
 	return tok
 }
 
 func (lex *Lexer) emitText(typ token.Type) []*token.Token {
-	return []*token.Token{lex.scanner.EmitToken(typ)}
+	tok := lex.scanner.EmitToken(typ)
+	tok.PrecedingNewlines = lex.precedingNewlines
+	tok.PrecedingSpaces = lex.precedingSpaces
+	return []*token.Token{tok}
 }
 
 func (lex *Lexer) emitError(err error, expectEOF bool) []*token.Token {
@@ -193,6 +200,8 @@ func (lex *Lexer) errorf(format string, v ...interface{}) []*token.Token {
 
 func (lex *Lexer) charToken(typ token.Type) []*token.Token {
 	tok := lex.scanner.EmitToken(typ)
+	tok.PrecedingNewlines = lex.precedingNewlines
+	tok.PrecedingSpaces = lex.precedingSpaces
 	return []*token.Token{tok}
 }
 
@@ -294,7 +303,17 @@ func (lex *Lexer) readFloatExponent() []*token.Token {
 
 func (lex *Lexer) skipWhitespace() {
 	if lex.scanner.AcceptSeqSpace() > 0 {
+		text := lex.scanner.Text()
+		lex.precedingNewlines = strings.Count(text, "\n")
+		if lex.precedingNewlines == 0 {
+			lex.precedingSpaces = len(text)
+		} else {
+			lex.precedingSpaces = 0
+		}
 		lex.scanner.Ignore()
+	} else {
+		lex.precedingNewlines = 0
+		lex.precedingSpaces = 0
 	}
 }
 
