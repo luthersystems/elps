@@ -79,6 +79,7 @@ testloop:
 			}
 			tok := toks[0]
 			tok.Source = nil
+			tok.PrecedingSpaces = 0
 			tokens = append(tokens, tok)
 			if tok.Type == token.EOF || tok.Type == token.ERROR {
 				break

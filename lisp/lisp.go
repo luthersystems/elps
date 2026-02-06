@@ -176,6 +176,21 @@ func (fd *LFunData) Copy() *LFunData {
 	return cp
 }
 
+// SourceMeta holds formatting metadata for an LVal, populated only when
+// parsing in format-preserving mode. Nil in normal parsing — zero cost.
+type SourceMeta struct {
+	OriginalText            string         // original token text for literals (preserves escapes, numeric bases)
+	BracketType             rune           // '(' or '[' for LSExpr nodes
+	LeadingComments         []*token.Token // comment tokens preceding this node
+	TrailingComment         *token.Token   // inline comment on same line after this node
+	InnerTrailingComments   []*token.Token // comments between last child and closing bracket
+	BlankLinesBefore        int            // blank lines (newline count - 1) before this node (or before its leading comments)
+	BlankLinesAfterComments int            // blank lines between last leading comment and the expression
+	PrecedingSpaces         int            // spaces before this token on the same line (for column alignment)
+	NewlineBefore           bool           // true if at least one newline preceded this node in source
+	ClosingBracketNewline   bool           // true if closing bracket was on its own line in source
+}
+
 // LVal is a lisp value
 type LVal struct {
 	// Native is generic storage for data which cannot be represented as an
@@ -213,6 +228,9 @@ type LVal struct {
 
 	// Spliced denotes the value as needing to be spliced into a parent value.
 	Spliced bool
+
+	// Meta holds formatting metadata, only populated in format-preserving mode.
+	Meta *SourceMeta
 }
 
 // GetType returns a quoted symbol denoting v's type.
