@@ -6,15 +6,14 @@
 
 (use-package 'sicp/stream)
 
-
 (defun sqrt-improve (guess x)
   ; average guess and x/guess
   (/ (+ guess (/ x guess)) 2))
 
 (defun sqrt-stream (x)
   (let ([guesses (stream-cons 1.0
-                               (stream-map #^(sqrt-improve % x)
-                                           guesses))])
+                              (stream-map #^(sqrt-improve % x)
+                                          guesses))])
     guesses))
 
 (debug-print '(sqrt-stream 2))

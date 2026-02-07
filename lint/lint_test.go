@@ -122,16 +122,34 @@ func TestLintFile_AnalyzerError(t *testing.T) {
 
 // --- set-usage ---
 
-func TestSetUsage_Positive(t *testing.T) {
-	diags := lintCheck(t, AnalyzerSetUsage, `(set x 42)`)
+func TestSetUsage_Positive_RepeatedSet(t *testing.T) {
+	// Second set on the same symbol should be set!
+	source := "(set 'x 1)\n(set 'x 2)"
+	diags := lintCheck(t, AnalyzerSetUsage, source)
 	assert.Len(t, diags, 1)
-	assertHasDiag(t, diags, "set! or let")
-	assert.Equal(t, 1, diags[0].Pos.Line)
+	assertHasDiag(t, diags, "already bound")
+	assert.Equal(t, 2, diags[0].Pos.Line)
 }
 
-func TestSetUsage_Nested(t *testing.T) {
-	diags := lintCheck(t, AnalyzerSetUsage, `(defun foo () (set x 1) (set y 2))`)
-	assert.Len(t, diags, 2)
+func TestSetUsage_Positive_RepeatedInBody(t *testing.T) {
+	// Sequential set on the same symbol inside a function body
+	source := `(defun foo () (set 'x 1) (set 'x 2))`
+	diags := lintCheck(t, AnalyzerSetUsage, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "already bound")
+}
+
+func TestSetUsage_Negative_FirstSet(t *testing.T) {
+	// First set creating a new binding is fine
+	diags := lintCheck(t, AnalyzerSetUsage, `(set 'x 42)`)
+	assertNoDiags(t, diags)
+}
+
+func TestSetUsage_Negative_DifferentSymbols(t *testing.T) {
+	// Different symbols are fine
+	source := `(set 'x 1) (set 'y 2)`
+	diags := lintCheck(t, AnalyzerSetUsage, source)
+	assertNoDiags(t, diags)
 }
 
 func TestSetUsage_Negative_SetBang(t *testing.T) {
@@ -544,38 +562,38 @@ func TestBuiltinArity_CondNotDuplicated(t *testing.T) {
 // --- nolint suppression ---
 
 func TestNolint_SuppressAll(t *testing.T) {
-	source := "(set x 42) ; nolint\n"
+	source := "(if true 1) ; nolint\n"
 	diags := lintSource(t, source)
 	assertNoDiags(t, diags)
 }
 
 func TestNolint_SuppressSpecific(t *testing.T) {
-	source := "(set x 42) ; nolint:set-usage\n"
+	source := "(if true 1) ; nolint:if-arity\n"
 	diags := lintSource(t, source)
 	assertNoDiags(t, diags)
 }
 
 func TestNolint_DifferentCheck(t *testing.T) {
-	// Suppressing a different check should not suppress set-usage
-	source := "(set x 42) ; nolint:if-arity\n"
+	// Suppressing a different check should not suppress if-arity
+	source := "(if true 1) ; nolint:set-usage\n"
 	diags := lintSource(t, source)
 	assert.Len(t, diags, 1)
-	assertHasDiag(t, diags, "set! or let")
+	assertHasDiag(t, diags, "too few")
 }
 
 func TestNolint_MultipleNames(t *testing.T) {
 	// Suppressing a comma-separated list including the right check
-	source := "(set x 42) ; nolint:if-arity,set-usage\n"
+	source := "(if true 1) ; nolint:set-usage,if-arity\n"
 	diags := lintSource(t, source)
 	assertNoDiags(t, diags)
 }
 
 func TestNolint_MultipleNames_NotMatched(t *testing.T) {
 	// Comma-separated list that doesn't include the triggered check
-	source := "(set x 42) ; nolint:if-arity,let-bindings\n"
+	source := "(if true 1) ; nolint:set-usage,let-bindings\n"
 	diags := lintSource(t, source)
 	assert.Len(t, diags, 1)
-	assertHasDiag(t, diags, "set! or let")
+	assertHasDiag(t, diags, "too few")
 }
 
 // --- output formatting ---
@@ -610,7 +628,7 @@ func TestFormatJSON(t *testing.T) {
 // --- integration test: multiple checks ---
 
 func TestIntegration_MultipleFindings(t *testing.T) {
-	source := "(set x 42)\n(if true 1)\n(defun foo (x) (in-package \"bad\") x)\n(let (y 1) y)\n(cond true)"
+	source := "(set 'x 1)\n(set 'x 2)\n(if true 1)\n(defun foo (x) (in-package \"bad\") x)\n(let (y 1) y)\n(cond true)"
 	diags := lintSource(t, source)
 	// Should find: set-usage, if-arity, in-package-toplevel, let-bindings, cond-structure
 	assert.GreaterOrEqual(t, len(diags), 5)
@@ -626,9 +644,9 @@ func TestIntegration_MultipleFindings(t *testing.T) {
 	assert.True(t, analyzers["cond-structure"], "expected cond-structure finding")
 
 	// Verify findings are on correct lines
-	assertDiagOnLine(t, diags, 1, "set! or let")
-	assertDiagOnLine(t, diags, 2, "too few")
-	assertDiagOnLine(t, diags, 3, "top level")
+	assertDiagOnLine(t, diags, 2, "already bound")
+	assertDiagOnLine(t, diags, 3, "too few")
+	assertDiagOnLine(t, diags, 4, "top level")
 }
 
 func TestIntegration_CleanCode(t *testing.T) {
@@ -639,7 +657,8 @@ func TestIntegration_CleanCode(t *testing.T) {
 
 func TestIntegration_SortedByLine(t *testing.T) {
 	// Diagnostics should be sorted by file then line
-	source := "(if true 1)\n(set x 42)\n(car)"
+	// Line 1: if-arity, Line 2: first set (ok), Line 3: set-usage (repeated), Line 4: builtin-arity
+	source := "(if true 1)\n(set x 1)\n(set x 2)\n(car)"
 	diags := lintSource(t, source)
 	assert.GreaterOrEqual(t, len(diags), 3)
 	for i := 1; i < len(diags); i++ {
@@ -852,19 +871,19 @@ func TestReportf_NilSource(t *testing.T) {
 
 func TestNolint_RegularCommentDoesNotSuppress(t *testing.T) {
 	// A regular trailing comment (non-nolint) should not suppress diagnostics
-	source := "(set x 42) ; this is a regular comment\n"
+	source := "(if true 1) ; this is a regular comment\n"
 	diags := lintSource(t, source)
 	assert.Len(t, diags, 1)
-	assertHasDiag(t, diags, "set! or let")
+	assertHasDiag(t, diags, "too few")
 }
 
 func TestNolint_LeadingCommentDoesNotSuppress(t *testing.T) {
 	// nolint in a leading comment is on a different line than the expression,
 	// so it does not suppress (nolint is line-based via trailing comments)
-	source := "; nolint\n(set x 42)\n"
+	source := "; nolint\n(if true 1)\n"
 	diags := lintSource(t, source)
 	assert.Len(t, diags, 1)
-	assertHasDiag(t, diags, "set! or let")
+	assertHasDiag(t, diags, "too few")
 }
 
 // --- buildArityTable ---

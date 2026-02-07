@@ -35,7 +35,6 @@
     (something (get m k))
     (nothing)))
 
-
 (set 'm (sorted-map "name" "anya"
                     "email" ()))
 (debug-print (equal? (get m "email") (get m "birthdate")))

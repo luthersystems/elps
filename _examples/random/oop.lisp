@@ -40,22 +40,22 @@
         ((empty? method-args)
          (error 'type-error "methods must take at least one argument"))
         (:else
-         (let* ([type-name (gensym)]
-                [fn (gensym)]
-                [fname (gensym)]
-                [type-table (gensym)])
-          (quasiquote (lisp:let* ([(unquote type-name) (oop:type-name (unquote type-specifier))]
-                                  [(unquote fname) (oop:method-name (unquote method-name))]
-                                  [(unquote fn) (lisp:lambda (unquote method-args)
-                                                             (unquote-splicing method-body))]
-                                  [(unquote type-table) (get oop:method-table (unquote type-name))])
-                                 (lisp:if (lisp:nil? (unquote type-table))
-                                          (lisp:assoc! oop:method-table
-                                                       (unquote type-name)
-                                                       (lisp:sorted-map (unquote method-name) (unquote fn)))
-                                          (lisp:assoc! (unquote type-table)
-                                                       (unquote method-name)
-                                                       (unquote fn)))))))))
+          (let* ([type-name (gensym)]
+                 [fn (gensym)]
+                 [fname (gensym)]
+                 [type-table (gensym)])
+            (quasiquote (lisp:let* ([(unquote type-name) (oop:type-name (unquote type-specifier))]
+                                    [(unquote fname) (oop:method-name (unquote method-name))]
+                                    [(unquote fn) (lisp:lambda (unquote method-args)
+                                                    (unquote-splicing method-body))]
+                                    [(unquote type-table) (get oop:method-table (unquote type-name))])
+                          (lisp:if (lisp:nil? (unquote type-table))
+                            (lisp:assoc! oop:method-table
+                                         (unquote type-name)
+                                         (lisp:sorted-map (unquote method-name) (unquote fn)))
+                            (lisp:assoc! (unquote type-table)
+                                         (unquote method-name)
+                                         (unquote fn)))))))))
 
 ;; methods returns a list of methods defined for (type obj).
 (export 'methods)
@@ -67,7 +67,7 @@
                        ((equal? 'lisp:typedef typ)
                         (get method-table (first (user-data obj))))
                        (:else
-                        (get method-table typ)))])
+                         (get method-table typ)))])
     (if (nil? type-table)
       '()
       (keys type-table))))
@@ -151,7 +151,7 @@
                        (if (= 0 (length acc))
                          (list x)
                          (progn (append! p (list (first acc) x))
-                                (list))))
+                           (list))))
                      '()
                      lis))
       p
@@ -178,7 +178,6 @@
       (get data field)
       (error 'struct-field (format-string "unknown struct field: {}" field)))))
 
-
 ;; var looks up a named struct field in the given object and returns its value.
 ;; obj must either be a struct or it must have a :struct method.  If obj is not
 ;; a struct then a chain of :struct method calls must yield a struct.
@@ -197,10 +196,10 @@
          (error 'type-error (format-string "first argument is not an int: {}" (type n))))
         ((not (int? d))
          (error 'type-error (format-string "second argument is not an int: {}" (type d)))))
-        ;; TODO:  Reduce by common factors
-        (new struct
-             :numer n
-             :denom d))
+  ;; TODO:  Reduce by common factors
+  (new struct
+       :numer n
+       :denom d))
 
 ;; method :struct implements the interface desired by ``var''.
 (defmethod rational :struct (self) (user-data self))
@@ -214,7 +213,7 @@
 (defmethod rational :mul (self x)
   (cond ((type? 'int x)
          (new rational (* x (var self :numer))
-                      (var self :denom)))
+              (var self :denom)))
         ((type? rational x)
          (new rational
               (* (var self :numer)

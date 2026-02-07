@@ -24,7 +24,7 @@
   (let ([f (delay (set! x (+ x 1)))])
     (f)
     (f)
-  (assert= 1 x)))
+    (assert= 1 x)))
 
 (export 'stream-concat)
 (defun stream-concat (&rest s)
@@ -120,8 +120,8 @@
 (defun stream-filter (pred s)
   (cond ((stream-null? s) the-empty-stream)
         ((funcall pred (stream-car s))
-          (stream-cons (stream-car s)
-                       (stream-filter pred (stream-cdr s))))
+         (stream-cons (stream-car s)
+                      (stream-filter pred (stream-cdr s))))
         (:else (stream-filter pred (stream-cdr s)))))
 
 (set 'prime-stream (stream-filter 'prime? (stream-enumerate-interval 3 100)))
@@ -160,13 +160,13 @@
 
 (assert-equal '('(1 1)
                 '(1 2)
-                        '(2 2)
+                '(2 2)
                 '(1 3)
-                        '(2 3)
+                '(2 3)
                 '(1 4)
-                                '(3 3)
+                '(3 3)
                 '(1 5)
-                        '(2 4)) ; this order sucks
+                '(2 4)) ; this order sucks
               (stream-collect (stream-take upper-integer-pairs 9)))
 
 (defun stream-fold (proc z s)
@@ -198,13 +198,13 @@
   ; a function like the external stream-concat but it operates on a potentially
   ; infinite stream-of-streams instead of a finite list of stream arguments.
   (labels ([stream-concat (sos)
-              (cond
-                ((stream-null? sos) the-empty-stream)
-                ((stream-null? (stream-car sos)) (stream-concat (stream-cdr sos)))
-                (:else
-                  (stream-cons (stream-car (stream-car sos))
-                               (stream-concat (stream-cons (stream-cdr (stream-car sos))
-                                                           (stream-cdr sos))))))])
+            (cond
+              ((stream-null? sos) the-empty-stream)
+              ((stream-null? (stream-car sos)) (stream-concat (stream-cdr sos)))
+              (:else
+                (stream-cons (stream-car (stream-car sos))
+                             (stream-concat (stream-cons (stream-cdr (stream-car sos))
+                                                         (stream-cdr sos))))))])
     (stream-concat (better-pairs-streams s t))))
 
 (assert-equal '('(1 1)

@@ -47,13 +47,13 @@
     ((number? expression) 0)
     ((variable? expression) (if (same-variable? expression variable) 1 0))
     ((sum? expression)
-      (make-sum (deriv (sum-addend expression) variable)
-                (deriv (sum-augend expression) variable)))
+     (make-sum (deriv (sum-addend expression) variable)
+               (deriv (sum-augend expression) variable)))
     ((product? expression)
-      (let [(e1 (product-multiplier expression))
-            (e2 (product-multiplicand expression))]
-        (make-sum (make-product e1 (deriv e2 variable))
-                  (make-product (deriv e1 variable) e2))))
+     (let [(e1 (product-multiplier expression))
+           (e2 (product-multiplicand expression))]
+       (make-sum (make-product e1 (deriv e2 variable))
+                 (make-product (deriv e1 variable) e2))))
     (:else (error 'invalid-expression
                   "unable to differentiate expression"
                   expression))))

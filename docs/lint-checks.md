@@ -48,19 +48,26 @@ To suppress all checks on a line:
 
 ### `set-usage`
 
-**Warns against bare `set` (use `set!` or `let` instead).**
+**Warns when `set` is used to reassign an already-bound symbol.**
 
-`set` is a legacy function that creates or overwrites bindings without
-indicating intent. Use `set!` for mutation of existing bindings, or
-`let`/`let*` for introducing new bindings.
+The first `set` creating a new binding is fine — ELPS has no `defvar`, so
+`set` is the standard way to create top-level bindings. However, subsequent
+`set` calls on the same symbol should use `set!` to clearly signal mutation
+intent.
+
+**Important:** `set` creates OR overwrites bindings. `set!` ONLY mutates
+existing bindings and errors if the symbol is not already bound. You cannot
+replace all `set` with `set!` — the first binding must use `set`.
 
 ```lisp
-;; BAD
-(set x 42)
+;; OK — first binding of x
+(set 'x 42)
 
-;; GOOD
-(set! x 42)          ; mutation
-(let ((x 42)) ...)   ; new binding
+;; BAD — x is already bound, use set! to signal mutation
+(set 'x 99)
+
+;; GOOD — clearly signals mutation intent
+(set! 'x 99)
 ```
 
 ### `in-package-toplevel`
@@ -192,10 +199,11 @@ all builtins (`car`, `cdr`, `cons`, `=`, `not`, etc.), special operators
 (gensym)
 ```
 
-**Note:** This check only knows about ELPS built-in functions. If your
-application defines custom functions that shadow builtin names (e.g., a
-custom `map` with different arity), you may see false positives. Suppress
-with `; nolint:builtin-arity`.
+**Note:** User-defined functions that shadow builtin names (via `defun` or
+`defmacro`) are automatically detected and excluded from arity checking.
+Formals lists and threading macro (`thread-first`, `thread-last`) children
+are also excluded, since their static argument count differs from the
+runtime count after macro expansion.
 
 ## Extending the Linter
 

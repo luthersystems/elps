@@ -36,10 +36,20 @@ With files, prints formatted output to stdout (use -w to overwrite).`,
 			}
 			return
 		}
+
+		expanded, err := expandArgs(args)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
 		exitCode := 0
-		for _, path := range args {
-			if err := fmtFile(path, cfg); err != nil {
+		for _, path := range expanded {
+			changed, err := fmtFile(path, cfg)
+			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
+				exitCode = 1
+			} else if fmtList && changed {
 				exitCode = 1
 			}
 		}
@@ -60,44 +70,46 @@ func fmtStdin(cfg *formatter.Config) error {
 	return err
 }
 
-func fmtFile(path string, cfg *formatter.Config) error {
+func fmtFile(path string, cfg *formatter.Config) (bool, error) {
 	src, err := os.ReadFile(path) //nolint:gosec // CLI tool reads user-specified files
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		return false, fmt.Errorf("%s: %w", path, err)
 	}
 	out, err := formatter.FormatFile(src, path, cfg)
 	if err != nil {
-		return err
+		return false, err
 	}
 
+	changed := string(src) != string(out)
+
 	if fmtList {
-		if string(src) != string(out) {
+		if changed {
 			fmt.Println(path)
 		}
-		return nil
+		return changed, nil
 	}
 
 	if fmtDiff {
-		if string(src) != string(out) {
+		if changed {
 			printUnifiedDiff(path, src, out)
 		}
-		return nil
+		return changed, nil
 	}
 
 	if fmtWrite {
-		if string(src) == string(out) {
-			return nil // no change
+		if !changed {
+			return false, nil
 		}
 		info, err := os.Stat(path)
 		if err != nil {
-			return fmt.Errorf("%s: %w", path, err)
+			return false, fmt.Errorf("%s: %w", path, err)
 		}
-		return os.WriteFile(path, out, info.Mode().Perm())
+		return true, os.WriteFile(path, out, info.Mode().Perm())
 	}
 
 	// Default: print to stdout
 	_, err = os.Stdout.Write(out)
-	return err
+	return changed, err
 }
 
 func printUnifiedDiff(path string, original, formatted []byte) {

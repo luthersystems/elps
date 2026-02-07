@@ -11,17 +11,39 @@ import (
 	"github.com/luthersystems/elps/parser/token"
 )
 
-// AnalyzerSetUsage warns against using the bare `set` function.
-// Use `set!` for mutation or `let` for new bindings instead.
+// AnalyzerSetUsage warns when `set` is used to reassign a symbol that was
+// already bound by a prior `set` in the same file. The first `set` creating
+// a binding is fine (ELPS has no `defvar`), but subsequent mutations of the
+// same symbol should use `set!` to signal intent.
 var AnalyzerSetUsage = &Analyzer{
 	Name: "set-usage",
-	Doc:  "Warn against bare `set` (use `set!` or `let` instead).\n\n`set` is a legacy function that creates or overwrites bindings. Prefer `set!` for mutation of existing bindings, or `let`/`let*` for introducing new bindings.",
+	Doc:  "Warn when `set` is used to reassign an already-bound symbol.\n\nThe first `set` creating a new binding is fine — ELPS has no `defvar`, so `set` is the standard way to create top-level bindings. However, subsequent `set` calls on the same symbol should use `set!` to clearly signal mutation intent.",
 	Run: func(pass *Pass) error {
+		seen := make(map[string]bool)
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
-			if HeadSymbol(sexpr) == "set" {
-				src := SourceOf(sexpr)
-				pass.Reportf(src.Source, "use set! or let instead of set")
+			if HeadSymbol(sexpr) != "set" {
+				return
 			}
+			if ArgCount(sexpr) < 1 {
+				return
+			}
+			// Extract the symbol name from the first argument.
+			// (set 'name value) — the arg is a quoted symbol.
+			arg := sexpr.Cells[1]
+			name := ""
+			if arg.Type == lisp.LSymbol {
+				name = arg.Str
+			} else if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+				name = arg.Cells[0].Str
+			}
+			if name == "" {
+				return
+			}
+			if seen[name] {
+				src := SourceOf(sexpr)
+				pass.Reportf(src.Source, "use set! instead of set to mutate '%s (already bound)", name)
+			}
+			seen[name] = true
 		})
 		return nil
 	},

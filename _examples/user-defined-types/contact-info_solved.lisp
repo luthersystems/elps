@@ -9,7 +9,7 @@
     (error 'type-error "argument is not contact-info")))
 
 (defun say-hello (contact)
-    (debug-print (format-string "Hello, {}" (contact-name contact))))
+  (debug-print (format-string "Hello, {}" (contact-name contact))))
 
 (say-hello (new contact-info "Alice" "+1-555-555-5555"))
 ;; "Hello, Alice"

@@ -19,9 +19,9 @@
     (labels ([dig (table operand-types value)
               (cond
                 ((nil? operand-types)
-                  (error 'nil-type-parameters "type parameters are nil"))
+                 (error 'nil-type-parameters "type parameters are nil"))
                 ((nil? (rest operand-types))
-                  (assoc! table (first operand-types) value))
+                 (assoc! table (first operand-types) value))
                 (:else
                   (let* ([operand-type (first operand-types)]
                          [sub-types (rest operand-types)]
@@ -38,19 +38,19 @@
     (labels ([dig (table operand-types)
               (cond
                 ((nil? operand-types)
-                  table)
+                 table)
                 ((not (sorted-map? table)) ())
                 ((symbol? operand-types) (get table operand-types))
                 ((not (key? table (first operand-types)))
-                  ())
+                 ())
                 (:else
                   (let* ([operand-type (first operand-types)]
                          [sub-types (rest operand-types)]
                          [sub-table (get table operand-type)])
                     (dig sub-table sub-types))))])
-    (if (nil? op-table)
-      ()
-      (dig op-table operand-types)))))
+      (if (nil? op-table)
+        ()
+        (dig op-table operand-types)))))
 
 (defun dispatch-call (op-symbol operand-types &rest operands)
   (let ([fun (dispatch-get op-symbol operand-types)])
@@ -65,26 +65,26 @@
            [imag-part (z) (second z)]
            [make-from-real-imag (x y) (list x y)]
            [magnitude (z)
-              (sqrt (+ (square (real-part z))
-                       (square (imag-part z))))]
+            (sqrt (+ (square (real-part z))
+                     (square (imag-part z))))]
            [angle (z)
-              (let ([x (real-part z)]
-                    [y (imag-part z)])
-                (atan (imag-part z)
-                      (real-part z)))]
+            (let ([x (real-part z)]
+                  [y (imag-part z)])
+              (atan (imag-part z)
+                    (real-part z)))]
            [make-from-mag-ang (r a)
-              (if (= 0 r)
-                (list 0 0)
-                (list (* r (cos a)) (* r (sin a))))]
+            (if (= 0 r)
+              (list 0 0)
+              (list (* r (cos a)) (* r (sin a))))]
            [tag (x) (attach-tag 'rectangular x)])
     (dispatch-put 'real-part '(rectangular) real-part)
     (dispatch-put 'imag-part '(rectangular) imag-part)
     (dispatch-put 'magnitude '(rectangular) magnitude)
     (dispatch-put 'angle '(rectangular) angle)
     (dispatch-put 'make-from-real-imag '(rectangular)
-         (lambda (x y) (tag (make-from-real-imag x y))))
+                  (lambda (x y) (tag (make-from-real-imag x y))))
     (dispatch-put 'make-from-mag-ang '(rectangular)
-         (lambda (r a) (tag (make-from-mag-ang r a))))
+                  (lambda (r a) (tag (make-from-mag-ang r a))))
     'done))
 
 (defun install-polar-package ()
@@ -92,13 +92,13 @@
            [angle (z) (second z)]
            [make-from-mag-ang (r a) (list r a)]
            [real-part (z)
-              (* (magnitude z) (cos (angle z)))]
+            (* (magnitude z) (cos (angle z)))]
            [imag-part (z)
-              (* (magnitude z) (sin (angle z)))]
+            (* (magnitude z) (sin (angle z)))]
            [make-from-real-imag (x y)
-              (list (sqrt (+ (square (real-part z))
-                             (square (imag-part z))))
-                    (atan y x))]
+            (list (sqrt (+ (square (real-part z))
+                           (square (imag-part z))))
+                  (atan y x))]
            [tag (x) (attach-tag 'polar x)])
     (dispatch-put 'real-part '(polar) real-part)
     (dispatch-put 'imag-part '(polar) imag-part)
@@ -128,7 +128,6 @@
 
 (defun make-from-mag-ang (r a)
   (dispatch-call 'make-from-mag-ang '(polar) r a))
-
 
 (trace (install-rectangular-package))
 (trace (install-polar-package))
@@ -181,22 +180,22 @@
   (labels ([numer (x) (first x)]
            [denom (x) (second x)]
            [make-rat (p q)
-              (let ([g (gcd p q)])
-                (list (/ p g) (/ q g)))]
+            (let ([g (gcd p q)])
+              (list (/ p g) (/ q g)))]
            [add-rat (x y)
-              (make-rat (+ (* (numer x) (denom y))
-                           (* (denom x) (numer y)))
-                        (* (denom x) (denom y)))]
+            (make-rat (+ (* (numer x) (denom y))
+                         (* (denom x) (numer y)))
+                      (* (denom x) (denom y)))]
            [sub-rat (x y)
-              (make-rat (- (* (numer x) (denom y))
-                           (* (denom x) (numer y)))
-                        (* (denom x) (denom y)))]
+            (make-rat (- (* (numer x) (denom y))
+                         (* (denom x) (numer y)))
+                      (* (denom x) (denom y)))]
            [mul-rat (x y)
-              (make-rat (* (numer x) (numer y))
-                        (* (denom x) (denom y)))]
+            (make-rat (* (numer x) (numer y))
+                      (* (denom x) (denom y)))]
            [div-rat (x y)
-              (make-rat (* (numer x) (denom y))
-                        (* (denom x) (numer y)))]
+            (make-rat (* (numer x) (denom y))
+                      (* (denom x) (numer y)))]
            [tag (x) (attach-tag 'rational x)])
     (dispatch-put 'make '(rational)
                   (lambda (p q) (tag (make-rat p q))))
@@ -233,21 +232,21 @@
 
 (defun install-complex-package ()
   (labels ([make-from-real-imag (x y)
-              (dispatch-call 'make-from-real-imag 'rectangular x y)]
+            (dispatch-call 'make-from-real-imag 'rectangular x y)]
            [make-from-mag-ang (r a)
-              (dispatch-call 'make-from-mag-ang 'polar r a)]
+            (dispatch-call 'make-from-mag-ang 'polar r a)]
            [add-complex (z1 z2)
-              (make-from-real-imag (+ (real-part z1) (real-part z2))
-                                   (+ (imag-part z1) (imag-part z2)))]
+            (make-from-real-imag (+ (real-part z1) (real-part z2))
+                                 (+ (imag-part z1) (imag-part z2)))]
            [sub-complex (z1 z2)
-              (make-from-real-imag (- (real-part z1) (real-part z2))
-                                   (- (imag-part z1) (imag-part z2)))]
+            (make-from-real-imag (- (real-part z1) (real-part z2))
+                                 (- (imag-part z1) (imag-part z2)))]
            [mul-complex (z1 z2)
-              (make-from-mag-ang (* (magnitude z1) (magnitude z2))
-                                 (+ (angle z1) (angle z2)))]
+            (make-from-mag-ang (* (magnitude z1) (magnitude z2))
+                               (+ (angle z1) (angle z2)))]
            [div-complex (z1 z2)
-              (make-from-mag-ang (/ (magnitude z1) (magnitude z2))
-                                 (- (angle z1) (angle z2)))]
+            (make-from-mag-ang (/ (magnitude z1) (magnitude z2))
+                               (- (angle z1) (angle z2)))]
            [tag (z) (attach-tag 'complex z)])
     (dispatch-put 'add '(complex complex)
                   (lambda (z1 z2) (tag (add-complex z1 z2))))
