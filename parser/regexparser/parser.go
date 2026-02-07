@@ -171,7 +171,7 @@ func newParsecParser() parsec.Parser {
 type nodeType uint
 
 func (t nodeType) String() string {
-	if int(t) >= len(nodeTypeStrings) {
+	if int(t) >= len(nodeTypeStrings) { //nolint:gosec // bounded by iota constants
 		return "INVALID"
 	}
 	return nodeTypeStrings[t]

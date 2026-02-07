@@ -34,7 +34,7 @@ func NewCallgrindProfiler(runtime *lisp.Runtime, opts ...Option) *callgrindProfi
 	p.runtime = runtime
 	runtime.Profiler = p
 
-	p.profiler.applyConfigs(opts...)
+	p.applyConfigs(opts...)
 	return p
 }
 
@@ -56,9 +56,9 @@ func (p *callgrindProfiler) Enable() error {
 	if p.writer == nil {
 		return errors.New("no output set in profiler")
 	}
-	fmt.Fprintf(p.writer, "version: 1\ncreator: elps %s (Go %s)\n", lisp.ElpsVersion, runtime.Version())
-	fmt.Fprintf(p.writer, "cmd: Eval\npart: 1\npositions: line\n\n")
-	fmt.Fprintf(p.writer, "events: Time_(ns) Memory_(bytes)\n\n")
+	fmt.Fprintf(p.writer, "version: 1\ncreator: elps %s (Go %s)\n", lisp.ElpsVersion, runtime.Version()) //nolint:errcheck // profiler output
+	fmt.Fprintf(p.writer, "cmd: Eval\npart: 1\npositions: line\n\n")                                    //nolint:errcheck // profiler output
+	fmt.Fprintf(p.writer, "events: Time_(ns) Memory_(bytes)\n\n")                                       //nolint:errcheck // profiler output
 	p.callRefs = make(map[int32]*callRef)
 	p.startTime = time.Now()
 	p.refs = make(map[string]int)
@@ -94,21 +94,21 @@ func (p *callgrindProfiler) Complete() error {
 	defer p.Unlock()
 	// Generate entrypoint
 	ref.duration = time.Since(ref.start)
-	fmt.Fprintf(p.writer, "fl=%s\n", p.getRef(ref.file))
-	fmt.Fprintf(p.writer, "fn=%s\n", p.getRef(ref.name))
-	fmt.Fprintf(p.writer, "%d %d %d\n", 0, ref.duration, 0)
+	fmt.Fprintf(p.writer, "fl=%s\n", p.getRef(ref.file))   //nolint:errcheck // profiler output
+	fmt.Fprintf(p.writer, "fn=%s\n", p.getRef(ref.name))  //nolint:errcheck // profiler output
+	fmt.Fprintf(p.writer, "%d %d %d\n", 0, ref.duration, 0) //nolint:errcheck // profiler output
 	// Output the things we called
 	for _, entry := range ref.children {
-		fmt.Fprintf(p.writer, "cfl=%s\n", p.getRef(entry.file))
-		fmt.Fprintf(p.writer, "cfn=%s\n", p.getRef(entry.name))
-		fmt.Fprint(p.writer, "calls=1 0 0\n")
-		fmt.Fprintf(p.writer, "%d %d %d\n", entry.line, entry.duration, 0)
+		fmt.Fprintf(p.writer, "cfl=%s\n", p.getRef(entry.file))  //nolint:errcheck // profiler output
+		fmt.Fprintf(p.writer, "cfn=%s\n", p.getRef(entry.name))  //nolint:errcheck // profiler output
+		fmt.Fprint(p.writer, "calls=1 0 0\n")                    //nolint:errcheck // profiler output
+		fmt.Fprintf(p.writer, "%d %d %d\n", entry.line, entry.duration, 0) //nolint:errcheck // profiler output
 	}
-	fmt.Fprint(p.writer, "\n")
+	fmt.Fprint(p.writer, "\n") //nolint:errcheck // profiler output
 	duration := time.Since(p.startTime)
 	ms := &runtime.MemStats{}
 	runtime.ReadMemStats(ms)
-	fmt.Fprintf(p.writer, "summary %d %d\n\n", duration.Nanoseconds(), ms.TotalAlloc)
+	fmt.Fprintf(p.writer, "summary %d %d\n\n", duration.Nanoseconds(), ms.TotalAlloc) //nolint:errcheck // profiler output
 	if err := p.writer.Close(); err != nil {
 		return err
 	}
@@ -183,9 +183,9 @@ func (p *callgrindProfiler) end(fun *lisp.LVal) {
 	loc := getSourceLoc(fun)
 	// Write what function we've been observing and where to find it
 	if loc != nil {
-		fmt.Fprintf(p.writer, "fl=%s\n", p.getRef(loc.File))
+		fmt.Fprintf(p.writer, "fl=%s\n", p.getRef(loc.File)) //nolint:errcheck // profiler output
 	}
-	fmt.Fprintf(p.writer, "fn=%s\n", p.getRef(fName))
+	fmt.Fprintf(p.writer, "fn=%s\n", p.getRef(fName)) //nolint:errcheck // profiler output
 	ref := p.getCallRefAndDecrement()
 	ref.duration = time.Since(ref.start)
 	if ref.duration == 0 {
@@ -206,14 +206,14 @@ func (p *callgrindProfiler) end(fun *lisp.LVal) {
 	if loc != nil {
 		line = loc.Line
 	}
-	fmt.Fprintf(p.writer, "%d %d %d\n", line, ref.duration, memory)
+	fmt.Fprintf(p.writer, "%d %d %d\n", line, ref.duration, memory) //nolint:errcheck // profiler output
 	// Output the things we called
 	for _, entry := range ref.children {
-		fmt.Fprintf(p.writer, "cfl=%s\n", p.getRef(entry.file))
-		fmt.Fprintf(p.writer, "cfn=%s\n", p.getRef(entry.name))
-		fmt.Fprint(p.writer, "calls=1 0 0\n")
-		fmt.Fprintf(p.writer, "%d %d %d\n", entry.line, entry.duration, memory)
+		fmt.Fprintf(p.writer, "cfl=%s\n", p.getRef(entry.file))  //nolint:errcheck // profiler output
+		fmt.Fprintf(p.writer, "cfn=%s\n", p.getRef(entry.name))  //nolint:errcheck // profiler output
+		fmt.Fprint(p.writer, "calls=1 0 0\n")                    //nolint:errcheck // profiler output
+		fmt.Fprintf(p.writer, "%d %d %d\n", entry.line, entry.duration, memory) //nolint:errcheck // profiler output
 	}
 	// and end the entry
-	fmt.Fprint(p.writer, "\n")
+	fmt.Fprint(p.writer, "\n") //nolint:errcheck // profiler output
 }

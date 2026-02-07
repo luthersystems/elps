@@ -770,7 +770,7 @@ func builtinNoOtherKeys(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 				return lisp.ErrorConditionf(BadArgs, "Invalid type received for constraint %v", c)
 			}
 			val := c.FunData().Builtin(env, input)
-			if val.Type == lisp.LError {
+			if val.Type == lisp.LError { //nolint:staticcheck // not a tagged switch context
 				return val
 			} else if val.Type == lisp.LString {
 				allowedKeys[val.Str] = true

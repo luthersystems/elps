@@ -23,7 +23,7 @@ func NewOpenCensusAnnotator(runtime *lisp.Runtime, parentContext context.Context
 		},
 		currentContext: parentContext,
 	}
-	p.profiler.applyConfigs(opts...)
+	p.applyConfigs(opts...)
 	return p
 }
 

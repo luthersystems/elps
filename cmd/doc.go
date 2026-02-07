@@ -76,7 +76,7 @@ func docExec(query string) error {
 		}
 	}
 	out := bufio.NewWriter(os.Stdout)
-	defer out.Flush() // TODO check for error
+	defer out.Flush() //nolint:errcheck // best-effort flush on exit
 	if docPackage {
 		// NOTE:  There is no function to list/document unexported functions
 		// because of the way use-package works, redefining symbols in the

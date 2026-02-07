@@ -141,7 +141,7 @@ func RenderPkgExported(w io.Writer, env *lisp.LEnv, query string) error {
 		v := pkg.Get(lisp.Symbol(exsym))
 		switch v.Type {
 		case lisp.LError:
-			fmt.Fprintln(w, v)
+			fmt.Fprintln(w, v) //nolint:errcheck // best-effort error display
 		case lisp.LFun:
 			err := renderFun(w, exsym, v)
 			if err != nil {

@@ -26,7 +26,7 @@ func NewPprofAnnotator(runtime *lisp.Runtime, parentContext context.Context, opt
 		},
 		currentContext: parentContext,
 	}
-	p.profiler.applyConfigs(opts...)
+	p.applyConfigs(opts...)
 	return p
 }
 

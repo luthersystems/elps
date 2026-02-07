@@ -1484,7 +1484,7 @@ func TestRepoFileRoundTrip(t *testing.T) {
 		}
 		for _, path := range matches {
 			t.Run(filepath.Base(path), func(t *testing.T) {
-				src, err := os.ReadFile(path)
+				src, err := os.ReadFile(path) //nolint:gosec // test reads discovered files
 				require.NoError(t, err)
 				formatted, err := Format(src, nil)
 				require.NoError(t, err, "Format failed for %s", path)
