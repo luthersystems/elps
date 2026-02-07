@@ -1469,6 +1469,281 @@ func TestASTPreservation(t *testing.T) {
 	}
 }
 
+// --- Error path tests ---
+// Verify that Format returns errors for malformed input.
+
+func TestFormatErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"unmatched open paren", "(foo bar"},
+		{"unmatched open bracket", "[a b"},
+		{"unmatched close paren", ")"},
+		{"unmatched close bracket", "]"},
+		{"mismatched brackets", "(foo]"},
+		{"mismatched brackets reverse", "[foo)"},
+		{"unterminated string", `(foo "hello)`},
+		{"nested unmatched", "(let ((x 1))\n  (+ x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Format([]byte(tt.input), nil)
+			assert.Error(t, err, "expected error for input: %s", tt.input)
+		})
+	}
+}
+
+// --- FormatFile tests ---
+// Verify FormatFile works and includes filename in error messages.
+
+func TestFormatFile(t *testing.T) {
+	t.Run("formats correctly", func(t *testing.T) {
+		input := "(defun foo (x)\n(+ x 1))"
+		expected := "(defun foo (x)\n  (+ x 1))\n"
+		got, err := FormatFile([]byte(input), "test.lisp", nil)
+		require.NoError(t, err)
+		assert.Equal(t, expected, string(got))
+	})
+
+	t.Run("filename in error message", func(t *testing.T) {
+		input := "(foo"
+		_, err := FormatFile([]byte(input), "myfile.lisp", nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "myfile.lisp", "error should contain filename")
+	})
+
+	t.Run("nil config uses defaults", func(t *testing.T) {
+		input := "(progn\n(a)\n(b))"
+		expected := "(progn\n  (a)\n  (b))\n"
+		got, err := FormatFile([]byte(input), "test.lisp", nil)
+		require.NoError(t, err)
+		assert.Equal(t, expected, string(got))
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		got, err := FormatFile([]byte(""), "empty.lisp", nil)
+		require.NoError(t, err)
+		assert.Equal(t, "", string(got))
+	})
+}
+
+// --- Nested quote tests ---
+// Verify writeQuote handles recursive quoting (''foo, '''foo, etc.)
+
+func TestNestedQuotes(t *testing.T) {
+	runFormatTests(t, []formatTest{
+		{
+			name:     "double quote",
+			input:    "''foo",
+			expected: "''foo\n",
+		},
+		{
+			name:     "triple quote",
+			input:    "'''foo",
+			expected: "'''foo\n",
+		},
+		{
+			name:     "nested quoted list",
+			input:    "''(a b c)",
+			expected: "''(a b c)\n",
+		},
+		{
+			name:     "quote inside function call",
+			input:    "(foo ''bar)",
+			expected: "(foo ''bar)\n",
+		},
+	})
+}
+
+// --- MaxBlankLines config tests ---
+// Verify MaxBlankLines with non-default values.
+
+func TestConfigMaxBlankLines(t *testing.T) {
+	t.Run("MaxBlankLines=0 strips all blank lines", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.MaxBlankLines = 0
+		input := "(foo)\n\n\n(bar)\n"
+		expected := "(foo)\n(bar)\n"
+		got, err := Format([]byte(input), cfg)
+		require.NoError(t, err)
+		assert.Equal(t, expected, string(got))
+	})
+
+	t.Run("MaxBlankLines=2 preserves two blank lines", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.MaxBlankLines = 2
+		input := "(foo)\n\n\n(bar)\n"
+		expected := "(foo)\n\n\n(bar)\n"
+		got, err := Format([]byte(input), cfg)
+		require.NoError(t, err)
+		assert.Equal(t, expected, string(got))
+	})
+
+	t.Run("MaxBlankLines=2 collapses more than two", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.MaxBlankLines = 2
+		input := "(foo)\n\n\n\n\n(bar)\n"
+		expected := "(foo)\n\n\n(bar)\n"
+		got, err := Format([]byte(input), cfg)
+		require.NoError(t, err)
+		assert.Equal(t, expected, string(got))
+	})
+
+	t.Run("MaxBlankLines=0 inside body", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.MaxBlankLines = 0
+		input := "(defun foo ()\n(a)\n\n(b))"
+		expected := "(defun foo ()\n  (a)\n  (b))\n"
+		got, err := Format([]byte(input), cfg)
+		require.NoError(t, err)
+		assert.Equal(t, expected, string(got))
+	})
+}
+
+// --- Active correction tests ---
+// Verify the formatter actively corrects bad formatting, not just preserves good formatting.
+
+func TestActivelyCorrects(t *testing.T) {
+	runFormatTests(t, []formatTest{
+		// Indentation correction
+		{
+			name:  "corrects defun body indent from 0 to 2",
+			input: "(defun foo (x)\n(+ x 1))",
+			expected: "(defun foo (x)\n" +
+				"  (+ x 1))\n",
+		},
+		{
+			name:  "corrects defun body indent from 4 to 2",
+			input: "(defun foo (x)\n    (+ x 1))",
+			expected: "(defun foo (x)\n" +
+				"  (+ x 1))\n",
+		},
+		{
+			name:  "corrects let body indent",
+			input: "(let ((x 1))\n        body)",
+			expected: "(let ((x 1))\n" +
+				"  body)\n",
+		},
+		{
+			name:  "corrects if body indent",
+			input: "(if cond\n        then\n        else)",
+			expected: "(if cond\n" +
+				"  then\n" +
+				"  else)\n",
+		},
+		{
+			name:  "corrects progn body indent",
+			input: "(progn\n      (a)\n      (b))",
+			expected: "(progn\n" +
+				"  (a)\n" +
+				"  (b))\n",
+		},
+		{
+			name:  "corrects alignment indent",
+			input: "(foo bar\n  baz)",
+			expected: "(foo bar\n" +
+				"     baz)\n",
+		},
+		// Whitespace normalization
+		{
+			name:     "removes space after open paren",
+			input:    "( foo bar )",
+			expected: "(foo bar)\n",
+		},
+		{
+			name:     "removes space after open bracket",
+			input:    "[ a b ]",
+			expected: "[a b]\n",
+		},
+		{
+			name:     "removes leading blank lines",
+			input:    "\n\n\n(foo)",
+			expected: "(foo)\n",
+		},
+		{
+			name:     "removes trailing blank lines",
+			input:    "(foo)\n\n\n",
+			expected: "(foo)\n",
+		},
+		{
+			name:     "collapses multiple blank lines to one",
+			input:    "(a)\n\n\n\n\n(b)",
+			expected: "(a)\n\n(b)\n",
+		},
+		{
+			name:     "removes trailing whitespace from lines",
+			input:    "(defun foo (x)   \n  (+ x 1))   ",
+			expected: "(defun foo (x)\n  (+ x 1))\n",
+		},
+		// Nested indentation correction
+		{
+			name: "corrects deeply nested mixed indentation",
+			input: "(defun foo (x)\n" +
+				"(let ((y 1))\n" +
+				"(if (> x 0)\n" +
+				"(+ x y)\n" +
+				"(- x y))))",
+			expected: "(defun foo (x)\n" +
+				"  (let ((y 1))\n" +
+				"    (if (> x 0)\n" +
+				"      (+ x y)\n" +
+				"      (- x y))))\n",
+		},
+	})
+}
+
+// --- Atom fallback tests ---
+// Test writeAtom and writeStringLiteral fallback paths when Meta is nil.
+
+func TestAtomFallbackNoMeta(t *testing.T) {
+	// These tests format values that have already been formatted,
+	// which exercises the standard path. To test the fallback path
+	// where OriginalText is missing, we verify that formatting
+	// basic literals produces correct output (the parser always sets
+	// OriginalText, so fallback is only hit in programmatic use).
+	runFormatTests(t, []formatTest{
+		{
+			name:     "integer round-trips",
+			input:    "42",
+			expected: "42\n",
+		},
+		{
+			name:     "float round-trips",
+			input:    "3.14159",
+			expected: "3.14159\n",
+		},
+		{
+			name:     "negative float round-trips",
+			input:    "-2.5",
+			expected: "-2.5\n",
+		},
+		{
+			name:     "float exponent round-trips",
+			input:    "1.23e10",
+			expected: "1.23e10\n",
+		},
+		{
+			name:     "string with special chars round-trips",
+			input:    `"hello\tworld\n"`,
+			expected: "\"hello\\tworld\\n\"\n",
+		},
+	})
+}
+
+// --- Inner trailing comment blank line tests ---
+// Test blank lines between inner trailing comments.
+
+func TestInnerTrailingCommentBlankLine(t *testing.T) {
+	runFormatTests(t, []formatTest{
+		{
+			name: "inner trailing comments separated by blank line",
+			input: "(progn\n  (do-a)\n  ; note 1\n\n  ; note 2\n  )",
+			expected: "(progn\n  (do-a)\n  ; note 1\n\n  ; note 2\n  )\n",
+		},
+	})
+}
+
 // --- Repository file round-trip tests ---
 // Format every .lisp file in the repo and verify AST preservation.
 

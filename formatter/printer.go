@@ -206,8 +206,8 @@ func (p *printer) writeQuote(v *lisp.LVal, indent int) {
 		p.writeQuote(v.Cells[0], indent)
 		return
 	}
-	// Single level of quoting (v.Quoted == true)
-	p.writeString("'")
+	// Terminal child of a quote chain. The child's Quoted flag (if set)
+	// will be handled by writeExpr, so we don't add another ' here.
 	p.writeExpr(v, indent)
 }
 
