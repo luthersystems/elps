@@ -2343,7 +2343,7 @@ func builtinDebugPrint(env *LEnv, args *LVal) *LVal {
 	for i := range args.Cells {
 		fmtargs[i] = args.Cells[i]
 	}
-	fmt.Fprintln(env.Runtime.getStderr(), fmtargs...)
+	fmt.Fprintln(env.Runtime.getStderr(), fmtargs...) //nolint:errcheck // best-effort debug output
 	return Nil()
 }
 

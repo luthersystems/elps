@@ -61,7 +61,7 @@ func fmtStdin(cfg *formatter.Config) error {
 }
 
 func fmtFile(path string, cfg *formatter.Config) error {
-	src, err := os.ReadFile(path)
+	src, err := os.ReadFile(path) //nolint:gosec // CLI tool reads user-specified files
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
@@ -88,7 +88,11 @@ func fmtFile(path string, cfg *formatter.Config) error {
 		if string(src) == string(out) {
 			return nil // no change
 		}
-		return os.WriteFile(path, out, 0o644)
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		return os.WriteFile(path, out, info.Mode().Perm())
 	}
 
 	// Default: print to stdout
@@ -103,12 +107,6 @@ func printUnifiedDiff(path string, original, formatted []byte) {
 
 	origLines := splitLines(original)
 	fmtLines := splitLines(formatted)
-
-	// Simple diff: show all lines that differ
-	maxLen := len(origLines)
-	if len(fmtLines) > maxLen {
-		maxLen = len(fmtLines)
-	}
 
 	i, j := 0, 0
 	for i < len(origLines) || j < len(fmtLines) {

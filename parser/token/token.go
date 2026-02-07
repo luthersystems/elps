@@ -90,9 +90,9 @@ func (typ Type) String() string {
 		BRACE_R:         "]",
 	}
 	if typ >= numTokenTypes {
-		return typeStrings[INVALID]
+		return typeStrings[INVALID] //nolint:gosec // INVALID is 0, always valid
 	}
-	return typeStrings[typ]
+	return typeStrings[typ] //nolint:gosec // bounds checked above
 }
 
 type Location struct {

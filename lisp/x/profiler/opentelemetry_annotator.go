@@ -28,7 +28,7 @@ func NewOpenTelemetryAnnotator(runtime *lisp.Runtime, parentContext context.Cont
 		currentContext: parentContext,
 		tracer:         otel.GetTracerProvider().Tracer("elps"),
 	}
-	p.profiler.applyConfigs(opts...)
+	p.applyConfigs(opts...)
 	return p
 }
 

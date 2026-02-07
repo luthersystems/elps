@@ -133,7 +133,7 @@ var lvalTypeStrings = []string{
 }
 
 func (t LType) String() string {
-	if int(t) >= len(lvalTypeStrings) {
+	if int(t) >= len(lvalTypeStrings) { //nolint:gosec // bounded by iota constants
 		return lvalTypeStrings[LInvalid]
 	}
 	return lvalTypeStrings[t]
@@ -156,7 +156,7 @@ var lfunTypeStrings = []string{
 }
 
 func (ft LFunType) String() string {
-	if ft >= LFunType(len(lfunTypeStrings)) {
+	if ft >= LFunType(len(lfunTypeStrings)) { //nolint:gosec // bounded by iota constants
 		return "invalid-function-type"
 	}
 	return lfunTypeStrings[ft]
@@ -1037,7 +1037,7 @@ func (v *LVal) str(onTheRecord bool) string {
 		if len(b) == 0 {
 			return quote + "#<bytes>"
 		}
-		return quote + "#<bytes " + strings.Trim(fmt.Sprint(b), "[]") + ">"
+		return quote + "#<bytes " + strings.Trim(fmt.Sprint(b), "[]") + ">" //nolint:staticcheck // fmt.Sprint gives byte slice repr, not string conversion
 	case LError:
 		if v.Quoted {
 			quote = QUOTE

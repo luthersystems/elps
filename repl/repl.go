@@ -113,7 +113,7 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 	if err != nil {
 		panic(err)
 	}
-	defer rl.Close()
+	defer rl.Close() //nolint:errcheck // best-effort cleanup
 
 	p.Read = func() []*token.Token {
 		rl.SetPrompt(p.Prompt())
@@ -160,14 +160,14 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 			break
 		}
 		if err != nil {
-			fmt.Fprintln(env.Runtime.Stderr, err)
+			fmt.Fprintln(env.Runtime.Stderr, err) //nolint:errcheck // best-effort error display
 			continue
 		}
 		val := env.Eval(expr)
 		if val.Type == lisp.LError {
 			_, _ = (*lisp.ErrorVal)(val).WriteTrace(env.Runtime.Stderr)
 		} else {
-			fmt.Fprintln(env.Runtime.Stderr, val)
+			fmt.Fprintln(env.Runtime.Stderr, val) //nolint:errcheck // best-effort REPL output
 		}
 	}
 }

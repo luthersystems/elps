@@ -14,19 +14,19 @@ func runReplWithString(t *testing.T, input string) (string, error) {
 	outR, outW := io.Pipe()
 
 	go func() {
-		defer inW.Close()
+		defer inW.Close() //nolint:errcheck // test cleanup
 		_, _ = io.WriteString(inW, input)
 	}()
 
 	go func() {
 		RunRepl("elps> ", WithStdin(inR), WithStderr(outW))
-		inR.Close()
-		outW.Close()
+		inR.Close()  //nolint:errcheck,gosec // test cleanup
+		outW.Close() //nolint:errcheck,gosec // test cleanup
 	}()
 
 	var output bytes.Buffer
 	_, _ = io.Copy(&output, outR)
-	outR.Close()
+	outR.Close() //nolint:errcheck,gosec // test cleanup
 
 	return output.String(), nil
 }

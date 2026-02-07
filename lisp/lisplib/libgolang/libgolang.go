@@ -106,7 +106,7 @@ func BuiltinInt(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 			x64 = v.Int()
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			x64 = int64(v.Uint())
+			x64 = int64(v.Uint()) //nolint:gosec // overflow checked on next line
 			if x64 < 0 {
 				return env.Errorf("unsigned integer overflow")
 			}
