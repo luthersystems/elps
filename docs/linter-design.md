@@ -241,26 +241,33 @@ These are thin wrappers over the same recursion pattern the formatter uses.
 These can be implemented with pure AST pattern-matching — no scope tracking,
 no type inference, no evaluation.
 
-#### 1. `set-usage` — Guard against direct use of `set`
+#### 1. `set-usage` — Warn on repeated `set` to same symbol
 
-From issue #47: detect direct use of `set` (which is deprecated in favor of
-`set!` or `let` bindings).
+From issue #47: detect when `set` is used to reassign a symbol that was
+already bound by a prior `set` in the same file. The first `set` creating a
+new binding is fine — ELPS has no `defvar`, so `set` is the standard way to
+create top-level bindings. Subsequent mutations should use `set!`.
+
+**Important:** `set` creates OR overwrites bindings. `set!` ONLY mutates
+existing bindings and errors if not bound. Blindly replacing all `set` with
+`set!` will break code where `set` is creating the initial binding.
 
 ```lisp
-;; BAD
-(set x 42)
+;; OK — first binding
+(set 'x 42)
+
+;; BAD — x already bound, use set! to signal mutation
+(set 'x 99)
 
 ;; GOOD
-(set! x 42)
-(let ((x 42)) ...)
+(set! 'x 99)
 ```
 
-**Implementation**: Walk s-expressions. If head symbol is `"set"`, report.
-Trivial pattern match.
+**Implementation**: Walk s-expressions tracking seen symbol names per file.
+If head symbol is `"set"` and the target symbol was already seen, report.
 
-**False positive rate**: Zero. `set` is unambiguously the wrong function.
-
-**Suggested fix**: Replace `set` with `set!` (TextEdit).
+**False positive rate**: Very low. Only flags repeated `set` on the same
+symbol, which is clearly a mutation that should use `set!`.
 
 #### 2. `in-package-toplevel` — `in-package` only at top level
 

@@ -35,3 +35,11 @@ jobs:
 
       - name: Tests
         run: make test
+
+      - name: Check formatting
+        run: |
+          go build -o elps .
+          ./elps fmt -l ./...
+
+      - name: Lint ELPS source
+        run: ./elps lint ./...

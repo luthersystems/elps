@@ -87,8 +87,14 @@ Examples:
 			return
 		}
 
+		expanded, err := expandArgs(args)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+
 		var allDiags []lint.Diagnostic
-		for _, path := range args {
+		for _, path := range expanded {
 			diags, err := lintFile(l, path)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)

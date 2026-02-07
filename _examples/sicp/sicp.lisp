@@ -61,9 +61,9 @@
 
 (defun sum (term a next b)
   (accumulate-iter '+ 0
-              term a
-              #^(+ 1 %)
-              #^(> % b)))
+                   term a
+                   #^(+ 1 %)
+                   #^(> % b)))
 
 (assert= 6 (sum identity 1 #^(+ 1 %) 3))
 (assert= 6 (sum identity 1 #^(+ 1 %) 3))
@@ -74,12 +74,12 @@
 (defun rat-norm (r)
   (cond
     ((< (rat-denom r) 0)
-      (rat-norm (list (- (rat-numer r))
-                      (- (rat-denom r)))))
+     (rat-norm (list (- (rat-numer r))
+                     (- (rat-denom r)))))
     ((> (rat-denom r) 1)
-      (let [(c (gcd (rat-numer r) (rat-denom r)))]
-        (list (to-int (/ (rat-numer r) c))
-              (to-int (/ (rat-denom r) c)))))
+     (let [(c (gcd (rat-numer r) (rat-denom r)))]
+       (list (to-int (/ (rat-numer r) c))
+             (to-int (/ (rat-denom r) c)))))
     (:else
       r)))
 
@@ -149,8 +149,8 @@
 (defun filter (predicate seq)
   (cond ((nil? seq) ())
         ((predicate (car seq))
-          (cons (car seq)
-                (filter predicate (cdr seq))))
+         (cons (car seq)
+               (filter predicate (cdr seq))))
         (:else (filter predicate (cdr seq)))))
 
 (defun accumulate (op initial seq)

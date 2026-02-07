@@ -6,9 +6,9 @@
 (test "regexp-compile"
   (set 're (regexp-compile "abc?"))
   (assert-string= "abc?" (regexp-pattern re))
-  (set 're (regexp-compile """abc?\(\)"""))
+  (set! 're (regexp-compile """abc?\(\)"""))
   (assert-string= "abc?\\(\\)" (regexp-pattern re))
-  (set 're (regexp-compile "abc\n"))
+  (set! 're (regexp-compile "abc\n"))
   (assert-string= "abc\n" (regexp-pattern re)))
 
 (test "regexp-match?"

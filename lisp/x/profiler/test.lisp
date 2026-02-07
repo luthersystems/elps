@@ -11,8 +11,8 @@
 
 (labels
   ([add-it-again (x)
-                 "@trace { Add-It-Again }" ; span 4
-                 (+ x 1)])
+    "@trace { Add-It-Again }" ; span 4
+    (+ x 1)])
   (add-it-again 2))
 
 (let ([l (lambda (x) "@trace{ lambda }" x)])
