@@ -52,21 +52,52 @@ func ArgCount(sexpr *lisp.LVal) int {
 	return len(sexpr.Cells) - 1
 }
 
-// UserDefined returns the set of function/macro names defined in the
-// source via defun or defmacro. This is used to detect when a builtin
-// name has been shadowed by a user definition.
+// UserDefined returns the set of names defined or bound in the source that
+// shadow builtins. This includes:
+//   - Function/macro names from defun/defmacro
+//   - Parameter names from defun/defmacro/lambda formals lists
+//
+// The result is file-global (not scope-aware), which is conservative: it may
+// suppress a valid finding but will never produce a false positive.
 func UserDefined(exprs []*lisp.LVal) map[string]bool {
 	defs := make(map[string]bool)
 	WalkSExprs(exprs, func(sexpr *lisp.LVal, depth int) {
 		head := HeadSymbol(sexpr)
-		if head != "defun" && head != "defmacro" {
-			return
-		}
-		if ArgCount(sexpr) >= 1 && sexpr.Cells[1].Type == lisp.LSymbol {
-			defs[sexpr.Cells[1].Str] = true
+		switch head {
+		case "defun", "defmacro":
+			if ArgCount(sexpr) >= 1 && sexpr.Cells[1].Type == lisp.LSymbol {
+				defs[sexpr.Cells[1].Str] = true
+			}
+			// Collect parameter names from the formals list
+			if ArgCount(sexpr) >= 2 {
+				collectFormals(sexpr.Cells[2], defs)
+			}
+		case "lambda":
+			if ArgCount(sexpr) >= 1 {
+				collectFormals(sexpr.Cells[1], defs)
+			}
 		}
 	})
 	return defs
+}
+
+// collectFormals extracts symbol names from a formals list, skipping
+// &rest, &optional, and &key markers.
+func collectFormals(formals *lisp.LVal, defs map[string]bool) {
+	if formals == nil || formals.Type != lisp.LSExpr {
+		return
+	}
+	for _, sym := range formals.Cells {
+		if sym.Type != lisp.LSymbol {
+			continue
+		}
+		switch sym.Str {
+		case "&rest", "&optional", "&key":
+			// skip markers
+		default:
+			defs[sym.Str] = true
+		}
+	}
 }
 
 // SourceOf returns the best source location for a node.
