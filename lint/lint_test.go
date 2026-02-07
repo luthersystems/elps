@@ -310,14 +310,14 @@ func TestLetBindings_Negative_Empty(t *testing.T) {
 func TestDefunStructure_Positive_TooFew(t *testing.T) {
 	diags := lintCheck(t, AnalyzerDefunStructure, `(defun foo)`)
 	assert.Len(t, diags, 1)
-	assertHasDiag(t, diags, "at least a name")
+	assertHasDiag(t, diags, "at least a name and formals")
 }
 
 func TestDefunStructure_Positive_NoArgs(t *testing.T) {
 	// (defun) — no args at all
 	diags := lintCheck(t, AnalyzerDefunStructure, `(defun)`)
 	assert.Len(t, diags, 1)
-	assertHasDiag(t, diags, "at least a name")
+	assertHasDiag(t, diags, "at least a name and formals")
 }
 
 func TestDefunStructure_Positive_NonSymbolName(t *testing.T) {
@@ -350,6 +350,12 @@ func TestDefunStructure_Negative_WithDocstring(t *testing.T) {
 
 func TestDefunStructure_Negative_NoFormals(t *testing.T) {
 	diags := lintCheck(t, AnalyzerDefunStructure, `(defun foo () 42)`)
+	assertNoDiags(t, diags)
+}
+
+func TestDefunStructure_Negative_EmptyBody(t *testing.T) {
+	// Empty-body defuns are valid no-ops
+	diags := lintCheck(t, AnalyzerDefunStructure, `(defun noop (x y))`)
 	assertNoDiags(t, diags)
 }
 
@@ -490,6 +496,20 @@ func TestBuiltinArity_Negative_ShadowedByDefmacro(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+func TestBuiltinArity_Negative_ShadowedByParam(t *testing.T) {
+	// Parameter name "reverse" shadows the builtin — calls should not be flagged
+	source := "(defun get-pos (entity-id get-entity-func reverse)\n  (reverse max-date))"
+	diags := lintCheck(t, AnalyzerBuiltinArity, source)
+	assertNoDiags(t, diags)
+}
+
+func TestBuiltinArity_Negative_ShadowedByLambdaParam(t *testing.T) {
+	// Lambda parameter shadowing a builtin
+	source := "(lambda (get) (get x))"
+	diags := lintCheck(t, AnalyzerBuiltinArity, source)
+	assertNoDiags(t, diags)
+}
+
 func TestBuiltinArity_Positive_NotShadowed(t *testing.T) {
 	// A defun for a different name should not prevent checking map
 	source := "(defun my-map (fn seq) ())\n(map fn seq)"
@@ -594,6 +614,34 @@ func TestNolint_MultipleNames_NotMatched(t *testing.T) {
 	diags := lintSource(t, source)
 	assert.Len(t, diags, 1)
 	assertHasDiag(t, diags, "too few")
+}
+
+func TestNolint_SuppressSetUsage(t *testing.T) {
+	// nolint should work for set-usage findings, not just if-arity
+	source := "(set 'x 1)\n(set 'x 2) ; nolint:set-usage\n"
+	diags := lintSource(t, source)
+	assertNoDiags(t, diags)
+}
+
+func TestNolint_MultipleNamesWithSpaces(t *testing.T) {
+	// Spaces after commas in the check list should be handled
+	source := "(if true 1) ; nolint:set-usage, if-arity\n"
+	diags := lintSource(t, source)
+	assertNoDiags(t, diags)
+}
+
+func TestNolint_SuppressAll_NoErrorOnLine(t *testing.T) {
+	// A line with ; nolint that has no actual finding should not error
+	source := "(+ 1 2) ; nolint\n"
+	diags := lintSource(t, source)
+	assertNoDiags(t, diags)
+}
+
+func TestNolint_SuppressSpecific_NoErrorOnLine(t *testing.T) {
+	// A line with ; nolint:check-name that has no matching finding should not error
+	source := "(+ 1 2) ; nolint:if-arity\n"
+	diags := lintSource(t, source)
+	assertNoDiags(t, diags)
 }
 
 // --- output formatting ---

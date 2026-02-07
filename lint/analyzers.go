@@ -151,7 +151,7 @@ func bindingSource(binding *lisp.LVal, fallback *lisp.LVal) *token.Location {
 // AnalyzerDefunStructure checks for malformed `defun` and `defmacro` forms.
 var AnalyzerDefunStructure = &Analyzer{
 	Name: "defun-structure",
-	Doc:  "Check for malformed `defun`/`defmacro` definitions.\n\nA `defun` requires a symbol name, a formals list, and at least one body expression. Common mistakes include non-symbol names or a non-list formals argument.",
+	Doc:  "Check for malformed `defun`/`defmacro` definitions.\n\nA `defun` requires a symbol name and a formals list. An empty body (no-op) is valid. Common mistakes include non-symbol names or a non-list formals argument.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			head := HeadSymbol(sexpr)
@@ -160,8 +160,8 @@ var AnalyzerDefunStructure = &Analyzer{
 			}
 			src := SourceOf(sexpr)
 			argc := ArgCount(sexpr)
-			if argc < 3 {
-				pass.Reportf(src.Source, "%s requires at least a name, formals list, and body (got %d arguments)", head, argc)
+			if argc < 2 {
+				pass.Reportf(src.Source, "%s requires at least a name and formals list (got %d argument(s))", head, argc)
 				return
 			}
 			name := sexpr.Cells[1]
