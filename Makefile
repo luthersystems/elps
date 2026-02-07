@@ -11,9 +11,6 @@ repl: build
 
 .PHONY: test
 
-.PHONY: citest
-citest: go-test
-
 .PHONY: go-test
 test: go-test
 go-test:
@@ -50,4 +47,4 @@ ${BIN}: ${GO_FILES}
 
 .PHONY: static-checks
 static-checks:
-	./scripts/static-checks.sh
+	golangci-lint run ./...
