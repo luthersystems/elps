@@ -156,6 +156,38 @@ var AnalyzerLetBindings = &Analyzer{
 	},
 }
 
+// AnalyzerQuoteCall warns when set or defconst is called with an unquoted symbol
+// as the first argument, which is almost always a mistake.
+var AnalyzerQuoteCall = &Analyzer{
+	Name: "quote-call",
+	Doc:  "Warn when set is called with an unquoted symbol argument.\n\nThe first argument to set should be a quoted symbol: (set 'x 42). Writing (set x 42) evaluates x first, which is rarely intended. This check does not flag set!, which takes an unquoted symbol by design.",
+	Run: func(pass *Pass) error {
+		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
+			head := HeadSymbol(sexpr)
+			if head != "set" && head != "defconst" {
+				return
+			}
+			if ArgCount(sexpr) < 1 {
+				return
+			}
+			arg := sexpr.Cells[1]
+			// Warn if the first argument is a bare (unquoted) symbol.
+			// Quoted symbols have Quoted == true (e.g. 'x parses as
+			// LSymbol{Quoted: true}). A bare LSymbol with Quoted == false
+			// means the user forgot the quote.
+			if arg.Type == lisp.LSymbol && !arg.Quoted {
+				src := SourceOf(sexpr)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("%s first argument should be quoted: (set '%s ...) not (set %s ...)", head, arg.Str, arg.Str),
+					Pos:     posFromSource(src.Source),
+					Notes:   []string{fmt.Sprintf("did you mean (%s '%s ...)?", head, arg.Str)},
+				})
+			}
+		})
+		return nil
+	},
+}
+
 // posFromSource converts a *token.Location to a Position, handling nil.
 func posFromSource(src *token.Location) Position {
 	if src == nil {

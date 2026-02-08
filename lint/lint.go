@@ -269,5 +269,6 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerDefunStructure,
 		AnalyzerCondStructure,
 		AnalyzerBuiltinArity,
+		AnalyzerQuoteCall,
 	}
 }
