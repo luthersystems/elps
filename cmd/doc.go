@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/luthersystems/elps/docs"
 	"github.com/luthersystems/elps/lisp"
@@ -220,8 +221,25 @@ func docCheckMissing() error {
 		return fmt.Errorf("load-library returned non-nil: %v", rc)
 	}
 
-	// Iterate all packages except the core "lisp" package (already
-	// covered above via DefaultBuiltins/DefaultSpecialOps/DefaultMacros).
+	// Check package-level documentation.
+	allPkgNames := make([]string, 0, len(env.Runtime.Registry.Packages))
+	for name := range env.Runtime.Registry.Packages {
+		if name == "user" {
+			continue // user package is the default workspace, no doc needed.
+		}
+		allPkgNames = append(allPkgNames, name)
+	}
+	sort.Strings(allPkgNames)
+
+	for _, pkgName := range allPkgNames {
+		pkg := env.Runtime.Registry.Packages[pkgName]
+		if strings.TrimSpace(pkg.Doc) == "" {
+			missing = append(missing, fmt.Sprintf("  package     %s", pkgName))
+		}
+	}
+
+	// Check library package exports (skip "lisp" — already covered above
+	// via DefaultBuiltins/DefaultSpecialOps/DefaultMacros).
 	pkgNames := make([]string, 0, len(env.Runtime.Registry.Packages))
 	for name := range env.Runtime.Registry.Packages {
 		if name == "lisp" || name == "user" {
