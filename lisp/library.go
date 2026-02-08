@@ -97,7 +97,16 @@ func (lib *RelativeFileSystemLibrary) LoadSource(ctx SourceContext, loc string) 
 	loc = filepath.Clean(loc)
 	if lib.RootDir != "" {
 		root := filepath.Clean(lib.RootDir)
-		if !strings.HasPrefix(loc, root+string(filepath.Separator)) && loc != root {
+		// Resolve symlinks on both root and loc so that a symlink
+		// within the root pointing outside cannot bypass confinement.
+		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+			root = resolved
+		}
+		resolvedLoc := loc
+		if resolved, err := filepath.EvalSymlinks(loc); err == nil {
+			resolvedLoc = resolved
+		}
+		if !strings.HasPrefix(resolvedLoc, root+string(filepath.Separator)) && resolvedLoc != root {
 			return "", "", nil, fmt.Errorf("access denied: %s is outside root directory %s", loc, root)
 		}
 	}
