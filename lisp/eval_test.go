@@ -37,14 +37,14 @@ string"""`, `"\"\"a raw\nstring"`, ""},
 			{"false", "false", ""},
 			// A bit brittle, but it's ok for now. Replace with a more robust
 			// test later if problematic.
-			{"a", "test:1: unbound symbol: a", ""},
+			{"a", "test:1:1: unbound symbol: a", ""},
 		}},
 		{"set", elpstest.TestSequence{
 			{`(set 'x 1)`, `1`, ``},
 			{`x`, `1`, ``},
 			{`(set 'x 2)`, `2`, ``},
 			{`x`, `2`, ``},
-			{`(set 'true 2)`, `test:1: lisp:set: cannot rebind constant: true`, ``},
+			{`(set 'true 2)`, `test:1:1: lisp:set: cannot rebind constant: true`, ``},
 		}},
 		{"lists basics", elpstest.TestSequence{
 			{"'()", "'()", ""},
@@ -284,7 +284,7 @@ string"""`, `"\"\"a raw\nstring"`, ""},
 			{"(make-sequence 0 5)", "'(0 1 2 3 4)", ""},
 			{"(make-sequence 0 5 2)", "'(0 2 4)", ""},
 			{"(make-sequence 0 2 0.5)", "'(0 0.5 1 1.5)", ""},
-			{"(make-sequence 0 5 0)", "test:1: lisp:make-sequence: third argument is not positive", ""},
+			{"(make-sequence 0 5 0)", "test:1:1: lisp:make-sequence: third argument is not positive", ""},
 			{"(make-sequence 10 5 2)", "'()", ""},
 		}},
 		{"filtering", elpstest.TestSequence{
@@ -308,7 +308,7 @@ string"""`, `"\"\"a raw\nstring"`, ""},
 			{"(reject 'vector (expr (< % 3)) '(0 1 1 -1 2 2))", "(vector)", ""},
 			{`(select 'list (lambda (x) (string= "b" (to-string x))) '(a b c))`, `'(b)`, ``},
 			{`(reject 'list (lambda (x) (string= "b" (to-string x))) '(a b c))`, `'(a c)`, ``},
-			{`(select 'list quote '(a b c))`, `test:1: lisp:select: second argument is not a regular function`, ``},
+			{`(select 'list quote '(a b c))`, `test:1:1: lisp:select: second argument is not a regular function`, ``},
 		}},
 		{"defun", elpstest.TestSequence{
 			// defun macro
@@ -320,7 +320,7 @@ string"""`, `"\"\"a raw\nstring"`, ""},
 			{"(fn2 1 2)", "3", ""},
 		}},
 		{"errors", elpstest.TestSequence{
-			{`(list 1 2 (error 'test-error "test message") 4)`, "test:1: test-error: test message", ""},
+			{`(list 1 2 (error 'test-error "test message") 4)`, "test:1:11: test-error: test message", ""},
 		}},
 	}
 	elpstest.RunTestSuite(t, tests)

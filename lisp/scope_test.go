@@ -13,7 +13,7 @@ func TestScope(t *testing.T) {
 		{"lexical scope", elpstest.TestSequence{
 			// simple lexical scoping tests
 			{"(let ((x 1)) x)", "1", ""},
-			{"x", "test:1: unbound symbol: x", ""},
+			{"x", "test:1:1: unbound symbol: x", ""},
 			{"(set 'x 1)", "1", ""},
 			{"(let ((x 2)) x)", "2", ""},
 			{"x", "1", ""},
