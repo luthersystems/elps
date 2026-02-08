@@ -117,6 +117,29 @@ func TestMacros(t *testing.T) {
 	elpstest.RunTestSuite(t, tests)
 }
 
+func TestMacroExpansionSourceLocations(t *testing.T) {
+	// Issue #43: Macro-expanded code should use call-site locations, not
+	// the macro definition site or "<native code>".
+	tests := elpstest.TestSuite{
+		{"defun-rebind-constant", elpstest.TestSequence{
+			// defun is a builtin macro that generates (set 'name ...).
+			// Attempting to rebind a constant like 'true' should report the
+			// call site (test:1:...) not "<native code>".
+			{"(defun true () 42)", "test:1:1: lisp:set: cannot rebind constant: true", ""},
+		}},
+		{"defun-rebind-false", elpstest.TestSequence{
+			{"(defun false () 42)", "test:1:1: lisp:set: cannot rebind constant: false", ""},
+		}},
+		{"builtin-macro-set-location", elpstest.TestSequence{
+			// The defun builtin macro generates (progn (set 'name fn) ()).
+			// All generated nodes have Pos < 0 (native). After stamping,
+			// the error should include the call site location.
+			{"(defun true () 42)", "test:1:1: lisp:set: cannot rebind constant: true", ""},
+		}},
+	}
+	elpstest.RunTestSuite(t, tests)
+}
+
 func BenchmarkMacroDefun(b *testing.B) {
 	elpstest.RunBenchmark(b, `
 		(defun benchmark () (debug-print 1 2 3))

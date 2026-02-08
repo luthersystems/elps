@@ -887,6 +887,10 @@ func (env *LEnv) MacroCall(fun, args *LVal) *LVal {
 		return env.Errorf("not a special function: %v", fun.FunType)
 	}
 
+	// Capture the call-site location before entering the macro body so we
+	// can stamp it onto expanded nodes that lack real source info.
+	callSite := env.Loc
+
 	// Push a frame onto the stack to represent the function's execution.
 	err := env.Runtime.Stack.PushFID(env.Loc, fun.FID(), fun.Package(), env.GetFunName(fun))
 	if err != nil {
@@ -909,6 +913,11 @@ func (env *LEnv) MacroCall(fun, args *LVal) *LVal {
 
 	// NOTE:  There should be no need to check for LMarkTailRec objects because
 	// we block all tail-recursion for macro calls.
+
+	// Stamp expanded nodes that have synthetic source locations (Pos < 0)
+	// with the call-site location so errors point to where the macro was
+	// invoked rather than "<native code>" or the macro definition site.
+	stampMacroExpansion(r, callSite)
 
 	// This is a lazy unquote.  Unquoting in this way appears to allow the
 	// upcoming evaluation to produce the correct value for user defined
