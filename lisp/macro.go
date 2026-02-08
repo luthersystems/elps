@@ -2,7 +2,11 @@
 
 package lisp
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/luthersystems/elps/parser/token"
+)
 
 var userMacros []*langBuiltin
 var langMacros = []*langBuiltin{
@@ -175,6 +179,21 @@ func macroDeftype(env *LEnv, args *LVal) *LVal {
 		}),
 		fqname,
 	})
+}
+
+// stampMacroExpansion walks the expanded AST and replaces synthetic source
+// locations (Pos < 0) with the macro call site. Nodes with valid source
+// locations (from parser or unquote) are left unchanged.
+func stampMacroExpansion(v *LVal, callSite *token.Location) {
+	if v == nil || callSite == nil {
+		return
+	}
+	if v.Source == nil || v.Source.Pos < 0 {
+		v.Source = callSite
+	}
+	for _, child := range v.Cells {
+		stampMacroExpansion(child, callSite)
+	}
 }
 
 type unquoteType int
