@@ -12,11 +12,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Configurable thresholds. Adjust these defaults as the project matures.
 env:
-  # benchstat reports "~" (no change), "+" (regression), or "-" (improvement).
-  # This threshold is for documentation; benchstat uses statistical significance
-  # with the given sample count. With -count=5 and alpha=0.05 it filters noise.
   BENCH_COUNT: "5"
   GO_VERSION: "1.22"
 
@@ -29,66 +25,66 @@ jobs:
     name: Benchmark Comparison
     runs-on: ubuntu-latest
     steps:
-      - name: Check out PR branch
+      - name: Check out code
         uses: actions/checkout@v4
-        with:
-          path: pr
-
-      - name: Check out base branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.sha || github.event.before || 'main' }}
-          path: base
-        # On push to main, github.event.before is the previous commit.
-        # On the very first push (repo init), this may fail — that's OK, we
-        # skip comparison below when base results are missing.
-        continue-on-error: true
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-          cache-dependency-path: pr/go.sum
 
       - name: Install benchstat
         run: go install golang.org/x/perf/cmd/benchstat@latest
 
-      - name: Run benchmarks (base)
-        id: bench-base
-        working-directory: base
-        run: |
-          if [ ! -f go.mod ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Base checkout missing or empty — skipping comparison."
-            exit 0
-          fi
-          go test -bench=. -benchmem -benchtime=100ms -count=${{ env.BENCH_COUNT }} -run='^$' -timeout=10m ./... \
-            | tee "$RUNNER_TEMP/bench-base.txt"
-          echo "skip=false" >> "$GITHUB_OUTPUT"
-        continue-on-error: true
+      # On PRs: try to restore cached baseline results from the latest main push.
+      # Each main push saves with a unique key (benchmark-baseline-<sha>).
+      # restore-keys prefix matching finds the most recent one.
+      - name: Restore cached baseline
+        if: github.event_name == 'pull_request'
+        id: cache-baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: bench-baseline.txt
+          key: benchmark-baseline-${{ github.event.pull_request.base.sha }}
+          restore-keys: benchmark-baseline-
 
-      - name: Run benchmarks (PR)
-        working-directory: pr
+      - name: Run benchmarks
         run: |
-          go test -bench=. -benchmem -benchtime=100ms -count=${{ env.BENCH_COUNT }} -run='^$' -timeout=10m ./... \
-            | tee "$RUNNER_TEMP/bench-pr.txt"
+          go test -bench=. -benchmem -benchtime=100ms -count=${{ env.BENCH_COUNT }} \
+            -run='^$' -timeout=10m ./... | tee bench-current.txt
+
+      # On push to main: save results as the new baseline for future PRs.
+      # Uses a per-SHA key so each push creates a new entry. The PR restore
+      # step uses restore-keys prefix matching to find the most recent one.
+      # The path must match the restore step (bench-baseline.txt).
+      - name: Save baseline to cache
+        if: github.event_name == 'push'
+        run: cp bench-current.txt bench-baseline.txt
+
+      - name: Upload baseline cache
+        if: github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          path: bench-baseline.txt
+          key: benchmark-baseline-${{ github.sha }}
 
       - name: Compare with benchstat
+        if: github.event_name == 'pull_request'
         id: benchstat
         run: |
-          if [ "${{ steps.bench-base.outputs.skip }}" = "true" ] || [ ! -s "$RUNNER_TEMP/bench-base.txt" ]; then
-            echo "No base benchmark results available — showing PR results only."
+          if [ ! -s bench-baseline.txt ]; then
+            echo "No cached baseline found — showing PR results only."
             echo "has_comparison=false" >> "$GITHUB_OUTPUT"
-
             {
               echo 'result<<BENCHSTAT_EOF'
-              echo '## Benchmark Results (no base branch to compare)'
+              echo '## Benchmark Results (no baseline to compare)'
               echo ''
-              echo 'This is the first run or the base branch had no benchmarks to compare against.'
+              echo 'No cached baseline from main found. Results will be cached'
+              echo 'once this PR merges and the next push to main runs.'
               echo ''
               echo '```'
-              cat "$RUNNER_TEMP/bench-pr.txt"
+              cat bench-current.txt
               echo '```'
               echo 'BENCHSTAT_EOF'
             } >> "$GITHUB_OUTPUT"
@@ -97,34 +93,29 @@ jobs:
 
           echo "has_comparison=true" >> "$GITHUB_OUTPUT"
 
-          # Run benchstat; it exits 0 regardless of regressions.
-          benchstat base="$RUNNER_TEMP/bench-base.txt" pr="$RUNNER_TEMP/bench-pr.txt" \
-            > "$RUNNER_TEMP/benchstat.txt" 2>&1 || true
+          benchstat base=bench-baseline.txt pr=bench-current.txt \
+            > benchstat-output.txt 2>&1 || true
 
-          # Build the output for PR comment.
           {
             echo 'result<<BENCHSTAT_EOF'
-            echo '## Benchmark Comparison (base vs PR)'
+            echo '## Benchmark Comparison (main baseline vs PR)'
             echo ''
             echo '<details>'
             echo '<summary>Click to expand benchstat output</summary>'
             echo ''
             echo '```'
-            cat "$RUNNER_TEMP/benchstat.txt"
+            cat benchstat-output.txt
             echo '```'
             echo ''
             echo '</details>'
             echo ''
-            echo '_Generated by the benchmark workflow. Regressions marked with `+` are flagged as warnings but do not block the PR._'
+            echo '_Compared against cached baseline from the latest main push._'
             echo 'BENCHSTAT_EOF'
           } >> "$GITHUB_OUTPUT"
 
-          # Check for statistically significant regressions.
-          # benchstat shows "+" for regressions that pass the significance test.
-          # We look for lines with a "+" that are NOT the header line.
-          if grep -E '^\S.*\+$' "$RUNNER_TEMP/benchstat.txt" | grep -qv '^name'; then
+          if grep -E '^\S.*\+$' benchstat-output.txt | grep -qv '^name'; then
             echo "has_regression=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Benchstat detected statistically significant regressions. See the PR comment for details."
+            echo "::warning::Benchstat detected statistically significant regressions."
           else
             echo "has_regression=false" >> "$GITHUB_OUTPUT"
           fi
@@ -135,14 +126,11 @@ jobs:
         env:
           BENCH_RESULT: ${{ steps.benchstat.outputs.result }}
         with:
-          # Use the default GITHUB_TOKEN. For PRs from forks this token has
-          # read-only permissions and the comment will be silently skipped.
           script: |
             const body = process.env.BENCH_RESULT;
             const marker = '<!-- benchmark-comparison-comment -->';
             const fullBody = marker + '\n' + body;
 
-            // Try to find and update an existing comment from a previous run.
             let existingComment = null;
             try {
               const { data: comments } = await github.rest.issues.listComments({
@@ -175,7 +163,6 @@ jobs:
                 core.info('Created new benchmark comment');
               }
             } catch (e) {
-              // Fork PRs may lack write permissions — warn but don't fail.
               core.warning(`Could not post PR comment: ${e.message}. This is expected for PRs from forks.`);
             }
 
@@ -183,6 +170,5 @@ jobs:
         if: steps.benchstat.outputs.has_regression == 'true'
         run: |
           echo "::warning::Benchmark regressions detected. Review the benchstat comparison above."
-          # Informational only — exit 0 so the workflow does not block the PR.
-          # To make this a hard gate, change to: exit 1
+          # Informational only. To make this a hard gate, change to: exit 1
           exit 0
