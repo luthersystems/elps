@@ -130,6 +130,10 @@ func builtinRepeat(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if n.Int < 0 {
 		return env.Errorf("count is negative: %v", n.Int)
 	}
+	maxAlloc := env.Runtime.MaxAllocBytes()
+	if int64(len(str.Str))*int64(n.Int) > int64(maxAlloc) {
+		return env.Errorf("repeat would exceed maximum allocation size (%d bytes)", maxAlloc)
+	}
 	return lisp.String(strings.Repeat(str.Str, n.Int))
 }
 

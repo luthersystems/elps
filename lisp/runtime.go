@@ -20,9 +20,19 @@ type Runtime struct {
 	Reader         Reader
 	Library        SourceLibrary
 	Profiler       Profiler
+	MaxAlloc       int // Maximum single allocation size in bytes (0 = use default).
 	conditionStack []*LVal
 	numenv         atomicCounter
 	numsym         atomicCounter
+}
+
+// MaxAllocBytes returns the effective maximum single allocation size.
+// If MaxAlloc is zero, DefaultMaxAlloc is returned.
+func (r *Runtime) MaxAllocBytes() int {
+	if r.MaxAlloc > 0 {
+		return r.MaxAlloc
+	}
+	return DefaultMaxAlloc
 }
 
 // PushCondition pushes an error onto the condition stack, making it available
@@ -50,6 +60,12 @@ func (r *Runtime) CurrentCondition() *LVal {
 	}
 	return r.conditionStack[n-1]
 }
+
+// DefaultMaxAlloc is the maximum size of a single allocation (in bytes for
+// strings, in elements for sequences) allowed by builtins like string:repeat
+// and make-sequence. This prevents memory exhaustion from untrusted input.
+// Applications can override this via Runtime.MaxAlloc.
+const DefaultMaxAlloc = 10 * 1024 * 1024 // 10 million (bytes or elements)
 
 // Default stack depth limits. These match the values used by the test harness
 // and provide protection against unbounded recursion exhausting the Go

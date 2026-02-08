@@ -1703,8 +1703,12 @@ func builtinMakeSequence(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("third argument is not positive")
 		}
 	}
+	maxAlloc := env.Runtime.MaxAllocBytes()
 	list := QExpr(nil)
 	for x := start; lessNumeric(x, stop); x = addNumeric(x, step) {
+		if len(list.Cells) >= maxAlloc {
+			return env.Errorf("make-sequence would exceed maximum allocation size (%d elements)", maxAlloc)
+		}
 		list.Cells = append(list.Cells, x.Copy())
 	}
 	return list
