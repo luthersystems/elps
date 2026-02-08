@@ -19,18 +19,27 @@ func TestRepeatAllocLimit(t *testing.T) {
 	lisplib.LoadLibrary(env)
 	env.InPackage(lisp.String(lisp.DefaultUserPackage))
 
-	// Normal usage should succeed.
-	exprs, _ := env.Runtime.Reader.Read("test", strings.NewReader(`(string:repeat "x" 100)`))
+	// Normal usage should succeed and return the correct value.
+	exprs, err := env.Runtime.Reader.Read("test", strings.NewReader(`(string:repeat "xy" 3)`))
+	if err != nil {
+		t.Fatalf("parse normal repeat: %v", err)
+	}
 	result := env.Eval(exprs[0])
 	if result.Type == lisp.LError {
-		t.Errorf("expected success, got error: %v", result)
+		t.Fatalf("expected success, got error: %v", result)
+	}
+	if result.Str != "xyxyxy" {
+		t.Errorf("expected %q, got %q", "xyxyxy", result.Str)
 	}
 
 	// Exceeding the limit should return a lisp error, not panic or OOM.
-	exprs, _ = env.Runtime.Reader.Read("test", strings.NewReader(`(string:repeat "AAAA" 5000000)`))
+	exprs, err = env.Runtime.Reader.Read("test", strings.NewReader(`(string:repeat "AAAA" 5000000)`))
+	if err != nil {
+		t.Fatalf("parse oversized repeat: %v", err)
+	}
 	result = env.Eval(exprs[0])
 	if result.Type != lisp.LError {
-		t.Errorf("expected LError for oversized repeat, got: %v", result)
+		t.Fatalf("expected LError for oversized repeat, got: %v", result)
 	}
 	errStr := result.String()
 	if !strings.Contains(errStr, "exceed maximum allocation size") {
