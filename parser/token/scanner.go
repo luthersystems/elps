@@ -328,6 +328,7 @@ func (s *Scanner) LocStart() *Location {
 		Path: s.path,
 		Line: s.startLine,
 		Pos:  startPos,
+		Col:  startPos - s.startLinePos + 1,
 	}
 }
 
@@ -339,6 +340,7 @@ func (s *Scanner) Loc() *Location {
 		Path: s.path,
 		Line: s.line,
 		Pos:  s.totalPos,
+		Col:  s.totalPos - s.linePos + 1,
 	}
 }
 

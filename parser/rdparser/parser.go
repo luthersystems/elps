@@ -412,7 +412,11 @@ func (p *Parser) ParseConsExpression() *lisp.LVal {
 		p.ignoreComments()
 		p.attachTrailingComment(expr)
 		if p.src.IsEOF() {
-			return p.errorf("unmatched-syntax", "unmatched %s", open.Text)
+			return p.errorAtf(open.Source, "unmatched-syntax", "unclosed %s opened at %s", open.Text, open.Source)
+		}
+		if p.PeekType() == token.BRACE_R {
+			p.ReadToken()
+			return p.errorf("mismatched-syntax", "expected ) to close %s opened at %s, but found ]", open.Text, open.Source)
 		}
 		if p.Accept(token.PAREN_R) {
 			p.recordClosingBracketNewline(expr)
@@ -441,7 +445,11 @@ func (p *Parser) ParseList() *lisp.LVal {
 		p.ignoreComments()
 		p.attachTrailingComment(expr)
 		if p.src.IsEOF() {
-			return p.errorf("unmatched-syntax", "unmatched %s", open.Text)
+			return p.errorAtf(open.Source, "unmatched-syntax", "unclosed %s opened at %s", open.Text, open.Source)
+		}
+		if p.PeekType() == token.PAREN_R {
+			p.ReadToken()
+			return p.errorf("mismatched-syntax", "expected ] to close %s opened at %s, but found )", open.Text, open.Source)
 		}
 		if p.Accept(token.BRACE_R) {
 			p.recordClosingBracketNewline(expr)
@@ -606,6 +614,12 @@ func (p *Parser) Accept(typ ...token.Type) bool {
 func (p *Parser) errorf(condition string, format string, v ...interface{}) *lisp.LVal {
 	err := lisp.ErrorConditionf(condition, format, v...)
 	err.Source = p.Location()
+	return err
+}
+
+func (p *Parser) errorAtf(source *token.Location, condition, format string, v ...interface{}) *lisp.LVal {
+	err := lisp.ErrorConditionf(condition, format, v...)
+	err.Source = source
 	return err
 }
 

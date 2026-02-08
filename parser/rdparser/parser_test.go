@@ -123,24 +123,24 @@ func TestErrors(t *testing.T) {
 		source string
 		errmsg string
 	}{
-		{`(1 2 3`, `test0:1: unmatched-syntax: unmatched (`},
+		{`(1 2 3`, `test0:1:1: unmatched-syntax: unclosed ( opened at test0:1:1`},
 		{`(1 2 3)
 		0
 		#xABC
 		#xabc
 		#o123
 		#o9
-`, `test1:6: invalid-octal-literal: invalid octal literal character: '9'`},
+`, `test1:6:5: invalid-octal-literal: invalid octal literal character: '9'`},
 		{`(1 2 3)
 		0
 		#xABC
 		#xDEADBEEG
 		#o123
 		#o9
-`, `test2:4: invalid-hex-literal: invalid hexidecimal literal character: 'G'`},
+`, `test2:4:5: invalid-hex-literal: invalid hexidecimal literal character: 'G'`},
 		{`(1 2 3)
 		134.
-		"abc"`, `test3:2: scan-error: invalid floating point literal starting: 134.`},
+		"abc"`, `test3:2:3: scan-error: invalid floating point literal starting: 134.`},
 		{`#!/usr/bin/env elps
 		(1 2 3)
 		0
@@ -148,7 +148,26 @@ func TestErrors(t *testing.T) {
 		#!/usr/bin/env foo
 		#o123
 		#o9
-`, `test4:5: parse-error: unexpected token: #!`},
+`, `test4:5:3: parse-error: unexpected token: #!`},
+		// Bracket mismatch errors
+		{`(1 2 3]`, `test5:1:7: mismatched-syntax: expected ) to close ( opened at test5:1:1, but found ]`},
+		{`[1 2 3)`, `test6:1:7: mismatched-syntax: expected ] to close [ opened at test6:1:1, but found )`},
+		{`[1 2 3`, `test7:1:1: unmatched-syntax: unclosed [ opened at test7:1:1`},
+		{`(let ([x 1) y)`, `test8:1:11: mismatched-syntax: expected ] to close [ opened at test8:1:7, but found )`},
+		// Empty bracket mismatch
+		{`(]`, `test9:1:2: mismatched-syntax: expected ) to close ( opened at test9:1:1, but found ]`},
+		// Multi-line unclosed bracket points to opening location
+		{`(foo
+bar
+baz`, `test10:1:1: unmatched-syntax: unclosed ( opened at test10:1:1`},
+		// Multi-line mismatch reports both locations across lines
+		{`(foo
+bar
+baz]`, `test11:3:4: mismatched-syntax: expected ) to close ( opened at test11:1:1, but found ]`},
+		// Nested: innermost unclosed bracket is reported
+		{`(((`, `test12:1:3: unmatched-syntax: unclosed ( opened at test12:1:3`},
+		// Second expression has the mismatch
+		{`(foo) (bar]`, `test13:1:11: mismatched-syntax: expected ) to close ( opened at test13:1:7, but found ]`},
 	}
 
 	for i, test := range tests {

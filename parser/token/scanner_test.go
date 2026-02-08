@@ -157,10 +157,10 @@ func TestScannerLoc(t *testing.T) {
 	assert.Equal(t, 10, tokens[1].Source.Pos)
 	assert.Equal(t, 20, tokens[2].Source.Pos)
 	assert.Equal(t, 25, tokens[3].Source.Pos)
-	assert.Equal(t, "test:1", tokens[0].Source.String())
-	assert.Equal(t, "test:2", tokens[1].Source.String())
-	assert.Equal(t, "test:3", tokens[2].Source.String())
-	assert.Equal(t, "test:3", tokens[3].Source.String())
+	assert.Equal(t, "test:1:1", tokens[0].Source.String())
+	assert.Equal(t, "test:2:1", tokens[1].Source.String())
+	assert.Equal(t, "test:3:1", tokens[2].Source.String())
+	assert.Equal(t, "test:3:6", tokens[3].Source.String())
 }
 
 type byteFiller byte

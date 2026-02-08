@@ -55,7 +55,7 @@ func TestLoadErrors(t *testing.T) {
 	})
 	lerr = env.Eval(testsrc)
 	msg := lisp.GoError(lerr).Error()
-	assert.Equal(t, "<native code>: lisp:load-string: load-string:1: unmatched-syntax: unmatched (", msg)
+	assert.Equal(t, "<native code>: lisp:load-string: load-string:1:1: unmatched-syntax: unclosed ( opened at load-string:1:1", msg)
 
 	testsrc = lisp.SExpr([]*lisp.LVal{
 		lisp.Symbol("load-string"),
@@ -65,7 +65,7 @@ func TestLoadErrors(t *testing.T) {
 	})
 	lerr = env.Eval(testsrc)
 	msg = lisp.GoError(lerr).Error()
-	assert.Equal(t, "<native code>: lisp:load-string: test.lisp:1: unmatched-syntax: unmatched (", msg)
+	assert.Equal(t, "<native code>: lisp:load-string: test.lisp:1:2: unmatched-syntax: unclosed ( opened at test.lisp:1:2", msg)
 
 	testsrc = lisp.SExpr([]*lisp.LVal{
 		lisp.Symbol("load-string"),
@@ -75,7 +75,7 @@ func TestLoadErrors(t *testing.T) {
 	})
 	lerr = env.Eval(testsrc)
 	msg = lisp.GoError(lerr).Error()
-	assert.Equal(t, "<native code>: lisp:load-string: test.lisp:1: unmatched-syntax: unmatched [", msg)
+	assert.Equal(t, "<native code>: lisp:load-string: test.lisp:1:2: unmatched-syntax: unclosed [ opened at test.lisp:1:2", msg)
 
 	testsrc = lisp.SExpr([]*lisp.LVal{
 		lisp.Symbol("load-string"),
@@ -85,7 +85,7 @@ func TestLoadErrors(t *testing.T) {
 	})
 	lerr = env.Eval(testsrc)
 	msg = lisp.GoError(lerr).Error()
-	assert.Equal(t, "<native code>: lisp:load-string: test.lisp:1: parse-error: unexpected token: )", msg)
+	assert.Equal(t, "<native code>: lisp:load-string: test.lisp:1:3: parse-error: unexpected token: )", msg)
 
 	testsrc = lisp.SExpr([]*lisp.LVal{
 		lisp.Symbol("load-string"),
@@ -95,7 +95,7 @@ func TestLoadErrors(t *testing.T) {
 	})
 	lerr = env.Eval(testsrc)
 	msg = lisp.GoError(lerr).Error()
-	assert.Equal(t, "<native code>: lisp:load-string: test.lisp:1: parse-error: unexpected token: )", msg)
+	assert.Equal(t, "<native code>: lisp:load-string: test.lisp:1:6: parse-error: unexpected token: )", msg)
 
 	testsrc = lisp.SExpr([]*lisp.LVal{
 		lisp.Symbol("load-string"),
@@ -105,7 +105,7 @@ func TestLoadErrors(t *testing.T) {
 	})
 	lerr = env.Eval(testsrc)
 	msg = lisp.GoError(lerr).Error()
-	assert.Equal(t, msg, "<native code>: lisp:load-string: test.lisp:1: scan-error: unexpected text starting with '^'", msg)
+	assert.Equal(t, "<native code>: lisp:load-string: test.lisp:1:8: scan-error: unexpected text starting with '^'", msg)
 
 	testsrc = lisp.SExpr([]*lisp.LVal{
 		lisp.Symbol("load-string"),
@@ -115,5 +115,5 @@ func TestLoadErrors(t *testing.T) {
 	})
 	lerr = env.Eval(testsrc)
 	msg = lisp.GoError(lerr).Error()
-	assert.Equal(t, "test.lisp:1: test-error: test error message", msg)
+	assert.Equal(t, "test.lisp:1:1: test-error: test error message", msg)
 }

@@ -56,11 +56,11 @@ func TestTaggedVals(t *testing.T) {
 			{`(tagged-value? o)`, `true`, ``},
 			{`(user-data o)`, `"hello"`, ``},
 			{`(tagged-value? "hello")`, `false`, ``},
-			{`(user-data "hello")`, `test:1: lisp:user-data: argument is not a tagged value: 'string`, ``},
+			{`(user-data "hello")`, `test:1:1: lisp:user-data: argument is not a tagged value: 'string`, ``},
 		}},
 		{"constructor", elpstest.TestSequence{
 			{`(set 'even (new lisp:typedef 'user:even (lambda (x) (if (int? x) (* x 2) (error 'type-error (format-string "argument is not an int: {}" (type x)))))))`, `#{lisp:typedef '('user:even (lambda (x) (if (int? x) (* x 2) (error 'type-error (format-string "argument is not an int: {}" (type x))))))}`, ``},
-			{`(new even "hello")`, `test:1: type-error: argument is not an int: 'string`, ``},
+			{`(new even "hello")`, `test:1:74: type-error: argument is not an int: 'string`, ``},
 			{`(new even 1)`, `#{user:even 2}`, ``},
 		}},
 		{"deftype", elpstest.TestSequence{

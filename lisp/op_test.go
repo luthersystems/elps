@@ -10,10 +10,10 @@ import (
 
 func TestSpecialOp(t *testing.T) {
 	debugstack := `Stack Trace [4 frames -- entrypoint last]:
-  height 3: test:4: lisp:debug-stack
-  height 2: test:4: lisp:progn
-  height 1: test:2: lisp:let
-  height 0: test:1: lisp:let [terminal]
+  height 3: test:4:20: lisp:debug-stack
+  height 2: test:4:13: lisp:progn
+  height 1: test:2:5: lisp:let
+  height 0: test:1:1: lisp:let [terminal]
 `
 	tests := elpstest.TestSuite{
 		{"if", elpstest.TestSequence{
@@ -44,8 +44,8 @@ func TestSpecialOp(t *testing.T) {
 			{`x`, `2`, ``},
 			{`(let ([x 'a]) (set! x 'b) x)`, `'b`, ``},
 			{`x`, `2`, ``},
-			{`(set! false x)`, `test:1: lisp:set!: cannot rebind constant: false`, ``},
-			{`(set! foo 3)`, `test:1: lisp:set!: symbol not bound: foo`, ``},
+			{`(set! false x)`, `test:1:7: lisp:set!: cannot rebind constant: false`, ``},
+			{`(set! foo 3)`, `test:1:7: lisp:set!: symbol not bound: foo`, ``},
 		}},
 		{"let*", elpstest.TestSequence{
 			{`(let* ())`, "()", ""},
@@ -65,7 +65,7 @@ func TestSpecialOp(t *testing.T) {
 		{"flet", elpstest.TestSequence{
 			{`(flet [])`, `()`, ``},
 			{`(flet ([f (x) x]) (f 2))`, `2`, ``},
-			{`(flet ([f (x) (f (+ x 1))]) (f 0))`, `test:1: f: unbound symbol: f`, ``},
+			{`(flet ([f (x) (f (+ x 1))]) (f 0))`, `test:1:16: f: unbound symbol: f`, ``},
 			{`(defun orig () 1)`, `()`, ``},
 			{`(flet ([orig () 2] [f () (orig)]) (f))`, `1`, ``},
 		}},
@@ -141,7 +141,7 @@ func TestSpecialOp(t *testing.T) {
 			{`(qualified-symbol x)`, `'user:x`, ``},
 			{`(qualified-symbol 'lisp:x)`, `'lisp:x`, ``},
 			{`(qualified-symbol lisp:x)`, `'lisp:x`, ``},
-			{`(qualified-symbol 3)`, `test:1: lisp:qualified-symbol: argument is not a symbol: 'int`, ``},
+			{`(qualified-symbol 3)`, `test:1:1: lisp:qualified-symbol: argument is not a symbol: 'int`, ``},
 			{`(in-package 'other)`, `()`, ``},
 			{`(qualified-symbol 'x)`, `'other:x`, ``},
 		}},
