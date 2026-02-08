@@ -674,21 +674,21 @@ func TestCondStructure_Positive_MisplacedKeywordElse(t *testing.T) {
 func TestRethrowContext_Positive_TopLevel(t *testing.T) {
 	diags := lintCheck(t, AnalyzerRethrowContext, `(rethrow)`)
 	assert.Len(t, diags, 1)
-	assertHasDiag(t, diags, "outside handler-bind")
+	assertDiagOnLine(t, diags, 1, "outside handler-bind")
 }
 
 func TestRethrowContext_Positive_InDefun(t *testing.T) {
 	source := "(defun my-handler (c &rest args)\n  (rethrow))"
 	diags := lintCheck(t, AnalyzerRethrowContext, source)
 	assert.Len(t, diags, 1)
-	assertHasDiag(t, diags, "outside handler-bind")
+	assertDiagOnLine(t, diags, 2, "outside handler-bind")
 }
 
 func TestRethrowContext_Positive_InLet(t *testing.T) {
 	source := "(let ((x 1))\n  (rethrow))"
 	diags := lintCheck(t, AnalyzerRethrowContext, source)
 	assert.Len(t, diags, 1)
-	assertHasDiag(t, diags, "outside handler-bind")
+	assertDiagOnLine(t, diags, 2, "outside handler-bind")
 }
 
 func TestRethrowContext_Negative_InHandlerBind(t *testing.T) {
@@ -708,9 +708,12 @@ func TestRethrowContext_Negative_InNestedHandlerBind(t *testing.T) {
 }
 
 func TestRethrowContext_Negative_InHandlerBindBody(t *testing.T) {
-	// rethrow in the body of handler-bind is inside the form (handler-bind
-	// pushes the condition before calling the handler, but body errors trigger
-	// the handler). This is still syntactically inside handler-bind.
+	// The linter deliberately permits (rethrow) anywhere inside a
+	// handler-bind form, including the body. At runtime, a body-level
+	// rethrow would fail unless an outer handler-bind is actively handling
+	// an error, but static analysis cannot determine that — so the linter
+	// avoids false positives by treating the entire handler-bind form as
+	// a valid context.
 	source := `(handler-bind ((condition (lambda (c &rest args) "caught")))
   (progn (do-stuff) (rethrow)))`
 	diags := lintCheck(t, AnalyzerRethrowContext, source)
@@ -727,10 +730,7 @@ func TestRethrowContext_Positive_HasNotes(t *testing.T) {
 func TestRethrowContext_Nolint(t *testing.T) {
 	source := "(rethrow) ; nolint:rethrow-context\n"
 	diags := lintSource(t, source)
-	// Should be suppressed by nolint
-	for _, d := range diags {
-		assert.NotEqual(t, "rethrow-context", d.Analyzer)
-	}
+	assertNoDiags(t, diags)
 }
 
 // --- nolint suppression ---

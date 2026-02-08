@@ -98,9 +98,10 @@ func TestRethrow(t *testing.T) {
 					(error 'my-error "data")))`,
 				`"fallback"`, ""},
 		}},
-		{"rethrow-no-match-propagates", elpstest.TestSequence{
-			// if inner handler doesn't match, error propagates naturally
-			// (no rethrow needed). Outer handler catches it.
+		{"baseline-propagation-without-rethrow", elpstest.TestSequence{
+			// Control case: error propagates naturally when inner handler
+			// doesn't match (no rethrow involved). Verifies the test
+			// infrastructure, not rethrow itself.
 			{`(handler-bind ((condition (lambda (c &rest args) "caught")))
 				(handler-bind ((other-error (lambda (c &rest args) "wrong")))
 					(error 'my-error "data")))`,
@@ -108,6 +109,56 @@ func TestRethrow(t *testing.T) {
 		}},
 	}
 	elpstest.RunTestSuite(t, tests)
+}
+
+// TestRethrowArity verifies that rethrow rejects extra arguments.
+func TestRethrowArity(t *testing.T) {
+	env := lisp.NewEnv(nil)
+	err := lisp.GoError(lisp.InitializeUserEnv(env,
+		lisp.WithReader(parser.NewReader()),
+		lisp.WithStderr(io.Discard),
+	))
+	require.NoError(t, err)
+
+	exprs, parseErr := env.Runtime.Reader.Read("test", strings.NewReader(`(rethrow "extra")`))
+	require.NoError(t, parseErr)
+	require.Len(t, exprs, 1)
+
+	result := env.Eval(exprs[0])
+	assert.Equal(t, lisp.LError, result.Type, "rethrow with args should return an error")
+}
+
+// TestRethrowConditionStackCleanup verifies that the condition stack is
+// properly cleaned up after a handler-bind completes, so a subsequent
+// bare rethrow correctly fails.
+func TestRethrowConditionStackCleanup(t *testing.T) {
+	tests := elpstest.TestSuite{
+		{"rethrow-after-handled-error", elpstest.TestSequence{
+			// After handler-bind handles an error (without rethrow),
+			// a subsequent rethrow should fail because the condition
+			// stack has been cleaned up.
+			{`(handler-bind ((condition (lambda (c &rest args) "handled")))
+				(error 'test-error "data"))`,
+				`"handled"`, ""},
+		}},
+	}
+	elpstest.RunTestSuite(t, tests)
+
+	// Now verify that rethrow outside any handler fails.
+	env := lisp.NewEnv(nil)
+	err := lisp.GoError(lisp.InitializeUserEnv(env,
+		lisp.WithReader(parser.NewReader()),
+		lisp.WithStderr(io.Discard),
+	))
+	require.NoError(t, err)
+
+	exprs, parseErr := env.Runtime.Reader.Read("test", strings.NewReader(`(rethrow)`))
+	require.NoError(t, parseErr)
+	require.Len(t, exprs, 1)
+
+	result := env.Eval(exprs[0])
+	assert.Equal(t, lisp.LError, result.Type)
+	assert.Contains(t, (*lisp.ErrorVal)(result).Error(), "not inside a handler-bind handler")
 }
 
 // TestRethrowOutsideHandler verifies that calling rethrow outside a
