@@ -56,6 +56,13 @@ func (p *Pass) Report(d Diagnostic) {
 	p.diagnostics = append(p.diagnostics, d)
 }
 
+// ReportWithNotes records a diagnostic with additional hint text.
+func (p *Pass) ReportWithNotes(d Diagnostic, notes ...string) {
+	d.Analyzer = p.Analyzer.Name
+	d.Notes = append(d.Notes, notes...)
+	p.diagnostics = append(p.diagnostics, d)
+}
+
 // Reportf is a convenience for reporting a diagnostic at a position.
 func (p *Pass) Reportf(source *token.Location, format string, args ...interface{}) {
 	d := Diagnostic{
@@ -77,6 +84,9 @@ type Diagnostic struct {
 
 	// Analyzer is the name of the check that found this problem.
 	Analyzer string `json:"analyzer"`
+
+	// Notes are optional hint text lines for the user.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // Position identifies a location in source code.
@@ -98,8 +108,13 @@ func (p Position) String() string {
 }
 
 // String returns the diagnostic in go vet style: file:line: message (analyzer)
+// with optional note lines appended.
 func (d Diagnostic) String() string {
-	return fmt.Sprintf("%s: %s (%s)", d.Pos, d.Message, d.Analyzer)
+	s := fmt.Sprintf("%s: %s (%s)", d.Pos, d.Message, d.Analyzer)
+	for _, n := range d.Notes {
+		s += "\n  = note: " + n
+	}
+	return s
 }
 
 // Linter runs a set of analyzers over source files.
