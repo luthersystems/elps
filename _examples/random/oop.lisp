@@ -192,7 +192,7 @@
 
 ;; rational represents a rational number and wraps a struct with two fields.
 (deftype 'rational (n d)
-  (cond ((not (int? n))
+  (cond ((not (int? n)) ; nolint:cond-missing-else
          (error 'type-error (format-string "first argument is not an int: {}" (type n))))
         ((not (int? d))
          (error 'type-error (format-string "second argument is not an int: {}" (type d)))))
