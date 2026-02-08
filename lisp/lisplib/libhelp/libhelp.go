@@ -52,6 +52,18 @@ var ops = []*libutil.Builtin{
 		is given which evaluates as true then unexported symbols in the package
 		will also be printed.
 		`),
+	libutil.FunctionDoc("help-packages", lisp.Formals(), opHelpPackages,
+		`
+		Lists all packages loaded in the runtime with their descriptions.
+		`),
+}
+
+func opHelpPackages(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	err := RenderPackageList(env.Runtime.Stderr, env)
+	if err != nil {
+		return env.Error(err)
+	}
+	return lisp.Nil()
 }
 
 func opHelp(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -120,6 +132,35 @@ func sortedSymbols(smap map[string]*lisp.LVal) []string {
 	}
 	sort.Strings(symbols)
 	return symbols
+}
+
+// RenderPackageList writes a summary of all loaded packages to w.
+// Each package is listed with its name, export count, and first line of
+// its doc string (if any). Packages are sorted alphabetically.
+func RenderPackageList(w io.Writer, env *lisp.LEnv) error {
+	names := make([]string, 0, len(env.Runtime.Registry.Packages))
+	for name := range env.Runtime.Registry.Packages {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		pkg := env.Runtime.Registry.Packages[name]
+		line := fmt.Sprintf("  %-12s", pkg.Name)
+		if pkg.Doc != "" {
+			first := strings.SplitN(strings.TrimSpace(pkg.Doc), "\n", 2)[0]
+			first = strings.TrimSpace(first)
+			line += "  " + first
+		}
+		nExports := len(pkg.Externals)
+		if nExports > 0 {
+			line += fmt.Sprintf(" (%d exports)", nExports)
+		}
+		if _, err := fmt.Fprintln(w, line); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // RenderPkgExported writes to w formatted documentation for exported symbols

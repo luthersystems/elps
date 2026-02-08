@@ -18,6 +18,7 @@ import (
 
 var docPackage bool
 var docSourceFile string
+var docListPackages bool
 
 // docCmd represents the doc command
 var docCmd = &cobra.Command{
@@ -42,12 +43,22 @@ Examples:
   elps doc -p lisp                 List core language functions
   elps doc -f mylib.lisp my-func   Load a file, then show docs for my-func
 
+Use -l to list all available packages in the runtime:
+  elps doc -l
+
 Common packages to explore:
   lisp      Core language (140+ builtins: map, filter, reduce, car, cdr, ...)
   math      Trigonometry, logarithms, constants (pi, inf)
   string    String operations (concat, split, join, ...)
   json      JSON serialization (json:encode, json:decode, json:null)`,
 	Run: func(cmd *cobra.Command, args []string) {
+		if docListPackages {
+			if err := docListPkgs(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
+		}
 		if len(args) != 1 {
 			_ = cmd.Help()
 			os.Exit(1)
@@ -62,6 +73,42 @@ Common packages to explore:
 			os.Exit(1)
 		}
 	},
+}
+
+func docListPkgs() error {
+	env := lisp.NewEnv(nil)
+	reader := parser.NewReader()
+	env.Runtime.Reader = reader
+	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
+	errbuf := &bytes.Buffer{}
+	env.Runtime.Stderr = errbuf
+	dumperr := func() { _, _ = os.Stderr.Write(errbuf.Bytes()) }
+	rc := lisp.InitializeUserEnv(env)
+	if !rc.IsNil() {
+		dumperr()
+		return fmt.Errorf("initialize-user-env returned non-nil: %v", rc)
+	}
+	rc = lisplib.LoadLibrary(env)
+	if !rc.IsNil() {
+		dumperr()
+		return fmt.Errorf("load-library returned non-nil: %v", rc)
+	}
+	rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
+	if !rc.IsNil() {
+		dumperr()
+		return fmt.Errorf("in-package returned non-nil: %v", rc)
+	}
+	if docSourceFile != "" {
+		res := env.LoadFile(docSourceFile)
+		if res.Type == lisp.LError {
+			dumperr()
+			_, _ = (*lisp.ErrorVal)(res).WriteTrace(os.Stderr)
+			os.Exit(1)
+		}
+	}
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush() //nolint:errcheck // best-effort flush on exit
+	return libhelp.RenderPackageList(out, env)
 }
 
 func docExec(query string) error {
@@ -119,4 +166,6 @@ func init() {
 		"Interpret the argument as a package name.")
 	docCmd.Flags().StringVarP(&docSourceFile, "source-file", "f", "",
 		"Evaluate a lisp source file before querying documentation (presumably desired docs are in source code).")
+	docCmd.Flags().BoolVarP(&docListPackages, "list-packages", "l", false,
+		"List all packages loaded in the runtime with descriptions.")
 }
