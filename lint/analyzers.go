@@ -188,6 +188,39 @@ var AnalyzerQuoteCall = &Analyzer{
 	},
 }
 
+// AnalyzerCondMissingElse warns when a cond has no default (else or true) clause.
+var AnalyzerCondMissingElse = &Analyzer{
+	Name: "cond-missing-else",
+	Doc:  "Warn when a cond expression has no default clause.\n\nWithout an else or (true ...) clause, cond returns nil when no condition matches. This is a common source of unexpected nil values. Add (else ...) or (true ...) as the last clause to handle the default case.",
+	Run: func(pass *Pass) error {
+		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
+			if HeadSymbol(sexpr) != "cond" {
+				return
+			}
+			// Skip empty cond (no clauses)
+			if ArgCount(sexpr) == 0 {
+				return
+			}
+			// Check the last clause for else or true
+			last := sexpr.Cells[len(sexpr.Cells)-1]
+			if last.Type != lisp.LSExpr || len(last.Cells) == 0 {
+				return // malformed clause, handled by cond-structure
+			}
+			head := last.Cells[0]
+			if head.Type == lisp.LSymbol && (head.Str == "else" || head.Str == "true") {
+				return // has default clause
+			}
+			src := SourceOf(sexpr)
+			pass.Report(Diagnostic{
+				Message: "cond has no default (else) clause",
+				Pos:     posFromSource(src.Source),
+				Notes:   []string{"add (else ...) or (true ...) as the last clause to handle unmatched cases"},
+			})
+		})
+		return nil
+	},
+}
+
 // posFromSource converts a *token.Location to a Position, handling nil.
 func posFromSource(src *token.Location) Position {
 	if src == nil {
