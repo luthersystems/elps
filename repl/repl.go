@@ -201,7 +201,7 @@ func ensureHistoryFilePermissions(path string) {
 		}
 		f.Close() //nolint:errcheck,gosec // best-effort cleanup
 	} else if err == nil {
-		os.Chmod(path, 0600) //nolint:errcheck // best-effort permission fix
+		os.Chmod(path, 0600) //nolint:errcheck,gosec // best-effort permission fix
 	}
 }
 

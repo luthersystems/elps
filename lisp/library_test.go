@@ -81,7 +81,7 @@ func TestRootDirConfinement_BlocksSymlinksOutsideRoot(t *testing.T) {
 
 	// Create a valid lisp file outside the root.
 	outsideFile := filepath.Join(outsideDir, "secret.lisp")
-	if err := os.WriteFile(outsideFile, []byte("(+ 1 1)"), 0644); err != nil {
+	if err := os.WriteFile(outsideFile, []byte("(+ 1 1)"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -102,7 +102,7 @@ func TestRootDirConfinement_BlocksSymlinksOutsideRoot(t *testing.T) {
 
 	// Loading a real file inside the root should still work.
 	realFile := filepath.Join(rootDir, "ok.lisp")
-	if werr := os.WriteFile(realFile, []byte("(+ 2 3)"), 0644); werr != nil {
+	if werr := os.WriteFile(realFile, []byte("(+ 2 3)"), 0600); werr != nil {
 		t.Fatal(werr)
 	}
 	_, _, data, err := lib.LoadSource(ctx, realFile)

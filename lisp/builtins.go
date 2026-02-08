@@ -510,10 +510,10 @@ func builtinUsePackage(env *LEnv, args *LVal) *LVal {
 
 func builtinExport(env *LEnv, args *LVal) *LVal {
 	for _, arg := range args.Cells {
-		switch {
-		case arg.Type == LSymbol || arg.Type == LString:
+		switch arg.Type {
+		case LSymbol, LString:
 			env.Runtime.Package.Exports(arg.Str)
-		case arg.Type == LSExpr:
+		case LSExpr:
 			builtinExport(env, arg)
 		default:
 			return env.Errorf("argument is not a symbol, a string, or a list of valid types: %v", arg.Type)

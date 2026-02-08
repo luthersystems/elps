@@ -51,7 +51,7 @@ func TestEnsureHistoryFilePermissions_RestrictsExistingFile(t *testing.T) {
 	histFile := filepath.Join(dir, ".elps_history")
 
 	// Create the file with overly permissive mode.
-	err := os.WriteFile(histFile, []byte("some history"), 0644)
+	err := os.WriteFile(histFile, []byte("some history"), 0600)
 	require.NoError(t, err)
 
 	ensureHistoryFilePermissions(histFile)
@@ -61,7 +61,7 @@ func TestEnsureHistoryFilePermissions_RestrictsExistingFile(t *testing.T) {
 	assert.Equal(t, os.FileMode(0600), info.Mode().Perm(), "existing history file should be restricted to 0600")
 
 	// Verify contents are preserved.
-	data, err := os.ReadFile(histFile)
+	data, err := os.ReadFile(histFile) //nolint:gosec // test file path from t.TempDir(), not user input
 	require.NoError(t, err)
 	assert.Equal(t, "some history", string(data))
 }
