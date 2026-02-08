@@ -358,11 +358,13 @@ func (env *LEnv) get(k *LVal) *LVal {
 	if k.Type != LSymbol && k.Type != LQSymbol {
 		return Nil()
 	}
+	// Return pre-allocated singletons for true/false instead of
+	// allocating a fresh Symbol on every boolean lookup.
 	if k.Str == TrueSymbol {
-		return Symbol(TrueSymbol)
+		return singletonTrue
 	}
 	if k.Str == FalseSymbol {
-		return Symbol(FalseSymbol)
+		return singletonFalse
 	}
 	colonIdx := strings.IndexByte(k.Str, ':')
 	if colonIdx < 0 {
