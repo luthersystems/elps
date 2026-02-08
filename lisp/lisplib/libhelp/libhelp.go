@@ -10,7 +10,6 @@ import (
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
-	"github.com/muesli/reflow/dedent"
 	"github.com/muesli/reflow/indent"
 	"github.com/muesli/reflow/wordwrap"
 )
@@ -205,7 +204,47 @@ func cleanDocstring(doc string) string {
 	if doc[0] == '\n' {
 		doc = doc[1:]
 	}
-	doc = indent.String(wordwrap.String(dedent.String(doc), 72), 2)
+	doc = indent.String(wordwrap.String(dedentDoc(doc), 72), 2)
 	doc = strings.TrimSuffix(doc, "\n")
 	return doc
+}
+
+// dedentDoc removes common leading whitespace from all non-empty lines.
+// It handles Go raw string literals where the first line may have less
+// indentation than continuation lines (which inherit the source code's
+// tab indentation). Tabs are normalized to spaces before processing.
+func dedentDoc(s string) string {
+	s = strings.ReplaceAll(s, "\t", "    ")
+	lines := strings.Split(s, "\n")
+
+	// Find minimum leading spaces across non-empty lines, skipping
+	// the first line (which in raw strings often has no indentation).
+	minWS := -1
+	start := 0
+	if len(lines) > 1 {
+		start = 1
+	}
+	for _, line := range lines[start:] {
+		trimmed := strings.TrimLeft(line, " ")
+		if trimmed == "" {
+			continue
+		}
+		ws := len(line) - len(trimmed)
+		if minWS < 0 || ws < minWS {
+			minWS = ws
+		}
+	}
+	if minWS <= 0 {
+		return strings.TrimLeft(lines[0], " ") + "\n" + strings.Join(lines[1:], "\n")
+	}
+
+	lines[0] = strings.TrimLeft(lines[0], " ")
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "" {
+			lines[i] = ""
+		} else if len(lines[i]) >= minWS {
+			lines[i] = lines[i][minWS:]
+		}
+	}
+	return strings.Join(lines, "\n")
 }

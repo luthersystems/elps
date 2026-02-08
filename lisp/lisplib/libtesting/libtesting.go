@@ -95,22 +95,55 @@ func (s *TestSuite) Benchmark(i int) *Test {
 
 func (s *TestSuite) Macros() []*libutil.Builtin {
 	return []*libutil.Builtin{
-		libutil.Function("test-let", lisp.Formals("name", "bindings", lisp.VarArgSymbol, "exprs"), s.MacroTestLet),
-		libutil.Function("test-let*", lisp.Formals("name", "bindings", lisp.VarArgSymbol, "exprs"), s.MacroTestLetSeq),
-		libutil.Function("benchmark-simple", lisp.Formals("name", lisp.VarArgSymbol, "exprs"), s.MacroBenchmarkSimple),
-		libutil.Function("assert=", lisp.Formals("expect", "num"), s.MacroAssertNumEq),
-		libutil.Function("assert-string=", lisp.Formals("expect", "str"), s.MacroAssertStringEq),
-		libutil.Function("assert-equal", lisp.Formals("expect", "expression"), s.MacroAssertEqual),
-		libutil.Function("assert-nil", lisp.Formals("expression"), s.MacroAssertNil),
-		libutil.Function("assert-not-nil", lisp.Formals("expression"), s.MacroAssertNotNil),
-		libutil.Function("assert-not", lisp.Formals("expression"), s.MacroAssertNot),
+		libutil.FunctionDoc("test-let", lisp.Formals("name", "bindings", lisp.VarArgSymbol, "exprs"), s.MacroTestLet,
+			`Defines a named test with local let bindings. Expands to
+			(test name (let (bindings) exprs...)). The bindings use
+			parallel binding (let) semantics.`),
+		libutil.FunctionDoc("test-let*", lisp.Formals("name", "bindings", lisp.VarArgSymbol, "exprs"), s.MacroTestLetSeq,
+			`Defines a named test with local let* bindings. Like test-let
+			but uses sequential binding (let*) semantics, so later
+			bindings can reference earlier ones.`),
+		libutil.FunctionDoc("benchmark-simple", lisp.Formals("name", lisp.VarArgSymbol, "exprs"), s.MacroBenchmarkSimple,
+			`Defines a simple benchmark that runs exprs repeatedly.
+			Expands to (benchmark name (count) (dotimes (_ count) exprs...)).
+			The iteration count is provided by the benchmark harness.`),
+		libutil.FunctionDoc("assert=", lisp.Formals("expect", "num"), s.MacroAssertNumEq,
+			`Asserts that two expressions evaluate to numerically equal
+			values. Both expect and num must evaluate to numbers (int or
+			float). Reports the expected and actual values on failure.`),
+		libutil.FunctionDoc("assert-string=", lisp.Formals("expect", "str"), s.MacroAssertStringEq,
+			`Asserts that two expressions evaluate to equal strings.
+			Both expect and str must evaluate to string values. Reports
+			the expected and actual values on failure.`),
+		libutil.FunctionDoc("assert-equal", lisp.Formals("expect", "expression"), s.MacroAssertEqual,
+			`Asserts that two expressions are structurally equal using
+			equal?. Works with any value types. Reports the expected
+			and actual values on failure.`),
+		libutil.FunctionDoc("assert-nil", lisp.Formals("expression"), s.MacroAssertNil,
+			`Asserts that expression evaluates to nil. Reports the
+			actual value on failure.`),
+		libutil.FunctionDoc("assert-not-nil", lisp.Formals("expression"), s.MacroAssertNotNil,
+			`Asserts that expression does not evaluate to nil. Reports
+			the expression on failure.`),
+		libutil.FunctionDoc("assert-not", lisp.Formals("expression"), s.MacroAssertNot,
+			`Asserts that expression evaluates to a falsey value (nil or
+			false). Reports the actual value on failure.`),
 	}
 }
 
 func (s *TestSuite) Ops() []*libutil.Builtin {
 	return []*libutil.Builtin{
-		libutil.Function("test", lisp.Formals("name", lisp.VarArgSymbol, "exprs"), s.OpTest),
-		libutil.Function("benchmark", lisp.Formals("name", "args", lisp.VarArgSymbol, "exprs"), s.OpBenchmark),
+		libutil.FunctionDoc("test", lisp.Formals("name", lisp.VarArgSymbol, "exprs"), s.OpTest,
+			`Defines a named test case. name must be a string. The body
+			expressions are wrapped in a lambda and registered with the
+			test suite for later execution. Use assert macros inside
+			the body to check conditions.`),
+		libutil.FunctionDoc("benchmark", lisp.Formals("name", "args", lisp.VarArgSymbol, "exprs"), s.OpBenchmark,
+			`Defines a named benchmark. name must be a string. args is a
+			list containing a single symbol that receives the iteration
+			count. The body should use dotimes or similar to run the
+			benchmarked code count times. Prefer benchmark-simple for
+			simple cases.`),
 	}
 }
 

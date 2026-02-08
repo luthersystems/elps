@@ -31,15 +31,36 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 }
 
 var builtins = []*libutil.Builtin{
-	libutil.Function("lowercase", lisp.Formals("str"), builtinLower),
-	libutil.Function("uppercase", lisp.Formals("str"), builtinUpper),
-	libutil.Function("split", lisp.Formals("str", "sep"), builtinSplit),
-	libutil.Function("join", lisp.Formals("list", "sep"), builtinJoin),
-	libutil.Function("repeat", lisp.Formals("str", "n"), builtinRepeat),
-	libutil.Function("trim-space", lisp.Formals("str"), builtinTrimSpace),
-	libutil.Function("trim", lisp.Formals("str", "cutset"), builtinTrim),
-	libutil.Function("trim-left", lisp.Formals("str", "cutset"), builtinTrimLeft),
-	libutil.Function("trim-right", lisp.Formals("str", "cutset"), builtinTrimRight),
+	libutil.FunctionDoc("lowercase", lisp.Formals("str"), builtinLower,
+		`Returns a copy of str with all Unicode characters converted to
+		lowercase.`),
+	libutil.FunctionDoc("uppercase", lisp.Formals("str"), builtinUpper,
+		`Returns a copy of str with all Unicode characters converted to
+		uppercase.`),
+	libutil.FunctionDoc("split", lisp.Formals("str", "sep"), builtinSplit,
+		`Splits str on each occurrence of the separator string sep and
+		returns a list of the substrings between separators. If sep is
+		empty, splits after each UTF-8 character.`),
+	libutil.FunctionDoc("join", lisp.Formals("list", "sep"), builtinJoin,
+		`Concatenates a list of strings with sep inserted between each
+		element. Returns a single string. All elements of list must be
+		strings.`),
+	libutil.FunctionDoc("repeat", lisp.Formals("str", "n"), builtinRepeat,
+		`Returns a new string consisting of n copies of str concatenated
+		together. n must be a non-negative integer.`),
+	libutil.FunctionDoc("trim-space", lisp.Formals("str"), builtinTrimSpace,
+		`Returns str with all leading and trailing whitespace removed
+		(spaces, tabs, newlines, etc.).`),
+	libutil.FunctionDoc("trim", lisp.Formals("str", "cutset"), builtinTrim,
+		`Returns str with all leading and trailing characters found in
+		cutset removed. The cutset is a string of individual characters
+		to trim, not a prefix/suffix.`),
+	libutil.FunctionDoc("trim-left", lisp.Formals("str", "cutset"), builtinTrimLeft,
+		`Returns str with all leading characters found in cutset removed.
+		The cutset is a string of individual characters to trim.`),
+	libutil.FunctionDoc("trim-right", lisp.Formals("str", "cutset"), builtinTrimRight,
+		`Returns str with all trailing characters found in cutset removed.
+		The cutset is a string of individual characters to trim.`),
 }
 
 func builtinLower(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {

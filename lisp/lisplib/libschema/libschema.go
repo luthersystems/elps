@@ -76,32 +76,109 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 }
 
 var builtins = []*libutil.Builtin{
-	libutil.Function("deftype", lisp.Formals("name", "type", lisp.VarArgSymbol, "constraints"), builtinDefType),
-	libutil.Function("make-validator", lisp.Formals("name", "type", lisp.VarArgSymbol, "constraints"), builtinMakeValidator),
-	libutil.Function("in", lisp.Formals("&rest", "allowed-values"), builtinAllowedValues),
-	libutil.Function("gt", lisp.Formals("allowed-value"), builtinGreaterThan),
-	libutil.Function("gte", lisp.Formals("allowed-value"), builtinGreaterThanOrEqual),
-	libutil.Function("lt", lisp.Formals("allowed-value"), builtinLessThan),
-	libutil.Function("lte", lisp.Formals("allowed-value"), builtinLessThanOrEqual),
-	libutil.Function("positive", lisp.Formals(), builtinPositive),
-	libutil.Function("negative", lisp.Formals(), builtinNegative),
-	libutil.Function("validate", lisp.Formals("type", "input"), builtinValidate),
-	libutil.Function("len", lisp.Formals("allowed-value"), builtinLen),
-	libutil.Function("lengt", lisp.Formals("allowed-value"), builtinLenGreaterThan),
-	libutil.Function("lengte", lisp.Formals("allowed-value"), builtinLenGreaterThanOrEqual),
-	libutil.Function("lenlt", lisp.Formals("allowed-value"), builtinLenLessThan),
-	libutil.Function("lenlte", lisp.Formals("allowed-value"), builtinLenLessThanOrEqual),
-	libutil.Function("of", lisp.Formals("&rest", "allowed-types"), builtinArrayOf),
-	libutil.Function("has-key", lisp.Formals("key", "&rest", "allowed-types"), builtinHasKey),
-	libutil.Function("may-have-key", lisp.Formals("key", "&rest", "allowed-types"), builtinMayHaveKey),
-	libutil.Function("no-other-keys", lisp.Formals("&rest", "constraints"), builtinNoOtherKeys),
-	libutil.Function("when", lisp.Formals("key", "constraint", "matchKey", "&rest", "constraints"), builtinWhen),
-	libutil.Function("is-true", lisp.Formals(), builtinIsTrue),
-	libutil.Function("is-false", lisp.Formals(), builtinIsFalse),
-	libutil.Function("is-truthy", lisp.Formals(), builtinIsTruthy),
-	libutil.Function("is-falsy", lisp.Formals(), builtinIsFalsy),
-	libutil.Function("not", lisp.Formals("constraint"), builtinIsNot),
-	libutil.Function("regexp", lisp.Formals("pattern"), builtinRegexp),
+	libutil.FunctionDoc("deftype", lisp.Formals("name", "type", lisp.VarArgSymbol, "constraints"), builtinDefType,
+		`Defines a named schema type and binds it as a global symbol.
+		name is a string used as both the type name and symbol binding.
+		type is a type string ("string", "int", "float", "number",
+		"bool", "array", "sorted-map", "fun", "tagged-value", "any").
+		Additional constraint functions may be passed to further
+		restrict valid values. Use with s:validate to check values.`),
+	libutil.FunctionDoc("make-validator", lisp.Formals("name", "type", lisp.VarArgSymbol, "constraints"), builtinMakeValidator,
+		`Creates and returns a validator function without binding it.
+		Like deftype but returns the validator instead of creating a
+		global binding. name may be a string or a typedef (tagged
+		value). When name is a typedef, the type argument is treated
+		as a constraint on the user-data and "tagged-value" is implied.`),
+	libutil.FunctionDoc("in", lisp.Formals("&rest", "allowed-values"), builtinAllowedValues,
+		`Returns a constraint that checks if the input is equal to one
+		of the allowed values. Useful for creating enum-like types.
+		Example: (s:in "red" "green" "blue").`),
+	libutil.FunctionDoc("gt", lisp.Formals("allowed-value"), builtinGreaterThan,
+		`Returns a constraint that checks if the input is strictly
+		greater than allowed-value. Works with numeric types.`),
+	libutil.FunctionDoc("gte", lisp.Formals("allowed-value"), builtinGreaterThanOrEqual,
+		`Returns a constraint that checks if the input is greater than
+		or equal to allowed-value. Works with numeric types.`),
+	libutil.FunctionDoc("lt", lisp.Formals("allowed-value"), builtinLessThan,
+		`Returns a constraint that checks if the input is strictly less
+		than allowed-value. Works with numeric types.`),
+	libutil.FunctionDoc("lte", lisp.Formals("allowed-value"), builtinLessThanOrEqual,
+		`Returns a constraint that checks if the input is less than or
+		equal to allowed-value. Works with numeric types.`),
+	libutil.FunctionDoc("positive", lisp.Formals(), builtinPositive,
+		`Returns a constraint that checks if the input is strictly
+		greater than zero.`),
+	libutil.FunctionDoc("negative", lisp.Formals(), builtinNegative,
+		`Returns a constraint that checks if the input is strictly
+		less than zero.`),
+	libutil.FunctionDoc("validate", lisp.Formals("type", "input"), builtinValidate,
+		`Validates input against a type validator function (created by
+		deftype or make-validator). Returns nil on success or an error
+		with a condition string describing the validation failure.`),
+	libutil.FunctionDoc("len", lisp.Formals("allowed-value"), builtinLen,
+		`Returns a constraint that checks if the length of the input
+		equals allowed-value. Works with strings, bytes, and arrays.`),
+	libutil.FunctionDoc("lengt", lisp.Formals("allowed-value"), builtinLenGreaterThan,
+		`Returns a constraint that checks if the length of the input is
+		strictly greater than allowed-value. Works with strings, bytes,
+		and arrays.`),
+	libutil.FunctionDoc("lengte", lisp.Formals("allowed-value"), builtinLenGreaterThanOrEqual,
+		`Returns a constraint that checks if the length of the input is
+		greater than or equal to allowed-value. Works with strings,
+		bytes, and arrays.`),
+	libutil.FunctionDoc("lenlt", lisp.Formals("allowed-value"), builtinLenLessThan,
+		`Returns a constraint that checks if the length of the input is
+		strictly less than allowed-value. Works with strings, bytes,
+		and arrays.`),
+	libutil.FunctionDoc("lenlte", lisp.Formals("allowed-value"), builtinLenLessThanOrEqual,
+		`Returns a constraint that checks if the length of the input is
+		less than or equal to allowed-value. Works with strings, bytes,
+		and arrays.`),
+	libutil.FunctionDoc("of", lisp.Formals("&rest", "allowed-types"), builtinArrayOf,
+		`Returns a constraint for arrays that checks each element matches
+		one of the allowed types. Each allowed-type is a type string
+		passed to the type handler. Example: (s:of "string") checks all
+		elements are strings.`),
+	libutil.FunctionDoc("has-key", lisp.Formals("key", "&rest", "allowed-types"), builtinHasKey,
+		`Returns a constraint for sorted-maps that checks the map has
+		the specified key and its value matches one of the allowed
+		types. key is a string. Returns the key name on success (used
+		by no-other-keys).`),
+	libutil.FunctionDoc("may-have-key", lisp.Formals("key", "&rest", "allowed-types"), builtinMayHaveKey,
+		`Returns a constraint for sorted-maps that checks if the key
+		exists, and if so, validates its value matches one of the
+		allowed types. If the key is absent, validation passes.
+		Returns the key name on success (used by no-other-keys).`),
+	libutil.FunctionDoc("no-other-keys", lisp.Formals("&rest", "constraints"), builtinNoOtherKeys,
+		`Returns a constraint for sorted-maps that rejects maps with
+		keys not declared by the given has-key or may-have-key
+		constraints. Pass all key constraints as arguments.`),
+	libutil.FunctionDoc("when", lisp.Formals("key", "constraint", "matchKey", "&rest", "constraints"), builtinWhen,
+		`Returns a conditional constraint for sorted-maps. When the value
+		at key satisfies constraint, the value at matchKey must satisfy
+		all additional constraints. If the condition is not met, the
+		constraint passes.`),
+	libutil.FunctionDoc("is-true", lisp.Formals(), builtinIsTrue,
+		`Returns a constraint that checks if the input is the boolean
+		true symbol.`),
+	libutil.FunctionDoc("is-false", lisp.Formals(), builtinIsFalse,
+		`Returns a constraint that checks if the input is the boolean
+		false symbol.`),
+	libutil.FunctionDoc("is-truthy", lisp.Formals(), builtinIsTruthy,
+		`Returns a constraint that checks if the input is truthy.
+		Truthy values include: true, non-empty strings (not "false"),
+		non-empty arrays/maps/bytes, and positive numbers.`),
+	libutil.FunctionDoc("is-falsy", lisp.Formals(), builtinIsFalsy,
+		`Returns a constraint that checks if the input is falsy (the
+		logical negation of is-truthy).`),
+	libutil.FunctionDoc("not", lisp.Formals("constraint"), builtinIsNot,
+		`Returns a constraint that negates another constraint. The
+		input passes if the inner constraint fails, and fails if the
+		inner constraint passes.`),
+	libutil.FunctionDoc("regexp", lisp.Formals("pattern"), builtinRegexp,
+		`Returns a constraint that checks if a string input matches
+		the given regular expression pattern. Uses Go RE2 syntax.
+		Returns an error if the pattern is invalid.`),
 }
 
 // This is the `s:validate` keyword. It checks its input matches the type

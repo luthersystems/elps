@@ -30,10 +30,21 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 }
 
 var builtins = []*libutil.Builtin{
-	libutil.Function("regexp?", lisp.Formals("value"), BuiltinIsRegexp),
-	libutil.Function("regexp-compile", lisp.Formals("pattern"), BuiltinCompile),
-	libutil.Function("regexp-pattern", lisp.Formals("re"), BuiltinPattern),
-	libutil.Function("regexp-match?", lisp.Formals("re", "text"), BuiltinIsMatch),
+	libutil.FunctionDoc("regexp?", lisp.Formals("value"), BuiltinIsRegexp,
+		`Returns true if value is a compiled regular expression (created
+		by regexp-compile). Returns false for all other types.`),
+	libutil.FunctionDoc("regexp-compile", lisp.Formals("pattern"), BuiltinCompile,
+		`Compiles a regular expression pattern string and returns a native
+		regexp object. Uses Go's RE2 syntax. Returns an error with
+		condition 'invalid-regexp-pattern' if the pattern is invalid.`),
+	libutil.FunctionDoc("regexp-pattern", lisp.Formals("re"), BuiltinPattern,
+		`Returns the pattern string of a compiled regexp object. The
+		argument may be a compiled regexp or a string (which will be
+		compiled first).`),
+	libutil.FunctionDoc("regexp-match?", lisp.Formals("re", "text"), BuiltinIsMatch,
+		`Returns true if the regexp matches text. re may be a compiled
+		regexp or a pattern string (compiled on each call). text may be
+		a string or bytes value.`),
 }
 
 func BuiltinIsRegexp(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {

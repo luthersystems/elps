@@ -52,22 +52,67 @@ func GetDuration(v *lisp.LVal) (time.Duration, bool) {
 }
 
 var builtins = []*libutil.Builtin{
-	libutil.Function("utc-now", lisp.Formals(), BuiltinUTCNow),
-	libutil.Function("parse-rfc3339", lisp.Formals("timestamp"), BuiltinParseRFC3339),
-	libutil.Function("parse-rfc3339-nano", lisp.Formals("timestamp"), BuiltinParseRFC3339Nano),
-	libutil.Function("format-rfc3339", lisp.Formals("datetime"), BuiltinFormatRFC3339),
-	libutil.Function("format-rfc3339-nano", lisp.Formals("datetime"), BuiltinFormatRFC3339Nano),
-	libutil.Function("time=", lisp.Formals("a", "b"), BuiltinTimeEq),
-	libutil.Function("time<", lisp.Formals("a", "b"), BuiltinTimeLT),
-	libutil.Function("time>", lisp.Formals("a", "b"), BuiltinTimeGT),
-	libutil.Function("time-add", lisp.Formals("datetime", "duration"), BuiltinTimeAdd),
-	libutil.Function("time-elapsed", lisp.Formals("start"), BuiltinElapsed),
-	libutil.Function("time-from", lisp.Formals("start", "end"), BuiltinDurationBetween),
-	libutil.Function("parse-duration", lisp.Formals("duration-string"), BuiltinParseDuration),
-	libutil.Function("duration-s", lisp.Formals("time-duration"), BuiltinDurationSeconds),
-	libutil.Function("duration-ms", lisp.Formals("time-duration"), BuiltinDurationMS),
-	libutil.Function("duration-ns", lisp.Formals("time-duration"), BuiltinDurationNS),
-	libutil.Function("sleep", lisp.Formals("time-duration"), BuiltinSleep),
+	libutil.FunctionDoc("utc-now", lisp.Formals(), BuiltinUTCNow,
+		`Returns the current time in UTC as a native time value. Takes no
+		arguments. Use format-rfc3339 or format-rfc3339-nano to convert
+		the result to a string.`),
+	libutil.FunctionDoc("parse-rfc3339", lisp.Formals("timestamp"), BuiltinParseRFC3339,
+		`Parses an RFC 3339 timestamp string (e.g. "2023-01-15T10:30:00Z")
+		and returns a native time value. Returns an error if the string
+		is not valid RFC 3339 format. For nanosecond precision, use
+		parse-rfc3339-nano.`),
+	libutil.FunctionDoc("parse-rfc3339-nano", lisp.Formals("timestamp"), BuiltinParseRFC3339Nano,
+		`Parses an RFC 3339 timestamp string with nanosecond precision
+		(e.g. "2023-01-15T10:30:00.123456789Z") and returns a native
+		time value. Returns an error if the string is not valid format.`),
+	libutil.FunctionDoc("format-rfc3339", lisp.Formals("datetime"), BuiltinFormatRFC3339,
+		`Formats a native time value as an RFC 3339 string with second
+		precision (e.g. "2023-01-15T10:30:00Z"). Returns a string.
+		The argument must be a native time value from utc-now or
+		parse-rfc3339.`),
+	libutil.FunctionDoc("format-rfc3339-nano", lisp.Formals("datetime"), BuiltinFormatRFC3339Nano,
+		`Formats a native time value as an RFC 3339 string with nanosecond
+		precision (e.g. "2023-01-15T10:30:00.123456789Z"). Returns a
+		string. The argument must be a native time value.`),
+	libutil.FunctionDoc("time=", lisp.Formals("a", "b"), BuiltinTimeEq,
+		`Returns true if the two native time values represent the same
+		instant. Both arguments must be native time values.`),
+	libutil.FunctionDoc("time<", lisp.Formals("a", "b"), BuiltinTimeLT,
+		`Returns true if time a is before time b. Both arguments must
+		be native time values.`),
+	libutil.FunctionDoc("time>", lisp.Formals("a", "b"), BuiltinTimeGT,
+		`Returns true if time a is after time b. Both arguments must
+		be native time values.`),
+	libutil.FunctionDoc("time-add", lisp.Formals("datetime", "duration"), BuiltinTimeAdd,
+		`Returns a new time value equal to datetime plus duration. The
+		first argument must be a native time value and the second must
+		be a native duration value (from parse-duration or time-from).`),
+	libutil.FunctionDoc("time-elapsed", lisp.Formals("start"), BuiltinElapsed,
+		`Returns the duration elapsed since start as a native duration
+		value. Equivalent to (time-from start (utc-now)). The argument
+		must be a native time value.`),
+	libutil.FunctionDoc("time-from", lisp.Formals("start", "end"), BuiltinDurationBetween,
+		`Returns the duration between start and end as a native duration
+		value (end - start). Both arguments must be native time values.
+		The result can be negative if end is before start.`),
+	libutil.FunctionDoc("parse-duration", lisp.Formals("duration-string"), BuiltinParseDuration,
+		`Parses a Go-style duration string and returns a native duration
+		value. Valid units are "ns", "us" (or "µs"), "ms", "s", "m", "h".
+		Examples: "1h30m", "500ms", "2h45m30s". Returns an error if the
+		string cannot be parsed.`),
+	libutil.FunctionDoc("duration-s", lisp.Formals("time-duration"), BuiltinDurationSeconds,
+		`Returns the number of seconds in the duration as a float.
+		The argument must be a native duration value.`),
+	libutil.FunctionDoc("duration-ms", lisp.Formals("time-duration"), BuiltinDurationMS,
+		`Returns the number of milliseconds in the duration as a float.
+		The argument must be a native duration value.`),
+	libutil.FunctionDoc("duration-ns", lisp.Formals("time-duration"), BuiltinDurationNS,
+		`Returns the number of nanoseconds in the duration as an integer.
+		The argument must be a native duration value. Returns an error
+		if the value overflows an int.`),
+	libutil.FunctionDoc("sleep", lisp.Formals("time-duration"), BuiltinSleep,
+		`Pauses execution for the specified duration. The argument must
+		be a native duration value (from parse-duration). Returns nil.`),
 }
 
 func BuiltinUTCNow(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {

@@ -30,8 +30,14 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 }
 
 var builtins = []*libutil.Builtin{
-	libutil.Function("encode", lisp.Formals("data"), builtinEncode),
-	libutil.Function("decode", lisp.Formals("base64-data"), builtinDecode),
+	libutil.FunctionDoc("encode", lisp.Formals("data"), builtinEncode,
+		`Encodes data using standard base64 encoding and returns the
+		result as bytes. The argument may be a string or bytes value.`),
+	libutil.FunctionDoc("decode", lisp.Formals("base64-data"), builtinDecode,
+		`Decodes base64-encoded data and returns the result as bytes.
+		The argument may be a string or bytes value containing valid
+		standard base64. Returns an error if the input is not valid
+		base64.`),
 }
 
 func builtinEncode(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {

@@ -45,14 +45,43 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 // set of package builtin functions that use it.
 func Builtins(s *Serializer) []*libutil.Builtin {
 	return []*libutil.Builtin{
-		libutil.Function("message-bytes", lisp.Formals("json-message"), s.MessageBytesBuiltin),
-		libutil.Function("dump-message", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpMessageBuiltin),
-		libutil.Function("load-message", lisp.Formals("json-message", lisp.KeyArgSymbol, "string-numbers"), s.LoadMessageBuiltin),
-		libutil.Function("dump-bytes", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpBytesBuiltin),
-		libutil.Function("load-bytes", lisp.Formals("json-bytes", lisp.KeyArgSymbol, "string-numbers"), s.LoadBytesBuiltin),
-		libutil.Function("dump-string", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpStringBuiltin),
-		libutil.Function("load-string", lisp.Formals("json-string", lisp.KeyArgSymbol, "string-numbers"), s.LoadStringBuiltin),
-		libutil.Function("use-string-numbers", lisp.Formals("bool"), s.UseStringNumbersBuiltin),
+		libutil.FunctionDoc("message-bytes", lisp.Formals("json-message"), s.MessageBytesBuiltin,
+			`Extracts the raw byte content from a native JSON message object
+			(json.RawMessage). Returns a bytes value. Use this to get the
+			underlying bytes of a message for further processing.`),
+		libutil.FunctionDoc("dump-message", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpMessageBuiltin,
+			`Serializes an ELPS value to a native JSON message object
+			(json.RawMessage) suitable for embedding in Go structures.
+			The :string-numbers keyword controls whether numbers are
+			serialized as JSON strings (default: serializer setting).`),
+		libutil.FunctionDoc("load-message", lisp.Formals("json-message", lisp.KeyArgSymbol, "string-numbers"), s.LoadMessageBuiltin,
+			`Parses a native JSON message object (json.RawMessage) into
+			ELPS values. The :string-numbers keyword controls whether
+			JSON numbers are returned as strings (default: serializer
+			setting).`),
+		libutil.FunctionDoc("dump-bytes", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpBytesBuiltin,
+			`Serializes an ELPS value to JSON and returns the result as
+			bytes. Sorted-maps become JSON objects, arrays become JSON
+			arrays, strings/ints/floats map naturally. The :string-numbers
+			keyword controls whether numbers are serialized as strings.`),
+		libutil.FunctionDoc("load-bytes", lisp.Formals("json-bytes", lisp.KeyArgSymbol, "string-numbers"), s.LoadBytesBuiltin,
+			`Parses a JSON bytes value into ELPS values. JSON objects become
+			sorted-maps, arrays become ELPS arrays, strings/numbers map
+			naturally. The :string-numbers keyword controls whether JSON
+			numbers are returned as strings.`),
+		libutil.FunctionDoc("dump-string", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpStringBuiltin,
+			`Serializes an ELPS value to a JSON string. Like dump-bytes
+			but returns a string instead of bytes. The :string-numbers
+			keyword controls whether numbers are serialized as strings.`),
+		libutil.FunctionDoc("load-string", lisp.Formals("json-string", lisp.KeyArgSymbol, "string-numbers"), s.LoadStringBuiltin,
+			`Parses a JSON string into ELPS values. Like load-bytes but
+			accepts a string argument. The :string-numbers keyword controls
+			whether JSON numbers are returned as strings.`),
+		libutil.FunctionDoc("use-string-numbers", lisp.Formals("bool"), s.UseStringNumbersBuiltin,
+			`Sets the default string-numbers mode for the JSON serializer.
+			When true, numbers are serialized as JSON strings and JSON
+			numbers are parsed as strings. Affects all dump/load functions
+			that don't explicitly pass :string-numbers. Returns nil.`),
 	}
 }
 

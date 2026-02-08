@@ -34,6 +34,7 @@ type builtin struct {
 	formals *lisp.LVal
 	fun     lisp.LBuiltin
 	name    string
+	docs    string
 }
 
 func (fun *builtin) Name() string {
@@ -48,11 +49,29 @@ func (fun *builtin) Eval(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return fun.fun(env, args)
 }
 
+func (fun *builtin) Docstring() string {
+	return fun.docs
+}
+
 var builtins = []*builtin{
-	{lisp.Formals("native-value"), BuiltinString, "string"},
-	{lisp.Formals("native-value"), BuiltinInt, "int"},
-	{lisp.Formals("native-value"), BuiltinFloat, "float"},
-	{lisp.Formals("native-struct", "field-name"), BuiltinStructField, "struct-field"},
+	{lisp.Formals("native-value"), BuiltinString, "string",
+		`Extracts a Go string from a native value and returns it as an
+		ELPS string. The native value must hold a Go string or a type
+		with underlying kind string. Does not convert non-string types
+		to strings (use to-string for that).`},
+	{lisp.Formals("native-value"), BuiltinInt, "int",
+		`Extracts a Go integer from a native value and returns it as an
+		ELPS int. Accepts any native value with an underlying integer
+		kind (signed or unsigned). Returns an error on overflow.`},
+	{lisp.Formals("native-value"), BuiltinFloat, "float",
+		`Extracts a Go float from a native value and returns it as an
+		ELPS float. Accepts native values with underlying kind float32
+		or float64.`},
+	{lisp.Formals("native-struct", "field-name"), BuiltinStructField, "struct-field",
+		`Reads an exported field from a native Go struct value using
+		reflection. field-name is a string or symbol naming the field
+		(must start with an uppercase letter). Returns the field value
+		as a native value. Automatically dereferences pointers.`},
 }
 
 // BuiltinString returns a string held by the native value (it does not convert
