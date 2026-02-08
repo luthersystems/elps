@@ -163,7 +163,7 @@ func RenderPkgExported(w io.Writer, env *lisp.LEnv, query string) error {
 				return fmt.Errorf("function %s: %w", exsym, err)
 			}
 		default:
-			err := renderVal(w, exsym, v)
+			err := renderVal(w, exsym, v, pkg.SymbolDocs[exsym])
 			if err != nil {
 				return fmt.Errorf("variable %s: %w", exsym, err)
 			}
@@ -182,13 +182,34 @@ func RenderVar(w io.Writer, env *lisp.LEnv, sym string) error {
 		return err
 	}
 	if v.Type != lisp.LFun {
-		return renderVal(w, sym, v)
+		return renderVal(w, sym, v, lookupSymbolDoc(env, sym))
 	}
 	return renderFun(w, sym, v)
 }
 
-func renderVal(w io.Writer, sym string, v *lisp.LVal) error {
+// lookupSymbolDoc resolves a symbol's documentation from its package.
+// Handles qualified names (pkg:sym) and unqualified names (current package).
+func lookupSymbolDoc(env *lisp.LEnv, sym string) string {
+	if i := strings.Index(sym, ":"); i >= 0 {
+		pkgName := sym[:i]
+		symName := sym[i+1:]
+		if pkg := env.Runtime.Registry.Packages[pkgName]; pkg != nil {
+			return pkg.SymbolDocs[symName]
+		}
+		return ""
+	}
+	return env.Runtime.Package.SymbolDocs[sym]
+}
+
+func renderVal(w io.Writer, sym string, v *lisp.LVal, doc string) error {
 	_, err := fmt.Fprintf(w, "%v %s %v\n", lisp.GetType(v).Str, sym, v)
+	if err != nil {
+		return err
+	}
+	if doc != "" {
+		cleaned := cleanDocstring(doc)
+		_, err = fmt.Fprintln(w, cleaned)
+	}
 	return err
 }
 

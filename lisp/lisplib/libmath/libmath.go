@@ -26,8 +26,12 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	env.SetPackageDoc(`Mathematical functions: trigonometry, logarithms, exponents, absolute
 		value, floor/ceiling, rounding, and mathematical constants (pi, inf).`)
 	env.PutGlobal(lisp.Symbol("pi"), lisp.Float(math.Pi))
+	env.SetSymbolDoc("pi", "The ratio of a circle's circumference to its diameter (3.14159...).")
 	env.PutGlobal(lisp.Symbol("inf"), lisp.Float(math.Inf(1)))
+	env.SetSymbolDoc("inf", "Positive infinity (IEEE 754).")
 	env.PutGlobal(lisp.Symbol("-inf"), lisp.Float(math.Inf(-1)))
+	env.SetSymbolDoc("-inf", "Negative infinity (IEEE 754).")
+	env.Runtime.Package.Exports("pi", "inf", "-inf")
 	for _, fn := range builtins {
 		env.AddBuiltins(true, fn)
 	}

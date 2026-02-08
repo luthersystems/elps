@@ -160,6 +160,11 @@ func (env *LEnv) SetPackageDoc(doc string) {
 	env.Runtime.Package.Doc = doc
 }
 
+// SetSymbolDoc sets the documentation string for a symbol in the current package.
+func (env *LEnv) SetSymbolDoc(name, doc string) {
+	env.Runtime.Package.SymbolDocs[name] = doc
+}
+
 func (env *LEnv) InPackage(name *LVal) *LVal {
 	if name.Type != LSymbol && name.Type != LString {
 		return env.Errorf("argument cannot be converted to string: %v", name.Type)

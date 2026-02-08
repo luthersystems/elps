@@ -30,19 +30,21 @@ func (r *PackageRegistry) DefinePackage(name string) *Package {
 // Package is a named set of bound symbols.  A package is interpreted code and
 // belongs to the LEnv that creates it.
 type Package struct {
-	Name      string
-	Doc       string
-	Symbols   map[string]*LVal
-	FunNames  map[string]string
-	Externals []string
+	Name       string
+	Doc        string
+	Symbols    map[string]*LVal
+	SymbolDocs map[string]string
+	FunNames   map[string]string
+	Externals  []string
 }
 
 // NewPackage initializes and returns a package with the given name.
 func NewPackage(name string) *Package {
 	return &Package{
-		Name:     name,
-		Symbols:  make(map[string]*LVal),
-		FunNames: make(map[string]string),
+		Name:       name,
+		Symbols:    make(map[string]*LVal),
+		SymbolDocs: make(map[string]string),
+		FunNames:   make(map[string]string),
 	}
 }
 

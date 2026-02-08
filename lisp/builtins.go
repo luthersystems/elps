@@ -80,11 +80,13 @@ var (
 		{"export", Formals(VarArgSymbol, "symbol"), builtinExport,
 			`Marks symbols as exported from the current package, making them
 			available to other packages via use-package. Returns nil.`},
-		{"set", Formals("sym", "val"), builtinSet,
+		{"set", Formals("sym", "val", VarArgSymbol, "docstring"), builtinSet,
 			`Binds val to the quoted symbol sym in the current package scope,
-			creating or overwriting the binding. Returns the bound value. This
-			is the primary way to create top-level bindings. Use set! to mutate
-			an existing binding without risk of accidental creation.`},
+			creating or overwriting the binding. Optional trailing strings set
+			the symbol's documentation (concatenated; empty strings produce
+			paragraph breaks). Returns the bound value. This is the primary
+			way to create top-level bindings. Use set! to mutate an existing
+			binding without risk of accidental creation.`},
 		{"gensym", Formals(), builtinGensym,
 			`Returns a new unique, uninterned symbol. Useful in macros to
 			avoid variable name collisions.`},
@@ -522,6 +524,17 @@ func builtinSet(env *LEnv, v *LVal) *LVal {
 	lerr := env.PutGlobal(v.Cells[0], v.Cells[1])
 	if lerr.Type == LError {
 		return lerr
+	}
+	// Optional trailing doc strings
+	if len(v.Cells) > 2 {
+		var parts []string
+		for _, arg := range v.Cells[2:] {
+			if arg.Type != LString {
+				return env.Errorf("docstring argument is not a string: %v", arg.Type)
+			}
+			parts = append(parts, arg.Str)
+		}
+		env.Runtime.Package.SymbolDocs[v.Cells[0].Str] = JoinDocStrings(parts)
 	}
 	return env.GetGlobal(v.Cells[0])
 }
