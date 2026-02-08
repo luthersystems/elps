@@ -39,19 +39,11 @@ Language overview:
   Error handling uses (handler-bind ...) and (ignore-errors ...).
 
 Standard library packages (use with use-package or qualified names):
-  math      Mathematical functions, constants (pi, inf)
-  string    String manipulation (concat, split, join, upper, lower, ...)
-  json      JSON encoding/decoding
-  regexp    Regular expression matching
-  time      Date/time operations
-  base64    Base64 encoding/decoding
-  testing   Test framework (assert-equal, assert-nil, test, test-let)
-  help      Documentation introspection (doc, doc-string, apropos)
-  golang    Go interop utilities
-  s         Schema type predicates
+  elps doc -l                    List all packages with descriptions
+  elps doc -p <package>          Show all exports in a package
 
 Documentation is built in: use (help 'symbol) in the REPL or elps doc <name>
-from the command line. Use elps doc -p <package> to explore a package.
+from the command line. Use (help-packages) in the REPL to list all packages.
 
 More information:
   Source code:     https://github.com/luthersystems/elps
