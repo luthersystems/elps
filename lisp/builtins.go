@@ -681,7 +681,7 @@ func builtinToBytes(env *LEnv, args *LVal) *LVal {
 		return Bytes([]byte(val.Str))
 	}
 	// TODO:  Allow sequences of integers to be turned into bytes?
-	return env.Errorf("cannot convert type to string: %v", val.Type)
+	return env.Errorf("cannot convert type to bytes: %v", val.Type)
 }
 
 func toString(val *LVal) (string, error) {
@@ -717,7 +717,7 @@ func builtinToInt(env *LEnv, args *LVal) *LVal {
 	case LFloat:
 		return Int(int(val.Float))
 	default:
-		return env.Errorf("cannot convert type to string: %v", val.Type)
+		return env.Errorf("cannot convert type to int: %v", val.Type)
 	}
 }
 
@@ -735,7 +735,7 @@ func builtinToFloat(env *LEnv, args *LVal) *LVal {
 	case LFloat:
 		return val
 	default:
-		return env.Errorf("cannot convert type to string: %v", val.Type)
+		return env.Errorf("cannot convert type to float: %v", val.Type)
 	}
 }
 
@@ -976,7 +976,7 @@ func builtinCompose(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("second argument is not a function: %s", g.Type)
 	}
 	if g.IsSpecialFun() {
-		return env.Errorf("first argument is not a regular function: %v", g.FunType)
+		return env.Errorf("second argument is not a regular function: %v", g.FunType)
 	}
 	formals := g.Cells[0].Copy()
 	gcall := SExpr(make([]*LVal, 0, len(formals.Cells)+1))
