@@ -43,3 +43,6 @@ jobs:
 
       - name: Lint ELPS source
         run: ./elps lint ./...
+
+      - name: Check missing documentation
+        run: ./elps doc -m

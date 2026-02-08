@@ -13,15 +13,42 @@ import (
 // responsible for holding shared environment state, generating identifiers,
 // and writing debugging output to a stream (typically os.Stderr).
 type Runtime struct {
-	Registry *PackageRegistry
-	Package  *Package
-	Stderr   io.Writer
-	Stack    *CallStack
-	Reader   Reader
-	Library  SourceLibrary
-	Profiler Profiler
-	numenv   atomicCounter
-	numsym   atomicCounter
+	Registry       *PackageRegistry
+	Package        *Package
+	Stderr         io.Writer
+	Stack          *CallStack
+	Reader         Reader
+	Library        SourceLibrary
+	Profiler       Profiler
+	conditionStack []*LVal
+	numenv         atomicCounter
+	numsym         atomicCounter
+}
+
+// PushCondition pushes an error onto the condition stack, making it available
+// to rethrow within a handler-bind handler.
+func (r *Runtime) PushCondition(err *LVal) {
+	r.conditionStack = append(r.conditionStack, err)
+}
+
+// PopCondition removes and returns the top condition from the stack.
+func (r *Runtime) PopCondition() *LVal {
+	n := len(r.conditionStack)
+	if n == 0 {
+		return nil
+	}
+	err := r.conditionStack[n-1]
+	r.conditionStack = r.conditionStack[:n-1]
+	return err
+}
+
+// CurrentCondition returns the condition currently being handled, or nil.
+func (r *Runtime) CurrentCondition() *LVal {
+	n := len(r.conditionStack)
+	if n == 0 {
+		return nil
+	}
+	return r.conditionStack[n-1]
 }
 
 // StandardRuntime returns a new Runtime with an empty package registry and

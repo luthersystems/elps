@@ -475,6 +475,65 @@ func buildArityTable() map[string]aritySpec {
 	return table
 }
 
+// AnalyzerRethrowContext warns when `rethrow` is used outside of a
+// `handler-bind` form. At runtime, rethrow can only be called from within a
+// handler-bind handler; calling it elsewhere always produces an error.
+var AnalyzerRethrowContext = &Analyzer{
+	Name: "rethrow-context",
+	Doc:  "Warn when `rethrow` is used outside a `handler-bind` form.\n\n`rethrow` re-raises the current error being handled by handler-bind, preserving the original stack trace. Calling it outside any handler-bind always produces an error at runtime.",
+	Run: func(pass *Pass) error {
+		walkRethrowContext(pass.Exprs, 0, func(sexpr *lisp.LVal) {
+			src := SourceOf(sexpr)
+			pass.Report(Diagnostic{
+				Message: "rethrow used outside handler-bind",
+				Pos:     posFromSource(src.Source),
+				Notes:   []string{"rethrow can only be called from within a handler-bind handler"},
+			})
+		})
+		return nil
+	},
+}
+
+// walkRethrowContext recursively walks the AST, tracking how many
+// handler-bind forms are in scope. When it finds a (rethrow) call with
+// handlerDepth == 0, it calls report.
+func walkRethrowContext(exprs []*lisp.LVal, handlerDepth int, report func(*lisp.LVal)) {
+	for _, expr := range exprs {
+		walkRethrowNode(expr, handlerDepth, report)
+	}
+}
+
+func walkRethrowNode(node *lisp.LVal, handlerDepth int, report func(*lisp.LVal)) {
+	if node == nil {
+		return
+	}
+	if node.Type != lisp.LSExpr || node.Quoted || len(node.Cells) == 0 {
+		for _, child := range node.Cells {
+			walkRethrowNode(child, handlerDepth, report)
+		}
+		return
+	}
+
+	head := HeadSymbol(node)
+
+	if head == "rethrow" && handlerDepth == 0 {
+		report(node)
+		return
+	}
+
+	if head == "handler-bind" {
+		// Walk the bindings (first arg) and body forms with incremented depth.
+		for _, child := range node.Cells[1:] {
+			walkRethrowNode(child, handlerDepth+1, report)
+		}
+		return
+	}
+
+	for _, child := range node.Cells {
+		walkRethrowNode(child, handlerDepth, report)
+	}
+}
+
 // AnalyzerNames returns a sorted list of all default analyzer names.
 func AnalyzerNames() []string {
 	analyzers := DefaultAnalyzers()

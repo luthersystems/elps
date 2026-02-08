@@ -739,6 +739,37 @@ In the above code double-not-number is handled by replacing the `(double x)`
 function call with the value 0, while any other error (like integer overflow)
 will be replaced with the string "ERROR DETECTED".
 
+### Rethrowing Errors
+
+Sometimes a handler needs to perform a side effect (such as logging or
+recording metrics) but still allow the error to propagate.  Using `(apply
+error c args)` to re-raise the error will lose the original stack trace.  The
+`rethrow` function re-raises the current error being handled, preserving the
+original stack trace and condition data.
+
+```lisp
+(handler-bind ((condition (lambda (c &rest args)
+                            (debug-print "error detected:" c)
+                            (rethrow))))
+    (double "abc"))
+; The error propagates with its original stack trace intact.
+```
+
+The `rethrow` function can only be called from within a handler-bind handler.
+It takes no arguments.  Calling `rethrow` outside a handler signals an error.
+
+Rethrown errors can be caught by outer handler-bind forms, allowing layered
+error handling:
+
+```lisp
+(handler-bind ((condition (lambda (c &rest args) (list 'recovered c))))
+    (handler-bind ((condition (lambda (c &rest args)
+                                (debug-print "inner handler logging")
+                                (rethrow))))
+        (error 'my-error "data")))
+; Evaluates to '('recovered 'my-error)
+```
+
 There is one final form of error handling, though its use is highly
 discouraged.  If one finds themselves handling all errors and inserting a nil
 value with an expression that looks like the following:

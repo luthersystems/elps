@@ -682,10 +682,14 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 				if hval.Type != LFun {
 					return env.Errorf("handler not a function for condition type %s: %v", sym.Str, hval.Type)
 				}
+				// Make the original error available to rethrow.
+				env.Runtime.PushCondition(val)
 				// Is this a Terminal expression? Probably not...
 				expr := []*LVal{hval, Quote(Symbol(val.Str))}
 				expr = append(expr, val.Copy().Cells...)
-				return env.Eval(SExpr(expr))
+				result := env.Eval(SExpr(expr))
+				env.Runtime.PopCondition()
+				return result
 			}
 			return val
 		}

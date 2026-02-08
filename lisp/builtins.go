@@ -124,6 +124,12 @@ var (
 			`Signals an error with the given condition name (a symbol or
 			string) and optional data arguments. The condition can be caught
 			by handler-bind.`},
+		{"rethrow", Formals(), builtinRethrow,
+			`Re-throws the current error being handled by handler-bind,
+			preserving the original stack trace. Can only be called from
+			within a handler-bind handler. Use this instead of (apply error
+			condition args) when you want to perform side effects (such as
+			logging) but still propagate the original error unchanged.`},
 		{"car", Formals("lis"), builtinCAR,
 			`Returns the first element of a list, or nil if empty.`},
 		{"cdr", Formals("lis"), builtinCDR,
@@ -758,6 +764,14 @@ func builtinError(env *LEnv, args *LVal) *LVal {
 		iargs[i] = arg
 	}
 	return env.ErrorCondition(condition.Str, iargs...)
+}
+
+func builtinRethrow(env *LEnv, args *LVal) *LVal {
+	cond := env.Runtime.CurrentCondition()
+	if cond == nil {
+		return env.Errorf("rethrow: not inside a handler-bind handler")
+	}
+	return cond
 }
 
 func builtinCAR(env *LEnv, args *LVal) *LVal {
