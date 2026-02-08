@@ -10,15 +10,33 @@ import (
 
 var userMacros []*langBuiltin
 var langMacros = []*langBuiltin{
-	{"defmacro", Formals("name", "formals", "expr"), macroDefmacro, ""},
+	{"defmacro", Formals("name", "formals", "expr"), macroDefmacro,
+		`Defines a named macro in the current package. The body receives
+		unevaluated forms and must return a form to be evaluated at the
+		call site. Use quasiquote/unquote to construct the expansion.`},
 	{"defun", Formals("name", "formals", VarArgSymbol, "expr"), macroDefun,
 		`Defines a named function in the current package.`},
-	{"deftype", Formals("name", "constructor-formals", VarArgSymbol, "constructor-exprs"), macroDeftype, ""},
-	{"curry-function", Formals("fun", VarArgSymbol, "args"), macroCurryFun, ""},
+	{"deftype", Formals("name", "constructor-formals", VarArgSymbol, "constructor-exprs"), macroDeftype,
+		`Defines a tagged type constructor bound to name in the current
+		package. The formals and body define a constructor function that
+		computes user data for new instances created with (new name ...).
+		Returns the qualified type symbol.`},
+	{"curry-function", Formals("fun", VarArgSymbol, "args"), macroCurryFun,
+		`Returns a new function that calls fun with args prepended to any
+		additional arguments supplied at call time. Equivalent to
+		(lambda (&rest rest) (apply fun arg1 arg2 ... rest)).`},
 	// get-default is a macro because we only want to evaluate the expression
 	// bound to default if the key doesn't exist in the map.
-	{"get-default", Formals("map", "key", "default"), macroGetDefault, ""},
-	{"trace", Formals("expr", OptArgSymbol, "message"), macroTrace, ""},
+	{"get-default", Formals("map", "key", "default"), macroGetDefault,
+		`Looks up key in a sorted-map, returning the associated value if
+		found. If the key is not present, evaluates and returns default.
+		The default expression is only evaluated when the key is missing
+		(lazy evaluation).`},
+	{"trace", Formals("expr", OptArgSymbol, "message"), macroTrace,
+		`Evaluates expr, prints the result to stderr prefixed by message
+		(default "TRACE") using debug-print, then returns the result.
+		The expression is evaluated exactly once. Useful for debugging
+		without altering control flow.`},
 }
 
 // RegisterDefaultMacro adds the given function to the list returned by

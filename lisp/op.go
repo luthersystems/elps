@@ -11,30 +11,111 @@ import (
 
 var userSpecialOps []*langBuiltin
 var langSpecialOps = []*langBuiltin{
-	{"function", Formals("name"), opFunction, ""},
-	{"set!", Formals("name", "expr"), opSetUpdate, ""},
-	{"assert", Formals("expr", VarArgSymbol, "message-format-args"), opAssert, ""},
-	{"quote", Formals("expr"), opQuote, ""},
-	{"quasiquote", Formals("expr"), opQuasiquote, ""},
+	{"function", Formals("name"), opFunction,
+		`Returns the function bound to the given symbol without calling
+		it. This is the operator behind the #' reader macro. Signals an
+		error if the symbol is not bound to a function.`},
+	{"set!", Formals("name", "expr"), opSetUpdate,
+		`Mutates an existing variable binding. Evaluates expr and updates
+		the binding of the quoted symbol name. Signals an error if the
+		symbol is not already bound in any enclosing scope or the current
+		package. Cannot rebind the constants true and false.`},
+	{"assert", Formals("expr", VarArgSymbol, "message-format-args"), opAssert,
+		`Evaluates the test expression and signals an error if the result
+		is falsey. An optional format string and arguments (evaluated only
+		on failure) customize the error message using {} placeholders.`},
+	{"quote", Formals("expr"), opQuote,
+		`Returns its argument unevaluated. This is the operator behind
+		the ' prefix syntax.`},
+	{"quasiquote", Formals("expr"), opQuasiquote,
+		`Returns a quoted template in which (unquote expr) forms are
+		evaluated and spliced in, and (unquote-splicing expr) forms are
+		evaluated and their list elements are spliced in. All other
+		subexpressions remain unevaluated.`},
 	{"lambda", Formals("formals", VarArgSymbol, "expr"), opLambda,
-		`Returns an anonymous function.`},
-	{"expr", Formals("pattern"), opExpr, ""},
-	{"thread-first", Formals("value", VarArgSymbol, "exprs"), opThreadFirst, ""},
-	{"thread-last", Formals("value", VarArgSymbol, "exprs"), opThreadLast, ""},
-	{"dotimes", Formals("control-sequence", VarArgSymbol, "exprs"), opDoTimes, ""},
-	{"labels", Formals("bindings", VarArgSymbol, "expr"), opLabels, ""},
-	{"macrolet", Formals("bindings", VarArgSymbol, "expr"), opMacrolet, ""},
-	{"flet", Formals("bindings", VarArgSymbol, "expr"), opFlet, ""},
-	{"let*", Formals("bindings", VarArgSymbol, "expr"), opLetSeq, ""},
-	{"let", Formals("bindings", VarArgSymbol, "expr"), opLet, ""},
-	{"progn", Formals(VarArgSymbol, "expr"), opProgn, ""},
-	{"handler-bind", Formals("bindings", VarArgSymbol, "forms"), opHandlerBind, ""},
-	{"ignore-errors", Formals(VarArgSymbol, "exprs"), opIgnoreErrors, ""},
-	{"cond", Formals(VarArgSymbol, "branch"), opCond, ""},
-	{"if", Formals("condition", "then", "else"), opIf, ""},
-	{"or", Formals(VarArgSymbol, "expr"), opOr, ""},
-	{"and", Formals(VarArgSymbol, "expr"), opAnd, ""},
-	{"qualified-symbol", Formals("symbol"), opQualifiedSymbol, ""},
+		`Returns an anonymous function. Formals is a list of parameter
+		names that may include &optional, &rest, and &key markers.
+		The body expressions are evaluated in order and the last value
+		is returned. A string literal as the first body expression
+		serves as a documentation string.`},
+	{"expr", Formals("pattern"), opExpr,
+		`Creates an anonymous function from a template using positional
+		placeholders: %% for a single argument, %%1 %%2 etc. for numbered
+		arguments, %%&rest for variadic arguments. Returns a lambda
+		whose formals are derived from the placeholders.`},
+	{"thread-first", Formals("value", VarArgSymbol, "exprs"), opThreadFirst,
+		`Threads a value through a series of function calls by inserting
+		it as the first argument after the function name in each form.
+		Evaluates the initial value, then passes it through each
+		subsequent form. Returns the result of the final form.`},
+	{"thread-last", Formals("value", VarArgSymbol, "exprs"), opThreadLast,
+		`Threads a value through a series of function calls by inserting
+		it as the last argument in each form. Evaluates the initial
+		value, then passes it through each subsequent form. Returns
+		the result of the final form.`},
+	{"dotimes", Formals("control-sequence", VarArgSymbol, "exprs"), opDoTimes,
+		`Iterates a body a fixed number of times. The control-sequence is
+		(symbol count [result]) where count evaluates to an integer. The
+		body is evaluated count times with symbol bound to 0, 1, ...,
+		count-1. Returns the result expression (or () if omitted).`},
+	{"labels", Formals("bindings", VarArgSymbol, "expr"), opLabels,
+		`Binds locally-scoped named functions and evaluates the body.
+		Each binding has the form (name formals &rest body). Unlike flet,
+		all functions share the same scope so they may call each other
+		and themselves recursively. Returns the last body value.`},
+	{"macrolet", Formals("bindings", VarArgSymbol, "expr"), opMacrolet,
+		`Binds locally-scoped macros and evaluates the body. Each binding
+		has the form (name formals &rest body). The macros do not share
+		scope with each other. Returns the last body value.`},
+	{"flet", Formals("bindings", VarArgSymbol, "expr"), opFlet,
+		`Binds locally-scoped named functions and evaluates the body.
+		Each binding has the form (name formals &rest body). Functions
+		cannot reference each other or recurse by name. Use labels for
+		mutual or self-recursion. Returns the last body value.`},
+	{"let*", Formals("bindings", VarArgSymbol, "expr"), opLetSeq,
+		`Creates local variable bindings evaluated sequentially, so each
+		binding can refer to previously bound symbols. The first argument
+		is a list of [symbol value] pairs. Returns the last body value.`},
+	{"let", Formals("bindings", VarArgSymbol, "expr"), opLet,
+		`Creates local variable bindings evaluated in parallel. All value
+		expressions are evaluated in the enclosing scope before any
+		bindings are established. The first argument is a list of
+		[symbol value] pairs. Returns the last body value.`},
+	{"progn", Formals(VarArgSymbol, "expr"), opProgn,
+		`Evaluates its body forms sequentially and returns the value of
+		the last form. Returns () if no forms are given.`},
+	{"handler-bind", Formals("bindings", VarArgSymbol, "forms"), opHandlerBind,
+		`Evaluates body forms with condition handlers in scope. The first
+		argument is a list of (condition-type handler-fn) pairs. If a
+		body form signals an error matching a condition type, the handler
+		is called with the condition name and error data. Use the symbol
+		'condition' to match any error.`},
+	{"ignore-errors", Formals(VarArgSymbol, "exprs"), opIgnoreErrors,
+		`Evaluates body forms sequentially. If any form signals an error,
+		evaluation stops and () is returned instead of propagating the
+		error. Returns the last value if no error occurs.`},
+	{"cond", Formals(VarArgSymbol, "branch"), opCond,
+		`Multi-way conditional. Each branch is a clause (test &rest body).
+		Clauses are evaluated in order: for the first truthy test, the
+		body forms are evaluated and the last value returned. Use 'else'
+		as the test in the final clause to match unconditionally. Returns
+		() if no clause matches.`},
+	{"if", Formals("condition", "then", "else"), opIf,
+		`Conditional branch. Evaluates condition; if truthy, evaluates
+		and returns then, otherwise evaluates and returns else. All three
+		arguments are required. Only one branch is evaluated.`},
+	{"or", Formals(VarArgSymbol, "expr"), opOr,
+		`Short-circuit logical disjunction. Evaluates arguments left to
+		right and returns the first truthy value. If no argument is
+		truthy, returns the last value. Returns false with no arguments.`},
+	{"and", Formals(VarArgSymbol, "expr"), opAnd,
+		`Short-circuit logical conjunction. Evaluates arguments left to
+		right and returns the first falsey value. If all arguments are
+		truthy, returns the last value. Returns true with no arguments.`},
+	{"qualified-symbol", Formals("symbol"), opQualifiedSymbol,
+		`Returns a quoted package-qualified symbol. If the symbol is
+		already qualified (contains a colon), returns it as-is. Otherwise
+		prepends the current package name (e.g. user:name).`},
 }
 
 // RegisterDefaultSpecialOp adds the given function to the list returned by

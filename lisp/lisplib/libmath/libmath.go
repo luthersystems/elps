@@ -33,26 +33,64 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 }
 
 var builtins = []*libutil.Builtin{
-	libutil.Function("nan?", lisp.Formals("number"), builtinIsNaN),
-	libutil.Function("abs", lisp.Formals("number"), builtinAbs),
-	libutil.Function("ceil", lisp.Formals("number"), builtinCeil),
-	libutil.Function("floor", lisp.Formals("number"), builtinFloor),
-	libutil.Function("sqrt", lisp.Formals("number"), builtinSqrt),
-	libutil.Function("exp", lisp.Formals("number"), builtinExp),
-	libutil.Function("ln", lisp.Formals("number"), builtinLn),
-	libutil.Function("log", lisp.Formals("base", "number"), builtinLog),
-	libutil.Function("sin", lisp.Formals("radians"), builtinSin),
-	libutil.Function("sinh", lisp.Formals("radians"), builtinSinh),
-	libutil.Function("asin", lisp.Formals("radians"), builtinAsin),
-	libutil.Function("asinh", lisp.Formals("radians"), builtinAsinh),
-	libutil.Function("cos", lisp.Formals("radians"), builtinCos),
-	libutil.Function("cosh", lisp.Formals("radians"), builtinCosh),
-	libutil.Function("acos", lisp.Formals("radians"), builtinAcos),
-	libutil.Function("acosh", lisp.Formals("radians"), builtinAcosh),
-	libutil.Function("tan", lisp.Formals("radians"), builtinTan),
-	libutil.Function("tanh", lisp.Formals("radians"), builtinTanh),
-	libutil.Function("atan", lisp.Formals("radians", lisp.OptArgSymbol, "quotient"), builtinAtan),
-	libutil.Function("atanh", lisp.Formals("radians"), builtinAtanh),
+	libutil.FunctionDoc("nan?", lisp.Formals("number"), builtinIsNaN,
+		`Returns true if number is IEEE 754 NaN (not-a-number). Integers
+		always return false. Returns an error if the argument is not
+		a number.`),
+	libutil.FunctionDoc("abs", lisp.Formals("number"), builtinAbs,
+		`Returns the absolute value of number. Preserves the type: an int
+		argument returns an int, a float returns a float. Returns an
+		error on integer overflow (min-int).`),
+	libutil.FunctionDoc("ceil", lisp.Formals("number"), builtinCeil,
+		`Returns the smallest float not less than number (rounds toward
+		positive infinity). Integers are returned unchanged. The result
+		is always a float for float input.`),
+	libutil.FunctionDoc("floor", lisp.Formals("number"), builtinFloor,
+		`Returns the largest float not greater than number (rounds toward
+		negative infinity). Integers are returned unchanged. The result
+		is always a float for float input.`),
+	libutil.FunctionDoc("sqrt", lisp.Formals("number"), builtinSqrt,
+		`Returns the square root of number as a float. Accepts int or
+		float arguments.`),
+	libutil.FunctionDoc("exp", lisp.Formals("number"), builtinExp,
+		`Returns e raised to the power of number (e^x) as a float.
+		Accepts int or float arguments.`),
+	libutil.FunctionDoc("ln", lisp.Formals("number"), builtinLn,
+		`Returns the natural logarithm (base e) of number as a float.
+		Accepts int or float arguments.`),
+	libutil.FunctionDoc("log", lisp.Formals("base", "number"), builtinLog,
+		`Returns the logarithm of number in the given base as a float.
+		Both arguments must be numbers. Computed as ln(number)/ln(base).`),
+	libutil.FunctionDoc("sin", lisp.Formals("radians"), builtinSin,
+		`Returns the sine of radians as a float.`),
+	libutil.FunctionDoc("sinh", lisp.Formals("radians"), builtinSinh,
+		`Returns the hyperbolic sine of radians as a float.`),
+	libutil.FunctionDoc("asin", lisp.Formals("radians"), builtinAsin,
+		`Returns the arcsine (inverse sine) in radians as a float.
+		The argument must be in the range [-1, 1].`),
+	libutil.FunctionDoc("asinh", lisp.Formals("radians"), builtinAsinh,
+		`Returns the inverse hyperbolic sine as a float.`),
+	libutil.FunctionDoc("cos", lisp.Formals("radians"), builtinCos,
+		`Returns the cosine of radians as a float.`),
+	libutil.FunctionDoc("cosh", lisp.Formals("radians"), builtinCosh,
+		`Returns the hyperbolic cosine of radians as a float.`),
+	libutil.FunctionDoc("acos", lisp.Formals("radians"), builtinAcos,
+		`Returns the arccosine (inverse cosine) in radians as a float.
+		The argument must be in the range [-1, 1].`),
+	libutil.FunctionDoc("acosh", lisp.Formals("radians"), builtinAcosh,
+		`Returns the inverse hyperbolic cosine as a float. The argument
+		must be >= 1.`),
+	libutil.FunctionDoc("tan", lisp.Formals("radians"), builtinTan,
+		`Returns the tangent of radians as a float.`),
+	libutil.FunctionDoc("tanh", lisp.Formals("radians"), builtinTanh,
+		`Returns the hyperbolic tangent of radians as a float.`),
+	libutil.FunctionDoc("atan", lisp.Formals("radians", lisp.OptArgSymbol, "quotient"), builtinAtan,
+		`Returns the arctangent as a float. With one argument, returns
+		atan(radians). With two arguments, returns atan2(radians,
+		quotient), computing the angle in the correct quadrant.`),
+	libutil.FunctionDoc("atanh", lisp.Formals("radians"), builtinAtanh,
+		`Returns the inverse hyperbolic tangent as a float. The argument
+		must be in the range (-1, 1).`),
 }
 
 func builtinIsNaN(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {

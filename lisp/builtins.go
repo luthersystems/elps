@@ -58,119 +58,314 @@ func (fun *langBuiltin) Docstring() string {
 var (
 	userBuiltins []*langBuiltin
 	langBuiltins = []*langBuiltin{
-		{"load-string", Formals("source-code", KeyArgSymbol, "name"), builtinLoadString, ""},
-		{"load-bytes", Formals("source-code", KeyArgSymbol, "name"), builtinLoadBytes, ""},
-		{"load-file", Formals("source-location"), builtinLoadFile, ""},
-		{"in-package", Formals("package-name"), builtinInPackage, ""},
-		{"use-package", Formals(VarArgSymbol, "package-name"), builtinUsePackage, ""},
-		{"export", Formals(VarArgSymbol, "symbol"), builtinExport, ""},
-		{"set", Formals("sym", "val"), builtinSet, ""},
-		{"gensym", Formals(), builtinGensym, ""},
-		{"identity", Formals("value"), builtinIdentity, ""},
-		{"macroexpand", Formals("quoted-form"), builtinMacroExpand, ""},
-		{"macroexpand-1", Formals("quoted-form"), builtinMacroExpand1, ""},
-		{"funcall", Formals("fun", VarArgSymbol, "args"), builtinFunCall, ""},
-		{"apply", Formals("fun", VarArgSymbol, "args"), builtinApply, ""},
-		{"to-string", Formals("value"), builtinToString, ""},
-		{"to-bytes", Formals("value"), builtinToBytes, ""},
-		{"to-int", Formals("value"), builtinToInt, ""},
-		{"to-float", Formals("value"), builtinToFloat, ""},
-		{"eval", Formals("expr"), builtinEval, ""},
-		{"error", Formals("condition", VarArgSymbol, "args"), builtinError, ""},
-		{"car", Formals("lis"), builtinCAR, ""},
-		{"cdr", Formals("lis"), builtinCDR, ""},
-		{"rest", Formals("lis"), builtinRest, ""},
-		{"first", Formals("seq"), builtinFirst, ""},
-		{"second", Formals("seq"), builtinSecond, ""},
-		{"nth", Formals("seq", "n"), builtinNth, ""},
+		{"load-string", Formals("source-code", KeyArgSymbol, "name"), builtinLoadString,
+			`Parses and evaluates source-code (a string) as ELPS source. The
+			optional :name keyword provides a label for error messages.
+			Returns the result of the last evaluated expression.`},
+		{"load-bytes", Formals("source-code", KeyArgSymbol, "name"), builtinLoadBytes,
+			`Parses and evaluates source-code (a bytes value) as ELPS source.
+			The optional :name keyword provides a label for error messages.
+			Returns the result of the last evaluated expression.`},
+		{"load-file", Formals("source-location"), builtinLoadFile,
+			`Loads and evaluates the ELPS source file at source-location.
+			Returns the result of the last evaluated expression.`},
+		{"in-package", Formals("package-name"), builtinInPackage,
+			`Switches the current package to package-name, creating it if it
+			does not exist. Returns nil.`},
+		{"use-package", Formals(VarArgSymbol, "package-name"), builtinUsePackage,
+			`Imports all exported symbols from the named packages into the
+			current package. Returns nil.`},
+		{"export", Formals(VarArgSymbol, "symbol"), builtinExport,
+			`Marks symbols as exported from the current package, making them
+			available to other packages via use-package. Returns nil.`},
+		{"set", Formals("sym", "val"), builtinSet,
+			`Binds val to the quoted symbol sym in the current package scope,
+			creating or overwriting the binding. Returns the bound value. This
+			is the primary way to create top-level bindings. Use set! to mutate
+			an existing binding without risk of accidental creation.`},
+		{"gensym", Formals(), builtinGensym,
+			`Returns a new unique, uninterned symbol. Useful in macros to
+			avoid variable name collisions.`},
+		{"identity", Formals("value"), builtinIdentity,
+			`Returns its argument unchanged.`},
+		{"macroexpand", Formals("quoted-form"), builtinMacroExpand,
+			`Repeatedly expands the macro call in quoted-form until the head
+			is no longer a macro. Returns the fully expanded form.`},
+		{"macroexpand-1", Formals("quoted-form"), builtinMacroExpand1,
+			`Performs a single macro expansion step on quoted-form and returns
+			the result. Useful for debugging macro expansion.`},
+		{"funcall", Formals("fun", VarArgSymbol, "args"), builtinFunCall,
+			`Calls fun with the given args and returns the result. Cannot be
+			used with special operators or macros.`},
+		{"apply", Formals("fun", VarArgSymbol, "args"), builtinApply,
+			`Calls fun with arguments formed by appending the last argument
+			(which must be a list) to any preceding arguments. For example,
+			(apply f 1 2 '(3 4)) calls f with arguments 1 2 3 4.`},
+		{"to-string", Formals("value"), builtinToString,
+			`Converts value to its string representation. Accepts strings,
+			symbols, bytes, integers, and floats.`},
+		{"to-bytes", Formals("value"), builtinToBytes,
+			`Converts value to a bytes value. Accepts strings (encoded as
+			UTF-8) and bytes (returned as-is).`},
+		{"to-int", Formals("value"), builtinToInt,
+			`Converts value to an integer. Accepts strings (parsed as
+			decimal), integers (returned as-is), and floats (truncated).`},
+		{"to-float", Formals("value"), builtinToFloat,
+			`Converts value to a float. Accepts strings (parsed), floats
+			(returned as-is), and integers (widened).`},
+		{"eval", Formals("expr"), builtinEval,
+			`Evaluates expr in the current environment and returns the result.
+			Quoted values are unquoted one level before evaluation.`},
+		{"error", Formals("condition", VarArgSymbol, "args"), builtinError,
+			`Signals an error with the given condition name (a symbol or
+			string) and optional data arguments. The condition can be caught
+			by handler-bind.`},
+		{"car", Formals("lis"), builtinCAR,
+			`Returns the first element of a list, or nil if empty.`},
+		{"cdr", Formals("lis"), builtinCDR,
+			`Returns a list of all elements except the first, or nil if the
+			list has fewer than two elements.`},
+		{"rest", Formals("lis"), builtinRest,
+			`Returns a list of all elements except the first. Accepts lists
+			and vectors. Returns nil if fewer than two elements.`},
+		{"first", Formals("seq"), builtinFirst,
+			`Returns the first element of a sequence (list or vector), or nil
+			if empty.`},
+		{"second", Formals("seq"), builtinSecond,
+			`Returns the second element of a sequence (list or vector), or nil
+			if fewer than two elements.`},
+		{"nth", Formals("seq", "n"), builtinNth,
+			`Returns the element at zero-based index n in a sequence, or nil
+			if n is out of bounds.`},
 		{
 			"map", Formals("type-specifier", "fn", "seq"), builtinMap,
-			`
-		Returns a sequence containing values returned by applying unary
-		function fn to elements of seq in order.
-		`,
+			`Returns a sequence containing values returned by applying unary
+			function fn to elements of seq in order. The type-specifier
+			('list or 'vector) determines the return type.`,
 		},
-		{"foldl", Formals("fn", "z", "seq"), builtinFoldLeft, ""},
-		{"foldr", Formals("fn", "z", "seq"), builtinFoldRight, ""},
-		{"compose", Formals("f", "g"), builtinCompose, ""},
-		{"unpack", Formals("f", "lis"), builtinUnpack, ""},
-		{"flip", Formals("binary-function"), builtinFlip, ""},
-		{"assoc", Formals("map", "key", "value"), builtinAssoc, ""},
-		{"assoc!", Formals("map", "key", "value"), builtinAssocMutate, ""},
-		{"dissoc", Formals("map", "key"), builtinDissoc, ""},
-		{"dissoc!", Formals("map", "key"), builtinDissocMutate, ""},
-		{"get", Formals("map", "key"), builtinGet, ""},
-		{"keys", Formals("map"), builtinKeys, ""},
-		{"key?", Formals("map", "key"), builtinIsKey, ""},
-		{"sorted-map", Formals(VarArgSymbol, "args"), builtinSortedMap, ""},
-		{"concat", Formals("type-specifier", VarArgSymbol, "args"), builtinConcat, ""},
-		{"insert-index", Formals("type-specifier", "seq", "index", "item"), builtinInsertIndex, ""},
-		{"stable-sort", Formals("less-predicate", "list", VarArgSymbol, "key-fun"), builtinSortStable, ""},
-		{"insert-sorted", Formals("type-specifier", "list", "predicate", "item", VarArgSymbol, "key-fun"), builtinInsertSorted, ""},
-		{"search-sorted", Formals("n", "predicate"), builtinSearchSorted, ""},
-		{"select", Formals("type-specifier", "predicate", "seq"), builtinSelect, ""},
-		{"reject", Formals("type-specifier", "predicate", "seq"), builtinReject, ""},
-		{"zip", Formals("type-specifier", "list", VarArgSymbol, "lists"), builtinZip, ""},
-		{"make-sequence", Formals("start", "stop", VarArgSymbol, "step"), builtinMakeSequence, ""},
-		{"format-string", Formals("format", VarArgSymbol, "values"), builtinFormatString, ""},
-		{"reverse", Formals("type-specifier", "seq"), builtinReverse, ""},
-		{"slice", Formals("type-specifier", "seq", "start", "end"), builtinSlice, ""},
-		{"list", Formals(VarArgSymbol, "args"), builtinList, ""},
-		{"vector", Formals(VarArgSymbol, "args"), builtinVector, ""},
-		{"append!", Formals("vec", VarArgSymbol, "values"), builtinAppendMutate, ""},
-		{"append", Formals("type-specifier", "vec", VarArgSymbol, "values"), builtinAppend, ""},
-		{"append-bytes!", Formals("bytes", "values"), builtinAppendBytesMutate, ""},
+		{"foldl", Formals("fn", "z", "seq"), builtinFoldLeft,
+			`Left-folds seq with binary function fn starting from accumulator
+			z. Calls (fn acc elem) for each element left to right, threading
+			the result. Returns z if seq is empty.`},
+		{"foldr", Formals("fn", "z", "seq"), builtinFoldRight,
+			`Right-folds seq with binary function fn starting from accumulator
+			z. Calls (fn elem acc) for each element right to left, threading
+			the result. Returns z if seq is empty.`},
+		{"compose", Formals("f", "g"), builtinCompose,
+			`Returns a new function that applies g to its arguments, then
+			applies f to the result. (compose f g) is equivalent to
+			(lambda (...) (f (g ...))).`},
+		{"unpack", Formals("f", "lis"), builtinUnpack,
+			`Calls f with the elements of lis as individual arguments.
+			Equivalent to (apply f lis).`},
+		{"flip", Formals("binary-function"), builtinFlip,
+			`Returns a new function that calls binary-function with its two
+			arguments swapped.`},
+		{"assoc", Formals("map", "key", "value"), builtinAssoc,
+			`Returns a new sorted-map with key set to value, without
+			modifying the original. If map is nil, creates a new map.`},
+		{"assoc!", Formals("map", "key", "value"), builtinAssocMutate,
+			`Sets key to value in map, mutating it in place, and returns the
+			modified map.`},
+		{"dissoc", Formals("map", "key"), builtinDissoc,
+			`Returns a new sorted-map with key removed, without modifying the
+			original.`},
+		{"dissoc!", Formals("map", "key"), builtinDissocMutate,
+			`Removes key from map, mutating it in place, and returns the
+			modified map.`},
+		{"get", Formals("map", "key"), builtinGet,
+			`Returns the value associated with key in a sorted-map, or nil if
+			the key is not present or map is nil.`},
+		{"keys", Formals("map"), builtinKeys,
+			`Returns a list of all keys in a sorted-map in sorted order.`},
+		{"key?", Formals("map", "key"), builtinIsKey,
+			`Returns true if key exists in the sorted-map, false otherwise.`},
+		{"sorted-map", Formals(VarArgSymbol, "args"), builtinSortedMap,
+			`Creates a new sorted-map from alternating key-value pairs. For
+			example, (sorted-map :a 1 :b 2). Keys are maintained in sorted
+			order.`},
+		{"concat", Formals("type-specifier", VarArgSymbol, "args"), builtinConcat,
+			`Concatenates sequences into one of the specified type. Accepts
+			'list, 'vector, 'string, or 'bytes as type-specifier.`},
+		{"insert-index", Formals("type-specifier", "seq", "index", "item"), builtinInsertIndex,
+			`Returns a new sequence with item inserted at the given index.
+			The type-specifier ('list or 'vector) determines the return type.`},
+		{"stable-sort", Formals("less-predicate", "list", VarArgSymbol, "key-fun"), builtinSortStable,
+			`Sorts list in-place using the binary less-predicate and returns
+			the mutated list. The sort is stable. An optional key-fun
+			extracts comparison keys from elements.`},
+		{"insert-sorted", Formals("type-specifier", "list", "predicate", "item", VarArgSymbol, "key-fun"), builtinInsertSorted,
+			`Returns a new sequence with item inserted at its sorted position
+			according to predicate. An optional key-fun extracts comparison
+			keys from elements.`},
+		{"search-sorted", Formals("n", "predicate"), builtinSearchSorted,
+			`Returns the smallest index i in [0, n) for which predicate
+			returns true, using binary search. Equivalent to Go's
+			sort.Search.`},
+		{"select", Formals("type-specifier", "predicate", "seq"), builtinSelect,
+			`Returns a new sequence containing only elements for which
+			predicate returns truthy. The type-specifier ('list or 'vector)
+			determines the return type.`},
+		{"reject", Formals("type-specifier", "predicate", "seq"), builtinReject,
+			`Returns a new sequence containing only elements for which
+			predicate returns falsey. The type-specifier ('list or 'vector)
+			determines the return type.`},
+		{"zip", Formals("type-specifier", "list", VarArgSymbol, "lists"), builtinZip,
+			`Returns a sequence of sequences, where the i-th inner sequence
+			contains the i-th element from each input list. Truncated to the
+			shortest input.`},
+		{"make-sequence", Formals("start", "stop", VarArgSymbol, "step"), builtinMakeSequence,
+			`Returns a list of numbers from start (inclusive) to stop
+			(exclusive), incrementing by step (default 1).`},
+		{"format-string", Formals("format", VarArgSymbol, "values"), builtinFormatString,
+			`Returns a string by replacing {} placeholders in the format
+			string with the corresponding values. Strings are interpolated
+			without quotes. Use {{ and }} for literal braces.`},
+		{"reverse", Formals("type-specifier", "seq"), builtinReverse,
+			`Returns a new sequence with elements in reverse order. The
+			type-specifier ('list or 'vector) determines the return type.`},
+		{"slice", Formals("type-specifier", "seq", "start", "end"), builtinSlice,
+			`Returns a subsequence from index start (inclusive) to end
+			(exclusive). Accepts lists, vectors, strings, and bytes.`},
+		{"list", Formals(VarArgSymbol, "args"), builtinList,
+			`Returns a new list containing all the given arguments.`},
+		{"vector", Formals(VarArgSymbol, "args"), builtinVector,
+			`Returns a new one-dimensional array (vector) containing all the
+			given arguments.`},
+		{"append!", Formals("vec", VarArgSymbol, "values"), builtinAppendMutate,
+			`Appends values to vec, mutating it in place. Returns the
+			modified vector.`},
+		{"append", Formals("type-specifier", "vec", VarArgSymbol, "values"), builtinAppend,
+			`Returns a new sequence with values appended to vec. The
+			type-specifier ('list, 'vector, or 'bytes) determines the return
+			type. Does not mutate the original.`},
+		{"append-bytes!", Formals("bytes", "values"), builtinAppendBytesMutate,
+			`Appends values to bytes, mutating it in place. Values can be a
+			string, bytes, or list of integers. Returns the modified bytes.`},
 		// NOTE:  ``append-bytes'' does not accept a type-specifier argument
 		// because 'string would be equivalent to (concat 'string ...)
-		{"append-bytes", Formals("bytes", "byte-sequence"), builtinAppendBytes, ""},
-		{"aref", Formals("a", VarArgSymbol, "indices"), builtinARef, ""},
-		{"length", Formals("seq"), builtinLength, ""},
-		{"empty?", Formals("seq"), builtinIsEmpty, ""},
-		{"cons", Formals("head", "tail"), builtinCons, ""},
-		{"not", Formals("expr"), builtinNot, ""},
+		{"append-bytes", Formals("bytes", "byte-sequence"), builtinAppendBytes,
+			`Returns new bytes with byte-sequence appended. The byte-sequence
+			can be a string, bytes, or list of integers.`},
+		{"aref", Formals("a", VarArgSymbol, "indices"), builtinARef,
+			`Returns the element at the given indices in an array. Multiple
+			indices access multi-dimensional arrays.`},
+		{"length", Formals("seq"), builtinLength,
+			`Returns the number of elements in a sequence. Accepts lists,
+			vectors, sorted-maps, strings, and bytes.`},
+		{"empty?", Formals("seq"), builtinIsEmpty,
+			`Returns true if the sequence has zero elements, false otherwise.`},
+		{"cons", Formals("head", "tail"), builtinCons,
+			`Returns a new list with head prepended to the list tail.`},
+		{"not", Formals("expr"), builtinNot,
+			`Returns true if expr is falsey (nil or false), false otherwise.`},
 		// true? is potentially needed as a boolean conversion function (for json)
-		{"true?", Formals("expr"), builtinIsTrue, ""},
-		{"type", Formals("value"), builtinType, ""},
-		{"type?", Formals("type-specifier", "value"), builtinIsType, ""},
-		{"tagged-value?", Formals("value"), builtinIsTaggedVal, ""},
-		{"user-data", Formals("value"), builtinUserData, ""},
-		{"new", Formals("type-specifier", VarArgSymbol, "arguments"), builtinNew, ""},
-		{"nil?", Formals("expr"), builtinIsNil, ""},
-		{"list?", Formals("expr"), builtinIsList, ""},
-		{"sorted-map?", Formals("expr"), builtinIsSortedMap, ""},
-		{"array?", Formals("expr"), builtinIsArray, ""},
-		{"vector?", Formals("expr"), builtinIsVector, ""},
-		{"bool?", Formals("expr"), builtinIsBool, ""},
-		{"number?", Formals("expr"), builtinIsNumber, ""},
-		{"int?", Formals("expr"), builtinIsInt, ""},
-		{"float?", Formals("expr"), builtinIsFloat, ""},
-		{"symbol?", Formals("expr"), builtinIsSymbol, ""},
-		{"string?", Formals("expr"), builtinIsString, ""},
-		{"bytes?", Formals("expr"), builtinIsBytes, ""},
-		{"equal?", Formals("a", "b"), builtinEqual, ""},
-		{"all?", Formals("predicate", "seq"), builtinAllP, ""},
-		{"any?", Formals("predicate", "seq"), builtinAnyP, ""},
-		{"max", Formals("real", VarArgSymbol, "rest"), builtinMax, ""},
-		{"min", Formals("real", VarArgSymbol, "rest"), builtinMin, ""},
-		{"string>=", Formals("a", "b"), builtinStringGEq, ""},
-		{"string>", Formals("a", "b"), builtinStringGT, ""},
-		{"string<=", Formals("a", "b"), builtinStringLEq, ""},
-		{"string<", Formals("a", "b"), builtinStringLT, ""},
-		{"string=", Formals("a", "b"), builtinStringEq, ""},
-		{"symbol=", Formals("a", "b"), builtinSymbolEq, ""},
-		{">=", Formals("a", "b"), builtinGEq, ""},
-		{">", Formals("a", "b"), builtinGT, ""},
-		{"<=", Formals("a", "b"), builtinLEq, ""},
-		{"<", Formals("a", "b"), builtinLT, ""},
-		{"=", Formals("a", "b"), builtinEqNum, ""},
-		{"pow", Formals("a", "b"), builtinPow, ""},
-		{"mod", Formals("a", "b"), builtinMod, ""},
-		{"+", Formals(VarArgSymbol, "x"), builtinAdd, ""},
-		{"-", Formals(VarArgSymbol, "x"), builtinSub, ""},
-		{"/", Formals(VarArgSymbol, "x"), builtinDiv, ""},
-		{"*", Formals(VarArgSymbol, "x"), builtinMul, ""},
-		{"debug-print", Formals(VarArgSymbol, "args"), builtinDebugPrint, ""},
-		{"debug-stack", Formals(), builtinDebugStack, ""},
+		{"true?", Formals("expr"), builtinIsTrue,
+			`Returns true if expr is truthy (not nil and not false), false
+			otherwise. Useful as an explicit boolean conversion.`},
+		{"type", Formals("value"), builtinType,
+			`Returns a symbol naming the type of value (e.g. 'int, 'float,
+			'string, 'list, 'sorted-map, 'array, 'bytes, 'fun).`},
+		{"type?", Formals("type-specifier", "value"), builtinIsType,
+			`Returns true if value matches the type-specifier symbol. Also
+			accepts a tagged typedef for user-defined types.`},
+		{"tagged-value?", Formals("value"), builtinIsTaggedVal,
+			`Returns true if value is a tagged value (user-defined type
+			instance), false otherwise.`},
+		{"user-data", Formals("value"), builtinUserData,
+			`Returns the user data associated with a tagged value.`},
+		{"new", Formals("type-specifier", VarArgSymbol, "arguments"), builtinNew,
+			`Creates a new instance of the type named by type-specifier,
+			passing additional arguments to the type's constructor.`},
+		{"nil?", Formals("expr"), builtinIsNil,
+			`Returns true if expr is nil (the empty list), false otherwise.`},
+		{"list?", Formals("expr"), builtinIsList,
+			`Returns true if expr is a list (including nil), false otherwise.`},
+		{"sorted-map?", Formals("expr"), builtinIsSortedMap,
+			`Returns true if expr is a sorted-map, false otherwise.`},
+		{"array?", Formals("expr"), builtinIsArray,
+			`Returns true if expr is an array, false otherwise.`},
+		{"vector?", Formals("expr"), builtinIsVector,
+			`Returns true if expr is a one-dimensional array (vector), false
+			otherwise.`},
+		{"bool?", Formals("expr"), builtinIsBool,
+			`Returns true if expr is a boolean (true or false), false
+			otherwise.`},
+		{"number?", Formals("expr"), builtinIsNumber,
+			`Returns true if expr is numeric (int or float), false otherwise.`},
+		{"int?", Formals("expr"), builtinIsInt,
+			`Returns true if expr is an integer, false otherwise.`},
+		{"float?", Formals("expr"), builtinIsFloat,
+			`Returns true if expr is a float, false otherwise.`},
+		{"symbol?", Formals("expr"), builtinIsSymbol,
+			`Returns true if expr is a symbol, false otherwise.`},
+		{"string?", Formals("expr"), builtinIsString,
+			`Returns true if expr is a string, false otherwise.`},
+		{"bytes?", Formals("expr"), builtinIsBytes,
+			`Returns true if expr is a bytes value, false otherwise.`},
+		{"equal?", Formals("a", "b"), builtinEqual,
+			`Returns true if a and b are structurally equal, performing deep
+			comparison across all value types.`},
+		{"all?", Formals("predicate", "seq"), builtinAllP,
+			`Returns true if predicate returns truthy for every element in
+			seq. Returns true for an empty sequence. Short-circuits on the
+			first falsey result.`},
+		{"any?", Formals("predicate", "seq"), builtinAnyP,
+			`Returns the first truthy result of applying predicate to
+			elements of seq, or false if none match. Short-circuits on the
+			first truthy result.`},
+		{"max", Formals("real", VarArgSymbol, "rest"), builtinMax,
+			`Returns the largest of the given numeric arguments.`},
+		{"min", Formals("real", VarArgSymbol, "rest"), builtinMin,
+			`Returns the smallest of the given numeric arguments.`},
+		{"string>=", Formals("a", "b"), builtinStringGEq,
+			`Returns true if string a is lexicographically >= string b.`},
+		{"string>", Formals("a", "b"), builtinStringGT,
+			`Returns true if string a is lexicographically > string b.`},
+		{"string<=", Formals("a", "b"), builtinStringLEq,
+			`Returns true if string a is lexicographically <= string b.`},
+		{"string<", Formals("a", "b"), builtinStringLT,
+			`Returns true if string a is lexicographically < string b.`},
+		{"string=", Formals("a", "b"), builtinStringEq,
+			`Returns true if strings a and b are equal.`},
+		{"symbol=", Formals("a", "b"), builtinSymbolEq,
+			`Returns true if symbols a and b are equal.`},
+		{">=", Formals("a", "b"), builtinGEq,
+			`Returns true if a >= b. Accepts ints and floats.`},
+		{">", Formals("a", "b"), builtinGT,
+			`Returns true if a > b. Accepts ints and floats.`},
+		{"<=", Formals("a", "b"), builtinLEq,
+			`Returns true if a <= b. Accepts ints and floats.`},
+		{"<", Formals("a", "b"), builtinLT,
+			`Returns true if a < b. Accepts ints and floats.`},
+		{"=", Formals("a", "b"), builtinEqNum,
+			`Returns true if numeric values a and b are equal.`},
+		{"pow", Formals("a", "b"), builtinPow,
+			`Returns a raised to the power b. Returns int when both args are
+			ints and b >= 0; otherwise returns float.`},
+		{"mod", Formals("a", "b"), builtinMod,
+			`Returns the remainder of integer division a mod b. Both
+			arguments must be ints and b must be non-zero.`},
+		{"+", Formals(VarArgSymbol, "x"), builtinAdd,
+			`Returns the sum of all arguments, or 0 with no arguments.
+			Returns int if all args are ints; otherwise float.`},
+		{"-", Formals(VarArgSymbol, "x"), builtinSub,
+			`With one argument, returns its negation. With two or more,
+			subtracts subsequent arguments from the first. Returns 0 with
+			no arguments.`},
+		{"/", Formals(VarArgSymbol, "x"), builtinDiv,
+			`With one argument, returns 1/x. With two or more, divides
+			the first by all subsequent. Returns int when all divisions are
+			exact; otherwise float.`},
+		{"*", Formals(VarArgSymbol, "x"), builtinMul,
+			`Returns the product of all arguments, or 1 with no arguments.
+			Returns int if all args are ints; otherwise float.`},
+		{"debug-print", Formals(VarArgSymbol, "args"), builtinDebugPrint,
+			`Prints all arguments to stderr followed by a newline. Returns
+			nil.`},
+		{"debug-stack", Formals(), builtinDebugStack,
+			`Prints the current call stack to stderr for debugging. Returns
+			nil.`},
 	}
 )
 
