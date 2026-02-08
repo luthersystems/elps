@@ -55,7 +55,9 @@ func (pkg *Package) Get(k *LVal) *LVal {
 		// Set the function's name here in case the same function is defined
 		// with multiple names.  We want to try and use the name the programmer
 		// used.  The name may even come from a higher scope.
-		pkg.FunNames[v.FID()] = k.Str
+		if fid := v.FID(); pkg.FunNames[fid] != k.Str {
+			pkg.FunNames[fid] = k.Str
+		}
 	}
 	return v
 }
@@ -77,7 +79,9 @@ func (pkg *Package) get(k *LVal) *LVal {
 			// Set the function's name here in case the same function is
 			// defined with multiple names.  We want to try and use the name
 			// the programmer used.
-			pkg.FunNames[v.FID()] = k.Str
+			if fid := v.FID(); pkg.FunNames[fid] != k.Str {
+				pkg.FunNames[fid] = k.Str
+			}
 		}
 		return v
 	}
