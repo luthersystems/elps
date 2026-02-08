@@ -947,3 +947,64 @@ func TestBuildArityTable_HasEntries(t *testing.T) {
 	assert.True(t, hasPlus, "arity table should include +")
 	assert.Equal(t, -1, plus.max, "+ should be variadic (max == -1)")
 }
+
+// --- Notes ---
+
+func TestDiagnostic_String_WithNotes(t *testing.T) {
+	d := Diagnostic{
+		Pos:      Position{File: "test.lisp", Line: 10},
+		Message:  "use set!",
+		Analyzer: "set-usage",
+		Notes:    []string{"set creates a new binding; set! mutates an existing one"},
+	}
+	s := d.String()
+	assert.Contains(t, s, "use set!")
+	assert.Contains(t, s, "= note: set creates a new binding")
+}
+
+func TestSetUsage_HasNotes(t *testing.T) {
+	source := "(set 'x 1)\n(set 'x 2)"
+	diags := lintCheck(t, AnalyzerSetUsage, source)
+	require.Len(t, diags, 1)
+	assert.NotEmpty(t, diags[0].Notes, "set-usage should provide hint notes")
+}
+
+func TestIfArity_TooFew_HasNotes(t *testing.T) {
+	diags := lintCheck(t, AnalyzerIfArity, `(if true 1)`)
+	require.Len(t, diags, 1)
+	assert.NotEmpty(t, diags[0].Notes, "if-arity should provide hint notes")
+}
+
+func TestBuiltinArity_HasNotes(t *testing.T) {
+	diags := lintCheck(t, AnalyzerBuiltinArity, `(car)`)
+	require.Len(t, diags, 1)
+	assert.NotEmpty(t, diags[0].Notes, "builtin-arity should provide hint notes")
+	assert.Contains(t, diags[0].Notes[0], "help")
+}
+
+func TestFormatJSON_WithNotes(t *testing.T) {
+	diags := []Diagnostic{
+		{
+			Pos:      Position{File: "test.lisp", Line: 1},
+			Message:  "test msg",
+			Analyzer: "test",
+			Notes:    []string{"hint 1", "hint 2"},
+		},
+	}
+	var buf bytes.Buffer
+	err := FormatJSON(&buf, diags)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "hint 1")
+	assert.Contains(t, buf.String(), "hint 2")
+}
+
+func TestFormatText_WithNotes(t *testing.T) {
+	diags := []Diagnostic{
+		{Pos: Position{File: "test.lisp", Line: 10}, Message: "use set!", Analyzer: "set-usage", Notes: []string{"hint text"}},
+	}
+	var buf bytes.Buffer
+	FormatText(&buf, diags)
+	output := buf.String()
+	assert.Contains(t, output, "use set!")
+	assert.Contains(t, output, "= note: hint text")
+}

@@ -41,7 +41,11 @@ var AnalyzerSetUsage = &Analyzer{
 			}
 			if seen[name] {
 				src := SourceOf(sexpr)
-				pass.Reportf(src.Source, "use set! instead of set to mutate '%s (already bound)", name)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("use set! instead of set to mutate '%s (already bound)", name),
+					Pos:     posFromSource(src.Source),
+					Notes:   []string{"set creates a new binding; set! mutates an existing one"},
+				})
 			}
 			seen[name] = true
 		})
@@ -80,9 +84,17 @@ var AnalyzerIfArity = &Analyzer{
 			}
 			src := SourceOf(sexpr)
 			if argc < 3 {
-				pass.Reportf(src.Source, "if requires 3 arguments (condition, then, else), got too few (%d)", argc)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("if requires 3 arguments (condition, then, else), got too few (%d)", argc),
+					Pos:     posFromSource(src.Source),
+					Notes:   []string{"use cond for multi-branch conditionals, or provide an else branch"},
+				})
 			} else {
-				pass.Reportf(src.Source, "if requires 3 arguments (condition, then, else), got too many (%d)", argc)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("if requires 3 arguments (condition, then, else), got too many (%d)", argc),
+					Pos:     posFromSource(src.Source),
+					Notes:   []string{"if takes exactly (condition then-expr else-expr); use progn to group multiple expressions"},
+				})
 			}
 		})
 		return nil
@@ -116,8 +128,11 @@ var AnalyzerLetBindings = &Analyzer{
 			// Each binding must be a 2-element list (symbol value)
 			for i, binding := range bindings.Cells {
 				if binding.Type != lisp.LSExpr {
-					pass.Reportf(bindingSource(binding, src),
-						"%s binding %d is not a list (did you forget the outer parentheses?)", head, i+1)
+					pass.Report(Diagnostic{
+						Message: fmt.Sprintf("%s binding %d is not a list (did you forget the outer parentheses?)", head, i+1),
+						Pos:     posFromSource(bindingSource(binding, src)),
+						Notes:   []string{"correct form: (let ((x 1) (y 2)) body...)"},
+					})
 					continue
 				}
 				if len(binding.Cells) == 0 {
@@ -139,6 +154,14 @@ var AnalyzerLetBindings = &Analyzer{
 		})
 		return nil
 	},
+}
+
+// posFromSource converts a *token.Location to a Position, handling nil.
+func posFromSource(src *token.Location) Position {
+	if src == nil {
+		return Position{}
+	}
+	return Position{File: src.File, Line: src.Line, Col: src.Col}
 }
 
 func bindingSource(binding *lisp.LVal, fallback *lisp.LVal) *token.Location {
@@ -197,7 +220,11 @@ var AnalyzerCondStructure = &Analyzer{
 				}
 
 				if clause.Type != lisp.LSExpr {
-					pass.Reportf(clauseSrc.Source, "cond clause %d is not a list", i)
+					pass.Report(Diagnostic{
+						Message: fmt.Sprintf("cond clause %d is not a list", i),
+						Pos:     posFromSource(clauseSrc.Source),
+						Notes:   []string{"cond clauses must be lists: (cond ((test1) body1) ((test2) body2) (else default))"},
+					})
 					continue
 				}
 				if len(clause.Cells) == 0 {
@@ -244,13 +271,22 @@ var AnalyzerBuiltinArity = &Analyzer{
 				return
 			}
 			argc := ArgCount(sexpr)
+			helpNote := fmt.Sprintf("see (help '%s) or `elps doc %s` for usage", head, head)
 			if argc < spec.min {
 				src := SourceOf(sexpr)
-				pass.Reportf(src.Source, "%s requires at least %d argument(s), got %d", head, spec.min, argc)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, spec.min, argc),
+					Pos:     posFromSource(src.Source),
+					Notes:   []string{helpNote},
+				})
 			}
 			if spec.max >= 0 && argc > spec.max {
 				src := SourceOf(sexpr)
-				pass.Reportf(src.Source, "%s accepts at most %d argument(s), got %d", head, spec.max, argc)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, spec.max, argc),
+					Pos:     posFromSource(src.Source),
+					Notes:   []string{helpNote},
+				})
 			}
 		})
 		return nil
