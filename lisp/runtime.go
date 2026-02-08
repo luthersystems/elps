@@ -51,13 +51,25 @@ func (r *Runtime) CurrentCondition() *LVal {
 	return r.conditionStack[n-1]
 }
 
+// Default stack depth limits. These match the values used by the test harness
+// and provide protection against unbounded recursion exhausting the Go
+// goroutine stack. Applications that need deeper stacks can override these
+// via WithMaximumLogicalStackHeight and WithMaximumPhysicalStackHeight.
+const (
+	DefaultMaxLogicalStackHeight  = 50000
+	DefaultMaxPhysicalStackHeight = 25000
+)
+
 // StandardRuntime returns a new Runtime with an empty package registry and
 // Stderr set to os.Stderr.
 func StandardRuntime() *Runtime {
 	return &Runtime{
 		Registry: NewRegistry(),
 		Stderr:   os.Stderr,
-		Stack:    &CallStack{},
+		Stack: &CallStack{
+			MaxHeightLogical:  DefaultMaxLogicalStackHeight,
+			MaxHeightPhysical: DefaultMaxPhysicalStackHeight,
+		},
 	}
 }
 
