@@ -137,7 +137,7 @@ func (pkg *Package) Update(k, v *LVal) *LVal {
 	}
 	_, ok := pkg.Symbols[k.Str]
 	if !ok {
-		return Errorf("symbol not bound: %v", k)
+		return Errorf("symbol not bound: %v (set! only mutates existing bindings; use set to create new ones)", k)
 	}
 	pkg.put(k, v)
 	return Nil()
