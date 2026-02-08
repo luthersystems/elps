@@ -66,8 +66,22 @@ func TestDocstring(t *testing.T) {
 		assert.Equal(t, "First line of docs. Second line of docs.", multi.Docstring())
 	}
 
-	// All strings with no body = no docstring (it's a constant function)
+	// Empty strings produce paragraph breaks
 	rc = env.LoadString("test3.lisp", `
+	(defun para-doc ()
+		"First paragraph."
+		""
+		"Second paragraph."
+		42)
+	`)
+	require.True(t, rc.IsNil())
+	para := env.Get(lisp.Symbol("para-doc"))
+	if assert.Equal(t, lisp.LFun, para.Type) {
+		assert.Equal(t, "First paragraph.\n\nSecond paragraph.", para.Docstring())
+	}
+
+	// All strings with no body = no docstring (it's a constant function)
+	rc = env.LoadString("test4.lisp", `
 	(defun all-strings () "a" "b" "c")
 	`)
 	require.True(t, rc.IsNil())
@@ -144,4 +158,16 @@ func TestPackageDocBuiltin(t *testing.T) {
 	assert.Contains(t, output, "package test-pkg")
 	assert.Contains(t, output, "A test package for unit testing.")
 	assert.Contains(t, output, "my-fn")
+
+	// Empty strings produce paragraph breaks in package docs
+	rc = env.LoadString("test2.lisp", `
+	(in-package 'para-pkg
+		"First paragraph."
+		""
+		"Second paragraph.")
+	`)
+	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
+	paraPkg := env.Runtime.Registry.Packages["para-pkg"]
+	require.NotNil(t, paraPkg)
+	assert.Equal(t, "First paragraph.\n\nSecond paragraph.", paraPkg.Doc)
 }

@@ -993,11 +993,29 @@ func (v *LVal) String() string {
 	return v.str(false)
 }
 
+// JoinDocStrings joins multiple doc string parts into a single string.
+// Non-empty strings are joined with spaces.  Empty strings produce blank
+// lines, acting as paragraph separators.
+func JoinDocStrings(parts []string) string {
+	var b strings.Builder
+	for i, p := range parts {
+		if p == "" {
+			b.WriteString("\n\n")
+		} else {
+			if i > 0 && parts[i-1] != "" {
+				b.WriteByte(' ')
+			}
+			b.WriteString(p)
+		}
+	}
+	return b.String()
+}
+
 // Docstring returns the docstring of the function reference v.  If v is not
 // a function Docstring returns the empty string.  For user-defined functions,
-// consecutive leading string expressions in the body are concatenated with
-// spaces to form the docstring (the body must contain at least one
-// non-string expression after the doc strings).
+// consecutive leading string expressions in the body are concatenated to form
+// the docstring (the body must contain at least one non-string expression
+// after the doc strings).  Empty strings produce paragraph breaks.
 func (v *LVal) Docstring() string {
 	if v.Type != LFun {
 		return ""
@@ -1022,7 +1040,7 @@ func (v *LVal) Docstring() string {
 		// Only treat as docstring if there's at least one non-string
 		// body expression after the strings.
 		if len(parts) < len(v.Cells)-1 {
-			return strings.Join(parts, " ")
+			return JoinDocStrings(parts)
 		}
 	}
 	return ""
