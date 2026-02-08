@@ -207,7 +207,7 @@ var AnalyzerCondMissingElse = &Analyzer{
 				return // malformed clause, handled by cond-structure
 			}
 			head := last.Cells[0]
-			if head.Type == lisp.LSymbol && (head.Str == "else" || head.Str == "true") {
+			if head.Type == lisp.LSymbol && isCondDefault(head.Str) {
 				return // has default clause
 			}
 			src := SourceOf(sexpr)
@@ -219,6 +219,12 @@ var AnalyzerCondMissingElse = &Analyzer{
 		})
 		return nil
 	},
+}
+
+// isCondDefault returns true if sym is a recognized default-clause head for cond.
+// ELPS users commonly write (else ...), (true ...), (:else ...), or (:true ...).
+func isCondDefault(sym string) bool {
+	return sym == "else" || sym == "true" || sym == ":else" || sym == ":true"
 }
 
 // posFromSource converts a *token.Location to a Position, handling nil.
@@ -298,7 +304,7 @@ var AnalyzerCondStructure = &Analyzer{
 				}
 
 				// Check for misplaced else
-				if clause.Cells[0].Type == lisp.LSymbol && clause.Cells[0].Str == "else" {
+				if clause.Cells[0].Type == lisp.LSymbol && isCondDefault(clause.Cells[0].Str) {
 					if i != last {
 						pass.Reportf(clauseSrc.Source, "cond else clause must be last (is clause %d of %d)", i, last)
 					}

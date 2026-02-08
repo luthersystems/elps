@@ -644,6 +644,31 @@ func TestCondMissingElse_Negative_SingleElse(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+func TestCondMissingElse_Negative_KeywordElse(t *testing.T) {
+	source := "(cond\n  ((= x 1) \"one\")\n  (:else \"default\"))"
+	diags := lintCheck(t, AnalyzerCondMissingElse, source)
+	assertNoDiags(t, diags)
+}
+
+func TestCondMissingElse_Negative_KeywordTrue(t *testing.T) {
+	source := "(cond\n  ((= x 1) \"one\")\n  (:true \"default\"))"
+	diags := lintCheck(t, AnalyzerCondMissingElse, source)
+	assertNoDiags(t, diags)
+}
+
+func TestCondStructure_Negative_KeywordElseLast(t *testing.T) {
+	source := "(cond\n  ((= x 1) \"one\")\n  (:else \"default\"))"
+	diags := lintCheck(t, AnalyzerCondStructure, source)
+	assertNoDiags(t, diags)
+}
+
+func TestCondStructure_Positive_MisplacedKeywordElse(t *testing.T) {
+	source := "(cond\n  (:else \"default\")\n  ((= x 1) \"one\"))"
+	diags := lintCheck(t, AnalyzerCondStructure, source)
+	assert.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "else clause must be last")
+}
+
 // --- nolint suppression ---
 
 func TestNolint_SuppressAll(t *testing.T) {
