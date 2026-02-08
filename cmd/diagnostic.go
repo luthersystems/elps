@@ -90,6 +90,7 @@ func lintDiagToDiagnostic(ld lintpkg.Diagnostic) diagnostic.Diagnostic {
 		})
 	}
 	d.Notes = append(d.Notes, ld.Notes...)
+	d.Notes = append(d.Notes, "to suppress: add \"; nolint:"+ld.Analyzer+"\" as a comment on this line")
 	return d
 }
 
