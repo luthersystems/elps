@@ -463,8 +463,8 @@ func FunRef(symbol, fun *LVal) *LVal {
 	}
 	cp := &LVal{}
 	*cp = *fun
-	fun.Str = symbol.Str
-	return fun
+	cp.Str = symbol.Str
+	return cp
 }
 
 // Fun returns an LVal representing a function
