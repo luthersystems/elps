@@ -999,12 +999,12 @@ func (env *LEnv) FunCall(fun, args *LVal) *LVal {
 }
 
 func (env *LEnv) trace(fun *LVal) func() {
-	if env.Runtime.Profiler != nil {
-		// fun might be an anon function, so we need to convert it to get the
-		// right type of LVal for filtering and labeling
-		return env.Runtime.Profiler.Start(fun)
+	if env.Runtime.Profiler == nil {
+		return func() {}
 	}
-	return func() {}
+	// fun might be an anon function, so we need to convert it to get the
+	// right type of LVal for filtering and labeling
+	return env.Runtime.Profiler.Start(fun)
 }
 
 // FunCall invokes regular function fun with the argument list args.
@@ -1016,7 +1016,9 @@ func (env *LEnv) funCall(fun, args *LVal) *LVal {
 		return env.Errorf("not a regular function: %v", fun.FunType)
 	}
 
-	defer env.trace(fun)()
+	if env.Runtime.Profiler != nil {
+		defer env.trace(fun)()
+	}
 
 	// Check for possible tail recursion before pushing to avoid hitting s when
 	// checking.  But push FID onto the stack before popping to simplify
