@@ -44,6 +44,26 @@ func TestPackages(t *testing.T) {
 			{`(fun 2)`, `3`, ""},
 			{`(other-package:fun 2)`, `1`, ""},
 		}},
+		{"export list of symbols", elpstest.TestSequence{
+			// Define multiple symbols in a package and export them as a list.
+			{"(in-package 'multi-export)", "()", ""},
+			{"(defun add1 (x) (+ x 1))", "()", ""},
+			{"(defun sub1 (x) (- x 1))", "()", ""},
+			{"(export '(add1 sub1))", "()", ""},
+			// Verify both are accessible via use-package.
+			{"(in-package 'user)", "()", ""},
+			{"(use-package 'multi-export)", "()", ""},
+			{`(add1 10)`, `11`, ""},
+			{`(sub1 10)`, `9`, ""},
+		}},
+		{"export string name", elpstest.TestSequence{
+			{"(in-package 'str-export)", "()", ""},
+			{"(defun str-fn (x) x)", "()", ""},
+			{`(export "str-fn")`, "()", ""},
+			{"(in-package 'user)", "()", ""},
+			{"(use-package 'str-export)", "()", ""},
+			{`(str-fn 42)`, `42`, ""},
+		}},
 	}
 	elpstest.RunTestSuite(t, tests)
 }

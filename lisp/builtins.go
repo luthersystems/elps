@@ -511,7 +511,7 @@ func builtinUsePackage(env *LEnv, args *LVal) *LVal {
 func builtinExport(env *LEnv, args *LVal) *LVal {
 	for _, arg := range args.Cells {
 		switch {
-		case arg.Type == LSymbol || arg.Type != LString:
+		case arg.Type == LSymbol || arg.Type == LString:
 			env.Runtime.Package.Exports(arg.Str)
 		case arg.Type == LSExpr:
 			builtinExport(env, arg)
