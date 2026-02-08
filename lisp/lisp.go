@@ -994,7 +994,10 @@ func (v *LVal) String() string {
 }
 
 // Docstring returns the docstring of the function reference v.  If v is not
-// a function Docstring returns the empty string.
+// a function Docstring returns the empty string.  For user-defined functions,
+// consecutive leading string expressions in the body are concatenated with
+// spaces to form the docstring (the body must contain at least one
+// non-string expression after the doc strings).
 func (v *LVal) Docstring() string {
 	if v.Type != LFun {
 		return ""
@@ -1009,7 +1012,18 @@ func (v *LVal) Docstring() string {
 	// functions without documentation so there must be a length check on the
 	// function body.
 	if len(v.Cells) > 2 && v.Cells[1].Type == LString {
-		return v.Cells[1].Str
+		var parts []string
+		for i := 1; i < len(v.Cells); i++ {
+			if v.Cells[i].Type != LString {
+				break
+			}
+			parts = append(parts, v.Cells[i].Str)
+		}
+		// Only treat as docstring if there's at least one non-string
+		// body expression after the strings.
+		if len(parts) < len(v.Cells)-1 {
+			return strings.Join(parts, " ")
+		}
 	}
 	return ""
 }
