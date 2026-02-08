@@ -133,7 +133,7 @@ var lvalTypeStrings = []string{
 }
 
 func (t LType) String() string {
-	if int(t) >= len(lvalTypeStrings) { //nolint:gosec // bounded by iota constants
+	if t >= LType(len(lvalTypeStrings)) {
 		return lvalTypeStrings[LInvalid]
 	}
 	return lvalTypeStrings[t]
