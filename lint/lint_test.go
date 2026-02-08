@@ -669,6 +669,70 @@ func TestCondStructure_Positive_MisplacedKeywordElse(t *testing.T) {
 	assert.Contains(t, diags[0].Message, "else clause must be last")
 }
 
+// --- rethrow-context ---
+
+func TestRethrowContext_Positive_TopLevel(t *testing.T) {
+	diags := lintCheck(t, AnalyzerRethrowContext, `(rethrow)`)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "outside handler-bind")
+}
+
+func TestRethrowContext_Positive_InDefun(t *testing.T) {
+	source := "(defun my-handler (c &rest args)\n  (rethrow))"
+	diags := lintCheck(t, AnalyzerRethrowContext, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "outside handler-bind")
+}
+
+func TestRethrowContext_Positive_InLet(t *testing.T) {
+	source := "(let ((x 1))\n  (rethrow))"
+	diags := lintCheck(t, AnalyzerRethrowContext, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "outside handler-bind")
+}
+
+func TestRethrowContext_Negative_InHandlerBind(t *testing.T) {
+	source := `(handler-bind ((condition (lambda (c &rest args) (rethrow)))) (error 'test "data"))`
+	diags := lintCheck(t, AnalyzerRethrowContext, source)
+	assertNoDiags(t, diags)
+}
+
+func TestRethrowContext_Negative_InNestedHandlerBind(t *testing.T) {
+	source := `(handler-bind ((condition (lambda (c &rest args)
+                 (handler-bind ((condition (lambda (c2 &rest a2)
+                                  (rethrow))))
+                   (rethrow)))))
+  (error 'test "data"))`
+	diags := lintCheck(t, AnalyzerRethrowContext, source)
+	assertNoDiags(t, diags)
+}
+
+func TestRethrowContext_Negative_InHandlerBindBody(t *testing.T) {
+	// rethrow in the body of handler-bind is inside the form (handler-bind
+	// pushes the condition before calling the handler, but body errors trigger
+	// the handler). This is still syntactically inside handler-bind.
+	source := `(handler-bind ((condition (lambda (c &rest args) "caught")))
+  (progn (do-stuff) (rethrow)))`
+	diags := lintCheck(t, AnalyzerRethrowContext, source)
+	assertNoDiags(t, diags)
+}
+
+func TestRethrowContext_Positive_HasNotes(t *testing.T) {
+	diags := lintCheck(t, AnalyzerRethrowContext, `(rethrow)`)
+	require.Len(t, diags, 1)
+	assert.NotEmpty(t, diags[0].Notes)
+	assert.Contains(t, diags[0].Notes[0], "handler-bind")
+}
+
+func TestRethrowContext_Nolint(t *testing.T) {
+	source := "(rethrow) ; nolint:rethrow-context\n"
+	diags := lintSource(t, source)
+	// Should be suppressed by nolint
+	for _, d := range diags {
+		assert.NotEqual(t, "rethrow-context", d.Analyzer)
+	}
+}
+
 // --- nolint suppression ---
 
 func TestNolint_SuppressAll(t *testing.T) {
@@ -837,7 +901,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 9)
+	assert.Len(t, analyzers, 10)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -848,6 +912,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"in-package-toplevel",
 		"let-bindings",
 		"quote-call",
+		"rethrow-context",
 		"set-usage",
 	}, names)
 }

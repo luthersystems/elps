@@ -271,5 +271,6 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerBuiltinArity,
 		AnalyzerQuoteCall,
 		AnalyzerCondMissingElse,
+		AnalyzerRethrowContext,
 	}
 }
