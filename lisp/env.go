@@ -119,6 +119,13 @@ func NewEnvRuntime(rt *Runtime) *LEnv {
 
 // NewEnv returns initializes and returns a new LEnv.
 func NewEnv(parent *LEnv) *LEnv {
+	return newEnvN(parent, 0)
+}
+
+// newEnvN creates a child LEnv with its Scope map pre-sized to hold n
+// bindings.  Callers that know the number of bindings up front (let, let*,
+// dotimes, etc.) can avoid map growth by passing the exact count.
+func newEnvN(parent *LEnv, n int) *LEnv {
 	var runtime *Runtime
 	var loc *token.Location
 	if parent != nil {
@@ -131,7 +138,7 @@ func NewEnv(parent *LEnv) *LEnv {
 	env := &LEnv{
 		ID:      runtime.GenEnvID(),
 		Loc:     loc,
-		Scope:   make(map[string]*LVal),
+		Scope:   make(map[string]*LVal, n),
 		FunName: make(map[string]string),
 		Parent:  parent,
 		Runtime: runtime,

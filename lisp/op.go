@@ -398,8 +398,8 @@ func opThreadFirst(env *LEnv, args *LVal) *LVal {
 }
 
 func opFlet(env *LEnv, args *LVal) *LVal {
-	fletenv := NewEnv(env)
 	bindlist := args.Cells[0]
+	fletenv := newEnvN(env, len(bindlist.Cells))
 	args.Cells = args.Cells[1:] // decap so we can call builtinProgn on args.
 	if bindlist.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %s", bindlist.Type)
@@ -457,7 +457,7 @@ func opDoTimes(env *LEnv, args *LVal) *LVal {
 	if count.Type != LInt {
 		return env.Errorf("count did not evaluate to an int: %v", count.Type)
 	}
-	loopenv := NewEnv(env)
+	loopenv := newEnvN(env, 1) // single loop variable
 	n := 0
 	for i := 0; i < count.Int; i++ {
 		n++
@@ -486,8 +486,8 @@ func opDoTimes(env *LEnv, args *LVal) *LVal {
 //		         (f2 () (debug-print "f2"))])
 //		  (f1))
 func opLabels(env *LEnv, args *LVal) *LVal {
-	fletenv := NewEnv(env)
 	bindlist := args.Cells[0]
+	fletenv := newEnvN(env, len(bindlist.Cells))
 	args.Cells = args.Cells[1:] // decap so we can call builtinProgn on args.
 	if bindlist.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %s", bindlist.Type)
@@ -524,8 +524,8 @@ func opLabels(env *LEnv, args *LVal) *LVal {
 // variables and functions, _during_ its exansion the macro may only make use
 // of other macros and global symbols.
 func opMacrolet(env *LEnv, args *LVal) *LVal {
-	fletenv := NewEnv(env)
 	bindlist := args.Cells[0]
+	fletenv := newEnvN(env, len(bindlist.Cells))
 	args.Cells = args.Cells[1:] // decap so we can call builtinProgn on args.
 	if bindlist.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %s", bindlist.Type)
@@ -553,8 +553,8 @@ func opMacrolet(env *LEnv, args *LVal) *LVal {
 }
 
 func opLet(env *LEnv, args *LVal) *LVal {
-	letenv := NewEnv(env)
 	bindlist := args.Cells[0]
+	letenv := newEnvN(env, len(bindlist.Cells))
 	args.Cells = args.Cells[1:] // decap so we can call builtinProgn on args.
 	if bindlist.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %s", bindlist.Type)
@@ -582,8 +582,8 @@ func opLet(env *LEnv, args *LVal) *LVal {
 }
 
 func opLetSeq(env *LEnv, args *LVal) *LVal {
-	letenv := NewEnv(env)
 	bindlist := args.Cells[0]
+	letenv := newEnvN(env, len(bindlist.Cells))
 	args.Cells = args.Cells[1:] // decap so we can call builtinProgn on args.
 	if bindlist.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %s", bindlist.Type)
