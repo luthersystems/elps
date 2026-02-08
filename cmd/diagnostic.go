@@ -89,12 +89,17 @@ func lintDiagToDiagnostic(ld lintpkg.Diagnostic) diagnostic.Diagnostic {
 			Col:  ld.Pos.Col,
 		})
 	}
+	d.Notes = append(d.Notes, ld.Notes...)
 	return d
 }
 
 // renderLispError renders a lisp error with diagnostic formatting to stderr.
-func renderLispError(lerr *lisp.LVal) {
+// If sourceFile is non-empty, a hint to run elps lint is appended.
+func renderLispError(lerr *lisp.LVal, sourceFiles ...string) {
 	d := lispErrorToDiagnostic(lerr)
+	if len(sourceFiles) > 0 && sourceFiles[0] != "" {
+		d.Notes = append(d.Notes, "try: elps lint "+sourceFiles[0])
+	}
 	r := newRenderer()
 	_ = r.Render(os.Stderr, d)
 }

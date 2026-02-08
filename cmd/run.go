@@ -19,9 +19,25 @@ var (
 
 // runCmd represents the run command
 var runCmd = &cobra.Command{
-	Use:   "run",
-	Short: "Run lisp code",
-	Long:  `Run lisp code provided supplied via the command line or a file.`,
+	Use:   "run [flags] [files...]",
+	Short: "Run elps source files or expressions",
+	Long: `Run ELPS Lisp code from files or command-line expressions.
+
+With file arguments, each file is loaded and executed in order. With -e,
+arguments are interpreted as Lisp expressions and evaluated directly.
+
+The runtime loads all standard library packages automatically. User code
+starts in the "user" package and can import other packages with use-package.
+
+Examples:
+  elps run hello.lisp              Run a source file
+  elps run lib.lisp app.lisp       Load files in order (lib first)
+  elps run -e '(+ 1 2)'            Evaluate an expression
+  elps run -e -p '(* 6 7)'         Evaluate and print the result
+
+Exit codes:
+  0  Success
+  1  Runtime error (use elps lint to catch common mistakes before running)`,
 	Run: func(cmd *cobra.Command, args []string) {
 		env := lisp.NewEnv(nil)
 		reader := parser.NewReader()
@@ -45,7 +61,7 @@ var runCmd = &cobra.Command{
 		for i := range args {
 			res := env.LoadFile(args[i])
 			if res.Type == lisp.LError {
-				renderLispError(res)
+				renderLispError(res, args[i])
 				os.Exit(1)
 			}
 		}
