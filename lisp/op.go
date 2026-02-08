@@ -133,7 +133,7 @@ func DefaultSpecialOps() []LBuiltinDef {
 	}
 	offset := len(langSpecialOps)
 	for i := range userSpecialOps {
-		ops[offset+i] = langSpecialOps[i]
+		ops[offset+i] = userSpecialOps[i]
 	}
 	return ops
 }

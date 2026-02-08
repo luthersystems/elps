@@ -388,7 +388,7 @@ func DefaultBuiltins() []LBuiltinDef {
 	}
 	offset := len(langBuiltins)
 	for i := range userBuiltins {
-		ops[offset+i] = langBuiltins[i]
+		ops[offset+i] = userBuiltins[i]
 	}
 	return ops
 }
