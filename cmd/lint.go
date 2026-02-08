@@ -113,7 +113,7 @@ Examples:
 				os.Exit(2)
 			}
 		} else {
-			lint.FormatText(os.Stderr, allDiags)
+			renderLintDiagnostics(allDiags)
 		}
 		os.Exit(1)
 	},
@@ -136,7 +136,7 @@ func lintStdin(l *lint.Linter) error {
 			return err
 		}
 	} else {
-		lint.FormatText(os.Stderr, diags)
+		renderLintDiagnostics(diags)
 	}
 	os.Exit(1)
 	return nil

@@ -45,7 +45,7 @@ var runCmd = &cobra.Command{
 		for i := range args {
 			res := env.LoadFile(args[i])
 			if res.Type == lisp.LError {
-				_, _ = (*lisp.ErrorVal)(res).WriteTrace(os.Stderr)
+				renderLispError(res)
 				os.Exit(1)
 			}
 		}
