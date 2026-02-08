@@ -21,9 +21,32 @@ var docSourceFile string
 
 // docCmd represents the doc command
 var docCmd = &cobra.Command{
-	Use:   "doc QUERY",
-	Short: "Show elps documentation",
-	Long:  `Show documentation for an elps package or function.`,
+	Use:   "doc [flags] QUERY",
+	Short: "Show elps documentation for functions, packages, and symbols",
+	Long: `Show built-in documentation for ELPS functions, macros, operators,
+constants, and packages.
+
+By default, looks up a function or variable by name. Use -p to list all
+exported symbols in a package. Use -f to load a source file first (useful
+for documenting your own code).
+
+Documentation is generated from doc strings embedded in function definitions
+and package declarations. All built-in and standard library functions have
+documentation.
+
+Examples:
+  elps doc map                     Show docs for the map function
+  elps doc defun                   Show docs for the defun macro
+  elps doc math:sin                Show docs for a qualified symbol
+  elps doc -p math                 List all exports in the math package
+  elps doc -p lisp                 List core language functions
+  elps doc -f mylib.lisp my-func   Load a file, then show docs for my-func
+
+Common packages to explore:
+  lisp      Core language (140+ builtins: map, filter, reduce, car, cdr, ...)
+  math      Trigonometry, logarithms, constants (pi, inf)
+  string    String operations (concat, split, join, ...)
+  json      JSON serialization (json:encode, json:decode, json:null)`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) != 1 {
 			_ = cmd.Help()

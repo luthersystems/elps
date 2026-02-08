@@ -18,13 +18,40 @@ var (
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "elps",
-	Short: "It's \"ellipse\" ;)",
-	Long: `
-The elps command provides a standalone lisp interpreter as an example of a Go
-program embedding elps.  The interpreter is presented as a demonstration in a
-"basic" embedded configuration.  It is not intended to be executed in
-production environments.
-`,
+	Short: "ELPS — Embedded Lisp interpreter",
+	Long: `ELPS is an embedded Lisp interpreter implemented in Go. It provides a
+standalone CLI for running, linting, formatting, and exploring ELPS Lisp code.
+
+Getting started:
+  elps run file.lisp           Run a Lisp source file
+  elps run -e '(+ 1 2)'       Evaluate an expression
+  elps repl                    Start an interactive REPL
+  elps doc map                 Show documentation for a function
+  elps doc -p math             List all exports in a package
+  elps lint file.lisp          Run static analysis checks
+  elps fmt file.lisp           Format source code
+
+Language overview:
+  ELPS is a Lisp-1 dialect (single namespace for functions and values).
+  Booleans are the symbols true and false. The empty list () is nil/falsey.
+  Functions are defined with (defun name (args) body) and called as (name args).
+  Packages provide namespacing: (in-package 'my-pkg), (use-package 'math).
+  Error handling uses (handler-bind ...) and (ignore-errors ...).
+
+Standard library packages (use with use-package or qualified names):
+  math      Mathematical functions, constants (pi, inf)
+  string    String manipulation (concat, split, join, upper, lower, ...)
+  json      JSON encoding/decoding
+  regexp    Regular expression matching
+  time      Date/time operations
+  base64    Base64 encoding/decoding
+  testing   Test framework (assert-equal, assert-nil, test, test-let)
+  help      Documentation introspection (doc, doc-string, apropos)
+  golang    Go interop utilities
+  s         Schema type predicates
+
+Documentation is built in: use (help 'symbol) in the REPL or elps doc <name>
+from the command line. Use elps doc -p <package> to explore a package.`,
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
