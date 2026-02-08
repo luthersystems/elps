@@ -171,3 +171,102 @@ func TestPackageDocBuiltin(t *testing.T) {
 	require.NotNil(t, paraPkg)
 	assert.Equal(t, "First paragraph.\n\nSecond paragraph.", paraPkg.Doc)
 }
+
+func TestSymbolDoc(t *testing.T) {
+	env := newTestEnv(t)
+
+	// set with trailing doc strings
+	rc := env.LoadString("test.lisp", `
+	(in-package 'sym-doc-pkg)
+	(set 'my-const 42 "The answer" "to everything.")
+	(export 'my-const)
+	`)
+	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
+
+	pkg := env.Runtime.Registry.Packages["sym-doc-pkg"]
+	require.NotNil(t, pkg)
+	assert.Equal(t, "The answer to everything.", pkg.SymbolDocs["my-const"])
+
+	// set with paragraph breaks in docs
+	rc = env.LoadString("test2.lisp", `
+	(in-package 'sym-doc-pkg)
+	(set 'documented 100 "First para." "" "Second para.")
+	`)
+	require.NotEqualf(t, lisp.LError, rc.Type, "LoadString failed: %v", rc)
+	assert.Equal(t, "First para.\n\nSecond para.", pkg.SymbolDocs["documented"])
+
+	// set without docs — no doc entry
+	rc = env.LoadString("test3.lisp", `
+	(in-package 'sym-doc-pkg)
+	(set 'undoc 0)
+	`)
+	require.NotEqualf(t, lisp.LError, rc.Type, "LoadString failed: %v", rc)
+	assert.Equal(t, "", pkg.SymbolDocs["undoc"])
+}
+
+func TestDefconstMacro(t *testing.T) {
+	env := newTestEnv(t)
+
+	rc := env.LoadString("test.lisp", `
+	(in-package 'const-pkg)
+	(defconst max-retries 3 "Maximum number of retries.")
+	(defconst pi-approx 3.14
+		"Approximate value of pi."
+		"Good enough for most uses.")
+	`)
+	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
+
+	pkg := env.Runtime.Registry.Packages["const-pkg"]
+	require.NotNil(t, pkg)
+
+	// Value is bound
+	val := pkg.Get(lisp.Symbol("max-retries"))
+	assert.Equal(t, lisp.LInt, val.Type)
+	assert.Equal(t, 3, val.Int)
+
+	// Symbol is exported
+	assert.Contains(t, pkg.Externals, "max-retries")
+	assert.Contains(t, pkg.Externals, "pi-approx")
+
+	// Doc is set
+	assert.Equal(t, "Maximum number of retries.", pkg.SymbolDocs["max-retries"])
+	assert.Equal(t, "Approximate value of pi. Good enough for most uses.", pkg.SymbolDocs["pi-approx"])
+}
+
+func TestRenderVarWithDoc(t *testing.T) {
+	env := newTestEnv(t)
+
+	// math:pi should have a doc string and render it
+	var buf bytes.Buffer
+	err := libhelp.RenderVar(&buf, env, "math:pi")
+	require.NoError(t, err)
+	output := buf.String()
+	assert.Contains(t, output, "pi")
+	assert.Contains(t, output, "circumference")
+}
+
+func TestRenderPkgExported_ConstantDocs(t *testing.T) {
+	env := newTestEnv(t)
+
+	var buf bytes.Buffer
+	err := libhelp.RenderPkgExported(&buf, env, "math")
+	require.NoError(t, err)
+	output := buf.String()
+
+	// Constants should appear with their docs
+	assert.Contains(t, output, "pi")
+	assert.Contains(t, output, "circumference")
+	assert.Contains(t, output, "inf")
+}
+
+func TestLookupSymbolDoc_Qualified(t *testing.T) {
+	env := newTestEnv(t)
+
+	// json:null should have a doc via qualified name lookup
+	var buf bytes.Buffer
+	err := libhelp.RenderVar(&buf, env, "json:null")
+	require.NoError(t, err)
+	output := buf.String()
+	assert.Contains(t, output, "null")
+	assert.Contains(t, output, "JSON")
+}

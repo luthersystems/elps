@@ -37,6 +37,12 @@ var langMacros = []*langBuiltin{
 		(default "TRACE") using debug-print, then returns the result.
 		The expression is evaluated exactly once. Useful for debugging
 		without altering control flow.`},
+	{"defconst", Formals("name", "value", VarArgSymbol, "docstring"), macroDefconst,
+		`Defines an exported, documented constant. Binds value to name
+		in the current package and exports it. Optional trailing strings
+		set the documentation (concatenated; empty strings produce
+		paragraph breaks). Equivalent to (set 'name value docs...)
+		followed by (export 'name).`},
 }
 
 // RegisterDefaultMacro adds the given function to the list returned by
@@ -54,7 +60,7 @@ func DefaultMacros() []LBuiltinDef {
 	}
 	offset := len(langMacros)
 	for i := range userMacros {
-		ops[offset+i] = langMacros[i]
+		ops[offset+i] = userMacros[i]
 	}
 	return ops
 }
@@ -98,6 +104,22 @@ func macroDefun(env *LEnv, args *LVal) *LVal {
 			Quote(sym),
 			fun,
 		}),
+		Nil(),
+	})
+}
+
+func macroDefconst(env *LEnv, args *LVal) *LVal {
+	sym, value, docstrings := args.Cells[0], args.Cells[1], args.Cells[2:]
+	if sym.Type != LSymbol {
+		return env.Errorf("first argument is not a symbol: %s", sym.Type)
+	}
+	// Build: (progn (set 'name value docstrings...) (export 'name) nil)
+	setCells := []*LVal{Symbol("lisp:set"), Quote(sym), value}
+	setCells = append(setCells, docstrings...)
+	return SExpr([]*LVal{
+		Symbol("lisp:progn"),
+		SExpr(setCells),
+		SExpr([]*LVal{Symbol("lisp:export"), Quote(sym)}),
 		Nil(),
 	})
 }

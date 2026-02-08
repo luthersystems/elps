@@ -73,8 +73,20 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	// We export the type symbols to the package to make writing code using it less messy
 	for _, symbol := range symbols {
 		env.PutGlobal(lisp.Symbol(symbol), lisp.String(symbol))
-		env.Runtime.Package.Externals = append(env.Runtime.Package.Externals, symbol)
 	}
+	env.Runtime.Package.Exports(symbols...)
+	env.SetSymbolDoc("string", "Type name for string values.")
+	env.SetSymbolDoc("number", "Type name for numeric values (int or float).")
+	env.SetSymbolDoc("int", "Type name for integer values.")
+	env.SetSymbolDoc("float", "Type name for floating-point values.")
+	env.SetSymbolDoc("fun", "Type name for function values.")
+	env.SetSymbolDoc("bytes", "Type name for byte-sequence values.")
+	env.SetSymbolDoc("error", "Type name for error values.")
+	env.SetSymbolDoc("sorted-map", "Type name for sorted-map (associative array) values.")
+	env.SetSymbolDoc("array", "Type name for array values.")
+	env.SetSymbolDoc("bool", "Type name for boolean values (true or false).")
+	env.SetSymbolDoc("tagged-value", "Type name for user-defined tagged values (created with deftype/new).")
+	env.SetSymbolDoc("any", "Type name matching any value type (no type constraint).")
 	return lisp.Nil()
 }
 
