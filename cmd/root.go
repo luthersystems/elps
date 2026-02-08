@@ -51,7 +51,11 @@ Standard library packages (use with use-package or qualified names):
   s         Schema type predicates
 
 Documentation is built in: use (help 'symbol) in the REPL or elps doc <name>
-from the command line. Use elps doc -p <package> to explore a package.`,
+from the command line. Use elps doc -p <package> to explore a package.
+
+More information:
+  Source code:     https://github.com/luthersystems/elps
+  Documentation:   https://github.com/luthersystems/docs`,
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
