@@ -45,7 +45,7 @@ func TestSpecialOp(t *testing.T) {
 			{`(let ([x 'a]) (set! x 'b) x)`, `'b`, ``},
 			{`x`, `2`, ``},
 			{`(set! false x)`, `test:1:7: lisp:set!: cannot rebind constant: false`, ``},
-			{`(set! foo 3)`, `test:1:7: lisp:set!: symbol not bound: foo`, ``},
+			{`(set! foo 3)`, `test:1:7: lisp:set!: symbol not bound: foo (set! only mutates existing bindings; use set to create new ones)`, ``},
 		}},
 		{"let*", elpstest.TestSequence{
 			{`(let* ())`, "()", ""},
