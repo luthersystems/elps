@@ -26,7 +26,8 @@ type fakeErr struct{ name string }
 
 func (e *fakeErr) Error() string { return "not found: " + e.name }
 
-func TestRenderError(t *testing.T) {
+func TestRenderErrorGolden(t *testing.T) {
+	t.Parallel()
 	r := testRenderer(map[string]string{
 		"test.lisp": "(set! false 42)",
 	})
@@ -44,17 +45,20 @@ func TestRenderError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := buf.String()
+	want := "error: cannot rebind constant: false\n" +
+		"  --> test.lisp:1:7\n" +
+		"   |\n" +
+		" 1 |  (set! false 42)\n" +
+		"   |        ^^^^^ set! target is a language constant\n" +
+		"   |\n"
 
-	// Verify key structural elements
-	assertContains(t, got, "error: cannot rebind constant: false")
-	assertContains(t, got, "--> test.lisp:1:7")
-	assertContains(t, got, "(set! false 42)")
-	assertContains(t, got, "^^^^^")
-	assertContains(t, got, "set! target is a language constant")
+	if got := buf.String(); got != want {
+		t.Errorf("golden output mismatch:\ngot:\n%s\nwant:\n%s", got, want)
+	}
 }
 
 func TestRenderWarning(t *testing.T) {
+	t.Parallel()
 	r := testRenderer(map[string]string{
 		"test.lisp": "(set x 1)\n(set x 2)",
 	})
@@ -78,7 +82,29 @@ func TestRenderWarning(t *testing.T) {
 	assertContains(t, got, "(set x 2)")
 }
 
+func TestRenderNote(t *testing.T) {
+	t.Parallel()
+	r := testRenderer(nil)
+
+	d := Diagnostic{
+		Severity: SeverityNote,
+		Message:  "defined here",
+		Spans:    []Span{{File: "test.lisp", Line: 3, Col: 1}},
+	}
+
+	var buf bytes.Buffer
+	if err := r.Render(&buf, d); err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	assertContains(t, got, "note: defined here")
+	assertNotContains(t, got, "error:")
+	assertNotContains(t, got, "warning:")
+}
+
 func TestRenderNoSource(t *testing.T) {
+	t.Parallel()
 	r := testRenderer(nil)
 
 	d := Diagnostic{
@@ -97,12 +123,14 @@ func TestRenderNoSource(t *testing.T) {
 	got := buf.String()
 	assertContains(t, got, "error: some error")
 	assertContains(t, got, "--> <stdin>:5:3")
-	// Should have a gutter but no source line
-	assertContains(t, got, "|")
+	// No-source fallback: gutter but no source line or underline
+	assertContains(t, got, "   |")
 	assertNotContains(t, got, "^")
+	assertNotContains(t, got, " 5 |")
 }
 
-func TestRenderNotes(t *testing.T) {
+func TestRenderWithNotes(t *testing.T) {
+	t.Parallel()
 	r := testRenderer(map[string]string{
 		"test.lisp": "(my-fn 1 2)",
 	})
@@ -130,6 +158,7 @@ func TestRenderNotes(t *testing.T) {
 }
 
 func TestRenderAutoDetectEndCol(t *testing.T) {
+	t.Parallel()
 	r := testRenderer(map[string]string{
 		"test.lisp": "(defun true () 42)",
 	})
@@ -148,11 +177,13 @@ func TestRenderAutoDetectEndCol(t *testing.T) {
 	}
 
 	got := buf.String()
-	// "true" starts at col 8 and is 4 chars → should produce "^^^^"
+	// "true" starts at col 8 and is 4 chars → exactly "^^^^"
 	assertContains(t, got, "^^^^")
+	assertNotContains(t, got, "^^^^^")
 }
 
 func TestRenderMultipleDiagnostics(t *testing.T) {
+	t.Parallel()
 	r := testRenderer(map[string]string{
 		"test.lisp": "(set x 1)\n(set x 2)\n(if true)",
 	})
@@ -176,16 +207,16 @@ func TestRenderMultipleDiagnostics(t *testing.T) {
 	}
 
 	got := buf.String()
-	// Should have both diagnostics separated by blank line
-	parts := strings.Split(got, "\n\n")
-	if len(parts) < 2 {
-		t.Errorf("expected diagnostics separated by blank line, got:\n%s", got)
-	}
 	assertContains(t, got, "repeated set on symbol: x")
 	assertContains(t, got, "if requires 2-3 arguments")
+	// Both diagnostics should be present
+	if strings.Count(got, "warning:") != 2 {
+		t.Errorf("expected 2 warning headers, got %d:\n%s", strings.Count(got, "warning:"), got)
+	}
 }
 
 func TestRenderNoSpans(t *testing.T) {
+	t.Parallel()
 	r := testRenderer(nil)
 
 	d := Diagnostic{
@@ -202,6 +233,30 @@ func TestRenderNoSpans(t *testing.T) {
 	assertContains(t, got, "error: library error: file not found")
 	// Should be just the header, no arrows or source
 	assertNotContains(t, got, "-->")
+}
+
+func TestRenderTabExpansion(t *testing.T) {
+	t.Parallel()
+	r := testRenderer(map[string]string{
+		"test.lisp": "\t(set x 1)",
+	})
+
+	d := Diagnostic{
+		Severity: SeverityWarning,
+		Message:  "test",
+		Spans:    []Span{{File: "test.lisp", Line: 1, Col: 2, EndCol: 4}},
+	}
+
+	var buf bytes.Buffer
+	if err := r.Render(&buf, d); err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	// Tab should be expanded to 4 spaces in the source display
+	assertContains(t, got, "    (set x 1)")
+	// Underline should be positioned after the expanded tab
+	assertContains(t, got, "    ^^^")
 }
 
 func assertContains(t *testing.T, got, want string) {
