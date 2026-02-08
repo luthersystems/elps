@@ -28,6 +28,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	if !e.IsNil() {
 		return e
 	}
+	env.SetPackageDoc("Interactive documentation: inspect functions, variables, and package exports.")
 	for _, op := range ops {
 		env.AddSpecialOps(true, op)
 	}
@@ -128,6 +129,21 @@ func RenderPkgExported(w io.Writer, env *lisp.LEnv, query string) error {
 	pkg := env.Runtime.Registry.Packages[query]
 	if pkg == nil {
 		return fmt.Errorf("no package: %q", query)
+	}
+	_, err := fmt.Fprintf(w, "package %s\n", pkg.Name)
+	if err != nil {
+		return err
+	}
+	if pkg.Doc != "" {
+		doc := cleanDocstring(pkg.Doc)
+		_, err = fmt.Fprintln(w, doc)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = fmt.Fprintln(w)
+	if err != nil {
+		return err
 	}
 	exports := pkg.Externals
 	for i, exsym := range exports {

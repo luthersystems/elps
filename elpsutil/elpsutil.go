@@ -48,6 +48,12 @@ type Package interface {
 	PackageName() string
 }
 
+// PackageDocumented allows an elps package to provide a documentation string.
+type PackageDocumented interface {
+	Package
+	PackageDoc() string
+}
+
 // PackageInit allows initialization of an elps package implemented in Go.
 type PackageInit interface {
 	Package
@@ -164,6 +170,9 @@ func PackageLoader(p Package) Loader {
 		e = env.InPackage(name)
 		if !e.IsNil() {
 			return e
+		}
+		if dp, ok := p.(PackageDocumented); ok {
+			env.SetPackageDoc(dp.PackageDoc())
 		}
 		initLoader := packageInit(p)
 		e = initLoader(env)

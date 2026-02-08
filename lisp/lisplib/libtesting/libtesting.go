@@ -25,6 +25,8 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	if !e.IsNil() {
 		return e
 	}
+	env.SetPackageDoc(`Test framework: define named tests and benchmarks with assertion
+		helpers (assert-equal, assert-nil, assert-not-nil, etc.).`)
 	suite := NewTestSuite()
 	env.PutGlobal(lisp.Symbol(DefaultSuiteSymbol), lisp.Native(suite))
 	for _, fn := range suite.Ops() {

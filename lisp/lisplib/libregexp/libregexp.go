@@ -23,6 +23,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	if !e.IsNil() {
 		return e
 	}
+	env.SetPackageDoc("Regular expression compilation and matching using Go RE2 syntax.")
 	for _, fn := range builtins {
 		env.AddBuiltins(true, fn)
 	}

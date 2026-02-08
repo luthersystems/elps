@@ -23,6 +23,8 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	if !e.IsNil() {
 		return e
 	}
+	env.SetPackageDoc(`Time operations: parsing, formatting, comparison, and arithmetic
+		on UTC timestamps and durations. Wraps Go's time package.`)
 	for _, fn := range builtins {
 		env.AddBuiltins(true, fn)
 	}

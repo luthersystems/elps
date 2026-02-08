@@ -24,6 +24,8 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	if !e.IsNil() {
 		return e
 	}
+	env.SetPackageDoc(`String manipulation: case conversion, splitting, joining,
+		repetition, and trimming.`)
 	for _, fn := range builtins {
 		env.AddBuiltins(true, fn)
 	}
