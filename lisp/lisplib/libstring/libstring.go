@@ -10,10 +10,10 @@ import (
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
 )
 
-// DeafultPackageName is the package name used by LoadPackage.
+// DefaultPackageName is the package name used by LoadPackage.
 const DefaultPackageName = "string"
 
-// LoadPackage adds the math package to env
+// LoadPackage adds the string package to env
 func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	name := lisp.Symbol(DefaultPackageName)
 	e := env.DefinePackage(name)

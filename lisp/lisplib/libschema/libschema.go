@@ -11,7 +11,7 @@ import (
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
 )
 
-// DeafultPackageName is the package name used by LoadPackage.
+// DefaultPackageName is the package name used by LoadPackage.
 const DefaultPackageName = "s"
 
 // These are our types. We don't use the `LType`s in the lisp package as we have
