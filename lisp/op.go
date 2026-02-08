@@ -683,13 +683,13 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 					return env.Errorf("handler not a function for condition type %s: %v", sym.Str, hval.Type)
 				}
 				// Make the original error available to rethrow.
+				// Use defer to ensure the condition stack is cleaned up
+				// even if a Go panic propagates through the handler.
 				env.Runtime.PushCondition(val)
-				// Is this a Terminal expression? Probably not...
+				defer env.Runtime.PopCondition()
 				expr := []*LVal{hval, Quote(Symbol(val.Str))}
 				expr = append(expr, val.Copy().Cells...)
-				result := env.Eval(SExpr(expr))
-				env.Runtime.PopCondition()
-				return result
+				return env.Eval(SExpr(expr))
 			}
 			return val
 		}

@@ -44,6 +44,20 @@ func TestPackages(t *testing.T) {
 			{`(fun 2)`, `3`, ""},
 			{`(other-package:fun 2)`, `1`, ""},
 		}},
+		{"use-package multiple args", elpstest.TestSequence{
+			// Define two separate packages with exported functions.
+			{"(in-package 'pkg-a)", "()", ""},
+			{"(defun a-fn () 'from-a)", "()", ""},
+			{"(export 'a-fn)", "()", ""},
+			{"(in-package 'pkg-b)", "()", ""},
+			{"(defun b-fn () 'from-b)", "()", ""},
+			{"(export 'b-fn)", "()", ""},
+			// Import both packages in a single use-package call.
+			{"(in-package 'user)", "()", ""},
+			{"(use-package 'pkg-a 'pkg-b)", "()", ""},
+			{`(a-fn)`, `'from-a`, ""},
+			{`(b-fn)`, `'from-b`, ""},
+		}},
 		{"export list of symbols", elpstest.TestSequence{
 			// Define multiple symbols in a package and export them as a list.
 			{"(in-package 'multi-export)", "()", ""},

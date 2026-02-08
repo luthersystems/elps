@@ -14,6 +14,23 @@ func TestStandardRuntimeStackLimits(t *testing.T) {
 	}
 }
 
+func TestAtomicCounterAdd(t *testing.T) {
+	var c atomicCounter
+	// Add various values and verify they accumulate correctly.
+	got := c.Add(1)
+	if got != 1 {
+		t.Errorf("Add(1) = %d, want 1", got)
+	}
+	got = c.Add(5)
+	if got != 6 {
+		t.Errorf("Add(5) = %d, want 6", got)
+	}
+	got = c.Add(10)
+	if got != 16 {
+		t.Errorf("Add(10) = %d, want 16", got)
+	}
+}
+
 func TestNewEnvDefaultStackLimits(t *testing.T) {
 	env := NewEnv(nil)
 	if env.Runtime.Stack.MaxHeightLogical != DefaultMaxLogicalStackHeight {

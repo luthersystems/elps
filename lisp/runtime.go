@@ -132,5 +132,5 @@ func (r *Runtime) sourceContext() SourceContext {
 type atomicCounter uint64
 
 func (c *atomicCounter) Add(n uint) uint {
-	return uint(atomic.AddUint64((*uint64)(c), uint64(1)))
+	return uint(atomic.AddUint64((*uint64)(c), uint64(n)))
 }

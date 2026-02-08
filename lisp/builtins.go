@@ -502,10 +502,16 @@ func builtinInPackage(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinUsePackage(env *LEnv, args *LVal) *LVal {
-	if args.Cells[0].Type != LSymbol && args.Cells[0].Type != LString {
-		return env.Errorf("first argument is not a symbol or a string: %v", args.Cells[0].Type)
+	for i, pkg := range args.Cells {
+		if pkg.Type != LSymbol && pkg.Type != LString {
+			return env.Errorf("argument %d is not a symbol or a string: %v", i+1, pkg.Type)
+		}
+		lerr := env.UsePackage(pkg)
+		if lerr.Type == LError {
+			return lerr
+		}
 	}
-	return env.UsePackage(args.Cells[0])
+	return Nil()
 }
 
 func builtinExport(env *LEnv, args *LVal) *LVal {
