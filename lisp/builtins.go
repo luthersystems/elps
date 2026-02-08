@@ -1408,7 +1408,7 @@ func builtinInsertIndex(env *LEnv, args *LVal) *LVal {
 	if index.Type != LInt {
 		return env.Errorf("third arument is not a integer: %v", index.Type)
 	}
-	if index.Int > list.Len() {
+	if index.Int < 0 || index.Int > list.Len() {
 		return env.Errorf("index out of bounds")
 	}
 	var v *LVal

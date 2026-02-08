@@ -260,6 +260,11 @@ string"""`, `"\"\"a raw\nstring"`, ""},
 			{`(insert-index 'vector (vector 2) 0 1)`, `(vector 1 2)`, ""},
 			{`(insert-index 'vector (vector 1) 1 2)`, `(vector 1 2)`, ""},
 			{`(insert-index 'vector (vector 1 3) 1 2)`, `(vector 1 2 3)`, ""},
+			// Negative index must return a lisp error, not a Go panic.
+			{`(insert-index 'list '(a b c) -1 'x)`, `test:1:1: lisp:insert-index: index out of bounds`, ""},
+			{`(insert-index 'vector (vector 1 2) -1 0)`, `test:1:1: lisp:insert-index: index out of bounds`, ""},
+			// Upper bound still checked.
+			{`(insert-index 'list '(a b) 3 'x)`, `test:1:1: lisp:insert-index: index out of bounds`, ""},
 		}},
 		{"append 'list", elpstest.TestSequence{
 			{"(set 'v (list))", "'()", ""},
