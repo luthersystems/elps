@@ -611,6 +611,39 @@ func TestQuoteCall_Negative_DynamicName(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+// --- cond-missing-else ---
+
+func TestCondMissingElse_Positive_NoDefault(t *testing.T) {
+	source := "(cond\n  ((= x 1) \"one\")\n  ((= x 2) \"two\"))"
+	diags := lintCheck(t, AnalyzerCondMissingElse, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "no default")
+	assert.NotEmpty(t, diags[0].Notes)
+}
+
+func TestCondMissingElse_Negative_HasElse(t *testing.T) {
+	source := "(cond\n  ((= x 1) \"one\")\n  (else \"default\"))"
+	diags := lintCheck(t, AnalyzerCondMissingElse, source)
+	assertNoDiags(t, diags)
+}
+
+func TestCondMissingElse_Negative_HasTrue(t *testing.T) {
+	source := "(cond\n  ((= x 1) \"one\")\n  (true \"default\"))"
+	diags := lintCheck(t, AnalyzerCondMissingElse, source)
+	assertNoDiags(t, diags)
+}
+
+func TestCondMissingElse_Negative_EmptyCond(t *testing.T) {
+	diags := lintCheck(t, AnalyzerCondMissingElse, `(cond)`)
+	assertNoDiags(t, diags)
+}
+
+func TestCondMissingElse_Negative_SingleElse(t *testing.T) {
+	source := "(cond (else \"only\"))"
+	diags := lintCheck(t, AnalyzerCondMissingElse, source)
+	assertNoDiags(t, diags)
+}
+
 // --- nolint suppression ---
 
 func TestNolint_SuppressAll(t *testing.T) {
@@ -779,10 +812,11 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 8)
+	assert.Len(t, analyzers, 9)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
+		"cond-missing-else",
 		"cond-structure",
 		"defun-structure",
 		"if-arity",
