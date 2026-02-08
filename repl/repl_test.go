@@ -3,8 +3,11 @@ package repl
 import (
 	"bytes"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,6 +32,43 @@ func runReplWithString(t *testing.T, input string) (string, error) {
 	outR.Close() //nolint:errcheck,gosec // test cleanup
 
 	return output.String(), nil
+}
+
+func TestEnsureHistoryFilePermissions_CreatesWithRestrictedMode(t *testing.T) {
+	dir := t.TempDir()
+	histFile := filepath.Join(dir, ".elps_history")
+
+	// File does not exist yet.
+	ensureHistoryFilePermissions(histFile)
+
+	info, err := os.Stat(histFile)
+	require.NoError(t, err, "history file should be created")
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm(), "new history file should have mode 0600")
+}
+
+func TestEnsureHistoryFilePermissions_RestrictsExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	histFile := filepath.Join(dir, ".elps_history")
+
+	// Create the file with overly permissive mode.
+	err := os.WriteFile(histFile, []byte("some history"), 0644)
+	require.NoError(t, err)
+
+	ensureHistoryFilePermissions(histFile)
+
+	info, err := os.Stat(histFile)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm(), "existing history file should be restricted to 0600")
+
+	// Verify contents are preserved.
+	data, err := os.ReadFile(histFile)
+	require.NoError(t, err)
+	assert.Equal(t, "some history", string(data))
+}
+
+func TestEnsureHistoryFilePermissions_EmptyPathNoOp(t *testing.T) {
+	// Should not panic or error with empty path.
+	ensureHistoryFilePermissions("")
 }
 
 func TestRunRepl(t *testing.T) {

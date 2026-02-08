@@ -101,11 +101,14 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		env.Runtime.Stderr = cfg.stderr
 	}
 
+	histPath := historyPath()
+	ensureHistoryFilePermissions(histPath)
+
 	rlCfg := &readline.Config{
 		Stdout:            env.Runtime.Stderr,
 		Stderr:            env.Runtime.Stderr,
 		Prompt:            p.Prompt(),
-		HistoryFile:       historyPath(),
+		HistoryFile:       histPath,
 		HistorySearchFold: true,
 		AutoComplete:      &symbolCompleter{env: env},
 	}
@@ -182,6 +185,24 @@ func historyPath() string {
 		return ""
 	}
 	return filepath.Join(home, ".elps_history")
+}
+
+// ensureHistoryFilePermissions creates the history file with mode 0600
+// if it does not exist, or restricts its permissions to 0600 if it does.
+// This prevents other users on a shared system from reading REPL history.
+func ensureHistoryFilePermissions(path string) {
+	if path == "" {
+		return
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0600) //#nosec G304
+		if err != nil {
+			return // best-effort
+		}
+		f.Close() //nolint:errcheck,gosec // best-effort cleanup
+	} else if err == nil {
+		os.Chmod(path, 0600) //nolint:errcheck // best-effort permission fix
+	}
 }
 
 func errlnf(format string, v ...interface{}) {
