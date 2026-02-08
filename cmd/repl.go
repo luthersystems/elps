@@ -13,8 +13,28 @@ import (
 // replCmd represents the repl command
 var replCmd = &cobra.Command{
 	Use:   "repl",
-	Short: "Run a lisp repl",
-	Long:  `Run a lisp repl.`,
+	Short: "Start an interactive ELPS Lisp REPL",
+	Long: `Start an interactive read-eval-print loop for ELPS Lisp.
+
+All standard library packages are loaded automatically. Line editing and
+in-session command history are supported via readline. Use Ctrl-D or
+Ctrl-C to exit.
+
+Example REPL session:
+  elps> (+ 1 2)
+  3
+  elps> (defun square (x) (* x x))
+  ()
+  elps> (square 5)
+  25
+  elps> (use-package 'math)
+  ()
+  elps> math:pi
+  3.141592653589793
+  elps> (help 'map)
+  ...
+  elps> (apropos "sort")
+  ...`,
 	Run: func(cmd *cobra.Command, args []string) {
 		repl.RunRepl(filepath.Base(os.Args[0]) + "> ")
 	},

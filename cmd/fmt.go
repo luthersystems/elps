@@ -20,11 +20,29 @@ var (
 
 var fmtCmd = &cobra.Command{
 	Use:   "fmt [flags] [files...]",
-	Short: "Format elps source files",
-	Long: `Format elps source files.
+	Short: "Format ELPS source files",
+	Long: `Format ELPS Lisp source files, similar to gofmt for Go.
 
-With no files and no flags, reads from stdin and writes to stdout.
-With files, prints formatted output to stdout (use -w to overwrite).`,
+Normalizes whitespace and indentation, aligns forms according to Lisp
+conventions, and preserves comments. The formatter is idempotent.
+
+With no files, reads from stdin and writes to stdout.
+With files, prints formatted output to stdout unless -w is given.
+
+Modes:
+  (default)   Print formatted code to stdout
+  -w          Write result back to source file
+  -d          Display a diff of changes
+  -l          List files that would be changed
+
+Examples:
+  elps fmt file.lisp               Print formatted output
+  elps fmt -w file.lisp            Format in place
+  elps fmt -w *.lisp               Format all lisp files in place
+  elps fmt -d file.lisp            Show what would change
+  elps fmt -l *.lisp               List files needing formatting
+  cat file.lisp | elps fmt         Format from stdin
+  elps fmt --indent-size 4 f.lisp  Use 4-space indentation`,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg := formatter.DefaultConfig()
 		cfg.IndentSize = fmtIndentSize
