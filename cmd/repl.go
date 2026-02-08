@@ -10,6 +10,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	replJSON  bool
+	replBatch bool
+	replEval  string
+)
+
 // replCmd represents the repl command
 var replCmd = &cobra.Command{
 	Use:   "repl",
@@ -19,6 +25,11 @@ var replCmd = &cobra.Command{
 All standard library packages are loaded automatically. Line editing and
 in-session command history are supported via readline. Use Ctrl-D or
 Ctrl-C to exit.
+
+Flags:
+  --json          Output each result as a single-line JSON object to stdout.
+  --batch         Suppress readline and read raw lines from stdin (auto-enables --json).
+  -e, --eval EXPR Evaluate a single expression, print the result, and exit.
 
 Example REPL session:
   elps> (+ 1 2)
@@ -34,22 +45,39 @@ Example REPL session:
   elps> (help 'map)
   ...
   elps> (apropos "sort")
-  ...`,
+  ...
+
+Example batch/JSON usage:
+  echo '(+ 1 2)' | elps repl --batch
+  elps repl -e '(* 6 7)'
+  elps repl -e '(* 6 7)' --json`,
 	Run: func(cmd *cobra.Command, args []string) {
-		repl.RunRepl(filepath.Base(os.Args[0]) + "> ")
+		jsonFlag := replJSON
+		// --batch auto-enables --json unless --json was explicitly set.
+		if replBatch && !cmd.Flags().Changed("json") {
+			jsonFlag = true
+		}
+
+		opts := []repl.Option{
+			repl.WithJSON(jsonFlag),
+			repl.WithBatch(replBatch),
+		}
+		if replEval != "" {
+			opts = append(opts, repl.WithEval(replEval))
+		}
+		repl.RunRepl(filepath.Base(os.Args[0])+"> ", opts...)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(replCmd)
 
-	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// replCmd.PersistentFlags().String("foo", "", "A help for foo")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// replCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	replCmd.Flags().BoolVar(&replJSON, "json", false,
+		"Output each result as a single-line JSON object to stdout")
+	replCmd.Flags().BoolVar(&replBatch, "batch", false,
+		"Suppress readline prompt; read raw lines from stdin (auto-enables --json)")
+	replCmd.Flags().BoolVar(&replBatch, "no-prompt", false,
+		"Alias for --batch")
+	replCmd.Flags().StringVarP(&replEval, "eval", "e", "",
+		"Evaluate a single expression, print result, and exit")
 }

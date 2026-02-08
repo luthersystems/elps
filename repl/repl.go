@@ -3,7 +3,9 @@
 package repl
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -22,6 +24,9 @@ import (
 type config struct {
 	stdin  io.ReadCloser
 	stderr io.WriteCloser
+	json   bool
+	batch  bool
+	eval   string
 }
 
 func newConfig(opts ...Option) *config {
@@ -34,7 +39,7 @@ func newConfig(opts ...Option) *config {
 
 type Option func(*config)
 
-// WithStderr allows overriding the input to the REPL.
+// WithStdin allows overriding the input to the REPL.
 func WithStdin(stdin io.ReadCloser) Option {
 	return func(c *config) {
 		c.stdin = stdin
@@ -46,6 +51,51 @@ func WithStderr(stderr io.WriteCloser) Option {
 	return func(c *config) {
 		c.stderr = stderr
 	}
+}
+
+// WithJSON enables JSON output mode. Each evaluation result is emitted
+// as a single-line JSON object to stdout.
+func WithJSON(enabled bool) Option {
+	return func(c *config) {
+		c.json = enabled
+	}
+}
+
+// WithBatch enables batch mode. The readline prompt and terminal
+// manipulation are suppressed and raw lines are read from stdin.
+// Batch mode auto-enables JSON output unless explicitly overridden.
+func WithBatch(enabled bool) Option {
+	return func(c *config) {
+		c.batch = enabled
+	}
+}
+
+// WithEval sets a single expression to evaluate. The REPL evaluates
+// the expression, prints the result, and exits.
+func WithEval(expr string) Option {
+	return func(c *config) {
+		c.eval = expr
+	}
+}
+
+// jsonResult is the JSON output for a successful evaluation.
+type jsonResult struct {
+	Type      string `json:"type"`
+	ValueType string `json:"value_type"`
+	Value     string `json:"value"`
+}
+
+// jsonError is the JSON output for an evaluation error.
+type jsonError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+	Source  string `json:"source,omitempty"`
+}
+
+// jsonParseError is the JSON output for a parse error.
+type jsonParseError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
 }
 
 // RunRepl runs a simple repl in a vanilla elps environment.
@@ -81,6 +131,17 @@ func RunRepl(prompt string, opts ...Option) {
 	if !rc.IsNil() {
 		errlnf("Use help package: %v", rc)
 		os.Exit(1)
+	}
+
+	// Handle --eval: parse and evaluate a single expression, then exit.
+	if cfg.eval != "" {
+		os.Exit(runEval(env, cfg, os.Stdout, os.Stderr))
+	}
+
+	// Handle --batch: read from stdin without readline.
+	if cfg.batch {
+		runBatch(env, cfg, os.Stdout, os.Stderr)
+		return
 	}
 
 	RunEnv(env, prompt, strings.Repeat(" ", len(prompt)), opts...)
@@ -167,16 +228,163 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 			break
 		}
 		if err != nil {
-			fmt.Fprintln(env.Runtime.Stderr, err) //nolint:errcheck // best-effort error display
+			if cfg.json {
+				emitParseError(os.Stdout, err)
+			} else {
+				fmt.Fprintln(env.Runtime.Stderr, err) //nolint:errcheck // best-effort error display
+			}
 			continue
 		}
 		val := env.Eval(expr)
-		if val.Type == lisp.LError {
+		if cfg.json {
+			emitResult(os.Stdout, val)
+		} else if val.Type == lisp.LError {
 			renderError(env.Runtime.Stderr, val)
 		} else {
 			fmt.Fprintln(env.Runtime.Stderr, val) //nolint:errcheck // best-effort REPL output
 		}
 	}
+}
+
+// runEval evaluates a single expression and returns an exit code.
+// stdout receives the result; errw receives error messages.
+func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
+	reader := rdparser.NewReader()
+	exprs, err := reader.Read("eval", strings.NewReader(cfg.eval))
+	if err != nil {
+		if cfg.json {
+			emitParseError(stdout, err)
+		} else {
+			fmt.Fprintln(errw, err) //nolint:errcheck // best-effort error display
+		}
+		return 1
+	}
+	if len(exprs) == 0 {
+		if cfg.json {
+			emitParseError(stdout, fmt.Errorf("no expression"))
+		} else {
+			fmt.Fprintln(errw, "no expression") //nolint:errcheck // best-effort error display
+		}
+		return 1
+	}
+
+	var last *lisp.LVal
+	for _, expr := range exprs {
+		last = env.Eval(expr)
+		if last.Type == lisp.LError {
+			if cfg.json {
+				emitResult(stdout, last)
+			} else {
+				renderError(errw, last)
+			}
+			return 1
+		}
+	}
+
+	if cfg.json {
+		emitResult(stdout, last)
+	} else {
+		fmt.Fprintln(stdout, last) //nolint:errcheck // best-effort output
+	}
+	return 0
+}
+
+// runBatch reads lines from stdin without readline, accumulates complete
+// expressions using the interactive parser, and evaluates each one.
+// stdout receives results; errw receives error messages.
+func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
+	p := rdparser.NewInteractive(nil)
+
+	stdin := cfg.stdin
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+	scanner := bufio.NewScanner(stdin)
+
+	p.Read = func() []*token.Token {
+		for scanner.Scan() {
+			line := bytes.TrimSpace(scanner.Bytes())
+			if len(line) == 0 {
+				continue
+			}
+			var tokens []*token.Token
+			s := token.NewScanner("stdin", bytes.NewReader(line))
+			lex := lexer.New(s)
+			for {
+				tok := lex.ReadToken()
+				if len(tok) != 1 {
+					panic("bad tokens")
+				}
+				if tok[0].Type == token.EOF {
+					return tokens
+				}
+				tokens = append(tokens, tok...)
+				if tok[0].Type == token.ERROR {
+					return tokens
+				}
+			}
+		}
+		return []*token.Token{{
+			Type: token.EOF,
+			Text: "",
+		}}
+	}
+
+	for {
+		expr, err := p.Parse()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if cfg.json {
+				emitParseError(stdout, err)
+			} else {
+				fmt.Fprintln(errw, err) //nolint:errcheck // best-effort error display
+			}
+			continue
+		}
+		val := env.Eval(expr)
+		if cfg.json {
+			emitResult(stdout, val)
+		} else if val.Type == lisp.LError {
+			renderError(errw, val)
+		} else {
+			fmt.Fprintln(stdout, val) //nolint:errcheck // best-effort output
+		}
+	}
+}
+
+// emitResult writes a JSON object for a result (success or error) to w.
+func emitResult(w io.Writer, val *lisp.LVal) {
+	if val.Type == lisp.LError {
+		obj := jsonError{
+			Type:    "error",
+			Message: (*lisp.ErrorVal)(val).Error(),
+		}
+		if val.Source != nil && val.Source.Pos >= 0 {
+			obj.Source = val.Source.String()
+		}
+		data, _ := json.Marshal(obj) //nolint:errcheck // marshaling known types
+		fmt.Fprintln(w, string(data)) //nolint:errcheck // best-effort output
+		return
+	}
+	obj := jsonResult{
+		Type:      "result",
+		ValueType: val.Type.String(),
+		Value:     val.String(),
+	}
+	data, _ := json.Marshal(obj) //nolint:errcheck // marshaling known types
+	fmt.Fprintln(w, string(data)) //nolint:errcheck // best-effort output
+}
+
+// emitParseError writes a JSON parse_error object to w.
+func emitParseError(w io.Writer, err error) {
+	obj := jsonParseError{
+		Type:    "parse_error",
+		Message: err.Error(),
+	}
+	data, _ := json.Marshal(obj) //nolint:errcheck // marshaling known types
+	fmt.Fprintln(w, string(data)) //nolint:errcheck // best-effort output
 }
 
 func historyPath() string {
