@@ -169,7 +169,7 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		}
 		val := env.Eval(expr)
 		if val.Type == lisp.LError {
-			_, _ = (*lisp.ErrorVal)(val).WriteTrace(env.Runtime.Stderr)
+			renderError(env.Runtime.Stderr, val)
 		} else {
 			fmt.Fprintln(env.Runtime.Stderr, val) //nolint:errcheck // best-effort REPL output
 		}
