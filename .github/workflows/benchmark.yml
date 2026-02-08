@@ -132,11 +132,13 @@ jobs:
       - name: Post PR comment
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
+        env:
+          BENCH_RESULT: ${{ steps.benchstat.outputs.result }}
         with:
           # Use the default GITHUB_TOKEN. For PRs from forks this token has
           # read-only permissions and the comment will be silently skipped.
           script: |
-            const body = `${{ steps.benchstat.outputs.result }}`;
+            const body = process.env.BENCH_RESULT;
             const marker = '<!-- benchmark-comparison-comment -->';
             const fullBody = marker + '\n' + body;
 
