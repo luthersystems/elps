@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ergochat/readline"
@@ -101,9 +102,12 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 	}
 
 	rlCfg := &readline.Config{
-		Stdout: env.Runtime.Stderr,
-		Stderr: env.Runtime.Stderr,
-		Prompt: p.Prompt(),
+		Stdout:            env.Runtime.Stderr,
+		Stderr:            env.Runtime.Stderr,
+		Prompt:            p.Prompt(),
+		HistoryFile:       historyPath(),
+		HistorySearchFold: true,
+		AutoComplete:      &symbolCompleter{env: env},
 	}
 
 	if cfg.stdin != nil {
@@ -170,6 +174,14 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 			fmt.Fprintln(env.Runtime.Stderr, val) //nolint:errcheck // best-effort REPL output
 		}
 	}
+}
+
+func historyPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".elps_history")
 }
 
 func errlnf(format string, v ...interface{}) {
