@@ -46,9 +46,34 @@ func TestDocstring(t *testing.T) {
 	if assert.Equal(t, lisp.LFun, lisp1.Type) {
 		assert.Equal(t, "", lisp1.Docstring())
 	}
+	// (defun f () "abc" "") — body is all strings, so no docstring
+	// (it's a constant function returning "")
 	lisp2 := env.Get(lisp.Symbol("const-string2"))
 	if assert.Equal(t, lisp.LFun, lisp2.Type) {
-		assert.Equal(t, "abc", lisp2.Docstring())
+		assert.Equal(t, "", lisp2.Docstring())
+	}
+
+	// Multi-string docstrings are concatenated with spaces
+	rc = env.LoadString("test2.lisp", `
+	(defun multi-doc ()
+		"First line of docs."
+		"Second line of docs."
+		42)
+	`)
+	require.True(t, rc.IsNil())
+	multi := env.Get(lisp.Symbol("multi-doc"))
+	if assert.Equal(t, lisp.LFun, multi.Type) {
+		assert.Equal(t, "First line of docs. Second line of docs.", multi.Docstring())
+	}
+
+	// All strings with no body = no docstring (it's a constant function)
+	rc = env.LoadString("test3.lisp", `
+	(defun all-strings () "a" "b" "c")
+	`)
+	require.True(t, rc.IsNil())
+	allStr := env.Get(lisp.Symbol("all-strings"))
+	if assert.Equal(t, lisp.LFun, allStr.Type) {
+		assert.Equal(t, "", allStr.Docstring())
 	}
 }
 
@@ -98,10 +123,10 @@ func TestRenderPkgExported_IncludesDoc(t *testing.T) {
 func TestPackageDocBuiltin(t *testing.T) {
 	env := newTestEnv(t)
 
-	// Use package-doc from lisp source
+	// Doc string as trailing argument to in-package
 	rc := env.LoadString("test.lisp", `
-	(in-package 'test-pkg)
-	(package-doc "A test package for unit testing.")
+	(in-package 'test-pkg
+		"A test package" "for unit testing.")
 	(export 'my-fn)
 	(defun my-fn () 42)
 	`)

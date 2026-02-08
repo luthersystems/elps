@@ -69,19 +69,17 @@ var (
 		{"load-file", Formals("source-location"), builtinLoadFile,
 			`Loads and evaluates the ELPS source file at source-location.
 			Returns the result of the last evaluated expression.`},
-		{"in-package", Formals("package-name"), builtinInPackage,
+		{"in-package", Formals("package-name", VarArgSymbol, "docstring"), builtinInPackage,
 			`Switches the current package to package-name, creating it if it
-			does not exist. Returns nil.`},
+			does not exist. Optional trailing strings set the package
+			documentation (concatenated with spaces if multiple are given).
+			Returns nil.`},
 		{"use-package", Formals(VarArgSymbol, "package-name"), builtinUsePackage,
 			`Imports all exported symbols from the named packages into the
 			current package. Returns nil.`},
 		{"export", Formals(VarArgSymbol, "symbol"), builtinExport,
 			`Marks symbols as exported from the current package, making them
 			available to other packages via use-package. Returns nil.`},
-		{"package-doc", Formals("docstring"), builtinPackageDoc,
-			`Sets the documentation string for the current package. The
-			argument must be a string describing the package's purpose.
-			Typically called immediately after (in-package ...). Returns nil.`},
 		{"set", Formals("sym", "val"), builtinSet,
 			`Binds val to the quoted symbol sym in the current package scope,
 			creating or overwriting the binding. Returns the bound value. This
@@ -481,6 +479,17 @@ func builtinInPackage(env *LEnv, args *LVal) *LVal {
 		// remember).
 		env.UsePackage(Symbol(env.Runtime.Registry.Lang))
 	}
+	// Optional trailing doc strings
+	if len(args.Cells) > 1 {
+		var parts []string
+		for _, arg := range args.Cells[1:] {
+			if arg.Type != LString {
+				return env.Errorf("docstring argument is not a string: %v", arg.Type)
+			}
+			parts = append(parts, arg.Str)
+		}
+		pkg.Doc = strings.Join(parts, " ")
+	}
 	return Nil()
 }
 
@@ -502,15 +511,6 @@ func builtinExport(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("argument is not a symbol, a string, or a list of valid types: %v", arg.Type)
 		}
 	}
-	return Nil()
-}
-
-func builtinPackageDoc(env *LEnv, args *LVal) *LVal {
-	doc := args.Cells[0]
-	if doc.Type != LString {
-		return env.Errorf("argument is not a string: %v", doc.Type)
-	}
-	env.Runtime.Package.Doc = doc.Str
 	return Nil()
 }
 
