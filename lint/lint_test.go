@@ -579,6 +579,38 @@ func TestBuiltinArity_CondNotDuplicated(t *testing.T) {
 	assert.False(t, ok, "cond should be removed from builtin arity table")
 }
 
+// --- quote-call ---
+
+func TestQuoteCall_Positive_UnquotedSet(t *testing.T) {
+	diags := lintCheck(t, AnalyzerQuoteCall, `(set x 42)`)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "should be quoted")
+	assert.NotEmpty(t, diags[0].Notes)
+}
+
+func TestQuoteCall_Positive_UnquotedDefconst(t *testing.T) {
+	diags := lintCheck(t, AnalyzerQuoteCall, `(defconst x 42 "doc")`)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "should be quoted")
+}
+
+func TestQuoteCall_Negative_QuotedSet(t *testing.T) {
+	diags := lintCheck(t, AnalyzerQuoteCall, `(set 'x 42)`)
+	assertNoDiags(t, diags)
+}
+
+func TestQuoteCall_Negative_SetBang(t *testing.T) {
+	// set! takes unquoted symbols by design
+	diags := lintCheck(t, AnalyzerQuoteCall, `(set! x 42)`)
+	assertNoDiags(t, diags)
+}
+
+func TestQuoteCall_Negative_DynamicName(t *testing.T) {
+	// An s-expression as the name arg is intentional (dynamic binding)
+	diags := lintCheck(t, AnalyzerQuoteCall, `(set (compute-name) 42)`)
+	assertNoDiags(t, diags)
+}
+
 // --- nolint suppression ---
 
 func TestNolint_SuppressAll(t *testing.T) {
@@ -747,7 +779,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 7)
+	assert.Len(t, analyzers, 8)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -756,6 +788,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"if-arity",
 		"in-package-toplevel",
 		"let-bindings",
+		"quote-call",
 		"set-usage",
 	}, names)
 }
