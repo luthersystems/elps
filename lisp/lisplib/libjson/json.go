@@ -33,6 +33,8 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	if !e.IsNil() {
 		return e
 	}
+	env.SetPackageDoc(`JSON serialization and deserialization. Marshal ELPS values to
+		JSON bytes or strings and unmarshal JSON into ELPS data structures.`)
 	env.PutGlobal(lisp.Symbol("null"), lisp.Symbol("json:null"))
 	s := DefaultSerializer()
 	for _, fn := range Builtins(s) {

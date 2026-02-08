@@ -24,6 +24,9 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 	env.Runtime.Registry.DefinePackage(DefaultLangPackage)
 	env.Runtime.Registry.Lang = DefaultLangPackage
 	env.Runtime.Package = env.Runtime.Registry.Packages[env.Runtime.Registry.Lang]
+	env.Runtime.Package.Doc = `The core ELPS language package. Provides fundamental data types,
+		control flow, function and macro definition, package management,
+		error handling, collections, I/O, and the type system.`
 	env.AddMacros(true)
 	env.AddSpecialOps(true)
 	env.AddBuiltins(true)
@@ -32,6 +35,7 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 		return rc
 	}
 	env.Runtime.Registry.DefinePackage(DefaultUserPackage)
+	env.Runtime.Registry.Packages[DefaultUserPackage].Doc = "The default user package for application code."
 	rc = env.InPackage(Symbol(DefaultUserPackage))
 	if GoError(rc) != nil {
 		return rc
@@ -149,6 +153,11 @@ func (env *LEnv) DefinePackage(name *LVal) *LVal {
 	}
 	env.Runtime.Registry.DefinePackage(name.Str)
 	return Nil()
+}
+
+// SetPackageDoc sets the documentation string for the current package.
+func (env *LEnv) SetPackageDoc(doc string) {
+	env.Runtime.Package.Doc = doc
 }
 
 func (env *LEnv) InPackage(name *LVal) *LVal {

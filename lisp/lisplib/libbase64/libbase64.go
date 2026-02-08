@@ -23,6 +23,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	if !e.IsNil() {
 		return e
 	}
+	env.SetPackageDoc("Base64 encoding and decoding using the standard alphabet (RFC 4648).")
 	for _, fn := range builtins {
 		env.AddBuiltins(true, fn)
 	}

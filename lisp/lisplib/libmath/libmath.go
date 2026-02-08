@@ -23,6 +23,8 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	if !e.IsNil() {
 		return e
 	}
+	env.SetPackageDoc(`Mathematical functions: trigonometry, logarithms, exponents, absolute
+		value, floor/ceiling, rounding, and mathematical constants (pi, inf).`)
 	env.PutGlobal(lisp.Symbol("pi"), lisp.Float(math.Pi))
 	env.PutGlobal(lisp.Symbol("inf"), lisp.Float(math.Inf(1)))
 	env.PutGlobal(lisp.Symbol("-inf"), lisp.Float(math.Inf(-1)))

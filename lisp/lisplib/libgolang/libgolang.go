@@ -24,6 +24,8 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	if !e.IsNil() {
 		return e
 	}
+	env.SetPackageDoc(`Go interop: extract strings, integers, and floats from native Go
+		objects, and read struct fields via reflection.`)
 	for _, fn := range builtins {
 		env.AddBuiltins(true, fn)
 	}

@@ -78,6 +78,10 @@ var (
 		{"export", Formals(VarArgSymbol, "symbol"), builtinExport,
 			`Marks symbols as exported from the current package, making them
 			available to other packages via use-package. Returns nil.`},
+		{"package-doc", Formals("docstring"), builtinPackageDoc,
+			`Sets the documentation string for the current package. The
+			argument must be a string describing the package's purpose.
+			Typically called immediately after (in-package ...). Returns nil.`},
 		{"set", Formals("sym", "val"), builtinSet,
 			`Binds val to the quoted symbol sym in the current package scope,
 			creating or overwriting the binding. Returns the bound value. This
@@ -498,6 +502,15 @@ func builtinExport(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("argument is not a symbol, a string, or a list of valid types: %v", arg.Type)
 		}
 	}
+	return Nil()
+}
+
+func builtinPackageDoc(env *LEnv, args *LVal) *LVal {
+	doc := args.Cells[0]
+	if doc.Type != LString {
+		return env.Errorf("argument is not a string: %v", doc.Type)
+	}
+	env.Runtime.Package.Doc = doc.Str
 	return Nil()
 }
 

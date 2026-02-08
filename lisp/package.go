@@ -31,6 +31,7 @@ func (r *PackageRegistry) DefinePackage(name string) *Package {
 // belongs to the LEnv that creates it.
 type Package struct {
 	Name      string
+	Doc       string
 	Symbols   map[string]*LVal
 	FunNames  map[string]string
 	Externals []string
