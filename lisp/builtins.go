@@ -488,7 +488,7 @@ func builtinInPackage(env *LEnv, args *LVal) *LVal {
 			}
 			parts = append(parts, arg.Str)
 		}
-		pkg.Doc = strings.Join(parts, " ")
+		pkg.Doc = JoinDocStrings(parts)
 	}
 	return Nil()
 }
