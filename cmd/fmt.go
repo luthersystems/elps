@@ -16,6 +16,7 @@ var (
 	fmtDiff       bool
 	fmtList       bool
 	fmtIndentSize int
+	fmtExcludes   []string
 )
 
 var fmtCmd = &cobra.Command{
@@ -55,7 +56,7 @@ Examples:
 			return
 		}
 
-		expanded, err := expandArgs(args)
+		expanded, err := expandArgs(args, fmtExcludes)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -180,4 +181,6 @@ func init() {
 		"List files whose formatting differs from elps fmt's.")
 	fmtCmd.Flags().IntVar(&fmtIndentSize, "indent-size", 2,
 		"Number of spaces per indentation level.")
+	fmtCmd.Flags().StringArrayVar(&fmtExcludes, "exclude", nil,
+		"Glob pattern for files to exclude (may be repeated).")
 }
