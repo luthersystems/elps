@@ -113,15 +113,17 @@ When adding a new builtin function, special operator, or macro:
 
 ## Skills
 
-The repo ships Claude Code skills in `.claude/skills/` for common workflows:
+Prescriptive workflows live in `.claude/skills/`. **Before starting a task, read the matching skill file and follow its workflow exactly.** Match tasks to skills by description:
 
-| Skill | Description |
-|-------|-------------|
-| `/implement` | Any code change — builtins, ops, macros, parser, formatter, CLI, bug fixes, docs |
-| `/add-linter-check` | New lint analyzer — prescriptive 3-file-touch workflow |
-| `/add-stdlib-package` | New stdlib package — create, wire, test |
-| `/verify` | CI gate — build, test, golangci-lint, fmt, lint, doc checks |
-| `/pr` | Ship — verify, push, create PR with summary and test plan |
-| `/pickup-issue` | Full lifecycle — issue to branch to implementation to PR |
-| `/benchmark` | Performance — before/after benchstat comparison |
-| `/audit` | Systematic codebase audit — bugs, security, perf, tests, docs, quality |
+| Skill File | When to Use |
+|------------|-------------|
+| `implement/SKILL.md` | Any code change — builtins, ops, macros, parser, formatter, CLI, bug fixes, docs |
+| `add-linter-check/SKILL.md` | New lint analyzer — prescriptive 3-file-touch workflow |
+| `add-stdlib-package/SKILL.md` | New stdlib package — create, wire, test |
+| `verify/SKILL.md` | CI gate — build, test, golangci-lint, fmt, lint, doc checks |
+| `pr/SKILL.md` | Ship — verify, push, create PR with summary and test plan |
+| `pickup-issue/SKILL.md` | Full lifecycle — issue to branch to implementation to PR |
+| `benchmark/SKILL.md` | Performance — before/after benchstat comparison |
+| `audit/SKILL.md` | Systematic codebase audit — bugs, security, perf, tests, docs, quality |
+
+Multiple skills can chain: e.g., a GitHub issue triggers `pickup-issue`, which uses `implement` for the code change, `verify` before committing, and `pr` to ship.
