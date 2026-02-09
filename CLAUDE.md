@@ -111,9 +111,32 @@ When adding a new builtin function, special operator, or macro:
 - **`set!` only mutates** existing bindings — it errors if the symbol is not already bound.
 - The `set-usage` linter flags repeated `set` on the same symbol, not every `set`.
 
-## Skills
+## Slash Commands
 
-Prescriptive workflows live in `.claude/skills/`. **Before starting a task, read the matching skill file and follow its workflow exactly.** Match tasks to skills by description:
+Invocable workflows live in `.claude/commands/`. Use these via `/project:<command>` in Claude Code:
+
+| Command | Description |
+|---------|-------------|
+| `/project:commit` | Create a well-formed commit with proper message conventions |
+| `/project:pr` | Ship changes — verify, push, create PR targeting `main` |
+| `/project:test` | Run tests (full suite or targeted by package/name) |
+| `/project:lint` | Run all linters (golangci-lint, elps fmt, elps lint, doc check) and fix issues |
+| `/project:verify` | Full CI gate — 6-step pipeline matching GitHub Actions |
+| `/project:implement` | Code change workflow — classify, branch, implement, test, verify |
+| `/project:add-builtin` | Add a new builtin function (register, docstring, tests) |
+| `/project:add-linter-check` | New lint analyzer — prescriptive 3-file-touch workflow |
+| `/project:add-stdlib-package` | New stdlib package — create, wire, test |
+| `/project:benchmark` | Before/after benchstat performance comparison |
+| `/project:pickup-issue` | Full lifecycle — GitHub issue to branch to PR |
+| `/project:audit` | Systematic multi-category codebase audit |
+| `/project:release` | Cut a new semver-tagged release |
+| `/project:review-pr` | Thorough code review of a pull request |
+
+Commands can chain: e.g., `/project:pickup-issue` uses `/project:implement` for the code, `/project:verify` before committing, and `/project:pr` to ship.
+
+## Skills (Reference)
+
+Detailed prescriptive workflows also live in `.claude/skills/` for auto-discovery. **Before starting a task, read the matching skill file and follow its workflow exactly.** Match tasks to skills by description:
 
 | Skill File | When to Use |
 |------------|-------------|
