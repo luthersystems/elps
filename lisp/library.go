@@ -3,8 +3,11 @@
 package lisp
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // SourceContext provides an execution context allowing SourceLibraries
@@ -77,6 +80,11 @@ type SourceLibrary interface {
 // application's implementation of Runtime.Reader must implement
 // LocationReader.
 type RelativeFileSystemLibrary struct {
+	// RootDir, when non-empty, confines all file access to this directory
+	// tree. Any attempt to load a file outside RootDir (including via ..
+	// path components) will return an error. When empty, no confinement
+	// is applied and the existing behavior is preserved.
+	RootDir string
 }
 
 var _ SourceLibrary = (*RelativeFileSystemLibrary)(nil)
@@ -86,7 +94,57 @@ func (lib *RelativeFileSystemLibrary) LoadSource(ctx SourceContext, loc string) 
 	if !filepath.IsAbs(loc) && ctx.Location() != "" {
 		loc = filepath.Join(filepath.Dir(ctx.Location()), loc)
 	}
+	loc = filepath.Clean(loc)
+	if lib.RootDir != "" {
+		root := filepath.Clean(lib.RootDir)
+		// Resolve symlinks on both root and loc so that a symlink
+		// within the root pointing outside cannot bypass confinement.
+		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+			root = resolved
+		}
+		resolvedLoc := loc
+		if resolved, err := filepath.EvalSymlinks(loc); err == nil {
+			resolvedLoc = resolved
+		}
+		if !strings.HasPrefix(resolvedLoc, root+string(filepath.Separator)) && resolvedLoc != root {
+			return "", "", nil, fmt.Errorf("access denied: %s is outside root directory %s", loc, root)
+		}
+	}
 	name := filepath.Base(loc)
 	data, err := os.ReadFile(loc) //#nosec G304
 	return name, loc, data, err
+}
+
+// FSLibrary implements SourceLibrary using an fs.FS, providing natural
+// confinement via the fs.FS contract (which rejects ".." path components
+// and absolute paths). Use os.DirFS(dir) to create an fs.FS rooted at a
+// directory.
+type FSLibrary struct {
+	FS fs.FS
+}
+
+var _ SourceLibrary = (*FSLibrary)(nil)
+
+// LoadSource reads loc from the embedded fs.FS. The fs.FS contract
+// inherently prevents path traversal — paths must be unrooted slash-
+// separated sequences without ".." elements.
+func (lib *FSLibrary) LoadSource(ctx SourceContext, loc string) (string, string, []byte, error) {
+	// Make the path relative to the calling file's directory within the FS.
+	if ctx.Location() != "" {
+		dir := filepath.Dir(ctx.Location())
+		if dir != "." && dir != "" {
+			loc = filepath.Join(dir, loc)
+		}
+	}
+	// Clean for consistency, then convert to forward slashes for fs.FS.
+	loc = filepath.ToSlash(filepath.Clean(loc))
+	// Strip leading slash if present (fs.FS paths must be unrooted).
+	loc = strings.TrimPrefix(loc, "/")
+
+	data, err := fs.ReadFile(lib.FS, loc)
+	if err != nil {
+		return "", "", nil, err
+	}
+	name := filepath.Base(loc)
+	return name, loc, data, nil
 }

@@ -161,6 +161,36 @@ func TestRethrowConditionStackCleanup(t *testing.T) {
 	assert.Contains(t, (*lisp.ErrorVal)(result).Error(), "not inside a handler-bind handler")
 }
 
+// TestHandlerBindConditionStackIntegrity verifies that the condition stack
+// remains consistent across multiple sequential and nested handler-bind
+// invocations, including cases where the handler itself triggers evaluation.
+func TestHandlerBindConditionStackIntegrity(t *testing.T) {
+	tests := elpstest.TestSuite{
+		{"sequential-handler-binds", elpstest.TestSequence{
+			// Multiple handler-bind calls in sequence. Each must fully
+			// clean up the condition stack before the next one runs.
+			{`(handler-bind ((condition (lambda (c &rest _) 'first)))
+				(error 'e1 "one"))`, `'first`, ""},
+			{`(handler-bind ((condition (lambda (c &rest _) 'second)))
+				(error 'e2 "two"))`, `'second`, ""},
+			{`(handler-bind ((condition (lambda (c &rest _) 'third)))
+				(error 'e3 "three"))`, `'third`, ""},
+		}},
+		{"handler-that-evaluates-complex-forms", elpstest.TestSequence{
+			// The handler body does non-trivial work including let
+			// bindings and function calls. Verifies that defer-based
+			// cleanup works even when the handler eval is complex.
+			{`(handler-bind ((condition (lambda (c &rest args)
+				(let ((x (+ 1 2))
+				      (y (+ 3 4)))
+				  (list c x y)))))
+				(error 'my-error "data"))`,
+				`'('my-error 3 7)`, ""},
+		}},
+	}
+	elpstest.RunTestSuite(t, tests)
+}
+
 // TestRethrowOutsideHandler verifies that calling rethrow outside a
 // handler-bind handler produces a clear error.
 func TestRethrowOutsideHandler(t *testing.T) {

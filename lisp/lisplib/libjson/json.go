@@ -19,10 +19,10 @@ func DefaultSerializer() *Serializer {
 	}
 }
 
-// DeafultPackageName is the package name used by LoadPackage.
+// DefaultPackageName is the package name used by LoadPackage.
 const DefaultPackageName = "json"
 
-// LoadPackage adds the time package to env
+// LoadPackage adds the json package to env
 func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	name := lisp.Symbol(DefaultPackageName)
 	e := env.DefinePackage(name)

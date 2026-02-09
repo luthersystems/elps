@@ -10,10 +10,10 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
-// DeafultPackageName is the package name used by LoadPackage.
+// DefaultPackageName is the package name used by LoadPackage.
 const DefaultPackageName = "golang"
 
-// LoadPackage adds the time package to env
+// LoadPackage adds the golang package to env
 func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	name := lisp.Symbol(DefaultPackageName)
 	e := env.DefinePackage(name)

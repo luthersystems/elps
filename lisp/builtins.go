@@ -502,18 +502,24 @@ func builtinInPackage(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinUsePackage(env *LEnv, args *LVal) *LVal {
-	if args.Cells[0].Type != LSymbol && args.Cells[0].Type != LString {
-		return env.Errorf("first argument is not a symbol or a string: %v", args.Cells[0].Type)
+	for i, pkg := range args.Cells {
+		if pkg.Type != LSymbol && pkg.Type != LString {
+			return env.Errorf("argument %d is not a symbol or a string: %v", i+1, pkg.Type)
+		}
+		lerr := env.UsePackage(pkg)
+		if lerr.Type == LError {
+			return lerr
+		}
 	}
-	return env.UsePackage(args.Cells[0])
+	return Nil()
 }
 
 func builtinExport(env *LEnv, args *LVal) *LVal {
 	for _, arg := range args.Cells {
-		switch {
-		case arg.Type == LSymbol || arg.Type != LString:
+		switch arg.Type {
+		case LSymbol, LString:
 			env.Runtime.Package.Exports(arg.Str)
-		case arg.Type == LSExpr:
+		case LSExpr:
 			builtinExport(env, arg)
 		default:
 			return env.Errorf("argument is not a symbol, a string, or a list of valid types: %v", arg.Type)
@@ -1408,7 +1414,7 @@ func builtinInsertIndex(env *LEnv, args *LVal) *LVal {
 	if index.Type != LInt {
 		return env.Errorf("third arument is not a integer: %v", index.Type)
 	}
-	if index.Int > list.Len() {
+	if index.Int < 0 || index.Int > list.Len() {
 		return env.Errorf("index out of bounds")
 	}
 	var v *LVal
@@ -1703,8 +1709,12 @@ func builtinMakeSequence(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("third argument is not positive")
 		}
 	}
+	maxAlloc := env.Runtime.MaxAllocBytes()
 	list := QExpr(nil)
 	for x := start; lessNumeric(x, stop); x = addNumeric(x, step) {
+		if len(list.Cells) >= maxAlloc {
+			return env.Errorf("make-sequence would exceed maximum allocation size (%d elements)", maxAlloc)
+		}
 		list.Cells = append(list.Cells, x.Copy())
 	}
 	return list

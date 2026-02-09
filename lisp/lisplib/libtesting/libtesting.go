@@ -9,12 +9,12 @@ import (
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
 )
 
-// DeafultPackageName is the package name used by LoadPackage.
+// DefaultPackageName is the package name used by LoadPackage.
 const DefaultPackageName = "testing"
 
 const DefaultSuiteSymbol = "test-suite"
 
-// LoadPackage adds the time package to env
+// LoadPackage adds the testing package to env
 func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	name := lisp.Symbol(DefaultPackageName)
 	e := env.DefinePackage(name)

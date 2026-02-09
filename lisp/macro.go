@@ -224,8 +224,21 @@ func macroDeftype(env *LEnv, args *LVal) *LVal {
 // stampMacroExpansion walks the expanded AST and replaces synthetic source
 // locations (Pos < 0) with the macro call site. Nodes with valid source
 // locations (from parser or unquote) are left unchanged.
+//
+// Singleton values (Nil, Bool) are skipped because they are shared,
+// immutable, pre-allocated values. Stamping a source location onto a
+// singleton would corrupt it for all other users. See the singleton
+// comments in lisp.go for details.
 func stampMacroExpansion(v *LVal, callSite *token.Location) {
 	if v == nil || callSite == nil {
+		return
+	}
+	// Do not mutate singleton nil values. Nil is a shared immutable
+	// value, and stamping a source location onto it would affect every
+	// place that holds a reference to the singleton. Nil nodes at the
+	// end of macro expansion bodies (e.g., the trailing () in progn)
+	// have no diagnostic value anyway.
+	if v.Type == LSExpr && len(v.Cells) == 0 {
 		return
 	}
 	if v.Source == nil || v.Source.Pos < 0 {

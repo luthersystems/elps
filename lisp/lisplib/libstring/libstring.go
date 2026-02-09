@@ -10,10 +10,10 @@ import (
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
 )
 
-// DeafultPackageName is the package name used by LoadPackage.
+// DefaultPackageName is the package name used by LoadPackage.
 const DefaultPackageName = "string"
 
-// LoadPackage adds the math package to env
+// LoadPackage adds the string package to env
 func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	name := lisp.Symbol(DefaultPackageName)
 	e := env.DefinePackage(name)
@@ -129,6 +129,15 @@ func builtinRepeat(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	if n.Int < 0 {
 		return env.Errorf("count is negative: %v", n.Int)
+	}
+	maxAlloc := env.Runtime.MaxAllocBytes()
+	// Check each operand independently before multiplying to prevent
+	// int64 overflow. If the string itself already exceeds the limit,
+	// any repetition count > 1 would overflow. This eliminates the
+	// theoretical case where len(str) * n overflows int64 (would
+	// require a 4GB+ string, but defense-in-depth).
+	if len(str.Str) > maxAlloc || (len(str.Str) > 0 && int64(n.Int) > int64(maxAlloc)/int64(len(str.Str))) {
+		return env.Errorf("repeat would exceed maximum allocation size (%d bytes)", maxAlloc)
 	}
 	return lisp.String(strings.Repeat(str.Str, n.Int))
 }

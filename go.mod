@@ -3,7 +3,7 @@ module github.com/luthersystems/elps
 go 1.22
 
 require (
-	github.com/chzyer/readline v1.5.0
+	github.com/ergochat/readline v0.1.3
 	github.com/muesli/reflow v0.3.0
 	github.com/prataprc/goparsec v0.0.0-20211219142520-daac0e635e7e
 	github.com/spf13/cobra v1.8.0

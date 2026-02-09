@@ -119,6 +119,13 @@ func NewEnvRuntime(rt *Runtime) *LEnv {
 
 // NewEnv returns initializes and returns a new LEnv.
 func NewEnv(parent *LEnv) *LEnv {
+	return newEnvN(parent, 0)
+}
+
+// newEnvN creates a child LEnv with its Scope map pre-sized to hold n
+// bindings.  Callers that know the number of bindings up front (let, let*,
+// dotimes, etc.) can avoid map growth by passing the exact count.
+func newEnvN(parent *LEnv, n int) *LEnv {
 	var runtime *Runtime
 	var loc *token.Location
 	if parent != nil {
@@ -131,7 +138,7 @@ func NewEnv(parent *LEnv) *LEnv {
 	env := &LEnv{
 		ID:      runtime.GenEnvID(),
 		Loc:     loc,
-		Scope:   make(map[string]*LVal),
+		Scope:   make(map[string]*LVal, n),
 		FunName: make(map[string]string),
 		Parent:  parent,
 		Runtime: runtime,
@@ -358,34 +365,39 @@ func (env *LEnv) get(k *LVal) *LVal {
 	if k.Type != LSymbol && k.Type != LQSymbol {
 		return Nil()
 	}
+	// Return pre-allocated singletons for true/false instead of
+	// allocating a fresh Symbol on every boolean lookup.
 	if k.Str == TrueSymbol {
-		return Symbol(TrueSymbol)
+		return singletonTrue
 	}
 	if k.Str == FalseSymbol {
-		return Symbol(FalseSymbol)
+		return singletonFalse
 	}
-	pieces := SplitSymbol(k)
-	if pieces.Type == LError {
-		env.ErrorAssociate(pieces)
-		return pieces
+	colonIdx := strings.IndexByte(k.Str, ':')
+	if colonIdx < 0 {
+		// No colon — simple unqualified symbol (common case, zero allocs).
+		return env.getSimple(k)
 	}
-	if pieces.Len() == 2 {
-		ns := pieces.Cells[0].Str
-		if ns == "" {
-			// keyword
-			return k
-		}
-		pkg := env.Runtime.Registry.Packages[ns]
-		if pkg == nil {
-			return env.Errorf("unknown package: %q", ns)
-		}
-		lerr := pkg.Get(pieces.Cells[1])
-		if lerr.Type == LError {
-			env.ErrorAssociate(lerr)
-		}
+	if colonIdx == 0 {
+		// keyword like :foo
+		return k
+	}
+	ns := k.Str[:colonIdx]
+	name := k.Str[colonIdx+1:]
+	if strings.IndexByte(name, ':') >= 0 {
+		lerr := Errorf("illegal symbol: %q", k.Str)
+		env.ErrorAssociate(lerr)
 		return lerr
 	}
-	return env.getSimple(k)
+	pkg := env.Runtime.Registry.Packages[ns]
+	if pkg == nil {
+		return env.Errorf("unknown package: %q", ns)
+	}
+	lerr := pkg.Get(Symbol(name))
+	if lerr.Type == LError {
+		env.ErrorAssociate(lerr)
+	}
+	return lerr
 }
 
 func (env *LEnv) getSimple(k *LVal) *LVal {
@@ -822,26 +834,30 @@ eval:
 	}
 	switch v.Type {
 	case LSymbol:
-		pieces := strings.Split(v.Str, ":")
-		switch len(pieces) {
-		case 1:
+		colonIdx := strings.IndexByte(v.Str, ':')
+		if colonIdx < 0 {
+			// No colon — simple unqualified symbol (the common case).
 			return env.Get(v)
-		case 2:
-			if pieces[0] == "" {
-				return v
-			}
-			pkg := env.root().Runtime.Registry.Packages[pieces[0]]
-			if pkg == nil {
-				return env.Errorf("unknown package: %q", pieces[0])
-			}
-			lerr := pkg.Get(Symbol(pieces[1]))
-			if lerr.Type == LError {
-				env.ErrorAssociate(lerr)
-			}
-			return lerr
-		default:
+		}
+		if colonIdx == 0 {
+			// Keyword like :foo
+			return v
+		}
+		// Qualified symbol like pkg:name — check for extra colons.
+		ns := v.Str[:colonIdx]
+		name := v.Str[colonIdx+1:]
+		if strings.IndexByte(name, ':') >= 0 {
 			return env.Errorf("illegal symbol: %q", v.Str)
 		}
+		pkg := env.Runtime.Registry.Packages[ns]
+		if pkg == nil {
+			return env.Errorf("unknown package: %q", ns)
+		}
+		lerr := pkg.Get(Symbol(name))
+		if lerr.Type == LError {
+			env.ErrorAssociate(lerr)
+		}
+		return lerr
 	case LSExpr:
 		res := env.EvalSExpr(v)
 		if res.Type == LMarkMacExpand {
@@ -999,12 +1015,12 @@ func (env *LEnv) FunCall(fun, args *LVal) *LVal {
 }
 
 func (env *LEnv) trace(fun *LVal) func() {
-	if env.Runtime.Profiler != nil {
-		// fun might be an anon function, so we need to convert it to get the
-		// right type of LVal for filtering and labeling
-		return env.Runtime.Profiler.Start(fun)
+	if env.Runtime.Profiler == nil {
+		return func() {}
 	}
-	return func() {}
+	// fun might be an anon function, so we need to convert it to get the
+	// right type of LVal for filtering and labeling
+	return env.Runtime.Profiler.Start(fun)
 }
 
 // FunCall invokes regular function fun with the argument list args.
@@ -1016,7 +1032,9 @@ func (env *LEnv) funCall(fun, args *LVal) *LVal {
 		return env.Errorf("not a regular function: %v", fun.FunType)
 	}
 
-	defer env.trace(fun)()
+	if env.Runtime.Profiler != nil {
+		defer env.trace(fun)()
+	}
 
 	// Check for possible tail recursion before pushing to avoid hitting s when
 	// checking.  But push FID onto the stack before popping to simplify
