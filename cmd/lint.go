@@ -12,9 +12,10 @@ import (
 )
 
 var (
-	lintJSON    bool
-	lintChecks  string
-	lintListAll bool
+	lintJSON     bool
+	lintChecks   string
+	lintListAll  bool
+	lintExcludes []string
 )
 
 var lintCmd = &cobra.Command{
@@ -43,12 +44,14 @@ To suppress all checks on a line:
 Available checks (use --checks to select specific ones):
 ` + lint.AnalyzerDoc() + `
 Examples:
-  elps lint file.lisp                    # Lint a single file
-  elps lint *.lisp                       # Lint multiple files
-  elps lint --json file.lisp             # Output diagnostics as JSON
-  elps lint --checks=if-arity file.lisp  # Run only specific checks
-  elps lint --list                       # List available checks
-  cat file.lisp | elps lint              # Lint from stdin`,
+  elps lint file.lisp                                 # Lint a single file
+  elps lint *.lisp                                    # Lint multiple files
+  elps lint --json file.lisp                          # Output diagnostics as JSON
+  elps lint --checks=if-arity file.lisp               # Run only specific checks
+  elps lint --list                                    # List available checks
+  elps lint --exclude='shirocore.lisp' ./...          # Exclude a file by name
+  elps lint --exclude='build' --exclude='vendor' ./...  # Exclude directories
+  cat file.lisp | elps lint                           # Lint from stdin`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if lintListAll {
 			for _, name := range lint.AnalyzerNames() {
@@ -87,7 +90,7 @@ Examples:
 			return
 		}
 
-		expanded, err := expandArgs(args)
+		expanded, err := expandArgs(args, lintExcludes)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
@@ -163,4 +166,6 @@ func init() {
 		"Comma-separated list of checks to run (default: all).")
 	lintCmd.Flags().BoolVar(&lintListAll, "list", false,
 		"List available checks and exit.")
+	lintCmd.Flags().StringArrayVar(&lintExcludes, "exclude", nil,
+		"Glob pattern for files to exclude (may be repeated).")
 }

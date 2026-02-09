@@ -733,6 +733,163 @@ func TestRethrowContext_Nolint(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+// --- unnecessary-progn ---
+
+func TestUnnecessaryProgn_Positive_Lambda(t *testing.T) {
+	source := `(lambda (x) (progn (print x) (+ x 1)))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "progn is unnecessary in lambda body")
+}
+
+func TestUnnecessaryProgn_Positive_Defun(t *testing.T) {
+	source := `(defun foo (x) (progn (print x) (+ x 1)))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "progn is unnecessary in defun body")
+}
+
+func TestUnnecessaryProgn_Positive_Let(t *testing.T) {
+	source := `(let ((x 1)) (progn (print x) x))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "progn is unnecessary in let body")
+}
+
+func TestUnnecessaryProgn_Positive_LetStar(t *testing.T) {
+	source := `(let* ((x 1)) (progn (print x) x))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "progn is unnecessary in let* body")
+}
+
+func TestUnnecessaryProgn_Positive_HandlerBind(t *testing.T) {
+	source := `(handler-bind ((condition (lambda (c &rest a) "caught"))) (progn (do-a) (do-b)))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "progn is unnecessary in handler-bind body")
+}
+
+func TestUnnecessaryProgn_Positive_IgnoreErrors(t *testing.T) {
+	source := `(ignore-errors (progn (do-a) (do-b)))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "progn is unnecessary in ignore-errors body")
+}
+
+func TestUnnecessaryProgn_Positive_Dotimes(t *testing.T) {
+	source := `(dotimes (i 10) (progn (print i) (do-stuff)))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "progn is unnecessary in dotimes body")
+}
+
+func TestUnnecessaryProgn_Positive_NestedProgn(t *testing.T) {
+	source := `(progn (progn (do-a) (do-b)))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "nested progn is redundant")
+}
+
+func TestUnnecessaryProgn_Positive_CondClause(t *testing.T) {
+	source := "(cond\n  ((= x 1) (progn (print x) x))\n  (else \"default\"))"
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "progn is unnecessary in cond clause body")
+}
+
+func TestUnnecessaryProgn_Positive_Flet(t *testing.T) {
+	source := `(flet ((helper (x) (+ x 1))) (progn (helper 1) (helper 2)))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "progn is unnecessary in flet body")
+}
+
+func TestUnnecessaryProgn_Positive_Labels(t *testing.T) {
+	source := `(labels ((helper (x) (+ x 1))) (progn (helper 1) (helper 2)))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "progn is unnecessary in labels body")
+}
+
+func TestUnnecessaryProgn_Positive_Macrolet(t *testing.T) {
+	source := `(macrolet ((helper (x) x)) (progn (helper 1) (helper 2)))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "progn is unnecessary in macrolet body")
+}
+
+// --- unnecessary-progn: negative cases ---
+
+func TestUnnecessaryProgn_Negative_IfThenBranch(t *testing.T) {
+	// progn IS needed in if branches
+	source := `(if true (progn (print "yes") 1) 0)`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnnecessaryProgn_Negative_IfElseBranch(t *testing.T) {
+	source := `(if true 1 (progn (print "no") 0))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnnecessaryProgn_Negative_Defmacro(t *testing.T) {
+	// defmacro only takes a single body expression, so progn IS needed
+	source := `(defmacro m (x) (progn (print x) x))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnnecessaryProgn_Negative_MultipleBodyExprs(t *testing.T) {
+	// If there are multiple body expressions (not just a single progn), no warning
+	source := `(defun foo (x) (print x) (+ x 1))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnnecessaryProgn_Negative_SingleNonProgn(t *testing.T) {
+	// A single body expression that's not progn is fine
+	source := `(defun foo (x) (+ x 1))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnnecessaryProgn_Negative_TopLevelProgn(t *testing.T) {
+	// A top-level progn is fine (not nested)
+	source := `(progn (do-a) (do-b))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnnecessaryProgn_Negative_CondClauseMultipleBody(t *testing.T) {
+	// cond clause with multiple body expressions (no wrapping progn) is fine
+	source := "(cond\n  ((= x 1) (print x) x)\n  (else \"default\"))"
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnnecessaryProgn_HasNotes(t *testing.T) {
+	source := `(defun foo (x) (progn (print x) x))`
+	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
+	require.Len(t, diags, 1)
+	assert.NotEmpty(t, diags[0].Notes)
+	assert.Contains(t, diags[0].Notes[0], "remove the progn")
+}
+
+func TestUnnecessaryProgn_Nolint(t *testing.T) {
+	source := "(defun foo (x) (progn (print x) x)) ; nolint:unnecessary-progn\n"
+	diags := lintSource(t, source)
+	// Filter only unnecessary-progn diagnostics
+	var prognDiags []Diagnostic
+	for _, d := range diags {
+		if d.Analyzer == "unnecessary-progn" {
+			prognDiags = append(prognDiags, d)
+		}
+	}
+	assert.Empty(t, prognDiags)
+}
+
 // --- nolint suppression ---
 
 func TestNolint_SuppressAll(t *testing.T) {
@@ -901,7 +1058,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 10)
+	assert.Len(t, analyzers, 11)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -914,6 +1071,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"quote-call",
 		"rethrow-context",
 		"set-usage",
+		"unnecessary-progn",
 	}, names)
 }
 

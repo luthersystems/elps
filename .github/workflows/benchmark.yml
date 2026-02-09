@@ -166,9 +166,8 @@ jobs:
               core.warning(`Could not post PR comment: ${e.message}. This is expected for PRs from forks.`);
             }
 
-      - name: Annotate regressions
+      - name: Fail on regressions
         if: steps.benchstat.outputs.has_regression == 'true'
         run: |
-          echo "::warning::Benchmark regressions detected. Review the benchstat comparison above."
-          # Informational only. To make this a hard gate, change to: exit 1
-          exit 0
+          echo "::error::Benchmark regressions detected. Review the benchstat comparison in the PR comment."
+          exit 1

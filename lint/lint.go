@@ -272,5 +272,6 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerQuoteCall,
 		AnalyzerCondMissingElse,
 		AnalyzerRethrowContext,
+		AnalyzerUnnecessaryProgn,
 	}
 }
