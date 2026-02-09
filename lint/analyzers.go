@@ -534,6 +534,83 @@ func walkRethrowNode(node *lisp.LVal, handlerDepth int, report func(*lisp.LVal))
 	}
 }
 
+// implicitPrognForms lists forms whose body already supports multiple
+// expressions, making a wrapping progn redundant. The int value is the
+// index of the first body argument (0-based from the s-expression head).
+// For example, defun has name + formals before the body, so bodyStart = 3.
+var implicitPrognForms = map[string]int{
+	"lambda":        2, // (lambda (formals) body...)
+	"defun":         3, // (defun name (formals) body...)
+	"let":           2, // (let (bindings) body...)
+	"let*":          2, // (let* (bindings) body...)
+	"flet":          2, // (flet (bindings) body...)
+	"labels":        2, // (labels (bindings) body...)
+	"macrolet":      2, // (macrolet (bindings) body...)
+	"handler-bind":  2, // (handler-bind (bindings) body...)
+	"ignore-errors": 1, // (ignore-errors body...)
+	"dotimes":       2, // (dotimes (var n) body...)
+	"progn":         1, // (progn body...) — nested progn
+}
+
+// AnalyzerUnnecessaryProgn warns when progn is used as the sole body
+// expression in a form that already supports multiple body expressions.
+var AnalyzerUnnecessaryProgn = &Analyzer{
+	Name: "unnecessary-progn",
+	Doc:  "Warn when `progn` wraps the body of a form that already supports multiple expressions.\n\nForms like `defun`, `lambda`, `let`, and others evaluate their body as an implicit progn. Wrapping the body in an explicit `(progn ...)` is redundant. This does not flag `progn` inside `if` branches or `defmacro`, where it is needed.",
+	Run: func(pass *Pass) error {
+		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
+			head := HeadSymbol(sexpr)
+			bodyStart, ok := implicitPrognForms[head]
+			if !ok {
+				return
+			}
+			// Check if there is exactly one body expression and it's a progn
+			bodyExprs := len(sexpr.Cells) - bodyStart
+			if bodyExprs != 1 {
+				return
+			}
+			body := sexpr.Cells[bodyStart]
+			if HeadSymbol(body) != "progn" {
+				return
+			}
+			src := SourceOf(body)
+			var msg string
+			if head == "progn" {
+				msg = "nested progn is redundant"
+			} else {
+				msg = fmt.Sprintf("progn is unnecessary in %s body (it supports multiple expressions)", head)
+			}
+			pass.Report(Diagnostic{
+				Message: msg,
+				Pos:     posFromSource(src.Source),
+				Notes:   []string{fmt.Sprintf("remove the progn and move its contents directly into the %s body", head)},
+			})
+		})
+		// Also check cond clause bodies
+		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
+			if HeadSymbol(sexpr) != "cond" {
+				return
+			}
+			for i := 1; i < len(sexpr.Cells); i++ {
+				clause := sexpr.Cells[i]
+				if clause.Type != lisp.LSExpr || len(clause.Cells) < 2 {
+					continue
+				}
+				// Clause body starts at index 1 (after the test)
+				if len(clause.Cells) == 2 && HeadSymbol(clause.Cells[1]) == "progn" {
+					src := SourceOf(clause.Cells[1])
+					pass.Report(Diagnostic{
+						Message: "progn is unnecessary in cond clause body (it supports multiple expressions)",
+						Pos:     posFromSource(src.Source),
+						Notes:   []string{"remove the progn and move its contents directly into the cond clause"},
+					})
+				}
+			}
+		})
+		return nil
+	},
+}
+
 // AnalyzerNames returns a sorted list of all default analyzer names.
 func AnalyzerNames() []string {
 	analyzers := DefaultAnalyzers()
