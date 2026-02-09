@@ -110,3 +110,18 @@ When adding a new builtin function, special operator, or macro:
 - **`set` creates or overwrites** bindings — it is the only way to create new top-level bindings.
 - **`set!` only mutates** existing bindings — it errors if the symbol is not already bound.
 - The `set-usage` linter flags repeated `set` on the same symbol, not every `set`.
+
+## Skills
+
+The repo ships Claude Code skills in `.claude/skills/` for common workflows:
+
+| Skill | Description |
+|-------|-------------|
+| `/implement` | Any code change — builtins, ops, macros, parser, formatter, CLI, bug fixes, docs |
+| `/add-linter-check` | New lint analyzer — prescriptive 3-file-touch workflow |
+| `/add-stdlib-package` | New stdlib package — create, wire, test |
+| `/verify` | CI gate — build, test, golangci-lint, fmt, lint, doc checks |
+| `/pr` | Ship — verify, push, create PR with summary and test plan |
+| `/pickup-issue` | Full lifecycle — issue to branch to implementation to PR |
+| `/benchmark` | Performance — before/after benchstat comparison |
+| `/audit` | Systematic codebase audit — bugs, security, perf, tests, docs, quality |
