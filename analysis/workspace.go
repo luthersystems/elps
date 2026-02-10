@@ -44,6 +44,36 @@ func ScanWorkspace(root string) ([]ExternalSymbol, error) {
 	return syms, nil
 }
 
+// ScanWorkspacePackages is like ScanWorkspace but returns a map of
+// package name to exported symbols, suitable for use as Config.PackageExports.
+func ScanWorkspacePackages(root string) (map[string][]ExternalSymbol, error) {
+	pkgs := make(map[string][]ExternalSymbol)
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if filepath.Ext(path) != ".lisp" {
+			return nil
+		}
+		fileSrc, readErr := os.ReadFile(path) //nolint:gosec // CLI tool reads user-specified files
+		if readErr != nil {
+			return nil
+		}
+		filePkgs := scanFilePackages(fileSrc, path)
+		for pkg, syms := range filePkgs {
+			pkgs[pkg] = append(pkgs[pkg], syms...)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return pkgs, nil
+}
+
 // scanFile parses a single file and extracts top-level definitions and
 // export information. Returns nil if the file fails to parse.
 func scanFile(source []byte, filename string) []ExternalSymbol {
@@ -58,6 +88,7 @@ func scanFile(source []byte, filename string) []ExternalSymbol {
 	// Collect top-level definitions
 	defs := make(map[string]*ExternalSymbol)
 	exported := make(map[string]bool)
+	currentPkg := "user" // default package
 
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
@@ -65,16 +96,23 @@ func scanFile(source []byte, filename string) []ExternalSymbol {
 		}
 		head := astutil.HeadSymbol(expr)
 		switch head {
+		case "in-package":
+			if name := scanPackageName(expr); name != "" {
+				currentPkg = name
+			}
 		case "defun":
 			if sym := scanDefun(expr, SymFunction); sym != nil {
+				sym.Package = currentPkg
 				defs[sym.Name] = sym
 			}
 		case "defmacro":
 			if sym := scanDefun(expr, SymMacro); sym != nil {
+				sym.Package = currentPkg
 				defs[sym.Name] = sym
 			}
 		case "set":
 			if sym := scanSet(expr); sym != nil {
+				sym.Package = currentPkg
 				defs[sym.Name] = sym
 			}
 		case "export":
@@ -92,6 +130,83 @@ func scanFile(source []byte, filename string) []ExternalSymbol {
 		}
 	}
 	return result
+}
+
+// scanFilePackages is like scanFile but returns symbols grouped by package.
+func scanFilePackages(source []byte, filename string) map[string][]ExternalSymbol {
+	s := token.NewScanner(filename, bytes.NewReader(source))
+	p := rdparser.New(s)
+
+	exprs, err := p.ParseProgram()
+	if err != nil {
+		return nil
+	}
+
+	defs := make(map[string]*ExternalSymbol)
+	exported := make(map[string]bool)
+	currentPkg := "user"
+
+	for _, expr := range exprs {
+		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+			continue
+		}
+		head := astutil.HeadSymbol(expr)
+		switch head {
+		case "in-package":
+			if name := scanPackageName(expr); name != "" {
+				currentPkg = name
+			}
+		case "defun":
+			if sym := scanDefun(expr, SymFunction); sym != nil {
+				sym.Package = currentPkg
+				defs[sym.Name] = sym
+			}
+		case "defmacro":
+			if sym := scanDefun(expr, SymMacro); sym != nil {
+				sym.Package = currentPkg
+				defs[sym.Name] = sym
+			}
+		case "set":
+			if sym := scanSet(expr); sym != nil {
+				sym.Package = currentPkg
+				defs[sym.Name] = sym
+			}
+		case "export":
+			for _, name := range scanExportNames(expr) {
+				exported[name] = true
+			}
+		}
+	}
+
+	result := make(map[string][]ExternalSymbol)
+	for name, sym := range defs {
+		if exported[name] {
+			result[sym.Package] = append(result[sym.Package], *sym)
+		}
+	}
+	return result
+}
+
+// scanPackageName extracts the package name from an in-package expression.
+func scanPackageName(expr *lisp.LVal) string {
+	if astutil.ArgCount(expr) < 1 {
+		return ""
+	}
+	return extractPkgNameArg(expr.Cells[1])
+}
+
+// extractPkgNameArg gets a package name from a use-package/in-package argument.
+func extractPkgNameArg(arg *lisp.LVal) string {
+	if arg.Type == lisp.LString {
+		return arg.Str
+	}
+	if arg.Type == lisp.LSymbol {
+		return arg.Str
+	}
+	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+		return arg.Cells[0].Str
+	}
+	return ""
 }
 
 func scanDefun(expr *lisp.LVal, kind SymbolKind) *ExternalSymbol {

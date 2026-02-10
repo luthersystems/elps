@@ -469,6 +469,104 @@ func TestAnalyze_ExternalSymbols(t *testing.T) {
 	assert.NotNil(t, result.RootScope.Lookup("external-fn"))
 }
 
+// --- Analyze: use-package ---
+
+func TestAnalyze_UsePackage_ResolvesImports(t *testing.T) {
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"testing": {
+				{Name: "assert-equal", Kind: SymMacro, Package: "testing"},
+				{Name: "test", Kind: SymMacro, Package: "testing"},
+			},
+		},
+	}
+	source := "(use-package 'testing)\n(assert-equal 1 1)"
+	s := token.NewScanner("test.lisp", bytes.NewReader([]byte(source)))
+	p := rdparser.New(s)
+	exprs, err := p.ParseProgram()
+	require.NoError(t, err)
+	result := Analyze(exprs, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "assert-equal", u.Name,
+			"assert-equal should be resolved from use-package 'testing")
+	}
+}
+
+func TestAnalyze_UsePackage_StringArg(t *testing.T) {
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"testing": {
+				{Name: "assert-equal", Kind: SymMacro, Package: "testing"},
+			},
+		},
+	}
+	source := `(use-package "testing")` + "\n" + `(assert-equal 1 1)`
+	s := token.NewScanner("test.lisp", bytes.NewReader([]byte(source)))
+	p := rdparser.New(s)
+	exprs, err := p.ParseProgram()
+	require.NoError(t, err)
+	result := Analyze(exprs, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "assert-equal", u.Name)
+	}
+}
+
+func TestAnalyze_UsePackage_UnknownPackage(t *testing.T) {
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{},
+	}
+	source := "(use-package 'unknown)\n(some-fn)"
+	s := token.NewScanner("test.lisp", bytes.NewReader([]byte(source)))
+	p := rdparser.New(s)
+	exprs, err := p.ParseProgram()
+	require.NoError(t, err)
+	result := Analyze(exprs, cfg)
+	require.Len(t, result.Unresolved, 1)
+	assert.Equal(t, "some-fn", result.Unresolved[0].Name)
+}
+
+func TestAnalyze_InPackage_ImportsLisp(t *testing.T) {
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"lisp": {
+				{Name: "lisp-builtin", Kind: SymFunction, Package: "lisp"},
+			},
+		},
+	}
+	source := "(in-package \"my-pkg\")\n(lisp-builtin)"
+	s := token.NewScanner("test.lisp", bytes.NewReader([]byte(source)))
+	p := rdparser.New(s)
+	exprs, err := p.ParseProgram()
+	require.NoError(t, err)
+	result := Analyze(exprs, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "lisp-builtin", u.Name,
+			"lisp-builtin should be auto-imported via in-package")
+	}
+}
+
+func TestAnalyze_UsePackage_NoOverwriteLocal(t *testing.T) {
+	// Local definitions should not be overwritten by package imports
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"testing": {
+				{Name: "helper", Kind: SymFunction, Package: "testing"},
+			},
+		},
+	}
+	source := "(defun helper () 42)\n(use-package 'testing)\n(helper)"
+	s := token.NewScanner("test.lisp", bytes.NewReader([]byte(source)))
+	p := rdparser.New(s)
+	exprs, err := p.ParseProgram()
+	require.NoError(t, err)
+	result := Analyze(exprs, cfg)
+	// The local helper should be used, not the package one
+	sym := result.RootScope.LookupLocal("helper")
+	require.NotNil(t, sym)
+	assert.Equal(t, SymFunction, sym.Kind)
+	assert.NotNil(t, sym.Source, "local defun should retain its source")
+}
+
 // --- ScopeKind.String() ---
 
 func TestScopeKind_String(t *testing.T) {

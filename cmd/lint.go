@@ -9,6 +9,9 @@ import (
 
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lint"
+	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib"
+	"github.com/luthersystems/elps/parser"
 	"github.com/spf13/cobra"
 )
 
@@ -100,7 +103,24 @@ Examples:
 				fmt.Fprintf(os.Stderr, "elps lint: scanning workspace %s: %v\n", lintWorkspace, err)
 				os.Exit(2)
 			}
-			analysisCfg = &analysis.Config{ExtraGlobals: syms}
+
+			// Extract stdlib package exports from a loaded env
+			pkgExports := extractStdlibExports()
+
+			// Merge workspace package exports
+			wsPkgs, err := analysis.ScanWorkspacePackages(lintWorkspace)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "elps lint: scanning workspace packages %s: %v\n", lintWorkspace, err)
+				os.Exit(2)
+			}
+			for pkg, wsSyms := range wsPkgs {
+				pkgExports[pkg] = append(pkgExports[pkg], wsSyms...)
+			}
+
+			analysisCfg = &analysis.Config{
+				ExtraGlobals:   syms,
+				PackageExports: pkgExports,
+			}
 		}
 
 		if len(args) == 0 {
@@ -184,6 +204,18 @@ func lintFilePath(l *lint.Linter, path string, cfg *analysis.Config) ([]lint.Dia
 
 func readStdin() ([]byte, error) {
 	return os.ReadFile("/dev/stdin")
+}
+
+// extractStdlibExports creates a temporary ELPS env, loads the standard
+// library, and extracts package exports. This allows the linter to resolve
+// symbols imported via use-package from Go-defined stdlib packages.
+func extractStdlibExports() map[string][]analysis.ExternalSymbol {
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
+	lisp.InitializeUserEnv(env)
+	lisplib.LoadLibrary(env)
+	return analysis.ExtractPackageExports(env.Runtime.Registry)
 }
 
 func init() {

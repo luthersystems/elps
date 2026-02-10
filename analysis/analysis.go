@@ -17,6 +17,10 @@ type Config struct {
 	// ExtraGlobals are symbols from other files (e.g. workspace scanning).
 	ExtraGlobals []ExternalSymbol
 
+	// PackageExports maps package names to their exported symbols.
+	// Used to resolve use-package imports from stdlib and workspace packages.
+	PackageExports map[string][]ExternalSymbol
+
 	// Filename is the source file being analyzed.
 	Filename string
 }
@@ -62,6 +66,7 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 	a := &analyzer{
 		root:   root,
 		result: &Result{RootScope: root},
+		cfg:    cfg,
 	}
 
 	// Phase 1: Pre-scan top-level definitions (forward references)

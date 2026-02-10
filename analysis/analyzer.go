@@ -13,6 +13,7 @@ import (
 type analyzer struct {
 	root   *Scope
 	result *Result
+	cfg    *Config
 }
 
 // prescan walks top-level expressions to register forward-referenceable
@@ -32,6 +33,10 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 			a.prescanSet(expr, scope)
 		case "export":
 			a.prescanExport(expr, scope)
+		case "use-package":
+			a.prescanUsePackage(expr, scope)
+		case "in-package":
+			a.prescanInPackage(expr, scope)
 		}
 	}
 }
@@ -105,6 +110,89 @@ func (a *analyzer) prescanExport(expr *lisp.LVal, scope *Scope) {
 			sym.Exported = true
 		}
 	}
+}
+
+func (a *analyzer) prescanUsePackage(expr *lisp.LVal, scope *Scope) {
+	if a.cfg == nil || a.cfg.PackageExports == nil {
+		return
+	}
+	if astutil.ArgCount(expr) < 1 {
+		return
+	}
+	pkgName := extractPackageName(expr.Cells[1])
+	if pkgName == "" {
+		return
+	}
+	syms, ok := a.cfg.PackageExports[pkgName]
+	if !ok {
+		return
+	}
+	for _, ext := range syms {
+		// Don't overwrite locally defined symbols
+		if scope.LookupLocal(ext.Name) != nil {
+			continue
+		}
+		sym := &Symbol{
+			Name:      ext.Name,
+			Kind:      ext.Kind,
+			Source:    ext.Source,
+			Signature: ext.Signature,
+			Exported:  true,
+		}
+		scope.Define(sym)
+	}
+}
+
+func (a *analyzer) prescanInPackage(expr *lisp.LVal, scope *Scope) {
+	// When switching to a package, the "lisp" package is auto-imported
+	// (runtime behavior from builtins.go:488). Also import the package
+	// itself if we have its exports.
+	if a.cfg == nil || a.cfg.PackageExports == nil {
+		return
+	}
+	if astutil.ArgCount(expr) < 1 {
+		return
+	}
+	pkgName := extractPackageName(expr.Cells[1])
+	if pkgName == "" {
+		return
+	}
+	// The "lisp" package is auto-imported when switching packages at runtime.
+	for _, importPkg := range []string{"lisp", pkgName} {
+		syms, ok := a.cfg.PackageExports[importPkg]
+		if !ok {
+			continue
+		}
+		for _, ext := range syms {
+			if scope.LookupLocal(ext.Name) != nil {
+				continue
+			}
+			sym := &Symbol{
+				Name:      ext.Name,
+				Kind:      ext.Kind,
+				Source:    ext.Source,
+				Signature: ext.Signature,
+				Exported:  true,
+			}
+			scope.Define(sym)
+		}
+	}
+}
+
+// extractPackageName gets the package name from the first arg of use-package
+// or in-package. Handles both quoted symbols ('testing) and strings ("testing").
+func extractPackageName(arg *lisp.LVal) string {
+	if arg.Type == lisp.LString {
+		return arg.Str
+	}
+	if arg.Type == lisp.LSymbol {
+		return arg.Str
+	}
+	// Quoted symbol: 'testing → LSExpr{Quoted: true, Cells: [LSymbol{testing}]}
+	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+		return arg.Cells[0].Str
+	}
+	return ""
 }
 
 // extractSetSymbolName extracts the symbol name from the first arg of set.
