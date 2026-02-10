@@ -16,7 +16,7 @@
 (defun dispatch-put (op-symbol operand-types operator)
   (let ([op-table (or (get dispatch-table op-symbol) (sorted-map))])
     (assoc! dispatch-table op-symbol op-table)
-    (labels ([dig (table operand-types value)
+    (labels ([dig (table operand-types value) ; nolint:shadowing
               (cond
                 ((nil? operand-types)
                  (error 'nil-type-parameters "type parameters are nil"))
@@ -35,7 +35,7 @@
 ; among implementations for an op.
 (defun dispatch-get (op-symbol operand-types)
   (let ([op-table (get dispatch-table op-symbol)])
-    (labels ([dig (table operand-types)
+    (labels ([dig (table operand-types) ; nolint:shadowing
               (cond
                 ((nil? operand-types)
                  table)
@@ -61,51 +61,51 @@
              (list op-symbol operand-types)))))
 
 (defun install-rectangular-package ()
-  (labels ([real-part (z) (first z)]
-           [imag-part (z) (second z)]
-           [make-from-real-imag (x y) (list x y)]
-           [magnitude (z)
+  (labels ([real-part (z) (first z)] ; nolint:shadowing
+           [imag-part (z) (second z)] ; nolint:shadowing
+           [make-from-real-imag (x y) (list x y)] ; nolint:shadowing
+           [magnitude (z) ; nolint:shadowing
             (sqrt (+ (square (real-part z))
                      (square (imag-part z))))]
-           [angle (z)
-            (let ([x (real-part z)]
-                  [y (imag-part z)])
+           [angle (z) ; nolint:shadowing
+            (let ([x (real-part z)] ; nolint
+                  [y (imag-part z)]) ; nolint
               (atan (imag-part z)
                     (real-part z)))]
-           [make-from-mag-ang (r a)
+           [make-from-mag-ang (r a) ; nolint:shadowing
             (if (= 0 r)
               (list 0 0)
               (list (* r (cos a)) (* r (sin a))))]
-           [tag (x) (attach-tag 'rectangular x)])
+           [tag (x) (attach-tag 'rectangular x)]) ; nolint:shadowing
     (dispatch-put 'real-part '(rectangular) real-part)
     (dispatch-put 'imag-part '(rectangular) imag-part)
     (dispatch-put 'magnitude '(rectangular) magnitude)
     (dispatch-put 'angle '(rectangular) angle)
     (dispatch-put 'make-from-real-imag '(rectangular)
-                  (lambda (x y) (tag (make-from-real-imag x y))))
+                  (lambda (x y) (tag (make-from-real-imag x y)))) ; nolint:shadowing
     (dispatch-put 'make-from-mag-ang '(rectangular)
                   (lambda (r a) (tag (make-from-mag-ang r a))))
     'done))
 
 (defun install-polar-package ()
-  (labels ([magnitude (z) (first z)]
-           [angle (z) (second z)]
-           [make-from-mag-ang (r a) (list r a)]
-           [real-part (z)
+  (labels ([magnitude (z) (first z)] ; nolint:shadowing
+           [angle (z) (second z)] ; nolint:shadowing
+           [make-from-mag-ang (r a) (list r a)] ; nolint:shadowing
+           [real-part (z) ; nolint:shadowing
             (* (magnitude z) (cos (angle z)))]
-           [imag-part (z)
+           [imag-part (z) ; nolint:shadowing
             (* (magnitude z) (sin (angle z)))]
-           [make-from-real-imag (x y)
-            (list (sqrt (+ (square (real-part z))
-                           (square (imag-part z))))
+           [make-from-real-imag (x y) ; nolint:shadowing
+            (list (sqrt (+ (square (real-part z)) ; nolint:undefined-symbol
+                           (square (imag-part z)))) ; nolint:undefined-symbol
                   (atan y x))]
-           [tag (x) (attach-tag 'polar x)])
+           [tag (x) (attach-tag 'polar x)]) ; nolint:shadowing
     (dispatch-put 'real-part '(polar) real-part)
     (dispatch-put 'imag-part '(polar) imag-part)
     (dispatch-put 'magnitude '(polar) magnitude)
     (dispatch-put 'angle '(polar) angle)
     (dispatch-put 'make-from-real-imag '(polar)
-                  (lambda (x y) (tag (make-from-real-imag x y))))
+                  (lambda (x y) (tag (make-from-real-imag x y)))) ; nolint:shadowing
     (dispatch-put 'make-from-mag-ang '(polar)
                   (lambda (r a) (tag (make-from-mag-ang r a))))
     'done))
@@ -123,7 +123,7 @@
 (defun magnitude (z) (apply-generic 'magnitude z))
 (defun angle (z) (apply-generic 'angle z))
 
-(defun make-from-real-imag (x y)
+(defun make-from-real-imag (x y) ; nolint:shadowing
   (dispatch-call 'make-from-real-imag '(rectangular) x y))
 
 (defun make-from-mag-ang (r a)
@@ -147,28 +147,28 @@
 (assert= -1 (imag-part (make-from-mag-ang 1 (/ (* 3 math:pi) 2))))
 (assert= -1 (real-part (make-from-mag-ang 1 math:pi)))
 
-(defun add (x y) (apply-generic 'add x y))
-(defun sub (x y) (apply-generic 'sub x y))
-(defun mul (x y) (apply-generic 'mul x y))
-(defun div (x y) (apply-generic 'div x y))
+(defun add (x y) (apply-generic 'add x y)) ; nolint:shadowing
+(defun sub (x y) (apply-generic 'sub x y)) ; nolint:shadowing
+(defun mul (x y) (apply-generic 'mul x y)) ; nolint:shadowing
+(defun div (x y) (apply-generic 'div x y)) ; nolint:shadowing
 
 (defun install-scheme-number-package ()
-  (labels ([tag (x) (attach-tag 'scheme-number x)])
+  (labels ([tag (x) (attach-tag 'scheme-number x)]) ; nolint:shadowing
     (dispatch-put 'add '(scheme-number scheme-number)
-                  (lambda (x y) (tag (+ x y))))
+                  (lambda (x y) (tag (+ x y)))) ; nolint:shadowing
     (dispatch-put 'sub '(scheme-number scheme-number)
-                  (lambda (x y) (tag (- x y))))
+                  (lambda (x y) (tag (- x y)))) ; nolint:shadowing
     (dispatch-put 'mul '(scheme-number scheme-number)
-                  (lambda (x y) (tag (* x y))))
+                  (lambda (x y) (tag (* x y)))) ; nolint:shadowing
     (dispatch-put 'div '(scheme-number scheme-number)
-                  (lambda (x y) (tag (/ x y))))
+                  (lambda (x y) (tag (/ x y)))) ; nolint:shadowing
     (dispatch-put 'make '(scheme-number)
-                  (lambda (x) (tag x)))
+                  (lambda (x) (tag x))) ; nolint:shadowing
     'done))
 
 (trace (install-scheme-number-package))
 
-(defun make-scheme-number (x)
+(defun make-scheme-number (x) ; nolint:shadowing
   (dispatch-call 'make '(scheme-number) x))
 
 (assert= 2 (contents (add (make-scheme-number 1) (make-scheme-number 1))))
@@ -177,38 +177,38 @@
 (assert= 0.5 (contents (div (make-scheme-number 1) (make-scheme-number 2))))
 
 (defun install-rational-package ()
-  (labels ([numer (x) (first x)]
-           [denom (x) (second x)]
+  (labels ([numer (x) (first x)] ; nolint:shadowing
+           [denom (x) (second x)] ; nolint:shadowing
            [make-rat (p q)
             (let ([g (gcd p q)])
               (list (/ p g) (/ q g)))]
-           [add-rat (x y)
+           [add-rat (x y) ; nolint:shadowing
             (make-rat (+ (* (numer x) (denom y))
                          (* (denom x) (numer y)))
                       (* (denom x) (denom y)))]
-           [sub-rat (x y)
+           [sub-rat (x y) ; nolint:shadowing
             (make-rat (- (* (numer x) (denom y))
                          (* (denom x) (numer y)))
                       (* (denom x) (denom y)))]
-           [mul-rat (x y)
+           [mul-rat (x y) ; nolint:shadowing
             (make-rat (* (numer x) (numer y))
                       (* (denom x) (denom y)))]
-           [div-rat (x y)
+           [div-rat (x y) ; nolint:shadowing
             (make-rat (* (numer x) (denom y))
                       (* (denom x) (numer y)))]
-           [tag (x) (attach-tag 'rational x)])
+           [tag (x) (attach-tag 'rational x)]) ; nolint:shadowing
     (dispatch-put 'make '(rational)
                   (lambda (p q) (tag (make-rat p q))))
     (dispatch-put 'numer '(rational) numer)
     (dispatch-put 'denom '(rational) denom)
     (dispatch-put 'add '(rational rational)
-                  (lambda (x y) (tag (add-rat x y))))
+                  (lambda (x y) (tag (add-rat x y)))) ; nolint:shadowing
     (dispatch-put 'sub '(rational rational)
-                  (lambda (x y) (tag (sub-rat x y))))
+                  (lambda (x y) (tag (sub-rat x y)))) ; nolint:shadowing
     (dispatch-put 'mul '(rational rational)
-                  (lambda (x y) (tag (mul-rat x y))))
+                  (lambda (x y) (tag (mul-rat x y)))) ; nolint:shadowing
     (dispatch-put 'div '(rational rational)
-                  (lambda (x y) (tag (div-rat x y))))
+                  (lambda (x y) (tag (div-rat x y)))) ; nolint:shadowing
     'dane))
 
 (trace (install-rational-package))
@@ -231,9 +231,9 @@
                        (make-rational 1 2))))
 
 (defun install-complex-package ()
-  (labels ([make-from-real-imag (x y)
+  (labels ([make-from-real-imag (x y) ; nolint:shadowing
             (dispatch-call 'make-from-real-imag 'rectangular x y)]
-           [make-from-mag-ang (r a)
+           [make-from-mag-ang (r a) ; nolint:shadowing
             (dispatch-call 'make-from-mag-ang 'polar r a)]
            [add-complex (z1 z2)
             (make-from-real-imag (+ (real-part z1) (real-part z2))
@@ -257,13 +257,13 @@
     (dispatch-put 'div '(complex complex)
                   (lambda (z1 z2) (tag (div-complex z1 z2))))
     (dispatch-put 'make-from-real-imag '(complex)
-                  (lambda (x y) (make-from-real-imag x y)))
+                  (lambda (x y) (make-from-real-imag x y))) ; nolint:shadowing
     (dispatch-put 'make-from-mag-ang '(complex)
                   (lambda (r a) (make-from-mag-ang r a)))
     'done))
 
-(defun make-complex-real-imag (x y) (dispatch-call 'make-from-real-imag 'complex x y))
-(defun make-complex-mag-ang (r a) (dispatch-call 'make-from-mag-ang 'complex r a))
+(defun make-complex-real-imag (x y) (dispatch-call 'make-from-real-imag 'complex x y)) ; nolint
+(defun make-complex-mag-ang (r a) (dispatch-call 'make-from-mag-ang 'complex r a)) ; nolint:unused-function
 
 (trace (install-complex-package))
 

@@ -9,7 +9,7 @@
 ;; type-name returns the type symbol that type-specifier corresponds to.
 ;; Symbols are returned unaltered and typedef objects will return the symbol of
 ;; the defined type.
-(defun type-name (type-specifier)
+(defun type-name (type-specifier) ; nolint:unused-function
   (cond ((symbol? type-specifier)
          type-specifier)
         ((type? 'lisp:typedef type-specifier)
@@ -30,7 +30,7 @@
 ;; defmethod declares or overwrites a method on a specified type.  The method
 ;; args must include the method receiver (i.e. self) as the first argument.
 (export 'defmethod)
-(defmacro defmethod (type-specifier method-name method-args &rest method-body)
+(defmacro defmethod (type-specifier method-name method-args &rest method-body) ; nolint:shadowing
   (cond ((not (symbol? type-specifier))
          (error 'type-error "first argument is not a valid type specifier"))
         ((not (symbol? method-name))
@@ -40,7 +40,7 @@
         ((empty? method-args)
          (error 'type-error "methods must take at least one argument"))
         (:else
-          (let* ([type-name (gensym)]
+          (let* ([type-name (gensym)] ; nolint:shadowing
                  [fn (gensym)]
                  [fname (gensym)]
                  [type-table (gensym)])
@@ -75,7 +75,7 @@
 ;; get-method returns the function that implements method m on (type obj).
 (export 'get-method)
 (defun get-method (obj m)
-  (let* ([name (method-name m)]
+  (let* ([name (method-name m)] ; nolint:unused-variable
          [type-table (get method-table (type obj))])
     (get type-table m)))
 
@@ -91,7 +91,7 @@
 ;; m.
 (export 'method?)
 (defun method? (obj &rest m)
-  (let* ([m (map 'list method-name m)]
+  (let* ([m (map 'list method-name m)] ; nolint:shadowing
          [type-table (get method-table (type obj))])
     (all? #^(key? type-table %) m)))
 
@@ -113,21 +113,21 @@
 
 ;; Create implementations for the simple-sequence interface for list and array
 ;; types.
-(defmethod 'list :to-list (self) self)
-(defmethod 'array :to-list (self)
-  (if (vector? self)
-    (map 'list identity self)
+(defmethod 'list :to-list (self) self) ; nolint:undefined-symbol
+(defmethod 'array :to-list (self) ; nolint:undefined-symbol
+  (if (vector? self) ; nolint:undefined-symbol
+    (map 'list identity self) ; nolint:undefined-symbol
     (error 'type-error (format-string "multi-dimensional array cannot be converted to a list"))))
 
 ;; Define a new complex number type.
 (deftype 'complex (real imag)
   (sorted-map :real real :imag imag))
 
-(defmethod complex :real (self)
-  (get (user-data self) :real))
+(defmethod complex :real (self) ; nolint:undefined-symbol
+  (get (user-data self) :real)) ; nolint:undefined-symbol
 
-(defmethod complex :imag (self)
-  (get (user-data self) :imag))
+(defmethod complex :imag (self) ; nolint:undefined-symbol
+  (get (user-data self) :imag)) ; nolint:undefined-symbol
 
 (set 'complex-interface (vector :real :imag))
 
@@ -147,7 +147,7 @@
 
 (defun pairs (lis)
   (let* ([p (vector)])
-    (if (nil? (foldl (lambda (acc x)
+    (if (nil? (foldl (lambda (acc x) ; nolint:shadowing
                        (if (= 0 (length acc))
                          (list x)
                          (progn (append! p (list (first acc) x))
@@ -171,9 +171,9 @@
     data))
 
 ;; method :var looks up the value of a field
-(defmethod struct :var (self name)
-  (let* ([data (user-data self)]
-         [field (method-name name)])
+(defmethod struct :var (self name) ; nolint:undefined-symbol
+  (let* ([data (user-data self)] ; nolint:undefined-symbol
+         [field (method-name name)]) ; nolint:undefined-symbol
     (if (key? data field)
       (get data field)
       (error 'struct-field (format-string "unknown struct field: {}" field)))))
@@ -202,23 +202,23 @@
        :denom d))
 
 ;; method :struct implements the interface desired by ``var''.
-(defmethod rational :struct (self) (user-data self))
+(defmethod rational :struct (self) (user-data self)) ; nolint:undefined-symbol
 
 ;; method :to-float converts the rational number to a float.
-(defmethod rational :to-float (self)
-  (/ (to-float (var self :numer))
-     (to-float (var self :denom))))
+(defmethod rational :to-float (self) ; nolint:undefined-symbol
+  (/ (to-float (var self :numer)) ; nolint:undefined-symbol
+     (to-float (var self :denom)))) ; nolint:undefined-symbol
 
 ;; method :mul multiplies self by x and returns a rational result.
-(defmethod rational :mul (self x)
+(defmethod rational :mul (self x) ; nolint:undefined-symbol
   (cond ((type? 'int x)
-         (new rational (* x (var self :numer))
-              (var self :denom)))
+         (new rational (* x (var self :numer)) ; nolint:undefined-symbol
+              (var self :denom))) ; nolint:undefined-symbol
         ((type? rational x)
          (new rational
-              (* (var self :numer)
+              (* (var self :numer) ; nolint:undefined-symbol
                  (var x :numer))
-              (* (var self :denom)
+              (* (var self :denom) ; nolint:undefined-symbol
                  (var x :denom))))
         (:else (error 'type-error (format-string "cannot multiply rational with type: {}" (type x))))))
 

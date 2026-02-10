@@ -25,7 +25,7 @@
 (assert= 2 (gcd 2 4))
 (assert= 20 (gcd 60 80))
 
-(defun square (x)
+(defun square (x) ; nolint
   (* x x))
 
 (defun divides? (n d)
@@ -48,7 +48,7 @@
   (if (done? a)
     null-value
     (let [(curr    (term a))
-          (match?  (if (nil? match?) (lambda (_) true) match?))]
+          (match?  (if (nil? match?) (lambda (_) true) match?))] ; nolint:shadowing
       (accumulate-iter combiner
                        (if (match? curr)
                          (funcall combiner null-value curr)
@@ -59,7 +59,7 @@
                        done?
                        match?))))
 
-(defun sum (term a next b)
+(defun sum (term a next b) ; nolint:unused-variable
   (accumulate-iter '+ 0
                    term a
                    #^(+ 1 %)
@@ -89,7 +89,7 @@
 (defun rat-denom (r)
   (second r))
 
-(defun rat-neg (r)
+(defun rat-neg (r) ; nolint:unused-function
   (make-rat (- (rat-numer r)) (rat-denom r)))
 
 (defun rat-add (a b)
@@ -97,7 +97,7 @@
                (* (rat-numer b) (rat-denom a)))
             (* (rat-denom a) (rat-denom b))))
 
-(defun rat-sub (a b)
+(defun rat-sub (a b) ; nolint:unused-function
   (make-rat (- (* (rat-numer a) (rat-denom b))
                (* (rat-numer b) (rat-denom a)))
             (* (rat-denom a) (rat-denom b))))
@@ -161,20 +161,20 @@
              (accumulate op initial (cdr seq)))))
 
 (defun map (p seq)
-  (accumulate (lambda (x ys) (cons (p x) ys))
+  (accumulate (lambda (x ys) (cons (p x) ys)) ; nolint:shadowing
               ()
               seq))
 
 (defun append (lis1 lis2)
   (accumulate 'cons lis2 lis1))
 
-(defun length (lis)
-  (accumulate '+ 0 seq))
+(defun length (lis) ; nolint
+  (accumulate '+ 0 seq)) ; nolint:undefined-symbol
 
 (assert-equal '(2 4 6 8) (map #^(* 2 %) '(1 2 3 4)))
 (assert-equal '(1 2 3 4) (append '(1) '(2 3 4)))
 
-(defun horner-eval (x coefficient-list)
+(defun horner-eval (x coefficient-list) ; nolint:shadowing
   (accumulate (lambda (a higher) (+ a (* x higher)))
               0.0
               coefficient-list))
@@ -200,7 +200,7 @@
   (accumulate 'append () (map proc seq)))
 
 (defun enumerate-tree (tree)
-  (let [(enumerate-subtrees (lambda (tree)
+  (let [(enumerate-subtrees (lambda (tree) ; nolint:shadowing
                               (cond ((nil? tree) ())
                                     ((not (list? tree)) (list tree))
                                     (:else (enumerate-tree tree)))))]

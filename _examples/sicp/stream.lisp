@@ -8,7 +8,7 @@
 (use-package 'testing)
 
 (export 'delay)
-(defmacro delay (expr)
+(defmacro delay (expr) ; nolint:shadowing
   (let ([valsym (gensym)]
         [funsym (gensym)])
     (quasiquote (progn
@@ -20,7 +20,7 @@
                       (set! (unquote funsym) #^())
                       (unquote valsym)))))))
 
-(let ([x 0])
+(let ([x 0]) ; nolint:shadowing
   (let ([f (delay (set! x (+ x 1)))])
     (f)
     (f)
@@ -43,7 +43,7 @@
                    (stream-flatmap proc (stream-cdr s)))))
 
 (export 'stream-repeat)
-(defun stream-repeat (x)
+(defun stream-repeat (x) ; nolint:shadowing
   (stream-cons x (stream-repeat x)))
 
 (export 'stream-collect)
@@ -89,7 +89,7 @@
       (stream-for-each proc (stream-cdr s)))))
 
 (export 'stream-debug)
-(defun stream-debug (s)
+(defun stream-debug (s) ; nolint:unused-function
   (stream-for-each 'debug-print s))
 
 (export 'stream-cons)
@@ -152,7 +152,7 @@
 (defun pairs (s t)
   (stream-cons
     (list (stream-car s) (stream-car t))
-    (interleave (stream-map (lambda (x) (list (stream-car s) x))
+    (interleave (stream-map (lambda (x) (list (stream-car s) x)) ; nolint:shadowing
                             (stream-cdr t))
                 (pairs (stream-cdr s) (stream-cdr t)))))
 
@@ -197,7 +197,7 @@
 (defun better-pairs (s t)
   ; a function like the external stream-concat but it operates on a potentially
   ; infinite stream-of-streams instead of a finite list of stream arguments.
-  (labels ([stream-concat (sos)
+  (labels ([stream-concat (sos) ; nolint:shadowing
             (cond
               ((stream-null? sos) the-empty-stream)
               ((stream-null? (stream-car sos)) (stream-concat (stream-cdr sos)))

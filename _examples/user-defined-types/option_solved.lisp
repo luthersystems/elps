@@ -19,11 +19,11 @@
   (something (funcall fn (get-something v))))
 
 (export 'optional?)
-(defun optional? (v) (or (nothing? v)
+(defun optional? (v) (or (nothing? v) ; nolint:unused-function
                          (something? v)))
 
 (export 'lookup)
-(defun lookup (m k)
+(defun lookup (m k) ; nolint:shadowing
   """
   returns an optional which contains the value of `k` in `m`.
 
@@ -51,7 +51,7 @@
 
 (debug-print (optional-map string:uppercase (something "abc")))
 (debug-print (optional-map string:uppercase (nothing)))
-(defun send-sms (phone msg)
+(defun send-sms (phone msg) ; nolint:unused-variable
   (error 'unimplemented "I can't send sms"))
 (optional-map #^(send-sms % "hello")
               (lookup m "phone"))

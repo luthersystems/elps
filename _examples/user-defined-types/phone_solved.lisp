@@ -4,7 +4,7 @@
   (defun phone-ok? (str) (and (string? str) (regexp-match? phone-re str))))
 
 (deftype phone-number (str)
-  (if (phone-ok? str) str (error 'format-error "invalid phone number")))
+  (if (phone-ok? str) str (error 'format-error "invalid phone number"))) ; nolint:undefined-symbol
 
 (debug-print (new phone-number "+1 5555555"))
 ;; {user:phone-number "+1 555 555 5555"}
