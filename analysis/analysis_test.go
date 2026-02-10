@@ -602,4 +602,62 @@ func TestSymbolKind_String(t *testing.T) {
 	assert.Equal(t, "parameter", SymParameter.String())
 	assert.Equal(t, "special-op", SymSpecialOp.String())
 	assert.Equal(t, "builtin", SymBuiltin.String())
+	assert.Equal(t, "type", SymType.String())
+}
+
+// --- Analyze: deftype ---
+
+func TestAnalyze_Deftype_NameResolved(t *testing.T) {
+	result := parseAndAnalyze(t, `
+(deftype point (x y) (sorted-map :x x :y y))
+(new point 1 2)`)
+	assert.Empty(t, result.Unresolved, "point should be resolved after deftype")
+}
+
+func TestAnalyze_Deftype_ConstructorFormals(t *testing.T) {
+	// Constructor formals (x, y) should be in scope within the body.
+	result := parseAndAnalyze(t, `
+(deftype point (x y) (sorted-map :x x :y y))`)
+	assert.Empty(t, result.Unresolved)
+}
+
+func TestAnalyze_Deftype_BodyUndefined(t *testing.T) {
+	// Reference to undefined symbol in deftype body should be flagged.
+	result := parseAndAnalyze(t, `(deftype point (x) (+ x z))`)
+	require.Len(t, result.Unresolved, 1)
+	assert.Equal(t, "z", result.Unresolved[0].Name)
+}
+
+func TestAnalyze_StringDeftype(t *testing.T) {
+	// s:deftype with string literal creates a symbol binding.
+	result := parseAndAnalyzeWithConfig(t, `
+(s:deftype "mystring" s:string)
+(s:validate mystring "hello")`,
+		&Config{
+			PackageExports: map[string][]ExternalSymbol{
+				"s": {
+					{Name: "deftype", Kind: SymFunction},
+					{Name: "validate", Kind: SymFunction},
+					{Name: "string", Kind: SymVariable},
+				},
+			},
+		})
+	// mystring should be resolved (created by s:deftype)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "mystring", u.Name, "mystring should be resolved by s:deftype")
+	}
+}
+
+// parseAndAnalyzeWithConfig is a test helper that parses source and runs
+// analysis with a custom Config.
+func parseAndAnalyzeWithConfig(t *testing.T, source string, cfg *Config) *Result {
+	t.Helper()
+	s := token.NewScanner("test.lisp", bytes.NewReader([]byte(source)))
+	p := rdparser.New(s)
+	exprs, err := p.ParseProgram()
+	require.NoError(t, err)
+	if cfg.Filename == "" {
+		cfg.Filename = "test.lisp"
+	}
+	return Analyze(exprs, cfg)
 }

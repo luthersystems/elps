@@ -17,6 +17,7 @@ const (
 	SymParameter                   // function/lambda parameter
 	SymSpecialOp                   // special operator (if, cond, etc.)
 	SymBuiltin                     // builtin function
+	SymType                        // deftype
 )
 
 func (k SymbolKind) String() string {
@@ -33,6 +34,8 @@ func (k SymbolKind) String() string {
 		return "special-op"
 	case SymBuiltin:
 		return "builtin"
+	case SymType:
+		return "type"
 	default:
 		return "unknown"
 	}

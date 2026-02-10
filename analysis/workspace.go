@@ -110,6 +110,11 @@ func scanFile(source []byte, filename string) []ExternalSymbol {
 				sym.Package = currentPkg
 				defs[sym.Name] = sym
 			}
+		case "deftype":
+			if sym := scanDeftype(expr); sym != nil {
+				sym.Package = currentPkg
+				defs[sym.Name] = sym
+			}
 		case "set":
 			if sym := scanSet(expr); sym != nil {
 				sym.Package = currentPkg
@@ -163,6 +168,11 @@ func scanFilePackages(source []byte, filename string) map[string][]ExternalSymbo
 			}
 		case "defmacro":
 			if sym := scanDefun(expr, SymMacro); sym != nil {
+				sym.Package = currentPkg
+				defs[sym.Name] = sym
+			}
+		case "deftype":
+			if sym := scanDeftype(expr); sym != nil {
 				sym.Package = currentPkg
 				defs[sym.Name] = sym
 			}
@@ -226,6 +236,22 @@ func scanDefun(expr *lisp.LVal, kind SymbolKind) *ExternalSymbol {
 		Kind:      kind,
 		Signature: signatureFromFormals(formalsVal),
 		Source:    nameVal.Source,
+	}
+}
+
+func scanDeftype(expr *lisp.LVal) *ExternalSymbol {
+	// (deftype name (constructor-formals) body...)
+	if astutil.ArgCount(expr) < 1 {
+		return nil
+	}
+	nameVal := expr.Cells[1]
+	if nameVal.Type != lisp.LSymbol {
+		return nil
+	}
+	return &ExternalSymbol{
+		Name:   nameVal.Str,
+		Kind:   SymType,
+		Source: nameVal.Source,
 	}
 }
 

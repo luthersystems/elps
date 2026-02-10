@@ -29,6 +29,8 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 			a.prescanDefun(expr, scope, SymFunction)
 		case "defmacro":
 			a.prescanDefun(expr, scope, SymMacro)
+		case "deftype":
+			a.prescanDeftype(expr, scope)
 		case "set":
 			a.prescanSet(expr, scope)
 		case "export":
@@ -90,6 +92,27 @@ func (a *analyzer) prescanSet(expr *lisp.LVal, scope *Scope) {
 		Name:   name,
 		Kind:   SymVariable,
 		Source: expr.Cells[1].Source,
+	}
+	scope.Define(sym)
+	a.result.Symbols = append(a.result.Symbols, sym)
+}
+
+func (a *analyzer) prescanDeftype(expr *lisp.LVal, scope *Scope) {
+	// (deftype name (constructor-formals) body...)
+	if astutil.ArgCount(expr) < 2 {
+		return
+	}
+	nameVal := expr.Cells[1]
+	if nameVal.Type != lisp.LSymbol {
+		return
+	}
+	if scope.LookupLocal(nameVal.Str) != nil {
+		return
+	}
+	sym := &Symbol{
+		Name:   nameVal.Str,
+		Kind:   SymType,
+		Source: nameVal.Source,
 	}
 	scope.Define(sym)
 	a.result.Symbols = append(a.result.Symbols, sym)
@@ -238,6 +261,8 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope) {
 		a.analyzeDefun(node, scope, SymFunction)
 	case "defmacro":
 		a.analyzeDefun(node, scope, SymMacro)
+	case "deftype":
+		a.analyzeDeftype(node, scope)
 	case "lambda":
 		a.analyzeLambda(node, scope)
 	case "let":
@@ -272,7 +297,14 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope) {
 	case "handler-bind":
 		a.analyzeHandlerBind(node, scope)
 	default:
-		a.analyzeCall(node, scope)
+		// Detect qualified deftype calls like (s:deftype "name" ...) where
+		// the first arg is a string that becomes a global symbol binding.
+		if strings.HasSuffix(head, ":deftype") && astutil.ArgCount(node) >= 1 &&
+			node.Cells[1].Type == lisp.LString {
+			a.analyzeStringDeftype(node, scope)
+		} else {
+			a.analyzeCall(node, scope)
+		}
 	}
 }
 
@@ -304,6 +336,58 @@ func (a *analyzer) analyzeDefun(node *lisp.LVal, scope *Scope, kind SymbolKind) 
 	}
 	for i := bodyStart; i < len(node.Cells); i++ {
 		a.analyzeExpr(node.Cells[i], bodyScope)
+	}
+}
+
+func (a *analyzer) analyzeDeftype(node *lisp.LVal, scope *Scope) {
+	// (deftype name (constructor-formals) constructor-body...)
+	if astutil.ArgCount(node) < 2 {
+		return
+	}
+	nameVal := node.Cells[1]
+	// Register the type name in scope (prescan handles top-level; this
+	// covers non-top-level deftype like inside test bodies).
+	if nameVal.Type == lisp.LSymbol && scope.LookupLocal(nameVal.Str) == nil {
+		sym := &Symbol{
+			Name:   nameVal.Str,
+			Kind:   SymType,
+			Source: nameVal.Source,
+		}
+		scope.Define(sym)
+		a.result.Symbols = append(a.result.Symbols, sym)
+	}
+	formalsVal := node.Cells[2]
+	if formalsVal.Type != lisp.LSExpr {
+		return
+	}
+	bodyScope := NewScope(ScopeFunction, scope, node)
+	a.addParams(formalsVal, bodyScope)
+	for i := 3; i < len(node.Cells); i++ {
+		a.analyzeExpr(node.Cells[i], bodyScope)
+	}
+}
+
+// analyzeStringDeftype handles calls like (s:deftype "name" type-expr ...)
+// where the string literal first argument creates a global symbol binding.
+func (a *analyzer) analyzeStringDeftype(node *lisp.LVal, scope *Scope) {
+	if astutil.ArgCount(node) < 1 {
+		return
+	}
+	nameVal := node.Cells[1]
+	if nameVal.Type != lisp.LString || nameVal.Str == "" {
+		return
+	}
+	// Register the string value as a variable in the enclosing scope.
+	sym := &Symbol{
+		Name:   nameVal.Str,
+		Kind:   SymVariable,
+		Source: nameVal.Source,
+	}
+	scope.Define(sym)
+	a.result.Symbols = append(a.result.Symbols, sym)
+	// Analyze remaining arguments normally.
+	for i := 2; i < len(node.Cells); i++ {
+		a.analyzeExpr(node.Cells[i], scope)
 	}
 }
 
