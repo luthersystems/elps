@@ -1059,7 +1059,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 12)
+	assert.Len(t, analyzers, 14)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -1074,6 +1074,8 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"set-usage",
 		"undefined-symbol",
 		"unnecessary-progn",
+		"unused-function",
+		"unused-variable",
 	}, names)
 }
 
@@ -1340,6 +1342,8 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"rethrow-context":    SeverityError,
 		"unnecessary-progn":  SeverityInfo,
 		"undefined-symbol":   SeverityError,
+		"unused-variable":    SeverityWarning,
+		"unused-function":    SeverityWarning,
 	}
 	for _, a := range DefaultAnalyzers() {
 		want, ok := expected[a.Name]
@@ -1537,4 +1541,99 @@ func TestUndefinedSymbol_HasNotes(t *testing.T) {
 	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, `(unknown-fn)`)
 	require.Len(t, diags, 1)
 	assert.NotEmpty(t, diags[0].Notes)
+}
+
+// --- unused-variable ---
+
+func TestUnusedVariable_Positive_LetBinding(t *testing.T) {
+	source := `(let ((x 1)) (+ 1 2))`
+	diags := lintCheckSemantic(t, AnalyzerUnusedVariable, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "unused variable: x")
+}
+
+func TestUnusedVariable_Positive_Parameter(t *testing.T) {
+	source := `(defun foo (x y) (+ y 1))`
+	diags := lintCheckSemantic(t, AnalyzerUnusedVariable, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "unused parameter: x")
+}
+
+func TestUnusedVariable_Negative_Used(t *testing.T) {
+	source := `(let ((x 1)) (+ x 1))`
+	diags := lintCheckSemantic(t, AnalyzerUnusedVariable, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedVariable_Negative_UnderscorePrefix(t *testing.T) {
+	source := `(let ((_x 1)) (+ 1 2))`
+	diags := lintCheckSemantic(t, AnalyzerUnusedVariable, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedVariable_Negative_GlobalScope(t *testing.T) {
+	// Top-level set bindings should not be flagged
+	source := `(set 'x 42)`
+	diags := lintCheckSemantic(t, AnalyzerUnusedVariable, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedVariable_Negative_NoSemantics(t *testing.T) {
+	diags := lintCheck(t, AnalyzerUnusedVariable, `(let ((x 1)) (+ 1 2))`)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedVariable_HasNotes(t *testing.T) {
+	source := `(let ((x 1)) (+ 1 2))`
+	diags := lintCheckSemantic(t, AnalyzerUnusedVariable, source)
+	require.Len(t, diags, 1)
+	assert.NotEmpty(t, diags[0].Notes)
+	assert.Contains(t, diags[0].Notes[0], "_")
+}
+
+// --- unused-function ---
+
+func TestUnusedFunction_Positive_NeverCalled(t *testing.T) {
+	source := `(defun helper () 42)`
+	diags := lintCheckSemantic(t, AnalyzerUnusedFunction, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "unused function: helper")
+}
+
+func TestUnusedFunction_Positive_UnusedMacro(t *testing.T) {
+	source := `(defmacro my-macro (x) x)`
+	diags := lintCheckSemantic(t, AnalyzerUnusedFunction, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "unused macro: my-macro")
+}
+
+func TestUnusedFunction_Negative_Called(t *testing.T) {
+	source := "(defun helper () 42)\n(helper)"
+	diags := lintCheckSemantic(t, AnalyzerUnusedFunction, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedFunction_Negative_Exported(t *testing.T) {
+	source := "(defun helper () 42)\n(export 'helper)"
+	diags := lintCheckSemantic(t, AnalyzerUnusedFunction, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedFunction_Negative_UnderscorePrefix(t *testing.T) {
+	source := `(defun _internal () 42)`
+	diags := lintCheckSemantic(t, AnalyzerUnusedFunction, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedFunction_Negative_NoSemantics(t *testing.T) {
+	diags := lintCheck(t, AnalyzerUnusedFunction, `(defun helper () 42)`)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedFunction_HasNotes(t *testing.T) {
+	source := `(defun helper () 42)`
+	diags := lintCheckSemantic(t, AnalyzerUnusedFunction, source)
+	require.Len(t, diags, 1)
+	assert.NotEmpty(t, diags[0].Notes)
+	assert.Contains(t, diags[0].Notes[0], "export")
 }

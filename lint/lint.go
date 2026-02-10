@@ -373,5 +373,7 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerRethrowContext,
 		AnalyzerUnnecessaryProgn,
 		AnalyzerUndefinedSymbol,
+		AnalyzerUnusedVariable,
+		AnalyzerUnusedFunction,
 	}
 }

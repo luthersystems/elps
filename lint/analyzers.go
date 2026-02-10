@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -618,6 +619,80 @@ var AnalyzerUnnecessaryProgn = &Analyzer{
 				}
 			}
 		})
+		return nil
+	},
+}
+
+// AnalyzerUnusedVariable warns about variables and parameters that are defined
+// but never referenced. Requires semantic analysis (pass.Semantics != nil).
+var AnalyzerUnusedVariable = &Analyzer{
+	Name:     "unused-variable",
+	Severity: SeverityWarning,
+	Doc:      "Warn about variables and parameters that are defined but never referenced.\n\nRequires semantic analysis (--workspace flag). Skips variables with underscore prefix (conventional \"ignored\" marker) and top-level (global scope) variables.",
+	Run: func(pass *Pass) error {
+		if pass.Semantics == nil {
+			return nil
+		}
+		for _, sym := range pass.Semantics.Symbols {
+			if sym.References > 0 {
+				continue
+			}
+			if sym.Kind != analysis.SymVariable && sym.Kind != analysis.SymParameter {
+				continue
+			}
+			// Skip global scope variables (top-level set bindings)
+			if sym.Scope == pass.Semantics.RootScope {
+				continue
+			}
+			// Skip _ prefixed names (conventional "unused" marker)
+			if len(sym.Name) > 0 && sym.Name[0] == '_' {
+				continue
+			}
+			pass.Report(Diagnostic{
+				Message: fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
+				Pos:     posFromSource(sym.Source),
+				Notes:   []string{fmt.Sprintf("if '%s' is intentionally unused, prefix it with '_'", sym.Name)},
+			})
+		}
+		return nil
+	},
+}
+
+// AnalyzerUnusedFunction warns about functions and macros that are defined at
+// the top level but never referenced. Requires semantic analysis.
+var AnalyzerUnusedFunction = &Analyzer{
+	Name:     "unused-function",
+	Severity: SeverityWarning,
+	Doc:      "Warn about top-level functions and macros that are defined but never referenced.\n\nRequires semantic analysis (--workspace flag). Exported symbols and functions with underscore prefix are excluded.",
+	Run: func(pass *Pass) error {
+		if pass.Semantics == nil {
+			return nil
+		}
+		for _, sym := range pass.Semantics.Symbols {
+			if sym.References > 0 {
+				continue
+			}
+			if sym.Kind != analysis.SymFunction && sym.Kind != analysis.SymMacro {
+				continue
+			}
+			// Only check top-level definitions
+			if sym.Scope != pass.Semantics.RootScope {
+				continue
+			}
+			// Skip exported symbols
+			if sym.Exported {
+				continue
+			}
+			// Skip _ prefixed names
+			if len(sym.Name) > 0 && sym.Name[0] == '_' {
+				continue
+			}
+			pass.Report(Diagnostic{
+				Message: fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
+				Pos:     posFromSource(sym.Source),
+				Notes:   []string{"if this is a public API, add it to an (export ...) form"},
+			})
+		}
 		return nil
 	},
 }
