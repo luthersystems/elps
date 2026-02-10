@@ -1367,6 +1367,17 @@ func TestSeverity_PropagatedInfo(t *testing.T) {
 	assert.Equal(t, SeverityInfo, diags[0].Severity)
 }
 
+func TestSeverity_PropagatedViaReportf(t *testing.T) {
+	// Reportf delegates to Report which propagates the analyzer's default severity.
+	pass := &Pass{
+		Analyzer: &Analyzer{Name: "test-reportf", Severity: SeverityError},
+	}
+	pass.Reportf(&token.Location{File: "test.lisp", Line: 1, Col: 1}, "test %s", "msg")
+	require.Len(t, pass.diagnostics, 1)
+	assert.Equal(t, SeverityError, pass.diagnostics[0].Severity)
+	assert.Equal(t, "test msg", pass.diagnostics[0].Message)
+}
+
 func TestSeverity_JSONRoundTrip(t *testing.T) {
 	diags := []Diagnostic{
 		{Pos: Position{File: "a.lisp", Line: 1}, Message: "err", Analyzer: "test", Severity: SeverityError},
