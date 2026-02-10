@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
@@ -1058,7 +1059,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 11)
+	assert.Len(t, analyzers, 12)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -1071,6 +1072,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"quote-call",
 		"rethrow-context",
 		"set-usage",
+		"undefined-symbol",
 		"unnecessary-progn",
 	}, names)
 }
@@ -1326,17 +1328,18 @@ func TestSeverity_String(t *testing.T) {
 func TestSeverity_AnalyzerDefaults(t *testing.T) {
 	// Table-driven: verify each analyzer has the expected severity.
 	expected := map[string]Severity{
-		"set-usage":         SeverityWarning,
+		"set-usage":          SeverityWarning,
 		"in-package-toplevel": SeverityWarning,
-		"if-arity":          SeverityError,
-		"let-bindings":      SeverityError,
-		"defun-structure":   SeverityError,
-		"cond-structure":    SeverityError,
-		"builtin-arity":     SeverityError,
-		"quote-call":        SeverityWarning,
-		"cond-missing-else": SeverityInfo,
-		"rethrow-context":   SeverityError,
-		"unnecessary-progn": SeverityInfo,
+		"if-arity":           SeverityError,
+		"let-bindings":       SeverityError,
+		"defun-structure":    SeverityError,
+		"cond-structure":     SeverityError,
+		"builtin-arity":      SeverityError,
+		"quote-call":         SeverityWarning,
+		"cond-missing-else":  SeverityInfo,
+		"rethrow-context":    SeverityError,
+		"unnecessary-progn":  SeverityInfo,
+		"undefined-symbol":   SeverityError,
 	}
 	for _, a := range DefaultAnalyzers() {
 		want, ok := expected[a.Name]
@@ -1411,4 +1414,127 @@ func TestFormatText_WithNotes(t *testing.T) {
 	output := buf.String()
 	assert.Contains(t, output, "use set!")
 	assert.Contains(t, output, "= note: hint text")
+}
+
+// --- semantic analysis helpers ---
+
+// lintCheckSemantic runs a single analyzer with semantic analysis enabled.
+func lintCheckSemantic(t *testing.T, analyzer *Analyzer, source string) []Diagnostic {
+	t.Helper()
+	l := &Linter{Analyzers: []*Analyzer{analyzer}}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", nil)
+	require.NoError(t, err)
+	return diags
+}
+
+// --- LintFileWithContext ---
+
+func TestLintFileWithContext_NilSemantics(t *testing.T) {
+	// With nil semantics, semantic analyzers should be no-ops
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
+	diags, err := l.LintFileWithContext([]byte(`(foo 1 2)`), "test.lisp", nil)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+// --- LintFileWithAnalysis ---
+
+func TestLintFileWithAnalysis_Basic(t *testing.T) {
+	l := &Linter{Analyzers: DefaultAnalyzers()}
+	diags, err := l.LintFileWithAnalysis([]byte(`(+ 1 2)`), "test.lisp", nil)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+func TestLintFileWithAnalysis_NilConfig(t *testing.T) {
+	l := &Linter{Analyzers: DefaultAnalyzers()}
+	diags, err := l.LintFileWithAnalysis([]byte(`(+ 1 2)`), "test.lisp", nil)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+func TestLintFileWithAnalysis_ExternalSymbols(t *testing.T) {
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "external-fn", Kind: analysis.SymFunction},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(`(external-fn 1 2)`), "test.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+// --- undefined-symbol ---
+
+func TestUndefinedSymbol_Positive_UnknownFunction(t *testing.T) {
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, `(unknown-fn 1 2)`)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "undefined symbol: unknown-fn")
+}
+
+func TestUndefinedSymbol_Positive_UnknownVariable(t *testing.T) {
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, `(+ x 1)`)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "undefined symbol: x")
+}
+
+func TestUndefinedSymbol_Negative_Builtin(t *testing.T) {
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, `(+ 1 2)`)
+	assertNoDiags(t, diags)
+}
+
+func TestUndefinedSymbol_Negative_Defun(t *testing.T) {
+	source := "(defun foo (x) (+ x 1))\n(foo 42)"
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUndefinedSymbol_Negative_ForwardRef(t *testing.T) {
+	source := "(defun bar () (foo))\n(defun foo () 42)"
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUndefinedSymbol_Negative_Keyword(t *testing.T) {
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, `(list :key :value)`)
+	assertNoDiags(t, diags)
+}
+
+func TestUndefinedSymbol_Negative_Qualified(t *testing.T) {
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, `(math:floor 1.5)`)
+	assertNoDiags(t, diags)
+}
+
+func TestUndefinedSymbol_Negative_SetDefines(t *testing.T) {
+	source := "(set 'x 42)\n(+ x 1)"
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUndefinedSymbol_Negative_Let(t *testing.T) {
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, `(let ((x 1)) (+ x 1))`)
+	assertNoDiags(t, diags)
+}
+
+func TestUndefinedSymbol_Negative_Lambda(t *testing.T) {
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, `(lambda (x) (+ x 1))`)
+	assertNoDiags(t, diags)
+}
+
+func TestUndefinedSymbol_Negative_TrueFalse(t *testing.T) {
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, `(if true 1 2)`)
+	assertNoDiags(t, diags)
+}
+
+func TestUndefinedSymbol_Negative_NoSemantics(t *testing.T) {
+	// Without semantic analysis, should be a no-op
+	diags := lintCheck(t, AnalyzerUndefinedSymbol, `(unknown-fn 1 2)`)
+	assertNoDiags(t, diags)
+}
+
+func TestUndefinedSymbol_HasNotes(t *testing.T) {
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, `(unknown-fn)`)
+	require.Len(t, diags, 1)
+	assert.NotEmpty(t, diags[0].Notes)
 }

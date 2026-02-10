@@ -622,6 +622,27 @@ var AnalyzerUnnecessaryProgn = &Analyzer{
 	},
 }
 
+// AnalyzerUndefinedSymbol reports symbols that could not be resolved in any
+// enclosing scope. Requires semantic analysis (pass.Semantics != nil).
+var AnalyzerUndefinedSymbol = &Analyzer{
+	Name:     "undefined-symbol",
+	Severity: SeverityError,
+	Doc:      "Report symbols that cannot be resolved in any enclosing scope.\n\nRequires semantic analysis (--workspace flag). Keywords and qualified symbols are excluded. Builtins, special operators, and macros are pre-populated.",
+	Run: func(pass *Pass) error {
+		if pass.Semantics == nil {
+			return nil
+		}
+		for _, u := range pass.Semantics.Unresolved {
+			pass.Report(Diagnostic{
+				Message: fmt.Sprintf("undefined symbol: %s", u.Name),
+				Pos:     posFromSource(u.Source),
+				Notes:   []string{fmt.Sprintf("'%s' is not defined in any enclosing scope; did you mean a different name?", u.Name)},
+			})
+		}
+		return nil
+	},
+}
+
 // AnalyzerNames returns a sorted list of all default analyzer names.
 func AnalyzerNames() []string {
 	analyzers := DefaultAnalyzers()

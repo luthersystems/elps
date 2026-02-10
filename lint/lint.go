@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
@@ -99,6 +100,11 @@ type Pass struct {
 
 	// Exprs are the top-level parsed expressions.
 	Exprs []*lisp.LVal
+
+	// Semantics holds the result of semantic analysis, if available.
+	// Nil when semantic analysis has not been run (e.g. no --workspace flag).
+	// Semantic analyzers should check for nil and return early.
+	Semantics *analysis.Result
 
 	// diagnostics collects reported findings.
 	diagnostics []Diagnostic
@@ -186,7 +192,15 @@ type Linter struct {
 }
 
 // LintFile analyzes a single source file and returns all diagnostics.
+// Semantic analyzers are no-ops because no analysis.Result is provided.
 func (l *Linter) LintFile(source []byte, filename string) ([]Diagnostic, error) {
+	return l.LintFileWithContext(source, filename, nil)
+}
+
+// LintFileWithContext analyzes a source file with optional semantic analysis results.
+// When semantics is nil, semantic analyzers (undefined-symbol, unused-variable, etc.)
+// are no-ops. When non-nil, they use the scope and reference data for deeper checks.
+func (l *Linter) LintFileWithContext(source []byte, filename string, semantics *analysis.Result) ([]Diagnostic, error) {
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	p := rdparser.NewFormatting(s)
 
@@ -199,9 +213,10 @@ func (l *Linter) LintFile(source []byte, filename string) ([]Diagnostic, error) 
 
 	for _, analyzer := range l.Analyzers {
 		pass := &Pass{
-			Analyzer: analyzer,
-			Filename: filename,
-			Exprs:    exprs,
+			Analyzer:  analyzer,
+			Filename:  filename,
+			Exprs:     exprs,
+			Semantics: semantics,
 		}
 		if err := analyzer.Run(pass); err != nil {
 			return nil, fmt.Errorf("%s: analyzer %s: %w", filename, analyzer.Name, err)
@@ -227,6 +242,27 @@ func (l *Linter) LintFile(source []byte, filename string) ([]Diagnostic, error) 
 	})
 
 	return all, nil
+}
+
+// LintFileWithAnalysis parses, analyzes, and lints a source file in one call.
+// This is a convenience that runs semantic analysis and passes the result to
+// all analyzers.
+func (l *Linter) LintFileWithAnalysis(source []byte, filename string, cfg *analysis.Config) ([]Diagnostic, error) {
+	s := token.NewScanner(filename, bytes.NewReader(source))
+	p := rdparser.New(s)
+
+	exprs, err := p.ParseProgram()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", filename, err)
+	}
+
+	if cfg == nil {
+		cfg = &analysis.Config{}
+	}
+	cfg.Filename = filename
+	result := analysis.Analyze(exprs, cfg)
+
+	return l.LintFileWithContext(source, filename, result)
 }
 
 // filterSuppressed removes diagnostics on lines with ;nolint comments.
@@ -336,5 +372,6 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerCondMissingElse,
 		AnalyzerRethrowContext,
 		AnalyzerUnnecessaryProgn,
+		AnalyzerUndefinedSymbol,
 	}
 }
