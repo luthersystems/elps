@@ -29,7 +29,8 @@ func TestNewReader_FormatPreserving(t *testing.T) {
 	// Format-preserving reader populates Meta with comments and bracket type.
 	require.NotNil(t, exprs[0].Meta)
 	assert.Equal(t, '(', exprs[0].Meta.BracketType)
-	assert.NotEmpty(t, exprs[0].Meta.LeadingComments)
+	require.Len(t, exprs[0].Meta.LeadingComments, 1)
+	assert.Contains(t, exprs[0].Meta.LeadingComments[0].Text, "comment")
 }
 
 func TestNewReader_FormatPreserving_BracketList(t *testing.T) {
@@ -61,6 +62,18 @@ func TestNewReader_FormatPreserving_LocationReader(t *testing.T) {
 	require.Len(t, exprs, 1)
 	assert.Equal(t, "logical", exprs[0].Source.File)
 	assert.Equal(t, "/path/to/file.lisp", exprs[0].Source.Path)
+}
+
+func TestNewReader_Standard_ParseError(t *testing.T) {
+	r := NewReader()
+	_, err := r.Read("test", strings.NewReader("(unclosed"))
+	assert.Error(t, err)
+}
+
+func TestNewReader_FormatPreserving_ParseError(t *testing.T) {
+	r := NewReader(WithFormatPreserving())
+	_, err := r.Read("test", strings.NewReader("(unclosed"))
+	assert.Error(t, err)
 }
 
 func TestNewReader_Standard_LocationReader(t *testing.T) {

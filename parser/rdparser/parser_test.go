@@ -205,6 +205,22 @@ func TestEndPos_FunRef(t *testing.T) {
 	assert.Equal(t, 8, v.Source.EndCol)  // "myfun" ends at col 7, EndCol is 8
 }
 
+func TestEndPos_Float(t *testing.T) {
+	v := parseOne(t, "3.14")
+	assert.Equal(t, 1, v.Source.EndLine)
+	assert.Equal(t, 5, v.Source.EndCol) // "3.14" is 4 chars, end col is 5
+}
+
+func TestEndPos_ExprPrefix(t *testing.T) {
+	// #^(+ 1 2) — the expr prefix wrapper gets Source from tokenLVal after
+	// inner expression is parsed, so Col reflects the closing bracket position.
+	v := parseOne(t, "#^(+ 1 2)")
+	assert.Equal(t, 1, v.Source.Line)
+	assert.Equal(t, 9, v.Source.Col)     // from ")" at col 9 (last consumed token)
+	assert.Equal(t, 1, v.Source.EndLine)
+	assert.Equal(t, 10, v.Source.EndCol) // inherited from inner expr: ")" at col 9, EndCol is 10
+}
+
 func TestEndPos_Empty(t *testing.T) {
 	v := parseOne(t, "()")
 	assert.Equal(t, 1, v.Source.EndLine)

@@ -1319,6 +1319,8 @@ func TestSeverity_String(t *testing.T) {
 	assert.Equal(t, "error", SeverityError.String())
 	assert.Equal(t, "warning", SeverityWarning.String())
 	assert.Equal(t, "info", SeverityInfo.String())
+	assert.Equal(t, "unknown", Severity(0).String())  // severityUnset zero value
+	assert.Equal(t, "unknown", Severity(99).String()) // out of range
 }
 
 func TestSeverity_AnalyzerDefaults(t *testing.T) {
