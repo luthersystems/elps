@@ -7,15 +7,18 @@ import (
 	"os"
 	"strings"
 
+	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lint"
 	"github.com/spf13/cobra"
 )
 
 var (
-	lintJSON     bool
-	lintChecks   string
-	lintListAll  bool
-	lintExcludes []string
+	lintJSON        bool
+	lintChecks      string
+	lintListAll     bool
+	lintExcludes    []string
+	lintWorkspace   string
+	lintNoWorkspace bool
 )
 
 var lintCmd = &cobra.Command{
@@ -29,6 +32,12 @@ diagnostics. The linter does NOT report style issues — use "elps fmt" for that
 
 With no files, reads from stdin. With files, analyzes each file and reports
 all findings to stderr.
+
+Semantic analysis (--workspace): When a workspace directory is specified,
+the linter performs scope-aware analysis that enables additional checks:
+undefined-symbol, unused-variable, unused-function, shadowing, and user-arity.
+Without --workspace, these checks are disabled and the linter only runs
+syntactic checks.
 
 Exit codes:
   0  No problems found
@@ -51,6 +60,7 @@ Examples:
   elps lint --list                                    # List available checks
   elps lint --exclude='shirocore.lisp' ./...          # Exclude a file by name
   elps lint --exclude='build' --exclude='vendor' ./...  # Exclude directories
+  elps lint --workspace=. ./...                       # Enable semantic analysis
   cat file.lisp | elps lint                           # Lint from stdin`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if lintListAll {
@@ -82,8 +92,19 @@ Examples:
 
 		l := &lint.Linter{Analyzers: analyzers}
 
+		// Resolve workspace configuration
+		var analysisCfg *analysis.Config
+		if lintWorkspace != "" && !lintNoWorkspace {
+			syms, err := analysis.ScanWorkspace(lintWorkspace)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "elps lint: scanning workspace %s: %v\n", lintWorkspace, err)
+				os.Exit(2)
+			}
+			analysisCfg = &analysis.Config{ExtraGlobals: syms}
+		}
+
 		if len(args) == 0 {
-			if err := lintStdin(l); err != nil {
+			if err := lintStdin(l, analysisCfg); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(2)
 			}
@@ -98,7 +119,7 @@ Examples:
 
 		var allDiags []lint.Diagnostic
 		for _, path := range expanded {
-			diags, err := lintFile(l, path)
+			diags, err := lintFilePath(l, path, analysisCfg)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(2)
@@ -122,12 +143,17 @@ Examples:
 	},
 }
 
-func lintStdin(l *lint.Linter) error {
+func lintStdin(l *lint.Linter, cfg *analysis.Config) error {
 	src, err := readStdin()
 	if err != nil {
 		return fmt.Errorf("reading stdin: %w", err)
 	}
-	diags, err := l.LintFile(src, "<stdin>")
+	var diags []lint.Diagnostic
+	if cfg != nil {
+		diags, err = l.LintFileWithAnalysis(src, "<stdin>", cfg)
+	} else {
+		diags, err = l.LintFile(src, "<stdin>")
+	}
 	if err != nil {
 		return err
 	}
@@ -145,10 +171,13 @@ func lintStdin(l *lint.Linter) error {
 	return nil
 }
 
-func lintFile(l *lint.Linter, path string) ([]lint.Diagnostic, error) {
+func lintFilePath(l *lint.Linter, path string, cfg *analysis.Config) ([]lint.Diagnostic, error) {
 	src, err := os.ReadFile(path) //nolint:gosec // CLI tool reads user-specified files
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if cfg != nil {
+		return l.LintFileWithAnalysis(src, path, cfg)
 	}
 	return l.LintFile(src, path)
 }
@@ -168,4 +197,8 @@ func init() {
 		"List available checks and exit.")
 	lintCmd.Flags().StringArrayVar(&lintExcludes, "exclude", nil,
 		"Glob pattern for files to exclude (may be repeated).")
+	lintCmd.Flags().StringVar(&lintWorkspace, "workspace", "",
+		"Workspace root directory for cross-file symbol resolution and semantic analysis.")
+	lintCmd.Flags().BoolVar(&lintNoWorkspace, "no-workspace", false,
+		"Disable workspace scanning (overrides --workspace).")
 }

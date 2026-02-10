@@ -20,7 +20,7 @@ func TestScanWorkspace_Basic(t *testing.T) {
 (defun public-fn (a b) (+ a b))
 (set 'my-var 42)
 (export 'public-fn 'my-var)
-`), 0644)
+`), 0600)
 	require.NoError(t, err)
 
 	syms, err := ScanWorkspace(dir)
@@ -42,13 +42,13 @@ func TestScanWorkspace_MultipleFIles(t *testing.T) {
 	err := os.WriteFile(filepath.Join(dir, "a.lisp"), []byte(`
 (defun fn-a () 1)
 (export 'fn-a)
-`), 0644)
+`), 0600)
 	require.NoError(t, err)
 
 	err = os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`
 (defun fn-b () 2)
 (export 'fn-b)
-`), 0644)
+`), 0600)
 	require.NoError(t, err)
 
 	syms, err := ScanWorkspace(dir)
@@ -69,11 +69,11 @@ func TestScanWorkspace_SkipsParseErrors(t *testing.T) {
 	err := os.WriteFile(filepath.Join(dir, "good.lisp"), []byte(`
 (defun good-fn () 42)
 (export 'good-fn)
-`), 0644)
+`), 0600)
 	require.NoError(t, err)
 
 	// Malformed file
-	err = os.WriteFile(filepath.Join(dir, "bad.lisp"), []byte(`(unclosed`), 0644)
+	err = os.WriteFile(filepath.Join(dir, "bad.lisp"), []byte(`(unclosed`), 0600)
 	require.NoError(t, err)
 
 	syms, err := ScanWorkspace(dir)
@@ -89,7 +89,7 @@ func TestScanWorkspace_SkipsParseErrors(t *testing.T) {
 func TestScanWorkspace_SkipsNonLisp(t *testing.T) {
 	dir := t.TempDir()
 
-	err := os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("not lisp"), 0644)
+	err := os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("not lisp"), 0600)
 	require.NoError(t, err)
 
 	syms, err := ScanWorkspace(dir)
@@ -100,13 +100,13 @@ func TestScanWorkspace_SkipsNonLisp(t *testing.T) {
 func TestScanWorkspace_Subdirectories(t *testing.T) {
 	dir := t.TempDir()
 	subdir := filepath.Join(dir, "sub")
-	err := os.MkdirAll(subdir, 0755)
+	err := os.MkdirAll(subdir, 0750)
 	require.NoError(t, err)
 
 	err = os.WriteFile(filepath.Join(subdir, "deep.lisp"), []byte(`
 (defun deep-fn () 42)
 (export 'deep-fn)
-`), 0644)
+`), 0600)
 	require.NoError(t, err)
 
 	syms, err := ScanWorkspace(dir)
@@ -125,7 +125,7 @@ func TestScanWorkspace_SignaturePreserved(t *testing.T) {
 	err := os.WriteFile(filepath.Join(dir, "lib.lisp"), []byte(`
 (defun add (a b) (+ a b))
 (export 'add)
-`), 0644)
+`), 0600)
 	require.NoError(t, err)
 
 	syms, err := ScanWorkspace(dir)
@@ -153,7 +153,7 @@ func TestScanWorkspace_DefmacroExported(t *testing.T) {
 	err := os.WriteFile(filepath.Join(dir, "macros.lisp"), []byte(`
 (defmacro when (condition &rest body) (list 'if condition (cons 'progn body)))
 (export 'when)
-`), 0644)
+`), 0600)
 	require.NoError(t, err)
 
 	syms, err := ScanWorkspace(dir)
