@@ -428,6 +428,14 @@ func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope) {
 			break
 		}
 	}
+	// Also check for empty formals () at the defun-like position (index 2).
+	// Empty () could be nil in a regular call, so only treat it as formals
+	// when preceded by a symbol name (defun-like pattern: def* name () body).
+	if formalsIdx < 0 && len(node.Cells) > 2 &&
+		node.Cells[1].Type == lisp.LSymbol && !node.Cells[1].Quoted &&
+		isEmptyFormals(node.Cells[2]) {
+		formalsIdx = 2
+	}
 	if formalsIdx < 0 {
 		// No formals detected — fall back to normal call analysis.
 		a.analyzeCall(node, scope)
@@ -438,8 +446,29 @@ func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope) {
 	// forms are calls to user-defined macros/functions.
 	a.analyzeExpr(node.Cells[0], scope)
 
-	// Analyze children before the formals in the outer scope (skip head).
+	// When formals are at index 2, child[1] is the definition name (like
+	// defun). Register it in scope rather than resolving it as a reference.
+	// e.g. (defendpoint my-name (req) body...)
+	nameIdx := -1
+	if formalsIdx == 2 && node.Cells[1].Type == lisp.LSymbol && !node.Cells[1].Quoted {
+		nameIdx = 1
+		nameVal := node.Cells[1]
+		if scope.LookupLocal(nameVal.Str) == nil {
+			sym := &Symbol{
+				Name:   nameVal.Str,
+				Kind:   SymFunction,
+				Source: nameVal.Source,
+			}
+			scope.Define(sym)
+			a.result.Symbols = append(a.result.Symbols, sym)
+		}
+	}
+
+	// Analyze children before the formals in the outer scope (skip head and name).
 	for i := 1; i < formalsIdx; i++ {
+		if i == nameIdx {
+			continue
+		}
 		a.analyzeExpr(node.Cells[i], scope)
 	}
 
@@ -466,6 +495,12 @@ func isFormalsLike(node *lisp.LVal) bool {
 		}
 	}
 	return true
+}
+
+// isEmptyFormals returns true if the node is an empty, non-quoted
+// parenthesized list (), representing a zero-argument formals list.
+func isEmptyFormals(node *lisp.LVal) bool {
+	return node.Type == lisp.LSExpr && !node.Quoted && len(node.Cells) == 0
 }
 
 func (a *analyzer) analyzeLambda(node *lisp.LVal, scope *Scope) {

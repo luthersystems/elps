@@ -641,6 +641,54 @@ func TestAnalyze_DefPrefix_OptionalParams(t *testing.T) {
 	}
 }
 
+func TestAnalyze_DefPrefix_NameRegistered(t *testing.T) {
+	// When formals are at index 2, child[1] is a definition name (like defun).
+	// It should be registered in scope, not resolved as a reference.
+	result := parseAndAnalyze(t, `(defendpoint my-handler (req) (+ req 1))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "my-handler", u.Name,
+			"my-handler should be registered as a definition name, not flagged as undefined")
+	}
+	// The name should be defined in scope.
+	sym := result.RootScope.LookupLocal("my-handler")
+	assert.NotNil(t, sym, "my-handler should be defined in scope")
+}
+
+func TestAnalyze_DefPrefix_EmptyFormals(t *testing.T) {
+	// (defendpoint healthcheck ()) — empty formals should be detected
+	// when in the defun-like position (name then empty list).
+	result := parseAndAnalyze(t, `(defendpoint healthcheck () (list 1))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "healthcheck", u.Name,
+			"healthcheck should be registered as a definition name")
+	}
+	sym := result.RootScope.LookupLocal("healthcheck")
+	assert.NotNil(t, sym, "healthcheck should be defined in scope")
+}
+
+func TestAnalyze_DefPrefix_DefendpointWithArgs(t *testing.T) {
+	// Regression: (defendpoint subtract (minuend subtrahend) body)
+	// should register 'subtract' as a definition name and bind formals.
+	result := parseAndAnalyze(t, `(defendpoint subtract (minuend subtrahend) (- minuend subtrahend))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "subtract", u.Name, "subtract should be a definition name")
+		assert.NotEqual(t, "minuend", u.Name, "minuend should be a formal param")
+		assert.NotEqual(t, "subtrahend", u.Name, "subtrahend should be a formal param")
+	}
+}
+
+func TestAnalyze_DefPrefix_NameNotRegisteredWhenFormalsLater(t *testing.T) {
+	// When formals are not at index 2 (e.g. defmethod type :name (formals) body),
+	// pre-formals children are analyzed normally — not treated as definitions.
+	result := parseAndAnalyze(t, `
+(set 'point 1)
+(defmethod point :move (self) self)`)
+	// point should be resolved as a reference (it's defined via set above)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "point", u.Name)
+	}
+}
+
 // --- Analyze: nested defun/defmacro ---
 
 func TestAnalyze_NestedDefmacro_VisibleToSiblings(t *testing.T) {

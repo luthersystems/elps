@@ -494,7 +494,7 @@ list. Requires building a package export table from `export` calls.
 | Column numbers | `token.Location.Col` is not reliably populated |
 | Type inference | No type annotations in the language |
 | Macro expansion | Would need to evaluate macros, which is runtime |
-| Cross-file analysis | No import/require graph in current parser |
+| Cross-file analysis | Via `--workspace` flag and `analysis.ScanWorkspace()` |
 
 ## Implementation Plan
 
@@ -525,10 +525,10 @@ list. Requires building a package export table from `export` calls.
 
 | Aspect | go vet | elps lint |
 |--------|--------|-----------|
-| Unit of analysis | Go package | Single .lisp file |
+| Unit of analysis | Go package | Single .lisp file (with workspace context) |
 | AST source | `go/ast` + `go/types` | `*lisp.LVal` from `rdparser` |
 | Type information | Full (from `go/types`) | None (untyped language) |
-| Cross-file analysis | Yes (via facts) | No (single-file for now) |
+| Cross-file analysis | Yes (via facts) | Yes (via `--workspace` and `analysis/`) |
 | Analyzer registration | `analysis.Analyzer` struct | `lint.Analyzer` struct |
 | Diagnostic reporting | `pass.Reportf()` | `pass.Report(Diagnostic{})` |
 | Output format | text, JSON | text, JSON |

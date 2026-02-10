@@ -761,6 +761,9 @@ var AnalyzerUserArity = &Analyzer{
 			if sym == nil || sym.Signature == nil || sym.Source == nil {
 				return // unknown or builtin — skip
 			}
+			if sym.External {
+				return // imported from workspace/package — may shadow builtins
+			}
 			if sym.Kind != analysis.SymFunction && sym.Kind != analysis.SymMacro {
 				return
 			}

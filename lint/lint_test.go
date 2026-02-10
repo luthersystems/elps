@@ -1777,6 +1777,29 @@ func TestUserArity_HasNotes(t *testing.T) {
 	assert.Contains(t, diags[0].Notes[0], "defined at")
 }
 
+func TestUserArity_Negative_ExternalSymbol(t *testing.T) {
+	// An external symbol (imported from workspace/package) that shadows a
+	// local function name should not cause user-arity checks. This prevents
+	// false positives when e.g. transient:get (1 arg) shadows builtin get (2 args).
+	source := "(get rep \"key\")"
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUserArity}}
+	cfg := &analysis.Config{
+		PackageExports: map[string][]analysis.ExternalSymbol{
+			"transient": {
+				{Name: "get", Kind: analysis.SymFunction, Package: "transient",
+					Signature: &analysis.Signature{
+						Params: []lisp.ParamInfo{{Name: "key", Kind: lisp.ParamRequired}},
+					}},
+			},
+		},
+	}
+	// Simulate use-package to import the external symbol
+	source = "(use-package 'transient)\n" + source
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
 // --- unused-nolint ---
 
 func TestUnusedNolint_Unused(t *testing.T) {

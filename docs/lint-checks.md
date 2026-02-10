@@ -280,6 +280,20 @@ multiple body expressions, so wrapping them in `progn` is unnecessary.
 Requires semantic analysis (`--workspace` flag). Keywords, qualified
 symbols (e.g., `math:floor`), and builtins are excluded.
 
+The analyzer understands:
+- Standard binding forms: `defun`, `defmacro`, `lambda`, `let`/`let*`,
+  `flet`/`labels`, `dotimes`, `set`, `deftype`.
+- `test` and `test-let`/`test-let*` from the testing library.
+- Nested `defun`/`defmacro` inside any body (e.g., inside `test`, `progn`,
+  `when`). Names are registered in the enclosing scope.
+- **`def` prefix heuristic:** Unknown forms starting with `def` (e.g.,
+  user macros like `defmethod`) are treated as definitions — the first
+  formals-like list is bound as parameters and the remaining children are
+  analyzed as body in that scope.
+- Prefix lambda (`#^`): implicit `%`, `%1`, `%2`, `%&rest` params.
+- Quasiquote templates: only `unquote`/`unquote-splicing` are analyzed.
+- Package imports via `use-package` and `in-package`.
+
 ```lisp
 ;; ERROR — unknown-fn is not defined anywhere
 (unknown-fn 1 2)
@@ -288,6 +302,9 @@ symbols (e.g., `math:floor`), and builtins are excluded.
 (+ 1 2)
 (list :key :value)
 (math:floor 1.5)
+
+;; OK — defmethod formals are recognized via def prefix heuristic
+(defmethod point :move (self dx) (+ self dx))
 ```
 
 **Known limitation — macros that delay evaluation:** The semantic analyzer
