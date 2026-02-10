@@ -16,8 +16,9 @@ import (
 // a binding is fine (ELPS has no `defvar`), but subsequent mutations of the
 // same symbol should use `set!` to signal intent.
 var AnalyzerSetUsage = &Analyzer{
-	Name: "set-usage",
-	Doc:  "Warn when `set` is used to reassign an already-bound symbol.\n\nThe first `set` creating a new binding is fine — ELPS has no `defvar`, so `set` is the standard way to create top-level bindings. However, subsequent `set` calls on the same symbol should use `set!` to clearly signal mutation intent.",
+	Name:     "set-usage",
+	Severity: SeverityWarning,
+	Doc:      "Warn when `set` is used to reassign an already-bound symbol.\n\nThe first `set` creating a new binding is fine — ELPS has no `defvar`, so `set` is the standard way to create top-level bindings. However, subsequent `set` calls on the same symbol should use `set!` to clearly signal mutation intent.",
 	Run: func(pass *Pass) error {
 		seen := make(map[string]bool)
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
@@ -56,8 +57,9 @@ var AnalyzerSetUsage = &Analyzer{
 // AnalyzerInPackageToplevel warns when `in-package` is used inside nested
 // expressions (function bodies, let forms, etc.) where it has no useful effect.
 var AnalyzerInPackageToplevel = &Analyzer{
-	Name: "in-package-toplevel",
-	Doc:  "Warn when `in-package` is used inside nested expressions.\n\n`in-package` only has meaningful effect at the top level of a file. Using it inside a `defun`, `let`, `lambda`, or other nested form is almost certainly a mistake.",
+	Name:     "in-package-toplevel",
+	Severity: SeverityWarning,
+	Doc:      "Warn when `in-package` is used inside nested expressions.\n\n`in-package` only has meaningful effect at the top level of a file. Using it inside a `defun`, `let`, `lambda`, or other nested form is almost certainly a mistake.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			if HeadSymbol(sexpr) == "in-package" && depth > 0 {
@@ -71,8 +73,9 @@ var AnalyzerInPackageToplevel = &Analyzer{
 
 // AnalyzerIfArity checks that `if` has exactly 3 arguments (condition, then, else).
 var AnalyzerIfArity = &Analyzer{
-	Name: "if-arity",
-	Doc:  "Check that `if` has exactly 3 arguments: condition, then-branch, else-branch.\n\nA missing else branch is a common source of subtle nil-return bugs. Extra arguments are silently ignored at parse time but indicate a structural error.",
+	Name:     "if-arity",
+	Severity: SeverityError,
+	Doc:      "Check that `if` has exactly 3 arguments: condition, then-branch, else-branch.\n\nA missing else branch is a common source of subtle nil-return bugs. Extra arguments are silently ignored at parse time but indicate a structural error.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			if HeadSymbol(sexpr) != "if" {
@@ -103,8 +106,9 @@ var AnalyzerIfArity = &Analyzer{
 
 // AnalyzerLetBindings checks for malformed `let` and `let*` binding lists.
 var AnalyzerLetBindings = &Analyzer{
-	Name: "let-bindings",
-	Doc:  "Check for malformed `let`/`let*` binding lists.\n\nThe first argument to `let` or `let*` must be a list of (symbol value) pairs. Common mistakes include forgetting the outer list: `(let (x 1) ...)` instead of `(let ((x 1)) ...)`.",
+	Name:     "let-bindings",
+	Severity: SeverityError,
+	Doc:      "Check for malformed `let`/`let*` binding lists.\n\nThe first argument to `let` or `let*` must be a list of (symbol value) pairs. Common mistakes include forgetting the outer list: `(let (x 1) ...)` instead of `(let ((x 1)) ...)`.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			head := HeadSymbol(sexpr)
@@ -159,8 +163,9 @@ var AnalyzerLetBindings = &Analyzer{
 // AnalyzerQuoteCall warns when set or defconst is called with an unquoted symbol
 // as the first argument, which is almost always a mistake.
 var AnalyzerQuoteCall = &Analyzer{
-	Name: "quote-call",
-	Doc:  "Warn when set is called with an unquoted symbol argument.\n\nThe first argument to set should be a quoted symbol: (set 'x 42). Writing (set x 42) evaluates x first, which is rarely intended. This check does not flag set!, which takes an unquoted symbol by design.",
+	Name:     "quote-call",
+	Severity: SeverityWarning,
+	Doc:      "Warn when set is called with an unquoted symbol argument.\n\nThe first argument to set should be a quoted symbol: (set 'x 42). Writing (set x 42) evaluates x first, which is rarely intended. This check does not flag set!, which takes an unquoted symbol by design.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			head := HeadSymbol(sexpr)
@@ -190,8 +195,9 @@ var AnalyzerQuoteCall = &Analyzer{
 
 // AnalyzerCondMissingElse warns when a cond has no default (else or true) clause.
 var AnalyzerCondMissingElse = &Analyzer{
-	Name: "cond-missing-else",
-	Doc:  "Warn when a cond expression has no default clause.\n\nWithout an else or (true ...) clause, cond returns nil when no condition matches. This is a common source of unexpected nil values. Add (else ...) or (true ...) as the last clause to handle the default case.",
+	Name:     "cond-missing-else",
+	Severity: SeverityInfo,
+	Doc:      "Warn when a cond expression has no default clause.\n\nWithout an else or (true ...) clause, cond returns nil when no condition matches. This is a common source of unexpected nil values. Add (else ...) or (true ...) as the last clause to handle the default case.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			if HeadSymbol(sexpr) != "cond" {
@@ -244,8 +250,9 @@ func bindingSource(binding *lisp.LVal, fallback *lisp.LVal) *token.Location {
 
 // AnalyzerDefunStructure checks for malformed `defun` and `defmacro` forms.
 var AnalyzerDefunStructure = &Analyzer{
-	Name: "defun-structure",
-	Doc:  "Check for malformed `defun`/`defmacro` definitions.\n\nA `defun` requires a symbol name and a formals list. An empty body (no-op) is valid. Common mistakes include non-symbol names or a non-list formals argument.",
+	Name:     "defun-structure",
+	Severity: SeverityError,
+	Doc:      "Check for malformed `defun`/`defmacro` definitions.\n\nA `defun` requires a symbol name and a formals list. An empty body (no-op) is valid. Common mistakes include non-symbol names or a non-list formals argument.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			head := HeadSymbol(sexpr)
@@ -273,8 +280,9 @@ var AnalyzerDefunStructure = &Analyzer{
 
 // AnalyzerCondStructure checks for malformed `cond` clauses.
 var AnalyzerCondStructure = &Analyzer{
-	Name: "cond-structure",
-	Doc:  "Check for malformed `cond` clauses.\n\nEach `cond` clause must be a non-empty list. The `else` clause, if present, must be last. Common mistakes include bare values instead of lists, or misplaced `else`.",
+	Name:     "cond-structure",
+	Severity: SeverityError,
+	Doc:      "Check for malformed `cond` clauses.\n\nEach `cond` clause must be a non-empty list. The `else` clause, if present, must be last. Common mistakes include bare values instead of lists, or misplaced `else`.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			if HeadSymbol(sexpr) != "cond" {
@@ -317,8 +325,9 @@ var AnalyzerCondStructure = &Analyzer{
 
 // AnalyzerBuiltinArity checks for wrong argument counts to known builtin functions.
 var AnalyzerBuiltinArity = &Analyzer{
-	Name: "builtin-arity",
-	Doc:  "Check argument counts for calls to known builtin functions and special forms.\n\nELPS builtin functions have well-defined argument signatures. This check catches calls with too few or too many arguments before runtime. User-defined functions that shadow builtin names are automatically excluded. Formals lists and threading macro children are also excluded.",
+	Name:     "builtin-arity",
+	Severity: SeverityError,
+	Doc:      "Check argument counts for calls to known builtin functions and special forms.\n\nELPS builtin functions have well-defined argument signatures. This check catches calls with too few or too many arguments before runtime. User-defined functions that shadow builtin names are automatically excluded. Formals lists and threading macro children are also excluded.",
 	Run: func(pass *Pass) error {
 		// Collect user-defined names so we don't flag shadowed builtins.
 		userDefs := UserDefined(pass.Exprs)
@@ -479,8 +488,9 @@ func buildArityTable() map[string]aritySpec {
 // `handler-bind` form. At runtime, rethrow can only be called from within a
 // handler-bind handler; calling it elsewhere always produces an error.
 var AnalyzerRethrowContext = &Analyzer{
-	Name: "rethrow-context",
-	Doc:  "Warn when `rethrow` is used outside a `handler-bind` form.\n\n`rethrow` re-raises the current error being handled by handler-bind, preserving the original stack trace. Calling it outside any handler-bind always produces an error at runtime.",
+	Name:     "rethrow-context",
+	Severity: SeverityError,
+	Doc:      "Warn when `rethrow` is used outside a `handler-bind` form.\n\n`rethrow` re-raises the current error being handled by handler-bind, preserving the original stack trace. Calling it outside any handler-bind always produces an error at runtime.",
 	Run: func(pass *Pass) error {
 		walkRethrowContext(pass.Exprs, 0, func(sexpr *lisp.LVal) {
 			src := SourceOf(sexpr)
@@ -555,8 +565,9 @@ var implicitPrognForms = map[string]int{
 // AnalyzerUnnecessaryProgn warns when progn is used as the sole body
 // expression in a form that already supports multiple body expressions.
 var AnalyzerUnnecessaryProgn = &Analyzer{
-	Name: "unnecessary-progn",
-	Doc:  "Warn when `progn` wraps the body of a form that already supports multiple expressions.\n\nForms like `defun`, `lambda`, `let`, and others evaluate their body as an implicit progn. Wrapping the body in an explicit `(progn ...)` is redundant. This does not flag `progn` inside `if` branches or `defmacro`, where it is needed.",
+	Name:     "unnecessary-progn",
+	Severity: SeverityInfo,
+	Doc:      "Warn when `progn` wraps the body of a form that already supports multiple expressions.\n\nForms like `defun`, `lambda`, `let`, and others evaluate their body as an implicit progn. Wrapping the body in an explicit `(progn ...)` is redundant. This does not flag `progn` inside `if` branches or `defmacro`, where it is needed.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			head := HeadSymbol(sexpr)

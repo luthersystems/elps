@@ -78,8 +78,17 @@ func lispErrorToDiagnostic(lerr *lisp.LVal) diagnostic.Diagnostic {
 
 // lintDiagToDiagnostic converts a lint.Diagnostic to a diagnostic.Diagnostic.
 func lintDiagToDiagnostic(ld lintpkg.Diagnostic) diagnostic.Diagnostic {
+	sev := diagnostic.SeverityWarning // fallback
+	switch ld.Severity {
+	case lintpkg.SeverityError:
+		sev = diagnostic.SeverityError
+	case lintpkg.SeverityWarning:
+		sev = diagnostic.SeverityWarning
+	case lintpkg.SeverityInfo:
+		sev = diagnostic.SeverityNote
+	}
 	d := diagnostic.Diagnostic{
-		Severity: diagnostic.SeverityWarning,
+		Severity: sev,
 		Message:  ld.Message + " (" + ld.Analyzer + ")",
 	}
 	if ld.Pos.Line > 0 {

@@ -96,11 +96,14 @@ func (typ Type) String() string {
 }
 
 type Location struct {
-	File string // a name representing the source stream
-	Path string // a physical location which may differ from File
-	Pos  int
-	Line int // line number (starting at 1 when tracked)
-	Col  int // line column number (starting at 1 when tracked)
+	File    string // a name representing the source stream
+	Path    string // a physical location which may differ from File
+	Pos     int
+	Line    int // line number (starting at 1 when tracked)
+	Col     int // line column number (starting at 1 when tracked)
+	EndPos  int // byte position past end of token/expr (0 = not tracked)
+	EndLine int // end line (1-based, 0 = not tracked)
+	EndCol  int // end column (1-based, exclusive, 0 = not tracked)
 }
 
 func (loc *Location) String() string {
@@ -116,11 +119,38 @@ func (loc *Location) String() string {
 	}
 }
 
+// TokenEnd computes the end position of a token from its start position
+// and text. The end column is exclusive (one past the last character).
+// For multi-line tokens (e.g., raw strings), the line and column are
+// adjusted accordingly.
+func TokenEnd(tok *Token) (endLine, endCol, endPos int) {
+	if tok == nil || tok.Source == nil {
+		return 0, 0, 0
+	}
+	line := tok.Source.Line
+	col := tok.Source.Col
+	for _, ch := range tok.Text {
+		if ch == '\n' {
+			line++
+			col = 1
+		} else {
+			col++
+		}
+	}
+	return line, col, tok.Source.Pos + len(tok.Text)
+}
+
 type LocationError struct {
 	Err    error
 	Source *Location
+	Code   string // error classification (empty = unclassified)
 }
 
 func (err *LocationError) Error() string {
 	return fmt.Sprintf("%s: %s", err.Source, err.Err)
+}
+
+// Unwrap returns the underlying error for use with errors.Is/errors.As.
+func (err *LocationError) Unwrap() error {
+	return err.Err
 }
