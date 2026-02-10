@@ -1059,7 +1059,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 14)
+	assert.Len(t, analyzers, 16)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -1072,10 +1072,12 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"quote-call",
 		"rethrow-context",
 		"set-usage",
+		"shadowing",
 		"undefined-symbol",
 		"unnecessary-progn",
 		"unused-function",
 		"unused-variable",
+		"user-arity",
 	}, names)
 }
 
@@ -1344,6 +1346,8 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"undefined-symbol":   SeverityError,
 		"unused-variable":    SeverityWarning,
 		"unused-function":    SeverityWarning,
+		"shadowing":          SeverityInfo,
+		"user-arity":         SeverityError,
 	}
 	for _, a := range DefaultAnalyzers() {
 		want, ok := expected[a.Name]
@@ -1636,4 +1640,102 @@ func TestUnusedFunction_HasNotes(t *testing.T) {
 	require.Len(t, diags, 1)
 	assert.NotEmpty(t, diags[0].Notes)
 	assert.Contains(t, diags[0].Notes[0], "export")
+}
+
+// --- shadowing ---
+
+func TestShadowing_Positive_ParamShadowsBuiltin(t *testing.T) {
+	source := `(defun foo (car) (+ car 1))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "shadows")
+	assertHasDiag(t, diags, "car")
+}
+
+func TestShadowing_Positive_LetShadowsParam(t *testing.T) {
+	source := `(defun foo (x) (let ((x 2)) (+ x 1)))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "shadows")
+	assertHasDiag(t, diags, "x")
+}
+
+func TestShadowing_Negative_NoShadow(t *testing.T) {
+	source := `(defun foo (x) (let ((y 2)) (+ x y)))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	assertNoDiags(t, diags)
+}
+
+func TestShadowing_Negative_TopLevel(t *testing.T) {
+	// Top-level defun redefining a builtin is OK (not shadowing)
+	source := `(defun map (f l) (cons (f (car l)) ()))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	assertNoDiags(t, diags)
+}
+
+func TestShadowing_Negative_NoSemantics(t *testing.T) {
+	diags := lintCheck(t, AnalyzerShadowing, `(defun foo (car) car)`)
+	assertNoDiags(t, diags)
+}
+
+func TestShadowing_HasNotes(t *testing.T) {
+	source := `(defun foo (car) car)`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	require.Len(t, diags, 1)
+	assert.NotEmpty(t, diags[0].Notes)
+	assert.Contains(t, diags[0].Notes[0], "rename")
+}
+
+// --- user-arity ---
+
+func TestUserArity_Positive_TooFew(t *testing.T) {
+	source := "(defun add (a b) (+ a b))\n(add 1)"
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "requires at least 2")
+}
+
+func TestUserArity_Positive_TooMany(t *testing.T) {
+	source := "(defun add (a b) (+ a b))\n(add 1 2 3)"
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "accepts at most 2")
+}
+
+func TestUserArity_Negative_Correct(t *testing.T) {
+	source := "(defun add (a b) (+ a b))\n(add 1 2)"
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUserArity_Negative_Variadic(t *testing.T) {
+	source := "(defun my-list (&rest items) items)\n(my-list 1 2 3 4 5)"
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUserArity_Negative_Optional(t *testing.T) {
+	source := "(defun greet (name &optional greeting) name)\n(greet \"Alice\")"
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUserArity_Negative_Builtin(t *testing.T) {
+	// Builtins should not be checked by user-arity (no Source)
+	diags := lintCheckSemantic(t, AnalyzerUserArity, `(car)`)
+	assertNoDiags(t, diags)
+}
+
+func TestUserArity_Negative_NoSemantics(t *testing.T) {
+	source := "(defun add (a b) (+ a b))\n(add 1)"
+	diags := lintCheck(t, AnalyzerUserArity, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUserArity_HasNotes(t *testing.T) {
+	source := "(defun add (a b) (+ a b))\n(add 1)"
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	require.Len(t, diags, 1)
+	assert.NotEmpty(t, diags[0].Notes)
+	assert.Contains(t, diags[0].Notes[0], "defined at")
 }

@@ -375,5 +375,7 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerUndefinedSymbol,
 		AnalyzerUnusedVariable,
 		AnalyzerUnusedFunction,
+		AnalyzerShadowing,
+		AnalyzerUserArity,
 	}
 }

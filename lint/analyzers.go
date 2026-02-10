@@ -697,6 +697,96 @@ var AnalyzerUnusedFunction = &Analyzer{
 	},
 }
 
+// AnalyzerShadowing reports when a local binding shadows a name from an
+// enclosing scope. This is informational — shadowing is valid but can cause
+// confusion. Requires semantic analysis (pass.Semantics != nil).
+var AnalyzerShadowing = &Analyzer{
+	Name:     "shadowing",
+	Severity: SeverityInfo,
+	Doc:      "Report when a local binding shadows a name from an enclosing scope.\n\nRequires semantic analysis (--workspace flag). Shadowing is valid but can cause confusion, especially when it hides a builtin or outer variable.",
+	Run: func(pass *Pass) error {
+		if pass.Semantics == nil {
+			return nil
+		}
+		for _, sym := range pass.Semantics.Symbols {
+			if sym.Scope == nil || sym.Scope == pass.Semantics.RootScope {
+				continue // top-level definitions can't shadow
+			}
+			if sym.Scope.Parent == nil {
+				continue
+			}
+			outer := sym.Scope.Parent.Lookup(sym.Name)
+			if outer == nil {
+				continue
+			}
+			pass.Report(Diagnostic{
+				Message: fmt.Sprintf("%s '%s' shadows %s from enclosing scope", sym.Kind, sym.Name, outer.Kind),
+				Pos:     posFromSource(sym.Source),
+				Notes:   []string{fmt.Sprintf("rename '%s' to avoid confusion with the outer %s", sym.Name, outer.Kind)},
+			})
+		}
+		return nil
+	},
+}
+
+// AnalyzerUserArity checks argument counts for calls to user-defined functions
+// and macros whose signatures are known from the same file. Requires semantic
+// analysis (pass.Semantics != nil).
+var AnalyzerUserArity = &Analyzer{
+	Name:     "user-arity",
+	Severity: SeverityError,
+	Doc:      "Check argument counts for calls to user-defined functions and macros.\n\nRequires semantic analysis (--workspace flag). Only checks calls to functions with known signatures (Source != nil). Complements builtin-arity which covers builtins.",
+	Run: func(pass *Pass) error {
+		if pass.Semantics == nil {
+			return nil
+		}
+		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
+			head := HeadSymbol(sexpr)
+			if head == "" {
+				return
+			}
+			sym := pass.Semantics.RootScope.Lookup(head)
+			if sym == nil || sym.Signature == nil || sym.Source == nil {
+				return // unknown or builtin — skip
+			}
+			if sym.Kind != analysis.SymFunction && sym.Kind != analysis.SymMacro {
+				return
+			}
+			argc := ArgCount(sexpr)
+			minArity := sym.Signature.MinArity()
+			maxArity := sym.Signature.MaxArity()
+			if argc < minArity {
+				src := SourceOf(sexpr)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, minArity, argc),
+					Pos:     posFromSource(src.Source),
+					Notes:   []string{fmt.Sprintf("defined at %s", sourceString(sym.Source))},
+				})
+			}
+			if maxArity >= 0 && argc > maxArity {
+				src := SourceOf(sexpr)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, maxArity, argc),
+					Pos:     posFromSource(src.Source),
+					Notes:   []string{fmt.Sprintf("defined at %s", sourceString(sym.Source))},
+				})
+			}
+		})
+		return nil
+	},
+}
+
+// sourceString formats a token.Location for use in diagnostic notes.
+func sourceString(loc *token.Location) string {
+	if loc == nil {
+		return "<unknown>"
+	}
+	if loc.Col > 0 {
+		return fmt.Sprintf("%s:%d:%d", loc.File, loc.Line, loc.Col)
+	}
+	return fmt.Sprintf("%s:%d", loc.File, loc.Line)
+}
+
 // AnalyzerUndefinedSymbol reports symbols that could not be resolved in any
 // enclosing scope. Requires semantic analysis (pass.Semantics != nil).
 var AnalyzerUndefinedSymbol = &Analyzer{
