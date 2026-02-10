@@ -21,6 +21,13 @@ func walkNode(node *lisp.LVal, parent *lisp.LVal, depth int, fn func(*lisp.LVal,
 		return
 	}
 	fn(node, parent, depth)
+	// Don't recurse into quasiquote bodies — they are code-generation
+	// templates where forms like (defun (unquote name) ...) are data,
+	// not actual function definitions or calls.
+	if node.Type == lisp.LSExpr && len(node.Cells) > 0 &&
+		node.Cells[0].Type == lisp.LSymbol && node.Cells[0].Str == "quasiquote" {
+		return
+	}
 	for _, child := range node.Cells {
 		walkNode(child, node, depth+1, fn)
 	}

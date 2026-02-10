@@ -375,6 +375,14 @@ func TestDefunStructure_Negative_EmptyBody(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+func TestDefunStructure_Negative_InsideQuasiquote(t *testing.T) {
+	// defun inside a quasiquote template is data, not a real definition.
+	// (defun (unquote name) ...) should not be flagged.
+	source := `(defmacro wrap (name) (quasiquote (defun (unquote name) (x) x)))`
+	diags := lintCheck(t, AnalyzerDefunStructure, source)
+	assertNoDiags(t, diags)
+}
+
 // --- cond-structure ---
 
 func TestCondStructure_Positive_NonListClause(t *testing.T) {
