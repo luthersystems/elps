@@ -193,6 +193,14 @@ func TestAnalyze_QuotedIgnored(t *testing.T) {
 	assert.Empty(t, result.Unresolved)
 }
 
+func TestAnalyze_QuotedSymbolIgnored(t *testing.T) {
+	// 'type-error is a quoted symbol used as data, not a variable reference
+	result := parseAndAnalyze(t, `(error 'type-error "bad")`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "type-error", u.Name, "quoted symbol should not be resolved")
+	}
+}
+
 // --- Analyze: defun ---
 
 func TestAnalyze_Defun(t *testing.T) {

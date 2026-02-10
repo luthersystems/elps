@@ -127,7 +127,9 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope) {
 
 	switch node.Type {
 	case lisp.LSymbol:
-		a.resolveSymbol(node, scope)
+		if !node.Quoted {
+			a.resolveSymbol(node, scope)
+		}
 		return
 	case lisp.LSExpr:
 		if node.Quoted {
