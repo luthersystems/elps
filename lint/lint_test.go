@@ -906,11 +906,13 @@ func TestNolint_SuppressSpecific(t *testing.T) {
 }
 
 func TestNolint_DifferentCheck(t *testing.T) {
-	// Suppressing a different check should not suppress if-arity
+	// Suppressing a different check should not suppress if-arity.
+	// The nolint:set-usage is also unused (no set-usage finding on this line).
 	source := "(if true 1) ; nolint:set-usage\n"
 	diags := lintSource(t, source)
-	assert.Len(t, diags, 1)
+	assert.Len(t, diags, 2)
 	assertHasDiag(t, diags, "too few")
+	assertHasDiag(t, diags, "does not suppress any diagnostic")
 }
 
 func TestNolint_MultipleNames(t *testing.T) {
@@ -921,11 +923,13 @@ func TestNolint_MultipleNames(t *testing.T) {
 }
 
 func TestNolint_MultipleNames_NotMatched(t *testing.T) {
-	// Comma-separated list that doesn't include the triggered check
+	// Comma-separated list that doesn't include the triggered check.
+	// The nolint directive is also unused (no set-usage or let-bindings finding).
 	source := "(if true 1) ; nolint:set-usage,let-bindings\n"
 	diags := lintSource(t, source)
-	assert.Len(t, diags, 1)
+	assert.Len(t, diags, 2)
 	assertHasDiag(t, diags, "too few")
+	assertHasDiag(t, diags, "does not suppress any diagnostic")
 }
 
 func TestNolint_SuppressSetUsage(t *testing.T) {
@@ -943,17 +947,21 @@ func TestNolint_MultipleNamesWithSpaces(t *testing.T) {
 }
 
 func TestNolint_SuppressAll_NoErrorOnLine(t *testing.T) {
-	// A line with ; nolint that has no actual finding should not error
+	// A line with ; nolint that has no actual finding should warn about unused nolint
 	source := "(+ 1 2) ; nolint\n"
 	diags := lintSource(t, source)
-	assertNoDiags(t, diags)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "does not suppress any diagnostic")
+	assert.Equal(t, "unused-nolint", diags[0].Analyzer)
 }
 
 func TestNolint_SuppressSpecific_NoErrorOnLine(t *testing.T) {
-	// A line with ; nolint:check-name that has no matching finding should not error
+	// A line with ; nolint:check-name that has no matching finding should warn about unused nolint
 	source := "(+ 1 2) ; nolint:if-arity\n"
 	diags := lintSource(t, source)
-	assertNoDiags(t, diags)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "does not suppress any diagnostic")
+	assert.Equal(t, "unused-nolint", diags[0].Analyzer)
 }
 
 // --- output formatting ---
@@ -1248,11 +1256,12 @@ func TestNolint_RegularCommentDoesNotSuppress(t *testing.T) {
 
 func TestNolint_LeadingCommentDoesNotSuppress(t *testing.T) {
 	// nolint in a leading comment is on a different line than the expression,
-	// so it does not suppress (nolint is line-based via trailing comments)
+	// so it does not suppress the if-arity finding. The nolint itself is unused.
 	source := "; nolint\n(if true 1)\n"
 	diags := lintSource(t, source)
-	assert.Len(t, diags, 1)
-	assertHasDiag(t, diags, "too few")
+	assert.Len(t, diags, 2)
+	assertDiagOnLine(t, diags, 1, "does not suppress any diagnostic")
+	assertDiagOnLine(t, diags, 2, "too few")
 }
 
 // --- buildArityTable ---
@@ -1766,4 +1775,117 @@ func TestUserArity_HasNotes(t *testing.T) {
 	require.Len(t, diags, 1)
 	assert.NotEmpty(t, diags[0].Notes)
 	assert.Contains(t, diags[0].Notes[0], "defined at")
+}
+
+// --- unused-nolint ---
+
+func TestUnusedNolint_Unused(t *testing.T) {
+	// nolint:set-usage on a line with no set-usage finding
+	source := "(+ 1 2) ; nolint:set-usage\n"
+	diags := lintSource(t, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "does not suppress any diagnostic")
+	assert.Equal(t, "unused-nolint", diags[0].Analyzer)
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+}
+
+func TestUnusedNolint_Used(t *testing.T) {
+	// nolint:set-usage that actually suppresses a finding — no warning
+	source := "(set 'x 1)\n(set 'x 2) ; nolint:set-usage\n"
+	diags := lintSource(t, source)
+	// Should have no diagnostics: set-usage is suppressed, nolint is used
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedNolint_UnknownAnalyzer(t *testing.T) {
+	// nolint references a non-existent analyzer
+	source := "(+ 1 2) ; nolint:nonexistent\n"
+	diags := lintSource(t, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "unknown analyzer")
+	assertHasDiag(t, diags, "nonexistent")
+	assert.Equal(t, "unused-nolint", diags[0].Analyzer)
+}
+
+func TestUnusedNolint_SuppressAllUnused(t *testing.T) {
+	// bare ; nolint on a clean line
+	source := "(+ 1 2) ; nolint\n"
+	diags := lintSource(t, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "does not suppress any diagnostic")
+	assert.Equal(t, "unused-nolint", diags[0].Analyzer)
+}
+
+func TestUnusedNolint_SuppressAllUsed(t *testing.T) {
+	// bare ; nolint that actually suppresses something — no warning
+	source := "(if true 1) ; nolint\n"
+	diags := lintSource(t, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedNolint_SelfSuppression(t *testing.T) {
+	// ; nolint:unused-nolint should suppress itself
+	source := "(+ 1 2) ; nolint:unused-nolint\n"
+	diags := lintSource(t, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedNolint_HasNotes(t *testing.T) {
+	source := "(+ 1 2) ; nolint:set-usage\n"
+	diags := lintSource(t, source)
+	require.Len(t, diags, 1)
+	require.Len(t, diags[0].Notes, 2)
+	assert.Contains(t, diags[0].Notes[0], "remove")
+	assert.Contains(t, diags[0].Notes[1], "unused-nolint")
+}
+
+func TestUnusedNolint_MixedKnownUnknown(t *testing.T) {
+	// Directive with a real analyzer that suppresses nothing + an unknown name
+	source := "(+ 1 2) ; nolint:set-usage,bogus-check\n"
+	diags := lintSource(t, source)
+	assert.Len(t, diags, 1)
+	// Should mention unknown because bogus-check doesn't exist
+	assertHasDiag(t, diags, "unknown analyzer")
+	assertHasDiag(t, diags, "bogus-check")
+	// Known analyzer should NOT appear in the unknown message
+	assert.NotContains(t, diags[0].Message, "set-usage")
+}
+
+func TestUnusedNolint_PartiallyUsed(t *testing.T) {
+	// Directive suppresses if-arity but also lists a non-existent check.
+	// The directive IS used (it suppresses if-arity), so no warning.
+	// This is a deliberate design choice: when a directive successfully
+	// suppresses at least one diagnostic, we don't warn about unused names
+	// in the same directive. This avoids noise when an analyzer is only
+	// sometimes triggered (e.g., a nolint that covers two checks but only
+	// one fires on any given run).
+	source := "(if true 1) ; nolint:if-arity,bogus-check\n"
+	diags := lintSource(t, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedNolint_MalformedDirective(t *testing.T) {
+	// "; nolint-if-arity" is NOT a valid nolint directive (missing colon separator).
+	// It should be ignored, so the if-arity finding is not suppressed.
+	source := "(if true 1) ; nolint-if-arity\n"
+	diags := lintSource(t, source)
+	assertHasDiag(t, diags, "too few")
+}
+
+func TestUnusedNolint_Position(t *testing.T) {
+	// Verify the reported position points to the nolint comment, not the expression
+	source := "(+ 1 2) ; nolint:set-usage\n"
+	diags := lintSource(t, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, 1, diags[0].Pos.Line)
+	assert.Greater(t, diags[0].Pos.Col, 0, "should point to the nolint comment, not column 0")
+}
+
+func TestUnusedNolint_MultipleDirectives_MixedUsage(t *testing.T) {
+	// Used nolint on line 1, unused nolint on line 2
+	source := "(if true 1) ; nolint:if-arity\n(+ 1 2) ; nolint:set-usage\n"
+	diags := lintSource(t, source)
+	assert.Len(t, diags, 1)
+	assert.Equal(t, 2, diags[0].Pos.Line) // only the unused one
+	assert.Equal(t, "unused-nolint", diags[0].Analyzer)
 }

@@ -231,7 +231,64 @@ func (l *Linter) LintFileWithContext(source []byte, filename string, semantics *
 	}
 
 	// Filter suppressed diagnostics (;nolint comments)
-	all = filterSuppressed(all, exprs)
+	all, nolintMap := filterSuppressed(all, exprs)
+
+	// Build set of enabled analyzer names for unknown-analyzer detection.
+	enabledAnalyzers := make(map[string]bool, len(l.Analyzers))
+	for _, a := range l.Analyzers {
+		enabledAnalyzers[a.Name] = true
+	}
+	// unused-nolint is synthetic (not a registered Analyzer) but valid in directives.
+	enabledAnalyzers["unused-nolint"] = true
+
+	// Emit unused-nolint diagnostics for stale directives.
+	var unusedNolints []Diagnostic
+	for _, info := range nolintMap {
+		if info.used {
+			continue
+		}
+		msg := "nolint directive does not suppress any diagnostic"
+		// Check for unknown analyzer names in specific directives.
+		if info.directive != "" {
+			var unknown []string
+			for _, name := range strings.Split(info.directive, ",") {
+				name = strings.TrimSpace(name)
+				if name != "" && !enabledAnalyzers[name] {
+					unknown = append(unknown, name)
+				}
+			}
+			if len(unknown) > 0 {
+				msg = fmt.Sprintf("nolint directive references unknown analyzer(s): %s",
+					strings.Join(unknown, ", "))
+			}
+		}
+		unusedNolints = append(unusedNolints, Diagnostic{
+			Pos:      Position{File: filename, Line: info.source.Line, Col: info.source.Col},
+			Message:  msg,
+			Analyzer: "unused-nolint",
+			Severity: SeverityWarning,
+			Notes:    []string{"remove the nolint directive or fix the analyzer name", "; nolint:unused-nolint"},
+		})
+	}
+
+	// Allow ; nolint:unused-nolint to self-suppress. Only explicit mentions
+	// of "unused-nolint" suppress the diagnostic — a bare ; nolint that didn't
+	// suppress anything is still reported as unused.
+	for i := len(unusedNolints) - 1; i >= 0; i-- {
+		d := unusedNolints[i]
+		info, ok := nolintMap[d.Pos.Line]
+		if !ok || info.directive == "" {
+			continue
+		}
+		for _, name := range strings.Split(info.directive, ",") {
+			if strings.TrimSpace(name) == "unused-nolint" {
+				unusedNolints = append(unusedNolints[:i], unusedNolints[i+1:]...)
+				break
+			}
+		}
+	}
+
+	all = append(all, unusedNolints...)
 
 	// Sort by file, then line
 	sort.Slice(all, func(i, j int) bool {
@@ -265,46 +322,59 @@ func (l *Linter) LintFileWithAnalysis(source []byte, filename string, cfg *analy
 	return l.LintFileWithContext(source, filename, result)
 }
 
-// filterSuppressed removes diagnostics on lines with ;nolint comments.
-func filterSuppressed(diags []Diagnostic, exprs []*lisp.LVal) []Diagnostic {
+// nolintInfo tracks a nolint directive and its source location.
+type nolintInfo struct {
+	directive string         // "" for suppress-all, or "analyzer1,analyzer2"
+	source    token.Location // location of the nolint comment itself
+	used      bool           // whether this directive suppressed at least one diagnostic
+}
+
+// filterSuppressed removes diagnostics on lines with ;nolint comments and
+// returns the filtered diagnostics plus a map of all nolint entries (with
+// usage tracking). Callers can inspect entries where used==false to emit
+// unused-nolint warnings.
+func filterSuppressed(diags []Diagnostic, exprs []*lisp.LVal) ([]Diagnostic, map[int]*nolintInfo) {
 	// Build a map of line -> nolint directives from trailing comments
-	nolintLines := make(map[int]string) // line -> "" (all) or "analyzer1,analyzer2"
+	nolintLines := make(map[int]*nolintInfo)
 	walkForNolint(exprs, nolintLines)
 
 	var filtered []Diagnostic
 	for _, d := range diags {
-		directive, ok := nolintLines[d.Pos.Line]
+		info, ok := nolintLines[d.Pos.Line]
 		if !ok {
 			filtered = append(filtered, d)
 			continue
 		}
 		// Empty directive = suppress all
-		if directive == "" {
+		if info.directive == "" {
+			info.used = true
 			continue
 		}
 		// Check if this specific analyzer is suppressed
 		suppressed := false
-		for _, name := range strings.Split(directive, ",") {
+		for _, name := range strings.Split(info.directive, ",") {
 			if strings.TrimSpace(name) == d.Analyzer {
 				suppressed = true
 				break
 			}
 		}
-		if !suppressed {
+		if suppressed {
+			info.used = true
+		} else {
 			filtered = append(filtered, d)
 		}
 	}
-	return filtered
+	return filtered, nolintLines
 }
 
 // walkForNolint finds ;nolint comments and maps them to line numbers.
-func walkForNolint(exprs []*lisp.LVal, lines map[int]string) {
+func walkForNolint(exprs []*lisp.LVal, lines map[int]*nolintInfo) {
 	for _, expr := range exprs {
 		walkNodeForNolint(expr, lines)
 	}
 }
 
-func walkNodeForNolint(v *lisp.LVal, lines map[int]string) {
+func walkNodeForNolint(v *lisp.LVal, lines map[int]*nolintInfo) {
 	if v == nil {
 		return
 	}
@@ -322,7 +392,7 @@ func walkNodeForNolint(v *lisp.LVal, lines map[int]string) {
 	}
 }
 
-func checkNolintToken(tok *token.Token, lines map[int]string) {
+func checkNolintToken(tok *token.Token, lines map[int]*nolintInfo) {
 	if tok == nil || tok.Source == nil {
 		return
 	}
@@ -336,11 +406,16 @@ func checkNolintToken(tok *token.Token, lines map[int]string) {
 	}
 	rest := strings.TrimPrefix(text, "nolint")
 	if rest == "" {
-		lines[tok.Source.Line] = ""
+		lines[tok.Source.Line] = &nolintInfo{
+			source: *tok.Source,
+		}
 		return
 	}
 	if strings.HasPrefix(rest, ":") {
-		lines[tok.Source.Line] = strings.TrimPrefix(rest, ":")
+		lines[tok.Source.Line] = &nolintInfo{
+			directive: strings.TrimPrefix(rest, ":"),
+			source:    *tok.Source,
+		}
 	}
 }
 
