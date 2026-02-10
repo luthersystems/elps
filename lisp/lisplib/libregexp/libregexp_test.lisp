@@ -22,10 +22,10 @@
                   "pattern {} does not match text: {}"
                   (quote (unquote pattsym))
                   (quote (unquote text)))))))
-  (assert-match "abc?" "ab") ; nolint:undefined-symbol
-  (assert-match "abc?" "abc") ; nolint:undefined-symbol
-  (assert-match """^\n*$""" "") ; nolint:undefined-symbol
-  (assert-match """^\n*$""" "\n") ; nolint:undefined-symbol
-  (assert-match """^\n*$""" "\n\n") ; nolint:undefined-symbol
-  (assert-match "^\n*$" "\n\n") ; nolint:undefined-symbol
-  (assert-match """\s""" "abc\n")) ; nolint:undefined-symbol
+  (assert-match "abc?" "ab")
+  (assert-match "abc?" "abc")
+  (assert-match """^\n*$""" "")
+  (assert-match """^\n*$""" "\n")
+  (assert-match """^\n*$""" "\n\n")
+  (assert-match "^\n*$" "\n\n")
+  (assert-match """\s""" "abc\n"))

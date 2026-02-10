@@ -298,6 +298,8 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope) {
 		a.analyzePrefixLambda(node, scope)
 	case "handler-bind":
 		a.analyzeHandlerBind(node, scope)
+	case "test":
+		a.analyzeTest(node, scope)
 	default:
 		// Detect qualified deftype calls like (s:deftype "name" ...) where
 		// the first arg is a string that becomes a global symbol binding.
@@ -316,7 +318,24 @@ func (a *analyzer) analyzeDefun(node *lisp.LVal, scope *Scope, kind SymbolKind) 
 	if astutil.ArgCount(node) < 2 {
 		return
 	}
-	// Name was already registered in prescan; just record a reference for it.
+	// Register the name in the enclosing scope if not already defined.
+	// Prescan handles top-level definitions; this covers nested defun/defmacro
+	// (e.g. inside test bodies, progn, when, etc.).
+	nameVal := node.Cells[1]
+	if nameVal.Type == lisp.LSymbol && scope.LookupLocal(nameVal.Str) == nil {
+		formalsForSig := node.Cells[2]
+		sym := &Symbol{
+			Name:   nameVal.Str,
+			Kind:   kind,
+			Source: nameVal.Source,
+		}
+		if formalsForSig.Type == lisp.LSExpr {
+			sym.Signature = signatureFromFormals(formalsForSig)
+		}
+		scope.Define(sym)
+		a.result.Symbols = append(a.result.Symbols, sym)
+	}
+
 	formalsVal := node.Cells[2]
 	if formalsVal.Type != lisp.LSExpr {
 		return
@@ -623,6 +642,19 @@ func (a *analyzer) analyzeDotimes(node *lisp.LVal, scope *Scope) {
 	// Walk body
 	for i := 2; i < len(node.Cells); i++ {
 		a.analyzeExpr(node.Cells[i], dotimesScope)
+	}
+}
+
+func (a *analyzer) analyzeTest(node *lisp.LVal, scope *Scope) {
+	// (test "name" body...)
+	if astutil.ArgCount(node) < 1 {
+		return
+	}
+	// Prescan body for forward-referenceable definitions (defun, defmacro, set).
+	body := node.Cells[2:]
+	a.prescan(body, scope)
+	for _, expr := range body {
+		a.analyzeExpr(expr, scope)
 	}
 }
 

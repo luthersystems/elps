@@ -641,6 +641,44 @@ func TestAnalyze_DefPrefix_OptionalParams(t *testing.T) {
 	}
 }
 
+// --- Analyze: nested defun/defmacro ---
+
+func TestAnalyze_NestedDefmacro_VisibleToSiblings(t *testing.T) {
+	// A defmacro inside a test body should be visible to later siblings.
+	result := parseAndAnalyze(t, `
+(test "my-test"
+  (defmacro my-assert (x) (quasiquote (assert (unquote x))))
+  (my-assert true))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "my-assert", u.Name,
+			"my-assert should be resolved from nested defmacro")
+	}
+}
+
+func TestAnalyze_NestedDefun_VisibleToSiblings(t *testing.T) {
+	// A defun inside a call body should be visible to later siblings.
+	result := parseAndAnalyze(t, `
+(progn
+  (defun helper (x) (+ x 1))
+  (helper 42))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "helper", u.Name,
+			"helper should be resolved from nested defun")
+	}
+}
+
+func TestAnalyze_Test_ForwardRef(t *testing.T) {
+	// Forward references within a test body should resolve via prescan.
+	result := parseAndAnalyze(t, `
+(test "forward-ref"
+  (my-helper 1)
+  (defun my-helper (x) (+ x 1)))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "my-helper", u.Name,
+			"my-helper should be resolved via prescan in test body")
+	}
+}
+
 // --- ScopeKind.String() ---
 
 func TestScopeKind_String(t *testing.T) {
