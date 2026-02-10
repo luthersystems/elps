@@ -340,6 +340,41 @@ func TestAnalyze_HandlerBind(t *testing.T) {
 	}
 }
 
+// --- Analyze: prefix lambda (#^) ---
+
+func TestAnalyze_PrefixLambda_PercentParam(t *testing.T) {
+	// #^(+ % 1) parses to (lisp:expr (+ % 1))
+	result := parseAndAnalyze(t, `(lisp:expr (+ % 1))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "%", u.Name, "% should be defined as implicit param")
+	}
+}
+
+func TestAnalyze_PrefixLambda_NumberedParams(t *testing.T) {
+	result := parseAndAnalyze(t, `(lisp:expr (+ %1 %2))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "%1", u.Name)
+		assert.NotEqual(t, "%2", u.Name)
+	}
+}
+
+func TestAnalyze_PrefixLambda_RestParam(t *testing.T) {
+	result := parseAndAnalyze(t, `(lisp:expr (cons %1 %&rest))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "%1", u.Name)
+		assert.NotEqual(t, "%&rest", u.Name)
+	}
+}
+
+func TestAnalyze_PrefixLambda_OuterScopeVisible(t *testing.T) {
+	// Outer scope symbols should still be visible inside prefix lambda
+	result := parseAndAnalyze(t, "(set 'y 10)\n(lisp:expr (+ % y))")
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "y", u.Name)
+		assert.NotEqual(t, "%", u.Name)
+	}
+}
+
 // --- Analyze: quasiquote ---
 
 func TestAnalyze_Quasiquote_TemplateIgnored(t *testing.T) {

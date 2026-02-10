@@ -3,6 +3,8 @@
 package analysis
 
 import (
+	"strings"
+
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
 )
@@ -173,6 +175,8 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope) {
 		return // package management, skip
 	case "function":
 		a.analyzeFunction(node, scope)
+	case "lisp:expr":
+		a.analyzePrefixLambda(node, scope)
 	case "handler-bind":
 		a.analyzeHandlerBind(node, scope)
 	default:
@@ -440,6 +444,49 @@ func (a *analyzer) analyzeHandlerBind(node *lisp.LVal, scope *Scope) {
 	// Not a scope creator — walk all children in current scope
 	for _, child := range node.Cells[1:] {
 		a.analyzeExpr(child, scope)
+	}
+}
+
+func (a *analyzer) analyzePrefixLambda(node *lisp.LVal, scope *Scope) {
+	// (lisp:expr body) — #^body parses to this form.
+	// The body uses implicit % params: %, %1, %2, %&rest, %&optional.
+	if astutil.ArgCount(node) < 1 {
+		return
+	}
+	body := node.Cells[1]
+
+	// Scan the body for %-prefixed symbols to determine which params exist.
+	params := make(map[string]bool)
+	collectPercentParams(body, params)
+
+	lambdaScope := NewScope(ScopeLambda, scope, node)
+	for name := range params {
+		sym := &Symbol{
+			Name: name,
+			Kind: SymParameter,
+		}
+		lambdaScope.Define(sym)
+		a.result.Symbols = append(a.result.Symbols, sym)
+	}
+
+	a.analyzeExpr(body, lambdaScope)
+}
+
+// collectPercentParams walks an expression tree and collects all %-prefixed
+// symbol names (implicit parameters for #^ prefix lambda forms).
+func collectPercentParams(node *lisp.LVal, params map[string]bool) {
+	if node == nil {
+		return
+	}
+	if node.Type == lisp.LSymbol && !node.Quoted && strings.HasPrefix(node.Str, "%") {
+		params[node.Str] = true
+		return
+	}
+	if node.Type == lisp.LSExpr && node.Quoted {
+		return // quoted data, skip
+	}
+	for _, child := range node.Cells {
+		collectPercentParams(child, params)
 	}
 }
 
