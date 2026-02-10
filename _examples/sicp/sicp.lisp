@@ -25,7 +25,7 @@
 (assert= 2 (gcd 2 4))
 (assert= 20 (gcd 60 80))
 
-(defun square (x) ; nolint
+(defun square (x) ; nolint:unused-function
   (* x x))
 
 (defun divides? (n d)
@@ -168,8 +168,8 @@
 (defun append (lis1 lis2)
   (accumulate 'cons lis2 lis1))
 
-(defun length (lis) ; nolint
-  (accumulate '+ 0 seq)) ; nolint:undefined-symbol
+(defun length (seq) ; nolint:unused-function
+  (accumulate '+ 0 seq))
 
 (assert-equal '(2 4 6 8) (map #^(* 2 %) '(1 2 3 4)))
 (assert-equal '(1 2 3 4) (append '(1) '(2 3 4)))

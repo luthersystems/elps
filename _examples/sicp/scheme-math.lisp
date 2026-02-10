@@ -68,8 +68,8 @@
             (sqrt (+ (square (real-part z))
                      (square (imag-part z))))]
            [angle (z) ; nolint:shadowing
-            (let ([x (real-part z)] ; nolint
-                  [y (imag-part z)]) ; nolint
+            (let ([x (real-part z)] ; nolint:unused-variable
+                  [y (imag-part z)]) ; nolint:unused-variable
               (atan (imag-part z)
                     (real-part z)))]
            [make-from-mag-ang (r a) ; nolint:shadowing
@@ -262,7 +262,7 @@
                   (lambda (r a) (make-from-mag-ang r a)))
     'done))
 
-(defun make-complex-real-imag (x y) (dispatch-call 'make-from-real-imag 'complex x y)) ; nolint
+(defun make-complex-real-imag (x y) (dispatch-call 'make-from-real-imag 'complex x y)) ; nolint:unused-function
 (defun make-complex-mag-ang (r a) (dispatch-call 'make-from-mag-ang 'complex r a)) ; nolint:unused-function
 
 (trace (install-complex-package))
