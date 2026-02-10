@@ -340,6 +340,36 @@ func TestAnalyze_HandlerBind(t *testing.T) {
 	}
 }
 
+// --- Analyze: quasiquote ---
+
+func TestAnalyze_Quasiquote_TemplateIgnored(t *testing.T) {
+	// Symbols inside quasiquote template are data, not code references
+	result := parseAndAnalyze(t, `(quasiquote (unknown-fn x y))`)
+	assert.Empty(t, result.Unresolved, "quasiquote template should not produce unresolved symbols")
+}
+
+func TestAnalyze_Quasiquote_UnquoteAnalyzed(t *testing.T) {
+	// unquote inside quasiquote IS code and should be analyzed
+	result := parseAndAnalyze(t, "(set 'x 1)\n(quasiquote (list (unquote x)))")
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "x", u.Name, "x in unquote should be resolved")
+	}
+}
+
+func TestAnalyze_Quasiquote_UnquoteSplicingAnalyzed(t *testing.T) {
+	result := parseAndAnalyze(t, "(set 'items 1)\n(quasiquote (list (unquote-splicing items)))")
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "items", u.Name, "items in unquote-splicing should be resolved")
+	}
+}
+
+func TestAnalyze_Quasiquote_UnquoteUnresolved(t *testing.T) {
+	// An undefined symbol inside unquote SHOULD be flagged
+	result := parseAndAnalyze(t, `(quasiquote (list (unquote undefined-var)))`)
+	require.Len(t, result.Unresolved, 1)
+	assert.Equal(t, "undefined-var", result.Unresolved[0].Name)
+}
+
 // --- Analyze: reference counting ---
 
 func TestAnalyze_ReferenceCount(t *testing.T) {

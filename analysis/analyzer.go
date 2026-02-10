@@ -166,6 +166,9 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope) {
 		a.analyzeSetBang(node, scope)
 	case "quote":
 		return // skip quoted data
+	case "quasiquote":
+		a.analyzeQuasiquote(node, scope)
+		return
 	case "in-package", "use-package", "export":
 		return // package management, skip
 	case "function":
@@ -437,6 +440,38 @@ func (a *analyzer) analyzeHandlerBind(node *lisp.LVal, scope *Scope) {
 	// Not a scope creator — walk all children in current scope
 	for _, child := range node.Cells[1:] {
 		a.analyzeExpr(child, scope)
+	}
+}
+
+func (a *analyzer) analyzeQuasiquote(node *lisp.LVal, scope *Scope) {
+	// Quasiquote bodies are template data. Only (unquote expr) and
+	// (unquote-splicing expr) contain code that should be analyzed.
+	if astutil.ArgCount(node) < 1 {
+		return
+	}
+	a.walkQuasiquoteTemplate(node.Cells[1], scope)
+}
+
+// walkQuasiquoteTemplate walks a quasiquote template, only analyzing
+// expressions inside unquote and unquote-splicing forms.
+func (a *analyzer) walkQuasiquoteTemplate(node *lisp.LVal, scope *Scope) {
+	if node == nil {
+		return
+	}
+	if node.Type != lisp.LSExpr || node.Quoted || len(node.Cells) == 0 {
+		return
+	}
+	head := astutil.HeadSymbol(node)
+	if head == "unquote" || head == "unquote-splicing" {
+		// The children of unquote/unquote-splicing are code, not template data.
+		for _, child := range node.Cells[1:] {
+			a.analyzeExpr(child, scope)
+		}
+		return
+	}
+	// Otherwise this is template data — recurse looking for nested unquotes.
+	for _, child := range node.Cells {
+		a.walkQuasiquoteTemplate(child, scope)
 	}
 }
 
