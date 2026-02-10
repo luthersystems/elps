@@ -143,8 +143,14 @@ func TokenEnd(tok *Token) (endLine, endCol, endPos int) {
 type LocationError struct {
 	Err    error
 	Source *Location
+	Code   string // error classification (empty = unclassified)
 }
 
 func (err *LocationError) Error() string {
 	return fmt.Sprintf("%s: %s", err.Source, err.Err)
+}
+
+// Unwrap returns the underlying error for use with errors.Is/errors.As.
+func (err *LocationError) Unwrap() error {
+	return err.Err
 }

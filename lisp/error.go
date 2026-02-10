@@ -37,6 +37,13 @@ func (e *ErrorVal) baseMessage() string {
 	return fmt.Sprintf("%s: %s", fname, msg)
 }
 
+// Condition returns the error condition name (e.g., "parse-error",
+// "unmatched-syntax"). This is the programmatic error classification
+// stored in the LVal.Str field for LError values.
+func (e *ErrorVal) Condition() string {
+	return e.Str
+}
+
 // FunName returns the qualified name of function on the top of the call stack
 // when the error occurred.
 func (e *ErrorVal) FunName() string {

@@ -241,6 +241,50 @@ func TestEndPos_TokenEnd_NilToken(t *testing.T) {
 	assert.Equal(t, 0, endPos)
 }
 
+// --- Parse error conditions ---
+
+func parseErrorCondition(t *testing.T, source string) string {
+	t.Helper()
+	p := New(token.NewScanner("test", strings.NewReader(source)))
+	_, err := p.ParseProgram()
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+	ev, ok := err.(*lisp.ErrorVal)
+	if !ok {
+		t.Fatalf("expected *ErrorVal, got %T: %v", err, err)
+	}
+	return ev.Condition()
+}
+
+func TestCondition_UnmatchedSyntax(t *testing.T) {
+	assert.Equal(t, lisp.CondUnmatchedSyntax, parseErrorCondition(t, "(foo"))
+}
+
+func TestCondition_MismatchedSyntax(t *testing.T) {
+	assert.Equal(t, lisp.CondMismatchedSyntax, parseErrorCondition(t, "(foo]"))
+}
+
+func TestCondition_MismatchedSyntax_Bracket(t *testing.T) {
+	assert.Equal(t, lisp.CondMismatchedSyntax, parseErrorCondition(t, "[foo)"))
+}
+
+func TestCondition_ScanError(t *testing.T) {
+	assert.Equal(t, lisp.CondScanError, parseErrorCondition(t, "134."))
+}
+
+func TestCondition_InvalidOctalLiteral(t *testing.T) {
+	assert.Equal(t, lisp.CondInvalidOctalLiteral, parseErrorCondition(t, "#o9"))
+}
+
+func TestCondition_InvalidHexLiteral(t *testing.T) {
+	assert.Equal(t, lisp.CondInvalidHexLiteral, parseErrorCondition(t, "#xG"))
+}
+
+func TestCondition_ParseError(t *testing.T) {
+	assert.Equal(t, lisp.CondParseError, parseErrorCondition(t, "#!/usr/bin/env elps\n#!/usr/bin/env foo\n"))
+}
+
 func TestErrors(t *testing.T) {
 	tests := []struct {
 		source string
