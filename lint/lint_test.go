@@ -1686,6 +1686,21 @@ func TestShadowing_HasNotes(t *testing.T) {
 	assert.Contains(t, diags[0].Notes[0], "rename")
 }
 
+func TestShadowing_Negative_ExternalSymbol(t *testing.T) {
+	// Parameters should not trigger shadowing when the outer symbol
+	// is from an external source (workspace scan / package import).
+	source := `(defun foo (x) (+ x 1))`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerShadowing}}
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "x", Kind: analysis.SymVariable},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
 // --- user-arity ---
 
 func TestUserArity_Positive_TooFew(t *testing.T) {

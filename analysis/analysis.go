@@ -60,6 +60,7 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 			Source:    ext.Source,
 			Signature: ext.Signature,
 			Exported:  true,
+			External:  true,
 		})
 	}
 

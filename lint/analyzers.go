@@ -719,6 +719,12 @@ var AnalyzerShadowing = &Analyzer{
 			if outer == nil {
 				continue
 			}
+			// Don't report shadowing of external (workspace/package-imported)
+			// symbols — these are injected globally and would produce noise
+			// for common parameter names like x, y, v, etc.
+			if outer.External {
+				continue
+			}
 			pass.Report(Diagnostic{
 				Message: fmt.Sprintf("%s '%s' shadows %s from enclosing scope", sym.Kind, sym.Name, outer.Kind),
 				Pos:     posFromSource(sym.Source),

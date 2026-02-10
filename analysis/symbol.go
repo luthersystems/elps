@@ -51,6 +51,7 @@ type Symbol struct {
 	DocString  string
 	References int
 	Exported   bool
+	External   bool // true for workspace-scanned or package-imported symbols
 }
 
 // Signature describes the parameter signature of a callable symbol.

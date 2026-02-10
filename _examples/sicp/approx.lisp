@@ -6,11 +6,11 @@
 
 (use-package 'sicp/stream)
 
-(defun sqrt-improve (guess x) ; nolint:shadowing
+(defun sqrt-improve (guess x)
   ; average guess and x/guess
   (/ (+ guess (/ x guess)) 2))
 
-(defun sqrt-stream (x) ; nolint:shadowing
+(defun sqrt-stream (x)
   (let ([guesses (stream-cons 1.0
                               (stream-map #^(sqrt-improve % x)
                                           guesses))]) ; nolint:undefined-symbol
@@ -36,7 +36,7 @@
 (debug-print 'pi-stream)
 (stream-debug (stream-take pi-stream 7))
 
-(defun square (x) (* x x)) ; nolint:shadowing
+(defun square (x) (* x x))
 (defun euler-transform (s)
   (let ([s0 (stream-ref s 0)]
         [s1 (stream-ref s 1)]

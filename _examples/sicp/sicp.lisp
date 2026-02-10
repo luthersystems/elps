@@ -161,7 +161,7 @@
              (accumulate op initial (cdr seq)))))
 
 (defun map (p seq)
-  (accumulate (lambda (x ys) (cons (p x) ys)) ; nolint:shadowing
+  (accumulate (lambda (x ys) (cons (p x) ys))
               ()
               seq))
 
@@ -174,7 +174,7 @@
 (assert-equal '(2 4 6 8) (map #^(* 2 %) '(1 2 3 4)))
 (assert-equal '(1 2 3 4) (append '(1) '(2 3 4)))
 
-(defun horner-eval (x coefficient-list) ; nolint:shadowing
+(defun horner-eval (x coefficient-list)
   (accumulate (lambda (a higher) (+ a (* x higher)))
               0.0
               coefficient-list))

@@ -147,7 +147,7 @@
 
 (defun pairs (lis)
   (let* ([p (vector)])
-    (if (nil? (foldl (lambda (acc x) ; nolint:shadowing
+    (if (nil? (foldl (lambda (acc x)
                        (if (= 0 (length acc))
                          (list x)
                          (progn (append! p (list (first acc) x))

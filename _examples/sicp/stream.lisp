@@ -20,7 +20,7 @@
                       (set! (unquote funsym) #^())
                       (unquote valsym)))))))
 
-(let ([x 0]) ; nolint:shadowing
+(let ([x 0])
   (let ([f (delay (set! x (+ x 1)))])
     (f)
     (f)
@@ -43,7 +43,7 @@
                    (stream-flatmap proc (stream-cdr s)))))
 
 (export 'stream-repeat)
-(defun stream-repeat (x) ; nolint:shadowing
+(defun stream-repeat (x)
   (stream-cons x (stream-repeat x)))
 
 (export 'stream-collect)
@@ -152,7 +152,7 @@
 (defun pairs (s t)
   (stream-cons
     (list (stream-car s) (stream-car t))
-    (interleave (stream-map (lambda (x) (list (stream-car s) x)) ; nolint:shadowing
+    (interleave (stream-map (lambda (x) (list (stream-car s) x))
                             (stream-cdr t))
                 (pairs (stream-cdr s) (stream-cdr t)))))
 

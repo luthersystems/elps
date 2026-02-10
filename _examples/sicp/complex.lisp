@@ -5,7 +5,7 @@
 (use-package 'testing)
 
 (export 'square)
-(defun square (x) ; nolint:shadowing
+(defun square (x)
   (* x x))
 
 (defun pair? (value)
@@ -47,7 +47,7 @@
   (atan (rectangular-imag-part z)
         (rectangular-real-part z)))
 
-(defun make-rectangular-from-real-imag (x y) ; nolint:shadowing
+(defun make-rectangular-from-real-imag (x y)
   (attach-tag 'rectangular (list x y)))
 
 (defun make-rectangular-from-mag-ang (r a) ; nolint:unused-function
@@ -66,7 +66,7 @@
 (defun polar-angle (z)
   (second z))
 
-(defun make-polar-from-real-imag (x y) ; nolint:shadowing
+(defun make-polar-from-real-imag (x y)
   (if (and (= 0 x)
            (= 0 y))
     (attach-tag 'polar (list 0 0))
@@ -79,7 +79,7 @@
     (attach-tag 'polar (list r a))))
 
 (export 'make-complex-from-real-imag)
-(defun make-complex-from-real-imag (x y) ; nolint:shadowing
+(defun make-complex-from-real-imag (x y)
   (make-rectangular-from-real-imag x y))
 
 (export 'make-complex-from-mag-ang)
