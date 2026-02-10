@@ -23,7 +23,7 @@
 
 (test-let* "duration"
   ((one-second (parse-duration "1s"))
-   (twelve-hours (parse-duration "12h"))
+   (_twelve-hours (parse-duration "12h"))
    (complex-dur (parse-duration "1h13m450ms"))
    (epoch-timestamp  "2000-01-01T00:00:00Z")
    (epoch (parse-rfc3339 epoch-timestamp)))

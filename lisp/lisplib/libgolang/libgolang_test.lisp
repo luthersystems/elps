@@ -4,7 +4,7 @@
 (use-package 'testing)
 
 (test-let* "struct"
-  ((struct (make-test-struct))
+  ((struct (make-test-struct)) ; nolint:undefined-symbol
    (field (curry-function 'golang:struct-field struct)))  ; partially bind function args
   (assert (string= (golang:string (field "StringField"))
                    "test-string"))

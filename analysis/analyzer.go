@@ -640,7 +640,15 @@ func (a *analyzer) walkQuasiquoteTemplate(node *lisp.LVal, scope *Scope) {
 	if node == nil {
 		return
 	}
-	if node.Type != lisp.LSExpr || node.Quoted || len(node.Cells) == 0 {
+	if node.Type != lisp.LSExpr || len(node.Cells) == 0 {
+		return
+	}
+	// Quoted lists (bracket expressions [...]) in quasiquote templates can
+	// still contain (unquote ...) forms, so we must recurse into them.
+	if node.Quoted {
+		for _, child := range node.Cells {
+			a.walkQuasiquoteTemplate(child, scope)
+		}
 		return
 	}
 	head := astutil.HeadSymbol(node)

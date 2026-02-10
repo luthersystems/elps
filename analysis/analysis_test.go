@@ -433,6 +433,21 @@ func TestAnalyze_Quasiquote_UnquoteUnresolved(t *testing.T) {
 	assert.Equal(t, "undefined-var", result.Unresolved[0].Name)
 }
 
+func TestAnalyze_Quasiquote_UnquoteInBracketList(t *testing.T) {
+	// Unquote inside bracket list ([...]) in quasiquote should resolve symbols.
+	// This is common in macro templates like (quasiquote (let ([(unquote x) val]) ...))
+	result := parseAndAnalyze(t, `
+(defmacro my-macro (patt)
+  (quasiquote (let ([(unquote patt) 42]) (unquote patt))))`)
+	for _, sym := range result.Symbols {
+		if sym.Name == "patt" && sym.Kind == SymParameter {
+			assert.Greater(t, sym.References, 0, "patt should be used via unquote inside bracket list")
+			return
+		}
+	}
+	t.Fatal("parameter patt not found in symbols")
+}
+
 // --- Analyze: reference counting ---
 
 func TestAnalyze_ReferenceCount(t *testing.T) {
