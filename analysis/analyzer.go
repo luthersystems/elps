@@ -304,6 +304,8 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope) {
 		if strings.HasSuffix(head, ":deftype") && astutil.ArgCount(node) >= 1 &&
 			node.Cells[1].Type == lisp.LString {
 			a.analyzeStringDeftype(node, scope)
+		} else if strings.HasPrefix(head, "def") {
+			a.analyzeDefLike(node, scope)
 		} else {
 			a.analyzeCall(node, scope)
 		}
@@ -391,6 +393,60 @@ func (a *analyzer) analyzeStringDeftype(node *lisp.LVal, scope *Scope) {
 	for i := 2; i < len(node.Cells); i++ {
 		a.analyzeExpr(node.Cells[i], scope)
 	}
+}
+
+// analyzeDefLike handles unknown (def* ...) forms that aren't explicitly
+// recognized (e.g. user-defined macros like defmethod, def-acre-route).
+// It scans children for the first formals list (an LSExpr whose contents
+// are all symbols), creates a scope with those as parameters, and analyzes
+// the remaining children as body in that scope.
+func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope) {
+	// Find the first child (after head) that looks like a formals list.
+	formalsIdx := -1
+	for i := 1; i < len(node.Cells); i++ {
+		if isFormalsLike(node.Cells[i]) {
+			formalsIdx = i
+			break
+		}
+	}
+	if formalsIdx < 0 {
+		// No formals detected — fall back to normal call analysis.
+		a.analyzeCall(node, scope)
+		return
+	}
+
+	// Resolve the head symbol — unlike built-in defun/defmacro, def-like
+	// forms are calls to user-defined macros/functions.
+	a.analyzeExpr(node.Cells[0], scope)
+
+	// Analyze children before the formals in the outer scope (skip head).
+	for i := 1; i < formalsIdx; i++ {
+		a.analyzeExpr(node.Cells[i], scope)
+	}
+
+	// Create a function scope with the formals as parameters.
+	bodyScope := NewScope(ScopeFunction, scope, node)
+	a.addParams(node.Cells[formalsIdx], bodyScope)
+
+	// Analyze body (everything after formals) in the new scope.
+	for i := formalsIdx + 1; i < len(node.Cells); i++ {
+		a.analyzeExpr(node.Cells[i], bodyScope)
+	}
+}
+
+// isFormalsLike returns true if the node looks like a parameter list:
+// a non-empty, non-quoted LSExpr where every child is a symbol (including
+// &optional, &rest, &key markers).
+func isFormalsLike(node *lisp.LVal) bool {
+	if node.Type != lisp.LSExpr || node.Quoted || len(node.Cells) == 0 {
+		return false
+	}
+	for _, child := range node.Cells {
+		if child.Type != lisp.LSymbol {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *analyzer) analyzeLambda(node *lisp.LVal, scope *Scope) {

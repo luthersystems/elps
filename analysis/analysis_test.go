@@ -582,6 +582,65 @@ func TestAnalyze_UsePackage_NoOverwriteLocal(t *testing.T) {
 	assert.NotNil(t, sym.Source, "local defun should retain its source")
 }
 
+// --- Analyze: def prefix heuristic ---
+
+func TestAnalyze_DefPrefix_DefmethodFormals(t *testing.T) {
+	// defmethod is a user macro: (defmethod type :name (self) body...)
+	// The formals (self) should create a scope so self is resolved.
+	result := parseAndAnalyze(t, `(defmethod point :move (self) (+ self 1))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "self", u.Name, "self should be resolved as a formal parameter")
+	}
+}
+
+func TestAnalyze_DefPrefix_MultipleArgs(t *testing.T) {
+	result := parseAndAnalyze(t, `(defmethod point :add (self other) (+ self other))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "self", u.Name)
+		assert.NotEqual(t, "other", u.Name)
+	}
+}
+
+func TestAnalyze_DefPrefix_BodyUndefined(t *testing.T) {
+	// Undefined symbol in body should still be flagged.
+	result := parseAndAnalyze(t, `(defmethod point :foo (self) (+ self undefined-var))`)
+	hasUndefined := false
+	for _, u := range result.Unresolved {
+		if u.Name == "undefined-var" {
+			hasUndefined = true
+		}
+	}
+	assert.True(t, hasUndefined, "undefined-var in body should be flagged")
+}
+
+func TestAnalyze_DefPrefix_NonFormalsSkipped(t *testing.T) {
+	// Children before formals (type-spec, method-name) are analyzed in outer scope.
+	// point and :move are resolved normally (point as symbol, :move as keyword).
+	result := parseAndAnalyze(t, `
+(set 'point 1)
+(defmethod point :move (self) self)`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "point", u.Name, "point should be resolved from outer scope")
+		assert.NotEqual(t, "self", u.Name, "self should be resolved as a formal")
+	}
+}
+
+func TestAnalyze_DefPrefix_NoFormals(t *testing.T) {
+	// (defconst 'name value) has no formals list — falls back to analyzeCall.
+	result := parseAndAnalyze(t, `(defconst 'name 42)`)
+	// Should not crash; name is quoted so no resolution needed.
+	assert.NotNil(t, result)
+}
+
+func TestAnalyze_DefPrefix_OptionalParams(t *testing.T) {
+	// Formals with &optional markers should be detected.
+	result := parseAndAnalyze(t, `(defmethod point :foo (self &optional extra) (list self extra))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "self", u.Name)
+		assert.NotEqual(t, "extra", u.Name)
+	}
+}
+
 // --- ScopeKind.String() ---
 
 func TestScopeKind_String(t *testing.T) {
