@@ -162,6 +162,10 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope) {
 		a.analyzeFlet(node, scope, true)
 	case "dotimes":
 		a.analyzeDotimes(node, scope)
+	case "test-let":
+		a.analyzeTestLet(node, scope, false)
+	case "test-let*":
+		a.analyzeTestLet(node, scope, true)
 	case "set":
 		a.analyzeSet(node, scope)
 	case "set!":
@@ -389,6 +393,49 @@ func (a *analyzer) analyzeDotimes(node *lisp.LVal, scope *Scope) {
 	// Walk body
 	for i := 2; i < len(node.Cells); i++ {
 		a.analyzeExpr(node.Cells[i], dotimesScope)
+	}
+}
+
+func (a *analyzer) analyzeTestLet(node *lisp.LVal, scope *Scope, sequential bool) {
+	// (test-let "name" ((x 1) (y 2)) body...)
+	// arg[1] = test name string (skip), arg[2] = bindings, rest = body
+	if astutil.ArgCount(node) < 2 {
+		return
+	}
+	bindings := node.Cells[2]
+	if bindings.Type != lisp.LSExpr {
+		return
+	}
+
+	letScope := NewScope(ScopeLet, scope, node)
+
+	for _, binding := range bindings.Cells {
+		if binding.Type != lisp.LSExpr || len(binding.Cells) < 2 {
+			continue
+		}
+		nameVal := binding.Cells[0]
+		valueVal := binding.Cells[1]
+
+		if sequential {
+			a.analyzeExpr(valueVal, letScope)
+		} else {
+			a.analyzeExpr(valueVal, scope)
+		}
+
+		if nameVal.Type == lisp.LSymbol {
+			sym := &Symbol{
+				Name:   nameVal.Str,
+				Kind:   SymVariable,
+				Source: nameVal.Source,
+			}
+			letScope.Define(sym)
+			a.result.Symbols = append(a.result.Symbols, sym)
+		}
+	}
+
+	// Walk body (after name string and bindings)
+	for i := 3; i < len(node.Cells); i++ {
+		a.analyzeExpr(node.Cells[i], letScope)
 	}
 }
 

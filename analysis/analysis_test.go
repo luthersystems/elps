@@ -340,6 +340,34 @@ func TestAnalyze_HandlerBind(t *testing.T) {
 	}
 }
 
+// --- Analyze: test-let / test-let* ---
+
+func TestAnalyze_TestLet_BindingsResolved(t *testing.T) {
+	// test-let creates let bindings in its body
+	result := parseAndAnalyze(t, `(test-let "my test" ((x 1) (y 2)) (+ x y))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "x", u.Name)
+		assert.NotEqual(t, "y", u.Name)
+	}
+}
+
+func TestAnalyze_TestLetStar_Sequential(t *testing.T) {
+	// test-let* uses sequential binding — y can reference x
+	result := parseAndAnalyze(t, `(test-let* "my test" ((x 1) (y x)) (+ x y))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "x", u.Name)
+		assert.NotEqual(t, "y", u.Name)
+	}
+}
+
+func TestAnalyze_TestLet_OuterScopeVisible(t *testing.T) {
+	result := parseAndAnalyze(t, "(set 'z 10)\n(test-let \"t\" ((x z)) (+ x z))")
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "z", u.Name)
+		assert.NotEqual(t, "x", u.Name)
+	}
+}
+
 // --- Analyze: prefix lambda (#^) ---
 
 func TestAnalyze_PrefixLambda_PercentParam(t *testing.T) {
