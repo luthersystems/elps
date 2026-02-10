@@ -23,6 +23,57 @@ import (
 	"github.com/luthersystems/elps/parser/token"
 )
 
+// Severity indicates the severity level of a lint diagnostic.
+type Severity int
+
+const (
+	severityUnset Severity = iota // unexported zero sentinel for default detection
+	SeverityError
+	SeverityWarning
+	SeverityInfo
+)
+
+func (s Severity) String() string {
+	switch s {
+	case SeverityError:
+		return "error"
+	case SeverityWarning:
+		return "warning"
+	case SeverityInfo:
+		return "info"
+	default:
+		return "unknown"
+	}
+}
+
+// MarshalJSON serializes the severity as a JSON string.
+// An unset severity (zero value) is marshaled as "warning".
+func (s Severity) MarshalJSON() ([]byte, error) {
+	if s == severityUnset {
+		return json.Marshal("warning")
+	}
+	return json.Marshal(s.String())
+}
+
+// UnmarshalJSON deserializes a severity from a JSON string.
+func (s *Severity) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	switch str {
+	case "error":
+		*s = SeverityError
+	case "warning":
+		*s = SeverityWarning
+	case "info":
+		*s = SeverityInfo
+	default:
+		return fmt.Errorf("unknown severity: %q", str)
+	}
+	return nil
+}
+
 // Analyzer defines a single lint check.
 type Analyzer struct {
 	// Name is a short identifier for this check (e.g. "set-usage").
@@ -30,6 +81,9 @@ type Analyzer struct {
 
 	// Doc is a human-readable description. The first line is a short summary.
 	Doc string
+
+	// Severity is the default severity for diagnostics from this analyzer.
+	Severity Severity
 
 	// Run executes the check. It should call pass.Report() for each finding.
 	Run func(pass *Pass) error
@@ -53,12 +107,18 @@ type Pass struct {
 // Report records a diagnostic finding.
 func (p *Pass) Report(d Diagnostic) {
 	d.Analyzer = p.Analyzer.Name
+	if d.Severity == severityUnset {
+		d.Severity = p.Analyzer.Severity
+	}
 	p.diagnostics = append(p.diagnostics, d)
 }
 
 // ReportWithNotes records a diagnostic with additional hint text.
 func (p *Pass) ReportWithNotes(d Diagnostic, notes ...string) {
 	d.Analyzer = p.Analyzer.Name
+	if d.Severity == severityUnset {
+		d.Severity = p.Analyzer.Severity
+	}
 	d.Notes = append(d.Notes, notes...)
 	p.diagnostics = append(p.diagnostics, d)
 }
@@ -84,6 +144,9 @@ type Diagnostic struct {
 
 	// Analyzer is the name of the check that found this problem.
 	Analyzer string `json:"analyzer"`
+
+	// Severity is the severity level of the diagnostic.
+	Severity Severity `json:"severity"`
 
 	// Notes are optional hint text lines for the user.
 	Notes []string `json:"notes,omitempty"`

@@ -971,7 +971,7 @@ func TestFormatText(t *testing.T) {
 
 func TestFormatJSON(t *testing.T) {
 	diags := []Diagnostic{
-		{Pos: Position{File: "test.lisp", Line: 10}, Message: "use set!", Analyzer: "set-usage"},
+		{Pos: Position{File: "test.lisp", Line: 10}, Message: "use set!", Analyzer: "set-usage", Severity: SeverityWarning},
 	}
 	var buf bytes.Buffer
 	err := FormatJSON(&buf, diags)
@@ -1311,6 +1311,82 @@ func TestFormatJSON_WithNotes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "hint 1")
 	assert.Contains(t, buf.String(), "hint 2")
+}
+
+// --- severity ---
+
+func TestSeverity_String(t *testing.T) {
+	assert.Equal(t, "error", SeverityError.String())
+	assert.Equal(t, "warning", SeverityWarning.String())
+	assert.Equal(t, "info", SeverityInfo.String())
+}
+
+func TestSeverity_AnalyzerDefaults(t *testing.T) {
+	// Table-driven: verify each analyzer has the expected severity.
+	expected := map[string]Severity{
+		"set-usage":         SeverityWarning,
+		"in-package-toplevel": SeverityWarning,
+		"if-arity":          SeverityError,
+		"let-bindings":      SeverityError,
+		"defun-structure":   SeverityError,
+		"cond-structure":    SeverityError,
+		"builtin-arity":     SeverityError,
+		"quote-call":        SeverityWarning,
+		"cond-missing-else": SeverityInfo,
+		"rethrow-context":   SeverityError,
+		"unnecessary-progn": SeverityInfo,
+	}
+	for _, a := range DefaultAnalyzers() {
+		want, ok := expected[a.Name]
+		if !ok {
+			t.Errorf("analyzer %q has no expected severity in test", a.Name)
+			continue
+		}
+		assert.Equal(t, want, a.Severity, "analyzer %s severity", a.Name)
+	}
+}
+
+func TestSeverity_PropagatedToDiagnostic(t *testing.T) {
+	// Verify that Report() sets the severity from the analyzer default.
+	diags := lintCheck(t, AnalyzerIfArity, `(if true 1)`)
+	require.Len(t, diags, 1)
+	assert.Equal(t, SeverityError, diags[0].Severity)
+}
+
+func TestSeverity_PropagatedWarning(t *testing.T) {
+	source := "(set 'x 1)\n(set 'x 2)"
+	diags := lintCheck(t, AnalyzerSetUsage, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+}
+
+func TestSeverity_PropagatedInfo(t *testing.T) {
+	source := "(cond\n  ((= x 1) \"one\")\n  ((= x 2) \"two\"))"
+	diags := lintCheck(t, AnalyzerCondMissingElse, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, SeverityInfo, diags[0].Severity)
+}
+
+func TestSeverity_JSONRoundTrip(t *testing.T) {
+	diags := []Diagnostic{
+		{Pos: Position{File: "a.lisp", Line: 1}, Message: "err", Analyzer: "test", Severity: SeverityError},
+		{Pos: Position{File: "a.lisp", Line: 2}, Message: "warn", Analyzer: "test", Severity: SeverityWarning},
+		{Pos: Position{File: "a.lisp", Line: 3}, Message: "info", Analyzer: "test", Severity: SeverityInfo},
+	}
+	var buf bytes.Buffer
+	err := FormatJSON(&buf, diags)
+	require.NoError(t, err)
+
+	var parsed []Diagnostic
+	err = json.Unmarshal(buf.Bytes(), &parsed)
+	require.NoError(t, err)
+	assert.Equal(t, diags, parsed)
+
+	// Verify the JSON contains string severity values
+	output := buf.String()
+	assert.Contains(t, output, `"error"`)
+	assert.Contains(t, output, `"warning"`)
+	assert.Contains(t, output, `"info"`)
 }
 
 func TestFormatText_WithNotes(t *testing.T) {
