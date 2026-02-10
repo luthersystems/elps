@@ -1732,6 +1732,19 @@ func TestUserArity_Negative_NoSemantics(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+func TestUserArity_Negative_ThreadFirst(t *testing.T) {
+	// thread-first inserts an extra arg — should not flag arity mismatch
+	source := "(defun get-val (a b) (+ a b))\n(thread-first x (get-val 1))"
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUserArity_Negative_ThreadLast(t *testing.T) {
+	source := "(defun get-val (a b) (+ a b))\n(thread-last x (get-val 1))"
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	assertNoDiags(t, diags)
+}
+
 func TestUserArity_HasNotes(t *testing.T) {
 	source := "(defun add (a b) (+ a b))\n(add 1)"
 	diags := lintCheckSemantic(t, AnalyzerUserArity, source)

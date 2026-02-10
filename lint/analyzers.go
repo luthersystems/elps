@@ -740,7 +740,13 @@ var AnalyzerUserArity = &Analyzer{
 		if pass.Semantics == nil {
 			return nil
 		}
+		// Reuse aritySkipNodes to exclude formals lists and threading macro children.
+		skipNodes := aritySkipNodes(pass.Exprs)
+
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
+			if skipNodes[sexpr] {
+				return
+			}
 			head := HeadSymbol(sexpr)
 			if head == "" {
 				return
