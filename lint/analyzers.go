@@ -23,6 +23,13 @@ var AnalyzerSetUsage = &Analyzer{
 	Run: func(pass *Pass) error {
 		seen := make(map[string]bool)
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
+			// Reset tracking when the package context changes.
+			// Each package has its own namespace, so a `set` in a
+			// new package is a first binding, not a reassignment.
+			if HeadSymbol(sexpr) == "in-package" && depth == 0 {
+				seen = make(map[string]bool)
+				return
+			}
 			if HeadSymbol(sexpr) != "set" {
 				return
 			}

@@ -169,6 +169,21 @@ func TestSetUsage_Negative_DataList(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+func TestSetUsage_Negative_DifferentPackages(t *testing.T) {
+	// Same symbol set in different packages is fine — each package
+	// has its own namespace so these are independent bindings.
+	source := `(in-package 'pkg-a) (set 'x 1) (in-package 'pkg-b) (set 'x 2)`
+	diags := lintCheck(t, AnalyzerSetUsage, source)
+	assertNoDiags(t, diags)
+}
+
+func TestSetUsage_Positive_SamePackageRepeated(t *testing.T) {
+	// Repeated set within the same package should still be flagged.
+	source := `(in-package 'pkg-a) (set 'x 1) (set 'x 2)`
+	diags := lintCheck(t, AnalyzerSetUsage, source)
+	assert.Equal(t, 1, len(diags))
+}
+
 // --- in-package-toplevel ---
 
 func TestInPackageToplevel_Positive_InDefun(t *testing.T) {
