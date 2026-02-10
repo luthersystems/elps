@@ -118,6 +118,129 @@ func testLValLocation(t *testing.T, v *lisp.LVal) {
 	}
 }
 
+// --- End positions ---
+
+func parseOne(t *testing.T, source string) *lisp.LVal {
+	t.Helper()
+	p := New(token.NewScanner("test", strings.NewReader(source)))
+	exprs, err := p.ParseProgram()
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(exprs) != 1 {
+		t.Fatalf("expected 1 expression, got %d", len(exprs))
+	}
+	return exprs[0]
+}
+
+func TestEndPos_Symbol(t *testing.T) {
+	v := parseOne(t, "foo")
+	assert.Equal(t, 1, v.Source.Line)
+	assert.Equal(t, 1, v.Source.Col)
+	assert.Equal(t, 1, v.Source.EndLine)
+	assert.Equal(t, 4, v.Source.EndCol)
+}
+
+func TestEndPos_Int(t *testing.T) {
+	v := parseOne(t, "42")
+	assert.Equal(t, 1, v.Source.EndLine)
+	assert.Equal(t, 3, v.Source.EndCol) // "42" is 2 chars, end col is 3
+}
+
+func TestEndPos_String(t *testing.T) {
+	v := parseOne(t, `"hello"`)
+	assert.Equal(t, 1, v.Source.EndLine)
+	assert.Equal(t, 8, v.Source.EndCol) // 7 chars including quotes, end col is 8
+}
+
+func TestEndPos_SExpr(t *testing.T) {
+	v := parseOne(t, "(+ 1 2)")
+	assert.Equal(t, 1, v.Source.Line)
+	assert.Equal(t, 1, v.Source.Col)
+	assert.Equal(t, 1, v.Source.EndLine)
+	assert.Equal(t, 8, v.Source.EndCol) // 7 chars, end col is 8
+}
+
+func TestEndPos_SExpr_MultiLine(t *testing.T) {
+	v := parseOne(t, "(foo\n  bar)")
+	assert.Equal(t, 1, v.Source.Line)
+	assert.Equal(t, 1, v.Source.Col)
+	assert.Equal(t, 2, v.Source.EndLine)
+	assert.Equal(t, 7, v.Source.EndCol) // ")" is at col 6, EndCol is 7
+}
+
+func TestEndPos_BracketList(t *testing.T) {
+	v := parseOne(t, "[a b c]")
+	assert.Equal(t, 1, v.Source.EndLine)
+	assert.Equal(t, 8, v.Source.EndCol)
+}
+
+func TestEndPos_Nested(t *testing.T) {
+	// ((a b) c)
+	v := parseOne(t, "((a b) c)")
+	assert.Equal(t, 1, v.Source.EndLine)
+	assert.Equal(t, 10, v.Source.EndCol) // 9 chars, end col is 10
+	// Inner s-expr (a b)
+	inner := v.Cells[0]
+	assert.Equal(t, 1, inner.Source.EndLine)
+	assert.Equal(t, 7, inner.Source.EndCol) // "(a b)" is 5 chars starting at col 2, end col is 7
+}
+
+func TestEndPos_Quote(t *testing.T) {
+	// 'foo — the quote wrapper gets its Source from the inner expression,
+	// so Source.Col is 2 (start of "foo"), and EndCol is from inner too.
+	v := parseOne(t, "'foo")
+	assert.Equal(t, 1, v.Source.Line)
+	assert.Equal(t, 2, v.Source.Col)     // from inner "foo" token
+	assert.Equal(t, 1, v.Source.EndLine)
+	assert.Equal(t, 5, v.Source.EndCol)  // "foo" ends at col 4, EndCol is 5
+}
+
+func TestEndPos_FunRef(t *testing.T) {
+	// #'myfun — the fun-ref wrapper gets Source from inner "myfun" token.
+	v := parseOne(t, "#'myfun")
+	assert.Equal(t, 1, v.Source.Line)
+	assert.Equal(t, 3, v.Source.Col)     // "myfun" starts at col 3
+	assert.Equal(t, 1, v.Source.EndLine)
+	assert.Equal(t, 8, v.Source.EndCol)  // "myfun" ends at col 7, EndCol is 8
+}
+
+func TestEndPos_Empty(t *testing.T) {
+	v := parseOne(t, "()")
+	assert.Equal(t, 1, v.Source.EndLine)
+	assert.Equal(t, 3, v.Source.EndCol)
+}
+
+func TestEndPos_TokenEnd(t *testing.T) {
+	// Test the TokenEnd helper directly
+	tok := &token.Token{
+		Text:   "hello",
+		Source: &token.Location{Line: 1, Col: 1, Pos: 0},
+	}
+	endLine, endCol, endPos := token.TokenEnd(tok)
+	assert.Equal(t, 1, endLine)
+	assert.Equal(t, 6, endCol) // 5 chars, end col is 6
+	assert.Equal(t, 5, endPos)
+}
+
+func TestEndPos_TokenEnd_MultiLine(t *testing.T) {
+	tok := &token.Token{
+		Text:   "ab\ncd",
+		Source: &token.Location{Line: 1, Col: 1, Pos: 0},
+	}
+	endLine, endCol, endPos := token.TokenEnd(tok)
+	assert.Equal(t, 2, endLine)
+	assert.Equal(t, 3, endCol)
+	assert.Equal(t, 5, endPos)
+}
+
+func TestEndPos_TokenEnd_NilToken(t *testing.T) {
+	endLine, endCol, endPos := token.TokenEnd(nil)
+	assert.Equal(t, 0, endLine)
+	assert.Equal(t, 0, endCol)
+	assert.Equal(t, 0, endPos)
+}
+
 func TestErrors(t *testing.T) {
 	tests := []struct {
 		source string

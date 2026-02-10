@@ -307,7 +307,9 @@ func (p *Parser) ParseQuote() *lisp.LVal {
 	}
 	prefixNewlines := p.src.Token.PrecedingNewlines
 	prefixSpaces := p.src.Token.PrecedingSpaces
-	result := p.Quote(p.ParseExpression())
+	inner := p.ParseExpression()
+	result := p.Quote(inner)
+	inheritEndPos(result, inner)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
 }
@@ -331,6 +333,7 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 		}
 	}
 	result := p.SExpr([]*lisp.LVal{sym, expr})
+	inheritEndPos(result, expr)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
 }
@@ -347,8 +350,20 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 		return name
 	}
 	result := p.SExpr([]*lisp.LVal{op, name})
+	inheritEndPos(result, name)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
+}
+
+// inheritEndPos copies end position from inner to outer, for prefix forms
+// where the outer node starts at the prefix token but ends at the inner
+// expression's end.
+func inheritEndPos(outer, inner *lisp.LVal) {
+	if outer.Source != nil && inner.Source != nil {
+		outer.Source.EndPos = inner.Source.EndPos
+		outer.Source.EndLine = inner.Source.EndLine
+		outer.Source.EndCol = inner.Source.EndCol
+	}
 }
 
 // applyPrefixNewlines sets the newline and spacing metadata on a prefix form
@@ -419,6 +434,12 @@ func (p *Parser) ParseConsExpression() *lisp.LVal {
 			return p.errorf("mismatched-syntax", "expected ) to close %s opened at %s, but found ]", open.Text, open.Source)
 		}
 		if p.Accept(token.PAREN_R) {
+			// Set end position from closing bracket.
+			if p.src.Token.Source != nil && expr.Source != nil {
+				expr.Source.EndPos = p.src.Token.Source.Pos + 1
+				expr.Source.EndLine = p.src.Token.Source.Line
+				expr.Source.EndCol = p.src.Token.Source.Col + 1
+			}
 			p.recordClosingBracketNewline(expr)
 			break
 		}
@@ -452,6 +473,12 @@ func (p *Parser) ParseList() *lisp.LVal {
 			return p.errorf("mismatched-syntax", "expected ] to close %s opened at %s, but found )", open.Text, open.Source)
 		}
 		if p.Accept(token.BRACE_R) {
+			// Set end position from closing bracket.
+			if p.src.Token.Source != nil && expr.Source != nil {
+				expr.Source.EndPos = p.src.Token.Source.Pos + 1
+				expr.Source.EndLine = p.src.Token.Source.Line
+				expr.Source.EndCol = p.src.Token.Source.Col + 1
+			}
 			p.recordClosingBracketNewline(expr)
 			break
 		}
@@ -577,6 +604,13 @@ func (p *Parser) QExpr(cells []*lisp.LVal) *lisp.LVal {
 
 func (p *Parser) tokenLVal(v *lisp.LVal) *lisp.LVal {
 	v.Source = p.Location()
+	// Set end position from the current token.
+	if v.Source != nil && p.src.Token != nil {
+		endLine, endCol, endPos := token.TokenEnd(p.src.Token)
+		v.Source.EndLine = endLine
+		v.Source.EndCol = endCol
+		v.Source.EndPos = endPos
+	}
 	if p.preserveFormat {
 		if v.Meta == nil {
 			v.Meta = &lisp.SourceMeta{}
