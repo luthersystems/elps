@@ -91,7 +91,7 @@ func (c *Config) RuleFor(name string) *IndentRule {
 		return r
 	}
 	// Common Lisp convention: forms starting with "def" get defun-style indent.
-	// This handles user-defined macros like def-acre-route, def-case-verification, etc.
+	// This handles user-defined macros like def-app-route, def-case-verification, etc.
 	if strings.HasPrefix(name, "def") {
 		return &IndentRule{Style: IndentSpecial, HeaderArgs: 2}
 	}
