@@ -15,11 +15,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib"
+	"github.com/luthersystems/elps/parser"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -189,6 +192,115 @@ func (d Diagnostic) String() string {
 // Linter runs a set of analyzers over source files.
 type Linter struct {
 	Analyzers []*Analyzer
+}
+
+// LintConfig configures the linter for a single run.
+type LintConfig struct {
+	// Workspace is the root directory for cross-file scanning.
+	// Empty string disables workspace scanning.
+	Workspace string
+
+	// Registry provides Go-registered symbols (builtins, special ops, macros)
+	// from an embedder's environment. These are merged with stdlib and
+	// workspace symbols for semantic analysis. When nil, only stdlib symbols
+	// are used.
+	Registry *lisp.PackageRegistry
+
+	// Excludes are glob patterns for files to skip during workspace scanning.
+	Excludes []string
+
+	// StdlibExports provides pre-extracted stdlib package exports. When nil,
+	// LintFiles uses the default stdlib (loaded via lisplib.LoadLibrary).
+	// Embedders that already have a configured env can pass
+	// analysis.ExtractPackageExports(env.Runtime.Registry) here to avoid
+	// the overhead of creating a temporary environment.
+	StdlibExports map[string][]analysis.ExternalSymbol
+}
+
+// LintFiles analyzes source files with full workspace + embedder context.
+// It handles workspace scanning, stdlib/registry symbol extraction, and
+// semantic analysis configuration. The files slice contains resolved file
+// paths (no glob expansion — callers handle that).
+//
+// When cfg is nil, all files are linted with syntactic checks only.
+func (l *Linter) LintFiles(cfg *LintConfig, files []string) ([]Diagnostic, error) {
+	var analysisCfg *analysis.Config
+	if cfg != nil && cfg.Workspace != "" {
+		acfg, err := BuildAnalysisConfig(cfg)
+		if err != nil {
+			return nil, err
+		}
+		analysisCfg = acfg
+	}
+
+	var allDiags []Diagnostic
+	for _, path := range files {
+		src, err := os.ReadFile(path) //nolint:gosec // linter reads user-specified files
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		var diags []Diagnostic
+		if analysisCfg != nil {
+			diags, err = l.LintFileWithAnalysis(src, path, analysisCfg)
+		} else {
+			diags, err = l.LintFile(src, path)
+		}
+		if err != nil {
+			return nil, err
+		}
+		allDiags = append(allDiags, diags...)
+	}
+	return allDiags, nil
+}
+
+// BuildAnalysisConfig constructs an analysis.Config from a LintConfig.
+// It scans the workspace, extracts stdlib exports, and merges embedder
+// registry symbols. This is exported for callers (like the CLI stdin path)
+// that need to build the config separately from file linting.
+func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
+	syms, err := analysis.ScanWorkspace(cfg.Workspace)
+	if err != nil {
+		return nil, fmt.Errorf("scanning workspace %s: %w", cfg.Workspace, err)
+	}
+
+	// Start with stdlib exports (either provided or extracted fresh)
+	pkgExports := cfg.StdlibExports
+	if pkgExports == nil {
+		pkgExports = defaultStdlibExports()
+	}
+
+	// Merge embedder registry exports
+	if cfg.Registry != nil {
+		regExports := analysis.ExtractPackageExports(cfg.Registry)
+		for pkg, regSyms := range regExports {
+			pkgExports[pkg] = append(pkgExports[pkg], regSyms...)
+		}
+	}
+
+	// Merge workspace package exports
+	wsPkgs, err := analysis.ScanWorkspacePackages(cfg.Workspace)
+	if err != nil {
+		return nil, fmt.Errorf("scanning workspace packages %s: %w", cfg.Workspace, err)
+	}
+	for pkg, wsSyms := range wsPkgs {
+		pkgExports[pkg] = append(pkgExports[pkg], wsSyms...)
+	}
+
+	return &analysis.Config{
+		ExtraGlobals:   syms,
+		PackageExports: pkgExports,
+	}, nil
+}
+
+// defaultStdlibExports creates a temporary ELPS env, loads the standard
+// library, and extracts package exports.
+func defaultStdlibExports() map[string][]analysis.ExternalSymbol {
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
+	lisp.InitializeUserEnv(env)
+	lisplib.LoadLibrary(env)
+	return analysis.ExtractPackageExports(env.Runtime.Registry)
 }
 
 // LintFile analyzes a single source file and returns all diagnostics.

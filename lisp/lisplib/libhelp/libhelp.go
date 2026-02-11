@@ -17,6 +17,102 @@ import (
 // DefaultPackageName is the package name used by LoadPackage.
 const DefaultPackageName = "help"
 
+// MissingDoc describes a symbol with no documentation.
+type MissingDoc struct {
+	// Kind is the type of the symbol: "builtin", "special-op", "macro",
+	// "package", or a function type string (e.g. "function").
+	Kind string
+
+	// Name is the qualified name of the symbol (e.g. "math:sin").
+	Name string
+}
+
+// CheckMissing reports symbols missing documentation in the given environment.
+// It checks core builtins/ops/macros (from DefaultBuiltins etc.), package-level
+// docs, and exported symbol docs for all packages in env.Runtime.Registry.
+func CheckMissing(env *lisp.LEnv) []MissingDoc {
+	var missing []MissingDoc
+
+	// Check core builtins.
+	for _, b := range lisp.DefaultBuiltins() {
+		if docstring(b) == "" {
+			missing = append(missing, MissingDoc{Kind: "builtin", Name: b.Name()})
+		}
+	}
+
+	// Check special operators.
+	for _, op := range lisp.DefaultSpecialOps() {
+		if docstring(op) == "" {
+			missing = append(missing, MissingDoc{Kind: "special-op", Name: op.Name()})
+		}
+	}
+
+	// Check macros.
+	for _, m := range lisp.DefaultMacros() {
+		if docstring(m) == "" {
+			missing = append(missing, MissingDoc{Kind: "macro", Name: m.Name()})
+		}
+	}
+
+	// Check package-level documentation.
+	allPkgNames := make([]string, 0, len(env.Runtime.Registry.Packages))
+	for name := range env.Runtime.Registry.Packages {
+		if name == "user" {
+			continue // user package is the default workspace, no doc needed.
+		}
+		allPkgNames = append(allPkgNames, name)
+	}
+	sort.Strings(allPkgNames)
+
+	for _, pkgName := range allPkgNames {
+		pkg := env.Runtime.Registry.Packages[pkgName]
+		if strings.TrimSpace(pkg.Doc) == "" {
+			missing = append(missing, MissingDoc{Kind: "package", Name: pkgName})
+		}
+	}
+
+	// Check exported symbol docs (skip "lisp" — covered above via
+	// DefaultBuiltins/DefaultSpecialOps/DefaultMacros, and "user").
+	pkgNames := make([]string, 0, len(env.Runtime.Registry.Packages))
+	for name := range env.Runtime.Registry.Packages {
+		if name == "lisp" || name == "user" {
+			continue
+		}
+		pkgNames = append(pkgNames, name)
+	}
+	sort.Strings(pkgNames)
+
+	for _, pkgName := range pkgNames {
+		pkg := env.Runtime.Registry.Packages[pkgName]
+		for _, sym := range pkg.Externals {
+			v := pkg.Get(lisp.Symbol(sym))
+			qualName := pkgName + ":" + sym
+			if v.Type == lisp.LFun && v.Docstring() == "" {
+				missing = append(missing, MissingDoc{Kind: v.FunType.String(), Name: qualName})
+			}
+			if v.Type != lisp.LFun && v.Type != lisp.LError {
+				if pkg.SymbolDocs[sym] == "" {
+					missing = append(missing, MissingDoc{Kind: lisp.GetType(v).Str, Name: qualName})
+				}
+			}
+		}
+	}
+
+	return missing
+}
+
+// docstring extracts the docstring from an LBuiltinDef, returning ""
+// if the definition does not implement the documented interface.
+func docstring(defn lisp.LBuiltinDef) string {
+	type documented interface {
+		Docstring() string
+	}
+	if doc, ok := defn.(documented); ok {
+		return doc.Docstring()
+	}
+	return ""
+}
+
 // LoadPackage adds the help package to env
 func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	name := lisp.Symbol(DefaultPackageName)

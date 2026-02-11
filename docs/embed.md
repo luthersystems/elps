@@ -200,3 +200,109 @@ the golang package.
             (name (golang:string go-name)))
         (debug-print (string:format "My name is {}" name))))
 ```
+
+## Tooling for Embedders
+
+ELPS ships three CLI tools (`lint`, `doc`, `fmt`). The `lint` and `doc` tools
+expose Go APIs so embedders can wire in their own runtime environment, making
+Go-provided bindings visible to static analysis and documentation.
+
+### Linting
+
+The `lint` package provides `LintConfig` and `LintFiles` for running the linter
+with embedder-provided symbols. Pass the embedder's `PackageRegistry` to make
+Go-registered builtins visible to semantic analysis (undefined-symbol,
+builtin-arity, etc.).
+
+```go
+import (
+    "github.com/luthersystems/elps/lint"
+)
+
+// env is the embedder's configured *lisp.LEnv with custom packages loaded.
+l := &lint.Linter{Analyzers: lint.DefaultAnalyzers()}
+diags, err := l.LintFiles(&lint.LintConfig{
+    Workspace: workspaceDir,
+    Registry:  env.Runtime.Registry,
+}, files)
+```
+
+Without the `Registry` field, the linter only knows about stdlib symbols and
+will report false positives for embedder-provided bindings.
+
+### Documentation
+
+The `libhelp` package provides rendering functions that accept any `*lisp.LEnv`.
+Embedders that have their own configured environment can use these directly:
+
+```go
+import (
+    "github.com/luthersystems/elps/lisp/lisplib/libhelp"
+)
+
+// env is the embedder's configured *lisp.LEnv with custom packages loaded.
+
+// Look up documentation for an embedder-provided symbol.
+libhelp.RenderVar(os.Stdout, env, "cc:storage-put")
+
+// List all exports in an embedder package.
+libhelp.RenderPkgExported(os.Stdout, env, "cc")
+
+// List all packages including embedder packages.
+libhelp.RenderPackageList(os.Stdout, env)
+
+// Check for missing documentation across all packages.
+missing := libhelp.CheckMissing(env)
+for _, m := range missing {
+    fmt.Printf("  %-10s  %s\n", m.Kind, m.Name)
+}
+```
+
+For convenience, `lisplib.NewDocEnv()` creates a standard environment with the
+stdlib loaded. Embedders can use this as a starting point or create their own
+environment from scratch.
+
+### Example: Embedder CLI Tool
+
+A complete example combining lint and doc support for an embedder runtime:
+
+```go
+package main
+
+import (
+    "fmt"
+    "os"
+
+    "github.com/luthersystems/elps/lint"
+    "github.com/luthersystems/elps/lisp/lisplib/libhelp"
+)
+
+func main() {
+    // Assume NewRuntime() creates an *lisp.LEnv with embedder packages
+    // (cc:*, acre:*, etc.) already registered.
+    env := NewRuntime()
+
+    switch os.Args[1] {
+    case "lint":
+        l := &lint.Linter{Analyzers: lint.DefaultAnalyzers()}
+        diags, err := l.LintFiles(&lint.LintConfig{
+            Workspace: ".",
+            Registry:  env.Runtime.Registry,
+        }, os.Args[2:])
+        if err != nil {
+            fmt.Fprintln(os.Stderr, err)
+            os.Exit(2)
+        }
+        lint.FormatText(os.Stderr, diags)
+
+    case "doc":
+        libhelp.RenderVar(os.Stdout, env, os.Args[2])
+
+    case "doc-missing":
+        missing := libhelp.CheckMissing(env)
+        for _, m := range missing {
+            fmt.Printf("  %-10s  %s\n", m.Kind, m.Name)
+        }
+    }
+}
+```

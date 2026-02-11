@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -1934,4 +1936,183 @@ func TestUnusedNolint_MultipleDirectives_MixedUsage(t *testing.T) {
 	assert.Len(t, diags, 1)
 	assert.Equal(t, 2, diags[0].Pos.Line) // only the unused one
 	assert.Equal(t, "unused-nolint", diags[0].Analyzer)
+}
+
+// --- LintFiles ---
+
+// writeTempLisp creates a .lisp file in dir and returns its path.
+func writeTempLisp(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	err := os.WriteFile(path, []byte(content), 0o600)
+	require.NoError(t, err)
+	return path
+}
+
+func TestLintFiles_NilConfig_SyntacticOnly(t *testing.T) {
+	dir := t.TempDir()
+	f := writeTempLisp(t, dir, "test.lisp", "(if true 1)")
+
+	l := &Linter{Analyzers: DefaultAnalyzers()}
+	diags, err := l.LintFiles(nil, []string{f})
+	require.NoError(t, err)
+	// if-arity should fire (syntactic check)
+	assertHasDiag(t, diags, "if")
+}
+
+func TestLintFiles_EmptyWorkspace_SyntacticOnly(t *testing.T) {
+	dir := t.TempDir()
+	f := writeTempLisp(t, dir, "test.lisp", "(if true 1)")
+
+	l := &Linter{Analyzers: DefaultAnalyzers()}
+	// Empty workspace string means no semantic analysis
+	diags, err := l.LintFiles(&LintConfig{}, []string{f})
+	require.NoError(t, err)
+	assertHasDiag(t, diags, "if")
+}
+
+func TestLintFiles_WithWorkspace_SemanticChecks(t *testing.T) {
+	dir := t.TempDir()
+	// File A defines and exports a function
+	writeTempLisp(t, dir, "a.lisp", `(in-package 'mylib)
+(defun helper (x) (+ x 1))
+(export 'helper)`)
+	// File B uses the function from mylib
+	b := writeTempLisp(t, dir, "b.lisp", `(use-package 'mylib)
+(helper 42)`)
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{b})
+	require.NoError(t, err)
+	// helper should resolve via workspace scanning — no undefined-symbol
+	assertNoDiags(t, diags)
+}
+
+func TestLintFiles_Registry_ResolvesEmbedderSymbols(t *testing.T) {
+	dir := t.TempDir()
+	// File calls a function that only exists in the embedder registry
+	f := writeTempLisp(t, dir, "test.lisp", `(use-package 'embedder)
+(embedder-fn 1 2 3)`)
+
+	// Build a registry with the embedder package
+	env := lisp.NewEnv(nil)
+	lisp.InitializeUserEnv(env)
+	pkg := env.Runtime.Registry.DefinePackage("embedder")
+	pkg.Symbols["embedder-fn"] = lisp.Fun("embedder-fn",
+		lisp.Formals("a", "b", "c"),
+		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+			return lisp.Nil()
+		})
+	pkg.Externals = append(pkg.Externals, "embedder-fn")
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
+	diags, err := l.LintFiles(&LintConfig{
+		Workspace: dir,
+		Registry:  env.Runtime.Registry,
+	}, []string{f})
+	require.NoError(t, err)
+	// embedder-fn should resolve via registry — no undefined-symbol
+	assertNoDiags(t, diags)
+}
+
+func TestLintFiles_Registry_WithoutWorkspace_NoSemanticAnalysis(t *testing.T) {
+	dir := t.TempDir()
+	f := writeTempLisp(t, dir, "test.lisp", `(unknown-fn 1 2)`)
+
+	env := lisp.NewEnv(nil)
+	lisp.InitializeUserEnv(env)
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
+	// Registry is set but workspace is empty — semantic analysis is disabled
+	diags, err := l.LintFiles(&LintConfig{
+		Registry: env.Runtime.Registry,
+	}, []string{f})
+	require.NoError(t, err)
+	// No semantic analysis → undefined-symbol is a no-op
+	assertNoDiags(t, diags)
+}
+
+func TestLintFiles_MultipleFiles(t *testing.T) {
+	dir := t.TempDir()
+	f1 := writeTempLisp(t, dir, "a.lisp", "(if true 1)")
+	f2 := writeTempLisp(t, dir, "b.lisp", "(if true 1)")
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerIfArity}}
+	diags, err := l.LintFiles(nil, []string{f1, f2})
+	require.NoError(t, err)
+	assert.Len(t, diags, 2, "should report one diagnostic per file")
+}
+
+func TestLintFiles_FileNotFound(t *testing.T) {
+	l := &Linter{Analyzers: DefaultAnalyzers()}
+	_, err := l.LintFiles(nil, []string{"/nonexistent/file.lisp"})
+	require.Error(t, err)
+}
+
+func TestBuildAnalysisConfig_Basic(t *testing.T) {
+	dir := t.TempDir()
+	writeTempLisp(t, dir, "lib.lisp", `(defun my-fn () 42)
+(export 'my-fn)`)
+
+	cfg, err := BuildAnalysisConfig(&LintConfig{Workspace: dir})
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	// Should have workspace globals
+	assert.NotEmpty(t, cfg.ExtraGlobals)
+
+	// Should have stdlib package exports
+	assert.NotNil(t, cfg.PackageExports)
+}
+
+func TestBuildAnalysisConfig_WithRegistry(t *testing.T) {
+	dir := t.TempDir()
+	writeTempLisp(t, dir, "lib.lisp", `(defun my-fn () 42)
+(export 'my-fn)`)
+
+	env := lisp.NewEnv(nil)
+	lisp.InitializeUserEnv(env)
+	ccPkg := env.Runtime.Registry.DefinePackage("cc")
+	ccPkg.Symbols["storage-put"] = lisp.Fun("storage-put",
+		lisp.Formals("key", "value"),
+		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+			return lisp.Nil()
+		})
+	ccPkg.Externals = append(ccPkg.Externals, "storage-put")
+
+	cfg, err := BuildAnalysisConfig(&LintConfig{
+		Workspace: dir,
+		Registry:  env.Runtime.Registry,
+	})
+	require.NoError(t, err)
+
+	// cc package should appear in PackageExports from the registry
+	ccSyms, ok := cfg.PackageExports["cc"]
+	require.True(t, ok, "cc package should be in PackageExports")
+	var names []string
+	for _, s := range ccSyms {
+		names = append(names, s.Name)
+	}
+	assert.Contains(t, names, "storage-put")
+}
+
+func TestBuildAnalysisConfig_StdlibExportsOverride(t *testing.T) {
+	dir := t.TempDir()
+	writeTempLisp(t, dir, "lib.lisp", "(+ 1 2)")
+
+	custom := map[string][]analysis.ExternalSymbol{
+		"custom-pkg": {
+			{Name: "custom-fn", Kind: analysis.SymFunction},
+		},
+	}
+
+	cfg, err := BuildAnalysisConfig(&LintConfig{
+		Workspace:     dir,
+		StdlibExports: custom,
+	})
+	require.NoError(t, err)
+
+	// Should use custom exports, not load stdlib
+	_, ok := cfg.PackageExports["custom-pkg"]
+	assert.True(t, ok, "custom-pkg should be in PackageExports")
 }

@@ -7,11 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lint"
-	"github.com/luthersystems/elps/lisp"
-	"github.com/luthersystems/elps/lisp/lisplib"
-	"github.com/luthersystems/elps/parser"
 	"github.com/spf13/cobra"
 )
 
@@ -95,36 +91,17 @@ Examples:
 
 		l := &lint.Linter{Analyzers: analyzers}
 
-		// Resolve workspace configuration
-		var analysisCfg *analysis.Config
+		// Build LintConfig from CLI flags
+		var cfg *lint.LintConfig
 		if lintWorkspace != "" && !lintNoWorkspace {
-			syms, err := analysis.ScanWorkspace(lintWorkspace)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "elps lint: scanning workspace %s: %v\n", lintWorkspace, err)
-				os.Exit(2)
-			}
-
-			// Extract stdlib package exports from a loaded env
-			pkgExports := extractStdlibExports()
-
-			// Merge workspace package exports
-			wsPkgs, err := analysis.ScanWorkspacePackages(lintWorkspace)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "elps lint: scanning workspace packages %s: %v\n", lintWorkspace, err)
-				os.Exit(2)
-			}
-			for pkg, wsSyms := range wsPkgs {
-				pkgExports[pkg] = append(pkgExports[pkg], wsSyms...)
-			}
-
-			analysisCfg = &analysis.Config{
-				ExtraGlobals:   syms,
-				PackageExports: pkgExports,
+			cfg = &lint.LintConfig{
+				Workspace: lintWorkspace,
+				Excludes:  lintExcludes,
 			}
 		}
 
 		if len(args) == 0 {
-			if err := lintStdin(l, analysisCfg); err != nil {
+			if err := lintStdin(l, cfg); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(2)
 			}
@@ -137,14 +114,10 @@ Examples:
 			os.Exit(2)
 		}
 
-		var allDiags []lint.Diagnostic
-		for _, path := range expanded {
-			diags, err := lintFilePath(l, path, analysisCfg)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(2)
-			}
-			allDiags = append(allDiags, diags...)
+		allDiags, err := l.LintFiles(cfg, expanded)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "elps lint: %v\n", err)
+			os.Exit(2)
 		}
 
 		if len(allDiags) == 0 {
@@ -163,14 +136,18 @@ Examples:
 	},
 }
 
-func lintStdin(l *lint.Linter, cfg *analysis.Config) error {
+func lintStdin(l *lint.Linter, cfg *lint.LintConfig) error {
 	src, err := readStdin()
 	if err != nil {
 		return fmt.Errorf("reading stdin: %w", err)
 	}
 	var diags []lint.Diagnostic
-	if cfg != nil {
-		diags, err = l.LintFileWithAnalysis(src, "<stdin>", cfg)
+	if cfg != nil && cfg.Workspace != "" {
+		acfg, buildErr := lint.BuildAnalysisConfig(cfg)
+		if buildErr != nil {
+			return buildErr
+		}
+		diags, err = l.LintFileWithAnalysis(src, "<stdin>", acfg)
 	} else {
 		diags, err = l.LintFile(src, "<stdin>")
 	}
@@ -191,31 +168,8 @@ func lintStdin(l *lint.Linter, cfg *analysis.Config) error {
 	return nil
 }
 
-func lintFilePath(l *lint.Linter, path string, cfg *analysis.Config) ([]lint.Diagnostic, error) {
-	src, err := os.ReadFile(path) //nolint:gosec // CLI tool reads user-specified files
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	if cfg != nil {
-		return l.LintFileWithAnalysis(src, path, cfg)
-	}
-	return l.LintFile(src, path)
-}
-
 func readStdin() ([]byte, error) {
 	return os.ReadFile("/dev/stdin")
-}
-
-// extractStdlibExports creates a temporary ELPS env, loads the standard
-// library, and extracts package exports. This allows the linter to resolve
-// symbols imported via use-package from Go-defined stdlib packages.
-func extractStdlibExports() map[string][]analysis.ExternalSymbol {
-	env := lisp.NewEnv(nil)
-	env.Runtime.Reader = parser.NewReader()
-	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
-	lisp.InitializeUserEnv(env)
-	lisplib.LoadLibrary(env)
-	return analysis.ExtractPackageExports(env.Runtime.Registry)
 }
 
 func init() {
