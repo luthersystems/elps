@@ -95,22 +95,22 @@
 
 (benchmark-simple "load-object"
   (let ([b (to-bytes """{"test1": 123, "test2": 456, "test3": 789}""")])
-    (dotimes (n 1000)
+    (dotimes (_n 1000)
       (json:load-bytes b))))
 
 (benchmark-simple "load-array"
   (let ([b (to-bytes """["test1", 123, "test2", 456, "test3", 789]""")])
-    (dotimes (n 1000)
+    (dotimes (_n 1000)
       (json:load-bytes b))))
 
 (benchmark-simple "load-nested"
   (let ([b (to-bytes """{"test1": 123, "test2": 456, "test3": {"test1": 123, "test2": 456, "test3": 789}}""")])
-    (dotimes (n 1000)
+    (dotimes (_n 1000)
       (json:load-bytes b))))
 
 (benchmark-simple "load-github"
   (let ([b (to-bytes github-json)])
-    (dotimes (n 1000)
+    (dotimes (_n 1000)
       (json:load-bytes b))))
 
 (set 'benchmark-input-get-nested """
@@ -146,7 +146,7 @@
 
 (benchmark-simple "get-nested-baseline"
   (let ([v (json:load-bytes (to-bytes benchmark-input-get-nested))])
-    (dotimes (n 1000)
+    (dotimes (_n 1000)
       (assert-equal 12
                     (thread-first v
                                   (get "e0")))
@@ -176,22 +176,22 @@
 
 (benchmark-simple "dump-object"
   (let* ([val (sorted-map "test1" 123 "test2" 456 "test3" 789)])
-    (dotimes (n 1000)
+    (dotimes (_n 1000)
       (json:dump-string val))))
 
 (benchmark-simple "dump-array"
   (let* ([val (list "test1" 123 "test2" 456 "test3" 789)])
-    (dotimes (n 1000)
+    (dotimes (_n 1000)
       (json:dump-string val))))
 
 (benchmark-simple "dump-nested"
   (let* ([val (sorted-map "test1" 123 "test2" 456 "test3" (sorted-map "test1" 123 "test2" 456 "test3" 789))])
-    (dotimes (n 1000)
+    (dotimes (_n 1000)
       (json:dump-string val))))
 
 (benchmark-simple "dump-github"
   (let* ([val (json:load-string github-json)])
-    (dotimes (n 1000)
+    (dotimes (_n 1000)
       (json:dump-string val))))
 
 ; curl https://api.github.com/repos/luthersystems/elps  

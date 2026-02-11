@@ -205,6 +205,214 @@ Formals lists and threading macro (`thread-first`, `thread-last`) children
 are also excluded, since their static argument count differs from the
 runtime count after macro expansion.
 
+### `quote-call`
+
+**Warns when forms like `set` and `defconst` are called with an unquoted
+symbol name.**
+
+`set` expects a quoted symbol as its first argument. Passing a bare symbol
+causes it to be evaluated, which is usually not intended.
+
+```lisp
+;; BAD — x is evaluated, not used as a name
+(set x 42)
+
+;; GOOD
+(set 'x 42)
+```
+
+### `cond-missing-else`
+
+**Suggests adding a default clause to `cond` expressions.** (Severity: info)
+
+A `cond` without an `else` or `true` default clause returns nil when no
+branch matches. While sometimes intentional, this is often an oversight.
+
+```lisp
+;; INFO — no default branch
+(cond
+  ((= x 1) "one")
+  ((= x 2) "two"))
+
+;; GOOD
+(cond
+  ((= x 1) "one")
+  ((= x 2) "two")
+  (else "other"))
+```
+
+### `rethrow-context`
+
+**Flags `(rethrow)` calls outside a `handler-bind` handler.**
+
+`rethrow` re-signals the currently active error and only works inside a
+`handler-bind` handler. Using it outside causes a runtime error.
+
+```lisp
+;; BAD — not inside handler-bind
+(defun my-handler (c &rest args)
+  (rethrow))
+
+;; GOOD
+(handler-bind ((condition (lambda (c &rest args) (rethrow))))
+  (error 'test "data"))
+```
+
+### `unnecessary-progn`
+
+**Flags redundant `progn` wrappers.** (Severity: info)
+
+Forms like `defun`, `let`, `lambda`, and `handler-bind` already accept
+multiple body expressions, so wrapping them in `progn` is unnecessary.
+
+```lisp
+;; BAD — progn is redundant
+(defun foo (x) (progn (print x) (+ x 1)))
+
+;; GOOD
+(defun foo (x) (print x) (+ x 1))
+```
+
+### `undefined-symbol`
+
+**Reports symbols that cannot be resolved in any enclosing scope.**
+
+Requires semantic analysis (`--workspace` flag). Keywords, qualified
+symbols (e.g., `math:floor`), and builtins are excluded.
+
+The analyzer understands:
+- Standard binding forms: `defun`, `defmacro`, `lambda`, `let`/`let*`,
+  `flet`/`labels`, `dotimes`, `set`, `deftype`.
+- `test` and `test-let`/`test-let*` from the testing library.
+- Nested `defun`/`defmacro` inside any body (e.g., inside `test`, `progn`,
+  `when`). Names are registered in the enclosing scope.
+- **`def` prefix heuristic:** Unknown forms starting with `def` (e.g.,
+  user macros like `defmethod`) are treated as definitions — the first
+  formals-like list is bound as parameters and the remaining children are
+  analyzed as body in that scope.
+- Prefix lambda (`#^`): implicit `%`, `%1`, `%2`, `%&rest` params.
+- Quasiquote templates: only `unquote`/`unquote-splicing` are analyzed.
+- Package imports via `use-package` and `in-package`.
+
+```lisp
+;; ERROR — unknown-fn is not defined anywhere
+(unknown-fn 1 2)
+
+;; OK — builtins, keywords, and qualified names are recognized
+(+ 1 2)
+(list :key :value)
+(math:floor 1.5)
+
+;; OK — defmethod formals are recognized via def prefix heuristic
+(defmethod point :move (self dx) (+ self dx))
+```
+
+**Known limitation — macros that delay evaluation:** The semantic analyzer
+operates on the unexpanded AST. Macros that capture an expression in a
+thunk (e.g., `stream-cons` wrapping its second argument in `delay`) create
+references that are not evaluated until after surrounding bindings exist.
+The analyzer cannot see through macro expansions, so self-referential
+bindings that rely on delayed evaluation will be flagged as undefined:
+
+```lisp
+;; False positive: guesses appears undefined in its own init-form,
+;; but stream-cons delays evaluation via (delay ...) so this works
+;; at runtime.
+(let ([guesses (stream-cons 1.0
+                            (stream-map f guesses))]) ; nolint:undefined-symbol
+  guesses)
+```
+
+Use `; nolint:undefined-symbol` to suppress these cases.
+
+### `unused-variable`
+
+**Warns about variables that are defined but never referenced.**
+
+Requires semantic analysis (`--workspace` flag). Top-level `set` bindings
+are excluded (they may be used by other files). Prefix unused variables
+with `_` to silence the warning.
+
+```lisp
+;; WARNING — x is never used
+(let ((x 1)) (+ 1 2))
+
+;; GOOD — underscore prefix signals intent
+(let ((_x 1)) (+ 1 2))
+```
+
+### `unused-function`
+
+**Warns about local functions that are defined but never called or
+exported.**
+
+Requires semantic analysis (`--workspace` flag). Prefix unused functions
+with `_` to silence the warning, or `export` them.
+
+```lisp
+;; WARNING — helper is never called
+(defun helper () 42)
+
+;; GOOD — exported functions are not flagged
+(defun helper () 42)
+(export 'helper)
+```
+
+### `shadowing`
+
+**Reports local bindings that shadow an outer binding.** (Severity: info)
+
+Requires semantic analysis. Flags parameters, `let` bindings, and local
+functions (via `labels`/`flet`) that reuse a name from an enclosing scope
+or the global scope. Top-level `defun` redefinitions are excluded (they
+are intentional overrides, not shadowing).
+
+```lisp
+;; INFO — parameter car shadows the builtin
+(defun foo (car) (+ car 1))
+
+;; INFO — local x shadows the parameter x
+(defun foo (x) (let ((x 2)) (+ x 1)))
+
+;; OK — top-level defun overriding a builtin is not flagged
+(defun map (f l) (cons (f (car l)) ()))
+```
+
+### `user-arity`
+
+**Checks argument counts for calls to user-defined functions.**
+
+Requires semantic analysis. Inspects `defun` formals to compute minimum
+and maximum arity, then flags call sites with wrong argument counts.
+Functions with `&rest` are variadic (no maximum). Threading macro children
+(`thread-first`, `thread-last`) are excluded.
+
+```lisp
+;; ERROR — add requires 2 arguments
+(defun add (a b) (+ a b))
+(add 1)        ; too few
+(add 1 2 3)    ; too many
+```
+
+### `unused-nolint`
+
+**Warns about `; nolint` directives that do not suppress any diagnostic.**
+
+A `; nolint:foo` comment that doesn't actually suppress any finding is dead
+code — it may reference a misspelled analyzer name, or the underlying issue
+may have been fixed. This check also detects unknown analyzer names.
+
+```lisp
+;; WARNING — no set-usage finding on this line
+(+ 1 2) ; nolint:set-usage
+
+;; WARNING — "nonexistent" is not a known analyzer
+(+ 1 2) ; nolint:nonexistent
+
+;; Self-suppression: suppress unused-nolint itself
+(+ 1 2) ; nolint:unused-nolint
+```
+
 ## Extending the Linter
 
 The linter is designed to be extensible. Embedders can define custom

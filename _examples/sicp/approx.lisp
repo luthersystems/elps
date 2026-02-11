@@ -13,7 +13,7 @@
 (defun sqrt-stream (x)
   (let ([guesses (stream-cons 1.0
                               (stream-map #^(sqrt-improve % x)
-                                          guesses))])
+                                          guesses))]) ; nolint:undefined-symbol
     guesses))
 
 (debug-print '(sqrt-stream 2))

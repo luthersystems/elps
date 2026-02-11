@@ -50,19 +50,64 @@ Add a trailing comment on the same line as the flagged expression:
 (set 'counter (+ counter 1))
 ```
 
+## Unused nolint detection
+
+The linter warns about `; nolint` directives that do not suppress any
+diagnostic. This catches stale comments left behind after code changes and
+misspelled analyzer names.
+
+```lisp
+;; WARNING — no set-usage finding on this line
+(+ 1 2) ; nolint:set-usage
+
+;; WARNING — "nonexistent" is not a known analyzer
+(+ 1 2) ; nolint:nonexistent
+```
+
+To suppress the unused-nolint check itself (rare):
+
+```lisp
+(+ 1 2) ; nolint:unused-nolint
+```
+
+A directive that successfully suppresses at least one diagnostic is
+considered "used" and will not trigger an unused-nolint warning, even if
+it also lists other analyzer names that did not fire.
+
 ## Available checks
 
 Run `elps lint --list` to see all available check names:
 
 ```
 builtin-arity
+cond-missing-else
 cond-structure
 defun-structure
 if-arity
 in-package-toplevel
 let-bindings
+quote-call
+rethrow-context
 set-usage
+shadowing
+undefined-symbol
+unnecessary-progn
+unused-function
+unused-nolint
+unused-variable
+user-arity
 ```
+
+Checks marked with `*` below require semantic analysis (`--workspace` flag):
+
+| Check | Requires `--workspace` |
+|-------|----------------------|
+| `undefined-symbol` | yes |
+| `unused-variable` | yes |
+| `unused-function` | yes |
+| `shadowing` | yes |
+| `user-arity` | yes |
+| all others | no |
 
 ## When to use nolint
 

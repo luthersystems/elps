@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -22,6 +23,13 @@ var AnalyzerSetUsage = &Analyzer{
 	Run: func(pass *Pass) error {
 		seen := make(map[string]bool)
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
+			// Reset tracking when the package context changes.
+			// Each package has its own namespace, so a `set` in a
+			// new package is a first binding, not a reassignment.
+			if HeadSymbol(sexpr) == "in-package" && depth == 0 {
+				seen = make(map[string]bool)
+				return
+			}
 			if HeadSymbol(sexpr) != "set" {
 				return
 			}
@@ -618,6 +626,206 @@ var AnalyzerUnnecessaryProgn = &Analyzer{
 				}
 			}
 		})
+		return nil
+	},
+}
+
+// AnalyzerUnusedVariable warns about variables and parameters that are defined
+// but never referenced. Requires semantic analysis (pass.Semantics != nil).
+var AnalyzerUnusedVariable = &Analyzer{
+	Name:     "unused-variable",
+	Severity: SeverityWarning,
+	Doc:      "Warn about variables and parameters that are defined but never referenced.\n\nRequires semantic analysis (--workspace flag). Skips variables with underscore prefix (conventional \"ignored\" marker) and top-level (global scope) variables.",
+	Run: func(pass *Pass) error {
+		if pass.Semantics == nil {
+			return nil
+		}
+		for _, sym := range pass.Semantics.Symbols {
+			if sym.References > 0 {
+				continue
+			}
+			if sym.Kind != analysis.SymVariable && sym.Kind != analysis.SymParameter {
+				continue
+			}
+			// Skip global scope variables (top-level set bindings)
+			if sym.Scope == pass.Semantics.RootScope {
+				continue
+			}
+			// Skip _ prefixed names (conventional "unused" marker)
+			if len(sym.Name) > 0 && sym.Name[0] == '_' {
+				continue
+			}
+			pass.Report(Diagnostic{
+				Message: fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
+				Pos:     posFromSource(sym.Source),
+				Notes:   []string{fmt.Sprintf("if '%s' is intentionally unused, prefix it with '_'", sym.Name)},
+			})
+		}
+		return nil
+	},
+}
+
+// AnalyzerUnusedFunction warns about functions and macros that are defined at
+// the top level but never referenced. Requires semantic analysis.
+var AnalyzerUnusedFunction = &Analyzer{
+	Name:     "unused-function",
+	Severity: SeverityWarning,
+	Doc:      "Warn about top-level functions and macros that are defined but never referenced.\n\nRequires semantic analysis (--workspace flag). Exported symbols and functions with underscore prefix are excluded.",
+	Run: func(pass *Pass) error {
+		if pass.Semantics == nil {
+			return nil
+		}
+		for _, sym := range pass.Semantics.Symbols {
+			if sym.References > 0 {
+				continue
+			}
+			if sym.Kind != analysis.SymFunction && sym.Kind != analysis.SymMacro {
+				continue
+			}
+			// Only check top-level definitions
+			if sym.Scope != pass.Semantics.RootScope {
+				continue
+			}
+			// Skip exported symbols
+			if sym.Exported {
+				continue
+			}
+			// Skip _ prefixed names
+			if len(sym.Name) > 0 && sym.Name[0] == '_' {
+				continue
+			}
+			pass.Report(Diagnostic{
+				Message: fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
+				Pos:     posFromSource(sym.Source),
+				Notes:   []string{"if this is a public API, add it to an (export ...) form"},
+			})
+		}
+		return nil
+	},
+}
+
+// AnalyzerShadowing reports when a local binding shadows a name from an
+// enclosing scope. This is informational — shadowing is valid but can cause
+// confusion. Requires semantic analysis (pass.Semantics != nil).
+var AnalyzerShadowing = &Analyzer{
+	Name:     "shadowing",
+	Severity: SeverityInfo,
+	Doc:      "Report when a local binding shadows a name from an enclosing scope.\n\nRequires semantic analysis (--workspace flag). Shadowing is valid but can cause confusion, especially when it hides a builtin or outer variable.",
+	Run: func(pass *Pass) error {
+		if pass.Semantics == nil {
+			return nil
+		}
+		for _, sym := range pass.Semantics.Symbols {
+			if sym.Scope == nil || sym.Scope == pass.Semantics.RootScope {
+				continue // top-level definitions can't shadow
+			}
+			if sym.Scope.Parent == nil {
+				continue
+			}
+			outer := sym.Scope.Parent.Lookup(sym.Name)
+			if outer == nil {
+				continue
+			}
+			// Don't report shadowing of external (workspace/package-imported)
+			// symbols — these are injected globally and would produce noise
+			// for common parameter names like x, y, v, etc.
+			if outer.External {
+				continue
+			}
+			pass.Report(Diagnostic{
+				Message: fmt.Sprintf("%s '%s' shadows %s from enclosing scope", sym.Kind, sym.Name, outer.Kind),
+				Pos:     posFromSource(sym.Source),
+				Notes:   []string{fmt.Sprintf("rename '%s' to avoid confusion with the outer %s", sym.Name, outer.Kind)},
+			})
+		}
+		return nil
+	},
+}
+
+// AnalyzerUserArity checks argument counts for calls to user-defined functions
+// and macros whose signatures are known from the same file. Requires semantic
+// analysis (pass.Semantics != nil).
+var AnalyzerUserArity = &Analyzer{
+	Name:     "user-arity",
+	Severity: SeverityError,
+	Doc:      "Check argument counts for calls to user-defined functions and macros.\n\nRequires semantic analysis (--workspace flag). Only checks calls to functions with known signatures (Source != nil). Complements builtin-arity which covers builtins.",
+	Run: func(pass *Pass) error {
+		if pass.Semantics == nil {
+			return nil
+		}
+		// Reuse aritySkipNodes to exclude formals lists and threading macro children.
+		skipNodes := aritySkipNodes(pass.Exprs)
+
+		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
+			if skipNodes[sexpr] {
+				return
+			}
+			head := HeadSymbol(sexpr)
+			if head == "" {
+				return
+			}
+			sym := pass.Semantics.RootScope.Lookup(head)
+			if sym == nil || sym.Signature == nil || sym.Source == nil {
+				return // unknown or builtin — skip
+			}
+			if sym.External {
+				return // imported from workspace/package — may shadow builtins
+			}
+			if sym.Kind != analysis.SymFunction && sym.Kind != analysis.SymMacro {
+				return
+			}
+			argc := ArgCount(sexpr)
+			minArity := sym.Signature.MinArity()
+			maxArity := sym.Signature.MaxArity()
+			if argc < minArity {
+				src := SourceOf(sexpr)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, minArity, argc),
+					Pos:     posFromSource(src.Source),
+					Notes:   []string{fmt.Sprintf("defined at %s", sourceString(sym.Source))},
+				})
+			}
+			if maxArity >= 0 && argc > maxArity {
+				src := SourceOf(sexpr)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, maxArity, argc),
+					Pos:     posFromSource(src.Source),
+					Notes:   []string{fmt.Sprintf("defined at %s", sourceString(sym.Source))},
+				})
+			}
+		})
+		return nil
+	},
+}
+
+// sourceString formats a token.Location for use in diagnostic notes.
+func sourceString(loc *token.Location) string {
+	if loc == nil {
+		return "<unknown>"
+	}
+	if loc.Col > 0 {
+		return fmt.Sprintf("%s:%d:%d", loc.File, loc.Line, loc.Col)
+	}
+	return fmt.Sprintf("%s:%d", loc.File, loc.Line)
+}
+
+// AnalyzerUndefinedSymbol reports symbols that could not be resolved in any
+// enclosing scope. Requires semantic analysis (pass.Semantics != nil).
+var AnalyzerUndefinedSymbol = &Analyzer{
+	Name:     "undefined-symbol",
+	Severity: SeverityError,
+	Doc:      "Report symbols that cannot be resolved in any enclosing scope.\n\nRequires semantic analysis (--workspace flag). Keywords and qualified symbols are excluded. Builtins, special operators, and macros are pre-populated.",
+	Run: func(pass *Pass) error {
+		if pass.Semantics == nil {
+			return nil
+		}
+		for _, u := range pass.Semantics.Unresolved {
+			pass.Report(Diagnostic{
+				Message: fmt.Sprintf("undefined symbol: %s", u.Name),
+				Pos:     posFromSource(u.Source),
+				Notes:   []string{fmt.Sprintf("'%s' is not defined in any enclosing scope; did you mean a different name?", u.Name)},
+			})
+		}
 		return nil
 	},
 }

@@ -17,7 +17,7 @@
                  93 83 12 12 2 2 3 845 83 3 2 4 59 92 1 34 888 38 2 8 4 2 8 4)))
       x)
     (foldl
-      (lambda (m q)
+      (lambda (_m _q)
         (foldl
           (lambda (j b)
             (* j b))

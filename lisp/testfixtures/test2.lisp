@@ -9,3 +9,4 @@
 (load-file "test1.lisp")
 
 (defun this-is-a-test2 () "TESTING")
+(export 'this-is-a-test2)

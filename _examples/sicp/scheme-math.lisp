@@ -16,7 +16,7 @@
 (defun dispatch-put (op-symbol operand-types operator)
   (let ([op-table (or (get dispatch-table op-symbol) (sorted-map))])
     (assoc! dispatch-table op-symbol op-table)
-    (labels ([dig (table operand-types value)
+    (labels ([dig (table operand-types value) ; nolint:shadowing
               (cond
                 ((nil? operand-types)
                  (error 'nil-type-parameters "type parameters are nil"))
@@ -35,7 +35,7 @@
 ; among implementations for an op.
 (defun dispatch-get (op-symbol operand-types)
   (let ([op-table (get dispatch-table op-symbol)])
-    (labels ([dig (table operand-types)
+    (labels ([dig (table operand-types) ; nolint:shadowing
               (cond
                 ((nil? operand-types)
                  table)
@@ -61,18 +61,18 @@
              (list op-symbol operand-types)))))
 
 (defun install-rectangular-package ()
-  (labels ([real-part (z) (first z)]
-           [imag-part (z) (second z)]
-           [make-from-real-imag (x y) (list x y)]
-           [magnitude (z)
+  (labels ([real-part (z) (first z)] ; nolint:shadowing
+           [imag-part (z) (second z)] ; nolint:shadowing
+           [make-from-real-imag (x y) (list x y)] ; nolint:shadowing
+           [magnitude (z) ; nolint:shadowing
             (sqrt (+ (square (real-part z))
                      (square (imag-part z))))]
-           [angle (z)
-            (let ([x (real-part z)]
-                  [y (imag-part z)])
+           [angle (z) ; nolint:shadowing
+            (let ([x (real-part z)] ; nolint:unused-variable
+                  [y (imag-part z)]) ; nolint:unused-variable
               (atan (imag-part z)
                     (real-part z)))]
-           [make-from-mag-ang (r a)
+           [make-from-mag-ang (r a) ; nolint:shadowing
             (if (= 0 r)
               (list 0 0)
               (list (* r (cos a)) (* r (sin a))))]
@@ -88,16 +88,16 @@
     'done))
 
 (defun install-polar-package ()
-  (labels ([magnitude (z) (first z)]
-           [angle (z) (second z)]
-           [make-from-mag-ang (r a) (list r a)]
-           [real-part (z)
+  (labels ([magnitude (z) (first z)] ; nolint:shadowing
+           [angle (z) (second z)] ; nolint:shadowing
+           [make-from-mag-ang (r a) (list r a)] ; nolint:shadowing
+           [real-part (z) ; nolint:shadowing
             (* (magnitude z) (cos (angle z)))]
-           [imag-part (z)
+           [imag-part (z) ; nolint:shadowing
             (* (magnitude z) (sin (angle z)))]
-           [make-from-real-imag (x y)
-            (list (sqrt (+ (square (real-part z))
-                           (square (imag-part z))))
+           [make-from-real-imag (x y) ; nolint:shadowing
+            (list (sqrt (+ (square (real-part z)) ; nolint:undefined-symbol
+                           (square (imag-part z)))) ; nolint:undefined-symbol
                   (atan y x))]
            [tag (x) (attach-tag 'polar x)])
     (dispatch-put 'real-part '(polar) real-part)
@@ -177,8 +177,8 @@
 (assert= 0.5 (contents (div (make-scheme-number 1) (make-scheme-number 2))))
 
 (defun install-rational-package ()
-  (labels ([numer (x) (first x)]
-           [denom (x) (second x)]
+  (labels ([numer (x) (first x)] ; nolint:shadowing
+           [denom (x) (second x)] ; nolint:shadowing
            [make-rat (p q)
             (let ([g (gcd p q)])
               (list (/ p g) (/ q g)))]
@@ -231,9 +231,9 @@
                        (make-rational 1 2))))
 
 (defun install-complex-package ()
-  (labels ([make-from-real-imag (x y)
+  (labels ([make-from-real-imag (x y) ; nolint:shadowing
             (dispatch-call 'make-from-real-imag 'rectangular x y)]
-           [make-from-mag-ang (r a)
+           [make-from-mag-ang (r a) ; nolint:shadowing
             (dispatch-call 'make-from-mag-ang 'polar r a)]
            [add-complex (z1 z2)
             (make-from-real-imag (+ (real-part z1) (real-part z2))
@@ -262,8 +262,8 @@
                   (lambda (r a) (make-from-mag-ang r a)))
     'done))
 
-(defun make-complex-real-imag (x y) (dispatch-call 'make-from-real-imag 'complex x y))
-(defun make-complex-mag-ang (r a) (dispatch-call 'make-from-mag-ang 'complex r a))
+(defun make-complex-real-imag (x y) (dispatch-call 'make-from-real-imag 'complex x y)) ; nolint:unused-function
+(defun make-complex-mag-ang (r a) (dispatch-call 'make-from-mag-ang 'complex r a)) ; nolint:unused-function
 
 (trace (install-complex-package))
 

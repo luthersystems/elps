@@ -8,7 +8,7 @@
 (use-package 'testing)
 
 (export 'delay)
-(defmacro delay (expr)
+(defmacro delay (expr) ; nolint:shadowing
   (let ([valsym (gensym)]
         [funsym (gensym)])
     (quasiquote (progn
@@ -89,7 +89,7 @@
       (stream-for-each proc (stream-cdr s)))))
 
 (export 'stream-debug)
-(defun stream-debug (s)
+(defun stream-debug (s) ; nolint:unused-function
   (stream-for-each 'debug-print s))
 
 (export 'stream-cons)
@@ -197,7 +197,7 @@
 (defun better-pairs (s t)
   ; a function like the external stream-concat but it operates on a potentially
   ; infinite stream-of-streams instead of a finite list of stream arguments.
-  (labels ([stream-concat (sos)
+  (labels ([stream-concat (sos) ; nolint:shadowing
             (cond
               ((stream-null? sos) the-empty-stream)
               ((stream-null? (stream-car sos)) (stream-concat (stream-cdr sos)))

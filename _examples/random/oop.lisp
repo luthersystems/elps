@@ -9,7 +9,7 @@
 ;; type-name returns the type symbol that type-specifier corresponds to.
 ;; Symbols are returned unaltered and typedef objects will return the symbol of
 ;; the defined type.
-(defun type-name (type-specifier)
+(defun type-name (type-specifier) ; nolint:unused-function
   (cond ((symbol? type-specifier)
          type-specifier)
         ((type? 'lisp:typedef type-specifier)
@@ -30,7 +30,7 @@
 ;; defmethod declares or overwrites a method on a specified type.  The method
 ;; args must include the method receiver (i.e. self) as the first argument.
 (export 'defmethod)
-(defmacro defmethod (type-specifier method-name method-args &rest method-body)
+(defmacro defmethod (type-specifier method-name method-args &rest method-body) ; nolint:shadowing
   (cond ((not (symbol? type-specifier))
          (error 'type-error "first argument is not a valid type specifier"))
         ((not (symbol? method-name))
@@ -40,7 +40,7 @@
         ((empty? method-args)
          (error 'type-error "methods must take at least one argument"))
         (:else
-          (let* ([type-name (gensym)]
+          (let* ([type-name (gensym)] ; nolint:shadowing
                  [fn (gensym)]
                  [fname (gensym)]
                  [type-table (gensym)])
@@ -75,7 +75,7 @@
 ;; get-method returns the function that implements method m on (type obj).
 (export 'get-method)
 (defun get-method (obj m)
-  (let* ([name (method-name m)]
+  (let* ([name (method-name m)] ; nolint:unused-variable
          [type-table (get method-table (type obj))])
     (get type-table m)))
 
@@ -91,7 +91,7 @@
 ;; m.
 (export 'method?)
 (defun method? (obj &rest m)
-  (let* ([m (map 'list method-name m)]
+  (let* ([m (map 'list method-name m)] ; nolint:shadowing
          [type-table (get method-table (type obj))])
     (all? #^(key? type-table %) m)))
 

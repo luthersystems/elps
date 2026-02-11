@@ -15,10 +15,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
+	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib"
+	"github.com/luthersystems/elps/parser"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -99,6 +103,11 @@ type Pass struct {
 
 	// Exprs are the top-level parsed expressions.
 	Exprs []*lisp.LVal
+
+	// Semantics holds the result of semantic analysis, if available.
+	// Nil when semantic analysis has not been run (e.g. no --workspace flag).
+	// Semantic analyzers should check for nil and return early.
+	Semantics *analysis.Result
 
 	// diagnostics collects reported findings.
 	diagnostics []Diagnostic
@@ -185,8 +194,125 @@ type Linter struct {
 	Analyzers []*Analyzer
 }
 
+// LintConfig configures the linter for a single run.
+type LintConfig struct {
+	// Workspace is the root directory for cross-file scanning.
+	// Empty string disables workspace scanning.
+	Workspace string
+
+	// Registry provides Go-registered symbols (builtins, special ops, macros)
+	// from an embedder's environment. These are merged with stdlib and
+	// workspace symbols for semantic analysis. When nil, only stdlib symbols
+	// are used.
+	Registry *lisp.PackageRegistry
+
+	// Excludes are glob patterns for files to skip during workspace scanning.
+	Excludes []string
+
+	// StdlibExports provides pre-extracted stdlib package exports. When nil,
+	// LintFiles uses the default stdlib (loaded via lisplib.LoadLibrary).
+	// Embedders that already have a configured env can pass
+	// analysis.ExtractPackageExports(env.Runtime.Registry) here to avoid
+	// the overhead of creating a temporary environment.
+	StdlibExports map[string][]analysis.ExternalSymbol
+}
+
+// LintFiles analyzes source files with full workspace + embedder context.
+// It handles workspace scanning, stdlib/registry symbol extraction, and
+// semantic analysis configuration. The files slice contains resolved file
+// paths (no glob expansion — callers handle that).
+//
+// When cfg is nil, all files are linted with syntactic checks only.
+func (l *Linter) LintFiles(cfg *LintConfig, files []string) ([]Diagnostic, error) {
+	var analysisCfg *analysis.Config
+	if cfg != nil && cfg.Workspace != "" {
+		acfg, err := BuildAnalysisConfig(cfg)
+		if err != nil {
+			return nil, err
+		}
+		analysisCfg = acfg
+	}
+
+	var allDiags []Diagnostic
+	for _, path := range files {
+		src, err := os.ReadFile(path) //nolint:gosec // linter reads user-specified files
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		var diags []Diagnostic
+		if analysisCfg != nil {
+			diags, err = l.LintFileWithAnalysis(src, path, analysisCfg)
+		} else {
+			diags, err = l.LintFile(src, path)
+		}
+		if err != nil {
+			return nil, err
+		}
+		allDiags = append(allDiags, diags...)
+	}
+	return allDiags, nil
+}
+
+// BuildAnalysisConfig constructs an analysis.Config from a LintConfig.
+// It scans the workspace, extracts stdlib exports, and merges embedder
+// registry symbols. This is exported for callers (like the CLI stdin path)
+// that need to build the config separately from file linting.
+func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
+	syms, err := analysis.ScanWorkspace(cfg.Workspace)
+	if err != nil {
+		return nil, fmt.Errorf("scanning workspace %s: %w", cfg.Workspace, err)
+	}
+
+	// Start with stdlib exports (either provided or extracted fresh)
+	pkgExports := cfg.StdlibExports
+	if pkgExports == nil {
+		pkgExports = defaultStdlibExports()
+	}
+
+	// Merge embedder registry exports
+	if cfg.Registry != nil {
+		regExports := analysis.ExtractPackageExports(cfg.Registry)
+		for pkg, regSyms := range regExports {
+			pkgExports[pkg] = append(pkgExports[pkg], regSyms...)
+		}
+	}
+
+	// Merge workspace package exports
+	wsPkgs, err := analysis.ScanWorkspacePackages(cfg.Workspace)
+	if err != nil {
+		return nil, fmt.Errorf("scanning workspace packages %s: %w", cfg.Workspace, err)
+	}
+	for pkg, wsSyms := range wsPkgs {
+		pkgExports[pkg] = append(pkgExports[pkg], wsSyms...)
+	}
+
+	return &analysis.Config{
+		ExtraGlobals:   syms,
+		PackageExports: pkgExports,
+	}, nil
+}
+
+// defaultStdlibExports creates a temporary ELPS env, loads the standard
+// library, and extracts package exports.
+func defaultStdlibExports() map[string][]analysis.ExternalSymbol {
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
+	lisp.InitializeUserEnv(env)
+	lisplib.LoadLibrary(env)
+	return analysis.ExtractPackageExports(env.Runtime.Registry)
+}
+
 // LintFile analyzes a single source file and returns all diagnostics.
+// Semantic analyzers are no-ops because no analysis.Result is provided.
 func (l *Linter) LintFile(source []byte, filename string) ([]Diagnostic, error) {
+	return l.LintFileWithContext(source, filename, nil)
+}
+
+// LintFileWithContext analyzes a source file with optional semantic analysis results.
+// When semantics is nil, semantic analyzers (undefined-symbol, unused-variable, etc.)
+// are no-ops. When non-nil, they use the scope and reference data for deeper checks.
+func (l *Linter) LintFileWithContext(source []byte, filename string, semantics *analysis.Result) ([]Diagnostic, error) {
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	p := rdparser.NewFormatting(s)
 
@@ -199,9 +325,10 @@ func (l *Linter) LintFile(source []byte, filename string) ([]Diagnostic, error) 
 
 	for _, analyzer := range l.Analyzers {
 		pass := &Pass{
-			Analyzer: analyzer,
-			Filename: filename,
-			Exprs:    exprs,
+			Analyzer:  analyzer,
+			Filename:  filename,
+			Exprs:     exprs,
+			Semantics: semantics,
 		}
 		if err := analyzer.Run(pass); err != nil {
 			return nil, fmt.Errorf("%s: analyzer %s: %w", filename, analyzer.Name, err)
@@ -216,7 +343,64 @@ func (l *Linter) LintFile(source []byte, filename string) ([]Diagnostic, error) 
 	}
 
 	// Filter suppressed diagnostics (;nolint comments)
-	all = filterSuppressed(all, exprs)
+	all, nolintMap := filterSuppressed(all, exprs)
+
+	// Build set of enabled analyzer names for unknown-analyzer detection.
+	enabledAnalyzers := make(map[string]bool, len(l.Analyzers))
+	for _, a := range l.Analyzers {
+		enabledAnalyzers[a.Name] = true
+	}
+	// unused-nolint is synthetic (not a registered Analyzer) but valid in directives.
+	enabledAnalyzers["unused-nolint"] = true
+
+	// Emit unused-nolint diagnostics for stale directives.
+	var unusedNolints []Diagnostic
+	for _, info := range nolintMap {
+		if info.used {
+			continue
+		}
+		msg := "nolint directive does not suppress any diagnostic"
+		// Check for unknown analyzer names in specific directives.
+		if info.directive != "" {
+			var unknown []string
+			for _, name := range strings.Split(info.directive, ",") {
+				name = strings.TrimSpace(name)
+				if name != "" && !enabledAnalyzers[name] {
+					unknown = append(unknown, name)
+				}
+			}
+			if len(unknown) > 0 {
+				msg = fmt.Sprintf("nolint directive references unknown analyzer(s): %s",
+					strings.Join(unknown, ", "))
+			}
+		}
+		unusedNolints = append(unusedNolints, Diagnostic{
+			Pos:      Position{File: filename, Line: info.source.Line, Col: info.source.Col},
+			Message:  msg,
+			Analyzer: "unused-nolint",
+			Severity: SeverityWarning,
+			Notes:    []string{"remove the nolint directive or fix the analyzer name", "; nolint:unused-nolint"},
+		})
+	}
+
+	// Allow ; nolint:unused-nolint to self-suppress. Only explicit mentions
+	// of "unused-nolint" suppress the diagnostic — a bare ; nolint that didn't
+	// suppress anything is still reported as unused.
+	for i := len(unusedNolints) - 1; i >= 0; i-- {
+		d := unusedNolints[i]
+		info, ok := nolintMap[d.Pos.Line]
+		if !ok || info.directive == "" {
+			continue
+		}
+		for _, name := range strings.Split(info.directive, ",") {
+			if strings.TrimSpace(name) == "unused-nolint" {
+				unusedNolints = append(unusedNolints[:i], unusedNolints[i+1:]...)
+				break
+			}
+		}
+	}
+
+	all = append(all, unusedNolints...)
 
 	// Sort by file, then line
 	sort.Slice(all, func(i, j int) bool {
@@ -229,46 +413,80 @@ func (l *Linter) LintFile(source []byte, filename string) ([]Diagnostic, error) 
 	return all, nil
 }
 
-// filterSuppressed removes diagnostics on lines with ;nolint comments.
-func filterSuppressed(diags []Diagnostic, exprs []*lisp.LVal) []Diagnostic {
+// LintFileWithAnalysis parses, analyzes, and lints a source file in one call.
+// This is a convenience that runs semantic analysis and passes the result to
+// all analyzers.
+func (l *Linter) LintFileWithAnalysis(source []byte, filename string, cfg *analysis.Config) ([]Diagnostic, error) {
+	s := token.NewScanner(filename, bytes.NewReader(source))
+	p := rdparser.New(s)
+
+	exprs, err := p.ParseProgram()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", filename, err)
+	}
+
+	if cfg == nil {
+		cfg = &analysis.Config{}
+	}
+	cfg.Filename = filename
+	result := analysis.Analyze(exprs, cfg)
+
+	return l.LintFileWithContext(source, filename, result)
+}
+
+// nolintInfo tracks a nolint directive and its source location.
+type nolintInfo struct {
+	directive string         // "" for suppress-all, or "analyzer1,analyzer2"
+	source    token.Location // location of the nolint comment itself
+	used      bool           // whether this directive suppressed at least one diagnostic
+}
+
+// filterSuppressed removes diagnostics on lines with ;nolint comments and
+// returns the filtered diagnostics plus a map of all nolint entries (with
+// usage tracking). Callers can inspect entries where used==false to emit
+// unused-nolint warnings.
+func filterSuppressed(diags []Diagnostic, exprs []*lisp.LVal) ([]Diagnostic, map[int]*nolintInfo) {
 	// Build a map of line -> nolint directives from trailing comments
-	nolintLines := make(map[int]string) // line -> "" (all) or "analyzer1,analyzer2"
+	nolintLines := make(map[int]*nolintInfo)
 	walkForNolint(exprs, nolintLines)
 
 	var filtered []Diagnostic
 	for _, d := range diags {
-		directive, ok := nolintLines[d.Pos.Line]
+		info, ok := nolintLines[d.Pos.Line]
 		if !ok {
 			filtered = append(filtered, d)
 			continue
 		}
 		// Empty directive = suppress all
-		if directive == "" {
+		if info.directive == "" {
+			info.used = true
 			continue
 		}
 		// Check if this specific analyzer is suppressed
 		suppressed := false
-		for _, name := range strings.Split(directive, ",") {
+		for _, name := range strings.Split(info.directive, ",") {
 			if strings.TrimSpace(name) == d.Analyzer {
 				suppressed = true
 				break
 			}
 		}
-		if !suppressed {
+		if suppressed {
+			info.used = true
+		} else {
 			filtered = append(filtered, d)
 		}
 	}
-	return filtered
+	return filtered, nolintLines
 }
 
 // walkForNolint finds ;nolint comments and maps them to line numbers.
-func walkForNolint(exprs []*lisp.LVal, lines map[int]string) {
+func walkForNolint(exprs []*lisp.LVal, lines map[int]*nolintInfo) {
 	for _, expr := range exprs {
 		walkNodeForNolint(expr, lines)
 	}
 }
 
-func walkNodeForNolint(v *lisp.LVal, lines map[int]string) {
+func walkNodeForNolint(v *lisp.LVal, lines map[int]*nolintInfo) {
 	if v == nil {
 		return
 	}
@@ -286,7 +504,7 @@ func walkNodeForNolint(v *lisp.LVal, lines map[int]string) {
 	}
 }
 
-func checkNolintToken(tok *token.Token, lines map[int]string) {
+func checkNolintToken(tok *token.Token, lines map[int]*nolintInfo) {
 	if tok == nil || tok.Source == nil {
 		return
 	}
@@ -300,11 +518,16 @@ func checkNolintToken(tok *token.Token, lines map[int]string) {
 	}
 	rest := strings.TrimPrefix(text, "nolint")
 	if rest == "" {
-		lines[tok.Source.Line] = ""
+		lines[tok.Source.Line] = &nolintInfo{
+			source: *tok.Source,
+		}
 		return
 	}
 	if strings.HasPrefix(rest, ":") {
-		lines[tok.Source.Line] = strings.TrimPrefix(rest, ":")
+		lines[tok.Source.Line] = &nolintInfo{
+			directive: strings.TrimPrefix(rest, ":"),
+			source:    *tok.Source,
+		}
 	}
 }
 
@@ -336,5 +559,10 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerCondMissingElse,
 		AnalyzerRethrowContext,
 		AnalyzerUnnecessaryProgn,
+		AnalyzerUndefinedSymbol,
+		AnalyzerUnusedVariable,
+		AnalyzerUnusedFunction,
+		AnalyzerShadowing,
+		AnalyzerUserArity,
 	}
 }

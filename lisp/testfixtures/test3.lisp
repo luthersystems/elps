@@ -5,3 +5,4 @@
 (load-file "test2.lisp")
 
 (defun this-is-a-test3 () "__TESTING__")
+(export 'this-is-a-test3)

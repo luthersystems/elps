@@ -5,6 +5,9 @@
 package lisplib
 
 import (
+	"bytes"
+	"fmt"
+
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/libbase64"
 	"github.com/luthersystems/elps/lisp/lisplib/libgolang"
@@ -16,6 +19,7 @@ import (
 	"github.com/luthersystems/elps/lisp/lisplib/libstring"
 	"github.com/luthersystems/elps/lisp/lisplib/libtesting"
 	"github.com/luthersystems/elps/lisp/lisplib/libtime"
+	"github.com/luthersystems/elps/parser"
 )
 
 // LoadLibrary loads the standard library into env and returns env to the
@@ -66,4 +70,24 @@ func LoadLibrary(env *lisp.LEnv) *lisp.LVal {
 		return e
 	}
 	return lisp.Nil()
+}
+
+// NewDocEnv creates a standard ELPS environment with the stdlib loaded,
+// suitable for documentation queries. Embedders can extend this env with
+// their own packages, or create their own env and use the libhelp.Render*
+// functions and libhelp.CheckMissing directly.
+func NewDocEnv() (*lisp.LEnv, error) {
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
+	env.Runtime.Stderr = &bytes.Buffer{}
+	rc := lisp.InitializeUserEnv(env)
+	if !rc.IsNil() {
+		return nil, fmt.Errorf("initialize-user-env returned non-nil: %v", rc)
+	}
+	rc = LoadLibrary(env)
+	if !rc.IsNil() {
+		return nil, fmt.Errorf("load-library returned non-nil: %v", rc)
+	}
+	return env, nil
 }

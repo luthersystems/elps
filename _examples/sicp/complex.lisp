@@ -12,7 +12,7 @@
   (and (list? value) (= 2 (length value))))
 
 (export 'attach-tag)
-(defun attach-tag (type-tag contents)
+(defun attach-tag (type-tag contents) ; nolint:shadowing
   (list type-tag contents))
 
 (export 'type-tag)
@@ -27,10 +27,10 @@
     (second datum)
     (error 'argument-error "bad tagged datum" datum)))
 
-(defun rectangular? (z)
+(defun rectangular? (z) ; nolint:unused-function
   (equal? (type-tag z) 'rectangular))
 
-(defun polar? (z)
+(defun polar? (z) ; nolint:unused-function
   (equal? (type-tag z) 'polar))
 
 (defun rectangular-real-part (z)
@@ -50,7 +50,7 @@
 (defun make-rectangular-from-real-imag (x y)
   (attach-tag 'rectangular (list x y)))
 
-(defun make-rectangular-from-mag-ang (r a)
+(defun make-rectangular-from-mag-ang (r a) ; nolint:unused-function
   (attach-tag 'rectangular (list (* r (cos a))
                                  (* r (sin a)))))
 
@@ -115,28 +115,28 @@
     (:else (error 'invalid-argument "argument is not a complex number" z))))
 
 (export 'complex-add)
-(defun complex-add (z1 z2)
+(defun complex-add (z1 z2) ; nolint:unused-function
   (make-complex-from-real-imag (+ (complex-real-part z1)
                                   (complex-real-part z2))
                                (+ (complex-imag-part z1)
                                   (complex-imag-part z2))))
 
 (export 'complex-sub)
-(defun complex-sub (z1 z2)
+(defun complex-sub (z1 z2) ; nolint:unused-function
   (make-complex-from-real-imag (- (complex-real-part z1)
                                   (complex-real-part z2))
                                (- (complex-imag-part z1)
                                   (complex-imag-part z2))))
 
 (export 'complex-mul)
-(defun complex-mul (z1 z2)
+(defun complex-mul (z1 z2) ; nolint:unused-function
   (make-complex-from-mag-ang (* (complex-magnitude z1)
                                 (complex-magnitude z2))
                              (+ (complex-angle z1)
                                 (complex-angle z2))))
 
 (export 'complex-div)
-(defun complex-div (z1 z2)
+(defun complex-div (z1 z2) ; nolint:unused-function
   (make-complex-from-mag-ang (/ (complex-magnitude z1)
                                 (complex-magnitude z2))
                              (- (complex-angle z1)

@@ -270,3 +270,130 @@ func TestLookupSymbolDoc_Qualified(t *testing.T) {
 	assert.Contains(t, output, "null")
 	assert.Contains(t, output, "JSON")
 }
+
+func TestCheckMissing_StdlibAllDocumented(t *testing.T) {
+	env := newTestEnv(t)
+
+	// The stdlib should have complete documentation (CI enforces this).
+	missing := libhelp.CheckMissing(env)
+	assert.Empty(t, missing, "stdlib should have no missing docs, got: %v", missing)
+}
+
+func TestCheckMissing_DetectsUndocumented(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Add a package with an undocumented export.
+	rc := env.LoadString("test.lisp", `
+	(in-package 'undoc-pkg "A documented package.")
+	(export 'undoc-fn)
+	(defun undoc-fn () 42)
+	`)
+	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
+
+	missing := libhelp.CheckMissing(env)
+
+	// Should find the undocumented function.
+	var found bool
+	for _, m := range missing {
+		if m.Name == "undoc-pkg:undoc-fn" {
+			found = true
+			assert.Equal(t, "function", m.Kind)
+			break
+		}
+	}
+	assert.True(t, found, "should detect undocumented function undoc-pkg:undoc-fn")
+}
+
+func TestCheckMissing_DetectsUndocumentedPackage(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Add a package with no doc string.
+	rc := env.LoadString("test.lisp", `
+	(in-package 'nodoc-pkg)
+	`)
+	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
+
+	missing := libhelp.CheckMissing(env)
+
+	var found bool
+	for _, m := range missing {
+		if m.Name == "nodoc-pkg" && m.Kind == "package" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "should detect undocumented package nodoc-pkg")
+}
+
+func TestCheckMissing_DetectsUndocumentedConstant(t *testing.T) {
+	env := newTestEnv(t)
+
+	rc := env.LoadString("test.lisp", `
+	(in-package 'const-check-pkg "A package with a constant.")
+	(set 'my-val 42)
+	(export 'my-val)
+	`)
+	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
+
+	missing := libhelp.CheckMissing(env)
+
+	var found bool
+	for _, m := range missing {
+		if m.Name == "const-check-pkg:my-val" {
+			found = true
+			assert.Equal(t, "int", m.Kind, "undocumented int constant should have Kind 'int'")
+			break
+		}
+	}
+	assert.True(t, found, "should detect undocumented constant const-check-pkg:my-val")
+}
+
+func TestCheckMissing_DocumentedExportNotReported(t *testing.T) {
+	env := newTestEnv(t)
+
+	rc := env.LoadString("test.lisp", `
+	(in-package 'doc-check-pkg "A documented package.")
+	(export 'documented-fn)
+	(defun documented-fn ()
+		"This function is documented."
+		42)
+	`)
+	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
+
+	missing := libhelp.CheckMissing(env)
+
+	for _, m := range missing {
+		assert.NotEqual(t, "doc-check-pkg:documented-fn", m.Name,
+			"documented function should not be reported as missing")
+		if m.Kind == "package" {
+			assert.NotEqual(t, "doc-check-pkg", m.Name,
+				"documented package should not be reported as missing")
+		}
+	}
+}
+
+func TestCheckMissing_ExcludesUserPackage(t *testing.T) {
+	env := newTestEnv(t)
+
+	missing := libhelp.CheckMissing(env)
+
+	for _, m := range missing {
+		if m.Kind == "package" {
+			assert.NotEqual(t, "user", m.Name,
+				"user package should be excluded from missing docs check")
+		}
+	}
+}
+
+func TestCheckMissing_NoDuplicates(t *testing.T) {
+	env := newTestEnv(t)
+
+	missing := libhelp.CheckMissing(env)
+
+	seen := make(map[string]bool, len(missing))
+	for _, m := range missing {
+		key := m.Kind + ":" + m.Name
+		assert.False(t, seen[key], "duplicate entry in CheckMissing results: %s %s", m.Kind, m.Name)
+		seen[key] = true
+	}
+}
