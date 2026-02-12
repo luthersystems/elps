@@ -518,11 +518,20 @@ elps> (make-sequence 0 10 4)
 
 ## `format-string`
 
-Creates a string using format placeholders and values.
+Creates a string using format placeholders and values. Use `{}` for
+sequential substitution or `{0}`, `{1}`, etc. for positional. Use `{{`
+and `}}` for literal braces. Sequential and positional styles cannot be
+mixed.
 
 ```Lisp
 elps> (format-string "Hello {}, {} you?" "World" "how are")
 "Hello World, how are you?"
+
+elps> (format-string "{1} {0}!" "world" "Hello")
+"Hello world!"
+
+elps> (format-string "{0} said {{hello}} to {0}" "Alice")
+"Alice said {hello} to Alice"
 ```
 
 ## `reverse`

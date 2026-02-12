@@ -228,9 +228,11 @@ var (
 			`Returns a list of numbers from start (inclusive) to stop
 			(exclusive), incrementing by step (default 1).`},
 		{"format-string", Formals("format", VarArgSymbol, "values"), builtinFormatString,
-			`Returns a string by replacing {} placeholders in the format
-			string with the corresponding values. Strings are interpolated
-			without quotes. Use {{ and }} for literal braces.`},
+			`Returns a string by replacing placeholders in the format string
+			with corresponding values. Use {} for sequential substitution or
+			{0}, {1}, etc. for positional. Strings are interpolated without
+			quotes. Use {{ and }} for literal braces. Cannot mix sequential
+			and positional styles.`},
 		{"reverse", Formals("type-specifier", "seq"), builtinReverse,
 			`Returns a new sequence with elements in reverse order. The
 			type-specifier ('list or 'vector) determines the return type.`},
@@ -2656,114 +2658,120 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 	if format.Type != LString {
 		return env.Errorf("first argument is not a string")
 	}
-	parts, err := parseFormatString(format.Str)
-	if err != nil {
-		return env.Error(err)
+	f := format.Str
+
+	// Fast path: no braces at all.
+	if strings.IndexByte(f, '{') < 0 && strings.IndexByte(f, '}') < 0 {
+		return String(f)
 	}
-	var buf bytes.Buffer
-	anonIndex := 0
-	for _, p := range parts {
-		if strings.HasPrefix(p, "{") && strings.HasSuffix(p, "}") {
-			p = strings.Join(strings.Fields(p), "")
-			// TODO:  Allow non-empty formatting directives
-			if p != "{}" {
-				return env.Errorf("formatting direcives must be empty")
-			}
-			if anonIndex >= len(fvals) {
-				return env.Errorf("too many formatting direcives for supplied values")
-			}
-			val := fvals[anonIndex]
-			if val.Type == LString && !val.Quoted {
-				buf.WriteString(val.Str)
-			} else {
-				buf.WriteString(val.String())
-			}
-			anonIndex++
-		} else {
-			buf.WriteString(p)
+
+	var buf strings.Builder
+	buf.Grow(len(f) + len(fvals)*16)
+
+	seqIndex := 0
+	// mode: 0 = undecided, 1 = sequential, 2 = positional
+	mode := 0
+	i := 0
+	n := len(f)
+
+	for i < n {
+		// Find the next '{' or '}'.
+		j := i
+		for j < n && f[j] != '{' && f[j] != '}' {
+			j++
 		}
+		// Write any literal text before the brace.
+		if j > i {
+			buf.WriteString(f[i:j])
+		}
+		if j >= n {
+			break
+		}
+
+		ch := f[j]
+		if ch == '}' {
+			// Must be a '}}' escape.
+			if j+1 < n && f[j+1] == '}' {
+				buf.WriteByte('}')
+				i = j + 2
+				continue
+			}
+			return env.Errorf("unexpected closing brace '}' outside of formatting directive")
+		}
+
+		// ch == '{'
+		// Check for '{{' escape.
+		if j+1 >= n {
+			return env.Errorf("unclosed '{' in format string")
+		}
+		if f[j+1] == '{' {
+			buf.WriteByte('{')
+			i = j + 2
+			continue
+		}
+
+		// Find the closing '}'.
+		close := strings.IndexByte(f[j+1:], '}')
+		if close < 0 {
+			return env.Errorf("unclosed '{' in format string")
+		}
+		close += j + 1 // absolute index of '}'
+
+		inner := f[j+1 : close]
+
+		// Determine argument index.
+		var argIdx int
+		if len(inner) == 0 || isAllSpaces(inner) {
+			// Sequential placeholder: {} or {  }
+			if mode == 2 {
+				return env.Errorf("cannot mix positional {N} and sequential {} placeholders")
+			}
+			mode = 1
+			argIdx = seqIndex
+			seqIndex++
+		} else {
+			// Positional placeholder: {0}, { 1 }, etc.
+			inner = strings.TrimSpace(inner)
+			idx, err := strconv.Atoi(inner)
+			if err != nil {
+				return env.Errorf("invalid format directive: {%s}", inner)
+			}
+			if idx < 0 {
+				return env.Errorf("negative positional index: {%s}", inner)
+			}
+			if mode == 1 {
+				return env.Errorf("cannot mix positional {N} and sequential {} placeholders")
+			}
+			mode = 2
+			argIdx = idx
+		}
+
+		if argIdx >= len(fvals) {
+			if mode == 2 {
+				return env.Errorf("positional index %d out of range for %d supplied values", argIdx, len(fvals))
+			}
+			return env.Errorf("too many formatting directives for supplied values")
+		}
+
+		val := fvals[argIdx]
+		if val.Type == LString && !val.Quoted {
+			buf.WriteString(val.Str)
+		} else {
+			buf.WriteString(val.String())
+		}
+
+		i = close + 1
 	}
 
 	return String(buf.String())
 }
 
-func parseFormatString(f string) ([]string, error) {
-	var s []string
-	tokens := tokenizeFormatString(f)
-	for len(tokens) > 0 {
-		tok := tokens[0]
-		if tok.typ == formatText {
-			s = append(s, tok.text)
-			tokens = tokens[1:]
-			continue
-		}
-		if tok.typ == formatClose {
-			if len(tokens) == 0 || tokens[0].typ != formatClose {
-				return nil, fmt.Errorf("unexpected closing brace '}' outside of formatting direcive")
-			}
-			s = append(s, "}")
-			tokens = tokens[2:]
-		}
-		if len(tokens) < 2 {
-			return nil, fmt.Errorf("unclosed formatting directive")
-		}
-		switch tokens[1].typ {
-		case formatOpen:
-			s = append(s, "{")
-			tokens = tokens[2:]
-			continue
-		case formatClose:
-			s = append(s, "{}")
-			tokens = tokens[2:]
-			continue
-		case formatText:
-			if len(tokens) < 3 {
-				return nil, fmt.Errorf("unclosed formatting directive")
-			}
-			if tokens[2].typ != formatClose {
-				return nil, fmt.Errorf("invalid formatting directive")
-			}
-			s = append(s, "{"+tokens[1].text+"}")
-			tokens = tokens[3:]
-			continue
-		default:
-			panic("unknown type")
+// isAllSpaces returns true if s contains only spaces and tabs.
+func isAllSpaces(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] != ' ' && s[i] != '\t' {
+			return false
 		}
 	}
-	return s, nil
-}
-
-func tokenizeFormatString(f string) []formatToken {
-	var tokens []formatToken
-	for {
-		i := strings.IndexAny(f, "{}")
-		if i < 0 {
-			tokens = append(tokens, formatToken{f, formatText})
-			return tokens
-		}
-		if i > 0 {
-			tokens = append(tokens, formatToken{f[:i], formatText})
-			f = f[i:]
-		}
-		if f[0] == '{' {
-			tokens = append(tokens, formatToken{"{", formatOpen})
-			f = f[1:]
-		} else {
-			tokens = append(tokens, formatToken{"}", formatClose})
-			f = f[1:]
-		}
-	}
-}
-
-type formatTokenType uint
-
-const (
-	formatText formatTokenType = iota
-	formatOpen
-	formatClose
-)
-
-type formatToken struct {
-	text string
-	typ  formatTokenType
+	return true
 }
