@@ -24,6 +24,8 @@ const DefaultPackageName = "json"
 
 // LoadPackage adds the json package to env
 func LoadPackage(env *lisp.LEnv) *lisp.LVal {
+	prevPkg := env.Runtime.Package.Name
+	defer env.InPackage(lisp.Symbol(prevPkg))
 	name := lisp.Symbol(DefaultPackageName)
 	e := env.DefinePackage(name)
 	if !e.IsNil() {

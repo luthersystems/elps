@@ -14,6 +14,8 @@ const DefaultPackageName = "base64"
 
 // LoadPackage adds the base64 package to env
 func LoadPackage(env *lisp.LEnv) *lisp.LVal {
+	prevPkg := env.Runtime.Package.Name
+	defer env.InPackage(lisp.Symbol(prevPkg))
 	name := lisp.Symbol(DefaultPackageName)
 	e := env.DefinePackage(name)
 	if !e.IsNil() {
