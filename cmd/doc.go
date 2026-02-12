@@ -15,17 +15,51 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var docPackage bool
-var docSourceFile string
-var docListPackages bool
-var docMissing bool
-var docGuide bool
+// DocCommand creates the "doc" cobra command with optional embedder
+// configuration. Embedders can pass WithEnv to supply a fully configured
+// environment (preferred) or WithRegistry to merge Go-registered packages
+// into the default doc environment.
+func DocCommand(opts ...Option) *cobra.Command {
+	var cfg cmdConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
 
-// docCmd represents the doc command
-var docCmd = &cobra.Command{
-	Use:   "doc [flags] QUERY",
-	Short: "Show elps documentation for functions, packages, and symbols",
-	Long: `Show built-in documentation for ELPS functions, macros, operators,
+	var (
+		pkgFlag      bool
+		sourceFile   string
+		listPackages bool
+		missing      bool
+		guide        bool
+	)
+
+	// makeEnv returns an LEnv suitable for documentation queries. When
+	// the embedder provided a full env via WithEnv it is returned as-is.
+	// Otherwise a standard doc env is created and any embedder registry
+	// packages are merged in.
+	makeEnv := func() (*lisp.LEnv, error) {
+		if cfg.env != nil {
+			return cfg.env, nil
+		}
+		env, err := lisplib.NewDocEnv()
+		if err != nil {
+			return nil, err
+		}
+		// Merge embedder registry packages that don't already exist.
+		if cfg.registry != nil {
+			for name, pkg := range cfg.registry.Packages {
+				if _, exists := env.Runtime.Registry.Packages[name]; !exists {
+					env.Runtime.Registry.Packages[name] = pkg
+				}
+			}
+		}
+		return env, nil
+	}
+
+	cmd := &cobra.Command{
+		Use:   "doc [flags] QUERY",
+		Short: "Show elps documentation for functions, packages, and symbols",
+		Long: `Show built-in documentation for ELPS functions, macros, operators,
 constants, and packages.
 
 By default, looks up a function or variable by name. Use -p to list all
@@ -58,48 +92,62 @@ Common packages to explore:
   math      Trigonometry, logarithms, constants (pi, inf)
   string    String operations (concat, split, join, ...)
   json      JSON serialization (json:encode, json:decode, json:null)`,
-	Run: func(cmd *cobra.Command, args []string) {
-		if docGuide {
-			fmt.Print(docs.LangGuide)
-			return
-		}
-		if docMissing {
-			if err := docCheckMissing(); err != nil {
-				fmt.Fprintln(os.Stderr, err)
+		Run: func(cmd *cobra.Command, args []string) {
+			if guide {
+				fmt.Print(docs.LangGuide)
+				return
+			}
+			if missing {
+				if err := docCheckMissing(makeEnv); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+				return
+			}
+			if listPackages {
+				if err := docListPkgs(makeEnv, sourceFile); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+				return
+			}
+			if len(args) != 1 {
+				_ = cmd.Help()
 				os.Exit(1)
 			}
-			return
-		}
-		if docListPackages {
-			if err := docListPkgs(); err != nil {
+			err := docExec(makeEnv, sourceFile, pkgFlag, args[0])
+			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
+				lerr := &lisp.ErrorVal{}
+				if errors.As(err, &lerr) {
+					_, _ = lerr.WriteTrace(os.Stderr)
+				}
 				os.Exit(1)
 			}
-			return
-		}
-		if len(args) != 1 {
-			_ = cmd.Help()
-			os.Exit(1)
-		}
-		err := docExec(args[0])
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			lerr := &lisp.ErrorVal{}
-			if errors.As(err, &lerr) {
-				_, _ = lerr.WriteTrace(os.Stderr)
-			}
-			os.Exit(1)
-		}
-	},
+		},
+	}
+
+	cmd.Flags().BoolVarP(&pkgFlag, "package", "p", false,
+		"Interpret the argument as a package name.")
+	cmd.Flags().StringVarP(&sourceFile, "source-file", "f", "",
+		"Evaluate a lisp source file before querying documentation (presumably desired docs are in source code).")
+	cmd.Flags().BoolVarP(&listPackages, "list-packages", "l", false,
+		"List all packages loaded in the runtime with descriptions.")
+	cmd.Flags().BoolVarP(&missing, "missing", "m", false,
+		"List all builtins, special ops, macros, and library functions with missing docstrings. Exits with code 1 if any are found.")
+	cmd.Flags().BoolVar(&guide, "guide", false,
+		"Print the full ELPS language reference guide.")
+
+	return cmd
 }
 
-func docListPkgs() error {
-	env, err := lisplib.NewDocEnv()
+func docListPkgs(makeEnv func() (*lisp.LEnv, error), sourceFile string) error {
+	env, err := makeEnv()
 	if err != nil {
 		return err
 	}
-	if docSourceFile != "" {
-		res := env.LoadFile(docSourceFile)
+	if sourceFile != "" {
+		res := env.LoadFile(sourceFile)
 		if res.Type == lisp.LError {
 			_, _ = (*lisp.ErrorVal)(res).WriteTrace(os.Stderr)
 			os.Exit(1)
@@ -110,13 +158,13 @@ func docListPkgs() error {
 	return libhelp.RenderPackageList(out, env)
 }
 
-func docExec(query string) error {
-	env, err := lisplib.NewDocEnv()
+func docExec(makeEnv func() (*lisp.LEnv, error), sourceFile string, pkgFlag bool, query string) error {
+	env, err := makeEnv()
 	if err != nil {
 		return err
 	}
-	if docSourceFile != "" {
-		res := env.LoadFile(docSourceFile)
+	if sourceFile != "" {
+		res := env.LoadFile(sourceFile)
 		if res.Type == lisp.LError {
 			_, _ = (*lisp.ErrorVal)(res).WriteTrace(os.Stderr)
 			os.Exit(1)
@@ -124,14 +172,14 @@ func docExec(query string) error {
 	}
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush() //nolint:errcheck // best-effort flush on exit
-	if docPackage {
+	if pkgFlag {
 		return libhelp.RenderPkgExported(out, env, query)
 	}
 	return libhelp.RenderVar(out, env, query)
 }
 
-func docCheckMissing() error {
-	env, err := lisplib.NewDocEnv()
+func docCheckMissing(makeEnv func() (*lisp.LEnv, error)) error {
+	env, err := makeEnv()
 	if err != nil {
 		return err
 	}
@@ -155,17 +203,5 @@ func docCheckMissing() error {
 }
 
 func init() {
-	rootCmd.AddCommand(docCmd)
-
-	// Here flags for the doc command are defined
-	docCmd.Flags().BoolVarP(&docPackage, "package", "p", false,
-		"Interpret the argument as a package name.")
-	docCmd.Flags().StringVarP(&docSourceFile, "source-file", "f", "",
-		"Evaluate a lisp source file before querying documentation (presumably desired docs are in source code).")
-	docCmd.Flags().BoolVarP(&docListPackages, "list-packages", "l", false,
-		"List all packages loaded in the runtime with descriptions.")
-	docCmd.Flags().BoolVarP(&docMissing, "missing", "m", false,
-		"List all builtins, special ops, macros, and library functions with missing docstrings. Exits with code 1 if any are found.")
-	docCmd.Flags().BoolVar(&docGuide, "guide", false,
-		"Print the full ELPS language reference guide.")
+	rootCmd.AddCommand(DocCommand())
 }

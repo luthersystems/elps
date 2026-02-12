@@ -262,19 +262,20 @@ For convenience, `lisplib.NewDocEnv()` creates a standard environment with the
 stdlib loaded. Embedders can use this as a starting point or create their own
 environment from scratch.
 
-### Example: Embedder CLI Tool
+### Reusing the CLI Commands (Recommended)
 
-A complete example combining lint and doc support for an embedder runtime:
+The `cmd` package exports `LintCommand()` and `DocCommand()` factory functions
+that return fully configured `*cobra.Command` values with all flags, output
+modes, and diagnostic rendering built in. Pass `cmd.WithRegistry` or
+`cmd.WithEnv` to inject embedder symbols so that semantic analysis and
+documentation queries see Go-registered builtins.
 
 ```go
 package main
 
 import (
-    "fmt"
-    "os"
-
-    "github.com/luthersystems/elps/lint"
-    "github.com/luthersystems/elps/lisp/lisplib/libhelp"
+    "github.com/luthersystems/elps/cmd"
+    "github.com/spf13/cobra"
 )
 
 func main() {
@@ -282,27 +283,58 @@ func main() {
     // (cc:*, app:*, etc.) already registered.
     env := NewRuntime()
 
-    switch os.Args[1] {
-    case "lint":
-        l := &lint.Linter{Analyzers: lint.DefaultAnalyzers()}
-        diags, err := l.LintFiles(&lint.LintConfig{
-            Workspace: ".",
-            Registry:  env.Runtime.Registry,
-        }, os.Args[2:])
-        if err != nil {
-            fmt.Fprintln(os.Stderr, err)
-            os.Exit(2)
-        }
-        lint.FormatText(os.Stderr, diags)
+    root := &cobra.Command{Use: "mytool"}
+    root.AddCommand(
+        // Lint: injects the registry so semantic analysis recognises
+        // embedder builtins (no false-positive undefined-symbol).
+        cmd.LintCommand(cmd.WithRegistry(env.Runtime.Registry)),
 
-    case "doc":
-        libhelp.RenderVar(os.Stdout, env, os.Args[2])
-
-    case "doc-missing":
-        missing := libhelp.CheckMissing(env)
-        for _, m := range missing {
-            fmt.Printf("  %-10s  %s\n", m.Kind, m.Name)
-        }
-    }
+        // Doc: injects the full env so documentation queries cover
+        // all embedder packages and their docstrings.
+        cmd.DocCommand(cmd.WithEnv(env)),
+    )
+    root.Execute()
 }
+```
+
+This gives embedders the full `elps lint` and `elps doc` experience — all
+flags (`--json`, `--workspace`, `--checks`, `-p`, `-m`, `--guide`, etc.),
+diagnostic rendering, and exit codes — with accurate analysis of custom
+builtins.
+
+**Option functions:**
+
+| Option | Effect |
+|--------|--------|
+| `cmd.WithRegistry(reg)` | Merges Go-registered symbols into semantic analysis (lint) or the doc environment. |
+| `cmd.WithEnv(env)` | Uses the given `*lisp.LEnv` directly. For lint, `env.Runtime.Registry` is extracted. For doc, the env is used for queries. |
+
+When both options are provided, `WithEnv` takes precedence for registry
+resolution (the env's registry is used).
+
+### Low-Level APIs
+
+For more control, the underlying packages can be used directly.
+
+#### Linting
+
+```go
+import "github.com/luthersystems/elps/lint"
+
+l := &lint.Linter{Analyzers: lint.DefaultAnalyzers()}
+diags, err := l.LintFiles(&lint.LintConfig{
+    Workspace: workspaceDir,
+    Registry:  env.Runtime.Registry,
+}, files)
+```
+
+#### Documentation
+
+```go
+import "github.com/luthersystems/elps/lisp/lisplib/libhelp"
+
+libhelp.RenderVar(os.Stdout, env, "cc:storage-put")
+libhelp.RenderPkgExported(os.Stdout, env, "cc")
+libhelp.RenderPackageList(os.Stdout, env)
+missing := libhelp.CheckMissing(env)
 ```
