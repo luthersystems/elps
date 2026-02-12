@@ -7,9 +7,57 @@ import (
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
+	"github.com/luthersystems/elps/lisp/lisplib/libbase64"
+	"github.com/luthersystems/elps/lisp/lisplib/libgolang"
+	"github.com/luthersystems/elps/lisp/lisplib/libhelp"
+	"github.com/luthersystems/elps/lisp/lisplib/libjson"
+	"github.com/luthersystems/elps/lisp/lisplib/libmath"
+	"github.com/luthersystems/elps/lisp/lisplib/libregexp"
+	"github.com/luthersystems/elps/lisp/lisplib/libschema"
+	"github.com/luthersystems/elps/lisp/lisplib/libstring"
+	"github.com/luthersystems/elps/lisp/lisplib/libtesting"
+	"github.com/luthersystems/elps/lisp/lisplib/libtime"
+	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLoadLibrary_EachPackageRestoresPrevious(t *testing.T) {
+	// Verify that calling each stdlib LoadPackage individually restores the
+	// previous active package. This is the fix for
+	// https://github.com/luthersystems/elps/issues/99.
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
+	rc := lisp.InitializeUserEnv(env)
+	require.True(t, rc.IsNil())
+	require.Equal(t, "user", env.Runtime.Package.Name)
+
+	loaders := []struct {
+		name string
+		load func(*lisp.LEnv) *lisp.LVal
+	}{
+		{"time", libtime.LoadPackage},
+		{"help", libhelp.LoadPackage},
+		{"golang", libgolang.LoadPackage},
+		{"math", libmath.LoadPackage},
+		{"string", libstring.LoadPackage},
+		{"base64", libbase64.LoadPackage},
+		{"json", libjson.LoadPackage},
+		{"regexp", libregexp.LoadPackage},
+		{"testing", libtesting.LoadPackage},
+		{"schema", libschema.LoadPackage},
+	}
+	for _, l := range loaders {
+		t.Run(l.name, func(t *testing.T) {
+			before := env.Runtime.Package.Name
+			rc := l.load(env)
+			require.Truef(t, rc.IsNil(), "LoadPackage(%s) failed: %v", l.name, rc)
+			assert.Equalf(t, before, env.Runtime.Package.Name,
+				"LoadPackage(%s) should restore the previous package", l.name)
+		})
+	}
+}
 
 func TestNewDocEnv(t *testing.T) {
 	env, err := lisplib.NewDocEnv()

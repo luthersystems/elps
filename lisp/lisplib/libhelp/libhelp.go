@@ -115,6 +115,8 @@ func docstring(defn lisp.LBuiltinDef) string {
 
 // LoadPackage adds the help package to env
 func LoadPackage(env *lisp.LEnv) *lisp.LVal {
+	prevPkg := env.Runtime.Package.Name
+	defer env.InPackage(lisp.Symbol(prevPkg))
 	name := lisp.Symbol(DefaultPackageName)
 	e := env.DefinePackage(name)
 	if !e.IsNil() {

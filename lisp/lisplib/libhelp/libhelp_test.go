@@ -385,6 +385,24 @@ func TestCheckMissing_ExcludesUserPackage(t *testing.T) {
 	}
 }
 
+func TestLoadPackage_RestoresPreviousPackage(t *testing.T) {
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
+	rc := lisp.InitializeUserEnv(env)
+	require.True(t, rc.IsNil())
+
+	// Before LoadPackage, we should be in "user".
+	require.Equal(t, "user", env.Runtime.Package.Name)
+
+	rc = libhelp.LoadPackage(env)
+	require.True(t, rc.IsNil())
+
+	// After LoadPackage, we should still be in "user".
+	assert.Equal(t, "user", env.Runtime.Package.Name,
+		"LoadPackage should restore the previous package")
+}
+
 func TestCheckMissing_NoDuplicates(t *testing.T) {
 	env := newTestEnv(t)
 
