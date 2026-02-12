@@ -1569,6 +1569,17 @@ func TestUndefinedSymbol_Negative_TrueFalse(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+func TestUndefinedSymbol_Negative_HandlerBindConditionType(t *testing.T) {
+	// Condition type names in handler-bind bindings are runtime matchers,
+	// not variable references.
+	source := `(defun safe-divide (a b)
+  (handler-bind
+    ((condition (lambda (c) c)))
+    (/ a b)))`
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	assertNoDiags(t, diags)
+}
+
 func TestUndefinedSymbol_Negative_NoSemantics(t *testing.T) {
 	// Without semantic analysis, should be a no-op
 	diags := lintCheck(t, AnalyzerUndefinedSymbol, `(unknown-fn 1 2)`)

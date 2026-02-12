@@ -340,6 +340,20 @@ func TestAnalyze_HandlerBind(t *testing.T) {
 	}
 }
 
+func TestAnalyze_HandlerBind_ConditionTypeNotUndefined(t *testing.T) {
+	// The condition type name in handler-bind bindings is a runtime matcher,
+	// not a variable reference. It should not be flagged as undefined.
+	result := parseAndAnalyze(t, `
+(defun safe-divide (a b)
+  (handler-bind
+    ((condition (lambda (c) (debug-print "caught" c) 0)))
+    (/ a b)))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "condition", u.Name,
+			"condition type name in handler-bind should not be flagged as undefined")
+	}
+}
+
 // --- Analyze: test-let / test-let* ---
 
 func TestAnalyze_TestLet_BindingsResolved(t *testing.T) {

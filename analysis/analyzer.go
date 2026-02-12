@@ -795,8 +795,23 @@ func (a *analyzer) analyzeFunction(node *lisp.LVal, scope *Scope) {
 }
 
 func (a *analyzer) analyzeHandlerBind(node *lisp.LVal, scope *Scope) {
-	// Not a scope creator — walk all children in current scope
-	for _, child := range node.Cells[1:] {
+	// (handler-bind ((condition-type handler-fn) ...) body...)
+	// The first arg is a list of binding pairs. The condition type name
+	// in each pair is a runtime matcher (not a variable reference) — skip it.
+	if astutil.ArgCount(node) < 1 {
+		return
+	}
+	bindings := node.Cells[1]
+	if bindings.Type == lisp.LSExpr && !bindings.Quoted {
+		for _, pair := range bindings.Cells {
+			if pair.Type == lisp.LSExpr && len(pair.Cells) >= 2 {
+				// Skip pair.Cells[0] (condition type name)
+				a.analyzeExpr(pair.Cells[1], scope)
+			}
+		}
+	}
+	// Walk body forms
+	for _, child := range node.Cells[2:] {
 		a.analyzeExpr(child, scope)
 	}
 }
