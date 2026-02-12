@@ -795,8 +795,29 @@ func (a *analyzer) analyzeFunction(node *lisp.LVal, scope *Scope) {
 }
 
 func (a *analyzer) analyzeHandlerBind(node *lisp.LVal, scope *Scope) {
-	// Not a scope creator — walk all children in current scope
-	for _, child := range node.Cells[1:] {
+	// handler-bind form: (handler-bind ((cond-type handler) ...) body...)
+	// The bindings list (Cells[1]) contains pairs where the first element
+	// is a condition type name (data, not a variable reference) and the
+	// second is a handler (usually a lambda). We must skip resolving the
+	// condition type names to avoid false "undefined symbol" reports.
+	if astutil.ArgCount(node) < 1 {
+		return
+	}
+	bindings := node.Cells[1]
+	if bindings.Type == lisp.LSExpr && !bindings.Quoted {
+		for _, clause := range bindings.Cells {
+			if clause.Type != lisp.LSExpr || len(clause.Cells) < 2 {
+				continue
+			}
+			// Skip clause.Cells[0] — it's a condition type name, not code.
+			// Analyze the handler (clause.Cells[1]) and any remaining forms.
+			for _, child := range clause.Cells[1:] {
+				a.analyzeExpr(child, scope)
+			}
+		}
+	}
+	// Analyze body forms
+	for _, child := range node.Cells[2:] {
 		a.analyzeExpr(child, scope)
 	}
 }

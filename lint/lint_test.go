@@ -1593,6 +1593,19 @@ func TestUndefinedSymbol_HasNotes(t *testing.T) {
 	assert.NotEmpty(t, diags[0].Notes)
 }
 
+func TestUndefinedSymbol_Negative_HandlerBindConditionType(t *testing.T) {
+	// Condition types in handler-bind clauses are not variable references.
+	source := `(defun safe-op ()
+  (handler-bind
+    ((condition (lambda (&rest e) (debug-print "caught" e) ())))
+    (/ 1 0)))`
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	for _, d := range diags {
+		assert.NotContains(t, d.Message, "condition",
+			"condition type in handler-bind should not be flagged")
+	}
+}
+
 // --- unused-variable ---
 
 func TestUnusedVariable_Positive_LetBinding(t *testing.T) {

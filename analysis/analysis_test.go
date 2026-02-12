@@ -340,6 +340,47 @@ func TestAnalyze_HandlerBind(t *testing.T) {
 	}
 }
 
+func TestAnalyze_HandlerBind_ConditionTypeNotFlagged(t *testing.T) {
+	// The first element of each handler-bind clause is a condition type name,
+	// not a variable reference. It should not be flagged as undefined.
+	result := parseAndAnalyze(t, `
+(defun safe-op ()
+  (handler-bind
+    ((condition (lambda (&rest e) (debug-print "caught" e) ())))
+    (/ 1 0)))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "condition", u.Name,
+			"condition type in handler-bind clause should not be flagged as undefined")
+	}
+}
+
+func TestAnalyze_HandlerBind_CustomConditionType(t *testing.T) {
+	// Custom condition type names should also not be flagged.
+	result := parseAndAnalyze(t, `
+(handler-bind
+  ((my-error-type (lambda (e) e)))
+  (do-something))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "my-error-type", u.Name,
+			"custom condition type in handler-bind should not be flagged")
+	}
+}
+
+func TestAnalyze_HandlerBind_MultipleClauses(t *testing.T) {
+	// Multiple handler-bind clauses — all condition types should be skipped.
+	result := parseAndAnalyze(t, `
+(handler-bind
+  ((type-error (lambda (e) e))
+   (condition (lambda (e) e)))
+  (+ 1 2))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "type-error", u.Name,
+			"type-error condition type should not be flagged")
+		assert.NotEqual(t, "condition", u.Name,
+			"condition type should not be flagged")
+	}
+}
+
 // --- Analyze: test-let / test-let* ---
 
 func TestAnalyze_TestLet_BindingsResolved(t *testing.T) {
