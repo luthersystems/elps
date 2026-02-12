@@ -38,7 +38,7 @@ git pull origin main
 git checkout -b issue-<N>/<short-description>
 ```
 
-Use the issue number in the branch name for traceability.
+Use the issue number in the branch name for traceability. **Never commit or push directly to main** — all work must happen on a feature branch.
 
 ### 4. Plan the Implementation
 
