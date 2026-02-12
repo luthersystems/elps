@@ -2030,6 +2030,92 @@ func TestUnusedNolint_MultipleDirectives_MixedUsage(t *testing.T) {
 	assert.Equal(t, "unused-nolint", diags[0].Analyzer)
 }
 
+// --- unused-nolint: semantic mode handling ---
+
+func TestUnusedNolint_SemanticNolintInSyntacticMode(t *testing.T) {
+	// nolint:unused-function in syntactic mode (no semantics) should NOT
+	// produce an unused-nolint warning — the analyzer is semantic-only.
+	source := "(defun incr (x) (+ x 1)) ; nolint:unused-function\n"
+	diags := lintSource(t, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedNolint_AllSemanticAnalyzersInSyntacticMode(t *testing.T) {
+	names := []string{"unused-variable", "unused-function", "undefined-symbol", "shadowing", "user-arity"}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			source := fmt.Sprintf("(+ 1 2) ; nolint:%s\n", name)
+			diags := lintSource(t, source)
+			assertNoDiags(t, diags)
+		})
+	}
+}
+
+func TestUnusedNolint_MultipleSemanticNamesInSyntacticMode(t *testing.T) {
+	// nolint:unused-function,user-arity — both semantic, should be tolerated
+	source := "(+ 1 2) ; nolint:unused-function,user-arity\n"
+	diags := lintSource(t, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedNolint_MixedSemanticSyntacticInSyntacticMode(t *testing.T) {
+	// nolint:unused-function,set-usage in syntactic mode — set-usage is
+	// a syntactic analyzer that didn't fire, so the directive is not
+	// purely semantic. Should still warn.
+	source := "(+ 1 2) ; nolint:unused-function,set-usage\n"
+	diags := lintSource(t, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "does not suppress any diagnostic")
+}
+
+func TestUnusedNolint_BareNolintInSyntacticModeStillWarns(t *testing.T) {
+	// Bare ; nolint on a clean line should still warn — it's not targeted
+	// at a specific semantic analyzer.
+	source := "(+ 1 2) ; nolint\n"
+	diags := lintSource(t, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "does not suppress any diagnostic")
+}
+
+func TestUnusedNolint_ChecksFilterDoesNotFlagKnown(t *testing.T) {
+	// When running with only set-usage, nolint:if-arity should NOT be
+	// flagged as "unknown analyzer" — if-arity is a valid name.
+	source := "(+ 1 2) ; nolint:if-arity\n"
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerSetUsage}}
+	diags, err := l.LintFile([]byte(source), "test.lisp")
+	require.NoError(t, err)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "does not suppress any diagnostic")
+	assert.NotContains(t, diags[0].Message, "unknown")
+}
+
+func TestUnusedNolint_ChecksFilterStillFlagsUnknown(t *testing.T) {
+	// A truly unknown analyzer name should still be flagged with --checks.
+	source := "(+ 1 2) ; nolint:totally-fake\n"
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerSetUsage}}
+	diags, err := l.LintFile([]byte(source), "test.lisp")
+	require.NoError(t, err)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "unknown analyzer")
+}
+
+func TestDefaultAnalyzers_SemanticField(t *testing.T) {
+	semanticNames := map[string]bool{
+		"unused-variable": true,
+		"unused-function": true,
+		"undefined-symbol": true,
+		"shadowing":        true,
+		"user-arity":       true,
+	}
+	for _, a := range DefaultAnalyzers() {
+		if semanticNames[a.Name] {
+			assert.True(t, a.Semantic, "%s should have Semantic: true", a.Name)
+		} else {
+			assert.False(t, a.Semantic, "%s should have Semantic: false", a.Name)
+		}
+	}
+}
+
 // --- LintFiles ---
 
 // writeTempLisp creates a .lisp file in dir and returns its path.

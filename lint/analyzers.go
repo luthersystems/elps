@@ -635,6 +635,7 @@ var AnalyzerUnnecessaryProgn = &Analyzer{
 var AnalyzerUnusedVariable = &Analyzer{
 	Name:     "unused-variable",
 	Severity: SeverityWarning,
+	Semantic: true,
 	Doc:      "Warn about variables and parameters that are defined but never referenced.\n\nRequires semantic analysis (--workspace flag). Skips variables with underscore prefix (conventional \"ignored\" marker) and top-level (global scope) variables.",
 	Run: func(pass *Pass) error {
 		if pass.Semantics == nil {
@@ -670,6 +671,7 @@ var AnalyzerUnusedVariable = &Analyzer{
 var AnalyzerUnusedFunction = &Analyzer{
 	Name:     "unused-function",
 	Severity: SeverityWarning,
+	Semantic: true,
 	Doc:      "Warn about top-level functions and macros that are defined but never referenced.\n\nRequires semantic analysis (--workspace flag). Exported symbols and functions with underscore prefix are excluded.",
 	Run: func(pass *Pass) error {
 		if pass.Semantics == nil {
@@ -710,6 +712,7 @@ var AnalyzerUnusedFunction = &Analyzer{
 var AnalyzerShadowing = &Analyzer{
 	Name:     "shadowing",
 	Severity: SeverityInfo,
+	Semantic: true,
 	Doc:      "Report when a local binding shadows a name from an enclosing scope.\n\nRequires semantic analysis (--workspace flag). Shadowing is valid but can cause confusion, especially when it hides a builtin or outer variable.",
 	Run: func(pass *Pass) error {
 		if pass.Semantics == nil {
@@ -748,6 +751,7 @@ var AnalyzerShadowing = &Analyzer{
 var AnalyzerUserArity = &Analyzer{
 	Name:     "user-arity",
 	Severity: SeverityError,
+	Semantic: true,
 	Doc:      "Check argument counts for calls to user-defined functions and macros.\n\nRequires semantic analysis (--workspace flag). Only checks calls to functions with known signatures (Source != nil). Complements builtin-arity which covers builtins.",
 	Run: func(pass *Pass) error {
 		if pass.Semantics == nil {
@@ -835,6 +839,7 @@ func sourceString(loc *token.Location) string {
 var AnalyzerUndefinedSymbol = &Analyzer{
 	Name:     "undefined-symbol",
 	Severity: SeverityError,
+	Semantic: true,
 	Doc:      "Report symbols that cannot be resolved in any enclosing scope.\n\nRequires semantic analysis (--workspace flag). Keywords and qualified symbols are excluded. Builtins, special operators, and macros are pre-populated.",
 	Run: func(pass *Pass) error {
 		if pass.Semantics == nil {
