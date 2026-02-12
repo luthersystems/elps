@@ -78,6 +78,50 @@ func (s *Severity) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// ParseSeverity converts a string to a Severity value.
+// Valid inputs: "error", "warning", "info".
+func ParseSeverity(s string) (Severity, error) {
+	switch s {
+	case "error":
+		return SeverityError, nil
+	case "warning":
+		return SeverityWarning, nil
+	case "info":
+		return SeverityInfo, nil
+	default:
+		return 0, fmt.Errorf("unknown severity: %q (valid: error, warning, info)", s)
+	}
+}
+
+// MaxSeverity returns the most severe level found in the given diagnostics.
+// Returns SeverityInfo if diags is empty (i.e., least severe / no problems).
+// Severity ordering: SeverityError > SeverityWarning > SeverityInfo.
+func MaxSeverity(diags []Diagnostic) Severity {
+	if len(diags) == 0 {
+		return SeverityInfo
+	}
+	max := SeverityInfo // start at least severe
+	for _, d := range diags {
+		sev := d.Severity
+		if sev == severityUnset {
+			sev = SeverityWarning // matches MarshalJSON behavior
+		}
+		if sev < max {
+			max = sev // lower numeric value = more severe
+		}
+	}
+	return max
+}
+
+// ShouldFail returns true if the diagnostics contain at least one finding
+// at or above the given severity threshold.
+func ShouldFail(diags []Diagnostic, threshold Severity) bool {
+	if len(diags) == 0 {
+		return false
+	}
+	return MaxSeverity(diags) <= threshold // lower numeric = more severe
+}
+
 // Analyzer defines a single lint check.
 type Analyzer struct {
 	// Name is a short identifier for this check (e.g. "set-usage").

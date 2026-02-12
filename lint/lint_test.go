@@ -1447,6 +1447,139 @@ func TestSeverity_JSONRoundTrip(t *testing.T) {
 	assert.Contains(t, output, `"info"`)
 }
 
+// --- ParseSeverity ---
+
+func TestParseSeverity(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  Severity
+		err   bool
+	}{
+		{"error", "error", SeverityError, false},
+		{"warning", "warning", SeverityWarning, false},
+		{"info", "info", SeverityInfo, false},
+		{"bogus", "bogus", 0, true},
+		{"empty", "", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseSeverity(tt.input)
+			if tt.err {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.input)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, got)
+			}
+		})
+	}
+}
+
+// --- MaxSeverity ---
+
+func TestMaxSeverity_Empty(t *testing.T) {
+	assert.Equal(t, SeverityInfo, MaxSeverity(nil))
+}
+
+func TestMaxSeverity_OnlyInfo(t *testing.T) {
+	diags := []Diagnostic{{Severity: SeverityInfo}}
+	assert.Equal(t, SeverityInfo, MaxSeverity(diags))
+}
+
+func TestMaxSeverity_OnlyWarning(t *testing.T) {
+	diags := []Diagnostic{{Severity: SeverityWarning}}
+	assert.Equal(t, SeverityWarning, MaxSeverity(diags))
+}
+
+func TestMaxSeverity_OnlyError(t *testing.T) {
+	diags := []Diagnostic{{Severity: SeverityError}}
+	assert.Equal(t, SeverityError, MaxSeverity(diags))
+}
+
+func TestMaxSeverity_Mixed(t *testing.T) {
+	diags := []Diagnostic{
+		{Severity: SeverityInfo},
+		{Severity: SeverityWarning},
+		{Severity: SeverityError},
+	}
+	assert.Equal(t, SeverityError, MaxSeverity(diags))
+}
+
+func TestMaxSeverity_MostSevereLast(t *testing.T) {
+	// Error at end — guards against return diags[0] or return diags[len-1] mutations
+	diags := []Diagnostic{
+		{Severity: SeverityWarning},
+		{Severity: SeverityInfo},
+		{Severity: SeverityError},
+	}
+	assert.Equal(t, SeverityError, MaxSeverity(diags))
+}
+
+func TestMaxSeverity_WarningAndInfo(t *testing.T) {
+	diags := []Diagnostic{
+		{Severity: SeverityInfo},
+		{Severity: SeverityWarning},
+	}
+	assert.Equal(t, SeverityWarning, MaxSeverity(diags))
+}
+
+func TestMaxSeverity_UnsetDefaultsToWarning(t *testing.T) {
+	diags := []Diagnostic{{Severity: severityUnset}}
+	assert.Equal(t, SeverityWarning, MaxSeverity(diags))
+}
+
+// --- ShouldFail ---
+
+func TestShouldFail_NoDiags(t *testing.T) {
+	assert.False(t, ShouldFail(nil, SeverityError))
+}
+
+func TestShouldFail_ErrorThreshold_OnlyInfo(t *testing.T) {
+	diags := []Diagnostic{{Severity: SeverityInfo}}
+	assert.False(t, ShouldFail(diags, SeverityError))
+}
+
+func TestShouldFail_ErrorThreshold_HasError(t *testing.T) {
+	diags := []Diagnostic{{Severity: SeverityError}}
+	assert.True(t, ShouldFail(diags, SeverityError))
+}
+
+func TestShouldFail_WarningThreshold_OnlyInfo(t *testing.T) {
+	diags := []Diagnostic{{Severity: SeverityInfo}}
+	assert.False(t, ShouldFail(diags, SeverityWarning))
+}
+
+func TestShouldFail_WarningThreshold_HasWarning(t *testing.T) {
+	diags := []Diagnostic{{Severity: SeverityWarning}}
+	assert.True(t, ShouldFail(diags, SeverityWarning))
+}
+
+func TestShouldFail_WarningThreshold_HasError(t *testing.T) {
+	diags := []Diagnostic{{Severity: SeverityError}}
+	assert.True(t, ShouldFail(diags, SeverityWarning))
+}
+
+func TestShouldFail_InfoThreshold_HasInfo(t *testing.T) {
+	diags := []Diagnostic{{Severity: SeverityInfo}}
+	assert.True(t, ShouldFail(diags, SeverityInfo))
+}
+
+func TestShouldFail_InfoThreshold_HasWarning(t *testing.T) {
+	diags := []Diagnostic{{Severity: SeverityWarning}}
+	assert.True(t, ShouldFail(diags, SeverityInfo))
+}
+
+func TestShouldFail_InfoThreshold_HasError(t *testing.T) {
+	diags := []Diagnostic{{Severity: SeverityError}}
+	assert.True(t, ShouldFail(diags, SeverityInfo))
+}
+
+func TestShouldFail_ErrorThreshold_HasWarning(t *testing.T) {
+	diags := []Diagnostic{{Severity: SeverityWarning}}
+	assert.False(t, ShouldFail(diags, SeverityError))
+}
+
 func TestFormatText_WithNotes(t *testing.T) {
 	diags := []Diagnostic{
 		{Pos: Position{File: "test.lisp", Line: 10}, Message: "use set!", Analyzer: "set-usage", Notes: []string{"hint text"}},
@@ -2041,10 +2174,13 @@ func TestUnusedNolint_SemanticNolintInSyntacticMode(t *testing.T) {
 }
 
 func TestUnusedNolint_AllSemanticAnalyzersInSyntacticMode(t *testing.T) {
-	names := []string{"unused-variable", "unused-function", "undefined-symbol", "shadowing", "user-arity"}
-	for _, name := range names {
-		t.Run(name, func(t *testing.T) {
-			source := fmt.Sprintf("(+ 1 2) ; nolint:%s\n", name)
+	// Derive names dynamically from DefaultAnalyzers() to prevent drift.
+	for _, a := range DefaultAnalyzers() {
+		if !a.Semantic {
+			continue
+		}
+		t.Run(a.Name, func(t *testing.T) {
+			source := fmt.Sprintf("(+ 1 2) ; nolint:%s\n", a.Name)
 			diags := lintSource(t, source)
 			assertNoDiags(t, diags)
 		})
