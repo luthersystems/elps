@@ -80,6 +80,7 @@ Functions return `*LVal`. Errors are LVal values with type `LError`. Check with 
 ## Additional Packages
 
 - **`formatter/`** — Source code formatter. Uses annotated AST with `LVal.Meta *SourceMeta`. Parser `preserveFormat` mode collects comments, brackets, newlines.
+- **`analysis/`** — Semantic analysis: scope building, symbol resolution, reference counting. `prescan()` uses a two-phase approach (definitions first, exports second) so `(export 'name)` before `(defun name ...)` works correctly.
 - **`lint/`** — Static analysis modeled after `go vet`. Each check is an `Analyzer` with a `Run func(pass *Pass) error`. Uses `Walk()`/`WalkSExprs()` for AST traversal, plus custom walkers for context-sensitive checks.
 - **`diagnostic/`** — Rust-style annotated source snippets for error and lint output. Zero dependencies on `lisp/`.
 

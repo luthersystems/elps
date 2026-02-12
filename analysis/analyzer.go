@@ -17,8 +17,11 @@ type analyzer struct {
 }
 
 // prescan walks top-level expressions to register forward-referenceable
-// definitions (defun, defmacro, set, export).
+// definitions (defun, defmacro, set, export). It runs in two phases so
+// that (export 'name) works regardless of source order — a common ELPS
+// convention is to place exports before the corresponding defun.
 func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
+	// Phase 1: Register all definitions.
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
 			continue
@@ -33,12 +36,19 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 			a.prescanDeftype(expr, scope)
 		case "set":
 			a.prescanSet(expr, scope)
-		case "export":
-			a.prescanExport(expr, scope)
 		case "use-package":
 			a.prescanUsePackage(expr, scope)
 		case "in-package":
 			a.prescanInPackage(expr, scope)
+		}
+	}
+	// Phase 2: Apply exports (all definitions now exist in scope).
+	for _, expr := range exprs {
+		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+			continue
+		}
+		if astutil.HeadSymbol(expr) == "export" {
+			a.prescanExport(expr, scope)
 		}
 	}
 }

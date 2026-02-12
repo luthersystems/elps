@@ -473,6 +473,39 @@ func TestAnalyze_Export(t *testing.T) {
 	assert.True(t, sym.Exported)
 }
 
+func TestAnalyze_ExportBeforeDefun(t *testing.T) {
+	// export before defun is a common ELPS convention — prescan must handle it.
+	result := parseAndAnalyze(t, "(export 'greet)\n(defun greet (name) name)")
+	sym := result.RootScope.LookupLocal("greet")
+	require.NotNil(t, sym)
+	assert.Equal(t, SymFunction, sym.Kind, "greet should be registered as a function")
+	assert.True(t, sym.Exported, "export before defun should mark greet as exported")
+}
+
+func TestAnalyze_ExportBeforeDefun_Multiple(t *testing.T) {
+	source := "(export 'a)\n(export 'b)\n(defun a () 1)\n(defun b () 2)"
+	result := parseAndAnalyze(t, source)
+	for _, name := range []string{"a", "b"} {
+		sym := result.RootScope.LookupLocal(name)
+		require.NotNil(t, sym, "symbol %s should exist", name)
+		assert.True(t, sym.Exported, "%s should be exported", name)
+	}
+}
+
+func TestAnalyze_ExportBeforeDefmacro(t *testing.T) {
+	result := parseAndAnalyze(t, "(export 'my-macro)\n(defmacro my-macro (x) x)")
+	sym := result.RootScope.LookupLocal("my-macro")
+	require.NotNil(t, sym)
+	assert.Equal(t, SymMacro, sym.Kind)
+	assert.True(t, sym.Exported)
+}
+
+func TestAnalyze_ExportNonexistent(t *testing.T) {
+	result := parseAndAnalyze(t, "(export 'ghost)")
+	sym := result.RootScope.LookupLocal("ghost")
+	assert.Nil(t, sym, "export of undefined name should not create a symbol")
+}
+
 // --- Analyze: external symbols ---
 
 func TestAnalyze_ExternalSymbols(t *testing.T) {

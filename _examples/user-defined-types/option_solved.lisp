@@ -19,7 +19,7 @@
   (something (funcall fn (get-something v))))
 
 (export 'optional?)
-(defun optional? (v) (or (nothing? v) ; nolint:unused-function
+(defun optional? (v) (or (nothing? v)
                          (something? v)))
 
 (export 'lookup)
