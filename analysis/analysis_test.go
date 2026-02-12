@@ -297,6 +297,101 @@ func TestAnalyze_Labels_MutualRecursion(t *testing.T) {
 	}
 }
 
+func TestAnalyze_Labels_SelfRecursion(t *testing.T) {
+	source := `(defun countdown (n)
+  (labels ([go (i) (if (<= i 0) "done" (go (- i 1)))])
+    (go n)))`
+	result := parseAndAnalyze(t, source)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "go", u.Name,
+			"self-recursive labels call should not be flagged as undefined")
+	}
+}
+
+func TestAnalyze_Labels_SelfRecursion_WithPackageExports(t *testing.T) {
+	// Simulates the code path when PackageRegistry is set (issue #90).
+	source := `(defun countdown (n)
+  (labels ([go (i) (if (<= i 0) "done" (go (- i 1)))])
+    (go n)))`
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"testing": {
+				{Name: "assert-equal", Kind: SymMacro, Package: "testing"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, source, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "go", u.Name,
+			"self-recursive labels call should not be flagged as undefined (with PackageExports)")
+	}
+}
+
+func TestAnalyze_Labels_SelfRecursion_WithExtraGlobals(t *testing.T) {
+	// Simulate workspace scanning where a file exports a function with
+	// the same name as a labels-defined function.
+	source := `(defun countdown (n)
+  (labels ([go (i) (if (<= i 0) "done" (go (- i 1)))])
+    (go n)))`
+	cfg := &Config{
+		ExtraGlobals: []ExternalSymbol{
+			{Name: "go", Kind: SymFunction},
+		},
+		PackageExports: map[string][]ExternalSymbol{
+			"testing": {
+				{Name: "assert-equal", Kind: SymMacro, Package: "testing"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, source, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "go", u.Name,
+			"labels-defined function should shadow external global")
+	}
+}
+
+func TestAnalyze_Labels_WithUsePackage(t *testing.T) {
+	// Regression test: labels should work correctly even when use-package
+	// imports symbols into the root scope.
+	source := `(use-package 'testing)
+(defun countdown (n)
+  (labels ([go (i) (if (<= i 0) "done" (go (- i 1)))])
+    (go n)))`
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"testing": {
+				{Name: "assert-equal", Kind: SymMacro, Package: "testing"},
+				{Name: "test", Kind: SymMacro, Package: "testing"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, source, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "go", u.Name,
+			"labels function should not be flagged with use-package")
+	}
+}
+
+func TestAnalyze_Labels_MutualRecursion_WithPackageExports(t *testing.T) {
+	source := `(labels ((even? (n) (if (= n 0) true (odd? (- n 1))))
+                  (odd? (n) (if (= n 0) false (even? (- n 1)))))
+              (even? 4))`
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"testing": {
+				{Name: "assert-equal", Kind: SymMacro, Package: "testing"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, source, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "even?", u.Name,
+			"even? should resolve (with PackageExports)")
+		assert.NotEqual(t, "odd?", u.Name,
+			"odd? should resolve (with PackageExports)")
+	}
+}
+
 // --- Analyze: dotimes ---
 
 func TestAnalyze_Dotimes(t *testing.T) {
@@ -338,6 +433,83 @@ func TestAnalyze_HandlerBind(t *testing.T) {
 	for _, u := range result.Unresolved {
 		assert.NotEqual(t, "c", u.Name)
 	}
+}
+
+func TestAnalyze_HandlerBind_ConditionTypeNotFlagged(t *testing.T) {
+	// The first element of each handler-bind clause is a condition type name,
+	// not a variable reference. It should not be flagged as undefined.
+	result := parseAndAnalyze(t, `
+(defun safe-op ()
+  (handler-bind
+    ((condition (lambda (&rest e) (debug-print "caught" e) ())))
+    (/ 1 0)))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "condition", u.Name,
+			"condition type in handler-bind clause should not be flagged as undefined")
+	}
+}
+
+func TestAnalyze_HandlerBind_CustomConditionType(t *testing.T) {
+	// Custom condition type names should also not be flagged.
+	result := parseAndAnalyze(t, `
+(handler-bind
+  ((my-error-type (lambda (e) e)))
+  (do-something))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "my-error-type", u.Name,
+			"custom condition type in handler-bind should not be flagged")
+	}
+}
+
+func TestAnalyze_HandlerBind_MultipleClauses(t *testing.T) {
+	// Multiple handler-bind clauses — all condition types should be skipped.
+	result := parseAndAnalyze(t, `
+(handler-bind
+  ((type-error (lambda (e) e))
+   (condition (lambda (e) e)))
+  (+ 1 2))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "type-error", u.Name,
+			"type-error condition type should not be flagged")
+		assert.NotEqual(t, "condition", u.Name,
+			"condition type should not be flagged")
+	}
+}
+
+func TestAnalyze_HandlerBind_BodyStillAnalyzed(t *testing.T) {
+	// Ensure that body forms inside handler-bind ARE still analyzed.
+	// An undefined symbol in the body should be flagged as unresolved.
+	result := parseAndAnalyze(t, `
+(handler-bind
+  ((condition (lambda (e) e)))
+  (undefined-body-call 1 2))`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "undefined-body-call" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"undefined symbol in handler-bind body should be flagged as unresolved")
+}
+
+func TestAnalyze_HandlerBind_HandlerBodyStillAnalyzed(t *testing.T) {
+	// Ensure handler lambda bodies ARE analyzed — undefined symbols inside
+	// handler lambdas should be flagged.
+	result := parseAndAnalyze(t, `
+(handler-bind
+  ((condition (lambda (e) (undefined-handler-call e))))
+  (+ 1 2))`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "undefined-handler-call" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"undefined symbol in handler-bind handler body should be flagged as unresolved")
 }
 
 // --- Analyze: test-let / test-let* ---

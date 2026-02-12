@@ -756,6 +756,24 @@ var AnalyzerUserArity = &Analyzer{
 		// Reuse aritySkipNodes to exclude formals lists and threading macro children.
 		skipNodes := aritySkipNodes(pass.Exprs)
 
+		// Build a set of function/macro names that are locally shadowed
+		// somewhere in the file (by let, let*, lambda params, etc.).
+		// When a name is shadowed, some call sites may refer to the local
+		// binding rather than the root-scope defun, so we conservatively
+		// skip arity checks for those names.
+		locallyShadowed := make(map[string]bool)
+		for _, sym := range pass.Semantics.Symbols {
+			if sym.Scope == nil || sym.Scope == pass.Semantics.RootScope {
+				continue
+			}
+			// Check if a root-scope function/macro has the same name.
+			rootSym := pass.Semantics.RootScope.LookupLocal(sym.Name)
+			if rootSym != nil && rootSym.Signature != nil &&
+				(rootSym.Kind == analysis.SymFunction || rootSym.Kind == analysis.SymMacro) {
+				locallyShadowed[sym.Name] = true
+			}
+		}
+
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			if skipNodes[sexpr] {
 				return
@@ -773,6 +791,9 @@ var AnalyzerUserArity = &Analyzer{
 			}
 			if sym.Kind != analysis.SymFunction && sym.Kind != analysis.SymMacro {
 				return
+			}
+			if locallyShadowed[head] {
+				return // name is shadowed by a local binding somewhere
 			}
 			argc := ArgCount(sexpr)
 			minArity := sym.Signature.MinArity()

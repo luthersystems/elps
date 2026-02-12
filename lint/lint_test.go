@@ -1593,6 +1593,50 @@ func TestUndefinedSymbol_HasNotes(t *testing.T) {
 	assert.NotEmpty(t, diags[0].Notes)
 }
 
+func TestUndefinedSymbol_Negative_HandlerBindConditionType(t *testing.T) {
+	// Condition types in handler-bind clauses are not variable references.
+	source := `(defun safe-op ()
+  (handler-bind
+    ((condition (lambda (&rest e) (debug-print "caught" e) ())))
+    (/ 1 0)))`
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	for _, d := range diags {
+		assert.NotContains(t, d.Message, "condition",
+			"condition type in handler-bind should not be flagged")
+	}
+}
+
+func TestUndefinedSymbol_Negative_LabelsSelfRecursion(t *testing.T) {
+	// Labels-defined functions that call themselves should not be flagged.
+	source := `(labels ([f (x) (if (= x 0) 1 (f (- x 1)))]) (f 5))`
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUndefinedSymbol_Negative_LabelsSelfRecursion_WithRegistry(t *testing.T) {
+	// Simulates the LintFiles API path with PackageRegistry (issue #90).
+	source := `(labels ([f (x) (if (= x 0) 1 (f (- x 1)))]) (f 5))`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
+	cfg := &analysis.Config{
+		PackageExports: map[string][]analysis.ExternalSymbol{
+			"testing": {
+				{Name: "assert-equal", Kind: analysis.SymMacro, Package: "testing"},
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+func TestUndefinedSymbol_Negative_LabelsMutualRecursion(t *testing.T) {
+	source := `(labels ((even? (n) (if (= n 0) true (odd? (- n 1))))
+                  (odd? (n) (if (= n 0) false (even? (- n 1)))))
+              (even? 4))`
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	assertNoDiags(t, diags)
+}
+
 // --- unused-variable ---
 
 func TestUnusedVariable_Positive_LetBinding(t *testing.T) {
@@ -1842,6 +1886,34 @@ func TestUserArity_Negative_ExternalSymbol(t *testing.T) {
 	source = "(use-package 'transient)\n" + source
 	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
 	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+func TestUserArity_Negative_LetStarShadow(t *testing.T) {
+	// When let* shadows a defun with a variable binding, user-arity should
+	// not check the call against the defun's signature (issue #91).
+	source := `(defun register (name) name)
+(defun call-handler ()
+  (let* ([register (lambda (a b c) (list a b c))])
+    (register 1 2 3)))`
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUserArity_Negative_LetShadow(t *testing.T) {
+	// Same as above but with let (not let*).
+	source := `(defun foo (x) (+ x 1))
+(let ([foo (lambda (a b) (+ a b))])
+  (foo 1 2))`
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUserArity_Negative_LambdaParamShadow(t *testing.T) {
+	// Lambda parameter shadows a defun — should skip arity check.
+	source := `(defun register (name) name)
+(lambda (register) (register 1 2 3))`
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
 	assertNoDiags(t, diags)
 }
 
