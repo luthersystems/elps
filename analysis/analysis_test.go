@@ -297,6 +297,101 @@ func TestAnalyze_Labels_MutualRecursion(t *testing.T) {
 	}
 }
 
+func TestAnalyze_Labels_SelfRecursion(t *testing.T) {
+	source := `(defun countdown (n)
+  (labels ([go (i) (if (<= i 0) "done" (go (- i 1)))])
+    (go n)))`
+	result := parseAndAnalyze(t, source)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "go", u.Name,
+			"self-recursive labels call should not be flagged as undefined")
+	}
+}
+
+func TestAnalyze_Labels_SelfRecursion_WithPackageExports(t *testing.T) {
+	// Simulates the code path when PackageRegistry is set (issue #90).
+	source := `(defun countdown (n)
+  (labels ([go (i) (if (<= i 0) "done" (go (- i 1)))])
+    (go n)))`
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"testing": {
+				{Name: "assert-equal", Kind: SymMacro, Package: "testing"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, source, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "go", u.Name,
+			"self-recursive labels call should not be flagged as undefined (with PackageExports)")
+	}
+}
+
+func TestAnalyze_Labels_SelfRecursion_WithExtraGlobals(t *testing.T) {
+	// Simulate workspace scanning where a file exports a function with
+	// the same name as a labels-defined function.
+	source := `(defun countdown (n)
+  (labels ([go (i) (if (<= i 0) "done" (go (- i 1)))])
+    (go n)))`
+	cfg := &Config{
+		ExtraGlobals: []ExternalSymbol{
+			{Name: "go", Kind: SymFunction},
+		},
+		PackageExports: map[string][]ExternalSymbol{
+			"testing": {
+				{Name: "assert-equal", Kind: SymMacro, Package: "testing"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, source, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "go", u.Name,
+			"labels-defined function should shadow external global")
+	}
+}
+
+func TestAnalyze_Labels_WithUsePackage(t *testing.T) {
+	// Regression test: labels should work correctly even when use-package
+	// imports symbols into the root scope.
+	source := `(use-package 'testing)
+(defun countdown (n)
+  (labels ([go (i) (if (<= i 0) "done" (go (- i 1)))])
+    (go n)))`
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"testing": {
+				{Name: "assert-equal", Kind: SymMacro, Package: "testing"},
+				{Name: "test", Kind: SymMacro, Package: "testing"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, source, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "go", u.Name,
+			"labels function should not be flagged with use-package")
+	}
+}
+
+func TestAnalyze_Labels_MutualRecursion_WithPackageExports(t *testing.T) {
+	source := `(labels ((even? (n) (if (= n 0) true (odd? (- n 1))))
+                  (odd? (n) (if (= n 0) false (even? (- n 1)))))
+              (even? 4))`
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"testing": {
+				{Name: "assert-equal", Kind: SymMacro, Package: "testing"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, source, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "even?", u.Name,
+			"even? should resolve (with PackageExports)")
+		assert.NotEqual(t, "odd?", u.Name,
+			"odd? should resolve (with PackageExports)")
+	}
+}
+
 // --- Analyze: dotimes ---
 
 func TestAnalyze_Dotimes(t *testing.T) {

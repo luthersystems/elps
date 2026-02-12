@@ -1606,6 +1606,37 @@ func TestUndefinedSymbol_Negative_HandlerBindConditionType(t *testing.T) {
 	}
 }
 
+func TestUndefinedSymbol_Negative_LabelsSelfRecursion(t *testing.T) {
+	// Labels-defined functions that call themselves should not be flagged.
+	source := `(labels ([f (x) (if (= x 0) 1 (f (- x 1)))]) (f 5))`
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUndefinedSymbol_Negative_LabelsSelfRecursion_WithRegistry(t *testing.T) {
+	// Simulates the LintFiles API path with PackageRegistry (issue #90).
+	source := `(labels ([f (x) (if (= x 0) 1 (f (- x 1)))]) (f 5))`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
+	cfg := &analysis.Config{
+		PackageExports: map[string][]analysis.ExternalSymbol{
+			"testing": {
+				{Name: "assert-equal", Kind: analysis.SymMacro, Package: "testing"},
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+func TestUndefinedSymbol_Negative_LabelsMutualRecursion(t *testing.T) {
+	source := `(labels ((even? (n) (if (= n 0) true (odd? (- n 1))))
+                  (odd? (n) (if (= n 0) false (even? (- n 1)))))
+              (even? 4))`
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	assertNoDiags(t, diags)
+}
+
 // --- unused-variable ---
 
 func TestUnusedVariable_Positive_LetBinding(t *testing.T) {
