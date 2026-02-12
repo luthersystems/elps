@@ -1657,6 +1657,14 @@ func TestUnusedFunction_Negative_Exported(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+func TestUnusedFunction_Negative_ExportBeforeDefun(t *testing.T) {
+	// export before defun is a common ELPS convention — should not produce
+	// unused-function diagnostic.
+	source := "(export 'greet)\n(defun greet (name) name)"
+	diags := lintCheckSemantic(t, AnalyzerUnusedFunction, source)
+	assertNoDiags(t, diags)
+}
+
 func TestUnusedFunction_Negative_UnderscorePrefix(t *testing.T) {
 	source := `(defun _internal () 42)`
 	diags := lintCheckSemantic(t, AnalyzerUnusedFunction, source)

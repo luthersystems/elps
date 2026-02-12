@@ -473,6 +473,14 @@ func TestAnalyze_Export(t *testing.T) {
 	assert.True(t, sym.Exported)
 }
 
+func TestAnalyze_ExportBeforeDefun(t *testing.T) {
+	// export before defun is a common ELPS convention — prescan must handle it.
+	result := parseAndAnalyze(t, "(export 'greet)\n(defun greet (name) name)")
+	sym := result.RootScope.LookupLocal("greet")
+	require.NotNil(t, sym)
+	assert.True(t, sym.Exported, "export before defun should mark greet as exported")
+}
+
 // --- Analyze: external symbols ---
 
 func TestAnalyze_ExternalSymbols(t *testing.T) {
