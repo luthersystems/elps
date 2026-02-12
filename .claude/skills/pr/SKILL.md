@@ -16,7 +16,19 @@ gh repo view --json defaultBranchRef -q '.defaultBranchRef.name'
 
 This is typically `main`.
 
-### 2. Fetch and Rebase
+### 2. Guard: Verify Not on Main
+
+```bash
+current=$(git branch --show-current)
+if [ "$current" = "main" ] || [ "$current" = "master" ]; then
+  echo "ERROR: On $current — create a feature branch first"
+  exit 1
+fi
+```
+
+**STOP** if on main/master. Create a feature branch before proceeding. Never push directly to the default branch.
+
+### 3. Fetch and Rebase
 
 ```bash
 git fetch origin
@@ -25,17 +37,17 @@ git rebase origin/<base-branch>
 
 If there are conflicts, resolve them before proceeding.
 
-### 3. Run Full Verification
+### 4. Run Full Verification
 
 Run the complete `/verify` pipeline (all 6 steps). If any step fails, stop and fix before creating the PR.
 
-### 4. Push
+### 5. Push
 
 ```bash
 git push -u origin <current-branch>
 ```
 
-### 5. Create the PR
+### 6. Create the PR
 
 ```bash
 gh pr create --title "<concise title>" --body "$(cat <<'EOF'
@@ -57,7 +69,7 @@ EOF
 )"
 ```
 
-### 6. Report
+### 7. Report
 
 Return the PR URL so the user can review it.
 
