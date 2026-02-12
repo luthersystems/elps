@@ -304,7 +304,7 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope) {
 		return // package management, skip
 	case "function":
 		a.analyzeFunction(node, scope)
-	case "lisp:expr":
+	case "lisp:expr", "expr":
 		a.analyzePrefixLambda(node, scope)
 	case "handler-bind":
 		a.analyzeHandlerBind(node, scope)

@@ -1569,6 +1569,18 @@ func TestUndefinedSymbol_Negative_TrueFalse(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+func TestUndefinedSymbol_Negative_UnqualifiedExpr(t *testing.T) {
+	// (expr body) is the unqualified form of the prefix lambda — % should
+	// not be flagged as undefined.
+	source := `(defun remove-string (type-specifier lis s)
+  (reject type-specifier (expr (string= s %)) lis))`
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	for _, d := range diags {
+		assert.NotContains(t, d.Message, "%",
+			"% should not be flagged as undefined in (expr ...) form")
+	}
+}
+
 func TestUndefinedSymbol_Negative_NoSemantics(t *testing.T) {
 	// Without semantic analysis, should be a no-op
 	diags := lintCheck(t, AnalyzerUndefinedSymbol, `(unknown-fn 1 2)`)

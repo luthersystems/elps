@@ -403,6 +403,18 @@ func TestAnalyze_PrefixLambda_OuterScopeVisible(t *testing.T) {
 	}
 }
 
+func TestAnalyze_PrefixLambda_UnqualifiedExpr(t *testing.T) {
+	// (expr body) is the unqualified form of (lisp:expr body) — both should
+	// create an implicit % parameter scope.
+	result := parseAndAnalyze(t, `
+(defun remove-string (type-specifier lis s)
+  (reject type-specifier (expr (string= s %)) lis))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "%", u.Name,
+			"% should be defined as implicit param in unqualified (expr ...) form")
+	}
+}
+
 // --- Analyze: quasiquote ---
 
 func TestAnalyze_Quasiquote_TemplateIgnored(t *testing.T) {
