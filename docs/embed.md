@@ -279,7 +279,7 @@ import (
 
 func main() {
     // Assume NewRuntime() creates an *lisp.LEnv with embedder packages
-    // (cc:*, acre:*, etc.) already registered.
+    // (cc:*, app:*, etc.) already registered.
     env := NewRuntime()
 
     switch os.Args[1] {

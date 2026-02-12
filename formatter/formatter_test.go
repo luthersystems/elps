@@ -1370,9 +1370,9 @@ func TestInnerTrailingComment(t *testing.T) {
 func TestDefPrefixHeuristic(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name:  "def-acre-route like defun",
-			input: "(def-acre-route \"create_thing\" (obj)\n  (let* ([id (mk-uuid)])\n    (create! id)))",
-			expected: "(def-acre-route \"create_thing\" (obj)\n  (let* ([id (mk-uuid)])\n    (create! id)))\n",
+			name:  "def-app-route like defun",
+			input: "(def-app-route \"create_thing\" (obj)\n  (let* ([id (mk-uuid)])\n    (create! id)))",
+			expected: "(def-app-route \"create_thing\" (obj)\n  (let* ([id (mk-uuid)])\n    (create! id)))\n",
 		},
 		{
 			name:  "def-case-verification with 2 header args",

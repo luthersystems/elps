@@ -415,7 +415,7 @@ func (a *analyzer) analyzeStringDeftype(node *lisp.LVal, scope *Scope) {
 }
 
 // analyzeDefLike handles unknown (def* ...) forms that aren't explicitly
-// recognized (e.g. user-defined macros like defmethod, def-acre-route).
+// recognized (e.g. user-defined macros like defmethod, def-app-route).
 // It scans children for the first formals list (an LSExpr whose contents
 // are all symbols), creates a scope with those as parameters, and analyzes
 // the remaining children as body in that scope.
