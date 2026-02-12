@@ -476,6 +476,42 @@ func TestAnalyze_HandlerBind_MultipleClauses(t *testing.T) {
 	}
 }
 
+func TestAnalyze_HandlerBind_BodyStillAnalyzed(t *testing.T) {
+	// Ensure that body forms inside handler-bind ARE still analyzed.
+	// An undefined symbol in the body should be flagged as unresolved.
+	result := parseAndAnalyze(t, `
+(handler-bind
+  ((condition (lambda (e) e)))
+  (undefined-body-call 1 2))`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "undefined-body-call" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"undefined symbol in handler-bind body should be flagged as unresolved")
+}
+
+func TestAnalyze_HandlerBind_HandlerBodyStillAnalyzed(t *testing.T) {
+	// Ensure handler lambda bodies ARE analyzed — undefined symbols inside
+	// handler lambdas should be flagged.
+	result := parseAndAnalyze(t, `
+(handler-bind
+  ((condition (lambda (e) (undefined-handler-call e))))
+  (+ 1 2))`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "undefined-handler-call" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"undefined symbol in handler-bind handler body should be flagged as unresolved")
+}
+
 // --- Analyze: test-let / test-let* ---
 
 func TestAnalyze_TestLet_BindingsResolved(t *testing.T) {
