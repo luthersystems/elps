@@ -1889,6 +1889,34 @@ func TestUserArity_Negative_ExternalSymbol(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+func TestUserArity_Negative_LetStarShadow(t *testing.T) {
+	// When let* shadows a defun with a variable binding, user-arity should
+	// not check the call against the defun's signature (issue #91).
+	source := `(defun register (name) name)
+(defun call-handler ()
+  (let* ([register (lambda (a b c) (list a b c))])
+    (register 1 2 3)))`
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUserArity_Negative_LetShadow(t *testing.T) {
+	// Same as above but with let (not let*).
+	source := `(defun foo (x) (+ x 1))
+(let ([foo (lambda (a b) (+ a b))])
+  (foo 1 2))`
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	assertNoDiags(t, diags)
+}
+
+func TestUserArity_Negative_LambdaParamShadow(t *testing.T) {
+	// Lambda parameter shadows a defun — should skip arity check.
+	source := `(defun register (name) name)
+(lambda (register) (register 1 2 3))`
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	assertNoDiags(t, diags)
+}
+
 // --- unused-nolint ---
 
 func TestUnusedNolint_Unused(t *testing.T) {
