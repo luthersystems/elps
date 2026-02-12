@@ -115,28 +115,28 @@
     (:else (error 'invalid-argument "argument is not a complex number" z))))
 
 (export 'complex-add)
-(defun complex-add (z1 z2) ; nolint:unused-function
+(defun complex-add (z1 z2)
   (make-complex-from-real-imag (+ (complex-real-part z1)
                                   (complex-real-part z2))
                                (+ (complex-imag-part z1)
                                   (complex-imag-part z2))))
 
 (export 'complex-sub)
-(defun complex-sub (z1 z2) ; nolint:unused-function
+(defun complex-sub (z1 z2)
   (make-complex-from-real-imag (- (complex-real-part z1)
                                   (complex-real-part z2))
                                (- (complex-imag-part z1)
                                   (complex-imag-part z2))))
 
 (export 'complex-mul)
-(defun complex-mul (z1 z2) ; nolint:unused-function
+(defun complex-mul (z1 z2)
   (make-complex-from-mag-ang (* (complex-magnitude z1)
                                 (complex-magnitude z2))
                              (+ (complex-angle z1)
                                 (complex-angle z2))))
 
 (export 'complex-div)
-(defun complex-div (z1 z2) ; nolint:unused-function
+(defun complex-div (z1 z2)
   (make-complex-from-mag-ang (/ (complex-magnitude z1)
                                 (complex-magnitude z2))
                              (- (complex-angle z1)

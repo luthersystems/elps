@@ -89,7 +89,7 @@
       (stream-for-each proc (stream-cdr s)))))
 
 (export 'stream-debug)
-(defun stream-debug (s) ; nolint:unused-function
+(defun stream-debug (s)
   (stream-for-each 'debug-print s))
 
 (export 'stream-cons)
