@@ -11,19 +11,28 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	lintJSON        bool
-	lintChecks      string
-	lintListAll     bool
-	lintExcludes    []string
-	lintWorkspace   string
-	lintNoWorkspace bool
-)
+// LintCommand creates the "lint" cobra command with optional embedder
+// configuration. Embedders can pass WithRegistry or WithEnv to inject
+// Go-registered symbols for semantic analysis.
+func LintCommand(opts ...Option) *cobra.Command {
+	var cfg cmdConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
 
-var lintCmd = &cobra.Command{
-	Use:   "lint [flags] [files...]",
-	Short: "Run static analysis checks on elps source files",
-	Long: `Run static analysis checks on elps source files.
+	var (
+		jsonOutput  bool
+		checks      string
+		listAll     bool
+		excludes    []string
+		workspace   string
+		noWorkspace bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "lint [flags] [files...]",
+		Short: "Run static analysis checks on elps source files",
+		Long: `Run static analysis checks on elps source files.
 
 The linter reports likely mistakes in ELPS code, similar to "go vet" for Go.
 Each check is an independent analyzer that examines the parsed AST and reports
@@ -61,82 +70,99 @@ Examples:
   elps lint --exclude='build' --exclude='vendor' ./...  # Exclude directories
   elps lint --workspace=. ./...                       # Enable semantic analysis
   cat file.lisp | elps lint                           # Lint from stdin`,
-	Run: func(cmd *cobra.Command, args []string) {
-		if lintListAll {
-			for _, name := range lint.AnalyzerNames() {
-				fmt.Println(name)
+		Run: func(_ *cobra.Command, args []string) {
+			if listAll {
+				for _, name := range lint.AnalyzerNames() {
+					fmt.Println(name)
+				}
+				return
 			}
-			return
-		}
 
-		analyzers := lint.DefaultAnalyzers()
-		if lintChecks != "" {
-			selected := make(map[string]bool)
-			for _, name := range strings.Split(lintChecks, ",") {
-				selected[strings.TrimSpace(name)] = true
+			analyzers := lint.DefaultAnalyzers()
+			if checks != "" {
+				selected := make(map[string]bool)
+				for _, name := range strings.Split(checks, ",") {
+					selected[strings.TrimSpace(name)] = true
+				}
+				var filtered []*lint.Analyzer
+				for _, a := range analyzers {
+					if selected[a.Name] {
+						filtered = append(filtered, a)
+						delete(selected, a.Name)
+					}
+				}
+				for name := range selected {
+					fmt.Fprintf(os.Stderr, "elps lint: unknown check: %s\n", name)
+					os.Exit(2)
+				}
+				analyzers = filtered
 			}
-			var filtered []*lint.Analyzer
-			for _, a := range analyzers {
-				if selected[a.Name] {
-					filtered = append(filtered, a)
-					delete(selected, a.Name)
+
+			l := &lint.Linter{Analyzers: analyzers}
+
+			// Build LintConfig from CLI flags
+			var lintCfg *lint.LintConfig
+			if workspace != "" && !noWorkspace {
+				lintCfg = &lint.LintConfig{
+					Workspace: workspace,
+					Excludes:  excludes,
+					Registry:  cfg.resolveRegistry(),
 				}
 			}
-			for name := range selected {
-				fmt.Fprintf(os.Stderr, "elps lint: unknown check: %s\n", name)
-				os.Exit(2)
+
+			if len(args) == 0 {
+				if err := lintStdin(l, lintCfg, jsonOutput); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(2)
+				}
+				return
 			}
-			analyzers = filtered
-		}
 
-		l := &lint.Linter{Analyzers: analyzers}
-
-		// Build LintConfig from CLI flags
-		var cfg *lint.LintConfig
-		if lintWorkspace != "" && !lintNoWorkspace {
-			cfg = &lint.LintConfig{
-				Workspace: lintWorkspace,
-				Excludes:  lintExcludes,
-			}
-		}
-
-		if len(args) == 0 {
-			if err := lintStdin(l, cfg); err != nil {
+			expanded, err := expandArgs(args, excludes)
+			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(2)
 			}
-			return
-		}
 
-		expanded, err := expandArgs(args, lintExcludes)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
-		}
-
-		allDiags, err := l.LintFiles(cfg, expanded)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "elps lint: %v\n", err)
-			os.Exit(2)
-		}
-
-		if len(allDiags) == 0 {
-			return
-		}
-
-		if lintJSON {
-			if err := lint.FormatJSON(os.Stdout, allDiags); err != nil {
-				fmt.Fprintln(os.Stderr, err)
+			allDiags, err := l.LintFiles(lintCfg, expanded)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "elps lint: %v\n", err)
 				os.Exit(2)
 			}
-		} else {
-			renderLintDiagnostics(allDiags)
-		}
-		os.Exit(1)
-	},
+
+			if len(allDiags) == 0 {
+				return
+			}
+
+			if jsonOutput {
+				if err := lint.FormatJSON(os.Stdout, allDiags); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(2)
+				}
+			} else {
+				renderLintDiagnostics(allDiags)
+			}
+			os.Exit(1)
+		},
+	}
+
+	cmd.Flags().BoolVar(&jsonOutput, "json", false,
+		"Output diagnostics as JSON.")
+	cmd.Flags().StringVar(&checks, "checks", "",
+		"Comma-separated list of checks to run (default: all).")
+	cmd.Flags().BoolVar(&listAll, "list", false,
+		"List available checks and exit.")
+	cmd.Flags().StringArrayVar(&excludes, "exclude", nil,
+		"Glob pattern for files to exclude (may be repeated).")
+	cmd.Flags().StringVar(&workspace, "workspace", "",
+		"Workspace root directory for cross-file symbol resolution and semantic analysis.")
+	cmd.Flags().BoolVar(&noWorkspace, "no-workspace", false,
+		"Disable workspace scanning (overrides --workspace).")
+
+	return cmd
 }
 
-func lintStdin(l *lint.Linter, cfg *lint.LintConfig) error {
+func lintStdin(l *lint.Linter, cfg *lint.LintConfig, jsonOutput bool) error {
 	src, err := readStdin()
 	if err != nil {
 		return fmt.Errorf("reading stdin: %w", err)
@@ -157,7 +183,7 @@ func lintStdin(l *lint.Linter, cfg *lint.LintConfig) error {
 	if len(diags) == 0 {
 		return nil
 	}
-	if lintJSON {
+	if jsonOutput {
 		if err := lint.FormatJSON(os.Stdout, diags); err != nil {
 			return err
 		}
@@ -173,18 +199,5 @@ func readStdin() ([]byte, error) {
 }
 
 func init() {
-	rootCmd.AddCommand(lintCmd)
-
-	lintCmd.Flags().BoolVar(&lintJSON, "json", false,
-		"Output diagnostics as JSON.")
-	lintCmd.Flags().StringVar(&lintChecks, "checks", "",
-		"Comma-separated list of checks to run (default: all).")
-	lintCmd.Flags().BoolVar(&lintListAll, "list", false,
-		"List available checks and exit.")
-	lintCmd.Flags().StringArrayVar(&lintExcludes, "exclude", nil,
-		"Glob pattern for files to exclude (may be repeated).")
-	lintCmd.Flags().StringVar(&lintWorkspace, "workspace", "",
-		"Workspace root directory for cross-file symbol resolution and semantic analysis.")
-	lintCmd.Flags().BoolVar(&lintNoWorkspace, "no-workspace", false,
-		"Disable workspace scanning (overrides --workspace).")
+	rootCmd.AddCommand(LintCommand())
 }
