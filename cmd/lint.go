@@ -27,6 +27,7 @@ func LintCommand(opts ...Option) *cobra.Command {
 		excludes    []string
 		workspace   string
 		noWorkspace bool
+		failOn      string
 	)
 
 	cmd := &cobra.Command{
@@ -48,8 +49,8 @@ Without --workspace, these checks are disabled and the linter only runs
 syntactic checks.
 
 Exit codes:
-  0  No problems found
-  1  One or more problems were reported
+  0  No problems found, or only diagnostics below the --fail-on threshold
+  1  One or more diagnostics at or above the --fail-on threshold (default: error)
   2  Bad invocation (invalid flags, unreadable files)
 
 To suppress a specific diagnostic, add a comment on the same line:
@@ -110,8 +111,14 @@ Examples:
 				}
 			}
 
+			threshold, thErr := lint.ParseSeverity(failOn)
+			if thErr != nil {
+				fmt.Fprintf(os.Stderr, "elps lint: invalid --fail-on value: %v\n", thErr)
+				os.Exit(2)
+			}
+
 			if len(args) == 0 {
-				if err := lintStdin(l, lintCfg, jsonOutput); err != nil {
+				if err := lintStdin(l, lintCfg, jsonOutput, threshold); err != nil {
 					fmt.Fprintln(os.Stderr, err)
 					os.Exit(2)
 				}
@@ -142,7 +149,9 @@ Examples:
 			} else {
 				renderLintDiagnostics(allDiags)
 			}
-			os.Exit(1)
+			if lint.ShouldFail(allDiags, threshold) {
+				os.Exit(1)
+			}
 		},
 	}
 
@@ -158,11 +167,13 @@ Examples:
 		"Workspace root directory for cross-file symbol resolution and semantic analysis.")
 	cmd.Flags().BoolVar(&noWorkspace, "no-workspace", false,
 		"Disable workspace scanning (overrides --workspace).")
+	cmd.Flags().StringVar(&failOn, "fail-on", "error",
+		"Minimum severity to cause a non-zero exit code (error, warning, info).")
 
 	return cmd
 }
 
-func lintStdin(l *lint.Linter, cfg *lint.LintConfig, jsonOutput bool) error {
+func lintStdin(l *lint.Linter, cfg *lint.LintConfig, jsonOutput bool, threshold lint.Severity) error {
 	src, err := readStdin()
 	if err != nil {
 		return fmt.Errorf("reading stdin: %w", err)
@@ -190,7 +201,9 @@ func lintStdin(l *lint.Linter, cfg *lint.LintConfig, jsonOutput bool) error {
 	} else {
 		renderLintDiagnostics(diags)
 	}
-	os.Exit(1)
+	if lint.ShouldFail(diags, threshold) {
+		os.Exit(1)
+	}
 	return nil
 }
 

@@ -78,6 +78,50 @@ func (s *Severity) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// ParseSeverity converts a string to a Severity value.
+// Valid inputs: "error", "warning", "info".
+func ParseSeverity(s string) (Severity, error) {
+	switch s {
+	case "error":
+		return SeverityError, nil
+	case "warning":
+		return SeverityWarning, nil
+	case "info":
+		return SeverityInfo, nil
+	default:
+		return 0, fmt.Errorf("unknown severity: %q (valid: error, warning, info)", s)
+	}
+}
+
+// MaxSeverity returns the most severe level found in the given diagnostics.
+// Returns SeverityInfo if diags is empty (i.e., least severe / no problems).
+// Severity ordering: SeverityError > SeverityWarning > SeverityInfo.
+func MaxSeverity(diags []Diagnostic) Severity {
+	if len(diags) == 0 {
+		return SeverityInfo
+	}
+	max := SeverityInfo // start at least severe
+	for _, d := range diags {
+		sev := d.Severity
+		if sev == severityUnset {
+			sev = SeverityWarning // matches MarshalJSON behavior
+		}
+		if sev < max {
+			max = sev // lower numeric value = more severe
+		}
+	}
+	return max
+}
+
+// ShouldFail returns true if the diagnostics contain at least one finding
+// at or above the given severity threshold.
+func ShouldFail(diags []Diagnostic, threshold Severity) bool {
+	if len(diags) == 0 {
+		return false
+	}
+	return MaxSeverity(diags) <= threshold // lower numeric = more severe
+}
+
 // Analyzer defines a single lint check.
 type Analyzer struct {
 	// Name is a short identifier for this check (e.g. "set-usage").
@@ -88,6 +132,12 @@ type Analyzer struct {
 
 	// Severity is the default severity for diagnostics from this analyzer.
 	Severity Severity
+
+	// Semantic indicates that this analyzer requires semantic analysis
+	// (pass.Semantics != nil) to produce diagnostics. When true and
+	// semantic analysis is not available, nolint directives targeting
+	// this analyzer are treated as conditionally valid rather than unused.
+	Semantic bool
 
 	// Run executes the check. It should call pass.Report() for each finding.
 	Run func(pass *Pass) error
@@ -345,13 +395,31 @@ func (l *Linter) LintFileWithContext(source []byte, filename string, semantics *
 	// Filter suppressed diagnostics (;nolint comments)
 	all, nolintMap := filterSuppressed(all, exprs)
 
-	// Build set of enabled analyzer names for unknown-analyzer detection.
-	enabledAnalyzers := make(map[string]bool, len(l.Analyzers))
+	// Build set of all known analyzer names for unknown-analyzer detection.
+	// Use DefaultAnalyzers() plus l.Analyzers so that --checks filtering
+	// does not cause valid analyzer names to be flagged as unknown.
+	knownAnalyzers := make(map[string]bool)
+	for _, a := range DefaultAnalyzers() {
+		knownAnalyzers[a.Name] = true
+	}
 	for _, a := range l.Analyzers {
-		enabledAnalyzers[a.Name] = true
+		knownAnalyzers[a.Name] = true
 	}
 	// unused-nolint is synthetic (not a registered Analyzer) but valid in directives.
-	enabledAnalyzers["unused-nolint"] = true
+	knownAnalyzers["unused-nolint"] = true
+
+	// Build set of semantic-only analyzer names for conditional nolint handling.
+	semanticAnalyzers := make(map[string]bool)
+	for _, a := range DefaultAnalyzers() {
+		if a.Semantic {
+			semanticAnalyzers[a.Name] = true
+		}
+	}
+	for _, a := range l.Analyzers {
+		if a.Semantic {
+			semanticAnalyzers[a.Name] = true
+		}
+	}
 
 	// Emit unused-nolint diagnostics for stale directives.
 	var unusedNolints []Diagnostic
@@ -359,13 +427,31 @@ func (l *Linter) LintFileWithContext(source []byte, filename string, semantics *
 		if info.used {
 			continue
 		}
+
+		// In syntactic mode, skip nolint directives that exclusively target
+		// semantic-only analyzers. These are valid when running with --workspace
+		// but the underlying analyzers produce no diagnostics without it.
+		if semantics == nil && info.directive != "" {
+			allSemantic := true
+			for _, name := range strings.Split(info.directive, ",") {
+				name = strings.TrimSpace(name)
+				if name != "" && !semanticAnalyzers[name] {
+					allSemantic = false
+					break
+				}
+			}
+			if allSemantic {
+				continue
+			}
+		}
+
 		msg := "nolint directive does not suppress any diagnostic"
 		// Check for unknown analyzer names in specific directives.
 		if info.directive != "" {
 			var unknown []string
 			for _, name := range strings.Split(info.directive, ",") {
 				name = strings.TrimSpace(name)
-				if name != "" && !enabledAnalyzers[name] {
+				if name != "" && !knownAnalyzers[name] {
 					unknown = append(unknown, name)
 				}
 			}
