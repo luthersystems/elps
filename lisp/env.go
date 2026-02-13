@@ -433,6 +433,15 @@ func (env *LEnv) packageGet(k *LVal) *LVal {
 // of the function is returned.  When the function is bound within a local
 // scope then the local name used to reference the function (if any) is
 // returned.
+//
+// Safety: the error path in this function is cosmetic-only and does not mask
+// data corruption.  Every caller (MacroCall, SpecialOpCall, funCall, call,
+// profiler) has already verified that f.Type == LFun before reaching here, so
+// pkgFunName should never fail.  The fallback to f.Str only affects the
+// human-readable name shown in error messages and stack traces — it cannot
+// influence evaluation, binding, or control flow.  We log at BUG level so the
+// issue is visible in diagnostics without changing the return type to an error
+// that every caller would have to handle for an unreachable code path.
 func (env *LEnv) GetFunName(f *LVal) string {
 	name, err := env.pkgFunName(f)
 	if err != nil {
