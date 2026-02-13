@@ -823,7 +823,9 @@ func opQualifiedSymbol(env *LEnv, args *LVal) *LVal {
 	}
 	pieces := SplitSymbol(sym)
 	if pieces.Type == LError {
-		env.ErrorAssociate(pieces)
+		if err := env.ErrorAssociate(pieces); err != nil {
+			return err
+		}
 		return pieces
 	}
 	if pieces.Len() == 2 {

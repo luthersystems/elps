@@ -386,7 +386,9 @@ func (env *LEnv) get(k *LVal) *LVal {
 	name := k.Str[colonIdx+1:]
 	if strings.IndexByte(name, ':') >= 0 {
 		lerr := Errorf("illegal symbol: %q", k.Str)
-		env.ErrorAssociate(lerr)
+		if err := env.ErrorAssociate(lerr); err != nil {
+			return err
+		}
 		return lerr
 	}
 	pkg := env.Runtime.Registry.Packages[ns]
@@ -395,7 +397,9 @@ func (env *LEnv) get(k *LVal) *LVal {
 	}
 	lerr := pkg.Get(Symbol(name))
 	if lerr.Type == LError {
-		env.ErrorAssociate(lerr)
+		if err := env.ErrorAssociate(lerr); err != nil {
+			return err
+		}
 	}
 	return lerr
 }
@@ -417,7 +421,9 @@ func (env *LEnv) getSimple(k *LVal) *LVal {
 func (env *LEnv) packageGet(k *LVal) *LVal {
 	lerr := env.Runtime.Package.Get(k)
 	if lerr.Type == LError {
-		env.ErrorAssociate(lerr)
+		if err := env.ErrorAssociate(lerr); err != nil {
+			return err
+		}
 	}
 	return lerr
 }
@@ -490,7 +496,9 @@ func (env *LEnv) update(k, v *LVal) *LVal {
 		if env.Parent == nil {
 			lerr := env.Runtime.Package.Update(k, v)
 			if lerr.Type == LError {
-				env.ErrorAssociate(lerr)
+				if err := env.ErrorAssociate(lerr); err != nil {
+					return err
+				}
 				return lerr
 			}
 			return Nil()
@@ -504,7 +512,9 @@ func (env *LEnv) update(k, v *LVal) *LVal {
 func (env *LEnv) GetGlobal(k *LVal) *LVal {
 	pieces := SplitSymbol(k)
 	if pieces.Type == LError {
-		env.ErrorAssociate(pieces)
+		if err := env.ErrorAssociate(pieces); err != nil {
+			return err
+		}
 		return pieces
 	}
 	if pieces.Len() == 2 {
@@ -519,7 +529,9 @@ func (env *LEnv) GetGlobal(k *LVal) *LVal {
 		}
 		lerr := pkg.Get(pieces.Cells[1])
 		if lerr.Type == LError {
-			env.ErrorAssociate(lerr)
+			if err := env.ErrorAssociate(lerr); err != nil {
+				return err
+			}
 		}
 		return lerr
 	}
@@ -530,7 +542,9 @@ func (env *LEnv) GetGlobal(k *LVal) *LVal {
 func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
 	pieces := SplitSymbol(k)
 	if pieces.Type == LError {
-		env.ErrorAssociate(pieces)
+		if err := env.ErrorAssociate(pieces); err != nil {
+			return err
+		}
 		return pieces
 	}
 	if pieces.Len() == 2 {
@@ -544,14 +558,18 @@ func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
 		}
 		lerr := pkg.Put(pieces.Cells[1], v)
 		if lerr.Type == LError {
-			env.ErrorAssociate(lerr)
+			if err := env.ErrorAssociate(lerr); err != nil {
+				return err
+			}
 		}
 		return lerr
 	}
 
 	lerr := env.Runtime.Package.Put(k, v)
 	if lerr.Type == LError {
-		env.ErrorAssociate(lerr)
+		if err := env.ErrorAssociate(lerr); err != nil {
+			return err
+		}
 		return lerr
 	}
 	return Nil()
@@ -801,12 +819,11 @@ func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface
 }
 
 // ErrorAssociate associates the LError value lerr with env's current call
-// stack and source location.  ErrorAssociate logs a warning and returns if
-// lerr is not LError.
-func (env *LEnv) ErrorAssociate(lerr *LVal) {
+// stack and source location.  ErrorAssociate returns an LError if lerr is
+// not an error value (indicating a bug in the caller), or nil on success.
+func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	if lerr.Type != LError {
-		log.Printf("BUG: ErrorAssociate called with non-error: %v", lerr.Type)
-		return
+		return env.Errorf("internal error: ErrorAssociate called with non-error: %v", lerr.Type)
 	}
 	if lerr.CallStack() == nil {
 		lerr.SetCallStack(env.Runtime.Stack.Copy())
@@ -819,6 +836,7 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) {
 	if lerr.Source == nil || lerr.Source.Pos < 0 {
 		lerr.Source = env.Loc
 	}
+	return nil
 }
 
 // Eval evaluates v in the context (scope) of env and returns the resulting
@@ -868,7 +886,9 @@ eval:
 		}
 		lerr := pkg.Get(Symbol(name))
 		if lerr.Type == LError {
-			env.ErrorAssociate(lerr)
+			if err := env.ErrorAssociate(lerr); err != nil {
+				return err
+			}
 		}
 		return lerr
 	case LSExpr:
@@ -880,7 +900,9 @@ eval:
 			goto eval
 		}
 		if res.Type == LError {
-			env.ErrorAssociate(res)
+			if err := env.ErrorAssociate(res); err != nil {
+				return err
+			}
 		}
 		return res
 	case LQuote:
@@ -902,7 +924,9 @@ func (env *LEnv) EvalSExpr(s *LVal) *LVal {
 	}
 	call := env.evalSExprCells(s)
 	if call.Type == LError {
-		env.ErrorAssociate(call)
+		if err := env.ErrorAssociate(call); err != nil {
+			return err
+		}
 		return call
 	}
 	fun := call.Cells[0] // call is not an empty expression -- fun is known LFun
