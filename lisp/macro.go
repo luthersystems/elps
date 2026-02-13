@@ -10,10 +10,11 @@ import (
 
 var userMacros []*langBuiltin
 var langMacros = []*langBuiltin{
-	{"defmacro", Formals("name", "formals", "expr"), macroDefmacro,
+	{"defmacro", Formals("name", "formals", VarArgSymbol, "expr"), macroDefmacro,
 		`Defines a named macro in the current package. The body receives
 		unevaluated forms and must return a form to be evaluated at the
-		call site. Use quasiquote/unquote to construct the expansion.`},
+		call site. Use quasiquote/unquote to construct the expansion.
+		An optional leading string in the body serves as a docstring.`},
 	{"defun", Formals("name", "formals", VarArgSymbol, "expr"), macroDefun,
 		`Defines a named function in the current package.`},
 	{"deftype", Formals("name", "constructor-formals", VarArgSymbol, "constructor-exprs"), macroDeftype,
@@ -66,11 +67,11 @@ func DefaultMacros() []LBuiltinDef {
 }
 
 func macroDefmacro(env *LEnv, args *LVal) *LVal {
-	sym, formals, bodyForms := args.Cells[0], args.Cells[1], args.Cells[2]
+	sym, formals, body := args.Cells[0], args.Cells[1], args.Cells[2:]
 	if sym.Type != LSymbol {
 		return env.Errorf("first argument is not a symbol: %s", sym.Type)
 	}
-	fun := env.Lambda(formals, []*LVal{bodyForms})
+	fun := env.Lambda(formals, body)
 	if fun.Type == LError {
 		fun.SetCallStack(env.Runtime.Stack.Copy())
 		return fun

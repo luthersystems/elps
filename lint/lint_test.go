@@ -860,11 +860,12 @@ func TestUnnecessaryProgn_Negative_IfElseBranch(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
-func TestUnnecessaryProgn_Negative_Defmacro(t *testing.T) {
-	// defmacro only takes a single body expression, so progn IS needed
+func TestUnnecessaryProgn_Positive_Defmacro(t *testing.T) {
+	// defmacro now supports multiple body expressions, so progn is redundant
 	source := `(defmacro m (x) (progn (print x) x))`
 	diags := lintCheck(t, AnalyzerUnnecessaryProgn, source)
-	assertNoDiags(t, diags)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "progn is unnecessary in defmacro body")
 }
 
 func TestUnnecessaryProgn_Negative_MultipleBodyExprs(t *testing.T) {

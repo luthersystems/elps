@@ -415,3 +415,83 @@ func TestCheckMissing_NoDuplicates(t *testing.T) {
 		seen[key] = true
 	}
 }
+
+func TestDefmacroDocstring(t *testing.T) {
+	env := newTestEnv(t)
+
+	rc := env.LoadString("test.lisp", `
+	(defmacro my-macro (x) "Transforms x." (list '+ x 1))
+	`)
+	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
+
+	v := env.Get(lisp.Symbol("my-macro"))
+	require.Equal(t, lisp.LFun, v.Type)
+	assert.Equal(t, "Transforms x.", v.Docstring())
+}
+
+func TestCheckMissing_FunWithSymbolDocs(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Documented function (via set) should NOT appear; undocumented sibling SHOULD.
+	rc := env.LoadString("test.lisp", `
+	(in-package 'symboldoc-pkg "A package with a function documented via set.")
+	(set 'my-fn (lambda (x) (+ x 1)) "Documented via set.")
+	(export 'my-fn)
+	(set 'undoc-fn (lambda (y) y))
+	(export 'undoc-fn)
+	`)
+	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
+
+	missing := libhelp.CheckMissing(env)
+	var foundUndoc bool
+	for _, m := range missing {
+		assert.NotEqual(t, "symboldoc-pkg:my-fn", m.Name,
+			"function with SymbolDocs should not be reported as missing")
+		if m.Name == "symboldoc-pkg:undoc-fn" {
+			foundUndoc = true
+		}
+	}
+	assert.True(t, foundUndoc, "undocumented function should be detected (proves loop executed)")
+}
+
+func TestCheckMissing_DefmacroDocstring(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Documented macro should NOT appear; undocumented sibling SHOULD.
+	rc := env.LoadString("test.lisp", `
+	(in-package 'macrodoc-pkg "A package with a documented macro.")
+	(export 'my-macro)
+	(defmacro my-macro (x) "Expands to addition." (list '+ x 1))
+	(export 'undoc-macro)
+	(defmacro undoc-macro (x) (list '+ x 1))
+	`)
+	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
+
+	missing := libhelp.CheckMissing(env)
+	var foundUndoc bool
+	for _, m := range missing {
+		assert.NotEqual(t, "macrodoc-pkg:my-macro", m.Name,
+			"macro with docstring should not be reported as missing")
+		if m.Name == "macrodoc-pkg:undoc-macro" {
+			foundUndoc = true
+		}
+	}
+	assert.True(t, foundUndoc, "undocumented macro should be detected (proves loop executed)")
+}
+
+func TestRenderFun_SymbolDocsFallback(t *testing.T) {
+	env := newTestEnv(t)
+
+	rc := env.LoadString("test.lisp", `
+	(in-package 'renderfun-pkg "A package for renderFun fallback test.")
+	(set 'my-fn (lambda (x) (+ x 1)) "Documented via set.")
+	(export 'my-fn)
+	`)
+	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
+
+	var buf bytes.Buffer
+	err := libhelp.RenderVar(&buf, env, "renderfun-pkg:my-fn")
+	require.NoError(t, err)
+	output := buf.String()
+	assert.Contains(t, output, "Documented via set.")
+}
