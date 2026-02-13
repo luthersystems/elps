@@ -437,7 +437,7 @@ func (env *LEnv) GetFunName(f *LVal) string {
 
 func (env *LEnv) pkgFunName(f *LVal) string {
 	if f.Type != LFun {
-		panic("not a function: " + f.Type.String())
+		return ""
 	}
 	pkgname := f.Package()
 	if pkgname == "" {
@@ -752,7 +752,7 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 			cells = append(cells, v)
 		case error:
 			if narg > 1 {
-				panic("invalid error argument")
+				return ErrorConditionf("runtime", "invalid error argument: cannot mix error and *LVal arguments")
 			}
 			return &LVal{
 				Type:   LError,
@@ -799,10 +799,11 @@ func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface
 }
 
 // ErrorAssociate associates the LError value lerr with env's current call
-// stack and source location.  ErrorAssociate panics if lerr is not LError.
+// stack and source location.  ErrorAssociate silently returns if lerr is not
+// LError.
 func (env *LEnv) ErrorAssociate(lerr *LVal) {
 	if lerr.Type != LError {
-		panic("not an error: " + lerr.Type.String())
+		return
 	}
 	if lerr.CallStack() == nil {
 		lerr.SetCallStack(env.Runtime.Stack.Copy())
@@ -820,10 +821,19 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) {
 // Eval evaluates v in the context (scope) of env and returns the resulting
 // LVal.  Eval does not modify v.
 //
+// Eval includes a recover() safety net that converts any Go panic during
+// evaluation into an LError, preventing panics from crashing the host process
+// when ELPS is embedded.
+//
 // NOTE:  Eval shouldn't unquote v during evaluation -- a difference between
-// Eval and the “eval” builtin function, but it does.  For some reason macros
+// Eval and the "eval" builtin function, but it does.  For some reason macros
 // won't work without this unquoting.
-func (env *LEnv) Eval(v *LVal) *LVal {
+func (env *LEnv) Eval(v *LVal) (result *LVal) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = env.Errorf("internal error (recovered panic): %v", r)
+		}
+	}()
 eval:
 	if v.Spliced {
 		return env.Errorf("spliced value used as expression")
@@ -904,7 +914,7 @@ func (env *LEnv) EvalSExpr(s *LVal) *LVal {
 	case LFunMacro:
 		return env.MacroCall(fun, args)
 	default:
-		panic(fmt.Sprintf("invalid function type %#v", fun.FunType))
+		return env.Errorf("internal error: invalid function type %v", fun.FunType)
 	}
 }
 
@@ -934,8 +944,7 @@ func (env *LEnv) MacroCall(fun, args *LVal) *LVal {
 
 	r := env.call(fun, args)
 	if r == nil {
-		_, _ = env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
-		panic("nil LVal returned from function call")
+		return env.Errorf("internal error: macro %s returned nil", env.GetFunName(fun))
 	}
 	if r.Type == LError {
 		return r
@@ -986,8 +995,7 @@ func (env *LEnv) SpecialOpCall(fun, args *LVal) *LVal {
 callf:
 	r := env.call(fun, args)
 	if r == nil {
-		_, _ = env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
-		panic("nil LVal returned from function call")
+		return env.Errorf("internal error: special operator %s returned nil", env.GetFunName(fun))
 	}
 	if r.Type == LError {
 		return r
@@ -1055,8 +1063,7 @@ func (env *LEnv) funCall(fun, args *LVal) *LVal {
 callf:
 	r := env.call(fun, args)
 	if r == nil {
-		_, _ = env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
-		panic("nil LVal returned from function call")
+		return env.Errorf("internal error: function %s returned nil", env.GetFunName(fun))
 	}
 	if r.Type == LError {
 		return r
@@ -1174,6 +1181,9 @@ func (env *LEnv) call(fun *LVal, args *LVal) *LVal {
 		// FIXME:  I think fun.Env is probably correct here.  But it wouldn't
 		// surprise me if at least one builtin breaks when it switches.
 		val := fn(env, list)
+		if val == nil {
+			return env.Errorf("internal error: builtin %s returned nil", env.GetFunName(fun))
+		}
 		if val.Type == LMarkTerminal {
 			env.Runtime.Stack.Top().Terminal = true
 			return val.Native.(*LEnv).Eval(val.Cells[0])
@@ -1265,10 +1275,10 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 			return nil, env.Errorf("invalid number of arguments: %v", narg)
 		}
 		if !ret.IsNil() {
-			panic("unexpected formal binding state")
+			return nil, env.Errorf("internal error: unexpected formal binding state")
 		}
 		if formals.Pos() == nformal {
-			panic("no progress binding")
+			return nil, env.Errorf("internal error: no progress binding formals")
 		}
 		nformal = formals.Pos()
 	}

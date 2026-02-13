@@ -749,10 +749,10 @@ func (v *LVal) Len() int {
 }
 
 // UserData returns the user-data associated with an LTaggedVal.
-// UserData panics if v is not an LTaggedVal.
+// UserData returns an error if v is not an LTaggedVal.
 func (v *LVal) UserData() *LVal {
 	if v.Type != LTaggedVal {
-		panic("not tagged: " + v.Type.String())
+		return Errorf("not tagged: %v", v.Type)
 	}
 	return v.Cells[0]
 }
@@ -788,19 +788,19 @@ func (v *LVal) MapEntries() *LVal {
 	return sortedMapEntries(v.Map())
 }
 
-// ArrayDims returns the dimensions of an array.  ArrayDims panics if v.Type is
-// not LArray
+// ArrayDims returns the dimensions of an array.  ArrayDims returns an error if
+// v.Type is not LArray.
 func (v *LVal) ArrayDims() *LVal {
 	if v.Type != LArray {
-		panic("not an array: " + v.Type.String())
+		return Errorf("not an array: %v", v.Type)
 	}
 	return v.Cells[0].Copy()
 }
 
-// ArrayIndex returns the value at
+// ArrayIndex returns the value at the given index in an array.
 func (v *LVal) ArrayIndex(index ...*LVal) *LVal {
 	if v.Type != LArray {
-		panic("not an array: " + v.Type.String())
+		return Errorf("not an array: %v", v.Type)
 	}
 	dims := v.Cells[0]
 	if len(index) != dims.Len() {
@@ -848,13 +848,13 @@ func (v *LVal) MapGet(k interface{}) *LVal {
 	}
 }
 
-// MapSet sets k to val in v.  MapSet panics if v.Type is not LSortMap.
-// String and symbol keys are coerced to avoid programming errors causing
-// symbol and string keys with equal string values from existing in the same
-// map.
+// MapSet sets k to val in v.  MapSet returns an error if v.Type is not
+// LSortMap.  String and symbol keys are coerced to avoid programming errors
+// causing symbol and string keys with equal string values from existing in the
+// same map.
 func (v *LVal) MapSet(k interface{}, val *LVal) *LVal {
 	if v.Type != LSortMap {
-		panic("not sortmap: " + v.Type.String())
+		return Errorf("not sorted-map: %v", v.Type)
 	}
 	switch k := k.(type) {
 	case *LVal:
@@ -1003,7 +1003,7 @@ func (v *LVal) Copy() *LVal {
 		// Copy the map structure while sharing value pointers.
 		mdata, err := v.copyMapData()
 		if err != nil {
-			panic("copy sorted-map: " + err.Error())
+			return Errorf("copy sorted-map: %v", err)
 		}
 		cp.Native = mdata
 	default:
@@ -1264,7 +1264,7 @@ func makeByteSeq(v *LVal) *LVal {
 		}
 		return QExpr(cells)
 	default:
-		panic("type is not a native byte sequence")
+		return Errorf("type is not a native byte sequence: %v", v.Type)
 	}
 }
 

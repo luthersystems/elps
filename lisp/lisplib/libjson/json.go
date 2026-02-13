@@ -236,7 +236,7 @@ func (s *Serializer) DumpMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.L
 		return val
 	}
 	if val.Type != lisp.LBytes {
-		panic("unexpected lval: " + val.Type.String())
+		return env.Errorf("internal error: unexpected value type from JSON dump: %v", val.Type)
 	}
 	b := val.Bytes()
 	msg := (*json.RawMessage)(&b)
