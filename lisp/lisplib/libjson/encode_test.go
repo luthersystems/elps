@@ -160,3 +160,37 @@ func randBytes(r *mathrand.Rand, maxLen int) []byte {
 	}
 	return b
 }
+
+func TestLoadMaxAllocArray(t *testing.T) {
+	s := DefaultSerializer()
+
+	t.Run("exceeds", func(t *testing.T) {
+		// JSON array with 5 elements, limit 3.
+		result := s.LoadMax([]byte(`[1,2,3,4,5]`), false, 3)
+		require.Equal(t, lisp.LError, result.Type, "expected error, got: %v", result)
+		assert.Contains(t, result.String(), "allocation size 5 exceeds maximum (3)")
+	})
+
+	t.Run("within limit", func(t *testing.T) {
+		result := s.LoadMax([]byte(`[1,2,3]`), false, 10)
+		require.NotEqual(t, lisp.LError, result.Type, "unexpected error: %v", result)
+		assert.Equal(t, 3, result.Len())
+	})
+}
+
+func TestLoadMaxAllocMap(t *testing.T) {
+	s := DefaultSerializer()
+
+	t.Run("exceeds", func(t *testing.T) {
+		// JSON object with 3 keys, limit 2.
+		result := s.LoadMax([]byte(`{"a":1,"b":2,"c":3}`), false, 2)
+		require.Equal(t, lisp.LError, result.Type, "expected error, got: %v", result)
+		assert.Contains(t, result.String(), "allocation size 3 exceeds maximum (2)")
+	})
+
+	t.Run("within limit", func(t *testing.T) {
+		result := s.LoadMax([]byte(`{"a":1,"b":2}`), false, 10)
+		require.NotEqual(t, lisp.LError, result.Type, "unexpected error: %v", result)
+		assert.Equal(t, 2, result.Len())
+	})
+}

@@ -864,6 +864,7 @@ func (env *LEnv) Eval(v *LVal) (result *LVal) {
 			result = env.Errorf("internal error (recovered panic): %v", r)
 		}
 	}()
+	macroDepth := 0
 eval:
 	if v.Spliced {
 		return env.Errorf("spliced value used as expression")
@@ -905,6 +906,10 @@ eval:
 		if res.Type == LMarkMacExpand {
 			// A macro was just expanded and returned an unevaluated
 			// expression.  We have to evaluate the result before we return.
+			macroDepth++
+			if macroDepth > env.Runtime.MaxMacroExpansions() {
+				return env.Errorf("macro expansion depth exceeded (%d expansions)", macroDepth)
+			}
 			v = res.Cells[0]
 			goto eval
 		}

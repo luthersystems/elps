@@ -566,7 +566,11 @@ func builtinMacroExpand(env *LEnv, args *LVal) *LVal {
 	if form.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %v", form.Type)
 	}
-	for {
+	maxDepth := env.Runtime.MaxMacroExpansions()
+	for depth := 0; ; depth++ {
+		if depth > maxDepth {
+			return env.Errorf("macro expansion depth exceeded (%d expansions)", depth)
+		}
 		if form.IsNil() {
 			return form
 		}
@@ -881,6 +885,11 @@ func builtinMap(env *LEnv, args *LVal) *LVal {
 	}
 	if !isSeq(lis) {
 		return env.Errorf("third argument is not a proper sequence: %s", lis.Type)
+	}
+	if !nilReturn {
+		if msg := env.Runtime.CheckAlloc(lis.Len()); msg != "" {
+			return env.Errorf(msg)
+		}
 	}
 	var v *LVal
 	var cells []*LVal
@@ -1215,6 +1224,9 @@ func builtinConcatString(env *LEnv, args *LVal) *LVal {
 		}
 		size += n
 	}
+	if msg := env.Runtime.CheckAlloc(size); msg != "" {
+		return env.Errorf(msg)
+	}
 	buf := bytes.NewBuffer(make([]byte, 0, size))
 	for _, v := range rest {
 		switch v.Type {
@@ -1245,6 +1257,9 @@ func builtinConcatBytes(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("argument is not sequence of bytes: %v", v.Type)
 		}
 		size += n
+	}
+	if msg := env.Runtime.CheckAlloc(size); msg != "" {
+		return env.Errorf(msg)
 	}
 	buf := make([]byte, 0, size)
 	for _, v := range rest {
@@ -1293,6 +1308,11 @@ func builtinConcatSeq(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("argument is not a proper sequence: %v", v.Type)
 		}
 		size += v.Len()
+	}
+	if env != nil {
+		if msg := env.Runtime.CheckAlloc(size); msg != "" {
+			return env.Errorf(msg)
+		}
 	}
 	if size == 0 {
 		switch typespec.Str {
@@ -1651,6 +1671,9 @@ func builtinZip(env *LEnv, args *LVal) *LVal {
 			n = m
 		}
 	}
+	if msg := env.Runtime.CheckAlloc(n * len(lists)); msg != "" {
+		return env.Errorf(msg)
+	}
 	var v *LVal
 	var cells []*LVal
 	switch typespec.Str {
@@ -1711,11 +1734,10 @@ func builtinMakeSequence(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("third argument is not positive")
 		}
 	}
-	maxAlloc := env.Runtime.MaxAllocBytes()
 	list := QExpr(nil)
 	for x := start; lessNumeric(x, stop); x = addNumeric(x, step) {
-		if len(list.Cells) >= maxAlloc {
-			return env.Errorf("make-sequence would exceed maximum allocation size (%d elements)", maxAlloc)
+		if msg := env.Runtime.CheckAlloc(len(list.Cells) + 1); msg != "" {
+			return env.Errorf(msg)
 		}
 		list.Cells = append(list.Cells, x.Copy())
 	}
@@ -1729,6 +1751,9 @@ func builtinReverse(env *LEnv, args *LVal) *LVal {
 	}
 	if !isSeq(list) {
 		return env.Errorf("first argument is not a proper sequence: %v", args.Cells[0].Type)
+	}
+	if msg := env.Runtime.CheckAlloc(list.Len()); msg != "" {
+		return env.Errorf(msg)
 	}
 	var v *LVal
 	var cells []*LVal
@@ -1858,6 +1883,9 @@ func builtinAppendMutate(env *LEnv, args *LVal) *LVal {
 	if !isVec(vec) {
 		return env.Errorf("first argument is not a vector: %v", vec.Type)
 	}
+	if msg := env.Runtime.CheckAlloc(len(vec.Cells[1].Cells) + len(vals)); msg != "" {
+		return env.Errorf(msg)
+	}
 	dims := vec.Cells[0]
 	dims.Cells[0].Int += len(vals)
 	vec.Cells[1].Cells = append(vec.Cells[1].Cells, vals...)
@@ -1867,7 +1895,11 @@ func builtinAppendMutate(env *LEnv, args *LVal) *LVal {
 func appendMutateBytes(env *LEnv, args *LVal) *LVal {
 	lbytes, xs := args.Cells[0], args.Cells[1:]
 	b := lbytes.Bytes()
-	err := appendBytes(env, QExpr(xs), func(x byte) {
+	xsVal := QExpr(xs)
+	if msg := env.Runtime.CheckAlloc(len(b) + xsVal.Len()); msg != "" {
+		return env.Errorf(msg)
+	}
+	err := appendBytes(env, xsVal, func(x byte) {
 		b = append(b, x)
 	})
 	if err != nil {
@@ -1883,6 +1915,9 @@ func builtinAppendBytesMutate(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("first argument is not bytes: %v", lbytes.Type)
 	}
 	b := lbytes.Bytes()
+	if msg := env.Runtime.CheckAlloc(len(b) + byteseq.Len()); msg != "" {
+		return env.Errorf(msg)
+	}
 	switch byteseq.Type {
 	case LString:
 		b = append(b, byteseq.Str...)
@@ -1912,6 +1947,9 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("second argument is not a proper sequence: %v", seq.Type)
 	}
 	cells := seqCells(seq)
+	if msg := env.Runtime.CheckAlloc(len(cells) + len(vals)); msg != "" {
+		return env.Errorf(msg)
+	}
 	switch typespec.Str {
 	case "list":
 		// The Cells of the returned list must not intersect with seqCells(seq)
@@ -1939,7 +1977,12 @@ func builtinAppend_Bytes(env *LEnv, args *LVal) *LVal {
 	// the type sequence has already been validated.
 	_, lbytes, xs := args.Cells[0], args.Cells[1], args.Cells[2:]
 	b := lbytes.Bytes()
-	err := appendBytes(env, QExpr(xs), func(x byte) {
+	xsVal := QExpr(xs)
+	resultLen := len(b) + xsVal.Len()
+	if msg := env.Runtime.CheckAlloc(resultLen); msg != "" {
+		return env.Errorf(msg)
+	}
+	err := appendBytes(env, xsVal, func(x byte) {
 		b = append(b, x)
 	})
 	if err != nil {
