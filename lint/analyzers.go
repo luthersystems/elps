@@ -559,6 +559,7 @@ func walkRethrowNode(node *lisp.LVal, handlerDepth int, report func(*lisp.LVal))
 var implicitPrognForms = map[string]int{
 	"lambda":        2, // (lambda (formals) body...)
 	"defun":         3, // (defun name (formals) body...)
+	"defmacro":      3, // (defmacro name (formals) body...)
 	"let":           2, // (let (bindings) body...)
 	"let*":          2, // (let* (bindings) body...)
 	"flet":          2, // (flet (bindings) body...)
@@ -575,7 +576,7 @@ var implicitPrognForms = map[string]int{
 var AnalyzerUnnecessaryProgn = &Analyzer{
 	Name:     "unnecessary-progn",
 	Severity: SeverityInfo,
-	Doc:      "Warn when `progn` wraps the body of a form that already supports multiple expressions.\n\nForms like `defun`, `lambda`, `let`, and others evaluate their body as an implicit progn. Wrapping the body in an explicit `(progn ...)` is redundant. This does not flag `progn` inside `if` branches or `defmacro`, where it is needed.",
+	Doc:      "Warn when `progn` wraps the body of a form that already supports multiple expressions.\n\nForms like `defun`, `defmacro`, `lambda`, `let`, and others evaluate their body as an implicit progn. Wrapping the body in an explicit `(progn ...)` is redundant. This does not flag `progn` inside `if` branches, where it is needed.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			head := HeadSymbol(sexpr)

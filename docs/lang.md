@@ -681,6 +681,97 @@ URL format for organizational clarity and to avoid package name collisions.
 (use-package 'example.com/faster-json/utils)
 ```
 
+## Documentation
+
+ELPS has built-in support for attaching documentation to functions, macros,
+variables, and packages. The `elps doc` command queries this documentation
+at the command line.
+
+### Function and macro docstrings
+
+Place one or more string literals at the beginning of a `defun` or `defmacro`
+body, before any executable expressions. Consecutive strings are joined with
+spaces. An empty string `""` inserts a paragraph break.
+
+```lisp
+(defun factorial (n)
+  "Computes the factorial of a non-negative integer n."
+  (if (<= n 1) 1 (* n (factorial (- n 1)))))
+
+(defmacro when (test &rest body)
+  "Evaluates body forms when test is truthy."
+  ""
+  "Like if but with no else branch and an implicit progn."
+  (list 'if test (cons 'progn body) ()))
+```
+
+A body consisting entirely of strings (no executable expression after them)
+is treated as a constant function returning a string, not as a docstring.
+
+### Variable and constant documentation
+
+The `set` special operator accepts optional trailing strings after the value.
+These are stored as the symbol's documentation in the current package.
+
+```lisp
+(set 'max-retries 3 "Maximum number of retry attempts.")
+```
+
+The `defconst` macro combines `set` and `export` in one step:
+
+```lisp
+(defconst pi-approx 3.14159
+  "Approximate value of pi."
+  "Good enough for most uses.")
+```
+
+### Package documentation
+
+Pass trailing strings to `in-package` after the package name:
+
+```lisp
+(in-package 'my-utils
+  "Utility functions for string and list manipulation.")
+```
+
+### Documenting Go builtins
+
+Go-implemented builtins provide documentation through their definition.
+Use `libutil.FunctionDoc` (for library packages) or the `langBuiltin`
+struct (for core builtins) and pass a docstring as the last argument:
+
+```go
+// Library package function
+libutil.FunctionDoc("my-fn", lisp.Formals("x", "y"), myFnImpl,
+    `Computes something useful from x and y.`)
+
+// Core builtin registration
+RegisterDefaultBuiltin("my-builtin",
+    lisp.Formals("arg"), myBuiltinImpl)
+```
+
+All builtins, macros, and exported symbols are required to have
+documentation. The `elps doc -m` command checks for missing docstrings
+and is typically run in CI.
+
+### Viewing documentation
+
+```
+elps doc map              # Look up a single symbol
+elps doc -p math          # List all exports in a package
+elps doc --list-packages  # List all loaded packages
+elps doc --guide          # Print this language reference
+elps doc -m               # Check for missing documentation
+```
+
+From the REPL or within lisp code, use the `help` package:
+
+```lisp
+(help 'map)               ; Show docs for a symbol
+(help-package 'math)      ; Show all exports in a package
+(help-packages)           ; List all loaded packages
+```
+
 ### Errors
 
 Sometimes an improper invocation of a function will cause an error at runtime.

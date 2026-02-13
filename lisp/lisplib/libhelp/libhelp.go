@@ -87,7 +87,7 @@ func CheckMissing(env *lisp.LEnv) []MissingDoc {
 		for _, sym := range pkg.Externals {
 			v := pkg.Get(lisp.Symbol(sym))
 			qualName := pkgName + ":" + sym
-			if v.Type == lisp.LFun && v.Docstring() == "" {
+			if v.Type == lisp.LFun && v.Docstring() == "" && pkg.SymbolDocs[sym] == "" {
 				missing = append(missing, MissingDoc{Kind: v.FunType.String(), Name: qualName})
 			}
 			if v.Type != lisp.LFun && v.Type != lisp.LError {
@@ -297,7 +297,7 @@ func RenderPkgExported(w io.Writer, env *lisp.LEnv, query string) error {
 		case lisp.LError:
 			fmt.Fprintln(w, v) //nolint:errcheck // best-effort error display
 		case lisp.LFun:
-			err := renderFun(w, exsym, v)
+			err := renderFun(w, exsym, v, pkg.SymbolDocs[exsym])
 			if err != nil {
 				return fmt.Errorf("function %s: %w", exsym, err)
 			}
@@ -323,7 +323,7 @@ func RenderVar(w io.Writer, env *lisp.LEnv, sym string) error {
 	if v.Type != lisp.LFun {
 		return renderVal(w, sym, v, lookupSymbolDoc(env, sym))
 	}
-	return renderFun(w, sym, v)
+	return renderFun(w, sym, v, lookupSymbolDoc(env, sym))
 }
 
 // lookupSymbolDoc resolves a symbol's documentation from its package.
@@ -352,7 +352,7 @@ func renderVal(w io.Writer, sym string, v *lisp.LVal, doc string) error {
 	return err
 }
 
-func renderFun(w io.Writer, sym string, v *lisp.LVal) error {
+func renderFun(w io.Writer, sym string, v *lisp.LVal, symbolDoc string) error {
 	_, err := fmt.Fprintf(w, "%s ", v.FunType)
 	if err != nil {
 		return fmt.Errorf("rendering function type: %w", err)
@@ -366,6 +366,9 @@ func renderFun(w io.Writer, sym string, v *lisp.LVal) error {
 		return fmt.Errorf("rendering signature: %w", err)
 	}
 	doc := cleanDocstring(v.Docstring())
+	if doc == "" {
+		doc = cleanDocstring(symbolDoc)
+	}
 	if doc != "" {
 		_, err = fmt.Fprintln(w, doc)
 		return err
