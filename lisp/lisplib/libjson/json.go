@@ -111,6 +111,12 @@ type Serializer struct {
 
 // Load parses b and returns an LVal representing its structure.
 func (s *Serializer) Load(b []byte, stringNums bool) *lisp.LVal {
+	return s.LoadMax(b, stringNums, 0)
+}
+
+// LoadMax is like Load but enforces a maximum allocation size for arrays
+// and maps parsed from JSON.  When maxAlloc is 0, no limit is enforced.
+func (s *Serializer) LoadMax(b []byte, stringNums bool, maxAlloc int) *lisp.LVal {
 	var x interface{}
 	err := s.jsonDecode(b, &x, stringNums)
 	switch err.(type) {
@@ -123,7 +129,7 @@ func (s *Serializer) Load(b []byte, stringNums bool) *lisp.LVal {
 	default:
 		return lisp.Error(err)
 	}
-	return s.loadInterface(x)
+	return s.loadInterfaceMax(x, maxAlloc)
 }
 
 func (s *Serializer) jsonDecode(b []byte, dst interface{}, stringNums bool) error {
@@ -152,16 +158,19 @@ func (*unmarshalFailer) UnmarshalJSON([]byte) error {
 	return errUnexpectedJSON
 }
 
-func (s *Serializer) loadInterface(x interface{}) *lisp.LVal {
+func (s *Serializer) loadInterfaceMax(x interface{}, maxAlloc int) *lisp.LVal {
 	// NOTE:  The order of types in this switch is deliberate to try and
 	// minimize the number of skipped branches.
 	switch x := x.(type) {
 	case string:
 		return lisp.String(x)
 	case map[string]interface{}:
+		if maxAlloc > 0 && len(x) > maxAlloc {
+			return lisp.Errorf("allocation size %d exceeds maximum (%d)", len(x), maxAlloc)
+		}
 		m := SortedMap(x)
 		for k, v := range m {
-			lval := s.loadInterface(v)
+			lval := s.loadInterfaceMax(v, maxAlloc)
 			if lval.Type == lisp.LError {
 				return lval
 			}
@@ -169,9 +178,12 @@ func (s *Serializer) loadInterface(x interface{}) *lisp.LVal {
 		}
 		return lisp.SortedMapFromData(&lisp.MapData{Map: m})
 	case []interface{}:
+		if maxAlloc > 0 && len(x) > maxAlloc {
+			return lisp.Errorf("allocation size %d exceeds maximum (%d)", len(x), maxAlloc)
+		}
 		cells := make([]*lisp.LVal, len(x))
 		for i := range x {
-			cells[i] = s.loadInterface(x[i])
+			cells[i] = s.loadInterfaceMax(x[i], maxAlloc)
 			if cells[i].Type == lisp.LError {
 				return cells[i]
 			}
@@ -282,7 +294,7 @@ func (s *Serializer) LoadBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVa
 			return stringNums
 		}
 	}
-	return s.attachStack(env, s.Load(js.Bytes(), lisp.True(stringNums)))
+	return s.attachStack(env, s.LoadMax(js.Bytes(), lisp.True(stringNums), env.Runtime.MaxAllocBytes()))
 }
 
 func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -311,7 +323,7 @@ func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 			return stringNums
 		}
 	}
-	return s.attachStack(env, s.Load([]byte(js.Str), lisp.True(stringNums)))
+	return s.attachStack(env, s.LoadMax([]byte(js.Str), lisp.True(stringNums), env.Runtime.MaxAllocBytes()))
 }
 
 // GoValue converts v to its natural representation in Go.  Quotes are ignored

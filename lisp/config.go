@@ -74,3 +74,23 @@ func WithLibrary(l SourceLibrary) Config {
 		return Nil()
 	}
 }
+
+// WithMaxMacroExpansionDepth returns a Config that limits the number of
+// successive macro expansions during evaluation.  This prevents infinite
+// macro expansion from exhausting memory.
+func WithMaxMacroExpansionDepth(n int) Config {
+	return func(env *LEnv) *LVal {
+		env.Runtime.MaxMacroExpansionDepth = n
+		return Nil()
+	}
+}
+
+// WithMaxAlloc returns a Config that sets the per-operation allocation size
+// cap (in bytes for strings, in elements for sequences).  This limits the
+// output size of any single builtin call, not cumulative memory usage.
+func WithMaxAlloc(n int) Config {
+	return func(env *LEnv) *LVal {
+		env.Runtime.MaxAlloc = n
+		return Nil()
+	}
+}
