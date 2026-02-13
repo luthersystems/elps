@@ -386,7 +386,9 @@ func (env *LEnv) get(k *LVal) *LVal {
 	name := k.Str[colonIdx+1:]
 	if strings.IndexByte(name, ':') >= 0 {
 		lerr := Errorf("illegal symbol: %q", k.Str)
-		env.ErrorAssociate(lerr)
+		if err := env.ErrorAssociate(lerr); err != nil {
+			return err
+		}
 		return lerr
 	}
 	pkg := env.Runtime.Registry.Packages[ns]
@@ -395,7 +397,9 @@ func (env *LEnv) get(k *LVal) *LVal {
 	}
 	lerr := pkg.Get(Symbol(name))
 	if lerr.Type == LError {
-		env.ErrorAssociate(lerr)
+		if err := env.ErrorAssociate(lerr); err != nil {
+			return err
+		}
 	}
 	return lerr
 }
@@ -417,7 +421,9 @@ func (env *LEnv) getSimple(k *LVal) *LVal {
 func (env *LEnv) packageGet(k *LVal) *LVal {
 	lerr := env.Runtime.Package.Get(k)
 	if lerr.Type == LError {
-		env.ErrorAssociate(lerr)
+		if err := env.ErrorAssociate(lerr); err != nil {
+			return err
+		}
 	}
 	return lerr
 }
@@ -427,29 +433,40 @@ func (env *LEnv) packageGet(k *LVal) *LVal {
 // of the function is returned.  When the function is bound within a local
 // scope then the local name used to reference the function (if any) is
 // returned.
+//
+// Safety: the error path in this function is cosmetic-only and does not mask
+// data corruption.  Every caller (MacroCall, SpecialOpCall, funCall, call,
+// profiler) has already verified that f.Type == LFun before reaching here, so
+// pkgFunName should never fail.  The fallback to f.Str only affects the
+// human-readable name shown in error messages and stack traces — it cannot
+// influence evaluation, binding, or control flow.  We log at BUG level so the
+// issue is visible in diagnostics without changing the return type to an error
+// that every caller would have to handle for an unreachable code path.
 func (env *LEnv) GetFunName(f *LVal) string {
-	name := env.pkgFunName(f)
+	name, err := env.pkgFunName(f)
+	if err != nil {
+		log.Printf("BUG: GetFunName: %v", err)
+		return f.Str
+	}
 	if name != "" {
 		return name
 	}
 	return f.Str
 }
 
-func (env *LEnv) pkgFunName(f *LVal) string {
+func (env *LEnv) pkgFunName(f *LVal) (string, error) {
 	if f.Type != LFun {
-		panic("not a function: " + f.Type.String())
+		return "", fmt.Errorf("not a function: %v", f.Type)
 	}
 	pkgname := f.Package()
 	if pkgname == "" {
-		log.Printf("unknown package for function %s", f.FID())
-		return ""
+		return "", fmt.Errorf("unknown package for function %s", f.FID())
 	}
 	pkg := env.Runtime.Registry.Packages[pkgname]
 	if pkg == nil {
-		log.Printf("failed to find package %q", pkgname)
-		return ""
+		return "", fmt.Errorf("package not found: %q", pkgname)
 	}
-	return pkg.FunNames[f.FID()]
+	return pkg.FunNames[f.FID()], nil
 }
 
 // Put takes an LSymbol k and binds it to v in env.  If k is already bound to a
@@ -488,7 +505,9 @@ func (env *LEnv) update(k, v *LVal) *LVal {
 		if env.Parent == nil {
 			lerr := env.Runtime.Package.Update(k, v)
 			if lerr.Type == LError {
-				env.ErrorAssociate(lerr)
+				if err := env.ErrorAssociate(lerr); err != nil {
+					return err
+				}
 				return lerr
 			}
 			return Nil()
@@ -502,7 +521,9 @@ func (env *LEnv) update(k, v *LVal) *LVal {
 func (env *LEnv) GetGlobal(k *LVal) *LVal {
 	pieces := SplitSymbol(k)
 	if pieces.Type == LError {
-		env.ErrorAssociate(pieces)
+		if err := env.ErrorAssociate(pieces); err != nil {
+			return err
+		}
 		return pieces
 	}
 	if pieces.Len() == 2 {
@@ -517,7 +538,9 @@ func (env *LEnv) GetGlobal(k *LVal) *LVal {
 		}
 		lerr := pkg.Get(pieces.Cells[1])
 		if lerr.Type == LError {
-			env.ErrorAssociate(lerr)
+			if err := env.ErrorAssociate(lerr); err != nil {
+				return err
+			}
 		}
 		return lerr
 	}
@@ -528,7 +551,9 @@ func (env *LEnv) GetGlobal(k *LVal) *LVal {
 func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
 	pieces := SplitSymbol(k)
 	if pieces.Type == LError {
-		env.ErrorAssociate(pieces)
+		if err := env.ErrorAssociate(pieces); err != nil {
+			return err
+		}
 		return pieces
 	}
 	if pieces.Len() == 2 {
@@ -542,14 +567,18 @@ func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
 		}
 		lerr := pkg.Put(pieces.Cells[1], v)
 		if lerr.Type == LError {
-			env.ErrorAssociate(lerr)
+			if err := env.ErrorAssociate(lerr); err != nil {
+				return err
+			}
 		}
 		return lerr
 	}
 
 	lerr := env.Runtime.Package.Put(k, v)
 	if lerr.Type == LError {
-		env.ErrorAssociate(lerr)
+		if err := env.ErrorAssociate(lerr); err != nil {
+			return err
+		}
 		return lerr
 	}
 	return Nil()
@@ -752,7 +781,7 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 			cells = append(cells, v)
 		case error:
 			if narg > 1 {
-				panic("invalid error argument")
+				return ErrorConditionf("runtime", "invalid error argument: cannot mix error and *LVal arguments")
 			}
 			return &LVal{
 				Type:   LError,
@@ -799,10 +828,11 @@ func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface
 }
 
 // ErrorAssociate associates the LError value lerr with env's current call
-// stack and source location.  ErrorAssociate panics if lerr is not LError.
-func (env *LEnv) ErrorAssociate(lerr *LVal) {
+// stack and source location.  ErrorAssociate returns an LError if lerr is
+// not an error value (indicating a bug in the caller), or nil on success.
+func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	if lerr.Type != LError {
-		panic("not an error: " + lerr.Type.String())
+		return env.Errorf("internal error: ErrorAssociate called with non-error: %v", lerr.Type)
 	}
 	if lerr.CallStack() == nil {
 		lerr.SetCallStack(env.Runtime.Stack.Copy())
@@ -815,15 +845,25 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) {
 	if lerr.Source == nil || lerr.Source.Pos < 0 {
 		lerr.Source = env.Loc
 	}
+	return nil
 }
 
 // Eval evaluates v in the context (scope) of env and returns the resulting
 // LVal.  Eval does not modify v.
 //
+// Eval includes a recover() safety net that converts any Go panic during
+// evaluation into an LError, preventing panics from crashing the host process
+// when ELPS is embedded.
+//
 // NOTE:  Eval shouldn't unquote v during evaluation -- a difference between
-// Eval and the “eval” builtin function, but it does.  For some reason macros
+// Eval and the "eval" builtin function, but it does.  For some reason macros
 // won't work without this unquoting.
-func (env *LEnv) Eval(v *LVal) *LVal {
+func (env *LEnv) Eval(v *LVal) (result *LVal) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = env.Errorf("internal error (recovered panic): %v", r)
+		}
+	}()
 eval:
 	if v.Spliced {
 		return env.Errorf("spliced value used as expression")
@@ -855,7 +895,9 @@ eval:
 		}
 		lerr := pkg.Get(Symbol(name))
 		if lerr.Type == LError {
-			env.ErrorAssociate(lerr)
+			if err := env.ErrorAssociate(lerr); err != nil {
+				return err
+			}
 		}
 		return lerr
 	case LSExpr:
@@ -867,7 +909,9 @@ eval:
 			goto eval
 		}
 		if res.Type == LError {
-			env.ErrorAssociate(res)
+			if err := env.ErrorAssociate(res); err != nil {
+				return err
+			}
 		}
 		return res
 	case LQuote:
@@ -889,7 +933,9 @@ func (env *LEnv) EvalSExpr(s *LVal) *LVal {
 	}
 	call := env.evalSExprCells(s)
 	if call.Type == LError {
-		env.ErrorAssociate(call)
+		if err := env.ErrorAssociate(call); err != nil {
+			return err
+		}
 		return call
 	}
 	fun := call.Cells[0] // call is not an empty expression -- fun is known LFun
@@ -904,7 +950,7 @@ func (env *LEnv) EvalSExpr(s *LVal) *LVal {
 	case LFunMacro:
 		return env.MacroCall(fun, args)
 	default:
-		panic(fmt.Sprintf("invalid function type %#v", fun.FunType))
+		return env.Errorf("internal error: invalid function type %v", fun.FunType)
 	}
 }
 
@@ -934,8 +980,7 @@ func (env *LEnv) MacroCall(fun, args *LVal) *LVal {
 
 	r := env.call(fun, args)
 	if r == nil {
-		_, _ = env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
-		panic("nil LVal returned from function call")
+		return env.Errorf("internal error: macro %s returned nil", env.GetFunName(fun))
 	}
 	if r.Type == LError {
 		return r
@@ -986,8 +1031,7 @@ func (env *LEnv) SpecialOpCall(fun, args *LVal) *LVal {
 callf:
 	r := env.call(fun, args)
 	if r == nil {
-		_, _ = env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
-		panic("nil LVal returned from function call")
+		return env.Errorf("internal error: special operator %s returned nil", env.GetFunName(fun))
 	}
 	if r.Type == LError {
 		return r
@@ -1055,8 +1099,7 @@ func (env *LEnv) funCall(fun, args *LVal) *LVal {
 callf:
 	r := env.call(fun, args)
 	if r == nil {
-		_, _ = env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
-		panic("nil LVal returned from function call")
+		return env.Errorf("internal error: function %s returned nil", env.GetFunName(fun))
 	}
 	if r.Type == LError {
 		return r
@@ -1174,6 +1217,9 @@ func (env *LEnv) call(fun *LVal, args *LVal) *LVal {
 		// FIXME:  I think fun.Env is probably correct here.  But it wouldn't
 		// surprise me if at least one builtin breaks when it switches.
 		val := fn(env, list)
+		if val == nil {
+			return env.Errorf("internal error: builtin %s returned nil", env.GetFunName(fun))
+		}
 		if val.Type == LMarkTerminal {
 			env.Runtime.Stack.Top().Terminal = true
 			return val.Native.(*LEnv).Eval(val.Cells[0])
@@ -1265,10 +1311,10 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 			return nil, env.Errorf("invalid number of arguments: %v", narg)
 		}
 		if !ret.IsNil() {
-			panic("unexpected formal binding state")
+			return nil, env.Errorf("internal error: unexpected formal binding state")
 		}
 		if formals.Pos() == nformal {
-			panic("no progress binding")
+			return nil, env.Errorf("internal error: no progress binding formals")
 		}
 		nformal = formals.Pos()
 	}

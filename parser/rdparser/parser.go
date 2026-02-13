@@ -292,7 +292,7 @@ func (p *Parser) ParseLiteralStringRaw() *lisp.LVal {
 	}
 	text := p.TokenText()
 	if len(text) < 6 {
-		panic("short raw string")
+		return p.errorf("parse-error", "invalid raw string literal: too short")
 	}
 	v := p.String(text[3 : len(text)-3])
 	if p.preserveFormat && v.Meta != nil {

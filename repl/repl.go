@@ -199,7 +199,8 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 	}
 	rl, err := readline.NewEx(rlCfg)
 	if err != nil {
-		panic(err)
+		errlnf("Failed to initialize readline: %v", err)
+		os.Exit(1)
 	}
 	defer rl.Close() //nolint:errcheck // best-effort cleanup
 
@@ -228,7 +229,10 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 			for {
 				tok := lex.ReadToken()
 				if len(tok) != 1 {
-					panic("bad tokens")
+					return []*token.Token{{
+						Type: token.ERROR,
+						Text: "unexpected token count from lexer",
+					}}
 				}
 				if tok[0].Type == token.EOF {
 					return tokens
@@ -333,7 +337,10 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 			for {
 				tok := lex.ReadToken()
 				if len(tok) != 1 {
-					panic("bad tokens")
+					return []*token.Token{{
+						Type: token.ERROR,
+						Text: "unexpected token count from lexer",
+					}}
 				}
 				if tok[0].Type == token.EOF {
 					return tokens

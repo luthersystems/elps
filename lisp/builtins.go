@@ -621,7 +621,7 @@ func macroExpand1(env *LEnv, mac *LVal, args *LVal) (*LVal, bool) {
 		return mark, true
 	}
 	if mark.Type != LMarkMacExpand {
-		panic("macro did not return LMarkMacExpand: " + mark.Type.String())
+		return env.Errorf("internal error: macro did not return expansion marker: %v", mark.Type), true
 	}
 	// MacroCall unquotes its result so that it can work properly in normal
 	// evaluation cycle.  So we need to re-quote the value here.
@@ -2491,7 +2491,7 @@ func builtinDiv(env *LEnv, v *LVal) *LVal {
 // result.
 func divInt(x, args *LVal) *LVal {
 	if x.Type != LInt {
-		panic("non-integer first argument")
+		return Errorf("internal error: divInt called with non-integer: %v", x.Type)
 	}
 	ys := args.Cells
 	for i := range ys {
@@ -2546,7 +2546,7 @@ func builtinMul(env *LEnv, v *LVal) *LVal {
 // mulInt tries to perform multiplication as int if all arguments are int.
 func mulInt(x, args *LVal) *LVal {
 	if x.Type != LInt {
-		panic("non-integer first argument")
+		return Errorf("internal error: mulInt called with non-integer: %v", x.Type)
 	}
 	ys := args.Cells
 	for i := range ys {
