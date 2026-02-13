@@ -437,6 +437,7 @@ func (env *LEnv) GetFunName(f *LVal) string {
 
 func (env *LEnv) pkgFunName(f *LVal) string {
 	if f.Type != LFun {
+		log.Printf("BUG: pkgFunName called with non-function: %v", f.Type)
 		return ""
 	}
 	pkgname := f.Package()
@@ -799,10 +800,11 @@ func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface
 }
 
 // ErrorAssociate associates the LError value lerr with env's current call
-// stack and source location.  ErrorAssociate silently returns if lerr is not
-// LError.
+// stack and source location.  ErrorAssociate logs a warning and returns if
+// lerr is not LError.
 func (env *LEnv) ErrorAssociate(lerr *LVal) {
 	if lerr.Type != LError {
+		log.Printf("BUG: ErrorAssociate called with non-error: %v", lerr.Type)
 		return
 	}
 	if lerr.CallStack() == nil {
