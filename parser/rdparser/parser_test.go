@@ -365,3 +365,47 @@ baz]`, `test11:3:4: mismatched-syntax: expected ) to close ( opened at test11:1:
 		assert.Equal(t, test.errmsg, msg)
 	}
 }
+
+func TestParseDepthLimit(t *testing.T) {
+	t.Parallel()
+
+	t.Run("exceeds limit by one", func(t *testing.T) {
+		t.Parallel()
+		// N parens = N calls to ParseExpression.  The check triggers when
+		// depth > maxDepth, so maxDepth+1 parens is the first to fail.
+		depth := DefaultMaxParseDepth + 1
+		input := strings.Repeat("(", depth) + strings.Repeat(")", depth)
+		p := New(token.NewScanner("deep", strings.NewReader(input)))
+		_, err := p.ParseProgram()
+		if err == nil {
+			t.Fatal("expected parse error for deeply nested input")
+		}
+		assert.Contains(t, err.Error(), fmt.Sprintf("expression nesting exceeds maximum depth (%d)", DefaultMaxParseDepth))
+	})
+
+	t.Run("at exact limit succeeds", func(t *testing.T) {
+		t.Parallel()
+		// N parens = depth N.  The check is depth > maxDepth, so exactly
+		// maxDepth parens is the deepest that succeeds.
+		depth := DefaultMaxParseDepth
+		input := strings.Repeat("(", depth) + strings.Repeat(")", depth)
+		p := New(token.NewScanner("ok", strings.NewReader(input)))
+		exprs, err := p.ParseProgram()
+		if err != nil {
+			t.Fatalf("unexpected error at depth %d parens: %v", depth, err)
+		}
+		assert.Len(t, exprs, 1)
+	})
+
+	t.Run("bracket list nesting exceeds limit", func(t *testing.T) {
+		t.Parallel()
+		depth := DefaultMaxParseDepth + 1
+		input := strings.Repeat("[", depth) + strings.Repeat("]", depth)
+		p := New(token.NewScanner("deep-bracket", strings.NewReader(input)))
+		_, err := p.ParseProgram()
+		if err == nil {
+			t.Fatal("expected parse error for deeply nested bracket lists")
+		}
+		assert.Contains(t, err.Error(), fmt.Sprintf("expression nesting exceeds maximum depth (%d)", DefaultMaxParseDepth))
+	})
+}

@@ -35,18 +35,27 @@ func (*reader) ReadLocation(name string, loc string, r io.Reader) ([]*lisp.LVal,
 	return p.ParseProgram()
 }
 
+// DefaultMaxParseDepth is the maximum nesting depth allowed by the parser.
+// Deeply nested input (e.g. 50K+ unmatched parens) can overflow the Go
+// goroutine stack with a fatal crash that recover() cannot catch.  This
+// limit converts the fatal crash into a parse error.
+const DefaultMaxParseDepth = 10000
+
 // Parser is a lisp parser.
 type Parser struct {
 	parsing         bool
 	src             *TokenSource
 	preserveFormat  bool
 	pendingComments []*token.Token
+	depth           int
+	maxDepth        int
 }
 
 // NewFromSource initializes and returns a Parser that reads tokens from src.
 func NewFromSource(src *TokenSource) *Parser {
 	return &Parser{
-		src: src,
+		src:      src,
+		maxDepth: DefaultMaxParseDepth,
 	}
 }
 
@@ -115,6 +124,12 @@ func (p *Parser) ParseProgram() ([]*lisp.LVal, error) {
 // requires an expression to be present in the input stream and will report
 // unexpected EOF tokens encountered.
 func (p *Parser) ParseExpression() *lisp.LVal {
+	p.depth++
+	defer func() { p.depth-- }()
+	if p.depth > p.maxDepth {
+		return p.errorf("parse-error", "expression nesting exceeds maximum depth (%d)", p.maxDepth)
+	}
+
 	fn := p.parseExpression()
 
 	// We have a token marking the beginning of an expression.  Flag that we
