@@ -428,29 +428,30 @@ func (env *LEnv) packageGet(k *LVal) *LVal {
 // scope then the local name used to reference the function (if any) is
 // returned.
 func (env *LEnv) GetFunName(f *LVal) string {
-	name := env.pkgFunName(f)
+	name, err := env.pkgFunName(f)
+	if err != nil {
+		log.Printf("BUG: GetFunName: %v", err)
+		return f.Str
+	}
 	if name != "" {
 		return name
 	}
 	return f.Str
 }
 
-func (env *LEnv) pkgFunName(f *LVal) string {
+func (env *LEnv) pkgFunName(f *LVal) (string, error) {
 	if f.Type != LFun {
-		log.Printf("BUG: pkgFunName called with non-function: %v", f.Type)
-		return ""
+		return "", fmt.Errorf("not a function: %v", f.Type)
 	}
 	pkgname := f.Package()
 	if pkgname == "" {
-		log.Printf("unknown package for function %s", f.FID())
-		return ""
+		return "", fmt.Errorf("unknown package for function %s", f.FID())
 	}
 	pkg := env.Runtime.Registry.Packages[pkgname]
 	if pkg == nil {
-		log.Printf("failed to find package %q", pkgname)
-		return ""
+		return "", fmt.Errorf("package not found: %q", pkgname)
 	}
-	return pkg.FunNames[f.FID()]
+	return pkg.FunNames[f.FID()], nil
 }
 
 // Put takes an LSymbol k and binds it to v in env.  If k is already bound to a
