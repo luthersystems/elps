@@ -11,9 +11,10 @@ import (
 )
 
 var (
-	replJSON  bool
-	replBatch bool
-	replEval  string
+	replJSON    bool
+	replBatch   bool
+	replEval    string
+	replRootDir string
 )
 
 // replCmd represents the repl command
@@ -62,6 +63,9 @@ Example batch/JSON usage:
 			repl.WithJSON(jsonFlag),
 			repl.WithBatch(replBatch),
 		}
+		if replRootDir != "" {
+			opts = append(opts, repl.WithRootDir(replRootDir))
+		}
 		if replEval != "" {
 			opts = append(opts, repl.WithEval(replEval))
 		}
@@ -80,4 +84,6 @@ func init() {
 		"Alias for --batch")
 	replCmd.Flags().StringVarP(&replEval, "eval", "e", "",
 		"Evaluate a single expression, print result, and exit")
+	replCmd.Flags().StringVar(&replRootDir, "root-dir", "",
+		"Root directory for file access confinement (default: working directory)")
 }

@@ -22,11 +22,12 @@ import (
 )
 
 type config struct {
-	stdin  io.ReadCloser
-	stderr io.WriteCloser
-	json   bool
-	batch  bool
-	eval   string
+	stdin   io.ReadCloser
+	stderr  io.WriteCloser
+	json    bool
+	batch   bool
+	eval    string
+	rootDir string
 }
 
 func newConfig(opts ...Option) *config {
@@ -78,6 +79,14 @@ func WithEval(expr string) Option {
 	}
 }
 
+// WithRootDir confines file access to the given directory tree.
+// When empty, the working directory is used as the root.
+func WithRootDir(dir string) Option {
+	return func(c *config) {
+		c.rootDir = dir
+	}
+}
+
 // jsonResult is the JSON output for a successful evaluation.
 type jsonResult struct {
 	Type      string `json:"type"`
@@ -102,12 +111,23 @@ type jsonParseError struct {
 func RunRepl(prompt string, opts ...Option) {
 	env := lisp.NewEnv(nil)
 
-	envOpts := []lisp.Config{
-		lisp.WithReader(parser.NewReader()),
-		lisp.WithLibrary(&lisp.RelativeFileSystemLibrary{}),
+	cfg := newConfig(opts...)
+
+	rootDir := cfg.rootDir
+	if rootDir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			errlnf("Cannot determine working directory: %v", err)
+			os.Exit(1)
+		}
+		rootDir = wd
 	}
 
-	cfg := newConfig(opts...)
+	envOpts := []lisp.Config{
+		lisp.WithReader(parser.NewReader()),
+		lisp.WithLibrary(&lisp.FSLibrary{FS: os.DirFS(rootDir)}),
+	}
+
 	if cfg.stderr != nil {
 		envOpts = append(envOpts, lisp.WithStderr(cfg.stderr))
 	}
