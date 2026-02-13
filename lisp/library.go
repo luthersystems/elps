@@ -99,16 +99,23 @@ func (lib *RelativeFileSystemLibrary) LoadSource(ctx SourceContext, loc string) 
 		root := filepath.Clean(lib.RootDir)
 		// Resolve symlinks on both root and loc so that a symlink
 		// within the root pointing outside cannot bypass confinement.
-		if resolved, err := filepath.EvalSymlinks(root); err == nil {
-			root = resolved
+		// Errors are not swallowed — if we cannot resolve the real
+		// path, we cannot verify confinement.
+		resolved, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("cannot resolve root directory %s: %w", lib.RootDir, err)
 		}
-		resolvedLoc := loc
-		if resolved, err := filepath.EvalSymlinks(loc); err == nil {
-			resolvedLoc = resolved
+		root = resolved
+		resolvedLoc, err := filepath.EvalSymlinks(loc)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("cannot resolve path %s: %w", loc, err)
 		}
 		if !strings.HasPrefix(resolvedLoc, root+string(filepath.Separator)) && resolvedLoc != root {
 			return "", "", nil, fmt.Errorf("access denied: %s is outside root directory %s", loc, root)
 		}
+		// Read from the resolved path to prevent TOCTOU races where
+		// a symlink target changes between resolution and read.
+		loc = resolvedLoc
 	}
 	name := filepath.Base(loc)
 	data, err := os.ReadFile(loc) //#nosec G304
