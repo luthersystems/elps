@@ -906,9 +906,7 @@ func (v *LVal) IsNumeric() bool {
 }
 
 // Equal returns a non-nil value if v and other are logically equal, under the
-// rules used by the “equal?” function.
-//
-// BUG:  sorted-map comparison is not implemented
+// rules used by the "equal?" function.
 func (v *LVal) Equal(other *LVal) *LVal {
 	if v.Type != other.Type {
 		if v.IsNumeric() && other.IsNumeric() {
@@ -951,8 +949,19 @@ func (v *LVal) Equal(other *LVal) *LVal {
 		if v.Map().Len() != other.Map().Len() {
 			return Bool(false)
 		}
-
-		return Bool(false)
+		vEntries := sortedMapEntries(v.Map())
+		oEntries := sortedMapEntries(other.Map())
+		for i := range vEntries.Cells {
+			vPair := vEntries.Cells[i]
+			oPair := oEntries.Cells[i]
+			if !True(vPair.Cells[0].Equal(oPair.Cells[0])) {
+				return Bool(false)
+			}
+			if !True(vPair.Cells[1].Equal(oPair.Cells[1])) {
+				return Bool(false)
+			}
+		}
+		return Bool(true)
 	}
 	return Bool(false)
 }
@@ -983,9 +992,21 @@ func (v *LVal) Copy() *LVal {
 	}
 	cp := &LVal{}
 	*cp = *v // shallow copy of all fields including Map and Bytes
-	if v.Type != LArray {
-		// Arrays are memory references but use Cells as backing storage.  So
-		// we can only copy the cells when the type is not an array.
+	switch v.Type {
+	case LArray:
+		// Arrays are memory references but use Cells as backing storage.
+		// We preserve the shared backing array (reference semantics).
+	case LSortMap:
+		// Sorted-maps store data in Native (*MapData) which contains Go
+		// maps. A shallow struct copy would alias the underlying maps,
+		// causing assoc!/dissoc! on the copy to mutate the original.
+		// Copy the map structure while sharing value pointers.
+		mdata, err := v.copyMapData()
+		if err != nil {
+			panic("copy sorted-map: " + err.Error())
+		}
+		cp.Native = mdata
+	default:
 		cp.Cells = v.copyCells()
 	}
 	return cp
