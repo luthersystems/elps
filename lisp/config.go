@@ -94,3 +94,13 @@ func WithMaxAlloc(n int) Config {
 		return Nil()
 	}
 }
+
+// WithDebugger returns a Config that attaches a debugger to the runtime.
+// When a debugger is attached, tail recursion optimization is disabled to
+// provide predictable stepping behavior and stack traces.
+func WithDebugger(d Debugger) Config {
+	return func(env *LEnv) *LVal {
+		env.Runtime.Debugger = d
+		return Nil()
+	}
+}

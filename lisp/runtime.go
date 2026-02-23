@@ -30,7 +30,8 @@ type Runtime struct {
 	Reader                 Reader
 	Library                SourceLibrary
 	Profiler               Profiler
-	MaxAlloc               int // Per-operation allocation size cap (0 = use default). Not cumulative.
+	Debugger               Debugger // nil = disabled (zero overhead on hot path)
+	MaxAlloc               int      // Per-operation allocation size cap (0 = use default). Not cumulative.
 	MaxMacroExpansionDepth int // Maximum macro expansion iterations (0 = use default).
 	conditionStack         []*LVal
 	numenv                 atomicCounter

@@ -1,9 +1,9 @@
 # ELPS Debugger Design Document
 
-**Date:** 2026-02-12
-**Status:** Draft / RFC
+**Date:** 2026-02-12 (updated 2026-02-23)
+**Status:** Approved — Phase 1 implementation in progress
 **Author:** Claude (with Sam)
-**Related:** PR #21 (2020, never merged), `docs/plans/lsp-support-enhancements.md`
+**Related:** Issue #100, PR #21 (2020, never merged), `docs/plans/lsp-support-enhancements.md`
 
 ---
 
@@ -139,24 +139,40 @@ This separation means:
 
 // Debugger is called by the interpreter at key execution points.
 // When Runtime.Debugger is nil, these calls are never made (zero cost).
+// The two-check gate pattern (d != nil && d.IsEnabled()) allows a debugger
+// to remain attached but dormant, further reducing overhead when not
+// actively debugging.
 type Debugger interface {
-    // OnEval is called before evaluating any expression.
+    // IsEnabled returns true when the debugger is actively debugging.
+    // A dormant debugger (attached but not yet activated) returns false,
+    // allowing the interpreter to skip all other hook calls.
+    IsEnabled() bool
+
+    // OnEval is called before evaluating any expression with a real
+    // source location (v.Source != nil). Synthetic expressions from
+    // macro expansion (Pos < 0) are skipped.
     // Returns true if the debugger wants execution to pause.
     // The env provides access to scope, stack, and current package.
     OnEval(env *LEnv, expr *LVal) bool
-
-    // OnFunCall is called before a function is invoked (after args are evaluated).
-    // fun is the function value, args is the evaluated argument list.
-    OnFunCall(env *LEnv, fun, args *LVal)
-
-    // OnFunReturn is called after a function returns.
-    // fun is the function, result is the return value.
-    OnFunReturn(env *LEnv, fun, result *LVal)
 
     // WaitIfPaused blocks until the debugger allows execution to continue.
     // Called when OnEval returns true.
     // Returns the action to take (Continue, StepInto, StepOver, StepOut).
     WaitIfPaused(env *LEnv, expr *LVal) DebugAction
+
+    // OnFunEntry is called when a function is entered, after formal
+    // parameters have been bound. Unlike OnFunCall (which received raw
+    // args), this provides access to fenv — the function's lexical
+    // environment with parameter bindings already in scope.
+    OnFunEntry(env *LEnv, fun *LVal, fenv *LEnv)
+
+    // OnFunReturn is called after a function returns.
+    // fun is the function, result is the return value.
+    OnFunReturn(env *LEnv, fun, result *LVal)
+
+    // OnError is called when an error condition is created.
+    // Returns true if the debugger wants execution to pause (exception breakpoint).
+    OnError(env *LEnv, lerr *LVal) bool
 }
 
 type DebugAction int
@@ -171,33 +187,48 @@ const (
 
 ### 3.2 Hook points in the interpreter
 
-Only **three** touch points in `env.go`:
+Five hook points in `env.go`, all using the **two-check gate** pattern:
+`if d := env.Runtime.Debugger; d != nil && d.IsEnabled() { ... }`.
+The nil check is free; `IsEnabled()` allows a dormant debugger.
 
 **Hook 1: `Eval()`** — expression-level granularity for line stepping
 
 ```go
 func (env *LEnv) Eval(v *LVal) *LVal {
     env.Loc = v.Source
-    if env.Runtime.Debugger != nil {  // nil check = zero cost when disabled
-        if env.Runtime.Debugger.OnEval(env, v) {
-            env.Runtime.Debugger.WaitIfPaused(env, v)
+    // Skip synthetic expressions (macro-generated nodes with no real source).
+    if v.Source != nil {
+        if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+            if d.OnEval(env, v) {
+                action := d.WaitIfPaused(env, v)
+                // action is used by the engine to update step state
+                _ = action
+            }
         }
     }
     // ... existing eval logic unchanged ...
 }
 ```
 
-**Hook 2: `funCall()`** — function entry (replaces/extends profiler hook)
+**Hook 2: `call()` post-bind** — function entry with bound parameters
+
+Moved from `funCall()` to `call()`, **after `bind()`** returns. This gives
+the debugger access to `fenv` with formal parameters already bound — far
+more useful than raw args. Guard: `fenv != nil && fenv != env` (skip for
+builtins, which return the caller env).
 
 ```go
-func (env *LEnv) funCall(fun, args *LVal) *LVal {
-    if env.Runtime.Debugger != nil {
-        env.Runtime.Debugger.OnFunCall(env, fun, args)
+func (env *LEnv) call(fun *LVal, args *LVal) *LVal {
+    fenv, list := env.bind(fun, args)
+    if list.Type == LError {
+        return list
     }
-    if env.Runtime.Profiler != nil {
-        defer env.trace(fun)()
+    if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+        if fenv != nil && fenv != env {
+            d.OnFunEntry(env, fun, fenv)
+        }
     }
-    // ... existing funCall logic unchanged ...
+    // ... existing call logic unchanged ...
 }
 ```
 
@@ -205,11 +236,42 @@ func (env *LEnv) funCall(fun, args *LVal) *LVal {
 
 ```go
     // At the end of funCall, before returning r:
-    if env.Runtime.Debugger != nil {
-        env.Runtime.Debugger.OnFunReturn(env, fun, r)
+    if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+        d.OnFunReturn(env, fun, r)
     }
     return r
 ```
+
+**Hook 4: `ErrorCondition()`** — exception breakpoints
+
+```go
+func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
+    // ... existing error construction ...
+    lerr := &LVal{Type: LError, ...}
+    if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+        if d.OnError(env, lerr) {
+            d.WaitIfPaused(env, lerr)
+        }
+    }
+    return lerr
+}
+```
+
+Same pattern in `ErrorConditionf()`.
+
+**Hook 5: `funCall()` TRO suppression** — disable tail recursion
+
+```go
+    // In funCall(), before TerminalFID check:
+    npop := 0
+    if env.Runtime.Debugger == nil {
+        npop = env.Runtime.Stack.TerminalFID(fun.FID())
+    }
+```
+
+TRO is globally disabled when any debugger is attached, regardless of
+`IsEnabled()`. This is simpler than per-frame tracking and ensures
+predictable stack traces.
 
 ### 3.3 Performance analysis: zero-cost when disabled
 
@@ -602,28 +664,29 @@ the same `Runtime.Registry` that `elps doc` and the linter already use.
 
 ### Phasing
 
-**Phase 1 — Minimum Viable Debugger (~1200 LOC)**
-- Debugger interface + hooks in env.go
-- Breakpoint engine (by file:line)
-- Continue + StepInto only
+**Phase 1 — Full-Featured Debugger (~2000 LOC)** *(current)*
+- Debugger interface (`IsEnabled`, `OnEval`, `WaitIfPaused`, `OnFunEntry`, `OnFunReturn`, `OnError`)
+- Hook points in env.go (5 hooks with two-check gate)
+- Breakpoint engine (by file:line) with conditional breakpoints
+- Exception breakpoints (OnError hook)
+- All stepping modes: Continue, StepInto, StepOver, StepOut
 - Variable inspection (locals + globals)
-- CLI `elps debug` with stdin/stdout DAP
+- Debug eval (REPL in paused context)
+- DAP server with TCP + stdio transport
+- CLI `elps debug` command
 - VS Code launch configuration
 
-**Phase 2 — Full Stepping (~600 LOC)**
-- StepOver + StepOut
-- Conditional breakpoints
+**Phase 2 — Embedded & Advanced (~600 LOC)**
 - Function breakpoints (by name)
-- Debug eval (REPL in paused context)
-- `attach` mode for embedded use
-
-**Phase 3 — Polish (~600 LOC)**
+- `attach` mode for embedded use (substrate, shirotester)
 - Hit count breakpoints
 - Log points (print without pausing)
-- Exception breakpoints (break on LError)
+
+**Phase 3 — Polish (~600 LOC)**
 - Watch expressions
 - Source mapping for macro expansions
-- Editor-specific launch configs (Neovim, JetBrains)
+- Editor-specific launch configs (Neovim, JetBrains, Helix)
+- VariableFormatter for custom native type display
 
 ---
 
@@ -659,7 +722,7 @@ modifies their definitions:
 | `elpsutil/` | Embedding helpers unchanged. |
 | `elpstest/` | Test framework unchanged. |
 
-### 7.2 Files that change (3 files, ~15 lines of modifications)
+### 7.2 Files that change (3 files, ~25 lines of modifications)
 
 #### `lisp/runtime.go` — Add one field
 
@@ -685,80 +748,80 @@ default (`StandardRuntime()` does not set it). No existing code references it.
 Size increase: 16 bytes per Runtime (one interface = pointer pair). There is
 exactly one Runtime per interpreter instance.
 
-#### `lisp/env.go` — Add nil-checked hooks at 3 points
+#### `lisp/env.go` — Add hooks at 5 points
 
-**Point 1: `Eval()` (line ~831)** — expression-level hook
+All hooks use the **two-check gate**: `d != nil && d.IsEnabled()`.
+
+**Point 1: `Eval()` (line ~872)** — expression-level hook with source guard
 
 ```diff
- func (env *LEnv) Eval(v *LVal) *LVal {
- eval:
-     if v.Spliced {
-         return env.Errorf("spliced value used as expression")
-     }
      env.Loc = v.Source
-+    if env.Runtime.Debugger != nil {
-+        if env.Runtime.Debugger.OnEval(env, v) {
-+            env.Runtime.Debugger.WaitIfPaused(env, v)
++    if v.Source != nil {
++        if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
++            if d.OnEval(env, v) {
++                d.WaitIfPaused(env, v)
++            }
 +        }
 +    }
      if v.Quoted {
-         return v
-     }
 ```
 
-**Impact:** 4 lines added. When `Debugger` is nil, this is a single
-pointer comparison (`CMPQ $0, offset(reg)`) that the CPU branch-predicts
-as not-taken. Identical to the existing `Profiler != nil` pattern in
-`funCall()`. The `Eval` function is the hottest path — this is the change
-that matters most. Benchmark verification is mandatory.
+**Impact:** The `v.Source != nil` guard skips synthetic expressions (macro
+expansion nodes with no real source). Combined with the two-check gate,
+production overhead is a single nil pointer comparison.
 
-**Point 2: `funCall()` (line ~1034)** — function entry hook
+**Point 2: `call()` post-bind (line ~1212)** — function entry with fenv
 
 ```diff
- func (env *LEnv) funCall(fun, args *LVal) *LVal {
-     if fun.Type != LFun {
-         return env.Errorf("not a function: %v", fun.Type)
+     fenv, list := env.bind(fun, args)
+     if list.Type == LError {
+         return list
      }
-     if fun.IsSpecialFun() {
-         return env.Errorf("not a regular function: %v", fun.FunType)
-     }
-
-+    if env.Runtime.Debugger != nil {
-+        env.Runtime.Debugger.OnFunCall(env, fun, args)
++    if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
++        if fenv != nil && fenv != env {
++            d.OnFunEntry(env, fun, fenv)
++        }
 +    }
-     if env.Runtime.Profiler != nil {
-         defer env.trace(fun)()
-     }
 ```
 
-**Impact:** 3 lines added, immediately before the existing Profiler check.
-Same nil-check pattern. Fires once per function call (not per expression).
+**Impact:** Fires in `call()` (not `funCall()`) so it covers all call
+types. The `fenv != env` guard skips builtins (which return the caller env
+from bind). Provides access to parameter bindings.
 
-**Point 3: `funCall()` return path (line ~1079)** — function exit hook
+**Point 3: `funCall()` return path (line ~1127)** — function exit hook
 
 ```diff
-+    if env.Runtime.Debugger != nil {
-+        env.Runtime.Debugger.OnFunReturn(env, fun, r)
++    if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
++        d.OnFunReturn(env, fun, r)
 +    }
      return r
- }
 ```
 
-**Impact:** 3 lines added at the end of `funCall()`. Same nil-check pattern.
+**Point 4: `ErrorCondition()`/`ErrorConditionf()` (lines ~786, ~798, ~821)** — exception breakpoints
 
-**Point 4: TRO conditional disable (line ~1042)** — optional
+```diff
++    if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
++        d.OnError(env, lerr)
++    }
+     return lerr
+```
+
+**Impact:** Fires when error conditions are created, enabling "break on
+exception" functionality. Added to both error construction paths.
+
+**Point 5: `funCall()` TRO suppression (line ~1091)**
 
 ```diff
 -    npop := env.Runtime.Stack.TerminalFID(fun.FID())
-+    var npop int
++    npop := 0
 +    if env.Runtime.Debugger == nil {
 +        npop = env.Runtime.Stack.TerminalFID(fun.FID())
 +    }
 ```
 
-**Impact:** Wraps existing TRO check in a nil guard. When debugger is nil,
-behavior is identical. When debugger is attached, TRO is disabled for
-predictable stepping. 2 lines changed.
+**Impact:** TRO disabled when debugger is attached (nil check, not
+IsEnabled check — TRO stays off even for dormant debuggers). Ensures
+predictable stack traces for debugging.
 
 #### `lisp/config.go` — Add one Config function
 
@@ -892,9 +955,12 @@ No interaction. The debugger operates at runtime, not on static source.
 
 ### 9.4 Error handling (handler-bind / rethrow)
 
-The debugger can provide "break on exception" functionality by hooking into
-the condition system. When `opHandlerBind` pushes to `Runtime.conditionStack`,
-the debugger can optionally pause. This is a Phase 3 feature.
+The debugger provides "break on exception" functionality via the `OnError`
+hook in `ErrorCondition()` and `ErrorConditionf()`. This is a Phase 1
+feature (promoted from Phase 3). When an error condition is created, the
+debugger's `OnError` method is called. If it returns true, execution pauses
+at the error site, giving the developer a chance to inspect the stack and
+local variables before the error propagates.
 
 ---
 
@@ -920,30 +986,45 @@ This follows the established Config pattern (`WithReader`, `WithStderr`,
 
 ---
 
-## 11. Open Questions
+## 11. Resolved Questions
 
-1. **Should the debugger disable TRO globally or per-session?** If globally,
-   it simplifies the implementation but means attaching a debugger changes
-   execution behavior. Per-session would require tracking which call chains
-   are being debugged.
+1. **TRO: global disable.** When a debugger is attached (`Runtime.Debugger != nil`),
+   TRO is disabled globally. This simplifies the implementation — no per-frame
+   tracking needed. The nil check (not IsEnabled) means TRO stays off even for
+   dormant debuggers. Deeply recursive programs may hit the stack limit during
+   debugging; this is acceptable and matches other debuggers.
 
-2. **Should `OnEval` fire for every expression or only expressions with
-   source locations?** Synthetic expressions (from macro expansion with
-   `Pos < 0`) may not be meaningful to step through. Filtering them reduces
-   overhead but may miss debugging opportunities.
+2. **OnEval: skip sourceless expressions.** The `v.Source != nil` guard skips
+   synthetic expressions from macro expansion. These have no meaningful source
+   location and would confuse stepping. The guard also avoids calling into the
+   debugger for compiler-generated nodes, reducing overhead.
 
-3. **Should the DAP server support both TCP and stdio?** VS Code typically
-   launches the debug adapter as a child process (stdio). Embedded attach
-   requires TCP. Supporting both is straightforward but adds complexity.
+3. **Transport: both TCP and stdio.** The DAP server accepts a `net.Listener`,
+   making TCP the primary transport (mandatory for embedded/substrate attach).
+   Stdio is supported for `elps debug` CLI use (VS Code typically launches the
+   debug adapter as a child process). The server's `ServeConn(io.ReadWriteCloser)`
+   method is transport-agnostic.
 
-4. **Should debug eval be sandboxed?** Evaluating expressions in the debug
-   console can mutate program state (e.g., `(set! x 42)`). Some debuggers
-   prevent mutations; others allow them. ELPS should probably allow them
-   (REPL philosophy) but document the risk.
+4. **Debug eval: allow mutations.** Evaluating expressions in the debug console
+   can mutate program state (`(set! x 42)`). This follows the REPL philosophy
+   and matches most modern debuggers. The risk is documented.
 
-5. **Goroutine model for the DAP server?** The Delve DAP server uses a
-   single-client model (restart for each session). This is simpler and
-   sufficient for v1.
+5. **Single-client model.** One DAP client per session, restart per session.
+   This is simpler and sufficient for all current use cases.
+
+---
+
+## 11.1 Re-entrancy
+
+Conditional breakpoint evaluation creates a re-entrancy concern: evaluating
+the condition expression calls `env.Eval()`, which triggers `OnEval`, which
+could trigger another conditional breakpoint check, and so on.
+
+**Solution:** The debugger engine sets a flag (`evaluatingCondition bool`)
+before evaluating a breakpoint condition. When this flag is set, `OnEval`
+skips all breakpoint and stepping checks, allowing the condition to evaluate
+without triggering the debugger recursively. The flag is cleared after
+evaluation completes (via defer).
 
 ---
 
@@ -952,13 +1033,21 @@ This follows the established Config pattern (`WithReader`, `WithStderr`,
 | Aspect | Decision |
 |--------|----------|
 | Protocol | DAP (Debug Adapter Protocol) |
-| Go library | `google/go-dap` v0.10.0 (codec only) |
+| Go library | `google/go-dap` (codec only) |
 | Architecture | Two layers: internal Debugger interface + DAP adapter |
-| Hook mechanism | Nil-checked calls in Eval() and funCall() |
+| Hook mechanism | Two-check gate: `d != nil && d.IsEnabled()` |
+| Hook points | `Eval()`, `call()` post-bind, `funCall()` return, `ErrorCondition()`, TRO suppression |
 | Hot path cost | Zero when debugger is nil (branch-predicted nil check) |
+| TRO | Globally disabled when debugger attached |
+| OnEval filter | `v.Source != nil` — skip synthetic expressions |
+| OnFunEntry | In `call()` after `bind()` — provides `fenv` with bound params |
+| OnError | In `ErrorCondition()`/`ErrorConditionf()` — exception breakpoints |
+| Transport | TCP (primary, for embedded) + stdio (for CLI) |
+| Debug eval | Allows mutations (REPL philosophy) |
+| Session model | Single-client, restart per session |
 | Embedded support | `attach` mode via WithDebugger() Config |
-| CLI support | `elps debug --dap` command |
-| Editor coverage | VS Code (Phase 1), Neovim/JetBrains/Helix (Phase 3) |
+| CLI support | `elps debug [--port N] [--stdio] [--stop-on-entry] file.lisp` |
+| Phase 1 scope | Full debugger: all stepping modes, conditional + exception BPs, debug eval |
 | Total estimated LOC | ~2400 across ~12 files |
 | Overall difficulty | Medium — no novel algorithms, well-trodden patterns |
 | Biggest risk | DAP protocol edge cases in message handler |
