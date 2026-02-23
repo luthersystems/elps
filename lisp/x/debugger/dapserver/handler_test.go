@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -952,6 +953,156 @@ func TestDAPServer_PackageScopeVariables(t *testing.T) {
 	case <-resultCh:
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")
+	}
+
+	s.disconnect()
+}
+
+// TestDAPServer_FileDebugSession exercises the full debug lifecycle with a
+// real file, mirroring what `elps debug --stop-on-entry testdata/simple.lisp`
+// does: set up environment with FSLibrary, load file, pause at breakpoint
+// inside function, inspect variables, evaluate expression, and continue.
+func TestDAPServer_FileDebugSession(t *testing.T) {
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Set breakpoint on line 3 (inside add function body: (+ a b)).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "simple.lisp"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 3}},
+		},
+	})
+	msg := s.read()
+	bpResp, ok := msg.(*dap.SetBreakpointsResponse)
+	require.True(t, ok, "expected SetBreakpointsResponse, got %T", msg)
+	assert.True(t, bpResp.Success)
+
+	s.configDone()
+
+	// Set up ELPS environment with FSLibrary, like cmd/debug.go does.
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	env.Runtime.Library = &lisp.FSLibrary{FS: os.DirFS("testdata")}
+	env.Runtime.Debugger = s.engine
+	rc := lisp.InitializeUserEnv(env)
+	require.True(t, rc.IsNil(), "InitializeUserEnv failed: %v", rc)
+	rc = lisplib.LoadLibrary(env)
+	require.True(t, rc.IsNil(), "LoadLibrary failed: %v", rc)
+	rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
+	require.True(t, rc.IsNil(), "InPackage failed: %v", rc)
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadFile("simple.lisp")
+		resultCh <- res
+	}()
+
+	// === Stop on entry ===
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not stop on entry")
+	s.read() // StoppedEvent
+
+	// Continue past stop-on-entry to hit breakpoint inside add.
+	s.continueExec()
+
+	// === Breakpoint inside add ===
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	stoppedMsg := s.read()
+	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	assert.Equal(t, "breakpoint", stoppedEvt.Body.Reason)
+
+	// === StackTrace ===
+	s.send(&dap.StackTraceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stackTrace",
+		},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+	})
+	msg = s.read()
+	stResp, ok := msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	require.Greater(t, len(stResp.Body.StackFrames), 0, "expected stack frames")
+	// Top frame should reference simple.lisp.
+	assert.Contains(t, stResp.Body.StackFrames[0].Source.Path, "simple.lisp")
+
+	topFrameID := stResp.Body.StackFrames[0].Id
+
+	// === Scopes + Variables ===
+	s.send(&dap.ScopesRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "scopes",
+		},
+		Arguments: dap.ScopesArguments{FrameId: topFrameID},
+	})
+	msg = s.read()
+	scopesResp, ok := msg.(*dap.ScopesResponse)
+	require.True(t, ok, "expected ScopesResponse, got %T", msg)
+
+	var localRef int
+	for _, scope := range scopesResp.Body.Scopes {
+		if scope.Name == "Local" {
+			localRef = scope.VariablesReference
+			break
+		}
+	}
+	require.Greater(t, localRef, 0, "expected local scope reference")
+
+	s.send(&dap.VariablesRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "variables",
+		},
+		Arguments: dap.VariablesArguments{VariablesReference: localRef},
+	})
+	msg = s.read()
+	varsResp, ok := msg.(*dap.VariablesResponse)
+	require.True(t, ok, "expected VariablesResponse, got %T", msg)
+	assert.True(t, varsResp.Success)
+
+	// Verify function parameters: a=1, b=2.
+	varMap := make(map[string]string)
+	for _, v := range varsResp.Body.Variables {
+		varMap[v.Name] = v.Value
+	}
+	assert.Equal(t, "1", varMap["a"], "expected a=1")
+	assert.Equal(t, "2", varMap["b"], "expected b=2")
+
+	// === Evaluate ===
+	s.send(&dap.EvaluateRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "evaluate",
+		},
+		Arguments: dap.EvaluateArguments{
+			Expression: "(+ a b)",
+			FrameId:    topFrameID,
+		},
+	})
+	msg = s.read()
+	evalResp, ok := msg.(*dap.EvaluateResponse)
+	require.True(t, ok, "expected EvaluateResponse, got %T", msg)
+	assert.True(t, evalResp.Success)
+	assert.Equal(t, "3", evalResp.Body.Result)
+
+	// === Continue to finish ===
+	s.continueExec()
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
+		assert.Equal(t, 3, res.Int)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for program result")
 	}
 
 	s.disconnect()
