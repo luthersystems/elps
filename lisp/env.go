@@ -783,25 +783,37 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 			if narg > 1 {
 				return ErrorConditionf("runtime", "invalid error argument: cannot mix error and *LVal arguments")
 			}
-			return &LVal{
+			lerr := &LVal{
 				Type:   LError,
 				Str:    condition,
 				Native: env.Runtime.Stack.Copy(),
 				Cells:  []*LVal{Native(v)},
 			}
+			if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+				if d.OnError(env, lerr) {
+					d.WaitIfPaused(env, lerr)
+				}
+			}
+			return lerr
 		case string:
 			cells = append(cells, String(v))
 		default:
 			cells = append(cells, Native(v))
 		}
 	}
-	return &LVal{
+	lerr := &LVal{
 		Type:   LError,
 		Source: env.Loc,
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
 		Cells:  cells,
 	}
+	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+		if d.OnError(env, lerr) {
+			d.WaitIfPaused(env, lerr)
+		}
+	}
+	return lerr
 }
 
 // Errorf returns an LError value with a formatted error message.
@@ -818,13 +830,19 @@ func (env *LEnv) Errorf(format string, v ...interface{}) *LVal {
 // Unlike the exported function, the ErrorConditionf method returns an LVal
 // with a copy env.Runtime.Stack.
 func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
-	return &LVal{
+	lerr := &LVal{
 		Source: env.Loc,
 		Type:   LError,
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
 		Cells:  []*LVal{String(fmt.Sprintf(format, v...))},
 	}
+	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+		if d.OnError(env, lerr) {
+			d.WaitIfPaused(env, lerr)
+		}
+	}
+	return lerr
 }
 
 // ErrorAssociate associates the LError value lerr with env's current call
@@ -870,6 +888,13 @@ eval:
 		return env.Errorf("spliced value used as expression")
 	}
 	env.Loc = v.Source
+	if v.Source != nil {
+		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+			if d.OnEval(env, v) {
+				d.WaitIfPaused(env, v)
+			}
+		}
+	}
 	if v.Quoted {
 		return v
 	}
@@ -1087,8 +1112,12 @@ func (env *LEnv) funCall(fun, args *LVal) *LVal {
 
 	// Check for possible tail recursion before pushing to avoid hitting s when
 	// checking.  But push FID onto the stack before popping to simplify
-	// book-keeping.
-	npop := env.Runtime.Stack.TerminalFID(fun.FID())
+	// book-keeping.  When a debugger is attached, TRO is disabled globally
+	// to provide predictable stepping and stack traces.
+	npop := 0
+	if env.Runtime.Debugger == nil {
+		npop = env.Runtime.Stack.TerminalFID(fun.FID())
+	}
 
 	// Push a frame onto the stack to represent the function's execution.
 	err := env.Runtime.Stack.PushFID(env.Loc, fun.FID(), fun.Package(), env.GetFunName(fun))
@@ -1124,6 +1153,9 @@ callf:
 		}
 	}
 
+	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+		d.OnFunReturn(env, fun, r)
+	}
 	return r
 }
 
@@ -1212,6 +1244,13 @@ func (env *LEnv) call(fun *LVal, args *LVal) *LVal {
 	fenv, list := env.bind(fun, args)
 	if list.Type == LError {
 		return list
+	}
+	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+		// fenv != env means this is a user-defined function (not a builtin).
+		// Builtins return the caller's env from bind.
+		if fenv != nil && fenv != env {
+			d.OnFunEntry(env, fun, fenv)
+		}
 	}
 
 	// NOTE:  The book's suggestion of chaining env here seems like dynamic
