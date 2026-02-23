@@ -1,10 +1,15 @@
 package debugger
 
 import (
+	"sort"
 	"testing"
 
+	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib"
+	"github.com/luthersystems/elps/parser"
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBreakpointStore_SetAndMatch(t *testing.T) {
@@ -105,11 +110,20 @@ func TestBreakpointStore_ExceptionBreak(t *testing.T) {
 
 func TestBreakpointStore_All(t *testing.T) {
 	store := NewBreakpointStore()
-	store.Set("a.lisp", 1, "")
-	store.Set("b.lisp", 2, "")
+	bp1 := store.Set("a.lisp", 1, "")
+	bp2 := store.Set("b.lisp", 2, "")
 
 	all := store.All()
 	assert.Len(t, all, 2)
+
+	// Verify returned breakpoint IDs and files, not just count.
+	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
+	assert.Equal(t, bp1.ID, all[0].ID)
+	assert.Equal(t, "a.lisp", all[0].File)
+	assert.Equal(t, 1, all[0].Line)
+	assert.Equal(t, bp2.ID, all[1].ID)
+	assert.Equal(t, "b.lisp", all[1].File)
+	assert.Equal(t, 2, all[1].Line)
 }
 
 func TestBreakpointStore_IDsAreUnique(t *testing.T) {
@@ -127,4 +141,71 @@ func TestBreakpointStore_SetUpdatesExisting(t *testing.T) {
 	// Same breakpoint ID, updated condition.
 	assert.Equal(t, bp1.ID, bp2.ID)
 	assert.Equal(t, "(> x 5)", bp2.Condition)
+}
+
+// newConditionTestEnv creates a minimal env with a reader for condition evaluation.
+func newConditionTestEnv(t *testing.T) *lisp.LEnv {
+	t.Helper()
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	rc := lisp.InitializeUserEnv(env)
+	require.True(t, rc.IsNil(), "InitializeUserEnv failed: %v", rc)
+	rc = lisplib.LoadLibrary(env)
+	require.True(t, rc.IsNil(), "LoadLibrary failed: %v", rc)
+	rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
+	require.True(t, rc.IsNil(), "InPackage failed: %v", rc)
+	return env
+}
+
+func TestEvalCondition_Empty(t *testing.T) {
+	env := newConditionTestEnv(t)
+	// Empty condition → always true (unconditional breakpoint).
+	assert.True(t, EvalCondition(env, ""))
+}
+
+func TestEvalCondition_True(t *testing.T) {
+	env := newConditionTestEnv(t)
+	assert.True(t, EvalCondition(env, "(> 5 3)"))
+}
+
+func TestEvalCondition_False(t *testing.T) {
+	env := newConditionTestEnv(t)
+	assert.False(t, EvalCondition(env, "(> 3 5)"))
+}
+
+func TestEvalCondition_Nil(t *testing.T) {
+	env := newConditionTestEnv(t)
+	// Condition that evaluates to nil → false.
+	assert.False(t, EvalCondition(env, "()"))
+}
+
+func TestEvalCondition_Error(t *testing.T) {
+	env := newConditionTestEnv(t)
+	// Condition that errors → false (error is falsey).
+	assert.False(t, EvalCondition(env, "undefined-symbol-xyz"))
+}
+
+func TestEvalCondition_ParseError(t *testing.T) {
+	env := newConditionTestEnv(t)
+	// Malformed expression → treated as unconditional (true) per design.
+	assert.True(t, EvalCondition(env, "(+ 1"))
+}
+
+func TestEvalCondition_NoReader(t *testing.T) {
+	env := lisp.NewEnv(nil)
+	// No reader → treated as unconditional (true).
+	assert.True(t, EvalCondition(env, "(> 5 3)"))
+}
+
+func TestBreakpointStore_DisabledBreakpoint(t *testing.T) {
+	store := NewBreakpointStore()
+	bp := store.Set("test.lisp", 10, "")
+	require.True(t, bp.Enabled)
+
+	// Manually disable the breakpoint.
+	bp.Enabled = false
+
+	// Match should return nil for disabled breakpoints.
+	loc := &token.Location{File: "test.lisp", Line: 10}
+	assert.Nil(t, store.Match(loc), "disabled breakpoint should not match")
 }

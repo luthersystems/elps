@@ -36,6 +36,9 @@ jobs:
       - name: Tests
         run: make test
 
+      - name: Race detection (debugger)
+        run: go test -race -count=1 ./lisp/x/debugger/...
+
       - name: Check formatting
         run: |
           go build -o elps .

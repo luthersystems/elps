@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib"
+	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,6 +23,10 @@ func TestInspectLocals(t *testing.T) {
 	// Sorted by name.
 	assert.Equal(t, "y", locals[0].Name)
 	assert.Equal(t, "z", locals[1].Name)
+
+	// Value assertions.
+	assert.Equal(t, "hello", locals[0].Value.Str)
+	assert.InDelta(t, 3.14, locals[1].Value.Float, 0.001)
 
 	// InspectLocals does NOT include parent bindings.
 	names := make(map[string]bool)
@@ -40,12 +46,16 @@ func TestInspectScope(t *testing.T) {
 	scope := InspectScope(child)
 	assert.Len(t, scope, 2)
 
-	names := make(map[string]bool)
+	nameVals := make(map[string]*lisp.LVal)
 	for _, b := range scope {
-		names[b.Name] = true
+		nameVals[b.Name] = b.Value
 	}
-	assert.True(t, names["x"])
-	assert.True(t, names["y"])
+	assert.Contains(t, nameVals, "x")
+	assert.Contains(t, nameVals, "y")
+
+	// Value assertions.
+	assert.Equal(t, 42, nameVals["x"].Int)
+	assert.Equal(t, "hello", nameVals["y"].Str)
 }
 
 func TestInspectScope_Shadowing(t *testing.T) {
@@ -77,23 +87,133 @@ func TestInspectLocals_Nil(t *testing.T) {
 
 func TestFormatValue(t *testing.T) {
 	tests := []struct {
-		name string
-		val  *lisp.LVal
-		want string
+		name     string
+		val      *lisp.LVal
+		want     string
+		contains string // if non-empty, use Contains instead of Equal
 	}{
-		{"nil val", nil, "<nil>"},
-		{"int", lisp.Int(42), "42"},
-		{"float", lisp.Float(3.14), "3.14"},
-		{"string", lisp.String("hello"), `"hello"`},
-		{"symbol", lisp.Symbol("foo"), "foo"},
-		{"nil list", lisp.Nil(), "()"},
-		{"true", lisp.Symbol("true"), "true"},
-		{"false", lisp.Symbol("false"), "false"},
+		{"nil val", nil, "<nil>", ""},
+		{"int", lisp.Int(42), "42", ""},
+		{"float", lisp.Float(3.14), "3.14", ""},
+		{"string", lisp.String("hello"), `"hello"`, ""},
+		{"symbol", lisp.Symbol("foo"), "foo", ""},
+		{"nil list", lisp.Nil(), "()", ""},
+		{"true", lisp.Symbol("true"), "true", ""},
+		{"false", lisp.Symbol("false"), "false", ""},
+		{"function", lisp.Fun("test-fn", lisp.Formals("x"), func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+			return lisp.Nil()
+		}), "<function test-fn>", ""},
+		{"error", lisp.Errorf("test error"), "<error: error>", ""},
+		{"native nil", lisp.Native(nil), "<native nil>", ""},
+		{"native int", lisp.Native(42), "<native int>", ""},
+		{"array", lisp.Array(nil, []*lisp.LVal{lisp.Int(1), lisp.Int(2)}), "<array len=2>", ""},
+		{"sorted-map", lisp.SortedMap(), "<sorted-map len=0>", ""},
+		{"qsymbol", lisp.QSymbol("pkg:sym"), "'pkg:sym", ""},
+		{"bytes", lisp.Bytes([]byte{0x01, 0x02}), "<bytes len=2>", ""},
+		{"sexpr list", lisp.SExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)}), "(1 2 3)", ""},
+		{"sexpr quoted", func() *lisp.LVal {
+			v := lisp.SExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)})
+			v.Quoted = true
+			return v
+		}(), "[1 2 3]", ""},
+		{"long list", func() *lisp.LVal {
+			cells := make([]*lisp.LVal, 12)
+			for i := range cells {
+				cells[i] = lisp.Int(i)
+			}
+			return lisp.SExpr(cells)
+		}(), "(12 elements)", ""},
+		{"tagged value", &lisp.LVal{Type: lisp.LTaggedVal, Str: "my-type"}, "<tagged my-type>", ""},
+		{"macro", func() *lisp.LVal {
+			v := lisp.Fun("test-macro", lisp.Formals("x"), func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+				return lisp.Nil()
+			})
+			v.FunType = lisp.LFunMacro
+			return v
+		}(), "<macro test-macro>", ""},
+		{"special-op", func() *lisp.LVal {
+			v := lisp.Fun("test-op", lisp.Formals("x"), func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+				return lisp.Nil()
+			})
+			v.FunType = lisp.LFunSpecialOp
+			return v
+		}(), "<special-op test-op>", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := FormatValue(tt.val)
-			assert.Equal(t, tt.want, got)
+			if tt.contains != "" {
+				assert.Contains(t, got, tt.contains)
+			} else {
+				assert.Equal(t, tt.want, got)
+			}
 		})
 	}
+}
+
+// newInspectorTestEnv creates a minimal ELPS environment for inspector tests.
+func newInspectorTestEnv(t *testing.T) *lisp.LEnv {
+	t.Helper()
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	rc := lisp.InitializeUserEnv(env)
+	require.True(t, rc.IsNil(), "InitializeUserEnv failed: %v", rc)
+	rc = lisplib.LoadLibrary(env)
+	require.True(t, rc.IsNil(), "LoadLibrary failed: %v", rc)
+	rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
+	require.True(t, rc.IsNil(), "InPackage failed: %v", rc)
+	return env
+}
+
+func TestEvalInContext(t *testing.T) {
+	env := newInspectorTestEnv(t)
+	result := EvalInContext(env, "(+ 1 2)")
+	require.NotNil(t, result)
+	assert.Equal(t, lisp.LInt, result.Type)
+	assert.Equal(t, 3, result.Int)
+}
+
+func TestEvalInContext_Error(t *testing.T) {
+	env := newInspectorTestEnv(t)
+	// Unbound symbol should produce an error.
+	result := EvalInContext(env, "undefined-symbol-xyz")
+	require.NotNil(t, result)
+	assert.Equal(t, lisp.LError, result.Type)
+}
+
+func TestEvalInContext_Empty(t *testing.T) {
+	env := newInspectorTestEnv(t)
+	result := EvalInContext(env, "")
+	require.NotNil(t, result)
+	// Empty string produces nil (no expressions parsed).
+	assert.True(t, result.IsNil(), "expected nil for empty input, got %v", result)
+}
+
+func TestEvalInContext_ParseError(t *testing.T) {
+	env := newInspectorTestEnv(t)
+	// Malformed expression — unclosed paren.
+	result := EvalInContext(env, "(+ 1")
+	require.NotNil(t, result)
+	assert.Equal(t, lisp.LError, result.Type)
+	// Error condition type is in Str; actual message is in Cells.
+	// Just verify we got an error LVal back.
+	formatted := FormatValue(result)
+	assert.Contains(t, formatted, "error", "expected error in formatted output, got: %s", formatted)
+}
+
+func TestEvalInContext_NoReader(t *testing.T) {
+	env := lisp.NewEnv(nil)
+	// Don't set a reader — should return error.
+	result := EvalInContext(env, "(+ 1 2)")
+	require.NotNil(t, result)
+	assert.Equal(t, lisp.LError, result.Type)
+}
+
+func TestEvalInContext_MultiExpression(t *testing.T) {
+	env := newInspectorTestEnv(t)
+	// Only the first expression should be evaluated.
+	result := EvalInContext(env, "(+ 1 2) (+ 3 4)")
+	require.NotNil(t, result)
+	assert.Equal(t, lisp.LInt, result.Type)
+	assert.Equal(t, 3, result.Int, "only the first expression should be evaluated")
 }

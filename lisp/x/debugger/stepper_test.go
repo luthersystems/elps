@@ -69,3 +69,31 @@ func TestStepper_Reset(t *testing.T) {
 	assert.Equal(t, StepNone, s.Mode())
 	assert.False(t, s.ShouldPause(0))
 }
+
+func TestStepper_StepOut_DepthZero(t *testing.T) {
+	s := NewStepper()
+	s.SetStepOut(0) // Step out issued at depth 0
+
+	// Can't go shallower than 0, so depth 0 should not pause (need depth < 0).
+	assert.False(t, s.ShouldPause(0))
+	// Still in StepOut mode since we haven't satisfied the condition.
+	assert.Equal(t, StepOut, s.Mode())
+}
+
+func TestStepper_StepOver_DepthZero(t *testing.T) {
+	s := NewStepper()
+	s.SetStepOver(0) // Step over issued at depth 0
+
+	// Same depth 0 should pause (depth <= recorded depth).
+	assert.True(t, s.ShouldPause(0))
+	assert.Equal(t, StepNone, s.Mode())
+}
+
+func TestStepper_StepInto_NonZeroDepth(t *testing.T) {
+	s := NewStepper()
+	s.SetStepInto()
+
+	// StepInto pauses at any depth, not just depth 0.
+	assert.True(t, s.ShouldPause(42))
+	assert.Equal(t, StepNone, s.Mode())
+}
