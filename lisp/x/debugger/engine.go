@@ -512,6 +512,22 @@ func (e *Engine) NotifyExit(exitCode int) {
 	}
 }
 
+// EvalInContext evaluates an expression string in a paused environment,
+// setting the evaluatingCondition guard so that the OnEval hook does not
+// re-enter breakpoint logic (which would deadlock since EvalInContext
+// runs on the DAP server goroutine, not the eval goroutine).
+func (e *Engine) EvalInContext(env *lisp.LEnv, source string) *lisp.LVal {
+	e.mu.Lock()
+	e.evaluatingCondition = true
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		e.evaluatingCondition = false
+		e.mu.Unlock()
+	}()
+	return EvalInContext(env, source)
+}
+
 // Disconnect atomically disables the debugger and resumes execution if paused.
 func (e *Engine) Disconnect() {
 	e.mu.Lock()

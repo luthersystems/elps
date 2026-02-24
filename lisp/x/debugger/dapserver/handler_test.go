@@ -18,6 +18,7 @@ import (
 )
 
 func TestDAPServer_InitializeAndDisconnect(t *testing.T) {
+	t.Parallel()
 	e := debugger.New()
 	e.Enable()
 	srv := New(e)
@@ -81,6 +82,7 @@ func TestDAPServer_InitializeAndDisconnect(t *testing.T) {
 }
 
 func TestDAPServer_SetBreakpoints(t *testing.T) {
+	t.Parallel()
 	e := debugger.New()
 	e.Enable()
 	srv := New(e)
@@ -150,6 +152,7 @@ func TestDAPServer_SetBreakpoints(t *testing.T) {
 }
 
 func TestDAPServer_Threads(t *testing.T) {
+	t.Parallel()
 	e := debugger.New()
 	e.Enable()
 	srv := New(e)
@@ -203,6 +206,7 @@ func TestDAPServer_Threads(t *testing.T) {
 // initialize → set breakpoint → launch program → read stopped event →
 // stackTrace → scopes → variables → evaluate → continue → disconnect.
 func TestDAPServer_FullSession(t *testing.T) {
+	t.Parallel()
 	e := debugger.New(debugger.WithStopOnEntry(true))
 	e.Enable()
 	srv := New(e)
@@ -569,6 +573,7 @@ func (s *dapTestSession) disconnect() {
 }
 
 func TestDAPServer_StepNext(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 
 	// Set breakpoint inside outer's body (line 3: call to inner).
@@ -683,6 +688,7 @@ func TestDAPServer_StepNext(t *testing.T) {
 }
 
 func TestDAPServer_StepIn(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
 	s.configDone()
 
@@ -736,6 +742,7 @@ func TestDAPServer_StepIn(t *testing.T) {
 }
 
 func TestDAPServer_StepOut(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 
 	// Set breakpoint inside function body (line 2).
@@ -842,6 +849,7 @@ func TestDAPServer_StepOut(t *testing.T) {
 }
 
 func TestDAPServer_SetExceptionBreakpoints(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 
 	s.send(&dap.SetExceptionBreakpointsRequest{
@@ -865,6 +873,7 @@ func TestDAPServer_SetExceptionBreakpoints(t *testing.T) {
 }
 
 func TestDAPServer_EvaluateNotPaused(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 	s.configDone()
 
@@ -889,6 +898,7 @@ func TestDAPServer_EvaluateNotPaused(t *testing.T) {
 }
 
 func TestDAPServer_StackTracePaging(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
 
 	// Set breakpoint inside function body (line 2).
@@ -969,6 +979,7 @@ func TestDAPServer_StackTracePaging(t *testing.T) {
 }
 
 func TestDAPServer_PackageScopeVariables(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
 
 	// Set breakpoint inside function body (line 2).
@@ -1089,6 +1100,7 @@ func TestDAPServer_PackageScopeVariables(t *testing.T) {
 // pauses (stopOnEntry) before the DAP client connects, the client receives
 // the stopped event when it sends configurationDone.
 func TestDAPServer_LateConnectStoppedEvent(t *testing.T) {
+	t.Parallel()
 	e := debugger.New(debugger.WithStopOnEntry(true))
 	e.Enable()
 
@@ -1183,6 +1195,7 @@ func TestDAPServer_LateConnectStoppedEvent(t *testing.T) {
 // TestDAPServer_ReadyChSignaledOnConfigDone verifies that the engine's
 // ReadyCh is closed when configurationDone is received.
 func TestDAPServer_ReadyChSignaledOnConfigDone(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 
 	// ReadyCh should not be closed yet.
@@ -1208,6 +1221,7 @@ func TestDAPServer_ReadyChSignaledOnConfigDone(t *testing.T) {
 // TestDAPServer_PathNormalization verifies that breakpoints set with absolute
 // paths from the IDE match ELPS runtime locations that use basenames.
 func TestDAPServer_PathNormalization(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
 
 	// Set breakpoints using absolute paths (like VS Code sends).
@@ -1266,6 +1280,7 @@ func TestDAPServer_PathNormalization(t *testing.T) {
 // does: set up environment with FSLibrary, load file, pause at breakpoint
 // inside function, inspect variables, evaluate expression, and continue.
 func TestDAPServer_FileDebugSession(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
 
 	// Set breakpoint on line 3 (inside add function body: (+ a b)).
@@ -1435,6 +1450,7 @@ func dialWithRetry(t *testing.T, addr string, timeout time.Duration) net.Conn {
 // ServeTCPLoop fixes this by looping on Accept. This test connects twice
 // to verify the server survives client reconnections.
 func TestServeTCPLoop_MultipleConnections(t *testing.T) {
+	t.Parallel()
 	e := debugger.New()
 	e.Enable()
 	srv := New(e)
@@ -1497,6 +1513,7 @@ func TestServeTCPLoop_MultipleConnections(t *testing.T) {
 }
 
 func TestDAPServer_AttachRequest(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 
 	s.send(&dap.AttachRequest{
@@ -1514,6 +1531,7 @@ func TestDAPServer_AttachRequest(t *testing.T) {
 }
 
 func TestDAPServer_LaunchRequest(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 
 	s.send(&dap.LaunchRequest{
@@ -1531,6 +1549,7 @@ func TestDAPServer_LaunchRequest(t *testing.T) {
 }
 
 func TestDAPServer_PauseRequest(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 	s.configDone()
 
@@ -1596,6 +1615,7 @@ func TestDAPServer_PauseRequest(t *testing.T) {
 }
 
 func TestDAPServer_SourceRequest(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 
 	s.send(&dap.SourceRequest{
@@ -1618,6 +1638,7 @@ func TestDAPServer_SourceRequest(t *testing.T) {
 }
 
 func TestDAPServer_StackTraceUsesPausedExpr(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
 
 	// Set breakpoint on line 2 (inside function body: (+ a b)).
@@ -1686,6 +1707,7 @@ func TestDAPServer_StackTraceUsesPausedExpr(t *testing.T) {
 }
 
 func TestDAPServer_SetFunctionBreakpoints(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 	s.configDone()
 
@@ -1744,6 +1766,7 @@ func TestDAPServer_SetFunctionBreakpoints(t *testing.T) {
 }
 
 func TestDAPServer_InitializeReportsFunctionBreakpointCapability(t *testing.T) {
+	t.Parallel()
 	e := debugger.New()
 	e.Enable()
 	srv := New(e)
@@ -1787,6 +1810,7 @@ func TestDAPServer_InitializeReportsFunctionBreakpointCapability(t *testing.T) {
 }
 
 func TestDAPServer_SourceRootResolvesAbsolutePaths(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t,
 		debugger.WithSourceRoot("/my/project"),
 	)
@@ -1852,6 +1876,7 @@ func TestDAPServer_SourceRootResolvesAbsolutePaths(t *testing.T) {
 }
 
 func TestDAPServer_TerminatedEventOnProgramFinish(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 	s.configDone()
 
@@ -1883,6 +1908,7 @@ func TestDAPServer_TerminatedEventOnProgramFinish(t *testing.T) {
 }
 
 func TestDAPServer_SetBreakpointsWithHitCondition(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 
 	// Set breakpoint with a hit condition.
@@ -1951,6 +1977,7 @@ func TestDAPServer_SetBreakpointsWithHitCondition(t *testing.T) {
 }
 
 func TestDAPServer_LogPoint(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 
 	// Set a log point breakpoint (LogMessage set, no condition).
@@ -2004,6 +2031,7 @@ func TestDAPServer_LogPoint(t *testing.T) {
 }
 
 func TestDAPServer_EvaluateWatch(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
 
 	// Set breakpoint inside function body (line 2).
@@ -2101,7 +2129,178 @@ func TestDAPServer_EvaluateWatch(t *testing.T) {
 	s.disconnect()
 }
 
+// TestDAPServer_EvaluateWhilePausedInRecursion is a regression test for the
+// critical deadlock where EvalInContext called env.Eval() without the
+// evaluatingCondition guard, causing OnEval to re-enter and block on
+// WaitIfPaused. This test breaks a recursive factorial at line 5 (the
+// recursive branch), then evaluates (+ n 100) — which previously returned
+// an ErrorResponse with "<error: error>".
+func TestDAPServer_EvaluateWhilePausedInRecursion(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Set breakpoint on line 5 (* n (factorial (- n 1)))
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "factorial.lisp"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 5}},
+		},
+	})
+	msg := s.read()
+	bpResp, ok := msg.(*dap.SetBreakpointsResponse)
+	require.True(t, ok, "expected SetBreakpointsResponse, got %T", msg)
+	assert.True(t, bpResp.Success)
+
+	s.configDone()
+
+	// Set up ELPS environment with FSLibrary.
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	env.Runtime.Library = &lisp.FSLibrary{FS: os.DirFS("testdata")}
+	env.Runtime.Debugger = s.engine
+	rc := lisp.InitializeUserEnv(env)
+	require.True(t, rc.IsNil(), "InitializeUserEnv failed: %v", rc)
+	rc = lisplib.LoadLibrary(env)
+	require.True(t, rc.IsNil(), "LoadLibrary failed: %v", rc)
+	rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
+	require.True(t, rc.IsNil(), "InPackage failed: %v", rc)
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadFile("factorial.lisp")
+		resultCh <- res
+	}()
+
+	// Stop on entry.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not stop on entry")
+	s.read() // StoppedEvent
+
+	// Continue past stop-on-entry to hit breakpoint in factorial.
+	s.continueExec()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	stoppedMsg := s.read()
+	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	assert.Equal(t, "breakpoint", stoppedEvt.Body.Reason)
+
+	// Get stack trace to find the top frame.
+	s.send(&dap.StackTraceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stackTrace",
+		},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+	})
+	msg = s.read()
+	stResp, ok := msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrameID := stResp.Body.StackFrames[0].Id
+
+	// Verify local variables are visible (the core of the locals bug fix).
+	s.send(&dap.ScopesRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "scopes",
+		},
+		Arguments: dap.ScopesArguments{FrameId: topFrameID},
+	})
+	msg = s.read()
+	scopesResp, ok := msg.(*dap.ScopesResponse)
+	require.True(t, ok, "expected ScopesResponse, got %T", msg)
+	var localRef int
+	for _, scope := range scopesResp.Body.Scopes {
+		if scope.Name == "Local" {
+			localRef = scope.VariablesReference
+		}
+	}
+	require.Greater(t, localRef, 0, "expected local scope reference")
+
+	s.send(&dap.VariablesRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "variables",
+		},
+		Arguments: dap.VariablesArguments{VariablesReference: localRef},
+	})
+	msg = s.read()
+	varsResp, ok := msg.(*dap.VariablesResponse)
+	require.True(t, ok, "expected VariablesResponse, got %T", msg)
+	varMap := make(map[string]string)
+	for _, v := range varsResp.Body.Variables {
+		varMap[v.Name] = v.Value
+	}
+	assert.Contains(t, varMap, "n",
+		"local scope should contain 'n' even when paused in sub-expression")
+
+	// Evaluate expression while paused (the core of the deadlock bug fix).
+	s.send(&dap.EvaluateRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "evaluate",
+		},
+		Arguments: dap.EvaluateArguments{
+			Expression: "(+ n 100)",
+			FrameId:    topFrameID,
+			Context:    "watch",
+		},
+	})
+	msg = s.read()
+	evalResp, ok := msg.(*dap.EvaluateResponse)
+	require.True(t, ok, "expected EvaluateResponse (not ErrorResponse), got %T", msg)
+	assert.True(t, evalResp.Success, "evaluate should succeed")
+	// n is 5 on the first hit (factorial(5)), so (+ n 100) = 105.
+	assert.Equal(t, "105", evalResp.Body.Result,
+		"(+ n 100) should equal 105 when n=5")
+
+	// Continue to finish — drain any more breakpoint hits.
+	s.continueExec()
+	for waitForEnginePause(t, s.engine, 500*time.Millisecond) {
+		s.read() // StoppedEvent
+		s.continueExec()
+	}
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
+		assert.Equal(t, 120, res.Int)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for program result")
+	}
+
+	s.disconnect()
+}
+
+// waitForEnginePause waits for the engine to enter paused state, returning true
+// if it paused within the timeout, false otherwise.
+func waitForEnginePause(t *testing.T, e *debugger.Engine, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			return false
+		case <-ticker.C:
+			if e.IsPaused() {
+				return true
+			}
+		}
+	}
+}
+
 func TestDAPServer_InitializeReportsHitAndLogCapabilities(t *testing.T) {
+	t.Parallel()
 	e := debugger.New()
 	e.Enable()
 	srv := New(e)

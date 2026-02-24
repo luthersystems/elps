@@ -271,17 +271,17 @@ func (h *handler) onStackTrace(req *dap.StackTraceRequest) {
 }
 
 // cacheFrameEnvs walks up the env parent chain and maps frame IDs to envs.
-// This is a simplification: we map the paused env to frame 1 (top of stack).
-// For deeper frames, we walk up the parent chain, which approximates the
-// lexical scopes at each call depth.
+// Frame IDs must match translateStackFrames: the top stack frame (most
+// recent call) gets Id = len(Stack.Frames), and deeper frames count down
+// to 1. The paused env corresponds to the top frame.
 func (h *handler) cacheFrameEnvs(env *lisp.LEnv) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.frameEnvs = make(map[int]*lisp.LEnv)
 	nframes := len(env.Runtime.Stack.Frames)
 	current := env
-	for i := 0; i < nframes && current != nil; i++ {
-		h.frameEnvs[i+1] = current // 1-based frame IDs
+	for i := nframes; i >= 1 && current != nil; i-- {
+		h.frameEnvs[i] = current
 		current = current.Parent
 	}
 }
@@ -331,7 +331,7 @@ func (h *handler) onVariables(req *dap.VariablesRequest) {
 		frameID := ref - scopeLocalBase
 		env := h.getFrameEnv(frameID)
 		if env != nil {
-			bindings = debugger.InspectLocals(env)
+			bindings = debugger.InspectFunctionLocals(env)
 		}
 	}
 
@@ -396,7 +396,7 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 		}
 	}
 
-	result := debugger.EvalInContext(env, req.Arguments.Expression)
+	result := h.engine.EvalInContext(env, req.Arguments.Expression)
 	if result != nil && result.Type == lisp.LError {
 		resp.Success = false
 		resp.Message = debugger.FormatValue(result)

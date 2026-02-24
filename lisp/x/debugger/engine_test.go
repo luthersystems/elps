@@ -1127,3 +1127,142 @@ func TestEngine_LogPoint_WithHitCondition(t *testing.T) {
 	// during the first recursive call (n=4).
 	assert.Equal(t, "hit at n=4", outputs[0])
 }
+
+func TestEngine_EvalInContextWhilePaused(t *testing.T) {
+	t.Parallel()
+	e := New()
+	e.Enable()
+
+	env := newTestEnv(t, e)
+
+	// Set a breakpoint on line 4 (the recursive branch of factorial).
+	e.Breakpoints().Set("test", 4, "")
+
+	program := "(defun factorial (n)\n" +
+		"  (if (<= n 1)\n" +
+		"    1\n" +
+		"    (* n (factorial (- n 1)))))\n" +
+		"(factorial 5)"
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Wait for the engine to pause at the breakpoint.
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+
+	// Evaluate an expression while paused. This previously deadlocked
+	// because OnEval would fire during evaluation and call WaitIfPaused.
+	pausedEnv, _ := e.PausedState()
+	require.NotNil(t, pausedEnv, "paused env should not be nil")
+
+	result := e.EvalInContext(pausedEnv, "(+ 1 2)")
+	require.NotNil(t, result)
+	assert.Equal(t, lisp.LInt, result.Type, "expected int result from eval, got %v (type %s)", result, result.Type)
+	assert.Equal(t, 3, result.Int)
+
+	// Evaluate with a variable from the paused scope.
+	result = e.EvalInContext(pausedEnv, "n")
+	require.NotNil(t, result)
+	assert.Equal(t, lisp.LInt, result.Type, "expected int for 'n', got %v (type %s)", result, result.Type)
+
+	// Resume and drain remaining breakpoint hits.
+	e.Resume()
+	for waitForPause(t, e, 500*time.Millisecond) {
+		e.Resume()
+	}
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
+		assert.Equal(t, 120, res.Int)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for eval result")
+	}
+}
+
+func TestInspectFunctionLocals(t *testing.T) {
+	t.Parallel()
+	var capturedEnv *lisp.LEnv
+	var mu sync.Mutex
+
+	e := New(WithEventCallback(func(evt Event) {
+		if evt.Type == EventStopped {
+			mu.Lock()
+			capturedEnv = evt.Env
+			mu.Unlock()
+		}
+	}))
+	e.Enable()
+
+	env := newTestEnv(t, e)
+
+	// Set a breakpoint inside the if form.
+	e.Breakpoints().Set("test", 4, "")
+
+	program := "(defun factorial (n)\n" +
+		"  (if (<= n 1)\n" +
+		"    1\n" +
+		"    (* n (factorial (- n 1)))))\n" +
+		"(factorial 5)"
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause")
+
+	mu.Lock()
+	testEnv := capturedEnv
+	mu.Unlock()
+	require.NotNil(t, testEnv)
+
+	// InspectLocals on the immediate env may be empty (paused at sub-expression).
+	// InspectFunctionLocals should find 'n' from the enclosing function scope.
+	funcLocals := InspectFunctionLocals(testEnv)
+	var names []string
+	for _, b := range funcLocals {
+		names = append(names, b.Name)
+	}
+	assert.Contains(t, names, "n",
+		"InspectFunctionLocals should find 'n' from enclosing function scope, got: %v", names)
+
+	// Resume and drain.
+	e.Resume()
+	for waitForPause(t, e, 500*time.Millisecond) {
+		e.Resume()
+	}
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for eval result")
+	}
+}
+
+// waitForPause waits for the engine to enter paused state, returning true
+// if it paused within the timeout, false otherwise.
+func waitForPause(t *testing.T, e *Engine, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			return false
+		case <-ticker.C:
+			if e.IsPaused() {
+				return true
+			}
+		}
+	}
+}
