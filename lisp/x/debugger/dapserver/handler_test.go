@@ -1554,6 +1554,172 @@ func TestDAPServer_StackTraceUsesPausedExpr(t *testing.T) {
 	s.disconnect()
 }
 
+func TestDAPServer_SetFunctionBreakpoints(t *testing.T) {
+	s := setupDAPSession(t)
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+
+	// Set a function breakpoint on "add".
+	s.send(&dap.SetFunctionBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setFunctionBreakpoints",
+		},
+		Arguments: dap.SetFunctionBreakpointsArguments{
+			Breakpoints: []dap.FunctionBreakpoint{{Name: "add"}},
+		},
+	})
+	msg := s.read()
+	fbResp, ok := msg.(*dap.SetFunctionBreakpointsResponse)
+	require.True(t, ok, "expected SetFunctionBreakpointsResponse, got %T", msg)
+	require.Len(t, fbResp.Body.Breakpoints, 1)
+	assert.True(t, fbResp.Body.Breakpoints[0].Verified)
+
+	// Run a program with "add" function.
+	program := `(defun add (a b) (+ a b)) (add 10 20)`
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Should pause when "add" is entered.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause on function breakpoint")
+
+	// Read stopped event.
+	stoppedMsg := s.read()
+	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	assert.Equal(t, "function breakpoint", stoppedEvt.Body.Reason)
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type)
+		assert.Equal(t, 30, res.Int)
+	case <-time.After(5 * time.Second):
+		if s.engine.IsPaused() {
+			s.engine.Resume()
+		}
+		t.Fatal("timeout")
+	}
+
+	s.disconnect()
+}
+
+func TestDAPServer_InitializeReportsFunctionBreakpointCapability(t *testing.T) {
+	e := debugger.New()
+	e.Enable()
+	srv := New(e)
+
+	client, server := net.Pipe()
+	defer client.Close() //nolint:errcheck
+
+	go func() {
+		_ = srv.ServeConn(server)
+	}()
+
+	reader := bufio.NewReader(client)
+
+	sendDAPRequest(t, client, &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+			Command:         "initialize",
+		},
+		Arguments: dap.InitializeRequestArguments{
+			AdapterID: "elps",
+		},
+	})
+
+	msg, err := dap.ReadProtocolMessage(reader)
+	require.NoError(t, err)
+	initResp, ok := msg.(*dap.InitializeResponse)
+	require.True(t, ok)
+	assert.True(t, initResp.Body.SupportsFunctionBreakpoints,
+		"capabilities should report function breakpoints support")
+
+	// Clean up.
+	readDAPMessage(t, reader) // InitializedEvent
+	sendDAPRequest(t, client, &dap.DisconnectRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 2, Type: "request"},
+			Command:         "disconnect",
+		},
+	})
+	readDAPMessage(t, reader) // DisconnectResponse
+	readDAPMessage(t, reader) // TerminatedEvent
+}
+
+func TestDAPServer_SourceRootResolvesAbsolutePaths(t *testing.T) {
+	s := setupDAPSession(t,
+		debugger.WithSourceRoot("/my/project"),
+	)
+
+	// Set breakpoint on line 2 (inside function body).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	program := "(defun add (a b)\n  (+ a b))\n(add 1 2)"
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Wait for breakpoint hit inside function.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Request stack trace.
+	s.send(&dap.StackTraceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stackTrace",
+		},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+	})
+	msg := s.read()
+	stResp, ok := msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+
+	// Stack frame Source.Path should be resolved to an absolute path
+	// using the sourceRoot prefix.
+	topFrame := stResp.Body.StackFrames[0]
+	require.NotNil(t, topFrame.Source)
+	assert.Equal(t, "/my/project/test", topFrame.Source.Path,
+		"expected source root + relative file path")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	s.disconnect()
+}
+
 func TestDAPServer_TerminatedEventOnProgramFinish(t *testing.T) {
 	s := setupDAPSession(t)
 	s.configDone()

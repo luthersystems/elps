@@ -77,6 +77,8 @@ func (h *handler) handle(msg dap.Message) {
 		h.onInitialize(req)
 	case *dap.SetBreakpointsRequest:
 		h.onSetBreakpoints(req)
+	case *dap.SetFunctionBreakpointsRequest:
+		h.onSetFunctionBreakpoints(req)
 	case *dap.SetExceptionBreakpointsRequest:
 		h.onSetExceptionBreakpoints(req)
 	case *dap.ConfigurationDoneRequest:
@@ -123,6 +125,7 @@ func (h *handler) onInitialize(req *dap.InitializeRequest) {
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	resp.Body = dap.Capabilities{
 		SupportsConfigurationDoneRequest:  true,
+		SupportsFunctionBreakpoints:       true,
 		SupportsConditionalBreakpoints:    true,
 		SupportsEvaluateForHovers:         true,
 		SupportTerminateDebuggee:          true,
@@ -160,6 +163,28 @@ func (h *handler) onSetBreakpoints(req *dap.SetBreakpointsRequest) {
 	resp := &dap.SetBreakpointsResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	resp.Body.Breakpoints = translateBreakpoints(bps)
+	h.send(resp)
+}
+
+func (h *handler) onSetFunctionBreakpoints(req *dap.SetFunctionBreakpointsRequest) {
+	names := make([]string, len(req.Arguments.Breakpoints))
+	for i, fb := range req.Arguments.Breakpoints {
+		names[i] = fb.Name
+	}
+
+	set := h.engine.SetFunctionBreakpoints(names)
+
+	resp := &dap.SetFunctionBreakpointsResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+	bps := make([]dap.Breakpoint, len(set))
+	for i, name := range set {
+		bps[i] = dap.Breakpoint{
+			Id:       i + 1,
+			Verified: true,
+			Source:   &dap.Source{Name: name},
+		}
+	}
+	resp.Body.Breakpoints = bps
 	h.send(resp)
 }
 
@@ -218,7 +243,7 @@ func (h *handler) onStackTrace(req *dap.StackTraceRequest) {
 		return
 	}
 
-	frames := translateStackFrames(env.Runtime.Stack, pausedExpr)
+	frames := translateStackFrames(env.Runtime.Stack, pausedExpr, h.engine.SourceRoot())
 	resp.Body.TotalFrames = len(frames)
 
 	// Apply paging.

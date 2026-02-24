@@ -38,11 +38,12 @@ const (
 type StopReason string
 
 const (
-	StopBreakpoint StopReason = "breakpoint"
-	StopStep       StopReason = "step"
-	StopException  StopReason = "exception"
-	StopEntry      StopReason = "entry"
-	StopPause      StopReason = "pause"
+	StopBreakpoint         StopReason = "breakpoint"
+	StopStep               StopReason = "step"
+	StopException          StopReason = "exception"
+	StopEntry              StopReason = "entry"
+	StopPause              StopReason = "pause"
+	StopFunctionBreakpoint StopReason = "function breakpoint"
 )
 
 // Event is sent to the event callback when the debugger state changes.
@@ -65,13 +66,16 @@ type Engine struct {
 	breakpoints *BreakpointStore
 	stepper     *Stepper
 	onEvent     EventCallback
+	sourceRoot  string // absolute path prefix for resolving relative Source.Path values
 
 	mu                  sync.Mutex
 	enabled             bool
 	stopOnEntry         bool
-	pauseRequested      bool   // set by RequestPause(), cleared in WaitIfPaused
-	evaluatingCondition bool   // re-entrancy guard for conditional breakpoints
-	lastContinuedKey    string // suppress breakpoint re-hit after continue on same line
+	pauseRequested      bool              // set by RequestPause(), cleared in WaitIfPaused
+	pauseReason         StopReason        // reason for pauseRequested (StopPause or StopFunctionBreakpoint)
+	evaluatingCondition bool              // re-entrancy guard for conditional breakpoints
+	lastContinuedKey    string            // suppress breakpoint re-hit after continue on same line
+	funBreakpoints      map[string]string // qualified name → user-provided name
 
 	// pauseCh is used by the eval goroutine to block in WaitIfPaused.
 	// The DAP server sends DebugAction values to resume execution.
@@ -106,6 +110,22 @@ func WithStopOnEntry(stop bool) Option {
 	return func(e *Engine) {
 		e.stopOnEntry = stop
 	}
+}
+
+// WithSourceRoot sets an absolute directory path used to resolve relative
+// Source.Path values into absolute paths. This allows DAP clients (VS Code)
+// to open source files from stack frames. Embedders should pass the root
+// directory of the ELPS source files (e.g., the phylum directory).
+func WithSourceRoot(dir string) Option {
+	return func(e *Engine) {
+		e.sourceRoot = dir
+	}
+}
+
+// SourceRoot returns the configured source root directory, or empty string
+// if not set.
+func (e *Engine) SourceRoot() string {
+	return e.sourceRoot
 }
 
 // New creates a new debugger engine.
@@ -276,8 +296,9 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 		e.stopOnEntry = false
 	}
 	if e.pauseRequested {
-		reason = StopPause
+		reason = e.pauseReason
 		e.pauseRequested = false
+		e.pauseReason = ""
 	}
 	e.pausedEnv = env
 	e.pausedExpr = expr
@@ -335,9 +356,55 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 	return action
 }
 
-// OnFunEntry implements lisp.Debugger.
+// SetFunctionBreakpoints replaces the set of function breakpoints.
+// Each name should be a function name as the user would type it (e.g., "add"
+// or "user:add"). Returns the names that were set.
+func (e *Engine) SetFunctionBreakpoints(names []string) []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.funBreakpoints = make(map[string]string, len(names))
+	result := make([]string, len(names))
+	for i, name := range names {
+		e.funBreakpoints[name] = name
+		result[i] = name
+	}
+	return result
+}
+
+// OnFunEntry implements lisp.Debugger. Checks function breakpoints.
 func (e *Engine) OnFunEntry(env *lisp.LEnv, fun *lisp.LVal, fenv *lisp.LEnv) {
-	// Currently used for stack tracking. Future: function breakpoints.
+	if fun.Type != lisp.LFun {
+		return
+	}
+	e.mu.Lock()
+	if len(e.funBreakpoints) == 0 {
+		e.mu.Unlock()
+		return
+	}
+
+	// Build qualified and unqualified names from the function value.
+	funData := fun.FunData()
+	localName := fun.Str
+	if localName == "" && funData != nil {
+		localName = funData.FID
+	}
+	qualifiedName := localName
+	if funData != nil && funData.Package != "" {
+		qualifiedName = funData.Package + ":" + localName
+	}
+
+	// Check if either form matches a function breakpoint.
+	_, matchQualified := e.funBreakpoints[qualifiedName]
+	_, matchLocal := e.funBreakpoints[localName]
+	if !matchQualified && !matchLocal {
+		e.mu.Unlock()
+		return
+	}
+
+	// Request a pause with function breakpoint reason.
+	e.pauseRequested = true
+	e.pauseReason = StopFunctionBreakpoint
+	e.mu.Unlock()
 }
 
 // OnFunReturn implements lisp.Debugger.
@@ -384,6 +451,7 @@ func (e *Engine) RequestPause() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.pauseRequested = true
+	e.pauseReason = StopPause
 }
 
 // NotifyExit fires an EventExited event to notify the DAP server that the

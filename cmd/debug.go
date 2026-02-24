@@ -73,6 +73,7 @@ Examples:
 		// Create the debugger engine.
 		dbg := debugger.New(
 			debugger.WithStopOnEntry(debugStopOnEntry),
+			debugger.WithSourceRoot(rootDir),
 		)
 		dbg.Enable()
 

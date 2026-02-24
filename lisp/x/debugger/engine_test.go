@@ -687,6 +687,129 @@ func TestEngine_RequestPause(t *testing.T) {
 	}
 }
 
+func TestEngine_FunctionBreakpoint(t *testing.T) {
+	var stopReason StopReason
+	var mu sync.Mutex
+
+	e := New(WithEventCallback(func(evt Event) {
+		if evt.Type == EventStopped {
+			mu.Lock()
+			stopReason = evt.Reason
+			mu.Unlock()
+		}
+	}))
+	e.Enable()
+
+	env := newTestEnv(t, e)
+
+	// Set a function breakpoint on "add".
+	e.SetFunctionBreakpoints([]string{"add"})
+
+	program := `(defun add (a b) (+ a b)) (add 10 20)`
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Should pause when "add" is entered.
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause on function breakpoint")
+
+	// Verify stop reason is "function breakpoint".
+	mu.Lock()
+	assert.Equal(t, StopFunctionBreakpoint, stopReason)
+	mu.Unlock()
+
+	// Resume to let the program finish.
+	e.Resume()
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
+		assert.Equal(t, 30, res.Int)
+	case <-time.After(2 * time.Second):
+		if e.IsPaused() {
+			e.Resume()
+		}
+		t.Fatal("timeout waiting for eval result")
+	}
+}
+
+func TestEngine_FunctionBreakpoint_QualifiedName(t *testing.T) {
+	var stopped bool
+	var mu sync.Mutex
+
+	e := New(WithEventCallback(func(evt Event) {
+		if evt.Type == EventStopped {
+			mu.Lock()
+			stopped = true
+			mu.Unlock()
+		}
+	}))
+	e.Enable()
+
+	env := newTestEnv(t, e)
+
+	// Set a function breakpoint on a qualified name "user:myfn".
+	e.SetFunctionBreakpoints([]string{"user:myfn"})
+
+	program := `(defun myfn (x) (+ x 1)) (myfn 5)`
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Should pause when "myfn" is entered (matched via qualified name).
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause on qualified function breakpoint")
+
+	mu.Lock()
+	assert.True(t, stopped)
+	mu.Unlock()
+
+	e.Resume()
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type)
+		assert.Equal(t, 6, res.Int)
+	case <-time.After(2 * time.Second):
+		if e.IsPaused() {
+			e.Resume()
+		}
+		t.Fatal("timeout")
+	}
+}
+
+func TestEngine_FunctionBreakpoint_NoMatch(t *testing.T) {
+	e := New()
+	e.Enable()
+
+	env := newTestEnv(t, e)
+
+	// Set a function breakpoint on a name that doesn't exist in the program.
+	e.SetFunctionBreakpoints([]string{"nonexistent"})
+
+	// Should run without pausing.
+	res := env.LoadString("test", `(defun add (a b) (+ a b)) (add 10 20)`)
+	assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
+	assert.Equal(t, 30, res.Int)
+}
+
+func TestEngine_SourceRoot(t *testing.T) {
+	e := New(WithSourceRoot("/my/project/dir"))
+	assert.Equal(t, "/my/project/dir", e.SourceRoot())
+
+	e2 := New()
+	assert.Equal(t, "", e2.SourceRoot())
+}
+
 func TestEngine_NotifyExit(t *testing.T) {
 	var events []Event
 	var mu sync.Mutex
