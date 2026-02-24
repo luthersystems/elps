@@ -945,5 +945,42 @@ func TestEngine_LogPoint(t *testing.T) {
 	defer mu.Unlock()
 	// Log point should have emitted output but NOT paused.
 	assert.Equal(t, 0, stopCount, "log point should not pause")
-	assert.Contains(t, outputs, "adding 3 + 4")
+	require.Len(t, outputs, 1, "expected exactly one log point output")
+	assert.Equal(t, "adding 3 + 4", outputs[0])
+}
+
+func TestEngine_LogPoint_WithHitCondition(t *testing.T) {
+	var outputs []string
+	var mu sync.Mutex
+
+	e := New(WithEventCallback(func(evt Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		if evt.Type == EventOutput {
+			outputs = append(outputs, evt.Output)
+		}
+	}))
+	e.Enable()
+
+	env := newTestEnv(t, e)
+
+	// Recursive countdown from 4. Log point with hit condition ==2.
+	// The recursive call on line 4 executes 4 times (n=4,3,2,1).
+	// With hit condition ==2, only the 2nd hit should emit output.
+	program := "(defun countdown (n)\n" +
+		"  (if (<= n 0)\n" +
+		"    0\n" +
+		"    (countdown (- n 1))))\n" +
+		"(countdown 4)"
+	e.Breakpoints().SetForFileSpecs("test", []BreakpointSpec{
+		{Line: 4, HitCondition: "==2", LogMessage: "hit at n={n}"},
+	})
+
+	res := env.LoadString("test", program)
+	assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, outputs, 1, "log point should emit exactly once for ==2")
+	assert.Contains(t, outputs[0], "hit at n=")
 }

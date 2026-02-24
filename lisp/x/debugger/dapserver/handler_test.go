@@ -1422,8 +1422,10 @@ func TestDAPServer_PauseRequest(t *testing.T) {
 		resultCh <- res
 	}()
 
-	// Give the eval goroutine time to start.
-	time.Sleep(10 * time.Millisecond)
+	// Wait for eval goroutine to start executing, then request pause.
+	require.Eventually(t, func() bool {
+		return s.engine.EvalCount() > 0
+	}, 2*time.Second, time.Millisecond, "eval goroutine did not start")
 
 	// Send Pause request.
 	s.send(&dap.PauseRequest{
@@ -1802,35 +1804,18 @@ func TestDAPServer_SetBreakpointsWithHitCondition(t *testing.T) {
 	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
 	assert.Equal(t, "breakpoint", stoppedEvt.Body.Reason)
 
-	// Continue to finish.
+	// Continue to finish. The program should complete without further stops
+	// because ==2 fires only once (on the 2nd hit).
 	s.continueExec()
-
-	// Keep resuming if paused again.
-	resumeDone := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-resumeDone:
-				return
-			case <-ticker.C:
-				if s.engine.IsPaused() {
-					s.engine.Resume()
-				}
-			}
-		}
-	}()
 
 	select {
 	case <-resultCh:
-		close(resumeDone)
+		// Program completed without additional stops — correct for ==2.
 	case <-time.After(5 * time.Second):
-		close(resumeDone)
 		if s.engine.IsPaused() {
 			s.engine.Resume()
 		}
-		t.Fatal("timeout")
+		t.Fatal("timeout — hit condition fired more than once")
 	}
 
 	s.disconnect()

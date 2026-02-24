@@ -344,6 +344,10 @@ func TestInterpolateLogMessage(t *testing.T) {
 
 	// Empty template.
 	assert.Equal(t, "", InterpolateLogMessage(env, ""))
+
+	// Expression that errors — should render as error.
+	result := InterpolateLogMessage(env, "val={undefined_sym}")
+	assert.Contains(t, result, "<error:")
 }
 
 func TestBreakpointStore_SetForFileSpecs(t *testing.T) {
