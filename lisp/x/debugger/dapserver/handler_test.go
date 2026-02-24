@@ -1316,7 +1316,7 @@ func TestServeTCPLoop_MultipleConnections(t *testing.T) {
 	ln, err := net.Listen("tcp", "localhost:0")
 	require.NoError(t, err)
 	addr := ln.Addr().String()
-	ln.Close()
+	ln.Close() //nolint:errcheck // best-effort cleanup for port reservation
 
 	go func() {
 		if err := srv.ServeTCPLoop(addr); err != nil {
@@ -1349,7 +1349,7 @@ func TestServeTCPLoop_MultipleConnections(t *testing.T) {
 	})
 	readDAPMessage(t, reader1) // DisconnectResponse
 	readDAPMessage(t, reader1) // TerminatedEvent
-	conn1.Close()
+	conn1.Close() //nolint:errcheck // best-effort cleanup
 
 	// --- Second connection (retry until server re-enters Accept) ---
 	conn2 := dialWithRetry(t, addr, 2*time.Second)
@@ -1366,5 +1366,5 @@ func TestServeTCPLoop_MultipleConnections(t *testing.T) {
 	require.True(t, ok, "expected InitializeResponse on second connection, got %T", msg)
 	assert.True(t, initResp.Success)
 
-	conn2.Close()
+	conn2.Close() //nolint:errcheck // best-effort cleanup
 }
