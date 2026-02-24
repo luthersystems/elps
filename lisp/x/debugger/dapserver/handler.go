@@ -25,6 +25,7 @@ type handler struct {
 
 	mu          sync.Mutex
 	initialized bool
+	stoppedSent bool // true if a stopped event has been sent via the event callback
 
 	// frameEnvs caches the environments for each stack frame when paused.
 	// Indexed by frame ID (1-based, most recent first).
@@ -39,6 +40,9 @@ func newHandler(s *Server, e *debugger.Engine) *handler {
 	// Wire the engine's event callback to forward stopped events to the DAP client.
 	e.SetEventCallback(func(evt debugger.Event) {
 		if evt.Type == debugger.EventStopped {
+			h.mu.Lock()
+			h.stoppedSent = true
+			h.mu.Unlock()
 			var bpIDs []int
 			if evt.BP != nil {
 				bpIDs = []int{evt.BP.ID}
@@ -163,9 +167,13 @@ func (h *handler) onConfigurationDone(req *dap.ConfigurationDoneRequest) {
 	h.engine.SignalReady()
 
 	// If the eval goroutine already paused (e.g., stopOnEntry fired before
-	// the client connected), send the stopped event now. The event callback
-	// was nil when the engine paused, so no stopped event was sent.
-	if h.engine.IsPaused() {
+	// the client connected), send the stopped event now — but only if the
+	// event callback hasn't already sent one. This handles the late-connect
+	// case where the engine paused before newHandler registered the callback.
+	h.mu.Lock()
+	alreadySent := h.stoppedSent
+	h.mu.Unlock()
+	if !alreadySent && h.engine.IsPaused() {
 		reason := debugger.StopEntry
 		h.sendStoppedEvent(reason, nil)
 	}
