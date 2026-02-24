@@ -1368,3 +1368,219 @@ func TestServeTCPLoop_MultipleConnections(t *testing.T) {
 
 	conn2.Close() //nolint:errcheck,gosec // best-effort cleanup
 }
+
+func TestDAPServer_AttachRequest(t *testing.T) {
+	s := setupDAPSession(t)
+
+	s.send(&dap.AttachRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "attach",
+		},
+	})
+	msg := s.read()
+	resp, ok := msg.(*dap.AttachResponse)
+	require.True(t, ok, "expected AttachResponse, got %T", msg)
+	assert.True(t, resp.Success)
+
+	s.disconnect()
+}
+
+func TestDAPServer_LaunchRequest(t *testing.T) {
+	s := setupDAPSession(t)
+
+	s.send(&dap.LaunchRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "launch",
+		},
+	})
+	msg := s.read()
+	resp, ok := msg.(*dap.LaunchResponse)
+	require.True(t, ok, "expected LaunchResponse, got %T", msg)
+	assert.True(t, resp.Success)
+
+	s.disconnect()
+}
+
+func TestDAPServer_PauseRequest(t *testing.T) {
+	s := setupDAPSession(t)
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+
+	// Use a long-running recursive program so we can pause mid-execution.
+	program := "(defun countdown (n)\n" +
+		"  (if (<= n 0)\n" +
+		"    0\n" +
+		"    (countdown (- n 1))))\n" +
+		"(countdown 10000)"
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Give the eval goroutine time to start.
+	time.Sleep(10 * time.Millisecond)
+
+	// Send Pause request.
+	s.send(&dap.PauseRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "pause",
+		},
+		Arguments: dap.PauseArguments{ThreadId: elpsThreadID},
+	})
+	msg := s.read()
+	pauseResp, ok := msg.(*dap.PauseResponse)
+	require.True(t, ok, "expected PauseResponse, got %T", msg)
+	assert.True(t, pauseResp.Success)
+
+	// Wait for the engine to actually pause.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause after pause request")
+
+	// Read the stopped event.
+	stoppedMsg := s.read()
+	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	assert.Equal(t, "pause", stoppedEvt.Body.Reason)
+
+	// Continue to let the program finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		if s.engine.IsPaused() {
+			s.engine.Resume()
+		}
+		t.Fatal("timeout waiting for program to finish")
+	}
+
+	s.disconnect()
+}
+
+func TestDAPServer_SourceRequest(t *testing.T) {
+	s := setupDAPSession(t)
+
+	s.send(&dap.SourceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "source",
+		},
+		Arguments: dap.SourceArguments{
+			SourceReference: 1,
+		},
+	})
+	msg := s.read()
+	// go-dap deserializes responses with Success=false as ErrorResponse.
+	errResp, ok := msg.(*dap.ErrorResponse)
+	require.True(t, ok, "expected ErrorResponse, got %T", msg)
+	assert.False(t, errResp.Success)
+	assert.Equal(t, "source not available", errResp.Message)
+
+	s.disconnect()
+}
+
+func TestDAPServer_StackTraceUsesPausedExpr(t *testing.T) {
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Set breakpoint on line 2 (inside function body: (+ a b)).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	program := "(defun add (a b)\n  (+ a b))\n(add 1 2)"
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// First stop: stop-on-entry.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	// Second stop: breakpoint on line 2 inside add.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	s.read() // StoppedEvent (breakpoint)
+
+	// Request stack trace — top frame should show line 2 (paused expression),
+	// not the call site line 3.
+	s.send(&dap.StackTraceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stackTrace",
+		},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+	})
+	msg := s.read()
+	stResp, ok := msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+
+	topFrame := stResp.Body.StackFrames[0]
+	assert.Equal(t, 2, topFrame.Line,
+		"top frame line should be 2 (paused expression), not the call site")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	s.disconnect()
+}
+
+func TestDAPServer_TerminatedEventOnProgramFinish(t *testing.T) {
+	s := setupDAPSession(t)
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+
+	// Run a simple program that finishes quickly, then call NotifyExit
+	// from the eval goroutine (like cmd/debug.go does). NotifyExit fires
+	// the event callback which writes to the pipe, so it must run on a
+	// separate goroutine from the reader.
+	go func() {
+		res := env.LoadString("test", "(+ 1 2)")
+		exitCode := 0
+		if res.Type == lisp.LError {
+			exitCode = 1
+		}
+		s.engine.NotifyExit(exitCode)
+	}()
+
+	// Should receive ExitedEvent.
+	msg := s.read()
+	exitedEvt, ok := msg.(*dap.ExitedEvent)
+	require.True(t, ok, "expected ExitedEvent, got %T", msg)
+	assert.Equal(t, 0, exitedEvt.Body.ExitCode)
+
+	// Should receive TerminatedEvent.
+	msg = s.read()
+	_, ok = msg.(*dap.TerminatedEvent)
+	assert.True(t, ok, "expected TerminatedEvent, got %T", msg)
+}

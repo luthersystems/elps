@@ -611,3 +611,107 @@ func TestEngine_ReadyCh_WithTimeout(t *testing.T) {
 		t.Fatal("ReadyCh should have been closed after SignalReady")
 	}
 }
+
+func TestEngine_RequestPause(t *testing.T) {
+	var stopReason StopReason
+	var mu sync.Mutex
+
+	e := New(WithEventCallback(func(evt Event) {
+		if evt.Type == EventStopped {
+			mu.Lock()
+			stopReason = evt.Reason
+			mu.Unlock()
+		}
+	}))
+	e.Enable()
+
+	env := newTestEnv(t, e)
+
+	// Use a long-running program so we have time to request a pause.
+	// Recursive countdown from 1000 gives the pause request time to take effect.
+	program := "(defun countdown (n)\n" +
+		"  (if (<= n 0)\n" +
+		"    0\n" +
+		"    (countdown (- n 1))))\n" +
+		"(countdown 1000)"
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Give the eval goroutine a moment to start, then request pause.
+	time.Sleep(10 * time.Millisecond)
+	e.RequestPause()
+
+	// The engine should pause.
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause after RequestPause")
+
+	// Verify stop reason is "pause".
+	mu.Lock()
+	assert.Equal(t, StopPause, stopReason, "expected pause stop reason")
+	mu.Unlock()
+
+	// Resume to let the program finish.
+	e.Resume()
+
+	// Keep resuming if needed (recursive calls may re-trigger).
+	resumeDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-resumeDone:
+				return
+			case <-ticker.C:
+				if e.IsPaused() {
+					e.Resume()
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-resultCh:
+		close(resumeDone)
+	case <-time.After(5 * time.Second):
+		close(resumeDone)
+		if e.IsPaused() {
+			e.Resume()
+		}
+		t.Fatal("timeout waiting for eval result")
+	}
+}
+
+func TestEngine_NotifyExit(t *testing.T) {
+	var events []Event
+	var mu sync.Mutex
+
+	e := New(WithEventCallback(func(evt Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, evt)
+	}))
+
+	// Call NotifyExit and verify the event is fired.
+	e.NotifyExit(42)
+
+	mu.Lock()
+	require.Len(t, events, 1, "expected exactly one event")
+	assert.Equal(t, EventExited, events[0].Type)
+	assert.Equal(t, 42, events[0].ExitCode)
+	mu.Unlock()
+
+	// Calling with exit code 0 should also work.
+	e.NotifyExit(0)
+
+	mu.Lock()
+	require.Len(t, events, 2)
+	assert.Equal(t, EventExited, events[1].Type)
+	assert.Equal(t, 0, events[1].ExitCode)
+	mu.Unlock()
+}

@@ -13,7 +13,10 @@ const elpsThreadID = 1
 
 // translateStackFrames converts ELPS CallStack frames to DAP StackFrame objects.
 // Frames are returned in reverse order (most recent first), matching DAP convention.
-func translateStackFrames(stack *lisp.CallStack) []dap.StackFrame {
+// If pausedExpr is non-nil, the top frame's line/column are overridden with
+// the paused expression's source location, which represents where execution
+// actually stopped (as opposed to the call site stored in the CallFrame).
+func translateStackFrames(stack *lisp.CallStack, pausedExpr *lisp.LVal) []dap.StackFrame {
 	if stack == nil || len(stack.Frames) == 0 {
 		return nil
 	}
@@ -31,6 +34,18 @@ func translateStackFrames(stack *lisp.CallStack) []dap.StackFrame {
 			}
 			sf.Line = f.Source.Line
 			sf.Column = f.Source.Col
+		}
+		// For the top frame (first appended), override with the paused
+		// expression's source to show where execution actually stopped.
+		if len(frames) == 0 && pausedExpr != nil && pausedExpr.Source != nil {
+			sf.Line = pausedExpr.Source.Line
+			sf.Column = pausedExpr.Source.Col
+			if sf.Source == nil {
+				sf.Source = &dap.Source{
+					Name: pausedExpr.Source.File,
+					Path: pausedExpr.Source.Path,
+				}
+			}
 		}
 		frames = append(frames, sf)
 	}

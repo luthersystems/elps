@@ -37,9 +37,10 @@ func newHandler(s *Server, e *debugger.Engine) *handler {
 		server: s,
 		engine: e,
 	}
-	// Wire the engine's event callback to forward stopped events to the DAP client.
+	// Wire the engine's event callback to forward events to the DAP client.
 	e.SetEventCallback(func(evt debugger.Event) {
-		if evt.Type == debugger.EventStopped {
+		switch evt.Type {
+		case debugger.EventStopped:
 			h.mu.Lock()
 			h.stoppedSent = true
 			h.mu.Unlock()
@@ -48,6 +49,16 @@ func newHandler(s *Server, e *debugger.Engine) *handler {
 				bpIDs = []int{evt.BP.ID}
 			}
 			h.sendStoppedEvent(evt.Reason, bpIDs)
+		case debugger.EventExited:
+			// Guard against server already closed (e.g., disconnect raced).
+			select {
+			case <-h.server.done:
+				return
+			default:
+			}
+			h.sendExitedEvent(evt.ExitCode)
+			h.sendTerminatedEvent()
+			h.server.close()
 		}
 	})
 	return h
@@ -88,6 +99,14 @@ func (h *handler) handle(msg dap.Message) {
 		h.onStepOut(req)
 	case *dap.EvaluateRequest:
 		h.onEvaluate(req)
+	case *dap.AttachRequest:
+		h.onAttach(req)
+	case *dap.LaunchRequest:
+		h.onLaunch(req)
+	case *dap.PauseRequest:
+		h.onPause(req)
+	case *dap.SourceRequest:
+		h.onSource(req)
 	case *dap.DisconnectRequest:
 		h.onDisconnect(req)
 	default:
@@ -189,7 +208,7 @@ func (h *handler) onThreads(req *dap.ThreadsRequest) {
 }
 
 func (h *handler) onStackTrace(req *dap.StackTraceRequest) {
-	env, _ := h.engine.PausedState()
+	env, pausedExpr := h.engine.PausedState()
 
 	resp := &dap.StackTraceResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
@@ -199,7 +218,7 @@ func (h *handler) onStackTrace(req *dap.StackTraceRequest) {
 		return
 	}
 
-	frames := translateStackFrames(env.Runtime.Stack)
+	frames := translateStackFrames(env.Runtime.Stack, pausedExpr)
 	resp.Body.TotalFrames = len(frames)
 
 	// Apply paging.
@@ -356,6 +375,33 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 	h.send(resp)
 }
 
+func (h *handler) onAttach(req *dap.AttachRequest) {
+	resp := &dap.AttachResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+	h.send(resp)
+}
+
+func (h *handler) onLaunch(req *dap.LaunchRequest) {
+	resp := &dap.LaunchResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+	h.send(resp)
+}
+
+func (h *handler) onPause(req *dap.PauseRequest) {
+	resp := &dap.PauseResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+	h.send(resp)
+	h.engine.RequestPause()
+}
+
+func (h *handler) onSource(req *dap.SourceRequest) {
+	resp := &dap.SourceResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+	resp.Success = false
+	resp.Message = "source not available"
+	h.send(resp)
+}
+
 func (h *handler) onDisconnect(req *dap.DisconnectRequest) {
 	resp := &dap.DisconnectResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
@@ -363,11 +409,24 @@ func (h *handler) onDisconnect(req *dap.DisconnectRequest) {
 
 	h.engine.Disconnect()
 
-	// Send terminated event.
+	h.sendTerminatedEvent()
+	h.server.close()
+}
+
+// sendExitedEvent sends a DAP exited event to the client.
+func (h *handler) sendExitedEvent(exitCode int) {
+	evt := &dap.ExitedEvent{
+		Event: h.newEvent("exited"),
+	}
+	evt.Body.ExitCode = exitCode
+	h.send(evt)
+}
+
+// sendTerminatedEvent sends a DAP terminated event to the client.
+func (h *handler) sendTerminatedEvent() {
 	h.send(&dap.TerminatedEvent{
 		Event: h.newEvent("terminated"),
 	})
-	h.server.close()
 }
 
 // sendStoppedEvent sends a DAP stopped event to the client.

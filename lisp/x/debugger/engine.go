@@ -47,11 +47,12 @@ const (
 
 // Event is sent to the event callback when the debugger state changes.
 type Event struct {
-	Type   EventType
-	Reason StopReason
-	Env    *lisp.LEnv
-	Expr   *lisp.LVal
-	BP     *Breakpoint // non-nil for breakpoint stops
+	Type     EventType
+	Reason   StopReason
+	ExitCode int // set for EventExited
+	Env      *lisp.LEnv
+	Expr     *lisp.LVal
+	BP       *Breakpoint // non-nil for breakpoint stops
 }
 
 // EventCallback is called when the debugger state changes. It runs on
@@ -68,6 +69,7 @@ type Engine struct {
 	mu                  sync.Mutex
 	enabled             bool
 	stopOnEntry         bool
+	pauseRequested      bool   // set by RequestPause(), cleared in WaitIfPaused
 	evaluatingCondition bool   // re-entrancy guard for conditional breakpoints
 	lastContinuedKey    string // suppress breakpoint re-hit after continue on same line
 
@@ -211,6 +213,12 @@ func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
 		e.mu.Unlock()
 		return true
 	}
+
+	// Check pause request (from DAP pause command).
+	if e.pauseRequested {
+		e.mu.Unlock()
+		return true
+	}
 	e.mu.Unlock()
 
 	// Check stepping.
@@ -266,6 +274,10 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 	if e.stopOnEntry {
 		reason = StopEntry
 		e.stopOnEntry = false
+	}
+	if e.pauseRequested {
+		reason = StopPause
+		e.pauseRequested = false
 	}
 	e.pausedEnv = env
 	e.pausedExpr = expr
@@ -363,6 +375,27 @@ func (e *Engine) StepOver() {
 // StepOut sends a StepOut action to the paused eval goroutine.
 func (e *Engine) StepOut() {
 	e.pauseCh <- lisp.DebugStepOut
+}
+
+// RequestPause requests that the eval goroutine pause at the next expression.
+// This is used by the DAP pause command. The flag is cleared when the engine
+// actually pauses in WaitIfPaused.
+func (e *Engine) RequestPause() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.pauseRequested = true
+}
+
+// NotifyExit fires an EventExited event to notify the DAP server that the
+// program has finished. This should be called from the eval goroutine after
+// evaluation completes, while the DAP server is still running.
+func (e *Engine) NotifyExit(exitCode int) {
+	e.mu.Lock()
+	cb := e.onEvent
+	e.mu.Unlock()
+	if cb != nil {
+		cb(Event{Type: EventExited, ExitCode: exitCode})
+	}
 }
 
 // Disconnect atomically disables the debugger and resumes execution if paused.
