@@ -1,0 +1,85 @@
+{
+  "name": "elps-debug",
+  "displayName": "ELPS Debug",
+  "description": "Debug adapter for the ELPS Lisp interpreter",
+  "version": "0.1.0",
+  "publisher": "luthersystems",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/luthersystems/elps"
+  },
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Debuggers"
+  ],
+  "activationEvents": [
+    "onDebugResolve:elps"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "debuggers": [
+      {
+        "type": "elps",
+        "label": "ELPS Debug",
+        "languages": [
+          "lisp",
+          "elps"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the .lisp file to debug",
+                "default": "${file}"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Pause before the first expression",
+                "default": true
+              },
+              "rootDir": {
+                "type": "string",
+                "description": "Source root directory for file resolution",
+                "default": "${workspaceFolder}"
+              },
+              "elpsPath": {
+                "type": "string",
+                "description": "Path to the elps binary",
+                "default": "elps"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "elps",
+            "request": "launch",
+            "name": "Debug ELPS",
+            "program": "${file}",
+            "stopOnEntry": true
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "ELPS: Debug File",
+            "description": "Debug the current ELPS file",
+            "body": {
+              "type": "elps",
+              "request": "launch",
+              "name": "Debug ELPS",
+              "program": "^\"\\${file}\"",
+              "stopOnEntry": true
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
