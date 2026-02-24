@@ -16,6 +16,7 @@ package debugger
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/luthersystems/elps/lisp"
 )
@@ -67,6 +68,7 @@ type Engine struct {
 	stepper     *Stepper
 	onEvent     EventCallback
 	sourceRoot  string // absolute path prefix for resolving relative Source.Path values
+	evalCount   atomic.Int64
 
 	mu                  sync.Mutex
 	enabled             bool
@@ -209,9 +211,17 @@ func (e *Engine) ReadyCh() <-chan struct{} {
 	return e.readyCh
 }
 
+// EvalCount returns the number of times OnEval has been called. This is
+// useful for tests that need to wait for evaluation to start.
+func (e *Engine) EvalCount() int64 {
+	return e.evalCount.Load()
+}
+
 // OnEval implements lisp.Debugger. Called before each expression with
 // a real source location.
 func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
+	e.evalCount.Add(1)
+
 	e.mu.Lock()
 	if e.evaluatingCondition {
 		e.mu.Unlock()

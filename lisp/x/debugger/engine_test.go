@@ -641,8 +641,10 @@ func TestEngine_RequestPause(t *testing.T) {
 		resultCh <- res
 	}()
 
-	// Give the eval goroutine a moment to start, then request pause.
-	time.Sleep(10 * time.Millisecond)
+	// Wait for eval goroutine to start executing, then request pause.
+	require.Eventually(t, func() bool {
+		return e.EvalCount() > 0
+	}, 2*time.Second, time.Millisecond, "eval goroutine did not start")
 	e.RequestPause()
 
 	// The engine should pause.
