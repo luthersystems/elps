@@ -52,6 +52,7 @@ type Event struct {
 	Type     EventType
 	Reason   StopReason
 	ExitCode int // set for EventExited
+	Output   string       // set for EventOutput (log points)
 	Env      *lisp.LEnv
 	Expr     *lisp.LVal
 	BP       *Breakpoint // non-nil for breakpoint stops
@@ -284,6 +285,41 @@ func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
 			return false
 		}
 	}
+
+	// Check hit count condition. The hit count is incremented under the
+	// breakpoint store lock to avoid races.
+	e.breakpoints.mu.Lock()
+	hitOK := bp.IncrementHitCount()
+	e.breakpoints.mu.Unlock()
+	if !hitOK {
+		return false
+	}
+
+	// Handle log points: emit output instead of pausing.
+	if bp.LogMessage != "" {
+		e.mu.Lock()
+		e.evaluatingCondition = true
+		e.mu.Unlock()
+		output := InterpolateLogMessage(env, bp.LogMessage)
+		e.mu.Lock()
+		e.evaluatingCondition = false
+		// Suppress re-hits on the same line (sub-expressions on the same
+		// line would otherwise fire the log point repeatedly).
+		e.lastContinuedKey = bp.key()
+		cb := e.onEvent
+		e.mu.Unlock()
+		if cb != nil {
+			cb(Event{
+				Type:   EventOutput,
+				Output: output,
+				Env:    env,
+				Expr:   expr,
+				BP:     bp,
+			})
+		}
+		return false // log points do not pause
+	}
+
 	return true
 }
 

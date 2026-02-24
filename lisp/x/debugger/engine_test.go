@@ -840,3 +840,110 @@ func TestEngine_NotifyExit(t *testing.T) {
 	assert.Equal(t, 0, events[1].ExitCode)
 	mu.Unlock()
 }
+
+func TestEngine_HitCountBreakpoint(t *testing.T) {
+	var stopCount int
+	var mu sync.Mutex
+
+	e := New(WithEventCallback(func(evt Event) {
+		if evt.Type == EventStopped && evt.Reason == StopBreakpoint {
+			mu.Lock()
+			stopCount++
+			mu.Unlock()
+		}
+	}))
+	e.Enable()
+
+	env := newTestEnv(t, e)
+
+	// Recursive countdown from 5. Set a hit count breakpoint that fires on hit ==3.
+	program := "(defun countdown (n)\n" +
+		"  (if (<= n 0)\n" +
+		"    0\n" +
+		"    (countdown (- n 1))))\n" +
+		"(countdown 5)"
+	e.Breakpoints().SetForFileSpecs("test", []BreakpointSpec{
+		{Line: 4, HitCondition: "==3"},
+	})
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Should pause exactly once (on the 3rd hit).
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause on hit count")
+	e.Resume()
+
+	// Keep resuming any additional hits.
+	resumeDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-resumeDone:
+				return
+			case <-ticker.C:
+				if e.IsPaused() {
+					e.Resume()
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-resultCh:
+		close(resumeDone)
+	case <-time.After(5 * time.Second):
+		close(resumeDone)
+		if e.IsPaused() {
+			e.Resume()
+		}
+		t.Fatal("timeout")
+	}
+
+	// Hit count ==3 fires only once.
+	mu.Lock()
+	assert.Equal(t, 1, stopCount, "breakpoint should fire exactly once for ==3")
+	mu.Unlock()
+}
+
+func TestEngine_LogPoint(t *testing.T) {
+	var outputs []string
+	var stopCount int
+	var mu sync.Mutex
+
+	e := New(WithEventCallback(func(evt Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch evt.Type {
+		case EventOutput:
+			outputs = append(outputs, evt.Output)
+		case EventStopped:
+			stopCount++
+		}
+	}))
+	e.Enable()
+
+	env := newTestEnv(t, e)
+
+	// Simple program with a breakpoint that has a log message.
+	program := "(defun add (a b)\n  (+ a b))\n(add 3 4)"
+	e.Breakpoints().SetForFileSpecs("test", []BreakpointSpec{
+		{Line: 2, LogMessage: "adding {a} + {b}"},
+	})
+
+	res := env.LoadString("test", program)
+	assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
+	assert.Equal(t, 7, res.Int)
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Log point should have emitted output but NOT paused.
+	assert.Equal(t, 0, stopCount, "log point should not pause")
+	assert.Contains(t, outputs, "adding 3 + 4")
+}

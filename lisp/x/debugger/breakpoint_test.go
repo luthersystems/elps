@@ -259,6 +259,110 @@ func TestBreakpointStore_SetForFile_PathNormalization(t *testing.T) {
 	assert.NotNil(t, store.Match(&token.Location{File: "test.lisp", Line: 20}), "new breakpoint should match")
 }
 
+func TestParseHitCondition(t *testing.T) {
+	tests := []struct {
+		input string
+		op    hitOp
+		val   int
+	}{
+		{"", hitOpNone, 0},
+		{"5", hitOpEQ, 5},
+		{"==10", hitOpEQ, 10},
+		{">3", hitOpGT, 3},
+		{">=7", hitOpGTE, 7},
+		{"%2", hitOpMod, 2},
+		{" >= 5 ", hitOpGTE, 5},
+		{"abc", hitOpNone, 0},
+		{">abc", hitOpNone, 0},
+	}
+	for _, tt := range tests {
+		op, val := parseHitCondition(tt.input)
+		assert.Equal(t, tt.op, op, "op for %q", tt.input)
+		assert.Equal(t, tt.val, val, "val for %q", tt.input)
+	}
+}
+
+func TestBreakpoint_HitCount(t *testing.T) {
+	bp := &Breakpoint{
+		parsedHitOp:  hitOpEQ,
+		parsedHitVal: 3,
+	}
+	assert.False(t, bp.IncrementHitCount()) // 1 != 3
+	assert.False(t, bp.IncrementHitCount()) // 2 != 3
+	assert.True(t, bp.IncrementHitCount())  // 3 == 3
+	assert.False(t, bp.IncrementHitCount()) // 4 != 3
+
+	// Test modulo.
+	bp2 := &Breakpoint{
+		parsedHitOp:  hitOpMod,
+		parsedHitVal: 2,
+	}
+	assert.False(t, bp2.IncrementHitCount()) // 1 % 2 != 0
+	assert.True(t, bp2.IncrementHitCount())  // 2 % 2 == 0
+	assert.False(t, bp2.IncrementHitCount()) // 3 % 2 != 0
+	assert.True(t, bp2.IncrementHitCount())  // 4 % 2 == 0
+
+	// Test > (greater than).
+	bp3 := &Breakpoint{
+		parsedHitOp:  hitOpGT,
+		parsedHitVal: 2,
+	}
+	assert.False(t, bp3.IncrementHitCount()) // 1 > 2 false
+	assert.False(t, bp3.IncrementHitCount()) // 2 > 2 false
+	assert.True(t, bp3.IncrementHitCount())  // 3 > 2 true
+	assert.True(t, bp3.IncrementHitCount())  // 4 > 2 true
+
+	// Test >= (greater than or equal).
+	bp4 := &Breakpoint{
+		parsedHitOp:  hitOpGTE,
+		parsedHitVal: 2,
+	}
+	assert.False(t, bp4.IncrementHitCount()) // 1 >= 2 false
+	assert.True(t, bp4.IncrementHitCount())  // 2 >= 2 true
+	assert.True(t, bp4.IncrementHitCount())  // 3 >= 2 true
+
+	// Test no hit condition.
+	bp5 := &Breakpoint{}
+	assert.True(t, bp5.IncrementHitCount())
+	assert.True(t, bp5.IncrementHitCount())
+}
+
+func TestInterpolateLogMessage(t *testing.T) {
+	env := newConditionTestEnv(t)
+
+	// Simple text with no interpolation.
+	assert.Equal(t, "hello world", InterpolateLogMessage(env, "hello world"))
+
+	// Single expression.
+	assert.Equal(t, "x is 3", InterpolateLogMessage(env, "x is {(+ 1 2)}"))
+
+	// Multiple expressions.
+	assert.Equal(t, "1 and 2", InterpolateLogMessage(env, "{1} and {2}"))
+
+	// Unterminated brace.
+	assert.Equal(t, "start {rest", InterpolateLogMessage(env, "start {rest"))
+
+	// Empty template.
+	assert.Equal(t, "", InterpolateLogMessage(env, ""))
+}
+
+func TestBreakpointStore_SetForFileSpecs(t *testing.T) {
+	store := NewBreakpointStore()
+
+	specs := []BreakpointSpec{
+		{Line: 5, Condition: "(> x 3)", HitCondition: ">2", LogMessage: "hit {x}"},
+		{Line: 10},
+	}
+	bps := store.SetForFileSpecs("test.lisp", specs)
+	assert.Len(t, bps, 2)
+	assert.Equal(t, "(> x 3)", bps[0].Condition)
+	assert.Equal(t, ">2", bps[0].HitCondition)
+	assert.Equal(t, "hit {x}", bps[0].LogMessage)
+	assert.Equal(t, hitOpGT, bps[0].parsedHitOp)
+	assert.Equal(t, 2, bps[0].parsedHitVal)
+	assert.Empty(t, bps[1].HitCondition)
+}
+
 func TestBreakpointStore_ClearFile_PathNormalization(t *testing.T) {
 	store := NewBreakpointStore()
 

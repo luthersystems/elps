@@ -1750,3 +1750,282 @@ func TestDAPServer_TerminatedEventOnProgramFinish(t *testing.T) {
 	_, ok = msg.(*dap.TerminatedEvent)
 	assert.True(t, ok, "expected TerminatedEvent, got %T", msg)
 }
+
+func TestDAPServer_SetBreakpointsWithHitCondition(t *testing.T) {
+	s := setupDAPSession(t)
+
+	// Set breakpoint with a hit condition.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source: dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{
+				{Line: 4, HitCondition: "==2"},
+			},
+		},
+	})
+	msg := s.read()
+	bpResp, ok := msg.(*dap.SetBreakpointsResponse)
+	require.True(t, ok, "expected SetBreakpointsResponse, got %T", msg)
+	assert.True(t, bpResp.Success)
+	require.Len(t, bpResp.Body.Breakpoints, 1)
+	assert.Equal(t, 4, bpResp.Body.Breakpoints[0].Line)
+
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+
+	// Recursive countdown from 3. Breakpoint on line 4 (recursive call).
+	// The recursive call executes 3 times (n=3,2,1). With ==2, it should
+	// fire on the 2nd hit.
+	program := "(defun countdown (n)\n" +
+		"  (if (<= n 0)\n" +
+		"    0\n" +
+		"    (countdown (- n 1))))\n" +
+		"(countdown 3)"
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Should pause on 2nd hit.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause on hit condition")
+	stoppedMsg := s.read()
+	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	assert.Equal(t, "breakpoint", stoppedEvt.Body.Reason)
+
+	// Continue to finish.
+	s.continueExec()
+
+	// Keep resuming if paused again.
+	resumeDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-resumeDone:
+				return
+			case <-ticker.C:
+				if s.engine.IsPaused() {
+					s.engine.Resume()
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-resultCh:
+		close(resumeDone)
+	case <-time.After(5 * time.Second):
+		close(resumeDone)
+		if s.engine.IsPaused() {
+			s.engine.Resume()
+		}
+		t.Fatal("timeout")
+	}
+
+	s.disconnect()
+}
+
+func TestDAPServer_LogPoint(t *testing.T) {
+	s := setupDAPSession(t)
+
+	// Set a log point breakpoint (LogMessage set, no condition).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source: dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{
+				{Line: 2, LogMessage: "result is {(+ a b)}"},
+			},
+		},
+	})
+	msg := s.read()
+	bpResp, ok := msg.(*dap.SetBreakpointsResponse)
+	require.True(t, ok, "expected SetBreakpointsResponse, got %T", msg)
+	assert.True(t, bpResp.Success)
+
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+
+	program := "(defun add (a b)\n  (+ a b))\n(add 3 4)"
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// The log point should emit an OutputEvent but NOT pause.
+	// Read the output event.
+	outputMsg := s.read()
+	outputEvt, ok := outputMsg.(*dap.OutputEvent)
+	require.True(t, ok, "expected OutputEvent, got %T", outputMsg)
+	assert.Equal(t, "console", outputEvt.Body.Category)
+	assert.Contains(t, outputEvt.Body.Output, "result is 7")
+
+	// Program should complete without pausing.
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type)
+		assert.Equal(t, 7, res.Int)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout — log point should not have paused")
+	}
+
+	s.disconnect()
+}
+
+func TestDAPServer_EvaluateWatch(t *testing.T) {
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Set breakpoint inside function body (line 2).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(defun add (a b)\n  (+ a b))\n(add 10 20)")
+		resultCh <- res
+	}()
+
+	// Stop on entry, then continue to breakpoint.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	s.read() // StoppedEvent (breakpoint)
+
+	// Get stack trace to cache frame environments.
+	s.send(&dap.StackTraceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stackTrace",
+		},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+	})
+	msg := s.read()
+	stResp, ok := msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrameID := stResp.Body.StackFrames[0].Id
+
+	// Evaluate with "watch" context — VS Code sends this for watch expressions.
+	s.send(&dap.EvaluateRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "evaluate",
+		},
+		Arguments: dap.EvaluateArguments{
+			Expression: "a",
+			FrameId:    topFrameID,
+			Context:    "watch",
+		},
+	})
+	msg = s.read()
+	evalResp, ok := msg.(*dap.EvaluateResponse)
+	require.True(t, ok, "expected EvaluateResponse, got %T", msg)
+	assert.True(t, evalResp.Success)
+	assert.Equal(t, "10", evalResp.Body.Result)
+
+	// Evaluate a computed expression.
+	s.send(&dap.EvaluateRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "evaluate",
+		},
+		Arguments: dap.EvaluateArguments{
+			Expression: "(+ a b)",
+			FrameId:    topFrameID,
+			Context:    "watch",
+		},
+	})
+	msg = s.read()
+	evalResp, ok = msg.(*dap.EvaluateResponse)
+	require.True(t, ok, "expected EvaluateResponse, got %T", msg)
+	assert.True(t, evalResp.Success)
+	assert.Equal(t, "30", evalResp.Body.Result)
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	s.disconnect()
+}
+
+func TestDAPServer_InitializeReportsHitAndLogCapabilities(t *testing.T) {
+	e := debugger.New()
+	e.Enable()
+	srv := New(e)
+
+	client, server := net.Pipe()
+	defer client.Close() //nolint:errcheck
+
+	go func() {
+		_ = srv.ServeConn(server)
+	}()
+
+	reader := bufio.NewReader(client)
+
+	sendDAPRequest(t, client, &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+			Command:         "initialize",
+		},
+		Arguments: dap.InitializeRequestArguments{AdapterID: "elps"},
+	})
+
+	msg, err := dap.ReadProtocolMessage(reader)
+	require.NoError(t, err)
+	initResp, ok := msg.(*dap.InitializeResponse)
+	require.True(t, ok)
+	assert.True(t, initResp.Body.SupportsHitConditionalBreakpoints,
+		"capabilities should report hit conditional breakpoints support")
+	assert.True(t, initResp.Body.SupportsLogPoints,
+		"capabilities should report log points support")
+
+	// Clean up.
+	readDAPMessage(t, reader) // InitializedEvent
+	sendDAPRequest(t, client, &dap.DisconnectRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 2, Type: "request"},
+			Command:         "disconnect",
+		},
+	})
+	readDAPMessage(t, reader) // DisconnectResponse
+	readDAPMessage(t, reader) // TerminatedEvent
+}

@@ -49,6 +49,8 @@ func newHandler(s *Server, e *debugger.Engine) *handler {
 				bpIDs = []int{evt.BP.ID}
 			}
 			h.sendStoppedEvent(evt.Reason, bpIDs)
+		case debugger.EventOutput:
+			h.sendOutputEvent(evt.Output)
 		case debugger.EventExited:
 			// Guard against server already closed (e.g., disconnect raced).
 			select {
@@ -124,11 +126,13 @@ func (h *handler) onInitialize(req *dap.InitializeRequest) {
 	resp := &dap.InitializeResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	resp.Body = dap.Capabilities{
-		SupportsConfigurationDoneRequest:  true,
-		SupportsFunctionBreakpoints:       true,
-		SupportsConditionalBreakpoints:    true,
-		SupportsEvaluateForHovers:         true,
-		SupportTerminateDebuggee:          true,
+		SupportsConfigurationDoneRequest:      true,
+		SupportsFunctionBreakpoints:           true,
+		SupportsConditionalBreakpoints:        true,
+		SupportsHitConditionalBreakpoints:     true,
+		SupportsLogPoints:                     true,
+		SupportsEvaluateForHovers:             true,
+		SupportTerminateDebuggee:              true,
 		ExceptionBreakpointFilters: []dap.ExceptionBreakpointsFilter{
 			{
 				Filter:  "all",
@@ -151,14 +155,17 @@ func (h *handler) onSetBreakpoints(req *dap.SetBreakpointsRequest) {
 		file = req.Arguments.Source.Name
 	}
 
-	lines := make([]int, len(req.Arguments.Breakpoints))
-	conditions := make([]string, len(req.Arguments.Breakpoints))
+	specs := make([]debugger.BreakpointSpec, len(req.Arguments.Breakpoints))
 	for i, bp := range req.Arguments.Breakpoints {
-		lines[i] = bp.Line
-		conditions[i] = bp.Condition
+		specs[i] = debugger.BreakpointSpec{
+			Line:         bp.Line,
+			Condition:    bp.Condition,
+			HitCondition: bp.HitCondition,
+			LogMessage:   bp.LogMessage,
+		}
 	}
 
-	bps := h.engine.Breakpoints().SetForFile(file, lines, conditions)
+	bps := h.engine.Breakpoints().SetForFileSpecs(file, specs)
 
 	resp := &dap.SetBreakpointsResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
@@ -452,6 +459,16 @@ func (h *handler) sendTerminatedEvent() {
 	h.send(&dap.TerminatedEvent{
 		Event: h.newEvent("terminated"),
 	})
+}
+
+// sendOutputEvent sends a DAP output event to the client (used for log points).
+func (h *handler) sendOutputEvent(output string) {
+	evt := &dap.OutputEvent{
+		Event: h.newEvent("output"),
+	}
+	evt.Body.Category = "console"
+	evt.Body.Output = output + "\n"
+	h.send(evt)
 }
 
 // sendStoppedEvent sends a DAP stopped event to the client.
