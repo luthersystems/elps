@@ -25,7 +25,6 @@ type handler struct {
 
 	mu          sync.Mutex
 	initialized bool
-	launched    bool
 
 	// frameEnvs caches the environments for each stack frame when paused.
 	// Indexed by frame ID (1-based, most recent first).
@@ -160,9 +159,16 @@ func (h *handler) onConfigurationDone(req *dap.ConfigurationDoneRequest) {
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	h.send(resp)
 
-	h.mu.Lock()
-	h.launched = true
-	h.mu.Unlock()
+	// Signal that the client has finished configuration (breakpoints set).
+	h.engine.SignalReady()
+
+	// If the eval goroutine already paused (e.g., stopOnEntry fired before
+	// the client connected), send the stopped event now. The event callback
+	// was nil when the engine paused, so no stopped event was sent.
+	if h.engine.IsPaused() {
+		reason := debugger.StopEntry
+		h.sendStoppedEvent(reason, nil)
+	}
 }
 
 func (h *handler) onThreads(req *dap.ThreadsRequest) {

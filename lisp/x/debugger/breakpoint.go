@@ -4,6 +4,7 @@ package debugger
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -26,7 +27,18 @@ func (bp *Breakpoint) key() string {
 }
 
 func breakpointKey(file string, line int) string {
-	return fmt.Sprintf("%s:%d", file, line)
+	return fmt.Sprintf("%s:%d", normalizePath(file), line)
+}
+
+// normalizePath reduces a file path to its basename for breakpoint matching.
+// IDE clients send absolute paths (e.g., /Users/.../phylum/organisation.lisp)
+// while the ELPS runtime uses relative paths or basenames. Normalizing to
+// basename allows breakpoints to match regardless of path format.
+func normalizePath(file string) string {
+	if file == "" {
+		return file
+	}
+	return filepath.Base(file)
 }
 
 // ExceptionBreakMode controls when the debugger pauses on exceptions.
@@ -98,7 +110,7 @@ func (s *BreakpointStore) Remove(file string, line int) bool {
 func (s *BreakpointStore) ClearFile(file string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	prefix := file + ":"
+	prefix := normalizePath(file) + ":"
 	for key := range s.byKey {
 		if strings.HasPrefix(key, prefix) {
 			delete(s.byKey, key)
@@ -111,8 +123,8 @@ func (s *BreakpointStore) ClearFile(file string) {
 func (s *BreakpointStore) SetForFile(file string, lines []int, conditions []string) []*Breakpoint {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Remove old breakpoints for this file.
-	prefix := file + ":"
+	// Remove old breakpoints for this file (using normalized path).
+	prefix := normalizePath(file) + ":"
 	for key := range s.byKey {
 		if strings.HasPrefix(key, prefix) {
 			delete(s.byKey, key)

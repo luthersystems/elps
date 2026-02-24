@@ -78,6 +78,12 @@ type Engine struct {
 	// pausedEnv/pausedExpr hold the state when paused, protected by mu.
 	pausedEnv  *lisp.LEnv
 	pausedExpr *lisp.LVal
+
+	// readyCh is closed when SignalReady is called, indicating that the
+	// external consumer (e.g., DAP client) has finished configuration.
+	// Embedders can wait on ReadyCh() before starting evaluation.
+	readyCh   chan struct{}
+	readyOnce sync.Once
 }
 
 // Verify Engine implements lisp.Debugger at compile time.
@@ -106,6 +112,7 @@ func New(opts ...Option) *Engine {
 		breakpoints: NewBreakpointStore(),
 		stepper:     NewStepper(),
 		pauseCh:     make(chan lisp.DebugAction, 1),
+		readyCh:     make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -162,6 +169,22 @@ func (e *Engine) PausedState() (*lisp.LEnv, *lisp.LVal) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.pausedEnv, e.pausedExpr
+}
+
+// SignalReady signals that the external consumer has finished its
+// configuration (e.g., DAP configurationDone). Embedders waiting on
+// ReadyCh() will be unblocked. Safe to call multiple times.
+func (e *Engine) SignalReady() {
+	e.readyOnce.Do(func() {
+		close(e.readyCh)
+	})
+}
+
+// ReadyCh returns a channel that is closed when SignalReady is called.
+// Embedders can select on this to wait for the DAP client to finish
+// setting breakpoints before starting evaluation.
+func (e *Engine) ReadyCh() <-chan struct{} {
+	return e.readyCh
 }
 
 // OnEval implements lisp.Debugger. Called before each expression with

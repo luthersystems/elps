@@ -958,6 +958,182 @@ func TestDAPServer_PackageScopeVariables(t *testing.T) {
 	s.disconnect()
 }
 
+// TestDAPServer_LateConnectStoppedEvent verifies that when the eval goroutine
+// pauses (stopOnEntry) before the DAP client connects, the client receives
+// the stopped event when it sends configurationDone.
+func TestDAPServer_LateConnectStoppedEvent(t *testing.T) {
+	e := debugger.New(debugger.WithStopOnEntry(true))
+	e.Enable()
+
+	env := newDAPTestEnv(t, e)
+
+	// Start evaluation BEFORE any DAP client connects. The engine will
+	// pause on the first expression (stopOnEntry), but no event callback
+	// is registered yet.
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(+ 1 2)")
+		resultCh <- res
+	}()
+
+	// Wait for the engine to actually pause.
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not stop on entry")
+
+	// NOW connect a DAP client (late connect).
+	srv := New(e)
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close() }) //nolint:errcheck,gosec
+
+	go func() {
+		_ = srv.ServeConn(server)
+	}()
+
+	reader := bufio.NewReader(client)
+	seq := 0
+	nextSeq := func() int {
+		seq++
+		return seq
+	}
+
+	// Initialize.
+	sendDAPRequest(t, client, &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: nextSeq(), Type: "request"},
+			Command:         "initialize",
+		},
+	})
+	readDAPMessage(t, reader) // InitializeResponse
+	readDAPMessage(t, reader) // InitializedEvent
+
+	// ConfigurationDone — this should detect the pending pause and send
+	// a stopped event.
+	sendDAPRequest(t, client, &dap.ConfigurationDoneRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: nextSeq(), Type: "request"},
+			Command:         "configurationDone",
+		},
+	})
+	readDAPMessage(t, reader) // ConfigurationDoneResponse
+
+	// Read the stopped event that configurationDone should have sent.
+	msg := readDAPMessage(t, reader)
+	stoppedEvt, ok := msg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent after late connect, got %T", msg)
+	assert.Equal(t, "entry", stoppedEvt.Body.Reason)
+	assert.Equal(t, elpsThreadID, stoppedEvt.Body.ThreadId)
+
+	// Continue to let the program finish.
+	sendDAPRequest(t, client, &dap.ContinueRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: nextSeq(), Type: "request"},
+			Command:         "continue",
+		},
+		Arguments: dap.ContinueArguments{ThreadId: elpsThreadID},
+	})
+	readDAPMessage(t, reader) // ContinueResponse
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type)
+		assert.Equal(t, 3, res.Int)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for eval result")
+	}
+
+	// Disconnect.
+	sendDAPRequest(t, client, &dap.DisconnectRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: nextSeq(), Type: "request"},
+			Command:         "disconnect",
+		},
+	})
+	readDAPMessage(t, reader) // DisconnectResponse
+	readDAPMessage(t, reader) // TerminatedEvent
+}
+
+// TestDAPServer_ReadyChSignaledOnConfigDone verifies that the engine's
+// ReadyCh is closed when configurationDone is received.
+func TestDAPServer_ReadyChSignaledOnConfigDone(t *testing.T) {
+	s := setupDAPSession(t)
+
+	// ReadyCh should not be closed yet.
+	select {
+	case <-s.engine.ReadyCh():
+		t.Fatal("ReadyCh should not be closed before configurationDone")
+	default:
+	}
+
+	s.configDone()
+
+	// ReadyCh should now be closed.
+	select {
+	case <-s.engine.ReadyCh():
+		// expected
+	case <-time.After(time.Second):
+		t.Fatal("ReadyCh should be closed after configurationDone")
+	}
+
+	s.disconnect()
+}
+
+// TestDAPServer_PathNormalization verifies that breakpoints set with absolute
+// paths from the IDE match ELPS runtime locations that use basenames.
+func TestDAPServer_PathNormalization(t *testing.T) {
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Set breakpoints using absolute paths (like VS Code sends).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "/Users/dev/project/phylum/test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+
+	s.configDone()
+
+	// The ELPS runtime uses "test" as the source name (basename-like).
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+		resultCh <- res
+	}()
+
+	// First stop: stop-on-entry.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	// Second stop: breakpoint on line 2 should fire even though the path
+	// was set as /Users/dev/project/phylum/test but runtime uses "test".
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "breakpoint should fire with normalized path")
+	msg := s.read()
+	stoppedEvt, ok := msg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T", msg)
+	assert.Equal(t, "breakpoint", stoppedEvt.Body.Reason)
+
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	s.disconnect()
+}
+
 // TestDAPServer_FileDebugSession exercises the full debug lifecycle with a
 // real file, mirroring what `elps debug --stop-on-entry testdata/simple.lisp`
 // does: set up environment with FSLibrary, load file, pause at breakpoint
@@ -1106,4 +1282,89 @@ func TestDAPServer_FileDebugSession(t *testing.T) {
 	}
 
 	s.disconnect()
+}
+
+// dialWithRetry retries net.Dial until it succeeds or the deadline passes.
+// This replaces time.Sleep for waiting on a server to start listening.
+func dialWithRetry(t *testing.T, addr string, timeout time.Duration) net.Conn {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			return conn
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("failed to connect to %s after %v: %v", addr, timeout, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestServeTCPLoop_MultipleConnections verifies Bug 3: the old ServeTCP
+// accepted exactly one connection. After the first client disconnected,
+// the server exited and no further debugging was possible.
+//
+// ServeTCPLoop fixes this by looping on Accept. This test connects twice
+// to verify the server survives client reconnections.
+func TestServeTCPLoop_MultipleConnections(t *testing.T) {
+	e := debugger.New()
+	e.Enable()
+	srv := New(e)
+
+	// Use a random available port.
+	ln, err := net.Listen("tcp", "localhost:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	ln.Close()
+
+	go func() {
+		if err := srv.ServeTCPLoop(addr); err != nil {
+			// Accept error after test cleanup is expected.
+			t.Logf("ServeTCPLoop exited: %v", err)
+		}
+	}()
+
+	// --- First connection (retry until server is listening) ---
+	conn1 := dialWithRetry(t, addr, 2*time.Second)
+	reader1 := bufio.NewReader(conn1)
+
+	sendDAPRequest(t, conn1, &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+			Command:         "initialize",
+		},
+	})
+	msg := readDAPMessage(t, reader1)
+	_, ok := msg.(*dap.InitializeResponse)
+	require.True(t, ok, "expected InitializeResponse on first connection")
+	readDAPMessage(t, reader1) // InitializedEvent
+
+	// Disconnect first client.
+	sendDAPRequest(t, conn1, &dap.DisconnectRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 2, Type: "request"},
+			Command:         "disconnect",
+		},
+	})
+	readDAPMessage(t, reader1) // DisconnectResponse
+	readDAPMessage(t, reader1) // TerminatedEvent
+	conn1.Close()
+
+	// --- Second connection (retry until server re-enters Accept) ---
+	conn2 := dialWithRetry(t, addr, 2*time.Second)
+	reader2 := bufio.NewReader(conn2)
+
+	sendDAPRequest(t, conn2, &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+			Command:         "initialize",
+		},
+	})
+	msg = readDAPMessage(t, reader2)
+	initResp, ok := msg.(*dap.InitializeResponse)
+	require.True(t, ok, "expected InitializeResponse on second connection, got %T", msg)
+	assert.True(t, initResp.Success)
+
+	conn2.Close()
 }

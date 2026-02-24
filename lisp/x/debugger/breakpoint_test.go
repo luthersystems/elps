@@ -209,3 +209,68 @@ func TestBreakpointStore_DisabledBreakpoint(t *testing.T) {
 	loc := &token.Location{File: "test.lisp", Line: 10}
 	assert.Nil(t, store.Match(loc), "disabled breakpoint should not match")
 }
+
+func TestBreakpointStore_PathNormalization(t *testing.T) {
+	store := NewBreakpointStore()
+
+	// Set breakpoint with absolute path (IDE-style).
+	store.Set("/Users/dev/project/phylum/organisation.lisp", 10, "")
+
+	// Match with basename (ELPS runtime-style).
+	loc := &token.Location{File: "organisation.lisp", Line: 10}
+	assert.NotNil(t, store.Match(loc), "basename should match absolute path breakpoint")
+
+	// Match with relative path.
+	loc2 := &token.Location{File: "../../../phylum/organisation.lisp", Line: 10}
+	assert.NotNil(t, store.Match(loc2), "relative path should match absolute path breakpoint")
+
+	// Match with different absolute path (same basename).
+	loc3 := &token.Location{File: "/other/path/organisation.lisp", Line: 10}
+	assert.NotNil(t, store.Match(loc3), "different absolute path with same basename should match")
+
+	// No match on different file.
+	loc4 := &token.Location{File: "utils.lisp", Line: 10}
+	assert.Nil(t, store.Match(loc4), "different basename should not match")
+
+	// No match on different line.
+	loc5 := &token.Location{File: "organisation.lisp", Line: 11}
+	assert.Nil(t, store.Match(loc5), "different line should not match")
+}
+
+func TestBreakpointStore_SetForFile_PathNormalization(t *testing.T) {
+	store := NewBreakpointStore()
+
+	// Set breakpoints with absolute path.
+	store.SetForFile("/Users/dev/project/phylum/test.lisp", []int{5, 10}, []string{"", ""})
+
+	// Match with basename.
+	loc := &token.Location{File: "test.lisp", Line: 5}
+	assert.NotNil(t, store.Match(loc), "basename should match SetForFile absolute path")
+
+	// Replace using a different absolute path (same basename).
+	bps := store.SetForFile("/other/path/test.lisp", []int{20}, []string{""})
+	assert.Len(t, bps, 1)
+
+	// Old breakpoints should be gone (same normalized name).
+	assert.Nil(t, store.Match(&token.Location{File: "test.lisp", Line: 5}), "old breakpoint should be cleared")
+	assert.Nil(t, store.Match(&token.Location{File: "test.lisp", Line: 10}), "old breakpoint should be cleared")
+
+	// New breakpoint should match.
+	assert.NotNil(t, store.Match(&token.Location{File: "test.lisp", Line: 20}), "new breakpoint should match")
+}
+
+func TestBreakpointStore_ClearFile_PathNormalization(t *testing.T) {
+	store := NewBreakpointStore()
+
+	store.Set("test.lisp", 5, "")
+	store.Set("/Users/dev/project/other.lisp", 10, "")
+
+	// Clear using absolute path for test.lisp.
+	store.ClearFile("/some/path/test.lisp")
+
+	// test.lisp breakpoint should be gone.
+	assert.Nil(t, store.Match(&token.Location{File: "test.lisp", Line: 5}), "cleared breakpoint should not match")
+
+	// other.lisp should still be there.
+	assert.NotNil(t, store.Match(&token.Location{File: "other.lisp", Line: 10}), "unrelated file should not be cleared")
+}

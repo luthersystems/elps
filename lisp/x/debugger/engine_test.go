@@ -557,3 +557,57 @@ func TestEngine_SetEventCallback(t *testing.T) {
 		t.Fatal("timeout")
 	}
 }
+
+func TestEngine_ReadyCh(t *testing.T) {
+	e := New()
+
+	// ReadyCh should not be closed before SignalReady.
+	select {
+	case <-e.ReadyCh():
+		t.Fatal("ReadyCh should not be closed before SignalReady")
+	default:
+		// expected
+	}
+
+	// Signal ready.
+	e.SignalReady()
+
+	// ReadyCh should now be closed.
+	select {
+	case <-e.ReadyCh():
+		// expected
+	case <-time.After(time.Second):
+		t.Fatal("ReadyCh should be closed after SignalReady")
+	}
+
+	// Calling SignalReady again should not panic.
+	e.SignalReady()
+}
+
+func TestEngine_ReadyCh_WithTimeout(t *testing.T) {
+	e := New()
+
+	// Simulate waiting with a timeout — should timeout since we don't signal.
+	timer := time.NewTimer(50 * time.Millisecond)
+	defer timer.Stop()
+
+	select {
+	case <-e.ReadyCh():
+		t.Fatal("ReadyCh should not have been ready")
+	case <-timer.C:
+		// expected: timed out waiting
+	}
+
+	// Now signal ready after a short delay.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		e.SignalReady()
+	}()
+
+	select {
+	case <-e.ReadyCh():
+		// expected
+	case <-time.After(time.Second):
+		t.Fatal("ReadyCh should have been closed after SignalReady")
+	}
+}
