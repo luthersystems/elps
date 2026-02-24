@@ -628,12 +628,13 @@ func TestEngine_RequestPause(t *testing.T) {
 	env := newTestEnv(t, e)
 
 	// Use a long-running program so we have time to request a pause.
-	// Recursive countdown from 1000 gives the pause request time to take effect.
+	// Large countdown ensures the program is still running when RequestPause
+	// takes effect — even on slow CI machines.
 	program := "(defun countdown (n)\n" +
 		"  (if (<= n 0)\n" +
 		"    0\n" +
 		"    (countdown (- n 1))))\n" +
-		"(countdown 1000)"
+		"(countdown 100000)"
 
 	resultCh := make(chan *lisp.LVal, 1)
 	go func() {
@@ -641,9 +642,11 @@ func TestEngine_RequestPause(t *testing.T) {
 		resultCh <- res
 	}()
 
-	// Wait for eval goroutine to start executing, then request pause.
+	// Wait for eval goroutine to be well into execution, then request pause.
+	// We wait for multiple evals (not just 1) so the program is solidly running
+	// and won't finish before RequestPause takes effect.
 	require.Eventually(t, func() bool {
-		return e.EvalCount() > 0
+		return e.EvalCount() > 10
 	}, 2*time.Second, time.Millisecond, "eval goroutine did not start")
 	e.RequestPause()
 

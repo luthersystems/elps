@@ -1410,11 +1410,13 @@ func TestDAPServer_PauseRequest(t *testing.T) {
 	env := newDAPTestEnv(t, s.engine)
 
 	// Use a long-running recursive program so we can pause mid-execution.
+	// Large countdown ensures the program is still running when the pause
+	// request takes effect — even on slow CI machines.
 	program := "(defun countdown (n)\n" +
 		"  (if (<= n 0)\n" +
 		"    0\n" +
 		"    (countdown (- n 1))))\n" +
-		"(countdown 10000)"
+		"(countdown 100000)"
 
 	resultCh := make(chan *lisp.LVal, 1)
 	go func() {
@@ -1422,9 +1424,9 @@ func TestDAPServer_PauseRequest(t *testing.T) {
 		resultCh <- res
 	}()
 
-	// Wait for eval goroutine to start executing, then request pause.
+	// Wait for eval goroutine to be well into execution before pausing.
 	require.Eventually(t, func() bool {
-		return s.engine.EvalCount() > 0
+		return s.engine.EvalCount() > 10
 	}, 2*time.Second, time.Millisecond, "eval goroutine did not start")
 
 	// Send Pause request.
