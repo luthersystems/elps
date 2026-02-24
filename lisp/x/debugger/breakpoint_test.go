@@ -13,6 +13,7 @@ import (
 )
 
 func TestBreakpointStore_SetAndMatch(t *testing.T) {
+	t.Parallel()
 	store := NewBreakpointStore()
 
 	bp := store.Set("test.lisp", 10, "")
@@ -40,6 +41,7 @@ func TestBreakpointStore_SetAndMatch(t *testing.T) {
 }
 
 func TestBreakpointStore_Remove(t *testing.T) {
+	t.Parallel()
 	store := NewBreakpointStore()
 	store.Set("test.lisp", 10, "")
 
@@ -55,6 +57,7 @@ func TestBreakpointStore_Remove(t *testing.T) {
 }
 
 func TestBreakpointStore_SetForFile(t *testing.T) {
+	t.Parallel()
 	store := NewBreakpointStore()
 
 	// Set initial breakpoints.
@@ -86,6 +89,7 @@ func TestBreakpointStore_SetForFile(t *testing.T) {
 }
 
 func TestBreakpointStore_ClearFile(t *testing.T) {
+	t.Parallel()
 	store := NewBreakpointStore()
 	store.Set("test.lisp", 5, "")
 	store.Set("test.lisp", 10, "")
@@ -98,6 +102,7 @@ func TestBreakpointStore_ClearFile(t *testing.T) {
 }
 
 func TestBreakpointStore_ExceptionBreak(t *testing.T) {
+	t.Parallel()
 	store := NewBreakpointStore()
 	assert.Equal(t, ExceptionBreakNever, store.ExceptionBreak())
 
@@ -109,6 +114,7 @@ func TestBreakpointStore_ExceptionBreak(t *testing.T) {
 }
 
 func TestBreakpointStore_All(t *testing.T) {
+	t.Parallel()
 	store := NewBreakpointStore()
 	bp1 := store.Set("a.lisp", 1, "")
 	bp2 := store.Set("b.lisp", 2, "")
@@ -127,6 +133,7 @@ func TestBreakpointStore_All(t *testing.T) {
 }
 
 func TestBreakpointStore_IDsAreUnique(t *testing.T) {
+	t.Parallel()
 	store := NewBreakpointStore()
 	bp1 := store.Set("test.lisp", 1, "")
 	bp2 := store.Set("test.lisp", 2, "")
@@ -134,6 +141,7 @@ func TestBreakpointStore_IDsAreUnique(t *testing.T) {
 }
 
 func TestBreakpointStore_SetUpdatesExisting(t *testing.T) {
+	t.Parallel()
 	store := NewBreakpointStore()
 	bp1 := store.Set("test.lisp", 10, "")
 	bp2 := store.Set("test.lisp", 10, "(> x 5)")
@@ -158,46 +166,54 @@ func newConditionTestEnv(t *testing.T) *lisp.LEnv {
 }
 
 func TestEvalCondition_Empty(t *testing.T) {
+	t.Parallel()
 	env := newConditionTestEnv(t)
 	// Empty condition → always true (unconditional breakpoint).
 	assert.True(t, EvalCondition(env, ""))
 }
 
 func TestEvalCondition_True(t *testing.T) {
+	t.Parallel()
 	env := newConditionTestEnv(t)
 	assert.True(t, EvalCondition(env, "(> 5 3)"))
 }
 
 func TestEvalCondition_False(t *testing.T) {
+	t.Parallel()
 	env := newConditionTestEnv(t)
 	assert.False(t, EvalCondition(env, "(> 3 5)"))
 }
 
 func TestEvalCondition_Nil(t *testing.T) {
+	t.Parallel()
 	env := newConditionTestEnv(t)
 	// Condition that evaluates to nil → false.
 	assert.False(t, EvalCondition(env, "()"))
 }
 
 func TestEvalCondition_Error(t *testing.T) {
+	t.Parallel()
 	env := newConditionTestEnv(t)
 	// Condition that errors → false (error is falsey).
 	assert.False(t, EvalCondition(env, "undefined-symbol-xyz"))
 }
 
 func TestEvalCondition_ParseError(t *testing.T) {
+	t.Parallel()
 	env := newConditionTestEnv(t)
 	// Malformed expression → treated as unconditional (true) per design.
 	assert.True(t, EvalCondition(env, "(+ 1"))
 }
 
 func TestEvalCondition_NoReader(t *testing.T) {
+	t.Parallel()
 	env := lisp.NewEnv(nil)
 	// No reader → treated as unconditional (true).
 	assert.True(t, EvalCondition(env, "(> 5 3)"))
 }
 
 func TestBreakpointStore_DisabledBreakpoint(t *testing.T) {
+	t.Parallel()
 	store := NewBreakpointStore()
 	bp := store.Set("test.lisp", 10, "")
 	require.True(t, bp.Enabled)
@@ -211,6 +227,7 @@ func TestBreakpointStore_DisabledBreakpoint(t *testing.T) {
 }
 
 func TestBreakpointStore_PathNormalization(t *testing.T) {
+	t.Parallel()
 	store := NewBreakpointStore()
 
 	// Set breakpoint with absolute path (IDE-style).
@@ -238,6 +255,7 @@ func TestBreakpointStore_PathNormalization(t *testing.T) {
 }
 
 func TestBreakpointStore_SetForFile_PathNormalization(t *testing.T) {
+	t.Parallel()
 	store := NewBreakpointStore()
 
 	// Set breakpoints with absolute path.
@@ -260,6 +278,7 @@ func TestBreakpointStore_SetForFile_PathNormalization(t *testing.T) {
 }
 
 func TestParseHitCondition(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input string
 		op    hitOp
@@ -274,6 +293,12 @@ func TestParseHitCondition(t *testing.T) {
 		{" >= 5 ", hitOpGTE, 5},
 		{"abc", hitOpNone, 0},
 		{">abc", hitOpNone, 0},
+		{">-1", hitOpGT, -1},    // negative numbers are parsed
+		{"==-3", hitOpEQ, -3},   // negative numbers are parsed
+		{"%0", hitOpMod, 0},      // zero modulus parsed but guarded at check time
+		{"   ", hitOpNone, 0},    // whitespace-only
+		{"==0", hitOpEQ, 0},      // zero value
+		{"999999", hitOpEQ, 999999}, // large value
 	}
 	for _, tt := range tests {
 		op, val := parseHitCondition(tt.input)
@@ -283,6 +308,7 @@ func TestParseHitCondition(t *testing.T) {
 }
 
 func TestBreakpoint_HitCount(t *testing.T) {
+	t.Parallel()
 	bp := &Breakpoint{
 		parsedHitOp:  hitOpEQ,
 		parsedHitVal: 3,
@@ -328,6 +354,7 @@ func TestBreakpoint_HitCount(t *testing.T) {
 }
 
 func TestInterpolateLogMessage(t *testing.T) {
+	t.Parallel()
 	env := newConditionTestEnv(t)
 
 	// Simple text with no interpolation.
@@ -351,6 +378,7 @@ func TestInterpolateLogMessage(t *testing.T) {
 }
 
 func TestBreakpointStore_SetForFileSpecs(t *testing.T) {
+	t.Parallel()
 	store := NewBreakpointStore()
 
 	specs := []BreakpointSpec{
@@ -368,6 +396,7 @@ func TestBreakpointStore_SetForFileSpecs(t *testing.T) {
 }
 
 func TestBreakpointStore_ClearFile_PathNormalization(t *testing.T) {
+	t.Parallel()
 	store := NewBreakpointStore()
 
 	store.Set("test.lisp", 5, "")

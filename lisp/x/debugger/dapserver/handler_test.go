@@ -569,40 +569,106 @@ func (s *dapTestSession) disconnect() {
 }
 
 func TestDAPServer_StepNext(t *testing.T) {
-	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+	s := setupDAPSession(t)
+
+	// Set breakpoint inside outer's body (line 3: call to inner).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 3}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
 	s.configDone()
 
 	env := newDAPTestEnv(t, s.engine)
 	resultCh := make(chan *lisp.LVal, 1)
+	// outer calls inner on line 3, then has another expression on line 4.
+	// Step-over from line 3 should NOT enter inner's body.
 	go func() {
-		res := env.LoadString("test", "(defun f (x) (+ x 1))\n(f 10)")
+		res := env.LoadString("test",
+			"(defun inner (x) (+ x 100))\n"+
+				"(defun outer (n)\n"+
+				"  (inner n)\n"+ // line 3
+				"  (+ n 1))\n"+ // line 4
+				"(outer 5)")
 		resultCh <- res
 	}()
 
-	// Wait for stop-on-entry.
+	// Wait for breakpoint inside outer (line 3).
 	require.Eventually(t, func() bool {
 		return s.engine.IsPaused()
 	}, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent
 
-	// Send Next (step over).
-	s.send(&dap.NextRequest{
+	// Get initial stack trace — should be inside outer.
+	s.send(&dap.StackTraceRequest{
 		Request: dap.Request{
 			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
-			Command:         "next",
+			Command:         "stackTrace",
 		},
-		Arguments: dap.NextArguments{ThreadId: elpsThreadID},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
 	})
 	msg := s.read()
-	nextResp, ok := msg.(*dap.NextResponse)
-	require.True(t, ok, "expected NextResponse, got %T", msg)
-	assert.True(t, nextResp.Success)
+	stResp, ok := msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	initialFrameCount := len(stResp.Body.StackFrames)
+	require.Greater(t, initialFrameCount, 0)
+	assert.Equal(t, 3, stResp.Body.StackFrames[0].Line, "should be on line 3")
 
-	// Should pause again after step over.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	// Clear breakpoints to avoid re-fire.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+
+	// Step-over (inner n) repeatedly until we reach line 4.
+	for range 20 {
+		s.send(&dap.NextRequest{
+			Request: dap.Request{
+				ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+				Command:         "next",
+			},
+			Arguments: dap.NextArguments{ThreadId: elpsThreadID},
+		})
+		s.read() // NextResponse
+
+		require.Eventually(t, func() bool {
+			return s.engine.IsPaused()
+		}, 2*time.Second, 10*time.Millisecond)
+		s.read() // StoppedEvent
+
+		// Check stack trace — frame count should NOT exceed initial (did not enter inner).
+		s.send(&dap.StackTraceRequest{
+			Request: dap.Request{
+				ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+				Command:         "stackTrace",
+			},
+			Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+		})
+		msg = s.read()
+		stResp, ok = msg.(*dap.StackTraceResponse)
+		require.True(t, ok)
+		assert.LessOrEqual(t, len(stResp.Body.StackFrames), initialFrameCount,
+			"step-over should not increase stack depth (entered nested function)")
+
+		if stResp.Body.StackFrames[0].Line == 4 {
+			break
+		}
+	}
+	assert.Equal(t, 4, stResp.Body.StackFrames[0].Line,
+		"step-over should eventually reach line 4")
 
 	// Continue to finish.
 	s.continueExec()
@@ -633,7 +699,7 @@ func TestDAPServer_StepIn(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent
 
-	// Send StepIn.
+	// Send StepIn — should advance to next expression.
 	s.send(&dap.StepInRequest{
 		Request: dap.Request{
 			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
@@ -651,6 +717,11 @@ func TestDAPServer_StepIn(t *testing.T) {
 		return s.engine.IsPaused()
 	}, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent
+
+	// Verify we actually paused (PausedState returns non-nil).
+	_, pausedExpr := s.engine.PausedState()
+	require.NotNil(t, pausedExpr, "step-in should have paused on an expression")
+	require.NotNil(t, pausedExpr.Source, "paused expression should have source location")
 
 	// Continue to finish.
 	s.continueExec()
@@ -683,16 +754,34 @@ func TestDAPServer_StepOut(t *testing.T) {
 
 	env := newDAPTestEnv(t, s.engine)
 	resultCh := make(chan *lisp.LVal, 1)
+	// Multi-line: breakpoint fires on line 2 inside f, step-out should
+	// return to caller on line 3.
 	go func() {
-		res := env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+		res := env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)\n(+ 1 1)")
 		resultCh <- res
 	}()
 
-	// Wait for breakpoint inside function.
+	// Wait for breakpoint inside function (line 2).
 	require.Eventually(t, func() bool {
 		return s.engine.IsPaused()
 	}, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent
+
+	// Get stack trace to record depth inside function.
+	s.send(&dap.StackTraceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stackTrace",
+		},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+	})
+	msg := s.read()
+	stResp, ok := msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	insideFrameCount := len(stResp.Body.StackFrames)
+	require.Greater(t, insideFrameCount, 0, "should have at least 1 frame inside function")
+	assert.Equal(t, 2, stResp.Body.StackFrames[0].Line,
+		"should be paused on line 2 inside function body")
 
 	// Clear breakpoints before stepping out to avoid re-fire.
 	s.send(&dap.SetBreakpointsRequest{
@@ -707,7 +796,7 @@ func TestDAPServer_StepOut(t *testing.T) {
 	})
 	s.read() // SetBreakpointsResponse
 
-	// Send StepOut.
+	// Send StepOut — should return to caller scope.
 	s.send(&dap.StepOutRequest{
 		Request: dap.Request{
 			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
@@ -715,12 +804,34 @@ func TestDAPServer_StepOut(t *testing.T) {
 		},
 		Arguments: dap.StepOutArguments{ThreadId: elpsThreadID},
 	})
-	msg := s.read()
+	msg = s.read()
 	stepResp, ok := msg.(*dap.StepOutResponse)
 	require.True(t, ok, "expected StepOutResponse, got %T", msg)
 	assert.True(t, stepResp.Success)
 
-	// Program finishes after stepping out (no more top-level expressions).
+	// Should pause after returning from f.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause after step-out")
+	s.read() // StoppedEvent
+
+	// Verify stack depth decreased after step-out.
+	s.send(&dap.StackTraceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stackTrace",
+		},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+	})
+	msg = s.read()
+	stResp, ok = msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	assert.Less(t, len(stResp.Body.StackFrames), insideFrameCount,
+		"step-out should decrease stack depth")
+
+	// Continue to finish.
+	s.continueExec()
+
 	select {
 	case <-resultCh:
 	case <-time.After(5 * time.Second):
@@ -944,7 +1055,23 @@ func TestDAPServer_PackageScopeVariables(t *testing.T) {
 	require.True(t, ok, "expected VariablesResponse, got %T", msg)
 	assert.True(t, varsResp.Success)
 	// Package scope should contain user-defined symbols (at least 'add').
-	assert.Greater(t, len(varsResp.Body.Variables), 0, "expected package variables")
+	require.Greater(t, len(varsResp.Body.Variables), 0, "expected package variables")
+	// Verify the 'add' function is among the package variables.
+	var foundAdd bool
+	for _, v := range varsResp.Body.Variables {
+		if v.Name == "add" {
+			foundAdd = true
+			break
+		}
+	}
+	assert.True(t, foundAdd, "expected 'add' function in package scope variables, got: %v",
+		func() []string {
+			names := make([]string, len(varsResp.Body.Variables))
+			for i, v := range varsResp.Body.Variables {
+				names[i] = v.Name
+			}
+			return names
+		}())
 
 	// Continue to finish.
 	s.continueExec()
