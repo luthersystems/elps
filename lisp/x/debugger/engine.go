@@ -75,6 +75,7 @@ type Engine struct {
 	mu                  sync.Mutex
 	enabled             bool
 	stopOnEntry         bool
+	stoppedOnEntry      bool // set by OnEval when stopOnEntry fires, read by WaitIfPaused
 	pauseRequested      bool              // set by RequestPause(), cleared in WaitIfPaused
 	pauseReason         StopReason        // reason for pauseRequested (StopPause or StopFunctionBreakpoint)
 	evaluatingCondition bool              // re-entrancy guard for conditional breakpoints
@@ -377,6 +378,7 @@ func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
 	// Check stop-on-entry (first expression only).
 	if e.stopOnEntry {
 		e.stopOnEntry = false
+		e.stoppedOnEntry = true
 		e.mu.Unlock()
 		return true
 	}
@@ -482,9 +484,9 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 	}
 
 	e.mu.Lock()
-	if e.stopOnEntry {
+	if e.stoppedOnEntry {
 		reason = StopEntry
-		e.stopOnEntry = false
+		e.stoppedOnEntry = false
 	}
 	if e.pauseRequested {
 		reason = e.pauseReason
