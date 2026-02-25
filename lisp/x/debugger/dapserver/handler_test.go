@@ -18,6 +18,7 @@ import (
 )
 
 func TestDAPServer_InitializeAndDisconnect(t *testing.T) {
+	t.Parallel()
 	e := debugger.New()
 	e.Enable()
 	srv := New(e)
@@ -81,6 +82,7 @@ func TestDAPServer_InitializeAndDisconnect(t *testing.T) {
 }
 
 func TestDAPServer_SetBreakpoints(t *testing.T) {
+	t.Parallel()
 	e := debugger.New()
 	e.Enable()
 	srv := New(e)
@@ -150,6 +152,7 @@ func TestDAPServer_SetBreakpoints(t *testing.T) {
 }
 
 func TestDAPServer_Threads(t *testing.T) {
+	t.Parallel()
 	e := debugger.New()
 	e.Enable()
 	srv := New(e)
@@ -203,6 +206,7 @@ func TestDAPServer_Threads(t *testing.T) {
 // initialize → set breakpoint → launch program → read stopped event →
 // stackTrace → scopes → variables → evaluate → continue → disconnect.
 func TestDAPServer_FullSession(t *testing.T) {
+	t.Parallel()
 	e := debugger.New(debugger.WithStopOnEntry(true))
 	e.Enable()
 	srv := New(e)
@@ -569,40 +573,107 @@ func (s *dapTestSession) disconnect() {
 }
 
 func TestDAPServer_StepNext(t *testing.T) {
-	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	// Set breakpoint inside outer's body (line 3: call to inner).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 3}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
 	s.configDone()
 
 	env := newDAPTestEnv(t, s.engine)
 	resultCh := make(chan *lisp.LVal, 1)
+	// outer calls inner on line 3, then has another expression on line 4.
+	// Step-over from line 3 should NOT enter inner's body.
 	go func() {
-		res := env.LoadString("test", "(defun f (x) (+ x 1))\n(f 10)")
+		res := env.LoadString("test",
+			"(defun inner (x) (+ x 100))\n"+
+				"(defun outer (n)\n"+
+				"  (inner n)\n"+ // line 3
+				"  (+ n 1))\n"+ // line 4
+				"(outer 5)")
 		resultCh <- res
 	}()
 
-	// Wait for stop-on-entry.
+	// Wait for breakpoint inside outer (line 3).
 	require.Eventually(t, func() bool {
 		return s.engine.IsPaused()
 	}, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent
 
-	// Send Next (step over).
-	s.send(&dap.NextRequest{
+	// Get initial stack trace — should be inside outer.
+	s.send(&dap.StackTraceRequest{
 		Request: dap.Request{
 			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
-			Command:         "next",
+			Command:         "stackTrace",
 		},
-		Arguments: dap.NextArguments{ThreadId: elpsThreadID},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
 	})
 	msg := s.read()
-	nextResp, ok := msg.(*dap.NextResponse)
-	require.True(t, ok, "expected NextResponse, got %T", msg)
-	assert.True(t, nextResp.Success)
+	stResp, ok := msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	initialFrameCount := len(stResp.Body.StackFrames)
+	require.Greater(t, initialFrameCount, 0)
+	assert.Equal(t, 3, stResp.Body.StackFrames[0].Line, "should be on line 3")
 
-	// Should pause again after step over.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	// Clear breakpoints to avoid re-fire.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+
+	// Step-over (inner n) repeatedly until we reach line 4.
+	for range 20 {
+		s.send(&dap.NextRequest{
+			Request: dap.Request{
+				ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+				Command:         "next",
+			},
+			Arguments: dap.NextArguments{ThreadId: elpsThreadID},
+		})
+		s.read() // NextResponse
+
+		require.Eventually(t, func() bool {
+			return s.engine.IsPaused()
+		}, 2*time.Second, 10*time.Millisecond)
+		s.read() // StoppedEvent
+
+		// Check stack trace — frame count should NOT exceed initial (did not enter inner).
+		s.send(&dap.StackTraceRequest{
+			Request: dap.Request{
+				ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+				Command:         "stackTrace",
+			},
+			Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+		})
+		msg = s.read()
+		stResp, ok = msg.(*dap.StackTraceResponse)
+		require.True(t, ok)
+		assert.LessOrEqual(t, len(stResp.Body.StackFrames), initialFrameCount,
+			"step-over should not increase stack depth (entered nested function)")
+
+		if stResp.Body.StackFrames[0].Line == 4 {
+			break
+		}
+	}
+	assert.Equal(t, 4, stResp.Body.StackFrames[0].Line,
+		"step-over should eventually reach line 4")
 
 	// Continue to finish.
 	s.continueExec()
@@ -617,6 +688,7 @@ func TestDAPServer_StepNext(t *testing.T) {
 }
 
 func TestDAPServer_StepIn(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
 	s.configDone()
 
@@ -633,7 +705,7 @@ func TestDAPServer_StepIn(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent
 
-	// Send StepIn.
+	// Send StepIn — should advance to next expression.
 	s.send(&dap.StepInRequest{
 		Request: dap.Request{
 			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
@@ -652,6 +724,11 @@ func TestDAPServer_StepIn(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent
 
+	// Verify we actually paused (PausedState returns non-nil).
+	_, pausedExpr := s.engine.PausedState()
+	require.NotNil(t, pausedExpr, "step-in should have paused on an expression")
+	require.NotNil(t, pausedExpr.Source, "paused expression should have source location")
+
 	// Continue to finish.
 	s.continueExec()
 
@@ -665,6 +742,7 @@ func TestDAPServer_StepIn(t *testing.T) {
 }
 
 func TestDAPServer_StepOut(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 
 	// Set breakpoint inside function body (line 2).
@@ -683,16 +761,34 @@ func TestDAPServer_StepOut(t *testing.T) {
 
 	env := newDAPTestEnv(t, s.engine)
 	resultCh := make(chan *lisp.LVal, 1)
+	// Multi-line: breakpoint fires on line 2 inside f, step-out should
+	// return to caller on line 3.
 	go func() {
-		res := env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+		res := env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)\n(+ 1 1)")
 		resultCh <- res
 	}()
 
-	// Wait for breakpoint inside function.
+	// Wait for breakpoint inside function (line 2).
 	require.Eventually(t, func() bool {
 		return s.engine.IsPaused()
 	}, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent
+
+	// Get stack trace to record depth inside function.
+	s.send(&dap.StackTraceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stackTrace",
+		},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+	})
+	msg := s.read()
+	stResp, ok := msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	insideFrameCount := len(stResp.Body.StackFrames)
+	require.Greater(t, insideFrameCount, 0, "should have at least 1 frame inside function")
+	assert.Equal(t, 2, stResp.Body.StackFrames[0].Line,
+		"should be paused on line 2 inside function body")
 
 	// Clear breakpoints before stepping out to avoid re-fire.
 	s.send(&dap.SetBreakpointsRequest{
@@ -707,7 +803,7 @@ func TestDAPServer_StepOut(t *testing.T) {
 	})
 	s.read() // SetBreakpointsResponse
 
-	// Send StepOut.
+	// Send StepOut — should return to caller scope.
 	s.send(&dap.StepOutRequest{
 		Request: dap.Request{
 			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
@@ -715,12 +811,34 @@ func TestDAPServer_StepOut(t *testing.T) {
 		},
 		Arguments: dap.StepOutArguments{ThreadId: elpsThreadID},
 	})
-	msg := s.read()
+	msg = s.read()
 	stepResp, ok := msg.(*dap.StepOutResponse)
 	require.True(t, ok, "expected StepOutResponse, got %T", msg)
 	assert.True(t, stepResp.Success)
 
-	// Program finishes after stepping out (no more top-level expressions).
+	// Should pause after returning from f.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause after step-out")
+	s.read() // StoppedEvent
+
+	// Verify stack depth decreased after step-out.
+	s.send(&dap.StackTraceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stackTrace",
+		},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+	})
+	msg = s.read()
+	stResp, ok = msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	assert.Less(t, len(stResp.Body.StackFrames), insideFrameCount,
+		"step-out should decrease stack depth")
+
+	// Continue to finish.
+	s.continueExec()
+
 	select {
 	case <-resultCh:
 	case <-time.After(5 * time.Second):
@@ -731,6 +849,7 @@ func TestDAPServer_StepOut(t *testing.T) {
 }
 
 func TestDAPServer_SetExceptionBreakpoints(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 
 	s.send(&dap.SetExceptionBreakpointsRequest{
@@ -754,6 +873,7 @@ func TestDAPServer_SetExceptionBreakpoints(t *testing.T) {
 }
 
 func TestDAPServer_EvaluateNotPaused(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t)
 	s.configDone()
 
@@ -778,6 +898,7 @@ func TestDAPServer_EvaluateNotPaused(t *testing.T) {
 }
 
 func TestDAPServer_StackTracePaging(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
 
 	// Set breakpoint inside function body (line 2).
@@ -858,6 +979,7 @@ func TestDAPServer_StackTracePaging(t *testing.T) {
 }
 
 func TestDAPServer_PackageScopeVariables(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
 
 	// Set breakpoint inside function body (line 2).
@@ -944,9 +1066,204 @@ func TestDAPServer_PackageScopeVariables(t *testing.T) {
 	require.True(t, ok, "expected VariablesResponse, got %T", msg)
 	assert.True(t, varsResp.Success)
 	// Package scope should contain user-defined symbols (at least 'add').
-	assert.Greater(t, len(varsResp.Body.Variables), 0, "expected package variables")
+	require.Greater(t, len(varsResp.Body.Variables), 0, "expected package variables")
+	// Verify the 'add' function is among the package variables.
+	var foundAdd bool
+	for _, v := range varsResp.Body.Variables {
+		if v.Name == "add" {
+			foundAdd = true
+			break
+		}
+	}
+	assert.True(t, foundAdd, "expected 'add' function in package scope variables, got: %v",
+		func() []string {
+			names := make([]string, len(varsResp.Body.Variables))
+			for i, v := range varsResp.Body.Variables {
+				names[i] = v.Name
+			}
+			return names
+		}())
 
 	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	s.disconnect()
+}
+
+// TestDAPServer_LateConnectStoppedEvent verifies that when the eval goroutine
+// pauses (stopOnEntry) before the DAP client connects, the client receives
+// the stopped event when it sends configurationDone.
+func TestDAPServer_LateConnectStoppedEvent(t *testing.T) {
+	t.Parallel()
+	e := debugger.New(debugger.WithStopOnEntry(true))
+	e.Enable()
+
+	env := newDAPTestEnv(t, e)
+
+	// Start evaluation BEFORE any DAP client connects. The engine will
+	// pause on the first expression (stopOnEntry), but no event callback
+	// is registered yet.
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(+ 1 2)")
+		resultCh <- res
+	}()
+
+	// Wait for the engine to actually pause.
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not stop on entry")
+
+	// NOW connect a DAP client (late connect).
+	srv := New(e)
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close() }) //nolint:errcheck,gosec
+
+	go func() {
+		_ = srv.ServeConn(server)
+	}()
+
+	reader := bufio.NewReader(client)
+	seq := 0
+	nextSeq := func() int {
+		seq++
+		return seq
+	}
+
+	// Initialize.
+	sendDAPRequest(t, client, &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: nextSeq(), Type: "request"},
+			Command:         "initialize",
+		},
+	})
+	readDAPMessage(t, reader) // InitializeResponse
+	readDAPMessage(t, reader) // InitializedEvent
+
+	// ConfigurationDone — this should detect the pending pause and send
+	// a stopped event.
+	sendDAPRequest(t, client, &dap.ConfigurationDoneRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: nextSeq(), Type: "request"},
+			Command:         "configurationDone",
+		},
+	})
+	readDAPMessage(t, reader) // ConfigurationDoneResponse
+
+	// Read the stopped event that configurationDone should have sent.
+	msg := readDAPMessage(t, reader)
+	stoppedEvt, ok := msg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent after late connect, got %T", msg)
+	assert.Equal(t, "entry", stoppedEvt.Body.Reason)
+	assert.Equal(t, elpsThreadID, stoppedEvt.Body.ThreadId)
+
+	// Continue to let the program finish.
+	sendDAPRequest(t, client, &dap.ContinueRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: nextSeq(), Type: "request"},
+			Command:         "continue",
+		},
+		Arguments: dap.ContinueArguments{ThreadId: elpsThreadID},
+	})
+	readDAPMessage(t, reader) // ContinueResponse
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type)
+		assert.Equal(t, 3, res.Int)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for eval result")
+	}
+
+	// Disconnect.
+	sendDAPRequest(t, client, &dap.DisconnectRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: nextSeq(), Type: "request"},
+			Command:         "disconnect",
+		},
+	})
+	readDAPMessage(t, reader) // DisconnectResponse
+	readDAPMessage(t, reader) // TerminatedEvent
+}
+
+// TestDAPServer_ReadyChSignaledOnConfigDone verifies that the engine's
+// ReadyCh is closed when configurationDone is received.
+func TestDAPServer_ReadyChSignaledOnConfigDone(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	// ReadyCh should not be closed yet.
+	select {
+	case <-s.engine.ReadyCh():
+		t.Fatal("ReadyCh should not be closed before configurationDone")
+	default:
+	}
+
+	s.configDone()
+
+	// ReadyCh should now be closed.
+	select {
+	case <-s.engine.ReadyCh():
+		// expected
+	case <-time.After(time.Second):
+		t.Fatal("ReadyCh should be closed after configurationDone")
+	}
+
+	s.disconnect()
+}
+
+// TestDAPServer_PathNormalization verifies that breakpoints set with absolute
+// paths from the IDE match ELPS runtime locations that use basenames.
+func TestDAPServer_PathNormalization(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Set breakpoints using absolute paths (like VS Code sends).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "/Users/dev/project/phylum/test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+
+	s.configDone()
+
+	// The ELPS runtime uses "test" as the source name (basename-like).
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+		resultCh <- res
+	}()
+
+	// First stop: stop-on-entry.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	// Second stop: breakpoint on line 2 should fire even though the path
+	// was set as /Users/dev/project/phylum/test but runtime uses "test".
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "breakpoint should fire with normalized path")
+	msg := s.read()
+	stoppedEvt, ok := msg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T", msg)
+	assert.Equal(t, "breakpoint", stoppedEvt.Body.Reason)
+
 	s.continueExec()
 
 	select {
@@ -963,6 +1280,7 @@ func TestDAPServer_PackageScopeVariables(t *testing.T) {
 // does: set up environment with FSLibrary, load file, pause at breakpoint
 // inside function, inspect variables, evaluate expression, and continue.
 func TestDAPServer_FileDebugSession(t *testing.T) {
+	t.Parallel()
 	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
 
 	// Set breakpoint on line 3 (inside add function body: (+ a b)).
@@ -1106,4 +1424,921 @@ func TestDAPServer_FileDebugSession(t *testing.T) {
 	}
 
 	s.disconnect()
+}
+
+// dialWithRetry retries net.Dial until it succeeds or the deadline passes.
+// This replaces time.Sleep for waiting on a server to start listening.
+func dialWithRetry(t *testing.T, addr string, timeout time.Duration) net.Conn {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			return conn
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("failed to connect to %s after %v: %v", addr, timeout, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestServeTCPLoop_MultipleConnections verifies Bug 3: the old ServeTCP
+// accepted exactly one connection. After the first client disconnected,
+// the server exited and no further debugging was possible.
+//
+// ServeTCPLoop fixes this by looping on Accept. This test connects twice
+// to verify the server survives client reconnections.
+func TestServeTCPLoop_MultipleConnections(t *testing.T) {
+	t.Parallel()
+	e := debugger.New()
+	e.Enable()
+	srv := New(e)
+
+	// Use a random available port.
+	ln, err := net.Listen("tcp", "localhost:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	ln.Close() //nolint:errcheck,gosec // best-effort cleanup for port reservation
+
+	go func() {
+		if err := srv.ServeTCPLoop(addr); err != nil {
+			// Accept error after test cleanup is expected.
+			t.Logf("ServeTCPLoop exited: %v", err)
+		}
+	}()
+
+	// --- First connection (retry until server is listening) ---
+	conn1 := dialWithRetry(t, addr, 2*time.Second)
+	reader1 := bufio.NewReader(conn1)
+
+	sendDAPRequest(t, conn1, &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+			Command:         "initialize",
+		},
+	})
+	msg := readDAPMessage(t, reader1)
+	_, ok := msg.(*dap.InitializeResponse)
+	require.True(t, ok, "expected InitializeResponse on first connection")
+	readDAPMessage(t, reader1) // InitializedEvent
+
+	// Disconnect first client.
+	sendDAPRequest(t, conn1, &dap.DisconnectRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 2, Type: "request"},
+			Command:         "disconnect",
+		},
+	})
+	readDAPMessage(t, reader1) // DisconnectResponse
+	readDAPMessage(t, reader1) // TerminatedEvent
+	conn1.Close() //nolint:errcheck,gosec // best-effort cleanup
+
+	// --- Second connection (retry until server re-enters Accept) ---
+	conn2 := dialWithRetry(t, addr, 2*time.Second)
+	reader2 := bufio.NewReader(conn2)
+
+	sendDAPRequest(t, conn2, &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+			Command:         "initialize",
+		},
+	})
+	msg = readDAPMessage(t, reader2)
+	initResp, ok := msg.(*dap.InitializeResponse)
+	require.True(t, ok, "expected InitializeResponse on second connection, got %T", msg)
+	assert.True(t, initResp.Success)
+
+	conn2.Close() //nolint:errcheck,gosec // best-effort cleanup
+}
+
+func TestDAPServer_AttachRequest(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	s.send(&dap.AttachRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "attach",
+		},
+	})
+	msg := s.read()
+	resp, ok := msg.(*dap.AttachResponse)
+	require.True(t, ok, "expected AttachResponse, got %T", msg)
+	assert.True(t, resp.Success)
+
+	s.disconnect()
+}
+
+func TestDAPServer_LaunchRequest(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	s.send(&dap.LaunchRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "launch",
+		},
+	})
+	msg := s.read()
+	resp, ok := msg.(*dap.LaunchResponse)
+	require.True(t, ok, "expected LaunchResponse, got %T", msg)
+	assert.True(t, resp.Success)
+
+	s.disconnect()
+}
+
+func TestDAPServer_PauseRequest(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+
+	// Use a long-running recursive program so we can pause mid-execution.
+	// Large countdown ensures the program is still running when the pause
+	// request takes effect — even on slow CI machines.
+	program := "(defun countdown (n)\n" +
+		"  (if (<= n 0)\n" +
+		"    0\n" +
+		"    (countdown (- n 1))))\n" +
+		"(countdown 100000)"
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Wait for eval goroutine to be well into execution before pausing.
+	require.Eventually(t, func() bool {
+		return s.engine.EvalCount() > 10
+	}, 2*time.Second, time.Millisecond, "eval goroutine did not start")
+
+	// Send Pause request.
+	s.send(&dap.PauseRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "pause",
+		},
+		Arguments: dap.PauseArguments{ThreadId: elpsThreadID},
+	})
+	msg := s.read()
+	pauseResp, ok := msg.(*dap.PauseResponse)
+	require.True(t, ok, "expected PauseResponse, got %T", msg)
+	assert.True(t, pauseResp.Success)
+
+	// Wait for the engine to actually pause.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause after pause request")
+
+	// Read the stopped event.
+	stoppedMsg := s.read()
+	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	assert.Equal(t, "pause", stoppedEvt.Body.Reason)
+
+	// Continue to let the program finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		if s.engine.IsPaused() {
+			s.engine.Resume()
+		}
+		t.Fatal("timeout waiting for program to finish")
+	}
+
+	s.disconnect()
+}
+
+func TestDAPServer_SourceRequest(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	s.send(&dap.SourceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "source",
+		},
+		Arguments: dap.SourceArguments{
+			SourceReference: 1,
+		},
+	})
+	msg := s.read()
+	// go-dap deserializes responses with Success=false as ErrorResponse.
+	errResp, ok := msg.(*dap.ErrorResponse)
+	require.True(t, ok, "expected ErrorResponse, got %T", msg)
+	assert.False(t, errResp.Success)
+	assert.Equal(t, "source not available", errResp.Message)
+
+	s.disconnect()
+}
+
+func TestDAPServer_StackTraceUsesPausedExpr(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Set breakpoint on line 2 (inside function body: (+ a b)).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	program := "(defun add (a b)\n  (+ a b))\n(add 1 2)"
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// First stop: stop-on-entry.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	// Second stop: breakpoint on line 2 inside add.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	s.read() // StoppedEvent (breakpoint)
+
+	// Request stack trace — top frame should show line 2 (paused expression),
+	// not the call site line 3.
+	s.send(&dap.StackTraceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stackTrace",
+		},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+	})
+	msg := s.read()
+	stResp, ok := msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+
+	topFrame := stResp.Body.StackFrames[0]
+	assert.Equal(t, 2, topFrame.Line,
+		"top frame line should be 2 (paused expression), not the call site")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	s.disconnect()
+}
+
+func TestDAPServer_SetFunctionBreakpoints(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+
+	// Set a function breakpoint on "add".
+	s.send(&dap.SetFunctionBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setFunctionBreakpoints",
+		},
+		Arguments: dap.SetFunctionBreakpointsArguments{
+			Breakpoints: []dap.FunctionBreakpoint{{Name: "add"}},
+		},
+	})
+	msg := s.read()
+	fbResp, ok := msg.(*dap.SetFunctionBreakpointsResponse)
+	require.True(t, ok, "expected SetFunctionBreakpointsResponse, got %T", msg)
+	require.Len(t, fbResp.Body.Breakpoints, 1)
+	assert.True(t, fbResp.Body.Breakpoints[0].Verified)
+
+	// Run a program with "add" function.
+	program := `(defun add (a b) (+ a b)) (add 10 20)`
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Should pause when "add" is entered.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause on function breakpoint")
+
+	// Read stopped event.
+	stoppedMsg := s.read()
+	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	assert.Equal(t, "function breakpoint", stoppedEvt.Body.Reason)
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type)
+		assert.Equal(t, 30, res.Int)
+	case <-time.After(5 * time.Second):
+		if s.engine.IsPaused() {
+			s.engine.Resume()
+		}
+		t.Fatal("timeout")
+	}
+
+	s.disconnect()
+}
+
+func TestDAPServer_InitializeReportsFunctionBreakpointCapability(t *testing.T) {
+	t.Parallel()
+	e := debugger.New()
+	e.Enable()
+	srv := New(e)
+
+	client, server := net.Pipe()
+	defer client.Close() //nolint:errcheck
+
+	go func() {
+		_ = srv.ServeConn(server)
+	}()
+
+	reader := bufio.NewReader(client)
+
+	sendDAPRequest(t, client, &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+			Command:         "initialize",
+		},
+		Arguments: dap.InitializeRequestArguments{
+			AdapterID: "elps",
+		},
+	})
+
+	msg, err := dap.ReadProtocolMessage(reader)
+	require.NoError(t, err)
+	initResp, ok := msg.(*dap.InitializeResponse)
+	require.True(t, ok)
+	assert.True(t, initResp.Body.SupportsFunctionBreakpoints,
+		"capabilities should report function breakpoints support")
+
+	// Clean up.
+	readDAPMessage(t, reader) // InitializedEvent
+	sendDAPRequest(t, client, &dap.DisconnectRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 2, Type: "request"},
+			Command:         "disconnect",
+		},
+	})
+	readDAPMessage(t, reader) // DisconnectResponse
+	readDAPMessage(t, reader) // TerminatedEvent
+}
+
+func TestDAPServer_SourceRootResolvesAbsolutePaths(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t,
+		debugger.WithSourceRoot("/my/project"),
+	)
+
+	// Set breakpoint on line 2 (inside function body).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	program := "(defun add (a b)\n  (+ a b))\n(add 1 2)"
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Wait for breakpoint hit inside function.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Request stack trace.
+	s.send(&dap.StackTraceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stackTrace",
+		},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+	})
+	msg := s.read()
+	stResp, ok := msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+
+	// Stack frame Source.Path should be resolved to an absolute path
+	// using the sourceRoot prefix.
+	topFrame := stResp.Body.StackFrames[0]
+	require.NotNil(t, topFrame.Source)
+	assert.Equal(t, "/my/project/test", topFrame.Source.Path,
+		"expected source root + relative file path")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	s.disconnect()
+}
+
+func TestDAPServer_TerminatedEventOnProgramFinish(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+
+	// Run a simple program that finishes quickly, then call NotifyExit
+	// from the eval goroutine (like cmd/debug.go does). NotifyExit fires
+	// the event callback which writes to the pipe, so it must run on a
+	// separate goroutine from the reader.
+	go func() {
+		res := env.LoadString("test", "(+ 1 2)")
+		exitCode := 0
+		if res.Type == lisp.LError {
+			exitCode = 1
+		}
+		s.engine.NotifyExit(exitCode)
+	}()
+
+	// Should receive ExitedEvent.
+	msg := s.read()
+	exitedEvt, ok := msg.(*dap.ExitedEvent)
+	require.True(t, ok, "expected ExitedEvent, got %T", msg)
+	assert.Equal(t, 0, exitedEvt.Body.ExitCode)
+
+	// Should receive TerminatedEvent.
+	msg = s.read()
+	_, ok = msg.(*dap.TerminatedEvent)
+	assert.True(t, ok, "expected TerminatedEvent, got %T", msg)
+}
+
+func TestDAPServer_SetBreakpointsWithHitCondition(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	// Set breakpoint with a hit condition.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source: dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{
+				{Line: 4, HitCondition: "==2"},
+			},
+		},
+	})
+	msg := s.read()
+	bpResp, ok := msg.(*dap.SetBreakpointsResponse)
+	require.True(t, ok, "expected SetBreakpointsResponse, got %T", msg)
+	assert.True(t, bpResp.Success)
+	require.Len(t, bpResp.Body.Breakpoints, 1)
+	assert.Equal(t, 4, bpResp.Body.Breakpoints[0].Line)
+
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+
+	// Recursive countdown from 3. Breakpoint on line 4 (recursive call).
+	// The recursive call executes 3 times (n=3,2,1). With ==2, it should
+	// fire on the 2nd hit.
+	program := "(defun countdown (n)\n" +
+		"  (if (<= n 0)\n" +
+		"    0\n" +
+		"    (countdown (- n 1))))\n" +
+		"(countdown 3)"
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Should pause on 2nd hit.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause on hit condition")
+	stoppedMsg := s.read()
+	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	assert.Equal(t, "breakpoint", stoppedEvt.Body.Reason)
+
+	// Continue to finish. The program should complete without further stops
+	// because ==2 fires only once (on the 2nd hit).
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+		// Program completed without additional stops — correct for ==2.
+	case <-time.After(5 * time.Second):
+		if s.engine.IsPaused() {
+			s.engine.Resume()
+		}
+		t.Fatal("timeout — hit condition fired more than once")
+	}
+
+	s.disconnect()
+}
+
+func TestDAPServer_LogPoint(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	// Set a log point breakpoint (LogMessage set, no condition).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source: dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{
+				{Line: 2, LogMessage: "result is {(+ a b)}"},
+			},
+		},
+	})
+	msg := s.read()
+	bpResp, ok := msg.(*dap.SetBreakpointsResponse)
+	require.True(t, ok, "expected SetBreakpointsResponse, got %T", msg)
+	assert.True(t, bpResp.Success)
+
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+
+	program := "(defun add (a b)\n  (+ a b))\n(add 3 4)"
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// The log point should emit an OutputEvent but NOT pause.
+	// Read the output event.
+	outputMsg := s.read()
+	outputEvt, ok := outputMsg.(*dap.OutputEvent)
+	require.True(t, ok, "expected OutputEvent, got %T", outputMsg)
+	assert.Equal(t, "console", outputEvt.Body.Category)
+	assert.Contains(t, outputEvt.Body.Output, "result is 7")
+
+	// Program should complete without pausing.
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type)
+		assert.Equal(t, 7, res.Int)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout — log point should not have paused")
+	}
+
+	s.disconnect()
+}
+
+func TestDAPServer_EvaluateWatch(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Set breakpoint inside function body (line 2).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(defun add (a b)\n  (+ a b))\n(add 10 20)")
+		resultCh <- res
+	}()
+
+	// Stop on entry, then continue to breakpoint.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	s.read() // StoppedEvent (breakpoint)
+
+	// Get stack trace to cache frame environments.
+	s.send(&dap.StackTraceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stackTrace",
+		},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+	})
+	msg := s.read()
+	stResp, ok := msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrameID := stResp.Body.StackFrames[0].Id
+
+	// Evaluate with "watch" context — VS Code sends this for watch expressions.
+	s.send(&dap.EvaluateRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "evaluate",
+		},
+		Arguments: dap.EvaluateArguments{
+			Expression: "a",
+			FrameId:    topFrameID,
+			Context:    "watch",
+		},
+	})
+	msg = s.read()
+	evalResp, ok := msg.(*dap.EvaluateResponse)
+	require.True(t, ok, "expected EvaluateResponse, got %T", msg)
+	assert.True(t, evalResp.Success)
+	assert.Equal(t, "10", evalResp.Body.Result)
+
+	// Evaluate a computed expression.
+	s.send(&dap.EvaluateRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "evaluate",
+		},
+		Arguments: dap.EvaluateArguments{
+			Expression: "(+ a b)",
+			FrameId:    topFrameID,
+			Context:    "watch",
+		},
+	})
+	msg = s.read()
+	evalResp, ok = msg.(*dap.EvaluateResponse)
+	require.True(t, ok, "expected EvaluateResponse, got %T", msg)
+	assert.True(t, evalResp.Success)
+	assert.Equal(t, "30", evalResp.Body.Result)
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	s.disconnect()
+}
+
+// TestDAPServer_EvaluateWhilePausedInRecursion is a regression test for the
+// critical deadlock where EvalInContext called env.Eval() without the
+// evaluatingCondition guard, causing OnEval to re-enter and block on
+// WaitIfPaused. This test breaks a recursive factorial at line 5 (the
+// recursive branch), then evaluates (+ n 100) — which previously returned
+// an ErrorResponse with "<error: error>".
+func TestDAPServer_EvaluateWhilePausedInRecursion(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Set breakpoint on line 5 (* n (factorial (- n 1)))
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "factorial.lisp"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 5}},
+		},
+	})
+	msg := s.read()
+	bpResp, ok := msg.(*dap.SetBreakpointsResponse)
+	require.True(t, ok, "expected SetBreakpointsResponse, got %T", msg)
+	assert.True(t, bpResp.Success)
+
+	s.configDone()
+
+	// Set up ELPS environment with FSLibrary.
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	env.Runtime.Library = &lisp.FSLibrary{FS: os.DirFS("testdata")}
+	env.Runtime.Debugger = s.engine
+	rc := lisp.InitializeUserEnv(env)
+	require.True(t, rc.IsNil(), "InitializeUserEnv failed: %v", rc)
+	rc = lisplib.LoadLibrary(env)
+	require.True(t, rc.IsNil(), "LoadLibrary failed: %v", rc)
+	rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
+	require.True(t, rc.IsNil(), "InPackage failed: %v", rc)
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadFile("factorial.lisp")
+		resultCh <- res
+	}()
+
+	// Stop on entry.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not stop on entry")
+	s.read() // StoppedEvent
+
+	// Continue past stop-on-entry to hit breakpoint in factorial.
+	s.continueExec()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	stoppedMsg := s.read()
+	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	assert.Equal(t, "breakpoint", stoppedEvt.Body.Reason)
+
+	// Get stack trace to find the top frame.
+	s.send(&dap.StackTraceRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stackTrace",
+		},
+		Arguments: dap.StackTraceArguments{ThreadId: elpsThreadID},
+	})
+	msg = s.read()
+	stResp, ok := msg.(*dap.StackTraceResponse)
+	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrameID := stResp.Body.StackFrames[0].Id
+
+	// Verify local variables are visible (the core of the locals bug fix).
+	s.send(&dap.ScopesRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "scopes",
+		},
+		Arguments: dap.ScopesArguments{FrameId: topFrameID},
+	})
+	msg = s.read()
+	scopesResp, ok := msg.(*dap.ScopesResponse)
+	require.True(t, ok, "expected ScopesResponse, got %T", msg)
+	var localRef int
+	for _, scope := range scopesResp.Body.Scopes {
+		if scope.Name == "Local" {
+			localRef = scope.VariablesReference
+		}
+	}
+	require.Greater(t, localRef, 0, "expected local scope reference")
+
+	s.send(&dap.VariablesRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "variables",
+		},
+		Arguments: dap.VariablesArguments{VariablesReference: localRef},
+	})
+	msg = s.read()
+	varsResp, ok := msg.(*dap.VariablesResponse)
+	require.True(t, ok, "expected VariablesResponse, got %T", msg)
+	varMap := make(map[string]string)
+	for _, v := range varsResp.Body.Variables {
+		varMap[v.Name] = v.Value
+	}
+	assert.Contains(t, varMap, "n",
+		"local scope should contain 'n' even when paused in sub-expression")
+
+	// Evaluate expression while paused (the core of the deadlock bug fix).
+	s.send(&dap.EvaluateRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "evaluate",
+		},
+		Arguments: dap.EvaluateArguments{
+			Expression: "(+ n 100)",
+			FrameId:    topFrameID,
+			Context:    "watch",
+		},
+	})
+	msg = s.read()
+	evalResp, ok := msg.(*dap.EvaluateResponse)
+	require.True(t, ok, "expected EvaluateResponse (not ErrorResponse), got %T", msg)
+	assert.True(t, evalResp.Success, "evaluate should succeed")
+	// n is 5 on the first hit (factorial(5)), so (+ n 100) = 105.
+	assert.Equal(t, "105", evalResp.Body.Result,
+		"(+ n 100) should equal 105 when n=5")
+
+	// Continue to finish — drain any more breakpoint hits.
+	s.continueExec()
+	for waitForEnginePause(t, s.engine, 500*time.Millisecond) {
+		s.read() // StoppedEvent
+		s.continueExec()
+	}
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
+		assert.Equal(t, 120, res.Int)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for program result")
+	}
+
+	s.disconnect()
+}
+
+// waitForEnginePause waits for the engine to enter paused state, returning true
+// if it paused within the timeout, false otherwise.
+func waitForEnginePause(t *testing.T, e *debugger.Engine, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			return false
+		case <-ticker.C:
+			if e.IsPaused() {
+				return true
+			}
+		}
+	}
+}
+
+func TestDAPServer_InitializeReportsHitAndLogCapabilities(t *testing.T) {
+	t.Parallel()
+	e := debugger.New()
+	e.Enable()
+	srv := New(e)
+
+	client, server := net.Pipe()
+	defer client.Close() //nolint:errcheck
+
+	go func() {
+		_ = srv.ServeConn(server)
+	}()
+
+	reader := bufio.NewReader(client)
+
+	sendDAPRequest(t, client, &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+			Command:         "initialize",
+		},
+		Arguments: dap.InitializeRequestArguments{AdapterID: "elps"},
+	})
+
+	msg, err := dap.ReadProtocolMessage(reader)
+	require.NoError(t, err)
+	initResp, ok := msg.(*dap.InitializeResponse)
+	require.True(t, ok)
+	assert.True(t, initResp.Body.SupportsHitConditionalBreakpoints,
+		"capabilities should report hit conditional breakpoints support")
+	assert.True(t, initResp.Body.SupportsLogPoints,
+		"capabilities should report log points support")
+
+	// Clean up.
+	readDAPMessage(t, reader) // InitializedEvent
+	sendDAPRequest(t, client, &dap.DisconnectRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 2, Type: "request"},
+			Command:         "disconnect",
+		},
+	})
+	readDAPMessage(t, reader) // DisconnectResponse
+	readDAPMessage(t, reader) // TerminatedEvent
 }

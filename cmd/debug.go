@@ -73,6 +73,7 @@ Examples:
 		// Create the debugger engine.
 		dbg := debugger.New(
 			debugger.WithStopOnEntry(debugStopOnEntry),
+			debugger.WithSourceRoot(rootDir),
 		)
 		dbg.Enable()
 
@@ -106,10 +107,17 @@ Examples:
 			os.Exit(1)
 		}
 
-		// Start the eval goroutine.
+		// Start the eval goroutine. After evaluation finishes, notify
+		// the DAP server so it can send ExitedEvent + TerminatedEvent
+		// while ServeConn is still running.
 		evalDone := make(chan *lisp.LVal, 1)
 		go func() {
 			res := env.LoadFile(relFile)
+			exitCode := 0
+			if res.Type == lisp.LError {
+				exitCode = 1
+			}
+			dbg.NotifyExit(exitCode)
 			evalDone <- res
 		}()
 

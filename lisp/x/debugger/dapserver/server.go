@@ -15,6 +15,7 @@ package dapserver
 import (
 	"bufio"
 	"io"
+	"log"
 	"net"
 	"sync"
 
@@ -100,6 +101,45 @@ func (s *Server) ServeListener(ln net.Listener) error {
 		return err
 	}
 	return s.ServeConn(conn)
+}
+
+// ServeTCPLoop listens on the given address and accepts connections in a
+// loop. Each connection gets its own handler while sharing the same engine.
+// When a client disconnects, the server resets and accepts the next
+// connection. This is designed for long-lived embedded servers (e.g.,
+// substrate) where the DAP server must survive client reconnections.
+// It blocks until the listener encounters an unrecoverable error.
+func (s *Server) ServeTCPLoop(addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer ln.Close() //nolint:errcheck // best-effort cleanup
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return err
+		}
+		s.reset()
+		if err := s.ServeConn(conn); err != nil {
+			log.Printf("dap: connection error: %v", err)
+		}
+	}
+}
+
+// reset prepares the server for a new connection by resetting the done
+// channel so the message loop can run again.
+func (s *Server) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-s.done:
+		// Previous connection closed; create a fresh channel.
+		s.done = make(chan struct{})
+	default:
+		// Already open — nothing to do.
+	}
+	s.seq = 0
 }
 
 // ServeStdio serves DAP messages on the given reader and writer,

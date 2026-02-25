@@ -93,10 +93,14 @@ func (pkg *Package) get(k *LVal) *LVal {
 // Exports declares symbols exported by the package.  The symbols are not
 // required to be bound at the time Exports is called.
 func (pkg *Package) Exports(sym ...string) {
-	sort.Strings(sym)
+	// Copy sym before sorting to avoid mutating the caller's backing
+	// array (e.g., a package-level var passed via ...).
+	sorted := make([]string, len(sym))
+	copy(sorted, sym)
+	sort.Strings(sorted)
 	externs := pkg.Externals
 addloop:
-	for _, symnew := range sym {
+	for _, symnew := range sorted {
 		for _, s := range pkg.Externals {
 			if s == symnew {
 				continue addloop

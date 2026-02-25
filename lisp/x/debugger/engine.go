@@ -16,6 +16,7 @@ package debugger
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/luthersystems/elps/lisp"
 )
@@ -38,20 +39,23 @@ const (
 type StopReason string
 
 const (
-	StopBreakpoint StopReason = "breakpoint"
-	StopStep       StopReason = "step"
-	StopException  StopReason = "exception"
-	StopEntry      StopReason = "entry"
-	StopPause      StopReason = "pause"
+	StopBreakpoint         StopReason = "breakpoint"
+	StopStep               StopReason = "step"
+	StopException          StopReason = "exception"
+	StopEntry              StopReason = "entry"
+	StopPause              StopReason = "pause"
+	StopFunctionBreakpoint StopReason = "function breakpoint"
 )
 
 // Event is sent to the event callback when the debugger state changes.
 type Event struct {
-	Type   EventType
-	Reason StopReason
-	Env    *lisp.LEnv
-	Expr   *lisp.LVal
-	BP     *Breakpoint // non-nil for breakpoint stops
+	Type     EventType
+	Reason   StopReason
+	ExitCode int // set for EventExited
+	Output   string       // set for EventOutput (log points)
+	Env      *lisp.LEnv
+	Expr     *lisp.LVal
+	BP       *Breakpoint // non-nil for breakpoint stops
 }
 
 // EventCallback is called when the debugger state changes. It runs on
@@ -64,12 +68,17 @@ type Engine struct {
 	breakpoints *BreakpointStore
 	stepper     *Stepper
 	onEvent     EventCallback
+	sourceRoot  string // absolute path prefix for resolving relative Source.Path values
+	evalCount   atomic.Int64
 
 	mu                  sync.Mutex
 	enabled             bool
 	stopOnEntry         bool
-	evaluatingCondition bool   // re-entrancy guard for conditional breakpoints
-	lastContinuedKey    string // suppress breakpoint re-hit after continue on same line
+	pauseRequested      bool              // set by RequestPause(), cleared in WaitIfPaused
+	pauseReason         StopReason        // reason for pauseRequested (StopPause or StopFunctionBreakpoint)
+	evaluatingCondition bool              // re-entrancy guard for conditional breakpoints
+	lastContinuedKey    string            // suppress breakpoint re-hit after continue on same line
+	funBreakpoints      map[string]string // qualified name → user-provided name
 
 	// pauseCh is used by the eval goroutine to block in WaitIfPaused.
 	// The DAP server sends DebugAction values to resume execution.
@@ -78,6 +87,12 @@ type Engine struct {
 	// pausedEnv/pausedExpr hold the state when paused, protected by mu.
 	pausedEnv  *lisp.LEnv
 	pausedExpr *lisp.LVal
+
+	// readyCh is closed when SignalReady is called, indicating that the
+	// external consumer (e.g., DAP client) has finished configuration.
+	// Embedders can wait on ReadyCh() before starting evaluation.
+	readyCh   chan struct{}
+	readyOnce sync.Once
 }
 
 // Verify Engine implements lisp.Debugger at compile time.
@@ -100,12 +115,29 @@ func WithStopOnEntry(stop bool) Option {
 	}
 }
 
+// WithSourceRoot sets an absolute directory path used to resolve relative
+// Source.Path values into absolute paths. This allows DAP clients (VS Code)
+// to open source files from stack frames. Embedders should pass the root
+// directory of the ELPS source files (e.g., the phylum directory).
+func WithSourceRoot(dir string) Option {
+	return func(e *Engine) {
+		e.sourceRoot = dir
+	}
+}
+
+// SourceRoot returns the configured source root directory, or empty string
+// if not set.
+func (e *Engine) SourceRoot() string {
+	return e.sourceRoot
+}
+
 // New creates a new debugger engine.
 func New(opts ...Option) *Engine {
 	e := &Engine{
 		breakpoints: NewBreakpointStore(),
 		stepper:     NewStepper(),
 		pauseCh:     make(chan lisp.DebugAction, 1),
+		readyCh:     make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -164,9 +196,33 @@ func (e *Engine) PausedState() (*lisp.LEnv, *lisp.LVal) {
 	return e.pausedEnv, e.pausedExpr
 }
 
+// SignalReady signals that the external consumer has finished its
+// configuration (e.g., DAP configurationDone). Embedders waiting on
+// ReadyCh() will be unblocked. Safe to call multiple times.
+func (e *Engine) SignalReady() {
+	e.readyOnce.Do(func() {
+		close(e.readyCh)
+	})
+}
+
+// ReadyCh returns a channel that is closed when SignalReady is called.
+// Embedders can select on this to wait for the DAP client to finish
+// setting breakpoints before starting evaluation.
+func (e *Engine) ReadyCh() <-chan struct{} {
+	return e.readyCh
+}
+
+// EvalCount returns the number of times OnEval has been called. This is
+// useful for tests that need to wait for evaluation to start.
+func (e *Engine) EvalCount() int64 {
+	return e.evalCount.Load()
+}
+
 // OnEval implements lisp.Debugger. Called before each expression with
 // a real source location.
 func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
+	e.evalCount.Add(1)
+
 	e.mu.Lock()
 	if e.evaluatingCondition {
 		e.mu.Unlock()
@@ -185,6 +241,12 @@ func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
 	// Check stop-on-entry (first expression only).
 	if e.stopOnEntry {
 		e.stopOnEntry = false
+		e.mu.Unlock()
+		return true
+	}
+
+	// Check pause request (from DAP pause command).
+	if e.pauseRequested {
 		e.mu.Unlock()
 		return true
 	}
@@ -223,6 +285,41 @@ func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
 			return false
 		}
 	}
+
+	// Check hit count condition. The hit count is incremented under the
+	// breakpoint store lock to avoid races.
+	e.breakpoints.mu.Lock()
+	hitOK := bp.IncrementHitCount()
+	e.breakpoints.mu.Unlock()
+	if !hitOK {
+		return false
+	}
+
+	// Handle log points: emit output instead of pausing.
+	if bp.LogMessage != "" {
+		e.mu.Lock()
+		e.evaluatingCondition = true
+		e.mu.Unlock()
+		output := InterpolateLogMessage(env, bp.LogMessage)
+		e.mu.Lock()
+		e.evaluatingCondition = false
+		// Suppress re-hits on the same line (sub-expressions on the same
+		// line would otherwise fire the log point repeatedly).
+		e.lastContinuedKey = bp.key()
+		cb := e.onEvent
+		e.mu.Unlock()
+		if cb != nil {
+			cb(Event{
+				Type:   EventOutput,
+				Output: output,
+				Env:    env,
+				Expr:   expr,
+				BP:     bp,
+			})
+		}
+		return false // log points do not pause
+	}
+
 	return true
 }
 
@@ -243,6 +340,11 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 	if e.stopOnEntry {
 		reason = StopEntry
 		e.stopOnEntry = false
+	}
+	if e.pauseRequested {
+		reason = e.pauseReason
+		e.pauseRequested = false
+		e.pauseReason = ""
 	}
 	e.pausedEnv = env
 	e.pausedExpr = expr
@@ -300,9 +402,55 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 	return action
 }
 
-// OnFunEntry implements lisp.Debugger.
+// SetFunctionBreakpoints replaces the set of function breakpoints.
+// Each name should be a function name as the user would type it (e.g., "add"
+// or "user:add"). Returns the names that were set.
+func (e *Engine) SetFunctionBreakpoints(names []string) []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.funBreakpoints = make(map[string]string, len(names))
+	result := make([]string, len(names))
+	for i, name := range names {
+		e.funBreakpoints[name] = name
+		result[i] = name
+	}
+	return result
+}
+
+// OnFunEntry implements lisp.Debugger. Checks function breakpoints.
 func (e *Engine) OnFunEntry(env *lisp.LEnv, fun *lisp.LVal, fenv *lisp.LEnv) {
-	// Currently used for stack tracking. Future: function breakpoints.
+	if fun.Type != lisp.LFun {
+		return
+	}
+	e.mu.Lock()
+	if len(e.funBreakpoints) == 0 {
+		e.mu.Unlock()
+		return
+	}
+
+	// Build qualified and unqualified names from the function value.
+	funData := fun.FunData()
+	localName := fun.Str
+	if localName == "" && funData != nil {
+		localName = funData.FID
+	}
+	qualifiedName := localName
+	if funData != nil && funData.Package != "" {
+		qualifiedName = funData.Package + ":" + localName
+	}
+
+	// Check if either form matches a function breakpoint.
+	_, matchQualified := e.funBreakpoints[qualifiedName]
+	_, matchLocal := e.funBreakpoints[localName]
+	if !matchQualified && !matchLocal {
+		e.mu.Unlock()
+		return
+	}
+
+	// Request a pause with function breakpoint reason.
+	e.pauseRequested = true
+	e.pauseReason = StopFunctionBreakpoint
+	e.mu.Unlock()
 }
 
 // OnFunReturn implements lisp.Debugger.
@@ -340,6 +488,44 @@ func (e *Engine) StepOver() {
 // StepOut sends a StepOut action to the paused eval goroutine.
 func (e *Engine) StepOut() {
 	e.pauseCh <- lisp.DebugStepOut
+}
+
+// RequestPause requests that the eval goroutine pause at the next expression.
+// This is used by the DAP pause command. The flag is cleared when the engine
+// actually pauses in WaitIfPaused.
+func (e *Engine) RequestPause() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.pauseRequested = true
+	e.pauseReason = StopPause
+}
+
+// NotifyExit fires an EventExited event to notify the DAP server that the
+// program has finished. This should be called from the eval goroutine after
+// evaluation completes, while the DAP server is still running.
+func (e *Engine) NotifyExit(exitCode int) {
+	e.mu.Lock()
+	cb := e.onEvent
+	e.mu.Unlock()
+	if cb != nil {
+		cb(Event{Type: EventExited, ExitCode: exitCode})
+	}
+}
+
+// EvalInContext evaluates an expression string in a paused environment,
+// setting the evaluatingCondition guard so that the OnEval hook does not
+// re-enter breakpoint logic (which would deadlock since EvalInContext
+// runs on the DAP server goroutine, not the eval goroutine).
+func (e *Engine) EvalInContext(env *lisp.LEnv, source string) *lisp.LVal {
+	e.mu.Lock()
+	e.evaluatingCondition = true
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		e.evaluatingCondition = false
+		e.mu.Unlock()
+	}()
+	return EvalInContext(env, source)
 }
 
 // Disconnect atomically disables the debugger and resumes execution if paused.

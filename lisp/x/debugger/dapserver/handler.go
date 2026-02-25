@@ -25,7 +25,7 @@ type handler struct {
 
 	mu          sync.Mutex
 	initialized bool
-	launched    bool
+	stoppedSent bool // true if a stopped event has been sent via the event callback
 
 	// frameEnvs caches the environments for each stack frame when paused.
 	// Indexed by frame ID (1-based, most recent first).
@@ -37,14 +37,30 @@ func newHandler(s *Server, e *debugger.Engine) *handler {
 		server: s,
 		engine: e,
 	}
-	// Wire the engine's event callback to forward stopped events to the DAP client.
+	// Wire the engine's event callback to forward events to the DAP client.
 	e.SetEventCallback(func(evt debugger.Event) {
-		if evt.Type == debugger.EventStopped {
+		switch evt.Type {
+		case debugger.EventStopped:
+			h.mu.Lock()
+			h.stoppedSent = true
+			h.mu.Unlock()
 			var bpIDs []int
 			if evt.BP != nil {
 				bpIDs = []int{evt.BP.ID}
 			}
 			h.sendStoppedEvent(evt.Reason, bpIDs)
+		case debugger.EventOutput:
+			h.sendOutputEvent(evt.Output)
+		case debugger.EventExited:
+			// Guard against server already closed (e.g., disconnect raced).
+			select {
+			case <-h.server.done:
+				return
+			default:
+			}
+			h.sendExitedEvent(evt.ExitCode)
+			h.sendTerminatedEvent()
+			h.server.close()
 		}
 	})
 	return h
@@ -63,6 +79,8 @@ func (h *handler) handle(msg dap.Message) {
 		h.onInitialize(req)
 	case *dap.SetBreakpointsRequest:
 		h.onSetBreakpoints(req)
+	case *dap.SetFunctionBreakpointsRequest:
+		h.onSetFunctionBreakpoints(req)
 	case *dap.SetExceptionBreakpointsRequest:
 		h.onSetExceptionBreakpoints(req)
 	case *dap.ConfigurationDoneRequest:
@@ -85,6 +103,14 @@ func (h *handler) handle(msg dap.Message) {
 		h.onStepOut(req)
 	case *dap.EvaluateRequest:
 		h.onEvaluate(req)
+	case *dap.AttachRequest:
+		h.onAttach(req)
+	case *dap.LaunchRequest:
+		h.onLaunch(req)
+	case *dap.PauseRequest:
+		h.onPause(req)
+	case *dap.SourceRequest:
+		h.onSource(req)
 	case *dap.DisconnectRequest:
 		h.onDisconnect(req)
 	default:
@@ -100,10 +126,13 @@ func (h *handler) onInitialize(req *dap.InitializeRequest) {
 	resp := &dap.InitializeResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	resp.Body = dap.Capabilities{
-		SupportsConfigurationDoneRequest:  true,
-		SupportsConditionalBreakpoints:    true,
-		SupportsEvaluateForHovers:         true,
-		SupportTerminateDebuggee:          true,
+		SupportsConfigurationDoneRequest:      true,
+		SupportsFunctionBreakpoints:           true,
+		SupportsConditionalBreakpoints:        true,
+		SupportsHitConditionalBreakpoints:     true,
+		SupportsLogPoints:                     true,
+		SupportsEvaluateForHovers:             true,
+		SupportTerminateDebuggee:              true,
 		ExceptionBreakpointFilters: []dap.ExceptionBreakpointsFilter{
 			{
 				Filter:  "all",
@@ -126,18 +155,43 @@ func (h *handler) onSetBreakpoints(req *dap.SetBreakpointsRequest) {
 		file = req.Arguments.Source.Name
 	}
 
-	lines := make([]int, len(req.Arguments.Breakpoints))
-	conditions := make([]string, len(req.Arguments.Breakpoints))
+	specs := make([]debugger.BreakpointSpec, len(req.Arguments.Breakpoints))
 	for i, bp := range req.Arguments.Breakpoints {
-		lines[i] = bp.Line
-		conditions[i] = bp.Condition
+		specs[i] = debugger.BreakpointSpec{
+			Line:         bp.Line,
+			Condition:    bp.Condition,
+			HitCondition: bp.HitCondition,
+			LogMessage:   bp.LogMessage,
+		}
 	}
 
-	bps := h.engine.Breakpoints().SetForFile(file, lines, conditions)
+	bps := h.engine.Breakpoints().SetForFileSpecs(file, specs)
 
 	resp := &dap.SetBreakpointsResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	resp.Body.Breakpoints = translateBreakpoints(bps)
+	h.send(resp)
+}
+
+func (h *handler) onSetFunctionBreakpoints(req *dap.SetFunctionBreakpointsRequest) {
+	names := make([]string, len(req.Arguments.Breakpoints))
+	for i, fb := range req.Arguments.Breakpoints {
+		names[i] = fb.Name
+	}
+
+	set := h.engine.SetFunctionBreakpoints(names)
+
+	resp := &dap.SetFunctionBreakpointsResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+	bps := make([]dap.Breakpoint, len(set))
+	for i, name := range set {
+		bps[i] = dap.Breakpoint{
+			Id:       i + 1,
+			Verified: true,
+			Source:   &dap.Source{Name: name},
+		}
+	}
+	resp.Body.Breakpoints = bps
 	h.send(resp)
 }
 
@@ -160,9 +214,20 @@ func (h *handler) onConfigurationDone(req *dap.ConfigurationDoneRequest) {
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	h.send(resp)
 
+	// Signal that the client has finished configuration (breakpoints set).
+	h.engine.SignalReady()
+
+	// If the eval goroutine already paused (e.g., stopOnEntry fired before
+	// the client connected), send the stopped event now — but only if the
+	// event callback hasn't already sent one. This handles the late-connect
+	// case where the engine paused before newHandler registered the callback.
 	h.mu.Lock()
-	h.launched = true
+	alreadySent := h.stoppedSent
 	h.mu.Unlock()
+	if !alreadySent && h.engine.IsPaused() {
+		reason := debugger.StopEntry
+		h.sendStoppedEvent(reason, nil)
+	}
 }
 
 func (h *handler) onThreads(req *dap.ThreadsRequest) {
@@ -175,7 +240,7 @@ func (h *handler) onThreads(req *dap.ThreadsRequest) {
 }
 
 func (h *handler) onStackTrace(req *dap.StackTraceRequest) {
-	env, _ := h.engine.PausedState()
+	env, pausedExpr := h.engine.PausedState()
 
 	resp := &dap.StackTraceResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
@@ -185,7 +250,7 @@ func (h *handler) onStackTrace(req *dap.StackTraceRequest) {
 		return
 	}
 
-	frames := translateStackFrames(env.Runtime.Stack)
+	frames := translateStackFrames(env.Runtime.Stack, pausedExpr, h.engine.SourceRoot())
 	resp.Body.TotalFrames = len(frames)
 
 	// Apply paging.
@@ -206,17 +271,17 @@ func (h *handler) onStackTrace(req *dap.StackTraceRequest) {
 }
 
 // cacheFrameEnvs walks up the env parent chain and maps frame IDs to envs.
-// This is a simplification: we map the paused env to frame 1 (top of stack).
-// For deeper frames, we walk up the parent chain, which approximates the
-// lexical scopes at each call depth.
+// Frame IDs must match translateStackFrames: the top stack frame (most
+// recent call) gets Id = len(Stack.Frames), and deeper frames count down
+// to 1. The paused env corresponds to the top frame.
 func (h *handler) cacheFrameEnvs(env *lisp.LEnv) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.frameEnvs = make(map[int]*lisp.LEnv)
 	nframes := len(env.Runtime.Stack.Frames)
 	current := env
-	for i := 0; i < nframes && current != nil; i++ {
-		h.frameEnvs[i+1] = current // 1-based frame IDs
+	for i := nframes; i >= 1 && current != nil; i-- {
+		h.frameEnvs[i] = current
 		current = current.Parent
 	}
 }
@@ -266,7 +331,7 @@ func (h *handler) onVariables(req *dap.VariablesRequest) {
 		frameID := ref - scopeLocalBase
 		env := h.getFrameEnv(frameID)
 		if env != nil {
-			bindings = debugger.InspectLocals(env)
+			bindings = debugger.InspectFunctionLocals(env)
 		}
 	}
 
@@ -331,7 +396,7 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 		}
 	}
 
-	result := debugger.EvalInContext(env, req.Arguments.Expression)
+	result := h.engine.EvalInContext(env, req.Arguments.Expression)
 	if result != nil && result.Type == lisp.LError {
 		resp.Success = false
 		resp.Message = debugger.FormatValue(result)
@@ -342,6 +407,33 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 	h.send(resp)
 }
 
+func (h *handler) onAttach(req *dap.AttachRequest) {
+	resp := &dap.AttachResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+	h.send(resp)
+}
+
+func (h *handler) onLaunch(req *dap.LaunchRequest) {
+	resp := &dap.LaunchResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+	h.send(resp)
+}
+
+func (h *handler) onPause(req *dap.PauseRequest) {
+	resp := &dap.PauseResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+	h.send(resp)
+	h.engine.RequestPause()
+}
+
+func (h *handler) onSource(req *dap.SourceRequest) {
+	resp := &dap.SourceResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+	resp.Success = false
+	resp.Message = "source not available"
+	h.send(resp)
+}
+
 func (h *handler) onDisconnect(req *dap.DisconnectRequest) {
 	resp := &dap.DisconnectResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
@@ -349,11 +441,34 @@ func (h *handler) onDisconnect(req *dap.DisconnectRequest) {
 
 	h.engine.Disconnect()
 
-	// Send terminated event.
+	h.sendTerminatedEvent()
+	h.server.close()
+}
+
+// sendExitedEvent sends a DAP exited event to the client.
+func (h *handler) sendExitedEvent(exitCode int) {
+	evt := &dap.ExitedEvent{
+		Event: h.newEvent("exited"),
+	}
+	evt.Body.ExitCode = exitCode
+	h.send(evt)
+}
+
+// sendTerminatedEvent sends a DAP terminated event to the client.
+func (h *handler) sendTerminatedEvent() {
 	h.send(&dap.TerminatedEvent{
 		Event: h.newEvent("terminated"),
 	})
-	h.server.close()
+}
+
+// sendOutputEvent sends a DAP output event to the client (used for log points).
+func (h *handler) sendOutputEvent(output string) {
+	evt := &dap.OutputEvent{
+		Event: h.newEvent("output"),
+	}
+	evt.Body.Category = "console"
+	evt.Body.Output = output + "\n"
+	h.send(evt)
 }
 
 // sendStoppedEvent sends a DAP stopped event to the client.

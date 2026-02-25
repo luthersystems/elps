@@ -4,6 +4,8 @@ package debugger
 
 import (
 	"fmt"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -11,13 +13,38 @@ import (
 	"github.com/luthersystems/elps/parser/token"
 )
 
+// hitOp represents a hit count comparison operator.
+type hitOp int
+
+const (
+	hitOpNone hitOp = iota
+	hitOpEQ         // == or bare number
+	hitOpGT         // >
+	hitOpGTE        // >=
+	hitOpMod        // %
+)
+
+// BreakpointSpec describes a breakpoint to set (used by SetForFileSpecs).
+type BreakpointSpec struct {
+	Line         int
+	Condition    string
+	HitCondition string
+	LogMessage   string
+}
+
 // Breakpoint represents a location where execution should pause.
 type Breakpoint struct {
-	ID        int
-	File      string
-	Line      int
-	Condition string // optional: Lisp expression to evaluate
-	Enabled   bool
+	ID           int
+	File         string
+	Line         int
+	Condition    string // optional: Lisp expression to evaluate
+	HitCondition string // optional: hit count expression (e.g., ">5", "==3", "%2")
+	LogMessage   string // optional: log point message template with {expr} interpolation
+	Enabled      bool
+
+	hitCount     int    // number of times this breakpoint has been reached
+	parsedHitOp  hitOp
+	parsedHitVal int
 }
 
 // key returns the file:line key used for map indexing.
@@ -26,7 +53,111 @@ func (bp *Breakpoint) key() string {
 }
 
 func breakpointKey(file string, line int) string {
-	return fmt.Sprintf("%s:%d", file, line)
+	return fmt.Sprintf("%s:%d", normalizePath(file), line)
+}
+
+// normalizePath reduces a file path to its basename for breakpoint matching.
+// IDE clients send absolute paths (e.g., /Users/.../phylum/organisation.lisp)
+// while the ELPS runtime uses relative paths or basenames. Normalizing to
+// basename allows breakpoints to match regardless of path format.
+func normalizePath(file string) string {
+	if file == "" {
+		return file
+	}
+	return filepath.Base(file)
+}
+
+// parseHitCondition parses a DAP hit condition string into an operator and value.
+// Supported formats: ">5", ">=3", "==10", "%2", or bare "5" (treated as ==5).
+func parseHitCondition(s string) (hitOp, int) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return hitOpNone, 0
+	}
+	var op hitOp
+	var numStr string
+	switch {
+	case strings.HasPrefix(s, ">="):
+		op = hitOpGTE
+		numStr = strings.TrimSpace(s[2:])
+	case strings.HasPrefix(s, "=="):
+		op = hitOpEQ
+		numStr = strings.TrimSpace(s[2:])
+	case strings.HasPrefix(s, ">"):
+		op = hitOpGT
+		numStr = strings.TrimSpace(s[1:])
+	case strings.HasPrefix(s, "%"):
+		op = hitOpMod
+		numStr = strings.TrimSpace(s[1:])
+	default:
+		op = hitOpEQ
+		numStr = s
+	}
+	val, err := strconv.Atoi(numStr)
+	if err != nil {
+		return hitOpNone, 0
+	}
+	return op, val
+}
+
+// checkHitCondition tests whether the breakpoint's current hit count
+// satisfies the hit condition. Returns true if there is no hit condition
+// or if the condition is met.
+func (bp *Breakpoint) checkHitCondition() bool {
+	if bp.parsedHitOp == hitOpNone {
+		return true
+	}
+	switch bp.parsedHitOp {
+	case hitOpEQ:
+		return bp.hitCount == bp.parsedHitVal
+	case hitOpGT:
+		return bp.hitCount > bp.parsedHitVal
+	case hitOpGTE:
+		return bp.hitCount >= bp.parsedHitVal
+	case hitOpMod:
+		if bp.parsedHitVal <= 0 {
+			return true
+		}
+		return bp.hitCount%bp.parsedHitVal == 0
+	}
+	return true
+}
+
+// IncrementHitCount increments the breakpoint's hit count and returns
+// whether the hit condition is satisfied.
+func (bp *Breakpoint) IncrementHitCount() bool {
+	bp.hitCount++
+	return bp.checkHitCondition()
+}
+
+// InterpolateLogMessage evaluates a log point message template, replacing
+// {expr} placeholders with the result of evaluating each expression.
+func InterpolateLogMessage(env *lisp.LEnv, template string) string {
+	if template == "" {
+		return ""
+	}
+	var buf strings.Builder
+	for {
+		open := strings.Index(template, "{")
+		if open < 0 {
+			buf.WriteString(template)
+			break
+		}
+		buf.WriteString(template[:open])
+		rest := template[open+1:]
+		close := strings.Index(rest, "}")
+		if close < 0 {
+			// Unterminated brace — emit remainder literally.
+			buf.WriteByte('{')
+			buf.WriteString(rest)
+			break
+		}
+		expr := rest[:close]
+		result := EvalInContext(env, expr)
+		buf.WriteString(FormatValue(result))
+		template = rest[close+1:]
+	}
+	return buf.String()
 }
 
 // ExceptionBreakMode controls when the debugger pauses on exceptions.
@@ -67,6 +198,11 @@ func (s *BreakpointStore) Set(file string, line int, condition string) *Breakpoi
 	bp, exists := s.byKey[key]
 	if exists {
 		bp.Condition = condition
+		bp.HitCondition = ""
+		bp.LogMessage = ""
+		bp.hitCount = 0
+		bp.parsedHitOp = hitOpNone
+		bp.parsedHitVal = 0
 		bp.Enabled = true
 		return bp
 	}
@@ -98,7 +234,7 @@ func (s *BreakpointStore) Remove(file string, line int) bool {
 func (s *BreakpointStore) ClearFile(file string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	prefix := file + ":"
+	prefix := normalizePath(file) + ":"
 	for key := range s.byKey {
 		if strings.HasPrefix(key, prefix) {
 			delete(s.byKey, key)
@@ -109,29 +245,44 @@ func (s *BreakpointStore) ClearFile(file string) {
 // SetForFile replaces all breakpoints in a file. This implements the DAP
 // setBreakpoints semantics (full replacement, not incremental).
 func (s *BreakpointStore) SetForFile(file string, lines []int, conditions []string) []*Breakpoint {
+	specs := make([]BreakpointSpec, len(lines))
+	for i, line := range lines {
+		cond := ""
+		if i < len(conditions) {
+			cond = conditions[i]
+		}
+		specs[i] = BreakpointSpec{Line: line, Condition: cond}
+	}
+	return s.SetForFileSpecs(file, specs)
+}
+
+// SetForFileSpecs replaces all breakpoints in a file using full specs.
+// This supports hit conditions and log messages in addition to conditions.
+func (s *BreakpointStore) SetForFileSpecs(file string, specs []BreakpointSpec) []*Breakpoint {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Remove old breakpoints for this file.
-	prefix := file + ":"
+	// Remove old breakpoints for this file (using normalized path).
+	prefix := normalizePath(file) + ":"
 	for key := range s.byKey {
 		if strings.HasPrefix(key, prefix) {
 			delete(s.byKey, key)
 		}
 	}
 	// Add new ones.
-	result := make([]*Breakpoint, len(lines))
-	for i, line := range lines {
+	result := make([]*Breakpoint, len(specs))
+	for i, spec := range specs {
 		s.nextID++
-		cond := ""
-		if i < len(conditions) {
-			cond = conditions[i]
-		}
+		hitOp, hitVal := parseHitCondition(spec.HitCondition)
 		bp := &Breakpoint{
-			ID:        s.nextID,
-			File:      file,
-			Line:      line,
-			Condition: cond,
-			Enabled:   true,
+			ID:           s.nextID,
+			File:         file,
+			Line:         spec.Line,
+			Condition:    spec.Condition,
+			HitCondition: spec.HitCondition,
+			LogMessage:   spec.LogMessage,
+			Enabled:      true,
+			parsedHitOp:  hitOp,
+			parsedHitVal: hitVal,
 		}
 		s.byKey[bp.key()] = bp
 		result[i] = bp

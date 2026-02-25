@@ -58,6 +58,40 @@ func InspectScope(env *lisp.LEnv) []ScopeBinding {
 	return bindings
 }
 
+// InspectFunctionLocals returns all bindings visible from the given
+// environment up through parent scopes, stopping at the root env
+// (Parent==nil) which contains builtins. In ELPS, package symbols live
+// in Runtime.Package, not in the env chain, so walking up to (but not
+// including) the root env collects exactly the function-local bindings.
+// This gives users the local variables they expect to see in a debugger,
+// even when paused inside a sub-expression like (if ...).
+func InspectFunctionLocals(env *lisp.LEnv) []ScopeBinding {
+	if env == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var bindings []ScopeBinding
+	current := env
+	for current != nil {
+		// Stop at the root env (builtins). Package symbols are in
+		// Runtime.Package.Symbols, not in env.Scope.
+		if current.Parent == nil {
+			break
+		}
+		for name, val := range current.Scope {
+			if !seen[name] {
+				seen[name] = true
+				bindings = append(bindings, ScopeBinding{Name: name, Value: val})
+			}
+		}
+		current = current.Parent
+	}
+	sort.Slice(bindings, func(i, j int) bool {
+		return bindings[i].Name < bindings[j].Name
+	})
+	return bindings
+}
+
 // FormatValue returns a human-readable string representation of an LVal,
 // suitable for display in a debugger variables view.
 func FormatValue(v *lisp.LVal) string {
