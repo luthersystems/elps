@@ -149,6 +149,7 @@ func (h *handler) onInitialize(req *dap.InitializeRequest) {
 		SupportsLogPoints:                     true,
 		SupportsEvaluateForHovers:             true,
 		SupportTerminateDebuggee:              true,
+		SupportsSteppingGranularity:           true,
 		ExceptionBreakpointFilters: []dap.ExceptionBreakpointsFilter{
 			{
 				Filter:  "all",
@@ -433,6 +434,7 @@ func (h *handler) onNext(req *dap.NextRequest) {
 	resp := &dap.NextResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	h.send(resp)
+	h.engine.SetStepGranularity(string(req.Arguments.Granularity))
 	h.engine.StepOver()
 }
 
@@ -440,6 +442,7 @@ func (h *handler) onStepIn(req *dap.StepInRequest) {
 	resp := &dap.StepInResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	h.send(resp)
+	h.engine.SetStepGranularity(string(req.Arguments.Granularity))
 	h.engine.StepInto()
 }
 
@@ -447,6 +450,7 @@ func (h *handler) onStepOut(req *dap.StepOutRequest) {
 	resp := &dap.StepOutResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	h.send(resp)
+	h.engine.SetStepGranularity(string(req.Arguments.Granularity))
 	h.engine.StepOut()
 }
 

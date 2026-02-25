@@ -55,6 +55,7 @@ func TestDAPServer_InitializeAndDisconnect(t *testing.T) {
 	require.True(t, ok, "expected InitializeResponse, got %T", msg1)
 	assert.True(t, initResp.Success)
 	assert.True(t, initResp.Body.SupportsConditionalBreakpoints)
+	assert.True(t, initResp.Body.SupportsSteppingGranularity)
 
 	// Read Initialized event.
 	msg2, err := dap.ReadProtocolMessage(reader)
@@ -794,8 +795,10 @@ func TestDAPServer_StepIn(t *testing.T) {
 
 	env := newDAPTestEnv(t, s.engine)
 	resultCh := make(chan *lisp.LVal, 1)
+	// Multi-line program: step-into from line 1 should advance to line 2
+	// (line-level granularity skips sub-expressions on the same line).
 	go func() {
-		res := env.LoadString("test", "(+ 1 2)")
+		res := env.LoadString("test", "(+ 1 2)\n(+ 3 4)")
 		resultCh <- res
 	}()
 
@@ -805,7 +808,7 @@ func TestDAPServer_StepIn(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent
 
-	// Send StepIn — should advance to next expression.
+	// Send StepIn — should advance to line 2 (skipping line 1 sub-expressions).
 	s.send(&dap.StepInRequest{
 		Request: dap.Request{
 			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
@@ -818,16 +821,17 @@ func TestDAPServer_StepIn(t *testing.T) {
 	require.True(t, ok, "expected StepInResponse, got %T", msg)
 	assert.True(t, stepResp.Success)
 
-	// Should pause again on next expression.
+	// Should pause again on line 2.
 	require.Eventually(t, func() bool {
 		return s.engine.IsPaused()
 	}, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent
 
-	// Verify we actually paused (PausedState returns non-nil).
+	// Verify we paused on line 2.
 	_, pausedExpr := s.engine.PausedState()
 	require.NotNil(t, pausedExpr, "step-in should have paused on an expression")
 	require.NotNil(t, pausedExpr.Source, "paused expression should have source location")
+	assert.Equal(t, 2, pausedExpr.Source.Line, "step-in should advance to line 2")
 
 	// Continue to finish.
 	s.continueExec()
@@ -3408,5 +3412,255 @@ func TestDAPServer_StopOnEntry_LaunchAbsent(t *testing.T) {
 	}
 
 	assert.False(t, s.engine.IsPaused(), "engine should not be paused after absent stopOnEntry")
+	s.disconnect()
+}
+
+// TestDAPServer_StepIn_LineGranularity verifies that step-in with default
+// (line-level) granularity skips sub-expressions on the same line and only
+// pauses when the line changes or a function is entered.
+func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	// Set breakpoint on line 3 (the call to (inner 5) inside outer).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 3}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	// inner's body is on line 2. outer calls (inner 5) on line 3.
+	// A single step-in from line 3 should enter inner's body (line 2),
+	// skipping sub-expressions (inner, 5) that are on line 3.
+	go func() {
+		res := env.LoadString("test",
+			"(defun inner (x) (+ x 100))\n"+ // line 1
+				"(defun outer ()\n"+               // line 2 (defun header, not in body)
+				"  (inner 5))\n"+                  // line 3
+				"(outer)")                         // line 4
+		resultCh <- res
+	}()
+
+	// Wait for breakpoint on line 3.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	st0 := s.stackTrace()
+	require.Greater(t, len(st0.Body.StackFrames), 0)
+	assert.Equal(t, 3, st0.Body.StackFrames[0].Line, "should be on line 3")
+	outerDepth := len(st0.Body.StackFrames)
+
+	// Clear breakpoints.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+
+	// Step in with default (line) granularity — should enter inner's body
+	// in a single step, skipping the sub-expressions on line 3.
+	s.send(&dap.StepInRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stepIn",
+		},
+		Arguments: dap.StepInArguments{ThreadId: elpsThreadID},
+	})
+	s.read() // StepInResponse
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	st1 := s.stackTrace()
+	require.Greater(t, len(st1.Body.StackFrames), 0)
+	// Should have entered inner's body — stack is deeper and line is 1
+	// (inner is defined on line 1: "(defun inner (x) (+ x 100))").
+	assert.Greater(t, len(st1.Body.StackFrames), outerDepth,
+		"step-in should enter inner (deeper stack)")
+	assert.Equal(t, 1, st1.Body.StackFrames[0].Line,
+		"step-in should enter inner's body on line 1")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case res := <-resultCh:
+		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+// TestDAPServer_StepIn_InstructionGranularity verifies that step-in with
+// "instruction" granularity pauses on every sub-expression, preserving the
+// old per-expression behavior.
+func TestDAPServer_StepIn_InstructionGranularity(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	// Single-line expression: with instruction granularity, step-in should
+	// pause on each sub-expression (not skip to end of line).
+	go func() {
+		res := env.LoadString("test", "(+ 1 2)")
+		resultCh <- res
+	}()
+
+	// Wait for stop-on-entry.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Record the initial expression at stop-on-entry.
+	_, entryExpr := s.engine.PausedState()
+	require.NotNil(t, entryExpr)
+
+	// Step in with "instruction" granularity — should pause on the very next
+	// sub-expression even though it's on the same line.
+	s.send(&dap.StepInRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stepIn",
+		},
+		Arguments: dap.StepInArguments{
+			ThreadId:    elpsThreadID,
+			Granularity: "instruction",
+		},
+	})
+	s.read() // StepInResponse
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Verify we paused on a sub-expression (still line 1, but a different expr).
+	_, pausedExpr := s.engine.PausedState()
+	require.NotNil(t, pausedExpr)
+	require.NotNil(t, pausedExpr.Source)
+	assert.Equal(t, 1, pausedExpr.Source.Line,
+		"instruction granularity should pause on same-line sub-expression")
+	// The expression must have changed — we moved to a different sub-expression.
+	assert.NotEqual(t, entryExpr, pausedExpr,
+		"instruction step should advance to a different expression")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+// TestDAPServer_StepNext_LineGranularity verifies that step-over with
+// line-level granularity advances to the next source line in one step,
+// rather than pausing on each sub-expression.
+func TestDAPServer_StepNext_LineGranularity(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	// Set breakpoint on line 3 (call to inner).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 3}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test",
+			"(defun inner (x) (+ x 100))\n"+
+				"(defun outer (n)\n"+
+				"  (inner n)\n"+ // line 3
+				"  (+ n 1))\n"+ // line 4
+				"(outer 5)")
+		resultCh <- res
+	}()
+
+	// Wait for breakpoint on line 3.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	st0 := s.stackTrace()
+	assert.Equal(t, 3, st0.Body.StackFrames[0].Line)
+
+	// Clear breakpoints.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+
+	// Step over with default (line) granularity — should reach line 4 in
+	// a single step (skipping sub-expressions on line 3).
+	s.send(&dap.NextRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "next",
+		},
+		Arguments: dap.NextArguments{ThreadId: elpsThreadID},
+	})
+	s.read() // NextResponse
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	st1 := s.stackTrace()
+	assert.Equal(t, 4, st1.Body.StackFrames[0].Line,
+		"step-over with line granularity should advance to line 4 in one step")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case res := <-resultCh:
+		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
 	s.disconnect()
 }

@@ -96,8 +96,10 @@ func TestEngine_StepInto(t *testing.T) {
 	env := newTestEnv(t, e)
 
 	resultCh := make(chan *lisp.LVal, 1)
+	// Multi-line program: step-into from line 1 should advance to line 2
+	// (line-level granularity skips sub-expressions on the same line).
 	go func() {
-		res := env.LoadString("test", "(+ 1 2)")
+		res := env.LoadString("test", "(+ 1 2)\n(+ 3 4)")
 		resultCh <- res
 	}()
 
@@ -110,18 +112,20 @@ func TestEngine_StepInto(t *testing.T) {
 	_, entryExpr := e.PausedState()
 	require.NotNil(t, entryExpr, "paused expression should not be nil")
 	require.NotNil(t, entryExpr.Source, "paused expression should have source location")
+	assert.Equal(t, 1, entryExpr.Source.Line, "should stop on entry at line 1")
 
-	// Step into — should advance to the next sub-expression.
+	// Step into — should advance to line 2 (skipping sub-expressions on line 1).
 	e.StepInto()
 
 	require.Eventually(t, func() bool {
 		return e.IsPaused()
 	}, 2*time.Second, 10*time.Millisecond, "engine did not pause after step")
 
-	// Verify we paused on a different expression (step advanced).
+	// Verify we paused on a different line.
 	_, stepExpr := e.PausedState()
 	require.NotNil(t, stepExpr, "paused expression after step should not be nil")
 	require.NotNil(t, stepExpr.Source, "paused expression after step should have source location")
+	assert.Equal(t, 2, stepExpr.Source.Line, "step-into should advance to line 2")
 
 	// Continue to finish.
 	e.Resume()
@@ -129,7 +133,7 @@ func TestEngine_StepInto(t *testing.T) {
 	select {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
-		assert.Equal(t, 3, res.Int)
+		assert.Equal(t, 7, res.Int)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for eval result")
 	}
