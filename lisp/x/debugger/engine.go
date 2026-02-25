@@ -75,6 +75,7 @@ type Engine struct {
 	mu                  sync.Mutex
 	enabled             bool
 	stopOnEntry         bool
+	stoppedOnEntry      bool // set by OnEval when stopOnEntry fires, read by WaitIfPaused
 	pauseRequested      bool              // set by RequestPause(), cleared in WaitIfPaused
 	pauseReason         StopReason        // reason for pauseRequested (StopPause or StopFunctionBreakpoint)
 	evaluatingCondition bool              // re-entrancy guard for conditional breakpoints
@@ -135,6 +136,17 @@ func WithStopOnEntry(stop bool) Option {
 	return func(e *Engine) {
 		e.stopOnEntry = stop
 	}
+}
+
+// SetStopOnEntry overrides the stop-on-entry flag at runtime. This allows
+// a DAP handler to reflect the client's stopOnEntry preference, which may
+// differ from the embedder's WithStopOnEntry option. It is safe to call
+// before evaluation starts. If called while the engine is already paused on
+// entry, the caller must also Resume the engine to unblock it.
+func (e *Engine) SetStopOnEntry(stop bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stopOnEntry = stop
 }
 
 // WithSourceRoot sets an absolute directory path used to resolve relative
@@ -366,6 +378,7 @@ func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
 	// Check stop-on-entry (first expression only).
 	if e.stopOnEntry {
 		e.stopOnEntry = false
+		e.stoppedOnEntry = true
 		e.mu.Unlock()
 		return true
 	}
@@ -471,9 +484,9 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 	}
 
 	e.mu.Lock()
-	if e.stopOnEntry {
+	if e.stoppedOnEntry {
 		reason = StopEntry
-		e.stopOnEntry = false
+		e.stoppedOnEntry = false
 	}
 	if e.pauseRequested {
 		reason = e.pauseReason
