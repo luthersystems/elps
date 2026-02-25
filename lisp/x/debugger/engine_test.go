@@ -1493,4 +1493,11 @@ func TestEngine_SourceLibrary(t *testing.T) {
 	lib := &lisp.FSLibrary{}
 	e2 := New(WithSourceLibrary(lib))
 	assert.Equal(t, lib, e2.SourceLibrary())
+
+	// SetSourceLibrary after construction.
+	e3 := New()
+	assert.Nil(t, e3.SourceLibrary())
+	lib2 := &lisp.FSLibrary{}
+	e3.SetSourceLibrary(lib2)
+	assert.Equal(t, lib2, e3.SourceLibrary())
 }

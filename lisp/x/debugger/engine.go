@@ -215,7 +215,19 @@ func (e *Engine) NativeChildren(v any) []NativeChild {
 
 // SourceLibrary returns the configured source library, or nil if not set.
 func (e *Engine) SourceLibrary() lisp.SourceLibrary {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	return e.sourceLib
+}
+
+// SetSourceLibrary sets or replaces the source library used to serve source
+// content for the DAP source request handler. This is safe to call after
+// construction, allowing embedders to wire the library once it becomes
+// available (e.g., after loading a phylum archive).
+func (e *Engine) SetSourceLibrary(lib lisp.SourceLibrary) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sourceLib = lib
 }
 
 // AllocSourceRef allocates a source reference ID for virtual source content.
