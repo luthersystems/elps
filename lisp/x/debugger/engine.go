@@ -112,6 +112,10 @@ type Engine struct {
 	// sources (e.g., go:embed files served via DAP source request).
 	sourceRefs    map[int]sourceRefEntry
 	nextSourceRef int
+
+	// scopeProviders holds custom scope providers registered by embedders.
+	// Read during debugging (onScopes/onVariables), written at startup.
+	scopeProviders []ScopeProvider
 }
 
 type sourceRefEntry struct {
@@ -171,6 +175,15 @@ func (e *Engine) SourceRoot() string {
 func WithFormatters(fmts map[string]VariableFormatter) Option {
 	return func(e *Engine) {
 		e.formatters = fmts
+	}
+}
+
+// WithScopeProviders sets the custom scope providers for the debugger.
+// These appear as additional scopes (alongside Local and Package) in the
+// debugger's Variables panel.
+func WithScopeProviders(providers ...ScopeProvider) Option {
+	return func(e *Engine) {
+		e.scopeProviders = append(e.scopeProviders, providers...)
 	}
 }
 
@@ -241,6 +254,26 @@ func (e *Engine) SetSourceLibrary(lib lisp.SourceLibrary) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.sourceLib = lib
+}
+
+// RegisterScopeProvider adds a custom scope provider at runtime. Safe to
+// call before debugging starts.
+func (e *Engine) RegisterScopeProvider(p ScopeProvider) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.scopeProviders = append(e.scopeProviders, p)
+}
+
+// ScopeProviders returns a copy of the registered scope providers.
+func (e *Engine) ScopeProviders() []ScopeProvider {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.scopeProviders) == 0 {
+		return nil
+	}
+	cp := make([]ScopeProvider, len(e.scopeProviders))
+	copy(cp, e.scopeProviders)
+	return cp
 }
 
 // AllocSourceRef allocates a source reference ID for virtual source content.
