@@ -97,3 +97,64 @@ func TestStepper_StepInto_NonZeroDepth(t *testing.T) {
 	assert.True(t, s.ShouldPause(42))
 	assert.Equal(t, StepNone, s.Mode())
 }
+
+func TestStepper_ShouldPausePostCall(t *testing.T) {
+	t.Run("pauses at lesser depth", func(t *testing.T) {
+		s := NewStepper()
+		s.SetStepOut(3)
+
+		// Post-call depth 2 < recorded depth 3 → should pause.
+		assert.True(t, s.ShouldPausePostCall(2))
+		// After pausing, mode resets.
+		assert.Equal(t, StepNone, s.Mode())
+	})
+
+	t.Run("no-op at same depth", func(t *testing.T) {
+		s := NewStepper()
+		s.SetStepOut(3)
+
+		// Same depth 3 is NOT < 3 → should not pause.
+		assert.False(t, s.ShouldPausePostCall(3))
+		// Mode stays StepOut.
+		assert.Equal(t, StepOut, s.Mode())
+	})
+
+	t.Run("no-op at greater depth", func(t *testing.T) {
+		s := NewStepper()
+		s.SetStepOut(3)
+
+		// Greater depth 5 is NOT < 3 → should not pause.
+		assert.False(t, s.ShouldPausePostCall(5))
+		assert.Equal(t, StepOut, s.Mode())
+	})
+
+	t.Run("no-op when not stepping out", func(t *testing.T) {
+		s := NewStepper()
+		s.SetStepOver(3)
+
+		// ShouldPausePostCall only checks StepOut mode.
+		assert.False(t, s.ShouldPausePostCall(2))
+		assert.Equal(t, StepOver, s.Mode())
+	})
+
+	t.Run("no-op when idle", func(t *testing.T) {
+		s := NewStepper()
+
+		assert.False(t, s.ShouldPausePostCall(0))
+		assert.Equal(t, StepNone, s.Mode())
+	})
+}
+
+func TestStepper_Depth(t *testing.T) {
+	s := NewStepper()
+	assert.Equal(t, 0, s.Depth())
+
+	s.SetStepOut(5)
+	assert.Equal(t, 5, s.Depth())
+
+	s.SetStepOver(3)
+	assert.Equal(t, 3, s.Depth())
+
+	s.Reset()
+	assert.Equal(t, 0, s.Depth())
+}

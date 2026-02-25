@@ -928,6 +928,15 @@ eval:
 		return lerr
 	case LSExpr:
 		res := env.EvalSExpr(v)
+		// Post-call check: after a function call returns, the stack
+		// frame has been popped and depth has decreased. If the debugger
+		// is stepping out, this is where we catch tail-position returns
+		// that would otherwise unwind without hitting OnEval.
+		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() && v.Source != nil {
+			if d.AfterFunCall(env) {
+				d.WaitIfPaused(env, v)
+			}
+		}
 		if res.Type == LMarkMacExpand {
 			// A macro was just expanded and returned an unevaluated
 			// expression.  We have to evaluate the result before we return.

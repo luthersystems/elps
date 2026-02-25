@@ -1388,6 +1388,76 @@ func TestEngine_SourceRefRegistry(t *testing.T) {
 	assert.Equal(t, "(+ 1 2)", content1)
 }
 
+func TestEngine_StepOutTailPosition(t *testing.T) {
+	t.Parallel()
+	e := New()
+	e.Enable()
+	env := newTestEnv(t, e)
+
+	// All calls are in tail position: outer → middle → inner.
+	// Step-out from inner should pause at the call site in middle.
+	program := "(defun inner (x)\n" + //  1
+		"  (+ x 100))\n" + //  2
+		"(defun middle (x)\n" + //  3
+		"  (inner (* x 2)))\n" + //  4
+		"(defun outer ()\n" + //  5
+		"  (middle 5))\n" + //  6
+		"(outer)\n" //  7
+
+	// Set a breakpoint inside inner (line 2).
+	e.Breakpoints().Set("test", 2, "")
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Wait for breakpoint inside inner.
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+
+	pausedEnv, expr := e.PausedState()
+	require.NotNil(t, expr)
+	require.NotNil(t, expr.Source)
+	assert.Equal(t, 2, expr.Source.Line, "should pause on line 2")
+	innerDepth := len(pausedEnv.Runtime.Stack.Frames)
+
+	// Clear breakpoints and step out.
+	e.Breakpoints().ClearFile("test")
+	e.StepOut()
+
+	// Should pause at the call site (NOT run to completion).
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "step-out from tail position should pause")
+
+	pausedEnv, expr = e.PausedState()
+	require.NotNil(t, expr)
+	require.NotNil(t, expr.Source, "paused expression should have source location")
+	assert.Equal(t, "test", expr.Source.File)
+	assert.NotEqual(t, 2, expr.Source.Line,
+		"should NOT still be on inner's body line after step-out")
+	outsideDepth := len(pausedEnv.Runtime.Stack.Frames)
+	assert.Less(t, outsideDepth, innerDepth,
+		"step-out should decrease stack depth (inner=%d, outside=%d)", innerDepth, outsideDepth)
+
+	// Resume to finish.
+	e.Resume()
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
+		assert.Equal(t, 110, res.Int) // inner(5*2) = 10+100 = 110
+	case <-time.After(5 * time.Second):
+		if e.IsPaused() {
+			e.Resume()
+		}
+		t.Fatal("timeout waiting for eval result")
+	}
+}
+
 func TestEngine_SourceLibrary(t *testing.T) {
 	t.Parallel()
 

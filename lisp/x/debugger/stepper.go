@@ -64,6 +64,27 @@ func (s *Stepper) SetStepOut(currentDepth int) {
 	s.depth = currentDepth
 }
 
+// Depth returns the reference stack depth recorded when the step command
+// was issued. Used by Engine to detect the step-out condition in
+// OnFunReturn (before the frame is popped).
+func (s *Stepper) Depth() int {
+	return s.depth
+}
+
+// ShouldPausePostCall returns true if a step-out should pause after a
+// function call returns (post-call check in Eval). This is the primary
+// mechanism for detecting step-out from tail-position functions, where
+// the normal OnEval-based ShouldPause never fires because execution
+// flows back through the call chain without visiting any new expressions
+// at a lesser depth. After returning true, the stepper resets to StepNone.
+func (s *Stepper) ShouldPausePostCall(currentDepth int) bool {
+	if s.mode == StepOut && currentDepth < s.depth {
+		s.mode = StepNone
+		return true
+	}
+	return false
+}
+
 // ShouldPause returns true if the stepper should cause a pause at the
 // given stack depth. After returning true, the stepper resets to StepNone.
 func (s *Stepper) ShouldPause(currentDepth int) bool {

@@ -81,6 +81,8 @@ type Engine struct {
 	lastContinuedKey    string            // suppress breakpoint re-hit after continue on same line
 	funBreakpoints      map[string]string // qualified name → user-provided name
 
+	stepOutReturned bool // set by OnFunReturn when step-out condition detected pre-pop
+
 	// pauseCh is used by the eval goroutine to block in WaitIfPaused.
 	// The DAP server sends DebugAction values to resume execution.
 	pauseCh chan lisp.DebugAction
@@ -363,6 +365,15 @@ func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
 	}
 	e.mu.Unlock()
 
+	// Safety net: if stepOutReturned is still set (AfterFunCall didn't
+	// consume it), pause here. This handles edge cases where the post-call
+	// check in Eval was not reached.
+	if e.stepOutReturned {
+		e.stepOutReturned = false
+		e.stepper.ShouldPausePostCall(len(env.Runtime.Stack.Frames))
+		return true
+	}
+
 	// Check stepping.
 	depth := len(env.Runtime.Stack.Frames)
 	if e.stepper.ShouldPause(depth) {
@@ -564,9 +575,35 @@ func (e *Engine) OnFunEntry(env *lisp.LEnv, fun *lisp.LVal, fenv *lisp.LEnv) {
 	e.mu.Unlock()
 }
 
-// OnFunReturn implements lisp.Debugger.
+// OnFunReturn implements lisp.Debugger. Detects the step-out condition
+// before the frame is popped: if the stepper is in StepOut mode and the
+// post-return depth will be less than the recorded depth, set the
+// stepOutReturned flag so that AfterFunCall (or OnEval as a safety net)
+// can pause at the call-site expression.
 func (e *Engine) OnFunReturn(env *lisp.LEnv, fun, result *lisp.LVal) {
-	// Currently a no-op. Future: watch expressions on return values.
+	if e.stepper.Mode() != StepOut {
+		return
+	}
+	// After Pop(), depth will be currentDepth - 1. Check if that satisfies
+	// the step-out condition (postReturnDepth < stepper.depth).
+	currentDepth := len(env.Runtime.Stack.Frames)
+	postReturnDepth := currentDepth - 1
+	if postReturnDepth < e.stepper.Depth() {
+		e.stepOutReturned = true
+	}
+}
+
+// AfterFunCall implements lisp.Debugger. Called in Eval after EvalSExpr
+// returns. Uses the stepper's ShouldPausePostCall to check if step-out
+// should fire at the current (post-pop) depth, and clears the
+// stepOutReturned flag.
+func (e *Engine) AfterFunCall(env *lisp.LEnv) bool {
+	if !e.stepOutReturned {
+		return false
+	}
+	e.stepOutReturned = false
+	depth := len(env.Runtime.Stack.Frames)
+	return e.stepper.ShouldPausePostCall(depth)
 }
 
 // OnError implements lisp.Debugger. Called when an error condition is

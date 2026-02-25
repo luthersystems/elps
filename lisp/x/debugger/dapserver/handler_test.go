@@ -2934,11 +2934,10 @@ func TestDAPServer_RapidStepSequence(t *testing.T) {
 	s.disconnect()
 }
 
-// TestDAPServer_StepOutTailPosition documents a known limitation: step-out
-// from a function in tail position (where the call result IS the return value
-// of every enclosing caller) causes the program to run to completion instead
-// of pausing. This happens because the call chain unwinds without passing
-// through any OnEval calls, so the stepper never fires.
+// TestDAPServer_StepOutTailPosition verifies that step-out from a function
+// in tail position correctly pauses at the call site instead of running to
+// completion. The post-call check in Eval catches the return and the
+// AfterFunCall hook detects the depth decrease.
 func TestDAPServer_StepOutTailPosition(t *testing.T) {
 	t.Parallel()
 	s := setupDAPSession(t)
@@ -2958,7 +2957,6 @@ func TestDAPServer_StepOutTailPosition(t *testing.T) {
 	s.configDone()
 
 	// All calls are in tail position: outer → middle → inner.
-	// Step-out from inner has nowhere to land.
 	env := newDAPTestEnv(t, s.engine)
 	resultCh := make(chan *lisp.LVal, 1)
 	go func() {
@@ -2982,6 +2980,7 @@ func TestDAPServer_StepOutTailPosition(t *testing.T) {
 	st := s.stackTrace()
 	require.Greater(t, len(st.Body.StackFrames), 0)
 	assert.Equal(t, 2, st.Body.StackFrames[0].Line)
+	innerDepth := len(st.Body.StackFrames)
 
 	// Clear breakpoints, then step-out.
 	s.send(&dap.SetBreakpointsRequest{
@@ -3005,16 +3004,39 @@ func TestDAPServer_StepOutTailPosition(t *testing.T) {
 	})
 	s.read() // StepOutResponse
 
-	// BUG: step-out from tail position runs to completion without pausing.
-	// The program finishes because the call chain (inner → middle → outer)
-	// unwinds without any OnEval calls at a lesser depth.
+	// Step-out from tail position should now pause at the call site.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond,
+		"step-out from tail position should pause at call site")
+	s.read() // StoppedEvent
+
+	st2 := s.stackTrace()
+	require.Greater(t, len(st2.Body.StackFrames), 0)
+	assert.Less(t, len(st2.Body.StackFrames), innerDepth,
+		"step-out should decrease stack depth")
+	assert.NotEqual(t, 2, st2.Body.StackFrames[0].Line,
+		"should not be paused inside inner after step-out")
+
+	// Resume to finish.
+	s.send(&dap.ContinueRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "continue",
+		},
+		Arguments: dap.ContinueArguments{ThreadId: elpsThreadID},
+	})
+	s.read() // ContinueResponse
+
 	select {
 	case res := <-resultCh:
 		require.False(t, res.Type == lisp.LError, "program error: %v", res)
-		// The program completed — step-out didn't pause. This confirms the
-		// known limitation with tail-position step-out.
+		assert.Equal(t, 110, res.Int, "inner(5*2) = 10+100 = 110")
 	case <-time.After(5 * time.Second):
-		t.Fatal("timeout — program should have completed")
+		if s.engine.IsPaused() {
+			s.engine.Resume()
+		}
+		t.Fatal("timeout waiting for eval result")
 	}
 
 	s.disconnect()
