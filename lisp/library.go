@@ -39,6 +39,14 @@ type SourceContext interface {
 	Location() string
 }
 
+// NewSourceContext creates a SourceContext with the given name and location.
+// This is useful for callers that need to construct a SourceContext for
+// SourceLibrary.LoadSource calls outside of normal evaluation flow (e.g.,
+// DAP source request handlers).
+func NewSourceContext(name, loc string) SourceContext {
+	return &sourceContext{name: name, loc: loc}
+}
+
 type sourceContext struct {
 	name string
 	loc  string

@@ -3,6 +3,7 @@
 package dapserver
 
 import (
+	"fmt"
 	"path/filepath"
 
 	"github.com/google/go-dap"
@@ -76,16 +77,102 @@ func resolveSourcePath(path, file, sourceRoot string) string {
 }
 
 // translateVariables converts scope bindings to DAP Variable objects.
-func translateVariables(bindings []debugger.ScopeBinding) []dap.Variable {
+// allocRef assigns a variable reference for expandable values. eng is used
+// for custom native type formatting.
+func translateVariables(bindings []debugger.ScopeBinding, allocRef func(*lisp.LVal) int, eng *debugger.Engine) []dap.Variable {
 	vars := make([]dap.Variable, len(bindings))
 	for i, b := range bindings {
 		vars[i] = dap.Variable{
-			Name:  b.Name,
-			Value: debugger.FormatValue(b.Value),
-			Type:  lvalTypeName(b.Value),
+			Name:               b.Name,
+			Value:              debugger.FormatValueWith(b.Value, eng),
+			Type:               lvalTypeName(b.Value),
+			VariablesReference: allocRef(b.Value),
 		}
 	}
 	return vars
+}
+
+// expandVariable returns the child variables of a structured LVal.
+func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.Engine) []dap.Variable {
+	if v == nil {
+		return nil
+	}
+	switch v.Type {
+	case lisp.LSExpr:
+		vars := make([]dap.Variable, len(v.Cells))
+		for i, cell := range v.Cells {
+			vars[i] = dap.Variable{
+				Name:               fmt.Sprintf("[%d]", i),
+				Value:              debugger.FormatValueWith(cell, eng),
+				Type:               lvalTypeName(cell),
+				VariablesReference: allocRef(cell),
+			}
+		}
+		return vars
+	case lisp.LSortMap:
+		entries := v.MapEntries()
+		if entries.Type == lisp.LError {
+			return nil
+		}
+		vars := make([]dap.Variable, len(entries.Cells))
+		for i, pair := range entries.Cells {
+			key := pair.Cells[0]
+			val := pair.Cells[1]
+			vars[i] = dap.Variable{
+				Name:               debugger.FormatValue(key),
+				Value:              debugger.FormatValueWith(val, eng),
+				Type:               lvalTypeName(val),
+				VariablesReference: allocRef(val),
+			}
+		}
+		return vars
+	case lisp.LArray:
+		// Cells[0] = dimensions, Cells[1] = flat data.
+		data := v.Cells[1]
+		vars := make([]dap.Variable, len(data.Cells))
+		for i, cell := range data.Cells {
+			vars[i] = dap.Variable{
+				Name:               fmt.Sprintf("[%d]", i),
+				Value:              debugger.FormatValueWith(cell, eng),
+				Type:               lvalTypeName(cell),
+				VariablesReference: allocRef(cell),
+			}
+		}
+		return vars
+	case lisp.LTaggedVal:
+		if len(v.Cells) == 0 {
+			return nil
+		}
+		inner := v.Cells[0]
+		return []dap.Variable{
+			{
+				Name:               "data",
+				Value:              debugger.FormatValueWith(inner, eng),
+				Type:               lvalTypeName(inner),
+				VariablesReference: allocRef(inner),
+			},
+		}
+	case lisp.LNative:
+		if eng == nil {
+			return nil
+		}
+		children := eng.NativeChildren(v.Native)
+		if len(children) == 0 {
+			return nil
+		}
+		vars := make([]dap.Variable, len(children))
+		for i, ch := range children {
+			vars[i] = dap.Variable{
+				Name:               ch.Name,
+				Value:              debugger.FormatValueWith(ch.Value, eng),
+				Type:               lvalTypeName(ch.Value),
+				VariablesReference: allocRef(ch.Value),
+			}
+		}
+		return vars
+	default:
+		return nil
+	}
 }
 
 // lvalTypeName returns a human-readable type name for an LVal.

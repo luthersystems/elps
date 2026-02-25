@@ -10,6 +10,31 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
+// VariableFormatter customizes how native Go values wrapped in LNative
+// are displayed in the debugger. Embedders register formatters by Go type
+// name (fmt.Sprintf("%T", value)) to provide rich display and drill-down.
+type VariableFormatter interface {
+	// FormatValue returns a human-readable string for the native value.
+	FormatValue(v any) string
+	// Children returns expandable child bindings for the native value.
+	// Return nil if the value has no children.
+	Children(v any) []NativeChild
+}
+
+// NativeChild represents a single child binding of a native value,
+// exposed for drill-down in the debugger variables view.
+type NativeChild struct {
+	Name  string
+	Value *lisp.LVal
+}
+
+// FormatterFunc adapts a simple format function into a VariableFormatter
+// with no children. Useful when you only need custom display text.
+type FormatterFunc func(v any) string
+
+func (f FormatterFunc) FormatValue(v any) string   { return f(v) }
+func (f FormatterFunc) Children(v any) []NativeChild { return nil }
+
 // ScopeBinding represents a single variable binding in a scope.
 type ScopeBinding struct {
 	Name  string
@@ -160,6 +185,18 @@ func formatList(v *lisp.LVal) string {
 		open, close = "[", "]"
 	}
 	return open + strings.Join(parts, " ") + close
+}
+
+// FormatValueWith returns a human-readable string representation of an LVal,
+// using the engine's registered formatters for LNative values. For all other
+// types it delegates to FormatValue. If eng is nil, falls back to FormatValue.
+func FormatValueWith(v *lisp.LVal, eng *Engine) string {
+	if eng != nil && v != nil && v.Type == lisp.LNative {
+		if s := eng.FormatNative(v.Native); s != "" {
+			return s
+		}
+	}
+	return FormatValue(v)
 }
 
 // EvalInContext parses and evaluates an expression in the paused

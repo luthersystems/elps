@@ -15,6 +15,7 @@
 package debugger
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -93,6 +94,25 @@ type Engine struct {
 	// Embedders can wait on ReadyCh() before starting evaluation.
 	readyCh   chan struct{}
 	readyOnce sync.Once
+
+	// formatters maps Go type names (fmt.Sprintf("%T", v)) to custom
+	// formatters for LNative values. Write-once at startup, read-only
+	// during debugging. Protected by mu.
+	formatters map[string]VariableFormatter
+
+	// sourceLib provides access to source files for the source request
+	// handler. Set once via WithSourceLibrary. Read-only during debugging.
+	sourceLib lisp.SourceLibrary
+
+	// sourceRefs maps integer reference IDs to source content for virtual
+	// sources (e.g., go:embed files served via DAP source request).
+	sourceRefs    map[int]sourceRefEntry
+	nextSourceRef int
+}
+
+type sourceRefEntry struct {
+	name    string
+	content string
 }
 
 // Verify Engine implements lisp.Debugger at compile time.
@@ -129,6 +149,97 @@ func WithSourceRoot(dir string) Option {
 // if not set.
 func (e *Engine) SourceRoot() string {
 	return e.sourceRoot
+}
+
+// WithFormatters sets the custom native type formatters for LNative values.
+// Keys are Go type names as returned by fmt.Sprintf("%T", value).
+func WithFormatters(fmts map[string]VariableFormatter) Option {
+	return func(e *Engine) {
+		e.formatters = fmts
+	}
+}
+
+// WithSourceLibrary sets the source library used to serve source content
+// for the DAP source request handler.
+func WithSourceLibrary(lib lisp.SourceLibrary) Option {
+	return func(e *Engine) {
+		e.sourceLib = lib
+	}
+}
+
+// RegisterFormatter registers a custom formatter for a native Go type.
+// typeName should match fmt.Sprintf("%T", value) for the values you want
+// to format. Safe to call before debugging starts.
+func (e *Engine) RegisterFormatter(typeName string, f VariableFormatter) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.formatters == nil {
+		e.formatters = make(map[string]VariableFormatter)
+	}
+	e.formatters[typeName] = f
+}
+
+// FormatNative returns a formatted string for a native Go value using
+// the registered formatter. Returns empty string if no formatter is
+// registered for the value's type.
+func (e *Engine) FormatNative(v any) string {
+	if v == nil {
+		return ""
+	}
+	e.mu.Lock()
+	f := e.formatters[fmt.Sprintf("%T", v)]
+	e.mu.Unlock()
+	if f == nil {
+		return ""
+	}
+	return f.FormatValue(v)
+}
+
+// NativeChildren returns the expandable child bindings for a native Go
+// value using the registered formatter. Returns nil if no formatter is
+// registered or the formatter returns no children.
+func (e *Engine) NativeChildren(v any) []NativeChild {
+	if v == nil {
+		return nil
+	}
+	e.mu.Lock()
+	f := e.formatters[fmt.Sprintf("%T", v)]
+	e.mu.Unlock()
+	if f == nil {
+		return nil
+	}
+	return f.Children(v)
+}
+
+// SourceLibrary returns the configured source library, or nil if not set.
+func (e *Engine) SourceLibrary() lisp.SourceLibrary {
+	return e.sourceLib
+}
+
+// AllocSourceRef allocates a source reference ID for virtual source content.
+// Returns the reference ID that can be used in DAP source requests.
+func (e *Engine) AllocSourceRef(name, content string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.sourceRefs == nil {
+		e.sourceRefs = make(map[int]sourceRefEntry)
+	}
+	e.nextSourceRef++
+	id := e.nextSourceRef
+	e.sourceRefs[id] = sourceRefEntry{name: name, content: content}
+	return id
+}
+
+// GetSourceRef retrieves virtual source content by reference ID.
+// Returns the content and true if found, or empty string and false if not.
+func (e *Engine) GetSourceRef(id int) (string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	entry, ok := e.sourceRefs[id]
+	if !ok {
+		return "", false
+	}
+	return entry.content, true
 }
 
 // New creates a new debugger engine.

@@ -217,3 +217,37 @@ func TestEvalInContext_MultiExpression(t *testing.T) {
 	assert.Equal(t, lisp.LInt, result.Type)
 	assert.Equal(t, 3, result.Int, "only the first expression should be evaluated")
 }
+
+func TestFormatValueWith_CustomFormatter(t *testing.T) {
+	type MyType struct{ Name string }
+
+	eng := New(WithFormatters(map[string]VariableFormatter{
+		"debugger.MyType": FormatterFunc(func(v any) string {
+			m, ok := v.(MyType)
+			if !ok {
+				return "<bad>"
+			}
+			return "MyType:" + m.Name
+		}),
+	}))
+
+	// LNative with registered formatter.
+	native := lisp.Native(MyType{Name: "test"})
+	assert.Equal(t, "MyType:test", FormatValueWith(native, eng))
+
+	// LNative without registered formatter falls back to FormatValue.
+	unregistered := lisp.Native(42)
+	assert.Equal(t, "<native int>", FormatValueWith(unregistered, eng))
+
+	// Non-native types always use FormatValue.
+	assert.Equal(t, "42", FormatValueWith(lisp.Int(42), eng))
+
+	// Nil engine falls back to FormatValue.
+	assert.Equal(t, FormatValue(native), FormatValueWith(native, nil))
+}
+
+func TestFormatterFunc(t *testing.T) {
+	f := FormatterFunc(func(v any) string { return "formatted" })
+	assert.Equal(t, "formatted", f.FormatValue(nil))
+	assert.Nil(t, f.Children(nil), "FormatterFunc should return nil children")
+}

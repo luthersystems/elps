@@ -1,6 +1,7 @@
 package debugger
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -1265,4 +1266,137 @@ func waitForPause(t *testing.T, e *Engine, timeout time.Duration) bool {
 			}
 		}
 	}
+}
+
+func TestEngine_RegisterFormatter(t *testing.T) {
+	t.Parallel()
+
+	type TestStruct struct{ Value int }
+	typeName := fmt.Sprintf("%T", TestStruct{})
+
+	e := New()
+
+	// No formatter registered — FormatNative returns empty string.
+	assert.Empty(t, e.FormatNative(TestStruct{Value: 42}))
+	assert.Nil(t, e.NativeChildren(TestStruct{Value: 42}))
+
+	// Register a formatter.
+	e.RegisterFormatter(typeName, FormatterFunc(func(v any) string {
+		s, ok := v.(TestStruct)
+		if !ok {
+			return ""
+		}
+		return fmt.Sprintf("TestStruct(%d)", s.Value)
+	}))
+
+	assert.Equal(t, "TestStruct(42)", e.FormatNative(TestStruct{Value: 42}))
+	assert.Nil(t, e.NativeChildren(TestStruct{Value: 42}),
+		"FormatterFunc should return nil children")
+
+	// nil value returns empty.
+	assert.Empty(t, e.FormatNative(nil))
+	assert.Nil(t, e.NativeChildren(nil))
+}
+
+func TestEngine_WithFormatters(t *testing.T) {
+	t.Parallel()
+
+	type MyType struct{}
+	typeName := fmt.Sprintf("%T", MyType{})
+
+	e := New(WithFormatters(map[string]VariableFormatter{
+		typeName: FormatterFunc(func(v any) string { return "custom" }),
+	}))
+
+	assert.Equal(t, "custom", e.FormatNative(MyType{}))
+}
+
+func TestEngine_NativeChildren_WithChildren(t *testing.T) {
+	t.Parallel()
+
+	typeName := fmt.Sprintf("%T", Container{})
+
+	formatter := &testFormatterWithChildren{}
+	e := New(WithFormatters(map[string]VariableFormatter{
+		typeName: formatter,
+	}))
+
+	c := Container{Items: []string{"a", "b"}}
+	children := e.NativeChildren(c)
+	require.Len(t, children, 2)
+	assert.Equal(t, "Items[0]", children[0].Name)
+	assert.Equal(t, "a", children[0].Value.Str)
+	assert.Equal(t, "Items[1]", children[1].Name)
+	assert.Equal(t, "b", children[1].Value.Str)
+}
+
+// Container is a test type for TestEngine_NativeChildren_WithChildren.
+type Container struct{ Items []string }
+
+type testFormatterWithChildren struct{}
+
+func (f *testFormatterWithChildren) FormatValue(v any) string {
+	c, ok := v.(Container)
+	if !ok {
+		return "<container>"
+	}
+	return fmt.Sprintf("<container len=%d>", len(c.Items))
+}
+
+func (f *testFormatterWithChildren) Children(v any) []NativeChild {
+	c, ok := v.(Container)
+	if !ok {
+		return nil
+	}
+	children := make([]NativeChild, len(c.Items))
+	for i, item := range c.Items {
+		children[i] = NativeChild{
+			Name:  fmt.Sprintf("Items[%d]", i),
+			Value: lisp.String(item),
+		}
+	}
+	return children
+}
+
+func TestEngine_SourceRefRegistry(t *testing.T) {
+	t.Parallel()
+	e := New()
+
+	// No refs initially.
+	_, ok := e.GetSourceRef(1)
+	assert.False(t, ok, "should not find non-existent ref")
+
+	// Allocate a ref.
+	ref1 := e.AllocSourceRef("test.lisp", "(+ 1 2)")
+	assert.Greater(t, ref1, 0)
+
+	content, ok := e.GetSourceRef(ref1)
+	assert.True(t, ok)
+	assert.Equal(t, "(+ 1 2)", content)
+
+	// Allocate another ref — IDs should be unique.
+	ref2 := e.AllocSourceRef("other.lisp", "(defun f () nil)")
+	assert.NotEqual(t, ref1, ref2)
+
+	content2, ok := e.GetSourceRef(ref2)
+	assert.True(t, ok)
+	assert.Equal(t, "(defun f () nil)", content2)
+
+	// First ref still accessible.
+	content1, ok := e.GetSourceRef(ref1)
+	assert.True(t, ok)
+	assert.Equal(t, "(+ 1 2)", content1)
+}
+
+func TestEngine_SourceLibrary(t *testing.T) {
+	t.Parallel()
+
+	// No library by default.
+	e := New()
+	assert.Nil(t, e.SourceLibrary())
+
+	// With library.
+	lib := &lisp.FSLibrary{}
+	e2 := New(WithSourceLibrary(lib))
+	assert.Equal(t, lib, e2.SourceLibrary())
 }

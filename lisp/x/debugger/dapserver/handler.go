@@ -13,9 +13,11 @@ import (
 
 // scopeRef constants encode scope type into variable references.
 // The frame index is embedded: ref = base + frameIndex.
+// variableRefBase is used for structured variable expansion (lists, maps, etc.).
 const (
 	scopeLocalBase   = 1000
 	scopePackageBase = 3000
+	variableRefBase  = 5000
 )
 
 // handler dispatches incoming DAP messages to the appropriate method.
@@ -30,6 +32,12 @@ type handler struct {
 	// frameEnvs caches the environments for each stack frame when paused.
 	// Indexed by frame ID (1-based, most recent first).
 	frameEnvs map[int]*lisp.LEnv
+
+	// varRefs maps variable reference IDs to LVal pointers for structured
+	// variable expansion (lists, sorted-maps, arrays, tagged values).
+	// Cleared when execution resumes (LVal pointers only valid while paused).
+	varRefs    map[int]*lisp.LVal
+	nextVarRef int
 }
 
 func newHandler(s *Server, e *debugger.Engine) *handler {
@@ -49,6 +57,11 @@ func newHandler(s *Server, e *debugger.Engine) *handler {
 				bpIDs = []int{evt.BP.ID}
 			}
 			h.sendStoppedEvent(evt.Reason, bpIDs)
+		case debugger.EventContinued:
+			h.mu.Lock()
+			h.varRefs = nil
+			h.nextVarRef = 0
+			h.mu.Unlock()
 		case debugger.EventOutput:
 			h.sendOutputEvent(evt.Output)
 		case debugger.EventExited:
@@ -311,31 +324,45 @@ func (h *handler) onVariables(req *dap.VariablesRequest) {
 	resp.Response = h.newResponse(req.Seq, req.Command)
 
 	ref := req.Arguments.VariablesReference
-	var bindings []debugger.ScopeBinding
+
+	allocRef := func(v *lisp.LVal) int {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.allocVarRef(v)
+	}
 
 	switch {
+	case ref >= variableRefBase:
+		// Expand a structured variable (list, map, array, tagged, native).
+		h.mu.Lock()
+		parent := h.varRefs[ref]
+		h.mu.Unlock()
+		if parent != nil {
+			resp.Body.Variables = expandVariable(parent, allocRef, h.engine)
+		}
 	case ref >= scopePackageBase:
 		frameID := ref - scopePackageBase
 		env := h.getFrameEnv(frameID)
 		if env != nil && env.Runtime.Package != nil {
-			// Show package-level symbols.
 			pkg := env.Runtime.Package
+			var bindings []debugger.ScopeBinding
 			for name := range pkg.Symbols {
 				v := pkg.Get(lisp.Symbol(name))
 				if v.Type != lisp.LError {
 					bindings = append(bindings, debugger.ScopeBinding{Name: name, Value: v})
 				}
 			}
+			resp.Body.Variables = translateVariables(bindings, allocRef, h.engine)
 		}
 	case ref >= scopeLocalBase:
 		frameID := ref - scopeLocalBase
 		env := h.getFrameEnv(frameID)
 		if env != nil {
-			bindings = debugger.InspectFunctionLocals(env)
+			bindings := debugger.InspectFunctionLocals(env)
+			resp.Body.Variables = translateVariables(bindings, allocRef, h.engine)
 		}
 	}
 
-	resp.Body.Variables = translateVariables(bindings)
 	h.send(resp)
 }
 
@@ -346,6 +373,43 @@ func (h *handler) getFrameEnv(frameID int) *lisp.LEnv {
 		return nil
 	}
 	return h.frameEnvs[frameID]
+}
+
+// allocVarRef assigns a variable reference ID for structured types that
+// support drill-down. Returns 0 if the value has no expandable children.
+// Must be called with h.mu held.
+func (h *handler) allocVarRef(v *lisp.LVal) int {
+	if !hasChildren(v, h.engine) {
+		return 0
+	}
+	if h.varRefs == nil {
+		h.varRefs = make(map[int]*lisp.LVal)
+	}
+	id := variableRefBase + h.nextVarRef
+	h.nextVarRef++
+	h.varRefs[id] = v
+	return id
+}
+
+// hasChildren returns true if the LVal has expandable child elements.
+func hasChildren(v *lisp.LVal, eng *debugger.Engine) bool {
+	if v == nil {
+		return false
+	}
+	switch v.Type {
+	case lisp.LSExpr:
+		return !v.IsNil()
+	case lisp.LSortMap:
+		return v.Len() > 0
+	case lisp.LArray:
+		return v.Len() > 0
+	case lisp.LTaggedVal:
+		return len(v.Cells) > 0
+	case lisp.LNative:
+		return eng != nil && len(eng.NativeChildren(v.Native)) > 0
+	default:
+		return false
+	}
 }
 
 func (h *handler) onContinue(req *dap.ContinueRequest) {
@@ -399,10 +463,13 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 	result := h.engine.EvalInContext(env, req.Arguments.Expression)
 	if result != nil && result.Type == lisp.LError {
 		resp.Success = false
-		resp.Message = debugger.FormatValue(result)
+		resp.Message = debugger.FormatValueWith(result, h.engine)
 	} else {
-		resp.Body.Result = debugger.FormatValue(result)
+		resp.Body.Result = debugger.FormatValueWith(result, h.engine)
 		resp.Body.Type = lvalTypeName(result)
+		h.mu.Lock()
+		resp.Body.VariablesReference = h.allocVarRef(result)
+		h.mu.Unlock()
 	}
 	h.send(resp)
 }
@@ -429,6 +496,37 @@ func (h *handler) onPause(req *dap.PauseRequest) {
 func (h *handler) onSource(req *dap.SourceRequest) {
 	resp := &dap.SourceResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
+
+	// Try source reference first (integer ID for virtual sources).
+	if ref := req.Arguments.SourceReference; ref > 0 {
+		if content, ok := h.engine.GetSourceRef(ref); ok {
+			resp.Body.Content = content
+			resp.Body.MimeType = "text/x-lisp"
+			h.send(resp)
+			return
+		}
+	}
+
+	// Try loading from the source library by path.
+	path := ""
+	if req.Arguments.Source != nil {
+		path = req.Arguments.Source.Path
+		if path == "" {
+			path = req.Arguments.Source.Name
+		}
+	}
+	if path != "" {
+		if lib := h.engine.SourceLibrary(); lib != nil {
+			_, _, data, err := lib.LoadSource(lisp.NewSourceContext("", ""), path)
+			if err == nil {
+				resp.Body.Content = string(data)
+				resp.Body.MimeType = "text/x-lisp"
+				h.send(resp)
+				return
+			}
+		}
+	}
+
 	resp.Success = false
 	resp.Message = "source not available"
 	h.send(resp)

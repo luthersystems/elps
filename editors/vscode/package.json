@@ -55,6 +55,20 @@
                 "default": "elps"
               }
             }
+          },
+          "attach": {
+            "properties": {
+              "host": {
+                "type": "string",
+                "description": "Host of the running DAP server",
+                "default": "localhost"
+              },
+              "port": {
+                "type": "number",
+                "description": "Port of the running DAP server",
+                "default": 4711
+              }
+            }
           }
         },
         "initialConfigurations": [
@@ -64,6 +78,13 @@
             "name": "Debug ELPS",
             "program": "${file}",
             "stopOnEntry": true
+          },
+          {
+            "type": "elps",
+            "request": "attach",
+            "name": "Attach to ELPS",
+            "host": "localhost",
+            "port": 4711
           }
         ],
         "configurationSnippets": [
@@ -76,6 +97,17 @@
               "name": "Debug ELPS",
               "program": "^\"\\${file}\"",
               "stopOnEntry": true
+            }
+          },
+          {
+            "label": "ELPS: Attach to Server",
+            "description": "Attach to a running ELPS DAP server",
+            "body": {
+              "type": "elps",
+              "request": "attach",
+              "name": "Attach to ELPS",
+              "host": "localhost",
+              "port": 4711
             }
           }
         ]
