@@ -15,10 +15,19 @@ import (
 // scopeRef constants encode scope type into variable references.
 // The frame index is embedded: ref = base + frameIndex.
 // variableRefBase is used for structured variable expansion (lists, maps, etc.).
+//
+// Reference space layout:
+//
+//	1000-2999: Local scopes (scopeLocalBase + frameID)
+//	3000-4999: Package scopes (scopePackageBase + frameID)
+//	5000-9999: Structured variable expansion (variableRefBase, dynamic)
+//	10000+:    Custom scope providers (customScopeBase + providerIdx*customScopeStride + frameID)
 const (
-	scopeLocalBase   = 1000
-	scopePackageBase = 3000
-	variableRefBase  = 5000
+	scopeLocalBase    = 1000
+	scopePackageBase  = 3000
+	variableRefBase   = 5000
+	customScopeBase   = 10000
+	customScopeStride = 1000 // max frames per provider
 )
 
 // handler dispatches incoming DAP messages to the appropriate method.
@@ -41,6 +50,12 @@ type handler struct {
 	// Cleared when execution resumes (LVal pointers only valid while paused).
 	varRefs    map[int]*lisp.LVal
 	nextVarRef int
+
+	// customVarRefs maps reference IDs to ScopeVariable children for
+	// drill-down into custom scope provider variables.
+	// Cleared when execution resumes.
+	customVarRefs    map[int][]debugger.ScopeVariable
+	nextCustomVarRef int
 }
 
 func newHandler(s *Server, e *debugger.Engine) *handler {
@@ -64,6 +79,8 @@ func newHandler(s *Server, e *debugger.Engine) *handler {
 			h.mu.Lock()
 			h.varRefs = nil
 			h.nextVarRef = 0
+			h.customVarRefs = nil
+			h.nextCustomVarRef = 0
 			h.mu.Unlock()
 		case debugger.EventOutput:
 			h.sendOutputEvent(evt.Output)
@@ -314,7 +331,7 @@ func (h *handler) onScopes(req *dap.ScopesRequest) {
 	resp.Response = h.newResponse(req.Seq, req.Command)
 
 	frameID := req.Arguments.FrameId
-	resp.Body.Scopes = []dap.Scope{
+	scopes := []dap.Scope{
 		{
 			Name:               "Local",
 			VariablesReference: scopeLocalBase + frameID,
@@ -326,6 +343,16 @@ func (h *handler) onScopes(req *dap.ScopesRequest) {
 			Expensive:          true,
 		},
 	}
+
+	for i, p := range h.engine.ScopeProviders() {
+		scopes = append(scopes, dap.Scope{
+			Name:               p.Name(),
+			VariablesReference: customScopeBase + i*customScopeStride + frameID,
+			Expensive:          p.Expensive(),
+		})
+	}
+
+	resp.Body.Scopes = scopes
 	h.send(resp)
 }
 
@@ -342,6 +369,27 @@ func (h *handler) onVariables(req *dap.VariablesRequest) {
 	}
 
 	switch {
+	case ref >= customScopeBase:
+		// Custom scope provider or child variable drill-down.
+		h.mu.Lock()
+		children := h.customVarRefs[ref]
+		h.mu.Unlock()
+		if children != nil {
+			// Expanding a cached ScopeVariable's children.
+			resp.Body.Variables = h.translateScopeVariables(children)
+		} else {
+			// Top-level: decode provider index and call Variables().
+			providerIdx := (ref - customScopeBase) / customScopeStride
+			frameID := (ref - customScopeBase) % customScopeStride
+			providers := h.engine.ScopeProviders()
+			if providerIdx < len(providers) {
+				env := h.getFrameEnv(frameID)
+				if env != nil {
+					vars := providers[providerIdx].Variables(env)
+					resp.Body.Variables = h.translateScopeVariables(vars)
+				}
+			}
+		}
 	case ref >= variableRefBase:
 		// Expand a structured variable (list, map, array, tagged, native).
 		h.mu.Lock()
@@ -398,6 +446,41 @@ func (h *handler) allocVarRef(v *lisp.LVal) int {
 	id := variableRefBase + h.nextVarRef
 	h.nextVarRef++
 	h.varRefs[id] = v
+	return id
+}
+
+// translateScopeVariables converts ScopeVariable slices to DAP variables,
+// allocating custom var refs for children that support drill-down.
+func (h *handler) translateScopeVariables(vars []debugger.ScopeVariable) []dap.Variable {
+	result := make([]dap.Variable, len(vars))
+	for i, v := range vars {
+		result[i] = dap.Variable{
+			Name:               v.Name,
+			Value:              v.Value,
+			Type:               v.Type,
+			VariablesReference: h.allocCustomVarRef(v.Children),
+		}
+	}
+	return result
+}
+
+// allocCustomVarRef stores children in customVarRefs and returns a reference
+// ID for drill-down. Returns 0 if children is nil/empty (leaf variable).
+func (h *handler) allocCustomVarRef(children []debugger.ScopeVariable) int {
+	if len(children) == 0 {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.customVarRefs == nil {
+		h.customVarRefs = make(map[int][]debugger.ScopeVariable)
+	}
+	// Allocate refs in a range that won't collide with scope-level refs.
+	// Scope-level refs are customScopeBase + providerIdx*stride + frameID,
+	// which stays small. Child refs start at a high offset.
+	id := customScopeBase + 900000 + h.nextCustomVarRef
+	h.nextCustomVarRef++
+	h.customVarRefs[id] = children
 	return id
 }
 

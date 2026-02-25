@@ -1606,3 +1606,77 @@ func TestEngine_SourceLibrary(t *testing.T) {
 	e3.SetSourceLibrary(lib2)
 	assert.Equal(t, lib2, e3.SourceLibrary())
 }
+
+// testScopeProvider is a minimal ScopeProvider for testing.
+type testScopeProvider struct {
+	name      string
+	expensive bool
+	vars      func(env *lisp.LEnv) []ScopeVariable
+}
+
+func (p *testScopeProvider) Name() string    { return p.name }
+func (p *testScopeProvider) Expensive() bool { return p.expensive }
+func (p *testScopeProvider) Variables(env *lisp.LEnv) []ScopeVariable {
+	if p.vars != nil {
+		return p.vars(env)
+	}
+	return nil
+}
+
+func TestEngine_ScopeProviders(t *testing.T) {
+	t.Parallel()
+
+	t.Run("WithScopeProviders option", func(t *testing.T) {
+		t.Parallel()
+		p1 := &testScopeProvider{name: "State DB", expensive: true}
+		p2 := &testScopeProvider{name: "Cache", expensive: false}
+		e := New(WithScopeProviders(p1, p2))
+
+		providers := e.ScopeProviders()
+		require.Len(t, providers, 2)
+		assert.Equal(t, "State DB", providers[0].Name())
+		assert.True(t, providers[0].Expensive())
+		assert.Equal(t, "Cache", providers[1].Name())
+		assert.False(t, providers[1].Expensive())
+	})
+
+	t.Run("RegisterScopeProvider", func(t *testing.T) {
+		t.Parallel()
+		e := New()
+		assert.Nil(t, e.ScopeProviders())
+
+		p := &testScopeProvider{name: "Custom", expensive: false}
+		e.RegisterScopeProvider(p)
+
+		providers := e.ScopeProviders()
+		require.Len(t, providers, 1)
+		assert.Equal(t, "Custom", providers[0].Name())
+	})
+
+	t.Run("ScopeProviders returns copy", func(t *testing.T) {
+		t.Parallel()
+		p := &testScopeProvider{name: "Original"}
+		e := New(WithScopeProviders(p))
+
+		// Mutating the returned slice should not affect the engine.
+		providers := e.ScopeProviders()
+		providers[0] = &testScopeProvider{name: "Mutated"}
+
+		fresh := e.ScopeProviders()
+		assert.Equal(t, "Original", fresh[0].Name())
+	})
+
+	t.Run("combined option and register", func(t *testing.T) {
+		t.Parallel()
+		p1 := &testScopeProvider{name: "A"}
+		e := New(WithScopeProviders(p1))
+
+		p2 := &testScopeProvider{name: "B"}
+		e.RegisterScopeProvider(p2)
+
+		providers := e.ScopeProviders()
+		require.Len(t, providers, 2)
+		assert.Equal(t, "A", providers[0].Name())
+		assert.Equal(t, "B", providers[1].Name())
+	})
+}

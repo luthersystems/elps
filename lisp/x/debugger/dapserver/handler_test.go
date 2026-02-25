@@ -3672,3 +3672,409 @@ func TestDAPServer_StepNext_LineGranularity(t *testing.T) {
 	}
 	s.disconnect()
 }
+
+// scopes requests scopes for a frame and returns all scopes.
+func (s *dapTestSession) scopes(frameID int) []dap.Scope {
+	s.send(&dap.ScopesRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "scopes",
+		},
+		Arguments: dap.ScopesArguments{FrameId: frameID},
+	})
+	msg := s.read()
+	scopesResp, ok := msg.(*dap.ScopesResponse)
+	require.True(s.t, ok, "expected ScopesResponse, got %T", msg)
+	return scopesResp.Body.Scopes
+}
+
+// mockScopeProvider implements debugger.ScopeProvider for tests.
+type mockScopeProvider struct {
+	name      string
+	expensive bool
+	vars      func(env *lisp.LEnv) []debugger.ScopeVariable
+}
+
+func (m *mockScopeProvider) Name() string    { return m.name }
+func (m *mockScopeProvider) Expensive() bool { return m.expensive }
+func (m *mockScopeProvider) Variables(env *lisp.LEnv) []debugger.ScopeVariable {
+	if m.vars != nil {
+		return m.vars(env)
+	}
+	return nil
+}
+
+func TestDAPServer_CustomScopeProvider(t *testing.T) {
+	t.Parallel()
+
+	var capturedEnv *lisp.LEnv
+	provider := &mockScopeProvider{
+		name:      "State DB",
+		expensive: true,
+		vars: func(env *lisp.LEnv) []debugger.ScopeVariable {
+			capturedEnv = env
+			return []debugger.ScopeVariable{
+				{Name: "balance", Value: "1000", Type: "int"},
+				{
+					Name:  "account",
+					Value: "{...}",
+					Type:  "object",
+					Children: []debugger.ScopeVariable{
+						{Name: "owner", Value: "Alice", Type: "string"},
+						{Name: "id", Value: "42", Type: "int"},
+					},
+				},
+				{
+					Name:  "cluster",
+					Value: "{...}",
+					Type:  "object",
+					Children: []debugger.ScopeVariable{
+						{
+							Name:  "node-1",
+							Value: "{...}",
+							Type:  "object",
+							Children: []debugger.ScopeVariable{
+								{Name: "status", Value: "healthy", Type: "string"},
+							},
+						},
+					},
+				},
+			}
+		},
+	}
+
+	s := setupDAPSession(t, debugger.WithScopeProviders(provider))
+
+	// Set breakpoint inside function body (line 2).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+		resultCh <- res
+	}()
+
+	// Wait for breakpoint inside function.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Get stack trace to get frame ID.
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrameID := stResp.Body.StackFrames[0].Id
+
+	// Request scopes — should have Local, Package, State DB.
+	allScopes := s.scopes(topFrameID)
+	require.Len(t, allScopes, 3, "expected 3 scopes (Local, Package, State DB)")
+	assert.Equal(t, "Local", allScopes[0].Name)
+	assert.Equal(t, "Package", allScopes[1].Name)
+	assert.Equal(t, "State DB", allScopes[2].Name)
+	assert.True(t, allScopes[2].Expensive)
+
+	// Request variables for the custom scope.
+	customRef := allScopes[2].VariablesReference
+	vars := s.variables(customRef)
+	require.Len(t, vars, 3)
+	assert.Equal(t, "balance", vars[0].Name)
+	assert.Equal(t, "1000", vars[0].Value)
+	assert.Equal(t, "int", vars[0].Type)
+	assert.Equal(t, 0, vars[0].VariablesReference, "leaf variable should have ref 0")
+
+	assert.Equal(t, "account", vars[1].Name)
+	assert.Equal(t, "{...}", vars[1].Value)
+	assert.Greater(t, vars[1].VariablesReference, 0, "variable with children should have ref > 0")
+
+	// Verify the env parameter was passed to the provider.
+	require.NotNil(t, capturedEnv, "Variables() should receive non-nil env")
+
+	// Drill into the account variable's children (2-level).
+	children := s.variables(vars[1].VariablesReference)
+	require.Len(t, children, 2)
+	assert.Equal(t, "owner", children[0].Name)
+	assert.Equal(t, "Alice", children[0].Value)
+	assert.Equal(t, "string", children[0].Type)
+	assert.Equal(t, "id", children[1].Name)
+	assert.Equal(t, "42", children[1].Value)
+	assert.Equal(t, "int", children[1].Type)
+
+	// Drill into the cluster variable (3-level nesting).
+	assert.Equal(t, "cluster", vars[2].Name)
+	assert.Greater(t, vars[2].VariablesReference, 0)
+	clusterChildren := s.variables(vars[2].VariablesReference)
+	require.Len(t, clusterChildren, 1)
+	assert.Equal(t, "node-1", clusterChildren[0].Name)
+	assert.Greater(t, clusterChildren[0].VariablesReference, 0, "nested node should have children ref")
+
+	// Drill to leaf level (3rd level).
+	nodeChildren := s.variables(clusterChildren[0].VariablesReference)
+	require.Len(t, nodeChildren, 1)
+	assert.Equal(t, "status", nodeChildren[0].Name)
+	assert.Equal(t, "healthy", nodeChildren[0].Value)
+	assert.Equal(t, "string", nodeChildren[0].Type)
+	assert.Equal(t, 0, nodeChildren[0].VariablesReference, "leaf should have ref 0")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+// TestDAPServer_CustomScopeProvider_Cleanup verifies that custom variable
+// references are cleaned up when execution resumes (EventContinued). Old
+// drill-down refs from a previous pause should not resolve after continue.
+func TestDAPServer_CustomScopeProvider_Cleanup(t *testing.T) {
+	t.Parallel()
+
+	provider := &mockScopeProvider{
+		name:      "State DB",
+		expensive: false,
+		vars: func(env *lisp.LEnv) []debugger.ScopeVariable {
+			return []debugger.ScopeVariable{
+				{
+					Name:  "record",
+					Value: "{...}",
+					Type:  "object",
+					Children: []debugger.ScopeVariable{
+						{Name: "key", Value: "abc", Type: "string"},
+					},
+				},
+			}
+		},
+	}
+
+	s := setupDAPSession(t, debugger.WithScopeProviders(provider))
+
+	// Set breakpoints on line 2 (inside f) and line 4 (inside g).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}, {Line: 4}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test",
+			"(defun f (x)\n  (+ x 1))\n(defun g (y)\n  (+ y 2))\n(f 10)\n(g 20)")
+		resultCh <- res
+	}()
+
+	// First breakpoint (line 2 inside f).
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrameID := stResp.Body.StackFrames[0].Id
+
+	allScopes := s.scopes(topFrameID)
+	require.Len(t, allScopes, 3)
+	vars := s.variables(allScopes[2].VariablesReference)
+	require.Len(t, vars, 1)
+	assert.Greater(t, vars[0].VariablesReference, 0)
+
+	// Save the old drill-down ref.
+	oldChildRef := vars[0].VariablesReference
+
+	// Verify it works while paused.
+	children := s.variables(oldChildRef)
+	require.Len(t, children, 1)
+	assert.Equal(t, "key", children[0].Name)
+
+	// Continue — this should clear customVarRefs.
+	s.continueExec()
+
+	// Second breakpoint (line 4 inside g).
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// The old drill-down ref should no longer resolve.
+	staleVars := s.variables(oldChildRef)
+	assert.Empty(t, staleVars, "old custom var ref should be invalidated after continue")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_MultipleScopeProviders(t *testing.T) {
+	t.Parallel()
+
+	p1 := &mockScopeProvider{
+		name:      "State DB",
+		expensive: true,
+		vars: func(env *lisp.LEnv) []debugger.ScopeVariable {
+			return []debugger.ScopeVariable{
+				{Name: "key1", Value: "val1"},
+			}
+		},
+	}
+	p2 := &mockScopeProvider{
+		name:      "Cache",
+		expensive: false,
+		vars: func(env *lisp.LEnv) []debugger.ScopeVariable {
+			return []debugger.ScopeVariable{
+				{Name: "hit-rate", Value: "0.95", Type: "float"},
+			}
+		},
+	}
+
+	s := setupDAPSession(t, debugger.WithScopeProviders(p1, p2))
+
+	// Set breakpoint inside function body (line 2).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+		resultCh <- res
+	}()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrameID := stResp.Body.StackFrames[0].Id
+
+	// Should have 4 scopes: Local, Package, State DB, Cache.
+	allScopes := s.scopes(topFrameID)
+	require.Len(t, allScopes, 4)
+	assert.Equal(t, "Local", allScopes[0].Name)
+	assert.Equal(t, "Package", allScopes[1].Name)
+	assert.Equal(t, "State DB", allScopes[2].Name)
+	assert.True(t, allScopes[2].Expensive)
+	assert.Equal(t, "Cache", allScopes[3].Name)
+	assert.False(t, allScopes[3].Expensive)
+
+	// Verify each provider returns correct variables.
+	vars1 := s.variables(allScopes[2].VariablesReference)
+	require.Len(t, vars1, 1)
+	assert.Equal(t, "key1", vars1[0].Name)
+	assert.Equal(t, "val1", vars1[0].Value)
+
+	vars2 := s.variables(allScopes[3].VariablesReference)
+	require.Len(t, vars2, 1)
+	assert.Equal(t, "hit-rate", vars2[0].Name)
+	assert.Equal(t, "0.95", vars2[0].Value)
+	assert.Equal(t, "float", vars2[0].Type)
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_CustomScopeProvider_Empty(t *testing.T) {
+	t.Parallel()
+
+	provider := &mockScopeProvider{
+		name:      "Empty Scope",
+		expensive: false,
+		vars:      func(env *lisp.LEnv) []debugger.ScopeVariable { return nil },
+	}
+
+	s := setupDAPSession(t, debugger.WithScopeProviders(provider))
+
+	// Set breakpoint inside function body (line 2).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+		resultCh <- res
+	}()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrameID := stResp.Body.StackFrames[0].Id
+
+	// Scope should appear even when empty.
+	allScopes := s.scopes(topFrameID)
+	require.Len(t, allScopes, 3)
+	assert.Equal(t, "Empty Scope", allScopes[2].Name)
+	assert.Greater(t, allScopes[2].VariablesReference, 0,
+		"empty scope should still have a valid VariablesReference for DAP clients")
+
+	// Variables request returns empty list.
+	vars := s.variables(allScopes[2].VariablesReference)
+	assert.Empty(t, vars)
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
