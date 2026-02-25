@@ -3422,7 +3422,7 @@ func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
 	t.Parallel()
 	s := setupDAPSession(t)
 
-	// Set breakpoint on line 3 (the call to (inner 5) inside outer).
+	// Set breakpoint on line 4 (the call to (inner 5) inside outer).
 	s.send(&dap.SetBreakpointsRequest{
 		Request: dap.Request{
 			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
@@ -3430,7 +3430,7 @@ func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
 		},
 		Arguments: dap.SetBreakpointsArguments{
 			Source:      dap.Source{Path: "test"},
-			Breakpoints: []dap.SourceBreakpoint{{Line: 3}},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 4}},
 		},
 	})
 	s.read() // SetBreakpointsResponse
@@ -3438,19 +3438,21 @@ func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
 
 	env := newDAPTestEnv(t, s.engine)
 	resultCh := make(chan *lisp.LVal, 1)
-	// inner's body is on line 2. outer calls (inner 5) on line 3.
-	// A single step-in from line 3 should enter inner's body (line 2),
-	// skipping sub-expressions (inner, 5) that are on line 3.
+	// inner's body is on line 2 (multi-line defun so body line is unambiguous).
+	// outer calls (inner 5) on line 4.
+	// A single step-in from line 4 should enter inner's body (line 2),
+	// skipping sub-expressions (inner, 5) that are on line 4.
 	go func() {
 		res := env.LoadString("test",
-			"(defun inner (x) (+ x 100))\n"+ // line 1
-				"(defun outer ()\n"+               // line 2 (defun header, not in body)
-				"  (inner 5))\n"+                  // line 3
-				"(outer)")                         // line 4
+			"(defun inner (x)\n"+  // line 1
+				"  (+ x 100))\n"+      // line 2 (inner's body)
+				"(defun outer ()\n"+   // line 3
+				"  (inner 5))\n"+      // line 4
+				"(outer)")             // line 5
 		resultCh <- res
 	}()
 
-	// Wait for breakpoint on line 3.
+	// Wait for breakpoint on line 4.
 	require.Eventually(t, func() bool {
 		return s.engine.IsPaused()
 	}, 2*time.Second, 10*time.Millisecond)
@@ -3458,7 +3460,7 @@ func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
 
 	st0 := s.stackTrace()
 	require.Greater(t, len(st0.Body.StackFrames), 0)
-	assert.Equal(t, 3, st0.Body.StackFrames[0].Line, "should be on line 3")
+	assert.Equal(t, 4, st0.Body.StackFrames[0].Line, "should be on line 4")
 	outerDepth := len(st0.Body.StackFrames)
 
 	// Clear breakpoints.
@@ -3475,7 +3477,7 @@ func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
 	s.read() // SetBreakpointsResponse
 
 	// Step in with default (line) granularity — should enter inner's body
-	// in a single step, skipping the sub-expressions on line 3.
+	// in a single step, skipping the sub-expressions on line 4.
 	s.send(&dap.StepInRequest{
 		Request: dap.Request{
 			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
@@ -3492,12 +3494,11 @@ func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
 
 	st1 := s.stackTrace()
 	require.Greater(t, len(st1.Body.StackFrames), 0)
-	// Should have entered inner's body — stack is deeper and line is 1
-	// (inner is defined on line 1: "(defun inner (x) (+ x 100))").
+	// Should have entered inner's body — stack is deeper and line is 2.
 	assert.Greater(t, len(st1.Body.StackFrames), outerDepth,
 		"step-in should enter inner (deeper stack)")
-	assert.Equal(t, 1, st1.Body.StackFrames[0].Line,
-		"step-in should enter inner's body on line 1")
+	assert.Equal(t, 2, st1.Body.StackFrames[0].Line,
+		"step-in should enter inner's body on line 2")
 
 	// Continue to finish.
 	s.continueExec()
@@ -3505,6 +3506,7 @@ func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
 	select {
 	case res := <-resultCh:
 		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+		assert.Equal(t, 105, res.Int, "expected (inner 5) = 105")
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")
 	}
@@ -3534,9 +3536,11 @@ func TestDAPServer_StepIn_InstructionGranularity(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent
 
-	// Record the initial expression at stop-on-entry.
+	// Record the initial expression at stop-on-entry: (+ 1 2) is an s-expr.
 	_, entryExpr := s.engine.PausedState()
 	require.NotNil(t, entryExpr)
+	assert.Equal(t, lisp.LSExpr, entryExpr.Type,
+		"stop-on-entry should pause on the s-expression (+ 1 2)")
 
 	// Step in with "instruction" granularity — should pause on the very next
 	// sub-expression even though it's on the same line.
@@ -3563,9 +3567,10 @@ func TestDAPServer_StepIn_InstructionGranularity(t *testing.T) {
 	require.NotNil(t, pausedExpr.Source)
 	assert.Equal(t, 1, pausedExpr.Source.Line,
 		"instruction granularity should pause on same-line sub-expression")
-	// The expression must have changed — we moved to a different sub-expression.
-	assert.NotEqual(t, entryExpr, pausedExpr,
-		"instruction step should advance to a different expression")
+	// The paused expression must be a sub-expression of (+ 1 2), not the
+	// s-expression itself — confirming we advanced within the same line.
+	assert.NotEqual(t, lisp.LSExpr, pausedExpr.Type,
+		"instruction step should advance to a sub-expression (atom), not remain on the s-expression")
 
 	// Continue to finish.
 	s.continueExec()
@@ -3619,6 +3624,7 @@ func TestDAPServer_StepNext_LineGranularity(t *testing.T) {
 
 	st0 := s.stackTrace()
 	assert.Equal(t, 3, st0.Body.StackFrames[0].Line)
+	preStepDepth := len(st0.Body.StackFrames)
 
 	// Clear breakpoints.
 	s.send(&dap.SetBreakpointsRequest{
@@ -3652,6 +3658,8 @@ func TestDAPServer_StepNext_LineGranularity(t *testing.T) {
 	st1 := s.stackTrace()
 	assert.Equal(t, 4, st1.Body.StackFrames[0].Line,
 		"step-over with line granularity should advance to line 4 in one step")
+	assert.LessOrEqual(t, len(st1.Body.StackFrames), preStepDepth,
+		"step-over should not enter a deeper call frame")
 
 	// Continue to finish.
 	s.continueExec()

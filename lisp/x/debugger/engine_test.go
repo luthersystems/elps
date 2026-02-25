@@ -139,6 +139,107 @@ func TestEngine_StepInto(t *testing.T) {
 	}
 }
 
+func TestEngine_StepInto_EntersFunction(t *testing.T) {
+	t.Parallel()
+	e := New()
+	e.Enable()
+	// Set breakpoint on line 4 (the call to inner inside outer).
+	e.Breakpoints().Set("test", 4, "")
+	env := newTestEnv(t, e)
+
+	resultCh := make(chan *lisp.LVal, 1)
+	// inner's body is on line 2. outer calls (inner 5) on line 4.
+	go func() {
+		res := env.LoadString("test",
+			"(defun inner (x)\n"+ // line 1
+				"  (+ x 100))\n"+ // line 2
+				"(defun outer ()\n"+ // line 3
+				"  (inner 5))\n"+ // line 4
+				"(outer)") // line 5
+		resultCh <- res
+	}()
+
+	// Hit breakpoint on line 4.
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	_, bpExpr := e.PausedState()
+	require.NotNil(t, bpExpr)
+	require.NotNil(t, bpExpr.Source)
+	assert.Equal(t, 4, bpExpr.Source.Line, "breakpoint should hit on line 4")
+
+	// Clear breakpoint so it doesn't interfere with stepping.
+	e.Breakpoints().Remove("test", 4)
+
+	// Step into — should enter inner's body on line 2.
+	e.StepInto()
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	_, stepExpr := e.PausedState()
+	require.NotNil(t, stepExpr)
+	require.NotNil(t, stepExpr.Source)
+	assert.Equal(t, 2, stepExpr.Source.Line,
+		"step-into from line 4 should enter inner's body on line 2")
+
+	e.Resume()
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type, "expected int result")
+		assert.Equal(t, 105, res.Int)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for eval result")
+	}
+}
+
+func TestEngine_StepInto_InstructionGranularity(t *testing.T) {
+	t.Parallel()
+	e := New(WithStopOnEntry(true))
+	e.Enable()
+	env := newTestEnv(t, e)
+
+	resultCh := make(chan *lisp.LVal, 1)
+	// Single-line expression: instruction granularity should pause on
+	// each sub-expression within the same line.
+	go func() {
+		res := env.LoadString("test", "(+ 1 2)")
+		resultCh <- res
+	}()
+
+	// Stop on entry at (+ 1 2).
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	_, entryExpr := e.PausedState()
+	require.NotNil(t, entryExpr)
+	assert.Equal(t, lisp.LSExpr, entryExpr.Type, "stop on entry at the s-expression")
+
+	// Set instruction granularity and step — should pause on a sub-expression
+	// on the same line (unlike default line-level which would skip to end).
+	e.SetStepGranularity("instruction")
+	e.StepInto()
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	_, stepExpr := e.PausedState()
+	require.NotNil(t, stepExpr)
+	require.NotNil(t, stepExpr.Source)
+	assert.Equal(t, 1, stepExpr.Source.Line, "instruction step pauses on same line")
+	assert.NotEqual(t, lisp.LSExpr, stepExpr.Type,
+		"instruction step should advance to a sub-expression (atom)")
+
+	e.Resume()
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type)
+		assert.Equal(t, 3, res.Int)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for eval result")
+	}
+}
+
 func TestEngine_ExceptionBreakpoint(t *testing.T) {
 	t.Parallel()
 	var stopReason StopReason

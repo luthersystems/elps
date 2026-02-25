@@ -295,19 +295,25 @@ func TestStepper_StepInto_LineGranularity_LesserDepth(t *testing.T) {
 	s := NewStepper()
 	s.SetStepInto(3, "", "test.lisp", 5)
 
-	// Lesser depth, same line → pause (returned from a call).
-	// Lesser depth means currentDepth < s.depth, so the condition
-	// `currentDepth <= s.depth` is true, but we're at a lesser depth
-	// which means we left the current scope — this should still pause
-	// because same-line suppression only applies at same or lesser depth.
-	// Actually, the isSameLine check AND currentDepth <= s.depth both hold,
-	// so this is suppressed. But that's correct: if we returned to a
-	// shallower frame on the same source line, it's a sub-expression
-	// evaluation completing, and the next different-line eval will pause.
+	// Lesser depth, same line → suppressed. Same-line check applies at
+	// any depth <= s.depth, so a sub-expression completing at a shallower
+	// frame on the same line is still "same line" and gets skipped.
 	assert.False(t, s.ShouldPause(2, "test.lisp", 5))
 	assert.Equal(t, StepInto, s.Mode())
 
 	// Different line at lesser depth → pause.
 	assert.True(t, s.ShouldPause(2, "test.lisp", 6))
+	assert.Equal(t, StepNone, s.Mode())
+}
+
+func TestStepper_StepOver_InstructionGranularity_SameLine(t *testing.T) {
+	t.Parallel()
+	s := NewStepper()
+	// StepOver with instruction granularity at same depth, same line.
+	s.SetStepOver(2, "instruction", "test.lisp", 5)
+
+	// Same file+line, same depth → should pause (instruction level skips
+	// the same-line suppression).
+	assert.True(t, s.ShouldPause(2, "test.lisp", 5))
 	assert.Equal(t, StepNone, s.Mode())
 }
