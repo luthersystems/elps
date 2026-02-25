@@ -3,6 +3,7 @@
 package dapserver
 
 import (
+	"encoding/json"
 	"log"
 	"sync"
 
@@ -25,9 +26,11 @@ type handler struct {
 	server *Server
 	engine *debugger.Engine
 
-	mu          sync.Mutex
-	initialized bool
-	stoppedSent bool // true if a stopped event has been sent via the event callback
+	mu              sync.Mutex
+	initialized     bool
+	stopOnEntry     bool // client's stopOnEntry preference from attach/launch args
+	stopOnEntrySet  bool // true if client sent attach/launch with stopOnEntry preference
+	stoppedSent     bool // true if a stopped event has been sent via the event callback
 
 	// frameEnvs caches the environments for each stack frame when paused.
 	// Indexed by frame ID (1-based, most recent first).
@@ -231,15 +234,21 @@ func (h *handler) onConfigurationDone(req *dap.ConfigurationDoneRequest) {
 	h.engine.SignalReady()
 
 	// If the eval goroutine already paused (e.g., stopOnEntry fired before
-	// the client connected), send the stopped event now — but only if the
-	// event callback hasn't already sent one. This handles the late-connect
-	// case where the engine paused before newHandler registered the callback.
+	// the client connected), handle according to client preference:
+	// - If client sent attach/launch with stopOnEntry:false, resume silently
+	// - Otherwise, send the stopped event (late-connect case)
 	h.mu.Lock()
 	alreadySent := h.stoppedSent
+	clientSet := h.stopOnEntrySet
+	clientStopOnEntry := h.stopOnEntry
 	h.mu.Unlock()
 	if !alreadySent && h.engine.IsPaused() {
-		reason := debugger.StopEntry
-		h.sendStoppedEvent(reason, nil)
+		if clientSet && !clientStopOnEntry {
+			h.engine.Resume()
+		} else {
+			reason := debugger.StopEntry
+			h.sendStoppedEvent(reason, nil)
+		}
 	}
 }
 
@@ -478,12 +487,32 @@ func (h *handler) onAttach(req *dap.AttachRequest) {
 	resp := &dap.AttachResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	h.send(resp)
+
+	// Parse stopOnEntry from client arguments. Default is false per DAP spec.
+	// Override the engine's stopOnEntry immediately so it is set before the
+	// eval goroutine starts (which may happen right after configurationDone).
+	stop := parseStopOnEntry(req.Arguments)
+	h.mu.Lock()
+	h.stopOnEntry = stop
+	h.stopOnEntrySet = true
+	h.mu.Unlock()
+	h.engine.SetStopOnEntry(stop)
 }
 
 func (h *handler) onLaunch(req *dap.LaunchRequest) {
 	resp := &dap.LaunchResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	h.send(resp)
+
+	// Parse stopOnEntry from client arguments. Default is false per DAP spec.
+	// Override the engine's stopOnEntry immediately so it is set before the
+	// eval goroutine starts (which may happen right after configurationDone).
+	stop := parseStopOnEntry(req.Arguments)
+	h.mu.Lock()
+	h.stopOnEntry = stop
+	h.stopOnEntrySet = true
+	h.mu.Unlock()
+	h.engine.SetStopOnEntry(stop)
 }
 
 func (h *handler) onPause(req *dap.PauseRequest) {
@@ -599,4 +628,21 @@ func (h *handler) newEvent(event string) dap.Event {
 		ProtocolMessage: dap.ProtocolMessage{Seq: h.server.nextSeq(), Type: "event"},
 		Event:           event,
 	}
+}
+
+// parseStopOnEntry extracts the boolean stopOnEntry field from raw JSON
+// arguments (as sent by attach/launch requests). Returns false if the
+// field is absent, the JSON is nil/empty, or parsing fails — matching the
+// DAP specification default.
+func parseStopOnEntry(args json.RawMessage) bool {
+	if len(args) == 0 {
+		return false
+	}
+	var parsed struct {
+		StopOnEntry bool `json:"stopOnEntry"`
+	}
+	if err := json.Unmarshal(args, &parsed); err != nil {
+		return false
+	}
+	return parsed.StopOnEntry
 }

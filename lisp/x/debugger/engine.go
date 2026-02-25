@@ -137,6 +137,17 @@ func WithStopOnEntry(stop bool) Option {
 	}
 }
 
+// SetStopOnEntry overrides the stop-on-entry flag at runtime. This allows
+// a DAP handler to reflect the client's stopOnEntry preference, which may
+// differ from the embedder's WithStopOnEntry option. It is safe to call
+// before evaluation starts. If called while the engine is already paused on
+// entry, the caller must also Resume the engine to unblock it.
+func (e *Engine) SetStopOnEntry(stop bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stopOnEntry = stop
+}
+
 // WithSourceRoot sets an absolute directory path used to resolve relative
 // Source.Path values into absolute paths. This allows DAP clients (VS Code)
 // to open source files from stack frames. Embedders should pass the root

@@ -2,6 +2,7 @@ package dapserver
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -477,6 +478,26 @@ func readDAPMessage(t *testing.T, r *bufio.Reader) dap.Message {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout reading DAP message")
 		return nil
+	}
+}
+
+// tryReadDAPMessage attempts to read a DAP message within the given timeout.
+// Returns the message and true if one was received, or nil and false if the
+// timeout elapsed without receiving a message.
+func tryReadDAPMessage(r *bufio.Reader, timeout time.Duration) (dap.Message, bool) {
+	done := make(chan dap.Message, 1)
+	go func() {
+		msg, err := dap.ReadProtocolMessage(r)
+		if err != nil {
+			return
+		}
+		done <- msg
+	}()
+	select {
+	case msg := <-done:
+		return msg, true
+	case <-time.After(timeout):
+		return nil, false
 	}
 }
 
@@ -3068,6 +3089,154 @@ func TestDAPServer_SourceLibraryMissing(t *testing.T) {
 	require.True(t, ok, "expected ErrorResponse, got %T", msg)
 	assert.False(t, errResp.Success)
 	assert.Equal(t, "source not available", errResp.Message)
+
+	s.disconnect()
+}
+
+// TestDAPServer_StopOnEntry_AttachTrue verifies that when the client sends
+// attach with stopOnEntry:true, the handler sends a stopped event on entry.
+func TestDAPServer_StopOnEntry_AttachTrue(t *testing.T) {
+	t.Parallel()
+	// Engine is configured to stop on entry.
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Client sends attach with stopOnEntry: true.
+	args, err := json.Marshal(map[string]interface{}{"stopOnEntry": true})
+	require.NoError(t, err)
+	s.send(&dap.AttachRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "attach",
+		},
+		Arguments: json.RawMessage(args),
+	})
+	msg := s.read()
+	_, ok := msg.(*dap.AttachResponse)
+	require.True(t, ok, "expected AttachResponse, got %T", msg)
+
+	s.configDone()
+
+	// Launch program -- engine should pause on entry.
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(+ 1 2)")
+		resultCh <- res
+	}()
+
+	// Should stop on entry.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not stop on entry")
+
+	stoppedMsg := s.read()
+	_, ok = stoppedMsg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+
+	// Continue to let the program finish.
+	s.continueExec()
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type)
+		assert.Equal(t, 3, res.Int)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for program result")
+	}
+
+	s.disconnect()
+}
+
+// TestDAPServer_StopOnEntry_AttachFalse verifies that when the client sends
+// attach with stopOnEntry:false, the engine resumes silently even though the
+// engine was configured with WithStopOnEntry(true).
+func TestDAPServer_StopOnEntry_AttachFalse(t *testing.T) {
+	t.Parallel()
+	// Engine is configured to stop on entry, but client overrides.
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Client sends attach with stopOnEntry: false.
+	args, err := json.Marshal(map[string]interface{}{"stopOnEntry": false})
+	require.NoError(t, err)
+	s.send(&dap.AttachRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "attach",
+		},
+		Arguments: json.RawMessage(args),
+	})
+	msg := s.read()
+	_, ok := msg.(*dap.AttachResponse)
+	require.True(t, ok, "expected AttachResponse, got %T", msg)
+
+	s.configDone()
+
+	// Launch program -- engine should NOT stop on entry because client
+	// said stopOnEntry: false.
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(+ 1 2)")
+		resultCh <- res
+	}()
+
+	// The program should run to completion without stopping.
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type, "expected int result")
+		assert.Equal(t, 3, res.Int)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout: program did not complete -- engine likely paused on entry when it should not have")
+	}
+
+	// Verify engine is not paused.
+	assert.False(t, s.engine.IsPaused(), "engine should not be paused after stopOnEntry:false")
+
+	s.disconnect()
+}
+
+// TestDAPServer_StopOnEntry_AttachAbsent verifies that when the client sends
+// attach without a stopOnEntry field, the default behavior is to NOT stop on
+// entry (per DAP spec, the default for stopOnEntry is false).
+func TestDAPServer_StopOnEntry_AttachAbsent(t *testing.T) {
+	t.Parallel()
+	// Engine is configured to stop on entry, but client does not include
+	// stopOnEntry in the attach arguments -- default should be false.
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Client sends attach with no stopOnEntry field.
+	s.send(&dap.AttachRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "attach",
+		},
+	})
+	msg := s.read()
+	_, ok := msg.(*dap.AttachResponse)
+	require.True(t, ok, "expected AttachResponse, got %T", msg)
+
+	s.configDone()
+
+	// Launch program -- engine should NOT stop on entry because the
+	// default for stopOnEntry is false.
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(+ 1 2)")
+		resultCh <- res
+	}()
+
+	// The program should run to completion without stopping.
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type, "expected int result")
+		assert.Equal(t, 3, res.Int)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout: program did not complete -- engine likely paused on entry when it should not have")
+	}
+
+	// Verify engine is not paused.
+	assert.False(t, s.engine.IsPaused(), "engine should not be paused after absent stopOnEntry")
 
 	s.disconnect()
 }
