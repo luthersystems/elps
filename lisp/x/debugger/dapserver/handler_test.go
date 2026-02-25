@@ -2739,6 +2739,287 @@ func TestDAPServer_VariableFormatterNative(t *testing.T) {
 	s.disconnect()
 }
 
+// TestDAPServer_StepIntoNestedCalls exercises step-in through nested function
+// calls (outer → middle → inner), then step-out back up the call stack. This
+// stresses the stepper's depth tracking and the DAP message ordering between
+// step responses and stopped events from different goroutines.
+func TestDAPServer_StepIntoNestedCalls(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	// Set breakpoint inside outer's body (line 9: the (middle 5) call).
+	// This ensures we have at least one stack frame when the breakpoint fires.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 9}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	// Program with three levels of nesting. Each function has a
+	// continuation expression AFTER the nested call so step-out has
+	// somewhere to land (otherwise tail-position calls unwind without
+	// any OnEval, and the stepper can never fire).
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test",
+			"(defun inner (x)\n"+   //  1
+				"  (+ x 100))\n"+   //  2
+				"\n"+               //  3
+				"(defun middle (x)\n"+     //  4
+				"  (set 'tmp (inner (* x 2)))\n"+ //  5
+				"  tmp)\n"+         //  6
+				"\n"+               //  7
+				"(defun outer ()\n"+       //  8
+				"  (set 'res (middle 5))\n"+ //  9
+				"  res)\n"+         // 10
+				"\n"+               // 11
+				"(outer)\n")        // 12
+		resultCh <- res
+	}()
+
+	// Wait for breakpoint at line 9 (inside outer, on the (middle 5) call).
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (breakpoint)
+
+	st0 := s.stackTrace()
+	outerDepth := len(st0.Body.StackFrames)
+	require.Greater(t, outerDepth, 0, "should have frames inside outer")
+	assert.Equal(t, 9, st0.Body.StackFrames[0].Line, "should be at line 9")
+
+	// Clear breakpoints to avoid re-fire inside nested calls.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+
+	// stepInUntilDeeper steps in repeatedly until the stack depth increases
+	// beyond the given baseline. In ELPS, step-in advances one expression
+	// at a time — the interpreter may evaluate sub-expressions (symbol lookup,
+	// argument evaluation) at the current depth before entering a function call.
+	stepInUntilDeeper := func(baseline int, label string) int {
+		t.Helper()
+		for range 20 {
+			s.send(&dap.StepInRequest{
+				Request: dap.Request{
+					ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+					Command:         "stepIn",
+				},
+				Arguments: dap.StepInArguments{ThreadId: elpsThreadID},
+			})
+			s.read() // StepInResponse
+			require.Eventually(t, func() bool {
+				return s.engine.IsPaused()
+			}, 2*time.Second, 10*time.Millisecond, "%s: engine did not pause", label)
+			s.read() // StoppedEvent
+
+			st := s.stackTrace()
+			if len(st.Body.StackFrames) > baseline {
+				return len(st.Body.StackFrames)
+			}
+		}
+		t.Fatalf("%s: stack depth never exceeded %d after 20 step-ins", label, baseline)
+		return 0
+	}
+
+	// --- Step into middle ---
+	middleDepth := stepInUntilDeeper(outerDepth, "entering middle")
+
+	// --- Step into inner ---
+	innerDepth := stepInUntilDeeper(middleDepth, "entering inner")
+
+	// --- Step out from inner back toward outer ---
+	s.send(&dap.StepOutRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stepOut",
+		},
+		Arguments: dap.StepOutArguments{ThreadId: elpsThreadID},
+	})
+	s.read() // StepOutResponse
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	st3 := s.stackTrace()
+	assert.Less(t, len(st3.Body.StackFrames), innerDepth,
+		"step-out should decrease stack depth (returned from inner)")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case res := <-resultCh:
+		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for program to finish")
+	}
+
+	s.disconnect()
+}
+
+// TestDAPServer_RapidStepSequence sends multiple step operations in quick
+// succession to stress test the synchronization between the DAP handler
+// goroutine and the eval goroutine. Each step must properly wait for the
+// previous one to complete (engine paused) before proceeding.
+func TestDAPServer_RapidStepSequence(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test",
+			"(defun f (n)\n"+
+				"  (if (<= n 0)\n"+
+				"    0\n"+
+				"    (+ n (f (- n 1)))))\n"+
+				"(f 3)\n")
+		resultCh <- res
+	}()
+
+	// Wait for stop-on-entry.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Perform 10 rapid step-in operations, verifying each one pauses.
+	for i := range 10 {
+		s.send(&dap.StepInRequest{
+			Request: dap.Request{
+				ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+				Command:         "stepIn",
+			},
+			Arguments: dap.StepInArguments{ThreadId: elpsThreadID},
+		})
+		msg := s.read()
+		_, ok := msg.(*dap.StepInResponse)
+		require.True(t, ok, "step %d: expected StepInResponse, got %T", i, msg)
+
+		require.Eventually(t, func() bool {
+			return s.engine.IsPaused()
+		}, 2*time.Second, 10*time.Millisecond, "step %d: engine did not pause", i)
+		s.read() // StoppedEvent
+	}
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case res := <-resultCh:
+		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+
+	s.disconnect()
+}
+
+// TestDAPServer_StepOutTailPosition documents a known limitation: step-out
+// from a function in tail position (where the call result IS the return value
+// of every enclosing caller) causes the program to run to completion instead
+// of pausing. This happens because the call chain unwinds without passing
+// through any OnEval calls, so the stepper never fires.
+func TestDAPServer_StepOutTailPosition(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	// Set breakpoint inside inner (line 2).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	// All calls are in tail position: outer → middle → inner.
+	// Step-out from inner has nowhere to land.
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test",
+			"(defun inner (x)\n"+ //  1
+				"  (+ x 100))\n"+ //  2
+				"(defun middle (x)\n"+  //  3
+				"  (inner (* x 2)))\n"+ //  4
+				"(defun outer ()\n"+    //  5
+				"  (middle 5))\n"+      //  6
+				"(outer)\n")            //  7
+		resultCh <- res
+	}()
+
+	// Wait for breakpoint inside inner.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	st := s.stackTrace()
+	require.Greater(t, len(st.Body.StackFrames), 0)
+	assert.Equal(t, 2, st.Body.StackFrames[0].Line)
+
+	// Clear breakpoints, then step-out.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+
+	s.send(&dap.StepOutRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stepOut",
+		},
+		Arguments: dap.StepOutArguments{ThreadId: elpsThreadID},
+	})
+	s.read() // StepOutResponse
+
+	// BUG: step-out from tail position runs to completion without pausing.
+	// The program finishes because the call chain (inner → middle → outer)
+	// unwinds without any OnEval calls at a lesser depth.
+	select {
+	case res := <-resultCh:
+		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+		// The program completed — step-out didn't pause. This confirms the
+		// known limitation with tail-position step-out.
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout — program should have completed")
+	}
+
+	s.disconnect()
+}
+
 // TestDAPServer_SourceLibraryMissing verifies that when a SourceLibrary
 // is configured but the requested file does not exist, the error response
 // is returned instead of crashing.
