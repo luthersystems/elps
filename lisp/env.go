@@ -259,7 +259,7 @@ func (env *LEnv) LoadLocation(name string, loc string, r io.Reader) *LVal {
 
 	reader, ok := env.Runtime.Reader.(LocationReader)
 	if !ok {
-		return env.Load(name, r)
+		return env.Load(loc, r)
 	}
 	exprs, err := reader.ReadLocation(name, loc, r)
 	if err != nil {

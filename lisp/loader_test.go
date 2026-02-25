@@ -3,6 +3,8 @@
 package lisp_test
 
 import (
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -93,4 +95,44 @@ func TestLoadFile_noSourceLibrary(t *testing.T) {
 	env.Runtime.Reader = parser.NewReader()
 	lok := env.LoadFile("testfixtures/test1.lisp")
 	assert.Equal(t, lok.Type, lisp.LError)
+}
+
+// plainReader wraps a lisp.Reader, exposing only the Read method so that the
+// wrapper intentionally does NOT implement lisp.LocationReader.  This forces
+// LoadLocation to take its fallback path.
+type plainReader struct {
+	inner lisp.Reader
+	// lastName records the name argument from the most recent Read call.
+	lastName string
+}
+
+func (r *plainReader) Read(name string, rd io.Reader) ([]*lisp.LVal, error) {
+	r.lastName = name
+	return r.inner.Read(name, rd)
+}
+
+// TestLoadLocation_fallbackUsesLoc verifies that LoadLocation passes the loc
+// argument (not name) to Read when the Reader does not implement
+// LocationReader.  This is the regression test for issue #119: stack frames
+// reported the loading file instead of the loaded file.
+func TestLoadLocation_fallbackUsesLoc(t *testing.T) {
+	env := lisp.NewEnv(nil)
+	lerr := lisp.InitializeUserEnv(env)
+	if !lerr.IsNil() {
+		t.Fatalf("environment initialization failure: %v", lerr)
+	}
+
+	pr := &plainReader{inner: parser.NewReader()}
+	env.Runtime.Reader = pr
+
+	src := strings.NewReader(`(+ 1 2)`)
+	result := env.LoadLocation("loader.lisp", "actual-file.lisp", src)
+	if result.Type == lisp.LError {
+		t.Fatalf("LoadLocation failed: %v", result)
+	}
+
+	// The fallback path should pass loc ("actual-file.lisp") to Read, not
+	// name ("loader.lisp").
+	assert.Equal(t, "actual-file.lisp", pr.lastName,
+		"LoadLocation fallback should pass loc to Read, not name")
 }
