@@ -82,7 +82,8 @@ type Engine struct {
 	lastContinuedKey    string            // suppress breakpoint re-hit after continue on same line
 	funBreakpoints      map[string]string // qualified name → user-provided name
 
-	stepOutReturned bool // set by OnFunReturn when step-out condition detected pre-pop
+	stepGranularity string // DAP stepping granularity ("instruction" or line-level default)
+	stepOutReturned bool   // set by OnFunReturn when step-out condition detected pre-pop
 
 	// pauseCh is used by the eval goroutine to block in WaitIfPaused.
 	// The DAP server sends DebugAction values to resume execution.
@@ -401,7 +402,13 @@ func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
 
 	// Check stepping.
 	depth := len(env.Runtime.Stack.Frames)
-	if e.stepper.ShouldPause(depth) {
+	var stepFile string
+	var stepLine int
+	if expr.Source != nil {
+		stepFile = expr.Source.File
+		stepLine = expr.Source.Line
+	}
+	if e.stepper.ShouldPause(depth, stepFile, stepLine) {
 		return true
 	}
 
@@ -528,11 +535,21 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 
 	// Configure stepper based on action.
 	depth := len(env.Runtime.Stack.Frames)
+	e.mu.Lock()
+	gran := e.stepGranularity
+	e.stepGranularity = "" // consume
+	e.mu.Unlock()
+	var file string
+	var line int
+	if expr.Source != nil {
+		file = expr.Source.File
+		line = expr.Source.Line
+	}
 	switch action {
 	case lisp.DebugStepInto:
-		e.stepper.SetStepInto()
+		e.stepper.SetStepInto(depth, gran, file, line)
 	case lisp.DebugStepOver:
-		e.stepper.SetStepOver(depth)
+		e.stepper.SetStepOver(depth, gran, file, line)
 	case lisp.DebugStepOut:
 		e.stepper.SetStepOut(depth)
 	default:
@@ -641,6 +658,16 @@ func (e *Engine) OnError(env *lisp.LEnv, lerr *lisp.LVal) bool {
 	}
 	e.mu.Unlock()
 	return e.breakpoints.ExceptionBreak() == ExceptionBreakAll
+}
+
+// SetStepGranularity sets the stepping granularity for the next step command.
+// The value is consumed by WaitIfPaused when configuring the stepper.
+// Use "instruction" for expression-level stepping; any other value (including
+// empty) defaults to line-level stepping.
+func (e *Engine) SetStepGranularity(g string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stepGranularity = g
 }
 
 // Resume sends a Continue action to the paused eval goroutine.
