@@ -9,6 +9,7 @@ import (
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1456,6 +1457,29 @@ func TestEngine_StepOutTailPosition(t *testing.T) {
 		}
 		t.Fatal("timeout waiting for eval result")
 	}
+}
+
+func TestEngine_StepOutSafetyNet(t *testing.T) {
+	t.Parallel()
+	e := New()
+	e.Enable()
+	env := newTestEnv(t, e)
+
+	// Simulate the safety net path: stepOutReturned is set (by OnFunReturn)
+	// but AfterFunCall did not consume it (e.g., the call-site expression
+	// had no source location). The next OnEval should catch it.
+	e.stepper.SetStepOut(3)
+	e.stepOutReturned = true
+
+	// Create a minimal expression with a source location for OnEval.
+	expr := lisp.Int(42)
+	expr.Source = &token.Location{File: "test", Line: 1}
+
+	// OnEval should return true (wants to pause) and clear the flag.
+	shouldPause := e.OnEval(env, expr)
+	assert.True(t, shouldPause, "safety net should trigger pause when stepOutReturned is set")
+	assert.False(t, e.stepOutReturned, "stepOutReturned should be cleared")
+	assert.Equal(t, StepNone, e.stepper.Mode(), "stepper should reset to StepNone")
 }
 
 func TestEngine_SourceLibrary(t *testing.T) {
