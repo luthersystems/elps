@@ -15,6 +15,7 @@
 package debugger
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -80,6 +81,8 @@ type Engine struct {
 	lastContinuedKey    string            // suppress breakpoint re-hit after continue on same line
 	funBreakpoints      map[string]string // qualified name → user-provided name
 
+	stepOutReturned bool // set by OnFunReturn when step-out condition detected pre-pop
+
 	// pauseCh is used by the eval goroutine to block in WaitIfPaused.
 	// The DAP server sends DebugAction values to resume execution.
 	pauseCh chan lisp.DebugAction
@@ -93,6 +96,25 @@ type Engine struct {
 	// Embedders can wait on ReadyCh() before starting evaluation.
 	readyCh   chan struct{}
 	readyOnce sync.Once
+
+	// formatters maps Go type names (fmt.Sprintf("%T", v)) to custom
+	// formatters for LNative values. Write-once at startup, read-only
+	// during debugging. Protected by mu.
+	formatters map[string]VariableFormatter
+
+	// sourceLib provides access to source files for the source request
+	// handler. Set once via WithSourceLibrary. Read-only during debugging.
+	sourceLib lisp.SourceLibrary
+
+	// sourceRefs maps integer reference IDs to source content for virtual
+	// sources (e.g., go:embed files served via DAP source request).
+	sourceRefs    map[int]sourceRefEntry
+	nextSourceRef int
+}
+
+type sourceRefEntry struct {
+	name    string
+	content string
 }
 
 // Verify Engine implements lisp.Debugger at compile time.
@@ -129,6 +151,97 @@ func WithSourceRoot(dir string) Option {
 // if not set.
 func (e *Engine) SourceRoot() string {
 	return e.sourceRoot
+}
+
+// WithFormatters sets the custom native type formatters for LNative values.
+// Keys are Go type names as returned by fmt.Sprintf("%T", value).
+func WithFormatters(fmts map[string]VariableFormatter) Option {
+	return func(e *Engine) {
+		e.formatters = fmts
+	}
+}
+
+// WithSourceLibrary sets the source library used to serve source content
+// for the DAP source request handler.
+func WithSourceLibrary(lib lisp.SourceLibrary) Option {
+	return func(e *Engine) {
+		e.sourceLib = lib
+	}
+}
+
+// RegisterFormatter registers a custom formatter for a native Go type.
+// typeName should match fmt.Sprintf("%T", value) for the values you want
+// to format. Safe to call before debugging starts.
+func (e *Engine) RegisterFormatter(typeName string, f VariableFormatter) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.formatters == nil {
+		e.formatters = make(map[string]VariableFormatter)
+	}
+	e.formatters[typeName] = f
+}
+
+// FormatNative returns a formatted string for a native Go value using
+// the registered formatter. Returns empty string if no formatter is
+// registered for the value's type.
+func (e *Engine) FormatNative(v any) string {
+	if v == nil {
+		return ""
+	}
+	e.mu.Lock()
+	f := e.formatters[fmt.Sprintf("%T", v)]
+	e.mu.Unlock()
+	if f == nil {
+		return ""
+	}
+	return f.FormatValue(v)
+}
+
+// NativeChildren returns the expandable child bindings for a native Go
+// value using the registered formatter. Returns nil if no formatter is
+// registered or the formatter returns no children.
+func (e *Engine) NativeChildren(v any) []NativeChild {
+	if v == nil {
+		return nil
+	}
+	e.mu.Lock()
+	f := e.formatters[fmt.Sprintf("%T", v)]
+	e.mu.Unlock()
+	if f == nil {
+		return nil
+	}
+	return f.Children(v)
+}
+
+// SourceLibrary returns the configured source library, or nil if not set.
+func (e *Engine) SourceLibrary() lisp.SourceLibrary {
+	return e.sourceLib
+}
+
+// AllocSourceRef allocates a source reference ID for virtual source content.
+// Returns the reference ID that can be used in DAP source requests.
+func (e *Engine) AllocSourceRef(name, content string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.sourceRefs == nil {
+		e.sourceRefs = make(map[int]sourceRefEntry)
+	}
+	e.nextSourceRef++
+	id := e.nextSourceRef
+	e.sourceRefs[id] = sourceRefEntry{name: name, content: content}
+	return id
+}
+
+// GetSourceRef retrieves virtual source content by reference ID.
+// Returns the content and true if found, or empty string and false if not.
+func (e *Engine) GetSourceRef(id int) (string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	entry, ok := e.sourceRefs[id]
+	if !ok {
+		return "", false
+	}
+	return entry.content, true
 }
 
 // New creates a new debugger engine.
@@ -251,6 +364,15 @@ func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
 		return true
 	}
 	e.mu.Unlock()
+
+	// Safety net: if stepOutReturned is still set (AfterFunCall didn't
+	// consume it), pause here. This handles edge cases where the post-call
+	// check in Eval was not reached.
+	if e.stepOutReturned {
+		e.stepOutReturned = false
+		e.stepper.ShouldPausePostCall(len(env.Runtime.Stack.Frames))
+		return true
+	}
 
 	// Check stepping.
 	depth := len(env.Runtime.Stack.Frames)
@@ -453,9 +575,35 @@ func (e *Engine) OnFunEntry(env *lisp.LEnv, fun *lisp.LVal, fenv *lisp.LEnv) {
 	e.mu.Unlock()
 }
 
-// OnFunReturn implements lisp.Debugger.
+// OnFunReturn implements lisp.Debugger. Detects the step-out condition
+// before the frame is popped: if the stepper is in StepOut mode and the
+// post-return depth will be less than the recorded depth, set the
+// stepOutReturned flag so that AfterFunCall (or OnEval as a safety net)
+// can pause at the call-site expression.
 func (e *Engine) OnFunReturn(env *lisp.LEnv, fun, result *lisp.LVal) {
-	// Currently a no-op. Future: watch expressions on return values.
+	if e.stepper.Mode() != StepOut {
+		return
+	}
+	// After Pop(), depth will be currentDepth - 1. Check if that satisfies
+	// the step-out condition (postReturnDepth < stepper.depth).
+	currentDepth := len(env.Runtime.Stack.Frames)
+	postReturnDepth := currentDepth - 1
+	if postReturnDepth < e.stepper.Depth() {
+		e.stepOutReturned = true
+	}
+}
+
+// AfterFunCall implements lisp.Debugger. Called in Eval after EvalSExpr
+// returns. Uses the stepper's ShouldPausePostCall to check if step-out
+// should fire at the current (post-pop) depth, and clears the
+// stepOutReturned flag.
+func (e *Engine) AfterFunCall(env *lisp.LEnv) bool {
+	if !e.stepOutReturned {
+		return false
+	}
+	e.stepOutReturned = false
+	depth := len(env.Runtime.Stack.Frames)
+	return e.stepper.ShouldPausePostCall(depth)
 }
 
 // OnError implements lisp.Debugger. Called when an error condition is

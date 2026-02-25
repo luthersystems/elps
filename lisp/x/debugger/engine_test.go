@@ -1,6 +1,7 @@
 package debugger
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1265,4 +1267,230 @@ func waitForPause(t *testing.T, e *Engine, timeout time.Duration) bool {
 			}
 		}
 	}
+}
+
+func TestEngine_RegisterFormatter(t *testing.T) {
+	t.Parallel()
+
+	type TestStruct struct{ Value int }
+	typeName := fmt.Sprintf("%T", TestStruct{})
+
+	e := New()
+
+	// No formatter registered — FormatNative returns empty string.
+	assert.Empty(t, e.FormatNative(TestStruct{Value: 42}))
+	assert.Nil(t, e.NativeChildren(TestStruct{Value: 42}))
+
+	// Register a formatter.
+	e.RegisterFormatter(typeName, FormatterFunc(func(v any) string {
+		s, ok := v.(TestStruct)
+		if !ok {
+			return ""
+		}
+		return fmt.Sprintf("TestStruct(%d)", s.Value)
+	}))
+
+	assert.Equal(t, "TestStruct(42)", e.FormatNative(TestStruct{Value: 42}))
+	assert.Nil(t, e.NativeChildren(TestStruct{Value: 42}),
+		"FormatterFunc should return nil children")
+
+	// nil value returns empty.
+	assert.Empty(t, e.FormatNative(nil))
+	assert.Nil(t, e.NativeChildren(nil))
+}
+
+func TestEngine_WithFormatters(t *testing.T) {
+	t.Parallel()
+
+	type MyType struct{}
+	typeName := fmt.Sprintf("%T", MyType{})
+
+	e := New(WithFormatters(map[string]VariableFormatter{
+		typeName: FormatterFunc(func(v any) string { return "custom" }),
+	}))
+
+	assert.Equal(t, "custom", e.FormatNative(MyType{}))
+}
+
+func TestEngine_NativeChildren_WithChildren(t *testing.T) {
+	t.Parallel()
+
+	typeName := fmt.Sprintf("%T", Container{})
+
+	formatter := &testFormatterWithChildren{}
+	e := New(WithFormatters(map[string]VariableFormatter{
+		typeName: formatter,
+	}))
+
+	c := Container{Items: []string{"a", "b"}}
+	children := e.NativeChildren(c)
+	require.Len(t, children, 2)
+	assert.Equal(t, "Items[0]", children[0].Name)
+	assert.Equal(t, "a", children[0].Value.Str)
+	assert.Equal(t, "Items[1]", children[1].Name)
+	assert.Equal(t, "b", children[1].Value.Str)
+}
+
+// Container is a test type for TestEngine_NativeChildren_WithChildren.
+type Container struct{ Items []string }
+
+type testFormatterWithChildren struct{}
+
+func (f *testFormatterWithChildren) FormatValue(v any) string {
+	c, ok := v.(Container)
+	if !ok {
+		return "<container>"
+	}
+	return fmt.Sprintf("<container len=%d>", len(c.Items))
+}
+
+func (f *testFormatterWithChildren) Children(v any) []NativeChild {
+	c, ok := v.(Container)
+	if !ok {
+		return nil
+	}
+	children := make([]NativeChild, len(c.Items))
+	for i, item := range c.Items {
+		children[i] = NativeChild{
+			Name:  fmt.Sprintf("Items[%d]", i),
+			Value: lisp.String(item),
+		}
+	}
+	return children
+}
+
+func TestEngine_SourceRefRegistry(t *testing.T) {
+	t.Parallel()
+	e := New()
+
+	// No refs initially.
+	_, ok := e.GetSourceRef(1)
+	assert.False(t, ok, "should not find non-existent ref")
+
+	// Allocate a ref.
+	ref1 := e.AllocSourceRef("test.lisp", "(+ 1 2)")
+	assert.Greater(t, ref1, 0)
+
+	content, ok := e.GetSourceRef(ref1)
+	assert.True(t, ok)
+	assert.Equal(t, "(+ 1 2)", content)
+
+	// Allocate another ref — IDs should be unique.
+	ref2 := e.AllocSourceRef("other.lisp", "(defun f () nil)")
+	assert.NotEqual(t, ref1, ref2)
+
+	content2, ok := e.GetSourceRef(ref2)
+	assert.True(t, ok)
+	assert.Equal(t, "(defun f () nil)", content2)
+
+	// First ref still accessible.
+	content1, ok := e.GetSourceRef(ref1)
+	assert.True(t, ok)
+	assert.Equal(t, "(+ 1 2)", content1)
+}
+
+func TestEngine_StepOutTailPosition(t *testing.T) {
+	t.Parallel()
+	e := New()
+	e.Enable()
+	env := newTestEnv(t, e)
+
+	// All calls are in tail position: outer → middle → inner.
+	// Step-out from inner should pause at the call site in middle.
+	program := "(defun inner (x)\n" + //  1
+		"  (+ x 100))\n" + //  2
+		"(defun middle (x)\n" + //  3
+		"  (inner (* x 2)))\n" + //  4
+		"(defun outer ()\n" + //  5
+		"  (middle 5))\n" + //  6
+		"(outer)\n" //  7
+
+	// Set a breakpoint inside inner (line 2).
+	e.Breakpoints().Set("test", 2, "")
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Wait for breakpoint inside inner.
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+
+	pausedEnv, expr := e.PausedState()
+	require.NotNil(t, expr)
+	require.NotNil(t, expr.Source)
+	assert.Equal(t, 2, expr.Source.Line, "should pause on line 2")
+	innerDepth := len(pausedEnv.Runtime.Stack.Frames)
+
+	// Clear breakpoints and step out.
+	e.Breakpoints().ClearFile("test")
+	e.StepOut()
+
+	// Should pause at the call site (NOT run to completion).
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "step-out from tail position should pause")
+
+	pausedEnv, expr = e.PausedState()
+	require.NotNil(t, expr)
+	require.NotNil(t, expr.Source, "paused expression should have source location")
+	assert.Equal(t, "test", expr.Source.File)
+	assert.NotEqual(t, 2, expr.Source.Line,
+		"should NOT still be on inner's body line after step-out")
+	outsideDepth := len(pausedEnv.Runtime.Stack.Frames)
+	assert.Less(t, outsideDepth, innerDepth,
+		"step-out should decrease stack depth (inner=%d, outside=%d)", innerDepth, outsideDepth)
+
+	// Resume to finish.
+	e.Resume()
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
+		assert.Equal(t, 110, res.Int) // inner(5*2) = 10+100 = 110
+	case <-time.After(5 * time.Second):
+		if e.IsPaused() {
+			e.Resume()
+		}
+		t.Fatal("timeout waiting for eval result")
+	}
+}
+
+func TestEngine_StepOutSafetyNet(t *testing.T) {
+	t.Parallel()
+	e := New()
+	e.Enable()
+	env := newTestEnv(t, e)
+
+	// Simulate the safety net path: stepOutReturned is set (by OnFunReturn)
+	// but AfterFunCall did not consume it (e.g., the call-site expression
+	// had no source location). The next OnEval should catch it.
+	e.stepper.SetStepOut(3)
+	e.stepOutReturned = true
+
+	// Create a minimal expression with a source location for OnEval.
+	expr := lisp.Int(42)
+	expr.Source = &token.Location{File: "test", Line: 1}
+
+	// OnEval should return true (wants to pause) and clear the flag.
+	shouldPause := e.OnEval(env, expr)
+	assert.True(t, shouldPause, "safety net should trigger pause when stepOutReturned is set")
+	assert.False(t, e.stepOutReturned, "stepOutReturned should be cleared")
+	assert.Equal(t, StepNone, e.stepper.Mode(), "stepper should reset to StepNone")
+}
+
+func TestEngine_SourceLibrary(t *testing.T) {
+	t.Parallel()
+
+	// No library by default.
+	e := New()
+	assert.Nil(t, e.SourceLibrary())
+
+	// With library.
+	lib := &lisp.FSLibrary{}
+	e2 := New(WithSourceLibrary(lib))
+	assert.Equal(t, lib, e2.SourceLibrary())
 }

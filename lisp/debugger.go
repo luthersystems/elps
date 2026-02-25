@@ -43,6 +43,12 @@ type Debugger interface {
 	// fun is the function value, result is the return value.
 	OnFunReturn(env *LEnv, fun, result *LVal)
 
+	// AfterFunCall is called in Eval after EvalSExpr returns, giving the
+	// debugger a chance to pause at the call-site expression when the
+	// stack depth has decreased (step-out from tail position). Returns
+	// true if execution should pause.
+	AfterFunCall(env *LEnv) bool
+
 	// OnError is called when an error condition is created (in
 	// ErrorCondition and ErrorConditionf). Returns true if the debugger
 	// wants execution to pause (exception breakpoint). When true, the
