@@ -263,6 +263,11 @@ func TestHandleLine_DebugCommands(t *testing.T) {
 	assert.Contains(t, stderr.String(), "not paused")
 	stderr.Reset()
 
+	// Test print with missing args.
+	assert.True(t, h.handleLine("print"))
+	assert.Contains(t, stderr.String(), "usage: print")
+	stderr.Reset()
+
 	// Test print when not paused.
 	assert.True(t, h.handleLine("print (+ 1 2)"))
 	assert.Contains(t, stderr.String(), "not paused")
@@ -697,7 +702,8 @@ func TestOnInterrupt(t *testing.T) {
 	h.onInterrupt() // calls engine.RequestPause — no panic = success
 }
 
-// TestEvalInContext verifies the evalInContext method returns a result.
+// TestEvalInContext verifies the evalInContext method evaluates expressions
+// via the engine's EvalInContext pathway.
 func TestEvalInContext(t *testing.T) {
 	t.Parallel()
 	dbg := debugger.New()
@@ -708,14 +714,14 @@ func TestEvalInContext(t *testing.T) {
 		env:    env,
 	}
 
-	// EvalInContext when engine has no paused state returns an error LVal.
+	// evalInContext stringifies the LVal and passes it to engine.EvalInContext.
+	// With a valid env, arithmetic expressions evaluate correctly.
 	expr := lisp.SExpr([]*lisp.LVal{
 		lisp.Symbol("+"),
 		lisp.Int(1),
 		lisp.Int(2),
 	})
 	result := h.evalInContext(env, expr)
-	// The result depends on engine state; we just verify it doesn't panic
-	// and returns an LVal.
-	assert.NotNil(t, result)
+	assert.Equal(t, lisp.LInt, result.Type, "should return an int")
+	assert.Equal(t, 3, result.Int, "should evaluate (+ 1 2) to 3")
 }
