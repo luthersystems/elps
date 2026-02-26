@@ -56,6 +56,16 @@ type handler struct {
 	// Cleared when execution resumes.
 	customVarRefs    map[int][]debugger.ScopeVariable
 	nextCustomVarRef int
+
+	// stepInTargets caches the targets from the last stepInTargets request.
+	// Maps target ID → target info (function name, occurrence index).
+	stepInTargets map[int]stepInTargetInfo
+	nextTargetID  int
+}
+
+type stepInTargetInfo struct {
+	qualifiedName string
+	occurrence    int // 0-based: which call to this function (for same-name disambiguation)
 }
 
 func newHandler(s *Server, e *debugger.Engine) *handler {
@@ -81,6 +91,8 @@ func newHandler(s *Server, e *debugger.Engine) *handler {
 			h.nextVarRef = 0
 			h.customVarRefs = nil
 			h.nextCustomVarRef = 0
+			h.stepInTargets = nil
+			h.nextTargetID = 0
 			h.mu.Unlock()
 		case debugger.EventOutput:
 			h.sendOutputEvent(evt.Output)
@@ -132,6 +144,8 @@ func (h *handler) handle(msg dap.Message) {
 		h.onNext(req)
 	case *dap.StepInRequest:
 		h.onStepIn(req)
+	case *dap.StepInTargetsRequest:
+		h.onStepInTargets(req)
 	case *dap.StepOutRequest:
 		h.onStepOut(req)
 	case *dap.EvaluateRequest:
@@ -167,6 +181,7 @@ func (h *handler) onInitialize(req *dap.InitializeRequest) {
 		SupportsEvaluateForHovers:             true,
 		SupportTerminateDebuggee:              true,
 		SupportsSteppingGranularity:           true,
+		SupportsStepInTargetsRequest:          true,
 		ExceptionBreakpointFilters: []dap.ExceptionBreakpointsFilter{
 			{
 				Filter:  "all",
@@ -525,6 +540,19 @@ func (h *handler) onStepIn(req *dap.StepInRequest) {
 	resp := &dap.StepInResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	h.send(resp)
+
+	if req.Arguments.TargetId > 0 {
+		h.mu.Lock()
+		target, ok := h.stepInTargets[req.Arguments.TargetId]
+		h.mu.Unlock()
+		if ok {
+			h.engine.SetStepInTarget(target.qualifiedName, target.occurrence)
+			h.engine.SetStepGranularity(string(req.Arguments.Granularity))
+			h.engine.StepOver() // StepOver as base mode; OnFunEntry handles the target pause
+			return
+		}
+	}
+	// No target or invalid target — regular step-in.
 	h.engine.SetStepGranularity(string(req.Arguments.Granularity))
 	h.engine.StepInto()
 }
@@ -732,4 +760,128 @@ func parseStopOnEntry(args json.RawMessage) bool {
 		return false
 	}
 	return parsed.StopOnEntry
+}
+
+func (h *handler) onStepInTargets(req *dap.StepInTargetsRequest) {
+	resp := &dap.StepInTargetsResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+
+	env, pausedExpr := h.engine.PausedState()
+	if env != nil && pausedExpr != nil {
+		targets := h.collectStepInTargets(env, pausedExpr)
+		resp.Body.Targets = targets
+	}
+	h.send(resp)
+}
+
+// collectStepInTargets walks the paused expression to find callable
+// sub-expressions whose head symbol resolves to a user-defined function.
+func (h *handler) collectStepInTargets(env *lisp.LEnv, expr *lisp.LVal) []dap.StepInTarget {
+	h.mu.Lock()
+	h.stepInTargets = make(map[int]stepInTargetInfo)
+	h.nextTargetID = 0
+	h.mu.Unlock()
+
+	// Track occurrence counts for disambiguation when the same function
+	// appears multiple times.
+	occurrences := map[string]int{}
+	var targets []dap.StepInTarget
+
+	// Walk all child s-expressions of the paused expression. The paused
+	// expression itself is typically the outer call (e.g., (f (g x) (h y))),
+	// and its children include the nested calls.
+	var walk func(v *lisp.LVal)
+	walk = func(v *lisp.LVal) {
+		if v == nil || v.Type != lisp.LSExpr || v.IsNil() {
+			return
+		}
+		head := v.Cells[0]
+		if head != nil && head.Type == lisp.LSymbol {
+			name := head.Str
+			resolved := env.Get(lisp.Symbol(name))
+			if resolved != nil && resolved.Type == lisp.LFun && resolved.FunType == lisp.LFunNone {
+				funData := resolved.FunData()
+				if funData != nil && funData.Env != nil {
+					// User-defined function — include as target.
+					qualifiedName := name
+					if funData.Package != "" {
+						qualifiedName = funData.Package + ":" + name
+					}
+					occ := occurrences[qualifiedName]
+					occurrences[qualifiedName]++
+
+					h.mu.Lock()
+					h.nextTargetID++
+					id := h.nextTargetID
+					h.stepInTargets[id] = stepInTargetInfo{
+						qualifiedName: qualifiedName,
+						occurrence:    occ,
+					}
+					h.mu.Unlock()
+
+					target := dap.StepInTarget{
+						Id:    id,
+						Label: name,
+					}
+					if head.Source != nil {
+						target.Line = head.Source.Line
+						target.Column = head.Source.Col
+					}
+					targets = append(targets, target)
+				}
+			}
+		}
+		// Recurse into children to find nested calls.
+		for _, child := range v.Cells[1:] {
+			walk(child)
+		}
+	}
+
+	// Walk each child of the paused expression (skip the head — that's the
+	// outer call's function name, which we handle separately).
+	if expr.Type == lisp.LSExpr && !expr.IsNil() {
+		// Include the outer expression itself as a target if its head is
+		// a user-defined function.
+		head := expr.Cells[0]
+		if head != nil && head.Type == lisp.LSymbol {
+			name := head.Str
+			resolved := env.Get(lisp.Symbol(name))
+			if resolved != nil && resolved.Type == lisp.LFun && resolved.FunType == lisp.LFunNone {
+				funData := resolved.FunData()
+				if funData != nil && funData.Env != nil {
+					qualifiedName := name
+					if funData.Package != "" {
+						qualifiedName = funData.Package + ":" + name
+					}
+					occ := occurrences[qualifiedName]
+					occurrences[qualifiedName]++
+
+					h.mu.Lock()
+					h.nextTargetID++
+					id := h.nextTargetID
+					h.stepInTargets[id] = stepInTargetInfo{
+						qualifiedName: qualifiedName,
+						occurrence:    occ,
+					}
+					h.mu.Unlock()
+
+					target := dap.StepInTarget{
+						Id:    id,
+						Label: name,
+					}
+					if head.Source != nil {
+						target.Line = head.Source.Line
+						target.Column = head.Source.Col
+					}
+					targets = append(targets, target)
+				}
+			}
+		}
+		// Walk the arguments (children after head) for nested calls.
+		for _, child := range expr.Cells[1:] {
+			walk(child)
+		}
+	}
+
+	return targets
 }
