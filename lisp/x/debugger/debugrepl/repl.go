@@ -84,6 +84,10 @@ func Run(engine *debugger.Engine, env *lisp.LEnv, file string, opts ...Option) e
 	h.mu.Unlock()
 	h.showStopBanner(evt)
 
+	// Direct REPL eval output to the debug handler's stderr so bare
+	// expression results appear alongside debug command output.
+	env.Runtime.Stderr = h.stderr
+
 	// Run the REPL with hooks.
 	repl.RunEnv(env, "(dbg) ", "   .. ", h.replOptions()...)
 
@@ -166,7 +170,14 @@ func (h *debugHandler) onInterrupt() {
 }
 
 // evalInContext evaluates a lisp expression in the debugger context.
+// When paused, it uses the paused environment so that local variables
+// from the stopped scope are visible. Otherwise it falls back to the
+// REPL's root environment.
 func (h *debugHandler) evalInContext(env *lisp.LEnv, expr *lisp.LVal) *lisp.LVal {
+	pausedEnv, _ := h.engine.PausedState()
+	if pausedEnv != nil {
+		env = pausedEnv
+	}
 	return h.engine.EvalInContext(env, expr.String())
 }
 
