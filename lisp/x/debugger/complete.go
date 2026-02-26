@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib/libhelp"
 )
 
 // CompletionCandidate represents a single auto-complete suggestion.
@@ -35,6 +36,9 @@ func CompleteInContext(env *lisp.LEnv, prefix string) []CompletionCandidate {
 			return
 		}
 		seen[label] = true
+		if doc := lookupDocstring(env, label); doc != "" {
+			detail = doc
+		}
 		candidates = append(candidates, CompletionCandidate{
 			Label:  label,
 			Type:   typ,
@@ -139,6 +143,30 @@ func lvalCompletionType(v *lisp.LVal) string {
 		return "function"
 	}
 	return "variable"
+}
+
+// lookupDocstring resolves the first line of a symbol's docstring.
+// It checks the LVal's Docstring() method first (builtins/special-ops/macros),
+// then falls back to libhelp.LookupSymbolDoc (package-level symbol docs).
+func lookupDocstring(env *lisp.LEnv, name string) string {
+	v := env.Get(lisp.Symbol(name))
+	if v != nil && v.Type == lisp.LFun {
+		if doc := v.Docstring(); doc != "" {
+			return firstLine(doc)
+		}
+	}
+	return firstLine(libhelp.LookupSymbolDoc(env, name))
+}
+
+// firstLine returns the first non-empty line of s, trimmed of whitespace.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 // collectKeywords scans package symbol tables for keyword-like symbols

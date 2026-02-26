@@ -4526,11 +4526,18 @@ func TestDAPServer_Completions(t *testing.T) {
 	require.Greater(t, len(stResp.Body.StackFrames), 0)
 	topFrameID := stResp.Body.StackFrames[0].Id
 
-	// --- Test 1: Complete local variable "a" ---
+	// --- Test 1: Complete local variable "a" (and verify "b" is excluded) ---
 	compResp := s.completions("(+ a", 5, topFrameID)
 	assert.True(t, compResp.Success)
 	labels := completionLabels(compResp.Body.Targets)
 	assert.Contains(t, labels, "a", "local variable 'a' should appear in completions")
+	assert.NotContains(t, labels, "b", "'b' should not match prefix 'a'")
+
+	// --- Test 1b: Complete local variable "b" ---
+	compRespB := s.completions("(+ b", 5, topFrameID)
+	assert.True(t, compRespB.Success)
+	labelsB := completionLabels(compRespB.Body.Targets)
+	assert.Contains(t, labelsB, "b", "local variable 'b' should appear in completions")
 
 	// --- Test 2: Complete builtin prefix "defu" ---
 	compResp2 := s.completions("(defu", 6, topFrameID)
@@ -4566,9 +4573,15 @@ func TestDAPServer_CompletionsNotPaused(t *testing.T) {
 	s.configDone()
 
 	// Completions when not paused should return empty targets, not an error.
+	// Test with frameId 0 and a non-zero frameId to ensure the not-paused
+	// check (not the frame ID) is what produces the empty result.
 	compResp := s.completions("(+ a", 5, 0)
 	assert.True(t, compResp.Success)
-	assert.Empty(t, compResp.Body.Targets, "completions when not paused should be empty")
+	assert.Empty(t, compResp.Body.Targets, "completions when not paused should be empty (frameId=0)")
+
+	compResp2 := s.completions("(+ a", 5, 1)
+	assert.True(t, compResp2.Success)
+	assert.Empty(t, compResp2.Body.Targets, "completions when not paused should be empty (frameId=1)")
 
 	s.disconnect()
 }

@@ -321,20 +321,27 @@ func RenderVar(w io.Writer, env *lisp.LEnv, sym string) error {
 		return err
 	}
 	if v.Type != lisp.LFun {
-		return renderVal(w, sym, v, lookupSymbolDoc(env, sym))
+		return renderVal(w, sym, v, LookupSymbolDoc(env, sym))
 	}
-	return renderFun(w, sym, v, lookupSymbolDoc(env, sym))
+	return renderFun(w, sym, v, LookupSymbolDoc(env, sym))
 }
 
-// lookupSymbolDoc resolves a symbol's documentation from its package.
+// LookupSymbolDoc resolves a symbol's documentation from its package.
 // Handles qualified names (pkg:sym) and unqualified names (current package).
-func lookupSymbolDoc(env *lisp.LEnv, sym string) string {
+// Returns "" if the environment is not fully initialized.
+func LookupSymbolDoc(env *lisp.LEnv, sym string) string {
 	if i := strings.Index(sym, ":"); i >= 0 {
 		pkgName := sym[:i]
 		symName := sym[i+1:]
+		if env.Runtime.Registry == nil {
+			return ""
+		}
 		if pkg := env.Runtime.Registry.Packages[pkgName]; pkg != nil {
 			return pkg.SymbolDocs[symName]
 		}
+		return ""
+	}
+	if env.Runtime.Package == nil {
 		return ""
 	}
 	return env.Runtime.Package.SymbolDocs[sym]
