@@ -462,6 +462,20 @@ func (h *handler) onVariables(req *dap.VariablesRequest) {
 		}
 	}
 
+	// Apply pagination (Start/Count) from the client.
+	vars := resp.Body.Variables
+	if start := req.Arguments.Start; start > 0 {
+		if start < len(vars) {
+			vars = vars[start:]
+		} else {
+			vars = nil
+		}
+	}
+	if count := req.Arguments.Count; count > 0 && count < len(vars) {
+		vars = vars[:count]
+	}
+	resp.Body.Variables = vars
+
 	h.send(resp)
 }
 
@@ -635,6 +649,13 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 		h.mu.Lock()
 		resp.Body.VariablesReference = h.allocVarRef(result)
 		h.mu.Unlock()
+		indexed, named := childInfo(result)
+		if indexed > 0 {
+			resp.Body.IndexedVariables = indexed
+		}
+		if named > 0 {
+			resp.Body.NamedVariables = named
+		}
 	}
 	h.send(resp)
 }

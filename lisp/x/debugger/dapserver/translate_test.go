@@ -264,3 +264,137 @@ func TestExpandVariable_Nil(t *testing.T) {
 	assert.Nil(t, expandVariable(nil, func(v *lisp.LVal) int { return 0 }, nil))
 	assert.Nil(t, expandVariable(lisp.Int(42), func(v *lisp.LVal) int { return 0 }, nil))
 }
+
+func TestChildInfo(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		val         *lisp.LVal
+		wantIndexed int
+		wantNamed   int
+	}{
+		{
+			name:        "nil value",
+			val:         nil,
+			wantIndexed: 0,
+			wantNamed:   0,
+		},
+		{
+			name:        "scalar int",
+			val:         lisp.Int(42),
+			wantIndexed: 0,
+			wantNamed:   0,
+		},
+		{
+			name:        "empty list",
+			val:         lisp.Nil(),
+			wantIndexed: 0,
+			wantNamed:   0,
+		},
+		{
+			name:        "list with 3 elements",
+			val:         lisp.SExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)}),
+			wantIndexed: 3,
+			wantNamed:   0,
+		},
+		{
+			name:        "array with 2 elements",
+			val:         lisp.Array(nil, []*lisp.LVal{lisp.String("a"), lisp.String("b")}),
+			wantIndexed: 2,
+			wantNamed:   0,
+		},
+		{
+			name: "sorted-map with 2 entries",
+			val: func() *lisp.LVal {
+				m := lisp.SortedMap()
+				m.MapSet(lisp.String("x"), lisp.Int(1))
+				m.MapSet(lisp.String("y"), lisp.Int(2))
+				return m
+			}(),
+			wantIndexed: 0,
+			wantNamed:   2,
+		},
+		{
+			// Tagged values have a single "data" child shown by expandVariable,
+			// but childInfo returns (0,0) because pagination hints are not
+			// useful for a single child.
+			name:        "tagged value with scalar inner",
+			val:         &lisp.LVal{Type: lisp.LTaggedVal, Str: "my-type", Cells: []*lisp.LVal{lisp.Int(1)}},
+			wantIndexed: 0,
+			wantNamed:   0,
+		},
+		{
+			// LArray with only dimensions (no data slice) — defensive guard.
+			name:        "array with missing data slice",
+			val:         &lisp.LVal{Type: lisp.LArray, Cells: []*lisp.LVal{lisp.SExpr(nil)}},
+			wantIndexed: 0,
+			wantNamed:   0,
+		},
+		{
+			name:        "string value",
+			val:         lisp.String("hello"),
+			wantIndexed: 0,
+			wantNamed:   0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			indexed, named := childInfo(tt.val)
+			assert.Equal(t, tt.wantIndexed, indexed, "indexed children")
+			assert.Equal(t, tt.wantNamed, named, "named children")
+		})
+	}
+}
+
+func TestTranslateVariables_PaginationHints(t *testing.T) {
+	t.Parallel()
+	noRef := func(v *lisp.LVal) int { return 0 }
+
+	bindings := []debugger.ScopeBinding{
+		{Name: "x", Value: lisp.Int(42)},
+		{Name: "items", Value: lisp.SExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)})},
+		{Name: "m", Value: func() *lisp.LVal {
+			m := lisp.SortedMap()
+			m.MapSet(lisp.String("a"), lisp.Int(1))
+			return m
+		}()},
+	}
+
+	vars := translateVariables(bindings, noRef, nil)
+	require.Len(t, vars, 3)
+
+	// Scalar: no hints set.
+	assert.Equal(t, 0, vars[0].IndexedVariables, "scalar should have 0 indexed")
+	assert.Equal(t, 0, vars[0].NamedVariables, "scalar should have 0 named")
+
+	// List: indexed hints set.
+	assert.Equal(t, 3, vars[1].IndexedVariables, "list should have 3 indexed")
+	assert.Equal(t, 0, vars[1].NamedVariables, "list should have 0 named")
+
+	// Sorted-map: named hints set.
+	assert.Equal(t, 0, vars[2].IndexedVariables, "map should have 0 indexed")
+	assert.Equal(t, 1, vars[2].NamedVariables, "map should have 1 named")
+}
+
+func TestExpandVariable_List_Hints(t *testing.T) {
+	t.Parallel()
+	// Create a list where one child is itself a list (expandable).
+	inner := lisp.SExpr([]*lisp.LVal{lisp.Int(10), lisp.Int(20)})
+	outer := lisp.SExpr([]*lisp.LVal{lisp.Int(1), inner, lisp.String("x")})
+	noRef := func(v *lisp.LVal) int { return 0 }
+
+	children := expandVariable(outer, noRef, nil)
+	require.Len(t, children, 3)
+
+	// First child is a scalar — no hints.
+	assert.Equal(t, 0, children[0].IndexedVariables)
+	assert.Equal(t, 0, children[0].NamedVariables)
+
+	// Second child is a 2-element list — indexed hint should be set.
+	assert.Equal(t, 2, children[1].IndexedVariables, "nested list child should have indexed hint")
+	assert.Equal(t, 0, children[1].NamedVariables)
+
+	// Third child is a string scalar — no hints.
+	assert.Equal(t, 0, children[2].IndexedVariables)
+	assert.Equal(t, 0, children[2].NamedVariables)
+}

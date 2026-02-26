@@ -94,6 +94,7 @@ func translateVariables(bindings []debugger.ScopeBinding, allocRef func(*lisp.LV
 			Type:               lvalTypeName(b.Value),
 			VariablesReference: allocRef(b.Value),
 		}
+		setChildHints(&vars[i], b.Value)
 	}
 	return vars
 }
@@ -113,6 +114,7 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 				Type:               lvalTypeName(cell),
 				VariablesReference: allocRef(cell),
 			}
+			setChildHints(&vars[i], cell)
 		}
 		return vars
 	case lisp.LSortMap:
@@ -130,6 +132,7 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 				Type:               lvalTypeName(val),
 				VariablesReference: allocRef(val),
 			}
+			setChildHints(&vars[i], val)
 		}
 		return vars
 	case lisp.LArray:
@@ -143,6 +146,7 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 				Type:               lvalTypeName(cell),
 				VariablesReference: allocRef(cell),
 			}
+			setChildHints(&vars[i], cell)
 		}
 		return vars
 	case lisp.LTaggedVal:
@@ -150,14 +154,14 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 			return nil
 		}
 		inner := v.Cells[0]
-		return []dap.Variable{
-			{
-				Name:               "data",
-				Value:              debugger.FormatValueWith(inner, eng),
-				Type:               lvalTypeName(inner),
-				VariablesReference: allocRef(inner),
-			},
+		child := dap.Variable{
+			Name:               "data",
+			Value:              debugger.FormatValueWith(inner, eng),
+			Type:               lvalTypeName(inner),
+			VariablesReference: allocRef(inner),
 		}
+		setChildHints(&child, inner)
+		return []dap.Variable{child}
 	case lisp.LNative:
 		if eng == nil {
 			return nil
@@ -174,10 +178,45 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 				Type:               lvalTypeName(ch.Value),
 				VariablesReference: allocRef(ch.Value),
 			}
+			setChildHints(&vars[i], ch.Value)
 		}
 		return vars
 	default:
 		return nil
+	}
+}
+
+// childInfo returns the number of indexed and named children for an LVal.
+// These counts are used as DAP pagination hints (IndexedVariables/NamedVariables)
+// so that clients like VS Code can paginate large collections.
+func childInfo(v *lisp.LVal) (indexedChildren, namedChildren int) {
+	if v == nil {
+		return 0, 0
+	}
+	switch v.Type {
+	case lisp.LSExpr:
+		return len(v.Cells), 0
+	case lisp.LArray:
+		if len(v.Cells) > 1 {
+			return len(v.Cells[1].Cells), 0
+		}
+		return 0, 0
+	case lisp.LSortMap:
+		return 0, v.Len()
+	default:
+		return 0, 0
+	}
+}
+
+// setChildHints sets IndexedVariables and NamedVariables on a DAP variable
+// based on the child counts of the given LVal.
+func setChildHints(v *dap.Variable, lval *lisp.LVal) {
+	indexed, named := childInfo(lval)
+	if indexed > 0 {
+		v.IndexedVariables = indexed
+	}
+	if named > 0 {
+		v.NamedVariables = named
 	}
 }
 
