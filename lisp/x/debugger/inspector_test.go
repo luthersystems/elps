@@ -6,6 +6,7 @@ import (
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -279,6 +280,47 @@ func TestInspectMacroExpansion_WithContext(t *testing.T) {
 	assert.Len(t, bindings, 3)
 	assert.Equal(t, "(macro)", bindings[0].Name)
 	assert.Equal(t, "lisp:defun", bindings[0].Value.Str)
+
+	// arg[0] is symbol "my-fn".
 	assert.Equal(t, "arg[0]", bindings[1].Name)
+	require.NotNil(t, bindings[1].Value)
+	assert.Equal(t, lisp.LSymbol, bindings[1].Value.Type)
+	assert.Equal(t, "my-fn", bindings[1].Value.Str)
+
+	// arg[1] is the formals list (x).
 	assert.Equal(t, "arg[1]", bindings[2].Name)
+	require.NotNil(t, bindings[2].Value)
+	assert.Equal(t, lisp.LSExpr, bindings[2].Value.Type)
+	require.Len(t, bindings[2].Value.Cells, 1)
+	assert.Equal(t, "x", bindings[2].Value.Cells[0].Str)
+}
+
+func TestInspectMacroExpansion_WithCallSite(t *testing.T) {
+	ctx := &lisp.MacroExpansionContext{
+		Name:     "lisp:defun",
+		CallSite: &token.Location{File: "test.lisp", Line: 5, Col: 1},
+	}
+	expr := lisp.Symbol("+")
+	expr.MacroExpansion = &lisp.MacroExpansionInfo{
+		MacroExpansionContext: ctx,
+		ID:                   1,
+	}
+
+	bindings := InspectMacroExpansion(expr)
+	require.NotNil(t, bindings)
+
+	// Should have: (macro), (call-site).
+	assert.Len(t, bindings, 2)
+	assert.Equal(t, "(macro)", bindings[0].Name)
+	assert.Equal(t, "(call-site)", bindings[1].Name)
+	assert.Contains(t, bindings[1].Value.Str, "test.lisp")
+}
+
+func TestInspectMacroExpansion_NilContext(t *testing.T) {
+	expr := lisp.Symbol("+")
+	expr.MacroExpansion = &lisp.MacroExpansionInfo{
+		MacroExpansionContext: nil,
+		ID:                   1,
+	}
+	assert.Nil(t, InspectMacroExpansion(expr))
 }
