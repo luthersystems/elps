@@ -657,6 +657,31 @@ func TestRunIntegration_BreakpointHit(t *testing.T) {
 		"expected 'print a' to show '1', got output:\n%s", out)
 }
 
+// TestRunIntegration_BareExprInPausedScope verifies that bare lisp
+// expressions (not prefixed with "print") evaluate in the paused scope,
+// giving access to local variables.
+func TestRunIntegration_BareExprInPausedScope(t *testing.T) {
+	src := "(set 'x 42)\n(set 'y 99)\n(+ x y)\n"
+	dbg, env, lispFile := newIntegrationEnv(t, src)
+
+	// Step once to execute (set 'x 42), then type a bare expression.
+	commands := "step\n(+ x 1)\nquit\n"
+	out := runWithCommands(t, dbg, env, lispFile, commands)
+
+	// The bare expression (+ x 1) should see x=42 from the paused scope
+	// and produce 43.
+	lines := strings.Split(out, "\n")
+	foundResult := false
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "43" {
+			foundResult = true
+			break
+		}
+	}
+	assert.True(t, foundResult,
+		"expected bare expression '(+ x 1)' to output '43' using paused scope, got output:\n%s", out)
+}
+
 // TestRunIntegration_DoQuitLifecycle verifies quit closes doneCh and
 // the REPL exits cleanly.
 func TestRunIntegration_DoQuitLifecycle(t *testing.T) {
