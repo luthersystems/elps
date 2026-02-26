@@ -761,10 +761,11 @@ func (e *Engine) NotifyExit(exitCode int) {
 	}
 }
 
-// EvalInContext evaluates an expression string in a paused environment,
-// setting the evaluatingCondition guard so that the OnEval hook does not
-// re-enter breakpoint logic (which would deadlock since EvalInContext
-// runs on the DAP server goroutine, not the eval goroutine).
+// EvalInContext evaluates all expressions in source in a paused environment,
+// returning the last result (progn semantics). Sets the evaluatingCondition
+// guard so that the OnEval hook does not re-enter breakpoint logic (which
+// would deadlock since EvalInContext runs on the DAP server goroutine, not
+// the eval goroutine).
 func (e *Engine) EvalInContext(env *lisp.LEnv, source string) *lisp.LVal {
 	e.mu.Lock()
 	e.evaluatingCondition = true
@@ -775,6 +776,22 @@ func (e *Engine) EvalInContext(env *lisp.LEnv, source string) *lisp.LVal {
 		e.mu.Unlock()
 	}()
 	return EvalInContext(env, source)
+}
+
+// EvalSingleInContext evaluates only the first expression in source in a
+// paused environment. Used for hover tooltips where multi-expression
+// evaluation is inappropriate. Sets the same evaluatingCondition reentrancy
+// guard as EvalInContext.
+func (e *Engine) EvalSingleInContext(env *lisp.LEnv, source string) *lisp.LVal {
+	e.mu.Lock()
+	e.evaluatingCondition = true
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		e.evaluatingCondition = false
+		e.mu.Unlock()
+	}()
+	return EvalSingleInContext(env, source)
 }
 
 // SetStepInTarget configures targeted step-in. The engine will use StepOver

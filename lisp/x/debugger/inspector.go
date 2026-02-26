@@ -227,10 +227,35 @@ func FormatValueWith(v *lisp.LVal, eng *Engine) string {
 	return FormatValue(v)
 }
 
-// EvalInContext parses and evaluates an expression in the paused
-// environment. This allows the debug console to inspect and mutate
-// state. Returns the result or an error LVal.
+// EvalInContext parses and evaluates all expressions in the paused
+// environment, returning the result of the last one (progn semantics).
+// Short-circuits on first error. This allows the debug console to
+// evaluate multi-expression input like "(set 'x 10) (+ x y)".
 func EvalInContext(env *lisp.LEnv, source string) *lisp.LVal {
+	if env.Runtime.Reader == nil {
+		return env.Errorf("no reader for debug evaluation")
+	}
+	exprs, err := env.Runtime.Reader.Read("debug-eval", strings.NewReader(source))
+	if err != nil {
+		return env.Errorf("debug eval parse error: %v", err)
+	}
+	if len(exprs) == 0 {
+		return lisp.Nil()
+	}
+	var result *lisp.LVal
+	for _, expr := range exprs {
+		result = env.Eval(expr)
+		if result.Type == lisp.LError {
+			return result
+		}
+	}
+	return result
+}
+
+// EvalSingleInContext parses and evaluates only the first expression in
+// the paused environment. Used for hover tooltips where multi-expression
+// evaluation is inappropriate.
+func EvalSingleInContext(env *lisp.LEnv, source string) *lisp.LVal {
 	if env.Runtime.Reader == nil {
 		return env.Errorf("no reader for debug evaluation")
 	}
