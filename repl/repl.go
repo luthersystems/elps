@@ -22,12 +22,18 @@ import (
 )
 
 type config struct {
-	stdin   io.ReadCloser
-	stderr  io.WriteCloser
-	json    bool
-	batch   bool
-	eval    string
-	rootDir string
+	stdin       io.ReadCloser
+	stderr      io.WriteCloser
+	json        bool
+	batch       bool
+	eval        string
+	rootDir     string
+	lineHandler func(line string) bool
+	evalFn      func(*lisp.LEnv, *lisp.LVal) *lisp.LVal
+	completer   readline.AutoCompleter
+	promptFn    func() (string, string)
+	interruptFn func()
+	doneCh      <-chan struct{}
 }
 
 func newConfig(opts ...Option) *config {
@@ -84,6 +90,59 @@ func WithEval(expr string) Option {
 func WithRootDir(dir string) Option {
 	return func(c *config) {
 		c.rootDir = dir
+	}
+}
+
+// WithLineHandler sets a function that intercepts raw input lines before
+// they reach the parser. If it returns true, the line is consumed and not
+// parsed as Lisp. This allows embedding debug commands (step, continue,
+// break, etc.) in a REPL session.
+func WithLineHandler(fn func(line string) bool) Option {
+	return func(c *config) {
+		c.lineHandler = fn
+	}
+}
+
+// WithEvalFunc replaces the default env.Eval call in the main REPL loop.
+// This allows a debug REPL to use engine.EvalInContext instead.
+func WithEvalFunc(fn func(*lisp.LEnv, *lisp.LVal) *lisp.LVal) Option {
+	return func(c *config) {
+		c.evalFn = fn
+	}
+}
+
+// WithCompleter replaces the default symbol completer with a custom
+// readline.AutoCompleter. This allows a debug REPL to include debug
+// command names alongside symbol completions.
+func WithCompleter(ac readline.AutoCompleter) Option {
+	return func(c *config) {
+		c.completer = ac
+	}
+}
+
+// WithPromptFunc sets a function that returns the primary and continuation
+// prompt strings dynamically. This allows a debug REPL to show state-aware
+// prompts (e.g., "(dbg) " when paused).
+func WithPromptFunc(fn func() (string, string)) Option {
+	return func(c *config) {
+		c.promptFn = fn
+	}
+}
+
+// WithInterruptFunc sets a function called when Ctrl+C is pressed. This
+// allows a debug REPL to request a pause via the debugger engine.
+func WithInterruptFunc(fn func()) Option {
+	return func(c *config) {
+		c.interruptFn = fn
+	}
+}
+
+// WithDoneCh sets a channel that, when closed, causes RunEnv to exit
+// cleanly. This allows an external controller (e.g., a debug REPL quit
+// command) to stop the REPL without calling os.Exit.
+func WithDoneCh(ch <-chan struct{}) Option {
+	return func(c *config) {
+		c.doneCh = ch
 	}
 }
 
@@ -185,13 +244,18 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 	histPath := historyPath()
 	ensureHistoryFilePermissions(histPath)
 
+	var completer readline.AutoCompleter = &symbolCompleter{env: env}
+	if cfg.completer != nil {
+		completer = cfg.completer
+	}
+
 	rlCfg := &readline.Config{
 		Stdout:            env.Runtime.Stderr,
 		Stderr:            env.Runtime.Stderr,
 		Prompt:            p.Prompt(),
 		HistoryFile:       histPath,
 		HistorySearchFold: true,
-		AutoComplete:      &symbolCompleter{env: env},
+		AutoComplete:      completer,
 	}
 
 	if cfg.stdin != nil {
@@ -205,6 +269,17 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 	defer rl.Close() //nolint:errcheck // best-effort cleanup
 
 	p.Read = func() []*token.Token {
+		if cfg.doneCh != nil {
+			select {
+			case <-cfg.doneCh:
+				return []*token.Token{{Type: token.EOF}}
+			default:
+			}
+		}
+		if cfg.promptFn != nil {
+			prompt, cont := cfg.promptFn()
+			p.SetPrompts(prompt, cont)
+		}
 		rl.SetPrompt(p.Prompt())
 		for {
 			var line []byte
@@ -216,11 +291,22 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 				}}
 			}
 			if err == readline.ErrInterrupt {
+				if cfg.interruptFn != nil {
+					cfg.interruptFn()
+				}
 				line = nil
 				continue
 			}
 			line = bytes.TrimSpace(line)
 			if len(line) == 0 {
+				continue
+			}
+			if cfg.lineHandler != nil && cfg.lineHandler(string(line)) {
+				if cfg.promptFn != nil {
+					prompt, cont := cfg.promptFn()
+					p.SetPrompts(prompt, cont)
+				}
+				rl.SetPrompt(p.Prompt())
 				continue
 			}
 			var tokens []*token.Token
@@ -259,7 +345,13 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 			}
 			continue
 		}
-		val := env.Eval(expr)
+		evalFn := env.Eval
+		if cfg.evalFn != nil {
+			evalFn = func(expr *lisp.LVal) *lisp.LVal {
+				return cfg.evalFn(env, expr)
+			}
+		}
+		val := evalFn(expr)
 		if cfg.json {
 			emitResult(os.Stdout, val)
 		} else if val.Type == lisp.LError {

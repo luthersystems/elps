@@ -345,6 +345,20 @@ func EvalCondition(env *lisp.LEnv, condition string) bool {
 	return true
 }
 
+// RemoveByID removes the breakpoint with the given ID. Returns true if it
+// existed. This is used by the debug REPL's "delete N" command.
+func (s *BreakpointStore) RemoveByID(id int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, bp := range s.byKey {
+		if bp.ID == id {
+			delete(s.byKey, key)
+			return true
+		}
+	}
+	return false
+}
+
 // All returns all breakpoints in the store.
 func (s *BreakpointStore) All() []*Breakpoint {
 	s.mu.RLock()
