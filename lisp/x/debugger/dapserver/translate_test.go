@@ -315,8 +315,18 @@ func TestChildInfo(t *testing.T) {
 			wantNamed:   2,
 		},
 		{
+			// Tagged values have a single "data" child shown by expandVariable,
+			// but childInfo returns (0,0) because pagination hints are not
+			// useful for a single child.
 			name:        "tagged value with scalar inner",
 			val:         &lisp.LVal{Type: lisp.LTaggedVal, Str: "my-type", Cells: []*lisp.LVal{lisp.Int(1)}},
+			wantIndexed: 0,
+			wantNamed:   0,
+		},
+		{
+			// LArray with only dimensions (no data slice) — defensive guard.
+			name:        "array with missing data slice",
+			val:         &lisp.LVal{Type: lisp.LArray, Cells: []*lisp.LVal{lisp.SExpr(nil)}},
 			wantIndexed: 0,
 			wantNamed:   0,
 		},

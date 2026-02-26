@@ -4797,7 +4797,27 @@ func TestDAPServer_VariablePaginationBeyondEnd(t *testing.T) {
 
 	// Start past end — should return empty.
 	page := s.variablesWithPagination(ref, 100, 0)
-	assert.Empty(t, page, "start past end should return empty")
+	assert.Empty(t, page, "start far past end should return empty")
+
+	// Start exactly at length — should also return empty.
+	page = s.variablesWithPagination(ref, 3, 0)
+	assert.Empty(t, page, "start at exact length should return empty")
+
+	// Start=0 with Count — should return first N without triggering offset.
+	page = s.variablesWithPagination(ref, 0, 2)
+	require.Len(t, page, 2, "start=0 count=2 should return first 2")
+	assert.Equal(t, "[0]", page[0].Name)
+	assert.Equal(t, "[1]", page[1].Name)
+
+	// Count=1 — minimal count value.
+	page = s.variablesWithPagination(ref, 1, 1)
+	require.Len(t, page, 1, "count=1 should return exactly 1")
+	assert.Equal(t, "[1]", page[0].Name)
+
+	// Count exceeds remaining — should return what's left.
+	page = s.variablesWithPagination(ref, 2, 100)
+	require.Len(t, page, 1, "count exceeding remaining should return rest")
+	assert.Equal(t, "[2]", page[0].Name)
 
 	s.continueExec()
 	select {
@@ -4851,6 +4871,8 @@ func TestDAPServer_EvaluatePaginationHints(t *testing.T) {
 	// Evaluate a sorted-map — NamedVariables should be set.
 	mapResp := s.evaluate(`(sorted-map :a 1 :b 2)`, topFrame)
 	assert.True(t, mapResp.Success)
+	assert.Greater(t, mapResp.Body.VariablesReference, 0,
+		"map should be expandable")
 	assert.Equal(t, 0, mapResp.Body.IndexedVariables,
 		"map eval should report 0 indexed children")
 	assert.Equal(t, 2, mapResp.Body.NamedVariables,
@@ -4859,6 +4881,8 @@ func TestDAPServer_EvaluatePaginationHints(t *testing.T) {
 	// Evaluate a scalar — no hints.
 	scalarResp := s.evaluate("42", topFrame)
 	assert.True(t, scalarResp.Success)
+	assert.Equal(t, 0, scalarResp.Body.VariablesReference,
+		"scalar should not be expandable")
 	assert.Equal(t, 0, scalarResp.Body.IndexedVariables,
 		"scalar eval should report 0 indexed children")
 	assert.Equal(t, 0, scalarResp.Body.NamedVariables,
