@@ -438,14 +438,8 @@ func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
 	}
 
 	// Check stepping.
-	depth := len(env.Runtime.Stack.Frames)
-	var stepFile string
-	var stepLine int
-	if expr.Source != nil {
-		stepFile = expr.Source.File
-		stepLine = expr.Source.Line
-	}
-	if e.stepper.ShouldPause(depth, stepFile, stepLine) {
+	loc := exprStepLocation(env, expr)
+	if e.stepper.ShouldPause(loc) {
 		return true
 	}
 
@@ -571,24 +565,18 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 	}
 
 	// Configure stepper based on action.
-	depth := len(env.Runtime.Stack.Frames)
+	loc := exprStepLocation(env, expr)
 	e.mu.Lock()
 	gran := e.stepGranularity
 	e.stepGranularity = "" // consume
 	e.mu.Unlock()
-	var file string
-	var line int
-	if expr.Source != nil {
-		file = expr.Source.File
-		line = expr.Source.Line
-	}
 	switch action {
 	case lisp.DebugStepInto:
-		e.stepper.SetStepInto(depth, gran, file, line)
+		e.stepper.SetStepInto(loc, gran)
 	case lisp.DebugStepOver:
-		e.stepper.SetStepOver(depth, gran, file, line)
+		e.stepper.SetStepOver(loc, gran)
 	case lisp.DebugStepOut:
-		e.stepper.SetStepOut(depth)
+		e.stepper.SetStepOut(loc.Depth)
 	default:
 		e.stepper.Reset()
 	}
@@ -798,6 +786,22 @@ func (e *Engine) SetStepInTarget(qualifiedName string, count int) {
 	e.stepInTarget = qualifiedName
 	e.stepInTargetCount = count
 	e.stepInTargetSeen = 0
+}
+
+// exprStepLocation builds a StepLocation from the current environment and
+// expression, extracting stack depth, source location, and macro expansion ID.
+func exprStepLocation(env *lisp.LEnv, expr *lisp.LVal) StepLocation {
+	loc := StepLocation{
+		Depth: len(env.Runtime.Stack.Frames),
+	}
+	if expr != nil && expr.Source != nil {
+		loc.File = expr.Source.File
+		loc.Line = expr.Source.Line
+	}
+	if expr != nil && expr.MacroExpansion != nil {
+		loc.MacroID = expr.MacroExpansion.ID
+	}
+	return loc
 }
 
 // Disconnect atomically disables the debugger and resumes execution if paused.

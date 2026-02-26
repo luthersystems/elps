@@ -51,6 +51,11 @@ func translateStackFrames(stack *lisp.CallStack, pausedExpr *lisp.LVal, sourceRo
 					Path: resolveSourcePath(pausedExpr.Source.Path, pausedExpr.Source.File, sourceRoot),
 				}
 			}
+			// Annotate with macro expansion name when paused inside a
+			// macro expansion, so the user can see which macro is active.
+			if pausedExpr.MacroExpansion != nil && pausedExpr.MacroExpansion.MacroExpansionContext != nil {
+				sf.Name = sf.Name + " [macro: " + pausedExpr.MacroExpansion.Name + "]"
+			}
 		}
 		frames = append(frames, sf)
 	}

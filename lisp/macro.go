@@ -226,11 +226,15 @@ func macroDeftype(env *LEnv, args *LVal) *LVal {
 // locations (Pos < 0) with the macro call site. Nodes with valid source
 // locations (from parser or unquote) are left unchanged.
 //
+// When ctx is non-nil (debugger attached), each stamped node also gets a
+// MacroExpansionInfo with a unique, monotonically-increasing ID. The
+// runtime's sequence counter is used to generate IDs.
+//
 // Singleton values (Nil, Bool) are skipped because they are shared,
 // immutable, pre-allocated values. Stamping a source location onto a
 // singleton would corrupt it for all other users. See the singleton
 // comments in lisp.go for details.
-func stampMacroExpansion(v *LVal, callSite *token.Location) {
+func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionContext, rt *Runtime) {
 	if v == nil || callSite == nil {
 		return
 	}
@@ -244,9 +248,15 @@ func stampMacroExpansion(v *LVal, callSite *token.Location) {
 	}
 	if v.Source == nil || v.Source.Pos < 0 {
 		v.Source = callSite
+		if ctx != nil {
+			v.MacroExpansion = &MacroExpansionInfo{
+				MacroExpansionContext: ctx,
+				ID:                   rt.nextMacroExpID(),
+			}
+		}
 	}
 	for _, child := range v.Cells {
-		stampMacroExpansion(child, callSite)
+		stampMacroExpansion(child, callSite, ctx, rt)
 	}
 }
 
