@@ -7,3 +7,6 @@ import _ "embed"
 
 //go:embed lang.md
 var LangGuide string
+
+//go:embed debugging-guide.md
+var DebuggingGuide string

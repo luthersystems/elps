@@ -57,6 +57,7 @@ See the `docs/` directory for more documentation:
 
 - [Language reference](docs/lang.md)
 - [Embedding guide](docs/embed.md)
+- [Debugging guide](docs/debugging-guide.md)
 
 See the `_examples/` directory for examples:
 - [SICP Examples](_examples/sicp)

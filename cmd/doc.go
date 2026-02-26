@@ -31,6 +31,7 @@ func DocCommand(opts ...Option) *cobra.Command {
 		listPackages bool
 		missing      bool
 		guide        bool
+		debugGuide   bool
 	)
 
 	// makeEnv returns an LEnv suitable for documentation queries. When
@@ -87,6 +88,9 @@ Use -m to find functions missing documentation (useful in CI):
 Use --guide to print the full ELPS language reference:
   elps doc --guide
 
+Use --debug-guide to print the debugging guide:
+  elps doc --debug-guide
+
 Common packages to explore:
   lisp      Core language (140+ builtins: map, filter, reduce, car, cdr, ...)
   math      Trigonometry, logarithms, constants (pi, inf)
@@ -95,6 +99,10 @@ Common packages to explore:
 		Run: func(cmd *cobra.Command, args []string) {
 			if guide {
 				fmt.Print(docs.LangGuide)
+				return
+			}
+			if debugGuide {
+				fmt.Print(docs.DebuggingGuide)
 				return
 			}
 			if missing {
@@ -137,6 +145,8 @@ Common packages to explore:
 		"List all builtins, special ops, macros, and library functions with missing docstrings. Exits with code 1 if any are found.")
 	cmd.Flags().BoolVar(&guide, "guide", false,
 		"Print the full ELPS language reference guide.")
+	cmd.Flags().BoolVar(&debugGuide, "debug-guide", false,
+		"Print the debugging guide.")
 
 	return cmd
 }
