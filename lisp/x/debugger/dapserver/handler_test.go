@@ -4464,3 +4464,155 @@ func TestDAPServer_EvaluateContextSemantics(t *testing.T) {
 	}
 	s.disconnect()
 }
+
+// completions sends a completions request and returns the response.
+func (s *dapTestSession) completions(text string, column int, frameID int) *dap.CompletionsResponse {
+	s.send(&dap.CompletionsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "completions",
+		},
+		Arguments: dap.CompletionsArguments{
+			Text:    text,
+			Column:  column,
+			FrameId: frameID,
+		},
+	})
+	msg := s.read()
+	resp, ok := msg.(*dap.CompletionsResponse)
+	require.True(s.t, ok, "expected CompletionsResponse, got %T", msg)
+	return resp
+}
+
+func TestDAPServer_Completions(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Set breakpoint inside function body (line 2).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(defun add (a b)\n  (+ a b))\n(add 10 20)")
+		resultCh <- res
+	}()
+
+	// Stop on entry, then continue to breakpoint.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	s.read() // StoppedEvent (breakpoint)
+
+	// Get stack trace to cache frame environments.
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrameID := stResp.Body.StackFrames[0].Id
+
+	// --- Test 1: Complete local variable "a" ---
+	compResp := s.completions("(+ a", 5, topFrameID)
+	assert.True(t, compResp.Success)
+	labels := completionLabels(compResp.Body.Targets)
+	assert.Contains(t, labels, "a", "local variable 'a' should appear in completions")
+
+	// --- Test 2: Complete builtin prefix "defu" ---
+	compResp2 := s.completions("(defu", 6, topFrameID)
+	assert.True(t, compResp2.Success)
+	labels2 := completionLabels(compResp2.Body.Targets)
+	assert.Contains(t, labels2, "defun", "builtin 'defun' should appear in completions")
+
+	// --- Test 3: Complete package name "stri" ---
+	compResp3 := s.completions("(stri", 6, topFrameID)
+	assert.True(t, compResp3.Success)
+	labels3 := completionLabels(compResp3.Body.Targets)
+	assert.Contains(t, labels3, "string:", "package name 'string:' should appear")
+
+	// --- Test 4: Empty prefix returns no targets ---
+	compResp4 := s.completions("(", 2, topFrameID)
+	assert.True(t, compResp4.Success)
+	assert.Empty(t, compResp4.Body.Targets, "empty prefix should produce no targets")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_CompletionsNotPaused(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+	s.configDone()
+
+	// Completions when not paused should return empty targets, not an error.
+	compResp := s.completions("(+ a", 5, 0)
+	assert.True(t, compResp.Success)
+	assert.Empty(t, compResp.Body.Targets, "completions when not paused should be empty")
+
+	s.disconnect()
+}
+
+func TestDAPServer_CompletionsCapability(t *testing.T) {
+	t.Parallel()
+	e := debugger.New()
+	e.Enable()
+	srv := New(e)
+
+	client, server := net.Pipe()
+	defer client.Close() //nolint:errcheck
+
+	go func() {
+		_ = srv.ServeConn(server)
+	}()
+
+	reader := bufio.NewReader(client)
+
+	// Send Initialize request.
+	sendDAPRequest(t, client, &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+			Command:         "initialize",
+		},
+		Arguments: dap.InitializeRequestArguments{
+			AdapterID: "elps",
+		},
+	})
+
+	msg, err := dap.ReadProtocolMessage(reader)
+	require.NoError(t, err)
+	initResp, ok := msg.(*dap.InitializeResponse)
+	require.True(t, ok, "expected InitializeResponse, got %T", msg)
+	assert.True(t, initResp.Body.SupportsCompletionsRequest,
+		"SupportsCompletionsRequest should be true")
+	assert.Equal(t, []string{"(", ":", "'"}, initResp.Body.CompletionTriggerCharacters)
+}
+
+// completionLabels extracts labels from completion items for easy assertion.
+func completionLabels(items []dap.CompletionItem) []string {
+	labels := make([]string, len(items))
+	for i, item := range items {
+		labels[i] = item.Label
+	}
+	return labels
+}
