@@ -84,7 +84,9 @@ func TestCompleteInContext_QualifiedCompletion(t *testing.T) {
 	c, ok := findCandidate(candidates, "string:join")
 	require.True(t, ok, "string:join should be in qualified completions")
 	assert.Equal(t, "function", c.Type, "string:join should be a function")
-	assert.Equal(t, "string", c.Detail, "Detail should be the package name")
+	assert.NotEmpty(t, c.Detail, "Detail should be populated")
+	// With docstring enrichment, Detail is the docstring (not the package name).
+	assert.NotEqual(t, "string", c.Detail, "Detail should be enriched with docstring, not bare package name")
 }
 
 func TestCompleteInContext_PackageNameCompletion(t *testing.T) {
@@ -204,6 +206,89 @@ func TestExtractPrefix(t *testing.T) {
 			t.Parallel()
 			got := ExtractPrefix(tt.text, tt.column)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCompleteInContext_DocstringEnrichment(t *testing.T) {
+	t.Parallel()
+	env := newInspectorTestEnv(t)
+
+	// "defun" is a builtin macro with a known docstring. Complete "defu"
+	// and verify that Detail contains the docstring rather than a package name.
+	candidates := CompleteInContext(env, "defu")
+	c, ok := findCandidate(candidates, "defun")
+	require.True(t, ok, "defun should be in completions")
+	assert.NotEqual(t, "lisp", c.Detail, "Detail should be docstring, not package name")
+	assert.NotEmpty(t, c.Detail, "Detail should contain docstring text")
+	// The detail should be the first line of defun's docstring.
+	assert.Contains(t, c.Detail, "function", "defun docstring should mention 'function'")
+}
+
+func TestCompleteInContext_QualifiedDocstring(t *testing.T) {
+	t.Parallel()
+	env := newInspectorTestEnv(t)
+
+	// Qualified completion "string:jo" should enrich "string:join" with a docstring.
+	candidates := CompleteInContext(env, "string:jo")
+	c, ok := findCandidate(candidates, "string:join")
+	require.True(t, ok, "string:join should be in completions")
+	assert.NotEqual(t, "string", c.Detail, "Detail should be docstring, not package name")
+	assert.NotEmpty(t, c.Detail, "Detail should contain docstring text")
+}
+
+func TestCompleteInContext_LocalNoDocstring(t *testing.T) {
+	t.Parallel()
+	env := newInspectorTestEnv(t)
+
+	// A local variable has no docstring — Detail should remain "local".
+	child := lisp.NewEnv(env)
+	child.Runtime = env.Runtime
+	child.Put(lisp.Symbol("xyz-local-test"), lisp.Int(42))
+
+	candidates := CompleteInContext(child, "xyz-local")
+	c, ok := findCandidate(candidates, "xyz-local-test")
+	require.True(t, ok, "xyz-local-test should be in completions")
+	assert.Equal(t, "local", c.Detail, "local variable without docstring should keep 'local' detail")
+}
+
+func TestLookupDocstring(t *testing.T) {
+	t.Parallel()
+	env := newInspectorTestEnv(t)
+
+	// Builtin with known docstring.
+	doc := lookupDocstring(env, "defun")
+	assert.NotEmpty(t, doc, "defun should have a docstring")
+	assert.NotContains(t, doc, "\n", "should return single line only")
+
+	// Qualified symbol.
+	doc = lookupDocstring(env, "string:join")
+	assert.NotEmpty(t, doc, "string:join should have a docstring")
+	assert.NotContains(t, doc, "\n", "should return single line only")
+
+	// Unbound symbol should return empty.
+	doc = lookupDocstring(env, "nonexistent-symbol-xyzzy")
+	assert.Empty(t, doc, "unbound symbol should have no docstring")
+}
+
+func TestFirstLine(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"single line", "hello world", "hello world"},
+		{"multi line", "first line\nsecond line", "first line"},
+		{"leading newline", "\nactual first", "actual first"},
+		{"leading whitespace", "  trimmed  ", "trimmed"},
+		{"blank lines then content", "\n\n\n  content  \nmore", "content"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, firstLine(tt.input))
 		})
 	}
 }
