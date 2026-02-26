@@ -1680,3 +1680,170 @@ func TestEngine_ScopeProviders(t *testing.T) {
 		assert.Equal(t, "B", providers[1].Name())
 	})
 }
+
+func TestEngine_StepInTarget(t *testing.T) {
+	t.Parallel()
+	e := New()
+	e.Enable()
+	// Set breakpoint inside main's body (line 4: the call to f).
+	e.Breakpoints().Set("test", 4, "")
+	env := newTestEnv(t, e)
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test",
+			"(defun f (x) (+ x 1))\n"+   // line 1
+				"(defun g (x) (+ x 2))\n"+ // line 2
+				"(defun main ()\n"+          // line 3
+				"  (f (g 10)))\n"+           // line 4
+				"(main)")                    // line 5
+		resultCh <- res
+	}()
+
+	// Hit breakpoint on line 4 inside main.
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	_, bpExpr := e.PausedState()
+	require.NotNil(t, bpExpr)
+	require.NotNil(t, bpExpr.Source)
+	assert.Equal(t, 4, bpExpr.Source.Line, "breakpoint should hit on line 4")
+
+	// Clear breakpoint so it doesn't interfere.
+	e.Breakpoints().Remove("test", 4)
+
+	// Set step-in target to "f" and use StepOver as base mode.
+	e.SetStepInTarget("user:f", 0)
+	e.StepOver()
+
+	// Should pause inside f's body (line 1).
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	_, stepExpr := e.PausedState()
+	require.NotNil(t, stepExpr)
+	require.NotNil(t, stepExpr.Source)
+	assert.Equal(t, 1, stepExpr.Source.Line,
+		"targeted step-in should pause inside f's body on line 1")
+
+	e.Resume()
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type, "expected int result")
+		assert.Equal(t, 13, res.Int)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for eval result")
+	}
+}
+
+func TestEngine_StepInTarget_SkipsNonTarget(t *testing.T) {
+	t.Parallel()
+
+	e := New()
+	e.Enable()
+	// Set breakpoint on line 4 (inside main).
+	e.Breakpoints().Set("test", 4, "")
+	env := newTestEnv(t, e)
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test",
+			"(defun f (x) (+ x 1))\n"+   // line 1
+				"(defun g (x) (+ x 2))\n"+ // line 2
+				"(defun main ()\n"+          // line 3
+				"  (f (g 10)))\n"+           // line 4
+				"(main)")                    // line 5
+		resultCh <- res
+	}()
+
+	// Hit breakpoint on line 4.
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+
+	// Clear breakpoint.
+	e.Breakpoints().Remove("test", 4)
+
+	// Target "f" — should NOT pause inside "g" even though g is called first.
+	e.SetStepInTarget("user:f", 0)
+	e.StepOver()
+
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	pausedEnv, stepExpr := e.PausedState()
+	require.NotNil(t, stepExpr)
+	require.NotNil(t, stepExpr.Source)
+
+	// Verify we're in f, not g. Check the top frame on the stack.
+	topFrame := pausedEnv.Runtime.Stack.Frames[len(pausedEnv.Runtime.Stack.Frames)-1]
+	assert.Equal(t, "f", topFrame.Name,
+		"should be inside f's frame, not g's")
+	assert.Equal(t, 1, stepExpr.Source.Line,
+		"should pause on f's body line (line 1)")
+
+	e.Resume()
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type)
+		assert.Equal(t, 13, res.Int)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for eval result")
+	}
+}
+
+func TestEngine_StepInTarget_SecondOccurrence(t *testing.T) {
+	t.Parallel()
+	e := New()
+	e.Enable()
+	// Breakpoint inside main body (line 3).
+	e.Breakpoints().Set("test", 3, "")
+	env := newTestEnv(t, e)
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test",
+			"(defun f (x) (+ x 1))\n"+ // line 1
+				"(defun main ()\n"+      // line 2
+				"  (+ (f 10) (f 20)))\n"+ // line 3: f called twice
+				"(main)")                 // line 4
+		resultCh <- res
+	}()
+
+	// Hit breakpoint on line 3.
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	e.Breakpoints().Remove("test", 3)
+
+	// Target second occurrence of f (count=1).
+	e.SetStepInTarget("user:f", 1)
+	e.StepOver()
+
+	// Should pause inside f's body on the second call (f 20).
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	pausedEnv, stepExpr := e.PausedState()
+	require.NotNil(t, stepExpr)
+	require.NotNil(t, stepExpr.Source)
+	assert.Equal(t, 1, stepExpr.Source.Line,
+		"targeted step-in (2nd occurrence) should pause inside f's body")
+
+	// Verify we're in the second invocation (f 20), not the first (f 10).
+	xVal := e.EvalInContext(pausedEnv, "x")
+	require.Equal(t, lisp.LInt, xVal.Type, "x should be an int")
+	assert.Equal(t, 20, xVal.Int, "x should be 20 (second call), not 10 (first call)")
+
+	e.Resume()
+
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type)
+		assert.Equal(t, 32, res.Int) // (+ 11 21)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for eval result")
+	}
+}

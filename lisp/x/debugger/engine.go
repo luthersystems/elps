@@ -82,6 +82,10 @@ type Engine struct {
 	lastContinuedKey    string            // suppress breakpoint re-hit after continue on same line
 	funBreakpoints      map[string]string // qualified name → user-provided name
 
+	stepInTarget        string            // qualified function name to target (smart step-into)
+	stepInTargetCount   int               // how many OnFunEntry matches to skip (0 = first match)
+	stepInTargetSeen    int               // matches seen so far
+
 	stepGranularity string // DAP stepping granularity ("instruction" or line-level default)
 	stepOutReturned bool   // set by OnFunReturn when step-out condition detected pre-pop
 
@@ -589,6 +593,15 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 		e.stepper.Reset()
 	}
 
+	// Clear step-in target unless we're stepping over with an active target
+	// (StepOver is the base mode for targeted step-in; OnFunEntry handles
+	// the actual target match).
+	if action != lisp.DebugStepOver || e.stepInTarget == "" {
+		e.stepInTarget = ""
+		e.stepInTargetCount = 0
+		e.stepInTargetSeen = 0
+	}
+
 	// Notify continued.
 	e.mu.Lock()
 	cb = e.onEvent
@@ -615,15 +628,13 @@ func (e *Engine) SetFunctionBreakpoints(names []string) []string {
 }
 
 // OnFunEntry implements lisp.Debugger. Checks function breakpoints.
+// OnFunEntry implements lisp.Debugger. Checks function breakpoints and
+// step-in targets (smart step-into).
 func (e *Engine) OnFunEntry(env *lisp.LEnv, fun *lisp.LVal, fenv *lisp.LEnv) {
 	if fun.Type != lisp.LFun {
 		return
 	}
 	e.mu.Lock()
-	if len(e.funBreakpoints) == 0 {
-		e.mu.Unlock()
-		return
-	}
 
 	// Build qualified and unqualified names from the function value.
 	funData := fun.FunData()
@@ -636,17 +647,34 @@ func (e *Engine) OnFunEntry(env *lisp.LEnv, fun *lisp.LVal, fenv *lisp.LEnv) {
 		qualifiedName = funData.Package + ":" + localName
 	}
 
-	// Check if either form matches a function breakpoint.
-	_, matchQualified := e.funBreakpoints[qualifiedName]
-	_, matchLocal := e.funBreakpoints[localName]
-	if !matchQualified && !matchLocal {
-		e.mu.Unlock()
-		return
+	// Check function breakpoints.
+	if len(e.funBreakpoints) > 0 {
+		_, matchQualified := e.funBreakpoints[qualifiedName]
+		_, matchLocal := e.funBreakpoints[localName]
+		if matchQualified || matchLocal {
+			e.pauseRequested = true
+			e.pauseReason = StopFunctionBreakpoint
+			e.mu.Unlock()
+			return
+		}
 	}
 
-	// Request a pause with function breakpoint reason.
-	e.pauseRequested = true
-	e.pauseReason = StopFunctionBreakpoint
+	// Check step-in target (smart step-into).
+	if e.stepInTarget != "" {
+		if qualifiedName == e.stepInTarget || localName == e.stepInTarget {
+			if e.stepInTargetSeen >= e.stepInTargetCount {
+				e.stepInTarget = ""
+				e.stepInTargetSeen = 0
+				e.stepInTargetCount = 0
+				e.pauseRequested = true
+				e.pauseReason = StopStep
+				e.mu.Unlock()
+				return
+			}
+			e.stepInTargetSeen++
+		}
+	}
+
 	e.mu.Unlock()
 }
 
@@ -759,6 +787,17 @@ func (e *Engine) EvalInContext(env *lisp.LEnv, source string) *lisp.LVal {
 		e.mu.Unlock()
 	}()
 	return EvalInContext(env, source)
+}
+
+// SetStepInTarget configures targeted step-in. The engine will use StepOver
+// mode but pause via OnFunEntry when the Nth matching function is entered.
+// count=0 means first match.
+func (e *Engine) SetStepInTarget(qualifiedName string, count int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stepInTarget = qualifiedName
+	e.stepInTargetCount = count
+	e.stepInTargetSeen = 0
 }
 
 // Disconnect atomically disables the debugger and resumes execution if paused.

@@ -4078,3 +4078,306 @@ func TestDAPServer_CustomScopeProvider_Empty(t *testing.T) {
 	}
 	s.disconnect()
 }
+
+// stepInTargets sends a stepInTargets request and returns the response.
+func (s *dapTestSession) stepInTargets(frameID int) *dap.StepInTargetsResponse {
+	s.send(&dap.StepInTargetsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stepInTargets",
+		},
+		Arguments: dap.StepInTargetsArguments{FrameId: frameID},
+	})
+	msg := s.read()
+	resp, ok := msg.(*dap.StepInTargetsResponse)
+	require.True(s.t, ok, "expected StepInTargetsResponse, got %T", msg)
+	return resp
+}
+
+// stepInWithTarget sends a stepIn request with a specific target ID.
+func (s *dapTestSession) stepInWithTarget(targetID int) {
+	s.send(&dap.StepInRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stepIn",
+		},
+		Arguments: dap.StepInArguments{
+			ThreadId: elpsThreadID,
+			TargetId: targetID,
+		},
+	})
+	s.read() // StepInResponse
+}
+
+func TestDAPServer_StepInTargets(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	// Set breakpoint on line 4 (inside main, the call expression).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 4}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test",
+			"(defun f (x) (+ x 1))\n"+   // line 1
+				"(defun g (x) (+ x 2))\n"+ // line 2
+				"(defun main ()\n"+          // line 3
+				"  (f (g 10)))\n"+           // line 4
+				"(main)")                    // line 5
+		resultCh <- res
+	}()
+
+	// Wait for breakpoint on line 4.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Get stack trace to find the top frame ID.
+	st := s.stackTrace()
+	require.Greater(t, len(st.Body.StackFrames), 0)
+	topFrameID := st.Body.StackFrames[0].Id
+
+	// Request step-in targets.
+	targetsResp := s.stepInTargets(topFrameID)
+	assert.True(t, targetsResp.Success)
+
+	// Should find exactly "f" and "g" as targets (no builtins like +).
+	require.Len(t, targetsResp.Body.Targets, 2, "should find exactly 2 user-defined targets")
+	var labels []string
+	for _, tgt := range targetsResp.Body.Targets {
+		labels = append(labels, tgt.Label)
+	}
+	assert.Contains(t, labels, "f", "should include f as a step-in target")
+	assert.Contains(t, labels, "g", "should include g as a step-in target")
+
+	// Find the target ID for "f".
+	var fTargetID int
+	for _, tgt := range targetsResp.Body.Targets {
+		if tgt.Label == "f" {
+			fTargetID = tgt.Id
+			break
+		}
+	}
+	require.NotZero(t, fTargetID, "should have found target ID for f")
+
+	// Clear breakpoints before stepping.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+
+	// Step-in with target "f" — should pause inside f's body.
+	s.stepInWithTarget(fTargetID)
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Verify we paused inside f (line 1).
+	st2 := s.stackTrace()
+	require.Greater(t, len(st2.Body.StackFrames), 0)
+	assert.Equal(t, 1, st2.Body.StackFrames[0].Line,
+		"should be paused inside f's body on line 1")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case res := <-resultCh:
+		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+		assert.Equal(t, lisp.LInt, res.Type, "expected int result")
+		assert.Equal(t, 13, res.Int, "f(g(10)) = f(12) = 13")
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_StepInTargets_Empty(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	// Expression with no user-defined function calls.
+	go func() {
+		res := env.LoadString("test", "(+ 1 2)")
+		resultCh <- res
+	}()
+
+	// Wait for stop-on-entry.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Request step-in targets — should be empty (+ is a builtin).
+	// On stop-on-entry the stack may be empty, so use frame 0.
+	targetsResp := s.stepInTargets(0)
+	assert.True(t, targetsResp.Success)
+	assert.Empty(t, targetsResp.Body.Targets,
+		"no user-defined targets should be found for builtin-only expression")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_StepInTargets_RegularStepIn(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	// Set breakpoint on line 3 (call to f).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 3}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test",
+			"(defun f (x)\n"+  // line 1
+				"  (+ x 1))\n"+ // line 2
+				"(f 10)")        // line 3
+		resultCh <- res
+	}()
+
+	// Wait for breakpoint on line 3.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Clear breakpoints.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+
+	// Regular step-in (no target ID) — should enter f's body.
+	s.send(&dap.StepInRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stepIn",
+		},
+		Arguments: dap.StepInArguments{ThreadId: elpsThreadID},
+	})
+	s.read() // StepInResponse
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Should be inside f's body (line 2).
+	st := s.stackTrace()
+	require.Greater(t, len(st.Body.StackFrames), 0)
+	assert.Equal(t, 2, st.Body.StackFrames[0].Line,
+		"regular step-in should enter f's body on line 2")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case res := <-resultCh:
+		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_StepInTargets_Capability(t *testing.T) {
+	t.Parallel()
+	e := debugger.New()
+	e.Enable()
+	srv := New(e)
+
+	client, server := net.Pipe()
+	defer client.Close() //nolint:errcheck
+
+	go func() {
+		_ = srv.ServeConn(server)
+	}()
+
+	reader := bufio.NewReader(client)
+
+	// Send Initialize request.
+	sendDAPRequest(t, client, &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+			Command:         "initialize",
+		},
+		Arguments: dap.InitializeRequestArguments{
+			AdapterID:     "elps",
+			LinesStartAt1: true,
+		},
+	})
+
+	// Read Initialize response.
+	msg, err := dap.ReadProtocolMessage(reader)
+	require.NoError(t, err)
+	initResp, ok := msg.(*dap.InitializeResponse)
+	require.True(t, ok, "expected InitializeResponse, got %T", msg)
+	assert.True(t, initResp.Success)
+	assert.True(t, initResp.Body.SupportsStepInTargetsRequest,
+		"SupportsStepInTargetsRequest should be true in capabilities")
+
+	// Read Initialized event.
+	_, err = dap.ReadProtocolMessage(reader)
+	require.NoError(t, err)
+
+	// Disconnect.
+	sendDAPRequest(t, client, &dap.DisconnectRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 2, Type: "request"},
+			Command:         "disconnect",
+		},
+	})
+	_, err = dap.ReadProtocolMessage(reader) // DisconnectResponse
+	require.NoError(t, err)
+}
