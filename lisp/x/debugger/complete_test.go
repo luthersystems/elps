@@ -72,7 +72,7 @@ func TestCompleteInContext_PackageSymbols(t *testing.T) {
 	c, ok := findCandidate(candidates, "my-test-func")
 	require.True(t, ok, "my-test-func should be in candidates")
 	assert.Equal(t, "function", c.Type, "defun should produce function type")
-	assert.NotEmpty(t, c.Detail, "Detail should be the package name")
+	assert.Equal(t, "user", c.Detail, "user-defined function without docstring should show package name")
 }
 
 func TestCompleteInContext_QualifiedCompletion(t *testing.T) {
@@ -84,9 +84,7 @@ func TestCompleteInContext_QualifiedCompletion(t *testing.T) {
 	c, ok := findCandidate(candidates, "string:join")
 	require.True(t, ok, "string:join should be in qualified completions")
 	assert.Equal(t, "function", c.Type, "string:join should be a function")
-	assert.NotEmpty(t, c.Detail, "Detail should be populated")
-	// With docstring enrichment, Detail is the docstring (not the package name).
-	assert.NotEqual(t, "string", c.Detail, "Detail should be enriched with docstring, not bare package name")
+	assert.Equal(t, "Concatenates a list of strings with sep inserted between each", c.Detail)
 }
 
 func TestCompleteInContext_PackageNameCompletion(t *testing.T) {
@@ -110,6 +108,7 @@ func TestCompleteInContext_ExportedUnqualified(t *testing.T) {
 	c, ok := findCandidate(candidates, "defun")
 	require.True(t, ok, "defun should be in unqualified completions")
 	assert.Equal(t, "function", c.Type, "defun should be a function")
+	assert.Equal(t, "Defines a named function in the current package.", c.Detail)
 }
 
 func TestCompleteInContext_KeywordCompletion(t *testing.T) {
@@ -126,10 +125,9 @@ func TestCompleteInContext_KeywordCompletion(t *testing.T) {
 	// packages. In a real env, keywords are self-evaluating symbols — they
 	// don't get stored in package symbol tables. So we exercise the code
 	// path to verify it doesn't panic and returns an empty-or-valid result.
-	candidates := CompleteInContext(env, ":")
-	// We just need to verify the code path runs without error. Whether
-	// keywords are found depends on whether any package has :symbols.
-	assert.NotNil(t, candidates != nil || candidates == nil, "should not panic")
+	// Verify the keyword code path runs without panic. Whether keywords
+	// are found depends on whether any package has :symbols in its table.
+	_ = CompleteInContext(env, ":")
 }
 
 func TestCompleteInContext_Dedup(t *testing.T) {
@@ -215,14 +213,11 @@ func TestCompleteInContext_DocstringEnrichment(t *testing.T) {
 	env := newInspectorTestEnv(t)
 
 	// "defun" is a builtin macro with a known docstring. Complete "defu"
-	// and verify that Detail contains the docstring rather than a package name.
+	// and verify that Detail contains the first line of its docstring.
 	candidates := CompleteInContext(env, "defu")
 	c, ok := findCandidate(candidates, "defun")
 	require.True(t, ok, "defun should be in completions")
-	assert.NotEqual(t, "lisp", c.Detail, "Detail should be docstring, not package name")
-	assert.NotEmpty(t, c.Detail, "Detail should contain docstring text")
-	// The detail should be the first line of defun's docstring.
-	assert.Contains(t, c.Detail, "function", "defun docstring should mention 'function'")
+	assert.Equal(t, "Defines a named function in the current package.", c.Detail)
 }
 
 func TestCompleteInContext_QualifiedDocstring(t *testing.T) {
@@ -233,8 +228,7 @@ func TestCompleteInContext_QualifiedDocstring(t *testing.T) {
 	candidates := CompleteInContext(env, "string:jo")
 	c, ok := findCandidate(candidates, "string:join")
 	require.True(t, ok, "string:join should be in completions")
-	assert.NotEqual(t, "string", c.Detail, "Detail should be docstring, not package name")
-	assert.NotEmpty(t, c.Detail, "Detail should contain docstring text")
+	assert.Equal(t, "Concatenates a list of strings with sep inserted between each", c.Detail)
 }
 
 func TestCompleteInContext_LocalNoDocstring(t *testing.T) {
@@ -258,13 +252,11 @@ func TestLookupDocstring(t *testing.T) {
 
 	// Builtin with known docstring.
 	doc := lookupDocstring(env, "defun")
-	assert.NotEmpty(t, doc, "defun should have a docstring")
-	assert.NotContains(t, doc, "\n", "should return single line only")
+	assert.Equal(t, "Defines a named function in the current package.", doc)
 
 	// Qualified symbol.
 	doc = lookupDocstring(env, "string:join")
-	assert.NotEmpty(t, doc, "string:join should have a docstring")
-	assert.NotContains(t, doc, "\n", "should return single line only")
+	assert.Equal(t, "Concatenates a list of strings with sep inserted between each", doc)
 
 	// Unbound symbol should return empty.
 	doc = lookupDocstring(env, "nonexistent-symbol-xyzzy")
