@@ -4629,3 +4629,246 @@ func completionLabels(items []dap.CompletionItem) []string {
 	}
 	return labels
 }
+
+// variablesWithPagination requests variables with Start/Count pagination.
+func (s *dapTestSession) variablesWithPagination(ref, start, count int) []dap.Variable {
+	s.send(&dap.VariablesRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "variables",
+		},
+		Arguments: dap.VariablesArguments{
+			VariablesReference: ref,
+			Start:              start,
+			Count:              count,
+		},
+	})
+	msg := s.read()
+	varsResp, ok := msg.(*dap.VariablesResponse)
+	require.True(s.t, ok, "expected VariablesResponse, got %T", msg)
+	return varsResp.Body.Variables
+}
+
+func TestDAPServer_VariablePagination(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	// Evaluate a 5-element list to get an expandable reference.
+	evalResp := s.evaluate("(list 10 20 30 40 50)", topFrame)
+	assert.True(t, evalResp.Success)
+	ref := evalResp.Body.VariablesReference
+	require.Greater(t, ref, 0, "list should be expandable")
+
+	// Request with Start=1, Count=2 — should get elements [1] and [2].
+	page := s.variablesWithPagination(ref, 1, 2)
+	require.Len(t, page, 2)
+	assert.Equal(t, "[1]", page[0].Name)
+	assert.Equal(t, "20", page[0].Value)
+	assert.Equal(t, "[2]", page[1].Name)
+	assert.Equal(t, "30", page[1].Value)
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_VariablePaginationStartOnly(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	evalResp := s.evaluate("(list 10 20 30 40 50)", topFrame)
+	assert.True(t, evalResp.Success)
+	ref := evalResp.Body.VariablesReference
+	require.Greater(t, ref, 0)
+
+	// Start=3, Count=0 (no count) — should return tail from [3] onward.
+	page := s.variablesWithPagination(ref, 3, 0)
+	require.Len(t, page, 2, "should return last 2 elements")
+	assert.Equal(t, "[3]", page[0].Name)
+	assert.Equal(t, "40", page[0].Value)
+	assert.Equal(t, "[4]", page[1].Name)
+	assert.Equal(t, "50", page[1].Value)
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_VariablePaginationBeyondEnd(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	evalResp := s.evaluate("(list 1 2 3)", topFrame)
+	assert.True(t, evalResp.Success)
+	ref := evalResp.Body.VariablesReference
+	require.Greater(t, ref, 0)
+
+	// Start past end — should return empty.
+	page := s.variablesWithPagination(ref, 100, 0)
+	assert.Empty(t, page, "start past end should return empty")
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_EvaluatePaginationHints(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	// Evaluate a list — IndexedVariables should be set.
+	listResp := s.evaluate("(list 1 2 3 4)", topFrame)
+	assert.True(t, listResp.Success)
+	assert.Equal(t, 4, listResp.Body.IndexedVariables,
+		"list eval should report 4 indexed children")
+	assert.Equal(t, 0, listResp.Body.NamedVariables,
+		"list eval should report 0 named children")
+
+	// Evaluate a sorted-map — NamedVariables should be set.
+	mapResp := s.evaluate(`(sorted-map :a 1 :b 2)`, topFrame)
+	assert.True(t, mapResp.Success)
+	assert.Equal(t, 0, mapResp.Body.IndexedVariables,
+		"map eval should report 0 indexed children")
+	assert.Equal(t, 2, mapResp.Body.NamedVariables,
+		"map eval should report 2 named children")
+
+	// Evaluate a scalar — no hints.
+	scalarResp := s.evaluate("42", topFrame)
+	assert.True(t, scalarResp.Success)
+	assert.Equal(t, 0, scalarResp.Body.IndexedVariables,
+		"scalar eval should report 0 indexed children")
+	assert.Equal(t, 0, scalarResp.Body.NamedVariables,
+		"scalar eval should report 0 named children")
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
