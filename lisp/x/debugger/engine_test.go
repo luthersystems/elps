@@ -695,6 +695,78 @@ func TestEngine_BreakpointInLoop(t *testing.T) {
 	assert.Equal(t, 3, count, "breakpoint should fire exactly 3 times (once per recursive call where n > 0)")
 }
 
+func TestEngine_BreakpointSuppressedDuringStep(t *testing.T) {
+	t.Parallel()
+	// Verify that stepping (step-in) from a breakpoint suppresses the
+	// breakpoint on the same line, so the debugger doesn't appear stuck.
+	// With line-level granularity, sub-expressions on the same line are
+	// skipped by the stepper, but breakpoints could still re-trigger
+	// without lastContinuedKey suppression.
+	var stops []StopReason
+	var mu sync.Mutex
+
+	e := New(WithEventCallback(func(evt Event) {
+		if evt.Type == EventStopped {
+			mu.Lock()
+			stops = append(stops, evt.Reason)
+			mu.Unlock()
+		}
+	}))
+	e.Enable()
+
+	env := newTestEnv(t, e)
+
+	// Multi-expression program. Breakpoint on line 1.
+	// Line 1: (+ 1 2)
+	// Line 2: (+ 3 4)
+	program := "(+ 1 2)\n(+ 3 4)"
+	e.Breakpoints().Set("test", 1, "")
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", program)
+		resultCh <- res
+	}()
+
+	// Wait for the breakpoint to hit.
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+
+	// Step-in with default (line-level) granularity from the breakpoint.
+	// The stepper skips same-line sub-expressions, but the breakpoint on
+	// line 1 must not re-fire for those sub-expressions. With the fix,
+	// lastContinuedKey is set for all resume actions (not just continue),
+	// suppressing the breakpoint.
+	e.StepInto()
+
+	// Wait for the step to pause again (should be on line 2).
+	require.Eventually(t, func() bool {
+		return e.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+
+	mu.Lock()
+	stopsCopy := make([]StopReason, len(stops))
+	copy(stopsCopy, stops)
+	mu.Unlock()
+
+	// First stop should be breakpoint, second should be step (not another breakpoint).
+	require.GreaterOrEqual(t, len(stopsCopy), 2, "expected at least 2 stops")
+	assert.Equal(t, StopBreakpoint, stopsCopy[0], "first stop should be breakpoint")
+	assert.Equal(t, StopStep, stopsCopy[1], "second stop should be step, not breakpoint")
+
+	// Clean up.
+	e.Resume()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		if e.IsPaused() {
+			e.Resume()
+		}
+		t.Fatal("timeout")
+	}
+}
+
 func TestEngine_PausedState(t *testing.T) {
 	t.Parallel()
 	e := New(WithStopOnEntry(true))

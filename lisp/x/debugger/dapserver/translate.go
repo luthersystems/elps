@@ -42,14 +42,15 @@ func translateStackFrames(stack *lisp.CallStack, pausedExpr *lisp.LVal, sourceRo
 		}
 		// For the top frame (first appended), override with the paused
 		// expression's source to show where execution actually stopped.
+		// Always use the paused expression's file — when stepping into a
+		// function defined in a different file, the call frame still points
+		// to the caller's file, but we need to show the callee's source.
 		if len(frames) == 0 && pausedExpr != nil && pausedExpr.Source != nil {
 			sf.Line = pausedExpr.Source.Line
 			sf.Column = pausedExpr.Source.Col
-			if sf.Source == nil {
-				sf.Source = &dap.Source{
-					Name: pausedExpr.Source.File,
-					Path: resolveSourcePath(pausedExpr.Source.Path, pausedExpr.Source.File, sourceRoot),
-				}
+			sf.Source = &dap.Source{
+				Name: pausedExpr.Source.File,
+				Path: resolveSourcePath(pausedExpr.Source.Path, pausedExpr.Source.File, sourceRoot),
 			}
 			// Annotate with macro expansion name when paused inside a
 			// macro expansion, so the user can see which macro is active.
