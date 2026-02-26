@@ -2,7 +2,10 @@
 
 package lisp
 
-import "io"
+import (
+	"context"
+	"io"
+)
 
 // Config is a function that configures a root environment or its runtime.
 type Config func(env *LEnv) *LVal
@@ -91,6 +94,28 @@ func WithMaxMacroExpansionDepth(n int) Config {
 func WithMaxAlloc(n int) Config {
 	return func(env *LEnv) *LVal {
 		env.Runtime.MaxAlloc = n
+		return Nil()
+	}
+}
+
+// WithContext returns a Config that sets the initial context.Context for the
+// runtime.  The context is checked at each evaluation step; if it is cancelled
+// or its deadline expires, evaluation returns a CondContextCancelled error.
+// For per-call context control, use the *Context methods on LEnv instead.
+func WithContext(ctx context.Context) Config {
+	return func(env *LEnv) *LVal {
+		env.Runtime.ctx = ctx
+		return Nil()
+	}
+}
+
+// WithMaxSteps returns a Config that sets the maximum number of evaluation
+// steps before evaluation returns a CondStepLimitExceeded error.  A step is
+// counted for each Eval entry, each TRO iteration, and each macro
+// re-expansion.  A value of 0 means unlimited (the default).
+func WithMaxSteps(n int64) Config {
+	return func(env *LEnv) *LVal {
+		env.Runtime.maxSteps = n
 		return Nil()
 	}
 }

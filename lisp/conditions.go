@@ -14,3 +14,9 @@ const (
 	CondInvalidHexLiteral   = "invalid-hex-literal"
 	CondOverflow            = "integer-overflow-error"
 )
+
+// Evaluation limit condition names.
+const (
+	CondContextCancelled  = "context-cancelled"
+	CondStepLimitExceeded = "step-limit-exceeded"
+)

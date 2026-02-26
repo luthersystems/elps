@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,12 @@ import (
 // Runtime is an object underlying a family of tree of LEnv values.  It is
 // responsible for holding shared environment state, generating identifiers,
 // and writing debugging output to a stream (typically os.Stderr).
+//
+// Context and Step Limits: Runtime supports optional cancellation via
+// context.Context and instruction counting via MaxSteps.  These are set
+// through the *Context methods on LEnv (e.g. EvalContext) or the
+// WithContext/WithMaxSteps Config options.  When neither is configured,
+// limit checks are two nil/zero comparisons with negligible overhead.
 //
 // Concurrency: Runtime and its associated LEnv tree are NOT safe for
 // concurrent use from multiple goroutines.  All calls to Eval, Load, and
@@ -32,7 +39,10 @@ type Runtime struct {
 	Profiler               Profiler
 	Debugger               Debugger // nil = disabled (zero overhead on hot path)
 	MaxAlloc               int      // Per-operation allocation size cap (0 = use default). Not cumulative.
-	MaxMacroExpansionDepth int // Maximum macro expansion iterations (0 = use default).
+	MaxMacroExpansionDepth int      // Maximum macro expansion iterations (0 = use default).
+	ctx                    context.Context // Cancellation/timeout signal (nil = no cancellation).
+	maxSteps               int64           // Per-evaluation step limit (0 = unlimited).
+	steps                  int64           // Cumulative step counter.
 	conditionStack         []*LVal
 	numenv                 atomicCounter
 	numsym                 atomicCounter
@@ -69,6 +79,18 @@ func (r *Runtime) CheckAlloc(n int) string {
 		return fmt.Sprintf("allocation size %d exceeds maximum (%d)", n, max)
 	}
 	return ""
+}
+
+// Steps returns the cumulative step count since the last ResetSteps call (or
+// since Runtime creation).  Each call to Eval, each tail-recursion iteration,
+// and each macro re-expansion increments the counter by one.
+func (r *Runtime) Steps() int64 {
+	return r.steps
+}
+
+// ResetSteps resets the cumulative step counter to zero.
+func (r *Runtime) ResetSteps() {
+	r.steps = 0
 }
 
 // PushCondition pushes an error onto the condition stack, making it available

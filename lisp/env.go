@@ -4,6 +4,7 @@ package lisp
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -202,6 +203,9 @@ func (env *LEnv) UsePackage(name *LVal) *LVal {
 	return Nil()
 }
 
+// LoadString loads and evaluates expressions from a string.
+//
+// Deprecated: Use LoadStringContext for cancellation and timeout support.
 func (env *LEnv) LoadString(name, exprs string) *LVal {
 	return env.Load(name, strings.NewReader(exprs))
 }
@@ -212,6 +216,8 @@ func (env *LEnv) LoadString(name, exprs string) *LVal {
 // the current package is restored to the current package at the time Load was
 // called, in case loaded source made calls to “in-package”.  If
 // env.Runtime.Reader has not been set then an error will be returned by Load.
+//
+// Deprecated: Use LoadFileContext for cancellation and timeout support.
 func (env *LEnv) LoadFile(loc string) *LVal {
 	if env.Runtime.Library == nil {
 		return env.Errorf("no source library in environment runtime")
@@ -229,6 +235,8 @@ func (env *LEnv) LoadFile(loc string) *LVal {
 // expressions the current package is restored to the current package at the
 // time Load was called, in case loaded source made calls to “in-package”.
 // If env.Runtime.Reader has not been set then an error will be returned by Load.
+//
+// Deprecated: Use LoadContext for cancellation and timeout support.
 func (env *LEnv) Load(name string, r io.Reader) *LVal {
 	if env.Runtime.Reader == nil {
 		return env.Errorf("no reader for environment runtime")
@@ -252,6 +260,8 @@ func (env *LEnv) Load(name string, r io.Reader) *LVal {
 // to the current package at the time Load was called, in case loaded source
 // made calls to “in-package”.  If env.Runtime.Reader has not been set then
 // an error will be returned by Load.
+//
+// Deprecated: Use LoadLocationContext for cancellation and timeout support.
 func (env *LEnv) LoadLocation(name string, loc string, r io.Reader) *LVal {
 	if env.Runtime.Reader == nil {
 		return env.Errorf("no reader for environment runtime")
@@ -866,6 +876,35 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	return nil
 }
 
+// checkLimits is the fast-path evaluation limit check.  When neither a
+// context nor a step limit is configured (the default), this is two nil/zero
+// comparisons (~1-2ns) and returns nil immediately.
+func (env *LEnv) checkLimits() *LVal {
+	r := env.Runtime
+	if r.ctx == nil && r.maxSteps == 0 {
+		return nil
+	}
+	return env.checkLimitsSlow()
+}
+
+// checkLimitsSlow is the cold-path limit check.  It increments the step
+// counter, checks the step limit, and checks the context for cancellation.
+func (env *LEnv) checkLimitsSlow() *LVal {
+	r := env.Runtime
+	r.steps++
+	if r.maxSteps > 0 && r.steps > r.maxSteps {
+		return env.ErrorConditionf(CondStepLimitExceeded,
+			"step limit exceeded (%d steps)", r.maxSteps)
+	}
+	if r.ctx != nil {
+		if err := r.ctx.Err(); err != nil {
+			return env.ErrorConditionf(CondContextCancelled,
+				"context cancelled: %v", err)
+		}
+	}
+	return nil
+}
+
 // Eval evaluates v in the context (scope) of env and returns the resulting
 // LVal.  Eval does not modify v.
 //
@@ -876,6 +915,8 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 // NOTE:  Eval shouldn't unquote v during evaluation -- a difference between
 // Eval and the "eval" builtin function, but it does.  For some reason macros
 // won't work without this unquoting.
+//
+// Deprecated: Use EvalContext for cancellation and timeout support.
 func (env *LEnv) Eval(v *LVal) (result *LVal) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -884,6 +925,9 @@ func (env *LEnv) Eval(v *LVal) (result *LVal) {
 	}()
 	macroDepth := 0
 eval:
+	if lerr := env.checkLimits(); lerr != nil {
+		return lerr
+	}
 	if v.Spliced {
 		return env.Errorf("spliced value used as expression")
 	}
@@ -1099,6 +1143,9 @@ callf:
 			if err != nil {
 				return env.Error(err)
 			}
+			if lerr := env.checkLimits(); lerr != nil {
+				return lerr
+			}
 			fun, args = extractMarkTailRec(r)
 			goto callf
 		}
@@ -1108,7 +1155,65 @@ callf:
 	return r
 }
 
+// FunCall invokes regular function fun with the argument list args.
+//
+// Deprecated: Use FunCallContext for cancellation and timeout support.
 func (env *LEnv) FunCall(fun, args *LVal) *LVal {
+	return env.funCall(fun, args)
+}
+
+// EvalContext evaluates v with the given context.  If ctx is cancelled or
+// its deadline expires during evaluation, a CondContextCancelled error is
+// returned.  The context is scoped to this call and restored on return.
+// Nested calls to *Context methods are safe — each saves and restores
+// the previous context.
+func (env *LEnv) EvalContext(ctx context.Context, v *LVal) *LVal {
+	prev := env.Runtime.ctx
+	env.Runtime.ctx = ctx
+	defer func() { env.Runtime.ctx = prev }()
+	return env.Eval(v)
+}
+
+// LoadContext reads LVals from r and evaluates them with the given context.
+func (env *LEnv) LoadContext(ctx context.Context, name string, r io.Reader) *LVal {
+	prev := env.Runtime.ctx
+	env.Runtime.ctx = ctx
+	defer func() { env.Runtime.ctx = prev }()
+	return env.Load(name, r)
+}
+
+// LoadFileContext loads and evaluates a source file with the given context.
+func (env *LEnv) LoadFileContext(ctx context.Context, loc string) *LVal {
+	prev := env.Runtime.ctx
+	env.Runtime.ctx = ctx
+	defer func() { env.Runtime.ctx = prev }()
+	return env.LoadFile(loc)
+}
+
+// LoadStringContext loads and evaluates a string with the given context.
+func (env *LEnv) LoadStringContext(ctx context.Context, name, exprs string) *LVal {
+	prev := env.Runtime.ctx
+	env.Runtime.ctx = ctx
+	defer func() { env.Runtime.ctx = prev }()
+	return env.LoadString(name, exprs)
+}
+
+// LoadLocationContext loads and evaluates a source stream at a given location
+// with the given context.
+func (env *LEnv) LoadLocationContext(ctx context.Context, name, loc string, r io.Reader) *LVal {
+	prev := env.Runtime.ctx
+	env.Runtime.ctx = ctx
+	defer func() { env.Runtime.ctx = prev }()
+	return env.LoadLocation(name, loc, r)
+}
+
+// FunCallContext invokes regular function fun with args under the given
+// context.  If ctx is cancelled or its deadline expires during the call,
+// a CondContextCancelled error is returned.
+func (env *LEnv) FunCallContext(ctx context.Context, fun, args *LVal) *LVal {
+	prev := env.Runtime.ctx
+	env.Runtime.ctx = ctx
+	defer func() { env.Runtime.ctx = prev }()
 	return env.funCall(fun, args)
 }
 
@@ -1171,6 +1276,9 @@ callf:
 			err := env.Runtime.Stack.CheckHeight()
 			if err != nil {
 				return env.Error(err)
+			}
+			if lerr := env.checkLimits(); lerr != nil {
+				return lerr
 			}
 			fun, args = extractMarkTailRec(r)
 			goto callf

@@ -4,3 +4,9 @@ run:
 linters:
   enable:
     - gosec
+  settings:
+    staticcheck:
+      checks:
+        - "all"
+        - "-SA1019" # Allow deprecated usage during migration to *Context methods
+        - "-ST*"    # Preserve pre-existing style check behavior
