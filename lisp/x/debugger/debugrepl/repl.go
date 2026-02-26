@@ -472,7 +472,8 @@ func showHelp(w io.Writer) {
   quit (q)            End debug session
   help (h)            Show this help
 
-Lisp expressions are evaluated in the paused scope.
+Lisp expressions are evaluated in the paused scope
+(local variables and function parameters are visible).
 Empty input repeats the last command.`
 	fmt.Fprintln(w, help) //nolint:errcheck
 }
