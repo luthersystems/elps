@@ -101,6 +101,30 @@ func TestBreakpointStore_ClearFile(t *testing.T) {
 	assert.NotNil(t, store.Match(&token.Location{File: "other.lisp", Line: 15}))
 }
 
+func TestBreakpointStore_RemoveByID(t *testing.T) {
+	t.Parallel()
+	store := NewBreakpointStore()
+	bp1 := store.Set("test.lisp", 10, "")
+	bp2 := store.Set("test.lisp", 20, "")
+
+	// Remove bp1 by ID; bp2 should survive.
+	assert.True(t, store.RemoveByID(bp1.ID))
+	assert.Nil(t, store.Match(&token.Location{File: "test.lisp", Line: 10}),
+		"removed breakpoint should not match")
+	assert.NotNil(t, store.Match(&token.Location{File: "test.lisp", Line: 20}),
+		"non-target breakpoint should be preserved")
+
+	// Removing the same ID again returns false.
+	assert.False(t, store.RemoveByID(bp1.ID))
+
+	// Remove bp2; store should be empty.
+	assert.True(t, store.RemoveByID(bp2.ID))
+	assert.Empty(t, store.All())
+
+	// Removing from empty store returns false.
+	assert.False(t, store.RemoveByID(999))
+}
+
 func TestBreakpointStore_ExceptionBreak(t *testing.T) {
 	t.Parallel()
 	store := NewBreakpointStore()

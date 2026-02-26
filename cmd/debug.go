@@ -13,6 +13,7 @@ import (
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/lisp/x/debugger"
 	"github.com/luthersystems/elps/lisp/x/debugger/dapserver"
+	"github.com/luthersystems/elps/lisp/x/debugger/debugrepl"
 	"github.com/luthersystems/elps/parser"
 	"github.com/spf13/cobra"
 )
@@ -22,18 +23,19 @@ var (
 	debugStdio       bool
 	debugStopOnEntry bool
 	debugRootDir     string
+	debugREPL        bool
 )
 
 var debugCmd = &cobra.Command{
 	Use:   "debug [flags] file.lisp",
 	Short: "Run a file under the DAP debugger",
-	Long: `Start a DAP (Debug Adapter Protocol) debug server for an ELPS source file.
+	Long: `Start a debugger for an ELPS source file.
 
-The debug server allows editors (VS Code, Neovim, Helix, etc.) to set
-breakpoints, step through code, and inspect variables using the standard
-Debug Adapter Protocol.
+By default, starts a DAP (Debug Adapter Protocol) server for editors
+(VS Code, Neovim, Helix, etc.) to connect to. With --repl, starts an
+interactive CLI debug REPL instead.
 
-Transport modes:
+Transport modes (DAP):
   --port N     Listen for a DAP client on TCP port N (default: 4711)
   --stdio      Use stdin/stdout for DAP communication (for editors that
                launch the debug adapter as a child process)
@@ -45,7 +47,8 @@ Examples:
   elps debug myfile.lisp                     Debug with TCP on port 4711
   elps debug --port 9229 myfile.lisp         Debug with TCP on port 9229
   elps debug --stdio myfile.lisp             Debug with stdio transport
-  elps debug --stop-on-entry myfile.lisp     Pause at first expression`,
+  elps debug --stop-on-entry myfile.lisp     Pause at first expression
+  elps debug --repl myfile.lisp              Interactive CLI debug REPL`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		rootDir := debugRootDir
@@ -77,14 +80,6 @@ Examples:
 		)
 		dbg.Enable()
 
-		// Create the DAP server.
-		srv := dapserver.New(dbg)
-
-		// Wire the engine's event callback to send DAP events.
-		// This runs on the eval goroutine, so it must not block.
-		// The DAP server's handler will pick up stopped events
-		// directly from the engine.
-
 		// Set up the ELPS environment.
 		env := lisp.NewEnv(nil)
 		env.Runtime.Reader = parser.NewReader()
@@ -106,6 +101,22 @@ Examples:
 			fmt.Fprintln(os.Stderr, rc)
 			os.Exit(1)
 		}
+
+		// Interactive CLI debug REPL mode.
+		if debugREPL {
+			absFile, ferr := filepath.Abs(file)
+			if ferr != nil {
+				absFile = file
+			}
+			if err := debugrepl.Run(dbg, env, absFile); err != nil {
+				fmt.Fprintf(os.Stderr, "debug repl error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+
+		// Create the DAP server.
+		srv := dapserver.New(dbg)
 
 		// Start the eval goroutine. After evaluation finishes, notify
 		// the DAP server so it can send ExitedEvent + TerminatedEvent
@@ -168,4 +179,6 @@ func init() {
 		"Pause execution before the first expression")
 	debugCmd.Flags().StringVar(&debugRootDir, "root-dir", "",
 		"Root directory for file access confinement (default: working directory)")
+	debugCmd.Flags().BoolVar(&debugREPL, "repl", false,
+		"Start an interactive CLI debug REPL instead of a DAP server")
 }
