@@ -328,6 +328,87 @@ func TestStepper_StepOver_InstructionGranularity_SameLine(t *testing.T) {
 	assert.Equal(t, StepNone, s.Mode())
 }
 
+// --- Expression-level stepping tests (Col + IsSExpr) ---
+
+// loce is a test helper for building StepLocation values with Col and IsSExpr.
+func loce(depth int, file string, line, col int, isSExpr bool) StepLocation {
+	return StepLocation{Depth: depth, File: file, Line: line, Col: col, IsSExpr: isSExpr}
+}
+
+func TestStepper_StepInto_LineGranularity_DifferentSExprSameLine(t *testing.T) {
+	t.Parallel()
+	s := NewStepper()
+	// Step issued at col 1 on an s-expression.
+	s.SetStepInto(loce(2, "test.lisp", 5, 1, true), "")
+
+	// Same line, different col, s-expression → pause (different expression).
+	assert.True(t, s.ShouldPause(loce(2, "test.lisp", 5, 10, true)))
+	assert.Equal(t, StepNone, s.Mode())
+}
+
+func TestStepper_StepInto_LineGranularity_AtomSameLine(t *testing.T) {
+	t.Parallel()
+	s := NewStepper()
+	// Step issued at col 1 on an s-expression.
+	s.SetStepInto(loce(2, "test.lisp", 5, 1, true), "")
+
+	// Same line, different col, atom → skip (atoms aren't interesting).
+	assert.False(t, s.ShouldPause(loce(2, "test.lisp", 5, 10, false)))
+	assert.Equal(t, StepInto, s.Mode())
+
+	// Same line, different col, s-expression → pause.
+	assert.True(t, s.ShouldPause(loce(2, "test.lisp", 5, 15, true)))
+	assert.Equal(t, StepNone, s.Mode())
+}
+
+func TestStepper_StepInto_LineGranularity_SameColSameLine(t *testing.T) {
+	t.Parallel()
+	s := NewStepper()
+	// Step issued at col 5 on an s-expression.
+	s.SetStepInto(loce(2, "test.lisp", 5, 5, true), "")
+
+	// Same line, same col → skip (same expression position).
+	assert.False(t, s.ShouldPause(loce(2, "test.lisp", 5, 5, true)))
+	assert.Equal(t, StepInto, s.Mode())
+}
+
+func TestStepper_StepInto_LineGranularity_ZeroColFallsBack(t *testing.T) {
+	t.Parallel()
+	s := NewStepper()
+	// Step issued with Col=0 (no column info).
+	s.SetStepInto(loce(2, "test.lisp", 5, 0, true), "")
+
+	// Same line, Col=0 → falls back to line-level behavior (skip).
+	assert.False(t, s.ShouldPause(loce(2, "test.lisp", 5, 0, true)))
+	assert.Equal(t, StepInto, s.Mode())
+
+	// Different line → pause.
+	assert.True(t, s.ShouldPause(loce(2, "test.lisp", 6, 0, true)))
+	assert.Equal(t, StepNone, s.Mode())
+}
+
+func TestStepper_StepInto_LineGranularity_IncomingZeroColSkips(t *testing.T) {
+	t.Parallel()
+	s := NewStepper()
+	// Step issued with Col=5 (has column info).
+	s.SetStepInto(loce(2, "test.lisp", 5, 5, true), "")
+
+	// Incoming expression has Col=0 (unknown) — should skip since we can't
+	// confirm it's a different expression without column info.
+	assert.False(t, s.ShouldPause(loce(2, "test.lisp", 5, 0, true)))
+	assert.Equal(t, StepInto, s.Mode())
+}
+
+func TestStepper_StepInto_LineGranularity_ExprLevelEntersFunction(t *testing.T) {
+	t.Parallel()
+	s := NewStepper()
+	s.SetStepInto(loce(2, "test.lisp", 5, 1, true), "")
+
+	// Greater depth → pause (entered function body), regardless of col.
+	assert.True(t, s.ShouldPause(loce(3, "test.lisp", 5, 1, true)))
+	assert.Equal(t, StepNone, s.Mode())
+}
+
 // --- Macro expansion ID tests ---
 
 func TestStepper_StepInto_MacroID_PausesOnChange(t *testing.T) {

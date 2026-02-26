@@ -557,8 +557,11 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 	e.pausedExpr = nil
 	e.mu.Unlock()
 
-	// On continue, suppress breakpoint re-hit on the same source line.
-	if action == lisp.DebugContinue && expr.Source != nil {
+	// Suppress breakpoint re-hit on the same source line for all resume
+	// actions (continue, step-in, step-over, step-out). Without this,
+	// stepping from a breakpoint would immediately re-trigger the same
+	// breakpoint, making the debugger appear stuck.
+	if expr.Source != nil {
 		e.mu.Lock()
 		e.lastContinuedKey = breakpointKey(expr.Source.File, expr.Source.Line)
 		e.mu.Unlock()
@@ -814,9 +817,13 @@ func exprStepLocation(env *lisp.LEnv, expr *lisp.LVal) StepLocation {
 	if expr != nil && expr.Source != nil {
 		loc.File = expr.Source.File
 		loc.Line = expr.Source.Line
+		loc.Col = expr.Source.Col
 	}
-	if expr != nil && expr.MacroExpansion != nil {
-		loc.MacroID = expr.MacroExpansion.ID
+	if expr != nil {
+		loc.IsSExpr = expr.Type == lisp.LSExpr
+		if expr.MacroExpansion != nil {
+			loc.MacroID = expr.MacroExpansion.ID
+		}
 	}
 	return loc
 }

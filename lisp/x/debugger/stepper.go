@@ -23,6 +23,8 @@ type StepLocation struct {
 	Depth   int    // stack depth
 	File    string // source file
 	Line    int    // source line
+	Col     int    // source column (1-based; 0 means unknown)
+	IsSExpr bool   // true if the expression is an s-expression (not an atom)
 	MacroID int64  // macro expansion node ID (0 = not in expansion)
 }
 
@@ -135,14 +137,20 @@ func (s *Stepper) ShouldPause(loc StepLocation) bool {
 		return false
 	case StepInto:
 		if s.isLineGranularity() && s.isSameLine(loc.File, loc.Line) && loc.Depth <= s.start.Depth {
-			// Same line, same or lesser depth. For step-into, check if
-			// the macro expansion ID changed — if so, the debugger has
-			// made progress within a macro expansion and should pause.
+			// Same line, same or lesser depth.
+			// Check if we moved to a different s-expression on this line.
+			// Col > 0 guards against expressions without column info.
+			if loc.Col > 0 && loc.Col != s.start.Col && loc.IsSExpr {
+				s.mode = StepNone
+				return true
+			}
+			// Check if the macro expansion ID changed — if so, the debugger
+			// has made progress within a macro expansion and should pause.
 			if loc.MacroID != s.start.MacroID {
 				s.mode = StepNone
 				return true
 			}
-			// Same macro ID (or both zero) — skip sub-expression.
+			// Same position, atom, or no column info — skip.
 			return false
 		}
 		s.mode = StepNone

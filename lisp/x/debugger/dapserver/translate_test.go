@@ -5,6 +5,7 @@ import (
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/x/debugger"
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -66,6 +67,108 @@ func TestResolveSourcePath(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestTranslateStackFrames_CrossFileSource(t *testing.T) {
+	t.Parallel()
+	// When the paused expression is in a different file than the top call
+	// frame (e.g., stepping into a function defined in another file), the
+	// top frame should use the paused expression's file, not the caller's.
+	stack := &lisp.CallStack{
+		Frames: []lisp.CallFrame{
+			{
+				Source: &token.Location{
+					File: "caller.lisp",
+					Path: "caller.lisp",
+					Line: 10,
+					Col:  1,
+				},
+				Name:    "my-func",
+				Package: "user",
+			},
+		},
+	}
+
+	// Paused expression is in a different file.
+	pausedExpr := &lisp.LVal{
+		Type: lisp.LSExpr,
+		Source: &token.Location{
+			File: "callee.lisp",
+			Path: "callee.lisp",
+			Line: 3,
+			Col:  5,
+		},
+	}
+
+	frames := translateStackFrames(stack, pausedExpr, "/root")
+	require.Len(t, frames, 1)
+
+	// The top frame should reflect the paused expression's source file.
+	assert.Equal(t, "callee.lisp", frames[0].Source.Name,
+		"top frame source should use paused expression's file")
+	assert.Equal(t, "/root/callee.lisp", frames[0].Source.Path)
+	assert.Equal(t, 3, frames[0].Line)
+	assert.Equal(t, 5, frames[0].Column)
+}
+
+func TestTranslateStackFrames_SameFileOverride(t *testing.T) {
+	t.Parallel()
+	// Even when in the same file, the paused expression's line/col should
+	// override the frame's call-site location.
+	stack := &lisp.CallStack{
+		Frames: []lisp.CallFrame{
+			{
+				Source: &token.Location{
+					File: "test.lisp",
+					Path: "test.lisp",
+					Line: 1,
+					Col:  1,
+				},
+				Name:    "add",
+				Package: "user",
+			},
+		},
+	}
+
+	pausedExpr := &lisp.LVal{
+		Type: lisp.LSExpr,
+		Source: &token.Location{
+			File: "test.lisp",
+			Path: "test.lisp",
+			Line: 5,
+			Col:  10,
+		},
+	}
+
+	frames := translateStackFrames(stack, pausedExpr, "")
+	require.Len(t, frames, 1)
+	assert.Equal(t, 5, frames[0].Line, "top frame line should use paused expr's line")
+	assert.Equal(t, 10, frames[0].Column, "top frame column should use paused expr's col")
+}
+
+func TestTranslateStackFrames_NilPausedExpr(t *testing.T) {
+	t.Parallel()
+	// When pausedExpr is nil, the frame's own source should be preserved.
+	stack := &lisp.CallStack{
+		Frames: []lisp.CallFrame{
+			{
+				Source: &token.Location{
+					File: "test.lisp",
+					Path: "test.lisp",
+					Line: 1,
+					Col:  1,
+				},
+				Name:    "fn",
+				Package: "user",
+			},
+		},
+	}
+
+	frames := translateStackFrames(stack, nil, "/root")
+	require.Len(t, frames, 1)
+	assert.Equal(t, "test.lisp", frames[0].Source.Name,
+		"should keep frame's own source when pausedExpr is nil")
+	assert.Equal(t, 1, frames[0].Line)
 }
 
 func TestTranslateVariables_WithRefAllocator(t *testing.T) {
