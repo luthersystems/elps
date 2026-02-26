@@ -333,7 +333,7 @@ The CLI debug REPL (`elps debug --repl`) provides a GDB-style command interface.
 **Conventions:**
 
 - Empty input repeats the last command (GDB convention). Useful for repeated stepping.
-- Bare Lisp expressions (anything not matching a command) are evaluated in the paused scope. For example, typing `(+ x 1)` evaluates with the current local bindings.
+- Bare Lisp expressions (anything not matching a command) are evaluated in the paused scope with full access to local variables and function parameters. For example, if paused inside a function where `x=42`, typing `(+ x 1)` returns `43`.
 - Ctrl+C pauses a running program.
 
 **Example session:**
