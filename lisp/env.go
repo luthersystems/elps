@@ -1031,7 +1031,22 @@ func (env *LEnv) MacroCall(fun, args *LVal) *LVal {
 	// Stamp expanded nodes that have synthetic source locations (Pos < 0)
 	// with the call-site location so errors point to where the macro was
 	// invoked rather than "<native code>" or the macro definition site.
-	stampMacroExpansion(r, callSite)
+	// When a debugger is attached, also populate MacroExpansionInfo on
+	// each stamped node with unique IDs for step-into differentiation.
+	var mctx *MacroExpansionContext
+	if env.Runtime.Debugger != nil {
+		qualName := env.GetFunName(fun)
+		if pkg := fun.Package(); pkg != "" {
+			qualName = pkg + ":" + qualName
+		}
+		mctx = &MacroExpansionContext{
+			CallSite: callSite,
+			Name:     qualName,
+			DefSite:  fun.Source,
+			Args:     args.Cells,
+		}
+	}
+	stampMacroExpansion(r, callSite, mctx, env.Runtime)
 
 	// This is a lazy unquote.  Unquoting in this way appears to allow the
 	// upcoming evaluation to produce the correct value for user defined

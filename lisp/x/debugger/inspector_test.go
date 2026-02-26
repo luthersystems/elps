@@ -251,3 +251,34 @@ func TestFormatterFunc(t *testing.T) {
 	assert.Equal(t, "formatted", f.FormatValue(nil))
 	assert.Nil(t, f.Children(nil), "FormatterFunc should return nil children")
 }
+
+func TestInspectMacroExpansion_Nil(t *testing.T) {
+	// Nil expression.
+	assert.Nil(t, InspectMacroExpansion(nil))
+
+	// Expression without macro expansion info.
+	expr := lisp.Symbol("x")
+	assert.Nil(t, InspectMacroExpansion(expr))
+}
+
+func TestInspectMacroExpansion_WithContext(t *testing.T) {
+	callSite := &lisp.MacroExpansionContext{
+		Name: "lisp:defun",
+		Args: []*lisp.LVal{lisp.Symbol("my-fn"), lisp.SExpr([]*lisp.LVal{lisp.Symbol("x")})},
+	}
+	expr := lisp.Symbol("+")
+	expr.MacroExpansion = &lisp.MacroExpansionInfo{
+		MacroExpansionContext: callSite,
+		ID:                   42,
+	}
+
+	bindings := InspectMacroExpansion(expr)
+	require.NotNil(t, bindings)
+
+	// Should have: (macro), arg[0], arg[1].
+	assert.Len(t, bindings, 3)
+	assert.Equal(t, "(macro)", bindings[0].Name)
+	assert.Equal(t, "lisp:defun", bindings[0].Value.Str)
+	assert.Equal(t, "arg[0]", bindings[1].Name)
+	assert.Equal(t, "arg[1]", bindings[2].Name)
+}

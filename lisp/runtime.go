@@ -36,6 +36,7 @@ type Runtime struct {
 	conditionStack         []*LVal
 	numenv                 atomicCounter
 	numsym                 atomicCounter
+	macroExpSeq            int64 // monotonic counter for MacroExpansionInfo.ID
 }
 
 // MaxAllocBytes returns the effective per-operation allocation size cap.
@@ -152,6 +153,13 @@ func (r *Runtime) getEnvID() uint {
 
 func (r *Runtime) gensym() uint {
 	return r.numsym.Add(1)
+}
+
+// nextMacroExpID returns the next unique macro expansion node ID.
+// Only called when a debugger is attached.
+func (r *Runtime) nextMacroExpID() int64 {
+	r.macroExpSeq++
+	return r.macroExpSeq
 }
 
 // sourceContext uses the CallStack to determine the location/name of the

@@ -176,6 +176,24 @@ func (fd *LFunData) Copy() *LFunData {
 	return cp
 }
 
+// MacroExpansionContext is shared by all nodes in a single macro expansion.
+// It records the macro call site, name, definition site, and unevaluated
+// arguments for debugger inspection.
+type MacroExpansionContext struct {
+	CallSite *token.Location // where the macro was invoked
+	Name     string          // qualified macro name (e.g. "lisp:defun")
+	DefSite  *token.Location // macro definition location (nil for builtins)
+	Args     []*LVal         // unevaluated call-site arguments (for debugger scope)
+}
+
+// MacroExpansionInfo is attached to LVal nodes produced by macro expansion.
+// It is only allocated when a debugger is attached (Runtime.Debugger != nil),
+// so production code pays zero allocation cost.
+type MacroExpansionInfo struct {
+	*MacroExpansionContext        // shared across all nodes in one expansion
+	ID                    int64   // unique per node, monotonically increasing
+}
+
 // SourceMeta holds formatting metadata for an LVal, populated only when
 // parsing in format-preserving mode. Nil in normal parsing — zero cost.
 type SourceMeta struct {
@@ -231,6 +249,11 @@ type LVal struct {
 
 	// Meta holds formatting metadata, only populated in format-preserving mode.
 	Meta *SourceMeta
+
+	// MacroExpansion holds debug metadata for nodes produced by macro
+	// expansion. Only populated when a debugger is attached — nil in
+	// production (zero overhead: 8-byte nil pointer).
+	MacroExpansion *MacroExpansionInfo
 }
 
 // GetType returns a quoted symbol denoting v's type.

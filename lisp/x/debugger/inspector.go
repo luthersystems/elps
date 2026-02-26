@@ -117,6 +117,34 @@ func InspectFunctionLocals(env *lisp.LEnv) []ScopeBinding {
 	return bindings
 }
 
+// InspectMacroExpansion returns scope bindings representing the macro
+// expansion context: macro name, call-site arguments paired with their
+// positional index, and the call-site location. Returns nil if the
+// expression has no macro expansion info.
+func InspectMacroExpansion(expr *lisp.LVal) []ScopeBinding {
+	if expr == nil || expr.MacroExpansion == nil {
+		return nil
+	}
+	ctx := expr.MacroExpansion.MacroExpansionContext
+	if ctx == nil {
+		return nil
+	}
+	bindings := []ScopeBinding{
+		{Name: "(macro)", Value: lisp.String(ctx.Name)},
+	}
+	for i, arg := range ctx.Args {
+		name := fmt.Sprintf("arg[%d]", i)
+		bindings = append(bindings, ScopeBinding{Name: name, Value: arg})
+	}
+	if ctx.CallSite != nil {
+		bindings = append(bindings, ScopeBinding{
+			Name:  "(call-site)",
+			Value: lisp.String(ctx.CallSite.String()),
+		})
+	}
+	return bindings
+}
+
 // FormatValue returns a human-readable string representation of an LVal,
 // suitable for display in a debugger variables view.
 func FormatValue(v *lisp.LVal) string {

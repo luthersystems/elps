@@ -19,12 +19,14 @@ import (
 // Reference space layout:
 //
 //	1000-2999: Local scopes (scopeLocalBase + frameID)
-//	3000-4999: Package scopes (scopePackageBase + frameID)
+//	3000-3999: Package scopes (scopePackageBase + frameID)
+//	4000-4999: Macro Expansion scopes (scopeMacroBase + frameID)
 //	5000-9999: Structured variable expansion (variableRefBase, dynamic)
 //	10000+:    Custom scope providers (customScopeBase + providerIdx*customScopeStride + frameID)
 const (
 	scopeLocalBase    = 1000
 	scopePackageBase  = 3000
+	scopeMacroBase    = 4000
 	variableRefBase   = 5000
 	customScopeBase   = 10000
 	customScopeStride = 1000 // max frames per provider
@@ -359,6 +361,19 @@ func (h *handler) onScopes(req *dap.ScopesRequest) {
 		},
 	}
 
+	// Add "Macro Expansion" scope when the top frame's paused expression
+	// has macro expansion info.
+	if frameID == 1 {
+		_, pausedExpr := h.engine.PausedState()
+		if pausedExpr != nil && pausedExpr.MacroExpansion != nil {
+			scopes = append(scopes, dap.Scope{
+				Name:               "Macro Expansion",
+				VariablesReference: scopeMacroBase + frameID,
+				Expensive:          false,
+			})
+		}
+	}
+
 	for i, p := range h.engine.ScopeProviders() {
 		scopes = append(scopes, dap.Scope{
 			Name:               p.Name(),
@@ -412,6 +427,13 @@ func (h *handler) onVariables(req *dap.VariablesRequest) {
 		h.mu.Unlock()
 		if parent != nil {
 			resp.Body.Variables = expandVariable(parent, allocRef, h.engine)
+		}
+	case ref >= scopeMacroBase && ref < variableRefBase:
+		// Macro Expansion scope.
+		_, pausedExpr := h.engine.PausedState()
+		if pausedExpr != nil {
+			bindings := debugger.InspectMacroExpansion(pausedExpr)
+			resp.Body.Variables = translateVariables(bindings, allocRef, h.engine)
 		}
 	case ref >= scopePackageBase:
 		frameID := ref - scopePackageBase
