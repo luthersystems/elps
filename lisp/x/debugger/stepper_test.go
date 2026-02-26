@@ -387,6 +387,18 @@ func TestStepper_StepInto_LineGranularity_ZeroColFallsBack(t *testing.T) {
 	assert.Equal(t, StepNone, s.Mode())
 }
 
+func TestStepper_StepInto_LineGranularity_IncomingZeroColSkips(t *testing.T) {
+	t.Parallel()
+	s := NewStepper()
+	// Step issued with Col=5 (has column info).
+	s.SetStepInto(loce(2, "test.lisp", 5, 5, true), "")
+
+	// Incoming expression has Col=0 (unknown) — should skip since we can't
+	// confirm it's a different expression without column info.
+	assert.False(t, s.ShouldPause(loce(2, "test.lisp", 5, 0, true)))
+	assert.Equal(t, StepInto, s.Mode())
+}
+
 func TestStepper_StepInto_LineGranularity_ExprLevelEntersFunction(t *testing.T) {
 	t.Parallel()
 	s := NewStepper()

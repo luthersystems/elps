@@ -146,6 +146,31 @@ func TestTranslateStackFrames_SameFileOverride(t *testing.T) {
 	assert.Equal(t, 10, frames[0].Column, "top frame column should use paused expr's col")
 }
 
+func TestTranslateStackFrames_NilPausedExpr(t *testing.T) {
+	t.Parallel()
+	// When pausedExpr is nil, the frame's own source should be preserved.
+	stack := &lisp.CallStack{
+		Frames: []lisp.CallFrame{
+			{
+				Source: &token.Location{
+					File: "test.lisp",
+					Path: "test.lisp",
+					Line: 1,
+					Col:  1,
+				},
+				Name:    "fn",
+				Package: "user",
+			},
+		},
+	}
+
+	frames := translateStackFrames(stack, nil, "/root")
+	require.Len(t, frames, 1)
+	assert.Equal(t, "test.lisp", frames[0].Source.Name,
+		"should keep frame's own source when pausedExpr is nil")
+	assert.Equal(t, 1, frames[0].Line)
+}
+
 func TestTranslateVariables_WithRefAllocator(t *testing.T) {
 	nextRef := 5000
 	allocRef := func(v *lisp.LVal) int {
