@@ -4,7 +4,10 @@ package dapserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/google/go-dap"
@@ -63,6 +66,15 @@ type handler struct {
 	// Maps target ID → target info (function name, occurrence index).
 	stepInTargets map[int]stepInTargetInfo
 	nextTargetID  int
+
+	// mapKeyFilter is a compiled regex for filtering sorted-map entries by key
+	// in the Variables pane. Set via "/filter <regex>" in the debug console.
+	// nil means no filter (show all entries). Protected by mu.
+	mapKeyFilter *regexp.Regexp
+
+	// clientSupportsInvalidatedEvent tracks whether the client declared
+	// support for the InvalidatedEvent in its InitializeRequestArguments.
+	clientSupportsInvalidatedEvent bool
 }
 
 type stepInTargetInfo struct {
@@ -172,6 +184,7 @@ func (h *handler) handle(msg dap.Message) {
 func (h *handler) onInitialize(req *dap.InitializeRequest) {
 	h.mu.Lock()
 	h.initialized = true
+	h.clientSupportsInvalidatedEvent = req.Arguments.SupportsInvalidatedEvent
 	h.mu.Unlock()
 
 	resp := &dap.InitializeResponse{}
@@ -428,9 +441,10 @@ func (h *handler) onVariables(req *dap.VariablesRequest) {
 		// Expand a structured variable (list, map, array, tagged, native).
 		h.mu.Lock()
 		parent := h.varRefs[ref]
+		filter := h.mapKeyFilter
 		h.mu.Unlock()
 		if parent != nil {
-			resp.Body.Variables = expandVariable(parent, allocRef, h.engine)
+			resp.Body.Variables = expandVariable(parent, allocRef, h.engine, filter)
 		}
 	case ref >= scopeMacroBase && ref < variableRefBase:
 		// Macro Expansion scope.
@@ -624,6 +638,11 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 		}
 	}
 
+	// Intercept /filter commands before evaluation.
+	if handled := h.handleFilterCommand(req); handled {
+		return
+	}
+
 	// Context-aware evaluation: hover uses a child env and single-expression
 	// eval to minimize side effects. The child env inherits all bindings via
 	// scope chain lookup but any scope-level writes stay in the child.
@@ -658,6 +677,48 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 		}
 	}
 	h.send(resp)
+}
+
+// handleFilterCommand checks if the evaluate expression is a /filter command
+// and handles it. Returns true if the command was handled, false otherwise.
+// /filter <regex> sets a map key filter; /filter (no args) clears it.
+func (h *handler) handleFilterCommand(req *dap.EvaluateRequest) bool {
+	expr := strings.TrimSpace(req.Arguments.Expression)
+	if expr != "/filter" && !strings.HasPrefix(expr, "/filter ") {
+		return false
+	}
+
+	resp := &dap.EvaluateResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+
+	pattern := strings.TrimSpace(strings.TrimPrefix(expr, "/filter"))
+	if pattern == "" {
+		// Clear filter.
+		h.mu.Lock()
+		h.mapKeyFilter = nil
+		h.mu.Unlock()
+		resp.Body.Result = "filter cleared"
+		h.send(resp)
+		h.sendInvalidatedVariables()
+		return true
+	}
+
+	// Compile the regex.
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		resp.Success = false
+		resp.Message = fmt.Sprintf("invalid regex: %v", err)
+		h.send(resp)
+		return true
+	}
+
+	h.mu.Lock()
+	h.mapKeyFilter = re
+	h.mu.Unlock()
+	resp.Body.Result = fmt.Sprintf("filter set: %s", pattern)
+	h.send(resp)
+	h.sendInvalidatedVariables()
+	return true
 }
 
 func (h *handler) onCompletions(req *dap.CompletionsRequest) {
@@ -805,6 +866,23 @@ func (h *handler) sendOutputEvent(output string) {
 	}
 	evt.Body.Category = "console"
 	evt.Body.Output = output + "\n"
+	h.send(evt)
+}
+
+// sendInvalidatedVariables sends a DAP InvalidatedEvent with area "variables"
+// if the client declared support for it. This causes VS Code to re-request
+// variable data, reflecting filter changes.
+func (h *handler) sendInvalidatedVariables() {
+	h.mu.Lock()
+	supported := h.clientSupportsInvalidatedEvent
+	h.mu.Unlock()
+	if !supported {
+		return
+	}
+	evt := &dap.InvalidatedEvent{
+		Event: h.newEvent("invalidated"),
+	}
+	evt.Body.Areas = []dap.InvalidatedAreas{"variables"}
 	h.send(evt)
 }
 

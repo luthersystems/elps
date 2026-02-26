@@ -5,6 +5,7 @@ package dapserver
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 
 	"github.com/google/go-dap"
 	"github.com/luthersystems/elps/lisp"
@@ -100,7 +101,9 @@ func translateVariables(bindings []debugger.ScopeBinding, allocRef func(*lisp.LV
 }
 
 // expandVariable returns the child variables of a structured LVal.
-func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.Engine) []dap.Variable {
+// mapKeyFilter, if non-nil, filters sorted-map entries to only those whose
+// formatted key name matches the regex. It is ignored for non-map types.
+func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.Engine, mapKeyFilter *regexp.Regexp) []dap.Variable {
 	if v == nil {
 		return nil
 	}
@@ -122,17 +125,22 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 		if entries.Type == lisp.LError {
 			return nil
 		}
-		vars := make([]dap.Variable, len(entries.Cells))
-		for i, pair := range entries.Cells {
+		var vars []dap.Variable
+		for _, pair := range entries.Cells {
 			key := pair.Cells[0]
 			val := pair.Cells[1]
-			vars[i] = dap.Variable{
-				Name:               debugger.FormatValue(key),
+			name := debugger.FormatValue(key)
+			if mapKeyFilter != nil && !mapKeyFilter.MatchString(name) {
+				continue
+			}
+			v := dap.Variable{
+				Name:               name,
 				Value:              debugger.FormatValueWith(val, eng),
 				Type:               lvalTypeName(val),
 				VariablesReference: allocRef(val),
 			}
-			setChildHints(&vars[i], val)
+			setChildHints(&v, val)
+			vars = append(vars, v)
 		}
 		return vars
 	case lisp.LArray:

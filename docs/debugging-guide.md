@@ -14,6 +14,7 @@ ELPS ships with a full-featured debugger that supports two modes of operation:
 | Stepping granularity        | Line + instruction      | Line                 |
 | Smart step-in targets       | Yes                     | No                   |
 | Variable inspection         | Local, Package, Macro   | Locals               |
+| Variable filtering          | `/filter <regex>`       | No                   |
 | Custom scope providers      | Yes                     | No                   |
 | Watch expressions           | Yes                     | No                   |
 | Debug console / eval        | Yes                     | Yes (bare exprs)     |
@@ -416,6 +417,17 @@ Structured values (lists, arrays, sorted-maps, tagged values) are expandable in 
 The debug console evaluates Lisp expressions in the paused scope. Supports multi-expression input with progn semantics (the result of the last expression is returned). Auto-complete is available for symbols in scope.
 
 Watch expressions are re-evaluated automatically each time execution pauses.
+
+**Debug console commands:**
+
+| Command            | Description                                          |
+|--------------------|------------------------------------------------------|
+| `/filter <regex>`  | Filter sorted-map entries by key (regex match)       |
+| `/filter`          | Clear the active filter (show all entries)            |
+
+The `/filter` command is useful for large sorted-maps with many keys. The regex matches against the formatted key name (e.g., `"apple"` for string keys, `:foo` for keywords). The filter applies to all sorted-map expansions in the Variables panel and persists across step/continue until cleared.
+
+When the client supports `InvalidatedEvent`, the Variables panel refreshes automatically after a filter change.
 
 ## Embedding the Debugger
 
