@@ -13,6 +13,13 @@ import (
 // responsible for holding shared environment state, generating identifiers,
 // and writing debugging output to a stream (typically os.Stderr).
 //
+// Step Limits: Runtime supports optional instruction counting via MaxSteps.
+// Context cancellation is handled per-evaluation via LEnv.evalCtx, which
+// is set by the *Context methods on LEnv (e.g. EvalContext) or the
+// WithContext Config option.  When neither context nor step limits are
+// configured, limit checks are two nil/zero comparisons with negligible
+// overhead.
+//
 // Concurrency: Runtime and its associated LEnv tree are NOT safe for
 // concurrent use from multiple goroutines.  All calls to Eval, Load, and
 // any other methods that read or mutate Runtime or LEnv state must be
@@ -32,7 +39,9 @@ type Runtime struct {
 	Profiler               Profiler
 	Debugger               Debugger // nil = disabled (zero overhead on hot path)
 	MaxAlloc               int      // Per-operation allocation size cap (0 = use default). Not cumulative.
-	MaxMacroExpansionDepth int // Maximum macro expansion iterations (0 = use default).
+	MaxMacroExpansionDepth int      // Maximum macro expansion iterations (0 = use default).
+	maxSteps               int64    // Per-evaluation step limit (0 = unlimited).
+	steps                  int64    // Cumulative step counter.
 	conditionStack         []*LVal
 	numenv                 atomicCounter
 	numsym                 atomicCounter
@@ -69,6 +78,18 @@ func (r *Runtime) CheckAlloc(n int) string {
 		return fmt.Sprintf("allocation size %d exceeds maximum (%d)", n, max)
 	}
 	return ""
+}
+
+// Steps returns the cumulative step count since the last ResetSteps call (or
+// since Runtime creation).  Each call to Eval, each tail-recursion iteration,
+// and each macro re-expansion increments the counter by one.
+func (r *Runtime) Steps() int64 {
+	return r.steps
+}
+
+// ResetSteps resets the cumulative step counter to zero.
+func (r *Runtime) ResetSteps() {
+	r.steps = 0
 }
 
 // PushCondition pushes an error onto the condition stack, making it available

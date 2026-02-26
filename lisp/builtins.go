@@ -645,7 +645,7 @@ func builtinFunCall(env *LEnv, args *LVal) *LVal {
 	// the standard method of signaling a terminal expression to the LEnv.  We
 	// need to set the flag explicitly before env.funCall is invoked
 	env.Runtime.Stack.Top().Terminal = true
-	return env.funCall(fun, SExpr(fargs))
+	return env.FunCall(fun, SExpr(fargs))
 }
 
 func builtinApply(env *LEnv, args *LVal) *LVal {
@@ -672,13 +672,13 @@ func builtinApply(env *LEnv, args *LVal) *LVal {
 
 	// Because funcall and apply do not actually call env.Eval they cannot use
 	// the standard method of signaling a terminal expression to the LEnv.  We
-	// need to set the flag explicitly before env.funCall is invoked
+	// need to set the flag explicitly before FunCall is invoked.
 	env.Runtime.Stack.Top().Terminal = true
 
 	argcells := make([]*LVal, 0, len(fargs)+argtail.Len())
 	argcells = append(argcells, fargs...)
 	argcells = append(argcells, argtail.Cells...)
-	return env.funCall(fun, SExpr(argcells))
+	return env.FunCall(fun, SExpr(argcells))
 }
 
 func builtinToString(env *LEnv, args *LVal) *LVal {

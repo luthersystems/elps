@@ -879,3 +879,61 @@ The function `ignore-errors` will perform the same task.
 It is worth saying again, and louder, that **the use of ignore-errors is
 greatly discouraged in general**.  If you must attempt to handle errors in lisp
 code try to use handler-bind.
+
+## Execution Limits
+
+ELPS supports two mechanisms for bounding evaluation time: **context
+cancellation** and **step limits**.  Both are optional and impose negligible
+overhead when not configured.
+
+### Context Cancellation
+
+Pass a Go `context.Context` to any of the `*Context` methods on `LEnv`:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+result := env.EvalContext(ctx, expr)
+```
+
+If the context is cancelled or its deadline expires during evaluation, a
+`context-cancelled` condition is raised.  This can be caught in Lisp with
+`handler-bind`:
+
+```lisp
+(handler-bind
+    ((context-cancelled (lambda (err) (debug-print "timed out"))))
+    (long-running-computation))
+```
+
+### Step Limits
+
+A step limit caps the total number of evaluation steps.  Each entry to
+`Eval`, each tail-recursion iteration, and each macro re-expansion counts
+as one step.
+
+```go
+env := lisp.NewEnv(nil)
+lisp.InitializeUserEnv(env, lisp.WithMaxSteps(1000000))
+```
+
+When the limit is reached, a `step-limit-exceeded` condition is raised.
+Use `Runtime.Steps()` to read the counter and `Runtime.ResetSteps()` to
+reset it between evaluations.
+
+### Available Context Methods
+
+| Method | Purpose |
+|--------|---------|
+| `EvalContext` | Evaluate an expression |
+| `LoadContext` | Load from an `io.Reader` |
+| `LoadFileContext` | Load a source file |
+| `LoadStringContext` | Load from a string |
+| `LoadLocationContext` | Load with explicit name/location |
+| `FunCallContext` | Invoke a function |
+
+Each method threads the context through the internal evaluation chain.
+The older non-context methods (`Eval`, `Load`, etc.) continue to work
+but are deprecated.  Builtins can access the current context via
+`env.Context()`.
