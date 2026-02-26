@@ -1720,11 +1720,13 @@ func TestEngine_StepInTarget(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return e.IsPaused()
 	}, 2*time.Second, 10*time.Millisecond)
-	_, stepExpr := e.PausedState()
+	pausedEnv, stepExpr := e.PausedState()
 	require.NotNil(t, stepExpr)
 	require.NotNil(t, stepExpr.Source)
 	assert.Equal(t, 1, stepExpr.Source.Line,
 		"targeted step-in should pause inside f's body on line 1")
+	topFrame := pausedEnv.Runtime.Stack.Frames[len(pausedEnv.Runtime.Stack.Frames)-1]
+	assert.Equal(t, "f", topFrame.Name, "should be inside f's frame")
 
 	e.Resume()
 

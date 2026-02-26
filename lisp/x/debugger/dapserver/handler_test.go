@@ -4106,7 +4106,10 @@ func (s *dapTestSession) stepInWithTarget(targetID int) {
 			TargetId: targetID,
 		},
 	})
-	s.read() // StepInResponse
+	msg := s.read()
+	resp, ok := msg.(*dap.StepInResponse)
+	require.True(s.t, ok, "expected StepInResponse, got %T", msg)
+	require.True(s.t, resp.Success, "StepInResponse should succeed")
 }
 
 func TestDAPServer_StepInTargets(t *testing.T) {
@@ -4155,13 +4158,13 @@ func TestDAPServer_StepInTargets(t *testing.T) {
 	assert.True(t, targetsResp.Success)
 
 	// Should find exactly "f" and "g" as targets (no builtins like +).
+	// The outer call head (f) comes first, then nested calls (g).
 	require.Len(t, targetsResp.Body.Targets, 2, "should find exactly 2 user-defined targets")
-	var labels []string
-	for _, tgt := range targetsResp.Body.Targets {
-		labels = append(labels, tgt.Label)
-	}
-	assert.Contains(t, labels, "f", "should include f as a step-in target")
-	assert.Contains(t, labels, "g", "should include g as a step-in target")
+	assert.Equal(t, "f", targetsResp.Body.Targets[0].Label, "outer call target should be f")
+	assert.Equal(t, "g", targetsResp.Body.Targets[1].Label, "nested call target should be g")
+	// Verify source locations are populated.
+	assert.Greater(t, targetsResp.Body.Targets[0].Line, 0, "f target should have line info")
+	assert.Greater(t, targetsResp.Body.Targets[1].Line, 0, "g target should have line info")
 
 	// Find the target ID for "f".
 	var fTargetID int
@@ -4318,6 +4321,82 @@ func TestDAPServer_StepInTargets_RegularStepIn(t *testing.T) {
 	require.Greater(t, len(st.Body.StackFrames), 0)
 	assert.Equal(t, 2, st.Body.StackFrames[0].Line,
 		"regular step-in should enter f's body on line 2")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case res := <-resultCh:
+		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+		assert.Equal(t, lisp.LInt, res.Type, "expected int result")
+		assert.Equal(t, 11, res.Int, "(f 10) = 11")
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_StepInTargets_InvalidTargetFallsBack(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	// Set breakpoint on line 3 (call to f).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 3}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test",
+			"(defun f (x)\n"+  // line 1
+				"  (+ x 1))\n"+ // line 2
+				"(f 10)")        // line 3
+		resultCh <- res
+	}()
+
+	// Wait for breakpoint on line 3.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Clear breakpoints.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+
+	// Step-in with an invalid/nonexistent target ID — should fall back to
+	// regular step-in (enter the first callable function).
+	s.stepInWithTarget(9999)
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Should have entered f's body via regular step-in (line 2).
+	st := s.stackTrace()
+	require.Greater(t, len(st.Body.StackFrames), 0)
+	assert.Equal(t, 2, st.Body.StackFrames[0].Line,
+		"invalid target ID should fall back to regular step-in, entering f's body on line 2")
 
 	// Continue to finish.
 	s.continueExec()
