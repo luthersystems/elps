@@ -65,7 +65,10 @@ func TestContextTimeout(t *testing.T) {
 	defer cancel()
 
 	result := env.EvalContext(ctx, SExpr([]*LVal{Symbol("test-spin")}))
-	requireCondition(t, result, CondContextCancelled)
+	msg := requireCondition(t, result, CondContextCancelled)
+	if !strings.Contains(msg, "deadline exceeded") {
+		t.Errorf("expected 'deadline exceeded' in message, got: %s", msg)
+	}
 }
 
 // --- Step limit tests ---
@@ -88,6 +91,32 @@ func TestStepLimit(t *testing.T) {
 	if !strings.Contains(msg, "step limit exceeded") {
 		t.Errorf("expected 'step limit exceeded' in message, got: %s", msg)
 	}
+}
+
+func TestStepLimitBoundary(t *testing.T) {
+	t.Parallel()
+
+	// (+ 1 2) takes exactly 4 steps: 1 for the SExpr + 3 for children.
+	// Test that maxSteps=4 succeeds (at limit) and maxSteps=3 fails
+	// (one over).  This distinguishes > from >= in the comparison.
+
+	t.Run("at_limit_succeeds", func(t *testing.T) {
+		t.Parallel()
+		env := initSafetyTestEnv(t)
+		env.Runtime.maxSteps = 4
+		result := env.Eval(SExpr([]*LVal{Symbol("+"), Int(1), Int(2)}))
+		if result.Type == LError {
+			t.Fatalf("expected success at exactly maxSteps, got error: %v", result)
+		}
+	})
+
+	t.Run("one_over_limit_fails", func(t *testing.T) {
+		t.Parallel()
+		env := initSafetyTestEnv(t)
+		env.Runtime.maxSteps = 3
+		result := env.Eval(SExpr([]*LVal{Symbol("+"), Int(1), Int(2)}))
+		requireCondition(t, result, CondStepLimitExceeded)
+	})
 }
 
 func TestStepLimitTailRecursion(t *testing.T) {
@@ -140,7 +169,7 @@ func TestResetSteps(t *testing.T) {
 	}
 }
 
-func TestNoLimitsZeroOverhead(t *testing.T) {
+func TestNoLimitsSkipsStepCounting(t *testing.T) {
 	t.Parallel()
 	env := initSafetyTestEnv(t)
 
@@ -274,10 +303,10 @@ func TestFunCallContext(t *testing.T) {
 
 func TestContextMethod(t *testing.T) {
 	t.Parallel()
-	env := initSafetyTestEnv(t)
 
 	// Default: no evalCtx set → Context() returns context.Background().
-	ctx := env.Context()
+	defaultEnv := initSafetyTestEnv(t)
+	ctx := defaultEnv.Context()
 	if ctx == nil {
 		t.Fatal("Context() returned nil")
 	}
@@ -285,10 +314,18 @@ func TestContextMethod(t *testing.T) {
 		t.Error("expected context.Background() from default env")
 	}
 
-	// After WithContext, Context() returns the configured context.
+	// After WithContext config, Context() returns the configured context.
 	customCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	env.evalCtx = customCtx
+	env := NewEnv(nil)
+	rc := InitializeUserEnv(env, WithContext(customCtx))
+	if rc.Type == LError {
+		t.Fatalf("InitializeUserEnv failed: %v", rc)
+	}
+	rc = env.InPackage(String(DefaultUserPackage))
+	if rc.Type == LError {
+		t.Fatalf("InPackage failed: %v", rc)
+	}
 	if env.Context() != customCtx {
 		t.Error("expected Context() to return the custom context")
 	}
