@@ -152,6 +152,8 @@ func (h *handler) handle(msg dap.Message) {
 		h.onStepOut(req)
 	case *dap.EvaluateRequest:
 		h.onEvaluate(req)
+	case *dap.CompletionsRequest:
+		h.onCompletions(req)
 	case *dap.AttachRequest:
 		h.onAttach(req)
 	case *dap.LaunchRequest:
@@ -184,6 +186,8 @@ func (h *handler) onInitialize(req *dap.InitializeRequest) {
 		SupportTerminateDebuggee:              true,
 		SupportsSteppingGranularity:           true,
 		SupportsStepInTargetsRequest:          true,
+		SupportsCompletionsRequest:            true,
+		CompletionTriggerCharacters:           []string{"(", ":", "'"},
 		ExceptionBreakpointFilters: []dap.ExceptionBreakpointsFilter{
 			{
 				Filter:  "all",
@@ -632,6 +636,39 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 		resp.Body.VariablesReference = h.allocVarRef(result)
 		h.mu.Unlock()
 	}
+	h.send(resp)
+}
+
+func (h *handler) onCompletions(req *dap.CompletionsRequest) {
+	resp := &dap.CompletionsResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+
+	env, _ := h.engine.PausedState()
+	if env == nil {
+		// Return empty list when not paused (VS Code handles this gracefully).
+		h.send(resp)
+		return
+	}
+
+	// Use the frame env if specified.
+	if req.Arguments.FrameId > 0 {
+		if fenv := h.getFrameEnv(req.Arguments.FrameId); fenv != nil {
+			env = fenv
+		}
+	}
+
+	prefix := debugger.ExtractPrefix(req.Arguments.Text, req.Arguments.Column)
+	candidates := debugger.CompleteInContext(env, prefix)
+
+	items := make([]dap.CompletionItem, len(candidates))
+	for i, c := range candidates {
+		items[i] = dap.CompletionItem{
+			Label:  c.Label,
+			Type:   dap.CompletionItemType(c.Type),
+			Detail: c.Detail,
+		}
+	}
+	resp.Body.Targets = items
 	h.send(resp)
 }
 
