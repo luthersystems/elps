@@ -21,6 +21,7 @@ ELPS is an embedded Lisp interpreter implemented in Go. It is a Lisp-1 dialect d
 | `./elps doc <query>` | Show function/package documentation |
 | `./elps doc -m` | Check for missing docstrings (used in CI) |
 | `./elps doc --guide` | Print the full language reference |
+| `./elps doc --debug-guide` | Print the debugging guide |
 | `./elps lint file.lisp` | Run static analysis on a lisp file |
 | `./elps fmt file.lisp` | Format a lisp file |
 
