@@ -99,12 +99,13 @@ func WithMaxAlloc(n int) Config {
 }
 
 // WithContext returns a Config that sets the initial context.Context for the
-// runtime.  The context is checked at each evaluation step; if it is cancelled
-// or its deadline expires, evaluation returns a CondContextCancelled error.
-// For per-call context control, use the *Context methods on LEnv instead.
+// root environment.  The context is checked at each evaluation step; if it is
+// cancelled or its deadline expires, evaluation returns a CondContextCancelled
+// error.  For per-call context control, use the *Context methods on LEnv
+// instead.
 func WithContext(ctx context.Context) Config {
 	return func(env *LEnv) *LVal {
-		env.Runtime.ctx = ctx
+		env.evalCtx = ctx
 		return Nil()
 	}
 }

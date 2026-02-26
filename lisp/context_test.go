@@ -144,9 +144,9 @@ func TestNoLimitsZeroOverhead(t *testing.T) {
 	t.Parallel()
 	env := initSafetyTestEnv(t)
 
-	// Default runtime has nil ctx and zero maxSteps.
-	if env.Runtime.ctx != nil {
-		t.Error("expected nil ctx on default runtime")
+	// Default env has nil evalCtx and zero maxSteps.
+	if env.evalCtx != nil {
+		t.Error("expected nil evalCtx on default env")
 	}
 	if env.Runtime.maxSteps != 0 {
 		t.Error("expected zero maxSteps on default runtime")
@@ -224,7 +224,7 @@ func TestWithContextConfig(t *testing.T) {
 
 // --- Context-scoped method tests ---
 
-func TestEvalContextClearsCtx(t *testing.T) {
+func TestEvalContextDoesNotPersist(t *testing.T) {
 	t.Parallel()
 	env := initSafetyTestEnv(t)
 
@@ -234,9 +234,10 @@ func TestEvalContextClearsCtx(t *testing.T) {
 		t.Fatalf("expected success, got error: %v", result)
 	}
 
-	// After EvalContext returns, ctx should be cleared.
-	if env.Runtime.ctx != nil {
-		t.Error("expected nil ctx after EvalContext returns")
+	// EvalContext passes ctx through the call chain but does not persist it
+	// on the env.  After return, evalCtx should still be nil (the default).
+	if env.evalCtx != nil {
+		t.Error("expected nil evalCtx after EvalContext returns")
 	}
 }
 
@@ -269,15 +270,31 @@ func TestFunCallContext(t *testing.T) {
 
 	result := env.FunCallContext(ctx, loopFn, SExpr([]*LVal{}))
 	requireCondition(t, result, CondContextCancelled)
+}
 
-	// Context should be cleared after return.
-	if env.Runtime.ctx != nil {
-		t.Error("expected nil ctx after FunCallContext returns")
+func TestContextMethod(t *testing.T) {
+	t.Parallel()
+	env := initSafetyTestEnv(t)
+
+	// Default: no evalCtx set → Context() returns context.Background().
+	ctx := env.Context()
+	if ctx == nil {
+		t.Fatal("Context() returned nil")
+	}
+	if ctx != context.Background() {
+		t.Error("expected context.Background() from default env")
+	}
+
+	// After WithContext, Context() returns the configured context.
+	customCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	env.evalCtx = customCtx
+	if env.Context() != customCtx {
+		t.Error("expected Context() to return the custom context")
 	}
 }
 
 // NOTE: LoadStringContext, LoadContext, LoadFileContext, LoadLocationContext
 // are not tested here because they require a parser.Reader, which would
-// create an import cycle (lisp/ cannot import parser/).  They follow the
-// same set-ctx/defer-clear/delegate pattern as EvalContext and are
-// exercised through integration tests in lisp/lisplib/ and elpstest/.
+// create an import cycle (lisp/ cannot import parser/).  They are exercised
+// through integration tests in lisp/lisplib/ and elpstest/.

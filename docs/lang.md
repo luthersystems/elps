@@ -933,6 +933,7 @@ reset it between evaluations.
 | `LoadLocationContext` | Load with explicit name/location |
 | `FunCallContext` | Invoke a function |
 
-Each method sets the runtime context for its duration and clears it on
-return.  The older non-context methods (`Eval`, `Load`, etc.) continue to
-work but are deprecated.
+Each method threads the context through the internal evaluation chain.
+The older non-context methods (`Eval`, `Load`, etc.) continue to work
+but are deprecated.  Builtins can access the current context via
+`env.Context()`.

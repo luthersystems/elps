@@ -3,7 +3,6 @@
 package lisp
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -14,11 +13,12 @@ import (
 // responsible for holding shared environment state, generating identifiers,
 // and writing debugging output to a stream (typically os.Stderr).
 //
-// Context and Step Limits: Runtime supports optional cancellation via
-// context.Context and instruction counting via MaxSteps.  These are set
-// through the *Context methods on LEnv (e.g. EvalContext) or the
-// WithContext/WithMaxSteps Config options.  When neither is configured,
-// limit checks are two nil/zero comparisons with negligible overhead.
+// Step Limits: Runtime supports optional instruction counting via MaxSteps.
+// Context cancellation is handled per-evaluation via LEnv.evalCtx, which
+// is set by the *Context methods on LEnv (e.g. EvalContext) or the
+// WithContext Config option.  When neither context nor step limits are
+// configured, limit checks are two nil/zero comparisons with negligible
+// overhead.
 //
 // Concurrency: Runtime and its associated LEnv tree are NOT safe for
 // concurrent use from multiple goroutines.  All calls to Eval, Load, and
@@ -40,9 +40,8 @@ type Runtime struct {
 	Debugger               Debugger // nil = disabled (zero overhead on hot path)
 	MaxAlloc               int      // Per-operation allocation size cap (0 = use default). Not cumulative.
 	MaxMacroExpansionDepth int      // Maximum macro expansion iterations (0 = use default).
-	ctx                    context.Context // Cancellation/timeout signal (nil = no cancellation).
-	maxSteps               int64           // Per-evaluation step limit (0 = unlimited).
-	steps                  int64           // Cumulative step counter.
+	maxSteps               int64    // Per-evaluation step limit (0 = unlimited).
+	steps                  int64    // Cumulative step counter.
 	conditionStack         []*LVal
 	numenv                 atomicCounter
 	numsym                 atomicCounter
