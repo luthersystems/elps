@@ -1,6 +1,7 @@
 package dapserver
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -202,7 +203,7 @@ func TestExpandVariable_List(t *testing.T) {
 	list := lisp.SExpr([]*lisp.LVal{lisp.Int(10), lisp.String("hi"), lisp.Float(3.14)})
 	noRef := func(v *lisp.LVal) int { return 0 }
 
-	children := expandVariable(list, noRef, nil)
+	children := expandVariable(list, noRef, nil, nil)
 	require.Len(t, children, 3)
 	assert.Equal(t, "[0]", children[0].Name)
 	assert.Equal(t, "10", children[0].Value)
@@ -218,7 +219,7 @@ func TestExpandVariable_SortedMap(t *testing.T) {
 	m.MapSet(lisp.String("beta"), lisp.Int(2))
 	noRef := func(v *lisp.LVal) int { return 0 }
 
-	children := expandVariable(m, noRef, nil)
+	children := expandVariable(m, noRef, nil, nil)
 	require.Len(t, children, 2)
 
 	vals := make(map[string]string)
@@ -233,7 +234,7 @@ func TestExpandVariable_Array(t *testing.T) {
 	arr := lisp.Array(nil, []*lisp.LVal{lisp.String("a"), lisp.String("b")})
 	noRef := func(v *lisp.LVal) int { return 0 }
 
-	children := expandVariable(arr, noRef, nil)
+	children := expandVariable(arr, noRef, nil, nil)
 	require.Len(t, children, 2)
 	assert.Equal(t, "[0]", children[0].Name)
 	assert.Equal(t, `"a"`, children[0].Value)
@@ -246,7 +247,7 @@ func TestExpandVariable_TaggedVal(t *testing.T) {
 	tagged := &lisp.LVal{Type: lisp.LTaggedVal, Str: "my-type", Cells: []*lisp.LVal{inner}}
 	noRef := func(v *lisp.LVal) int { return 0 }
 
-	children := expandVariable(tagged, noRef, nil)
+	children := expandVariable(tagged, noRef, nil, nil)
 	require.Len(t, children, 1)
 	assert.Equal(t, "data", children[0].Name)
 	assert.Equal(t, "42", children[0].Value)
@@ -256,13 +257,13 @@ func TestExpandVariable_NativeNilEngine(t *testing.T) {
 	native := lisp.Native(struct{ X int }{X: 42})
 	noRef := func(v *lisp.LVal) int { return 0 }
 
-	children := expandVariable(native, noRef, nil)
+	children := expandVariable(native, noRef, nil, nil)
 	assert.Nil(t, children, "LNative with nil engine should return nil children")
 }
 
 func TestExpandVariable_Nil(t *testing.T) {
-	assert.Nil(t, expandVariable(nil, func(v *lisp.LVal) int { return 0 }, nil))
-	assert.Nil(t, expandVariable(lisp.Int(42), func(v *lisp.LVal) int { return 0 }, nil))
+	assert.Nil(t, expandVariable(nil, func(v *lisp.LVal) int { return 0 }, nil, nil))
+	assert.Nil(t, expandVariable(lisp.Int(42), func(v *lisp.LVal) int { return 0 }, nil, nil))
 }
 
 func TestChildInfo(t *testing.T) {
@@ -383,7 +384,7 @@ func TestExpandVariable_List_Hints(t *testing.T) {
 	outer := lisp.SExpr([]*lisp.LVal{lisp.Int(1), inner, lisp.String("x")})
 	noRef := func(v *lisp.LVal) int { return 0 }
 
-	children := expandVariable(outer, noRef, nil)
+	children := expandVariable(outer, noRef, nil, nil)
 	require.Len(t, children, 3)
 
 	// First child is a scalar — no hints.
@@ -397,4 +398,72 @@ func TestExpandVariable_List_Hints(t *testing.T) {
 	// Third child is a string scalar — no hints.
 	assert.Equal(t, 0, children[2].IndexedVariables)
 	assert.Equal(t, 0, children[2].NamedVariables)
+}
+
+func TestExpandVariable_SortedMap_WithFilter(t *testing.T) {
+	t.Parallel()
+	m := lisp.SortedMap()
+	m.MapSet(lisp.String("apple"), lisp.Int(1))
+	m.MapSet(lisp.String("banana"), lisp.Int(2))
+	m.MapSet(lisp.String("avocado"), lisp.Int(3))
+	m.MapSet(lisp.String("cherry"), lisp.Int(4))
+	noRef := func(v *lisp.LVal) int { return 0 }
+
+	// Filter: keys containing "a" at the start (formatted as `"apple"`, `"avocado"`, etc.)
+	filter := regexp.MustCompile(`^"a`)
+	children := expandVariable(m, noRef, nil, filter)
+	require.Len(t, children, 2)
+
+	names := make(map[string]bool)
+	for _, ch := range children {
+		names[ch.Name] = true
+	}
+	assert.True(t, names[`"apple"`], "apple should match filter")
+	assert.True(t, names[`"avocado"`], "avocado should match filter")
+	assert.False(t, names[`"banana"`], "banana should not match filter")
+	assert.False(t, names[`"cherry"`], "cherry should not match filter")
+}
+
+func TestExpandVariable_SortedMap_FilterNoMatch(t *testing.T) {
+	t.Parallel()
+	m := lisp.SortedMap()
+	m.MapSet(lisp.String("alpha"), lisp.Int(1))
+	m.MapSet(lisp.String("beta"), lisp.Int(2))
+	noRef := func(v *lisp.LVal) int { return 0 }
+
+	filter := regexp.MustCompile(`zzz`)
+	children := expandVariable(m, noRef, nil, filter)
+	assert.Empty(t, children, "no entries should match")
+}
+
+func TestExpandVariable_SortedMap_NilFilter(t *testing.T) {
+	t.Parallel()
+	m := lisp.SortedMap()
+	m.MapSet(lisp.String("x"), lisp.Int(1))
+	m.MapSet(lisp.String("y"), lisp.Int(2))
+	noRef := func(v *lisp.LVal) int { return 0 }
+
+	children := expandVariable(m, noRef, nil, nil)
+	assert.Len(t, children, 2, "nil filter should return all entries")
+}
+
+func TestExpandVariable_SortedMap_EmptyMapWithFilter(t *testing.T) {
+	t.Parallel()
+	m := lisp.SortedMap()
+	noRef := func(v *lisp.LVal) int { return 0 }
+
+	filter := regexp.MustCompile(`anything`)
+	children := expandVariable(m, noRef, nil, filter)
+	assert.Empty(t, children, "filter on empty map should return no entries")
+}
+
+func TestExpandVariable_List_FilterIgnored(t *testing.T) {
+	t.Parallel()
+	list := lisp.SExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)})
+	noRef := func(v *lisp.LVal) int { return 0 }
+
+	// Even with a filter set, list expansion should return all elements.
+	filter := regexp.MustCompile(`zzz`)
+	children := expandVariable(list, noRef, nil, filter)
+	assert.Len(t, children, 3, "filter should not affect list expansion")
 }

@@ -4896,3 +4896,401 @@ func TestDAPServer_EvaluatePaginationHints(t *testing.T) {
 	}
 	s.disconnect()
 }
+
+// setupDAPSessionWithClientCaps creates a DAP test session where the
+// InitializeRequest includes the given client capabilities (e.g.,
+// SupportsInvalidatedEvent: true).
+func setupDAPSessionWithClientCaps(t *testing.T, initArgs dap.InitializeRequestArguments, opts ...debugger.Option) *dapTestSession {
+	t.Helper()
+	e := debugger.New(opts...)
+	e.Enable()
+	srv := New(e)
+
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close() }) //nolint:errcheck,gosec
+
+	go func() {
+		_ = srv.ServeConn(server)
+	}()
+
+	s := &dapTestSession{
+		t:      t,
+		engine: e,
+		client: client,
+		reader: bufio.NewReader(client),
+	}
+
+	s.send(&dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "initialize",
+		},
+		Arguments: initArgs,
+	})
+	msg := s.read()
+	initResp, ok := msg.(*dap.InitializeResponse)
+	require.True(t, ok, "expected InitializeResponse, got %T", msg)
+	require.True(t, initResp.Success)
+	s.read() // InitializedEvent
+
+	return s
+}
+
+func TestDAPServer_FilterCommand_SetAndClear(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	// Set breakpoint on line 4 (inside function body, after map creation).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 4}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test",
+			"(defun f ()\n"+
+				"  (set 'm (sorted-map \"apple\" 1 \"banana\" 2 \"avocado\" 3 \"cherry\" 4))\n"+
+				"  m\n"+
+				"  (+ 1 1))\n"+
+				"(f)")
+	}()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	// Evaluate the map to get an expandable variable reference.
+	evalResp := s.evaluate("m", topFrame)
+	require.True(t, evalResp.Success, "evaluate m should succeed")
+	require.Greater(t, evalResp.Body.VariablesReference, 0, "map should be expandable")
+	mapRef := evalResp.Body.VariablesReference
+
+	// Without filter: all 4 entries.
+	vars := s.variables(mapRef)
+	assert.Len(t, vars, 4, "unfiltered map should have 4 entries")
+
+	// Set filter: /filter ^"a — keys starting with "a (formatted as "apple", "avocado")
+	filterResp := s.evaluate(`/filter ^"a`, topFrame)
+	assert.True(t, filterResp.Success)
+	assert.Equal(t, `filter set: ^"a`, filterResp.Body.Result)
+
+	// Re-evaluate to get a fresh variable reference (filter applies at expand time).
+	evalResp2 := s.evaluate("m", topFrame)
+	require.True(t, evalResp2.Success)
+	require.Greater(t, evalResp2.Body.VariablesReference, 0)
+
+	filtered := s.variables(evalResp2.Body.VariablesReference)
+	assert.Len(t, filtered, 2, "filtered map should have 2 entries matching ^\"a")
+	names := make(map[string]bool)
+	for _, v := range filtered {
+		names[v.Name] = true
+	}
+	assert.True(t, names[`"apple"`])
+	assert.True(t, names[`"avocado"`])
+
+	// Clear filter: /filter
+	clearResp := s.evaluate("/filter", topFrame)
+	assert.True(t, clearResp.Success)
+	assert.Equal(t, "filter cleared", clearResp.Body.Result)
+
+	// Re-evaluate and verify all entries are back.
+	evalResp3 := s.evaluate("m", topFrame)
+	require.True(t, evalResp3.Success)
+	require.Greater(t, evalResp3.Body.VariablesReference, 0)
+
+	allVars := s.variables(evalResp3.Body.VariablesReference)
+	assert.Len(t, allVars, 4, "cleared filter should show all 4 entries")
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_FilterCommand_InvalidRegex(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	// Set breakpoint to pause execution.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	// Set a valid filter first, then send an invalid one.
+	// The valid filter should survive the invalid attempt.
+	validResp := s.evaluate(`/filter valid`, topFrame)
+	assert.True(t, validResp.Success)
+
+	// Send invalid regex.
+	// go-dap decodes any response with success=false as *dap.ErrorResponse,
+	// even though the server sends a *dap.EvaluateResponse.
+	s.send(&dap.EvaluateRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "evaluate",
+		},
+		Arguments: dap.EvaluateArguments{
+			Expression: `/filter [invalid`,
+			FrameId:    topFrame,
+		},
+	})
+	msg := s.read()
+	errResp, ok := msg.(*dap.ErrorResponse)
+	require.True(t, ok, "expected ErrorResponse for invalid regex, got %T", msg)
+	assert.False(t, errResp.Success)
+	assert.Contains(t, errResp.Message, "invalid regex")
+
+	// Verify the previous valid filter is still active (not corrupted).
+	// Evaluate a sorted-map and expand — "valid" filter should apply.
+	mapResp := s.evaluate(`(sorted-map "valid-key" 1 "other" 2)`, topFrame)
+	require.True(t, mapResp.Success)
+	require.Greater(t, mapResp.Body.VariablesReference, 0)
+	vars := s.variables(mapResp.Body.VariablesReference)
+	assert.Len(t, vars, 1, "previous valid filter should still be active")
+	assert.Equal(t, `"valid-key"`, vars[0].Name)
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_FilterCommand_InvalidatedEvent(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSessionWithClientCaps(t, dap.InitializeRequestArguments{
+		AdapterID:                "elps",
+		LinesStartAt1:            true,
+		SupportsInvalidatedEvent: true,
+	})
+
+	// Set breakpoint.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	// Set filter — should get EvaluateResponse followed by InvalidatedEvent.
+	filterResp := s.evaluate(`/filter test`, topFrame)
+	assert.True(t, filterResp.Success)
+	assert.Equal(t, "filter set: test", filterResp.Body.Result)
+
+	// Read the InvalidatedEvent that should follow.
+	msg, ok := s.tryRead(2 * time.Second)
+	require.True(t, ok, "expected InvalidatedEvent after filter set")
+	invEvt, ok := msg.(*dap.InvalidatedEvent)
+	require.True(t, ok, "expected InvalidatedEvent, got %T", msg)
+	assert.Contains(t, invEvt.Body.Areas, dap.InvalidatedAreas("variables"))
+
+	// Clear filter — should also get InvalidatedEvent.
+	clearResp := s.evaluate("/filter", topFrame)
+	assert.True(t, clearResp.Success)
+
+	msg, ok = s.tryRead(2 * time.Second)
+	require.True(t, ok, "expected InvalidatedEvent after filter clear")
+	invEvt2, ok := msg.(*dap.InvalidatedEvent)
+	require.True(t, ok, "expected InvalidatedEvent, got %T", msg)
+	assert.Contains(t, invEvt2.Body.Areas, dap.InvalidatedAreas("variables"))
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_FilterCommand_NoInvalidatedEventWhenUnsupported(t *testing.T) {
+	t.Parallel()
+	// Default setupDAPSession does NOT set SupportsInvalidatedEvent.
+	s := setupDAPSession(t)
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	// Set filter — should get EvaluateResponse but NO InvalidatedEvent.
+	filterResp := s.evaluate(`/filter test`, topFrame)
+	assert.True(t, filterResp.Success)
+
+	// Verify no extra message arrives (InvalidatedEvent should NOT be sent).
+	msg, received := s.tryRead(200 * time.Millisecond)
+	assert.False(t, received, "should not receive InvalidatedEvent when unsupported, got %T", msg)
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_FilterCommand_WithPagination(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 4}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test",
+			"(defun f ()\n"+
+				"  (set 'm (sorted-map \"a1\" 1 \"a2\" 2 \"a3\" 3 \"b1\" 4 \"b2\" 5))\n"+
+				"  m\n"+
+				"  (+ 1 1))\n"+
+				"(f)")
+	}()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	// Set filter to only show "a" keys (a1, a2, a3 = 3 matches).
+	filterResp := s.evaluate(`/filter ^"a`, topFrame)
+	assert.True(t, filterResp.Success)
+
+	// Evaluate map to get a reference.
+	evalResp := s.evaluate("m", topFrame)
+	require.True(t, evalResp.Success)
+	require.Greater(t, evalResp.Body.VariablesReference, 0)
+	mapRef := evalResp.Body.VariablesReference
+
+	// Request with pagination: Start=1, Count=1 (skip first, take 1).
+	s.send(&dap.VariablesRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "variables",
+		},
+		Arguments: dap.VariablesArguments{
+			VariablesReference: mapRef,
+			Start:              1,
+			Count:              1,
+		},
+	})
+	msg := s.read()
+	varsResp, ok := msg.(*dap.VariablesResponse)
+	require.True(t, ok, "expected VariablesResponse, got %T", msg)
+	require.Len(t, varsResp.Body.Variables, 1,
+		"pagination after filter should return 1 entry")
+	// Filtered entries are a1, a2, a3 (sorted). Start=1 skips a1, Count=1 takes a2.
+	assert.Equal(t, `"a2"`, varsResp.Body.Variables[0].Name,
+		"Start=1 should skip first filtered entry and return second")
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
