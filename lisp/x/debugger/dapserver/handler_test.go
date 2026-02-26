@@ -657,6 +657,12 @@ func varNames(vars []dap.Variable) []string {
 
 // evaluate sends an evaluate request and returns the response.
 func (s *dapTestSession) evaluate(expr string, frameID int) *dap.EvaluateResponse {
+	return s.evaluateWithContext(expr, frameID, "")
+}
+
+// evaluateWithContext sends an evaluate request with the given DAP context
+// ("hover", "repl", "watch", etc.) and returns the response.
+func (s *dapTestSession) evaluateWithContext(expr string, frameID int, ctx string) *dap.EvaluateResponse {
 	s.send(&dap.EvaluateRequest{
 		Request: dap.Request{
 			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
@@ -665,6 +671,7 @@ func (s *dapTestSession) evaluate(expr string, frameID int) *dap.EvaluateRespons
 		Arguments: dap.EvaluateArguments{
 			Expression: expr,
 			FrameId:    frameID,
+			Context:    ctx,
 		},
 	})
 	msg := s.read()
@@ -4380,4 +4387,80 @@ func TestDAPServer_StepInTargets_Capability(t *testing.T) {
 	})
 	_, err = dap.ReadProtocolMessage(reader) // DisconnectResponse
 	require.NoError(t, err)
+}
+
+// TestDAPServer_EvaluateContextSemantics verifies context-aware evaluation:
+// repl supports multi-expression eval (progn semantics), hover uses a child
+// env and single-expression eval, and the default (empty) context uses
+// multi-expression eval like repl.
+func TestDAPServer_EvaluateContextSemantics(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun add (a b)\n  (+ a b))\n(add 10 20)")
+	}()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	s.read() // StoppedEvent (breakpoint)
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrameID := stResp.Body.StackFrames[0].Id
+
+	// --- Repl: multi-expression with progn semantics ---
+	evalResp := s.evaluateWithContext("(set 'repl-x 10) (+ repl-x 5)", topFrameID, "repl")
+	assert.True(t, evalResp.Success, "repl multi-expr should succeed")
+	assert.Equal(t, "15", evalResp.Body.Result)
+
+	// --- Repl: mutations persist ---
+	evalResp2 := s.evaluateWithContext("repl-x", topFrameID, "repl")
+	assert.True(t, evalResp2.Success)
+	assert.Equal(t, "10", evalResp2.Body.Result)
+
+	// --- Hover: reads repl-created bindings via package lookup ---
+	hoverResp := s.evaluateWithContext("repl-x", topFrameID, "hover")
+	assert.True(t, hoverResp.Success, "hover should read repl-created variable")
+	assert.Equal(t, "10", hoverResp.Body.Result)
+
+	// --- Hover: single-expression semantics ---
+	hoverResp2 := s.evaluateWithContext("(+ 1 2) (+ 3 4)", topFrameID, "hover")
+	assert.True(t, hoverResp2.Success)
+	assert.Equal(t, "3", hoverResp2.Body.Result, "hover should return first expression only")
+
+	// --- Default context (empty string): multi-expression like repl ---
+	defaultResp := s.evaluateWithContext("(set 'default-y 7) (+ default-y 3)", topFrameID, "")
+	assert.True(t, defaultResp.Success, "default context multi-expr should succeed")
+	assert.Equal(t, "10", defaultResp.Body.Result)
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
 }

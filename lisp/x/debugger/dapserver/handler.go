@@ -606,7 +606,22 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 		}
 	}
 
-	result := h.engine.EvalInContext(env, req.Arguments.Expression)
+	// Context-aware evaluation: hover uses a child env and single-expression
+	// eval to minimize side effects. The child env inherits all bindings via
+	// scope chain lookup but any scope-level writes stay in the child.
+	// Note: package-level mutations (via set) still reach Runtime.Package
+	// since it is shared; the child env isolates only scope-level bindings.
+	// All other contexts use the direct env with multi-expression eval
+	// (progn semantics).
+	var result *lisp.LVal
+	if req.Arguments.Context == "hover" {
+		child := lisp.NewEnv(env)
+		child.Runtime = env.Runtime
+		result = h.engine.EvalSingleInContext(child, req.Arguments.Expression)
+	} else {
+		result = h.engine.EvalInContext(env, req.Arguments.Expression)
+	}
+
 	if result != nil && result.Type == lisp.LError {
 		resp.Success = false
 		resp.Message = debugger.FormatValueWith(result, h.engine)

@@ -212,11 +212,53 @@ func TestEvalInContext_NoReader(t *testing.T) {
 
 func TestEvalInContext_MultiExpression(t *testing.T) {
 	env := newInspectorTestEnv(t)
-	// Only the first expression should be evaluated.
+	// All expressions are evaluated; the last result is returned.
 	result := EvalInContext(env, "(+ 1 2) (+ 3 4)")
 	require.NotNil(t, result)
 	assert.Equal(t, lisp.LInt, result.Type)
+	assert.Equal(t, 7, result.Int, "should return the last expression result")
+}
+
+func TestEvalInContext_MultiExpression_ErrorShortCircuit(t *testing.T) {
+	env := newInspectorTestEnv(t)
+	// Pre-set a sentinel. If the third expression runs, it will change it.
+	EvalInContext(env, "(set 'sc-guard 0)")
+	// Error in second expression short-circuits — third is not evaluated.
+	result := EvalInContext(env, "(+ 1 2) undefined-sym-xyz (set 'sc-guard 99)")
+	require.NotNil(t, result)
+	assert.Equal(t, lisp.LError, result.Type)
+	// Verify the third expression was NOT evaluated.
+	guard := EvalInContext(env, "sc-guard")
+	assert.Equal(t, 0, guard.Int, "third expression should not have been evaluated")
+}
+
+func TestEvalInContext_MultiExpression_Mutation(t *testing.T) {
+	env := newInspectorTestEnv(t)
+	// First expression sets a variable, second reads it.
+	result := EvalInContext(env, "(set 'debug-x 10) debug-x")
+	require.NotNil(t, result)
+	assert.Equal(t, lisp.LInt, result.Type)
+	assert.Equal(t, 10, result.Int)
+}
+
+func TestEvalSingleInContext(t *testing.T) {
+	env := newInspectorTestEnv(t)
+	result := EvalSingleInContext(env, "(+ 1 2)")
+	require.NotNil(t, result)
+	assert.Equal(t, lisp.LInt, result.Type)
+	assert.Equal(t, 3, result.Int)
+}
+
+func TestEvalSingleInContext_MultiExpression(t *testing.T) {
+	env := newInspectorTestEnv(t)
+	// Pre-set a sentinel to verify the second expression is NOT evaluated.
+	EvalInContext(env, "(set 'single-guard 0)")
+	result := EvalSingleInContext(env, "(+ 1 2) (set 'single-guard 99)")
+	require.NotNil(t, result)
+	assert.Equal(t, lisp.LInt, result.Type)
 	assert.Equal(t, 3, result.Int, "only the first expression should be evaluated")
+	guard := EvalInContext(env, "single-guard")
+	assert.Equal(t, 0, guard.Int, "second expression should not have been evaluated")
 }
 
 func TestFormatValueWith_CustomFormatter(t *testing.T) {
