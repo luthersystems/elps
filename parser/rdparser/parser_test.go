@@ -369,6 +369,7 @@ baz]`, `test11:3:4: mismatched-syntax: expected ) to close ( opened at test11:1:
 // --- Fault-tolerant parsing ---
 
 func TestFaultTolerant_NoErrors(t *testing.T) {
+	t.Parallel()
 	source := "(a 1)\n(b 2)\n(c 3)"
 	p := New(token.NewScanner("test", strings.NewReader(source)))
 	result := p.ParseProgramFaultTolerant()
@@ -385,17 +386,22 @@ func TestFaultTolerant_NoErrors(t *testing.T) {
 }
 
 func TestFaultTolerant_ErrorInMiddle(t *testing.T) {
+	t.Parallel()
 	// Mismatched bracket terminates the broken expr, allowing recovery.
 	source := "(a 1)\n(broken]\n(b 2)"
 	p := New(token.NewScanner("test", strings.NewReader(source)))
 	result := p.ParseProgramFaultTolerant()
 	assert.Len(t, result.Errors, 1, "should have one error for the mismatched bracket")
+	ev, ok := result.Errors[0].(*lisp.ErrorVal)
+	assert.True(t, ok, "error should be *lisp.ErrorVal")
+	assert.Equal(t, lisp.CondMismatchedSyntax, ev.Condition())
 	assert.Len(t, result.Exprs, 2, "should recover (a 1) and (b 2)")
 	assert.Equal(t, "(a 1)", result.Exprs[0].String())
 	assert.Equal(t, "(b 2)", result.Exprs[1].String())
 }
 
 func TestFaultTolerant_ErrorAtStart(t *testing.T) {
+	t.Parallel()
 	// Mismatched bracket at start, valid expression after.
 	source := "(broken]\n(a 1)"
 	p := New(token.NewScanner("test", strings.NewReader(source)))
@@ -406,52 +412,64 @@ func TestFaultTolerant_ErrorAtStart(t *testing.T) {
 }
 
 func TestFaultTolerant_ErrorAtEnd(t *testing.T) {
+	t.Parallel()
 	// Unclosed bracket at end — only the prior valid expression is recovered.
 	source := "(a 1)\n(broken"
 	p := New(token.NewScanner("test", strings.NewReader(source)))
 	result := p.ParseProgramFaultTolerant()
 	assert.Len(t, result.Errors, 1)
+	ev, ok := result.Errors[0].(*lisp.ErrorVal)
+	assert.True(t, ok, "error should be *lisp.ErrorVal")
+	assert.Equal(t, lisp.CondUnmatchedSyntax, ev.Condition())
 	assert.Len(t, result.Exprs, 1, "should recover (a 1)")
 	assert.Equal(t, "(a 1)", result.Exprs[0].String())
 }
 
 func TestFaultTolerant_StrayCloser(t *testing.T) {
+	t.Parallel()
 	source := ") (a 1)"
 	p := New(token.NewScanner("test", strings.NewReader(source)))
 	result := p.ParseProgramFaultTolerant()
-	assert.NotEmpty(t, result.Errors, "stray ) should produce an error")
+	assert.Len(t, result.Errors, 1, "stray ) should produce exactly one error")
 	assert.Len(t, result.Exprs, 1, "should recover (a 1)")
 	assert.Equal(t, "(a 1)", result.Exprs[0].String())
 }
 
 func TestFaultTolerant_MismatchedBrackets(t *testing.T) {
+	t.Parallel()
 	source := "(foo] (bar)"
 	p := New(token.NewScanner("test", strings.NewReader(source)))
 	result := p.ParseProgramFaultTolerant()
-	assert.NotEmpty(t, result.Errors)
+	assert.Len(t, result.Errors, 1)
 	assert.Len(t, result.Exprs, 1, "should recover (bar)")
 	assert.Equal(t, "(bar)", result.Exprs[0].String())
 }
 
 func TestFaultTolerant_MultipleErrors(t *testing.T) {
+	t.Parallel()
 	// Two mismatched brackets with valid expressions between and after.
 	source := "(a 1)\n(broken1]\n(b 2)\n(broken2]\n(c 3)"
 	p := New(token.NewScanner("test", strings.NewReader(source)))
 	result := p.ParseProgramFaultTolerant()
 	assert.Len(t, result.Errors, 2, "should collect both errors")
 	assert.Len(t, result.Exprs, 3, "should recover (a 1), (b 2), and (c 3)")
+	assert.Equal(t, "(a 1)", result.Exprs[0].String())
+	assert.Equal(t, "(b 2)", result.Exprs[1].String())
+	assert.Equal(t, "(c 3)", result.Exprs[2].String())
 }
 
 func TestFaultTolerant_OnlyErrors(t *testing.T) {
+	t.Parallel()
 	// Two stray closers with nothing valid.
 	source := ") ]"
 	p := New(token.NewScanner("test", strings.NewReader(source)))
 	result := p.ParseProgramFaultTolerant()
-	assert.NotEmpty(t, result.Errors)
+	assert.Len(t, result.Errors, 1, "stray ) is consumed by parser, ] is consumed by skip")
 	assert.Empty(t, result.Exprs, "no valid expressions to recover")
 }
 
 func TestFaultTolerant_EmptyInput(t *testing.T) {
+	t.Parallel()
 	p := New(token.NewScanner("test", strings.NewReader("")))
 	result := p.ParseProgramFaultTolerant()
 	assert.Empty(t, result.Errors)
@@ -459,7 +477,8 @@ func TestFaultTolerant_EmptyInput(t *testing.T) {
 }
 
 func TestFaultTolerant_ErrorPositions(t *testing.T) {
-	// Mismatched bracket on line 2.
+	t.Parallel()
+	// Mismatched bracket on line 2: "(broken]" at col 8.
 	source := "(ok 1)\n(broken]\n(ok 2)"
 	p := New(token.NewScanner("test", strings.NewReader(source)))
 	result := p.ParseProgramFaultTolerant()
@@ -467,10 +486,12 @@ func TestFaultTolerant_ErrorPositions(t *testing.T) {
 	ev, ok := result.Errors[0].(*lisp.ErrorVal)
 	assert.True(t, ok, "error should be *lisp.ErrorVal")
 	assert.NotNil(t, ev.Source, "error should have source location")
-	assert.True(t, ev.Source.Line > 0, "error should have a valid line number")
+	assert.Equal(t, 2, ev.Source.Line, "error should be on line 2")
+	assert.Equal(t, lisp.CondMismatchedSyntax, ev.Condition())
 }
 
 func TestFaultTolerant_ErrorLimit(t *testing.T) {
+	t.Parallel()
 	// Generate more than maxRecoveryErrors mismatched bracket expressions.
 	// Each (x] produces one error; skip finds the next ( to continue.
 	var parts []string
@@ -482,9 +503,11 @@ func TestFaultTolerant_ErrorLimit(t *testing.T) {
 	p := New(token.NewScanner("test", strings.NewReader(source)))
 	result := p.ParseProgramFaultTolerant()
 	assert.Len(t, result.Errors, maxRecoveryErrors, "errors should be capped at maxRecoveryErrors")
+	assert.Empty(t, result.Exprs, "no valid expressions when limit is hit before (ok 1)")
 }
 
 func TestFaultTolerant_UnclosedBracketConsumesFollowing(t *testing.T) {
+	t.Parallel()
 	// An unclosed bracket at EOF consumes subsequent expressions because the
 	// parser greedily reads children. This is expected behavior — only the
 	// expressions before the unclosed bracket are recovered.
@@ -497,6 +520,7 @@ func TestFaultTolerant_UnclosedBracketConsumesFollowing(t *testing.T) {
 }
 
 func TestFaultTolerant_ScanError(t *testing.T) {
+	t.Parallel()
 	// A scan error (invalid float) doesn't consume following expressions.
 	source := "(a 1)\n134.\n(b 2)"
 	p := New(token.NewScanner("test", strings.NewReader(source)))
@@ -505,6 +529,18 @@ func TestFaultTolerant_ScanError(t *testing.T) {
 	assert.Len(t, result.Exprs, 2, "should recover (a 1) and (b 2)")
 	assert.Equal(t, "(a 1)", result.Exprs[0].String())
 	assert.Equal(t, "(b 2)", result.Exprs[1].String())
+}
+
+func TestFaultTolerant_BareTokenRecovery(t *testing.T) {
+	t.Parallel()
+	// After a bracket error, recovery finds a bare symbol at top level.
+	source := "(err] my-symbol (ok 1)"
+	p := New(token.NewScanner("test", strings.NewReader(source)))
+	result := p.ParseProgramFaultTolerant()
+	assert.Len(t, result.Errors, 1)
+	assert.Len(t, result.Exprs, 2, "should recover my-symbol and (ok 1)")
+	assert.Equal(t, "my-symbol", result.Exprs[0].String())
+	assert.Equal(t, "(ok 1)", result.Exprs[1].String())
 }
 
 func TestParseDepthLimit(t *testing.T) {
