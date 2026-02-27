@@ -10,3 +10,6 @@ var LangGuide string
 
 //go:embed debugging-guide.md
 var DebuggingGuide string
+
+//go:embed lsp-guide.md
+var LSPGuide string

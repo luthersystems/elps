@@ -32,6 +32,7 @@ func DocCommand(opts ...Option) *cobra.Command {
 		missing      bool
 		guide        bool
 		debugGuide   bool
+		lspGuide     bool
 	)
 
 	// makeEnv returns an LEnv suitable for documentation queries. When
@@ -91,6 +92,9 @@ Use --guide to print the full ELPS language reference:
 Use --debug-guide to print the debugging guide:
   elps doc --debug-guide
 
+Use --lsp-guide to print the Language Server Protocol guide:
+  elps doc --lsp-guide
+
 Common packages to explore:
   lisp      Core language (140+ builtins: map, filter, reduce, car, cdr, ...)
   math      Trigonometry, logarithms, constants (pi, inf)
@@ -103,6 +107,10 @@ Common packages to explore:
 			}
 			if debugGuide {
 				fmt.Print(docs.DebuggingGuide)
+				return
+			}
+			if lspGuide {
+				fmt.Print(docs.LSPGuide)
 				return
 			}
 			if missing {
@@ -147,6 +155,8 @@ Common packages to explore:
 		"Print the full ELPS language reference guide.")
 	cmd.Flags().BoolVar(&debugGuide, "debug-guide", false,
 		"Print the debugging guide.")
+	cmd.Flags().BoolVar(&lspGuide, "lsp-guide", false,
+		"Print the Language Server Protocol guide.")
 
 	return cmd
 }

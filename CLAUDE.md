@@ -22,6 +22,9 @@ ELPS is an embedded Lisp interpreter implemented in Go. It is a Lisp-1 dialect d
 | `./elps doc -m` | Check for missing docstrings (used in CI) |
 | `./elps doc --guide` | Print the full language reference |
 | `./elps doc --debug-guide` | Print the debugging guide |
+| `./elps doc --lsp-guide` | Print the Language Server Protocol guide |
+| `./elps lsp --stdio` | Start the LSP server (stdio transport) |
+| `./elps lsp --port 7998` | Start the LSP server (TCP transport) |
 | `./elps lint file.lisp` | Run static analysis on a lisp file |
 | `./elps fmt file.lisp` | Format a lisp file |
 
@@ -32,10 +35,11 @@ ELPS is an embedded Lisp interpreter implemented in Go. It is a Lisp-1 dialect d
 - **`lisp/`** — The interpreter core. Contains `LVal` (lisp values), `LEnv` (environment/evaluator), builtins, special operators, macros, package system, call stack, error handling, and Go interop.
 - **`parser/`** — Lexer (`lexer/`), tokens (`token/`), and two parser implementations: `rdparser/` (recursive descent, primary) and `regexparser/` (regex-based, alternative).
 - **`lisp/lisplib/`** — Standard library packages loaded by `LoadLibrary()`: time, help, golang, math, string, base64, json, regexp, testing, schema.
-- **`cmd/`** — Cobra CLI commands: `run`, `repl`, `doc`, `lint`, `fmt`.
+- **`cmd/`** — Cobra CLI commands: `run`, `repl`, `doc`, `lint`, `fmt`, `lsp`.
 - **`repl/`** — Interactive REPL using readline.
 - **`elpstest/`** — Test framework (`Runner`) for executing lisp-based test files as Go subtests.
 - **`elpsutil/`** — Helpers for building embedded packages in Go (`Function()`, `PackageLoader()`, etc.).
+- **`lsp/`** — Language Server Protocol server built on `tliron/glsp`. Provides diagnostics, hover, go-to-definition, references, completion, document symbols, and rename. Embeddable via `lsp.WithEnv()` / `lsp.WithRegistry()` options.
 - **`lisp/x/profiler/`** — Experimental profiling (callgrind, OpenCensus, OpenTelemetry).
 
 ### Key Types (lisp/)
