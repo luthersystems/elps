@@ -81,10 +81,11 @@ func TestCallHierarchyIncoming(t *testing.T) {
 	})
 	require.NoError(t, err)
 	// "caller" calls "helper", so we should get 1 incoming call.
-	if assert.NotEmpty(t, result) {
-		assert.Equal(t, "caller", result[0].From.Name)
-		assert.NotEmpty(t, result[0].FromRanges)
-	}
+	require.NotEmpty(t, result)
+	assert.Equal(t, "caller", result[0].From.Name)
+	require.NotEmpty(t, result[0].FromRanges)
+	// FromRanges should point to line 1 where "helper" is called inside "caller".
+	assert.Equal(t, protocol.UInteger(1), result[0].FromRanges[0].Start.Line)
 }
 
 func TestCallHierarchyOutgoing(t *testing.T) {
@@ -111,10 +112,11 @@ func TestCallHierarchyOutgoing(t *testing.T) {
 	})
 	require.NoError(t, err)
 	// "caller" calls "helper", so we should get 1 outgoing call.
-	if assert.NotEmpty(t, result) {
-		assert.Equal(t, "helper", result[0].To.Name)
-		assert.NotEmpty(t, result[0].FromRanges)
-	}
+	require.NotEmpty(t, result)
+	assert.Equal(t, "helper", result[0].To.Name)
+	require.NotEmpty(t, result[0].FromRanges)
+	// FromRanges should point to line 1 where "helper" is called.
+	assert.Equal(t, protocol.UInteger(1), result[0].FromRanges[0].Start.Line)
 }
 
 func TestDecodeCallHierarchyData(t *testing.T) {
