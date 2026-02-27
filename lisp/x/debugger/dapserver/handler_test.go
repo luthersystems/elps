@@ -5807,3 +5807,447 @@ func TestDAPServer_HelpCommand_CompletionsIncludeDescriptions(t *testing.T) {
 	}
 	s.disconnect()
 }
+
+func TestDAPServer_SetVariableNotPaused(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+	s.configDone()
+
+	// SetVariable without being paused — should fail gracefully.
+	s.send(&dap.SetVariableRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setVariable",
+		},
+		Arguments: dap.SetVariableArguments{
+			VariablesReference: scopeLocalBase + 1,
+			Name:               "x",
+			Value:              "42",
+		},
+	})
+	msg := s.read()
+	errResp, ok := msg.(*dap.ErrorResponse)
+	require.True(t, ok, "expected ErrorResponse, got %T", msg)
+	assert.False(t, errResp.Success)
+	assert.Equal(t, "not paused", errResp.Message)
+
+	s.disconnect()
+}
+
+func TestDAPServer_SetVariableLocal(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Set breakpoint inside function body (line 2).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		// defun add with locals a and b; breakpoint on line 2 (the body).
+		res := env.LoadString("test", "(defun add (a b)\n  (+ a b))\n(add 10 20)")
+		resultCh <- res
+	}()
+
+	// Stop on entry, then continue to breakpoint.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	s.read() // StoppedEvent (breakpoint)
+
+	// Get stack trace to cache frame environments.
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrameID := stResp.Body.StackFrames[0].Id
+
+	// Get the local scope ref.
+	localRef := s.localScopeRef(topFrameID)
+
+	// Verify initial value of 'a' is 10.
+	vars := s.variables(localRef)
+	found := false
+	for _, v := range vars {
+		if v.Name == "a" {
+			assert.Equal(t, "10", v.Value)
+			found = true
+		}
+	}
+	require.True(t, found, "variable 'a' not found in locals")
+
+	// Set variable 'a' to 99.
+	s.send(&dap.SetVariableRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setVariable",
+		},
+		Arguments: dap.SetVariableArguments{
+			VariablesReference: localRef,
+			Name:               "a",
+			Value:              "99",
+		},
+	})
+	msg := s.read()
+	setResp, ok := msg.(*dap.SetVariableResponse)
+	require.True(t, ok, "expected SetVariableResponse, got %T", msg)
+	assert.True(t, setResp.Success)
+	assert.Equal(t, "99", setResp.Body.Value)
+	assert.Equal(t, "int", setResp.Body.Type)
+
+	// Verify the variable was actually updated by evaluating it.
+	s.send(&dap.EvaluateRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "evaluate",
+		},
+		Arguments: dap.EvaluateArguments{
+			Expression: "a",
+			FrameId:    topFrameID,
+			Context:    "watch",
+		},
+	})
+	msg = s.read()
+	evalResp, ok := msg.(*dap.EvaluateResponse)
+	require.True(t, ok, "expected EvaluateResponse, got %T", msg)
+	assert.True(t, evalResp.Success)
+	assert.Equal(t, "99", evalResp.Body.Result)
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_SetVariablePackage(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Set breakpoint on line 3 (inside the function body that reads counter).
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 3}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		// Define a package-level variable, then a function that reads it.
+		res := env.LoadString("test", "(set 'counter 0)\n(defun read-counter ()\n  counter)\n(read-counter)")
+		resultCh <- res
+	}()
+
+	// Stop on entry, then continue to breakpoint.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	s.read() // StoppedEvent (breakpoint)
+
+	// Get stack trace.
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrameID := stResp.Body.StackFrames[0].Id
+
+	// Get the package scope ref.
+	pkgRef := scopePackageBase + topFrameID
+
+	// Set counter to 42 via package scope.
+	s.send(&dap.SetVariableRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setVariable",
+		},
+		Arguments: dap.SetVariableArguments{
+			VariablesReference: pkgRef,
+			Name:               "counter",
+			Value:              "42",
+		},
+	})
+	msg := s.read()
+	setResp, ok := msg.(*dap.SetVariableResponse)
+	require.True(t, ok, "expected SetVariableResponse, got %T", msg)
+	assert.True(t, setResp.Success)
+	assert.Equal(t, "42", setResp.Body.Value)
+
+	// Verify via evaluate.
+	s.send(&dap.EvaluateRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "evaluate",
+		},
+		Arguments: dap.EvaluateArguments{
+			Expression: "counter",
+			FrameId:    topFrameID,
+		},
+	})
+	msg = s.read()
+	evalResp, ok := msg.(*dap.EvaluateResponse)
+	require.True(t, ok, "expected EvaluateResponse, got %T", msg)
+	assert.True(t, evalResp.Success)
+	assert.Equal(t, "42", evalResp.Body.Result)
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_SetVariableExpression(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Set breakpoint on line 2.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 5)")
+		resultCh <- res
+	}()
+
+	// Stop on entry, then continue to breakpoint.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	s.read() // StoppedEvent (breakpoint)
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrameID := stResp.Body.StackFrames[0].Id
+	localRef := s.localScopeRef(topFrameID)
+
+	// Set 'x' using an expression (not just a literal).
+	s.send(&dap.SetVariableRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setVariable",
+		},
+		Arguments: dap.SetVariableArguments{
+			VariablesReference: localRef,
+			Name:               "x",
+			Value:              "(+ 10 20)",
+		},
+	})
+	msg := s.read()
+	setResp, ok := msg.(*dap.SetVariableResponse)
+	require.True(t, ok, "expected SetVariableResponse, got %T", msg)
+	assert.True(t, setResp.Success)
+	assert.Equal(t, "30", setResp.Body.Value)
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_SetVariableInvalidExpression(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Set breakpoint on line 2.
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 5)")
+		resultCh <- res
+	}()
+
+	// Stop on entry, then continue to breakpoint.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	s.read() // StoppedEvent (breakpoint)
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrameID := stResp.Body.StackFrames[0].Id
+	localRef := s.localScopeRef(topFrameID)
+
+	// Try to set 'x' with an invalid expression (unclosed paren).
+	s.send(&dap.SetVariableRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setVariable",
+		},
+		Arguments: dap.SetVariableArguments{
+			VariablesReference: localRef,
+			Name:               "x",
+			Value:              "(+ 1",
+		},
+	})
+	msg := s.read()
+	errResp, ok := msg.(*dap.ErrorResponse)
+	require.True(t, ok, "expected ErrorResponse, got %T", msg)
+	assert.False(t, errResp.Success)
+	assert.Contains(t, errResp.Message, "failed to evaluate value")
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_SetVariableUnsupportedScope(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(+ 1 2)")
+		resultCh <- res
+	}()
+
+	// Stop on entry.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+
+	// Try to set variable in a custom/macro scope (unsupported).
+	s.send(&dap.SetVariableRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setVariable",
+		},
+		Arguments: dap.SetVariableArguments{
+			VariablesReference: scopeMacroBase + 1,
+			Name:               "x",
+			Value:              "42",
+		},
+	})
+	msg := s.read()
+	errResp, ok := msg.(*dap.ErrorResponse)
+	require.True(t, ok, "expected ErrorResponse, got %T", msg)
+	assert.False(t, errResp.Success)
+	assert.Equal(t, "setVariable not supported for this scope", errResp.Message)
+
+	// Continue to finish.
+	s.continueExec()
+
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_SetVariableCapability(t *testing.T) {
+	t.Parallel()
+	e := debugger.New()
+	e.Enable()
+	srv := New(e)
+
+	client, server := net.Pipe()
+	defer client.Close() //nolint:errcheck
+
+	go func() {
+		_ = srv.ServeConn(server)
+	}()
+
+	reader := bufio.NewReader(client)
+
+	// Send Initialize request.
+	sendDAPRequest(t, client, &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+			Command:         "initialize",
+		},
+		Arguments: dap.InitializeRequestArguments{
+			AdapterID: "elps",
+		},
+	})
+
+	msg := readDAPMessage(t, reader)
+	initResp, ok := msg.(*dap.InitializeResponse)
+	require.True(t, ok, "expected InitializeResponse, got %T", msg)
+	assert.True(t, initResp.Body.SupportsSetVariable, "SupportsSetVariable should be true")
+}
