@@ -97,11 +97,14 @@ func New(opts ...Option) *Server {
 		TextDocumentDocumentSymbol: s.textDocumentDocumentSymbol,
 		TextDocumentRename:         s.textDocumentRename,
 		TextDocumentPrepareRename:  s.textDocumentPrepareRename,
-		TextDocumentFormatting:          s.textDocumentFormatting,
-		TextDocumentSignatureHelp:       s.textDocumentSignatureHelp,
-		TextDocumentCodeAction:          s.textDocumentCodeAction,
-		TextDocumentFoldingRange:        s.textDocumentFoldingRange,
-		TextDocumentSemanticTokensFull:  s.textDocumentSemanticTokensFull,
+		TextDocumentFormatting:           s.textDocumentFormatting,
+		TextDocumentSignatureHelp:        s.textDocumentSignatureHelp,
+		TextDocumentCodeAction:           s.textDocumentCodeAction,
+		TextDocumentFoldingRange:         s.textDocumentFoldingRange,
+		TextDocumentSemanticTokensFull:   s.textDocumentSemanticTokensFull,
+		TextDocumentPrepareCallHierarchy: s.textDocumentPrepareCallHierarchy,
+		CallHierarchyIncomingCalls:       s.callHierarchyIncomingCalls,
+		CallHierarchyOutgoingCalls:       s.callHierarchyOutgoingCalls,
 	}
 
 	s.glspSrv = glspserver.NewServer(&s.handler, serverName, false)
