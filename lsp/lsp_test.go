@@ -1762,3 +1762,267 @@ func TestWorkspaceIndexWithEmptyRootPath(t *testing.T) {
 	assert.Equal(t, analysis.SymFunction, joinSym.Kind, "join should be a function")
 	assert.NotEmpty(t, joinSym.DocString, "join should have a docstring from registry")
 }
+
+// --- Issue #179: initialized notification not required ---
+
+// TestEnsureWorkspaceIndexInvalidatesAnalysis verifies that building
+// the workspace index invalidates cached analysis for already-open
+// documents, so they get re-analyzed with the workspace config on next
+// access.
+func TestEnsureWorkspaceIndexInvalidatesAnalysis(t *testing.T) {
+	s := testServer()
+
+	// Open a document before the workspace index is built.
+	doc := openDoc(s, "file:///test.lisp", `(string:join "," '("a" "b"))`)
+
+	// Manually set a non-nil analysis to simulate a prior analysis pass
+	// that was done without the workspace config.
+	doc.mu.Lock()
+	doc.analysis = &analysis.Result{}
+	doc.mu.Unlock()
+
+	// Trigger workspace index build — this should invalidate the analysis.
+	s.ensureWorkspaceIndex()
+
+	doc.mu.Lock()
+	assert.Nil(t, doc.analysis,
+		"analysis should be invalidated after workspace index build (#179)")
+	doc.mu.Unlock()
+}
+
+// --- Issue #177: hover on qualified symbols at all positions ---
+
+// TestHoverOnQualifiedSymbolAllPositions tests hover at every column
+// position on a line containing a qualified symbol call, verifying that
+// hover returns content at all positions within the symbol name.
+func TestHoverOnQualifiedSymbolAllPositions(t *testing.T) {
+	s := testServerWithWorkspaceIndex(t)
+	content := `(string:join "," '())`
+	doc := openDoc(s, "file:///test.lisp", content)
+	s.ensureAnalysis(doc)
+
+	// "string:join" starts at col 1, ends at col 11 (0-based).
+	for col := protocol.UInteger(1); col <= 11; col++ {
+		col := col // capture for subtest
+		t.Run(fmt.Sprintf("col=%d", col), func(t *testing.T) {
+			hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+					Position:     protocol.Position{Line: 0, Character: col},
+				},
+			})
+			require.NoError(t, err)
+			assertHoverContains(t, hover, "join", "function")
+		})
+	}
+
+	// Columns outside the symbol should NOT return hover on "join".
+	// Note: col 12 is the space right after "join" — wordAtPosition
+	// correctly returns the adjacent word, so it still shows hover.
+	for _, col := range []protocol.UInteger{0, 13, 14} {
+		col := col // capture for subtest
+		t.Run(fmt.Sprintf("col=%d_outside", col), func(t *testing.T) {
+			hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+					Position:     protocol.Position{Line: 0, Character: col},
+				},
+			})
+			require.NoError(t, err)
+			if hover != nil {
+				mc, ok := hover.Contents.(protocol.MarkupContent)
+				if ok {
+					assert.NotContains(t, mc.Value, "join",
+						"hover at col %d should not return join hover", col)
+				}
+			}
+		})
+	}
+}
+
+// TestHoverOnShortQualifiedSymbol tests hover on short qualified names
+// like "math:abs" (mirrors the "cc:log" pattern from the bug report).
+func TestHoverOnShortQualifiedSymbol(t *testing.T) {
+	s := testServerWithWorkspaceIndex(t)
+	content := `(math:abs -5)`
+	doc := openDoc(s, "file:///test.lisp", content)
+	s.ensureAnalysis(doc)
+
+	// "math:abs" spans cols 1-8 (0-based).
+	for col := protocol.UInteger(1); col <= 8; col++ {
+		col := col // capture for subtest
+		t.Run(fmt.Sprintf("col=%d", col), func(t *testing.T) {
+			hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+					Position:     protocol.Position{Line: 0, Character: col},
+				},
+			})
+			require.NoError(t, err)
+			assertHoverContains(t, hover, "abs")
+		})
+	}
+}
+
+// TestHoverOnMultipleStdlibPackages tests hover across multiple stdlib
+// packages to ensure broad coverage.
+func TestHoverOnMultipleStdlibPackages(t *testing.T) {
+	s := testServerWithWorkspaceIndex(t)
+
+	tests := []struct {
+		content  string
+		col      protocol.UInteger
+		expected string
+	}{
+		{`(math:abs -5)`, 1, "abs"},
+		{`(regexp:regexp-compile "a+")`, 1, "regexp-compile"},
+		{`(json:dump-string '())`, 1, "dump-string"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.expected, func(t *testing.T) {
+			uri := "file:///test-" + tc.expected + ".lisp"
+			doc := openDoc(s, uri, tc.content)
+			s.ensureAnalysis(doc)
+
+			hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{URI: uri},
+					Position:     protocol.Position{Line: 0, Character: tc.col},
+				},
+			})
+			require.NoError(t, err)
+			assertHoverContains(t, hover, tc.expected)
+		})
+	}
+}
+
+// --- Issue #178: signature help for incomplete calls and qualified symbols ---
+
+// TestSignatureHelpIncompleteCall verifies that signature help works when
+// the user is typing an incomplete call (unclosed paren).
+func TestSignatureHelpIncompleteCall(t *testing.T) {
+	s := testServer()
+	content := "(defun greet (name)\n  \"Greet someone.\"\n  name)\n\n(greet "
+	openDoc(s, "file:///test.lisp", content)
+
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 4, Character: 7}, // after "(greet "
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "signature help should work for incomplete calls (#178)")
+	require.Len(t, result.Signatures, 1)
+	assert.Contains(t, result.Signatures[0].Label, "greet")
+	assert.Contains(t, result.Signatures[0].Label, "name")
+}
+
+// TestSignatureHelpIncompleteSecondArg verifies active parameter tracking
+// for incomplete calls with multiple arguments.
+func TestSignatureHelpIncompleteSecondArg(t *testing.T) {
+	s := testServer()
+	content := "(defun add (x y)\n  \"Add two numbers.\"\n  (+ x y))\n\n(add 1 "
+	openDoc(s, "file:///test.lisp", content)
+
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 4, Character: 7}, // after "(add 1 "
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "signature help should work for incomplete second arg (#178)")
+	require.Len(t, result.Signatures, 1)
+	assert.Contains(t, result.Signatures[0].Label, "add")
+	require.NotNil(t, result.ActiveParameter)
+	assert.Equal(t, uint32(1), *result.ActiveParameter, "active param should be 1 (second arg)")
+}
+
+// TestSignatureHelpQualifiedSymbol verifies that signature help works for
+// package-qualified symbols like "string:join".
+func TestSignatureHelpQualifiedSymbol(t *testing.T) {
+	s := testServerWithWorkspaceIndex(t)
+	content := `(string:join "," '("a" "b"))`
+	doc := openDoc(s, "file:///test.lisp", content)
+	s.ensureAnalysis(doc)
+
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 13}, // after "(string:join "
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "signature help should work for qualified symbols (#178)")
+	require.Len(t, result.Signatures, 1)
+	assert.Contains(t, result.Signatures[0].Label, "join")
+}
+
+// TestEnclosingCallText tests the text-based parenthesis scanning fallback.
+func TestEnclosingCallText(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		line     int
+		col      int
+		wantName string
+		wantArg  int
+	}{
+		{
+			name:     "simple incomplete",
+			content:  "(greet ",
+			line:     0,
+			col:      7,
+			wantName: "greet",
+			wantArg:  0,
+		},
+		{
+			name:     "second arg",
+			content:  "(add 1 ",
+			line:     0,
+			col:      7,
+			wantName: "add",
+			wantArg:  1,
+		},
+		{
+			name:     "multiline incomplete",
+			content:  "(defun greet (name) name)\n(greet ",
+			line:     1,
+			col:      7,
+			wantName: "greet",
+			wantArg:  0,
+		},
+		{
+			name:     "nested call",
+			content:  "(outer (inner ",
+			line:     0,
+			col:      14,
+			wantName: "inner",
+			wantArg:  0,
+		},
+		{
+			name:     "no enclosing call",
+			content:  "hello",
+			line:     0,
+			col:      3,
+			wantName: "",
+			wantArg:  0,
+		},
+		{
+			name:     "string argument",
+			content:  `(greet "world" `,
+			line:     0,
+			col:      15,
+			wantName: "greet",
+			wantArg:  1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			name, argIdx := enclosingCallText(tc.content, tc.line, tc.col)
+			assert.Equal(t, tc.wantName, name, "function name")
+			assert.Equal(t, tc.wantArg, argIdx, "argument index")
+		})
+	}
+}
