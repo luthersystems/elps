@@ -154,12 +154,19 @@ func convertLintDiagnostic(d lint.Diagnostic) protocol.Diagnostic {
 	if col > 0 {
 		col--
 	}
+	start := protocol.Position{Line: safeUint(line), Character: safeUint(col)}
+	end := start // Default: zero-width range.
+	if d.EndPos.Line > 0 {
+		endLine := d.EndPos.Line - 1
+		endCol := d.EndPos.Col
+		if endCol > 0 {
+			endCol--
+		}
+		end = protocol.Position{Line: safeUint(endLine), Character: safeUint(endCol)}
+	}
 	sev := mapLintSeverity(d.Severity)
 	return protocol.Diagnostic{
-		Range: protocol.Range{
-			Start: protocol.Position{Line: safeUint(line), Character: safeUint(col)},
-			End:   protocol.Position{Line: safeUint(line), Character: safeUint(col)},
-		},
+		Range:    protocol.Range{Start: start, End: end},
 		Severity: &sev,
 		Source:   strPtr("elps-lint"),
 		Code:     &protocol.IntegerOrString{Value: d.Analyzer},

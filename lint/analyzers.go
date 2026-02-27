@@ -93,17 +93,19 @@ var AnalyzerIfArity = &Analyzer{
 			if argc == 3 {
 				return
 			}
-			src := SourceOf(sexpr)
+			head := sexpr.Cells[0]
 			if argc < 3 {
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("if requires 3 arguments (condition, then, else), got too few (%d)", argc),
-					Pos:     posFromSource(src.Source),
+					Pos:     posFromSource(head.Source),
+					EndPos:  endPosFromNode(head),
 					Notes:   []string{"use cond for multi-branch conditionals, or provide an else branch"},
 				})
 			} else {
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("if requires 3 arguments (condition, then, else), got too many (%d)", argc),
-					Pos:     posFromSource(src.Source),
+					Pos:     posFromSource(head.Source),
+					EndPos:  endPosFromNode(head),
 					Notes:   []string{"if takes exactly (condition then-expr else-expr); use progn to group multiple expressions"},
 				})
 			}
@@ -123,9 +125,13 @@ var AnalyzerLetBindings = &Analyzer{
 			if head != "let" && head != "let*" {
 				return
 			}
+			headNode := sexpr.Cells[0]
 			if ArgCount(sexpr) < 1 {
-				src := SourceOf(sexpr)
-				pass.Reportf(src.Source, "%s requires a binding list and body", head)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("%s requires a binding list and body", head),
+					Pos:     posFromSource(headNode.Source),
+					EndPos:  endPosFromNode(headNode),
+				})
 				return
 			}
 			bindings := sexpr.Cells[1]
@@ -249,6 +255,23 @@ func posFromSource(src *token.Location) Position {
 	return Position{File: src.File, Line: src.Line, Col: src.Col}
 }
 
+// endPosFromNode extracts an end position from a node. Uses EndLine/EndCol
+// from the source location if available, otherwise estimates from the symbol
+// name length. Returns zero Position when no end can be determined.
+func endPosFromNode(node *lisp.LVal) Position {
+	if node == nil || node.Source == nil {
+		return Position{}
+	}
+	src := node.Source
+	if src.EndLine > 0 && src.EndCol > 0 {
+		return Position{File: src.File, Line: src.EndLine, Col: src.EndCol}
+	}
+	if node.Type == lisp.LSymbol && len(node.Str) > 0 && src.Col > 0 {
+		return Position{File: src.File, Line: src.Line, Col: src.Col + len(node.Str)}
+	}
+	return Position{}
+}
+
 func bindingSource(binding *lisp.LVal, fallback *lisp.LVal) *token.Location {
 	if binding.Source != nil && binding.Source.Line > 0 {
 		return binding.Source
@@ -267,19 +290,31 @@ var AnalyzerDefunStructure = &Analyzer{
 			if head != "defun" && head != "defmacro" {
 				return
 			}
-			src := SourceOf(sexpr)
+			headNode := sexpr.Cells[0]
 			argc := ArgCount(sexpr)
 			if argc < 2 {
-				pass.Reportf(src.Source, "%s requires at least a name and formals list (got %d argument(s))", head, argc)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("%s requires at least a name and formals list (got %d argument(s))", head, argc),
+					Pos:     posFromSource(headNode.Source),
+					EndPos:  endPosFromNode(headNode),
+				})
 				return
 			}
 			name := sexpr.Cells[1]
 			if name.Type != lisp.LSymbol {
-				pass.Reportf(src.Source, "%s name must be a symbol, got %s", head, name.Type)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("%s name must be a symbol, got %s", head, name.Type),
+					Pos:     posFromSource(headNode.Source),
+					EndPos:  endPosFromNode(headNode),
+				})
 			}
 			formals := sexpr.Cells[2]
 			if formals.Type != lisp.LSExpr {
-				pass.Reportf(src.Source, "%s formals must be a list, got %s", head, formals.Type)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("%s formals must be a list, got %s", head, formals.Type),
+					Pos:     posFromSource(headNode.Source),
+					EndPos:  endPosFromNode(headNode),
+				})
 			}
 		})
 		return nil
@@ -360,19 +395,20 @@ var AnalyzerBuiltinArity = &Analyzer{
 			}
 			argc := ArgCount(sexpr)
 			helpNote := fmt.Sprintf("see (help '%s) or `elps doc %s` for usage", head, head)
+			headNode := sexpr.Cells[0]
 			if argc < spec.min {
-				src := SourceOf(sexpr)
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, spec.min, argc),
-					Pos:     posFromSource(src.Source),
+					Pos:     posFromSource(headNode.Source),
+					EndPos:  endPosFromNode(headNode),
 					Notes:   []string{helpNote},
 				})
 			}
 			if spec.max >= 0 && argc > spec.max {
-				src := SourceOf(sexpr)
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, spec.max, argc),
-					Pos:     posFromSource(src.Source),
+					Pos:     posFromSource(headNode.Source),
+					EndPos:  endPosFromNode(headNode),
 					Notes:   []string{helpNote},
 				})
 			}

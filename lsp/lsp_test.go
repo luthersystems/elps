@@ -989,3 +989,29 @@ func TestConvertLintDiagnostic(t *testing.T) {
 	assert.Equal(t, protocol.UInteger(2), d.Range.Start.Line)
 	assert.Equal(t, protocol.UInteger(4), d.Range.Start.Character)
 }
+
+func TestConvertLintDiagnosticWithEndPos(t *testing.T) {
+	from := lint.Diagnostic{
+		Pos:      lint.Position{File: "test.lisp", Line: 3, Col: 5},
+		EndPos:   lint.Position{File: "test.lisp", Line: 3, Col: 10},
+		Message:  "test message",
+		Analyzer: "test-check",
+		Severity: lint.SeverityWarning,
+	}
+	d := convertLintDiagnostic(from)
+	assert.Equal(t, protocol.UInteger(2), d.Range.Start.Line)
+	assert.Equal(t, protocol.UInteger(4), d.Range.Start.Character)
+	assert.Equal(t, protocol.UInteger(2), d.Range.End.Line)
+	assert.Equal(t, protocol.UInteger(9), d.Range.End.Character)
+}
+
+func TestConvertLintDiagnosticZeroEndPos(t *testing.T) {
+	// When EndPos is zero, End should equal Start (zero-width).
+	from := lint.Diagnostic{
+		Pos:      lint.Position{File: "test.lisp", Line: 3, Col: 5},
+		Message:  "test message",
+		Analyzer: "test-check",
+	}
+	d := convertLintDiagnostic(from)
+	assert.Equal(t, d.Range.Start, d.Range.End, "zero EndPos should produce zero-width range")
+}

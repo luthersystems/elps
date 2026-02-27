@@ -182,6 +182,25 @@ func (p *Pass) ReportWithNotes(d Diagnostic, notes ...string) {
 	p.diagnostics = append(p.diagnostics, d)
 }
 
+// ReportNode records a diagnostic spanning a node's source range. It
+// extracts both start and end positions from the node. If the node
+// lacks end position information, it falls back to using the symbol
+// name length as a heuristic.
+func (p *Pass) ReportNode(node *lisp.LVal, format string, args ...interface{}) {
+	d := Diagnostic{
+		Message: fmt.Sprintf(format, args...),
+	}
+	if node != nil && node.Source != nil {
+		d.Pos = Position{File: node.Source.File, Line: node.Source.Line, Col: node.Source.Col}
+		if node.Source.EndLine > 0 && node.Source.EndCol > 0 {
+			d.EndPos = Position{File: node.Source.File, Line: node.Source.EndLine, Col: node.Source.EndCol}
+		} else if node.Type == lisp.LSymbol && len(node.Str) > 0 && node.Source.Col > 0 {
+			d.EndPos = Position{File: node.Source.File, Line: node.Source.Line, Col: node.Source.Col + len(node.Str)}
+		}
+	}
+	p.Report(d)
+}
+
 // Reportf is a convenience for reporting a diagnostic at a position.
 func (p *Pass) Reportf(source *token.Location, format string, args ...interface{}) {
 	d := Diagnostic{
@@ -197,6 +216,11 @@ func (p *Pass) Reportf(source *token.Location, format string, args ...interface{
 type Diagnostic struct {
 	// Pos is the source location of the problem.
 	Pos Position `json:"pos"`
+
+	// EndPos is the end of the diagnostic range. When zero, editors
+	// treat the diagnostic as zero-width (a single point). When set,
+	// the range [Pos, EndPos) is highlighted.
+	EndPos Position `json:"end_pos,omitempty"`
 
 	// Message is a human-readable description of the problem.
 	Message string `json:"message"`
