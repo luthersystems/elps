@@ -1970,6 +1970,75 @@ func TestEngine_Commands(t *testing.T) {
 		assert.Equal(t, []string{"alpha", "middle", "zebra"}, names)
 	})
 
+	t.Run("RegisterCommandWithDescription", func(t *testing.T) {
+		t.Parallel()
+		e := New()
+		e.RegisterCommand("reload", func(args string) (string, bool, error) {
+			return "reloaded", false, nil
+		}, "Reload all modules")
+
+		h := e.Command("reload")
+		require.NotNil(t, h)
+		resp, _, _ := h("")
+		assert.Equal(t, "reloaded", resp)
+
+		assert.Equal(t, "Reload all modules", e.CommandDescription("reload"))
+	})
+
+	t.Run("RegisterCommandWithoutDescription", func(t *testing.T) {
+		t.Parallel()
+		e := New()
+		e.RegisterCommand("ping", func(args string) (string, bool, error) {
+			return "pong", false, nil
+		})
+
+		assert.Equal(t, "", e.CommandDescription("ping"))
+	})
+
+	t.Run("CommandDescriptions", func(t *testing.T) {
+		t.Parallel()
+		e := New()
+		e.RegisterCommand("reload", func(args string) (string, bool, error) {
+			return "", false, nil
+		}, "Reload all modules")
+		e.RegisterCommand("reset", func(args string) (string, bool, error) {
+			return "", false, nil
+		}, "Reset state")
+
+		descs := e.CommandDescriptions()
+		assert.Equal(t, map[string]string{
+			"reload": "Reload all modules",
+			"reset":  "Reset state",
+		}, descs)
+	})
+
+	t.Run("WithCommandsEmptyDescriptions", func(t *testing.T) {
+		t.Parallel()
+		e := New(WithCommands(map[string]CommandHandler{
+			"ping": func(args string) (string, bool, error) {
+				return "pong", false, nil
+			},
+		}))
+
+		// WithCommands commands have empty descriptions.
+		assert.Equal(t, "", e.CommandDescription("ping"))
+
+		descs := e.CommandDescriptions()
+		assert.Equal(t, map[string]string{"ping": ""}, descs)
+	})
+
+	t.Run("CommandDescriptionUnknown", func(t *testing.T) {
+		t.Parallel()
+		e := New()
+		assert.Equal(t, "", e.CommandDescription("nonexistent"))
+	})
+
+	t.Run("CommandDescriptionsEmpty", func(t *testing.T) {
+		t.Parallel()
+		e := New()
+		assert.Nil(t, e.CommandDescriptions())
+	})
+
 	t.Run("empty", func(t *testing.T) {
 		t.Parallel()
 		e := New()
