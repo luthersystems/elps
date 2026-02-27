@@ -51,8 +51,8 @@ func collectFoldingRanges(v *lisp.LVal, ranges *[]protocol.FoldingRange) {
 		if endLine > startLine {
 			kind := string(protocol.FoldingRangeKindRegion)
 			*ranges = append(*ranges, protocol.FoldingRange{
-				StartLine: protocol.UInteger(startLine),
-				EndLine:   protocol.UInteger(endLine),
+				StartLine: safeUint(startLine),
+				EndLine:   safeUint(endLine),
 				Kind:      &kind,
 			})
 		}
@@ -82,8 +82,8 @@ func commentFoldingRanges(content string) []protocol.FoldingRange {
 			if blockStart >= 0 && i-1 > blockStart {
 				kind := string(protocol.FoldingRangeKindComment)
 				ranges = append(ranges, protocol.FoldingRange{
-					StartLine: protocol.UInteger(blockStart),
-					EndLine:   protocol.UInteger(i - 1),
+					StartLine: safeUint(blockStart),
+					EndLine:   safeUint(i - 1),
 					Kind:      &kind,
 				})
 			}
@@ -94,8 +94,8 @@ func commentFoldingRanges(content string) []protocol.FoldingRange {
 	if blockStart >= 0 && len(lines)-1 > blockStart {
 		kind := string(protocol.FoldingRangeKindComment)
 		ranges = append(ranges, protocol.FoldingRange{
-			StartLine: protocol.UInteger(blockStart),
-			EndLine:   protocol.UInteger(len(lines) - 1),
+			StartLine: safeUint(blockStart),
+			EndLine:   safeUint(len(lines) - 1),
 			Kind:      &kind,
 		})
 	}
