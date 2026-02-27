@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -5605,7 +5606,7 @@ func TestDAPServer_CompletionsCapability_SlashTrigger(t *testing.T) {
 		"CompletionTriggerCharacters should include '/'")
 }
 
-func TestDAPServer_HelpCommand(t *testing.T) {
+func TestDAPServer_HelpCommand_ListsBuiltinAndCustomCommands(t *testing.T) {
 	t.Parallel()
 	s := setupDAPSession(t, debugger.WithCommands(map[string]debugger.CommandHandler{
 		"reload": func(args string) (string, bool, error) { return "", false, nil },
@@ -5637,12 +5638,21 @@ func TestDAPServer_HelpCommand(t *testing.T) {
 	// /help should list built-in commands (filter, help) plus registered (reload).
 	evalResp := s.evaluate("/help", topFrame)
 	assert.True(t, evalResp.Success)
-	assert.Contains(t, evalResp.Body.Result, "Available commands:")
-	assert.Contains(t, evalResp.Body.Result, "/filter")
-	assert.Contains(t, evalResp.Body.Result, "/help")
-	assert.Contains(t, evalResp.Body.Result, "/reload")
-	assert.Contains(t, evalResp.Body.Result, "Filter map keys by regex")
-	assert.Contains(t, evalResp.Body.Result, "Show available commands")
+
+	// Verify per-line structure: each command on its own line with correct description.
+	lines := strings.Split(evalResp.Body.Result, "\n")
+	require.Len(t, lines, 4, "expected header + 3 command lines")
+	assert.Equal(t, "Available commands:", lines[0])
+	assert.Contains(t, lines[1], "/filter")
+	assert.Contains(t, lines[1], "Filter map keys by regex")
+	assert.Contains(t, lines[2], "/help")
+	assert.Contains(t, lines[2], "Show available commands")
+	assert.Contains(t, lines[3], "/reload")
+
+	// Whitespace-trimmed input should also work.
+	evalResp2 := s.evaluate("  /help  ", topFrame)
+	assert.True(t, evalResp2.Success)
+	assert.Equal(t, evalResp.Body.Result, evalResp2.Body.Result)
 
 	s.continueExec()
 	select {
@@ -5653,38 +5663,15 @@ func TestDAPServer_HelpCommand(t *testing.T) {
 	s.disconnect()
 }
 
-func TestDAPServer_HelpCommand_WithDescriptions(t *testing.T) {
+func TestDAPServer_HelpCommand_ShowsCustomDescriptions(t *testing.T) {
 	t.Parallel()
-	e := debugger.New(debugger.WithStopOnEntry(true))
-	e.Enable()
-	e.RegisterCommand("reload", func(args string) (string, bool, error) {
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+	s.engine.RegisterCommand("reload", func(args string) (string, bool, error) {
 		return "", false, nil
 	}, "Reload all modules")
-	e.RegisterCommand("status", func(args string) (string, bool, error) {
+	s.engine.RegisterCommand("status", func(args string) (string, bool, error) {
 		return "", false, nil
 	}, "Show system status")
-	srv := New(e)
-
-	client, server := net.Pipe()
-	t.Cleanup(func() { client.Close() }) //nolint:errcheck,gosec
-
-	go func() {
-		_ = srv.ServeConn(server)
-	}()
-
-	s := &dapTestSession{
-		t:      t,
-		engine: e,
-		client: client,
-		reader: bufio.NewReader(client),
-	}
-
-	s.send(&dap.InitializeRequest{
-		Request: dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "initialize"},
-		Arguments: dap.InitializeRequestArguments{AdapterID: "elps", LinesStartAt1: true},
-	})
-	s.read() // InitializeResponse
-	s.read() // InitializedEvent
 
 	s.send(&dap.SetBreakpointsRequest{
 		Request: dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "setBreakpoints"},
@@ -5696,18 +5683,18 @@ func TestDAPServer_HelpCommand_WithDescriptions(t *testing.T) {
 	s.read() // SetBreakpointsResponse
 	s.configDone()
 
-	env := newDAPTestEnv(t, e)
+	env := newDAPTestEnv(t, s.engine)
 	resultCh := make(chan *lisp.LVal, 1)
 	go func() {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
 	// Stop on entry, then continue to breakpoint.
-	require.Eventually(t, func() bool { return e.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent (entry)
 	s.continueExec()
 
-	require.Eventually(t, func() bool { return e.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent (breakpoint)
 
 	stResp := s.stackTrace()
@@ -5716,15 +5703,29 @@ func TestDAPServer_HelpCommand_WithDescriptions(t *testing.T) {
 
 	evalResp := s.evaluate("/help", topFrame)
 	assert.True(t, evalResp.Success)
-	// Custom commands should show their descriptions.
-	assert.Contains(t, evalResp.Body.Result, "Reload all modules")
-	assert.Contains(t, evalResp.Body.Result, "Show system status")
-	// All commands should be aligned — verify column alignment by checking
-	// that descriptions for built-ins and custom commands are present.
-	assert.Contains(t, evalResp.Body.Result, "/filter")
-	assert.Contains(t, evalResp.Body.Result, "/help")
-	assert.Contains(t, evalResp.Body.Result, "/reload")
-	assert.Contains(t, evalResp.Body.Result, "/status")
+
+	// Verify per-line: each command line has the correct description.
+	lines := strings.Split(evalResp.Body.Result, "\n")
+	require.Len(t, lines, 5, "expected header + 4 command lines (filter, help, reload, status)")
+	assert.Equal(t, "Available commands:", lines[0])
+
+	// Build line-to-description map for structural verification.
+	lineFor := make(map[string]string) // command name → full line
+	for _, line := range lines[1:] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Extract command name (first word starting with /)
+		parts := strings.Fields(trimmed)
+		if len(parts) > 0 {
+			lineFor[parts[0]] = line
+		}
+	}
+	assert.Contains(t, lineFor["/reload"], "Reload all modules")
+	assert.Contains(t, lineFor["/status"], "Show system status")
+	assert.Contains(t, lineFor["/filter"], "Filter map keys by regex")
+	assert.Contains(t, lineFor["/help"], "Show available commands")
 
 	s.continueExec()
 	select {
@@ -5735,35 +5736,12 @@ func TestDAPServer_HelpCommand_WithDescriptions(t *testing.T) {
 	s.disconnect()
 }
 
-func TestDAPServer_HelpCommand_Completions(t *testing.T) {
+func TestDAPServer_HelpCommand_CompletionsIncludeDescriptions(t *testing.T) {
 	t.Parallel()
-	e := debugger.New(debugger.WithStopOnEntry(true))
-	e.Enable()
-	e.RegisterCommand("reload", func(args string) (string, bool, error) {
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+	s.engine.RegisterCommand("reload", func(args string) (string, bool, error) {
 		return "", false, nil
 	}, "Reload all modules")
-	srv := New(e)
-
-	client, server := net.Pipe()
-	t.Cleanup(func() { client.Close() }) //nolint:errcheck,gosec
-
-	go func() {
-		_ = srv.ServeConn(server)
-	}()
-
-	s := &dapTestSession{
-		t:      t,
-		engine: e,
-		client: client,
-		reader: bufio.NewReader(client),
-	}
-
-	s.send(&dap.InitializeRequest{
-		Request: dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "initialize"},
-		Arguments: dap.InitializeRequestArguments{AdapterID: "elps", LinesStartAt1: true},
-	})
-	s.read() // InitializeResponse
-	s.read() // InitializedEvent
 
 	s.send(&dap.SetBreakpointsRequest{
 		Request: dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "setBreakpoints"},
@@ -5775,18 +5753,18 @@ func TestDAPServer_HelpCommand_Completions(t *testing.T) {
 	s.read() // SetBreakpointsResponse
 	s.configDone()
 
-	env := newDAPTestEnv(t, e)
+	env := newDAPTestEnv(t, s.engine)
 	resultCh := make(chan *lisp.LVal, 1)
 	go func() {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
 	// Stop on entry, then continue to breakpoint.
-	require.Eventually(t, func() bool { return e.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent (entry)
 	s.continueExec()
 
-	require.Eventually(t, func() bool { return e.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent (breakpoint)
 
 	stResp := s.stackTrace()
@@ -5816,6 +5794,10 @@ func TestDAPServer_HelpCommand_Completions(t *testing.T) {
 	assert.Contains(t, labels2, "/help")
 	assert.NotContains(t, labels2, "/filter")
 	assert.NotContains(t, labels2, "/reload")
+
+	// "/xyz" should return no matches.
+	compResp3 := s.completions("/xyz", 5, topFrame)
+	assert.Empty(t, compResp3.Body.Targets)
 
 	s.continueExec()
 	select {

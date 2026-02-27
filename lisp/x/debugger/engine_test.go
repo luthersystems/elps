@@ -1979,10 +1979,23 @@ func TestEngine_Commands(t *testing.T) {
 
 		h := e.Command("reload")
 		require.NotNil(t, h)
-		resp, _, _ := h("")
+		resp, refresh, err := h("")
+		require.NoError(t, err)
 		assert.Equal(t, "reloaded", resp)
+		assert.False(t, refresh)
 
 		assert.Equal(t, "Reload all modules", e.CommandDescription("reload"))
+	})
+
+	t.Run("RegisterCommandMultipleDescriptions", func(t *testing.T) {
+		// Variadic desc uses only the first element; extras are ignored.
+		t.Parallel()
+		e := New()
+		e.RegisterCommand("multi", func(args string) (string, bool, error) {
+			return "", false, nil
+		}, "first", "second")
+
+		assert.Equal(t, "first", e.CommandDescription("multi"))
 	})
 
 	t.Run("RegisterCommandWithoutDescription", func(t *testing.T) {
@@ -1992,6 +2005,7 @@ func TestEngine_Commands(t *testing.T) {
 			return "pong", false, nil
 		})
 
+		require.NotNil(t, e.Command("ping"), "handler should still be registered without description")
 		assert.Equal(t, "", e.CommandDescription("ping"))
 	})
 
@@ -2010,6 +2024,11 @@ func TestEngine_Commands(t *testing.T) {
 			"reload": "Reload all modules",
 			"reset":  "Reset state",
 		}, descs)
+
+		// Mutating the returned map must not corrupt engine state.
+		descs["reload"] = "MUTATED"
+		descs2 := e.CommandDescriptions()
+		assert.Equal(t, "Reload all modules", descs2["reload"])
 	})
 
 	t.Run("WithCommandsEmptyDescriptions", func(t *testing.T) {
