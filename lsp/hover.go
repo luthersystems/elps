@@ -57,6 +57,8 @@ func (s *Server) qualifiedSymbolHover(word string) string {
 		return ""
 	}
 
+	s.ensureWorkspaceIndex()
+
 	s.analysisCfgMu.RLock()
 	cfg := s.analysisCfg
 	s.analysisCfgMu.RUnlock()

@@ -50,6 +50,8 @@ func splitPackageQualified(prefix string) (pkg, partial string, ok bool) {
 
 // packageCompletions returns completion items from a package's exports.
 func (s *Server) packageCompletions(doc *Document, pkgName, partial string) []protocol.CompletionItem {
+	s.ensureWorkspaceIndex()
+
 	s.analysisCfgMu.RLock()
 	cfg := s.analysisCfg
 	s.analysisCfgMu.RUnlock()
