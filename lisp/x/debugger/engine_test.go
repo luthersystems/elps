@@ -1919,3 +1919,61 @@ func TestEngine_StepInTarget_SecondOccurrence(t *testing.T) {
 		t.Fatal("timeout waiting for eval result")
 	}
 }
+
+func TestEngine_Commands(t *testing.T) {
+	t.Parallel()
+
+	t.Run("RegisterCommand", func(t *testing.T) {
+		t.Parallel()
+		e := New()
+		e.RegisterCommand("reload", func(args string) (string, bool, error) {
+			return "reloaded: " + args, true, nil
+		})
+
+		h := e.Command("reload")
+		require.NotNil(t, h, "registered command should be found")
+
+		resp, refresh, err := h("all")
+		require.NoError(t, err)
+		assert.Equal(t, "reloaded: all", resp)
+		assert.True(t, refresh)
+	})
+
+	t.Run("WithCommands", func(t *testing.T) {
+		t.Parallel()
+		e := New(WithCommands(map[string]CommandHandler{
+			"ping": func(args string) (string, bool, error) {
+				return "pong", false, nil
+			},
+			"reset": func(args string) (string, bool, error) {
+				return "done", true, nil
+			},
+		}))
+
+		assert.NotNil(t, e.Command("ping"))
+		assert.NotNil(t, e.Command("reset"))
+
+		resp, refresh, err := e.Command("ping")("")
+		require.NoError(t, err)
+		assert.Equal(t, "pong", resp)
+		assert.False(t, refresh)
+	})
+
+	t.Run("CommandNames", func(t *testing.T) {
+		t.Parallel()
+		e := New()
+		e.RegisterCommand("zebra", func(args string) (string, bool, error) { return "", false, nil })
+		e.RegisterCommand("alpha", func(args string) (string, bool, error) { return "", false, nil })
+		e.RegisterCommand("middle", func(args string) (string, bool, error) { return "", false, nil })
+
+		names := e.CommandNames()
+		assert.Equal(t, []string{"alpha", "middle", "zebra"}, names)
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
+		e := New()
+		assert.Nil(t, e.Command("anything"))
+		assert.Nil(t, e.CommandNames())
+	})
+}

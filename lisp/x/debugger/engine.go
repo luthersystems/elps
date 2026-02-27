@@ -16,11 +16,18 @@ package debugger
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 
 	"github.com/luthersystems/elps/lisp"
 )
+
+// CommandHandler handles a custom slash command in the debug console.
+// args is the text after the command name (may be empty).
+// response is the text shown to the user.
+// refresh indicates whether the Variables pane should be invalidated.
+type CommandHandler func(args string) (response string, refresh bool, err error)
 
 // EventType identifies the kind of debug event.
 type EventType int
@@ -120,6 +127,10 @@ type Engine struct {
 	// scopeProviders holds custom scope providers registered by embedders.
 	// Read during debugging (onScopes/onVariables), written at startup.
 	scopeProviders []ScopeProvider
+
+	// commands holds custom slash command handlers registered by embedders.
+	// Read during debugging (onEvaluate), written at startup.
+	commands map[string]CommandHandler
 }
 
 type sourceRefEntry struct {
@@ -196,6 +207,19 @@ func WithScopeProviders(providers ...ScopeProvider) Option {
 func WithSourceLibrary(lib lisp.SourceLibrary) Option {
 	return func(e *Engine) {
 		e.sourceLib = lib
+	}
+}
+
+// WithCommands sets the custom slash command handlers for the debug console.
+// Keys are command names without the leading "/" (e.g., "reload").
+func WithCommands(cmds map[string]CommandHandler) Option {
+	return func(e *Engine) {
+		if e.commands == nil {
+			e.commands = make(map[string]CommandHandler)
+		}
+		for name, h := range cmds {
+			e.commands[name] = h
+		}
 	}
 }
 
@@ -278,6 +302,41 @@ func (e *Engine) ScopeProviders() []ScopeProvider {
 	cp := make([]ScopeProvider, len(e.scopeProviders))
 	copy(cp, e.scopeProviders)
 	return cp
+}
+
+// RegisterCommand registers a custom slash command handler at runtime.
+// name is the command name without the leading "/" (e.g., "reload").
+// Safe to call before debugging starts.
+func (e *Engine) RegisterCommand(name string, h CommandHandler) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.commands == nil {
+		e.commands = make(map[string]CommandHandler)
+	}
+	e.commands[name] = h
+}
+
+// Command returns the handler registered for the given command name, or nil
+// if no handler is registered.
+func (e *Engine) Command(name string) CommandHandler {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.commands[name]
+}
+
+// CommandNames returns the sorted list of registered command names.
+func (e *Engine) CommandNames() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.commands) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(e.commands))
+	for name := range e.commands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // AllocSourceRef allocates a source reference ID for virtual source content.
