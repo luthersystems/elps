@@ -1,0 +1,202 @@
+================================================================================
+If form
+================================================================================
+
+(if (> x 0) "positive" "non-positive")
+
+---
+
+(source_file
+  (list
+    (symbol)
+    (list
+      (symbol)
+      (symbol)
+      (integer))
+    (string)
+    (string)))
+
+================================================================================
+Cond form
+================================================================================
+
+(cond
+  ((< x 0) "negative")
+  ((= x 0) "zero")
+  (:else "positive"))
+
+---
+
+(source_file
+  (list
+    (symbol)
+    (list
+      (list
+        (symbol)
+        (symbol)
+        (integer))
+      (string))
+    (list
+      (list
+        (symbol)
+        (symbol)
+        (integer))
+      (string))
+    (list
+      (keyword)
+      (string))))
+
+================================================================================
+Let form with bracket bindings
+================================================================================
+
+(let [(x 1) (y 2)]
+  (+ x y))
+
+---
+
+(source_file
+  (let_form
+    operator: (symbol)
+    bindings: (let_bindings
+      (let_binding
+        (symbol)
+        (integer))
+      (let_binding
+        (symbol)
+        (integer)))
+    body: (list
+      (symbol)
+      (symbol)
+      (symbol))))
+
+================================================================================
+Let form with paren bindings
+================================================================================
+
+(let ((x 1) (y 2))
+  (+ x y))
+
+---
+
+(source_file
+  (let_form
+    operator: (symbol)
+    bindings: (let_bindings
+      (let_binding
+        (symbol)
+        (integer))
+      (let_binding
+        (symbol)
+        (integer)))
+    body: (list
+      (symbol)
+      (symbol)
+      (symbol))))
+
+================================================================================
+Let star form
+================================================================================
+
+(let* [(x 1) (y (+ x 1))]
+  y)
+
+---
+
+(source_file
+  (let_form
+    operator: (symbol)
+    bindings: (let_bindings
+      (let_binding
+        (symbol)
+        (integer))
+      (let_binding
+        (symbol)
+        (list
+          (symbol)
+          (symbol)
+          (integer))))
+    body: (symbol)))
+
+================================================================================
+Set form
+================================================================================
+
+(set 'x 42)
+
+---
+
+(source_file
+  (list
+    (symbol)
+    (quote
+      (symbol))
+    (integer)))
+
+================================================================================
+Handler-bind form
+================================================================================
+
+(handler-bind ((error (lambda (e) (debug-print e))))
+  (risky-operation))
+
+---
+
+(source_file
+  (list
+    (symbol)
+    (list
+      (list
+        (symbol)
+        (lambda_form
+          operator: (symbol)
+          formals: (formals
+            (symbol))
+          body: (list
+            (symbol)
+            (symbol)))))
+    (list
+      (symbol))))
+
+================================================================================
+Thread-first form
+================================================================================
+
+(thread-first x
+  (+ 1)
+  (* 2))
+
+---
+
+(source_file
+  (list
+    (symbol)
+    (symbol)
+    (list
+      (symbol)
+      (integer))
+    (list
+      (symbol)
+      (integer))))
+
+================================================================================
+Progn form
+================================================================================
+
+(progn
+  (debug-print "a")
+  (debug-print "b")
+  42)
+
+---
+
+(source_file
+  (list
+    (symbol)
+    (list
+      (symbol)
+      (string))
+    (list
+      (symbol)
+      (string))
+    (integer)))

@@ -1,0 +1,141 @@
+================================================================================
+Negative octal
+================================================================================
+
+-#o77
+
+---
+
+(source_file
+  (octal_integer))
+
+================================================================================
+Negative hex
+================================================================================
+
+-#xFF
+
+---
+
+(source_file
+  (hex_integer))
+
+================================================================================
+Mixed bracket and paren nesting
+================================================================================
+
+(let [(x [1 2 3])]
+  (first x))
+
+---
+
+(source_file
+  (let_form
+    operator: (symbol)
+    bindings: (let_bindings
+      (let_binding
+        (symbol)
+        (bracket_list
+          (integer)
+          (integer)
+          (integer))))
+    body: (list
+      (symbol)
+      (symbol))))
+
+================================================================================
+Nolint comment
+================================================================================
+
+(set 'x 1) ; nolint:set-usage
+
+---
+
+(source_file
+  (list
+    (symbol)
+    (quote
+      (symbol))
+    (integer))
+  (comment))
+
+================================================================================
+Multiple expressions
+================================================================================
+
+(+ 1 2)
+(- 3 4)
+"hello"
+42
+
+---
+
+(source_file
+  (list
+    (symbol)
+    (integer)
+    (integer))
+  (list
+    (symbol)
+    (integer)
+    (integer))
+  (string)
+  (integer))
+
+================================================================================
+Symbols with percent
+================================================================================
+
+(#^(+ % 1) 5)
+
+---
+
+(source_file
+  (list
+    (expr_shorthand
+      (list
+        (symbol)
+        (symbol)
+        (integer)))
+    (integer)))
+
+================================================================================
+Deeply nested let
+================================================================================
+
+(let [(x 1)]
+  (let [(y 2)]
+    (+ x y)))
+
+---
+
+(source_file
+  (let_form
+    operator: (symbol)
+    bindings: (let_bindings
+      (let_binding
+        (symbol)
+        (integer)))
+    body: (let_form
+      operator: (symbol)
+      bindings: (let_bindings
+        (let_binding
+          (symbol)
+          (integer)))
+      body: (list
+        (symbol)
+        (symbol)
+        (symbol)))))
+
+================================================================================
+Qualified symbol in function call
+================================================================================
+
+(math:abs -5)
+
+---
+
+(source_file
+  (list
+    (qualified_symbol)
+    (integer)))
