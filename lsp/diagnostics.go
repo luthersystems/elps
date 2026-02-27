@@ -50,6 +50,7 @@ func (s *Server) textDocumentDidChange(ctx *glsp.Context, params *protocol.DidCh
 		t.Stop()
 	}
 	s.debounce[doc.URI] = time.AfterFunc(debounceDelay, func() {
+		defer func() { _ = recover() }() // don't crash the server on analysis panic
 		d := s.docs.Get(doc.URI)
 		if d != nil {
 			s.analyzeAndPublish(d)
@@ -102,23 +103,31 @@ func (s *Server) textDocumentDidClose(_ *glsp.Context, params *protocol.DidClose
 func (s *Server) analyzeAndPublish(doc *Document) {
 	s.ensureAnalysis(doc)
 
+	// Snapshot document fields under the lock.
+	doc.mu.Lock()
+	parseErr := doc.parseErr
+	content := doc.Content
+	docAnalysis := doc.analysis
+	uri := doc.URI
+	doc.mu.Unlock()
+
 	var diags []protocol.Diagnostic
 
 	// Report parse errors as diagnostics.
-	if doc.parseErr != nil {
+	if parseErr != nil {
 		diags = append(diags, protocol.Diagnostic{
 			Range:    protocol.Range{},
 			Severity: severity(protocol.DiagnosticSeverityError),
 			Source:   strPtr("elps"),
-			Message:  doc.parseErr.Error(),
+			Message:  parseErr.Error(),
 		})
 	}
 
 	// Run linter with cached analysis.
 	lintDiags, err := s.linter.LintFileWithContext(
-		[]byte(doc.Content),
-		uriToPath(doc.URI),
-		doc.analysis,
+		[]byte(content),
+		uriToPath(uri),
+		docAnalysis,
 	)
 	if err == nil {
 		for _, d := range lintDiags {
@@ -127,7 +136,7 @@ func (s *Server) analyzeAndPublish(doc *Document) {
 	}
 
 	s.sendNotification(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
-		URI:         doc.URI,
+		URI:         uri,
 		Diagnostics: diags,
 	})
 }

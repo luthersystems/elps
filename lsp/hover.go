@@ -52,7 +52,14 @@ func buildHoverContent(sym *analysis.Symbol) string {
 
 	// Signature for callables.
 	if sym.Signature != nil {
-		fmt.Fprintf(&sb, "\n\n```lisp\n(%s %s)\n```", sym.Name, formatSignature(sym.Signature)[1:len(formatSignature(sym.Signature))-1])
+		sig := formatSignature(sym.Signature)
+		// Strip outer parens from "(x y)" to get "x y" for inline display.
+		inner := sig[1 : len(sig)-1]
+		if inner != "" {
+			fmt.Fprintf(&sb, "\n\n```lisp\n(%s %s)\n```", sym.Name, inner)
+		} else {
+			fmt.Fprintf(&sb, "\n\n```lisp\n(%s)\n```", sym.Name)
+		}
 	}
 
 	// Docstring.

@@ -570,14 +570,14 @@ func TestRenameBuiltinRejected(t *testing.T) {
 	content := "(map (lambda (x) x) '(1 2 3))"
 	openDoc(s, "file:///test.lisp", content)
 
-	_, err := s.textDocumentPrepareRename(mockContext(), &protocol.PrepareRenameParams{
+	result, err := s.textDocumentPrepareRename(mockContext(), &protocol.PrepareRenameParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
 			Position:     protocol.Position{Line: 0, Character: 1}, // on "map"
 		},
 	})
-	require.Error(t, err, "renaming a builtin should be rejected")
-	assert.Contains(t, err.Error(), "cannot rename")
+	require.NoError(t, err, "prepareRename should not error (returns nil per LSP spec)")
+	assert.Nil(t, result, "renaming a builtin should return nil")
 }
 
 func TestPrepareRenameUserFunction(t *testing.T) {
@@ -716,6 +716,192 @@ func TestLocContainsCol(t *testing.T) {
 	assert.False(t, locContainsCol(loc, "defun", 4))
 	// Zero col means untracked — never matches.
 	assert.False(t, locContainsCol(&token.Location{Line: 1, Col: 0}, "x", 1))
+}
+
+// --- Additional tests from gap analysis ---
+
+func TestDiagnosticsIncludeLintWarnings(t *testing.T) {
+	s := testServer()
+	ctx, captured := capturingContext()
+
+	// (if true) has wrong arity — the linter should flag it.
+	err := s.textDocumentDidOpen(ctx, &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{
+			URI:     "file:///test.lisp",
+			Version: 1,
+			Text:    "(if true)",
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, *captured, 1)
+	pub := (*captured)[0]
+
+	// Should have at least one lint diagnostic.
+	var foundLint bool
+	for _, d := range pub.Diagnostics {
+		if d.Source != nil && *d.Source == "elps-lint" {
+			foundLint = true
+		}
+	}
+	assert.True(t, foundLint, "diagnostics should include lint warnings")
+}
+
+func TestHoverOnSpecialOperator(t *testing.T) {
+	s := testServer()
+	content := "(if true 1 2)"
+	openDoc(s, "file:///test.lisp", content)
+
+	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 1}, // on "if"
+		},
+	})
+	require.NoError(t, err)
+	if hover != nil {
+		mc, ok := hover.Contents.(protocol.MarkupContent)
+		require.True(t, ok)
+		assert.Contains(t, mc.Value, "if")
+	}
+	// hover may be nil if analysis doesn't track "if" as a symbol — both are valid.
+}
+
+func TestHoverOnSetVariable(t *testing.T) {
+	s := testServer()
+	content := "(set 'my-var 42)\nmy-var"
+	openDoc(s, "file:///test.lisp", content)
+
+	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 1, Character: 0}, // on "my-var" usage
+		},
+	})
+	require.NoError(t, err)
+	if hover != nil {
+		mc, ok := hover.Contents.(protocol.MarkupContent)
+		require.True(t, ok)
+		assert.Contains(t, mc.Value, "my-var")
+		assert.Contains(t, mc.Value, "variable")
+	}
+}
+
+func TestCompletionEmptyPrefix(t *testing.T) {
+	s := testServer()
+	content := "(defun aaa () 1)\n("
+	openDoc(s, "file:///test.lisp", content)
+
+	result, err := s.textDocumentCompletion(mockContext(), &protocol.CompletionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 1, Character: 1}, // after "("
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "completion with empty prefix should return all visible symbols")
+	items, ok := result.([]protocol.CompletionItem)
+	require.True(t, ok)
+	// With no prefix filter, should return many symbols (builtins + user-defined).
+	assert.Greater(t, len(items), 5, "should return many completions for empty prefix")
+
+	// User-defined "aaa" should be among them.
+	labels := make([]string, len(items))
+	for i, item := range items {
+		labels[i] = item.Label
+	}
+	assert.Contains(t, labels, "aaa")
+}
+
+func TestDefinitionOnUndefinedSymbol(t *testing.T) {
+	s := testServer()
+	content := "(nonexistent 1 2 3)"
+	openDoc(s, "file:///test.lisp", content)
+
+	result, err := s.textDocumentDefinition(mockContext(), &protocol.DefinitionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 1}, // on "nonexistent"
+		},
+	})
+	require.NoError(t, err)
+	// Undefined symbol should return nil, not error.
+	assert.Nil(t, result, "definition of undefined symbol should be nil")
+}
+
+func TestDocumentSymbolsEmptyFile(t *testing.T) {
+	s := testServer()
+	openDoc(s, "file:///test.lisp", "(+ 1 2)\n(- 3 4)")
+
+	result, err := s.textDocumentDocumentSymbol(mockContext(), &protocol.DocumentSymbolParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+	})
+	require.NoError(t, err)
+	// A file with no defun/set should return empty or nil symbols.
+	if result != nil {
+		symbols, ok := result.([]protocol.DocumentSymbol)
+		if ok {
+			assert.Empty(t, symbols, "file with no definitions should have no document symbols")
+		}
+	}
+}
+
+func TestRenameVariable(t *testing.T) {
+	s := testServer()
+	content := `(set 'counter 0)
+(set! 'counter (+ counter 1))
+counter`
+	openDoc(s, "file:///test.lisp", content)
+
+	// Try to rename "counter".
+	result, err := s.textDocumentPrepareRename(mockContext(), &protocol.PrepareRenameParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 2, Character: 0}, // on "counter" reference
+		},
+	})
+	require.NoError(t, err)
+	if result != nil {
+		rp, ok := result.(*protocol.RangeWithPlaceholder)
+		require.True(t, ok)
+		assert.Equal(t, "counter", rp.Placeholder)
+	}
+}
+
+func TestMultipleDocuments(t *testing.T) {
+	s := testServer()
+	openDoc(s, "file:///a.lisp", "(defun foo () 1)")
+	openDoc(s, "file:///b.lisp", "(defun bar () 2)")
+
+	// Hover on foo in document A.
+	hoverA, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///a.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 7},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, hoverA)
+	mc, ok := hoverA.Contents.(protocol.MarkupContent)
+	require.True(t, ok)
+	assert.Contains(t, mc.Value, "foo")
+
+	// Hover on bar in document B.
+	hoverB, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///b.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 7},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, hoverB)
+	mc, ok = hoverB.Contents.(protocol.MarkupContent)
+	require.True(t, ok)
+	assert.Contains(t, mc.Value, "bar")
+
+	// Close A, B should still work.
+	s.docs.Close("file:///a.lisp")
+	assert.Nil(t, s.docs.Get("file:///a.lisp"))
+	assert.NotNil(t, s.docs.Get("file:///b.lisp"))
 }
 
 func TestConvertLintDiagnostic(t *testing.T) {

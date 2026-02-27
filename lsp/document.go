@@ -14,6 +14,7 @@ import (
 
 // Document represents an open text document tracked by the LSP server.
 type Document struct {
+	mu       sync.Mutex
 	URI      string
 	Version  int32
 	Content  string
@@ -92,12 +93,15 @@ func (s *DocumentStore) Change(uri string, version int32, content string) *Docum
 		doc = &Document{URI: uri}
 		s.docs[uri] = doc
 	}
+	s.mu.Unlock()
+
+	doc.mu.Lock()
 	doc.Version = version
 	doc.Content = content
 	doc.parse()
 	// Clear cached analysis; it will be rebuilt on next request.
 	doc.analysis = nil
-	s.mu.Unlock()
+	doc.mu.Unlock()
 	return doc
 }
 

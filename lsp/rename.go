@@ -15,7 +15,7 @@ import (
 func (s *Server) textDocumentPrepareRename(_ *glsp.Context, params *protocol.PrepareRenameParams) (any, error) {
 	doc := s.docs.Get(params.TextDocument.URI)
 	if doc == nil {
-		return nil, fmt.Errorf("document not found")
+		return nil, nil // no document — rename not applicable
 	}
 	s.ensureAnalysis(doc)
 
@@ -24,15 +24,16 @@ func (s *Server) textDocumentPrepareRename(_ *glsp.Context, params *protocol.Pre
 
 	sym, ref := symbolAtPosition(doc, line, col)
 	if sym == nil {
-		return nil, fmt.Errorf("no symbol at position")
+		return nil, nil // no symbol at position — rename not applicable
 	}
 
 	// Reject renaming builtins, special ops, and external symbols.
+	// Per LSP spec, prepareRename returns null (not error) for non-renameable symbols.
 	if sym.Kind == analysis.SymBuiltin || sym.Kind == analysis.SymSpecialOp {
-		return nil, fmt.Errorf("cannot rename %s: %s", symbolKindLabel(sym.Kind), sym.Name)
+		return nil, nil
 	}
 	if sym.External {
-		return nil, fmt.Errorf("cannot rename external symbol: %s", sym.Name)
+		return nil, nil
 	}
 
 	// Determine the range to highlight.
@@ -41,7 +42,7 @@ func (s *Server) textDocumentPrepareRename(_ *glsp.Context, params *protocol.Pre
 		loc = ref.Source
 	}
 	if loc == nil {
-		return nil, fmt.Errorf("no source location for symbol")
+		return nil, nil
 	}
 
 	return &protocol.RangeWithPlaceholder{

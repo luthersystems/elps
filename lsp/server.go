@@ -176,6 +176,7 @@ func (s *Server) setTrace(_ *glsp.Context, _ *protocol.SetTraceParams) error {
 
 // buildWorkspaceIndex scans the workspace root and builds the analysis config.
 func (s *Server) buildWorkspaceIndex() {
+	defer func() { _ = recover() }() // don't crash the server on scan panic
 	if s.rootPath == "" {
 		return
 	}
@@ -236,6 +237,8 @@ func (s *Server) getAnalysisConfig(uri string) *analysis.Config {
 
 // ensureAnalysis ensures the document has a current analysis result.
 func (s *Server) ensureAnalysis(doc *Document) {
+	doc.mu.Lock()
+	defer doc.mu.Unlock()
 	if doc.analysis != nil {
 		return
 	}
