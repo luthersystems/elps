@@ -108,7 +108,7 @@ func (s *Server) analyzeAndPublish(doc *Document) {
 
 	// Snapshot document fields under the lock.
 	doc.mu.Lock()
-	parseErr := doc.parseErr
+	parseErrors := doc.parseErrors
 	content := doc.Content
 	docAnalysis := doc.analysis
 	uri := doc.URI
@@ -117,7 +117,7 @@ func (s *Server) analyzeAndPublish(doc *Document) {
 	var diags []protocol.Diagnostic
 
 	// Report parse errors as diagnostics.
-	if parseErr != nil {
+	for _, parseErr := range parseErrors {
 		diags = append(diags, protocol.Diagnostic{
 			Range:    parseErrorRange(parseErr),
 			Severity: severity(protocol.DiagnosticSeverityError),

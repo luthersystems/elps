@@ -14,42 +14,24 @@ import (
 
 // Document represents an open text document tracked by the LSP server.
 type Document struct {
-	mu       sync.Mutex
-	URI      string
-	Version  int32
-	Content  string
-	ast      []*lisp.LVal
-	analysis *analysis.Result
-	parseErr error
+	mu          sync.Mutex
+	URI         string
+	Version     int32
+	Content     string
+	ast         []*lisp.LVal
+	analysis    *analysis.Result
+	parseErrors []error
 }
 
-// parse parses the document content and caches the AST.
-// It uses a fault-tolerant approach: if the standard parser fails
-// (e.g., on incomplete input), it falls back to parsing
-// expression-by-expression, collecting what it can.
+// parse parses the document content and caches the AST using the
+// fault-tolerant parser. This recovers partial ASTs and collects all
+// parse errors in a single pass.
 func (d *Document) parse() {
-	scanner := token.NewScanner(uriToPath(d.URI), strings.NewReader(d.Content))
-	p := rdparser.New(scanner)
-	exprs, err := p.ParseProgram()
-	if err == nil {
-		d.ast = exprs
-		d.parseErr = nil
-		return
-	}
-	// Fault-tolerant fallback: re-parse, collecting expressions one at a
-	// time until we hit the error.
-	d.parseErr = err
-	scanner2 := token.NewScanner(uriToPath(d.URI), strings.NewReader(d.Content))
-	p2 := rdparser.New(scanner2)
-	var partial []*lisp.LVal
-	for {
-		expr, parseErr := p2.Parse()
-		if parseErr != nil {
-			break
-		}
-		partial = append(partial, expr)
-	}
-	d.ast = partial
+	s := token.NewScanner(uriToPath(d.URI), strings.NewReader(d.Content))
+	p := rdparser.New(s)
+	result := p.ParseProgramFaultTolerant()
+	d.ast = result.Exprs
+	d.parseErrors = result.Errors
 }
 
 // analyze runs semantic analysis on the cached AST.
