@@ -162,6 +162,8 @@ func (h *handler) handle(msg dap.Message) {
 		h.onStepInTargets(req)
 	case *dap.StepOutRequest:
 		h.onStepOut(req)
+	case *dap.SetVariableRequest:
+		h.onSetVariable(req)
 	case *dap.EvaluateRequest:
 		h.onEvaluate(req)
 	case *dap.CompletionsRequest:
@@ -195,6 +197,7 @@ func (h *handler) onInitialize(req *dap.InitializeRequest) {
 		SupportsConditionalBreakpoints:        true,
 		SupportsHitConditionalBreakpoints:     true,
 		SupportsLogPoints:                     true,
+		SupportsSetVariable:                   true,
 		SupportsEvaluateForHovers:             true,
 		SupportTerminateDebuggee:              true,
 		SupportsSteppingGranularity:           true,
@@ -686,6 +689,81 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 			resp.Body.NamedVariables = named
 		}
 	}
+	h.send(resp)
+}
+
+// onSetVariable handles the DAP setVariable request. It evaluates the new
+// value expression in the paused environment and updates the named binding
+// in the appropriate scope (local or package).
+func (h *handler) onSetVariable(req *dap.SetVariableRequest) {
+	resp := &dap.SetVariableResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+
+	env, _ := h.engine.PausedState()
+	if env == nil {
+		resp.Success = false
+		resp.Message = "not paused"
+		h.send(resp)
+		return
+	}
+
+	ref := req.Arguments.VariablesReference
+	name := req.Arguments.Name
+	valueExpr := req.Arguments.Value
+
+	// Parse and evaluate the new value expression.
+	result := h.engine.EvalSingleInContext(env, valueExpr)
+	if result != nil && result.Type == lisp.LError {
+		resp.Success = false
+		resp.Message = fmt.Sprintf("failed to evaluate value: %s", debugger.FormatValueWith(result, h.engine))
+		h.send(resp)
+		return
+	}
+
+	// Determine scope and update the binding.
+	var updateErr *lisp.LVal
+	switch {
+	case ref >= scopePackageBase && ref < scopeMacroBase:
+		// Package scope: update the symbol directly in the package.
+		frameID := ref - scopePackageBase
+		fenv := h.getFrameEnv(frameID)
+		if fenv == nil || fenv.Runtime.Package == nil {
+			resp.Success = false
+			resp.Message = "invalid frame for package scope"
+			h.send(resp)
+			return
+		}
+		updateErr = fenv.Runtime.Package.Update(lisp.Symbol(name), result)
+	case ref >= scopeLocalBase && ref < scopePackageBase:
+		// Local scope: walk the env chain to find and update the binding.
+		frameID := ref - scopeLocalBase
+		fenv := h.getFrameEnv(frameID)
+		if fenv == nil {
+			resp.Success = false
+			resp.Message = "invalid frame for local scope"
+			h.send(resp)
+			return
+		}
+		updateErr = fenv.Update(lisp.Symbol(name), result)
+	default:
+		resp.Success = false
+		resp.Message = "setVariable not supported for this scope"
+		h.send(resp)
+		return
+	}
+
+	if updateErr != nil && updateErr.Type == lisp.LError {
+		resp.Success = false
+		resp.Message = fmt.Sprintf("failed to update variable: %s", debugger.FormatValueWith(updateErr, h.engine))
+		h.send(resp)
+		return
+	}
+
+	resp.Body.Value = debugger.FormatValueWith(result, h.engine)
+	resp.Body.Type = lvalTypeName(result)
+	h.mu.Lock()
+	resp.Body.VariablesReference = h.allocVarRef(result)
+	h.mu.Unlock()
 	h.send(resp)
 }
 
