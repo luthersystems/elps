@@ -197,7 +197,7 @@ func (p *Parser) parseExpression() func(p *Parser) *lisp.LVal {
 	case token.ERROR, token.INVALID:
 		return func(p *Parser) *lisp.LVal {
 			p.ReadToken()
-			return p.errorf("scan-error", p.TokenText())
+			return p.errorf("scan-error", "%s", p.TokenText())
 		}
 	default:
 		return func(p *Parser) *lisp.LVal {

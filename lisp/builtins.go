@@ -888,7 +888,7 @@ func builtinMap(env *LEnv, args *LVal) *LVal {
 	}
 	if !nilReturn {
 		if msg := env.Runtime.CheckAlloc(lis.Len()); msg != "" {
-			return env.Errorf(msg)
+			return env.Errorf("%s", msg)
 		}
 	}
 	var v *LVal
@@ -1225,7 +1225,7 @@ func builtinConcatString(env *LEnv, args *LVal) *LVal {
 		size += n
 	}
 	if msg := env.Runtime.CheckAlloc(size); msg != "" {
-		return env.Errorf(msg)
+		return env.Errorf("%s", msg)
 	}
 	buf := bytes.NewBuffer(make([]byte, 0, size))
 	for _, v := range rest {
@@ -1259,7 +1259,7 @@ func builtinConcatBytes(env *LEnv, args *LVal) *LVal {
 		size += n
 	}
 	if msg := env.Runtime.CheckAlloc(size); msg != "" {
-		return env.Errorf(msg)
+		return env.Errorf("%s", msg)
 	}
 	buf := make([]byte, 0, size)
 	for _, v := range rest {
@@ -1311,7 +1311,7 @@ func builtinConcatSeq(env *LEnv, args *LVal) *LVal {
 	}
 	if env != nil {
 		if msg := env.Runtime.CheckAlloc(size); msg != "" {
-			return env.Errorf(msg)
+			return env.Errorf("%s", msg)
 		}
 	}
 	if size == 0 {
@@ -1672,7 +1672,7 @@ func builtinZip(env *LEnv, args *LVal) *LVal {
 		}
 	}
 	if msg := env.Runtime.CheckAlloc(n * len(lists)); msg != "" {
-		return env.Errorf(msg)
+		return env.Errorf("%s", msg)
 	}
 	var v *LVal
 	var cells []*LVal
@@ -1737,7 +1737,7 @@ func builtinMakeSequence(env *LEnv, args *LVal) *LVal {
 	list := QExpr(nil)
 	for x := start; lessNumeric(x, stop); x = addNumeric(x, step) {
 		if msg := env.Runtime.CheckAlloc(len(list.Cells) + 1); msg != "" {
-			return env.Errorf(msg)
+			return env.Errorf("%s", msg)
 		}
 		list.Cells = append(list.Cells, x.Copy())
 	}
@@ -1753,7 +1753,7 @@ func builtinReverse(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("first argument is not a proper sequence: %v", args.Cells[0].Type)
 	}
 	if msg := env.Runtime.CheckAlloc(list.Len()); msg != "" {
-		return env.Errorf(msg)
+		return env.Errorf("%s", msg)
 	}
 	var v *LVal
 	var cells []*LVal
@@ -1884,7 +1884,7 @@ func builtinAppendMutate(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("first argument is not a vector: %v", vec.Type)
 	}
 	if msg := env.Runtime.CheckAlloc(len(vec.Cells[1].Cells) + len(vals)); msg != "" {
-		return env.Errorf(msg)
+		return env.Errorf("%s", msg)
 	}
 	dims := vec.Cells[0]
 	dims.Cells[0].Int += len(vals)
@@ -1897,7 +1897,7 @@ func appendMutateBytes(env *LEnv, args *LVal) *LVal {
 	b := lbytes.Bytes()
 	xsVal := QExpr(xs)
 	if msg := env.Runtime.CheckAlloc(len(b) + xsVal.Len()); msg != "" {
-		return env.Errorf(msg)
+		return env.Errorf("%s", msg)
 	}
 	err := appendBytes(env, xsVal, func(x byte) {
 		b = append(b, x)
@@ -1916,7 +1916,7 @@ func builtinAppendBytesMutate(env *LEnv, args *LVal) *LVal {
 	}
 	b := lbytes.Bytes()
 	if msg := env.Runtime.CheckAlloc(len(b) + byteseq.Len()); msg != "" {
-		return env.Errorf(msg)
+		return env.Errorf("%s", msg)
 	}
 	switch byteseq.Type {
 	case LString:
@@ -1948,7 +1948,7 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 	}
 	cells := seqCells(seq)
 	if msg := env.Runtime.CheckAlloc(len(cells) + len(vals)); msg != "" {
-		return env.Errorf(msg)
+		return env.Errorf("%s", msg)
 	}
 	switch typespec.Str {
 	case "list":
@@ -1980,7 +1980,7 @@ func builtinAppend_Bytes(env *LEnv, args *LVal) *LVal {
 	xsVal := QExpr(xs)
 	resultLen := len(b) + xsVal.Len()
 	if msg := env.Runtime.CheckAlloc(resultLen); msg != "" {
-		return env.Errorf(msg)
+		return env.Errorf("%s", msg)
 	}
 	err := appendBytes(env, xsVal, func(x byte) {
 		b = append(b, x)
