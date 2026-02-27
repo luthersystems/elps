@@ -521,6 +521,10 @@
                 {
                   "type": "SYMBOL",
                   "name": "qualified_symbol"
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "quote"
                 }
               ]
             }
@@ -587,6 +591,10 @@
                 {
                   "type": "SYMBOL",
                   "name": "qualified_symbol"
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "quote"
                 }
               ]
             }
@@ -653,6 +661,10 @@
                 {
                   "type": "SYMBOL",
                   "name": "qualified_symbol"
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "quote"
                 }
               ]
             }
@@ -838,6 +850,10 @@
                 {
                   "type": "SYMBOL",
                   "name": "qualified_symbol"
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "quote"
                 }
               ]
             }
@@ -959,11 +975,14 @@
             },
             {
               "type": "SYMBOL",
-              "name": "symbol"
+              "name": "_expression"
             },
             {
-              "type": "SYMBOL",
-              "name": "_expression"
+              "type": "REPEAT1",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_expression"
+              }
             },
             {
               "type": "STRING",
@@ -980,11 +999,14 @@
             },
             {
               "type": "SYMBOL",
-              "name": "symbol"
+              "name": "_expression"
             },
             {
-              "type": "SYMBOL",
-              "name": "_expression"
+              "type": "REPEAT1",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_expression"
+              }
             },
             {
               "type": "STRING",

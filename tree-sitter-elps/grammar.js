@@ -133,7 +133,7 @@ module.exports = grammar({
         seq(
           "(",
           field("operator", alias("defun", $.symbol)),
-          field("name", choice($.symbol, $.qualified_symbol)),
+          field("name", choice($.symbol, $.qualified_symbol, $.quote)),
           field("formals", $.formals),
           repeat(field("body", $._expression)),
           ")",
@@ -146,7 +146,7 @@ module.exports = grammar({
         seq(
           "(",
           field("operator", alias("defmacro", $.symbol)),
-          field("name", choice($.symbol, $.qualified_symbol)),
+          field("name", choice($.symbol, $.qualified_symbol, $.quote)),
           field("formals", $.formals),
           repeat(field("body", $._expression)),
           ")",
@@ -159,7 +159,7 @@ module.exports = grammar({
         seq(
           "(",
           field("operator", alias("deftype", $.symbol)),
-          field("name", choice($.symbol, $.qualified_symbol)),
+          field("name", choice($.symbol, $.qualified_symbol, $.quote)),
           field("formals", $.formals),
           repeat(field("body", $._expression)),
           ")",
@@ -196,7 +196,7 @@ module.exports = grammar({
         seq(
           "(",
           field("operator", alias("defconst", $.symbol)),
-          field("name", choice($.symbol, $.qualified_symbol)),
+          field("name", choice($.symbol, $.qualified_symbol, $.quote)),
           field("value", $._expression),
           optional(field("docstring", $.string)),
           ")",
@@ -235,10 +235,10 @@ module.exports = grammar({
 
     let_binding: $ =>
       choice(
-        // Bracket form: [x 1]
-        seq("[", $.symbol, $._expression, "]"),
-        // Paren form: (x 1)
-        seq("(", $.symbol, $._expression, ")"),
+        // Bracket form: [name value] or [name (formals) body...] (labels/flet)
+        seq("[", $._expression, repeat1($._expression), "]"),
+        // Paren form: (name value) or (name (formals) body...) (labels/flet)
+        seq("(", $._expression, repeat1($._expression), ")"),
       ),
 
     // --- Extras ---

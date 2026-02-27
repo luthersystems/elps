@@ -45,6 +45,10 @@ clean:
 ${BIN}: ${GO_FILES}
 	go build
 
+.PHONY: tree-sitter-test
+tree-sitter-test:
+	cd tree-sitter-elps && go test ./...
+
 .PHONY: static-checks
 static-checks:
 	golangci-lint run ./...
