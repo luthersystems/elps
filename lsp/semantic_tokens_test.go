@@ -22,6 +22,7 @@ func TestSemanticTokensFull(t *testing.T) {
 		require.NotNil(t, result)
 		// Single token: deltaLine=0, deltaChar=0, length=2, type=number(9), mods=0
 		require.Len(t, result.Data, 5)
+		assert.Equal(t, protocol.UInteger(2), result.Data[2])           // length of "42"
 		assert.Equal(t, protocol.UInteger(semTokenNumber), result.Data[3])
 	})
 
@@ -33,19 +34,50 @@ func TestSemanticTokensFull(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.Len(t, result.Data, 5)
+		assert.Equal(t, protocol.UInteger(7), result.Data[2])            // length of `"hello"` (including quotes)
 		assert.Equal(t, protocol.UInteger(semTokenString), result.Data[3])
 	})
 
 	t.Run("keyword special ops", func(t *testing.T) {
 		doc := openDoc(s, "file:///test/defun.lisp", "(defun foo (x) x)")
+		s.ensureAnalysis(doc)
 		result, err := s.textDocumentSemanticTokensFull(mockContext(), &protocol.SemanticTokensParams{
 			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
 		})
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		// Should have tokens for: defun, foo, x (param), x (ref).
-		// At minimum 4 tokens = 20 integers.
-		assert.GreaterOrEqual(t, len(result.Data), 15)
+		tokens := decodeTokens(result.Data)
+		require.GreaterOrEqual(t, len(tokens), 4, "expected at least 4 tokens")
+
+		// Find specific tokens by type and verify.
+		var hasKeyword, hasFunction bool
+		for _, tok := range tokens {
+			if tok.tokenType == semTokenKeyword {
+				hasKeyword = true
+				assert.Equal(t, 5, tok.length, "defun should be 5 chars")
+			}
+			if tok.tokenType == semTokenFunction && tok.modifiers&semModDefinition != 0 {
+				hasFunction = true
+				assert.Equal(t, 3, tok.length, "foo should be 3 chars")
+			}
+		}
+		assert.True(t, hasKeyword, "expected a keyword token for 'defun'")
+		assert.True(t, hasFunction, "expected a function definition token for 'foo'")
+	})
+
+	t.Run("comment lines are not in AST so only code tokens emitted", func(t *testing.T) {
+		// Comments are stripped by the standard parser (non-formatting mode),
+		// so they don't appear as semantic tokens. Only the code is tokenized.
+		doc := openDoc(s, "file:///test/comments.lisp", "; a comment\n42")
+		result, err := s.textDocumentSemanticTokensFull(mockContext(), &protocol.SemanticTokensParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		tokens := decodeTokens(result.Data)
+		require.Len(t, tokens, 1, "only the number token should be present")
+		assert.Equal(t, semTokenNumber, tokens[0].tokenType)
 	})
 
 	t.Run("function definition has definition modifier", func(t *testing.T) {
