@@ -638,6 +638,59 @@ func TestE2E_EmptyDocument(t *testing.T) {
 	send(t, conn, jsonRPCNotification("exit", nil))
 }
 
+func TestE2E_SignatureHelp(t *testing.T) {
+	conn, cleanup := e2eServer(t)
+	defer cleanup()
+
+	reader := bufio.NewReader(conn)
+	testURI := "file:///tmp/e2e-sigh/test.lisp"
+
+	// Initialize.
+	send(t, conn, jsonRPCRequest(1, "initialize", map[string]any{
+		"capabilities": map[string]any{},
+	}))
+
+	resp, _ := readResponse(t, reader, 1)
+	result := resp["result"].(map[string]any)
+	caps := result["capabilities"].(map[string]any)
+	assert.NotNil(t, caps["signatureHelpProvider"], "should have signatureHelp capability")
+
+	send(t, conn, jsonRPCNotification("initialized", map[string]any{}))
+
+	// Open document with a user-defined function and a call.
+	send(t, conn, jsonRPCNotification("textDocument/didOpen", map[string]any{
+		"textDocument": map[string]any{
+			"uri":        testURI,
+			"languageId": "elps",
+			"version":    1,
+			"text":       "(defun greet (name greeting)\n  \"Greet someone.\"\n  (concat greeting \" \" name))\n\n(greet \"world\" \"hello\")",
+		},
+	}))
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Request signature help inside the (greet ...) call.
+	send(t, conn, jsonRPCRequest(2, "textDocument/signatureHelp", map[string]any{
+		"textDocument": map[string]any{"uri": testURI},
+		"position":     map[string]any{"line": 4, "character": 7},
+	}))
+
+	sigResp, _ := readResponse(t, reader, 2)
+	require.NotNil(t, sigResp["result"], "signature help should return a result")
+	sigResult := sigResp["result"].(map[string]any)
+	sigs := sigResult["signatures"].([]any)
+	require.Len(t, sigs, 1)
+	sig := sigs[0].(map[string]any)
+	sigLabel := sig["label"].(string)
+	assert.Contains(t, sigLabel, "greet")
+	assert.Contains(t, sigLabel, "name")
+
+	// Cleanup.
+	send(t, conn, jsonRPCRequest(99, "shutdown", nil))
+	readResponse(t, reader, 99)
+	send(t, conn, jsonRPCNotification("exit", nil))
+}
+
 func TestE2E_Formatting(t *testing.T) {
 	conn, cleanup := e2eServer(t)
 	defer cleanup()

@@ -98,6 +98,7 @@ func New(opts ...Option) *Server {
 		TextDocumentRename:         s.textDocumentRename,
 		TextDocumentPrepareRename:  s.textDocumentPrepareRename,
 		TextDocumentFormatting:     s.textDocumentFormatting,
+		TextDocumentSignatureHelp:  s.textDocumentSignatureHelp,
 	}
 
 	s.glspSrv = glspserver.NewServer(&s.handler, serverName, false)
@@ -144,6 +145,12 @@ func (s *Server) initialize(ctx *glsp.Context, params *protocol.InitializeParams
 	// Enable prepare rename.
 	capabilities.RenameProvider = &protocol.RenameOptions{
 		PrepareProvider: boolPtr(true),
+	}
+
+	// Set up signature help trigger characters.
+	capabilities.SignatureHelpProvider = &protocol.SignatureHelpOptions{
+		TriggerCharacters:   []string{" "},
+		RetriggerCharacters: []string{" ", ")"},
 	}
 
 	version := "0.1.0"

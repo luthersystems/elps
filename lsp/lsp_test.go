@@ -806,6 +806,95 @@ func TestFormattingTabSize(t *testing.T) {
 	assert.Contains(t, edits[0].NewText, "    (+", "should use 4-space indent from tabSize")
 }
 
+// --- Signature help tests ---
+
+func TestSignatureHelp(t *testing.T) {
+	s := testServer()
+	content := `(defun greet (name greeting)
+  "Greet someone."
+  (concat greeting " " name))
+
+(greet "world" "hello")`
+	openDoc(s, "file:///test.lisp", content)
+
+	// Cursor after "(greet " — should show signature for greet, active param 0.
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 4, Character: 7}, // after "(greet "
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "signature help should not be nil for user function")
+	require.Len(t, result.Signatures, 1)
+	sig := result.Signatures[0]
+	assert.Contains(t, sig.Label, "greet")
+	assert.Contains(t, sig.Label, "name")
+	assert.Contains(t, sig.Label, "greeting")
+	assert.Len(t, sig.Parameters, 2)
+}
+
+func TestSignatureHelpBuiltin(t *testing.T) {
+	s := testServer()
+	content := `(map identity '(1 2 3))`
+	openDoc(s, "file:///test.lisp", content)
+
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 5}, // after "(map "
+		},
+	})
+	require.NoError(t, err)
+	if result != nil {
+		require.Len(t, result.Signatures, 1)
+		assert.Contains(t, result.Signatures[0].Label, "map")
+	}
+}
+
+func TestSignatureHelpOutside(t *testing.T) {
+	s := testServer()
+	content := `(defun add (x y) (+ x y))
+; some comment`
+	openDoc(s, "file:///test.lisp", content)
+
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 1, Character: 0}, // on comment line
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, result, "signature help outside a call should be nil")
+}
+
+func TestEnclosingCall(t *testing.T) {
+	s := testServer()
+	content := "(defun add (x y) (+ x y))\n(add 1 2)"
+	openDoc(s, "file:///test.lisp", content)
+
+	doc := s.docs.Get("file:///test.lisp")
+	require.NotNil(t, doc)
+
+	// Cursor inside "(add 1 2)" after "add ".
+	name, argIdx := enclosingCall(doc.ast, 2, 6)
+	assert.Equal(t, "add", name)
+	assert.Equal(t, 0, argIdx, "first argument position")
+}
+
+func TestSignatureHelpUnknownDocument(t *testing.T) {
+	s := testServer()
+
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///unknown.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 5},
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, result)
+}
+
 func TestExitHandler(t *testing.T) {
 	s := testServer()
 	var exitCode int
