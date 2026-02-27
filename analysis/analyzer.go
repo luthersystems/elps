@@ -170,6 +170,7 @@ func (a *analyzer) prescanUsePackage(expr *lisp.LVal, scope *Scope) {
 			Kind:      ext.Kind,
 			Source:    ext.Source,
 			Signature: ext.Signature,
+			DocString: ext.DocString,
 			Exported:  true,
 			External:  true,
 		}
@@ -206,6 +207,7 @@ func (a *analyzer) prescanInPackage(expr *lisp.LVal, scope *Scope) {
 				Kind:      ext.Kind,
 				Source:    ext.Source,
 				Signature: ext.Signature,
+				DocString: ext.DocString,
 				Exported:  true,
 				External:  true,
 			}

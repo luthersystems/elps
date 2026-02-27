@@ -79,3 +79,22 @@ func TestExtractPackageExports_PackageField(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractPackageExports_DocString(t *testing.T) {
+	reg := loadedRegistry()
+	exports := ExtractPackageExports(reg)
+	require.NotNil(t, exports)
+
+	// Find a builtin with a known docstring (e.g. "map" in the lisp package).
+	lispPkg, ok := exports["lisp"]
+	require.True(t, ok, "lisp package should have exports")
+
+	found := false
+	for _, sym := range lispPkg {
+		if sym.DocString != "" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "at least one lisp package export should have a docstring")
+}

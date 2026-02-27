@@ -23,21 +23,67 @@ func (s *Server) textDocumentHover(_ *glsp.Context, params *protocol.HoverParams
 	col := int(params.Position.Character)
 
 	sym, _ := symbolAtPosition(doc, line, col)
-	if sym == nil {
-		return nil, nil
+	if sym != nil {
+		content := buildHoverContent(sym)
+		if content != "" {
+			return &protocol.Hover{
+				Contents: protocol.MarkupContent{
+					Kind:  protocol.MarkupKindMarkdown,
+					Value: content,
+				},
+			}, nil
+		}
 	}
 
-	content := buildHoverContent(sym)
-	if content == "" {
-		return nil, nil
+	// Fallback: check for qualified symbol (e.g. "string:join") in package exports.
+	word := wordAtPosition(doc.Content, line, col)
+	if content := s.qualifiedSymbolHover(word); content != "" {
+		return &protocol.Hover{
+			Contents: protocol.MarkupContent{
+				Kind:  protocol.MarkupKindMarkdown,
+				Value: content,
+			},
+		}, nil
 	}
 
-	return &protocol.Hover{
-		Contents: protocol.MarkupContent{
-			Kind:  protocol.MarkupKindMarkdown,
-			Value: content,
-		},
-	}, nil
+	return nil, nil
+}
+
+// qualifiedSymbolHover looks up a qualified symbol (e.g. "string:join") in
+// the workspace analysis config's PackageExports and builds hover content.
+func (s *Server) qualifiedSymbolHover(word string) string {
+	pkgName, symName, ok := splitPackageQualified(word)
+	if !ok || symName == "" {
+		return ""
+	}
+
+	s.analysisCfgMu.RLock()
+	cfg := s.analysisCfg
+	s.analysisCfgMu.RUnlock()
+
+	if cfg == nil || cfg.PackageExports == nil {
+		return ""
+	}
+
+	exports, ok := cfg.PackageExports[pkgName]
+	if !ok {
+		return ""
+	}
+
+	for _, ext := range exports {
+		if ext.Name == symName {
+			sym := &analysis.Symbol{
+				Name:      ext.Name,
+				Kind:      ext.Kind,
+				Source:    ext.Source,
+				Signature: ext.Signature,
+				DocString: ext.DocString,
+				External:  true,
+			}
+			return buildHoverContent(sym)
+		}
+	}
+	return ""
 }
 
 // buildHoverContent builds Markdown hover text for a symbol.
