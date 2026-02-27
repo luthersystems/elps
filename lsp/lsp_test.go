@@ -4,6 +4,7 @@ package lsp
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/analysis"
@@ -1316,15 +1317,17 @@ func TestReanalyzeOpenDocuments(t *testing.T) {
 	require.Len(t, captured, 1, "initial analysis should publish one diagnostic set")
 	initialDiags := captured[0].Diagnostics
 
-	hasUndefinedSymbol := false
+	// Verify we actually get a diagnostic about the unresolvable symbol.
+	require.NotEmpty(t, initialDiags, "initial analysis should produce diagnostics for unresolvable package")
+	hasUnresolved := false
 	for _, d := range initialDiags {
-		if d.Message != "" {
-			hasUndefinedSymbol = true
+		if strings.Contains(d.Message, "fake-func") || strings.Contains(d.Message, "fakepkg") {
+			hasUnresolved = true
 			break
 		}
 	}
-	require.True(t, hasUndefinedSymbol || len(initialDiags) > 0,
-		"initial analysis should produce diagnostics (unresolvable package)")
+	require.True(t, hasUnresolved,
+		"initial diagnostics should mention fake-func or fakepkg, got: %v", diagMessages(initialDiags))
 
 	// Simulate workspace index completing with fakepkg exports.
 	s.analysisCfg = &analysis.Config{
@@ -1340,10 +1343,25 @@ func TestReanalyzeOpenDocuments(t *testing.T) {
 	require.Greater(t, len(captured), 1,
 		"reanalyze should publish new diagnostics after workspace index completes")
 
-	// The re-analysis diagnostics should have fewer issues (false positives cleared).
+	// The re-analysis diagnostics should have strictly fewer issues now that
+	// fakepkg is known. The fake-func diagnostic should be gone.
 	reanalyzedDiags := captured[len(captured)-1].Diagnostics
-	assert.LessOrEqual(t, len(reanalyzedDiags), len(initialDiags),
-		"re-analysis with workspace config should produce fewer (or equal) diagnostics")
+	assert.Less(t, len(reanalyzedDiags), len(initialDiags),
+		"re-analysis with workspace config should produce strictly fewer diagnostics")
+
+	for _, d := range reanalyzedDiags {
+		assert.NotContains(t, d.Message, "fake-func",
+			"re-analysis should not flag fake-func after fakepkg is registered")
+	}
+}
+
+// diagMessages extracts messages from diagnostics for test failure output.
+func diagMessages(diags []protocol.Diagnostic) []string {
+	msgs := make([]string, len(diags))
+	for i, d := range diags {
+		msgs[i] = d.Message
+	}
+	return msgs
 }
 
 func TestDefinitionOnUndefinedSymbol(t *testing.T) {
@@ -1519,6 +1537,18 @@ func testServerWithWorkspaceIndex(t *testing.T) *Server {
 	return s
 }
 
+// assertHoverContains checks that hover returns non-nil Markdown content
+// containing all expected substrings.
+func assertHoverContains(t *testing.T, hover *protocol.Hover, expected ...string) {
+	t.Helper()
+	require.NotNil(t, hover, "hover should not be null")
+	content := hover.Contents.(protocol.MarkupContent)
+	assert.Equal(t, protocol.MarkupKindMarkdown, content.Kind, "hover should be Markdown")
+	for _, s := range expected {
+		assert.Contains(t, content.Value, s, "hover content should contain %q", s)
+	}
+}
+
 // TestHoverOnStdlibQualifiedSymbol reproduces issue #169: hover on
 // package-qualified stdlib symbols like "string:join" returns null.
 func TestHoverOnStdlibQualifiedSymbol(t *testing.T) {
@@ -1534,9 +1564,7 @@ func TestHoverOnStdlibQualifiedSymbol(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.NotNil(t, hover, "hover on stdlib qualified symbol should not be null (#169)")
-	content := hover.Contents.(protocol.MarkupContent)
-	assert.Contains(t, content.Value, "join", "hover should mention function name")
+	assertHoverContains(t, hover, "join", "function")
 }
 
 // TestHoverOnStdlibQualifiedSymbol_NoWorkspaceIndex verifies that hover
@@ -1555,7 +1583,8 @@ func TestHoverOnStdlibQualifiedSymbol_NoWorkspaceIndex(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.NotNil(t, hover, "hover should work even without prior workspace index (#173 fallback)")
+	// Fallback path should produce equivalent results to the with-index path.
+	assertHoverContains(t, hover, "join", "function")
 }
 
 // TestCompletionForPackageQualifiedPrefix reproduces issue #170: completion
@@ -1573,17 +1602,18 @@ func TestCompletionForPackageQualifiedPrefix(t *testing.T) {
 	})
 	require.NoError(t, err)
 	labels := completionLabels(t, result)
-	assert.NotEmpty(t, labels, "completion for 'string:' should return package exports (#170)")
+	require.Contains(t, labels, "string:join", "completion should include string:join (#170)")
 
-	// Should contain string:join (or similar).
-	var found bool
-	for _, l := range labels {
-		if l == "string:join" {
-			found = true
+	// Verify completion items have correct Kind metadata.
+	items := result.([]protocol.CompletionItem)
+	for _, item := range items {
+		if item.Label == "string:join" {
+			require.NotNil(t, item.Kind, "completion item should have a Kind")
+			assert.Equal(t, protocol.CompletionItemKindFunction, *item.Kind,
+				"string:join should be a Function, not %v", *item.Kind)
 			break
 		}
 	}
-	assert.True(t, found, "completion should include string:join, got %v", labels)
 }
 
 // TestCompletionForPackageQualifiedPrefix_NoWorkspaceIndex verifies that
@@ -1601,8 +1631,10 @@ func TestCompletionForPackageQualifiedPrefix_NoWorkspaceIndex(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
+	// Fallback path should produce equivalent results to the with-index path.
 	labels := completionLabels(t, result)
-	assert.NotEmpty(t, labels, "completion should work without prior workspace index (#173 fallback)")
+	require.Contains(t, labels, "string:join",
+		"completion should include string:join even without prior workspace index (#173 fallback)")
 }
 
 // TestHoverOnUsePackageImportedSymbol reproduces issue #171: hover on a
@@ -1620,9 +1652,7 @@ func TestHoverOnUsePackageImportedSymbol(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.NotNil(t, hover, "hover on use-package imported symbol should not be null (#171)")
-	content := hover.Contents.(protocol.MarkupContent)
-	assert.Contains(t, content.Value, "join", "hover should mention function name")
+	assertHoverContains(t, hover, "join", "function")
 }
 
 // TestFormattingReturnsEdits reproduces issue #172: formatting returns null
@@ -1657,5 +1687,15 @@ func TestWorkspaceIndexWithEmptyRootPath(t *testing.T) {
 
 	require.NotNil(t, cfg, "analysisCfg should be set even with empty rootPath")
 	require.NotNil(t, cfg.PackageExports, "PackageExports should be set from registry")
-	assert.NotEmpty(t, cfg.PackageExports["string"], "string package exports should be populated from registry")
+	strExports := cfg.PackageExports["string"]
+	require.NotEmpty(t, strExports, "string package exports should be populated from registry")
+
+	var hasJoin bool
+	for _, sym := range strExports {
+		if sym.Name == "join" {
+			hasJoin = true
+			break
+		}
+	}
+	assert.True(t, hasJoin, "string package should include 'join' export")
 }
