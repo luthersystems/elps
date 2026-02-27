@@ -1,0 +1,1480 @@
+[
+  {
+    "type": "bracket_list",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "bracket_list",
+          "named": true
+        },
+        {
+          "type": "defconst_form",
+          "named": true
+        },
+        {
+          "type": "defmacro_form",
+          "named": true
+        },
+        {
+          "type": "deftype_form",
+          "named": true
+        },
+        {
+          "type": "defun_form",
+          "named": true
+        },
+        {
+          "type": "expr_shorthand",
+          "named": true
+        },
+        {
+          "type": "float",
+          "named": true
+        },
+        {
+          "type": "function_quote",
+          "named": true
+        },
+        {
+          "type": "hex_integer",
+          "named": true
+        },
+        {
+          "type": "integer",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "lambda_form",
+          "named": true
+        },
+        {
+          "type": "let_form",
+          "named": true
+        },
+        {
+          "type": "list",
+          "named": true
+        },
+        {
+          "type": "nil",
+          "named": true
+        },
+        {
+          "type": "octal_integer",
+          "named": true
+        },
+        {
+          "type": "qualified_symbol",
+          "named": true
+        },
+        {
+          "type": "quote",
+          "named": true
+        },
+        {
+          "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "symbol",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "defconst_form",
+    "named": true,
+    "fields": {
+      "docstring": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "qualified_symbol",
+            "named": true
+          },
+          {
+            "type": "quote",
+            "named": true
+          },
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      },
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "bracket_list",
+            "named": true
+          },
+          {
+            "type": "defconst_form",
+            "named": true
+          },
+          {
+            "type": "defmacro_form",
+            "named": true
+          },
+          {
+            "type": "deftype_form",
+            "named": true
+          },
+          {
+            "type": "defun_form",
+            "named": true
+          },
+          {
+            "type": "expr_shorthand",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "function_quote",
+            "named": true
+          },
+          {
+            "type": "hex_integer",
+            "named": true
+          },
+          {
+            "type": "integer",
+            "named": true
+          },
+          {
+            "type": "keyword",
+            "named": true
+          },
+          {
+            "type": "lambda_form",
+            "named": true
+          },
+          {
+            "type": "let_form",
+            "named": true
+          },
+          {
+            "type": "list",
+            "named": true
+          },
+          {
+            "type": "nil",
+            "named": true
+          },
+          {
+            "type": "octal_integer",
+            "named": true
+          },
+          {
+            "type": "qualified_symbol",
+            "named": true
+          },
+          {
+            "type": "quote",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "defmacro_form",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "bracket_list",
+            "named": true
+          },
+          {
+            "type": "defconst_form",
+            "named": true
+          },
+          {
+            "type": "defmacro_form",
+            "named": true
+          },
+          {
+            "type": "deftype_form",
+            "named": true
+          },
+          {
+            "type": "defun_form",
+            "named": true
+          },
+          {
+            "type": "expr_shorthand",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "function_quote",
+            "named": true
+          },
+          {
+            "type": "hex_integer",
+            "named": true
+          },
+          {
+            "type": "integer",
+            "named": true
+          },
+          {
+            "type": "keyword",
+            "named": true
+          },
+          {
+            "type": "lambda_form",
+            "named": true
+          },
+          {
+            "type": "let_form",
+            "named": true
+          },
+          {
+            "type": "list",
+            "named": true
+          },
+          {
+            "type": "nil",
+            "named": true
+          },
+          {
+            "type": "octal_integer",
+            "named": true
+          },
+          {
+            "type": "qualified_symbol",
+            "named": true
+          },
+          {
+            "type": "quote",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      },
+      "formals": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "formals",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "qualified_symbol",
+            "named": true
+          },
+          {
+            "type": "quote",
+            "named": true
+          },
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      },
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "deftype_form",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "bracket_list",
+            "named": true
+          },
+          {
+            "type": "defconst_form",
+            "named": true
+          },
+          {
+            "type": "defmacro_form",
+            "named": true
+          },
+          {
+            "type": "deftype_form",
+            "named": true
+          },
+          {
+            "type": "defun_form",
+            "named": true
+          },
+          {
+            "type": "expr_shorthand",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "function_quote",
+            "named": true
+          },
+          {
+            "type": "hex_integer",
+            "named": true
+          },
+          {
+            "type": "integer",
+            "named": true
+          },
+          {
+            "type": "keyword",
+            "named": true
+          },
+          {
+            "type": "lambda_form",
+            "named": true
+          },
+          {
+            "type": "let_form",
+            "named": true
+          },
+          {
+            "type": "list",
+            "named": true
+          },
+          {
+            "type": "nil",
+            "named": true
+          },
+          {
+            "type": "octal_integer",
+            "named": true
+          },
+          {
+            "type": "qualified_symbol",
+            "named": true
+          },
+          {
+            "type": "quote",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      },
+      "formals": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "formals",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "qualified_symbol",
+            "named": true
+          },
+          {
+            "type": "quote",
+            "named": true
+          },
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      },
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "defun_form",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "bracket_list",
+            "named": true
+          },
+          {
+            "type": "defconst_form",
+            "named": true
+          },
+          {
+            "type": "defmacro_form",
+            "named": true
+          },
+          {
+            "type": "deftype_form",
+            "named": true
+          },
+          {
+            "type": "defun_form",
+            "named": true
+          },
+          {
+            "type": "expr_shorthand",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "function_quote",
+            "named": true
+          },
+          {
+            "type": "hex_integer",
+            "named": true
+          },
+          {
+            "type": "integer",
+            "named": true
+          },
+          {
+            "type": "keyword",
+            "named": true
+          },
+          {
+            "type": "lambda_form",
+            "named": true
+          },
+          {
+            "type": "let_form",
+            "named": true
+          },
+          {
+            "type": "list",
+            "named": true
+          },
+          {
+            "type": "nil",
+            "named": true
+          },
+          {
+            "type": "octal_integer",
+            "named": true
+          },
+          {
+            "type": "qualified_symbol",
+            "named": true
+          },
+          {
+            "type": "quote",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      },
+      "formals": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "formals",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "qualified_symbol",
+            "named": true
+          },
+          {
+            "type": "quote",
+            "named": true
+          },
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      },
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "expr_shorthand",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "bracket_list",
+          "named": true
+        },
+        {
+          "type": "defconst_form",
+          "named": true
+        },
+        {
+          "type": "defmacro_form",
+          "named": true
+        },
+        {
+          "type": "deftype_form",
+          "named": true
+        },
+        {
+          "type": "defun_form",
+          "named": true
+        },
+        {
+          "type": "expr_shorthand",
+          "named": true
+        },
+        {
+          "type": "float",
+          "named": true
+        },
+        {
+          "type": "function_quote",
+          "named": true
+        },
+        {
+          "type": "hex_integer",
+          "named": true
+        },
+        {
+          "type": "integer",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "lambda_form",
+          "named": true
+        },
+        {
+          "type": "let_form",
+          "named": true
+        },
+        {
+          "type": "list",
+          "named": true
+        },
+        {
+          "type": "nil",
+          "named": true
+        },
+        {
+          "type": "octal_integer",
+          "named": true
+        },
+        {
+          "type": "qualified_symbol",
+          "named": true
+        },
+        {
+          "type": "quote",
+          "named": true
+        },
+        {
+          "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "symbol",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "formals",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "qualified_symbol",
+          "named": true
+        },
+        {
+          "type": "symbol",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "function_quote",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "qualified_symbol",
+          "named": true
+        },
+        {
+          "type": "symbol",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "hashbang",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "lambda_form",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "bracket_list",
+            "named": true
+          },
+          {
+            "type": "defconst_form",
+            "named": true
+          },
+          {
+            "type": "defmacro_form",
+            "named": true
+          },
+          {
+            "type": "deftype_form",
+            "named": true
+          },
+          {
+            "type": "defun_form",
+            "named": true
+          },
+          {
+            "type": "expr_shorthand",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "function_quote",
+            "named": true
+          },
+          {
+            "type": "hex_integer",
+            "named": true
+          },
+          {
+            "type": "integer",
+            "named": true
+          },
+          {
+            "type": "keyword",
+            "named": true
+          },
+          {
+            "type": "lambda_form",
+            "named": true
+          },
+          {
+            "type": "let_form",
+            "named": true
+          },
+          {
+            "type": "list",
+            "named": true
+          },
+          {
+            "type": "nil",
+            "named": true
+          },
+          {
+            "type": "octal_integer",
+            "named": true
+          },
+          {
+            "type": "qualified_symbol",
+            "named": true
+          },
+          {
+            "type": "quote",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      },
+      "formals": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "formals",
+            "named": true
+          }
+        ]
+      },
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "let_binding",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "bracket_list",
+          "named": true
+        },
+        {
+          "type": "defconst_form",
+          "named": true
+        },
+        {
+          "type": "defmacro_form",
+          "named": true
+        },
+        {
+          "type": "deftype_form",
+          "named": true
+        },
+        {
+          "type": "defun_form",
+          "named": true
+        },
+        {
+          "type": "expr_shorthand",
+          "named": true
+        },
+        {
+          "type": "float",
+          "named": true
+        },
+        {
+          "type": "function_quote",
+          "named": true
+        },
+        {
+          "type": "hex_integer",
+          "named": true
+        },
+        {
+          "type": "integer",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "lambda_form",
+          "named": true
+        },
+        {
+          "type": "let_form",
+          "named": true
+        },
+        {
+          "type": "list",
+          "named": true
+        },
+        {
+          "type": "nil",
+          "named": true
+        },
+        {
+          "type": "octal_integer",
+          "named": true
+        },
+        {
+          "type": "qualified_symbol",
+          "named": true
+        },
+        {
+          "type": "quote",
+          "named": true
+        },
+        {
+          "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "symbol",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "let_bindings",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "let_binding",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "let_form",
+    "named": true,
+    "fields": {
+      "bindings": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "let_bindings",
+            "named": true
+          }
+        ]
+      },
+      "body": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "bracket_list",
+            "named": true
+          },
+          {
+            "type": "defconst_form",
+            "named": true
+          },
+          {
+            "type": "defmacro_form",
+            "named": true
+          },
+          {
+            "type": "deftype_form",
+            "named": true
+          },
+          {
+            "type": "defun_form",
+            "named": true
+          },
+          {
+            "type": "expr_shorthand",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "function_quote",
+            "named": true
+          },
+          {
+            "type": "hex_integer",
+            "named": true
+          },
+          {
+            "type": "integer",
+            "named": true
+          },
+          {
+            "type": "keyword",
+            "named": true
+          },
+          {
+            "type": "lambda_form",
+            "named": true
+          },
+          {
+            "type": "let_form",
+            "named": true
+          },
+          {
+            "type": "list",
+            "named": true
+          },
+          {
+            "type": "nil",
+            "named": true
+          },
+          {
+            "type": "octal_integer",
+            "named": true
+          },
+          {
+            "type": "qualified_symbol",
+            "named": true
+          },
+          {
+            "type": "quote",
+            "named": true
+          },
+          {
+            "type": "raw_string",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          },
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      },
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "symbol",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "list",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "bracket_list",
+          "named": true
+        },
+        {
+          "type": "defconst_form",
+          "named": true
+        },
+        {
+          "type": "defmacro_form",
+          "named": true
+        },
+        {
+          "type": "deftype_form",
+          "named": true
+        },
+        {
+          "type": "defun_form",
+          "named": true
+        },
+        {
+          "type": "expr_shorthand",
+          "named": true
+        },
+        {
+          "type": "float",
+          "named": true
+        },
+        {
+          "type": "function_quote",
+          "named": true
+        },
+        {
+          "type": "hex_integer",
+          "named": true
+        },
+        {
+          "type": "integer",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "lambda_form",
+          "named": true
+        },
+        {
+          "type": "let_form",
+          "named": true
+        },
+        {
+          "type": "list",
+          "named": true
+        },
+        {
+          "type": "nil",
+          "named": true
+        },
+        {
+          "type": "octal_integer",
+          "named": true
+        },
+        {
+          "type": "qualified_symbol",
+          "named": true
+        },
+        {
+          "type": "quote",
+          "named": true
+        },
+        {
+          "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "symbol",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "nil",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "quote",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "bracket_list",
+          "named": true
+        },
+        {
+          "type": "defconst_form",
+          "named": true
+        },
+        {
+          "type": "defmacro_form",
+          "named": true
+        },
+        {
+          "type": "deftype_form",
+          "named": true
+        },
+        {
+          "type": "defun_form",
+          "named": true
+        },
+        {
+          "type": "expr_shorthand",
+          "named": true
+        },
+        {
+          "type": "float",
+          "named": true
+        },
+        {
+          "type": "function_quote",
+          "named": true
+        },
+        {
+          "type": "hex_integer",
+          "named": true
+        },
+        {
+          "type": "integer",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "lambda_form",
+          "named": true
+        },
+        {
+          "type": "let_form",
+          "named": true
+        },
+        {
+          "type": "list",
+          "named": true
+        },
+        {
+          "type": "nil",
+          "named": true
+        },
+        {
+          "type": "octal_integer",
+          "named": true
+        },
+        {
+          "type": "qualified_symbol",
+          "named": true
+        },
+        {
+          "type": "quote",
+          "named": true
+        },
+        {
+          "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "symbol",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "source_file",
+    "named": true,
+    "root": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "bracket_list",
+          "named": true
+        },
+        {
+          "type": "defconst_form",
+          "named": true
+        },
+        {
+          "type": "defmacro_form",
+          "named": true
+        },
+        {
+          "type": "deftype_form",
+          "named": true
+        },
+        {
+          "type": "defun_form",
+          "named": true
+        },
+        {
+          "type": "expr_shorthand",
+          "named": true
+        },
+        {
+          "type": "float",
+          "named": true
+        },
+        {
+          "type": "function_quote",
+          "named": true
+        },
+        {
+          "type": "hashbang",
+          "named": true
+        },
+        {
+          "type": "hex_integer",
+          "named": true
+        },
+        {
+          "type": "integer",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        },
+        {
+          "type": "lambda_form",
+          "named": true
+        },
+        {
+          "type": "let_form",
+          "named": true
+        },
+        {
+          "type": "list",
+          "named": true
+        },
+        {
+          "type": "nil",
+          "named": true
+        },
+        {
+          "type": "octal_integer",
+          "named": true
+        },
+        {
+          "type": "qualified_symbol",
+          "named": true
+        },
+        {
+          "type": "quote",
+          "named": true
+        },
+        {
+          "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "symbol",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "#!",
+    "named": false
+  },
+  {
+    "type": "#'",
+    "named": false
+  },
+  {
+    "type": "#^",
+    "named": false
+  },
+  {
+    "type": "'",
+    "named": false
+  },
+  {
+    "type": "(",
+    "named": false
+  },
+  {
+    "type": ")",
+    "named": false
+  },
+  {
+    "type": "[",
+    "named": false
+  },
+  {
+    "type": "]",
+    "named": false
+  },
+  {
+    "type": "comment",
+    "named": true
+  },
+  {
+    "type": "float",
+    "named": true
+  },
+  {
+    "type": "hex_integer",
+    "named": true
+  },
+  {
+    "type": "integer",
+    "named": true
+  },
+  {
+    "type": "keyword",
+    "named": true
+  },
+  {
+    "type": "octal_integer",
+    "named": true
+  },
+  {
+    "type": "qualified_symbol",
+    "named": true
+  },
+  {
+    "type": "raw_string",
+    "named": true
+  },
+  {
+    "type": "string",
+    "named": true
+  },
+  {
+    "type": "symbol",
+    "named": true
+  }
+]

@@ -1,0 +1,78 @@
+================================================================================
+In-package
+================================================================================
+
+(in-package 'mylib)
+
+---
+
+(source_file
+  (list
+    (symbol)
+    (quote
+      (symbol))))
+
+================================================================================
+Export
+================================================================================
+
+(export 'my-func)
+
+---
+
+(source_file
+  (list
+    (symbol)
+    (quote
+      (symbol))))
+
+================================================================================
+Use-package
+================================================================================
+
+(use-package 'testing)
+
+---
+
+(source_file
+  (list
+    (symbol)
+    (quote
+      (symbol))))
+
+================================================================================
+Full package setup
+================================================================================
+
+(in-package 'mylib)
+(use-package 'testing)
+(export 'add)
+
+(defun add (a b)
+  (+ a b))
+
+---
+
+(source_file
+  (list
+    (symbol)
+    (quote
+      (symbol)))
+  (list
+    (symbol)
+    (quote
+      (symbol)))
+  (list
+    (symbol)
+    (quote
+      (symbol)))
+  (defun_form
+    operator: (symbol)
+    name: (symbol)
+    formals: (formals
+      (symbol)
+      (symbol))
+    body: (list
+      (symbol)
+      (symbol)
+      (symbol))))

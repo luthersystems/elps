@@ -1,0 +1,192 @@
+================================================================================
+Simple defun
+================================================================================
+
+(defun add (a b)
+  (+ a b))
+
+---
+
+(source_file
+  (defun_form
+    operator: (symbol)
+    name: (symbol)
+    formals: (formals
+      (symbol)
+      (symbol))
+    body: (list
+      (symbol)
+      (symbol)
+      (symbol))))
+
+================================================================================
+Defun with multiple body expressions
+================================================================================
+
+(defun greet (name)
+  (debug-print name)
+  (format-string "Hello {}" name))
+
+---
+
+(source_file
+  (defun_form
+    operator: (symbol)
+    name: (symbol)
+    formals: (formals
+      (symbol))
+    body: (list
+      (symbol)
+      (symbol))
+    body: (list
+      (symbol)
+      (string)
+      (symbol))))
+
+================================================================================
+Defun with optional args
+================================================================================
+
+(defun make-point (x &optional y)
+  (list x y))
+
+---
+
+(source_file
+  (defun_form
+    operator: (symbol)
+    name: (symbol)
+    formals: (formals
+      (symbol)
+      (symbol)
+      (symbol))
+    body: (list
+      (symbol)
+      (symbol)
+      (symbol))))
+
+================================================================================
+Defun with no body
+================================================================================
+
+(defun noop ())
+
+---
+
+(source_file
+  (defun_form
+    operator: (symbol)
+    name: (symbol)
+    formals: (formals)))
+
+================================================================================
+Defmacro
+================================================================================
+
+(defmacro when (condition &rest body)
+  (list 'if condition (cons 'progn body)))
+
+---
+
+(source_file
+  (defmacro_form
+    operator: (symbol)
+    name: (symbol)
+    formals: (formals
+      (symbol)
+      (symbol)
+      (symbol))
+    body: (list
+      (symbol)
+      (quote
+        (symbol))
+      (symbol)
+      (list
+        (symbol)
+        (quote
+          (symbol))
+        (symbol)))))
+
+================================================================================
+Deftype
+================================================================================
+
+(deftype point (x y)
+  (sorted-map "x" x "y" y))
+
+---
+
+(source_file
+  (deftype_form
+    operator: (symbol)
+    name: (symbol)
+    formals: (formals
+      (symbol)
+      (symbol))
+    body: (list
+      (symbol)
+      (string)
+      (symbol)
+      (string)
+      (symbol))))
+
+================================================================================
+Lambda
+================================================================================
+
+(lambda (x) (* x x))
+
+---
+
+(source_file
+  (lambda_form
+    operator: (symbol)
+    formals: (formals
+      (symbol))
+    body: (list
+      (symbol)
+      (symbol)
+      (symbol))))
+
+================================================================================
+Lambda no args
+================================================================================
+
+(lambda () 42)
+
+---
+
+(source_file
+  (lambda_form
+    operator: (symbol)
+    formals: (formals)
+    body: (integer)))
+
+================================================================================
+Defconst
+================================================================================
+
+(defconst pi 3.14159 "The ratio of circumference to diameter")
+
+---
+
+(source_file
+  (defconst_form
+    operator: (symbol)
+    name: (symbol)
+    value: (float)
+    docstring: (string)))
+
+================================================================================
+Defconst without docstring
+================================================================================
+
+(defconst max-size 100)
+
+---
+
+(source_file
+  (defconst_form
+    operator: (symbol)
+    name: (symbol)
+    value: (integer)))

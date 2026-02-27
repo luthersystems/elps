@@ -1,0 +1,37 @@
+{
+  "grammars": [
+    {
+      "name": "elps",
+      "camelCase": false,
+      "scope": "source.elps",
+      "file-types": [
+        "lisp",
+        "elps"
+      ],
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm",
+      "injection-regex": "^elps$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Tree-sitter grammar for ELPS (Embedded Lisp)",
+    "authors": [
+      {
+        "name": "Luther Systems"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/luthersystems/elps"
+    }
+  },
+  "bindings": {
+    "c": true,
+    "go": true,
+    "node": true,
+    "python": true,
+    "rust": true,
+    "swift": true
+  }
+}

@@ -1,0 +1,38 @@
+name: Tree-sitter Grammar Tests
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "tree-sitter-elps/**"
+  push:
+    branches:
+      - main
+    paths:
+      - "tree-sitter-elps/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tree-sitter Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+          cache-dependency-path: tree-sitter-elps/go.sum
+
+      - name: Download dependencies
+        working-directory: tree-sitter-elps
+        run: go mod download
+
+      - name: Tests
+        working-directory: tree-sitter-elps
+        run: go test -v ./...
