@@ -100,6 +100,7 @@ func New(opts ...Option) *Server {
 		TextDocumentFormatting:     s.textDocumentFormatting,
 		TextDocumentSignatureHelp:  s.textDocumentSignatureHelp,
 		TextDocumentCodeAction:     s.textDocumentCodeAction,
+		TextDocumentFoldingRange:   s.textDocumentFoldingRange,
 	}
 
 	s.glspSrv = glspserver.NewServer(&s.handler, serverName, false)
