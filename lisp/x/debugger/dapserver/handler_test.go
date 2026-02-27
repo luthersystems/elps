@@ -5298,30 +5298,18 @@ func TestDAPServer_FilterCommand_WithPagination(t *testing.T) {
 
 func TestDAPServer_CustomCommand_Dispatch(t *testing.T) {
 	t.Parallel()
-	e := debugger.New(debugger.WithCommands(map[string]debugger.CommandHandler{
+	// Use setupDAPSessionWithClientCaps with SupportsInvalidatedEvent: true
+	// so we can verify refresh=false actually suppresses InvalidatedEvent.
+	s := setupDAPSessionWithClientCaps(t, dap.InitializeRequestArguments{
+		AdapterID:                "elps",
+		LinesStartAt1:            true,
+		SupportsInvalidatedEvent: true,
+	}, debugger.WithCommands(map[string]debugger.CommandHandler{
 		"reload": func(args string) (string, bool, error) {
 			return "reloaded: " + args, false, nil
 		},
 	}))
-	e.Enable()
-	srv := New(e)
 
-	client, server := net.Pipe()
-	t.Cleanup(func() { client.Close() }) //nolint:errcheck,gosec
-
-	go func() {
-		_ = srv.ServeConn(server)
-	}()
-
-	s := &dapTestSession{t: t, engine: e, client: client, reader: bufio.NewReader(client)}
-	s.send(&dap.InitializeRequest{
-		Request:   dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "initialize"},
-		Arguments: dap.InitializeRequestArguments{AdapterID: "elps", LinesStartAt1: true},
-	})
-	s.read() // InitializeResponse
-	s.read() // InitializedEvent
-
-	// Set breakpoint and pause.
 	s.send(&dap.SetBreakpointsRequest{
 		Request: dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "setBreakpoints"},
 		Arguments: dap.SetBreakpointsArguments{
@@ -5332,23 +5320,28 @@ func TestDAPServer_CustomCommand_Dispatch(t *testing.T) {
 	s.read() // SetBreakpointsResponse
 	s.configDone()
 
-	env := newDAPTestEnv(t, e)
+	env := newDAPTestEnv(t, s.engine)
 	resultCh := make(chan *lisp.LVal, 1)
 	go func() {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
-	require.Eventually(t, func() bool { return e.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
 	require.Greater(t, len(stResp.Body.StackFrames), 0)
 	topFrame := stResp.Body.StackFrames[0].Id
 
-	// Dispatch custom command.
+	// Dispatch custom command with refresh=false.
 	evalResp := s.evaluate("/reload all-modules", topFrame)
 	assert.True(t, evalResp.Success)
 	assert.Equal(t, "reloaded: all-modules", evalResp.Body.Result)
+
+	// Verify NO InvalidatedEvent when refresh=false (client supports it,
+	// so only the refresh flag prevents it).
+	msg, received := s.tryRead(200 * time.Millisecond)
+	assert.False(t, received, "should NOT receive InvalidatedEvent when refresh=false, got %T", msg)
 
 	s.continueExec()
 	select {
@@ -5361,13 +5354,6 @@ func TestDAPServer_CustomCommand_Dispatch(t *testing.T) {
 
 func TestDAPServer_CustomCommand_Refresh(t *testing.T) {
 	t.Parallel()
-	e := debugger.New(debugger.WithCommands(map[string]debugger.CommandHandler{
-		"refresh-data": func(args string) (string, bool, error) {
-			return "refreshed", true, nil
-		},
-	}))
-	e.Enable()
-
 	s := setupDAPSessionWithClientCaps(t, dap.InitializeRequestArguments{
 		AdapterID:                "elps",
 		LinesStartAt1:            true,
