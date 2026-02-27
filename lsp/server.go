@@ -80,11 +80,10 @@ func New(opts ...Option) *Server {
 	}
 
 	s.handler = protocol.Handler{
-		Initialize:  s.initialize,
-		Initialized: s.initialized,
-		Shutdown:    s.shutdown,
-		Exit:        s.exit,
-		SetTrace:    s.setTrace,
+		Initialize: s.initialize,
+		Shutdown:   s.shutdown,
+		Exit:       s.exit,
+		SetTrace:   s.setTrace,
 
 		TextDocumentDidOpen:   s.textDocumentDidOpen,
 		TextDocumentDidChange: s.textDocumentDidChange,
@@ -164,19 +163,6 @@ func (s *Server) initialize(ctx *glsp.Context, params *protocol.InitializeParams
 	}, nil
 }
 
-// initialized is called after the client confirms initialization.
-// Build the workspace index in the background, then re-analyze any
-// documents that were opened before the index was ready.
-func (s *Server) initialized(ctx *glsp.Context, params *protocol.InitializedParams) error {
-	s.captureNotify(ctx)
-	go func() {
-		defer func() { _ = recover() }()
-		s.ensureWorkspaceIndex()
-		s.reanalyzeOpenDocuments()
-	}()
-	return nil
-}
-
 // shutdown handles the LSP shutdown request.
 func (s *Server) shutdown(ctx *glsp.Context) error {
 	// Cancel any pending debounce timers.
@@ -205,13 +191,21 @@ func (s *Server) setTrace(_ *glsp.Context, _ *protocol.SetTraceParams) error {
 }
 
 // ensureWorkspaceIndex guarantees the workspace index is built at least
-// once. It is safe to call from any goroutine. If the initialized
-// notification triggered the build, this is a no-op. Otherwise it builds
-// the index lazily on first demand — this is the fallback for issue #173
-// where the initialized notification may fail in some JSON-RPC libraries.
+// once. It is safe to call from any goroutine. The index is built lazily
+// on first demand — typically from the first hover, completion, or other
+// request that requires analysis. After building, cached analysis results
+// for all open documents are invalidated so they will be re-analyzed with
+// the workspace config on next access.
 func (s *Server) ensureWorkspaceIndex() {
 	s.indexOnce.Do(func() {
 		s.buildWorkspaceIndex()
+		// Invalidate cached analysis for all open documents so they'll
+		// be re-analyzed with the new workspace config on next access.
+		for _, doc := range s.docs.All() {
+			doc.mu.Lock()
+			doc.analysis = nil
+			doc.mu.Unlock()
+		}
 	})
 }
 

@@ -737,6 +737,72 @@ func TestE2E_Formatting(t *testing.T) {
 	send(t, conn, jsonRPCNotification("exit", nil))
 }
 
+// TestE2E_InitializedNotRequired verifies that the server works correctly
+// even when the client never sends the "initialized" notification (#179).
+// The workspace index should be built lazily on first demand.
+func TestE2E_InitializedNotRequired(t *testing.T) {
+	conn, cleanup := e2eServer(t)
+	defer cleanup()
+
+	reader := bufio.NewReader(conn)
+	testURI := "file:///tmp/e2e-noinit/test.lisp"
+
+	// Step 1: Initialize (but deliberately skip "initialized" notification).
+	send(t, conn, jsonRPCRequest(1, "initialize", map[string]any{
+		"capabilities": map[string]any{},
+		"rootUri":      "file:///tmp/e2e-noinit",
+	}))
+	readResponse(t, reader, 1)
+	// NOTE: No "initialized" notification sent here.
+
+	// Step 2: Open a document.
+	send(t, conn, jsonRPCNotification("textDocument/didOpen", map[string]any{
+		"textDocument": map[string]any{
+			"uri":        testURI,
+			"languageId": "elps",
+			"version":    1,
+			"text":       "(defun add (a b)\n  \"Add two numbers.\"\n  (+ a b))\n\n(add 1 2)",
+		},
+	}))
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Step 3: Hover should work without initialized notification.
+	send(t, conn, jsonRPCRequest(2, "textDocument/hover", map[string]any{
+		"textDocument": map[string]any{"uri": testURI},
+		"position":     map[string]any{"line": 0, "character": 7},
+	}))
+
+	hoverResp, _ := readResponse(t, reader, 2)
+	require.NotNil(t, hoverResp["result"], "hover should work without initialized notification (#179)")
+	hoverResult := hoverResp["result"].(map[string]any)
+	hoverContents := hoverResult["contents"].(map[string]any)
+	hoverValue := hoverContents["value"].(string)
+	assert.Contains(t, hoverValue, "add", "hover should mention function name")
+	assert.Contains(t, hoverValue, "function", "hover should show kind")
+
+	// Step 4: Completion should also work.
+	send(t, conn, jsonRPCRequest(3, "textDocument/completion", map[string]any{
+		"textDocument": map[string]any{"uri": testURI},
+		"position":     map[string]any{"line": 4, "character": 2},
+	}))
+
+	compResp, _ := readResponse(t, reader, 3)
+	require.NotNil(t, compResp["result"], "completion should work without initialized notification (#179)")
+	compItems := compResp["result"].([]any)
+	var compLabels []string
+	for _, item := range compItems {
+		ci := item.(map[string]any)
+		compLabels = append(compLabels, ci["label"].(string))
+	}
+	assert.Contains(t, compLabels, "add", "completion should include user-defined 'add'")
+
+	// Cleanup.
+	send(t, conn, jsonRPCRequest(99, "shutdown", nil))
+	readResponse(t, reader, 99)
+	send(t, conn, jsonRPCNotification("exit", nil))
+}
+
 func TestE2E_RenameBuiltinRejected(t *testing.T) {
 	conn, cleanup := e2eServer(t)
 	defer cleanup()
