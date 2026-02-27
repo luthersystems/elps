@@ -105,6 +105,8 @@ func New(opts ...Option) *Server {
 		TextDocumentPrepareCallHierarchy: s.textDocumentPrepareCallHierarchy,
 		CallHierarchyIncomingCalls:       s.callHierarchyIncomingCalls,
 		CallHierarchyOutgoingCalls:       s.callHierarchyOutgoingCalls,
+
+		WorkspaceSymbol: s.workspaceSymbol,
 	}
 
 	s.glspSrv = glspserver.NewServer(&s.handler, serverName, false)
