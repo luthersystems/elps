@@ -208,11 +208,9 @@ func (s *Server) buildWorkspaceIndex() {
 	var extraGlobals []analysis.ExternalSymbol
 	var pkgExports map[string][]analysis.ExternalSymbol
 
-	// Scan workspace files.
-	if globals, err := analysis.ScanWorkspace(s.rootPath); err == nil {
+	// Scan workspace files in a single pass.
+	if globals, pkgs, err := analysis.ScanWorkspaceFull(s.rootPath); err == nil {
 		extraGlobals = globals
-	}
-	if pkgs, err := analysis.ScanWorkspacePackages(s.rootPath); err == nil {
 		pkgExports = pkgs
 	}
 
@@ -232,6 +230,12 @@ func (s *Server) buildWorkspaceIndex() {
 		}
 	}
 
+	// Deduplicate package exports by symbol name. Prefer registry entries
+	// (richer type info) over workspace entries when both exist.
+	for pkg, syms := range pkgExports {
+		pkgExports[pkg] = deduplicateExports(syms)
+	}
+
 	cfg := &analysis.Config{
 		ExtraGlobals:   extraGlobals,
 		PackageExports: pkgExports,
@@ -240,6 +244,40 @@ func (s *Server) buildWorkspaceIndex() {
 	s.analysisCfgMu.Lock()
 	s.analysisCfg = cfg
 	s.analysisCfgMu.Unlock()
+
+	// Re-analyze all open documents now that workspace context is available.
+	// This clears false positives from the initial analysis (e.g. missing
+	// use-package imports) that ran before the workspace index was ready.
+	s.reanalyzeOpenDocuments()
+}
+
+// reanalyzeOpenDocuments invalidates cached analysis for all open documents
+// and re-publishes diagnostics with the current workspace config.
+func (s *Server) reanalyzeOpenDocuments() {
+	for _, doc := range s.docs.All() {
+		doc.mu.Lock()
+		doc.analysis = nil
+		doc.mu.Unlock()
+		s.analyzeAndPublish(doc)
+	}
+}
+
+// deduplicateExports removes duplicate symbols by name from a list of
+// exports. The last entry wins — since stdlib (registry) entries are
+// appended after workspace entries, they take precedence.
+func deduplicateExports(syms []analysis.ExternalSymbol) []analysis.ExternalSymbol {
+	seen := make(map[string]int, len(syms))
+	var result []analysis.ExternalSymbol
+	for _, sym := range syms {
+		if idx, ok := seen[sym.Name]; ok {
+			// Replace existing entry (last wins = registry preferred).
+			result[idx] = sym
+		} else {
+			seen[sym.Name] = len(result)
+			result = append(result, sym)
+		}
+	}
+	return result
 }
 
 // getAnalysisConfig returns a copy of the workspace analysis config with

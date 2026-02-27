@@ -79,3 +79,27 @@ func TestExtractPackageExports_PackageField(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractPackageExports_DocString(t *testing.T) {
+	reg := loadedRegistry()
+	exports := ExtractPackageExports(reg)
+	require.NotNil(t, exports)
+
+	// Pin a specific known symbol and verify its docstring content.
+	testingPkg, ok := exports["testing"]
+	require.True(t, ok, "testing package should have exports")
+
+	symByName := make(map[string]ExternalSymbol)
+	for _, sym := range testingPkg {
+		symByName[sym.Name] = sym
+	}
+	assertEq, ok := symByName["assert-equal"]
+	require.True(t, ok, "testing package should export assert-equal")
+	assert.Contains(t, assertEq.DocString, "structurally equal",
+		"assert-equal docstring should describe structural equality")
+
+	assertNil, ok := symByName["assert-nil"]
+	require.True(t, ok, "testing package should export assert-nil")
+	assert.Contains(t, assertNil.DocString, "nil",
+		"assert-nil docstring should mention nil")
+}

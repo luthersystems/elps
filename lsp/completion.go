@@ -78,6 +78,12 @@ func (s *Server) packageCompletions(doc *Document, pkgName, partial string) []pr
 			detail := formatSignature(ext.Signature)
 			item.Detail = &detail
 		}
+		if ext.DocString != "" {
+			item.Documentation = &protocol.MarkupContent{
+				Kind:  protocol.MarkupKindMarkdown,
+				Value: ext.DocString,
+			}
+		}
 		items = append(items, item)
 	}
 	return items

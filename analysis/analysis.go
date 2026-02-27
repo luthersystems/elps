@@ -32,6 +32,7 @@ type ExternalSymbol struct {
 	Package   string
 	Signature *Signature
 	Source    *token.Location
+	DocString string
 }
 
 // Result holds the output of semantic analysis.
@@ -59,6 +60,7 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 			Kind:      ext.Kind,
 			Source:    ext.Source,
 			Signature: ext.Signature,
+			DocString: ext.DocString,
 			Exported:  true,
 			External:  true,
 		})

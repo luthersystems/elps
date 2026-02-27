@@ -1076,6 +1076,267 @@ func TestCompletionEmptyPrefix(t *testing.T) {
 	assert.Contains(t, labels, "aaa")
 }
 
+func TestHoverOnQualifiedSymbol(t *testing.T) {
+	s := testServer()
+	s.analysisCfg = &analysis.Config{
+		PackageExports: map[string][]analysis.ExternalSymbol{
+			"string": {
+				{
+					Name:      "join",
+					Kind:      analysis.SymFunction,
+					Package:   "string",
+					DocString: "Join a list of strings with a separator.",
+					Signature: &analysis.Signature{
+						Params: []lisp.ParamInfo{
+							{Name: "sep", Kind: lisp.ParamRequired},
+							{Name: "lst", Kind: lisp.ParamRequired},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	content := "(string:join \",\" '(\"a\" \"b\" \"c\"))"
+	openDoc(s, "file:///test.lisp", content)
+
+	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 2}, // on "string:join"
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, hover, "hover on qualified symbol should not be nil")
+	mc, ok := hover.Contents.(protocol.MarkupContent)
+	require.True(t, ok, "hover contents should be MarkupContent")
+	assert.Contains(t, mc.Value, "join")
+	assert.Contains(t, mc.Value, "function")
+	assert.Contains(t, mc.Value, "Join a list of strings with a separator.")
+}
+
+func TestHoverOnQualifiedSymbolUnknown(t *testing.T) {
+	s := testServer()
+	s.analysisCfg = &analysis.Config{
+		PackageExports: map[string][]analysis.ExternalSymbol{
+			"string": {
+				{Name: "join", Kind: analysis.SymFunction, Package: "string"},
+			},
+		},
+	}
+
+	content := "(string:nonexistent 1)"
+	openDoc(s, "file:///test.lisp", content)
+
+	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 2},
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, hover, "hover on unknown qualified symbol should be nil")
+}
+
+func TestCompletionPackageQualifiedDocString(t *testing.T) {
+	s := testServer()
+	s.analysisCfg = &analysis.Config{
+		PackageExports: map[string][]analysis.ExternalSymbol{
+			"math": {
+				{
+					Name:      "abs",
+					Kind:      analysis.SymFunction,
+					Package:   "math",
+					DocString: "Return the absolute value.",
+				},
+			},
+		},
+	}
+
+	content := "(math:"
+	openDoc(s, "file:///test.lisp", content)
+
+	result, err := s.textDocumentCompletion(mockContext(), &protocol.CompletionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 6},
+		},
+	})
+	require.NoError(t, err)
+	items, ok := result.([]protocol.CompletionItem)
+	require.True(t, ok)
+	require.Len(t, items, 1)
+	assert.Equal(t, "math:abs", items[0].Label)
+	require.NotNil(t, items[0].Documentation, "completion item should have documentation")
+	mc, ok := items[0].Documentation.(*protocol.MarkupContent)
+	require.True(t, ok, "documentation should be MarkupContent")
+	assert.Equal(t, "Return the absolute value.", mc.Value)
+}
+
+func TestCompletionPackageQualifiedNoDocString(t *testing.T) {
+	s := testServer()
+	s.analysisCfg = &analysis.Config{
+		PackageExports: map[string][]analysis.ExternalSymbol{
+			"math": {
+				{Name: "abs", Kind: analysis.SymFunction, Package: "math"},
+			},
+		},
+	}
+
+	content := "(math:"
+	openDoc(s, "file:///test.lisp", content)
+
+	result, err := s.textDocumentCompletion(mockContext(), &protocol.CompletionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 6},
+		},
+	})
+	require.NoError(t, err)
+	items, ok := result.([]protocol.CompletionItem)
+	require.True(t, ok)
+	require.Len(t, items, 1)
+	assert.Equal(t, "math:abs", items[0].Label)
+	assert.Nil(t, items[0].Documentation,
+		"completion item without docstring should have nil documentation")
+}
+
+func TestHoverOnUnknownPackageQualifiedSymbol(t *testing.T) {
+	s := testServer()
+	// Package "nosuchpkg" doesn't exist in exports at all.
+	s.analysisCfg = &analysis.Config{
+		PackageExports: map[string][]analysis.ExternalSymbol{},
+	}
+
+	content := "(nosuchpkg:something 1)"
+	openDoc(s, "file:///test.lisp", content)
+
+	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 2},
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, hover, "hover on unknown package should be nil")
+}
+
+func TestDeduplicateExports(t *testing.T) {
+	t.Run("no duplicates", func(t *testing.T) {
+		syms := []analysis.ExternalSymbol{
+			{Name: "foo", Kind: analysis.SymFunction},
+			{Name: "bar", Kind: analysis.SymFunction},
+		}
+		result := deduplicateExports(syms)
+		require.Len(t, result, 2)
+		names := make(map[string]bool)
+		for _, sym := range result {
+			names[sym.Name] = true
+		}
+		assert.True(t, names["foo"], "foo should survive deduplication")
+		assert.True(t, names["bar"], "bar should survive deduplication")
+	})
+
+	t.Run("duplicates removed", func(t *testing.T) {
+		syms := []analysis.ExternalSymbol{
+			{Name: "foo", Kind: analysis.SymFunction, DocString: "workspace"},
+			{Name: "bar", Kind: analysis.SymFunction, DocString: "bar-doc"},
+			{Name: "foo", Kind: analysis.SymFunction, DocString: "registry"},
+		}
+		result := deduplicateExports(syms)
+		require.Len(t, result, 2)
+		resultMap := make(map[string]analysis.ExternalSymbol)
+		for _, sym := range result {
+			resultMap[sym.Name] = sym
+		}
+		assert.Equal(t, "registry", resultMap["foo"].DocString,
+			"registry entry should take precedence over workspace")
+		assert.Equal(t, "bar-doc", resultMap["bar"].DocString,
+			"non-duplicate entry should be preserved")
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		result := deduplicateExports(nil)
+		assert.Empty(t, result)
+	})
+}
+
+func TestDocumentStoreAll(t *testing.T) {
+	store := NewDocumentStore()
+	store.Open("file:///a.lisp", 1, "(+ 1 2)")
+	store.Open("file:///b.lisp", 1, "(+ 3 4)")
+
+	all := store.All()
+	require.Len(t, all, 2, "All() should return all open documents")
+
+	docsByURI := make(map[string]*Document)
+	for _, doc := range all {
+		docsByURI[doc.URI] = doc
+	}
+	require.Contains(t, docsByURI, "file:///a.lisp")
+	require.Contains(t, docsByURI, "file:///b.lisp")
+	assert.Equal(t, "(+ 1 2)", docsByURI["file:///a.lisp"].Content)
+	assert.Equal(t, "(+ 3 4)", docsByURI["file:///b.lisp"].Content)
+
+	// After closing one document, All() should reflect the change.
+	store.Close("file:///a.lisp")
+	all = store.All()
+	require.Len(t, all, 1, "All() should reflect closed documents")
+	assert.Equal(t, "file:///b.lisp", all[0].URI)
+}
+
+func TestReanalyzeOpenDocuments(t *testing.T) {
+	s := testServer()
+	// Set up notification capturing.
+	var captured []*protocol.PublishDiagnosticsParams
+	s.notify = func(method string, params any) {
+		if method == protocol.ServerTextDocumentPublishDiagnostics {
+			captured = append(captured, params.(*protocol.PublishDiagnosticsParams))
+		}
+	}
+
+	// Open a document that uses a package (will have false positive until
+	// workspace index provides the package exports).
+	content := `(use-package 'testing)
+(assert-equal 1 1)`
+	doc := openDoc(s, "file:///test.lisp", content)
+
+	// First analysis: no workspace config yet, so use-package can't resolve.
+	s.analyzeAndPublish(doc)
+	require.Len(t, captured, 1, "initial analysis should publish one diagnostic set")
+	initialDiags := captured[0].Diagnostics
+
+	// Without workspace config, assert-equal is unresolvable — expect diagnostics.
+	hasUndefinedSymbol := false
+	for _, d := range initialDiags {
+		if d.Message != "" {
+			hasUndefinedSymbol = true
+			break
+		}
+	}
+	require.True(t, hasUndefinedSymbol || len(initialDiags) > 0,
+		"initial analysis should produce diagnostics (unresolvable package)")
+
+	// Now simulate workspace index completing with testing package exports.
+	s.analysisCfg = &analysis.Config{
+		PackageExports: map[string][]analysis.ExternalSymbol{
+			"testing": {
+				{Name: "assert-equal", Kind: analysis.SymFunction, Package: "testing"},
+			},
+		},
+	}
+
+	// Re-analyze should publish new diagnostics for all open docs.
+	s.reanalyzeOpenDocuments()
+	require.Greater(t, len(captured), 1,
+		"reanalyze should publish new diagnostics after workspace index completes")
+
+	// The re-analysis diagnostics should have fewer issues (false positives cleared).
+	reanalyzedDiags := captured[len(captured)-1].Diagnostics
+	assert.LessOrEqual(t, len(reanalyzedDiags), len(initialDiags),
+		"re-analysis with workspace config should produce fewer (or equal) diagnostics")
+}
+
 func TestDefinitionOnUndefinedSymbol(t *testing.T) {
 	s := testServer()
 	content := "(nonexistent 1 2 3)"

@@ -21,8 +21,9 @@ func ExtractPackageExports(reg *lisp.PackageRegistry) map[string][]ExternalSymbo
 				continue
 			}
 			sym := ExternalSymbol{
-				Name:    extName,
-				Package: name,
+				Name:      extName,
+				Package:   name,
+				DocString: val.Docstring(),
 			}
 			sym.Kind, sym.Signature = classifyLVal(val)
 			syms = append(syms, sym)
