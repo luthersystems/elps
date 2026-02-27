@@ -227,13 +227,6 @@ func classifySymbol(
 		return semTokenVariable, 0
 	}
 
-	// Check if this is a package-qualified name (contains :).
-	if i := strings.Index(name, ":"); i > 0 && !strings.HasPrefix(name, ":") {
-		// The package prefix part is a namespace token — but we emit the
-		// whole symbol as one token based on its resolved kind.
-		// Fall through to analysis-based classification.
-	}
-
 	// Check analysis result — look up by 1-based position.
 	key := symbolKey{line + 1, col + 1}
 
