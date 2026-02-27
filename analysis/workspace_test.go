@@ -263,11 +263,15 @@ func TestScanWorkspaceFull_CombinedResults(t *testing.T) {
 	require.NoError(t, err)
 
 	// Globals should contain the exported symbol.
-	assert.Len(t, globals, 1)
+	require.Len(t, globals, 1)
 	assert.Equal(t, "helper", globals[0].Name)
+	assert.Equal(t, SymFunction, globals[0].Kind)
 
-	// Package exports should group by package.
+	// Package exports should group by package with Package field set.
 	require.Contains(t, pkgs, "mylib")
-	assert.Len(t, pkgs["mylib"], 1)
+	require.Len(t, pkgs["mylib"], 1)
 	assert.Equal(t, "helper", pkgs["mylib"][0].Name)
+	assert.Equal(t, "mylib", pkgs["mylib"][0].Package,
+		"package export should have Package field set")
+	assert.Equal(t, SymFunction, pkgs["mylib"][0].Kind)
 }
