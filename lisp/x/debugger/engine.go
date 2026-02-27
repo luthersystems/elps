@@ -130,7 +130,13 @@ type Engine struct {
 
 	// commands holds custom slash command handlers registered by embedders.
 	// Read during debugging (onEvaluate), written at startup.
-	commands map[string]CommandHandler
+	commands map[string]commandEntry
+}
+
+// commandEntry pairs a command handler with an optional description.
+type commandEntry struct {
+	handler CommandHandler
+	desc    string
 }
 
 type sourceRefEntry struct {
@@ -212,13 +218,15 @@ func WithSourceLibrary(lib lisp.SourceLibrary) Option {
 
 // WithCommands sets the custom slash command handlers for the debug console.
 // Keys are command names without the leading "/" (e.g., "reload").
+// Commands registered via WithCommands have empty descriptions; use
+// RegisterCommand to provide descriptions.
 func WithCommands(cmds map[string]CommandHandler) Option {
 	return func(e *Engine) {
 		if e.commands == nil {
-			e.commands = make(map[string]CommandHandler)
+			e.commands = make(map[string]commandEntry)
 		}
 		for name, h := range cmds {
-			e.commands[name] = h
+			e.commands[name] = commandEntry{handler: h}
 		}
 	}
 }
@@ -306,14 +314,19 @@ func (e *Engine) ScopeProviders() []ScopeProvider {
 
 // RegisterCommand registers a custom slash command handler at runtime.
 // name is the command name without the leading "/" (e.g., "reload").
+// An optional description string can be provided as the third argument.
 // Safe to call before debugging starts.
-func (e *Engine) RegisterCommand(name string, h CommandHandler) {
+func (e *Engine) RegisterCommand(name string, h CommandHandler, desc ...string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.commands == nil {
-		e.commands = make(map[string]CommandHandler)
+		e.commands = make(map[string]commandEntry)
 	}
-	e.commands[name] = h
+	d := ""
+	if len(desc) > 0 {
+		d = desc[0]
+	}
+	e.commands[name] = commandEntry{handler: h, desc: d}
 }
 
 // Command returns the handler registered for the given command name, or nil
@@ -321,7 +334,11 @@ func (e *Engine) RegisterCommand(name string, h CommandHandler) {
 func (e *Engine) Command(name string) CommandHandler {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.commands[name]
+	entry, ok := e.commands[name]
+	if !ok {
+		return nil
+	}
+	return entry.handler
 }
 
 // CommandNames returns the sorted list of registered command names.
@@ -337,6 +354,29 @@ func (e *Engine) CommandNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// CommandDescriptions returns a map of command name to description for all
+// registered commands. Commands without descriptions have empty strings.
+func (e *Engine) CommandDescriptions() map[string]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.commands) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(e.commands))
+	for name, entry := range e.commands {
+		m[name] = entry.desc
+	}
+	return m
+}
+
+// CommandDescription returns the description for a single command, or empty
+// string if the command is not registered or has no description.
+func (e *Engine) CommandDescription(name string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.commands[name].desc
 }
 
 // AllocSourceRef allocates a source reference ID for virtual source content.

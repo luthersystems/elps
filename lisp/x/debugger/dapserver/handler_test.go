@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -5603,4 +5604,206 @@ func TestDAPServer_CompletionsCapability_SlashTrigger(t *testing.T) {
 	require.True(t, ok, "expected InitializeResponse, got %T", msg)
 	assert.Contains(t, initResp.Body.CompletionTriggerCharacters, "/",
 		"CompletionTriggerCharacters should include '/'")
+}
+
+func TestDAPServer_HelpCommand_ListsBuiltinAndCustomCommands(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithCommands(map[string]debugger.CommandHandler{
+		"reload": func(args string) (string, bool, error) { return "", false, nil },
+	}))
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "setBreakpoints"},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	// /help should list built-in commands (filter, help) plus registered (reload).
+	evalResp := s.evaluate("/help", topFrame)
+	assert.True(t, evalResp.Success)
+
+	// Verify per-line structure: each command on its own line with correct description.
+	lines := strings.Split(evalResp.Body.Result, "\n")
+	require.Len(t, lines, 4, "expected header + 3 command lines")
+	assert.Equal(t, "Available commands:", lines[0])
+	assert.Contains(t, lines[1], "/filter")
+	assert.Contains(t, lines[1], "Filter map keys by regex")
+	assert.Contains(t, lines[2], "/help")
+	assert.Contains(t, lines[2], "Show available commands")
+	assert.Contains(t, lines[3], "/reload")
+
+	// Whitespace-trimmed input should also work.
+	evalResp2 := s.evaluate("  /help  ", topFrame)
+	assert.True(t, evalResp2.Success)
+	assert.Equal(t, evalResp.Body.Result, evalResp2.Body.Result)
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_HelpCommand_ShowsCustomDescriptions(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+	s.engine.RegisterCommand("reload", func(args string) (string, bool, error) {
+		return "", false, nil
+	}, "Reload all modules")
+	s.engine.RegisterCommand("status", func(args string) (string, bool, error) {
+		return "", false, nil
+	}, "Show system status")
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "setBreakpoints"},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	// Stop on entry, then continue to breakpoint.
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (breakpoint)
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	evalResp := s.evaluate("/help", topFrame)
+	assert.True(t, evalResp.Success)
+
+	// Verify per-line: each command line has the correct description.
+	lines := strings.Split(evalResp.Body.Result, "\n")
+	require.Len(t, lines, 5, "expected header + 4 command lines (filter, help, reload, status)")
+	assert.Equal(t, "Available commands:", lines[0])
+
+	// Build line-to-description map for structural verification.
+	lineFor := make(map[string]string) // command name → full line
+	for _, line := range lines[1:] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Extract command name (first word starting with /)
+		parts := strings.Fields(trimmed)
+		if len(parts) > 0 {
+			lineFor[parts[0]] = line
+		}
+	}
+	assert.Contains(t, lineFor["/reload"], "Reload all modules")
+	assert.Contains(t, lineFor["/status"], "Show system status")
+	assert.Contains(t, lineFor["/filter"], "Filter map keys by regex")
+	assert.Contains(t, lineFor["/help"], "Show available commands")
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_HelpCommand_CompletionsIncludeDescriptions(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+	s.engine.RegisterCommand("reload", func(args string) (string, bool, error) {
+		return "", false, nil
+	}, "Reload all modules")
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "setBreakpoints"},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	// Stop on entry, then continue to breakpoint.
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (breakpoint)
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	// "/" should include /help in completions.
+	compResp := s.completions("/", 2, topFrame)
+	assert.True(t, compResp.Success)
+	labels := completionLabels(compResp.Body.Targets)
+	assert.Contains(t, labels, "/help", "built-in /help should appear")
+	assert.Contains(t, labels, "/filter", "built-in /filter should appear")
+	assert.Contains(t, labels, "/reload", "registered /reload should appear")
+
+	// Verify descriptions appear in completion details.
+	detailMap := make(map[string]string)
+	for _, item := range compResp.Body.Targets {
+		detailMap[item.Label] = item.Detail
+	}
+	assert.Equal(t, "Show available commands", detailMap["/help"])
+	assert.Equal(t, "Filter map keys by regex", detailMap["/filter"])
+	assert.Equal(t, "Reload all modules", detailMap["/reload"])
+
+	// "/h" should match help but not filter or reload.
+	compResp2 := s.completions("/h", 3, topFrame)
+	labels2 := completionLabels(compResp2.Body.Targets)
+	assert.Contains(t, labels2, "/help")
+	assert.NotContains(t, labels2, "/filter")
+	assert.NotContains(t, labels2, "/reload")
+
+	// "/xyz" should return no matches.
+	compResp3 := s.completions("/xyz", 5, topFrame)
+	assert.Empty(t, compResp3.Body.Targets)
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
 }

@@ -638,6 +638,11 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 		}
 	}
 
+	// Intercept /help command.
+	if handled := h.handleHelpCommand(req); handled {
+		return
+	}
+
 	// Intercept /filter commands before evaluation.
 	if handled := h.handleFilterCommand(req); handled {
 		return
@@ -682,6 +687,53 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 		}
 	}
 	h.send(resp)
+}
+
+// handleHelpCommand checks if the evaluate expression is "/help" and returns
+// a formatted table of all available commands. Returns true if handled.
+func (h *handler) handleHelpCommand(req *dap.EvaluateRequest) bool {
+	expr := strings.TrimSpace(req.Arguments.Expression)
+	if expr != "/help" {
+		return false
+	}
+
+	resp := &dap.EvaluateResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+
+	// Collect all commands: built-ins + engine-registered.
+	type cmdInfo struct {
+		name string
+		desc string
+	}
+	cmds := []cmdInfo{
+		{name: "filter", desc: "Filter map keys by regex"},
+		{name: "help", desc: "Show available commands"},
+	}
+	descs := h.engine.CommandDescriptions()
+	for _, name := range h.engine.CommandNames() {
+		cmds = append(cmds, cmdInfo{name: name, desc: descs[name]})
+	}
+
+	// Find the longest command name for alignment.
+	maxLen := 0
+	for _, c := range cmds {
+		if len(c.name) > maxLen {
+			maxLen = len(c.name)
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("Available commands:")
+	for _, c := range cmds {
+		b.WriteString(fmt.Sprintf("\n  /%-*s", maxLen, c.name))
+		if c.desc != "" {
+			b.WriteString("  " + c.desc)
+		}
+	}
+
+	resp.Body.Result = b.String()
+	h.send(resp)
+	return true
 }
 
 // handleFilterCommand checks if the evaluate expression is a /filter command
@@ -806,8 +858,8 @@ func (h *handler) onCompletions(req *dap.CompletionsRequest) {
 }
 
 // completeCommands returns completion items for slash commands matching the
-// given text (which starts with "/"). Includes the built-in /filter command
-// and all registered custom commands.
+// given text (which starts with "/"). Includes the built-in /filter and /help
+// commands and all registered custom commands with their descriptions.
 func (h *handler) completeCommands(text string) []dap.CompletionItem {
 	prefix := strings.TrimPrefix(text, "/")
 
@@ -818,10 +870,12 @@ func (h *handler) completeCommands(text string) []dap.CompletionItem {
 	// Built-in commands.
 	all := []cmdEntry{
 		{name: "filter", detail: "Filter map keys by regex"},
+		{name: "help", detail: "Show available commands"},
 	}
-	// Registered custom commands.
+	// Registered custom commands (with descriptions).
+	descs := h.engine.CommandDescriptions()
 	for _, name := range h.engine.CommandNames() {
-		all = append(all, cmdEntry{name: name})
+		all = append(all, cmdEntry{name: name, detail: descs[name]})
 	}
 
 	var items []dap.CompletionItem
