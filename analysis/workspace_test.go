@@ -249,6 +249,15 @@ func TestScanWorkspaceFull_SkipsHiddenDirs(t *testing.T) {
 	assert.False(t, names["dep-fn"], "node_modules files should be skipped")
 }
 
+func TestShouldSkipDir(t *testing.T) {
+	assert.False(t, shouldSkipDir("."), "current directory should not be skipped")
+	assert.False(t, shouldSkipDir(".."), "parent directory should not be skipped")
+	assert.True(t, shouldSkipDir(".git"), "hidden directory should be skipped")
+	assert.True(t, shouldSkipDir(".vscode"), "hidden directory should be skipped")
+	assert.True(t, shouldSkipDir("node_modules"), "node_modules should be skipped")
+	assert.False(t, shouldSkipDir("src"), "normal directory should not be skipped")
+}
+
 func TestScanWorkspaceFull_CombinedResults(t *testing.T) {
 	dir := t.TempDir()
 

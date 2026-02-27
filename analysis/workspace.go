@@ -75,7 +75,12 @@ func ScanWorkspaceFull(root string) ([]ExternalSymbol, map[string][]ExternalSymb
 }
 
 // shouldSkipDir returns true for directories that should not be walked.
+// It skips hidden directories (e.g. .git, .vscode) and node_modules,
+// but not "." or ".." which represent the current/parent directory.
 func shouldSkipDir(name string) bool {
+	if name == "." || name == ".." {
+		return false
+	}
 	if len(name) > 0 && name[0] == '.' {
 		return true
 	}
