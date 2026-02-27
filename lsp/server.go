@@ -99,6 +99,7 @@ func New(opts ...Option) *Server {
 		TextDocumentPrepareRename:  s.textDocumentPrepareRename,
 		TextDocumentFormatting:     s.textDocumentFormatting,
 		TextDocumentSignatureHelp:  s.textDocumentSignatureHelp,
+		TextDocumentCodeAction:     s.textDocumentCodeAction,
 	}
 
 	s.glspSrv = glspserver.NewServer(&s.handler, serverName, false)
