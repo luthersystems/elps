@@ -322,11 +322,11 @@ func deltaEncode(tokens []rawToken) []protocol.UInteger {
 			deltaChar = tok.startChar - prevChar
 		}
 		data = append(data,
-			protocol.UInteger(deltaLine),
-			protocol.UInteger(deltaChar),
-			protocol.UInteger(tok.length),
-			protocol.UInteger(tok.tokenType),
-			protocol.UInteger(tok.modifiers),
+			safeUint(deltaLine),
+			safeUint(deltaChar),
+			safeUint(tok.length),
+			safeUint(tok.tokenType),
+			safeUint(tok.modifiers),
 		)
 		prevLine = tok.line
 		prevChar = tok.startChar
