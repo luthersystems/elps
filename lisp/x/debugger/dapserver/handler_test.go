@@ -3,6 +3,7 @@ package dapserver
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -4618,7 +4619,7 @@ func TestDAPServer_CompletionsCapability(t *testing.T) {
 	require.True(t, ok, "expected InitializeResponse, got %T", msg)
 	assert.True(t, initResp.Body.SupportsCompletionsRequest,
 		"SupportsCompletionsRequest should be true")
-	assert.Equal(t, []string{"(", ":", "'"}, initResp.Body.CompletionTriggerCharacters)
+	assert.Equal(t, []string{"(", ":", "'", "/"}, initResp.Body.CompletionTriggerCharacters)
 }
 
 // completionLabels extracts labels from completion items for easy assertion.
@@ -5293,4 +5294,313 @@ func TestDAPServer_FilterCommand_WithPagination(t *testing.T) {
 		t.Fatal("timeout")
 	}
 	s.disconnect()
+}
+
+func TestDAPServer_CustomCommand_Dispatch(t *testing.T) {
+	t.Parallel()
+	// Use setupDAPSessionWithClientCaps with SupportsInvalidatedEvent: true
+	// so we can verify refresh=false actually suppresses InvalidatedEvent.
+	s := setupDAPSessionWithClientCaps(t, dap.InitializeRequestArguments{
+		AdapterID:                "elps",
+		LinesStartAt1:            true,
+		SupportsInvalidatedEvent: true,
+	}, debugger.WithCommands(map[string]debugger.CommandHandler{
+		"reload": func(args string) (string, bool, error) {
+			return "reloaded: " + args, false, nil
+		},
+	}))
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "setBreakpoints"},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	// Dispatch custom command with refresh=false.
+	evalResp := s.evaluate("/reload all-modules", topFrame)
+	assert.True(t, evalResp.Success)
+	assert.Equal(t, "reloaded: all-modules", evalResp.Body.Result)
+
+	// Verify NO InvalidatedEvent when refresh=false (client supports it,
+	// so only the refresh flag prevents it).
+	msg, received := s.tryRead(200 * time.Millisecond)
+	assert.False(t, received, "should NOT receive InvalidatedEvent when refresh=false, got %T", msg)
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_CustomCommand_Refresh(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSessionWithClientCaps(t, dap.InitializeRequestArguments{
+		AdapterID:                "elps",
+		LinesStartAt1:            true,
+		SupportsInvalidatedEvent: true,
+	}, debugger.WithCommands(map[string]debugger.CommandHandler{
+		"refresh-data": func(args string) (string, bool, error) {
+			return "refreshed", true, nil
+		},
+	}))
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "setBreakpoints"},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	// Dispatch command that returns refresh=true.
+	evalResp := s.evaluate("/refresh-data", topFrame)
+	assert.True(t, evalResp.Success)
+	assert.Equal(t, "refreshed", evalResp.Body.Result)
+
+	// Should receive InvalidatedEvent because refresh=true and client supports it.
+	msg, ok := s.tryRead(2 * time.Second)
+	require.True(t, ok, "expected InvalidatedEvent after refresh command")
+	invEvt, ok := msg.(*dap.InvalidatedEvent)
+	require.True(t, ok, "expected InvalidatedEvent, got %T", msg)
+	assert.Contains(t, invEvt.Body.Areas, dap.InvalidatedAreas("variables"))
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_CustomCommand_Error(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithCommands(map[string]debugger.CommandHandler{
+		"fail": func(args string) (string, bool, error) {
+			return "", false, errors.New("something went wrong")
+		},
+	}))
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "setBreakpoints"},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	// Dispatch command that returns an error.
+	// go-dap decodes any response with success=false as *dap.ErrorResponse.
+	s.send(&dap.EvaluateRequest{
+		Request:   dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "evaluate"},
+		Arguments: dap.EvaluateArguments{Expression: "/fail", FrameId: topFrame},
+	})
+	msg := s.read()
+	errResp, ok := msg.(*dap.ErrorResponse)
+	require.True(t, ok, "expected ErrorResponse for command error, got %T", msg)
+	assert.False(t, errResp.Success)
+	assert.Equal(t, "something went wrong", errResp.Message)
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_CustomCommand_UnknownFallsThrough(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t)
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "setBreakpoints"},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	// Unknown /xxx command should fall through to Lisp eval (and fail).
+	// go-dap decodes any response with success=false as *dap.ErrorResponse.
+	s.send(&dap.EvaluateRequest{
+		Request:   dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "evaluate"},
+		Arguments: dap.EvaluateArguments{Expression: "/unknown-cmd", FrameId: topFrame},
+	})
+	msg := s.read()
+	errResp, ok := msg.(*dap.ErrorResponse)
+	require.True(t, ok, "expected ErrorResponse for unknown command fallthrough, got %T", msg)
+	assert.False(t, errResp.Success, "unknown slash command should fall through to Lisp eval")
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_CustomCommand_Completions(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true), debugger.WithCommands(map[string]debugger.CommandHandler{
+		"reload": func(args string) (string, bool, error) { return "", false, nil },
+		"reset":  func(args string) (string, bool, error) { return "", false, nil },
+	}))
+
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"}, Command: "setBreakpoints"},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
+	}()
+
+	// Stop on entry, then continue to breakpoint.
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (entry)
+	s.continueExec()
+
+	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (breakpoint)
+
+	stResp := s.stackTrace()
+	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	topFrame := stResp.Body.StackFrames[0].Id
+
+	// "/" prefix should return all commands (filter, reload, reset).
+	compResp := s.completions("/", 2, topFrame)
+	assert.True(t, compResp.Success)
+	labels := completionLabels(compResp.Body.Targets)
+	assert.Contains(t, labels, "/filter", "built-in /filter should appear")
+	assert.Contains(t, labels, "/reload", "registered /reload should appear")
+	assert.Contains(t, labels, "/reset", "registered /reset should appear")
+
+	// "/re" prefix should match reload, reset but not filter.
+	compResp2 := s.completions("/re", 4, topFrame)
+	assert.True(t, compResp2.Success)
+	labels2 := completionLabels(compResp2.Body.Targets)
+	assert.Contains(t, labels2, "/reload")
+	assert.Contains(t, labels2, "/reset")
+	assert.NotContains(t, labels2, "/filter")
+
+	// "/f" prefix should match filter but not reload/reset.
+	compResp3 := s.completions("/f", 3, topFrame)
+	assert.True(t, compResp3.Success)
+	labels3 := completionLabels(compResp3.Body.Targets)
+	assert.Contains(t, labels3, "/filter")
+	assert.NotContains(t, labels3, "/reload")
+
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_CompletionsCapability_SlashTrigger(t *testing.T) {
+	t.Parallel()
+	e := debugger.New()
+	e.Enable()
+	srv := New(e)
+
+	client, server := net.Pipe()
+	defer client.Close() //nolint:errcheck
+
+	go func() {
+		_ = srv.ServeConn(server)
+	}()
+
+	reader := bufio.NewReader(client)
+
+	sendDAPRequest(t, client, &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+			Command:         "initialize",
+		},
+		Arguments: dap.InitializeRequestArguments{AdapterID: "elps"},
+	})
+
+	msg, err := dap.ReadProtocolMessage(reader)
+	require.NoError(t, err)
+	initResp, ok := msg.(*dap.InitializeResponse)
+	require.True(t, ok, "expected InitializeResponse, got %T", msg)
+	assert.Contains(t, initResp.Body.CompletionTriggerCharacters, "/",
+		"CompletionTriggerCharacters should include '/'")
 }

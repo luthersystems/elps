@@ -200,7 +200,7 @@ func (h *handler) onInitialize(req *dap.InitializeRequest) {
 		SupportsSteppingGranularity:           true,
 		SupportsStepInTargetsRequest:          true,
 		SupportsCompletionsRequest:            true,
-		CompletionTriggerCharacters:           []string{"(", ":", "'"},
+		CompletionTriggerCharacters:           []string{"(", ":", "'", "/"},
 		ExceptionBreakpointFilters: []dap.ExceptionBreakpointsFilter{
 			{
 				Filter:  "all",
@@ -643,6 +643,11 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 		return
 	}
 
+	// Intercept custom slash commands registered by embedders.
+	if handled := h.handleSlashCommand(req); handled {
+		return
+	}
+
 	// Context-aware evaluation: hover uses a child env and single-expression
 	// eval to minimize side effects. The child env inherits all bindings via
 	// scope chain lookup but any scope-level writes stay in the child.
@@ -721,6 +726,43 @@ func (h *handler) handleFilterCommand(req *dap.EvaluateRequest) bool {
 	return true
 }
 
+// handleSlashCommand checks if the evaluate expression is a registered
+// custom slash command and dispatches it. Returns true if handled.
+func (h *handler) handleSlashCommand(req *dap.EvaluateRequest) bool {
+	expr := strings.TrimSpace(req.Arguments.Expression)
+	if !strings.HasPrefix(expr, "/") {
+		return false
+	}
+
+	// Parse "/name args" — name is the first word after "/".
+	cmd := strings.TrimPrefix(expr, "/")
+	name, args, _ := strings.Cut(cmd, " ")
+	args = strings.TrimSpace(args)
+
+	handler := h.engine.Command(name)
+	if handler == nil {
+		return false
+	}
+
+	resp := &dap.EvaluateResponse{}
+	resp.Response = h.newResponse(req.Seq, req.Command)
+
+	response, refresh, err := handler(args)
+	if err != nil {
+		resp.Success = false
+		resp.Message = err.Error()
+		h.send(resp)
+		return true
+	}
+
+	resp.Body.Result = response
+	h.send(resp)
+	if refresh {
+		h.sendInvalidatedVariables()
+	}
+	return true
+}
+
 func (h *handler) onCompletions(req *dap.CompletionsRequest) {
 	resp := &dap.CompletionsResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
@@ -739,6 +781,15 @@ func (h *handler) onCompletions(req *dap.CompletionsRequest) {
 		}
 	}
 
+	// Slash command completions: when the text starts with "/", offer
+	// built-in and registered command names instead of Lisp completions.
+	text := strings.TrimSpace(req.Arguments.Text)
+	if strings.HasPrefix(text, "/") {
+		resp.Body.Targets = h.completeCommands(text)
+		h.send(resp)
+		return
+	}
+
 	prefix := debugger.ExtractPrefix(req.Arguments.Text, req.Arguments.Column)
 	candidates := debugger.CompleteInContext(env, prefix)
 
@@ -752,6 +803,38 @@ func (h *handler) onCompletions(req *dap.CompletionsRequest) {
 	}
 	resp.Body.Targets = items
 	h.send(resp)
+}
+
+// completeCommands returns completion items for slash commands matching the
+// given text (which starts with "/"). Includes the built-in /filter command
+// and all registered custom commands.
+func (h *handler) completeCommands(text string) []dap.CompletionItem {
+	prefix := strings.TrimPrefix(text, "/")
+
+	type cmdEntry struct {
+		name   string
+		detail string
+	}
+	// Built-in commands.
+	all := []cmdEntry{
+		{name: "filter", detail: "Filter map keys by regex"},
+	}
+	// Registered custom commands.
+	for _, name := range h.engine.CommandNames() {
+		all = append(all, cmdEntry{name: name})
+	}
+
+	var items []dap.CompletionItem
+	for _, cmd := range all {
+		if strings.HasPrefix(cmd.name, prefix) {
+			items = append(items, dap.CompletionItem{
+				Label:  "/" + cmd.name,
+				Type:   "function",
+				Detail: cmd.detail,
+			})
+		}
+	}
+	return items
 }
 
 func (h *handler) onAttach(req *dap.AttachRequest) {
