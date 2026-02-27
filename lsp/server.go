@@ -97,10 +97,11 @@ func New(opts ...Option) *Server {
 		TextDocumentDocumentSymbol: s.textDocumentDocumentSymbol,
 		TextDocumentRename:         s.textDocumentRename,
 		TextDocumentPrepareRename:  s.textDocumentPrepareRename,
-		TextDocumentFormatting:     s.textDocumentFormatting,
-		TextDocumentSignatureHelp:  s.textDocumentSignatureHelp,
-		TextDocumentCodeAction:     s.textDocumentCodeAction,
-		TextDocumentFoldingRange:   s.textDocumentFoldingRange,
+		TextDocumentFormatting:          s.textDocumentFormatting,
+		TextDocumentSignatureHelp:       s.textDocumentSignatureHelp,
+		TextDocumentCodeAction:          s.textDocumentCodeAction,
+		TextDocumentFoldingRange:        s.textDocumentFoldingRange,
+		TextDocumentSemanticTokensFull:  s.textDocumentSemanticTokensFull,
 	}
 
 	s.glspSrv = glspserver.NewServer(&s.handler, serverName, false)
@@ -153,6 +154,12 @@ func (s *Server) initialize(ctx *glsp.Context, params *protocol.InitializeParams
 	capabilities.SignatureHelpProvider = &protocol.SignatureHelpOptions{
 		TriggerCharacters:   []string{" "},
 		RetriggerCharacters: []string{" ", ")"},
+	}
+
+	// Set up semantic tokens with our legend.
+	capabilities.SemanticTokensProvider = &protocol.SemanticTokensOptions{
+		Legend: semanticTokenLegend(),
+		Full:   true,
 	}
 
 	version := "0.1.0"
