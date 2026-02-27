@@ -1,0 +1,269 @@
+// Copyright © 2024 The ELPS authors
+
+// Package lsp implements a Language Server Protocol server for ELPS.
+// It provides diagnostics, hover, go-to-definition, references,
+// completion, document symbols, and rename support.
+package lsp
+
+import (
+	"sync"
+	"time"
+
+	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lint"
+	"github.com/tliron/glsp"
+	glspserver "github.com/tliron/glsp/server"
+
+	protocol "github.com/tliron/glsp/protocol_3_16"
+)
+
+const serverName = "elps-lsp"
+
+// Server is the ELPS language server.
+type Server struct {
+	handler  protocol.Handler
+	glspSrv  *glspserver.Server
+	docs     *DocumentStore
+	rootURI  string
+	rootPath string
+
+	// Workspace analysis configuration built during initialization.
+	analysisCfg   *analysis.Config
+	analysisCfgMu sync.RWMutex
+
+	// Linter instance shared across diagnostics runs.
+	linter *lint.Linter
+
+	// Embedder-provided environment and registry.
+	registry *lisp.PackageRegistry
+	env      *lisp.LEnv
+
+	// Debouncer for didChange notifications.
+	debounceMu sync.Mutex
+	debounce   map[string]*time.Timer
+
+	// Context for sending notifications (captured from latest request).
+	notifyMu sync.Mutex
+	notify   glsp.NotifyFunc
+}
+
+// Option configures the LSP server.
+type Option func(*Server)
+
+// WithRegistry injects an embedder's package registry for stdlib exports.
+func WithRegistry(reg *lisp.PackageRegistry) Option {
+	return func(s *Server) { s.registry = reg }
+}
+
+// WithEnv injects a fully initialized ELPS environment.
+func WithEnv(env *lisp.LEnv) Option {
+	return func(s *Server) { s.env = env }
+}
+
+// New creates a new ELPS LSP server.
+func New(opts ...Option) *Server {
+	s := &Server{
+		docs:     NewDocumentStore(),
+		linter:   &lint.Linter{Analyzers: lint.DefaultAnalyzers()},
+		debounce: make(map[string]*time.Timer),
+	}
+	for _, o := range opts {
+		o(s)
+	}
+
+	s.handler = protocol.Handler{
+		Initialize:  s.initialize,
+		Initialized: s.initialized,
+		Shutdown:    s.shutdown,
+		SetTrace:    s.setTrace,
+
+		TextDocumentDidOpen:   s.textDocumentDidOpen,
+		TextDocumentDidChange: s.textDocumentDidChange,
+		TextDocumentDidSave:   s.textDocumentDidSave,
+		TextDocumentDidClose:  s.textDocumentDidClose,
+
+		TextDocumentHover:          s.textDocumentHover,
+		TextDocumentDefinition:     s.textDocumentDefinition,
+		TextDocumentCompletion:     s.textDocumentCompletion,
+		TextDocumentReferences:     s.textDocumentReferences,
+		TextDocumentDocumentSymbol: s.textDocumentDocumentSymbol,
+		TextDocumentRename:         s.textDocumentRename,
+		TextDocumentPrepareRename:  s.textDocumentPrepareRename,
+	}
+
+	s.glspSrv = glspserver.NewServer(&s.handler, serverName, false)
+	return s
+}
+
+// RunStdio starts the server using stdio transport.
+func (s *Server) RunStdio() error {
+	return s.glspSrv.RunStdio()
+}
+
+// RunTCP starts the server listening on the given address.
+func (s *Server) RunTCP(addr string) error {
+	return s.glspSrv.RunTCP(addr)
+}
+
+// initialize handles the LSP initialize request.
+func (s *Server) initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, error) {
+	s.captureNotify(ctx)
+
+	if params.RootURI != nil {
+		s.rootURI = *params.RootURI
+		s.rootPath = uriToPath(s.rootURI)
+	} else if params.RootPath != nil {
+		s.rootPath = *params.RootPath
+		s.rootURI = pathToURI(s.rootPath)
+	}
+
+	capabilities := s.handler.CreateServerCapabilities()
+
+	// Override text document sync to full.
+	syncKind := protocol.TextDocumentSyncKindFull
+	capabilities.TextDocumentSync = &protocol.TextDocumentSyncOptions{
+		OpenClose: boolPtr(true),
+		Change:    &syncKind,
+		Save:      &protocol.SaveOptions{IncludeText: boolPtr(false)},
+	}
+
+	// Set up completion trigger characters.
+	capabilities.CompletionProvider = &protocol.CompletionOptions{
+		TriggerCharacters: []string{"(", ":"},
+	}
+
+	// Enable prepare rename.
+	capabilities.RenameProvider = &protocol.RenameOptions{
+		PrepareProvider: boolPtr(true),
+	}
+
+	version := "0.1.0"
+	return protocol.InitializeResult{
+		Capabilities: capabilities,
+		ServerInfo: &protocol.InitializeResultServerInfo{
+			Name:    serverName,
+			Version: &version,
+		},
+	}, nil
+}
+
+// initialized is called after the client confirms initialization.
+// Build the workspace index in the background.
+func (s *Server) initialized(ctx *glsp.Context, params *protocol.InitializedParams) error {
+	s.captureNotify(ctx)
+	go s.buildWorkspaceIndex()
+	return nil
+}
+
+// shutdown handles the LSP shutdown request.
+func (s *Server) shutdown(ctx *glsp.Context) error {
+	// Cancel any pending debounce timers.
+	s.debounceMu.Lock()
+	for _, t := range s.debounce {
+		t.Stop()
+	}
+	s.debounce = make(map[string]*time.Timer)
+	s.debounceMu.Unlock()
+
+	return nil
+}
+
+// setTrace handles the $/setTrace notification (required by some clients).
+func (s *Server) setTrace(_ *glsp.Context, _ *protocol.SetTraceParams) error {
+	return nil
+}
+
+// buildWorkspaceIndex scans the workspace root and builds the analysis config.
+func (s *Server) buildWorkspaceIndex() {
+	defer func() { _ = recover() }() // don't crash the server on scan panic
+	if s.rootPath == "" {
+		return
+	}
+
+	var extraGlobals []analysis.ExternalSymbol
+	var pkgExports map[string][]analysis.ExternalSymbol
+
+	// Scan workspace files.
+	if globals, err := analysis.ScanWorkspace(s.rootPath); err == nil {
+		extraGlobals = globals
+	}
+	if pkgs, err := analysis.ScanWorkspacePackages(s.rootPath); err == nil {
+		pkgExports = pkgs
+	}
+
+	// Extract stdlib exports from the embedder's registry.
+	reg := s.registry
+	if reg == nil && s.env != nil {
+		reg = s.env.Runtime.Registry
+	}
+	if reg != nil {
+		stdlib := analysis.ExtractPackageExports(reg)
+		if pkgExports == nil {
+			pkgExports = stdlib
+		} else {
+			for k, v := range stdlib {
+				pkgExports[k] = append(pkgExports[k], v...)
+			}
+		}
+	}
+
+	cfg := &analysis.Config{
+		ExtraGlobals:   extraGlobals,
+		PackageExports: pkgExports,
+	}
+
+	s.analysisCfgMu.Lock()
+	s.analysisCfg = cfg
+	s.analysisCfgMu.Unlock()
+}
+
+// getAnalysisConfig returns a copy of the workspace analysis config with
+// the filename set for the given document.
+func (s *Server) getAnalysisConfig(uri string) *analysis.Config {
+	s.analysisCfgMu.RLock()
+	base := s.analysisCfg
+	s.analysisCfgMu.RUnlock()
+
+	cfg := &analysis.Config{
+		Filename: uriToPath(uri),
+	}
+	if base != nil {
+		cfg.ExtraGlobals = base.ExtraGlobals
+		cfg.PackageExports = base.PackageExports
+	}
+	return cfg
+}
+
+// ensureAnalysis ensures the document has a current analysis result.
+func (s *Server) ensureAnalysis(doc *Document) {
+	doc.mu.Lock()
+	defer doc.mu.Unlock()
+	if doc.analysis != nil {
+		return
+	}
+	cfg := s.getAnalysisConfig(doc.URI)
+	doc.analyze(cfg)
+}
+
+// captureNotify stores the notification function from the context for
+// async use (e.g., publishing diagnostics after a debounce).
+func (s *Server) captureNotify(ctx *glsp.Context) {
+	s.notifyMu.Lock()
+	s.notify = ctx.Notify
+	s.notifyMu.Unlock()
+}
+
+// sendNotification sends a notification to the client.
+func (s *Server) sendNotification(method string, params any) {
+	s.notifyMu.Lock()
+	fn := s.notify
+	s.notifyMu.Unlock()
+	if fn != nil {
+		fn(method, params)
+	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
