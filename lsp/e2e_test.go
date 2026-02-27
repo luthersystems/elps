@@ -789,6 +789,13 @@ func TestE2E_InitializedNotRequired(t *testing.T) {
 
 	compResp, _ := readResponse(t, reader, 3)
 	require.NotNil(t, compResp["result"], "completion should work without initialized notification (#179)")
+	compItems := compResp["result"].([]any)
+	var compLabels []string
+	for _, item := range compItems {
+		ci := item.(map[string]any)
+		compLabels = append(compLabels, ci["label"].(string))
+	}
+	assert.Contains(t, compLabels, "add", "completion should include user-defined 'add'")
 
 	// Cleanup.
 	send(t, conn, jsonRPCRequest(99, "shutdown", nil))

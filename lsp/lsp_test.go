@@ -1859,7 +1859,28 @@ func TestHoverOnShortQualifiedSymbol(t *testing.T) {
 				},
 			})
 			require.NoError(t, err)
-			assertHoverContains(t, hover, "abs")
+			assertHoverContains(t, hover, "abs", "function")
+		})
+	}
+
+	// Columns outside the symbol should NOT return hover for "abs".
+	for _, col := range []protocol.UInteger{0, 10, 11} {
+		col := col // capture for subtest
+		t.Run(fmt.Sprintf("col=%d_outside", col), func(t *testing.T) {
+			hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+					Position:     protocol.Position{Line: 0, Character: col},
+				},
+			})
+			require.NoError(t, err)
+			if hover != nil {
+				mc, ok := hover.Contents.(protocol.MarkupContent)
+				if ok {
+					assert.NotContains(t, mc.Value, "abs",
+						"hover at col %d should not return abs hover", col)
+				}
+			}
 		})
 	}
 }
@@ -1875,7 +1896,7 @@ func TestHoverOnMultipleStdlibPackages(t *testing.T) {
 		expected string
 	}{
 		{`(math:abs -5)`, 1, "abs"},
-		{`(regexp:regexp-compile "a+")`, 1, "regexp-compile"},
+		{`(regexp:regexp-compile "a+")`, 10, "regexp-compile"}, // mid-symbol col
 		{`(json:dump-string '())`, 1, "dump-string"},
 	}
 	for _, tc := range tests {
@@ -1956,7 +1977,13 @@ func TestSignatureHelpQualifiedSymbol(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result, "signature help should work for qualified symbols (#178)")
 	require.Len(t, result.Signatures, 1)
-	assert.Contains(t, result.Signatures[0].Label, "join")
+	sig := result.Signatures[0]
+	assert.Contains(t, sig.Label, "join")
+	assert.GreaterOrEqual(t, len(sig.Parameters), 2,
+		"string:join should have at least 2 parameters (list, sep)")
+	require.NotNil(t, result.ActiveParameter, "active parameter should be set")
+	assert.Equal(t, uint32(0), *result.ActiveParameter,
+		"active parameter should be 0 (first arg)")
 }
 
 // TestEnclosingCallText tests the text-based parenthesis scanning fallback.
@@ -2016,6 +2043,22 @@ func TestEnclosingCallText(t *testing.T) {
 			col:      15,
 			wantName: "greet",
 			wantArg:  1,
+		},
+		{
+			name:     "qualified symbol",
+			content:  "(string:join ",
+			line:     0,
+			col:      13,
+			wantName: "string:join",
+			wantArg:  0,
+		},
+		{
+			name:     "empty parens",
+			content:  "()",
+			line:     0,
+			col:      1,
+			wantName: "",
+			wantArg:  0,
 		},
 	}
 	for _, tc := range tests {
