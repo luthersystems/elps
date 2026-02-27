@@ -6,6 +6,7 @@
 package lsp
 
 import (
+	"os"
 	"sync"
 	"time"
 
@@ -46,6 +47,10 @@ type Server struct {
 	// Context for sending notifications (captured from latest request).
 	notifyMu sync.Mutex
 	notify   glsp.NotifyFunc
+
+	// exitFn is called on the LSP exit notification. Defaults to os.Exit.
+	// Overridable for testing.
+	exitFn func(int)
 }
 
 // Option configures the LSP server.
@@ -67,6 +72,7 @@ func New(opts ...Option) *Server {
 		docs:     NewDocumentStore(),
 		linter:   &lint.Linter{Analyzers: lint.DefaultAnalyzers()},
 		debounce: make(map[string]*time.Timer),
+		exitFn:   os.Exit,
 	}
 	for _, o := range opts {
 		o(s)
@@ -76,6 +82,7 @@ func New(opts ...Option) *Server {
 		Initialize:  s.initialize,
 		Initialized: s.initialized,
 		Shutdown:    s.shutdown,
+		Exit:        s.exit,
 		SetTrace:    s.setTrace,
 
 		TextDocumentDidOpen:   s.textDocumentDidOpen,
@@ -90,6 +97,8 @@ func New(opts ...Option) *Server {
 		TextDocumentDocumentSymbol: s.textDocumentDocumentSymbol,
 		TextDocumentRename:         s.textDocumentRename,
 		TextDocumentPrepareRename:  s.textDocumentPrepareRename,
+		TextDocumentFormatting:     s.textDocumentFormatting,
+		TextDocumentSignatureHelp:  s.textDocumentSignatureHelp,
 	}
 
 	s.glspSrv = glspserver.NewServer(&s.handler, serverName, false)
@@ -138,6 +147,12 @@ func (s *Server) initialize(ctx *glsp.Context, params *protocol.InitializeParams
 		PrepareProvider: boolPtr(true),
 	}
 
+	// Set up signature help trigger characters.
+	capabilities.SignatureHelpProvider = &protocol.SignatureHelpOptions{
+		TriggerCharacters:   []string{" "},
+		RetriggerCharacters: []string{" ", ")"},
+	}
+
 	version := "0.1.0"
 	return protocol.InitializeResult{
 		Capabilities: capabilities,
@@ -166,6 +181,15 @@ func (s *Server) shutdown(ctx *glsp.Context) error {
 	s.debounce = make(map[string]*time.Timer)
 	s.debounceMu.Unlock()
 
+	return nil
+}
+
+// exit handles the LSP exit notification by terminating the process.
+// Per the LSP spec, the server should exit with code 0 if shutdown was
+// called first, or code 1 otherwise. We always exit with 0 since we
+// handle shutdown gracefully.
+func (s *Server) exit(_ *glsp.Context) error {
+	s.exitFn(0)
 	return nil
 }
 

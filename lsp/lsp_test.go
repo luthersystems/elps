@@ -3,6 +3,7 @@
 package lsp
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/luthersystems/elps/analysis"
@@ -253,6 +254,38 @@ func TestDiagnosticsOnParseError(t *testing.T) {
 	pub := (*captured)[0]
 	require.NotEmpty(t, pub.Diagnostics, "parse error should produce diagnostics")
 	assert.Equal(t, protocol.DiagnosticSeverityError, *pub.Diagnostics[0].Severity)
+}
+
+func TestDiagnosticsParseErrorPosition(t *testing.T) {
+	s := testServer()
+	ctx, captured := capturingContext()
+
+	// Open document with an unclosed paren — parse error should have a real position.
+	err := s.textDocumentDidOpen(ctx, &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{
+			URI:     "file:///test.lisp",
+			Version: 1,
+			Text:    "(defun broken (x y",
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, *captured, 1)
+	pub := (*captured)[0]
+	require.NotEmpty(t, pub.Diagnostics)
+
+	// Find the parse error diagnostic.
+	var parseDiag *protocol.Diagnostic
+	for i, d := range pub.Diagnostics {
+		if d.Source != nil && *d.Source == "elps" {
+			parseDiag = &pub.Diagnostics[i]
+			break
+		}
+	}
+	require.NotNil(t, parseDiag, "should have a parse error diagnostic")
+	// The range should NOT be at 0:0 — the parser error should have a real position.
+	assert.True(t,
+		parseDiag.Range.Start.Line > 0 || parseDiag.Range.Start.Character > 0,
+		"parse error diagnostic should have a non-zero position, got %v", parseDiag.Range)
 }
 
 func TestDiagnosticsOnClose_Cleared(t *testing.T) {
@@ -671,6 +704,17 @@ func TestURIConversion(t *testing.T) {
 	// Non-URI input returned unchanged.
 	assert.Equal(t, "relative/path", uriToPath("relative/path"))
 	assert.Equal(t, "relative/path", pathToURI("relative/path"))
+
+	// Percent-encoded spaces.
+	assert.Equal(t, "/path/to/my file.lisp", uriToPath("file:///path/to/my%20file.lisp"))
+	// Percent-encoded parentheses.
+	assert.Equal(t, "/path/to/(test).lisp", uriToPath("file:///path/to/%28test%29.lisp"))
+	// Round-trip: path with spaces.
+	spacePath := "/path/to/my file.lisp"
+	assert.Equal(t, spacePath, uriToPath(pathToURI(spacePath)))
+	// Round-trip: path with parentheses.
+	parenPath := "/path/to/(test).lisp"
+	assert.Equal(t, parenPath, uriToPath(pathToURI(parenPath)))
 }
 
 func TestSplitPackageQualified(t *testing.T) {
@@ -689,6 +733,181 @@ func TestSplitPackageQualified(t *testing.T) {
 
 	_, _, ok = splitPackageQualified("nocolon")
 	assert.False(t, ok)
+}
+
+// --- Formatting tests ---
+
+func TestFormatting(t *testing.T) {
+	s := testServer()
+	// Badly formatted: missing indentation.
+	content := "(defun add (x y)\n(+ x y))"
+	openDoc(s, "file:///test.lisp", content)
+
+	edits, err := s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Options:      protocol.FormattingOptions{},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, edits, "badly formatted code should produce edits")
+	assert.Len(t, edits, 1, "should return a single whole-document edit")
+	assert.Contains(t, edits[0].NewText, "  (+", "formatted output should indent body")
+}
+
+func TestFormattingAlreadyFormatted(t *testing.T) {
+	s := testServer()
+	// Already formatted (indented correctly with trailing newline).
+	content := "(defun add (x y)\n  (+ x y))\n"
+	openDoc(s, "file:///test.lisp", content)
+
+	edits, err := s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Options:      protocol.FormattingOptions{},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, edits, "already formatted code should produce no edits")
+}
+
+func TestFormattingParseError(t *testing.T) {
+	s := testServer()
+	// Incomplete code — can't format.
+	content := "(defun broken (x y"
+	openDoc(s, "file:///test.lisp", content)
+
+	edits, err := s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Options:      protocol.FormattingOptions{},
+	})
+	require.NoError(t, err, "parse error should not produce an RPC error")
+	assert.Nil(t, edits, "parse error should produce nil edits")
+}
+
+func TestFormattingUnknownDocument(t *testing.T) {
+	s := testServer()
+
+	edits, err := s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///unknown.lisp"},
+		Options:      protocol.FormattingOptions{},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, edits, "unknown document should produce nil edits")
+}
+
+func TestFormattingTabSize(t *testing.T) {
+	s := testServer()
+	content := "(defun add (x y)\n(+ x y))"
+	openDoc(s, "file:///test.lisp", content)
+
+	edits, err := s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Options:      protocol.FormattingOptions{"tabSize": float64(4)},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, edits)
+	assert.Contains(t, edits[0].NewText, "    (+", "should use 4-space indent from tabSize")
+}
+
+// --- Signature help tests ---
+
+func TestSignatureHelp(t *testing.T) {
+	s := testServer()
+	content := `(defun greet (name greeting)
+  "Greet someone."
+  (concat greeting " " name))
+
+(greet "world" "hello")`
+	openDoc(s, "file:///test.lisp", content)
+
+	// Cursor after "(greet " — should show signature for greet, active param 0.
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 4, Character: 7}, // after "(greet "
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "signature help should not be nil for user function")
+	require.Len(t, result.Signatures, 1)
+	sig := result.Signatures[0]
+	assert.Contains(t, sig.Label, "greet")
+	assert.Contains(t, sig.Label, "name")
+	assert.Contains(t, sig.Label, "greeting")
+	assert.Len(t, sig.Parameters, 2)
+}
+
+func TestSignatureHelpBuiltin(t *testing.T) {
+	s := testServer()
+	content := `(map identity '(1 2 3))`
+	openDoc(s, "file:///test.lisp", content)
+
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 5}, // after "(map "
+		},
+	})
+	require.NoError(t, err)
+	if result != nil {
+		require.Len(t, result.Signatures, 1)
+		assert.Contains(t, result.Signatures[0].Label, "map")
+	}
+}
+
+func TestSignatureHelpOutside(t *testing.T) {
+	s := testServer()
+	content := `(defun add (x y) (+ x y))
+; some comment`
+	openDoc(s, "file:///test.lisp", content)
+
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 1, Character: 0}, // on comment line
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, result, "signature help outside a call should be nil")
+}
+
+func TestEnclosingCall(t *testing.T) {
+	s := testServer()
+	content := "(defun add (x y) (+ x y))\n(add 1 2)"
+	openDoc(s, "file:///test.lisp", content)
+
+	doc := s.docs.Get("file:///test.lisp")
+	require.NotNil(t, doc)
+
+	// Cursor inside "(add 1 2)" after "add ".
+	name, argIdx := enclosingCall(doc.ast, 2, 6)
+	assert.Equal(t, "add", name)
+	assert.Equal(t, 0, argIdx, "first argument position")
+}
+
+func TestSignatureHelpUnknownDocument(t *testing.T) {
+	s := testServer()
+
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///unknown.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 5},
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, result)
+}
+
+func TestExitHandler(t *testing.T) {
+	s := testServer()
+	var exitCode int
+	var exitCalled bool
+	s.exitFn = func(code int) {
+		exitCode = code
+		exitCalled = true
+	}
+
+	err := s.exit(mockContext())
+	require.NoError(t, err)
+	assert.True(t, exitCalled, "exit handler should call exitFn")
+	assert.Equal(t, 0, exitCode, "exit should call with code 0")
 }
 
 func TestInitializeLifecycle(t *testing.T) {
@@ -904,6 +1123,34 @@ func TestMultipleDocuments(t *testing.T) {
 	assert.NotNil(t, s.docs.Get("file:///b.lisp"))
 }
 
+func TestParseErrorRange(t *testing.T) {
+	t.Run("ErrorVal with source", func(t *testing.T) {
+		errVal := &lisp.ErrorVal{
+			Source: &token.Location{File: "test.lisp", Line: 3, Col: 5},
+		}
+		r := parseErrorRange(errVal)
+		assert.Equal(t, protocol.UInteger(2), r.Start.Line)
+		assert.Equal(t, protocol.UInteger(4), r.Start.Character)
+		// Range should be at least 1 char wide.
+		assert.Equal(t, protocol.UInteger(2), r.End.Line)
+		assert.Equal(t, protocol.UInteger(5), r.End.Character)
+	})
+	t.Run("LocationError with source", func(t *testing.T) {
+		locErr := &token.LocationError{
+			Err:    fmt.Errorf("unexpected token"),
+			Source: &token.Location{File: "test.lisp", Line: 1, Col: 10},
+		}
+		r := parseErrorRange(locErr)
+		assert.Equal(t, protocol.UInteger(0), r.Start.Line)
+		assert.Equal(t, protocol.UInteger(9), r.Start.Character)
+	})
+	t.Run("plain error", func(t *testing.T) {
+		r := parseErrorRange(fmt.Errorf("some error"))
+		assert.Equal(t, protocol.UInteger(0), r.Start.Line)
+		assert.Equal(t, protocol.UInteger(0), r.Start.Character)
+	})
+}
+
 func TestConvertLintDiagnostic(t *testing.T) {
 	from := lint.Diagnostic{
 		Pos:      lint.Position{File: "test.lisp", Line: 3, Col: 5},
@@ -916,4 +1163,30 @@ func TestConvertLintDiagnostic(t *testing.T) {
 	assert.Equal(t, protocol.DiagnosticSeverityWarning, *d.Severity)
 	assert.Equal(t, protocol.UInteger(2), d.Range.Start.Line)
 	assert.Equal(t, protocol.UInteger(4), d.Range.Start.Character)
+}
+
+func TestConvertLintDiagnosticWithEndPos(t *testing.T) {
+	from := lint.Diagnostic{
+		Pos:      lint.Position{File: "test.lisp", Line: 3, Col: 5},
+		EndPos:   lint.Position{File: "test.lisp", Line: 3, Col: 10},
+		Message:  "test message",
+		Analyzer: "test-check",
+		Severity: lint.SeverityWarning,
+	}
+	d := convertLintDiagnostic(from)
+	assert.Equal(t, protocol.UInteger(2), d.Range.Start.Line)
+	assert.Equal(t, protocol.UInteger(4), d.Range.Start.Character)
+	assert.Equal(t, protocol.UInteger(2), d.Range.End.Line)
+	assert.Equal(t, protocol.UInteger(9), d.Range.End.Character)
+}
+
+func TestConvertLintDiagnosticZeroEndPos(t *testing.T) {
+	// When EndPos is zero, End should equal Start (zero-width).
+	from := lint.Diagnostic{
+		Pos:      lint.Position{File: "test.lisp", Line: 3, Col: 5},
+		Message:  "test message",
+		Analyzer: "test-check",
+	}
+	d := convertLintDiagnostic(from)
+	assert.Equal(t, d.Range.Start, d.Range.End, "zero EndPos should produce zero-width range")
 }
