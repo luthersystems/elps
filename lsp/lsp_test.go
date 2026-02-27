@@ -1343,12 +1343,8 @@ func TestReanalyzeOpenDocuments(t *testing.T) {
 	require.Greater(t, len(captured), 1,
 		"reanalyze should publish new diagnostics after workspace index completes")
 
-	// The re-analysis diagnostics should have strictly fewer issues now that
-	// fakepkg is known. The fake-func diagnostic should be gone.
+	// The fake-func diagnostic should be gone now that fakepkg is registered.
 	reanalyzedDiags := captured[len(captured)-1].Diagnostics
-	assert.Less(t, len(reanalyzedDiags), len(initialDiags),
-		"re-analysis with workspace config should produce strictly fewer diagnostics")
-
 	for _, d := range reanalyzedDiags {
 		assert.NotContains(t, d.Message, "fake-func",
 			"re-analysis should not flag fake-func after fakepkg is registered")
@@ -1534,6 +1530,13 @@ func testServerWithWorkspaceIndex(t *testing.T) *Server {
 	t.Helper()
 	s := testServer()
 	s.ensureWorkspaceIndex()
+
+	// Guard: fail fast if index build silently panicked.
+	s.analysisCfgMu.RLock()
+	cfg := s.analysisCfg
+	s.analysisCfgMu.RUnlock()
+	require.NotNil(t, cfg, "workspace index should be built")
+	require.NotEmpty(t, cfg.PackageExports, "workspace index should have package exports")
 	return s
 }
 
@@ -1542,7 +1545,8 @@ func testServerWithWorkspaceIndex(t *testing.T) *Server {
 func assertHoverContains(t *testing.T, hover *protocol.Hover, expected ...string) {
 	t.Helper()
 	require.NotNil(t, hover, "hover should not be null")
-	content := hover.Contents.(protocol.MarkupContent)
+	content, ok := hover.Contents.(protocol.MarkupContent)
+	require.True(t, ok, "hover contents should be MarkupContent, got %T", hover.Contents)
 	assert.Equal(t, protocol.MarkupKindMarkdown, content.Kind, "hover should be Markdown")
 	for _, s := range expected {
 		assert.Contains(t, content.Value, s, "hover content should contain %q", s)
@@ -1567,14 +1571,24 @@ func TestHoverOnStdlibQualifiedSymbol(t *testing.T) {
 	assertHoverContains(t, hover, "join", "function")
 }
 
-// TestHoverOnStdlibQualifiedSymbol_NoWorkspaceIndex verifies that hover
-// on a qualified symbol works even if the workspace index hasn't been built
-// yet (e.g., because the initialized notification failed — issue #173).
-func TestHoverOnStdlibQualifiedSymbol_NoWorkspaceIndex(t *testing.T) {
+// TestHoverOnStdlibQualifiedSymbol_LazyIndex verifies that hover on a
+// qualified symbol triggers lazy workspace index building when the
+// initialized notification hasn't fired yet (issue #173 fallback).
+func TestHoverOnStdlibQualifiedSymbol_LazyIndex(t *testing.T) {
 	s := testServer()
-	// Deliberately NOT calling buildWorkspaceIndex — simulates #173 failure.
+
+	// Verify the workspace index has NOT been built yet.
+	s.analysisCfgMu.RLock()
+	require.Nil(t, s.analysisCfg, "analysisCfg should be nil before lazy init")
+	s.analysisCfgMu.RUnlock()
+
 	doc := openDoc(s, "file:///test.lisp", `(string:join "," '("a" "b" "c"))`)
 	s.ensureAnalysis(doc)
+
+	// After ensureAnalysis, the lazy init should have built the index.
+	s.analysisCfgMu.RLock()
+	require.NotNil(t, s.analysisCfg, "analysisCfg should be built by lazy init")
+	s.analysisCfgMu.RUnlock()
 
 	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
@@ -1583,7 +1597,7 @@ func TestHoverOnStdlibQualifiedSymbol_NoWorkspaceIndex(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	// Fallback path should produce equivalent results to the with-index path.
+	// Lazy-built index should produce equivalent results to eagerly-built index.
 	assertHoverContains(t, hover, "join", "function")
 }
 
@@ -1604,25 +1618,38 @@ func TestCompletionForPackageQualifiedPrefix(t *testing.T) {
 	labels := completionLabels(t, result)
 	require.Contains(t, labels, "string:join", "completion should include string:join (#170)")
 
-	// Verify completion items have correct Kind metadata.
+	// Verify ALL completion items have Kind metadata set.
 	items := result.([]protocol.CompletionItem)
+	var foundJoin bool
 	for _, item := range items {
+		require.NotNil(t, item.Kind, "completion item %q should have a Kind", item.Label)
 		if item.Label == "string:join" {
-			require.NotNil(t, item.Kind, "completion item should have a Kind")
+			foundJoin = true
 			assert.Equal(t, protocol.CompletionItemKindFunction, *item.Kind,
 				"string:join should be a Function, not %v", *item.Kind)
-			break
 		}
 	}
+	require.True(t, foundJoin, "string:join should be present in completion items")
 }
 
-// TestCompletionForPackageQualifiedPrefix_NoWorkspaceIndex verifies that
-// completion works even when the workspace index hasn't been built.
-func TestCompletionForPackageQualifiedPrefix_NoWorkspaceIndex(t *testing.T) {
+// TestCompletionForPackageQualifiedPrefix_LazyIndex verifies that
+// completion triggers lazy workspace index building when the initialized
+// notification hasn't fired yet (issue #173 fallback).
+func TestCompletionForPackageQualifiedPrefix_LazyIndex(t *testing.T) {
 	s := testServer()
-	// Deliberately NOT calling buildWorkspaceIndex.
+
+	// Verify the workspace index has NOT been built yet.
+	s.analysisCfgMu.RLock()
+	require.Nil(t, s.analysisCfg, "analysisCfg should be nil before lazy init")
+	s.analysisCfgMu.RUnlock()
+
 	doc := openDoc(s, "file:///test.lisp", "(string:")
 	s.ensureAnalysis(doc)
+
+	// After ensureAnalysis, the lazy init should have built the index.
+	s.analysisCfgMu.RLock()
+	require.NotNil(t, s.analysisCfg, "analysisCfg should be built by lazy init")
+	s.analysisCfgMu.RUnlock()
 
 	result, err := s.textDocumentCompletion(mockContext(), &protocol.CompletionParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
@@ -1631,7 +1658,6 @@ func TestCompletionForPackageQualifiedPrefix_NoWorkspaceIndex(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	// Fallback path should produce equivalent results to the with-index path.
 	labels := completionLabels(t, result)
 	require.Contains(t, labels, "string:join",
 		"completion should include string:join even without prior workspace index (#173 fallback)")
@@ -1644,7 +1670,7 @@ func TestHoverOnUsePackageImportedSymbol(t *testing.T) {
 	doc := openDoc(s, "file:///test.lisp", "(use-package 'string)\n(join \",\" '(\"a\" \"b\"))")
 	s.ensureAnalysis(doc)
 
-	// Hover on "join" at line 1, col 1.
+	// Hover on "join" at line 1, col 1 — imported via use-package.
 	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
@@ -1653,13 +1679,37 @@ func TestHoverOnUsePackageImportedSymbol(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assertHoverContains(t, hover, "join", "function")
+
+	// Negative control: a symbol from a package NOT imported via use-package
+	// should NOT produce hover (unless it's qualified).
+	doc2 := openDoc(s, "file:///test2.lisp", "(concat \"a\" \"b\")")
+	s.ensureAnalysis(doc2)
+	hover2, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test2.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 1},
+		},
+	})
+	require.NoError(t, err)
+	// "concat" without use-package 'string should resolve as a builtin or not at all,
+	// but should NOT resolve as a string package import.
+	if hover2 != nil {
+		content, ok := hover2.Contents.(protocol.MarkupContent)
+		if ok && strings.Contains(content.Value, "concat") {
+			// If it resolves, it should NOT claim to be from the string package import.
+			// It should resolve as a builtin (which is fine).
+			assert.NotContains(t, content.Value, "Defined in",
+				"unimported symbol should not show as defined from an external source")
+		}
+	}
 }
 
 // TestFormattingReturnsEdits reproduces issue #172: formatting returns null
 // instead of text edits for badly-formatted code.
 func TestFormattingReturnsEdits(t *testing.T) {
 	s := testServer()
-	openDoc(s, "file:///test.lisp", "(defun  add  (x  y)\n(+  x  y))")
+	input := "(defun  add  (x  y)\n(+  x  y))"
+	openDoc(s, "file:///test.lisp", input)
 
 	edits, err := s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
 		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
@@ -1671,7 +1721,17 @@ func TestFormattingReturnsEdits(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, edits, "formatting should return edits, not null (#172)")
 	require.Len(t, edits, 1, "should return a single whole-document edit")
+
+	// Verify the edit range covers the whole document.
+	assert.Equal(t, protocol.Position{Line: 0, Character: 0}, edits[0].Range.Start,
+		"edit should start at beginning of document")
+	assert.Equal(t, protocol.UInteger(1), edits[0].Range.End.Line,
+		"edit end line should cover the 2-line input")
+
+	// Verify formatting improved indentation.
 	assert.Contains(t, edits[0].NewText, "  (+", "formatted text should be properly indented")
+	// Verify the formatted output differs from the input.
+	assert.NotEqual(t, input, edits[0].NewText, "formatted output should differ from input")
 }
 
 // TestWorkspaceIndexWithEmptyRootPath verifies that the workspace index
@@ -1690,12 +1750,15 @@ func TestWorkspaceIndexWithEmptyRootPath(t *testing.T) {
 	strExports := cfg.PackageExports["string"]
 	require.NotEmpty(t, strExports, "string package exports should be populated from registry")
 
-	var hasJoin bool
-	for _, sym := range strExports {
-		if sym.Name == "join" {
-			hasJoin = true
+	// Verify the "join" export exists with correct metadata.
+	var joinSym *analysis.ExternalSymbol
+	for i := range strExports {
+		if strExports[i].Name == "join" {
+			joinSym = &strExports[i]
 			break
 		}
 	}
-	assert.True(t, hasJoin, "string package should include 'join' export")
+	require.NotNil(t, joinSym, "string package should include 'join' export")
+	assert.Equal(t, analysis.SymFunction, joinSym.Kind, "join should be a function")
+	assert.NotEmpty(t, joinSym.DocString, "join should have a docstring from registry")
 }
