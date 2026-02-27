@@ -3,6 +3,7 @@
 package lsp
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/luthersystems/elps/analysis"
@@ -253,6 +254,38 @@ func TestDiagnosticsOnParseError(t *testing.T) {
 	pub := (*captured)[0]
 	require.NotEmpty(t, pub.Diagnostics, "parse error should produce diagnostics")
 	assert.Equal(t, protocol.DiagnosticSeverityError, *pub.Diagnostics[0].Severity)
+}
+
+func TestDiagnosticsParseErrorPosition(t *testing.T) {
+	s := testServer()
+	ctx, captured := capturingContext()
+
+	// Open document with an unclosed paren — parse error should have a real position.
+	err := s.textDocumentDidOpen(ctx, &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{
+			URI:     "file:///test.lisp",
+			Version: 1,
+			Text:    "(defun broken (x y",
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, *captured, 1)
+	pub := (*captured)[0]
+	require.NotEmpty(t, pub.Diagnostics)
+
+	// Find the parse error diagnostic.
+	var parseDiag *protocol.Diagnostic
+	for i, d := range pub.Diagnostics {
+		if d.Source != nil && *d.Source == "elps" {
+			parseDiag = &pub.Diagnostics[i]
+			break
+		}
+	}
+	require.NotNil(t, parseDiag, "should have a parse error diagnostic")
+	// The range should NOT be at 0:0 — the parser error should have a real position.
+	assert.True(t,
+		parseDiag.Range.Start.Line > 0 || parseDiag.Range.Start.Character > 0,
+		"parse error diagnostic should have a non-zero position, got %v", parseDiag.Range)
 }
 
 func TestDiagnosticsOnClose_Cleared(t *testing.T) {
@@ -913,6 +946,34 @@ func TestMultipleDocuments(t *testing.T) {
 	s.docs.Close("file:///a.lisp")
 	assert.Nil(t, s.docs.Get("file:///a.lisp"))
 	assert.NotNil(t, s.docs.Get("file:///b.lisp"))
+}
+
+func TestParseErrorRange(t *testing.T) {
+	t.Run("ErrorVal with source", func(t *testing.T) {
+		errVal := &lisp.ErrorVal{
+			Source: &token.Location{File: "test.lisp", Line: 3, Col: 5},
+		}
+		r := parseErrorRange(errVal)
+		assert.Equal(t, protocol.UInteger(2), r.Start.Line)
+		assert.Equal(t, protocol.UInteger(4), r.Start.Character)
+		// Range should be at least 1 char wide.
+		assert.Equal(t, protocol.UInteger(2), r.End.Line)
+		assert.Equal(t, protocol.UInteger(5), r.End.Character)
+	})
+	t.Run("LocationError with source", func(t *testing.T) {
+		locErr := &token.LocationError{
+			Err:    fmt.Errorf("unexpected token"),
+			Source: &token.Location{File: "test.lisp", Line: 1, Col: 10},
+		}
+		r := parseErrorRange(locErr)
+		assert.Equal(t, protocol.UInteger(0), r.Start.Line)
+		assert.Equal(t, protocol.UInteger(9), r.Start.Character)
+	})
+	t.Run("plain error", func(t *testing.T) {
+		r := parseErrorRange(fmt.Errorf("some error"))
+		assert.Equal(t, protocol.UInteger(0), r.Start.Line)
+		assert.Equal(t, protocol.UInteger(0), r.Start.Character)
+	})
 }
 
 func TestConvertLintDiagnostic(t *testing.T) {

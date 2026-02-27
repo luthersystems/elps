@@ -3,9 +3,12 @@
 package lsp
 
 import (
+	"errors"
 	"time"
 
+	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lint"
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 )
@@ -116,7 +119,7 @@ func (s *Server) analyzeAndPublish(doc *Document) {
 	// Report parse errors as diagnostics.
 	if parseErr != nil {
 		diags = append(diags, protocol.Diagnostic{
-			Range:    protocol.Range{},
+			Range:    parseErrorRange(parseErr),
 			Severity: severity(protocol.DiagnosticSeverityError),
 			Source:   strPtr("elps"),
 			Message:  parseErr.Error(),
@@ -180,6 +183,23 @@ func mapLintSeverity(sev lint.Severity) protocol.DiagnosticSeverity {
 
 func severity(s protocol.DiagnosticSeverity) *protocol.DiagnosticSeverity {
 	return &s
+}
+
+// parseErrorRange extracts source position from a parse error, returning
+// a non-zero LSP range when possible. It tries *lisp.ErrorVal (parser
+// errors) and *token.LocationError (scanner errors) in that order.
+func parseErrorRange(err error) protocol.Range {
+	// Try *lisp.ErrorVal (parser-level errors).
+	var errVal *lisp.ErrorVal
+	if errors.As(err, &errVal) && errVal.Source != nil && errVal.Source.Line > 0 {
+		return elpsToLSPRange(errVal.Source, 1)
+	}
+	// Try *token.LocationError (scanner-level errors).
+	var locErr *token.LocationError
+	if errors.As(err, &locErr) && locErr.Source != nil && locErr.Source.Line > 0 {
+		return elpsToLSPRange(locErr.Source, 1)
+	}
+	return protocol.Range{}
 }
 
 func strPtr(s string) *string {
