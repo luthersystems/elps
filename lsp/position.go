@@ -3,6 +3,7 @@
 package lsp
 
 import (
+	"net/url"
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
@@ -280,18 +281,26 @@ func formatSignature(sig *analysis.Signature) string {
 	return "(" + strings.Join(parts, " ") + ")"
 }
 
-// uriToPath converts a file:// URI to a filesystem path.
+// uriToPath converts a file:// URI to a filesystem path, decoding any
+// percent-encoded characters (e.g. %20 for spaces).
 func uriToPath(uri string) string {
+	u, err := url.Parse(uri)
+	if err == nil && u.Scheme == "file" {
+		return u.Path
+	}
+	// Fallback: strip prefix manually for non-standard URIs.
 	if path, ok := strings.CutPrefix(uri, "file://"); ok {
 		return path
 	}
 	return uri
 }
 
-// pathToURI converts a filesystem path to a file:// URI.
+// pathToURI converts a filesystem path to a file:// URI, encoding any
+// characters that require percent-encoding (spaces, parentheses, etc.).
 func pathToURI(path string) string {
 	if strings.HasPrefix(path, "/") {
-		return "file://" + path
+		u := &url.URL{Scheme: "file", Path: path}
+		return u.String()
 	}
 	return path
 }

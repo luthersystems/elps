@@ -671,6 +671,17 @@ func TestURIConversion(t *testing.T) {
 	// Non-URI input returned unchanged.
 	assert.Equal(t, "relative/path", uriToPath("relative/path"))
 	assert.Equal(t, "relative/path", pathToURI("relative/path"))
+
+	// Percent-encoded spaces.
+	assert.Equal(t, "/path/to/my file.lisp", uriToPath("file:///path/to/my%20file.lisp"))
+	// Percent-encoded parentheses.
+	assert.Equal(t, "/path/to/(test).lisp", uriToPath("file:///path/to/%28test%29.lisp"))
+	// Round-trip: path with spaces.
+	spacePath := "/path/to/my file.lisp"
+	assert.Equal(t, spacePath, uriToPath(pathToURI(spacePath)))
+	// Round-trip: path with parentheses.
+	parenPath := "/path/to/(test).lisp"
+	assert.Equal(t, parenPath, uriToPath(pathToURI(parenPath)))
 }
 
 func TestSplitPackageQualified(t *testing.T) {
