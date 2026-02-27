@@ -735,6 +735,21 @@ func TestSplitPackageQualified(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestExitHandler(t *testing.T) {
+	s := testServer()
+	var exitCode int
+	var exitCalled bool
+	s.exitFn = func(code int) {
+		exitCode = code
+		exitCalled = true
+	}
+
+	err := s.exit(mockContext())
+	require.NoError(t, err)
+	assert.True(t, exitCalled, "exit handler should call exitFn")
+	assert.Equal(t, 0, exitCode, "exit should call with code 0")
+}
+
 func TestInitializeLifecycle(t *testing.T) {
 	s := testServer()
 
