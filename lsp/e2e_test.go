@@ -638,6 +638,52 @@ func TestE2E_EmptyDocument(t *testing.T) {
 	send(t, conn, jsonRPCNotification("exit", nil))
 }
 
+func TestE2E_Formatting(t *testing.T) {
+	conn, cleanup := e2eServer(t)
+	defer cleanup()
+
+	reader := bufio.NewReader(conn)
+	testURI := "file:///tmp/e2e-fmt/test.lisp"
+
+	// Initialize.
+	send(t, conn, jsonRPCRequest(1, "initialize", map[string]any{
+		"capabilities": map[string]any{},
+	}))
+	readResponse(t, reader, 1)
+	send(t, conn, jsonRPCNotification("initialized", map[string]any{}))
+
+	// Open badly formatted document.
+	send(t, conn, jsonRPCNotification("textDocument/didOpen", map[string]any{
+		"textDocument": map[string]any{
+			"uri":        testURI,
+			"languageId": "elps",
+			"version":    1,
+			"text":       "(defun add (x y)\n(+ x y))",
+		},
+	}))
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Request formatting.
+	send(t, conn, jsonRPCRequest(2, "textDocument/formatting", map[string]any{
+		"textDocument": map[string]any{"uri": testURI},
+		"options":      map[string]any{"tabSize": 2, "insertSpaces": true},
+	}))
+
+	resp, _ := readResponse(t, reader, 2)
+	require.NotNil(t, resp["result"], "formatting should return edits")
+	edits := resp["result"].([]any)
+	require.Len(t, edits, 1, "should return a single whole-document edit")
+	edit := edits[0].(map[string]any)
+	newText := edit["newText"].(string)
+	assert.Contains(t, newText, "  (+", "formatted text should be indented")
+
+	// Cleanup.
+	send(t, conn, jsonRPCRequest(99, "shutdown", nil))
+	readResponse(t, reader, 99)
+	send(t, conn, jsonRPCNotification("exit", nil))
+}
+
 func TestE2E_RenameBuiltinRejected(t *testing.T) {
 	conn, cleanup := e2eServer(t)
 	defer cleanup()

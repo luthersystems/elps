@@ -735,6 +735,77 @@ func TestSplitPackageQualified(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// --- Formatting tests ---
+
+func TestFormatting(t *testing.T) {
+	s := testServer()
+	// Badly formatted: missing indentation.
+	content := "(defun add (x y)\n(+ x y))"
+	openDoc(s, "file:///test.lisp", content)
+
+	edits, err := s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Options:      protocol.FormattingOptions{},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, edits, "badly formatted code should produce edits")
+	assert.Len(t, edits, 1, "should return a single whole-document edit")
+	assert.Contains(t, edits[0].NewText, "  (+", "formatted output should indent body")
+}
+
+func TestFormattingAlreadyFormatted(t *testing.T) {
+	s := testServer()
+	// Already formatted (indented correctly with trailing newline).
+	content := "(defun add (x y)\n  (+ x y))\n"
+	openDoc(s, "file:///test.lisp", content)
+
+	edits, err := s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Options:      protocol.FormattingOptions{},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, edits, "already formatted code should produce no edits")
+}
+
+func TestFormattingParseError(t *testing.T) {
+	s := testServer()
+	// Incomplete code — can't format.
+	content := "(defun broken (x y"
+	openDoc(s, "file:///test.lisp", content)
+
+	edits, err := s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Options:      protocol.FormattingOptions{},
+	})
+	require.NoError(t, err, "parse error should not produce an RPC error")
+	assert.Nil(t, edits, "parse error should produce nil edits")
+}
+
+func TestFormattingUnknownDocument(t *testing.T) {
+	s := testServer()
+
+	edits, err := s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///unknown.lisp"},
+		Options:      protocol.FormattingOptions{},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, edits, "unknown document should produce nil edits")
+}
+
+func TestFormattingTabSize(t *testing.T) {
+	s := testServer()
+	content := "(defun add (x y)\n(+ x y))"
+	openDoc(s, "file:///test.lisp", content)
+
+	edits, err := s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Options:      protocol.FormattingOptions{"tabSize": float64(4)},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, edits)
+	assert.Contains(t, edits[0].NewText, "    (+", "should use 4-space indent from tabSize")
+}
+
 func TestExitHandler(t *testing.T) {
 	s := testServer()
 	var exitCode int
