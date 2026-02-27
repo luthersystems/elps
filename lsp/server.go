@@ -32,6 +32,7 @@ type Server struct {
 	// Workspace analysis configuration built during initialization.
 	analysisCfg   *analysis.Config
 	analysisCfgMu sync.RWMutex
+	indexOnce     sync.Once
 
 	// Linter instance shared across diagnostics runs.
 	linter *lint.Linter
@@ -164,10 +165,15 @@ func (s *Server) initialize(ctx *glsp.Context, params *protocol.InitializeParams
 }
 
 // initialized is called after the client confirms initialization.
-// Build the workspace index in the background.
+// Build the workspace index in the background, then re-analyze any
+// documents that were opened before the index was ready.
 func (s *Server) initialized(ctx *glsp.Context, params *protocol.InitializedParams) error {
 	s.captureNotify(ctx)
-	go s.buildWorkspaceIndex()
+	go func() {
+		defer func() { _ = recover() }()
+		s.ensureWorkspaceIndex()
+		s.reanalyzeOpenDocuments()
+	}()
 	return nil
 }
 
@@ -198,20 +204,30 @@ func (s *Server) setTrace(_ *glsp.Context, _ *protocol.SetTraceParams) error {
 	return nil
 }
 
+// ensureWorkspaceIndex guarantees the workspace index is built at least
+// once. It is safe to call from any goroutine. If the initialized
+// notification triggered the build, this is a no-op. Otherwise it builds
+// the index lazily on first demand — this is the fallback for issue #173
+// where the initialized notification may fail in some JSON-RPC libraries.
+func (s *Server) ensureWorkspaceIndex() {
+	s.indexOnce.Do(func() {
+		s.buildWorkspaceIndex()
+	})
+}
+
 // buildWorkspaceIndex scans the workspace root and builds the analysis config.
 func (s *Server) buildWorkspaceIndex() {
 	defer func() { _ = recover() }() // don't crash the server on scan panic
-	if s.rootPath == "" {
-		return
-	}
 
 	var extraGlobals []analysis.ExternalSymbol
 	var pkgExports map[string][]analysis.ExternalSymbol
 
-	// Scan workspace files in a single pass.
-	if globals, pkgs, err := analysis.ScanWorkspaceFull(s.rootPath); err == nil {
-		extraGlobals = globals
-		pkgExports = pkgs
+	// Scan workspace files in a single pass (only if we have a root path).
+	if s.rootPath != "" {
+		if globals, pkgs, err := analysis.ScanWorkspaceFull(s.rootPath); err == nil {
+			extraGlobals = globals
+			pkgExports = pkgs
+		}
 	}
 
 	// Extract stdlib exports from the embedder's registry.
@@ -244,11 +260,6 @@ func (s *Server) buildWorkspaceIndex() {
 	s.analysisCfgMu.Lock()
 	s.analysisCfg = cfg
 	s.analysisCfgMu.Unlock()
-
-	// Re-analyze all open documents now that workspace context is available.
-	// This clears false positives from the initial analysis (e.g. missing
-	// use-package imports) that ran before the workspace index was ready.
-	s.reanalyzeOpenDocuments()
 }
 
 // reanalyzeOpenDocuments invalidates cached analysis for all open documents
@@ -298,7 +309,13 @@ func (s *Server) getAnalysisConfig(uri string) *analysis.Config {
 }
 
 // ensureAnalysis ensures the document has a current analysis result.
+// It lazily triggers the workspace index build if needed (fallback for
+// issue #173 where the initialized notification may fail).
 func (s *Server) ensureAnalysis(doc *Document) {
+	// Build workspace index before locking doc — buildWorkspaceIndex may
+	// call reanalyzeOpenDocuments which also locks documents.
+	s.ensureWorkspaceIndex()
+
 	doc.mu.Lock()
 	defer doc.mu.Unlock()
 	if doc.analysis != nil {

@@ -43,6 +43,13 @@ func openDoc(s *Server, uri, content string) *Document {
 	return s.docs.Open(uri, 1, content)
 }
 
+// setTestAnalysisCfg sets the analysis config on a test server and marks the
+// workspace index as done so ensureWorkspaceIndex won't overwrite it.
+func setTestAnalysisCfg(s *Server, cfg *analysis.Config) {
+	s.indexOnce.Do(func() {}) // prevent ensureWorkspaceIndex from running
+	s.analysisCfg = cfg
+}
+
 // mockContext returns a minimal glsp.Context for testing.
 func mockContext() *glsp.Context {
 	return &glsp.Context{
@@ -580,7 +587,7 @@ func TestCompletion(t *testing.T) {
 
 func TestCompletionPackageQualified(t *testing.T) {
 	s := testServer()
-	s.analysisCfg = &analysis.Config{
+	setTestAnalysisCfg(s, &analysis.Config{
 		PackageExports: map[string][]analysis.ExternalSymbol{
 			"math": {
 				{Name: "abs", Kind: analysis.SymFunction},
@@ -588,7 +595,7 @@ func TestCompletionPackageQualified(t *testing.T) {
 				{Name: "ceil", Kind: analysis.SymFunction},
 			},
 		},
-	}
+	})
 
 	content := "(math:"
 	openDoc(s, "file:///test.lisp", content)
@@ -1078,7 +1085,7 @@ func TestCompletionEmptyPrefix(t *testing.T) {
 
 func TestHoverOnQualifiedSymbol(t *testing.T) {
 	s := testServer()
-	s.analysisCfg = &analysis.Config{
+	setTestAnalysisCfg(s, &analysis.Config{
 		PackageExports: map[string][]analysis.ExternalSymbol{
 			"string": {
 				{
@@ -1095,7 +1102,7 @@ func TestHoverOnQualifiedSymbol(t *testing.T) {
 				},
 			},
 		},
-	}
+	})
 
 	content := "(string:join \",\" '(\"a\" \"b\" \"c\"))"
 	openDoc(s, "file:///test.lisp", content)
@@ -1117,13 +1124,13 @@ func TestHoverOnQualifiedSymbol(t *testing.T) {
 
 func TestHoverOnQualifiedSymbolUnknown(t *testing.T) {
 	s := testServer()
-	s.analysisCfg = &analysis.Config{
+	setTestAnalysisCfg(s, &analysis.Config{
 		PackageExports: map[string][]analysis.ExternalSymbol{
 			"string": {
 				{Name: "join", Kind: analysis.SymFunction, Package: "string"},
 			},
 		},
-	}
+	})
 
 	content := "(string:nonexistent 1)"
 	openDoc(s, "file:///test.lisp", content)
@@ -1140,7 +1147,7 @@ func TestHoverOnQualifiedSymbolUnknown(t *testing.T) {
 
 func TestCompletionPackageQualifiedDocString(t *testing.T) {
 	s := testServer()
-	s.analysisCfg = &analysis.Config{
+	setTestAnalysisCfg(s, &analysis.Config{
 		PackageExports: map[string][]analysis.ExternalSymbol{
 			"math": {
 				{
@@ -1151,7 +1158,7 @@ func TestCompletionPackageQualifiedDocString(t *testing.T) {
 				},
 			},
 		},
-	}
+	})
 
 	content := "(math:"
 	openDoc(s, "file:///test.lisp", content)
@@ -1175,13 +1182,13 @@ func TestCompletionPackageQualifiedDocString(t *testing.T) {
 
 func TestCompletionPackageQualifiedNoDocString(t *testing.T) {
 	s := testServer()
-	s.analysisCfg = &analysis.Config{
+	setTestAnalysisCfg(s, &analysis.Config{
 		PackageExports: map[string][]analysis.ExternalSymbol{
 			"math": {
 				{Name: "abs", Kind: analysis.SymFunction, Package: "math"},
 			},
 		},
-	}
+	})
 
 	content := "(math:"
 	openDoc(s, "file:///test.lisp", content)
@@ -1204,9 +1211,9 @@ func TestCompletionPackageQualifiedNoDocString(t *testing.T) {
 func TestHoverOnUnknownPackageQualifiedSymbol(t *testing.T) {
 	s := testServer()
 	// Package "nosuchpkg" doesn't exist in exports at all.
-	s.analysisCfg = &analysis.Config{
+	setTestAnalysisCfg(s, &analysis.Config{
 		PackageExports: map[string][]analysis.ExternalSymbol{},
-	}
+	})
 
 	content := "(nosuchpkg:something 1)"
 	openDoc(s, "file:///test.lisp", content)
@@ -1295,18 +1302,20 @@ func TestReanalyzeOpenDocuments(t *testing.T) {
 		}
 	}
 
-	// Open a document that uses a package (will have false positive until
-	// workspace index provides the package exports).
-	content := `(use-package 'testing)
-(assert-equal 1 1)`
+	// Start with an empty workspace config (no package exports).
+	// This simulates the state before the workspace index has run.
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Open a document that uses a package that isn't in the config yet.
+	content := `(use-package 'fakepkg)
+(fake-func 1 1)`
 	doc := openDoc(s, "file:///test.lisp", content)
 
-	// First analysis: no workspace config yet, so use-package can't resolve.
+	// First analysis: no exports for "fakepkg", so fake-func is unresolvable.
 	s.analyzeAndPublish(doc)
 	require.Len(t, captured, 1, "initial analysis should publish one diagnostic set")
 	initialDiags := captured[0].Diagnostics
 
-	// Without workspace config, assert-equal is unresolvable — expect diagnostics.
 	hasUndefinedSymbol := false
 	for _, d := range initialDiags {
 		if d.Message != "" {
@@ -1317,11 +1326,11 @@ func TestReanalyzeOpenDocuments(t *testing.T) {
 	require.True(t, hasUndefinedSymbol || len(initialDiags) > 0,
 		"initial analysis should produce diagnostics (unresolvable package)")
 
-	// Now simulate workspace index completing with testing package exports.
+	// Simulate workspace index completing with fakepkg exports.
 	s.analysisCfg = &analysis.Config{
 		PackageExports: map[string][]analysis.ExternalSymbol{
-			"testing": {
-				{Name: "assert-equal", Kind: analysis.SymFunction, Package: "testing"},
+			"fakepkg": {
+				{Name: "fake-func", Kind: analysis.SymFunction, Package: "fakepkg"},
 			},
 		},
 	}
@@ -1495,4 +1504,158 @@ func TestConvertLintDiagnosticZeroEndPos(t *testing.T) {
 	}
 	d := convertLintDiagnostic(from)
 	assert.Equal(t, d.Range.Start, d.Range.End, "zero EndPos should produce zero-width range")
+}
+
+// --- Issue reproduction tests (#169, #170, #171, #172, #173) ---
+
+// testServerWithWorkspaceIndex creates a server with a standard library
+// registry AND ensures the workspace index is built (so PackageExports are
+// available). This simulates the state after a successful initialized
+// notification.
+func testServerWithWorkspaceIndex(t *testing.T) *Server {
+	t.Helper()
+	s := testServer()
+	s.ensureWorkspaceIndex()
+	return s
+}
+
+// TestHoverOnStdlibQualifiedSymbol reproduces issue #169: hover on
+// package-qualified stdlib symbols like "string:join" returns null.
+func TestHoverOnStdlibQualifiedSymbol(t *testing.T) {
+	s := testServerWithWorkspaceIndex(t)
+	doc := openDoc(s, "file:///test.lisp", `(string:join "," '("a" "b" "c"))`)
+	s.ensureAnalysis(doc)
+
+	// Hover at column 1 — inside "string:join".
+	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 1},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, hover, "hover on stdlib qualified symbol should not be null (#169)")
+	content := hover.Contents.(protocol.MarkupContent)
+	assert.Contains(t, content.Value, "join", "hover should mention function name")
+}
+
+// TestHoverOnStdlibQualifiedSymbol_NoWorkspaceIndex verifies that hover
+// on a qualified symbol works even if the workspace index hasn't been built
+// yet (e.g., because the initialized notification failed — issue #173).
+func TestHoverOnStdlibQualifiedSymbol_NoWorkspaceIndex(t *testing.T) {
+	s := testServer()
+	// Deliberately NOT calling buildWorkspaceIndex — simulates #173 failure.
+	doc := openDoc(s, "file:///test.lisp", `(string:join "," '("a" "b" "c"))`)
+	s.ensureAnalysis(doc)
+
+	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 1},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, hover, "hover should work even without prior workspace index (#173 fallback)")
+}
+
+// TestCompletionForPackageQualifiedPrefix reproduces issue #170: completion
+// at "string:" prefix returns null instead of listing package exports.
+func TestCompletionForPackageQualifiedPrefix(t *testing.T) {
+	s := testServerWithWorkspaceIndex(t)
+	doc := openDoc(s, "file:///test.lisp", "(string:")
+	s.ensureAnalysis(doc)
+
+	result, err := s.textDocumentCompletion(mockContext(), &protocol.CompletionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 8},
+		},
+	})
+	require.NoError(t, err)
+	labels := completionLabels(t, result)
+	assert.NotEmpty(t, labels, "completion for 'string:' should return package exports (#170)")
+
+	// Should contain string:join (or similar).
+	var found bool
+	for _, l := range labels {
+		if l == "string:join" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "completion should include string:join, got %v", labels)
+}
+
+// TestCompletionForPackageQualifiedPrefix_NoWorkspaceIndex verifies that
+// completion works even when the workspace index hasn't been built.
+func TestCompletionForPackageQualifiedPrefix_NoWorkspaceIndex(t *testing.T) {
+	s := testServer()
+	// Deliberately NOT calling buildWorkspaceIndex.
+	doc := openDoc(s, "file:///test.lisp", "(string:")
+	s.ensureAnalysis(doc)
+
+	result, err := s.textDocumentCompletion(mockContext(), &protocol.CompletionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 8},
+		},
+	})
+	require.NoError(t, err)
+	labels := completionLabels(t, result)
+	assert.NotEmpty(t, labels, "completion should work without prior workspace index (#173 fallback)")
+}
+
+// TestHoverOnUsePackageImportedSymbol reproduces issue #171: hover on a
+// symbol imported via use-package returns null.
+func TestHoverOnUsePackageImportedSymbol(t *testing.T) {
+	s := testServerWithWorkspaceIndex(t)
+	doc := openDoc(s, "file:///test.lisp", "(use-package 'string)\n(join \",\" '(\"a\" \"b\"))")
+	s.ensureAnalysis(doc)
+
+	// Hover on "join" at line 1, col 1.
+	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 1, Character: 1},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, hover, "hover on use-package imported symbol should not be null (#171)")
+	content := hover.Contents.(protocol.MarkupContent)
+	assert.Contains(t, content.Value, "join", "hover should mention function name")
+}
+
+// TestFormattingReturnsEdits reproduces issue #172: formatting returns null
+// instead of text edits for badly-formatted code.
+func TestFormattingReturnsEdits(t *testing.T) {
+	s := testServer()
+	openDoc(s, "file:///test.lisp", "(defun  add  (x  y)\n(+  x  y))")
+
+	edits, err := s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Options: map[string]any{
+			"tabSize":      float64(2),
+			"insertSpaces": true,
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, edits, "formatting should return edits, not null (#172)")
+	require.Len(t, edits, 1, "should return a single whole-document edit")
+	assert.Contains(t, edits[0].NewText, "  (+", "formatted text should be properly indented")
+}
+
+// TestWorkspaceIndexWithEmptyRootPath verifies that the workspace index
+// still extracts registry exports even when rootPath is empty.
+func TestWorkspaceIndexWithEmptyRootPath(t *testing.T) {
+	s := testServer()
+	// rootPath is "" by default — simulates no rootUri in initialize.
+	s.ensureWorkspaceIndex()
+
+	s.analysisCfgMu.RLock()
+	cfg := s.analysisCfg
+	s.analysisCfgMu.RUnlock()
+
+	require.NotNil(t, cfg, "analysisCfg should be set even with empty rootPath")
+	require.NotNil(t, cfg.PackageExports, "PackageExports should be set from registry")
+	assert.NotEmpty(t, cfg.PackageExports["string"], "string package exports should be populated from registry")
 }
