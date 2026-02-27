@@ -678,6 +678,84 @@ func (p *Parser) scanError(condition string) *lisp.LVal {
 	return err
 }
 
+// ParseResult holds the result of a fault-tolerant parse: a partial AST
+// and any errors encountered during parsing.
+type ParseResult struct {
+	Exprs  []*lisp.LVal
+	Errors []error
+}
+
+// maxRecoveryErrors is the maximum number of errors collected before
+// ParseProgramFaultTolerant stops attempting to recover. This prevents
+// runaway recovery on pathological input.
+const maxRecoveryErrors = 50
+
+// ParseProgramFaultTolerant parses a series of expressions like
+// ParseProgram, but recovers from errors and continues parsing. It returns
+// all successfully parsed expressions alongside all collected errors.
+// This is useful for IDE/LSP scenarios where partial ASTs are valuable.
+func (p *Parser) ParseProgramFaultTolerant() ParseResult {
+	var result ParseResult
+
+	p.ignoreHashBang()
+
+	for {
+		expr, err := p.Parse()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			result.Errors = append(result.Errors, err)
+			if len(result.Errors) >= maxRecoveryErrors {
+				break
+			}
+			p.skipToNextExpression()
+			continue
+		}
+		result.Exprs = append(result.Exprs, expr)
+	}
+
+	return result
+}
+
+// skipToNextExpression advances the token stream past the current error
+// region to find the start of the next top-level expression. It consumes
+// stray closing brackets and skips over any remaining tokens inside
+// unbalanced brackets.
+func (p *Parser) skipToNextExpression() {
+	// Clear pending comments to prevent comment leakage across error boundaries.
+	p.pendingComments = nil
+
+	bracketDepth := 0
+	for {
+		if p.src.IsEOF() {
+			return
+		}
+		switch p.PeekType() {
+		case token.PAREN_L, token.BRACE_L:
+			if bracketDepth == 0 {
+				// Found the start of a new expression.
+				return
+			}
+			bracketDepth++
+			p.ReadToken()
+		case token.PAREN_R, token.BRACE_R:
+			p.ReadToken()
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+			// At depth 0, stray closers are consumed as orphans; continue.
+		default:
+			if bracketDepth == 0 {
+				// Found a non-bracket token at top level — this is the
+				// start of a new expression (e.g., a symbol or literal).
+				return
+			}
+			p.ReadToken()
+		}
+	}
+}
+
 // PendingComments returns any comments collected but not yet attached to an
 // LVal (e.g., trailing comments at end of file). Only useful in formatting mode.
 func (p *Parser) PendingComments() []*token.Token {

@@ -191,7 +191,7 @@ func TestDocumentParse(t *testing.T) {
 	store := NewDocumentStore()
 	doc := store.Open("file:///test.lisp", 1, "(defun add (x y) (+ x y))")
 	require.NotNil(t, doc)
-	assert.Nil(t, doc.parseErr)
+	assert.Empty(t, doc.parseErrors)
 	assert.Len(t, doc.ast, 1)
 }
 
@@ -199,7 +199,10 @@ func TestDocumentParseError(t *testing.T) {
 	store := NewDocumentStore()
 	doc := store.Open("file:///test.lisp", 1, "(defun add (x y")
 	require.NotNil(t, doc)
-	assert.NotNil(t, doc.parseErr)
+	require.Len(t, doc.parseErrors, 1)
+	var ev *lisp.ErrorVal
+	require.ErrorAs(t, doc.parseErrors[0], &ev)
+	assert.Equal(t, lisp.CondUnmatchedSyntax, ev.Condition())
 }
 
 func TestDocumentFaultTolerantParse(t *testing.T) {
@@ -207,8 +210,10 @@ func TestDocumentFaultTolerantParse(t *testing.T) {
 	// Two valid expressions followed by an incomplete one.
 	doc := store.Open("file:///test.lisp", 1, "(defun a () 1)\n(defun b () 2)\n(incomplete")
 	require.NotNil(t, doc)
-	assert.NotNil(t, doc.parseErr, "should record parse error")
+	require.Len(t, doc.parseErrors, 1, "should record one parse error")
 	assert.Len(t, doc.ast, 2, "should recover the two valid expressions")
+	assert.Equal(t, "(defun a () 1)", doc.ast[0].String())
+	assert.Equal(t, "(defun b () 2)", doc.ast[1].String())
 }
 
 // --- Diagnostics tests ---
@@ -335,6 +340,46 @@ func TestDiagnosticsOnSave_Immediate(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Greater(t, len(*captured), before, "save should trigger immediate diagnostics publish")
+}
+
+func TestDocumentFaultTolerantRecoveryBeyondError(t *testing.T) {
+	store := NewDocumentStore()
+	// Mismatched bracket in middle, valid code AFTER the error is recovered.
+	doc := store.Open("file:///test.lisp", 1, "(defun a () 1)\n(broken]\n(defun b () 2)")
+	require.NotNil(t, doc)
+	require.Len(t, doc.parseErrors, 1, "should record one parse error")
+	assert.Len(t, doc.ast, 2, "should recover both valid expressions around the error")
+	assert.Equal(t, "(defun a () 1)", doc.ast[0].String())
+	assert.Equal(t, "(defun b () 2)", doc.ast[1].String())
+}
+
+func TestDiagnosticsMultipleParseErrors(t *testing.T) {
+	s := testServer()
+	ctx, captured := capturingContext()
+
+	// Two mismatched bracket errors with valid code between.
+	err := s.textDocumentDidOpen(ctx, &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{
+			URI:     "file:///test.lisp",
+			Version: 1,
+			Text:    "(err1]\n(+ 1 2)\n(err2]",
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, *captured, 1)
+	pub := (*captured)[0]
+
+	// Collect parse error diagnostics.
+	var parseDiags []protocol.Diagnostic
+	for _, d := range pub.Diagnostics {
+		if d.Source != nil && *d.Source == "elps" {
+			parseDiags = append(parseDiags, d)
+		}
+	}
+	require.Len(t, parseDiags, 2, "should publish one diagnostic per parse error")
+	// The two errors are on different lines; verify distinct positions.
+	assert.NotEqual(t, parseDiags[0].Range.Start.Line, parseDiags[1].Range.Start.Line,
+		"two errors on different lines should have different diagnostic positions")
 }
 
 // --- Hover tests ---
