@@ -2321,16 +2321,18 @@ func TestCrossFileHover(t *testing.T) {
 	assert.Contains(t, mc.Value, "remote-fn")
 	assert.Contains(t, mc.Value, "function")
 	assert.Contains(t, mc.Value, "Does something remotely.")
+	assert.Contains(t, mc.Value, "/workspace/b.lisp", "hover should show source location from external file")
 }
 
-func TestCrossFileHover_Definition(t *testing.T) {
+func TestCrossFileHover_LocalNotContaminatedByExternal(t *testing.T) {
 	s := testServer()
 	setTestAnalysisCfg(s, &analysis.Config{
 		ExtraGlobals: []analysis.ExternalSymbol{
 			{
-				Name:   "other-fn",
-				Kind:   analysis.SymFunction,
-				Source: &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 8, Pos: 7},
+				Name:      "other-fn",
+				Kind:      analysis.SymFunction,
+				DocString: "External doc.",
+				Source:    &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 8, Pos: 7},
 			},
 		},
 	})
@@ -2338,6 +2340,7 @@ func TestCrossFileHover_Definition(t *testing.T) {
 	doc := openDoc(s, "file:///workspace/a.lisp", "(defun local-fn (x) x)")
 	s.ensureAnalysis(doc)
 
+	// Hover on "local-fn" — should show local definition, not external symbol.
 	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
@@ -2349,6 +2352,8 @@ func TestCrossFileHover_Definition(t *testing.T) {
 	mc, ok := hover.Contents.(protocol.MarkupContent)
 	require.True(t, ok)
 	assert.Contains(t, mc.Value, "local-fn")
+	assert.NotContains(t, mc.Value, "other-fn", "local hover should not show external symbol data")
+	assert.NotContains(t, mc.Value, "External doc.", "local hover should not contain external docstring")
 }
 
 func TestCrossFileHover_NoExtraGlobals(t *testing.T) {
@@ -2430,7 +2435,7 @@ func TestCrossFileCompletion_NoPrefix(t *testing.T) {
 	assert.Contains(t, labels, "remote-fn", "external symbols should appear with empty prefix")
 }
 
-func TestCrossFileCompletion_LocalShadowsExternal(t *testing.T) {
+func TestCrossFileCompletion_LocalAndExternalCoexist(t *testing.T) {
 	s := testServer()
 	setTestAnalysisCfg(s, &analysis.Config{
 		ExtraGlobals: []analysis.ExternalSymbol{
@@ -2454,6 +2459,15 @@ func TestCrossFileCompletion_LocalShadowsExternal(t *testing.T) {
 	require.NoError(t, err)
 	labels := completionLabels(t, result)
 	assert.Contains(t, labels, "helper", "helper should appear in completions")
+
+	// Count how many "helper" entries appear — verify no duplicates.
+	helperCount := 0
+	for _, label := range labels {
+		if label == "helper" {
+			helperCount++
+		}
+	}
+	assert.Equal(t, 1, helperCount, "helper should appear exactly once (no duplicates from local + external)")
 }
 
 // --- Cross-file signature help tests ---
@@ -2491,6 +2505,7 @@ func TestCrossFileSignatureHelp(t *testing.T) {
 	sig := result.Signatures[0]
 	assert.Contains(t, sig.Label, "remote-fn")
 	assert.Contains(t, sig.Label, "x")
+	assert.Contains(t, sig.Label, "&optional", "label should include &optional keyword for optional param")
 	assert.Len(t, sig.Parameters, 2, "should have 2 parameters (x required, y optional)")
 }
 
@@ -2526,6 +2541,7 @@ func TestCrossFileSignatureHelp_Incomplete(t *testing.T) {
 	require.NotNil(t, result, "signature help should work for incomplete cross-file calls via text fallback")
 	require.Len(t, result.Signatures, 1)
 	assert.Contains(t, result.Signatures[0].Label, "remote-fn")
+	assert.Len(t, result.Signatures[0].Parameters, 1, "should have 1 parameter from external signature")
 }
 
 func TestCrossFileSignatureHelp_NoSignature(t *testing.T) {
@@ -2626,13 +2642,14 @@ func TestCrossFileReferences_ExternalCursor(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, locs)
+	// Should have exactly 3 locations: definition (a.lisp), local ref (b.lisp), workspace ref (c.lisp).
+	require.Len(t, locs, 3, "should have declaration + local ref + workspace ref")
 
 	// Collect URIs.
 	uris := make(map[string]bool)
 	for _, loc := range locs {
 		uris[loc.URI] = true
 	}
-	// Should include: definition from a.lisp, local ref from b.lisp, and workspace ref from c.lisp.
 	assert.True(t, uris["file:///workspace/a.lisp"], "should include definition from a.lisp")
 	assert.True(t, uris["file:///workspace/b.lisp"], "should include local ref from b.lisp")
 	assert.True(t, uris["file:///workspace/c.lisp"], "should include workspace ref from c.lisp")
@@ -2679,11 +2696,11 @@ func TestCrossFileRename_ExternalCursor(t *testing.T) {
 
 	// Should have edits in a.lisp (definition), b.lisp (local call), and c.lisp (workspace ref).
 	aEdits := edit.Changes["file:///workspace/a.lisp"]
-	assert.NotEmpty(t, aEdits, "a.lisp should have rename edits (definition)")
+	require.Len(t, aEdits, 1, "a.lisp should have 1 edit (definition)")
 	bEdits := edit.Changes["file:///workspace/b.lisp"]
-	assert.NotEmpty(t, bEdits, "b.lisp should have rename edits (local call)")
+	require.Len(t, bEdits, 1, "b.lisp should have 1 edit (local call)")
 	cEdits := edit.Changes["file:///workspace/c.lisp"]
-	assert.NotEmpty(t, cEdits, "c.lisp should have rename edits (workspace ref)")
+	require.Len(t, cEdits, 1, "c.lisp should have 1 edit (workspace ref)")
 
 	// All edits should use the new name.
 	for uri, edits := range edit.Changes {
@@ -2691,4 +2708,12 @@ func TestCrossFileRename_ExternalCursor(t *testing.T) {
 			assert.Equal(t, "new-helper", e.NewText, "edit in %s should use new name", uri)
 		}
 	}
+
+	// Verify edit positions.
+	// a.lisp: definition at line 0, col 7 (1-based col 8 → 0-based 7).
+	assert.Equal(t, protocol.UInteger(0), aEdits[0].Range.Start.Line, "a.lisp edit should be on line 0")
+	assert.Equal(t, protocol.UInteger(7), aEdits[0].Range.Start.Character, "a.lisp edit should start at char 7")
+	// c.lisp: workspace ref at line 0, col 9 (1-based col 10 → 0-based 9).
+	assert.Equal(t, protocol.UInteger(0), cEdits[0].Range.Start.Line, "c.lisp edit should be on line 0")
+	assert.Equal(t, protocol.UInteger(9), cEdits[0].Range.Start.Character, "c.lisp edit should start at char 9")
 }

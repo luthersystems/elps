@@ -295,6 +295,8 @@ func TestCrossFileIncomingCalls_MultipleCallers(t *testing.T) {
 	callerNames := make(map[string]string) // name -> URI
 	for _, call := range result {
 		callerNames[call.From.Name] = call.From.URI
+		// Each caller should have at least one call site range.
+		require.NotEmpty(t, call.FromRanges, "caller %s should have at least one call site range", call.From.Name)
 	}
 	assert.Contains(t, callerNames, "caller-b", "should have incoming call from caller-b")
 	assert.Contains(t, callerNames, "caller-c", "should have incoming call from caller-c")
