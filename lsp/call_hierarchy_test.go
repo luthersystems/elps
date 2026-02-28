@@ -238,3 +238,160 @@ func TestDecodeCallHierarchyData(t *testing.T) {
 		assert.Nil(t, decodeCallHierarchyData(data))
 	})
 }
+
+func TestCrossFileIncomingCalls_MultipleCallers(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// File A defines "target".
+	docA := openDoc(s, "file:///workspace/a.lisp", "(defun target (x) (+ x 1))")
+	s.ensureAnalysis(docA)
+
+	// Inject workspace refs: "target" called from two different files.
+	targetKey := analysis.SymbolKey{Name: "target", Kind: analysis.SymFunction}.String()
+	s.setTestWorkspaceRefs(map[string][]analysis.FileReference{
+		targetKey: {
+			{
+				SymbolKey: analysis.SymbolKey{Name: "target", Kind: analysis.SymFunction},
+				Source:    &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 20, Pos: 19},
+				File:      "/workspace/b.lisp",
+				Enclosing: "caller-b",
+				EnclosingSource: &token.Location{
+					File: "/workspace/b.lisp", Line: 1, Col: 8, Pos: 7,
+				},
+				EnclosingKind: analysis.SymFunction,
+			},
+			{
+				SymbolKey: analysis.SymbolKey{Name: "target", Kind: analysis.SymFunction},
+				Source:    &token.Location{File: "/workspace/c.lisp", Line: 1, Col: 20, Pos: 19},
+				File:      "/workspace/c.lisp",
+				Enclosing: "caller-c",
+				EnclosingSource: &token.Location{
+					File: "/workspace/c.lisp", Line: 1, Col: 8, Pos: 7,
+				},
+				EnclosingKind: analysis.SymFunction,
+			},
+		},
+	})
+
+	// Prepare on "target".
+	items, err := s.textDocumentPrepareCallHierarchy(mockContext(), &protocol.CallHierarchyPrepareParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: docA.URI},
+			Position:     protocol.Position{Line: 0, Character: 7}, // on "target"
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+
+	// Get incoming calls.
+	result, err := s.callHierarchyIncomingCalls(mockContext(), &protocol.CallHierarchyIncomingCallsParams{
+		Item: items[0],
+	})
+	require.NoError(t, err)
+	require.Len(t, result, 2, "should have exactly 2 incoming calls from different files")
+
+	// Collect caller names and URIs.
+	callerNames := make(map[string]string) // name -> URI
+	for _, call := range result {
+		callerNames[call.From.Name] = call.From.URI
+	}
+	assert.Contains(t, callerNames, "caller-b", "should have incoming call from caller-b")
+	assert.Contains(t, callerNames, "caller-c", "should have incoming call from caller-c")
+	assert.Equal(t, "file:///workspace/b.lisp", callerNames["caller-b"])
+	assert.Equal(t, "file:///workspace/c.lisp", callerNames["caller-c"])
+}
+
+func TestCrossFileOutgoingCalls_MultipleCalls(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:   "ext-fn-1",
+				Kind:   analysis.SymFunction,
+				Source: &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 8, Pos: 7},
+			},
+			{
+				Name:   "ext-fn-2",
+				Kind:   analysis.SymFunction,
+				Source: &token.Location{File: "/workspace/c.lisp", Line: 1, Col: 8, Pos: 7},
+			},
+		},
+	})
+
+	// File A defines "main" which calls both external functions.
+	docA := openDoc(s, "file:///workspace/a.lisp", "(defun main () (ext-fn-1 1) (ext-fn-2 2))")
+	s.ensureAnalysis(docA)
+
+	// Prepare on "main".
+	items, err := s.textDocumentPrepareCallHierarchy(mockContext(), &protocol.CallHierarchyPrepareParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: docA.URI},
+			Position:     protocol.Position{Line: 0, Character: 7}, // on "main"
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+
+	// Get outgoing calls from "main".
+	result, err := s.callHierarchyOutgoingCalls(mockContext(), &protocol.CallHierarchyOutgoingCallsParams{
+		Item: items[0],
+	})
+	require.NoError(t, err)
+	require.Len(t, result, 2, "should have exactly 2 outgoing calls to different files")
+
+	// Collect callee names and URIs.
+	calleeNames := make(map[string]string) // name -> URI
+	for _, call := range result {
+		calleeNames[call.To.Name] = call.To.URI
+	}
+	assert.Contains(t, calleeNames, "ext-fn-1", "should have outgoing call to ext-fn-1")
+	assert.Contains(t, calleeNames, "ext-fn-2", "should have outgoing call to ext-fn-2")
+	assert.Equal(t, "file:///workspace/b.lisp", calleeNames["ext-fn-1"])
+	assert.Equal(t, "file:///workspace/c.lisp", calleeNames["ext-fn-2"])
+}
+
+func TestCrossFileOutgoingCalls_MixedLocalAndExternal(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:   "ext-fn",
+				Kind:   analysis.SymFunction,
+				Source: &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 8, Pos: 7},
+			},
+		},
+	})
+
+	// File A defines "helper" locally and "main" which calls both local and external.
+	src := "(defun helper () 1)\n(defun main () (helper) (ext-fn 2))"
+	docA := openDoc(s, "file:///workspace/a.lisp", src)
+	s.ensureAnalysis(docA)
+
+	// Prepare on "main" (line 1, col 7).
+	items, err := s.textDocumentPrepareCallHierarchy(mockContext(), &protocol.CallHierarchyPrepareParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: docA.URI},
+			Position:     protocol.Position{Line: 1, Character: 7}, // on "main"
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+
+	// Get outgoing calls from "main".
+	result, err := s.callHierarchyOutgoingCalls(mockContext(), &protocol.CallHierarchyOutgoingCallsParams{
+		Item: items[0],
+	})
+	require.NoError(t, err)
+	require.Len(t, result, 2, "should have 2 outgoing calls (1 local + 1 external)")
+
+	// Collect callees.
+	calleeInfo := make(map[string]string) // name -> URI
+	for _, call := range result {
+		calleeInfo[call.To.Name] = call.To.URI
+	}
+	assert.Contains(t, calleeInfo, "helper", "should have outgoing call to local helper")
+	assert.Contains(t, calleeInfo, "ext-fn", "should have outgoing call to external ext-fn")
+	assert.Equal(t, docA.URI, calleeInfo["helper"], "helper should point to current file")
+	assert.Equal(t, "file:///workspace/b.lisp", calleeInfo["ext-fn"], "ext-fn should point to b.lisp")
+}

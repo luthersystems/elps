@@ -2284,3 +2284,411 @@ func TestUpdateFileRefs(t *testing.T) {
 	s.workspaceRefsMu.RUnlock()
 	assert.Equal(t, 0, newTotalRefs, "old refs should be removed after file update")
 }
+
+// --- Cross-file hover tests ---
+
+func TestCrossFileHover(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:      "remote-fn",
+				Kind:      analysis.SymFunction,
+				DocString: "Does something remotely.",
+				Source:    &token.Location{File: "/workspace/b.lisp", Line: 3, Col: 8, Pos: 30},
+				Signature: &analysis.Signature{
+					Params: []lisp.ParamInfo{
+						{Name: "x", Kind: lisp.ParamRequired},
+					},
+				},
+			},
+		},
+	})
+
+	doc := openDoc(s, "file:///workspace/a.lisp", "(defun main () (remote-fn 42))")
+	s.ensureAnalysis(doc)
+
+	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+			Position:     protocol.Position{Line: 0, Character: 16}, // on "remote-fn"
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, hover, "hover on cross-file symbol should not be nil")
+	mc, ok := hover.Contents.(protocol.MarkupContent)
+	require.True(t, ok)
+	assert.Contains(t, mc.Value, "remote-fn")
+	assert.Contains(t, mc.Value, "function")
+	assert.Contains(t, mc.Value, "Does something remotely.")
+}
+
+func TestCrossFileHover_Definition(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:   "other-fn",
+				Kind:   analysis.SymFunction,
+				Source: &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 8, Pos: 7},
+			},
+		},
+	})
+
+	doc := openDoc(s, "file:///workspace/a.lisp", "(defun local-fn (x) x)")
+	s.ensureAnalysis(doc)
+
+	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+			Position:     protocol.Position{Line: 0, Character: 7}, // on "local-fn"
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, hover, "hover on local definition should work when externals exist")
+	mc, ok := hover.Contents.(protocol.MarkupContent)
+	require.True(t, ok)
+	assert.Contains(t, mc.Value, "local-fn")
+}
+
+func TestCrossFileHover_NoExtraGlobals(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	doc := openDoc(s, "file:///workspace/a.lisp", "(defun main () (unknown-fn 42))")
+	s.ensureAnalysis(doc)
+
+	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+			Position:     protocol.Position{Line: 0, Character: 16}, // on "unknown-fn"
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, hover, "hover on unresolved symbol with no ExtraGlobals should be nil")
+}
+
+// --- Cross-file completion tests ---
+
+func TestCrossFileCompletion(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:   "remote-fn",
+				Kind:   analysis.SymFunction,
+				Source: &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 8, Pos: 7},
+			},
+			{
+				Name:   "remote-helper",
+				Kind:   analysis.SymFunction,
+				Source: &token.Location{File: "/workspace/c.lisp", Line: 1, Col: 8, Pos: 7},
+			},
+		},
+	})
+
+	// Include a valid expression so analysis runs and ExtraGlobals populate the scope.
+	doc := openDoc(s, "file:///workspace/a.lisp", "(defun dummy () 1)\n(remote-")
+	s.ensureAnalysis(doc)
+
+	result, err := s.textDocumentCompletion(mockContext(), &protocol.CompletionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+			Position:     protocol.Position{Line: 1, Character: 8}, // after "(remote-"
+		},
+	})
+	require.NoError(t, err)
+	labels := completionLabels(t, result)
+	assert.Contains(t, labels, "remote-fn", "should complete remote-fn from ExtraGlobals")
+	assert.Contains(t, labels, "remote-helper", "should complete remote-helper from ExtraGlobals")
+}
+
+func TestCrossFileCompletion_NoPrefix(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:   "remote-fn",
+				Kind:   analysis.SymFunction,
+				Source: &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 8, Pos: 7},
+			},
+		},
+	})
+
+	// Include a valid expression so analysis runs and ExtraGlobals populate the scope.
+	doc := openDoc(s, "file:///workspace/a.lisp", "(defun dummy () 1)\n(")
+	s.ensureAnalysis(doc)
+
+	result, err := s.textDocumentCompletion(mockContext(), &protocol.CompletionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+			Position:     protocol.Position{Line: 1, Character: 1}, // after "("
+		},
+	})
+	require.NoError(t, err)
+	labels := completionLabels(t, result)
+	assert.Contains(t, labels, "remote-fn", "external symbols should appear with empty prefix")
+}
+
+func TestCrossFileCompletion_LocalShadowsExternal(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:   "helper",
+				Kind:   analysis.SymFunction,
+				Source: &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 8, Pos: 7},
+			},
+		},
+	})
+
+	doc := openDoc(s, "file:///workspace/a.lisp", "(defun helper (x) (+ x 1))\n(hel")
+	s.ensureAnalysis(doc)
+
+	result, err := s.textDocumentCompletion(mockContext(), &protocol.CompletionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+			Position:     protocol.Position{Line: 1, Character: 4}, // after "(hel"
+		},
+	})
+	require.NoError(t, err)
+	labels := completionLabels(t, result)
+	assert.Contains(t, labels, "helper", "helper should appear in completions")
+}
+
+// --- Cross-file signature help tests ---
+
+func TestCrossFileSignatureHelp(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:   "remote-fn",
+				Kind:   analysis.SymFunction,
+				Source: &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 8, Pos: 7},
+				Signature: &analysis.Signature{
+					Params: []lisp.ParamInfo{
+						{Name: "x", Kind: lisp.ParamRequired},
+						{Name: "y", Kind: lisp.ParamOptional},
+					},
+				},
+			},
+		},
+	})
+
+	doc := openDoc(s, "file:///workspace/a.lisp", "(defun main () (remote-fn 42))")
+	s.ensureAnalysis(doc)
+
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+			Position:     protocol.Position{Line: 0, Character: 26}, // after "(remote-fn "
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "signature help for cross-file function should not be nil")
+	require.Len(t, result.Signatures, 1)
+	sig := result.Signatures[0]
+	assert.Contains(t, sig.Label, "remote-fn")
+	assert.Contains(t, sig.Label, "x")
+	assert.Len(t, sig.Parameters, 2, "should have 2 parameters (x required, y optional)")
+}
+
+func TestCrossFileSignatureHelp_Incomplete(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:   "remote-fn",
+				Kind:   analysis.SymFunction,
+				Source: &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 8, Pos: 7},
+				Signature: &analysis.Signature{
+					Params: []lisp.ParamInfo{
+						{Name: "x", Kind: lisp.ParamRequired},
+					},
+				},
+			},
+		},
+	})
+
+	// Incomplete call — no closing paren. Text-based fallback finds the function name,
+	// and scope lookup finds the ExtraGlobals symbol (requires valid AST for analysis).
+	doc := openDoc(s, "file:///workspace/a.lisp", "(defun dummy () 1)\n(remote-fn ")
+	s.ensureAnalysis(doc)
+
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+			Position:     protocol.Position{Line: 1, Character: 11}, // after "(remote-fn "
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "signature help should work for incomplete cross-file calls via text fallback")
+	require.Len(t, result.Signatures, 1)
+	assert.Contains(t, result.Signatures[0].Label, "remote-fn")
+}
+
+func TestCrossFileSignatureHelp_NoSignature(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:   "remote-var",
+				Kind:   analysis.SymVariable,
+				Source: &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 8, Pos: 7},
+				// No Signature — this is a variable, not callable.
+			},
+		},
+	})
+
+	doc := openDoc(s, "file:///workspace/a.lisp", "(remote-var ")
+	s.ensureAnalysis(doc)
+
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+			Position:     protocol.Position{Line: 0, Character: 12},
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, result, "signature help for non-callable cross-file symbol should be nil")
+}
+
+// --- Cross-file definition test ---
+
+func TestCrossFileDefinition(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:   "remote-fn",
+				Kind:   analysis.SymFunction,
+				Source: &token.Location{File: "/workspace/b.lisp", Line: 5, Col: 8, Pos: 50},
+			},
+		},
+	})
+
+	doc := openDoc(s, "file:///workspace/a.lisp", "(defun main () (remote-fn 42))")
+	s.ensureAnalysis(doc)
+
+	result, err := s.textDocumentDefinition(mockContext(), &protocol.DefinitionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+			Position:     protocol.Position{Line: 0, Character: 16}, // on "remote-fn"
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "definition for cross-file symbol should not be nil")
+	loc, ok := result.(protocol.Location)
+	require.True(t, ok, "definition result should be Location, got %T", result)
+	assert.Equal(t, "file:///workspace/b.lisp", loc.URI, "definition should point to b.lisp")
+	assert.Equal(t, protocol.UInteger(4), loc.Range.Start.Line, "line should be 0-based (5-1=4)")
+	assert.Equal(t, protocol.UInteger(7), loc.Range.Start.Character, "char should be 0-based (8-1=7)")
+}
+
+// --- Cross-file edge cases for references and rename ---
+
+func TestCrossFileReferences_ExternalCursor(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:   "helper",
+				Kind:   analysis.SymFunction,
+				Source: &token.Location{File: "/workspace/a.lisp", Line: 1, Col: 8, Pos: 7},
+			},
+		},
+	})
+
+	// File B calls "helper" (defined externally in a.lisp).
+	docB := openDoc(s, "file:///workspace/b.lisp", "(defun caller () (helper 42))")
+	s.ensureAnalysis(docB)
+
+	// Inject workspace refs for "helper" from file C.
+	helperKey := analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction}.String()
+	s.setTestWorkspaceRefs(map[string][]analysis.FileReference{
+		helperKey: {
+			{
+				SymbolKey: analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction},
+				Source:    &token.Location{File: "/workspace/c.lisp", Line: 1, Col: 10, Pos: 9},
+				File:      "/workspace/c.lisp",
+				Enclosing: "other-caller",
+			},
+		},
+	})
+
+	locs, err := s.textDocumentReferences(mockContext(), &protocol.ReferenceParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: docB.URI},
+			Position:     protocol.Position{Line: 0, Character: 18}, // on "helper" call in B
+		},
+		Context: protocol.ReferenceContext{IncludeDeclaration: true},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, locs)
+
+	// Collect URIs.
+	uris := make(map[string]bool)
+	for _, loc := range locs {
+		uris[loc.URI] = true
+	}
+	// Should include: definition from a.lisp, local ref from b.lisp, and workspace ref from c.lisp.
+	assert.True(t, uris["file:///workspace/a.lisp"], "should include definition from a.lisp")
+	assert.True(t, uris["file:///workspace/b.lisp"], "should include local ref from b.lisp")
+	assert.True(t, uris["file:///workspace/c.lisp"], "should include workspace ref from c.lisp")
+}
+
+func TestCrossFileRename_ExternalCursor(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:   "helper",
+				Kind:   analysis.SymFunction,
+				Source: &token.Location{File: "/workspace/a.lisp", Line: 1, Col: 8, Pos: 7},
+			},
+		},
+	})
+
+	// File B calls "helper" (defined externally in a.lisp).
+	docB := openDoc(s, "file:///workspace/b.lisp", "(defun caller () (helper 42))")
+	s.ensureAnalysis(docB)
+
+	// Inject workspace refs from file C.
+	helperKey := analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction}.String()
+	s.setTestWorkspaceRefs(map[string][]analysis.FileReference{
+		helperKey: {
+			{
+				SymbolKey: analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction},
+				Source:    &token.Location{File: "/workspace/c.lisp", Line: 1, Col: 10, Pos: 9},
+				File:      "/workspace/c.lisp",
+			},
+		},
+	})
+
+	edit, err := s.textDocumentRename(mockContext(), &protocol.RenameParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: docB.URI},
+			Position:     protocol.Position{Line: 0, Character: 18}, // on "helper" call in B
+		},
+		NewName: "new-helper",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, edit, "rename should return workspace edit")
+	require.NotNil(t, edit.Changes)
+
+	// Should have edits in a.lisp (definition), b.lisp (local call), and c.lisp (workspace ref).
+	aEdits := edit.Changes["file:///workspace/a.lisp"]
+	assert.NotEmpty(t, aEdits, "a.lisp should have rename edits (definition)")
+	bEdits := edit.Changes["file:///workspace/b.lisp"]
+	assert.NotEmpty(t, bEdits, "b.lisp should have rename edits (local call)")
+	cEdits := edit.Changes["file:///workspace/c.lisp"]
+	assert.NotEmpty(t, cEdits, "c.lisp should have rename edits (workspace ref)")
+
+	// All edits should use the new name.
+	for uri, edits := range edit.Changes {
+		for _, e := range edits {
+			assert.Equal(t, "new-helper", e.NewText, "edit in %s should use new name", uri)
+		}
+	}
+}
