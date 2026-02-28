@@ -2227,6 +2227,9 @@ func TestCrossFileRename(t *testing.T) {
 	// Verify the b.lisp edit position (injected at Line:1, Col:19 → LSP line 0, char 18).
 	assert.Equal(t, protocol.UInteger(0), bEdits[0].Range.Start.Line, "b.lisp edit should be on line 0")
 	assert.Equal(t, protocol.UInteger(18), bEdits[0].Range.Start.Character, "b.lisp edit should start at char 18")
+	// Range.End should be Start + len("helper") = 18 + 6 = 24.
+	assert.Equal(t, protocol.UInteger(0), bEdits[0].Range.End.Line, "b.lisp edit end should be on line 0")
+	assert.Equal(t, protocol.UInteger(24), bEdits[0].Range.End.Character, "b.lisp edit end should be at char 24")
 }
 
 func TestUpdateFileRefs(t *testing.T) {
@@ -2505,8 +2508,12 @@ func TestCrossFileSignatureHelp(t *testing.T) {
 	sig := result.Signatures[0]
 	assert.Contains(t, sig.Label, "remote-fn")
 	assert.Contains(t, sig.Label, "x")
+	assert.Contains(t, sig.Label, "y", "label should include the optional parameter name y")
 	assert.Contains(t, sig.Label, "&optional", "label should include &optional keyword for optional param")
 	assert.Len(t, sig.Parameters, 2, "should have 2 parameters (x required, y optional)")
+	// ActiveParameter should indicate the first argument (cursor is on arg 0).
+	require.NotNil(t, result.ActiveParameter, "ActiveParameter should be set")
+	assert.Equal(t, uint32(0), *result.ActiveParameter, "ActiveParameter should be 0 (cursor on first arg)")
 }
 
 func TestCrossFileSignatureHelp_Incomplete(t *testing.T) {
@@ -2542,6 +2549,9 @@ func TestCrossFileSignatureHelp_Incomplete(t *testing.T) {
 	require.Len(t, result.Signatures, 1)
 	assert.Contains(t, result.Signatures[0].Label, "remote-fn")
 	assert.Len(t, result.Signatures[0].Parameters, 1, "should have 1 parameter from external signature")
+	// ActiveParameter should be set (cursor is past the function name, on arg position 0).
+	require.NotNil(t, result.ActiveParameter, "ActiveParameter should be set for incomplete call")
+	assert.Equal(t, uint32(0), *result.ActiveParameter, "ActiveParameter should be 0 (cursor on first arg position)")
 }
 
 func TestCrossFileSignatureHelp_NoSignature(t *testing.T) {
@@ -2713,7 +2723,13 @@ func TestCrossFileRename_ExternalCursor(t *testing.T) {
 	// a.lisp: definition at line 0, col 7 (1-based col 8 → 0-based 7).
 	assert.Equal(t, protocol.UInteger(0), aEdits[0].Range.Start.Line, "a.lisp edit should be on line 0")
 	assert.Equal(t, protocol.UInteger(7), aEdits[0].Range.Start.Character, "a.lisp edit should start at char 7")
+	// Range.End should be Start + len("helper") = 7 + 6 = 13.
+	assert.Equal(t, protocol.UInteger(0), aEdits[0].Range.End.Line, "a.lisp edit end should be on line 0")
+	assert.Equal(t, protocol.UInteger(13), aEdits[0].Range.End.Character, "a.lisp edit end should be at char 13")
 	// c.lisp: workspace ref at line 0, col 9 (1-based col 10 → 0-based 9).
 	assert.Equal(t, protocol.UInteger(0), cEdits[0].Range.Start.Line, "c.lisp edit should be on line 0")
 	assert.Equal(t, protocol.UInteger(9), cEdits[0].Range.Start.Character, "c.lisp edit should start at char 9")
+	// Range.End should be Start + len("helper") = 9 + 6 = 15.
+	assert.Equal(t, protocol.UInteger(0), cEdits[0].Range.End.Line, "c.lisp edit end should be on line 0")
+	assert.Equal(t, protocol.UInteger(15), cEdits[0].Range.End.Character, "c.lisp edit end should be at char 15")
 }

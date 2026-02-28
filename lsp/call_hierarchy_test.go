@@ -346,6 +346,8 @@ func TestCrossFileOutgoingCalls_MultipleCalls(t *testing.T) {
 	calleeNames := make(map[string]string) // name -> URI
 	for _, call := range result {
 		calleeNames[call.To.Name] = call.To.URI
+		// Each outgoing call should have at least one call site range.
+		require.NotEmpty(t, call.FromRanges, "callee %s should have at least one call site range", call.To.Name)
 	}
 	assert.Contains(t, calleeNames, "ext-fn-1", "should have outgoing call to ext-fn-1")
 	assert.Contains(t, calleeNames, "ext-fn-2", "should have outgoing call to ext-fn-2")
