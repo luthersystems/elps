@@ -160,19 +160,15 @@ func TestCrossFileIncomingCalls(t *testing.T) {
 		Item: items[0],
 	})
 	require.NoError(t, err)
-	require.NotEmpty(t, result, "should have incoming calls from cross-file")
+	require.Len(t, result, 1, "should have exactly 1 incoming call from cross-file")
 
-	// Find the cross-file caller.
-	var found bool
-	for _, call := range result {
-		if call.From.Name == "remote-caller" {
-			found = true
-			assert.Contains(t, call.From.URI, "b.lisp", "caller should be from b.lisp")
-			assert.NotEmpty(t, call.FromRanges)
-			break
-		}
-	}
-	assert.True(t, found, "should find remote-caller from b.lisp in incoming calls")
+	call := result[0]
+	assert.Equal(t, "remote-caller", call.From.Name, "caller should be remote-caller")
+	assert.Equal(t, "file:///workspace/b.lisp", call.From.URI, "caller should be from b.lisp")
+	require.Len(t, call.FromRanges, 1, "should have exactly 1 call site range")
+	// Injected at Line:1, Col:25 → LSP 0-based: line 0, char 24.
+	assert.Equal(t, protocol.UInteger(0), call.FromRanges[0].Start.Line, "call site should be on line 0")
+	assert.Equal(t, protocol.UInteger(24), call.FromRanges[0].Start.Character, "call site should start at char 24")
 }
 
 func TestDecodeCallHierarchyData(t *testing.T) {

@@ -316,14 +316,17 @@ func TestScanWorkspaceRefs_CrossFile(t *testing.T) {
 	helperRefs := refs[helperKey]
 	require.NotEmpty(t, helperRefs, "should have cross-file references to helper")
 
-	// Find the reference from file B.
+	// Find the reference from file B and verify its position.
 	bPath := filepath.Join(dir, "b.lisp")
 	var found bool
 	for _, ref := range helperRefs {
 		if ref.File == bPath {
 			found = true
 			assert.Equal(t, "caller", ref.Enclosing, "reference should be inside 'caller'")
-			assert.NotNil(t, ref.Source, "reference should have source location")
+			require.NotNil(t, ref.Source, "reference should have source location")
+			// "helper" is called at column 19 in: (defun caller () (helper 42))
+			assert.Equal(t, 1, ref.Source.Line, "reference should be on line 1")
+			assert.Equal(t, 19, ref.Source.Col, "reference should be at column 19")
 			break
 		}
 	}
@@ -331,9 +334,11 @@ func TestScanWorkspaceRefs_CrossFile(t *testing.T) {
 }
 
 func TestExtractFileRefs_SkipsBuiltinsAndLocals(t *testing.T) {
-	src := []byte(`(defun my-fn (x)
+	// "my-fn" calls "other-fn" (a global), plus uses builtin "+", param "x", and local "local-var".
+	src := []byte(`(defun other-fn () 1)
+(defun my-fn (x)
   (let ((local-var 1))
-    (+ x local-var)))
+    (+ x local-var (other-fn))))
 `)
 	filename := "test.lisp"
 	result := AnalyzeFile(src, filename, nil)
@@ -341,13 +346,21 @@ func TestExtractFileRefs_SkipsBuiltinsAndLocals(t *testing.T) {
 
 	refs := ExtractFileRefs(result, filename)
 
-	// "+" is a builtin, "x" is a parameter, "local-var" is a let binding.
-	// None should appear in the extracted refs.
+	// Must not be empty — "other-fn" is a global user-defined function and should be included.
+	require.NotEmpty(t, refs, "should extract at least one reference")
+
+	refNames := make(map[string]bool)
 	for _, ref := range refs {
-		assert.NotEqual(t, "+", ref.SymbolKey.Name, "builtins should be excluded")
-		assert.NotEqual(t, "x", ref.SymbolKey.Name, "parameters should be excluded")
-		assert.NotEqual(t, "local-var", ref.SymbolKey.Name, "locals should be excluded")
+		refNames[ref.SymbolKey.Name] = true
 	}
+
+	// "other-fn" is a global user-defined function — should be included.
+	assert.True(t, refNames["other-fn"], "global user function should be included")
+
+	// "+" is a builtin, "x" is a parameter, "local-var" is a let binding — all excluded.
+	assert.False(t, refNames["+"], "builtins should be excluded")
+	assert.False(t, refNames["x"], "parameters should be excluded")
+	assert.False(t, refNames["local-var"], "locals should be excluded")
 }
 
 func TestFindEnclosingFunction(t *testing.T) {
@@ -360,20 +373,23 @@ func TestFindEnclosingFunction(t *testing.T) {
 	require.NotNil(t, result.RootScope)
 
 	t.Run("inside inner function body", func(t *testing.T) {
-		// The "+" on line 2 is inside "inner".
+		// Column 22 is the position of "+" on line 2: "  (defun inner (x) (+ x 1))"
 		enc := FindEnclosingFunction(result.RootScope, 2, 22)
 		require.NotNil(t, enc)
 		assert.Equal(t, "inner", enc.Name)
 	})
 
-	t.Run("at top-level returns nil", func(t *testing.T) {
-		// Position before any function.
-		enc := FindEnclosingFunction(result.RootScope, 1, 1)
-		// Line 1 col 1 is the opening paren of (defun outer ...).
-		// It's at the start of outer's definition, which is global scope.
-		// Depending on scope boundaries, this might return outer or nil.
-		// The important thing is it doesn't crash.
-		_ = enc
+	t.Run("inside outer function body", func(t *testing.T) {
+		// Line 3, col 4 is inside "(inner 42)" which is in outer's body.
+		enc := FindEnclosingFunction(result.RootScope, 3, 4)
+		require.NotNil(t, enc)
+		assert.Equal(t, "outer", enc.Name)
+	})
+
+	t.Run("before any function scope", func(t *testing.T) {
+		// Line 100, col 1 is beyond the source — should be global scope, returns nil.
+		enc := FindEnclosingFunction(result.RootScope, 100, 1)
+		assert.Nil(t, enc, "position outside any function should return nil")
 	})
 }
 

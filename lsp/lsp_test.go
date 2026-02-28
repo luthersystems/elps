@@ -4,6 +4,7 @@ package lsp
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -2103,13 +2104,23 @@ func TestCrossFileReferences(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, locs)
 
-	// Should have: declaration + cross-file ref from b.lisp.
+	// Should have exactly 2 locations: declaration from a.lisp + cross-file ref from b.lisp.
+	require.Len(t, locs, 2, "should have declaration + 1 cross-file ref")
+
 	uris := make(map[string]bool)
 	for _, loc := range locs {
 		uris[loc.URI] = true
 	}
 	assert.True(t, uris["file:///workspace/a.lisp"], "should include definition from a.lisp")
 	assert.True(t, uris["file:///workspace/b.lisp"], "should include cross-file ref from b.lisp")
+
+	// Verify the cross-file ref position (injected at Line:1, Col:19 → LSP 0-based: line 0, char 18).
+	for _, loc := range locs {
+		if loc.URI == "file:///workspace/b.lisp" {
+			assert.Equal(t, protocol.UInteger(0), loc.Range.Start.Line, "b.lisp ref should be on line 0")
+			assert.Equal(t, protocol.UInteger(18), loc.Range.Start.Character, "b.lisp ref should start at char 18")
+		}
+	}
 }
 
 func TestCrossFileReferences_NoDuplicates(t *testing.T) {
@@ -2163,6 +2174,7 @@ func TestCrossFileReferences_NoDuplicates(t *testing.T) {
 	// Cross-file should add 1 from b.lisp (current-file refs excluded).
 	assert.Equal(t, 1, aCount, "a.lisp should have 1 ref (from single-file analysis)")
 	assert.Equal(t, 1, bCount, "b.lisp should have 1 ref (from workspace index)")
+	assert.Len(t, locs, 2, "total should be exactly 2 (no duplicates)")
 }
 
 func TestCrossFileRename(t *testing.T) {
@@ -2198,10 +2210,11 @@ func TestCrossFileRename(t *testing.T) {
 	require.NotNil(t, edit.Changes)
 
 	// Should have edits in both files.
+	// a.lisp: 1 def + 1 call = 2 edits; b.lisp: 1 cross-file ref = 1 edit.
 	aEdits := edit.Changes["file:///workspace/a.lisp"]
-	assert.NotEmpty(t, aEdits, "should have edits in a.lisp")
+	require.Len(t, aEdits, 2, "a.lisp should have 2 edits (def + call)")
 	bEdits := edit.Changes["file:///workspace/b.lisp"]
-	assert.NotEmpty(t, bEdits, "should have edits in b.lisp")
+	require.Len(t, bEdits, 1, "b.lisp should have 1 edit (cross-file ref)")
 
 	// All edits should rename to "assist".
 	for _, e := range aEdits {
@@ -2210,4 +2223,64 @@ func TestCrossFileRename(t *testing.T) {
 	for _, e := range bEdits {
 		assert.Equal(t, "assist", e.NewText)
 	}
+
+	// Verify the b.lisp edit position (injected at Line:1, Col:19 → LSP line 0, char 18).
+	assert.Equal(t, protocol.UInteger(0), bEdits[0].Range.Start.Line, "b.lisp edit should be on line 0")
+	assert.Equal(t, protocol.UInteger(18), bEdits[0].Range.Start.Character, "b.lisp edit should start at char 18")
+}
+
+func TestUpdateFileRefs(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Create a temp file with two functions — "caller" calls "target".
+	// Both must be defined so analysis resolves the reference.
+	dir := t.TempDir()
+	filePath := dir + "/test.lisp"
+	require.NoError(t, os.WriteFile(filePath, []byte("(defun target (x) x)\n(defun caller () (target 1))"), 0600))
+
+	uri := pathToURI(filePath)
+
+	// Initially no workspace refs.
+	s.setTestWorkspaceRefs(make(map[string][]analysis.FileReference))
+
+	// Run updateFileRefs.
+	s.updateFileRefs(uri)
+
+	// Check that refs were populated — "caller" references "target".
+	s.workspaceRefsMu.RLock()
+	totalRefs := 0
+	for _, refs := range s.workspaceRefs {
+		totalRefs += len(refs)
+	}
+	s.workspaceRefsMu.RUnlock()
+	assert.Greater(t, totalRefs, 0, "updateFileRefs should populate workspace refs")
+
+	// Verify the ref is for "target".
+	targetKey := analysis.SymbolKey{Name: "target", Kind: analysis.SymFunction}.String()
+	s.workspaceRefsMu.RLock()
+	targetRefs := s.workspaceRefs[targetKey]
+	s.workspaceRefsMu.RUnlock()
+	require.NotEmpty(t, targetRefs, "should have refs for target")
+	assert.Equal(t, filePath, targetRefs[0].File)
+	assert.Equal(t, "caller", targetRefs[0].Enclosing, "ref should be inside caller")
+
+	// Now update the file to remove the call.
+	require.NoError(t, os.WriteFile(filePath, []byte("(defun target (x) x)\n(defun caller () 42)"), 0600))
+
+	// Run updateFileRefs again.
+	s.updateFileRefs(uri)
+
+	// Check that old refs for this file were removed.
+	s.workspaceRefsMu.RLock()
+	newTotalRefs := 0
+	for _, refs := range s.workspaceRefs {
+		for _, ref := range refs {
+			if ref.File == filePath {
+				newTotalRefs++
+			}
+		}
+	}
+	s.workspaceRefsMu.RUnlock()
+	assert.Equal(t, 0, newTotalRefs, "old refs should be removed after file update")
 }
