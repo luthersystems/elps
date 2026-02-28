@@ -213,7 +213,13 @@ func (s *Server) callHierarchyOutgoingCalls(_ *glsp.Context, params *protocol.Ca
 
 	var result []protocol.CallHierarchyOutgoingCall
 	for _, c := range callees {
-		item := symbolToCallHierarchyItem(c.sym, data.URI)
+		// Determine the URI for the callee. If the symbol is defined in
+		// another file (External with a Source.File), resolve its URI.
+		calleeURI := data.URI
+		if c.sym.External && c.sym.Source != nil && c.sym.Source.File != "" {
+			calleeURI = s.resolveURI(data.URI, c.sym.Source.File)
+		}
+		item := symbolToCallHierarchyItem(c.sym, calleeURI)
 		result = append(result, protocol.CallHierarchyOutgoingCall{
 			To:         item,
 			FromRanges: c.ranges,

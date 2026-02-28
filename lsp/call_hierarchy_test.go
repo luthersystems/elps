@@ -171,6 +171,50 @@ func TestCrossFileIncomingCalls(t *testing.T) {
 	assert.Equal(t, protocol.UInteger(24), call.FromRanges[0].Start.Character, "call site should start at char 24")
 }
 
+func TestCrossFileOutgoingCalls(t *testing.T) {
+	s := testServer()
+
+	// Set up analysis config with an external symbol "remote-fn" defined in file B.
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:   "remote-fn",
+				Kind:   analysis.SymFunction,
+				Source: &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 8, Pos: 7},
+			},
+		},
+	})
+
+	// File A defines "caller" which calls "remote-fn".
+	docA := openDoc(s, "file:///workspace/a.lisp", "(defun caller () (remote-fn 42))")
+	s.ensureAnalysis(docA)
+
+	// Prepare on "caller".
+	items, err := s.textDocumentPrepareCallHierarchy(mockContext(), &protocol.CallHierarchyPrepareParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: docA.URI},
+			Position:     protocol.Position{Line: 0, Character: 7}, // on "caller"
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+
+	// Get outgoing calls from "caller".
+	result, err := s.callHierarchyOutgoingCalls(mockContext(), &protocol.CallHierarchyOutgoingCallsParams{
+		Item: items[0],
+	})
+	require.NoError(t, err)
+	require.Len(t, result, 1, "should have exactly 1 outgoing call")
+
+	call := result[0]
+	assert.Equal(t, "remote-fn", call.To.Name, "callee should be remote-fn")
+	assert.Equal(t, "file:///workspace/b.lisp", call.To.URI, "callee should point to b.lisp")
+	require.Len(t, call.FromRanges, 1, "should have exactly 1 call site range")
+	// "(defun caller () (remote-fn 42))" — "remote-fn" starts at col 19 (1-based), LSP 0-based: 18.
+	assert.Equal(t, protocol.UInteger(0), call.FromRanges[0].Start.Line, "call site should be on line 0")
+	assert.Equal(t, protocol.UInteger(18), call.FromRanges[0].Start.Character, "call site should start at char 18")
+}
+
 func TestDecodeCallHierarchyData(t *testing.T) {
 	t.Run("valid data", func(t *testing.T) {
 		data := map[string]any{
