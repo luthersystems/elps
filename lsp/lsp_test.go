@@ -2069,3 +2069,145 @@ func TestEnclosingCallText(t *testing.T) {
 		})
 	}
 }
+
+// --- Cross-file reference tests ---
+
+func TestCrossFileReferences(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// File A defines "helper".
+	docA := openDoc(s, "file:///workspace/a.lisp", "(defun helper (x) (+ x 1))")
+	s.ensureAnalysis(docA)
+
+	// Inject workspace refs simulating a reference from file B.
+	helperKey := analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction}.String()
+	s.setTestWorkspaceRefs(map[string][]analysis.FileReference{
+		helperKey: {
+			{
+				SymbolKey: analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction},
+				Source:    &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 19, Pos: 18},
+				File:      "/workspace/b.lisp",
+				Enclosing: "caller",
+			},
+		},
+	})
+
+	locs, err := s.textDocumentReferences(mockContext(), &protocol.ReferenceParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: docA.URI},
+			Position:     protocol.Position{Line: 0, Character: 7}, // on "helper" def
+		},
+		Context: protocol.ReferenceContext{IncludeDeclaration: true},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, locs)
+
+	// Should have: declaration + cross-file ref from b.lisp.
+	uris := make(map[string]bool)
+	for _, loc := range locs {
+		uris[loc.URI] = true
+	}
+	assert.True(t, uris["file:///workspace/a.lisp"], "should include definition from a.lisp")
+	assert.True(t, uris["file:///workspace/b.lisp"], "should include cross-file ref from b.lisp")
+}
+
+func TestCrossFileReferences_NoDuplicates(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// File A defines and calls "helper".
+	src := "(defun helper (x) (+ x 1))\n(helper 42)"
+	docA := openDoc(s, "file:///workspace/a.lisp", src)
+	s.ensureAnalysis(docA)
+
+	// Inject workspace refs that include a ref from a.lisp itself.
+	// The getWorkspaceRefs should exclude current-file refs.
+	helperKey := analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction}.String()
+	s.setTestWorkspaceRefs(map[string][]analysis.FileReference{
+		helperKey: {
+			{
+				SymbolKey: analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction},
+				Source:    &token.Location{File: "/workspace/a.lisp", Line: 2, Col: 2, Pos: 29},
+				File:      "/workspace/a.lisp",
+			},
+			{
+				SymbolKey: analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction},
+				Source:    &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 2, Pos: 1},
+				File:      "/workspace/b.lisp",
+			},
+		},
+	})
+
+	locs, err := s.textDocumentReferences(mockContext(), &protocol.ReferenceParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: docA.URI},
+			Position:     protocol.Position{Line: 0, Character: 7},
+		},
+		Context: protocol.ReferenceContext{IncludeDeclaration: false},
+	})
+	require.NoError(t, err)
+
+	// Count refs per URI — a.lisp should not have double-counted refs.
+	aCount := 0
+	bCount := 0
+	for _, loc := range locs {
+		switch loc.URI {
+		case "file:///workspace/a.lisp":
+			aCount++
+		case "file:///workspace/b.lisp":
+			bCount++
+		}
+	}
+	// Single-file analysis should give 1 ref from a.lisp (the call on line 2).
+	// Cross-file should add 1 from b.lisp (current-file refs excluded).
+	assert.Equal(t, 1, aCount, "a.lisp should have 1 ref (from single-file analysis)")
+	assert.Equal(t, 1, bCount, "b.lisp should have 1 ref (from workspace index)")
+}
+
+func TestCrossFileRename(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// File A defines "helper" and calls it.
+	src := "(defun helper (x) (+ x 1))\n(helper 42)"
+	docA := openDoc(s, "file:///workspace/a.lisp", src)
+	s.ensureAnalysis(docA)
+
+	// Inject workspace refs from file B.
+	helperKey := analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction}.String()
+	s.setTestWorkspaceRefs(map[string][]analysis.FileReference{
+		helperKey: {
+			{
+				SymbolKey: analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction},
+				Source:    &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 19, Pos: 18},
+				File:      "/workspace/b.lisp",
+			},
+		},
+	})
+
+	edit, err := s.textDocumentRename(mockContext(), &protocol.RenameParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: docA.URI},
+			Position:     protocol.Position{Line: 0, Character: 7}, // on "helper" def
+		},
+		NewName: "assist",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, edit)
+	require.NotNil(t, edit.Changes)
+
+	// Should have edits in both files.
+	aEdits := edit.Changes["file:///workspace/a.lisp"]
+	assert.NotEmpty(t, aEdits, "should have edits in a.lisp")
+	bEdits := edit.Changes["file:///workspace/b.lisp"]
+	assert.NotEmpty(t, bEdits, "should have edits in b.lisp")
+
+	// All edits should rename to "assist".
+	for _, e := range aEdits {
+		assert.Equal(t, "assist", e.NewText)
+	}
+	for _, e := range bEdits {
+		assert.Equal(t, "assist", e.NewText)
+	}
+}

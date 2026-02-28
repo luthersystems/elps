@@ -72,10 +72,12 @@ func (s *Server) callHierarchyIncomingCalls(_ *glsp.Context, params *protocol.Ca
 	// Find all references to the target and group by enclosing function.
 	type callerInfo struct {
 		sym    *analysis.Symbol
+		uri    string // URI of the file containing the caller
 		ranges []protocol.Range
 	}
 	callers := make(map[string]*callerInfo)
 
+	// Single-file references (pointer equality).
 	for _, ref := range res.References {
 		if ref.Symbol != targetSym {
 			continue
@@ -83,17 +85,42 @@ func (s *Server) callHierarchyIncomingCalls(_ *glsp.Context, params *protocol.Ca
 		if ref.Source == nil || ref.Source.Line == 0 {
 			continue
 		}
-		// Find the enclosing function of this reference.
 		enclosing := findEnclosingFunction(res.RootScope, ref.Source.Line, ref.Source.Col)
 		if enclosing == nil {
-			continue // reference is at top level, not inside a function
+			continue
 		}
 		refRange := elpsToLSPRange(ref.Source, len(ref.Symbol.Name))
-		key := enclosing.Name
+		key := data.URI + ":" + enclosing.Name
 		if c, ok := callers[key]; ok {
 			c.ranges = append(c.ranges, refRange)
 		} else {
-			callers[key] = &callerInfo{sym: enclosing, ranges: []protocol.Range{refRange}}
+			callers[key] = &callerInfo{sym: enclosing, uri: data.URI, ranges: []protocol.Range{refRange}}
+		}
+	}
+
+	// Cross-file references from workspace index.
+	wsKey := symbolToKey(targetSym)
+	currentFile := uriToPath(data.URI)
+	for _, wref := range s.getWorkspaceRefs(wsKey, currentFile) {
+		if wref.Enclosing == "" {
+			continue // top-level reference, not inside a function
+		}
+		if wref.Source == nil {
+			continue
+		}
+		refRange := elpsToLSPRange(wref.Source, len(targetSym.Name))
+		callerURI := s.resolveURI(data.URI, wref.File)
+		key := callerURI + ":" + wref.Enclosing
+		if c, ok := callers[key]; ok {
+			c.ranges = append(c.ranges, refRange)
+		} else {
+			// Construct a synthetic symbol for the enclosing function.
+			encSym := &analysis.Symbol{
+				Name:   wref.Enclosing,
+				Kind:   wref.EnclosingKind,
+				Source: wref.EnclosingSource,
+			}
+			callers[key] = &callerInfo{sym: encSym, uri: callerURI, ranges: []protocol.Range{refRange}}
 		}
 	}
 
@@ -102,7 +129,7 @@ func (s *Server) callHierarchyIncomingCalls(_ *glsp.Context, params *protocol.Ca
 		if c.sym.Source == nil || c.sym.Source.Line == 0 {
 			continue
 		}
-		item := symbolToCallHierarchyItem(c.sym, data.URI)
+		item := symbolToCallHierarchyItem(c.sym, c.uri)
 		result = append(result, protocol.CallHierarchyIncomingCall{
 			From:       item,
 			FromRanges: c.ranges,
@@ -254,27 +281,9 @@ func findSymbolByName(res *analysis.Result, name string) *analysis.Symbol {
 }
 
 // findEnclosingFunction finds the function symbol that contains the given
-// 1-based position by walking the scope tree.
+// 1-based position by walking the scope tree. Delegates to analysis.FindEnclosingFunction.
 func findEnclosingFunction(root *analysis.Scope, line, col int) *analysis.Symbol {
-	scope := scopeAtPosition(root, line, col)
-	// Walk up to find the nearest function scope.
-	for scope != nil {
-		if scope.Kind == analysis.ScopeFunction {
-			// Find the symbol defined in the parent scope for this function.
-			if scope.Node != nil && scope.Node.Source != nil {
-				// The function name is typically the second child of the defun form.
-				for _, sym := range scope.Parent.Symbols {
-					if sym.Kind == analysis.SymFunction || sym.Kind == analysis.SymMacro {
-						if sym.Source != nil && sym.Source.Line == scope.Node.Source.Line {
-							return sym
-						}
-					}
-				}
-			}
-		}
-		scope = scope.Parent
-	}
-	return nil
+	return analysis.FindEnclosingFunction(root, line, col)
 }
 
 // findFunctionScope finds the scope for a named function.

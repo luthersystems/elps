@@ -37,6 +37,10 @@ type Server struct {
 	// Linter instance shared across diagnostics runs.
 	linter *lint.Linter
 
+	// Workspace reference index: maps SymbolKey.String() to cross-file references.
+	workspaceRefs   map[string][]analysis.FileReference
+	workspaceRefsMu sync.RWMutex
+
 	// Embedder-provided environment and registry.
 	registry *lisp.PackageRegistry
 	env      *lisp.LEnv
@@ -268,6 +272,14 @@ func (s *Server) buildWorkspaceIndex() {
 	s.analysisCfgMu.Lock()
 	s.analysisCfg = cfg
 	s.analysisCfgMu.Unlock()
+
+	// Build workspace reference index using the populated config.
+	if s.rootPath != "" {
+		wsRefs := analysis.ScanWorkspaceRefs(s.rootPath, cfg)
+		s.workspaceRefsMu.Lock()
+		s.workspaceRefs = wsRefs
+		s.workspaceRefsMu.Unlock()
+	}
 }
 
 // reanalyzeOpenDocuments invalidates cached analysis for all open documents
@@ -349,6 +361,92 @@ func (s *Server) sendNotification(method string, params any) {
 	if fn != nil {
 		fn(method, params)
 	}
+}
+
+// getWorkspaceRefs returns cross-file references for the given symbol key,
+// excluding references from the specified file to avoid double-counting.
+func (s *Server) getWorkspaceRefs(key string, excludeFile string) []analysis.FileReference {
+	s.workspaceRefsMu.RLock()
+	refs := s.workspaceRefs[key]
+	s.workspaceRefsMu.RUnlock()
+
+	if excludeFile == "" {
+		return refs
+	}
+
+	var filtered []analysis.FileReference
+	for _, ref := range refs {
+		if ref.File != excludeFile {
+			filtered = append(filtered, ref)
+		}
+	}
+	return filtered
+}
+
+// symbolToKey derives the workspace ref lookup key from an analysis symbol.
+func symbolToKey(sym *analysis.Symbol) string {
+	return analysis.SymbolToKey(sym).String()
+}
+
+// updateFileRefs re-analyzes a single file and updates the workspace ref index.
+func (s *Server) updateFileRefs(uri string) {
+	filePath := uriToPath(uri)
+	source, err := os.ReadFile(filePath) //nolint:gosec // LSP server reads user files
+	if err != nil {
+		return
+	}
+
+	s.analysisCfgMu.RLock()
+	cfg := s.analysisCfg
+	s.analysisCfgMu.RUnlock()
+
+	result := analysis.AnalyzeFile(source, filePath, cfg)
+	if result == nil {
+		return
+	}
+
+	newRefs := analysis.ExtractFileRefs(result, filePath)
+
+	// Build a set of new refs keyed by SymbolKey string.
+	newByKey := make(map[string][]analysis.FileReference)
+	for i := range newRefs {
+		key := newRefs[i].SymbolKey.String()
+		newByKey[key] = append(newByKey[key], newRefs[i])
+	}
+
+	s.workspaceRefsMu.Lock()
+	defer s.workspaceRefsMu.Unlock()
+
+	if s.workspaceRefs == nil {
+		s.workspaceRefs = make(map[string][]analysis.FileReference)
+	}
+
+	// Remove old entries for this file from all keys.
+	for key, refs := range s.workspaceRefs {
+		var kept []analysis.FileReference
+		for _, ref := range refs {
+			if ref.File != filePath {
+				kept = append(kept, ref)
+			}
+		}
+		if len(kept) == 0 {
+			delete(s.workspaceRefs, key)
+		} else {
+			s.workspaceRefs[key] = kept
+		}
+	}
+
+	// Insert new entries.
+	for key, refs := range newByKey {
+		s.workspaceRefs[key] = append(s.workspaceRefs[key], refs...)
+	}
+}
+
+// setTestWorkspaceRefs injects workspace refs directly for unit tests.
+func (s *Server) setTestWorkspaceRefs(refs map[string][]analysis.FileReference) {
+	s.workspaceRefsMu.Lock()
+	s.workspaceRefs = refs
+	s.workspaceRefsMu.Unlock()
 }
 
 func boolPtr(b bool) *bool {

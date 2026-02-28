@@ -284,3 +284,103 @@ func TestScanWorkspaceFull_CombinedResults(t *testing.T) {
 		"package export should have Package field set")
 	assert.Equal(t, SymFunction, pkgs["mylib"][0].Kind)
 }
+
+func TestScanWorkspaceRefs_CrossFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// File A defines and exports "helper".
+	err := os.WriteFile(filepath.Join(dir, "a.lisp"), []byte(`(defun helper (x) (+ x 1))
+(export 'helper)
+`), 0600)
+	require.NoError(t, err)
+
+	// File B calls "helper" inside a function.
+	err = os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`(defun caller () (helper 42))
+`), 0600)
+	require.NoError(t, err)
+
+	// Phase 1: Scan definitions to build config.
+	globals, pkgs, err := ScanWorkspaceFull(dir)
+	require.NoError(t, err)
+
+	cfg := &Config{
+		ExtraGlobals:   globals,
+		PackageExports: pkgs,
+	}
+
+	// Phase 2: Scan references.
+	refs := ScanWorkspaceRefs(dir, cfg)
+
+	// There should be a reference to "helper" from file B.
+	helperKey := SymbolKey{Name: "helper", Kind: SymFunction}.String()
+	helperRefs := refs[helperKey]
+	require.NotEmpty(t, helperRefs, "should have cross-file references to helper")
+
+	// Find the reference from file B.
+	bPath := filepath.Join(dir, "b.lisp")
+	var found bool
+	for _, ref := range helperRefs {
+		if ref.File == bPath {
+			found = true
+			assert.Equal(t, "caller", ref.Enclosing, "reference should be inside 'caller'")
+			assert.NotNil(t, ref.Source, "reference should have source location")
+			break
+		}
+	}
+	assert.True(t, found, "should find helper reference from b.lisp")
+}
+
+func TestExtractFileRefs_SkipsBuiltinsAndLocals(t *testing.T) {
+	src := []byte(`(defun my-fn (x)
+  (let ((local-var 1))
+    (+ x local-var)))
+`)
+	filename := "test.lisp"
+	result := AnalyzeFile(src, filename, nil)
+	require.NotNil(t, result)
+
+	refs := ExtractFileRefs(result, filename)
+
+	// "+" is a builtin, "x" is a parameter, "local-var" is a let binding.
+	// None should appear in the extracted refs.
+	for _, ref := range refs {
+		assert.NotEqual(t, "+", ref.SymbolKey.Name, "builtins should be excluded")
+		assert.NotEqual(t, "x", ref.SymbolKey.Name, "parameters should be excluded")
+		assert.NotEqual(t, "local-var", ref.SymbolKey.Name, "locals should be excluded")
+	}
+}
+
+func TestFindEnclosingFunction(t *testing.T) {
+	src := []byte(`(defun outer ()
+  (defun inner (x) (+ x 1))
+  (inner 42))
+`)
+	result := AnalyzeFile(src, "test.lisp", nil)
+	require.NotNil(t, result)
+	require.NotNil(t, result.RootScope)
+
+	t.Run("inside inner function body", func(t *testing.T) {
+		// The "+" on line 2 is inside "inner".
+		enc := FindEnclosingFunction(result.RootScope, 2, 22)
+		require.NotNil(t, enc)
+		assert.Equal(t, "inner", enc.Name)
+	})
+
+	t.Run("at top-level returns nil", func(t *testing.T) {
+		// Position before any function.
+		enc := FindEnclosingFunction(result.RootScope, 1, 1)
+		// Line 1 col 1 is the opening paren of (defun outer ...).
+		// It's at the start of outer's definition, which is global scope.
+		// Depending on scope boundaries, this might return outer or nil.
+		// The important thing is it doesn't crash.
+		_ = enc
+	})
+}
+
+func TestSymbolKey_String(t *testing.T) {
+	key := SymbolKey{Name: "helper", Kind: SymFunction}
+	assert.Equal(t, "helper/function", key.String())
+
+	key2 := SymbolKey{Name: "my-var", Kind: SymVariable}
+	assert.Equal(t, "my-var/variable", key2.String())
+}

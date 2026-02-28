@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	protocol "github.com/tliron/glsp/protocol_3_16"
@@ -117,6 +118,61 @@ func TestCallHierarchyOutgoing(t *testing.T) {
 	require.NotEmpty(t, result[0].FromRanges)
 	// FromRanges should point to line 1 where "helper" is called.
 	assert.Equal(t, protocol.UInteger(1), result[0].FromRanges[0].Start.Line)
+}
+
+func TestCrossFileIncomingCalls(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// File A defines "target".
+	docA := openDoc(s, "file:///workspace/a.lisp", "(defun target (x) (+ x 1))")
+	s.ensureAnalysis(docA)
+
+	// Inject workspace refs: "target" is called from "remote-caller" in file B.
+	targetKey := analysis.SymbolKey{Name: "target", Kind: analysis.SymFunction}.String()
+	s.setTestWorkspaceRefs(map[string][]analysis.FileReference{
+		targetKey: {
+			{
+				SymbolKey: analysis.SymbolKey{Name: "target", Kind: analysis.SymFunction},
+				Source:    &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 25, Pos: 24},
+				File:      "/workspace/b.lisp",
+				Enclosing: "remote-caller",
+				EnclosingSource: &token.Location{
+					File: "/workspace/b.lisp", Line: 1, Col: 8, Pos: 7,
+				},
+				EnclosingKind: analysis.SymFunction,
+			},
+		},
+	})
+
+	// Prepare on "target".
+	items, err := s.textDocumentPrepareCallHierarchy(mockContext(), &protocol.CallHierarchyPrepareParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: docA.URI},
+			Position:     protocol.Position{Line: 0, Character: 7}, // on "target"
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+
+	// Get incoming calls.
+	result, err := s.callHierarchyIncomingCalls(mockContext(), &protocol.CallHierarchyIncomingCallsParams{
+		Item: items[0],
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result, "should have incoming calls from cross-file")
+
+	// Find the cross-file caller.
+	var found bool
+	for _, call := range result {
+		if call.From.Name == "remote-caller" {
+			found = true
+			assert.Contains(t, call.From.URI, "b.lisp", "caller should be from b.lisp")
+			assert.NotEmpty(t, call.FromRanges)
+			break
+		}
+	}
+	assert.True(t, found, "should find remote-caller from b.lisp in incoming calls")
 }
 
 func TestDecodeCallHierarchyData(t *testing.T) {
