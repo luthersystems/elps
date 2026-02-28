@@ -946,9 +946,10 @@ func (a *analyzer) resolveSymbol(node *lisp.LVal, scope *Scope) {
 		return
 	}
 
-	// Skip qualified symbols (contain :)
+	// Handle qualified symbols (contain :)
 	for i := 1; i < len(name); i++ {
 		if name[i] == ':' {
+			a.resolveQualifiedSymbol(node, scope, name[:i], name[i+1:])
 			return
 		}
 	}
@@ -968,4 +969,56 @@ func (a *analyzer) resolveSymbol(node *lisp.LVal, scope *Scope) {
 			Node:   node,
 		})
 	}
+}
+
+// resolveQualifiedSymbol handles a qualified symbol like "pkg:sym".
+// It looks up the unqualified name in PackageExports for the given package,
+// and if found, records a reference using the unqualified symbol name (matching
+// the convention used by prescanUsePackage).
+func (a *analyzer) resolveQualifiedSymbol(node *lisp.LVal, scope *Scope, pkgName, symName string) {
+	if a.cfg == nil || a.cfg.PackageExports == nil {
+		return
+	}
+
+	exports, ok := a.cfg.PackageExports[pkgName]
+	if !ok {
+		return
+	}
+
+	// Find the exported symbol definition.
+	var ext *ExternalSymbol
+	for i := range exports {
+		if exports[i].Name == symName {
+			ext = &exports[i]
+			break
+		}
+	}
+	if ext == nil {
+		return
+	}
+
+	// Check if the unqualified name is already in scope (e.g. from use-package).
+	sym := scope.Lookup(symName)
+	if sym == nil {
+		// Create a symbol from the external definition and define it at root
+		// scope so all references share the same Symbol pointer.
+		sym = &Symbol{
+			Name:      ext.Name,
+			Kind:      ext.Kind,
+			Source:    ext.Source,
+			Signature: ext.Signature,
+			DocString: ext.DocString,
+			Exported:  true,
+			External:  true,
+		}
+		a.result.RootScope.Define(sym)
+		a.result.Symbols = append(a.result.Symbols, sym)
+	}
+
+	sym.References++
+	a.result.References = append(a.result.References, &Reference{
+		Symbol: sym,
+		Source: node.Source,
+		Node:   node,
+	})
 }

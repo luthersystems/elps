@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -399,4 +400,138 @@ func TestSymbolKey_String(t *testing.T) {
 
 	key2 := SymbolKey{Name: "my-var", Kind: SymVariable}
 	assert.Equal(t, "my-var/variable", key2.String())
+}
+
+func TestScanWorkspaceRefs_QualifiedSymbol(t *testing.T) {
+	dir := t.TempDir()
+
+	// helpers.lisp defines and exports "add-one" in the helpers package.
+	err := os.WriteFile(filepath.Join(dir, "helpers.lisp"), []byte(`(in-package 'helpers)
+(export 'add-one)
+(defun add-one (x) (+ x 1))
+`), 0600)
+	require.NoError(t, err)
+
+	// consumer.lisp calls helpers:add-one WITHOUT use-package — exercises
+	// the "create new symbol" path in resolveQualifiedSymbol.
+	err = os.WriteFile(filepath.Join(dir, "consumer.lisp"), []byte(`(in-package 'consumer)
+(defun do-work () (helpers:add-one 42))
+`), 0600)
+	require.NoError(t, err)
+
+	// Phase 1: Scan definitions.
+	globals, pkgs, err := ScanWorkspaceFull(dir)
+	require.NoError(t, err)
+
+	cfg := &Config{
+		ExtraGlobals:   globals,
+		PackageExports: pkgs,
+	}
+
+	// Phase 2: Scan references.
+	refs := ScanWorkspaceRefs(dir, cfg)
+
+	// There should be a reference to "add-one" (unqualified key) from consumer.lisp.
+	addOneKey := SymbolKey{Name: "add-one", Kind: SymFunction}.String()
+	addOneRefs := refs[addOneKey]
+	require.NotEmpty(t, addOneRefs, "should have cross-file reference to add-one via qualified symbol")
+
+	consumerPath := filepath.Join(dir, "consumer.lisp")
+	var found bool
+	for _, ref := range addOneRefs {
+		if ref.File == consumerPath {
+			found = true
+			assert.Equal(t, "do-work", ref.Enclosing, "reference should be inside 'do-work'")
+			require.NotNil(t, ref.Source, "reference should have source location")
+			// "helpers:add-one" starts at col 20 on line 2:
+			// (defun do-work () (helpers:add-one 42))
+			//                    ^ col 20
+			assert.Equal(t, 2, ref.Source.Line, "reference should be on line 2")
+			assert.Equal(t, 20, ref.Source.Col, "reference should be at column 20")
+			break
+		}
+	}
+	assert.True(t, found, "should find add-one reference from consumer.lisp")
+}
+
+func TestExtractFileRefs_QualifiedSymbol(t *testing.T) {
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"helpers": {
+				{
+					Name:   "add-one",
+					Kind:   SymFunction,
+					Source: &token.Location{File: "helpers.lisp", Line: 3, Col: 1, Pos: 40},
+				},
+			},
+		},
+	}
+
+	t.Run("without use-package", func(t *testing.T) {
+		// No use-package — forces resolveQualifiedSymbol to create the symbol
+		// from PackageExports (the scope.Lookup(symName) returns nil path).
+		src := []byte(`(in-package 'consumer)
+(defun do-work () (helpers:add-one 42))
+`)
+		result := AnalyzeFile(src, "consumer.lisp", cfg)
+		require.NotNil(t, result)
+
+		// The analysis should resolve the qualified symbol.
+		var foundRef *Reference
+		for _, ref := range result.References {
+			if ref.Symbol.Name == "add-one" && ref.Symbol.Kind == SymFunction {
+				foundRef = ref
+				break
+			}
+		}
+		require.NotNil(t, foundRef, "analysis should resolve helpers:add-one as a reference")
+		assert.True(t, foundRef.Symbol.External, "symbol should be marked External")
+		assert.True(t, foundRef.Symbol.Exported, "symbol should be marked Exported")
+
+		// ExtractFileRefs should produce a FileReference with full properties.
+		fileRefs := ExtractFileRefs(result, "consumer.lisp")
+		require.Len(t, fileRefs, 1, "should have exactly one cross-file reference")
+		assert.Equal(t, "add-one", fileRefs[0].SymbolKey.Name)
+		assert.Equal(t, SymFunction, fileRefs[0].SymbolKey.Kind)
+		assert.Equal(t, "do-work", fileRefs[0].Enclosing)
+		require.NotNil(t, fileRefs[0].Source)
+		assert.Equal(t, 2, fileRefs[0].Source.Line)
+	})
+
+	t.Run("with use-package", func(t *testing.T) {
+		// With use-package — the unqualified name is already in scope from
+		// prescanUsePackage; resolveQualifiedSymbol should reuse that symbol.
+		src := []byte(`(in-package 'consumer)
+(use-package 'helpers)
+(defun do-work () (helpers:add-one 42))
+`)
+		result := AnalyzeFile(src, "consumer.lisp", cfg)
+		require.NotNil(t, result)
+
+		fileRefs := ExtractFileRefs(result, "consumer.lisp")
+		require.Len(t, fileRefs, 1, "should have exactly one cross-file reference")
+		assert.Equal(t, "add-one", fileRefs[0].SymbolKey.Name)
+		assert.Equal(t, SymFunction, fileRefs[0].SymbolKey.Kind)
+		assert.Equal(t, "do-work", fileRefs[0].Enclosing)
+	})
+
+	t.Run("nonexistent package", func(t *testing.T) {
+		src := []byte(`(defun f () (nosuchpkg:foo 1))`)
+		result := AnalyzeFile(src, "test.lisp", cfg)
+		require.NotNil(t, result)
+		// Unknown package — should not produce any reference.
+		fileRefs := ExtractFileRefs(result, "test.lisp")
+		assert.Empty(t, fileRefs, "nonexistent package should produce no references")
+	})
+
+	t.Run("nonexistent symbol in valid package", func(t *testing.T) {
+		src := []byte(`(defun f () (helpers:no-such-fn 1))`)
+		result := AnalyzeFile(src, "test.lisp", cfg)
+		require.NotNil(t, result)
+		fileRefs := ExtractFileRefs(result, "test.lisp")
+		assert.Empty(t, fileRefs, "nonexistent symbol in valid package should produce no references")
+	})
+
+	// Note: trailing colon (e.g. "helpers:") is a parse-level concern —
+	// the parser either rejects it or splits it, so we don't test it here.
 }

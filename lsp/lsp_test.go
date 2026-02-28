@@ -2733,3 +2733,87 @@ func TestCrossFileRename_ExternalCursor(t *testing.T) {
 	assert.Equal(t, protocol.UInteger(0), cEdits[0].Range.End.Line, "c.lisp edit end should be on line 0")
 	assert.Equal(t, protocol.UInteger(15), cEdits[0].Range.End.Character, "c.lisp edit end should be at char 15")
 }
+
+func TestCrossFileReferences_QualifiedSymbol(t *testing.T) {
+	dir := t.TempDir()
+
+	// helpers.lisp defines and exports "add-one" in the helpers package.
+	require.NoError(t, os.WriteFile(dir+"/helpers.lisp", []byte(`(in-package 'helpers)
+(export 'add-one)
+(defun add-one (x) (+ x 1))
+`), 0600))
+
+	// consumer.lisp calls helpers:add-one WITHOUT use-package — exercises
+	// the full qualified resolution path.
+	require.NoError(t, os.WriteFile(dir+"/consumer.lisp", []byte(`(in-package 'consumer)
+(defun do-work () (helpers:add-one 42))
+`), 0600))
+
+	// Set up a real server with rootPath pointing to the temp workspace.
+	s := testServer()
+	s.rootPath = dir
+	s.buildWorkspaceIndex()
+
+	// Verify the workspace index was built with package exports.
+	s.analysisCfgMu.RLock()
+	cfg := s.analysisCfg
+	s.analysisCfgMu.RUnlock()
+	require.NotNil(t, cfg, "analysisCfg should be set")
+	require.Contains(t, cfg.PackageExports, "helpers", "should have helpers package exports")
+
+	// Verify workspace refs include add-one from consumer.lisp.
+	addOneKey := analysis.SymbolKey{Name: "add-one", Kind: analysis.SymFunction}.String()
+	s.workspaceRefsMu.RLock()
+	addOneRefs := s.workspaceRefs[addOneKey]
+	s.workspaceRefsMu.RUnlock()
+	require.NotEmpty(t, addOneRefs, "should have workspace ref for add-one via qualified symbol")
+
+	consumerPath := dir + "/consumer.lisp"
+	var found bool
+	for _, ref := range addOneRefs {
+		if ref.File == consumerPath {
+			found = true
+			assert.Equal(t, "do-work", ref.Enclosing, "reference should be inside do-work")
+			break
+		}
+	}
+	assert.True(t, found, "should find add-one reference from consumer.lisp")
+
+	// Open helpers.lisp and find references on "add-one" definition.
+	helpersURI := pathToURI(dir + "/helpers.lisp")
+	helpersSrc := "(in-package 'helpers)\n(export 'add-one)\n(defun add-one (x) (+ x 1))\n"
+	doc := openDoc(s, helpersURI, helpersSrc)
+	s.ensureAnalysis(doc)
+
+	// "add-one" definition is at line 3, col 8 in: "(defun add-one (x) (+ x 1))"
+	locs, err := s.textDocumentReferences(mockContext(), &protocol.ReferenceParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: helpersURI},
+			Position:     protocol.Position{Line: 2, Character: 7}, // on "add-one" in defun
+		},
+		Context: protocol.ReferenceContext{IncludeDeclaration: true},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, locs)
+
+	// Should have exactly 2 locations: declaration from helpers.lisp + cross-file ref from consumer.lisp.
+	require.Len(t, locs, 2, "should have definition + 1 cross-file qualified ref")
+
+	uris := make(map[string]bool)
+	for _, loc := range locs {
+		uris[loc.URI] = true
+	}
+	consumerURI := pathToURI(consumerPath)
+	assert.True(t, uris[helpersURI], "should include definition from helpers.lisp")
+	assert.True(t, uris[consumerURI], "should include cross-file ref from consumer.lisp")
+
+	// Verify the cross-file ref position.
+	// consumer.lisp line 2: "(defun do-work () (helpers:add-one 42))"
+	//                        ^ col 20 (1-based) → LSP 0-based: line 1, char 19.
+	for _, loc := range locs {
+		if loc.URI == consumerURI {
+			assert.Equal(t, protocol.UInteger(1), loc.Range.Start.Line, "consumer ref should be on line 1")
+			assert.Equal(t, protocol.UInteger(19), loc.Range.Start.Character, "consumer ref should start at char 19")
+		}
+	}
+}
