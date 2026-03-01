@@ -152,54 +152,9 @@ func isSymbolChar(c byte) bool {
 }
 
 // scopeAtPosition returns the innermost scope that contains the given
-// 1-based ELPS line and column. It walks the scope tree depth-first.
+// 1-based ELPS line and column. Delegates to analysis.ScopeAtPosition.
 func scopeAtPosition(root *analysis.Scope, line, col int) *analysis.Scope {
-	if root == nil {
-		return nil
-	}
-	best := root
-	for _, child := range root.Children {
-		if s := scopeContaining(child, line, col); s != nil {
-			best = s
-		}
-	}
-	return best
-}
-
-// scopeContaining checks if a scope's node contains the position and
-// recursively checks children for the most specific match.
-func scopeContaining(scope *analysis.Scope, line, col int) *analysis.Scope {
-	if scope.Node == nil || scope.Node.Source == nil {
-		return nil
-	}
-	loc := scope.Node.Source
-	if loc.Line == 0 {
-		return nil
-	}
-	// A scope contains the position if its source range spans the line.
-	// For scopes without EndLine, we accept any position after the start.
-	startLine := loc.Line
-	endLine := loc.EndLine
-	if endLine == 0 {
-		endLine = startLine + 1000 // heuristic: scope extends far
-	}
-	if line < startLine || line > endLine {
-		return nil
-	}
-	if line == startLine && col < loc.Col {
-		return nil
-	}
-	if line == endLine && loc.EndCol > 0 && col >= loc.EndCol {
-		return nil
-	}
-	// This scope contains the position; check children for a tighter match.
-	best := scope
-	for _, child := range scope.Children {
-		if s := scopeContaining(child, line, col); s != nil {
-			best = s
-		}
-	}
-	return best
+	return analysis.ScopeAtPosition(root, line, col)
 }
 
 // collectVisibleSymbols walks the scope chain outward from scope, collecting

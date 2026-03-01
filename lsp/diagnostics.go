@@ -78,6 +78,13 @@ func (s *Server) textDocumentDidSave(ctx *glsp.Context, params *protocol.DidSave
 	if doc != nil {
 		s.analyzeAndPublish(doc)
 	}
+
+	// Incrementally update the workspace reference index for the saved file.
+	go func() {
+		defer func() { _ = recover() }() // don't crash on update panic
+		s.updateFileRefs(params.TextDocument.URI)
+	}()
+
 	return nil
 }
 

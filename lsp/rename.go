@@ -27,12 +27,14 @@ func (s *Server) textDocumentPrepareRename(_ *glsp.Context, params *protocol.Pre
 		return nil, nil // no symbol at position — rename not applicable
 	}
 
-	// Reject renaming builtins, special ops, and external symbols.
+	// Reject renaming builtins and special ops.
 	// Per LSP spec, prepareRename returns null (not error) for non-renameable symbols.
 	if sym.Kind == analysis.SymBuiltin || sym.Kind == analysis.SymSpecialOp {
 		return nil, nil
 	}
-	if sym.External {
+	// Reject external symbols unless they have a real source location
+	// (workspace-defined symbols imported via use-package or ExtraGlobals).
+	if sym.External && (sym.Source == nil || sym.Source.Pos < 0) {
 		return nil, nil
 	}
 
@@ -70,7 +72,9 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 	if sym.Kind == analysis.SymBuiltin || sym.Kind == analysis.SymSpecialOp {
 		return nil, fmt.Errorf("cannot rename %s: %s", symbolKindLabel(sym.Kind), sym.Name)
 	}
-	if sym.External {
+	// Reject external symbols that lack a real source location (stdlib builtins).
+	// Workspace-defined external symbols (with real source) can be renamed.
+	if sym.External && (sym.Source == nil || sym.Source.Pos < 0) {
 		return nil, fmt.Errorf("cannot rename external symbol: %s", sym.Name)
 	}
 
@@ -86,7 +90,7 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 		})
 	}
 
-	// Rename at all reference sites.
+	// Rename at all reference sites in the current file.
 	if doc.analysis != nil {
 		for _, ref := range doc.analysis.References {
 			if ref.Symbol != sym || ref.Source == nil {
@@ -98,6 +102,17 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 				NewText: params.NewName,
 			})
 		}
+	}
+
+	// Cross-file rename edits from workspace index.
+	key := symbolToKey(sym)
+	currentFile := uriToPath(docURI)
+	for _, wref := range s.getWorkspaceRefs(key, currentFile) {
+		refURI := s.resolveURI(docURI, wref.File)
+		edits[refURI] = append(edits[refURI], protocol.TextEdit{
+			Range:   elpsToLSPRange(wref.Source, len(sym.Name)),
+			NewText: params.NewName,
+		})
 	}
 
 	return &protocol.WorkspaceEdit{Changes: edits}, nil

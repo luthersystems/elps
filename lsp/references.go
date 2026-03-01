@@ -36,7 +36,7 @@ func (s *Server) textDocumentReferences(_ *glsp.Context, params *protocol.Refere
 		})
 	}
 
-	// Find all references to this symbol.
+	// Find all references to this symbol in the current file.
 	for _, ref := range doc.analysis.References {
 		if ref.Symbol != sym || ref.Source == nil {
 			continue
@@ -45,6 +45,17 @@ func (s *Server) textDocumentReferences(_ *glsp.Context, params *protocol.Refere
 		locs = append(locs, protocol.Location{
 			URI:   refURI,
 			Range: elpsToLSPRange(ref.Source, len(sym.Name)),
+		})
+	}
+
+	// Cross-file references from workspace index.
+	key := symbolToKey(sym)
+	currentFile := uriToPath(params.TextDocument.URI)
+	for _, wref := range s.getWorkspaceRefs(key, currentFile) {
+		refURI := s.resolveURI(params.TextDocument.URI, wref.File)
+		locs = append(locs, protocol.Location{
+			URI:   refURI,
+			Range: elpsToLSPRange(wref.Source, len(sym.Name)),
 		})
 	}
 

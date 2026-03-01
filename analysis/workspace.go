@@ -4,14 +4,37 @@ package analysis
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
 )
+
+// SymbolKey identifies a symbol across files by name and kind.
+type SymbolKey struct {
+	Name string
+	Kind SymbolKind
+}
+
+// String returns a lookup key for use in maps.
+func (k SymbolKey) String() string {
+	return fmt.Sprintf("%s/%s", k.Name, k.Kind)
+}
+
+// FileReference represents a cross-file reference to a symbol.
+type FileReference struct {
+	SymbolKey       SymbolKey
+	Source          *token.Location
+	File            string           // absolute path
+	Enclosing       string           // name of enclosing function ("" if top-level)
+	EnclosingSource *token.Location  // definition site of enclosing function
+	EnclosingKind   SymbolKind       // kind of enclosing function
+}
 
 // ScanWorkspace walks a directory tree, parsing all .lisp files and
 // extracting exported top-level definitions. The result can be used as
@@ -317,4 +340,243 @@ func scanExportNames(expr *lisp.LVal) []string {
 		}
 	}
 	return names
+}
+
+// AnalyzeFile parses and performs full semantic analysis on a single file.
+// Returns nil if the file fails to parse.
+func AnalyzeFile(source []byte, filename string, cfg *Config) *Result {
+	s := token.NewScanner(filename, bytes.NewReader(source))
+	p := rdparser.New(s)
+
+	exprs, err := p.ParseProgram()
+	if err != nil {
+		return nil
+	}
+
+	fileCfg := cfg
+	if fileCfg == nil {
+		fileCfg = &Config{}
+	}
+	fileCfg = &Config{
+		ExtraGlobals:   fileCfg.ExtraGlobals,
+		PackageExports: fileCfg.PackageExports,
+		Filename:       filename,
+	}
+	return Analyze(exprs, fileCfg)
+}
+
+// ExtractFileRefs extracts cross-file-trackable references from an
+// analysis result. Only references to global-scope, non-builtin symbols
+// are included (builtins, special ops, parameters, and locals are skipped).
+func ExtractFileRefs(result *Result, filePath string) []FileReference {
+	if result == nil {
+		return nil
+	}
+
+	var refs []FileReference
+	for _, ref := range result.References {
+		if ref.Symbol == nil || ref.Source == nil {
+			continue
+		}
+		// Skip builtins, special ops, parameters, and locals.
+		if !isGlobalUserSymbol(ref.Symbol) {
+			continue
+		}
+
+		key := SymbolKey{Name: ref.Symbol.Name, Kind: ref.Symbol.Kind}
+		fref := FileReference{
+			SymbolKey: key,
+			Source:    ref.Source,
+			File:      filePath,
+		}
+
+		// Find enclosing function for call hierarchy support.
+		enclosing := FindEnclosingFunction(result.RootScope, ref.Source.Line, ref.Source.Col)
+		if enclosing != nil {
+			fref.Enclosing = enclosing.Name
+			fref.EnclosingSource = enclosing.Source
+			fref.EnclosingKind = enclosing.Kind
+		}
+
+		refs = append(refs, fref)
+	}
+	return refs
+}
+
+// isGlobalUserSymbol returns true if a symbol is a user-defined global
+// (not a builtin, special op, parameter, or lambda-scoped local).
+func isGlobalUserSymbol(sym *Symbol) bool {
+	switch sym.Kind {
+	case SymBuiltin, SymSpecialOp, SymParameter:
+		return false
+	}
+	// Skip symbols without a real source location (builtins registered
+	// in populateBuiltins have nil Source).
+	if sym.Source == nil || sym.Source.Pos < 0 {
+		return false
+	}
+	// Only include symbols defined at global or function scope.
+	if sym.Scope != nil {
+		switch sym.Scope.Kind {
+		case ScopeGlobal, ScopeFunction:
+			return true
+		}
+		return false
+	}
+	return true
+}
+
+// FindEnclosingFunction finds the function symbol that contains the given
+// 1-based position by walking the scope tree.
+func FindEnclosingFunction(root *Scope, line, col int) *Symbol {
+	scope := ScopeAtPosition(root, line, col)
+	for scope != nil {
+		if scope.Kind == ScopeFunction {
+			if scope.Node != nil && scope.Node.Source != nil && scope.Parent != nil {
+				nodeLoc := scope.Node.Source
+				for _, sym := range scope.Parent.Symbols {
+					if sym.Kind != SymFunction && sym.Kind != SymMacro {
+						continue
+					}
+					// Skip external (imported) symbols — they belong to
+					// other files and may coincidentally share a line number.
+					if sym.External {
+						continue
+					}
+					if sym.Source != nil && sym.Source.Line == nodeLoc.Line &&
+						sym.Source.File == nodeLoc.File {
+						return sym
+					}
+				}
+			}
+		}
+		scope = scope.Parent
+	}
+	return nil
+}
+
+// ScopeAtPosition returns the innermost scope that contains the given
+// 1-based ELPS line and column. It walks the scope tree depth-first.
+func ScopeAtPosition(root *Scope, line, col int) *Scope {
+	if root == nil {
+		return nil
+	}
+	best := root
+	for _, child := range root.Children {
+		if s := scopeContainingAnalysis(child, line, col); s != nil {
+			best = s
+		}
+	}
+	return best
+}
+
+// scopeContainingAnalysis checks if a scope's node contains the position
+// and recursively checks children for the most specific match.
+func scopeContainingAnalysis(scope *Scope, line, col int) *Scope {
+	if scope.Node == nil || scope.Node.Source == nil {
+		return nil
+	}
+	loc := scope.Node.Source
+	if loc.Line == 0 {
+		return nil
+	}
+	startLine := loc.Line
+	endLine := loc.EndLine
+	if endLine == 0 {
+		endLine = startLine + 1000
+	}
+	if line < startLine || line > endLine {
+		return nil
+	}
+	if line == startLine && col < loc.Col {
+		return nil
+	}
+	if line == endLine && loc.EndCol > 0 && col >= loc.EndCol {
+		return nil
+	}
+	best := scope
+	for _, child := range scope.Children {
+		if s := scopeContainingAnalysis(child, line, col); s != nil {
+			best = s
+		}
+	}
+	return best
+}
+
+// ScanWorkspaceRefs walks the workspace directory tree, performs full
+// analysis on each .lisp file, and extracts cross-file references.
+// The cfg should have ExtraGlobals and PackageExports populated from
+// a prior ScanWorkspaceFull call.
+//
+// Returns a map from SymbolKey.String() to FileReference slices.
+func ScanWorkspaceRefs(root string, cfg *Config) map[string][]FileReference {
+	refs := make(map[string][]FileReference)
+
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			if shouldSkipDir(info.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".lisp" {
+			return nil
+		}
+		fileSrc, readErr := os.ReadFile(path) //nolint:gosec // CLI tool reads user-specified files
+		if readErr != nil {
+			return nil
+		}
+
+		result := AnalyzeFile(fileSrc, path, cfg)
+		if result == nil {
+			return nil
+		}
+
+		absPath := path
+		if !filepath.IsAbs(absPath) {
+			if abs, err := filepath.Abs(absPath); err == nil {
+				absPath = abs
+			}
+		}
+
+		fileRefs := ExtractFileRefs(result, absPath)
+		for i := range fileRefs {
+			key := fileRefs[i].SymbolKey.String()
+			refs[key] = append(refs[key], fileRefs[i])
+		}
+		return nil
+	})
+
+	return refs
+}
+
+// SymbolToKey derives a SymbolKey from an analysis Symbol.
+func SymbolToKey(sym *Symbol) SymbolKey {
+	kind := sym.Kind
+	// Normalize macro kind to function for cross-file matching,
+	// since a defmacro in one file is referenced as a "function call" in another.
+	// Actually, keep them distinct — the kind is part of the identity.
+	return SymbolKey{Name: sym.Name, Kind: kind}
+}
+
+// SymbolKeyFromNameKind creates a SymbolKey from raw name and kind strings.
+// The kind string should match SymbolKind.String() output.
+func SymbolKeyFromNameKind(name string, kind string) SymbolKey {
+	var k SymbolKind
+	switch strings.ToLower(kind) {
+	case "function":
+		k = SymFunction
+	case "macro":
+		k = SymMacro
+	case "variable":
+		k = SymVariable
+	case "type":
+		k = SymType
+	default:
+		k = SymVariable
+	}
+	return SymbolKey{Name: name, Kind: k}
 }
