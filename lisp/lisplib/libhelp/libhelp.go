@@ -199,7 +199,7 @@ func symbolDocFromLVal(name string, v *lisp.LVal, symbolDoc string) *SymbolDoc {
 // key argument lists based on the &optional, &rest, and &key sentinels.
 func parseFormals(formals *lisp.LVal) *FormalsDoc {
 	if formals == nil || formals.Len() == 0 {
-		return &FormalsDoc{}
+		return &FormalsDoc{Required: []string{}}
 	}
 
 	fd := &FormalsDoc{}

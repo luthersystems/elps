@@ -505,22 +505,18 @@ func TestQueryPackages(t *testing.T) {
 
 	require.NotEmpty(t, pkgs, "QueryPackages should return at least one package")
 
-	// Every package should have a name.
+	// Verify expected core packages are all present.
+	names := make(map[string]bool, len(pkgs))
 	for _, pkg := range pkgs {
 		assert.NotEmpty(t, pkg.Name, "package name should not be empty")
+		names[pkg.Name] = true
+	}
+	for _, expected := range []string{"lisp", "math", "string", "json", "help", "user"} {
+		assert.True(t, names[expected], "expected package %q not found", expected)
 	}
 
-	// Check a known package exists.
-	var foundMath bool
-	for _, pkg := range pkgs {
-		if pkg.Name == "math" {
-			foundMath = true
-			assert.NotEmpty(t, pkg.Symbols, "math package should have symbols")
-			assert.NotEmpty(t, pkg.Doc, "math package should have a doc string")
-			break
-		}
-	}
-	assert.True(t, foundMath, "should find math package")
+	// Verify no duplicates.
+	assert.Equal(t, len(names), len(pkgs), "QueryPackages should not return duplicate packages")
 }
 
 func TestQueryPackage(t *testing.T) {
@@ -581,7 +577,7 @@ func TestQuerySymbol(t *testing.T) {
 	assert.Equal(t, "function", sd.Kind)
 	assert.NotEmpty(t, sd.Doc)
 	require.NotNil(t, sd.Formals)
-	assert.NotEmpty(t, sd.Formals.Required)
+	assert.Equal(t, []string{"type-specifier", "fn", "seq"}, sd.Formals.Required)
 }
 
 func TestQuerySymbolQualified(t *testing.T) {
@@ -627,6 +623,15 @@ func TestQuerySymbol_NotFound(t *testing.T) {
 
 	_, err := libhelp.QuerySymbol(env, "nonexistent-sym-xyz")
 	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nonexistent-sym-xyz")
+}
+
+func TestQuerySymbol_QualifiedNotFound(t *testing.T) {
+	env := newTestEnv(t)
+
+	_, err := libhelp.QuerySymbol(env, "math:nonexistent-sym")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "math:nonexistent-sym")
 }
 
 func TestParseFormals_Optional(t *testing.T) {
@@ -658,7 +663,20 @@ func TestParseFormals_Rest(t *testing.T) {
 	sd, err := libhelp.QuerySymbol(env, "+")
 	require.NoError(t, err)
 	require.NotNil(t, sd.Formals)
-	assert.NotEmpty(t, sd.Formals.Rest, "+ should have a rest arg")
+	assert.Equal(t, "x", sd.Formals.Rest, "+ should have rest arg 'x'")
+}
+
+func TestParseFormals_ZeroArity(t *testing.T) {
+	env := newTestEnv(t)
+
+	// help:help-packages has no arguments.
+	sd, err := libhelp.QuerySymbol(env, "help:help-packages")
+	require.NoError(t, err)
+	require.NotNil(t, sd.Formals)
+	assert.Equal(t, []string{}, sd.Formals.Required)
+	assert.Empty(t, sd.Formals.Optional)
+	assert.Empty(t, sd.Formals.Rest)
+	assert.Empty(t, sd.Formals.Keys)
 }
 
 func TestQueryPackages_JSONSerializable(t *testing.T) {
@@ -669,11 +687,20 @@ func TestQueryPackages_JSONSerializable(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, json.Valid(data), "QueryPackages output should be valid JSON")
 
-	// Round-trip: deserialize back
+	// Round-trip: deserialize back and verify structural equality.
 	var decoded []libhelp.PackageDoc
 	err = json.Unmarshal(data, &decoded)
 	require.NoError(t, err)
-	assert.Equal(t, len(pkgs), len(decoded))
+	require.Equal(t, len(pkgs), len(decoded))
+
+	// Spot-check: math package fields survive the round trip.
+	for i, pkg := range decoded {
+		if pkg.Name == "math" {
+			assert.Equal(t, pkgs[i].Doc, pkg.Doc, "math doc should survive round-trip")
+			assert.Equal(t, len(pkgs[i].Symbols), len(pkg.Symbols), "math symbol count should survive round-trip")
+			break
+		}
+	}
 }
 
 func TestQuerySymbol_DocNotWordWrapped(t *testing.T) {
@@ -682,10 +709,23 @@ func TestQuerySymbol_DocNotWordWrapped(t *testing.T) {
 	// Get a symbol known to have a long docstring.
 	sd, err := libhelp.QuerySymbol(env, "map")
 	require.NoError(t, err)
+	require.NotEmpty(t, sd.Doc, "map should have a docstring")
 
 	// The doc should NOT contain the 2-space indent that cleanDocstring adds.
-	if sd.Doc != "" {
-		assert.False(t, strings.HasPrefix(sd.Doc, "  "),
-			"JSON doc should not have leading indent")
-	}
+	assert.False(t, strings.HasPrefix(sd.Doc, "  "),
+		"JSON doc should not have leading indent")
+	// The doc should not have leading/trailing whitespace (cleanDocRaw trims).
+	assert.Equal(t, strings.TrimSpace(sd.Doc), sd.Doc,
+		"JSON doc should be trimmed")
+}
+
+func TestQuerySymbol_Variable(t *testing.T) {
+	env := newTestEnv(t)
+
+	sd, err := libhelp.QuerySymbol(env, "math:pi")
+	require.NoError(t, err)
+	assert.Equal(t, "pi", sd.Name)
+	assert.Equal(t, "variable", sd.Kind)
+	assert.NotEmpty(t, sd.Doc)
+	assert.Nil(t, sd.Formals, "variables should not have formals")
 }
