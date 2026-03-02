@@ -70,6 +70,19 @@ func TestResolveSourcePath(t *testing.T) {
 	}
 }
 
+func TestTranslateStackFrames_Empty(t *testing.T) {
+	t.Parallel()
+	// nil stack returns non-nil empty slice (DAP clients expect [] not null).
+	frames := translateStackFrames(nil, nil, "")
+	assert.NotNil(t, frames)
+	assert.Empty(t, frames)
+
+	// Empty stack returns non-nil empty slice.
+	frames = translateStackFrames(&lisp.CallStack{}, nil, "")
+	assert.NotNil(t, frames)
+	assert.Empty(t, frames)
+}
+
 func TestTranslateStackFrames_CrossFileSource(t *testing.T) {
 	t.Parallel()
 	// When the paused expression is in a different file than the top call
@@ -258,12 +271,22 @@ func TestExpandVariable_NativeNilEngine(t *testing.T) {
 	noRef := func(v *lisp.LVal) int { return 0 }
 
 	children := expandVariable(native, noRef, nil, nil)
-	assert.Nil(t, children, "LNative with nil engine should return nil children")
+	assert.NotNil(t, children, "LNative with nil engine should return non-nil empty slice")
+	assert.Empty(t, children, "LNative with nil engine should return empty slice")
 }
 
 func TestExpandVariable_Nil(t *testing.T) {
-	assert.Nil(t, expandVariable(nil, func(v *lisp.LVal) int { return 0 }, nil, nil))
-	assert.Nil(t, expandVariable(lisp.Int(42), func(v *lisp.LVal) int { return 0 }, nil, nil))
+	noRef := func(v *lisp.LVal) int { return 0 }
+
+	// nil input returns non-nil empty slice (DAP clients expect [] not null).
+	result := expandVariable(nil, noRef, nil, nil)
+	assert.NotNil(t, result)
+	assert.Empty(t, result)
+
+	// Scalar types (no children) return non-nil empty slice.
+	result = expandVariable(lisp.Int(42), noRef, nil, nil)
+	assert.NotNil(t, result)
+	assert.Empty(t, result)
 }
 
 func TestChildInfo(t *testing.T) {

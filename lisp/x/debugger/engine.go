@@ -191,6 +191,15 @@ func (e *Engine) SourceRoot() string {
 	return e.sourceRoot
 }
 
+// SetSourceRoot overrides the source root directory at runtime. This allows
+// a DAP handler to reflect the client's sourceRoot preference from launch/
+// attach arguments. It is safe to call before evaluation starts.
+func (e *Engine) SetSourceRoot(dir string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sourceRoot = dir
+}
+
 // WithFormatters sets the custom native type formatters for LNative values.
 // Keys are Go type names as returned by fmt.Sprintf("%T", value).
 func WithFormatters(fmts map[string]VariableFormatter) Option {

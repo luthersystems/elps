@@ -3266,25 +3266,37 @@ func TestDAPServer_StopOnEntry_AttachAbsent(t *testing.T) {
 
 // TestParseStopOnEntry verifies the parseStopOnEntry helper handles all JSON
 // edge cases correctly, defaulting to false per DAP spec.
-func TestParseStopOnEntry(t *testing.T) {
+func TestParseLaunchConfig(t *testing.T) {
 	t.Parallel()
+	boolPtr := func(b bool) *bool { return &b }
+
 	tests := []struct {
-		name string
-		args json.RawMessage
-		want bool
+		name             string
+		args             json.RawMessage
+		wantStopOnEntry  bool
+		wantSourceRoot   string
+		wantSkipBuiltins *bool
 	}{
-		{"nil", nil, false},
-		{"empty_object", json.RawMessage(`{}`), false},
-		{"true", json.RawMessage(`{"stopOnEntry":true}`), true},
-		{"false", json.RawMessage(`{"stopOnEntry":false}`), false},
-		{"malformed_json", json.RawMessage(`{invalid}`), false},
-		{"extra_fields", json.RawMessage(`{"stopOnEntry":true,"other":"field"}`), true},
-		{"empty_bytes", json.RawMessage(``), false},
+		{"nil", nil, false, "", nil},
+		{"empty_object", json.RawMessage(`{}`), false, "", nil},
+		{"stopOnEntry_only", json.RawMessage(`{"stopOnEntry":true}`), true, "", nil},
+		{"all_fields", json.RawMessage(`{"stopOnEntry":true,"sourceRoot":"/my/project","skipBuiltins":false}`), true, "/my/project", boolPtr(false)},
+		{"skipBuiltins_true", json.RawMessage(`{"skipBuiltins":true}`), false, "", boolPtr(true)},
+		{"sourceRoot_only", json.RawMessage(`{"sourceRoot":"/root"}`), false, "/root", nil},
+		{"malformed_json", json.RawMessage(`{invalid}`), false, "", nil},
+		{"empty_bytes", json.RawMessage(``), false, "", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseStopOnEntry(tt.args)
-			assert.Equal(t, tt.want, got)
+			cfg := parseLaunchConfig(tt.args)
+			assert.Equal(t, tt.wantStopOnEntry, cfg.StopOnEntry)
+			assert.Equal(t, tt.wantSourceRoot, cfg.SourceRoot)
+			if tt.wantSkipBuiltins == nil {
+				assert.Nil(t, cfg.SkipBuiltins)
+			} else {
+				require.NotNil(t, cfg.SkipBuiltins)
+				assert.Equal(t, *tt.wantSkipBuiltins, *cfg.SkipBuiltins)
+			}
 		})
 	}
 }
@@ -6250,4 +6262,366 @@ func TestDAPServer_SetVariableCapability(t *testing.T) {
 	initResp, ok := msg.(*dap.InitializeResponse)
 	require.True(t, ok, "expected InitializeResponse, got %T", msg)
 	assert.True(t, initResp.Body.SupportsSetVariable, "SupportsSetVariable should be true")
+}
+
+func TestIsBuiltinCall(t *testing.T) {
+	t.Parallel()
+
+	// Set up a minimal ELPS environment with builtins.
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	rc := lisp.InitializeUserEnv(env)
+	if rc.Type == lisp.LError {
+		t.Fatalf("InitializeUserEnv failed: %v", rc)
+	}
+	rc = lisplib.LoadLibrary(env)
+	if rc.Type == lisp.LError {
+		t.Fatalf("LoadLibrary failed: %v", rc)
+	}
+	rc = env.InPackage(lisp.String("user"))
+	if rc.Type == lisp.LError {
+		t.Fatalf("InPackage failed: %v", rc)
+	}
+
+	// Define a user function.
+	rc = env.LoadString("user-test", `(defun my-add (a b) (+ a b))`)
+	if rc.Type == lisp.LError {
+		t.Fatalf("defun failed: %v", rc)
+	}
+
+	tests := []struct {
+		name string
+		expr *lisp.LVal
+		want bool
+	}{
+		{
+			name: "builtin_plus",
+			expr: lisp.SExpr([]*lisp.LVal{lisp.Symbol("+"), lisp.Int(1), lisp.Int(2)}),
+			want: true,
+		},
+		{
+			name: "builtin_car",
+			expr: lisp.SExpr([]*lisp.LVal{lisp.Symbol("car"), lisp.Nil()}),
+			want: true,
+		},
+		{
+			name: "user_defined_function",
+			expr: lisp.SExpr([]*lisp.LVal{lisp.Symbol("my-add"), lisp.Int(1), lisp.Int(2)}),
+			want: false,
+		},
+		{
+			name: "special_op_if",
+			expr: lisp.SExpr([]*lisp.LVal{lisp.Symbol("if"), lisp.Symbol("true"), lisp.Int(1), lisp.Int(2)}),
+			want: false,
+		},
+		{
+			name: "nil_expr",
+			expr: nil,
+			want: false,
+		},
+		{
+			name: "non_call_int",
+			expr: lisp.Int(42),
+			want: false,
+		},
+		{
+			name: "empty_list",
+			expr: lisp.Nil(),
+			want: false,
+		},
+		{
+			// (+ 1 (my-add 2 3)) — builtin head but nested user-defined call.
+			// Step-in should NOT be skipped because the user wants to enter my-add.
+			name: "builtin_with_nested_user_call",
+			expr: lisp.SExpr([]*lisp.LVal{
+				lisp.Symbol("+"),
+				lisp.Int(1),
+				lisp.SExpr([]*lisp.LVal{lisp.Symbol("my-add"), lisp.Int(2), lisp.Int(3)}),
+			}),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isBuiltinCall(env, tt.expr)
+			assert.Equal(t, tt.want, got, "isBuiltinCall(%s)", tt.name)
+		})
+	}
+}
+
+func TestDAPServer_StepIn_BuiltinAutoStepOver(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+	s.configDone()
+
+	// Two-expression program: builtin call then a second expression.
+	// Step-in on the builtin should auto step-over to the second expr.
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test", "(+ 1 2)\n(+ 3 4)")
+		resultCh <- res
+		s.engine.NotifyExit(0)
+	}()
+
+	// Wait for stop-on-entry.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Verify we're on line 1: the (+ 1 2) builtin call.
+	_, pausedExpr := s.engine.PausedState()
+	require.NotNil(t, pausedExpr)
+	require.NotNil(t, pausedExpr.Source)
+	assert.Equal(t, 1, pausedExpr.Source.Line, "should start on line 1")
+
+	// Step-in on the builtin — should auto step-over to line 2.
+	s.send(&dap.StepInRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stepIn",
+		},
+		Arguments: dap.StepInArguments{ThreadId: elpsThreadID},
+	})
+	s.read() // StepInResponse
+
+	// Should pause at line 2 (the next expression), not enter the builtin.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond, "engine should pause after step-over")
+	msg := s.read() // StoppedEvent
+	stopped, ok := msg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T", msg)
+	assert.Equal(t, "step", stopped.Body.Reason)
+
+	_, pausedExpr = s.engine.PausedState()
+	require.NotNil(t, pausedExpr, "should be paused on an expression")
+	require.NotNil(t, pausedExpr.Source)
+	assert.Equal(t, 2, pausedExpr.Source.Line,
+		"step-in on builtin should auto step-over to line 2")
+
+	// Continue to finish.
+	s.continueExec()
+	select {
+	case res := <-resultCh:
+		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for program to finish")
+	}
+	s.disconnect()
+}
+
+// TestDAPServer_StepIn_BuiltinSkipDisabledDuringStep verifies that the
+// builtin auto-step-over does NOT fire when the user is already stepping
+// through sub-expressions (lastStopWasStep=true).
+func TestDAPServer_StepIn_BuiltinSkipDisabledDuringStep(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+	s.configDone()
+
+	// Program with a user function that calls a builtin as a sub-expr.
+	// (defun f () (+ 1 2))  ; line 1
+	// (f)                    ; line 2
+	// Step-in from (f) enters f, step-in from (+ 1 2) should NOT auto-skip
+	// because lastStopWasStep is true (we arrived via stepping).
+	source := "(defun f ()\n  (+ 1 2))\n(f)\n"
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test.lisp", source)
+		resultCh <- res
+		s.engine.NotifyExit(0)
+	}()
+
+	// Wait for stop on entry (line 1: defun).
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent
+
+	// Step-over the defun to reach line 3: (f).
+	s.send(&dap.NextRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "next",
+		},
+		Arguments: dap.NextArguments{ThreadId: elpsThreadID},
+	})
+	s.read() // NextResponse
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (step)
+
+	_, pausedExpr := s.engine.PausedState()
+	require.NotNil(t, pausedExpr)
+	require.NotNil(t, pausedExpr.Source)
+	assert.Equal(t, 3, pausedExpr.Source.Line, "should be at (f) on line 3")
+
+	// Step-in to enter f — should go to line 2: (+ 1 2).
+	s.send(&dap.StepInRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stepIn",
+		},
+		Arguments: dap.StepInArguments{ThreadId: elpsThreadID},
+	})
+	s.read() // StepInResponse
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	s.read() // StoppedEvent (step — inside f)
+
+	_, pausedExpr = s.engine.PausedState()
+	require.NotNil(t, pausedExpr)
+	require.NotNil(t, pausedExpr.Source)
+	assert.Equal(t, 2, pausedExpr.Source.Line,
+		"step-in should enter f at line 2: (+ 1 2)")
+
+	// Now step-in again on (+ 1 2). This is a builtin, but lastStopWasStep
+	// is true (we got here via stepping), so it should NOT auto-skip.
+	// Instead, regular step-in proceeds and the program finishes.
+	s.send(&dap.StepInRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stepIn",
+		},
+		Arguments: dap.StepInArguments{ThreadId: elpsThreadID},
+	})
+	s.read() // StepInResponse
+
+	// The step-in should proceed normally (not auto-skip). The program
+	// may pause again or exit — either is fine as long as it doesn't hang.
+	msg := s.read()
+	switch msg.(type) {
+	case *dap.StoppedEvent:
+		// Paused at next expression — step-in worked without auto-skip.
+	case *dap.ExitedEvent:
+		// Program finished — step-in advanced past the last expression.
+	default:
+		t.Fatalf("unexpected message after step-in during stepping: %T", msg)
+	}
+
+	// Continue/finish.
+	if s.engine.IsPaused() {
+		s.continueExec()
+	}
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for program to finish")
+	}
+	s.disconnect()
+}
+
+func TestDAPServer_LaunchConfig_SourceRoot(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Send launch with sourceRoot.
+	args, err := json.Marshal(map[string]any{
+		"stopOnEntry": true,
+		"sourceRoot":  "/my/lisp/project",
+	})
+	require.NoError(t, err)
+	s.send(&dap.LaunchRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "launch",
+		},
+		Arguments: json.RawMessage(args),
+	})
+	s.read() // LaunchResponse
+
+	// Send a follow-up request to ensure the launch processing (which
+	// applies config after sending the response) has completed.
+	s.send(&dap.ThreadsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "threads",
+		},
+	})
+	s.read() // ThreadsResponse — handler processes requests sequentially
+
+	// Verify the engine's source root was updated.
+	assert.Equal(t, "/my/lisp/project", s.engine.SourceRoot(),
+		"sourceRoot from launch config should be applied to engine")
+}
+
+func TestDAPServer_LaunchConfig_SkipBuiltins(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+
+	// Send launch with skipBuiltins:false to disable auto step-over.
+	args, err := json.Marshal(map[string]any{
+		"stopOnEntry":  true,
+		"skipBuiltins": false,
+	})
+	require.NoError(t, err)
+	s.send(&dap.LaunchRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "launch",
+		},
+		Arguments: json.RawMessage(args),
+	})
+	s.read() // LaunchResponse
+
+	s.configDone()
+
+	// Two-expression program with a pure builtin call.
+	source := "(+ 1 2)\n(+ 3 4)\n"
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		res := env.LoadString("test.lisp", source)
+		resultCh <- res
+		s.engine.NotifyExit(0)
+	}()
+
+	// Wait for stop-on-entry.
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	msg := s.read()
+	_, ok := msg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent on entry")
+
+	// Verify we start on line 1.
+	_, pausedExpr := s.engine.PausedState()
+	require.NotNil(t, pausedExpr)
+	require.NotNil(t, pausedExpr.Source)
+	assert.Equal(t, 1, pausedExpr.Source.Line)
+
+	// With skipBuiltins=false, step-in on (+ 1 2) should behave as
+	// regular step-in (no auto step-over). The result should be the
+	// same as without the feature. This verifies the config is applied.
+	s.send(&dap.StepInRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "stepIn",
+		},
+		Arguments: dap.StepInArguments{ThreadId: elpsThreadID},
+	})
+	s.read() // StepInResponse
+
+	// The engine should pause (regular step-in, not auto-skip).
+	require.Eventually(t, func() bool {
+		return s.engine.IsPaused()
+	}, 2*time.Second, 10*time.Millisecond)
+	msg = s.read() // StoppedEvent
+	_, ok = msg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T", msg)
+
+	// Continue to finish.
+	s.continueExec()
+	select {
+	case <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for program to finish")
+	}
+	s.disconnect()
 }

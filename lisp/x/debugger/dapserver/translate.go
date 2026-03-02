@@ -24,7 +24,7 @@ const elpsThreadID = 1
 // absolute paths so that DAP clients (VS Code) can open the source files.
 func translateStackFrames(stack *lisp.CallStack, pausedExpr *lisp.LVal, sourceRoot string) []dap.StackFrame {
 	if stack == nil || len(stack.Frames) == 0 {
-		return nil
+		return []dap.StackFrame{}
 	}
 	frames := make([]dap.StackFrame, 0, len(stack.Frames))
 	for i := len(stack.Frames) - 1; i >= 0; i-- {
@@ -105,7 +105,7 @@ func translateVariables(bindings []debugger.ScopeBinding, allocRef func(*lisp.LV
 // formatted key name matches the regex. It is ignored for non-map types.
 func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.Engine, mapKeyFilter *regexp.Regexp) []dap.Variable {
 	if v == nil {
-		return nil
+		return []dap.Variable{}
 	}
 	switch v.Type {
 	case lisp.LSExpr:
@@ -123,7 +123,7 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 	case lisp.LSortMap:
 		entries := v.MapEntries()
 		if entries.Type == lisp.LError {
-			return nil
+			return []dap.Variable{}
 		}
 		var vars []dap.Variable
 		for _, pair := range entries.Cells {
@@ -159,7 +159,7 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 		return vars
 	case lisp.LTaggedVal:
 		if len(v.Cells) == 0 {
-			return nil
+			return []dap.Variable{}
 		}
 		inner := v.Cells[0]
 		child := dap.Variable{
@@ -172,11 +172,11 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 		return []dap.Variable{child}
 	case lisp.LNative:
 		if eng == nil {
-			return nil
+			return []dap.Variable{}
 		}
 		children := eng.NativeChildren(v.Native)
 		if len(children) == 0 {
-			return nil
+			return []dap.Variable{}
 		}
 		vars := make([]dap.Variable, len(children))
 		for i, ch := range children {
@@ -190,7 +190,7 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 		}
 		return vars
 	default:
-		return nil
+		return []dap.Variable{}
 	}
 }
 
