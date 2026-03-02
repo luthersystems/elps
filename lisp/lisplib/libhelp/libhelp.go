@@ -17,6 +17,252 @@ import (
 // DefaultPackageName is the package name used by LoadPackage.
 const DefaultPackageName = "help"
 
+// SymbolDoc describes a documented symbol for JSON output.
+type SymbolDoc struct {
+	Name    string      `json:"name"`
+	Kind    string      `json:"kind"`             // "function", "macro", "operator", "variable"
+	Doc     string      `json:"doc,omitempty"`
+	Formals *FormalsDoc `json:"formals,omitempty"` // nil for non-functions
+}
+
+// FormalsDoc describes a function's parameter list.
+type FormalsDoc struct {
+	Required []string `json:"required"`
+	Optional []string `json:"optional,omitempty"`
+	Rest     string   `json:"rest,omitempty"`
+	Keys     []string `json:"keys,omitempty"`
+}
+
+// PackageDoc describes a package for JSON output.
+type PackageDoc struct {
+	Name    string      `json:"name"`
+	Doc     string      `json:"doc,omitempty"`
+	Symbols []SymbolDoc `json:"symbols"`
+}
+
+// QueryPackages returns structured documentation for all packages in
+// the environment, suitable for JSON serialization.
+func QueryPackages(env *lisp.LEnv) []PackageDoc {
+	// Collect core builtins into the "lisp" package.
+	lispSyms := queryCoreSymbols()
+
+	names := make([]string, 0, len(env.Runtime.Registry.Packages))
+	for name := range env.Runtime.Registry.Packages {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var pkgs []PackageDoc
+	for _, name := range names {
+		pkg := env.Runtime.Registry.Packages[name]
+		pd := PackageDoc{
+			Name: pkg.Name,
+			Doc:  cleanDocRaw(pkg.Doc),
+		}
+		if name == "lisp" {
+			pd.Symbols = lispSyms
+		} else {
+			pd.Symbols = queryPackageSymbols(pkg)
+		}
+		pkgs = append(pkgs, pd)
+	}
+	return pkgs
+}
+
+// QueryPackage returns structured documentation for a single package.
+func QueryPackage(env *lisp.LEnv, name string) (*PackageDoc, error) {
+	pkg := env.Runtime.Registry.Packages[name]
+	if pkg == nil {
+		return nil, fmt.Errorf("no package: %q", name)
+	}
+	pd := &PackageDoc{
+		Name: pkg.Name,
+		Doc:  cleanDocRaw(pkg.Doc),
+	}
+	if name == "lisp" {
+		pd.Symbols = queryCoreSymbols()
+	} else {
+		pd.Symbols = queryPackageSymbols(pkg)
+	}
+	return pd, nil
+}
+
+// QuerySymbol returns structured documentation for a single symbol,
+// resolved in the context of env. Supports qualified names (pkg:sym).
+func QuerySymbol(env *lisp.LEnv, sym string) (*SymbolDoc, error) {
+	// Check if it's a qualified name.
+	if i := strings.Index(sym, ":"); i >= 0 {
+		pkgName := sym[:i]
+		symName := sym[i+1:]
+		pkg := env.Runtime.Registry.Packages[pkgName]
+		if pkg == nil {
+			return nil, fmt.Errorf("no package: %q", pkgName)
+		}
+		if pkgName == "lisp" {
+			// Core builtins — search DefaultBuiltins/Ops/Macros first.
+			if sd := queryCoreSymbol(symName); sd != nil {
+				return sd, nil
+			}
+		}
+		v := pkg.Get(lisp.Symbol(symName))
+		if v.Type == lisp.LError {
+			return nil, fmt.Errorf("symbol not found: %s", sym)
+		}
+		return symbolDocFromLVal(symName, v, pkg.SymbolDocs[symName]), nil
+	}
+
+	// Unqualified: check core builtins first, then env.Get.
+	if sd := queryCoreSymbol(sym); sd != nil {
+		return sd, nil
+	}
+
+	v := env.Get(lisp.Symbol(sym))
+	if err := lisp.GoError(v); err != nil {
+		return nil, err
+	}
+	return symbolDocFromLVal(sym, v, LookupSymbolDoc(env, sym)), nil
+}
+
+// queryCoreSymbols builds SymbolDoc entries for DefaultBuiltins,
+// DefaultSpecialOps, and DefaultMacros.
+func queryCoreSymbols() []SymbolDoc {
+	var syms []SymbolDoc
+	for _, b := range lisp.DefaultBuiltins() {
+		syms = append(syms, symbolDocFromDef(b, "function"))
+	}
+	for _, op := range lisp.DefaultSpecialOps() {
+		syms = append(syms, symbolDocFromDef(op, "operator"))
+	}
+	for _, m := range lisp.DefaultMacros() {
+		syms = append(syms, symbolDocFromDef(m, "macro"))
+	}
+	sort.Slice(syms, func(i, j int) bool { return syms[i].Name < syms[j].Name })
+	return syms
+}
+
+// queryCoreSymbol looks up a single symbol among the core builtins/ops/macros.
+func queryCoreSymbol(name string) *SymbolDoc {
+	for _, b := range lisp.DefaultBuiltins() {
+		if b.Name() == name {
+			sd := symbolDocFromDef(b, "function")
+			return &sd
+		}
+	}
+	for _, op := range lisp.DefaultSpecialOps() {
+		if op.Name() == name {
+			sd := symbolDocFromDef(op, "operator")
+			return &sd
+		}
+	}
+	for _, m := range lisp.DefaultMacros() {
+		if m.Name() == name {
+			sd := symbolDocFromDef(m, "macro")
+			return &sd
+		}
+	}
+	return nil
+}
+
+// symbolDocFromDef creates a SymbolDoc from an LBuiltinDef.
+func symbolDocFromDef(defn lisp.LBuiltinDef, kind string) SymbolDoc {
+	sd := SymbolDoc{
+		Name:    defn.Name(),
+		Kind:    kind,
+		Doc:     cleanDocRaw(docstring(defn)),
+		Formals: parseFormals(defn.Formals()),
+	}
+	return sd
+}
+
+// symbolDocFromLVal creates a SymbolDoc from a resolved LVal.
+func symbolDocFromLVal(name string, v *lisp.LVal, symbolDoc string) *SymbolDoc {
+	if v.Type == lisp.LFun {
+		doc := cleanDocRaw(v.Docstring())
+		if doc == "" {
+			doc = cleanDocRaw(symbolDoc)
+		}
+		return &SymbolDoc{
+			Name:    name,
+			Kind:    v.FunType.String(),
+			Doc:     doc,
+			Formals: parseFormals(v.Cells[0]),
+		}
+	}
+	return &SymbolDoc{
+		Name: name,
+		Kind: "variable",
+		Doc:  cleanDocRaw(symbolDoc),
+	}
+}
+
+// parseFormals splits a formals LVal into required, optional, rest, and
+// key argument lists based on the &optional, &rest, and &key sentinels.
+func parseFormals(formals *lisp.LVal) *FormalsDoc {
+	if formals == nil || formals.Len() == 0 {
+		return &FormalsDoc{Required: []string{}}
+	}
+
+	fd := &FormalsDoc{}
+	mode := "required"
+	for _, cell := range formals.Cells {
+		sym := cell.Str
+		switch sym {
+		case lisp.OptArgSymbol:
+			mode = "optional"
+			continue
+		case lisp.VarArgSymbol:
+			mode = "rest"
+			continue
+		case lisp.KeyArgSymbol:
+			mode = "key"
+			continue
+		}
+		switch mode {
+		case "required":
+			fd.Required = append(fd.Required, sym)
+		case "optional":
+			fd.Optional = append(fd.Optional, sym)
+		case "rest":
+			fd.Rest = sym
+			mode = "done" // only one rest arg
+		case "key":
+			fd.Keys = append(fd.Keys, sym)
+		}
+	}
+	if fd.Required == nil {
+		fd.Required = []string{}
+	}
+	return fd
+}
+
+// queryPackageSymbols builds SymbolDoc entries for a non-lisp package's
+// exported symbols.
+func queryPackageSymbols(pkg *lisp.Package) []SymbolDoc {
+	var syms []SymbolDoc
+	for _, exsym := range pkg.Externals {
+		v := pkg.Get(lisp.Symbol(exsym))
+		if v.Type == lisp.LError {
+			continue
+		}
+		syms = append(syms, *symbolDocFromLVal(exsym, v, pkg.SymbolDocs[exsym]))
+	}
+	return syms
+}
+
+// cleanDocRaw dedents a docstring without word-wrapping.
+// JSON consumers get clean text they can format themselves.
+func cleanDocRaw(doc string) string {
+	if doc == "" {
+		return ""
+	}
+	if doc[0] == '\n' {
+		doc = doc[1:]
+	}
+	doc = dedentDoc(doc)
+	doc = strings.TrimSpace(doc)
+	return doc
+}
+
 // MissingDoc describes a symbol with no documentation.
 type MissingDoc struct {
 	// Kind is the type of the symbol: "builtin", "special-op", "macro",

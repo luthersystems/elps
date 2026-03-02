@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -33,6 +34,7 @@ func DocCommand(opts ...Option) *cobra.Command {
 		guide        bool
 		debugGuide   bool
 		lspGuide     bool
+		jsonOutput   bool
 	)
 
 	// makeEnv returns an LEnv suitable for documentation queries. When
@@ -95,6 +97,11 @@ Use --debug-guide to print the debugging guide:
 Use --lsp-guide to print the Language Server Protocol guide:
   elps doc --lsp-guide
 
+Use --json for machine-readable output (for LSP, MCP, editor extensions):
+  elps doc --json -l                   All packages with symbols as JSON
+  elps doc --json -p math              Single package as JSON
+  elps doc --json map                  Single symbol as JSON
+
 Common packages to explore:
   lisp      Core language (140+ builtins: map, filter, reduce, car, cdr, ...)
   math      Trigonometry, logarithms, constants (pi, inf)
@@ -115,6 +122,13 @@ Common packages to explore:
 			}
 			if missing {
 				if err := docCheckMissing(makeEnv); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+				return
+			}
+			if jsonOutput {
+				if err := docJSON(makeEnv, sourceFile, pkgFlag, listPackages, args); err != nil {
 					fmt.Fprintln(os.Stderr, err)
 					os.Exit(1)
 				}
@@ -157,8 +171,52 @@ Common packages to explore:
 		"Print the debugging guide.")
 	cmd.Flags().BoolVar(&lspGuide, "lsp-guide", false,
 		"Print the Language Server Protocol guide.")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false,
+		"Output as JSON.")
 
 	return cmd
+}
+
+func docJSON(makeEnv func() (*lisp.LEnv, error), sourceFile string, pkgFlag, listPackages bool, args []string) error {
+	env, err := makeEnv()
+	if err != nil {
+		return err
+	}
+	if sourceFile != "" {
+		res := env.LoadFile(sourceFile)
+		if res.Type == lisp.LError {
+			_, _ = (*lisp.ErrorVal)(res).WriteTrace(os.Stderr)
+			os.Exit(1)
+		}
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+
+	// --json -l or --json with no args: all packages
+	if listPackages || (len(args) == 0 && !pkgFlag) {
+		return enc.Encode(libhelp.QueryPackages(env))
+	}
+
+	if len(args) != 1 {
+		return fmt.Errorf("--json requires exactly one argument (or use -l for all packages)")
+	}
+	query := args[0]
+
+	// --json -p <pkg>: single package
+	if pkgFlag {
+		pd, err := libhelp.QueryPackage(env, query)
+		if err != nil {
+			return err
+		}
+		return enc.Encode(pd)
+	}
+
+	// --json <symbol>: single symbol
+	sd, err := libhelp.QuerySymbol(env, query)
+	if err != nil {
+		return err
+	}
+	return enc.Encode(sd)
 }
 
 func docListPkgs(makeEnv func() (*lisp.LEnv, error), sourceFile string) error {
