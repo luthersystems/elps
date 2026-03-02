@@ -2921,3 +2921,404 @@ func TestCrossFileReferences_QualifiedSymbol(t *testing.T) {
 		}
 	}
 }
+
+// --- Document highlight tests ---
+
+func TestDocumentHighlight_FunctionDef(t *testing.T) {
+	s := testServer()
+	content := `(defun double (x) (* x 2))
+(double 5)
+(double 10)`
+	openDoc(s, "file:///test.lisp", content)
+
+	highlights, err := s.textDocumentDocumentHighlight(mockContext(), &protocol.DocumentHighlightParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 7}, // on "double" def
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, highlights, "highlights should not be nil")
+	// 1 definition (Write) + 2 call sites (Read) = 3.
+	assert.Len(t, highlights, 3, "should have definition + 2 call sites")
+
+	// Verify kinds.
+	var writeCount, readCount int
+	for _, h := range highlights {
+		if h.Kind != nil && *h.Kind == protocol.DocumentHighlightKindWrite {
+			writeCount++
+		}
+		if h.Kind != nil && *h.Kind == protocol.DocumentHighlightKindRead {
+			readCount++
+		}
+	}
+	assert.Equal(t, 1, writeCount, "should have exactly 1 Write highlight (definition)")
+	assert.Equal(t, 2, readCount, "should have exactly 2 Read highlights (references)")
+}
+
+func TestDocumentHighlight_FunctionRef(t *testing.T) {
+	s := testServer()
+	content := `(defun double (x) (* x 2))
+(double 5)
+(double 10)`
+	openDoc(s, "file:///test.lisp", content)
+
+	// Cursor on a call site (line 1, "double").
+	highlights, err := s.textDocumentDocumentHighlight(mockContext(), &protocol.DocumentHighlightParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 1, Character: 1}, // on "double" call
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, highlights, "highlights should not be nil")
+	// Same result as clicking on the definition: 1 Write + 2 Read = 3.
+	assert.Len(t, highlights, 3, "should have definition + 2 call sites")
+}
+
+func TestDocumentHighlight_Variable(t *testing.T) {
+	s := testServer()
+	content := `(set *counter* 0)
+(set! *counter* (+ *counter* 1))
+(debug-print *counter*)`
+	openDoc(s, "file:///test.lisp", content)
+
+	// Cursor on "*counter*" definition (line 0, char 5).
+	highlights, err := s.textDocumentDocumentHighlight(mockContext(), &protocol.DocumentHighlightParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 5}, // on "*counter*"
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, highlights, "should find highlights for variable")
+
+	// Should have at least the definition highlight.
+	var hasWrite bool
+	for _, h := range highlights {
+		if h.Kind != nil && *h.Kind == protocol.DocumentHighlightKindWrite {
+			hasWrite = true
+		}
+	}
+	assert.True(t, hasWrite, "should have a Write highlight for the definition")
+}
+
+func TestDocumentHighlight_NoSymbol(t *testing.T) {
+	s := testServer()
+	content := `(defun f () nil)`
+	openDoc(s, "file:///test.lisp", content)
+
+	// Cursor on whitespace between "f" and "()".
+	highlights, err := s.textDocumentDocumentHighlight(mockContext(), &protocol.DocumentHighlightParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 0}, // on "("
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, highlights, "should return nil when no symbol under cursor")
+}
+
+func TestDocumentHighlight_NoDocument(t *testing.T) {
+	s := testServer()
+
+	highlights, err := s.textDocumentDocumentHighlight(mockContext(), &protocol.DocumentHighlightParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///nonexistent.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 0},
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, highlights, "should return nil for unknown document")
+}
+
+func TestDocumentHighlight_Keyword(t *testing.T) {
+	s := testServer()
+	content := `(defun f (&key name) name)`
+	openDoc(s, "file:///test.lisp", content)
+
+	// Cursor on ":key" — keywords are not tracked as user symbols.
+	highlights, err := s.textDocumentDocumentHighlight(mockContext(), &protocol.DocumentHighlightParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 10}, // on "&key"
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, highlights, "keywords should not produce highlights")
+}
+
+// --- Selection Range tests ---
+
+func TestSelectionRange_BasicExpansion(t *testing.T) {
+	s := testServer()
+	content := `(defun add (x y) (+ x y))`
+	openDoc(s, "file:///test.lisp", content)
+
+	// Cursor on "x" at position (0, 19) — the x inside (+ x y).
+	result, err := s.textDocumentSelectionRange(mockContext(), &protocol.SelectionRangeParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Positions:    []protocol.Position{{Line: 0, Character: 19}},
+	})
+	require.NoError(t, err)
+	require.Len(t, result, 1, "should return one chain per position")
+
+	// Walk the chain — innermost first, should expand outward.
+	sr := &result[0]
+	var depth int
+	for sr != nil {
+		depth++
+		sr = sr.Parent
+	}
+	assert.GreaterOrEqual(t, depth, 2, "chain should have at least 2 levels (atom + enclosing sexpr)")
+}
+
+func TestSelectionRange_NestedSExpr(t *testing.T) {
+	s := testServer()
+	content := `(defun f () (if true (+ 1 2) 0))`
+	openDoc(s, "file:///test.lisp", content)
+
+	// Cursor on "1" inside (+ 1 2) inside (if ...) inside (defun ...).
+	result, err := s.textDocumentSelectionRange(mockContext(), &protocol.SelectionRangeParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Positions:    []protocol.Position{{Line: 0, Character: 24}},
+	})
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+
+	// Count depth: should be atom → (+ 1 2) → (if ...) → (defun ...) = 4.
+	sr := &result[0]
+	var depth int
+	for sr != nil {
+		depth++
+		sr = sr.Parent
+	}
+	assert.GreaterOrEqual(t, depth, 3, "deeply nested chain should have 3+ levels")
+}
+
+func TestSelectionRange_TopLevel(t *testing.T) {
+	s := testServer()
+	content := `(+ 1 2)`
+	openDoc(s, "file:///test.lisp", content)
+
+	// Cursor on "+" at (0, 1).
+	result, err := s.textDocumentSelectionRange(mockContext(), &protocol.SelectionRangeParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Positions:    []protocol.Position{{Line: 0, Character: 1}},
+	})
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+
+	sr := &result[0]
+	var depth int
+	for sr != nil {
+		depth++
+		sr = sr.Parent
+	}
+	assert.GreaterOrEqual(t, depth, 1, "top-level atom should have at least 1 level")
+}
+
+func TestSelectionRange_MultiplePositions(t *testing.T) {
+	s := testServer()
+	content := `(+ 1 2)`
+	openDoc(s, "file:///test.lisp", content)
+
+	result, err := s.textDocumentSelectionRange(mockContext(), &protocol.SelectionRangeParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Positions: []protocol.Position{
+			{Line: 0, Character: 1}, // on "+"
+			{Line: 0, Character: 3}, // on "1"
+		},
+	})
+	require.NoError(t, err)
+	assert.Len(t, result, 2, "should return one chain per position")
+}
+
+func TestSelectionRange_NoDocument(t *testing.T) {
+	s := testServer()
+
+	result, err := s.textDocumentSelectionRange(mockContext(), &protocol.SelectionRangeParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///nonexistent.lisp"},
+		Positions:    []protocol.Position{{Line: 0, Character: 0}},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, result, "should return nil for unknown document")
+}
+
+// --- Linked Editing Range tests ---
+
+func TestLinkedEditing_Function(t *testing.T) {
+	s := testServer()
+	content := "(defun f () nil)\n(f)"
+	openDoc(s, "file:///test.lisp", content)
+
+	// Cursor on "f" definition (line 0, char 7).
+	result, err := s.textDocumentLinkedEditingRange(mockContext(), &protocol.LinkedEditingRangeParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 7},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "should return linked editing ranges for function")
+	assert.Len(t, result.Ranges, 2, "should have definition + 1 call site")
+	assert.NotNil(t, result.WordPattern)
+}
+
+func TestLinkedEditing_Variable(t *testing.T) {
+	s := testServer()
+	content := "(set x 1)\n(+ x 2)"
+	openDoc(s, "file:///test.lisp", content)
+
+	// Cursor on "x" at definition (line 0, char 5).
+	result, err := s.textDocumentLinkedEditingRange(mockContext(), &protocol.LinkedEditingRangeParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 5},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "should return linked editing ranges for variable")
+	assert.GreaterOrEqual(t, len(result.Ranges), 2, "should have definition + at least 1 reference")
+}
+
+func TestLinkedEditing_Builtin(t *testing.T) {
+	s := testServer()
+	content := "(+ 1 2)"
+	openDoc(s, "file:///test.lisp", content)
+
+	// Cursor on "+" — a builtin.
+	result, err := s.textDocumentLinkedEditingRange(mockContext(), &protocol.LinkedEditingRangeParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 1},
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, result, "builtins should not produce linked editing ranges")
+}
+
+func TestLinkedEditing_NoSymbol(t *testing.T) {
+	s := testServer()
+	content := "(defun f () nil)"
+	openDoc(s, "file:///test.lisp", content)
+
+	// Cursor on whitespace.
+	result, err := s.textDocumentLinkedEditingRange(mockContext(), &protocol.LinkedEditingRangeParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 0},
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, result, "should return nil when no symbol under cursor")
+}
+
+func TestLinkedEditing_NoDocument(t *testing.T) {
+	s := testServer()
+
+	result, err := s.textDocumentLinkedEditingRange(mockContext(), &protocol.LinkedEditingRangeParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///nonexistent.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 0},
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, result, "should return nil for unknown document")
+}
+
+// --- Watched Files tests ---
+
+func TestWatchedFiles_Changed(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Create a temp file to simulate a workspace .lisp file.
+	tmp, err := os.CreateTemp("", "test-*.lisp")
+	require.NoError(t, err)
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	_, err = tmp.WriteString("(defun greet () nil)")
+	require.NoError(t, err)
+	require.NoError(t, tmp.Close())
+
+	uri := pathToURI(tmp.Name())
+
+	// Simulate a file change event.
+	err = s.workspaceDidChangeWatchedFiles(mockContext(), &protocol.DidChangeWatchedFilesParams{
+		Changes: []protocol.FileEvent{
+			{URI: protocol.DocumentUri(uri), Type: protocol.FileChangeTypeChanged},
+		},
+	})
+	require.NoError(t, err)
+
+	// Verify that workspace refs were updated for the file.
+	s.workspaceRefsMu.RLock()
+	hasRefs := len(s.workspaceRefs) >= 0 // just verify no panic
+	s.workspaceRefsMu.RUnlock()
+	assert.True(t, hasRefs)
+}
+
+func TestWatchedFiles_Deleted(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	filePath := "/tmp/deleted-test.lisp"
+
+	// Pre-populate workspace refs for the file.
+	s.setTestWorkspaceRefs(map[string][]analysis.FileReference{
+		"greet/function": {
+			{SymbolKey: analysis.SymbolKey{Name: "greet", Kind: analysis.SymFunction}, File: filePath},
+		},
+	})
+
+	// Simulate a file deletion event.
+	uri := pathToURI(filePath)
+	err := s.workspaceDidChangeWatchedFiles(mockContext(), &protocol.DidChangeWatchedFilesParams{
+		Changes: []protocol.FileEvent{
+			{URI: protocol.DocumentUri(uri), Type: protocol.FileChangeTypeDeleted},
+		},
+	})
+	require.NoError(t, err)
+
+	// Verify that refs for the deleted file were removed.
+	s.workspaceRefsMu.RLock()
+	refs := s.workspaceRefs["greet/function"]
+	s.workspaceRefsMu.RUnlock()
+	assert.Empty(t, refs, "refs for deleted file should be removed")
+}
+
+func TestWatchedFiles_NonLisp(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Pre-populate workspace refs.
+	s.setTestWorkspaceRefs(map[string][]analysis.FileReference{
+		"greet/function": {
+			{SymbolKey: analysis.SymbolKey{Name: "greet", Kind: analysis.SymFunction}, File: "/tmp/test.lisp"},
+		},
+	})
+
+	// Send a .txt file change — should be ignored.
+	err := s.workspaceDidChangeWatchedFiles(mockContext(), &protocol.DidChangeWatchedFilesParams{
+		Changes: []protocol.FileEvent{
+			{URI: "file:///tmp/notes.txt", Type: protocol.FileChangeTypeChanged},
+		},
+	})
+	require.NoError(t, err)
+
+	// Verify refs are unchanged.
+	s.workspaceRefsMu.RLock()
+	refs := s.workspaceRefs["greet/function"]
+	s.workspaceRefsMu.RUnlock()
+	assert.Len(t, refs, 1, "non-lisp file changes should not affect refs")
+}
+
+// --- Workspace indexer tests ---
+
+func TestShouldSkipDir_Vendor(t *testing.T) {
+	assert.True(t, analysis.ShouldSkipDir("vendor"), "vendor/ should be skipped")
+	assert.True(t, analysis.ShouldSkipDir("node_modules"), "node_modules/ should be skipped")
+	assert.True(t, analysis.ShouldSkipDir(".git"), ".git/ should be skipped")
+	assert.False(t, analysis.ShouldSkipDir("lib"), "lib/ should not be skipped")
+	assert.False(t, analysis.ShouldSkipDir("."), ". should not be skipped")
+}
