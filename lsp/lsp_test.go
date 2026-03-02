@@ -426,10 +426,9 @@ func TestHoverOnBuiltin(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.NotNil(t, hover, "hover on builtin should not be nil")
-	mc, ok := hover.Contents.(protocol.MarkupContent)
-	require.True(t, ok, "hover contents should be MarkupContent")
-	assert.Contains(t, mc.Value, "map")
+	assertHoverContains(t, hover, "map", "*Built-in*")
+	mc := hover.Contents.(protocol.MarkupContent)
+	assert.NotContains(t, mc.Value, "Defined in", "builtin hover should not show 'Defined in'")
 }
 
 func TestHoverOnEmpty(t *testing.T) {
@@ -468,7 +467,7 @@ func TestDefinition(t *testing.T) {
 	assert.Equal(t, protocol.UInteger(0), loc.Range.Start.Line, "definition should point to line 0")
 }
 
-func TestDefinitionBuiltinReturnsNil(t *testing.T) {
+func TestDefinitionBuiltin(t *testing.T) {
 	s := testServer()
 	openDoc(s, "file:///test.lisp", "(map identity '(1 2 3))")
 
@@ -479,8 +478,113 @@ func TestDefinitionBuiltinReturnsNil(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	// Builtins have no navigable source; nil is the correct response.
-	assert.Nil(t, result, "definition of builtin should be nil")
+	require.NotNil(t, result, "definition of builtin should return a location")
+
+	loc, ok := result.(protocol.Location)
+	require.True(t, ok, "result should be protocol.Location, got %T", result)
+	assert.Equal(t, "elps-builtin://lisp/map", loc.URI, "builtin URI")
+	assert.Equal(t, protocol.Range{}, loc.Range, "builtin range should be zero")
+}
+
+func TestDefinitionQualifiedBuiltin(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{
+		PackageExports: map[string][]analysis.ExternalSymbol{
+			"math": {
+				{Name: "sin", Kind: analysis.SymFunction},
+			},
+		},
+	})
+	openDoc(s, "file:///test.lisp", `(math:sin 1.0)`)
+
+	result, err := s.textDocumentDefinition(mockContext(), &protocol.DefinitionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 1}, // on "math:sin"
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "definition of qualified builtin should return a location")
+
+	loc, ok := result.(protocol.Location)
+	require.True(t, ok, "result should be protocol.Location, got %T", result)
+	assert.Equal(t, "elps-builtin://math/sin", loc.URI, "qualified builtin URI")
+	assert.Equal(t, protocol.Range{}, loc.Range, "builtin range should be zero")
+}
+
+func TestBuiltinURI(t *testing.T) {
+	tests := []struct {
+		pkg, name, want string
+	}{
+		{"lisp", "map", "elps-builtin://lisp/map"},
+		{"math", "sin", "elps-builtin://math/sin"},
+		{"string", "join", "elps-builtin://string/join"},
+		{"base64", "encode-string", "elps-builtin://base64/encode-string"},
+		{"lisp", "not=", "elps-builtin://lisp/not="},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pkg+"/"+tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, builtinURI(tt.pkg, tt.name))
+		})
+	}
+}
+
+func TestIsBuiltin(t *testing.T) {
+	tests := []struct {
+		name string
+		sym  *analysis.Symbol
+		want bool
+	}{
+		{"nil source", &analysis.Symbol{Source: nil}, true},
+		{"negative pos", &analysis.Symbol{Source: &token.Location{Pos: -1}}, true},
+		{"zero pos", &analysis.Symbol{Source: &token.Location{Pos: 0, Line: 1, Col: 1}}, false},
+		{"positive pos", &analysis.Symbol{Source: &token.Location{Pos: 10, Line: 1, Col: 1, File: "test.lisp"}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isBuiltin(tt.sym), "isBuiltin(%v)", tt.sym.Source)
+		})
+	}
+}
+
+func TestBuiltinLocationForWord(t *testing.T) {
+	tests := []struct {
+		name    string
+		word    string
+		symName string
+		wantPkg string
+	}{
+		{"unqualified", "map", "map", "lisp"},
+		{"qualified", "math:sin", "sin", "math"},
+		{"keyword ignored", ":keyword", "keyword", "lisp"},
+		{"empty word", "", "map", "lisp"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			loc := builtinLocationForWord(tt.word, tt.symName)
+			assert.Equal(t, builtinURI(tt.wantPkg, tt.symName), loc.URI)
+			assert.Equal(t, protocol.Range{}, loc.Range, "builtin range should be zero")
+		})
+	}
+}
+
+func TestDefinitionBuiltin_SpecialOp(t *testing.T) {
+	s := testServer()
+	openDoc(s, "file:///test.lisp", "(if true 1 2)")
+
+	result, err := s.textDocumentDefinition(mockContext(), &protocol.DefinitionParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 1}, // on "if"
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "definition of special op should return a location")
+
+	loc, ok := result.(protocol.Location)
+	require.True(t, ok, "result should be protocol.Location, got %T", result)
+	assert.Equal(t, "elps-builtin://lisp/if", loc.URI, "special op URI")
+	assert.Equal(t, protocol.Range{}, loc.Range, "builtin range should be zero")
 }
 
 // --- References tests ---
