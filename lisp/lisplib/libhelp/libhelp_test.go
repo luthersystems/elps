@@ -4,6 +4,7 @@ package libhelp_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -494,4 +495,197 @@ func TestRenderFun_SymbolDocsFallback(t *testing.T) {
 	require.NoError(t, err)
 	output := buf.String()
 	assert.Contains(t, output, "Documented via set.")
+}
+
+// --- JSON query tests ---
+
+func TestQueryPackages(t *testing.T) {
+	env := newTestEnv(t)
+	pkgs := libhelp.QueryPackages(env)
+
+	require.NotEmpty(t, pkgs, "QueryPackages should return at least one package")
+
+	// Every package should have a name.
+	for _, pkg := range pkgs {
+		assert.NotEmpty(t, pkg.Name, "package name should not be empty")
+	}
+
+	// Check a known package exists.
+	var foundMath bool
+	for _, pkg := range pkgs {
+		if pkg.Name == "math" {
+			foundMath = true
+			assert.NotEmpty(t, pkg.Symbols, "math package should have symbols")
+			assert.NotEmpty(t, pkg.Doc, "math package should have a doc string")
+			break
+		}
+	}
+	assert.True(t, foundMath, "should find math package")
+}
+
+func TestQueryPackage(t *testing.T) {
+	env := newTestEnv(t)
+
+	pd, err := libhelp.QueryPackage(env, "math")
+	require.NoError(t, err)
+	assert.Equal(t, "math", pd.Name)
+	assert.NotEmpty(t, pd.Doc)
+	assert.NotEmpty(t, pd.Symbols)
+
+	// "sin" should be a function with required=["radians"]
+	var foundSin bool
+	for _, sym := range pd.Symbols {
+		if sym.Name == "sin" {
+			foundSin = true
+			assert.Equal(t, "function", sym.Kind)
+			require.NotNil(t, sym.Formals)
+			assert.Contains(t, sym.Formals.Required, "radians")
+			break
+		}
+	}
+	assert.True(t, foundSin, "math package should contain sin")
+}
+
+func TestQueryPackage_CoreBuiltins(t *testing.T) {
+	env := newTestEnv(t)
+
+	pd, err := libhelp.QueryPackage(env, "lisp")
+	require.NoError(t, err)
+	assert.Equal(t, "lisp", pd.Name)
+	assert.NotEmpty(t, pd.Symbols)
+
+	// Should include builtins, operators, and macros.
+	kindCounts := map[string]int{}
+	for _, sym := range pd.Symbols {
+		kindCounts[sym.Kind]++
+	}
+	assert.Greater(t, kindCounts["function"], 0, "lisp package should have functions")
+	assert.Greater(t, kindCounts["operator"], 0, "lisp package should have operators")
+	assert.Greater(t, kindCounts["macro"], 0, "lisp package should have macros")
+}
+
+func TestQueryPackageNotFound(t *testing.T) {
+	env := newTestEnv(t)
+
+	_, err := libhelp.QueryPackage(env, "nonexistent-pkg")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nonexistent-pkg")
+}
+
+func TestQuerySymbol(t *testing.T) {
+	env := newTestEnv(t)
+
+	sd, err := libhelp.QuerySymbol(env, "map")
+	require.NoError(t, err)
+	assert.Equal(t, "map", sd.Name)
+	assert.Equal(t, "function", sd.Kind)
+	assert.NotEmpty(t, sd.Doc)
+	require.NotNil(t, sd.Formals)
+	assert.NotEmpty(t, sd.Formals.Required)
+}
+
+func TestQuerySymbolQualified(t *testing.T) {
+	env := newTestEnv(t)
+
+	sd, err := libhelp.QuerySymbol(env, "math:sin")
+	require.NoError(t, err)
+	assert.Equal(t, "sin", sd.Name)
+	assert.Equal(t, "function", sd.Kind)
+	require.NotNil(t, sd.Formals)
+	assert.Contains(t, sd.Formals.Required, "radians")
+}
+
+func TestQuerySymbolQualified_Core(t *testing.T) {
+	env := newTestEnv(t)
+
+	sd, err := libhelp.QuerySymbol(env, "lisp:map")
+	require.NoError(t, err)
+	assert.Equal(t, "map", sd.Name)
+	assert.Equal(t, "function", sd.Kind)
+}
+
+func TestQuerySymbol_Operator(t *testing.T) {
+	env := newTestEnv(t)
+
+	sd, err := libhelp.QuerySymbol(env, "lambda")
+	require.NoError(t, err)
+	assert.Equal(t, "lambda", sd.Name)
+	assert.Equal(t, "operator", sd.Kind)
+}
+
+func TestQuerySymbol_Macro(t *testing.T) {
+	env := newTestEnv(t)
+
+	sd, err := libhelp.QuerySymbol(env, "defun")
+	require.NoError(t, err)
+	assert.Equal(t, "defun", sd.Name)
+	assert.Equal(t, "macro", sd.Kind)
+}
+
+func TestQuerySymbol_NotFound(t *testing.T) {
+	env := newTestEnv(t)
+
+	_, err := libhelp.QuerySymbol(env, "nonexistent-sym-xyz")
+	assert.Error(t, err)
+}
+
+func TestParseFormals_Optional(t *testing.T) {
+	env := newTestEnv(t)
+
+	// math:atan has &optional.
+	sd, err := libhelp.QuerySymbol(env, "math:atan")
+	require.NoError(t, err)
+	require.NotNil(t, sd.Formals)
+	assert.Contains(t, sd.Formals.Required, "radians")
+	assert.Contains(t, sd.Formals.Optional, "quotient")
+}
+
+func TestParseFormals_Key(t *testing.T) {
+	env := newTestEnv(t)
+
+	// json:dump-string has &key.
+	sd, err := libhelp.QuerySymbol(env, "json:dump-string")
+	require.NoError(t, err)
+	require.NotNil(t, sd.Formals)
+	assert.Contains(t, sd.Formals.Required, "object")
+	assert.Contains(t, sd.Formals.Keys, "string-numbers")
+}
+
+func TestParseFormals_Rest(t *testing.T) {
+	env := newTestEnv(t)
+
+	// "+" has &rest args.
+	sd, err := libhelp.QuerySymbol(env, "+")
+	require.NoError(t, err)
+	require.NotNil(t, sd.Formals)
+	assert.NotEmpty(t, sd.Formals.Rest, "+ should have a rest arg")
+}
+
+func TestQueryPackages_JSONSerializable(t *testing.T) {
+	env := newTestEnv(t)
+	pkgs := libhelp.QueryPackages(env)
+
+	data, err := json.Marshal(pkgs)
+	require.NoError(t, err)
+	assert.True(t, json.Valid(data), "QueryPackages output should be valid JSON")
+
+	// Round-trip: deserialize back
+	var decoded []libhelp.PackageDoc
+	err = json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
+	assert.Equal(t, len(pkgs), len(decoded))
+}
+
+func TestQuerySymbol_DocNotWordWrapped(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Get a symbol known to have a long docstring.
+	sd, err := libhelp.QuerySymbol(env, "map")
+	require.NoError(t, err)
+
+	// The doc should NOT contain the 2-space indent that cleanDocstring adds.
+	if sd.Doc != "" {
+		assert.False(t, strings.HasPrefix(sd.Doc, "  "),
+			"JSON doc should not have leading indent")
+	}
 }
