@@ -129,12 +129,13 @@ code --install-extension elps-debug-0.1.0.vsix
 }
 ```
 
-| Attribute     | Type    | Default              | Description                        |
-|---------------|---------|----------------------|------------------------------------|
-| `program`     | string  | `${file}`            | Path to the `.lisp` file to debug  |
-| `stopOnEntry` | boolean | `true`               | Pause before the first expression  |
-| `rootDir`     | string  | `${workspaceFolder}` | Source root for file resolution    |
-| `elpsPath`    | string  | `"elps"`             | Path to the `elps` binary          |
+| Attribute      | Type    | Default              | Description                                  |
+|----------------|---------|----------------------|----------------------------------------------|
+| `program`      | string  | `${file}`            | Path to the `.lisp` file to debug            |
+| `stopOnEntry`  | boolean | `true`               | Pause before the first expression            |
+| `rootDir`      | string  | `${workspaceFolder}` | Source root for file resolution              |
+| `elpsPath`     | string  | `"elps"`             | Path to the `elps` binary                    |
+| `skipBuiltins` | boolean | `true`               | Auto step-over builtins on untargeted step-in |
 
 ### Neovim
 
@@ -310,6 +311,54 @@ Requires the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin.
 
 1. **Run > Edit Configurations > + > DAP**
 2. Set DAP Server to "ELPS Debug", Request to "attach", Host to "localhost", Port to 4711.
+
+## Launch Configuration Reference
+
+All DAP clients (VS Code, Neovim, Helix, Emacs, JetBrains) send the same launch/attach configuration to the ELPS debug adapter. The table below lists all supported fields.
+
+### Launch Request Fields
+
+| Field          | Type    | Default | Description                                                    |
+|----------------|---------|---------|----------------------------------------------------------------|
+| `program`      | string  | —       | Path to the `.lisp` file to debug (required)                   |
+| `stopOnEntry`  | boolean | `false` | Pause before the first expression                              |
+| `sourceRoot`   | string  | `""`    | Absolute path prefix for resolving relative source file paths  |
+| `skipBuiltins` | boolean | `true`  | Auto step-over builtins on untargeted step-in                  |
+
+### Attach Request Fields
+
+| Field  | Type   | Default       | Description                       |
+|--------|--------|---------------|-----------------------------------|
+| `host` | string | `"localhost"` | Host of the running DAP server    |
+| `port` | number | `4711`        | Port of the running DAP server    |
+
+Attach requests also accept `stopOnEntry`, `sourceRoot`, and `skipBuiltins`.
+
+### Field Details
+
+**`sourceRoot`** — When ELPS source files use relative paths (common in embedded applications), the debugger needs an absolute path prefix to locate the actual files on disk. Set `sourceRoot` to the directory containing your `.lisp` files:
+
+```json
+{
+  "type": "elps",
+  "request": "launch",
+  "name": "Debug with source root",
+  "program": "main.lisp",
+  "sourceRoot": "/home/user/project/lisp"
+}
+```
+
+**`skipBuiltins`** — When stepping into a call like `(map my-fn items)`, the debugger automatically skips over the `map` builtin and steps directly into `my-fn`. Set `skipBuiltins` to `false` to observe the builtin dispatch:
+
+```json
+{
+  "type": "elps",
+  "request": "launch",
+  "name": "Debug builtins",
+  "program": "${file}",
+  "skipBuiltins": false
+}
+```
 
 ## REPL Mode Commands
 
@@ -548,6 +597,96 @@ engine.SetSourceLibrary(mySourceLib)
 ```
 
 The DAP source request handler uses this to serve file content to editors.
+
+### Auto-Attach Pattern
+
+For Go applications that embed ELPS, the auto-attach pattern lets you debug both Go and ELPS code in a single session. The Go application starts a DAP server on a well-known port; the editor connects to it automatically.
+
+**Step 1: Environment-driven attach in your Go application.**
+
+Wire the debugger to start a DAP server when an environment variable is set:
+
+```go
+import (
+    "os"
+    "github.com/luthersystems/elps/lisp/x/debugger"
+    "github.com/luthersystems/elps/lisp/x/debugger/dapserver"
+)
+
+func setupDebugger(env *lisp.LEnv) {
+    port := os.Getenv("ELPS_DAP_PORT")
+    if port == "" {
+        return
+    }
+    engine := debugger.New(
+        debugger.WithStopOnEntry(true),
+        debugger.WithSourceRoot("/path/to/lisp/sources"),
+    )
+    engine.Enable()
+    env.Runtime.Debugger = engine
+
+    srv := dapserver.New(engine)
+    go srv.ServeTCPLoop("localhost:" + port)
+}
+```
+
+**Step 2: VS Code compound launch configuration.**
+
+Debug Go and ELPS simultaneously by launching the Go process first, then attaching to the ELPS DAP server:
+
+```json
+{
+  "version": "0.2.0",
+  "compounds": [
+    {
+      "name": "Go + ELPS",
+      "configurations": ["Launch Go", "Attach ELPS"],
+      "stopAll": true
+    }
+  ],
+  "configurations": [
+    {
+      "name": "Launch Go",
+      "type": "go",
+      "request": "launch",
+      "program": "${workspaceFolder}/cmd/myapp",
+      "env": { "ELPS_DAP_PORT": "4711" }
+    },
+    {
+      "name": "Attach ELPS",
+      "type": "elps",
+      "request": "attach",
+      "host": "localhost",
+      "port": 4711,
+      "sourceRoot": "${workspaceFolder}/lisp"
+    }
+  ]
+}
+```
+
+**Step 3: Neovim auto-detect.**
+
+For Neovim users, detect the environment variable and auto-configure the attach adapter:
+
+```lua
+local dap = require('dap')
+
+-- Auto-attach when ELPS_DAP_PORT is set.
+local elps_port = os.getenv('ELPS_DAP_PORT')
+if elps_port then
+  dap.adapters.elps_auto = {
+    type = 'server',
+    host = '127.0.0.1',
+    port = tonumber(elps_port),
+  }
+  table.insert(dap.configurations.lisp, {
+    type = 'elps_auto',
+    request = 'attach',
+    name = 'Auto-attach ELPS (port ' .. elps_port .. ')',
+    sourceRoot = vim.fn.getcwd() .. '/lisp',
+  })
+end
+```
 
 ### Architecture Deep-Dive
 
