@@ -122,7 +122,10 @@ func New(opts ...Option) *Server {
 		WorkspaceSymbol:                s.workspaceSymbol,
 	}
 
-	s.glspSrv = glspserver.NewServer(&s.handler, serverName, false)
+	s.glspSrv = glspserver.NewServer(&handlerWrapper{
+		inner:  &s.handler,
+		server: s,
+	}, serverName, false)
 	return s
 }
 
@@ -181,8 +184,23 @@ func (s *Server) initialize(ctx *glsp.Context, params *protocol.InitializeParams
 	}
 
 	version := "0.1.0"
-	return protocol.InitializeResult{
-		Capabilities: capabilities,
+
+	// Wrap capabilities to advertise LSP 3.17 features (like
+	// inlayHintProvider) that protocol_3_16 doesn't include.
+	type extendedCapabilities struct {
+		protocol.ServerCapabilities
+		InlayHintProvider bool `json:"inlayHintProvider,omitempty"`
+	}
+	type extendedInitResult struct {
+		Capabilities extendedCapabilities                 `json:"capabilities"`
+		ServerInfo   *protocol.InitializeResultServerInfo `json:"serverInfo,omitempty"`
+	}
+
+	return extendedInitResult{
+		Capabilities: extendedCapabilities{
+			ServerCapabilities: capabilities,
+			InlayHintProvider:  true,
+		},
 		ServerInfo: &protocol.InitializeResultServerInfo{
 			Name:    serverName,
 			Version: &version,

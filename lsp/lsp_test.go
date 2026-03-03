@@ -3,6 +3,7 @@
 package lsp
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -1078,10 +1079,25 @@ func TestInitializeLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	initResult, ok := result.(protocol.InitializeResult)
-	require.True(t, ok)
-	assert.NotNil(t, initResult.ServerInfo)
-	assert.Equal(t, serverName, initResult.ServerInfo.Name)
+	// The result is an extendedInitResult (wraps protocol capabilities
+	// with LSP 3.17 fields like InlayHintProvider).
+	type initResultLike struct {
+		Capabilities struct {
+			InlayHintProvider bool `json:"inlayHintProvider"`
+		} `json:"capabilities"`
+		ServerInfo *protocol.InitializeResultServerInfo `json:"serverInfo"`
+	}
+
+	// Use JSON round-trip to verify the structure since the type is
+	// local to server.go.
+	data, err := json.Marshal(result)
+	require.NoError(t, err)
+	var parsed initResultLike
+	require.NoError(t, json.Unmarshal(data, &parsed))
+
+	assert.NotNil(t, parsed.ServerInfo)
+	assert.Equal(t, serverName, parsed.ServerInfo.Name)
+	assert.True(t, parsed.Capabilities.InlayHintProvider, "should advertise inlayHintProvider")
 	assert.Equal(t, "/workspace", s.rootPath)
 }
 
@@ -3321,4 +3337,201 @@ func TestShouldSkipDir_Vendor(t *testing.T) {
 	assert.True(t, analysis.ShouldSkipDir(".git"), ".git/ should be skipped")
 	assert.False(t, analysis.ShouldSkipDir("lib"), "lib/ should not be skipped")
 	assert.False(t, analysis.ShouldSkipDir("."), ". should not be skipped")
+}
+
+// --- Inlay hint tests ---
+
+func TestInlayHint_Basic(t *testing.T) {
+	s := testServer()
+	content := `(defun add (x y)
+  "Add two numbers."
+  (+ x y))
+
+(add 1 2)`
+	openDoc(s, "file:///test.lisp", content)
+
+	hints, err := s.textDocumentInlayHint(&InlayHintParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Range: protocol.Range{
+			Start: protocol.Position{Line: 0, Character: 0},
+			End:   protocol.Position{Line: 5, Character: 0},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, hints, 2, "should have hints for x and y")
+
+	assert.Equal(t, "x:", hints[0].Label)
+	assert.Equal(t, "y:", hints[1].Label)
+	assert.Equal(t, inlayHintKindParameter, hints[0].Kind)
+	assert.True(t, hints[0].PaddingRight)
+
+	// Hints should be on line 4 (0-based) where "(add 1 2)" is.
+	assert.Equal(t, protocol.UInteger(4), hints[0].Position.Line)
+	assert.Equal(t, protocol.UInteger(4), hints[1].Position.Line)
+}
+
+func TestInlayHint_SingleParam(t *testing.T) {
+	s := testServer()
+	content := `(defun negate (x)
+  "Negate a number."
+  (- 0 x))
+
+(negate 42)`
+	openDoc(s, "file:///test.lisp", content)
+
+	hints, err := s.textDocumentInlayHint(&InlayHintParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Range: protocol.Range{
+			Start: protocol.Position{Line: 0, Character: 0},
+			End:   protocol.Position{Line: 5, Character: 0},
+		},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, hints, "single-param functions should not produce hints")
+}
+
+func TestInlayHint_RestParam(t *testing.T) {
+	s := testServer()
+	content := `(defun f (a b &rest args)
+  "Function with rest."
+  (list a b args))
+
+(f 1 2 3 4 5)`
+	openDoc(s, "file:///test.lisp", content)
+
+	hints, err := s.textDocumentInlayHint(&InlayHintParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Range: protocol.Range{
+			Start: protocol.Position{Line: 0, Character: 0},
+			End:   protocol.Position{Line: 5, Character: 0},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, hints, 2, "should only hint required params a and b, not &rest")
+	assert.Equal(t, "a:", hints[0].Label)
+	assert.Equal(t, "b:", hints[1].Label)
+}
+
+func TestInlayHint_KeywordArg(t *testing.T) {
+	s := testServer()
+	content := `(defun greet (name greeting)
+  "Greet someone."
+  (concat greeting " " name))
+
+(greet :alice "hello")`
+	openDoc(s, "file:///test.lisp", content)
+
+	hints, err := s.textDocumentInlayHint(&InlayHintParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Range: protocol.Range{
+			Start: protocol.Position{Line: 0, Character: 0},
+			End:   protocol.Position{Line: 5, Character: 0},
+		},
+	})
+	require.NoError(t, err)
+	// :alice is a keyword literal — skip hint for name. greeting gets a hint.
+	require.Len(t, hints, 1, "keyword arg should not get a hint")
+	assert.Equal(t, "greeting:", hints[0].Label)
+}
+
+func TestInlayHint_ArgMatchesParam(t *testing.T) {
+	s := testServer()
+	content := `(defun add (x y)
+  "Add."
+  (+ x y))
+
+(set 'x 10)
+(set 'y 20)
+(add x y)`
+	openDoc(s, "file:///test.lisp", content)
+
+	// Only request hints for the line with "(add x y)" — line 6.
+	hints, err := s.textDocumentInlayHint(&InlayHintParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Range: protocol.Range{
+			Start: protocol.Position{Line: 6, Character: 0},
+			End:   protocol.Position{Line: 7, Character: 0},
+		},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, hints, "args matching param names should not produce hints")
+}
+
+func TestInlayHint_NoDocument(t *testing.T) {
+	s := testServer()
+
+	hints, err := s.textDocumentInlayHint(&InlayHintParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///nonexistent.lisp"},
+		Range: protocol.Range{
+			Start: protocol.Position{Line: 0, Character: 0},
+			End:   protocol.Position{Line: 10, Character: 0},
+		},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, hints)
+}
+
+func TestInlayHint_EmptyDoc(t *testing.T) {
+	s := testServer()
+	openDoc(s, "file:///test.lisp", "")
+
+	hints, err := s.textDocumentInlayHint(&InlayHintParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Range: protocol.Range{
+			Start: protocol.Position{Line: 0, Character: 0},
+			End:   protocol.Position{Line: 1, Character: 0},
+		},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, hints)
+}
+
+func TestInlayHint_Builtin(t *testing.T) {
+	s := testServer()
+	content := `(map to-string '(1 2 3))`
+	openDoc(s, "file:///test.lisp", content)
+
+	hints, err := s.textDocumentInlayHint(&InlayHintParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Range: protocol.Range{
+			Start: protocol.Position{Line: 0, Character: 0},
+			End:   protocol.Position{Line: 1, Character: 0},
+		},
+	})
+	require.NoError(t, err)
+	// map has signature (fun list) — 2 required params, so hints are emitted.
+	if len(hints) > 0 {
+		assert.Equal(t, inlayHintKindParameter, hints[0].Kind)
+		// Verify hint labels contain parameter names.
+		for _, h := range hints {
+			assert.Contains(t, h.Label, ":")
+		}
+	}
+}
+
+func TestHandlerWrapper_InlayHintRoute(t *testing.T) {
+	// Verify that the wrapper routes textDocument/inlayHint to our handler.
+	s := testServer()
+	content := `(defun add (x y) (+ x y))
+(add 1 2)`
+	openDoc(s, "file:///test.lisp", content)
+
+	wrapper := &handlerWrapper{inner: &s.handler, server: s}
+
+	params := `{"textDocument":{"uri":"file:///test.lisp"},"range":{"start":{"line":0,"character":0},"end":{"line":2,"character":0}}}`
+	ctx := &glsp.Context{
+		Method: "textDocument/inlayHint",
+		Params: []byte(params),
+		Notify: func(method string, params any) {},
+	}
+	result, validMethod, validParams, err := wrapper.Handle(ctx)
+	assert.True(t, validMethod, "inlayHint should be a valid method")
+	assert.True(t, validParams, "params should be valid")
+	assert.NoError(t, err)
+
+	hints, ok := result.([]InlayHint)
+	require.True(t, ok, "result should be []InlayHint")
+	require.Len(t, hints, 2)
+	assert.Equal(t, "x:", hints[0].Label)
+	assert.Equal(t, "y:", hints[1].Label)
 }
