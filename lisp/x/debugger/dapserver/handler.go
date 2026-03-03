@@ -45,6 +45,8 @@ type handler struct {
 	stopOnEntry     bool // client's stopOnEntry preference from attach/launch args
 	stopOnEntrySet  bool // true if client sent attach/launch with stopOnEntry preference
 	stoppedSent     bool // true if a stopped event has been sent via the event callback
+	skipBuiltins    bool // auto step-over builtins on untargeted step-in (default true)
+	lastStopWasStep bool // true if the most recent stop was from a step operation
 
 	// frameEnvs caches the environments for each stack frame when paused.
 	// Indexed by frame ID (1-based, most recent first).
@@ -84,8 +86,9 @@ type stepInTargetInfo struct {
 
 func newHandler(s *Server, e *debugger.Engine) *handler {
 	h := &handler{
-		server: s,
-		engine: e,
+		server:       s,
+		engine:       e,
+		skipBuiltins: true,
 	}
 	// Wire the engine's event callback to forward events to the DAP client.
 	e.SetEventCallback(func(evt debugger.Event) {
@@ -323,6 +326,7 @@ func (h *handler) onStackTrace(req *dap.StackTraceRequest) {
 	resp.Response = h.newResponse(req.Seq, req.Command)
 
 	if env == nil {
+		resp.Body.StackFrames = []dap.StackFrame{}
 		h.send(resp)
 		return
 	}
@@ -485,11 +489,14 @@ func (h *handler) onVariables(req *dap.VariablesRequest) {
 		if start < len(vars) {
 			vars = vars[start:]
 		} else {
-			vars = nil
+			vars = []dap.Variable{}
 		}
 	}
 	if count := req.Arguments.Count; count > 0 && count < len(vars) {
 		vars = vars[:count]
+	}
+	if vars == nil {
+		vars = []dap.Variable{}
 	}
 	resp.Body.Variables = vars
 
@@ -609,7 +616,22 @@ func (h *handler) onStepIn(req *dap.StepInRequest) {
 			return
 		}
 	}
-	// No target or invalid target — regular step-in.
+	// No target or invalid target — check if paused on a builtin call.
+	// Only skip when the stop was NOT from stepping (e.g., breakpoint or
+	// entry), so that sub-expression stepping is not disrupted.
+	h.mu.Lock()
+	skip := h.skipBuiltins
+	stepping := h.lastStopWasStep
+	h.mu.Unlock()
+	if skip && !stepping {
+		env, pausedExpr := h.engine.PausedState()
+		if env != nil && pausedExpr != nil && isBuiltinCall(env, pausedExpr) {
+			h.engine.SetStepGranularity(string(req.Arguments.Granularity))
+			h.engine.StepOver()
+			return
+		}
+	}
+	// Regular step-in.
 	h.engine.SetStepGranularity(string(req.Arguments.Granularity))
 	h.engine.StepInto()
 }
@@ -900,6 +922,7 @@ func (h *handler) onCompletions(req *dap.CompletionsRequest) {
 	env, _ := h.engine.PausedState()
 	if env == nil {
 		// Return empty list when not paused (VS Code handles this gracefully).
+		resp.Body.Targets = []dap.CompletionItem{}
 		h.send(resp)
 		return
 	}
@@ -974,15 +997,7 @@ func (h *handler) onAttach(req *dap.AttachRequest) {
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	h.send(resp)
 
-	// Parse stopOnEntry from client arguments. Default is false per DAP spec.
-	// Override the engine's stopOnEntry immediately so it is set before the
-	// eval goroutine starts (which may happen right after configurationDone).
-	stop := parseStopOnEntry(req.Arguments)
-	h.mu.Lock()
-	h.stopOnEntry = stop
-	h.stopOnEntrySet = true
-	h.mu.Unlock()
-	h.engine.SetStopOnEntry(stop)
+	h.applyLaunchConfig(parseLaunchConfig(req.Arguments))
 }
 
 func (h *handler) onLaunch(req *dap.LaunchRequest) {
@@ -990,15 +1005,23 @@ func (h *handler) onLaunch(req *dap.LaunchRequest) {
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	h.send(resp)
 
-	// Parse stopOnEntry from client arguments. Default is false per DAP spec.
-	// Override the engine's stopOnEntry immediately so it is set before the
-	// eval goroutine starts (which may happen right after configurationDone).
-	stop := parseStopOnEntry(req.Arguments)
+	h.applyLaunchConfig(parseLaunchConfig(req.Arguments))
+}
+
+// applyLaunchConfig applies parsed launch/attach configuration to the
+// handler and engine.
+func (h *handler) applyLaunchConfig(cfg launchConfig) {
 	h.mu.Lock()
-	h.stopOnEntry = stop
+	h.stopOnEntry = cfg.StopOnEntry
 	h.stopOnEntrySet = true
+	if cfg.SkipBuiltins != nil {
+		h.skipBuiltins = *cfg.SkipBuiltins
+	}
 	h.mu.Unlock()
-	h.engine.SetStopOnEntry(stop)
+	h.engine.SetStopOnEntry(cfg.StopOnEntry)
+	if cfg.SourceRoot != "" {
+		h.engine.SetSourceRoot(cfg.SourceRoot)
+	}
 }
 
 func (h *handler) onPause(req *dap.PauseRequest) {
@@ -1103,6 +1126,10 @@ func (h *handler) sendInvalidatedVariables() {
 
 // sendStoppedEvent sends a DAP stopped event to the client.
 func (h *handler) sendStoppedEvent(reason debugger.StopReason, bpIDs []int) {
+	h.mu.Lock()
+	h.lastStopWasStep = (reason == debugger.StopStep)
+	h.mu.Unlock()
+
 	evt := &dap.StoppedEvent{
 		Event: h.newEvent("stopped"),
 	}
@@ -1111,6 +1138,8 @@ func (h *handler) sendStoppedEvent(reason debugger.StopReason, bpIDs []int) {
 	evt.Body.AllThreadsStopped = true
 	if len(bpIDs) > 0 {
 		evt.Body.HitBreakpointIds = bpIDs
+	} else {
+		evt.Body.HitBreakpointIds = []int{}
 	}
 	h.send(evt)
 }
@@ -1133,26 +1162,83 @@ func (h *handler) newEvent(event string) dap.Event {
 	}
 }
 
-// parseStopOnEntry extracts the boolean stopOnEntry field from raw JSON
-// arguments (as sent by attach/launch requests). Returns false if the
-// field is absent, the JSON is nil/empty, or parsing fails — matching the
-// DAP specification default.
-func parseStopOnEntry(args json.RawMessage) bool {
+// launchConfig holds configuration fields parsed from DAP launch/attach
+// request arguments.
+type launchConfig struct {
+	StopOnEntry  bool   `json:"stopOnEntry"`
+	SourceRoot   string `json:"sourceRoot"`
+	SkipBuiltins *bool  `json:"skipBuiltins"`
+}
+
+// parseLaunchConfig extracts configuration from raw JSON launch/attach
+// arguments. Returns a zero-value config if the JSON is nil/empty or
+// parsing fails.
+func parseLaunchConfig(args json.RawMessage) launchConfig {
 	if len(args) == 0 {
+		return launchConfig{}
+	}
+	var cfg launchConfig
+	_ = json.Unmarshal(args, &cfg)
+	return cfg
+}
+
+// isBuiltinCall returns true if expr is an s-expression whose head symbol
+// resolves to a Go-implemented builtin function (not a special operator or
+// macro), AND there are no user-defined function calls anywhere in the
+// expression tree. If a nested argument contains a user-defined call (e.g.,
+// (set 'x (my-func 1))), step-in should still enter that function.
+func isBuiltinCall(env *lisp.LEnv, expr *lisp.LVal) bool {
+	if expr == nil || expr.Type != lisp.LSExpr || expr.IsNil() {
 		return false
 	}
-	var parsed struct {
-		StopOnEntry bool `json:"stopOnEntry"`
-	}
-	if err := json.Unmarshal(args, &parsed); err != nil {
+	head := expr.Cells[0]
+	if head == nil || head.Type != lisp.LSymbol {
 		return false
 	}
-	return parsed.StopOnEntry
+	resolved := env.Get(lisp.Symbol(head.Str))
+	if resolved == nil || resolved.Type != lisp.LFun || resolved.FunType != lisp.LFunNone {
+		return false
+	}
+	funData := resolved.FunData()
+	if funData == nil || funData.Builtin == nil || funData.Env != nil {
+		return false
+	}
+	// The head is a builtin, but check if any argument contains a
+	// user-defined function call — if so, step-in should enter it.
+	return !hasUserFunCall(env, expr)
+}
+
+// hasUserFunCall recursively checks whether any sub-expression in expr
+// contains a call to a user-defined function.
+func hasUserFunCall(env *lisp.LEnv, expr *lisp.LVal) bool {
+	if expr == nil || expr.Type != lisp.LSExpr || expr.IsNil() {
+		return false
+	}
+	for _, child := range expr.Cells[1:] {
+		if child == nil || child.Type != lisp.LSExpr || child.IsNil() {
+			continue
+		}
+		ch := child.Cells[0]
+		if ch != nil && ch.Type == lisp.LSymbol {
+			resolved := env.Get(lisp.Symbol(ch.Str))
+			if resolved != nil && resolved.Type == lisp.LFun && resolved.FunType == lisp.LFunNone {
+				fd := resolved.FunData()
+				if fd != nil && fd.Env != nil {
+					return true
+				}
+			}
+		}
+		if hasUserFunCall(env, child) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *handler) onStepInTargets(req *dap.StepInTargetsRequest) {
 	resp := &dap.StepInTargetsResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
+	resp.Body.Targets = []dap.StepInTarget{}
 
 	env, pausedExpr := h.engine.PausedState()
 	if env != nil && pausedExpr != nil {

@@ -74,15 +74,7 @@ func (s *Server) qualifiedSymbolHover(word string) string {
 
 	for _, ext := range exports {
 		if ext.Name == symName {
-			sym := &analysis.Symbol{
-				Name:      ext.Name,
-				Kind:      ext.Kind,
-				Source:    ext.Source,
-				Signature: ext.Signature,
-				DocString: ext.DocString,
-				External:  true,
-			}
-			return buildHoverContent(sym)
+			return buildHoverContent(externalToSymbol(&ext))
 		}
 	}
 	return ""
@@ -118,6 +110,8 @@ func buildHoverContent(sym *analysis.Symbol) string {
 	// Source location.
 	if sym.Source != nil && sym.Source.File != "" {
 		fmt.Fprintf(&sb, "\n\n*Defined in %s:%d*", sym.Source.File, sym.Source.Line)
+	} else if isBuiltin(sym) {
+		sb.WriteString("\n\n*Built-in*")
 	}
 
 	return sb.String()

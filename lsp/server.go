@@ -53,6 +53,10 @@ type Server struct {
 	notifyMu sync.Mutex
 	notify   glsp.NotifyFunc
 
+	// Call function for dynamic capability registration (captured from initialized).
+	callMu sync.Mutex
+	callFn glsp.CallFunc
+
 	// exitFn is called on the LSP exit notification. Defaults to os.Exit.
 	// Overridable for testing.
 	exitFn func(int)
@@ -84,36 +88,44 @@ func New(opts ...Option) *Server {
 	}
 
 	s.handler = protocol.Handler{
-		Initialize: s.initialize,
-		Shutdown:   s.shutdown,
-		Exit:       s.exit,
-		SetTrace:   s.setTrace,
+		Initialize:  s.initialize,
+		Initialized: s.initialized,
+		Shutdown:    s.shutdown,
+		Exit:        s.exit,
+		SetTrace:    s.setTrace,
 
 		TextDocumentDidOpen:   s.textDocumentDidOpen,
 		TextDocumentDidChange: s.textDocumentDidChange,
 		TextDocumentDidSave:   s.textDocumentDidSave,
 		TextDocumentDidClose:  s.textDocumentDidClose,
 
-		TextDocumentHover:          s.textDocumentHover,
-		TextDocumentDefinition:     s.textDocumentDefinition,
-		TextDocumentCompletion:     s.textDocumentCompletion,
-		TextDocumentReferences:     s.textDocumentReferences,
-		TextDocumentDocumentSymbol: s.textDocumentDocumentSymbol,
-		TextDocumentRename:         s.textDocumentRename,
-		TextDocumentPrepareRename:  s.textDocumentPrepareRename,
+		TextDocumentHover:                s.textDocumentHover,
+		TextDocumentDefinition:           s.textDocumentDefinition,
+		TextDocumentCompletion:           s.textDocumentCompletion,
+		TextDocumentReferences:           s.textDocumentReferences,
+		TextDocumentDocumentHighlight:    s.textDocumentDocumentHighlight,
+		TextDocumentDocumentSymbol:       s.textDocumentDocumentSymbol,
+		TextDocumentRename:               s.textDocumentRename,
+		TextDocumentPrepareRename:        s.textDocumentPrepareRename,
 		TextDocumentFormatting:           s.textDocumentFormatting,
 		TextDocumentSignatureHelp:        s.textDocumentSignatureHelp,
 		TextDocumentCodeAction:           s.textDocumentCodeAction,
 		TextDocumentFoldingRange:         s.textDocumentFoldingRange,
 		TextDocumentSemanticTokensFull:   s.textDocumentSemanticTokensFull,
+		TextDocumentSelectionRange:       s.textDocumentSelectionRange,
+		TextDocumentLinkedEditingRange:   s.textDocumentLinkedEditingRange,
 		TextDocumentPrepareCallHierarchy: s.textDocumentPrepareCallHierarchy,
 		CallHierarchyIncomingCalls:       s.callHierarchyIncomingCalls,
 		CallHierarchyOutgoingCalls:       s.callHierarchyOutgoingCalls,
 
-		WorkspaceSymbol: s.workspaceSymbol,
+		WorkspaceDidChangeWatchedFiles: s.workspaceDidChangeWatchedFiles,
+		WorkspaceSymbol:                s.workspaceSymbol,
 	}
 
-	s.glspSrv = glspserver.NewServer(&s.handler, serverName, false)
+	s.glspSrv = glspserver.NewServer(&handlerWrapper{
+		inner:  &s.handler,
+		server: s,
+	}, serverName, false)
 	return s
 }
 
@@ -172,8 +184,23 @@ func (s *Server) initialize(ctx *glsp.Context, params *protocol.InitializeParams
 	}
 
 	version := "0.1.0"
-	return protocol.InitializeResult{
-		Capabilities: capabilities,
+
+	// Wrap capabilities to advertise LSP 3.17 features (like
+	// inlayHintProvider) that protocol_3_16 doesn't include.
+	type extendedCapabilities struct {
+		protocol.ServerCapabilities
+		InlayHintProvider bool `json:"inlayHintProvider,omitempty"`
+	}
+	type extendedInitResult struct {
+		Capabilities extendedCapabilities                 `json:"capabilities"`
+		ServerInfo   *protocol.InitializeResultServerInfo `json:"serverInfo,omitempty"`
+	}
+
+	return extendedInitResult{
+		Capabilities: extendedCapabilities{
+			ServerCapabilities: capabilities,
+			InlayHintProvider:  true,
+		},
 		ServerInfo: &protocol.InitializeResultServerInfo{
 			Name:    serverName,
 			Version: &version,

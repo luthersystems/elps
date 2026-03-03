@@ -7,13 +7,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
 )
+
+// maxWorkspaceFiles limits the number of .lisp files scanned during workspace
+// indexing. This prevents excessive memory/CPU usage in very large workspaces.
+const maxWorkspaceFiles = 5000
 
 // SymbolKey identifies a symbol across files by name and kind.
 type SymbolKey struct {
@@ -55,20 +61,80 @@ func ScanWorkspacePackages(root string) (map[string][]ExternalSymbol, error) {
 
 // ScanWorkspaceFull walks a directory tree in a single pass, parsing all
 // .lisp files and extracting both global symbols and package exports.
-// It skips hidden directories (names starting with '.') and node_modules.
+// It skips hidden directories (names starting with '.'), node_modules,
+// and vendor directories. Stops collecting after maxWorkspaceFiles.
+// Parsing is done concurrently using a bounded worker pool.
 //
 // Files that fail to parse are silently skipped (fault tolerant).
 func ScanWorkspaceFull(root string) ([]ExternalSymbol, map[string][]ExternalSymbol, error) {
+	// Phase 1: Collect file paths (sequential walk).
+	paths, err := collectLispFiles(root)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Phase 2: Parse concurrently with bounded worker pool.
+	type fileResult struct {
+		globals []ExternalSymbol
+		pkgs    map[string][]ExternalSymbol
+	}
+
+	results := make([]fileResult, len(paths))
+	numWorkers := runtime.NumCPU()
+	if numWorkers > len(paths) {
+		numWorkers = len(paths)
+	}
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	var wg sync.WaitGroup
+	work := make(chan int, len(paths))
+	for i := range paths {
+		work <- i
+	}
+	close(work)
+
+	wg.Add(numWorkers)
+	for range numWorkers {
+		go func() {
+			defer wg.Done()
+			for i := range work {
+				fileSrc, readErr := os.ReadFile(paths[i]) //nolint:gosec // CLI tool reads user-specified files
+				if readErr != nil {
+					continue
+				}
+				results[i] = fileResult{
+					globals: scanFile(fileSrc, paths[i]),
+					pkgs:    scanFilePackages(fileSrc, paths[i]),
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Phase 3: Merge results.
 	var globals []ExternalSymbol
 	pkgs := make(map[string][]ExternalSymbol)
+	for _, r := range results {
+		globals = append(globals, r.globals...)
+		for pkg, syms := range r.pkgs {
+			pkgs[pkg] = append(pkgs[pkg], syms...)
+		}
+	}
+	return globals, pkgs, nil
+}
 
+// collectLispFiles walks the directory tree and collects .lisp file paths,
+// up to maxWorkspaceFiles.
+func collectLispFiles(root string) ([]string, error) {
+	var paths []string
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil // skip unreadable dirs
+			return nil
 		}
 		if info.IsDir() {
-			name := info.Name()
-			if shouldSkipDir(name) {
+			if ShouldSkipDir(info.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -76,38 +142,26 @@ func ScanWorkspaceFull(root string) ([]ExternalSymbol, map[string][]ExternalSymb
 		if filepath.Ext(path) != ".lisp" {
 			return nil
 		}
-		fileSrc, readErr := os.ReadFile(path) //nolint:gosec // CLI tool reads user-specified files
-		if readErr != nil {
-			return nil // skip unreadable files
-		}
-
-		// Parse once and extract both globals and packages.
-		fileGlobals := scanFile(fileSrc, path)
-		globals = append(globals, fileGlobals...)
-
-		filePkgs := scanFilePackages(fileSrc, path)
-		for pkg, syms := range filePkgs {
-			pkgs[pkg] = append(pkgs[pkg], syms...)
+		paths = append(paths, path)
+		if len(paths) >= maxWorkspaceFiles {
+			return filepath.SkipAll
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, nil, err
-	}
-	return globals, pkgs, nil
+	return paths, err
 }
 
-// shouldSkipDir returns true for directories that should not be walked.
+// ShouldSkipDir returns true for directories that should not be walked.
 // It skips hidden directories (e.g. .git, .vscode) and node_modules,
 // but not "." or ".." which represent the current/parent directory.
-func shouldSkipDir(name string) bool {
+func ShouldSkipDir(name string) bool {
 	if name == "." || name == ".." {
 		return false
 	}
 	if len(name) > 0 && name[0] == '.' {
 		return true
 	}
-	if name == "node_modules" {
+	if name == "node_modules" || name == "vendor" {
 		return true
 	}
 	return false
@@ -506,50 +560,68 @@ func scopeContainingAnalysis(scope *Scope, line, col int) *Scope {
 // ScanWorkspaceRefs walks the workspace directory tree, performs full
 // analysis on each .lisp file, and extracts cross-file references.
 // The cfg should have ExtraGlobals and PackageExports populated from
-// a prior ScanWorkspaceFull call.
+// a prior ScanWorkspaceFull call. Parsing is done concurrently.
 //
 // Returns a map from SymbolKey.String() to FileReference slices.
 func ScanWorkspaceRefs(root string, cfg *Config) map[string][]FileReference {
-	refs := make(map[string][]FileReference)
-
-	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if info.IsDir() {
-			if shouldSkipDir(info.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if filepath.Ext(path) != ".lisp" {
-			return nil
-		}
-		fileSrc, readErr := os.ReadFile(path) //nolint:gosec // CLI tool reads user-specified files
-		if readErr != nil {
-			return nil
-		}
-
-		result := AnalyzeFile(fileSrc, path, cfg)
-		if result == nil {
-			return nil
-		}
-
-		absPath := path
-		if !filepath.IsAbs(absPath) {
-			if abs, err := filepath.Abs(absPath); err == nil {
-				absPath = abs
-			}
-		}
-
-		fileRefs := ExtractFileRefs(result, absPath)
-		for i := range fileRefs {
-			key := fileRefs[i].SymbolKey.String()
-			refs[key] = append(refs[key], fileRefs[i])
-		}
+	paths, err := collectLispFiles(root)
+	if err != nil || len(paths) == 0 {
 		return nil
-	})
+	}
 
+	type fileResult struct {
+		refs []FileReference
+	}
+
+	results := make([]fileResult, len(paths))
+	numWorkers := runtime.NumCPU()
+	if numWorkers > len(paths) {
+		numWorkers = len(paths)
+	}
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	var wg sync.WaitGroup
+	work := make(chan int, len(paths))
+	for i := range paths {
+		work <- i
+	}
+	close(work)
+
+	wg.Add(numWorkers)
+	for range numWorkers {
+		go func() {
+			defer wg.Done()
+			for i := range work {
+				fileSrc, readErr := os.ReadFile(paths[i]) //nolint:gosec // CLI tool reads user-specified files
+				if readErr != nil {
+					continue
+				}
+				result := AnalyzeFile(fileSrc, paths[i], cfg)
+				if result == nil {
+					continue
+				}
+				absPath := paths[i]
+				if !filepath.IsAbs(absPath) {
+					if abs, absErr := filepath.Abs(absPath); absErr == nil {
+						absPath = abs
+					}
+				}
+				results[i] = fileResult{refs: ExtractFileRefs(result, absPath)}
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Merge results.
+	refs := make(map[string][]FileReference)
+	for _, r := range results {
+		for i := range r.refs {
+			key := r.refs[i].SymbolKey.String()
+			refs[key] = append(refs[key], r.refs[i])
+		}
+	}
 	return refs
 }
 
