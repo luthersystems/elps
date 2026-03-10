@@ -54,6 +54,12 @@ type Config struct {
 	// override this (e.g., "substrate-analyze-disable").
 	SuppressionPrefix string `yaml:"suppression_prefix"`
 
+	// AmplificationCausesScaling enables N+1 detection mode. When true,
+	// calling an expensive function inside a loop adds +1 to the caller's
+	// scaling order beyond the loop depth contribution. This surfaces the
+	// classic N+1 query pattern more aggressively.
+	AmplificationCausesScaling bool `yaml:"amplification_causes_scaling"`
+
 	// Rules filters which rules to run. When empty, all rules run.
 	// Valid values: "PERF001", "PERF002", "PERF003", "PERF004", "UNKNOWN001".
 	Rules []string `yaml:"rules"`

@@ -67,6 +67,17 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 		for _, edge := range fn.Calls {
 			callee := solved[edge.Callee]
 			if callee == nil {
+				// External callee (not in graph). Treat as O(1) leaf
+				// but still propagate loop depth and amplification.
+				if edge.Context.InLoop {
+					calleeOrder := edge.Context.LoopDepth
+					if cfg.AmplificationCausesScaling && edge.IsExpensive {
+						calleeOrder++
+					}
+					if calleeOrder > sf.ScalingOrder {
+						sf.ScalingOrder = calleeOrder
+					}
+				}
 				continue
 			}
 			// Propagate cost with loop amplification
@@ -78,6 +89,9 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 
 			// Propagate scaling order
 			calleeOrder := callee.ScalingOrder + edge.Context.LoopDepth
+			if cfg.AmplificationCausesScaling && edge.IsExpensive && edge.Context.InLoop {
+				calleeOrder++
+			}
 			if calleeOrder > sf.ScalingOrder {
 				sf.ScalingOrder = calleeOrder
 			}

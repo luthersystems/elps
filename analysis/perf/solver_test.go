@@ -273,3 +273,81 @@ func TestSolve_UNKNOWN001_FuncallApply(t *testing.T) {
 	}
 	assert.Len(t, unknown, 2, "expected UNKNOWN001 for funcall and apply")
 }
+
+func TestSolve_AmplificationCausesScaling_Disabled(t *testing.T) {
+	// db-put is expensive, called inside a loop (depth 1).
+	// Without amplification: scaling = 0 (db-put leaf) + 1 (loop) = 1.
+	src := `
+(defun process (items)
+  (map 'list (lambda (item) (db-put item)) items))
+`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	cfg.AmplificationCausesScaling = false
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+	graph := BuildGraph(summaries)
+	solved, _ := Solve(graph, cfg)
+
+	var processSolved *SolvedFunction
+	for _, sf := range solved {
+		if sf.Name == "process" {
+			processSolved = sf
+			break
+		}
+	}
+	require.NotNil(t, processSolved)
+	assert.Equal(t, 1, processSolved.ScalingOrder,
+		"without amplification, scaling should be 1 (loop depth only)")
+}
+
+func TestSolve_AmplificationCausesScaling_Enabled(t *testing.T) {
+	// db-put is expensive, called inside a loop (depth 1).
+	// With amplification: scaling = 0 (db-put leaf) + 1 (loop) + 1 (amplification) = 2.
+	src := `
+(defun process (items)
+  (map 'list (lambda (item) (db-put item)) items))
+`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	cfg.AmplificationCausesScaling = true
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+	graph := BuildGraph(summaries)
+	solved, _ := Solve(graph, cfg)
+
+	var processSolved *SolvedFunction
+	for _, sf := range solved {
+		if sf.Name == "process" {
+			processSolved = sf
+			break
+		}
+	}
+	require.NotNil(t, processSolved)
+	assert.Equal(t, 2, processSolved.ScalingOrder,
+		"with amplification, scaling should be 2 (loop depth + expensive amplification)")
+}
+
+func TestSolve_AmplificationCausesScaling_NonExpensiveUnaffected(t *testing.T) {
+	// concat is NOT expensive, called inside a loop.
+	// With amplification enabled: scaling should still be 1 (no amplification for non-expensive).
+	src := `
+(defun process (items)
+  (map 'list (lambda (item) (concat 'string item "x")) items))
+`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	cfg.AmplificationCausesScaling = true
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+	graph := BuildGraph(summaries)
+	solved, _ := Solve(graph, cfg)
+
+	var processSolved *SolvedFunction
+	for _, sf := range solved {
+		if sf.Name == "process" {
+			processSolved = sf
+			break
+		}
+	}
+	require.NotNil(t, processSolved)
+	assert.Equal(t, 1, processSolved.ScalingOrder,
+		"non-expensive calls should not get amplification bonus")
+}
