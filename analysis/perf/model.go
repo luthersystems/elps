@@ -134,4 +134,21 @@ type Issue struct {
 	File string
 	// Details provides additional context (e.g., cycle members, call chain).
 	Details []string
+	// Fingerprint is a stable identifier for this issue across runs,
+	// derived from sha256(file:function:rule)[:16].
+	Fingerprint string
+	// Trace is the call chain that explains why this issue was raised.
+	// For PERF001/PERF002, it shows the hot path from caller to expensive leaf.
+	// For PERF003, it shows the loop context.
+	Trace []TraceEntry
+}
+
+// TraceEntry is a single step in a call chain trace.
+type TraceEntry struct {
+	// Function is the function name at this step.
+	Function string
+	// Source is the source location.
+	Source *token.Location
+	// Note describes what happens at this step (e.g., "calls db-put in loop (depth 1)").
+	Note string
 }

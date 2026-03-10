@@ -42,6 +42,21 @@ type Config struct {
 
 	// MaxRecursionOrder caps the scaling order assigned to recursive functions.
 	MaxRecursionOrder int `yaml:"max_recursion_order"`
+
+	// FunctionCosts provides per-function cost overrides. Keys are function
+	// names (exact match), values are the base cost for a single call.
+	// Overrides the default cost of 1. Embedders use this to assign
+	// domain-specific weights (e.g., {"statedb:put": 100}).
+	FunctionCosts map[string]int `yaml:"function_costs"`
+
+	// SuppressionPrefix is the comment text that disables analysis for a
+	// function. Defaults to "elps-analyze-disable". Embedders can
+	// override this (e.g., "substrate-analyze-disable").
+	SuppressionPrefix string `yaml:"suppression_prefix"`
+
+	// Rules filters which rules to run. When empty, all rules run.
+	// Valid values: "PERF001", "PERF002", "PERF003", "PERF004", "UNKNOWN001".
+	Rules []string `yaml:"rules"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -58,6 +73,7 @@ func DefaultConfig() *Config {
 		MaxAcceptableOrder:    2,
 		ScalingErrorThreshold: 3,
 		MaxRecursionOrder:     5,
+		SuppressionPrefix:    "elps-analyze-disable",
 	}
 }
 

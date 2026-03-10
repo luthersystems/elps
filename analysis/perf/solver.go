@@ -3,7 +3,9 @@
 package perf
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -40,12 +42,12 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 			continue
 		}
 		sf := &SolvedFunction{
-			Name:      name,
-			Source:    fn.Source,
-			File:     fn.File,
-			LocalCost: fn.LocalCost,
+			Name:       name,
+			Source:     fn.Source,
+			File:       fn.File,
+			LocalCost:  fn.LocalCost,
 			TotalScore: fn.LocalCost,
-			InCycle:   cycleMembers[name] != nil,
+			InCycle:    cycleMembers[name] != nil,
 		}
 		solved[name] = sf
 	}
@@ -87,6 +89,9 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 		}
 	}
 
+	// Build rule filter set
+	ruleFilter := makeRuleFilter(cfg.Rules)
+
 	// Generate issues
 	var issues []Issue
 
@@ -98,87 +103,123 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 		}
 
 		// PERF001: Hot path
-		if sf.TotalScore > cfg.MaxScore {
-			issues = append(issues, Issue{
+		if ruleFilter[PERF001] && sf.TotalScore > cfg.MaxScore {
+			issue := Issue{
 				Rule:     PERF001,
 				Severity: SeverityWarning,
 				Message:  fmt.Sprintf("hot path: total score %d exceeds threshold %d", sf.TotalScore, cfg.MaxScore),
 				Function: name,
 				Source:   fn.Source,
-				File:    fn.File,
-			})
+				File:     fn.File,
+				Trace:    buildHotPathTrace(name, graph, solved, cfg),
+			}
+			issue.Fingerprint = fingerprint(issue)
+			issues = append(issues, issue)
 		}
 
 		// PERF002: Scaling risk
-		if sf.ScalingOrder >= cfg.ScalingErrorThreshold {
-			issues = append(issues, Issue{
-				Rule:     PERF002,
-				Severity: SeverityError,
-				Message:  fmt.Sprintf("scaling risk: O(N^%d) complexity", sf.ScalingOrder),
-				Function: name,
-				Source:   fn.Source,
-				File:    fn.File,
-			})
-		} else if sf.ScalingOrder >= cfg.MaxAcceptableOrder {
-			issues = append(issues, Issue{
-				Rule:     PERF002,
-				Severity: SeverityWarning,
-				Message:  fmt.Sprintf("scaling risk: O(N^%d) complexity", sf.ScalingOrder),
-				Function: name,
-				Source:   fn.Source,
-				File:    fn.File,
-			})
+		if ruleFilter[PERF002] {
+			if sf.ScalingOrder >= cfg.ScalingErrorThreshold {
+				issue := Issue{
+					Rule:     PERF002,
+					Severity: SeverityError,
+					Message:  fmt.Sprintf("scaling risk: O(N^%d) complexity", sf.ScalingOrder),
+					Function: name,
+					Source:   fn.Source,
+					File:     fn.File,
+					Trace:    buildScalingTrace(name, graph, solved),
+				}
+				issue.Fingerprint = fingerprint(issue)
+				issues = append(issues, issue)
+			} else if sf.ScalingOrder >= cfg.MaxAcceptableOrder {
+				issue := Issue{
+					Rule:     PERF002,
+					Severity: SeverityWarning,
+					Message:  fmt.Sprintf("scaling risk: O(N^%d) complexity", sf.ScalingOrder),
+					Function: name,
+					Source:   fn.Source,
+					File:     fn.File,
+					Trace:    buildScalingTrace(name, graph, solved),
+				}
+				issue.Fingerprint = fingerprint(issue)
+				issues = append(issues, issue)
+			}
 		}
 
 		// PERF003: Expensive call in loop
-		for _, edge := range fn.Calls {
-			if edge.IsExpensive && edge.Context.InLoop {
-				details := []string{
-					fmt.Sprintf("expensive function %q called at loop depth %d", edge.Callee, edge.Context.LoopDepth),
+		if ruleFilter[PERF003] {
+			for _, edge := range fn.Calls {
+				if edge.IsExpensive && edge.Context.InLoop {
+					details := []string{
+						fmt.Sprintf("expensive function %q called at loop depth %d", edge.Callee, edge.Context.LoopDepth),
+					}
+					issue := Issue{
+						Rule:     PERF003,
+						Severity: SeverityWarning,
+						Message:  fmt.Sprintf("expensive call %q inside loop (depth %d)", edge.Callee, edge.Context.LoopDepth),
+						Function: name,
+						Source:   edge.Source,
+						File:     fn.File,
+						Details:  details,
+						Trace: []TraceEntry{
+							{Function: name, Source: fn.Source, Note: fmt.Sprintf("defines function %s", name)},
+							{Function: name, Source: edge.Source, Note: fmt.Sprintf("calls %s in loop (depth %d)", edge.Callee, edge.Context.LoopDepth)},
+						},
+					}
+					issue.Fingerprint = fingerprint(issue)
+					issues = append(issues, issue)
 				}
-				issues = append(issues, Issue{
-					Rule:     PERF003,
-					Severity: SeverityWarning,
-					Message:  fmt.Sprintf("expensive call %q inside loop (depth %d)", edge.Callee, edge.Context.LoopDepth),
-					Function: name,
-					Source:   edge.Source,
-					File:    fn.File,
-					Details: details,
-				})
 			}
 		}
 
 		// PERF004: Recursive cycle
-		if sf.InCycle {
+		if ruleFilter[PERF004] && sf.InCycle {
 			cycle := cycleMembers[name]
 			// Only report once per cycle (on the first member alphabetically)
 			sorted := make([]string, len(cycle))
 			copy(sorted, cycle)
 			sort.Strings(sorted)
 			if sorted[0] == name {
-				issues = append(issues, Issue{
+				var trace []TraceEntry
+				for _, member := range sorted {
+					if mfn := graph.Functions[member]; mfn != nil {
+						trace = append(trace, TraceEntry{
+							Function: member,
+							Source:   mfn.Source,
+							Note:     "member of recursive cycle",
+						})
+					}
+				}
+				issue := Issue{
 					Rule:     PERF004,
 					Severity: SeverityWarning,
 					Message:  fmt.Sprintf("recursive cycle: %s", strings.Join(sorted, " -> ")),
 					Function: name,
 					Source:   fn.Source,
-					File:    fn.File,
-					Details: sorted,
-				})
+					File:     fn.File,
+					Details:  sorted,
+					Trace:    trace,
+				}
+				issue.Fingerprint = fingerprint(issue)
+				issues = append(issues, issue)
 			}
 		}
 
 		// UNKNOWN001: Dynamic dispatch
-		for _, edge := range fn.Calls {
-			if edge.Callee == "<dynamic>" {
-				issues = append(issues, Issue{
-					Rule:     UNKNOWN001,
-					Severity: SeverityInfo,
-					Message:  "dynamic dispatch: callee cannot be statically resolved",
-					Function: name,
-					Source:   edge.Source,
-					File:    fn.File,
-				})
+		if ruleFilter[UNKNOWN001] {
+			for _, edge := range fn.Calls {
+				if edge.Callee == "<dynamic>" {
+					issue := Issue{
+						Rule:     UNKNOWN001,
+						Severity: SeverityInfo,
+						Message:  "dynamic dispatch: callee cannot be statically resolved",
+						Function: name,
+						Source:   edge.Source,
+						File:     fn.File,
+					}
+					issue.Fingerprint = fingerprint(issue)
+					issues = append(issues, issue)
+				}
 			}
 		}
 	}
@@ -205,6 +246,111 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 		}
 	}
 	return solvedList, issues
+}
+
+// fingerprint generates a stable sha256-based identifier for an issue.
+func fingerprint(issue Issue) string {
+	key := fmt.Sprintf("%s:%s:%s", issue.File, issue.Function, issue.Rule)
+	h := sha256.Sum256([]byte(key))
+	return fmt.Sprintf("%x", h[:8])
+}
+
+// makeRuleFilter returns a set of enabled rules. When rules is empty,
+// all rules are enabled.
+func makeRuleFilter(rules []string) map[RuleID]bool {
+	if len(rules) == 0 {
+		return map[RuleID]bool{
+			PERF001:    true,
+			PERF002:    true,
+			PERF003:    true,
+			PERF004:    true,
+			UNKNOWN001: true,
+		}
+	}
+	m := make(map[RuleID]bool, len(rules))
+	for _, r := range rules {
+		m[RuleID(r)] = true
+	}
+	return m
+}
+
+// buildHotPathTrace builds a trace showing the highest-cost call chain.
+func buildHotPathTrace(name string, graph *CallGraph, solved map[string]*SolvedFunction, cfg *Config) []TraceEntry {
+	var trace []TraceEntry
+	visited := make(map[string]bool)
+	current := name
+	for len(trace) < 10 { // cap trace depth
+		if visited[current] {
+			break
+		}
+		visited[current] = true
+		fn := graph.Functions[current]
+		if fn == nil {
+			break
+		}
+		sf := solved[current]
+		note := fmt.Sprintf("score=%d", sf.TotalScore)
+		trace = append(trace, TraceEntry{Function: current, Source: fn.Source, Note: note})
+
+		// Follow the highest-cost callee
+		bestCallee := ""
+		bestScore := 0
+		for _, edge := range fn.Calls {
+			if cs := solved[edge.Callee]; cs != nil {
+				score := cs.TotalScore
+				for range edge.Context.LoopDepth {
+					score *= cfg.LoopMultiplier
+				}
+				if score > bestScore {
+					bestScore = score
+					bestCallee = edge.Callee
+				}
+			}
+		}
+		if bestCallee == "" {
+			break
+		}
+		current = bestCallee
+	}
+	return trace
+}
+
+// buildScalingTrace builds a trace showing the path to highest scaling order.
+func buildScalingTrace(name string, graph *CallGraph, solved map[string]*SolvedFunction) []TraceEntry {
+	var trace []TraceEntry
+	visited := make(map[string]bool)
+	current := name
+	for len(trace) < 10 {
+		if visited[current] {
+			break
+		}
+		visited[current] = true
+		fn := graph.Functions[current]
+		if fn == nil {
+			break
+		}
+		sf := solved[current]
+		note := fmt.Sprintf("O(N^%d)", sf.ScalingOrder)
+		trace = append(trace, TraceEntry{Function: current, Source: fn.Source, Note: note})
+
+		// Follow the callee contributing the most scaling
+		bestCallee := ""
+		bestOrder := 0
+		for _, edge := range fn.Calls {
+			if cs := solved[edge.Callee]; cs != nil {
+				order := cs.ScalingOrder + edge.Context.LoopDepth
+				if order > bestOrder {
+					bestOrder = order
+					bestCallee = edge.Callee
+				}
+			}
+		}
+		if bestCallee == "" {
+			break
+		}
+		current = bestCallee
+	}
+	return trace
 }
 
 // findCycles uses Tarjan's algorithm to find strongly connected components
@@ -259,11 +405,8 @@ func findCycles(adj map[string][]string, funcs map[string]*FunctionSummary) [][]
 				cycles = append(cycles, scc)
 			} else if len(scc) == 1 {
 				// Check for self-loop
-				for _, w := range adj[scc[0]] {
-					if w == scc[0] {
-						cycles = append(cycles, scc)
-						break
-					}
+				if slices.Contains(adj[scc[0]], scc[0]) {
+					cycles = append(cycles, scc)
 				}
 			}
 		}
@@ -297,14 +440,7 @@ func topoSort(adj map[string][]string, funcs map[string]*FunctionSummary, cycleM
 		for _, callee := range adj[name] {
 			// Skip back edges within the same cycle to avoid infinite recursion
 			if cycleMembers[name] != nil && cycleMembers[callee] != nil {
-				sameCycle := false
-				for _, m := range cycleMembers[name] {
-					if m == callee {
-						sameCycle = true
-						break
-					}
-				}
-				if sameCycle {
+				if slices.Contains(cycleMembers[name], callee) {
 					continue
 				}
 			}

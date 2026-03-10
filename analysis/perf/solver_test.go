@@ -25,6 +25,8 @@ func TestSolve_PERF003_ExpensiveInLoop(t *testing.T) {
 	}
 	require.NotEmpty(t, perf003, "expected PERF003 issue for expensive call in loop")
 	assert.Contains(t, perf003[0].Message, "db-put")
+	assert.NotEmpty(t, perf003[0].Fingerprint, "issue should have a fingerprint")
+	assert.NotEmpty(t, perf003[0].Trace, "issue should have a trace")
 }
 
 func TestSolve_PERF004_MutualRecursion(t *testing.T) {
@@ -52,6 +54,7 @@ func TestSolve_PERF004_MutualRecursion(t *testing.T) {
 		}
 	}
 	require.NotEmpty(t, perf004, "expected PERF004 issue for recursive cycle")
+	assert.NotEmpty(t, perf004[0].Trace, "cycle issue should have a trace")
 }
 
 func TestSolve_PERF004_SelfRecursion(t *testing.T) {
@@ -112,4 +115,63 @@ func TestSolve_ScalingPropagation(t *testing.T) {
 	require.NotNil(t, outerSolved)
 	// outer calls inner inside a loop, so scaling order should be >= 1
 	assert.GreaterOrEqual(t, outerSolved.ScalingOrder, 1)
+}
+
+func TestSolve_RuleFilter(t *testing.T) {
+	// This source triggers both PERF003 and PERF004
+	src := `
+(defun recursive-expensive (items)
+  (map 'list (lambda (item) (db-put item)) items)
+  (recursive-expensive items))
+`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	cfg.Rules = []string{"PERF003"} // Only run PERF003
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+	graph := BuildGraph(summaries)
+	_, issues := Solve(graph, cfg)
+
+	for _, issue := range issues {
+		assert.Equal(t, PERF003, issue.Rule,
+			"only PERF003 should fire when rules are filtered")
+	}
+}
+
+func TestSolve_FingerprintStability(t *testing.T) {
+	src := `(defun process (items) (map 'list (lambda (item) (db-put item)) items))`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+
+	// Run twice — fingerprints should be identical
+	summaries1 := ScanFile(exprs, "test.lisp", cfg)
+	_, issues1 := Solve(BuildGraph(summaries1), cfg)
+
+	summaries2 := ScanFile(exprs, "test.lisp", cfg)
+	_, issues2 := Solve(BuildGraph(summaries2), cfg)
+
+	require.Equal(t, len(issues1), len(issues2))
+	for i := range issues1 {
+		assert.Equal(t, issues1[i].Fingerprint, issues2[i].Fingerprint,
+			"fingerprints should be stable across runs")
+	}
+}
+
+func TestSolve_UNKNOWN001_FuncallApply(t *testing.T) {
+	src := `
+(defun dispatch (f x) (funcall f x))
+(defun run-all (f args) (apply f args))
+`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+	graph := BuildGraph(summaries)
+	_, issues := Solve(graph, cfg)
+
+	var unknown []Issue
+	for _, issue := range issues {
+		if issue.Rule == UNKNOWN001 {
+			unknown = append(unknown, issue)
+		}
+	}
+	assert.Len(t, unknown, 2, "expected UNKNOWN001 for funcall and apply")
 }

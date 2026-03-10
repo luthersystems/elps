@@ -10,11 +10,25 @@ import (
 	"github.com/luthersystems/elps/parser/token"
 )
 
+// scanContext bundles the immutable configuration threaded through the scan.
+type scanContext struct {
+	loopSet           map[string]bool
+	expensivePatterns []string
+	expensiveCost     int
+	loopMultiplier    int
+	functionCosts     map[string]int
+}
+
 // ScanFile performs Pass 1: a local scan of parsed expressions from a
 // single file, producing FunctionSummary values for each defun/defmacro.
 func ScanFile(exprs []*lisp.LVal, filename string, cfg *Config) []*FunctionSummary {
-	loopSet := makeSet(cfg.LoopKeywords)
-	expensivePatterns := cfg.ExpensiveFunctions
+	ctx := &scanContext{
+		loopSet:           makeSet(cfg.LoopKeywords),
+		expensivePatterns: cfg.ExpensiveFunctions,
+		expensiveCost:     cfg.ExpensiveCost,
+		loopMultiplier:    cfg.LoopMultiplier,
+		functionCosts:     cfg.FunctionCosts,
+	}
 
 	var summaries []*FunctionSummary
 
@@ -36,10 +50,10 @@ func ScanFile(exprs []*lisp.LVal, filename string, cfg *Config) []*FunctionSumma
 		src := astutil.SourceOf(sexpr)
 
 		summary := &FunctionSummary{
-			Name:      funcName,
+			Name:       funcName,
 			Source:     src.Source,
-			File:      filename,
-			Suppressed: isSuppressed(sexpr),
+			File:       filename,
+			Suppressed: isSuppressed(sexpr, cfg.SuppressionPrefix),
 		}
 
 		// Walk the function body (skip name and formals)
@@ -53,7 +67,7 @@ func ScanFile(exprs []*lisp.LVal, filename string, cfg *Config) []*FunctionSumma
 		}
 
 		body := sexpr.Cells[bodyStart:]
-		scanBody(body, funcName, 0, loopSet, expensivePatterns, cfg.ExpensiveCost, summary)
+		scanBody(body, funcName, 0, ctx, summary)
 
 		summaries = append(summaries, summary)
 	})
@@ -63,29 +77,13 @@ func ScanFile(exprs []*lisp.LVal, filename string, cfg *Config) []*FunctionSumma
 
 // scanBody recursively walks body expressions, tracking loop depth and
 // collecting call edges and cost.
-func scanBody(
-	exprs []*lisp.LVal,
-	caller string,
-	loopDepth int,
-	loopSet map[string]bool,
-	expensivePatterns []string,
-	expensiveCost int,
-	summary *FunctionSummary,
-) {
+func scanBody(exprs []*lisp.LVal, caller string, loopDepth int, ctx *scanContext, summary *FunctionSummary) {
 	for _, expr := range exprs {
-		scanExpr(expr, caller, loopDepth, loopSet, expensivePatterns, expensiveCost, summary)
+		scanExpr(expr, caller, loopDepth, ctx, summary)
 	}
 }
 
-func scanExpr(
-	expr *lisp.LVal,
-	caller string,
-	loopDepth int,
-	loopSet map[string]bool,
-	expensivePatterns []string,
-	expensiveCost int,
-	summary *FunctionSummary,
-) {
+func scanExpr(expr *lisp.LVal, caller string, loopDepth int, ctx *scanContext, summary *FunctionSummary) {
 	if expr == nil {
 		return
 	}
@@ -102,26 +100,26 @@ func scanExpr(
 			summary.Calls = append(summary.Calls, CallEdge{
 				Caller:  caller,
 				Callee:  "<dynamic>",
-				Source:  astutil.SourceOf(expr).Source,
+				Source:   astutil.SourceOf(expr).Source,
 				Context: CallContext{LoopDepth: loopDepth, InLoop: loopDepth > 0},
 			})
 		}
 		// Still scan children
 		for _, child := range expr.Cells {
-			scanExpr(child, caller, loopDepth, loopSet, expensivePatterns, expensiveCost, summary)
+			scanExpr(child, caller, loopDepth, ctx, summary)
 		}
 		return
 	}
 
 	// Check if this is a loop form
-	if loopSet[head] {
+	if ctx.loopSet[head] {
 		newDepth := loopDepth + 1
 		if newDepth > summary.MaxLoopDepth {
 			summary.MaxLoopDepth = newDepth
 		}
 		// Scan children with increased loop depth
 		for _, child := range expr.Cells[1:] {
-			scanExpr(child, caller, newDepth, loopSet, expensivePatterns, expensiveCost, summary)
+			scanExpr(child, caller, newDepth, ctx, summary)
 		}
 		return
 	}
@@ -138,22 +136,38 @@ func scanExpr(
 		// so scan the body at the current loop depth. Skip formals (Cells[1]).
 		bodyStart := 2 // Cells[0]="lambda", Cells[1]=formals
 		if bodyStart < len(expr.Cells) {
-			scanBody(expr.Cells[bodyStart:], caller, loopDepth, loopSet, expensivePatterns, expensiveCost, summary)
+			scanBody(expr.Cells[bodyStart:], caller, loopDepth, ctx, summary)
+		}
+		return
+	case "funcall", "apply":
+		// Dynamic dispatch — callee is a runtime value.
+		summary.Calls = append(summary.Calls, CallEdge{
+			Caller:  caller,
+			Callee:  "<dynamic>",
+			Source:   callSource(expr),
+			Context: CallContext{LoopDepth: loopDepth, InLoop: loopDepth > 0},
+		})
+		// Scan arguments (skip head + function arg)
+		for _, child := range expr.Cells[2:] {
+			scanExpr(child, caller, loopDepth, ctx, summary)
 		}
 		return
 	}
 
-	// Record call edge for named function calls
+	// Record call edge for named function calls (skip special forms)
 	if isCallable(head) {
-		expensive := matchesAnyPattern(head, expensivePatterns)
+		expensive := matchesAnyPattern(head, ctx.expensivePatterns)
 		cost := 1
+		if override, ok := ctx.functionCosts[head]; ok {
+			cost = override
+		}
 		if expensive {
-			cost += expensiveCost
+			cost += ctx.expensiveCost
 		}
 		// Apply loop amplification to local cost
 		amplifiedCost := cost
-		for i := 0; i < loopDepth; i++ {
-			amplifiedCost *= summary.loopMultiplier(expensiveCost)
+		for range loopDepth {
+			amplifiedCost *= ctx.loopMultiplier
 		}
 		summary.LocalCost += amplifiedCost
 
@@ -168,27 +182,27 @@ func scanExpr(
 
 	// Recurse into children (skip head symbol)
 	for _, child := range expr.Cells[1:] {
-		scanExpr(child, caller, loopDepth, loopSet, expensivePatterns, expensiveCost, summary)
+		scanExpr(child, caller, loopDepth, ctx, summary)
 	}
-}
-
-// loopMultiplier returns the configured loop multiplier. This is stored
-// on the config, but we thread it through the summary's cost tracking
-// for convenience. Since we don't store config on summary, just use 20.
-func (s *FunctionSummary) loopMultiplier(_ int) int {
-	return 20 // matches DefaultConfig
 }
 
 // isCallable returns true if the symbol name looks like a function call
 // rather than a special form that doesn't produce a call edge.
 func isCallable(name string) bool {
 	switch name {
-	case "if", "cond", "progn", "let", "flet", "labels",
-		"set", "set!", "and", "or", "not",
+	case // special operators
+		"if", "cond", "progn", "let", "let*", "flet", "labels", "macrolet",
+		"set", "set!", "and", "or",
 		"handler-bind", "ignore-errors",
 		"in-package", "use-package", "export",
-		"begin", "do",
-		"assert-equal", "assert=", "assert-nil", "assert-not-nil",
+		"dotimes",
+		"thread-first", "thread-last",
+		"assert", "qualified-symbol",
+		"function", "expr",
+		// macros
+		"defun", "defmacro", "deftype", "defconst",
+		"curry-function", "get-default", "trace",
+		// testing forms (not real calls)
 		"test", "test-let":
 		return false
 	}

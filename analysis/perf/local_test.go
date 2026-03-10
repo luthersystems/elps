@@ -113,6 +113,67 @@ func TestScanFile_MultipleFunctions(t *testing.T) {
 	assert.True(t, names["bar"])
 }
 
+func TestScanFile_FuncallDynamic(t *testing.T) {
+	// funcall should generate a <dynamic> edge
+	src := `(defun dispatch (f x) (funcall f x))`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+
+	require.Len(t, summaries, 1)
+	var found bool
+	for _, edge := range summaries[0].Calls {
+		if edge.Callee == "<dynamic>" {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected <dynamic> edge for funcall")
+}
+
+func TestScanFile_ApplyDynamic(t *testing.T) {
+	// apply should generate a <dynamic> edge
+	src := `(defun run-all (f args) (apply f args))`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+
+	require.Len(t, summaries, 1)
+	var found bool
+	for _, edge := range summaries[0].Calls {
+		if edge.Callee == "<dynamic>" {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected <dynamic> edge for apply")
+}
+
+func TestScanFile_SpecialFormsNotCallable(t *testing.T) {
+	// Special forms should not produce call edges
+	src := `(defun example (x)
+		(let* ([a 1] [b 2])
+		  (if (= a b) true false)))`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+
+	require.Len(t, summaries, 1)
+	for _, edge := range summaries[0].Calls {
+		assert.NotEqual(t, "let*", edge.Callee, "let* should not produce a call edge")
+		assert.NotEqual(t, "if", edge.Callee, "if should not produce a call edge")
+	}
+}
+
+func TestScanFile_FunctionCostOverride(t *testing.T) {
+	src := `(defun example () (custom-op))`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	cfg.FunctionCosts = map[string]int{"custom-op": 100}
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+
+	require.Len(t, summaries, 1)
+	assert.Equal(t, 100, summaries[0].LocalCost)
+}
+
 func TestMatchesAnyPattern(t *testing.T) {
 	patterns := []string{"db-*", "http-*", "put-state"}
 	assert.True(t, matchesAnyPattern("db-put", patterns))
