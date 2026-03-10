@@ -10,7 +10,7 @@ import (
 )
 
 func TestSolve_PERF003_ExpensiveInLoop(t *testing.T) {
-	src := `(defun process (items) (dolist (item items) (db-put item)))`
+	src := `(defun process (items) (map 'list (lambda (item) (db-put item)) items))`
 	exprs := parseSource(t, src)
 	cfg := DefaultConfig()
 	summaries := ScanFile(exprs, "test.lisp", cfg)
@@ -76,8 +76,7 @@ func TestSolve_Suppressed(t *testing.T) {
 	src := `
 ;; elps-analyze-disable
 (defun hot-path (items)
-  (dolist (item items)
-    (db-put item)))
+  (map 'list (lambda (item) (db-put item)) items))
 `
 	exprs := parseSource(t, src)
 	cfg := DefaultConfig()
@@ -94,8 +93,8 @@ func TestSolve_Suppressed(t *testing.T) {
 
 func TestSolve_ScalingPropagation(t *testing.T) {
 	src := `
-(defun inner () (concat "x"))
-(defun outer () (dolist (x items) (inner)))
+(defun inner () (concat 'string "x"))
+(defun outer (items) (map 'list (lambda (x) (inner)) items))
 `
 	exprs := parseSource(t, src)
 	cfg := DefaultConfig()

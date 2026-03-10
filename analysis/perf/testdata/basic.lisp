@@ -1,21 +1,22 @@
 ; Basic test: simple function with a call
 (defun greet (name)
   "Greet someone."
-  (concat "Hello, " name))
+  (concat 'string "Hello, " name))
 
 (defun process-item (item)
   "Process a single item."
   (db-put item))
 
-; N+1 pattern: expensive call inside a loop
+; N+1 pattern: expensive call inside a map
 (defun process-batch (items)
-  "Process a batch of items."
-  (dolist (item items)
-          (db-put item)))
+  "Process a batch of items — maps db-put over each element."
+  (map 'list (lambda (item) (db-put item)) items))
 
-; Nested loops with expensive call
-(defun process-matrix (matrix)
-  "Process all items in a matrix."
-  (dolist (row matrix)
-          (dolist (item row)
-                  (db-put item))))
+; Nested iteration with expensive call
+(defun process-matrix (rows n)
+  "Process all items: outer map, inner dotimes."
+  (map 'list
+       (lambda (row)
+         (dotimes (i n)
+           (db-put (nth row i))))
+       rows))

@@ -13,12 +13,10 @@ func TestSuppressed(t *testing.T) {
 	src := `
 ;; elps-analyze-disable
 (defun noisy (items)
-  (dolist (item items)
-    (db-put item)))
+  (map 'list (lambda (item) (db-put item)) items))
 
 (defun normal (items)
-  (dolist (item items)
-    (db-put item)))
+  (map 'list (lambda (item) (db-put item)) items))
 `
 	exprs := parseSource(t, src)
 	cfg := DefaultConfig()

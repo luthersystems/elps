@@ -20,7 +20,8 @@ type Config struct {
 	ExpensiveCost int `yaml:"expensive_cost"`
 
 	// LoopKeywords are symbols that introduce loop iteration in ELPS
-	// (e.g., "dolist", "dotimes", "mapcar").
+	// (e.g., "dotimes", "map", "foldl"). Embedders may append
+	// domain-specific iteration forms via config.
 	LoopKeywords []string `yaml:"loop_keywords"`
 
 	// LoopMultiplier is the assumed number of iterations per loop level.
@@ -49,8 +50,7 @@ func DefaultConfig() *Config {
 		ExpensiveFunctions: []string{"db-*", "put-state", "get-state", "http-*"},
 		ExpensiveCost:      50,
 		LoopKeywords: []string{
-			"dolist", "dotimes", "mapcar", "mapc",
-			"filter", "remove", "foldl", "foldr", "sort",
+			"dotimes", "map", "foldl", "foldr",
 			"select", "reject",
 		},
 		LoopMultiplier:        20,

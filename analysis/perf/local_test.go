@@ -23,7 +23,7 @@ func parseSource(t *testing.T, src string) []*lisp.LVal {
 }
 
 func TestScanFile_SimpleFunction(t *testing.T) {
-	src := `(defun greet (name) "hello" (concat "hi " name))`
+	src := `(defun greet (name) "hello" (concat 'string "hi " name))`
 	exprs := parseSource(t, src)
 	cfg := DefaultConfig()
 	summaries := ScanFile(exprs, "test.lisp", cfg)
@@ -54,7 +54,8 @@ func TestScanFile_ExpensiveCall(t *testing.T) {
 }
 
 func TestScanFile_ExpensiveInLoop(t *testing.T) {
-	src := `(defun process (items) (dolist (item items) (db-put item)))`
+	// map is a real ELPS iteration builtin: (map 'list fn seq)
+	src := `(defun process (items) (map 'list (lambda (item) (db-put item)) items))`
 	exprs := parseSource(t, src)
 	cfg := DefaultConfig()
 	summaries := ScanFile(exprs, "test.lisp", cfg)
@@ -75,7 +76,8 @@ func TestScanFile_ExpensiveInLoop(t *testing.T) {
 }
 
 func TestScanFile_NestedLoops(t *testing.T) {
-	src := `(defun process (m) (dolist (row m) (dolist (item row) (db-put item))))`
+	// dotimes is a real ELPS special operator, map is a real builtin
+	src := `(defun process (items n) (map 'list (lambda (item) (dotimes (i n) (db-put item))) items))`
 	exprs := parseSource(t, src)
 	cfg := DefaultConfig()
 	summaries := ScanFile(exprs, "test.lisp", cfg)
@@ -96,7 +98,7 @@ func TestScanFile_NestedLoops(t *testing.T) {
 func TestScanFile_MultipleFunctions(t *testing.T) {
 	src := `
 (defun foo () (bar))
-(defun bar () (concat "x"))
+(defun bar () (concat 'string "x"))
 `
 	exprs := parseSource(t, src)
 	cfg := DefaultConfig()

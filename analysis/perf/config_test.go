@@ -19,8 +19,8 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, 2, cfg.MaxAcceptableOrder)
 	assert.Equal(t, 3, cfg.ScalingErrorThreshold)
 	assert.Equal(t, 5, cfg.MaxRecursionOrder)
-	assert.Contains(t, cfg.LoopKeywords, "dolist")
 	assert.Contains(t, cfg.LoopKeywords, "dotimes")
+	assert.Contains(t, cfg.LoopKeywords, "map")
 	assert.Contains(t, cfg.ExpensiveFunctions, "db-*")
 }
 

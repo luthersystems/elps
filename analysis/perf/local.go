@@ -126,11 +126,20 @@ func scanExpr(
 		return
 	}
 
-	// Skip defun/defmacro/lambda inside body — they define new scopes
+	// Skip nested defun/defmacro — they define separate top-level functions
+	// that will be scanned independently.
 	switch head {
-	case "defun", "defmacro", "lambda":
+	case "defun", "defmacro":
 		return
 	case "quote", "quasiquote":
+		return
+	case "lambda":
+		// Lambda bodies execute inline (often as callbacks to map/foldl),
+		// so scan the body at the current loop depth. Skip formals (Cells[1]).
+		bodyStart := 2 // Cells[0]="lambda", Cells[1]=formals
+		if bodyStart < len(expr.Cells) {
+			scanBody(expr.Cells[bodyStart:], caller, loopDepth, loopSet, expensivePatterns, expensiveCost, summary)
+		}
 		return
 	}
 
