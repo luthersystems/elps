@@ -1,0 +1,122 @@
+// Copyright © 2024 The ELPS authors
+
+package perf
+
+import (
+	"bytes"
+	"testing"
+
+	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/rdparser"
+	"github.com/luthersystems/elps/parser/token"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func parseSource(t *testing.T, src string) []*lisp.LVal {
+	t.Helper()
+	s := token.NewScanner("test.lisp", bytes.NewReader([]byte(src)))
+	p := rdparser.NewFormatting(s)
+	exprs, err := p.ParseProgram()
+	require.NoError(t, err)
+	return exprs
+}
+
+func TestScanFile_SimpleFunction(t *testing.T) {
+	src := `(defun greet (name) "hello" (concat "hi " name))`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+
+	require.Len(t, summaries, 1)
+	assert.Equal(t, "greet", summaries[0].Name)
+	assert.Equal(t, "test.lisp", summaries[0].File)
+	assert.False(t, summaries[0].Suppressed)
+}
+
+func TestScanFile_ExpensiveCall(t *testing.T) {
+	src := `(defun save (item) (db-put item))`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+
+	require.Len(t, summaries, 1)
+	// Should have a call edge to db-put marked as expensive
+	var found bool
+	for _, edge := range summaries[0].Calls {
+		if edge.Callee == "db-put" {
+			found = true
+			assert.True(t, edge.IsExpensive)
+			assert.False(t, edge.Context.InLoop)
+		}
+	}
+	assert.True(t, found, "expected call edge to db-put")
+}
+
+func TestScanFile_ExpensiveInLoop(t *testing.T) {
+	src := `(defun process (items) (dolist (item items) (db-put item)))`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+
+	require.Len(t, summaries, 1)
+	assert.Equal(t, 1, summaries[0].MaxLoopDepth)
+
+	var found bool
+	for _, edge := range summaries[0].Calls {
+		if edge.Callee == "db-put" {
+			found = true
+			assert.True(t, edge.IsExpensive)
+			assert.True(t, edge.Context.InLoop)
+			assert.Equal(t, 1, edge.Context.LoopDepth)
+		}
+	}
+	assert.True(t, found, "expected call edge to db-put inside loop")
+}
+
+func TestScanFile_NestedLoops(t *testing.T) {
+	src := `(defun process (m) (dolist (row m) (dolist (item row) (db-put item))))`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+
+	require.Len(t, summaries, 1)
+	assert.Equal(t, 2, summaries[0].MaxLoopDepth)
+
+	var found bool
+	for _, edge := range summaries[0].Calls {
+		if edge.Callee == "db-put" {
+			found = true
+			assert.Equal(t, 2, edge.Context.LoopDepth)
+		}
+	}
+	assert.True(t, found)
+}
+
+func TestScanFile_MultipleFunctions(t *testing.T) {
+	src := `
+(defun foo () (bar))
+(defun bar () (concat "x"))
+`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+
+	assert.Len(t, summaries, 2)
+	names := make(map[string]bool)
+	for _, s := range summaries {
+		names[s.Name] = true
+	}
+	assert.True(t, names["foo"])
+	assert.True(t, names["bar"])
+}
+
+func TestMatchesAnyPattern(t *testing.T) {
+	patterns := []string{"db-*", "http-*", "put-state"}
+	assert.True(t, matchesAnyPattern("db-put", patterns))
+	assert.True(t, matchesAnyPattern("db-get", patterns))
+	assert.True(t, matchesAnyPattern("http-request", patterns))
+	assert.True(t, matchesAnyPattern("put-state", patterns))
+	assert.False(t, matchesAnyPattern("concat", patterns))
+	assert.False(t, matchesAnyPattern("get-state", patterns)) // no glob match for get-state
+}
