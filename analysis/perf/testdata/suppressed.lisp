@@ -3,4 +3,4 @@
 (defun noisy-but-ok (items)
   "Known hot path, intentionally excluded."
   (dolist (item items)
-    (db-put item)))
+          (db-put item)))

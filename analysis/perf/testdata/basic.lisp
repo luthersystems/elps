@@ -11,11 +11,11 @@
 (defun process-batch (items)
   "Process a batch of items."
   (dolist (item items)
-    (db-put item)))
+          (db-put item)))
 
 ; Nested loops with expensive call
 (defun process-matrix (matrix)
   "Process all items in a matrix."
   (dolist (row matrix)
-    (dolist (item row)
-      (db-put item))))
+          (dolist (item row)
+                  (db-put item))))
