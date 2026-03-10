@@ -274,9 +274,22 @@ func TestSolve_UNKNOWN001_FuncallApply(t *testing.T) {
 	assert.Len(t, unknown, 2, "expected UNKNOWN001 for funcall and apply")
 }
 
+// findSolved returns the SolvedFunction with the given name, or fails the test.
+func findSolved(t *testing.T, solved []*SolvedFunction, name string) *SolvedFunction {
+	t.Helper()
+	for _, sf := range solved {
+		if sf.Name == name {
+			return sf
+		}
+	}
+	t.Fatalf("solved function %q not found", name)
+	return nil
+}
+
 func TestSolve_AmplificationCausesScaling_Disabled(t *testing.T) {
-	// db-put is expensive, called inside a loop (depth 1).
+	// db-put is expensive (external), called inside a loop (depth 1).
 	// Without amplification: scaling = 0 (db-put leaf) + 1 (loop) = 1.
+	// This is a control test paired with _Enabled below.
 	src := `
 (defun process (items)
   (map 'list (lambda (item) (db-put item)) items))
@@ -286,23 +299,24 @@ func TestSolve_AmplificationCausesScaling_Disabled(t *testing.T) {
 	cfg.AmplificationCausesScaling = false
 	summaries := ScanFile(exprs, "test.lisp", cfg)
 	graph := BuildGraph(summaries)
-	solved, _ := Solve(graph, cfg)
+	solved, issues := Solve(graph, cfg)
 
-	var processSolved *SolvedFunction
-	for _, sf := range solved {
-		if sf.Name == "process" {
-			processSolved = sf
-			break
+	sf := findSolved(t, solved, "process")
+	assert.Equal(t, 1, sf.ScalingOrder,
+		"without amplification, scaling should be 1 (loop depth only)")
+
+	// ScalingOrder=1 < MaxAcceptableOrder=2, so no PERF002
+	for _, issue := range issues {
+		if issue.Rule == PERF002 && issue.Function == "process" {
+			t.Error("PERF002 should not fire for process without amplification (scaling=1)")
 		}
 	}
-	require.NotNil(t, processSolved)
-	assert.Equal(t, 1, processSolved.ScalingOrder,
-		"without amplification, scaling should be 1 (loop depth only)")
 }
 
 func TestSolve_AmplificationCausesScaling_Enabled(t *testing.T) {
-	// db-put is expensive, called inside a loop (depth 1).
+	// db-put is expensive (external), called inside a loop (depth 1).
 	// With amplification: scaling = 0 (db-put leaf) + 1 (loop) + 1 (amplification) = 2.
+	// ScalingOrder=2 >= MaxAcceptableOrder=2 → PERF002 warning.
 	src := `
 (defun process (items)
   (map 'list (lambda (item) (db-put item)) items))
@@ -312,18 +326,21 @@ func TestSolve_AmplificationCausesScaling_Enabled(t *testing.T) {
 	cfg.AmplificationCausesScaling = true
 	summaries := ScanFile(exprs, "test.lisp", cfg)
 	graph := BuildGraph(summaries)
-	solved, _ := Solve(graph, cfg)
+	solved, issues := Solve(graph, cfg)
 
-	var processSolved *SolvedFunction
-	for _, sf := range solved {
-		if sf.Name == "process" {
-			processSolved = sf
-			break
+	sf := findSolved(t, solved, "process")
+	assert.Equal(t, 2, sf.ScalingOrder,
+		"with amplification, scaling should be 2 (loop depth + expensive amplification)")
+
+	// ScalingOrder=2 >= MaxAcceptableOrder=2 → PERF002 warning
+	var perf002 []Issue
+	for _, issue := range issues {
+		if issue.Rule == PERF002 && issue.Function == "process" {
+			perf002 = append(perf002, issue)
 		}
 	}
-	require.NotNil(t, processSolved)
-	assert.Equal(t, 2, processSolved.ScalingOrder,
-		"with amplification, scaling should be 2 (loop depth + expensive amplification)")
+	require.NotEmpty(t, perf002, "PERF002 should fire for process with amplification (scaling=2)")
+	assert.Equal(t, SeverityWarning, perf002[0].Severity)
 }
 
 func TestSolve_AmplificationCausesScaling_NonExpensiveUnaffected(t *testing.T) {
@@ -340,14 +357,65 @@ func TestSolve_AmplificationCausesScaling_NonExpensiveUnaffected(t *testing.T) {
 	graph := BuildGraph(summaries)
 	solved, _ := Solve(graph, cfg)
 
-	var processSolved *SolvedFunction
-	for _, sf := range solved {
-		if sf.Name == "process" {
-			processSolved = sf
-			break
+	sf := findSolved(t, solved, "process")
+	assert.Equal(t, 1, sf.ScalingOrder,
+		"non-expensive calls should not get amplification bonus")
+}
+
+func TestSolve_AmplificationCausesScaling_InGraphCallee(t *testing.T) {
+	// db-helper matches "db-*" expensive pattern and IS in the call graph.
+	// This exercises the in-graph amplification path (solver.go Path B).
+	// With amplification: scaling = 0 (db-helper leaf) + 1 (loop) + 1 (amp) = 2.
+	src := `
+(defun db-helper () (concat 'string "x"))
+(defun process (items)
+  (map 'list (lambda (item) (db-helper)) items))
+`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	cfg.AmplificationCausesScaling = true
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+	graph := BuildGraph(summaries)
+	solved, _ := Solve(graph, cfg)
+
+	sf := findSolved(t, solved, "process")
+	assert.Equal(t, 2, sf.ScalingOrder,
+		"in-graph expensive callee in loop should get amplification bonus")
+
+	// Verify db-helper itself is unaffected (not called in a loop from its own perspective)
+	dbHelper := findSolved(t, solved, "db-helper")
+	assert.Equal(t, 0, dbHelper.ScalingOrder,
+		"db-helper itself should have scaling order 0 (leaf)")
+}
+
+func TestSolve_AmplificationCausesScaling_NestedLoops(t *testing.T) {
+	// db-put is expensive (external), called inside nested loops (depth 2).
+	// With amplification: scaling = 0 + 2 (loops) + 1 (amp) = 3.
+	// ScalingOrder=3 >= ScalingErrorThreshold=3 → PERF002 error.
+	// This is the key scenario: amplification pushes from warning to error.
+	src := `
+(defun process (matrix)
+  (map 'list (lambda (row)
+    (map 'list (lambda (item) (db-put item)) row)) matrix))
+`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	cfg.AmplificationCausesScaling = true
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+	graph := BuildGraph(summaries)
+	solved, issues := Solve(graph, cfg)
+
+	sf := findSolved(t, solved, "process")
+	assert.Equal(t, 3, sf.ScalingOrder,
+		"nested loops + amplification: scaling should be 3")
+
+	// ScalingOrder=3 >= ScalingErrorThreshold=3 → PERF002 error
+	var perf002Errors []Issue
+	for _, issue := range issues {
+		if issue.Rule == PERF002 && issue.Function == "process" && issue.Severity == SeverityError {
+			perf002Errors = append(perf002Errors, issue)
 		}
 	}
-	require.NotNil(t, processSolved)
-	assert.Equal(t, 1, processSolved.ScalingOrder,
-		"non-expensive calls should not get amplification bonus")
+	require.NotEmpty(t, perf002Errors,
+		"amplification in nested loops should push PERF002 to error severity")
 }
