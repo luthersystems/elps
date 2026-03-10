@@ -27,9 +27,8 @@ func TestFormatText(t *testing.T) {
 	var buf bytes.Buffer
 	FormatText(&buf, issues)
 	output := buf.String()
-	assert.Contains(t, output, "PERF003")
-	assert.Contains(t, output, "db-put")
-	assert.Contains(t, output, "test.lisp:5:3")
+	// Verify format: "location: severity: message [RULE]"
+	assert.Contains(t, output, `test.lisp:5:3: warning: expensive call "db-put" inside loop (depth 1) [PERF003]`)
 }
 
 func TestFormatJSON(t *testing.T) {
@@ -54,4 +53,10 @@ func TestFormatJSON(t *testing.T) {
 	require.Len(t, parsed, 1)
 	assert.Equal(t, string(PERF004), string(parsed[0].Rule))
 	assert.Equal(t, "warning", parsed[0].Severity)
+	assert.Equal(t, "recursive cycle: ping -> pong", parsed[0].Message)
+	assert.Equal(t, "ping", parsed[0].Function)
+	assert.Equal(t, "test.lisp", parsed[0].File)
+	assert.Equal(t, 1, parsed[0].Line)
+	assert.Equal(t, 1, parsed[0].Col)
+	assert.Equal(t, []string{"ping", "pong"}, parsed[0].Details)
 }
