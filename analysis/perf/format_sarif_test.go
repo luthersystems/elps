@@ -13,6 +13,7 @@ import (
 )
 
 func TestFormatSARIF_ValidSchema(t *testing.T) {
+	t.Parallel()
 	issues := []Issue{
 		{
 			Rule:        PERF001,
@@ -39,6 +40,7 @@ func TestFormatSARIF_ValidSchema(t *testing.T) {
 }
 
 func TestFormatSARIF_CodeFlows(t *testing.T) {
+	t.Parallel()
 	issues := []Issue{
 		{
 			Rule:        PERF001,
@@ -73,11 +75,16 @@ func TestFormatSARIF_CodeFlows(t *testing.T) {
 	assert.Equal(t, "app.lisp", locs[0].Location.PhysicalLocation.ArtifactLocation.URI)
 	assert.Equal(t, 10, locs[0].Location.PhysicalLocation.Region.StartLine)
 	assert.Equal(t, "entry point", locs[0].Location.Message.Text)
+	// Verify middle trace entry is correct too.
+	assert.Equal(t, "app.lisp", locs[1].Location.PhysicalLocation.ArtifactLocation.URI)
+	assert.Equal(t, 20, locs[1].Location.PhysicalLocation.Region.StartLine)
+	assert.Equal(t, "calls save-item in loop (depth 1)", locs[1].Location.Message.Text)
 	assert.Equal(t, "db.lisp", locs[2].Location.PhysicalLocation.ArtifactLocation.URI)
 	assert.Equal(t, "expensive call", locs[2].Location.Message.Text)
 }
 
 func TestFormatSARIF_Fingerprints(t *testing.T) {
+	t.Parallel()
 	issues := []Issue{
 		{
 			Rule:        PERF003,
@@ -98,9 +105,15 @@ func TestFormatSARIF_Fingerprints(t *testing.T) {
 
 	result := log.Runs[0].Results[0]
 	assert.Equal(t, "deadbeef12345678", result.PartialFingerprints["primaryLocationLineHash"])
+
+	// Source is nil but File is set — location URI should be populated, region nil.
+	require.Len(t, result.Locations, 1)
+	assert.Equal(t, "test.lisp", result.Locations[0].PhysicalLocation.ArtifactLocation.URI)
+	assert.Nil(t, result.Locations[0].PhysicalLocation.Region)
 }
 
 func TestFormatSARIF_AllRules(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	err := FormatSARIF(&buf, nil, "elps-perf", "0.1.0")
 	require.NoError(t, err)
@@ -118,13 +131,18 @@ func TestFormatSARIF_AllRules(t *testing.T) {
 	assert.Equal(t, []string{"PERF001", "PERF002", "PERF003", "PERF004", "UNKNOWN001"}, ruleIDs)
 	assert.Equal(t, "HotPath", rules[0].Name)
 	assert.Equal(t, "DynamicDispatch", rules[4].Name)
+
+	// Nil issues should produce an empty results array.
+	assert.Empty(t, log.Runs[0].Results)
 }
 
 func TestFormatSARIF_SeverityMapping(t *testing.T) {
+	t.Parallel()
 	issues := []Issue{
 		{Rule: PERF001, Severity: SeverityError, Message: "err", Function: "f1", File: "a.lisp", Fingerprint: "a"},
 		{Rule: PERF002, Severity: SeverityWarning, Message: "warn", Function: "f2", File: "b.lisp", Fingerprint: "b"},
 		{Rule: UNKNOWN001, Severity: SeverityInfo, Message: "info", Function: "f3", File: "c.lisp", Fingerprint: "c"},
+		{Rule: PERF003, Severity: Severity(99), Message: "unknown", Function: "f4", File: "d.lisp", Fingerprint: "d"},
 	}
 
 	var buf bytes.Buffer
@@ -133,8 +151,15 @@ func TestFormatSARIF_SeverityMapping(t *testing.T) {
 
 	var log sarifLog
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &log))
-	require.Len(t, log.Runs[0].Results, 3)
+	require.Len(t, log.Runs[0].Results, 4)
 	assert.Equal(t, "error", log.Runs[0].Results[0].Level)
 	assert.Equal(t, "warning", log.Runs[0].Results[1].Level)
 	assert.Equal(t, "note", log.Runs[0].Results[2].Level)
+	assert.Equal(t, "none", log.Runs[0].Results[3].Level)
+
+	// Verify ruleIndex maps to correct rule in the rules array.
+	assert.Equal(t, 0, log.Runs[0].Results[0].RuleIndex) // PERF001 -> index 0
+	assert.Equal(t, 1, log.Runs[0].Results[1].RuleIndex) // PERF002 -> index 1
+	assert.Equal(t, 4, log.Runs[0].Results[2].RuleIndex) // UNKNOWN001 -> index 4
+	assert.Equal(t, 2, log.Runs[0].Results[3].RuleIndex) // PERF003 -> index 2
 }
