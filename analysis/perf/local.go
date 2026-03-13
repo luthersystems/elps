@@ -50,11 +50,11 @@ func ScanFile(exprs []*lisp.LVal, filename string, cfg *Config) []*FunctionSumma
 		src := astutil.SourceOf(sexpr)
 
 		summary := &FunctionSummary{
-			Name:       funcName,
-			Source:     src.Source,
-			File:       filename,
-			Suppressed: isSuppressed(sexpr, cfg.SuppressionPrefix),
+			Name:   funcName,
+			Source: src.Source,
+			File:   filename,
 		}
+		applySuppression(summary, parseSuppression(sexpr, cfg.SuppressionPrefix))
 
 		// Walk the function body (skip name and formals)
 		bodyStart := 3 // Cells[0]=head, Cells[1]=name, Cells[2]=formals
@@ -100,7 +100,7 @@ func scanExpr(expr *lisp.LVal, caller string, loopDepth int, ctx *scanContext, s
 			summary.Calls = append(summary.Calls, CallEdge{
 				Caller:  caller,
 				Callee:  "<dynamic>",
-				Source:   astutil.SourceOf(expr).Source,
+				Source:  astutil.SourceOf(expr).Source,
 				Context: CallContext{LoopDepth: loopDepth, InLoop: loopDepth > 0},
 			})
 		}
@@ -144,7 +144,7 @@ func scanExpr(expr *lisp.LVal, caller string, loopDepth int, ctx *scanContext, s
 		summary.Calls = append(summary.Calls, CallEdge{
 			Caller:  caller,
 			Callee:  "<dynamic>",
-			Source:   callSource(expr),
+			Source:  callSource(expr),
 			Context: CallContext{LoopDepth: loopDepth, InLoop: loopDepth > 0},
 		})
 		// Scan arguments (skip head + function arg)
@@ -174,7 +174,7 @@ func scanExpr(expr *lisp.LVal, caller string, loopDepth int, ctx *scanContext, s
 		summary.Calls = append(summary.Calls, CallEdge{
 			Caller:      caller,
 			Callee:      head,
-			Source:       callSource(expr),
+			Source:      callSource(expr),
 			Context:     CallContext{LoopDepth: loopDepth, InLoop: loopDepth > 0},
 			IsExpensive: expensive,
 		})

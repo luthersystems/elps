@@ -87,8 +87,10 @@ type FunctionSummary struct {
 	MaxLoopDepth int
 	// Calls are the outgoing call edges from this function.
 	Calls []CallEdge
-	// Suppressed is true if the function has an elps-analyze-disable comment.
-	Suppressed bool
+	// SuppressAll is true if the function has a bare elps-analyze-disable comment.
+	SuppressAll bool
+	// SuppressedRules contains rule IDs suppressed for this function.
+	SuppressedRules map[RuleID]bool
 }
 
 // CallGraph holds the complete call graph for a set of source files.

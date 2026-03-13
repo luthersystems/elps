@@ -31,7 +31,8 @@ func TestScanFile_SimpleFunction(t *testing.T) {
 	require.Len(t, summaries, 1)
 	assert.Equal(t, "greet", summaries[0].Name)
 	assert.Equal(t, "test.lisp", summaries[0].File)
-	assert.False(t, summaries[0].Suppressed)
+	assert.False(t, summaries[0].SuppressAll)
+	assert.Empty(t, summaries[0].SuppressedRules)
 }
 
 func TestScanFile_ExpensiveCall(t *testing.T) {
