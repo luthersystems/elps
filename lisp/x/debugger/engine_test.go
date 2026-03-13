@@ -14,6 +14,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type pauseSnapshot struct {
+	env          *lisp.LEnv
+	expr         *lisp.LVal
+	topFrameName string
+	stackDepth   int
+}
+
 // newTestEnv creates a minimal ELPS environment for testing.
 func newTestEnv(t *testing.T, dbg *Engine) *lisp.LEnv {
 	t.Helper()
@@ -27,6 +34,32 @@ func newTestEnv(t *testing.T, dbg *Engine) *lisp.LEnv {
 	rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
 	require.True(t, rc.IsNil(), "InPackage failed: %v", rc)
 	return env
+}
+
+func snapshotPause(evt Event) pauseSnapshot {
+	snapshot := pauseSnapshot{
+		env:  evt.Env,
+		expr: evt.Expr,
+	}
+	if evt.Env != nil {
+		snapshot.stackDepth = len(evt.Env.Runtime.Stack.Frames)
+		if snapshot.stackDepth > 0 {
+			snapshot.topFrameName = evt.Env.Runtime.Stack.Frames[snapshot.stackDepth-1].Name
+		}
+	}
+	return snapshot
+}
+
+func waitForStoppedEvent(t *testing.T, ch <-chan pauseSnapshot, message string) pauseSnapshot {
+	t.Helper()
+
+	select {
+	case snapshot := <-ch:
+		return snapshot
+	case <-time.After(2 * time.Second):
+		t.Fatal(message)
+		return pauseSnapshot{}
+	}
 }
 
 func waitForPauseStateChange(t *testing.T, e *Engine, previous *lisp.LVal) (*lisp.LEnv, *lisp.LVal) {
@@ -1590,7 +1623,12 @@ func TestEngine_SourceRefRegistry(t *testing.T) {
 
 func TestEngine_StepOutTailPosition(t *testing.T) {
 	t.Parallel()
-	e := New()
+	stoppedCh := make(chan pauseSnapshot, 8)
+	e := New(WithEventCallback(func(evt Event) {
+		if evt.Type == EventStopped {
+			stoppedCh <- snapshotPause(evt)
+		}
+	}))
 	e.Enable()
 	env := newTestEnv(t, e)
 
@@ -1614,28 +1652,26 @@ func TestEngine_StepOutTailPosition(t *testing.T) {
 	}()
 
 	// Wait for breakpoint inside inner.
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
-
-	pausedEnv, expr := e.PausedState()
+	firstStop := waitForStoppedEvent(t, stoppedCh, "engine did not pause at breakpoint")
+	expr := firstStop.expr
 	require.NotNil(t, expr)
 	require.NotNil(t, expr.Source)
 	assert.Equal(t, 2, expr.Source.Line, "should pause on line 2")
-	innerDepth := len(pausedEnv.Runtime.Stack.Frames)
+	innerDepth := firstStop.stackDepth
 
 	// Clear breakpoints and step out.
 	e.Breakpoints().ClearFile("test")
 	e.StepOut()
 
 	// Should pause at the call site (NOT run to completion).
-	pausedEnv, expr = waitForPauseStateChange(t, e, expr)
+	secondStop := waitForStoppedEvent(t, stoppedCh, "step-out did not produce a stopped event")
+	expr = secondStop.expr
 	require.NotNil(t, expr)
 	require.NotNil(t, expr.Source, "paused expression should have source location")
 	assert.Equal(t, "test", expr.Source.File)
 	assert.NotEqual(t, 2, expr.Source.Line,
 		"should NOT still be on inner's body line after step-out")
-	outsideDepth := len(pausedEnv.Runtime.Stack.Frames)
+	outsideDepth := secondStop.stackDepth
 	assert.Less(t, outsideDepth, innerDepth,
 		"step-out should decrease stack depth (inner=%d, outside=%d)", innerDepth, outsideDepth)
 
@@ -1773,7 +1809,12 @@ func TestEngine_ScopeProviders(t *testing.T) {
 
 func TestEngine_StepInTarget(t *testing.T) {
 	t.Parallel()
-	e := New()
+	stoppedCh := make(chan pauseSnapshot, 8)
+	e := New(WithEventCallback(func(evt Event) {
+		if evt.Type == EventStopped {
+			stoppedCh <- snapshotPause(evt)
+		}
+	}))
 	e.Enable()
 	// Set breakpoint inside main's body (line 4: the call to f).
 	e.Breakpoints().Set("test", 4, "")
@@ -1791,10 +1832,8 @@ func TestEngine_StepInTarget(t *testing.T) {
 	}()
 
 	// Hit breakpoint on line 4 inside main.
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	_, bpExpr := e.PausedState()
+	firstStop := waitForStoppedEvent(t, stoppedCh, "engine did not pause at breakpoint")
+	bpExpr := firstStop.expr
 	require.NotNil(t, bpExpr)
 	require.NotNil(t, bpExpr.Source)
 	assert.Equal(t, 4, bpExpr.Source.Line, "breakpoint should hit on line 4")
@@ -1807,7 +1846,8 @@ func TestEngine_StepInTarget(t *testing.T) {
 	e.StepOver()
 
 	// Should pause inside f's body (line 1).
-	_, stepExpr := waitForPauseStateChange(t, e, bpExpr)
+	secondStop := waitForStoppedEvent(t, stoppedCh, "targeted step-in did not stop")
+	stepExpr := secondStop.expr
 	require.NotNil(t, stepExpr)
 	require.NotNil(t, stepExpr.Source)
 	assert.Equal(t, 1, stepExpr.Source.Line,
@@ -1827,7 +1867,12 @@ func TestEngine_StepInTarget(t *testing.T) {
 func TestEngine_StepInTarget_SkipsNonTarget(t *testing.T) {
 	t.Parallel()
 
-	e := New()
+	stoppedCh := make(chan pauseSnapshot, 8)
+	e := New(WithEventCallback(func(evt Event) {
+		if evt.Type == EventStopped {
+			stoppedCh <- snapshotPause(evt)
+		}
+	}))
 	e.Enable()
 	// Set breakpoint on line 4 (inside main).
 	e.Breakpoints().Set("test", 4, "")
@@ -1845,9 +1890,7 @@ func TestEngine_StepInTarget_SkipsNonTarget(t *testing.T) {
 	}()
 
 	// Hit breakpoint on line 4.
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
+	waitForStoppedEvent(t, stoppedCh, "engine did not pause at breakpoint")
 
 	// Clear breakpoint.
 	e.Breakpoints().Remove("test", 4)
@@ -1856,22 +1899,13 @@ func TestEngine_StepInTarget_SkipsNonTarget(t *testing.T) {
 	e.SetStepInTarget("user:f", 0)
 	e.StepOver()
 
-	pausedEnv, stepExpr := waitForPausedPredicate(t, e, func(env *lisp.LEnv, expr *lisp.LVal) bool {
-		if env == nil || expr == nil || expr.Source == nil {
-			return false
-		}
-		if len(env.Runtime.Stack.Frames) == 0 {
-			return false
-		}
-		topFrame := env.Runtime.Stack.Frames[len(env.Runtime.Stack.Frames)-1]
-		return topFrame.Name == "f" && expr.Source.Line == 1
-	}, "targeted step-in should pause in f")
+	stop := waitForStoppedEvent(t, stoppedCh, "targeted step-in should pause in f")
+	stepExpr := stop.expr
 	require.NotNil(t, stepExpr)
 	require.NotNil(t, stepExpr.Source)
 
 	// Verify we're in f, not g. Check the top frame on the stack.
-	topFrame := pausedEnv.Runtime.Stack.Frames[len(pausedEnv.Runtime.Stack.Frames)-1]
-	assert.Equal(t, "f", topFrame.Name,
+	assert.Equal(t, "f", stop.topFrameName,
 		"should be inside f's frame, not g's")
 	assert.Equal(t, 1, stepExpr.Source.Line,
 		"should pause on f's body line (line 1)")
@@ -1889,7 +1923,12 @@ func TestEngine_StepInTarget_SkipsNonTarget(t *testing.T) {
 
 func TestEngine_StepInTarget_SecondOccurrence(t *testing.T) {
 	t.Parallel()
-	e := New()
+	stoppedCh := make(chan pauseSnapshot, 8)
+	e := New(WithEventCallback(func(evt Event) {
+		if evt.Type == EventStopped {
+			stoppedCh <- snapshotPause(evt)
+		}
+	}))
 	e.Enable()
 	// Breakpoint inside main body (line 3).
 	e.Breakpoints().Set("test", 3, "")
@@ -1906,9 +1945,7 @@ func TestEngine_StepInTarget_SecondOccurrence(t *testing.T) {
 	}()
 
 	// Hit breakpoint on line 3.
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
+	waitForStoppedEvent(t, stoppedCh, "engine did not pause at breakpoint")
 	e.Breakpoints().Remove("test", 3)
 
 	// Target second occurrence of f (count=1).
@@ -1916,22 +1953,11 @@ func TestEngine_StepInTarget_SecondOccurrence(t *testing.T) {
 	e.StepOver()
 
 	// Should pause inside f's body on the second call (f 20).
-	pausedEnv, stepExpr := waitForPausedPredicate(t, e, func(env *lisp.LEnv, expr *lisp.LVal) bool {
-		if env == nil || expr == nil || expr.Source == nil {
-			return false
-		}
-		if len(env.Runtime.Stack.Frames) == 0 {
-			return false
-		}
-		topFrame := env.Runtime.Stack.Frames[len(env.Runtime.Stack.Frames)-1]
-		if topFrame.Name != "f" || expr.Source.Line != 1 {
-			return false
-		}
-		xVal := e.EvalInContext(env, "x")
-		return xVal.Type == lisp.LInt && xVal.Int == 20
-	}, "targeted step-in should pause in second f invocation")
+	stop := waitForStoppedEvent(t, stoppedCh, "targeted step-in should pause in second f invocation")
+	pausedEnv, stepExpr := stop.env, stop.expr
 	require.NotNil(t, stepExpr)
 	require.NotNil(t, stepExpr.Source)
+	require.Equal(t, "f", stop.topFrameName, "should be inside f")
 	assert.Equal(t, 1, stepExpr.Source.Line,
 		"targeted step-in (2nd occurrence) should pause inside f's body")
 
