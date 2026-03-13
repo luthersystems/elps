@@ -33,7 +33,7 @@ func TestRunMinify_StdoutSingleFile(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "(defun x1 (x2) x2)\n", out.String())
-	src, err := os.ReadFile(path)
+	src, err := os.ReadFile(path) //nolint:gosec // test reads temp file created in this test
 	require.NoError(t, err)
 	assert.Equal(t, "(defun outer (value) value)\n", string(src))
 }
@@ -52,11 +52,11 @@ func TestRunMinify_WriteAndMap(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, out.String())
 
-	src, err := os.ReadFile(path)
+	src, err := os.ReadFile(path) //nolint:gosec // test reads temp file created in this test
 	require.NoError(t, err)
 	assert.Equal(t, "(defun x1 (x2) x2)\n", string(src))
 
-	mapBytes, err := os.ReadFile(mapPath)
+	mapBytes, err := os.ReadFile(mapPath) //nolint:gosec // test reads temp file created in this test
 	require.NoError(t, err)
 	var symMap minifier.SymbolMap
 	require.NoError(t, json.Unmarshal(mapBytes, &symMap))
