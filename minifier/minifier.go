@@ -84,7 +84,8 @@ type parsedFile struct {
 }
 
 type fileSymbols struct {
-	globals []analysis.ExternalSymbol
+	globals  []analysis.ExternalSymbol
+	packages map[string]bool
 }
 
 type preservationSet struct {
@@ -223,11 +224,19 @@ func mergeAnalysisConfig(base *analysis.Config, filename string, perFile map[str
 	for pkg, exports := range pkgExports {
 		cfg.PackageExports[pkg] = append(cfg.PackageExports[pkg], exports...)
 	}
+	currentPackages := map[string]bool{"user": true}
+	if symbols, ok := perFile[filename]; ok && len(symbols.packages) > 0 {
+		currentPackages = symbols.packages
+	}
 	for path, symbols := range perFile {
 		if path == filename {
 			continue
 		}
-		cfg.ExtraGlobals = append(cfg.ExtraGlobals, symbols.globals...)
+		for _, sym := range symbols.globals {
+			if currentPackages[sym.Package] {
+				cfg.ExtraGlobals = append(cfg.ExtraGlobals, sym)
+			}
+		}
 	}
 	return cfg
 }
@@ -247,8 +256,8 @@ func scanInputSymbols(files []parsedFile) (map[string]fileSymbols, map[string][]
 	perFile := make(map[string]fileSymbols, len(files))
 	pkgExports := make(map[string][]analysis.ExternalSymbol)
 	for _, file := range files {
-		globals, exports := scanProgramSymbols(file.exprs)
-		perFile[file.path] = fileSymbols{globals: globals}
+		globals, exports, packages := scanProgramSymbols(file.exprs)
+		perFile[file.path] = fileSymbols{globals: globals, packages: packages}
 		for pkg, syms := range exports {
 			pkgExports[pkg] = append(pkgExports[pkg], syms...)
 		}
@@ -256,10 +265,11 @@ func scanInputSymbols(files []parsedFile) (map[string]fileSymbols, map[string][]
 	return perFile, pkgExports
 }
 
-func scanProgramSymbols(exprs []*lisp.LVal) ([]analysis.ExternalSymbol, map[string][]analysis.ExternalSymbol) {
+func scanProgramSymbols(exprs []*lisp.LVal) ([]analysis.ExternalSymbol, map[string][]analysis.ExternalSymbol, map[string]bool) {
 	defs := make(map[string]analysis.ExternalSymbol)
 	exported := make(map[string]map[string]bool)
 	currentPkg := "user"
+	packages := map[string]bool{"user": true}
 
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 || expr.Cells[0].Type != lisp.LSymbol {
@@ -269,6 +279,7 @@ func scanProgramSymbols(exprs []*lisp.LVal) ([]analysis.ExternalSymbol, map[stri
 		case "in-package":
 			if pkg := packageName(expr.Cells[1:]); pkg != "" {
 				currentPkg = pkg
+				packages[pkg] = true
 			}
 		case "defun":
 			if sym := topLevelDef(expr, analysis.SymFunction, currentPkg); sym != nil {
@@ -309,7 +320,7 @@ func scanProgramSymbols(exprs []*lisp.LVal) ([]analysis.ExternalSymbol, map[stri
 			pkgExports[pkg] = append(pkgExports[pkg], sym)
 		}
 	}
-	return globals, pkgExports
+	return globals, pkgExports, packages
 }
 
 func topLevelDef(expr *lisp.LVal, kind analysis.SymbolKind, pkg string) *analysis.ExternalSymbol {

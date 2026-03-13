@@ -462,6 +462,92 @@ func TestMinifySource_RenameExportsRewritesQualifiedReferences(t *testing.T) {
 	assert.Equal(t, 42, evalResult.Int)
 }
 
+func TestMinify_ImportedExportedSymbolBeatsUnrelatedPrivateHelper(t *testing.T) {
+	inputs := []InputFile{
+		{
+			Path: "utils.lisp",
+			Source: []byte(`(in-package 'utils)
+(export 'string-starts-with?)
+(defun string-starts-with? (corpus prefix)
+  true)
+`),
+		},
+		{
+			Path: "appctrl.lisp",
+			Source: []byte(`(in-package 'appctrl)
+(defun string-starts-with? (corpus prefix)
+  false)
+`),
+		},
+		{
+			Path: "validations.lisp",
+			Source: []byte(`(in-package 'validations)
+(use-package 'utils)
+(defun validate (value)
+  (string-starts-with? value "+44"))
+
+(validate "demo")
+`),
+		},
+	}
+
+	result, err := Minify(inputs, &Config{})
+	require.NoError(t, err)
+	require.Len(t, result.Files, 3)
+
+	var privateHelperMinified string
+	for _, entry := range result.SymbolMap.Entries {
+		if entry.Original == "string-starts-with?" {
+			privateHelperMinified = entry.Minified
+		}
+	}
+	require.NotEmpty(t, privateHelperMinified, "private helper should still be minified")
+	assert.Contains(t, string(result.Files[2].Output), "(string-starts-with? x")
+	assert.NotContains(t, string(result.Files[2].Output), "("+privateHelperMinified+" x")
+
+	evalResult := evalMinifiedProgram(t, []InputFile{
+		{Path: result.Files[0].Path, Source: result.Files[0].Output},
+		{Path: result.Files[1].Path, Source: result.Files[1].Output},
+		{Path: result.Files[2].Path, Source: result.Files[2].Output},
+	})
+	require.Equal(t, lisp.LSymbol, evalResult.Type)
+	assert.Equal(t, "true", evalResult.Str)
+}
+
+func TestMinify_SamePackagePrivateCrossFileReferenceStillRewrites(t *testing.T) {
+	inputs := []InputFile{
+		{
+			Path: "helpers.lisp",
+			Source: []byte(`(in-package 'shared)
+(defun helper (value)
+  value)
+`),
+		},
+		{
+			Path: "consumer.lisp",
+			Source: []byte(`(in-package 'shared)
+(defun outer (value)
+  (helper value))
+`),
+		},
+	}
+
+	result, err := Minify(inputs, &Config{})
+	require.NoError(t, err)
+	require.Len(t, result.Files, 2)
+
+	var helperMinified string
+	for _, entry := range result.SymbolMap.Entries {
+		if entry.Original == "helper" {
+			helperMinified = entry.Minified
+			break
+		}
+	}
+	require.NotEmpty(t, helperMinified)
+	assert.Contains(t, string(result.Files[0].Output), "(defun "+helperMinified+" ")
+	assert.Contains(t, string(result.Files[1].Output), "("+helperMinified+" x")
+}
+
 func TestMinify_MultiFileMacroTemplateReferencesRemainExecutable(t *testing.T) {
 	inputs := []InputFile{
 		{
