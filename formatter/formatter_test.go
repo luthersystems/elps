@@ -255,6 +255,18 @@ func TestCompactMode(t *testing.T) {
 			expected: "''value\n",
 			config:   cfg,
 		},
+		{
+			name:     "compact preserves comments when strip-comments is false",
+			input:    ";; header\n(foo bar) ; tail\n",
+			expected: ";; header\n(foo bar) ; tail\n",
+			config: &Config{
+				Compact:       true,
+				StripComments: false,
+				IndentSize:    2,
+				MaxBlankLines: 1,
+				Rules:         DefaultRules(),
+			},
+		},
 	}
 	runFormatTests(t, tests)
 	for _, tt := range tests {

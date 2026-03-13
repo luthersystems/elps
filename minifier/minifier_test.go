@@ -105,6 +105,28 @@ func TestMinify_ExclusionsAndMultiFileSession(t *testing.T) {
 	assert.Equal(t, "second", result.SymbolMap.MinifiedToOriginal["x3"])
 }
 
+func TestMinify_MultiFileRewritesCrossFileReferences(t *testing.T) {
+	inputs := []InputFile{
+		{
+			Path:   "a.lisp",
+			Source: []byte("(defun helper () 42)\n"),
+		},
+		{
+			Path:   "b.lisp",
+			Source: []byte("(defun outer () (helper))\n"),
+		},
+	}
+
+	result, err := Minify(inputs, &Config{})
+	require.NoError(t, err)
+	require.Len(t, result.Files, 2)
+
+	assert.Equal(t, "(defun x1 () 42)\n", string(result.Files[0].Output))
+	assert.Equal(t, "(defun x2 () (x1))\n", string(result.Files[1].Output))
+	assert.Equal(t, "helper", result.SymbolMap.MinifiedToOriginal["x1"])
+	assert.Equal(t, "outer", result.SymbolMap.MinifiedToOriginal["x2"])
+}
+
 func TestMinifySource_StripsCommentsByDefault(t *testing.T) {
 	src := []byte(`;; comment
 (defun demo (value)

@@ -34,7 +34,7 @@ func Format(source []byte, cfg *Config) ([]byte, error) {
 
 	pr := newPrinter(cfg)
 	if cfg.Compact {
-		pr.writeTopLevelCompact(exprs)
+		pr.writeTopLevelCompact(exprs, trailingComments)
 	} else {
 		pr.writeTopLevel(exprs, trailingComments)
 	}
@@ -67,7 +67,7 @@ func FormatFile(source []byte, filename string, cfg *Config) ([]byte, error) {
 
 	pr := newPrinter(cfg)
 	if cfg.Compact {
-		pr.writeTopLevelCompact(exprs)
+		pr.writeTopLevelCompact(exprs, trailingComments)
 	} else {
 		pr.writeTopLevel(exprs, trailingComments)
 	}
@@ -90,7 +90,7 @@ func FormatProgram(exprs []*lisp.LVal, trailingComments []*token.Token, cfg *Con
 
 	pr := newPrinter(cfg)
 	if cfg.Compact {
-		pr.writeTopLevelCompact(exprs)
+		pr.writeTopLevelCompact(exprs, trailingComments)
 	} else {
 		pr.writeTopLevel(exprs, trailingComments)
 	}

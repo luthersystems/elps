@@ -156,12 +156,24 @@ func (p *printer) writeInnerTrailingComments(v *lisp.LVal, indent int) {
 	}
 }
 
-func (p *printer) writeTopLevelCompact(exprs []*lisp.LVal) {
-	for i, expr := range exprs {
-		if i > 0 {
-			p.newline()
-		}
+func (p *printer) writeTopLevelCompact(exprs []*lisp.LVal, trailingComments []*token.Token) {
+	for _, expr := range exprs {
+		p.writeLeadingComments(expr, 0)
+		p.writeBlankLinesAfterComments(expr)
 		p.writeCompactExpr(expr)
+		p.writeTrailingComment(expr)
+		p.newline()
+		p.first = false
+	}
+
+	if p.cfg.StripComments {
+		return
+	}
+	for _, c := range trailingComments {
+		p.writeIndent(0)
+		p.writeString(c.Text)
+		p.newline()
+		p.first = false
 	}
 }
 

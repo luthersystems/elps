@@ -73,6 +73,10 @@ type parsedFile struct {
 	analysis         *analysis.Result
 }
 
+type fileSymbols struct {
+	globals []analysis.ExternalSymbol
+}
+
 // Minify rewrites one or more source units using a single deterministic
 // symbol-assignment session.
 func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
@@ -94,19 +98,18 @@ func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
-		if cfg.Analysis != nil {
-			fileCfg := *cfg.Analysis
-			fileCfg.Filename = input.Path
-			file.analysis = analysis.Analyze(file.exprs, &fileCfg)
-		} else {
-			file.analysis = analysis.Analyze(file.exprs, &analysis.Config{Filename: input.Path})
-		}
 		files = append(files, file)
 	}
 
-	assignments, symMap := buildAssignments(files, cfg)
+	perFile, pkgExports := scanInputSymbols(files)
 	for i := range files {
-		applyAssignments(&files[i], assignments, cfg)
+		fileCfg := mergeAnalysisConfig(cfg.Analysis, files[i].path, perFile, pkgExports)
+		files[i].analysis = analysis.Analyze(files[i].exprs, fileCfg)
+	}
+
+	assignments, assignmentKeys, symMap := buildAssignments(files, cfg)
+	for i := range files {
+		applyAssignments(&files[i], assignments, assignmentKeys, cfg)
 	}
 
 	result := &Result{
@@ -188,7 +191,173 @@ func parseFile(input InputFile) (parsedFile, error) {
 	}, nil
 }
 
-func buildAssignments(files []parsedFile, cfg *Config) (map[*analysis.Symbol]string, SymbolMap) {
+func mergeAnalysisConfig(base *analysis.Config, filename string, perFile map[string]fileSymbols, pkgExports map[string][]analysis.ExternalSymbol) *analysis.Config {
+	cfg := &analysis.Config{Filename: filename}
+	if base != nil {
+		cfg.ExtraGlobals = append(cfg.ExtraGlobals, base.ExtraGlobals...)
+		cfg.PackageExports = copyPackageExports(base.PackageExports)
+	}
+	if cfg.PackageExports == nil {
+		cfg.PackageExports = make(map[string][]analysis.ExternalSymbol)
+	}
+	for pkg, exports := range pkgExports {
+		cfg.PackageExports[pkg] = append(cfg.PackageExports[pkg], exports...)
+	}
+	for path, symbols := range perFile {
+		if path == filename {
+			continue
+		}
+		cfg.ExtraGlobals = append(cfg.ExtraGlobals, symbols.globals...)
+	}
+	return cfg
+}
+
+func copyPackageExports(in map[string][]analysis.ExternalSymbol) map[string][]analysis.ExternalSymbol {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string][]analysis.ExternalSymbol, len(in))
+	for pkg, symbols := range in {
+		out[pkg] = append([]analysis.ExternalSymbol(nil), symbols...)
+	}
+	return out
+}
+
+func scanInputSymbols(files []parsedFile) (map[string]fileSymbols, map[string][]analysis.ExternalSymbol) {
+	perFile := make(map[string]fileSymbols, len(files))
+	pkgExports := make(map[string][]analysis.ExternalSymbol)
+	for _, file := range files {
+		globals, exports := scanProgramSymbols(file.exprs)
+		perFile[file.path] = fileSymbols{globals: globals}
+		for pkg, syms := range exports {
+			pkgExports[pkg] = append(pkgExports[pkg], syms...)
+		}
+	}
+	return perFile, pkgExports
+}
+
+func scanProgramSymbols(exprs []*lisp.LVal) ([]analysis.ExternalSymbol, map[string][]analysis.ExternalSymbol) {
+	defs := make(map[string]analysis.ExternalSymbol)
+	exported := make(map[string]map[string]bool)
+	currentPkg := "user"
+
+	for _, expr := range exprs {
+		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 || expr.Cells[0].Type != lisp.LSymbol {
+			continue
+		}
+		switch expr.Cells[0].Str {
+		case "in-package":
+			if pkg := packageName(expr.Cells[1:]); pkg != "" {
+				currentPkg = pkg
+			}
+		case "defun":
+			if sym := topLevelDef(expr, analysis.SymFunction, currentPkg); sym != nil {
+				defs[currentPkg+"/"+sym.Name] = *sym
+			}
+		case "defmacro":
+			if sym := topLevelDef(expr, analysis.SymMacro, currentPkg); sym != nil {
+				defs[currentPkg+"/"+sym.Name] = *sym
+			}
+		case "deftype":
+			if sym := topLevelDef(expr, analysis.SymType, currentPkg); sym != nil {
+				defs[currentPkg+"/"+sym.Name] = *sym
+			}
+		case "set":
+			if sym := topLevelSet(expr, currentPkg); sym != nil {
+				defs[currentPkg+"/"+sym.Name] = *sym
+			}
+		case "export":
+			names := exportNames(expr.Cells[1:])
+			if len(names) == 0 {
+				continue
+			}
+			if exported[currentPkg] == nil {
+				exported[currentPkg] = make(map[string]bool)
+			}
+			for _, name := range names {
+				exported[currentPkg][name] = true
+			}
+		}
+	}
+
+	globals := make([]analysis.ExternalSymbol, 0, len(defs))
+	pkgExports := make(map[string][]analysis.ExternalSymbol)
+	for key, sym := range defs {
+		globals = append(globals, sym)
+		pkg, name, _ := strings.Cut(key, "/")
+		if exported[pkg][name] {
+			pkgExports[pkg] = append(pkgExports[pkg], sym)
+		}
+	}
+	return globals, pkgExports
+}
+
+func topLevelDef(expr *lisp.LVal, kind analysis.SymbolKind, pkg string) *analysis.ExternalSymbol {
+	if len(expr.Cells) < 2 || expr.Cells[1].Type != lisp.LSymbol {
+		return nil
+	}
+	return &analysis.ExternalSymbol{
+		Name:    expr.Cells[1].Str,
+		Kind:    kind,
+		Package: pkg,
+		Source:  expr.Cells[1].Source,
+	}
+}
+
+func topLevelSet(expr *lisp.LVal, pkg string) *analysis.ExternalSymbol {
+	if len(expr.Cells) < 2 {
+		return nil
+	}
+	name := setName(expr.Cells[1])
+	if name == "" {
+		return nil
+	}
+	return &analysis.ExternalSymbol{
+		Name:    name,
+		Kind:    analysis.SymVariable,
+		Package: pkg,
+		Source:  expr.Cells[1].Source,
+	}
+}
+
+func packageName(args []*lisp.LVal) string {
+	if len(args) == 0 {
+		return ""
+	}
+	arg := args[0]
+	if arg.Type == lisp.LString || arg.Type == lisp.LSymbol {
+		return arg.Str
+	}
+	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+		return arg.Cells[0].Str
+	}
+	return ""
+}
+
+func exportNames(args []*lisp.LVal) []string {
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		switch {
+		case arg.Type == lisp.LSymbol:
+			out = append(out, arg.Str)
+		case arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol:
+			out = append(out, arg.Cells[0].Str)
+		}
+	}
+	return out
+}
+
+func setName(arg *lisp.LVal) string {
+	if arg.Type == lisp.LSymbol {
+		return arg.Str
+	}
+	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+		return arg.Cells[0].Str
+	}
+	return ""
+}
+
+func buildAssignments(files []parsedFile, cfg *Config) (map[*analysis.Symbol]string, map[string]string, SymbolMap) {
 	type symbolRecord struct {
 		sym *analysis.Symbol
 	}
@@ -208,6 +377,7 @@ func buildAssignments(files []parsedFile, cfg *Config) (map[*analysis.Symbol]str
 	})
 
 	assignments := make(map[*analysis.Symbol]string, len(records))
+	assignmentKeys := make(map[string]string, len(records))
 	entries := make([]SymbolMapEntry, 0, len(records))
 	minToOrig := make(map[string]string, len(records))
 	origToMin := make(map[string][]string)
@@ -215,6 +385,7 @@ func buildAssignments(files []parsedFile, cfg *Config) (map[*analysis.Symbol]str
 	for i, record := range records {
 		newName := fmt.Sprintf("x%d", i+1)
 		assignments[record.sym] = newName
+		assignmentKeys[symbolLookupKey(record.sym)] = newName
 
 		entry := SymbolMapEntry{
 			Minified: newName,
@@ -235,14 +406,14 @@ func buildAssignments(files []parsedFile, cfg *Config) (map[*analysis.Symbol]str
 		sort.Strings(origToMin[name])
 	}
 
-	return assignments, SymbolMap{
+	return assignments, assignmentKeys, SymbolMap{
 		Entries:            entries,
 		MinifiedToOriginal: minToOrig,
 		OriginalToMinified: origToMin,
 	}
 }
 
-func applyAssignments(file *parsedFile, assignments map[*analysis.Symbol]string, cfg *Config) {
+func applyAssignments(file *parsedFile, assignments map[*analysis.Symbol]string, assignmentKeys map[string]string, cfg *Config) {
 	for sym, newName := range assignments {
 		if sym.Node != nil && sym.Node.Type == lisp.LSymbol {
 			sym.Node.Str = newName
@@ -250,7 +421,11 @@ func applyAssignments(file *parsedFile, assignments map[*analysis.Symbol]string,
 	}
 
 	for _, ref := range file.analysis.References {
-		if newName, ok := assignments[ref.Symbol]; ok && ref.Node != nil && ref.Node.Type == lisp.LSymbol {
+		newName, ok := assignments[ref.Symbol]
+		if !ok {
+			newName, ok = assignmentKeys[symbolLookupKey(ref.Symbol)]
+		}
+		if ok && ref.Node != nil && ref.Node.Type == lisp.LSymbol {
 			ref.Node.Str = newName
 		}
 	}
@@ -258,6 +433,21 @@ func applyAssignments(file *parsedFile, assignments map[*analysis.Symbol]string,
 	if cfg.RenameExports {
 		rewriteExports(file.exprs, file.analysis.RootScope, assignments)
 	}
+}
+
+func symbolLookupKey(sym *analysis.Symbol) string {
+	if sym == nil {
+		return ""
+	}
+	file := ""
+	line := 0
+	col := 0
+	if sym.Source != nil {
+		file = sym.Source.File
+		line = sym.Source.Line
+		col = sym.Source.Col
+	}
+	return fmt.Sprintf("%s|%s|%s|%d|%d", sym.Name, sym.Kind.String(), file, line, col)
 }
 
 func rewriteExports(exprs []*lisp.LVal, scope *analysis.Scope, assignments map[*analysis.Symbol]string) {
