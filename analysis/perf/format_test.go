@@ -20,7 +20,7 @@ func TestFormatText(t *testing.T) {
 			Message:  `expensive call "db-put" inside loop (depth 1)`,
 			Function: "process",
 			Source:   &token.Location{File: "test.lisp", Line: 5, Col: 3},
-			File:    "test.lisp",
+			File:     "test.lisp",
 		},
 	}
 
@@ -39,8 +39,8 @@ func TestFormatJSON(t *testing.T) {
 			Message:  "recursive cycle: ping -> pong",
 			Function: "ping",
 			Source:   &token.Location{File: "test.lisp", Line: 1, Col: 1},
-			File:    "test.lisp",
-			Details: []string{"ping", "pong"},
+			File:     "test.lisp",
+			Details:  []string{"ping", "pong"},
 		},
 	}
 
@@ -59,4 +59,23 @@ func TestFormatJSON(t *testing.T) {
 	assert.Equal(t, 1, parsed[0].Line)
 	assert.Equal(t, 1, parsed[0].Col)
 	assert.Equal(t, []string{"ping", "pong"}, parsed[0].Details)
+}
+
+func TestFormatJSON_EmptyCollections(t *testing.T) {
+	t.Parallel()
+	outputs := make([]string, 0, 2)
+	for _, issues := range [][]Issue{nil, {}} {
+		var buf bytes.Buffer
+		err := FormatJSON(&buf, issues)
+		require.NoError(t, err)
+		outputs = append(outputs, buf.String())
+
+		var parsed any
+		require.NoError(t, json.Unmarshal(buf.Bytes(), &parsed))
+		slice, ok := parsed.([]any)
+		require.True(t, ok, "empty JSON output should decode as an array")
+		assert.Len(t, slice, 0)
+	}
+	require.Len(t, outputs, 2)
+	assert.Equal(t, outputs[0], outputs[1])
 }

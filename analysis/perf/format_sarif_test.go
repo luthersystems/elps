@@ -114,26 +114,40 @@ func TestFormatSARIF_Fingerprints(t *testing.T) {
 
 func TestFormatSARIF_AllRules(t *testing.T) {
 	t.Parallel()
-	var buf bytes.Buffer
-	err := FormatSARIF(&buf, nil, "elps-perf", "0.1.0")
-	require.NoError(t, err)
+	outputs := make([]string, 0, 2)
+	for _, issues := range [][]Issue{nil, {}} {
+		var buf bytes.Buffer
+		err := FormatSARIF(&buf, issues, "elps-perf", "0.1.0")
+		require.NoError(t, err)
+		outputs = append(outputs, buf.String())
 
-	var log sarifLog
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &log))
+		var log sarifLog
+		require.NoError(t, json.Unmarshal(buf.Bytes(), &log))
 
-	rules := log.Runs[0].Tool.Driver.Rules
-	require.Len(t, rules, 5)
+		rules := log.Runs[0].Tool.Driver.Rules
+		require.Len(t, rules, 5)
 
-	ruleIDs := make([]string, len(rules))
-	for i, r := range rules {
-		ruleIDs[i] = r.ID
+		ruleIDs := make([]string, len(rules))
+		for i, r := range rules {
+			ruleIDs[i] = r.ID
+		}
+		assert.Equal(t, []string{"PERF001", "PERF002", "PERF003", "PERF004", "UNKNOWN001"}, ruleIDs)
+		assert.Equal(t, "HotPath", rules[0].Name)
+		assert.Equal(t, "DynamicDispatch", rules[4].Name)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(buf.Bytes(), &raw))
+		runs, ok := raw["runs"].([]any)
+		require.True(t, ok)
+		require.Len(t, runs, 1)
+		run, ok := runs[0].(map[string]any)
+		require.True(t, ok)
+		results, ok := run["results"].([]any)
+		require.True(t, ok, "empty SARIF results should decode as an array")
+		assert.Len(t, results, 0)
 	}
-	assert.Equal(t, []string{"PERF001", "PERF002", "PERF003", "PERF004", "UNKNOWN001"}, ruleIDs)
-	assert.Equal(t, "HotPath", rules[0].Name)
-	assert.Equal(t, "DynamicDispatch", rules[4].Name)
-
-	// Nil issues should produce an empty results array.
-	assert.Empty(t, log.Runs[0].Results)
+	require.Len(t, outputs, 2)
+	assert.Equal(t, outputs[0], outputs[1])
 }
 
 func TestFormatSARIF_SeverityMapping(t *testing.T) {

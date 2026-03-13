@@ -19,7 +19,7 @@ func FormatSARIF(w io.Writer, issues []Issue, toolName, toolVersion string) erro
 		ruleIndex[RuleID(r.ID)] = i
 	}
 
-	var results []sarifResult
+	results := make([]sarifResult, 0, len(issues))
 	for _, issue := range issues {
 		r := sarifResult{
 			RuleID:    string(issue.Rule),
