@@ -107,7 +107,8 @@ func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
 		files[i].analysis = analysis.Analyze(files[i].exprs, fileCfg)
 	}
 
-	assignments, assignmentKeys, symMap := buildAssignments(files, cfg)
+	protected := protectedMacroTemplateNames(files, cfg.Exclusions)
+	assignments, assignmentKeys, symMap := buildAssignments(files, cfg, protected)
 	for i := range files {
 		applyAssignments(&files[i], assignments, assignmentKeys, cfg)
 	}
@@ -359,7 +360,7 @@ func setName(arg *lisp.LVal) string {
 	return ""
 }
 
-func buildAssignments(files []parsedFile, cfg *Config) (map[*analysis.Symbol]string, map[string]string, SymbolMap) {
+func buildAssignments(files []parsedFile, cfg *Config, exclusions map[string]bool) (map[*analysis.Symbol]string, map[string]string, SymbolMap) {
 	type symbolRecord struct {
 		sym *analysis.Symbol
 	}
@@ -367,7 +368,7 @@ func buildAssignments(files []parsedFile, cfg *Config) (map[*analysis.Symbol]str
 	var records []symbolRecord
 	for _, file := range files {
 		for _, sym := range file.analysis.Symbols {
-			if !renameable(sym, cfg) {
+			if !renameable(sym, cfg, exclusions) {
 				continue
 			}
 			records = append(records, symbolRecord{sym: sym})
@@ -479,7 +480,7 @@ func rewriteExports(exprs []*lisp.LVal, scope *analysis.Scope, assignments map[*
 	}
 }
 
-func renameable(sym *analysis.Symbol, cfg *Config) bool {
+func renameable(sym *analysis.Symbol, cfg *Config, exclusions map[string]bool) bool {
 	if sym == nil || sym.Node == nil || sym.Node.Type != lisp.LSymbol {
 		return false
 	}
@@ -496,10 +497,81 @@ func renameable(sym *analysis.Symbol, cfg *Config) bool {
 	if name == "" || strings.Contains(name, ":") || strings.HasPrefix(name, ":") || strings.HasPrefix(name, "%") {
 		return false
 	}
-	if cfg.Exclusions != nil && cfg.Exclusions[name] {
+	if exclusions != nil && exclusions[name] {
 		return false
 	}
 	return true
+}
+
+func protectedMacroTemplateNames(files []parsedFile, base map[string]bool) map[string]bool {
+	protected := make(map[string]bool, len(base))
+	for name := range base {
+		protected[name] = true
+	}
+	for _, file := range files {
+		for _, expr := range file.exprs {
+			collectProtectedMacroTemplateNames(expr, protected)
+		}
+	}
+	return protected
+}
+
+func collectProtectedMacroTemplateNames(expr *lisp.LVal, protected map[string]bool) {
+	if expr == nil || expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) < 4 {
+		return
+	}
+	if expr.Cells[0].Type != lisp.LSymbol || expr.Cells[0].Str != "defmacro" {
+		return
+	}
+	for _, body := range expr.Cells[3:] {
+		walkMacroBodyForQuasiquote(body, protected)
+	}
+}
+
+func walkMacroBodyForQuasiquote(node *lisp.LVal, protected map[string]bool) {
+	if node == nil || node.Type != lisp.LSExpr {
+		return
+	}
+	if !node.Quoted && len(node.Cells) > 0 && node.Cells[0].Type == lisp.LSymbol && node.Cells[0].Str == "quasiquote" {
+		if len(node.Cells) > 1 {
+			collectTemplateSymbols(node.Cells[1], protected)
+		}
+		return
+	}
+	for _, child := range node.Cells {
+		walkMacroBodyForQuasiquote(child, protected)
+	}
+}
+
+func collectTemplateSymbols(node *lisp.LVal, protected map[string]bool) {
+	if node == nil {
+		return
+	}
+	if node.Type == lisp.LSymbol {
+		if preserveMacroTemplateName(node.Str) {
+			protected[node.Str] = true
+		}
+		return
+	}
+	if node.Type != lisp.LSExpr {
+		return
+	}
+	if !node.Quoted && len(node.Cells) > 0 && node.Cells[0].Type == lisp.LSymbol {
+		switch node.Cells[0].Str {
+		case "unquote", "unquote-splicing":
+			return
+		}
+	}
+	for _, child := range node.Cells {
+		collectTemplateSymbols(child, protected)
+	}
+}
+
+func preserveMacroTemplateName(name string) bool {
+	return name != "" &&
+		!strings.Contains(name, ":") &&
+		!strings.HasPrefix(name, ":") &&
+		!strings.HasPrefix(name, "%")
 }
 
 func compareSymbols(a, b *analysis.Symbol) int {

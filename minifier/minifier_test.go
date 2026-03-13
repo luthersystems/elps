@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -141,19 +143,6 @@ func TestMinifySource_StripsCommentsByDefault(t *testing.T) {
 	assert.Equal(t, "(defun x1 (x2) (let ((x3 (+ x2 1))) x3))\n", string(out))
 }
 
-func TestMinifySource_QuasiquoteOnlyRenamesUnquotedCode(t *testing.T) {
-	src := []byte(`(set 'x 1)
-(quasiquote (list x (unquote x) (unquote-splicing [x])))
-`)
-
-	out, symMap, err := MinifySource(src, "qq.lisp", nil)
-	require.NoError(t, err)
-
-	assert.Equal(t, "(set 'x1 1)\n(quasiquote (list x (unquote x1) (unquote-splicing [x])))\n", string(out))
-	require.Len(t, symMap.Entries, 1)
-	assert.Equal(t, "x", symMap.MinifiedToOriginal["x1"])
-}
-
 func TestMinifySource_WithWorkspacePreservesImportedSymbols(t *testing.T) {
 	dir := t.TempDir()
 	libPath := filepath.Join(dir, "lib.lisp")
@@ -176,6 +165,121 @@ func TestMinifySource_WithWorkspacePreservesImportedSymbols(t *testing.T) {
 	require.Len(t, symMap.Entries, 2)
 	assert.Equal(t, "outer", symMap.MinifiedToOriginal["x1"])
 	assert.Equal(t, "value", symMap.MinifiedToOriginal["x2"])
+}
+
+func TestMinifySource_PreservesMacroTemplateHelperReferences(t *testing.T) {
+	src := []byte(`(defun helper (value)
+  (+ value 1))
+
+(defmacro wrap (expr)
+  (quasiquote
+    (helper (unquote expr))))
+
+(defun outer (value)
+  (wrap value))
+
+(outer 41)
+`)
+
+	out, symMap, err := MinifySource(src, "macro-helper.lisp", nil)
+	require.NoError(t, err)
+
+	result := evalMinifiedProgram(t, []InputFile{{Path: "macro-helper.lisp", Source: out}})
+	require.Equal(t, lisp.LInt, result.Type)
+	assert.Equal(t, 42, result.Int)
+
+	assert.Contains(t, string(out), "(defun helper")
+	assert.Contains(t, string(out), "(helper (unquote x")
+	assert.NotContains(t, symMap.MinifiedToOriginal, "helper")
+	assert.Contains(t, symMap.OriginalToMinified, "outer")
+}
+
+func TestMinifySource_PreservesMacroTemplateQuotedSetSymbols(t *testing.T) {
+	src := []byte(`(set 'counter 0)
+
+(defmacro bump-counter ()
+  (quasiquote
+    (set 'counter (+ counter 1))))
+
+(defun run ()
+  (bump-counter)
+  counter)
+
+(run)
+`)
+
+	out, symMap, err := MinifySource(src, "macro-set.lisp", nil)
+	require.NoError(t, err)
+
+	result := evalMinifiedProgram(t, []InputFile{{Path: "macro-set.lisp", Source: out}})
+	require.Equal(t, lisp.LInt, result.Type)
+	assert.Equal(t, 1, result.Int)
+
+	assert.Contains(t, string(out), "(set 'counter")
+	assert.NotContains(t, symMap.MinifiedToOriginal, "counter")
+}
+
+func TestMinifySource_PreservesMacroGeneratedLocalRecursion(t *testing.T) {
+	src := []byte(`(defmacro sum-down (n)
+  (quasiquote
+    (labels ([loop (x acc)
+              (if (<= x 0)
+                acc
+                (loop (- x 1) (+ acc x)))])
+      (loop (unquote n) 0))))
+
+(defun run (value)
+  (sum-down value))
+
+(run 4)
+`)
+
+	out, symMap, err := MinifySource(src, "macro-labels.lisp", nil)
+	require.NoError(t, err)
+
+	result := evalMinifiedProgram(t, []InputFile{{Path: "macro-labels.lisp", Source: out}})
+	require.Equal(t, lisp.LInt, result.Type)
+	assert.Equal(t, 10, result.Int)
+
+	assert.Contains(t, string(out), "[loop (x acc)")
+	assert.NotContains(t, symMap.MinifiedToOriginal, "loop")
+}
+
+func TestMinify_MultiFileMacroTemplateReferencesRemainExecutable(t *testing.T) {
+	inputs := []InputFile{
+		{
+			Path: "lib.lisp",
+			Source: []byte(`(defun helper (value)
+  (+ value 1))
+
+(defmacro wrap (expr)
+  (quasiquote
+    (helper (unquote expr))))
+`),
+		},
+		{
+			Path: "main.lisp",
+			Source: []byte(`(defun outer (value)
+  (wrap value))
+
+(outer 41)
+`),
+		},
+	}
+
+	result, err := Minify(inputs, &Config{})
+	require.NoError(t, err)
+	require.Len(t, result.Files, 2)
+
+	evalResult := evalMinifiedProgram(t, []InputFile{
+		{Path: result.Files[0].Path, Source: result.Files[0].Output},
+		{Path: result.Files[1].Path, Source: result.Files[1].Output},
+	})
+	require.Equal(t, lisp.LInt, evalResult.Type)
+	assert.Equal(t, 42, evalResult.Int)
+
+	assert.Contains(t, string(result.Files[0].Output), "(defun helper")
+	assert.NotContains(t, result.SymbolMap.MinifiedToOriginal, "helper")
 }
 
 func TestReadExcludeFile(t *testing.T) {
@@ -203,4 +307,26 @@ func TestSymbolMapJSON(t *testing.T) {
 	assert.Equal(t, symMap.Entries, parsed.Entries)
 	assert.Equal(t, symMap.MinifiedToOriginal, parsed.MinifiedToOriginal)
 	assert.Equal(t, symMap.OriginalToMinified, parsed.OriginalToMinified)
+}
+
+func evalMinifiedProgram(t *testing.T, files []InputFile) *lisp.LVal {
+	t.Helper()
+
+	env := lisp.NewEnv(nil)
+	lerr := lisp.InitializeUserEnv(env)
+	require.Truef(t, lerr.IsNil(), "InitializeUserEnv failed: %v", lerr)
+	env.Runtime.Reader = parser.NewReader()
+	lerr = env.InPackage(lisp.String(lisp.DefaultUserPackage))
+	require.Truef(t, lerr.IsNil(), "InPackage failed: %v", lerr)
+
+	var result *lisp.LVal
+	for _, file := range files {
+		program := env.LoadString(file.Path, string(file.Source))
+		require.NotNil(t, program)
+		result = env.Eval(program)
+		require.NotNil(t, result)
+		require.NotEqualf(t, lisp.LError, result.Type, "program %s failed: %v", file.Path, result)
+	}
+
+	return result
 }
