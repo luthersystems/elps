@@ -112,7 +112,7 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 	for _, name := range order {
 		sf := solved[name]
 		fn := graph.Functions[name]
-		if sf == nil || fn == nil || fn.Suppressed {
+		if sf == nil || fn == nil {
 			continue
 		}
 
@@ -128,7 +128,7 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 				Trace:    buildHotPathTrace(name, graph, solved, cfg),
 			}
 			issue.Fingerprint = fingerprint(issue)
-			issues = append(issues, issue)
+			issues = appendIssueUnlessSuppressed(issues, fn, issue)
 		}
 
 		// PERF002: Scaling risk
@@ -144,7 +144,7 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 					Trace:    buildScalingTrace(name, graph, solved),
 				}
 				issue.Fingerprint = fingerprint(issue)
-				issues = append(issues, issue)
+				issues = appendIssueUnlessSuppressed(issues, fn, issue)
 			} else if sf.ScalingOrder >= cfg.MaxAcceptableOrder {
 				issue := Issue{
 					Rule:     PERF002,
@@ -156,7 +156,7 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 					Trace:    buildScalingTrace(name, graph, solved),
 				}
 				issue.Fingerprint = fingerprint(issue)
-				issues = append(issues, issue)
+				issues = appendIssueUnlessSuppressed(issues, fn, issue)
 			}
 		}
 
@@ -181,7 +181,7 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 						},
 					}
 					issue.Fingerprint = fingerprint(issue)
-					issues = append(issues, issue)
+					issues = appendIssueUnlessSuppressed(issues, fn, issue)
 				}
 			}
 		}
@@ -215,7 +215,7 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 					Trace:    trace,
 				}
 				issue.Fingerprint = fingerprint(issue)
-				issues = append(issues, issue)
+				issues = appendCycleIssueUnlessSuppressed(issues, graph, sorted, issue)
 			}
 		}
 
@@ -232,7 +232,7 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 						File:     fn.File,
 					}
 					issue.Fingerprint = fingerprint(issue)
-					issues = append(issues, issue)
+					issues = appendIssueUnlessSuppressed(issues, fn, issue)
 				}
 			}
 		}
@@ -260,6 +260,22 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 		}
 	}
 	return solvedList, issues
+}
+
+func appendIssueUnlessSuppressed(issues []Issue, fn *FunctionSummary, issue Issue) []Issue {
+	if suppressesRule(fn, issue.Rule) {
+		return issues
+	}
+	return append(issues, issue)
+}
+
+func appendCycleIssueUnlessSuppressed(issues []Issue, graph *CallGraph, cycle []string, issue Issue) []Issue {
+	for _, member := range cycle {
+		if suppressesRule(graph.Functions[member], issue.Rule) {
+			return issues
+		}
+	}
+	return append(issues, issue)
 }
 
 // fingerprint generates a stable sha256-based identifier for an issue.

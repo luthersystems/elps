@@ -8,19 +8,15 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
-// isSuppressed checks whether a function definition has a suppression
-// comment in its leading comments. The default directive is:
-//
-//	;; elps-analyze-disable
-//
-// The prefix can be customized via Config.SuppressionPrefix so that
-// embedders can use their own convention (e.g., "substrate-analyze-disable").
-//
-// When present on a defun/defmacro, the function is excluded from
-// performance analysis entirely.
-func isSuppressed(node *lisp.LVal, prefix string) bool {
+type suppression struct {
+	all   bool
+	rules map[RuleID]bool
+}
+
+func parseSuppression(node *lisp.LVal, prefix string) suppression {
+	var out suppression
 	if node == nil || node.Meta == nil {
-		return false
+		return out
 	}
 	if prefix == "" {
 		prefix = "elps-analyze-disable"
@@ -33,8 +29,52 @@ func isSuppressed(node *lisp.LVal, prefix string) bool {
 		text = strings.TrimLeft(text, ";")
 		text = strings.TrimSpace(text)
 		if text == prefix {
-			return true
+			out.all = true
+			out.rules = nil
+			return out
+		}
+		ruleText, ok := strings.CutPrefix(text, prefix+":")
+		if !ok {
+			continue
+		}
+		if out.rules == nil {
+			out.rules = make(map[RuleID]bool)
+		}
+		for _, part := range strings.Split(ruleText, ",") {
+			rule := parseSuppressedRule(part)
+			if rule == "" {
+				continue
+			}
+			out.rules[rule] = true
 		}
 	}
-	return false
+	return out
+}
+
+func parseSuppressedRule(part string) RuleID {
+	rule := RuleID(strings.TrimSpace(part))
+	switch rule {
+	case PERF001, PERF002, PERF003, PERF004, UNKNOWN001:
+		return rule
+	default:
+		return ""
+	}
+}
+
+func applySuppression(summary *FunctionSummary, s suppression) {
+	if summary == nil {
+		return
+	}
+	summary.SuppressAll = s.all
+	summary.SuppressedRules = s.rules
+}
+
+func suppressesRule(summary *FunctionSummary, rule RuleID) bool {
+	if summary == nil {
+		return false
+	}
+	if summary.SuppressAll {
+		return true
+	}
+	return summary.SuppressedRules[rule]
 }

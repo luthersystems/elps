@@ -113,6 +113,88 @@ func TestSolve_Suppressed(t *testing.T) {
 	}
 }
 
+func TestSolve_RuleSpecificSuppression(t *testing.T) {
+	src := `
+;; elps-analyze-disable:PERF004
+(defun recursive-expensive (items)
+  (map 'list (lambda (item) (db-put item)) items)
+  (recursive-expensive items))
+`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	cfg.MaxScore = 10
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+	graph := BuildGraph(summaries)
+	_, issues := Solve(graph, cfg)
+
+	var perf001, perf003, perf004 int
+	for _, issue := range issues {
+		if issue.Function != "recursive-expensive" {
+			continue
+		}
+		switch issue.Rule {
+		case PERF001:
+			perf001++
+		case PERF003:
+			perf003++
+		case PERF004:
+			perf004++
+		}
+	}
+
+	assert.Greater(t, perf001, 0, "rule-specific suppression should not hide PERF001")
+	assert.Greater(t, perf003, 0, "rule-specific suppression should not hide PERF003")
+	assert.Zero(t, perf004, "PERF004 should be suppressed for this function")
+}
+
+func TestSolve_MultiRuleSuppression(t *testing.T) {
+	src := `
+;; elps-analyze-disable:PERF001,PERF004
+(defun recursive-expensive (items)
+  (map 'list (lambda (item) (db-put item)) items)
+  (recursive-expensive items))
+`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	cfg.MaxScore = 10
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+	graph := BuildGraph(summaries)
+	_, issues := Solve(graph, cfg)
+
+	for _, issue := range issues {
+		if issue.Function != "recursive-expensive" {
+			continue
+		}
+		assert.NotEqual(t, PERF001, issue.Rule)
+		assert.NotEqual(t, PERF004, issue.Rule)
+	}
+
+	var perf003 int
+	for _, issue := range issues {
+		if issue.Function == "recursive-expensive" && issue.Rule == PERF003 {
+			perf003++
+		}
+	}
+	assert.Greater(t, perf003, 0, "multi-rule suppression should still allow other findings")
+}
+
+func TestSolve_PERF004SuppressionOnAnyCycleMember(t *testing.T) {
+	src := `
+(defun alpha (n) (if (= n 0) true (beta (- n 1))))
+;; elps-analyze-disable:PERF004
+(defun beta (n) (if (= n 0) true (alpha (- n 1))))
+`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+	graph := BuildGraph(summaries)
+	_, issues := Solve(graph, cfg)
+
+	for _, issue := range issues {
+		assert.NotEqual(t, PERF004, issue.Rule, "PERF004 should be suppressed when any cycle member suppresses it")
+	}
+}
+
 func TestSolve_ScalingPropagation(t *testing.T) {
 	src := `
 (defun inner () (concat 'string "x"))

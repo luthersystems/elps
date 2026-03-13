@@ -97,6 +97,8 @@ directory upward). Override with --config.
 
 To suppress analysis for a specific function, add a leading comment:
   ;; elps-analyze-disable
+  ;; elps-analyze-disable:PERF004
+  ;; elps-analyze-disable:PERF002,PERF004
   (defun my-function () ...)
 
 Exit codes:
