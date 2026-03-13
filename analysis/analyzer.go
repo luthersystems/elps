@@ -40,6 +40,8 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 			a.prescanUsePackage(expr, scope)
 		case "in-package":
 			a.prescanInPackage(expr, scope)
+		default:
+			a.prescanCustomDef(expr, scope)
 		}
 	}
 	// Phase 2: Apply exports (all definitions now exist in scope).
@@ -51,6 +53,34 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 			a.prescanExport(expr, scope)
 		}
 	}
+}
+
+func (a *analyzer) prescanCustomDef(expr *lisp.LVal, scope *Scope) {
+	match, ok := customDefLikeMatch(expr, a.cfg)
+	if !ok || !match.bindsName || match.nameIdx <= 0 || match.nameIdx >= len(expr.Cells) {
+		return
+	}
+	nameVal := expr.Cells[match.nameIdx]
+	if nameVal.Type != lisp.LSymbol || scope.LookupLocal(nameVal.Str) != nil {
+		return
+	}
+	formalsVal := expr.Cells[match.formalsIdx]
+	if formalsVal.Type != lisp.LSExpr {
+		return
+	}
+	kind := match.nameKind
+	if kind != SymVariable && kind != SymFunction && kind != SymMacro && kind != SymType {
+		kind = SymFunction
+	}
+	sym := &Symbol{
+		Name:      nameVal.Str,
+		Kind:      kind,
+		Source:    nameVal.Source,
+		Node:      nameVal,
+		Signature: signatureFromFormals(formalsVal),
+	}
+	scope.Define(sym)
+	a.result.Symbols = append(a.result.Symbols, sym)
 }
 
 func (a *analyzer) prescanDefun(expr *lisp.LVal, scope *Scope, kind SymbolKind) {

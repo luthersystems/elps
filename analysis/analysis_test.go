@@ -974,6 +974,34 @@ func TestAnalyze_CustomDefForm_EmptyFormals(t *testing.T) {
 	assert.Equal(t, SymFunction, sym.Kind)
 }
 
+func TestAnalyze_CustomDefForm_PrescanSupportsExportBeforeDefinition(t *testing.T) {
+	result := parseAndAnalyzeWithConfig(t, `
+(export 'handler)
+(endpoint handler (req) req)`, &Config{
+		DefForms: []DefFormSpec{
+			{Head: "endpoint", FormalsIndex: 2, BindsName: true, NameIndex: 1, NameKind: SymFunction},
+		},
+	})
+
+	sym := result.RootScope.LookupLocal("handler")
+	require.NotNil(t, sym)
+	assert.True(t, sym.Exported)
+}
+
+func TestAnalyze_CustomDefForm_PrescanSupportsForwardReference(t *testing.T) {
+	result := parseAndAnalyzeWithConfig(t, `
+(defun caller () (handler 1))
+(endpoint handler (req) req)`, &Config{
+		DefForms: []DefFormSpec{
+			{Head: "endpoint", FormalsIndex: 2, BindsName: true, NameIndex: 1, NameKind: SymFunction},
+		},
+	})
+
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "handler", u.Name)
+	}
+}
+
 func TestAnalyze_DefPrefix_DefaultInsideLabelsOptionalParam(t *testing.T) {
 	result := parseAndAnalyze(t, `
 (defun outer ()

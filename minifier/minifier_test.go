@@ -462,6 +462,42 @@ func TestMinifySource_RenameExportsRewritesQualifiedReferences(t *testing.T) {
 	assert.Equal(t, 42, evalResult.Int)
 }
 
+func TestMinify_PrivateQualifiedReferencePreservedRegardlessOfFileOrder(t *testing.T) {
+	inputs := []InputFile{
+		{
+			Path: "router.lisp",
+			Source: []byte(`(in-package 'router)
+(defun helper (value)
+  value)
+`),
+		},
+		{
+			Path: "batch.lisp",
+			Source: []byte(`(in-package 'batch)
+(defun run ()
+  (router:helper 42))
+
+(run)
+`),
+		},
+	}
+
+	result, err := Minify(inputs, &Config{})
+	require.NoError(t, err)
+	require.Len(t, result.Files, 2)
+
+	assert.Contains(t, string(result.Files[0].Output), "(defun helper ")
+	assert.Contains(t, string(result.Files[1].Output), "(router:helper 42)")
+	assert.NotContains(t, result.SymbolMap.OriginalToMinified, "helper")
+
+	evalResult := evalMinifiedProgram(t, []InputFile{
+		{Path: result.Files[0].Path, Source: result.Files[0].Output},
+		{Path: result.Files[1].Path, Source: result.Files[1].Output},
+	})
+	require.Equal(t, lisp.LInt, evalResult.Type)
+	assert.Equal(t, 42, evalResult.Int)
+}
+
 func TestMinify_ImportedExportedSymbolBeatsUnrelatedPrivateHelper(t *testing.T) {
 	inputs := []InputFile{
 		{
@@ -546,6 +582,42 @@ func TestMinify_SamePackagePrivateCrossFileReferenceStillRewrites(t *testing.T) 
 	require.NotEmpty(t, helperMinified)
 	assert.Contains(t, string(result.Files[0].Output), "(defun "+helperMinified+" ")
 	assert.Contains(t, string(result.Files[1].Output), "("+helperMinified+" x")
+}
+
+func TestMinify_CustomDefForm_MultiFileReferencesRewriteAndExportsPreserve(t *testing.T) {
+	inputs := []InputFile{
+		{
+			Path: "api.lisp",
+			Source: []byte(`(in-package 'svc)
+(export 'handler)
+(endpoint handler (req)
+  req)
+`),
+		},
+		{
+			Path: "app.lisp",
+			Source: []byte(`(in-package 'svc)
+(endpoint caller ()
+  (handler 42))
+
+(caller)
+`),
+		},
+	}
+
+	result, err := Minify(inputs, &Config{
+		Analysis: &analysis.Config{
+			DefForms: []analysis.DefFormSpec{
+				{Head: "endpoint", FormalsIndex: 2, BindsName: true, NameIndex: 1, NameKind: analysis.SymFunction},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Files, 2)
+
+	assert.Contains(t, string(result.Files[0].Output), "(export 'handler)")
+	assert.Contains(t, string(result.Files[0].Output), "(endpoint handler (x1) x1)")
+	assert.Contains(t, string(result.Files[1].Output), "(endpoint x2 () (handler 42))")
 }
 
 func TestMinify_MultiFileMacroTemplateReferencesRemainExecutable(t *testing.T) {

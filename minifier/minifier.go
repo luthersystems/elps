@@ -118,7 +118,7 @@ func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
 		files = append(files, file)
 	}
 
-	perFile, pkgExports := scanInputSymbols(files)
+	perFile, pkgExports := scanInputSymbols(files, cfg)
 	for i := range files {
 		fileCfg := mergeAnalysisConfig(cfg.Analysis, files[i].path, perFile, pkgExports)
 		files[i].analysis = analysis.Analyze(files[i].exprs, fileCfg)
@@ -252,11 +252,11 @@ func copyPackageExports(in map[string][]analysis.ExternalSymbol) map[string][]an
 	return out
 }
 
-func scanInputSymbols(files []parsedFile) (map[string]fileSymbols, map[string][]analysis.ExternalSymbol) {
+func scanInputSymbols(files []parsedFile, cfg *Config) (map[string]fileSymbols, map[string][]analysis.ExternalSymbol) {
 	perFile := make(map[string]fileSymbols, len(files))
 	pkgExports := make(map[string][]analysis.ExternalSymbol)
 	for _, file := range files {
-		globals, exports, packages := scanProgramSymbols(file.exprs)
+		globals, exports, packages := scanProgramSymbols(file.exprs, cfg)
 		perFile[file.path] = fileSymbols{globals: globals, packages: packages}
 		for pkg, syms := range exports {
 			pkgExports[pkg] = append(pkgExports[pkg], syms...)
@@ -265,7 +265,7 @@ func scanInputSymbols(files []parsedFile) (map[string]fileSymbols, map[string][]
 	return perFile, pkgExports
 }
 
-func scanProgramSymbols(exprs []*lisp.LVal) ([]analysis.ExternalSymbol, map[string][]analysis.ExternalSymbol, map[string]bool) {
+func scanProgramSymbols(exprs []*lisp.LVal, cfg *Config) ([]analysis.ExternalSymbol, map[string][]analysis.ExternalSymbol, map[string]bool) {
 	defs := make(map[string]analysis.ExternalSymbol)
 	exported := make(map[string]map[string]bool)
 	currentPkg := "user"
@@ -308,6 +308,10 @@ func scanProgramSymbols(exprs []*lisp.LVal) ([]analysis.ExternalSymbol, map[stri
 			for _, name := range names {
 				exported[currentPkg][name] = true
 			}
+		default:
+			if sym := topLevelCustomDef(expr, currentPkg, cfg); sym != nil {
+				defs[currentPkg+"/"+sym.Name] = *sym
+			}
 		}
 	}
 
@@ -349,6 +353,35 @@ func topLevelSet(expr *lisp.LVal, pkg string) *analysis.ExternalSymbol {
 		Package: pkg,
 		Source:  expr.Cells[1].Source,
 	}
+}
+
+func topLevelCustomDef(expr *lisp.LVal, pkg string, cfg *Config) *analysis.ExternalSymbol {
+	if cfg == nil || cfg.Analysis == nil || len(expr.Cells) == 0 {
+		return nil
+	}
+	head := astutil.HeadSymbol(expr)
+	for _, spec := range cfg.Analysis.DefForms {
+		if spec.Head != head || !spec.BindsName || spec.NameIndex <= 0 || spec.NameIndex >= len(expr.Cells) {
+			continue
+		}
+		if expr.Cells[spec.NameIndex].Type != lisp.LSymbol {
+			continue
+		}
+		kind := spec.NameKind
+		if kind != analysis.SymVariable &&
+			kind != analysis.SymFunction &&
+			kind != analysis.SymMacro &&
+			kind != analysis.SymType {
+			kind = analysis.SymFunction
+		}
+		return &analysis.ExternalSymbol{
+			Name:    expr.Cells[spec.NameIndex].Str,
+			Kind:    kind,
+			Package: pkg,
+			Source:  expr.Cells[spec.NameIndex].Source,
+		}
+	}
+	return nil
 }
 
 func packageName(args []*lisp.LVal) string {
@@ -573,6 +606,9 @@ func buildPreservationSet(files []parsedFile, cfg *Config) *preservationSet {
 func preservePackageSurfaceSymbols(files []parsedFile, cfg *Config, protected *preservationSet) {
 	qualifiedRefs := make(map[string]bool)
 	for i := range files {
+		recordFileQualifiedReferences(files[i].exprs, qualifiedRefs)
+	}
+	for i := range files {
 		currentPkg := "user"
 		for _, expr := range files[i].exprs {
 			if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
@@ -583,7 +619,6 @@ func preservePackageSurfaceSymbols(files []parsedFile, cfg *Config, protected *p
 					currentPkg = pkg
 				}
 			}
-			recordQualifiedReferences(expr, qualifiedRefs)
 			if expr.Cells[0].Type != lisp.LSymbol {
 				continue
 			}
@@ -599,8 +634,12 @@ func preservePackageSurfaceSymbols(files []parsedFile, cfg *Config, protected *p
 			case "defun", "deftype":
 				if len(expr.Cells) > 1 && expr.Cells[1].Type == lisp.LSymbol {
 					if qualifiedRefs[currentPkg+"/"+expr.Cells[1].Str] {
-						preserveNodeSymbol(files[i].analysis, expr.Cells[1], protected)
+						preserveQualifiedDefinitionNode(files[i].analysis, expr.Cells[1], cfg, protected)
 					}
+				}
+			default:
+				if node := configuredTopLevelNameNode(expr, cfg); node != nil && qualifiedRefs[currentPkg+"/"+node.Str] {
+					preserveQualifiedDefinitionNode(files[i].analysis, node, cfg, protected)
 				}
 			}
 			if expr.Cells[0].Str == "set" && len(expr.Cells) > 1 {
@@ -610,6 +649,12 @@ func preservePackageSurfaceSymbols(files []parsedFile, cfg *Config, protected *p
 			}
 			preserveConfiguredPackageSurfaceSymbol(files[i].analysis, expr, cfg, protected)
 		}
+	}
+}
+
+func recordFileQualifiedReferences(exprs []*lisp.LVal, refs map[string]bool) {
+	for _, expr := range exprs {
+		recordQualifiedReferences(expr, refs)
 	}
 }
 
@@ -651,17 +696,52 @@ func packageSurfaceSymbolNode(expr *lisp.LVal, spec PackageSurfaceFormSpec) *lis
 	return nil
 }
 
+func configuredTopLevelNameNode(expr *lisp.LVal, cfg *Config) *lisp.LVal {
+	if expr == nil || len(expr.Cells) == 0 || cfg == nil || cfg.Analysis == nil {
+		return nil
+	}
+	head := astutil.HeadSymbol(expr)
+	for _, spec := range cfg.Analysis.DefForms {
+		if spec.Head != head || !spec.BindsName || spec.NameIndex <= 0 || spec.NameIndex >= len(expr.Cells) {
+			continue
+		}
+		node := expr.Cells[spec.NameIndex]
+		if node.Type == lisp.LSymbol && !node.Quoted {
+			return node
+		}
+	}
+	return nil
+}
+
 func preserveNodeSymbol(result *analysis.Result, node *lisp.LVal, protected *preservationSet) {
-	if result == nil || node == nil || node.Type != lisp.LSymbol || protected == nil {
+	if sym := nodeSymbol(result, node); sym != nil {
+		protected.symbols[sym] = true
+		protected.symbolKeys[symbolLookupKey(sym)] = true
+	}
+}
+
+func preserveQualifiedDefinitionNode(result *analysis.Result, node *lisp.LVal, cfg *Config, protected *preservationSet) {
+	sym := nodeSymbol(result, node)
+	if sym == nil {
 		return
+	}
+	if sym.Exported && cfg != nil && cfg.RenameExports {
+		return
+	}
+	protected.symbols[sym] = true
+	protected.symbolKeys[symbolLookupKey(sym)] = true
+}
+
+func nodeSymbol(result *analysis.Result, node *lisp.LVal) *analysis.Symbol {
+	if result == nil || node == nil || node.Type != lisp.LSymbol {
+		return nil
 	}
 	for _, sym := range result.Symbols {
 		if sym != nil && sym.Node == node {
-			protected.symbols[sym] = true
-			protected.symbolKeys[symbolLookupKey(sym)] = true
-			return
+			return sym
 		}
 	}
+	return nil
 }
 
 func collectProtectedMacroTemplateSymbols(expr *lisp.LVal, root *analysis.Scope, protected *preservationSet) {
