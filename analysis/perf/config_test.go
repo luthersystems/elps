@@ -22,6 +22,8 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Contains(t, cfg.LoopKeywords, "dotimes")
 	assert.Contains(t, cfg.LoopKeywords, "map")
 	assert.Contains(t, cfg.ExpensiveFunctions, "db-*")
+	assert.Empty(t, cfg.ExcludeFiles)
+	assert.False(t, cfg.IncludeTests)
 }
 
 func TestLoadConfigFile_NotExist(t *testing.T) {
@@ -40,6 +42,10 @@ expensive_functions:
 expensive_cost: 100
 loop_multiplier: 10
 max_score: 50000
+exclude_files:
+  - "build/**"
+  - "*_generated.lisp"
+include_tests: true
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0600))
 
@@ -49,6 +55,8 @@ max_score: 50000
 	assert.Equal(t, 10, cfg.LoopMultiplier)
 	assert.Equal(t, 50000, cfg.MaxScore)
 	assert.Equal(t, []string{"statedb-*", "http-*"}, cfg.ExpensiveFunctions)
+	assert.Equal(t, []string{"build/**", "*_generated.lisp"}, cfg.ExcludeFiles)
+	assert.True(t, cfg.IncludeTests)
 	// Defaults preserved for unset fields
 	assert.Equal(t, 2, cfg.MaxAcceptableOrder)
 }

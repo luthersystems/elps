@@ -63,6 +63,14 @@ type Config struct {
 	// Rules filters which rules to run. When empty, all rules run.
 	// Valid values: "PERF001", "PERF002", "PERF003", "PERF004", "UNKNOWN001".
 	Rules []string `yaml:"rules"`
+
+	// ExcludeFiles are file glob patterns excluded from CLI-oriented analysis
+	// workflows. The analyzer core remains file-agnostic.
+	ExcludeFiles []string `yaml:"exclude_files"`
+
+	// IncludeTests opts back into including *_test.lisp files in CLI-oriented
+	// analysis workflows.
+	IncludeTests bool `yaml:"include_tests"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -79,7 +87,7 @@ func DefaultConfig() *Config {
 		MaxAcceptableOrder:    2,
 		ScalingErrorThreshold: 3,
 		MaxRecursionOrder:     5,
-		SuppressionPrefix:    "elps-analyze-disable",
+		SuppressionPrefix:     "elps-analyze-disable",
 	}
 }
 

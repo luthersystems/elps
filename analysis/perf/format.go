@@ -34,6 +34,9 @@ func FormatText(w io.Writer, issues []Issue) {
 
 // FormatJSON writes issues as a JSON array.
 func FormatJSON(w io.Writer, issues []Issue) error {
+	if issues == nil {
+		issues = []Issue{}
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(issues)
