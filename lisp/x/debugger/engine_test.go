@@ -29,6 +29,48 @@ func newTestEnv(t *testing.T, dbg *Engine) *lisp.LEnv {
 	return env
 }
 
+func waitForPauseStateChange(t *testing.T, e *Engine, previous *lisp.LVal) (*lisp.LEnv, *lisp.LVal) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		if !e.IsPaused() {
+			return false
+		}
+		_, current := e.PausedState()
+		if current == nil {
+			return false
+		}
+		if previous == nil {
+			return true
+		}
+		if current != previous {
+			return true
+		}
+		if current.Source == nil || previous.Source == nil {
+			return false
+		}
+		return current.Source.Line != previous.Source.Line ||
+			current.Source.Col != previous.Source.Col ||
+			current.Type != previous.Type
+	}, 2*time.Second, 10*time.Millisecond, "engine did not reach a new paused state")
+
+	return e.PausedState()
+}
+
+func waitForPausedPredicate(t *testing.T, e *Engine, predicate func(*lisp.LEnv, *lisp.LVal) bool, message string) (*lisp.LEnv, *lisp.LVal) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		if !e.IsPaused() {
+			return false
+		}
+		env, expr := e.PausedState()
+		return predicate(env, expr)
+	}, 2*time.Second, 10*time.Millisecond, message)
+
+	return e.PausedState()
+}
+
 func TestEngine_IsEnabled(t *testing.T) {
 	t.Parallel()
 	e := New()
@@ -116,13 +158,7 @@ func TestEngine_StepInto(t *testing.T) {
 
 	// Step into — should advance to line 2 (skipping sub-expressions on line 1).
 	e.StepInto()
-
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause after step")
-
-	// Verify we paused on a different line.
-	_, stepExpr := e.PausedState()
+	_, stepExpr := waitForPauseStateChange(t, e, entryExpr)
 	require.NotNil(t, stepExpr, "paused expression after step should not be nil")
 	require.NotNil(t, stepExpr.Source, "paused expression after step should have source location")
 	assert.Equal(t, 2, stepExpr.Source.Line, "step-into should advance to line 2")
@@ -173,10 +209,7 @@ func TestEngine_StepInto_EntersFunction(t *testing.T) {
 
 	// Step into — should enter inner's body on line 2.
 	e.StepInto()
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	_, stepExpr := e.PausedState()
+	_, stepExpr := waitForPauseStateChange(t, e, bpExpr)
 	require.NotNil(t, stepExpr)
 	require.NotNil(t, stepExpr.Source)
 	assert.Equal(t, 2, stepExpr.Source.Line,
@@ -219,10 +252,7 @@ func TestEngine_StepInto_InstructionGranularity(t *testing.T) {
 	// on the same line (unlike default line-level which would skip to end).
 	e.SetStepGranularity("instruction")
 	e.StepInto()
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	_, stepExpr := e.PausedState()
+	_, stepExpr := waitForPauseStateChange(t, e, entryExpr)
 	require.NotNil(t, stepExpr)
 	require.NotNil(t, stepExpr.Source)
 	assert.Equal(t, 1, stepExpr.Source.Line, "instruction step pauses on same line")
@@ -484,11 +514,7 @@ func TestEngine_StepOver(t *testing.T) {
 
 	var lastExpr *lisp.LVal
 	for range 20 {
-		require.Eventually(t, func() bool {
-			return e.IsPaused()
-		}, 2*time.Second, 10*time.Millisecond, "engine did not pause after step over")
-
-		pausedEnv, lastExpr = e.PausedState()
+		pausedEnv, lastExpr = waitForPauseStateChange(t, e, expr)
 		require.NotNil(t, lastExpr)
 
 		// Verify depth never went deeper than where we started (did NOT enter inner).
@@ -502,6 +528,7 @@ func TestEngine_StepOver(t *testing.T) {
 		}
 
 		// Keep stepping over sub-expressions on line 3.
+		expr = lastExpr
 		e.StepOver()
 	}
 
@@ -559,13 +586,7 @@ func TestEngine_StepOut(t *testing.T) {
 	// Clear breakpoints and step out — should return to caller.
 	e.Breakpoints().ClearFile("test")
 	e.StepOut()
-
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause after step out")
-
-	// Verify we're back in the caller scope with lower stack depth.
-	pausedEnv, expr = e.PausedState()
+	pausedEnv, expr = waitForPauseStateChange(t, e, expr)
 	require.NotNil(t, expr)
 	outsideDepth := len(pausedEnv.Runtime.Stack.Frames)
 	assert.Less(t, outsideDepth, insideDepth,
@@ -740,10 +761,11 @@ func TestEngine_BreakpointSuppressedDuringStep(t *testing.T) {
 	// suppressing the breakpoint.
 	e.StepInto()
 
-	// Wait for the step to pause again (should be on line 2).
 	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
+		mu.Lock()
+		defer mu.Unlock()
+		return len(stops) >= 2
+	}, 2*time.Second, 10*time.Millisecond, "expected a second stop after stepping")
 
 	mu.Lock()
 	stopsCopy := make([]StopReason, len(stops))
@@ -1607,11 +1629,7 @@ func TestEngine_StepOutTailPosition(t *testing.T) {
 	e.StepOut()
 
 	// Should pause at the call site (NOT run to completion).
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "step-out from tail position should pause")
-
-	pausedEnv, expr = e.PausedState()
+	pausedEnv, expr = waitForPauseStateChange(t, e, expr)
 	require.NotNil(t, expr)
 	require.NotNil(t, expr.Source, "paused expression should have source location")
 	assert.Equal(t, "test", expr.Source.File)
@@ -1764,11 +1782,11 @@ func TestEngine_StepInTarget(t *testing.T) {
 	resultCh := make(chan *lisp.LVal, 1)
 	go func() {
 		res := env.LoadString("test",
-			"(defun f (x) (+ x 1))\n"+   // line 1
+			"(defun f (x) (+ x 1))\n"+ // line 1
 				"(defun g (x) (+ x 2))\n"+ // line 2
-				"(defun main ()\n"+          // line 3
-				"  (f (g 10)))\n"+           // line 4
-				"(main)")                    // line 5
+				"(defun main ()\n"+ // line 3
+				"  (f (g 10)))\n"+ // line 4
+				"(main)") // line 5
 		resultCh <- res
 	}()
 
@@ -1789,10 +1807,7 @@ func TestEngine_StepInTarget(t *testing.T) {
 	e.StepOver()
 
 	// Should pause inside f's body (line 1).
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	_, stepExpr := e.PausedState()
+	_, stepExpr := waitForPauseStateChange(t, e, bpExpr)
 	require.NotNil(t, stepExpr)
 	require.NotNil(t, stepExpr.Source)
 	assert.Equal(t, 1, stepExpr.Source.Line,
@@ -1821,11 +1836,11 @@ func TestEngine_StepInTarget_SkipsNonTarget(t *testing.T) {
 	resultCh := make(chan *lisp.LVal, 1)
 	go func() {
 		res := env.LoadString("test",
-			"(defun f (x) (+ x 1))\n"+   // line 1
+			"(defun f (x) (+ x 1))\n"+ // line 1
 				"(defun g (x) (+ x 2))\n"+ // line 2
-				"(defun main ()\n"+          // line 3
-				"  (f (g 10)))\n"+           // line 4
-				"(main)")                    // line 5
+				"(defun main ()\n"+ // line 3
+				"  (f (g 10)))\n"+ // line 4
+				"(main)") // line 5
 		resultCh <- res
 	}()
 
@@ -1841,10 +1856,16 @@ func TestEngine_StepInTarget_SkipsNonTarget(t *testing.T) {
 	e.SetStepInTarget("user:f", 0)
 	e.StepOver()
 
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	pausedEnv, stepExpr := e.PausedState()
+	pausedEnv, stepExpr := waitForPausedPredicate(t, e, func(env *lisp.LEnv, expr *lisp.LVal) bool {
+		if env == nil || expr == nil || expr.Source == nil {
+			return false
+		}
+		if len(env.Runtime.Stack.Frames) == 0 {
+			return false
+		}
+		topFrame := env.Runtime.Stack.Frames[len(env.Runtime.Stack.Frames)-1]
+		return topFrame.Name == "f" && expr.Source.Line == 1
+	}, "targeted step-in should pause in f")
 	require.NotNil(t, stepExpr)
 	require.NotNil(t, stepExpr.Source)
 
@@ -1878,9 +1899,9 @@ func TestEngine_StepInTarget_SecondOccurrence(t *testing.T) {
 	go func() {
 		res := env.LoadString("test",
 			"(defun f (x) (+ x 1))\n"+ // line 1
-				"(defun main ()\n"+      // line 2
+				"(defun main ()\n"+ // line 2
 				"  (+ (f 10) (f 20)))\n"+ // line 3: f called twice
-				"(main)")                 // line 4
+				"(main)") // line 4
 		resultCh <- res
 	}()
 
@@ -1895,10 +1916,20 @@ func TestEngine_StepInTarget_SecondOccurrence(t *testing.T) {
 	e.StepOver()
 
 	// Should pause inside f's body on the second call (f 20).
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	pausedEnv, stepExpr := e.PausedState()
+	pausedEnv, stepExpr := waitForPausedPredicate(t, e, func(env *lisp.LEnv, expr *lisp.LVal) bool {
+		if env == nil || expr == nil || expr.Source == nil {
+			return false
+		}
+		if len(env.Runtime.Stack.Frames) == 0 {
+			return false
+		}
+		topFrame := env.Runtime.Stack.Frames[len(env.Runtime.Stack.Frames)-1]
+		if topFrame.Name != "f" || expr.Source.Line != 1 {
+			return false
+		}
+		xVal := e.EvalInContext(env, "x")
+		return xVal.Type == lisp.LInt && xVal.Int == 20
+	}, "targeted step-in should pause in second f invocation")
 	require.NotNil(t, stepExpr)
 	require.NotNil(t, stepExpr.Source)
 	assert.Equal(t, 1, stepExpr.Source.Line,
