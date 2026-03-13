@@ -245,6 +245,26 @@ func TestMinifySource_PreservesMacroGeneratedLocalRecursion(t *testing.T) {
 	assert.NotContains(t, symMap.MinifiedToOriginal, "loop")
 }
 
+func TestMinifySource_MacroTemplateBindersDoNotBlockUnrelatedRenames(t *testing.T) {
+	src := []byte(`(defmacro m ()
+  (quasiquote
+    (let ((x 1))
+      x)))
+
+(defun f (x)
+  (+ x 1))
+`)
+
+	out, symMap, err := MinifySource(src, "macro-binder.lisp", nil)
+	require.NoError(t, err)
+
+	assert.Contains(t, string(out), "(let ((x 1)) x)")
+	assert.Equal(t, "(defmacro x1 () (quasiquote (let ((x 1)) x)))\n(defun x2 (x3) (+ x3 1))\n", string(out))
+	assert.Equal(t, "m", symMap.MinifiedToOriginal["x1"])
+	assert.Equal(t, "f", symMap.MinifiedToOriginal["x2"])
+	assert.Equal(t, "x", symMap.MinifiedToOriginal["x3"])
+}
+
 func TestMinify_MultiFileMacroTemplateReferencesRemainExecutable(t *testing.T) {
 	inputs := []InputFile{
 		{
