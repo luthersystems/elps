@@ -90,20 +90,6 @@ func waitForPauseStateChange(t *testing.T, e *Engine, previous *lisp.LVal) (*lis
 	return e.PausedState()
 }
 
-func waitForPausedPredicate(t *testing.T, e *Engine, predicate func(*lisp.LEnv, *lisp.LVal) bool, message string) (*lisp.LEnv, *lisp.LVal) {
-	t.Helper()
-
-	require.Eventually(t, func() bool {
-		if !e.IsPaused() {
-			return false
-		}
-		env, expr := e.PausedState()
-		return predicate(env, expr)
-	}, 2*time.Second, 10*time.Millisecond, message)
-
-	return e.PausedState()
-}
-
 func TestEngine_IsEnabled(t *testing.T) {
 	t.Parallel()
 	e := New()
