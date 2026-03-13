@@ -178,6 +178,23 @@ func TestSolve_MultiRuleSuppression(t *testing.T) {
 	assert.Greater(t, perf003, 0, "multi-rule suppression should still allow other findings")
 }
 
+func TestSolve_PERF004SuppressionOnAnyCycleMember(t *testing.T) {
+	src := `
+(defun alpha (n) (if (= n 0) true (beta (- n 1))))
+;; elps-analyze-disable:PERF004
+(defun beta (n) (if (= n 0) true (alpha (- n 1))))
+`
+	exprs := parseSource(t, src)
+	cfg := DefaultConfig()
+	summaries := ScanFile(exprs, "test.lisp", cfg)
+	graph := BuildGraph(summaries)
+	_, issues := Solve(graph, cfg)
+
+	for _, issue := range issues {
+		assert.NotEqual(t, PERF004, issue.Rule, "PERF004 should be suppressed when any cycle member suppresses it")
+	}
+}
+
 func TestSolve_ScalingPropagation(t *testing.T) {
 	src := `
 (defun inner () (concat 'string "x"))

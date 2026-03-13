@@ -215,7 +215,7 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 					Trace:    trace,
 				}
 				issue.Fingerprint = fingerprint(issue)
-				issues = appendIssueUnlessSuppressed(issues, fn, issue)
+				issues = appendCycleIssueUnlessSuppressed(issues, graph, sorted, issue)
 			}
 		}
 
@@ -265,6 +265,15 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 func appendIssueUnlessSuppressed(issues []Issue, fn *FunctionSummary, issue Issue) []Issue {
 	if suppressesRule(fn, issue.Rule) {
 		return issues
+	}
+	return append(issues, issue)
+}
+
+func appendCycleIssueUnlessSuppressed(issues []Issue, graph *CallGraph, cycle []string, issue Issue) []Issue {
+	for _, member := range cycle {
+		if suppressesRule(graph.Functions[member], issue.Rule) {
+			return issues
+		}
 	}
 	return append(issues, issue)
 }
