@@ -21,8 +21,23 @@ type Config struct {
 	// Used to resolve use-package imports from stdlib and workspace packages.
 	PackageExports map[string][]ExternalSymbol
 
+	// DefForms declares additional definition-form heads for embedding programs.
+	// Head is matched exactly against the form head symbol. FormalsIndex must
+	// point at the parameter list cell. If BindsName is true, NameIndex points
+	// at the defined symbol cell and the analyzer registers it using NameKind.
+	DefForms []DefFormSpec
+
 	// Filename is the source file being analyzed.
 	Filename string
+}
+
+// DefFormSpec describes a custom definition-like form.
+type DefFormSpec struct {
+	Head         string
+	FormalsIndex int
+	BindsName    bool
+	NameIndex    int
+	NameKind     SymbolKind
 }
 
 // ExternalSymbol represents a symbol defined in another file.

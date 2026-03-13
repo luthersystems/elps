@@ -259,10 +259,207 @@ func TestMinifySource_MacroTemplateBindersDoNotBlockUnrelatedRenames(t *testing.
 	require.NoError(t, err)
 
 	assert.Contains(t, string(out), "(let ((x 1)) x)")
-	assert.Equal(t, "(defmacro x1 () (quasiquote (let ((x 1)) x)))\n(defun x2 (x3) (+ x3 1))\n", string(out))
-	assert.Equal(t, "m", symMap.MinifiedToOriginal["x1"])
-	assert.Equal(t, "f", symMap.MinifiedToOriginal["x2"])
-	assert.Equal(t, "x", symMap.MinifiedToOriginal["x3"])
+	assert.Equal(t, "(defmacro m () (quasiquote (let ((x 1)) x)))\n(defun x1 (x2) (+ x2 1))\n", string(out))
+	assert.Equal(t, "f", symMap.MinifiedToOriginal["x1"])
+	assert.Equal(t, "x", symMap.MinifiedToOriginal["x2"])
+	assert.NotContains(t, symMap.OriginalToMinified, "m")
+}
+
+func TestMinifySource_DefaultCallDoesNotProduceInconsistentOptionalRename(t *testing.T) {
+	src := []byte(`(defun outer ()
+  (labels ([register (id name &optional ctx)
+            (let* ([body (default ctx (sorted-map))])
+              (assoc! body "id" id)
+              (assoc! body "name" name)
+              body)])
+    (register "a" "b")))
+`)
+
+	out, symMap, err := MinifySource(src, "default-optional.lisp", nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, "(defun x1 () (labels ([x2 (x3 x4 &optional x5) (let* ([x6 (default x5 (sorted-map))]) (assoc! x6 \"id\" x3) (assoc! x6 \"name\" x4) x6)]) (x2 \"a\" \"b\")))\n", string(out))
+	assert.Equal(t, "ctx", symMap.MinifiedToOriginal["x5"])
+	result := evalMinifiedProgram(t, []InputFile{{Path: "default-optional.lisp", Source: out}})
+	require.NotNil(t, result)
+	assert.NotEqual(t, lisp.LError, result.Type)
+}
+
+func TestMinifySource_DefaultCallOutsideLabelsFallsBackToNormalCall(t *testing.T) {
+	src := []byte(`(defun fallback (ctx)
+  (default ctx (sorted-map)))
+`)
+
+	out, symMap, err := MinifySource(src, "default-call.lisp", nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, "(defun x1 (x2) (default x2 (sorted-map)))\n", string(out))
+	assert.Equal(t, "fallback", symMap.MinifiedToOriginal["x1"])
+	assert.Equal(t, "ctx", symMap.MinifiedToOriginal["x2"])
+}
+
+func TestMinifySource_WithCustomDefFormConfig(t *testing.T) {
+	src := []byte(`(endpoint handler (req)
+  (+ req 1))
+`)
+
+	out, symMap, err := MinifySource(src, "custom-def-form.lisp", &Config{
+		Analysis: &analysis.Config{
+			DefForms: []analysis.DefFormSpec{
+				{Head: "endpoint", FormalsIndex: 2, BindsName: true, NameIndex: 1, NameKind: analysis.SymFunction},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "(endpoint x1 (x2) (+ x2 1))\n", string(out))
+	assert.Equal(t, "handler", symMap.MinifiedToOriginal["x1"])
+	assert.Equal(t, "req", symMap.MinifiedToOriginal["x2"])
+}
+
+func TestMinifySource_WithCustomPackageSurfaceFormPreservesCustomDefName(t *testing.T) {
+	src := []byte(`(endpoint handler (req)
+  (+ req 1))
+`)
+
+	out, symMap, err := MinifySource(src, "custom-surface-form.lisp", &Config{
+		Analysis: &analysis.Config{
+			DefForms: []analysis.DefFormSpec{
+				{Head: "endpoint", FormalsIndex: 2, BindsName: true, NameIndex: 1, NameKind: analysis.SymFunction},
+			},
+		},
+		PackageSurfaceForms: []PackageSurfaceFormSpec{
+			{Head: "endpoint", NameIndex: 1},
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "(endpoint handler (x1) (+ x1 1))\n", string(out))
+	assert.Equal(t, "req", symMap.MinifiedToOriginal["x1"])
+	assert.NotContains(t, symMap.OriginalToMinified, "handler")
+}
+
+func TestMinifySource_WithCustomQuotedPackageSurfaceFormPreservesName(t *testing.T) {
+	src := []byte(`(define-surface 'handler (lambda (value) value))
+
+(defun use-value (value)
+  (+ value 1))
+`)
+
+	out, symMap, err := MinifySource(src, "custom-quoted-surface-form.lisp", &Config{
+		PackageSurfaceForms: []PackageSurfaceFormSpec{
+			{Head: "define-surface", NameIndex: 1, QuotedName: true},
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "(define-surface 'handler (lambda (x1) x1))\n(defun x2 (x3) (+ x3 1))\n", string(out))
+	assert.Equal(t, "value", symMap.MinifiedToOriginal["x1"])
+	assert.Equal(t, "use-value", symMap.MinifiedToOriginal["x2"])
+	assert.Equal(t, "value", symMap.MinifiedToOriginal["x3"])
+	assert.NotContains(t, symMap.OriginalToMinified, "handler")
+}
+
+func TestMinifySource_TopLevelSetNamesPreservedByDefault(t *testing.T) {
+	src := []byte(`(set 'counter 0)
+
+(defun use-counter (value)
+  (+ counter value))
+`)
+
+	out, symMap, err := MinifySource(src, "set-preserve.lisp", nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, "(set 'counter 0)\n(defun x1 (x2) (+ counter x2))\n", string(out))
+	assert.Equal(t, "use-counter", symMap.MinifiedToOriginal["x1"])
+	assert.Equal(t, "value", symMap.MinifiedToOriginal["x2"])
+	assert.NotContains(t, symMap.OriginalToMinified, "counter")
+}
+
+func TestMinifySource_QualifiedInternalSetReferencePreservedSafely(t *testing.T) {
+	inputs := []InputFile{
+		{
+			Path: "router.lisp",
+			Source: []byte(`(in-package 'router)
+(set 'add-init-pre-hook (lambda (callback) callback))
+`),
+		},
+		{
+			Path: "batch.lisp",
+			Source: []byte(`(in-package 'batch)
+(use-package 'router)
+(defun handler ()
+  (router:add-init-pre-hook (lambda () true)))
+
+(handler)
+`),
+		},
+	}
+
+	result, err := Minify(inputs, &Config{})
+	require.NoError(t, err)
+	require.Len(t, result.Files, 2)
+
+	assert.Contains(t, string(result.Files[0].Output), "(set 'add-init-pre-hook (lambda (")
+	assert.Contains(t, string(result.Files[0].Output), ") ")
+	assert.Contains(t, string(result.Files[1].Output), "(router:add-init-pre-hook (lambda () true))")
+	assert.Contains(t, string(result.Files[1].Output), "(defun x")
+	assert.NotContains(t, result.SymbolMap.OriginalToMinified, "add-init-pre-hook")
+
+	evalResult := evalMinifiedProgram(t, []InputFile{
+		{Path: result.Files[0].Path, Source: result.Files[0].Output},
+		{Path: result.Files[1].Path, Source: result.Files[1].Output},
+	})
+	require.NotNil(t, evalResult)
+	assert.NotEqual(t, lisp.LError, evalResult.Type)
+}
+
+func TestMinifySource_RenameExportsRewritesQualifiedReferences(t *testing.T) {
+	inputs := []InputFile{
+		{
+			Path: "router.lisp",
+			Source: []byte(`(in-package 'router)
+(export 'helper)
+(defun helper (value) value)
+`),
+		},
+		{
+			Path: "batch.lisp",
+			Source: []byte(`(in-package 'batch)
+(defun handler ()
+  (router:helper 42))
+
+(handler)
+`),
+		},
+	}
+
+	result, err := Minify(inputs, &Config{RenameExports: true})
+	require.NoError(t, err)
+	require.Len(t, result.Files, 2)
+
+	assert.Contains(t, string(result.Files[0].Output), "(export 'x")
+	assert.Contains(t, string(result.Files[0].Output), "(defun x")
+	assert.Contains(t, string(result.Files[1].Output), "(router:x")
+
+	var helperMinified string
+	for _, entry := range result.SymbolMap.Entries {
+		if entry.Original == "helper" {
+			helperMinified = entry.Minified
+			break
+		}
+	}
+	require.NotEmpty(t, helperMinified)
+	assert.Contains(t, string(result.Files[0].Output), "(export '"+helperMinified+")")
+	assert.Contains(t, string(result.Files[0].Output), "(defun "+helperMinified+" (")
+	assert.Contains(t, string(result.Files[1].Output), "(router:"+helperMinified+" 42)")
+
+	evalResult := evalMinifiedProgram(t, []InputFile{
+		{Path: result.Files[0].Path, Source: result.Files[0].Output},
+		{Path: result.Files[1].Path, Source: result.Files[1].Output},
+	})
+	require.Equal(t, lisp.LInt, evalResult.Type)
+	assert.Equal(t, 42, evalResult.Int)
 }
 
 func TestMinify_MultiFileMacroTemplateReferencesRemainExecutable(t *testing.T) {

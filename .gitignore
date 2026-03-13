@@ -1,3 +1,4 @@
 elps
 .claude/settings.local.json
+.claude/worktrees/
 .tmp/

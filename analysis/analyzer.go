@@ -331,7 +331,7 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope) {
 		if strings.HasSuffix(head, ":deftype") && astutil.ArgCount(node) >= 1 &&
 			node.Cells[1].Type == lisp.LString {
 			a.analyzeStringDeftype(node, scope)
-		} else if strings.HasPrefix(head, "def") {
+		} else if _, ok := defLikeMatch(node, a.cfg); ok {
 			a.analyzeDefLike(node, scope)
 		} else {
 			a.analyzeCall(node, scope)
@@ -448,23 +448,8 @@ func (a *analyzer) analyzeStringDeftype(node *lisp.LVal, scope *Scope) {
 // are all symbols), creates a scope with those as parameters, and analyzes
 // the remaining children as body in that scope.
 func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope) {
-	// Find the first child (after head) that looks like a formals list.
-	formalsIdx := -1
-	for i := 1; i < len(node.Cells); i++ {
-		if isFormalsLike(node.Cells[i]) {
-			formalsIdx = i
-			break
-		}
-	}
-	// Also check for empty formals () at the defun-like position (index 2).
-	// Empty () could be nil in a regular call, so only treat it as formals
-	// when preceded by a symbol name (defun-like pattern: def* name () body).
-	if formalsIdx < 0 && len(node.Cells) > 2 &&
-		node.Cells[1].Type == lisp.LSymbol && !node.Cells[1].Quoted &&
-		isEmptyFormals(node.Cells[2]) {
-		formalsIdx = 2
-	}
-	if formalsIdx < 0 {
+	match, ok := defLikeMatch(node, a.cfg)
+	if !ok {
 		// No formals detected — fall back to normal call analysis.
 		a.analyzeCall(node, scope)
 		return
@@ -478,13 +463,24 @@ func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope) {
 	// defun). Register it in scope rather than resolving it as a reference.
 	// e.g. (defendpoint my-name (req) body...)
 	nameIdx := -1
-	if formalsIdx == 2 && node.Cells[1].Type == lisp.LSymbol && !node.Cells[1].Quoted {
-		nameIdx = 1
-		nameVal := node.Cells[1]
+	if match.bindsName &&
+		match.nameIdx > 0 &&
+		match.nameIdx < len(node.Cells) &&
+		node.Cells[match.nameIdx].Type == lisp.LSymbol &&
+		!node.Cells[match.nameIdx].Quoted {
+		nameIdx = match.nameIdx
+		nameVal := node.Cells[match.nameIdx]
 		if scope.LookupLocal(nameVal.Str) == nil {
+			kind := match.nameKind
+			if kind != SymVariable &&
+				kind != SymFunction &&
+				kind != SymMacro &&
+				kind != SymType {
+				kind = SymFunction
+			}
 			sym := &Symbol{
 				Name:   nameVal.Str,
-				Kind:   SymFunction,
+				Kind:   kind,
 				Source: nameVal.Source,
 				Node:   nameVal,
 			}
@@ -494,7 +490,7 @@ func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope) {
 	}
 
 	// Analyze children before the formals in the outer scope (skip head and name).
-	for i := 1; i < formalsIdx; i++ {
+	for i := 1; i < match.formalsIdx; i++ {
 		if i == nameIdx {
 			continue
 		}
@@ -503,12 +499,120 @@ func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope) {
 
 	// Create a function scope with the formals as parameters.
 	bodyScope := NewScope(ScopeFunction, scope, node)
-	a.addParams(node.Cells[formalsIdx], bodyScope)
+	a.addParams(node.Cells[match.formalsIdx], bodyScope)
 
 	// Analyze body (everything after formals) in the new scope.
-	for i := formalsIdx + 1; i < len(node.Cells); i++ {
+	for i := match.formalsIdx + 1; i < len(node.Cells); i++ {
 		a.analyzeExpr(node.Cells[i], bodyScope)
 	}
+}
+
+type defLikeSpec struct {
+	formalsIdx int
+	bindsName  bool
+	nameIdx    int
+	nameKind   SymbolKind
+}
+
+func defLikeMatch(node *lisp.LVal, cfg *Config) (defLikeSpec, bool) {
+	if match, ok := customDefLikeMatch(node, cfg); ok {
+		return match, true
+	}
+	if idx := heuristicDefLikeFormalsIndex(node); idx >= 0 {
+		return defLikeSpec{
+			formalsIdx: idx,
+			bindsName:  idx == 2,
+			nameIdx:    1,
+			nameKind:   SymFunction,
+		}, true
+	}
+	return defLikeSpec{}, false
+}
+
+func defLikeFormalsIndex(node *lisp.LVal) int {
+	match, ok := defLikeMatch(node, nil)
+	if !ok {
+		return -1
+	}
+	return match.formalsIdx
+}
+
+func customDefLikeMatch(node *lisp.LVal, cfg *Config) (defLikeSpec, bool) {
+	if node == nil || node.Type != lisp.LSExpr || node.Quoted || len(node.Cells) == 0 || cfg == nil {
+		return defLikeSpec{}, false
+	}
+	head := astutil.HeadSymbol(node)
+	for _, spec := range cfg.DefForms {
+		if spec.Head == "" || spec.Head != head {
+			continue
+		}
+		if !validDefFormSpec(node, spec) {
+			continue
+		}
+		nameKind := spec.NameKind
+		if spec.BindsName &&
+			nameKind != SymVariable &&
+			nameKind != SymFunction &&
+			nameKind != SymMacro &&
+			nameKind != SymType {
+			nameKind = SymFunction
+		}
+		return defLikeSpec{
+			formalsIdx: spec.FormalsIndex,
+			bindsName:  spec.BindsName,
+			nameIdx:    spec.NameIndex,
+			nameKind:   nameKind,
+		}, true
+	}
+	return defLikeSpec{}, false
+}
+
+func validDefFormSpec(node *lisp.LVal, spec DefFormSpec) bool {
+	if spec.FormalsIndex <= 0 || spec.FormalsIndex >= len(node.Cells)-1 {
+		return false
+	}
+	formals := node.Cells[spec.FormalsIndex]
+	if !isFormalsLike(formals) && !isEmptyFormals(formals) {
+		return false
+	}
+	if spec.BindsName {
+		if spec.NameIndex <= 0 || spec.NameIndex >= len(node.Cells) {
+			return false
+		}
+		if spec.NameIndex == spec.FormalsIndex {
+			return false
+		}
+		if node.Cells[spec.NameIndex].Type != lisp.LSymbol || node.Cells[spec.NameIndex].Quoted {
+			return false
+		}
+	}
+	return true
+}
+
+func heuristicDefLikeFormalsIndex(node *lisp.LVal) int {
+	if node == nil || node.Type != lisp.LSExpr || node.Quoted || len(node.Cells) < 4 {
+		return -1
+	}
+	head := astutil.HeadSymbol(node)
+	if !strings.HasPrefix(head, "def") {
+		return -1
+	}
+
+	// Find the first child (after head) that looks like a formals list.
+	for i := 1; i < len(node.Cells)-1; i++ {
+		if isFormalsLike(node.Cells[i]) {
+			return i
+		}
+	}
+	// Also check for empty formals () at the defun-like position (index 2).
+	// Empty () could be nil in a regular call, so only treat it as formals
+	// when preceded by a symbol name and followed by a body expression.
+	if len(node.Cells) > 3 &&
+		node.Cells[1].Type == lisp.LSymbol && !node.Cells[1].Quoted &&
+		isEmptyFormals(node.Cells[2]) {
+		return 2
+	}
+	return -1
 }
 
 // isFormalsLike returns true if the node looks like a parameter list:

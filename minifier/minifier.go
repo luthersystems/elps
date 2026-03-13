@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/formatter"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
@@ -28,10 +29,19 @@ type InputFile struct {
 
 // Config controls minification behavior.
 type Config struct {
-	Analysis      *analysis.Config
-	Exclusions    map[string]bool
-	RenameExports bool
-	Formatter     *formatter.Config
+	Analysis            *analysis.Config
+	Exclusions          map[string]bool
+	RenameExports       bool
+	PackageSurfaceForms []PackageSurfaceFormSpec
+	Formatter           *formatter.Config
+}
+
+// PackageSurfaceFormSpec declares a top-level form that creates a stable
+// package-visible binding that should be preserved by default.
+type PackageSurfaceFormSpec struct {
+	Head       string
+	NameIndex  int
+	QuotedName bool
 }
 
 // FileResult contains the minified output for one source unit.
@@ -77,6 +87,12 @@ type fileSymbols struct {
 	globals []analysis.ExternalSymbol
 }
 
+type preservationSet struct {
+	names      map[string]bool
+	symbols    map[*analysis.Symbol]bool
+	symbolKeys map[string]bool
+}
+
 // Minify rewrites one or more source units using a single deterministic
 // symbol-assignment session.
 func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
@@ -107,7 +123,7 @@ func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
 		files[i].analysis = analysis.Analyze(files[i].exprs, fileCfg)
 	}
 
-	protected := protectedMacroTemplateSymbols(files, cfg.Exclusions)
+	protected := buildPreservationSet(files, cfg)
 	assignments, assignmentKeys, symMap := buildAssignments(files, cfg, protected)
 	for i := range files {
 		applyAssignments(&files[i], assignments, assignmentKeys, cfg)
@@ -199,6 +215,7 @@ func mergeAnalysisConfig(base *analysis.Config, filename string, perFile map[str
 	if base != nil {
 		cfg.ExtraGlobals = append(cfg.ExtraGlobals, base.ExtraGlobals...)
 		cfg.PackageExports = copyPackageExports(base.PackageExports)
+		cfg.DefForms = append(cfg.DefForms, base.DefForms...)
 	}
 	if cfg.PackageExports == nil {
 		cfg.PackageExports = make(map[string][]analysis.ExternalSymbol)
@@ -360,7 +377,17 @@ func setName(arg *lisp.LVal) string {
 	return ""
 }
 
-func buildAssignments(files []parsedFile, cfg *Config, exclusions map[string]bool) (map[*analysis.Symbol]string, map[string]string, SymbolMap) {
+func setSymbolNode(arg *lisp.LVal) *lisp.LVal {
+	if arg.Type == lisp.LSymbol {
+		return arg
+	}
+	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+		return arg.Cells[0]
+	}
+	return nil
+}
+
+func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSet) (map[*analysis.Symbol]string, map[string]string, SymbolMap) {
 	type symbolRecord struct {
 		sym *analysis.Symbol
 	}
@@ -368,7 +395,7 @@ func buildAssignments(files []parsedFile, cfg *Config, exclusions map[string]boo
 	var records []symbolRecord
 	for _, file := range files {
 		for _, sym := range file.analysis.Symbols {
-			if !renameable(sym, cfg, exclusions) {
+			if !renameable(sym, cfg, preserved) {
 				continue
 			}
 			records = append(records, symbolRecord{sym: sym})
@@ -429,7 +456,7 @@ func applyAssignments(file *parsedFile, assignments map[*analysis.Symbol]string,
 			newName, ok = assignmentKeys[symbolLookupKey(ref.Symbol)]
 		}
 		if ok && ref.Node != nil && ref.Node.Type == lisp.LSymbol {
-			ref.Node.Str = newName
+			rewriteReferenceNode(ref.Node, newName)
 		}
 	}
 
@@ -480,7 +507,7 @@ func rewriteExports(exprs []*lisp.LVal, scope *analysis.Scope, assignments map[*
 	}
 }
 
-func renameable(sym *analysis.Symbol, cfg *Config, exclusions map[string]bool) bool {
+func renameable(sym *analysis.Symbol, cfg *Config, preserved *preservationSet) bool {
 	if sym == nil || sym.Node == nil || sym.Node.Type != lisp.LSymbol {
 		return false
 	}
@@ -497,17 +524,33 @@ func renameable(sym *analysis.Symbol, cfg *Config, exclusions map[string]bool) b
 	if name == "" || strings.Contains(name, ":") || strings.HasPrefix(name, ":") || strings.HasPrefix(name, "%") {
 		return false
 	}
-	if exclusions != nil && exclusions[name] {
+	if sym.Scope != nil && sym.Scope.Kind == analysis.ScopeGlobal {
+		switch sym.Kind {
+		case analysis.SymMacro, analysis.SymVariable:
+			return false
+		}
+	}
+	if preserved != nil && preserved.names[name] {
+		return false
+	}
+	if preserved != nil && (preserved.symbols[sym] || preserved.symbolKeys[symbolLookupKey(sym)]) {
 		return false
 	}
 	return true
 }
 
-func protectedMacroTemplateSymbols(files []parsedFile, base map[string]bool) map[string]bool {
-	protected := make(map[string]bool, len(base))
-	for name := range base {
-		protected[name] = true
+func buildPreservationSet(files []parsedFile, cfg *Config) *preservationSet {
+	protected := &preservationSet{
+		names:      make(map[string]bool),
+		symbols:    make(map[*analysis.Symbol]bool),
+		symbolKeys: make(map[string]bool),
 	}
+	if cfg != nil {
+		for name := range cfg.Exclusions {
+			protected.names[name] = true
+		}
+	}
+	preservePackageSurfaceSymbols(files, cfg, protected)
 	for i := range files {
 		for _, expr := range files[i].exprs {
 			collectProtectedMacroTemplateSymbols(expr, files[i].analysis.RootScope, protected)
@@ -516,7 +559,101 @@ func protectedMacroTemplateSymbols(files []parsedFile, base map[string]bool) map
 	return protected
 }
 
-func collectProtectedMacroTemplateSymbols(expr *lisp.LVal, root *analysis.Scope, protected map[string]bool) {
+func preservePackageSurfaceSymbols(files []parsedFile, cfg *Config, protected *preservationSet) {
+	qualifiedRefs := make(map[string]bool)
+	for i := range files {
+		currentPkg := "user"
+		for _, expr := range files[i].exprs {
+			if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+				continue
+			}
+			if expr.Cells[0].Type == lisp.LSymbol && expr.Cells[0].Str == "in-package" {
+				if pkg := packageName(expr.Cells[1:]); pkg != "" {
+					currentPkg = pkg
+				}
+			}
+			recordQualifiedReferences(expr, qualifiedRefs)
+			if expr.Cells[0].Type != lisp.LSymbol {
+				continue
+			}
+			switch expr.Cells[0].Str {
+			case "defmacro":
+				if len(expr.Cells) > 1 {
+					preserveNodeSymbol(files[i].analysis, expr.Cells[1], protected)
+				}
+			case "set":
+				if len(expr.Cells) > 1 {
+					preserveNodeSymbol(files[i].analysis, setSymbolNode(expr.Cells[1]), protected)
+				}
+			case "defun", "deftype":
+				if len(expr.Cells) > 1 && expr.Cells[1].Type == lisp.LSymbol {
+					if qualifiedRefs[currentPkg+"/"+expr.Cells[1].Str] {
+						preserveNodeSymbol(files[i].analysis, expr.Cells[1], protected)
+					}
+				}
+			}
+			if expr.Cells[0].Str == "set" && len(expr.Cells) > 1 {
+				if name := setName(expr.Cells[1]); name != "" && qualifiedRefs[currentPkg+"/"+name] {
+					preserveNodeSymbol(files[i].analysis, setSymbolNode(expr.Cells[1]), protected)
+				}
+			}
+			preserveConfiguredPackageSurfaceSymbol(files[i].analysis, expr, cfg, protected)
+		}
+	}
+}
+
+func preserveConfiguredPackageSurfaceSymbol(result *analysis.Result, expr *lisp.LVal, cfg *Config, protected *preservationSet) {
+	if result == nil || expr == nil || protected == nil || len(expr.Cells) == 0 {
+		return
+	}
+	head := astutil.HeadSymbol(expr)
+	for _, spec := range packageSurfaceForms(cfg) {
+		if spec.Head != head {
+			continue
+		}
+		node := packageSurfaceSymbolNode(expr, spec)
+		if node == nil {
+			continue
+		}
+		preserveNodeSymbol(result, node, protected)
+	}
+}
+
+func packageSurfaceForms(cfg *Config) []PackageSurfaceFormSpec {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.PackageSurfaceForms
+}
+
+func packageSurfaceSymbolNode(expr *lisp.LVal, spec PackageSurfaceFormSpec) *lisp.LVal {
+	if expr == nil || spec.NameIndex <= 0 || spec.NameIndex >= len(expr.Cells) {
+		return nil
+	}
+	arg := expr.Cells[spec.NameIndex]
+	if spec.QuotedName {
+		return setSymbolNode(arg)
+	}
+	if arg.Type == lisp.LSymbol && !arg.Quoted {
+		return arg
+	}
+	return nil
+}
+
+func preserveNodeSymbol(result *analysis.Result, node *lisp.LVal, protected *preservationSet) {
+	if result == nil || node == nil || node.Type != lisp.LSymbol || protected == nil {
+		return
+	}
+	for _, sym := range result.Symbols {
+		if sym != nil && sym.Node == node {
+			protected.symbols[sym] = true
+			protected.symbolKeys[symbolLookupKey(sym)] = true
+			return
+		}
+	}
+}
+
+func collectProtectedMacroTemplateSymbols(expr *lisp.LVal, root *analysis.Scope, protected *preservationSet) {
 	if expr == nil || root == nil || expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) < 4 {
 		return
 	}
@@ -532,7 +669,7 @@ func collectProtectedMacroTemplateSymbols(expr *lisp.LVal, root *analysis.Scope,
 	}
 }
 
-func walkMacroBodyForQuasiquote(node *lisp.LVal, scope *analysis.Scope, protected map[string]bool) {
+func walkMacroBodyForQuasiquote(node *lisp.LVal, scope *analysis.Scope, protected *preservationSet) {
 	if node == nil || node.Type != lisp.LSExpr {
 		return
 	}
@@ -547,13 +684,14 @@ func walkMacroBodyForQuasiquote(node *lisp.LVal, scope *analysis.Scope, protecte
 	}
 }
 
-func collectTemplateSymbols(node *lisp.LVal, scope *analysis.Scope, protected map[string]bool) {
+func collectTemplateSymbols(node *lisp.LVal, scope *analysis.Scope, protected *preservationSet) {
 	if node == nil {
 		return
 	}
 	if node.Type == lisp.LSymbol {
-		if preserveMacroTemplateSymbol(scope, node.Str) {
-			protected[node.Str] = true
+		if sym := preserveMacroTemplateSymbol(scope, node.Str); sym != nil {
+			protected.symbols[sym] = true
+			protected.symbolKeys[symbolLookupKey(sym)] = true
 		}
 		return
 	}
@@ -571,15 +709,63 @@ func collectTemplateSymbols(node *lisp.LVal, scope *analysis.Scope, protected ma
 	}
 }
 
-func preserveMacroTemplateSymbol(scope *analysis.Scope, name string) bool {
+func preserveMacroTemplateSymbol(scope *analysis.Scope, name string) *analysis.Symbol {
 	if name == "" ||
 		strings.Contains(name, ":") ||
 		strings.HasPrefix(name, ":") ||
 		strings.HasPrefix(name, "%") {
-		return false
+		return nil
 	}
 	sym := scope.Lookup(name)
-	return sym != nil && sym.Scope != nil && sym.Scope.Kind == analysis.ScopeGlobal
+	if sym != nil && sym.Scope != nil && sym.Scope.Kind == analysis.ScopeGlobal {
+		return sym
+	}
+	return nil
+}
+
+func recordQualifiedReferences(node *lisp.LVal, refs map[string]bool) {
+	if node == nil {
+		return
+	}
+	switch node.Type {
+	case lisp.LSymbol:
+		if pkg, name, ok := splitQualifiedSymbol(node.Str); ok {
+			refs[pkg+"/"+name] = true
+		}
+	case lisp.LSExpr:
+		if node.Quoted {
+			return
+		}
+		for _, child := range node.Cells {
+			recordQualifiedReferences(child, refs)
+		}
+	}
+}
+
+func rewriteReferenceNode(node *lisp.LVal, newName string) {
+	if node == nil || node.Type != lisp.LSymbol {
+		return
+	}
+	if pkg, _, ok := splitQualifiedSymbol(node.Str); ok {
+		node.Str = pkg + ":" + newName
+		return
+	}
+	node.Str = newName
+}
+
+func splitQualifiedSymbol(name string) (string, string, bool) {
+	if name == "" || strings.HasPrefix(name, ":") {
+		return "", "", false
+	}
+	for i := 1; i < len(name); i++ {
+		if name[i] == ':' {
+			if i+1 >= len(name) {
+				return "", "", false
+			}
+			return name[:i], name[i+1:], true
+		}
+	}
+	return "", "", false
 }
 
 func findScopeForNode(scope *analysis.Scope, node *lisp.LVal) *analysis.Scope {
