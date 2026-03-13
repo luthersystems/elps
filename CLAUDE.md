@@ -134,3 +134,12 @@ Prescriptive workflows live in `.claude/skills/`. **Before starting a task, read
 | `release/SKILL.md` | Create a tagged GitHub release with auto-generated notes from merged PRs |
 
 Multiple skills can chain: e.g., a GitHub issue triggers `pickup-issue`, which uses `implement` for the code change, `verify` before committing, and `pr` to ship.
+
+## GitHub Tooling
+
+Use `gh` for GitHub-hosted resources in this repository's workflows:
+- issues: `gh issue view`, `gh issue list`, `gh issue comment`
+- pull requests: `gh pr view`, `gh pr checks`, `gh pr create`
+- repo metadata and API queries: `gh repo view`, `gh api`
+
+Do not use generic web-scraping/search tooling for normal GitHub issue or PR retrieval when the GitHub CLI can provide the data directly.

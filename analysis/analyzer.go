@@ -79,6 +79,7 @@ func (a *analyzer) prescanDefun(expr *lisp.LVal, scope *Scope, kind SymbolKind) 
 		Name:      nameVal.Str,
 		Kind:      kind,
 		Source:    nameVal.Source,
+		Node:      nameVal,
 		Signature: signatureFromFormals(formalsVal),
 		DocString: docStr,
 	}
@@ -102,6 +103,7 @@ func (a *analyzer) prescanSet(expr *lisp.LVal, scope *Scope) {
 		Name:   name,
 		Kind:   SymVariable,
 		Source: expr.Cells[1].Source,
+		Node:   extractSetSymbolNode(expr.Cells[1]),
 	}
 	scope.Define(sym)
 	a.result.Symbols = append(a.result.Symbols, sym)
@@ -123,6 +125,7 @@ func (a *analyzer) prescanDeftype(expr *lisp.LVal, scope *Scope) {
 		Name:   nameVal.Str,
 		Kind:   SymType,
 		Source: nameVal.Source,
+		Node:   nameVal,
 	}
 	scope.Define(sym)
 	a.result.Symbols = append(a.result.Symbols, sym)
@@ -245,6 +248,16 @@ func extractSetSymbolName(arg *lisp.LVal) string {
 	return ""
 }
 
+func extractSetSymbolNode(arg *lisp.LVal) *lisp.LVal {
+	if arg.Type == lisp.LSymbol {
+		return arg
+	}
+	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+		return arg.Cells[0]
+	}
+	return nil
+}
+
 // analyzeExpr recursively walks an expression, building scopes and
 // tracking symbol references.
 func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope) {
@@ -340,6 +353,7 @@ func (a *analyzer) analyzeDefun(node *lisp.LVal, scope *Scope, kind SymbolKind) 
 			Name:   nameVal.Str,
 			Kind:   kind,
 			Source: nameVal.Source,
+			Node:   nameVal,
 		}
 		if formalsForSig.Type == lisp.LSExpr {
 			sym.Signature = signatureFromFormals(formalsForSig)
@@ -387,6 +401,7 @@ func (a *analyzer) analyzeDeftype(node *lisp.LVal, scope *Scope) {
 			Name:   nameVal.Str,
 			Kind:   SymType,
 			Source: nameVal.Source,
+			Node:   nameVal,
 		}
 		scope.Define(sym)
 		a.result.Symbols = append(a.result.Symbols, sym)
@@ -417,6 +432,7 @@ func (a *analyzer) analyzeStringDeftype(node *lisp.LVal, scope *Scope) {
 		Name:   nameVal.Str,
 		Kind:   SymVariable,
 		Source: nameVal.Source,
+		Node:   nameVal,
 	}
 	scope.Define(sym)
 	a.result.Symbols = append(a.result.Symbols, sym)
@@ -470,6 +486,7 @@ func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope) {
 				Name:   nameVal.Str,
 				Kind:   SymFunction,
 				Source: nameVal.Source,
+				Node:   nameVal,
 			}
 			scope.Define(sym)
 			a.result.Symbols = append(a.result.Symbols, sym)
@@ -569,6 +586,7 @@ func (a *analyzer) analyzeLet(node *lisp.LVal, scope *Scope, sequential bool) {
 				Name:   nameVal.Str,
 				Kind:   SymVariable,
 				Source: nameVal.Source,
+				Node:   nameVal,
 			}
 			letScope.Define(sym)
 			a.result.Symbols = append(a.result.Symbols, sym)
@@ -607,6 +625,7 @@ func (a *analyzer) analyzeFlet(node *lisp.LVal, scope *Scope, labels bool) {
 				Name:      nameVal.Str,
 				Kind:      SymFunction,
 				Source:    nameVal.Source,
+				Node:      nameVal,
 				Signature: signatureFromFormals(formalsVal),
 			}
 			fletScope.Define(sym)
@@ -641,6 +660,7 @@ func (a *analyzer) analyzeFlet(node *lisp.LVal, scope *Scope, labels bool) {
 				Name:      nameVal.Str,
 				Kind:      SymFunction,
 				Source:    nameVal.Source,
+				Node:      nameVal,
 				Signature: signatureFromFormals(formalsVal),
 			}
 			fletScope.Define(sym)
@@ -681,6 +701,7 @@ func (a *analyzer) analyzeDotimes(node *lisp.LVal, scope *Scope) {
 			Name:   varVal.Str,
 			Kind:   SymVariable,
 			Source: varVal.Source,
+			Node:   varVal,
 		}
 		dotimesScope.Define(sym)
 		a.result.Symbols = append(a.result.Symbols, sym)
@@ -736,6 +757,7 @@ func (a *analyzer) analyzeTestLet(node *lisp.LVal, scope *Scope, sequential bool
 				Name:   nameVal.Str,
 				Kind:   SymVariable,
 				Source: nameVal.Source,
+				Node:   nameVal,
 			}
 			letScope.Define(sym)
 			a.result.Symbols = append(a.result.Symbols, sym)
@@ -766,6 +788,7 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope) {
 			Name:   name,
 			Kind:   SymVariable,
 			Source: node.Cells[1].Source,
+			Node:   extractSetSymbolNode(node.Cells[1]),
 		}
 		scope.Define(sym)
 		a.result.Symbols = append(a.result.Symbols, sym)
@@ -926,6 +949,7 @@ func (a *analyzer) addParams(formalsVal *lisp.LVal, scope *Scope) {
 		for _, cell := range formalsVal.Cells {
 			if cell.Type == lisp.LSymbol && cell.Str == p.Name {
 				sym.Source = cell.Source
+				sym.Node = cell
 				break
 			}
 		}

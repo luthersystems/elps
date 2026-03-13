@@ -26,6 +26,8 @@ type IndentRule struct {
 type Config struct {
 	IndentSize    int                    // spaces per indent level (default: 2)
 	MaxBlankLines int                    // max consecutive blank lines (default: 1)
+	Compact       bool                   // emit compact output with minimal whitespace
+	StripComments bool                   // omit comments from output
 	Rules         map[string]*IndentRule // form name -> rule
 }
 

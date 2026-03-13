@@ -46,6 +46,7 @@ type Symbol struct {
 	Name       string
 	Kind       SymbolKind
 	Source     *token.Location // nil for builtins
+	Node       *lisp.LVal
 	Scope      *Scope
 	Signature  *Signature // non-nil for callables
 	DocString  string
