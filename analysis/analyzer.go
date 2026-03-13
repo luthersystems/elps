@@ -529,14 +529,6 @@ func defLikeMatch(node *lisp.LVal, cfg *Config) (defLikeSpec, bool) {
 	return defLikeSpec{}, false
 }
 
-func defLikeFormalsIndex(node *lisp.LVal) int {
-	match, ok := defLikeMatch(node, nil)
-	if !ok {
-		return -1
-	}
-	return match.formalsIdx
-}
-
 func customDefLikeMatch(node *lisp.LVal, cfg *Config) (defLikeSpec, bool) {
 	if node == nil || node.Type != lisp.LSExpr || node.Quoted || len(node.Cells) == 0 || cfg == nil {
 		return defLikeSpec{}, false
