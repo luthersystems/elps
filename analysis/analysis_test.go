@@ -134,7 +134,6 @@ func TestSignature_MinMaxArity(t *testing.T) {
 	}
 }
 
-
 // --- Builtins ---
 
 func TestPopulateBuiltins(t *testing.T) {
@@ -849,6 +848,31 @@ func TestAnalyze_DefPrefix_NoFormals(t *testing.T) {
 	assert.NotNil(t, result)
 }
 
+func TestAnalyze_DefPrefix_DefaultCallFallsBackToNormalCall(t *testing.T) {
+	result := parseAndAnalyze(t, `(defun f (ctx) (default ctx (sorted-map)))`)
+
+	for _, sym := range result.Symbols {
+		assert.False(t,
+			(sym.Name == "ctx" && sym.Kind == SymFunction) ||
+				(sym.Name == "sorted-map" && sym.Kind == SymParameter),
+			"default call should not synthesize def-like symbols: %+v", sym)
+	}
+
+	var ctxRef *Reference
+	for _, ref := range result.References {
+		if ref.Node != nil && ref.Node.Str == "ctx" {
+			ctxRef = ref
+			break
+		}
+	}
+	require.NotNil(t, ctxRef, "ctx reference in default call should be resolved")
+	require.NotNil(t, ctxRef.Symbol)
+	assert.Equal(t, SymParameter, ctxRef.Symbol.Kind)
+	require.NotNil(t, ctxRef.Symbol.Source)
+	assert.Equal(t, 1, ctxRef.Symbol.Source.Line)
+	assert.Equal(t, 11, ctxRef.Symbol.Source.Col)
+}
+
 func TestAnalyze_DefPrefix_OptionalParams(t *testing.T) {
 	// Formals with &optional markers should be detected.
 	result := parseAndAnalyze(t, `(defmethod point :foo (self &optional extra) (list self extra))`)
@@ -904,6 +928,110 @@ func TestAnalyze_DefPrefix_NameNotRegisteredWhenFormalsLater(t *testing.T) {
 	for _, u := range result.Unresolved {
 		assert.NotEqual(t, "point", u.Name)
 	}
+}
+
+func TestAnalyze_CustomDefForm_NonDefPrefixBindsNameAndParams(t *testing.T) {
+	result := parseAndAnalyzeWithConfig(t, `(endpoint handler (req) (+ req 1))`, &Config{
+		DefForms: []DefFormSpec{
+			{Head: "endpoint", FormalsIndex: 2, BindsName: true, NameIndex: 1, NameKind: SymFunction},
+		},
+	})
+
+	sym := result.RootScope.LookupLocal("handler")
+	require.NotNil(t, sym)
+	assert.Equal(t, SymFunction, sym.Kind)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "handler", u.Name)
+		assert.NotEqual(t, "req", u.Name)
+	}
+}
+
+func TestAnalyze_CustomDefForm_LaterFormalsWithoutBoundName(t *testing.T) {
+	result := parseAndAnalyzeWithConfig(t, `
+(set 'point 1)
+(register-method point :move (self) self)`, &Config{
+		DefForms: []DefFormSpec{
+			{Head: "register-method", FormalsIndex: 3},
+		},
+	})
+
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "point", u.Name)
+		assert.NotEqual(t, "self", u.Name)
+	}
+	assert.Nil(t, result.RootScope.LookupLocal(":move"))
+}
+
+func TestAnalyze_CustomDefForm_EmptyFormals(t *testing.T) {
+	result := parseAndAnalyzeWithConfig(t, `(endpoint healthcheck () (list 1))`, &Config{
+		DefForms: []DefFormSpec{
+			{Head: "endpoint", FormalsIndex: 2, BindsName: true, NameIndex: 1, NameKind: SymFunction},
+		},
+	})
+
+	sym := result.RootScope.LookupLocal("healthcheck")
+	require.NotNil(t, sym)
+	assert.Equal(t, SymFunction, sym.Kind)
+}
+
+func TestAnalyze_CustomDefForm_PrescanSupportsExportBeforeDefinition(t *testing.T) {
+	result := parseAndAnalyzeWithConfig(t, `
+(export 'handler)
+(endpoint handler (req) req)`, &Config{
+		DefForms: []DefFormSpec{
+			{Head: "endpoint", FormalsIndex: 2, BindsName: true, NameIndex: 1, NameKind: SymFunction},
+		},
+	})
+
+	sym := result.RootScope.LookupLocal("handler")
+	require.NotNil(t, sym)
+	assert.True(t, sym.Exported)
+}
+
+func TestAnalyze_CustomDefForm_PrescanSupportsForwardReference(t *testing.T) {
+	result := parseAndAnalyzeWithConfig(t, `
+(defun caller () (handler 1))
+(endpoint handler (req) req)`, &Config{
+		DefForms: []DefFormSpec{
+			{Head: "endpoint", FormalsIndex: 2, BindsName: true, NameIndex: 1, NameKind: SymFunction},
+		},
+	})
+
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "handler", u.Name)
+	}
+}
+
+func TestAnalyze_DefPrefix_DefaultInsideLabelsOptionalParam(t *testing.T) {
+	result := parseAndAnalyze(t, `
+(defun outer ()
+  (labels ([register (id name &optional ctx)
+            (let* ([body (default ctx (sorted-map))])
+              (assoc! body "id" id)
+              (assoc! body "name" name)
+              body)])
+    (register "a" "b")))`)
+
+	for _, sym := range result.Symbols {
+		assert.False(t,
+			(sym.Name == "ctx" && sym.Kind == SymFunction) ||
+				(sym.Name == "sorted-map" && sym.Kind == SymParameter),
+			"default call in labels should not synthesize def-like symbols: %+v", sym)
+	}
+
+	var ctxRef *Reference
+	for _, ref := range result.References {
+		if ref.Node != nil && ref.Node.Str == "ctx" && ref.Source != nil && ref.Source.Line == 4 {
+			ctxRef = ref
+			break
+		}
+	}
+	require.NotNil(t, ctxRef, "ctx reference in labels body should be resolved")
+	require.NotNil(t, ctxRef.Symbol)
+	assert.Equal(t, SymParameter, ctxRef.Symbol.Kind)
+	require.NotNil(t, ctxRef.Symbol.Source)
+	assert.Equal(t, 3, ctxRef.Symbol.Source.Line)
+	assert.Equal(t, 41, ctxRef.Symbol.Source.Col)
 }
 
 // --- Analyze: nested defun/defmacro ---
