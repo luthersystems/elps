@@ -92,8 +92,8 @@ func TestIndentDefaultAlign(t *testing.T) {
 				"     baz)\n",
 		},
 		{
-			name:  "extra spaces preserved for column alignment",
-			input: "(foo   bar   baz)",
+			name:     "extra spaces preserved for column alignment",
+			input:    "(foo   bar   baz)",
 			expected: "(foo   bar   baz)\n",
 		},
 	})
@@ -102,18 +102,18 @@ func TestIndentDefaultAlign(t *testing.T) {
 func TestIndentDefun(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "defun body indent",
+			name:  "defun body indent",
 			input: "(defun square (x)\n(* x x))",
 			expected: "(defun square (x)\n" +
 				"  (* x x))\n",
 		},
 		{
-			name: "defun single line stays single",
-			input: "(defun id (x) x)",
+			name:     "defun single line stays single",
+			input:    "(defun id (x) x)",
 			expected: "(defun id (x) x)\n",
 		},
 		{
-			name: "defmacro body indent",
+			name:  "defmacro body indent",
 			input: "(defmacro my-macro (x)\n(list x))",
 			expected: "(defmacro my-macro (x)\n" +
 				"  (list x))\n",
@@ -124,7 +124,7 @@ func TestIndentDefun(t *testing.T) {
 func TestIndentLambda(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "lambda body indent",
+			name:  "lambda body indent",
 			input: "(lambda (x)\n(+ x 1))",
 			expected: "(lambda (x)\n" +
 				"  (+ x 1))\n",
@@ -135,13 +135,13 @@ func TestIndentLambda(t *testing.T) {
 func TestIndentLet(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "let body indent",
+			name:  "let body indent",
 			input: "(let ((x 1))\n(+ x 2))",
 			expected: "(let ((x 1))\n" +
 				"  (+ x 2))\n",
 		},
 		{
-			name: "let with brackets",
+			name:  "let with brackets",
 			input: "(let ([x 1] [y 2])\n(+ x y))",
 			expected: "(let ([x 1] [y 2])\n" +
 				"  (+ x y))\n",
@@ -152,7 +152,7 @@ func TestIndentLet(t *testing.T) {
 func TestIndentIf(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "if then else",
+			name:  "if then else",
 			input: "(if (> x 0)\ntrue\nfalse)",
 			expected: "(if (> x 0)\n" +
 				"  true\n" +
@@ -164,7 +164,7 @@ func TestIndentIf(t *testing.T) {
 func TestIndentProgn(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "progn body",
+			name:  "progn body",
 			input: "(progn\n(foo)\n(bar))",
 			expected: "(progn\n" +
 				"  (foo)\n" +
@@ -176,14 +176,14 @@ func TestIndentProgn(t *testing.T) {
 func TestIndentCond(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "cond args on next line use body indent",
+			name:  "cond args on next line use body indent",
 			input: "(cond\n((= x 1) \"one\")\n(:else \"other\"))",
 			expected: "(cond\n" +
 				"  ((= x 1) \"one\")\n" +
 				"  (:else \"other\"))\n",
 		},
 		{
-			name: "cond first-arg on same line uses alignment",
+			name:  "cond first-arg on same line uses alignment",
 			input: "(cond ((= x 1) \"one\")\n((= x 2) \"two\"))",
 			expected: "(cond ((= x 1) \"one\")\n" +
 				"      ((= x 2) \"two\"))\n",
@@ -222,16 +222,58 @@ func TestIndentOrAnd(t *testing.T) {
 	})
 }
 
+func TestCompactMode(t *testing.T) {
+	cfg := &Config{
+		Compact:       true,
+		StripComments: true,
+		IndentSize:    2,
+		MaxBlankLines: 1,
+		Rules:         DefaultRules(),
+	}
+	tests := []formatTest{
+		{
+			name:     "compact removes comments and redundant whitespace",
+			input:    ";; top\n(defun demo (value)\n\n  ; inline lead\n  (let ((value (+ value 1))) ; trailing\n    (debug-print 'value)\n    value))\n",
+			expected: "(defun demo (value) (let ((value (+ value 1))) (debug-print 'value) value))\n",
+			config:   cfg,
+		},
+		{
+			name:     "compact keeps top-level forms on separate lines",
+			input:    "(set x 1)\n\n(set y 2)\n",
+			expected: "(set x 1)\n(set y 2)\n",
+			config:   cfg,
+		},
+		{
+			name:     "compact preserves quoted bracket lists",
+			input:    "(quasiquote (let ([(unquote patt) 42]) [patt]))\n",
+			expected: "(quasiquote (let ([(unquote patt) 42]) [patt]))\n",
+			config:   cfg,
+		},
+		{
+			name:     "compact preserves multiple quote levels",
+			input:    "''value\n",
+			expected: "''value\n",
+			config:   cfg,
+		},
+	}
+	runFormatTests(t, tests)
+	for _, tt := range tests {
+		got, err := Format([]byte(tt.input), cfg)
+		require.NoError(t, err)
+		roundTripEqual(t, tt.input, string(got))
+	}
+}
+
 func TestIndentTest(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "test special",
+			name:  "test special",
 			input: "(test \"my test\"\n(assert= 1 1))",
 			expected: "(test \"my test\"\n" +
 				"  (assert= 1 1))\n",
 		},
 		{
-			name: "test-let special 2 header args",
+			name:  "test-let special 2 header args",
 			input: "(test-let \"my test\" ((x 1))\n(assert= 1 x))",
 			expected: "(test-let \"my test\" ((x 1))\n" +
 				"  (assert= 1 x))\n",
@@ -242,14 +284,14 @@ func TestIndentTest(t *testing.T) {
 func TestIndentThreading(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "thread-first aligns with first arg",
+			name:  "thread-first aligns with first arg",
 			input: "(thread-first val\n(foo)\n(bar))",
 			expected: "(thread-first val\n" +
 				"              (foo)\n" +
 				"              (bar))\n",
 		},
 		{
-			name: "thread-first wraps to body indent",
+			name:  "thread-first wraps to body indent",
 			input: "(thread-first\nval\n(foo)\n(bar))",
 			expected: "(thread-first\n" +
 				"  val\n" +
@@ -262,7 +304,7 @@ func TestIndentThreading(t *testing.T) {
 func TestIndentDo(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "do special",
+			name:  "do special",
 			input: "(do ((i 0 (+ i 1)))\n(body))",
 			expected: "(do ((i 0 (+ i 1)))\n" +
 				"  (body))\n",
@@ -273,7 +315,7 @@ func TestIndentDo(t *testing.T) {
 func TestIndentIgnoreErrors(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "ignore-errors body",
+			name:  "ignore-errors body",
 			input: "(ignore-errors\n(risky-op))",
 			expected: "(ignore-errors\n" +
 				"  (risky-op))\n",
@@ -286,8 +328,8 @@ func TestIndentIgnoreErrors(t *testing.T) {
 func TestCommentLeadingTopLevel(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "comment before top-level form",
-			input: "; hello\n(foo)",
+			name:     "comment before top-level form",
+			input:    "; hello\n(foo)",
 			expected: "; hello\n(foo)\n",
 		},
 	})
@@ -296,8 +338,8 @@ func TestCommentLeadingTopLevel(t *testing.T) {
 func TestCommentBetweenForms(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "comment between two forms",
-			input: "(foo)\n\n; separator\n(bar)",
+			name:     "comment between two forms",
+			input:    "(foo)\n\n; separator\n(bar)",
 			expected: "(foo)\n\n; separator\n(bar)\n",
 		},
 	})
@@ -306,7 +348,7 @@ func TestCommentBetweenForms(t *testing.T) {
 func TestCommentInsideSExpr(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "comment inside s-expr",
+			name:  "comment inside s-expr",
 			input: "(defun foo (x)\n  ; compute\n  (+ x 1))",
 			expected: "(defun foo (x)\n" +
 				"  ; compute\n" +
@@ -318,7 +360,7 @@ func TestCommentInsideSExpr(t *testing.T) {
 func TestCommentInsideList(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "comment inside brackets",
+			name:  "comment inside brackets",
 			input: "[a\n; comment\nb]",
 			expected: "[a\n" +
 				" ; comment\n" +
@@ -330,8 +372,8 @@ func TestCommentInsideList(t *testing.T) {
 func TestCommentMultipleConsecutive(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "multiple consecutive comments",
-			input: "; line 1\n; line 2\n(foo)",
+			name:     "multiple consecutive comments",
+			input:    "; line 1\n; line 2\n(foo)",
 			expected: "; line 1\n; line 2\n(foo)\n",
 		},
 	})
@@ -362,17 +404,17 @@ func TestCommentAttachedVsDetached(t *testing.T) {
 			expected: ";; hello\n(world)\n",
 		},
 		{
-			name: "section header detached then attached comment",
-			input: ";; section header\n\n;; attached comment\n(defun foo () 1)\n",
+			name:     "section header detached then attached comment",
+			input:    ";; section header\n\n;; attached comment\n(defun foo () 1)\n",
 			expected: ";; section header\n\n;; attached comment\n(defun foo () 1)\n",
 		},
 		{
-			name: "two comment blocks separated by blank line",
-			input: ";; block 1\n;; block 1 cont\n\n;; block 2\n(foo)\n",
+			name:     "two comment blocks separated by blank line",
+			input:    ";; block 1\n;; block 1 cont\n\n;; block 2\n(foo)\n",
 			expected: ";; block 1\n;; block 1 cont\n\n;; block 2\n(foo)\n",
 		},
 		{
-			name: "detached comments inside function body",
+			name:  "detached comments inside function body",
 			input: "(defun setup ()\n  ;; section one\n\n  (init)\n\n  ;; section two\n\n  (run))",
 			expected: "(defun setup ()\n" +
 				"  ;; section one\n\n" +
@@ -460,7 +502,7 @@ func TestBracketEmpty(t *testing.T) {
 func TestDataListIndent(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "let* binding pairs align inside bracket",
+			name:  "let* binding pairs align inside bracket",
 			input: "(let* ([x 1]\n[y 2]\n[z 3])\n(+ x y z))",
 			expected: "(let* ([x 1]\n" +
 				"       [y 2]\n" +
@@ -468,13 +510,13 @@ func TestDataListIndent(t *testing.T) {
 				"  (+ x y z))\n",
 		},
 		{
-			name: "cond with first-arg on same line aligns",
+			name:  "cond with first-arg on same line aligns",
 			input: "(cond ((= x 1) \"one\")\n((= x 2) \"two\"))",
 			expected: "(cond ((= x 1) \"one\")\n" +
 				"      ((= x 2) \"two\"))\n",
 		},
 		{
-			name: "nested data list in let",
+			name:  "nested data list in let",
 			input: "(let (([a 1] [b 2]))\n(+ a b))",
 			expected: "(let (([a 1] [b 2]))\n" +
 				"  (+ a b))\n",
@@ -653,8 +695,8 @@ func TestWhitespaceSpacingPreservation(t *testing.T) {
 				"  \"longer-key\" '(\"c\" \"d\"))\n",
 		},
 		{
-			name: "column-aligned data table preserved",
-			input: "(vector role \"permission/name\"   \"uuid-here\"  true  false)",
+			name:     "column-aligned data table preserved",
+			input:    "(vector role \"permission/name\"   \"uuid-here\"  true  false)",
 			expected: "(vector role \"permission/name\"   \"uuid-here\"  true  false)\n",
 		},
 		{
@@ -688,8 +730,8 @@ func TestListFirstChildOnNewLine(t *testing.T) {
 				"   [b \"2\"]])\n",
 		},
 		{
-			name: "empty list with bracket style preserved",
-			input: "(foo\n  [])",
+			name:     "empty list with bracket style preserved",
+			input:    "(foo\n  [])",
 			expected: "(foo\n  [])\n",
 		},
 	})
@@ -715,8 +757,8 @@ func TestDataListHeadOnNewLine(t *testing.T) {
 				" )\n",
 		},
 		{
-			name: "data list head on same line stays on same line",
-			input: "([a 1]\n [b 2])",
+			name:     "data list head on same line stays on same line",
+			input:    "([a 1]\n [b 2])",
 			expected: "([a 1]\n [b 2])\n",
 		},
 	})
@@ -725,18 +767,18 @@ func TestDataListHeadOnNewLine(t *testing.T) {
 func TestClosingBracketOnNewLine(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "closing paren on its own line preserved",
-			input: "(foo\n  bar\n  baz\n  )",
+			name:     "closing paren on its own line preserved",
+			input:    "(foo\n  bar\n  baz\n  )",
 			expected: "(foo\n  bar\n  baz\n  )\n",
 		},
 		{
-			name: "closing bracket on its own line preserved",
-			input: "[a\n b\n c\n ]",
+			name:     "closing bracket on its own line preserved",
+			input:    "[a\n b\n c\n ]",
 			expected: "[a\n b\n c\n ]\n",
 		},
 		{
-			name: "closing paren on same line stays on same line",
-			input: "(foo\n  bar\n  baz)",
+			name:     "closing paren on same line stays on same line",
+			input:    "(foo\n  bar\n  baz)",
 			expected: "(foo\n  bar\n  baz)\n",
 		},
 	})
@@ -765,8 +807,8 @@ func TestWhitespaceBeforeClose(t *testing.T) {
 func TestWhitespaceTrailing(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "trailing whitespace removed",
-			input: "(foo)   \n",
+			name:     "trailing whitespace removed",
+			input:    "(foo)   \n",
 			expected: "(foo)\n",
 		},
 	})
@@ -777,8 +819,8 @@ func TestWhitespaceTrailing(t *testing.T) {
 func TestBlankLineSinglePreserved(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name:  "single blank line preserved",
-			input: "(foo)\n\n(bar)\n",
+			name:     "single blank line preserved",
+			input:    "(foo)\n\n(bar)\n",
 			expected: "(foo)\n\n(bar)\n",
 		},
 	})
@@ -787,8 +829,8 @@ func TestBlankLineSinglePreserved(t *testing.T) {
 func TestBlankLineMultipleCollapsed(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name:  "multiple blank lines collapsed",
-			input: "(foo)\n\n\n\n(bar)\n",
+			name:     "multiple blank lines collapsed",
+			input:    "(foo)\n\n\n\n(bar)\n",
 			expected: "(foo)\n\n(bar)\n",
 		},
 	})
@@ -819,14 +861,14 @@ func TestTrailingNewline(t *testing.T) {
 func TestBlankLinesInsideBody(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "blank line between forms in defun body",
+			name:  "blank line between forms in defun body",
 			input: "(defun foo ()\n(bar)\n\n(baz))",
 			expected: "(defun foo ()\n" +
 				"  (bar)\n\n" +
 				"  (baz))\n",
 		},
 		{
-			name: "blank line between forms in progn",
+			name:  "blank line between forms in progn",
 			input: "(progn\n(a)\n\n(b))",
 			expected: "(progn\n" +
 				"  (a)\n\n" +
@@ -840,20 +882,20 @@ func TestBlankLinesInsideBody(t *testing.T) {
 func TestIndentSpecialNewlineFallback(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "unless condition on same line keeps special",
+			name:  "unless condition on same line keeps special",
 			input: "(unless (> x 0)\n(do-something))",
 			expected: "(unless (> x 0)\n" +
 				"  (do-something))\n",
 		},
 		{
-			name: "unless condition on next line uses body indent",
+			name:  "unless condition on next line uses body indent",
 			input: "(unless\n(> x 0)\n(do-something))",
 			expected: "(unless\n" +
 				"  (> x 0)\n" +
 				"  (do-something))\n",
 		},
 		{
-			name: "if condition on next line uses body indent",
+			name:  "if condition on next line uses body indent",
 			input: "(if\ncondition\nthen\nelse)",
 			expected: "(if\n" +
 				"  condition\n" +
@@ -878,7 +920,7 @@ func TestNestedDeep(t *testing.T) {
 func TestNestedMixedRules(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "defun with let inside",
+			name:  "defun with let inside",
 			input: "(defun foo (x)\n(let ((y 1))\n(+ x y)))",
 			expected: "(defun foo (x)\n" +
 				"  (let ((y 1))\n" +
@@ -970,7 +1012,7 @@ func TestConfigCustomIndentSize(t *testing.T) {
 	cfg.IndentSize = 4
 	runFormatTests(t, []formatTest{
 		{
-			name: "4-space indent",
+			name:  "4-space indent",
 			input: "(defun foo (x)\n(+ x 1))",
 			expected: "(defun foo (x)\n" +
 				"    (+ x 1))\n",
@@ -984,7 +1026,7 @@ func TestConfigCustomRule(t *testing.T) {
 	cfg.Rules["my-form"] = &IndentRule{Style: IndentSpecial, HeaderArgs: 1}
 	runFormatTests(t, []formatTest{
 		{
-			name: "custom rule",
+			name:  "custom rule",
 			input: "(my-form header\nbody)",
 			expected: "(my-form header\n" +
 				"  body)\n",
@@ -1039,7 +1081,7 @@ func TestHashbang(t *testing.T) {
 func TestIndentDeftype(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "deftype body indent",
+			name:  "deftype body indent",
 			input: "(deftype my-type (x)\n(validate x))",
 			expected: "(deftype my-type (x)\n" +
 				"  (validate x))\n",
@@ -1052,7 +1094,7 @@ func TestIndentDeftype(t *testing.T) {
 func TestIndentFlet(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "flet body indent",
+			name:  "flet body indent",
 			input: "(flet ((helper (x) (+ x 1)))\n(helper 5))",
 			expected: "(flet ((helper (x) (+ x 1)))\n" +
 				"  (helper 5))\n",
@@ -1065,7 +1107,7 @@ func TestIndentFlet(t *testing.T) {
 func TestIndentHandlerBind(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "handler-bind body indent",
+			name:  "handler-bind body indent",
 			input: "(handler-bind ((error (lambda (c) (handle c))))\n(risky-op))",
 			expected: "(handler-bind ((error (lambda (c) (handle c))))\n" +
 				"  (risky-op))\n",
@@ -1078,7 +1120,7 @@ func TestIndentHandlerBind(t *testing.T) {
 func TestIndentDotimes(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "dotimes body indent",
+			name:  "dotimes body indent",
 			input: "(dotimes (i 10)\n(print i))",
 			expected: "(dotimes (i 10)\n" +
 				"  (print i))\n",
@@ -1091,7 +1133,7 @@ func TestIndentDotimes(t *testing.T) {
 func TestIndentWhen(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "when body indent",
+			name:  "when body indent",
 			input: "(when (> x 0)\n(do-something))",
 			expected: "(when (> x 0)\n" +
 				"  (do-something))\n",
@@ -1102,7 +1144,7 @@ func TestIndentWhen(t *testing.T) {
 func TestIndentUnless(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "unless body indent",
+			name:  "unless body indent",
 			input: "(unless (> x 0)\n(do-something))",
 			expected: "(unless (> x 0)\n" +
 				"  (do-something))\n",
@@ -1145,7 +1187,7 @@ func TestPatternCondWithClauses(t *testing.T) {
 func TestPatternSortedMapWrapped(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "sorted-map with args on next line uses body indent",
+			name:  "sorted-map with args on next line uses body indent",
 			input: "(set 'lookup (sorted-map\n\"key1\" 1\n\"key2\" 2\n\"key3\" 3))",
 			expected: "(set 'lookup (sorted-map\n" +
 				"               \"key1\" 1\n" +
@@ -1158,7 +1200,7 @@ func TestPatternSortedMapWrapped(t *testing.T) {
 func TestPatternHandlerBind(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "handler-bind with handler on same line",
+			name:  "handler-bind with handler on same line",
 			input: "(handler-bind ([err (lambda (c) (handle c))])\n(risky-op)\n(more-ops))",
 			expected: "(handler-bind ([err (lambda (c) (handle c))])\n" +
 				"  (risky-op)\n" +
@@ -1194,7 +1236,7 @@ func TestPatternNestedLetLambda(t *testing.T) {
 func TestPatternThreadFirst(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "thread-first with multiple transformations",
+			name:  "thread-first with multiple transformations",
 			input: "(thread-first message\n(to-bytes)\n(compress)\n(encode)\n(to-string))",
 			expected: "(thread-first message\n" +
 				"              (to-bytes)\n" +
@@ -1208,7 +1250,7 @@ func TestPatternThreadFirst(t *testing.T) {
 func TestPatternBlankLinesInBody(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "blank lines between body forms in defun",
+			name:  "blank lines between body forms in defun",
 			input: "(defun setup ()\n(init-db)\n\n(init-cache)\n\n(start-server))",
 			expected: "(defun setup ()\n" +
 				"  (init-db)\n\n" +
@@ -1221,12 +1263,12 @@ func TestPatternBlankLinesInBody(t *testing.T) {
 func TestPatternBlankLineAfterComment(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "blank line between comment and form preserved at top level",
-			input: "; storage key format\n; prefix:id\n\n(set 'storage-prefix \"data\")",
+			name:     "blank line between comment and form preserved at top level",
+			input:    "; storage key format\n; prefix:id\n\n(set 'storage-prefix \"data\")",
 			expected: "; storage key format\n; prefix:id\n\n(set 'storage-prefix \"data\")\n",
 		},
 		{
-			name: "blank line after comment inside body",
+			name:  "blank line after comment inside body",
 			input: "(defun foo ()\n; setup\n\n(init)\n(run))",
 			expected: "(defun foo ()\n" +
 				"  ; setup\n\n" +
@@ -1239,14 +1281,14 @@ func TestPatternBlankLineAfterComment(t *testing.T) {
 func TestPatternAndOrAlignment(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "and with conditions on same line aligns",
+			name:  "and with conditions on same line aligns",
 			input: "(and (not passed)\n(not optional)\n(key? lookup id))",
 			expected: "(and (not passed)\n" +
 				"     (not optional)\n" +
 				"     (key? lookup id))\n",
 		},
 		{
-			name: "or with conditions on same line aligns",
+			name:  "or with conditions on same line aligns",
 			input: "(or (empty? status)\n(equal? status \"DISABLED\"))",
 			expected: "(or (empty? status)\n" +
 				"    (equal? status \"DISABLED\"))\n",
@@ -1257,20 +1299,20 @@ func TestPatternAndOrAlignment(t *testing.T) {
 func TestPatternFirstArgWrapped(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "long function name with first arg wrapped uses body indent",
+			name:  "long function name with first arg wrapped uses body indent",
 			input: "(assert-error\n'lisp:assert\nexamples)",
 			expected: "(assert-error\n" +
 				"  'lisp:assert\n" +
 				"  examples)\n",
 		},
 		{
-			name: "long function name with first arg on same line aligns",
+			name:  "long function name with first arg on same line aligns",
 			input: "(assert-error 'lisp:assert\nexamples)",
 			expected: "(assert-error 'lisp:assert\n" +
 				"              examples)\n",
 		},
 		{
-			name: "user can avoid rightward drift by wrapping first arg",
+			name:  "user can avoid rightward drift by wrapping first arg",
 			input: "(some-very-long-function-name\nfirst-arg\nsecond-arg\nthird-arg)",
 			expected: "(some-very-long-function-name\n" +
 				"  first-arg\n" +
@@ -1296,8 +1338,8 @@ func TestPatternDefunWithDocstring(t *testing.T) {
 				"      (report-errors errors))))\n",
 		},
 		{
-			name: "defun docstring on same line stays",
-			input: "(defun id (x) \"Returns its argument unchanged.\" x)",
+			name:     "defun docstring on same line stays",
+			input:    "(defun id (x) \"Returns its argument unchanged.\" x)",
 			expected: "(defun id (x) \"Returns its argument unchanged.\" x)\n",
 		},
 	})
@@ -1306,13 +1348,13 @@ func TestPatternDefunWithDocstring(t *testing.T) {
 func TestPatternUnlessWrapped(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "unless with long condition on same line",
+			name:  "unless with long condition on same line",
 			input: "(unless (nil? owner-id)\n(validate-owner owner-id))",
 			expected: "(unless (nil? owner-id)\n" +
 				"  (validate-owner owner-id))\n",
 		},
 		{
-			name: "unless with condition wrapped to next line",
+			name:  "unless with condition wrapped to next line",
 			input: "(unless\n(and (empty? required-by) (empty? required-from))\n(validate-requirement))",
 			expected: "(unless\n" +
 				"  (and (empty? required-by) (empty? required-from))\n" +
@@ -1325,13 +1367,13 @@ func TestPatternUnlessWrapped(t *testing.T) {
 func TestInlineTrailingComment(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name:  "trailing comment on binding",
-			input: "(let* ([aud (first items)] ; grab first\n       [x 1])\n  body)",
+			name:     "trailing comment on binding",
+			input:    "(let* ([aud (first items)] ; grab first\n       [x 1])\n  body)",
 			expected: "(let* ([aud (first items)] ; grab first\n       [x 1])\n  body)\n",
 		},
 		{
-			name:  "trailing comment on last child",
-			input: "(foo bar ; comment\n  baz)",
+			name:     "trailing comment on last child",
+			input:    "(foo bar ; comment\n  baz)",
 			expected: "(foo bar ; comment\n     baz)\n",
 		},
 		{
@@ -1350,18 +1392,18 @@ func TestInlineTrailingComment(t *testing.T) {
 func TestInnerTrailingComment(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "comment before closing bracket",
-			input: "(let* ([x 1]\n       [y 2]\n       ; end bindings\n       )\n  body)",
+			name:     "comment before closing bracket",
+			input:    "(let* ([x 1]\n       [y 2]\n       ; end bindings\n       )\n  body)",
 			expected: "(let* ([x 1]\n       [y 2]\n       ; end bindings\n       )\n  body)\n",
 		},
 		{
-			name: "comment before closing bracket in list",
-			input: "[a\n b\n ; last item\n ]",
+			name:     "comment before closing bracket in list",
+			input:    "[a\n b\n ; last item\n ]",
 			expected: "[a\n b\n ; last item\n ]\n",
 		},
 		{
-			name: "multiple inner trailing comments",
-			input: "(progn\n  (do-a)\n  ; note 1\n  ; note 2\n  )",
+			name:     "multiple inner trailing comments",
+			input:    "(progn\n  (do-a)\n  ; note 1\n  ; note 2\n  )",
 			expected: "(progn\n  (do-a)\n  ; note 1\n  ; note 2\n  )\n",
 		},
 	})
@@ -1370,18 +1412,18 @@ func TestInnerTrailingComment(t *testing.T) {
 func TestDefPrefixHeuristic(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name:  "def-app-route like defun",
-			input: "(def-app-route \"create_thing\" (obj)\n  (let* ([id (mk-uuid)])\n    (create! id)))",
+			name:     "def-app-route like defun",
+			input:    "(def-app-route \"create_thing\" (obj)\n  (let* ([id (mk-uuid)])\n    (create! id)))",
 			expected: "(def-app-route \"create_thing\" (obj)\n  (let* ([id (mk-uuid)])\n    (create! id)))\n",
 		},
 		{
-			name:  "def-case-verification with 2 header args",
-			input: "(def-case-verification config bindings\n  body)",
+			name:     "def-case-verification with 2 header args",
+			input:    "(def-case-verification config bindings\n  body)",
 			expected: "(def-case-verification config bindings\n  body)\n",
 		},
 		{
-			name:  "defmacro header arg wraps to new line",
-			input: "(defmacro assert-error\n  (err msg &rest expr)\n  (progn body))",
+			name:     "defmacro header arg wraps to new line",
+			input:    "(defmacro assert-error\n  (err msg &rest expr)\n  (progn body))",
 			expected: "(defmacro assert-error\n  (err msg &rest expr)\n  (progn body))\n",
 		},
 	})
@@ -1390,13 +1432,13 @@ func TestDefPrefixHeuristic(t *testing.T) {
 func TestIndentSpecialHeaderArgWrap(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name:  "unless condition on new line",
-			input: "(unless\n  cond\n  body1\n  body2)",
+			name:     "unless condition on new line",
+			input:    "(unless\n  cond\n  body1\n  body2)",
 			expected: "(unless\n  cond\n  body1\n  body2)\n",
 		},
 		{
-			name:  "if condition on new line",
-			input: "(if\n  cond\n  then\n  else)",
+			name:     "if condition on new line",
+			input:    "(if\n  cond\n  then\n  else)",
 			expected: "(if\n  cond\n  then\n  else)\n",
 		},
 	})
@@ -1737,8 +1779,8 @@ func TestAtomFallbackNoMeta(t *testing.T) {
 func TestInnerTrailingCommentBlankLine(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
-			name: "inner trailing comments separated by blank line",
-			input: "(progn\n  (do-a)\n  ; note 1\n\n  ; note 2\n  )",
+			name:     "inner trailing comments separated by blank line",
+			input:    "(progn\n  (do-a)\n  ; note 1\n\n  ; note 2\n  )",
 			expected: "(progn\n  (do-a)\n  ; note 1\n\n  ; note 2\n  )\n",
 		},
 	})

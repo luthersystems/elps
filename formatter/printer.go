@@ -45,6 +45,9 @@ func (p *printer) writeTopLevel(exprs []*lisp.LVal, trailingComments []*token.To
 	}
 
 	// Trailing comments
+	if p.cfg.StripComments {
+		return
+	}
 	for _, c := range trailingComments {
 		if !p.first {
 			blankLines := 0
@@ -67,6 +70,9 @@ func (p *printer) writeTopLevel(exprs []*lisp.LVal, trailingComments []*token.To
 
 // writeLeadingComments writes comments that precede a node.
 func (p *printer) writeLeadingComments(v *lisp.LVal, indent int) {
+	if p.cfg.StripComments {
+		return
+	}
 	if v.Meta == nil || len(v.Meta.LeadingComments) == 0 {
 		return
 	}
@@ -90,6 +96,9 @@ func (p *printer) writeLeadingComments(v *lisp.LVal, indent int) {
 // writeBlankLinesAfterComments emits blank lines between the last leading
 // comment and the expression, if any were present in the source.
 func (p *printer) writeBlankLinesAfterComments(v *lisp.LVal) {
+	if p.cfg.StripComments {
+		return
+	}
 	if v.Meta == nil {
 		return
 	}
@@ -106,6 +115,9 @@ func (p *printer) writeBlankLinesAfterComments(v *lisp.LVal) {
 // as the expression, after the expression. Preserves original spacing for
 // column-aligned comments.
 func (p *printer) writeTrailingComment(v *lisp.LVal) {
+	if p.cfg.StripComments {
+		return
+	}
 	if v.Meta != nil && v.Meta.TrailingComment != nil {
 		spaces := 1
 		if v.Meta.TrailingComment.PrecedingSpaces > 1 {
@@ -122,6 +134,9 @@ func (p *printer) writeTrailingComment(v *lisp.LVal) {
 // writeInnerTrailingComments writes comments that appeared between the last
 // child and the closing bracket of an s-expression or list.
 func (p *printer) writeInnerTrailingComments(v *lisp.LVal, indent int) {
+	if p.cfg.StripComments {
+		return
+	}
 	if v.Meta == nil || len(v.Meta.InnerTrailingComments) == 0 {
 		return
 	}
@@ -141,8 +156,21 @@ func (p *printer) writeInnerTrailingComments(v *lisp.LVal, indent int) {
 	}
 }
 
+func (p *printer) writeTopLevelCompact(exprs []*lisp.LVal) {
+	for i, expr := range exprs {
+		if i > 0 {
+			p.newline()
+		}
+		p.writeCompactExpr(expr)
+	}
+}
+
 // writeExpr dispatches to the appropriate printer for a node type.
 func (p *printer) writeExpr(v *lisp.LVal, indent int) {
+	if p.cfg.Compact {
+		p.writeCompactExpr(v)
+		return
+	}
 	// Handle quoting prefix for non-LQuote types
 	if v.Quoted && v.Type != lisp.LQuote && v.Type != lisp.LSExpr {
 		p.writeString("'")
@@ -174,6 +202,42 @@ func (p *printer) writeExpr(v *lisp.LVal, indent int) {
 	default:
 		p.writeString(v.String())
 	}
+}
+
+func (p *printer) writeCompactExpr(v *lisp.LVal) {
+	if v.Quoted && v.Type != lisp.LQuote && v.Type != lisp.LSExpr {
+		p.writeString("'")
+	}
+	switch v.Type {
+	case lisp.LInt, lisp.LFloat:
+		p.writeAtom(v)
+	case lisp.LString:
+		p.writeStringLiteral(v)
+	case lisp.LSymbol:
+		p.writeString(v.Str)
+	case lisp.LSExpr:
+		p.writeCompactList(v)
+	case lisp.LQuote:
+		p.writeString("'")
+		p.writeCompactExpr(v.Cells[0])
+	default:
+		p.writeString(v.String())
+	}
+}
+
+func (p *printer) writeCompactList(v *lisp.LVal) {
+	bracket := bracketOpen(v)
+	if v.Quoted && (v.Meta == nil || v.Meta.BracketType != '[') {
+		p.writeString("'")
+	}
+	p.writeString(string(bracket))
+	for i, child := range v.Cells {
+		if i > 0 {
+			p.writeString(" ")
+		}
+		p.writeCompactExpr(child)
+	}
+	p.writeString(string(bracketClose(bracket)))
 }
 
 // writeAtom writes an integer or float, using original text if available.
