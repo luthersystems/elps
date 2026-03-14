@@ -30,7 +30,7 @@ func TestMCPCommand_StdioRoundTrip(t *testing.T) {
 		Command: exec.Command(bin, "mcp"), //nolint:gosec // test executes freshly built local binary
 	}, nil)
 	require.NoError(t, err)
-	defer session.Close()
+	defer closeMCPClientSession(t, session)
 
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "describe_server"})
 	require.NoError(t, err)
@@ -62,11 +62,11 @@ func TestMCPCommand_StdioRoundTripWithConfigFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".elps.yaml"), []byte("color: never\n"), 0o600))
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v1.0.0"}, nil)
-	cmd := exec.Command(bin, "mcp")
+	cmd := exec.Command(bin, "mcp") //nolint:gosec // test executes freshly built local binary
 	cmd.Env = append(os.Environ(), "HOME="+home)
 	session, err := client.Connect(context.Background(), &mcp.CommandTransport{Command: cmd}, nil)
 	require.NoError(t, err)
-	defer session.Close()
+	defer closeMCPClientSession(t, session)
 
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "describe_server"})
 	require.NoError(t, err)
@@ -89,7 +89,7 @@ func TestMCPCommand_ProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
 		Command: exec.Command(bin, "mcp"), //nolint:gosec // test executes freshly built local binary
 	}, nil)
 	require.NoError(t, err)
-	defer session.Close()
+	defer closeMCPClientSession(t, session)
 
 	content := `(string:join "," items)`
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
@@ -113,4 +113,9 @@ func TestMCPCommand_ProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &got))
 	assert.True(t, got.Found)
 	assert.Equal(t, "join", got.SymbolName)
+}
+
+func closeMCPClientSession(t *testing.T, session *mcp.ClientSession) {
+	t.Helper()
+	require.NoError(t, session.Close())
 }

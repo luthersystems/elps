@@ -432,7 +432,7 @@ func TestWorkspaceTraversalErrorsSurface(t *testing.T) {
 	writeTestFile(t, filepath.Join(blockedDir, "hidden.lisp"), `(defun hidden () 1)`)
 	require.NoError(t, os.Chmod(blockedDir, 0))
 	defer func() {
-		require.NoError(t, os.Chmod(blockedDir, 0o750))
+		require.NoError(t, os.Chmod(blockedDir, 0o750)) //nolint:gosec // restore temp test dir permissions for cleanup
 	}()
 
 	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
