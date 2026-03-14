@@ -8,8 +8,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luthersystems/elps/analysis/perf"
+	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -163,7 +165,9 @@ func TestWorkspaceSymbolsRefreshAcrossRequests(t *testing.T) {
 	libPath := filepath.Join(tmp, "lib.lisp")
 	writeTestFile(t, libPath, "(in-package 'lib)\n(export 'alpha)\n(defun alpha () 1)")
 
-	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	session, serverSession := connectTestServer(t, srv)
 	defer session.Close()
 	defer serverSession.Close()
 
@@ -188,7 +192,10 @@ func TestWorkspaceStateReusedWhenFingerprintUnchanged(t *testing.T) {
 
 	srv := New(WithWorkspaceRoot(tmp))
 	builds := 0
+	fingerprints := 0
 	srv.service.buildWorkspaceStateHook = func(string) { builds++ }
+	srv.service.workspaceFingerprintHook = func(string) { fingerprints++ }
+	srv.service.workspaceValidationInterval = time.Hour
 
 	session, serverSession := connectTestServer(t, srv)
 	defer session.Close()
@@ -199,11 +206,59 @@ func TestWorkspaceStateReusedWhenFingerprintUnchanged(t *testing.T) {
 	second := workspaceSymbols(t, session, tmp, "alpha")
 	require.Len(t, second.Symbols, 1)
 	assert.Equal(t, 1, builds)
+	assert.Equal(t, 1, fingerprints)
+}
 
-	writeTestFile(t, libPath, "(in-package 'lib)\n(export 'beta)\n(defun beta () 1)")
-	third := workspaceSymbols(t, session, tmp, "beta")
-	require.Len(t, third.Symbols, 1)
-	assert.Equal(t, 2, builds)
+func TestReferencesStayWithinPackage(t *testing.T) {
+	tmp := t.TempDir()
+	fooPath := filepath.Join(tmp, "foo.lisp")
+	barPath := filepath.Join(tmp, "bar.lisp")
+	fooUsePath := filepath.Join(tmp, "foo_use.lisp")
+	barUsePath := filepath.Join(tmp, "bar_use.lisp")
+	writeTestFile(t, fooPath, "(in-package 'foo)\n(export 'run)\n(defun run () 1)")
+	writeTestFile(t, barPath, "(in-package 'bar)\n(export 'run)\n(defun run () 2)")
+	writeTestFile(t, fooUsePath, "(defun use-foo () (foo:run))")
+	writeTestFile(t, barUsePath, "(defun use-bar () (bar:run))")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	session, serverSession := connectTestServer(t, srv)
+	defer session.Close()
+	defer serverSession.Close()
+
+	fooRefsRes, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "references",
+		Arguments: map[string]any{
+			"path":                fooPath,
+			"line":                2,
+			"character":           strings.Index("(defun run () 1)", "run"),
+			"include_declaration": true,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, fooRefsRes.IsError)
+	fooRefs := decodeStructured[ReferencesResponse](t, fooRefsRes)
+	require.Len(t, fooRefs.References, 2)
+	assert.Contains(t, []string{fooRefs.References[0].Path, fooRefs.References[1].Path}, fooPath)
+	assert.Contains(t, []string{fooRefs.References[0].Path, fooRefs.References[1].Path}, fooUsePath)
+	assert.NotContains(t, []string{fooRefs.References[0].Path, fooRefs.References[1].Path}, barUsePath)
+
+	barRefsRes, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "references",
+		Arguments: map[string]any{
+			"path":                barPath,
+			"line":                2,
+			"character":           strings.Index("(defun run () 2)", "run"),
+			"include_declaration": true,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, barRefsRes.IsError)
+	barRefs := decodeStructured[ReferencesResponse](t, barRefsRes)
+	require.Len(t, barRefs.References, 2)
+	assert.Contains(t, []string{barRefs.References[0].Path, barRefs.References[1].Path}, barPath)
+	assert.Contains(t, []string{barRefs.References[0].Path, barRefs.References[1].Path}, barUsePath)
+	assert.NotContains(t, []string{barRefs.References[0].Path, barRefs.References[1].Path}, fooUsePath)
 }
 
 func TestWorkspaceSymbolsDeduplicateExports(t *testing.T) {
@@ -218,6 +273,67 @@ func TestWorkspaceSymbolsDeduplicateExports(t *testing.T) {
 	symbols := workspaceSymbols(t, session, tmp, "alpha")
 	require.Len(t, symbols.Symbols, 1)
 	assert.Equal(t, "alpha", symbols.Symbols[0].Name)
+	assert.Equal(t, "lib", symbols.Symbols[0].Package)
+}
+
+func TestWorkspaceSymbolsPreservePackageMetadata(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "foo.lisp"), "(in-package 'foo)\n(export 'run)\n(defun run () 1)")
+	writeTestFile(t, filepath.Join(tmp, "bar.lisp"), "(in-package 'bar)\n(export 'run)\n(defun run () 2)")
+
+	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
+	defer session.Close()
+	defer serverSession.Close()
+
+	all := workspaceSymbols(t, session, tmp, "run")
+	require.Len(t, all.Symbols, 2)
+	packages := []string{all.Symbols[0].Package, all.Symbols[1].Package}
+	assert.Contains(t, packages, "foo")
+	assert.Contains(t, packages, "bar")
+
+	fooOnly := workspaceSymbols(t, session, tmp, "foo:run")
+	require.Len(t, fooOnly.Symbols, 1)
+	assert.Equal(t, "foo", fooOnly.Symbols[0].Package)
+	assert.Equal(t, "run", fooOnly.Symbols[0].Name)
+}
+
+func TestWorkspacePackageSymbolsOverrideStdlib(t *testing.T) {
+	tmp := t.TempDir()
+	stringPath := filepath.Join(tmp, "string.lisp")
+	writeTestFile(t, stringPath, "(in-package 'string)\n(export 'join)\n(defun join (items sep) items)")
+
+	env, err := lisplib.NewDocEnv()
+	require.NoError(t, err)
+
+	srv := New(WithWorkspaceRoot(tmp), WithRegistry(env.Runtime.Registry))
+	srv.service.workspaceValidationInterval = 0
+	session, serverSession := connectTestServer(t, srv)
+	defer session.Close()
+	defer serverSession.Close()
+
+	symbols := workspaceSymbols(t, session, tmp, "string:join")
+	require.Len(t, symbols.Symbols, 1)
+	assert.Equal(t, "string", symbols.Symbols[0].Package)
+	assert.Equal(t, stringPath, symbols.Symbols[0].Path)
+
+	mainPath := filepath.Join(tmp, "main.lisp")
+	content := "(defun run () (string:join items \",\"))"
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "definition",
+		Arguments: map[string]any{
+			"path":      mainPath,
+			"line":      0,
+			"character": strings.Index(content, "join"),
+			"content":   content,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	definition := decodeStructured[DefinitionResponse](t, res)
+	require.True(t, definition.Found)
+	require.NotNil(t, definition.Location)
+	assert.Equal(t, stringPath, definition.Location.Path)
 }
 
 func TestDescribeServerIncludesRegistrarTools(t *testing.T) {
@@ -251,11 +367,11 @@ func TestPerfSelectionHonorsServerConfigIncludeTestsAndExcludes(t *testing.T) {
 	tmp := t.TempDir()
 	writeTestFile(t, filepath.Join(tmp, "prod.lisp"), `(defun prod (items) (map 'list (lambda (item) (db-put item)) items))`)
 	writeTestFile(t, filepath.Join(tmp, "prod_test.lisp"), `(defun prod-test (items) (map 'list (lambda (item) (db-put item)) items))`)
-	writeTestFile(t, filepath.Join(tmp, "skipme.lisp"), `(defun skipme (items) (map 'list (lambda (item) (db-put item)) items))`)
+	writeTestFile(t, filepath.Join(tmp, "generated_case_test.lisp"), `(defun generated-case-test (items) (map 'list (lambda (item) (db-put item)) items))`)
 
 	cfg := perf.DefaultConfig()
 	cfg.IncludeTests = true
-	cfg.ExcludeFiles = []string{"skipme.lisp"}
+	cfg.ExcludeFiles = []string{"generated_*_test.lisp"}
 
 	srv := New(WithWorkspaceRoot(tmp), WithPerfConfig(cfg))
 	session, serverSession := connectTestServer(t, srv)
@@ -278,7 +394,7 @@ func TestPerfSelectionHonorsServerConfigIncludeTestsAndExcludes(t *testing.T) {
 	}
 	assert.Contains(t, names, "prod")
 	assert.Contains(t, names, "prod-test")
-	assert.NotContains(t, names, "skipme")
+	assert.NotContains(t, names, "generated-case-test")
 }
 
 func TestWorkspaceTraversalErrorsSurface(t *testing.T) {

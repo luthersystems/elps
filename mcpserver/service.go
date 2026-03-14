@@ -41,13 +41,16 @@ type service struct {
 	mu         sync.RWMutex
 	workspaces map[string]*workspaceState
 
-	buildWorkspaceStateHook func(string)
+	buildWorkspaceStateHook     func(string)
+	workspaceFingerprintHook    func(string)
+	workspaceValidationInterval time.Duration
 }
 
 type workspaceState struct {
 	cfg         *analysis.Config
 	refs        map[string][]analysis.FileReference
 	fingerprint string
+	validatedAt time.Time
 }
 
 type document struct {
@@ -59,12 +62,13 @@ type document struct {
 
 func newService(cfg serviceConfig) *service {
 	return &service{
-		registry:      cfg.registry,
-		env:           cfg.env,
-		workspaceRoot: cfg.workspaceRoot,
-		perfConfig:    clonePerfConfig(cfg.perfConfig),
-		linter:        cfg.linter,
-		workspaces:    make(map[string]*workspaceState),
+		registry:                    cfg.registry,
+		env:                         cfg.env,
+		workspaceRoot:               cfg.workspaceRoot,
+		perfConfig:                  clonePerfConfig(cfg.perfConfig),
+		linter:                      cfg.linter,
+		workspaces:                  make(map[string]*workspaceState),
+		workspaceValidationInterval: time.Second,
 	}
 }
 
@@ -218,14 +222,18 @@ func (s *service) workspaceSymbolsTool(ctx context.Context, _ *mcp.CallToolReque
 	var out []WorkspaceSymbol
 	seen := make(map[string]bool)
 	for _, sym := range state.cfg.ExtraGlobals {
-		if !matchesQuery(sym.Name, query) || sym.Source == nil || sym.Source.Line == 0 {
+		if sym.Source == nil || sym.Source.Line == 0 {
+			continue
+		}
+		if !matchesQuery(sym.Name, query) && !matchesQuery(sym.Package+":"+sym.Name, query) {
 			continue
 		}
 		entry := WorkspaceSymbol{
-			Name:  sym.Name,
-			Kind:  symbolKindLabel(sym.Kind),
-			Path:  sym.Source.File,
-			Range: rangeFromSource(sym.Source, len(sym.Name)),
+			Name:    sym.Name,
+			Kind:    symbolKindLabel(sym.Kind),
+			Package: sym.Package,
+			Path:    sym.Source.File,
+			Range:   rangeFromSource(sym.Source, len(sym.Name)),
 		}
 		if !seenWorkspaceSymbol(seen, entry) {
 			out = append(out, entry)
@@ -475,7 +483,14 @@ func (s *service) loadDocument(path string, content *string, workspaceRoot *stri
 }
 
 func (s *service) workspace(root string) (*workspaceState, error) {
-	fingerprint, err := workspaceFingerprint(root)
+	s.mu.RLock()
+	cached, ok := s.workspaces[root]
+	s.mu.RUnlock()
+	if ok && !s.shouldValidateWorkspace(cached) {
+		return cached, nil
+	}
+
+	fingerprint, err := s.fingerprintWorkspace(root)
 	if err != nil {
 		return nil, err
 	}
@@ -483,11 +498,12 @@ func (s *service) workspace(root string) (*workspaceState, error) {
 	s.mu.RLock()
 	if state, ok := s.workspaces[root]; ok && state.fingerprint == fingerprint {
 		s.mu.RUnlock()
+		s.markWorkspaceValidated(root)
 		return state, nil
 	}
 	s.mu.RUnlock()
 
-	state, err := s.buildWorkspaceState(root, fingerprint)
+	state, err := s.buildWorkspaceState(root, fingerprint, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -497,13 +513,14 @@ func (s *service) workspace(root string) (*workspaceState, error) {
 	return state, nil
 }
 
-func (s *service) buildWorkspaceState(root, fingerprint string) (*workspaceState, error) {
+func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time.Time) (*workspaceState, error) {
 	if s.buildWorkspaceStateHook != nil {
 		s.buildWorkspaceStateHook(root)
 	}
 	state := &workspaceState{
 		cfg:         &analysis.Config{},
 		fingerprint: fingerprint,
+		validatedAt: validatedAt,
 	}
 	if root != "" {
 		globals, pkgs, err := analysis.ScanWorkspaceFull(root)
@@ -524,7 +541,7 @@ func (s *service) buildWorkspaceState(root, fingerprint string) (*workspaceState
 			state.cfg.PackageExports = stdlib
 		} else {
 			for pkgName, syms := range stdlib {
-				state.cfg.PackageExports[pkgName] = append(state.cfg.PackageExports[pkgName], syms...)
+				state.cfg.PackageExports[pkgName] = mergeExternalSymbols(state.cfg.PackageExports[pkgName], syms)
 			}
 		}
 	}
@@ -641,12 +658,7 @@ func optionalStringPtr(s string) *string {
 func perfExcludePatterns(cfg *perf.Config, includeTests bool) []string {
 	var excludes []string
 	if cfg != nil {
-		for _, pattern := range cfg.ExcludeFiles {
-			if perfIncludeTests(cfg, includeTests) && excludeTargetsTestFiles(pattern) {
-				continue
-			}
-			excludes = append(excludes, pattern)
-		}
+		excludes = append(excludes, cfg.ExcludeFiles...)
 	}
 	if !perfIncludeTests(cfg, includeTests) {
 		excludes = append(excludes, "*_test.lisp")
@@ -672,8 +684,9 @@ func compareRange(a, b Range) bool {
 }
 
 func seenWorkspaceSymbol(seen map[string]bool, symbol WorkspaceSymbol) bool {
-	key := fmt.Sprintf("%s|%s|%s|%d|%d|%d|%d",
+	key := fmt.Sprintf("%s|%s|%s|%s|%d|%d|%d|%d",
 		symbol.Name,
+		symbol.Package,
 		symbol.Path,
 		symbol.Kind,
 		symbol.Range.Start.Line,
@@ -704,34 +717,6 @@ func shouldExcludePerfPath(root, path string, patterns []string) bool {
 		}
 	}
 	return false
-}
-
-func excludeTargetsTestFiles(pattern string) bool {
-	testSamples := []string{
-		"example_test.lisp",
-		filepath.Join("pkg", "example_test.lisp"),
-	}
-	nonTestSamples := []string{
-		"example.lisp",
-		filepath.Join("pkg", "example.lisp"),
-	}
-
-	matchesTest := false
-	for _, sample := range testSamples {
-		if pathMatchesPattern(sample, pattern) {
-			matchesTest = true
-			break
-		}
-	}
-	if !matchesTest {
-		return false
-	}
-	for _, sample := range nonTestSamples {
-		if pathMatchesPattern(sample, pattern) {
-			return false
-		}
-	}
-	return true
 }
 
 func pathMatchesPattern(path, pattern string) bool {
@@ -821,18 +806,76 @@ func workspaceFingerprint(root string) (string, error) {
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
+func (s *service) shouldValidateWorkspace(state *workspaceState) bool {
+	if state == nil {
+		return true
+	}
+	interval := s.workspaceValidationInterval
+	if interval <= 0 {
+		return true
+	}
+	return time.Since(state.validatedAt) >= interval
+}
+
+func (s *service) fingerprintWorkspace(root string) (string, error) {
+	if s.workspaceFingerprintHook != nil {
+		s.workspaceFingerprintHook(root)
+	}
+	return workspaceFingerprint(root)
+}
+
+func (s *service) markWorkspaceValidated(root string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if state, ok := s.workspaces[root]; ok {
+		state.validatedAt = time.Now()
+	}
+}
+
 func deduplicateExports(syms []analysis.ExternalSymbol) []analysis.ExternalSymbol {
 	seen := make(map[string]int, len(syms))
 	var result []analysis.ExternalSymbol
 	for _, sym := range syms {
 		if idx, ok := seen[sym.Name]; ok {
-			result[idx] = sym
+			if preferExternalSymbol(sym, result[idx]) {
+				result[idx] = sym
+			}
 			continue
 		}
 		seen[sym.Name] = len(result)
 		result = append(result, sym)
 	}
 	return result
+}
+
+func mergeExternalSymbols(primary, secondary []analysis.ExternalSymbol) []analysis.ExternalSymbol {
+	if len(primary) == 0 {
+		return deduplicateExports(append([]analysis.ExternalSymbol(nil), secondary...))
+	}
+	result := append([]analysis.ExternalSymbol(nil), primary...)
+	seen := make(map[string]bool, len(primary))
+	for _, sym := range primary {
+		seen[sym.Name] = true
+	}
+	for _, sym := range secondary {
+		if seen[sym.Name] {
+			continue
+		}
+		seen[sym.Name] = true
+		result = append(result, sym)
+	}
+	return deduplicateExports(result)
+}
+
+func preferExternalSymbol(candidate, current analysis.ExternalSymbol) bool {
+	if hasRealSource(candidate.Source) != hasRealSource(current.Source) {
+		return hasRealSource(candidate.Source)
+	}
+	return false
+}
+
+func hasRealSource(loc *token.Location) bool {
+	return loc != nil && loc.Line > 0
 }
 
 func getWorkspaceRefs(state *workspaceState, key string, excludeFile string) []analysis.FileReference {

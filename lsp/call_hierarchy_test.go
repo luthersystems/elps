@@ -129,11 +129,11 @@ func TestCrossFileIncomingCalls(t *testing.T) {
 	s.ensureAnalysis(docA)
 
 	// Inject workspace refs: "target" is called from "remote-caller" in file B.
-	targetKey := analysis.SymbolKey{Name: "target", Kind: analysis.SymFunction}.String()
+	targetKey := analysis.SymbolKey{Package: "user", Name: "target", Kind: analysis.SymFunction}.String()
 	s.setTestWorkspaceRefs(map[string][]analysis.FileReference{
 		targetKey: {
 			{
-				SymbolKey: analysis.SymbolKey{Name: "target", Kind: analysis.SymFunction},
+				SymbolKey: analysis.SymbolKey{Package: "user", Name: "target", Kind: analysis.SymFunction},
 				Source:    &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 25, Pos: 24},
 				File:      "/workspace/b.lisp",
 				Enclosing: "remote-caller",
@@ -248,11 +248,11 @@ func TestCrossFileIncomingCalls_MultipleCallers(t *testing.T) {
 	s.ensureAnalysis(docA)
 
 	// Inject workspace refs: "target" called from two different files.
-	targetKey := analysis.SymbolKey{Name: "target", Kind: analysis.SymFunction}.String()
+	targetKey := analysis.SymbolKey{Package: "user", Name: "target", Kind: analysis.SymFunction}.String()
 	s.setTestWorkspaceRefs(map[string][]analysis.FileReference{
 		targetKey: {
 			{
-				SymbolKey: analysis.SymbolKey{Name: "target", Kind: analysis.SymFunction},
+				SymbolKey: analysis.SymbolKey{Package: "user", Name: "target", Kind: analysis.SymFunction},
 				Source:    &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 20, Pos: 19},
 				File:      "/workspace/b.lisp",
 				Enclosing: "caller-b",
@@ -262,7 +262,7 @@ func TestCrossFileIncomingCalls_MultipleCallers(t *testing.T) {
 				EnclosingKind: analysis.SymFunction,
 			},
 			{
-				SymbolKey: analysis.SymbolKey{Name: "target", Kind: analysis.SymFunction},
+				SymbolKey: analysis.SymbolKey{Package: "user", Name: "target", Kind: analysis.SymFunction},
 				Source:    &token.Location{File: "/workspace/c.lisp", Line: 1, Col: 20, Pos: 19},
 				File:      "/workspace/c.lisp",
 				Enclosing: "caller-c",

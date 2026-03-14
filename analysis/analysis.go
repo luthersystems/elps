@@ -72,6 +72,7 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 	for _, ext := range cfg.ExtraGlobals {
 		root.Define(&Symbol{
 			Name:      ext.Name,
+			Package:   ext.Package,
 			Kind:      ext.Kind,
 			Source:    ext.Source,
 			Signature: ext.Signature,
@@ -82,9 +83,10 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 	}
 
 	a := &analyzer{
-		root:   root,
-		result: &Result{RootScope: root},
-		cfg:    cfg,
+		root:             root,
+		result:           &Result{RootScope: root},
+		cfg:              cfg,
+		qualifiedSymbols: make(map[string]*Symbol),
 	}
 
 	// Phase 1: Pre-scan top-level definitions (forward references)

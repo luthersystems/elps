@@ -11,9 +11,10 @@ import (
 
 // analyzer is the internal state for a single analysis run.
 type analyzer struct {
-	root   *Scope
-	result *Result
-	cfg    *Config
+	root             *Scope
+	result           *Result
+	cfg              *Config
+	qualifiedSymbols map[string]*Symbol
 }
 
 // prescan walks top-level expressions to register forward-referenceable
@@ -21,6 +22,7 @@ type analyzer struct {
 // that (export 'name) works regardless of source order — a common ELPS
 // convention is to place exports before the corresponding defun.
 func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
+	currentPkg := "user"
 	// Phase 1: Register all definitions.
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
@@ -29,19 +31,24 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 		head := astutil.HeadSymbol(expr)
 		switch head {
 		case "defun":
-			a.prescanDefun(expr, scope, SymFunction)
+			a.prescanDefun(expr, scope, SymFunction, currentPkg)
 		case "defmacro":
-			a.prescanDefun(expr, scope, SymMacro)
+			a.prescanDefun(expr, scope, SymMacro, currentPkg)
 		case "deftype":
-			a.prescanDeftype(expr, scope)
+			a.prescanDeftype(expr, scope, currentPkg)
 		case "set":
-			a.prescanSet(expr, scope)
+			a.prescanSet(expr, scope, currentPkg)
 		case "use-package":
 			a.prescanUsePackage(expr, scope)
 		case "in-package":
+			if astutil.ArgCount(expr) >= 1 {
+				if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
+					currentPkg = pkgName
+				}
+			}
 			a.prescanInPackage(expr, scope)
 		default:
-			a.prescanCustomDef(expr, scope)
+			a.prescanCustomDef(expr, scope, currentPkg)
 		}
 	}
 	// Phase 2: Apply exports (all definitions now exist in scope).
@@ -55,7 +62,7 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 	}
 }
 
-func (a *analyzer) prescanCustomDef(expr *lisp.LVal, scope *Scope) {
+func (a *analyzer) prescanCustomDef(expr *lisp.LVal, scope *Scope, pkg string) {
 	match, ok := customDefLikeMatch(expr, a.cfg)
 	if !ok || !match.bindsName || match.nameIdx <= 0 || match.nameIdx >= len(expr.Cells) {
 		return
@@ -74,6 +81,7 @@ func (a *analyzer) prescanCustomDef(expr *lisp.LVal, scope *Scope) {
 	}
 	sym := &Symbol{
 		Name:      nameVal.Str,
+		Package:   pkg,
 		Kind:      kind,
 		Source:    nameVal.Source,
 		Node:      nameVal,
@@ -83,7 +91,7 @@ func (a *analyzer) prescanCustomDef(expr *lisp.LVal, scope *Scope) {
 	a.result.Symbols = append(a.result.Symbols, sym)
 }
 
-func (a *analyzer) prescanDefun(expr *lisp.LVal, scope *Scope, kind SymbolKind) {
+func (a *analyzer) prescanDefun(expr *lisp.LVal, scope *Scope, kind SymbolKind, pkg string) {
 	if astutil.ArgCount(expr) < 2 {
 		return
 	}
@@ -107,6 +115,7 @@ func (a *analyzer) prescanDefun(expr *lisp.LVal, scope *Scope, kind SymbolKind) 
 
 	sym := &Symbol{
 		Name:      nameVal.Str,
+		Package:   pkg,
 		Kind:      kind,
 		Source:    nameVal.Source,
 		Node:      nameVal,
@@ -117,7 +126,7 @@ func (a *analyzer) prescanDefun(expr *lisp.LVal, scope *Scope, kind SymbolKind) 
 	a.result.Symbols = append(a.result.Symbols, sym)
 }
 
-func (a *analyzer) prescanSet(expr *lisp.LVal, scope *Scope) {
+func (a *analyzer) prescanSet(expr *lisp.LVal, scope *Scope, pkg string) {
 	if astutil.ArgCount(expr) < 1 {
 		return
 	}
@@ -130,16 +139,17 @@ func (a *analyzer) prescanSet(expr *lisp.LVal, scope *Scope) {
 		return
 	}
 	sym := &Symbol{
-		Name:   name,
-		Kind:   SymVariable,
-		Source: expr.Cells[1].Source,
-		Node:   extractSetSymbolNode(expr.Cells[1]),
+		Name:    name,
+		Package: pkg,
+		Kind:    SymVariable,
+		Source:  expr.Cells[1].Source,
+		Node:    extractSetSymbolNode(expr.Cells[1]),
 	}
 	scope.Define(sym)
 	a.result.Symbols = append(a.result.Symbols, sym)
 }
 
-func (a *analyzer) prescanDeftype(expr *lisp.LVal, scope *Scope) {
+func (a *analyzer) prescanDeftype(expr *lisp.LVal, scope *Scope, pkg string) {
 	// (deftype name (constructor-formals) body...)
 	if astutil.ArgCount(expr) < 2 {
 		return
@@ -152,10 +162,11 @@ func (a *analyzer) prescanDeftype(expr *lisp.LVal, scope *Scope) {
 		return
 	}
 	sym := &Symbol{
-		Name:   nameVal.Str,
-		Kind:   SymType,
-		Source: nameVal.Source,
-		Node:   nameVal,
+		Name:    nameVal.Str,
+		Package: pkg,
+		Kind:    SymType,
+		Source:  nameVal.Source,
+		Node:    nameVal,
 	}
 	scope.Define(sym)
 	a.result.Symbols = append(a.result.Symbols, sym)
@@ -200,6 +211,7 @@ func (a *analyzer) prescanUsePackage(expr *lisp.LVal, scope *Scope) {
 		}
 		sym := &Symbol{
 			Name:      ext.Name,
+			Package:   ext.Package,
 			Kind:      ext.Kind,
 			Source:    ext.Source,
 			Signature: ext.Signature,
@@ -237,6 +249,7 @@ func (a *analyzer) prescanInPackage(expr *lisp.LVal, scope *Scope) {
 			}
 			sym := &Symbol{
 				Name:      ext.Name,
+				Package:   ext.Package,
 				Kind:      ext.Kind,
 				Source:    ext.Source,
 				Signature: ext.Signature,
@@ -1147,13 +1160,19 @@ func (a *analyzer) resolveQualifiedSymbol(node *lisp.LVal, scope *Scope, pkgName
 		return
 	}
 
-	// Check if the unqualified name is already in scope (e.g. from use-package).
+	// Reuse an imported symbol only when it matches the requested package.
 	sym := scope.Lookup(symName)
+	if sym != nil && (sym.Package != ext.Package || sym.Kind != ext.Kind) {
+		sym = nil
+	}
 	if sym == nil {
-		// Create a symbol from the external definition and define it at root
-		// scope so all references share the same Symbol pointer.
+		key := SymbolKey{Package: ext.Package, Name: ext.Name, Kind: ext.Kind}.String()
+		sym = a.qualifiedSymbols[key]
+	}
+	if sym == nil {
 		sym = &Symbol{
 			Name:      ext.Name,
+			Package:   ext.Package,
 			Kind:      ext.Kind,
 			Source:    ext.Source,
 			Signature: ext.Signature,
@@ -1161,7 +1180,7 @@ func (a *analyzer) resolveQualifiedSymbol(node *lisp.LVal, scope *Scope, pkgName
 			Exported:  true,
 			External:  true,
 		}
-		a.result.RootScope.Define(sym)
+		a.qualifiedSymbols[SymbolKey{Package: ext.Package, Name: ext.Name, Kind: ext.Kind}.String()] = sym
 		a.result.Symbols = append(a.result.Symbols, sym)
 	}
 
