@@ -135,7 +135,9 @@ func (s *Server) syncToolDescriptors() error {
 	if err != nil {
 		return err
 	}
-	defer serverSession.Close()
+	defer func() {
+		_ = serverSession.Close()
+	}()
 
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    defaultImplementationName + "-introspect",
@@ -145,7 +147,9 @@ func (s *Server) syncToolDescriptors() error {
 	if err != nil {
 		return err
 	}
-	defer clientSession.Close()
+	defer func() {
+		_ = clientSession.Close()
+	}()
 
 	result, err := clientSession.ListTools(ctx, nil)
 	if err != nil {

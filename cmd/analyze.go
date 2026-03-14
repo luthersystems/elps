@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -296,19 +295,4 @@ func analyzeExcludePatterns(cfg *perf.Config, cliExcludes []string, includeTests
 
 func effectiveIncludeTests(cfg *perf.Config, includeTests bool) bool {
 	return includeTests || (cfg != nil && cfg.IncludeTests)
-}
-
-func pathMatchesPattern(path, pattern string) bool {
-	if matched, _ := filepath.Match(pattern, path); matched {
-		return true
-	}
-	if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
-		return true
-	}
-	for _, component := range splitPath(path) {
-		if matched, _ := filepath.Match(pattern, component); matched {
-			return true
-		}
-	}
-	return false
 }

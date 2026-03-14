@@ -20,8 +20,8 @@ import (
 func TestDescribeServerAndListTools(t *testing.T) {
 	tmp := t.TempDir()
 	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
-	defer session.Close()
-	defer serverSession.Close()
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
 
 	tools, err := session.ListTools(context.Background(), nil)
 	require.NoError(t, err)
@@ -39,8 +39,8 @@ func TestDescribeServerAndListTools(t *testing.T) {
 
 func TestNewProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
 	session, serverSession := connectTestServer(t, New())
-	defer session.Close()
-	defer serverSession.Close()
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
 
 	content := `(string:join "," items)`
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
@@ -69,8 +69,8 @@ func TestNavigationTools(t *testing.T) {
 	writeTestFile(t, mainPath, mainContent)
 
 	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
-	defer session.Close()
-	defer serverSession.Close()
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
 
 	pos := strings.Index(mainContent, "add-one")
 	require.GreaterOrEqual(t, pos, 0)
@@ -129,8 +129,8 @@ func TestDiagnosticsAndPerfTools(t *testing.T) {
 	writeTestFile(t, perfPath, perfContent)
 
 	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
-	defer session.Close()
-	defer serverSession.Close()
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
 
 	diagRes, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "diagnostics",
@@ -191,8 +191,8 @@ func TestWorkspaceSymbolsRefreshAcrossRequests(t *testing.T) {
 	srv := New(WithWorkspaceRoot(tmp))
 	srv.service.workspaceValidationInterval = 0
 	session, serverSession := connectTestServer(t, srv)
-	defer session.Close()
-	defer serverSession.Close()
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
 
 	first := workspaceSymbols(t, session, tmp, "alpha")
 	require.Len(t, first.Symbols, 1)
@@ -221,8 +221,8 @@ func TestWorkspaceStateReusedWhenFingerprintUnchanged(t *testing.T) {
 	srv.service.workspaceValidationInterval = time.Hour
 
 	session, serverSession := connectTestServer(t, srv)
-	defer session.Close()
-	defer serverSession.Close()
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
 
 	first := workspaceSymbols(t, session, tmp, "alpha")
 	require.Len(t, first.Symbols, 1)
@@ -246,8 +246,8 @@ func TestReferencesStayWithinPackage(t *testing.T) {
 	srv := New(WithWorkspaceRoot(tmp))
 	srv.service.workspaceValidationInterval = 0
 	session, serverSession := connectTestServer(t, srv)
-	defer session.Close()
-	defer serverSession.Close()
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
 
 	fooRefsRes, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "references",
@@ -290,8 +290,8 @@ func TestWorkspaceSymbolsDeduplicateExports(t *testing.T) {
 	writeTestFile(t, libPath, "(in-package 'lib)\n(export 'alpha)\n(defun alpha () 1)")
 
 	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
-	defer session.Close()
-	defer serverSession.Close()
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
 
 	symbols := workspaceSymbols(t, session, tmp, "alpha")
 	require.Len(t, symbols.Symbols, 1)
@@ -305,8 +305,8 @@ func TestWorkspaceSymbolsPreservePackageMetadata(t *testing.T) {
 	writeTestFile(t, filepath.Join(tmp, "bar.lisp"), "(in-package 'bar)\n(export 'run)\n(defun run () 2)")
 
 	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
-	defer session.Close()
-	defer serverSession.Close()
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
 
 	all := workspaceSymbols(t, session, tmp, "run")
 	require.Len(t, all.Symbols, 2)
@@ -331,8 +331,8 @@ func TestWorkspacePackageSymbolsOverrideStdlib(t *testing.T) {
 	srv := New(WithWorkspaceRoot(tmp), WithRegistry(env.Runtime.Registry))
 	srv.service.workspaceValidationInterval = 0
 	session, serverSession := connectTestServer(t, srv)
-	defer session.Close()
-	defer serverSession.Close()
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
 
 	symbols := workspaceSymbols(t, session, tmp, "string:join")
 	require.Len(t, symbols.Symbols, 1)
@@ -368,8 +368,8 @@ func TestDescribeServerIncludesRegistrarTools(t *testing.T) {
 	}))
 
 	session, serverSession := connectTestServer(t, srv)
-	defer session.Close()
-	defer serverSession.Close()
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
 
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "describe_server"})
 	require.NoError(t, err)
@@ -398,8 +398,8 @@ func TestPerfSelectionHonorsServerConfigIncludeTestsAndExcludes(t *testing.T) {
 
 	srv := New(WithWorkspaceRoot(tmp), WithPerfConfig(cfg))
 	session, serverSession := connectTestServer(t, srv)
-	defer session.Close()
-	defer serverSession.Close()
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
 
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "call_graph",
@@ -428,14 +428,16 @@ func TestWorkspaceTraversalErrorsSurface(t *testing.T) {
 	tmp := t.TempDir()
 	writeTestFile(t, filepath.Join(tmp, "ok.lisp"), `(defun ok () 1)`)
 	blockedDir := filepath.Join(tmp, "blocked")
-	require.NoError(t, os.Mkdir(blockedDir, 0o755))
+	require.NoError(t, os.Mkdir(blockedDir, 0o750))
 	writeTestFile(t, filepath.Join(blockedDir, "hidden.lisp"), `(defun hidden () 1)`)
 	require.NoError(t, os.Chmod(blockedDir, 0))
-	defer os.Chmod(blockedDir, 0o755)
+	defer func() {
+		require.NoError(t, os.Chmod(blockedDir, 0o750))
+	}()
 
 	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
-	defer session.Close()
-	defer serverSession.Close()
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
 
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "workspace_symbols",
@@ -471,7 +473,17 @@ func decodeStructured[T any](t *testing.T, res *mcp.CallToolResult) T {
 
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+}
+
+func closeClientSession(t *testing.T, session *mcp.ClientSession) {
+	t.Helper()
+	require.NoError(t, session.Close())
+}
+
+func closeServerSession(t *testing.T, session *mcp.ServerSession) {
+	t.Helper()
+	require.NoError(t, session.Close())
 }
 
 func workspaceSymbols(t *testing.T, session *mcp.ClientSession, root string, query string) WorkspaceSymbolsResponse {
