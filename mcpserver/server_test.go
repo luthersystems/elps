@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/analysis/perf"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -218,6 +219,40 @@ func TestDescribeServerIncludesRegistrarTools(t *testing.T) {
 		}
 	}
 	assert.True(t, found)
+}
+
+func TestPerfSelectionHonorsServerConfigIncludeTestsAndExcludes(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "prod.lisp"), `(defun prod (items) (map 'list (lambda (item) (db-put item)) items))`)
+	writeTestFile(t, filepath.Join(tmp, "prod_test.lisp"), `(defun prod-test (items) (map 'list (lambda (item) (db-put item)) items))`)
+	writeTestFile(t, filepath.Join(tmp, "skipme.lisp"), `(defun skipme (items) (map 'list (lambda (item) (db-put item)) items))`)
+
+	cfg := perf.DefaultConfig()
+	cfg.IncludeTests = true
+	cfg.ExcludeFiles = []string{"skipme.lisp"}
+
+	srv := New(WithWorkspaceRoot(tmp), WithPerfConfig(cfg))
+	session, serverSession := connectTestServer(t, srv)
+	defer session.Close()
+	defer serverSession.Close()
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "call_graph",
+		Arguments: map[string]any{
+			"workspace_root": tmp,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	graph := decodeStructured[CallGraphResponse](t, res)
+	var names []string
+	for _, fn := range graph.Functions {
+		names = append(names, fn.Name)
+	}
+	assert.Contains(t, names, "prod")
+	assert.Contains(t, names, "prod-test")
+	assert.NotContains(t, names, "skipme")
 }
 
 func connectTestServer(t *testing.T, srv *Server) (*mcp.ClientSession, *mcp.ServerSession) {

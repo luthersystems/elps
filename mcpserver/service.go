@@ -401,7 +401,7 @@ func (s *service) selectPerfFiles(in PerfSelectionInput) ([]string, error) {
 		sort.Strings(files)
 		return files, nil
 	}
-	return listWorkspaceFiles(root, in.IncludeTests)
+	return listPerfWorkspaceFiles(root, s.perfConfig, in.IncludeTests)
 }
 
 func (s *service) collectFileDiagnostics(path string, content *string, workspaceRoot *string) (FileDiagnostics, error) {
@@ -604,6 +604,22 @@ func listWorkspaceFiles(root string, includeTests bool) ([]string, error) {
 	return paths, nil
 }
 
+func listPerfWorkspaceFiles(root string, cfg *perf.Config, includeTests bool) ([]string, error) {
+	paths, err := listWorkspaceFiles(root, true)
+	if err != nil {
+		return nil, err
+	}
+	excludes := perfExcludePatterns(cfg, includeTests)
+	filtered := paths[:0]
+	for _, path := range paths {
+		if shouldExcludePerfPath(root, path, excludes) {
+			continue
+		}
+		filtered = append(filtered, path)
+	}
+	return filtered, nil
+}
+
 func matchesQuery(name, query string) bool {
 	return query == "" || strings.Contains(strings.ToLower(name), query)
 }
@@ -613,6 +629,26 @@ func optionalStringPtr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+func perfExcludePatterns(cfg *perf.Config, includeTests bool) []string {
+	var excludes []string
+	if cfg != nil {
+		for _, pattern := range cfg.ExcludeFiles {
+			if perfIncludeTests(cfg, includeTests) && excludeTargetsTestFiles(pattern) {
+				continue
+			}
+			excludes = append(excludes, pattern)
+		}
+	}
+	if !perfIncludeTests(cfg, includeTests) {
+		excludes = append(excludes, "*_test.lisp")
+	}
+	return excludes
+}
+
+func perfIncludeTests(cfg *perf.Config, includeTests bool) bool {
+	return includeTests || (cfg != nil && cfg.IncludeTests)
 }
 
 func compareRange(a, b Range) bool {
@@ -643,6 +679,83 @@ func seenWorkspaceSymbol(seen map[string]bool, symbol WorkspaceSymbol) bool {
 	}
 	seen[key] = true
 	return false
+}
+
+func shouldExcludePerfPath(root, path string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	rel := path
+	if root != "" {
+		if relPath, err := filepath.Rel(root, path); err == nil {
+			rel = relPath
+		}
+	}
+	for _, pattern := range patterns {
+		if pathMatchesPattern(rel, pattern) || pathMatchesPattern(path, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func excludeTargetsTestFiles(pattern string) bool {
+	testSamples := []string{
+		"example_test.lisp",
+		filepath.Join("pkg", "example_test.lisp"),
+	}
+	nonTestSamples := []string{
+		"example.lisp",
+		filepath.Join("pkg", "example.lisp"),
+	}
+
+	matchesTest := false
+	for _, sample := range testSamples {
+		if pathMatchesPattern(sample, pattern) {
+			matchesTest = true
+			break
+		}
+	}
+	if !matchesTest {
+		return false
+	}
+	for _, sample := range nonTestSamples {
+		if pathMatchesPattern(sample, pattern) {
+			return false
+		}
+	}
+	return true
+}
+
+func pathMatchesPattern(path, pattern string) bool {
+	if matched, _ := filepath.Match(pattern, path); matched {
+		return true
+	}
+	if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
+		return true
+	}
+	for _, component := range splitPath(path) {
+		if matched, _ := filepath.Match(pattern, component); matched {
+			return true
+		}
+	}
+	return false
+}
+
+func splitPath(path string) []string {
+	path = filepath.Clean(path)
+	if path == "." {
+		return nil
+	}
+	parts := strings.Split(path, string(filepath.Separator))
+	out := parts[:0]
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
 }
 
 func deduplicateExports(syms []analysis.ExternalSymbol) []analysis.ExternalSymbol {
