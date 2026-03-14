@@ -37,6 +37,29 @@ func TestDescribeServerAndListTools(t *testing.T) {
 	assert.Len(t, got.Capabilities, 10)
 }
 
+func TestNewProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
+	session, serverSession := connectTestServer(t, New())
+	defer session.Close()
+	defer serverSession.Close()
+
+	content := `(string:join "," items)`
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "hover",
+		Arguments: map[string]any{
+			"path":      filepath.Join(t.TempDir(), "stdlib.lisp"),
+			"line":      0,
+			"character": strings.Index(content, "join"),
+			"content":   content,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	hover := decodeStructured[HoverResponse](t, res)
+	assert.True(t, hover.Found)
+	assert.Equal(t, "join", hover.SymbolName)
+}
+
 func TestNavigationTools(t *testing.T) {
 	tmp := t.TempDir()
 	libPath := filepath.Join(tmp, "lib.lisp")

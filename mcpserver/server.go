@@ -7,6 +7,7 @@ import (
 	"github.com/luthersystems/elps/analysis/perf"
 	"github.com/luthersystems/elps/lint"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -77,6 +78,14 @@ func New(opts ...Option) *Server {
 		s.impl = &mcp.Implementation{
 			Name:    defaultImplementationName,
 			Version: defaultImplementationVersion,
+		}
+	}
+	if s.env == nil && s.registry == nil {
+		env, err := lisplib.NewDocEnv()
+		if err != nil {
+			s.buildErr = err
+		} else {
+			s.env = env
 		}
 	}
 
