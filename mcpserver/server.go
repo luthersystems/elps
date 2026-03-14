@@ -98,6 +98,9 @@ func New(opts ...Option) *Server {
 			break
 		}
 	}
+	if s.buildErr == nil {
+		s.buildErr = s.syncToolDescriptors()
+	}
 	return s
 }
 
@@ -114,6 +117,41 @@ func (s *Server) MCPServer() *mcp.Server {
 
 func (s *Server) registerTool(name, description string) {
 	s.tools = append(s.tools, ToolDescriptor{Name: name, Description: description})
+}
+
+func (s *Server) syncToolDescriptors() error {
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := s.server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		return err
+	}
+	defer serverSession.Close()
+
+	client := mcp.NewClient(&mcp.Implementation{
+		Name:    defaultImplementationName + "-introspect",
+		Version: defaultImplementationVersion,
+	}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		return err
+	}
+	defer clientSession.Close()
+
+	result, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	descriptors := make([]ToolDescriptor, 0, len(result.Tools))
+	for _, tool := range result.Tools {
+		descriptors = append(descriptors, ToolDescriptor{
+			Name:        tool.Name,
+			Description: tool.Description,
+		})
+	}
+	s.tools = descriptors
+	return nil
 }
 
 func (s *Server) registerCoreTools() {

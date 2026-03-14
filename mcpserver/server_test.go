@@ -156,6 +156,70 @@ func TestDiagnosticsAndPerfTools(t *testing.T) {
 	require.Len(t, hotspots.Functions, 1)
 }
 
+func TestWorkspaceSymbolsRefreshAcrossRequests(t *testing.T) {
+	tmp := t.TempDir()
+	libPath := filepath.Join(tmp, "lib.lisp")
+	writeTestFile(t, libPath, "(in-package 'lib)\n(export 'alpha)\n(defun alpha () 1)")
+
+	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
+	defer session.Close()
+	defer serverSession.Close()
+
+	first := workspaceSymbols(t, session, tmp, "alpha")
+	require.Len(t, first.Symbols, 1)
+	assert.Equal(t, "alpha", first.Symbols[0].Name)
+
+	writeTestFile(t, libPath, "(in-package 'lib)\n(export 'beta)\n(defun beta () 1)")
+
+	second := workspaceSymbols(t, session, tmp, "beta")
+	require.Len(t, second.Symbols, 1)
+	assert.Equal(t, "beta", second.Symbols[0].Name)
+
+	old := workspaceSymbols(t, session, tmp, "alpha")
+	assert.Empty(t, old.Symbols)
+}
+
+func TestWorkspaceSymbolsDeduplicateExports(t *testing.T) {
+	tmp := t.TempDir()
+	libPath := filepath.Join(tmp, "lib.lisp")
+	writeTestFile(t, libPath, "(in-package 'lib)\n(export 'alpha)\n(defun alpha () 1)")
+
+	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
+	defer session.Close()
+	defer serverSession.Close()
+
+	symbols := workspaceSymbols(t, session, tmp, "alpha")
+	require.Len(t, symbols.Symbols, 1)
+	assert.Equal(t, "alpha", symbols.Symbols[0].Name)
+}
+
+func TestDescribeServerIncludesRegistrarTools(t *testing.T) {
+	srv := New(WithToolRegistrar(func(server *mcp.Server) error {
+		mcp.AddTool(server, &mcp.Tool{Name: "custom_tool", Description: "custom tool"}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, map[string]any, error) {
+			return nil, map[string]any{"ok": true}, nil
+		})
+		return nil
+	}))
+
+	session, serverSession := connectTestServer(t, srv)
+	defer session.Close()
+	defer serverSession.Close()
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "describe_server"})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	got := decodeStructured[DescribeServerResponse](t, res)
+	var found bool
+	for _, capability := range got.Capabilities {
+		if capability.Name == "custom_tool" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found)
+}
+
 func connectTestServer(t *testing.T, srv *Server) (*mcp.ClientSession, *mcp.ServerSession) {
 	t.Helper()
 	ctx := context.Background()
@@ -180,4 +244,18 @@ func decodeStructured[T any](t *testing.T, res *mcp.CallToolResult) T {
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+}
+
+func workspaceSymbols(t *testing.T, session *mcp.ClientSession, root string, query string) WorkspaceSymbolsResponse {
+	t.Helper()
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "workspace_symbols",
+		Arguments: map[string]any{
+			"workspace_root": root,
+			"query":          query,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	return decodeStructured[WorkspaceSymbolsResponse](t, res)
 }

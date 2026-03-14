@@ -211,16 +211,20 @@ func (s *service) workspaceSymbolsTool(ctx context.Context, _ *mcp.CallToolReque
 	}
 	query := strings.ToLower(in.Query)
 	var out []WorkspaceSymbol
+	seen := make(map[string]bool)
 	for _, sym := range state.cfg.ExtraGlobals {
 		if !matchesQuery(sym.Name, query) || sym.Source == nil || sym.Source.Line == 0 {
 			continue
 		}
-		out = append(out, WorkspaceSymbol{
+		entry := WorkspaceSymbol{
 			Name:  sym.Name,
 			Kind:  symbolKindLabel(sym.Kind),
 			Path:  sym.Source.File,
 			Range: rangeFromSource(sym.Source, len(sym.Name)),
-		})
+		}
+		if !seenWorkspaceSymbol(seen, entry) {
+			out = append(out, entry)
+		}
 	}
 	for pkgName, syms := range state.cfg.PackageExports {
 		for _, sym := range syms {
@@ -230,13 +234,16 @@ func (s *service) workspaceSymbolsTool(ctx context.Context, _ *mcp.CallToolReque
 			if !matchesQuery(sym.Name, query) && !matchesQuery(pkgName+":"+sym.Name, query) {
 				continue
 			}
-			out = append(out, WorkspaceSymbol{
+			entry := WorkspaceSymbol{
 				Name:    sym.Name,
 				Kind:    symbolKindLabel(sym.Kind),
 				Package: pkgName,
 				Path:    sym.Source.File,
 				Range:   rangeFromSource(sym.Source, len(sym.Name)),
-			})
+			}
+			if !seenWorkspaceSymbol(seen, entry) {
+				out = append(out, entry)
+			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -463,14 +470,18 @@ func (s *service) loadDocument(path string, content *string, workspaceRoot *stri
 }
 
 func (s *service) workspace(root string) (*workspaceState, error) {
-	s.mu.RLock()
-	state, ok := s.workspaces[root]
-	s.mu.RUnlock()
-	if ok {
-		return state, nil
+	state, err := s.buildWorkspaceState(root)
+	if err != nil {
+		return nil, err
 	}
+	s.mu.Lock()
+	s.workspaces[root] = state
+	s.mu.Unlock()
+	return state, nil
+}
 
-	state = &workspaceState{cfg: &analysis.Config{}}
+func (s *service) buildWorkspaceState(root string) (*workspaceState, error) {
+	state := &workspaceState{cfg: &analysis.Config{}}
 	if root != "" {
 		globals, pkgs, err := analysis.ScanWorkspaceFull(root)
 		if err != nil {
@@ -500,14 +511,6 @@ func (s *service) workspace(root string) (*workspaceState, error) {
 	if root != "" {
 		state.refs = analysis.ScanWorkspaceRefs(root, state.cfg)
 	}
-
-	s.mu.Lock()
-	if existing, ok := s.workspaces[root]; ok {
-		s.mu.Unlock()
-		return existing, nil
-	}
-	s.workspaces[root] = state
-	s.mu.Unlock()
 	return state, nil
 }
 
@@ -623,6 +626,23 @@ func compareRange(a, b Range) bool {
 		return a.End.Line < b.End.Line
 	}
 	return a.End.Character < b.End.Character
+}
+
+func seenWorkspaceSymbol(seen map[string]bool, symbol WorkspaceSymbol) bool {
+	key := fmt.Sprintf("%s|%s|%s|%d|%d|%d|%d",
+		symbol.Name,
+		symbol.Path,
+		symbol.Kind,
+		symbol.Range.Start.Line,
+		symbol.Range.Start.Character,
+		symbol.Range.End.Line,
+		symbol.Range.End.Character,
+	)
+	if seen[key] {
+		return true
+	}
+	seen[key] = true
+	return false
 }
 
 func deduplicateExports(syms []analysis.ExternalSymbol) []analysis.ExternalSymbol {
