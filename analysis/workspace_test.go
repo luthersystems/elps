@@ -313,7 +313,7 @@ func TestScanWorkspaceRefs_CrossFile(t *testing.T) {
 	refs := ScanWorkspaceRefs(dir, cfg)
 
 	// There should be a reference to "helper" from file B.
-	helperKey := SymbolKey{Name: "helper", Kind: SymFunction}.String()
+	helperKey := SymbolKey{Package: "user", Name: "helper", Kind: SymFunction}.String()
 	helperRefs := refs[helperKey]
 	require.NotEmpty(t, helperRefs, "should have cross-file references to helper")
 
@@ -400,6 +400,9 @@ func TestSymbolKey_String(t *testing.T) {
 
 	key2 := SymbolKey{Name: "my-var", Kind: SymVariable}
 	assert.Equal(t, "my-var/variable", key2.String())
+
+	key3 := SymbolKey{Package: "helpers", Name: "add-one", Kind: SymFunction}
+	assert.Equal(t, "helpers:add-one/function", key3.String())
 }
 
 func TestScanWorkspaceRefs_QualifiedSymbol(t *testing.T) {
@@ -432,7 +435,7 @@ func TestScanWorkspaceRefs_QualifiedSymbol(t *testing.T) {
 	refs := ScanWorkspaceRefs(dir, cfg)
 
 	// There should be a reference to "add-one" (unqualified key) from consumer.lisp.
-	addOneKey := SymbolKey{Name: "add-one", Kind: SymFunction}.String()
+	addOneKey := SymbolKey{Package: "helpers", Name: "add-one", Kind: SymFunction}.String()
 	addOneRefs := refs[addOneKey]
 	require.NotEmpty(t, addOneRefs, "should have cross-file reference to add-one via qualified symbol")
 

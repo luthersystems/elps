@@ -2202,11 +2202,11 @@ func TestCrossFileReferences(t *testing.T) {
 	s.ensureAnalysis(docA)
 
 	// Inject workspace refs simulating a reference from file B.
-	helperKey := analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction}.String()
+	helperKey := analysis.SymbolKey{Package: "user", Name: "helper", Kind: analysis.SymFunction}.String()
 	s.setTestWorkspaceRefs(map[string][]analysis.FileReference{
 		helperKey: {
 			{
-				SymbolKey: analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction},
+				SymbolKey: analysis.SymbolKey{Package: "user", Name: "helper", Kind: analysis.SymFunction},
 				Source:    &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 19, Pos: 18},
 				File:      "/workspace/b.lisp",
 				Enclosing: "caller",
@@ -2254,16 +2254,16 @@ func TestCrossFileReferences_NoDuplicates(t *testing.T) {
 
 	// Inject workspace refs that include a ref from a.lisp itself.
 	// The getWorkspaceRefs should exclude current-file refs.
-	helperKey := analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction}.String()
+	helperKey := analysis.SymbolKey{Package: "user", Name: "helper", Kind: analysis.SymFunction}.String()
 	s.setTestWorkspaceRefs(map[string][]analysis.FileReference{
 		helperKey: {
 			{
-				SymbolKey: analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction},
+				SymbolKey: analysis.SymbolKey{Package: "user", Name: "helper", Kind: analysis.SymFunction},
 				Source:    &token.Location{File: "/workspace/a.lisp", Line: 2, Col: 2, Pos: 29},
 				File:      "/workspace/a.lisp",
 			},
 			{
-				SymbolKey: analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction},
+				SymbolKey: analysis.SymbolKey{Package: "user", Name: "helper", Kind: analysis.SymFunction},
 				Source:    &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 2, Pos: 1},
 				File:      "/workspace/b.lisp",
 			},
@@ -2307,11 +2307,11 @@ func TestCrossFileRename(t *testing.T) {
 	s.ensureAnalysis(docA)
 
 	// Inject workspace refs from file B.
-	helperKey := analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction}.String()
+	helperKey := analysis.SymbolKey{Package: "user", Name: "helper", Kind: analysis.SymFunction}.String()
 	s.setTestWorkspaceRefs(map[string][]analysis.FileReference{
 		helperKey: {
 			{
-				SymbolKey: analysis.SymbolKey{Name: "helper", Kind: analysis.SymFunction},
+				SymbolKey: analysis.SymbolKey{Package: "user", Name: "helper", Kind: analysis.SymFunction},
 				Source:    &token.Location{File: "/workspace/b.lisp", Line: 1, Col: 19, Pos: 18},
 				File:      "/workspace/b.lisp",
 			},
@@ -2380,7 +2380,7 @@ func TestUpdateFileRefs(t *testing.T) {
 	assert.Greater(t, totalRefs, 0, "updateFileRefs should populate workspace refs")
 
 	// Verify the ref is for "target".
-	targetKey := analysis.SymbolKey{Name: "target", Kind: analysis.SymFunction}.String()
+	targetKey := analysis.SymbolKey{Package: "user", Name: "target", Kind: analysis.SymFunction}.String()
 	s.workspaceRefsMu.RLock()
 	targetRefs := s.workspaceRefs[targetKey]
 	s.workspaceRefsMu.RUnlock()
@@ -2882,7 +2882,7 @@ func TestCrossFileReferences_QualifiedSymbol(t *testing.T) {
 	require.Contains(t, cfg.PackageExports, "helpers", "should have helpers package exports")
 
 	// Verify workspace refs include add-one from consumer.lisp.
-	addOneKey := analysis.SymbolKey{Name: "add-one", Kind: analysis.SymFunction}.String()
+	addOneKey := analysis.SymbolKey{Package: "helpers", Name: "add-one", Kind: analysis.SymFunction}.String()
 	s.workspaceRefsMu.RLock()
 	addOneRefs := s.workspaceRefs[addOneKey]
 	s.workspaceRefsMu.RUnlock()

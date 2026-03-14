@@ -23,12 +23,16 @@ const maxWorkspaceFiles = 5000
 
 // SymbolKey identifies a symbol across files by name and kind.
 type SymbolKey struct {
-	Name string
-	Kind SymbolKind
+	Package string
+	Name    string
+	Kind    SymbolKind
 }
 
 // String returns a lookup key for use in maps.
 func (k SymbolKey) String() string {
+	if k.Package != "" {
+		return fmt.Sprintf("%s:%s/%s", k.Package, k.Name, k.Kind)
+	}
 	return fmt.Sprintf("%s/%s", k.Name, k.Kind)
 }
 
@@ -36,10 +40,10 @@ func (k SymbolKey) String() string {
 type FileReference struct {
 	SymbolKey       SymbolKey
 	Source          *token.Location
-	File            string           // absolute path
-	Enclosing       string           // name of enclosing function ("" if top-level)
-	EnclosingSource *token.Location  // definition site of enclosing function
-	EnclosingKind   SymbolKind       // kind of enclosing function
+	File            string          // absolute path
+	Enclosing       string          // name of enclosing function ("" if top-level)
+	EnclosingSource *token.Location // definition site of enclosing function
+	EnclosingKind   SymbolKind      // kind of enclosing function
 }
 
 // ScanWorkspace walks a directory tree, parsing all .lisp files and
@@ -437,7 +441,11 @@ func ExtractFileRefs(result *Result, filePath string) []FileReference {
 			continue
 		}
 
-		key := SymbolKey{Name: ref.Symbol.Name, Kind: ref.Symbol.Kind}
+		key := SymbolKey{
+			Package: ref.Symbol.Package,
+			Name:    ref.Symbol.Name,
+			Kind:    ref.Symbol.Kind,
+		}
 		fref := FileReference{
 			SymbolKey: key,
 			Source:    ref.Source,
@@ -628,10 +636,7 @@ func ScanWorkspaceRefs(root string, cfg *Config) map[string][]FileReference {
 // SymbolToKey derives a SymbolKey from an analysis Symbol.
 func SymbolToKey(sym *Symbol) SymbolKey {
 	kind := sym.Kind
-	// Normalize macro kind to function for cross-file matching,
-	// since a defmacro in one file is referenced as a "function call" in another.
-	// Actually, keep them distinct — the kind is part of the identity.
-	return SymbolKey{Name: sym.Name, Kind: kind}
+	return SymbolKey{Package: sym.Package, Name: sym.Name, Kind: kind}
 }
 
 // SymbolKeyFromNameKind creates a SymbolKey from raw name and kind strings.

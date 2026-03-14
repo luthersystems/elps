@@ -1,4 +1,5 @@
 elps
+.firecrawl/
 .claude/settings.local.json
 .claude/worktrees/
 .tmp/

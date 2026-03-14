@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -285,12 +284,7 @@ func init() {
 func analyzeExcludePatterns(cfg *perf.Config, cliExcludes []string, includeTests bool) []string {
 	var excludes []string
 	if cfg != nil {
-		for _, pattern := range cfg.ExcludeFiles {
-			if effectiveIncludeTests(cfg, includeTests) && excludeTargetsTestFiles(pattern) {
-				continue
-			}
-			excludes = append(excludes, pattern)
-		}
+		excludes = append(excludes, cfg.ExcludeFiles...)
 	}
 	excludes = append(excludes, cliExcludes...)
 	if !effectiveIncludeTests(cfg, includeTests) {
@@ -301,47 +295,4 @@ func analyzeExcludePatterns(cfg *perf.Config, cliExcludes []string, includeTests
 
 func effectiveIncludeTests(cfg *perf.Config, includeTests bool) bool {
 	return includeTests || (cfg != nil && cfg.IncludeTests)
-}
-
-func excludeTargetsTestFiles(pattern string) bool {
-	testSamples := []string{
-		"example_test.lisp",
-		filepath.Join("pkg", "example_test.lisp"),
-	}
-	nonTestSamples := []string{
-		"example.lisp",
-		filepath.Join("pkg", "example.lisp"),
-	}
-
-	matchesTest := false
-	for _, sample := range testSamples {
-		if pathMatchesPattern(sample, pattern) {
-			matchesTest = true
-			break
-		}
-	}
-	if !matchesTest {
-		return false
-	}
-	for _, sample := range nonTestSamples {
-		if pathMatchesPattern(sample, pattern) {
-			return false
-		}
-	}
-	return true
-}
-
-func pathMatchesPattern(path, pattern string) bool {
-	if matched, _ := filepath.Match(pattern, path); matched {
-		return true
-	}
-	if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
-		return true
-	}
-	for _, component := range splitPath(path) {
-		if matched, _ := filepath.Match(pattern, component); matched {
-			return true
-		}
-	}
-	return false
 }
