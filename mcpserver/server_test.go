@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -180,6 +181,31 @@ func TestWorkspaceSymbolsRefreshAcrossRequests(t *testing.T) {
 	assert.Empty(t, old.Symbols)
 }
 
+func TestWorkspaceStateReusedWhenFingerprintUnchanged(t *testing.T) {
+	tmp := t.TempDir()
+	libPath := filepath.Join(tmp, "lib.lisp")
+	writeTestFile(t, libPath, "(in-package 'lib)\n(export 'alpha)\n(defun alpha () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	builds := 0
+	srv.service.buildWorkspaceStateHook = func(string) { builds++ }
+
+	session, serverSession := connectTestServer(t, srv)
+	defer session.Close()
+	defer serverSession.Close()
+
+	first := workspaceSymbols(t, session, tmp, "alpha")
+	require.Len(t, first.Symbols, 1)
+	second := workspaceSymbols(t, session, tmp, "alpha")
+	require.Len(t, second.Symbols, 1)
+	assert.Equal(t, 1, builds)
+
+	writeTestFile(t, libPath, "(in-package 'lib)\n(export 'beta)\n(defun beta () 1)")
+	third := workspaceSymbols(t, session, tmp, "beta")
+	require.Len(t, third.Symbols, 1)
+	assert.Equal(t, 2, builds)
+}
+
 func TestWorkspaceSymbolsDeduplicateExports(t *testing.T) {
 	tmp := t.TempDir()
 	libPath := filepath.Join(tmp, "lib.lisp")
@@ -253,6 +279,34 @@ func TestPerfSelectionHonorsServerConfigIncludeTestsAndExcludes(t *testing.T) {
 	assert.Contains(t, names, "prod")
 	assert.Contains(t, names, "prod-test")
 	assert.NotContains(t, names, "skipme")
+}
+
+func TestWorkspaceTraversalErrorsSurface(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission-based traversal failure is not reliable on windows")
+	}
+
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "ok.lisp"), `(defun ok () 1)`)
+	blockedDir := filepath.Join(tmp, "blocked")
+	require.NoError(t, os.Mkdir(blockedDir, 0o755))
+	writeTestFile(t, filepath.Join(blockedDir, "hidden.lisp"), `(defun hidden () 1)`)
+	require.NoError(t, os.Chmod(blockedDir, 0))
+	defer os.Chmod(blockedDir, 0o755)
+
+	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
+	defer session.Close()
+	defer serverSession.Close()
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "workspace_symbols",
+		Arguments: map[string]any{
+			"workspace_root": tmp,
+			"query":          "ok",
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, res.IsError)
 }
 
 func connectTestServer(t *testing.T, srv *Server) (*mcp.ClientSession, *mcp.ServerSession) {

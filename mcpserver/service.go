@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/analysis/perf"
@@ -38,11 +40,14 @@ type service struct {
 
 	mu         sync.RWMutex
 	workspaces map[string]*workspaceState
+
+	buildWorkspaceStateHook func(string)
 }
 
 type workspaceState struct {
-	cfg  *analysis.Config
-	refs map[string][]analysis.FileReference
+	cfg         *analysis.Config
+	refs        map[string][]analysis.FileReference
+	fingerprint string
 }
 
 type document struct {
@@ -470,7 +475,19 @@ func (s *service) loadDocument(path string, content *string, workspaceRoot *stri
 }
 
 func (s *service) workspace(root string) (*workspaceState, error) {
-	state, err := s.buildWorkspaceState(root)
+	fingerprint, err := workspaceFingerprint(root)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	if state, ok := s.workspaces[root]; ok && state.fingerprint == fingerprint {
+		s.mu.RUnlock()
+		return state, nil
+	}
+	s.mu.RUnlock()
+
+	state, err := s.buildWorkspaceState(root, fingerprint)
 	if err != nil {
 		return nil, err
 	}
@@ -480,8 +497,14 @@ func (s *service) workspace(root string) (*workspaceState, error) {
 	return state, nil
 }
 
-func (s *service) buildWorkspaceState(root string) (*workspaceState, error) {
-	state := &workspaceState{cfg: &analysis.Config{}}
+func (s *service) buildWorkspaceState(root, fingerprint string) (*workspaceState, error) {
+	if s.buildWorkspaceStateHook != nil {
+		s.buildWorkspaceStateHook(root)
+	}
+	state := &workspaceState{
+		cfg:         &analysis.Config{},
+		fingerprint: fingerprint,
+	}
 	if root != "" {
 		globals, pkgs, err := analysis.ScanWorkspaceFull(root)
 		if err != nil {
@@ -577,30 +600,14 @@ func validateCursor(line, character int) error {
 }
 
 func listWorkspaceFiles(root string, includeTests bool) ([]string, error) {
-	var paths []string
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if info.IsDir() {
-			if analysis.ShouldSkipDir(info.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if filepath.Ext(path) != ".lisp" {
-			return nil
-		}
-		if !includeTests && strings.HasSuffix(path, "_test.lisp") {
-			return nil
-		}
-		paths = append(paths, path)
-		return nil
-	})
+	files, err := collectWorkspaceFiles(root, includeTests)
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(paths)
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.path)
+	}
 	return paths, nil
 }
 
@@ -756,6 +763,62 @@ func splitPath(path string) []string {
 		out = append(out, part)
 	}
 	return out
+}
+
+type workspaceFile struct {
+	path    string
+	size    int64
+	modTime time.Time
+}
+
+func collectWorkspaceFiles(root string, includeTests bool) ([]workspaceFile, error) {
+	var files []workspaceFile
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return fmt.Errorf("walking workspace path %s: %w", path, err)
+		}
+		if info == nil {
+			return fmt.Errorf("walking workspace path %s: missing file info", path)
+		}
+		if info.IsDir() {
+			if analysis.ShouldSkipDir(info.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".lisp" {
+			return nil
+		}
+		if !includeTests && strings.HasSuffix(path, "_test.lisp") {
+			return nil
+		}
+		files = append(files, workspaceFile{
+			path:    path,
+			size:    info.Size(),
+			modTime: info.ModTime(),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
+	return files, nil
+}
+
+func workspaceFingerprint(root string) (string, error) {
+	if root == "" {
+		return "", nil
+	}
+	files, err := collectWorkspaceFiles(root, true)
+	if err != nil {
+		return "", err
+	}
+	h := fnv.New64a()
+	for _, file := range files {
+		_, _ = fmt.Fprintf(h, "%s\x00%d\x00%d\x00", file.path, file.size, file.modTime.UnixNano())
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
 func deduplicateExports(syms []analysis.ExternalSymbol) []analysis.ExternalSymbol {

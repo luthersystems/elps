@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -70,4 +71,46 @@ func TestMCPCommand_StdioRoundTripWithConfigFile(t *testing.T) {
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "describe_server"})
 	require.NoError(t, err)
 	require.False(t, res.IsError)
+}
+
+func TestMCPCommand_ProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+	root := filepath.Dir(wd)
+	bin := filepath.Join(t.TempDir(), "elps")
+
+	build := exec.Command("go", "build", "-o", bin, ".")
+	build.Dir = root
+	output, err := build.CombinedOutput()
+	require.NoError(t, err, string(output))
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v1.0.0"}, nil)
+	session, err := client.Connect(context.Background(), &mcp.CommandTransport{
+		Command: exec.Command(bin, "mcp"),
+	}, nil)
+	require.NoError(t, err)
+	defer session.Close()
+
+	content := `(string:join "," items)`
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "hover",
+		Arguments: map[string]any{
+			"path":      filepath.Join(t.TempDir(), "stdlib.lisp"),
+			"line":      0,
+			"character": strings.Index(content, "join"),
+			"content":   content,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	var got struct {
+		Found      bool   `json:"found"`
+		SymbolName string `json:"symbol_name"`
+	}
+	data, err := json.Marshal(res.StructuredContent)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.True(t, got.Found)
+	assert.Equal(t, "join", got.SymbolName)
 }

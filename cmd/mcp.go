@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/mcpserver"
 	"github.com/spf13/cobra"
 )
@@ -32,6 +33,13 @@ the ELPS LSP server or the existing ELPS CLI commands.`,
 			}
 			if reg := cfg.resolveRegistry(); reg != nil {
 				serverOpts = append(serverOpts, mcpserver.WithRegistry(reg))
+			} else {
+				env, err := lisplib.NewDocEnv()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "mcp server bootstrap error: %v\n", err)
+					os.Exit(1)
+				}
+				serverOpts = append(serverOpts, mcpserver.WithRegistry(env.Runtime.Registry))
 			}
 			srv := mcpserver.New(serverOpts...)
 			if err := srv.RunStdio(context.Background()); err != nil {
