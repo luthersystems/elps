@@ -60,6 +60,31 @@ func TestNewProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
 	assert.Equal(t, "join", hover.SymbolName)
 }
 
+func TestHoverPreservesBuiltinPackageInLocation(t *testing.T) {
+	session, serverSession := connectTestServer(t, New())
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
+
+	content := `(string:join "," items)`
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "hover",
+		Arguments: map[string]any{
+			"path":      filepath.Join(t.TempDir(), "stdlib.lisp"),
+			"line":      0,
+			"character": strings.Index(content, "join"),
+			"content":   content,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	hover := decodeStructured[HoverResponse](t, res)
+	require.True(t, hover.Found)
+	require.NotNil(t, hover.DefinedIn)
+	assert.True(t, hover.DefinedIn.Virtual)
+	assert.Equal(t, builtinURI("string", "join"), hover.DefinedIn.VirtualID)
+}
+
 func TestNavigationTools(t *testing.T) {
 	tmp := t.TempDir()
 	libPath := filepath.Join(tmp, "lib.lisp")
@@ -418,6 +443,39 @@ func TestPerfSelectionHonorsServerConfigIncludeTestsAndExcludes(t *testing.T) {
 	assert.Contains(t, names, "prod")
 	assert.Contains(t, names, "prod-test")
 	assert.NotContains(t, names, "generated-case-test")
+}
+
+func TestPerfSelectionHonorsRecursiveExcludeGlobs(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "prod.lisp"), `(defun prod (items) (map 'list (lambda (item) (db-put item)) items))`)
+	buildDir := filepath.Join(tmp, "build", "nested")
+	require.NoError(t, os.MkdirAll(buildDir, 0o755))
+	writeTestFile(t, filepath.Join(buildDir, "bad.lisp"), `(defun bad (items) (map 'list (lambda (item) (db-put item)) items))`)
+
+	cfg := perf.DefaultConfig()
+	cfg.ExcludeFiles = []string{"build/**"}
+
+	srv := New(WithWorkspaceRoot(tmp), WithPerfConfig(cfg))
+	session, serverSession := connectTestServer(t, srv)
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "call_graph",
+		Arguments: map[string]any{
+			"workspace_root": tmp,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	graph := decodeStructured[CallGraphResponse](t, res)
+	var names []string
+	for _, fn := range graph.Functions {
+		names = append(names, fn.Name)
+	}
+	assert.Contains(t, names, "prod")
+	assert.NotContains(t, names, "bad")
 }
 
 func TestWorkspaceTraversalErrorsSurface(t *testing.T) {

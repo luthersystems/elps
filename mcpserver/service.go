@@ -122,7 +122,7 @@ func (s *service) definitionTool(ctx context.Context, _ *mcp.CallToolRequest, in
 
 	if sym == nil || sym.Source == nil {
 		if sym != nil && isBuiltin(sym) {
-			return nil, DefinitionResponse{Found: true, Location: builtinLocationForWord(word, sym.Name)}, nil
+			return nil, DefinitionResponse{Found: true, Location: builtinLocationForSymbolWord(sym, word)}, nil
 		}
 		if loc := qualifiedSymbolDefinition(state, word); loc != nil {
 			return nil, DefinitionResponse{Found: true, Location: loc}, nil
@@ -131,7 +131,7 @@ func (s *service) definitionTool(ctx context.Context, _ *mcp.CallToolRequest, in
 	}
 
 	if sym.Source.Pos < 0 {
-		return nil, DefinitionResponse{Found: true, Location: builtinLocationForWord(word, sym.Name)}, nil
+		return nil, DefinitionResponse{Found: true, Location: builtinLocationForSymbolWord(sym, word)}, nil
 	}
 
 	loc := locationFromSource(resolvePathAgainstRoot(sym.Source.File, s.rootForState(in.WorkspaceRoot, state), doc.Path), sym.Source, len(sym.Name))
@@ -720,26 +720,31 @@ func shouldExcludePerfPath(root, path string, patterns []string) bool {
 }
 
 func pathMatchesPattern(path, pattern string) bool {
-	if matched, _ := filepath.Match(pattern, path); matched {
+	normalizedPath := normalizeGlobPath(path)
+	normalizedPattern := normalizeGlobPath(pattern)
+	if matched, _ := filepath.Match(normalizedPattern, normalizedPath); matched {
 		return true
 	}
-	if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
+	if matched, _ := filepath.Match(normalizedPattern, filepath.Base(normalizedPath)); matched {
 		return true
 	}
-	for _, component := range splitPath(path) {
-		if matched, _ := filepath.Match(pattern, component); matched {
+	for _, component := range splitPath(normalizedPath) {
+		if matched, _ := filepath.Match(normalizedPattern, component); matched {
 			return true
 		}
+	}
+	if strings.Contains(normalizedPattern, "**") && matchGlobstarPath(splitPath(normalizedPath), splitPath(normalizedPattern)) {
+		return true
 	}
 	return false
 }
 
 func splitPath(path string) []string {
-	path = filepath.Clean(path)
+	path = normalizeGlobPath(path)
 	if path == "." {
 		return nil
 	}
-	parts := strings.Split(path, string(filepath.Separator))
+	parts := strings.Split(path, "/")
 	out := parts[:0]
 	for _, part := range parts {
 		if part == "" || part == "." {
@@ -748,6 +753,35 @@ func splitPath(path string) []string {
 		out = append(out, part)
 	}
 	return out
+}
+
+func normalizeGlobPath(path string) string {
+	return filepath.ToSlash(filepath.Clean(path))
+}
+
+func matchGlobstarPath(pathParts, patternParts []string) bool {
+	if len(patternParts) == 0 {
+		return len(pathParts) == 0
+	}
+	if patternParts[0] == "**" {
+		if len(patternParts) == 1 {
+			return true
+		}
+		for i := 0; i <= len(pathParts); i++ {
+			if matchGlobstarPath(pathParts[i:], patternParts[1:]) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(pathParts) == 0 {
+		return false
+	}
+	matched, _ := filepath.Match(patternParts[0], pathParts[0])
+	if !matched {
+		return false
+	}
+	return matchGlobstarPath(pathParts[1:], patternParts[1:])
 }
 
 type workspaceFile struct {
@@ -1019,6 +1053,7 @@ func qualifiedSymbolDefinition(state *workspaceState, word string) *Location {
 func externalToSymbol(ext *analysis.ExternalSymbol) *analysis.Symbol {
 	return &analysis.Symbol{
 		Name:      ext.Name,
+		Package:   ext.Package,
 		Kind:      ext.Kind,
 		Source:    ext.Source,
 		Signature: ext.Signature,
@@ -1103,7 +1138,7 @@ func symbolLocation(sym *analysis.Symbol, currentPath string, state *workspaceSt
 		return nil
 	}
 	if isBuiltin(sym) {
-		return builtinLocation("lisp", sym.Name)
+		return builtinLocation(builtinPackage(sym), sym.Name)
 	}
 	if sym.Source == nil {
 		return nil
@@ -1180,11 +1215,29 @@ func lintDiagnostic(diag lint.Diagnostic) Diagnostic {
 }
 
 func builtinLocationForWord(word, symName string) *Location {
-	pkg := "lisp"
-	if pkgName, _, ok := splitPackageQualified(word); ok && pkgName != "" {
-		pkg = pkgName
+	return builtinLocation(builtinPackageForWord(word), symName)
+}
+
+func builtinLocationForSymbolWord(sym *analysis.Symbol, word string) *Location {
+	pkg := builtinPackageForWord(word)
+	if pkg == "lisp" && !strings.Contains(word, ":") {
+		pkg = builtinPackage(sym)
 	}
-	return builtinLocation(pkg, symName)
+	return builtinLocation(pkg, sym.Name)
+}
+
+func builtinPackageForWord(word string) string {
+	if pkgName, _, ok := splitPackageQualified(word); ok && pkgName != "" {
+		return pkgName
+	}
+	return "lisp"
+}
+
+func builtinPackage(sym *analysis.Symbol) string {
+	if sym != nil && sym.Package != "" {
+		return sym.Package
+	}
+	return "lisp"
 }
 
 func builtinLocation(pkg, name string) *Location {
