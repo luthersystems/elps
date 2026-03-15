@@ -48,6 +48,7 @@ type service struct {
 
 type workspaceState struct {
 	cfg         *analysis.Config
+	symbols     []analysis.ExternalSymbol
 	refs        map[string][]analysis.FileReference
 	fingerprint string
 	validatedAt time.Time
@@ -221,7 +222,7 @@ func (s *service) workspaceSymbolsTool(ctx context.Context, _ *mcp.CallToolReque
 	query := strings.ToLower(in.Query)
 	var out []WorkspaceSymbol
 	seen := make(map[string]bool)
-	for _, sym := range state.cfg.ExtraGlobals {
+	for _, sym := range state.symbols {
 		if sym.Source == nil || sym.Source.Line == 0 {
 			continue
 		}
@@ -527,8 +528,13 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 		if err != nil {
 			return nil, err
 		}
+		symbols, err := analysis.ScanWorkspaceDefinitions(root)
+		if err != nil {
+			return nil, err
+		}
 		state.cfg.ExtraGlobals = globals
 		state.cfg.PackageExports = pkgs
+		state.symbols = symbols
 	}
 
 	reg := s.registry

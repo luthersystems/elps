@@ -324,6 +324,22 @@ func TestWorkspaceSymbolsDeduplicateExports(t *testing.T) {
 	assert.Equal(t, "lib", symbols.Symbols[0].Package)
 }
 
+func TestWorkspaceSymbolsIncludePrivateTopLevelDefinitions(t *testing.T) {
+	tmp := t.TempDir()
+	libPath := filepath.Join(tmp, "lib.lisp")
+	writeTestFile(t, libPath, "(in-package 'lib)\n(defun helper () 1)\n(defun public () 2)\n(export 'public)")
+
+	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
+
+	symbols := workspaceSymbols(t, session, tmp, "helper")
+	require.Len(t, symbols.Symbols, 1)
+	assert.Equal(t, "helper", symbols.Symbols[0].Name)
+	assert.Equal(t, "lib", symbols.Symbols[0].Package)
+	assert.Equal(t, libPath, symbols.Symbols[0].Path)
+}
+
 func TestWorkspaceSymbolsPreservePackageMetadata(t *testing.T) {
 	tmp := t.TempDir()
 	writeTestFile(t, filepath.Join(tmp, "foo.lisp"), "(in-package 'foo)\n(export 'run)\n(defun run () 1)")

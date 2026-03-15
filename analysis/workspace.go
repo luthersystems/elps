@@ -63,6 +63,57 @@ func ScanWorkspacePackages(root string) (map[string][]ExternalSymbol, error) {
 	return pkgs, err
 }
 
+// ScanWorkspaceDefinitions walks a directory tree and returns all top-level
+// definitions, including non-exported symbols. The result is intended for
+// workspace symbol search, not cross-file resolution.
+func ScanWorkspaceDefinitions(root string) ([]ExternalSymbol, error) {
+	paths, err := collectLispFiles(root)
+	if err != nil {
+		return nil, err
+	}
+
+	type fileResult struct {
+		symbols []ExternalSymbol
+	}
+
+	results := make([]fileResult, len(paths))
+	numWorkers := runtime.NumCPU()
+	if numWorkers > len(paths) {
+		numWorkers = len(paths)
+	}
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	var wg sync.WaitGroup
+	work := make(chan int, len(paths))
+	for i := range paths {
+		work <- i
+	}
+	close(work)
+
+	wg.Add(numWorkers)
+	for range numWorkers {
+		go func() {
+			defer wg.Done()
+			for i := range work {
+				fileSrc, readErr := os.ReadFile(paths[i]) //nolint:gosec // tool reads user-specified workspace files
+				if readErr != nil {
+					continue
+				}
+				results[i] = fileResult{symbols: scanFileDefinitions(fileSrc, paths[i])}
+			}
+		}()
+	}
+	wg.Wait()
+
+	var symbols []ExternalSymbol
+	for _, r := range results {
+		symbols = append(symbols, r.symbols...)
+	}
+	return symbols, nil
+}
+
 // ScanWorkspaceFull walks a directory tree in a single pass, parsing all
 // .lisp files and extracting both global symbols and package exports.
 // It skips hidden directories (names starting with '.'), node_modules,
@@ -174,6 +225,41 @@ func ShouldSkipDir(name string) bool {
 // scanFile parses a single file and extracts top-level definitions and
 // export information. Returns nil if the file fails to parse.
 func scanFile(source []byte, filename string) []ExternalSymbol {
+	defs := scanFileDefinitions(source, filename)
+	if defs == nil {
+		return nil
+	}
+	s := token.NewScanner(filename, bytes.NewReader(source))
+	p := rdparser.New(s)
+
+	exprs, err := p.ParseProgram()
+	if err != nil {
+		return nil // skip files that fail to parse
+	}
+
+	exported := make(map[string]bool)
+	for _, expr := range exprs {
+		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+			continue
+		}
+		if astutil.HeadSymbol(expr) != "export" {
+			continue
+		}
+		for _, name := range scanExportNames(expr) {
+			exported[name] = true
+		}
+	}
+
+	var result []ExternalSymbol
+	for _, sym := range defs {
+		if exported[sym.Name] {
+			result = append(result, sym)
+		}
+	}
+	return result
+}
+
+func scanFileDefinitions(source []byte, filename string) []ExternalSymbol {
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	p := rdparser.New(s)
 
@@ -184,7 +270,6 @@ func scanFile(source []byte, filename string) []ExternalSymbol {
 
 	// Collect top-level definitions
 	defs := make(map[string]*ExternalSymbol)
-	exported := make(map[string]bool)
 	currentPkg := "user" // default package
 
 	for _, expr := range exprs {
@@ -217,19 +302,12 @@ func scanFile(source []byte, filename string) []ExternalSymbol {
 				sym.Package = currentPkg
 				defs[sym.Name] = sym
 			}
-		case "export":
-			for _, name := range scanExportNames(expr) {
-				exported[name] = true
-			}
 		}
 	}
 
-	// Only return definitions that appear in export forms
 	var result []ExternalSymbol
-	for name, sym := range defs {
-		if exported[name] {
-			result = append(result, *sym)
-		}
+	for _, sym := range defs {
+		result = append(result, *sym)
 	}
 	return result
 }
