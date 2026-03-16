@@ -3,12 +3,15 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/mcpserver"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -113,6 +116,44 @@ func TestMCPCommand_ProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &got))
 	assert.True(t, got.Found)
 	assert.Equal(t, "join", got.SymbolName)
+}
+
+func TestMCPCommand_ReturnsBootstrapErrors(t *testing.T) {
+	origNewDocEnv := newMCPDocEnv
+	origRunMCPStdio := runMCPStdio
+	t.Cleanup(func() {
+		newMCPDocEnv = origNewDocEnv
+		runMCPStdio = origRunMCPStdio
+	})
+
+	newMCPDocEnv = func() (*lisp.LEnv, error) {
+		return nil, errors.New("boom")
+	}
+
+	cmd := MCPCommand()
+	cmd.SetArgs(nil)
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mcp server bootstrap error")
+	assert.Contains(t, err.Error(), "boom")
+}
+
+func TestMCPCommand_ReturnsServerErrors(t *testing.T) {
+	origRunMCPStdio := runMCPStdio
+	t.Cleanup(func() {
+		runMCPStdio = origRunMCPStdio
+	})
+
+	runMCPStdio = func(context.Context, *mcpserver.Server) error {
+		return errors.New("stdio failed")
+	}
+
+	cmd := MCPCommand()
+	cmd.SetArgs(nil)
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mcp server error")
+	assert.Contains(t, err.Error(), "stdio failed")
 }
 
 func closeMCPClientSession(t *testing.T, session *mcp.ClientSession) {
