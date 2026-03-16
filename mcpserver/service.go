@@ -240,26 +240,6 @@ func (s *service) workspaceSymbolsTool(ctx context.Context, _ *mcp.CallToolReque
 			out = append(out, entry)
 		}
 	}
-	for pkgName, syms := range state.cfg.PackageExports {
-		for _, sym := range syms {
-			if sym.Source == nil || sym.Source.Line == 0 {
-				continue
-			}
-			if !matchesQuery(sym.Name, query) && !matchesQuery(pkgName+":"+sym.Name, query) {
-				continue
-			}
-			entry := WorkspaceSymbol{
-				Name:    sym.Name,
-				Kind:    symbolKindLabel(sym.Kind),
-				Package: pkgName,
-				Path:    sym.Source.File,
-				Range:   rangeFromSource(sym.Source, len(sym.Name)),
-			}
-			if !seenWorkspaceSymbol(seen, entry) {
-				out = append(out, entry)
-			}
-		}
-	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Path == out[j].Path {
 			if out[i].Name == out[j].Name {

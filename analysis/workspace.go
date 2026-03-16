@@ -585,7 +585,7 @@ func FindEnclosingFunction(root *Scope, line, col int) *Symbol {
 		if scope.Kind == ScopeFunction {
 			if scope.Node != nil && scope.Node.Source != nil && scope.Parent != nil {
 				nodeLoc := scope.Node.Source
-				for _, sym := range scope.Parent.Symbols {
+				for _, sym := range scope.Parent.allSymbols() {
 					if sym.Kind != SymFunction && sym.Kind != SymMacro {
 						continue
 					}
@@ -604,6 +604,29 @@ func FindEnclosingFunction(root *Scope, line, col int) *Symbol {
 		scope = scope.Parent
 	}
 	return nil
+}
+
+func (s *Scope) allSymbols() []*Symbol {
+	if s == nil {
+		return nil
+	}
+	out := make([]*Symbol, 0, len(s.Symbols)+len(s.PackageSymbols))
+	seen := make(map[*Symbol]bool, len(s.Symbols)+len(s.PackageSymbols))
+	for _, sym := range s.Symbols {
+		if sym == nil || seen[sym] {
+			continue
+		}
+		seen[sym] = true
+		out = append(out, sym)
+	}
+	for _, sym := range s.PackageSymbols {
+		if sym == nil || seen[sym] {
+			continue
+		}
+		seen[sym] = true
+		out = append(out, sym)
+	}
+	return out
 }
 
 // ScopeAtPosition returns the innermost scope that contains the given

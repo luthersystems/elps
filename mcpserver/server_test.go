@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/analysis/perf"
 	"github.com/luthersystems/elps/lisp/lisplib"
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -83,6 +85,45 @@ func TestHoverPreservesBuiltinPackageInLocation(t *testing.T) {
 	require.NotNil(t, hover.DefinedIn)
 	assert.True(t, hover.DefinedIn.Virtual)
 	assert.Equal(t, builtinURI("string", "join"), hover.DefinedIn.VirtualID)
+}
+
+func TestWorkspaceSymbolsExcludeStdlibExports(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	fingerprint, err := srv.service.fingerprintWorkspace(tmp)
+	require.NoError(t, err)
+	srv.service.workspaceValidationInterval = time.Hour
+	srv.service.workspaces[tmp] = &workspaceState{
+		cfg: &analysis.Config{
+			PackageExports: map[string][]analysis.ExternalSymbol{
+				"string": {
+					{
+						Name:    "join",
+						Package: "string",
+						Kind:    analysis.SymFunction,
+						Source:  &token.Location{File: "/stdlib/string.lisp", Line: 1, Col: 1},
+					},
+				},
+			},
+		},
+		symbols: []analysis.ExternalSymbol{
+			{
+				Name:    "helper",
+				Package: "user",
+				Kind:    analysis.SymFunction,
+				Source:  &token.Location{File: filepath.Join(tmp, "local.lisp"), Line: 1, Col: 8},
+			},
+		},
+		fingerprint: fingerprint,
+		validatedAt: time.Now(),
+	}
+
+	_, join, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &tmp,
+		Query:         "join",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, join.Symbols, "workspace_symbols query should not return non-workspace package exports")
 }
 
 func TestNavigationTools(t *testing.T) {

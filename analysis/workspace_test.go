@@ -456,6 +456,33 @@ func TestFindEnclosingFunction(t *testing.T) {
 	})
 }
 
+func TestFindEnclosingFunction_MultiPackageSameName(t *testing.T) {
+	src := []byte(`(in-package 'foo)
+(defun caller () (+ 1 1))
+(defun use-foo () (caller))
+(in-package 'bar)
+(defun caller () (+ 2 2))
+(defun use-bar () (caller))
+`)
+	result := AnalyzeFile(src, "test.lisp", nil)
+	require.NotNil(t, result)
+	require.NotNil(t, result.RootScope)
+
+	t.Run("inside foo caller body", func(t *testing.T) {
+		enc := FindEnclosingFunction(result.RootScope, 2, 18)
+		require.NotNil(t, enc)
+		assert.Equal(t, "caller", enc.Name)
+		assert.Equal(t, "foo", enc.Package)
+	})
+
+	t.Run("inside bar caller body", func(t *testing.T) {
+		enc := FindEnclosingFunction(result.RootScope, 5, 18)
+		require.NotNil(t, enc)
+		assert.Equal(t, "caller", enc.Name)
+		assert.Equal(t, "bar", enc.Package)
+	})
+}
+
 func TestSymbolKey_String(t *testing.T) {
 	key := SymbolKey{Name: "helper", Kind: SymFunction}
 	assert.Equal(t, "helper/function", key.String())

@@ -52,12 +52,19 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 		}
 	}
 	// Phase 2: Apply exports (all definitions now exist in scope).
+	currentPkg = "user"
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
 			continue
 		}
+		if astutil.HeadSymbol(expr) == "in-package" && astutil.ArgCount(expr) >= 1 {
+			if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
+				currentPkg = pkgName
+			}
+			continue
+		}
 		if astutil.HeadSymbol(expr) == "export" {
-			a.prescanExport(expr, scope)
+			a.prescanExport(expr, scope, currentPkg)
 		}
 	}
 }
@@ -68,7 +75,7 @@ func (a *analyzer) prescanCustomDef(expr *lisp.LVal, scope *Scope, pkg string) {
 		return
 	}
 	nameVal := expr.Cells[match.nameIdx]
-	if nameVal.Type != lisp.LSymbol || scope.LookupLocal(nameVal.Str) != nil {
+	if nameVal.Type != lisp.LSymbol || scope.LookupLocalInPackage(nameVal.Str, pkg) != nil {
 		return
 	}
 	formalsVal := expr.Cells[match.formalsIdx]
@@ -135,7 +142,7 @@ func (a *analyzer) prescanSet(expr *lisp.LVal, scope *Scope, pkg string) {
 		return
 	}
 	// Only define if not already in scope (prescan doesn't overwrite)
-	if scope.LookupLocal(name) != nil {
+	if scope.LookupLocalInPackage(name, pkg) != nil {
 		return
 	}
 	sym := &Symbol{
@@ -158,7 +165,7 @@ func (a *analyzer) prescanDeftype(expr *lisp.LVal, scope *Scope, pkg string) {
 	if nameVal.Type != lisp.LSymbol {
 		return
 	}
-	if scope.LookupLocal(nameVal.Str) != nil {
+	if scope.LookupLocalInPackage(nameVal.Str, pkg) != nil {
 		return
 	}
 	sym := &Symbol{
@@ -172,7 +179,7 @@ func (a *analyzer) prescanDeftype(expr *lisp.LVal, scope *Scope, pkg string) {
 	a.result.Symbols = append(a.result.Symbols, sym)
 }
 
-func (a *analyzer) prescanExport(expr *lisp.LVal, scope *Scope) {
+func (a *analyzer) prescanExport(expr *lisp.LVal, scope *Scope, pkg string) {
 	for _, arg := range expr.Cells[1:] {
 		name := ""
 		if arg.Type == lisp.LSymbol {
@@ -183,7 +190,7 @@ func (a *analyzer) prescanExport(expr *lisp.LVal, scope *Scope) {
 		if name == "" {
 			continue
 		}
-		if sym := scope.LookupLocal(name); sym != nil {
+		if sym := scope.LookupLocalInPackage(name, pkg); sym != nil {
 			sym.Exported = true
 		}
 	}
@@ -303,7 +310,7 @@ func extractSetSymbolNode(arg *lisp.LVal) *lisp.LVal {
 
 // analyzeExpr recursively walks an expression, building scopes and
 // tracking symbol references.
-func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope, currentPkg string) {
 	if node == nil {
 		return
 	}
@@ -311,7 +318,7 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope) {
 	switch node.Type {
 	case lisp.LSymbol:
 		if !node.Quoted {
-			a.resolveSymbol(node, scope)
+			a.resolveSymbol(node, scope, currentPkg)
 		}
 		return
 	case lisp.LSExpr:
@@ -328,61 +335,61 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope) {
 	head := astutil.HeadSymbol(node)
 	switch head {
 	case "defun":
-		a.analyzeDefun(node, scope, SymFunction)
+		a.analyzeDefun(node, scope, SymFunction, currentPkg)
 	case "defmacro":
-		a.analyzeDefun(node, scope, SymMacro)
+		a.analyzeDefun(node, scope, SymMacro, currentPkg)
 	case "deftype":
-		a.analyzeDeftype(node, scope)
+		a.analyzeDeftype(node, scope, currentPkg)
 	case "lambda":
-		a.analyzeLambda(node, scope)
+		a.analyzeLambda(node, scope, currentPkg)
 	case "let":
-		a.analyzeLet(node, scope, false)
+		a.analyzeLet(node, scope, false, currentPkg)
 	case "let*":
-		a.analyzeLet(node, scope, true)
+		a.analyzeLet(node, scope, true, currentPkg)
 	case "flet":
-		a.analyzeFlet(node, scope, false)
+		a.analyzeFlet(node, scope, false, currentPkg)
 	case "labels":
-		a.analyzeFlet(node, scope, true)
+		a.analyzeFlet(node, scope, true, currentPkg)
 	case "dotimes":
-		a.analyzeDotimes(node, scope)
+		a.analyzeDotimes(node, scope, currentPkg)
 	case "test-let":
-		a.analyzeTestLet(node, scope, false)
+		a.analyzeTestLet(node, scope, false, currentPkg)
 	case "test-let*":
-		a.analyzeTestLet(node, scope, true)
+		a.analyzeTestLet(node, scope, true, currentPkg)
 	case "set":
-		a.analyzeSet(node, scope)
+		a.analyzeSet(node, scope, currentPkg)
 	case "set!":
-		a.analyzeSetBang(node, scope)
+		a.analyzeSetBang(node, scope, currentPkg)
 	case "quote":
 		return // skip quoted data
 	case "quasiquote":
-		a.analyzeQuasiquote(node, scope)
+		a.analyzeQuasiquote(node, scope, currentPkg)
 		return
 	case "in-package", "use-package", "export":
 		return // package management, skip
 	case "function":
-		a.analyzeFunction(node, scope)
+		a.analyzeFunction(node, scope, currentPkg)
 	case "lisp:expr", "expr":
-		a.analyzePrefixLambda(node, scope)
+		a.analyzePrefixLambda(node, scope, currentPkg)
 	case "handler-bind":
-		a.analyzeHandlerBind(node, scope)
+		a.analyzeHandlerBind(node, scope, currentPkg)
 	case "test":
-		a.analyzeTest(node, scope)
+		a.analyzeTest(node, scope, currentPkg)
 	default:
 		// Detect qualified deftype calls like (s:deftype "name" ...) where
 		// the first arg is a string that becomes a global symbol binding.
 		if strings.HasSuffix(head, ":deftype") && astutil.ArgCount(node) >= 1 &&
 			node.Cells[1].Type == lisp.LString {
-			a.analyzeStringDeftype(node, scope)
+			a.analyzeStringDeftype(node, scope, currentPkg)
 		} else if _, ok := defLikeMatch(node, a.cfg); ok {
-			a.analyzeDefLike(node, scope)
+			a.analyzeDefLike(node, scope, currentPkg)
 		} else {
-			a.analyzeCall(node, scope)
+			a.analyzeCall(node, scope, currentPkg)
 		}
 	}
 }
 
-func (a *analyzer) analyzeDefun(node *lisp.LVal, scope *Scope, kind SymbolKind) {
+func (a *analyzer) analyzeDefun(node *lisp.LVal, scope *Scope, kind SymbolKind, currentPkg string) {
 	if astutil.ArgCount(node) < 2 {
 		return
 	}
@@ -427,11 +434,11 @@ func (a *analyzer) analyzeDefun(node *lisp.LVal, scope *Scope, kind SymbolKind) 
 		}
 	}
 	for i := bodyStart; i < len(node.Cells); i++ {
-		a.analyzeExpr(node.Cells[i], bodyScope)
+		a.analyzeExpr(node.Cells[i], bodyScope, currentPkg)
 	}
 }
 
-func (a *analyzer) analyzeDeftype(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) analyzeDeftype(node *lisp.LVal, scope *Scope, currentPkg string) {
 	// (deftype name (constructor-formals) constructor-body...)
 	if astutil.ArgCount(node) < 2 {
 		return
@@ -456,13 +463,13 @@ func (a *analyzer) analyzeDeftype(node *lisp.LVal, scope *Scope) {
 	bodyScope := NewScope(ScopeFunction, scope, node)
 	a.addParams(formalsVal, bodyScope)
 	for i := 3; i < len(node.Cells); i++ {
-		a.analyzeExpr(node.Cells[i], bodyScope)
+		a.analyzeExpr(node.Cells[i], bodyScope, currentPkg)
 	}
 }
 
 // analyzeStringDeftype handles calls like (s:deftype "name" type-expr ...)
 // where the string literal first argument creates a global symbol binding.
-func (a *analyzer) analyzeStringDeftype(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) analyzeStringDeftype(node *lisp.LVal, scope *Scope, currentPkg string) {
 	if astutil.ArgCount(node) < 1 {
 		return
 	}
@@ -481,7 +488,7 @@ func (a *analyzer) analyzeStringDeftype(node *lisp.LVal, scope *Scope) {
 	a.result.Symbols = append(a.result.Symbols, sym)
 	// Analyze remaining arguments normally.
 	for i := 2; i < len(node.Cells); i++ {
-		a.analyzeExpr(node.Cells[i], scope)
+		a.analyzeExpr(node.Cells[i], scope, currentPkg)
 	}
 }
 
@@ -490,17 +497,17 @@ func (a *analyzer) analyzeStringDeftype(node *lisp.LVal, scope *Scope) {
 // It scans children for the first formals list (an LSExpr whose contents
 // are all symbols), creates a scope with those as parameters, and analyzes
 // the remaining children as body in that scope.
-func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope, currentPkg string) {
 	match, ok := defLikeMatch(node, a.cfg)
 	if !ok {
 		// No formals detected — fall back to normal call analysis.
-		a.analyzeCall(node, scope)
+		a.analyzeCall(node, scope, currentPkg)
 		return
 	}
 
 	// Resolve the head symbol — unlike built-in defun/defmacro, def-like
 	// forms are calls to user-defined macros/functions.
-	a.analyzeExpr(node.Cells[0], scope)
+	a.analyzeExpr(node.Cells[0], scope, currentPkg)
 
 	// When formals are at index 2, child[1] is the definition name (like
 	// defun). Register it in scope rather than resolving it as a reference.
@@ -537,7 +544,7 @@ func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope) {
 		if i == nameIdx {
 			continue
 		}
-		a.analyzeExpr(node.Cells[i], scope)
+		a.analyzeExpr(node.Cells[i], scope, currentPkg)
 	}
 
 	// Create a function scope with the formals as parameters.
@@ -546,7 +553,7 @@ func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope) {
 
 	// Analyze body (everything after formals) in the new scope.
 	for i := match.formalsIdx + 1; i < len(node.Cells); i++ {
-		a.analyzeExpr(node.Cells[i], bodyScope)
+		a.analyzeExpr(node.Cells[i], bodyScope, currentPkg)
 	}
 }
 
@@ -671,7 +678,7 @@ func isEmptyFormals(node *lisp.LVal) bool {
 	return node.Type == lisp.LSExpr && !node.Quoted && len(node.Cells) == 0
 }
 
-func (a *analyzer) analyzeLambda(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) analyzeLambda(node *lisp.LVal, scope *Scope, currentPkg string) {
 	if astutil.ArgCount(node) < 1 {
 		return
 	}
@@ -691,11 +698,11 @@ func (a *analyzer) analyzeLambda(node *lisp.LVal, scope *Scope) {
 		}
 	}
 	for i := bodyStart; i < len(node.Cells); i++ {
-		a.analyzeExpr(node.Cells[i], bodyScope)
+		a.analyzeExpr(node.Cells[i], bodyScope, currentPkg)
 	}
 }
 
-func (a *analyzer) analyzeLet(node *lisp.LVal, scope *Scope, sequential bool) {
+func (a *analyzer) analyzeLet(node *lisp.LVal, scope *Scope, sequential bool, currentPkg string) {
 	if astutil.ArgCount(node) < 1 {
 		return
 	}
@@ -715,9 +722,9 @@ func (a *analyzer) analyzeLet(node *lisp.LVal, scope *Scope, sequential bool) {
 
 		// For let*, values see prior bindings; for let, values see parent scope
 		if sequential {
-			a.analyzeExpr(valueVal, letScope)
+			a.analyzeExpr(valueVal, letScope, currentPkg)
 		} else {
-			a.analyzeExpr(valueVal, scope)
+			a.analyzeExpr(valueVal, scope, currentPkg)
 		}
 
 		if nameVal.Type == lisp.LSymbol {
@@ -734,11 +741,11 @@ func (a *analyzer) analyzeLet(node *lisp.LVal, scope *Scope, sequential bool) {
 
 	// Walk body
 	for i := 2; i < len(node.Cells); i++ {
-		a.analyzeExpr(node.Cells[i], letScope)
+		a.analyzeExpr(node.Cells[i], letScope, currentPkg)
 	}
 }
 
-func (a *analyzer) analyzeFlet(node *lisp.LVal, scope *Scope, labels bool) {
+func (a *analyzer) analyzeFlet(node *lisp.LVal, scope *Scope, labels bool, currentPkg string) {
 	if astutil.ArgCount(node) < 1 {
 		return
 	}
@@ -781,7 +788,7 @@ func (a *analyzer) analyzeFlet(node *lisp.LVal, scope *Scope, labels bool) {
 			fnScope := NewScope(ScopeFunction, fletScope, binding)
 			a.addParams(formalsVal, fnScope)
 			for i := 2; i < len(binding.Cells); i++ {
-				a.analyzeExpr(binding.Cells[i], fnScope)
+				a.analyzeExpr(binding.Cells[i], fnScope, currentPkg)
 			}
 		}
 	} else {
@@ -809,7 +816,7 @@ func (a *analyzer) analyzeFlet(node *lisp.LVal, scope *Scope, labels bool) {
 				fnScope := NewScope(ScopeFunction, scope, binding)
 				a.addParams(formalsVal, fnScope)
 				for i := 2; i < len(binding.Cells); i++ {
-					a.analyzeExpr(binding.Cells[i], fnScope)
+					a.analyzeExpr(binding.Cells[i], fnScope, currentPkg)
 				}
 			}
 		}
@@ -817,11 +824,11 @@ func (a *analyzer) analyzeFlet(node *lisp.LVal, scope *Scope, labels bool) {
 
 	// Walk body
 	for i := 2; i < len(node.Cells); i++ {
-		a.analyzeExpr(node.Cells[i], fletScope)
+		a.analyzeExpr(node.Cells[i], fletScope, currentPkg)
 	}
 }
 
-func (a *analyzer) analyzeDotimes(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) analyzeDotimes(node *lisp.LVal, scope *Scope, currentPkg string) {
 	if astutil.ArgCount(node) < 1 {
 		return
 	}
@@ -831,7 +838,7 @@ func (a *analyzer) analyzeDotimes(node *lisp.LVal, scope *Scope) {
 	}
 
 	// Analyze the count expression in the outer scope
-	a.analyzeExpr(bindingList.Cells[1], scope)
+	a.analyzeExpr(bindingList.Cells[1], scope, currentPkg)
 
 	dotimesScope := NewScope(ScopeDotimes, scope, node)
 	varVal := bindingList.Cells[0]
@@ -848,11 +855,11 @@ func (a *analyzer) analyzeDotimes(node *lisp.LVal, scope *Scope) {
 
 	// Walk body
 	for i := 2; i < len(node.Cells); i++ {
-		a.analyzeExpr(node.Cells[i], dotimesScope)
+		a.analyzeExpr(node.Cells[i], dotimesScope, currentPkg)
 	}
 }
 
-func (a *analyzer) analyzeTest(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) analyzeTest(node *lisp.LVal, scope *Scope, currentPkg string) {
 	// (test "name" body...)
 	if astutil.ArgCount(node) < 1 {
 		return
@@ -861,11 +868,11 @@ func (a *analyzer) analyzeTest(node *lisp.LVal, scope *Scope) {
 	body := node.Cells[2:]
 	a.prescan(body, scope)
 	for _, expr := range body {
-		a.analyzeExpr(expr, scope)
+		a.analyzeExpr(expr, scope, currentPkg)
 	}
 }
 
-func (a *analyzer) analyzeTestLet(node *lisp.LVal, scope *Scope, sequential bool) {
+func (a *analyzer) analyzeTestLet(node *lisp.LVal, scope *Scope, sequential bool, currentPkg string) {
 	// (test-let "name" ((x 1) (y 2)) body...)
 	// arg[1] = test name string (skip), arg[2] = bindings, rest = body
 	if astutil.ArgCount(node) < 2 {
@@ -886,9 +893,9 @@ func (a *analyzer) analyzeTestLet(node *lisp.LVal, scope *Scope, sequential bool
 		valueVal := binding.Cells[1]
 
 		if sequential {
-			a.analyzeExpr(valueVal, letScope)
+			a.analyzeExpr(valueVal, letScope, currentPkg)
 		} else {
-			a.analyzeExpr(valueVal, scope)
+			a.analyzeExpr(valueVal, scope, currentPkg)
 		}
 
 		if nameVal.Type == lisp.LSymbol {
@@ -905,16 +912,16 @@ func (a *analyzer) analyzeTestLet(node *lisp.LVal, scope *Scope, sequential bool
 
 	// Walk body (after name string and bindings)
 	for i := 3; i < len(node.Cells); i++ {
-		a.analyzeExpr(node.Cells[i], letScope)
+		a.analyzeExpr(node.Cells[i], letScope, currentPkg)
 	}
 }
 
-func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) {
 	if astutil.ArgCount(node) < 2 {
 		return
 	}
 	// Analyze the value expression
-	a.analyzeExpr(node.Cells[2], scope)
+	a.analyzeExpr(node.Cells[2], scope, currentPkg)
 
 	// For set, the name might be a new binding or overwrite
 	name := extractSetSymbolName(node.Cells[1])
@@ -934,31 +941,31 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope) {
 	}
 }
 
-func (a *analyzer) analyzeSetBang(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) analyzeSetBang(node *lisp.LVal, scope *Scope, currentPkg string) {
 	if astutil.ArgCount(node) < 2 {
 		return
 	}
 	// set! takes an unquoted symbol
 	target := node.Cells[1]
 	if target.Type == lisp.LSymbol {
-		a.resolveSymbol(target, scope)
+		a.resolveSymbol(target, scope, currentPkg)
 	}
 	// Analyze the value expression
-	a.analyzeExpr(node.Cells[2], scope)
+	a.analyzeExpr(node.Cells[2], scope, currentPkg)
 }
 
-func (a *analyzer) analyzeFunction(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) analyzeFunction(node *lisp.LVal, scope *Scope, currentPkg string) {
 	// (function name) or #'name — resolve as function reference
 	if astutil.ArgCount(node) < 1 {
 		return
 	}
 	arg := node.Cells[1]
 	if arg.Type == lisp.LSymbol {
-		a.resolveSymbol(arg, scope)
+		a.resolveSymbol(arg, scope, currentPkg)
 	}
 }
 
-func (a *analyzer) analyzeHandlerBind(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) analyzeHandlerBind(node *lisp.LVal, scope *Scope, currentPkg string) {
 	// handler-bind form: (handler-bind ((cond-type handler) ...) body...)
 	// The bindings list (Cells[1]) contains pairs where the first element
 	// is a condition type name (data, not a variable reference) and the
@@ -976,17 +983,17 @@ func (a *analyzer) analyzeHandlerBind(node *lisp.LVal, scope *Scope) {
 			// Skip clause.Cells[0] — it's a condition type name, not code.
 			// Analyze the handler (clause.Cells[1]) and any remaining forms.
 			for _, child := range clause.Cells[1:] {
-				a.analyzeExpr(child, scope)
+				a.analyzeExpr(child, scope, currentPkg)
 			}
 		}
 	}
 	// Analyze body forms
 	for _, child := range node.Cells[2:] {
-		a.analyzeExpr(child, scope)
+		a.analyzeExpr(child, scope, currentPkg)
 	}
 }
 
-func (a *analyzer) analyzePrefixLambda(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) analyzePrefixLambda(node *lisp.LVal, scope *Scope, currentPkg string) {
 	// (lisp:expr body) — #^body parses to this form.
 	// The body uses implicit % params: %, %1, %2, %&rest, %&optional.
 	if astutil.ArgCount(node) < 1 {
@@ -1008,7 +1015,7 @@ func (a *analyzer) analyzePrefixLambda(node *lisp.LVal, scope *Scope) {
 		a.result.Symbols = append(a.result.Symbols, sym)
 	}
 
-	a.analyzeExpr(body, lambdaScope)
+	a.analyzeExpr(body, lambdaScope, currentPkg)
 }
 
 // collectPercentParams walks an expression tree and collects all %-prefixed
@@ -1029,18 +1036,18 @@ func collectPercentParams(node *lisp.LVal, params map[string]bool) {
 	}
 }
 
-func (a *analyzer) analyzeQuasiquote(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) analyzeQuasiquote(node *lisp.LVal, scope *Scope, currentPkg string) {
 	// Quasiquote bodies are template data. Only (unquote expr) and
 	// (unquote-splicing expr) contain code that should be analyzed.
 	if astutil.ArgCount(node) < 1 {
 		return
 	}
-	a.walkQuasiquoteTemplate(node.Cells[1], scope)
+	a.walkQuasiquoteTemplate(node.Cells[1], scope, currentPkg)
 }
 
 // walkQuasiquoteTemplate walks a quasiquote template, only analyzing
 // expressions inside unquote and unquote-splicing forms.
-func (a *analyzer) walkQuasiquoteTemplate(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) walkQuasiquoteTemplate(node *lisp.LVal, scope *Scope, currentPkg string) {
 	if node == nil {
 		return
 	}
@@ -1048,31 +1055,31 @@ func (a *analyzer) walkQuasiquoteTemplate(node *lisp.LVal, scope *Scope) {
 		return
 	}
 	// Quoted lists (bracket expressions [...]) in quasiquote templates can
-	// still contain (unquote ...) forms, so we must recurse into them.
-	if node.Quoted {
-		for _, child := range node.Cells {
-			a.walkQuasiquoteTemplate(child, scope)
+		// still contain (unquote ...) forms, so we must recurse into them.
+		if node.Quoted {
+			for _, child := range node.Cells {
+				a.walkQuasiquoteTemplate(child, scope, currentPkg)
+			}
+			return
 		}
-		return
-	}
 	head := astutil.HeadSymbol(node)
 	if head == "unquote" || head == "unquote-splicing" {
 		// The children of unquote/unquote-splicing are code, not template data.
 		for _, child := range node.Cells[1:] {
-			a.analyzeExpr(child, scope)
+			a.analyzeExpr(child, scope, currentPkg)
 		}
 		return
 	}
 	// Otherwise this is template data — recurse looking for nested unquotes.
 	for _, child := range node.Cells {
-		a.walkQuasiquoteTemplate(child, scope)
+		a.walkQuasiquoteTemplate(child, scope, currentPkg)
 	}
 }
 
-func (a *analyzer) analyzeCall(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) analyzeCall(node *lisp.LVal, scope *Scope, currentPkg string) {
 	// Head can be symbol or expression
 	for _, child := range node.Cells {
-		a.analyzeExpr(child, scope)
+		a.analyzeExpr(child, scope, currentPkg)
 	}
 }
 
@@ -1098,7 +1105,7 @@ func (a *analyzer) addParams(formalsVal *lisp.LVal, scope *Scope) {
 }
 
 // resolveSymbol attempts to resolve a symbol reference in the given scope.
-func (a *analyzer) resolveSymbol(node *lisp.LVal, scope *Scope) {
+func (a *analyzer) resolveSymbol(node *lisp.LVal, scope *Scope, currentPkg string) {
 	if node.Type != lisp.LSymbol {
 		return
 	}
@@ -1117,7 +1124,7 @@ func (a *analyzer) resolveSymbol(node *lisp.LVal, scope *Scope) {
 		}
 	}
 
-	sym := scope.Lookup(name)
+	sym := scope.LookupInPackage(name, currentPkg)
 	if sym != nil {
 		sym.References++
 		a.result.References = append(a.result.References, &Reference{

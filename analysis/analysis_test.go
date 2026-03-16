@@ -798,6 +798,50 @@ func TestAnalyze_UsePackage_NoOverwriteLocal(t *testing.T) {
 	assert.NotNil(t, sym.Source, "local defun should retain its source")
 }
 
+func TestAnalyze_UsePackage_PrefersImportedPackageOverOtherWorkspaceSymbol(t *testing.T) {
+	cfg := &Config{
+		ExtraGlobals: []ExternalSymbol{
+			{Name: "run", Kind: SymFunction, Package: "bar"},
+		},
+		PackageExports: map[string][]ExternalSymbol{
+			"foo": {
+				{Name: "run", Kind: SymFunction, Package: "foo"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, "(use-package 'foo)\n(run)", cfg)
+	require.Len(t, result.References, 1)
+	assert.Equal(t, "foo", result.References[0].Symbol.Package)
+	assert.Equal(t, "run", result.References[0].Symbol.Name)
+}
+
+func TestAnalyze_InPackage_PrefersCurrentPackageDefinition(t *testing.T) {
+	result := parseAndAnalyzeWithConfig(t, `(in-package 'foo)
+(defun run () 1)
+(defun use-foo () (run))
+(in-package 'bar)
+(defun run () 2)
+(defun use-bar () (run))`, &Config{})
+
+	var fooRef *Reference
+	var barRef *Reference
+	for _, ref := range result.References {
+		if ref.Symbol == nil || ref.Symbol.Name != "run" || ref.Source == nil {
+			continue
+		}
+		switch ref.Source.Line {
+		case 3:
+			fooRef = ref
+		case 6:
+			barRef = ref
+		}
+	}
+	require.NotNil(t, fooRef, "expected run reference inside use-foo")
+	require.NotNil(t, barRef, "expected run reference inside use-bar")
+	assert.Equal(t, "foo", fooRef.Symbol.Package)
+	assert.Equal(t, "bar", barRef.Symbol.Package)
+}
+
 // --- Analyze: def prefix heuristic ---
 
 func TestAnalyze_DefPrefix_DefmethodFormals(t *testing.T) {
