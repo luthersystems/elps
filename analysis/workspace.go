@@ -237,22 +237,11 @@ func scanFile(source []byte, filename string) []ExternalSymbol {
 		return nil // skip files that fail to parse
 	}
 
-	exported := make(map[string]bool)
-	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
-			continue
-		}
-		if astutil.HeadSymbol(expr) != "export" {
-			continue
-		}
-		for _, name := range scanExportNames(expr) {
-			exported[name] = true
-		}
-	}
+	exported := scanExportedDefinitionKeys(exprs)
 
 	var result []ExternalSymbol
 	for _, sym := range defs {
-		if exported[sym.Name] {
+		if exported[definitionKey(sym.Package, sym.Name)] {
 			result = append(result, sym)
 		}
 	}
@@ -268,7 +257,8 @@ func scanFileDefinitions(source []byte, filename string) []ExternalSymbol {
 		return nil // skip files that fail to parse
 	}
 
-	// Collect top-level definitions
+	// Collect top-level definitions keyed by package-qualified name so
+	// multi-package files can define the same symbol in different packages.
 	defs := make(map[string]*ExternalSymbol)
 	currentPkg := "user" // default package
 
@@ -285,22 +275,22 @@ func scanFileDefinitions(source []byte, filename string) []ExternalSymbol {
 		case "defun":
 			if sym := scanDefun(expr, SymFunction); sym != nil {
 				sym.Package = currentPkg
-				defs[sym.Name] = sym
+				defs[definitionKey(sym.Package, sym.Name)] = sym
 			}
 		case "defmacro":
 			if sym := scanDefun(expr, SymMacro); sym != nil {
 				sym.Package = currentPkg
-				defs[sym.Name] = sym
+				defs[definitionKey(sym.Package, sym.Name)] = sym
 			}
 		case "deftype":
 			if sym := scanDeftype(expr); sym != nil {
 				sym.Package = currentPkg
-				defs[sym.Name] = sym
+				defs[definitionKey(sym.Package, sym.Name)] = sym
 			}
 		case "set":
 			if sym := scanSet(expr); sym != nil {
 				sym.Package = currentPkg
-				defs[sym.Name] = sym
+				defs[definitionKey(sym.Package, sym.Name)] = sym
 			}
 		}
 	}
@@ -310,6 +300,10 @@ func scanFileDefinitions(source []byte, filename string) []ExternalSymbol {
 		result = append(result, *sym)
 	}
 	return result
+}
+
+func definitionKey(pkg, name string) string {
+	return pkg + "\x00" + name
 }
 
 // scanFilePackages is like scanFile but returns symbols grouped by package.
@@ -323,7 +317,6 @@ func scanFilePackages(source []byte, filename string) map[string][]ExternalSymbo
 	}
 
 	defs := make(map[string]*ExternalSymbol)
-	exported := make(map[string]bool)
 	currentPkg := "user"
 
 	for _, expr := range exprs {
@@ -339,37 +332,55 @@ func scanFilePackages(source []byte, filename string) map[string][]ExternalSymbo
 		case "defun":
 			if sym := scanDefun(expr, SymFunction); sym != nil {
 				sym.Package = currentPkg
-				defs[sym.Name] = sym
+				defs[definitionKey(sym.Package, sym.Name)] = sym
 			}
 		case "defmacro":
 			if sym := scanDefun(expr, SymMacro); sym != nil {
 				sym.Package = currentPkg
-				defs[sym.Name] = sym
+				defs[definitionKey(sym.Package, sym.Name)] = sym
 			}
 		case "deftype":
 			if sym := scanDeftype(expr); sym != nil {
 				sym.Package = currentPkg
-				defs[sym.Name] = sym
+				defs[definitionKey(sym.Package, sym.Name)] = sym
 			}
 		case "set":
 			if sym := scanSet(expr); sym != nil {
 				sym.Package = currentPkg
-				defs[sym.Name] = sym
-			}
-		case "export":
-			for _, name := range scanExportNames(expr) {
-				exported[name] = true
+				defs[definitionKey(sym.Package, sym.Name)] = sym
 			}
 		}
 	}
 
+	exported := scanExportedDefinitionKeys(exprs)
 	result := make(map[string][]ExternalSymbol)
-	for name, sym := range defs {
-		if exported[name] {
+	for key, sym := range defs {
+		if exported[key] {
 			result[sym.Package] = append(result[sym.Package], *sym)
 		}
 	}
 	return result
+}
+
+func scanExportedDefinitionKeys(exprs []*lisp.LVal) map[string]bool {
+	exported := make(map[string]bool)
+	currentPkg := "user"
+	for _, expr := range exprs {
+		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+			continue
+		}
+		switch astutil.HeadSymbol(expr) {
+		case "in-package":
+			if name := scanPackageName(expr); name != "" {
+				currentPkg = name
+			}
+		case "export":
+			for _, name := range scanExportNames(expr) {
+				exported[definitionKey(currentPkg, name)] = true
+			}
+		}
+	}
+	return exported
 }
 
 // scanPackageName extracts the package name from an in-package expression.

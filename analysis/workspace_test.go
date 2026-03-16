@@ -87,6 +87,68 @@ func TestScanWorkspace_SkipsParseErrors(t *testing.T) {
 	assert.True(t, names["good-fn"], "good file should still be scanned")
 }
 
+func TestScanWorkspaceDefinitions_KeepsSameNameAcrossPackages(t *testing.T) {
+	dir := t.TempDir()
+	err := os.WriteFile(filepath.Join(dir, "multi.lisp"), []byte(`
+(in-package 'foo)
+(defun helper () 1)
+(in-package 'bar)
+(defun helper () 2)
+`), 0600)
+	require.NoError(t, err)
+
+	syms, err := ScanWorkspaceDefinitions(dir)
+	require.NoError(t, err)
+	require.Len(t, syms, 2)
+
+	packages := map[string]bool{}
+	for _, sym := range syms {
+		if sym.Name == "helper" {
+			packages[sym.Package] = true
+		}
+	}
+	assert.True(t, packages["foo"])
+	assert.True(t, packages["bar"])
+}
+
+func TestScanWorkspace_DoesNotLeakNonExportedDefsAcrossPackages(t *testing.T) {
+	dir := t.TempDir()
+	err := os.WriteFile(filepath.Join(dir, "multi.lisp"), []byte(`
+(in-package 'foo)
+(defun helper () 1)
+(export 'helper)
+(in-package 'bar)
+(defun helper () 2)
+`), 0600)
+	require.NoError(t, err)
+
+	syms, err := ScanWorkspace(dir)
+	require.NoError(t, err)
+	require.Len(t, syms, 1)
+	assert.Equal(t, "helper", syms[0].Name)
+	assert.Equal(t, "foo", syms[0].Package)
+}
+
+func TestScanWorkspacePackages_UsesPackageQualifiedDefinitions(t *testing.T) {
+	dir := t.TempDir()
+	err := os.WriteFile(filepath.Join(dir, "multi.lisp"), []byte(`
+(in-package 'foo)
+(defun helper () 1)
+(export 'helper)
+(in-package 'bar)
+(defun helper () 2)
+`), 0600)
+	require.NoError(t, err)
+
+	pkgs, err := ScanWorkspacePackages(dir)
+	require.NoError(t, err)
+	require.Contains(t, pkgs, "foo")
+	require.Len(t, pkgs["foo"], 1)
+	assert.Equal(t, "helper", pkgs["foo"][0].Name)
+	assert.Equal(t, "foo", pkgs["foo"][0].Package)
+	assert.NotContains(t, pkgs, "bar")
+}
+
 func TestScanWorkspace_SkipsNonLisp(t *testing.T) {
 	dir := t.TempDir()
 
