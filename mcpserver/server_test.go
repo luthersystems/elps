@@ -465,7 +465,7 @@ func TestPerfSelectionHonorsRecursiveExcludeGlobs(t *testing.T) {
 	tmp := t.TempDir()
 	writeTestFile(t, filepath.Join(tmp, "prod.lisp"), `(defun prod (items) (map 'list (lambda (item) (db-put item)) items))`)
 	buildDir := filepath.Join(tmp, "build", "nested")
-	require.NoError(t, os.MkdirAll(buildDir, 0o755))
+	require.NoError(t, os.MkdirAll(buildDir, 0o750))
 	writeTestFile(t, filepath.Join(buildDir, "bad.lisp"), `(defun bad (items) (map 'list (lambda (item) (db-put item)) items))`)
 
 	cfg := perf.DefaultConfig()

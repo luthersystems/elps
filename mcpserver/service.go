@@ -1220,10 +1220,6 @@ func lintDiagnostic(diag lint.Diagnostic) Diagnostic {
 	}
 }
 
-func builtinLocationForWord(word, symName string) *Location {
-	return builtinLocation(builtinPackageForWord(word), symName)
-}
-
 func builtinLocationForSymbolWord(sym *analysis.Symbol, word string) *Location {
 	pkg := builtinPackageForWord(word)
 	if pkg == "lisp" && !strings.Contains(word, ":") {
