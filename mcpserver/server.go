@@ -58,6 +58,14 @@ func WithInstructions(instructions string) Option {
 	return func(s *Server) { s.instructions = instructions }
 }
 
+func WithLogger(logger *slog.Logger) Option {
+	return func(s *Server) {
+		if logger != nil {
+			s.logger = logger
+		}
+	}
+}
+
 func WithToolRegistrar(register func(*mcp.Server) error) Option {
 	return func(s *Server) {
 		if register != nil {
@@ -95,6 +103,7 @@ func New(opts ...Option) *Server {
 		workspaceRoot: s.workspaceRoot,
 		perfConfig:    s.perfConfig,
 		linter:        &lint.Linter{Analyzers: lint.DefaultAnalyzers()},
+		logger:        s.logger,
 	})
 	s.server = mcp.NewServer(s.impl, &mcp.ServerOptions{
 		Instructions: s.instructions,

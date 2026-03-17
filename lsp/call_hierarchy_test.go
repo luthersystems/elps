@@ -120,6 +120,38 @@ func TestCallHierarchyOutgoing(t *testing.T) {
 	assert.Equal(t, protocol.UInteger(1), result[0].FromRanges[0].Start.Line)
 }
 
+func TestCallHierarchyOutgoing_MultiPackageSameName(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	src := `(in-package 'foo)
+(defun target () 1)
+(defun caller () (target))
+(in-package 'bar)
+(defun target () 2)
+(defun caller () (target))`
+	doc := openDoc(s, "file:///test/multi-package-call-hierarchy.lisp", src)
+	s.ensureAnalysis(doc)
+
+	items, err := s.textDocumentPrepareCallHierarchy(mockContext(), &protocol.CallHierarchyPrepareParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+			Position:     protocol.Position{Line: 5, Character: 8}, // on bar caller
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+
+	result, err := s.callHierarchyOutgoingCalls(mockContext(), &protocol.CallHierarchyOutgoingCallsParams{
+		Item: items[0],
+	})
+	require.NoError(t, err)
+	require.Len(t, result, 1, "bar caller should have one outgoing call")
+	assert.Equal(t, "target", result[0].To.Name)
+	require.Len(t, result[0].FromRanges, 1)
+	assert.Equal(t, protocol.UInteger(5), result[0].FromRanges[0].Start.Line, "outgoing call should come from bar caller body")
+}
+
 func TestCrossFileIncomingCalls(t *testing.T) {
 	s := testServer()
 	setTestAnalysisCfg(s, &analysis.Config{})

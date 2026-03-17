@@ -13,10 +13,11 @@ import (
 // callHierarchyData is stored in CallHierarchyItem.Data to carry context
 // between prepare and incoming/outgoing calls requests.
 type callHierarchyData struct {
-	Name string `json:"name"`
-	URI  string `json:"uri"`
-	Line int    `json:"line"` // 0-based
-	Col  int    `json:"col"`  // 0-based
+	Name    string `json:"name"`
+	Package string `json:"package,omitempty"`
+	URI     string `json:"uri"`
+	Line    int    `json:"line"` // 0-based
+	Col     int    `json:"col"`  // 0-based
 }
 
 // textDocumentPrepareCallHierarchy handles the textDocument/prepareCallHierarchy request.
@@ -66,7 +67,7 @@ func (s *Server) callHierarchyIncomingCalls(_ *glsp.Context, params *protocol.Ca
 	}
 
 	// Find the target symbol.
-	targetSym := findSymbolByName(res, data.Name)
+	targetSym := findSymbolByData(res, data)
 	if targetSym == nil {
 		return nil, nil
 	}
@@ -92,7 +93,7 @@ func (s *Server) callHierarchyIncomingCalls(_ *glsp.Context, params *protocol.Ca
 			continue
 		}
 		refRange := elpsToLSPRange(ref.Source, len(ref.Symbol.Name))
-		key := data.URI + ":" + enclosing.Name
+		key := data.URI + ":" + symbolToKey(enclosing)
 		if c, ok := callers[key]; ok {
 			c.ranges = append(c.ranges, refRange)
 		} else {
@@ -163,13 +164,13 @@ func (s *Server) callHierarchyOutgoingCalls(_ *glsp.Context, params *protocol.Ca
 	}
 
 	// Find the target function symbol.
-	targetSym := findSymbolByName(res, data.Name)
+	targetSym := findSymbolByData(res, data)
 	if targetSym == nil || targetSym.Source == nil {
 		return nil, nil
 	}
 
 	// Find the scope of the target function.
-	funcScope := findFunctionScope(res.RootScope, data.Name)
+	funcScope := findFunctionScope(res.RootScope, data)
 	if funcScope == nil || funcScope.Node == nil || funcScope.Node.Source == nil {
 		return nil, nil
 	}
@@ -205,7 +206,7 @@ func (s *Server) callHierarchyOutgoingCalls(_ *glsp.Context, params *protocol.Ca
 		}
 
 		refRange := elpsToLSPRange(ref.Source, len(ref.Symbol.Name))
-		key := ref.Symbol.Name
+		key := symbolToKey(ref.Symbol)
 		if c, ok := callees[key]; ok {
 			c.ranges = append(c.ranges, refRange)
 		} else {
@@ -255,10 +256,11 @@ func symbolToCallHierarchyItem(sym *analysis.Symbol, uri string) protocol.CallHi
 		Range:          encRange,
 		SelectionRange: selRange,
 		Data: callHierarchyData{
-			Name: sym.Name,
-			URI:  uri,
-			Line: int(selRange.Start.Line),
-			Col:  int(selRange.Start.Character),
+			Name:    sym.Name,
+			Package: sym.Package,
+			URI:     uri,
+			Line:    int(selRange.Start.Line),
+			Col:     int(selRange.Start.Character),
 		},
 	}
 }
@@ -272,16 +274,16 @@ func isCallable(kind analysis.SymbolKind) bool {
 	return false
 }
 
-// findSymbolByName finds a non-external symbol by name in the analysis result.
-func findSymbolByName(res *analysis.Result, name string) *analysis.Symbol {
+// findSymbolByData finds a symbol in the analysis result matching the call hierarchy item identity.
+func findSymbolByData(res *analysis.Result, data *callHierarchyData) *analysis.Symbol {
 	for _, sym := range res.Symbols {
-		if sym.Name == name && !sym.External {
+		if symbolMatchesCallHierarchyData(sym, data) && !sym.External {
 			return sym
 		}
 	}
 	// Fall back to external symbols.
 	for _, sym := range res.Symbols {
-		if sym.Name == name {
+		if symbolMatchesCallHierarchyData(sym, data) {
 			return sym
 		}
 	}
@@ -294,13 +296,16 @@ func findEnclosingFunction(root *analysis.Scope, line, col int) *analysis.Symbol
 	return analysis.FindEnclosingFunction(root, line, col)
 }
 
-// findFunctionScope finds the scope for a named function.
-func findFunctionScope(root *analysis.Scope, name string) *analysis.Scope {
+// findFunctionScope finds the scope for a specific function identity.
+func findFunctionScope(root *analysis.Scope, data *callHierarchyData) *analysis.Scope {
 	// Look for a ScopeFunction child whose parent has the named symbol.
 	for _, child := range root.Children {
 		if child.Kind == analysis.ScopeFunction {
-			for _, sym := range parentSymbols(root, name) {
+			for _, sym := range parentSymbols(root, data.Name) {
 				if sym.Kind != analysis.SymFunction && sym.Kind != analysis.SymMacro {
+					continue
+				}
+				if !symbolMatchesCallHierarchyData(sym, data) {
 					continue
 				}
 				if child.Node != nil && sym.Source != nil &&
@@ -310,7 +315,7 @@ func findFunctionScope(root *analysis.Scope, name string) *analysis.Scope {
 			}
 		}
 		// Recurse for nested scopes.
-		if found := findFunctionScope(child, name); found != nil {
+		if found := findFunctionScope(child, data); found != nil {
 			return found
 		}
 	}
@@ -358,6 +363,7 @@ func decodeCallHierarchyData(data any) *callHierarchyData {
 		return nil
 	}
 	name, _ := m["name"].(string)
+	pkg, _ := m["package"].(string)
 	uri, _ := m["uri"].(string)
 	if name == "" || uri == "" {
 		return nil
@@ -365,9 +371,23 @@ func decodeCallHierarchyData(data any) *callHierarchyData {
 	line, _ := m["line"].(float64)
 	col, _ := m["col"].(float64)
 	return &callHierarchyData{
-		Name: name,
-		URI:  uri,
-		Line: int(line),
-		Col:  int(col),
+		Name:    name,
+		Package: pkg,
+		URI:     uri,
+		Line:    int(line),
+		Col:     int(col),
 	}
+}
+
+func symbolMatchesCallHierarchyData(sym *analysis.Symbol, data *callHierarchyData) bool {
+	if sym == nil || data == nil || sym.Name != data.Name {
+		return false
+	}
+	if data.Package != "" && sym.Package != data.Package {
+		return false
+	}
+	if sym.Source == nil {
+		return false
+	}
+	return sym.Source.Line == data.Line+1 && sym.Source.Col == data.Col+1
 }

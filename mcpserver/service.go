@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,6 +30,7 @@ type serviceConfig struct {
 	workspaceRoot string
 	perfConfig    *perf.Config
 	linter        *lint.Linter
+	logger        *slog.Logger
 }
 
 type service struct {
@@ -37,6 +39,7 @@ type service struct {
 	workspaceRoot string
 	perfConfig    *perf.Config
 	linter        *lint.Linter
+	logger        *slog.Logger
 
 	mu         sync.RWMutex
 	workspaces map[string]*workspaceState
@@ -68,6 +71,7 @@ func newService(cfg serviceConfig) *service {
 		workspaceRoot:               cfg.workspaceRoot,
 		perfConfig:                  clonePerfConfig(cfg.perfConfig),
 		linter:                      cfg.linter,
+		logger:                      cfg.logger,
 		workspaces:                  make(map[string]*workspaceState),
 		workspaceValidationInterval: time.Second,
 	}
@@ -258,7 +262,7 @@ func (s *service) diagnosticsTool(ctx context.Context, _ *mcp.CallToolRequest, i
 		if err != nil {
 			return nil, DiagnosticsResponse{}, err
 		}
-		files, err := listWorkspaceFiles(root, true)
+		files, err := s.listWorkspaceFiles(root, true)
 		if err != nil {
 			return nil, DiagnosticsResponse{}, err
 		}
@@ -395,7 +399,7 @@ func (s *service) selectPerfFiles(in PerfSelectionInput) ([]string, error) {
 		sort.Strings(files)
 		return files, nil
 	}
-	return listPerfWorkspaceFiles(root, s.perfConfig, in.IncludeTests)
+	return s.listPerfWorkspaceFiles(root, s.perfConfig, in.IncludeTests)
 }
 
 func (s *service) collectFileDiagnostics(path string, content *string, workspaceRoot *string) (FileDiagnostics, error) {
@@ -602,8 +606,8 @@ func validateCursor(line, character int) error {
 	return nil
 }
 
-func listWorkspaceFiles(root string, includeTests bool) ([]string, error) {
-	files, err := collectWorkspaceFiles(root, includeTests)
+func (s *service) listWorkspaceFiles(root string, includeTests bool) ([]string, error) {
+	files, err := s.collectWorkspaceFiles(root, includeTests)
 	if err != nil {
 		return nil, err
 	}
@@ -614,8 +618,8 @@ func listWorkspaceFiles(root string, includeTests bool) ([]string, error) {
 	return paths, nil
 }
 
-func listPerfWorkspaceFiles(root string, cfg *perf.Config, includeTests bool) ([]string, error) {
-	paths, err := listWorkspaceFiles(root, true)
+func (s *service) listPerfWorkspaceFiles(root string, cfg *perf.Config, includeTests bool) ([]string, error) {
+	paths, err := s.listWorkspaceFiles(root, true)
 	if err != nil {
 		return nil, err
 	}
@@ -776,14 +780,23 @@ type workspaceFile struct {
 	modTime time.Time
 }
 
-func collectWorkspaceFiles(root string, includeTests bool) ([]workspaceFile, error) {
+func (s *service) collectWorkspaceFiles(root string, includeTests bool) ([]workspaceFile, error) {
 	var files []workspaceFile
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return fmt.Errorf("walking workspace path %s: %w", path, err)
+			if s.logger != nil {
+				s.logger.Warn("skipping unreadable workspace path", "path", path, "error", err)
+			}
+			if info != nil && info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if info == nil {
-			return fmt.Errorf("walking workspace path %s: missing file info", path)
+			if s.logger != nil {
+				s.logger.Warn("skipping workspace path with missing file info", "path", path)
+			}
+			return nil
 		}
 		if info.IsDir() {
 			if analysis.ShouldSkipDir(info.Name()) {
@@ -811,11 +824,11 @@ func collectWorkspaceFiles(root string, includeTests bool) ([]workspaceFile, err
 	return files, nil
 }
 
-func workspaceFingerprint(root string) (string, error) {
+func (s *service) workspaceFingerprint(root string) (string, error) {
 	if root == "" {
 		return "", nil
 	}
-	files, err := collectWorkspaceFiles(root, true)
+	files, err := s.collectWorkspaceFiles(root, true)
 	if err != nil {
 		return "", err
 	}
@@ -841,7 +854,7 @@ func (s *service) fingerprintWorkspace(root string) (string, error) {
 	if s.workspaceFingerprintHook != nil {
 		s.workspaceFingerprintHook(root)
 	}
-	return workspaceFingerprint(root)
+	return s.workspaceFingerprint(root)
 }
 
 func (s *service) markWorkspaceValidated(root string) {

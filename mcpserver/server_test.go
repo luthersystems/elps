@@ -1,8 +1,10 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -535,7 +537,7 @@ func TestPerfSelectionHonorsRecursiveExcludeGlobs(t *testing.T) {
 	assert.NotContains(t, names, "bad")
 }
 
-func TestWorkspaceTraversalErrorsSurface(t *testing.T) {
+func TestWorkspaceTraversalErrorsAreLoggedAndSkipped(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission-based traversal failure is not reliable on windows")
 	}
@@ -550,7 +552,9 @@ func TestWorkspaceTraversalErrorsSurface(t *testing.T) {
 		require.NoError(t, os.Chmod(blockedDir, 0o750)) //nolint:gosec // restore temp test dir permissions for cleanup
 	}()
 
-	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp), WithLogger(logger)))
 	defer closeClientSession(t, session)
 	defer closeServerSession(t, serverSession)
 
@@ -562,7 +566,12 @@ func TestWorkspaceTraversalErrorsSurface(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.True(t, res.IsError)
+	require.False(t, res.IsError)
+	symbols := decodeStructured[WorkspaceSymbolsResponse](t, res)
+	require.Len(t, symbols.Symbols, 1)
+	assert.Equal(t, "ok", symbols.Symbols[0].Name)
+	assert.Contains(t, logBuf.String(), "skipping unreadable workspace path")
+	assert.Contains(t, logBuf.String(), blockedDir)
 }
 
 func connectTestServer(t *testing.T, srv *Server) (*mcp.ClientSession, *mcp.ServerSession) {
