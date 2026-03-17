@@ -106,7 +106,7 @@ func (s *Scope) Lookup(name string) *Symbol {
 		if sym, ok := scope.Symbols[name]; ok {
 			return sym
 		}
-		if sym, ok := scope.PackageSymbols[lisp.DefaultUserPackage+":"+name]; ok {
+		if sym := scope.lookupAnyPackageSymbol(name); sym != nil {
 			return sym
 		}
 	}
@@ -118,7 +118,19 @@ func (s *Scope) LookupLocal(name string) *Symbol {
 	if sym, ok := s.Symbols[name]; ok {
 		return sym
 	}
-	return s.PackageSymbols[lisp.DefaultUserPackage+":"+name]
+	return s.lookupAnyPackageSymbol(name)
+}
+
+// lookupAnyPackageSymbol searches PackageSymbols for any entry matching the
+// given bare name, regardless of package. This ensures callers that don't
+// know or specify a package can still find symbols defined in non-user packages.
+func (s *Scope) lookupAnyPackageSymbol(name string) *Symbol {
+	for _, sym := range s.PackageSymbols {
+		if sym.Name == name {
+			return sym
+		}
+	}
+	return nil
 }
 
 // LookupInPackage resolves a symbol by preferring a package-qualified match in

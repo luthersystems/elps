@@ -67,14 +67,39 @@ func TestScope_Shadowing(t *testing.T) {
 	assert.Same(t, parentSym, parent.Lookup("x"))
 }
 
-func TestScope_Define_PackageScopedNotBareVisible(t *testing.T) {
+func TestScope_Define_PackageScopedLookup(t *testing.T) {
 	scope := NewScope(ScopeGlobal, nil, nil)
 	sym := &Symbol{Name: "run", Package: "foo", Kind: SymFunction}
 	scope.Define(sym)
 
-	assert.Nil(t, scope.LookupLocal("run"))
+	// Package-agnostic lookups find the symbol regardless of package.
+	assert.Same(t, sym, scope.LookupLocal("run"))
+	assert.Same(t, sym, scope.Lookup("run"))
+
+	// Package-qualified lookup finds it for the correct package.
 	assert.Same(t, sym, scope.LookupLocalInPackage("run", "foo"))
 	assert.Nil(t, scope.LookupInPackage("run", "bar"))
+}
+
+func TestScope_Lookup_NonUserPackage(t *testing.T) {
+	// Regression: Lookup and LookupLocal must find symbols defined in
+	// non-user packages. Without this, the minifier's macro template
+	// protection and the lint user-arity check both miss symbols in
+	// files that use (in-package 'some-pkg).
+	parent := NewScope(ScopeGlobal, nil, nil)
+	child := NewScope(ScopeLet, parent, nil)
+
+	parentSym := &Symbol{Name: "helper", Package: "mylib", Kind: SymFunction}
+	parent.Define(parentSym)
+	child.Define(&Symbol{Name: "local-var", Kind: SymVariable})
+
+	// Child walks up and finds the parent's package-scoped symbol.
+	assert.Same(t, parentSym, child.Lookup("helper"))
+	// Parent also finds it directly.
+	assert.Same(t, parentSym, parent.Lookup("helper"))
+	assert.Same(t, parentSym, parent.LookupLocal("helper"))
+	// Child's LookupLocal does NOT see it (it's in the parent).
+	assert.Nil(t, child.LookupLocal("helper"))
 }
 
 // --- Signature tests ---
@@ -823,6 +848,37 @@ func TestAnalyze_UsePackage_PrefersImportedPackageOverOtherWorkspaceSymbol(t *te
 	require.Len(t, result.References, 1)
 	assert.Equal(t, "foo", result.References[0].Symbol.Package)
 	assert.Equal(t, "run", result.References[0].Symbol.Name)
+}
+
+func TestScope_LookupLocal_NonUserPackageDefun(t *testing.T) {
+	// Regression: LookupLocal must find symbols from (in-package 'foo)
+	// files. The lint user-arity analyzer uses RootScope.LookupLocal to
+	// detect locally-shadowed functions; without this, arity mismatches in
+	// non-user packages become invisible.
+	result := parseAndAnalyze(t, `(in-package 'mylib)
+(defun helper (x y) (+ x y))
+(helper 1 2)`)
+	sym := result.RootScope.LookupLocal("helper")
+	require.NotNil(t, sym, "LookupLocal should find symbol defined in non-user package")
+	assert.Equal(t, SymFunction, sym.Kind)
+	assert.Equal(t, "mylib", sym.Package)
+}
+
+func TestScope_Lookup_NonUserPackageWalk(t *testing.T) {
+	// Regression: Lookup must walk the parent chain and find symbols from
+	// non-user packages. The minifier's preserveMacroTemplateSymbol uses
+	// scope.Lookup(name) to protect quasiquoted symbols; without this,
+	// globals in non-user packages are renamed but quoted template symbols
+	// are not, breaking macro expansion.
+	result := parseAndAnalyze(t, `(in-package 'mylib)
+(defun target () 42)
+(defmacro wrap (x) (quasiquote (target (unquote x))))`)
+	// Lookup from a child scope should find the root-level symbol.
+	for _, scope := range result.RootScope.Children {
+		sym := scope.Lookup("target")
+		require.NotNil(t, sym, "Lookup should find non-user package symbol from child scope")
+		assert.Equal(t, "mylib", sym.Package)
+	}
 }
 
 func TestAnalyze_InPackage_PrefersCurrentPackageDefinition(t *testing.T) {
