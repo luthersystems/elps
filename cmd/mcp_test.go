@@ -18,6 +18,9 @@ import (
 )
 
 func TestMCPCommand_StdioRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	wd, err := os.Getwd()
 	require.NoError(t, err)
 	root := filepath.Dir(wd)
@@ -51,6 +54,9 @@ func TestMCPCommand_StdioRoundTrip(t *testing.T) {
 }
 
 func TestMCPCommand_StdioRoundTripWithConfigFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	wd, err := os.Getwd()
 	require.NoError(t, err)
 	root := filepath.Dir(wd)
@@ -77,6 +83,9 @@ func TestMCPCommand_StdioRoundTripWithConfigFile(t *testing.T) {
 }
 
 func TestMCPCommand_ProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	wd, err := os.Getwd()
 	require.NoError(t, err)
 	root := filepath.Dir(wd)

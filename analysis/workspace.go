@@ -67,51 +67,8 @@ func ScanWorkspacePackages(root string) (map[string][]ExternalSymbol, error) {
 // definitions, including non-exported symbols. The result is intended for
 // workspace symbol search, not cross-file resolution.
 func ScanWorkspaceDefinitions(root string) ([]ExternalSymbol, error) {
-	paths, err := collectLispFiles(root)
-	if err != nil {
-		return nil, err
-	}
-
-	type fileResult struct {
-		symbols []ExternalSymbol
-	}
-
-	results := make([]fileResult, len(paths))
-	numWorkers := runtime.NumCPU()
-	if numWorkers > len(paths) {
-		numWorkers = len(paths)
-	}
-	if numWorkers < 1 {
-		numWorkers = 1
-	}
-
-	var wg sync.WaitGroup
-	work := make(chan int, len(paths))
-	for i := range paths {
-		work <- i
-	}
-	close(work)
-
-	wg.Add(numWorkers)
-	for range numWorkers {
-		go func() {
-			defer wg.Done()
-			for i := range work {
-				fileSrc, readErr := os.ReadFile(paths[i]) //nolint:gosec // tool reads user-specified workspace files
-				if readErr != nil {
-					continue
-				}
-				results[i] = fileResult{symbols: scanFileDefinitions(fileSrc, paths[i])}
-			}
-		}()
-	}
-	wg.Wait()
-
-	var symbols []ExternalSymbol
-	for _, r := range results {
-		symbols = append(symbols, r.symbols...)
-	}
-	return symbols, nil
+	_, _, allDefs, err := ScanWorkspaceAll(root)
+	return allDefs, err
 }
 
 // ScanWorkspaceFull walks a directory tree in a single pass, parsing all
@@ -122,16 +79,25 @@ func ScanWorkspaceDefinitions(root string) ([]ExternalSymbol, error) {
 //
 // Files that fail to parse are silently skipped (fault tolerant).
 func ScanWorkspaceFull(root string) ([]ExternalSymbol, map[string][]ExternalSymbol, error) {
+	globals, pkgs, _, err := ScanWorkspaceAll(root)
+	return globals, pkgs, err
+}
+
+// ScanWorkspaceAll combines ScanWorkspaceFull and ScanWorkspaceDefinitions
+// into a single pass: each file is parsed once and all three results are
+// extracted from the same AST.
+func ScanWorkspaceAll(root string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, err error) {
 	// Phase 1: Collect file paths (sequential walk).
 	paths, err := collectLispFiles(root)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// Phase 2: Parse concurrently with bounded worker pool.
 	type fileResult struct {
 		globals []ExternalSymbol
 		pkgs    map[string][]ExternalSymbol
+		allDefs []ExternalSymbol
 	}
 
 	results := make([]fileResult, len(paths))
@@ -159,25 +125,23 @@ func ScanWorkspaceFull(root string) ([]ExternalSymbol, map[string][]ExternalSymb
 				if readErr != nil {
 					continue
 				}
-				results[i] = fileResult{
-					globals: scanFile(fileSrc, paths[i]),
-					pkgs:    scanFilePackages(fileSrc, paths[i]),
-				}
+				g, p, d := scanFileFull(fileSrc, paths[i])
+				results[i] = fileResult{globals: g, pkgs: p, allDefs: d}
 			}
 		}()
 	}
 	wg.Wait()
 
 	// Phase 3: Merge results.
-	var globals []ExternalSymbol
-	pkgs := make(map[string][]ExternalSymbol)
+	pkgs = make(map[string][]ExternalSymbol)
 	for _, r := range results {
 		globals = append(globals, r.globals...)
+		allDefs = append(allDefs, r.allDefs...)
 		for pkg, syms := range r.pkgs {
 			pkgs[pkg] = append(pkgs[pkg], syms...)
 		}
 	}
-	return globals, pkgs, nil
+	return globals, pkgs, allDefs, nil
 }
 
 // collectLispFiles walks the directory tree and collects .lisp file paths,
@@ -222,40 +186,28 @@ func ShouldSkipDir(name string) bool {
 	return false
 }
 
-// scanFile parses a single file and extracts exported top-level definitions.
-// Returns nil if the file fails to parse.
-func scanFile(source []byte, filename string) []ExternalSymbol {
+// scanFileFull parses a file once and extracts exported globals, package-grouped
+// exports, and all definitions in a single pass.
+func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol) {
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	p := rdparser.New(s)
 
 	exprs, err := p.ParseProgram()
 	if err != nil {
-		return nil // skip files that fail to parse
+		return nil, nil, nil
 	}
 
 	defs := extractDefinitions(exprs)
 	exported := scanExportedDefinitionKeys(exprs)
 
-	var result []ExternalSymbol
+	pkgs = make(map[string][]ExternalSymbol)
 	for _, sym := range defs {
 		if exported[definitionKey(sym.Package, sym.Name)] {
-			result = append(result, sym)
+			globals = append(globals, sym)
+			pkgs[sym.Package] = append(pkgs[sym.Package], sym)
 		}
 	}
-	return result
-}
-
-// scanFileDefinitions parses a file and extracts all top-level definitions.
-func scanFileDefinitions(source []byte, filename string) []ExternalSymbol {
-	s := token.NewScanner(filename, bytes.NewReader(source))
-	p := rdparser.New(s)
-
-	exprs, err := p.ParseProgram()
-	if err != nil {
-		return nil // skip files that fail to parse
-	}
-
-	return extractDefinitions(exprs)
+	return globals, pkgs, defs
 }
 
 // extractDefinitions collects top-level definitions from pre-parsed expressions.
@@ -307,62 +259,6 @@ func extractDefinitions(exprs []*lisp.LVal) []ExternalSymbol {
 
 func definitionKey(pkg, name string) string {
 	return pkg + "\x00" + name
-}
-
-// scanFilePackages is like scanFile but returns symbols grouped by package.
-func scanFilePackages(source []byte, filename string) map[string][]ExternalSymbol {
-	s := token.NewScanner(filename, bytes.NewReader(source))
-	p := rdparser.New(s)
-
-	exprs, err := p.ParseProgram()
-	if err != nil {
-		return nil
-	}
-
-	defs := make(map[string]*ExternalSymbol)
-	currentPkg := "user"
-
-	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
-			continue
-		}
-		head := astutil.HeadSymbol(expr)
-		switch head {
-		case "in-package":
-			if name := scanPackageName(expr); name != "" {
-				currentPkg = name
-			}
-		case "defun":
-			if sym := scanDefun(expr, SymFunction); sym != nil {
-				sym.Package = currentPkg
-				defs[definitionKey(sym.Package, sym.Name)] = sym
-			}
-		case "defmacro":
-			if sym := scanDefun(expr, SymMacro); sym != nil {
-				sym.Package = currentPkg
-				defs[definitionKey(sym.Package, sym.Name)] = sym
-			}
-		case "deftype":
-			if sym := scanDeftype(expr); sym != nil {
-				sym.Package = currentPkg
-				defs[definitionKey(sym.Package, sym.Name)] = sym
-			}
-		case "set":
-			if sym := scanSet(expr); sym != nil {
-				sym.Package = currentPkg
-				defs[definitionKey(sym.Package, sym.Name)] = sym
-			}
-		}
-	}
-
-	exported := scanExportedDefinitionKeys(exprs)
-	result := make(map[string][]ExternalSymbol)
-	for key, sym := range defs {
-		if exported[key] {
-			result[sym.Package] = append(result[sym.Package], *sym)
-		}
-	}
-	return result
 }
 
 func scanExportedDefinitionKeys(exprs []*lisp.LVal) map[string]bool {
@@ -588,19 +484,25 @@ func FindEnclosingFunction(root *Scope, line, col int) *Symbol {
 		if scope.Kind == ScopeFunction {
 			if scope.Node != nil && scope.Node.Source != nil && scope.Parent != nil {
 				nodeLoc := scope.Node.Source
-				for _, sym := range scope.Parent.allSymbols() {
+				var found *Symbol
+				scope.Parent.forEachSymbol(func(sym *Symbol) bool {
 					if sym.Kind != SymFunction && sym.Kind != SymMacro {
-						continue
+						return true
 					}
 					// Skip external (imported) symbols — they belong to
 					// other files and may coincidentally share a line number.
 					if sym.External {
-						continue
+						return true
 					}
 					if sym.Source != nil && sym.Source.Line == nodeLoc.Line &&
 						sym.Source.File == nodeLoc.File {
-						return sym
+						found = sym
+						return false
 					}
+					return true
+				})
+				if found != nil {
+					return found
 				}
 			}
 		}
@@ -609,27 +511,32 @@ func FindEnclosingFunction(root *Scope, line, col int) *Symbol {
 	return nil
 }
 
-func (s *Scope) allSymbols() []*Symbol {
+// forEachSymbol iterates over all unique symbols in this scope (both bare and
+// package-qualified) without allocating a slice. The callback receives each
+// symbol exactly once; return false to stop early.
+func (s *Scope) forEachSymbol(fn func(*Symbol) bool) {
 	if s == nil {
-		return nil
+		return
 	}
-	out := make([]*Symbol, 0, len(s.Symbols)+len(s.PackageSymbols))
 	seen := make(map[*Symbol]bool, len(s.Symbols)+len(s.PackageSymbols))
 	for _, sym := range s.Symbols {
 		if sym == nil || seen[sym] {
 			continue
 		}
 		seen[sym] = true
-		out = append(out, sym)
+		if !fn(sym) {
+			return
+		}
 	}
 	for _, sym := range s.PackageSymbols {
 		if sym == nil || seen[sym] {
 			continue
 		}
 		seen[sym] = true
-		out = append(out, sym)
+		if !fn(sym) {
+			return
+		}
 	}
-	return out
 }
 
 // ScopeAtPosition returns the innermost scope that contains the given

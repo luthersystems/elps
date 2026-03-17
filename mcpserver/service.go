@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -519,11 +520,7 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 	}
 	state.validatedAt.Store(validatedAt.UnixNano())
 	if root != "" {
-		globals, pkgs, err := analysis.ScanWorkspaceFull(root)
-		if err != nil {
-			return nil, err
-		}
-		symbols, err := analysis.ScanWorkspaceDefinitions(root)
+		globals, pkgs, symbols, err := analysis.ScanWorkspaceAll(root)
 		if err != nil {
 			return nil, err
 		}
@@ -597,7 +594,12 @@ func (s *service) resolvePath(path string, root string) (string, error) {
 		return filepath.Clean(path), nil
 	}
 	if root != "" {
-		return filepath.Join(root, path), nil
+		resolved := filepath.Join(root, path)
+		// Defense-in-depth: ensure the resolved path stays under the workspace root.
+		if !strings.HasPrefix(resolved, root+string(filepath.Separator)) && resolved != root {
+			return "", fmt.Errorf("path %q resolves outside workspace root", path)
+		}
+		return resolved, nil
 	}
 	return filepath.Abs(path)
 }
@@ -685,16 +687,9 @@ func compareRange(a, b Range) bool {
 }
 
 func seenWorkspaceSymbol(seen map[string]bool, symbol WorkspaceSymbol) bool {
-	key := fmt.Sprintf("%s|%s|%s|%s|%d|%d|%d|%d",
-		symbol.Name,
-		symbol.Package,
-		symbol.Path,
-		symbol.Kind,
-		symbol.Range.Start.Line,
-		symbol.Range.Start.Character,
-		symbol.Range.End.Line,
-		symbol.Range.End.Character,
-	)
+	key := symbol.Name + "|" + symbol.Package + "|" + symbol.Path + "|" + symbol.Kind + "|" +
+		strconv.Itoa(symbol.Range.Start.Line) + "|" + strconv.Itoa(symbol.Range.Start.Character) + "|" +
+		strconv.Itoa(symbol.Range.End.Line) + "|" + strconv.Itoa(symbol.Range.End.Character)
 	if seen[key] {
 		return true
 	}
@@ -990,6 +985,10 @@ func locContainsCol(loc *token.Location, name string, col int) bool {
 	return col >= start && col < end
 }
 
+// wordAtPosition extracts the symbol word at a 0-based line and column.
+// It operates on byte offsets, which is correct for ELPS symbol names (ASCII
+// only). Multi-byte UTF-8 in comments or strings could misalign the column,
+// but symbol lookup would simply miss — no incorrect results.
 func wordAtPosition(content string, line, col int) string {
 	lines := strings.Split(content, "\n")
 	if line < 0 || line >= len(lines) {

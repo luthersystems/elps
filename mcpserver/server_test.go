@@ -659,6 +659,55 @@ func TestWorkspaceValidationRaceSafety(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsWorkspaceWide(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "ok.lisp"), "(defun ok () 1)")
+	writeTestFile(t, filepath.Join(tmp, "bad.lisp"), "(defun broken (")
+
+	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "diagnostics",
+		Arguments: map[string]any{
+			"workspace_root":    tmp,
+			"include_workspace": true,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	diagnostics := decodeStructured[DiagnosticsResponse](t, res)
+	require.Len(t, diagnostics.Files, 2, "should include both workspace files")
+	var hasErrors bool
+	for _, fd := range diagnostics.Files {
+		if len(fd.Diagnostics) > 0 {
+			hasErrors = true
+		}
+	}
+	assert.True(t, hasErrors, "bad.lisp should produce diagnostics")
+}
+
+func TestResolvePath_AbsoluteInput(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+
+	absPath := filepath.Join(tmp, "test.lisp")
+	resolved, err := srv.service.resolvePath(absPath, tmp)
+	require.NoError(t, err)
+	assert.Equal(t, absPath, resolved)
+}
+
+func TestResolvePath_TraversalBlocked(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+
+	_, err := srv.service.resolvePath("../../etc/passwd", tmp)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolves outside workspace root")
+}
+
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))

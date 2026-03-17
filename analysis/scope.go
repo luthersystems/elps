@@ -166,6 +166,11 @@ func (s *Scope) LookupInPackage(name, pkg string) *Symbol {
 
 // LookupLocalInPackage resolves a symbol in the current scope, preferring the
 // package-qualified key when a package is provided.
+//
+// The bare-name fallback into Symbols is restricted to the default user package.
+// This prevents builtins (Package == "") from blocking package-local definitions
+// like (in-package 'foo) (defun set ...). Unlike LookupInPackage, this method
+// does not consult bareNameIndex.
 func (s *Scope) LookupLocalInPackage(name, pkg string) *Symbol {
 	if pkg != "" {
 		if sym, ok := s.PackageSymbols[pkg+":"+name]; ok {
