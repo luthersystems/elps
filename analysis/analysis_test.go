@@ -1431,6 +1431,44 @@ func TestScope_LookupInPackage_DoesNotUseBareNameIndex(t *testing.T) {
 	assert.Same(t, sym, scope.Lookup("run"))
 }
 
+// --- P2-3: LookupLocalInPackage with empty package ---
+
+func TestScope_LookupLocalInPackage_EmptyPackage(t *testing.T) {
+	scope := NewScope(ScopeGlobal, nil, nil)
+	// A builtin-like symbol with no package.
+	builtin := &Symbol{Name: "set", Kind: SymBuiltin}
+	scope.Define(builtin)
+	// A package-qualified symbol.
+	fooSym := &Symbol{Name: "run", Package: "foo", Kind: SymFunction}
+	scope.Define(fooSym)
+
+	// Empty pkg skips both PackageSymbols and Symbols fallback, returning nil.
+	assert.Nil(t, scope.LookupLocalInPackage("set", ""))
+	assert.Nil(t, scope.LookupLocalInPackage("run", ""))
+
+	// This prevents builtins from blocking package-local definitions.
+	assert.Same(t, builtin, scope.LookupLocalInPackage("set", "user"))
+	assert.Same(t, fooSym, scope.LookupLocalInPackage("run", "foo"))
+}
+
+// --- LookupAllLocal ---
+
+func TestScope_LookupAllLocal(t *testing.T) {
+	scope := NewScope(ScopeGlobal, nil, nil)
+	fooRun := &Symbol{Name: "run", Package: "foo", Kind: SymFunction}
+	barRun := &Symbol{Name: "run", Package: "bar", Kind: SymFunction}
+	bareRun := &Symbol{Name: "run", Kind: SymFunction}
+	scope.DefineQualifiedOnly(fooRun)
+	scope.DefineQualifiedOnly(barRun)
+	scope.Define(bareRun) // bare name in Symbols
+
+	all := scope.LookupAllLocal("run")
+	assert.Len(t, all, 3)
+
+	// No results for a name that doesn't exist.
+	assert.Empty(t, scope.LookupAllLocal("nonexistent"))
+}
+
 // parseAndAnalyzeWithConfig is a test helper that parses source and runs
 // analysis with a custom Config.
 func parseAndAnalyzeWithConfig(t *testing.T, source string, cfg *Config) *Result {

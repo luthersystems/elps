@@ -136,6 +136,33 @@ func (s *Scope) lookupAnyPackageSymbol(name string) *Symbol {
 	return s.bareNameIndex[name]
 }
 
+// LookupAllLocal returns all symbols matching a bare name in this scope,
+// across Symbols and all PackageSymbols entries. Used by call hierarchy to
+// find all package variants of a function name.
+func (s *Scope) LookupAllLocal(name string) []*Symbol {
+	var out []*Symbol
+	seen := make(map[*Symbol]bool)
+	if sym, ok := s.Symbols[name]; ok && sym != nil {
+		seen[sym] = true
+		out = append(out, sym)
+	}
+	// Check bareNameIndex first: if no package has this bare name, skip the scan.
+	if s.bareNameIndex[name] == nil {
+		return out
+	}
+	for key, sym := range s.PackageSymbols {
+		if sym == nil || seen[sym] {
+			continue
+		}
+		// Key format is "pkg:name" — check suffix.
+		if idx := len(key) - len(name); idx > 0 && key[idx-1] == ':' && key[idx:] == name {
+			seen[sym] = true
+			out = append(out, sym)
+		}
+	}
+	return out
+}
+
 // LookupInPackage resolves a symbol by preferring a package-qualified match in
 // the current scope chain before falling back to a bare-name lookup. The
 // bare-name fallback into Symbols is intentional: builtins and user-package

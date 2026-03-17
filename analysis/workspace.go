@@ -291,18 +291,7 @@ func scanPackageName(expr *lisp.LVal) string {
 }
 
 // extractPkgNameArg gets a package name from a use-package/in-package argument.
-func extractPkgNameArg(arg *lisp.LVal) string {
-	if arg.Type == lisp.LString {
-		return arg.Str
-	}
-	if arg.Type == lisp.LSymbol {
-		return arg.Str
-	}
-	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
-		return arg.Cells[0].Str
-	}
-	return ""
-}
+var extractPkgNameArg = astutil.PackageNameArg
 
 func scanDefun(expr *lisp.LVal, kind SymbolKind) *ExternalSymbol {
 	if astutil.ArgCount(expr) < 2 {

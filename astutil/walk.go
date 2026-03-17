@@ -111,6 +111,22 @@ func CollectFormals(formals *lisp.LVal, defs map[string]bool) {
 	}
 }
 
+// PackageNameArg extracts a package name from a use-package or in-package
+// argument. Handles quoted symbols ('testing), bare symbols (testing), and
+// strings ("testing").
+func PackageNameArg(arg *lisp.LVal) string {
+	if arg == nil {
+		return ""
+	}
+	if arg.Type == lisp.LString || arg.Type == lisp.LSymbol {
+		return arg.Str
+	}
+	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+		return arg.Cells[0].Str
+	}
+	return ""
+}
+
 // SourceOf returns the best source location for a node.
 // Prefers the node's own source, falls back to first child's source.
 func SourceOf(v *lisp.LVal) *lisp.LVal {

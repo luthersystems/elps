@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -17,19 +18,44 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var (
+	testBinOnce sync.Once
+	testBinPath string
+	testBinErr  error
+)
+
+// buildTestBinary builds the elps binary once and reuses it across integration tests.
+func buildTestBinary(t *testing.T) string {
+	t.Helper()
+	testBinOnce.Do(func() {
+		wd, err := os.Getwd()
+		if err != nil {
+			testBinErr = err
+			return
+		}
+		root := filepath.Dir(wd)
+		dir, err := os.MkdirTemp("", "elps-test-*")
+		if err != nil {
+			testBinErr = err
+			return
+		}
+		testBinPath = filepath.Join(dir, "elps")
+		build := exec.Command("go", "build", "-o", testBinPath, ".") //nolint:gosec // test builds local binary in temp dir
+		build.Dir = root
+		output, err := build.CombinedOutput()
+		if err != nil {
+			testBinErr = errors.New(string(output))
+		}
+	})
+	require.NoError(t, testBinErr, "failed to build test binary")
+	return testBinPath
+}
+
 func TestMCPCommand_StdioRoundTrip(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-	wd, err := os.Getwd()
-	require.NoError(t, err)
-	root := filepath.Dir(wd)
-	bin := filepath.Join(t.TempDir(), "elps")
-
-	build := exec.Command("go", "build", "-o", bin, ".") //nolint:gosec // test builds local binary in temp dir
-	build.Dir = root
-	output, err := build.CombinedOutput()
-	require.NoError(t, err, string(output))
+	bin := buildTestBinary(t)
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v1.0.0"}, nil)
 	session, err := client.Connect(context.Background(), &mcp.CommandTransport{
@@ -57,15 +83,7 @@ func TestMCPCommand_StdioRoundTripWithConfigFile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-	wd, err := os.Getwd()
-	require.NoError(t, err)
-	root := filepath.Dir(wd)
-	bin := filepath.Join(t.TempDir(), "elps")
-
-	build := exec.Command("go", "build", "-o", bin, ".") //nolint:gosec // test builds local binary in temp dir
-	build.Dir = root
-	output, err := build.CombinedOutput()
-	require.NoError(t, err, string(output))
+	bin := buildTestBinary(t)
 
 	home := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".elps.yaml"), []byte("color: never\n"), 0o600))
@@ -86,15 +104,7 @@ func TestMCPCommand_ProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-	wd, err := os.Getwd()
-	require.NoError(t, err)
-	root := filepath.Dir(wd)
-	bin := filepath.Join(t.TempDir(), "elps")
-
-	build := exec.Command("go", "build", "-o", bin, ".") //nolint:gosec // test builds local binary in temp dir
-	build.Dir = root
-	output, err := build.CombinedOutput()
-	require.NoError(t, err, string(output))
+	bin := buildTestBinary(t)
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v1.0.0"}, nil)
 	session, err := client.Connect(context.Background(), &mcp.CommandTransport{

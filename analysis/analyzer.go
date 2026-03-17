@@ -270,20 +270,8 @@ func (a *analyzer) prescanInPackage(expr *lisp.LVal, scope *Scope) {
 }
 
 // extractPackageName gets the package name from the first arg of use-package
-// or in-package. Handles both quoted symbols ('testing) and strings ("testing").
-func extractPackageName(arg *lisp.LVal) string {
-	if arg.Type == lisp.LString {
-		return arg.Str
-	}
-	if arg.Type == lisp.LSymbol {
-		return arg.Str
-	}
-	// Quoted symbol: 'testing → LSExpr{Quoted: true, Cells: [LSymbol{testing}]}
-	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
-		return arg.Cells[0].Str
-	}
-	return ""
-}
+// or in-package.
+var extractPackageName = astutil.PackageNameArg
 
 // extractSetSymbolName extracts the symbol name from the first arg of set.
 // Handles both (set 'name value) and (set name value).

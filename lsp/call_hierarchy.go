@@ -3,10 +3,7 @@
 package lsp
 
 import (
-	"strings"
-
 	"github.com/luthersystems/elps/analysis"
-	"github.com/luthersystems/elps/lisp"
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 )
@@ -324,24 +321,7 @@ func findFunctionScope(root *analysis.Scope, data *callHierarchyData) *analysis.
 }
 
 func parentSymbols(scope *analysis.Scope, name string) []*analysis.Symbol {
-	var out []*analysis.Symbol
-	seen := make(map[*analysis.Symbol]bool)
-	if sym, ok := scope.Symbols[name]; ok {
-		seen[sym] = true
-		out = append(out, sym)
-	}
-	if sym, ok := scope.PackageSymbols[lisp.DefaultUserPackage+":"+name]; ok && !seen[sym] {
-		seen[sym] = true
-		out = append(out, sym)
-	}
-	for key, sym := range scope.PackageSymbols {
-		if !strings.HasSuffix(key, ":"+name) || seen[sym] {
-			continue
-		}
-		seen[sym] = true
-		out = append(out, sym)
-	}
-	return out
+	return scope.LookupAllLocal(name)
 }
 
 // decodeCallHierarchyData decodes the data field from a CallHierarchyItem.
@@ -380,6 +360,9 @@ func decodeCallHierarchyData(data any) *callHierarchyData {
 	}
 }
 
+// symbolMatchesCallHierarchyData matches a symbol against call hierarchy identity.
+// Returns false for builtins (Source == nil) — call hierarchy is not meaningful
+// for built-in functions since they have no source location to navigate to.
 func symbolMatchesCallHierarchyData(sym *analysis.Symbol, data *callHierarchyData) bool {
 	if sym == nil || data == nil || sym.Name != data.Name {
 		return false

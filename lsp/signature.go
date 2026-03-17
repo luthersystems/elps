@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
@@ -411,18 +412,7 @@ func packageAtLine(ast []*lisp.LVal, line int) string {
 	return pkg
 }
 
-func packageNameArg(arg *lisp.LVal) string {
-	if arg == nil {
-		return ""
-	}
-	if arg.Type == lisp.LString || arg.Type == lisp.LSymbol {
-		return arg.Str
-	}
-	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
-		return arg.Cells[0].Str
-	}
-	return ""
-}
+var packageNameArg = astutil.PackageNameArg
 
 // buildSignatureHelp constructs an LSP SignatureHelp from a symbol and
 // active argument index.
