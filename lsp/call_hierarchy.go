@@ -4,8 +4,10 @@ package lsp
 
 import (
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/lisp"
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
+	"strings"
 )
 
 // callHierarchyData is stored in CallHierarchyItem.Data to carry context
@@ -297,12 +299,13 @@ func findFunctionScope(root *analysis.Scope, name string) *analysis.Scope {
 	// Look for a ScopeFunction child whose parent has the named symbol.
 	for _, child := range root.Children {
 		if child.Kind == analysis.ScopeFunction {
-			if sym, ok := root.Symbols[name]; ok {
-				if sym.Kind == analysis.SymFunction || sym.Kind == analysis.SymMacro {
-					if child.Node != nil && sym.Source != nil &&
-						child.Node.Source != nil && child.Node.Source.Line == sym.Source.Line {
-						return child
-					}
+			for _, sym := range parentSymbols(root, name) {
+				if sym.Kind != analysis.SymFunction && sym.Kind != analysis.SymMacro {
+					continue
+				}
+				if child.Node != nil && sym.Source != nil &&
+					child.Node.Source != nil && child.Node.Source.Line == sym.Source.Line {
+					return child
 				}
 			}
 		}
@@ -312,6 +315,27 @@ func findFunctionScope(root *analysis.Scope, name string) *analysis.Scope {
 		}
 	}
 	return nil
+}
+
+func parentSymbols(scope *analysis.Scope, name string) []*analysis.Symbol {
+	var out []*analysis.Symbol
+	seen := make(map[*analysis.Symbol]bool)
+	if sym, ok := scope.Symbols[name]; ok {
+		seen[sym] = true
+		out = append(out, sym)
+	}
+	if sym, ok := scope.PackageSymbols[lisp.DefaultUserPackage+":"+name]; ok && !seen[sym] {
+		seen[sym] = true
+		out = append(out, sym)
+	}
+	for key, sym := range scope.PackageSymbols {
+		if !strings.HasSuffix(key, ":"+name) || seen[sym] {
+			continue
+		}
+		seen[sym] = true
+		out = append(out, sym)
+	}
+	return out
 }
 
 // decodeCallHierarchyData decodes the data field from a CallHierarchyItem.

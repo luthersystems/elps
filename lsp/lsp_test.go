@@ -2107,6 +2107,27 @@ func TestSignatureHelpQualifiedSymbol(t *testing.T) {
 		"active parameter should be 0 (first arg)")
 }
 
+func TestSignatureHelpInPackageLocalSymbol(t *testing.T) {
+	s := testServer()
+	content := `(in-package 'foo)
+(defun add (x y)
+  (+ x y))
+
+(add 1 `
+	openDoc(s, "file:///test.lisp", content)
+
+	result, err := s.textDocumentSignatureHelp(mockContext(), &protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 4, Character: 7},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "signature help should resolve local symbols in the active package")
+	require.Len(t, result.Signatures, 1)
+	assert.Contains(t, result.Signatures[0].Label, "add")
+}
+
 // TestEnclosingCallText tests the text-based parenthesis scanning fallback.
 func TestEnclosingCallText(t *testing.T) {
 	tests := []struct {

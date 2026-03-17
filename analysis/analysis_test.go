@@ -67,6 +67,16 @@ func TestScope_Shadowing(t *testing.T) {
 	assert.Same(t, parentSym, parent.Lookup("x"))
 }
 
+func TestScope_Define_PackageScopedNotBareVisible(t *testing.T) {
+	scope := NewScope(ScopeGlobal, nil, nil)
+	sym := &Symbol{Name: "run", Package: "foo", Kind: SymFunction}
+	scope.Define(sym)
+
+	assert.Nil(t, scope.LookupLocal("run"))
+	assert.Same(t, sym, scope.LookupLocalInPackage("run", "foo"))
+	assert.Nil(t, scope.LookupInPackage("run", "bar"))
+}
+
 // --- Signature tests ---
 
 func TestSignature_MinMaxArity(t *testing.T) {
@@ -840,6 +850,114 @@ func TestAnalyze_InPackage_PrefersCurrentPackageDefinition(t *testing.T) {
 	require.NotNil(t, barRef, "expected run reference inside use-bar")
 	assert.Equal(t, "foo", fooRef.Symbol.Package)
 	assert.Equal(t, "bar", barRef.Symbol.Package)
+}
+
+func TestAnalyze_InPackage_DoesNotLeakUnqualifiedAcrossPackages(t *testing.T) {
+	result := parseAndAnalyzeWithConfig(t, `(in-package 'foo)
+(defun run () 1)
+(in-package 'bar)
+(run)`, &Config{})
+
+	require.Len(t, result.Unresolved, 1)
+	assert.Equal(t, "run", result.Unresolved[0].Name)
+}
+
+func TestAnalyze_UsePackage_DoesNotBlockSamePackageDefinition(t *testing.T) {
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"bar": {
+				{Name: "run", Kind: SymFunction, Package: "bar"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, `(in-package 'foo)
+(use-package 'bar)
+(defun run () 1)
+(run)`, cfg)
+
+	require.Len(t, result.References, 1)
+	assert.Equal(t, "foo", result.References[0].Symbol.Package)
+	assert.Equal(t, "run", result.References[0].Symbol.Name)
+}
+
+func TestAnalyze_UsePackage_DoesNotLeakAcrossLaterInPackage(t *testing.T) {
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"bar": {
+				{Name: "run", Kind: SymFunction, Package: "bar"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, `(in-package 'foo)
+(use-package 'bar)
+(run)
+(in-package 'baz)
+(run)`, cfg)
+
+	require.Len(t, result.References, 1)
+	assert.Equal(t, "bar", result.References[0].Symbol.Package)
+	require.Len(t, result.Unresolved, 1)
+	assert.Equal(t, "run", result.Unresolved[0].Name)
+	assert.Equal(t, 5, result.Unresolved[0].Source.Line)
+}
+
+func TestAnalyze_UsePackage_ConflictingImportsStayPackageLocal(t *testing.T) {
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"bar": {
+				{Name: "run", Kind: SymFunction, Package: "bar"},
+			},
+			"qux": {
+				{Name: "run", Kind: SymFunction, Package: "qux"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, `(in-package 'foo)
+(use-package 'bar)
+(run)
+(in-package 'baz)
+(use-package 'qux)
+(run)`, cfg)
+
+	require.Len(t, result.References, 2)
+	var fooRef *Reference
+	var bazRef *Reference
+	for _, ref := range result.References {
+		if ref.Source == nil || ref.Symbol == nil || ref.Symbol.Name != "run" {
+			continue
+		}
+		switch ref.Source.Line {
+		case 3:
+			fooRef = ref
+		case 6:
+			bazRef = ref
+		}
+	}
+	require.NotNil(t, fooRef)
+	require.NotNil(t, bazRef)
+	assert.Equal(t, "bar", fooRef.Symbol.Package)
+	assert.Equal(t, "qux", bazRef.Symbol.Package)
+}
+
+func TestAnalyze_InPackage_ImportsCurrentPackageExportsLocally(t *testing.T) {
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"foo": {
+				{Name: "run", Kind: SymFunction, Package: "foo"},
+			},
+			"bar": {
+				{Name: "run", Kind: SymFunction, Package: "bar"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, `(in-package 'foo)
+(run)
+(in-package 'bar)
+(run)`, cfg)
+
+	require.Len(t, result.References, 2)
+	assert.Equal(t, "foo", result.References[0].Symbol.Package)
+	assert.Equal(t, "bar", result.References[1].Symbol.Package)
 }
 
 // --- Analyze: def prefix heuristic ---

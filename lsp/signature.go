@@ -56,8 +56,10 @@ func (s *Server) textDocumentSignatureHelp(_ *glsp.Context, params *protocol.Sig
 	}
 
 	// Strategy 3a: scope-based lookup.
+	currentPkg := packageAtLine(ast, line+1)
+
 	if docAnalysis != nil {
-		sym := lookupCallable(docAnalysis, name)
+		sym := lookupCallable(docAnalysis, name, currentPkg)
 		if sym != nil && sym.Signature != nil {
 			return buildSignatureHelp(sym, argIdx), nil
 		}
@@ -375,11 +377,11 @@ func computeArgIndex(node *lisp.LVal, line, col int) int {
 
 // lookupCallable finds a callable symbol by name in the analysis result.
 // It searches the scope chain from the root scope.
-func lookupCallable(result *analysis.Result, name string) *analysis.Symbol {
+func lookupCallable(result *analysis.Result, name, currentPkg string) *analysis.Symbol {
 	if result == nil || result.RootScope == nil {
 		return nil
 	}
-	sym := result.RootScope.Lookup(name)
+	sym := result.RootScope.LookupInPackage(name, currentPkg)
 	if sym == nil {
 		return nil
 	}
@@ -387,6 +389,39 @@ func lookupCallable(result *analysis.Result, name string) *analysis.Symbol {
 		return nil
 	}
 	return sym
+}
+
+func packageAtLine(ast []*lisp.LVal, line int) string {
+	pkg := lisp.DefaultUserPackage
+	for _, expr := range ast {
+		if expr == nil || expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+			continue
+		}
+		if expr.Source != nil && expr.Source.Line > line {
+			break
+		}
+		head := expr.Cells[0]
+		if head.Type != lisp.LSymbol || head.Str != "in-package" || len(expr.Cells) < 2 {
+			continue
+		}
+		if name := packageNameArg(expr.Cells[1]); name != "" {
+			pkg = name
+		}
+	}
+	return pkg
+}
+
+func packageNameArg(arg *lisp.LVal) string {
+	if arg == nil {
+		return ""
+	}
+	if arg.Type == lisp.LString || arg.Type == lisp.LSymbol {
+		return arg.Str
+	}
+	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+		return arg.Cells[0].Str
+	}
+	return ""
 }
 
 // buildSignatureHelp constructs an LSP SignatureHelp from a symbol and

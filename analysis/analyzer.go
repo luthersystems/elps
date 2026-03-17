@@ -39,7 +39,7 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 		case "set":
 			a.prescanSet(expr, scope, currentPkg)
 		case "use-package":
-			a.prescanUsePackage(expr, scope)
+			a.prescanUsePackage(expr, scope, currentPkg)
 		case "in-package":
 			if astutil.ArgCount(expr) >= 1 {
 				if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
@@ -196,7 +196,7 @@ func (a *analyzer) prescanExport(expr *lisp.LVal, scope *Scope, pkg string) {
 	}
 }
 
-func (a *analyzer) prescanUsePackage(expr *lisp.LVal, scope *Scope) {
+func (a *analyzer) prescanUsePackage(expr *lisp.LVal, scope *Scope, currentPkg string) {
 	if a.cfg == nil || a.cfg.PackageExports == nil {
 		return
 	}
@@ -213,7 +213,7 @@ func (a *analyzer) prescanUsePackage(expr *lisp.LVal, scope *Scope) {
 	}
 	for _, ext := range syms {
 		// Don't overwrite locally defined symbols
-		if scope.LookupLocal(ext.Name) != nil {
+		if scope.LookupLocalVisible(ext.Name, currentPkg) != nil {
 			continue
 		}
 		sym := &Symbol{
@@ -226,7 +226,7 @@ func (a *analyzer) prescanUsePackage(expr *lisp.LVal, scope *Scope) {
 			Exported:  true,
 			External:  true,
 		}
-		scope.Define(sym)
+		scope.DefineImported(sym, currentPkg)
 	}
 }
 
@@ -251,7 +251,7 @@ func (a *analyzer) prescanInPackage(expr *lisp.LVal, scope *Scope) {
 			continue
 		}
 		for _, ext := range syms {
-			if scope.LookupLocal(ext.Name) != nil {
+			if scope.LookupLocalVisible(ext.Name, pkgName) != nil {
 				continue
 			}
 			sym := &Symbol{
@@ -264,7 +264,7 @@ func (a *analyzer) prescanInPackage(expr *lisp.LVal, scope *Scope) {
 				Exported:  true,
 				External:  true,
 			}
-			scope.Define(sym)
+			scope.DefineImported(sym, pkgName)
 		}
 	}
 }
@@ -397,13 +397,15 @@ func (a *analyzer) analyzeDefun(node *lisp.LVal, scope *Scope, kind SymbolKind, 
 	// Prescan handles top-level definitions; this covers nested defun/defmacro
 	// (e.g. inside test bodies, progn, when, etc.).
 	nameVal := node.Cells[1]
-	if nameVal.Type == lisp.LSymbol && scope.LookupLocal(nameVal.Str) == nil {
+	defPkg := packageForScope(scope, currentPkg)
+	if nameVal.Type == lisp.LSymbol && scope.LookupLocalInPackage(nameVal.Str, defPkg) == nil {
 		formalsForSig := node.Cells[2]
 		sym := &Symbol{
-			Name:   nameVal.Str,
-			Kind:   kind,
-			Source: nameVal.Source,
-			Node:   nameVal,
+			Name:    nameVal.Str,
+			Package: defPkg,
+			Kind:    kind,
+			Source:  nameVal.Source,
+			Node:    nameVal,
 		}
 		if formalsForSig.Type == lisp.LSExpr {
 			sym.Signature = signatureFromFormals(formalsForSig)
@@ -446,12 +448,14 @@ func (a *analyzer) analyzeDeftype(node *lisp.LVal, scope *Scope, currentPkg stri
 	nameVal := node.Cells[1]
 	// Register the type name in scope (prescan handles top-level; this
 	// covers non-top-level deftype like inside test bodies).
-	if nameVal.Type == lisp.LSymbol && scope.LookupLocal(nameVal.Str) == nil {
+	defPkg := packageForScope(scope, currentPkg)
+	if nameVal.Type == lisp.LSymbol && scope.LookupLocalInPackage(nameVal.Str, defPkg) == nil {
 		sym := &Symbol{
-			Name:   nameVal.Str,
-			Kind:   SymType,
-			Source: nameVal.Source,
-			Node:   nameVal,
+			Name:    nameVal.Str,
+			Package: defPkg,
+			Kind:    SymType,
+			Source:  nameVal.Source,
+			Node:    nameVal,
 		}
 		scope.Define(sym)
 		a.result.Symbols = append(a.result.Symbols, sym)
@@ -478,11 +482,13 @@ func (a *analyzer) analyzeStringDeftype(node *lisp.LVal, scope *Scope, currentPk
 		return
 	}
 	// Register the string value as a variable in the enclosing scope.
+	defPkg := packageForScope(scope, currentPkg)
 	sym := &Symbol{
-		Name:   nameVal.Str,
-		Kind:   SymVariable,
-		Source: nameVal.Source,
-		Node:   nameVal,
+		Name:    nameVal.Str,
+		Package: defPkg,
+		Kind:    SymVariable,
+		Source:  nameVal.Source,
+		Node:    nameVal,
 	}
 	scope.Define(sym)
 	a.result.Symbols = append(a.result.Symbols, sym)
@@ -520,7 +526,8 @@ func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope, currentPkg stri
 		!node.Cells[match.nameIdx].Quoted {
 		nameIdx = match.nameIdx
 		nameVal := node.Cells[match.nameIdx]
-		if scope.LookupLocal(nameVal.Str) == nil {
+		defPkg := packageForScope(scope, currentPkg)
+		if scope.LookupLocalInPackage(nameVal.Str, defPkg) == nil {
 			kind := match.nameKind
 			if kind != SymVariable &&
 				kind != SymFunction &&
@@ -529,10 +536,11 @@ func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope, currentPkg stri
 				kind = SymFunction
 			}
 			sym := &Symbol{
-				Name:   nameVal.Str,
-				Kind:   kind,
-				Source: nameVal.Source,
-				Node:   nameVal,
+				Name:    nameVal.Str,
+				Package: defPkg,
+				Kind:    kind,
+				Source:  nameVal.Source,
+				Node:    nameVal,
 			}
 			scope.Define(sym)
 			a.result.Symbols = append(a.result.Symbols, sym)
@@ -929,16 +937,25 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 		return
 	}
 	// If not already defined at top level, define it
-	if scope.LookupLocal(name) == nil {
+	defPkg := packageForScope(scope, currentPkg)
+	if scope.LookupLocalInPackage(name, defPkg) == nil {
 		sym := &Symbol{
-			Name:   name,
-			Kind:   SymVariable,
-			Source: node.Cells[1].Source,
-			Node:   extractSetSymbolNode(node.Cells[1]),
+			Name:    name,
+			Package: defPkg,
+			Kind:    SymVariable,
+			Source:  node.Cells[1].Source,
+			Node:    extractSetSymbolNode(node.Cells[1]),
 		}
 		scope.Define(sym)
 		a.result.Symbols = append(a.result.Symbols, sym)
 	}
+}
+
+func packageForScope(scope *Scope, currentPkg string) string {
+	if scope != nil && scope.Kind == ScopeGlobal {
+		return currentPkg
+	}
+	return ""
 }
 
 func (a *analyzer) analyzeSetBang(node *lisp.LVal, scope *Scope, currentPkg string) {
@@ -1168,7 +1185,7 @@ func (a *analyzer) resolveQualifiedSymbol(node *lisp.LVal, scope *Scope, pkgName
 	}
 
 	// Reuse an imported symbol only when it matches the requested package.
-	sym := scope.Lookup(symName)
+	sym := scope.LookupInPackage(symName, pkgName)
 	if sym != nil && (sym.Package != ext.Package || sym.Kind != ext.Kind) {
 		sym = nil
 	}

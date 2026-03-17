@@ -62,6 +62,7 @@ func (s *Server) textDocumentInlayHint(params *InlayHintParams) ([]InlayHint, er
 
 	ctx := &hintContext{
 		analysis:  docAnalysis,
+		ast:       ast,
 		server:    s,
 		startLine: startLine,
 		startCol:  startCol,
@@ -79,6 +80,7 @@ func (s *Server) textDocumentInlayHint(params *InlayHintParams) ([]InlayHint, er
 // hintContext carries state through the AST walk.
 type hintContext struct {
 	analysis  *analysis.Result
+	ast       []*lisp.LVal
 	server    *Server
 	startLine int
 	startCol  int
@@ -120,7 +122,8 @@ func processCallNode(ctx *hintContext, node *lisp.LVal, name string) {
 	}
 
 	// Look up the callable's signature.
-	sig := lookupSignature(ctx.analysis, ctx.server, name)
+	currentPkg := packageAtLine(ctx.ast, node.Source.Line)
+	sig := lookupSignature(ctx.analysis, ctx.server, name, currentPkg)
 	if sig == nil {
 		return
 	}
@@ -138,8 +141,8 @@ func processCallNode(ctx *hintContext, node *lisp.LVal, name string) {
 // Only returns signatures for functions and builtins — special operators
 // and macros have non-standard argument semantics that would produce
 // misleading hints (e.g., defun's "name" and "formals" params).
-func lookupSignature(result *analysis.Result, s *Server, name string) *analysis.Signature {
-	sym := lookupCallable(result, name)
+func lookupSignature(result *analysis.Result, s *Server, name, currentPkg string) *analysis.Signature {
+	sym := lookupCallable(result, name, currentPkg)
 	if sym != nil && hintableKind(sym.Kind) {
 		return sym.Signature
 	}
