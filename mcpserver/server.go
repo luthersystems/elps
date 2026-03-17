@@ -137,6 +137,10 @@ func (s *Server) registerTool(name, description string) {
 	s.tools = append(s.tools, ToolDescriptor{Name: name, Description: description})
 }
 
+// syncToolDescriptors rebuilds the tools list by introspecting the MCP
+// server. This is necessary because third-party registrars (WithToolRegistrar)
+// add tools directly to the mcp.Server without going through registerTool,
+// so the only way to capture the full tool list is to read it back.
 func (s *Server) syncToolDescriptors() error {
 	ctx := context.Background()
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()

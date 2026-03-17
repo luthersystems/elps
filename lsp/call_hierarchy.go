@@ -3,11 +3,12 @@
 package lsp
 
 import (
+	"strings"
+
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
-	"strings"
 )
 
 // callHierarchyData is stored in CallHierarchyItem.Data to carry context

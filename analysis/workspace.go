@@ -222,13 +222,9 @@ func ShouldSkipDir(name string) bool {
 	return false
 }
 
-// scanFile parses a single file and extracts top-level definitions and
-// export information. Returns nil if the file fails to parse.
+// scanFile parses a single file and extracts exported top-level definitions.
+// Returns nil if the file fails to parse.
 func scanFile(source []byte, filename string) []ExternalSymbol {
-	defs := scanFileDefinitions(source, filename)
-	if defs == nil {
-		return nil
-	}
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	p := rdparser.New(s)
 
@@ -237,6 +233,7 @@ func scanFile(source []byte, filename string) []ExternalSymbol {
 		return nil // skip files that fail to parse
 	}
 
+	defs := extractDefinitions(exprs)
 	exported := scanExportedDefinitionKeys(exprs)
 
 	var result []ExternalSymbol
@@ -248,6 +245,7 @@ func scanFile(source []byte, filename string) []ExternalSymbol {
 	return result
 }
 
+// scanFileDefinitions parses a file and extracts all top-level definitions.
 func scanFileDefinitions(source []byte, filename string) []ExternalSymbol {
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	p := rdparser.New(s)
@@ -257,6 +255,11 @@ func scanFileDefinitions(source []byte, filename string) []ExternalSymbol {
 		return nil // skip files that fail to parse
 	}
 
+	return extractDefinitions(exprs)
+}
+
+// extractDefinitions collects top-level definitions from pre-parsed expressions.
+func extractDefinitions(exprs []*lisp.LVal) []ExternalSymbol {
 	// Collect top-level definitions keyed by package-qualified name so
 	// multi-package files can define the same symbol in different packages.
 	defs := make(map[string]*ExternalSymbol)

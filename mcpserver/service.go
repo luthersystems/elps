@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -139,7 +140,7 @@ func (s *service) definitionTool(ctx context.Context, _ *mcp.CallToolRequest, in
 		return nil, DefinitionResponse{Found: true, Location: builtinLocationForSymbolWord(sym, word)}, nil
 	}
 
-	loc := locationFromSource(resolvePathAgainstRoot(sym.Source.File, s.rootForState(in.WorkspaceRoot, state), doc.Path), sym.Source, len(sym.Name))
+	loc := locationFromSource(resolvePathAgainstRoot(sym.Source.File, s.rootForState(in.WorkspaceRoot), doc.Path), sym.Source, len(sym.Name))
 	return nil, DefinitionResponse{Found: true, Location: loc}, nil
 }
 
@@ -159,14 +160,14 @@ func (s *service) referencesTool(ctx context.Context, _ *mcp.CallToolRequest, in
 
 	var refs []Location
 	if in.IncludeDeclaration && sym.Source != nil && sym.Source.Pos >= 0 {
-		refs = append(refs, *locationFromSource(resolvePathAgainstRoot(sym.Source.File, s.rootForState(in.WorkspaceRoot, state), doc.Path), sym.Source, len(sym.Name)))
+		refs = append(refs, *locationFromSource(resolvePathAgainstRoot(sym.Source.File, s.rootForState(in.WorkspaceRoot), doc.Path), sym.Source, len(sym.Name)))
 	}
 
 	for _, ref := range doc.Analysis.References {
 		if ref.Symbol != sym || ref.Source == nil {
 			continue
 		}
-		refs = append(refs, *locationFromSource(resolvePathAgainstRoot(ref.Source.File, s.rootForState(in.WorkspaceRoot, state), doc.Path), ref.Source, len(sym.Name)))
+		refs = append(refs, *locationFromSource(resolvePathAgainstRoot(ref.Source.File, s.rootForState(in.WorkspaceRoot), doc.Path), ref.Source, len(sym.Name)))
 	}
 
 	for _, wref := range getWorkspaceRefs(state, analysis.SymbolToKey(sym).String(), doc.Path) {
@@ -435,7 +436,7 @@ func (s *service) loadDocument(path string, content *string, workspaceRoot *stri
 	if err != nil {
 		return nil, nil, err
 	}
-	source, contentString, err := s.readSource(resolvedPath, content)
+	_, contentString, err := s.readSource(resolvedPath, content)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -452,13 +453,13 @@ func (s *service) loadDocument(path string, content *string, workspaceRoot *stri
 		Filename:       resolvedPath,
 		ExtraGlobals:   state.cfg.ExtraGlobals,
 		PackageExports: state.cfg.PackageExports,
+		DefForms:       state.cfg.DefForms,
 	}
 	var result *analysis.Result
 	if parsed.Exprs != nil {
 		result = analysis.Analyze(parsed.Exprs, cfg)
 	}
 
-	_ = source
 	return &document{
 		Path:        resolvedPath,
 		Content:     contentString,
@@ -488,6 +489,11 @@ func (s *service) workspace(root string) (*workspaceState, error) {
 	}
 	s.mu.RUnlock()
 
+	// NOTE: Between the RUnlock above and the Lock below, another goroutine
+	// may also build a workspace state for the same root. This is benign —
+	// buildWorkspaceState is pure and the last writer wins with an identical
+	// result. A full mutex around the build would serialize all workspace
+	// loads, which is worse than occasional duplicate work.
 	state, err := s.buildWorkspaceState(root, fingerprint, time.Now())
 	if err != nil {
 		return nil, err
@@ -591,7 +597,7 @@ func (s *service) resolvePath(path string, root string) (string, error) {
 	return filepath.Abs(path)
 }
 
-func (s *service) rootForState(workspaceRoot *string, _ *workspaceState) string {
+func (s *service) rootForState(workspaceRoot *string) string {
 	root, _ := s.resolveWorkspaceRoot(workspaceRoot, false)
 	return root
 }
@@ -782,24 +788,18 @@ type workspaceFile struct {
 
 func (s *service) collectWorkspaceFiles(root string, includeTests bool) ([]workspaceFile, error) {
 	var files []workspaceFile
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if s.logger != nil {
 				s.logger.Warn("skipping unreadable workspace path", "path", path, "error", err)
 			}
-			if info != nil && info.IsDir() {
+			if d != nil && d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if info == nil {
-			if s.logger != nil {
-				s.logger.Warn("skipping workspace path with missing file info", "path", path)
-			}
-			return nil
-		}
-		if info.IsDir() {
-			if analysis.ShouldSkipDir(info.Name()) {
+		if d.IsDir() {
+			if analysis.ShouldSkipDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -808,6 +808,13 @@ func (s *service) collectWorkspaceFiles(root string, includeTests bool) ([]works
 			return nil
 		}
 		if !includeTests && strings.HasSuffix(path, "_test.lisp") {
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			if s.logger != nil {
+				s.logger.Warn("skipping file with unreadable info", "path", path, "error", infoErr)
+			}
 			return nil
 		}
 		files = append(files, workspaceFile{
@@ -1363,9 +1370,3 @@ func mapCallGraph(graph *perf.CallGraph) CallGraphResponse {
 	return CallGraphResponse{Functions: functions, Edges: edges}
 }
 
-func max(v, floor int) int {
-	if v < floor {
-		return floor
-	}
-	return v
-}

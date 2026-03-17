@@ -43,7 +43,8 @@ type Scope struct {
 	Symbols        map[string]*Symbol
 	PackageSymbols map[string]*Symbol
 	PackageImports map[string]map[string]*Symbol
-	Node           *lisp.LVal // the AST node that introduced this scope
+	bareNameIndex  map[string]*Symbol // bare name → first PackageSymbols entry for O(1) lookup
+	Node           *lisp.LVal         // the AST node that introduced this scope
 }
 
 // NewScope creates a new scope of the given kind with the given parent.
@@ -54,6 +55,7 @@ func NewScope(kind ScopeKind, parent *Scope, node *lisp.LVal) *Scope {
 		Symbols:        make(map[string]*Symbol),
 		PackageSymbols: make(map[string]*Symbol),
 		PackageImports: make(map[string]map[string]*Symbol),
+		bareNameIndex:  make(map[string]*Symbol),
 		Node:           node,
 	}
 	if parent != nil {
@@ -67,6 +69,7 @@ func (s *Scope) Define(sym *Symbol) {
 	sym.Scope = s
 	if sym.Package != "" {
 		s.PackageSymbols[sym.Package+":"+sym.Name] = sym
+		s.bareNameIndex[sym.Name] = sym
 		return
 	}
 	s.Symbols[sym.Name] = sym
@@ -78,6 +81,7 @@ func (s *Scope) DefineImported(sym *Symbol, pkg string) {
 	sym.Scope = s
 	if sym.Package != "" {
 		s.PackageSymbols[sym.Package+":"+sym.Name] = sym
+		s.bareNameIndex[sym.Name] = sym
 	}
 	if pkg == "" {
 		s.Symbols[sym.Name] = sym
@@ -97,6 +101,7 @@ func (s *Scope) DefineQualifiedOnly(sym *Symbol) {
 		return
 	}
 	s.PackageSymbols[sym.Package+":"+sym.Name] = sym
+	s.bareNameIndex[sym.Name] = sym
 }
 
 // Lookup resolves a symbol by walking the parent chain.
@@ -125,16 +130,14 @@ func (s *Scope) LookupLocal(name string) *Symbol {
 // given bare name, regardless of package. This ensures callers that don't
 // know or specify a package can still find symbols defined in non-user packages.
 func (s *Scope) lookupAnyPackageSymbol(name string) *Symbol {
-	for _, sym := range s.PackageSymbols {
-		if sym.Name == name {
-			return sym
-		}
-	}
-	return nil
+	return s.bareNameIndex[name]
 }
 
 // LookupInPackage resolves a symbol by preferring a package-qualified match in
-// the current scope chain before falling back to a bare-name lookup.
+// the current scope chain before falling back to a bare-name lookup. The
+// bare-name fallback into Symbols is intentional: builtins and user-package
+// symbols are registered with Package == "" and must be reachable when no
+// qualified entry matches.
 func (s *Scope) LookupInPackage(name, pkg string) *Symbol {
 	for scope := s; scope != nil; scope = scope.Parent {
 		if pkg != "" {

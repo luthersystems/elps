@@ -1356,6 +1356,34 @@ func TestAnalyze_StringDeftype(t *testing.T) {
 	}
 }
 
+// --- LookupInPackage cross-package negative ---
+
+func TestScope_LookupInPackage_CrossPackageNegative(t *testing.T) {
+	// A symbol defined in package "math" should NOT be found when
+	// looking up in package "string" — the qualified key differs.
+	scope := NewScope(ScopeGlobal, nil, nil)
+	scope.Define(&Symbol{Name: "add", Package: "math", Kind: SymFunction})
+
+	// Correct package finds it.
+	assert.NotNil(t, scope.LookupInPackage("add", "math"))
+	// Wrong package does not.
+	assert.Nil(t, scope.LookupInPackage("add", "string"))
+}
+
+// --- DefineQualifiedOnly with Package == "" ---
+
+func TestScope_DefineQualifiedOnly_EmptyPackage(t *testing.T) {
+	// When Package is empty, DefineQualifiedOnly falls back to Symbols.
+	scope := NewScope(ScopeGlobal, nil, nil)
+	sym := &Symbol{Name: "x", Kind: SymVariable}
+	scope.DefineQualifiedOnly(sym)
+
+	// Should be reachable via bare Symbols lookup.
+	assert.Equal(t, sym, scope.Symbols["x"])
+	// Should NOT appear in PackageSymbols (no qualified key).
+	assert.Empty(t, scope.PackageSymbols)
+}
+
 // parseAndAnalyzeWithConfig is a test helper that parses source and runs
 // analysis with a custom Config.
 func parseAndAnalyzeWithConfig(t *testing.T, source string, cfg *Config) *Result {
