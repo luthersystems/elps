@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luthersystems/elps/analysis"
@@ -55,7 +56,7 @@ type workspaceState struct {
 	symbols     []analysis.ExternalSymbol
 	refs        map[string][]analysis.FileReference
 	fingerprint string
-	validatedAt time.Time
+	validatedAt atomic.Int64 // UnixNano timestamp; atomic to avoid races between readers and markWorkspaceValidated
 }
 
 type document struct {
@@ -469,6 +470,10 @@ func (s *service) loadDocument(path string, content *string, workspaceRoot *stri
 }
 
 func (s *service) workspace(root string) (*workspaceState, error) {
+	if root == "" {
+		return s.buildWorkspaceState("", "", time.Now())
+	}
+
 	s.mu.RLock()
 	cached, ok := s.workspaces[root]
 	s.mu.RUnlock()
@@ -511,8 +516,8 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 	state := &workspaceState{
 		cfg:         &analysis.Config{},
 		fingerprint: fingerprint,
-		validatedAt: validatedAt,
 	}
+	state.validatedAt.Store(validatedAt.UnixNano())
 	if root != "" {
 		globals, pkgs, err := analysis.ScanWorkspaceFull(root)
 		if err != nil {
@@ -630,7 +635,7 @@ func (s *service) listPerfWorkspaceFiles(root string, cfg *perf.Config, includeT
 		return nil, err
 	}
 	excludes := perfExcludePatterns(cfg, includeTests)
-	filtered := paths[:0]
+	filtered := make([]string, 0, len(paths))
 	for _, path := range paths {
 		if shouldExcludePerfPath(root, path, excludes) {
 			continue
@@ -854,7 +859,8 @@ func (s *service) shouldValidateWorkspace(state *workspaceState) bool {
 	if interval <= 0 {
 		return true
 	}
-	return time.Since(state.validatedAt) >= interval
+	validated := time.Unix(0, state.validatedAt.Load())
+	return time.Since(validated) >= interval
 }
 
 func (s *service) fingerprintWorkspace(root string) (string, error) {
@@ -865,10 +871,11 @@ func (s *service) fingerprintWorkspace(root string) (string, error) {
 }
 
 func (s *service) markWorkspaceValidated(root string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if state, ok := s.workspaces[root]; ok {
-		state.validatedAt = time.Now()
+	s.mu.RLock()
+	state, ok := s.workspaces[root]
+	s.mu.RUnlock()
+	if ok {
+		state.validatedAt.Store(time.Now().UnixNano())
 	}
 }
 
@@ -1153,7 +1160,6 @@ func symbolLocation(sym *analysis.Symbol, currentPath string, state *workspaceSt
 	if path == "" {
 		path = currentPath
 	}
-	_ = state
 	return locationFromSource(path, sym.Source, len(sym.Name))
 }
 

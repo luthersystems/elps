@@ -43,7 +43,7 @@ type Scope struct {
 	Symbols        map[string]*Symbol
 	PackageSymbols map[string]*Symbol
 	PackageImports map[string]map[string]*Symbol
-	bareNameIndex  map[string]*Symbol // bare name → first PackageSymbols entry for O(1) lookup
+	bareNameIndex  map[string]*Symbol // bare name → an arbitrary PackageSymbols entry for O(1) existence checks. When multiple packages define the same bare name, one wins non-deterministically.
 	Node           *lisp.LVal         // the AST node that introduced this scope
 }
 
@@ -93,7 +93,10 @@ func (s *Scope) DefineImported(sym *Symbol, pkg string) {
 	s.PackageImports[pkg][sym.Name] = sym
 }
 
-// DefineQualifiedOnly adds a package-qualified symbol without exposing a bare-name alias.
+// DefineQualifiedOnly adds a package-qualified symbol without adding it to the
+// bare-name Symbols map. The symbol is still reachable through Lookup/LookupLocal
+// via the bareNameIndex for package-agnostic callers (e.g., minifier, lint arity
+// checker).
 func (s *Scope) DefineQualifiedOnly(sym *Symbol) {
 	sym.Scope = s
 	if sym.Package == "" {
@@ -138,6 +141,10 @@ func (s *Scope) lookupAnyPackageSymbol(name string) *Symbol {
 // bare-name fallback into Symbols is intentional: builtins and user-package
 // symbols are registered with Package == "" and must be reachable when no
 // qualified entry matches.
+//
+// Unlike Lookup, LookupInPackage does not consult bareNameIndex — a symbol
+// registered only via DefineQualifiedOnly is invisible to LookupInPackage
+// unless the correct package is specified.
 func (s *Scope) LookupInPackage(name, pkg string) *Symbol {
 	for scope := s; scope != nil; scope = scope.Parent {
 		if pkg != "" {

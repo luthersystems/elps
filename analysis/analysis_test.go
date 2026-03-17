@@ -1384,6 +1384,53 @@ func TestScope_DefineQualifiedOnly_EmptyPackage(t *testing.T) {
 	assert.Empty(t, scope.PackageSymbols)
 }
 
+// --- P1-1: DefineQualifiedOnly reachable via Lookup ---
+
+func TestScope_DefineQualifiedOnly_ReachableViaLookup(t *testing.T) {
+	scope := NewScope(ScopeGlobal, nil, nil)
+	sym := &Symbol{Name: "run", Package: "foo", Kind: SymFunction}
+	scope.DefineQualifiedOnly(sym)
+
+	// Lookup (package-agnostic) finds it via bareNameIndex.
+	assert.Same(t, sym, scope.Lookup("run"))
+	// But it is NOT in the bare-name Symbols map.
+	assert.Nil(t, scope.Symbols["run"])
+	// Package-qualified lookup works.
+	assert.Same(t, sym, scope.LookupInPackage("run", "foo"))
+}
+
+// --- P1-2: bareNameIndex cross-package collision ---
+
+func TestScope_BareNameIndex_CrossPackageCollision(t *testing.T) {
+	scope := NewScope(ScopeGlobal, nil, nil)
+	fooRun := &Symbol{Name: "run", Package: "foo", Kind: SymFunction}
+	barRun := &Symbol{Name: "run", Package: "bar", Kind: SymFunction}
+	scope.DefineQualifiedOnly(fooRun)
+	scope.DefineQualifiedOnly(barRun)
+
+	// lookupAnyPackageSymbol returns one of them (not nil).
+	got := scope.lookupAnyPackageSymbol("run")
+	assert.NotNil(t, got)
+	assert.Equal(t, "run", got.Name)
+
+	// Both qualified lookups still work.
+	assert.Same(t, fooRun, scope.LookupInPackage("run", "foo"))
+	assert.Same(t, barRun, scope.LookupInPackage("run", "bar"))
+}
+
+// --- P2-9: LookupInPackage does not use bareNameIndex ---
+
+func TestScope_LookupInPackage_DoesNotUseBareNameIndex(t *testing.T) {
+	scope := NewScope(ScopeGlobal, nil, nil)
+	sym := &Symbol{Name: "run", Package: "foo", Kind: SymFunction}
+	scope.DefineQualifiedOnly(sym)
+
+	// LookupInPackage with wrong package returns nil — no bareNameIndex fallback.
+	assert.Nil(t, scope.LookupInPackage("run", "bar"))
+	// But package-agnostic Lookup succeeds.
+	assert.Same(t, sym, scope.Lookup("run"))
+}
+
 // parseAndAnalyzeWithConfig is a test helper that parses source and runs
 // analysis with a custom Config.
 func parseAndAnalyzeWithConfig(t *testing.T, source string, cfg *Config) *Result {

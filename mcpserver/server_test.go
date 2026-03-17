@@ -117,8 +117,8 @@ func TestWorkspaceSymbolsExcludeStdlibExports(t *testing.T) {
 			},
 		},
 		fingerprint: fingerprint,
-		validatedAt: time.Now(),
 	}
+	srv.service.workspaces[tmp].validatedAt.Store(time.Now().UnixNano())
 
 	_, join, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
 		WorkspaceRoot: &tmp,
@@ -593,6 +593,70 @@ func decodeStructured[T any](t *testing.T, res *mcp.CallToolResult) T {
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal(data, &out))
 	return out
+}
+
+func TestListPerfWorkspaceFiles_DoesNotMutateInput(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "a.lisp"), "(defun a () 1)")
+	writeTestFile(t, filepath.Join(tmp, "b_test.lisp"), "(defun b () 2)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	paths, err := srv.service.listWorkspaceFiles(tmp, true)
+	require.NoError(t, err)
+	original := make([]string, len(paths))
+	copy(original, paths)
+
+	cfg := &perf.Config{ExcludeFiles: []string{"*_test.lisp"}}
+	filtered, err := srv.service.listPerfWorkspaceFiles(tmp, cfg, false)
+	require.NoError(t, err)
+	require.NotEmpty(t, filtered)
+
+	// The original paths slice must not have been mutated.
+	assert.Equal(t, original, paths)
+}
+
+func TestWorkspaceEmptyRoot_NoFilesystemIO(t *testing.T) {
+	srv := New()
+	fingerprintCalled := false
+	srv.service.workspaceFingerprintHook = func(string) { fingerprintCalled = true }
+
+	state, err := srv.service.workspace("")
+	require.NoError(t, err)
+	assert.NotNil(t, state)
+	assert.NotNil(t, state.cfg)
+	assert.False(t, fingerprintCalled, "workspace fingerprinting should be skipped for empty root")
+}
+
+func TestWorkspaceValidationRaceSafety(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "lib.lisp"), "(defun lib () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+
+	// Prime the workspace cache.
+	_, err := srv.service.workspace(tmp)
+	require.NoError(t, err)
+
+	// Concurrently read and mark validated — should not race with -race flag.
+	done := make(chan struct{})
+	for i := 0; i < 10; i++ {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			for j := 0; j < 50; j++ {
+				_, _ = srv.service.workspace(tmp)
+			}
+		}()
+		go func() {
+			defer func() { done <- struct{}{} }()
+			for j := 0; j < 50; j++ {
+				srv.service.markWorkspaceValidated(tmp)
+			}
+		}()
+	}
+	for i := 0; i < 20; i++ {
+		<-done
+	}
 }
 
 func writeTestFile(t *testing.T, path, content string) {

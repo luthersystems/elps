@@ -118,19 +118,23 @@ func TestMCPCommand_ProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
 	assert.Equal(t, "join", got.SymbolName)
 }
 
+func withTestDocEnv(fn func() (*lisp.LEnv, error)) Option {
+	return func(c *cmdConfig) { c.newDocEnv = fn }
+}
+
+func withTestStdioRunner(fn func(context.Context, *mcpserver.Server) error) Option {
+	return func(c *cmdConfig) { c.runStdio = fn }
+}
+
 func TestMCPCommand_ReturnsBootstrapErrors(t *testing.T) {
-	origNewDocEnv := newMCPDocEnv
-	origRunMCPStdio := runMCPStdio
-	t.Cleanup(func() {
-		newMCPDocEnv = origNewDocEnv
-		runMCPStdio = origRunMCPStdio
-	})
-
-	newMCPDocEnv = func() (*lisp.LEnv, error) {
-		return nil, errors.New("boom")
-	}
-
-	cmd := MCPCommand()
+	cmd := MCPCommand(
+		withTestDocEnv(func() (*lisp.LEnv, error) {
+			return nil, errors.New("boom")
+		}),
+		withTestStdioRunner(func(context.Context, *mcpserver.Server) error {
+			return nil
+		}),
+	)
 	cmd.SetArgs(nil)
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -139,16 +143,11 @@ func TestMCPCommand_ReturnsBootstrapErrors(t *testing.T) {
 }
 
 func TestMCPCommand_ReturnsServerErrors(t *testing.T) {
-	origRunMCPStdio := runMCPStdio
-	t.Cleanup(func() {
-		runMCPStdio = origRunMCPStdio
-	})
-
-	runMCPStdio = func(context.Context, *mcpserver.Server) error {
-		return errors.New("stdio failed")
-	}
-
-	cmd := MCPCommand()
+	cmd := MCPCommand(
+		withTestStdioRunner(func(context.Context, *mcpserver.Server) error {
+			return errors.New("stdio failed")
+		}),
+	)
 	cmd.SetArgs(nil)
 	err := cmd.Execute()
 	require.Error(t, err)
