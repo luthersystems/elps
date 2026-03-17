@@ -741,7 +741,7 @@ func splitPath(path string) []string {
 		return nil
 	}
 	parts := strings.Split(path, "/")
-	out := parts[:0]
+	out := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if part == "" || part == "." {
 			continue

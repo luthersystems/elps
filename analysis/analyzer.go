@@ -1060,13 +1060,13 @@ func (a *analyzer) walkQuasiquoteTemplate(node *lisp.LVal, scope *Scope, current
 		return
 	}
 	// Quoted lists (bracket expressions [...]) in quasiquote templates can
-		// still contain (unquote ...) forms, so we must recurse into them.
-		if node.Quoted {
-			for _, child := range node.Cells {
-				a.walkQuasiquoteTemplate(child, scope, currentPkg)
-			}
-			return
+	// still contain (unquote ...) forms, so we must recurse into them.
+	if node.Quoted {
+		for _, child := range node.Cells {
+			a.walkQuasiquoteTemplate(child, scope, currentPkg)
 		}
+		return
+	}
 	head := astutil.HeadSymbol(node)
 	if head == "unquote" || head == "unquote-splicing" {
 		// The children of unquote/unquote-splicing are code, not template data.

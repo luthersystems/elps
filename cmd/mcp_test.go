@@ -21,8 +21,17 @@ import (
 var (
 	testBinOnce sync.Once
 	testBinPath string
+	testBinDir  string
 	testBinErr  error
 )
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if testBinDir != "" {
+		_ = os.RemoveAll(testBinDir)
+	}
+	os.Exit(code)
+}
 
 // buildTestBinary builds the elps binary once and reuses it across integration tests.
 func buildTestBinary(t *testing.T) string {
@@ -39,6 +48,7 @@ func buildTestBinary(t *testing.T) string {
 			testBinErr = err
 			return
 		}
+		testBinDir = dir
 		testBinPath = filepath.Join(dir, "elps")
 		build := exec.Command("go", "build", "-o", testBinPath, ".") //nolint:gosec // test builds local binary in temp dir
 		build.Dir = root

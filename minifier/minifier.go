@@ -866,18 +866,7 @@ func splitQualifiedSymbol(name string) (string, string, bool) {
 	return "", "", false
 }
 
-func packageNameArg(arg *lisp.LVal) string {
-	if arg == nil {
-		return ""
-	}
-	if arg.Type == lisp.LString || arg.Type == lisp.LSymbol {
-		return arg.Str
-	}
-	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
-		return arg.Cells[0].Str
-	}
-	return ""
-}
+var packageNameArg = astutil.PackageNameArg
 
 func findScopeForNode(scope *analysis.Scope, node *lisp.LVal) *analysis.Scope {
 	if scope == nil {
