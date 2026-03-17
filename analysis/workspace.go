@@ -23,12 +23,16 @@ const maxWorkspaceFiles = 5000
 
 // SymbolKey identifies a symbol across files by name and kind.
 type SymbolKey struct {
-	Name string
-	Kind SymbolKind
+	Package string
+	Name    string
+	Kind    SymbolKind
 }
 
 // String returns a lookup key for use in maps.
 func (k SymbolKey) String() string {
+	if k.Package != "" {
+		return fmt.Sprintf("%s:%s/%s", k.Package, k.Name, k.Kind)
+	}
 	return fmt.Sprintf("%s/%s", k.Name, k.Kind)
 }
 
@@ -36,10 +40,10 @@ func (k SymbolKey) String() string {
 type FileReference struct {
 	SymbolKey       SymbolKey
 	Source          *token.Location
-	File            string           // absolute path
-	Enclosing       string           // name of enclosing function ("" if top-level)
-	EnclosingSource *token.Location  // definition site of enclosing function
-	EnclosingKind   SymbolKind       // kind of enclosing function
+	File            string          // absolute path
+	Enclosing       string          // name of enclosing function ("" if top-level)
+	EnclosingSource *token.Location // definition site of enclosing function
+	EnclosingKind   SymbolKind      // kind of enclosing function
 }
 
 // ScanWorkspace walks a directory tree, parsing all .lisp files and
@@ -59,6 +63,14 @@ func ScanWorkspacePackages(root string) (map[string][]ExternalSymbol, error) {
 	return pkgs, err
 }
 
+// ScanWorkspaceDefinitions walks a directory tree and returns all top-level
+// definitions, including non-exported symbols. The result is intended for
+// workspace symbol search, not cross-file resolution.
+func ScanWorkspaceDefinitions(root string) ([]ExternalSymbol, error) {
+	_, _, allDefs, err := ScanWorkspaceAll(root)
+	return allDefs, err
+}
+
 // ScanWorkspaceFull walks a directory tree in a single pass, parsing all
 // .lisp files and extracting both global symbols and package exports.
 // It skips hidden directories (names starting with '.'), node_modules,
@@ -67,16 +79,25 @@ func ScanWorkspacePackages(root string) (map[string][]ExternalSymbol, error) {
 //
 // Files that fail to parse are silently skipped (fault tolerant).
 func ScanWorkspaceFull(root string) ([]ExternalSymbol, map[string][]ExternalSymbol, error) {
+	globals, pkgs, _, err := ScanWorkspaceAll(root)
+	return globals, pkgs, err
+}
+
+// ScanWorkspaceAll combines ScanWorkspaceFull and ScanWorkspaceDefinitions
+// into a single pass: each file is parsed once and all three results are
+// extracted from the same AST.
+func ScanWorkspaceAll(root string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, err error) {
 	// Phase 1: Collect file paths (sequential walk).
 	paths, err := collectLispFiles(root)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// Phase 2: Parse concurrently with bounded worker pool.
 	type fileResult struct {
 		globals []ExternalSymbol
 		pkgs    map[string][]ExternalSymbol
+		allDefs []ExternalSymbol
 	}
 
 	results := make([]fileResult, len(paths))
@@ -104,25 +125,23 @@ func ScanWorkspaceFull(root string) ([]ExternalSymbol, map[string][]ExternalSymb
 				if readErr != nil {
 					continue
 				}
-				results[i] = fileResult{
-					globals: scanFile(fileSrc, paths[i]),
-					pkgs:    scanFilePackages(fileSrc, paths[i]),
-				}
+				g, p, d := scanFileFull(fileSrc, paths[i])
+				results[i] = fileResult{globals: g, pkgs: p, allDefs: d}
 			}
 		}()
 	}
 	wg.Wait()
 
 	// Phase 3: Merge results.
-	var globals []ExternalSymbol
-	pkgs := make(map[string][]ExternalSymbol)
+	pkgs = make(map[string][]ExternalSymbol)
 	for _, r := range results {
 		globals = append(globals, r.globals...)
+		allDefs = append(allDefs, r.allDefs...)
 		for pkg, syms := range r.pkgs {
 			pkgs[pkg] = append(pkgs[pkg], syms...)
 		}
 	}
-	return globals, pkgs, nil
+	return globals, pkgs, allDefs, nil
 }
 
 // collectLispFiles walks the directory tree and collects .lisp file paths,
@@ -167,20 +186,35 @@ func ShouldSkipDir(name string) bool {
 	return false
 }
 
-// scanFile parses a single file and extracts top-level definitions and
-// export information. Returns nil if the file fails to parse.
-func scanFile(source []byte, filename string) []ExternalSymbol {
+// scanFileFull parses a file once and extracts exported globals, package-grouped
+// exports, and all definitions in a single pass.
+func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol) {
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	p := rdparser.New(s)
 
 	exprs, err := p.ParseProgram()
 	if err != nil {
-		return nil // skip files that fail to parse
+		return nil, nil, nil
 	}
 
-	// Collect top-level definitions
+	defs := extractDefinitions(exprs)
+	exported := scanExportedDefinitionKeys(exprs)
+
+	pkgs = make(map[string][]ExternalSymbol)
+	for _, sym := range defs {
+		if exported[definitionKey(sym.Package, sym.Name)] {
+			globals = append(globals, sym)
+			pkgs[sym.Package] = append(pkgs[sym.Package], sym)
+		}
+	}
+	return globals, pkgs, defs
+}
+
+// extractDefinitions collects top-level definitions from pre-parsed expressions.
+func extractDefinitions(exprs []*lisp.LVal) []ExternalSymbol {
+	// Collect top-level definitions keyed by package-qualified name so
+	// multi-package files can define the same symbol in different packages.
 	defs := make(map[string]*ExternalSymbol)
-	exported := make(map[string]bool)
 	currentPkg := "user" // default package
 
 	for _, expr := range exprs {
@@ -196,98 +230,56 @@ func scanFile(source []byte, filename string) []ExternalSymbol {
 		case "defun":
 			if sym := scanDefun(expr, SymFunction); sym != nil {
 				sym.Package = currentPkg
-				defs[sym.Name] = sym
+				defs[definitionKey(sym.Package, sym.Name)] = sym
 			}
 		case "defmacro":
 			if sym := scanDefun(expr, SymMacro); sym != nil {
 				sym.Package = currentPkg
-				defs[sym.Name] = sym
+				defs[definitionKey(sym.Package, sym.Name)] = sym
 			}
 		case "deftype":
 			if sym := scanDeftype(expr); sym != nil {
 				sym.Package = currentPkg
-				defs[sym.Name] = sym
+				defs[definitionKey(sym.Package, sym.Name)] = sym
 			}
 		case "set":
 			if sym := scanSet(expr); sym != nil {
 				sym.Package = currentPkg
-				defs[sym.Name] = sym
-			}
-		case "export":
-			for _, name := range scanExportNames(expr) {
-				exported[name] = true
+				defs[definitionKey(sym.Package, sym.Name)] = sym
 			}
 		}
 	}
 
-	// Only return definitions that appear in export forms
 	var result []ExternalSymbol
-	for name, sym := range defs {
-		if exported[name] {
-			result = append(result, *sym)
-		}
+	for _, sym := range defs {
+		result = append(result, *sym)
 	}
 	return result
 }
 
-// scanFilePackages is like scanFile but returns symbols grouped by package.
-func scanFilePackages(source []byte, filename string) map[string][]ExternalSymbol {
-	s := token.NewScanner(filename, bytes.NewReader(source))
-	p := rdparser.New(s)
+func definitionKey(pkg, name string) string {
+	return pkg + "\x00" + name
+}
 
-	exprs, err := p.ParseProgram()
-	if err != nil {
-		return nil
-	}
-
-	defs := make(map[string]*ExternalSymbol)
+func scanExportedDefinitionKeys(exprs []*lisp.LVal) map[string]bool {
 	exported := make(map[string]bool)
 	currentPkg := "user"
-
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
 			continue
 		}
-		head := astutil.HeadSymbol(expr)
-		switch head {
+		switch astutil.HeadSymbol(expr) {
 		case "in-package":
 			if name := scanPackageName(expr); name != "" {
 				currentPkg = name
 			}
-		case "defun":
-			if sym := scanDefun(expr, SymFunction); sym != nil {
-				sym.Package = currentPkg
-				defs[sym.Name] = sym
-			}
-		case "defmacro":
-			if sym := scanDefun(expr, SymMacro); sym != nil {
-				sym.Package = currentPkg
-				defs[sym.Name] = sym
-			}
-		case "deftype":
-			if sym := scanDeftype(expr); sym != nil {
-				sym.Package = currentPkg
-				defs[sym.Name] = sym
-			}
-		case "set":
-			if sym := scanSet(expr); sym != nil {
-				sym.Package = currentPkg
-				defs[sym.Name] = sym
-			}
 		case "export":
 			for _, name := range scanExportNames(expr) {
-				exported[name] = true
+				exported[definitionKey(currentPkg, name)] = true
 			}
 		}
 	}
-
-	result := make(map[string][]ExternalSymbol)
-	for name, sym := range defs {
-		if exported[name] {
-			result[sym.Package] = append(result[sym.Package], *sym)
-		}
-	}
-	return result
+	return exported
 }
 
 // scanPackageName extracts the package name from an in-package expression.
@@ -299,18 +291,7 @@ func scanPackageName(expr *lisp.LVal) string {
 }
 
 // extractPkgNameArg gets a package name from a use-package/in-package argument.
-func extractPkgNameArg(arg *lisp.LVal) string {
-	if arg.Type == lisp.LString {
-		return arg.Str
-	}
-	if arg.Type == lisp.LSymbol {
-		return arg.Str
-	}
-	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
-		return arg.Cells[0].Str
-	}
-	return ""
-}
+var extractPkgNameArg = astutil.PackageNameArg
 
 func scanDefun(expr *lisp.LVal, kind SymbolKind) *ExternalSymbol {
 	if astutil.ArgCount(expr) < 2 {
@@ -437,7 +418,11 @@ func ExtractFileRefs(result *Result, filePath string) []FileReference {
 			continue
 		}
 
-		key := SymbolKey{Name: ref.Symbol.Name, Kind: ref.Symbol.Kind}
+		key := SymbolKey{
+			Package: ref.Symbol.Package,
+			Name:    ref.Symbol.Name,
+			Kind:    ref.Symbol.Kind,
+		}
 		fref := FileReference{
 			SymbolKey: key,
 			Source:    ref.Source,
@@ -488,25 +473,59 @@ func FindEnclosingFunction(root *Scope, line, col int) *Symbol {
 		if scope.Kind == ScopeFunction {
 			if scope.Node != nil && scope.Node.Source != nil && scope.Parent != nil {
 				nodeLoc := scope.Node.Source
-				for _, sym := range scope.Parent.Symbols {
+				var found *Symbol
+				scope.Parent.forEachSymbol(func(sym *Symbol) bool {
 					if sym.Kind != SymFunction && sym.Kind != SymMacro {
-						continue
+						return true
 					}
 					// Skip external (imported) symbols — they belong to
 					// other files and may coincidentally share a line number.
 					if sym.External {
-						continue
+						return true
 					}
 					if sym.Source != nil && sym.Source.Line == nodeLoc.Line &&
 						sym.Source.File == nodeLoc.File {
-						return sym
+						found = sym
+						return false
 					}
+					return true
+				})
+				if found != nil {
+					return found
 				}
 			}
 		}
 		scope = scope.Parent
 	}
 	return nil
+}
+
+// forEachSymbol iterates over all unique symbols in this scope (both bare and
+// package-qualified) without allocating a slice. The callback receives each
+// symbol exactly once; return false to stop early.
+func (s *Scope) forEachSymbol(fn func(*Symbol) bool) {
+	if s == nil {
+		return
+	}
+	seen := make(map[*Symbol]bool, len(s.Symbols)+len(s.PackageSymbols))
+	for _, sym := range s.Symbols {
+		if sym == nil || seen[sym] {
+			continue
+		}
+		seen[sym] = true
+		if !fn(sym) {
+			return
+		}
+	}
+	for _, sym := range s.PackageSymbols {
+		if sym == nil || seen[sym] {
+			continue
+		}
+		seen[sym] = true
+		if !fn(sym) {
+			return
+		}
+	}
 }
 
 // ScopeAtPosition returns the innermost scope that contains the given
@@ -628,10 +647,7 @@ func ScanWorkspaceRefs(root string, cfg *Config) map[string][]FileReference {
 // SymbolToKey derives a SymbolKey from an analysis Symbol.
 func SymbolToKey(sym *Symbol) SymbolKey {
 	kind := sym.Kind
-	// Normalize macro kind to function for cross-file matching,
-	// since a defmacro in one file is referenced as a "function call" in another.
-	// Actually, keep them distinct — the kind is part of the identity.
-	return SymbolKey{Name: sym.Name, Kind: kind}
+	return SymbolKey{Package: sym.Package, Name: sym.Name, Kind: kind}
 }
 
 // SymbolKeyFromNameKind creates a SymbolKey from raw name and kind strings.

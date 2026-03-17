@@ -102,8 +102,9 @@ func (s *Server) scopeCompletions(doc *Document, line, col int, prefix string) [
 	elpsLine := line + 1
 	elpsCol := col + 1
 	scope := scopeAtPosition(doc.analysis.RootScope, elpsLine, elpsCol)
+	currentPkg := packageAtLine(doc.ast, elpsLine)
 
-	syms := collectVisibleSymbols(scope)
+	syms := collectVisibleSymbols(scope, currentPkg)
 
 	var items []protocol.CompletionItem
 	for _, sym := range syms {
@@ -147,4 +148,3 @@ func (s *Server) scopeCompletions(doc *Document, line, col int, prefix string) [
 
 	return items
 }
-

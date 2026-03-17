@@ -87,6 +87,68 @@ func TestScanWorkspace_SkipsParseErrors(t *testing.T) {
 	assert.True(t, names["good-fn"], "good file should still be scanned")
 }
 
+func TestScanWorkspaceDefinitions_KeepsSameNameAcrossPackages(t *testing.T) {
+	dir := t.TempDir()
+	err := os.WriteFile(filepath.Join(dir, "multi.lisp"), []byte(`
+(in-package 'foo)
+(defun helper () 1)
+(in-package 'bar)
+(defun helper () 2)
+`), 0600)
+	require.NoError(t, err)
+
+	syms, err := ScanWorkspaceDefinitions(dir)
+	require.NoError(t, err)
+	require.Len(t, syms, 2)
+
+	packages := map[string]bool{}
+	for _, sym := range syms {
+		if sym.Name == "helper" {
+			packages[sym.Package] = true
+		}
+	}
+	assert.True(t, packages["foo"])
+	assert.True(t, packages["bar"])
+}
+
+func TestScanWorkspace_DoesNotLeakNonExportedDefsAcrossPackages(t *testing.T) {
+	dir := t.TempDir()
+	err := os.WriteFile(filepath.Join(dir, "multi.lisp"), []byte(`
+(in-package 'foo)
+(defun helper () 1)
+(export 'helper)
+(in-package 'bar)
+(defun helper () 2)
+`), 0600)
+	require.NoError(t, err)
+
+	syms, err := ScanWorkspace(dir)
+	require.NoError(t, err)
+	require.Len(t, syms, 1)
+	assert.Equal(t, "helper", syms[0].Name)
+	assert.Equal(t, "foo", syms[0].Package)
+}
+
+func TestScanWorkspacePackages_UsesPackageQualifiedDefinitions(t *testing.T) {
+	dir := t.TempDir()
+	err := os.WriteFile(filepath.Join(dir, "multi.lisp"), []byte(`
+(in-package 'foo)
+(defun helper () 1)
+(export 'helper)
+(in-package 'bar)
+(defun helper () 2)
+`), 0600)
+	require.NoError(t, err)
+
+	pkgs, err := ScanWorkspacePackages(dir)
+	require.NoError(t, err)
+	require.Contains(t, pkgs, "foo")
+	require.Len(t, pkgs["foo"], 1)
+	assert.Equal(t, "helper", pkgs["foo"][0].Name)
+	assert.Equal(t, "foo", pkgs["foo"][0].Package)
+	assert.NotContains(t, pkgs, "bar")
+}
+
 func TestScanWorkspace_SkipsNonLisp(t *testing.T) {
 	dir := t.TempDir()
 
@@ -313,7 +375,7 @@ func TestScanWorkspaceRefs_CrossFile(t *testing.T) {
 	refs := ScanWorkspaceRefs(dir, cfg)
 
 	// There should be a reference to "helper" from file B.
-	helperKey := SymbolKey{Name: "helper", Kind: SymFunction}.String()
+	helperKey := SymbolKey{Package: "user", Name: "helper", Kind: SymFunction}.String()
 	helperRefs := refs[helperKey]
 	require.NotEmpty(t, helperRefs, "should have cross-file references to helper")
 
@@ -394,12 +456,42 @@ func TestFindEnclosingFunction(t *testing.T) {
 	})
 }
 
+func TestFindEnclosingFunction_MultiPackageSameName(t *testing.T) {
+	src := []byte(`(in-package 'foo)
+(defun caller () (+ 1 1))
+(defun use-foo () (caller))
+(in-package 'bar)
+(defun caller () (+ 2 2))
+(defun use-bar () (caller))
+`)
+	result := AnalyzeFile(src, "test.lisp", nil)
+	require.NotNil(t, result)
+	require.NotNil(t, result.RootScope)
+
+	t.Run("inside foo caller body", func(t *testing.T) {
+		enc := FindEnclosingFunction(result.RootScope, 2, 18)
+		require.NotNil(t, enc)
+		assert.Equal(t, "caller", enc.Name)
+		assert.Equal(t, "foo", enc.Package)
+	})
+
+	t.Run("inside bar caller body", func(t *testing.T) {
+		enc := FindEnclosingFunction(result.RootScope, 5, 18)
+		require.NotNil(t, enc)
+		assert.Equal(t, "caller", enc.Name)
+		assert.Equal(t, "bar", enc.Package)
+	})
+}
+
 func TestSymbolKey_String(t *testing.T) {
 	key := SymbolKey{Name: "helper", Kind: SymFunction}
 	assert.Equal(t, "helper/function", key.String())
 
 	key2 := SymbolKey{Name: "my-var", Kind: SymVariable}
 	assert.Equal(t, "my-var/variable", key2.String())
+
+	key3 := SymbolKey{Package: "helpers", Name: "add-one", Kind: SymFunction}
+	assert.Equal(t, "helpers:add-one/function", key3.String())
 }
 
 func TestScanWorkspaceRefs_QualifiedSymbol(t *testing.T) {
@@ -432,7 +524,7 @@ func TestScanWorkspaceRefs_QualifiedSymbol(t *testing.T) {
 	refs := ScanWorkspaceRefs(dir, cfg)
 
 	// There should be a reference to "add-one" (unqualified key) from consumer.lisp.
-	addOneKey := SymbolKey{Name: "add-one", Kind: SymFunction}.String()
+	addOneKey := SymbolKey{Package: "helpers", Name: "add-one", Kind: SymFunction}.String()
 	addOneRefs := refs[addOneKey]
 	require.NotEmpty(t, addOneRefs, "should have cross-file reference to add-one via qualified symbol")
 

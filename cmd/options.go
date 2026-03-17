@@ -2,7 +2,12 @@
 
 package cmd
 
-import "github.com/luthersystems/elps/lisp"
+import (
+	"context"
+
+	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/mcpserver"
+)
 
 // Option configures an exported command factory (LintCommand, DocCommand).
 type Option func(*cmdConfig)
@@ -10,6 +15,8 @@ type Option func(*cmdConfig)
 type cmdConfig struct {
 	registry *lisp.PackageRegistry
 	env      *lisp.LEnv
+	newDocEnv func() (*lisp.LEnv, error)
+	runStdio  func(context.Context, *mcpserver.Server) error
 }
 
 // WithRegistry injects a PackageRegistry for semantic analysis. The

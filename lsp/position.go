@@ -159,10 +159,29 @@ func scopeAtPosition(root *analysis.Scope, line, col int) *analysis.Scope {
 
 // collectVisibleSymbols walks the scope chain outward from scope, collecting
 // all symbols visible at that point.
-func collectVisibleSymbols(scope *analysis.Scope) []*analysis.Symbol {
+func collectVisibleSymbols(scope *analysis.Scope, currentPkg string) []*analysis.Symbol {
 	seen := make(map[string]bool)
 	var result []*analysis.Symbol
 	for s := scope; s != nil; s = s.Parent {
+		if currentPkg != "" {
+			for key, sym := range s.PackageSymbols {
+				if !strings.HasPrefix(key, currentPkg+":") {
+					continue
+				}
+				if !seen[sym.Name] {
+					seen[sym.Name] = true
+					result = append(result, sym)
+				}
+			}
+			if imports := s.PackageImports[currentPkg]; imports != nil {
+				for name, sym := range imports {
+					if !seen[name] {
+						seen[name] = true
+						result = append(result, sym)
+					}
+				}
+			}
+		}
 		for name, sym := range s.Symbols {
 			if !seen[name] {
 				seen[name] = true
@@ -259,4 +278,3 @@ func pathToURI(path string) string {
 	}
 	return path
 }
-

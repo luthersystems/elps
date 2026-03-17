@@ -525,8 +525,15 @@ func symbolLookupKey(sym *analysis.Symbol) string {
 }
 
 func rewriteExports(exprs []*lisp.LVal, scope *analysis.Scope, assignments map[*analysis.Symbol]string) {
+	currentPkg := lisp.DefaultUserPackage
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+			continue
+		}
+		if expr.Cells[0].Type == lisp.LSymbol && expr.Cells[0].Str == "in-package" && len(expr.Cells) > 1 {
+			if pkg := packageNameArg(expr.Cells[1]); pkg != "" {
+				currentPkg = pkg
+			}
 			continue
 		}
 		if expr.Cells[0].Type != lisp.LSymbol || expr.Cells[0].Str != "export" {
@@ -535,13 +542,13 @@ func rewriteExports(exprs []*lisp.LVal, scope *analysis.Scope, assignments map[*
 		for _, arg := range expr.Cells[1:] {
 			switch {
 			case arg.Type == lisp.LSymbol:
-				if sym := scope.LookupLocal(arg.Str); sym != nil {
+				if sym := scope.LookupLocalInPackage(arg.Str, currentPkg); sym != nil {
 					if newName, ok := assignments[sym]; ok {
 						arg.Str = newName
 					}
 				}
 			case arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol:
-				if sym := scope.LookupLocal(arg.Cells[0].Str); sym != nil {
+				if sym := scope.LookupLocalInPackage(arg.Cells[0].Str, currentPkg); sym != nil {
 					if newName, ok := assignments[sym]; ok {
 						arg.Cells[0].Str = newName
 					}
@@ -858,6 +865,8 @@ func splitQualifiedSymbol(name string) (string, string, bool) {
 	}
 	return "", "", false
 }
+
+var packageNameArg = astutil.PackageNameArg
 
 func findScopeForNode(scope *analysis.Scope, node *lisp.LVal) *analysis.Scope {
 	if scope == nil {

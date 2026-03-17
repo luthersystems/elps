@@ -67,6 +67,41 @@ func TestScope_Shadowing(t *testing.T) {
 	assert.Same(t, parentSym, parent.Lookup("x"))
 }
 
+func TestScope_Define_PackageScopedLookup(t *testing.T) {
+	scope := NewScope(ScopeGlobal, nil, nil)
+	sym := &Symbol{Name: "run", Package: "foo", Kind: SymFunction}
+	scope.Define(sym)
+
+	// Package-agnostic lookups find the symbol regardless of package.
+	assert.Same(t, sym, scope.LookupLocal("run"))
+	assert.Same(t, sym, scope.Lookup("run"))
+
+	// Package-qualified lookup finds it for the correct package.
+	assert.Same(t, sym, scope.LookupLocalInPackage("run", "foo"))
+	assert.Nil(t, scope.LookupInPackage("run", "bar"))
+}
+
+func TestScope_Lookup_NonUserPackage(t *testing.T) {
+	// Regression: Lookup and LookupLocal must find symbols defined in
+	// non-user packages. Without this, the minifier's macro template
+	// protection and the lint user-arity check both miss symbols in
+	// files that use (in-package 'some-pkg).
+	parent := NewScope(ScopeGlobal, nil, nil)
+	child := NewScope(ScopeLet, parent, nil)
+
+	parentSym := &Symbol{Name: "helper", Package: "mylib", Kind: SymFunction}
+	parent.Define(parentSym)
+	child.Define(&Symbol{Name: "local-var", Kind: SymVariable})
+
+	// Child walks up and finds the parent's package-scoped symbol.
+	assert.Same(t, parentSym, child.Lookup("helper"))
+	// Parent also finds it directly.
+	assert.Same(t, parentSym, parent.Lookup("helper"))
+	assert.Same(t, parentSym, parent.LookupLocal("helper"))
+	// Child's LookupLocal does NOT see it (it's in the parent).
+	assert.Nil(t, child.LookupLocal("helper"))
+}
+
 // --- Signature tests ---
 
 func TestSignature_MinMaxArity(t *testing.T) {
@@ -798,6 +833,189 @@ func TestAnalyze_UsePackage_NoOverwriteLocal(t *testing.T) {
 	assert.NotNil(t, sym.Source, "local defun should retain its source")
 }
 
+func TestAnalyze_UsePackage_PrefersImportedPackageOverOtherWorkspaceSymbol(t *testing.T) {
+	cfg := &Config{
+		ExtraGlobals: []ExternalSymbol{
+			{Name: "run", Kind: SymFunction, Package: "bar"},
+		},
+		PackageExports: map[string][]ExternalSymbol{
+			"foo": {
+				{Name: "run", Kind: SymFunction, Package: "foo"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, "(use-package 'foo)\n(run)", cfg)
+	require.Len(t, result.References, 1)
+	assert.Equal(t, "foo", result.References[0].Symbol.Package)
+	assert.Equal(t, "run", result.References[0].Symbol.Name)
+}
+
+func TestScope_LookupLocal_NonUserPackageDefun(t *testing.T) {
+	// Regression: LookupLocal must find symbols from (in-package 'foo)
+	// files. The lint user-arity analyzer uses RootScope.LookupLocal to
+	// detect locally-shadowed functions; without this, arity mismatches in
+	// non-user packages become invisible.
+	result := parseAndAnalyze(t, `(in-package 'mylib)
+(defun helper (x y) (+ x y))
+(helper 1 2)`)
+	sym := result.RootScope.LookupLocal("helper")
+	require.NotNil(t, sym, "LookupLocal should find symbol defined in non-user package")
+	assert.Equal(t, SymFunction, sym.Kind)
+	assert.Equal(t, "mylib", sym.Package)
+}
+
+func TestScope_Lookup_NonUserPackageWalk(t *testing.T) {
+	// Regression: Lookup must walk the parent chain and find symbols from
+	// non-user packages. The minifier's preserveMacroTemplateSymbol uses
+	// scope.Lookup(name) to protect quasiquoted symbols; without this,
+	// globals in non-user packages are renamed but quoted template symbols
+	// are not, breaking macro expansion.
+	result := parseAndAnalyze(t, `(in-package 'mylib)
+(defun target () 42)
+(defmacro wrap (x) (quasiquote (target (unquote x))))`)
+	// Lookup from a child scope should find the root-level symbol.
+	for _, scope := range result.RootScope.Children {
+		sym := scope.Lookup("target")
+		require.NotNil(t, sym, "Lookup should find non-user package symbol from child scope")
+		assert.Equal(t, "mylib", sym.Package)
+	}
+}
+
+func TestAnalyze_InPackage_PrefersCurrentPackageDefinition(t *testing.T) {
+	result := parseAndAnalyzeWithConfig(t, `(in-package 'foo)
+(defun run () 1)
+(defun use-foo () (run))
+(in-package 'bar)
+(defun run () 2)
+(defun use-bar () (run))`, &Config{})
+
+	var fooRef *Reference
+	var barRef *Reference
+	for _, ref := range result.References {
+		if ref.Symbol == nil || ref.Symbol.Name != "run" || ref.Source == nil {
+			continue
+		}
+		switch ref.Source.Line {
+		case 3:
+			fooRef = ref
+		case 6:
+			barRef = ref
+		}
+	}
+	require.NotNil(t, fooRef, "expected run reference inside use-foo")
+	require.NotNil(t, barRef, "expected run reference inside use-bar")
+	assert.Equal(t, "foo", fooRef.Symbol.Package)
+	assert.Equal(t, "bar", barRef.Symbol.Package)
+}
+
+func TestAnalyze_InPackage_DoesNotLeakUnqualifiedAcrossPackages(t *testing.T) {
+	result := parseAndAnalyzeWithConfig(t, `(in-package 'foo)
+(defun run () 1)
+(in-package 'bar)
+(run)`, &Config{})
+
+	require.Len(t, result.Unresolved, 1)
+	assert.Equal(t, "run", result.Unresolved[0].Name)
+}
+
+func TestAnalyze_UsePackage_DoesNotBlockSamePackageDefinition(t *testing.T) {
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"bar": {
+				{Name: "run", Kind: SymFunction, Package: "bar"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, `(in-package 'foo)
+(use-package 'bar)
+(defun run () 1)
+(run)`, cfg)
+
+	require.Len(t, result.References, 1)
+	assert.Equal(t, "foo", result.References[0].Symbol.Package)
+	assert.Equal(t, "run", result.References[0].Symbol.Name)
+}
+
+func TestAnalyze_UsePackage_DoesNotLeakAcrossLaterInPackage(t *testing.T) {
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"bar": {
+				{Name: "run", Kind: SymFunction, Package: "bar"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, `(in-package 'foo)
+(use-package 'bar)
+(run)
+(in-package 'baz)
+(run)`, cfg)
+
+	require.Len(t, result.References, 1)
+	assert.Equal(t, "bar", result.References[0].Symbol.Package)
+	require.Len(t, result.Unresolved, 1)
+	assert.Equal(t, "run", result.Unresolved[0].Name)
+	assert.Equal(t, 5, result.Unresolved[0].Source.Line)
+}
+
+func TestAnalyze_UsePackage_ConflictingImportsStayPackageLocal(t *testing.T) {
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"bar": {
+				{Name: "run", Kind: SymFunction, Package: "bar"},
+			},
+			"qux": {
+				{Name: "run", Kind: SymFunction, Package: "qux"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, `(in-package 'foo)
+(use-package 'bar)
+(run)
+(in-package 'baz)
+(use-package 'qux)
+(run)`, cfg)
+
+	require.Len(t, result.References, 2)
+	var fooRef *Reference
+	var bazRef *Reference
+	for _, ref := range result.References {
+		if ref.Source == nil || ref.Symbol == nil || ref.Symbol.Name != "run" {
+			continue
+		}
+		switch ref.Source.Line {
+		case 3:
+			fooRef = ref
+		case 6:
+			bazRef = ref
+		}
+	}
+	require.NotNil(t, fooRef)
+	require.NotNil(t, bazRef)
+	assert.Equal(t, "bar", fooRef.Symbol.Package)
+	assert.Equal(t, "qux", bazRef.Symbol.Package)
+}
+
+func TestAnalyze_InPackage_ImportsCurrentPackageExportsLocally(t *testing.T) {
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"foo": {
+				{Name: "run", Kind: SymFunction, Package: "foo"},
+			},
+			"bar": {
+				{Name: "run", Kind: SymFunction, Package: "bar"},
+			},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, `(in-package 'foo)
+(run)
+(in-package 'bar)
+(run)`, cfg)
+
+	require.Len(t, result.References, 2)
+	assert.Equal(t, "foo", result.References[0].Symbol.Package)
+	assert.Equal(t, "bar", result.References[1].Symbol.Package)
+}
+
 // --- Analyze: def prefix heuristic ---
 
 func TestAnalyze_DefPrefix_DefmethodFormals(t *testing.T) {
@@ -1136,6 +1354,119 @@ func TestAnalyze_StringDeftype(t *testing.T) {
 	for _, u := range result.Unresolved {
 		assert.NotEqual(t, "mystring", u.Name, "mystring should be resolved by s:deftype")
 	}
+}
+
+// --- LookupInPackage cross-package negative ---
+
+func TestScope_LookupInPackage_CrossPackageNegative(t *testing.T) {
+	// A symbol defined in package "math" should NOT be found when
+	// looking up in package "string" — the qualified key differs.
+	scope := NewScope(ScopeGlobal, nil, nil)
+	scope.Define(&Symbol{Name: "add", Package: "math", Kind: SymFunction})
+
+	// Correct package finds it.
+	assert.NotNil(t, scope.LookupInPackage("add", "math"))
+	// Wrong package does not.
+	assert.Nil(t, scope.LookupInPackage("add", "string"))
+}
+
+// --- DefineQualifiedOnly with Package == "" ---
+
+func TestScope_DefineQualifiedOnly_EmptyPackage(t *testing.T) {
+	// When Package is empty, DefineQualifiedOnly falls back to Symbols.
+	scope := NewScope(ScopeGlobal, nil, nil)
+	sym := &Symbol{Name: "x", Kind: SymVariable}
+	scope.DefineQualifiedOnly(sym)
+
+	// Should be reachable via bare Symbols lookup.
+	assert.Equal(t, sym, scope.Symbols["x"])
+	// Should NOT appear in PackageSymbols (no qualified key).
+	assert.Empty(t, scope.PackageSymbols)
+}
+
+// --- P1-1: DefineQualifiedOnly reachable via Lookup ---
+
+func TestScope_DefineQualifiedOnly_ReachableViaLookup(t *testing.T) {
+	scope := NewScope(ScopeGlobal, nil, nil)
+	sym := &Symbol{Name: "run", Package: "foo", Kind: SymFunction}
+	scope.DefineQualifiedOnly(sym)
+
+	// Lookup (package-agnostic) finds it via bareNameIndex.
+	assert.Same(t, sym, scope.Lookup("run"))
+	// But it is NOT in the bare-name Symbols map.
+	assert.Nil(t, scope.Symbols["run"])
+	// Package-qualified lookup works.
+	assert.Same(t, sym, scope.LookupInPackage("run", "foo"))
+}
+
+// --- P1-2: bareNameIndex cross-package collision ---
+
+func TestScope_BareNameIndex_CrossPackageCollision(t *testing.T) {
+	scope := NewScope(ScopeGlobal, nil, nil)
+	fooRun := &Symbol{Name: "run", Package: "foo", Kind: SymFunction}
+	barRun := &Symbol{Name: "run", Package: "bar", Kind: SymFunction}
+	scope.DefineQualifiedOnly(fooRun)
+	scope.DefineQualifiedOnly(barRun)
+
+	// lookupAnyPackageSymbol returns one of them (not nil).
+	got := scope.lookupAnyPackageSymbol("run")
+	assert.NotNil(t, got)
+	assert.Equal(t, "run", got.Name)
+
+	// Both qualified lookups still work.
+	assert.Same(t, fooRun, scope.LookupInPackage("run", "foo"))
+	assert.Same(t, barRun, scope.LookupInPackage("run", "bar"))
+}
+
+// --- P2-9: LookupInPackage does not use bareNameIndex ---
+
+func TestScope_LookupInPackage_DoesNotUseBareNameIndex(t *testing.T) {
+	scope := NewScope(ScopeGlobal, nil, nil)
+	sym := &Symbol{Name: "run", Package: "foo", Kind: SymFunction}
+	scope.DefineQualifiedOnly(sym)
+
+	// LookupInPackage with wrong package returns nil — no bareNameIndex fallback.
+	assert.Nil(t, scope.LookupInPackage("run", "bar"))
+	// But package-agnostic Lookup succeeds.
+	assert.Same(t, sym, scope.Lookup("run"))
+}
+
+// --- P2-3: LookupLocalInPackage with empty package ---
+
+func TestScope_LookupLocalInPackage_EmptyPackage(t *testing.T) {
+	scope := NewScope(ScopeGlobal, nil, nil)
+	// A builtin-like symbol with no package.
+	builtin := &Symbol{Name: "set", Kind: SymBuiltin}
+	scope.Define(builtin)
+	// A package-qualified symbol.
+	fooSym := &Symbol{Name: "run", Package: "foo", Kind: SymFunction}
+	scope.Define(fooSym)
+
+	// Empty pkg skips both PackageSymbols and Symbols fallback, returning nil.
+	assert.Nil(t, scope.LookupLocalInPackage("set", ""))
+	assert.Nil(t, scope.LookupLocalInPackage("run", ""))
+
+	// This prevents builtins from blocking package-local definitions.
+	assert.Same(t, builtin, scope.LookupLocalInPackage("set", "user"))
+	assert.Same(t, fooSym, scope.LookupLocalInPackage("run", "foo"))
+}
+
+// --- LookupAllLocal ---
+
+func TestScope_LookupAllLocal(t *testing.T) {
+	scope := NewScope(ScopeGlobal, nil, nil)
+	fooRun := &Symbol{Name: "run", Package: "foo", Kind: SymFunction}
+	barRun := &Symbol{Name: "run", Package: "bar", Kind: SymFunction}
+	bareRun := &Symbol{Name: "run", Kind: SymFunction}
+	scope.DefineQualifiedOnly(fooRun)
+	scope.DefineQualifiedOnly(barRun)
+	scope.Define(bareRun) // bare name in Symbols
+
+	all := scope.LookupAllLocal("run")
+	assert.Len(t, all, 3)
+
+	// No results for a name that doesn't exist.
+	assert.Empty(t, scope.LookupAllLocal("nonexistent"))
 }
 
 // parseAndAnalyzeWithConfig is a test helper that parses source and runs

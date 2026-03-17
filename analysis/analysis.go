@@ -8,6 +8,7 @@
 package analysis
 
 import (
+	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -70,29 +71,43 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 
 	// Add external symbols from workspace
 	for _, ext := range cfg.ExtraGlobals {
-		root.Define(&Symbol{
+		sym := &Symbol{
 			Name:      ext.Name,
+			Package:   ext.Package,
 			Kind:      ext.Kind,
 			Source:    ext.Source,
 			Signature: ext.Signature,
 			DocString: ext.DocString,
 			Exported:  true,
 			External:  true,
-		})
+		}
+		if ext.Package != "" {
+			root.DefineQualifiedOnly(sym)
+			continue
+		}
+		root.Define(sym)
 	}
 
 	a := &analyzer{
-		root:   root,
-		result: &Result{RootScope: root},
-		cfg:    cfg,
+		root:             root,
+		result:           &Result{RootScope: root},
+		cfg:              cfg,
+		qualifiedSymbols: make(map[string]*Symbol),
 	}
 
 	// Phase 1: Pre-scan top-level definitions (forward references)
 	a.prescan(exprs, root)
 
 	// Phase 2: Deep recursive walk
+	currentPkg := "user"
 	for _, expr := range exprs {
-		a.analyzeExpr(expr, root)
+		a.analyzeExpr(expr, root, currentPkg)
+		if expr != nil && expr.Type == lisp.LSExpr && !expr.Quoted && len(expr.Cells) > 0 &&
+			astutil.HeadSymbol(expr) == "in-package" && len(expr.Cells) > 1 {
+			if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
+				currentPkg = pkgName
+			}
+		}
 	}
 
 	return a.result

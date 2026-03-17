@@ -31,11 +31,11 @@ func TestAnalyzeExcludePatterns_ConfigIncludeTestsOverridesDefault(t *testing.T)
 	assert.NotContains(t, excludes, "*_test.lisp")
 }
 
-func TestAnalyzeExcludePatterns_IncludeTestsOverridesConfigTestExclude(t *testing.T) {
+func TestAnalyzeExcludePatterns_IncludeTestsPreservesExplicitConfigTestExclude(t *testing.T) {
 	cfg := perf.DefaultConfig()
 	cfg.ExcludeFiles = []string{"*_test.lisp", "build/**"}
 	excludes := analyzeExcludePatterns(cfg, nil, true)
-	assert.NotContains(t, excludes, "*_test.lisp")
+	assert.Contains(t, excludes, "*_test.lisp")
 	assert.Contains(t, excludes, "build/**")
 }
 
@@ -130,7 +130,7 @@ func TestRunAnalyze_ConfigCanIncludeTests(t *testing.T) {
 	assert.Equal(t, "feature_test.lisp", filepath.Base(issues[0]["file"].(string)))
 }
 
-func TestRunAnalyze_IncludeTestsOverridesConfigTestExclude(t *testing.T) {
+func TestRunAnalyze_IncludeTestsPreservesExplicitConfigTestExclude(t *testing.T) {
 	dir := t.TempDir()
 	writeAnalyzeFixture(t, filepath.Join(dir, "feature_test.lisp"), `
 (defun process-batch (items)
@@ -145,6 +145,32 @@ func TestRunAnalyze_IncludeTestsOverridesConfigTestExclude(t *testing.T) {
 		configFile:   configPath,
 		includeTests: true,
 		failOn:       "error",
+	})
+	require.Error(t, err)
+	assert.Equal(t, 2, code)
+	assert.Contains(t, err.Error(), "no .lisp files found")
+	assert.Empty(t, stdout.String())
+	assert.Empty(t, stderr.String())
+}
+
+func TestRunAnalyze_IncludeTestsStillHonorsSpecificTestExcludes(t *testing.T) {
+	dir := t.TempDir()
+	writeAnalyzeFixture(t, filepath.Join(dir, "feature_test.lisp"), `
+(defun process-batch (items)
+  (map 'list (lambda (item) (db-put item)) items))
+`)
+	writeAnalyzeFixture(t, filepath.Join(dir, "generated_case_test.lisp"), `
+(defun generated-batch (items)
+  (map 'list (lambda (item) (db-put item)) items))
+`)
+	configPath := writeAnalyzeFixture(t, filepath.Join(dir, ".elps-analyze.yaml"), "include_tests: true\nexclude_files:\n  - \"generated_*_test.lisp\"\n")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code, err := runAnalyze([]string{filepath.Join(dir, "...")}, &stdout, &stderr, analyzeRunConfig{
+		jsonOutput: true,
+		configFile: configPath,
+		failOn:     "error",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 0, code)

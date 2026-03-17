@@ -44,6 +44,7 @@ func (k SymbolKind) String() string {
 // Symbol represents a defined name in a scope.
 type Symbol struct {
 	Name       string
+	Package    string
 	Kind       SymbolKind
 	Source     *token.Location // nil for builtins
 	Node       *lisp.LVal
