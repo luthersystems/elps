@@ -74,15 +74,18 @@ func (s *Server) textDocumentDidSave(ctx *glsp.Context, params *protocol.DidSave
 	}
 	s.debounceMu.Unlock()
 
+	// Update the definition index synchronously before analysis so that
+	// the current save's diagnostics reflect the latest ExtraGlobals.
+	s.updateFileDefinitions(params.TextDocument.URI)
+
 	doc := s.docs.Get(params.TextDocument.URI)
 	if doc != nil {
 		s.analyzeAndPublish(doc)
 	}
 
-	// Incrementally update the workspace definition and reference indexes.
+	// Incrementally update the workspace reference index in the background.
 	go func() {
 		defer func() { _ = recover() }() // don't crash on update panic
-		s.updateFileDefinitions(params.TextDocument.URI)
 		s.updateFileRefs(params.TextDocument.URI)
 	}()
 

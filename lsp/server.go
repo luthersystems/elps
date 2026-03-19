@@ -490,16 +490,7 @@ func (s *Server) updateFileDefinitions(uri string) {
 		return
 	}
 
-	// Filter out old entries for this file.
-	var kept []analysis.ExternalSymbol
-	for _, sym := range s.analysisCfg.ExtraGlobals {
-		if sym.Source == nil || sym.Source.File != filePath {
-			kept = append(kept, sym)
-		}
-	}
-
-	// Append new definitions.
-	s.analysisCfg.ExtraGlobals = append(kept, newDefs...)
+	s.analysisCfg.ExtraGlobals = append(filterExtraGlobalsByFile(s.analysisCfg.ExtraGlobals, filePath), newDefs...)
 }
 
 // removeFileDefinitions removes all ExtraGlobals entries for the given file path.
@@ -511,13 +502,19 @@ func (s *Server) removeFileDefinitions(filePath string) {
 		return
 	}
 
+	s.analysisCfg.ExtraGlobals = filterExtraGlobalsByFile(s.analysisCfg.ExtraGlobals, filePath)
+}
+
+// filterExtraGlobalsByFile returns a new slice with all entries whose
+// Source.File does not match excludeFile. Entries with nil Source are kept.
+func filterExtraGlobalsByFile(globals []analysis.ExternalSymbol, excludeFile string) []analysis.ExternalSymbol {
 	var kept []analysis.ExternalSymbol
-	for _, sym := range s.analysisCfg.ExtraGlobals {
-		if sym.Source == nil || sym.Source.File != filePath {
+	for _, sym := range globals {
+		if sym.Source == nil || sym.Source.File != excludeFile {
 			kept = append(kept, sym)
 		}
 	}
-	s.analysisCfg.ExtraGlobals = kept
+	return kept
 }
 
 // setTestWorkspaceRefs injects workspace refs directly for unit tests.

@@ -4,6 +4,7 @@ package lint
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -961,6 +962,14 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 			}
 		}
 
+		// Normalize the current filename for reliable self-file comparison.
+		// Paths from workspace scanning may be absolute while lint filenames
+		// may be relative (or vice versa).
+		cleanFilename := pass.Filename
+		if cleanFilename != "" {
+			cleanFilename = filepath.Clean(cleanFilename)
+		}
+
 		for key, syms := range groups {
 			first := syms[0]
 
@@ -974,7 +983,9 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 			}
 
 			// Cross-file: check if an external symbol with the same name
-			// and package exists in ExtraGlobals.
+			// and package exists in ExtraGlobals. The extIndex maps each
+			// (name, pkg) to at most one external, so this produces at
+			// most one cross-file warning per local symbol.
 			localPkg := key.pkg
 			if localPkg == "" {
 				localPkg = "user"
@@ -982,7 +993,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 			if ext, ok := extIndex[extKey{name: key.name, pkg: localPkg}]; ok {
 				// Skip if the external definition is from the same file
 				// (self-reference from workspace scanning).
-				if pass.Filename != "" && ext.Source.File == pass.Filename {
+				if cleanFilename != "" && filepath.Clean(ext.Source.File) == cleanFilename {
 					continue
 				}
 				pass.Report(Diagnostic{

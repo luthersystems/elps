@@ -3716,3 +3716,71 @@ func TestRemoveFileDefinitions(t *testing.T) {
 	assert.True(t, names["keep-me"], "should keep definitions from other files")
 	assert.False(t, names["remove-me"], "should remove definitions from deleted file")
 }
+
+func TestWatchedFiles_UpdatesDefinitions(t *testing.T) {
+	s := testServer()
+
+	// Create temp workspace with a lisp file.
+	dir := t.TempDir()
+	filePath := dir + "/lib.lisp"
+	require.NoError(t, os.WriteFile(filePath, []byte("(defun lib-fn () 1)"), 0o600))
+
+	// Initialize with empty config.
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	uri := pathToURI(filePath)
+
+	// Simulate file creation event.
+	err := s.workspaceDidChangeWatchedFiles(mockContext(), &protocol.DidChangeWatchedFilesParams{
+		Changes: []protocol.FileEvent{
+			{URI: protocol.DocumentUri(uri), Type: protocol.FileChangeTypeCreated},
+		},
+	})
+	require.NoError(t, err)
+
+	// ExtraGlobals should now contain "lib-fn".
+	s.analysisCfgMu.RLock()
+	globals := s.analysisCfg.ExtraGlobals
+	s.analysisCfgMu.RUnlock()
+
+	names := make(map[string]bool)
+	for _, sym := range globals {
+		names[sym.Name] = true
+	}
+	assert.True(t, names["lib-fn"], "created file's definitions should be in ExtraGlobals")
+
+	// Simulate file change — rename function.
+	require.NoError(t, os.WriteFile(filePath, []byte("(defun renamed-fn () 2)"), 0o600))
+	err = s.workspaceDidChangeWatchedFiles(mockContext(), &protocol.DidChangeWatchedFilesParams{
+		Changes: []protocol.FileEvent{
+			{URI: protocol.DocumentUri(uri), Type: protocol.FileChangeTypeChanged},
+		},
+	})
+	require.NoError(t, err)
+
+	s.analysisCfgMu.RLock()
+	globals = s.analysisCfg.ExtraGlobals
+	s.analysisCfgMu.RUnlock()
+
+	names = make(map[string]bool)
+	for _, sym := range globals {
+		names[sym.Name] = true
+	}
+	assert.False(t, names["lib-fn"], "old definition should be gone after change")
+	assert.True(t, names["renamed-fn"], "new definition should be present after change")
+
+	// Simulate file deletion.
+	require.NoError(t, os.Remove(filePath))
+	err = s.workspaceDidChangeWatchedFiles(mockContext(), &protocol.DidChangeWatchedFilesParams{
+		Changes: []protocol.FileEvent{
+			{URI: protocol.DocumentUri(uri), Type: protocol.FileChangeTypeDeleted},
+		},
+	})
+	require.NoError(t, err)
+
+	s.analysisCfgMu.RLock()
+	globals = s.analysisCfg.ExtraGlobals
+	s.analysisCfgMu.RUnlock()
+
+	assert.Empty(t, globals, "all definitions should be removed after file deletion")
+}
