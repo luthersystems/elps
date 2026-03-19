@@ -57,6 +57,12 @@ type Result struct {
 	Symbols    []*Symbol
 	References []*Reference
 	Unresolved []*UnresolvedRef
+
+	// ExtraGlobals are the external symbols that were provided via Config.
+	// Stored here so downstream consumers (e.g. lint analyzers) can check
+	// for cross-file duplicates without relying on scope lookups that may
+	// have been overwritten by local definitions.
+	ExtraGlobals []ExternalSymbol
 }
 
 // Analyze performs semantic analysis on a set of parsed expressions.
@@ -90,7 +96,7 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 
 	a := &analyzer{
 		root:             root,
-		result:           &Result{RootScope: root},
+		result:           &Result{RootScope: root, ExtraGlobals: cfg.ExtraGlobals},
 		cfg:              cfg,
 		qualifiedSymbols: make(map[string]*Symbol),
 	}

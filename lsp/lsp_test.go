@@ -3556,3 +3556,163 @@ func TestHandlerWrapper_InlayHintRoute(t *testing.T) {
 	assert.Equal(t, "x:", hints[0].Label)
 	assert.Equal(t, "y:", hints[1].Label)
 }
+
+// --- Cross-file duplicate-definition diagnostics ---
+
+func TestCrossFileDuplicateDefinition(t *testing.T) {
+	s := testServer()
+	ctx, captured := capturingContext()
+
+	// Set up ExtraGlobals with a definition of "foo" from another file.
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:    "foo",
+				Kind:    analysis.SymFunction,
+				Package: "user",
+				Source:  &token.Location{File: "/workspace/other.lisp", Line: 3, Col: 7, Pos: 20},
+			},
+		},
+	})
+
+	// Open a file that also defines "foo" — should get a duplicate warning.
+	err := s.textDocumentDidOpen(ctx, &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{
+			URI:     "file:///workspace/current.lisp",
+			Version: 1,
+			Text:    "(defun foo () 42)",
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, *captured, 1)
+
+	var dupDiags []protocol.Diagnostic
+	for _, d := range (*captured)[0].Diagnostics {
+		if strings.Contains(d.Message, "duplicate definition") {
+			dupDiags = append(dupDiags, d)
+		}
+	}
+	require.NotEmpty(t, dupDiags, "should report cross-file duplicate definition")
+	assert.Contains(t, dupDiags[0].Message, "foo")
+}
+
+func TestCrossFileDuplicateDefinition_DifferentPackages(t *testing.T) {
+	s := testServer()
+	ctx, captured := capturingContext()
+
+	// External "foo" is in package "other-pkg".
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:    "foo",
+				Kind:    analysis.SymFunction,
+				Package: "other-pkg",
+				Source:  &token.Location{File: "/workspace/other.lisp", Line: 1, Col: 7, Pos: 6},
+			},
+		},
+	})
+
+	// Local "foo" is in default "user" package — different package, no warning.
+	err := s.textDocumentDidOpen(ctx, &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{
+			URI:     "file:///workspace/current.lisp",
+			Version: 1,
+			Text:    "(defun foo () 42)",
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, *captured, 1)
+
+	for _, d := range (*captured)[0].Diagnostics {
+		if strings.Contains(d.Message, "duplicate definition") {
+			t.Errorf("should NOT report duplicate for different packages: %s", d.Message)
+		}
+	}
+}
+
+func TestUpdateFileDefinitions(t *testing.T) {
+	s := testServer()
+
+	// Create a temp file with a definition.
+	dir := t.TempDir()
+	filePath := dir + "/test.lisp"
+	require.NoError(t, os.WriteFile(filePath, []byte("(defun bar () 1)"), 0o600))
+
+	// Initialize config with an existing definition from another file.
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:    "existing",
+				Kind:    analysis.SymFunction,
+				Package: "user",
+				Source:  &token.Location{File: "/other/file.lisp", Line: 1, Col: 1, Pos: 0},
+			},
+		},
+	})
+
+	// Update definitions from the temp file.
+	s.updateFileDefinitions(pathToURI(filePath))
+
+	// ExtraGlobals should now contain both "existing" and "bar".
+	s.analysisCfgMu.RLock()
+	globals := s.analysisCfg.ExtraGlobals
+	s.analysisCfgMu.RUnlock()
+
+	names := make(map[string]bool)
+	for _, sym := range globals {
+		names[sym.Name] = true
+	}
+	assert.True(t, names["existing"], "should keep existing definitions from other files")
+	assert.True(t, names["bar"], "should add new definition from updated file")
+
+	// Now update the file to rename bar → baz.
+	require.NoError(t, os.WriteFile(filePath, []byte("(defun baz () 2)"), 0o600))
+	s.updateFileDefinitions(pathToURI(filePath))
+
+	s.analysisCfgMu.RLock()
+	globals = s.analysisCfg.ExtraGlobals
+	s.analysisCfgMu.RUnlock()
+
+	names = make(map[string]bool)
+	for _, sym := range globals {
+		names[sym.Name] = true
+	}
+	assert.True(t, names["existing"], "should keep existing definitions")
+	assert.False(t, names["bar"], "old definition should be removed")
+	assert.True(t, names["baz"], "new definition should be present")
+}
+
+func TestRemoveFileDefinitions(t *testing.T) {
+	s := testServer()
+
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:    "keep-me",
+				Kind:    analysis.SymFunction,
+				Package: "user",
+				Source:  &token.Location{File: "/workspace/keep.lisp", Line: 1, Col: 1, Pos: 0},
+			},
+			{
+				Name:    "remove-me",
+				Kind:    analysis.SymFunction,
+				Package: "user",
+				Source:  &token.Location{File: "/workspace/delete.lisp", Line: 1, Col: 1, Pos: 0},
+			},
+		},
+	})
+
+	// Remove definitions from the deleted file.
+	s.removeFileDefinitions("/workspace/delete.lisp")
+
+	s.analysisCfgMu.RLock()
+	globals := s.analysisCfg.ExtraGlobals
+	s.analysisCfgMu.RUnlock()
+
+	names := make(map[string]bool)
+	for _, sym := range globals {
+		names[sym.Name] = true
+	}
+	assert.True(t, names["keep-me"], "should keep definitions from other files")
+	assert.False(t, names["remove-me"], "should remove definitions from deleted file")
+}

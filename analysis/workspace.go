@@ -644,6 +644,21 @@ func ScanWorkspaceRefs(root string, cfg *Config) map[string][]FileReference {
 	return refs
 }
 
+// ExtractFileDefinitions parses source and returns all top-level definitions
+// from a single file. This is the public counterpart of extractDefinitions,
+// suitable for incremental workspace index updates.
+func ExtractFileDefinitions(source []byte, filename string) []ExternalSymbol {
+	s := token.NewScanner(filename, bytes.NewReader(source))
+	p := rdparser.New(s)
+
+	exprs, err := p.ParseProgram()
+	if err != nil {
+		return nil
+	}
+
+	return extractDefinitions(exprs)
+}
+
 // SymbolToKey derives a SymbolKey from an analysis Symbol.
 func SymbolToKey(sym *Symbol) SymbolKey {
 	kind := sym.Kind
