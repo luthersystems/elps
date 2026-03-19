@@ -2061,6 +2061,7 @@ func TestDuplicateDefinition_Positive_SameFileDefun(t *testing.T) {
 	assert.Len(t, diags, 1)
 	assertHasDiag(t, diags, "duplicate definition")
 	assertHasDiag(t, diags, "foo")
+	assert.Equal(t, 2, diags[0].Pos.Line, "diagnostic should point to the second definition")
 }
 
 func TestDuplicateDefinition_Positive_SameFileDefmacro(t *testing.T) {
@@ -2069,6 +2070,22 @@ func TestDuplicateDefinition_Positive_SameFileDefmacro(t *testing.T) {
 	assert.Len(t, diags, 1)
 	assertHasDiag(t, diags, "duplicate definition")
 	assertHasDiag(t, diags, "bar")
+	assert.Equal(t, 2, diags[0].Pos.Line, "diagnostic should point to the second definition")
+}
+
+func TestDuplicateDefinition_Negative_SameFileDeftype(t *testing.T) {
+	// deftype prescan skips duplicates (scope.LookupLocalInPackage guard),
+	// so only one symbol ends up in result.Symbols. This is a known
+	// limitation — deftype duplicates are caught at runtime instead.
+	source := "(deftype my-type () (list 'string))\n(deftype my-type () (list 'int))"
+	diags := lintCheckSemantic(t, AnalyzerDuplicateDefinition, source)
+	assertNoDiags(t, diags)
+}
+
+func TestDuplicateDefinition_Positive_TripleDuplicate(t *testing.T) {
+	source := "(defun foo () 1)\n(defun foo () 2)\n(defun foo () 3)"
+	diags := lintCheckSemantic(t, AnalyzerDuplicateDefinition, source)
+	assert.Len(t, diags, 2, "should report on 2nd and 3rd definitions")
 }
 
 func TestDuplicateDefinition_Negative_DifferentNames(t *testing.T) {
@@ -2124,6 +2141,53 @@ func TestDuplicateDefinition_CrossFile(t *testing.T) {
 	assert.Len(t, diags, 1)
 	assertHasDiag(t, diags, "also defined externally")
 	assertHasDiag(t, diags, "helper")
+	require.NotEmpty(t, diags[0].Notes)
+	assert.Contains(t, diags[0].Notes[0], "other.lisp:5")
+}
+
+func TestDuplicateDefinition_CrossFile_DifferentPackage(t *testing.T) {
+	// An external symbol in a different package should NOT trigger a warning.
+	source := "(defun helper () 42)"
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDuplicateDefinition}}
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:    "helper",
+				Kind:    analysis.SymFunction,
+				Package: "other-pkg",
+				Source:  &token.Location{File: "other.lisp", Line: 5},
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+func TestDuplicateDefinition_CrossFile_UserPackageNormalization(t *testing.T) {
+	// When an external symbol has explicit Package:"user", it goes through
+	// DefineQualifiedOnly and lands at the same PackageSymbols key as the
+	// local defun — the scope overwrites it. This is a known limitation:
+	// same-package qualified externals are indistinguishable from locals
+	// after prescan. The empty-package path (tested in CrossFile above)
+	// works because the external lands in Symbols["helper"] while the
+	// local lands in PackageSymbols["user:helper"].
+	source := "(defun helper () 42)"
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDuplicateDefinition}}
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:    "helper",
+				Kind:    analysis.SymFunction,
+				Package: "user",
+				Source:  &token.Location{File: "other.lisp", Line: 3},
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	// Cannot detect due to scope key collision — documented limitation.
+	assertNoDiags(t, diags)
 }
 
 func TestDuplicateDefinition_HasNotes(t *testing.T) {

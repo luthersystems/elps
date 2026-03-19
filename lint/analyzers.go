@@ -902,7 +902,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 	Name:     "duplicate-definition",
 	Severity: SeverityWarning,
 	Semantic: true,
-	Doc:      "Warn when a symbol is defined more than once at the top level.\n\nRequires semantic analysis (--workspace flag). Detects same-file duplicates (two defun with the same name) and cross-file duplicates (a local defun that shadows an imported definition). Only checks defun, defmacro, and deftype — repeated set is handled by set-usage.",
+	Doc:      "Warn when a symbol is defined more than once at the top level.\n\nRequires semantic analysis (--workspace flag). Detects same-file duplicates (two defun with the same name) and cross-file duplicates (a local defun that shadows an imported definition). Only checks defun and defmacro — repeated set is handled by set-usage.",
 	Run: func(pass *Pass) error {
 		if pass.Semantics == nil {
 			return nil
