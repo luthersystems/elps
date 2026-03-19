@@ -893,6 +893,97 @@ var AnalyzerUndefinedSymbol = &Analyzer{
 	},
 }
 
+// AnalyzerDuplicateDefinition warns when the same symbol is defined more than
+// once at the top level (e.g. two defun with the same name). Only flags
+// defun/defmacro/deftype duplicates — repeated set is already covered by
+// set-usage. Cross-file duplicates are detected when an External symbol
+// matches a local definition. Requires semantic analysis.
+var AnalyzerDuplicateDefinition = &Analyzer{
+	Name:     "duplicate-definition",
+	Severity: SeverityWarning,
+	Semantic: true,
+	Doc:      "Warn when a symbol is defined more than once at the top level.\n\nRequires semantic analysis (--workspace flag). Detects same-file duplicates (two defun with the same name) and cross-file duplicates (a local defun that shadows an imported definition). Only checks defun, defmacro, and deftype — repeated set is handled by set-usage.",
+	Run: func(pass *Pass) error {
+		if pass.Semantics == nil {
+			return nil
+		}
+
+		// definitionKinds are the symbol kinds we check for duplicates.
+		isDefKind := func(k analysis.SymbolKind) bool {
+			return k == analysis.SymFunction || k == analysis.SymMacro || k == analysis.SymType
+		}
+
+		// Collect local (non-external) root-scope definitions by (name, package).
+		type defKey struct {
+			name string
+			pkg  string
+		}
+		groups := make(map[defKey][]*analysis.Symbol)
+
+		for _, sym := range pass.Semantics.Symbols {
+			if sym.Scope != pass.Semantics.RootScope {
+				continue
+			}
+			if sym.External {
+				continue
+			}
+			if !isDefKind(sym.Kind) {
+				continue
+			}
+			if sym.Source == nil {
+				continue // skip builtins
+			}
+			key := defKey{name: sym.Name, pkg: sym.Package}
+			groups[key] = append(groups[key], sym)
+		}
+
+		for key, syms := range groups {
+			first := syms[0]
+
+			// Same-file duplicates: report on 2nd+ definitions.
+			for _, sym := range syms[1:] {
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("duplicate definition: %s '%s' already defined", sym.Kind, sym.Name),
+					Pos:     posFromSource(sym.Source),
+					Notes:   []string{fmt.Sprintf("first defined at %s", sourceString(first.Source))},
+				})
+			}
+
+			// Cross-file: check if an external symbol with the same name
+			// exists in the root scope. External symbols from ExtraGlobals
+			// are in the scope but not in result.Symbols.
+			allLocal := pass.Semantics.RootScope.LookupAllLocal(key.name)
+			for _, ext := range allLocal {
+				if !ext.External || ext.Source == nil {
+					continue
+				}
+				if !isDefKind(ext.Kind) {
+					continue
+				}
+				// Treat empty package as "user" (the default package).
+			extPkg := ext.Package
+			if extPkg == "" {
+				extPkg = "user"
+			}
+			localPkg := key.pkg
+			if localPkg == "" {
+				localPkg = "user"
+			}
+			if extPkg != localPkg {
+				continue
+			}
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("duplicate definition: %s '%s' is also defined externally", first.Kind, first.Name),
+					Pos:     posFromSource(first.Source),
+					Notes:   []string{fmt.Sprintf("also defined at %s", sourceString(ext.Source))},
+				})
+				break // one cross-file warning per local symbol is enough
+			}
+		}
+		return nil
+	},
+}
+
 // AnalyzerNames returns a sorted list of all default analyzer names.
 func AnalyzerNames() []string {
 	analyzers := DefaultAnalyzers()
