@@ -674,5 +674,6 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerUnusedFunction,
 		AnalyzerShadowing,
 		AnalyzerUserArity,
+		AnalyzerDuplicateDefinition,
 	}
 }
