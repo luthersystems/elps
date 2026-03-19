@@ -159,7 +159,7 @@ var AnalyzerLetBindings = &Analyzer{
 					continue
 				}
 				// Accept (unquote sym) as a valid binding name — it expands to a symbol at macro-expansion time.
-			if binding.Cells[0].Type != lisp.LSymbol && HeadSymbol(binding.Cells[0]) != "unquote" {
+				if binding.Cells[0].Type != lisp.LSymbol && HeadSymbol(binding.Cells[0]) != "unquote" {
 					pass.Reportf(bindingSource(binding, src),
 						"%s binding %d: first element must be a symbol, got %s", head, i+1, binding.Cells[0].Type)
 					continue
@@ -895,9 +895,9 @@ var AnalyzerUndefinedSymbol = &Analyzer{
 
 // AnalyzerDuplicateDefinition warns when the same symbol is defined more than
 // once at the top level (e.g. two defun with the same name). Only flags
-// defun/defmacro/deftype duplicates — repeated set is already covered by
-// set-usage. Cross-file duplicates are detected when an External symbol
-// matches a local definition. Requires semantic analysis.
+// defun/defmacro duplicates — repeated set is already covered by set-usage.
+// Cross-file duplicates are detected when an External symbol matches a local
+// definition. Requires semantic analysis.
 var AnalyzerDuplicateDefinition = &Analyzer{
 	Name:     "duplicate-definition",
 	Severity: SeverityWarning,
@@ -910,7 +910,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 
 		// definitionKinds are the symbol kinds we check for duplicates.
 		isDefKind := func(k analysis.SymbolKind) bool {
-			return k == analysis.SymFunction || k == analysis.SymMacro || k == analysis.SymType
+			return k == analysis.SymFunction || k == analysis.SymMacro
 		}
 
 		// Collect local (non-external) root-scope definitions by (name, package).
@@ -961,17 +961,17 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 					continue
 				}
 				// Treat empty package as "user" (the default package).
-			extPkg := ext.Package
-			if extPkg == "" {
-				extPkg = "user"
-			}
-			localPkg := key.pkg
-			if localPkg == "" {
-				localPkg = "user"
-			}
-			if extPkg != localPkg {
-				continue
-			}
+				extPkg := ext.Package
+				if extPkg == "" {
+					extPkg = "user"
+				}
+				localPkg := key.pkg
+				if localPkg == "" {
+					localPkg = "user"
+				}
+				if extPkg != localPkg {
+					continue
+				}
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("duplicate definition: %s '%s' is also defined externally", first.Kind, first.Name),
 					Pos:     posFromSource(first.Source),

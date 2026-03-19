@@ -1383,7 +1383,7 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"unused-variable":    SeverityWarning,
 		"unused-function":    SeverityWarning,
 		"shadowing":          SeverityInfo,
-		"user-arity":            SeverityError,
+		"user-arity":           SeverityError,
 		"duplicate-definition": SeverityWarning,
 	}
 	for _, a := range DefaultAnalyzers() {
