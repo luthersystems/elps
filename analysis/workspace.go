@@ -699,6 +699,125 @@ func ScanWorkspaceRefs(root string, cfg *Config) map[string][]FileReference {
 	return refs
 }
 
+// WorkspacePrescan holds the results of a workspace prescan: file definitions,
+// package exports, and DefFormSpecs extracted from defmacro definitions.
+type WorkspacePrescan struct {
+	// Files is the list of .lisp file paths that were scanned.
+	Files []string
+	// Truncated is true if the file limit was reached during collection.
+	Truncated bool
+	// Globals are all top-level definitions (for ExtraGlobals).
+	Globals []ExternalSymbol
+	// PkgExports maps package name to exported symbols.
+	PkgExports map[string][]ExternalSymbol
+	// AllDefs are all definitions (exported and non-exported).
+	AllDefs []ExternalSymbol
+	// DefForms are DefFormSpecs derived from defmacro definitions whose
+	// names start with "def". These can be injected into Config.DefForms
+	// for per-file analysis.
+	DefForms []DefFormSpec
+}
+
+// PrescanWorkspace performs a single-pass workspace scan that collects
+// file definitions and extracts DefFormSpecs from def*-prefixed macros.
+// The result provides everything needed to build a Config for per-file
+// analysis, including macro-derived definition forms.
+func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, error) {
+	paths, truncated, err := collectLispFilesWithConfig(root, scanCfg)
+	if err != nil {
+		return nil, err
+	}
+
+	type fileResult struct {
+		globals  []ExternalSymbol
+		pkgs     map[string][]ExternalSymbol
+		allDefs  []ExternalSymbol
+		defForms []DefFormSpec
+	}
+
+	results := make([]fileResult, len(paths))
+	numWorkers := runtime.NumCPU()
+	if numWorkers > len(paths) {
+		numWorkers = len(paths)
+	}
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	var wg sync.WaitGroup
+	work := make(chan int, len(paths))
+	for i := range paths {
+		work <- i
+	}
+	close(work)
+
+	wg.Add(numWorkers)
+	for range numWorkers {
+		go func() {
+			defer wg.Done()
+			for i := range work {
+				fileSrc, readErr := os.ReadFile(paths[i]) //nolint:gosec // CLI tool reads user-specified files
+				if readErr != nil {
+					continue
+				}
+				g, p, d := scanFileFull(fileSrc, paths[i])
+				df := extractDefFormSpecs(d)
+				results[i] = fileResult{globals: g, pkgs: p, allDefs: d, defForms: df}
+			}
+		}()
+	}
+	wg.Wait()
+
+	prescan := &WorkspacePrescan{
+		Files:      paths,
+		Truncated:  truncated,
+		PkgExports: make(map[string][]ExternalSymbol),
+	}
+	for _, r := range results {
+		prescan.Globals = append(prescan.Globals, r.globals...)
+		prescan.AllDefs = append(prescan.AllDefs, r.allDefs...)
+		prescan.DefForms = append(prescan.DefForms, r.defForms...)
+		for pkg, syms := range r.pkgs {
+			prescan.PkgExports[pkg] = append(prescan.PkgExports[pkg], syms...)
+		}
+	}
+	return prescan, nil
+}
+
+// extractDefFormSpecs derives DefFormSpecs from defmacro definitions whose
+// names start with "def". This enables the analyzer to recognize these macros
+// as definition forms in other files during per-file analysis.
+func extractDefFormSpecs(defs []ExternalSymbol) []DefFormSpec {
+	var specs []DefFormSpec
+	for _, sym := range defs {
+		if sym.Kind != SymMacro || !strings.HasPrefix(sym.Name, "def") {
+			continue
+		}
+		if sym.Signature == nil {
+			continue
+		}
+		// Heuristic: the macro defines a name at index 1 and has formals
+		// at the first parameter-list-like position. For macros like
+		// (defmacro def-handler (name routes) ...), the formals for the
+		// generated function are typically in the second argument position.
+		formalsIdx := 2 // default: (def-xxx name (formals) body...)
+		if sym.Signature.MinArity() < 2 {
+			formalsIdx = -1 // can't have both name and formals
+		}
+		if formalsIdx < 0 {
+			continue
+		}
+		specs = append(specs, DefFormSpec{
+			Head:         sym.Name,
+			FormalsIndex: formalsIdx,
+			BindsName:    true,
+			NameIndex:    1,
+			NameKind:     SymFunction,
+		})
+	}
+	return specs
+}
+
 // ExtractFileDefinitions parses source and returns all top-level definitions
 // from a single file. This is the public counterpart of extractDefinitions,
 // suitable for incremental workspace index updates.

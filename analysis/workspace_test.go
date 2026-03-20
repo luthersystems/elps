@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -654,6 +655,96 @@ func TestExtractFileDefinitions_InvalidSource(t *testing.T) {
 	// Unparseable source should return nil, not panic.
 	defs := ExtractFileDefinitions([]byte("(defun broken"), "bad.lisp")
 	assert.Nil(t, defs)
+}
+
+func TestPrescanWorkspace_DefForms(t *testing.T) {
+	dir := t.TempDir()
+
+	// File A defines a def-prefixed macro with 2+ params.
+	err := os.WriteFile(filepath.Join(dir, "macros.lisp"), []byte(`
+(defmacro def-handler (name routes)
+  "Define a handler with routes."
+  (list 'defun name (list 'req) routes))
+(export 'def-handler)
+`), 0600)
+	require.NoError(t, err)
+
+	// File B uses the macro — (def-handler name (formals) body...).
+	err = os.WriteFile(filepath.Join(dir, "handlers.lisp"), []byte(`
+(def-handler my-api (req)
+  (respond req "ok"))
+`), 0600)
+	require.NoError(t, err)
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+	require.NotNil(t, prescan)
+
+	// Should produce a DefFormSpec for def-handler.
+	var found *DefFormSpec
+	for i := range prescan.DefForms {
+		if prescan.DefForms[i].Head == "def-handler" {
+			found = &prescan.DefForms[i]
+			break
+		}
+	}
+	require.NotNil(t, found, "should produce DefFormSpec for def-handler")
+	assert.True(t, found.BindsName, "def-handler should bind a name")
+	assert.Equal(t, 1, found.NameIndex, "name should be at index 1")
+	assert.Equal(t, 2, found.FormalsIndex, "formals should be at index 2")
+
+	// Verify that analysis with the DefForms recognizes my-api as a definition.
+	cfg := &Config{
+		ExtraGlobals:   prescan.AllDefs,
+		PackageExports: prescan.PkgExports,
+		DefForms:       prescan.DefForms,
+		Filename:       filepath.Join(dir, "handlers.lisp"),
+	}
+	handlerSrc, _ := os.ReadFile(filepath.Join(dir, "handlers.lisp")) //nolint:gosec // test file
+	result := AnalyzeFile(handlerSrc, filepath.Join(dir, "handlers.lisp"), cfg)
+	require.NotNil(t, result)
+
+	// my-api should be in the symbols list as a definition.
+	var myAPI *Symbol
+	for _, sym := range result.Symbols {
+		if sym.Name == "my-api" {
+			myAPI = sym
+			break
+		}
+	}
+	assert.NotNil(t, myAPI, "my-api should be recognized as a definition via def-handler DefFormSpec")
+}
+
+func TestPrescanWorkspace_NoDefPrefixMacroSkipped(t *testing.T) {
+	dir := t.TempDir()
+
+	// Macro without "def" prefix should NOT produce a DefFormSpec.
+	err := os.WriteFile(filepath.Join(dir, "macros.lisp"), []byte(`
+(defmacro with-logging (body)
+  (list 'progn (list 'log "start") body (list 'log "end")))
+(export 'with-logging)
+`), 0600)
+	require.NoError(t, err)
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+	assert.Empty(t, prescan.DefForms, "non-def-prefixed macros should not produce DefFormSpecs")
+}
+
+func TestExtractDefFormSpecs_MinArity(t *testing.T) {
+	// A macro with only 1 required param (arity < 2) can't have both
+	// name and formals, so no DefFormSpec should be produced.
+	defs := []ExternalSymbol{
+		{
+			Name: "def-simple",
+			Kind: SymMacro,
+			Signature: &Signature{
+				Params: []lisp.ParamInfo{{Name: "body", Kind: lisp.ParamRequired}},
+			},
+		},
+	}
+	specs := extractDefFormSpecs(defs)
+	assert.Empty(t, specs, "macro with < 2 params should not produce DefFormSpec")
 }
 
 func TestCollectLispFilesWithConfig_MaxFiles(t *testing.T) {

@@ -282,6 +282,7 @@ func (s *Server) buildWorkspaceIndex() {
 
 	var extraGlobals []analysis.ExternalSymbol
 	var pkgExports map[string][]analysis.ExternalSymbol
+	var defForms []analysis.DefFormSpec
 
 	// Build scan config from server options.
 	scanCfg := &analysis.ScanConfig{
@@ -289,14 +290,14 @@ func (s *Server) buildWorkspaceIndex() {
 		MaxFileBytes: int64(s.maxDocumentBytes),
 	}
 
-	// Scan workspace files in a single pass (only if we have a root path).
-	// Use allDefs (all top-level definitions, not just exports) so that
-	// cross-file duplicate-definition detection works for non-exported symbols.
+	// Two-phase workspace scan: prescan extracts definitions AND
+	// macro-derived DefFormSpecs for cross-file def-like form recognition.
 	if s.rootPath != "" {
-		if _, pkgs, allDefs, truncated, err := analysis.ScanWorkspaceAllWithConfig(s.rootPath, scanCfg); err == nil {
-			extraGlobals = allDefs
-			pkgExports = pkgs
-			if truncated {
+		if prescan, err := analysis.PrescanWorkspace(s.rootPath, scanCfg); err == nil {
+			extraGlobals = prescan.AllDefs
+			pkgExports = prescan.PkgExports
+			defForms = prescan.DefForms
+			if prescan.Truncated {
 				s.sendNotification("window/showMessage", &protocol.ShowMessageParams{
 					Type:    protocol.MessageTypeWarning,
 					Message: "Workspace file limit reached; some files were not indexed for cross-file analysis.",
@@ -336,6 +337,7 @@ func (s *Server) buildWorkspaceIndex() {
 	cfg := &analysis.Config{
 		ExtraGlobals:   extraGlobals,
 		PackageExports: pkgExports,
+		DefForms:       defForms,
 	}
 
 	s.analysisCfgMu.Lock()
@@ -396,6 +398,7 @@ func (s *Server) getAnalysisConfig(uri string) *analysis.Config {
 	if base != nil {
 		cfg.ExtraGlobals = base.ExtraGlobals
 		cfg.PackageExports = base.PackageExports
+		cfg.DefForms = base.DefForms
 	}
 	return cfg
 }
