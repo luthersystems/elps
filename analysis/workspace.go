@@ -124,62 +124,15 @@ func ScanWorkspaceAll(root string) (globals []ExternalSymbol, pkgs map[string][]
 // ScanWorkspaceAllWithConfig is like ScanWorkspaceAll but accepts a
 // ScanConfig for configurable limits. It also returns whether the file
 // list was truncated due to hitting the MaxFiles limit.
+//
+// Delegates to PrescanWorkspace internally to avoid duplicating the
+// concurrent worker pool logic.
 func ScanWorkspaceAllWithConfig(root string, scanCfg *ScanConfig) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, truncated bool, err error) {
-	// Phase 1: Collect file paths (sequential walk).
-	paths, truncated, err := collectLispFilesWithConfig(root, scanCfg)
+	prescan, err := PrescanWorkspace(root, scanCfg)
 	if err != nil {
 		return nil, nil, nil, false, err
 	}
-
-	// Phase 2: Parse concurrently with bounded worker pool.
-	type fileResult struct {
-		globals []ExternalSymbol
-		pkgs    map[string][]ExternalSymbol
-		allDefs []ExternalSymbol
-	}
-
-	results := make([]fileResult, len(paths))
-	numWorkers := runtime.NumCPU()
-	if numWorkers > len(paths) {
-		numWorkers = len(paths)
-	}
-	if numWorkers < 1 {
-		numWorkers = 1
-	}
-
-	var wg sync.WaitGroup
-	work := make(chan int, len(paths))
-	for i := range paths {
-		work <- i
-	}
-	close(work)
-
-	wg.Add(numWorkers)
-	for range numWorkers {
-		go func() {
-			defer wg.Done()
-			for i := range work {
-				fileSrc, readErr := os.ReadFile(paths[i]) //nolint:gosec // CLI tool reads user-specified files
-				if readErr != nil {
-					continue
-				}
-				g, p, d := scanFileFull(fileSrc, paths[i])
-				results[i] = fileResult{globals: g, pkgs: p, allDefs: d}
-			}
-		}()
-	}
-	wg.Wait()
-
-	// Phase 3: Merge results.
-	pkgs = make(map[string][]ExternalSymbol)
-	for _, r := range results {
-		globals = append(globals, r.globals...)
-		allDefs = append(allDefs, r.allDefs...)
-		for pkg, syms := range r.pkgs {
-			pkgs[pkg] = append(pkgs[pkg], syms...)
-		}
-	}
-	return globals, pkgs, allDefs, truncated, nil
+	return prescan.ExportedGlobals, prescan.PkgExports, prescan.AllDefs, prescan.Truncated, nil
 }
 
 // collectLispFilesWithConfig walks the directory tree and collects .lisp
@@ -698,11 +651,13 @@ type WorkspacePrescan struct {
 	Files []string
 	// Truncated is true if the file limit was reached during collection.
 	Truncated bool
-	// Globals are all top-level definitions (for ExtraGlobals).
-	Globals []ExternalSymbol
+	// ExportedGlobals are exported top-level definitions only.
+	// Used by ScanWorkspaceAllWithConfig for backwards compatibility.
+	ExportedGlobals []ExternalSymbol
 	// PkgExports maps package name to exported symbols.
 	PkgExports map[string][]ExternalSymbol
 	// AllDefs are all definitions (exported and non-exported).
+	// Typically used as Config.ExtraGlobals for cross-file resolution.
 	AllDefs []ExternalSymbol
 	// DefForms are DefFormSpecs derived from defmacro definitions whose
 	// names start with "def". These can be injected into Config.DefForms
@@ -766,7 +721,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		PkgExports: make(map[string][]ExternalSymbol),
 	}
 	for _, r := range results {
-		prescan.Globals = append(prescan.Globals, r.globals...)
+		prescan.ExportedGlobals = append(prescan.ExportedGlobals, r.globals...)
 		prescan.AllDefs = append(prescan.AllDefs, r.allDefs...)
 		prescan.DefForms = append(prescan.DefForms, r.defForms...)
 		for pkg, syms := range r.pkgs {

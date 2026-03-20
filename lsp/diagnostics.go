@@ -115,21 +115,27 @@ func (s *Server) textDocumentDidClose(_ *glsp.Context, params *protocol.DidClose
 // analyzeAndPublish runs analysis and lint on a document and publishes
 // the resulting diagnostics to the client.
 func (s *Server) analyzeAndPublish(doc *Document) {
-	// Take a snapshot for size check and version tracking.
-	snap := doc.Snapshot()
+	// Check document size before running analysis. Use a cheap lock-and-read
+	// rather than a full Snapshot() to avoid unnecessary slice cloning.
+	if s.maxDocumentBytes > 0 {
+		doc.mu.Lock()
+		contentLen := len(doc.Content)
+		uri := doc.URI
+		doc.mu.Unlock()
 
-	if s.maxDocumentBytes > 0 && len(snap.Content) > s.maxDocumentBytes {
-		sev := protocol.DiagnosticSeverityInformation
-		s.sendNotification(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
-			URI: snap.URI,
-			Diagnostics: []protocol.Diagnostic{{
-				Range:    protocol.Range{},
-				Severity: &sev,
-				Source:   strPtr("elps"),
-				Message:  "File exceeds size limit for semantic analysis",
-			}},
-		})
-		return
+		if contentLen > s.maxDocumentBytes {
+			sev := protocol.DiagnosticSeverityInformation
+			s.sendNotification(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
+				URI: uri,
+				Diagnostics: []protocol.Diagnostic{{
+					Range:    protocol.Range{},
+					Severity: &sev,
+					Source:   strPtr("elps"),
+					Message:  "File exceeds size limit for semantic analysis",
+				}},
+			})
+			return
+		}
 	}
 
 	s.ensureAnalysis(doc)

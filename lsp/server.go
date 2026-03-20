@@ -86,15 +86,15 @@ func WithEnv(env *lisp.LEnv) Option {
 
 // WithMaxDocumentBytes sets the maximum document size for semantic analysis.
 // Documents exceeding this limit receive an informational diagnostic instead.
-// A value of 0 disables the limit (default).
+// A value <= 0 disables the limit (default).
 func WithMaxDocumentBytes(n int) Option {
-	return func(s *Server) { s.maxDocumentBytes = n }
+	return func(s *Server) { s.maxDocumentBytes = max(n, 0) }
 }
 
 // WithMaxWorkspaceFiles sets the maximum number of .lisp files scanned
-// during workspace indexing. A value of 0 uses the default (5000).
+// during workspace indexing. A value <= 0 uses the default (5000).
 func WithMaxWorkspaceFiles(n int) Option {
-	return func(s *Server) { s.maxWorkspaceFiles = n }
+	return func(s *Server) { s.maxWorkspaceFiles = max(n, 0) }
 }
 
 // New creates a new ELPS LSP server.
