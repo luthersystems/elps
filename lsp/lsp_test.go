@@ -3808,6 +3808,76 @@ func TestDocumentSizeGuard_OversizedDoc(t *testing.T) {
 	doc.mu.Unlock()
 }
 
+func TestDocumentSizeGuard_ExactBoundary(t *testing.T) {
+	// A document exactly at the limit should pass through to analysis
+	// (strict > semantics). One byte over should be skipped.
+	limit := 50
+	s := New(WithMaxDocumentBytes(limit))
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Exactly at limit — should analyze normally.
+	exactContent := strings.Repeat("x", limit)
+	doc := s.docs.Open("file:///exact.lisp", 1, exactContent)
+	s.analyzeAndPublish(doc)
+
+	require.Len(t, *captured, 1)
+	for _, d := range (*captured)[0].Diagnostics {
+		assert.NotContains(t, d.Message, "size limit",
+			"document at exact limit should not be skipped")
+	}
+	doc.mu.Lock()
+	assert.NotNil(t, doc.analysis, "analysis should run for document at exact limit")
+	doc.mu.Unlock()
+
+	// One byte over — should be skipped.
+	overContent := strings.Repeat("x", limit+1)
+	doc2 := s.docs.Open("file:///over.lisp", 1, overContent)
+	s.analyzeAndPublish(doc2)
+
+	require.Len(t, *captured, 2)
+	require.Len(t, (*captured)[1].Diagnostics, 1)
+	assert.Contains(t, (*captured)[1].Diagnostics[0].Message, "size limit")
+	doc2.mu.Lock()
+	assert.Nil(t, doc2.analysis, "analysis should be skipped for document over limit")
+	doc2.mu.Unlock()
+}
+
+func TestDocumentSizeGuard_ZeroMeansNoLimit(t *testing.T) {
+	// Default (no WithMaxDocumentBytes) means maxDocumentBytes=0 → no limit.
+	s := New()
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Even a large document should not be skipped.
+	largeContent := strings.Repeat("(+ 1 1)\n", 1000)
+	doc := s.docs.Open("file:///large.lisp", 1, largeContent)
+	s.analyzeAndPublish(doc)
+
+	require.Len(t, *captured, 1)
+	for _, d := range (*captured)[0].Diagnostics {
+		assert.NotContains(t, d.Message, "size limit",
+			"no limit should be applied when maxDocumentBytes is 0")
+	}
+	doc.mu.Lock()
+	assert.NotNil(t, doc.analysis, "analysis should run with no size limit")
+	doc.mu.Unlock()
+}
+
+func TestWithMaxDocumentBytes_NegativeClamped(t *testing.T) {
+	s := New(WithMaxDocumentBytes(-5))
+	assert.Equal(t, 0, s.maxDocumentBytes,
+		"negative value should be clamped to 0")
+}
+
+func TestWithMaxWorkspaceFiles_NegativeClamped(t *testing.T) {
+	s := New(WithMaxWorkspaceFiles(-10))
+	assert.Equal(t, 0, s.maxWorkspaceFiles,
+		"negative value should be clamped to 0")
+}
+
 func TestDocumentSizeGuard_NormalDoc(t *testing.T) {
 	s := New(WithMaxDocumentBytes(10000))
 	ctx, captured := capturingContext()

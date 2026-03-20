@@ -874,3 +874,44 @@ func TestCollectLispFilesWithConfig_Defaults(t *testing.T) {
 	assert.Len(t, paths, 1)
 	assert.False(t, truncated)
 }
+
+func TestCollectLispFilesWithConfig_ZeroMaxFilesUsesDefault(t *testing.T) {
+	dir := t.TempDir()
+
+	err := os.WriteFile(filepath.Join(dir, "a.lisp"), []byte("()"), 0600)
+	require.NoError(t, err)
+
+	// MaxFiles: 0 should use DefaultMaxWorkspaceFiles, not collect zero files.
+	paths, truncated, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFiles: 0})
+	require.NoError(t, err)
+	assert.Len(t, paths, 1, "MaxFiles: 0 should use default, not collect zero files")
+	assert.False(t, truncated)
+}
+
+func TestCollectLispFilesWithConfig_ZeroMaxFileBytesUsesDefault(t *testing.T) {
+	dir := t.TempDir()
+
+	// A small file that would be excluded if MaxFileBytes: 0 meant "skip all".
+	err := os.WriteFile(filepath.Join(dir, "a.lisp"), []byte("()"), 0600)
+	require.NoError(t, err)
+
+	paths, _, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFileBytes: 0})
+	require.NoError(t, err)
+	assert.Len(t, paths, 1, "MaxFileBytes: 0 should use default, not skip all files")
+}
+
+func TestScanConfig_EffectiveDefaults(t *testing.T) {
+	// Verify the effective* methods return defaults for zero/nil.
+	var nilCfg *ScanConfig
+	assert.Equal(t, DefaultMaxWorkspaceFiles, nilCfg.effectiveMaxFiles())
+	assert.Equal(t, int64(DefaultMaxFileBytes), nilCfg.effectiveMaxFileBytes())
+
+	zeroCfg := &ScanConfig{MaxFiles: 0, MaxFileBytes: 0}
+	assert.Equal(t, DefaultMaxWorkspaceFiles, zeroCfg.effectiveMaxFiles())
+	assert.Equal(t, int64(DefaultMaxFileBytes), zeroCfg.effectiveMaxFileBytes())
+
+	// Negative values also use defaults.
+	negCfg := &ScanConfig{MaxFiles: -1, MaxFileBytes: -1}
+	assert.Equal(t, DefaultMaxWorkspaceFiles, negCfg.effectiveMaxFiles())
+	assert.Equal(t, int64(DefaultMaxFileBytes), negCfg.effectiveMaxFileBytes())
+}
