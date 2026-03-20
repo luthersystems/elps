@@ -115,14 +115,42 @@ func (s *Server) textDocumentDidClose(_ *glsp.Context, params *protocol.DidClose
 // analyzeAndPublish runs analysis and lint on a document and publishes
 // the resulting diagnostics to the client.
 func (s *Server) analyzeAndPublish(doc *Document) {
+	// Check document size before running analysis. Use a cheap lock-and-read
+	// rather than a full Snapshot() to avoid unnecessary slice cloning.
+	if s.maxDocumentBytes > 0 {
+		doc.mu.Lock()
+		contentLen := len(doc.Content)
+		uri := doc.URI
+		doc.mu.Unlock()
+
+		if contentLen > s.maxDocumentBytes {
+			sev := protocol.DiagnosticSeverityInformation
+			s.sendNotification(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
+				URI: uri,
+				Diagnostics: []protocol.Diagnostic{{
+					Range:    protocol.Range{},
+					Severity: &sev,
+					Source:   strPtr("elps"),
+					Message:  "File exceeds size limit for semantic analysis",
+				}},
+			})
+			return
+		}
+	}
+
 	s.ensureAnalysis(doc)
 
-	// Snapshot document fields under the lock.
+	// Re-snapshot after analysis to capture the result and the current
+	// version atomically. We use doc.Version (not snap.Version) so the
+	// version guard compares the version that matches the content/analysis
+	// we actually read here — avoiding a TOCTOU window where the doc
+	// could have been updated between the initial snapshot and now.
 	doc.mu.Lock()
 	parseErrors := doc.parseErrors
 	content := doc.Content
 	docAnalysis := doc.analysis
 	uri := doc.URI
+	currentVersion := doc.Version
 	doc.mu.Unlock()
 
 	var diags []protocol.Diagnostic
@@ -148,6 +176,21 @@ func (s *Server) analyzeAndPublish(doc *Document) {
 			diags = append(diags, convertLintDiagnostic(d))
 		}
 	}
+
+	// Version guard: discard stale results from debounced analysis.
+	doc.mu.Lock()
+	if currentVersion < doc.Version {
+		// Document changed since we read it — discard these stale results.
+		doc.mu.Unlock()
+		return
+	}
+	if currentVersion < doc.publishedVersion {
+		// A strictly newer version was already published — skip.
+		doc.mu.Unlock()
+		return
+	}
+	doc.publishedVersion = currentVersion
+	doc.mu.Unlock()
 
 	s.sendNotification(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
 		URI:         uri,

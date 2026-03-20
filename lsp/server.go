@@ -60,6 +60,15 @@ type Server struct {
 	// exitFn is called on the LSP exit notification. Defaults to os.Exit.
 	// Overridable for testing.
 	exitFn func(int)
+
+	// maxDocumentBytes is the maximum document size (in bytes) for semantic
+	// analysis. Documents exceeding this limit receive an informational
+	// diagnostic instead of full analysis. 0 means no limit.
+	maxDocumentBytes int
+
+	// maxWorkspaceFiles is the maximum number of .lisp files to scan during
+	// workspace indexing. 0 means use the default (5000).
+	maxWorkspaceFiles int
 }
 
 // Option configures the LSP server.
@@ -73,6 +82,19 @@ func WithRegistry(reg *lisp.PackageRegistry) Option {
 // WithEnv injects a fully initialized ELPS environment.
 func WithEnv(env *lisp.LEnv) Option {
 	return func(s *Server) { s.env = env }
+}
+
+// WithMaxDocumentBytes sets the maximum document size for semantic analysis.
+// Documents exceeding this limit receive an informational diagnostic instead.
+// A value <= 0 disables the limit (default).
+func WithMaxDocumentBytes(n int) Option {
+	return func(s *Server) { s.maxDocumentBytes = max(n, 0) }
+}
+
+// WithMaxWorkspaceFiles sets the maximum number of .lisp files scanned
+// during workspace indexing. A value <= 0 uses the default (5000).
+func WithMaxWorkspaceFiles(n int) Option {
+	return func(s *Server) { s.maxWorkspaceFiles = max(n, 0) }
 }
 
 // New creates a new ELPS LSP server.
@@ -260,14 +282,28 @@ func (s *Server) buildWorkspaceIndex() {
 
 	var extraGlobals []analysis.ExternalSymbol
 	var pkgExports map[string][]analysis.ExternalSymbol
+	var defForms []analysis.DefFormSpec
 
-	// Scan workspace files in a single pass (only if we have a root path).
-	// Use allDefs (all top-level definitions, not just exports) so that
-	// cross-file duplicate-definition detection works for non-exported symbols.
+	// Build scan config from server options. MaxFileBytes uses its own
+	// default (not maxDocumentBytes) since document analysis limits and
+	// workspace scan limits serve different purposes.
+	scanCfg := &analysis.ScanConfig{
+		MaxFiles: s.maxWorkspaceFiles,
+	}
+
+	// Two-phase workspace scan: prescan extracts definitions AND
+	// macro-derived DefFormSpecs for cross-file def-like form recognition.
 	if s.rootPath != "" {
-		if _, pkgs, allDefs, err := analysis.ScanWorkspaceAll(s.rootPath); err == nil {
-			extraGlobals = allDefs
-			pkgExports = pkgs
+		if prescan, err := analysis.PrescanWorkspace(s.rootPath, scanCfg); err == nil {
+			extraGlobals = prescan.AllDefs
+			pkgExports = prescan.PkgExports
+			defForms = prescan.DefForms
+			if prescan.Truncated {
+				s.sendNotification("window/showMessage", &protocol.ShowMessageParams{
+					Type:    protocol.MessageTypeWarning,
+					Message: "Workspace file limit reached; some files were not indexed for cross-file analysis.",
+				})
+			}
 		}
 	}
 
@@ -289,13 +325,20 @@ func (s *Server) buildWorkspaceIndex() {
 
 	// Deduplicate package exports by symbol name. Prefer registry entries
 	// (richer type info) over workspace entries when both exist.
+	// Sort after dedup for deterministic resolution order.
 	for pkg, syms := range pkgExports {
-		pkgExports[pkg] = deduplicateExports(syms)
+		deduped := deduplicateExports(syms)
+		analysis.SortDefinitions(deduped)
+		pkgExports[pkg] = deduped
 	}
+
+	// Sort extraGlobals for deterministic duplicate resolution.
+	analysis.SortDefinitions(extraGlobals)
 
 	cfg := &analysis.Config{
 		ExtraGlobals:   extraGlobals,
 		PackageExports: pkgExports,
+		DefForms:       defForms,
 	}
 
 	s.analysisCfgMu.Lock()
@@ -317,6 +360,9 @@ func (s *Server) reanalyzeOpenDocuments() {
 	for _, doc := range s.docs.All() {
 		doc.mu.Lock()
 		doc.analysis = nil
+		// Reset publishedVersion so the version guard allows republishing
+		// with the updated workspace config.
+		doc.publishedVersion = 0
 		doc.mu.Unlock()
 		s.analyzeAndPublish(doc)
 	}
@@ -353,6 +399,7 @@ func (s *Server) getAnalysisConfig(uri string) *analysis.Config {
 	if base != nil {
 		cfg.ExtraGlobals = base.ExtraGlobals
 		cfg.PackageExports = base.PackageExports
+		cfg.DefForms = base.DefForms
 	}
 	return cfg
 }

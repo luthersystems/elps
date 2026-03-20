@@ -3,10 +3,12 @@
 package analysis
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -653,4 +655,263 @@ func TestExtractFileDefinitions_InvalidSource(t *testing.T) {
 	// Unparseable source should return nil, not panic.
 	defs := ExtractFileDefinitions([]byte("(defun broken"), "bad.lisp")
 	assert.Nil(t, defs)
+}
+
+func TestPrescanWorkspace_DefForms(t *testing.T) {
+	dir := t.TempDir()
+
+	// File A defines a def-prefixed macro with 2+ params.
+	err := os.WriteFile(filepath.Join(dir, "macros.lisp"), []byte(`
+(defmacro def-handler (name routes)
+  "Define a handler with routes."
+  (list 'defun name (list 'req) routes))
+(export 'def-handler)
+`), 0600)
+	require.NoError(t, err)
+
+	// File B uses the macro — (def-handler name (formals) body...).
+	err = os.WriteFile(filepath.Join(dir, "handlers.lisp"), []byte(`
+(def-handler my-api (req)
+  (respond req "ok"))
+`), 0600)
+	require.NoError(t, err)
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+	require.NotNil(t, prescan)
+
+	// Should produce a DefFormSpec for def-handler.
+	var found *DefFormSpec
+	for i := range prescan.DefForms {
+		if prescan.DefForms[i].Head == "def-handler" {
+			found = &prescan.DefForms[i]
+			break
+		}
+	}
+	require.NotNil(t, found, "should produce DefFormSpec for def-handler")
+	assert.True(t, found.BindsName, "def-handler should bind a name")
+	assert.Equal(t, 1, found.NameIndex, "name should be at index 1")
+	assert.Equal(t, 2, found.FormalsIndex, "formals should be at index 2")
+
+	// Verify that analysis with the DefForms recognizes my-api as a definition.
+	cfg := &Config{
+		ExtraGlobals:   prescan.AllDefs,
+		PackageExports: prescan.PkgExports,
+		DefForms:       prescan.DefForms,
+		Filename:       filepath.Join(dir, "handlers.lisp"),
+	}
+	handlerSrc, _ := os.ReadFile(filepath.Join(dir, "handlers.lisp")) //nolint:gosec // test file
+	result := AnalyzeFile(handlerSrc, filepath.Join(dir, "handlers.lisp"), cfg)
+	require.NotNil(t, result)
+
+	// my-api should be in the symbols list as a definition.
+	var myAPI *Symbol
+	for _, sym := range result.Symbols {
+		if sym.Name == "my-api" {
+			myAPI = sym
+			break
+		}
+	}
+	assert.NotNil(t, myAPI, "my-api should be recognized as a definition via def-handler DefFormSpec")
+}
+
+func TestPrescanWorkspace_NoDefPrefixMacroSkipped(t *testing.T) {
+	dir := t.TempDir()
+
+	// Macro without "def" prefix should NOT produce a DefFormSpec.
+	err := os.WriteFile(filepath.Join(dir, "macros.lisp"), []byte(`
+(defmacro with-logging (body)
+  (list 'progn (list 'log "start") body (list 'log "end")))
+(export 'with-logging)
+`), 0600)
+	require.NoError(t, err)
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+	assert.Empty(t, prescan.DefForms, "non-def-prefixed macros should not produce DefFormSpecs")
+}
+
+func TestExtractDefFormSpecs_MinArity(t *testing.T) {
+	// A macro with only 1 required param (arity < 2) can't have both
+	// name and formals, so no DefFormSpec should be produced.
+	defs := []ExternalSymbol{
+		{
+			Name: "def-simple",
+			Kind: SymMacro,
+			Signature: &Signature{
+				Params: []lisp.ParamInfo{{Name: "body", Kind: lisp.ParamRequired}},
+			},
+		},
+	}
+	specs := extractDefFormSpecs(defs)
+	assert.Empty(t, specs, "macro with < 2 params should not produce DefFormSpec")
+}
+
+func TestExtractDefFormSpecs_ValidMacro(t *testing.T) {
+	// A def-prefixed macro with arity >= 2 should produce a DefFormSpec.
+	defs := []ExternalSymbol{
+		{
+			Name: "def-handler",
+			Kind: SymMacro,
+			Signature: &Signature{
+				Params: []lisp.ParamInfo{
+					{Name: "name", Kind: lisp.ParamRequired},
+					{Name: "routes", Kind: lisp.ParamRequired},
+				},
+			},
+		},
+	}
+	specs := extractDefFormSpecs(defs)
+	require.Len(t, specs, 1)
+	assert.Equal(t, "def-handler", specs[0].Head)
+	assert.True(t, specs[0].BindsName)
+	assert.Equal(t, 1, specs[0].NameIndex)
+	assert.Equal(t, 2, specs[0].FormalsIndex)
+	assert.Equal(t, SymFunction, specs[0].NameKind)
+}
+
+func TestExtractDefFormSpecs_NonMacroSkipped(t *testing.T) {
+	// A function (not macro) with "def" prefix should NOT produce a DefFormSpec.
+	defs := []ExternalSymbol{
+		{
+			Name: "def-helper",
+			Kind: SymFunction,
+			Signature: &Signature{
+				Params: []lisp.ParamInfo{
+					{Name: "name", Kind: lisp.ParamRequired},
+					{Name: "value", Kind: lisp.ParamRequired},
+				},
+			},
+		},
+	}
+	specs := extractDefFormSpecs(defs)
+	assert.Empty(t, specs, "non-macro symbols should not produce DefFormSpecs")
+}
+
+func TestExtractDefFormSpecs_NilSignatureSkipped(t *testing.T) {
+	defs := []ExternalSymbol{
+		{Name: "def-broken", Kind: SymMacro, Signature: nil},
+	}
+	specs := extractDefFormSpecs(defs)
+	assert.Empty(t, specs, "macro with nil signature should not produce DefFormSpec")
+}
+
+func TestCollectLispFilesWithConfig_MaxFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create 5 .lisp files.
+	for i := range 5 {
+		err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d.lisp", i)), []byte("()"), 0600)
+		require.NoError(t, err)
+	}
+
+	// Limit to 3 files.
+	paths, truncated, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFiles: 3})
+	require.NoError(t, err)
+	assert.Len(t, paths, 3)
+	assert.True(t, truncated, "should be truncated when hitting MaxFiles limit")
+}
+
+func TestCollectLispFilesWithConfig_NoTruncation(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create 2 .lisp files.
+	for i := range 2 {
+		err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d.lisp", i)), []byte("()"), 0600)
+		require.NoError(t, err)
+	}
+
+	paths, truncated, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFiles: 10})
+	require.NoError(t, err)
+	assert.Len(t, paths, 2)
+	assert.False(t, truncated, "should not be truncated when under limit")
+}
+
+func TestCollectLispFilesWithConfig_MaxFileBytes(t *testing.T) {
+	dir := t.TempDir()
+
+	// Small file (under limit).
+	err := os.WriteFile(filepath.Join(dir, "small.lisp"), []byte("(+ 1 1)"), 0600)
+	require.NoError(t, err)
+
+	// Large file (over limit).
+	err = os.WriteFile(filepath.Join(dir, "large.lisp"), make([]byte, 200), 0600)
+	require.NoError(t, err)
+
+	paths, _, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFileBytes: 100})
+	require.NoError(t, err)
+	assert.Len(t, paths, 1, "only the small file should be collected")
+	assert.Contains(t, paths[0], "small.lisp")
+}
+
+func TestCollectLispFilesWithConfig_MaxFileBytesExactBoundary(t *testing.T) {
+	dir := t.TempDir()
+
+	// File exactly at the limit (100 bytes). The implementation uses
+	// strict > so exactly-at-limit files should be included.
+	err := os.WriteFile(filepath.Join(dir, "exact.lisp"), make([]byte, 100), 0600)
+	require.NoError(t, err)
+
+	// File 1 byte over the limit.
+	err = os.WriteFile(filepath.Join(dir, "over.lisp"), make([]byte, 101), 0600)
+	require.NoError(t, err)
+
+	paths, _, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFileBytes: 100})
+	require.NoError(t, err)
+	assert.Len(t, paths, 1, "file exactly at limit should be included, over should be excluded")
+	assert.Contains(t, paths[0], "exact.lisp")
+}
+
+func TestCollectLispFilesWithConfig_Defaults(t *testing.T) {
+	dir := t.TempDir()
+
+	err := os.WriteFile(filepath.Join(dir, "a.lisp"), []byte("()"), 0600)
+	require.NoError(t, err)
+
+	// nil config uses defaults.
+	paths, truncated, err := collectLispFilesWithConfig(dir, nil)
+	require.NoError(t, err)
+	assert.Len(t, paths, 1)
+	assert.False(t, truncated)
+}
+
+func TestCollectLispFilesWithConfig_ZeroMaxFilesUsesDefault(t *testing.T) {
+	dir := t.TempDir()
+
+	err := os.WriteFile(filepath.Join(dir, "a.lisp"), []byte("()"), 0600)
+	require.NoError(t, err)
+
+	// MaxFiles: 0 should use DefaultMaxWorkspaceFiles, not collect zero files.
+	paths, truncated, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFiles: 0})
+	require.NoError(t, err)
+	assert.Len(t, paths, 1, "MaxFiles: 0 should use default, not collect zero files")
+	assert.False(t, truncated)
+}
+
+func TestCollectLispFilesWithConfig_ZeroMaxFileBytesUsesDefault(t *testing.T) {
+	dir := t.TempDir()
+
+	// A small file that would be excluded if MaxFileBytes: 0 meant "skip all".
+	err := os.WriteFile(filepath.Join(dir, "a.lisp"), []byte("()"), 0600)
+	require.NoError(t, err)
+
+	paths, _, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFileBytes: 0})
+	require.NoError(t, err)
+	assert.Len(t, paths, 1, "MaxFileBytes: 0 should use default, not skip all files")
+}
+
+func TestScanConfig_EffectiveDefaults(t *testing.T) {
+	// Verify the effective* methods return defaults for zero/nil.
+	var nilCfg *ScanConfig
+	assert.Equal(t, DefaultMaxWorkspaceFiles, nilCfg.effectiveMaxFiles())
+	assert.Equal(t, int64(DefaultMaxFileBytes), nilCfg.effectiveMaxFileBytes())
+
+	zeroCfg := &ScanConfig{MaxFiles: 0, MaxFileBytes: 0}
+	assert.Equal(t, DefaultMaxWorkspaceFiles, zeroCfg.effectiveMaxFiles())
+	assert.Equal(t, int64(DefaultMaxFileBytes), zeroCfg.effectiveMaxFileBytes())
+
+	// Negative values also use defaults.
+	negCfg := &ScanConfig{MaxFiles: -1, MaxFileBytes: -1}
+	assert.Equal(t, DefaultMaxWorkspaceFiles, negCfg.effectiveMaxFiles())
+	assert.Equal(t, int64(DefaultMaxFileBytes), negCfg.effectiveMaxFileBytes())
 }

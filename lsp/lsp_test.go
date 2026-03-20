@@ -3784,3 +3784,258 @@ func TestWatchedFiles_UpdatesDefinitions(t *testing.T) {
 
 	assert.Empty(t, globals, "all definitions should be removed after file deletion")
 }
+
+func TestDocumentSizeGuard_OversizedDoc(t *testing.T) {
+	s := New(WithMaxDocumentBytes(100))
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Open a document exceeding the size limit.
+	largeContent := strings.Repeat("(+ 1 1)\n", 20) // ~160 bytes
+	doc := s.docs.Open("file:///big.lisp", 1, largeContent)
+	s.analyzeAndPublish(doc)
+
+	require.Len(t, *captured, 1)
+	pub := (*captured)[0]
+	require.Len(t, pub.Diagnostics, 1)
+	assert.Equal(t, protocol.DiagnosticSeverityInformation, *pub.Diagnostics[0].Severity)
+	assert.Contains(t, pub.Diagnostics[0].Message, "size limit")
+
+	// Verify analysis was actually skipped — doc.analysis should remain nil.
+	doc.mu.Lock()
+	assert.Nil(t, doc.analysis, "analysis should be skipped for oversized documents")
+	doc.mu.Unlock()
+}
+
+func TestDocumentSizeGuard_ExactBoundary(t *testing.T) {
+	// A document exactly at the limit should pass through to analysis
+	// (strict > semantics). One byte over should be skipped.
+	limit := 50
+	s := New(WithMaxDocumentBytes(limit))
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Exactly at limit — should analyze normally.
+	exactContent := strings.Repeat("x", limit)
+	doc := s.docs.Open("file:///exact.lisp", 1, exactContent)
+	s.analyzeAndPublish(doc)
+
+	require.Len(t, *captured, 1)
+	for _, d := range (*captured)[0].Diagnostics {
+		assert.NotContains(t, d.Message, "size limit",
+			"document at exact limit should not be skipped")
+	}
+	doc.mu.Lock()
+	assert.NotNil(t, doc.analysis, "analysis should run for document at exact limit")
+	doc.mu.Unlock()
+
+	// One byte over — should be skipped.
+	overContent := strings.Repeat("x", limit+1)
+	doc2 := s.docs.Open("file:///over.lisp", 1, overContent)
+	s.analyzeAndPublish(doc2)
+
+	require.Len(t, *captured, 2)
+	require.Len(t, (*captured)[1].Diagnostics, 1)
+	assert.Contains(t, (*captured)[1].Diagnostics[0].Message, "size limit")
+	doc2.mu.Lock()
+	assert.Nil(t, doc2.analysis, "analysis should be skipped for document over limit")
+	doc2.mu.Unlock()
+}
+
+func TestDocumentSizeGuard_ZeroMeansNoLimit(t *testing.T) {
+	// Default (no WithMaxDocumentBytes) means maxDocumentBytes=0 → no limit.
+	s := New()
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Even a large document should not be skipped.
+	largeContent := strings.Repeat("(+ 1 1)\n", 1000)
+	doc := s.docs.Open("file:///large.lisp", 1, largeContent)
+	s.analyzeAndPublish(doc)
+
+	require.Len(t, *captured, 1)
+	for _, d := range (*captured)[0].Diagnostics {
+		assert.NotContains(t, d.Message, "size limit",
+			"no limit should be applied when maxDocumentBytes is 0")
+	}
+	doc.mu.Lock()
+	assert.NotNil(t, doc.analysis, "analysis should run with no size limit")
+	doc.mu.Unlock()
+}
+
+func TestWithMaxDocumentBytes_NegativeClamped(t *testing.T) {
+	s := New(WithMaxDocumentBytes(-5))
+	assert.Equal(t, 0, s.maxDocumentBytes,
+		"negative value should be clamped to 0")
+}
+
+func TestWithMaxWorkspaceFiles_NegativeClamped(t *testing.T) {
+	s := New(WithMaxWorkspaceFiles(-10))
+	assert.Equal(t, 0, s.maxWorkspaceFiles,
+		"negative value should be clamped to 0")
+}
+
+func TestDocumentSizeGuard_NormalDoc(t *testing.T) {
+	s := New(WithMaxDocumentBytes(10000))
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Open a small document — should get normal analysis, not size warning.
+	doc := s.docs.Open("file:///small.lisp", 1, "(defun add (x y) (+ x y))")
+	s.analyzeAndPublish(doc)
+
+	require.Len(t, *captured, 1)
+	pub := (*captured)[0]
+	for _, d := range pub.Diagnostics {
+		assert.NotContains(t, d.Message, "size limit",
+			"normal-sized document should not get size limit diagnostic")
+	}
+
+	// Verify analysis actually ran — doc.analysis should be populated.
+	doc.mu.Lock()
+	assert.NotNil(t, doc.analysis, "analysis should run for normal-sized documents")
+	doc.mu.Unlock()
+}
+
+func TestVersionGuard_StalePublishDiscarded(t *testing.T) {
+	s := testServer()
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Publish v1, v2, then attempt v1 again — v1 should be discarded.
+	doc := s.docs.Open("file:///test.lisp", 1, "(+ 1 1)")
+	s.analyzeAndPublish(doc)
+	require.Len(t, *captured, 1, "v1 should publish")
+
+	// Change to v2 and publish.
+	s.docs.Change("file:///test.lisp", 2, "(+ 2 2)")
+	s.analyzeAndPublish(doc)
+	require.Len(t, *captured, 2, "v2 should publish")
+
+	// Now revert version to 1 (simulating a stale debounce timer firing
+	// with old content after v2 was already published).
+	doc.mu.Lock()
+	doc.Version = 1
+	doc.analysis = nil
+	doc.mu.Unlock()
+	s.analyzeAndPublish(doc)
+
+	// Stale v1 should be discarded — still only 2 publications.
+	assert.Len(t, *captured, 2,
+		"stale v1 should be discarded since v2 was already published")
+}
+
+func TestVersionGuard_PublishedVersionBlocksOlderVersion(t *testing.T) {
+	s := testServer()
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Publish v3, then attempt to publish v1 — v1 should be blocked by
+	// the publishedVersion check (not just the doc.Version check).
+	doc := s.docs.Open("file:///test.lisp", 3, "(+ 3 3)")
+	s.analyzeAndPublish(doc)
+	require.Len(t, *captured, 1, "v3 should publish")
+
+	// Simulate v5 published by another path (e.g., concurrent didSave).
+	doc.mu.Lock()
+	doc.publishedVersion = 5
+	doc.mu.Unlock()
+
+	// Attempt to publish v3 again — should be blocked because v5 was
+	// already published (tests the publishedVersion guard specifically).
+	doc.mu.Lock()
+	doc.analysis = nil
+	doc.mu.Unlock()
+	s.analyzeAndPublish(doc)
+
+	assert.Len(t, *captured, 1,
+		"v3 re-publish should be blocked when publishedVersion is 5")
+}
+
+func TestVersionGuard_NewerVersionPublishes(t *testing.T) {
+	s := testServer()
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Open v1 and publish.
+	doc := s.docs.Open("file:///test.lisp", 1, "(+ 1 1)")
+	s.analyzeAndPublish(doc)
+	require.Len(t, *captured, 1, "v1 should publish")
+
+	// Change to v2 and publish — must succeed since v2 > v1.
+	s.docs.Change("file:///test.lisp", 2, "(+ 2 2)")
+	s.analyzeAndPublish(doc)
+	require.Len(t, *captured, 2, "v2 should publish since it's newer than v1")
+
+	// Attempt to publish v1 — should be blocked since v2 was published.
+	doc.mu.Lock()
+	doc.Version = 1
+	doc.analysis = nil
+	doc.mu.Unlock()
+	s.analyzeAndPublish(doc)
+	assert.Len(t, *captured, 2,
+		"v1 should be blocked after v2 was published")
+}
+
+func TestDocumentSnapshot_CopiesFields(t *testing.T) {
+	doc := &Document{
+		URI:     "file:///test.lisp",
+		Version: 5,
+		Content: "(+ 1 1)",
+	}
+	snap := doc.Snapshot()
+	assert.Equal(t, "file:///test.lisp", snap.URI)
+	assert.Equal(t, int32(5), snap.Version)
+	assert.Equal(t, "(+ 1 1)", snap.Content)
+}
+
+func TestDocumentSnapshot_IsolatedFromMutation(t *testing.T) {
+	// Verify that snapshot slices are isolated from the document's slices,
+	// so a concurrent parse() replacing doc.ast won't affect the snapshot.
+	store := NewDocumentStore()
+	doc := store.Open("file:///test.lisp", 1, "(defun f () 1)")
+	require.NotNil(t, doc)
+
+	// Take snapshot while document has parsed AST.
+	snap := doc.Snapshot()
+	require.NotEmpty(t, snap.AST, "snapshot should have AST from parsed content")
+	originalASTLen := len(snap.AST)
+
+	// Mutate the document (simulates concurrent parse with different content).
+	doc.mu.Lock()
+	doc.Content = "(+ 1 1)"
+	doc.parse()
+	doc.mu.Unlock()
+
+	// Snapshot's AST should be unchanged despite the document being re-parsed.
+	assert.Len(t, snap.AST, originalASTLen,
+		"snapshot AST should be isolated from document mutations")
+}
+
+func TestDocumentSnapshot_ParseErrorsIsolated(t *testing.T) {
+	store := NewDocumentStore()
+	// Open with a parse error.
+	doc := store.Open("file:///test.lisp", 1, "(defun broken (x y")
+	require.NotNil(t, doc)
+
+	snap := doc.Snapshot()
+	require.NotEmpty(t, snap.ParseErrors, "snapshot should capture parse errors")
+	originalErrCount := len(snap.ParseErrors)
+
+	// Re-parse with valid content (no errors).
+	doc.mu.Lock()
+	doc.Content = "(+ 1 1)"
+	doc.parse()
+	doc.mu.Unlock()
+
+	// Snapshot's parse errors should be unchanged.
+	assert.Len(t, snap.ParseErrors, originalErrCount,
+		"snapshot parse errors should be isolated from document mutations")
+}

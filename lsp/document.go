@@ -3,6 +3,7 @@
 package lsp
 
 import (
+	"slices"
 	"strings"
 	"sync"
 
@@ -21,6 +22,36 @@ type Document struct {
 	ast         []*lisp.LVal
 	analysis    *analysis.Result
 	parseErrors []error
+
+	// publishedVersion tracks the latest version whose diagnostics were
+	// successfully published. Used to discard stale debounced results.
+	publishedVersion int32
+}
+
+// DocumentSnapshot is an immutable copy of a document's state at a point
+// in time. Slice fields are shallow-copied so the snapshot remains safe
+// even if the document's slices are replaced by a concurrent parse().
+type DocumentSnapshot struct {
+	URI         string
+	Version     int32
+	Content     string
+	AST         []*lisp.LVal
+	ParseErrors []error
+}
+
+// Snapshot returns an immutable copy of the document's current state.
+// Slice fields are copied so the snapshot is safe to use after the
+// document's lock is released.
+func (d *Document) Snapshot() DocumentSnapshot {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return DocumentSnapshot{
+		URI:         d.URI,
+		Version:     d.Version,
+		Content:     d.Content,
+		AST:         slices.Clone(d.ast),
+		ParseErrors: slices.Clone(d.parseErrors),
+	}
 }
 
 // parse parses the document content and caches the AST using the
