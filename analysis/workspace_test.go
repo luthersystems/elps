@@ -627,3 +627,30 @@ func TestExtractFileRefs_QualifiedSymbol(t *testing.T) {
 	// Note: trailing colon (e.g. "helpers:") is a parse-level concern —
 	// the parser either rejects it or splits it, so we don't test it here.
 }
+
+func TestExtractFileDefinitions(t *testing.T) {
+	source := []byte(`(in-package 'mylib)
+(defun helper (x) (+ x 1))
+(defmacro with-thing (body) body)
+(set 'max-retries 3)
+(export 'helper)`)
+
+	defs := ExtractFileDefinitions(source, "mylib.lisp")
+	require.NotEmpty(t, defs)
+
+	names := make(map[string]SymbolKind)
+	for _, d := range defs {
+		names[d.Name] = d.Kind
+		assert.Equal(t, "mylib", d.Package, "all defs should be in mylib package")
+	}
+
+	assert.Equal(t, SymFunction, names["helper"])
+	assert.Equal(t, SymMacro, names["with-thing"])
+	assert.Equal(t, SymVariable, names["max-retries"])
+}
+
+func TestExtractFileDefinitions_InvalidSource(t *testing.T) {
+	// Unparseable source should return nil, not panic.
+	defs := ExtractFileDefinitions([]byte("(defun broken"), "bad.lisp")
+	assert.Nil(t, defs)
+}

@@ -262,9 +262,11 @@ func (s *Server) buildWorkspaceIndex() {
 	var pkgExports map[string][]analysis.ExternalSymbol
 
 	// Scan workspace files in a single pass (only if we have a root path).
+	// Use allDefs (all top-level definitions, not just exports) so that
+	// cross-file duplicate-definition detection works for non-exported symbols.
 	if s.rootPath != "" {
-		if globals, pkgs, err := analysis.ScanWorkspaceFull(s.rootPath); err == nil {
-			extraGlobals = globals
+		if _, pkgs, allDefs, err := analysis.ScanWorkspaceAll(s.rootPath); err == nil {
+			extraGlobals = allDefs
 			pkgExports = pkgs
 		}
 	}
@@ -467,6 +469,52 @@ func (s *Server) updateFileRefs(uri string) {
 	for key, refs := range newByKey {
 		s.workspaceRefs[key] = append(s.workspaceRefs[key], refs...)
 	}
+}
+
+// updateFileDefinitions re-extracts top-level definitions from a single file
+// and updates ExtraGlobals in the analysis config. Old entries for this file
+// are removed and replaced with the new definitions.
+func (s *Server) updateFileDefinitions(uri string) {
+	filePath := uriToPath(uri)
+	source, err := os.ReadFile(filePath) //nolint:gosec // LSP server reads user files
+	if err != nil {
+		return
+	}
+
+	newDefs := analysis.ExtractFileDefinitions(source, filePath)
+
+	s.analysisCfgMu.Lock()
+	defer s.analysisCfgMu.Unlock()
+
+	if s.analysisCfg == nil {
+		return
+	}
+
+	s.analysisCfg.ExtraGlobals = append(filterExtraGlobalsByFile(s.analysisCfg.ExtraGlobals, filePath), newDefs...)
+}
+
+// removeFileDefinitions removes all ExtraGlobals entries for the given file path.
+func (s *Server) removeFileDefinitions(filePath string) {
+	s.analysisCfgMu.Lock()
+	defer s.analysisCfgMu.Unlock()
+
+	if s.analysisCfg == nil {
+		return
+	}
+
+	s.analysisCfg.ExtraGlobals = filterExtraGlobalsByFile(s.analysisCfg.ExtraGlobals, filePath)
+}
+
+// filterExtraGlobalsByFile returns a new slice with all entries whose
+// Source.File does not match excludeFile. Entries with nil Source are kept.
+func filterExtraGlobalsByFile(globals []analysis.ExternalSymbol, excludeFile string) []analysis.ExternalSymbol {
+	var kept []analysis.ExternalSymbol
+	for _, sym := range globals {
+		if sym.Source == nil || sym.Source.File != excludeFile {
+			kept = append(kept, sym)
+		}
+	}
+	return kept
 }
 
 // setTestWorkspaceRefs injects workspace refs directly for unit tests.

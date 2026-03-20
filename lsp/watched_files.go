@@ -62,9 +62,12 @@ func (s *Server) workspaceDidChangeWatchedFiles(_ *glsp.Context, params *protoco
 
 		switch event.Type {
 		case protocol.FileChangeTypeCreated, protocol.FileChangeTypeChanged:
+			s.updateFileDefinitions(uri)
 			s.updateFileRefs(uri)
 		case protocol.FileChangeTypeDeleted:
-			s.removeFileRefs(uriToPath(uri))
+			filePath := uriToPath(uri)
+			s.removeFileDefinitions(filePath)
+			s.removeFileRefs(filePath)
 		}
 	}
 

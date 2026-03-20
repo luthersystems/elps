@@ -2165,13 +2165,10 @@ func TestDuplicateDefinition_CrossFile_DifferentPackage(t *testing.T) {
 }
 
 func TestDuplicateDefinition_CrossFile_UserPackageNormalization(t *testing.T) {
-	// When an external symbol has explicit Package:"user", it goes through
-	// DefineQualifiedOnly and lands at the same PackageSymbols key as the
-	// local defun — the scope overwrites it. This is a known limitation:
-	// same-package qualified externals are indistinguishable from locals
-	// after prescan. The empty-package path (tested in CrossFile above)
-	// works because the external lands in Symbols["helper"] while the
-	// local lands in PackageSymbols["user:helper"].
+	// External symbol with explicit Package:"user" should be detected as
+	// a cross-file duplicate. The analyzer now checks ExtraGlobals directly
+	// instead of relying on scope lookups (which can be overwritten by
+	// local definitions during prescan).
 	source := "(defun helper () 42)"
 	l := &Linter{Analyzers: []*Analyzer{AnalyzerDuplicateDefinition}}
 	cfg := &analysis.Config{
@@ -2186,7 +2183,49 @@ func TestDuplicateDefinition_CrossFile_UserPackageNormalization(t *testing.T) {
 	}
 	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
 	require.NoError(t, err)
-	// Cannot detect due to scope key collision — documented limitation.
+	require.Len(t, diags, 1)
+	assert.Contains(t, diags[0].Message, "duplicate definition")
+	assert.Contains(t, diags[0].Message, "helper")
+}
+
+func TestDuplicateDefinition_CrossFile_SameFileSelfReference(t *testing.T) {
+	// When ExtraGlobals contains a definition from the same file being
+	// linted (self-reference from workspace scanning), it should be
+	// skipped — not reported as a cross-file duplicate.
+	source := "(defun helper () 42)"
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDuplicateDefinition}}
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:    "helper",
+				Kind:    analysis.SymFunction,
+				Package: "user",
+				Source:  &token.Location{File: "test.lisp", Line: 1, Col: 7},
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+func TestDuplicateDefinition_CrossFile_SameFilePathNormalization(t *testing.T) {
+	// Self-file filtering should work even when one path is relative and
+	// the other has extra components (e.g. "./dir/../file.lisp").
+	source := "(defun helper () 42)"
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDuplicateDefinition}}
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:    "helper",
+				Kind:    analysis.SymFunction,
+				Package: "user",
+				Source:  &token.Location{File: "dir/../test.lisp", Line: 1, Col: 7},
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
 	assertNoDiags(t, diags)
 }
 

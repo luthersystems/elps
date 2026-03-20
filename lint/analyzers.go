@@ -4,6 +4,7 @@ package lint
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -937,6 +938,38 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 			groups[key] = append(groups[key], sym)
 		}
 
+		// Build an index of ExtraGlobals for cross-file duplicate checking.
+		// This avoids relying on scope lookups which may have been
+		// overwritten by local definitions during prescan.
+		type extKey struct {
+			name string
+			pkg  string
+		}
+		extIndex := make(map[extKey]*analysis.ExternalSymbol)
+		for i := range pass.Semantics.ExtraGlobals {
+			ext := &pass.Semantics.ExtraGlobals[i]
+			if !isDefKind(ext.Kind) || ext.Source == nil {
+				continue
+			}
+			pkg := ext.Package
+			if pkg == "" {
+				pkg = "user"
+			}
+			// Keep only the first external occurrence per key.
+			ek := extKey{name: ext.Name, pkg: pkg}
+			if _, exists := extIndex[ek]; !exists {
+				extIndex[ek] = ext
+			}
+		}
+
+		// Normalize the current filename for reliable self-file comparison.
+		// Paths from workspace scanning may be absolute while lint filenames
+		// may be relative (or vice versa).
+		cleanFilename := pass.Filename
+		if cleanFilename != "" {
+			cleanFilename = filepath.Clean(cleanFilename)
+		}
+
 		for key, syms := range groups {
 			first := syms[0]
 
@@ -950,26 +983,17 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 			}
 
 			// Cross-file: check if an external symbol with the same name
-			// exists in the root scope. External symbols from ExtraGlobals
-			// are in the scope but not in result.Symbols.
-			allLocal := pass.Semantics.RootScope.LookupAllLocal(key.name)
-			for _, ext := range allLocal {
-				if !ext.External || ext.Source == nil {
-					continue
-				}
-				if !isDefKind(ext.Kind) {
-					continue
-				}
-				// Treat empty package as "user" (the default package).
-				extPkg := ext.Package
-				if extPkg == "" {
-					extPkg = "user"
-				}
-				localPkg := key.pkg
-				if localPkg == "" {
-					localPkg = "user"
-				}
-				if extPkg != localPkg {
+			// and package exists in ExtraGlobals. The extIndex maps each
+			// (name, pkg) to at most one external, so this produces at
+			// most one cross-file warning per local symbol.
+			localPkg := key.pkg
+			if localPkg == "" {
+				localPkg = "user"
+			}
+			if ext, ok := extIndex[extKey{name: key.name, pkg: localPkg}]; ok {
+				// Skip if the external definition is from the same file
+				// (self-reference from workspace scanning).
+				if cleanFilename != "" && filepath.Clean(ext.Source.File) == cleanFilename {
 					continue
 				}
 				pass.Report(Diagnostic{
@@ -977,7 +1001,6 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 					Pos:     posFromSource(first.Source),
 					Notes:   []string{fmt.Sprintf("also defined at %s", sourceString(ext.Source))},
 				})
-				break // one cross-file warning per local symbol is enough
 			}
 		}
 		return nil
