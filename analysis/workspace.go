@@ -25,7 +25,6 @@ const (
 	DefaultMaxFileBytes = 5 * 1024 * 1024
 )
 
-
 // ScanConfig controls workspace file collection limits.
 type ScanConfig struct {
 	// MaxFiles is the maximum number of .lisp files to collect.
@@ -181,13 +180,6 @@ func ScanWorkspaceAllWithConfig(root string, scanCfg *ScanConfig) (globals []Ext
 		}
 	}
 	return globals, pkgs, allDefs, truncated, nil
-}
-
-// collectLispFiles walks the directory tree and collects .lisp file paths,
-// up to maxWorkspaceFiles. Files exceeding maxFileBytes are skipped.
-func collectLispFiles(root string, maxFileBytes int64) ([]string, error) {
-	paths, _, err := collectLispFilesWithConfig(root, &ScanConfig{MaxFileBytes: maxFileBytes})
-	return paths, err
 }
 
 // collectLispFilesWithConfig walks the directory tree and collects .lisp
@@ -638,7 +630,7 @@ func scopeContainingAnalysis(scope *Scope, line, col int) *Scope {
 //
 // Returns a map from SymbolKey.String() to FileReference slices.
 func ScanWorkspaceRefs(root string, cfg *Config) map[string][]FileReference {
-	paths, err := collectLispFiles(root, 0)
+	paths, _, err := collectLispFilesWithConfig(root, nil)
 	if err != nil || len(paths) == 0 {
 		return nil
 	}

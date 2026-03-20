@@ -284,10 +284,11 @@ func (s *Server) buildWorkspaceIndex() {
 	var pkgExports map[string][]analysis.ExternalSymbol
 	var defForms []analysis.DefFormSpec
 
-	// Build scan config from server options.
+	// Build scan config from server options. MaxFileBytes uses its own
+	// default (not maxDocumentBytes) since document analysis limits and
+	// workspace scan limits serve different purposes.
 	scanCfg := &analysis.ScanConfig{
-		MaxFiles:     s.maxWorkspaceFiles,
-		MaxFileBytes: int64(s.maxDocumentBytes),
+		MaxFiles: s.maxWorkspaceFiles,
 	}
 
 	// Two-phase workspace scan: prescan extracts definitions AND

@@ -11,6 +11,7 @@ import (
 // with the same name. The winner is chosen by: lexicographically smallest
 // Source.File, then earliest Source.Line, then earliest Source.Col.
 // Symbols with nil Source are ranked last. Returns nil if the slice is empty.
+// Note: sorts the input slice in-place as a side effect.
 func PreferredDefinition(syms []ExternalSymbol) *ExternalSymbol {
 	if len(syms) == 0 {
 		return nil

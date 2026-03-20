@@ -134,13 +134,17 @@ func (s *Server) analyzeAndPublish(doc *Document) {
 
 	s.ensureAnalysis(doc)
 
-	// Re-snapshot after analysis to capture the analysis result.
+	// Re-snapshot after analysis to capture the result and the current
+	// version atomically. We use doc.Version (not snap.Version) so the
+	// version guard compares the version that matches the content/analysis
+	// we actually read here — avoiding a TOCTOU window where the doc
+	// could have been updated between the initial snapshot and now.
 	doc.mu.Lock()
 	parseErrors := doc.parseErrors
 	content := doc.Content
 	docAnalysis := doc.analysis
 	uri := doc.URI
-	snapVersion := snap.Version
+	currentVersion := doc.Version
 	doc.mu.Unlock()
 
 	var diags []protocol.Diagnostic
@@ -169,17 +173,17 @@ func (s *Server) analyzeAndPublish(doc *Document) {
 
 	// Version guard: discard stale results from debounced analysis.
 	doc.mu.Lock()
-	if snapVersion < doc.Version {
-		// Document changed since we started — discard these stale results.
+	if currentVersion < doc.Version {
+		// Document changed since we read it — discard these stale results.
 		doc.mu.Unlock()
 		return
 	}
-	if snapVersion < doc.publishedVersion {
+	if currentVersion < doc.publishedVersion {
 		// A strictly newer version was already published — skip.
 		doc.mu.Unlock()
 		return
 	}
-	doc.publishedVersion = snapVersion
+	doc.publishedVersion = currentVersion
 	doc.mu.Unlock()
 
 	s.sendNotification(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{

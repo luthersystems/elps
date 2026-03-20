@@ -3,6 +3,7 @@
 package lsp
 
 import (
+	"slices"
 	"strings"
 	"sync"
 
@@ -28,7 +29,8 @@ type Document struct {
 }
 
 // DocumentSnapshot is an immutable copy of a document's state at a point
-// in time. Used to run analysis without holding the document lock.
+// in time. Slice fields are shallow-copied so the snapshot remains safe
+// even if the document's slices are replaced by a concurrent parse().
 type DocumentSnapshot struct {
 	URI         string
 	Version     int32
@@ -38,6 +40,8 @@ type DocumentSnapshot struct {
 }
 
 // Snapshot returns an immutable copy of the document's current state.
+// Slice fields are copied so the snapshot is safe to use after the
+// document's lock is released.
 func (d *Document) Snapshot() DocumentSnapshot {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -45,8 +49,8 @@ func (d *Document) Snapshot() DocumentSnapshot {
 		URI:         d.URI,
 		Version:     d.Version,
 		Content:     d.Content,
-		AST:         d.ast,
-		ParseErrors: d.parseErrors,
+		AST:         slices.Clone(d.ast),
+		ParseErrors: slices.Clone(d.parseErrors),
 	}
 }
 
