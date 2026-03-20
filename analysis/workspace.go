@@ -17,9 +17,40 @@ import (
 	"github.com/luthersystems/elps/parser/token"
 )
 
-// maxWorkspaceFiles limits the number of .lisp files scanned during workspace
-// indexing. This prevents excessive memory/CPU usage in very large workspaces.
-const maxWorkspaceFiles = 5000
+// Default limits for workspace scanning.
+const (
+	// DefaultMaxWorkspaceFiles limits the number of .lisp files scanned.
+	DefaultMaxWorkspaceFiles = 5000
+	// DefaultMaxFileBytes limits individual file size (5 MB).
+	DefaultMaxFileBytes = 5 * 1024 * 1024
+)
+
+
+// ScanConfig controls workspace file collection limits.
+type ScanConfig struct {
+	// MaxFiles is the maximum number of .lisp files to collect.
+	// 0 means use DefaultMaxWorkspaceFiles.
+	MaxFiles int
+	// MaxFileBytes is the maximum size in bytes for a single file.
+	// Files exceeding this are skipped. 0 means use DefaultMaxFileBytes.
+	MaxFileBytes int64
+}
+
+// effectiveMaxFiles returns the file limit, applying the default if zero.
+func (c *ScanConfig) effectiveMaxFiles() int {
+	if c == nil || c.MaxFiles <= 0 {
+		return DefaultMaxWorkspaceFiles
+	}
+	return c.MaxFiles
+}
+
+// effectiveMaxFileBytes returns the file size limit, applying the default if zero.
+func (c *ScanConfig) effectiveMaxFileBytes() int64 {
+	if c == nil || c.MaxFileBytes <= 0 {
+		return DefaultMaxFileBytes
+	}
+	return c.MaxFileBytes
+}
 
 // SymbolKey identifies a symbol across files by name and kind.
 type SymbolKey struct {
@@ -87,10 +118,18 @@ func ScanWorkspaceFull(root string) ([]ExternalSymbol, map[string][]ExternalSymb
 // into a single pass: each file is parsed once and all three results are
 // extracted from the same AST.
 func ScanWorkspaceAll(root string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, err error) {
+	globals, pkgs, allDefs, _, err = ScanWorkspaceAllWithConfig(root, nil)
+	return
+}
+
+// ScanWorkspaceAllWithConfig is like ScanWorkspaceAll but accepts a
+// ScanConfig for configurable limits. It also returns whether the file
+// list was truncated due to hitting the MaxFiles limit.
+func ScanWorkspaceAllWithConfig(root string, scanCfg *ScanConfig) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, truncated bool, err error) {
 	// Phase 1: Collect file paths (sequential walk).
-	paths, err := collectLispFiles(root, 0)
+	paths, truncated, err := collectLispFilesWithConfig(root, scanCfg)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, false, err
 	}
 
 	// Phase 2: Parse concurrently with bounded worker pool.
@@ -141,13 +180,25 @@ func ScanWorkspaceAll(root string) (globals []ExternalSymbol, pkgs map[string][]
 			pkgs[pkg] = append(pkgs[pkg], syms...)
 		}
 	}
-	return globals, pkgs, allDefs, nil
+	return globals, pkgs, allDefs, truncated, nil
 }
 
 // collectLispFiles walks the directory tree and collects .lisp file paths,
 // up to maxWorkspaceFiles. Files exceeding maxFileBytes are skipped.
 func collectLispFiles(root string, maxFileBytes int64) ([]string, error) {
+	paths, _, err := collectLispFilesWithConfig(root, &ScanConfig{MaxFileBytes: maxFileBytes})
+	return paths, err
+}
+
+// collectLispFilesWithConfig walks the directory tree and collects .lisp
+// file paths, respecting ScanConfig limits. Returns the collected paths,
+// whether the MaxFiles limit was reached (truncated), and any walk error.
+func collectLispFilesWithConfig(root string, scanCfg *ScanConfig) ([]string, bool, error) {
+	maxFiles := scanCfg.effectiveMaxFiles()
+	maxBytes := scanCfg.effectiveMaxFileBytes()
+
 	var paths []string
+	var truncated bool
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
@@ -161,16 +212,17 @@ func collectLispFiles(root string, maxFileBytes int64) ([]string, error) {
 		if filepath.Ext(path) != ".lisp" {
 			return nil
 		}
-		if maxFileBytes > 0 && info.Size() > maxFileBytes {
+		if maxBytes > 0 && info.Size() > maxBytes {
 			return nil
 		}
 		paths = append(paths, path)
-		if len(paths) >= maxWorkspaceFiles {
+		if len(paths) >= maxFiles {
+			truncated = true
 			return filepath.SkipAll
 		}
 		return nil
 	})
-	return paths, err
+	return paths, truncated, err
 }
 
 // ShouldSkipDir returns true for directories that should not be walked.

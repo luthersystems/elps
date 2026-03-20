@@ -65,6 +65,10 @@ type Server struct {
 	// analysis. Documents exceeding this limit receive an informational
 	// diagnostic instead of full analysis. 0 means no limit.
 	maxDocumentBytes int
+
+	// maxWorkspaceFiles is the maximum number of .lisp files to scan during
+	// workspace indexing. 0 means use the default (5000).
+	maxWorkspaceFiles int
 }
 
 // Option configures the LSP server.
@@ -85,6 +89,12 @@ func WithEnv(env *lisp.LEnv) Option {
 // A value of 0 disables the limit (default).
 func WithMaxDocumentBytes(n int) Option {
 	return func(s *Server) { s.maxDocumentBytes = n }
+}
+
+// WithMaxWorkspaceFiles sets the maximum number of .lisp files scanned
+// during workspace indexing. A value of 0 uses the default (5000).
+func WithMaxWorkspaceFiles(n int) Option {
+	return func(s *Server) { s.maxWorkspaceFiles = n }
 }
 
 // New creates a new ELPS LSP server.
@@ -273,13 +283,25 @@ func (s *Server) buildWorkspaceIndex() {
 	var extraGlobals []analysis.ExternalSymbol
 	var pkgExports map[string][]analysis.ExternalSymbol
 
+	// Build scan config from server options.
+	scanCfg := &analysis.ScanConfig{
+		MaxFiles:     s.maxWorkspaceFiles,
+		MaxFileBytes: int64(s.maxDocumentBytes),
+	}
+
 	// Scan workspace files in a single pass (only if we have a root path).
 	// Use allDefs (all top-level definitions, not just exports) so that
 	// cross-file duplicate-definition detection works for non-exported symbols.
 	if s.rootPath != "" {
-		if _, pkgs, allDefs, err := analysis.ScanWorkspaceAll(s.rootPath); err == nil {
+		if _, pkgs, allDefs, truncated, err := analysis.ScanWorkspaceAllWithConfig(s.rootPath, scanCfg); err == nil {
 			extraGlobals = allDefs
 			pkgExports = pkgs
+			if truncated {
+				s.sendNotification("window/showMessage", &protocol.ShowMessageParams{
+					Type:    protocol.MessageTypeWarning,
+					Message: "Workspace file limit reached; some files were not indexed for cross-file analysis.",
+				})
+			}
 		}
 	}
 

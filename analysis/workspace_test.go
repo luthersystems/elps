@@ -3,6 +3,7 @@
 package analysis
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -653,4 +654,65 @@ func TestExtractFileDefinitions_InvalidSource(t *testing.T) {
 	// Unparseable source should return nil, not panic.
 	defs := ExtractFileDefinitions([]byte("(defun broken"), "bad.lisp")
 	assert.Nil(t, defs)
+}
+
+func TestCollectLispFilesWithConfig_MaxFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create 5 .lisp files.
+	for i := range 5 {
+		err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d.lisp", i)), []byte("()"), 0600)
+		require.NoError(t, err)
+	}
+
+	// Limit to 3 files.
+	paths, truncated, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFiles: 3})
+	require.NoError(t, err)
+	assert.Len(t, paths, 3)
+	assert.True(t, truncated, "should be truncated when hitting MaxFiles limit")
+}
+
+func TestCollectLispFilesWithConfig_NoTruncation(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create 2 .lisp files.
+	for i := range 2 {
+		err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d.lisp", i)), []byte("()"), 0600)
+		require.NoError(t, err)
+	}
+
+	paths, truncated, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFiles: 10})
+	require.NoError(t, err)
+	assert.Len(t, paths, 2)
+	assert.False(t, truncated, "should not be truncated when under limit")
+}
+
+func TestCollectLispFilesWithConfig_MaxFileBytes(t *testing.T) {
+	dir := t.TempDir()
+
+	// Small file (under limit).
+	err := os.WriteFile(filepath.Join(dir, "small.lisp"), []byte("(+ 1 1)"), 0600)
+	require.NoError(t, err)
+
+	// Large file (over limit).
+	err = os.WriteFile(filepath.Join(dir, "large.lisp"), make([]byte, 200), 0600)
+	require.NoError(t, err)
+
+	paths, _, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFileBytes: 100})
+	require.NoError(t, err)
+	assert.Len(t, paths, 1, "only the small file should be collected")
+	assert.Contains(t, paths[0], "small.lisp")
+}
+
+func TestCollectLispFilesWithConfig_Defaults(t *testing.T) {
+	dir := t.TempDir()
+
+	err := os.WriteFile(filepath.Join(dir, "a.lisp"), []byte("()"), 0600)
+	require.NoError(t, err)
+
+	// nil config uses defaults.
+	paths, truncated, err := collectLispFilesWithConfig(dir, nil)
+	require.NoError(t, err)
+	assert.Len(t, paths, 1)
+	assert.False(t, truncated)
 }
