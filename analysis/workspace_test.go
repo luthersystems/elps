@@ -747,6 +747,55 @@ func TestExtractDefFormSpecs_MinArity(t *testing.T) {
 	assert.Empty(t, specs, "macro with < 2 params should not produce DefFormSpec")
 }
 
+func TestExtractDefFormSpecs_ValidMacro(t *testing.T) {
+	// A def-prefixed macro with arity >= 2 should produce a DefFormSpec.
+	defs := []ExternalSymbol{
+		{
+			Name: "def-handler",
+			Kind: SymMacro,
+			Signature: &Signature{
+				Params: []lisp.ParamInfo{
+					{Name: "name", Kind: lisp.ParamRequired},
+					{Name: "routes", Kind: lisp.ParamRequired},
+				},
+			},
+		},
+	}
+	specs := extractDefFormSpecs(defs)
+	require.Len(t, specs, 1)
+	assert.Equal(t, "def-handler", specs[0].Head)
+	assert.True(t, specs[0].BindsName)
+	assert.Equal(t, 1, specs[0].NameIndex)
+	assert.Equal(t, 2, specs[0].FormalsIndex)
+	assert.Equal(t, SymFunction, specs[0].NameKind)
+}
+
+func TestExtractDefFormSpecs_NonMacroSkipped(t *testing.T) {
+	// A function (not macro) with "def" prefix should NOT produce a DefFormSpec.
+	defs := []ExternalSymbol{
+		{
+			Name: "def-helper",
+			Kind: SymFunction,
+			Signature: &Signature{
+				Params: []lisp.ParamInfo{
+					{Name: "name", Kind: lisp.ParamRequired},
+					{Name: "value", Kind: lisp.ParamRequired},
+				},
+			},
+		},
+	}
+	specs := extractDefFormSpecs(defs)
+	assert.Empty(t, specs, "non-macro symbols should not produce DefFormSpecs")
+}
+
+func TestExtractDefFormSpecs_NilSignatureSkipped(t *testing.T) {
+	defs := []ExternalSymbol{
+		{Name: "def-broken", Kind: SymMacro, Signature: nil},
+	}
+	specs := extractDefFormSpecs(defs)
+	assert.Empty(t, specs, "macro with nil signature should not produce DefFormSpec")
+}
+
 func TestCollectLispFilesWithConfig_MaxFiles(t *testing.T) {
 	dir := t.TempDir()
 
@@ -793,6 +842,24 @@ func TestCollectLispFilesWithConfig_MaxFileBytes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, paths, 1, "only the small file should be collected")
 	assert.Contains(t, paths[0], "small.lisp")
+}
+
+func TestCollectLispFilesWithConfig_MaxFileBytesExactBoundary(t *testing.T) {
+	dir := t.TempDir()
+
+	// File exactly at the limit (100 bytes). The implementation uses
+	// strict > so exactly-at-limit files should be included.
+	err := os.WriteFile(filepath.Join(dir, "exact.lisp"), make([]byte, 100), 0600)
+	require.NoError(t, err)
+
+	// File 1 byte over the limit.
+	err = os.WriteFile(filepath.Join(dir, "over.lisp"), make([]byte, 101), 0600)
+	require.NoError(t, err)
+
+	paths, _, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFileBytes: 100})
+	require.NoError(t, err)
+	assert.Len(t, paths, 1, "file exactly at limit should be included, over should be excluded")
+	assert.Contains(t, paths[0], "exact.lisp")
 }
 
 func TestCollectLispFilesWithConfig_Defaults(t *testing.T) {
