@@ -357,6 +357,9 @@ func (s *Server) reanalyzeOpenDocuments() {
 	for _, doc := range s.docs.All() {
 		doc.mu.Lock()
 		doc.analysis = nil
+		// Reset publishedVersion so the version guard allows republishing
+		// with the updated workspace config.
+		doc.publishedVersion = 0
 		doc.mu.Unlock()
 		s.analyzeAndPublish(doc)
 	}

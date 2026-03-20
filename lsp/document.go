@@ -21,6 +21,33 @@ type Document struct {
 	ast         []*lisp.LVal
 	analysis    *analysis.Result
 	parseErrors []error
+
+	// publishedVersion tracks the latest version whose diagnostics were
+	// successfully published. Used to discard stale debounced results.
+	publishedVersion int32
+}
+
+// DocumentSnapshot is an immutable copy of a document's state at a point
+// in time. Used to run analysis without holding the document lock.
+type DocumentSnapshot struct {
+	URI         string
+	Version     int32
+	Content     string
+	AST         []*lisp.LVal
+	ParseErrors []error
+}
+
+// Snapshot returns an immutable copy of the document's current state.
+func (d *Document) Snapshot() DocumentSnapshot {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return DocumentSnapshot{
+		URI:         d.URI,
+		Version:     d.Version,
+		Content:     d.Content,
+		AST:         d.ast,
+		ParseErrors: d.parseErrors,
+	}
 }
 
 // parse parses the document content and caches the AST using the

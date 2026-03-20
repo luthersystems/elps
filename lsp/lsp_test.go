@@ -3820,3 +3820,59 @@ func TestDocumentSizeGuard_NormalDoc(t *testing.T) {
 			"normal-sized document should not get size limit diagnostic")
 	}
 }
+
+func TestVersionGuard_StalePublishDiscarded(t *testing.T) {
+	s := testServer()
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Open v1 and publish it.
+	doc := s.docs.Open("file:///test.lisp", 1, "(+ 1 1)")
+	s.analyzeAndPublish(doc)
+	require.Len(t, *captured, 1, "v1 should publish")
+
+	// Simulate v5 being published (e.g., by a concurrent didSave).
+	doc.mu.Lock()
+	doc.publishedVersion = 5
+	doc.mu.Unlock()
+
+	// Now try to publish v3 — should be discarded as stale.
+	doc.mu.Lock()
+	doc.Version = 3
+	doc.analysis = nil
+	doc.mu.Unlock()
+	s.analyzeAndPublish(doc)
+
+	// Only the original v1 publication should exist — v3 was discarded.
+	assert.Len(t, *captured, 1, "stale v3 publish should be discarded when v5 already published")
+}
+
+func TestVersionGuard_NewerVersionPublishes(t *testing.T) {
+	s := testServer()
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Open v1.
+	doc := s.docs.Open("file:///test.lisp", 1, "(+ 1 1)")
+	s.analyzeAndPublish(doc)
+	require.Len(t, *captured, 1, "v1 should publish")
+
+	// Change to v2.
+	s.docs.Change("file:///test.lisp", 2, "(+ 2 2)")
+	s.analyzeAndPublish(doc)
+	assert.Len(t, *captured, 2, "v2 should publish since it's newer than v1")
+}
+
+func TestDocumentSnapshot(t *testing.T) {
+	doc := &Document{
+		URI:     "file:///test.lisp",
+		Version: 5,
+		Content: "(+ 1 1)",
+	}
+	snap := doc.Snapshot()
+	assert.Equal(t, "file:///test.lisp", snap.URI)
+	assert.Equal(t, int32(5), snap.Version)
+	assert.Equal(t, "(+ 1 1)", snap.Content)
+}

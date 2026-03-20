@@ -115,16 +115,13 @@ func (s *Server) textDocumentDidClose(_ *glsp.Context, params *protocol.DidClose
 // analyzeAndPublish runs analysis and lint on a document and publishes
 // the resulting diagnostics to the client.
 func (s *Server) analyzeAndPublish(doc *Document) {
-	// Check document size before running analysis.
-	doc.mu.Lock()
-	content := doc.Content
-	uri := doc.URI
-	doc.mu.Unlock()
+	// Take a snapshot for size check and version tracking.
+	snap := doc.Snapshot()
 
-	if s.maxDocumentBytes > 0 && len(content) > s.maxDocumentBytes {
+	if s.maxDocumentBytes > 0 && len(snap.Content) > s.maxDocumentBytes {
 		sev := protocol.DiagnosticSeverityInformation
 		s.sendNotification(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
-			URI: uri,
+			URI: snap.URI,
 			Diagnostics: []protocol.Diagnostic{{
 				Range:    protocol.Range{},
 				Severity: &sev,
@@ -137,12 +134,13 @@ func (s *Server) analyzeAndPublish(doc *Document) {
 
 	s.ensureAnalysis(doc)
 
-	// Snapshot document fields under the lock.
+	// Re-snapshot after analysis to capture the analysis result.
 	doc.mu.Lock()
 	parseErrors := doc.parseErrors
-	content = doc.Content
+	content := doc.Content
 	docAnalysis := doc.analysis
-	uri = doc.URI
+	uri := doc.URI
+	snapVersion := snap.Version
 	doc.mu.Unlock()
 
 	var diags []protocol.Diagnostic
@@ -168,6 +166,21 @@ func (s *Server) analyzeAndPublish(doc *Document) {
 			diags = append(diags, convertLintDiagnostic(d))
 		}
 	}
+
+	// Version guard: discard stale results from debounced analysis.
+	doc.mu.Lock()
+	if snapVersion < doc.Version {
+		// Document changed since we started — discard these stale results.
+		doc.mu.Unlock()
+		return
+	}
+	if snapVersion < doc.publishedVersion {
+		// A strictly newer version was already published — skip.
+		doc.mu.Unlock()
+		return
+	}
+	doc.publishedVersion = snapVersion
+	doc.mu.Unlock()
 
 	s.sendNotification(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
 		URI:         uri,
