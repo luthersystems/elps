@@ -289,9 +289,15 @@ func (s *Server) buildWorkspaceIndex() {
 
 	// Deduplicate package exports by symbol name. Prefer registry entries
 	// (richer type info) over workspace entries when both exist.
+	// Sort after dedup for deterministic resolution order.
 	for pkg, syms := range pkgExports {
-		pkgExports[pkg] = deduplicateExports(syms)
+		deduped := deduplicateExports(syms)
+		analysis.SortDefinitions(deduped)
+		pkgExports[pkg] = deduped
 	}
+
+	// Sort extraGlobals for deterministic duplicate resolution.
+	analysis.SortDefinitions(extraGlobals)
 
 	cfg := &analysis.Config{
 		ExtraGlobals:   extraGlobals,
