@@ -88,7 +88,7 @@ func ScanWorkspaceFull(root string) ([]ExternalSymbol, map[string][]ExternalSymb
 // extracted from the same AST.
 func ScanWorkspaceAll(root string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, err error) {
 	// Phase 1: Collect file paths (sequential walk).
-	paths, err := collectLispFiles(root)
+	paths, err := collectLispFiles(root, 0)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -145,8 +145,8 @@ func ScanWorkspaceAll(root string) (globals []ExternalSymbol, pkgs map[string][]
 }
 
 // collectLispFiles walks the directory tree and collects .lisp file paths,
-// up to maxWorkspaceFiles.
-func collectLispFiles(root string) ([]string, error) {
+// up to maxWorkspaceFiles. Files exceeding maxFileBytes are skipped.
+func collectLispFiles(root string, maxFileBytes int64) ([]string, error) {
 	var paths []string
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -159,6 +159,9 @@ func collectLispFiles(root string) ([]string, error) {
 			return nil
 		}
 		if filepath.Ext(path) != ".lisp" {
+			return nil
+		}
+		if maxFileBytes > 0 && info.Size() > maxFileBytes {
 			return nil
 		}
 		paths = append(paths, path)
@@ -583,7 +586,7 @@ func scopeContainingAnalysis(scope *Scope, line, col int) *Scope {
 //
 // Returns a map from SymbolKey.String() to FileReference slices.
 func ScanWorkspaceRefs(root string, cfg *Config) map[string][]FileReference {
-	paths, err := collectLispFiles(root)
+	paths, err := collectLispFiles(root, 0)
 	if err != nil || len(paths) == 0 {
 		return nil
 	}

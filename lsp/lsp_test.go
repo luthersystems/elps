@@ -3784,3 +3784,39 @@ func TestWatchedFiles_UpdatesDefinitions(t *testing.T) {
 
 	assert.Empty(t, globals, "all definitions should be removed after file deletion")
 }
+
+func TestDocumentSizeGuard_OversizedDoc(t *testing.T) {
+	s := New(WithMaxDocumentBytes(100))
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Open a document exceeding the size limit.
+	largeContent := strings.Repeat("(+ 1 1)\n", 20) // ~160 bytes
+	doc := s.docs.Open("file:///big.lisp", 1, largeContent)
+	s.analyzeAndPublish(doc)
+
+	require.Len(t, *captured, 1)
+	pub := (*captured)[0]
+	require.Len(t, pub.Diagnostics, 1)
+	assert.Equal(t, protocol.DiagnosticSeverityInformation, *pub.Diagnostics[0].Severity)
+	assert.Contains(t, pub.Diagnostics[0].Message, "size limit")
+}
+
+func TestDocumentSizeGuard_NormalDoc(t *testing.T) {
+	s := New(WithMaxDocumentBytes(10000))
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	// Open a small document — should get normal analysis, not size warning.
+	doc := s.docs.Open("file:///small.lisp", 1, "(defun add (x y) (+ x y))")
+	s.analyzeAndPublish(doc)
+
+	require.Len(t, *captured, 1)
+	pub := (*captured)[0]
+	for _, d := range pub.Diagnostics {
+		assert.NotContains(t, d.Message, "size limit",
+			"normal-sized document should not get size limit diagnostic")
+	}
+}

@@ -115,14 +115,34 @@ func (s *Server) textDocumentDidClose(_ *glsp.Context, params *protocol.DidClose
 // analyzeAndPublish runs analysis and lint on a document and publishes
 // the resulting diagnostics to the client.
 func (s *Server) analyzeAndPublish(doc *Document) {
+	// Check document size before running analysis.
+	doc.mu.Lock()
+	content := doc.Content
+	uri := doc.URI
+	doc.mu.Unlock()
+
+	if s.maxDocumentBytes > 0 && len(content) > s.maxDocumentBytes {
+		sev := protocol.DiagnosticSeverityInformation
+		s.sendNotification(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
+			URI: uri,
+			Diagnostics: []protocol.Diagnostic{{
+				Range:    protocol.Range{},
+				Severity: &sev,
+				Source:   strPtr("elps"),
+				Message:  "File exceeds size limit for semantic analysis",
+			}},
+		})
+		return
+	}
+
 	s.ensureAnalysis(doc)
 
 	// Snapshot document fields under the lock.
 	doc.mu.Lock()
 	parseErrors := doc.parseErrors
-	content := doc.Content
+	content = doc.Content
 	docAnalysis := doc.analysis
-	uri := doc.URI
+	uri = doc.URI
 	doc.mu.Unlock()
 
 	var diags []protocol.Diagnostic

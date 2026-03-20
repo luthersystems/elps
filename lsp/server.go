@@ -60,6 +60,11 @@ type Server struct {
 	// exitFn is called on the LSP exit notification. Defaults to os.Exit.
 	// Overridable for testing.
 	exitFn func(int)
+
+	// maxDocumentBytes is the maximum document size (in bytes) for semantic
+	// analysis. Documents exceeding this limit receive an informational
+	// diagnostic instead of full analysis. 0 means no limit.
+	maxDocumentBytes int
 }
 
 // Option configures the LSP server.
@@ -73,6 +78,13 @@ func WithRegistry(reg *lisp.PackageRegistry) Option {
 // WithEnv injects a fully initialized ELPS environment.
 func WithEnv(env *lisp.LEnv) Option {
 	return func(s *Server) { s.env = env }
+}
+
+// WithMaxDocumentBytes sets the maximum document size for semantic analysis.
+// Documents exceeding this limit receive an informational diagnostic instead.
+// A value of 0 disables the limit (default).
+func WithMaxDocumentBytes(n int) Option {
+	return func(s *Server) { s.maxDocumentBytes = n }
 }
 
 // New creates a new ELPS LSP server.
