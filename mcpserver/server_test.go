@@ -850,6 +850,28 @@ func TestHover_FileNotFound(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "file not found")
+	var te *toolErr
+	require.ErrorAs(t, err, &te, "loadDocument errors should be structured toolErr")
+	assert.Equal(t, "file_not_found", te.Code)
+}
+
+func TestDiagnostics_SeverityFilterExcludesEmptyFiles(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "broken.lisp"), "(defun broken (")
+	writeTestFile(t, filepath.Join(tmp, "ok.lisp"), "(defun ok () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	severity := "error"
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		WorkspaceRoot:    &tmp,
+		IncludeWorkspace: true,
+		Severity:         &severity,
+	})
+	require.NoError(t, err)
+	for _, fd := range resp.Files {
+		assert.NotEmpty(t, fd.Diagnostics, "files with no matching diagnostics should be excluded when severity filter is set, but %s was included", fd.Path)
+	}
 }
 
 func TestCallGraph_TopLimitsOutput(t *testing.T) {

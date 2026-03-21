@@ -316,6 +316,9 @@ func (s *service) diagnosticsTool(ctx context.Context, _ *mcp.CallToolRequest, i
 				continue
 			}
 			fd.Diagnostics = filterDiagnosticsBySeverity(fd.Diagnostics, in.Severity)
+			if in.Severity != nil && len(fd.Diagnostics) == 0 {
+				continue
+			}
 			result = append(result, fd)
 		}
 		resp := s.applyDiagnosticsLimits(result, in.MaxFiles, in.Offset)
@@ -517,7 +520,7 @@ func (s *service) loadDocument(path string, content *string, workspaceRoot *stri
 	_, contentString, err := s.readSource(resolvedPath, content)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil, fmt.Errorf("file not found: %s", resolvedPath)
+			return nil, nil, newToolErr("file_not_found", fmt.Sprintf("file not found: %s", resolvedPath), resolvedPath)
 		}
 		return nil, nil, err
 	}
