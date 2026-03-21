@@ -314,12 +314,4 @@ type ResponseMeta struct {
 	WorkspaceRoot string `json:"workspace_root,omitempty"`
 	ElapsedMs     int64  `json:"elapsed_ms"`
 	FileCount     int    `json:"file_count,omitempty"`
-	Truncated     bool   `json:"truncated,omitempty"`
-}
-
-// ToolError is a structured error response returned by tools.
-type ToolError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Path    string `json:"path,omitempty"`
 }

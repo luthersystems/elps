@@ -1698,7 +1698,6 @@ All tool responses include a ` + "`_meta`" + ` object with:
 - ` + "`workspace_root`" + `: which workspace was used
 - ` + "`elapsed_ms`" + `: time taken in milliseconds
 - ` + "`file_count`" + `: number of files processed (where applicable)
-- ` + "`truncated`" + `: whether results were trimmed
 
 ## Error Responses
 Errors include structured JSON with:
@@ -1733,7 +1732,7 @@ func (s *service) formatTool(_ context.Context, _ *mcp.CallToolRequest, in Forma
 			if errors.Is(err, os.ErrNotExist) {
 				return nil, FormatResponse{}, newToolErr("file_not_found", fmt.Sprintf("file not found: %s", path), path)
 			}
-			return nil, FormatResponse{}, newToolErr("file_not_found", err.Error(), path)
+			return nil, FormatResponse{}, newToolErr("invalid_input", err.Error(), path)
 		}
 	}
 	var cfg *formatter.Config
@@ -1778,7 +1777,7 @@ func (s *service) lintTool(_ context.Context, _ *mcp.CallToolRequest, in LintInp
 			if errors.Is(err, os.ErrNotExist) {
 				return nil, LintResponse{}, newToolErr("file_not_found", fmt.Sprintf("file not found: %s", path), path)
 			}
-			return nil, LintResponse{}, newToolErr("file_not_found", err.Error(), path)
+			return nil, LintResponse{}, newToolErr("invalid_input", err.Error(), path)
 		}
 	}
 
@@ -1796,17 +1795,14 @@ func (s *service) lintTool(_ context.Context, _ *mcp.CallToolRequest, in LintInp
 		diags = append(diags, parseDiagnostic(parseErr, path))
 	}
 
-	var lintDiags []lint.Diagnostic
-	if root != "" {
+	var semantics *analysis.Result
+	if root != "" && parsed.Exprs != nil {
 		lintCfg := &lint.LintConfig{Workspace: root}
-		analysisCfg, buildErr := lint.BuildAnalysisConfig(lintCfg)
-		if buildErr == nil && parsed.Exprs != nil {
-			lintDiags, _ = linter.LintFileWithContext(source, path, analysis.Analyze(parsed.Exprs, analysisCfg))
+		if analysisCfg, buildErr := lint.BuildAnalysisConfig(lintCfg); buildErr == nil {
+			semantics = analysis.Analyze(parsed.Exprs, analysisCfg)
 		}
 	}
-	if lintDiags == nil {
-		lintDiags, _ = linter.LintFile(source, path)
-	}
+	lintDiags, _ := linter.LintFileWithContext(source, path, semantics)
 
 	for _, d := range lintDiags {
 		diags = append(diags, lintDiagnostic(d))

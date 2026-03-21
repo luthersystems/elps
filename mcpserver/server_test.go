@@ -701,9 +701,8 @@ func TestNullVsEmptySlice_References(t *testing.T) {
 		Character: 100, // past end of line — no symbol
 	})
 	require.NoError(t, err)
-	data, _ := json.Marshal(resp)
-	assert.Contains(t, string(data), `"references":[]`)
-	assert.NotContains(t, string(data), `"references":null`)
+	require.NotNil(t, resp.References, "references must be non-nil empty slice, not nil")
+	assert.Empty(t, resp.References)
 }
 
 func TestNullVsEmptySlice_DocumentSymbols(t *testing.T) {
@@ -714,9 +713,8 @@ func TestNullVsEmptySlice_DocumentSymbols(t *testing.T) {
 	srv := New(WithWorkspaceRoot(tmp))
 	_, resp, err := srv.service.documentSymbolsTool(context.Background(), nil, DocumentQueryInput{Path: path})
 	require.NoError(t, err)
-	data, _ := json.Marshal(resp)
-	assert.Contains(t, string(data), `"symbols":[]`)
-	assert.NotContains(t, string(data), `"symbols":null`)
+	require.NotNil(t, resp.Symbols, "symbols must be non-nil empty slice, not nil")
+	assert.Empty(t, resp.Symbols)
 }
 
 func TestNullVsEmptySlice_WorkspaceSymbols(t *testing.T) {
@@ -730,9 +728,8 @@ func TestNullVsEmptySlice_WorkspaceSymbols(t *testing.T) {
 		Query:         "nonexistent-symbol-xyz",
 	})
 	require.NoError(t, err)
-	data, _ := json.Marshal(resp)
-	assert.Contains(t, string(data), `"symbols":[]`)
-	assert.NotContains(t, string(data), `"symbols":null`)
+	require.NotNil(t, resp.Symbols, "symbols must be non-nil empty slice, not nil")
+	assert.Empty(t, resp.Symbols)
 }
 
 func TestReferences_Limit(t *testing.T) {
@@ -1292,7 +1289,7 @@ func TestLintTool_ReportsParseErrors(t *testing.T) {
 		Content: &content,
 	})
 	require.NoError(t, err)
-	assert.NotEmpty(t, resp.Diagnostics, "lint tool should report parse errors for broken files")
+	require.NotEmpty(t, resp.Diagnostics, "lint tool must report parse errors for broken files")
 	found := false
 	for _, d := range resp.Diagnostics {
 		if d.Severity == "error" {
@@ -1300,7 +1297,7 @@ func TestLintTool_ReportsParseErrors(t *testing.T) {
 			break
 		}
 	}
-	assert.True(t, found, "parse errors should appear as error-severity diagnostics")
+	require.True(t, found, "at least one error-severity diagnostic must be present for broken code")
 }
 
 func TestPerfIssues_SolvedAlwaysArray(t *testing.T) {
@@ -1316,16 +1313,16 @@ func TestPerfIssues_SolvedAlwaysArray(t *testing.T) {
 		Top:   5,
 	})
 	require.NoError(t, err)
-	data, _ := json.Marshal(resp)
-	assert.Contains(t, string(data), `"solved":[]`, "solved should always be [] not null/omitted when filtered to empty")
+	require.NotNil(t, resp.Solved, "solved must be initialized, not nil")
+	assert.Empty(t, resp.Solved, "solved should be empty when rules filter matches nothing")
 
 	// Without top, solved should still be [] not null.
 	_, resp2, err := srv.service.perfIssuesTool(context.Background(), nil, PerfSelectionInput{
 		Paths: []string{path},
 	})
 	require.NoError(t, err)
-	data2, _ := json.Marshal(resp2)
-	assert.Contains(t, string(data2), `"solved":[]`, "solved should be [] when top is not set")
+	require.NotNil(t, resp2.Solved, "solved must be initialized even without top")
+	assert.Empty(t, resp2.Solved)
 }
 
 func TestPerfTools_SkipUnparseableFiles(t *testing.T) {
@@ -1339,7 +1336,9 @@ func TestPerfTools_SkipUnparseableFiles(t *testing.T) {
 		Top:           5,
 	})
 	require.NoError(t, err, "perf tools should skip unparseable files, not error")
-	assert.NotNil(t, resp)
+	require.NotNil(t, resp.Issues)
+	require.NotNil(t, resp.Solved)
+	assert.True(t, len(resp.Solved) > 0 || len(resp.Issues) > 0, "good.lisp should still produce analysis results")
 }
 
 func TestResolvePath_NoDoublePrefixing(t *testing.T) {
@@ -1372,6 +1371,115 @@ func TestResolvePath_TraversalBlocked(t *testing.T) {
 	_, err := srv.service.resolvePath("../../etc/passwd", tmp)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolves outside workspace root")
+}
+
+func TestWordAtPosition(t *testing.T) {
+	content := "(defun add (x y)\n  (+ x y))"
+	tests := []struct {
+		name      string
+		line, col int
+		want      string
+	}{
+		{"function name", 0, 7, "add"},
+		{"param x", 0, 12, "x"},
+		{"builtin +", 1, 3, "+"},
+		{"past end of line", 0, 100, ""},
+		{"negative line", -1, 0, ""},
+		{"line past end", 99, 0, ""},
+		{"on paren", 0, 0, ""},
+		{"empty content", 0, 0, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := content
+			if tt.name == "empty content" {
+				src = ""
+			}
+			got := wordAtPosition(src, tt.line, tt.col)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestPaginateSlice(t *testing.T) {
+	items := []int{1, 2, 3, 4, 5}
+	tests := []struct {
+		name           string
+		offset, limit  int
+		wantLen        int
+	}{
+		{"no pagination", 0, 0, 5},
+		{"limit only", 0, 3, 3},
+		{"offset only", 2, 0, 3},
+		{"offset+limit", 1, 2, 2},
+		{"offset at end", 5, 2, 0},
+		{"offset past end", 10, 2, 0},
+		{"limit larger than items", 0, 100, 5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := paginateSlice(items, tt.offset, tt.limit)
+			assert.Len(t, got, tt.wantLen)
+		})
+	}
+}
+
+func TestHover_UndefinedSymbol(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.lisp")
+	writeTestFile(t, path, "(defun foo () (undefined-symbol-xyz 1 2))")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.hoverTool(context.Background(), nil, FileQueryInput{
+		Path:      path,
+		Line:      0,
+		Character: 15,
+	})
+	require.NoError(t, err)
+	assert.False(t, resp.Found, "hover on undefined symbol should return found=false")
+}
+
+func TestHotspots_TopZeroErrors(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.lisp")
+	writeTestFile(t, path, "(defun foo () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, _, err := srv.service.hotspotsTool(context.Background(), nil, PerfSelectionInput{
+		Paths: []string{path},
+		Top:   0,
+	})
+	require.Error(t, err, "hotspots with top=0 should error")
+	assert.Contains(t, err.Error(), "top must be greater than zero")
+}
+
+func TestLintTool_InvalidCheckName(t *testing.T) {
+	srv := New()
+	content := "(defun foo () 1)"
+	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+		Checks:  []string{"nonexistent-analyzer"},
+	})
+	require.NoError(t, err, "invalid check names should not error, just produce no results")
+	assert.Empty(t, resp.Diagnostics)
+}
+
+func TestDiagnostics_SeverityFilterAllItems(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "mixed.lisp")
+	writeTestFile(t, path, "(set 'x 1)\n(set 'x 2)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	severity := "warning"
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		Path:     &path,
+		Severity: &severity,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Files, 1)
+	for i, d := range resp.Files[0].Diagnostics {
+		assert.Equal(t, "warning", d.Severity, "diagnostic %d should be warning severity", i)
+	}
 }
 
 func writeTestFile(t *testing.T, path, content string) {
