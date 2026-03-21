@@ -234,7 +234,16 @@ func (s *service) documentSymbolsTool(ctx context.Context, _ *mcp.CallToolReques
 		}
 		return symbols[i].Path < symbols[j].Path
 	})
-	return nil, DocumentSymbolsResponse{Symbols: symbols}, nil
+	resp := DocumentSymbolsResponse{Symbols: symbols}
+	if in.Offset > 0 || in.Limit > 0 {
+		total := len(resp.Symbols)
+		resp.Symbols = paginateSlice(resp.Symbols, in.Offset, in.Limit)
+		if len(resp.Symbols) < total {
+			resp.Truncated = true
+			resp.Total = total
+		}
+	}
+	return nil, resp, nil
 }
 
 func (s *service) workspaceSymbolsTool(ctx context.Context, _ *mcp.CallToolRequest, in WorkspaceSymbolsInput) (*mcp.CallToolResult, WorkspaceSymbolsResponse, error) {
@@ -926,7 +935,8 @@ func (s *service) collectWorkspaceFiles(root string, includeTests bool) ([]works
 			return nil
 		}
 		if d.IsDir() {
-			if analysis.ShouldSkipDir(d.Name()) {
+			// Never skip the root directory itself — only subdirectories.
+			if path != root && analysis.ShouldSkipDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -1730,6 +1740,17 @@ func (s *service) testTool(_ context.Context, _ *mcp.CallToolRequest, in TestInp
 	if lisp.GoError(lerr) != nil {
 		return nil, TestResponse{}, fmt.Errorf("package error: %v", lisp.GoError(lerr))
 	}
+	// Auto-import testing package so test/assert macros are available
+	// without requiring (use-package 'testing) in every test file.
+	useTest := env.Eval(lisp.SExpr([]*lisp.LVal{
+		lisp.Symbol("use-package"),
+		lisp.String("testing"),
+	}))
+	if useTest.Type == lisp.LError {
+		if s.logger != nil {
+			s.logger.Warn("could not auto-import testing package", "error", lisp.GoError(useTest))
+		}
+	}
 	exprs, parseErr := env.Runtime.Reader.Read(path, strings.NewReader(string(source)))
 	if parseErr != nil {
 		return nil, TestResponse{
@@ -1960,6 +1981,16 @@ Use ` + "`offset`" + ` to paginate: ` + "`{\"limit\": 10, \"offset\": 20}`" + ` 
 
 ## Empty Results
 All tools return empty arrays (` + "`[]`" + `), never ` + "`null`" + `, for list fields.
+
+## Eval Batch Mode
+Each expression in ` + "`expressions`" + ` is evaluated in an **isolated environment**.
+Variables and functions defined in one expression are NOT visible to later expressions.
+To share state across expressions, combine them into a single ` + "`expression`" + ` string
+using ` + "`let`" + `, ` + "`progn`" + `, or multiple top-level forms separated by newlines.
+
+## Test Tool
+The test tool auto-imports the ` + "`testing`" + ` package, so ` + "`test`" + `, ` + "`assert-equal`" + `,
+` + "`assert=`" + `, ` + "`assert-nil`" + `, etc. are available without ` + "`(use-package 'testing)`" + `.
 
 ## Common Workflows
 1. **Find a symbol**: ` + "`workspace_symbols`" + ` → locate definition file and line

@@ -938,6 +938,69 @@ func TestMeta_FileCountAccuracy(t *testing.T) {
 	assert.Greater(t, resp.Meta.ElapsedMs, int64(-1), "elapsed_ms should be non-negative")
 }
 
+func TestWorkspaceScanner_DotPrefixedRoot(t *testing.T) {
+	// Create a workspace root with a dot prefix (e.g., .tmp).
+	parent := t.TempDir()
+	dotRoot := filepath.Join(parent, ".hidden-workspace")
+	require.NoError(t, os.Mkdir(dotRoot, 0o750))
+	writeTestFile(t, filepath.Join(dotRoot, "lib.lisp"), "(defun found-me () 1)")
+
+	srv := New(WithWorkspaceRoot(dotRoot))
+	srv.service.workspaceValidationInterval = 0
+	_, resp, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &dotRoot,
+		Query:         "found-me",
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Symbols, 1, "dot-prefixed workspace root should still be scanned")
+	assert.Equal(t, "found-me", resp.Symbols[0].Name)
+}
+
+func TestDocumentSymbols_LimitOffset(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "many.lisp")
+	writeTestFile(t, path, "(defun a () 1)\n(defun b () 2)\n(defun c () 3)\n(defun d () 4)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.documentSymbolsTool(context.Background(), nil, DocumentQueryInput{
+		Path:  path,
+		Limit: 2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp.Symbols, 2)
+	assert.True(t, resp.Truncated)
+	assert.Equal(t, 4, resp.Total)
+
+	// Second page
+	_, resp2, err := srv.service.documentSymbolsTool(context.Background(), nil, DocumentQueryInput{
+		Path:   path,
+		Limit:  2,
+		Offset: 2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp2.Symbols, 2)
+
+	// No overlap
+	for _, s1 := range resp.Symbols {
+		for _, s2 := range resp2.Symbols {
+			assert.NotEqual(t, s1.Name, s2.Name, "pages should not overlap")
+		}
+	}
+}
+
+func TestTestTool_AutoImportsTestingPackage(t *testing.T) {
+	srv := New()
+	// Content WITHOUT (use-package 'testing) — test macros should still work.
+	content := "(test \"auto-import\" (assert-equal 4 (+ 2 2)))"
+	_, resp, err := srv.service.testTool(context.Background(), nil, TestInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, resp.Total, "test should be found without explicit use-package")
+	assert.Equal(t, 1, resp.Passed)
+	assert.True(t, resp.Tests[0].Passed)
+}
+
 func TestDiagnostics_SeverityFilterExcludesEmptyFiles(t *testing.T) {
 	tmp := t.TempDir()
 	writeTestFile(t, filepath.Join(tmp, "broken.lisp"), "(defun broken (")

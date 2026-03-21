@@ -55,6 +55,8 @@ type DocumentQueryInput struct {
 	Path          string  `json:"path"`
 	Content       *string `json:"content,omitempty"`
 	WorkspaceRoot *string `json:"workspace_root,omitempty"`
+	Limit         int     `json:"limit,omitempty"`
+	Offset        int     `json:"offset,omitempty"`
 }
 
 // WorkspaceSymbolsInput is input for the workspace_symbols tool.
@@ -148,8 +150,10 @@ type DocumentSymbol struct {
 
 // DocumentSymbolsResponse is the result of a document symbols query.
 type DocumentSymbolsResponse struct {
-	Symbols []DocumentSymbol `json:"symbols"`
-	Meta    *ResponseMeta    `json:"_meta,omitempty"`
+	Symbols   []DocumentSymbol `json:"symbols"`
+	Truncated bool             `json:"truncated,omitempty"`
+	Total     int              `json:"total,omitempty"`
+	Meta      *ResponseMeta    `json:"_meta,omitempty"`
 }
 
 // WorkspaceSymbol describes a symbol found across the workspace.
