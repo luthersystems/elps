@@ -29,7 +29,7 @@ func TestDescribeServerAndListTools(t *testing.T) {
 
 	tools, err := session.ListTools(context.Background(), nil)
 	require.NoError(t, err)
-	assert.Len(t, tools.Tools, 10)
+	assert.Len(t, tools.Tools, 11)
 
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "describe_server"})
 	require.NoError(t, err)
@@ -38,7 +38,7 @@ func TestDescribeServerAndListTools(t *testing.T) {
 	got := decodeStructured[DescribeServerResponse](t, res)
 	assert.Equal(t, defaultImplementationName, got.Name)
 	assert.Equal(t, tmp, got.DefaultWorkspaceRoot)
-	assert.Len(t, got.Capabilities, 10)
+	assert.Len(t, got.Capabilities, 11)
 }
 
 func TestNewProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
@@ -687,6 +687,382 @@ func TestDiagnosticsWorkspaceWide(t *testing.T) {
 		}
 	}
 	assert.True(t, hasErrors, "bad.lisp should produce diagnostics")
+}
+
+func TestNullVsEmptySlice_References(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "empty.lisp")
+	writeTestFile(t, path, "(defun noop () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.referencesTool(context.Background(), nil, ReferencesInput{
+		Path:      path,
+		Line:      0,
+		Character: 100, // past end of line — no symbol
+	})
+	require.NoError(t, err)
+	data, _ := json.Marshal(resp)
+	assert.Contains(t, string(data), `"references":[]`)
+	assert.NotContains(t, string(data), `"references":null`)
+}
+
+func TestNullVsEmptySlice_DocumentSymbols(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "empty.lisp")
+	writeTestFile(t, path, "; just a comment")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.documentSymbolsTool(context.Background(), nil, DocumentQueryInput{Path: path})
+	require.NoError(t, err)
+	data, _ := json.Marshal(resp)
+	assert.Contains(t, string(data), `"symbols":[]`)
+	assert.NotContains(t, string(data), `"symbols":null`)
+}
+
+func TestNullVsEmptySlice_WorkspaceSymbols(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "lib.lisp"), "(defun alpha () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	_, resp, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &tmp,
+		Query:         "nonexistent-symbol-xyz",
+	})
+	require.NoError(t, err)
+	data, _ := json.Marshal(resp)
+	assert.Contains(t, string(data), `"symbols":[]`)
+	assert.NotContains(t, string(data), `"symbols":null`)
+}
+
+func TestReferences_Limit(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "refs.lisp")
+	writeTestFile(t, path, "(defun helper () 1)\n(defun a () (helper))\n(defun b () (helper))\n(defun c () (helper))")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.referencesTool(context.Background(), nil, ReferencesInput{
+		Path:               path,
+		Line:               0,
+		Character:          7, // "helper"
+		IncludeDeclaration: true,
+		Limit:              2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp.References, 2)
+	assert.True(t, resp.Truncated)
+	assert.GreaterOrEqual(t, resp.Total, 3)
+}
+
+func TestWorkspaceSymbols_Limit(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "many.lisp"), "(defun alpha () 1)\n(defun beta () 2)\n(defun gamma () 3)\n(defun delta () 4)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	_, resp, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &tmp,
+		Query:         "",
+		Limit:         2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp.Symbols, 2)
+	assert.True(t, resp.Truncated)
+	assert.Equal(t, 4, resp.Total)
+}
+
+func TestDiagnostics_MaxFiles(t *testing.T) {
+	tmp := t.TempDir()
+	for _, name := range []string{"a.lisp", "b.lisp", "c.lisp", "d.lisp", "e.lisp"} {
+		writeTestFile(t, filepath.Join(tmp, name), "(defun broken (")
+	}
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		WorkspaceRoot:    &tmp,
+		IncludeWorkspace: true,
+		MaxFiles:         2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp.Files, 2)
+	assert.True(t, resp.Truncated)
+	assert.Equal(t, 5, resp.TotalFiles)
+}
+
+func TestDiagnostics_SeverityFilter(t *testing.T) {
+	tmp := t.TempDir()
+	// File with parse errors (severity: error) and lint warnings.
+	// set x twice produces a set-usage warning.
+	path := filepath.Join(tmp, "mixed.lisp")
+	writeTestFile(t, path, "(set 'x 1)\n(set 'x 2)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	severity := "warning"
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		Path:     &path,
+		Severity: &severity,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Files, 1)
+	for _, d := range resp.Files[0].Diagnostics {
+		assert.Equal(t, "warning", d.Severity)
+	}
+}
+
+func TestDiagnostics_InlineContentNoPath(t *testing.T) {
+	srv := New()
+	content := "(defun broken ("
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Files, 1)
+	assert.Equal(t, "<stdin>", resp.Files[0].Path)
+	assert.NotEmpty(t, resp.Files[0].Diagnostics)
+}
+
+func TestDiagnostics_PathWithIncludeWorkspace(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "a.lisp"), "(defun broken (")
+	writeTestFile(t, filepath.Join(tmp, "b.lisp"), "(defun also-broken (")
+	targetPath := filepath.Join(tmp, "a.lisp")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		Path:             &targetPath,
+		WorkspaceRoot:    &tmp,
+		IncludeWorkspace: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Files, 1, "should only return diagnostics for the specified path")
+	assert.Equal(t, targetPath, resp.Files[0].Path)
+}
+
+func TestHover_FileNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	_, _, err := srv.service.hoverTool(context.Background(), nil, FileQueryInput{
+		Path:      filepath.Join(tmp, "nonexistent.lisp"),
+		Line:      0,
+		Character: 0,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "file not found")
+}
+
+func TestCallGraph_TopLimitsOutput(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "graph.lisp")
+	writeTestFile(t, path, `
+(defun a () (b) (c) (d))
+(defun b () (c))
+(defun c () (d))
+(defun d () 1)
+`)
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.callGraphTool(context.Background(), nil, PerfSelectionInput{
+		Paths: []string{path},
+		Top:   2,
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(resp.Functions), 2)
+	assert.True(t, resp.Truncated)
+	assert.GreaterOrEqual(t, resp.TotalFunctions, 3)
+}
+
+func TestPerfIssues_TopLimitsIssues(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "perf.lisp")
+	writeTestFile(t, path, `
+(defun a (items) (map 'list (lambda (item) (db-put item)) items))
+(defun b (items) (map 'list (lambda (item) (db-get item)) items))
+`)
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.perfIssuesTool(context.Background(), nil, PerfSelectionInput{
+		Paths: []string{path},
+		Top:   1,
+	})
+	require.NoError(t, err)
+	if len(resp.Issues) > 0 {
+		assert.LessOrEqual(t, len(resp.Issues), 1)
+	}
+}
+
+func TestPerfIssues_SolvedFilteredByRules(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "perf.lisp")
+	writeTestFile(t, path, `
+(defun a (items) (map 'list (lambda (item) (db-put item)) items))
+(defun b () 1)
+`)
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, fullResp, err := srv.service.perfIssuesTool(context.Background(), nil, PerfSelectionInput{
+		Paths: []string{path},
+		Top:   10,
+	})
+	require.NoError(t, err)
+
+	if len(fullResp.Issues) > 0 {
+		rule := fullResp.Issues[0].Rule
+		_, filtered, err := srv.service.perfIssuesTool(context.Background(), nil, PerfSelectionInput{
+			Paths: []string{path},
+			Top:   10,
+			Rules: []string{rule},
+		})
+		require.NoError(t, err)
+		for _, s := range filtered.Solved {
+			found := false
+			for _, issue := range filtered.Issues {
+				if issue.Function == s.Name {
+					found = true
+					break
+				}
+			}
+			assert.True(t, found, "solved function %q should have a matching issue for rule %s", s.Name, rule)
+		}
+	}
+}
+
+func TestPerfFiles_IncludeTestsWithExplicitPaths(t *testing.T) {
+	tmp := t.TempDir()
+	prodPath := filepath.Join(tmp, "prod.lisp")
+	testPath := filepath.Join(tmp, "prod_test.lisp")
+	writeTestFile(t, prodPath, "(defun prod () 1)")
+	writeTestFile(t, testPath, "(defun prod-test () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	files, err := srv.service.selectPerfFiles(PerfSelectionInput{
+		Paths:        []string{prodPath, testPath},
+		IncludeTests: false,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, files, prodPath)
+	assert.NotContains(t, files, testPath, "test file should be excluded even with explicit paths when include_tests=false")
+}
+
+func TestDocumentSymbols_MacroInContentOverride(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "macros.lisp")
+	content := "(defmacro my-when (cond &rest body) (list 'if cond (cons 'progn body)))\n(defun my-func () 1)"
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.documentSymbolsTool(context.Background(), nil, DocumentQueryInput{
+		Path:    path,
+		Content: &content,
+	})
+	require.NoError(t, err)
+	var names []string
+	for _, sym := range resp.Symbols {
+		names = append(names, sym.Name)
+	}
+	assert.Contains(t, names, "my-func")
+	assert.Contains(t, names, "my-when", "defmacro should appear in document_symbols with content override")
+}
+
+func TestHelpTool(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.helpTool(context.Background(), nil, HelpInput{})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Content, "Coordinate System")
+	assert.Contains(t, resp.Content, "Path Resolution")
+	assert.Contains(t, resp.Content, "Content Override")
+	assert.Contains(t, resp.Content, "PERF001")
+	assert.Contains(t, resp.Content, "set-usage")
+}
+
+func TestWorkspaceSymbols_Pagination(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "many.lisp"), "(defun alpha () 1)\n(defun beta () 2)\n(defun gamma () 3)\n(defun delta () 4)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+
+	// First page
+	_, page1, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &tmp,
+		Limit:         2,
+		Offset:        0,
+	})
+	require.NoError(t, err)
+	assert.Len(t, page1.Symbols, 2)
+	assert.True(t, page1.Truncated)
+	assert.Equal(t, 4, page1.Total)
+
+	// Second page
+	_, page2, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &tmp,
+		Limit:         2,
+		Offset:        2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, page2.Symbols, 2)
+	assert.True(t, page2.Truncated)
+
+	// No overlap
+	for _, s1 := range page1.Symbols {
+		for _, s2 := range page2.Symbols {
+			assert.NotEqual(t, s1.Name, s2.Name, "pages should not overlap")
+		}
+	}
+
+	// Past end
+	_, page3, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &tmp,
+		Limit:         2,
+		Offset:        10,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, page3.Symbols)
+	assert.True(t, page3.Truncated)
+}
+
+func TestDiagnostics_Pagination(t *testing.T) {
+	tmp := t.TempDir()
+	for _, name := range []string{"a.lisp", "b.lisp", "c.lisp"} {
+		writeTestFile(t, filepath.Join(tmp, name), "(defun broken (")
+	}
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+
+	_, page1, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		WorkspaceRoot:    &tmp,
+		IncludeWorkspace: true,
+		MaxFiles:         2,
+		Offset:           0,
+	})
+	require.NoError(t, err)
+	assert.Len(t, page1.Files, 2)
+	assert.True(t, page1.Truncated)
+	assert.Equal(t, 3, page1.TotalFiles)
+
+	_, page2, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		WorkspaceRoot:    &tmp,
+		IncludeWorkspace: true,
+		MaxFiles:         2,
+		Offset:           2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, page2.Files, 1)
+	assert.True(t, page2.Truncated)
+}
+
+func TestResolvePath_NoDoublePrefixing(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	// Create a file inside the workspace
+	testFile := filepath.Join(tmp, "utils.lisp")
+	writeTestFile(t, testFile, "(defun util () 1)")
+
+	// When CWD is inside the workspace root, a relative path should not get double-prefixed.
+	resolved, err := srv.service.resolvePath("utils.lisp", tmp)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(tmp, "utils.lisp"), resolved)
 }
 
 func TestResolvePath_AbsoluteInput(t *testing.T) {

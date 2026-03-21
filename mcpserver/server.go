@@ -190,10 +190,10 @@ func (s *Server) syncToolDescriptors() error {
 }
 
 func (s *Server) registerCoreTools() {
-	s.registerTool("describe_server", "Describe server metadata and supported tools")
+	s.registerTool("describe_server", "Describe server metadata, capabilities, and supported tools. Returns server name, version, workspace root, and a list of all registered tools with descriptions.")
 	mcp.AddTool(s.server, &mcp.Tool{
 		Name:        "describe_server",
-		Description: "Describe server metadata and supported tools",
+		Description: "Describe server metadata, capabilities, and supported tools. Returns server name, version, workspace root, and a list of all registered tools with descriptions.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ DescribeServerInput) (*mcp.CallToolResult, DescribeServerResponse, error) {
 		return nil, DescribeServerResponse{
 			Name:                 s.impl.Name,
@@ -204,32 +204,35 @@ func (s *Server) registerCoreTools() {
 		}, nil
 	})
 
-	s.registerTool("hover", "Look up symbol information at a file position")
-	mcp.AddTool(s.server, &mcp.Tool{Name: "hover", Description: "Look up symbol information at a file position"}, s.service.hoverTool)
+	s.registerTool("help", "Return a usage guide covering coordinates, paths, content overrides, scoping, result limiting, lint analyzers, and perf rules.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "help", Description: "Return a usage guide covering coordinates, paths, content overrides, scoping, result limiting, lint analyzers, and perf rules."}, s.service.helpTool)
 
-	s.registerTool("definition", "Find the definition of a symbol at a file position")
-	mcp.AddTool(s.server, &mcp.Tool{Name: "definition", Description: "Find the definition of a symbol at a file position"}, s.service.definitionTool)
+	s.registerTool("hover", "Look up symbol information (name, kind, signature, docs, definition location) at a 0-based line/character position in a file. Supports content override for unsaved buffers.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "hover", Description: "Look up symbol information (name, kind, signature, docs, definition location) at a 0-based line/character position in a file. Supports content override for unsaved buffers."}, s.service.hoverTool)
 
-	s.registerTool("references", "Find references for a symbol at a file position")
-	mcp.AddTool(s.server, &mcp.Tool{Name: "references", Description: "Find references for a symbol at a file position"}, s.service.referencesTool)
+	s.registerTool("definition", "Find where a symbol at a given position is defined. Returns the file path and range, or a virtual location for builtins.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "definition", Description: "Find where a symbol at a given position is defined. Returns the file path and range, or a virtual location for builtins."}, s.service.definitionTool)
 
-	s.registerTool("document_symbols", "List top-level symbols in a document")
-	mcp.AddTool(s.server, &mcp.Tool{Name: "document_symbols", Description: "List top-level symbols in a document"}, s.service.documentSymbolsTool)
+	s.registerTool("references", "Find all references to a symbol across the current file and workspace. Supports include_declaration and limit parameters.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "references", Description: "Find all references to a symbol across the current file and workspace. Supports include_declaration and limit parameters."}, s.service.referencesTool)
 
-	s.registerTool("workspace_symbols", "Search top-level symbols across a workspace")
-	mcp.AddTool(s.server, &mcp.Tool{Name: "workspace_symbols", Description: "Search top-level symbols across a workspace"}, s.service.workspaceSymbolsTool)
+	s.registerTool("document_symbols", "List all top-level symbol definitions (functions, macros, variables, types) in a single document. Supports content override.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "document_symbols", Description: "List all top-level symbol definitions (functions, macros, variables, types) in a single document. Supports content override."}, s.service.documentSymbolsTool)
 
-	s.registerTool("diagnostics", "Collect parse and lint diagnostics for a file or workspace")
-	mcp.AddTool(s.server, &mcp.Tool{Name: "diagnostics", Description: "Collect parse and lint diagnostics for a file or workspace"}, s.service.diagnosticsTool)
+	s.registerTool("workspace_symbols", "Search for top-level symbol definitions across all .lisp files in a workspace. Supports query filtering and limit. Does not return Go-registered builtins.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "workspace_symbols", Description: "Search for top-level symbol definitions across all .lisp files in a workspace. Supports query filtering and limit. Does not return Go-registered builtins."}, s.service.workspaceSymbolsTool)
 
-	s.registerTool("perf_issues", "Run ELPS performance analysis and return structured issues")
-	mcp.AddTool(s.server, &mcp.Tool{Name: "perf_issues", Description: "Run ELPS performance analysis and return structured issues"}, s.service.perfIssuesTool)
+	s.registerTool("diagnostics", "Collect parse errors and lint diagnostics for a file, inline content, or entire workspace. Supports severity filtering and max_files limit.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "diagnostics", Description: "Collect parse errors and lint diagnostics for a file, inline content, or entire workspace. Supports severity filtering and max_files limit."}, s.service.diagnosticsTool)
 
-	s.registerTool("call_graph", "Build a structured call graph from ELPS performance analysis")
-	mcp.AddTool(s.server, &mcp.Tool{Name: "call_graph", Description: "Build a structured call graph from ELPS performance analysis"}, s.service.callGraphTool)
+	s.registerTool("perf_issues", "Run ELPS performance analysis and return structured issues with traces. Use paths to scope, top to limit output, rules to filter by rule ID.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "perf_issues", Description: "Run ELPS performance analysis and return structured issues with traces. Use paths to scope, top to limit output, rules to filter by rule ID."}, s.service.perfIssuesTool)
 
-	s.registerTool("hotspots", "Return the highest-cost functions from ELPS performance analysis")
-	mcp.AddTool(s.server, &mcp.Tool{Name: "hotspots", Description: "Return the highest-cost functions from ELPS performance analysis"}, s.service.hotspotsTool)
+	s.registerTool("call_graph", "Build a structured call graph showing functions and caller-callee edges. Use paths to scope and top to limit to highest-cost functions.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "call_graph", Description: "Build a structured call graph showing functions and caller-callee edges. Use paths to scope and top to limit to highest-cost functions."}, s.service.callGraphTool)
+
+	s.registerTool("hotspots", "Return the highest-cost functions from performance analysis. Requires top parameter. Use paths to scope the analysis.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "hotspots", Description: "Return the highest-cost functions from performance analysis. Requires top parameter. Use paths to scope the analysis."}, s.service.hotspotsTool)
 }
 
 func clonePerfConfig(cfg *perf.Config) *perf.Config {

@@ -163,7 +163,7 @@ func (s *service) referencesTool(ctx context.Context, _ *mcp.CallToolRequest, in
 		return nil, ReferencesResponse{References: []Location{}}, nil
 	}
 
-	var refs []Location
+	refs := []Location{}
 	if in.IncludeDeclaration && sym.Source != nil && sym.Source.Pos >= 0 {
 		refs = append(refs, *locationFromSource(resolvePathAgainstRoot(sym.Source.File, s.rootForState(in.WorkspaceRoot), doc.Path), sym.Source, len(sym.Name)))
 	}
@@ -179,10 +179,19 @@ func (s *service) referencesTool(ctx context.Context, _ *mcp.CallToolRequest, in
 		refs = append(refs, *locationFromSource(wref.File, wref.Source, len(sym.Name)))
 	}
 
-	return nil, ReferencesResponse{
+	resp := ReferencesResponse{
 		SymbolName: sym.Name,
 		References: refs,
-	}, nil
+	}
+	if in.Offset > 0 || in.Limit > 0 {
+		total := len(resp.References)
+		resp.References = paginateSlice(resp.References, in.Offset, in.Limit)
+		if len(resp.References) < total {
+			resp.Truncated = true
+			resp.Total = total
+		}
+	}
+	return nil, resp, nil
 }
 
 func (s *service) documentSymbolsTool(ctx context.Context, _ *mcp.CallToolRequest, in DocumentQueryInput) (*mcp.CallToolResult, DocumentSymbolsResponse, error) {
@@ -190,7 +199,7 @@ func (s *service) documentSymbolsTool(ctx context.Context, _ *mcp.CallToolReques
 	if err != nil {
 		return nil, DocumentSymbolsResponse{}, err
 	}
-	var symbols []DocumentSymbol
+	symbols := []DocumentSymbol{}
 	if doc.Analysis != nil {
 		for _, sym := range doc.Analysis.Symbols {
 			if sym.External || sym.Source == nil || sym.Source.Line == 0 {
@@ -230,7 +239,7 @@ func (s *service) workspaceSymbolsTool(ctx context.Context, _ *mcp.CallToolReque
 		return nil, WorkspaceSymbolsResponse{}, err
 	}
 	query := strings.ToLower(in.Query)
-	var out []WorkspaceSymbol
+	out := []WorkspaceSymbol{}
 	seen := make(map[string]bool)
 	for _, sym := range state.symbols {
 		if sym.Source == nil || sym.Source.Line == 0 {
@@ -259,7 +268,16 @@ func (s *service) workspaceSymbolsTool(ctx context.Context, _ *mcp.CallToolReque
 		}
 		return out[i].Path < out[j].Path
 	})
-	return nil, WorkspaceSymbolsResponse{Symbols: out}, nil
+	resp := WorkspaceSymbolsResponse{Symbols: out}
+	if in.Offset > 0 || in.Limit > 0 {
+		total := len(resp.Symbols)
+		resp.Symbols = paginateSlice(resp.Symbols, in.Offset, in.Limit)
+		if len(resp.Symbols) < total {
+			resp.Truncated = true
+			resp.Total = total
+		}
+	}
+	return nil, resp, nil
 }
 
 func (s *service) diagnosticsTool(ctx context.Context, _ *mcp.CallToolRequest, in DiagnosticsInput) (*mcp.CallToolResult, DiagnosticsResponse, error) {
@@ -273,35 +291,48 @@ func (s *service) diagnosticsTool(ctx context.Context, _ *mcp.CallToolRequest, i
 			return nil, DiagnosticsResponse{}, err
 		}
 		contentByPath := make(map[string]*string)
-		if in.Path != nil && in.Content != nil {
+		var filterPath string
+		if in.Path != nil {
 			resolved, resolveErr := s.resolvePath(*in.Path, root)
 			if resolveErr != nil {
 				return nil, DiagnosticsResponse{}, resolveErr
 			}
-			contentByPath[resolved] = in.Content
+			filterPath = resolved
+			if in.Content != nil {
+				contentByPath[resolved] = in.Content
+			}
 		}
-		var result []FileDiagnostics
+		result := []FileDiagnostics{}
 		for _, path := range files {
 			fd, diagErr := s.collectFileDiagnostics(path, contentByPath[path], &root)
 			if diagErr != nil {
 				return nil, DiagnosticsResponse{}, diagErr
 			}
+			if filterPath != "" && path != filterPath {
+				continue
+			}
+			fd.Diagnostics = filterDiagnosticsBySeverity(fd.Diagnostics, in.Severity)
 			result = append(result, fd)
 		}
-		return nil, DiagnosticsResponse{Files: result}, nil
+		return nil, s.applyDiagnosticsLimits(result, in.MaxFiles, in.Offset), nil
 	}
 
-	if in.Path == nil {
-		return nil, DiagnosticsResponse{}, errors.New("path is required when include_workspace is false")
+	if in.Path == nil && in.Content == nil {
+		return nil, DiagnosticsResponse{}, errors.New("path is required when include_workspace is false and no content is provided")
 	}
 	root, err := s.resolveWorkspaceRoot(in.WorkspaceRoot, false)
 	if err != nil {
 		return nil, DiagnosticsResponse{}, err
 	}
-	fd, err := s.collectFileDiagnostics(*in.Path, in.Content, optionalStringPtr(root))
+	path := "<stdin>"
+	if in.Path != nil {
+		path = *in.Path
+	}
+	fd, err := s.collectFileDiagnostics(path, in.Content, optionalStringPtr(root))
 	if err != nil {
 		return nil, DiagnosticsResponse{}, err
 	}
+	fd.Diagnostics = filterDiagnosticsBySeverity(fd.Diagnostics, in.Severity)
 	return nil, DiagnosticsResponse{Files: []FileDiagnostics{fd}}, nil
 }
 
@@ -310,9 +341,19 @@ func (s *service) perfIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, in
 	if err != nil {
 		return nil, PerfIssuesResponse{}, err
 	}
-	out := PerfIssuesResponse{Issues: mapIssues(result.Issues)}
+	issues := mapIssues(result.Issues)
+	out := PerfIssuesResponse{Issues: issues}
 	if in.Top > 0 {
-		out.Solved = topSolved(result.Solved, in.Top)
+		if len(out.Issues) > in.Top {
+			out.TotalIssues = len(out.Issues)
+			out.Issues = out.Issues[:in.Top]
+			out.Truncated = true
+		}
+		solved := result.Solved
+		if len(in.Rules) > 0 {
+			solved = filterSolvedByRules(solved, result.Issues, in.Rules)
+		}
+		out.Solved = topSolved(solved, in.Top)
 	}
 	return nil, out, nil
 }
@@ -322,7 +363,11 @@ func (s *service) callGraphTool(ctx context.Context, _ *mcp.CallToolRequest, in 
 	if err != nil {
 		return nil, CallGraphResponse{}, err
 	}
-	return nil, mapCallGraph(result.Graph), nil
+	resp := mapCallGraph(result.Graph)
+	if in.Top > 0 {
+		resp = truncateCallGraph(resp, result.Solved, in.Top)
+	}
+	return nil, resp, nil
 }
 
 func (s *service) hotspotsTool(ctx context.Context, _ *mcp.CallToolRequest, in PerfSelectionInput) (*mcp.CallToolResult, HotspotsResponse, error) {
@@ -394,11 +439,15 @@ func (s *service) selectPerfFiles(in PerfSelectionInput) ([]string, error) {
 		return nil, err
 	}
 	if len(in.Paths) > 0 {
+		excludes := perfExcludePatterns(s.perfConfig, in.IncludeTests)
 		files := make([]string, 0, len(in.Paths))
 		for _, path := range in.Paths {
 			resolved, resolveErr := s.resolvePath(path, root)
 			if resolveErr != nil {
 				return nil, resolveErr
+			}
+			if shouldExcludePerfPath(root, resolved, excludes) {
+				continue
 			}
 			files = append(files, resolved)
 		}
@@ -430,8 +479,11 @@ func (s *service) collectFileDiagnostics(path string, content *string, workspace
 }
 
 func (s *service) loadDocument(path string, content *string, workspaceRoot *string) (*document, *workspaceState, error) {
-	if path == "" {
+	if path == "" && content == nil {
 		return nil, nil, errors.New("path is required")
+	}
+	if path == "" {
+		path = "<stdin>"
 	}
 	root, err := s.resolveWorkspaceRoot(workspaceRoot, false)
 	if err != nil {
@@ -443,6 +495,9 @@ func (s *service) loadDocument(path string, content *string, workspaceRoot *stri
 	}
 	_, contentString, err := s.readSource(resolvedPath, content)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, fmt.Errorf("file not found: %s", resolvedPath)
+		}
 		return nil, nil, err
 	}
 	state, err := s.workspace(root)
@@ -596,10 +651,19 @@ func (s *service) resolvePath(path string, root string) (string, error) {
 	if path == "" {
 		return "", errors.New("path is required")
 	}
+	if path == "<stdin>" {
+		return path, nil
+	}
 	if filepath.IsAbs(path) {
 		return filepath.Clean(path), nil
 	}
 	if root != "" {
+		// Check if path already resolves under workspace root from CWD.
+		if absPath, err := filepath.Abs(path); err == nil {
+			if strings.HasPrefix(absPath, root+string(filepath.Separator)) || absPath == root {
+				return absPath, nil
+			}
+		}
 		resolved := filepath.Join(root, path)
 		// Defense-in-depth: ensure the resolved path stays under the workspace root.
 		if !strings.HasPrefix(resolved, root+string(filepath.Separator)) && resolved != root {
@@ -1380,4 +1444,198 @@ func mapCallGraph(graph *perf.CallGraph) CallGraphResponse {
 	})
 	return CallGraphResponse{Functions: functions, Edges: edges}
 }
+
+func truncateCallGraph(resp CallGraphResponse, solved []*perf.SolvedFunction, top int) CallGraphResponse {
+	if top <= 0 || len(resp.Functions) <= top {
+		return resp
+	}
+	items := append([]*perf.SolvedFunction(nil), solved...)
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].TotalScore == items[j].TotalScore {
+			return items[i].Name < items[j].Name
+		}
+		return items[i].TotalScore > items[j].TotalScore
+	})
+	if top < len(items) {
+		items = items[:top]
+	}
+	keep := make(map[string]bool, len(items))
+	for _, fn := range items {
+		keep[fn.Name] = true
+	}
+	totalFunctions := len(resp.Functions)
+	totalEdges := len(resp.Edges)
+	functions := make([]CallGraphFunction, 0, len(items))
+	for _, fn := range resp.Functions {
+		if keep[fn.Name] {
+			functions = append(functions, fn)
+		}
+	}
+	edges := make([]CallGraphEdge, 0, len(resp.Edges))
+	for _, edge := range resp.Edges {
+		if keep[edge.Caller] || keep[edge.Callee] {
+			edges = append(edges, edge)
+		}
+	}
+	return CallGraphResponse{
+		Functions:      functions,
+		Edges:          edges,
+		Truncated:      true,
+		TotalFunctions: totalFunctions,
+		TotalEdges:     totalEdges,
+	}
+}
+
+func filterSolvedByRules(solved []*perf.SolvedFunction, issues []perf.Issue, rules []string) []*perf.SolvedFunction {
+	ruleSet := make(map[string]bool, len(rules))
+	for _, r := range rules {
+		ruleSet[r] = true
+	}
+	funcHasMatchingIssue := make(map[string]bool)
+	for _, issue := range issues {
+		if ruleSet[string(issue.Rule)] {
+			funcHasMatchingIssue[issue.Function] = true
+		}
+	}
+	var filtered []*perf.SolvedFunction
+	for _, fn := range solved {
+		if funcHasMatchingIssue[fn.Name] {
+			filtered = append(filtered, fn)
+		}
+	}
+	return filtered
+}
+
+func filterDiagnosticsBySeverity(diags []Diagnostic, severity *string) []Diagnostic {
+	if severity == nil || *severity == "" {
+		return diags
+	}
+	target := strings.ToLower(*severity)
+	filtered := make([]Diagnostic, 0, len(diags))
+	for _, d := range diags {
+		if strings.ToLower(d.Severity) == target {
+			filtered = append(filtered, d)
+		}
+	}
+	return filtered
+}
+
+func (s *service) applyDiagnosticsLimits(result []FileDiagnostics, maxFiles, offset int) DiagnosticsResponse {
+	resp := DiagnosticsResponse{Files: result}
+	if offset > 0 || maxFiles > 0 {
+		total := len(resp.Files)
+		resp.Files = paginateSlice(resp.Files, offset, maxFiles)
+		if len(resp.Files) < total {
+			resp.Truncated = true
+			resp.TotalFiles = total
+		}
+	}
+	return resp
+}
+
+func paginateSlice[T any](items []T, offset, limit int) []T {
+	if offset > 0 {
+		if offset >= len(items) {
+			return []T{}
+		}
+		items = items[offset:]
+	}
+	if limit > 0 && limit < len(items) {
+		items = items[:limit]
+	}
+	return items
+}
+
+func (s *service) helpTool(_ context.Context, _ *mcp.CallToolRequest, _ HelpInput) (*mcp.CallToolResult, HelpResponse, error) {
+	return nil, HelpResponse{Content: helpContent}, nil
+}
+
+const helpContent = `# ELPS MCP Server — Usage Guide
+
+## Coordinate System
+Lines and characters are **0-indexed** (LSP convention). Line 1 in your editor is line 0 in MCP tool calls.
+
+## Path Resolution
+- Use **bare filenames** (` + "`utils.lisp`" + `) for files in the workspace root.
+- Use **absolute paths** for files outside the workspace.
+- Do NOT use project-relative paths that include the workspace root directory name — they get double-prefixed.
+
+## Content Override
+The ` + "`content`" + ` parameter lets you analyze unsaved buffer content without writing to disk.
+- Works for ` + "`defun`" + `, ` + "`set`" + `, ` + "`deftype`" + `, ` + "`defmacro`" + ` within a single file.
+- Cross-package ` + "`use-package`" + ` within a single content buffer does NOT resolve imported symbols (single-file prescan limitation).
+- ` + "`path`" + ` is still needed for workspace context when using content override with navigation tools.
+- For diagnostics, you may pass ` + "`content`" + ` without ` + "`path`" + ` — results use ` + "`<stdin>`" + ` as the file path.
+
+## workspace_root
+Each tool call can specify a different ` + "`workspace_root`" + `. A new root triggers a fresh directory scan.
+This is NOT the same as the startup ` + "`--workspace-root`" + ` flag (which sets the default).
+
+## Scoping (Performance Tools)
+` + "`call_graph`" + `, ` + "`hotspots`" + `, ` + "`perf_issues`" + ` analyze the entire workspace by default.
+**Always pass ` + "`paths`" + `** to avoid output overflow. Use ` + "`top`" + ` to further limit results.
+
+### ` + "`top`" + ` Parameter Behavior
+- **hotspots**: limits function count
+- **perf_issues**: limits both issues and solved functions
+- **call_graph**: limits functions to top-N by cost, edges filtered to match
+
+### ` + "`rules`" + ` Filter
+On ` + "`perf_issues`" + `: filters both ` + "`issues`" + ` AND ` + "`solved`" + ` results.
+On ` + "`call_graph`" + `: the ` + "`rules`" + ` parameter has no effect — scope with ` + "`paths`" + ` instead.
+
+## workspace_symbols
+Only finds ` + "`.lisp`" + `-defined symbols. Go-registered builtins (from the embedder's registry) are NOT returned.
+Use ` + "`hover`" + ` on a known position to get builtin info.
+
+## include_tests
+Test files (` + "`*_test.lisp`" + `) are excluded by default. Set ` + "`include_tests=true`" + ` to include them.
+This applies to all paths, whether using explicit ` + "`paths`" + ` or workspace scan.
+
+## Result Limiting and Pagination
+All list-returning tools support a ` + "`limit`" + ` parameter (or ` + "`max_files`" + ` for diagnostics, ` + "`top`" + ` for perf tools).
+When results are trimmed, the response includes ` + "`truncated: true`" + ` and a total count field.
+Use ` + "`offset`" + ` to paginate: ` + "`{\"limit\": 10, \"offset\": 20}`" + ` skips the first 20 results and returns the next 10.
+
+## Empty Results
+All tools return empty arrays (` + "`[]`" + `), never ` + "`null`" + `, for list fields.
+
+## Common Workflows
+1. **Find a symbol**: ` + "`workspace_symbols`" + ` → locate definition file and line
+2. **Understand a symbol**: ` + "`hover`" + ` → get signature, docs, definition location
+3. **Go to definition**: ` + "`definition`" + ` → jump to where a symbol is defined
+4. **Find usages**: ` + "`references`" + ` → find all references across the workspace
+5. **Check for errors**: ` + "`diagnostics`" + ` → parse errors and lint warnings
+6. **Performance audit**: ` + "`perf_issues`" + ` → find performance problems, then ` + "`call_graph`" + ` for context
+
+## Lint Analyzers
+| Analyzer | Severity | Description |
+|----------|----------|-------------|
+| set-usage | warning | Flags repeated ` + "`set`" + ` on same symbol (use ` + "`set!`" + ` for mutation) |
+| in-package-toplevel | error | ` + "`in-package`" + ` must be at top level |
+| if-arity | error | ` + "`if`" + ` requires 2-3 arguments |
+| let-bindings | error | ` + "`let`" + ` binding list must be well-formed |
+| defun-structure | error | ` + "`defun`" + ` requires name, params, body |
+| cond-structure | error | ` + "`cond`" + ` clauses must be lists |
+| builtin-arity | error | Checks argument count for builtins |
+| rethrow-context | error | ` + "`rethrow`" + ` only valid inside ` + "`handler-bind`" + ` |
+| handler-bind-structure | error | ` + "`handler-bind`" + ` form must be well-formed |
+| cond-else | warning | ` + "`cond`" + ` ` + "`else`" + ` must be last clause |
+| test-structure | error | ` + "`test`" + ` form must have name and body |
+| lambda-structure | error | ` + "`lambda`" + ` requires params and body |
+| missing-package-qualifier | warning | Unexported symbol used without package qualifier |
+| deftype-structure | error | ` + "`deftype`" + ` requires name and field list |
+| export-form | warning | ` + "`export`" + ` argument must be a quoted symbol |
+| sort-stable-comparator | warning | ` + "`sort-stable`" + ` requires a comparator function |
+| assert-arity | warning | ` + "`assert-*`" + ` test macros have specific arity |
+
+## Performance Rules
+| Rule | Description |
+|------|-------------|
+| PERF001 | Expensive function call detected inside a loop |
+| PERF002 | Hot path — function exceeds cost threshold |
+| PERF003 | High scaling order (e.g., O(n²) or worse) |
+| PERF004 | Cycle detected in call graph |
+| UNKNOWN001 | Unresolved function call in analysis |
+`
 

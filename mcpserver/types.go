@@ -61,6 +61,8 @@ type DocumentQueryInput struct {
 type WorkspaceSymbolsInput struct {
 	Query         string  `json:"query"`
 	WorkspaceRoot *string `json:"workspace_root,omitempty"`
+	Limit         int     `json:"limit,omitempty"`
+	Offset        int     `json:"offset,omitempty"`
 }
 
 // DiagnosticsInput is input for the diagnostics tool.
@@ -69,6 +71,9 @@ type DiagnosticsInput struct {
 	Content          *string `json:"content,omitempty"`
 	WorkspaceRoot    *string `json:"workspace_root,omitempty"`
 	IncludeWorkspace bool    `json:"include_workspace,omitempty"`
+	MaxFiles         int     `json:"max_files,omitempty"`
+	Offset           int     `json:"offset,omitempty"`
+	Severity         *string `json:"severity,omitempty"`
 }
 
 // PerfToolConfig allows overriding performance analysis settings per-request.
@@ -117,12 +122,16 @@ type ReferencesInput struct {
 	Content            *string `json:"content,omitempty"`
 	WorkspaceRoot      *string `json:"workspace_root,omitempty"`
 	IncludeDeclaration bool    `json:"include_declaration,omitempty"`
+	Limit              int     `json:"limit,omitempty"`
+	Offset             int     `json:"offset,omitempty"`
 }
 
 // ReferencesResponse is the result of a find-references query.
 type ReferencesResponse struct {
 	SymbolName string     `json:"symbol_name,omitempty"`
 	References []Location `json:"references"`
+	Truncated  bool       `json:"truncated,omitempty"`
+	Total      int        `json:"total,omitempty"`
 }
 
 // DocumentSymbol describes a top-level symbol in a document.
@@ -150,7 +159,9 @@ type WorkspaceSymbol struct {
 
 // WorkspaceSymbolsResponse is the result of a workspace symbols query.
 type WorkspaceSymbolsResponse struct {
-	Symbols []WorkspaceSymbol `json:"symbols"`
+	Symbols   []WorkspaceSymbol `json:"symbols"`
+	Truncated bool              `json:"truncated,omitempty"`
+	Total     int               `json:"total,omitempty"`
 }
 
 // Diagnostic is a parse or lint diagnostic for a source location.
@@ -170,7 +181,9 @@ type FileDiagnostics struct {
 
 // DiagnosticsResponse is the result of a diagnostics query.
 type DiagnosticsResponse struct {
-	Files []FileDiagnostics `json:"files"`
+	Files      []FileDiagnostics `json:"files"`
+	Truncated  bool              `json:"truncated,omitempty"`
+	TotalFiles int               `json:"total_files,omitempty"`
 }
 
 // TraceEntry is a single entry in a performance issue trace.
@@ -206,8 +219,10 @@ type SolvedFunctionSummary struct {
 
 // PerfIssuesResponse is the result of a perf_issues query.
 type PerfIssuesResponse struct {
-	Issues []PerfIssue             `json:"issues"`
-	Solved []SolvedFunctionSummary `json:"solved,omitempty"`
+	Issues      []PerfIssue             `json:"issues"`
+	Solved      []SolvedFunctionSummary `json:"solved,omitempty"`
+	Truncated   bool                    `json:"truncated,omitempty"`
+	TotalIssues int                     `json:"total_issues,omitempty"`
 }
 
 // CallGraphFunction describes a function node in a call graph.
@@ -231,11 +246,22 @@ type CallGraphEdge struct {
 
 // CallGraphResponse is the result of a call_graph query.
 type CallGraphResponse struct {
-	Functions []CallGraphFunction `json:"functions"`
-	Edges     []CallGraphEdge     `json:"edges"`
+	Functions      []CallGraphFunction `json:"functions"`
+	Edges          []CallGraphEdge     `json:"edges"`
+	Truncated      bool                `json:"truncated,omitempty"`
+	TotalFunctions int                 `json:"total_functions,omitempty"`
+	TotalEdges     int                 `json:"total_edges,omitempty"`
 }
 
 // HotspotsResponse is the result of a hotspots query.
 type HotspotsResponse struct {
 	Functions []SolvedFunctionSummary `json:"functions"`
+}
+
+// HelpInput is the (empty) input for the help tool.
+type HelpInput struct{}
+
+// HelpResponse is the result of the help tool.
+type HelpResponse struct {
+	Content string `json:"content"`
 }
