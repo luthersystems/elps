@@ -28,21 +28,23 @@ import (
 const builtinScheme = "elps-builtin"
 
 type serviceConfig struct {
-	registry      *lisp.PackageRegistry
-	env           *lisp.LEnv
-	workspaceRoot string
-	perfConfig    *perf.Config
-	linter        *lint.Linter
-	logger        *slog.Logger
+	registry        *lisp.PackageRegistry
+	env             *lisp.LEnv
+	workspaceRoot   string
+	perfConfig      *perf.Config
+	excludePatterns []string
+	linter          *lint.Linter
+	logger          *slog.Logger
 }
 
 type service struct {
-	registry      *lisp.PackageRegistry
-	env           *lisp.LEnv
-	workspaceRoot string
-	perfConfig    *perf.Config
-	linter        *lint.Linter
-	logger        *slog.Logger
+	registry        *lisp.PackageRegistry
+	env             *lisp.LEnv
+	workspaceRoot   string
+	perfConfig      *perf.Config
+	excludePatterns []string
+	linter          *lint.Linter
+	logger          *slog.Logger
 
 	mu         sync.RWMutex
 	workspaces map[string]*workspaceState
@@ -73,6 +75,7 @@ func newService(cfg serviceConfig) *service {
 		env:                         cfg.env,
 		workspaceRoot:               cfg.workspaceRoot,
 		perfConfig:                  clonePerfConfig(cfg.perfConfig),
+		excludePatterns:             cfg.excludePatterns,
 		linter:                      cfg.linter,
 		logger:                      cfg.logger,
 		workspaces:                  make(map[string]*workspaceState),
@@ -519,8 +522,11 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 		fingerprint: fingerprint,
 	}
 	state.validatedAt.Store(validatedAt.UnixNano())
+	scanCfg := &analysis.ScanConfig{
+		Excludes: s.excludePatterns,
+	}
 	if root != "" {
-		globals, pkgs, symbols, err := analysis.ScanWorkspaceAll(root)
+		globals, pkgs, symbols, _, err := analysis.ScanWorkspaceAllWithConfig(root, scanCfg)
 		if err != nil {
 			return nil, err
 		}
@@ -547,7 +553,7 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 		state.cfg.PackageExports[pkgName] = deduplicateExports(syms)
 	}
 	if root != "" {
-		state.refs = analysis.ScanWorkspaceRefs(root, state.cfg, nil)
+		state.refs = analysis.ScanWorkspaceRefs(root, state.cfg, scanCfg)
 	}
 	return state, nil
 }

@@ -332,7 +332,11 @@ func (l *Linter) LintFiles(cfg *LintConfig, files []string) ([]Diagnostic, error
 // registry symbols. This is exported for callers (like the CLI stdin path)
 // that need to build the config separately from file linting.
 func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
-	syms, err := analysis.ScanWorkspace(cfg.Workspace)
+	scanCfg := &analysis.ScanConfig{
+		Excludes: cfg.Excludes,
+	}
+
+	prescan, err := analysis.PrescanWorkspace(cfg.Workspace, scanCfg)
 	if err != nil {
 		return nil, fmt.Errorf("scanning workspace %s: %w", cfg.Workspace, err)
 	}
@@ -352,17 +356,14 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 	}
 
 	// Merge workspace package exports
-	wsPkgs, err := analysis.ScanWorkspacePackages(cfg.Workspace)
-	if err != nil {
-		return nil, fmt.Errorf("scanning workspace packages %s: %w", cfg.Workspace, err)
-	}
-	for pkg, wsSyms := range wsPkgs {
+	for pkg, wsSyms := range prescan.PkgExports {
 		pkgExports[pkg] = append(pkgExports[pkg], wsSyms...)
 	}
 
 	return &analysis.Config{
-		ExtraGlobals:   syms,
+		ExtraGlobals:   prescan.ExportedGlobals,
 		PackageExports: pkgExports,
+		DefForms:       prescan.DefForms,
 	}, nil
 }
 

@@ -19,14 +19,15 @@ const (
 type Option func(*Server)
 
 type Server struct {
-	registry      *lisp.PackageRegistry
-	env           *lisp.LEnv
-	workspaceRoot string
-	perfConfig    *perf.Config
-	impl          *mcp.Implementation
-	instructions  string
-	logger        *slog.Logger
-	registrars    []func(*mcp.Server) error
+	registry        *lisp.PackageRegistry
+	env             *lisp.LEnv
+	workspaceRoot   string
+	perfConfig      *perf.Config
+	excludePatterns []string
+	impl            *mcp.Implementation
+	instructions    string
+	logger          *slog.Logger
+	registrars      []func(*mcp.Server) error
 
 	service  *service
 	server   *mcp.Server
@@ -56,6 +57,11 @@ func WithImplementation(impl *mcp.Implementation) Option {
 
 func WithInstructions(instructions string) Option {
 	return func(s *Server) { s.instructions = instructions }
+}
+
+// WithExcludes sets glob patterns for files to skip during workspace scanning.
+func WithExcludes(patterns []string) Option {
+	return func(s *Server) { s.excludePatterns = patterns }
 }
 
 func WithLogger(logger *slog.Logger) Option {
@@ -98,12 +104,13 @@ func New(opts ...Option) *Server {
 	}
 
 	s.service = newService(serviceConfig{
-		registry:      s.registry,
-		env:           s.env,
-		workspaceRoot: s.workspaceRoot,
-		perfConfig:    s.perfConfig,
-		linter:        &lint.Linter{Analyzers: lint.DefaultAnalyzers()},
-		logger:        s.logger,
+		registry:        s.registry,
+		env:             s.env,
+		workspaceRoot:   s.workspaceRoot,
+		perfConfig:      s.perfConfig,
+		excludePatterns: s.excludePatterns,
+		linter:          &lint.Linter{Analyzers: lint.DefaultAnalyzers()},
+		logger:          s.logger,
 	})
 	s.server = mcp.NewServer(s.impl, &mcp.ServerOptions{
 		Instructions: s.instructions,

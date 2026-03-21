@@ -69,6 +69,10 @@ type Server struct {
 	// maxWorkspaceFiles is the maximum number of .lisp files to scan during
 	// workspace indexing. 0 means use the default (5000).
 	maxWorkspaceFiles int
+
+	// excludePatterns are glob patterns for files to skip during workspace
+	// scanning. Matched against full path, base name, and directory components.
+	excludePatterns []string
 }
 
 // Option configures the LSP server.
@@ -95,6 +99,13 @@ func WithMaxDocumentBytes(n int) Option {
 // during workspace indexing. A value <= 0 uses the default (5000).
 func WithMaxWorkspaceFiles(n int) Option {
 	return func(s *Server) { s.maxWorkspaceFiles = max(n, 0) }
+}
+
+// WithExcludes sets glob patterns for files to skip during workspace scanning.
+// Patterns are matched against the full path, base name, and each directory
+// component using filepath.Match semantics.
+func WithExcludes(patterns []string) Option {
+	return func(s *Server) { s.excludePatterns = patterns }
 }
 
 // New creates a new ELPS LSP server.
@@ -289,6 +300,7 @@ func (s *Server) buildWorkspaceIndex() {
 	// workspace scan limits serve different purposes.
 	scanCfg := &analysis.ScanConfig{
 		MaxFiles: s.maxWorkspaceFiles,
+		Excludes: s.excludePatterns,
 	}
 
 	// Two-phase workspace scan: prescan extracts definitions AND

@@ -2618,3 +2618,48 @@ func TestBuildAnalysisConfig_StdlibExportsOverride(t *testing.T) {
 	_, ok := cfg.PackageExports["custom-pkg"]
 	assert.True(t, ok, "custom-pkg should be in PackageExports")
 }
+
+func TestBuildAnalysisConfig_Excludes(t *testing.T) {
+	dir := t.TempDir()
+
+	// File A exports "helper".
+	writeTempLisp(t, dir, "lib.lisp", `
+(defun helper () 1)
+(export 'helper)
+`)
+	// File B (generated) also exports "helper" — would cause duplicate-definition.
+	writeTempLisp(t, dir, "generated.lisp", `
+(defun helper () 1)
+(export 'helper)
+`)
+
+	// Without excludes: both files contribute symbols.
+	cfgAll, err := BuildAnalysisConfig(&LintConfig{
+		Workspace:     dir,
+		StdlibExports: map[string][]analysis.ExternalSymbol{},
+	})
+	require.NoError(t, err)
+	countAll := 0
+	for _, sym := range cfgAll.ExtraGlobals {
+		if sym.Name == "helper" {
+			countAll++
+		}
+	}
+
+	// With excludes: generated.lisp is excluded.
+	cfgExcluded, err := BuildAnalysisConfig(&LintConfig{
+		Workspace:     dir,
+		Excludes:      []string{"generated.lisp"},
+		StdlibExports: map[string][]analysis.ExternalSymbol{},
+	})
+	require.NoError(t, err)
+	countExcluded := 0
+	for _, sym := range cfgExcluded.ExtraGlobals {
+		if sym.Name == "helper" {
+			countExcluded++
+		}
+	}
+
+	assert.Greater(t, countAll, countExcluded, "excluding a file should reduce symbols")
+	assert.Equal(t, 1, countExcluded, "only one helper should remain after excluding generated.lisp")
+}
