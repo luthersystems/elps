@@ -33,6 +33,10 @@ type ScanConfig struct {
 	// MaxFileBytes is the maximum size in bytes for a single file.
 	// Files exceeding this are skipped. 0 means use DefaultMaxFileBytes.
 	MaxFileBytes int64
+	// Excludes are glob patterns for files to skip during collection.
+	// Patterns are matched against the full path, base name, and each
+	// directory component using filepath.Match semantics.
+	Excludes []string
 }
 
 // effectiveMaxFiles returns the file limit, applying the default if zero.
@@ -49,6 +53,14 @@ func (c *ScanConfig) effectiveMaxFileBytes() int64 {
 		return DefaultMaxFileBytes
 	}
 	return c.MaxFileBytes
+}
+
+// effectiveExcludes returns the exclude patterns, or nil if none configured.
+func (c *ScanConfig) effectiveExcludes() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Excludes
 }
 
 // SymbolKey identifies a symbol across files by name and kind.
@@ -142,6 +154,8 @@ func collectLispFilesWithConfig(root string, scanCfg *ScanConfig) ([]string, boo
 	maxFiles := scanCfg.effectiveMaxFiles()
 	maxBytes := scanCfg.effectiveMaxFileBytes()
 
+	excludes := scanCfg.effectiveExcludes()
+
 	var paths []string
 	var truncated bool
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -155,6 +169,9 @@ func collectLispFilesWithConfig(root string, scanCfg *ScanConfig) ([]string, boo
 			return nil
 		}
 		if filepath.Ext(path) != ".lisp" {
+			return nil
+		}
+		if len(excludes) > 0 && MatchesExclude(path, excludes) {
 			return nil
 		}
 		if maxBytes > 0 && info.Size() > maxBytes {
@@ -580,10 +597,11 @@ func scopeContainingAnalysis(scope *Scope, line, col int) *Scope {
 // analysis on each .lisp file, and extracts cross-file references.
 // The cfg should have ExtraGlobals and PackageExports populated from
 // a prior ScanWorkspaceFull call. Parsing is done concurrently.
+// The optional scanCfg controls file collection limits and excludes.
 //
 // Returns a map from SymbolKey.String() to FileReference slices.
-func ScanWorkspaceRefs(root string, cfg *Config) map[string][]FileReference {
-	paths, _, err := collectLispFilesWithConfig(root, nil)
+func ScanWorkspaceRefs(root string, cfg *Config, scanCfg *ScanConfig) map[string][]FileReference {
+	paths, _, err := collectLispFilesWithConfig(root, scanCfg)
 	if err != nil || len(paths) == 0 {
 		return nil
 	}

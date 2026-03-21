@@ -65,25 +65,3 @@ func TestFilterExcludes_EmptyExcludes(t *testing.T) {
 	result := filterExcludes(paths, nil)
 	assert.Equal(t, []string{"src/main.lisp"}, result)
 }
-
-func TestMatchesAny_FullPath(t *testing.T) {
-	// filepath.Match on the full path
-	assert.True(t, matchesAny("src/main.lisp", []string{"src/*.lisp"}))
-	assert.False(t, matchesAny("lib/main.lisp", []string{"src/*.lisp"}))
-}
-
-func TestMatchesAny_BaseName(t *testing.T) {
-	assert.True(t, matchesAny("deep/nested/shirocore.lisp", []string{"shirocore.lisp"}))
-}
-
-func TestMatchesAny_Component(t *testing.T) {
-	assert.True(t, matchesAny("project/build/output.lisp", []string{"build"}))
-	assert.False(t, matchesAny("project/src/output.lisp", []string{"build"}))
-}
-
-func TestSplitPath(t *testing.T) {
-	components := splitPath("a/b/c.lisp")
-	assert.Contains(t, components, "c.lisp")
-	assert.Contains(t, components, "b")
-	assert.Contains(t, components, "a")
-}
