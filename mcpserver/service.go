@@ -414,7 +414,33 @@ func (s *service) runPerf(in PerfSelectionInput) (*perf.Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	return perf.AnalyzeFiles(files, cfg)
+	// Filter out files that can't be parsed — perf.AnalyzeFiles uses
+	// strict parsing and fails on the first broken file.
+	validFiles := filterParseableFiles(files, s.logger)
+	return perf.AnalyzeFiles(validFiles, cfg)
+}
+
+func filterParseableFiles(files []string, logger *slog.Logger) []string {
+	valid := make([]string, 0, len(files))
+	for _, path := range files {
+		data, err := os.ReadFile(path) //nolint:gosec // tool reads user-selected paths
+		if err != nil {
+			if logger != nil {
+				logger.Warn("skipping unreadable file for perf analysis", "path", path, "error", err)
+			}
+			continue
+		}
+		scanner := token.NewScanner(path, strings.NewReader(string(data)))
+		parser := rdparser.NewFormatting(scanner)
+		if _, parseErr := parser.ParseProgram(); parseErr != nil {
+			if logger != nil {
+				logger.Warn("skipping unparseable file for perf analysis", "path", path, "error", parseErr)
+			}
+			continue
+		}
+		valid = append(valid, path)
+	}
+	return valid
 }
 
 func (s *service) mergePerfConfig(in PerfSelectionInput) (*perf.Config, error) {

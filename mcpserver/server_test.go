@@ -1328,6 +1328,20 @@ func TestPerfIssues_SolvedAlwaysArray(t *testing.T) {
 	assert.Contains(t, string(data2), `"solved":[]`, "solved should be [] when top is not set")
 }
 
+func TestPerfTools_SkipUnparseableFiles(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "good.lisp"), "(defun good (items) (map 'list (lambda (item) (db-put item)) items))")
+	writeTestFile(t, filepath.Join(tmp, "broken.lisp"), "(defun broken (")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.perfIssuesTool(context.Background(), nil, PerfSelectionInput{
+		WorkspaceRoot: &tmp,
+		Top:           5,
+	})
+	require.NoError(t, err, "perf tools should skip unparseable files, not error")
+	assert.NotNil(t, resp)
+}
+
 func TestResolvePath_NoDoublePrefixing(t *testing.T) {
 	tmp := t.TempDir()
 	srv := New(WithWorkspaceRoot(tmp))
