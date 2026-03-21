@@ -1272,6 +1272,62 @@ func TestWorkspaceRootOverride(t *testing.T) {
 	assert.Empty(t, ws2Alpha.Symbols)
 }
 
+func TestValidateCursor_StructuredError(t *testing.T) {
+	err := validateCursor(-1, 0)
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "invalid_position", te.Code)
+
+	err = validateCursor(0, -1)
+	require.Error(t, err)
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "invalid_position", te.Code)
+}
+
+func TestLintTool_ReportsParseErrors(t *testing.T) {
+	srv := New()
+	content := "(defun broken ("
+	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Diagnostics, "lint tool should report parse errors for broken files")
+	found := false
+	for _, d := range resp.Diagnostics {
+		if d.Severity == "error" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "parse errors should appear as error-severity diagnostics")
+}
+
+func TestPerfIssues_SolvedAlwaysArray(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "clean.lisp")
+	writeTestFile(t, path, "(defun clean () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	// Use rules filter that matches nothing — solved should be [] not null.
+	_, resp, err := srv.service.perfIssuesTool(context.Background(), nil, PerfSelectionInput{
+		Paths: []string{path},
+		Rules: []string{"PERF001"},
+		Top:   5,
+	})
+	require.NoError(t, err)
+	data, _ := json.Marshal(resp)
+	assert.Contains(t, string(data), `"solved":[]`, "solved should always be [] not null/omitted when filtered to empty")
+
+	// Without top, solved should still be [] not null.
+	_, resp2, err := srv.service.perfIssuesTool(context.Background(), nil, PerfSelectionInput{
+		Paths: []string{path},
+	})
+	require.NoError(t, err)
+	data2, _ := json.Marshal(resp2)
+	assert.Contains(t, string(data2), `"solved":[]`, "solved should be [] when top is not set")
+}
+
 func TestResolvePath_NoDoublePrefixing(t *testing.T) {
 	tmp := t.TempDir()
 	srv := New(WithWorkspaceRoot(tmp))

@@ -356,7 +356,7 @@ func (s *service) perfIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, in
 		return nil, PerfIssuesResponse{}, err
 	}
 	issues := mapIssues(result.Issues)
-	out := PerfIssuesResponse{Issues: issues}
+	out := PerfIssuesResponse{Issues: issues, Solved: []SolvedFunctionSummary{}}
 	if in.Top > 0 {
 		if len(out.Issues) > in.Top {
 			out.TotalIssues = len(out.Issues)
@@ -705,10 +705,10 @@ func (s *service) rootForState(workspaceRoot *string) string {
 
 func validateCursor(line, character int) error {
 	if line < 0 {
-		return errors.New("line must be non-negative")
+		return newToolErr("invalid_position", "line must be non-negative", "")
 	}
 	if character < 0 {
-		return errors.New("character must be non-negative")
+		return newToolErr("invalid_position", "character must be non-negative", "")
 	}
 	return nil
 }
@@ -1407,7 +1407,7 @@ func mapIssues(issues []perf.Issue) []PerfIssue {
 
 func topSolved(solved []*perf.SolvedFunction, top int) []SolvedFunctionSummary {
 	if len(solved) == 0 || top <= 0 {
-		return nil
+		return []SolvedFunctionSummary{}
 	}
 	items := append([]*perf.SolvedFunction(nil), solved...)
 	sort.Slice(items, func(i, j int) bool {
@@ -1761,22 +1761,27 @@ func (s *service) lintTool(_ context.Context, _ *mcp.CallToolRequest, in LintInp
 		linter = filterLinter(s.linter, in.Checks)
 	}
 
+	// Parse first to collect parse errors.
+	scanner := token.NewScanner(path, strings.NewReader(string(source)))
+	parsed := rdparser.New(scanner).ParseProgramFaultTolerant()
+
+	diags := make([]Diagnostic, 0)
+	for _, parseErr := range parsed.Errors {
+		diags = append(diags, parseDiagnostic(parseErr, path))
+	}
+
 	var lintDiags []lint.Diagnostic
 	if root != "" {
 		lintCfg := &lint.LintConfig{Workspace: root}
 		analysisCfg, buildErr := lint.BuildAnalysisConfig(lintCfg)
-		if buildErr == nil {
-			lintDiags, _ = linter.LintFileWithContext(source, path, analysis.Analyze(
-				rdparser.New(token.NewScanner(path, strings.NewReader(string(source)))).ParseProgramFaultTolerant().Exprs,
-				analysisCfg,
-			))
+		if buildErr == nil && parsed.Exprs != nil {
+			lintDiags, _ = linter.LintFileWithContext(source, path, analysis.Analyze(parsed.Exprs, analysisCfg))
 		}
 	}
 	if lintDiags == nil {
 		lintDiags, _ = linter.LintFile(source, path)
 	}
 
-	diags := make([]Diagnostic, 0, len(lintDiags))
 	for _, d := range lintDiags {
 		diags = append(diags, lintDiagnostic(d))
 	}

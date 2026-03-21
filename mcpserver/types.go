@@ -226,7 +226,7 @@ type SolvedFunctionSummary struct {
 // PerfIssuesResponse is the result of a perf_issues query.
 type PerfIssuesResponse struct {
 	Issues      []PerfIssue             `json:"issues"`
-	Solved      []SolvedFunctionSummary `json:"solved,omitempty"`
+	Solved      []SolvedFunctionSummary `json:"solved"`
 	Truncated   bool                    `json:"truncated,omitempty"`
 	TotalIssues int                     `json:"total_issues,omitempty"`
 	Meta        *ResponseMeta           `json:"_meta,omitempty"`
