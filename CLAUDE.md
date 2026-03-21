@@ -27,6 +27,8 @@ ELPS is an embedded Lisp interpreter implemented in Go. It is a Lisp-1 dialect d
 | `./elps lsp --port 7998` | Start the LSP server (TCP transport) |
 | `./elps lint file.lisp` | Run static analysis on a lisp file |
 | `./elps fmt file.lisp` | Format a lisp file |
+| `make release-notes` | Preview release notes (commits, PRs, CI status since last tag) |
+| `make release VERSION=v1.X.0` | Create a tagged GitHub release (must be on main, CI must pass) |
 
 ## Architecture
 
