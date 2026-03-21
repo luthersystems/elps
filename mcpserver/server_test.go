@@ -1001,6 +1001,19 @@ func TestTestTool_AutoImportsTestingPackage(t *testing.T) {
 	assert.True(t, resp.Tests[0].Passed)
 }
 
+func TestTestTool_AutoImportsTestingInCustomPackage(t *testing.T) {
+	srv := New()
+	// File switches to a custom package — testing macros should still work.
+	content := "(in-package 'my-test-pkg)\n(test \"custom-pkg\" (assert-equal 6 (* 2 3)))"
+	_, resp, err := srv.service.testTool(context.Background(), nil, TestInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, resp.Total, "test should work in custom package without explicit use-package")
+	assert.Equal(t, 1, resp.Passed)
+	assert.True(t, resp.Tests[0].Passed, "test in custom package should pass")
+}
+
 func TestDiagnostics_SeverityFilterExcludesEmptyFiles(t *testing.T) {
 	tmp := t.TempDir()
 	writeTestFile(t, filepath.Join(tmp, "broken.lisp"), "(defun broken (")

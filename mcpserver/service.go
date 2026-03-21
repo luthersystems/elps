@@ -1740,17 +1740,7 @@ func (s *service) testTool(_ context.Context, _ *mcp.CallToolRequest, in TestInp
 	if lisp.GoError(lerr) != nil {
 		return nil, TestResponse{}, fmt.Errorf("package error: %v", lisp.GoError(lerr))
 	}
-	// Auto-import testing package so test/assert macros are available
-	// without requiring (use-package 'testing) in every test file.
-	useTest := env.Eval(lisp.SExpr([]*lisp.LVal{
-		lisp.Symbol("use-package"),
-		lisp.String("testing"),
-	}))
-	if useTest.Type == lisp.LError {
-		if s.logger != nil {
-			s.logger.Warn("could not auto-import testing package", "error", lisp.GoError(useTest))
-		}
-	}
+	autoImportTesting(env)
 	exprs, parseErr := env.Runtime.Reader.Read(path, strings.NewReader(string(source)))
 	if parseErr != nil {
 		return nil, TestResponse{
@@ -1761,6 +1751,13 @@ func (s *service) testTool(_ context.Context, _ *mcp.CallToolRequest, in TestInp
 		}, nil
 	}
 	for _, expr := range exprs {
+		// When the file switches packages, auto-import testing into the
+		// new package so test/assert macros are available immediately.
+		if isInPackageExpr(expr) {
+			env.Eval(expr)
+			autoImportTesting(env)
+			continue
+		}
 		result := env.Eval(expr)
 		if result.Type == lisp.LError {
 			return nil, TestResponse{
@@ -1989,8 +1986,10 @@ To share state across expressions, combine them into a single ` + "`expression`"
 using ` + "`let`" + `, ` + "`progn`" + `, or multiple top-level forms separated by newlines.
 
 ## Test Tool
-The test tool auto-imports the ` + "`testing`" + ` package, so ` + "`test`" + `, ` + "`assert-equal`" + `,
-` + "`assert=`" + `, ` + "`assert-nil`" + `, etc. are available without ` + "`(use-package 'testing)`" + `.
+The test tool auto-imports the ` + "`testing`" + ` package into both the default user
+package and whatever package the file switches to via ` + "`(in-package ...)`" + `.
+So ` + "`test`" + `, ` + "`assert-equal`" + `, ` + "`assert=`" + `, ` + "`assert-nil`" + `, etc. are available without
+explicit ` + "`(use-package 'testing)`" + ` in any package context.
 
 ## Common Workflows
 1. **Find a symbol**: ` + "`workspace_symbols`" + ` → locate definition file and line
@@ -1998,7 +1997,28 @@ The test tool auto-imports the ` + "`testing`" + ` package, so ` + "`test`" + `,
 3. **Go to definition**: ` + "`definition`" + ` → jump to where a symbol is defined
 4. **Find usages**: ` + "`references`" + ` → find all references across the workspace
 5. **Check for errors**: ` + "`diagnostics`" + ` → parse errors and lint warnings
-6. **Performance audit**: ` + "`perf_issues`" + ` → find performance problems, then ` + "`call_graph`" + ` for context
+6. **Lint only**: ` + "`lint`" + ` → run specific analyzers with ` + "`checks`" + ` filter
+7. **Format code**: ` + "`format`" + ` → format source; use ` + "`check_only=true`" + ` to just check without getting content back
+8. **Look up docs**: ` + "`doc`" + ` → search by name (` + "`map`" + `, ` + "`math:sin`" + `); use ` + "`package=true`" + ` to list a package
+9. **Run tests**: ` + "`test`" + ` → run test file, get structured pass/fail per test
+10. **Quick eval**: ` + "`eval`" + ` → evaluate expressions; use ` + "`expressions`" + ` array for batch mode
+11. **Performance audit**: ` + "`perf_issues`" + ` → find performance problems, then ` + "`call_graph`" + ` for context
+
+## Diagnostics vs Lint
+- **diagnostics**: returns parse errors AND lint warnings for files. Use for "is this file healthy?"
+  Supports ` + "`include_workspace`" + ` for cross-file analysis.
+- **lint**: runs specific analyzers only. Use ` + "`checks`" + ` to select which analyzers to run.
+  Supports ` + "`severity`" + ` filter and pagination. Better for targeted analysis.
+
+## Format check_only
+Pass ` + "`check_only=true`" + ` to the format tool to check whether a file needs formatting
+without receiving the formatted content. Returns ` + "`changed: true/false`" + ` only.
+When ` + "`check_only`" + ` is false (default), content is only returned when ` + "`changed: true`" + `.
+
+## Standard Library Packages
+Use ` + "`doc`" + ` with ` + "`package=true`" + ` to list symbols in any package:
+` + "`math`" + `, ` + "`string`" + `, ` + "`json`" + `, ` + "`regexp`" + `, ` + "`time`" + `, ` + "`base64`" + `, ` + "`testing`" + `, ` + "`schema`" + `, ` + "`help`" + `, ` + "`golang`" + `.
+Embedders may register additional packages via ` + "`WithRegistry`" + `.
 
 ## Lint Analyzers
 | Analyzer | Severity | Description |
@@ -2202,6 +2222,21 @@ func (e *toolErr) Error() string {
 		return fmt.Sprintf("%s: %s (%s)", e.Code, e.Message, e.Path)
 	}
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
+func isInPackageExpr(expr *lisp.LVal) bool {
+	if expr.Type != lisp.LSExpr || len(expr.Cells) == 0 {
+		return false
+	}
+	head := expr.Cells[0]
+	return head.Type == lisp.LSymbol && head.Str == "in-package"
+}
+
+func autoImportTesting(env *lisp.LEnv) {
+	env.Eval(lisp.SExpr([]*lisp.LVal{
+		lisp.Symbol("use-package"),
+		lisp.String("testing"),
+	}))
 }
 
 func lvalErrorString(v *lisp.LVal) string {
