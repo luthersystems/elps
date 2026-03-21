@@ -8,20 +8,17 @@ import (
 )
 
 // MatchesExclude returns true if the given path matches any of the exclude
-// patterns. Each pattern is matched against the full path, the base name,
-// and each directory component, using filepath.Match semantics.
+// patterns. Each pattern is matched against the full path and each path
+// component (directories + filename), using filepath.Match semantics.
 func MatchesExclude(path string, patterns []string) bool {
 	for _, pattern := range patterns {
 		// Match against full path
 		if matched, _ := filepath.Match(pattern, path); matched {
 			return true
 		}
-		// Match against base name (e.g. "shirocore.lisp")
-		if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
-			return true
-		}
-		// Match against each path component for directory patterns
-		// (e.g. "build" matches any/build/file.lisp)
+		// Match against each path component (directories + filename).
+		// splitPath includes the base name, so patterns like
+		// "shirocore.lisp" or "build" match anywhere in the path.
 		for _, component := range splitPath(path) {
 			if matched, _ := filepath.Match(pattern, component); matched {
 				return true

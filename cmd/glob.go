@@ -38,22 +38,17 @@ func expandArgs(args []string, excludes []string) ([]string, error) {
 }
 
 // filterExcludes removes paths matching any of the given glob patterns.
-// Each pattern is matched against both the full path and the base name,
-// so --exclude='shirocore.lisp' matches any file with that name and
-// --exclude='**/build/**' matches paths containing a build directory.
+// Delegates to analysis.MatchesExclude which matches against the full path,
+// each directory component, and the filename.
 func filterExcludes(paths []string, excludes []string) []string {
 	var filtered []string
 	for _, p := range paths {
-		if matchesAny(p, excludes) {
+		if analysis.MatchesExclude(p, excludes) {
 			continue
 		}
 		filtered = append(filtered, p)
 	}
 	return filtered
-}
-
-func matchesAny(path string, patterns []string) bool {
-	return analysis.MatchesExclude(path, patterns)
 }
 
 func findLispFiles(root string) ([]string, error) {
