@@ -163,7 +163,8 @@ func collectLispFilesWithConfig(root string, scanCfg *ScanConfig) ([]string, boo
 			return nil
 		}
 		if info.IsDir() {
-			if ShouldSkipDir(info.Name()) {
+			// Never skip the root directory itself — only subdirectories.
+			if path != root && ShouldSkipDir(info.Name()) {
 				return filepath.SkipDir
 			}
 			return nil

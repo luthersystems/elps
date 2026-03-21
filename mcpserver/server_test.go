@@ -29,7 +29,7 @@ func TestDescribeServerAndListTools(t *testing.T) {
 
 	tools, err := session.ListTools(context.Background(), nil)
 	require.NoError(t, err)
-	assert.Len(t, tools.Tools, 10)
+	assert.Len(t, tools.Tools, 16)
 
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "describe_server"})
 	require.NoError(t, err)
@@ -38,7 +38,7 @@ func TestDescribeServerAndListTools(t *testing.T) {
 	got := decodeStructured[DescribeServerResponse](t, res)
 	assert.Equal(t, defaultImplementationName, got.Name)
 	assert.Equal(t, tmp, got.DefaultWorkspaceRoot)
-	assert.Len(t, got.Capabilities, 10)
+	assert.Len(t, got.Capabilities, 16)
 }
 
 func TestNewProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
@@ -689,6 +689,859 @@ func TestDiagnosticsWorkspaceWide(t *testing.T) {
 	assert.True(t, hasErrors, "bad.lisp should produce diagnostics")
 }
 
+func TestNullVsEmptySlice_References(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "empty.lisp")
+	writeTestFile(t, path, "(defun noop () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.referencesTool(context.Background(), nil, ReferencesInput{
+		Path:      path,
+		Line:      0,
+		Character: 100, // past end of line — no symbol
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.References, "references must be non-nil empty slice, not nil")
+	assert.Empty(t, resp.References)
+}
+
+func TestNullVsEmptySlice_DocumentSymbols(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "empty.lisp")
+	writeTestFile(t, path, "; just a comment")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.documentSymbolsTool(context.Background(), nil, DocumentQueryInput{Path: path})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Symbols, "symbols must be non-nil empty slice, not nil")
+	assert.Empty(t, resp.Symbols)
+}
+
+func TestNullVsEmptySlice_WorkspaceSymbols(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "lib.lisp"), "(defun alpha () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	_, resp, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &tmp,
+		Query:         "nonexistent-symbol-xyz",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Symbols, "symbols must be non-nil empty slice, not nil")
+	assert.Empty(t, resp.Symbols)
+}
+
+func TestReferences_Limit(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "refs.lisp")
+	writeTestFile(t, path, "(defun helper () 1)\n(defun a () (helper))\n(defun b () (helper))\n(defun c () (helper))")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.referencesTool(context.Background(), nil, ReferencesInput{
+		Path:               path,
+		Line:               0,
+		Character:          7, // "helper"
+		IncludeDeclaration: true,
+		Limit:              2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp.References, 2)
+	assert.True(t, resp.Truncated)
+	assert.GreaterOrEqual(t, resp.Total, 3)
+}
+
+func TestWorkspaceSymbols_Limit(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "many.lisp"), "(defun alpha () 1)\n(defun beta () 2)\n(defun gamma () 3)\n(defun delta () 4)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	_, resp, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &tmp,
+		Query:         "",
+		Limit:         2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp.Symbols, 2)
+	assert.True(t, resp.Truncated)
+	assert.Equal(t, 4, resp.Total)
+}
+
+func TestDiagnostics_MaxFiles(t *testing.T) {
+	tmp := t.TempDir()
+	for _, name := range []string{"a.lisp", "b.lisp", "c.lisp", "d.lisp", "e.lisp"} {
+		writeTestFile(t, filepath.Join(tmp, name), "(defun broken (")
+	}
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		WorkspaceRoot:    &tmp,
+		IncludeWorkspace: true,
+		MaxFiles:         2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp.Files, 2)
+	assert.True(t, resp.Truncated)
+	assert.Equal(t, 5, resp.TotalFiles)
+}
+
+func TestDiagnostics_SeverityFilter(t *testing.T) {
+	tmp := t.TempDir()
+	// File with parse errors (severity: error) and lint warnings.
+	// set x twice produces a set-usage warning.
+	path := filepath.Join(tmp, "mixed.lisp")
+	writeTestFile(t, path, "(set 'x 1)\n(set 'x 2)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	severity := "warning"
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		Path:     &path,
+		Severity: &severity,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Files, 1)
+	for _, d := range resp.Files[0].Diagnostics {
+		assert.Equal(t, "warning", d.Severity)
+	}
+}
+
+func TestDiagnostics_InlineContentNoPath(t *testing.T) {
+	srv := New()
+	content := "(defun broken ("
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Files, 1)
+	assert.Equal(t, "<stdin>", resp.Files[0].Path)
+	assert.NotEmpty(t, resp.Files[0].Diagnostics)
+}
+
+func TestDiagnostics_PathWithIncludeWorkspace(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "a.lisp"), "(defun broken (")
+	writeTestFile(t, filepath.Join(tmp, "b.lisp"), "(defun also-broken (")
+	targetPath := filepath.Join(tmp, "a.lisp")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		Path:             &targetPath,
+		WorkspaceRoot:    &tmp,
+		IncludeWorkspace: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Files, 1, "should only return diagnostics for the specified path")
+	assert.Equal(t, targetPath, resp.Files[0].Path)
+}
+
+func TestHover_FileNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	_, _, err := srv.service.hoverTool(context.Background(), nil, FileQueryInput{
+		Path:      filepath.Join(tmp, "nonexistent.lisp"),
+		Line:      0,
+		Character: 0,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "file not found")
+	var te *toolErr
+	require.ErrorAs(t, err, &te, "loadDocument errors should be structured toolErr")
+	assert.Equal(t, "file_not_found", te.Code)
+}
+
+func TestDefinition_FileNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	_, _, err := srv.service.definitionTool(context.Background(), nil, FileQueryInput{
+		Path: filepath.Join(tmp, "nonexistent.lisp"), Line: 0, Character: 0,
+	})
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "file_not_found", te.Code)
+}
+
+func TestReferences_FileNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	_, _, err := srv.service.referencesTool(context.Background(), nil, ReferencesInput{
+		Path: filepath.Join(tmp, "nonexistent.lisp"), Line: 0, Character: 0,
+	})
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "file_not_found", te.Code)
+}
+
+func TestDocumentSymbols_FileNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	_, _, err := srv.service.documentSymbolsTool(context.Background(), nil, DocumentQueryInput{
+		Path: filepath.Join(tmp, "nonexistent.lisp"),
+	})
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "file_not_found", te.Code)
+}
+
+func TestEvalTool_EnvironmentIsolation(t *testing.T) {
+	srv := New()
+	// First call: define a function.
+	_, resp1, err := srv.service.evalTool(context.Background(), nil, EvalInput{
+		Expression: "(defun my-secret-fn () 42)\n(my-secret-fn)",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "42", resp1.Value)
+
+	// Second call: function should NOT exist — each call gets a fresh env.
+	_, resp2, err := srv.service.evalTool(context.Background(), nil, EvalInput{
+		Expression: "(my-secret-fn)",
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp2.Error, "function from previous eval call should not persist")
+}
+
+func TestLintTool_MixedValidInvalidChecks(t *testing.T) {
+	srv := New()
+	content := "(set 'x 1)\n(set 'x 2)\n(if true 1)"
+	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+		Checks:  []string{"set-usage", "nonexistent-analyzer", "if-arity"},
+	})
+	require.NoError(t, err)
+	// Only valid checks should produce results; invalid ones silently skipped.
+	for _, d := range resp.Diagnostics {
+		assert.Contains(t, []string{"set-usage", "if-arity"}, d.Code,
+			"diagnostic code %q should be from a valid requested analyzer", d.Code)
+	}
+}
+
+func TestMeta_FileCountAccuracy(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "a.lisp"), "(defun a () 1)")
+	writeTestFile(t, filepath.Join(tmp, "b.lisp"), "(defun b () 2)")
+	writeTestFile(t, filepath.Join(tmp, "c.lisp"), "(defun c () 3)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		WorkspaceRoot:    &tmp,
+		IncludeWorkspace: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Meta)
+	assert.Equal(t, 3, resp.Meta.FileCount, "meta file_count should match actual files scanned")
+	assert.Greater(t, resp.Meta.ElapsedMs, int64(-1), "elapsed_ms should be non-negative")
+}
+
+func TestWorkspaceScanner_DotPrefixedRoot(t *testing.T) {
+	// Create a workspace root with a dot prefix (e.g., .tmp).
+	parent := t.TempDir()
+	dotRoot := filepath.Join(parent, ".hidden-workspace")
+	require.NoError(t, os.Mkdir(dotRoot, 0o750))
+	writeTestFile(t, filepath.Join(dotRoot, "lib.lisp"), "(defun found-me () 1)")
+
+	srv := New(WithWorkspaceRoot(dotRoot))
+	srv.service.workspaceValidationInterval = 0
+	_, resp, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &dotRoot,
+		Query:         "found-me",
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Symbols, 1, "dot-prefixed workspace root should still be scanned")
+	assert.Equal(t, "found-me", resp.Symbols[0].Name)
+}
+
+func TestDocumentSymbols_LimitOffset(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "many.lisp")
+	writeTestFile(t, path, "(defun a () 1)\n(defun b () 2)\n(defun c () 3)\n(defun d () 4)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.documentSymbolsTool(context.Background(), nil, DocumentQueryInput{
+		Path:  path,
+		Limit: 2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp.Symbols, 2)
+	assert.True(t, resp.Truncated)
+	assert.Equal(t, 4, resp.Total)
+
+	// Second page
+	_, resp2, err := srv.service.documentSymbolsTool(context.Background(), nil, DocumentQueryInput{
+		Path:   path,
+		Limit:  2,
+		Offset: 2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, resp2.Symbols, 2)
+
+	// No overlap
+	for _, s1 := range resp.Symbols {
+		for _, s2 := range resp2.Symbols {
+			assert.NotEqual(t, s1.Name, s2.Name, "pages should not overlap")
+		}
+	}
+}
+
+func TestTestTool_AutoImportsTestingPackage(t *testing.T) {
+	srv := New()
+	// Content WITHOUT (use-package 'testing) — test macros should still work.
+	content := "(test \"auto-import\" (assert-equal 4 (+ 2 2)))"
+	_, resp, err := srv.service.testTool(context.Background(), nil, TestInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, resp.Total, "test should be found without explicit use-package")
+	assert.Equal(t, 1, resp.Passed)
+	assert.True(t, resp.Tests[0].Passed)
+}
+
+func TestTestTool_AutoImportsTestingInCustomPackage(t *testing.T) {
+	srv := New()
+	// File switches to a custom package — testing macros should still work.
+	content := "(in-package 'my-test-pkg)\n(test \"custom-pkg\" (assert-equal 6 (* 2 3)))"
+	_, resp, err := srv.service.testTool(context.Background(), nil, TestInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, resp.Total, "test should work in custom package without explicit use-package")
+	assert.Equal(t, 1, resp.Passed)
+	assert.True(t, resp.Tests[0].Passed, "test in custom package should pass")
+}
+
+func TestDiagnostics_SeverityFilterExcludesEmptyFiles(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "broken.lisp"), "(defun broken (")
+	writeTestFile(t, filepath.Join(tmp, "ok.lisp"), "(defun ok () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	severity := "error"
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		WorkspaceRoot:    &tmp,
+		IncludeWorkspace: true,
+		Severity:         &severity,
+	})
+	require.NoError(t, err)
+	for _, fd := range resp.Files {
+		assert.NotEmpty(t, fd.Diagnostics, "files with no matching diagnostics should be excluded when severity filter is set, but %s was included", fd.Path)
+	}
+}
+
+func TestCallGraph_TopLimitsOutput(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "graph.lisp")
+	writeTestFile(t, path, `
+(defun a () (b) (c) (d))
+(defun b () (c))
+(defun c () (d))
+(defun d () 1)
+`)
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.callGraphTool(context.Background(), nil, PerfSelectionInput{
+		Paths: []string{path},
+		Top:   2,
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(resp.Functions), 2)
+	assert.True(t, resp.Truncated)
+	assert.GreaterOrEqual(t, resp.TotalFunctions, 3)
+}
+
+func TestPerfIssues_TopLimitsIssues(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "perf.lisp")
+	writeTestFile(t, path, `
+(defun a (items) (map 'list (lambda (item) (db-put item)) items))
+(defun b (items) (map 'list (lambda (item) (db-get item)) items))
+`)
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.perfIssuesTool(context.Background(), nil, PerfSelectionInput{
+		Paths: []string{path},
+		Top:   1,
+	})
+	require.NoError(t, err)
+	if len(resp.Issues) > 0 {
+		assert.LessOrEqual(t, len(resp.Issues), 1)
+	}
+}
+
+func TestPerfIssues_SolvedFilteredByRules(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "perf.lisp")
+	writeTestFile(t, path, `
+(defun a (items) (map 'list (lambda (item) (db-put item)) items))
+(defun b () 1)
+`)
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, fullResp, err := srv.service.perfIssuesTool(context.Background(), nil, PerfSelectionInput{
+		Paths: []string{path},
+		Top:   10,
+	})
+	require.NoError(t, err)
+
+	if len(fullResp.Issues) > 0 {
+		rule := fullResp.Issues[0].Rule
+		_, filtered, err := srv.service.perfIssuesTool(context.Background(), nil, PerfSelectionInput{
+			Paths: []string{path},
+			Top:   10,
+			Rules: []string{rule},
+		})
+		require.NoError(t, err)
+		for _, s := range filtered.Solved {
+			found := false
+			for _, issue := range filtered.Issues {
+				if issue.Function == s.Name {
+					found = true
+					break
+				}
+			}
+			assert.True(t, found, "solved function %q should have a matching issue for rule %s", s.Name, rule)
+		}
+	}
+}
+
+func TestPerfFiles_IncludeTestsWithExplicitPaths(t *testing.T) {
+	tmp := t.TempDir()
+	prodPath := filepath.Join(tmp, "prod.lisp")
+	testPath := filepath.Join(tmp, "prod_test.lisp")
+	writeTestFile(t, prodPath, "(defun prod () 1)")
+	writeTestFile(t, testPath, "(defun prod-test () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	files, err := srv.service.selectPerfFiles(PerfSelectionInput{
+		Paths:        []string{prodPath, testPath},
+		IncludeTests: false,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, files, prodPath)
+	assert.NotContains(t, files, testPath, "test file should be excluded even with explicit paths when include_tests=false")
+}
+
+func TestDocumentSymbols_MacroInContentOverride(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "macros.lisp")
+	content := "(defmacro my-when (cond &rest body) (list 'if cond (cons 'progn body)))\n(defun my-func () 1)"
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.documentSymbolsTool(context.Background(), nil, DocumentQueryInput{
+		Path:    path,
+		Content: &content,
+	})
+	require.NoError(t, err)
+	var names []string
+	for _, sym := range resp.Symbols {
+		names = append(names, sym.Name)
+	}
+	assert.Contains(t, names, "my-func")
+	assert.Contains(t, names, "my-when", "defmacro should appear in document_symbols with content override")
+}
+
+func TestHelpTool(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.helpTool(context.Background(), nil, HelpInput{})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Content, "Coordinate System")
+	assert.Contains(t, resp.Content, "Path Resolution")
+	assert.Contains(t, resp.Content, "Content Override")
+	assert.Contains(t, resp.Content, "PERF001")
+	assert.Contains(t, resp.Content, "set-usage")
+}
+
+func TestWorkspaceSymbols_Pagination(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "many.lisp"), "(defun alpha () 1)\n(defun beta () 2)\n(defun gamma () 3)\n(defun delta () 4)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+
+	// First page
+	_, page1, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &tmp,
+		Limit:         2,
+		Offset:        0,
+	})
+	require.NoError(t, err)
+	assert.Len(t, page1.Symbols, 2)
+	assert.True(t, page1.Truncated)
+	assert.Equal(t, 4, page1.Total)
+
+	// Second page
+	_, page2, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &tmp,
+		Limit:         2,
+		Offset:        2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, page2.Symbols, 2)
+	assert.True(t, page2.Truncated)
+
+	// No overlap
+	for _, s1 := range page1.Symbols {
+		for _, s2 := range page2.Symbols {
+			assert.NotEqual(t, s1.Name, s2.Name, "pages should not overlap")
+		}
+	}
+
+	// Past end
+	_, page3, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &tmp,
+		Limit:         2,
+		Offset:        10,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, page3.Symbols)
+	assert.True(t, page3.Truncated)
+}
+
+func TestDiagnostics_Pagination(t *testing.T) {
+	tmp := t.TempDir()
+	for _, name := range []string{"a.lisp", "b.lisp", "c.lisp"} {
+		writeTestFile(t, filepath.Join(tmp, name), "(defun broken (")
+	}
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+
+	_, page1, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		WorkspaceRoot:    &tmp,
+		IncludeWorkspace: true,
+		MaxFiles:         2,
+		Offset:           0,
+	})
+	require.NoError(t, err)
+	assert.Len(t, page1.Files, 2)
+	assert.True(t, page1.Truncated)
+	assert.Equal(t, 3, page1.TotalFiles)
+
+	_, page2, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		WorkspaceRoot:    &tmp,
+		IncludeWorkspace: true,
+		MaxFiles:         2,
+		Offset:           2,
+	})
+	require.NoError(t, err)
+	assert.Len(t, page2.Files, 1)
+	assert.True(t, page2.Truncated)
+}
+
+func TestFormatTool_InlineContent(t *testing.T) {
+	srv := New()
+	content := "(defun foo (x y)\n(+ x y))"
+	_, resp, err := srv.service.formatTool(context.Background(), nil, FormatInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.Changed, "formatter should indent the body")
+	assert.Contains(t, resp.Formatted, "  (+ x y)")
+	assert.NotNil(t, resp.Meta)
+	assert.GreaterOrEqual(t, resp.Meta.ElapsedMs, int64(0))
+}
+
+func TestFormatTool_NoChange(t *testing.T) {
+	srv := New()
+	content := "(defun foo (x y)\n  (+ x y))\n"
+	_, resp, err := srv.service.formatTool(context.Background(), nil, FormatInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	assert.False(t, resp.Changed)
+	assert.Empty(t, resp.Formatted, "formatted content should be empty when unchanged")
+}
+
+func TestFormatTool_CheckOnly(t *testing.T) {
+	srv := New()
+	// Unformatted content — needs formatting.
+	content := "(defun foo (x y)\n(+ x y))"
+	_, resp, err := srv.service.formatTool(context.Background(), nil, FormatInput{
+		Content:   &content,
+		CheckOnly: true,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.Changed)
+	assert.Empty(t, resp.Formatted, "check_only should not return formatted content")
+}
+
+func TestFormatTool_CheckOnlyNoChange(t *testing.T) {
+	srv := New()
+	content := "(defun foo (x y)\n  (+ x y))\n"
+	_, resp, err := srv.service.formatTool(context.Background(), nil, FormatInput{
+		Content:   &content,
+		CheckOnly: true,
+	})
+	require.NoError(t, err)
+	assert.False(t, resp.Changed)
+	assert.Empty(t, resp.Formatted)
+}
+
+func TestFormatTool_FileNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	_, _, err := srv.service.formatTool(context.Background(), nil, FormatInput{
+		Path: filepath.Join(tmp, "nonexistent.lisp"),
+	})
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "file_not_found", te.Code)
+}
+
+func TestFormatTool_ParseError(t *testing.T) {
+	srv := New()
+	content := "(defun broken ("
+	_, _, err := srv.service.formatTool(context.Background(), nil, FormatInput{
+		Content: &content,
+	})
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "parse_error", te.Code)
+}
+
+func TestFormatTool_IndentSize(t *testing.T) {
+	srv := New()
+	content := "(defun foo (x)\n  (+ x 1))"
+	_, resp, err := srv.service.formatTool(context.Background(), nil, FormatInput{
+		Content:    &content,
+		IndentSize: 4,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Formatted, "    (+ x 1)")
+}
+
+func TestLintTool_InlineContent(t *testing.T) {
+	srv := New()
+	content := "(set 'x 1)\n(set 'x 2)"
+	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Diagnostics)
+	assert.NotNil(t, resp.Meta)
+}
+
+func TestLintTool_ChecksFilter(t *testing.T) {
+	srv := New()
+	content := "(set 'x 1)\n(set 'x 2)\n(if true 1)"
+	_, allResp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+
+	_, filteredResp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+		Checks:  []string{"set-usage"},
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(filteredResp.Diagnostics), len(allResp.Diagnostics))
+	for _, d := range filteredResp.Diagnostics {
+		assert.Equal(t, "set-usage", d.Code)
+	}
+}
+
+func TestLintTool_SeverityFilter(t *testing.T) {
+	srv := New()
+	content := "(set 'x 1)\n(set 'x 2)"
+	severity := "error"
+	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content:  &content,
+		Severity: &severity,
+	})
+	require.NoError(t, err)
+	for _, d := range resp.Diagnostics {
+		assert.Equal(t, "error", d.Severity)
+	}
+}
+
+func TestLintTool_Pagination(t *testing.T) {
+	srv := New()
+	// Multiple set-usage warnings
+	content := "(set 'x 1)\n(set 'x 2)\n(set 'x 3)\n(set 'x 4)"
+	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+		Limit:   1,
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(resp.Diagnostics), 1)
+	if len(resp.Diagnostics) > 0 {
+		assert.True(t, resp.Truncated)
+	}
+}
+
+func TestLintTool_FileNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	_, _, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Path: filepath.Join(tmp, "nonexistent.lisp"),
+	})
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "file_not_found", te.Code)
+}
+
+func TestStructuredErrors_InvalidInput(t *testing.T) {
+	srv := New()
+	_, _, err := srv.service.formatTool(context.Background(), nil, FormatInput{})
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "invalid_input", te.Code)
+	assert.Contains(t, te.Error(), "invalid_input")
+}
+
+func TestMeta_WorkspaceSymbolsIncludesMeta(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "lib.lisp"), "(defun alpha () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	_, resp, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &tmp,
+		Query:         "",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Meta)
+	assert.Equal(t, tmp, resp.Meta.WorkspaceRoot)
+	assert.GreaterOrEqual(t, resp.Meta.ElapsedMs, int64(0))
+}
+
+func TestMeta_DiagnosticsIncludesMeta(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "ok.lisp")
+	writeTestFile(t, path, "(defun ok () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		Path: &path,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Meta)
+	assert.Equal(t, 1, resp.Meta.FileCount)
+}
+
+func TestWorkspaceRootOverride(t *testing.T) {
+	// Create two separate workspaces with different symbols.
+	ws1 := t.TempDir()
+	ws2 := t.TempDir()
+	writeTestFile(t, filepath.Join(ws1, "lib1.lisp"), "(defun alpha () 1)")
+	writeTestFile(t, filepath.Join(ws2, "lib2.lisp"), "(defun beta () 2)")
+
+	// Server starts with ws1 as default, but we query ws2 via override.
+	srv := New(WithWorkspaceRoot(ws1))
+	srv.service.workspaceValidationInterval = 0
+	session, serverSession := connectTestServer(t, srv)
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
+
+	// Query ws1 — should find alpha.
+	ws1Symbols := workspaceSymbols(t, session, ws1, "alpha")
+	require.Len(t, ws1Symbols.Symbols, 1)
+	assert.Equal(t, "alpha", ws1Symbols.Symbols[0].Name)
+
+	// Override workspace_root to ws2 — should find beta, not alpha.
+	ws2Symbols := workspaceSymbols(t, session, ws2, "beta")
+	require.Len(t, ws2Symbols.Symbols, 1)
+	assert.Equal(t, "beta", ws2Symbols.Symbols[0].Name)
+
+	// ws2 should NOT contain alpha.
+	ws2Alpha := workspaceSymbols(t, session, ws2, "alpha")
+	assert.Empty(t, ws2Alpha.Symbols)
+}
+
+func TestValidateCursor_StructuredError(t *testing.T) {
+	err := validateCursor(-1, 0)
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "invalid_position", te.Code)
+
+	err = validateCursor(0, -1)
+	require.Error(t, err)
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "invalid_position", te.Code)
+}
+
+func TestLintTool_ReportsParseErrors(t *testing.T) {
+	srv := New()
+	content := "(defun broken ("
+	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, resp.Diagnostics, "lint tool must report parse errors for broken files")
+	found := false
+	for _, d := range resp.Diagnostics {
+		if d.Severity == "error" {
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "at least one error-severity diagnostic must be present for broken code")
+}
+
+func TestPerfIssues_SolvedAlwaysArray(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "clean.lisp")
+	writeTestFile(t, path, "(defun clean () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	// Use rules filter that matches nothing — solved should be [] not null.
+	_, resp, err := srv.service.perfIssuesTool(context.Background(), nil, PerfSelectionInput{
+		Paths: []string{path},
+		Rules: []string{"PERF001"},
+		Top:   5,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Solved, "solved must be initialized, not nil")
+	assert.Empty(t, resp.Solved, "solved should be empty when rules filter matches nothing")
+
+	// Without top, solved should still be [] not null.
+	_, resp2, err := srv.service.perfIssuesTool(context.Background(), nil, PerfSelectionInput{
+		Paths: []string{path},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp2.Solved, "solved must be initialized even without top")
+	assert.Empty(t, resp2.Solved)
+}
+
+func TestPerfTools_SkipUnparseableFiles(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "good.lisp"), "(defun good (items) (map 'list (lambda (item) (db-put item)) items))")
+	writeTestFile(t, filepath.Join(tmp, "broken.lisp"), "(defun broken (")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.perfIssuesTool(context.Background(), nil, PerfSelectionInput{
+		WorkspaceRoot: &tmp,
+		Top:           5,
+	})
+	require.NoError(t, err, "perf tools should skip unparseable files, not error")
+	require.NotNil(t, resp.Issues)
+	require.NotNil(t, resp.Solved)
+	assert.True(t, len(resp.Solved) > 0 || len(resp.Issues) > 0, "good.lisp should still produce analysis results")
+}
+
+func TestResolvePath_NoDoublePrefixing(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	// Create a file inside the workspace
+	testFile := filepath.Join(tmp, "utils.lisp")
+	writeTestFile(t, testFile, "(defun util () 1)")
+
+	// When CWD is inside the workspace root, a relative path should not get double-prefixed.
+	resolved, err := srv.service.resolvePath("utils.lisp", tmp)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(tmp, "utils.lisp"), resolved)
+}
+
 func TestResolvePath_AbsoluteInput(t *testing.T) {
 	tmp := t.TempDir()
 	srv := New(WithWorkspaceRoot(tmp))
@@ -706,6 +1559,314 @@ func TestResolvePath_TraversalBlocked(t *testing.T) {
 	_, err := srv.service.resolvePath("../../etc/passwd", tmp)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolves outside workspace root")
+}
+
+func TestWordAtPosition(t *testing.T) {
+	content := "(defun add (x y)\n  (+ x y))"
+	tests := []struct {
+		name      string
+		line, col int
+		want      string
+	}{
+		{"function name", 0, 7, "add"},
+		{"param x", 0, 12, "x"},
+		{"builtin +", 1, 3, "+"},
+		{"past end of line", 0, 100, ""},
+		{"negative line", -1, 0, ""},
+		{"line past end", 99, 0, ""},
+		{"on paren", 0, 0, ""},
+		{"empty content", 0, 0, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := content
+			if tt.name == "empty content" {
+				src = ""
+			}
+			got := wordAtPosition(src, tt.line, tt.col)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestPaginateSlice(t *testing.T) {
+	items := []int{1, 2, 3, 4, 5}
+	tests := []struct {
+		name           string
+		offset, limit  int
+		wantLen        int
+	}{
+		{"no pagination", 0, 0, 5},
+		{"limit only", 0, 3, 3},
+		{"offset only", 2, 0, 3},
+		{"offset+limit", 1, 2, 2},
+		{"offset at end", 5, 2, 0},
+		{"offset past end", 10, 2, 0},
+		{"limit larger than items", 0, 100, 5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := paginateSlice(items, tt.offset, tt.limit)
+			assert.Len(t, got, tt.wantLen)
+		})
+	}
+}
+
+func TestHover_UndefinedSymbol(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.lisp")
+	writeTestFile(t, path, "(defun foo () (undefined-symbol-xyz 1 2))")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.hoverTool(context.Background(), nil, FileQueryInput{
+		Path:      path,
+		Line:      0,
+		Character: 15,
+	})
+	require.NoError(t, err)
+	assert.False(t, resp.Found, "hover on undefined symbol should return found=false")
+}
+
+func TestHotspots_TopZeroErrors(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.lisp")
+	writeTestFile(t, path, "(defun foo () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, _, err := srv.service.hotspotsTool(context.Background(), nil, PerfSelectionInput{
+		Paths: []string{path},
+		Top:   0,
+	})
+	require.Error(t, err, "hotspots with top=0 should error")
+	assert.Contains(t, err.Error(), "top must be greater than zero")
+}
+
+func TestLintTool_InvalidCheckName(t *testing.T) {
+	srv := New()
+	content := "(defun foo () 1)"
+	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+		Checks:  []string{"nonexistent-analyzer"},
+	})
+	require.NoError(t, err, "invalid check names should not error, just produce no results")
+	assert.Empty(t, resp.Diagnostics)
+}
+
+func TestDiagnostics_SeverityFilterAllItems(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "mixed.lisp")
+	writeTestFile(t, path, "(set 'x 1)\n(set 'x 2)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	severity := "warning"
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		Path:     &path,
+		Severity: &severity,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Files, 1)
+	for i, d := range resp.Files[0].Diagnostics {
+		assert.Equal(t, "warning", d.Severity, "diagnostic %d should be warning severity", i)
+	}
+}
+
+func TestDocTool_SymbolLookup(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.docTool(context.Background(), nil, DocInput{Query: "map"})
+	require.NoError(t, err)
+	require.True(t, resp.Found)
+	require.NotNil(t, resp.Symbol)
+	assert.Equal(t, "map", resp.Symbol.Name)
+	assert.NotEmpty(t, resp.Symbol.Doc)
+	assert.NotNil(t, resp.Symbol.Formals)
+}
+
+func TestDocTool_QualifiedSymbol(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.docTool(context.Background(), nil, DocInput{Query: "math:sin"})
+	require.NoError(t, err)
+	require.True(t, resp.Found)
+	require.NotNil(t, resp.Symbol)
+	assert.Equal(t, "sin", resp.Symbol.Name)
+}
+
+func TestDocTool_PackageLookup(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.docTool(context.Background(), nil, DocInput{Query: "math", Package: true})
+	require.NoError(t, err)
+	require.True(t, resp.Found)
+	require.NotNil(t, resp.Package)
+	assert.Equal(t, "math", resp.Package.Name)
+	assert.NotEmpty(t, resp.Package.Symbols)
+}
+
+func TestDocTool_NotFound(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.docTool(context.Background(), nil, DocInput{Query: "nonexistent-xyz-123"})
+	require.NoError(t, err)
+	assert.False(t, resp.Found)
+}
+
+func TestTestTool_PassingTests(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "pass_test.lisp")
+	writeTestFile(t, path, "(use-package 'testing)\n(test \"math works\" (assert-equal 4 (+ 2 2)))")
+
+	srv := New()
+	_, resp, err := srv.service.testTool(context.Background(), nil, TestInput{Path: path})
+	require.NoError(t, err)
+	assert.Equal(t, path, resp.Path)
+	require.Equal(t, 1, resp.Total)
+	assert.Equal(t, 1, resp.Passed)
+	assert.Equal(t, 0, resp.Failed)
+	assert.True(t, resp.Tests[0].Passed)
+	assert.Equal(t, "math works", resp.Tests[0].Name)
+}
+
+func TestTestTool_FailingTest(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "fail_test.lisp")
+	writeTestFile(t, path, "(use-package 'testing)\n(test \"bad math\" (assert-equal 5 (+ 2 2)))")
+
+	srv := New()
+	_, resp, err := srv.service.testTool(context.Background(), nil, TestInput{Path: path})
+	require.NoError(t, err)
+	assert.Equal(t, 1, resp.Total)
+	assert.Equal(t, 0, resp.Passed)
+	assert.Equal(t, 1, resp.Failed)
+	assert.False(t, resp.Tests[0].Passed)
+	assert.NotEmpty(t, resp.Tests[0].Error)
+}
+
+func TestTestTool_ParseError(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "broken_test.lisp")
+	writeTestFile(t, path, "(defun broken (")
+
+	srv := New()
+	_, resp, err := srv.service.testTool(context.Background(), nil, TestInput{Path: path})
+	require.NoError(t, err)
+	require.Equal(t, 1, resp.Failed)
+	require.Len(t, resp.Tests, 1)
+	assert.Equal(t, "<parse>", resp.Tests[0].Name)
+	assert.False(t, resp.Tests[0].Passed)
+	assert.NotEmpty(t, resp.Tests[0].Error)
+}
+
+func TestTestTool_NoTests(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "empty_test.lisp")
+	writeTestFile(t, path, "(defun helper () 1)")
+
+	srv := New()
+	_, resp, err := srv.service.testTool(context.Background(), nil, TestInput{Path: path})
+	require.NoError(t, err)
+	assert.Equal(t, 0, resp.Total)
+	assert.Empty(t, resp.Tests)
+}
+
+func TestEvalTool_SimpleExpression(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.evalTool(context.Background(), nil, EvalInput{Expression: "(+ 2 3)"})
+	require.NoError(t, err)
+	assert.Equal(t, "5", resp.Value)
+	assert.Empty(t, resp.Error)
+}
+
+func TestEvalTool_MultipleExpressions(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.evalTool(context.Background(), nil, EvalInput{
+		Expression: "(+ 1 1)\n(* 3 4)",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "12", resp.Value)
+	require.Len(t, resp.Results, 2)
+	assert.Equal(t, "2", resp.Results[0])
+	assert.Equal(t, "12", resp.Results[1])
+}
+
+func TestEvalTool_Error(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.evalTool(context.Background(), nil, EvalInput{Expression: "(error \"boom\")"})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Error)
+	assert.Empty(t, resp.Value, "value should be empty when error occurs")
+}
+
+func TestEvalTool_MultiExprPartialFailure(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.evalTool(context.Background(), nil, EvalInput{
+		Expression: "(+ 1 1)\n(error \"boom\")\n(+ 3 3)",
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Error, "should stop at error")
+	assert.Empty(t, resp.Value, "value should be empty on error")
+}
+
+func TestEvalTool_DefunAndCall(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.evalTool(context.Background(), nil, EvalInput{
+		Expression: "(defun double (x) (* x 2))\n(double 21)",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "42", resp.Value)
+	assert.Empty(t, resp.Error)
+}
+
+func TestEvalTool_ParseError(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.evalTool(context.Background(), nil, EvalInput{Expression: "(defun broken ("})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Error)
+	assert.Empty(t, resp.Value, "value should be empty on parse error")
+}
+
+func TestEvalTool_Batch(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.evalTool(context.Background(), nil, EvalInput{
+		Expressions: []string{
+			"(+ 1 2)",
+			"(* 3 4)",
+			"(error \"boom\")",
+			"(- 10 5)",
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Batch, 4)
+	assert.Equal(t, "3", resp.Batch[0].Value)
+	assert.Empty(t, resp.Batch[0].Error)
+	assert.Equal(t, "12", resp.Batch[1].Value)
+	assert.Empty(t, resp.Batch[1].Error)
+	assert.NotEmpty(t, resp.Batch[2].Error, "error expression should produce error")
+	assert.Empty(t, resp.Batch[2].Value)
+	assert.Equal(t, "5", resp.Batch[3].Value, "batch items are independent — error in [2] doesn't affect [3]")
+}
+
+func TestDocTool_Batch(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.docTool(context.Background(), nil, DocInput{
+		Queries: []string{"map", "defun", "nonexistent-xyz"},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Batch, 3)
+	assert.True(t, resp.Batch[0].Found)
+	assert.Equal(t, "map", resp.Batch[0].Symbol.Name)
+	assert.True(t, resp.Batch[1].Found)
+	assert.Equal(t, "defun", resp.Batch[1].Symbol.Name)
+	assert.False(t, resp.Batch[2].Found)
+}
+
+func TestTestTool_ContentOverride(t *testing.T) {
+	srv := New()
+	content := "(use-package 'testing)\n(test \"inline\" (assert-equal 6 (* 2 3)))"
+	_, resp, err := srv.service.testTool(context.Background(), nil, TestInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "<stdin>", resp.Path)
+	require.Equal(t, 1, resp.Total)
+	assert.Equal(t, 1, resp.Passed)
+	assert.True(t, resp.Tests[0].Passed)
 }
 
 func writeTestFile(t *testing.T, path, content string) {
