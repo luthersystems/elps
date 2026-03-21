@@ -29,7 +29,7 @@ func TestDescribeServerAndListTools(t *testing.T) {
 
 	tools, err := session.ListTools(context.Background(), nil)
 	require.NoError(t, err)
-	assert.Len(t, tools.Tools, 11)
+	assert.Len(t, tools.Tools, 13)
 
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "describe_server"})
 	require.NoError(t, err)
@@ -38,7 +38,7 @@ func TestDescribeServerAndListTools(t *testing.T) {
 	got := decodeStructured[DescribeServerResponse](t, res)
 	assert.Equal(t, defaultImplementationName, got.Name)
 	assert.Equal(t, tmp, got.DefaultWorkspaceRoot)
-	assert.Len(t, got.Capabilities, 11)
+	assert.Len(t, got.Capabilities, 13)
 }
 
 func TestNewProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
@@ -1050,6 +1050,204 @@ func TestDiagnostics_Pagination(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, page2.Files, 1)
 	assert.True(t, page2.Truncated)
+}
+
+func TestFormatTool_InlineContent(t *testing.T) {
+	srv := New()
+	content := "(defun foo (x y)\n(+ x y))"
+	_, resp, err := srv.service.formatTool(context.Background(), nil, FormatInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.Changed, "formatter should indent the body")
+	assert.Contains(t, resp.Formatted, "  (+ x y)")
+	assert.NotNil(t, resp.Meta)
+	assert.GreaterOrEqual(t, resp.Meta.ElapsedMs, int64(0))
+}
+
+func TestFormatTool_NoChange(t *testing.T) {
+	srv := New()
+	content := "(defun foo (x y)\n  (+ x y))\n"
+	_, resp, err := srv.service.formatTool(context.Background(), nil, FormatInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	assert.False(t, resp.Changed)
+}
+
+func TestFormatTool_FileNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	_, _, err := srv.service.formatTool(context.Background(), nil, FormatInput{
+		Path: filepath.Join(tmp, "nonexistent.lisp"),
+	})
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "file_not_found", te.Code)
+}
+
+func TestFormatTool_ParseError(t *testing.T) {
+	srv := New()
+	content := "(defun broken ("
+	_, _, err := srv.service.formatTool(context.Background(), nil, FormatInput{
+		Content: &content,
+	})
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "parse_error", te.Code)
+}
+
+func TestFormatTool_IndentSize(t *testing.T) {
+	srv := New()
+	content := "(defun foo (x)\n  (+ x 1))"
+	_, resp, err := srv.service.formatTool(context.Background(), nil, FormatInput{
+		Content:    &content,
+		IndentSize: 4,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, resp.Formatted, "    (+ x 1)")
+}
+
+func TestLintTool_InlineContent(t *testing.T) {
+	srv := New()
+	content := "(set 'x 1)\n(set 'x 2)"
+	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Diagnostics)
+	assert.NotNil(t, resp.Meta)
+}
+
+func TestLintTool_ChecksFilter(t *testing.T) {
+	srv := New()
+	content := "(set 'x 1)\n(set 'x 2)\n(if true 1)"
+	_, allResp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+
+	_, filteredResp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+		Checks:  []string{"set-usage"},
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(filteredResp.Diagnostics), len(allResp.Diagnostics))
+	for _, d := range filteredResp.Diagnostics {
+		assert.Equal(t, "set-usage", d.Code)
+	}
+}
+
+func TestLintTool_SeverityFilter(t *testing.T) {
+	srv := New()
+	content := "(set 'x 1)\n(set 'x 2)"
+	severity := "error"
+	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content:  &content,
+		Severity: &severity,
+	})
+	require.NoError(t, err)
+	for _, d := range resp.Diagnostics {
+		assert.Equal(t, "error", d.Severity)
+	}
+}
+
+func TestLintTool_Pagination(t *testing.T) {
+	srv := New()
+	// Multiple set-usage warnings
+	content := "(set 'x 1)\n(set 'x 2)\n(set 'x 3)\n(set 'x 4)"
+	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+		Limit:   1,
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(resp.Diagnostics), 1)
+	if len(resp.Diagnostics) > 0 {
+		assert.True(t, resp.Truncated)
+	}
+}
+
+func TestLintTool_FileNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	_, _, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Path: filepath.Join(tmp, "nonexistent.lisp"),
+	})
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "file_not_found", te.Code)
+}
+
+func TestStructuredErrors_InvalidInput(t *testing.T) {
+	srv := New()
+	_, _, err := srv.service.formatTool(context.Background(), nil, FormatInput{})
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "invalid_input", te.Code)
+	assert.Contains(t, te.Error(), "invalid_input")
+}
+
+func TestMeta_WorkspaceSymbolsIncludesMeta(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "lib.lisp"), "(defun alpha () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	_, resp, err := srv.service.workspaceSymbolsTool(context.Background(), nil, WorkspaceSymbolsInput{
+		WorkspaceRoot: &tmp,
+		Query:         "",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Meta)
+	assert.Equal(t, tmp, resp.Meta.WorkspaceRoot)
+	assert.GreaterOrEqual(t, resp.Meta.ElapsedMs, int64(0))
+}
+
+func TestMeta_DiagnosticsIncludesMeta(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "ok.lisp")
+	writeTestFile(t, path, "(defun ok () 1)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		Path: &path,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Meta)
+	assert.Equal(t, 1, resp.Meta.FileCount)
+}
+
+func TestWorkspaceRootOverride(t *testing.T) {
+	// Create two separate workspaces with different symbols.
+	ws1 := t.TempDir()
+	ws2 := t.TempDir()
+	writeTestFile(t, filepath.Join(ws1, "lib1.lisp"), "(defun alpha () 1)")
+	writeTestFile(t, filepath.Join(ws2, "lib2.lisp"), "(defun beta () 2)")
+
+	// Server starts with ws1 as default, but we query ws2 via override.
+	srv := New(WithWorkspaceRoot(ws1))
+	srv.service.workspaceValidationInterval = 0
+	session, serverSession := connectTestServer(t, srv)
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
+
+	// Query ws1 — should find alpha.
+	ws1Symbols := workspaceSymbols(t, session, ws1, "alpha")
+	require.Len(t, ws1Symbols.Symbols, 1)
+	assert.Equal(t, "alpha", ws1Symbols.Symbols[0].Name)
+
+	// Override workspace_root to ws2 — should find beta, not alpha.
+	ws2Symbols := workspaceSymbols(t, session, ws2, "beta")
+	require.Len(t, ws2Symbols.Symbols, 1)
+	assert.Equal(t, "beta", ws2Symbols.Symbols[0].Name)
+
+	// ws2 should NOT contain alpha.
+	ws2Alpha := workspaceSymbols(t, session, ws2, "alpha")
+	assert.Empty(t, ws2Alpha.Symbols)
 }
 
 func TestResolvePath_NoDoublePrefixing(t *testing.T) {

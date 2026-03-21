@@ -233,6 +233,12 @@ func (s *Server) registerCoreTools() {
 
 	s.registerTool("hotspots", "Return the highest-cost functions from performance analysis. Requires top parameter. Use paths to scope the analysis.")
 	mcp.AddTool(s.server, &mcp.Tool{Name: "hotspots", Description: "Return the highest-cost functions from performance analysis. Requires top parameter. Use paths to scope the analysis."}, s.service.hotspotsTool)
+
+	s.registerTool("format", "Format ELPS source code. Pass content for unsaved buffers or path for files on disk. Returns formatted source and whether it changed. Supports indent_size override.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "format", Description: "Format ELPS source code. Pass content for unsaved buffers or path for files on disk. Returns formatted source and whether it changed. Supports indent_size override."}, s.service.formatTool)
+
+	s.registerTool("lint", "Run specific lint analyzers on a file or inline content. Use checks to select analyzers (e.g., [\"undefined-symbol\", \"user-arity\"]). Supports severity filter, limit, and offset for pagination.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "lint", Description: "Run specific lint analyzers on a file or inline content. Use checks to select analyzers (e.g., [\"undefined-symbol\", \"user-arity\"]). Supports severity filter, limit, and offset for pagination."}, s.service.lintTool)
 }
 
 func clonePerfConfig(cfg *perf.Config) *perf.Config {

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "elps": {
+      "command": "go",
+      "args": ["run", ".", "mcp"]
+    }
+  }
+}

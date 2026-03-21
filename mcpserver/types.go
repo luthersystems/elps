@@ -99,19 +99,21 @@ type PerfSelectionInput struct {
 
 // HoverResponse is the result of a hover query.
 type HoverResponse struct {
-	SymbolName string    `json:"symbol_name,omitempty"`
-	Kind       string    `json:"kind,omitempty"`
-	Signature  string    `json:"signature,omitempty"`
-	Doc        string    `json:"doc,omitempty"`
-	DefinedIn  *Location `json:"defined_in,omitempty"`
-	Markdown   string    `json:"markdown,omitempty"`
-	Found      bool      `json:"found"`
+	SymbolName string        `json:"symbol_name,omitempty"`
+	Kind       string        `json:"kind,omitempty"`
+	Signature  string        `json:"signature,omitempty"`
+	Doc        string        `json:"doc,omitempty"`
+	DefinedIn  *Location     `json:"defined_in,omitempty"`
+	Markdown   string        `json:"markdown,omitempty"`
+	Found      bool          `json:"found"`
+	Meta       *ResponseMeta `json:"_meta,omitempty"`
 }
 
 // DefinitionResponse is the result of a go-to-definition query.
 type DefinitionResponse struct {
-	Found    bool      `json:"found"`
-	Location *Location `json:"location,omitempty"`
+	Found    bool          `json:"found"`
+	Location *Location     `json:"location,omitempty"`
+	Meta     *ResponseMeta `json:"_meta,omitempty"`
 }
 
 // ReferencesInput is input for the references tool.
@@ -128,10 +130,11 @@ type ReferencesInput struct {
 
 // ReferencesResponse is the result of a find-references query.
 type ReferencesResponse struct {
-	SymbolName string     `json:"symbol_name,omitempty"`
-	References []Location `json:"references"`
-	Truncated  bool       `json:"truncated,omitempty"`
-	Total      int        `json:"total,omitempty"`
+	SymbolName string        `json:"symbol_name,omitempty"`
+	References []Location    `json:"references"`
+	Truncated  bool          `json:"truncated,omitempty"`
+	Total      int           `json:"total,omitempty"`
+	Meta       *ResponseMeta `json:"_meta,omitempty"`
 }
 
 // DocumentSymbol describes a top-level symbol in a document.
@@ -146,6 +149,7 @@ type DocumentSymbol struct {
 // DocumentSymbolsResponse is the result of a document symbols query.
 type DocumentSymbolsResponse struct {
 	Symbols []DocumentSymbol `json:"symbols"`
+	Meta    *ResponseMeta    `json:"_meta,omitempty"`
 }
 
 // WorkspaceSymbol describes a symbol found across the workspace.
@@ -162,6 +166,7 @@ type WorkspaceSymbolsResponse struct {
 	Symbols   []WorkspaceSymbol `json:"symbols"`
 	Truncated bool              `json:"truncated,omitempty"`
 	Total     int               `json:"total,omitempty"`
+	Meta      *ResponseMeta     `json:"_meta,omitempty"`
 }
 
 // Diagnostic is a parse or lint diagnostic for a source location.
@@ -184,6 +189,7 @@ type DiagnosticsResponse struct {
 	Files      []FileDiagnostics `json:"files"`
 	Truncated  bool              `json:"truncated,omitempty"`
 	TotalFiles int               `json:"total_files,omitempty"`
+	Meta       *ResponseMeta     `json:"_meta,omitempty"`
 }
 
 // TraceEntry is a single entry in a performance issue trace.
@@ -223,6 +229,7 @@ type PerfIssuesResponse struct {
 	Solved      []SolvedFunctionSummary `json:"solved,omitempty"`
 	Truncated   bool                    `json:"truncated,omitempty"`
 	TotalIssues int                     `json:"total_issues,omitempty"`
+	Meta        *ResponseMeta           `json:"_meta,omitempty"`
 }
 
 // CallGraphFunction describes a function node in a call graph.
@@ -251,11 +258,13 @@ type CallGraphResponse struct {
 	Truncated      bool                `json:"truncated,omitempty"`
 	TotalFunctions int                 `json:"total_functions,omitempty"`
 	TotalEdges     int                 `json:"total_edges,omitempty"`
+	Meta           *ResponseMeta       `json:"_meta,omitempty"`
 }
 
 // HotspotsResponse is the result of a hotspots query.
 type HotspotsResponse struct {
 	Functions []SolvedFunctionSummary `json:"functions"`
+	Meta      *ResponseMeta           `json:"_meta,omitempty"`
 }
 
 // HelpInput is the (empty) input for the help tool.
@@ -264,4 +273,53 @@ type HelpInput struct{}
 // HelpResponse is the result of the help tool.
 type HelpResponse struct {
 	Content string `json:"content"`
+}
+
+// FormatInput is input for the format tool.
+type FormatInput struct {
+	Path          string  `json:"path,omitempty"`
+	Content       *string `json:"content,omitempty"`
+	IndentSize    int     `json:"indent_size,omitempty"`
+	WorkspaceRoot *string `json:"workspace_root,omitempty"`
+}
+
+// FormatResponse is the result of the format tool.
+type FormatResponse struct {
+	Formatted string        `json:"formatted"`
+	Changed   bool          `json:"changed"`
+	Meta      *ResponseMeta `json:"_meta,omitempty"`
+}
+
+// LintInput is input for the lint tool.
+type LintInput struct {
+	Path          string   `json:"path,omitempty"`
+	Content       *string  `json:"content,omitempty"`
+	WorkspaceRoot *string  `json:"workspace_root,omitempty"`
+	Checks        []string `json:"checks,omitempty"`
+	Severity      *string  `json:"severity,omitempty"`
+	Limit         int      `json:"limit,omitempty"`
+	Offset        int      `json:"offset,omitempty"`
+}
+
+// LintResponse is the result of the lint tool.
+type LintResponse struct {
+	Diagnostics []Diagnostic  `json:"diagnostics"`
+	Truncated   bool          `json:"truncated,omitempty"`
+	Total       int           `json:"total,omitempty"`
+	Meta        *ResponseMeta `json:"_meta,omitempty"`
+}
+
+// ResponseMeta provides metadata about the tool response.
+type ResponseMeta struct {
+	WorkspaceRoot string `json:"workspace_root,omitempty"`
+	ElapsedMs     int64  `json:"elapsed_ms"`
+	FileCount     int    `json:"file_count,omitempty"`
+	Truncated     bool   `json:"truncated,omitempty"`
+}
+
+// ToolError is a structured error response returned by tools.
+type ToolError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Path    string `json:"path,omitempty"`
 }

@@ -18,6 +18,7 @@ import (
 
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/analysis/perf"
+	"github.com/luthersystems/elps/formatter"
 	"github.com/luthersystems/elps/lint"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
@@ -230,6 +231,7 @@ func (s *service) documentSymbolsTool(ctx context.Context, _ *mcp.CallToolReques
 }
 
 func (s *service) workspaceSymbolsTool(ctx context.Context, _ *mcp.CallToolRequest, in WorkspaceSymbolsInput) (*mcp.CallToolResult, WorkspaceSymbolsResponse, error) {
+	start := time.Now()
 	root, err := s.resolveWorkspaceRoot(in.WorkspaceRoot, true)
 	if err != nil {
 		return nil, WorkspaceSymbolsResponse{}, err
@@ -277,10 +279,12 @@ func (s *service) workspaceSymbolsTool(ctx context.Context, _ *mcp.CallToolReque
 			resp.Total = total
 		}
 	}
+	resp.Meta = makeMeta(root, time.Since(start), len(state.symbols))
 	return nil, resp, nil
 }
 
 func (s *service) diagnosticsTool(ctx context.Context, _ *mcp.CallToolRequest, in DiagnosticsInput) (*mcp.CallToolResult, DiagnosticsResponse, error) {
+	start := time.Now()
 	if in.IncludeWorkspace {
 		root, err := s.resolveWorkspaceRoot(in.WorkspaceRoot, true)
 		if err != nil {
@@ -314,7 +318,9 @@ func (s *service) diagnosticsTool(ctx context.Context, _ *mcp.CallToolRequest, i
 			fd.Diagnostics = filterDiagnosticsBySeverity(fd.Diagnostics, in.Severity)
 			result = append(result, fd)
 		}
-		return nil, s.applyDiagnosticsLimits(result, in.MaxFiles, in.Offset), nil
+		resp := s.applyDiagnosticsLimits(result, in.MaxFiles, in.Offset)
+		resp.Meta = makeMeta(root, time.Since(start), len(files))
+		return nil, resp, nil
 	}
 
 	if in.Path == nil && in.Content == nil {
@@ -333,10 +339,15 @@ func (s *service) diagnosticsTool(ctx context.Context, _ *mcp.CallToolRequest, i
 		return nil, DiagnosticsResponse{}, err
 	}
 	fd.Diagnostics = filterDiagnosticsBySeverity(fd.Diagnostics, in.Severity)
-	return nil, DiagnosticsResponse{Files: []FileDiagnostics{fd}}, nil
+	resp := DiagnosticsResponse{
+		Files: []FileDiagnostics{fd},
+		Meta:  makeMeta(root, time.Since(start), 1),
+	}
+	return nil, resp, nil
 }
 
 func (s *service) perfIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, in PerfSelectionInput) (*mcp.CallToolResult, PerfIssuesResponse, error) {
+	start := time.Now()
 	result, err := s.runPerf(in)
 	if err != nil {
 		return nil, PerfIssuesResponse{}, err
@@ -355,10 +366,13 @@ func (s *service) perfIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, in
 		}
 		out.Solved = topSolved(solved, in.Top)
 	}
+	root, _ := s.resolveWorkspaceRoot(in.WorkspaceRoot, false)
+	out.Meta = makeMeta(root, time.Since(start), 0)
 	return nil, out, nil
 }
 
 func (s *service) callGraphTool(ctx context.Context, _ *mcp.CallToolRequest, in PerfSelectionInput) (*mcp.CallToolResult, CallGraphResponse, error) {
+	start := time.Now()
 	result, err := s.runPerf(in)
 	if err != nil {
 		return nil, CallGraphResponse{}, err
@@ -367,10 +381,13 @@ func (s *service) callGraphTool(ctx context.Context, _ *mcp.CallToolRequest, in 
 	if in.Top > 0 {
 		resp = truncateCallGraph(resp, result.Solved, in.Top)
 	}
+	root, _ := s.resolveWorkspaceRoot(in.WorkspaceRoot, false)
+	resp.Meta = makeMeta(root, time.Since(start), 0)
 	return nil, resp, nil
 }
 
 func (s *service) hotspotsTool(ctx context.Context, _ *mcp.CallToolRequest, in PerfSelectionInput) (*mcp.CallToolResult, HotspotsResponse, error) {
+	start := time.Now()
 	if in.Top <= 0 {
 		return nil, HotspotsResponse{}, errors.New("top must be greater than zero")
 	}
@@ -378,7 +395,11 @@ func (s *service) hotspotsTool(ctx context.Context, _ *mcp.CallToolRequest, in P
 	if err != nil {
 		return nil, HotspotsResponse{}, err
 	}
-	return nil, HotspotsResponse{Functions: topSolved(result.Solved, in.Top)}, nil
+	root, _ := s.resolveWorkspaceRoot(in.WorkspaceRoot, false)
+	return nil, HotspotsResponse{
+		Functions: topSolved(result.Solved, in.Top),
+		Meta:      makeMeta(root, time.Since(start), 0),
+	}, nil
 }
 
 func (s *service) runPerf(in PerfSelectionInput) (*perf.Result, error) {
@@ -1637,5 +1658,179 @@ All tools return empty arrays (` + "`[]`" + `), never ` + "`null`" + `, for list
 | PERF003 | High scaling order (e.g., O(n²) or worse) |
 | PERF004 | Cycle detected in call graph |
 | UNKNOWN001 | Unresolved function call in analysis |
+
+## Advanced: Performance Config
+The ` + "`config`" + ` parameter on perf tools exposes low-level tuning (function costs, thresholds, loop keywords).
+Defaults are tuned for typical ELPS workloads. You should NOT need to set this for normal usage.
+Only use it for custom cost models (e.g., marking domain-specific functions as expensive).
+
+## Response Metadata
+All tool responses include a ` + "`_meta`" + ` object with:
+- ` + "`workspace_root`" + `: which workspace was used
+- ` + "`elapsed_ms`" + `: time taken in milliseconds
+- ` + "`file_count`" + `: number of files processed (where applicable)
+- ` + "`truncated`" + `: whether results were trimmed
+
+## Error Responses
+Errors include structured JSON with:
+- ` + "`code`" + `: machine-readable error code (` + "`file_not_found`" + `, ` + "`parse_error`" + `, ` + "`invalid_position`" + `, ` + "`workspace_not_configured`" + `, ` + "`invalid_input`" + `)
+- ` + "`message`" + `: human-readable description
+- ` + "`path`" + `: relevant file path (when applicable)
 `
+
+func (s *service) formatTool(_ context.Context, _ *mcp.CallToolRequest, in FormatInput) (*mcp.CallToolResult, FormatResponse, error) {
+	start := time.Now()
+	if in.Path == "" && in.Content == nil {
+		return nil, FormatResponse{}, newToolErr("invalid_input", "path or content is required", "")
+	}
+	root, err := s.resolveWorkspaceRoot(in.WorkspaceRoot, false)
+	if err != nil {
+		return nil, FormatResponse{}, newToolErr("invalid_input", err.Error(), "")
+	}
+	path := "<stdin>"
+	if in.Path != "" {
+		resolved, resolveErr := s.resolvePath(in.Path, root)
+		if resolveErr != nil {
+			return nil, FormatResponse{}, newToolErr("invalid_input", resolveErr.Error(), in.Path)
+		}
+		path = resolved
+	}
+	var source []byte
+	if in.Content != nil {
+		source = []byte(*in.Content)
+	} else {
+		source, err = os.ReadFile(path) //nolint:gosec // tool reads user-selected paths
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, FormatResponse{}, newToolErr("file_not_found", fmt.Sprintf("file not found: %s", path), path)
+			}
+			return nil, FormatResponse{}, newToolErr("file_not_found", err.Error(), path)
+		}
+	}
+	var cfg *formatter.Config
+	if in.IndentSize > 0 {
+		cfg = formatter.DefaultConfig()
+		cfg.IndentSize = in.IndentSize
+	}
+	formatted, err := formatter.FormatFile(source, path, cfg)
+	if err != nil {
+		return nil, FormatResponse{}, newToolErr("parse_error", err.Error(), path)
+	}
+	return nil, FormatResponse{
+		Formatted: string(formatted),
+		Changed:   string(formatted) != string(source),
+		Meta:      makeMeta(root, time.Since(start), 1),
+	}, nil
+}
+
+func (s *service) lintTool(_ context.Context, _ *mcp.CallToolRequest, in LintInput) (*mcp.CallToolResult, LintResponse, error) {
+	start := time.Now()
+	if in.Path == "" && in.Content == nil {
+		return nil, LintResponse{}, newToolErr("invalid_input", "path or content is required", "")
+	}
+	root, err := s.resolveWorkspaceRoot(in.WorkspaceRoot, false)
+	if err != nil {
+		return nil, LintResponse{}, newToolErr("invalid_input", err.Error(), "")
+	}
+	path := "<stdin>"
+	if in.Path != "" {
+		resolved, resolveErr := s.resolvePath(in.Path, root)
+		if resolveErr != nil {
+			return nil, LintResponse{}, newToolErr("invalid_input", resolveErr.Error(), in.Path)
+		}
+		path = resolved
+	}
+	var source []byte
+	if in.Content != nil {
+		source = []byte(*in.Content)
+	} else {
+		source, err = os.ReadFile(path) //nolint:gosec // tool reads user-selected paths
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, LintResponse{}, newToolErr("file_not_found", fmt.Sprintf("file not found: %s", path), path)
+			}
+			return nil, LintResponse{}, newToolErr("file_not_found", err.Error(), path)
+		}
+	}
+
+	linter := s.linter
+	if len(in.Checks) > 0 {
+		linter = filterLinter(s.linter, in.Checks)
+	}
+
+	var lintDiags []lint.Diagnostic
+	if root != "" {
+		lintCfg := &lint.LintConfig{Workspace: root}
+		analysisCfg, buildErr := lint.BuildAnalysisConfig(lintCfg)
+		if buildErr == nil {
+			lintDiags, _ = linter.LintFileWithContext(source, path, analysis.Analyze(
+				rdparser.New(token.NewScanner(path, strings.NewReader(string(source)))).ParseProgramFaultTolerant().Exprs,
+				analysisCfg,
+			))
+		}
+	}
+	if lintDiags == nil {
+		lintDiags, _ = linter.LintFile(source, path)
+	}
+
+	diags := make([]Diagnostic, 0, len(lintDiags))
+	for _, d := range lintDiags {
+		diags = append(diags, lintDiagnostic(d))
+	}
+	diags = filterDiagnosticsBySeverity(diags, in.Severity)
+	sort.Slice(diags, func(i, j int) bool { return compareRange(diags[i].Range, diags[j].Range) })
+
+	resp := LintResponse{
+		Diagnostics: diags,
+		Meta:        makeMeta(root, time.Since(start), 1),
+	}
+	if in.Offset > 0 || in.Limit > 0 {
+		total := len(resp.Diagnostics)
+		resp.Diagnostics = paginateSlice(resp.Diagnostics, in.Offset, in.Limit)
+		if len(resp.Diagnostics) < total {
+			resp.Truncated = true
+			resp.Total = total
+		}
+	}
+	return nil, resp, nil
+}
+
+func filterLinter(original *lint.Linter, checks []string) *lint.Linter {
+	selected := make(map[string]bool, len(checks))
+	for _, name := range checks {
+		selected[strings.TrimSpace(name)] = true
+	}
+	var filtered []*lint.Analyzer
+	for _, a := range original.Analyzers {
+		if selected[a.Name] {
+			filtered = append(filtered, a)
+		}
+	}
+	return &lint.Linter{Analyzers: filtered}
+}
+
+func newToolErr(code, message, path string) error {
+	return &toolErr{Code: code, Message: message, Path: path}
+}
+
+type toolErr struct {
+	Code    string
+	Message string
+	Path    string
+}
+
+func (e *toolErr) Error() string {
+	if e.Path != "" {
+		return fmt.Sprintf("%s: %s (%s)", e.Code, e.Message, e.Path)
+	}
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
+func makeMeta(workspaceRoot string, elapsed time.Duration, fileCount int) *ResponseMeta {
+	return &ResponseMeta{
+		WorkspaceRoot: workspaceRoot,
+		ElapsedMs:     elapsed.Milliseconds(),
+		FileCount:     fileCount,
+	}
+}
 
