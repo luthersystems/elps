@@ -852,6 +852,92 @@ func TestHover_FileNotFound(t *testing.T) {
 	assert.Equal(t, "file_not_found", te.Code)
 }
 
+func TestDefinition_FileNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	_, _, err := srv.service.definitionTool(context.Background(), nil, FileQueryInput{
+		Path: filepath.Join(tmp, "nonexistent.lisp"), Line: 0, Character: 0,
+	})
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "file_not_found", te.Code)
+}
+
+func TestReferences_FileNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	_, _, err := srv.service.referencesTool(context.Background(), nil, ReferencesInput{
+		Path: filepath.Join(tmp, "nonexistent.lisp"), Line: 0, Character: 0,
+	})
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "file_not_found", te.Code)
+}
+
+func TestDocumentSymbols_FileNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	srv := New(WithWorkspaceRoot(tmp))
+	_, _, err := srv.service.documentSymbolsTool(context.Background(), nil, DocumentQueryInput{
+		Path: filepath.Join(tmp, "nonexistent.lisp"),
+	})
+	require.Error(t, err)
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "file_not_found", te.Code)
+}
+
+func TestEvalTool_EnvironmentIsolation(t *testing.T) {
+	srv := New()
+	// First call: define a function.
+	_, resp1, err := srv.service.evalTool(context.Background(), nil, EvalInput{
+		Expression: "(defun my-secret-fn () 42)\n(my-secret-fn)",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "42", resp1.Value)
+
+	// Second call: function should NOT exist — each call gets a fresh env.
+	_, resp2, err := srv.service.evalTool(context.Background(), nil, EvalInput{
+		Expression: "(my-secret-fn)",
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp2.Error, "function from previous eval call should not persist")
+}
+
+func TestLintTool_MixedValidInvalidChecks(t *testing.T) {
+	srv := New()
+	content := "(set 'x 1)\n(set 'x 2)\n(if true 1)"
+	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+		Checks:  []string{"set-usage", "nonexistent-analyzer", "if-arity"},
+	})
+	require.NoError(t, err)
+	// Only valid checks should produce results; invalid ones silently skipped.
+	for _, d := range resp.Diagnostics {
+		assert.Contains(t, []string{"set-usage", "if-arity"}, d.Code,
+			"diagnostic code %q should be from a valid requested analyzer", d.Code)
+	}
+}
+
+func TestMeta_FileCountAccuracy(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "a.lisp"), "(defun a () 1)")
+	writeTestFile(t, filepath.Join(tmp, "b.lisp"), "(defun b () 2)")
+	writeTestFile(t, filepath.Join(tmp, "c.lisp"), "(defun c () 3)")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+	_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+		WorkspaceRoot:    &tmp,
+		IncludeWorkspace: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Meta)
+	assert.Equal(t, 3, resp.Meta.FileCount, "meta file_count should match actual files scanned")
+	assert.Greater(t, resp.Meta.ElapsedMs, int64(-1), "elapsed_ms should be non-negative")
+}
+
 func TestDiagnostics_SeverityFilterExcludesEmptyFiles(t *testing.T) {
 	tmp := t.TempDir()
 	writeTestFile(t, filepath.Join(tmp, "broken.lisp"), "(defun broken (")
