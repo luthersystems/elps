@@ -81,9 +81,10 @@ func TestMatchesAny_Component(t *testing.T) {
 	assert.False(t, matchesAny("project/src/output.lisp", []string{"build"}))
 }
 
-func TestSplitPath(t *testing.T) {
-	components := splitPath("a/b/c.lisp")
-	assert.Contains(t, components, "c.lisp")
-	assert.Contains(t, components, "b")
-	assert.Contains(t, components, "a")
+func TestMatchesAny_DirectoryDeep(t *testing.T) {
+	// Verifies directory component matching works through the delegation.
+	assert.True(t, matchesAny("a/b/c.lisp", []string{"b"}))
+	assert.True(t, matchesAny("a/b/c.lisp", []string{"c.lisp"}))
+	assert.True(t, matchesAny("a/b/c.lisp", []string{"a"}))
+	assert.False(t, matchesAny("a/b/c.lisp", []string{"d"}))
 }

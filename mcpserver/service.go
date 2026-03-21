@@ -547,7 +547,7 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 		state.cfg.PackageExports[pkgName] = deduplicateExports(syms)
 	}
 	if root != "" {
-		state.refs = analysis.ScanWorkspaceRefs(root, state.cfg)
+		state.refs = analysis.ScanWorkspaceRefs(root, state.cfg, nil)
 	}
 	return state, nil
 }

@@ -374,7 +374,7 @@ func TestScanWorkspaceRefs_CrossFile(t *testing.T) {
 	}
 
 	// Phase 2: Scan references.
-	refs := ScanWorkspaceRefs(dir, cfg)
+	refs := ScanWorkspaceRefs(dir, cfg, nil)
 
 	// There should be a reference to "helper" from file B.
 	helperKey := SymbolKey{Package: "user", Name: "helper", Kind: SymFunction}.String()
@@ -523,7 +523,7 @@ func TestScanWorkspaceRefs_QualifiedSymbol(t *testing.T) {
 	}
 
 	// Phase 2: Scan references.
-	refs := ScanWorkspaceRefs(dir, cfg)
+	refs := ScanWorkspaceRefs(dir, cfg, nil)
 
 	// There should be a reference to "add-one" (unqualified key) from consumer.lisp.
 	addOneKey := SymbolKey{Package: "helpers", Name: "add-one", Kind: SymFunction}.String()
@@ -898,6 +898,45 @@ func TestCollectLispFilesWithConfig_ZeroMaxFileBytesUsesDefault(t *testing.T) {
 	paths, _, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFileBytes: 0})
 	require.NoError(t, err)
 	assert.Len(t, paths, 1, "MaxFileBytes: 0 should use default, not skip all files")
+}
+
+func TestCollectLispFilesWithConfig_Excludes(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create 3 .lisp files.
+	for _, name := range []string{"main.lisp", "generated.lisp", "utils.lisp"} {
+		err := os.WriteFile(filepath.Join(dir, name), []byte("()"), 0600)
+		require.NoError(t, err)
+	}
+
+	// Exclude "generated.lisp" by base name.
+	paths, truncated, err := collectLispFilesWithConfig(dir, &ScanConfig{Excludes: []string{"generated.lisp"}})
+	require.NoError(t, err)
+	assert.False(t, truncated)
+	assert.Len(t, paths, 2, "generated.lisp should be excluded")
+	for _, p := range paths {
+		assert.NotContains(t, p, "generated.lisp")
+	}
+}
+
+func TestCollectLispFilesWithConfig_ExcludesDirectory(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a "build" subdirectory with a file.
+	buildDir := filepath.Join(dir, "build")
+	err := os.MkdirAll(buildDir, 0750)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(buildDir, "output.lisp"), []byte("()"), 0600)
+	require.NoError(t, err)
+
+	// And a regular file.
+	err = os.WriteFile(filepath.Join(dir, "main.lisp"), []byte("()"), 0600)
+	require.NoError(t, err)
+
+	paths, _, err := collectLispFilesWithConfig(dir, &ScanConfig{Excludes: []string{"build"}})
+	require.NoError(t, err)
+	assert.Len(t, paths, 1, "build directory files should be excluded")
+	assert.Contains(t, paths[0], "main.lisp")
 }
 
 func TestScanConfig_EffectiveDefaults(t *testing.T) {

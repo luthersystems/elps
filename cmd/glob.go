@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/luthersystems/elps/analysis"
 )
 
 // expandArgs expands arguments, resolving patterns ending with "/..." to all
@@ -51,45 +53,7 @@ func filterExcludes(paths []string, excludes []string) []string {
 }
 
 func matchesAny(path string, patterns []string) bool {
-	for _, pattern := range patterns {
-		// Match against full path
-		if matched, _ := filepath.Match(pattern, path); matched {
-			return true
-		}
-		// Match against base name (e.g. --exclude='shirocore.lisp')
-		if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
-			return true
-		}
-		// Match against each path component for directory patterns
-		// (e.g. --exclude='build' matches any/build/file.lisp)
-		for _, component := range splitPath(path) {
-			if matched, _ := filepath.Match(pattern, component); matched {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// splitPath returns all directory components and the filename of a path.
-func splitPath(path string) []string {
-	var components []string
-	dir, file := filepath.Split(path)
-	if file != "" {
-		components = append(components, file)
-	}
-	for dir != "" && dir != "/" && dir != "." {
-		dir = strings.TrimRight(dir, string(filepath.Separator))
-		parent, base := filepath.Split(dir)
-		if base != "" {
-			components = append(components, base)
-		}
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return components
+	return analysis.MatchesExclude(path, patterns)
 }
 
 func findLispFiles(root string) ([]string, error) {

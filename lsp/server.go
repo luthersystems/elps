@@ -347,7 +347,7 @@ func (s *Server) buildWorkspaceIndex() {
 
 	// Build workspace reference index using the populated config.
 	if s.rootPath != "" {
-		wsRefs := analysis.ScanWorkspaceRefs(s.rootPath, cfg)
+		wsRefs := analysis.ScanWorkspaceRefs(s.rootPath, cfg, scanCfg)
 		s.workspaceRefsMu.Lock()
 		s.workspaceRefs = wsRefs
 		s.workspaceRefsMu.Unlock()
