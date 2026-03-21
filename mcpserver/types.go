@@ -284,6 +284,7 @@ type FormatInput struct {
 	Path          string  `json:"path,omitempty"`
 	Content       *string `json:"content,omitempty"`
 	IndentSize    int     `json:"indent_size,omitempty"`
+	CheckOnly     bool    `json:"check_only,omitempty"`
 	WorkspaceRoot *string `json:"workspace_root,omitempty"`
 }
 

@@ -1241,6 +1241,32 @@ func TestFormatTool_NoChange(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.False(t, resp.Changed)
+	assert.Empty(t, resp.Formatted, "formatted content should be empty when unchanged")
+}
+
+func TestFormatTool_CheckOnly(t *testing.T) {
+	srv := New()
+	// Unformatted content — needs formatting.
+	content := "(defun foo (x y)\n(+ x y))"
+	_, resp, err := srv.service.formatTool(context.Background(), nil, FormatInput{
+		Content:   &content,
+		CheckOnly: true,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.Changed)
+	assert.Empty(t, resp.Formatted, "check_only should not return formatted content")
+}
+
+func TestFormatTool_CheckOnlyNoChange(t *testing.T) {
+	srv := New()
+	content := "(defun foo (x y)\n  (+ x y))\n"
+	_, resp, err := srv.service.formatTool(context.Background(), nil, FormatInput{
+		Content:   &content,
+		CheckOnly: true,
+	})
+	require.NoError(t, err)
+	assert.False(t, resp.Changed)
+	assert.Empty(t, resp.Formatted)
 }
 
 func TestFormatTool_FileNotFound(t *testing.T) {

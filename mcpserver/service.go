@@ -2086,11 +2086,17 @@ func (s *service) formatTool(_ context.Context, _ *mcp.CallToolRequest, in Forma
 	if err != nil {
 		return nil, FormatResponse{}, newToolErr("parse_error", err.Error(), path)
 	}
-	return nil, FormatResponse{
-		Formatted: string(formatted),
-		Changed:   string(formatted) != string(source),
-		Meta:      makeMeta(root, time.Since(start), 1),
-	}, nil
+	changed := string(formatted) != string(source)
+	resp := FormatResponse{
+		Changed: changed,
+		Meta:    makeMeta(root, time.Since(start), 1),
+	}
+	// Only include formatted content when it actually changed and
+	// check_only is not set. Avoids sending 100K+ of unchanged content.
+	if changed && !in.CheckOnly {
+		resp.Formatted = string(formatted)
+	}
+	return nil, resp, nil
 }
 
 func (s *service) lintTool(_ context.Context, _ *mcp.CallToolRequest, in LintInput) (*mcp.CallToolResult, LintResponse, error) {
