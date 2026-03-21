@@ -309,6 +309,98 @@ type LintResponse struct {
 	Meta        *ResponseMeta `json:"_meta,omitempty"`
 }
 
+// DocInput is input for the doc tool.
+type DocInput struct {
+	Query   string   `json:"query,omitempty"`
+	Queries []string `json:"queries,omitempty"`
+	Package bool     `json:"package,omitempty"`
+}
+
+// DocResult is the result of a single doc lookup in batch mode.
+type DocResult struct {
+	Query   string     `json:"query"`
+	Found   bool       `json:"found"`
+	Symbol  *DocSymbol `json:"symbol,omitempty"`
+}
+
+// DocResponse is the result of the doc tool.
+type DocResponse struct {
+	Found   bool          `json:"found"`
+	Symbol  *DocSymbol    `json:"symbol,omitempty"`
+	Package *DocPackage   `json:"package,omitempty"`
+	Batch   []DocResult   `json:"batch,omitempty"`
+	Meta    *ResponseMeta `json:"_meta,omitempty"`
+}
+
+// DocSymbol describes a documented symbol.
+type DocSymbol struct {
+	Name    string       `json:"name"`
+	Kind    string       `json:"kind"`
+	Doc     string       `json:"doc,omitempty"`
+	Formals *DocFormals  `json:"formals,omitempty"`
+}
+
+// DocFormals describes a function's parameter list.
+type DocFormals struct {
+	Required []string `json:"required"`
+	Optional []string `json:"optional,omitempty"`
+	Rest     string   `json:"rest,omitempty"`
+	Keys     []string `json:"keys,omitempty"`
+}
+
+// DocPackage describes a package for documentation.
+type DocPackage struct {
+	Name    string      `json:"name"`
+	Doc     string      `json:"doc,omitempty"`
+	Symbols []DocSymbol `json:"symbols"`
+}
+
+// TestInput is input for the test tool.
+type TestInput struct {
+	Path          string  `json:"path"`
+	Content       *string `json:"content,omitempty"`
+	WorkspaceRoot *string `json:"workspace_root,omitempty"`
+}
+
+// TestResult describes a single test outcome.
+type TestResult struct {
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
+	Error  string `json:"error,omitempty"`
+}
+
+// TestResponse is the result of the test tool.
+type TestResponse struct {
+	Path    string        `json:"path"`
+	Tests   []TestResult  `json:"tests"`
+	Passed  int           `json:"passed"`
+	Failed  int           `json:"failed"`
+	Total   int           `json:"total"`
+	Meta    *ResponseMeta `json:"_meta,omitempty"`
+}
+
+// EvalInput is input for the eval tool.
+type EvalInput struct {
+	Expression  string   `json:"expression,omitempty"`
+	Expressions []string `json:"expressions,omitempty"`
+}
+
+// EvalResult is the result of evaluating a single expression.
+type EvalResult struct {
+	Expression string `json:"expression"`
+	Value      string `json:"value,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// EvalResponse is the result of the eval tool.
+type EvalResponse struct {
+	Value   string        `json:"value"`
+	Results []string      `json:"results,omitempty"`
+	Batch   []EvalResult  `json:"batch,omitempty"`
+	Error   string        `json:"error,omitempty"`
+	Meta    *ResponseMeta `json:"_meta,omitempty"`
+}
+
 // ResponseMeta provides metadata about the tool response.
 type ResponseMeta struct {
 	WorkspaceRoot string `json:"workspace_root,omitempty"`

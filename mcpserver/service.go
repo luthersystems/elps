@@ -21,6 +21,10 @@ import (
 	"github.com/luthersystems/elps/formatter"
 	"github.com/luthersystems/elps/lint"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib"
+	"github.com/luthersystems/elps/lisp/lisplib/libhelp"
+	"github.com/luthersystems/elps/lisp/lisplib/libtesting"
+	"github.com/luthersystems/elps/parser"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -31,6 +35,7 @@ const builtinScheme = "elps-builtin"
 type serviceConfig struct {
 	registry        *lisp.PackageRegistry
 	env             *lisp.LEnv
+	envFactory      func() (*lisp.LEnv, error)
 	workspaceRoot   string
 	perfConfig      *perf.Config
 	excludePatterns []string
@@ -41,6 +46,7 @@ type serviceConfig struct {
 type service struct {
 	registry        *lisp.PackageRegistry
 	env             *lisp.LEnv
+	envFactory      func() (*lisp.LEnv, error)
 	workspaceRoot   string
 	perfConfig      *perf.Config
 	excludePatterns []string
@@ -74,6 +80,7 @@ func newService(cfg serviceConfig) *service {
 	return &service{
 		registry:                    cfg.registry,
 		env:                         cfg.env,
+		envFactory:                  cfg.envFactory,
 		workspaceRoot:               cfg.workspaceRoot,
 		perfConfig:                  clonePerfConfig(cfg.perfConfig),
 		excludePatterns:             cfg.excludePatterns,
@@ -1596,6 +1603,310 @@ func paginateSlice[T any](items []T, offset, limit int) []T {
 	return items
 }
 
+func (s *service) docTool(_ context.Context, _ *mcp.CallToolRequest, in DocInput) (*mcp.CallToolResult, DocResponse, error) {
+	start := time.Now()
+	if in.Query == "" && len(in.Queries) == 0 {
+		return nil, DocResponse{}, newToolErr("invalid_input", "query or queries is required", "")
+	}
+	env, err := s.docEnv()
+	if err != nil {
+		return nil, DocResponse{}, err
+	}
+
+	// Batch mode: look up multiple symbols at once.
+	if len(in.Queries) > 0 {
+		batch := make([]DocResult, 0, len(in.Queries))
+		for _, q := range in.Queries {
+			dr := DocResult{Query: q}
+			sd, lookupErr := libhelp.QuerySymbol(env, q)
+			if lookupErr == nil {
+				sym := docSymbolFromLib(*sd)
+				dr.Found = true
+				dr.Symbol = &sym
+			}
+			batch = append(batch, dr)
+		}
+		return nil, DocResponse{Batch: batch, Meta: makeMeta("", time.Since(start), 0)}, nil
+	}
+
+	if in.Package {
+		pd, pkgErr := libhelp.QueryPackage(env, in.Query)
+		if pkgErr != nil {
+			return nil, DocResponse{Found: false, Meta: makeMeta("", time.Since(start), 0)}, nil
+		}
+		pkg := &DocPackage{
+			Name:    pd.Name,
+			Doc:     pd.Doc,
+			Symbols: make([]DocSymbol, 0, len(pd.Symbols)),
+		}
+		for _, sym := range pd.Symbols {
+			pkg.Symbols = append(pkg.Symbols, docSymbolFromLib(sym))
+		}
+		return nil, DocResponse{Found: true, Package: pkg, Meta: makeMeta("", time.Since(start), 0)}, nil
+	}
+	sd, lookupErr := libhelp.QuerySymbol(env, in.Query)
+	if lookupErr != nil {
+		return nil, DocResponse{Found: false, Meta: makeMeta("", time.Since(start), 0)}, nil
+	}
+	sym := docSymbolFromLib(*sd)
+	return nil, DocResponse{Found: true, Symbol: &sym, Meta: makeMeta("", time.Since(start), 0)}, nil
+}
+
+func docSymbolFromLib(sd libhelp.SymbolDoc) DocSymbol {
+	ds := DocSymbol{
+		Name: sd.Name,
+		Kind: sd.Kind,
+		Doc:  sd.Doc,
+	}
+	if sd.Formals != nil {
+		ds.Formals = &DocFormals{
+			Required: sd.Formals.Required,
+			Optional: sd.Formals.Optional,
+			Rest:     sd.Formals.Rest,
+			Keys:     sd.Formals.Keys,
+		}
+	}
+	return ds
+}
+
+func (s *service) docEnv() (*lisp.LEnv, error) {
+	if s.env != nil {
+		return s.env, nil
+	}
+	if s.envFactory != nil {
+		return s.envFactory()
+	}
+	env, err := lisplib.NewDocEnv()
+	if err != nil {
+		return nil, err
+	}
+	if s.registry != nil {
+		for name, pkg := range s.registry.Packages {
+			if _, exists := env.Runtime.Registry.Packages[name]; !exists {
+				env.Runtime.Registry.Packages[name] = pkg
+			}
+		}
+	}
+	return env, nil
+}
+
+func (s *service) testTool(_ context.Context, _ *mcp.CallToolRequest, in TestInput) (*mcp.CallToolResult, TestResponse, error) {
+	start := time.Now()
+	if in.Path == "" && in.Content == nil {
+		return nil, TestResponse{}, newToolErr("invalid_input", "path or content is required", "")
+	}
+	root, err := s.resolveWorkspaceRoot(in.WorkspaceRoot, false)
+	if err != nil {
+		return nil, TestResponse{}, newToolErr("invalid_input", err.Error(), "")
+	}
+	path := "<stdin>"
+	if in.Path != "" {
+		resolved, resolveErr := s.resolvePath(in.Path, root)
+		if resolveErr != nil {
+			return nil, TestResponse{}, newToolErr("invalid_input", resolveErr.Error(), in.Path)
+		}
+		path = resolved
+	}
+	var source []byte
+	if in.Content != nil {
+		source = []byte(*in.Content)
+	} else {
+		source, err = os.ReadFile(path) //nolint:gosec // tool reads user-selected paths
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, TestResponse{}, newToolErr("file_not_found", fmt.Sprintf("file not found: %s", path), path)
+			}
+			return nil, TestResponse{}, newToolErr("invalid_input", err.Error(), path)
+		}
+	}
+
+	env, testErr := s.newTestEnv()
+	if testErr != nil {
+		return nil, TestResponse{}, testErr
+	}
+
+	// Load and evaluate the test file.
+	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
+	if lisp.GoError(lerr) != nil {
+		return nil, TestResponse{}, fmt.Errorf("package error: %v", lisp.GoError(lerr))
+	}
+	exprs, parseErr := env.Runtime.Reader.Read(path, strings.NewReader(string(source)))
+	if parseErr != nil {
+		return nil, TestResponse{
+			Path:  path,
+			Tests: []TestResult{{Name: "<parse>", Passed: false, Error: parseErr.Error()}},
+			Total: 1, Failed: 1,
+			Meta: makeMeta(root, time.Since(start), 1),
+		}, nil
+	}
+	for _, expr := range exprs {
+		result := env.Eval(expr)
+		if result.Type == lisp.LError {
+			return nil, TestResponse{
+				Path:  path,
+				Tests: []TestResult{{Name: "<load>", Passed: false, Error: lvalErrorString(result)}},
+				Total: 1, Failed: 1,
+				Meta: makeMeta(root, time.Since(start), 1),
+			}, nil
+		}
+	}
+
+	suite := libtesting.EnvTestSuite(env)
+	if suite == nil || suite.Len() == 0 {
+		return nil, TestResponse{
+			Path: path, Tests: []TestResult{}, Meta: makeMeta(root, time.Since(start), 1),
+		}, nil
+	}
+
+	results := make([]TestResult, 0, suite.Len())
+	passed, failed := 0, 0
+	for i := range suite.Len() {
+		test := suite.Test(i)
+		tr := TestResult{Name: test.Name}
+		if test.Fun == nil {
+			tr.Error = "test has no function body"
+			failed++
+			results = append(results, tr)
+			continue
+		}
+		result := env.Eval(lisp.SExpr([]*lisp.LVal{test.Fun}))
+		if result == nil || result.Type == lisp.LError {
+			tr.Passed = false
+			if result != nil {
+				tr.Error = lvalErrorString(result)
+			}
+			failed++
+		} else {
+			tr.Passed = true
+			passed++
+		}
+		results = append(results, tr)
+	}
+
+	return nil, TestResponse{
+		Path:   path,
+		Tests:  results,
+		Passed: passed,
+		Failed: failed,
+		Total:  len(results),
+		Meta:   makeMeta(root, time.Since(start), 1),
+	}, nil
+}
+
+func (s *service) newTestEnv() (*lisp.LEnv, error) {
+	if s.envFactory != nil {
+		return s.envFactory()
+	}
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
+	rc := lisp.InitializeUserEnv(env)
+	if lisp.GoError(rc) != nil {
+		return nil, fmt.Errorf("env init: %v", lisp.GoError(rc))
+	}
+	rc = lisplib.LoadLibrary(env)
+	if lisp.GoError(rc) != nil {
+		return nil, fmt.Errorf("load library: %v", lisp.GoError(rc))
+	}
+	return env, nil
+}
+
+func (s *service) evalTool(_ context.Context, _ *mcp.CallToolRequest, in EvalInput) (*mcp.CallToolResult, EvalResponse, error) {
+	start := time.Now()
+	if in.Expression == "" && len(in.Expressions) == 0 {
+		return nil, EvalResponse{}, newToolErr("invalid_input", "expression or expressions is required", "")
+	}
+
+	// Batch mode: each expression gets its own isolated env.
+	if len(in.Expressions) > 0 {
+		batch := make([]EvalResult, 0, len(in.Expressions))
+		for _, expr := range in.Expressions {
+			result := s.evalSingle(expr)
+			batch = append(batch, result)
+		}
+		return nil, EvalResponse{
+			Batch: batch,
+			Meta:  makeMeta("", time.Since(start), 0),
+		}, nil
+	}
+
+	// Single expression mode.
+	env, err := s.newTestEnv()
+	if err != nil {
+		return nil, EvalResponse{}, err
+	}
+	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
+	if lisp.GoError(lerr) != nil {
+		return nil, EvalResponse{}, fmt.Errorf("package error: %v", lisp.GoError(lerr))
+	}
+
+	exprs, parseErr := env.Runtime.Reader.Read("<eval>", strings.NewReader(in.Expression))
+	if parseErr != nil {
+		return nil, EvalResponse{
+			Error: parseErr.Error(),
+			Meta:  makeMeta("", time.Since(start), 0),
+		}, nil
+	}
+
+	var lastResult *lisp.LVal
+	var results []string
+	for _, expr := range exprs {
+		lastResult = env.Eval(expr)
+		if lastResult == nil || lastResult.Type == lisp.LError {
+			errMsg := "unknown error"
+			if lastResult != nil {
+				errMsg = lvalErrorString(lastResult)
+			}
+			return nil, EvalResponse{
+				Error: errMsg,
+				Meta:  makeMeta("", time.Since(start), 0),
+			}, nil
+		}
+		results = append(results, lastResult.String())
+	}
+
+	value := ""
+	if lastResult != nil {
+		value = lastResult.String()
+	}
+	return nil, EvalResponse{
+		Value:   value,
+		Results: results,
+		Meta:    makeMeta("", time.Since(start), 0),
+	}, nil
+}
+
+func (s *service) evalSingle(expression string) EvalResult {
+	env, err := s.newTestEnv()
+	if err != nil {
+		return EvalResult{Expression: expression, Error: err.Error()}
+	}
+	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
+	if lisp.GoError(lerr) != nil {
+		return EvalResult{Expression: expression, Error: lisp.GoError(lerr).Error()}
+	}
+	exprs, parseErr := env.Runtime.Reader.Read("<eval>", strings.NewReader(expression))
+	if parseErr != nil {
+		return EvalResult{Expression: expression, Error: parseErr.Error()}
+	}
+	var lastResult *lisp.LVal
+	for _, expr := range exprs {
+		lastResult = env.Eval(expr)
+		if lastResult == nil || lastResult.Type == lisp.LError {
+			errMsg := "unknown error"
+			if lastResult != nil {
+				errMsg = lvalErrorString(lastResult)
+			}
+			return EvalResult{Expression: expression, Error: errMsg}
+		}
+	}
+	value := ""
+	if lastResult != nil {
+		value = lastResult.String()
+	}
+	return EvalResult{Expression: expression, Value: value}
+}
+
 func (s *service) helpTool(_ context.Context, _ *mcp.CallToolRequest, _ HelpInput) (*mcp.CallToolResult, HelpResponse, error) {
 	return nil, HelpResponse{Content: helpContent}, nil
 }
@@ -1854,6 +2165,16 @@ func (e *toolErr) Error() string {
 		return fmt.Sprintf("%s: %s (%s)", e.Code, e.Message, e.Path)
 	}
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
+func lvalErrorString(v *lisp.LVal) string {
+	if v == nil {
+		return "unknown error"
+	}
+	if err := lisp.GoError(v); err != nil {
+		return err.Error()
+	}
+	return v.Str
 }
 
 func makeMeta(workspaceRoot string, elapsed time.Duration, fileCount int) *ResponseMeta {

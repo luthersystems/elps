@@ -21,6 +21,7 @@ type Option func(*Server)
 type Server struct {
 	registry        *lisp.PackageRegistry
 	env             *lisp.LEnv
+	envFactory      func() (*lisp.LEnv, error)
 	workspaceRoot   string
 	perfConfig      *perf.Config
 	excludePatterns []string
@@ -72,6 +73,18 @@ func WithLogger(logger *slog.Logger) Option {
 	}
 }
 
+// WithEnvFactory sets a factory function that creates fresh LEnv instances
+// for the eval and test tools. Each call gets an isolated environment.
+// Embedders (e.g., substrate) should use this to inject their full runtime
+// (shirocore builtins, test harness, etc.) into eval/test environments.
+func WithEnvFactory(factory func() (*lisp.LEnv, error)) Option {
+	return func(s *Server) {
+		if factory != nil {
+			s.envFactory = factory
+		}
+	}
+}
+
 func WithToolRegistrar(register func(*mcp.Server) error) Option {
 	return func(s *Server) {
 		if register != nil {
@@ -106,6 +119,7 @@ func New(opts ...Option) *Server {
 	s.service = newService(serviceConfig{
 		registry:        s.registry,
 		env:             s.env,
+		envFactory:      s.envFactory,
 		workspaceRoot:   s.workspaceRoot,
 		perfConfig:      s.perfConfig,
 		excludePatterns: s.excludePatterns,
@@ -239,6 +253,15 @@ func (s *Server) registerCoreTools() {
 
 	s.registerTool("lint", "Run specific lint analyzers on a file or inline content. Use checks to select analyzers (e.g., [\"undefined-symbol\", \"user-arity\"]). Supports severity filter, limit, and offset for pagination.")
 	mcp.AddTool(s.server, &mcp.Tool{Name: "lint", Description: "Run specific lint analyzers on a file or inline content. Use checks to select analyzers (e.g., [\"undefined-symbol\", \"user-arity\"]). Supports severity filter, limit, and offset for pagination."}, s.service.lintTool)
+
+	s.registerTool("doc", "Look up documentation for an ELPS function, macro, operator, or package by name. Use package=true to list all symbols in a package. Supports qualified names like math:sin.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "doc", Description: "Look up documentation for an ELPS function, macro, operator, or package by name. Use package=true to list all symbols in a package. Supports qualified names like math:sin."}, s.service.docTool)
+
+	s.registerTool("test", "Run ELPS test files and return structured pass/fail results. Tests are defined with (test \"name\" ...) forms. Returns per-test results with error messages for failures.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "test", Description: "Run ELPS test files and return structured pass/fail results. Tests are defined with (test \"name\" ...) forms. Returns per-test results with error messages for failures."}, s.service.testTool)
+
+	s.registerTool("eval", "Evaluate ELPS expressions and return the result. Useful for quick one-off evaluation, testing snippets, or exploring the language. Returns the value of the last expression.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "eval", Description: "Evaluate ELPS expressions and return the result. Useful for quick one-off evaluation, testing snippets, or exploring the language. Returns the value of the last expression."}, s.service.evalTool)
 }
 
 func clonePerfConfig(cfg *perf.Config) *perf.Config {

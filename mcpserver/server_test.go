@@ -29,7 +29,7 @@ func TestDescribeServerAndListTools(t *testing.T) {
 
 	tools, err := session.ListTools(context.Background(), nil)
 	require.NoError(t, err)
-	assert.Len(t, tools.Tools, 13)
+	assert.Len(t, tools.Tools, 16)
 
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "describe_server"})
 	require.NoError(t, err)
@@ -38,7 +38,7 @@ func TestDescribeServerAndListTools(t *testing.T) {
 	got := decodeStructured[DescribeServerResponse](t, res)
 	assert.Equal(t, defaultImplementationName, got.Name)
 	assert.Equal(t, tmp, got.DefaultWorkspaceRoot)
-	assert.Len(t, got.Capabilities, 13)
+	assert.Len(t, got.Capabilities, 16)
 }
 
 func TestNewProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
@@ -1480,6 +1480,205 @@ func TestDiagnostics_SeverityFilterAllItems(t *testing.T) {
 	for i, d := range resp.Files[0].Diagnostics {
 		assert.Equal(t, "warning", d.Severity, "diagnostic %d should be warning severity", i)
 	}
+}
+
+func TestDocTool_SymbolLookup(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.docTool(context.Background(), nil, DocInput{Query: "map"})
+	require.NoError(t, err)
+	require.True(t, resp.Found)
+	require.NotNil(t, resp.Symbol)
+	assert.Equal(t, "map", resp.Symbol.Name)
+	assert.NotEmpty(t, resp.Symbol.Doc)
+	assert.NotNil(t, resp.Symbol.Formals)
+}
+
+func TestDocTool_QualifiedSymbol(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.docTool(context.Background(), nil, DocInput{Query: "math:sin"})
+	require.NoError(t, err)
+	require.True(t, resp.Found)
+	require.NotNil(t, resp.Symbol)
+	assert.Equal(t, "sin", resp.Symbol.Name)
+}
+
+func TestDocTool_PackageLookup(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.docTool(context.Background(), nil, DocInput{Query: "math", Package: true})
+	require.NoError(t, err)
+	require.True(t, resp.Found)
+	require.NotNil(t, resp.Package)
+	assert.Equal(t, "math", resp.Package.Name)
+	assert.NotEmpty(t, resp.Package.Symbols)
+}
+
+func TestDocTool_NotFound(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.docTool(context.Background(), nil, DocInput{Query: "nonexistent-xyz-123"})
+	require.NoError(t, err)
+	assert.False(t, resp.Found)
+}
+
+func TestTestTool_PassingTests(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "pass_test.lisp")
+	writeTestFile(t, path, "(use-package 'testing)\n(test \"math works\" (assert-equal 4 (+ 2 2)))")
+
+	srv := New()
+	_, resp, err := srv.service.testTool(context.Background(), nil, TestInput{Path: path})
+	require.NoError(t, err)
+	assert.Equal(t, path, resp.Path)
+	require.Equal(t, 1, resp.Total)
+	assert.Equal(t, 1, resp.Passed)
+	assert.Equal(t, 0, resp.Failed)
+	assert.True(t, resp.Tests[0].Passed)
+	assert.Equal(t, "math works", resp.Tests[0].Name)
+}
+
+func TestTestTool_FailingTest(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "fail_test.lisp")
+	writeTestFile(t, path, "(use-package 'testing)\n(test \"bad math\" (assert-equal 5 (+ 2 2)))")
+
+	srv := New()
+	_, resp, err := srv.service.testTool(context.Background(), nil, TestInput{Path: path})
+	require.NoError(t, err)
+	assert.Equal(t, 1, resp.Total)
+	assert.Equal(t, 0, resp.Passed)
+	assert.Equal(t, 1, resp.Failed)
+	assert.False(t, resp.Tests[0].Passed)
+	assert.NotEmpty(t, resp.Tests[0].Error)
+}
+
+func TestTestTool_ParseError(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "broken_test.lisp")
+	writeTestFile(t, path, "(defun broken (")
+
+	srv := New()
+	_, resp, err := srv.service.testTool(context.Background(), nil, TestInput{Path: path})
+	require.NoError(t, err)
+	require.Equal(t, 1, resp.Failed)
+	require.Len(t, resp.Tests, 1)
+	assert.Equal(t, "<parse>", resp.Tests[0].Name)
+	assert.False(t, resp.Tests[0].Passed)
+	assert.NotEmpty(t, resp.Tests[0].Error)
+}
+
+func TestTestTool_NoTests(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "empty_test.lisp")
+	writeTestFile(t, path, "(defun helper () 1)")
+
+	srv := New()
+	_, resp, err := srv.service.testTool(context.Background(), nil, TestInput{Path: path})
+	require.NoError(t, err)
+	assert.Equal(t, 0, resp.Total)
+	assert.Empty(t, resp.Tests)
+}
+
+func TestEvalTool_SimpleExpression(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.evalTool(context.Background(), nil, EvalInput{Expression: "(+ 2 3)"})
+	require.NoError(t, err)
+	assert.Equal(t, "5", resp.Value)
+	assert.Empty(t, resp.Error)
+}
+
+func TestEvalTool_MultipleExpressions(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.evalTool(context.Background(), nil, EvalInput{
+		Expression: "(+ 1 1)\n(* 3 4)",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "12", resp.Value)
+	require.Len(t, resp.Results, 2)
+	assert.Equal(t, "2", resp.Results[0])
+	assert.Equal(t, "12", resp.Results[1])
+}
+
+func TestEvalTool_Error(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.evalTool(context.Background(), nil, EvalInput{Expression: "(error \"boom\")"})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Error)
+	assert.Empty(t, resp.Value, "value should be empty when error occurs")
+}
+
+func TestEvalTool_MultiExprPartialFailure(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.evalTool(context.Background(), nil, EvalInput{
+		Expression: "(+ 1 1)\n(error \"boom\")\n(+ 3 3)",
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Error, "should stop at error")
+	assert.Empty(t, resp.Value, "value should be empty on error")
+}
+
+func TestEvalTool_DefunAndCall(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.evalTool(context.Background(), nil, EvalInput{
+		Expression: "(defun double (x) (* x 2))\n(double 21)",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "42", resp.Value)
+	assert.Empty(t, resp.Error)
+}
+
+func TestEvalTool_ParseError(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.evalTool(context.Background(), nil, EvalInput{Expression: "(defun broken ("})
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Error)
+	assert.Empty(t, resp.Value, "value should be empty on parse error")
+}
+
+func TestEvalTool_Batch(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.evalTool(context.Background(), nil, EvalInput{
+		Expressions: []string{
+			"(+ 1 2)",
+			"(* 3 4)",
+			"(error \"boom\")",
+			"(- 10 5)",
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Batch, 4)
+	assert.Equal(t, "3", resp.Batch[0].Value)
+	assert.Empty(t, resp.Batch[0].Error)
+	assert.Equal(t, "12", resp.Batch[1].Value)
+	assert.Empty(t, resp.Batch[1].Error)
+	assert.NotEmpty(t, resp.Batch[2].Error, "error expression should produce error")
+	assert.Empty(t, resp.Batch[2].Value)
+	assert.Equal(t, "5", resp.Batch[3].Value, "batch items are independent — error in [2] doesn't affect [3]")
+}
+
+func TestDocTool_Batch(t *testing.T) {
+	srv := New()
+	_, resp, err := srv.service.docTool(context.Background(), nil, DocInput{
+		Queries: []string{"map", "defun", "nonexistent-xyz"},
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.Batch, 3)
+	assert.True(t, resp.Batch[0].Found)
+	assert.Equal(t, "map", resp.Batch[0].Symbol.Name)
+	assert.True(t, resp.Batch[1].Found)
+	assert.Equal(t, "defun", resp.Batch[1].Symbol.Name)
+	assert.False(t, resp.Batch[2].Found)
+}
+
+func TestTestTool_ContentOverride(t *testing.T) {
+	srv := New()
+	content := "(use-package 'testing)\n(test \"inline\" (assert-equal 6 (* 2 3)))"
+	_, resp, err := srv.service.testTool(context.Background(), nil, TestInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "<stdin>", resp.Path)
+	require.Equal(t, 1, resp.Total)
+	assert.Equal(t, 1, resp.Passed)
+	assert.True(t, resp.Tests[0].Passed)
 }
 
 func writeTestFile(t *testing.T, path, content string) {
