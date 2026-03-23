@@ -1,11 +1,24 @@
-// ELPS Debug Adapter Extension for VS Code
+// ELPS Extension for VS Code
 //
-// This extension registers a DebugAdapterDescriptorFactory that handles
-// two modes:
-// - launch: spawns `elps debug --stdio` as a child process
-// - attach: connects to a running DAP server over TCP
+// Provides:
+// - LSP client: spawns `elps lsp --stdio` for language features
+// - DAP client: spawns `elps debug --stdio` or attaches to a running DAP server
 
 const vscode = require("vscode");
+const {
+  LanguageClient,
+  TransportKind,
+} = require("vscode-languageclient/node");
+
+let client = null;
+
+// --- Helpers ---
+
+function getElpsPath() {
+  return vscode.workspace.getConfiguration("elps").get("path", "elps");
+}
+
+// --- DAP ---
 
 class ElpsDebugAdapterFactory {
   createDebugAdapterDescriptor(session) {
@@ -19,7 +32,7 @@ class ElpsDebugAdapterFactory {
     }
 
     // Launch mode: spawn the elps binary as a child process.
-    const elpsPath = config.elpsPath || "elps";
+    const elpsPath = config.elpsPath || getElpsPath();
     const args = ["debug", "--stdio"];
 
     if (config.stopOnEntry) {
@@ -35,13 +48,100 @@ class ElpsDebugAdapterFactory {
   }
 }
 
-function activate(context) {
-  const factory = new ElpsDebugAdapterFactory();
+// --- LSP ---
+
+async function startLSP(context) {
+  const config = vscode.workspace.getConfiguration("elps");
+  if (!config.get("lsp.enable", true)) {
+    return;
+  }
+
+  const elpsPath = getElpsPath();
+
+  const serverOptions = {
+    run: {
+      command: elpsPath,
+      args: ["lsp", "--stdio"],
+      transport: TransportKind.stdio,
+    },
+    debug: {
+      command: elpsPath,
+      args: ["lsp", "--stdio"],
+      transport: TransportKind.stdio,
+    },
+  };
+
+  const clientOptions = {
+    documentSelector: [{ scheme: "file", language: "elps" }],
+    synchronize: {
+      fileEvents: vscode.workspace.createFileSystemWatcher("**/*.lisp"),
+    },
+    outputChannelName: "ELPS Language Server",
+  };
+
+  client = new LanguageClient(
+    "elps",
+    "ELPS Language Server",
+    serverOptions,
+    clientOptions,
+  );
+
+  try {
+    await client.start();
+  } catch (err) {
+    vscode.window
+      .showWarningMessage(
+        `ELPS language server failed to start. Is '${elpsPath}' installed? (${err.message})`,
+        "Open Settings",
+      )
+      .then((choice) => {
+        if (choice === "Open Settings") {
+          vscode.commands.executeCommand(
+            "workbench.action.openSettings",
+            "elps.path",
+          );
+        }
+      });
+  }
+}
+
+async function stopLSP() {
+  if (client) {
+    await client.stop();
+    client = null;
+  }
+}
+
+// --- Activation ---
+
+async function activate(context) {
+  // DAP
   context.subscriptions.push(
-    vscode.debug.registerDebugAdapterDescriptorFactory("elps", factory)
+    vscode.debug.registerDebugAdapterDescriptorFactory(
+      "elps",
+      new ElpsDebugAdapterFactory(),
+    ),
+  );
+
+  // LSP
+  await startLSP(context);
+
+  // Restart LSP when relevant settings change.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration(async (e) => {
+      if (
+        e.affectsConfiguration("elps.path") ||
+        e.affectsConfiguration("elps.lsp.enable")
+      ) {
+        await stopLSP();
+        await startLSP(context);
+      }
+    }),
   );
 }
 
-function deactivate() {}
+async function deactivate() {
+  await stopLSP();
+}
 
 module.exports = { activate, deactivate };

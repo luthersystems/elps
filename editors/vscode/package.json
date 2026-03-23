@@ -1,8 +1,8 @@
 {
-  "name": "elps-debug",
-  "displayName": "ELPS Debug",
-  "description": "Debug adapter for the ELPS Lisp interpreter",
-  "version": "0.1.0",
+  "name": "elps",
+  "displayName": "ELPS",
+  "description": "ELPS Lisp — syntax highlighting, language server, and debugger",
+  "version": "0.2.0",
   "publisher": "luthersystems",
   "license": "MIT",
   "repository": {
@@ -10,22 +10,63 @@
     "url": "https://github.com/luthersystems/elps"
   },
   "engines": {
-    "vscode": "^1.74.0"
+    "vscode": "^1.75.0"
   },
   "categories": [
-    "Debuggers"
+    "Programming Languages",
+    "Debuggers",
+    "Linters",
+    "Formatters"
   ],
   "activationEvents": [
-    "onDebugResolve:elps"
+    "onLanguage:elps"
   ],
   "main": "./extension.js",
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
   "contributes": {
+    "languages": [
+      {
+        "id": "elps",
+        "aliases": ["ELPS", "elps"],
+        "extensions": [".lisp"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "elps",
+        "scopeName": "source.elps",
+        "path": "./syntaxes/elps.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "ELPS",
+      "properties": {
+        "elps.path": {
+          "type": "string",
+          "default": "elps",
+          "description": "Path to the elps binary"
+        },
+        "elps.lsp.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the ELPS language server"
+        },
+        "elps.lsp.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Trace communication with the ELPS language server"
+        }
+      }
+    },
     "debuggers": [
       {
         "type": "elps",
         "label": "ELPS Debug",
         "languages": [
-          "lisp",
           "elps"
         ],
         "configurationAttributes": {
@@ -51,8 +92,8 @@
               },
               "elpsPath": {
                 "type": "string",
-                "description": "Path to the elps binary",
-                "default": "elps"
+                "description": "Path to the elps binary (overrides elps.path setting)",
+                "default": ""
               }
             }
           },
