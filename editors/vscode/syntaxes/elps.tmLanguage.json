@@ -33,8 +33,10 @@
         { "include": "#special-op-form" },
         { "include": "#builtin-form" },
         { "include": "#qualified-call-form" },
+        { "include": "#function-call" },
         { "include": "#list" },
         { "include": "#bracket-list" },
+        { "include": "#parameter-keywords" },
         { "include": "#qualified-symbol" },
         { "include": "#symbol" }
       ]
@@ -120,71 +122,68 @@
 
     "defun-form": {
       "name": "meta.function.elps",
-      "begin": "(\\()\\s*(defun)(?=\\s)",
+      "begin": "(\\()\\s*(defun)\\s+([a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$:]*)",
       "beginCaptures": {
         "1": { "name": "punctuation.definition.list.begin.elps" },
-        "2": { "name": "keyword.control.definition.elps" }
+        "2": { "name": "keyword.control.definition.elps" },
+        "3": { "name": "entity.name.function.elps" }
       },
       "end": "(\\))",
       "endCaptures": {
         "1": { "name": "punctuation.definition.list.end.elps" }
       },
       "patterns": [
-        { "include": "#function-name" },
-        { "include": "#formals" },
         { "include": "#expression" }
       ]
     },
 
     "defmacro-form": {
       "name": "meta.macro.elps",
-      "begin": "(\\()\\s*(defmacro)(?=\\s)",
+      "begin": "(\\()\\s*(defmacro)\\s+([a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$:]*)",
       "beginCaptures": {
         "1": { "name": "punctuation.definition.list.begin.elps" },
-        "2": { "name": "keyword.control.definition.elps" }
+        "2": { "name": "keyword.control.definition.elps" },
+        "3": { "name": "entity.name.function.macro.elps" }
       },
       "end": "(\\))",
       "endCaptures": {
         "1": { "name": "punctuation.definition.list.end.elps" }
       },
       "patterns": [
-        { "include": "#macro-name" },
-        { "include": "#formals" },
         { "include": "#expression" }
       ]
     },
 
     "deftype-form": {
       "name": "meta.type.elps",
-      "begin": "(\\()\\s*(deftype)(?=\\s)",
+      "begin": "(\\()\\s*(deftype)\\s+([a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$:]*)",
       "beginCaptures": {
         "1": { "name": "punctuation.definition.list.begin.elps" },
-        "2": { "name": "keyword.control.definition.elps" }
+        "2": { "name": "keyword.control.definition.elps" },
+        "3": { "name": "entity.name.type.elps" }
       },
       "end": "(\\))",
       "endCaptures": {
         "1": { "name": "punctuation.definition.list.end.elps" }
       },
       "patterns": [
-        { "include": "#type-name" },
-        { "include": "#formals" },
         { "include": "#expression" }
       ]
     },
 
     "defconst-form": {
       "name": "meta.constant.elps",
-      "begin": "(\\()\\s*(defconst)(?=\\s)",
+      "begin": "(\\()\\s*(defconst)\\s+([a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$:]*)",
       "beginCaptures": {
         "1": { "name": "punctuation.definition.list.begin.elps" },
-        "2": { "name": "keyword.control.definition.elps" }
+        "2": { "name": "keyword.control.definition.elps" },
+        "3": { "name": "variable.other.constant.elps" }
       },
       "end": "(\\))",
       "endCaptures": {
         "1": { "name": "punctuation.definition.list.end.elps" }
       },
       "patterns": [
-        { "include": "#constant-name" },
         { "include": "#expression" }
       ]
     },
@@ -201,7 +200,6 @@
         "1": { "name": "punctuation.definition.list.end.elps" }
       },
       "patterns": [
-        { "include": "#formals" },
         { "include": "#expression" }
       ]
     },
@@ -270,12 +268,27 @@
       ]
     },
 
-    "list": {
-      "name": "meta.list.elps",
-      "begin": "(\\()\\s*([a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*)(?=[\\s)])?",
+    "function-call": {
+      "name": "meta.function-call.elps",
+      "begin": "(\\()\\s*([a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*)(?=[\\s)])",
       "beginCaptures": {
         "1": { "name": "punctuation.definition.list.begin.elps" },
         "2": { "name": "entity.name.function.elps" }
+      },
+      "end": "(\\))",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.list.end.elps" }
+      },
+      "patterns": [
+        { "include": "#expression" }
+      ]
+    },
+
+    "list": {
+      "name": "meta.list.elps",
+      "begin": "(\\()",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.list.begin.elps" }
       },
       "end": "(\\))",
       "endCaptures": {
@@ -311,79 +324,9 @@
       "match": "[a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*"
     },
 
-    "function-name": {
-      "patterns": [
-        {
-          "name": "entity.name.function.qualified.elps",
-          "match": "[a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*:[a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*"
-        },
-        {
-          "name": "entity.name.function.elps",
-          "match": "[a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*"
-        }
-      ]
-    },
-
-    "macro-name": {
-      "patterns": [
-        {
-          "name": "entity.name.function.macro.qualified.elps",
-          "match": "[a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*:[a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*"
-        },
-        {
-          "name": "entity.name.function.macro.elps",
-          "match": "[a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*"
-        }
-      ]
-    },
-
-    "type-name": {
-      "patterns": [
-        {
-          "name": "entity.name.type.qualified.elps",
-          "match": "[a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*:[a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*"
-        },
-        {
-          "name": "entity.name.type.elps",
-          "match": "[a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*"
-        }
-      ]
-    },
-
-    "constant-name": {
-      "patterns": [
-        {
-          "name": "variable.other.constant.qualified.elps",
-          "match": "[a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*:[a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*"
-        },
-        {
-          "name": "variable.other.constant.elps",
-          "match": "[a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*"
-        }
-      ]
-    },
-
-    "formals": {
-      "name": "meta.formals.elps",
-      "begin": "(\\()",
-      "beginCaptures": {
-        "1": { "name": "punctuation.definition.parameters.begin.elps" }
-      },
-      "end": "(\\))",
-      "endCaptures": {
-        "1": { "name": "punctuation.definition.parameters.end.elps" }
-      },
-      "patterns": [
-        { "include": "#comment" },
-        {
-          "name": "variable.parameter.elps",
-          "match": "&(?:optional|rest|key)"
-        },
-        {
-          "name": "variable.parameter.elps",
-          "match": "[a-zA-Z._+\\-*/=<>!&~%?$][a-zA-Z0-9._+\\-*/=<>!&~%?$]*"
-        }
-      ]
+    "parameter-keywords": {
+      "name": "variable.parameter.elps",
+      "match": "&(?:optional|rest|key)"
     }
   }
 }
