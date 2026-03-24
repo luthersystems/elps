@@ -4,3 +4,4 @@ elps
 .claude/worktrees/
 .tmp/
 node_modules/
+*.vsix
