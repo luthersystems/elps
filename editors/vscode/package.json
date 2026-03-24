@@ -1,15 +1,34 @@
 {
-  "name": "elps",
-  "displayName": "ELPS",
-  "description": "ELPS Lisp — syntax highlighting, language server, and debugger",
+  "name": "elps-lang",
+  "displayName": "ELPS Lisp",
+  "description": "ELPS — embedded Lisp interpreter for Go. Syntax highlighting, language server, and debugger.",
   "version": "0.2.0",
-  "publisher": "luthersystems",
-  "license": "MIT",
+  "publisher": "LutherSystems",
+  "license": "BSD-3-Clause",
   "repository": {
     "type": "git",
     "url": "https://github.com/luthersystems/elps"
   },
+  "homepage": "https://github.com/luthersystems/elps",
+  "bugs": {
+    "url": "https://github.com/luthersystems/elps/issues"
+  },
+  "qna": "https://github.com/luthersystems/elps/issues",
   "icon": "images/icon.png",
+  "markdown": "github",
+  "keywords": [
+    "lisp",
+    "elps",
+    "lsp",
+    "debugger",
+    "s-expression",
+    "interpreter",
+    "language-server"
+  ],
+  "galleryBanner": {
+    "color": "#1a1a2e",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -33,15 +52,20 @@
   },
   "devDependencies": {
     "@vscode/vsce": "^3.2.2",
-    "esbuild": "^0.24.2",
+    "esbuild": "^0.25.12",
     "vscode-tmgrammar-test": "^0.1.3"
   },
   "contributes": {
     "languages": [
       {
         "id": "elps",
-        "aliases": ["ELPS", "elps"],
-        "extensions": [".lisp"],
+        "aliases": [
+          "ELPS",
+          "elps"
+        ],
+        "extensions": [
+          ".lisp"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -67,7 +91,11 @@
         },
         "elps.lsp.trace.server": {
           "type": "string",
-          "enum": ["off", "messages", "verbose"],
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
           "default": "off",
           "description": "Trace communication with the ELPS language server"
         }

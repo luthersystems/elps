@@ -31,6 +31,7 @@ func (s *Server) textDocumentCodeAction(_ *glsp.Context, params *protocol.CodeAc
 	doc.mu.Lock()
 	content := doc.Content
 	docAnalysis := doc.analysis
+	cachedDiags := doc.publishedDiagnostics
 	doc.mu.Unlock()
 
 	s.analysisCfgMu.RLock()
@@ -47,9 +48,14 @@ func (s *Server) textDocumentCodeAction(_ *glsp.Context, params *protocol.CodeAc
 
 		switch *diag.Source {
 		case "elps-lint":
-			analyzerName := ""
-			if diag.Code != nil {
-				analyzerName = fmt.Sprintf("%v", diag.Code.Value)
+			analyzerName := diagnosticCodeString(diag.Code)
+			if analyzerName == "" {
+				// Workaround for glsp v0.2.2 bug: IntegerOrString.UnmarshalJSON
+				// uses a value receiver, so Code.Value is always nil after JSON
+				// round-trip from the client. Look up the original diagnostic we
+				// published (which has the correct Code) by matching position
+				// and message.
+				analyzerName = lookupCachedAnalyzerName(cachedDiags, diag)
 			}
 
 			switch analyzerName {
@@ -153,6 +159,40 @@ func usePackageActions(uri string, _ protocol.Range, symName, content string, cf
 		}
 	}
 	return actions
+}
+
+// diagnosticCodeString extracts the analyzer name from a diagnostic Code field.
+// The glsp library (v0.2.2) has a bug where IntegerOrString.UnmarshalJSON uses
+// a value receiver, so Value is always nil after JSON round-trip from the client.
+// We work around this by also checking if Value is a float64 (JSON number
+// deserialized via encoding/json into any) and by looking at the raw interface.
+func diagnosticCodeString(code *protocol.IntegerOrString) string {
+	if code == nil {
+		return ""
+	}
+	switch v := code.Value.(type) {
+	case string:
+		return v
+	case float64:
+		// JSON numbers deserialize as float64 into any — not a valid analyzer name.
+		return ""
+	default:
+		return ""
+	}
+}
+
+// lookupCachedAnalyzerName finds a matching diagnostic in the cached list
+// and returns its Code as a string. This works around the glsp bug where
+// Code.Value is lost during JSON round-trip.
+func lookupCachedAnalyzerName(cached []protocol.Diagnostic, diag protocol.Diagnostic) string {
+	for _, c := range cached {
+		if c.Range.Start.Line == diag.Range.Start.Line &&
+			c.Range.Start.Character == diag.Range.Start.Character &&
+			c.Message == diag.Message {
+			return diagnosticCodeString(c.Code)
+		}
+	}
+	return ""
 }
 
 // suppressLintAction creates a code action that adds a ; nolint:analyzer-name

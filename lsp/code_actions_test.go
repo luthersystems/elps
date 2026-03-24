@@ -61,6 +61,51 @@ func TestCodeActionSuppressLint(t *testing.T) {
 	assert.True(t, found, "expected a suppress action for set-usage")
 }
 
+func TestCodeActionSuppressLint_InvalidCodeValues(t *testing.T) {
+	tests := []struct {
+		name string
+		code *protocol.IntegerOrString
+	}{
+		{"nil Code pointer", nil},
+		{"nil Code.Value", &protocol.IntegerOrString{Value: nil}},
+		{"integer Code.Value", &protocol.IntegerOrString{Value: int32(42)}},
+		{"empty string Code.Value", &protocol.IntegerOrString{Value: ""}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := testServer()
+			setTestAnalysisCfg(s, &analysis.Config{})
+
+			src := "(set x 1)\n(set x 2)"
+			doc := openDoc(s, "file:///test/invalidcode.lisp", src)
+
+			sev := protocol.DiagnosticSeverityWarning
+			diag := protocol.Diagnostic{
+				Range: protocol.Range{
+					Start: protocol.Position{Line: 1, Character: 1},
+					End:   protocol.Position{Line: 1, Character: 4},
+				},
+				Severity: &sev,
+				Source:   strPtr("elps-lint"),
+				Code:     tt.code,
+				Message:  "some warning",
+			}
+
+			result, err := s.textDocumentCodeAction(mockContext(), &protocol.CodeActionParams{
+				TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+				Range:        diag.Range,
+				Context: protocol.CodeActionContext{
+					Diagnostics: []protocol.Diagnostic{diag},
+				},
+			})
+			require.NoError(t, err)
+			assert.Nil(t, result,
+				"invalid Code value should produce no code actions")
+		})
+	}
+}
+
 func TestCodeActionFixUndefinedSymbol(t *testing.T) {
 	s := testServer()
 

@@ -4,3 +4,5 @@
 node_modules/**
 test/**
 extension.js
+*.vsix
+images/logo.png

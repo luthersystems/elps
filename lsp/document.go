@@ -11,6 +11,7 @@ import (
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
+	protocol "github.com/tliron/glsp/protocol_3_16"
 )
 
 // Document represents an open text document tracked by the LSP server.
@@ -26,6 +27,12 @@ type Document struct {
 	// publishedVersion tracks the latest version whose diagnostics were
 	// successfully published. Used to discard stale debounced results.
 	publishedVersion int32
+
+	// publishedDiagnostics caches the last set of diagnostics published
+	// for this document. Used by code actions to look up the original
+	// diagnostic Code (analyzer name), working around a glsp bug where
+	// IntegerOrString.Value is lost during JSON round-trip from the client.
+	publishedDiagnostics []protocol.Diagnostic
 }
 
 // DocumentSnapshot is an immutable copy of a document's state at a point
