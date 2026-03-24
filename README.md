@@ -63,7 +63,7 @@ env.LoadString(`(debug-print "hello world")`)
 
 ## Editor Support
 
-- **[VS Code Extension](editors/vscode/)** — Syntax highlighting, LSP, debugger ([Marketplace](https://marketplace.visualstudio.com/items?itemName=luthersystems.elps))
+- **[VS Code Extension](editors/vscode/)** — Syntax highlighting, LSP, debugger ([Marketplace](https://marketplace.visualstudio.com/items?itemName=LutherSystems.elps-lang))
 - **[Neovim](editors/neovim/)** — DAP configuration
 - **[Emacs](editors/emacs/)** — DAP mode configuration
 - **[Helix](editors/helix/)** — DAP configuration
