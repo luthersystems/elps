@@ -5,6 +5,9 @@
 // - DAP client: spawns `elps debug --stdio` or attaches to a running DAP server
 
 const vscode = require("vscode");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
 const {
   LanguageClient,
   TransportKind,
@@ -14,8 +17,41 @@ let client = null;
 
 // --- Helpers ---
 
+// Resolve the elps binary path. If the user has set elps.path to something
+// other than the default "elps", use that. Otherwise, search common Go
+// install locations since VS Code on macOS doesn't inherit shell PATH.
 function getElpsPath() {
-  return vscode.workspace.getConfiguration("elps").get("path", "elps");
+  const configured = vscode.workspace.getConfiguration("elps").get("path", "elps");
+  if (configured !== "elps") {
+    return configured;
+  }
+
+  const home = os.homedir();
+  const candidates = [
+    path.join(home, "go", "bin", "elps"),
+    path.join(home, ".local", "bin", "elps"),
+    "/usr/local/bin/elps",
+    "/opt/homebrew/bin/elps",
+  ];
+
+  // Also check GOPATH/bin and GOBIN if set in the process environment.
+  if (process.env.GOBIN) {
+    candidates.unshift(path.join(process.env.GOBIN, "elps"));
+  } else if (process.env.GOPATH) {
+    candidates.unshift(path.join(process.env.GOPATH, "bin", "elps"));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // not found, try next
+    }
+  }
+
+  // Fall back to bare "elps" and hope it's on PATH.
+  return "elps";
 }
 
 // --- DAP ---
