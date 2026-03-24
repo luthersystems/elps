@@ -1,4 +1,19 @@
-# ELPS — VS Code Extension
+<p align="center">
+  <img src="https://raw.githubusercontent.com/luthersystems/elps/main/editors/vscode/images/logo.png" alt="ELPS — Embedded Lisp Interpreter" width="128">
+</p>
+
+<p align="center">
+  <strong>ELPS — Syntax highlighting, language server, and debugger for VS Code</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/luthersystems/elps">ELPS</a> •
+  <a href="https://luthersystems.com">Luther Systems</a> •
+  <a href="https://insideout.luthersystems.com">InsideOut</a> •
+  <a href="https://insideout.luthersystems.com/discord"><img src="https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+</p>
+
+---
 
 Full-featured VS Code extension for [ELPS](https://github.com/luthersystems/elps), an embedded Lisp interpreter implemented in Go. Provides syntax highlighting, language server integration, and debugging.
 
@@ -155,3 +170,15 @@ Run grammar tests:
 ```bash
 npm test
 ```
+
+## Links
+
+- [ELPS Repository](https://github.com/luthersystems/elps)
+- [Luther Systems](https://luthersystems.com)
+- [InsideOut Platform](https://insideout.luthersystems.com)
+
+### Community & Support
+
+- [Discord](https://insideout.luthersystems.com/discord)
+- [General Inquiry Call](https://insideout.luthersystems.com/general-call)
+- [Tech Call](https://insideout.luthersystems.com/tech-call)
