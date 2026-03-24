@@ -8,10 +8,7 @@ const vscode = require("vscode");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const {
-  LanguageClient,
-  TransportKind,
-} = require("vscode-languageclient/node");
+const { LanguageClient } = require("vscode-languageclient/node");
 
 let client = null;
 
@@ -94,17 +91,10 @@ async function startLSP(context) {
 
   const elpsPath = getElpsPath();
 
+  // elps lsp defaults to stdio, so --stdio is not needed.
   const serverOptions = {
-    run: {
-      command: elpsPath,
-      args: ["lsp", "--stdio"],
-      transport: TransportKind.stdio,
-    },
-    debug: {
-      command: elpsPath,
-      args: ["lsp", "--stdio"],
-      transport: TransportKind.stdio,
-    },
+    run: { command: elpsPath, args: ["lsp"] },
+    debug: { command: elpsPath, args: ["lsp"] },
   };
 
   const clientOptions = {
