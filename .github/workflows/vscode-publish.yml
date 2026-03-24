@@ -29,7 +29,11 @@ jobs:
         working-directory: editors/vscode
         run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
 
-      - name: Build and publish
+      - name: Build extension
+        working-directory: editors/vscode
+        run: npm run build
+
+      - name: Publish to marketplace
         working-directory: editors/vscode
         run: npx vsce publish -p "$VSCE_PAT"
         env:
