@@ -49,7 +49,9 @@ func (s *Server) textDocumentCodeAction(_ *glsp.Context, params *protocol.CodeAc
 		case "elps-lint":
 			analyzerName := ""
 			if diag.Code != nil {
-				analyzerName = fmt.Sprintf("%v", diag.Code.Value)
+				if str, ok := diag.Code.Value.(string); ok {
+					analyzerName = str
+				}
 			}
 
 			switch analyzerName {

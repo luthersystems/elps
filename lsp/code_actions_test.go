@@ -61,6 +61,47 @@ func TestCodeActionSuppressLint(t *testing.T) {
 	assert.True(t, found, "expected a suppress action for set-usage")
 }
 
+func TestCodeActionSuppressLint_NilCodeValue(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	src := "(set x 1)\n(set x 2)"
+	doc := openDoc(s, "file:///test/nilcode.lisp", src)
+
+	// Simulate a diagnostic where Code.Value is nil (the bug in #233).
+	sev := protocol.DiagnosticSeverityWarning
+	diag := protocol.Diagnostic{
+		Range: protocol.Range{
+			Start: protocol.Position{Line: 1, Character: 1},
+			End:   protocol.Position{Line: 1, Character: 4},
+		},
+		Severity: &sev,
+		Source:   strPtr("elps-lint"),
+		Code:     &protocol.IntegerOrString{Value: nil},
+		Message:  "some warning",
+	}
+
+	result, err := s.textDocumentCodeAction(mockContext(), &protocol.CodeActionParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+		Range:        diag.Range,
+		Context: protocol.CodeActionContext{
+			Diagnostics: []protocol.Diagnostic{diag},
+		},
+	})
+	require.NoError(t, err)
+
+	// Should not produce a "; nolint:<nil>" action.
+	if result != nil {
+		actions, ok := result.([]protocol.CodeAction)
+		if ok {
+			for _, a := range actions {
+				assert.NotContains(t, a.Title, "<nil>",
+					"code action should not contain <nil> analyzer name")
+			}
+		}
+	}
+}
+
 func TestCodeActionFixUndefinedSymbol(t *testing.T) {
 	s := testServer()
 

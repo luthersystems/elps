@@ -4,12 +4,17 @@ Full-featured VS Code extension for the [ELPS](https://github.com/luthersystems/
 
 ## Prerequisites
 
-Build the `elps` binary and ensure it's on your PATH:
+Install the `elps` binary using the Go toolchain:
 
 ```bash
-cd /path/to/elps
-make
-export PATH="$PWD:$PATH"
+go install github.com/luthersystems/elps@latest
+```
+
+This installs to `$GOPATH/bin` (typically `~/go/bin`). The extension auto-discovers the binary in common Go install locations. Alternatively, build from source:
+
+```bash
+git clone https://github.com/luthersystems/elps.git
+cd elps && make
 ```
 
 ## Install
@@ -18,12 +23,7 @@ From the `editors/vscode/` directory:
 
 ```bash
 npm install
-
-# Option 1: Symlink into VS Code extensions directory
-ln -s "$PWD" ~/.vscode/extensions/elps
-
-# Option 2: Package and install with vsce
-npx @vscode/vsce package
+npm run package
 code --install-extension elps-0.2.0.vsix
 ```
 
