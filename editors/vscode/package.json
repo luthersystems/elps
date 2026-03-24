@@ -9,6 +9,7 @@
     "type": "git",
     "url": "https://github.com/luthersystems/elps"
   },
+  "icon": "images/icon.png",
   "engines": {
     "vscode": "^1.75.0"
   },
