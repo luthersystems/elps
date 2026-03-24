@@ -190,6 +190,7 @@ func (s *Server) analyzeAndPublish(doc *Document) {
 		return
 	}
 	doc.publishedVersion = currentVersion
+	doc.publishedDiagnostics = diags
 	doc.mu.Unlock()
 
 	s.sendNotification(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
