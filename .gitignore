@@ -5,3 +5,4 @@ elps
 .tmp/
 node_modules/
 *.vsix
+editors/vscode/dist/
