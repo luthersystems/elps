@@ -4,12 +4,31 @@
   "description": "ELPS Lisp — syntax highlighting, language server, and debugger",
   "version": "0.2.0",
   "publisher": "luthersystems",
-  "license": "MIT",
+  "license": "BSD-3-Clause",
   "repository": {
     "type": "git",
     "url": "https://github.com/luthersystems/elps"
   },
+  "homepage": "https://github.com/luthersystems/elps",
+  "bugs": {
+    "url": "https://github.com/luthersystems/elps/issues"
+  },
+  "qna": "https://github.com/luthersystems/elps/issues",
   "icon": "images/icon.png",
+  "markdown": "github",
+  "keywords": [
+    "lisp",
+    "elps",
+    "lsp",
+    "debugger",
+    "s-expression",
+    "interpreter",
+    "language-server"
+  ],
+  "galleryBanner": {
+    "color": "#1a1a2e",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.75.0"
   },

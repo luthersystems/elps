@@ -1,31 +1,20 @@
 # ELPS — VS Code Extension
 
-Full-featured VS Code extension for the [ELPS](https://github.com/luthersystems/elps) Lisp interpreter, providing syntax highlighting, language server integration, and debugging.
+Full-featured VS Code extension for [ELPS](https://github.com/luthersystems/elps), an embedded Lisp interpreter implemented in Go. Provides syntax highlighting, language server integration, and debugging.
+
+> **Requires the `elps` binary.** The extension provides editor features but needs the `elps` command-line tool installed separately. See [Prerequisites](#prerequisites) below.
 
 ## Prerequisites
 
-Install the `elps` binary using the Go toolchain:
+Install the `elps` binary using the Go toolchain (requires [Go 1.21+](https://go.dev/dl/)):
 
 ```bash
 go install github.com/luthersystems/elps@latest
 ```
 
-This installs to `$GOPATH/bin` (typically `~/go/bin`). The extension auto-discovers the binary in common Go install locations. Alternatively, build from source:
+This installs to `$GOPATH/bin` (typically `~/go/bin`). The extension auto-discovers the binary in common Go install locations (`~/go/bin`, `$GOPATH/bin`, `/usr/local/bin`, `/opt/homebrew/bin`).
 
-```bash
-git clone https://github.com/luthersystems/elps.git
-cd elps && make
-```
-
-## Install
-
-From the `editors/vscode/` directory:
-
-```bash
-npm install
-npm run package
-code --install-extension elps-0.2.0.vsix
-```
+If the binary isn't found automatically, set the path in VS Code settings: `elps.path`.
 
 ## Features
 
@@ -45,7 +34,7 @@ TextMate grammar for `.lisp` files with support for:
 
 ### Language Server (LSP)
 
-Automatically starts `elps lsp --stdio` and provides:
+Automatically starts the ELPS language server and provides:
 
 - **Diagnostics** — real-time parse errors and lint warnings
 - **Hover** — documentation and type information
@@ -59,11 +48,11 @@ Automatically starts `elps lsp --stdio` and provides:
 - **Semantic Tokens** — precise syntax highlighting from the language server
 - **Call Hierarchy** — incoming and outgoing call chains
 - **Inlay Hints** — parameter name hints for function calls
-- **Code Actions** — quick fixes for diagnostics
+- **Code Actions** — quick fixes for diagnostics (including `; nolint:` suppression)
 - **Folding Ranges** — fold s-expressions and comment blocks
 - **Selection Range** — expand/contract selection by AST node
 - **Document Highlighting** — highlight symbol occurrences
-- **Formatting** — format documents via the language server
+- **Formatting** — format documents (`Shift+Alt+F`)
 
 ### Debugger (DAP)
 
@@ -91,7 +80,7 @@ Launch or attach to the ELPS debug adapter:
 
 ## Debug Configuration
 
-Create a `.vscode/launch.json` (or use the auto-generated snippet):
+Create a `.vscode/launch.json` (or use the auto-generated snippet from `Cmd+Shift+P` > "Debug: Add Configuration"):
 
 ```json
 {
@@ -135,11 +124,11 @@ Create a `.vscode/launch.json` (or use the auto-generated snippet):
 
 **Extension doesn't activate / "ELPS" not in language list**: VS Code must trust the workspace. If the workspace is in "Restricted Mode", click "Trust" in the banner or run `Workspaces: Manage Workspace Trust` from the command palette.
 
-**Language server fails to start**: VS Code on macOS doesn't inherit your shell PATH. If `elps` is installed in a non-standard location (e.g., `~/go/bin`), set the full path in settings:
+**Language server fails to start**: The extension auto-discovers `elps` in common Go install locations. If it's installed elsewhere, set the full path:
 
 ```json
 {
-  "elps.path": "/Users/you/go/bin/elps"
+  "elps.path": "/path/to/elps"
 }
 ```
 
@@ -147,4 +136,22 @@ Check the "ELPS Language Server" output channel (`View > Output > ELPS Language 
 
 **Syntax highlighting looks wrong**: If another extension claims `.lisp` files, set `"files.associations": { "*.lisp": "elps" }` in your workspace settings.
 
-**Debug adapter fails**: Verify `elps debug --stdio --help` works from your terminal.
+**Debug adapter fails**: Verify `elps debug --help` works from your terminal.
+
+## Development
+
+To build and install from source:
+
+```bash
+git clone https://github.com/luthersystems/elps.git
+cd elps/editors/vscode
+npm install
+npm run package
+code --install-extension elps-*.vsix
+```
+
+Run grammar tests:
+
+```bash
+npm test
+```
