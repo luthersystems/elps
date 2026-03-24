@@ -133,7 +133,17 @@ Create a `.vscode/launch.json` (or use the auto-generated snippet):
 
 ## Troubleshooting
 
-**Language server fails to start**: Ensure the `elps` binary is on your PATH or set `elps.path` in settings. Check the "ELPS Language Server" output channel for details.
+**Extension doesn't activate / "ELPS" not in language list**: VS Code must trust the workspace. If the workspace is in "Restricted Mode", click "Trust" in the banner or run `Workspaces: Manage Workspace Trust` from the command palette.
+
+**Language server fails to start**: VS Code on macOS doesn't inherit your shell PATH. If `elps` is installed in a non-standard location (e.g., `~/go/bin`), set the full path in settings:
+
+```json
+{
+  "elps.path": "/Users/you/go/bin/elps"
+}
+```
+
+Check the "ELPS Language Server" output channel (`View > Output > ELPS Language Server`) for details.
 
 **Syntax highlighting looks wrong**: If another extension claims `.lisp` files, set `"files.associations": { "*.lisp": "elps" }` in your workspace settings.
 
