@@ -1140,7 +1140,7 @@ func TestDiagnosticsIncludeLintWarnings(t *testing.T) {
 }
 
 func TestHoverOnSpecialOperator(t *testing.T) {
-	s := testServer()
+	s := testServerWithWorkspaceIndex(t)
 	content := "(if true 1 2)"
 	openDoc(s, "file:///test.lisp", content)
 
@@ -1151,12 +1151,35 @@ func TestHoverOnSpecialOperator(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	if hover != nil {
-		mc, ok := hover.Contents.(protocol.MarkupContent)
-		require.True(t, ok)
-		assert.Contains(t, mc.Value, "if")
-	}
-	// hover may be nil if analysis doesn't track "if" as a symbol — both are valid.
+	assertHoverContains(t, hover, "if", "special operator")
+}
+
+func TestHoverOnUsePackage(t *testing.T) {
+	s := testServerWithWorkspaceIndex(t)
+	openDoc(s, "file:///test.lisp", "(use-package 'string)")
+
+	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 1},
+		},
+	})
+	require.NoError(t, err)
+	assertHoverContains(t, hover, "use-package")
+}
+
+func TestHoverOnUsePackageImportedMacro(t *testing.T) {
+	s := testServerWithWorkspaceIndex(t)
+	openDoc(s, "file:///test.lisp", "(use-package 'testing)\n(test \"my test\" (assert= 1 1))")
+
+	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 1, Character: 1}, // on "test"
+		},
+	})
+	require.NoError(t, err)
+	assertHoverContains(t, hover, "test")
 }
 
 func TestHoverOnSetVariable(t *testing.T) {
