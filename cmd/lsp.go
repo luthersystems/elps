@@ -5,8 +5,8 @@ package cmd
 import (
 	"fmt"
 	"log"
-	"os"
 
+	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/lsp"
 	"github.com/spf13/cobra"
 )
@@ -24,6 +24,11 @@ func LSPCommand(opts ...Option) *cobra.Command {
 		stdio bool
 		port  int
 	)
+
+	newDocEnv := cfg.newDocEnv
+	if newDocEnv == nil {
+		newDocEnv = lisplib.NewDocEnv
+	}
 
 	cmd := &cobra.Command{
 		Use:   "lsp [flags]",
@@ -47,13 +52,19 @@ Editor configuration (VS Code):
   Install a generic LSP client extension and configure it to run
   "elps lsp --stdio" for .lisp files.`,
 		Args: cobra.NoArgs,
-		Run: func(_ *cobra.Command, _ []string) {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			var serverOpts []lsp.Option
 			if cfg.env != nil {
 				serverOpts = append(serverOpts, lsp.WithEnv(cfg.env))
 			}
 			if reg := cfg.resolveRegistry(); reg != nil {
 				serverOpts = append(serverOpts, lsp.WithRegistry(reg))
+			} else {
+				env, err := newDocEnv()
+				if err != nil {
+					return fmt.Errorf("lsp server bootstrap error: %w", err)
+				}
+				serverOpts = append(serverOpts, lsp.WithRegistry(env.Runtime.Registry))
 			}
 
 			srv := lsp.New(serverOpts...)
@@ -62,15 +73,14 @@ Editor configuration (VS Code):
 				addr := fmt.Sprintf("localhost:%d", port)
 				log.Printf("ELPS LSP server listening on %s", addr)
 				if err := srv.RunTCP(addr); err != nil {
-					fmt.Fprintf(os.Stderr, "lsp server error: %v\n", err)
-					os.Exit(1)
+					return fmt.Errorf("lsp server error: %w", err)
 				}
 			} else {
 				if err := srv.RunStdio(); err != nil {
-					fmt.Fprintf(os.Stderr, "lsp server error: %v\n", err)
-					os.Exit(1)
+					return fmt.Errorf("lsp server error: %w", err)
 				}
 			}
+			return nil
 		},
 	}
 

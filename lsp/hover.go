@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/astutil"
+	"github.com/luthersystems/elps/lisp"
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 )
@@ -38,6 +40,17 @@ func (s *Server) textDocumentHover(_ *glsp.Context, params *protocol.HoverParams
 	// Fallback: check for qualified symbol (e.g. "string:join") in package exports.
 	word := wordAtPosition(doc.Content, line, col)
 	if content := s.qualifiedSymbolHover(word); content != "" {
+		return &protocol.Hover{
+			Contents: protocol.MarkupContent{
+				Kind:  protocol.MarkupKindMarkdown,
+				Value: content,
+			},
+		}, nil
+	}
+
+	// Fallback: check builtins, special ops, macros, and use-package imports
+	// in the registry's package exports.
+	if content := s.registryHover(word, doc.ast, line+1); content != "" {
 		return &protocol.Hover{
 			Contents: protocol.MarkupContent{
 				Kind:  protocol.MarkupKindMarkdown,
@@ -78,6 +91,69 @@ func (s *Server) qualifiedSymbolHover(word string) string {
 		}
 	}
 	return ""
+}
+
+// registryHover looks up an unqualified symbol in the registry's package
+// exports. It checks the core "lisp" package (builtins, special ops, macros)
+// and any packages imported via use-package before the given 1-based line.
+func (s *Server) registryHover(word string, ast []*lisp.LVal, elpsLine int) string {
+	if word == "" {
+		return ""
+	}
+
+	s.ensureWorkspaceIndex()
+
+	s.analysisCfgMu.RLock()
+	cfg := s.analysisCfg
+	s.analysisCfgMu.RUnlock()
+
+	if cfg == nil || cfg.PackageExports == nil {
+		return ""
+	}
+
+	// Check the core "lisp" package (builtins, special ops, macros).
+	if exports, ok := cfg.PackageExports[lisp.DefaultLangPackage]; ok {
+		for _, ext := range exports {
+			if ext.Name == word {
+				return buildHoverContent(externalToSymbol(&ext))
+			}
+		}
+	}
+
+	// Check packages imported via use-package.
+	for _, pkg := range usedPackagesAtLine(ast, elpsLine) {
+		if exports, ok := cfg.PackageExports[pkg]; ok {
+			for _, ext := range exports {
+				if ext.Name == word {
+					return buildHoverContent(externalToSymbol(&ext))
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+// usedPackagesAtLine returns the package names imported via use-package
+// forms that appear before the given 1-based line in the AST.
+func usedPackagesAtLine(ast []*lisp.LVal, line int) []string {
+	var pkgs []string
+	for _, expr := range ast {
+		if expr == nil || expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+			continue
+		}
+		if expr.Source != nil && expr.Source.Line > line {
+			break
+		}
+		head := expr.Cells[0]
+		if head.Type != lisp.LSymbol || head.Str != "use-package" || len(expr.Cells) < 2 {
+			continue
+		}
+		if name := astutil.PackageNameArg(expr.Cells[1]); name != "" {
+			pkgs = append(pkgs, name)
+		}
+	}
+	return pkgs
 }
 
 // buildHoverContent builds Markdown hover text for a symbol.
