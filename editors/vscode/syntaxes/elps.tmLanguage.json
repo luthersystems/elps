@@ -102,7 +102,7 @@
 
     "boolean": {
       "name": "constant.language.boolean.elps",
-      "match": "(?<=[\\s(\\[])(?:true|false)(?=[\\s)\\]]|$)"
+      "match": "(?:^|(?<=[\\s(\\[]))(?:true|false)(?=[\\s)\\]]|$)"
     },
 
     "function-quote": {
@@ -222,7 +222,7 @@
 
     "special-op-form": {
       "name": "meta.special-op.elps",
-      "begin": "(\\()\\s*(if|cond|and|or|progn|set!?|export|use-package|in-package|handler-bind|ignore-errors|dotimes|assert|thread-first|thread-last|quasiquote|unquote|unquote-splicing|test|test-let|rethrow-context)(?=[\\s)])",
+      "begin": "(\\()\\s*(if|cond|and|or|progn|set!?|export|use-package|in-package|handler-bind|ignore-errors|dotimes|assert|thread-first|thread-last|quasiquote|unquote|unquote-splicing|function|expr|qualified-symbol|test|test-let)(?=[\\s)])",
       "beginCaptures": {
         "1": { "name": "punctuation.definition.list.begin.elps" },
         "2": { "name": "keyword.control.elps" }
@@ -238,7 +238,7 @@
 
     "builtin-form": {
       "name": "meta.function-call.builtin.elps",
-      "begin": "(\\()\\s*(\\+|-(?![0-9])|\\*|/|=|<=?|>=?|mod|pow|max|min|car|cdr|rest|first|second|nth|cons|list|concat|append!?|reverse|slice|length|aref|map|foldl|foldr|select|reject|zip|sorted-map|get|assoc!?|dissoc!?|keys|key\\?|funcall|apply|compose|flip|unpack|type\\??|nil\\?|list\\?|sorted-map\\?|array\\?|bool\\?|number\\?|int\\?|float\\?|symbol\\?|string\\?|bytes\\?|empty\\?|true\\?|tagged-value\\?|vector\\?|equal\\?|all\\?|any\\?|not|to-string|to-bytes|to-int|to-float|format-string|string=|string<=?|string>=?|error|rethrow|eval|macroexpand-?1?|gensym|identity|vector|make-sequence|insert-index|insert-sorted|search-sorted|stable-sort|append-bytes!?|load-string|load-bytes|load-file|debug-print|debug-stack|new|user-data)(?=[\\s)])",
+      "begin": "(\\()\\s*(\\+|-(?![0-9])|\\*|/|=|<=?|>=?|mod|pow|max|min|car|cdr|rest|first|second|nth|cons|list|concat|append!?|reverse|slice|length|aref|map|foldl|foldr|select|reject|zip|sorted-map|get|assoc!?|dissoc!?|keys|key\\?|funcall|apply|compose|flip|unpack|type\\??|nil\\?|list\\?|sorted-map\\?|array\\?|bool\\?|number\\?|int\\?|float\\?|symbol\\?|string\\?|bytes\\?|empty\\?|true\\?|tagged-value\\?|vector\\?|equal\\?|all\\?|any\\?|not|to-string|to-bytes|to-int|to-float|format-string|string=|string<=?|string>=?|error|rethrow|eval|macroexpand(?:-1)?|gensym|identity|vector|make-sequence|insert-index|insert-sorted|search-sorted|stable-sort|append-bytes!?|load-string|load-bytes|load-file|debug-print|debug-stack|new|user-data|symbol=|get-default|trace|curry-function)(?=[\\s)])",
       "beginCaptures": {
         "1": { "name": "punctuation.definition.list.begin.elps" },
         "2": { "name": "support.function.elps" }

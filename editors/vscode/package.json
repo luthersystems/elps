@@ -22,8 +22,14 @@
     "onLanguage:elps"
   ],
   "main": "./extension.js",
+  "scripts": {
+    "test": "vscode-tmgrammar-test -g syntaxes/elps.tmLanguage.json 'test/grammar/*.lisp'"
+  },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "vscode-tmgrammar-test": "^0.1.3"
   },
   "contributes": {
     "languages": [
