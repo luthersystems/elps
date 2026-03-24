@@ -33,15 +33,20 @@
   },
   "devDependencies": {
     "@vscode/vsce": "^3.2.2",
-    "esbuild": "^0.24.2",
+    "esbuild": "^0.25.12",
     "vscode-tmgrammar-test": "^0.1.3"
   },
   "contributes": {
     "languages": [
       {
         "id": "elps",
-        "aliases": ["ELPS", "elps"],
-        "extensions": [".lisp"],
+        "aliases": [
+          "ELPS",
+          "elps"
+        ],
+        "extensions": [
+          ".lisp"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -67,7 +72,11 @@
         },
         "elps.lsp.trace.server": {
           "type": "string",
-          "enum": ["off", "messages", "verbose"],
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
           "default": "off",
           "description": "Trace communication with the ELPS language server"
         }
