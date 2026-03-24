@@ -175,6 +175,7 @@ npm test
 
 - [ELPS Repository](https://github.com/luthersystems/elps)
 - [Luther Systems](https://luthersystems.com)
+- [Luther Enterprise](https://enterprise.luthersystems.com)
 - [InsideOut Platform](https://insideout.luthersystems.com)
 
 ### Community & Support
