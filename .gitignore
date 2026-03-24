@@ -6,3 +6,4 @@ elps
 node_modules/
 *.vsix
 editors/vscode/dist/
+.vscode/
