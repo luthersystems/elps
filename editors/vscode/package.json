@@ -1,7 +1,7 @@
 {
   "name": "elps",
   "displayName": "ELPS",
-  "description": "ELPS Lisp — syntax highlighting, language server, and debugger",
+  "description": "ELPS — embedded Lisp interpreter for Go. Syntax highlighting, language server, and debugger.",
   "version": "0.2.0",
   "publisher": "luthersystems",
   "license": "BSD-3-Clause",
