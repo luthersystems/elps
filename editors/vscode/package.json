@@ -2,7 +2,7 @@
   "name": "elps-lang",
   "displayName": "ELPS Lisp",
   "description": "ELPS — embedded Lisp interpreter for Go. Syntax highlighting, language server, and debugger.",
-  "version": "0.2.0",
+  "version": "0.0.0",
   "publisher": "LutherSystems",
   "license": "BSD-3-Clause",
   "repository": {
