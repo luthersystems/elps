@@ -87,14 +87,10 @@ func TestMinifySource_PreserveParams(t *testing.T) {
 	out, symMap, err := MinifySource(src, "test.lisp", cfg)
 	require.NoError(t, err)
 
-	result := string(out)
-	// Function name should be renamed
-	assert.Contains(t, symMap.OriginalToMinified, "greet")
-	// Parameter names should be preserved
-	assert.Contains(t, result, "name")
-	assert.Contains(t, result, "greeting")
-	assert.NotContains(t, symMap.OriginalToMinified, "name")
-	assert.NotContains(t, symMap.OriginalToMinified, "greeting")
+	// Exact output: function name renamed, params and body refs preserved.
+	assert.Equal(t, "(defun x1 (name greeting) (format-string \"%s, %s!\" greeting name))\n", string(out))
+	assert.Equal(t, "greet", symMap.MinifiedToOriginal["x1"])
+	assert.Len(t, symMap.Entries, 1, "only the function name should be renamed")
 }
 
 func TestMinifySource_PreserveParams_Lambda(t *testing.T) {
@@ -102,12 +98,30 @@ func TestMinifySource_PreserveParams_Lambda(t *testing.T) {
 `)
 
 	cfg := &Config{PreserveParams: true}
-	out, _, err := MinifySource(src, "test.lisp", cfg)
+	out, symMap, err := MinifySource(src, "test.lisp", cfg)
+	require.NoError(t, err)
+
+	// handler is a top-level set binding — preserved by default (not renamed).
+	// Lambda params are preserved by PreserveParams.
+	assert.Equal(t, "(set handler (lambda (request response) response))\n", string(out))
+	assert.Empty(t, symMap.Entries, "nothing should be renamed")
+}
+
+func TestMinifySource_PreserveParams_Defmacro(t *testing.T) {
+	src := []byte(`(defmacro with-retry (retries body)
+  (list 'dotimes (list retries) body))
+`)
+
+	cfg := &Config{PreserveParams: true}
+	out, symMap, err := MinifySource(src, "test.lisp", cfg)
 	require.NoError(t, err)
 
 	result := string(out)
-	assert.Contains(t, result, "request")
-	assert.Contains(t, result, "response")
+	// Macro name preserved (global macros are not renamed by default).
+	// Params should be preserved.
+	assert.Contains(t, result, "(retries body)")
+	assert.NotContains(t, symMap.OriginalToMinified, "retries")
+	assert.NotContains(t, symMap.OriginalToMinified, "body")
 }
 
 func TestMinify_ExclusionsAndMultiFileSession(t *testing.T) {
