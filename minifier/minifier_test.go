@@ -78,6 +78,52 @@ func TestMinifySource_RenameExportsOptionRewritesExportForms(t *testing.T) {
 	assert.Equal(t, "public", symMap.MinifiedToOriginal["x1"])
 }
 
+func TestMinifySource_PreserveParams(t *testing.T) {
+	src := []byte(`(defun greet (name greeting)
+  (format-string "%s, %s!" greeting name))
+`)
+
+	cfg := &Config{PreserveParams: true}
+	out, symMap, err := MinifySource(src, "test.lisp", cfg)
+	require.NoError(t, err)
+
+	// Exact output: function name renamed, params and body refs preserved.
+	assert.Equal(t, "(defun x1 (name greeting) (format-string \"%s, %s!\" greeting name))\n", string(out))
+	assert.Equal(t, "greet", symMap.MinifiedToOriginal["x1"])
+	assert.Len(t, symMap.Entries, 1, "only the function name should be renamed")
+}
+
+func TestMinifySource_PreserveParams_Lambda(t *testing.T) {
+	src := []byte(`(set handler (lambda (request response) response))
+`)
+
+	cfg := &Config{PreserveParams: true}
+	out, symMap, err := MinifySource(src, "test.lisp", cfg)
+	require.NoError(t, err)
+
+	// handler is a top-level set binding — preserved by default (not renamed).
+	// Lambda params are preserved by PreserveParams.
+	assert.Equal(t, "(set handler (lambda (request response) response))\n", string(out))
+	assert.Empty(t, symMap.Entries, "nothing should be renamed")
+}
+
+func TestMinifySource_PreserveParams_Defmacro(t *testing.T) {
+	src := []byte(`(defmacro with-retry (retries body)
+  (list 'dotimes (list retries) body))
+`)
+
+	cfg := &Config{PreserveParams: true}
+	out, symMap, err := MinifySource(src, "test.lisp", cfg)
+	require.NoError(t, err)
+
+	result := string(out)
+	// Macro name preserved (global macros are not renamed by default).
+	// Params should be preserved.
+	assert.Contains(t, result, "(retries body)")
+	assert.NotContains(t, symMap.OriginalToMinified, "retries")
+	assert.NotContains(t, symMap.OriginalToMinified, "body")
+}
+
 func TestMinify_ExclusionsAndMultiFileSession(t *testing.T) {
 	inputs := []InputFile{
 		{

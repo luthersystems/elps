@@ -4062,3 +4062,33 @@ func TestDocumentSnapshot_ParseErrorsIsolated(t *testing.T) {
 	assert.Len(t, snap.ParseErrors, originalErrCount,
 		"snapshot parse errors should be isolated from document mutations")
 }
+
+func TestInlayHint_QuotedArg(t *testing.T) {
+	// Regression test: inlay hints for quoted args like '() should be
+	// positioned at the quote prefix, not inside the parens.
+	s := testServer()
+	content := `(defun put-data (key data)
+  "Store data."
+  data)
+
+(put-data "k" '())`
+	openDoc(s, "file:///test.lisp", content)
+
+	hints, err := s.textDocumentInlayHint(&InlayHintParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+		Range: protocol.Range{
+			Start: protocol.Position{Line: 0, Character: 0},
+			End:   protocol.Position{Line: 5, Character: 0},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, hints, 2, "should have hints for key and data")
+
+	assert.Equal(t, "key:", hints[0].Label)
+	assert.Equal(t, "data:", hints[1].Label)
+
+	// The "data:" hint should be at the ' character (column 14, 0-indexed),
+	// not at ( (column 15) which was the bug.
+	assert.Equal(t, protocol.UInteger(14), hints[1].Position.Character,
+		"hint should be at the ' quote prefix, not inside the parens")
+}

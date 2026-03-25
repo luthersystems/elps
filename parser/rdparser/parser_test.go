@@ -187,20 +187,19 @@ func TestEndPos_Nested(t *testing.T) {
 }
 
 func TestEndPos_Quote(t *testing.T) {
-	// 'foo — the quote wrapper gets its Source from the inner expression,
-	// so Source.Col is 2 (start of "foo"), and EndCol is from inner too.
+	// 'foo — the quote wrapper Source starts at the ' prefix token.
 	v := parseOne(t, "'foo")
 	assert.Equal(t, 1, v.Source.Line)
-	assert.Equal(t, 2, v.Source.Col)     // from inner "foo" token
+	assert.Equal(t, 1, v.Source.Col)     // ' starts at col 1
 	assert.Equal(t, 1, v.Source.EndLine)
 	assert.Equal(t, 5, v.Source.EndCol)  // "foo" ends at col 4, EndCol is 5
 }
 
 func TestEndPos_FunRef(t *testing.T) {
-	// #'myfun — the fun-ref wrapper gets Source from inner "myfun" token.
+	// #'myfun — the fun-ref wrapper Source starts at the #' prefix token.
 	v := parseOne(t, "#'myfun")
 	assert.Equal(t, 1, v.Source.Line)
-	assert.Equal(t, 3, v.Source.Col)     // "myfun" starts at col 3
+	assert.Equal(t, 1, v.Source.Col)     // #' starts at col 1
 	assert.Equal(t, 1, v.Source.EndLine)
 	assert.Equal(t, 8, v.Source.EndCol)  // "myfun" ends at col 7, EndCol is 8
 }
@@ -212,11 +211,10 @@ func TestEndPos_Float(t *testing.T) {
 }
 
 func TestEndPos_ExprPrefix(t *testing.T) {
-	// #^(+ 1 2) — the expr prefix wrapper gets Source from tokenLVal after
-	// inner expression is parsed, so Col reflects the closing bracket position.
+	// #^(+ 1 2) — the expr prefix wrapper Source starts at the #^ prefix token.
 	v := parseOne(t, "#^(+ 1 2)")
 	assert.Equal(t, 1, v.Source.Line)
-	assert.Equal(t, 9, v.Source.Col)     // from ")" at col 9 (last consumed token)
+	assert.Equal(t, 1, v.Source.Col)     // #^ starts at col 1
 	assert.Equal(t, 1, v.Source.EndLine)
 	assert.Equal(t, 10, v.Source.EndCol) // inherited from inner expr: ")" at col 9, EndCol is 10
 }

@@ -322,9 +322,11 @@ func (p *Parser) ParseQuote() *lisp.LVal {
 	}
 	prefixNewlines := p.src.Token.PrecedingNewlines
 	prefixSpaces := p.src.Token.PrecedingSpaces
+	quoteLoc := p.Location() // save ' location before parsing inner expression
 	inner := p.ParseExpression()
 	result := p.Quote(inner)
 	inheritEndPos(result, inner)
+	applyPrefixLocation(result, quoteLoc)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
 }
@@ -335,6 +337,7 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 	}
 	prefixNewlines := p.src.Token.PrecedingNewlines
 	prefixSpaces := p.src.Token.PrecedingSpaces
+	prefixLoc := p.Location() // save #^ location before parsing inner expression
 	expr := p.ParseExpression()
 	if expr.Type == lisp.LError {
 		return expr
@@ -349,6 +352,7 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 	}
 	result := p.SExpr([]*lisp.LVal{sym, expr})
 	inheritEndPos(result, expr)
+	applyPrefixLocation(result, prefixLoc)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
 }
@@ -360,12 +364,14 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 	}
 	prefixNewlines := p.src.Token.PrecedingNewlines
 	prefixSpaces := p.src.Token.PrecedingSpaces
+	prefixLoc := p.Location() // save #' location before parsing inner expression
 	name := p.ParseSymbol()
 	if name.Type == lisp.LError {
 		return name
 	}
 	result := p.SExpr([]*lisp.LVal{op, name})
 	inheritEndPos(result, name)
+	applyPrefixLocation(result, prefixLoc)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
 }
@@ -378,6 +384,21 @@ func inheritEndPos(outer, inner *lisp.LVal) {
 		outer.Source.EndPos = inner.Source.EndPos
 		outer.Source.EndLine = inner.Source.EndLine
 		outer.Source.EndCol = inner.Source.EndCol
+	}
+}
+
+// applyPrefixLocation overwrites the start position of a prefix form (quote,
+// #', #^) with the prefix token's location. tokenLVal sets Source from the
+// last consumed token, which for prefix forms is the inner expression — not
+// the prefix. This corrects it so that e.g. '() has its Source at the '
+// rather than at the (.
+func applyPrefixLocation(v *lisp.LVal, loc *token.Location) {
+	if v.Source != nil && loc != nil {
+		v.Source.File = loc.File
+		v.Source.Path = loc.Path
+		v.Source.Line = loc.Line
+		v.Source.Col = loc.Col
+		v.Source.Pos = loc.Pos
 	}
 }
 
