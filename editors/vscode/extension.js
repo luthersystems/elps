@@ -69,6 +69,25 @@ function getElpsPath() {
 
 // --- DAP ---
 
+// Provides a default debug configuration when the user presses F5 without
+// a launch.json. VS Code calls resolveDebugConfiguration with an empty
+// config object; we fill in the launch defaults.
+class ElpsDebugConfigurationProvider {
+  resolveDebugConfiguration(_folder, config) {
+    if (!config.type && !config.request && !config.name) {
+      const editor = vscode.window.activeTextEditor;
+      if (editor && editor.document.languageId === "elps") {
+        config.type = "elps";
+        config.request = "launch";
+        config.name = "Debug ELPS";
+        config.program = editor.document.uri.fsPath;
+        config.stopOnEntry = true;
+      }
+    }
+    return config;
+  }
+}
+
 class ElpsDebugAdapterFactory {
   createDebugAdapterDescriptor(session) {
     const config = session.configuration;
@@ -161,6 +180,10 @@ async function activate(context) {
 
   // DAP
   context.subscriptions.push(
+    vscode.debug.registerDebugConfigurationProvider(
+      "elps",
+      new ElpsDebugConfigurationProvider(),
+    ),
     vscode.debug.registerDebugAdapterDescriptorFactory(
       "elps",
       new ElpsDebugAdapterFactory(),
