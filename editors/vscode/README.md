@@ -19,13 +19,13 @@ Full-featured VS Code extension for [ELPS](https://github.com/luthersystems/elps
 
 The extension includes the `elps` binary for supported platforms (macOS, Linux, Windows on x64 and arm64). **No separate installation required** — just install the extension and it works.
 
-To use a custom build instead, install via Go and the extension will auto-discover it:
+To use a custom build instead, set `elps.path` in VS Code settings to point to your binary:
 
-```bash
-go install github.com/luthersystems/elps@latest
+```json
+{
+  "elps.path": "/path/to/your/elps"
+}
 ```
-
-You can also set a specific path via the `elps.path` setting.
 
 ## Features
 
