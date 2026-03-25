@@ -11,18 +11,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	fmtWrite      bool
-	fmtDiff       bool
-	fmtList       bool
-	fmtIndentSize int
-	fmtExcludes   []string
-)
+// FmtCommand creates the "fmt" cobra command. Embedders can add this
+// to their own CLI (e.g., shirotester fmt) without duplicating the
+// implementation.
+func FmtCommand(opts ...Option) *cobra.Command {
+	var cfg cmdConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
 
-var fmtCmd = &cobra.Command{
-	Use:   "fmt [flags] [files...]",
-	Short: "Format ELPS source files",
-	Long: `Format ELPS Lisp source files, similar to gofmt for Go.
+	var (
+		fmtWrite      bool
+		fmtDiff       bool
+		fmtList       bool
+		fmtIndentSize int
+		fmtExcludes   []string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "fmt [flags] [files...]",
+		Short: "Format ELPS source files",
+		Long: `Format ELPS Lisp source files, similar to gofmt for Go.
 
 Normalizes whitespace and indentation, aligns forms according to Lisp
 conventions, and preserves comments. The formatter is idempotent.
@@ -44,36 +53,50 @@ Examples:
   elps fmt -l *.lisp               List files needing formatting
   cat file.lisp | elps fmt         Format from stdin
   elps fmt --indent-size 4 f.lisp  Use 4-space indentation`,
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg := formatter.DefaultConfig()
-		cfg.IndentSize = fmtIndentSize
+		Run: func(cmd *cobra.Command, args []string) {
+			fmtCfg := formatter.DefaultConfig()
+			fmtCfg.IndentSize = fmtIndentSize
 
-		if len(args) == 0 {
-			if err := fmtStdin(cfg); err != nil {
+			if len(args) == 0 {
+				if err := fmtStdin(fmtCfg); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+				return
+			}
+
+			expanded, err := expandArgs(args, fmtExcludes)
+			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
-			return
-		}
 
-		expanded, err := expandArgs(args, fmtExcludes)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-
-		exitCode := 0
-		for _, path := range expanded {
-			changed, err := fmtFile(path, cfg)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				exitCode = 1
-			} else if fmtList && changed {
-				exitCode = 1
+			exitCode := 0
+			for _, path := range expanded {
+				changed, err := fmtFile(path, fmtCfg, fmtWrite, fmtDiff, fmtList)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					exitCode = 1
+				} else if fmtList && changed {
+					exitCode = 1
+				}
 			}
-		}
-		os.Exit(exitCode)
-	},
+			os.Exit(exitCode)
+		},
+	}
+
+	cmd.Flags().BoolVarP(&fmtWrite, "write", "w", false,
+		"Write result to (source) file instead of stdout.")
+	cmd.Flags().BoolVarP(&fmtDiff, "diff", "d", false,
+		"Display diffs instead of rewriting files.")
+	cmd.Flags().BoolVarP(&fmtList, "list", "l", false,
+		"List files whose formatting differs from elps fmt's.")
+	cmd.Flags().IntVar(&fmtIndentSize, "indent-size", 2,
+		"Number of spaces per indentation level.")
+	cmd.Flags().StringArrayVar(&fmtExcludes, "exclude", nil,
+		"Glob pattern for files to exclude (may be repeated).")
+
+	return cmd
 }
 
 func fmtStdin(cfg *formatter.Config) error {
@@ -89,7 +112,7 @@ func fmtStdin(cfg *formatter.Config) error {
 	return err
 }
 
-func fmtFile(path string, cfg *formatter.Config) (bool, error) {
+func fmtFile(path string, cfg *formatter.Config, write, diff, list bool) (bool, error) {
 	src, err := os.ReadFile(path) //nolint:gosec // CLI tool reads user-specified files
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", path, err)
@@ -101,21 +124,21 @@ func fmtFile(path string, cfg *formatter.Config) (bool, error) {
 
 	changed := string(src) != string(out)
 
-	if fmtList {
+	if list {
 		if changed {
 			fmt.Println(path)
 		}
 		return changed, nil
 	}
 
-	if fmtDiff {
+	if diff {
 		if changed {
 			printUnifiedDiff(path, src, out)
 		}
 		return changed, nil
 	}
 
-	if fmtWrite {
+	if write {
 		if !changed {
 			return false, nil
 		}
@@ -171,16 +194,5 @@ func splitLines(data []byte) []string {
 }
 
 func init() {
-	rootCmd.AddCommand(fmtCmd)
-
-	fmtCmd.Flags().BoolVarP(&fmtWrite, "write", "w", false,
-		"Write result to (source) file instead of stdout.")
-	fmtCmd.Flags().BoolVarP(&fmtDiff, "diff", "d", false,
-		"Display diffs instead of rewriting files.")
-	fmtCmd.Flags().BoolVarP(&fmtList, "list", "l", false,
-		"List files whose formatting differs from elps fmt's.")
-	fmtCmd.Flags().IntVar(&fmtIndentSize, "indent-size", 2,
-		"Number of spaces per indentation level.")
-	fmtCmd.Flags().StringArrayVar(&fmtExcludes, "exclude", nil,
-		"Glob pattern for files to exclude (may be repeated).")
+	rootCmd.AddCommand(FmtCommand())
 }

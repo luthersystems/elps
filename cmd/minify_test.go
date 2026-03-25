@@ -24,6 +24,7 @@ func TestMinifyCommand_DefaultFlags(t *testing.T) {
 
 func TestRunMinify_StdoutSingleFile(t *testing.T) {
 	resetMinifyFlags()
+	minifyPreserveParams = false
 	dir := t.TempDir()
 	path := filepath.Join(dir, "demo.lisp")
 	require.NoError(t, os.WriteFile(path, []byte("(defun outer (value) value)\n"), 0o600))
@@ -40,6 +41,7 @@ func TestRunMinify_StdoutSingleFile(t *testing.T) {
 
 func TestRunMinify_WriteAndMap(t *testing.T) {
 	resetMinifyFlags()
+	minifyPreserveParams = false
 	minifyWrite = true
 	dir := t.TempDir()
 	path := filepath.Join(dir, "demo.lisp")
@@ -66,6 +68,7 @@ func TestRunMinify_WriteAndMap(t *testing.T) {
 
 func TestRunMinify_Stdin(t *testing.T) {
 	resetMinifyFlags()
+	minifyPreserveParams = false
 
 	var out bytes.Buffer
 	err := runMinify(nil, bytes.NewBufferString("(defun outer (value) value)\n"), &out)
@@ -82,6 +85,7 @@ func TestRunMinify_MultipleFilesRequireWrite(t *testing.T) {
 
 func TestRunMinify_RenameExports(t *testing.T) {
 	resetMinifyFlags()
+	minifyPreserveParams = false
 	minifyRenameExports = true
 	dir := t.TempDir()
 	path := filepath.Join(dir, "exports.lisp")
@@ -100,5 +104,5 @@ func resetMinifyFlags() {
 	minifyExcludes = nil
 	minifyWorkspace = ""
 	minifyRenameExports = false
-	minifyPreserveParams = false
+	minifyPreserveParams = true // default is true
 }

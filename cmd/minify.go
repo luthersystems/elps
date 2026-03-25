@@ -174,6 +174,6 @@ func init() {
 		"Workspace root for cross-file semantic resolution.")
 	minifyCmd.Flags().BoolVar(&minifyRenameExports, "rename-exports", false,
 		"Rename exported top-level symbols and rewrite matching export forms.")
-	minifyCmd.Flags().BoolVar(&minifyPreserveParams, "preserve-params", false,
-		"Preserve function and macro parameter names instead of renaming them.")
+	minifyCmd.Flags().BoolVar(&minifyPreserveParams, "preserve-params", true,
+		"Preserve function and macro parameter names (default: true). Use --preserve-params=false to rename them.")
 }
