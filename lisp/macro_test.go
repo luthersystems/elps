@@ -38,8 +38,8 @@ func TestMacros(t *testing.T) {
 			{"(quasiquote (list (unquote-splicing 1 2)))", "test:1:19: lisp:quasiquote: unquote-splicing: one argument expected (got 2)", ""},
 			{"(quasiquote (list (unquote 1 2)))", "test:1:19: lisp:quasiquote: unquote: one argument expected (got 2)", ""},
 			{"(quasiquote (unquote-splicing '(+ 2 3)))", "test:1:13: lisp:quasiquote: unquote-splicing used in an invalid context", ""},
-			{"(quasiquote '(unquote-splicing '(+ 2 3)))", "test:1:40: lisp:quasiquote: unquote-splicing used in an invalid context", ""},
-			{"(quasiquote ''(unquote-splicing '(+ 2 3)))", "test:1:41: lisp:quasiquote: unquote-splicing used in an invalid context", ""},
+			{"(quasiquote '(unquote-splicing '(+ 2 3)))", "test:1:13: lisp:quasiquote: unquote-splicing used in an invalid context", ""},
+			{"(quasiquote ''(unquote-splicing '(+ 2 3)))", "test:1:13: lisp:quasiquote: unquote-splicing used in an invalid context", ""},
 			{"(quasiquote ((unquote-splicing '(+ 2 3))))", "'(+ 2 3)", ""},
 		}},
 		{"defmacro", elpstest.TestSequence{
