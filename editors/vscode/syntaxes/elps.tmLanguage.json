@@ -111,7 +111,7 @@
     },
 
     "expr-shorthand": {
-      "name": "keyword.operator.expr-shorthand.elps",
+      "name": "keyword.control.definition.elps",
       "match": "#\\^"
     },
 

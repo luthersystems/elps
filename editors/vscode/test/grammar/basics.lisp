@@ -49,7 +49,7 @@
 ; <- keyword.operator.function-quote.elps
 
 #^expr-shorthand
-; <- keyword.operator.expr-shorthand.elps
+; <- keyword.control.definition.elps
 
 (defun f (x &optional y)
 ;           ^^^^^^^^^ variable.parameter.elps
