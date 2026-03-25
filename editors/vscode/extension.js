@@ -22,7 +22,7 @@ let extensionContext = null;
 // 4. Bare "elps" on PATH
 function getElpsPath() {
   const configured = vscode.workspace.getConfiguration("elps").get("path", "elps");
-  if (configured !== "elps") {
+  if (configured && configured !== "elps") {
     return configured;
   }
 
