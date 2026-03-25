@@ -11,31 +11,47 @@ const os = require("os");
 const { LanguageClient } = require("vscode-languageclient/node");
 
 let client = null;
+let extensionContext = null;
 
 // --- Helpers ---
 
-// Resolve the elps binary path. If the user has set elps.path to something
-// other than the default "elps", use that. Otherwise, search common Go
-// install locations since VS Code on macOS doesn't inherit shell PATH.
+// Resolve the elps binary path. Priority:
+// 1. User-configured elps.path setting (if changed from default)
+// 2. Bundled binary in the extension's bin/ directory (platform-specific packages)
+// 3. Common Go install locations (GOBIN, GOPATH, ~/go/bin, etc.)
+// 4. Bare "elps" on PATH
 function getElpsPath() {
   const configured = vscode.workspace.getConfiguration("elps").get("path", "elps");
-  if (configured !== "elps") {
+  if (configured && configured !== "elps") {
     return configured;
   }
 
+  // Bundled binary (platform-specific extension package).
+  if (extensionContext) {
+    const ext = process.platform === "win32" ? ".exe" : "";
+    const bundled = path.join(extensionContext.extensionPath, "bin", "elps" + ext);
+    try {
+      fs.accessSync(bundled, fs.constants.X_OK);
+      return bundled;
+    } catch {
+      // Not bundled (universal package) — fall through to auto-discovery.
+    }
+  }
+
+  // Auto-discovery in common Go install locations.
   const home = os.homedir();
+  const ext = process.platform === "win32" ? ".exe" : "";
   const candidates = [
-    path.join(home, "go", "bin", "elps"),
-    path.join(home, ".local", "bin", "elps"),
+    path.join(home, "go", "bin", "elps" + ext),
+    path.join(home, ".local", "bin", "elps" + ext),
     "/usr/local/bin/elps",
     "/opt/homebrew/bin/elps",
   ];
 
-  // Also check GOPATH/bin and GOBIN if set in the process environment.
   if (process.env.GOBIN) {
-    candidates.unshift(path.join(process.env.GOBIN, "elps"));
+    candidates.unshift(path.join(process.env.GOBIN, "elps" + ext));
   } else if (process.env.GOPATH) {
-    candidates.unshift(path.join(process.env.GOPATH, "bin", "elps"));
+    candidates.unshift(path.join(process.env.GOPATH, "bin", "elps" + ext));
   }
 
   for (const candidate of candidates) {
@@ -141,6 +157,8 @@ async function stopLSP() {
 // --- Activation ---
 
 async function activate(context) {
+  extensionContext = context;
+
   // DAP
   context.subscriptions.push(
     vscode.debug.registerDebugAdapterDescriptorFactory(
