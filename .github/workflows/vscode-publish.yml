@@ -24,14 +24,9 @@ jobs:
           - goos: darwin
             goarch: arm64
             target: darwin-arm64
-          - goos: windows
-            goarch: amd64
-            target: win32-x64
-            ext: .exe
-          - goos: windows
-            goarch: arm64
-            target: win32-arm64
-            ext: .exe
+          # Windows excluded: tliron/kutil dependency has broken
+          # Windows cross-compilation (EnableWindowsANSIConsole).
+          # Windows users get the universal (no-binary) package.
     steps:
       - uses: actions/checkout@v4
 
@@ -65,8 +60,6 @@ jobs:
           - target: linux-arm64
           - target: darwin-x64
           - target: darwin-arm64
-          - target: win32-x64
-          - target: win32-arm64
     steps:
       - uses: actions/checkout@v4
 
