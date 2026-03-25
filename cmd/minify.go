@@ -14,12 +14,13 @@ import (
 )
 
 var (
-	minifyWrite         bool
-	minifyMapPath       string
-	minifyExcludeFiles  []string
-	minifyExcludes      []string
-	minifyWorkspace     string
-	minifyRenameExports bool
+	minifyWrite          bool
+	minifyMapPath        string
+	minifyExcludeFiles   []string
+	minifyExcludes       []string
+	minifyWorkspace      string
+	minifyRenameExports  bool
+	minifyPreserveParams bool
 )
 
 var minifyCmd = &cobra.Command{
@@ -58,9 +59,10 @@ func buildMinifyConfig() (*minifier.Config, error) {
 	}
 
 	cfg := &minifier.Config{
-		Exclusions:    exclusions,
-		RenameExports: minifyRenameExports,
-		Formatter:     formatter.DefaultConfig(),
+		Exclusions:     exclusions,
+		RenameExports:  minifyRenameExports,
+		PreserveParams: minifyPreserveParams,
+		Formatter:      formatter.DefaultConfig(),
 	}
 	cfg.Formatter.Compact = true
 	cfg.Formatter.StripComments = true
@@ -172,4 +174,6 @@ func init() {
 		"Workspace root for cross-file semantic resolution.")
 	minifyCmd.Flags().BoolVar(&minifyRenameExports, "rename-exports", false,
 		"Rename exported top-level symbols and rewrite matching export forms.")
+	minifyCmd.Flags().BoolVar(&minifyPreserveParams, "preserve-params", false,
+		"Preserve function and macro parameter names instead of renaming them.")
 }

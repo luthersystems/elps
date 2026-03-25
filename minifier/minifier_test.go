@@ -78,6 +78,38 @@ func TestMinifySource_RenameExportsOptionRewritesExportForms(t *testing.T) {
 	assert.Equal(t, "public", symMap.MinifiedToOriginal["x1"])
 }
 
+func TestMinifySource_PreserveParams(t *testing.T) {
+	src := []byte(`(defun greet (name greeting)
+  (format-string "%s, %s!" greeting name))
+`)
+
+	cfg := &Config{PreserveParams: true}
+	out, symMap, err := MinifySource(src, "test.lisp", cfg)
+	require.NoError(t, err)
+
+	result := string(out)
+	// Function name should be renamed
+	assert.Contains(t, symMap.OriginalToMinified, "greet")
+	// Parameter names should be preserved
+	assert.Contains(t, result, "name")
+	assert.Contains(t, result, "greeting")
+	assert.NotContains(t, symMap.OriginalToMinified, "name")
+	assert.NotContains(t, symMap.OriginalToMinified, "greeting")
+}
+
+func TestMinifySource_PreserveParams_Lambda(t *testing.T) {
+	src := []byte(`(set handler (lambda (request response) response))
+`)
+
+	cfg := &Config{PreserveParams: true}
+	out, _, err := MinifySource(src, "test.lisp", cfg)
+	require.NoError(t, err)
+
+	result := string(out)
+	assert.Contains(t, result, "request")
+	assert.Contains(t, result, "response")
+}
+
 func TestMinify_ExclusionsAndMultiFileSession(t *testing.T) {
 	inputs := []InputFile{
 		{

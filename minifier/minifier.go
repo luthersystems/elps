@@ -32,6 +32,7 @@ type Config struct {
 	Analysis            *analysis.Config
 	Exclusions          map[string]bool
 	RenameExports       bool
+	PreserveParams      bool
 	PackageSurfaceForms []PackageSurfaceFormSpec
 	Formatter           *formatter.Config
 }
@@ -569,6 +570,9 @@ func renameable(sym *analysis.Symbol, cfg *Config, preserved *preservationSet) b
 		return false
 	}
 	if sym.Exported && !cfg.RenameExports {
+		return false
+	}
+	if cfg.PreserveParams && sym.Kind == analysis.SymParameter {
 		return false
 	}
 	name := sym.Name

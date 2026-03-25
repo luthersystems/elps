@@ -17,7 +17,7 @@ import (
 func TestMinifyCommand_DefaultFlags(t *testing.T) {
 	assert.Equal(t, "minify [flags] [files...]", minifyCmd.Use)
 
-	for _, name := range []string{"write", "map", "exclude", "exclude-file", "workspace", "rename-exports"} {
+	for _, name := range []string{"write", "map", "exclude", "exclude-file", "workspace", "rename-exports", "preserve-params"} {
 		assert.NotNil(t, minifyCmd.Flags().Lookup(name), "missing flag: %s", name)
 	}
 }
@@ -100,4 +100,5 @@ func resetMinifyFlags() {
 	minifyExcludes = nil
 	minifyWorkspace = ""
 	minifyRenameExports = false
+	minifyPreserveParams = false
 }
