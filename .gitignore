@@ -6,5 +6,6 @@ elps
 node_modules/
 *.vsix
 editors/vscode/dist/
+editors/vscode/bin/
 .vscode/
 .env

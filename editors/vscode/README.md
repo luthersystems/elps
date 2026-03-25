@@ -17,19 +17,15 @@
 
 Full-featured VS Code extension for [ELPS](https://github.com/luthersystems/elps), an embedded Lisp interpreter implemented in Go. Provides syntax highlighting, language server integration, and debugging.
 
-> **Requires the `elps` binary.** The extension provides editor features but needs the `elps` command-line tool installed separately. See [Prerequisites](#prerequisites) below.
+The extension includes the `elps` binary for supported platforms (macOS, Linux, Windows on x64 and arm64). **No separate installation required** — just install the extension and it works.
 
-## Prerequisites
-
-Install the `elps` binary using the Go toolchain (requires [Go 1.21+](https://go.dev/dl/)):
+To use a custom build instead, install via Go and the extension will auto-discover it:
 
 ```bash
 go install github.com/luthersystems/elps@latest
 ```
 
-This installs to `$GOPATH/bin` (typically `~/go/bin`). The extension auto-discovers the binary in common Go install locations (`~/go/bin`, `$GOPATH/bin`, `/usr/local/bin`, `/opt/homebrew/bin`).
-
-If the binary isn't found automatically, set the path in VS Code settings: `elps.path`.
+You can also set a specific path via the `elps.path` setting.
 
 ## Features
 
