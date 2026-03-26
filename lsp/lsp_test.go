@@ -3378,7 +3378,9 @@ func TestWatchedFiles_NonLisp(t *testing.T) {
 func TestShouldSkipDir_Vendor(t *testing.T) {
 	assert.True(t, analysis.ShouldSkipDir("vendor"), "vendor/ should be skipped")
 	assert.True(t, analysis.ShouldSkipDir("node_modules"), "node_modules/ should be skipped")
+	assert.True(t, analysis.ShouldSkipDir("build"), "build/ should be skipped")
 	assert.True(t, analysis.ShouldSkipDir(".git"), ".git/ should be skipped")
+	assert.True(t, analysis.ShouldSkipDir("_archive"), "_archive/ should be skipped")
 	assert.False(t, analysis.ShouldSkipDir("lib"), "lib/ should not be skipped")
 	assert.False(t, analysis.ShouldSkipDir("."), ". should not be skipped")
 }

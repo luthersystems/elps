@@ -73,6 +73,11 @@ type Server struct {
 	// excludePatterns are glob patterns for files to skip during workspace
 	// scanning. Matched against full path, base name, and directory components.
 	excludePatterns []string
+
+	// includeDirs are directory names that override ShouldSkipDir during
+	// workspace scanning. A directory matching any entry will be walked
+	// even if it would normally be skipped (e.g. "_examples").
+	includeDirs []string
 }
 
 // Option configures the LSP server.
@@ -106,6 +111,13 @@ func WithMaxWorkspaceFiles(n int) Option {
 // component using filepath.Match semantics.
 func WithExcludes(patterns []string) Option {
 	return func(s *Server) { s.excludePatterns = patterns }
+}
+
+// WithIncludes sets directory names that override ShouldSkipDir during
+// workspace scanning. Directories matching any entry will be walked even
+// if they would normally be skipped (e.g. "_examples").
+func WithIncludes(dirs []string) Option {
+	return func(s *Server) { s.includeDirs = dirs }
 }
 
 // New creates a new ELPS LSP server.
@@ -299,8 +311,9 @@ func (s *Server) buildWorkspaceIndex() {
 	// default (not maxDocumentBytes) since document analysis limits and
 	// workspace scan limits serve different purposes.
 	scanCfg := &analysis.ScanConfig{
-		MaxFiles: s.maxWorkspaceFiles,
-		Excludes: s.excludePatterns,
+		MaxFiles:    s.maxWorkspaceFiles,
+		Excludes:    s.excludePatterns,
+		IncludeDirs: s.includeDirs,
 	}
 
 	// Two-phase workspace scan: prescan extracts definitions AND
