@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -3383,6 +3384,64 @@ func TestShouldSkipDir_Vendor(t *testing.T) {
 	assert.True(t, analysis.ShouldSkipDir("_archive"), "_archive/ should be skipped")
 	assert.False(t, analysis.ShouldSkipDir("lib"), "lib/ should not be skipped")
 	assert.False(t, analysis.ShouldSkipDir("."), ". should not be skipped")
+}
+
+func TestWithIncludes_WorkspaceIndexing(t *testing.T) {
+	dir := t.TempDir()
+
+	// _examples/ would normally be skipped by ShouldSkipDir.
+	exDir := filepath.Join(dir, "_examples")
+	require.NoError(t, os.MkdirAll(exDir, 0750))
+	require.NoError(t, os.WriteFile(filepath.Join(exDir, "demo.lisp"), []byte(`
+(defun demo-fn () 42)
+(export 'demo-fn)
+`), 0600))
+
+	// A normal file that should always be indexed.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "lib.lisp"), []byte(`
+(defun lib-fn () 1)
+(export 'lib-fn)
+`), 0600))
+
+	// Server WITHOUT WithIncludes — _examples should be skipped.
+	s1 := testServer()
+	s1.rootPath = dir
+	s1.buildWorkspaceIndex()
+
+	s1.analysisCfgMu.RLock()
+	cfg1 := s1.analysisCfg
+	s1.analysisCfgMu.RUnlock()
+	require.NotNil(t, cfg1)
+
+	names1 := make(map[string]bool)
+	for _, sym := range cfg1.ExtraGlobals {
+		names1[sym.Name] = true
+	}
+	assert.True(t, names1["lib-fn"], "lib-fn should be indexed")
+	assert.False(t, names1["demo-fn"], "demo-fn should NOT be indexed without WithIncludes")
+
+	// Server WITH WithIncludes — _examples should be included.
+	// Use New() directly to verify the WithIncludes option flows through.
+	env2 := lisp.NewEnv(nil)
+	env2.Runtime.Reader = parser.NewReader()
+	lisp.InitializeUserEnv(env2)
+	lisplib.LoadLibrary(env2)
+	env2.InPackage(lisp.String(lisp.DefaultUserPackage))
+	s2 := New(WithEnv(env2), WithIncludes([]string{"_examples"}))
+	s2.rootPath = dir
+	s2.buildWorkspaceIndex()
+
+	s2.analysisCfgMu.RLock()
+	cfg2 := s2.analysisCfg
+	s2.analysisCfgMu.RUnlock()
+	require.NotNil(t, cfg2)
+
+	names2 := make(map[string]bool)
+	for _, sym := range cfg2.ExtraGlobals {
+		names2[sym.Name] = true
+	}
+	assert.True(t, names2["lib-fn"], "lib-fn should be indexed")
+	assert.True(t, names2["demo-fn"], "demo-fn should be indexed with WithIncludes")
 }
 
 // --- Inlay hint tests ---
