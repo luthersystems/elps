@@ -167,6 +167,10 @@ Run grammar tests:
 npm test
 ```
 
+## About Luther Systems
+
+Our mission is to accelerate the advent of the automated enterprise. Founded by a team who spent years automating complex processes for some of the world's largest financial institutions, Luther Systems builds platforms that bring enterprise-grade infrastructure and operations to teams of every size.
+
 ## Links
 
 - [ELPS Repository](https://github.com/luthersystems/elps)
