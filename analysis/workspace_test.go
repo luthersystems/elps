@@ -320,7 +320,13 @@ func TestShouldSkipDir(t *testing.T) {
 	assert.True(t, ShouldSkipDir(".git"), "hidden directory should be skipped")
 	assert.True(t, ShouldSkipDir(".vscode"), "hidden directory should be skipped")
 	assert.True(t, ShouldSkipDir("node_modules"), "node_modules should be skipped")
+	assert.True(t, ShouldSkipDir("vendor"), "vendor should be skipped")
+	assert.True(t, ShouldSkipDir("build"), "build should be skipped")
+	assert.True(t, ShouldSkipDir("_archive"), "underscore-prefixed directory should be skipped")
+	assert.True(t, ShouldSkipDir("_old"), "underscore-prefixed directory should be skipped")
+	assert.True(t, ShouldSkipDir("_backup"), "underscore-prefixed directory should be skipped")
 	assert.False(t, ShouldSkipDir("src"), "normal directory should not be skipped")
+	assert.False(t, ShouldSkipDir("lib"), "normal directory should not be skipped")
 }
 
 func TestScanWorkspaceFull_CombinedResults(t *testing.T) {

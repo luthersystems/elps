@@ -115,8 +115,8 @@ func ScanWorkspaceDefinitions(root string) ([]ExternalSymbol, error) {
 
 // ScanWorkspaceFull walks a directory tree in a single pass, parsing all
 // .lisp files and extracting both global symbols and package exports.
-// It skips hidden directories (names starting with '.'), node_modules,
-// and vendor directories. Stops collecting after maxWorkspaceFiles.
+// It skips directories matched by ShouldSkipDir (hidden, underscore-prefixed,
+// node_modules, vendor, build). Stops collecting after maxWorkspaceFiles.
 // Parsing is done concurrently using a bounded worker pool.
 //
 // Files that fail to parse are silently skipped (fault tolerant).
@@ -189,8 +189,10 @@ func collectLispFilesWithConfig(root string, scanCfg *ScanConfig) ([]string, boo
 }
 
 // ShouldSkipDir returns true for directories that should not be walked.
-// It skips hidden directories (e.g. .git, .vscode) and node_modules,
-// but not "." or ".." which represent the current/parent directory.
+// It skips hidden directories (e.g. .git, .vscode), underscore-prefixed
+// directories (e.g. _archive, _old), and common dependency/build output
+// directories — but not "." or ".." which represent the current/parent
+// directory.
 func ShouldSkipDir(name string) bool {
 	if name == "." || name == ".." {
 		return false
@@ -198,7 +200,10 @@ func ShouldSkipDir(name string) bool {
 	if len(name) > 0 && name[0] == '.' {
 		return true
 	}
-	if name == "node_modules" || name == "vendor" {
+	if len(name) > 0 && name[0] == '_' {
+		return true
+	}
+	if name == "node_modules" || name == "vendor" || name == "build" {
 		return true
 	}
 	return false
