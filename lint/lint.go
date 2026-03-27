@@ -366,13 +366,18 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		pkgExports[pkg] = append(pkgExports[pkg], wsSyms...)
 	}
 
-	return &analysis.Config{
+	acfg := &analysis.Config{
 		ExtraGlobals:   prescan.ExportedGlobals,
 		PackageExports: pkgExports,
 		DefForms:       prescan.DefForms,
 		PackageImports: prescan.PackageImports,
 		DefaultPackage: prescan.DefaultPackage,
-	}, nil
+	}
+
+	// Build workspace refs so lint analyzers can check cross-file references.
+	acfg.WorkspaceRefs = analysis.ScanWorkspaceRefs(cfg.Workspace, acfg, scanCfg)
+
+	return acfg, nil
 }
 
 // defaultStdlibExports creates a temporary ELPS env, loads the standard

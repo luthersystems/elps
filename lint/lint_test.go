@@ -1876,6 +1876,54 @@ func TestUnusedFunction_HasNotes(t *testing.T) {
 	assert.Contains(t, diags[0].Notes[0], "export")
 }
 
+func TestUnusedFunction_Negative_CrossFileRef(t *testing.T) {
+	// Function with 0 local refs but a cross-file ref should NOT be flagged.
+	source := `(defun helper () 42)`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
+	// The symbol ends up in "user" package (default for bare source).
+	helperKey := analysis.SymbolKey{Package: "user", Name: "helper", Kind: analysis.SymFunction}.String()
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "helper", Kind: analysis.SymFunction},
+		},
+		WorkspaceRefs: map[string][]analysis.FileReference{
+			helperKey: {
+				{File: "/other/file.lisp"}, // referenced from another file
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedFunction_Positive_OnlySameFileRef(t *testing.T) {
+	// Workspace refs exist but only from the same file — still unused.
+	source := `(defun helper () 42)`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
+	helperKey := analysis.SymbolKey{Package: "user", Name: "helper", Kind: analysis.SymFunction}.String()
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "helper", Kind: analysis.SymFunction},
+		},
+		WorkspaceRefs: map[string][]analysis.FileReference{
+			helperKey: {
+				{File: "test.lisp"}, // same file — doesn't count
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	assert.Len(t, diags, 1, "same-file refs don't count as cross-file usage")
+}
+
+func TestUnusedFunction_Positive_NoWorkspaceRefs(t *testing.T) {
+	// Without workspace refs, still flagged (existing behavior).
+	source := `(defun helper () 42)`
+	diags := lintCheckSemantic(t, AnalyzerUnusedFunction, source)
+	assert.Len(t, diags, 1)
+}
+
 // --- shadowing ---
 
 func TestShadowing_Negative_ParamShadowsBuiltin(t *testing.T) {

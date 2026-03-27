@@ -573,6 +573,7 @@ func AnalyzeFile(source []byte, filename string, cfg *Config) *Result {
 		DefForms:       fileCfg.DefForms,
 		PackageImports: fileCfg.PackageImports,
 		DefaultPackage: fileCfg.DefaultPackage,
+		WorkspaceRefs:  fileCfg.WorkspaceRefs,
 		Filename:       filename,
 	}
 	return Analyze(exprs, fileCfg)

@@ -372,17 +372,20 @@ func (s *Server) buildWorkspaceIndex() {
 		DefaultPackage: defaultPackage,
 	}
 
-	s.analysisCfgMu.Lock()
-	s.analysisCfg = cfg
-	s.analysisCfgMu.Unlock()
-
 	// Build workspace reference index using the populated config.
+	// Set it on the config so per-file analysis (and lint analyzers)
+	// can check cross-file references.
 	if s.rootPath != "" {
 		wsRefs := analysis.ScanWorkspaceRefs(s.rootPath, cfg, scanCfg)
+		cfg.WorkspaceRefs = wsRefs
 		s.workspaceRefsMu.Lock()
 		s.workspaceRefs = wsRefs
 		s.workspaceRefsMu.Unlock()
 	}
+
+	s.analysisCfgMu.Lock()
+	s.analysisCfg = cfg
+	s.analysisCfgMu.Unlock()
 }
 
 // reanalyzeOpenDocuments invalidates cached analysis for all open documents
@@ -433,6 +436,7 @@ func (s *Server) getAnalysisConfig(uri string) *analysis.Config {
 		cfg.DefForms = base.DefForms
 		cfg.PackageImports = base.PackageImports
 		cfg.DefaultPackage = base.DefaultPackage
+		cfg.WorkspaceRefs = base.WorkspaceRefs
 	}
 	return cfg
 }

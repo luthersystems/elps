@@ -743,6 +743,23 @@ var AnalyzerUnusedFunction = &Analyzer{
 			if len(sym.Name) > 0 && sym.Name[0] == '_' {
 				continue
 			}
+			// Check cross-file references from workspace scanning.
+			// Per-file analysis can't see callers in other files.
+			if pass.Semantics.WorkspaceRefs != nil {
+				key := analysis.SymbolToKey(sym).String()
+				if refs, ok := pass.Semantics.WorkspaceRefs[key]; ok {
+					hasExternal := false
+					for _, ref := range refs {
+						if ref.File != pass.Filename {
+							hasExternal = true
+							break
+						}
+					}
+					if hasExternal {
+						continue
+					}
+				}
+			}
 			pass.Report(Diagnostic{
 				Message: fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
 				Pos:     posFromSource(sym.Source),
