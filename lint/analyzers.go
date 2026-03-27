@@ -776,6 +776,7 @@ var AnalyzerShadowing = &Analyzer{
 			pass.Report(Diagnostic{
 				Message: fmt.Sprintf("%s '%s' shadows %s from enclosing scope", sym.Kind, sym.Name, outer.Kind),
 				Pos:     posFromSource(sym.Source),
+				EndPos:  endPosFromNode(sym.Node),
 				Notes:   []string{fmt.Sprintf("rename '%s' to avoid confusion with the outer %s", sym.Name, outer.Kind)},
 			})
 		}

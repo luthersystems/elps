@@ -1920,6 +1920,30 @@ func TestShadowing_HasNotes(t *testing.T) {
 	assert.Contains(t, diags[0].Notes[0], "rename")
 }
 
+func TestShadowing_DiagnosticPosition(t *testing.T) {
+	// Verify the diagnostic position points to "car" in the formals, not elsewhere.
+	source := `(defun foo (car) car)`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	require.Len(t, diags, 1)
+	// "car" starts at col 13 (1-based): "(defun foo (" = 12 chars, then "car"
+	assert.Equal(t, 1, diags[0].Pos.Line)
+	assert.Equal(t, 13, diags[0].Pos.Col)
+	assert.Equal(t, 1, diags[0].EndPos.Line)
+	assert.Equal(t, 16, diags[0].EndPos.Col) // 13 + len("car") = 16
+}
+
+func TestShadowing_DiagnosticPosition_RestParam(t *testing.T) {
+	// Verify position points to "expr" after &rest, not to &rest itself.
+	source := `(defmacro bar (&rest expr) expr)`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	require.Len(t, diags, 1)
+	// "&rest" is at col 16, "expr" is at col 22: "(defmacro bar (&rest " = 21 chars
+	assert.Equal(t, 1, diags[0].Pos.Line)
+	assert.Equal(t, 22, diags[0].Pos.Col)
+	assert.Equal(t, 1, diags[0].EndPos.Line)
+	assert.Equal(t, 26, diags[0].EndPos.Col) // 22 + len("expr") = 26
+}
+
 func TestShadowing_Negative_ExternalSymbol(t *testing.T) {
 	// Parameters should not trigger shadowing when the outer symbol
 	// is from an external source (workspace scan / package import).
