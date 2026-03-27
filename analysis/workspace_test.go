@@ -1128,9 +1128,28 @@ func TestPrescanWorkspace_PackageImports(t *testing.T) {
 	prescan, err := PrescanWorkspace(dir, nil)
 	require.NoError(t, err)
 
-	// The workspace prescan should capture that svc imports utils.
-	assert.Contains(t, prescan.PackageImports, "svc")
-	assert.Contains(t, prescan.PackageImports["svc"], "utils")
+	// Exact match: svc imports exactly [utils], nothing spurious.
+	assert.Equal(t, []string{"utils"}, prescan.PackageImports["svc"])
+}
+
+func TestPrescanWorkspace_PackageImports_Dedup(t *testing.T) {
+	dir := t.TempDir()
+
+	// Both files import utils in the svc package — should be deduplicated.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'svc)
+(use-package 'utils)
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "helpers.lisp"), []byte(`
+(in-package 'svc)
+(use-package 'utils)
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+
+	// utils should appear exactly once despite being imported in two files.
+	assert.Equal(t, []string{"utils"}, prescan.PackageImports["svc"])
 }
 
 func TestScanConfig_EffectiveDefaults(t *testing.T) {

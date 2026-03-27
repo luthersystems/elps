@@ -1894,6 +1894,16 @@ func TestShadowing_Negative_ParamShadowsSpecialOp(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+func TestShadowing_Positive_LetShadowsBuiltin(t *testing.T) {
+	// Let-binding shadowing a builtin should still be reported — the
+	// suppression only applies to parameters, not all inner symbol kinds.
+	source := `(defun foo () (let ((car 1)) car))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "shadows")
+	assertHasDiag(t, diags, "car")
+}
+
 func TestShadowing_Positive_LetShadowsParam(t *testing.T) {
 	source := `(defun foo (x) (let ((x 2)) (+ x 1)))`
 	diags := lintCheckSemantic(t, AnalyzerShadowing, source)

@@ -489,6 +489,8 @@ func AnalyzeFile(source []byte, filename string, cfg *Config) *Result {
 	fileCfg = &Config{
 		ExtraGlobals:   fileCfg.ExtraGlobals,
 		PackageExports: fileCfg.PackageExports,
+		DefForms:       fileCfg.DefForms,
+		PackageImports: fileCfg.PackageImports,
 		Filename:       filename,
 	}
 	return Analyze(exprs, fileCfg)

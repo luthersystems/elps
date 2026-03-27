@@ -1502,7 +1502,16 @@ func TestAnalyze_CrossFileUsePackage(t *testing.T) {
 	for _, u := range result.Unresolved {
 		unresolvedNames[u.Name] = true
 	}
-	assert.False(t, unresolvedNames["when"], "with PackageImports, 'when' should resolve")
+	assert.False(t, unresolvedNames["when"], "with PackageImports, 'when' should not be unresolved")
+
+	// Positive assertion: 'when' should appear as a resolved reference.
+	resolvedNames := make(map[string]bool)
+	for _, ref := range result.References {
+		if ref.Symbol != nil {
+			resolvedNames[ref.Symbol.Name] = true
+		}
+	}
+	assert.True(t, resolvedNames["when"], "with PackageImports, 'when' should be a resolved reference")
 }
 
 func TestAnalyze_CrossFileUsePackage_MultiPackageFile(t *testing.T) {
@@ -1527,6 +1536,29 @@ func TestAnalyze_CrossFileUsePackage_MultiPackageFile(t *testing.T) {
 	}
 	assert.False(t, unresolvedNames["helper-a"], "helper-a should resolve via pkg-a's cross-file imports")
 	assert.False(t, unresolvedNames["helper-b"], "helper-b should resolve via pkg-b's cross-file imports")
+}
+
+func TestAnalyzeFile_PreservesPackageImports(t *testing.T) {
+	// Regression test: AnalyzeFile must forward PackageImports and DefForms
+	// to Analyze. Previously it dropped them when constructing the internal Config.
+	source := []byte("(in-package 'svc)\n(defun f () (when true 1))")
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"utils": {{Name: "when", Kind: SymMacro, Package: "utils"}},
+		},
+		PackageImports: map[string][]string{
+			"svc": {"utils"},
+		},
+	}
+	result := AnalyzeFile(source, "test.lisp", cfg)
+	require.NotNil(t, result)
+
+	unresolvedNames := make(map[string]bool)
+	for _, u := range result.Unresolved {
+		unresolvedNames[u.Name] = true
+	}
+	assert.False(t, unresolvedNames["when"],
+		"AnalyzeFile should forward PackageImports so 'when' resolves")
 }
 
 // parseAndAnalyzeWithConfig is a test helper that parses source and runs
