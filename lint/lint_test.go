@@ -1963,6 +1963,27 @@ func TestShadowing_DiagnosticPosition_NestedLambda(t *testing.T) {
 	assert.Equal(t, 26, diags[0].EndPos.Col) // 25 + len("x") = 26
 }
 
+func TestUndefinedSymbol_HasEndPos(t *testing.T) {
+	source := `(defun f () (unknown-fn 42))`
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	require.Len(t, diags, 1)
+	// "unknown-fn" starts at col 14: "(defun f () (" = 13 chars, then "unknown-fn"
+	assert.Equal(t, 1, diags[0].Pos.Line)
+	assert.Equal(t, 14, diags[0].Pos.Col)
+	assert.Equal(t, 1, diags[0].EndPos.Line)
+	assert.Equal(t, 24, diags[0].EndPos.Col) // 14 + len("unknown-fn") = 24
+}
+
+func TestUserArity_HasEndPos(t *testing.T) {
+	source := "(defun add (x y) (+ x y))\n(add 1)"
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	require.Len(t, diags, 1)
+	assert.True(t, diags[0].Pos.Line > 0, "Pos should be set")
+	assert.True(t, diags[0].Pos.Col > 0, "Pos.Col should be set")
+	assert.True(t, diags[0].EndPos.Line > 0, "EndPos should be set")
+	assert.True(t, diags[0].EndPos.Col > 0, "EndPos.Col should be set")
+}
+
 func TestShadowing_Negative_ExternalSymbol(t *testing.T) {
 	// Parameters should not trigger shadowing when the outer symbol
 	// is from an external source (workspace scan / package import).

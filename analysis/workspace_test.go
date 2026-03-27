@@ -1377,6 +1377,77 @@ func TestPrescanWorkspace_PhylumPattern(t *testing.T) {
 		"authenticate from auth.lisp should resolve in test file (same myapp package)")
 }
 
+func TestPrescanWorkspace_ExplicitUserPackageNotRemapped(t *testing.T) {
+	dir := t.TempDir()
+
+	// main.lisp sets svc and loads a file that explicitly declares user package.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'svc)
+(load-file "user-prefs.lisp")
+`), 0600))
+	// user-prefs.lisp EXPLICITLY declares user package — must NOT be remapped.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "user-prefs.lisp"), []byte(`
+(in-package 'user)
+(defun pref-fn () 1)
+(export 'pref-fn)
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "svc", prescan.DefaultPackage)
+
+	for _, d := range prescan.AllDefs {
+		if d.Name == "pref-fn" {
+			assert.Equal(t, "user", d.Package,
+				"explicit (in-package 'user) should NOT be remapped to svc")
+			return
+		}
+	}
+	t.Fatal("pref-fn should be in AllDefs")
+}
+
+func TestPrescanWorkspace_NoMainLisp(t *testing.T) {
+	dir := t.TempDir()
+
+	// Workspace without main.lisp — no DefaultPackage, defs stay in user.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "lib.lisp"), []byte(`
+(defun lib-fn () 1)
+(export 'lib-fn)
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "", prescan.DefaultPackage)
+
+	for _, d := range prescan.AllDefs {
+		if d.Name == "lib-fn" {
+			assert.Equal(t, "user", d.Package,
+				"without main.lisp, defs should stay in user package")
+			return
+		}
+	}
+	t.Fatal("lib-fn should be in AllDefs")
+}
+
+func TestBuildLoadTree_CycleDetection(t *testing.T) {
+	dir := t.TempDir()
+
+	// a.lisp loads b.lisp, b.lisp loads a.lisp — must terminate.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.lisp"), []byte(`
+(in-package 'svc)
+(load-file "b.lisp")
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`
+(load-file "a.lisp")
+`), 0600))
+
+	tree := buildLoadTree(filepath.Join(dir, "a.lisp"))
+	assert.NotNil(t, tree, "should terminate without infinite loop")
+
+	absB, _ := filepath.Abs(filepath.Join(dir, "b.lisp"))
+	assert.Equal(t, "svc", tree[absB])
+}
+
 func TestScanConfig_EffectiveDefaults(t *testing.T) {
 	// Verify the effective* methods return defaults for zero/nil.
 	var nilCfg *ScanConfig

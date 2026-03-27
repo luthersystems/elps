@@ -162,6 +162,11 @@ func TestWordAtPosition(t *testing.T) {
 		assert.Equal(t, "*global*", wordAtPosition("*global*", 0, 0))
 		assert.Equal(t, "set!", wordAtPosition("(set! x 1)", 0, 1))
 	})
+	t.Run("ampersand keywords", func(t *testing.T) {
+		assert.Equal(t, "&rest", wordAtPosition("(defun f (&rest args) args)", 0, 10))
+		assert.Equal(t, "&optional", wordAtPosition("(defun f (&optional x) x)", 0, 10))
+		assert.Equal(t, "&key", wordAtPosition("(defun f (&key x) x)", 0, 10))
+	})
 }
 
 // --- Document store tests ---
@@ -3496,64 +3501,41 @@ func TestCrossFileUsePackage(t *testing.T) {
 	}
 }
 
-func TestHover_Keyword_Rest(t *testing.T) {
-	s := testServer()
-	content := `(defun foo (&rest args) args)`
-	doc := openDoc(s, "file:///test.lisp", content)
-	s.ensureAnalysis(doc)
+func TestHover_AllKeywords(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		col     uint32
+		expect  string
+	}{
+		{"&rest", `(defun f (&rest args) args)`, 10, "variadic"},
+		{"&optional", `(defun f (&optional x) x)`, 10, "optional"},
+		{"&key", `(defun f (&key x) x)`, 10, "keyword"},
+		{"unquote", `(quasiquote (list (unquote x)))`, 19, "quasiquote"},
+		{"unquote-splicing", `(quasiquote (list (unquote-splicing xs)))`, 19, "splices"},
+		{"condition", `(handler-bind ((condition (lambda (e) e))) 1)`, 16, "handler-bind"},
+		{"else", `(cond ((= x 1) "one") (else "other"))`, 23, "cond"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := testServer()
+			doc := openDoc(s, "file:///test.lisp", tt.content)
+			s.ensureAnalysis(doc)
 
-	// Hover on "&rest" at col 12 (0-based).
-	hover, err := s.textDocumentHover(nil, &protocol.HoverParams{
-		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
-			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
-			Position:     protocol.Position{Line: 0, Character: 12},
-		},
-	})
-	require.NoError(t, err)
-	require.NotNil(t, hover, "&rest should have hover docs")
-	mc, ok := hover.Contents.(protocol.MarkupContent)
-	require.True(t, ok)
-	assert.Contains(t, mc.Value, "variadic parameter")
-}
-
-func TestHover_Keyword_Unquote(t *testing.T) {
-	s := testServer()
-	content := `(quasiquote (list (unquote x)))`
-	doc := openDoc(s, "file:///test.lisp", content)
-	s.ensureAnalysis(doc)
-
-	// Hover on "unquote" at col 19 (0-based).
-	hover, err := s.textDocumentHover(nil, &protocol.HoverParams{
-		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
-			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
-			Position:     protocol.Position{Line: 0, Character: 19},
-		},
-	})
-	require.NoError(t, err)
-	require.NotNil(t, hover, "unquote should have hover docs")
-	mc, ok := hover.Contents.(protocol.MarkupContent)
-	require.True(t, ok)
-	assert.Contains(t, mc.Value, "quasiquote")
-}
-
-func TestHover_Keyword_Condition(t *testing.T) {
-	s := testServer()
-	content := `(handler-bind ((condition (lambda (e) e))) 1)`
-	doc := openDoc(s, "file:///test.lisp", content)
-	s.ensureAnalysis(doc)
-
-	// Hover on "condition" at col 16 (0-based).
-	hover, err := s.textDocumentHover(nil, &protocol.HoverParams{
-		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
-			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
-			Position:     protocol.Position{Line: 0, Character: 16},
-		},
-	})
-	require.NoError(t, err)
-	require.NotNil(t, hover, "condition should have hover docs")
-	mc, ok := hover.Contents.(protocol.MarkupContent)
-	require.True(t, ok)
-	assert.Contains(t, mc.Value, "handler-bind")
+			hover, err := s.textDocumentHover(nil, &protocol.HoverParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+					Position:     protocol.Position{Line: 0, Character: tt.col},
+				},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, hover, "%s should have hover docs", tt.name)
+			mc, ok := hover.Contents.(protocol.MarkupContent)
+			require.True(t, ok)
+			assert.Contains(t, mc.Value, tt.expect,
+				"%s hover should contain %q", tt.name, tt.expect)
+		})
+	}
 }
 
 // --- Inlay hint tests ---
