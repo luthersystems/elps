@@ -1248,6 +1248,135 @@ func TestPrescanWorkspace_DefaultPackage(t *testing.T) {
 	assert.True(t, found, "do-work should be in AllDefs")
 }
 
+// TestPrescanWorkspace_PhylumPattern replicates a typical phylum workspace:
+// - main.lisp sets in-package and imports packages via use-package
+// - main.lisp loads a utils file that switches packages then switches back
+// - main.lisp loads many bare files that inherit the package context
+// - test files have explicit in-package + use-package 'testing
+// - cross-file symbol resolution must work for all patterns
+func TestPrescanWorkspace_PhylumPattern(t *testing.T) {
+	dir := t.TempDir()
+
+	// main.lisp: entry point — sets package, imports, loads files.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'myapp)
+(use-package 'router)
+(use-package 'myutils)
+
+(load-file "myutils.lisp")
+(load-file "auth.lisp")
+(load-file "client.lisp")
+(load-file "init.lisp")
+`), 0600))
+
+	// myutils.lisp: defines symbols in myutils package, then returns to myapp.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "myutils.lisp"), []byte(`
+(in-package 'myutils)
+(defun helper-fn (x) (+ x 1))
+(export 'helper-fn)
+(defun string-check (s) (not (nil? s)))
+(export 'string-check)
+(in-package 'myapp)
+`), 0600))
+
+	// router package: provides route-ok (simulates Go-registered package).
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "router.lisp"), []byte(`
+(in-package 'router)
+(defun route-ok (data) data)
+(export 'route-ok)
+`), 0600))
+
+	// auth.lisp: bare file — no in-package. Uses symbols from imported packages.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "auth.lisp"), []byte(`
+(defun authenticate (token)
+  (string-check token))
+
+(defun auth-route (req)
+  (route-ok (authenticate (get req "token"))))
+
+(export 'authenticate)
+(export 'auth-route)
+`), 0600))
+
+	// client.lisp: bare file — references symbols from auth.lisp (load order).
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "client.lisp"), []byte(`
+(defun get-client (id)
+  (helper-fn id))
+
+(export 'get-client)
+`), 0600))
+
+	// init.lisp: bare file — defines bootstrap constants.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "init.lisp"), []byte(`
+(set 'bootstrap-id "boot-001")
+`), 0600))
+
+	// auth_test.lisp: test file — explicit in-package + use-package 'testing.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "auth_test.lisp"), []byte(`
+(in-package 'myapp)
+(use-package 'testing)
+
+(test "auth works"
+  (assert-equal "ok" (authenticate "ok")))
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+
+	// Verify DefaultPackage is myapp (from main.lisp).
+	assert.Equal(t, "myapp", prescan.DefaultPackage)
+
+	// Verify bare file definitions are in myapp package.
+	defPkgs := make(map[string]string)
+	for _, d := range prescan.AllDefs {
+		defPkgs[d.Name] = d.Package
+	}
+	assert.Equal(t, "myapp", defPkgs["authenticate"], "bare file def should be in myapp")
+	assert.Equal(t, "myapp", defPkgs["auth-route"], "bare file def should be in myapp")
+	assert.Equal(t, "myapp", defPkgs["get-client"], "bare file def should be in myapp")
+	assert.Equal(t, "myapp", defPkgs["bootstrap-id"], "bare file constant should be in myapp")
+	assert.Equal(t, "myutils", defPkgs["helper-fn"], "myutils def stays in myutils")
+	assert.Equal(t, "myutils", defPkgs["string-check"], "myutils def stays in myutils")
+
+	// Verify PackageImports includes all use-package declarations.
+	assert.Contains(t, prescan.PackageImports["myapp"], "router")
+	assert.Contains(t, prescan.PackageImports["myapp"], "myutils")
+	assert.Contains(t, prescan.PackageImports["myapp"], "testing")
+
+	// Verify cross-file resolution works: analyze auth.lisp (bare file)
+	// with the prescan config — helper-fn and route-ok should resolve.
+	cfg := &Config{
+		ExtraGlobals:   prescan.AllDefs,
+		PackageExports: prescan.PkgExports,
+		PackageImports: prescan.PackageImports,
+		DefaultPackage: prescan.DefaultPackage,
+	}
+	authSrc, _ := os.ReadFile(filepath.Join(dir, "auth.lisp"))
+	result := AnalyzeFile(authSrc, filepath.Join(dir, "auth.lisp"), cfg)
+	require.NotNil(t, result)
+
+	unresolvedNames := make(map[string]bool)
+	for _, u := range result.Unresolved {
+		unresolvedNames[u.Name] = true
+	}
+	assert.False(t, unresolvedNames["string-check"],
+		"string-check from myutils should resolve via cross-file use-package")
+	assert.False(t, unresolvedNames["route-ok"],
+		"route-ok from router should resolve via cross-file use-package")
+
+	// Verify test file resolution: auth_test.lisp has explicit in-package.
+	testSrc, _ := os.ReadFile(filepath.Join(dir, "auth_test.lisp"))
+	testResult := AnalyzeFile(testSrc, filepath.Join(dir, "auth_test.lisp"), cfg)
+	require.NotNil(t, testResult)
+
+	testUnresolved := make(map[string]bool)
+	for _, u := range testResult.Unresolved {
+		testUnresolved[u.Name] = true
+	}
+	assert.False(t, testUnresolved["authenticate"],
+		"authenticate from auth.lisp should resolve in test file (same myapp package)")
+}
+
 func TestScanConfig_EffectiveDefaults(t *testing.T) {
 	// Verify the effective* methods return defaults for zero/nil.
 	var nilCfg *ScanConfig
