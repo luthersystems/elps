@@ -71,20 +71,24 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 	// Phase 3: Apply workspace-level use-package imports. These come from
 	// other files in the workspace (e.g. main.lisp having use-package 'utils)
 	// and make their symbols available to all files in the same package.
+	// Collect ALL packages the file declares (files may have multiple
+	// in-package) and import for each.
 	if a.cfg != nil && len(a.cfg.PackageImports) > 0 {
-		currentPkg = "user"
+		filePkgs := map[string]bool{"user": true}
 		for _, expr := range exprs {
 			if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
 				continue
 			}
 			if astutil.HeadSymbol(expr) == "in-package" && astutil.ArgCount(expr) >= 1 {
 				if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
-					currentPkg = pkgName
+					filePkgs[pkgName] = true
 				}
 			}
 		}
-		for _, importPkg := range a.cfg.PackageImports[currentPkg] {
-			a.importPackageSymbols(scope, importPkg, currentPkg)
+		for pkg := range filePkgs {
+			for _, importPkg := range a.cfg.PackageImports[pkg] {
+				a.importPackageSymbols(scope, importPkg, pkg)
+			}
 		}
 	}
 }

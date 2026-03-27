@@ -1505,6 +1505,30 @@ func TestAnalyze_CrossFileUsePackage(t *testing.T) {
 	assert.False(t, unresolvedNames["when"], "with PackageImports, 'when' should resolve")
 }
 
+func TestAnalyze_CrossFileUsePackage_MultiPackageFile(t *testing.T) {
+	// Regression test: a file that declares two in-package sections should
+	// get cross-file imports for BOTH packages, not just the last one.
+	source := "(in-package 'pkg-a)\n(defun fa () (helper-a 1))\n" +
+		"(in-package 'pkg-b)\n(defun fb () (helper-b 2))"
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"lib-a": {{Name: "helper-a", Kind: SymFunction, Package: "lib-a"}},
+			"lib-b": {{Name: "helper-b", Kind: SymFunction, Package: "lib-b"}},
+		},
+		PackageImports: map[string][]string{
+			"pkg-a": {"lib-a"},
+			"pkg-b": {"lib-b"},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, source, cfg)
+	unresolvedNames := make(map[string]bool)
+	for _, u := range result.Unresolved {
+		unresolvedNames[u.Name] = true
+	}
+	assert.False(t, unresolvedNames["helper-a"], "helper-a should resolve via pkg-a's cross-file imports")
+	assert.False(t, unresolvedNames["helper-b"], "helper-b should resolve via pkg-b's cross-file imports")
+}
+
 // parseAndAnalyzeWithConfig is a test helper that parses source and runs
 // analysis with a custom Config.
 func parseAndAnalyzeWithConfig(t *testing.T, source string, cfg *Config) *Result {

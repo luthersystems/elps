@@ -233,18 +233,23 @@ func matchesInclude(name string, includes []string) bool {
 }
 
 // appendUnique appends items to dst, skipping duplicates already present.
+// Uses linear scan — expected cardinality is small (1-3 imports per package).
 func appendUnique(dst []string, items ...string) []string {
-	seen := make(map[string]bool, len(dst))
-	for _, s := range dst {
-		seen[s] = true
-	}
 	for _, s := range items {
-		if !seen[s] {
+		if !sliceContains(dst, s) {
 			dst = append(dst, s)
-			seen[s] = true
 		}
 	}
 	return dst
+}
+
+func sliceContains(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // scanFileFull parses a file once and extracts exported globals, package-grouped
