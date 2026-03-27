@@ -1878,12 +1878,20 @@ func TestUnusedFunction_HasNotes(t *testing.T) {
 
 // --- shadowing ---
 
-func TestShadowing_Positive_ParamShadowsBuiltin(t *testing.T) {
+func TestShadowing_Negative_ParamShadowsBuiltin(t *testing.T) {
+	// Parameters shadowing builtins should not be reported — names like
+	// car, map, expr are commonly used as parameter names.
 	source := `(defun foo (car) (+ car 1))`
 	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
-	assert.Len(t, diags, 1)
-	assertHasDiag(t, diags, "shadows")
-	assertHasDiag(t, diags, "car")
+	assertNoDiags(t, diags)
+}
+
+func TestShadowing_Negative_ParamShadowsSpecialOp(t *testing.T) {
+	// Parameters shadowing special-ops should not be reported — expr is
+	// a special-op but also the most common macro parameter name.
+	source := `(defmacro foo (&rest expr) expr)`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	assertNoDiags(t, diags)
 }
 
 func TestShadowing_Positive_LetShadowsParam(t *testing.T) {
@@ -1913,7 +1921,8 @@ func TestShadowing_Negative_NoSemantics(t *testing.T) {
 }
 
 func TestShadowing_HasNotes(t *testing.T) {
-	source := `(defun foo (car) car)`
+	// Use let-shadows-param instead of param-shadows-builtin (now suppressed).
+	source := `(defun foo (x) (let ((x 2)) (+ x 1)))`
 	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
 	require.Len(t, diags, 1)
 	assert.NotEmpty(t, diags[0].Notes)
@@ -1921,27 +1930,27 @@ func TestShadowing_HasNotes(t *testing.T) {
 }
 
 func TestShadowing_DiagnosticPosition(t *testing.T) {
-	// Verify the diagnostic position points to "car" in the formals, not elsewhere.
-	source := `(defun foo (car) car)`
+	// Verify the diagnostic position points to "x" in the let binding.
+	source := `(defun foo (x) (let ((x 2)) x))`
 	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
 	require.Len(t, diags, 1)
-	// "car" starts at col 13 (1-based): "(defun foo (" = 12 chars, then "car"
+	// let binding "x" starts at col 23: "(defun foo (x) (let ((" = 22 chars, then "x"
 	assert.Equal(t, 1, diags[0].Pos.Line)
-	assert.Equal(t, 13, diags[0].Pos.Col)
+	assert.Equal(t, 23, diags[0].Pos.Col)
 	assert.Equal(t, 1, diags[0].EndPos.Line)
-	assert.Equal(t, 16, diags[0].EndPos.Col) // 13 + len("car") = 16
+	assert.Equal(t, 24, diags[0].EndPos.Col) // 23 + len("x") = 24
 }
 
-func TestShadowing_DiagnosticPosition_RestParam(t *testing.T) {
-	// Verify position points to "expr" after &rest, not to &rest itself.
-	source := `(defmacro bar (&rest expr) expr)`
+func TestShadowing_DiagnosticPosition_NestedLambda(t *testing.T) {
+	// Verify position for a lambda param that shadows an outer param.
+	source := "(defun foo (x) (lambda (x) x))"
 	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
 	require.Len(t, diags, 1)
-	// "&rest" is at col 16, "expr" is at col 22: "(defmacro bar (&rest " = 21 chars
+	// lambda "x" at col 25: "(defun foo (x) (lambda (" = 24 chars, then "x"
 	assert.Equal(t, 1, diags[0].Pos.Line)
-	assert.Equal(t, 22, diags[0].Pos.Col)
+	assert.Equal(t, 25, diags[0].Pos.Col)
 	assert.Equal(t, 1, diags[0].EndPos.Line)
-	assert.Equal(t, 26, diags[0].EndPos.Col) // 22 + len("expr") = 26
+	assert.Equal(t, 26, diags[0].EndPos.Col) // 25 + len("x") = 26
 }
 
 func TestShadowing_Negative_ExternalSymbol(t *testing.T) {

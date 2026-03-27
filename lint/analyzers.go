@@ -773,6 +773,13 @@ var AnalyzerShadowing = &Analyzer{
 			if outer.External {
 				continue
 			}
+			// Don't report when a parameter shadows a builtin or special-op.
+			// Names like expr, car, map are pervasive in formals and shadowing
+			// them is idiomatic — the builtins themselves use these names.
+			if sym.Kind == analysis.SymParameter &&
+				(outer.Kind == analysis.SymSpecialOp || outer.Kind == analysis.SymBuiltin) {
+				continue
+			}
 			pass.Report(Diagnostic{
 				Message: fmt.Sprintf("%s '%s' shadows %s from enclosing scope", sym.Kind, sym.Name, outer.Kind),
 				Pos:     posFromSource(sym.Source),
