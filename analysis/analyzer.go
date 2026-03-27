@@ -23,7 +23,7 @@ func (a *analyzer) defaultPackage() string {
 	if a.cfg != nil && a.cfg.DefaultPackage != "" {
 		return a.cfg.DefaultPackage
 	}
-	return "user"
+	return lisp.DefaultUserPackage
 }
 
 // prescan walks top-level expressions to register forward-referenceable

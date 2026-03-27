@@ -275,7 +275,7 @@ func scanFilePackage(exprs []*lisp.LVal) string {
 func buildLoadTree(mainPath string) map[string]string {
 	result := make(map[string]string)
 	visited := make(map[string]bool)
-	walkLoadFile(mainPath, "user", result, visited)
+	walkLoadFile(mainPath, lisp.DefaultUserPackage, result, visited)
 	return result
 }
 
@@ -359,7 +359,7 @@ func extractDefinitions(exprs []*lisp.LVal) []ExternalSymbol {
 	// Collect top-level definitions keyed by package-qualified name so
 	// multi-package files can define the same symbol in different packages.
 	defs := make(map[string]*ExternalSymbol)
-	currentPkg := "user" // default package
+	currentPkg := lisp.DefaultUserPackage
 
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
@@ -407,7 +407,7 @@ func definitionKey(pkg, name string) string {
 
 func scanExportedDefinitionKeys(exprs []*lisp.LVal) map[string]bool {
 	exported := make(map[string]bool)
-	currentPkg := "user"
+	currentPkg := lisp.DefaultUserPackage
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
 			continue
@@ -526,7 +526,7 @@ func scanExportNames(expr *lisp.LVal) []string {
 // packages it imports via use-package.
 func scanUsePackages(exprs []*lisp.LVal) map[string][]string {
 	result := make(map[string][]string)
-	currentPkg := "user"
+	currentPkg := lisp.DefaultUserPackage
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
 			continue
@@ -941,54 +941,63 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		}
 	}
 
-	// Remap bare-file symbols from "user" to their load-tree package.
-	// Files loaded by main.lisp inherit the package context from the load point.
+	// Remap bare-file symbols from the default user package to their
+	// load-tree package. Only bare files (no in-package) are remapped —
+	// files with explicit in-package already have correct package assignments.
 	if defaultPkg != "" && len(loadTree) > 0 {
-		for i := range prescan.AllDefs {
-			if prescan.AllDefs[i].Package != "user" {
-				continue
-			}
-			if prescan.AllDefs[i].Source != nil {
-				absFile := prescan.AllDefs[i].Source.File
-				if pkg, ok := loadTree[absFile]; ok {
-					prescan.AllDefs[i].Package = pkg
+		// Build set of bare-file paths for targeted remapping.
+		bareFiles := make(map[string]bool)
+		for i, r := range results {
+			if r.filePkg == "" {
+				if abs, err := filepath.Abs(paths[i]); err == nil {
+					bareFiles[abs] = true
 				}
+			}
+		}
+
+		userPkg := lisp.DefaultUserPackage
+		shouldRemap := func(sym *ExternalSymbol) (string, bool) {
+			if sym.Package != userPkg || sym.Source == nil {
+				return "", false
+			}
+			if !bareFiles[sym.Source.File] {
+				return "", false
+			}
+			pkg, ok := loadTree[sym.Source.File]
+			return pkg, ok
+		}
+
+		for i := range prescan.AllDefs {
+			if pkg, ok := shouldRemap(&prescan.AllDefs[i]); ok {
+				prescan.AllDefs[i].Package = pkg
 			}
 		}
 		for i := range prescan.ExportedGlobals {
-			if prescan.ExportedGlobals[i].Package != "user" {
-				continue
-			}
-			if prescan.ExportedGlobals[i].Source != nil {
-				absFile := prescan.ExportedGlobals[i].Source.File
-				if pkg, ok := loadTree[absFile]; ok {
-					prescan.ExportedGlobals[i].Package = pkg
-				}
+			if pkg, ok := shouldRemap(&prescan.ExportedGlobals[i]); ok {
+				prescan.ExportedGlobals[i].Package = pkg
 			}
 		}
 		// Remap PkgExports: move remapped symbols out of "user".
-		if userExports, ok := prescan.PkgExports["user"]; ok {
+		if userExports, ok := prescan.PkgExports[userPkg]; ok {
 			var remaining []ExternalSymbol
 			for i := range userExports {
-				if userExports[i].Source != nil {
-					if pkg, ok := loadTree[userExports[i].Source.File]; ok {
-						userExports[i].Package = pkg
-						prescan.PkgExports[pkg] = append(prescan.PkgExports[pkg], userExports[i])
-						continue
-					}
+				if pkg, ok := shouldRemap(&userExports[i]); ok {
+					userExports[i].Package = pkg
+					prescan.PkgExports[pkg] = append(prescan.PkgExports[pkg], userExports[i])
+					continue
 				}
 				remaining = append(remaining, userExports[i])
 			}
 			if len(remaining) > 0 {
-				prescan.PkgExports["user"] = remaining
+				prescan.PkgExports[userPkg] = remaining
 			} else {
-				delete(prescan.PkgExports, "user")
+				delete(prescan.PkgExports, userPkg)
 			}
 		}
 		// Merge use-package imports from "user" into default package.
-		if userImports, ok := prescan.PackageImports["user"]; ok {
+		if userImports, ok := prescan.PackageImports[userPkg]; ok {
 			prescan.PackageImports[defaultPkg] = appendUnique(prescan.PackageImports[defaultPkg], userImports...)
-			delete(prescan.PackageImports, "user")
+			delete(prescan.PackageImports, userPkg)
 		}
 	}
 

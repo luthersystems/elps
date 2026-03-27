@@ -594,6 +594,13 @@ application to create more powerful abstractions over typed data.
 Packages allow namespace isolation for components of a code base as its
 complexity increases.
 
+### The Default Package
+
+When the ELPS interpreter starts, all code executes in the `user` package.
+This is the default package for any file that does not contain an
+`(in-package ...)` declaration.  Files loaded via `load-file` inherit the
+caller's current package context at the point of the load call.
+
 ### Basics
 
 Packages are created/modified using the `in-package`
