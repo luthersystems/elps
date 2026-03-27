@@ -1152,6 +1152,102 @@ func TestPrescanWorkspace_PackageImports_Dedup(t *testing.T) {
 	assert.Equal(t, []string{"utils"}, prescan.PackageImports["svc"])
 }
 
+func TestBuildLoadTree_Basic(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'svc)
+(load-file "a.lisp")
+(load-file "b.lisp")
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.lisp"), []byte(`(defun a-fn () 1)`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`(defun b-fn () 2)`), 0600))
+
+	tree := buildLoadTree(filepath.Join(dir, "main.lisp"))
+
+	absA, _ := filepath.Abs(filepath.Join(dir, "a.lisp"))
+	absB, _ := filepath.Abs(filepath.Join(dir, "b.lisp"))
+	assert.Equal(t, "svc", tree[absA])
+	assert.Equal(t, "svc", tree[absB])
+}
+
+func TestBuildLoadTree_PackageSwitch(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'svc)
+(load-file "a.lisp")
+(in-package 'other)
+(load-file "b.lisp")
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.lisp"), []byte(`(defun a-fn () 1)`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`(defun b-fn () 2)`), 0600))
+
+	tree := buildLoadTree(filepath.Join(dir, "main.lisp"))
+
+	absA, _ := filepath.Abs(filepath.Join(dir, "a.lisp"))
+	absB, _ := filepath.Abs(filepath.Join(dir, "b.lisp"))
+	assert.Equal(t, "svc", tree[absA])
+	assert.Equal(t, "other", tree[absB])
+}
+
+func TestBuildLoadTree_Nested(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'svc)
+(load-file "a.lisp")
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.lisp"), []byte(`
+(load-file "b.lisp")
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`(defun b-fn () 2)`), 0600))
+
+	tree := buildLoadTree(filepath.Join(dir, "main.lisp"))
+
+	absA, _ := filepath.Abs(filepath.Join(dir, "a.lisp"))
+	absB, _ := filepath.Abs(filepath.Join(dir, "b.lisp"))
+	assert.Equal(t, "svc", tree[absA], "a.lisp loaded from main in svc context")
+	assert.Equal(t, "svc", tree[absB], "b.lisp loaded from a.lisp which inherited svc context")
+}
+
+func TestPrescanWorkspace_DefaultPackage(t *testing.T) {
+	dir := t.TempDir()
+
+	// main.lisp sets the package and loads a bare file.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'svc)
+(use-package 'helpers)
+(load-file "consumer.lisp")
+`), 0600))
+	// helpers.lisp exports helper-fn.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "helpers.lisp"), []byte(`
+(in-package 'helpers)
+(defun helper-fn (x) (+ x 1))
+(export 'helper-fn)
+`), 0600))
+	// consumer.lisp is bare — no in-package.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "consumer.lisp"), []byte(`
+(defun do-work () (helper-fn 42))
+(export 'do-work)
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, "svc", prescan.DefaultPackage)
+
+	// do-work from bare consumer.lisp should be in svc package (not user).
+	found := false
+	for _, d := range prescan.AllDefs {
+		if d.Name == "do-work" {
+			assert.Equal(t, "svc", d.Package, "bare file def should be remapped to main.lisp's package")
+			found = true
+		}
+	}
+	assert.True(t, found, "do-work should be in AllDefs")
+}
+
 func TestScanConfig_EffectiveDefaults(t *testing.T) {
 	// Verify the effective* methods return defaults for zero/nil.
 	var nilCfg *ScanConfig

@@ -252,17 +252,94 @@ func sliceContains(ss []string, s string) bool {
 	return false
 }
 
+// scanFilePackage returns the first in-package declaration in the expressions,
+// or "" if the file has no in-package (bare file).
+func scanFilePackage(exprs []*lisp.LVal) string {
+	for _, expr := range exprs {
+		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+			continue
+		}
+		if astutil.HeadSymbol(expr) == "in-package" {
+			if name := scanPackageName(expr); name != "" {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+// buildLoadTree parses mainPath and recursively walks load-file calls to build
+// a map from absolute file path to the package context inherited from the load
+// chain. This mirrors the runtime behavior where load-file executes in the
+// caller's current package context.
+func buildLoadTree(mainPath string) map[string]string {
+	result := make(map[string]string)
+	visited := make(map[string]bool)
+	walkLoadFile(mainPath, "user", result, visited)
+	return result
+}
+
+// walkLoadFile recursively parses a file and tracks package context through
+// in-package and load-file calls.
+func walkLoadFile(filePath, currentPkg string, result map[string]string, visited map[string]bool) {
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return
+	}
+	if visited[absPath] {
+		return
+	}
+	visited[absPath] = true
+
+	src, err := os.ReadFile(absPath) //nolint:gosec // workspace file
+	if err != nil {
+		return
+	}
+	s := token.NewScanner(absPath, bytes.NewReader(src))
+	p := rdparser.New(s)
+	exprs, err := p.ParseProgram()
+	if err != nil {
+		return
+	}
+
+	dir := filepath.Dir(absPath)
+	for _, expr := range exprs {
+		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+			continue
+		}
+		head := astutil.HeadSymbol(expr)
+		switch head {
+		case "in-package":
+			if name := scanPackageName(expr); name != "" {
+				currentPkg = name
+			}
+		case "load-file":
+			if len(expr.Cells) >= 2 && expr.Cells[1].Type == lisp.LString {
+				loadPath := filepath.Join(dir, expr.Cells[1].Str)
+				absLoad, absErr := filepath.Abs(loadPath)
+				if absErr != nil {
+					continue
+				}
+				result[absLoad] = currentPkg
+				walkLoadFile(absLoad, currentPkg, result, visited)
+			}
+		}
+	}
+}
+
 // scanFileFull parses a file once and extracts exported globals, package-grouped
-// exports, and all definitions in a single pass.
-func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, usePackages map[string][]string) {
+// exports, all definitions, use-package declarations, and the file's primary
+// package ("" for bare files without in-package).
+func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, usePackages map[string][]string, filePkg string) {
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	p := rdparser.New(s)
 
 	exprs, err := p.ParseProgram()
 	if err != nil {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, ""
 	}
 
+	filePkg = scanFilePackage(exprs)
 	defs := extractDefinitions(exprs)
 	exported := scanExportedDefinitionKeys(exprs)
 
@@ -274,7 +351,7 @@ func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkg
 		}
 	}
 	usePackages = scanUsePackages(exprs)
-	return globals, pkgs, defs, usePackages
+	return globals, pkgs, defs, usePackages, filePkg
 }
 
 // extractDefinitions collects top-level definitions from pre-parsed expressions.
@@ -491,6 +568,7 @@ func AnalyzeFile(source []byte, filename string, cfg *Config) *Result {
 		PackageExports: fileCfg.PackageExports,
 		DefForms:       fileCfg.DefForms,
 		PackageImports: fileCfg.PackageImports,
+		DefaultPackage: fileCfg.DefaultPackage,
 		Filename:       filename,
 	}
 	return Analyze(exprs, fileCfg)
@@ -764,6 +842,11 @@ type WorkspacePrescan struct {
 	// via use-package across all workspace files. This enables per-file
 	// analysis to resolve symbols from cross-file use-package declarations.
 	PackageImports map[string][]string
+	// DefaultPackage is the package declared in main.lisp (if present).
+	// Used as the default for bare files (no in-package) so that cross-file
+	// resolution works in projects where files inherit the package from
+	// load order.
+	DefaultPackage string
 }
 
 // PrescanWorkspace performs a single-pass workspace scan that collects
@@ -782,6 +865,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		allDefs     []ExternalSymbol
 		defForms    []DefFormSpec
 		usePackages map[string][]string
+		filePkg     string // "" for bare files
 	}
 
 	results := make([]fileResult, len(paths))
@@ -809,19 +893,41 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 				if readErr != nil {
 					continue
 				}
-				g, p, d, up := scanFileFull(fileSrc, paths[i])
+				g, p, d, up, fp := scanFileFull(fileSrc, paths[i])
 				df := extractDefFormSpecs(d)
-				results[i] = fileResult{globals: g, pkgs: p, allDefs: d, defForms: df, usePackages: up}
+				results[i] = fileResult{globals: g, pkgs: p, allDefs: d, defForms: df, usePackages: up, filePkg: fp}
 			}
 		}()
 	}
 	wg.Wait()
+
+	// Build load tree from main.lisp to infer packages for bare files.
+	var mainPath string
+	loadTree := make(map[string]string)
+	var defaultPkg string
+	for _, p := range paths {
+		if filepath.Base(p) == "main.lisp" {
+			mainPath = p
+			break
+		}
+	}
+	if mainPath != "" {
+		loadTree = buildLoadTree(mainPath)
+		// Find main.lisp's package from its fileResult.
+		for i, r := range results {
+			if paths[i] == mainPath && r.filePkg != "" {
+				defaultPkg = r.filePkg
+				break
+			}
+		}
+	}
 
 	prescan := &WorkspacePrescan{
 		Files:          paths,
 		Truncated:      truncated,
 		PkgExports:     make(map[string][]ExternalSymbol),
 		PackageImports: make(map[string][]string),
+		DefaultPackage: defaultPkg,
 	}
 	for _, r := range results {
 		prescan.ExportedGlobals = append(prescan.ExportedGlobals, r.globals...)
@@ -834,6 +940,58 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 			prescan.PackageImports[pkg] = appendUnique(prescan.PackageImports[pkg], imports...)
 		}
 	}
+
+	// Remap bare-file symbols from "user" to their load-tree package.
+	// Files loaded by main.lisp inherit the package context from the load point.
+	if defaultPkg != "" && len(loadTree) > 0 {
+		for i := range prescan.AllDefs {
+			if prescan.AllDefs[i].Package != "user" {
+				continue
+			}
+			if prescan.AllDefs[i].Source != nil {
+				absFile := prescan.AllDefs[i].Source.File
+				if pkg, ok := loadTree[absFile]; ok {
+					prescan.AllDefs[i].Package = pkg
+				}
+			}
+		}
+		for i := range prescan.ExportedGlobals {
+			if prescan.ExportedGlobals[i].Package != "user" {
+				continue
+			}
+			if prescan.ExportedGlobals[i].Source != nil {
+				absFile := prescan.ExportedGlobals[i].Source.File
+				if pkg, ok := loadTree[absFile]; ok {
+					prescan.ExportedGlobals[i].Package = pkg
+				}
+			}
+		}
+		// Remap PkgExports: move remapped symbols out of "user".
+		if userExports, ok := prescan.PkgExports["user"]; ok {
+			var remaining []ExternalSymbol
+			for i := range userExports {
+				if userExports[i].Source != nil {
+					if pkg, ok := loadTree[userExports[i].Source.File]; ok {
+						userExports[i].Package = pkg
+						prescan.PkgExports[pkg] = append(prescan.PkgExports[pkg], userExports[i])
+						continue
+					}
+				}
+				remaining = append(remaining, userExports[i])
+			}
+			if len(remaining) > 0 {
+				prescan.PkgExports["user"] = remaining
+			} else {
+				delete(prescan.PkgExports, "user")
+			}
+		}
+		// Merge use-package imports from "user" into default package.
+		if userImports, ok := prescan.PackageImports["user"]; ok {
+			prescan.PackageImports[defaultPkg] = appendUnique(prescan.PackageImports[defaultPkg], userImports...)
+			delete(prescan.PackageImports, "user")
+		}
+	}
+
 	return prescan, nil
 }
 

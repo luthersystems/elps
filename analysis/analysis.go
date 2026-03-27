@@ -34,6 +34,10 @@ type Config struct {
 	// imported in other files (e.g. main.lisp) are available.
 	PackageImports map[string][]string
 
+	// DefaultPackage overrides the default "user" package for bare files
+	// (no in-package declaration). Derived from main.lisp's in-package.
+	DefaultPackage string
+
 	// Filename is the source file being analyzed.
 	Filename string
 }
@@ -111,7 +115,7 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 	a.prescan(exprs, root)
 
 	// Phase 2: Deep recursive walk
-	currentPkg := "user"
+	currentPkg := a.defaultPackage()
 	for _, expr := range exprs {
 		a.analyzeExpr(expr, root, currentPkg)
 		if expr != nil && expr.Type == lisp.LSExpr && !expr.Quoted && len(expr.Cells) > 0 &&

@@ -17,12 +17,21 @@ type analyzer struct {
 	qualifiedSymbols map[string]*Symbol
 }
 
+// defaultPackage returns the default package for bare files. If a
+// DefaultPackage is configured (from main.lisp), use it; otherwise "user".
+func (a *analyzer) defaultPackage() string {
+	if a.cfg != nil && a.cfg.DefaultPackage != "" {
+		return a.cfg.DefaultPackage
+	}
+	return "user"
+}
+
 // prescan walks top-level expressions to register forward-referenceable
 // definitions (defun, defmacro, set, export). It runs in two phases so
 // that (export 'name) works regardless of source order — a common ELPS
 // convention is to place exports before the corresponding defun.
 func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
-	currentPkg := "user"
+	currentPkg := a.defaultPackage()
 	// Phase 1: Register all definitions.
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
@@ -52,7 +61,7 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 		}
 	}
 	// Phase 2: Apply exports (all definitions now exist in scope).
-	currentPkg = "user"
+	currentPkg = a.defaultPackage()
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
 			continue
@@ -74,7 +83,8 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 	// Collect ALL packages the file declares (files may have multiple
 	// in-package) and import for each.
 	if a.cfg != nil && len(a.cfg.PackageImports) > 0 {
-		filePkgs := map[string]bool{"user": true}
+		defaultPkg := a.defaultPackage()
+		filePkgs := map[string]bool{defaultPkg: true}
 		for _, expr := range exprs {
 			if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
 				continue
