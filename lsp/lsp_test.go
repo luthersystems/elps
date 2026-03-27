@@ -3496,6 +3496,66 @@ func TestCrossFileUsePackage(t *testing.T) {
 	}
 }
 
+func TestHover_Keyword_Rest(t *testing.T) {
+	s := testServer()
+	content := `(defun foo (&rest args) args)`
+	doc := openDoc(s, "file:///test.lisp", content)
+	s.ensureAnalysis(doc)
+
+	// Hover on "&rest" at col 12 (0-based).
+	hover, err := s.textDocumentHover(nil, &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 12},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, hover, "&rest should have hover docs")
+	mc, ok := hover.Contents.(protocol.MarkupContent)
+	require.True(t, ok)
+	assert.Contains(t, mc.Value, "variadic parameter")
+}
+
+func TestHover_Keyword_Unquote(t *testing.T) {
+	s := testServer()
+	content := `(quasiquote (list (unquote x)))`
+	doc := openDoc(s, "file:///test.lisp", content)
+	s.ensureAnalysis(doc)
+
+	// Hover on "unquote" at col 19 (0-based).
+	hover, err := s.textDocumentHover(nil, &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 19},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, hover, "unquote should have hover docs")
+	mc, ok := hover.Contents.(protocol.MarkupContent)
+	require.True(t, ok)
+	assert.Contains(t, mc.Value, "quasiquote")
+}
+
+func TestHover_Keyword_Condition(t *testing.T) {
+	s := testServer()
+	content := `(handler-bind ((condition (lambda (e) e))) 1)`
+	doc := openDoc(s, "file:///test.lisp", content)
+	s.ensureAnalysis(doc)
+
+	// Hover on "condition" at col 16 (0-based).
+	hover, err := s.textDocumentHover(nil, &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 16},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, hover, "condition should have hover docs")
+	mc, ok := hover.Contents.(protocol.MarkupContent)
+	require.True(t, ok)
+	assert.Contains(t, mc.Value, "handler-bind")
+}
+
 // --- Inlay hint tests ---
 
 func TestInlayHint_Basic(t *testing.T) {
