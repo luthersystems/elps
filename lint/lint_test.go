@@ -1926,6 +1926,28 @@ func TestUnusedFunction_Positive_NoWorkspaceRefs(t *testing.T) {
 
 // --- shadowing ---
 
+func TestUnusedFunction_Negative_CrossFileRef_WithDefaultPackage(t *testing.T) {
+	// Bare file with DefaultPackage set — symbol ends up in "svc" package.
+	// WorkspaceRefs key must match the "svc" package for cross-file check.
+	source := `(defun helper () 42)`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
+	helperKey := analysis.SymbolKey{Package: "svc", Name: "helper", Kind: analysis.SymFunction}.String()
+	cfg := &analysis.Config{
+		DefaultPackage: "svc",
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "helper", Kind: analysis.SymFunction, Package: "svc"},
+		},
+		WorkspaceRefs: map[string][]analysis.FileReference{
+			helperKey: {
+				{File: "/other/file.lisp"},
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
 func TestShadowing_Negative_ParamShadowsBuiltin(t *testing.T) {
 	// Parameters shadowing builtins should not be reported — names like
 	// car, map, expr are commonly used as parameter names.
@@ -2023,13 +2045,14 @@ func TestUndefinedSymbol_HasEndPos(t *testing.T) {
 }
 
 func TestUserArity_HasEndPos(t *testing.T) {
+	// "(add 1)" on line 2 — SourceOf returns the s-expression starting at col 1.
 	source := "(defun add (x y) (+ x y))\n(add 1)"
 	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
 	require.Len(t, diags, 1)
-	assert.True(t, diags[0].Pos.Line > 0, "Pos should be set")
-	assert.True(t, diags[0].Pos.Col > 0, "Pos.Col should be set")
-	assert.True(t, diags[0].EndPos.Line > 0, "EndPos should be set")
-	assert.True(t, diags[0].EndPos.Col > 0, "EndPos.Col should be set")
+	assert.Equal(t, 2, diags[0].Pos.Line)
+	assert.Equal(t, 1, diags[0].Pos.Col)
+	assert.Equal(t, 2, diags[0].EndPos.Line)
+	assert.Equal(t, 8, diags[0].EndPos.Col) // end of "(add 1)"
 }
 
 func TestShadowing_Negative_ExternalSymbol(t *testing.T) {
