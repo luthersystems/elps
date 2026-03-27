@@ -703,10 +703,11 @@ var AnalyzerUnusedVariable = &Analyzer{
 				continue
 			}
 			pass.Report(Diagnostic{
-				Message: fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
-				Pos:     posFromSource(sym.Source),
-				EndPos:  endPosFromNode(sym.Node),
-				Notes:   []string{fmt.Sprintf("if '%s' is intentionally unused, prefix it with '_'", sym.Name)},
+				Message:     fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
+				Pos:         posFromSource(sym.Source),
+				EndPos:      endPosFromNode(sym.Node),
+				Notes:       []string{fmt.Sprintf("if '%s' is intentionally unused, prefix it with '_'", sym.Name)},
+				Unnecessary: true,
 			})
 		}
 		return nil
@@ -761,10 +762,11 @@ var AnalyzerUnusedFunction = &Analyzer{
 				}
 			}
 			pass.Report(Diagnostic{
-				Message: fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
-				Pos:     posFromSource(sym.Source),
-				EndPos:  endPosFromNode(sym.Node),
-				Notes:   []string{"if this is a public API, add it to an (export ...) form"},
+				Message:     fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
+				Pos:         posFromSource(sym.Source),
+				EndPos:      endPosFromNode(sym.Node),
+				Notes:       []string{"if this is a public API, add it to an (export ...) form"},
+				Unnecessary: true,
 			})
 		}
 		return nil
@@ -921,11 +923,18 @@ var AnalyzerUndefinedSymbol = &Analyzer{
 			return nil
 		}
 		for _, u := range pass.Semantics.Unresolved {
+			sev := SeverityError
+			notes := []string{fmt.Sprintf("'%s' is not defined in any enclosing scope; did you mean a different name?", u.Name)}
+			if u.InsideMacroCall {
+				sev = SeverityWarning
+				notes = append(notes, "inside a macro call — the macro may introduce this binding at expansion time")
+			}
 			pass.Report(Diagnostic{
-				Message: fmt.Sprintf("undefined symbol: %s", u.Name),
-				Pos:     posFromSource(u.Source),
-				EndPos:  endPosFromNode(u.Node),
-				Notes:   []string{fmt.Sprintf("'%s' is not defined in any enclosing scope; did you mean a different name?", u.Name)},
+				Severity: sev,
+				Message:  fmt.Sprintf("undefined symbol: %s", u.Name),
+				Pos:      posFromSource(u.Source),
+				EndPos:   endPosFromNode(u.Node),
+				Notes:    notes,
 			})
 		}
 		return nil

@@ -2055,6 +2055,60 @@ func TestUserArity_HasEndPos(t *testing.T) {
 	assert.Equal(t, 8, diags[0].EndPos.Col) // end of "(add 1)"
 }
 
+func TestUndefinedSymbol_Warning_InsideMacroBody(t *testing.T) {
+	// Unresolved symbols inside user-defined macro bodies should be
+	// warnings, not errors — the macro may introduce bindings.
+	source := `(my-macro (+ x 1))`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "my-macro", Kind: analysis.SymMacro, Package: "user",
+				Source: &token.Location{File: "macros.lisp", Line: 1, Col: 1, Pos: 0}},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	// x is unresolved but inside a user-macro call → warning not error
+	var xDiag *Diagnostic
+	for i := range diags {
+		for _, note := range diags[i].Notes {
+			if strings.Contains(note, "macro") {
+				xDiag = &diags[i]
+				break
+			}
+		}
+	}
+	require.NotNil(t, xDiag, "should have a diagnostic for x inside macro body")
+	assert.Equal(t, SeverityWarning, xDiag.Severity, "inside macro body should be warning, not error")
+}
+
+func TestUndefinedSymbol_Error_InsideBuiltinMacro(t *testing.T) {
+	// Unresolved symbols inside builtin macro bodies (defun) should
+	// still be errors — builtin macros have known semantics.
+	source := `(defun f () (unknown-fn 42))`
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, SeverityError, diags[0].Severity)
+}
+
+func TestUndefinedSymbol_Error_InsideFunctionCall(t *testing.T) {
+	// Unresolved symbols inside regular function calls should still be errors.
+	source := `(my-fn (+ x 1))`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "my-fn", Kind: analysis.SymFunction, Package: "user",
+				Source: &token.Location{File: "funcs.lisp", Line: 1, Col: 1, Pos: 0}},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	for _, d := range diags {
+		assert.Equal(t, SeverityError, d.Severity,
+			"undefined symbol inside function call should be error, not warning")
+	}
+}
+
 func TestShadowing_Negative_ExternalSymbol(t *testing.T) {
 	// Parameters should not trigger shadowing when the outer symbol
 	// is from an external source (workspace scan / package import).

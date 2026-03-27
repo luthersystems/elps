@@ -15,6 +15,7 @@ type analyzer struct {
 	result           *Result
 	cfg              *Config
 	qualifiedSymbols map[string]*Symbol
+	insideMacroCall  int // depth counter for user-macro body analysis
 }
 
 // defaultPackage returns the default package for bare files. If a
@@ -1123,10 +1124,28 @@ func (a *analyzer) walkQuasiquoteTemplate(node *lisp.LVal, scope *Scope, current
 }
 
 func (a *analyzer) analyzeCall(node *lisp.LVal, scope *Scope, currentPkg string) {
-	// Head can be symbol or expression
+	// Check if head is a user-defined macro — unresolved symbols inside
+	// macro bodies get lower severity since macros may introduce bindings
+	// at expansion time that are invisible to static analysis.
+	if len(node.Cells) > 0 && node.Cells[0].Type == lisp.LSymbol {
+		if sym := scope.Lookup(node.Cells[0].Str); sym != nil && sym.Kind == SymMacro && isUserMacro(sym) {
+			a.insideMacroCall++
+			defer func() { a.insideMacroCall-- }()
+		}
+	}
 	for _, child := range node.Cells {
 		a.analyzeExpr(child, scope, currentPkg)
 	}
+}
+
+// isUserMacro returns true if the symbol is a user-defined macro (not a
+// built-in macro like defun, defmacro, etc). Built-in macros have nil
+// Source or negative Pos.
+func isUserMacro(sym *Symbol) bool {
+	if sym.Source == nil || sym.Source.Pos < 0 {
+		return false
+	}
+	return true
 }
 
 // addParams adds function parameter symbols to a scope.
@@ -1180,9 +1199,10 @@ func (a *analyzer) resolveSymbol(node *lisp.LVal, scope *Scope, currentPkg strin
 		})
 	} else {
 		a.result.Unresolved = append(a.result.Unresolved, &UnresolvedRef{
-			Name:   name,
-			Source: node.Source,
-			Node:   node,
+			Name:            name,
+			Source:          node.Source,
+			Node:            node,
+			InsideMacroCall: a.insideMacroCall > 0,
 		})
 	}
 }

@@ -233,6 +233,10 @@ type Diagnostic struct {
 
 	// Notes are optional hint text lines for the user.
 	Notes []string `json:"notes,omitempty"`
+
+	// Unnecessary marks the diagnostic as "unnecessary" code (e.g., unused
+	// variables). Editors may render these with faded text.
+	Unnecessary bool `json:"unnecessary,omitempty"`
 }
 
 // Position identifies a location in source code.
