@@ -28,6 +28,12 @@ type Config struct {
 	// at the defined symbol cell and the analyzer registers it using NameKind.
 	DefForms []DefFormSpec
 
+	// PackageImports maps package name to imported package names collected
+	// from cross-file use-package declarations during workspace prescan.
+	// Per-file analysis applies these imports so symbols from packages
+	// imported in other files (e.g. main.lisp) are available.
+	PackageImports map[string][]string
+
 	// Filename is the source file being analyzed.
 	Filename string
 }

@@ -67,6 +67,26 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 			a.prescanExport(expr, scope, currentPkg)
 		}
 	}
+
+	// Phase 3: Apply workspace-level use-package imports. These come from
+	// other files in the workspace (e.g. main.lisp having use-package 'utils)
+	// and make their symbols available to all files in the same package.
+	if a.cfg != nil && len(a.cfg.PackageImports) > 0 {
+		currentPkg = "user"
+		for _, expr := range exprs {
+			if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+				continue
+			}
+			if astutil.HeadSymbol(expr) == "in-package" && astutil.ArgCount(expr) >= 1 {
+				if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
+					currentPkg = pkgName
+				}
+			}
+		}
+		for _, importPkg := range a.cfg.PackageImports[currentPkg] {
+			a.importPackageSymbols(scope, importPkg, currentPkg)
+		}
+	}
 }
 
 func (a *analyzer) prescanCustomDef(expr *lisp.LVal, scope *Scope, pkg string) {
@@ -197,14 +217,21 @@ func (a *analyzer) prescanExport(expr *lisp.LVal, scope *Scope, pkg string) {
 }
 
 func (a *analyzer) prescanUsePackage(expr *lisp.LVal, scope *Scope, currentPkg string) {
-	if a.cfg == nil || a.cfg.PackageExports == nil {
-		return
-	}
 	if astutil.ArgCount(expr) < 1 {
 		return
 	}
 	pkgName := extractPackageName(expr.Cells[1])
 	if pkgName == "" {
+		return
+	}
+	a.importPackageSymbols(scope, pkgName, currentPkg)
+}
+
+// importPackageSymbols imports all exported symbols from pkgName into scope
+// under currentPkg. Used by prescanUsePackage for per-file use-package and
+// by prescan Phase 3 for cross-file workspace-level use-package.
+func (a *analyzer) importPackageSymbols(scope *Scope, pkgName, currentPkg string) {
+	if a.cfg == nil || a.cfg.PackageExports == nil {
 		return
 	}
 	syms, ok := a.cfg.PackageExports[pkgName]

@@ -1469,6 +1469,42 @@ func TestScope_LookupAllLocal(t *testing.T) {
 	assert.Empty(t, scope.LookupAllLocal("nonexistent"))
 }
 
+func TestAnalyze_CrossFileUsePackage(t *testing.T) {
+	// Regression test for #250: a file in package 'svc' uses 'when' from
+	// 'utils' without its own use-package. The workspace-level PackageImports
+	// (from main.lisp having use-package 'utils) should make 'when' resolve.
+
+	// Without PackageImports, 'when' is unresolved.
+	source := "(in-package 'svc)\n(defun f () (when true 1))"
+	cfgWithout := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"utils": {{Name: "when", Kind: SymMacro, Package: "utils"}},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, source, cfgWithout)
+	unresolvedNames := make(map[string]bool)
+	for _, u := range result.Unresolved {
+		unresolvedNames[u.Name] = true
+	}
+	assert.True(t, unresolvedNames["when"], "without PackageImports, 'when' should be unresolved")
+
+	// With PackageImports, 'when' resolves via cross-file use-package.
+	cfgWith := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"utils": {{Name: "when", Kind: SymMacro, Package: "utils"}},
+		},
+		PackageImports: map[string][]string{
+			"svc": {"utils"},
+		},
+	}
+	result = parseAndAnalyzeWithConfig(t, source, cfgWith)
+	unresolvedNames = make(map[string]bool)
+	for _, u := range result.Unresolved {
+		unresolvedNames[u.Name] = true
+	}
+	assert.False(t, unresolvedNames["when"], "with PackageImports, 'when' should resolve")
+}
+
 // parseAndAnalyzeWithConfig is a test helper that parses source and runs
 // analysis with a custom Config.
 func parseAndAnalyzeWithConfig(t *testing.T, source string, cfg *Config) *Result {

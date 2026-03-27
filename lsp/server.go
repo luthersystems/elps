@@ -306,6 +306,7 @@ func (s *Server) buildWorkspaceIndex() {
 	var extraGlobals []analysis.ExternalSymbol
 	var pkgExports map[string][]analysis.ExternalSymbol
 	var defForms []analysis.DefFormSpec
+	var packageImports map[string][]string
 
 	// Build scan config from server options. MaxFileBytes uses its own
 	// default (not maxDocumentBytes) since document analysis limits and
@@ -323,6 +324,7 @@ func (s *Server) buildWorkspaceIndex() {
 			extraGlobals = prescan.AllDefs
 			pkgExports = prescan.PkgExports
 			defForms = prescan.DefForms
+			packageImports = prescan.PackageImports
 			if prescan.Truncated {
 				s.sendNotification("window/showMessage", &protocol.ShowMessageParams{
 					Type:    protocol.MessageTypeWarning,
@@ -364,6 +366,7 @@ func (s *Server) buildWorkspaceIndex() {
 		ExtraGlobals:   extraGlobals,
 		PackageExports: pkgExports,
 		DefForms:       defForms,
+		PackageImports: packageImports,
 	}
 
 	s.analysisCfgMu.Lock()
@@ -425,6 +428,7 @@ func (s *Server) getAnalysisConfig(uri string) *analysis.Config {
 		cfg.ExtraGlobals = base.ExtraGlobals
 		cfg.PackageExports = base.PackageExports
 		cfg.DefForms = base.DefForms
+		cfg.PackageImports = base.PackageImports
 	}
 	return cfg
 }

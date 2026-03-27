@@ -370,6 +370,7 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		ExtraGlobals:   prescan.ExportedGlobals,
 		PackageExports: pkgExports,
 		DefForms:       prescan.DefForms,
+		PackageImports: prescan.PackageImports,
 	}, nil
 }
 

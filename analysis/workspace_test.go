@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1068,6 +1070,67 @@ func TestCollectLispFilesWithConfig_ExcludesDirectory(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, paths, 1, "build directory files should be excluded")
 	assert.Contains(t, paths[0], "main.lisp")
+}
+
+func TestScanUsePackages(t *testing.T) {
+	parse := func(src string) []*lisp.LVal {
+		t.Helper()
+		s := token.NewScanner("test.lisp", strings.NewReader(src))
+		p := rdparser.New(s)
+		exprs, err := p.ParseProgram()
+		require.NoError(t, err)
+		return exprs
+	}
+
+	t.Run("basic", func(t *testing.T) {
+		exprs := parse(`(in-package 'svc) (use-package 'utils)`)
+		result := scanUsePackages(exprs)
+		assert.Equal(t, []string{"utils"}, result["svc"])
+	})
+
+	t.Run("multiple packages", func(t *testing.T) {
+		exprs := parse(`(in-package 'svc) (use-package 'utils) (use-package 'router)`)
+		result := scanUsePackages(exprs)
+		assert.Equal(t, []string{"utils", "router"}, result["svc"])
+	})
+
+	t.Run("default user package", func(t *testing.T) {
+		exprs := parse(`(use-package 'helpers)`)
+		result := scanUsePackages(exprs)
+		assert.Equal(t, []string{"helpers"}, result["user"])
+	})
+
+	t.Run("no use-package", func(t *testing.T) {
+		exprs := parse(`(in-package 'svc) (defun foo () 1)`)
+		result := scanUsePackages(exprs)
+		assert.Empty(t, result)
+	})
+}
+
+func TestPrescanWorkspace_PackageImports(t *testing.T) {
+	dir := t.TempDir()
+
+	// main.lisp imports utils in the svc package.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'svc)
+(use-package 'utils)
+(defun start () 1)
+(export 'start)
+`), 0600))
+
+	// helpers.lisp is in svc but does NOT have use-package 'utils.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "helpers.lisp"), []byte(`
+(in-package 'svc)
+(defun helper () 2)
+(export 'helper)
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+
+	// The workspace prescan should capture that svc imports utils.
+	assert.Contains(t, prescan.PackageImports, "svc")
+	assert.Contains(t, prescan.PackageImports["svc"], "utils")
 }
 
 func TestScanConfig_EffectiveDefaults(t *testing.T) {

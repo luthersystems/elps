@@ -3444,6 +3444,58 @@ func TestWithIncludes_WorkspaceIndexing(t *testing.T) {
 	assert.True(t, names2["demo-fn"], "demo-fn should be indexed with WithIncludes")
 }
 
+func TestCrossFileUsePackage(t *testing.T) {
+	// Regression test for #250: consumer.lisp uses helper-fn from helpers
+	// package without its own use-package. main.lisp's use-package should
+	// propagate through the workspace prescan.
+	dir := t.TempDir()
+
+	// main.lisp imports the helpers package in svc.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'svc)
+(use-package 'helpers)
+`), 0600))
+
+	// helpers.lisp defines and exports helper-fn.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "helpers.lisp"), []byte(`
+(in-package 'helpers)
+(defun helper-fn (x) (+ x 1))
+(export 'helper-fn)
+`), 0600))
+
+	// consumer.lisp uses helper-fn without its own use-package 'helpers.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "consumer.lisp"), []byte(`
+(in-package 'svc)
+(defun do-work () (helper-fn 42))
+(export 'do-work)
+`), 0600))
+
+	s := testServer()
+	s.rootPath = dir
+	s.buildWorkspaceIndex()
+
+	s.analysisCfgMu.RLock()
+	cfg := s.analysisCfg
+	s.analysisCfgMu.RUnlock()
+	require.NotNil(t, cfg)
+
+	// The workspace prescan should have captured the use-package.
+	require.Contains(t, cfg.PackageImports, "svc")
+	assert.Contains(t, cfg.PackageImports["svc"], "helpers")
+
+	// Open consumer.lisp and verify helper-fn is not flagged as undefined.
+	consumerURI := pathToURI(filepath.Join(dir, "consumer.lisp"))
+	consumerSrc := "(in-package 'svc)\n(defun do-work () (helper-fn 42))\n(export 'do-work)"
+	doc := openDoc(s, consumerURI, consumerSrc)
+	s.ensureAnalysis(doc)
+
+	require.NotNil(t, doc.analysis)
+	for _, u := range doc.analysis.Unresolved {
+		assert.NotEqual(t, "helper-fn", u.Name,
+			"helper-fn should resolve via cross-file use-package, not be unresolved")
+	}
+}
+
 // --- Inlay hint tests ---
 
 func TestInlayHint_Basic(t *testing.T) {
