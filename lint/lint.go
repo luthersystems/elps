@@ -374,7 +374,9 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		DefaultPackage: prescan.DefaultPackage,
 	}
 
-	// Build workspace refs so lint analyzers can check cross-file references.
+	// Build workspace refs so lint analyzers (e.g. unused-function) can check
+	// cross-file references. This re-parses workspace files — acceptable for
+	// CLI lint runs (typically <1s for ~100 files).
 	acfg.WorkspaceRefs = analysis.ScanWorkspaceRefs(cfg.Workspace, acfg, scanCfg)
 
 	return acfg, nil

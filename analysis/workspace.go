@@ -284,7 +284,9 @@ func buildLoadTree(mainPath string) map[string]string {
 }
 
 // walkLoadFile recursively parses a file and tracks package context through
-// in-package and load-file calls.
+// in-package and load-file calls. It only tracks package *context* (which
+// package is active), not use-package imports — those are handled separately
+// by scanUsePackages and PackageImports.
 func walkLoadFile(filePath, currentPkg string, result map[string]string, visited map[string]bool) {
 	absPath, err := filepath.Abs(filePath)
 	if err != nil {
