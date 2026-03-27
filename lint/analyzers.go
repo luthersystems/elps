@@ -54,6 +54,7 @@ var AnalyzerSetUsage = &Analyzer{
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("use set! instead of set to mutate '%s (already bound)", name),
 					Pos:     posFromSource(src.Source),
+					EndPos:  endPosFromNode(src),
 					Notes:   []string{"set creates a new binding; set! mutates an existing one"},
 				})
 			}
@@ -150,6 +151,7 @@ var AnalyzerLetBindings = &Analyzer{
 					pass.Report(Diagnostic{
 						Message: fmt.Sprintf("%s binding %d is not a list (did you forget the outer parentheses?)", head, i+1),
 						Pos:     posFromSource(bindingSource(binding, src)),
+						EndPos:  endPosFromNode(binding),
 						Notes:   []string{"correct form: (let ((x 1) (y 2)) body...)"},
 					})
 					continue
@@ -200,6 +202,7 @@ var AnalyzerQuoteCall = &Analyzer{
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s first argument should be quoted: (set '%s ...) not (set %s ...)", head, arg.Str, arg.Str),
 					Pos:     posFromSource(src.Source),
+					EndPos:  endPosFromNode(src),
 					Notes:   []string{fmt.Sprintf("did you mean (%s '%s ...)?", head, arg.Str)},
 				})
 			}
@@ -235,6 +238,7 @@ var AnalyzerCondMissingElse = &Analyzer{
 			pass.Report(Diagnostic{
 				Message: "cond has no default (else) clause",
 				Pos:     posFromSource(src.Source),
+				EndPos:  endPosFromNode(src),
 				Notes:   []string{"add (else ...) or (true ...) as the last clause to handle unmatched cases"},
 			})
 		})
@@ -346,6 +350,7 @@ var AnalyzerCondStructure = &Analyzer{
 					pass.Report(Diagnostic{
 						Message: fmt.Sprintf("cond clause %d is not a list", i),
 						Pos:     posFromSource(clauseSrc.Source),
+						EndPos:  endPosFromNode(clauseSrc),
 						Notes:   []string{"cond clauses must be lists: (cond ((test1) body1) ((test2) body2) (else default))"},
 					})
 					continue
@@ -542,6 +547,7 @@ var AnalyzerRethrowContext = &Analyzer{
 			pass.Report(Diagnostic{
 				Message: "rethrow used outside handler-bind",
 				Pos:     posFromSource(src.Source),
+				EndPos:  endPosFromNode(src),
 				Notes:   []string{"rethrow can only be called from within a handler-bind handler"},
 			})
 		})
@@ -640,6 +646,7 @@ var AnalyzerUnnecessaryProgn = &Analyzer{
 			pass.Report(Diagnostic{
 				Message: msg,
 				Pos:     posFromSource(src.Source),
+				EndPos:  endPosFromNode(src),
 				Notes:   []string{fmt.Sprintf("remove the progn and move its contents directly into the %s body", head)},
 			})
 		})
@@ -659,6 +666,7 @@ var AnalyzerUnnecessaryProgn = &Analyzer{
 					pass.Report(Diagnostic{
 						Message: "progn is unnecessary in cond clause body (it supports multiple expressions)",
 						Pos:     posFromSource(src.Source),
+						EndPos:  endPosFromNode(src),
 						Notes:   []string{"remove the progn and move its contents directly into the cond clause"},
 					})
 				}
@@ -697,6 +705,7 @@ var AnalyzerUnusedVariable = &Analyzer{
 			pass.Report(Diagnostic{
 				Message: fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
 				Pos:     posFromSource(sym.Source),
+				EndPos:  endPosFromNode(sym.Node),
 				Notes:   []string{fmt.Sprintf("if '%s' is intentionally unused, prefix it with '_'", sym.Name)},
 			})
 		}
@@ -737,6 +746,7 @@ var AnalyzerUnusedFunction = &Analyzer{
 			pass.Report(Diagnostic{
 				Message: fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
 				Pos:     posFromSource(sym.Source),
+				EndPos:  endPosFromNode(sym.Node),
 				Notes:   []string{"if this is a public API, add it to an (export ...) form"},
 			})
 		}
@@ -853,6 +863,7 @@ var AnalyzerUserArity = &Analyzer{
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, minArity, argc),
 					Pos:     posFromSource(src.Source),
+					EndPos:  endPosFromNode(src),
 					Notes:   []string{fmt.Sprintf("defined at %s", sourceString(sym.Source))},
 				})
 			}
@@ -861,6 +872,7 @@ var AnalyzerUserArity = &Analyzer{
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, maxArity, argc),
 					Pos:     posFromSource(src.Source),
+					EndPos:  endPosFromNode(src),
 					Notes:   []string{fmt.Sprintf("defined at %s", sourceString(sym.Source))},
 				})
 			}
@@ -895,6 +907,7 @@ var AnalyzerUndefinedSymbol = &Analyzer{
 			pass.Report(Diagnostic{
 				Message: fmt.Sprintf("undefined symbol: %s", u.Name),
 				Pos:     posFromSource(u.Source),
+				EndPos:  endPosFromNode(u.Node),
 				Notes:   []string{fmt.Sprintf("'%s' is not defined in any enclosing scope; did you mean a different name?", u.Name)},
 			})
 		}
@@ -986,6 +999,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("duplicate definition: %s '%s' already defined", sym.Kind, sym.Name),
 					Pos:     posFromSource(sym.Source),
+					EndPos:  endPosFromNode(sym.Node),
 					Notes:   []string{fmt.Sprintf("first defined at %s", sourceString(first.Source))},
 				})
 			}
@@ -1007,6 +1021,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("duplicate definition: %s '%s' is also defined externally", first.Kind, first.Name),
 					Pos:     posFromSource(first.Source),
+					EndPos:  endPosFromNode(first.Node),
 					Notes:   []string{fmt.Sprintf("also defined at %s", sourceString(ext.Source))},
 				})
 			}
