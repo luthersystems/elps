@@ -1448,6 +1448,93 @@ func TestBuildLoadTree_CycleDetection(t *testing.T) {
 	assert.Equal(t, "svc", tree[absB])
 }
 
+func TestPrescanWorkspace_DefsBeforeInPackage(t *testing.T) {
+	dir := t.TempDir()
+
+	// main.lisp loads mixed.lisp which has defs before its first in-package.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'svc)
+(load-file "mixed.lisp")
+(load-file "consumer.lisp")
+`), 0600))
+
+	// mixed.lisp: defs before in-package should inherit svc from load context.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "mixed.lisp"), []byte(`
+(defun helper-a () 1)
+(defun helper-b () 2)
+
+(in-package 'internal)
+(defun internal-fn () 3)
+(export 'internal-fn)
+(in-package 'svc)
+`), 0600))
+
+	// consumer.lisp: bare file that uses helper-a.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "consumer.lisp"), []byte(`
+(defun do-work () (helper-a))
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+
+	defPkgs := make(map[string]string)
+	for _, d := range prescan.AllDefs {
+		defPkgs[d.Name] = d.Package
+	}
+
+	// Defs before in-package should be remapped to svc (inherited from load context).
+	assert.Equal(t, "svc", defPkgs["helper-a"],
+		"def before in-package should be remapped to load-tree package")
+	assert.Equal(t, "svc", defPkgs["helper-b"],
+		"def before in-package should be remapped to load-tree package")
+	// Def after in-package 'internal should stay in internal.
+	assert.Equal(t, "internal", defPkgs["internal-fn"],
+		"def after in-package should keep its explicit package")
+	// Bare file def should be remapped to svc.
+	assert.Equal(t, "svc", defPkgs["do-work"],
+		"bare file def should be remapped to load-tree package")
+}
+
+func TestAnalyze_DefsBeforeInPackage_Resolve(t *testing.T) {
+	dir := t.TempDir()
+
+	// Same workspace as above — verify consumer.lisp resolves helper-a.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'svc)
+(load-file "mixed.lisp")
+(load-file "consumer.lisp")
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "mixed.lisp"), []byte(`
+(defun helper-a () 1)
+(in-package 'internal)
+(defun internal-fn () 3)
+(export 'internal-fn)
+(in-package 'svc)
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "consumer.lisp"), []byte(`
+(defun do-work () (helper-a))
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+
+	cfg := &Config{
+		ExtraGlobals:   prescan.AllDefs,
+		PackageExports: prescan.PkgExports,
+		PackageImports: prescan.PackageImports,
+		DefaultPackage: prescan.DefaultPackage,
+	}
+
+	consumerSrc, _ := os.ReadFile(filepath.Join(dir, "consumer.lisp"))
+	result := AnalyzeFile(consumerSrc, filepath.Join(dir, "consumer.lisp"), cfg)
+	require.NotNil(t, result)
+
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "helper-a", u.Name,
+			"helper-a should resolve — its pre-in-package def was remapped to svc")
+	}
+}
+
 func TestScanConfig_EffectiveDefaults(t *testing.T) {
 	// Verify the effective* methods return defaults for zero/nil.
 	var nilCfg *ScanConfig
