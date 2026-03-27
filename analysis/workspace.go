@@ -37,6 +37,10 @@ type ScanConfig struct {
 	// Patterns are matched against the full path, base name, and each
 	// directory component using filepath.Match semantics.
 	Excludes []string
+	// IncludeDirs are directory names that override ShouldSkipDir.
+	// If a directory name matches any entry, it will be walked even if
+	// ShouldSkipDir would normally skip it (e.g. "_examples").
+	IncludeDirs []string
 }
 
 // effectiveMaxFiles returns the file limit, applying the default if zero.
@@ -61,6 +65,14 @@ func (c *ScanConfig) effectiveExcludes() []string {
 		return nil
 	}
 	return c.Excludes
+}
+
+// effectiveIncludeDirs returns the directory include list, or nil if none configured.
+func (c *ScanConfig) effectiveIncludeDirs() []string {
+	if c == nil {
+		return nil
+	}
+	return c.IncludeDirs
 }
 
 // SymbolKey identifies a symbol across files by name and kind.
@@ -115,8 +127,8 @@ func ScanWorkspaceDefinitions(root string) ([]ExternalSymbol, error) {
 
 // ScanWorkspaceFull walks a directory tree in a single pass, parsing all
 // .lisp files and extracting both global symbols and package exports.
-// It skips hidden directories (names starting with '.'), node_modules,
-// and vendor directories. Stops collecting after maxWorkspaceFiles.
+// It skips directories matched by ShouldSkipDir (hidden, underscore-prefixed,
+// node_modules, vendor, build). Stops collecting after maxWorkspaceFiles.
 // Parsing is done concurrently using a bounded worker pool.
 //
 // Files that fail to parse are silently skipped (fault tolerant).
@@ -155,6 +167,7 @@ func collectLispFilesWithConfig(root string, scanCfg *ScanConfig) ([]string, boo
 	maxBytes := scanCfg.effectiveMaxFileBytes()
 
 	excludes := scanCfg.effectiveExcludes()
+	includeDirs := scanCfg.effectiveIncludeDirs()
 
 	var paths []string
 	var truncated bool
@@ -164,7 +177,7 @@ func collectLispFilesWithConfig(root string, scanCfg *ScanConfig) ([]string, boo
 		}
 		if info.IsDir() {
 			// Never skip the root directory itself — only subdirectories.
-			if path != root && ShouldSkipDir(info.Name()) {
+			if path != root && ShouldSkipDir(info.Name()) && !matchesInclude(info.Name(), includeDirs) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -189,8 +202,10 @@ func collectLispFilesWithConfig(root string, scanCfg *ScanConfig) ([]string, boo
 }
 
 // ShouldSkipDir returns true for directories that should not be walked.
-// It skips hidden directories (e.g. .git, .vscode) and node_modules,
-// but not "." or ".." which represent the current/parent directory.
+// It skips hidden directories (e.g. .git, .vscode), underscore-prefixed
+// directories (e.g. _archive, _old), and common dependency/build output
+// directories — but not "." or ".." which represent the current/parent
+// directory.
 func ShouldSkipDir(name string) bool {
 	if name == "." || name == ".." {
 		return false
@@ -198,8 +213,21 @@ func ShouldSkipDir(name string) bool {
 	if len(name) > 0 && name[0] == '.' {
 		return true
 	}
-	if name == "node_modules" || name == "vendor" {
+	if len(name) > 0 && name[0] == '_' {
 		return true
+	}
+	if name == "node_modules" || name == "vendor" || name == "build" {
+		return true
+	}
+	return false
+}
+
+// matchesInclude returns true if name matches any entry in the include list.
+func matchesInclude(name string, includes []string) bool {
+	for _, inc := range includes {
+		if name == inc {
+			return true
+		}
 	}
 	return false
 }

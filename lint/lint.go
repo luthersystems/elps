@@ -283,6 +283,11 @@ type LintConfig struct {
 	// Excludes are glob patterns for files to skip during workspace scanning.
 	Excludes []string
 
+	// IncludeDirs are directory names that override ShouldSkipDir during
+	// workspace scanning. A directory matching any entry will be walked
+	// even if it would normally be skipped (e.g. "_examples").
+	IncludeDirs []string
+
 	// StdlibExports provides pre-extracted stdlib package exports. When nil,
 	// LintFiles uses the default stdlib (loaded via lisplib.LoadLibrary).
 	// Embedders that already have a configured env can pass
@@ -333,7 +338,8 @@ func (l *Linter) LintFiles(cfg *LintConfig, files []string) ([]Diagnostic, error
 // that need to build the config separately from file linting.
 func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 	scanCfg := &analysis.ScanConfig{
-		Excludes: cfg.Excludes,
+		Excludes:    cfg.Excludes,
+		IncludeDirs: cfg.IncludeDirs,
 	}
 
 	prescan, err := analysis.PrescanWorkspace(cfg.Workspace, scanCfg)

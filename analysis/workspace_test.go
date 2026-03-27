@@ -289,6 +289,26 @@ func TestScanWorkspaceFull_SkipsHiddenDirs(t *testing.T) {
 `), 0600)
 	require.NoError(t, err)
 
+	// Create a build directory.
+	buildDir := filepath.Join(dir, "build")
+	err = os.MkdirAll(buildDir, 0750)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(buildDir, "generated.lisp"), []byte(`
+(defun build-fn () 42)
+(export 'build-fn)
+`), 0600)
+	require.NoError(t, err)
+
+	// Create an underscore-prefixed directory.
+	archiveDir := filepath.Join(dir, "_archive")
+	err = os.MkdirAll(archiveDir, 0750)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(archiveDir, "old.lisp"), []byte(`
+(defun archive-fn () 42)
+(export 'archive-fn)
+`), 0600)
+	require.NoError(t, err)
+
 	// Create a visible file.
 	err = os.WriteFile(filepath.Join(dir, "lib.lisp"), []byte(`
 (defun visible-fn () 42)
@@ -312,15 +332,126 @@ func TestScanWorkspaceFull_SkipsHiddenDirs(t *testing.T) {
 	assert.True(t, names["visible-fn"], "visible file should be scanned")
 	assert.False(t, names["hidden-fn"], "hidden directory files should be skipped")
 	assert.False(t, names["dep-fn"], "node_modules files should be skipped")
+	assert.False(t, names["build-fn"], "build directory files should be skipped")
+	assert.False(t, names["archive-fn"], "underscore-prefixed directory files should be skipped")
+}
+
+func TestCollectLispFiles_IncludeDirs(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create an underscore-prefixed directory that would normally be skipped.
+	exDir := filepath.Join(dir, "_examples")
+	err := os.MkdirAll(exDir, 0750)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(exDir, "demo.lisp"), []byte(`(defun demo () 1)`), 0600)
+	require.NoError(t, err)
+
+	// Create a build directory that would normally be skipped.
+	buildDir := filepath.Join(dir, "build")
+	err = os.MkdirAll(buildDir, 0750)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(buildDir, "gen.lisp"), []byte(`(defun gen () 2)`), 0600)
+	require.NoError(t, err)
+
+	// Create a normal file.
+	err = os.WriteFile(filepath.Join(dir, "lib.lisp"), []byte(`(defun lib-fn () 3)`), 0600)
+	require.NoError(t, err)
+
+	// Without includes: only lib.lisp should be found.
+	paths, _, err := collectLispFilesWithConfig(dir, nil)
+	require.NoError(t, err)
+	require.Len(t, paths, 1, "without includes, skipped dirs should be excluded")
+	assert.Equal(t, "lib.lisp", filepath.Base(paths[0]), "only the normal file should be found")
+
+	// With includes: _examples should be included, build still skipped.
+	cfg := &ScanConfig{IncludeDirs: []string{"_examples"}}
+	paths, _, err = collectLispFilesWithConfig(dir, cfg)
+	require.NoError(t, err)
+	assert.Len(t, paths, 2, "_examples should be included via IncludeDirs")
+
+	found := make(map[string]bool)
+	for _, p := range paths {
+		found[filepath.Base(p)] = true
+	}
+	assert.True(t, found["lib.lisp"], "normal file should be found")
+	assert.True(t, found["demo.lisp"], "included dir file should be found")
+	assert.False(t, found["gen.lisp"], "non-included skipped dir should still be excluded")
+}
+
+func TestCollectLispFiles_IncludeDirs_Nested(t *testing.T) {
+	dir := t.TempDir()
+
+	// _examples is included, but _examples/_internal should still be skipped
+	// because IncludeDirs matches directory names individually, not recursively.
+	exDir := filepath.Join(dir, "_examples")
+	require.NoError(t, os.MkdirAll(exDir, 0750))
+	require.NoError(t, os.WriteFile(filepath.Join(exDir, "top.lisp"), []byte(`(defun top () 1)`), 0600))
+
+	nestedDir := filepath.Join(exDir, "_internal")
+	require.NoError(t, os.MkdirAll(nestedDir, 0750))
+	require.NoError(t, os.WriteFile(filepath.Join(nestedDir, "deep.lisp"), []byte(`(defun deep () 2)`), 0600))
+
+	cfg := &ScanConfig{IncludeDirs: []string{"_examples"}}
+	paths, _, err := collectLispFilesWithConfig(dir, cfg)
+	require.NoError(t, err)
+
+	found := make(map[string]bool)
+	for _, p := range paths {
+		found[filepath.Base(p)] = true
+	}
+	assert.True(t, found["top.lisp"], "direct child of included dir should be found")
+	assert.False(t, found["deep.lisp"], "nested underscore dir inside included dir should still be skipped")
+}
+
+func TestMatchesInclude(t *testing.T) {
+	// nil list never matches.
+	assert.False(t, matchesInclude("_examples", nil))
+
+	// Empty list never matches.
+	assert.False(t, matchesInclude("_examples", []string{}))
+
+	// Exact match.
+	assert.True(t, matchesInclude("_examples", []string{"_examples"}))
+
+	// No match.
+	assert.False(t, matchesInclude("_archive", []string{"_examples"}))
+
+	// Multiple entries.
+	assert.True(t, matchesInclude("vendor", []string{"_examples", "vendor"}))
+
+	// Can override hidden dirs.
+	assert.True(t, matchesInclude(".hidden", []string{".hidden"}))
+
+	// Case sensitive — no match on different case.
+	assert.False(t, matchesInclude("_Examples", []string{"_examples"}))
 }
 
 func TestShouldSkipDir(t *testing.T) {
+	// Special cases: . and .. are never skipped.
 	assert.False(t, ShouldSkipDir("."), "current directory should not be skipped")
 	assert.False(t, ShouldSkipDir(".."), "parent directory should not be skipped")
+
+	// Hidden directories (dot-prefixed).
 	assert.True(t, ShouldSkipDir(".git"), "hidden directory should be skipped")
 	assert.True(t, ShouldSkipDir(".vscode"), "hidden directory should be skipped")
+	assert.True(t, ShouldSkipDir(".a"), "single-char hidden directory should be skipped")
+
+	// Underscore-prefixed directories.
+	assert.True(t, ShouldSkipDir("_archive"), "underscore-prefixed directory should be skipped")
+	assert.True(t, ShouldSkipDir("_"), "bare underscore directory should be skipped")
+
+	// Named directories.
 	assert.True(t, ShouldSkipDir("node_modules"), "node_modules should be skipped")
+	assert.True(t, ShouldSkipDir("vendor"), "vendor should be skipped")
+	assert.True(t, ShouldSkipDir("build"), "build should be skipped")
+
+	// Boundary: similar names that should NOT be skipped.
+	assert.False(t, ShouldSkipDir("builder"), "builder should not be skipped (not exact match)")
 	assert.False(t, ShouldSkipDir("src"), "normal directory should not be skipped")
+	assert.False(t, ShouldSkipDir("lib"), "normal directory should not be skipped")
+
+	// Empty string (defensive).
+	assert.False(t, ShouldSkipDir(""), "empty string should not be skipped")
 }
 
 func TestScanWorkspaceFull_CombinedResults(t *testing.T) {
