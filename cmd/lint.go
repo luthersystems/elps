@@ -25,6 +25,7 @@ func LintCommand(opts ...Option) *cobra.Command {
 		checks      string
 		listAll     bool
 		excludes    []string
+		includeDirs []string
 		workspace   string
 		noWorkspace bool
 		failOn      string
@@ -69,6 +70,7 @@ Examples:
   elps lint --list                                    # List available checks
   elps lint --exclude='shirocore.lisp' ./...          # Exclude a file by name
   elps lint --exclude='build' --exclude='vendor' ./...  # Exclude directories
+  elps lint --include='_examples' --workspace=. ./...  # Include a normally-skipped directory
   elps lint --workspace=. ./...                       # Enable semantic analysis
   cat file.lisp | elps lint                           # Lint from stdin`,
 		Run: func(_ *cobra.Command, args []string) {
@@ -105,9 +107,10 @@ Examples:
 			var lintCfg *lint.LintConfig
 			if workspace != "" && !noWorkspace {
 				lintCfg = &lint.LintConfig{
-					Workspace: workspace,
-					Excludes:  excludes,
-					Registry:  cfg.resolveRegistry(),
+					Workspace:   workspace,
+					Excludes:    excludes,
+					IncludeDirs: includeDirs,
+					Registry:    cfg.resolveRegistry(),
 				}
 			}
 
@@ -163,6 +166,8 @@ Examples:
 		"List available checks and exit.")
 	cmd.Flags().StringArrayVar(&excludes, "exclude", nil,
 		"Glob pattern for files to exclude (may be repeated).")
+	cmd.Flags().StringArrayVar(&includeDirs, "include", nil,
+		"Directory name to force-include during workspace scanning, overriding default skip rules (may be repeated).")
 	cmd.Flags().StringVar(&workspace, "workspace", "",
 		"Workspace root directory for cross-file symbol resolution and semantic analysis.")
 	cmd.Flags().BoolVar(&noWorkspace, "no-workspace", false,
