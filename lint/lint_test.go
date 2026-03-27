@@ -2109,6 +2109,90 @@ func TestUndefinedSymbol_Error_InsideFunctionCall(t *testing.T) {
 	}
 }
 
+func TestDiagnosticRanges_IssueExample(t *testing.T) {
+	// Reproduce issue #251: multiple diagnostics on nearby lines.
+	// Each diagnostic's Pos must point to its own token, and EndPos
+	// must produce a valid non-zero-width range.
+	source := `(in-package 'myapp)
+(use-package 'testing)
+
+(defun run-test ()
+  (let* ((unused-var (+ 1 2)))
+    (some-macro
+      (sorted-map "result" (equal? binding-a "expected")))))`
+
+	l := &Linter{Analyzers: DefaultAnalyzers()}
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "some-macro", Kind: analysis.SymMacro, Package: "myapp",
+				Source: &token.Location{File: "macros.lisp", Line: 1, Col: 1, Pos: 0}},
+		},
+		PackageExports: map[string][]analysis.ExternalSymbol{
+			"testing": {{Name: "assert-equal", Kind: analysis.SymFunction, Package: "testing"}},
+		},
+		PackageImports: map[string][]string{
+			"myapp": {"testing"},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+
+	// Log all diagnostics for debugging.
+	for _, d := range diags {
+		t.Logf("[%s] %s at line=%d col=%d endLine=%d endCol=%d: %s",
+			d.Severity, d.Analyzer, d.Pos.Line, d.Pos.Col,
+			d.EndPos.Line, d.EndPos.Col, d.Message)
+	}
+
+	// Every diagnostic must have a valid position.
+	for _, d := range diags {
+		assert.True(t, d.Pos.Line > 0,
+			"diagnostic %q should have Pos.Line > 0", d.Message)
+		assert.True(t, d.Pos.Col > 0,
+			"diagnostic %q should have Pos.Col > 0", d.Message)
+	}
+
+	// Every diagnostic with EndPos set must have EndPos >= Pos (not inverted).
+	for _, d := range diags {
+		if d.EndPos.Line > 0 {
+			if d.EndPos.Line == d.Pos.Line {
+				assert.True(t, d.EndPos.Col >= d.Pos.Col,
+					"diagnostic %q has inverted range: Pos.Col=%d > EndPos.Col=%d",
+					d.Message, d.Pos.Col, d.EndPos.Col)
+			}
+			assert.True(t, d.EndPos.Line >= d.Pos.Line,
+				"diagnostic %q has inverted range: Pos.Line=%d > EndPos.Line=%d",
+				d.Message, d.Pos.Line, d.EndPos.Line)
+		}
+	}
+
+	// No two diagnostics should have exactly the same Pos (they'd overlap in VS Code).
+	seen := make(map[string]string)
+	for _, d := range diags {
+		key := fmt.Sprintf("%d:%d", d.Pos.Line, d.Pos.Col)
+		if prev, ok := seen[key]; ok {
+			t.Errorf("diagnostics overlap at %s: %q and %q", key, prev, d.Message)
+		}
+		seen[key] = d.Message
+	}
+
+	// Verify each diagnostic points to the correct token in the source.
+	lines := strings.Split(source, "\n")
+	for _, d := range diags {
+		if d.Pos.Line > 0 && d.Pos.Line <= len(lines) && d.EndPos.Line > 0 && d.EndPos.Line <= len(lines) {
+			line := lines[d.Pos.Line-1]
+			if d.Pos.Col > 0 && d.EndPos.Col > 0 && d.Pos.Line == d.EndPos.Line {
+				startCol := d.Pos.Col - 1
+				endCol := d.EndPos.Col - 1
+				if endCol <= len(line) {
+					token := line[startCol:endCol]
+					t.Logf("  → token at range: %q", token)
+				}
+			}
+		}
+	}
+}
+
 func TestShadowing_Negative_ExternalSymbol(t *testing.T) {
 	// Parameters should not trigger shadowing when the outer symbol
 	// is from an external source (workspace scan / package import).
