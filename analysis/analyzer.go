@@ -15,6 +15,16 @@ type analyzer struct {
 	result           *Result
 	cfg              *Config
 	qualifiedSymbols map[string]*Symbol
+	insideMacroCall  int // depth counter for user-macro body analysis
+}
+
+// defaultPackage returns the default package for bare files. If a
+// DefaultPackage is configured (from main.lisp), use it; otherwise "user".
+func (a *analyzer) defaultPackage() string {
+	if a.cfg != nil && a.cfg.DefaultPackage != "" {
+		return a.cfg.DefaultPackage
+	}
+	return lisp.DefaultUserPackage
 }
 
 // prescan walks top-level expressions to register forward-referenceable
@@ -22,7 +32,7 @@ type analyzer struct {
 // that (export 'name) works regardless of source order — a common ELPS
 // convention is to place exports before the corresponding defun.
 func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
-	currentPkg := "user"
+	currentPkg := a.defaultPackage()
 	// Phase 1: Register all definitions.
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
@@ -52,7 +62,7 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 		}
 	}
 	// Phase 2: Apply exports (all definitions now exist in scope).
-	currentPkg = "user"
+	currentPkg = a.defaultPackage()
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
 			continue
@@ -65,6 +75,31 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 		}
 		if astutil.HeadSymbol(expr) == "export" {
 			a.prescanExport(expr, scope, currentPkg)
+		}
+	}
+
+	// Phase 3: Apply workspace-level use-package imports. These come from
+	// other files in the workspace (e.g. main.lisp having use-package 'utils)
+	// and make their symbols available to all files in the same package.
+	// Collect ALL packages the file declares (files may have multiple
+	// in-package) and import for each.
+	if a.cfg != nil && len(a.cfg.PackageImports) > 0 {
+		defaultPkg := a.defaultPackage()
+		filePkgs := map[string]bool{defaultPkg: true}
+		for _, expr := range exprs {
+			if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+				continue
+			}
+			if astutil.HeadSymbol(expr) == "in-package" && astutil.ArgCount(expr) >= 1 {
+				if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
+					filePkgs[pkgName] = true
+				}
+			}
+		}
+		for pkg := range filePkgs {
+			for _, importPkg := range a.cfg.PackageImports[pkg] {
+				a.importPackageSymbols(scope, importPkg, pkg)
+			}
 		}
 	}
 }
@@ -197,14 +232,21 @@ func (a *analyzer) prescanExport(expr *lisp.LVal, scope *Scope, pkg string) {
 }
 
 func (a *analyzer) prescanUsePackage(expr *lisp.LVal, scope *Scope, currentPkg string) {
-	if a.cfg == nil || a.cfg.PackageExports == nil {
-		return
-	}
 	if astutil.ArgCount(expr) < 1 {
 		return
 	}
 	pkgName := extractPackageName(expr.Cells[1])
 	if pkgName == "" {
+		return
+	}
+	a.importPackageSymbols(scope, pkgName, currentPkg)
+}
+
+// importPackageSymbols imports all exported symbols from pkgName into scope
+// under currentPkg. Used by prescanUsePackage for per-file use-package and
+// by prescan Phase 3 for cross-file workspace-level use-package.
+func (a *analyzer) importPackageSymbols(scope *Scope, pkgName, currentPkg string) {
+	if a.cfg == nil || a.cfg.PackageExports == nil {
 		return
 	}
 	syms, ok := a.cfg.PackageExports[pkgName]
@@ -1082,10 +1124,28 @@ func (a *analyzer) walkQuasiquoteTemplate(node *lisp.LVal, scope *Scope, current
 }
 
 func (a *analyzer) analyzeCall(node *lisp.LVal, scope *Scope, currentPkg string) {
-	// Head can be symbol or expression
+	// Check if head is a user-defined macro — unresolved symbols inside
+	// macro bodies get lower severity since macros may introduce bindings
+	// at expansion time that are invisible to static analysis.
+	if len(node.Cells) > 0 && node.Cells[0].Type == lisp.LSymbol {
+		if sym := scope.Lookup(node.Cells[0].Str); sym != nil && sym.Kind == SymMacro && isUserMacro(sym) {
+			a.insideMacroCall++
+			defer func() { a.insideMacroCall-- }()
+		}
+	}
 	for _, child := range node.Cells {
 		a.analyzeExpr(child, scope, currentPkg)
 	}
+}
+
+// isUserMacro returns true if the symbol is a user-defined macro (not a
+// built-in macro like defun, defmacro, etc). Built-in macros have nil
+// Source or negative Pos.
+func isUserMacro(sym *Symbol) bool {
+	if sym.Source == nil || sym.Source.Pos < 0 {
+		return false
+	}
+	return true
 }
 
 // addParams adds function parameter symbols to a scope.
@@ -1139,9 +1199,10 @@ func (a *analyzer) resolveSymbol(node *lisp.LVal, scope *Scope, currentPkg strin
 		})
 	} else {
 		a.result.Unresolved = append(a.result.Unresolved, &UnresolvedRef{
-			Name:   name,
-			Source: node.Source,
-			Node:   node,
+			Name:            name,
+			Source:          node.Source,
+			Node:            node,
+			InsideMacroCall: a.insideMacroCall > 0,
 		})
 	}
 }

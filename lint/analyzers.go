@@ -54,6 +54,7 @@ var AnalyzerSetUsage = &Analyzer{
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("use set! instead of set to mutate '%s (already bound)", name),
 					Pos:     posFromSource(src.Source),
+					EndPos:  endPosFromNode(src),
 					Notes:   []string{"set creates a new binding; set! mutates an existing one"},
 				})
 			}
@@ -150,6 +151,7 @@ var AnalyzerLetBindings = &Analyzer{
 					pass.Report(Diagnostic{
 						Message: fmt.Sprintf("%s binding %d is not a list (did you forget the outer parentheses?)", head, i+1),
 						Pos:     posFromSource(bindingSource(binding, src)),
+						EndPos:  endPosFromNode(binding),
 						Notes:   []string{"correct form: (let ((x 1) (y 2)) body...)"},
 					})
 					continue
@@ -200,6 +202,7 @@ var AnalyzerQuoteCall = &Analyzer{
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s first argument should be quoted: (set '%s ...) not (set %s ...)", head, arg.Str, arg.Str),
 					Pos:     posFromSource(src.Source),
+					EndPos:  endPosFromNode(src),
 					Notes:   []string{fmt.Sprintf("did you mean (%s '%s ...)?", head, arg.Str)},
 				})
 			}
@@ -235,6 +238,7 @@ var AnalyzerCondMissingElse = &Analyzer{
 			pass.Report(Diagnostic{
 				Message: "cond has no default (else) clause",
 				Pos:     posFromSource(src.Source),
+				EndPos:  endPosFromNode(src),
 				Notes:   []string{"add (else ...) or (true ...) as the last clause to handle unmatched cases"},
 			})
 		})
@@ -346,6 +350,7 @@ var AnalyzerCondStructure = &Analyzer{
 					pass.Report(Diagnostic{
 						Message: fmt.Sprintf("cond clause %d is not a list", i),
 						Pos:     posFromSource(clauseSrc.Source),
+						EndPos:  endPosFromNode(clauseSrc),
 						Notes:   []string{"cond clauses must be lists: (cond ((test1) body1) ((test2) body2) (else default))"},
 					})
 					continue
@@ -542,6 +547,7 @@ var AnalyzerRethrowContext = &Analyzer{
 			pass.Report(Diagnostic{
 				Message: "rethrow used outside handler-bind",
 				Pos:     posFromSource(src.Source),
+				EndPos:  endPosFromNode(src),
 				Notes:   []string{"rethrow can only be called from within a handler-bind handler"},
 			})
 		})
@@ -640,6 +646,7 @@ var AnalyzerUnnecessaryProgn = &Analyzer{
 			pass.Report(Diagnostic{
 				Message: msg,
 				Pos:     posFromSource(src.Source),
+				EndPos:  endPosFromNode(src),
 				Notes:   []string{fmt.Sprintf("remove the progn and move its contents directly into the %s body", head)},
 			})
 		})
@@ -659,6 +666,7 @@ var AnalyzerUnnecessaryProgn = &Analyzer{
 					pass.Report(Diagnostic{
 						Message: "progn is unnecessary in cond clause body (it supports multiple expressions)",
 						Pos:     posFromSource(src.Source),
+						EndPos:  endPosFromNode(src),
 						Notes:   []string{"remove the progn and move its contents directly into the cond clause"},
 					})
 				}
@@ -695,9 +703,11 @@ var AnalyzerUnusedVariable = &Analyzer{
 				continue
 			}
 			pass.Report(Diagnostic{
-				Message: fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
-				Pos:     posFromSource(sym.Source),
-				Notes:   []string{fmt.Sprintf("if '%s' is intentionally unused, prefix it with '_'", sym.Name)},
+				Message:     fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
+				Pos:         posFromSource(sym.Source),
+				EndPos:      endPosFromNode(sym.Node),
+				Notes:       []string{fmt.Sprintf("if '%s' is intentionally unused, prefix it with '_'", sym.Name)},
+				Unnecessary: true,
 			})
 		}
 		return nil
@@ -734,10 +744,29 @@ var AnalyzerUnusedFunction = &Analyzer{
 			if len(sym.Name) > 0 && sym.Name[0] == '_' {
 				continue
 			}
+			// Check cross-file references from workspace scanning.
+			// Per-file analysis can't see callers in other files.
+			if pass.Semantics.WorkspaceRefs != nil {
+				key := analysis.SymbolToKey(sym).String()
+				if refs, ok := pass.Semantics.WorkspaceRefs[key]; ok {
+					hasExternal := false
+					for _, ref := range refs {
+						if ref.File != pass.Filename {
+							hasExternal = true
+							break
+						}
+					}
+					if hasExternal {
+						continue
+					}
+				}
+			}
 			pass.Report(Diagnostic{
-				Message: fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
-				Pos:     posFromSource(sym.Source),
-				Notes:   []string{"if this is a public API, add it to an (export ...) form"},
+				Message:     fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
+				Pos:         posFromSource(sym.Source),
+				EndPos:      endPosFromNode(sym.Node),
+				Notes:       []string{"if this is a public API, add it to an (export ...) form"},
+				Unnecessary: true,
 			})
 		}
 		return nil
@@ -773,9 +802,17 @@ var AnalyzerShadowing = &Analyzer{
 			if outer.External {
 				continue
 			}
+			// Don't report when a parameter shadows a builtin or special-op.
+			// Names like expr, car, map are pervasive in formals and shadowing
+			// them is idiomatic — the builtins themselves use these names.
+			if sym.Kind == analysis.SymParameter &&
+				(outer.Kind == analysis.SymSpecialOp || outer.Kind == analysis.SymBuiltin) {
+				continue
+			}
 			pass.Report(Diagnostic{
 				Message: fmt.Sprintf("%s '%s' shadows %s from enclosing scope", sym.Kind, sym.Name, outer.Kind),
 				Pos:     posFromSource(sym.Source),
+				EndPos:  endPosFromNode(sym.Node),
 				Notes:   []string{fmt.Sprintf("rename '%s' to avoid confusion with the outer %s", sym.Name, outer.Kind)},
 			})
 		}
@@ -845,6 +882,7 @@ var AnalyzerUserArity = &Analyzer{
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, minArity, argc),
 					Pos:     posFromSource(src.Source),
+					EndPos:  endPosFromNode(src),
 					Notes:   []string{fmt.Sprintf("defined at %s", sourceString(sym.Source))},
 				})
 			}
@@ -853,6 +891,7 @@ var AnalyzerUserArity = &Analyzer{
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, maxArity, argc),
 					Pos:     posFromSource(src.Source),
+					EndPos:  endPosFromNode(src),
 					Notes:   []string{fmt.Sprintf("defined at %s", sourceString(sym.Source))},
 				})
 			}
@@ -884,10 +923,18 @@ var AnalyzerUndefinedSymbol = &Analyzer{
 			return nil
 		}
 		for _, u := range pass.Semantics.Unresolved {
+			sev := SeverityError
+			notes := []string{fmt.Sprintf("'%s' is not defined in any enclosing scope; did you mean a different name?", u.Name)}
+			if u.InsideMacroCall {
+				sev = SeverityWarning
+				notes = append(notes, "inside a macro call — the macro may introduce this binding at expansion time")
+			}
 			pass.Report(Diagnostic{
-				Message: fmt.Sprintf("undefined symbol: %s", u.Name),
-				Pos:     posFromSource(u.Source),
-				Notes:   []string{fmt.Sprintf("'%s' is not defined in any enclosing scope; did you mean a different name?", u.Name)},
+				Severity: sev,
+				Message:  fmt.Sprintf("undefined symbol: %s", u.Name),
+				Pos:      posFromSource(u.Source),
+				EndPos:   endPosFromNode(u.Node),
+				Notes:    notes,
 			})
 		}
 		return nil
@@ -978,6 +1025,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("duplicate definition: %s '%s' already defined", sym.Kind, sym.Name),
 					Pos:     posFromSource(sym.Source),
+					EndPos:  endPosFromNode(sym.Node),
 					Notes:   []string{fmt.Sprintf("first defined at %s", sourceString(first.Source))},
 				})
 			}
@@ -999,6 +1047,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("duplicate definition: %s '%s' is also defined externally", first.Kind, first.Name),
 					Pos:     posFromSource(first.Source),
+					EndPos:  endPosFromNode(first.Node),
 					Notes:   []string{fmt.Sprintf("also defined at %s", sourceString(ext.Source))},
 				})
 			}

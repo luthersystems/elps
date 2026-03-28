@@ -59,7 +59,29 @@ func (s *Server) textDocumentHover(_ *glsp.Context, params *protocol.HoverParams
 		}, nil
 	}
 
+	// Fallback: language keywords (not callable, but used in special contexts).
+	if content, ok := keywordDocs[word]; ok {
+		return &protocol.Hover{
+			Contents: protocol.MarkupContent{
+				Kind:  protocol.MarkupKindMarkdown,
+				Value: content,
+			},
+		}, nil
+	}
+
 	return nil, nil
+}
+
+// keywordDocs provides hover documentation for language keywords that are
+// not registered as callable symbols but appear in source code.
+var keywordDocs = map[string]string{
+	"&rest":             "**&rest** — variadic parameter marker\n\nMarks the start of a variadic parameter in a formal argument list. The parameter after `&rest` collects all remaining arguments into a list.\n\n```lisp\n(defun f (x &rest args) args)\n```",
+	"&optional":         "**&optional** — optional parameter marker\n\nMarks the start of optional parameters in a formal argument list. Optional parameters are bound to `()` if not provided.\n\n```lisp\n(defun f (x &optional y) y)\n```",
+	"&key":              "**&key** — keyword parameter marker\n\nMarks the start of keyword parameters in a formal argument list. Keyword arguments are passed as `:name value` pairs.\n\n```lisp\n(defun f (&key x y) (list x y))\n```",
+	"unquote":           "**unquote** — evaluate inside quasiquote\n\nEvaluates an expression inside a `quasiquote` template. The result replaces the `unquote` form. Only valid inside `(quasiquote ...)`.\n\n```lisp\n(quasiquote (list (unquote x)))\n```",
+	"unquote-splicing":  "**unquote-splicing** — evaluate and splice inside quasiquote\n\nEvaluates an expression inside a `quasiquote` template and splices the result list into the parent. The expression must evaluate to a list.\n\n```lisp\n(quasiquote (list (unquote-splicing items)))\n```",
+	"condition":         "**condition** — catch-all error type\n\nUsed as the error type in a `handler-bind` clause to match any error.\n\n```lisp\n(handler-bind ((condition (lambda (e) e))) body)\n```",
+	"else":              "**else** — catch-all cond clause\n\nWhen used as the test in the last `cond` clause, it always matches.\n\n```lisp\n(cond ((= x 1) \"one\") (else \"other\"))\n```",
 }
 
 // qualifiedSymbolHover looks up a qualified symbol (e.g. "string:join") in

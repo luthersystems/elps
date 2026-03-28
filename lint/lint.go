@@ -233,6 +233,10 @@ type Diagnostic struct {
 
 	// Notes are optional hint text lines for the user.
 	Notes []string `json:"notes,omitempty"`
+
+	// Unnecessary marks the diagnostic as "unnecessary" code (e.g., unused
+	// variables). Editors may render these with faded text.
+	Unnecessary bool `json:"unnecessary,omitempty"`
 }
 
 // Position identifies a location in source code.
@@ -366,11 +370,20 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		pkgExports[pkg] = append(pkgExports[pkg], wsSyms...)
 	}
 
-	return &analysis.Config{
+	acfg := &analysis.Config{
 		ExtraGlobals:   prescan.ExportedGlobals,
 		PackageExports: pkgExports,
 		DefForms:       prescan.DefForms,
-	}, nil
+		PackageImports: prescan.PackageImports,
+		DefaultPackage: prescan.DefaultPackage,
+	}
+
+	// Build workspace refs so lint analyzers (e.g. unused-function) can check
+	// cross-file references. This re-parses workspace files — acceptable for
+	// CLI lint runs (typically <1s for ~100 files).
+	acfg.WorkspaceRefs = analysis.ScanWorkspaceRefs(cfg.Workspace, acfg, scanCfg)
+
+	return acfg, nil
 }
 
 // defaultStdlibExports creates a temporary ELPS env, loads the standard

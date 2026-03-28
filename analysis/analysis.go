@@ -28,6 +28,21 @@ type Config struct {
 	// at the defined symbol cell and the analyzer registers it using NameKind.
 	DefForms []DefFormSpec
 
+	// PackageImports maps package name to imported package names collected
+	// from cross-file use-package declarations during workspace prescan.
+	// Per-file analysis applies these imports so symbols from packages
+	// imported in other files (e.g. main.lisp) are available.
+	PackageImports map[string][]string
+
+	// DefaultPackage overrides the default "user" package for bare files
+	// (no in-package declaration). Derived from main.lisp's in-package.
+	DefaultPackage string
+
+	// WorkspaceRefs maps SymbolKey.String() to cross-file references.
+	// When set, analyzers can check whether a symbol is referenced from
+	// other files in the workspace.
+	WorkspaceRefs map[string][]FileReference
+
 	// Filename is the source file being analyzed.
 	Filename string
 }
@@ -63,6 +78,11 @@ type Result struct {
 	// for cross-file duplicates without relying on scope lookups that may
 	// have been overwritten by local definitions.
 	ExtraGlobals []ExternalSymbol
+
+	// WorkspaceRefs maps SymbolKey.String() to cross-file references.
+	// Copied from Config. Used by lint analyzers to check whether a symbol
+	// is referenced from other workspace files (e.g. unused-function check).
+	WorkspaceRefs map[string][]FileReference
 }
 
 // Analyze performs semantic analysis on a set of parsed expressions.
@@ -96,7 +116,7 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 
 	a := &analyzer{
 		root:             root,
-		result:           &Result{RootScope: root, ExtraGlobals: cfg.ExtraGlobals},
+		result:           &Result{RootScope: root, ExtraGlobals: cfg.ExtraGlobals, WorkspaceRefs: cfg.WorkspaceRefs},
 		cfg:              cfg,
 		qualifiedSymbols: make(map[string]*Symbol),
 	}
@@ -105,7 +125,7 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 	a.prescan(exprs, root)
 
 	// Phase 2: Deep recursive walk
-	currentPkg := "user"
+	currentPkg := a.defaultPackage()
 	for _, expr := range exprs {
 		a.analyzeExpr(expr, root, currentPkg)
 		if expr != nil && expr.Type == lisp.LSExpr && !expr.Quoted && len(expr.Cells) > 0 &&

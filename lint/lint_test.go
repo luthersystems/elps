@@ -1876,10 +1876,98 @@ func TestUnusedFunction_HasNotes(t *testing.T) {
 	assert.Contains(t, diags[0].Notes[0], "export")
 }
 
+func TestUnusedFunction_Negative_CrossFileRef(t *testing.T) {
+	// Function with 0 local refs but a cross-file ref should NOT be flagged.
+	source := `(defun helper () 42)`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
+	// The symbol ends up in "user" package (default for bare source).
+	helperKey := analysis.SymbolKey{Package: "user", Name: "helper", Kind: analysis.SymFunction}.String()
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "helper", Kind: analysis.SymFunction},
+		},
+		WorkspaceRefs: map[string][]analysis.FileReference{
+			helperKey: {
+				{File: "/other/file.lisp"}, // referenced from another file
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+func TestUnusedFunction_Positive_OnlySameFileRef(t *testing.T) {
+	// Workspace refs exist but only from the same file — still unused.
+	source := `(defun helper () 42)`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
+	helperKey := analysis.SymbolKey{Package: "user", Name: "helper", Kind: analysis.SymFunction}.String()
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "helper", Kind: analysis.SymFunction},
+		},
+		WorkspaceRefs: map[string][]analysis.FileReference{
+			helperKey: {
+				{File: "test.lisp"}, // same file — doesn't count
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	assert.Len(t, diags, 1, "same-file refs don't count as cross-file usage")
+}
+
+func TestUnusedFunction_Positive_NoWorkspaceRefs(t *testing.T) {
+	// Without workspace refs, still flagged (existing behavior).
+	source := `(defun helper () 42)`
+	diags := lintCheckSemantic(t, AnalyzerUnusedFunction, source)
+	assert.Len(t, diags, 1)
+}
+
 // --- shadowing ---
 
-func TestShadowing_Positive_ParamShadowsBuiltin(t *testing.T) {
+func TestUnusedFunction_Negative_CrossFileRef_WithDefaultPackage(t *testing.T) {
+	// Bare file with DefaultPackage set — symbol ends up in "svc" package.
+	// WorkspaceRefs key must match the "svc" package for cross-file check.
+	source := `(defun helper () 42)`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
+	helperKey := analysis.SymbolKey{Package: "svc", Name: "helper", Kind: analysis.SymFunction}.String()
+	cfg := &analysis.Config{
+		DefaultPackage: "svc",
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "helper", Kind: analysis.SymFunction, Package: "svc"},
+		},
+		WorkspaceRefs: map[string][]analysis.FileReference{
+			helperKey: {
+				{File: "/other/file.lisp"},
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+func TestShadowing_Negative_ParamShadowsBuiltin(t *testing.T) {
+	// Parameters shadowing builtins should not be reported — names like
+	// car, map, expr are commonly used as parameter names.
 	source := `(defun foo (car) (+ car 1))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	assertNoDiags(t, diags)
+}
+
+func TestShadowing_Negative_ParamShadowsSpecialOp(t *testing.T) {
+	// Parameters shadowing special-ops should not be reported — expr is
+	// a special-op but also the most common macro parameter name.
+	source := `(defmacro foo (&rest expr) expr)`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	assertNoDiags(t, diags)
+}
+
+func TestShadowing_Positive_LetShadowsBuiltin(t *testing.T) {
+	// Let-binding shadowing a builtin should still be reported — the
+	// suppression only applies to parameters, not all inner symbol kinds.
+	source := `(defun foo () (let ((car 1)) car))`
 	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
 	assert.Len(t, diags, 1)
 	assertHasDiag(t, diags, "shadows")
@@ -1913,11 +2001,196 @@ func TestShadowing_Negative_NoSemantics(t *testing.T) {
 }
 
 func TestShadowing_HasNotes(t *testing.T) {
-	source := `(defun foo (car) car)`
+	// Use let-shadows-param instead of param-shadows-builtin (now suppressed).
+	source := `(defun foo (x) (let ((x 2)) (+ x 1)))`
 	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
 	require.Len(t, diags, 1)
 	assert.NotEmpty(t, diags[0].Notes)
 	assert.Contains(t, diags[0].Notes[0], "rename")
+}
+
+func TestShadowing_DiagnosticPosition(t *testing.T) {
+	// Verify the diagnostic position points to "x" in the let binding.
+	source := `(defun foo (x) (let ((x 2)) x))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	require.Len(t, diags, 1)
+	// let binding "x" starts at col 23: "(defun foo (x) (let ((" = 22 chars, then "x"
+	assert.Equal(t, 1, diags[0].Pos.Line)
+	assert.Equal(t, 23, diags[0].Pos.Col)
+	assert.Equal(t, 1, diags[0].EndPos.Line)
+	assert.Equal(t, 24, diags[0].EndPos.Col) // 23 + len("x") = 24
+}
+
+func TestShadowing_DiagnosticPosition_NestedLambda(t *testing.T) {
+	// Verify position for a lambda param that shadows an outer param.
+	source := "(defun foo (x) (lambda (x) x))"
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	require.Len(t, diags, 1)
+	// lambda "x" at col 25: "(defun foo (x) (lambda (" = 24 chars, then "x"
+	assert.Equal(t, 1, diags[0].Pos.Line)
+	assert.Equal(t, 25, diags[0].Pos.Col)
+	assert.Equal(t, 1, diags[0].EndPos.Line)
+	assert.Equal(t, 26, diags[0].EndPos.Col) // 25 + len("x") = 26
+}
+
+func TestUndefinedSymbol_HasEndPos(t *testing.T) {
+	source := `(defun f () (unknown-fn 42))`
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	require.Len(t, diags, 1)
+	// "unknown-fn" starts at col 14: "(defun f () (" = 13 chars, then "unknown-fn"
+	assert.Equal(t, 1, diags[0].Pos.Line)
+	assert.Equal(t, 14, diags[0].Pos.Col)
+	assert.Equal(t, 1, diags[0].EndPos.Line)
+	assert.Equal(t, 24, diags[0].EndPos.Col) // 14 + len("unknown-fn") = 24
+}
+
+func TestUserArity_HasEndPos(t *testing.T) {
+	// "(add 1)" on line 2 — SourceOf returns the s-expression starting at col 1.
+	source := "(defun add (x y) (+ x y))\n(add 1)"
+	diags := lintCheckSemantic(t, AnalyzerUserArity, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, 2, diags[0].Pos.Line)
+	assert.Equal(t, 1, diags[0].Pos.Col)
+	assert.Equal(t, 2, diags[0].EndPos.Line)
+	assert.Equal(t, 8, diags[0].EndPos.Col) // end of "(add 1)"
+}
+
+func TestUndefinedSymbol_Warning_InsideMacroBody(t *testing.T) {
+	// Unresolved symbols inside user-defined macro bodies should be
+	// warnings, not errors — the macro may introduce bindings.
+	source := `(my-macro (+ x 1))`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "my-macro", Kind: analysis.SymMacro, Package: "user",
+				Source: &token.Location{File: "macros.lisp", Line: 1, Col: 1, Pos: 0}},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	// x is unresolved but inside a user-macro call → warning not error
+	var xDiag *Diagnostic
+	for i := range diags {
+		for _, note := range diags[i].Notes {
+			if strings.Contains(note, "macro") {
+				xDiag = &diags[i]
+				break
+			}
+		}
+	}
+	require.NotNil(t, xDiag, "should have a diagnostic for x inside macro body")
+	assert.Equal(t, SeverityWarning, xDiag.Severity, "inside macro body should be warning, not error")
+}
+
+func TestUndefinedSymbol_Error_InsideBuiltinMacro(t *testing.T) {
+	// Unresolved symbols inside builtin macro bodies (defun) should
+	// still be errors — builtin macros have known semantics.
+	source := `(defun f () (unknown-fn 42))`
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, SeverityError, diags[0].Severity)
+}
+
+func TestUndefinedSymbol_Error_InsideFunctionCall(t *testing.T) {
+	// Unresolved symbols inside regular function calls should still be errors.
+	source := `(my-fn (+ x 1))`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "my-fn", Kind: analysis.SymFunction, Package: "user",
+				Source: &token.Location{File: "funcs.lisp", Line: 1, Col: 1, Pos: 0}},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	for _, d := range diags {
+		assert.Equal(t, SeverityError, d.Severity,
+			"undefined symbol inside function call should be error, not warning")
+	}
+}
+
+func TestDiagnosticRanges_IssueExample(t *testing.T) {
+	// Reproduce issue #251: multiple diagnostics on nearby lines.
+	// Each diagnostic's Pos must point to its own token, and EndPos
+	// must produce a valid non-zero-width range.
+	source := `(in-package 'myapp)
+(use-package 'testing)
+
+(defun run-test ()
+  (let* ((unused-var (+ 1 2)))
+    (some-macro
+      (sorted-map "result" (equal? binding-a "expected")))))`
+
+	l := &Linter{Analyzers: DefaultAnalyzers()}
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "some-macro", Kind: analysis.SymMacro, Package: "myapp",
+				Source: &token.Location{File: "macros.lisp", Line: 1, Col: 1, Pos: 0}},
+		},
+		PackageExports: map[string][]analysis.ExternalSymbol{
+			"testing": {{Name: "assert-equal", Kind: analysis.SymFunction, Package: "testing"}},
+		},
+		PackageImports: map[string][]string{
+			"myapp": {"testing"},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+
+	// Log all diagnostics for debugging.
+	for _, d := range diags {
+		t.Logf("[%s] %s at line=%d col=%d endLine=%d endCol=%d: %s",
+			d.Severity, d.Analyzer, d.Pos.Line, d.Pos.Col,
+			d.EndPos.Line, d.EndPos.Col, d.Message)
+	}
+
+	// Every diagnostic must have a valid position.
+	for _, d := range diags {
+		assert.True(t, d.Pos.Line > 0,
+			"diagnostic %q should have Pos.Line > 0", d.Message)
+		assert.True(t, d.Pos.Col > 0,
+			"diagnostic %q should have Pos.Col > 0", d.Message)
+	}
+
+	// Every diagnostic with EndPos set must have EndPos >= Pos (not inverted).
+	for _, d := range diags {
+		if d.EndPos.Line > 0 {
+			if d.EndPos.Line == d.Pos.Line {
+				assert.True(t, d.EndPos.Col >= d.Pos.Col,
+					"diagnostic %q has inverted range: Pos.Col=%d > EndPos.Col=%d",
+					d.Message, d.Pos.Col, d.EndPos.Col)
+			}
+			assert.True(t, d.EndPos.Line >= d.Pos.Line,
+				"diagnostic %q has inverted range: Pos.Line=%d > EndPos.Line=%d",
+				d.Message, d.Pos.Line, d.EndPos.Line)
+		}
+	}
+
+	// No two diagnostics should have exactly the same Pos (they'd overlap in VS Code).
+	seen := make(map[string]string)
+	for _, d := range diags {
+		key := fmt.Sprintf("%d:%d", d.Pos.Line, d.Pos.Col)
+		if prev, ok := seen[key]; ok {
+			t.Errorf("diagnostics overlap at %s: %q and %q", key, prev, d.Message)
+		}
+		seen[key] = d.Message
+	}
+
+	// Verify each diagnostic points to the correct token in the source.
+	lines := strings.Split(source, "\n")
+	for _, d := range diags {
+		if d.Pos.Line > 0 && d.Pos.Line <= len(lines) && d.EndPos.Line > 0 && d.EndPos.Line <= len(lines) {
+			line := lines[d.Pos.Line-1]
+			if d.Pos.Col > 0 && d.EndPos.Col > 0 && d.Pos.Line == d.EndPos.Line {
+				startCol := d.Pos.Col - 1
+				endCol := d.EndPos.Col - 1
+				if endCol <= len(line) {
+					token := line[startCol:endCol]
+					t.Logf("  → token at range: %q", token)
+				}
+			}
+		}
+	}
 }
 
 func TestShadowing_Negative_ExternalSymbol(t *testing.T) {

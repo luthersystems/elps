@@ -220,13 +220,17 @@ func convertLintDiagnostic(d lint.Diagnostic) protocol.Diagnostic {
 		end = protocol.Position{Line: safeUint(endLine), Character: safeUint(endCol)}
 	}
 	sev := mapLintSeverity(d.Severity)
-	return protocol.Diagnostic{
+	diag := protocol.Diagnostic{
 		Range:    protocol.Range{Start: start, End: end},
 		Severity: &sev,
 		Source:   strPtr("elps-lint"),
 		Code:     &protocol.IntegerOrString{Value: d.Analyzer},
 		Message:  d.Message,
 	}
+	if d.Unnecessary {
+		diag.Tags = []protocol.DiagnosticTag{protocol.DiagnosticTagUnnecessary}
+	}
+	return diag
 }
 
 // mapLintSeverity converts a lint.Severity to a protocol.DiagnosticSeverity.
