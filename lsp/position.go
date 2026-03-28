@@ -145,7 +145,7 @@ func isSymbolChar(c byte) bool {
 		return true
 	}
 	switch c {
-	case '-', '_', '!', '?', '+', '*', '/', '<', '>', '=', ':', '.', '#', '^':
+	case '-', '_', '!', '?', '+', '*', '/', '<', '>', '=', ':', '.', '#', '^', '&':
 		return true
 	}
 	return false

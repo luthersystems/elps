@@ -307,6 +307,7 @@ func (s *Server) buildWorkspaceIndex() {
 	var pkgExports map[string][]analysis.ExternalSymbol
 	var defForms []analysis.DefFormSpec
 	var packageImports map[string][]string
+	var defaultPackage string
 
 	// Build scan config from server options. MaxFileBytes uses its own
 	// default (not maxDocumentBytes) since document analysis limits and
@@ -325,6 +326,7 @@ func (s *Server) buildWorkspaceIndex() {
 			pkgExports = prescan.PkgExports
 			defForms = prescan.DefForms
 			packageImports = prescan.PackageImports
+			defaultPackage = prescan.DefaultPackage
 			if prescan.Truncated {
 				s.sendNotification("window/showMessage", &protocol.ShowMessageParams{
 					Type:    protocol.MessageTypeWarning,
@@ -367,19 +369,23 @@ func (s *Server) buildWorkspaceIndex() {
 		PackageExports: pkgExports,
 		DefForms:       defForms,
 		PackageImports: packageImports,
+		DefaultPackage: defaultPackage,
+	}
+
+	// Build workspace reference index using the populated config.
+	// Set it on the config so per-file analysis (and lint analyzers)
+	// can check cross-file references.
+	if s.rootPath != "" {
+		wsRefs := analysis.ScanWorkspaceRefs(s.rootPath, cfg, scanCfg)
+		cfg.WorkspaceRefs = wsRefs
+		s.workspaceRefsMu.Lock()
+		s.workspaceRefs = wsRefs
+		s.workspaceRefsMu.Unlock()
 	}
 
 	s.analysisCfgMu.Lock()
 	s.analysisCfg = cfg
 	s.analysisCfgMu.Unlock()
-
-	// Build workspace reference index using the populated config.
-	if s.rootPath != "" {
-		wsRefs := analysis.ScanWorkspaceRefs(s.rootPath, cfg, scanCfg)
-		s.workspaceRefsMu.Lock()
-		s.workspaceRefs = wsRefs
-		s.workspaceRefsMu.Unlock()
-	}
 }
 
 // reanalyzeOpenDocuments invalidates cached analysis for all open documents
@@ -429,6 +435,8 @@ func (s *Server) getAnalysisConfig(uri string) *analysis.Config {
 		cfg.PackageExports = base.PackageExports
 		cfg.DefForms = base.DefForms
 		cfg.PackageImports = base.PackageImports
+		cfg.DefaultPackage = base.DefaultPackage
+		cfg.WorkspaceRefs = base.WorkspaceRefs
 	}
 	return cfg
 }

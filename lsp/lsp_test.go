@@ -162,6 +162,11 @@ func TestWordAtPosition(t *testing.T) {
 		assert.Equal(t, "*global*", wordAtPosition("*global*", 0, 0))
 		assert.Equal(t, "set!", wordAtPosition("(set! x 1)", 0, 1))
 	})
+	t.Run("ampersand keywords", func(t *testing.T) {
+		assert.Equal(t, "&rest", wordAtPosition("(defun f (&rest args) args)", 0, 10))
+		assert.Equal(t, "&optional", wordAtPosition("(defun f (&optional x) x)", 0, 10))
+		assert.Equal(t, "&key", wordAtPosition("(defun f (&key x) x)", 0, 10))
+	})
 }
 
 // --- Document store tests ---
@@ -3494,6 +3499,140 @@ func TestCrossFileUsePackage(t *testing.T) {
 		assert.NotEqual(t, "helper-fn", u.Name,
 			"helper-fn should resolve via cross-file use-package, not be unresolved")
 	}
+}
+
+func TestHover_AllKeywords(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		col     uint32
+		expect  string
+	}{
+		{"&rest", `(defun f (&rest args) args)`, 10, "variadic"},
+		{"&optional", `(defun f (&optional x) x)`, 10, "optional"},
+		{"&key", `(defun f (&key x) x)`, 10, "keyword"},
+		{"unquote", `(quasiquote (list (unquote x)))`, 19, "quasiquote"},
+		{"unquote-splicing", `(quasiquote (list (unquote-splicing xs)))`, 19, "splices"},
+		{"condition", `(handler-bind ((condition (lambda (e) e))) 1)`, 16, "handler-bind"},
+		{"else", `(cond ((= x 1) "one") (else "other"))`, 23, "cond"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := testServer()
+			doc := openDoc(s, "file:///test.lisp", tt.content)
+			s.ensureAnalysis(doc)
+
+			hover, err := s.textDocumentHover(nil, &protocol.HoverParams{
+				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+					TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+					Position:     protocol.Position{Line: 0, Character: tt.col},
+				},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, hover, "%s should have hover docs", tt.name)
+			mc, ok := hover.Contents.(protocol.MarkupContent)
+			require.True(t, ok)
+			assert.Contains(t, mc.Value, tt.expect,
+				"%s hover should contain %q", tt.name, tt.expect)
+		})
+	}
+}
+
+// --- Diagnostic position tests (issue #251) ---
+
+func TestDiagnosticPositions_Issue251_Repro(t *testing.T) {
+	// Minimal repro from issue #251: two diagnostics in the same file.
+	// "View Problem" on the warning at line 1 jumps to the error at line 4.
+	// Verify the LSP diagnostic ranges are correct and distinct.
+	dir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'test)
+(load-file "bug.lisp")
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bug.lisp"), []byte(
+		"(defun unused-fn () 42)\n\n(defun caller ()\n  (not 1 2 3))\n",
+	), 0600))
+
+	s := testServer()
+	s.rootPath = dir
+	s.buildWorkspaceIndex()
+
+	bugURI := pathToURI(filepath.Join(dir, "bug.lisp"))
+	bugSrc := "(defun unused-fn () 42)\n\n(defun caller ()\n  (not 1 2 3))\n"
+	doc := openDoc(s, bugURI, bugSrc)
+	s.ensureAnalysis(doc)
+
+	// Run the full LSP diagnostic pipeline.
+	lintDiags, err := s.linter.LintFileWithContext(
+		[]byte(bugSrc), uriToPath(bugURI), doc.analysis)
+	require.NoError(t, err)
+
+	// Convert to LSP protocol diagnostics (same as analyzeAndPublish).
+	var protoDiags []protocol.Diagnostic
+	for _, d := range lintDiags {
+		protoDiags = append(protoDiags, convertLintDiagnostic(d))
+	}
+
+	t.Logf("Total LSP diagnostics: %d", len(protoDiags))
+	for i, d := range protoDiags {
+		sev := "?"
+		if d.Severity != nil {
+			switch *d.Severity {
+			case protocol.DiagnosticSeverityError:
+				sev = "error"
+			case protocol.DiagnosticSeverityWarning:
+				sev = "warning"
+			case protocol.DiagnosticSeverityInformation:
+				sev = "info"
+			case protocol.DiagnosticSeverityHint:
+				sev = "hint"
+			}
+		}
+		code := ""
+		if d.Code != nil {
+			code = fmt.Sprintf("%v", d.Code.Value)
+		}
+		t.Logf("  [%d] %s (%s) L%d:C%d-L%d:C%d tags=%v: %s",
+			i, sev, code,
+			d.Range.Start.Line, d.Range.Start.Character,
+			d.Range.End.Line, d.Range.End.Character,
+			d.Tags, d.Message)
+	}
+
+	// Find the two key diagnostics by message content.
+	var unusedDiag, arityDiag *protocol.Diagnostic
+	for i := range protoDiags {
+		switch {
+		case strings.Contains(protoDiags[i].Message, "unused-fn"):
+			unusedDiag = &protoDiags[i]
+		case strings.Contains(protoDiags[i].Message, "not accepts"):
+			arityDiag = &protoDiags[i]
+		}
+	}
+
+	require.NotNil(t, unusedDiag, "should have unused-function diagnostic")
+	require.NotNil(t, arityDiag, "should have builtin-arity diagnostic")
+
+	// The unused-fn warning must be at line 0 (0-based), NOT at the arity error's line.
+	assert.Equal(t, protocol.UInteger(0), unusedDiag.Range.Start.Line,
+		"unused-fn warning should be at line 0 (0-based)")
+	assert.Equal(t, protocol.UInteger(3), arityDiag.Range.Start.Line,
+		"not arity error should be at line 3 (0-based)")
+
+	// Ranges must not overlap or point to same location.
+	assert.NotEqual(t, unusedDiag.Range.Start.Line, arityDiag.Range.Start.Line,
+		"diagnostics should be on different lines")
+
+	// Ranges must be non-zero-width.
+	assert.NotEqual(t, unusedDiag.Range.Start, unusedDiag.Range.End,
+		"unused-fn diagnostic should have non-zero-width range")
+	assert.NotEqual(t, arityDiag.Range.Start, arityDiag.Range.End,
+		"arity diagnostic should have non-zero-width range")
+
+	// The unused diagnostic must have the Unnecessary tag.
+	assert.Contains(t, unusedDiag.Tags, protocol.DiagnosticTagUnnecessary,
+		"unused-fn should have Unnecessary tag")
 }
 
 // --- Inlay hint tests ---

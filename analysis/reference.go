@@ -19,4 +19,8 @@ type UnresolvedRef struct {
 	Name   string
 	Source *token.Location
 	Node   *lisp.LVal
+	// InsideMacroCall is true when the unresolved reference appears inside
+	// a user-defined macro call body. Macros may introduce bindings at
+	// expansion time that are invisible to static analysis.
+	InsideMacroCall bool
 }

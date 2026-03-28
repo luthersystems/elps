@@ -1561,6 +1561,28 @@ func TestAnalyzeFile_PreservesPackageImports(t *testing.T) {
 		"AnalyzeFile should forward PackageImports so 'when' resolves")
 }
 
+func TestAnalyze_DefaultPackage_BareFile(t *testing.T) {
+	// Regression test: a bare file (no in-package) with DefaultPackage set
+	// should use the default package, enabling cross-file imports to work.
+	source := "(defun f () (helper-fn 42))"
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"helpers": {{Name: "helper-fn", Kind: SymFunction, Package: "helpers"}},
+		},
+		PackageImports: map[string][]string{
+			"svc": {"helpers"},
+		},
+		DefaultPackage: "svc",
+	}
+	result := parseAndAnalyzeWithConfig(t, source, cfg)
+	unresolvedNames := make(map[string]bool)
+	for _, u := range result.Unresolved {
+		unresolvedNames[u.Name] = true
+	}
+	assert.False(t, unresolvedNames["helper-fn"],
+		"bare file with DefaultPackage should resolve symbols via cross-file imports")
+}
+
 // parseAndAnalyzeWithConfig is a test helper that parses source and runs
 // analysis with a custom Config.
 func parseAndAnalyzeWithConfig(t *testing.T, source string, cfg *Config) *Result {
