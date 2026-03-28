@@ -1351,7 +1351,7 @@ func TestPrescanWorkspace_PhylumPattern(t *testing.T) {
 		PackageImports: prescan.PackageImports,
 		DefaultPackage: prescan.DefaultPackage,
 	}
-	authSrc, _ := os.ReadFile(filepath.Join(dir, "auth.lisp"))
+	authSrc := []byte("(defun authenticate (token)\n  (string-check token))\n\n(defun auth-route (req)\n  (route-ok (authenticate (get req \"token\"))))\n\n(export 'authenticate)\n(export 'auth-route)\n")
 	result := AnalyzeFile(authSrc, filepath.Join(dir, "auth.lisp"), cfg)
 	require.NotNil(t, result)
 
@@ -1365,7 +1365,7 @@ func TestPrescanWorkspace_PhylumPattern(t *testing.T) {
 		"route-ok from router should resolve via cross-file use-package")
 
 	// Verify test file resolution: auth_test.lisp has explicit in-package.
-	testSrc, _ := os.ReadFile(filepath.Join(dir, "auth_test.lisp"))
+	testSrc := []byte("(in-package 'myapp)\n(use-package 'testing)\n\n(test \"auth works\"\n  (assert-equal \"ok\" (authenticate \"ok\")))\n")
 	testResult := AnalyzeFile(testSrc, filepath.Join(dir, "auth_test.lisp"), cfg)
 	require.NotNil(t, testResult)
 
@@ -1525,7 +1525,7 @@ func TestAnalyze_DefsBeforeInPackage_Resolve(t *testing.T) {
 		DefaultPackage: prescan.DefaultPackage,
 	}
 
-	consumerSrc, _ := os.ReadFile(filepath.Join(dir, "consumer.lisp"))
+	consumerSrc := []byte("(defun do-work () (helper-a))\n")
 	result := AnalyzeFile(consumerSrc, filepath.Join(dir, "consumer.lisp"), cfg)
 	require.NotNil(t, result)
 
