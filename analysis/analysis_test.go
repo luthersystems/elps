@@ -666,6 +666,40 @@ func TestAnalyze_Quasiquote_UnquoteInBracketList(t *testing.T) {
 	t.Fatal("parameter patt not found in symbols")
 }
 
+func TestAnalyze_Quasiquote_TemplateFunctionReference(t *testing.T) {
+	// A function used inside a quasiquote template should be counted as
+	// referenced, even though the template is data. This prevents false
+	// "unused function" warnings for functions called in macro-generated code.
+	result := parseAndAnalyze(t, `
+(defun helper () 42)
+
+(defmacro my-macro (x)
+  (quasiquote
+    (begin
+      (helper)
+      (unquote x))))`)
+	var helperSym *Symbol
+	for _, sym := range result.Symbols {
+		if sym.Name == "helper" && sym.Kind == SymFunction {
+			helperSym = sym
+			break
+		}
+	}
+	require.NotNil(t, helperSym, "helper function should be in symbols")
+	assert.Greater(t, helperSym.References, 0,
+		"helper should be referenced via quasiquote template")
+	assert.Empty(t, result.Unresolved,
+		"template symbols that resolve should not produce unresolved entries")
+}
+
+func TestAnalyze_Quasiquote_TemplateUnknownNoUnresolved(t *testing.T) {
+	// Unknown symbols in quasiquote templates must NOT produce unresolved
+	// entries — they may be introduced at macro expansion time.
+	result := parseAndAnalyze(t, `(quasiquote (unknown-fn x y))`)
+	assert.Empty(t, result.Unresolved,
+		"quasiquote template should not produce unresolved symbols")
+}
+
 // --- Analyze: reference counting ---
 
 func TestAnalyze_ReferenceCount(t *testing.T) {
