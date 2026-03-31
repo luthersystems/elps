@@ -623,8 +623,9 @@ func TestAnalyze_PrefixLambda_UnqualifiedExpr(t *testing.T) {
 
 // --- Analyze: quasiquote ---
 
-func TestAnalyze_Quasiquote_TemplateIgnored(t *testing.T) {
-	// Symbols inside quasiquote template are data, not code references
+func TestAnalyze_Quasiquote_TemplateUnknownNotUnresolved(t *testing.T) {
+	// Unknown symbols in quasiquote templates must NOT produce unresolved
+	// entries — they may be introduced at macro expansion time.
 	result := parseAndAnalyze(t, `(quasiquote (unknown-fn x y))`)
 	assert.Empty(t, result.Unresolved, "quasiquote template should not produce unresolved symbols")
 }
@@ -686,18 +687,30 @@ func TestAnalyze_Quasiquote_TemplateFunctionReference(t *testing.T) {
 		}
 	}
 	require.NotNil(t, helperSym, "helper function should be in symbols")
-	assert.Greater(t, helperSym.References, 0,
-		"helper should be referenced via quasiquote template")
+	assert.Equal(t, 1, helperSym.References,
+		"helper should be referenced exactly once via quasiquote template")
+	// Verify the Reference entry exists in the result slice too.
+	var found bool
+	for _, ref := range result.References {
+		if ref.Symbol.Name == "helper" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "result.References should contain an entry for helper")
 	assert.Empty(t, result.Unresolved,
 		"template symbols that resolve should not produce unresolved entries")
 }
 
-func TestAnalyze_Quasiquote_TemplateUnknownNoUnresolved(t *testing.T) {
-	// Unknown symbols in quasiquote templates must NOT produce unresolved
-	// entries — they may be introduced at macro expansion time.
-	result := parseAndAnalyze(t, `(quasiquote (unknown-fn x y))`)
-	assert.Empty(t, result.Unresolved,
-		"quasiquote template should not produce unresolved symbols")
+func TestAnalyze_Quasiquote_TemplateKeywordsSkipped(t *testing.T) {
+	// Keyword symbols (starting with :) in quasiquote templates should be
+	// skipped — they are data, not function/variable references.
+	result := parseAndAnalyze(t, `(quasiquote (my-fn :key 1 :value 2))`)
+	assert.Empty(t, result.Unresolved)
+	for _, ref := range result.References {
+		assert.NotEqual(t, ':', rune(ref.Symbol.Name[0]),
+			"keywords should not be resolved as references")
+	}
 }
 
 // --- Analyze: reference counting ---

@@ -1940,6 +1940,23 @@ func TestUnusedFunction_Negative_UsedInQuasiquoteTemplate(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+func TestUnusedFunction_Positive_NotInQuasiquoteTemplate(t *testing.T) {
+	// A function that coexists with a defmacro but is NOT referenced in
+	// its quasiquote template should still be flagged as unused.
+	source := `
+(defun unused-helper () 99)
+
+(export 'my-macro)
+(defmacro my-macro (x)
+  (quasiquote
+    (begin
+      (other-fn)
+      (unquote x))))`
+	diags := lintCheckSemantic(t, AnalyzerUnusedFunction, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "unused function: unused-helper")
+}
+
 // --- shadowing ---
 
 func TestUnusedFunction_Negative_CrossFileRef_WithDefaultPackage(t *testing.T) {
