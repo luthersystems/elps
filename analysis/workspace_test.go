@@ -531,6 +531,58 @@ func TestScanWorkspaceRefs_CrossFile(t *testing.T) {
 	assert.True(t, found, "should find helper reference from b.lisp")
 }
 
+func TestScanWorkspaceRefs_QuasiquoteTemplateCrossFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// helpers.lisp defines and exports "get-valid-me" in the helpers package.
+	err := os.WriteFile(filepath.Join(dir, "helpers.lisp"), []byte(`(in-package 'helpers)
+(export 'get-valid-me)
+(defun get-valid-me () 42)
+`), 0600)
+	require.NoError(t, err)
+
+	// macro.lisp defines a macro whose quasiquote template references
+	// helpers:get-valid-me. This is the pattern from def-acre-route.
+	err = os.WriteFile(filepath.Join(dir, "macro.lisp"), []byte(`(in-package 'myapp)
+(export 'my-macro)
+(defmacro my-macro (name)
+  (quasiquote
+    (begin
+      (helpers:get-valid-me)
+      (unquote name))))
+`), 0600)
+	require.NoError(t, err)
+
+	// Phase 1: Scan definitions.
+	globals, pkgs, err := ScanWorkspaceFull(dir)
+	require.NoError(t, err)
+
+	cfg := &Config{
+		ExtraGlobals:   globals,
+		PackageExports: pkgs,
+	}
+
+	// Phase 2: Scan references.
+	refs := ScanWorkspaceRefs(dir, cfg, nil)
+
+	// There should be a cross-file reference to "get-valid-me" from macro.lisp.
+	key := SymbolKey{Package: "helpers", Name: "get-valid-me", Kind: SymFunction}.String()
+	fnRefs := refs[key]
+	require.NotEmpty(t, fnRefs,
+		"should have cross-file reference to get-valid-me via quasiquote template")
+
+	macroPath := filepath.Join(dir, "macro.lisp")
+	var found bool
+	for _, ref := range fnRefs {
+		if ref.File == macroPath {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"should find get-valid-me reference from macro.lisp's quasiquote template")
+}
+
 func TestExtractFileRefs_SkipsBuiltinsAndLocals(t *testing.T) {
 	// "my-fn" calls "other-fn" (a global), plus uses builtin "+", param "x", and local "local-var".
 	src := []byte(`(defun other-fn () 1)
@@ -761,6 +813,56 @@ func TestExtractFileRefs_QualifiedSymbol(t *testing.T) {
 
 	// Note: trailing colon (e.g. "helpers:") is a parse-level concern —
 	// the parser either rejects it or splits it, so we don't test it here.
+
+	t.Run("qualified symbol in quasiquote template", func(t *testing.T) {
+		// A qualified symbol inside a defmacro's quasiquote template should
+		// produce a cross-file reference, just like a direct call would.
+		// This is the pattern used by def-acre-route: the macro template
+		// references acre:get-valid-me which is defined in another file.
+		cfgWithPkg := &Config{
+			PackageExports: map[string][]ExternalSymbol{
+				"helpers": {
+					{
+						Name:    "add-one",
+						Kind:    SymFunction,
+						Package: "helpers",
+						Source:  &token.Location{File: "helpers.lisp", Line: 3, Col: 1, Pos: 40},
+					},
+				},
+			},
+		}
+		src := []byte(`(in-package 'myapp)
+(export 'my-macro)
+(defmacro my-macro (name)
+  (quasiquote
+    (begin
+      (helpers:add-one 1)
+      (unquote name))))
+`)
+		result := AnalyzeFile(src, "macro.lisp", cfgWithPkg)
+		require.NotNil(t, result)
+
+		var foundRef *Reference
+		for _, ref := range result.References {
+			if ref.Symbol.Name == "add-one" && ref.Symbol.Kind == SymFunction {
+				foundRef = ref
+				break
+			}
+		}
+		require.NotNil(t, foundRef,
+			"quasiquote template should resolve helpers:add-one as a reference")
+
+		fileRefs := ExtractFileRefs(result, "macro.lisp")
+		var found bool
+		for _, fref := range fileRefs {
+			if fref.SymbolKey.Name == "add-one" && fref.SymbolKey.Package == "helpers" {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found,
+			"ExtractFileRefs should include the quasiquote template reference")
+	})
 }
 
 func TestExtractFileDefinitions(t *testing.T) {

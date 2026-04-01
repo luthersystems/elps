@@ -1957,6 +1957,35 @@ func TestUnusedFunction_Positive_NotInQuasiquoteTemplate(t *testing.T) {
 	assertHasDiag(t, diags, "unused function: unused-helper")
 }
 
+func TestUnusedFunction_Negative_CrossFileRef_QuasiquoteTemplate(t *testing.T) {
+	// A function defined in one file, referenced via qualified symbol in
+	// another file's defmacro quasiquote template, should NOT be flagged.
+	// This simulates the acre:get-valid-me pattern.
+	source := `(in-package 'helpers)
+(export 'get-valid-me)
+(defun get-valid-me () 42)`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
+	key := analysis.SymbolKey{Package: "helpers", Name: "get-valid-me", Kind: analysis.SymFunction}.String()
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "get-valid-me", Kind: analysis.SymFunction, Package: "helpers"},
+		},
+		PackageExports: map[string][]analysis.ExternalSymbol{
+			"helpers": {
+				{Name: "get-valid-me", Kind: analysis.SymFunction, Package: "helpers"},
+			},
+		},
+		WorkspaceRefs: map[string][]analysis.FileReference{
+			key: {
+				{File: "/other/macro.lisp"}, // cross-file ref from quasiquote template
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "helpers.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
 // --- shadowing ---
 
 func TestUnusedFunction_Negative_CrossFileRef_WithDefaultPackage(t *testing.T) {
