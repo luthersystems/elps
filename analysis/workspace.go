@@ -1028,6 +1028,23 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 				delete(prescan.PkgExports, userPkg)
 			}
 		}
+		// Remap PkgAllSymbols: same treatment as PkgExports.
+		if userAll, ok := prescan.PkgAllSymbols[userPkg]; ok {
+			var remaining []ExternalSymbol
+			for i := range userAll {
+				if pkg, ok := shouldRemap(&userAll[i]); ok {
+					userAll[i].Package = pkg
+					prescan.PkgAllSymbols[pkg] = append(prescan.PkgAllSymbols[pkg], userAll[i])
+					continue
+				}
+				remaining = append(remaining, userAll[i])
+			}
+			if len(remaining) > 0 {
+				prescan.PkgAllSymbols[userPkg] = remaining
+			} else {
+				delete(prescan.PkgAllSymbols, userPkg)
+			}
+		}
 		// Merge use-package imports from "user" into default package.
 		if userImports, ok := prescan.PackageImports[userPkg]; ok {
 			prescan.PackageImports[defaultPkg] = appendUnique(prescan.PackageImports[defaultPkg], userImports...)

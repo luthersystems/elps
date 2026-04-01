@@ -2914,6 +2914,34 @@ func TestLintFiles_UnusedFunction_CrossFileQuasiquoteTemplate(t *testing.T) {
 	}
 }
 
+func TestLintFiles_UnusedFunction_CrossFileBareFile(t *testing.T) {
+	// End-to-end: the real phylum pattern — helpers.lisp is a bare file
+	// (no in-package) that inherits the package from DefaultPackage.
+	// main.lisp's macro references myapp:do-work in its quasiquote template.
+	dir := t.TempDir()
+
+	writeTempLisp(t, dir, "main.lisp", `(in-package 'myapp)
+(load-file "helpers.lisp")
+
+(export 'my-macro)
+(defmacro my-macro (name)
+  (quasiquote
+    (begin
+      (myapp:do-work)
+      (unquote name))))`)
+
+	// Bare file — no (in-package). Inherits 'myapp via load-file from main.lisp.
+	helpers := writeTempLisp(t, dir, "helpers.lisp", `(defun do-work () 42)`)
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{helpers})
+	require.NoError(t, err)
+	for _, d := range diags {
+		assert.NotContains(t, d.Message, "do-work",
+			"do-work should not be flagged — it is used in main.lisp's quasiquote template")
+	}
+}
+
 func TestBuildAnalysisConfig_Basic(t *testing.T) {
 	dir := t.TempDir()
 	writeTempLisp(t, dir, "lib.lisp", `(defun my-fn () 42)
