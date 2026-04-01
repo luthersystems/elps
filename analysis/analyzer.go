@@ -1218,26 +1218,19 @@ func (a *analyzer) resolveSymbol(node *lisp.LVal, scope *Scope, currentPkg strin
 }
 
 // resolveQualifiedSymbol handles a qualified symbol like "pkg:sym".
-// It looks up the unqualified name in PackageExports for the given package,
-// and if found, records a reference using the unqualified symbol name (matching
-// the convention used by prescanUsePackage).
+// It first checks PackageExports, then falls back to PackageSymbols
+// (all definitions) because ELPS runtime allows qualified access to
+// any symbol in a package, not just exported ones.
 func (a *analyzer) resolveQualifiedSymbol(node *lisp.LVal, scope *Scope, pkgName, symName string) {
-	if a.cfg == nil || a.cfg.PackageExports == nil {
+	if a.cfg == nil {
 		return
 	}
 
-	exports, ok := a.cfg.PackageExports[pkgName]
-	if !ok {
-		return
-	}
-
-	// Find the exported symbol definition.
-	var ext *ExternalSymbol
-	for i := range exports {
-		if exports[i].Name == symName {
-			ext = &exports[i]
-			break
-		}
+	// Look up in exports first, then fall back to all symbols.
+	ext := FindExternalSymbol(a.cfg.PackageExports, pkgName, symName)
+	exported := ext != nil
+	if ext == nil {
+		ext = FindExternalSymbol(a.cfg.PackageSymbols, pkgName, symName)
 	}
 	if ext == nil {
 		return
@@ -1260,7 +1253,7 @@ func (a *analyzer) resolveQualifiedSymbol(node *lisp.LVal, scope *Scope, pkgName
 			Source:    ext.Source,
 			Signature: ext.Signature,
 			DocString: ext.DocString,
-			Exported:  true,
+			Exported:  exported,
 			External:  true,
 		}
 		a.qualifiedSymbols[SymbolKey{Package: ext.Package, Name: ext.Name, Kind: ext.Kind}.String()] = sym
@@ -1273,6 +1266,23 @@ func (a *analyzer) resolveQualifiedSymbol(node *lisp.LVal, scope *Scope, pkgName
 		Source: node.Source,
 		Node:   node,
 	})
+}
+
+// FindExternalSymbol looks up a symbol by name in a package-to-symbols map.
+func FindExternalSymbol(pkgMap map[string][]ExternalSymbol, pkgName, symName string) *ExternalSymbol {
+	if pkgMap == nil {
+		return nil
+	}
+	syms, ok := pkgMap[pkgName]
+	if !ok {
+		return nil
+	}
+	for i := range syms {
+		if syms[i].Name == symName {
+			return &syms[i]
+		}
+	}
+	return nil
 }
 
 // resolveTemplateSymbol resolves a symbol inside a quasiquote template.

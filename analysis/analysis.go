@@ -22,6 +22,13 @@ type Config struct {
 	// Used to resolve use-package imports from stdlib and workspace packages.
 	PackageExports map[string][]ExternalSymbol
 
+	// PackageSymbols maps package names to ALL symbols (exported and
+	// non-exported). Used by resolveQualifiedSymbol as a fallback when
+	// a qualified reference (pkg:sym) targets a non-exported symbol.
+	// ELPS runtime allows qualified access to any symbol in a package,
+	// not just exported ones.
+	PackageSymbols map[string][]ExternalSymbol
+
 	// DefForms declares additional definition-form heads for embedding programs.
 	// Head is matched exactly against the form head symbol. FormalsIndex must
 	// point at the parameter list cell. If BindsName is true, NameIndex points

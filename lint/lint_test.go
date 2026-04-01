@@ -1957,6 +1957,35 @@ func TestUnusedFunction_Positive_NotInQuasiquoteTemplate(t *testing.T) {
 	assertHasDiag(t, diags, "unused function: unused-helper")
 }
 
+func TestUnusedFunction_Negative_CrossFileRef_QuasiquoteTemplate(t *testing.T) {
+	// A function defined in one file, referenced via qualified symbol in
+	// another file's defmacro quasiquote template, should NOT be flagged.
+	// This simulates the acre:get-valid-me pattern.
+	source := `(in-package 'helpers)
+(export 'get-valid-me)
+(defun get-valid-me () 42)`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
+	key := analysis.SymbolKey{Package: "helpers", Name: "get-valid-me", Kind: analysis.SymFunction}.String()
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{Name: "get-valid-me", Kind: analysis.SymFunction, Package: "helpers"},
+		},
+		PackageExports: map[string][]analysis.ExternalSymbol{
+			"helpers": {
+				{Name: "get-valid-me", Kind: analysis.SymFunction, Package: "helpers"},
+			},
+		},
+		WorkspaceRefs: map[string][]analysis.FileReference{
+			key: {
+				{File: "/other/macro.lisp"}, // cross-file ref from quasiquote template
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "helpers.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
 // --- shadowing ---
 
 func TestUnusedFunction_Negative_CrossFileRef_WithDefaultPackage(t *testing.T) {
@@ -2855,6 +2884,56 @@ func TestLintFiles_FileNotFound(t *testing.T) {
 	l := &Linter{Analyzers: DefaultAnalyzers()}
 	_, err := l.LintFiles(nil, []string{"/nonexistent/file.lisp"})
 	require.Error(t, err)
+}
+
+func TestLintFiles_UnusedFunction_CrossFileQuasiquoteTemplate(t *testing.T) {
+	// End-to-end: a non-exported function referenced via qualified symbol
+	// in another file's quasiquote template must not be flagged as unused.
+	// This is the def-acre-route pattern where the helper is internal.
+	dir := t.TempDir()
+
+	writeTempLisp(t, dir, "macro.lisp", `(in-package 'myapp)
+(use-package 'helpers)
+(export 'my-macro)
+(defmacro my-macro (name)
+  (quasiquote
+    (begin
+      (helpers:do-work)
+      (unquote name))))`)
+
+	// do-work is NOT exported — forces reliance on cross-file WorkspaceRefs.
+	helpers := writeTempLisp(t, dir, "helpers.lisp", `(in-package 'helpers)
+(defun do-work () 42)`)
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{helpers})
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+func TestLintFiles_UnusedFunction_CrossFileBareFile(t *testing.T) {
+	// End-to-end: the real phylum pattern — helpers.lisp is a bare file
+	// (no in-package) that inherits the package from DefaultPackage.
+	// main.lisp's macro references myapp:do-work in its quasiquote template.
+	dir := t.TempDir()
+
+	writeTempLisp(t, dir, "main.lisp", `(in-package 'myapp)
+(load-file "helpers.lisp")
+
+(export 'my-macro)
+(defmacro my-macro (name)
+  (quasiquote
+    (begin
+      (myapp:do-work)
+      (unquote name))))`)
+
+	// Bare file — no (in-package). Inherits 'myapp via load-file from main.lisp.
+	helpers := writeTempLisp(t, dir, "helpers.lisp", `(defun do-work () 42)`)
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{helpers})
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
 }
 
 func TestBuildAnalysisConfig_Basic(t *testing.T) {

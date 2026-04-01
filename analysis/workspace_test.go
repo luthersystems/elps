@@ -531,6 +531,106 @@ func TestScanWorkspaceRefs_CrossFile(t *testing.T) {
 	assert.True(t, found, "should find helper reference from b.lisp")
 }
 
+func TestScanWorkspaceRefs_QuasiquoteTemplateCrossFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// helpers.lisp defines and exports "get-valid-me" in the helpers package.
+	err := os.WriteFile(filepath.Join(dir, "helpers.lisp"), []byte(`(in-package 'helpers)
+(export 'get-valid-me)
+(defun get-valid-me () 42)
+`), 0600)
+	require.NoError(t, err)
+
+	// macro.lisp defines a macro whose quasiquote template references
+	// helpers:get-valid-me. This is the pattern from def-acre-route.
+	err = os.WriteFile(filepath.Join(dir, "macro.lisp"), []byte(`(in-package 'myapp)
+(export 'my-macro)
+(defmacro my-macro (name)
+  (quasiquote
+    (begin
+      (helpers:get-valid-me)
+      (unquote name))))
+`), 0600)
+	require.NoError(t, err)
+
+	// Phase 1: Scan definitions.
+	globals, pkgs, err := ScanWorkspaceFull(dir)
+	require.NoError(t, err)
+
+	cfg := &Config{
+		ExtraGlobals:   globals,
+		PackageExports: pkgs,
+	}
+
+	// Phase 2: Scan references.
+	refs := ScanWorkspaceRefs(dir, cfg, nil)
+
+	// There should be a cross-file reference to "get-valid-me" from macro.lisp.
+	key := SymbolKey{Package: "helpers", Name: "get-valid-me", Kind: SymFunction}.String()
+	fnRefs := refs[key]
+	require.NotEmpty(t, fnRefs,
+		"should have cross-file reference to get-valid-me via quasiquote template")
+
+	macroPath := filepath.Join(dir, "macro.lisp")
+	var found bool
+	for _, ref := range fnRefs {
+		if ref.File == macroPath {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"should find get-valid-me reference from macro.lisp's quasiquote template")
+}
+
+func TestScanWorkspaceRefs_NonExportedQualifiedCrossFile(t *testing.T) {
+	// A non-exported function referenced via qualified symbol in another
+	// file's quasiquote template must produce a cross-file reference.
+	// This exercises the PackageSymbols fallback (not PackageExports).
+	dir := t.TempDir()
+
+	err := os.WriteFile(filepath.Join(dir, "helpers.lisp"), []byte(`(in-package 'helpers)
+(defun do-work () 42)
+`), 0600)
+	require.NoError(t, err)
+
+	err = os.WriteFile(filepath.Join(dir, "macro.lisp"), []byte(`(in-package 'myapp)
+(defmacro my-macro (name)
+  (quasiquote
+    (begin
+      (helpers:do-work)
+      (unquote name))))
+`), 0600)
+	require.NoError(t, err)
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+
+	cfg := &Config{
+		ExtraGlobals:   prescan.AllDefs,
+		PackageExports: prescan.PkgExports,
+		PackageSymbols: prescan.PkgAllSymbols,
+	}
+
+	refs := ScanWorkspaceRefs(dir, cfg, nil)
+
+	key := SymbolKey{Package: "helpers", Name: "do-work", Kind: SymFunction}.String()
+	fnRefs := refs[key]
+	require.NotEmpty(t, fnRefs,
+		"non-exported function should be found via PackageSymbols fallback")
+
+	macroPath := filepath.Join(dir, "macro.lisp")
+	var found bool
+	for _, ref := range fnRefs {
+		if ref.File == macroPath {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"should find do-work reference from macro.lisp")
+}
+
 func TestExtractFileRefs_SkipsBuiltinsAndLocals(t *testing.T) {
 	// "my-fn" calls "other-fn" (a global), plus uses builtin "+", param "x", and local "local-var".
 	src := []byte(`(defun other-fn () 1)
@@ -761,6 +861,91 @@ func TestExtractFileRefs_QualifiedSymbol(t *testing.T) {
 
 	// Note: trailing colon (e.g. "helpers:") is a parse-level concern —
 	// the parser either rejects it or splits it, so we don't test it here.
+
+	t.Run("qualified symbol in quasiquote template", func(t *testing.T) {
+		// A qualified symbol inside a defmacro's quasiquote template should
+		// produce a cross-file reference, just like a direct call would.
+		// This is the pattern used by def-acre-route: the macro template
+		// references acre:get-valid-me which is defined in another file.
+		cfgWithPkg := &Config{
+			PackageExports: map[string][]ExternalSymbol{
+				"helpers": {
+					{
+						Name:    "add-one",
+						Kind:    SymFunction,
+						Package: "helpers",
+						Source:  &token.Location{File: "helpers.lisp", Line: 3, Col: 1, Pos: 40},
+					},
+				},
+			},
+		}
+		src := []byte(`(in-package 'myapp)
+(export 'my-macro)
+(defmacro my-macro (name)
+  (quasiquote
+    (begin
+      (helpers:add-one 1)
+      (unquote name))))
+`)
+		result := AnalyzeFile(src, "macro.lisp", cfgWithPkg)
+		require.NotNil(t, result)
+
+		var foundRef *Reference
+		for _, ref := range result.References {
+			if ref.Symbol.Name == "add-one" && ref.Symbol.Kind == SymFunction {
+				foundRef = ref
+				break
+			}
+		}
+		require.NotNil(t, foundRef,
+			"quasiquote template should resolve helpers:add-one as a reference")
+
+		fileRefs := ExtractFileRefs(result, "macro.lisp")
+		var found bool
+		for _, fref := range fileRefs {
+			if fref.SymbolKey.Name == "add-one" && fref.SymbolKey.Package == "helpers" {
+				found = true
+				break
+			}
+		}
+		assert.True(t, found,
+			"ExtractFileRefs should include the quasiquote template reference")
+	})
+
+	t.Run("non-exported qualified symbol via PackageSymbols", func(t *testing.T) {
+		// Symbol is ONLY in PackageSymbols (not PackageExports).
+		// This exercises the resolveQualifiedSymbol fallback.
+		cfgNonExported := &Config{
+			PackageSymbols: map[string][]ExternalSymbol{
+				"helpers": {
+					{
+						Name:    "do-work",
+						Kind:    SymFunction,
+						Package: "helpers",
+						Source:  &token.Location{File: "helpers.lisp", Line: 2, Col: 1, Pos: 22},
+					},
+				},
+			},
+		}
+		src := []byte(`(in-package 'myapp)
+(defun caller () (helpers:do-work))`)
+		result := AnalyzeFile(src, "test.lisp", cfgNonExported)
+		require.NotNil(t, result)
+
+		var foundRef *Reference
+		for _, ref := range result.References {
+			if ref.Symbol.Name == "do-work" {
+				foundRef = ref
+				break
+			}
+		}
+		require.NotNil(t, foundRef,
+			"should resolve non-exported helpers:do-work via PackageSymbols")
+		assert.False(t, foundRef.Symbol.Exported,
+			"symbol resolved via PackageSymbols should NOT be marked Exported")
+		assert.True(t, foundRef.Symbol.External,
+			"symbol should be marked External")
+	})
 }
 
 func TestExtractFileDefinitions(t *testing.T) {

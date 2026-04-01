@@ -616,13 +616,18 @@ function, which changes the environment's working package.  Symbols bound using
 ```
 
 Outside of the `my-new-package` package, the symbol `my-special-function` may
-be bound to other values.  Symbols defined inside `my-new-package` may be
-explicitly accessed by qualifying the symbol using the package name.
+be bound to other values.  Any symbol defined inside a package may be
+explicitly accessed by qualifying the symbol using the package name, regardless
+of whether it was exported.
 
 ```lisp
 (my-new-package:my-special-function)  ; prints "something special"
 (my-new-package:my-other-function)    ; prints "something else"
 ```
+
+NOTE:  Qualified access (`pkg:sym`) works for all symbols in a package, not
+just exported ones.  Exports only control what `use-package` imports into the
+caller's namespace — they do not restrict visibility.
 
 Scheme-like symbol bindings and assignment are also possible using the `define`
 and `set!` operators.
