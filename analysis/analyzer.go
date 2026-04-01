@@ -1093,9 +1093,19 @@ func (a *analyzer) analyzeQuasiquote(node *lisp.LVal, scope *Scope, currentPkg s
 }
 
 // walkQuasiquoteTemplate walks a quasiquote template, only analyzing
-// expressions inside unquote and unquote-splicing forms.
+// expressions inside unquote and unquote-splicing forms. Bare symbols
+// in the template are resolved as references (to avoid false "unused"
+// warnings) but unknown symbols are not flagged as unresolved since
+// they may be introduced at macro expansion time.
 func (a *analyzer) walkQuasiquoteTemplate(node *lisp.LVal, scope *Scope, currentPkg string) {
 	if node == nil {
+		return
+	}
+	// Resolve bare symbols as template references without unresolved tracking.
+	if node.Type == lisp.LSymbol {
+		if !node.Quoted {
+			a.resolveTemplateSymbol(node, scope, currentPkg)
+		}
 		return
 	}
 	if node.Type != lisp.LSExpr || len(node.Cells) == 0 {
@@ -1263,4 +1273,41 @@ func (a *analyzer) resolveQualifiedSymbol(node *lisp.LVal, scope *Scope, pkgName
 		Source: node.Source,
 		Node:   node,
 	})
+}
+
+// resolveTemplateSymbol resolves a symbol inside a quasiquote template.
+// It increments References for known symbols but does NOT add to Unresolved
+// when the symbol is not found, since template symbols may be introduced
+// at macro expansion time.
+func (a *analyzer) resolveTemplateSymbol(node *lisp.LVal, scope *Scope, currentPkg string) {
+	if node.Type != lisp.LSymbol {
+		return
+	}
+	name := node.Str
+
+	// Skip keywords (start with :)
+	if len(name) > 0 && name[0] == ':' {
+		return
+	}
+
+	// Handle qualified symbols (contain :) — resolveQualifiedSymbol already
+	// returns silently when the package/symbol is not found.
+	for i := 1; i < len(name); i++ {
+		if name[i] == ':' {
+			a.resolveQualifiedSymbol(node, scope, name[:i], name[i+1:])
+			return
+		}
+	}
+
+	sym := scope.LookupInPackage(name, currentPkg)
+	if sym != nil {
+		sym.References++
+		a.result.References = append(a.result.References, &Reference{
+			Symbol: sym,
+			Source: node.Source,
+			Node:   node,
+		})
+	}
+	// Unlike resolveSymbol, we intentionally do NOT append to Unresolved here.
+	// Template symbols may refer to names introduced at macro expansion time.
 }

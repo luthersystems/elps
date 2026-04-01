@@ -623,8 +623,9 @@ func TestAnalyze_PrefixLambda_UnqualifiedExpr(t *testing.T) {
 
 // --- Analyze: quasiquote ---
 
-func TestAnalyze_Quasiquote_TemplateIgnored(t *testing.T) {
-	// Symbols inside quasiquote template are data, not code references
+func TestAnalyze_Quasiquote_TemplateUnknownNotUnresolved(t *testing.T) {
+	// Unknown symbols in quasiquote templates must NOT produce unresolved
+	// entries — they may be introduced at macro expansion time.
 	result := parseAndAnalyze(t, `(quasiquote (unknown-fn x y))`)
 	assert.Empty(t, result.Unresolved, "quasiquote template should not produce unresolved symbols")
 }
@@ -664,6 +665,52 @@ func TestAnalyze_Quasiquote_UnquoteInBracketList(t *testing.T) {
 		}
 	}
 	t.Fatal("parameter patt not found in symbols")
+}
+
+func TestAnalyze_Quasiquote_TemplateFunctionReference(t *testing.T) {
+	// A function used inside a quasiquote template should be counted as
+	// referenced, even though the template is data. This prevents false
+	// "unused function" warnings for functions called in macro-generated code.
+	result := parseAndAnalyze(t, `
+(defun helper () 42)
+
+(defmacro my-macro (x)
+  (quasiquote
+    (begin
+      (helper)
+      (unquote x))))`)
+	var helperSym *Symbol
+	for _, sym := range result.Symbols {
+		if sym.Name == "helper" && sym.Kind == SymFunction {
+			helperSym = sym
+			break
+		}
+	}
+	require.NotNil(t, helperSym, "helper function should be in symbols")
+	assert.Equal(t, 1, helperSym.References,
+		"helper should be referenced exactly once via quasiquote template")
+	// Verify the Reference entry exists in the result slice too.
+	var found bool
+	for _, ref := range result.References {
+		if ref.Symbol.Name == "helper" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "result.References should contain an entry for helper")
+	assert.Empty(t, result.Unresolved,
+		"template symbols that resolve should not produce unresolved entries")
+}
+
+func TestAnalyze_Quasiquote_TemplateKeywordsSkipped(t *testing.T) {
+	// Keyword symbols (starting with :) in quasiquote templates should be
+	// skipped — they are data, not function/variable references.
+	result := parseAndAnalyze(t, `(quasiquote (my-fn :key 1 :value 2))`)
+	assert.Empty(t, result.Unresolved)
+	for _, ref := range result.References {
+		assert.NotEqual(t, ':', rune(ref.Symbol.Name[0]),
+			"keywords should not be resolved as references")
+	}
 }
 
 // --- Analyze: reference counting ---
