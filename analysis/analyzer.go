@@ -403,6 +403,8 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope, currentPkg string)
 		a.analyzePrefixLambda(node, scope, currentPkg)
 	case "handler-bind":
 		a.analyzeHandlerBind(node, scope, currentPkg)
+	case "cond":
+		a.analyzeCond(node, scope, currentPkg)
 	case "test":
 		a.analyzeTest(node, scope, currentPkg)
 	default:
@@ -961,12 +963,41 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 	// Analyze the value expression
 	a.analyzeExpr(node.Cells[2], scope, currentPkg)
 
-	// For set, the name might be a new binding or overwrite
 	name := extractSetSymbolName(node.Cells[1])
 	if name == "" {
 		return
 	}
-	// If not already defined at top level, define it
+
+	// At runtime, set always calls PutGlobal — it writes to the package-
+	// level scope regardless of where the call appears. Model this by:
+	// - In non-global scopes: treat as a reference to the existing global
+	//   binding (or create one in the root scope if none exists).
+	// - In global scope: create or overwrite in the current scope (existing
+	//   behavior, matches prescan).
+	if scope.Kind != ScopeGlobal {
+		if existing := scope.LookupInPackage(name, currentPkg); existing != nil {
+			existing.References++
+			a.result.References = append(a.result.References, &Reference{
+				Symbol: existing,
+				Source:  node.Cells[1].Source,
+				Node:    extractSetSymbolNode(node.Cells[1]),
+			})
+			return
+		}
+		// No existing global — set will create it at package scope.
+		sym := &Symbol{
+			Name:    name,
+			Package: currentPkg,
+			Kind:    SymVariable,
+			Source:  node.Cells[1].Source,
+			Node:    extractSetSymbolNode(node.Cells[1]),
+		}
+		a.root.Define(sym)
+		a.result.Symbols = append(a.result.Symbols, sym)
+		return
+	}
+
+	// Global scope: define locally if not already present.
 	defPkg := packageForScope(scope, currentPkg)
 	if scope.LookupLocalInPackage(name, defPkg) == nil {
 		sym := &Symbol{
@@ -1038,6 +1069,34 @@ func (a *analyzer) analyzeHandlerBind(node *lisp.LVal, scope *Scope, currentPkg 
 	for _, child := range node.Cells[2:] {
 		a.analyzeExpr(child, scope, currentPkg)
 	}
+}
+
+func (a *analyzer) analyzeCond(node *lisp.LVal, scope *Scope, currentPkg string) {
+	// cond form: (cond (test body...)*)
+	// The test position of the final clause may be the bare symbol 'else'
+	// or 'true', which the runtime treats as a catch-all (op.go:729).
+	// Skip resolving these symbols to avoid false "undefined symbol" reports.
+	for _, clause := range node.Cells[1:] {
+		if clause.Type != lisp.LSExpr || clause.Quoted || len(clause.Cells) == 0 {
+			continue
+		}
+		test := clause.Cells[0]
+		if test.Type == lisp.LSymbol && !test.Quoted && isCondDefaultSymbol(test.Str) {
+			// Skip — 'else' and 'true' are recognized keywords in cond test position.
+		} else {
+			a.analyzeExpr(test, scope, currentPkg)
+		}
+		for _, body := range clause.Cells[1:] {
+			a.analyzeExpr(body, scope, currentPkg)
+		}
+	}
+}
+
+// isCondDefaultSymbol returns true if name is a bare symbol recognized as
+// a default clause test in cond. Keywords (:else, :true) are already
+// skipped by resolveSymbol so only bare forms need checking here.
+func isCondDefaultSymbol(name string) bool {
+	return name == "else" || name == "true"
 }
 
 func (a *analyzer) analyzePrefixLambda(node *lisp.LVal, scope *Scope, currentPkg string) {

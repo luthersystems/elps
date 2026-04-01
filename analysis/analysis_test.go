@@ -451,6 +451,40 @@ func TestAnalyze_SetBang(t *testing.T) {
 	}
 }
 
+func TestAnalyze_Set_InLambdaReferencesGlobal(t *testing.T) {
+	// Regression test for #260: (set 'x ...) inside a lambda writes to the
+	// package-global scope (PutGlobal), not a lambda-local binding. The
+	// analyzer should not create a spurious local variable.
+	result := parseAndAnalyze(t, `
+(set 'now 0)
+(defun setup ()
+  (lambda ()
+    (set 'now 42)))
+(defun use-now () now)`)
+
+	// 'now' should NOT appear as an unused variable.
+	for _, sym := range result.Symbols {
+		if sym.Name == "now" && sym.Scope != result.RootScope {
+			t.Errorf("'now' should not be defined in a non-global scope (found in %v)", sym.Scope.Kind)
+		}
+	}
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "now", u.Name, "'now' should be resolved")
+	}
+}
+
+func TestAnalyze_Set_InLambdaCreatesGlobalIfMissing(t *testing.T) {
+	// When set creates a new variable from inside a lambda, the symbol
+	// should be registered in the root/global scope.
+	result := parseAndAnalyze(t, `
+(defun f ()
+  (lambda ()
+    (set 'y 1)))`)
+
+	sym := result.RootScope.LookupLocal("y")
+	assert.NotNil(t, sym, "'y' should be defined in global scope by set inside lambda")
+}
+
 // --- Analyze: function (#') ---
 
 func TestAnalyze_FunctionRef(t *testing.T) {
@@ -544,6 +578,68 @@ func TestAnalyze_HandlerBind_HandlerBodyStillAnalyzed(t *testing.T) {
 	}
 	assert.True(t, found,
 		"undefined symbol in handler-bind handler body should be flagged as unresolved")
+}
+
+// --- Analyze: cond ---
+
+func TestAnalyze_Cond_ElseNotFlagged(t *testing.T) {
+	// Bare 'else' in cond test position is a language keyword, not a symbol reference.
+	result := parseAndAnalyze(t, `
+(defun classify (x)
+  (cond
+    ((number? x) "number")
+    (else "other")))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "else", u.Name,
+			"bare 'else' in cond test position should not be flagged as undefined")
+	}
+}
+
+func TestAnalyze_Cond_TrueNotFlagged(t *testing.T) {
+	// Bare 'true' in cond test position is a recognized default clause.
+	result := parseAndAnalyze(t, `
+(defun classify (x)
+  (cond
+    ((number? x) "number")
+    (true "other")))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "true", u.Name,
+			"bare 'true' in cond test position should not be flagged as undefined")
+	}
+}
+
+func TestAnalyze_Cond_UndefinedTestStillFlagged(t *testing.T) {
+	// A non-keyword symbol in cond test position should still be flagged.
+	result := parseAndAnalyze(t, `
+(defun classify (x)
+  (cond
+    ((number? x) "number")
+    (bogus "other")))`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "bogus" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"undefined symbol in cond test position should still be flagged as unresolved")
+}
+
+func TestAnalyze_Cond_BodyStillAnalyzed(t *testing.T) {
+	// Body expressions in cond clauses should still be analyzed.
+	result := parseAndAnalyze(t, `
+(cond
+  (else (unknown-body-fn)))`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "unknown-body-fn" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"undefined symbol in cond body should still be flagged")
 }
 
 // --- Analyze: test-let / test-let* ---
