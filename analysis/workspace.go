@@ -1011,40 +1011,8 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 				prescan.ExportedGlobals[i].Package = pkg
 			}
 		}
-		// Remap PkgExports: move remapped symbols out of "user".
-		if userExports, ok := prescan.PkgExports[userPkg]; ok {
-			var remaining []ExternalSymbol
-			for i := range userExports {
-				if pkg, ok := shouldRemap(&userExports[i]); ok {
-					userExports[i].Package = pkg
-					prescan.PkgExports[pkg] = append(prescan.PkgExports[pkg], userExports[i])
-					continue
-				}
-				remaining = append(remaining, userExports[i])
-			}
-			if len(remaining) > 0 {
-				prescan.PkgExports[userPkg] = remaining
-			} else {
-				delete(prescan.PkgExports, userPkg)
-			}
-		}
-		// Remap PkgAllSymbols: same treatment as PkgExports.
-		if userAll, ok := prescan.PkgAllSymbols[userPkg]; ok {
-			var remaining []ExternalSymbol
-			for i := range userAll {
-				if pkg, ok := shouldRemap(&userAll[i]); ok {
-					userAll[i].Package = pkg
-					prescan.PkgAllSymbols[pkg] = append(prescan.PkgAllSymbols[pkg], userAll[i])
-					continue
-				}
-				remaining = append(remaining, userAll[i])
-			}
-			if len(remaining) > 0 {
-				prescan.PkgAllSymbols[userPkg] = remaining
-			} else {
-				delete(prescan.PkgAllSymbols, userPkg)
-			}
-		}
+		remapPackageMap(prescan.PkgExports, userPkg, shouldRemap)
+		remapPackageMap(prescan.PkgAllSymbols, userPkg, shouldRemap)
 		// Merge use-package imports from "user" into default package.
 		if userImports, ok := prescan.PackageImports[userPkg]; ok {
 			prescan.PackageImports[defaultPkg] = appendUnique(prescan.PackageImports[defaultPkg], userImports...)
@@ -1053,6 +1021,30 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 	}
 
 	return prescan, nil
+}
+
+// remapPackageMap moves symbols from srcPkg to their correct package based
+// on shouldRemap. Used to fix bare-file symbols that start in "user" but
+// should be in the package inherited from the load tree.
+func remapPackageMap(m map[string][]ExternalSymbol, srcPkg string, shouldRemap func(*ExternalSymbol) (string, bool)) {
+	syms, ok := m[srcPkg]
+	if !ok {
+		return
+	}
+	var remaining []ExternalSymbol
+	for i := range syms {
+		if pkg, ok := shouldRemap(&syms[i]); ok {
+			syms[i].Package = pkg
+			m[pkg] = append(m[pkg], syms[i])
+			continue
+		}
+		remaining = append(remaining, syms[i])
+	}
+	if len(remaining) > 0 {
+		m[srcPkg] = remaining
+	} else {
+		delete(m, srcPkg)
+	}
 }
 
 // extractDefFormSpecs derives DefFormSpecs from defmacro definitions whose

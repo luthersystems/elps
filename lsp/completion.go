@@ -5,6 +5,7 @@ package lsp
 import (
 	"strings"
 
+	"github.com/luthersystems/elps/analysis"
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 )
@@ -48,7 +49,9 @@ func splitPackageQualified(prefix string) (pkg, partial string, ok bool) {
 	return prefix[:idx], prefix[idx+1:], true
 }
 
-// packageCompletions returns completion items from a package's exports.
+// packageCompletions returns completion items from a package's symbols.
+// Includes both exported and non-exported symbols since ELPS allows
+// qualified access (pkg:sym) to any symbol in a package.
 func (s *Server) packageCompletions(doc *Document, pkgName, partial string) []protocol.CompletionItem {
 	s.ensureWorkspaceIndex()
 
@@ -56,37 +59,45 @@ func (s *Server) packageCompletions(doc *Document, pkgName, partial string) []pr
 	cfg := s.analysisCfg
 	s.analysisCfgMu.RUnlock()
 
-	if cfg == nil || cfg.PackageExports == nil {
+	if cfg == nil {
 		return nil
 	}
 
-	exports, ok := cfg.PackageExports[pkgName]
-	if !ok {
-		return nil
-	}
-
+	// Collect symbols from both exports and all-symbols, deduplicating
+	// by name (exports take priority for richer metadata).
+	seen := make(map[string]bool)
 	var items []protocol.CompletionItem
-	for _, ext := range exports {
-		if partial != "" && !strings.HasPrefix(ext.Name, partial) {
-			continue
-		}
-		kind := mapCompletionItemKind(ext.Kind)
-		label := pkgName + ":" + ext.Name
-		item := protocol.CompletionItem{
-			Label: label,
-			Kind:  &kind,
-		}
-		if ext.Signature != nil {
-			detail := formatSignature(ext.Signature)
-			item.Detail = &detail
-		}
-		if ext.DocString != "" {
-			item.Documentation = &protocol.MarkupContent{
-				Kind:  protocol.MarkupKindMarkdown,
-				Value: ext.DocString,
+
+	for _, syms := range [][]analysis.ExternalSymbol{
+		cfg.PackageExports[pkgName],
+		cfg.PackageSymbols[pkgName],
+	} {
+		for _, ext := range syms {
+			if seen[ext.Name] {
+				continue
 			}
+			seen[ext.Name] = true
+			if partial != "" && !strings.HasPrefix(ext.Name, partial) {
+				continue
+			}
+			kind := mapCompletionItemKind(ext.Kind)
+			label := pkgName + ":" + ext.Name
+			item := protocol.CompletionItem{
+				Label: label,
+				Kind:  &kind,
+			}
+			if ext.Signature != nil {
+				detail := formatSignature(ext.Signature)
+				item.Detail = &detail
+			}
+			if ext.DocString != "" {
+				item.Documentation = &protocol.MarkupContent{
+					Kind:  protocol.MarkupKindMarkdown,
+					Value: ext.DocString,
+				}
+			}
+			items = append(items, item)
 		}
-		items = append(items, item)
 	}
 	return items
 }
@@ -129,12 +140,19 @@ func (s *Server) scopeCompletions(doc *Document, line, col int, prefix string) [
 		items = append(items, item)
 	}
 
-	// Also add package-qualified completions from workspace exports.
+	// Also add package-qualified completions from workspace packages.
 	s.analysisCfgMu.RLock()
 	cfg := s.analysisCfg
 	s.analysisCfgMu.RUnlock()
-	if cfg != nil && cfg.PackageExports != nil {
+	if cfg != nil {
+		pkgNames := make(map[string]bool)
 		for pkgName := range cfg.PackageExports {
+			pkgNames[pkgName] = true
+		}
+		for pkgName := range cfg.PackageSymbols {
+			pkgNames[pkgName] = true
+		}
+		for pkgName := range pkgNames {
 			if prefix != "" && !strings.HasPrefix(pkgName+":", prefix) {
 				continue
 			}

@@ -91,37 +91,36 @@ func (s *Server) qualifiedSymbolDefinition(word string) *protocol.Location {
 	cfg := s.analysisCfg
 	s.analysisCfgMu.RUnlock()
 
-	if cfg == nil || cfg.PackageExports == nil {
+	if cfg == nil {
 		return nil
 	}
 
-	exports, ok := cfg.PackageExports[pkgName]
-	if !ok {
+	// Check exports first, then fall back to all symbols.
+	// ELPS runtime allows pkg:sym access to any symbol, not just exported ones.
+	ext := analysis.FindExternalSymbol(cfg.PackageExports, pkgName, symName)
+	if ext == nil {
+		ext = analysis.FindExternalSymbol(cfg.PackageSymbols, pkgName, symName)
+	}
+	if ext == nil {
 		return nil
 	}
 
-	for _, ext := range exports {
-		if ext.Name != symName {
-			continue
+	sym := externalToSymbol(ext)
+	if isBuiltin(sym) {
+		loc := builtinLocation(pkgName, symName)
+		return &loc
+	}
+	// User-defined symbol with real source.
+	if sym.Source != nil && sym.Source.File != "" {
+		defPath := sym.Source.File
+		if !filepath.IsAbs(defPath) && s.rootPath != "" {
+			defPath = filepath.Join(s.rootPath, defPath)
 		}
-		sym := externalToSymbol(&ext)
-		if isBuiltin(sym) {
-			loc := builtinLocation(pkgName, symName)
-			return &loc
+		loc := protocol.Location{
+			URI:   pathToURI(defPath),
+			Range: elpsToLSPRange(sym.Source, len(sym.Name)),
 		}
-		// User-defined symbol with real source.
-		if sym.Source != nil && sym.Source.File != "" {
-			defPath := sym.Source.File
-			if !filepath.IsAbs(defPath) && s.rootPath != "" {
-				defPath = filepath.Join(s.rootPath, defPath)
-			}
-			loc := protocol.Location{
-				URI:   pathToURI(defPath),
-				Range: elpsToLSPRange(sym.Source, len(sym.Name)),
-			}
-			return &loc
-		}
-		return nil
+		return &loc
 	}
 	return nil
 }

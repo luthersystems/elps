@@ -1227,9 +1227,10 @@ func (a *analyzer) resolveQualifiedSymbol(node *lisp.LVal, scope *Scope, pkgName
 	}
 
 	// Look up in exports first, then fall back to all symbols.
-	ext := findExternalSymbol(a.cfg.PackageExports, pkgName, symName)
+	ext := FindExternalSymbol(a.cfg.PackageExports, pkgName, symName)
+	exported := ext != nil
 	if ext == nil {
-		ext = findExternalSymbol(a.cfg.PackageSymbols, pkgName, symName)
+		ext = FindExternalSymbol(a.cfg.PackageSymbols, pkgName, symName)
 	}
 	if ext == nil {
 		return
@@ -1245,7 +1246,6 @@ func (a *analyzer) resolveQualifiedSymbol(node *lisp.LVal, scope *Scope, pkgName
 		sym = a.qualifiedSymbols[key]
 	}
 	if sym == nil {
-		exported := findExternalSymbol(a.cfg.PackageExports, pkgName, symName) != nil
 		sym = &Symbol{
 			Name:      ext.Name,
 			Package:   ext.Package,
@@ -1268,8 +1268,8 @@ func (a *analyzer) resolveQualifiedSymbol(node *lisp.LVal, scope *Scope, pkgName
 	})
 }
 
-// findExternalSymbol looks up a symbol by name in a package-to-symbols map.
-func findExternalSymbol(pkgMap map[string][]ExternalSymbol, pkgName, symName string) *ExternalSymbol {
+// FindExternalSymbol looks up a symbol by name in a package-to-symbols map.
+func FindExternalSymbol(pkgMap map[string][]ExternalSymbol, pkgName, symName string) *ExternalSymbol {
 	if pkgMap == nil {
 		return nil
 	}
