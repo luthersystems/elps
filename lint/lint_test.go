@@ -2908,10 +2908,7 @@ func TestLintFiles_UnusedFunction_CrossFileQuasiquoteTemplate(t *testing.T) {
 	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
 	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{helpers})
 	require.NoError(t, err)
-	for _, d := range diags {
-		assert.NotContains(t, d.Message, "do-work",
-			"do-work should not be flagged — it is used in macro.lisp's quasiquote template")
-	}
+	assertNoDiags(t, diags)
 }
 
 func TestLintFiles_UnusedFunction_CrossFileBareFile(t *testing.T) {
@@ -2936,10 +2933,7 @@ func TestLintFiles_UnusedFunction_CrossFileBareFile(t *testing.T) {
 	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
 	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{helpers})
 	require.NoError(t, err)
-	for _, d := range diags {
-		assert.NotContains(t, d.Message, "do-work",
-			"do-work should not be flagged — it is used in main.lisp's quasiquote template")
-	}
+	assertNoDiags(t, diags)
 }
 
 func TestBuildAnalysisConfig_Basic(t *testing.T) {
