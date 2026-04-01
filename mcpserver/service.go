@@ -579,7 +579,11 @@ func (s *service) loadDocument(path string, content *string, workspaceRoot *stri
 		Filename:       resolvedPath,
 		ExtraGlobals:   state.cfg.ExtraGlobals,
 		PackageExports: state.cfg.PackageExports,
+		PackageSymbols: state.cfg.PackageSymbols,
 		DefForms:       state.cfg.DefForms,
+		PackageImports: state.cfg.PackageImports,
+		DefaultPackage: state.cfg.DefaultPackage,
+		WorkspaceRefs:  state.cfg.WorkspaceRefs,
 	}
 	var result *analysis.Result
 	if parsed.Exprs != nil {
@@ -647,13 +651,17 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 		Excludes: s.excludePatterns,
 	}
 	if root != "" {
-		globals, pkgs, symbols, _, err := analysis.ScanWorkspaceAllWithConfig(root, scanCfg)
+		prescan, err := analysis.PrescanWorkspace(root, scanCfg)
 		if err != nil {
 			return nil, err
 		}
-		state.cfg.ExtraGlobals = globals
-		state.cfg.PackageExports = pkgs
-		state.symbols = symbols
+		state.cfg.ExtraGlobals = prescan.AllDefs
+		state.cfg.PackageExports = prescan.PkgExports
+		state.cfg.PackageSymbols = prescan.PkgAllSymbols
+		state.cfg.DefForms = prescan.DefForms
+		state.cfg.PackageImports = prescan.PackageImports
+		state.cfg.DefaultPackage = prescan.DefaultPackage
+		state.symbols = prescan.AllDefs
 	}
 
 	reg := s.registry
@@ -675,6 +683,7 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 	}
 	if root != "" {
 		state.refs = analysis.ScanWorkspaceRefs(root, state.cfg, scanCfg)
+		state.cfg.WorkspaceRefs = state.refs
 	}
 	return state, nil
 }

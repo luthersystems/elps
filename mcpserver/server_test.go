@@ -689,6 +689,37 @@ func TestDiagnosticsWorkspaceWide(t *testing.T) {
 	assert.True(t, hasErrors, "bad.lisp should produce diagnostics")
 }
 
+func TestDiagnostics_CrossFileSymbolResolution(t *testing.T) {
+	// Regression test for #259: MCP diagnostics should resolve symbols
+	// defined in other workspace files when workspace_root is set.
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "a.lisp"), "(defun helper () 42)")
+	writeTestFile(t, filepath.Join(tmp, "b.lisp"), "(defun caller () (helper))")
+
+	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "diagnostics",
+		Arguments: map[string]any{
+			"path":           filepath.Join(tmp, "b.lisp"),
+			"workspace_root": tmp,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	diagnostics := decodeStructured[DiagnosticsResponse](t, res)
+	// 'helper' should NOT be flagged as undefined — it's defined in a.lisp.
+	for _, fd := range diagnostics.Files {
+		for _, d := range fd.Diagnostics {
+			assert.NotContains(t, d.Message, "helper",
+				"cross-file symbol 'helper' should be resolved via workspace_root")
+		}
+	}
+}
+
 func TestNullVsEmptySlice_References(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "empty.lisp")
