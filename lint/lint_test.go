@@ -2886,6 +2886,36 @@ func TestLintFiles_FileNotFound(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestLintFiles_UnusedFunction_CrossFileQuasiquoteTemplate(t *testing.T) {
+	// End-to-end: a non-exported function referenced via qualified symbol
+	// in another file's quasiquote template must not be flagged as unused.
+	// This is the def-acre-route pattern where the helper is internal.
+	// TODO(#255): fix resolveQualifiedSymbol to check all defs, not just exports.
+	t.Skip("known bug: resolveQualifiedSymbol only checks PackageExports")
+	dir := t.TempDir()
+
+	writeTempLisp(t, dir, "macro.lisp", `(in-package 'myapp)
+(use-package 'helpers)
+(export 'my-macro)
+(defmacro my-macro (name)
+  (quasiquote
+    (begin
+      (helpers:do-work)
+      (unquote name))))`)
+
+	// do-work is NOT exported — forces reliance on cross-file WorkspaceRefs.
+	helpers := writeTempLisp(t, dir, "helpers.lisp", `(in-package 'helpers)
+(defun do-work () 42)`)
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{helpers})
+	require.NoError(t, err)
+	for _, d := range diags {
+		assert.NotContains(t, d.Message, "do-work",
+			"do-work should not be flagged — it is used in macro.lisp's quasiquote template")
+	}
+}
+
 func TestBuildAnalysisConfig_Basic(t *testing.T) {
 	dir := t.TempDir()
 	writeTempLisp(t, dir, "lib.lisp", `(defun my-fn () 42)
