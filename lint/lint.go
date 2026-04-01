@@ -371,8 +371,9 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 	}
 
 	acfg := &analysis.Config{
-		ExtraGlobals:   prescan.ExportedGlobals,
+		ExtraGlobals:   prescan.AllDefs,
 		PackageExports: pkgExports,
+		PackageSymbols: prescan.PkgAllSymbols,
 		DefForms:       prescan.DefForms,
 		PackageImports: prescan.PackageImports,
 		DefaultPackage: prescan.DefaultPackage,

@@ -2890,8 +2890,6 @@ func TestLintFiles_UnusedFunction_CrossFileQuasiquoteTemplate(t *testing.T) {
 	// End-to-end: a non-exported function referenced via qualified symbol
 	// in another file's quasiquote template must not be flagged as unused.
 	// This is the def-acre-route pattern where the helper is internal.
-	// TODO(#255): fix resolveQualifiedSymbol to check all defs, not just exports.
-	t.Skip("known bug: resolveQualifiedSymbol only checks PackageExports")
 	dir := t.TempDir()
 
 	writeTempLisp(t, dir, "macro.lisp", `(in-package 'myapp)

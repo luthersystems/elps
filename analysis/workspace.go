@@ -336,13 +336,13 @@ func walkLoadFile(filePath, currentPkg string, result map[string]string, visited
 // scanFileFull parses a file once and extracts exported globals, package-grouped
 // exports, all definitions, use-package declarations, and the file's primary
 // package ("" for bare files without in-package).
-func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, usePackages map[string][]string, filePkg string, firstInPkgLine int) {
+func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, pkgAll map[string][]ExternalSymbol, usePackages map[string][]string, filePkg string, firstInPkgLine int) {
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	p := rdparser.New(s)
 
 	exprs, err := p.ParseProgram()
 	if err != nil {
-		return nil, nil, nil, nil, "", 0
+		return nil, nil, nil, nil, nil, "", 0
 	}
 
 	filePkg, firstInPkgLine = scanFilePackage(exprs)
@@ -350,14 +350,16 @@ func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkg
 	exported := scanExportedDefinitionKeys(exprs)
 
 	pkgs = make(map[string][]ExternalSymbol)
+	pkgAll = make(map[string][]ExternalSymbol)
 	for _, sym := range defs {
+		pkgAll[sym.Package] = append(pkgAll[sym.Package], sym)
 		if exported[definitionKey(sym.Package, sym.Name)] {
 			globals = append(globals, sym)
 			pkgs[sym.Package] = append(pkgs[sym.Package], sym)
 		}
 	}
 	usePackages = scanUsePackages(exprs)
-	return globals, pkgs, defs, usePackages, filePkg, firstInPkgLine
+	return globals, pkgs, defs, pkgAll, usePackages, filePkg, firstInPkgLine
 }
 
 // extractDefinitions collects top-level definitions from pre-parsed expressions.
@@ -572,6 +574,7 @@ func AnalyzeFile(source []byte, filename string, cfg *Config) *Result {
 	fileCfg = &Config{
 		ExtraGlobals:   fileCfg.ExtraGlobals,
 		PackageExports: fileCfg.PackageExports,
+		PackageSymbols: fileCfg.PackageSymbols,
 		DefForms:       fileCfg.DefForms,
 		PackageImports: fileCfg.PackageImports,
 		DefaultPackage: fileCfg.DefaultPackage,
@@ -841,6 +844,10 @@ type WorkspacePrescan struct {
 	// AllDefs are all definitions (exported and non-exported).
 	// Typically used as Config.ExtraGlobals for cross-file resolution.
 	AllDefs []ExternalSymbol
+	// PkgAllSymbols maps package name to ALL symbols (exported and
+	// non-exported). Used for qualified symbol resolution since ELPS
+	// runtime allows pkg:sym access to any symbol in a package.
+	PkgAllSymbols map[string][]ExternalSymbol
 	// DefForms are DefFormSpecs derived from defmacro definitions whose
 	// names start with "def". These can be injected into Config.DefForms
 	// for per-file analysis.
@@ -870,6 +877,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		globals        []ExternalSymbol
 		pkgs           map[string][]ExternalSymbol
 		allDefs        []ExternalSymbol
+		pkgAll         map[string][]ExternalSymbol
 		defForms       []DefFormSpec
 		usePackages    map[string][]string
 		filePkg        string // "" for bare files
@@ -901,9 +909,9 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 				if readErr != nil {
 					continue
 				}
-				g, p, d, up, fp, fpl := scanFileFull(fileSrc, paths[i])
+				g, p, d, pa, up, fp, fpl := scanFileFull(fileSrc, paths[i])
 				df := extractDefFormSpecs(d)
-				results[i] = fileResult{globals: g, pkgs: p, allDefs: d, defForms: df, usePackages: up, filePkg: fp, firstInPkgLine: fpl}
+				results[i] = fileResult{globals: g, pkgs: p, allDefs: d, pkgAll: pa, defForms: df, usePackages: up, filePkg: fp, firstInPkgLine: fpl}
 			}
 		}()
 	}
@@ -934,6 +942,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		Files:          paths,
 		Truncated:      truncated,
 		PkgExports:     make(map[string][]ExternalSymbol),
+		PkgAllSymbols:  make(map[string][]ExternalSymbol),
 		PackageImports: make(map[string][]string),
 		DefaultPackage: defaultPkg,
 	}
@@ -943,6 +952,9 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		prescan.DefForms = append(prescan.DefForms, r.defForms...)
 		for pkg, syms := range r.pkgs {
 			prescan.PkgExports[pkg] = append(prescan.PkgExports[pkg], syms...)
+		}
+		for pkg, syms := range r.pkgAll {
+			prescan.PkgAllSymbols[pkg] = append(prescan.PkgAllSymbols[pkg], syms...)
 		}
 		for pkg, imports := range r.usePackages {
 			prescan.PackageImports[pkg] = appendUnique(prescan.PackageImports[pkg], imports...)

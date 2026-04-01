@@ -305,6 +305,7 @@ func (s *Server) buildWorkspaceIndex() {
 
 	var extraGlobals []analysis.ExternalSymbol
 	var pkgExports map[string][]analysis.ExternalSymbol
+	var pkgAllSymbols map[string][]analysis.ExternalSymbol
 	var defForms []analysis.DefFormSpec
 	var packageImports map[string][]string
 	var defaultPackage string
@@ -324,6 +325,7 @@ func (s *Server) buildWorkspaceIndex() {
 		if prescan, err := analysis.PrescanWorkspace(s.rootPath, scanCfg); err == nil {
 			extraGlobals = prescan.AllDefs
 			pkgExports = prescan.PkgExports
+			pkgAllSymbols = prescan.PkgAllSymbols
 			defForms = prescan.DefForms
 			packageImports = prescan.PackageImports
 			defaultPackage = prescan.DefaultPackage
@@ -367,6 +369,7 @@ func (s *Server) buildWorkspaceIndex() {
 	cfg := &analysis.Config{
 		ExtraGlobals:   extraGlobals,
 		PackageExports: pkgExports,
+		PackageSymbols: pkgAllSymbols,
 		DefForms:       defForms,
 		PackageImports: packageImports,
 		DefaultPackage: defaultPackage,
@@ -433,6 +436,7 @@ func (s *Server) getAnalysisConfig(uri string) *analysis.Config {
 	if base != nil {
 		cfg.ExtraGlobals = base.ExtraGlobals
 		cfg.PackageExports = base.PackageExports
+		cfg.PackageSymbols = base.PackageSymbols
 		cfg.DefForms = base.DefForms
 		cfg.PackageImports = base.PackageImports
 		cfg.DefaultPackage = base.DefaultPackage
