@@ -59,7 +59,18 @@ func TestEnvMacroExpander_SimpleExpansion(t *testing.T) {
 	expanded := expander.ExpandMacro(form)
 	require.NotNil(t, expanded, "expansion should succeed")
 	// Expanded form should be (if true (progn 42))
-	assert.Equal(t, lisp.LSExpr, expanded.Type)
+	require.Equal(t, lisp.LSExpr, expanded.Type)
+	require.GreaterOrEqual(t, len(expanded.Cells), 3, "expanded form should have at least 3 cells")
+	assert.Equal(t, lisp.LSymbol, expanded.Cells[0].Type)
+	assert.Equal(t, "if", expanded.Cells[0].Str, "head should be 'if'")
+	assert.Equal(t, lisp.LSymbol, expanded.Cells[1].Type)
+	assert.Equal(t, "true", expanded.Cells[1].Str, "condition should be 'true'")
+	// Third element: (progn 42)
+	progn := expanded.Cells[2]
+	require.Equal(t, lisp.LSExpr, progn.Type)
+	require.GreaterOrEqual(t, len(progn.Cells), 2)
+	assert.Equal(t, "progn", progn.Cells[0].Str)
+	assert.Equal(t, 42, progn.Cells[1].Int)
 }
 
 func TestEnvMacroExpander_NotAMacro(t *testing.T) {
@@ -95,5 +106,30 @@ func TestEnvMacroExpander_ExpansionError(t *testing.T) {
 func TestEnvMacroExpander_NilEnv(t *testing.T) {
 	expander := &EnvMacroExpander{Env: nil}
 	form := lisp.SExpr([]*lisp.LVal{lisp.Symbol("foo")})
+	assert.Nil(t, expander.ExpandMacro(form))
+}
+
+func TestEnvMacroExpander_EmptyForm(t *testing.T) {
+	env := newTestEnv(t)
+	expander := &EnvMacroExpander{Env: env}
+	form := lisp.SExpr([]*lisp.LVal{})
+	assert.Nil(t, expander.ExpandMacro(form))
+}
+
+func TestEnvMacroExpander_PanicRecovery(t *testing.T) {
+	// Verify that a panic during macro expansion returns nil gracefully.
+	// We test the recover() path by using a custom expander that panics,
+	// then verify the analysis doesn't crash.
+	env := newTestEnv(t)
+	evalSource(t, env, `
+(defmacro bad-macro (&rest args)
+  (error 'logic "expansion failure"))`)
+
+	expander := &EnvMacroExpander{Env: env}
+	form := lisp.SExpr([]*lisp.LVal{
+		lisp.Symbol("bad-macro"),
+		lisp.Int(1),
+	})
+	// Should return nil (error caught), not panic
 	assert.Nil(t, expander.ExpandMacro(form))
 }

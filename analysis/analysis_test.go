@@ -471,6 +471,14 @@ func TestAnalyze_Set_InLambdaReferencesGlobal(t *testing.T) {
 	for _, u := range result.Unresolved {
 		assert.NotEqual(t, "now", u.Name, "'now' should be resolved")
 	}
+
+	// Verify 'now' exists in the global scope with expected properties.
+	globalNow := result.RootScope.LookupLocal("now")
+	require.NotNil(t, globalNow, "'now' should be defined in the global scope")
+	assert.Equal(t, SymVariable, globalNow.Kind)
+	// The lambda's (set 'now 42) should increment References on the global symbol.
+	assert.GreaterOrEqual(t, globalNow.References, 1,
+		"global 'now' should have references from the lambda set and use-now")
 }
 
 func TestAnalyze_Set_InLambdaCreatesGlobalIfMissing(t *testing.T) {
@@ -1757,35 +1765,45 @@ func TestAnalyze_MacroExpansion_LambdaParams(t *testing.T) {
 	// Pattern from def-acre-route: macro introduces lambda parameters.
 	// Without expansion: req/resp flagged as undefined.
 	// With expansion: they resolve as lambda params.
+	// Note: macro name intentionally doesn't start with "def" to avoid
+	// the heuristic def-like matching, ensuring expansion is actually tested.
 	result := parseAndAnalyzeWithExpander(t,
-		`(defmacro def-handler (name args &rest exprs)
+		`(defmacro make-handler (name args &rest exprs)
 		   (quasiquote
 		     (set (quote (unquote name))
 		       (lambda (unquote args)
 		         (progn (unquote-splicing exprs))))))`,
-		`(def-handler handle-request (req resp)
+		`(make-handler handle-request (req resp)
 		   (list req resp))`)
 
 	for _, u := range result.Unresolved {
 		assert.NotEqual(t, "req", u.Name, "req should resolve as lambda param after expansion")
 		assert.NotEqual(t, "resp", u.Name, "resp should resolve as lambda param after expansion")
 	}
+
+	// Verify symbols actually resolved as references (not just absent from Unresolved).
+	refNames := make(map[string]bool)
+	for _, ref := range result.References {
+		refNames[ref.Symbol.Name] = true
+	}
+	assert.True(t, refNames["req"], "req should appear in References after macro expansion")
+	assert.True(t, refNames["resp"], "resp should appear in References after macro expansion")
 }
 
 func TestAnalyze_MacroExpansion_NestedMacros(t *testing.T) {
 	// Pattern from def-acre-route-get calling def-acre-route.
 	// Outer macro expands, inner macro expands on next recursion.
 	result := parseAndAnalyzeWithExpander(t,
-		`(defmacro def-route (name args &rest exprs)
+		`(defmacro make-route (name args &rest exprs)
 		   (quasiquote
 		     (set (quote (unquote name))
 		       (lambda (unquote args)
 		         (progn (unquote-splicing exprs))))))
-		 (defmacro def-route-get (name args &rest exprs)
+		 (defmacro make-route-get (name args &rest exprs)
 		   (quasiquote
-		     (def-route (unquote name) (unquote args)
+		     (make-route (unquote name) (unquote args)
 		       (unquote-splicing exprs))))`,
-		`(def-route-get my-handler (req)
+		`(make-route-get my-handler (req)
 		   (+ req 1))`)
 
 	for _, u := range result.Unresolved {
@@ -1831,6 +1849,26 @@ func TestAnalyze_MacroExpansion_FailureFallback(t *testing.T) {
 	// Should not crash — falls back to opaque analysis.
 	// 42 inside the macro call gets InsideMacroCall treatment.
 	assert.NotNil(t, result)
+}
+
+func TestAnalyze_MacroExpansion_UnresolvedInExpandedCode(t *testing.T) {
+	// Symbols that are genuinely undefined in expanded code should still
+	// appear in Unresolved, but with InsideMacroCall=true (downgraded severity).
+	result := parseAndAnalyzeWithExpander(t,
+		`(defmacro wrap-body (&rest body)
+		   (quasiquote (progn (unquote-splicing body))))`,
+		`(wrap-body (totally-unknown-fn 42))`)
+
+	var found *UnresolvedRef
+	for _, u := range result.Unresolved {
+		if u.Name == "totally-unknown-fn" {
+			found = u
+			break
+		}
+	}
+	require.NotNil(t, found, "genuinely undefined symbol in expanded code should still be flagged")
+	assert.True(t, found.InsideMacroCall,
+		"undefined symbol in expanded code should have InsideMacroCall=true for downgraded severity")
 }
 
 func TestAnalyze_MacroExpansion_HandlerBindPattern(t *testing.T) {

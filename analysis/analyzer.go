@@ -1197,24 +1197,32 @@ func (a *analyzer) analyzeCall(node *lisp.LVal, scope *Scope, currentPkg string)
 	// is available, otherwise fall back to opaque analysis with lowered
 	// severity for unresolved symbols.
 	if len(node.Cells) > 0 && node.Cells[0].Type == lisp.LSymbol {
-		if sym := scope.Lookup(node.Cells[0].Str); sym != nil && sym.Kind == SymMacro && isUserMacro(sym) {
+		sym := scope.Lookup(node.Cells[0].Str)
+		isMacro := sym != nil && sym.Kind == SymMacro && isUserMacro(sym)
+
+		if isMacro {
 			sym.References++
 			a.result.References = append(a.result.References, &Reference{
 				Symbol: sym,
 				Source:  node.Cells[0].Source,
 				Node:    node.Cells[0],
 			})
-			if a.cfg != nil && a.cfg.MacroExpander != nil {
-				if expanded := a.cfg.MacroExpander.ExpandMacro(node); expanded != nil {
-					// Analyze expanded code. Keep insideMacroCall
-					// incremented so template-generated symbols that
-					// can't be resolved get warning severity, not error.
-					a.insideMacroCall++
-					a.analyzeExpr(expanded, scope, currentPkg)
-					a.insideMacroCall--
-					return
-				}
+		}
+
+		// Try macro expansion: either the symbol is a known user-macro,
+		// or the expander recognizes it (the macro may be defined in the
+		// runtime env but not in the analyzed source, e.g. cross-file macros
+		// or macros from the embedder's registry).
+		if a.cfg != nil && a.cfg.MacroExpander != nil && (isMacro || sym == nil) {
+			if expanded := a.cfg.MacroExpander.ExpandMacro(node); expanded != nil {
+				a.insideMacroCall++
+				a.analyzeExpr(expanded, scope, currentPkg)
+				a.insideMacroCall--
+				return
 			}
+		}
+
+		if isMacro {
 			// No expander or expansion failed — opaque walk.
 			a.insideMacroCall++
 			defer func() { a.insideMacroCall-- }()

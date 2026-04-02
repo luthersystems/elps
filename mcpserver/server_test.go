@@ -711,6 +711,7 @@ func TestDiagnostics_CrossFileSymbolResolution(t *testing.T) {
 	require.False(t, res.IsError)
 
 	diagnostics := decodeStructured[DiagnosticsResponse](t, res)
+	require.NotEmpty(t, diagnostics.Files, "should have diagnostics for at least one file")
 	// 'helper' should NOT be flagged as undefined — it's defined in a.lisp.
 	for _, fd := range diagnostics.Files {
 		for _, d := range fd.Diagnostics {
@@ -718,6 +719,42 @@ func TestDiagnostics_CrossFileSymbolResolution(t *testing.T) {
 				"cross-file symbol 'helper' should be resolved via workspace_root")
 		}
 	}
+}
+
+func TestDiagnostics_CrossFileSymbolResolution_WithoutWorkspace(t *testing.T) {
+	// Negative test: without workspace_root, cross-file symbols are NOT resolved.
+	// This proves the workspace_root fix is actually needed.
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "a.lisp"), "(defun helper () 42)")
+	writeTestFile(t, filepath.Join(tmp, "b.lisp"), "(defun caller () (helper))")
+
+	// Create server WITHOUT workspace root — single-file analysis only.
+	session, serverSession := connectTestServer(t, New())
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
+
+	// Analyze b.lisp alone, without workspace_root — single-file mode.
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "diagnostics",
+		Arguments: map[string]any{
+			"path": filepath.Join(tmp, "b.lisp"),
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	diagnostics := decodeStructured[DiagnosticsResponse](t, res)
+	// Without workspace context, 'helper' SHOULD be flagged as undefined.
+	var helperFlagged bool
+	for _, fd := range diagnostics.Files {
+		for _, d := range fd.Diagnostics {
+			if strings.Contains(d.Message, "helper") {
+				helperFlagged = true
+			}
+		}
+	}
+	assert.True(t, helperFlagged,
+		"without workspace_root, cross-file symbol 'helper' should be flagged as undefined")
 }
 
 func TestNullVsEmptySlice_References(t *testing.T) {
