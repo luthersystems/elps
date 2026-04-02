@@ -1456,6 +1456,7 @@ func TestScopeKind_String(t *testing.T) {
 	assert.Equal(t, "lambda", ScopeLambda.String())
 	assert.Equal(t, "let", ScopeLet.String())
 	assert.Equal(t, "flet", ScopeFlet.String())
+	assert.Equal(t, "macrolet", ScopeMacrolet.String())
 	assert.Equal(t, "dotimes", ScopeDotimes.String())
 }
 
@@ -1739,6 +1740,162 @@ func TestAnalyze_DefaultPackage_BareFile(t *testing.T) {
 	}
 	assert.False(t, unresolvedNames["helper-fn"],
 		"bare file with DefaultPackage should resolve symbols via cross-file imports")
+}
+
+// --- Macrolet ---
+
+func TestAnalyze_Macrolet_BodyResolves(t *testing.T) {
+	// Local macros defined in macrolet should be visible in the body.
+	result := parseAndAnalyze(t, `
+(defun f ()
+  (macrolet ((my-add (a b) (quasiquote (+ (unquote a) (unquote b)))))
+    (my-add 1 2)))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "my-add", u.Name,
+			"macrolet-defined macro should not be flagged as undefined")
+	}
+}
+
+func TestAnalyze_Macrolet_MultipleMacros(t *testing.T) {
+	// Multiple macros in one macrolet should all be in scope.
+	result := parseAndAnalyze(t, `
+(macrolet ((m1 () '1)
+           (m2 () '2))
+  (m1)
+  (m2))`)
+	unresolvedNames := make(map[string]bool)
+	for _, u := range result.Unresolved {
+		unresolvedNames[u.Name] = true
+	}
+	assert.False(t, unresolvedNames["m1"], "m1 should resolve in macrolet body")
+	assert.False(t, unresolvedNames["m2"], "m2 should resolve in macrolet body")
+}
+
+func TestAnalyze_Macrolet_MacroNotVisibleOutside(t *testing.T) {
+	// Macros defined in macrolet should NOT be visible outside its body.
+	result := parseAndAnalyze(t, `
+(macrolet ((local-mac () '1))
+  (local-mac))
+(local-mac)`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "local-mac" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"macrolet-defined macro should be undefined outside macrolet body")
+}
+
+func TestAnalyze_Macrolet_BodyUndefinedFlagged(t *testing.T) {
+	// Undefined symbols in macrolet body should still be flagged.
+	result := parseAndAnalyze(t, `
+(macrolet ((m () '1))
+  (undefined-fn 42))`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "undefined-fn" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"undefined symbol in macrolet body should be flagged")
+}
+
+func TestAnalyze_Macrolet_TemplateBodyNotAnalyzed(t *testing.T) {
+	// Template variables in macro bodies should NOT be flagged as undefined.
+	// Macro bodies are templates — they contain quasiquote/unquote patterns
+	// with variables that don't exist in the lexical scope.
+	result := parseAndAnalyze(t, `
+(macrolet ((wrap (body) (quasiquote (progn (unquote body)))))
+  (wrap (+ 1 2)))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "body", u.Name,
+			"macro template variable should not be flagged as undefined")
+	}
+}
+
+func TestAnalyze_Macrolet_DefinedAsMacroSymbol(t *testing.T) {
+	// Macrolet bindings should be registered as SymMacro symbols.
+	result := parseAndAnalyze(t, `
+(macrolet ((my-mac () '1))
+  (my-mac))`)
+	found := false
+	for _, sym := range result.Symbols {
+		if sym.Name == "my-mac" && sym.Kind == SymMacro {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "macrolet binding should appear as a SymMacro in result.Symbols")
+}
+
+// --- Qualified-symbol ---
+
+func TestAnalyze_QualifiedSymbol_ArgNotFlagged(t *testing.T) {
+	// The argument to qualified-symbol is data (a name), not a symbol
+	// reference. It should not be flagged as undefined.
+	result := parseAndAnalyze(t, `(qualified-symbol some-name)`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "some-name", u.Name,
+			"qualified-symbol argument should not be flagged as undefined")
+	}
+}
+
+func TestAnalyze_QualifiedSymbol_HeadResolved(t *testing.T) {
+	// The qualified-symbol operator itself should still be resolved.
+	result := parseAndAnalyze(t, `(qualified-symbol foo)`)
+	// qualified-symbol is a builtin special op — should be resolved.
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "qualified-symbol", u.Name,
+			"qualified-symbol head should be resolved as a builtin")
+	}
+}
+
+// --- Thread-first / Thread-last ---
+
+func TestAnalyze_ThreadFirst_SymbolsResolved(t *testing.T) {
+	// Symbols used in thread-first forms should still be resolved.
+	result := parseAndAnalyze(t, `
+(defun f (x) x)
+(defun g (x y) (+ x y))
+(thread-first 1 (f) (g 2))`)
+	unresolvedNames := make(map[string]bool)
+	for _, u := range result.Unresolved {
+		unresolvedNames[u.Name] = true
+	}
+	assert.False(t, unresolvedNames["f"], "f should resolve in thread-first")
+	assert.False(t, unresolvedNames["g"], "g should resolve in thread-first")
+}
+
+func TestAnalyze_ThreadLast_SymbolsResolved(t *testing.T) {
+	// Symbols used in thread-last forms should still be resolved.
+	result := parseAndAnalyze(t, `
+(defun f (x) x)
+(defun g (x y) (+ x y))
+(thread-last 1 (f) (g 2))`)
+	unresolvedNames := make(map[string]bool)
+	for _, u := range result.Unresolved {
+		unresolvedNames[u.Name] = true
+	}
+	assert.False(t, unresolvedNames["f"], "f should resolve in thread-last")
+	assert.False(t, unresolvedNames["g"], "g should resolve in thread-last")
+}
+
+func TestAnalyze_ThreadFirst_UndefinedFlagged(t *testing.T) {
+	// Undefined symbols in thread-first should still be flagged.
+	result := parseAndAnalyze(t, `(thread-first 1 (unknown-fn 2))`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "unknown-fn" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"undefined symbol in thread-first should be flagged")
 }
 
 // parseAndAnalyzeWithConfig is a test helper that parses source and runs

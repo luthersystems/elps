@@ -410,6 +410,16 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope, currentPkg string)
 		a.analyzeHandlerBind(node, scope, currentPkg)
 	case "cond":
 		a.analyzeCond(node, scope, currentPkg)
+	case "macrolet":
+		a.analyzeMacrolet(node, scope, currentPkg)
+	case "qualified-symbol":
+		a.analyzeQualifiedSymbol(node, scope, currentPkg)
+	case "thread-first", "thread-last":
+		// Threading macros transform expressions at expansion time by
+		// inserting the threaded value as the first/last argument of each
+		// form. For symbol resolution purposes the same symbols appear
+		// regardless of the transformation, so analyzeCall is correct.
+		a.analyzeCall(node, scope, currentPkg)
 	case "test":
 		a.analyzeTest(node, scope, currentPkg)
 	default:
@@ -1106,6 +1116,66 @@ func (a *analyzer) analyzeCond(node *lisp.LVal, scope *Scope, currentPkg string)
 // See also: lint/analyzers.go isCondDefault (same logic, used by lint checks).
 func isCondDefaultSymbol(name string) bool {
 	return name == "else" || name == "true"
+}
+
+func (a *analyzer) analyzeMacrolet(node *lisp.LVal, scope *Scope, currentPkg string) {
+	// macrolet form: (macrolet ((name formals body...) ...) body...)
+	// Creates a new scope with locally-bound macros, then evaluates body in
+	// that scope. Macro bodies are templates (like defmacro) — we skip
+	// analyzing them to avoid false positives from template variables.
+	if astutil.ArgCount(node) < 1 {
+		return
+	}
+	bindings := node.Cells[1]
+	if bindings.Type != lisp.LSExpr {
+		return
+	}
+
+	macroletScope := NewScope(ScopeMacrolet, scope, node)
+
+	for _, binding := range bindings.Cells {
+		if binding.Type != lisp.LSExpr || len(binding.Cells) < 2 {
+			continue
+		}
+		nameVal := binding.Cells[0]
+		if nameVal.Type != lisp.LSymbol {
+			continue
+		}
+		sym := &Symbol{
+			Name:   nameVal.Str,
+			Kind:   SymMacro,
+			Source: nameVal.Source,
+			Node:   nameVal,
+		}
+		macroletScope.Define(sym)
+		a.result.Symbols = append(a.result.Symbols, sym)
+		// Skip analyzing macro bodies — they are templates, not executable
+		// code in this scope. Like defmacro, template variables (from
+		// quasiquote/unquote) would produce false "undefined symbol" reports.
+	}
+
+	// Analyze body forms in the macrolet scope
+	for i := 2; i < len(node.Cells); i++ {
+		a.analyzeExpr(node.Cells[i], macroletScope, currentPkg)
+	}
+}
+
+func (a *analyzer) analyzeQualifiedSymbol(node *lisp.LVal, scope *Scope, currentPkg string) {
+	// qualified-symbol form: (qualified-symbol name)
+	// The argument is a bare symbol treated as data (a name to construct a
+	// qualified symbol from), not a variable reference. Skip resolving it to
+	// avoid false "undefined symbol" reports, similar to how handler-bind
+	// skips condition type names.
+	//
+	// Analyze the head (qualified-symbol itself) so it gets resolved.
+	if len(node.Cells) > 0 {
+		a.analyzeExpr(node.Cells[0], scope, currentPkg)
+	}
+	// Skip Cells[1] — it's data, not a symbol reference.
+	// Analyze any remaining args (unlikely but for completeness).
+	for i := 2; i < len(node.Cells); i++ {
+		a.analyzeExpr(node.Cells[i], scope, currentPkg)
+	}
 }
 
 func (a *analyzer) analyzePrefixLambda(node *lisp.LVal, scope *Scope, currentPkg string) {
