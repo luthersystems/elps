@@ -113,8 +113,17 @@ func loadOneMacro(env *lisp.LEnv, def MacroDef) (retErr error) {
 		}
 	}()
 	// Switch to the macro's source package so it registers in the right scope.
+	// DefinePackage is idempotent — safe for packages that already exist.
+	// Workspace packages (e.g. "acre") won't exist in the boot env, so we
+	// create them and import the lang package so builtins like defmacro work.
 	if def.Package != "" {
+		env.Runtime.Registry.DefinePackage(def.Package)
 		rc := env.InPackage(lisp.String(def.Package))
+		if rc.Type == lisp.LError {
+			return fmt.Errorf("error setting package %q for macro %s: %v",
+				def.Package, macroDefName(def.Node), rc)
+		}
+		rc = env.UsePackage(lisp.Symbol(env.Runtime.Registry.Lang))
 		if rc.Type == lisp.LError {
 			return fmt.Errorf("error setting package %q for macro %s: %v",
 				def.Package, macroDefName(def.Node), rc)

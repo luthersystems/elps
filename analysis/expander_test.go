@@ -213,6 +213,26 @@ func TestLoadWorkspaceMacros_PackageContext(t *testing.T) {
 		"pkg-macro should NOT be defined in user package")
 }
 
+func TestLoadWorkspaceMacros_PackageAutoCreated(t *testing.T) {
+	// Workspace packages (e.g. "acre") don't exist in the boot env.
+	// LoadWorkspaceMacros should auto-create them via DefinePackage.
+	env := newTestEnv(t)
+
+	// "newpkg" is NOT pre-defined — simulates a workspace-only package.
+	def := parseMacroDef(t,
+		`(defmacro ws-macro () '99)`,
+		"newpkg")
+
+	errs := LoadWorkspaceMacros(env, []MacroDef{def})
+	assert.Empty(t, errs, "should auto-create the package, not error")
+
+	// Verify the macro was registered in the auto-created package.
+	env.InPackage(lisp.String("newpkg"))
+	mac := env.Get(lisp.Symbol("ws-macro"))
+	assert.Equal(t, lisp.LFun, mac.Type, "ws-macro should be defined in newpkg")
+	assert.True(t, mac.IsMacro())
+}
+
 func TestLoadWorkspaceMacros_ErrorReturned(t *testing.T) {
 	env := newTestEnv(t)
 
