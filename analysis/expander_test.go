@@ -56,7 +56,7 @@ func TestEnvMacroExpander_SimpleExpansion(t *testing.T) {
 		lisp.Int(42),
 	})
 
-	expanded := expander.ExpandMacro(form)
+	expanded := expander.ExpandMacro(form, lisp.DefaultUserPackage)
 	require.NotNil(t, expanded, "expansion should succeed")
 	// Expanded form should be (if true (progn 42))
 	require.Equal(t, lisp.LSExpr, expanded.Type)
@@ -83,7 +83,7 @@ func TestEnvMacroExpander_NotAMacro(t *testing.T) {
 		lisp.Int(1),
 		lisp.Int(2),
 	})
-	assert.Nil(t, expander.ExpandMacro(form))
+	assert.Nil(t, expander.ExpandMacro(form, lisp.DefaultUserPackage))
 }
 
 func TestEnvMacroExpander_ExpansionError(t *testing.T) {
@@ -100,20 +100,20 @@ func TestEnvMacroExpander_ExpansionError(t *testing.T) {
 		lisp.Int(1),
 		// missing second arg
 	})
-	assert.Nil(t, expander.ExpandMacro(form))
+	assert.Nil(t, expander.ExpandMacro(form, lisp.DefaultUserPackage))
 }
 
 func TestEnvMacroExpander_NilEnv(t *testing.T) {
 	expander := &EnvMacroExpander{Env: nil}
 	form := lisp.SExpr([]*lisp.LVal{lisp.Symbol("foo")})
-	assert.Nil(t, expander.ExpandMacro(form))
+	assert.Nil(t, expander.ExpandMacro(form, lisp.DefaultUserPackage))
 }
 
 func TestEnvMacroExpander_EmptyForm(t *testing.T) {
 	env := newTestEnv(t)
 	expander := &EnvMacroExpander{Env: env}
 	form := lisp.SExpr([]*lisp.LVal{})
-	assert.Nil(t, expander.ExpandMacro(form))
+	assert.Nil(t, expander.ExpandMacro(form, lisp.DefaultUserPackage))
 }
 
 func TestEnvMacroExpander_NotMacroCached(t *testing.T) {
@@ -126,13 +126,14 @@ func TestEnvMacroExpander_NotMacroCached(t *testing.T) {
 	})
 
 	// First call — should populate the notMacro cache.
-	assert.Nil(t, expander.ExpandMacro(form))
+	assert.Nil(t, expander.ExpandMacro(form, lisp.DefaultUserPackage))
 	require.NotNil(t, expander.notMacro, "notMacro cache should be initialized")
-	assert.True(t, expander.notMacro["+"], "should cache '+' as not-a-macro")
+	cacheKey := lisp.DefaultUserPackage + "\x00+"
+	assert.True(t, expander.notMacro[cacheKey], "should cache '+' as not-a-macro")
 
 	// Second call — hits cache (no env.Get needed).
-	assert.Nil(t, expander.ExpandMacro(form))
-	assert.True(t, expander.notMacro["+"], "cache entry should persist across calls")
+	assert.Nil(t, expander.ExpandMacro(form, lisp.DefaultUserPackage))
+	assert.True(t, expander.notMacro[cacheKey], "cache entry should persist across calls")
 }
 
 func TestEnvMacroExpander_ExpansionErrorGracefulReturn(t *testing.T) {
@@ -150,7 +151,7 @@ func TestEnvMacroExpander_ExpansionErrorGracefulReturn(t *testing.T) {
 		lisp.Int(1),
 	})
 	// Should return nil (error caught), not panic
-	assert.Nil(t, expander.ExpandMacro(form))
+	assert.Nil(t, expander.ExpandMacro(form, lisp.DefaultUserPackage))
 }
 
 // --- LoadWorkspaceMacros tests ---
@@ -303,20 +304,20 @@ func TestEnvMacroExpander_Reset_ClearsCache(t *testing.T) {
 		lisp.Symbol("true"),
 		lisp.Int(42),
 	})
-	assert.Nil(t, expander.ExpandMacro(form))
-	assert.True(t, expander.notMacro["my-when"], "should be cached as not-a-macro")
+	assert.Nil(t, expander.ExpandMacro(form, lisp.DefaultUserPackage))
+	assert.True(t, expander.notMacro[lisp.DefaultUserPackage+"\x00my-when"], "should be cached as not-a-macro")
 
 	// Define the macro in the env.
 	evalSource(t, env, `(defmacro my-when (cond &rest body)
 	  (quasiquote (if (unquote cond) (progn (unquote-splicing body)))))`)
 
 	// Without Reset, stale cache prevents expansion.
-	assert.Nil(t, expander.ExpandMacro(form), "stale cache should prevent expansion")
+	assert.Nil(t, expander.ExpandMacro(form, lisp.DefaultUserPackage), "stale cache should prevent expansion")
 
 	// After Reset, expansion succeeds.
 	expander.Reset()
 	assert.Nil(t, expander.notMacro, "Reset should clear the cache")
-	expanded := expander.ExpandMacro(form)
+	expanded := expander.ExpandMacro(form, lisp.DefaultUserPackage)
 	require.NotNil(t, expanded, "after Reset, newly-defined macro should expand")
 	assert.Equal(t, "if", expanded.Cells[0].Str)
 }

@@ -12,11 +12,14 @@ import (
 
 // MacroExpander expands a macro call form at analysis time.
 // The form includes the macro name as Cells[0] and arguments as Cells[1:].
+// pkg is the current package context from the analyzer — the expander
+// should resolve the macro name relative to this package, matching the
+// runtime's package-scoped symbol resolution.
 // Returns the expanded AST, or nil if expansion is not possible (macro not
 // found, expansion error, wrong arity, etc.). Returning nil causes the
 // analyzer to fall back to treating the call as an opaque macro invocation.
 type MacroExpander interface {
-	ExpandMacro(form *lisp.LVal) *lisp.LVal
+	ExpandMacro(form *lisp.LVal, pkg string) *lisp.LVal
 }
 
 // EnvMacroExpander uses a live LEnv to expand user-defined macros.
@@ -45,11 +48,12 @@ func (e *EnvMacroExpander) Reset() {
 	e.mu.Unlock()
 }
 
-// ExpandMacro looks up the head symbol in the environment, verifies it is
-// a macro, and calls MacroCall to expand it. Returns the expanded AST or
-// nil on any failure. Results for non-macro symbols are cached to avoid
-// repeated env lookups on every unresolved call.
-func (e *EnvMacroExpander) ExpandMacro(form *lisp.LVal) (result *lisp.LVal) {
+// ExpandMacro looks up the head symbol in the environment relative to
+// the given package, verifies it is a macro, and calls MacroCall to
+// expand it. The env is temporarily switched to pkg so that unqualified
+// symbol resolution matches the file's package context — the same way
+// the runtime resolves symbols during eval.
+func (e *EnvMacroExpander) ExpandMacro(form *lisp.LVal, pkg string) (result *lisp.LVal) {
 	defer func() {
 		if r := recover(); r != nil {
 			result = nil
@@ -65,8 +69,17 @@ func (e *EnvMacroExpander) ExpandMacro(form *lisp.LVal) (result *lisp.LVal) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// Fast path: already know this symbol is not a macro.
-	if e.notMacro != nil && e.notMacro[name] {
+	// Switch to the file's package for correct symbol resolution.
+	// Save and restore — MacroCall may also switch packages internally.
+	prevPkg := e.Env.Runtime.Package
+	if pkg != "" {
+		e.Env.InPackage(lisp.String(pkg))
+	}
+	defer func() { e.Env.Runtime.Package = prevPkg }()
+
+	// Fast path: already know this symbol is not a macro in this package.
+	cacheKey := pkg + "\x00" + name
+	if e.notMacro != nil && e.notMacro[cacheKey] {
 		return nil
 	}
 
@@ -76,7 +89,7 @@ func (e *EnvMacroExpander) ExpandMacro(form *lisp.LVal) (result *lisp.LVal) {
 		if e.notMacro == nil {
 			e.notMacro = make(map[string]bool)
 		}
-		e.notMacro[name] = true
+		e.notMacro[cacheKey] = true
 		return nil
 	}
 

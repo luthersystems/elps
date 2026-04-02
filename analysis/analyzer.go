@@ -1296,7 +1296,7 @@ func (a *analyzer) analyzeCall(node *lisp.LVal, scope *Scope, currentPkg string)
 		// Depth-limited to prevent stack overflow on self-expanding macros.
 		if a.cfg != nil && a.cfg.MacroExpander != nil && (isMacro || sym == nil) &&
 			a.expansionDepth < maxMacroExpansionDepth {
-			if expanded := a.cfg.MacroExpander.ExpandMacro(node); expanded != nil {
+			if expanded := a.cfg.MacroExpander.ExpandMacro(node, currentPkg); expanded != nil {
 				a.insideMacroCall++
 				a.expansionDepth++
 				a.analyzeExpr(expanded, scope, currentPkg)
