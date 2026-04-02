@@ -1,8 +1,10 @@
-// Copyright © 2024 The ELPS authors
+// Copyright © 2026 The ELPS authors
 
 package analysis
 
 import (
+	"sync"
+
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -18,13 +20,21 @@ type MacroExpander interface {
 // EnvMacroExpander uses a live LEnv to expand user-defined macros.
 // Expansion errors and panics are caught — the analyzer falls back to
 // opaque analysis when ExpandMacro returns nil.
+//
+// Thread-safe: a mutex serializes expansion calls since MacroCall mutates
+// shared Runtime state (call stack, package pointer). The mutex is only
+// contended when multiple LSP handlers trigger concurrent analyses.
 type EnvMacroExpander struct {
 	Env *lisp.LEnv
+
+	mu       sync.Mutex
+	notMacro map[string]bool // cache: symbols that are not macros in the env
 }
 
 // ExpandMacro looks up the head symbol in the environment, verifies it is
 // a macro, and calls MacroCall to expand it. Returns the expanded AST or
-// nil on any failure.
+// nil on any failure. Results for non-macro symbols are cached to avoid
+// repeated env lookups on every unresolved call.
 func (e *EnvMacroExpander) ExpandMacro(form *lisp.LVal) (result *lisp.LVal) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -36,8 +46,23 @@ func (e *EnvMacroExpander) ExpandMacro(form *lisp.LVal) (result *lisp.LVal) {
 		return nil
 	}
 
+	name := form.Cells[0].Str
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Fast path: already know this symbol is not a macro.
+	if e.notMacro != nil && e.notMacro[name] {
+		return nil
+	}
+
 	mac := e.Env.Get(form.Cells[0])
 	if mac.Type != lisp.LFun || !mac.IsMacro() {
+		// Cache the negative result to avoid future lookups.
+		if e.notMacro == nil {
+			e.notMacro = make(map[string]bool)
+		}
+		e.notMacro[name] = true
 		return nil
 	}
 

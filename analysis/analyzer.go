@@ -9,6 +9,10 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
+// maxMacroExpansionDepth caps recursive macro expansion in the analyzer
+// to prevent stack overflow on pathological macros (e.g. self-expanding).
+const maxMacroExpansionDepth = 64
+
 // analyzer is the internal state for a single analysis run.
 type analyzer struct {
 	root             *Scope
@@ -16,6 +20,7 @@ type analyzer struct {
 	cfg              *Config
 	qualifiedSymbols map[string]*Symbol
 	insideMacroCall  int // depth counter for user-macro body analysis
+	expansionDepth   int // current macro expansion nesting depth
 }
 
 // defaultPackage returns the default package for bare files. If a
@@ -975,7 +980,10 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 	// - In global scope: create or overwrite in the current scope (existing
 	//   behavior, matches prescan).
 	if scope.Kind != ScopeGlobal {
-		if existing := scope.LookupInPackage(name, currentPkg); existing != nil {
+		// Look up in the root (global) scope specifically — set always
+		// targets the package scope via PutGlobal, so let/lambda-local
+		// bindings with the same name should not be found here.
+		if existing := a.root.LookupLocalInPackage(name, currentPkg); existing != nil {
 			existing.References++
 			a.result.References = append(a.result.References, &Reference{
 				Symbol: existing,
@@ -1095,6 +1103,7 @@ func (a *analyzer) analyzeCond(node *lisp.LVal, scope *Scope, currentPkg string)
 // isCondDefaultSymbol returns true if name is a bare symbol recognized as
 // a default clause test in cond. Keywords (:else, :true) are already
 // skipped by resolveSymbol so only bare forms need checking here.
+// See also: lint/analyzers.go isCondDefault (same logic, used by lint checks).
 func isCondDefaultSymbol(name string) bool {
 	return name == "else" || name == "true"
 }
@@ -1213,10 +1222,14 @@ func (a *analyzer) analyzeCall(node *lisp.LVal, scope *Scope, currentPkg string)
 		// or the expander recognizes it (the macro may be defined in the
 		// runtime env but not in the analyzed source, e.g. cross-file macros
 		// or macros from the embedder's registry).
-		if a.cfg != nil && a.cfg.MacroExpander != nil && (isMacro || sym == nil) {
+		// Depth-limited to prevent stack overflow on self-expanding macros.
+		if a.cfg != nil && a.cfg.MacroExpander != nil && (isMacro || sym == nil) &&
+			a.expansionDepth < maxMacroExpansionDepth {
 			if expanded := a.cfg.MacroExpander.ExpandMacro(node); expanded != nil {
 				a.insideMacroCall++
+				a.expansionDepth++
 				a.analyzeExpr(expanded, scope, currentPkg)
+				a.expansionDepth--
 				a.insideMacroCall--
 				return
 			}

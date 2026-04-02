@@ -1,4 +1,4 @@
-// Copyright © 2024 The ELPS authors
+// Copyright © 2026 The ELPS authors
 
 package analysis
 
