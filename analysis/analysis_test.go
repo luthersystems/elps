@@ -490,7 +490,14 @@ func TestAnalyze_Set_InLambdaCreatesGlobalIfMissing(t *testing.T) {
     (set 'y 1)))`)
 
 	sym := result.RootScope.LookupLocal("y")
-	assert.NotNil(t, sym, "'y' should be defined in global scope by set inside lambda")
+	require.NotNil(t, sym, "'y' should be defined in global scope by set inside lambda")
+	assert.Equal(t, SymVariable, sym.Kind)
+	// Verify 'y' was NOT defined in any non-global scope.
+	for _, s := range result.Symbols {
+		if s.Name == "y" && s.Scope != result.RootScope {
+			t.Errorf("'y' should not be defined in a non-global scope (found in %v)", s.Scope.Kind)
+		}
+	}
 }
 
 // --- Analyze: function (#') ---
@@ -1809,6 +1816,13 @@ func TestAnalyze_MacroExpansion_NestedMacros(t *testing.T) {
 	for _, u := range result.Unresolved {
 		assert.NotEqual(t, "req", u.Name, "req should resolve via nested macro expansion")
 	}
+
+	// Verify req actually resolved as a reference (not just absent from Unresolved).
+	refNames := make(map[string]bool)
+	for _, ref := range result.References {
+		refNames[ref.Symbol.Name] = true
+	}
+	assert.True(t, refNames["req"], "req should appear in References after nested expansion")
 }
 
 func TestAnalyze_MacroExpansion_WhenMacro(t *testing.T) {
@@ -1849,6 +1863,23 @@ func TestAnalyze_MacroExpansion_FailureFallback(t *testing.T) {
 	// Should not crash — falls back to opaque analysis.
 	// 42 inside the macro call gets InsideMacroCall treatment.
 	assert.NotNil(t, result)
+}
+
+func TestAnalyze_MacroExpansion_DepthLimit(t *testing.T) {
+	// A self-expanding macro should not cause a stack overflow.
+	// The analyzer caps expansion at maxMacroExpansionDepth and falls
+	// back to opaque analysis.
+	result := parseAndAnalyzeWithExpander(t,
+		`(defmacro loop-forever (&rest body)
+		   (quasiquote (loop-forever (unquote-splicing body))))`,
+		`(loop-forever 42)`)
+
+	// Should complete without panic or hang.
+	assert.NotNil(t, result)
+	// The macro call should still appear (as unresolved or via opaque walk),
+	// not silently disappear.
+	assert.True(t, len(result.Unresolved) > 0 || len(result.References) > 0,
+		"self-expanding macro should produce some analysis output")
 }
 
 func TestAnalyze_MacroExpansion_UnresolvedInExpandedCode(t *testing.T) {

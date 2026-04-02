@@ -116,10 +116,10 @@ func TestEnvMacroExpander_EmptyForm(t *testing.T) {
 	assert.Nil(t, expander.ExpandMacro(form))
 }
 
-func TestEnvMacroExpander_PanicRecovery(t *testing.T) {
-	// Verify that a panic during macro expansion returns nil gracefully.
-	// We test the recover() path by using a custom expander that panics,
-	// then verify the analysis doesn't crash.
+func TestEnvMacroExpander_ExpansionErrorGracefulReturn(t *testing.T) {
+	// Verify that an ELPS error during macro expansion returns nil gracefully.
+	// The macro body raises an error condition, which MacroCall returns as
+	// LError. ExpandMacro catches this and returns nil (fallback to opaque).
 	env := newTestEnv(t)
 	evalSource(t, env, `
 (defmacro bad-macro (&rest args)
