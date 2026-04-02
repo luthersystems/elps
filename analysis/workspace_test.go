@@ -1735,3 +1735,39 @@ func TestScanConfig_EffectiveDefaults(t *testing.T) {
 	assert.Equal(t, DefaultMaxWorkspaceFiles, negCfg.effectiveMaxFiles())
 	assert.Equal(t, int64(DefaultMaxFileBytes), negCfg.effectiveMaxFileBytes())
 }
+
+func TestPrescanWorkspace_MacroDefs(t *testing.T) {
+	dir := t.TempDir()
+
+	// File with in-package + defmacro — macro should have package "mypkg".
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "macros.lisp"), []byte(`
+(in-package 'mypkg)
+(defmacro my-macro (x) (quasiquote (+ (unquote x) 1)))
+(defun not-a-macro () 42)
+`), 0600))
+
+	// Bare file with defmacro — macro should have default package "user".
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "user.lisp"), []byte(`
+(defmacro user-macro () '1)
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+	require.Len(t, prescan.MacroDefs, 2, "should collect both defmacro forms")
+
+	// Verify package context is correct.
+	pkgByName := make(map[string]string)
+	for _, md := range prescan.MacroDefs {
+		pkgByName[macroDefName(md.Node)] = md.Package
+	}
+	assert.Equal(t, "mypkg", pkgByName["my-macro"],
+		"my-macro should have package from in-package")
+	assert.Equal(t, "user", pkgByName["user-macro"],
+		"user-macro should have default user package")
+
+	// defun should NOT appear in MacroDefs.
+	for _, md := range prescan.MacroDefs {
+		assert.NotEqual(t, "not-a-macro", macroDefName(md.Node),
+			"defun should not appear in MacroDefs")
+	}
+}

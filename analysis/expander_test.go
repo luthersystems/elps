@@ -224,13 +224,78 @@ func TestLoadWorkspaceMacros_ErrorReturned(t *testing.T) {
 	assert.Contains(t, errs[0].Error(), "loading macro", "error should describe the failure")
 }
 
-func TestLoadWorkspaceMacros_ErrorIncludesMacroName(t *testing.T) {
+func TestLoadWorkspaceMacros_ErrorWithNonSymbolName(t *testing.T) {
 	env := newTestEnv(t)
 
 	// A defmacro where the name is not a symbol — will error during eval.
+	// macroDefName returns "<unknown>" for non-symbol names.
 	def := parseMacroDef(t, `(defmacro 42 () '1)`, lisp.DefaultUserPackage)
 
 	errs := LoadWorkspaceMacros(env, []MacroDef{def})
 	require.NotEmpty(t, errs)
-	assert.Contains(t, errs[0].Error(), "loading macro", "error should describe the failure")
+	assert.Contains(t, errs[0].Error(), "<unknown>",
+		"error for non-symbol macro name should show <unknown>")
+}
+
+func TestLoadWorkspaceMacros_MultiplePackages(t *testing.T) {
+	// Verify sequential loading of macros from different packages —
+	// each macro registers in its own package, not the previous one's.
+	env := newTestEnv(t)
+
+	env.Runtime.Registry.DefinePackage("pkgA")
+	env.InPackage(lisp.String("pkgA"))
+	env.UsePackage(lisp.Symbol(env.Runtime.Registry.Lang))
+
+	env.Runtime.Registry.DefinePackage("pkgB")
+	env.InPackage(lisp.String("pkgB"))
+	env.UsePackage(lisp.Symbol(env.Runtime.Registry.Lang))
+
+	defs := []MacroDef{
+		parseMacroDef(t, `(defmacro mac-a () '1)`, "pkgA"),
+		parseMacroDef(t, `(defmacro mac-b () '2)`, "pkgB"),
+	}
+	errs := LoadWorkspaceMacros(env, defs)
+	assert.Empty(t, errs)
+
+	// Each macro should be in its own package.
+	env.InPackage(lisp.String("pkgA"))
+	assert.Equal(t, lisp.LFun, env.Get(lisp.Symbol("mac-a")).Type,
+		"mac-a should be in pkgA")
+
+	env.InPackage(lisp.String("pkgB"))
+	assert.Equal(t, lisp.LFun, env.Get(lisp.Symbol("mac-b")).Type,
+		"mac-b should be in pkgB")
+
+	// Cross-check: mac-b should NOT be in pkgA.
+	env.InPackage(lisp.String("pkgA"))
+	assert.NotEqual(t, lisp.LFun, env.Get(lisp.Symbol("mac-b")).Type,
+		"mac-b should NOT leak into pkgA")
+}
+
+func TestEnvMacroExpander_Reset_ClearsCache(t *testing.T) {
+	env := newTestEnv(t)
+	expander := &EnvMacroExpander{Env: env}
+
+	// First: my-when is not defined → cached as not-a-macro.
+	form := lisp.SExpr([]*lisp.LVal{
+		lisp.Symbol("my-when"),
+		lisp.Symbol("true"),
+		lisp.Int(42),
+	})
+	assert.Nil(t, expander.ExpandMacro(form))
+	assert.True(t, expander.notMacro["my-when"], "should be cached as not-a-macro")
+
+	// Define the macro in the env.
+	evalSource(t, env, `(defmacro my-when (cond &rest body)
+	  (quasiquote (if (unquote cond) (progn (unquote-splicing body)))))`)
+
+	// Without Reset, stale cache prevents expansion.
+	assert.Nil(t, expander.ExpandMacro(form), "stale cache should prevent expansion")
+
+	// After Reset, expansion succeeds.
+	expander.Reset()
+	assert.Nil(t, expander.notMacro, "Reset should clear the cache")
+	expanded := expander.ExpandMacro(form)
+	require.NotNil(t, expanded, "after Reset, newly-defined macro should expand")
+	assert.Equal(t, "if", expanded.Cells[0].Str)
 }
