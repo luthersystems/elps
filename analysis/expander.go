@@ -93,10 +93,27 @@ func (e *EnvMacroExpander) ExpandMacro(form *lisp.LVal) (result *lisp.LVal) {
 // is evaluated in the package it was defined in (from the prescan's
 // in-package tracking), ensuring macros register in the correct package.
 //
+// packageImports provides cross-file use-package declarations (from
+// prescan.PackageImports). These are applied to each workspace package
+// before eval'ing its macros so that functions from imported packages
+// (e.g. flatten from utils) are available during macro expansion.
+// Pass nil if no cross-file imports are needed.
+//
 // Malformed macros are skipped — the returned errors slice contains one
 // entry per failed defmacro with the macro name and cause. Callers
 // should log these for visibility (e.g. as warnings in the LSP or CLI).
-func LoadWorkspaceMacros(env *lisp.LEnv, defs []MacroDef) []error {
+func LoadWorkspaceMacros(env *lisp.LEnv, defs []MacroDef, packageImports map[string][]string) []error {
+	// Ensure all workspace packages exist and have their imports applied
+	// before any macros are eval'd (a macro in pkg A may depend on a
+	// function from pkg B that was imported via use-package in pkg A).
+	preparedPkgs := make(map[string]bool)
+	for _, def := range defs {
+		if def.Package != "" && !preparedPkgs[def.Package] {
+			preparePackage(env, def.Package, packageImports)
+			preparedPkgs[def.Package] = true
+		}
+	}
+
 	var errs []error
 	for _, def := range defs {
 		if err := loadOneMacro(env, def); err != nil {
@@ -106,24 +123,27 @@ func LoadWorkspaceMacros(env *lisp.LEnv, defs []MacroDef) []error {
 	return errs
 }
 
+// preparePackage ensures a workspace package exists in the env with the
+// lang package and any cross-file use-package imports applied.
+func preparePackage(env *lisp.LEnv, pkg string, packageImports map[string][]string) {
+	env.Runtime.Registry.DefinePackage(pkg)
+	env.InPackage(lisp.String(pkg))
+	env.UsePackage(lisp.Symbol(env.Runtime.Registry.Lang))
+	for _, imp := range packageImports[pkg] {
+		// Ensure imported package exists too (it may be a workspace package).
+		env.Runtime.Registry.DefinePackage(imp)
+		env.UsePackage(lisp.Symbol(imp))
+	}
+}
+
 func loadOneMacro(env *lisp.LEnv, def MacroDef) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			retErr = fmt.Errorf("panic loading macro %s: %v", macroDefName(def.Node), r)
 		}
 	}()
-	// Switch to the macro's source package so it registers in the right scope.
-	// DefinePackage is idempotent — safe for packages that already exist.
-	// Workspace packages (e.g. "acre") won't exist in the boot env, so we
-	// create them and import the lang package so builtins like defmacro work.
 	if def.Package != "" {
-		env.Runtime.Registry.DefinePackage(def.Package)
 		rc := env.InPackage(lisp.String(def.Package))
-		if rc.Type == lisp.LError {
-			return fmt.Errorf("error setting package %q for macro %s: %v",
-				def.Package, macroDefName(def.Node), rc)
-		}
-		rc = env.UsePackage(lisp.Symbol(env.Runtime.Registry.Lang))
 		if rc.Type == lisp.LError {
 			return fmt.Errorf("error setting package %q for macro %s: %v",
 				def.Package, macroDefName(def.Node), rc)

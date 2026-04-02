@@ -689,7 +689,7 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 		state.cfg.WorkspaceRefs = state.refs
 	}
 	if s.env != nil {
-		if errs := analysis.LoadWorkspaceMacros(s.env, macroDefs); len(errs) > 0 {
+		if errs := analysis.LoadWorkspaceMacros(s.env, macroDefs, state.cfg.PackageImports); len(errs) > 0 {
 			for _, err := range errs {
 				slog.Warn("failed to load workspace macro", "error", err)
 			}

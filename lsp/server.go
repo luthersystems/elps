@@ -380,7 +380,7 @@ func (s *Server) buildWorkspaceIndex() {
 	// Enable macro expansion at analysis time if an environment is available.
 	// Load workspace-defined macros into the env so the expander can find them.
 	if s.env != nil {
-		if errs := analysis.LoadWorkspaceMacros(s.env, macroDefs); len(errs) > 0 {
+		if errs := analysis.LoadWorkspaceMacros(s.env, macroDefs, packageImports); len(errs) > 0 {
 			for _, err := range errs {
 				s.sendNotification("window/logMessage", &protocol.LogMessageParams{
 					Type:    protocol.MessageTypeWarning,

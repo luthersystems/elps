@@ -173,7 +173,7 @@ func TestLoadWorkspaceMacros_Success(t *testing.T) {
 		`(defmacro my-when (cond &rest body) (quasiquote (if (unquote cond) (progn (unquote-splicing body)))))`,
 		lisp.DefaultUserPackage)
 
-	errs := LoadWorkspaceMacros(env, []MacroDef{def})
+	errs := LoadWorkspaceMacros(env, []MacroDef{def}, nil)
 	assert.Empty(t, errs, "loading a valid defmacro should produce no errors")
 
 	// Verify the macro is now callable in the env.
@@ -197,7 +197,7 @@ func TestLoadWorkspaceMacros_PackageContext(t *testing.T) {
 	// Switch to user package first to confirm LoadWorkspaceMacros switches back.
 	env.InPackage(lisp.String(lisp.DefaultUserPackage))
 
-	errs := LoadWorkspaceMacros(env, []MacroDef{def})
+	errs := LoadWorkspaceMacros(env, []MacroDef{def}, nil)
 	assert.Empty(t, errs)
 
 	// Verify the macro was registered in mypkg, not user.
@@ -223,7 +223,7 @@ func TestLoadWorkspaceMacros_PackageAutoCreated(t *testing.T) {
 		`(defmacro ws-macro () '99)`,
 		"newpkg")
 
-	errs := LoadWorkspaceMacros(env, []MacroDef{def})
+	errs := LoadWorkspaceMacros(env, []MacroDef{def}, nil)
 	assert.Empty(t, errs, "should auto-create the package, not error")
 
 	// Verify the macro was registered in the auto-created package.
@@ -239,7 +239,7 @@ func TestLoadWorkspaceMacros_ErrorReturned(t *testing.T) {
 	// A malformed defmacro — missing body.
 	def := parseMacroDef(t, `(defmacro)`, lisp.DefaultUserPackage)
 
-	errs := LoadWorkspaceMacros(env, []MacroDef{def})
+	errs := LoadWorkspaceMacros(env, []MacroDef{def}, nil)
 	require.NotEmpty(t, errs, "malformed defmacro should return an error")
 	assert.Contains(t, errs[0].Error(), "loading macro", "error should describe the failure")
 }
@@ -251,7 +251,7 @@ func TestLoadWorkspaceMacros_ErrorWithNonSymbolName(t *testing.T) {
 	// macroDefName returns "<unknown>" for non-symbol names.
 	def := parseMacroDef(t, `(defmacro 42 () '1)`, lisp.DefaultUserPackage)
 
-	errs := LoadWorkspaceMacros(env, []MacroDef{def})
+	errs := LoadWorkspaceMacros(env, []MacroDef{def}, nil)
 	require.NotEmpty(t, errs)
 	assert.Contains(t, errs[0].Error(), "<unknown>",
 		"error for non-symbol macro name should show <unknown>")
@@ -274,7 +274,7 @@ func TestLoadWorkspaceMacros_MultiplePackages(t *testing.T) {
 		parseMacroDef(t, `(defmacro mac-a () '1)`, "pkgA"),
 		parseMacroDef(t, `(defmacro mac-b () '2)`, "pkgB"),
 	}
-	errs := LoadWorkspaceMacros(env, defs)
+	errs := LoadWorkspaceMacros(env, defs, nil)
 	assert.Empty(t, errs)
 
 	// Each macro should be in its own package.

@@ -394,7 +394,7 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 	// otherwise, if Env is provided, load workspace macros and create one.
 	expander := cfg.MacroExpander
 	if expander == nil && cfg.Env != nil {
-		if errs := analysis.LoadWorkspaceMacros(cfg.Env, prescan.MacroDefs); len(errs) > 0 {
+		if errs := analysis.LoadWorkspaceMacros(cfg.Env, prescan.MacroDefs, prescan.PackageImports); len(errs) > 0 {
 			for _, err := range errs {
 				slog.Warn("failed to load workspace macro", "error", err)
 			}
