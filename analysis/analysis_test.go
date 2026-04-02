@@ -1832,6 +1832,18 @@ func TestAnalyze_Macrolet_DefinedAsMacroSymbol(t *testing.T) {
 	assert.True(t, found, "macrolet binding should appear as a SymMacro in result.Symbols")
 }
 
+func TestAnalyze_Macrolet_Nested(t *testing.T) {
+	// Nested macrolet: inner scope sees both inner and outer macros.
+	result := parseAndAnalyze(t, `
+(macrolet ((m1 () '1))
+  (macrolet ((m2 () '2))
+    (list (m1) (m2))))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "m1", u.Name, "outer macrolet binding should be visible in nested scope")
+		assert.NotEqual(t, "m2", u.Name, "inner macrolet binding should be visible")
+	}
+}
+
 // --- Qualified-symbol ---
 
 func TestAnalyze_QualifiedSymbol_ArgNotFlagged(t *testing.T) {
@@ -1852,6 +1864,21 @@ func TestAnalyze_QualifiedSymbol_HeadResolved(t *testing.T) {
 		assert.NotEqual(t, "qualified-symbol", u.Name,
 			"qualified-symbol head should be resolved as a builtin")
 	}
+}
+
+func TestAnalyze_QualifiedSymbol_ExtraArgsAnalyzed(t *testing.T) {
+	// Arguments beyond Cells[1] should still be analyzed normally.
+	result := parseAndAnalyze(t, `(qualified-symbol some-name undefined-extra)`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "undefined-extra" {
+			found = true
+		}
+		assert.NotEqual(t, "some-name", u.Name,
+			"first arg is still data, not a reference")
+	}
+	assert.True(t, found,
+		"extra arguments to qualified-symbol should still be analyzed")
 }
 
 // --- Thread-first / Thread-last ---
@@ -1896,6 +1923,20 @@ func TestAnalyze_ThreadFirst_UndefinedFlagged(t *testing.T) {
 	}
 	assert.True(t, found,
 		"undefined symbol in thread-first should be flagged")
+}
+
+func TestAnalyze_ThreadLast_UndefinedFlagged(t *testing.T) {
+	// Undefined symbols in thread-last should still be flagged.
+	result := parseAndAnalyze(t, `(thread-last 1 (unknown-fn 2))`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "unknown-fn" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"undefined symbol in thread-last should be flagged")
 }
 
 // parseAndAnalyzeWithConfig is a test helper that parses source and runs
@@ -2044,10 +2085,25 @@ func TestAnalyze_MacroExpansion_DepthLimit(t *testing.T) {
 
 	// Should complete without panic or hang.
 	assert.NotNil(t, result)
-	// The macro call should still appear (as unresolved or via opaque walk),
-	// not silently disappear.
-	assert.True(t, len(result.Unresolved) > 0 || len(result.References) > 0,
-		"self-expanding macro should produce some analysis output")
+	// After hitting the depth limit, the macro name should appear somewhere
+	// in the analysis output (as an unresolved ref from the opaque fallback).
+	var loopForeverSeen bool
+	for _, u := range result.Unresolved {
+		if u.Name == "loop-forever" {
+			loopForeverSeen = true
+			break
+		}
+	}
+	if !loopForeverSeen {
+		for _, r := range result.References {
+			if r.Symbol.Name == "loop-forever" {
+				loopForeverSeen = true
+				break
+			}
+		}
+	}
+	assert.True(t, loopForeverSeen,
+		"self-expanding macro should produce analysis output for 'loop-forever'")
 }
 
 func TestAnalyze_MacroExpansion_UnresolvedInExpandedCode(t *testing.T) {
