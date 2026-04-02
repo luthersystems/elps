@@ -1091,16 +1091,17 @@ func (a *analyzer) analyzeHandlerBind(node *lisp.LVal, scope *Scope, currentPkg 
 
 func (a *analyzer) analyzeCond(node *lisp.LVal, scope *Scope, currentPkg string) {
 	// cond form: (cond (test body...)*)
-	// The test position of the final clause may be the bare symbol 'else'
-	// or 'true', which the runtime treats as a catch-all (op.go:729).
-	// Skip resolving these symbols to avoid false "undefined symbol" reports.
+	// The runtime special-cases bare 'else' as a catch-all keyword (op.go:729).
+	// Bare 'true' is not special-cased by the runtime but evaluates to a
+	// truthy value (well-known symbol from populateBuiltins), so it also
+	// serves as a default clause. Skip resolving both to avoid noise.
 	for _, clause := range node.Cells[1:] {
 		if clause.Type != lisp.LSExpr || clause.Quoted || len(clause.Cells) == 0 {
 			continue
 		}
 		test := clause.Cells[0]
 		if test.Type == lisp.LSymbol && !test.Quoted && isCondDefaultSymbol(test.Str) {
-			// Skip — 'else' and 'true' are recognized keywords in cond test position.
+			// Skip — 'else' is a runtime keyword; 'true' is a well-known truthy symbol.
 		} else {
 			a.analyzeExpr(test, scope, currentPkg)
 		}

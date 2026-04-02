@@ -651,7 +651,7 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 	scanCfg := &analysis.ScanConfig{
 		Excludes: s.excludePatterns,
 	}
-	var macroDefs []*lisp.LVal
+	var macroDefs []analysis.MacroDef
 	if root != "" {
 		prescan, err := analysis.PrescanWorkspace(root, scanCfg)
 		if err != nil {
@@ -689,7 +689,11 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 		state.cfg.WorkspaceRefs = state.refs
 	}
 	if s.env != nil {
-		analysis.LoadWorkspaceMacros(s.env, macroDefs)
+		if errs := analysis.LoadWorkspaceMacros(s.env, macroDefs); len(errs) > 0 {
+			for _, err := range errs {
+				slog.Warn("failed to load workspace macro", "error", err)
+			}
+		}
 		state.cfg.MacroExpander = &analysis.EnvMacroExpander{Env: s.env}
 	}
 	return state, nil

@@ -30,6 +30,18 @@ type EnvMacroExpander struct {
 
 	mu       sync.Mutex
 	notMacro map[string]bool // cache: symbols that are not macros in the env
+	// NOTE: notMacro assumes the env's macro set is stable for this
+	// expander's lifetime. If macros are added to the env after creation
+	// (e.g. LoadWorkspaceMacros), create a new EnvMacroExpander or call
+	// Reset() to clear the cache.
+}
+
+// Reset clears the not-a-macro cache. Call this after loading new macros
+// into the env (e.g. via LoadWorkspaceMacros) if the expander is reused.
+func (e *EnvMacroExpander) Reset() {
+	e.mu.Lock()
+	e.notMacro = nil
+	e.mu.Unlock()
 }
 
 // ExpandMacro looks up the head symbol in the environment, verifies it is
@@ -77,14 +89,14 @@ func (e *EnvMacroExpander) ExpandMacro(form *lisp.LVal) (result *lisp.LVal) {
 }
 
 // LoadWorkspaceMacros evaluates workspace defmacro AST nodes into the
-// given environment so that EnvMacroExpander can expand them. A defmacro
-// evaluation registers the macro in the env's package scope with no
-// other side effects.
+// given environment so that EnvMacroExpander can expand them. Each macro
+// is evaluated in the package it was defined in (from the prescan's
+// in-package tracking), ensuring macros register in the correct package.
 //
 // Malformed macros are skipped — the returned errors slice contains one
 // entry per failed defmacro with the macro name and cause. Callers
 // should log these for visibility (e.g. as warnings in the LSP or CLI).
-func LoadWorkspaceMacros(env *lisp.LEnv, defs []*lisp.LVal) []error {
+func LoadWorkspaceMacros(env *lisp.LEnv, defs []MacroDef) []error {
 	var errs []error
 	for _, def := range defs {
 		if err := loadOneMacro(env, def); err != nil {
@@ -94,15 +106,23 @@ func LoadWorkspaceMacros(env *lisp.LEnv, defs []*lisp.LVal) []error {
 	return errs
 }
 
-func loadOneMacro(env *lisp.LEnv, def *lisp.LVal) (retErr error) {
+func loadOneMacro(env *lisp.LEnv, def MacroDef) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
-			retErr = fmt.Errorf("panic loading macro %s: %v", macroDefName(def), r)
+			retErr = fmt.Errorf("panic loading macro %s: %v", macroDefName(def.Node), r)
 		}
 	}()
-	result := env.Eval(def)
+	// Switch to the macro's source package so it registers in the right scope.
+	if def.Package != "" {
+		rc := env.InPackage(lisp.String(def.Package))
+		if rc.Type == lisp.LError {
+			return fmt.Errorf("error setting package %q for macro %s: %v",
+				def.Package, macroDefName(def.Node), rc)
+		}
+	}
+	result := env.Eval(def.Node)
 	if result.Type == lisp.LError {
-		return fmt.Errorf("error loading macro %s: %v", macroDefName(def), result)
+		return fmt.Errorf("error loading macro %s: %v", macroDefName(def.Node), result)
 	}
 	return nil
 }

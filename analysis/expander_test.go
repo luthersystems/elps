@@ -155,18 +155,25 @@ func TestEnvMacroExpander_ExpansionErrorGracefulReturn(t *testing.T) {
 
 // --- LoadWorkspaceMacros tests ---
 
-func TestLoadWorkspaceMacros_Success(t *testing.T) {
-	env := newTestEnv(t)
-
-	// Parse a defmacro form as raw AST (simulating what prescan collects).
-	s := token.NewScanner("test.lisp", strings.NewReader(
-		`(defmacro my-when (cond &rest body) (quasiquote (if (unquote cond) (progn (unquote-splicing body)))))`))
+// parseMacroDef parses a single defmacro source string and returns it as a MacroDef.
+func parseMacroDef(t *testing.T, source, pkg string) MacroDef {
+	t.Helper()
+	s := token.NewScanner("test.lisp", strings.NewReader(source))
 	p := rdparser.New(s)
 	exprs, err := p.ParseProgram()
 	require.NoError(t, err)
 	require.Len(t, exprs, 1)
+	return MacroDef{Package: pkg, Node: exprs[0]}
+}
 
-	errs := LoadWorkspaceMacros(env, exprs)
+func TestLoadWorkspaceMacros_Success(t *testing.T) {
+	env := newTestEnv(t)
+
+	def := parseMacroDef(t,
+		`(defmacro my-when (cond &rest body) (quasiquote (if (unquote cond) (progn (unquote-splicing body)))))`,
+		lisp.DefaultUserPackage)
+
+	errs := LoadWorkspaceMacros(env, []MacroDef{def})
 	assert.Empty(t, errs, "loading a valid defmacro should produce no errors")
 
 	// Verify the macro is now callable in the env.
@@ -175,16 +182,44 @@ func TestLoadWorkspaceMacros_Success(t *testing.T) {
 	assert.True(t, mac.IsMacro(), "my-when should be a macro")
 }
 
+func TestLoadWorkspaceMacros_PackageContext(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Register the package and import lang builtins so defmacro is available.
+	env.Runtime.Registry.DefinePackage("mypkg")
+	env.InPackage(lisp.String("mypkg"))
+	env.UsePackage(lisp.Symbol(env.Runtime.Registry.Lang))
+
+	def := parseMacroDef(t,
+		`(defmacro pkg-macro () '42)`,
+		"mypkg")
+
+	// Switch to user package first to confirm LoadWorkspaceMacros switches back.
+	env.InPackage(lisp.String(lisp.DefaultUserPackage))
+
+	errs := LoadWorkspaceMacros(env, []MacroDef{def})
+	assert.Empty(t, errs)
+
+	// Verify the macro was registered in mypkg, not user.
+	env.InPackage(lisp.String("mypkg"))
+	mac := env.Get(lisp.Symbol("pkg-macro"))
+	assert.Equal(t, lisp.LFun, mac.Type, "pkg-macro should be defined in mypkg")
+	assert.True(t, mac.IsMacro())
+
+	// Verify it's NOT in the user package.
+	env.InPackage(lisp.String(lisp.DefaultUserPackage))
+	notFound := env.Get(lisp.Symbol("pkg-macro"))
+	assert.NotEqual(t, lisp.LFun, notFound.Type,
+		"pkg-macro should NOT be defined in user package")
+}
+
 func TestLoadWorkspaceMacros_ErrorReturned(t *testing.T) {
 	env := newTestEnv(t)
 
 	// A malformed defmacro — missing body.
-	s := token.NewScanner("test.lisp", strings.NewReader(`(defmacro)`))
-	p := rdparser.New(s)
-	exprs, err := p.ParseProgram()
-	require.NoError(t, err)
+	def := parseMacroDef(t, `(defmacro)`, lisp.DefaultUserPackage)
 
-	errs := LoadWorkspaceMacros(env, exprs)
+	errs := LoadWorkspaceMacros(env, []MacroDef{def})
 	require.NotEmpty(t, errs, "malformed defmacro should return an error")
 	assert.Contains(t, errs[0].Error(), "loading macro", "error should describe the failure")
 }
@@ -193,13 +228,9 @@ func TestLoadWorkspaceMacros_ErrorIncludesMacroName(t *testing.T) {
 	env := newTestEnv(t)
 
 	// A defmacro where the name is not a symbol — will error during eval.
-	s := token.NewScanner("test.lisp", strings.NewReader(
-		`(defmacro 42 () '1)`))
-	p := rdparser.New(s)
-	exprs, err := p.ParseProgram()
-	require.NoError(t, err)
+	def := parseMacroDef(t, `(defmacro 42 () '1)`, lisp.DefaultUserPackage)
 
-	errs := LoadWorkspaceMacros(env, exprs)
+	errs := LoadWorkspaceMacros(env, []MacroDef{def})
 	require.NotEmpty(t, errs)
 	assert.Contains(t, errs[0].Error(), "loading macro", "error should describe the failure")
 }

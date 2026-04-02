@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -393,7 +394,11 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 	// otherwise, if Env is provided, load workspace macros and create one.
 	expander := cfg.MacroExpander
 	if expander == nil && cfg.Env != nil {
-		analysis.LoadWorkspaceMacros(cfg.Env, prescan.MacroDefs)
+		if errs := analysis.LoadWorkspaceMacros(cfg.Env, prescan.MacroDefs); len(errs) > 0 {
+			for _, err := range errs {
+				slog.Warn("failed to load workspace macro", "error", err)
+			}
+		}
 		expander = &analysis.EnvMacroExpander{Env: cfg.Env}
 	}
 
