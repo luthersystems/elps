@@ -3,6 +3,8 @@
 package analysis
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -300,6 +302,68 @@ func TestLoadWorkspaceMacros_DefunAvailableForMacroExpansion(t *testing.T) {
 		assert.NotEqual(t, "x", u.Name, "x should resolve as lambda param after macro expansion")
 		assert.NotEqual(t, "y", u.Name, "y should resolve as lambda param after macro expansion")
 	}
+}
+
+func TestLoadWorkspaceMacros_RecursiveDefun(t *testing.T) {
+	// Recursive defun should work in preamble loading. defun binds the
+	// function name before the body is evaluated, so self-references resolve.
+	env := newTestEnv(t)
+
+	preamble := parsePreamble(t, `
+(in-package 'myapp)
+(defun my-flatten (seq)
+  (if (not (list? seq)) (list seq)
+    (if (empty? seq) '()
+      (concat 'list
+        (my-flatten (car seq))
+        (my-flatten (cdr seq))))))`)
+
+	errs := LoadWorkspaceMacros(env, preamble)
+	assert.Empty(t, errs, "recursive defun should load without error")
+
+	// Verify the recursive function is callable.
+	env.InPackage(lisp.String("myapp"))
+	fn := env.Get(lisp.Symbol("my-flatten"))
+	assert.Equal(t, lisp.LFun, fn.Type, "my-flatten should be defined")
+}
+
+func TestLoadWorkspaceMacros_BareFileDefunUsesDefaultPackage(t *testing.T) {
+	// Edge case: files without in-package should use DefaultPackage.
+	// At runtime, (load-file "helpers.lisp") inherits the caller's package.
+	// The prescan computes DefaultPackage from main.lisp; bare files'
+	// preamble forms should be prefixed with in-package for that package
+	// so defuns register in the right package.
+	dir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'myapp)
+(defmacro my-macro () '42)
+`), 0600))
+
+	// helpers.lisp has NO in-package — at runtime it inherits myapp.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "helpers.lisp"), []byte(`
+(defun ws-helper () 99)
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "myapp", prescan.DefaultPackage)
+
+	env := newTestEnv(t)
+	errs := LoadWorkspaceMacros(env, prescan.Preamble)
+	assert.Empty(t, errs)
+
+	// ws-helper should be defined in myapp (DefaultPackage), not user.
+	env.InPackage(lisp.String("myapp"))
+	fn := env.Get(lisp.Symbol("ws-helper"))
+	assert.Equal(t, lisp.LFun, fn.Type,
+		"bare file defun should be defined in myapp (DefaultPackage)")
+
+	// Verify NOT in user package.
+	env.InPackage(lisp.String(lisp.DefaultUserPackage))
+	notFound := env.Get(lisp.Symbol("ws-helper"))
+	assert.NotEqual(t, lisp.LFun, notFound.Type,
+		"bare file defun should NOT be defined in user package")
 }
 
 func TestLoadWorkspaceMacros_ErrorReturned(t *testing.T) {

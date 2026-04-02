@@ -970,6 +970,17 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		prescan.ExportedGlobals = append(prescan.ExportedGlobals, r.globals...)
 		prescan.AllDefs = append(prescan.AllDefs, r.allDefs...)
 		prescan.DefForms = append(prescan.DefForms, r.defForms...)
+		// For bare files (no in-package), prepend a synthetic in-package
+		// form so LoadWorkspaceMacros places their definitions in the
+		// workspace's DefaultPackage — matching runtime load behavior
+		// where (load-file) inherits the caller's package.
+		if r.filePkg == "" && defaultPkg != "" && len(r.preamble) > 0 {
+			syntheticInPkg := lisp.SExpr([]*lisp.LVal{
+				lisp.Symbol("in-package"),
+				lisp.Quote(lisp.Symbol(defaultPkg)),
+			})
+			prescan.Preamble = append(prescan.Preamble, syntheticInPkg)
+		}
 		prescan.Preamble = append(prescan.Preamble, r.preamble...)
 		for pkg, syms := range r.pkgs {
 			prescan.PkgExports[pkg] = append(prescan.PkgExports[pkg], syms...)
