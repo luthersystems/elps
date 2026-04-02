@@ -116,6 +116,25 @@ func TestEnvMacroExpander_EmptyForm(t *testing.T) {
 	assert.Nil(t, expander.ExpandMacro(form))
 }
 
+func TestEnvMacroExpander_NotMacroCached(t *testing.T) {
+	env := newTestEnv(t)
+	expander := &EnvMacroExpander{Env: env}
+
+	form := lisp.SExpr([]*lisp.LVal{
+		lisp.Symbol("+"),
+		lisp.Int(1),
+	})
+
+	// First call — should populate the notMacro cache.
+	assert.Nil(t, expander.ExpandMacro(form))
+	require.NotNil(t, expander.notMacro, "notMacro cache should be initialized")
+	assert.True(t, expander.notMacro["+"], "should cache '+' as not-a-macro")
+
+	// Second call — hits cache (no env.Get needed).
+	assert.Nil(t, expander.ExpandMacro(form))
+	assert.True(t, expander.notMacro["+"], "cache entry should persist across calls")
+}
+
 func TestEnvMacroExpander_ExpansionErrorGracefulReturn(t *testing.T) {
 	// Verify that an ELPS error during macro expansion returns nil gracefully.
 	// The macro body raises an error condition, which MacroCall returns as

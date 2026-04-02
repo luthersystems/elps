@@ -1826,15 +1826,26 @@ func TestAnalyze_MacroExpansion_NestedMacros(t *testing.T) {
 }
 
 func TestAnalyze_MacroExpansion_WhenMacro(t *testing.T) {
-	// Simple when macro — very common pattern.
+	// Macro that introduces a let binding — 'default-val' only exists after
+	// expansion, so this test proves expansion actually adds value (the previous
+	// version used a defun param which resolved without expansion).
 	result := parseAndAnalyzeWithExpander(t,
-		`(defmacro my-when (cond &rest body)
-		   (quasiquote (if (unquote cond) (progn (unquote-splicing body)))))`,
-		`(defun f (x) (my-when (> x 0) (+ x 1)))`)
+		`(defmacro with-default (name val &rest body)
+		   (quasiquote (let (((unquote name) (unquote val))) (unquote-splicing body))))`,
+		`(with-default default-val 42 (+ default-val 1))`)
 
 	for _, u := range result.Unresolved {
-		assert.NotEqual(t, "x", u.Name, "x should resolve through macro expansion")
+		assert.NotEqual(t, "default-val", u.Name,
+			"default-val should resolve through macro expansion (let binding introduced by macro)")
 	}
+
+	// Verify default-val actually resolved as a reference, not just absent from Unresolved.
+	refNames := make(map[string]bool)
+	for _, ref := range result.References {
+		refNames[ref.Symbol.Name] = true
+	}
+	assert.True(t, refNames["default-val"],
+		"default-val should appear in References after expansion introduces the let binding")
 }
 
 func TestAnalyze_MacroExpansion_WithoutExpander(t *testing.T) {
