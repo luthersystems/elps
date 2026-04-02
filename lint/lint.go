@@ -298,6 +298,12 @@ type LintConfig struct {
 	// analysis.ExtractPackageExports(env.Runtime.Registry) here to avoid
 	// the overhead of creating a temporary environment.
 	StdlibExports map[string][]analysis.ExternalSymbol
+
+	// MacroExpander optionally expands user-macro calls at analysis time.
+	// Embedders that boot a full environment can pass
+	// &analysis.EnvMacroExpander{Env: env} to enable accurate symbol
+	// resolution inside macro bodies.
+	MacroExpander analysis.MacroExpander
 }
 
 // LintFiles analyzes source files with full workspace + embedder context.
@@ -377,6 +383,7 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		DefForms:       prescan.DefForms,
 		PackageImports: prescan.PackageImports,
 		DefaultPackage: prescan.DefaultPackage,
+		MacroExpander:  cfg.MacroExpander,
 	}
 
 	// Build workspace refs so lint analyzers (e.g. unused-function) can check
