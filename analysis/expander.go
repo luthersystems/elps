@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -88,76 +89,72 @@ func (e *EnvMacroExpander) ExpandMacro(form *lisp.LVal) (result *lisp.LVal) {
 	return mark.Cells[0]
 }
 
-// LoadWorkspaceMacros evaluates workspace defmacro AST nodes into the
-// given environment so that EnvMacroExpander can expand them. Each macro
-// is evaluated in the package it was defined in (from the prescan's
-// in-package tracking), ensuring macros register in the correct package.
+// LoadWorkspaceMacros replays workspace preamble forms (in-package,
+// use-package, export, defmacro) into the given environment. This mirrors
+// what the runtime's (load) does — forms are eval'd in source order so
+// package context, imports, and macro definitions build up naturally.
 //
-// packageImports provides cross-file use-package declarations (from
-// prescan.PackageImports). These are applied to each workspace package
-// before eval'ing its macros so that functions from imported packages
-// (e.g. flatten from utils) are available during macro expansion.
-// Pass nil if no cross-file imports are needed.
+// Workspace packages that don't exist in the boot env are auto-created.
+// The env's active package is saved and restored after loading.
 //
-// Malformed macros are skipped — the returned errors slice contains one
-// entry per failed defmacro with the macro name and cause. Callers
-// should log these for visibility (e.g. as warnings in the LSP or CLI).
-func LoadWorkspaceMacros(env *lisp.LEnv, defs []MacroDef, packageImports map[string][]string) []error {
-	// Ensure all workspace packages exist and have their imports applied
-	// before any macros are eval'd (a macro in pkg A may depend on a
-	// function from pkg B that was imported via use-package in pkg A).
-	preparedPkgs := make(map[string]bool)
-	for _, def := range defs {
-		if def.Package != "" && !preparedPkgs[def.Package] {
-			preparePackage(env, def.Package, packageImports)
-			preparedPkgs[def.Package] = true
-		}
-	}
+// Malformed forms are skipped — the returned errors slice contains one
+// entry per failure. Callers should log these for visibility.
+func LoadWorkspaceMacros(env *lisp.LEnv, preamble []*lisp.LVal) []error {
+	// Save and restore the env's active package, same as env.load().
+	currPkg := env.Runtime.Package
+	defer func() { env.Runtime.Package = currPkg }()
 
 	var errs []error
-	for _, def := range defs {
-		if err := loadOneMacro(env, def); err != nil {
+	for _, form := range preamble {
+		if err := evalPreambleForm(env, form); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errs
 }
 
-// preparePackage ensures a workspace package exists in the env with the
-// lang package and any cross-file use-package imports applied.
-func preparePackage(env *lisp.LEnv, pkg string, packageImports map[string][]string) {
-	env.Runtime.Registry.DefinePackage(pkg)
-	env.InPackage(lisp.String(pkg))
-	env.UsePackage(lisp.Symbol(env.Runtime.Registry.Lang))
-	for _, imp := range packageImports[pkg] {
-		// Ensure imported package exists too (it may be a workspace package).
-		env.Runtime.Registry.DefinePackage(imp)
-		env.UsePackage(lisp.Symbol(imp))
-	}
-}
-
-func loadOneMacro(env *lisp.LEnv, def MacroDef) (retErr error) {
+func evalPreambleForm(env *lisp.LEnv, form *lisp.LVal) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
-			retErr = fmt.Errorf("panic loading macro %s: %v", macroDefName(def.Node), r)
+			retErr = fmt.Errorf("panic in preamble form: %v", r)
 		}
 	}()
-	if def.Package != "" {
-		rc := env.InPackage(lisp.String(def.Package))
-		if rc.Type == lisp.LError {
-			return fmt.Errorf("error setting package %q for macro %s: %v",
-				def.Package, macroDefName(def.Node), rc)
+	// Auto-create workspace packages so in-package doesn't fail.
+	// Import the lang package so builtins (defmacro, use-package, etc.) work.
+	head := astutil.HeadSymbol(form)
+	if head == "in-package" && len(form.Cells) > 1 {
+		if name := preamblePkgName(form.Cells[1]); name != "" {
+			env.Runtime.Registry.DefinePackage(name)
+			// Temporarily switch to the new package to import lang builtins,
+			// then let the actual (in-package ...) eval do the real switch.
+			env.InPackage(lisp.String(name))
+			env.UsePackage(lisp.Symbol(env.Runtime.Registry.Lang))
 		}
 	}
-	result := env.Eval(def.Node)
+	result := env.Eval(form)
 	if result.Type == lisp.LError {
-		return fmt.Errorf("error loading macro %s: %v", macroDefName(def.Node), result)
+		if head == "defmacro" {
+			return fmt.Errorf("error loading macro %s: %v", preambleDefName(form), result)
+		}
+		return fmt.Errorf("error in preamble (%s): %v", head, result)
 	}
 	return nil
 }
 
-// macroDefName extracts the name from a (defmacro name ...) AST node.
-func macroDefName(def *lisp.LVal) string {
+// preamblePkgName extracts a package name from a quoted or bare symbol.
+func preamblePkgName(v *lisp.LVal) string {
+	if v.Type == lisp.LSymbol {
+		return v.Str
+	}
+	// (quote sym) or 'sym
+	if v.Type == lisp.LSExpr && v.Quoted && len(v.Cells) > 0 && v.Cells[0].Type == lisp.LSymbol {
+		return v.Cells[0].Str
+	}
+	return ""
+}
+
+// preambleDefName extracts the name from a (defmacro name ...) AST node.
+func preambleDefName(def *lisp.LVal) string {
 	if def != nil && len(def.Cells) > 1 && def.Cells[1].Type == lisp.LSymbol {
 		return def.Cells[1].Str
 	}

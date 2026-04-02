@@ -336,7 +336,7 @@ func walkLoadFile(filePath, currentPkg string, result map[string]string, visited
 // scanFileFull parses a file once and extracts exported globals, package-grouped
 // exports, all definitions, use-package declarations, raw defmacro AST nodes,
 // and the file's primary package ("" for bare files without in-package).
-func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, pkgAll map[string][]ExternalSymbol, usePackages map[string][]string, macroDefs []MacroDef, filePkg string, firstInPkgLine int) {
+func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, pkgAll map[string][]ExternalSymbol, usePackages map[string][]string, preamble []*lisp.LVal, filePkg string, firstInPkgLine int) {
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	p := rdparser.New(s)
 
@@ -360,23 +360,20 @@ func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkg
 	}
 	usePackages = scanUsePackages(exprs)
 
-	// Collect raw defmacro AST nodes with package context for LoadWorkspaceMacros.
-	currentPkg := lisp.DefaultUserPackage
+	// Collect preamble forms (package management + macro definitions) in
+	// source order. LoadWorkspaceMacros evals these to replay the package
+	// setup and register macros, mirroring the runtime's (load) behavior.
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
 			continue
 		}
 		switch astutil.HeadSymbol(expr) {
-		case "in-package":
-			if name := scanPackageName(expr); name != "" {
-				currentPkg = name
-			}
-		case "defmacro":
-			macroDefs = append(macroDefs, MacroDef{Package: currentPkg, Node: expr})
+		case "in-package", "use-package", "export", "defmacro":
+			preamble = append(preamble, expr)
 		}
 	}
 
-	return globals, pkgs, defs, pkgAll, usePackages, macroDefs, filePkg, firstInPkgLine
+	return globals, pkgs, defs, pkgAll, usePackages, preamble, filePkg, firstInPkgLine
 }
 
 // extractDefinitions collects top-level definitions from pre-parsed expressions.
@@ -846,14 +843,6 @@ func ScanWorkspaceRefs(root string, cfg *Config, scanCfg *ScanConfig) map[string
 	return refs
 }
 
-// MacroDef pairs a raw (defmacro ...) AST node with the package it was
-// defined in. LoadWorkspaceMacros uses this to set the correct package
-// context before evaluating each macro definition.
-type MacroDef struct {
-	Package string     // package from the most recent in-package before this defmacro
-	Node    *lisp.LVal // the raw (defmacro name formals body...) AST node
-}
-
 // WorkspacePrescan holds the results of a workspace prescan: file definitions,
 // package exports, and DefFormSpecs extracted from defmacro definitions.
 type WorkspacePrescan struct {
@@ -881,11 +870,11 @@ type WorkspacePrescan struct {
 	// via use-package across all workspace files. This enables per-file
 	// analysis to resolve symbols from cross-file use-package declarations.
 	PackageImports map[string][]string
-	// MacroDefs are the raw AST nodes of top-level (defmacro ...) forms
-	// found in workspace files, paired with the package they were defined
-	// in. Pass these to LoadWorkspaceMacros to register them in a runtime
-	// environment for macro expansion during analysis.
-	MacroDefs []MacroDef
+	// Preamble contains package-management and macro-definition forms
+	// (in-package, use-package, export, defmacro) from all workspace files,
+	// in source order per file. Pass these to LoadWorkspaceMacros to replay
+	// the package setup and register macros in a runtime environment.
+	Preamble []*lisp.LVal
 	// DefaultPackage is the package declared in main.lisp (if present).
 	// Used as the default for bare files (no in-package) so that cross-file
 	// resolution works in projects where files inherit the package from
@@ -909,7 +898,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		allDefs        []ExternalSymbol
 		pkgAll         map[string][]ExternalSymbol
 		defForms       []DefFormSpec
-		macroDefs      []MacroDef
+		preamble       []*lisp.LVal
 		usePackages    map[string][]string
 		filePkg        string // "" for bare files
 		firstInPkgLine int    // 1-based line of first in-package, 0 if none
@@ -942,7 +931,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 				}
 				g, p, d, pa, up, md, fp, fpl := scanFileFull(fileSrc, paths[i])
 				df := extractDefFormSpecs(d)
-				results[i] = fileResult{globals: g, pkgs: p, allDefs: d, pkgAll: pa, defForms: df, macroDefs: md, usePackages: up, filePkg: fp, firstInPkgLine: fpl}
+				results[i] = fileResult{globals: g, pkgs: p, allDefs: d, pkgAll: pa, defForms: df, preamble: md, usePackages: up, filePkg: fp, firstInPkgLine: fpl}
 			}
 		}()
 	}
@@ -981,7 +970,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		prescan.ExportedGlobals = append(prescan.ExportedGlobals, r.globals...)
 		prescan.AllDefs = append(prescan.AllDefs, r.allDefs...)
 		prescan.DefForms = append(prescan.DefForms, r.defForms...)
-		prescan.MacroDefs = append(prescan.MacroDefs, r.macroDefs...)
+		prescan.Preamble = append(prescan.Preamble, r.preamble...)
 		for pkg, syms := range r.pkgs {
 			prescan.PkgExports[pkg] = append(prescan.PkgExports[pkg], syms...)
 		}

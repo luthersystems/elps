@@ -155,49 +155,39 @@ func TestEnvMacroExpander_ExpansionErrorGracefulReturn(t *testing.T) {
 
 // --- LoadWorkspaceMacros tests ---
 
-// parseMacroDef parses a single defmacro source string and returns it as a MacroDef.
-func parseMacroDef(t *testing.T, source, pkg string) MacroDef {
+// parsePreamble parses source containing preamble forms and returns them.
+func parsePreamble(t *testing.T, source string) []*lisp.LVal {
 	t.Helper()
 	s := token.NewScanner("test.lisp", strings.NewReader(source))
 	p := rdparser.New(s)
 	exprs, err := p.ParseProgram()
 	require.NoError(t, err)
-	require.Len(t, exprs, 1)
-	return MacroDef{Package: pkg, Node: exprs[0]}
+	return exprs
 }
 
 func TestLoadWorkspaceMacros_Success(t *testing.T) {
 	env := newTestEnv(t)
 
-	def := parseMacroDef(t,
-		`(defmacro my-when (cond &rest body) (quasiquote (if (unquote cond) (progn (unquote-splicing body)))))`,
-		lisp.DefaultUserPackage)
+	preamble := parsePreamble(t,
+		`(defmacro my-when (cond &rest body) (quasiquote (if (unquote cond) (progn (unquote-splicing body)))))`)
 
-	errs := LoadWorkspaceMacros(env, []MacroDef{def}, nil)
+	errs := LoadWorkspaceMacros(env, preamble)
 	assert.Empty(t, errs, "loading a valid defmacro should produce no errors")
 
-	// Verify the macro is now callable in the env.
 	mac := env.Get(lisp.Symbol("my-when"))
 	assert.Equal(t, lisp.LFun, mac.Type, "my-when should be a function in the env")
 	assert.True(t, mac.IsMacro(), "my-when should be a macro")
 }
 
 func TestLoadWorkspaceMacros_PackageContext(t *testing.T) {
+	// Preamble with in-package switches context naturally.
 	env := newTestEnv(t)
 
-	// Register the package and import lang builtins so defmacro is available.
-	env.Runtime.Registry.DefinePackage("mypkg")
-	env.InPackage(lisp.String("mypkg"))
-	env.UsePackage(lisp.Symbol(env.Runtime.Registry.Lang))
+	preamble := parsePreamble(t, `
+(in-package 'mypkg)
+(defmacro pkg-macro () '42)`)
 
-	def := parseMacroDef(t,
-		`(defmacro pkg-macro () '42)`,
-		"mypkg")
-
-	// Switch to user package first to confirm LoadWorkspaceMacros switches back.
-	env.InPackage(lisp.String(lisp.DefaultUserPackage))
-
-	errs := LoadWorkspaceMacros(env, []MacroDef{def}, nil)
+	errs := LoadWorkspaceMacros(env, preamble)
 	assert.Empty(t, errs)
 
 	// Verify the macro was registered in mypkg, not user.
@@ -215,76 +205,87 @@ func TestLoadWorkspaceMacros_PackageContext(t *testing.T) {
 
 func TestLoadWorkspaceMacros_PackageAutoCreated(t *testing.T) {
 	// Workspace packages (e.g. "acre") don't exist in the boot env.
-	// LoadWorkspaceMacros should auto-create them via DefinePackage.
+	// in-package in the preamble auto-creates them.
 	env := newTestEnv(t)
 
-	// "newpkg" is NOT pre-defined — simulates a workspace-only package.
-	def := parseMacroDef(t,
-		`(defmacro ws-macro () '99)`,
-		"newpkg")
+	preamble := parsePreamble(t, `
+(in-package 'newpkg)
+(defmacro ws-macro () '99)`)
 
-	errs := LoadWorkspaceMacros(env, []MacroDef{def}, nil)
+	errs := LoadWorkspaceMacros(env, preamble)
 	assert.Empty(t, errs, "should auto-create the package, not error")
 
-	// Verify the macro was registered in the auto-created package.
 	env.InPackage(lisp.String("newpkg"))
 	mac := env.Get(lisp.Symbol("ws-macro"))
 	assert.Equal(t, lisp.LFun, mac.Type, "ws-macro should be defined in newpkg")
 	assert.True(t, mac.IsMacro())
 }
 
+func TestLoadWorkspaceMacros_PackageRestored(t *testing.T) {
+	// The env's active package should be restored after loading.
+	env := newTestEnv(t)
+	env.InPackage(lisp.String(lisp.DefaultUserPackage))
+
+	preamble := parsePreamble(t, `
+(in-package 'otherpkg)
+(defmacro m () '1)`)
+
+	LoadWorkspaceMacros(env, preamble)
+
+	// Should be back in user package.
+	assert.Equal(t, lisp.DefaultUserPackage, env.Runtime.Package.Name,
+		"env package should be restored after LoadWorkspaceMacros")
+}
+
+func TestLoadWorkspaceMacros_UsePackageImports(t *testing.T) {
+	// use-package in the preamble should make imported functions available
+	// during macro expansion. This mirrors the runtime's file loading.
+	env := newTestEnv(t)
+
+	// Define a helper in a "utils" package.
+	evalSource(t, env, `
+(in-package 'utils)
+(export 'helper)
+(defun helper () 42)`)
+	env.InPackage(lisp.String(lisp.DefaultUserPackage))
+
+	// Preamble: switch to mypkg, import utils, define macro that uses helper.
+	preamble := parsePreamble(t, `
+(in-package 'mypkg)
+(use-package 'utils)
+(defmacro my-macro () (quasiquote (helper)))`)
+
+	errs := LoadWorkspaceMacros(env, preamble)
+	assert.Empty(t, errs, "macro using imported function should load without error")
+}
+
 func TestLoadWorkspaceMacros_ErrorReturned(t *testing.T) {
 	env := newTestEnv(t)
 
-	// A malformed defmacro — missing body.
-	def := parseMacroDef(t, `(defmacro)`, lisp.DefaultUserPackage)
+	preamble := parsePreamble(t, `(defmacro)`)
 
-	errs := LoadWorkspaceMacros(env, []MacroDef{def}, nil)
+	errs := LoadWorkspaceMacros(env, preamble)
 	require.NotEmpty(t, errs, "malformed defmacro should return an error")
-	assert.Contains(t, errs[0].Error(), "loading macro", "error should describe the failure")
-}
-
-func TestLoadWorkspaceMacros_ErrorWithNonSymbolName(t *testing.T) {
-	env := newTestEnv(t)
-
-	// A defmacro where the name is not a symbol — will error during eval.
-	// macroDefName returns "<unknown>" for non-symbol names.
-	def := parseMacroDef(t, `(defmacro 42 () '1)`, lisp.DefaultUserPackage)
-
-	errs := LoadWorkspaceMacros(env, []MacroDef{def}, nil)
-	require.NotEmpty(t, errs)
-	assert.Contains(t, errs[0].Error(), "<unknown>",
-		"error for non-symbol macro name should show <unknown>")
 }
 
 func TestLoadWorkspaceMacros_MultiplePackages(t *testing.T) {
-	// Verify sequential loading of macros from different packages —
-	// each macro registers in its own package, not the previous one's.
+	// Macros in different packages via in-package switching.
 	env := newTestEnv(t)
 
-	env.Runtime.Registry.DefinePackage("pkgA")
-	env.InPackage(lisp.String("pkgA"))
-	env.UsePackage(lisp.Symbol(env.Runtime.Registry.Lang))
+	preamble := parsePreamble(t, `
+(in-package 'pkgA)
+(defmacro mac-a () '1)
+(in-package 'pkgB)
+(defmacro mac-b () '2)`)
 
-	env.Runtime.Registry.DefinePackage("pkgB")
-	env.InPackage(lisp.String("pkgB"))
-	env.UsePackage(lisp.Symbol(env.Runtime.Registry.Lang))
-
-	defs := []MacroDef{
-		parseMacroDef(t, `(defmacro mac-a () '1)`, "pkgA"),
-		parseMacroDef(t, `(defmacro mac-b () '2)`, "pkgB"),
-	}
-	errs := LoadWorkspaceMacros(env, defs, nil)
+	errs := LoadWorkspaceMacros(env, preamble)
 	assert.Empty(t, errs)
 
-	// Each macro should be in its own package.
 	env.InPackage(lisp.String("pkgA"))
-	assert.Equal(t, lisp.LFun, env.Get(lisp.Symbol("mac-a")).Type,
-		"mac-a should be in pkgA")
+	assert.Equal(t, lisp.LFun, env.Get(lisp.Symbol("mac-a")).Type, "mac-a should be in pkgA")
 
 	env.InPackage(lisp.String("pkgB"))
-	assert.Equal(t, lisp.LFun, env.Get(lisp.Symbol("mac-b")).Type,
-		"mac-b should be in pkgB")
+	assert.Equal(t, lisp.LFun, env.Get(lisp.Symbol("mac-b")).Type, "mac-b should be in pkgB")
 
 	// Cross-check: mac-b should NOT be in pkgA.
 	env.InPackage(lisp.String("pkgA"))
