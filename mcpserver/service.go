@@ -651,6 +651,7 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 	scanCfg := &analysis.ScanConfig{
 		Excludes: s.excludePatterns,
 	}
+	var macroDefs []*lisp.LVal
 	if root != "" {
 		prescan, err := analysis.PrescanWorkspace(root, scanCfg)
 		if err != nil {
@@ -663,6 +664,7 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 		state.cfg.PackageImports = prescan.PackageImports
 		state.cfg.DefaultPackage = prescan.DefaultPackage
 		state.symbols = prescan.AllDefs
+		macroDefs = prescan.MacroDefs
 	}
 
 	reg := s.registry
@@ -687,6 +689,7 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 		state.cfg.WorkspaceRefs = state.refs
 	}
 	if s.env != nil {
+		analysis.LoadWorkspaceMacros(s.env, macroDefs)
 		state.cfg.MacroExpander = &analysis.EnvMacroExpander{Env: s.env}
 	}
 	return state, nil

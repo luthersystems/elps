@@ -3,6 +3,7 @@
 package analysis
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/luthersystems/elps/lisp"
@@ -73,4 +74,43 @@ func (e *EnvMacroExpander) ExpandMacro(form *lisp.LVal) (result *lisp.LVal) {
 	}
 
 	return mark.Cells[0]
+}
+
+// LoadWorkspaceMacros evaluates workspace defmacro AST nodes into the
+// given environment so that EnvMacroExpander can expand them. A defmacro
+// evaluation registers the macro in the env's package scope with no
+// other side effects.
+//
+// Malformed macros are skipped — the returned errors slice contains one
+// entry per failed defmacro with the macro name and cause. Callers
+// should log these for visibility (e.g. as warnings in the LSP or CLI).
+func LoadWorkspaceMacros(env *lisp.LEnv, defs []*lisp.LVal) []error {
+	var errs []error
+	for _, def := range defs {
+		if err := loadOneMacro(env, def); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errs
+}
+
+func loadOneMacro(env *lisp.LEnv, def *lisp.LVal) (retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("panic loading macro %s: %v", macroDefName(def), r)
+		}
+	}()
+	result := env.Eval(def)
+	if result.Type == lisp.LError {
+		return fmt.Errorf("error loading macro %s: %v", macroDefName(def), result)
+	}
+	return nil
+}
+
+// macroDefName extracts the name from a (defmacro name ...) AST node.
+func macroDefName(def *lisp.LVal) string {
+	if def != nil && len(def.Cells) > 1 && def.Cells[1].Type == lisp.LSymbol {
+		return def.Cells[1].Str
+	}
+	return "<unknown>"
 }

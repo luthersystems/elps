@@ -321,6 +321,7 @@ func (s *Server) buildWorkspaceIndex() {
 
 	// Two-phase workspace scan: prescan extracts definitions AND
 	// macro-derived DefFormSpecs for cross-file def-like form recognition.
+	var macroDefs []*lisp.LVal
 	if s.rootPath != "" {
 		if prescan, err := analysis.PrescanWorkspace(s.rootPath, scanCfg); err == nil {
 			extraGlobals = prescan.AllDefs
@@ -329,6 +330,7 @@ func (s *Server) buildWorkspaceIndex() {
 			defForms = prescan.DefForms
 			packageImports = prescan.PackageImports
 			defaultPackage = prescan.DefaultPackage
+			macroDefs = prescan.MacroDefs
 			if prescan.Truncated {
 				s.sendNotification("window/showMessage", &protocol.ShowMessageParams{
 					Type:    protocol.MessageTypeWarning,
@@ -376,7 +378,9 @@ func (s *Server) buildWorkspaceIndex() {
 	}
 
 	// Enable macro expansion at analysis time if an environment is available.
+	// Load workspace-defined macros into the env so the expander can find them.
 	if s.env != nil {
+		analysis.LoadWorkspaceMacros(s.env, macroDefs)
 		cfg.MacroExpander = &analysis.EnvMacroExpander{Env: s.env}
 	}
 

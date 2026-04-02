@@ -303,7 +303,20 @@ type LintConfig struct {
 	// Embedders that boot a full environment can pass
 	// &analysis.EnvMacroExpander{Env: env} to enable accurate symbol
 	// resolution inside macro bodies.
+	//
+	// For most embedders, setting Env is simpler — it automatically creates
+	// the expander and loads workspace macros. Use MacroExpander only when
+	// you need a custom implementation.
 	MacroExpander analysis.MacroExpander
+
+	// Env is an optional runtime environment for macro expansion. When set
+	// alongside a Workspace, workspace-defined macros are loaded into the
+	// env and a MacroExpander is created automatically. This is the
+	// recommended way for embedders to enable macro expansion — just pass
+	// the env and elps handles the rest.
+	//
+	// If MacroExpander is also set, it takes precedence over Env.
+	Env *lisp.LEnv
 }
 
 // LintFiles analyzes source files with full workspace + embedder context.
@@ -376,6 +389,14 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		pkgExports[pkg] = append(pkgExports[pkg], wsSyms...)
 	}
 
+	// Set up macro expansion. Explicit MacroExpander takes precedence;
+	// otherwise, if Env is provided, load workspace macros and create one.
+	expander := cfg.MacroExpander
+	if expander == nil && cfg.Env != nil {
+		analysis.LoadWorkspaceMacros(cfg.Env, prescan.MacroDefs)
+		expander = &analysis.EnvMacroExpander{Env: cfg.Env}
+	}
+
 	acfg := &analysis.Config{
 		ExtraGlobals:   prescan.AllDefs,
 		PackageExports: pkgExports,
@@ -383,7 +404,7 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		DefForms:       prescan.DefForms,
 		PackageImports: prescan.PackageImports,
 		DefaultPackage: prescan.DefaultPackage,
-		MacroExpander:  cfg.MacroExpander,
+		MacroExpander:  expander,
 	}
 
 	// Build workspace refs so lint analyzers (e.g. unused-function) can check

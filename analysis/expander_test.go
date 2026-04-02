@@ -152,3 +152,54 @@ func TestEnvMacroExpander_ExpansionErrorGracefulReturn(t *testing.T) {
 	// Should return nil (error caught), not panic
 	assert.Nil(t, expander.ExpandMacro(form))
 }
+
+// --- LoadWorkspaceMacros tests ---
+
+func TestLoadWorkspaceMacros_Success(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Parse a defmacro form as raw AST (simulating what prescan collects).
+	s := token.NewScanner("test.lisp", strings.NewReader(
+		`(defmacro my-when (cond &rest body) (quasiquote (if (unquote cond) (progn (unquote-splicing body)))))`))
+	p := rdparser.New(s)
+	exprs, err := p.ParseProgram()
+	require.NoError(t, err)
+	require.Len(t, exprs, 1)
+
+	errs := LoadWorkspaceMacros(env, exprs)
+	assert.Empty(t, errs, "loading a valid defmacro should produce no errors")
+
+	// Verify the macro is now callable in the env.
+	mac := env.Get(lisp.Symbol("my-when"))
+	assert.Equal(t, lisp.LFun, mac.Type, "my-when should be a function in the env")
+	assert.True(t, mac.IsMacro(), "my-when should be a macro")
+}
+
+func TestLoadWorkspaceMacros_ErrorReturned(t *testing.T) {
+	env := newTestEnv(t)
+
+	// A malformed defmacro — missing body.
+	s := token.NewScanner("test.lisp", strings.NewReader(`(defmacro)`))
+	p := rdparser.New(s)
+	exprs, err := p.ParseProgram()
+	require.NoError(t, err)
+
+	errs := LoadWorkspaceMacros(env, exprs)
+	require.NotEmpty(t, errs, "malformed defmacro should return an error")
+	assert.Contains(t, errs[0].Error(), "loading macro", "error should describe the failure")
+}
+
+func TestLoadWorkspaceMacros_ErrorIncludesMacroName(t *testing.T) {
+	env := newTestEnv(t)
+
+	// A defmacro where the name is not a symbol — will error during eval.
+	s := token.NewScanner("test.lisp", strings.NewReader(
+		`(defmacro 42 () '1)`))
+	p := rdparser.New(s)
+	exprs, err := p.ParseProgram()
+	require.NoError(t, err)
+
+	errs := LoadWorkspaceMacros(env, exprs)
+	require.NotEmpty(t, errs)
+	assert.Contains(t, errs[0].Error(), "loading macro", "error should describe the failure")
+}

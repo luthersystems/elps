@@ -334,15 +334,15 @@ func walkLoadFile(filePath, currentPkg string, result map[string]string, visited
 }
 
 // scanFileFull parses a file once and extracts exported globals, package-grouped
-// exports, all definitions, use-package declarations, and the file's primary
-// package ("" for bare files without in-package).
-func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, pkgAll map[string][]ExternalSymbol, usePackages map[string][]string, filePkg string, firstInPkgLine int) {
+// exports, all definitions, use-package declarations, raw defmacro AST nodes,
+// and the file's primary package ("" for bare files without in-package).
+func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, pkgAll map[string][]ExternalSymbol, usePackages map[string][]string, macroDefs []*lisp.LVal, filePkg string, firstInPkgLine int) {
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	p := rdparser.New(s)
 
 	exprs, err := p.ParseProgram()
 	if err != nil {
-		return nil, nil, nil, nil, nil, "", 0
+		return nil, nil, nil, nil, nil, nil, "", 0
 	}
 
 	filePkg, firstInPkgLine = scanFilePackage(exprs)
@@ -359,7 +359,16 @@ func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkg
 		}
 	}
 	usePackages = scanUsePackages(exprs)
-	return globals, pkgs, defs, pkgAll, usePackages, filePkg, firstInPkgLine
+
+	// Collect raw defmacro AST nodes for LoadWorkspaceMacros.
+	for _, expr := range exprs {
+		if expr.Type == lisp.LSExpr && !expr.Quoted && len(expr.Cells) > 0 &&
+			astutil.HeadSymbol(expr) == "defmacro" {
+			macroDefs = append(macroDefs, expr)
+		}
+	}
+
+	return globals, pkgs, defs, pkgAll, usePackages, macroDefs, filePkg, firstInPkgLine
 }
 
 // extractDefinitions collects top-level definitions from pre-parsed expressions.
@@ -856,6 +865,11 @@ type WorkspacePrescan struct {
 	// via use-package across all workspace files. This enables per-file
 	// analysis to resolve symbols from cross-file use-package declarations.
 	PackageImports map[string][]string
+	// MacroDefs are the raw AST nodes of top-level (defmacro ...) forms
+	// found in workspace files. Pass these to LoadWorkspaceMacros to
+	// register them in a runtime environment for macro expansion during
+	// analysis.
+	MacroDefs []*lisp.LVal
 	// DefaultPackage is the package declared in main.lisp (if present).
 	// Used as the default for bare files (no in-package) so that cross-file
 	// resolution works in projects where files inherit the package from
@@ -879,6 +893,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		allDefs        []ExternalSymbol
 		pkgAll         map[string][]ExternalSymbol
 		defForms       []DefFormSpec
+		macroDefs      []*lisp.LVal
 		usePackages    map[string][]string
 		filePkg        string // "" for bare files
 		firstInPkgLine int    // 1-based line of first in-package, 0 if none
@@ -909,9 +924,9 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 				if readErr != nil {
 					continue
 				}
-				g, p, d, pa, up, fp, fpl := scanFileFull(fileSrc, paths[i])
+				g, p, d, pa, up, md, fp, fpl := scanFileFull(fileSrc, paths[i])
 				df := extractDefFormSpecs(d)
-				results[i] = fileResult{globals: g, pkgs: p, allDefs: d, pkgAll: pa, defForms: df, usePackages: up, filePkg: fp, firstInPkgLine: fpl}
+				results[i] = fileResult{globals: g, pkgs: p, allDefs: d, pkgAll: pa, defForms: df, macroDefs: md, usePackages: up, filePkg: fp, firstInPkgLine: fpl}
 			}
 		}()
 	}
@@ -950,6 +965,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		prescan.ExportedGlobals = append(prescan.ExportedGlobals, r.globals...)
 		prescan.AllDefs = append(prescan.AllDefs, r.allDefs...)
 		prescan.DefForms = append(prescan.DefForms, r.defForms...)
+		prescan.MacroDefs = append(prescan.MacroDefs, r.macroDefs...)
 		for pkg, syms := range r.pkgs {
 			prescan.PkgExports[pkg] = append(prescan.PkgExports[pkg], syms...)
 		}
