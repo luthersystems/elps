@@ -327,43 +327,80 @@ func TestLoadWorkspaceMacros_RecursiveDefun(t *testing.T) {
 	assert.Equal(t, lisp.LFun, fn.Type, "my-flatten should be defined")
 }
 
-func TestLoadWorkspaceMacros_BareFileDefunUsesDefaultPackage(t *testing.T) {
-	// Edge case: files without in-package should use DefaultPackage.
-	// At runtime, (load-file "helpers.lisp") inherits the caller's package.
-	// The prescan computes DefaultPackage from main.lisp; bare files'
-	// preamble forms should be prefixed with in-package for that package
-	// so defuns register in the right package.
+func TestLoadWorkspaceMacros_BareFileInheritsLoadContext(t *testing.T) {
+	// Bare files (no in-package) inherit the caller's package from the
+	// load-file call site, matching runtime behavior. The prescan's
+	// loadTree tracks this per-file context.
 	dir := t.TempDir()
 
+	// main.lisp loads helpers.lisp while in myapp package.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
 (in-package 'myapp)
-(defmacro my-macro () '42)
+(load-file "helpers.lisp")
 `), 0600))
 
-	// helpers.lisp has NO in-package — at runtime it inherits myapp.
+	// helpers.lisp has NO in-package — inherits myapp from load context.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "helpers.lisp"), []byte(`
 (defun ws-helper () 99)
 `), 0600))
 
 	prescan, err := PrescanWorkspace(dir, nil)
 	require.NoError(t, err)
-	assert.Equal(t, "myapp", prescan.DefaultPackage)
 
 	env := newTestEnv(t)
 	errs := LoadWorkspaceMacros(env, prescan.Preamble)
 	assert.Empty(t, errs)
 
-	// ws-helper should be defined in myapp (DefaultPackage), not user.
+	// ws-helper should be in myapp (inherited from load context), not user.
 	env.InPackage(lisp.String("myapp"))
 	fn := env.Get(lisp.Symbol("ws-helper"))
 	assert.Equal(t, lisp.LFun, fn.Type,
-		"bare file defun should be defined in myapp (DefaultPackage)")
+		"bare file defun should inherit load context package (myapp)")
 
-	// Verify NOT in user package.
 	env.InPackage(lisp.String(lisp.DefaultUserPackage))
 	notFound := env.Get(lisp.Symbol("ws-helper"))
 	assert.NotEqual(t, lisp.LFun, notFound.Type,
-		"bare file defun should NOT be defined in user package")
+		"bare file defun should NOT be in user package")
+}
+
+func TestLoadWorkspaceMacros_BareFileInheritsPackageSwitch(t *testing.T) {
+	// When main.lisp switches packages between load-file calls, each
+	// bare file inherits the package active at its load-file call site.
+	dir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'pkgA)
+(load-file "a.lisp")
+(in-package 'pkgB)
+(load-file "b.lisp")
+`), 0600))
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.lisp"), []byte(`
+(defun fn-a () 1)
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`
+(defun fn-b () 2)
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+
+	env := newTestEnv(t)
+	errs := LoadWorkspaceMacros(env, prescan.Preamble)
+	assert.Empty(t, errs)
+
+	// fn-a should be in pkgA, fn-b in pkgB.
+	env.InPackage(lisp.String("pkgA"))
+	assert.Equal(t, lisp.LFun, env.Get(lisp.Symbol("fn-a")).Type,
+		"fn-a should inherit pkgA from load context")
+	env.InPackage(lisp.String("pkgB"))
+	assert.Equal(t, lisp.LFun, env.Get(lisp.Symbol("fn-b")).Type,
+		"fn-b should inherit pkgB from load context")
+
+	// Cross-check: fn-b NOT in pkgA.
+	env.InPackage(lisp.String("pkgA"))
+	assert.NotEqual(t, lisp.LFun, env.Get(lisp.Symbol("fn-b")).Type,
+		"fn-b should NOT leak into pkgA")
 }
 
 func TestLoadWorkspaceMacros_ErrorReturned(t *testing.T) {

@@ -966,20 +966,28 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		PackageImports: make(map[string][]string),
 		DefaultPackage: defaultPkg,
 	}
-	for _, r := range results {
+	for i, r := range results {
 		prescan.ExportedGlobals = append(prescan.ExportedGlobals, r.globals...)
 		prescan.AllDefs = append(prescan.AllDefs, r.allDefs...)
 		prescan.DefForms = append(prescan.DefForms, r.defForms...)
 		// For bare files (no in-package), prepend a synthetic in-package
-		// form so LoadWorkspaceMacros places their definitions in the
-		// workspace's DefaultPackage — matching runtime load behavior
-		// where (load-file) inherits the caller's package.
-		if r.filePkg == "" && defaultPkg != "" && len(r.preamble) > 0 {
-			syntheticInPkg := lisp.SExpr([]*lisp.LVal{
-				lisp.Symbol("in-package"),
-				lisp.Quote(lisp.Symbol(defaultPkg)),
-			})
-			prescan.Preamble = append(prescan.Preamble, syntheticInPkg)
+		// using the load-tree's package context. This mirrors runtime
+		// behavior: (load-file "bare.lisp") inherits the caller's package,
+		// which may differ from DefaultPackage if in-package was called
+		// between load-file calls in main.lisp.
+		if r.filePkg == "" && len(r.preamble) > 0 {
+			absPath, _ := filepath.Abs(paths[i])
+			inheritedPkg := loadTree[absPath]
+			if inheritedPkg == "" {
+				inheritedPkg = defaultPkg // fallback for files not in load tree
+			}
+			if inheritedPkg != "" {
+				syntheticInPkg := lisp.SExpr([]*lisp.LVal{
+					lisp.Symbol("in-package"),
+					lisp.Quote(lisp.Symbol(inheritedPkg)),
+				})
+				prescan.Preamble = append(prescan.Preamble, syntheticInPkg)
+			}
 		}
 		prescan.Preamble = append(prescan.Preamble, r.preamble...)
 		for pkg, syms := range r.pkgs {
