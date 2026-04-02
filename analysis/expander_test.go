@@ -260,6 +260,48 @@ func TestLoadWorkspaceMacros_UsePackageImports(t *testing.T) {
 	assert.Empty(t, errs, "macro using imported function should load without error")
 }
 
+func TestLoadWorkspaceMacros_DefunAvailableForMacroExpansion(t *testing.T) {
+	// Regression test: workspace-defined functions (defun) must be available
+	// during macro expansion. Without loading defuns into the env, macros
+	// that call workspace functions (like flatten) fail silently.
+	env := newTestEnv(t)
+
+	preamble := parsePreamble(t, `
+(in-package 'myapp)
+(defun my-flatten (seq)
+  (if (nil? seq) '()
+    (concat 'list (car seq) (my-flatten (cdr seq)))))
+(defmacro with-flat-defs (definitions &rest body)
+  (quasiquote
+    (lambda
+      (unquote (map 'list #^(first %) (my-flatten definitions)))
+      (progn (unquote-splicing body)))))`)
+
+	errs := LoadWorkspaceMacros(env, preamble)
+	assert.Empty(t, errs, "preamble with defun + defmacro should load without error")
+
+	// Verify the function is callable in the env.
+	env.InPackage(lisp.String("myapp"))
+	fn := env.Get(lisp.Symbol("my-flatten"))
+	assert.Equal(t, lisp.LFun, fn.Type, "my-flatten should be a function in the env")
+
+	// Verify the macro can expand (it calls my-flatten during expansion).
+	// Use the full analysis path to test end-to-end.
+	result := parseAndAnalyzeWithConfig(t,
+		`(in-package 'myapp)
+(defun test ()
+  (with-flat-defs (([x] [y]))
+    (list x y)))`,
+		&Config{
+			MacroExpander: &EnvMacroExpander{Env: env},
+		})
+
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "x", u.Name, "x should resolve as lambda param after macro expansion")
+		assert.NotEqual(t, "y", u.Name, "y should resolve as lambda param after macro expansion")
+	}
+}
+
 func TestLoadWorkspaceMacros_ErrorReturned(t *testing.T) {
 	env := newTestEnv(t)
 

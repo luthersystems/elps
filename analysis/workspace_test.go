@@ -1767,5 +1767,5 @@ func TestPrescanWorkspace_Preamble(t *testing.T) {
 	assert.Equal(t, 1, heads["use-package"], "should collect use-package")
 	assert.Equal(t, 1, heads["export"], "should collect export")
 	assert.Equal(t, 2, heads["defmacro"], "should collect both defmacro forms")
-	assert.Equal(t, 0, heads["defun"], "defun should NOT appear in Preamble")
+	assert.Equal(t, 1, heads["defun"], "should collect defun forms")
 }

@@ -368,7 +368,7 @@ func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkg
 			continue
 		}
 		switch astutil.HeadSymbol(expr) {
-		case "in-package", "use-package", "export", "defmacro":
+		case "in-package", "use-package", "export", "defmacro", "defun":
 			preamble = append(preamble, expr)
 		}
 	}
