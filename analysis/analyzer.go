@@ -1193,11 +1193,29 @@ func (a *analyzer) walkQuasiquoteTemplate(node *lisp.LVal, scope *Scope, current
 }
 
 func (a *analyzer) analyzeCall(node *lisp.LVal, scope *Scope, currentPkg string) {
-	// Check if head is a user-defined macro — unresolved symbols inside
-	// macro bodies get lower severity since macros may introduce bindings
-	// at expansion time that are invisible to static analysis.
+	// Check if head is a user-defined macro — try expansion if an expander
+	// is available, otherwise fall back to opaque analysis with lowered
+	// severity for unresolved symbols.
 	if len(node.Cells) > 0 && node.Cells[0].Type == lisp.LSymbol {
 		if sym := scope.Lookup(node.Cells[0].Str); sym != nil && sym.Kind == SymMacro && isUserMacro(sym) {
+			sym.References++
+			a.result.References = append(a.result.References, &Reference{
+				Symbol: sym,
+				Source:  node.Cells[0].Source,
+				Node:    node.Cells[0],
+			})
+			if a.cfg != nil && a.cfg.MacroExpander != nil {
+				if expanded := a.cfg.MacroExpander.ExpandMacro(node); expanded != nil {
+					// Analyze expanded code. Keep insideMacroCall
+					// incremented so template-generated symbols that
+					// can't be resolved get warning severity, not error.
+					a.insideMacroCall++
+					a.analyzeExpr(expanded, scope, currentPkg)
+					a.insideMacroCall--
+					return
+				}
+			}
+			// No expander or expansion failed — opaque walk.
 			a.insideMacroCall++
 			defer func() { a.insideMacroCall-- }()
 		}

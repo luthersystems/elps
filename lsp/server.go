@@ -375,6 +375,11 @@ func (s *Server) buildWorkspaceIndex() {
 		DefaultPackage: defaultPackage,
 	}
 
+	// Enable macro expansion at analysis time if an environment is available.
+	if s.env != nil {
+		cfg.MacroExpander = &analysis.EnvMacroExpander{Env: s.env}
+	}
+
 	// Build workspace reference index using the populated config.
 	// Set it on the config so per-file analysis (and lint analyzers)
 	// can check cross-file references.
@@ -441,6 +446,7 @@ func (s *Server) getAnalysisConfig(uri string) *analysis.Config {
 		cfg.PackageImports = base.PackageImports
 		cfg.DefaultPackage = base.DefaultPackage
 		cfg.WorkspaceRefs = base.WorkspaceRefs
+		cfg.MacroExpander = base.MacroExpander
 	}
 	return cfg
 }

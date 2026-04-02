@@ -1739,3 +1739,112 @@ func parseAndAnalyzeWithConfig(t *testing.T, source string, cfg *Config) *Result
 	}
 	return Analyze(exprs, cfg)
 }
+
+// --- Analyze: macro expansion at analysis time ---
+
+// parseAndAnalyzeWithExpander creates an env, evaluates macroSource in it,
+// then analyzes callSource with the expander enabled.
+func parseAndAnalyzeWithExpander(t *testing.T, macroSource, callSource string) *Result {
+	t.Helper()
+	env := newTestEnv(t)
+	evalSource(t, env, macroSource)
+	return parseAndAnalyzeWithConfig(t, callSource, &Config{
+		MacroExpander: &EnvMacroExpander{Env: env},
+	})
+}
+
+func TestAnalyze_MacroExpansion_LambdaParams(t *testing.T) {
+	// Pattern from def-acre-route: macro introduces lambda parameters.
+	// Without expansion: req/resp flagged as undefined.
+	// With expansion: they resolve as lambda params.
+	result := parseAndAnalyzeWithExpander(t,
+		`(defmacro def-handler (name args &rest exprs)
+		   (quasiquote
+		     (set (quote (unquote name))
+		       (lambda (unquote args)
+		         (progn (unquote-splicing exprs))))))`,
+		`(def-handler handle-request (req resp)
+		   (list req resp))`)
+
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "req", u.Name, "req should resolve as lambda param after expansion")
+		assert.NotEqual(t, "resp", u.Name, "resp should resolve as lambda param after expansion")
+	}
+}
+
+func TestAnalyze_MacroExpansion_NestedMacros(t *testing.T) {
+	// Pattern from def-acre-route-get calling def-acre-route.
+	// Outer macro expands, inner macro expands on next recursion.
+	result := parseAndAnalyzeWithExpander(t,
+		`(defmacro def-route (name args &rest exprs)
+		   (quasiquote
+		     (set (quote (unquote name))
+		       (lambda (unquote args)
+		         (progn (unquote-splicing exprs))))))
+		 (defmacro def-route-get (name args &rest exprs)
+		   (quasiquote
+		     (def-route (unquote name) (unquote args)
+		       (unquote-splicing exprs))))`,
+		`(def-route-get my-handler (req)
+		   (+ req 1))`)
+
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "req", u.Name, "req should resolve via nested macro expansion")
+	}
+}
+
+func TestAnalyze_MacroExpansion_WhenMacro(t *testing.T) {
+	// Simple when macro — very common pattern.
+	result := parseAndAnalyzeWithExpander(t,
+		`(defmacro my-when (cond &rest body)
+		   (quasiquote (if (unquote cond) (progn (unquote-splicing body)))))`,
+		`(defun f (x) (my-when (> x 0) (+ x 1)))`)
+
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "x", u.Name, "x should resolve through macro expansion")
+	}
+}
+
+func TestAnalyze_MacroExpansion_WithoutExpander(t *testing.T) {
+	// Without an expander, behavior should be unchanged (opaque + downgraded severity).
+	result := parseAndAnalyze(t, `
+(defmacro my-when (cond &rest body)
+  (quasiquote (if (unquote cond) (progn (unquote-splicing body)))))
+(defun f (x) (my-when (> x 0) (+ x 1)))`)
+
+	// x inside my-when call should still resolve (it's a symbol ref to the param)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "x", u.Name, "x should resolve as defun param")
+	}
+}
+
+func TestAnalyze_MacroExpansion_FailureFallback(t *testing.T) {
+	// If expansion fails (e.g. macro not in env), fall back to opaque analysis.
+	env := newTestEnv(t)
+	// Don't define the macro in the env — only in the source for prescan.
+	result := parseAndAnalyzeWithConfig(t, `
+(defmacro my-macro (x) (quasiquote (+ (unquote x) 1)))
+(my-macro 42)`, &Config{
+		MacroExpander: &EnvMacroExpander{Env: env},
+	})
+
+	// Should not crash — falls back to opaque analysis.
+	// 42 inside the macro call gets InsideMacroCall treatment.
+	assert.NotNil(t, result)
+}
+
+func TestAnalyze_MacroExpansion_HandlerBindPattern(t *testing.T) {
+	// Pattern from assert-not-error: macro wraps handler-bind.
+	result := parseAndAnalyzeWithExpander(t,
+		`(defmacro with-handler (handler &rest body)
+		   (quasiquote
+		     (handler-bind ((condition (unquote handler)))
+		       (unquote-splicing body))))`,
+		`(defun safe-call (f)
+		   (with-handler (lambda (&rest e) ()) (f)))`)
+
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "f", u.Name, "f should resolve through expansion")
+		assert.NotEqual(t, "e", u.Name, "e should resolve as lambda param")
+	}
+}

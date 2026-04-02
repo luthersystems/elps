@@ -584,6 +584,7 @@ func (s *service) loadDocument(path string, content *string, workspaceRoot *stri
 		PackageImports: state.cfg.PackageImports,
 		DefaultPackage: state.cfg.DefaultPackage,
 		WorkspaceRefs:  state.cfg.WorkspaceRefs,
+		MacroExpander:  state.cfg.MacroExpander,
 	}
 	var result *analysis.Result
 	if parsed.Exprs != nil {
@@ -684,6 +685,9 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 	if root != "" {
 		state.refs = analysis.ScanWorkspaceRefs(root, state.cfg, scanCfg)
 		state.cfg.WorkspaceRefs = state.refs
+	}
+	if s.env != nil {
+		state.cfg.MacroExpander = &analysis.EnvMacroExpander{Env: s.env}
 	}
 	return state, nil
 }
