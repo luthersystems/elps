@@ -1480,6 +1480,55 @@ func TestPrescanWorkspace_SetInBareFileRemapped(t *testing.T) {
 	}
 }
 
+func TestPrescanWorkspace_SetInBareFileNotInLoadTree(t *testing.T) {
+	// Bare files not explicitly loaded via load-file should still have
+	// their definitions remapped to DefaultPackage (not left in user).
+	// At runtime these files would inherit the caller's package; the
+	// best static approximation is DefaultPackage from main.lisp.
+	dir := t.TempDir()
+
+	// main.lisp does NOT load-file template.lisp.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'myapp)
+(defun use-template () my-template)
+`), 0600))
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "template.lisp"), []byte(`
+(set 'my-template "hello world")
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "myapp", prescan.DefaultPackage)
+
+	// my-template should be remapped to myapp even without load-file.
+	found := false
+	for _, d := range prescan.AllDefs {
+		if d.Name == "my-template" {
+			assert.Equal(t, "myapp", d.Package,
+				"bare file set not in load tree should remap to DefaultPackage")
+			found = true
+		}
+	}
+	assert.True(t, found, "my-template should be in AllDefs")
+
+	// End-to-end: verify it resolves cross-file.
+	cfg := &Config{
+		ExtraGlobals:   prescan.AllDefs,
+		PackageExports: prescan.PkgExports,
+		PackageSymbols: prescan.PkgAllSymbols,
+		PackageImports: prescan.PackageImports,
+		DefaultPackage: prescan.DefaultPackage,
+	}
+	result := parseAndAnalyzeWithConfig(t,
+		`(in-package 'myapp)
+(defun use-template () my-template)`, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "my-template", u.Name,
+			"set global from bare file not in load tree should resolve via DefaultPackage")
+	}
+}
+
 // TestPrescanWorkspace_PhylumPattern replicates a typical phylum workspace:
 // - main.lisp sets in-package and imports packages via use-package
 // - main.lisp loads a utils file that switches packages then switches back

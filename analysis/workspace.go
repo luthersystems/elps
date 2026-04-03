@@ -1036,7 +1036,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 	// Two cases: (1) bare files — all defs remapped, (2) non-bare files —
 	// only defs before the first in-package are remapped (they inherit the
 	// load context at runtime but extractDefinitions assigns them to "user").
-	if defaultPkg != "" && len(loadTree) > 0 {
+	if defaultPkg != "" {
 		bareFiles := make(map[string]bool)
 		firstPkgLine := make(map[string]int) // file → line of first in-package
 		for i, r := range results {
@@ -1058,12 +1058,18 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 				return "", false
 			}
 			pkg, inTree := loadTree[sym.Source.File]
+			// Bare file: remap to load-tree package, or defaultPkg if not
+			// in the load tree. At runtime, bare files always inherit their
+			// caller's package — defaultPkg is the best approximation when
+			// the file isn't explicitly loaded via load-file.
+			if bareFiles[sym.Source.File] {
+				if !inTree {
+					pkg = defaultPkg
+				}
+				return pkg, true
+			}
 			if !inTree {
 				return "", false
-			}
-			// Bare file: remap all user-package defs.
-			if bareFiles[sym.Source.File] {
-				return pkg, true
 			}
 			// Non-bare file: remap user-package defs before the first in-package.
 			if line, ok := firstPkgLine[sym.Source.File]; ok && sym.Source.Line < line {
