@@ -1434,6 +1434,52 @@ func TestPrescanWorkspace_DefaultPackage(t *testing.T) {
 	assert.True(t, found, "do-work should be in AllDefs")
 }
 
+func TestPrescanWorkspace_SetInBareFileRemapped(t *testing.T) {
+	// set definitions in bare template files should be remapped to the
+	// load-tree's package context, making them visible to other files.
+	dir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'myapp)
+(load-file "template.lisp")
+`), 0600))
+
+	// template.lisp — no in-package, uses set for a global.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "template.lisp"), []byte(`
+(set 'default-template "hello world")
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+
+	// default-template should be remapped to myapp (not user).
+	found := false
+	for _, d := range prescan.AllDefs {
+		if d.Name == "default-template" {
+			assert.Equal(t, "myapp", d.Package,
+				"set global in bare file should be remapped to load context package")
+			found = true
+		}
+	}
+	assert.True(t, found, "default-template should be in AllDefs")
+
+	// End-to-end: verify a file in myapp can resolve default-template.
+	cfg := &Config{
+		ExtraGlobals:   prescan.AllDefs,
+		PackageExports: prescan.PkgExports,
+		PackageSymbols: prescan.PkgAllSymbols,
+		PackageImports: prescan.PackageImports,
+		DefaultPackage: prescan.DefaultPackage,
+	}
+	result := parseAndAnalyzeWithConfig(t,
+		`(in-package 'myapp)
+(defun use-template () default-template)`, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "default-template", u.Name,
+			"set global from bare template file should resolve cross-file")
+	}
+}
+
 // TestPrescanWorkspace_PhylumPattern replicates a typical phylum workspace:
 // - main.lisp sets in-package and imports packages via use-package
 // - main.lisp loads a utils file that switches packages then switches back
