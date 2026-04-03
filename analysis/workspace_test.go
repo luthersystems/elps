@@ -1349,7 +1349,7 @@ func TestBuildLoadTree_Basic(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.lisp"), []byte(`(defun a-fn () 1)`), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`(defun b-fn () 2)`), 0600))
 
-	tree := buildLoadTree(filepath.Join(dir, "main.lisp"))
+	tree, _ := buildLoadTree(filepath.Join(dir, "main.lisp"))
 
 	absA, _ := filepath.Abs(filepath.Join(dir, "a.lisp"))
 	absB, _ := filepath.Abs(filepath.Join(dir, "b.lisp"))
@@ -1369,7 +1369,7 @@ func TestBuildLoadTree_PackageSwitch(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.lisp"), []byte(`(defun a-fn () 1)`), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`(defun b-fn () 2)`), 0600))
 
-	tree := buildLoadTree(filepath.Join(dir, "main.lisp"))
+	tree, _ := buildLoadTree(filepath.Join(dir, "main.lisp"))
 
 	absA, _ := filepath.Abs(filepath.Join(dir, "a.lisp"))
 	absB, _ := filepath.Abs(filepath.Join(dir, "b.lisp"))
@@ -1389,7 +1389,7 @@ func TestBuildLoadTree_Nested(t *testing.T) {
 `), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`(defun b-fn () 2)`), 0600))
 
-	tree := buildLoadTree(filepath.Join(dir, "main.lisp"))
+	tree, _ := buildLoadTree(filepath.Join(dir, "main.lisp"))
 
 	absA, _ := filepath.Abs(filepath.Join(dir, "a.lisp"))
 	absB, _ := filepath.Abs(filepath.Join(dir, "b.lisp"))
@@ -1627,7 +1627,7 @@ func TestBuildLoadTree_CycleDetection(t *testing.T) {
 (load-file "a.lisp")
 `), 0600))
 
-	tree := buildLoadTree(filepath.Join(dir, "a.lisp"))
+	tree, _ := buildLoadTree(filepath.Join(dir, "a.lisp"))
 	assert.NotNil(t, tree, "should terminate without infinite loop")
 
 	absB, _ := filepath.Abs(filepath.Join(dir, "b.lisp"))
