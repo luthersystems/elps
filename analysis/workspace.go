@@ -1032,10 +1032,27 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		}
 	}
 
-	// Remap user-package symbols from the load tree to their correct package.
-	// Two cases: (1) bare files — all defs remapped, (2) non-bare files —
-	// only defs before the first in-package are remapped (they inherit the
-	// load context at runtime but extractDefinitions assigns them to "user").
+	// Remap user-package symbols to their correct package.
+	//
+	// extractDefinitions assigns all symbols to "user" by default because
+	// it has no package context beyond in-package forms. At runtime, bare
+	// files (no in-package) inherit the caller's package from load-file,
+	// so their definitions belong in a different package.
+	//
+	// DefaultPackage (from main.lisp's in-package) is the workspace's
+	// "real" default package — the package most bare files will inherit
+	// at runtime, since main.lisp is typically the entry point that loads
+	// everything else.
+	//
+	// Three remapping rules:
+	// (1) Bare files in the load tree: remap to the load-tree's package
+	//     context (the package active at the load-file call site).
+	// (2) Bare files NOT in the load tree: remap to DefaultPackage.
+	//     These files may be loaded at runtime from inside function bodies
+	//     (e.g. template files loaded conditionally) — DefaultPackage is
+	//     the best static approximation of the runtime package.
+	// (3) Non-bare files: only remap user-package defs that appear before
+	//     the first in-package (they inherit the load context, not "user").
 	if defaultPkg != "" {
 		bareFiles := make(map[string]bool)
 		firstPkgLine := make(map[string]int) // file → line of first in-package
