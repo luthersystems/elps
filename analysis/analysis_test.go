@@ -451,6 +451,55 @@ func TestAnalyze_SetBang(t *testing.T) {
 	}
 }
 
+func TestAnalyze_Set_InLambdaReferencesGlobal(t *testing.T) {
+	// Regression test for #260: (set 'x ...) inside a lambda writes to the
+	// package-global scope (PutGlobal), not a lambda-local binding. The
+	// analyzer should not create a spurious local variable.
+	result := parseAndAnalyze(t, `
+(set 'now 0)
+(defun setup ()
+  (lambda ()
+    (set 'now 42)))
+(defun use-now () now)`)
+
+	// 'now' should NOT appear as an unused variable.
+	for _, sym := range result.Symbols {
+		if sym.Name == "now" && sym.Scope != result.RootScope {
+			t.Errorf("'now' should not be defined in a non-global scope (found in %v)", sym.Scope.Kind)
+		}
+	}
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "now", u.Name, "'now' should be resolved")
+	}
+
+	// Verify 'now' exists in the global scope with expected properties.
+	globalNow := result.RootScope.LookupLocal("now")
+	require.NotNil(t, globalNow, "'now' should be defined in the global scope")
+	assert.Equal(t, SymVariable, globalNow.Kind)
+	// The lambda's (set 'now 42) should increment References on the global symbol.
+	assert.GreaterOrEqual(t, globalNow.References, 1,
+		"global 'now' should have references from the lambda set and use-now")
+}
+
+func TestAnalyze_Set_InLambdaCreatesGlobalIfMissing(t *testing.T) {
+	// When set creates a new variable from inside a lambda, the symbol
+	// should be registered in the root/global scope.
+	result := parseAndAnalyze(t, `
+(defun f ()
+  (lambda ()
+    (set 'y 1)))`)
+
+	sym := result.RootScope.LookupLocal("y")
+	require.NotNil(t, sym, "'y' should be defined in global scope by set inside lambda")
+	assert.Equal(t, SymVariable, sym.Kind)
+	// Verify 'y' was NOT defined in any non-global scope.
+	for _, s := range result.Symbols {
+		if s.Name == "y" && s.Scope != result.RootScope {
+			t.Errorf("'y' should not be defined in a non-global scope (found in %v)", s.Scope.Kind)
+		}
+	}
+}
+
 // --- Analyze: function (#') ---
 
 func TestAnalyze_FunctionRef(t *testing.T) {
@@ -544,6 +593,68 @@ func TestAnalyze_HandlerBind_HandlerBodyStillAnalyzed(t *testing.T) {
 	}
 	assert.True(t, found,
 		"undefined symbol in handler-bind handler body should be flagged as unresolved")
+}
+
+// --- Analyze: cond ---
+
+func TestAnalyze_Cond_ElseNotFlagged(t *testing.T) {
+	// Bare 'else' in cond test position is a language keyword, not a symbol reference.
+	result := parseAndAnalyze(t, `
+(defun classify (x)
+  (cond
+    ((number? x) "number")
+    (else "other")))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "else", u.Name,
+			"bare 'else' in cond test position should not be flagged as undefined")
+	}
+}
+
+func TestAnalyze_Cond_TrueNotFlagged(t *testing.T) {
+	// Bare 'true' in cond test position is a recognized default clause.
+	result := parseAndAnalyze(t, `
+(defun classify (x)
+  (cond
+    ((number? x) "number")
+    (true "other")))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "true", u.Name,
+			"bare 'true' in cond test position should not be flagged as undefined")
+	}
+}
+
+func TestAnalyze_Cond_UndefinedTestStillFlagged(t *testing.T) {
+	// A non-keyword symbol in cond test position should still be flagged.
+	result := parseAndAnalyze(t, `
+(defun classify (x)
+  (cond
+    ((number? x) "number")
+    (bogus "other")))`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "bogus" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"undefined symbol in cond test position should still be flagged as unresolved")
+}
+
+func TestAnalyze_Cond_BodyStillAnalyzed(t *testing.T) {
+	// Body expressions in cond clauses should still be analyzed.
+	result := parseAndAnalyze(t, `
+(cond
+  (else (unknown-body-fn)))`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "unknown-body-fn" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"undefined symbol in cond body should still be flagged")
 }
 
 // --- Analyze: test-let / test-let* ---
@@ -1345,6 +1456,7 @@ func TestScopeKind_String(t *testing.T) {
 	assert.Equal(t, "lambda", ScopeLambda.String())
 	assert.Equal(t, "let", ScopeLet.String())
 	assert.Equal(t, "flet", ScopeFlet.String())
+	assert.Equal(t, "macrolet", ScopeMacrolet.String())
 	assert.Equal(t, "dotimes", ScopeDotimes.String())
 }
 
@@ -1630,6 +1742,203 @@ func TestAnalyze_DefaultPackage_BareFile(t *testing.T) {
 		"bare file with DefaultPackage should resolve symbols via cross-file imports")
 }
 
+// --- Macrolet ---
+
+func TestAnalyze_Macrolet_BodyResolves(t *testing.T) {
+	// Local macros defined in macrolet should be visible in the body.
+	result := parseAndAnalyze(t, `
+(defun f ()
+  (macrolet ((my-add (a b) (quasiquote (+ (unquote a) (unquote b)))))
+    (my-add 1 2)))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "my-add", u.Name,
+			"macrolet-defined macro should not be flagged as undefined")
+	}
+}
+
+func TestAnalyze_Macrolet_MultipleMacros(t *testing.T) {
+	// Multiple macros in one macrolet should all be in scope.
+	result := parseAndAnalyze(t, `
+(macrolet ((m1 () '1)
+           (m2 () '2))
+  (m1)
+  (m2))`)
+	unresolvedNames := make(map[string]bool)
+	for _, u := range result.Unresolved {
+		unresolvedNames[u.Name] = true
+	}
+	assert.False(t, unresolvedNames["m1"], "m1 should resolve in macrolet body")
+	assert.False(t, unresolvedNames["m2"], "m2 should resolve in macrolet body")
+}
+
+func TestAnalyze_Macrolet_MacroNotVisibleOutside(t *testing.T) {
+	// Macros defined in macrolet should NOT be visible outside its body.
+	result := parseAndAnalyze(t, `
+(macrolet ((local-mac () '1))
+  (local-mac))
+(local-mac)`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "local-mac" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"macrolet-defined macro should be undefined outside macrolet body")
+}
+
+func TestAnalyze_Macrolet_BodyUndefinedFlagged(t *testing.T) {
+	// Undefined symbols in macrolet body should still be flagged.
+	result := parseAndAnalyze(t, `
+(macrolet ((m () '1))
+  (undefined-fn 42))`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "undefined-fn" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"undefined symbol in macrolet body should be flagged")
+}
+
+func TestAnalyze_Macrolet_TemplateBodyNotAnalyzed(t *testing.T) {
+	// Template variables in macro bodies should NOT be flagged as undefined.
+	// Macro bodies are templates — they contain quasiquote/unquote patterns
+	// with variables that don't exist in the lexical scope.
+	result := parseAndAnalyze(t, `
+(macrolet ((wrap (body) (quasiquote (progn (unquote body)))))
+  (wrap (+ 1 2)))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "body", u.Name,
+			"macro template variable should not be flagged as undefined")
+	}
+}
+
+func TestAnalyze_Macrolet_DefinedAsMacroSymbol(t *testing.T) {
+	// Macrolet bindings should be registered as SymMacro symbols.
+	result := parseAndAnalyze(t, `
+(macrolet ((my-mac () '1))
+  (my-mac))`)
+	found := false
+	for _, sym := range result.Symbols {
+		if sym.Name == "my-mac" && sym.Kind == SymMacro {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "macrolet binding should appear as a SymMacro in result.Symbols")
+}
+
+func TestAnalyze_Macrolet_Nested(t *testing.T) {
+	// Nested macrolet: inner scope sees both inner and outer macros.
+	result := parseAndAnalyze(t, `
+(macrolet ((m1 () '1))
+  (macrolet ((m2 () '2))
+    (list (m1) (m2))))`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "m1", u.Name, "outer macrolet binding should be visible in nested scope")
+		assert.NotEqual(t, "m2", u.Name, "inner macrolet binding should be visible")
+	}
+}
+
+// --- Qualified-symbol ---
+
+func TestAnalyze_QualifiedSymbol_ArgNotFlagged(t *testing.T) {
+	// The argument to qualified-symbol is data (a name), not a symbol
+	// reference. It should not be flagged as undefined.
+	result := parseAndAnalyze(t, `(qualified-symbol some-name)`)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "some-name", u.Name,
+			"qualified-symbol argument should not be flagged as undefined")
+	}
+}
+
+func TestAnalyze_QualifiedSymbol_HeadResolved(t *testing.T) {
+	// The qualified-symbol operator itself should still be resolved.
+	result := parseAndAnalyze(t, `(qualified-symbol foo)`)
+	// qualified-symbol is a builtin special op — should be resolved.
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "qualified-symbol", u.Name,
+			"qualified-symbol head should be resolved as a builtin")
+	}
+}
+
+func TestAnalyze_QualifiedSymbol_ExtraArgsAnalyzed(t *testing.T) {
+	// Arguments beyond Cells[1] should still be analyzed normally.
+	result := parseAndAnalyze(t, `(qualified-symbol some-name undefined-extra)`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "undefined-extra" {
+			found = true
+		}
+		assert.NotEqual(t, "some-name", u.Name,
+			"first arg is still data, not a reference")
+	}
+	assert.True(t, found,
+		"extra arguments to qualified-symbol should still be analyzed")
+}
+
+// --- Thread-first / Thread-last ---
+
+func TestAnalyze_ThreadFirst_SymbolsResolved(t *testing.T) {
+	// Symbols used in thread-first forms should still be resolved.
+	result := parseAndAnalyze(t, `
+(defun f (x) x)
+(defun g (x y) (+ x y))
+(thread-first 1 (f) (g 2))`)
+	unresolvedNames := make(map[string]bool)
+	for _, u := range result.Unresolved {
+		unresolvedNames[u.Name] = true
+	}
+	assert.False(t, unresolvedNames["f"], "f should resolve in thread-first")
+	assert.False(t, unresolvedNames["g"], "g should resolve in thread-first")
+}
+
+func TestAnalyze_ThreadLast_SymbolsResolved(t *testing.T) {
+	// Symbols used in thread-last forms should still be resolved.
+	result := parseAndAnalyze(t, `
+(defun f (x) x)
+(defun g (x y) (+ x y))
+(thread-last 1 (f) (g 2))`)
+	unresolvedNames := make(map[string]bool)
+	for _, u := range result.Unresolved {
+		unresolvedNames[u.Name] = true
+	}
+	assert.False(t, unresolvedNames["f"], "f should resolve in thread-last")
+	assert.False(t, unresolvedNames["g"], "g should resolve in thread-last")
+}
+
+func TestAnalyze_ThreadFirst_UndefinedFlagged(t *testing.T) {
+	// Undefined symbols in thread-first should still be flagged.
+	result := parseAndAnalyze(t, `(thread-first 1 (unknown-fn 2))`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "unknown-fn" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"undefined symbol in thread-first should be flagged")
+}
+
+func TestAnalyze_ThreadLast_UndefinedFlagged(t *testing.T) {
+	// Undefined symbols in thread-last should still be flagged.
+	result := parseAndAnalyze(t, `(thread-last 1 (unknown-fn 2))`)
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Name == "unknown-fn" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"undefined symbol in thread-last should be flagged")
+}
+
 // parseAndAnalyzeWithConfig is a test helper that parses source and runs
 // analysis with a custom Config.
 func parseAndAnalyzeWithConfig(t *testing.T, source string, cfg *Config) *Result {
@@ -1642,4 +1951,193 @@ func parseAndAnalyzeWithConfig(t *testing.T, source string, cfg *Config) *Result
 		cfg.Filename = "test.lisp"
 	}
 	return Analyze(exprs, cfg)
+}
+
+// --- Analyze: macro expansion at analysis time ---
+
+// parseAndAnalyzeWithExpander creates an env, evaluates macroSource in it,
+// then analyzes callSource with the expander enabled.
+func parseAndAnalyzeWithExpander(t *testing.T, macroSource, callSource string) *Result {
+	t.Helper()
+	env := newTestEnv(t)
+	evalSource(t, env, macroSource)
+	return parseAndAnalyzeWithConfig(t, callSource, &Config{
+		MacroExpander: &EnvMacroExpander{Env: env},
+	})
+}
+
+func TestAnalyze_MacroExpansion_LambdaParams(t *testing.T) {
+	// Pattern from def-acre-route: macro introduces lambda parameters.
+	// Without expansion: req/resp flagged as undefined.
+	// With expansion: they resolve as lambda params.
+	// Note: macro name intentionally doesn't start with "def" to avoid
+	// the heuristic def-like matching, ensuring expansion is actually tested.
+	result := parseAndAnalyzeWithExpander(t,
+		`(defmacro make-handler (name args &rest exprs)
+		   (quasiquote
+		     (set (quote (unquote name))
+		       (lambda (unquote args)
+		         (progn (unquote-splicing exprs))))))`,
+		`(make-handler handle-request (req resp)
+		   (list req resp))`)
+
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "req", u.Name, "req should resolve as lambda param after expansion")
+		assert.NotEqual(t, "resp", u.Name, "resp should resolve as lambda param after expansion")
+	}
+
+	// Verify symbols actually resolved as references (not just absent from Unresolved).
+	refNames := make(map[string]bool)
+	for _, ref := range result.References {
+		refNames[ref.Symbol.Name] = true
+	}
+	assert.True(t, refNames["req"], "req should appear in References after macro expansion")
+	assert.True(t, refNames["resp"], "resp should appear in References after macro expansion")
+}
+
+func TestAnalyze_MacroExpansion_NestedMacros(t *testing.T) {
+	// Pattern from def-acre-route-get calling def-acre-route.
+	// Outer macro expands, inner macro expands on next recursion.
+	result := parseAndAnalyzeWithExpander(t,
+		`(defmacro make-route (name args &rest exprs)
+		   (quasiquote
+		     (set (quote (unquote name))
+		       (lambda (unquote args)
+		         (progn (unquote-splicing exprs))))))
+		 (defmacro make-route-get (name args &rest exprs)
+		   (quasiquote
+		     (make-route (unquote name) (unquote args)
+		       (unquote-splicing exprs))))`,
+		`(make-route-get my-handler (req)
+		   (+ req 1))`)
+
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "req", u.Name, "req should resolve via nested macro expansion")
+	}
+
+	// Verify req actually resolved as a reference (not just absent from Unresolved).
+	refNames := make(map[string]bool)
+	for _, ref := range result.References {
+		refNames[ref.Symbol.Name] = true
+	}
+	assert.True(t, refNames["req"], "req should appear in References after nested expansion")
+}
+
+func TestAnalyze_MacroExpansion_WhenMacro(t *testing.T) {
+	// Macro that introduces a let binding — 'default-val' only exists after
+	// expansion, so this test proves expansion actually adds value (the previous
+	// version used a defun param which resolved without expansion).
+	result := parseAndAnalyzeWithExpander(t,
+		`(defmacro with-default (name val &rest body)
+		   (quasiquote (let (((unquote name) (unquote val))) (unquote-splicing body))))`,
+		`(with-default default-val 42 (+ default-val 1))`)
+
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "default-val", u.Name,
+			"default-val should resolve through macro expansion (let binding introduced by macro)")
+	}
+
+	// Verify default-val actually resolved as a reference, not just absent from Unresolved.
+	refNames := make(map[string]bool)
+	for _, ref := range result.References {
+		refNames[ref.Symbol.Name] = true
+	}
+	assert.True(t, refNames["default-val"],
+		"default-val should appear in References after expansion introduces the let binding")
+}
+
+func TestAnalyze_MacroExpansion_WithoutExpander(t *testing.T) {
+	// Without an expander, behavior should be unchanged (opaque + downgraded severity).
+	result := parseAndAnalyze(t, `
+(defmacro my-when (cond &rest body)
+  (quasiquote (if (unquote cond) (progn (unquote-splicing body)))))
+(defun f (x) (my-when (> x 0) (+ x 1)))`)
+
+	// x inside my-when call should still resolve (it's a symbol ref to the param)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "x", u.Name, "x should resolve as defun param")
+	}
+}
+
+func TestAnalyze_MacroExpansion_FailureFallback(t *testing.T) {
+	// If expansion fails (e.g. macro not in env), fall back to opaque analysis.
+	env := newTestEnv(t)
+	// Don't define the macro in the env — only in the source for prescan.
+	result := parseAndAnalyzeWithConfig(t, `
+(defmacro my-macro (x) (quasiquote (+ (unquote x) 1)))
+(my-macro 42)`, &Config{
+		MacroExpander: &EnvMacroExpander{Env: env},
+	})
+
+	// Should not crash — falls back to opaque analysis.
+	// 42 inside the macro call gets InsideMacroCall treatment.
+	assert.NotNil(t, result)
+}
+
+func TestAnalyze_MacroExpansion_DepthLimit(t *testing.T) {
+	// A self-expanding macro should not cause a stack overflow.
+	// The analyzer caps expansion at maxMacroExpansionDepth and falls
+	// back to opaque analysis.
+	result := parseAndAnalyzeWithExpander(t,
+		`(defmacro loop-forever (&rest body)
+		   (quasiquote (loop-forever (unquote-splicing body))))`,
+		`(loop-forever 42)`)
+
+	// Should complete without panic or hang.
+	assert.NotNil(t, result)
+	// After hitting the depth limit, the macro name should appear somewhere
+	// in the analysis output (as an unresolved ref from the opaque fallback).
+	var loopForeverSeen bool
+	for _, u := range result.Unresolved {
+		if u.Name == "loop-forever" {
+			loopForeverSeen = true
+			break
+		}
+	}
+	if !loopForeverSeen {
+		for _, r := range result.References {
+			if r.Symbol.Name == "loop-forever" {
+				loopForeverSeen = true
+				break
+			}
+		}
+	}
+	assert.True(t, loopForeverSeen,
+		"self-expanding macro should produce analysis output for 'loop-forever'")
+}
+
+func TestAnalyze_MacroExpansion_UnresolvedInExpandedCode(t *testing.T) {
+	// Symbols that are genuinely undefined in expanded code should still
+	// appear in Unresolved, but with InsideMacroCall=true (downgraded severity).
+	result := parseAndAnalyzeWithExpander(t,
+		`(defmacro wrap-body (&rest body)
+		   (quasiquote (progn (unquote-splicing body))))`,
+		`(wrap-body (totally-unknown-fn 42))`)
+
+	var found *UnresolvedRef
+	for _, u := range result.Unresolved {
+		if u.Name == "totally-unknown-fn" {
+			found = u
+			break
+		}
+	}
+	require.NotNil(t, found, "genuinely undefined symbol in expanded code should still be flagged")
+	assert.True(t, found.InsideMacroCall,
+		"undefined symbol in expanded code should have InsideMacroCall=true for downgraded severity")
+}
+
+func TestAnalyze_MacroExpansion_HandlerBindPattern(t *testing.T) {
+	// Pattern from assert-not-error: macro wraps handler-bind.
+	result := parseAndAnalyzeWithExpander(t,
+		`(defmacro with-handler (handler &rest body)
+		   (quasiquote
+		     (handler-bind ((condition (unquote handler)))
+		       (unquote-splicing body))))`,
+		`(defun safe-call (f)
+		   (with-handler (lambda (&rest e) ()) (f)))`)
+
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "f", u.Name, "f should resolve through expansion")
+		assert.NotEqual(t, "e", u.Name, "e should resolve as lambda param")
+	}
 }

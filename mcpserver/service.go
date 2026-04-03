@@ -579,7 +579,12 @@ func (s *service) loadDocument(path string, content *string, workspaceRoot *stri
 		Filename:       resolvedPath,
 		ExtraGlobals:   state.cfg.ExtraGlobals,
 		PackageExports: state.cfg.PackageExports,
+		PackageSymbols: state.cfg.PackageSymbols,
 		DefForms:       state.cfg.DefForms,
+		PackageImports: state.cfg.PackageImports,
+		DefaultPackage: state.cfg.DefaultPackage,
+		WorkspaceRefs:  state.cfg.WorkspaceRefs,
+		MacroExpander:  state.cfg.MacroExpander,
 	}
 	var result *analysis.Result
 	if parsed.Exprs != nil {
@@ -646,14 +651,20 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 	scanCfg := &analysis.ScanConfig{
 		Excludes: s.excludePatterns,
 	}
+	var preamble []*lisp.LVal
 	if root != "" {
-		globals, pkgs, symbols, _, err := analysis.ScanWorkspaceAllWithConfig(root, scanCfg)
+		prescan, err := analysis.PrescanWorkspace(root, scanCfg)
 		if err != nil {
 			return nil, err
 		}
-		state.cfg.ExtraGlobals = globals
-		state.cfg.PackageExports = pkgs
-		state.symbols = symbols
+		state.cfg.ExtraGlobals = prescan.AllDefs
+		state.cfg.PackageExports = prescan.PkgExports
+		state.cfg.PackageSymbols = prescan.PkgAllSymbols
+		state.cfg.DefForms = prescan.DefForms
+		state.cfg.PackageImports = prescan.PackageImports
+		state.cfg.DefaultPackage = prescan.DefaultPackage
+		state.symbols = prescan.AllDefs
+		preamble = prescan.Preamble
 	}
 
 	reg := s.registry
@@ -675,6 +686,15 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 	}
 	if root != "" {
 		state.refs = analysis.ScanWorkspaceRefs(root, state.cfg, scanCfg)
+		state.cfg.WorkspaceRefs = state.refs
+	}
+	if s.env != nil {
+		if errs := analysis.LoadWorkspaceMacros(s.env, preamble); len(errs) > 0 {
+			for _, err := range errs {
+				slog.Warn("failed to load workspace macro", "error", err)
+			}
+		}
+		state.cfg.MacroExpander = &analysis.EnvMacroExpander{Env: s.env}
 	}
 	return state, nil
 }

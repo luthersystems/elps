@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
@@ -1348,7 +1349,7 @@ func TestBuildLoadTree_Basic(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.lisp"), []byte(`(defun a-fn () 1)`), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`(defun b-fn () 2)`), 0600))
 
-	tree := buildLoadTree(filepath.Join(dir, "main.lisp"))
+	tree, _ := buildLoadTree(filepath.Join(dir, "main.lisp"))
 
 	absA, _ := filepath.Abs(filepath.Join(dir, "a.lisp"))
 	absB, _ := filepath.Abs(filepath.Join(dir, "b.lisp"))
@@ -1368,7 +1369,7 @@ func TestBuildLoadTree_PackageSwitch(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.lisp"), []byte(`(defun a-fn () 1)`), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`(defun b-fn () 2)`), 0600))
 
-	tree := buildLoadTree(filepath.Join(dir, "main.lisp"))
+	tree, _ := buildLoadTree(filepath.Join(dir, "main.lisp"))
 
 	absA, _ := filepath.Abs(filepath.Join(dir, "a.lisp"))
 	absB, _ := filepath.Abs(filepath.Join(dir, "b.lisp"))
@@ -1388,7 +1389,7 @@ func TestBuildLoadTree_Nested(t *testing.T) {
 `), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`(defun b-fn () 2)`), 0600))
 
-	tree := buildLoadTree(filepath.Join(dir, "main.lisp"))
+	tree, _ := buildLoadTree(filepath.Join(dir, "main.lisp"))
 
 	absA, _ := filepath.Abs(filepath.Join(dir, "a.lisp"))
 	absB, _ := filepath.Abs(filepath.Join(dir, "b.lisp"))
@@ -1431,6 +1432,101 @@ func TestPrescanWorkspace_DefaultPackage(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "do-work should be in AllDefs")
+}
+
+func TestPrescanWorkspace_SetInBareFileRemapped(t *testing.T) {
+	// set definitions in bare template files should be remapped to the
+	// load-tree's package context, making them visible to other files.
+	dir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'myapp)
+(load-file "template.lisp")
+`), 0600))
+
+	// template.lisp — no in-package, uses set for a global.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "template.lisp"), []byte(`
+(set 'default-template "hello world")
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+
+	// default-template should be remapped to myapp (not user).
+	found := false
+	for _, d := range prescan.AllDefs {
+		if d.Name == "default-template" {
+			assert.Equal(t, "myapp", d.Package,
+				"set global in bare file should be remapped to load context package")
+			found = true
+		}
+	}
+	assert.True(t, found, "default-template should be in AllDefs")
+
+	// End-to-end: verify a file in myapp can resolve default-template.
+	cfg := &Config{
+		ExtraGlobals:   prescan.AllDefs,
+		PackageExports: prescan.PkgExports,
+		PackageSymbols: prescan.PkgAllSymbols,
+		PackageImports: prescan.PackageImports,
+		DefaultPackage: prescan.DefaultPackage,
+	}
+	result := parseAndAnalyzeWithConfig(t,
+		`(in-package 'myapp)
+(defun use-template () default-template)`, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "default-template", u.Name,
+			"set global from bare template file should resolve cross-file")
+	}
+}
+
+func TestPrescanWorkspace_SetInBareFileNotInLoadTree(t *testing.T) {
+	// Bare files not explicitly loaded via load-file should still have
+	// their definitions remapped to DefaultPackage (not left in user).
+	// At runtime these files would inherit the caller's package; the
+	// best static approximation is DefaultPackage from main.lisp.
+	dir := t.TempDir()
+
+	// main.lisp does NOT load-file template.lisp.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'myapp)
+(defun use-template () my-template)
+`), 0600))
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "template.lisp"), []byte(`
+(set 'my-template "hello world")
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "myapp", prescan.DefaultPackage)
+
+	// my-template should be remapped to myapp even without load-file.
+	found := false
+	for _, d := range prescan.AllDefs {
+		if d.Name == "my-template" {
+			assert.Equal(t, "myapp", d.Package,
+				"bare file set not in load tree should remap to DefaultPackage")
+			found = true
+		}
+	}
+	assert.True(t, found, "my-template should be in AllDefs")
+
+	// End-to-end: verify it resolves cross-file.
+	cfg := &Config{
+		ExtraGlobals:   prescan.AllDefs,
+		PackageExports: prescan.PkgExports,
+		PackageSymbols: prescan.PkgAllSymbols,
+		PackageImports: prescan.PackageImports,
+		DefaultPackage: prescan.DefaultPackage,
+	}
+	result := parseAndAnalyzeWithConfig(t,
+		`(in-package 'myapp)
+(defun use-template () my-template)`, cfg)
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "my-template", u.Name,
+			"set global from bare file not in load tree should resolve via DefaultPackage")
+	}
 }
 
 // TestPrescanWorkspace_PhylumPattern replicates a typical phylum workspace:
@@ -1626,7 +1722,7 @@ func TestBuildLoadTree_CycleDetection(t *testing.T) {
 (load-file "a.lisp")
 `), 0600))
 
-	tree := buildLoadTree(filepath.Join(dir, "a.lisp"))
+	tree, _ := buildLoadTree(filepath.Join(dir, "a.lisp"))
 	assert.NotNil(t, tree, "should terminate without infinite loop")
 
 	absB, _ := filepath.Abs(filepath.Join(dir, "b.lisp"))
@@ -1734,4 +1830,39 @@ func TestScanConfig_EffectiveDefaults(t *testing.T) {
 	negCfg := &ScanConfig{MaxFiles: -1, MaxFileBytes: -1}
 	assert.Equal(t, DefaultMaxWorkspaceFiles, negCfg.effectiveMaxFiles())
 	assert.Equal(t, int64(DefaultMaxFileBytes), negCfg.effectiveMaxFileBytes())
+}
+
+func TestPrescanWorkspace_Preamble(t *testing.T) {
+	dir := t.TempDir()
+
+	// File with in-package, use-package, export, defmacro, and defun.
+	// Only preamble forms should be collected.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "macros.lisp"), []byte(`
+(in-package 'mypkg)
+(use-package 'utils)
+(export 'my-macro)
+(defmacro my-macro (x) (quasiquote (+ (unquote x) 1)))
+(defun helper () 42)
+(set 'my-global "value")
+`), 0600))
+
+	// Bare file with defmacro only.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "user.lisp"), []byte(`
+(defmacro user-macro () '1)
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+
+	// Count preamble forms by type.
+	heads := make(map[string]int)
+	for _, form := range prescan.Preamble {
+		heads[astutil.HeadSymbol(form)]++
+	}
+	assert.Equal(t, 1, heads["in-package"], "should collect in-package")
+	assert.Equal(t, 1, heads["use-package"], "should collect use-package")
+	assert.Equal(t, 1, heads["export"], "should collect export")
+	assert.Equal(t, 2, heads["defmacro"], "should collect both defmacro forms")
+	assert.Equal(t, 1, heads["defun"], "should collect defun forms")
+	assert.Equal(t, 1, heads["set"], "should collect set forms")
 }

@@ -9,6 +9,10 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
+// maxMacroExpansionDepth caps recursive macro expansion in the analyzer
+// to prevent stack overflow on pathological macros (e.g. self-expanding).
+const maxMacroExpansionDepth = 64
+
 // analyzer is the internal state for a single analysis run.
 type analyzer struct {
 	root             *Scope
@@ -16,6 +20,7 @@ type analyzer struct {
 	cfg              *Config
 	qualifiedSymbols map[string]*Symbol
 	insideMacroCall  int // depth counter for user-macro body analysis
+	expansionDepth   int // current macro expansion nesting depth
 }
 
 // defaultPackage returns the default package for bare files. If a
@@ -403,6 +408,18 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope, currentPkg string)
 		a.analyzePrefixLambda(node, scope, currentPkg)
 	case "handler-bind":
 		a.analyzeHandlerBind(node, scope, currentPkg)
+	case "cond":
+		a.analyzeCond(node, scope, currentPkg)
+	case "macrolet":
+		a.analyzeMacrolet(node, scope, currentPkg)
+	case "qualified-symbol":
+		a.analyzeQualifiedSymbol(node, scope, currentPkg)
+	case "thread-first", "thread-last":
+		// Threading macros transform expressions at expansion time by
+		// inserting the threaded value as the first/last argument of each
+		// form. For symbol resolution purposes the same symbols appear
+		// regardless of the transformation, so analyzeCall is correct.
+		a.analyzeCall(node, scope, currentPkg)
 	case "test":
 		a.analyzeTest(node, scope, currentPkg)
 	default:
@@ -961,12 +978,44 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 	// Analyze the value expression
 	a.analyzeExpr(node.Cells[2], scope, currentPkg)
 
-	// For set, the name might be a new binding or overwrite
 	name := extractSetSymbolName(node.Cells[1])
 	if name == "" {
 		return
 	}
-	// If not already defined at top level, define it
+
+	// At runtime, set always calls PutGlobal — it writes to the package-
+	// level scope regardless of where the call appears. Model this by:
+	// - In non-global scopes: treat as a reference to the existing global
+	//   binding (or create one in the root scope if none exists).
+	// - In global scope: create or overwrite in the current scope (existing
+	//   behavior, matches prescan).
+	if scope.Kind != ScopeGlobal {
+		// Look up in the root (global) scope specifically — set always
+		// targets the package scope via PutGlobal, so let/lambda-local
+		// bindings with the same name should not be found here.
+		if existing := a.root.LookupLocalInPackage(name, currentPkg); existing != nil {
+			existing.References++
+			a.result.References = append(a.result.References, &Reference{
+				Symbol: existing,
+				Source:  node.Cells[1].Source,
+				Node:    extractSetSymbolNode(node.Cells[1]),
+			})
+			return
+		}
+		// No existing global — set will create it at package scope.
+		sym := &Symbol{
+			Name:    name,
+			Package: currentPkg,
+			Kind:    SymVariable,
+			Source:  node.Cells[1].Source,
+			Node:    extractSetSymbolNode(node.Cells[1]),
+		}
+		a.root.Define(sym)
+		a.result.Symbols = append(a.result.Symbols, sym)
+		return
+	}
+
+	// Global scope: define locally if not already present.
 	defPkg := packageForScope(scope, currentPkg)
 	if scope.LookupLocalInPackage(name, defPkg) == nil {
 		sym := &Symbol{
@@ -1037,6 +1086,96 @@ func (a *analyzer) analyzeHandlerBind(node *lisp.LVal, scope *Scope, currentPkg 
 	// Analyze body forms
 	for _, child := range node.Cells[2:] {
 		a.analyzeExpr(child, scope, currentPkg)
+	}
+}
+
+func (a *analyzer) analyzeCond(node *lisp.LVal, scope *Scope, currentPkg string) {
+	// cond form: (cond (test body...)*)
+	// The runtime special-cases bare 'else' as a catch-all keyword (op.go:729).
+	// Bare 'true' is not special-cased by the runtime but evaluates to a
+	// truthy value (well-known symbol from populateBuiltins), so it also
+	// serves as a default clause. Skip resolving both to avoid noise.
+	for _, clause := range node.Cells[1:] {
+		if clause.Type != lisp.LSExpr || clause.Quoted || len(clause.Cells) == 0 {
+			continue
+		}
+		test := clause.Cells[0]
+		if test.Type == lisp.LSymbol && !test.Quoted && isCondDefaultSymbol(test.Str) {
+			// Skip — 'else' is a runtime keyword; 'true' is a well-known truthy symbol.
+		} else {
+			a.analyzeExpr(test, scope, currentPkg)
+		}
+		for _, body := range clause.Cells[1:] {
+			a.analyzeExpr(body, scope, currentPkg)
+		}
+	}
+}
+
+// isCondDefaultSymbol returns true if name is a bare symbol recognized as
+// a default clause test in cond. Keywords (:else, :true) are already
+// skipped by resolveSymbol so only bare forms need checking here.
+// See also: lint/analyzers.go isCondDefault (same logic, used by lint checks).
+func isCondDefaultSymbol(name string) bool {
+	return name == "else" || name == "true"
+}
+
+func (a *analyzer) analyzeMacrolet(node *lisp.LVal, scope *Scope, currentPkg string) {
+	// macrolet form: (macrolet ((name formals body...) ...) body...)
+	// Creates a new scope with locally-bound macros, then evaluates body in
+	// that scope. Macro bodies are templates (like defmacro) — we skip
+	// analyzing them to avoid false positives from template variables.
+	if astutil.ArgCount(node) < 1 {
+		return
+	}
+	bindings := node.Cells[1]
+	if bindings.Type != lisp.LSExpr {
+		return
+	}
+
+	macroletScope := NewScope(ScopeMacrolet, scope, node)
+
+	for _, binding := range bindings.Cells {
+		if binding.Type != lisp.LSExpr || len(binding.Cells) < 2 {
+			continue
+		}
+		nameVal := binding.Cells[0]
+		if nameVal.Type != lisp.LSymbol {
+			continue
+		}
+		sym := &Symbol{
+			Name:   nameVal.Str,
+			Kind:   SymMacro,
+			Source: nameVal.Source,
+			Node:   nameVal,
+		}
+		macroletScope.Define(sym)
+		a.result.Symbols = append(a.result.Symbols, sym)
+		// Skip analyzing macro bodies — they are templates, not executable
+		// code in this scope. Like defmacro, template variables (from
+		// quasiquote/unquote) would produce false "undefined symbol" reports.
+	}
+
+	// Analyze body forms in the macrolet scope
+	for i := 2; i < len(node.Cells); i++ {
+		a.analyzeExpr(node.Cells[i], macroletScope, currentPkg)
+	}
+}
+
+func (a *analyzer) analyzeQualifiedSymbol(node *lisp.LVal, scope *Scope, currentPkg string) {
+	// qualified-symbol form: (qualified-symbol name)
+	// The argument is a bare symbol treated as data (a name to construct a
+	// qualified symbol from), not a variable reference. Skip resolving it to
+	// avoid false "undefined symbol" reports, similar to how handler-bind
+	// skips condition type names.
+	//
+	// Analyze the head (qualified-symbol itself) so it gets resolved.
+	if len(node.Cells) > 0 {
+		a.analyzeExpr(node.Cells[0], scope, currentPkg)
+	}
+	// Skip Cells[1] — it's data, not a symbol reference.
+	// Analyze any remaining args (unlikely but for completeness).
+	for i := 2; i < len(node.Cells); i++ {
+		a.analyzeExpr(node.Cells[i], scope, currentPkg)
 	}
 }
 
@@ -1134,11 +1273,41 @@ func (a *analyzer) walkQuasiquoteTemplate(node *lisp.LVal, scope *Scope, current
 }
 
 func (a *analyzer) analyzeCall(node *lisp.LVal, scope *Scope, currentPkg string) {
-	// Check if head is a user-defined macro — unresolved symbols inside
-	// macro bodies get lower severity since macros may introduce bindings
-	// at expansion time that are invisible to static analysis.
+	// Check if head is a user-defined macro — try expansion if an expander
+	// is available, otherwise fall back to opaque analysis with lowered
+	// severity for unresolved symbols.
 	if len(node.Cells) > 0 && node.Cells[0].Type == lisp.LSymbol {
-		if sym := scope.Lookup(node.Cells[0].Str); sym != nil && sym.Kind == SymMacro && isUserMacro(sym) {
+		sym := scope.Lookup(node.Cells[0].Str)
+		isMacro := sym != nil && sym.Kind == SymMacro && isUserMacro(sym)
+
+		if isMacro {
+			sym.References++
+			a.result.References = append(a.result.References, &Reference{
+				Symbol: sym,
+				Source:  node.Cells[0].Source,
+				Node:    node.Cells[0],
+			})
+		}
+
+		// Try macro expansion: either the symbol is a known user-macro,
+		// or the expander recognizes it (the macro may be defined in the
+		// runtime env but not in the analyzed source, e.g. cross-file macros
+		// or macros from the embedder's registry).
+		// Depth-limited to prevent stack overflow on self-expanding macros.
+		if a.cfg != nil && a.cfg.MacroExpander != nil && (isMacro || sym == nil) &&
+			a.expansionDepth < maxMacroExpansionDepth {
+			if expanded := a.cfg.MacroExpander.ExpandMacro(node, currentPkg); expanded != nil {
+				a.insideMacroCall++
+				a.expansionDepth++
+				a.analyzeExpr(expanded, scope, currentPkg)
+				a.expansionDepth--
+				a.insideMacroCall--
+				return
+			}
+		}
+
+		if isMacro {
+			// No expander or expansion failed — opaque walk.
 			a.insideMacroCall++
 			defer func() { a.insideMacroCall-- }()
 		}

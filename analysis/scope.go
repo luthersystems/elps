@@ -13,6 +13,7 @@ const (
 	ScopeLambda                    // lambda body
 	ScopeLet                       // let/let* body
 	ScopeFlet                      // flet/labels body
+	ScopeMacrolet                  // macrolet body
 	ScopeDotimes                   // dotimes body
 )
 
@@ -28,6 +29,8 @@ func (k ScopeKind) String() string {
 		return "let"
 	case ScopeFlet:
 		return "flet"
+	case ScopeMacrolet:
+		return "macrolet"
 	case ScopeDotimes:
 		return "dotimes"
 	default:

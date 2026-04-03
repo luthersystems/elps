@@ -63,8 +63,6 @@ gh pr create --title "<concise title>" --body "$(cat <<'EOF'
 - [ ] `./elps doc -m` reports no missing docs
 
 Closes #<N>
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
 ```
