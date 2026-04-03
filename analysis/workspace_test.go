@@ -1747,7 +1747,8 @@ func TestPrescanWorkspace_Preamble(t *testing.T) {
 (use-package 'utils)
 (export 'my-macro)
 (defmacro my-macro (x) (quasiquote (+ (unquote x) 1)))
-(defun not-a-preamble () 42)
+(defun helper () 42)
+(set 'my-global "value")
 `), 0600))
 
 	// Bare file with defmacro only.
@@ -1768,4 +1769,5 @@ func TestPrescanWorkspace_Preamble(t *testing.T) {
 	assert.Equal(t, 1, heads["export"], "should collect export")
 	assert.Equal(t, 2, heads["defmacro"], "should collect both defmacro forms")
 	assert.Equal(t, 1, heads["defun"], "should collect defun forms")
+	assert.Equal(t, 1, heads["set"], "should collect set forms")
 }

@@ -103,9 +103,9 @@ func (e *EnvMacroExpander) ExpandMacro(form *lisp.LVal, pkg string) (result *lis
 }
 
 // LoadWorkspaceMacros replays workspace preamble forms (in-package,
-// use-package, export, defmacro) into the given environment. This mirrors
-// what the runtime's (load) does — forms are eval'd in source order so
-// package context, imports, and macro definitions build up naturally.
+// use-package, export, defmacro, defun, set) into the given environment.
+// This mirrors what the runtime's (load) does — forms are eval'd in source
+// order so package context, imports, and definitions build up naturally.
 //
 // Workspace packages that don't exist in the boot env are auto-created.
 // The env's active package is saved and restored after loading.

@@ -365,15 +365,15 @@ func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkg
 	}
 	usePackages = scanUsePackages(exprs)
 
-	// Collect preamble forms (package management + macro definitions) in
-	// source order. LoadWorkspaceMacros evals these to replay the package
-	// setup and register macros, mirroring the runtime's (load) behavior.
+	// Collect preamble forms (package management + definitions) in source
+	// order. LoadWorkspaceMacros evals these to replay the package setup
+	// and register macros/functions/globals, mirroring (load) behavior.
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
 			continue
 		}
 		switch astutil.HeadSymbol(expr) {
-		case "in-package", "use-package", "export", "defmacro", "defun":
+		case "in-package", "use-package", "export", "defmacro", "defun", "set":
 			preamble = append(preamble, expr)
 		}
 	}

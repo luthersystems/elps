@@ -403,6 +403,83 @@ func TestLoadWorkspaceMacros_BareFileInheritsPackageSwitch(t *testing.T) {
 		"fn-b should NOT leak into pkgA")
 }
 
+func TestLoadWorkspaceMacros_LoadOrderMatters(t *testing.T) {
+	// Preamble forms must be in load-tree DFS order so that definitions
+	// are available when later macros need them during expansion.
+	// helpers.lisp defines a function, macros.lisp defines a macro that
+	// calls it. main.lisp loads helpers first — matching load order.
+	dir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'myapp)
+(load-file "helpers.lisp")
+(load-file "macros.lisp")
+`), 0600))
+
+	// helpers.lisp defines the function (loaded first).
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "helpers.lisp"), []byte(`
+(in-package 'myapp)
+(defun double (x) (+ x x))
+`), 0600))
+
+	// macros.lisp defines a macro that calls double (loaded second).
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "macros.lisp"), []byte(`
+(in-package 'myapp)
+(defmacro with-double (val &rest body)
+  (quasiquote (let ([doubled (double (unquote val))]) (unquote-splicing body))))
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+
+	env := newTestEnv(t)
+	errs := LoadWorkspaceMacros(env, prescan.Preamble)
+	assert.Empty(t, errs, "helpers loaded before macros — double should be available")
+
+	// Verify the macro expands correctly using the workspace helper.
+	result := parseAndAnalyzeWithConfig(t,
+		`(in-package 'myapp)
+(defun test (x) (with-double x (+ doubled 1)))`,
+		&Config{
+			MacroExpander: &EnvMacroExpander{Env: env},
+		})
+
+	for _, u := range result.Unresolved {
+		assert.NotEqual(t, "doubled", u.Name,
+			"doubled should resolve as let binding from macro expansion")
+	}
+}
+
+func TestLoadWorkspaceMacros_SetInBareFile(t *testing.T) {
+	// set definitions in bare template files should be loaded into the
+	// correct package, making globals available during macro expansion.
+	dir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'myapp)
+(load-file "template.lisp")
+`), 0600))
+
+	// template.lisp — no in-package, uses set for a global.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "template.lisp"), []byte(`
+(set 'default-template "hello world")
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+
+	env := newTestEnv(t)
+	errs := LoadWorkspaceMacros(env, prescan.Preamble)
+	assert.Empty(t, errs)
+
+	// default-template should be in myapp (inherited from load context).
+	env.InPackage(lisp.String("myapp"))
+	val := env.Get(lisp.Symbol("default-template"))
+	assert.Equal(t, lisp.LString, val.Type,
+		"set global in bare file should be in myapp package")
+	assert.Equal(t, "hello world", val.Str)
+}
+
 func TestLoadWorkspaceMacros_ErrorReturned(t *testing.T) {
 	env := newTestEnv(t)
 
