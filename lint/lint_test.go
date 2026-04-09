@@ -1368,21 +1368,21 @@ func TestSeverity_String(t *testing.T) {
 func TestSeverity_AnalyzerDefaults(t *testing.T) {
 	// Table-driven: verify each analyzer has the expected severity.
 	expected := map[string]Severity{
-		"set-usage":          SeverityWarning,
-		"in-package-toplevel": SeverityWarning,
-		"if-arity":           SeverityError,
-		"let-bindings":       SeverityError,
-		"defun-structure":    SeverityError,
-		"cond-structure":     SeverityError,
-		"builtin-arity":      SeverityError,
-		"quote-call":         SeverityWarning,
-		"cond-missing-else":  SeverityInfo,
-		"rethrow-context":    SeverityError,
-		"unnecessary-progn":  SeverityInfo,
-		"undefined-symbol":   SeverityError,
-		"unused-variable":    SeverityWarning,
-		"unused-function":    SeverityWarning,
-		"shadowing":          SeverityInfo,
+		"set-usage":            SeverityWarning,
+		"in-package-toplevel":  SeverityWarning,
+		"if-arity":             SeverityError,
+		"let-bindings":         SeverityError,
+		"defun-structure":      SeverityError,
+		"cond-structure":       SeverityError,
+		"builtin-arity":        SeverityError,
+		"quote-call":           SeverityWarning,
+		"cond-missing-else":    SeverityInfo,
+		"rethrow-context":      SeverityError,
+		"unnecessary-progn":    SeverityInfo,
+		"undefined-symbol":     SeverityError,
+		"unused-variable":      SeverityWarning,
+		"unused-function":      SeverityWarning,
+		"shadowing":            SeverityInfo,
 		"user-arity":           SeverityError,
 		"duplicate-definition": SeverityWarning,
 	}
@@ -2478,6 +2478,10 @@ func TestDuplicateDefinition_CrossFile(t *testing.T) {
 	assertHasDiag(t, diags, "helper")
 	require.NotEmpty(t, diags[0].Notes)
 	assert.Contains(t, diags[0].Notes[0], "other.lisp:5")
+	require.Len(t, diags[0].Related, 1)
+	assert.Equal(t, "also defined here", diags[0].Related[0].Message)
+	assert.Equal(t, "other.lisp", diags[0].Related[0].Location.File)
+	assert.Equal(t, 5, diags[0].Related[0].Location.Line)
 }
 
 func TestDuplicateDefinition_CrossFile_DifferentPackage(t *testing.T) {
@@ -2560,6 +2564,33 @@ func TestDuplicateDefinition_CrossFile_SameFilePathNormalization(t *testing.T) {
 		},
 	}
 	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+func TestDuplicateDefinition_CrossFile_SameFileSymlinkNormalization(t *testing.T) {
+	source := "(defun helper () 42)"
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDuplicateDefinition}}
+
+	dir := t.TempDir()
+	realPath := filepath.Join(dir, "real.lisp")
+	aliasPath := filepath.Join(dir, "alias.lisp")
+	require.NoError(t, os.WriteFile(realPath, []byte(source), 0o600))
+	if err := os.Symlink(realPath, aliasPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	cfg := &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:    "helper",
+				Kind:    analysis.SymFunction,
+				Package: "user",
+				Source:  &token.Location{File: realPath, Line: 1, Col: 7},
+			},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), aliasPath, cfg)
 	require.NoError(t, err)
 	assertNoDiags(t, diags)
 }

@@ -109,13 +109,36 @@ func locContainsCol(loc *token.Location, name string, col int) bool {
 // position from the document content. The cursor can be inside or at the
 // end of a word; in both cases the full word is returned.
 func wordAtPosition(content string, line, col int) string {
+	start, end, ok := wordBoundsAtPosition(content, line, col)
+	if !ok {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	return lines[line][start:end]
+}
+
+// wordRangeAtPosition returns the LSP range for the symbol-like word at the
+// given 0-based position. Returns nil if there is no word at that location.
+func wordRangeAtPosition(content string, line, col int) *protocol.Range {
+	start, end, ok := wordBoundsAtPosition(content, line, col)
+	if !ok {
+		return nil
+	}
+	rng := protocol.Range{
+		Start: protocol.Position{Line: safeUint(line), Character: safeUint(start)},
+		End:   protocol.Position{Line: safeUint(line), Character: safeUint(end)},
+	}
+	return &rng
+}
+
+func wordBoundsAtPosition(content string, line, col int) (int, int, bool) {
 	lines := strings.Split(content, "\n")
 	if line < 0 || line >= len(lines) {
-		return ""
+		return 0, 0, false
 	}
 	ln := lines[line]
 	if col < 0 || col > len(ln) {
-		return ""
+		return 0, 0, false
 	}
 	// Clamp col to the line length (cursor can be at end of line).
 	if col >= len(ln) {
@@ -131,7 +154,10 @@ func wordAtPosition(content string, line, col int) string {
 	for end < len(ln) && isSymbolChar(ln[end]) {
 		end++
 	}
-	return ln[start:end]
+	if start == end {
+		return 0, 0, false
+	}
+	return start, end, true
 }
 
 func isSymbolChar(c byte) bool {

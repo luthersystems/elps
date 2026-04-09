@@ -157,6 +157,8 @@ func TestCodeActionFixUndefinedSymbol(t *testing.T) {
 	for _, a := range actions {
 		if a.Title == "Add (use-package 'string)" {
 			found = true
+			require.NotNil(t, a.IsPreferred)
+			assert.True(t, *a.IsPreferred)
 			require.NotNil(t, a.Edit)
 			edits := a.Edit.Changes[doc.URI]
 			require.NotEmpty(t, edits)
@@ -165,6 +167,40 @@ func TestCodeActionFixUndefinedSymbol(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "expected an add use-package action for string")
+}
+
+func TestCodeActionUsesDiagnosticDataAnalyzer(t *testing.T) {
+	s := testServer()
+	setTestAnalysisCfg(s, &analysis.Config{})
+
+	src := "(set x 1)\n(set x 2)"
+	doc := openDoc(s, "file:///test/data-analyzer.lisp", src)
+
+	sev := protocol.DiagnosticSeverityWarning
+	diag := protocol.Diagnostic{
+		Range: protocol.Range{
+			Start: protocol.Position{Line: 1, Character: 1},
+			End:   protocol.Position{Line: 1, Character: 4},
+		},
+		Severity: &sev,
+		Source:   strPtr("elps-lint"),
+		Message:  "set reassigns symbol x; use set! to mutate",
+		Data:     map[string]any{"analyzer": "set-usage"},
+	}
+
+	result, err := s.textDocumentCodeAction(mockContext(), &protocol.CodeActionParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+		Range:        diag.Range,
+		Context: protocol.CodeActionContext{
+			Diagnostics: []protocol.Diagnostic{diag},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	actions := result.([]protocol.CodeAction)
+	require.NotEmpty(t, actions)
+	assert.Equal(t, "Suppress with ; nolint:set-usage", actions[0].Title)
 }
 
 func TestCodeActionNoDiagnostics(t *testing.T) {

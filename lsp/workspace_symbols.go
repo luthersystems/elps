@@ -88,6 +88,10 @@ func (s *Server) workspaceSymbol(_ *glsp.Context, params *protocol.WorkspaceSymb
 			}
 			seen[key] = true
 			r := elpsToLSPRange(sym.Source, len(sym.Name))
+			var containerName *string
+			if pkg := symbolContainerName(sym); pkg != "" {
+				containerName = &pkg
+			}
 			results = append(results, protocol.SymbolInformation{
 				Name: sym.Name,
 				Kind: mapSymbolKind(sym.Kind),
@@ -95,11 +99,19 @@ func (s *Server) workspaceSymbol(_ *glsp.Context, params *protocol.WorkspaceSymb
 					URI:   doc.URI,
 					Range: r,
 				},
+				ContainerName: containerName,
 			})
 		}
 	}
 
 	return results, nil
+}
+
+func symbolContainerName(sym *analysis.Symbol) string {
+	if sym == nil {
+		return ""
+	}
+	return sym.Package
 }
 
 // externalSymbolToInfo converts an analysis.ExternalSymbol to a

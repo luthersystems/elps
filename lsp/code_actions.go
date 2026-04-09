@@ -4,6 +4,7 @@ package lsp
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
@@ -48,7 +49,7 @@ func (s *Server) textDocumentCodeAction(_ *glsp.Context, params *protocol.CodeAc
 
 		switch *diag.Source {
 		case "elps-lint":
-			analyzerName := diagnosticCodeString(diag.Code)
+			analyzerName := diagnosticAnalyzerName(diag)
 			if analyzerName == "" {
 				// Workaround for glsp v0.2.2 bug: IntegerOrString.UnmarshalJSON
 				// uses a value receiver, so Code.Value is always nil after JSON
@@ -128,8 +129,15 @@ func unresolvedRefActions(uri string, rng protocol.Range, res *analysis.Result, 
 // usePackageActions searches all package exports for a symbol name and returns
 // code actions that insert (use-package 'pkg) at the top of the file.
 func usePackageActions(uri string, _ protocol.Range, symName, content string, cfg *analysis.Config, diag *protocol.Diagnostic) []protocol.CodeAction {
+	packages := make([]string, 0, len(cfg.PackageExports))
+	for pkg := range cfg.PackageExports {
+		packages = append(packages, pkg)
+	}
+	sort.Strings(packages)
+
 	var actions []protocol.CodeAction
-	for pkg, exports := range cfg.PackageExports {
+	for _, pkg := range packages {
+		exports := cfg.PackageExports[pkg]
 		for _, sym := range exports {
 			if sym.Name == symName {
 				title := fmt.Sprintf("Add (use-package '%s)", pkg)
@@ -158,7 +166,20 @@ func usePackageActions(uri string, _ protocol.Range, symName, content string, cf
 			}
 		}
 	}
+	if len(actions) == 1 {
+		actions[0].IsPreferred = boolPtr(true)
+	}
 	return actions
+}
+
+func diagnosticAnalyzerName(diag protocol.Diagnostic) string {
+	if analyzer := diagnosticCodeString(diag.Code); analyzer != "" {
+		return analyzer
+	}
+	if analyzer := diagnosticDataAnalyzer(diag.Data); analyzer != "" {
+		return analyzer
+	}
+	return ""
 }
 
 // diagnosticCodeString extracts the analyzer name from a diagnostic Code field.
@@ -179,6 +200,19 @@ func diagnosticCodeString(code *protocol.IntegerOrString) string {
 	default:
 		return ""
 	}
+}
+
+func diagnosticDataAnalyzer(data any) string {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return ""
+	}
+	v, ok := m["analyzer"]
+	if !ok {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
 }
 
 // lookupCachedAnalyzerName finds a matching diagnostic in the cached list

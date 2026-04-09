@@ -4,7 +4,6 @@ package lint
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -884,6 +883,7 @@ var AnalyzerUserArity = &Analyzer{
 					Pos:     posFromSource(src.Source),
 					EndPos:  endPosFromNode(src),
 					Notes:   []string{fmt.Sprintf("defined at %s", sourceString(sym.Source))},
+					Related: relatedFromSource(sym.Source, "defined here"),
 				})
 			}
 			if maxArity >= 0 && argc > maxArity {
@@ -893,6 +893,7 @@ var AnalyzerUserArity = &Analyzer{
 					Pos:     posFromSource(src.Source),
 					EndPos:  endPosFromNode(src),
 					Notes:   []string{fmt.Sprintf("defined at %s", sourceString(sym.Source))},
+					Related: relatedFromSource(sym.Source, "defined here"),
 				})
 			}
 		})
@@ -909,6 +910,16 @@ func sourceString(loc *token.Location) string {
 		return fmt.Sprintf("%s:%d:%d", loc.File, loc.Line, loc.Col)
 	}
 	return fmt.Sprintf("%s:%d", loc.File, loc.Line)
+}
+
+func relatedFromSource(loc *token.Location, message string) []RelatedInformation {
+	if loc == nil {
+		return nil
+	}
+	return []RelatedInformation{{
+		Location: posFromSource(loc),
+		Message:  message,
+	}}
 }
 
 // AnalyzerUndefinedSymbol reports symbols that could not be resolved in any
@@ -1012,10 +1023,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 		// Normalize the current filename for reliable self-file comparison.
 		// Paths from workspace scanning may be absolute while lint filenames
 		// may be relative (or vice versa).
-		cleanFilename := pass.Filename
-		if cleanFilename != "" {
-			cleanFilename = filepath.Clean(cleanFilename)
-		}
+		cleanFilename := analysis.NormalizePath(pass.Filename)
 
 		for key, syms := range groups {
 			first := syms[0]
@@ -1027,6 +1035,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 					Pos:     posFromSource(sym.Source),
 					EndPos:  endPosFromNode(sym.Node),
 					Notes:   []string{fmt.Sprintf("first defined at %s", sourceString(first.Source))},
+					Related: relatedFromSource(first.Source, "first defined here"),
 				})
 			}
 
@@ -1041,7 +1050,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 			if ext, ok := extIndex[extKey{name: key.name, pkg: localPkg}]; ok {
 				// Skip if the external definition is from the same file
 				// (self-reference from workspace scanning).
-				if cleanFilename != "" && filepath.Clean(ext.Source.File) == cleanFilename {
+				if cleanFilename != "" && analysis.NormalizePath(ext.Source.File) == cleanFilename {
 					continue
 				}
 				pass.Report(Diagnostic{
@@ -1049,6 +1058,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 					Pos:     posFromSource(first.Source),
 					EndPos:  endPosFromNode(first.Node),
 					Notes:   []string{fmt.Sprintf("also defined at %s", sourceString(ext.Source))},
+					Related: relatedFromSource(ext.Source, "also defined here"),
 				})
 			}
 		}
