@@ -86,8 +86,8 @@ func (s *Server) packageCompletions(doc *Document, pkgName, partial string) []pr
 				Label: label,
 				Kind:  &kind,
 			}
-			if ext.Signature != nil {
-				detail := formatSignature(ext.Signature)
+			detail := externalCompletionDetail(&ext, pkgName)
+			if detail != "" {
 				item.Detail = &detail
 			}
 			if ext.DocString != "" {
@@ -127,8 +127,8 @@ func (s *Server) scopeCompletions(doc *Document, line, col int, prefix string) [
 			Label: sym.Name,
 			Kind:  &kind,
 		}
-		if sym.Signature != nil {
-			detail := formatSignature(sym.Signature)
+		detail := symbolCompletionDetail(sym)
+		if detail != "" {
 			item.Detail = &detail
 		}
 		if sym.DocString != "" {
@@ -165,4 +165,46 @@ func (s *Server) scopeCompletions(doc *Document, line, col int, prefix string) [
 	}
 
 	return items
+}
+
+func externalCompletionDetail(sym *analysis.ExternalSymbol, fallbackPkg string) string {
+	if sym == nil {
+		return ""
+	}
+	origin := symbolKindLabel(sym.Kind)
+	pkg := sym.Package
+	if pkg == "" {
+		pkg = fallbackPkg
+	}
+	switch {
+	case pkg != "":
+		origin += " from package " + pkg
+	case sym.Source != nil && sym.Source.File != "":
+		origin += " from " + sym.Source.File
+	}
+	if sym.Signature != nil {
+		origin += " " + formatSignature(sym.Signature)
+	}
+	return origin
+}
+
+func symbolCompletionDetail(sym *analysis.Symbol) string {
+	if sym == nil {
+		return ""
+	}
+	detail := symbolKindLabel(sym.Kind)
+	switch {
+	case isBuiltin(sym):
+		detail = "builtin"
+	case sym.External && sym.Package != "":
+		detail += " from package " + sym.Package
+	case sym.External && sym.Source != nil && sym.Source.File != "":
+		detail += " from " + sym.Source.File
+	case sym.Package != "":
+		detail += " in package " + sym.Package
+	}
+	if sym.Signature != nil {
+		detail += " " + formatSignature(sym.Signature)
+	}
+	return detail
 }

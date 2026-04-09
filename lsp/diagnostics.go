@@ -4,14 +4,18 @@ package lsp
 
 import (
 	"errors"
+	"path/filepath"
 	"time"
 
-	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lint"
+	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 )
+
+const lintChecksDocURL = "https://github.com/luthersystems/elps/blob/main/docs/lint-checks.md"
 
 const debounceDelay = 300 * time.Millisecond
 
@@ -226,11 +230,67 @@ func convertLintDiagnostic(d lint.Diagnostic) protocol.Diagnostic {
 		Source:   strPtr("elps-lint"),
 		Code:     &protocol.IntegerOrString{Value: d.Analyzer},
 		Message:  d.Message,
+		Data:     diagnosticData(d),
+	}
+	if href := diagnosticCodeDescriptionHref(d.Analyzer); href != "" {
+		diag.CodeDescription = &protocol.CodeDescription{HRef: protocol.URI(href)}
+	}
+	for _, related := range d.Related {
+		diag.RelatedInformation = append(diag.RelatedInformation, protocol.DiagnosticRelatedInformation{
+			Location: protocol.Location{
+				URI:   protocol.DocumentUri(diagnosticURI(related.Location.File)),
+				Range: diagnosticPositionRange(related.Location),
+			},
+			Message: related.Message,
+		})
 	}
 	if d.Unnecessary {
 		diag.Tags = []protocol.DiagnosticTag{protocol.DiagnosticTagUnnecessary}
 	}
 	return diag
+}
+
+func diagnosticData(d lint.Diagnostic) map[string]any {
+	data := map[string]any{
+		"analyzer": d.Analyzer,
+	}
+	if len(d.Notes) > 0 {
+		data["notes"] = d.Notes
+	}
+	return data
+}
+
+func diagnosticCodeDescriptionHref(analyzer string) string {
+	if analyzer == "" {
+		return ""
+	}
+	return lintChecksDocURL + "#" + analyzer
+}
+
+func diagnosticPositionRange(pos lint.Position) protocol.Range {
+	line := pos.Line
+	col := pos.Col
+	if line > 0 {
+		line--
+	}
+	if col > 0 {
+		col--
+	}
+	start := protocol.Position{Line: safeUint(line), Character: safeUint(col)}
+	return protocol.Range{Start: start, End: start}
+}
+
+func diagnosticURI(path string) string {
+	normalized := analysis.NormalizePath(path)
+	if normalized == "" {
+		return ""
+	}
+	if !filepath.IsAbs(normalized) {
+		if abs, err := filepath.Abs(normalized); err == nil {
+			normalized = abs
+		}
+	}
+	return pathToURI(normalized)
 }
 
 // mapLintSeverity converts a lint.Severity to a protocol.DiagnosticSeverity.

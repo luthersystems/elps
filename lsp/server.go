@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/luthersystems/elps/analysis"
-	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lint"
+	"github.com/luthersystems/elps/lisp"
 	"github.com/tliron/glsp"
 	glspserver "github.com/tliron/glsp/server"
 
@@ -580,7 +580,7 @@ func (s *Server) updateFileRefs(uri string) {
 // and updates ExtraGlobals in the analysis config. Old entries for this file
 // are removed and replaced with the new definitions.
 func (s *Server) updateFileDefinitions(uri string) {
-	filePath := uriToPath(uri)
+	filePath := analysis.NormalizePath(uriToPath(uri))
 	source, err := os.ReadFile(filePath) //nolint:gosec // LSP server reads user files
 	if err != nil {
 		return
@@ -600,6 +600,8 @@ func (s *Server) updateFileDefinitions(uri string) {
 
 // removeFileDefinitions removes all ExtraGlobals entries for the given file path.
 func (s *Server) removeFileDefinitions(filePath string) {
+	filePath = analysis.NormalizePath(filePath)
+
 	s.analysisCfgMu.Lock()
 	defer s.analysisCfgMu.Unlock()
 
@@ -613,9 +615,11 @@ func (s *Server) removeFileDefinitions(filePath string) {
 // filterExtraGlobalsByFile returns a new slice with all entries whose
 // Source.File does not match excludeFile. Entries with nil Source are kept.
 func filterExtraGlobalsByFile(globals []analysis.ExternalSymbol, excludeFile string) []analysis.ExternalSymbol {
+	excludeFile = analysis.NormalizePath(excludeFile)
+
 	var kept []analysis.ExternalSymbol
 	for _, sym := range globals {
-		if sym.Source == nil || sym.Source.File != excludeFile {
+		if sym.Source == nil || analysis.NormalizePath(sym.Source.File) != excludeFile {
 			kept = append(kept, sym)
 		}
 	}

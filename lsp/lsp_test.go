@@ -419,6 +419,9 @@ func TestHoverOnDefun(t *testing.T) {
 	require.True(t, ok, "hover contents should be MarkupContent")
 	assert.Contains(t, mc.Value, "greet")
 	assert.Contains(t, mc.Value, "function")
+	require.NotNil(t, hover.Range)
+	assert.Equal(t, protocol.UInteger(0), hover.Range.Start.Line)
+	assert.Equal(t, protocol.UInteger(7), hover.Range.Start.Character)
 }
 
 func TestHoverOnBuiltin(t *testing.T) {
@@ -1325,6 +1328,8 @@ func TestCompletionPackageQualifiedDocString(t *testing.T) {
 	require.True(t, ok)
 	require.Len(t, items, 1)
 	assert.Equal(t, "math:abs", items[0].Label)
+	require.NotNil(t, items[0].Detail)
+	assert.Contains(t, *items[0].Detail, "from package math")
 	require.NotNil(t, items[0].Documentation, "completion item should have documentation")
 	mc, ok := items[0].Documentation.(*protocol.MarkupContent)
 	require.True(t, ok, "documentation should be MarkupContent")
@@ -1642,6 +1647,11 @@ func TestConvertLintDiagnostic(t *testing.T) {
 	assert.Equal(t, protocol.DiagnosticSeverityWarning, *d.Severity)
 	assert.Equal(t, protocol.UInteger(2), d.Range.Start.Line)
 	assert.Equal(t, protocol.UInteger(4), d.Range.Start.Character)
+	require.NotNil(t, d.CodeDescription)
+	assert.Equal(t, "https://github.com/luthersystems/elps/blob/main/docs/lint-checks.md#test-check", string(d.CodeDescription.HRef))
+	data, ok := d.Data.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "test-check", data["analyzer"])
 }
 
 func TestConvertLintDiagnosticWithEndPos(t *testing.T) {
@@ -2576,9 +2586,16 @@ func TestCrossFileCompletion(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
+	items := result.([]protocol.CompletionItem)
 	labels := completionLabels(t, result)
 	assert.Contains(t, labels, "remote-fn", "should complete remote-fn from ExtraGlobals")
 	assert.Contains(t, labels, "remote-helper", "should complete remote-helper from ExtraGlobals")
+	for _, item := range items {
+		if item.Label == "remote-fn" {
+			require.NotNil(t, item.Detail)
+			assert.Contains(t, *item.Detail, "/workspace/b.lisp")
+		}
+	}
 }
 
 func TestCrossFileCompletion_NoPrefix(t *testing.T) {
@@ -3869,6 +3886,9 @@ func TestCrossFileDuplicateDefinition(t *testing.T) {
 	}
 	require.NotEmpty(t, dupDiags, "should report cross-file duplicate definition")
 	assert.Contains(t, dupDiags[0].Message, "foo")
+	require.Len(t, dupDiags[0].RelatedInformation, 1)
+	assert.Equal(t, "also defined here", dupDiags[0].RelatedInformation[0].Message)
+	assert.Equal(t, "file:///workspace/other.lisp", string(dupDiags[0].RelatedInformation[0].Location.URI))
 }
 
 func TestCrossFileDuplicateDefinition_DifferentPackages(t *testing.T) {
@@ -3990,6 +4010,37 @@ func TestRemoveFileDefinitions(t *testing.T) {
 	}
 	assert.True(t, names["keep-me"], "should keep definitions from other files")
 	assert.False(t, names["remove-me"], "should remove definitions from deleted file")
+}
+
+func TestRemoveFileDefinitions_SymlinkNormalization(t *testing.T) {
+	s := testServer()
+
+	dir := t.TempDir()
+	realPath := filepath.Join(dir, "real.lisp")
+	aliasPath := filepath.Join(dir, "alias.lisp")
+	require.NoError(t, os.WriteFile(realPath, []byte("(defun helper () 1)"), 0o600))
+	if err := os.Symlink(realPath, aliasPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	setTestAnalysisCfg(s, &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{
+			{
+				Name:    "helper",
+				Kind:    analysis.SymFunction,
+				Package: "user",
+				Source:  &token.Location{File: realPath, Line: 1, Col: 1, Pos: 0},
+			},
+		},
+	})
+
+	s.removeFileDefinitions(aliasPath)
+
+	s.analysisCfgMu.RLock()
+	globals := s.analysisCfg.ExtraGlobals
+	s.analysisCfgMu.RUnlock()
+
+	assert.Empty(t, globals, "symlinked alias should remove canonicalized file definitions")
 }
 
 func TestWatchedFiles_UpdatesDefinitions(t *testing.T) {

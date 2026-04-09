@@ -235,9 +235,21 @@ type Diagnostic struct {
 	// Notes are optional hint text lines for the user.
 	Notes []string `json:"notes,omitempty"`
 
+	// Related points to additional source locations that help explain the
+	// diagnostic, such as the original definition that conflicts with the
+	// current one.
+	Related []RelatedInformation `json:"related,omitempty"`
+
 	// Unnecessary marks the diagnostic as "unnecessary" code (e.g., unused
 	// variables). Editors may render these with faded text.
 	Unnecessary bool `json:"unnecessary,omitempty"`
+}
+
+// RelatedInformation describes an additional source location associated with a
+// diagnostic.
+type RelatedInformation struct {
+	Location Position `json:"location"`
+	Message  string   `json:"message"`
 }
 
 // Position identifies a location in source code.

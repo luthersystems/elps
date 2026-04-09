@@ -153,6 +153,9 @@ func TestWorkspaceSymbol(t *testing.T) {
 		require.NoError(t, err)
 		names := symbolNames(result)
 		assert.Contains(t, names, "active-fn")
+		require.Len(t, result, 1)
+		require.NotNil(t, result[0].ContainerName)
+		assert.Equal(t, "user", *result[0].ContainerName)
 	})
 }
 
