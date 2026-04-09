@@ -27,25 +27,25 @@ func NormalizePath(path string) string {
 }
 
 func normalizeViaExistingParent(path string) (string, bool) {
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-	var tail []string
+	dir := path
+	var suffix []string
 
 	for {
-		if dir == "" || dir == "." || dir == string(filepath.Separator) {
-			break
-		}
 		if _, err := os.Stat(dir); err == nil {
 			resolvedDir, err := filepath.EvalSymlinks(dir)
 			if err != nil {
 				return "", false
 			}
-			parts := append([]string{resolvedDir}, tail...)
-			parts = append(parts, base)
+			if len(suffix) == 0 {
+				return filepath.Clean(resolvedDir), true
+			}
+			parts := append([]string{resolvedDir}, suffix...)
 			return filepath.Clean(filepath.Join(parts...)), true
 		}
-		tail = append([]string{base}, tail...)
-		base = filepath.Base(dir)
+		if dir == "" || dir == "." || dir == string(filepath.Separator) {
+			break
+		}
+		suffix = append([]string{filepath.Base(dir)}, suffix...)
 		next := filepath.Dir(dir)
 		if next == dir {
 			break

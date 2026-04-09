@@ -1274,6 +1274,10 @@ func TestHoverOnQualifiedSymbol(t *testing.T) {
 	assert.Contains(t, mc.Value, "join")
 	assert.Contains(t, mc.Value, "function")
 	assert.Contains(t, mc.Value, "Join a list of strings with a separator.")
+	require.NotNil(t, hover.Range)
+	assert.Equal(t, protocol.UInteger(0), hover.Range.Start.Line)
+	assert.Equal(t, protocol.UInteger(1), hover.Range.Start.Character)
+	assert.Equal(t, protocol.UInteger(12), hover.Range.End.Character)
 }
 
 func TestHoverOnQualifiedSymbolUnknown(t *testing.T) {

@@ -65,7 +65,11 @@ func hoverWithContent(content string, rng *protocol.Range) *protocol.Hover {
 
 func hoverRange(sym *analysis.Symbol, ref *analysis.Reference) *protocol.Range {
 	if ref != nil && ref.Source != nil {
-		rng := elpsToLSPRange(ref.Source, len(sym.Name))
+		nameLen := len(sym.Name)
+		if ref.Node != nil && ref.Node.Type == lisp.LSymbol && ref.Node.Str != "" {
+			nameLen = len(ref.Node.Str)
+		}
+		rng := elpsToLSPRange(ref.Source, nameLen)
 		return &rng
 	}
 	if sym != nil && sym.Source != nil {
