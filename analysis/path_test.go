@@ -13,7 +13,7 @@ func TestNormalizePath_SymlinkedMissingNestedPath(t *testing.T) {
 	root := t.TempDir()
 	realDir := filepath.Join(root, "real")
 	linkDir := filepath.Join(root, "alias")
-	require.NoError(t, os.Mkdir(realDir, 0o755))
+	require.NoError(t, os.Mkdir(realDir, 0o750))
 	if err := os.Symlink(realDir, linkDir); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
