@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"testing"
@@ -178,6 +179,96 @@ func TestPanicWithNonStringValues(t *testing.T) {
 				t.Errorf("error should contain %q, got: %s", tc.contains, msg)
 			}
 		})
+	}
+}
+
+// TestPanicGoStackCaptured verifies that when env.eval recovers a Go panic,
+// the resulting LError carries a runtime.Stack snapshot of the panic origin.
+// This is the diagnostic any embedder needs to identify which Go function
+// panicked from the resulting error.
+func TestPanicGoStackCaptured(t *testing.T) {
+	t.Parallel()
+	env := initSafetyTestEnv(t)
+	env.AddBuiltins(true, &langBuiltin{
+		name:    "test-panic-gostack",
+		formals: Formals(),
+		fun: func(env *LEnv, args *LVal) *LVal {
+			panic("boom")
+		},
+		docs: "test builtin that panics",
+	})
+	result := env.Eval(SExpr([]*LVal{Symbol("test-panic-gostack")}))
+	requireLError(t, result)
+	stack := result.CallStack()
+	if stack == nil {
+		t.Fatal("expected call stack on recovered-panic error")
+	}
+	if len(stack.GoStack) == 0 {
+		t.Fatal("expected non-empty GoStack on recovered-panic error")
+	}
+	if !bytes.Contains(stack.GoStack, []byte("goroutine ")) {
+		t.Errorf("GoStack missing 'goroutine ' header: %s", stack.GoStack)
+	}
+}
+
+// TestPanicGoStackRenderedInWriteTrace verifies the Go stack is emitted
+// through ErrorVal.WriteTrace so any caller (e.g. an embedder's error
+// dumper) picks it up without code changes on their side.
+func TestPanicGoStackRenderedInWriteTrace(t *testing.T) {
+	t.Parallel()
+	env := initSafetyTestEnv(t)
+	env.AddBuiltins(true, &langBuiltin{
+		name:    "test-panic-render",
+		formals: Formals(),
+		fun:     func(env *LEnv, args *LVal) *LVal { panic("render-me") },
+		docs:    "",
+	})
+	result := env.Eval(SExpr([]*LVal{Symbol("test-panic-render")}))
+	requireLError(t, result)
+	var buf bytes.Buffer
+	_, err := (*ErrorVal)(result).WriteTrace(&buf)
+	if err != nil {
+		t.Fatalf("WriteTrace: %v", err)
+	}
+	out := buf.String()
+	const goHeader = "Go stack trace (panic origin):"
+	const elpsHeader = "Stack Trace ["
+	if !strings.Contains(out, goHeader) {
+		t.Errorf("WriteTrace missing Go stack section:\n%s", out)
+	}
+	if !strings.Contains(out, "goroutine ") {
+		t.Errorf("WriteTrace missing 'goroutine ' line:\n%s", out)
+	}
+	// Ordering: the Go stack must come *after* the ELPS frames so
+	// downstream consumers can scan the ELPS trace first and treat the
+	// Go section as a panic-only appendix. A mutation that flipped the
+	// order in error.go's WriteTrace would silently corrupt this.
+	if elpsIdx, goIdx := strings.Index(out, elpsHeader), strings.Index(out, goHeader); elpsIdx < 0 || goIdx < 0 || goIdx <= elpsIdx {
+		t.Errorf("Go stack section must follow ELPS frames; got elpsIdx=%d goIdx=%d\n%s",
+			elpsIdx, goIdx, out)
+	}
+}
+
+// TestNonPanicErrorHasNoGoStack guards the documented backward-compat
+// contract on (*CallStack).GoStack: ordinary errors (those that flow
+// through env.Errorf / ErrorAssociate rather than env.eval's recover
+// defer) carry no Go stack. Without this test a future regression that
+// e.g. moves runtime.Stack out of the recover and into Errorf would
+// silently inflate every LError by ~16 KiB.
+func TestNonPanicErrorHasNoGoStack(t *testing.T) {
+	t.Parallel()
+	env := initSafetyTestEnv(t)
+	// Reference an unbound symbol — a regular ELPS error that flows
+	// through env.Errorf, not the recover defer.
+	result := env.Eval(Symbol("definitely-not-bound-271"))
+	requireLError(t, result)
+	stack := result.CallStack()
+	if stack == nil {
+		t.Fatal("expected call stack on regular error")
+	}
+	if len(stack.GoStack) != 0 {
+		t.Errorf("regular (non-panic) LError must have nil GoStack; got %d bytes:\n%s",
+			len(stack.GoStack), stack.GoStack)
 	}
 }
 

@@ -90,6 +90,14 @@ func (e *ErrorVal) WriteTrace(w io.Writer) (int, error) {
 		if !wrote(stack.DebugPrint(bw)) {
 			return n, err
 		}
+		if len(stack.GoStack) > 0 {
+			if !wrote(bw.WriteString("\nGo stack trace (panic origin):\n")) {
+				return n, err
+			}
+			if !wrote(bw.Write(stack.GoStack)) {
+				return n, err
+			}
+		}
 	}
 	return n, bw.Flush()
 }

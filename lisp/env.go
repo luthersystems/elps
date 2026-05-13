@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"runtime"
 	"strings"
 
 	"github.com/luthersystems/elps/parser/token"
@@ -935,6 +936,16 @@ func (env *LEnv) eval(ctx context.Context, v *LVal) (result *LVal) {
 	defer func() {
 		if r := recover(); r != nil {
 			result = env.Errorf("internal error (recovered panic): %v", r)
+			// Capture the Go stack at the panic origin so any caller of
+			// (*ErrorVal).WriteTrace (or direct readers of CallStack.GoStack)
+			// can render it. This defer runs before the panic unwind
+			// completes, so runtime.Stack reflects the panic site, not the
+			// recover frame.
+			if stack := result.CallStack(); stack != nil {
+				buf := make([]byte, 16*1024)
+				n := runtime.Stack(buf, false)
+				stack.GoStack = buf[:n]
+			}
 		}
 	}()
 	macroDepth := 0
