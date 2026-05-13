@@ -43,7 +43,7 @@ jobs:
       - name: Restore cached baseline
         if: github.event_name == 'pull_request'
         id: cache-baseline
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
         with:
           path: bench-baseline.txt
           key: benchmark-baseline-${{ github.event.pull_request.base.sha }}
@@ -64,7 +64,7 @@ jobs:
 
       - name: Upload baseline cache
         if: github.event_name == 'push'
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5
         with:
           path: bench-baseline.txt
           key: benchmark-baseline-${{ github.sha }}
