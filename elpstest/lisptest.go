@@ -152,6 +152,17 @@ func (r *Runner) LoadBenchmarks(t *testing.B, path string, source io.Reader) []s
 // determine a file basename to use in LEnv.Load().  RunTest returns true if
 // the test, and any teardown function given, completed successfully.
 func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
+	// Snapshot the shared singleton LVals before running the test; if a
+	// macro expansion or other tree-walker accidentally mutates a
+	// singleton (issue #274), the per-test guard surfaces the regression
+	// at the offending lisp test, not at end-of-suite.
+	snap := lisp.TakeSingletonSnapshot()
+	defer func() {
+		if drift := snap.Verify(); drift != "" {
+			t.Errorf("singleton %s was mutated during test", drift)
+		}
+	}()
+
 	env, err := r.NewEnv(t)
 	if err != nil {
 		t.Error(err.Error())
@@ -319,6 +330,15 @@ type TestSuite []struct {
 
 // RunTestSuite runs each TestSequence in tests on isolated lisp.LEnvs.
 func RunTestSuite(t *testing.T, tests TestSuite) {
+	// Snapshot the singleton LVals before running the suite; if any
+	// sequence mutates one (issue #274), report it before returning.
+	snap := lisp.TakeSingletonSnapshot()
+	defer func() {
+		if drift := snap.Verify(); drift != "" {
+			t.Errorf("singleton %s was mutated during test suite", drift)
+		}
+	}()
+
 	for i, test := range tests {
 		log.Printf("test %d -- %s", i, test.Name)
 		env := lisp.NewEnv(nil)
