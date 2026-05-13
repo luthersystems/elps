@@ -680,9 +680,7 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 // method doesn't produce the expected behavior and can't be exported publicly
 // because of that.
 func (env *LEnv) builtin(f LBuiltinDef) *LVal {
-	v := Fun(NewEnv(env).getFID(), f.Formals(), f.Eval)
-	v.FunData().Package = env.Runtime.Package.Name
-	return v
+	return FunInPackage(env.Runtime.Package.Name, NewEnv(env).getFID(), f.Formals(), f.Eval)
 }
 
 func (env *LEnv) Terminal(expr *LVal) *LVal {
@@ -714,9 +712,8 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 			panic(fmt.Sprintf("macro already defined: %v (= %v)", k, exist))
 		}
 		id := fmt.Sprintf("<builtin-macro ``%s''>", mac.Name())
-		fn := Macro(id, mac.Formals(), mac.Eval)
+		fn := MacroInPackage(pkg.Name, id, mac.Formals(), mac.Eval)
 		fn.Cells[1] = String(builtinDocstring(mac))
-		fn.FunData().Package = pkg.Name
 		pkg.Put(k, fn)
 		if external {
 			pkg.Externals = append(pkg.Externals, k.Str)
@@ -738,9 +735,8 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 			panic(fmt.Sprintf("macro already defined: %v (= %v)", k, exist))
 		}
 		id := fmt.Sprintf("<special-op ``%s''>", op.Name())
-		fn := SpecialOp(id, op.Formals(), op.Eval)
+		fn := SpecialOpInPackage(pkg.Name, id, op.Formals(), op.Eval)
 		fn.Cells[1] = String(builtinDocstring(op))
-		fn.FunData().Package = pkg.Name
 		pkg.Put(k, fn)
 		if external {
 			pkg.Externals = append(pkg.Externals, k.Str)
@@ -762,9 +758,8 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 			panic("symbol already defined: " + f.Name())
 		}
 		id := fmt.Sprintf("<builtin-function ``%s''>", f.Name())
-		v := Fun(id, f.Formals(), f.Eval)
+		v := FunInPackage(pkg.Name, id, f.Formals(), f.Eval)
 		v.Cells[1] = String(builtinDocstring(f))
-		v.FunData().Package = pkg.Name
 		pkg.Put(k, v)
 		if external {
 			pkg.Externals = append(pkg.Externals, k.Str)
