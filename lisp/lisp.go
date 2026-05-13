@@ -522,21 +522,38 @@ func FunRef(symbol, fun *LVal) *LVal {
 	return cp
 }
 
-// Fun returns an LVal representing a function
-func Fun(fid string, formals *LVal, fn LBuiltin) *LVal {
+// FunInPackage returns an LFun bound to the named package. Prefer this
+// over Fun for code embedding ELPS: Fun leaves Package empty, and a
+// package-less LFun reaching funCall / MacroCall / SpecialOpCall
+// produces "BUG: GetFunName" log spam (issue #271).
+func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
 		Source: nativeSource(),
 		Type:   LFun,
 		Native: &LFunData{
 			FID:     fid,
 			Builtin: fn,
+			Package: pkg,
 		},
 		Cells: []*LVal{formals, String("")},
 	}
 }
 
-// Macro returns an LVal representing a macro
-func Macro(fid string, formals *LVal, fn LBuiltin) *LVal {
+// Fun returns an LVal representing a function. Package is left empty;
+// callers MUST set v.FunData().Package before the value is invoked, or
+// GetFunName will log "BUG: ..." at every call site that observes a
+// package-less LFun.
+//
+// Deprecated: use FunInPackage, which sets Package atomically. See
+// issue #271.
+func Fun(fid string, formals *LVal, fn LBuiltin) *LVal {
+	return FunInPackage("", fid, formals, fn)
+}
+
+// MacroInPackage returns a macro LFun bound to the named package.
+// Prefer this over Macro for the same reasons FunInPackage is preferred
+// over Fun. See issue #271.
+func MacroInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
 		Source:  nativeSource(),
 		Type:    LFun,
@@ -544,6 +561,35 @@ func Macro(fid string, formals *LVal, fn LBuiltin) *LVal {
 		Native: &LFunData{
 			FID:     fid,
 			Builtin: fn,
+			Package: pkg,
+		},
+		Cells: []*LVal{formals, String("")},
+	}
+}
+
+// Macro returns an LVal representing a macro. Package is left empty;
+// callers MUST set v.FunData().Package before the value is invoked, or
+// GetFunName will log "BUG: ..." at every call site that observes a
+// package-less LFun.
+//
+// Deprecated: use MacroInPackage, which sets Package atomically. See
+// issue #271.
+func Macro(fid string, formals *LVal, fn LBuiltin) *LVal {
+	return MacroInPackage("", fid, formals, fn)
+}
+
+// SpecialOpInPackage returns a special-operator LFun bound to the named
+// package. Prefer this over SpecialOp for the same reasons FunInPackage
+// is preferred over Fun. See issue #271.
+func SpecialOpInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
+	return &LVal{
+		Source:  nativeSource(),
+		Type:    LFun,
+		FunType: LFunSpecialOp,
+		Native: &LFunData{
+			FID:     fid,
+			Builtin: fn,
+			Package: pkg,
 		},
 		Cells: []*LVal{formals, String("")},
 	}
@@ -553,17 +599,15 @@ func Macro(fid string, formals *LVal, fn LBuiltin) *LVal {
 // operators are function which receive unevaluated results, like macros.
 // However values returned by special operations do not require further
 // evaluation, unlike macros.
+//
+// Package is left empty; callers MUST set v.FunData().Package before the
+// value is invoked, or GetFunName will log "BUG: ..." at every call site
+// that observes a package-less LFun.
+//
+// Deprecated: use SpecialOpInPackage, which sets Package atomically.
+// See issue #271.
 func SpecialOp(fid string, formals *LVal, fn LBuiltin) *LVal {
-	return &LVal{
-		Source:  nativeSource(),
-		Type:    LFun,
-		FunType: LFunSpecialOp,
-		Native: &LFunData{
-			FID:     fid,
-			Builtin: fn,
-		},
-		Cells: []*LVal{formals, String("")},
-	}
+	return SpecialOpInPackage("", fid, formals, fn)
 }
 
 // Error returns an LError representing err.  Errors store their message in
