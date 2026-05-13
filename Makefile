@@ -16,6 +16,21 @@ test: go-test
 go-test:
 	go test -cover ./...
 
+# Run the full test suite with the race detector. CI runs this to catch
+# concurrent mutations of shared state — see issue #274. Kept separate
+# from `make test` because race-instrumented runs are ~3x slower.
+.PHONY: race
+race:
+	go test -race -count=1 ./...
+
+# Run the test suite with the `elpscheck` build tag, which enables
+# per-call integrity checks on the Bool()/Nil() singletons. Detects
+# inadvertent singleton mutation at the next read after the offending
+# write. See lisp/singleton_check_elpscheck.go and issue #274.
+.PHONY: test-elpscheck
+test-elpscheck:
+	go test -tags elpscheck ./...
+
 .PHONY: examples
 examples:
 	$(MAKE) -C _examples

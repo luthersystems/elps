@@ -124,6 +124,45 @@ func TestStampMacroExpansion_SkipsSingletonNil(t *testing.T) {
 	assert.Nil(t, nilVal.MacroExpansion)
 }
 
+// TestStampMacroExpansion_SkipsSingletonTrue verifies that Bool(true)
+// — an LSymbol singleton with Source.Pos == -1 — is not mutated by
+// macro expansion stamping. A type-based guard catches only singletonNil
+// (the empty LSExpr); identity-based guarding is required for the two
+// Bool singletons. See issue #274.
+func TestStampMacroExpansion_SkipsSingletonTrue(t *testing.T) {
+	callSite := &token.Location{File: "test.lisp", Line: 5, Col: 1, Pos: 0}
+	rt := StandardRuntime()
+	ctx := &MacroExpansionContext{CallSite: callSite, Name: "lisp:defun"}
+
+	origSource := Bool(true).Source
+
+	trueVal := Bool(true) // singleton
+	stampMacroExpansion(trueVal, callSite, ctx, rt)
+
+	assert.Nil(t, trueVal.MacroExpansion, "Bool(true) singleton was mutated (MacroExpansion)")
+	assert.Equal(t, origSource, trueVal.Source, "Bool(true) singleton was mutated (Source)")
+	assert.Nil(t, Bool(true).MacroExpansion, "Bool(true) singleton corruption is shared")
+	assert.Equal(t, origSource, Bool(true).Source, "Bool(true) singleton corruption is shared (Source)")
+}
+
+// TestStampMacroExpansion_SkipsSingletonFalse mirrors the Bool(true)
+// case. See TestStampMacroExpansion_SkipsSingletonTrue.
+func TestStampMacroExpansion_SkipsSingletonFalse(t *testing.T) {
+	callSite := &token.Location{File: "test.lisp", Line: 5, Col: 1, Pos: 0}
+	rt := StandardRuntime()
+	ctx := &MacroExpansionContext{CallSite: callSite, Name: "lisp:defun"}
+
+	origSource := Bool(false).Source
+
+	falseVal := Bool(false) // singleton
+	stampMacroExpansion(falseVal, callSite, ctx, rt)
+
+	assert.Nil(t, falseVal.MacroExpansion, "Bool(false) singleton was mutated (MacroExpansion)")
+	assert.Equal(t, origSource, falseVal.Source, "Bool(false) singleton was mutated (Source)")
+	assert.Nil(t, Bool(false).MacroExpansion, "Bool(false) singleton corruption is shared")
+	assert.Equal(t, origSource, Bool(false).Source, "Bool(false) singleton corruption is shared (Source)")
+}
+
 func TestRuntimeMacroExpSeq(t *testing.T) {
 	rt := StandardRuntime()
 	id1 := rt.nextMacroExpID()

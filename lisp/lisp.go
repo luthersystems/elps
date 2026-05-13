@@ -289,39 +289,19 @@ func Value(v interface{}) *LVal {
 	}
 }
 
-// Singleton LVals for Nil, true, and false.
-//
-// These are pre-allocated, shared, immutable values returned by Nil(),
-// Bool(true), and Bool(false). They exist because these three values are
-// constructed on nearly every evaluation cycle — Nil() is returned by
-// ~130 call sites (every builtin/op that "returns nothing"), and Bool()
-// is returned by every comparison, predicate, and type check.
-//
-// SAFETY: A full audit of all 127 Nil() and 63 Bool() call sites
-// confirmed that no call site mutates the returned *LVal. The only
-// mutation vector was stampMacroExpansion in macro.go, which has been
-// guarded to skip empty SExprs (nil singletons). The ELPS language has
-// no destructive list operations (no nconc, rplaca, etc.) — append!
-// only works on vectors (LArray), not lists (LSExpr), and cons/append
-// create new lists without mutating their inputs.
-//
-// INVARIANT: Code that receives a Nil(), Bool(true), or Bool(false)
-// return value MUST NOT mutate any field on the returned *LVal. If you
-// need a mutable nil value (e.g., to build up a list), use SExpr(nil)
-// directly instead of Nil().
-var (
-	singletonNil   = &LVal{Source: nativeSource(), Type: LSExpr}
-	singletonTrue  = &LVal{Source: nativeSource(), Type: LSymbol, Str: TrueSymbol}
-	singletonFalse = &LVal{Source: nativeSource(), Type: LSymbol, Str: FalseSymbol}
-)
+// Singleton LVals (singletonNil, singletonTrue, singletonFalse) and
+// their helpers (isSingleton, assertNotSingleton, SingletonSnapshot)
+// live in singleton.go.
 
 // Bool returns an LVal with truthiness identical to b.
 //
 // The returned value is a shared singleton — callers MUST NOT mutate it.
 func Bool(b bool) *LVal {
 	if b {
+		checkSingleton(singletonTrue)
 		return singletonTrue
 	}
+	checkSingleton(singletonFalse)
 	return singletonFalse
 }
 
@@ -400,6 +380,7 @@ func QSymbol(s string) *LVal {
 // If you need a mutable empty list (e.g., to append children), use
 // SExpr(nil) directly.
 func Nil() *LVal {
+	checkSingleton(singletonNil)
 	return singletonNil
 }
 

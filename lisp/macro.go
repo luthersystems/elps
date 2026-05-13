@@ -230,20 +230,18 @@ func macroDeftype(env *LEnv, args *LVal) *LVal {
 // MacroExpansionInfo with a unique, monotonically-increasing ID. The
 // runtime's sequence counter is used to generate IDs.
 //
-// Singleton values (Nil, Bool) are skipped because they are shared,
-// immutable, pre-allocated values. Stamping a source location onto a
-// singleton would corrupt it for all other users. See the singleton
-// comments in lisp.go for details.
+// Singleton values (Nil(), Bool(true), Bool(false)) are skipped via
+// identity check — they are shared, immutable, pre-allocated values
+// and mutating one corrupts every reader of that singleton for the
+// remainder of the process lifetime. See issue #274.
 func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionContext, rt *Runtime) {
 	if v == nil || callSite == nil {
 		return
 	}
-	// Do not mutate singleton nil values. Nil is a shared immutable
-	// value, and stamping a source location onto it would affect every
-	// place that holds a reference to the singleton. Nil nodes at the
-	// end of macro expansion bodies (e.g., the trailing () in progn)
-	// have no diagnostic value anyway.
-	if v.Type == LSExpr && len(v.Cells) == 0 {
+	// Identity-based guard: a type-based check would catch only the empty-
+	// LSExpr singletonNil and miss singletonTrue/singletonFalse (which are
+	// LSymbol with Source.Pos == -1). See issue #274.
+	if isSingleton(v) {
 		return
 	}
 	if v.Source == nil || v.Source.Pos < 0 {
@@ -251,7 +249,7 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionC
 		if ctx != nil {
 			v.MacroExpansion = &MacroExpansionInfo{
 				MacroExpansionContext: ctx,
-				ID:                   rt.nextMacroExpID(),
+				ID:                    rt.nextMacroExpID(),
 			}
 		}
 	}
