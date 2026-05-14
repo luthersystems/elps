@@ -14,11 +14,32 @@ import (
 // information (e.g. call stack) can be stored in the Cells slice.
 type ErrorVal LVal
 
+// nilErrorMessage is the sentinel returned by the rendering chain when a nil
+// *ErrorVal receiver is observed. It exists so that diagnostic paths that
+// reach DumpErrorStack with a corrupted value never crash the process — the
+// caller still gets a non-empty string describing what went wrong. See
+// substrate#288.
+const nilErrorMessage = "<nil error>"
+
+// corruptedNativeMessage is the sentinel returned by ErrorMessage when the
+// type switch over Cells[0].Native panics (e.g. due to a stale itab from a
+// concurrent mutation or an unsafe pointer cast). The intent is to surface
+// the corruption to the operator without taking down the process.
+const corruptedNativeMessage = "<corrupted error: cell native deref panicked>"
+
 // Error implements the error interface.  When the error condition is not
 // “error” it wil be printed preceding the error message.  Otherwise, the
 // name of the function that generated the error will be printed preceding the
 // error, if the function can be determined.
+//
+// Defensive: a nil receiver returns the nilErrorMessage sentinel rather than
+// dereferencing. This matters because diagnostic code (e.g. substrate's
+// DumpErrorStack) may be invoked from a deferred recover handler where the
+// LVal pointer can be stale or zeroed.
 func (e *ErrorVal) Error() string {
+	if e == nil {
+		return nilErrorMessage
+	}
 	if e.Source != nil {
 		return fmt.Sprintf("%s: %s", e.Source, e.baseMessage())
 	}
@@ -26,6 +47,9 @@ func (e *ErrorVal) Error() string {
 }
 
 func (e *ErrorVal) baseMessage() string {
+	if e == nil {
+		return nilErrorMessage
+	}
 	msg := e.ErrorMessage()
 	if e.Str != "error" {
 		return fmt.Sprintf("%s: %s", e.Str, msg)
@@ -41,36 +65,71 @@ func (e *ErrorVal) baseMessage() string {
 // "unmatched-syntax"). This is the programmatic error classification
 // stored in the LVal.Str field for LError values.
 func (e *ErrorVal) Condition() string {
+	if e == nil {
+		return ""
+	}
 	return e.Str
 }
 
 // FunName returns the qualified name of function on the top of the call stack
 // when the error occurred.
 func (e *ErrorVal) FunName() string {
+	if e == nil {
+		return ""
+	}
 	stack := (*LVal)(e).CallStack()
 	if stack == nil {
 		return ""
 	}
-	if stack.Top() == nil {
+	top := stack.Top()
+	if top == nil {
 		return ""
 	}
-	return stack.Top().QualifiedFunName(DefaultUserPackage)
+	return top.QualifiedFunName(DefaultUserPackage)
 }
 
 // ErrorMessage returns the underlying message in the error.
-func (e *ErrorVal) ErrorMessage() string {
-	if len(e.Cells) > 0 {
+//
+// Defensive: the original implementation crashed at substrate#288 when
+// Cells[0].Native held a corrupted interface (stale itab → invalid pointer
+// deref during the type switch). The deferred recover ensures the diagnostic
+// pipeline always produces a renderable string even when the underlying LVal
+// is malformed; well-formed errors are unaffected.
+func (e *ErrorVal) ErrorMessage() (msg string) {
+	if e == nil {
+		return nilErrorMessage
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			msg = corruptedNativeMessage
+		}
+	}()
+	if len(e.Cells) > 0 && e.Cells[0] != nil {
 		switch v := e.Cells[0].Native.(type) {
 		case error:
-			return v.Error()
+			if v != nil {
+				return v.Error()
+			}
 		}
 	}
 
 	return errorCellMessage(e.Cells)
 }
 
-// WriteTrace writes the error and a stack trace to w
+// WriteTrace writes the error and a stack trace to w.
+//
+// Defensive: a nil receiver writes the nilErrorMessage sentinel rather than
+// panicking. This keeps DumpErrorStack-style callers safe even when fed a
+// corrupted LError pointer.
 func (e *ErrorVal) WriteTrace(w io.Writer) (int, error) {
+	if e == nil {
+		bw := bufio.NewWriter(w)
+		n, err := bw.WriteString(nilErrorMessage + "\n")
+		if err != nil {
+			return n, err
+		}
+		return n, bw.Flush()
+	}
 	bw := bufio.NewWriter(w)
 	var n int
 	var err error
@@ -102,11 +161,18 @@ func (e *ErrorVal) WriteTrace(w io.Writer) (int, error) {
 	return n, bw.Flush()
 }
 
+// errorCellMessage renders the cells of an LError as a human-readable
+// message. Nil cells are skipped (rendered as "<nil>") rather than
+// dereferenced; see substrate#288.
 func errorCellMessage(ecells []*LVal) string {
 	var buf bytes.Buffer
 	for i, cell := range ecells {
 		if i > 0 {
 			buf.WriteString(" ")
+		}
+		if cell == nil {
+			buf.WriteString("<nil>")
+			continue
 		}
 		if cell.Type == LString {
 			buf.WriteString(cell.Str)
