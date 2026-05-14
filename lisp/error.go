@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log"
 )
 
 // ErrorVal implements the error interface so that errors can be first class lisp
@@ -16,9 +17,8 @@ type ErrorVal LVal
 
 // nilErrorMessage is the sentinel returned by the rendering chain when a nil
 // *ErrorVal receiver is observed. It exists so that diagnostic paths that
-// reach DumpErrorStack with a corrupted value never crash the process — the
-// caller still gets a non-empty string describing what went wrong. See
-// substrate#288.
+// reach the rendering chain with a corrupted value never crash the caller —
+// the caller still gets a non-empty string describing what went wrong.
 const nilErrorMessage = "<nil error>"
 
 // corruptedNativeMessage is the sentinel returned by ErrorMessage when the
@@ -33,11 +33,12 @@ const corruptedNativeMessage = "<corrupted error: cell native deref panicked>"
 // error, if the function can be determined.
 //
 // Defensive: a nil receiver returns the nilErrorMessage sentinel rather than
-// dereferencing. This matters because diagnostic code (e.g. substrate's
-// DumpErrorStack) may be invoked from a deferred recover handler where the
-// LVal pointer can be stale or zeroed.
+// dereferencing. This matters because diagnostic code that renders errors may
+// be invoked from a deferred recover handler where the LVal pointer can be
+// stale or zeroed.
 func (e *ErrorVal) Error() string {
 	if e == nil {
+		log.Printf("elps: ErrorVal.Error called on nil receiver; returning sentinel")
 		return nilErrorMessage
 	}
 	if e.Source != nil {
@@ -48,6 +49,7 @@ func (e *ErrorVal) Error() string {
 
 func (e *ErrorVal) baseMessage() string {
 	if e == nil {
+		log.Printf("elps: ErrorVal.baseMessage called on nil receiver; returning sentinel")
 		return nilErrorMessage
 	}
 	msg := e.ErrorMessage()
@@ -90,17 +92,22 @@ func (e *ErrorVal) FunName() string {
 
 // ErrorMessage returns the underlying message in the error.
 //
-// Defensive: the original implementation crashed at substrate#288 when
-// Cells[0].Native held a corrupted interface (stale itab → invalid pointer
-// deref during the type switch). The deferred recover ensures the diagnostic
-// pipeline always produces a renderable string even when the underlying LVal
-// is malformed; well-formed errors are unaffected.
+// Defensive: a downstream consumer reported a SIGSEGV inside the type switch
+// over Cells[0].Native when the interface header was corrupted (stale itab
+// → invalid pointer deref during the type assertion). The deferred recover
+// ensures the diagnostic pipeline always produces a renderable string even
+// when the underlying LVal is malformed; well-formed errors are unaffected.
+// The recovered panic is logged so the operator sees that something is
+// corrupting the error's Cells[0].Native — silently swallowing would hide a
+// real bug.
 func (e *ErrorVal) ErrorMessage() (msg string) {
 	if e == nil {
+		log.Printf("elps: ErrorVal.ErrorMessage called on nil receiver; returning sentinel")
 		return nilErrorMessage
 	}
 	defer func() {
 		if r := recover(); r != nil {
+			log.Printf("elps: ErrorVal.ErrorMessage recovered panic during Cells[0].Native type switch: %v; returning sentinel %q", r, corruptedNativeMessage)
 			msg = corruptedNativeMessage
 		}
 	}()
@@ -119,10 +126,10 @@ func (e *ErrorVal) ErrorMessage() (msg string) {
 // WriteTrace writes the error and a stack trace to w.
 //
 // Defensive: a nil receiver writes the nilErrorMessage sentinel rather than
-// panicking. This keeps DumpErrorStack-style callers safe even when fed a
-// corrupted LError pointer.
+// panicking. This keeps callers safe even when fed a corrupted LError pointer.
 func (e *ErrorVal) WriteTrace(w io.Writer) (int, error) {
 	if e == nil {
+		log.Printf("elps: ErrorVal.WriteTrace called on nil receiver; emitting sentinel")
 		bw := bufio.NewWriter(w)
 		n, err := bw.WriteString(nilErrorMessage + "\n")
 		if err != nil {
@@ -162,8 +169,7 @@ func (e *ErrorVal) WriteTrace(w io.Writer) (int, error) {
 }
 
 // errorCellMessage renders the cells of an LError as a human-readable
-// message. Nil cells are skipped (rendered as "<nil>") rather than
-// dereferenced; see substrate#288.
+// message. Nil cells are rendered as "<nil>" rather than dereferenced.
 func errorCellMessage(ecells []*LVal) string {
 	var buf bytes.Buffer
 	for i, cell := range ecells {
@@ -171,6 +177,7 @@ func errorCellMessage(ecells []*LVal) string {
 			buf.WriteString(" ")
 		}
 		if cell == nil {
+			log.Printf("elps: errorCellMessage skipping nil cell at index %d (LError has malformed Cells slice)", i)
 			buf.WriteString("<nil>")
 			continue
 		}

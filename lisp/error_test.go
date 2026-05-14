@@ -16,10 +16,9 @@ import (
 )
 
 // panickingNative is a value that lives in an LVal.Native interface and
-// panics on any method call. It mimics the corruption-via-stale-itab
-// scenario described in substrate#288, where ErrorVal.ErrorMessage crashed
-// at the type-switch on Cells[0].Native because dereferencing the
-// underlying pointer was invalid.
+// panics on any method call. It mimics a corruption-via-stale-itab scenario
+// where ErrorVal.ErrorMessage crashes at the type-switch on Cells[0].Native
+// because dereferencing the underlying pointer is invalid.
 type panickingNative struct{}
 
 // Error satisfies the error interface so that the value matches the
@@ -34,8 +33,8 @@ func (panickingNative) Error() string {
 
 // TestErrorVal_NilReceiver verifies that every renderer on *ErrorVal
 // tolerates a nil receiver and returns a sentinel rather than panicking.
-// This is the foundation of substrate#288's defense: DumpErrorStack may
-// be invoked from a deferred-recover path where the LVal pointer is stale.
+// Diagnostic callers may invoke these methods from a deferred-recover path
+// where the LVal pointer is stale.
 func TestErrorVal_NilReceiver(t *testing.T) {
 	var e *lisp.ErrorVal
 
@@ -68,8 +67,8 @@ func TestErrorVal_NilReceiver(t *testing.T) {
 }
 
 // TestErrorVal_NilCells verifies that an ErrorVal with no cells does not
-// panic when rendered. This is the simplest variant of the substrate#288
-// corruption surface: an LError that lost its message-bearing cells.
+// panic when rendered. This is the simplest variant of the corruption
+// surface: an LError that lost its message-bearing cells.
 func TestErrorVal_NilCells(t *testing.T) {
 	e := (*lisp.ErrorVal)(&lisp.LVal{Type: lisp.LError, Str: "test-error"})
 
@@ -110,12 +109,12 @@ func TestErrorVal_NilCellPointer(t *testing.T) {
 	})
 }
 
-// TestErrorVal_CorruptedNative is the direct regression test for
-// substrate#288: ErrorMessage took a type-switch over Cells[0].Native and
-// crashed when that interface, while satisfying the error type, panicked
-// on the actual Error() call (the closest reproducible analogue of a
-// stale-itab deref without unsafe trickery). The deferred recover in
-// ErrorMessage must convert the panic into a sentinel string.
+// TestErrorVal_CorruptedNative is the direct regression test for the
+// corruption-during-rendering crash: ErrorMessage took a type-switch over
+// Cells[0].Native and crashed when that interface, while satisfying the
+// error type, panicked on the actual Error() call (the closest reproducible
+// analogue of a stale-itab deref without unsafe trickery). The deferred
+// recover in ErrorMessage must convert the panic into a sentinel string.
 func TestErrorVal_CorruptedNative(t *testing.T) {
 	nativeCell := &lisp.LVal{Native: panickingNative{}}
 	e := (*lisp.ErrorVal)(&lisp.LVal{
