@@ -15,6 +15,151 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// panickingNative is a value that lives in an LVal.Native interface and
+// panics on any method call. It mimics a corruption-via-stale-itab scenario
+// where ErrorVal.ErrorMessage crashes at the type-switch on Cells[0].Native
+// because dereferencing the underlying pointer is invalid.
+type panickingNative struct{}
+
+// Error satisfies the error interface so that the value matches the
+// "case error" arm of ErrorMessage's type switch. The panic then fires
+// when the renderer calls v.Error() — which models the failure mode of
+// a corrupted error-bearing Native more faithfully than panicking from
+// the type switch itself (Go's type switch on interfaces does not panic
+// for valid itabs; the original crash was inside the error method call).
+func (panickingNative) Error() string {
+	panic("simulated corruption in Native interface")
+}
+
+// TestErrorVal_NilReceiver verifies that every renderer on *ErrorVal
+// tolerates a nil receiver and returns a sentinel rather than panicking.
+// Diagnostic callers may invoke these methods from a deferred-recover path
+// where the LVal pointer is stale.
+func TestErrorVal_NilReceiver(t *testing.T) {
+	var e *lisp.ErrorVal
+
+	require.NotPanics(t, func() {
+		s := e.Error()
+		assert.Equal(t, "<nil error>", s)
+	}, "Error() on nil receiver must not panic")
+
+	require.NotPanics(t, func() {
+		s := e.ErrorMessage()
+		assert.Equal(t, "<nil error>", s)
+	}, "ErrorMessage() on nil receiver must not panic")
+
+	require.NotPanics(t, func() {
+		s := e.Condition()
+		assert.Equal(t, "", s)
+	}, "Condition() on nil receiver must not panic")
+
+	require.NotPanics(t, func() {
+		s := e.FunName()
+		assert.Equal(t, "", s)
+	}, "FunName() on nil receiver must not panic")
+
+	require.NotPanics(t, func() {
+		var buf bytes.Buffer
+		_, err := e.WriteTrace(&buf)
+		require.NoError(t, err)
+		assert.Contains(t, buf.String(), "<nil error>")
+	}, "WriteTrace() on nil receiver must not panic")
+}
+
+// TestErrorVal_NilCells verifies that an ErrorVal with no cells does not
+// panic when rendered. This is the simplest variant of the corruption
+// surface: an LError that lost its message-bearing cells.
+func TestErrorVal_NilCells(t *testing.T) {
+	e := (*lisp.ErrorVal)(&lisp.LVal{Type: lisp.LError, Str: "test-error"})
+
+	require.NotPanics(t, func() {
+		s := e.Error()
+		// Bare condition with no cells: the renderer prints
+		// "<condition>: <empty>" or similar — the contract is just
+		// "no panic, useful string".
+		assert.Contains(t, s, "test-error")
+	})
+}
+
+// TestErrorVal_NilCellPointer verifies that an ErrorVal whose Cells slice
+// contains a nil *LVal does not panic. The original errorCellMessage
+// dereferenced cell.Type / cell.Str / cell.String() unconditionally.
+func TestErrorVal_NilCellPointer(t *testing.T) {
+	e := (*lisp.ErrorVal)(&lisp.LVal{
+		Type:  lisp.LError,
+		Str:   "test-error",
+		Cells: []*lisp.LVal{nil, nil},
+	})
+
+	require.NotPanics(t, func() {
+		s := e.Error()
+		assert.Contains(t, s, "<nil>")
+	})
+
+	require.NotPanics(t, func() {
+		s := e.ErrorMessage()
+		assert.Contains(t, s, "<nil>")
+	})
+
+	require.NotPanics(t, func() {
+		var buf bytes.Buffer
+		_, err := e.WriteTrace(&buf)
+		require.NoError(t, err)
+		assert.Contains(t, buf.String(), "<nil>")
+	})
+}
+
+// TestErrorVal_CorruptedNative is the direct regression test for the
+// corruption-during-rendering crash: ErrorMessage took a type-switch over
+// Cells[0].Native and crashed when that interface, while satisfying the
+// error type, panicked on the actual Error() call (the closest reproducible
+// analogue of a stale-itab deref without unsafe trickery). The deferred
+// recover in ErrorMessage must convert the panic into a sentinel string.
+func TestErrorVal_CorruptedNative(t *testing.T) {
+	nativeCell := &lisp.LVal{Native: panickingNative{}}
+	e := (*lisp.ErrorVal)(&lisp.LVal{
+		Type:  lisp.LError,
+		Str:   "test-error",
+		Cells: []*lisp.LVal{nativeCell},
+	})
+
+	require.NotPanics(t, func() {
+		s := e.ErrorMessage()
+		assert.Equal(t, "<corrupted error: cell native deref panicked>", s)
+	}, "ErrorMessage() must convert a panic in the Native deref into a sentinel")
+
+	require.NotPanics(t, func() {
+		s := e.Error()
+		// Error() wraps ErrorMessage() via baseMessage(); the sentinel
+		// must propagate through that chain.
+		assert.Contains(t, s, "<corrupted error")
+	}, "Error() must not propagate the panic from a corrupted Native")
+
+	require.NotPanics(t, func() {
+		var buf bytes.Buffer
+		_, err := e.WriteTrace(&buf)
+		require.NoError(t, err)
+		assert.Contains(t, buf.String(), "<corrupted error")
+	}, "WriteTrace() must not propagate the panic from a corrupted Native")
+}
+
+// TestErrorVal_NilNativeError verifies that a Cells[0].Native holding a
+// typed-nil error does not crash. The original code matched the error
+// arm and called v.Error() on a nil interface-backed pointer.
+func TestErrorVal_NilNativeError(t *testing.T) {
+	var nilErr error
+	nativeCell := &lisp.LVal{Native: nilErr}
+	e := (*lisp.ErrorVal)(&lisp.LVal{
+		Type:  lisp.LError,
+		Str:   "test-error",
+		Cells: []*lisp.LVal{nativeCell},
+	})
+
+	require.NotPanics(t, func() {
+		_ = e.ErrorMessage()
+	})
+}
+
 func TestErrors(t *testing.T) {
 	tests := elpstest.TestSuite{
 		{"ignore-errors", elpstest.TestSequence{
