@@ -129,6 +129,14 @@ func New(opts ...Option) *Server {
 	s.server = mcp.NewServer(s.impl, &mcp.ServerOptions{
 		Instructions: s.instructions,
 		Logger:       s.logger,
+		// Tools are registered once at construction and never change at
+		// runtime, so we disable the "tools/list_changed" notification.
+		// Leaving it on (the default) causes AddTool calls during
+		// registration to schedule a debounced notification that races
+		// the stdio session's shutdown — the notification fires after
+		// the client closes stdin and the resulting "server is closing:
+		// EOF" write error propagates up to a non-zero subprocess exit.
+		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
 	})
 	s.registerCoreTools()
 	for _, register := range s.registrars {
