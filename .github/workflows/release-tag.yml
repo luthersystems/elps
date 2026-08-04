@@ -1,0 +1,101 @@
+name: Release (tag)
+
+# On-demand release, dispatched by an operator (or an agent the operator
+# directed) with an explicit version. Pattern copied from
+# lutherauth/.github/workflows/release-tag.yml (itself from reliable/buildenv):
+# the release is cut by the official Claude App via claude-code-action, NOT the
+# default GITHUB_TOKEN, because GitHub suppresses workflow->workflow events for
+# GITHUB_TOKEN — a GITHUB_TOKEN-created tag would never trigger
+# vscode-publish.yml's tag run (the platform elps binaries + VS Code
+# Marketplace extension publish). The App-token release creates the tag
+# server-side; the tag-push event then runs the publish exactly as a human
+# `git push origin vX.Y.Z` would. Direct tag pushes are blocked from agent
+# sandboxes, hence this action.
+#
+# NOTE: cutting a tag here PUBLISHES the VS Code extension to the
+# Marketplace — treat a release as externally visible immediately.
+#
+# Model auth: repo secret CLAUDE_CODE_OAUTH_TOKEN (same identity as the
+# reliable/buildenv/lutherauth release automation) — must be granted to this
+# repo before the workflow can run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to tag (vMAJOR.MINOR.PATCH, e.g. v1.48.2). Must be strictly newer than the latest stable tag and is always cut from main HEAD."
+        type: string
+        required: true
+      dry_run:
+        description: "Print the validation + notes but do NOT cut the release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # gh release create (creates the tag + release)
+  id-token: write # lets claude-code-action mint the official Claude App token, so the tag triggers vscode-publish.yml
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Cut release ${{ inputs.version }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # all tags + history for validation and release notes
+      - name: Cut the release via Claude
+        uses: anthropics/claude-code-action@v1
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        with:
+          # Official-app auth (minted via OIDC using `id-token: write`). Do NOT
+          # add a `github_token:` here — a default GITHUB_TOKEN tag does not
+          # trigger vscode-publish.yml, which this release depends on.
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Cut a release of elps at the version in the RELEASE_VERSION env
+            var. Do exactly this and nothing else — no source changes, no
+            PRs, no branch pushes.
+
+            1. Validate, STOPPING with a clear explanation on any failure:
+               - RELEASE_VERSION matches ^v[0-9]+\.[0-9]+\.[0-9]+$ exactly.
+               - It is STRICTLY newer (semver ordering) than the latest
+                 existing STABLE v* tag — ignore pre-release tags carrying a
+                 suffix when finding the latest
+                 (`git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1`).
+               - The checkout is on the latest main
+                 (`git rev-parse HEAD` == `git rev-parse origin/main`).
+            2. Notes: summarize the merged PRs / commits since that latest
+               stable tag (`git log <lasttag>..HEAD --oneline`). Concise
+               plain-Markdown bullets; omit noise.
+            3. Ship: if the env var DRY_RUN is "true", PRINT the version and
+               notes, then STOP — create nothing. Otherwise run
+               `gh release create "$RELEASE_VERSION" --title "$RELEASE_VERSION" --notes "<notes>"`.
+               The tag-push event triggers vscode-publish.yml, which builds
+               the platform elps binaries and publishes the VS Code
+               extension to the Marketplace.
+
+            Never invent a different version, never force anything, never
+            touch branches or files. If anything is ambiguous, STOP and
+            explain rather than guessing.
+          claude_args: |
+            --allowedTools Bash,Read,Grep,Glob
+            --max-turns 30
+            --model claude-opus-4-8
+      # Capture the agent's stream-json conversation so a deliberate STOP
+      # (validation refusal) is explainable after the fact — the action hides
+      # the transcript from the job log. Mirrors buildenv's release-patch.yml.
+      - name: Capture agent trace (conversation log)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-tag-trace-${{ github.run_id }}
+          path: ${{ runner.temp }}/claude-execution-output.json
+          retention-days: 14
+          if-no-files-found: warn
