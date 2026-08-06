@@ -1002,7 +1002,15 @@ func (v *LVal) Equal(other *LVal) *LVal {
 		for i := range vEntries.Cells {
 			vPair := vEntries.Cells[i]
 			oPair := oEntries.Cells[i]
-			if !True(vPair.Cells[0].Equal(oPair.Cells[0])) {
+			// Sorted-map keys are identified by name, not by whether they
+			// were written as a string or a symbol: get, key?, assoc and
+			// dissoc all accept either form for the same entry.  Comparing
+			// the reconstructed key LVals with Equal would instead compare
+			// LString against LSymbol and report two maps unequal even
+			// though no documented accessor can tell them apart.  Compare
+			// key names so equality follows the same key identity as
+			// lookup.
+			if vPair.Cells[0].Str != oPair.Cells[0].Str {
 				return Bool(false)
 			}
 			if !True(vPair.Cells[1].Equal(oPair.Cells[1])) {

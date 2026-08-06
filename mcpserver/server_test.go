@@ -541,6 +541,12 @@ func TestWorkspaceTraversalErrorsAreLoggedAndSkipped(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission-based traversal failure is not reliable on windows")
 	}
+	// Root (and any process holding CAP_DAC_OVERRIDE) bypasses the mode-0
+	// directory permission this test relies on, so the traversal succeeds and
+	// no "unreadable path" is ever logged. Common in CI/dev containers.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode-0 directory permissions do not block traversal")
+	}
 
 	tmp := t.TempDir()
 	writeTestFile(t, filepath.Join(tmp, "ok.lisp"), `(defun ok () 1)`)

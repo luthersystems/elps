@@ -13,6 +13,7 @@ import (
 
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,6 +26,17 @@ func lintSource(t *testing.T, source string) []Diagnostic {
 	diags, err := l.LintFile([]byte(source), "test.lisp")
 	require.NoError(t, err)
 	return diags
+}
+
+// parseTestSource parses source the way the linter does, returning the
+// top-level expressions.
+func parseTestSource(t *testing.T, source string) []*lisp.LVal {
+	t.Helper()
+	sc := token.NewScanner("test.lisp", bytes.NewReader([]byte(source)))
+	exprs, err := rdparser.NewFormatting(sc).ParseProgram()
+	require.NoError(t, err)
+	require.NotEmpty(t, exprs)
+	return exprs
 }
 
 // lintCheck runs a single analyzer on the given source.
@@ -605,6 +617,98 @@ func TestBuiltinArity_CondNotDuplicated(t *testing.T) {
 	assert.False(t, ok, "cond should be removed from builtin arity table")
 }
 
+// TestBuiltinArity_Negative_BindingForms pins that binding entries in
+// let/let*/flet/labels/macrolet are not mistaken for calls.
+//
+// (let ((map (sorted-map))) ...) contains the s-expression (map (sorted-map)),
+// whose head happens to name the builtin `map` (min arity 3). A naive walk
+// reported "map requires at least 3 argument(s), got 1" at SeverityError, so
+// `elps lint` exited 1 on correct code. The same applied to any local name
+// colliding with a builtin — first, rest, get, nth, assoc, reverse, set, ...
+func TestBuiltinArity_Negative_BindingForms(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		source string
+	}{
+		{"let value binding", `(let ((map (sorted-map 'a 1))) (get map 'a))`},
+		{"let* value binding", `(let* ((nth 1) (m (+ nth 1))) m)`},
+		{"flet function binding", `(flet ((rest (xs) (cdr xs))) (rest '(1 2 3)))`},
+		{"labels function binding", `(labels ((first (xs) (car xs))) (first '(1 2 3)))`},
+		{"macrolet binding", `(macrolet ((get (x) x)) 1)`},
+		{"multiple bindings", `(let ((get 1) (assoc 2) (reverse 3)) (+ get assoc reverse))`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			diags := lintCheck(t, AnalyzerBuiltinArity, tt.source)
+			assertNoDiags(t, diags)
+		})
+	}
+}
+
+// TestAritySkipNodes_BindingEntries pins the node-level half of the fix
+// directly. A binding entry is not a call, independently of whether the name
+// it binds happens to be recorded as shadowing a builtin — the two mechanisms
+// (skip the entry; treat the bound name as shadowed at call sites) overlap in
+// practice, so this test isolates the first one.
+func TestAritySkipNodes_BindingEntries(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		source  string
+		formals bool // the binding also carries a formals list to skip
+	}{
+		{name: "let", source: `(let ((map (sorted-map))) map)`},
+		{name: "let*", source: `(let* ((nth 1)) nth)`},
+		{name: "flet", source: `(flet ((rest (xs) xs)) 1)`, formals: true},
+		{name: "labels", source: `(labels ((first (xs) xs)) 1)`, formals: true},
+		{name: "macrolet", source: `(macrolet ((get (x) x)) 1)`, formals: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			exprs := parseTestSource(t, tt.source)
+			skip := aritySkipNodes(exprs)
+
+			// exprs[0] is the binding form; Cells[1] is its binding list.
+			binds := exprs[0].Cells[1]
+			assert.True(t, skip[binds], "the binding list itself must be skipped")
+			require.NotEmpty(t, binds.Cells)
+			entry := binds.Cells[0]
+			assert.True(t, skip[entry], "the binding entry must be skipped")
+			if tt.formals {
+				assert.True(t, skip[entry.Cells[1]], "the binding's formals list must be skipped")
+			}
+		})
+	}
+}
+
+// TestBuiltinArity_Negative_LocallyShadowedCalls pins that a call to a
+// locally bound function that shadows a builtin is not checked against the
+// builtin's arity: (flet ((get (x) x)) (get 1)) calls the local one-argument
+// `get`, not the two-argument builtin.
+func TestBuiltinArity_Negative_LocallyShadowedCalls(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		source string
+	}{
+		{"flet", `(flet ((get (x) x)) (get 1))`},
+		{"labels", `(labels ((get (x) x)) (get 1))`},
+		{"flet formals shadow", `(flet ((f (nth) (+ nth 1))) (f 1))`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			diags := lintCheck(t, AnalyzerBuiltinArity, tt.source)
+			assertNoDiags(t, diags)
+		})
+	}
+}
+
+// TestBuiltinArity_Positive_StillCatchesRealErrors pins that the binding-form
+// exemption did not turn the check off: a genuine arity error in a file with
+// no shadowing binding is still reported.
+func TestBuiltinArity_Positive_StillCatchesRealErrors(t *testing.T) {
+	diags := lintCheck(t, AnalyzerBuiltinArity, `(let ((x 1)) (nth x))`)
+	assertHasDiag(t, diags, "nth requires at least 2 argument(s)")
+
+	diags = lintCheck(t, AnalyzerBuiltinArity, `(defun f () (get 1))`)
+	assertHasDiag(t, diags, "get requires at least 2 argument(s)")
+}
+
 // --- quote-call ---
 
 func TestQuoteCall_Positive_UnquotedSet(t *testing.T) {
@@ -614,10 +718,16 @@ func TestQuoteCall_Positive_UnquotedSet(t *testing.T) {
 	assert.NotEmpty(t, diags[0].Notes)
 }
 
-func TestQuoteCall_Positive_UnquotedDefconst(t *testing.T) {
+// TestQuoteCall_Negative_UnquotedDefconst pins that defconst is NOT flagged.
+// defconst is a macro that quotes its own name argument — (defconst x 42)
+// expands to (progn (set 'x 42) (export 'x) ()) — so the unquoted spelling is
+// the correct one. quote-call used to flag every correct defconst, and its
+// suggested fix, (defconst 'x 42), fails at runtime with
+// "lisp:set: first argument is not a symbol: quote" (see
+// TestDefconstQuotedNameIsARuntimeError in lisp).
+func TestQuoteCall_Negative_UnquotedDefconst(t *testing.T) {
 	diags := lintCheck(t, AnalyzerQuoteCall, `(defconst x 42 "doc")`)
-	assert.Len(t, diags, 1)
-	assertHasDiag(t, diags, "should be quoted")
+	assertNoDiags(t, diags)
 }
 
 func TestQuoteCall_Negative_QuotedSet(t *testing.T) {
@@ -2766,16 +2876,47 @@ func TestUnusedNolint_BareNolintInSyntacticModeStillWarns(t *testing.T) {
 	assertHasDiag(t, diags, "does not suppress any diagnostic")
 }
 
+// TestUnusedNolint_ChecksFilterDoesNotFlagKnown pins that narrowing the
+// analyzer set (--checks) does not turn every other file's nolint directives
+// into "unused" warnings. if-arity is a valid name; it simply never ran, so
+// the directive cannot be shown to be stale.
 func TestUnusedNolint_ChecksFilterDoesNotFlagKnown(t *testing.T) {
-	// When running with only set-usage, nolint:if-arity should NOT be
-	// flagged as "unknown analyzer" — if-arity is a valid name.
 	source := "(+ 1 2) ; nolint:if-arity\n"
 	l := &Linter{Analyzers: []*Analyzer{AnalyzerSetUsage}}
 	diags, err := l.LintFile([]byte(source), "test.lisp")
 	require.NoError(t, err)
-	assert.Len(t, diags, 1)
+	assertNoDiags(t, diags)
+}
+
+// TestUnusedNolint_ChecksFilterDoesNotFlagBare pins the same for a bare
+// ; nolint directive: it suppresses every analyzer, so on a narrowed run it
+// can never be shown to be stale.
+func TestUnusedNolint_ChecksFilterDoesNotFlagBare(t *testing.T) {
+	source := "(+ 1 2) ; nolint\n"
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerSetUsage}}
+	diags, err := l.LintFile([]byte(source), "test.lisp")
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+// TestUnusedNolint_FullRunStillFlagsStale pins that the narrowed-run
+// exemption does not weaken the check on a normal, full run.
+func TestUnusedNolint_FullRunStillFlagsStale(t *testing.T) {
+	source := "(+ 1 2) ; nolint:if-arity\n"
+	l := &Linter{Analyzers: DefaultAnalyzers()}
+	diags, err := l.LintFile([]byte(source), "test.lisp")
+	require.NoError(t, err)
 	assertHasDiag(t, diags, "does not suppress any diagnostic")
-	assert.NotContains(t, diags[0].Message, "unknown")
+}
+
+// TestUnusedNolint_ChecksFilterFlagsPartiallyEnabled pins that a directive
+// naming at least one analyzer that DID run is still evaluated normally.
+func TestUnusedNolint_ChecksFilterFlagsPartiallyEnabled(t *testing.T) {
+	source := "(+ 1 2) ; nolint:set-usage,if-arity\n"
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerSetUsage}}
+	diags, err := l.LintFile([]byte(source), "test.lisp")
+	require.NoError(t, err)
+	assertHasDiag(t, diags, "does not suppress any diagnostic")
 }
 
 func TestUnusedNolint_ChecksFilterStillFlagsUnknown(t *testing.T) {

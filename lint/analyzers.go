@@ -176,16 +176,22 @@ var AnalyzerLetBindings = &Analyzer{
 	},
 }
 
-// AnalyzerQuoteCall warns when set or defconst is called with an unquoted symbol
+// AnalyzerQuoteCall warns when set is called with an unquoted symbol
 // as the first argument, which is almost always a mistake.
+//
+// NOTE: defconst is deliberately NOT checked. It is a macro that quotes its
+// own name argument — (defconst x 42) expands to (set 'x 42) — so the
+// correct spelling is the unquoted one. Flagging it reported every correct
+// use, and the suggested "fix" of (defconst 'x 42) makes the program fail at
+// runtime with "lisp:set: first argument is not a symbol: quote".
 var AnalyzerQuoteCall = &Analyzer{
 	Name:     "quote-call",
 	Severity: SeverityWarning,
-	Doc:      "Warn when set is called with an unquoted symbol argument.\n\nThe first argument to set should be a quoted symbol: (set 'x 42). Writing (set x 42) evaluates x first, which is rarely intended. This check does not flag set!, which takes an unquoted symbol by design.",
+	Doc:      "Warn when set is called with an unquoted symbol argument.\n\nThe first argument to set should be a quoted symbol: (set 'x 42). Writing (set x 42) evaluates x first, which is rarely intended. This check does not flag set!, which takes an unquoted symbol by design, nor defconst, which quotes its own name argument.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			head := HeadSymbol(sexpr)
-			if head != "set" && head != "defconst" {
+			if head != "set" {
 				return
 			}
 			if ArgCount(sexpr) < 1 {
@@ -375,10 +381,14 @@ var AnalyzerCondStructure = &Analyzer{
 var AnalyzerBuiltinArity = &Analyzer{
 	Name:     "builtin-arity",
 	Severity: SeverityError,
-	Doc:      "Check argument counts for calls to known builtin functions and special forms.\n\nELPS builtin functions have well-defined argument signatures. This check catches calls with too few or too many arguments before runtime. User-defined functions that shadow builtin names are automatically excluded. Formals lists and threading macro children are also excluded.",
+	Doc:      "Check argument counts for calls to known builtin functions and special forms.\n\nELPS builtin functions have well-defined argument signatures. This check catches calls with too few or too many arguments before runtime. User-defined functions that shadow builtin names are automatically excluded, including names bound by let/let*/flet/labels/macrolet. Binding lists, formals lists and threading macro children are also excluded.",
 	Run: func(pass *Pass) error {
 		// Collect user-defined names so we don't flag shadowed builtins.
 		userDefs := UserDefined(pass.Exprs)
+		// Local bindings shadow builtins too: (flet ((first (xs) ...)) ...)
+		// rebinds `first`, so calls to it in the body must not be checked
+		// against the builtin's arity.
+		collectBindingFormNames(pass.Exprs, userDefs)
 
 		// Collect AST nodes where arity checking should be skipped.
 		skipNodes := aritySkipNodes(pass.Exprs)
@@ -422,13 +432,70 @@ var AnalyzerBuiltinArity = &Analyzer{
 	},
 }
 
+// bindingForms are the special operators whose first argument is a list of
+// bindings rather than an expression to evaluate. Their binding entries look
+// like function calls to a naive walk — (let ((map (sorted-map))) ...)
+// contains the s-expression (map (sorted-map)) — so they must be excluded
+// from call-shaped checks.
+//
+// letBinding entries are (name value); funBinding entries are
+// (name (formals...) body...).
+var bindingForms = map[string]struct{ funBinding bool }{
+	"let":      {funBinding: false},
+	"let*":     {funBinding: false},
+	"flet":     {funBinding: true},
+	"labels":   {funBinding: true},
+	"macrolet": {funBinding: true},
+}
+
+// bindingList returns the binding list of a binding form, or nil if sexpr is
+// not a binding form or is malformed.
+func bindingList(sexpr *lisp.LVal) (*lisp.LVal, bool) {
+	kind, ok := bindingForms[HeadSymbol(sexpr)]
+	if !ok || ArgCount(sexpr) < 1 {
+		return nil, false
+	}
+	binds := sexpr.Cells[1]
+	if binds == nil || binds.Type != lisp.LSExpr {
+		return nil, false
+	}
+	return binds, kind.funBinding
+}
+
+// collectBindingFormNames adds every name bound by let/let*/flet/labels/
+// macrolet — and the formals of flet/labels/macrolet functions — to defs, so
+// checks that compare against the builtin table skip locally shadowed names.
+func collectBindingFormNames(exprs []*lisp.LVal, defs map[string]bool) {
+	WalkSExprs(exprs, func(sexpr *lisp.LVal, depth int) {
+		binds, funBinding := bindingList(sexpr)
+		if binds == nil {
+			return
+		}
+		for _, bind := range binds.Cells {
+			if bind == nil || bind.Type != lisp.LSExpr || len(bind.Cells) == 0 {
+				continue
+			}
+			if name := bind.Cells[0]; name.Type == lisp.LSymbol {
+				defs[name.Str] = true
+			}
+			if funBinding && len(bind.Cells) >= 2 {
+				CollectFormals(bind.Cells[1], defs)
+			}
+		}
+	})
+}
+
 // aritySkipNodes returns a set of AST nodes that should be excluded from
-// arity checking. This covers two cases:
+// arity checking. This covers three cases:
 //
 //  1. Formals lists — (defun f (x y) ...) the (x y) is a parameter list,
 //     not a function call.
 //  2. Threading macro children — (thread-first v (get "key")) expands to
 //     (get v "key"), so the static arg count is one less than the runtime count.
+//  3. Binding-form entries — the (map (sorted-map)) inside
+//     (let ((map (sorted-map))) ...) binds the name `map`; it is not a call
+//     to the builtin `map`. Same for let*, flet, labels and macrolet, whose
+//     entries additionally carry a formals list.
 func aritySkipNodes(exprs []*lisp.LVal) map[*lisp.LVal]bool {
 	skip := make(map[*lisp.LVal]bool)
 	WalkSExprs(exprs, func(sexpr *lisp.LVal, depth int) {
@@ -449,6 +516,18 @@ func aritySkipNodes(exprs []*lisp.LVal) map[*lisp.LVal]bool {
 			// inserted by the macro: (thread-first val (f a)) => (f val a)
 			for i := 2; i < len(sexpr.Cells); i++ {
 				skip[sexpr.Cells[i]] = true
+			}
+		}
+		if binds, funBinding := bindingList(sexpr); binds != nil {
+			skip[binds] = true
+			for _, bind := range binds.Cells {
+				if bind == nil || bind.Type != lisp.LSExpr {
+					continue
+				}
+				skip[bind] = true
+				if funBinding && len(bind.Cells) >= 2 {
+					skip[bind.Cells[1]] = true // formals list
+				}
 			}
 		}
 	})

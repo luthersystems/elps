@@ -206,6 +206,57 @@ func TestSortedMapCopyViaSort(t *testing.T) {
 	elpstest.RunTestSuite(t, tests)
 }
 
+// TestSortedMapEqualIgnoresKeySpelling pins that sorted-map equality follows
+// the same key identity as lookup.
+//
+// docs/lang.md documents that a sorted-map key may be written as a string or
+// a symbol and that "looking up values by key can be done with either a
+// string or a symbol, regardless which type was used to insert/set the value
+// originally" — get, key?, assoc and dissoc all honour that. Equal() used to
+// compare the reconstructed key LVals with LVal.Equal, which is type
+// sensitive, so it disagreed with every one of those accessors.
+//
+// The map's remembered key spelling is also sticky: Set with a string key
+// does not clear a symbol spelling recorded by an earlier Set. That made
+// equality depend on a map's construction *history* rather than its
+// contents — two maps holding identical entries compared unequal purely
+// because one of them had once been keyed with a symbol.
+func TestSortedMapEqualIgnoresKeySpelling(t *testing.T) {
+	strKeyed := lisp.SortedMap()
+	strKeyed.Map().Set(lisp.String("a"), lisp.Int(1))
+
+	symKeyed := lisp.SortedMap()
+	symKeyed.Map().Set(lisp.Symbol("a"), lisp.Int(1))
+
+	// Every documented accessor agrees these hold the same entry.
+	for _, key := range []*lisp.LVal{lisp.String("a"), lisp.Symbol("a")} {
+		s, sok := strKeyed.Map().Get(key)
+		y, yok := symKeyed.Map().Get(key)
+		assert.True(t, sok && yok, "both maps must contain key %v", key)
+		assert.True(t, lisp.True(s.Equal(y)), "both maps must map %v to the same value", key)
+	}
+	assert.Equal(t, strKeyed.Map().Len(), symKeyed.Map().Len())
+
+	assert.True(t, lisp.True(strKeyed.Equal(symKeyed)),
+		`(sorted-map "a" 1) and (sorted-map 'a 1) must be equal?`)
+	assert.True(t, lisp.True(symKeyed.Equal(strKeyed)),
+		"equality must be symmetric")
+
+	// Sticky key spelling: overwriting a symbol-keyed entry with a string
+	// key leaves the symbol spelling in place. Equality must not see it.
+	historyDependent := lisp.SortedMap()
+	historyDependent.Map().Set(lisp.Symbol("a"), lisp.Int(0))
+	historyDependent.Map().Set(lisp.String("a"), lisp.Int(1))
+	assert.True(t, lisp.True(historyDependent.Equal(strKeyed)),
+		"equality must depend on contents, not on construction history")
+
+	// Different key names still differ.
+	other := lisp.SortedMap()
+	other.Map().Set(lisp.Symbol("b"), lisp.Int(1))
+	assert.True(t, lisp.Not(strKeyed.Equal(other)),
+		"keys with different names must not be equal")
+}
+
 // TestSortedMapEqualELPS verifies sorted-map equality from the ELPS level.
 func TestSortedMapEqualELPS(t *testing.T) {
 	tests := elpstest.TestSuite{
@@ -234,6 +285,18 @@ func TestSortedMapEqualELPS(t *testing.T) {
 			{`(equal? (sorted-map) ())`, `false`, ""},
 			{`(equal? (sorted-map 'a 1) 42)`, `false`, ""},
 			{`(equal? (sorted-map 'a 1) "hello")`, `false`, ""},
+
+			// Key spelling is not part of key identity: get/key?/assoc all
+			// accept either spelling for the same entry, so equal? must
+			// too. See TestSortedMapEqualIgnoresKeySpelling.
+			{`(equal? (sorted-map "a" 1) (sorted-map 'a 1))`, `true`, ""},
+			{`(equal? (sorted-map "a" 1 'b 2) (sorted-map 'a 1 "b" 2))`, `true`, ""},
+			{`(equal? (sorted-map "a" 1) (sorted-map 'a 2))`, `false`, ""},
+			{`(equal? (sorted-map "a" 1) (sorted-map 'b 1))`, `false`, ""},
+			// Equality follows contents, not construction history.
+			{`(set 'mh (sorted-map 'a 0))`, `(sorted-map 'a 0)`, ""},
+			{`(assoc! mh "a" 1)`, `(sorted-map 'a 1)`, ""},
+			{`(equal? mh (sorted-map "a" 1))`, `true`, ""},
 		}},
 	}
 	elpstest.RunTestSuite(t, tests)

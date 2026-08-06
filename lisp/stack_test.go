@@ -54,12 +54,17 @@ func TestStack(t *testing.T) {
 		{"effective stack height", elpstest.TestSequence{
 			{`(defun recursive () (+ 1 (recursive)))`, `()`, ``},
 			{`(defun tail-recursive (n) (if (> n 0) (tail-recursive (- n 1)) ()))`, `()`, ``},
-			{`(recursive)`, `test:1:26: recursive: physical stack height exceeded maximum: 25001`, ``},
+			{`(recursive)`, `test:1:26: recursive: physical stack height exceeded maximum: 25001 (recursion too deep; the limit stops the Go runtime from aborting the process with an unrecoverable stack overflow — rewrite the recursion as a tail call, or raise the limit with WithMaximumPhysicalStackHeight)`, ``},
 			// NOTE:  It's a little hard to control the function reported in
 			// the following error message.  It may change if there is a change
 			// in the function definition or to the maximum logical stack
 			// height.
-			{`(tail-recursive 100000)`, `test:1:31: lisp:if: logical stack height exceeded maximum: 50001`, ``},
+			//
+			// The logical bound is off by default (DefaultMaxLogicalStackHeight
+			// is 0); this test harness opts in via
+			// WithMaximumLogicalStackHeight(50000), which is what makes the
+			// check fire here.
+			{`(tail-recursive 100000)`, `test:1:31: lisp:if: logical stack height exceeded maximum: 50001 (logical height counts frames elided by tail-call optimization, so a long tail-recursive loop reaches it without using stack space; raise or disable the limit with WithMaximumLogicalStackHeight)`, ``},
 		}},
 	}
 	elpstest.RunTestSuite(t, tests)

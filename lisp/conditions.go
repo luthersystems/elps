@@ -20,3 +20,24 @@ const (
 	CondContextCancelled  = "context-cancelled"
 	CondStepLimitExceeded = "step-limit-exceeded"
 )
+
+// CondInternalPanic is the condition type of an error produced by recovering
+// a Go panic that escaped a builtin, special operator, or any other host
+// code called during evaluation.
+//
+// It is deliberately NOT an ordinary error condition.  A panic means host Go
+// code hit a bug — a nil dereference, an out-of-range index, a failed
+// invariant — and left its data structures in an unknown state.  Treating
+// that as a routine, catchable lisp error lets `ignore-errors` and a
+// catch-all `handler-bind` swallow it silently, so a genuine host defect
+// looks exactly like `(error 'my-condition "...")` and the program keeps
+// running on top of it.
+//
+// Accordingly, `ignore-errors` and the catch-all `condition` handler
+// specifier do not intercept this condition; it propagates to the caller.  A
+// handler that genuinely wants to intercept host panics must name the
+// condition explicitly:
+//
+//	(handler-bind ((internal-panic (lambda (c &rest args) ...)))
+//	    (risky))
+const CondInternalPanic = "internal-panic"

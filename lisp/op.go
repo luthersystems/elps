@@ -89,11 +89,15 @@ var langSpecialOps = []*langBuiltin{
 		argument is a list of (condition-type handler-fn) pairs. If a
 		body form signals an error matching a condition type, the handler
 		is called with the condition name and error data. Use the symbol
-		'condition' to match any error.`},
+		'condition' to match any error. The internal-panic condition — a
+		Go panic recovered from host code — is excluded from 'condition'
+		and must be named explicitly to be intercepted.`},
 	{"ignore-errors", Formals(VarArgSymbol, "exprs"), opIgnoreErrors,
 		`Evaluates body forms sequentially. If any form signals an error,
 		evaluation stops and () is returned instead of propagating the
-		error. Returns the last value if no error occurs.`},
+		error. Returns the last value if no error occurs. The
+		internal-panic condition is not suppressed: a Go panic recovered
+		from host code signals a defect in that code, so it propagates.`},
 	{"cond", Formals(VarArgSymbol, "branch"), opCond,
 		`Multi-way conditional. Each branch is a clause (test &rest body).
 		Clauses are evaluated in order: for the first truthy test, the
@@ -669,7 +673,11 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 			for _, bind := range lbinds.Cells {
 				sym, handler := bind.Cells[0], bind.Cells[1]
 				// Compare the error condition to the handler type specifier.
-				if sym.Str != val.Str && sym.Str != "condition" {
+				// The catch-all "condition" specifier deliberately does not
+				// match CondInternalPanic — a recovered Go panic is a host
+				// defect and must be named explicitly to be intercepted.
+				if sym.Str != val.Str &&
+					(sym.Str != "condition" || val.Str == CondInternalPanic) {
 					continue
 				}
 				// The condition matches so we evaluate the handler and then
@@ -709,6 +717,12 @@ func opIgnoreErrors(env *LEnv, args *LVal) *LVal {
 	for _, c := range args.Cells {
 		val = env.Eval(c)
 		if val.Type == LError {
+			if val.Str == CondInternalPanic {
+				// A recovered Go panic is a host-code bug, not a program
+				// condition.  Swallowing it would hide the defect and let
+				// evaluation continue over unknown state.
+				return val
+			}
 			return Nil()
 		}
 	}

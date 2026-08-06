@@ -703,3 +703,129 @@ func TestMacroExpansionDepthLimit(t *testing.T) {
 		}
 	})
 }
+
+// --- Recovered Go panics are not ordinary conditions (finding 3) ---
+
+// addPanicBuiltin registers a builtin named name that panics with msg.
+func addPanicBuiltin(env *LEnv, name, msg string) {
+	env.AddBuiltins(true, &langBuiltin{
+		name:    name,
+		formals: Formals(),
+		fun: func(env *LEnv, args *LVal) *LVal {
+			panic(msg)
+		},
+		docs: "test builtin that panics",
+	})
+}
+
+// TestPanicHasInternalPanicCondition pins that a recovered Go panic carries a
+// dedicated condition type rather than the generic "error" condition, so
+// hosts and handlers can tell a host-code defect apart from a lisp-level
+// (error 'my-condition "...").
+func TestPanicHasInternalPanicCondition(t *testing.T) {
+	t.Parallel()
+	env := initSafetyTestEnv(t)
+	addPanicBuiltin(env, "test-panic-condition", "boom")
+
+	result := env.Eval(SExpr([]*LVal{Symbol("test-panic-condition")}))
+	requireLError(t, result)
+	if result.Str != CondInternalPanic {
+		t.Errorf("condition = %q, want %q", result.Str, CondInternalPanic)
+	}
+}
+
+// TestIgnoreErrorsDoesNotSwallowPanic pins that ignore-errors propagates a
+// recovered Go panic. Swallowing it made a nil dereference in a host builtin
+// indistinguishable from a routine, expected error: the program carried on
+// over data structures the panicking code had left in an unknown state.
+func TestIgnoreErrorsDoesNotSwallowPanic(t *testing.T) {
+	t.Parallel()
+	env := initSafetyTestEnv(t)
+	addPanicBuiltin(env, "test-panic-ignore", "host defect")
+
+	// A normal lisp error is still suppressed.
+	ok := env.Eval(SExpr([]*LVal{
+		Symbol("ignore-errors"),
+		SExpr([]*LVal{Symbol("error"), Quote(Symbol("some-condition")), String("nope")}),
+	}))
+	if ok.Type == LError {
+		t.Fatalf("ignore-errors must still suppress ordinary errors, got: %v", ok)
+	}
+
+	result := env.Eval(SExpr([]*LVal{
+		Symbol("ignore-errors"),
+		SExpr([]*LVal{Symbol("test-panic-ignore")}),
+	}))
+	msg := requireLError(t, result)
+	if result.Str != CondInternalPanic {
+		t.Errorf("condition = %q, want %q", result.Str, CondInternalPanic)
+	}
+	if !strings.Contains(msg, "host defect") {
+		t.Errorf("error should preserve the panic message, got: %s", msg)
+	}
+}
+
+// TestHandlerBindCatchAllDoesNotSwallowPanic pins that the catch-all
+// 'condition handler specifier does not intercept a recovered Go panic, while
+// an explicitly named internal-panic handler does.
+func TestHandlerBindCatchAllDoesNotSwallowPanic(t *testing.T) {
+	t.Parallel()
+
+	// handlerBind builds (handler-bind ((<spec> (lambda (&rest args) <ret>))) (<body>)).
+	handlerBind := func(spec string, ret *LVal, body string) *LVal {
+		handler := SExpr([]*LVal{
+			Symbol("lambda"),
+			SExpr([]*LVal{Symbol(VarArgSymbol), Symbol("args")}),
+			ret,
+		})
+		return SExpr([]*LVal{
+			Symbol("handler-bind"),
+			SExpr([]*LVal{SExpr([]*LVal{Symbol(spec), handler})}),
+			SExpr([]*LVal{Symbol(body)}),
+		})
+	}
+
+	t.Run("catch-all does not intercept", func(t *testing.T) {
+		t.Parallel()
+		env := initSafetyTestEnv(t)
+		addPanicBuiltin(env, "test-panic-hb-all", "host defect")
+		result := env.Eval(handlerBind("condition", String("handled"), "test-panic-hb-all"))
+		requireLError(t, result)
+		if result.Str != CondInternalPanic {
+			t.Errorf("condition = %q, want %q", result.Str, CondInternalPanic)
+		}
+	})
+
+	t.Run("catch-all still intercepts ordinary errors", func(t *testing.T) {
+		t.Parallel()
+		env := initSafetyTestEnv(t)
+		env.AddBuiltins(true, &langBuiltin{
+			name:    "test-plain-error",
+			formals: Formals(),
+			fun: func(env *LEnv, args *LVal) *LVal {
+				return env.ErrorConditionf("some-condition", "ordinary failure")
+			},
+			docs: "test builtin that returns an ordinary error",
+		})
+		result := env.Eval(handlerBind("condition", String("handled"), "test-plain-error"))
+		if result.Type == LError {
+			t.Fatalf("catch-all must still intercept ordinary errors, got: %v", result)
+		}
+		if result.Str != "handled" {
+			t.Errorf("result = %v, want \"handled\"", result)
+		}
+	})
+
+	t.Run("explicit internal-panic handler intercepts", func(t *testing.T) {
+		t.Parallel()
+		env := initSafetyTestEnv(t)
+		addPanicBuiltin(env, "test-panic-hb-named", "host defect")
+		result := env.Eval(handlerBind(CondInternalPanic, String("handled"), "test-panic-hb-named"))
+		if result.Type == LError {
+			t.Fatalf("an explicit internal-panic handler must intercept, got: %v", result)
+		}
+		if result.Str != "handled" {
+			t.Errorf("result = %v, want \"handled\"", result)
+		}
+	})
+}

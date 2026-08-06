@@ -157,3 +157,22 @@ func BenchmarkMacroDefun(b *testing.B) {
 		(defun benchmark (&rest a) (apply debug-print a))
 	`)
 }
+
+// TestDefconstQuotedNameIsARuntimeError pins the ground truth behind the
+// quote-call lint fix: defconst quotes its own name argument, so the correct
+// spelling is (defconst x 42). The quote-call analyzer used to flag that
+// correct form and suggest (defconst 'x 42) — which does not merely fail to
+// help, it breaks the program.
+func TestDefconstQuotedNameIsARuntimeError(t *testing.T) {
+	tests := elpstest.TestSuite{
+		{"defconst name quoting", elpstest.TestSequence{
+			// The unquoted (correct) form works and exports the binding.
+			{`(defconst answer 42 "the answer")`, `()`, ``},
+			{`answer`, `42`, ``},
+			// The form quote-call used to suggest is a hard error.
+			{`(defconst 'oops 1)`,
+				`test:1:1: lisp:set: first argument is not a symbol: quote`, ``},
+		}},
+	}
+	elpstest.RunTestSuite(t, tests)
+}

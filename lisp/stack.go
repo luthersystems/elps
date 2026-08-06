@@ -19,21 +19,57 @@ import (
 // ErrorVal.WriteTrace or direct access) can render the Go-level origin
 // alongside the ELPS frames. It is nil for non-panic errors.
 type CallStack struct {
-	Frames            []CallFrame
-	MaxHeightLogical  int
+	Frames []CallFrame
+
+	// MaxHeightLogical bounds CallFrame.HeightLogical, which accumulates
+	// every frame elided by tail-call optimization.  Its unit is *elided
+	// frames*, not loop turns: one iteration of a tail loop adds the length
+	// of the elided terminal chain (2 for a trivial (defun f (n) (if ...
+	// (f ...))), more for a body with deeper terminal nesting).  Because
+	// the ratio depends on the shape of the loop body, this is a poor knob
+	// for bounding iteration count — use MaxTailIterations for that.  Zero
+	// disables the check (the default).
+	MaxHeightLogical int
+
+	// MaxHeightPhysical bounds the number of frames physically on the
+	// stack.  This is the memory guard: exceeding the Go goroutine stack
+	// aborts the process with an unrecoverable "stack overflow", so this
+	// limit must stay comfortably below that threshold.  Frames elided by
+	// tail-call optimization do not count toward it.  Zero disables the
+	// check.
 	MaxHeightPhysical int
-	GoStack           []byte
+
+	// MaxTailIterations bounds CallFrame.TailIterations — the number of
+	// tail-call iterations performed at a single stack frame.  Unlike
+	// MaxHeightLogical its unit is loop turns, independent of the shape of
+	// the loop body, so an operator can reason about it directly.  It is a
+	// runaway-loop backstop, not a business limit.  Zero disables the
+	// check.
+	MaxTailIterations int
+
+	GoStack []byte
 }
 
 // CallFrame is one frame in the CallStack
 type CallFrame struct {
-	Source        *token.Location
-	FID           string
-	Package       string
-	Name          string
+	Source  *token.Location
+	FID     string
+	Package string
+	Name    string
+
+	// HeightLogical is the frame's virtual depth: its physical depth plus
+	// every frame elided beneath it by tail-call optimization.  It is a
+	// diagnostic quantity — a tail loop runs in constant physical height
+	// but its HeightLogical grows without bound.
 	HeightLogical int
-	Terminal      bool
-	TROBlock      bool // Stop tail-recursion optimization from collapsing this frame
+
+	// TailIterations counts tail-call iterations performed at this frame.
+	// Each turn of a tail loop increments it by exactly one, regardless of
+	// how many frames that turn elided.
+	TailIterations int
+
+	Terminal bool
+	TROBlock bool // Stop tail-recursion optimization from collapsing this frame
 }
 
 // QualifiedFunName returns the qualified name for the function on the top of
@@ -93,9 +129,11 @@ func (s *CallStack) Copy() *CallStack {
 	frames := make([]CallFrame, len(s.Frames))
 	copy(frames, s.Frames)
 	return &CallStack{
-		MaxHeightLogical: s.MaxHeightLogical,
-		Frames:           frames,
-		GoStack:          s.GoStack,
+		MaxHeightLogical:  s.MaxHeightLogical,
+		MaxHeightPhysical: s.MaxHeightPhysical,
+		MaxTailIterations: s.MaxTailIterations,
+		Frames:            frames,
+		GoStack:           s.GoStack,
 	}
 }
 
@@ -206,6 +244,32 @@ func (s *CallStack) CheckHeight() error {
 	return nil
 }
 
+// CheckTailIterations returns an error if the top frame has performed more
+// tail-call iterations than MaxTailIterations allows.
+func (s *CallStack) CheckTailIterations() error {
+	if s.MaxTailIterations <= 0 {
+		return nil
+	}
+	if len(s.Frames) == 0 {
+		return nil
+	}
+	if s.MaxTailIterations < s.Top().TailIterations {
+		return &TailIterationLimitError{s.Top().TailIterations}
+	}
+	return nil
+}
+
+// CheckTailCall runs the limit checks that apply after a tail-call
+// optimization elides frames: the (opt-in) logical height bound and the
+// tail-iteration bound.  Physical height is unchanged by a tail call, so it
+// is deliberately not rechecked here.
+func (s *CallStack) CheckTailCall() error {
+	if err := s.CheckHeight(); err != nil {
+		return err
+	}
+	return s.CheckTailIterations()
+}
+
 // Pop removes the top CallFrame from the stack and returns it.  If the stack
 // is empty Pop returns nil.
 func (s *CallStack) Pop() CallFrame {
@@ -241,7 +305,10 @@ type LogicalStackOverflowError struct {
 }
 
 func (e *LogicalStackOverflowError) Error() string {
-	return fmt.Sprintf("logical stack height exceeded maximum: %v", e.Height)
+	return fmt.Sprintf("logical stack height exceeded maximum: %v"+
+		" (logical height counts frames elided by tail-call optimization, so a long"+
+		" tail-recursive loop reaches it without using stack space; raise or disable"+
+		" the limit with WithMaximumLogicalStackHeight)", e.Height)
 }
 
 type PhysicalStackOverflowError struct {
@@ -249,5 +316,22 @@ type PhysicalStackOverflowError struct {
 }
 
 func (e *PhysicalStackOverflowError) Error() string {
-	return fmt.Sprintf("physical stack height exceeded maximum: %v", e.Height)
+	return fmt.Sprintf("physical stack height exceeded maximum: %v"+
+		" (recursion too deep; the limit stops the Go runtime from aborting the"+
+		" process with an unrecoverable stack overflow — rewrite the recursion as a"+
+		" tail call, or raise the limit with WithMaximumPhysicalStackHeight)", e.Height)
+}
+
+// TailIterationLimitError reports that a single tail-recursive loop performed
+// more iterations than the runtime allows.  It is a runaway-loop backstop, not
+// a stack-depth problem: tail calls run in constant stack space.
+type TailIterationLimitError struct {
+	Iterations int
+}
+
+func (e *TailIterationLimitError) Error() string {
+	return fmt.Sprintf("tail-call iteration limit exceeded: %v"+
+		" (a single tail-recursive loop ran this many turns; this is a runaway-loop"+
+		" backstop, not a stack overflow — raise or disable the limit with"+
+		" WithMaxTailIterations)", e.Iterations)
 }
