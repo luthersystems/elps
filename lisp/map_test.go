@@ -257,6 +257,77 @@ func TestSortedMapEqualIgnoresKeySpelling(t *testing.T) {
 		"keys with different names must not be equal")
 }
 
+// TestSortedMapKeySpellingIsStickyOnSymbol pins ACCEPTED behaviour, not a bug.
+// It exists so the next reader does not rediscover it as one.
+//
+// A sorted-map remembers whether each key was last *seen* as a symbol, and
+// that memory is monotonic within an entry's lifetime: any symbol write turns
+// it on, a string write never turns it off, and only deleting the entry
+// clears it. Measured:
+//
+//	(sorted-map "a" 1)                            => (sorted-map "a" 1)
+//	(sorted-map 'a 0)  + (assoc! m "a" 1)         => (sorted-map 'a 1)   <- string write does NOT clear
+//	(sorted-map "a" 0) + (assoc! m 'a 1)          => (sorted-map 'a 1)   <- symbol write sets it
+//	(sorted-map 'a 0)  + dissoc + (assoc! "a" 1)  => (sorted-map "a" 1)  <- delete clears it
+//
+// So the displayed spelling reflects the entry's history rather than its last
+// write. That is arbitrary rather than designed, but it is only ever
+// COSMETIC: it reaches `keys` and printing, and nothing else. Lookup has
+// always ignored key spelling (docs/lang.md), and as of
+// TestSortedMapEqualIgnoresKeySpelling so does equality -- which is the bug
+// that was actually fixed. Nothing in the language depends on which spelling
+// comes back.
+//
+// Changing this would alter `keys` and printed output for every existing
+// program, which is a far larger blast radius than the cosmetic inconsistency
+// justifies. If that trade is ever revisited, this test is the record of what
+// the behaviour was and why it was left alone.
+func TestSortedMapKeySpellingIsStickyOnSymbol(t *testing.T) {
+	symbolKey := lisp.Symbol("a")
+	stringKey := lisp.String("a")
+
+	// spelling reports the type of the single key returned by Keys().
+	spelling := func(m *lisp.LVal) lisp.LType {
+		keys := m.Map().Keys()
+		if len(keys.Cells) != 1 {
+			t.Fatalf("expected exactly one key, got %d", len(keys.Cells))
+		}
+		return keys.Cells[0].Type
+	}
+
+	neverSymbol := lisp.SortedMap()
+	neverSymbol.Map().Set(stringKey, lisp.Int(1))
+	assert.Equal(t, lisp.LString, spelling(neverSymbol),
+		"a key only ever written as a string stays a string")
+
+	stringWriteDoesNotClear := lisp.SortedMap()
+	stringWriteDoesNotClear.Map().Set(symbolKey, lisp.Int(0))
+	stringWriteDoesNotClear.Map().Set(stringKey, lisp.Int(1))
+	assert.Equal(t, lisp.LSymbol, spelling(stringWriteDoesNotClear),
+		"overwriting with a string key does NOT clear the remembered symbol spelling")
+
+	symbolWriteSets := lisp.SortedMap()
+	symbolWriteSets.Map().Set(stringKey, lisp.Int(0))
+	symbolWriteSets.Map().Set(symbolKey, lisp.Int(1))
+	assert.Equal(t, lisp.LSymbol, spelling(symbolWriteSets),
+		"a symbol write sets the remembered spelling")
+
+	deleteClears := lisp.SortedMap()
+	deleteClears.Map().Set(symbolKey, lisp.Int(0))
+	deleteClears.Map().Del(stringKey)
+	deleteClears.Map().Set(stringKey, lisp.Int(1))
+	assert.Equal(t, lisp.LString, spelling(deleteClears),
+		"deleting the entry clears the remembered spelling")
+
+	// The whole point: none of the above is observable through equality.
+	// Every map here holding value 1 must be equal? to every other, however
+	// its key was spelled along the way.
+	for _, m := range []*lisp.LVal{stringWriteDoesNotClear, symbolWriteSets, deleteClears} {
+		assert.True(t, lisp.True(neverSymbol.Equal(m)),
+			"key spelling must not be observable through equality")
+	}
+}
+
 // TestSortedMapEqualELPS verifies sorted-map equality from the ELPS level.
 func TestSortedMapEqualELPS(t *testing.T) {
 	tests := elpstest.TestSuite{
