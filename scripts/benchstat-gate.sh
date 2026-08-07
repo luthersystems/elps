@@ -87,23 +87,37 @@
 # measurable -- sail through.  So there are two:
 #
 #   BENCH_ALLOC_THRESHOLD_PCT      (default 5)   B/op, allocs/op
-#       Measured worst-case noise 0.19%, so 5% leaves ~26x headroom.  This is
-#       the gate that will actually catch things, and it is trustworthy today.
+#       Worst-case bad-direction noise measured at 0.19% (sandbox) and 0.18%
+#       (real CI), so 5% leaves ~26x headroom.  This is the gate that will
+#       actually catch things, and it is trustworthy today.
 #
-#   BENCH_REGRESSION_THRESHOLD_PCT (default 50)  sec/op, B/s, unrecognised
-#       Measured worst-case bad-direction noise 33.83%, so 50% leaves ~1.5x
-#       headroom.  Deliberately coarse: it is a backstop for algorithmic
-#       blow-ups (1.5x and worse), not a precision instrument.
+#   BENCH_REGRESSION_THRESHOLD_PCT (default 15)  sec/op, B/s, unrecognised
+#       See the two measurements below.  Coarser than the allocation gate by an
+#       order of magnitude, because timing on shared runners genuinely is.
 #
-# Calibration caveat, stated plainly: those measurements were taken on a
-# contended shared VM, which OVERSTATES the noise a dedicated ubuntu-latest
-# runner shows -- they bound it from above, they do not predict it.  The timing
-# threshold in particular should be tightened once real CI runs show the true
-# floor; both numbers are env vars set in .github/workflows/benchmark.yml, so
-# tuning them needs no change to this script.  A 5% timing gate -- the number
+# The sandbox numbers above bound the noise from ABOVE; they do not predict CI.
+# A real datapoint is now available and is much kinder.  The CI run for the very
+# commit that introduced this script changed NO Go code, so its benchstat
+# comparison against the main baseline is a genuine null comparison on the real
+# infrastructure (GitHub ubuntu-latest, AMD EPYC 7763).  It is preserved verbatim
+# as scripts/testdata/benchstat-clean-ci.txt.  Worst bad-direction moves there:
+#
+#     Package/dump-array-4   +1.52% (p=0.008 n=5)   [sec/op]
+#     Package/load-nested-4  +0.88% (p=0.032 n=5)   [sec/op]
+#     Parser/sicp.lisp-4     +0.18% (p=0.016 n=5)   [B/op]
+#
+# So real CI timing noise is ~1.5%, not the ~34% a contended sandbox shows.
+# 15% is set against that: ~10x headroom over the observed CI floor, and still
+# above the 7.14% worst case the sibling substrate repo measured on its own
+# (noisier, self-hosted ARM) runners, so an unlucky run does not red an innocent
+# PR.  It should come down further as more real runs accumulate -- both numbers
+# are env vars in .github/workflows/benchmark.yml, so tuning them needs no change
+# to this script.
+#
+# Do not drop the timing gate straight to 5% -- the number
 # .claude/skills/benchmark/SKILL.md quotes for local, same-machine comparisons --
-# would red a large fraction of innocent PRs here, and the gate would be switched
-# off again within a week, recreating the exact problem this script fixes.
+# on the strength of one quiet run.  If it reds innocent PRs the gate gets
+# switched off again, recreating the exact problem this script fixes.
 #
 # The root fix for the timing headroom is quieter benchmarks (a longer
 # -benchtime, a higher -count, or dropping the sub-millisecond microbenchmarks
@@ -131,12 +145,12 @@
 set -euo pipefail
 
 ALPHA="${BENCH_ALPHA:-0.05}"
-THRESHOLD="${BENCH_REGRESSION_THRESHOLD_PCT:-50}"
+THRESHOLD="${BENCH_REGRESSION_THRESHOLD_PCT:-15}"
 ALLOC_THRESHOLD="${BENCH_ALLOC_THRESHOLD_PCT:-5}"
 
 if [ "$#" -ne 1 ]; then
 	echo "usage: $0 <benchstat-output-file>" >&2
-	echo "  env: BENCH_REGRESSION_THRESHOLD_PCT (default 50)  timing metrics: sec/op, B/s" >&2
+	echo "  env: BENCH_REGRESSION_THRESHOLD_PCT (default 15)  timing metrics: sec/op, B/s" >&2
 	echo "       BENCH_ALLOC_THRESHOLD_PCT      (default 5)   allocation metrics: B/op, allocs/op" >&2
 	echo "       BENCH_ALPHA                    (default 0.05)" >&2
 	exit 2

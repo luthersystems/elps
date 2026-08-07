@@ -111,15 +111,27 @@ assert_exit 0 "large deltas with p above alpha never fire" \
 assert_exit 0 "old-format table whose deltas are all under the gate" \
 	"$GATE" "${TESTDATA}/benchstat-clean-old.txt"
 
-# benchstat-clean-elps.txt is a REAL comparison of elps against ITSELF: the
-# workflow's exact benchmark command run twice on identical code. Every delta in
-# it is by definition noise, so the gate must not fire -- while still parsing the
-# whole table (170 rows) rather than silently understanding none of it.
-assert_exit 0 "REAL elps-vs-itself comparison does not fire (pure noise)" \
-	"$GATE" "${TESTDATA}/benchstat-clean-elps.txt"
-assert_contains "interpreted 62 delta row(s) + 108 no-change row(s)" \
-	"the real comparison is fully parsed, not silently skipped" \
-	"$GATE" "${TESTDATA}/benchstat-clean-elps.txt"
+# benchstat-clean-ci.txt is the REAL CI comparison from the commit that added
+# this gate. That commit changed no Go code, so it is a genuine null comparison
+# on the real infrastructure -- every delta in it is noise, and the gate must not
+# fire, while still parsing the whole table rather than silently understanding
+# none of it. This is the fixture that keeps the DEFAULT thresholds honest: if a
+# future retune drops them below the real CI noise floor, this assertion flips.
+assert_exit 0 "REAL CI null comparison does not fire at the default gates" \
+	"$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
+assert_contains "interpreted 22 delta row(s) + 148 no-change row(s)" \
+	"the real CI comparison is fully parsed, not silently skipped" \
+	"$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
+assert_contains "3 significant move(s) in the bad direction" \
+	"the real CI noise IS seen; only the threshold holds it back" \
+	"$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
+
+# The same command on a CONTENDED machine is an order of magnitude noisier
+# (worst bad-direction move +33.83% sec/op vs +1.52% on CI). Pinned so nobody
+# re-derives the thresholds from a local run and concludes the gate is broken:
+# it fires here, and that is the machine's fault, not the gate's.
+assert_exit 1 "the same comparison on a CONTENDED machine DOES fire (noise, not a bug)" \
+	"$GATE" "${TESTDATA}/benchstat-noisy-sandbox.txt"
 
 echo
 echo "== benchstat-gate: metric DIRECTION (elps emits B/s via b.SetBytes) ======"
@@ -168,7 +180,7 @@ echo "== benchstat-gate: the threshold is the only thing holding it back =======
 # table format ever changes out from under the parser, this assertion flips.
 assert_exit 1 "the REAL clean fixture DOES fire once the gates are lowered to 0%" \
 	env BENCH_REGRESSION_THRESHOLD_PCT=0 BENCH_ALLOC_THRESHOLD_PCT=0 \
-	"$GATE" "${TESTDATA}/benchstat-clean-elps.txt"
+	"$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
 assert_exit 1 "old-format clean fixture DOES fire at 0%" \
 	env BENCH_REGRESSION_THRESHOLD_PCT=0 BENCH_ALLOC_THRESHOLD_PCT=0 \
 	"$GATE" "${TESTDATA}/benchstat-clean-old.txt"

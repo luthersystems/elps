@@ -16,12 +16,12 @@ env:
   BENCH_COUNT: "5"
   GO_VERSION: "1.25"
   # Regression gates, applied per metric class by scripts/benchstat-gate.sh.
-  # elps' allocation metrics are near-deterministic (measured worst-case noise on
-  # identical code: 0.19%) while sec/op noise reaches 33.83%, so one threshold
-  # cannot serve both. Read the threshold note in that script before changing
-  # these -- they are deliberately conservative and want recalibrating against
-  # real CI runs.
-  BENCH_REGRESSION_THRESHOLD_PCT: "50"
+  # elps' allocation metrics are near-deterministic (worst-case noise measured on
+  # identical code: 0.18%) while sec/op noise on this runner reaches ~1.5%, and
+  # far more on a contended machine -- so one threshold cannot serve both. Both
+  # are set with generous headroom over the measured floor; read the threshold
+  # note in that script before changing either.
+  BENCH_REGRESSION_THRESHOLD_PCT: "15"
   BENCH_ALLOC_THRESHOLD_PCT: "5"
 
 permissions:
