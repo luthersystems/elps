@@ -63,13 +63,26 @@ type CallFrame struct {
 	// but its HeightLogical grows without bound.
 	HeightLogical int
 
+	Terminal bool
+	TROBlock bool // Stop tail-recursion optimization from collapsing this frame
+
 	// TailIterations counts tail-call iterations performed at this frame.
 	// Each turn of a tail loop increments it by exactly one, regardless of
 	// how many frames that turn elided.
-	TailIterations int
-
-	Terminal bool
-	TROBlock bool // Stop tail-recursion optimization from collapsing this frame
+	//
+	// DELIBERATELY int32, AND DELIBERATELY PLACED AFTER THE BOOLS.  A
+	// CallFrame is allocated per call, so its size is on the hot path: as
+	// an `int` declared above Terminal/TROBlock this field grew the struct
+	// from 72 to 80 bytes (+11.1%), which the benchmark gate caught as
+	// +8.44% B/op on EnvFunCallRecursion with allocs/op unchanged — same
+	// allocation count, larger allocations.  Two bools leave 6 bytes of
+	// tail padding that an 8-byte int cannot use but a 4-byte int32 can, so
+	// this placement is free: the struct stays 72 bytes.
+	//
+	// int32 caps at ~2.1e9 iterations against a default budget of 1e6.  If
+	// MaxTailIterations is ever raised near that ceiling, widen this field
+	// and accept the 8 bytes rather than letting the counter wrap.
+	TailIterations int32
 }
 
 // QualifiedFunName returns the qualified name for the function on the top of
@@ -253,8 +266,10 @@ func (s *CallStack) CheckTailIterations() error {
 	if len(s.Frames) == 0 {
 		return nil
 	}
-	if s.MaxTailIterations < s.Top().TailIterations {
-		return &TailIterationLimitError{s.Top().TailIterations}
+	// Widen for the comparison rather than narrowing MaxTailIterations: an
+	// int32 counter against an int limit must not truncate the limit.
+	if int64(s.MaxTailIterations) < int64(s.Top().TailIterations) {
+		return &TailIterationLimitError{int(s.Top().TailIterations)}
 	}
 	return nil
 }
