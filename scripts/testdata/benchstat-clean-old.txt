@@ -1,0 +1,7 @@
+name                       old time/op    new time/op    delta
+EnvGet-4                     27.1ms ± 2%    29.2ms ± 1%   +7.74%  (p=0.008 n=5+5)
+MacroDefun-4                 64.6µs ± 1%    64.7µs ± 2%     ~     (p=0.841 n=5+5)
+
+name                       old allocs/op  new allocs/op  delta
+EnvGet-4                      128k ± 0%      128k ± 0%     ~     (all equal)
+Parser/diff.lisp-4           4.23k ± 0%     4.23k ± 0%     ~     (all equal)

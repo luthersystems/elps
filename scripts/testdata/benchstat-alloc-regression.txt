@@ -1,0 +1,16 @@
+goos: linux
+goarch: amd64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Intel(R) Xeon(R) Processor @ 2.80GHz
+# An allocation regression too small for the loose TIMING gate but well above
+# the tight ALLOCATION gate. Proves the two thresholds are applied per metric
+# class: at a single 50% gate this table would pass unflagged.
+                       │     base      │                 pr                  │
+                       │  allocs/op    │  allocs/op     vs base              │
+EnvGet-4                 128.0k ± ∞ ¹    138.2k ± ∞ ¹   +8.00% (p=0.008 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                       │     base      │                 pr                  │
+                       │     B/op      │     B/op       vs base              │
+EnvGet-4                 10.20Mi ± ∞ ¹   10.92Mi ± ∞ ¹   +7.10% (p=0.008 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95

@@ -68,6 +68,24 @@ tree-sitter-test:
 static-checks:
 	golangci-lint run ./...
 
+# Self-test for the CI gate logic in scripts/. Run this after touching
+# scripts/benchstat-gate.sh or .github/workflows/benchmark.yml — it proves the
+# benchmark regression gate can actually FAIL, which is the property that was
+# missing while the gate sat dead for 473 workflow runs.
+.PHONY: ci-gates-test
+ci-gates-test:
+	bash scripts/ci-gates-test.sh
+
+# Adjudicate a benchstat comparison locally, exactly as CI does:
+#   go test -bench=. -benchmem -benchtime=100ms -count=5 -run='^$$' ./... > pr.txt
+#   git stash && go test ... > base.txt && git stash pop
+#   benchstat base=base.txt pr=pr.txt > cmp.txt
+#   make bench-gate BENCHSTAT_OUT=cmp.txt
+BENCHSTAT_OUT ?= benchstat-output.txt
+.PHONY: bench-gate
+bench-gate:
+	bash scripts/benchstat-gate.sh $(BENCHSTAT_OUT)
+
 # --- Release targets ---
 
 LATEST_TAG := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "none")
