@@ -15,12 +15,39 @@ concurrency:
 env:
   BENCH_COUNT: "5"
   GO_VERSION: "1.25"
+  # Regression gates, applied per metric class by scripts/benchstat-gate.sh.
+  # elps' allocation metrics are near-deterministic (worst-case noise measured on
+  # identical code: 0.18%) while sec/op noise on this runner reaches ~1.5%, and
+  # far more on a contended machine -- so one threshold cannot serve both. Both
+  # are set with generous headroom over the measured floor; read the threshold
+  # note in that script before changing either.
+  BENCH_REGRESSION_THRESHOLD_PCT: "15"
+  BENCH_ALLOC_THRESHOLD_PCT: "5"
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
+  # Proves the regression gate can actually FAIL. This job exists because the
+  # gate it guards was dead for 473 runs -- an inline `grep -E '^\S.*\+$'` that
+  # no benchstat line can match -- and nothing noticed, because a gate that can
+  # only report success is indistinguishable from a gate that works. It is
+  # deliberately independent of the `benchmark` job: it is fast, needs no Go
+  # build, and must report even when the benchmark job is cancelled or skipped.
+  gates:
+    name: CI Gate Self-Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v6
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run CI gate self-test
+        run: bash scripts/ci-gates-test.sh
+
   benchmark:
     name: Benchmark Comparison
     runs-on: ubuntu-latest
@@ -51,6 +78,13 @@ jobs:
 
       - name: Run benchmarks
         run: |
+          # `set -o pipefail` is load-bearing: without it the exit status of
+          # `go test ... | tee` is tee's, which is 0 even when the benchmarks
+          # fail to compile or panic. The step would go green, bench-current.txt
+          # would hold error text, and the comparison downstream would be
+          # meaningless. GitHub's default shell is `bash -e` WITHOUT pipefail,
+          # so this has to be set explicitly.
+          set -o pipefail
           go test -bench=. -benchmem -benchtime=100ms -count=${{ env.BENCH_COUNT }} \
             -run='^$' -timeout=10m ./... | tee bench-current.txt
 
@@ -73,9 +107,12 @@ jobs:
         if: github.event_name == 'pull_request'
         id: benchstat
         run: |
+          set -uo pipefail
           if [ ! -s bench-baseline.txt ]; then
             echo "No cached baseline found — showing PR results only."
-            echo "has_comparison=false" >> "$GITHUB_OUTPUT"
+            # `skipped` (not 0) so the gate step below can tell "nothing to
+            # compare" apart from "compared and found clean".
+            echo "gate_status=skipped" >> "$GITHUB_OUTPUT"
             {
               echo 'result<<BENCHSTAT_EOF'
               echo '## Benchmark Results (no baseline to compare)'
@@ -91,10 +128,18 @@ jobs:
             exit 0
           fi
 
-          echo "has_comparison=true" >> "$GITHUB_OUTPUT"
-
+          # benchstat's own exit code is captured rather than discarded with
+          # `|| true`: if it crashed, its error text is all that lands in
+          # benchstat-output.txt, and benchstat-gate.sh turns that into a hard
+          # exit 2 ("cannot interpret") instead of a silent pass. Swallowing it
+          # here is what made a benchstat failure indistinguishable from a clean
+          # comparison.
+          bench_rc=0
           benchstat base=bench-baseline.txt pr=bench-current.txt \
-            > benchstat-output.txt 2>&1 || true
+            > benchstat-output.txt 2>&1 || bench_rc=$?
+          if [ "$bench_rc" -ne 0 ]; then
+            echo "::warning::benchstat exited ${bench_rc}; the gate will adjudicate its output."
+          fi
 
           {
             echo 'result<<BENCHSTAT_EOF'
@@ -113,12 +158,17 @@ jobs:
             echo 'BENCHSTAT_EOF'
           } >> "$GITHUB_OUTPUT"
 
-          if grep -E '^\S.*\+$' benchstat-output.txt | grep -qv '^name'; then
-            echo "has_regression=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Benchstat detected statistically significant regressions."
-          else
-            echo "has_regression=false" >> "$GITHUB_OUTPUT"
-          fi
+          # The gate lives in scripts/benchstat-gate.sh so it can be unit-tested
+          # (scripts/ci-gates-test.sh) and run locally (make ci-gates-test).
+          # It exits 0 = clean, 1 = regression, 2 = could not interpret.
+          gate_status=0
+          ./scripts/benchstat-gate.sh benchstat-output.txt || gate_status=$?
+          echo "gate_status=${gate_status}" >> "$GITHUB_OUTPUT"
+          case "$gate_status" in
+            0) echo "No benchmark regression at or above the configured gates." ;;
+            1) echo "::warning::Benchstat detected a significant benchmark regression." ;;
+            *) echo "::warning::The benchmark comparison could not be interpreted." ;;
+          esac
 
       - name: Post PR comment
         if: github.event_name == 'pull_request'
@@ -166,8 +216,20 @@ jobs:
               core.warning(`Could not post PR comment: ${e.message}. This is expected for PRs from forks.`);
             }
 
+      # `always()` so this cannot be silently skipped when an earlier step is
+      # cancelled or fails: a gate that only runs on the happy path is not a
+      # gate. `skipped` (no cached baseline) and `0` (clean) are the only values
+      # that pass; 1 = regression and 2 = uninterpretable both fail.
       - name: Fail on regressions
-        if: steps.benchstat.outputs.has_regression == 'true'
+        if: >-
+          always() && github.event_name == 'pull_request' &&
+          steps.benchstat.outputs.gate_status != 'skipped' &&
+          steps.benchstat.outputs.gate_status != '0'
         run: |
-          echo "::error::Benchmark regressions detected. Review the benchstat comparison in the PR comment."
+          status='${{ steps.benchstat.outputs.gate_status }}'
+          if [ "$status" = '2' ]; then
+            echo "::error::The benchmark comparison could not be interpreted (gate exit 2). This is a hard failure by design — a gate that cannot read its input must never report success. See the job log above."
+          else
+            echo "::error::Benchmark regressions detected (gate exit ${status:-<unset>}). Review the benchstat comparison in the PR comment and the gate report in the job log."
+          fi
           exit 1

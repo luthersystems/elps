@@ -1,0 +1,19 @@
+goos: linux
+goarch: amd64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Intel(R) Xeon(R) Processor @ 2.80GHz
+# Defensive fixture: large POSITIVE deltas whose p-values are above alpha.
+# benchstat normally prints "~" instead of a delta in this case, so this
+# combination should not occur in practice -- the fixture exists to prove the
+# gate consults the p-value and does not fire on statistical noise.
+                       │     base     │                 pr                  │
+                       │    sec/op    │    sec/op     vs base               │
+EnvGet-4                 27.13m ± ∞ ¹   54.26m ± ∞ ¹  +99.99% (p=0.412 n=5)
+MacroDefun-4             64.62µ ± ∞ ¹   96.93µ ± ∞ ¹  +50.00% (p=0.056 n=5)
+geomean                  1.324m         2.293m        +73.19%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                       │     base      │                 pr                  │
+                       │  allocs/op    │  allocs/op     vs base              │
+EnvGet-4                 128.0k ± ∞ ¹    256.0k ± ∞ ¹  +99.99% (p=0.412 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
