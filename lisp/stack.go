@@ -18,8 +18,12 @@ import (
 // the runtime.Stack output captured at the panic site so callers (via
 // ErrorVal.WriteTrace or direct access) can render the Go-level origin
 // alongside the ELPS frames. It is nil for non-panic errors.
+//
+// Field order is layout-sensitive: the two slice headers lead so the GC scan
+// extent stops at 32 bytes instead of 48. Keep scalars trailing.
 type CallStack struct {
-	Frames []CallFrame
+	Frames  []CallFrame
+	GoStack []byte
 
 	// MaxHeightLogical bounds CallFrame.HeightLogical, which accumulates
 	// every frame elided by tail-call optimization.  Its unit is *elided
@@ -46,8 +50,6 @@ type CallStack struct {
 	// runaway-loop backstop, not a business limit.  Zero disables the
 	// check.
 	MaxTailIterations int
-
-	GoStack []byte
 }
 
 // CallFrame is one frame in the CallStack

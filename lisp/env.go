@@ -90,14 +90,17 @@ func InitializeTypedef(env *LEnv) *LVal {
 // TODO(elps2): Remove the field LEnv.FunName
 
 // LEnv is a lisp environment.
+//
+// Field order is layout-sensitive: the pointer-bearing fields lead so the GC
+// scan extent stops at 56 bytes instead of 64. Keep scalars (ID) trailing.
 type LEnv struct {
 	Loc     *token.Location
 	Scope   map[string]*LVal
 	FunName map[string]string
 	Parent  *LEnv
 	Runtime *Runtime
-	ID      uint
 	evalCtx context.Context // transient: set by call() at builtin boundary
+	ID      uint
 }
 
 // Context returns the context.Context currently associated with this

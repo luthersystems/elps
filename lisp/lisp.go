@@ -197,30 +197,45 @@ type MacroExpansionInfo struct {
 // SourceMeta holds formatting metadata for an LVal, populated only when
 // parsing in format-preserving mode. Nil in normal parsing — zero cost.
 type SourceMeta struct {
-	OriginalText            string         // original token text for literals (preserves escapes, numeric bases)
-	BracketType             rune           // '(' or '[' for LSExpr nodes
-	LeadingComments         []*token.Token // comment tokens preceding this node
 	TrailingComment         *token.Token   // inline comment on same line after this node
+	OriginalText            string         // original token text for literals (preserves escapes, numeric bases)
+	LeadingComments         []*token.Token // comment tokens preceding this node
 	InnerTrailingComments   []*token.Token // comments between last child and closing bracket
 	BlankLinesBefore        int            // blank lines (newline count - 1) before this node (or before its leading comments)
 	BlankLinesAfterComments int            // blank lines between last leading comment and the expression
 	PrecedingSpaces         int            // spaces before this token on the same line (for column alignment)
+	BracketType             rune           // '(' or '[' for LSExpr nodes
 	NewlineBefore           bool           // true if at least one newline preceded this node in source
 	ClosingBracketNewline   bool           // true if closing bracket was on its own line in source
 }
 
 // LVal is a lisp value
+//
+// Field order is chosen so that every pointer-bearing word sits in the leading
+// 64 bytes: the GC only scans up to the last pointer word, so grouping the
+// pointers first and letting Str/Cells contribute their pointer word last
+// leaves their len/cap tails (and all the scalars) outside the scan range.
+// This cuts the GC scan extent from 112 bytes to 64 without changing the
+// struct's overall size. LVal is allocated for every value in the
+// interpreter, so keep the pointers first when adding fields — `govet`'s
+// fieldalignment check (see .golangci.yml) enforces this.
 type LVal struct {
 	// Native is generic storage for data which cannot be represented as an
 	// LVal (and thus can't be stored in Cells).
-
 	Native interface{}
 
 	// Source is the values originating location in source code.  Programs
 	// should not modify the contents of Source as the reference may be shared
 	// by multiple LVals.
-
 	Source *token.Location
+
+	// Meta holds formatting metadata, only populated in format-preserving mode.
+	Meta *SourceMeta
+
+	// MacroExpansion holds debug metadata for nodes produced by macro
+	// expansion. Only populated when a debugger is attached — nil in
+	// production (zero overhead: 8-byte nil pointer).
+	MacroExpansion *MacroExpansionInfo
 
 	// Str used by LSymbol and LString values
 	Str string
@@ -246,14 +261,6 @@ type LVal struct {
 
 	// Spliced denotes the value as needing to be spliced into a parent value.
 	Spliced bool
-
-	// Meta holds formatting metadata, only populated in format-preserving mode.
-	Meta *SourceMeta
-
-	// MacroExpansion holds debug metadata for nodes produced by macro
-	// expansion. Only populated when a debugger is attached — nil in
-	// production (zero overhead: 8-byte nil pointer).
-	MacroExpansion *MacroExpansionInfo
 }
 
 // GetType returns a quoted symbol denoting v's type.

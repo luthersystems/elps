@@ -43,12 +43,12 @@ const DefaultMaxParseDepth = 10000
 
 // Parser is a lisp parser.
 type Parser struct {
-	parsing         bool
 	src             *TokenSource
-	preserveFormat  bool
 	pendingComments []*token.Token
 	depth           int
 	maxDepth        int
+	parsing         bool
+	preserveFormat  bool
 }
 
 // NewFromSource initializes and returns a Parser that reads tokens from src.
