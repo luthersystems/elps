@@ -1,0 +1,52 @@
+# The row that actually failed CI on luthersystems/elps PR #310
+# (actions/runs/31222414614), verbatim.
+#
+# Reported as a false positive on the grounds that "no timing delta exceeds 15%"
+# -- true, the worst was +6.37% -- and that the only magnitudes above 5% were in
+# the B/s throughput column. But the run ALSO contained this, in the lisp
+# package's B/op table:
+#
+#     EnvFunCallRecursion-4   3.768Mi -> 4.086Mi   +8.44% (p=0.008 n=5)
+#
+# That is an allocation metric at 8.44%, above the 5% allocation gate, and it is
+# what fired. It is a TRUE positive:
+#
+#   * allocs/op for the same benchmark is IDENTICAL (40.08k, +0.00%) -- the
+#     allocation COUNT did not move, only the bytes. Same allocations, bigger.
+#   * the PR adds a `TailIterations int` field to CallFrame (lisp/stack.go),
+#     which is allocated per call. 40,080 allocations x 8 bytes ~ 313 KiB;
+#     the observed delta is 4.086Mi - 3.768Mi = ~325 KiB. The arithmetic lands.
+#   * p=0.008 on the metric class that is near-deterministic in elps.
+#
+# So the gate correctly priced a real memory cost of the change. The fixture
+# exists so that stays pinned: if a future edit stops this firing, the gate has
+# lost the one signal it is most reliable at.
+goos: linux
+goarch: amd64
+pkg: github.com/luthersystems/elps/lisp
+cpu: AMD EPYC 7763 64-Core Processor
+                             │     base     │                  pr                  │
+                             │    sec/op    │    sec/op      vs base               │
+EnvFunCallRecursion-4          8.907m ± ∞ ¹   10.107m ± ∞ ¹  +13.48% (p=0.016 n=5)
+EnvFunCallTailRec-4            3.706m ± ∞ ¹    3.968m ± ∞ ¹   +7.07% (p=0.008 n=5)
+EnvFunCallPos-4                1.744m ± ∞ ¹    1.939m ± ∞ ¹  +11.19% (p=0.008 n=5)
+geomean                        1.281m          1.341m         +4.65%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                             │     base      │                 pr                  │
+                             │     B/op      │     B/op       vs base              │
+EnvGet-4                       10.20Mi ± ∞ ¹   10.20Mi ± ∞ ¹  +0.00% (p=0.016 n=5)
+EnvFunCallRecursion-4          3.768Mi ± ∞ ¹   4.086Mi ± ∞ ¹  +8.44% (p=0.008 n=5)
+EnvFunCallTailRec-4            3.454Mi ± ∞ ¹   3.454Mi ± ∞ ¹  +0.00% (p=0.008 n=5)
+MacroDefun-4                   33.31Ki ± ∞ ¹   33.32Ki ± ∞ ¹  +0.04% (p=0.008 n=5)
+geomean                        1.145Mi         1.151Mi        +0.51%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                             │     base     │                  pr                  │
+                             │  allocs/op   │  allocs/op    vs base                │
+EnvGet-4                       128.0k ± ∞ ¹   128.0k ± ∞ ¹       ~ (p=0.405 n=5)
+EnvFunCallRecursion-4          40.08k ± ∞ ¹   40.08k ± ∞ ¹  +0.00% (p=0.008 n=5)
+EnvFunCallTailRec-4            44.07k ± ∞ ¹   44.07k ± ∞ ¹       ~ (p=1.000 n=5) ²
+geomean                        13.58k         13.58k        +0.00%
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal

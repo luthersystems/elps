@@ -152,6 +152,25 @@ assert_exit 1 "B/s throughput COLLAPSE does fire the gate" \
 assert_contains "higher is better" "the report labels the metric direction" \
 	"$GATE" "${TESTDATA}/benchstat-bps-regression.txt"
 
+# A B/s DIP of a few percent is the case between those two extremes, and the one
+# that got mistaken for a gate bug on PR #310: it is the only column in that run
+# with magnitudes above BENCH_ALLOC_THRESHOLD_PCT, which invites the conclusion
+# that B/s is being judged against the allocation gate. It is not -- B/s has no
+# "/op" suffix, so is_alloc_metric() returns 0 and it falls to the timing gate.
+# These assertions pin that, so the question does not have to be re-litigated
+# from the numbers.
+assert_exit 0 "a several-percent B/s DIP with flat B/op and allocs/op does NOT fire" \
+	"$GATE" "${TESTDATA}/benchstat-bps-dip-only.txt"
+assert_contains "gate 15%" "B/s rows are judged against the TIMING gate, not the allocation gate" \
+	"$GATE" "${TESTDATA}/benchstat-bps-dip-only.txt"
+assert_not_contains "REGRESSION" "no B/s dip below the timing gate is called a regression" \
+	"$GATE" "${TESTDATA}/benchstat-bps-dip-only.txt"
+# Belt and braces: even if the allocation gate were tightened to zero, the B/s
+# rows must be unaffected by it. If this ever fails, B/s has been mis-classified
+# into the allocation bucket -- which is exactly the bug that was suspected.
+assert_exit 0 "B/s dip is untouched by the ALLOCATION gate, even at 0%" \
+	env BENCH_ALLOC_THRESHOLD_PCT=0 "$GATE" "${TESTDATA}/benchstat-bps-dip-only.txt"
+
 echo
 echo "== benchstat-gate: per-metric-class thresholds ==========================="
 
@@ -171,6 +190,23 @@ assert_exit 0 "the same table passes once the allocation gate is raised to 20%" 
 # And the timing gate alone would never have caught it.
 assert_exit 0 "a single 50% gate would have missed it entirely" \
 	env BENCH_ALLOC_THRESHOLD_PCT=50 "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
+
+# The live case: the gate's first real firing, on PR #310. A +8.44% B/op
+# regression with an IDENTICAL allocation count -- the same allocations, made
+# bigger by a field added to CallFrame. This is the signal the allocation gate
+# exists for, and it must keep firing.
+assert_exit 1 "the LIVE PR #310 allocation regression fires" \
+	"$GATE" "${TESTDATA}/benchstat-alloc-regression-live.txt"
+assert_contains "REGRESSION" "the live allocation regression is reported" \
+	"$GATE" "${TESTDATA}/benchstat-alloc-regression-live.txt"
+assert_contains "EnvFunCallRecursion-4" "the offending row is named" \
+	"$GATE" "${TESTDATA}/benchstat-alloc-regression-live.txt"
+# Its timing deltas (worst +13.48%) are all under the 15% timing gate, so the
+# allocation column is genuinely the only thing that fired. Raising just the
+# allocation gate makes the whole table pass -- proof that no timing row was
+# responsible, and the knob a maintainer would reach for to accept the cost.
+assert_exit 0 "with only the ALLOCATION gate raised, the live table passes" \
+	env BENCH_ALLOC_THRESHOLD_PCT=10 "$GATE" "${TESTDATA}/benchstat-alloc-regression-live.txt"
 
 echo
 echo "== benchstat-gate: the threshold is the only thing holding it back ======="
