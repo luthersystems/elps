@@ -61,7 +61,7 @@
 # ------------------------------------------------------------------
 # The workflow's exact benchmark command
 #
-#     go test -bench=. -benchmem -benchtime=100ms -count=5 -run='^$' ./...
+#     go test -bench=. -benchmem -benchtime=100ms -count=10 -run='^$' ./...
 #
 # was run three times against IDENTICAL code and the runs compared pairwise with
 # benchstat.  Every "significant" delta in such a comparison is by construction
@@ -77,9 +77,12 @@
 # The allocation metrics are effectively DETERMINISTIC -- identical code
 # reproduces them exactly, and benchstat routinely annotates them "all samples
 # are equal".  The timing metrics are extremely noisy at these sampling
-# parameters (-benchtime=100ms with -count=5 is a very small sample, and the
-# baseline and PR measurements are taken in different jobs on different shared
-# runners).
+# parameters (-benchtime=100ms is a short run, and the baseline and PR
+# measurements are taken in different jobs on different shared runners).
+#
+# -count is 10, not 5: benchstat needs >= 6 samples before it will compute a
+# confidence interval, and at n=5 the smallest achievable p-value is 0.008,
+# which a small systematic difference between the two jobs produces by itself.
 #
 # A SINGLE threshold is therefore the wrong shape for elps: set it low enough to
 # be useful for allocations and every PR reds on timing noise; set it high enough

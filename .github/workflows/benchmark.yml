@@ -13,7 +13,20 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BENCH_COUNT: "5"
+  # 10, not 5.  benchstat needs >= 6 samples to compute a confidence interval
+  # at level 0.95; below that every row prints "± ∞" and the annotation "need
+  # >= 6 samples for confidence interval at level 0.95", so a reader has no way
+  # to judge spread.  Worse, at n=5 vs n=5 the smallest achievable Mann-Whitney
+  # p-value IS 0.008 -- it means only "all five PR samples ranked worse than all
+  # five base samples", which a small systematic difference between the two
+  # jobs (different runner, thermal state, noisy neighbour) produces on its own.
+  # That made p=0.008 unreadable as evidence: it appeared on both a real
+  # allocation regression and on pure timing noise in the same run.
+  #
+  # Raising the count cannot make the gate fire spuriously: a row must clear
+  # BOTH significance AND its magnitude threshold, and more samples only
+  # sharpen the estimate of magnitude.  The cost is roughly a minute of CI.
+  BENCH_COUNT: "10"
   GO_VERSION: "1.25"
   # Regression gates, applied per metric class by scripts/benchstat-gate.sh.
   # elps' allocation metrics are near-deterministic (worst-case noise measured on
