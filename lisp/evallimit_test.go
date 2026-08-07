@@ -160,6 +160,39 @@ func TestTailIterationLimit(t *testing.T) {
 	assert.NotEqual(t, lisp.LError, res.Type, "0 must disable the check: %v", res)
 }
 
+// TestTailIterationLimitBoundary pins the exact off-by-one. A limit of N
+// permits N turns and refuses turn N+1, and the error reports the turn that
+// exceeded — so the reported number is always limit+1. Testing only values
+// far from the boundary would leave < vs <= unpinned.
+func TestTailIterationLimitBoundary(t *testing.T) {
+	const limit = 1000
+
+	for _, tt := range []struct {
+		turns   int
+		wantErr bool
+	}{
+		{turns: limit - 1, wantErr: false},
+		{turns: limit, wantErr: false},
+		{turns: limit + 1, wantErr: true},
+	} {
+		t.Run(fmt.Sprintf("%d_turns", tt.turns), func(t *testing.T) {
+			env := newLimitTestEnv(t, lisp.WithMaxTailIterations(limit))
+			require.NotEqual(t, lisp.LError, env.LoadString("test", spinDefn).Type)
+			res := env.LoadString("test", fmt.Sprintf("(spin %d)", tt.turns))
+			if !tt.wantErr {
+				require.NotEqual(t, lisp.LError, res.Type,
+					"%d turns must be allowed under a %d-turn limit: %v", tt.turns, limit, res)
+				return
+			}
+			require.Equal(t, lisp.LError, res.Type,
+				"%d turns must exceed a %d-turn limit", tt.turns, limit)
+			assert.Contains(t, res.String(),
+				fmt.Sprintf("tail-call iteration limit exceeded: %d", limit+1),
+				"the error must report the turn that exceeded the limit")
+		})
+	}
+}
+
 // TestTailIterationUnitIsOneTurnPerIteration pins the unit of
 // MaxTailIterations against the unit of MaxHeightLogical. This is the whole
 // reason the tail-iteration counter exists: HeightLogical counts *elided
@@ -278,6 +311,53 @@ func TestMaxStepsNotRefilledByNestedEvaluation(t *testing.T) {
 	require.Equal(t, lisp.LError, res.Type,
 		"a nested eval must not refill the step budget, got: %v", res)
 	assert.Contains(t, res.String(), "step limit exceeded")
+}
+
+// TestMaxStepsResetAtEveryExportedEntryPoint pins that every exported entry
+// point resets the budget, not just the ones that were easy to remember.
+//
+// MacroCall was missed on the first pass: it evaluates (macroCall -> call ->
+// eval, which increments steps) but had no beginEval, so a host driving macro
+// expansion through it — a formatter, an expander, an LSP feature — still got
+// exactly the lifetime-quota poisoning this change set out to remove.
+func TestMaxStepsResetAtEveryExportedEntryPoint(t *testing.T) {
+	// burn exhausts the budget so any entry point that fails to reset it
+	// will return a step-limit error on the very next call.
+	setup := func(t *testing.T) *lisp.LEnv {
+		t.Helper()
+		env := newLimitTestEnv(t, lisp.WithMaxSteps(2000))
+		require.NotEqual(t, lisp.LError, env.LoadString("test", spinDefn).Type)
+		require.NotEqual(t, lisp.LError,
+			env.LoadString("test", `(defmacro plus1 (x) (quasiquote (+ 1 (unquote x))))`).Type)
+		res := env.LoadString("test", `(spin 100000)`)
+		require.Equal(t, lisp.LError, res.Type, "setup should exhaust the budget")
+		return env
+	}
+
+	t.Run("MacroCall", func(t *testing.T) {
+		env := setup(t)
+		mac := env.GetGlobal(lisp.Symbol("plus1"))
+		require.Equal(t, lisp.LFun, mac.Type)
+		res := env.MacroCall(mac, lisp.QExpr([]*lisp.LVal{lisp.Int(1)}))
+		assert.NotEqual(t, lisp.LError, res.Type,
+			"MacroCall must reset the step budget, got: %v", res)
+	})
+
+	t.Run("FunCall", func(t *testing.T) {
+		env := setup(t)
+		fn := env.GetGlobal(lisp.Symbol("spin"))
+		require.Equal(t, lisp.LFun, fn.Type)
+		res := env.FunCall(fn, lisp.QExpr([]*lisp.LVal{lisp.Int(5)}))
+		assert.NotEqual(t, lisp.LError, res.Type,
+			"FunCall must reset the step budget, got: %v", res)
+	})
+
+	t.Run("Eval", func(t *testing.T) {
+		env := setup(t)
+		res := env.LoadString("test", `(+ 1 2)`)
+		assert.NotEqual(t, lisp.LError, res.Type,
+			"Load must reset the step budget, got: %v", res)
+	})
 }
 
 // TestStepsAndTotalSteps pins the two counters against each other.

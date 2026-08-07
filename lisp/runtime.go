@@ -189,10 +189,16 @@ const DefaultMaxMacroExpansionDepth = 1000
 // # DefaultMaxTailIterations — the runaway-loop backstop
 //
 // This bounds how many turns a single tail-recursive loop may take. Its unit
-// is loop turns, so it is a knob an operator can reason about. One million
-// turns of a trivial loop costs ~4s of pure interpreter overhead, which is
-// far beyond any legitimate workload but still terminates well inside a
-// typical host transaction timeout. It is a backstop, not a business limit.
+// is loop turns, so it is a knob an operator can reason about.
+//
+// It is a backstop against a loop that never terminates, NOT a time bound.
+// One million turns of a trivial O(1) body costs ~4s of interpreter
+// overhead, but turns say nothing about the work done per turn: a body that
+// conses a list, concatenates a string, or calls any O(n) builtin can run
+// for minutes — or effectively forever — inside the same turn budget, and a
+// step limit does not help either because an O(n) builtin is one step. To
+// bound wall-clock time, pass a context with a deadline (WithContext, or the
+// *Context methods on LEnv). That is the only limit here that measures time.
 //
 // # DefaultMaxLogicalStackHeight — off by default
 //
@@ -214,7 +220,13 @@ const DefaultMaxMacroExpansionDepth = 1000
 //
 // None of these limits catch a non-recursive infinite loop (a host-provided
 // `while`, for example) because such a loop neither grows the stack nor
-// performs tail calls. Use WithMaxSteps for that.
+// performs tail calls. WithMaxSteps bounds the number of evaluation steps,
+// which does catch that shape.
+//
+// None of them — including WithMaxSteps — bound elapsed time, because a
+// single step may perform an arbitrary amount of work inside a builtin. A
+// context deadline is the only real time bound; see WithContext and the
+// *Context methods on LEnv.
 const (
 	DefaultMaxLogicalStackHeight  = 0
 	DefaultMaxPhysicalStackHeight = 25000

@@ -922,6 +922,12 @@ on top of it.  So:
 * the catch-all `condition` handler specifier does **not** match
   `internal-panic`.
 
+The carve-out keys off a Go stack snapshot the interpreter attaches when it
+recovers the panic — not off the condition name — so `(error 'internal-panic
+"...")` written in lisp is an ordinary, containable condition.  Only a
+genuine recovered panic escapes.  Embedders testing for one should use
+`lisp.IsInternalPanic(v)` rather than comparing the condition name.
+
 A handler that genuinely wants to intercept host panics must name the
 condition explicitly:
 
@@ -975,8 +981,8 @@ lisp.InitializeUserEnv(env, lisp.WithMaxSteps(1000000))
 ```
 
 The counter is reset each time an exported entry point (`Eval`,
-`EvalContext`, `EvalSExpr`, `FunCall`, `FunCallContext`, `SpecialOpCall`, or
-any `Load*`) is entered from outside an evaluation.  Nested evaluation — a
+`EvalContext`, `EvalSExpr`, `FunCall`, `FunCallContext`, `SpecialOpCall`,
+`MacroCall`, or any `Load*`) is entered from outside an evaluation.  Nested evaluation — a
 builtin calling back into `Eval`, a tail-call loop, the forms evaluated by a
 single `Load` — shares the enclosing budget and does not refill it.  Without
 that reset, `WithMaxSteps(n)` would be a *lifetime* quota: once a long-lived
@@ -990,6 +996,11 @@ to reset the current counter explicitly.
 
 A step limit is the only mechanism here that bounds a loop which neither
 recurses nor tail-calls — no stack limit can see such a loop.
+
+It is not a time bound: a single step may run an arbitrary amount of work
+inside a builtin.  **Context cancellation with a deadline is the only limit
+here that measures elapsed time**, and it is what you want if the real
+requirement is "give up after N seconds".
 
 ### Stack Height and Tail-Call Limits
 
@@ -1008,10 +1019,22 @@ recommended.
 **Tail-call iterations** count the turns of a tail-recursive loop.  Tail
 calls run in constant stack space, so no stack-height limit can bound a
 runaway loop; this is the limit that does.  It is bounded by default
-(`DefaultMaxTailIterations`, 1,000,000) purely as a runaway-loop backstop —
-a million turns of a trivial loop costs several seconds of interpreter time,
-far beyond any legitimate workload.  Override with
-`lisp.WithMaxTailIterations(n)`; 0 disables the check.
+(`DefaultMaxTailIterations`, 1,000,000) purely as a backstop against a loop
+that never terminates.  Override with `lisp.WithMaxTailIterations(n)`; 0
+disables the check.
+
+It is **not** a time bound.  A million turns of a trivial body costs a few
+seconds, but turns say nothing about the work done per turn — a body that
+conses onto a list or calls any O(n) builtin can run for minutes inside the
+same turn budget:
+
+```lisp
+(defun grow (n acc) (if (= n 0) (length acc) (grow (- n 1) (cons n acc))))
+(grow 60000 ())   ; 60,000 turns — well under the backstop — but ~17s
+```
+
+A step limit does not help here either, since an O(n) builtin call is one
+step.  To bound elapsed time, use a context deadline (below).
 
 **Logical (virtual) stack height** is the physical height plus every frame
 elided by tail-call optimization.  It is a useful stack-trace diagnostic but

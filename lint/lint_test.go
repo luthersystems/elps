@@ -709,6 +709,35 @@ func TestBuiltinArity_Positive_StillCatchesRealErrors(t *testing.T) {
 	assertHasDiag(t, diags, "get requires at least 2 argument(s)")
 }
 
+// TestBuiltinArity_ShadowingIsScopedToTheBindingForm pins that a local
+// binding suppresses the check only inside the form that binds it.
+//
+// The first version of the binding-form fix collected bound names into a
+// file-global set, so one unrelated (let ([map ...]) ...) anywhere in a file
+// silently disabled builtin-arity for `map` across the whole file. That
+// matters: builtin-arity is a SeverityError check that gates the build, and
+// in substrate's shirocore corpus 8 of 20 files bind a name that collides
+// with a builtin (`key`, `min`, `get`, `max`, `map`).
+func TestBuiltinArity_ShadowingIsScopedToTheBindingForm(t *testing.T) {
+	source := `(map 'list)
+(defun unrelated ()
+  (let ([map (sorted-map 'a 1)])
+    (get map 'a)))`
+
+	diags := lintCheck(t, AnalyzerBuiltinArity, source)
+	assertHasDiag(t, diags, "map requires at least 3 argument(s)")
+	assert.Len(t, diags, 1, "only the out-of-scope call should be reported")
+
+	// The same shape with a local function binding.
+	source = `(get 1)
+(defun unrelated ()
+  (flet ((get (x) x))
+    (get 2)))`
+	diags = lintCheck(t, AnalyzerBuiltinArity, source)
+	assertHasDiag(t, diags, "get requires at least 2 argument(s)")
+	assert.Len(t, diags, 1, "the in-scope shadowed call must not be reported")
+}
+
 // --- quote-call ---
 
 func TestQuoteCall_Positive_UnquotedSet(t *testing.T) {

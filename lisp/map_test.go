@@ -3,6 +3,7 @@
 package lisp_test
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/luthersystems/elps/elpstest"
@@ -371,4 +372,100 @@ func TestSortedMapEqualELPS(t *testing.T) {
 		}},
 	}
 	elpstest.RunTestSuite(t, tests)
+}
+
+// intKeyedMap is a minimal custom lisp.Map backed by integer keys. Map is an
+// exported interface and SortedMapFromData an exported extension point, so an
+// embedder can legitimately build one of these — the stock sortedmap's
+// string/symbol-only key restriction is not part of the Map contract, and
+// elpstest.AssertSortedMap does not test for it.
+type intKeyedMap struct{ m map[int]*lisp.LVal }
+
+func newIntKeyedMap(pairs map[int]string) *lisp.LVal {
+	im := &intKeyedMap{m: make(map[int]*lisp.LVal, len(pairs))}
+	for k, v := range pairs {
+		im.m[k] = lisp.String(v)
+	}
+	return lisp.SortedMapFromData(&lisp.MapData{Map: im})
+}
+
+func (im *intKeyedMap) Len() int { return len(im.m) }
+
+func (im *intKeyedMap) Get(k *lisp.LVal) (*lisp.LVal, bool) {
+	v, ok := im.m[k.Int]
+	if !ok {
+		return lisp.Nil(), false
+	}
+	return v, true
+}
+
+func (im *intKeyedMap) Set(k, v *lisp.LVal) *lisp.LVal {
+	im.m[k.Int] = v
+	return lisp.Nil()
+}
+
+func (im *intKeyedMap) Del(k *lisp.LVal) *lisp.LVal {
+	delete(im.m, k.Int)
+	return lisp.Nil()
+}
+
+func (im *intKeyedMap) Keys() *lisp.LVal {
+	ks := make([]int, 0, len(im.m))
+	for k := range im.m {
+		ks = append(ks, k)
+	}
+	sort.Ints(ks)
+	cells := make([]*lisp.LVal, len(ks))
+	for i, k := range ks {
+		cells[i] = lisp.Int(k)
+	}
+	return lisp.QExpr(cells)
+}
+
+func (im *intKeyedMap) Entries(buf []*lisp.LVal) *lisp.LVal {
+	keys := im.Keys()
+	for i, k := range keys.Cells {
+		v, _ := im.Get(k)
+		buf[i] = lisp.QExpr([]*lisp.LVal{k, v})
+	}
+	return lisp.Int(len(im.m))
+}
+
+// TestSortedMapEqualNonStringKeys pins that the key-name comparison used for
+// string-like keys is NOT applied to key types that carry no name.
+//
+// Comparing keys by .Str unconditionally is safe for the stock sortedmap,
+// which rejects anything but LString/LSymbol. But a custom lisp.Map may be
+// keyed by integers or tuples, whose .Str is always "" — so every key would
+// compare equal to every other, and two structurally different maps would
+// report as equal?. That is a silent wrong answer in a public API: an
+// embedder comparing snapshots for change detection would see "no change"
+// and skip a write.
+func TestSortedMapEqualNonStringKeys(t *testing.T) {
+	a := newIntKeyedMap(map[int]string{1: "x", 2: "y"})
+	b := newIntKeyedMap(map[int]string{7: "x", 9: "y"})
+
+	// The maps are plainly different through their keys.
+	assert.Equal(t, `'(1 2)`, a.Map().Keys().String())
+	assert.Equal(t, `'(7 9)`, b.Map().Keys().String())
+
+	assert.True(t, lisp.Not(a.Equal(b)),
+		"integer-keyed maps with different keys must not be equal")
+	assert.True(t, lisp.Not(b.Equal(a)), "inequality must be symmetric")
+
+	// Same keys and values still compare equal.
+	assert.True(t, lisp.True(a.Equal(newIntKeyedMap(map[int]string{1: "x", 2: "y"}))),
+		"integer-keyed maps with identical entries must be equal")
+
+	// Same keys, different values.
+	assert.True(t, lisp.Not(a.Equal(newIntKeyedMap(map[int]string{1: "x", 2: "z"}))),
+		"differing values must not be equal")
+
+	// And the string-like rule still applies where it was reasoned about.
+	strKeyed := lisp.SortedMap()
+	strKeyed.Map().Set(lisp.String("a"), lisp.Int(1))
+	symKeyed := lisp.SortedMap()
+	symKeyed.Map().Set(lisp.Symbol("a"), lisp.Int(1))
+	assert.True(t, lisp.True(strKeyed.Equal(symKeyed)),
+		"string-like keys must still compare by name")
 }

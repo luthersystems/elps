@@ -385,10 +385,6 @@ var AnalyzerBuiltinArity = &Analyzer{
 	Run: func(pass *Pass) error {
 		// Collect user-defined names so we don't flag shadowed builtins.
 		userDefs := UserDefined(pass.Exprs)
-		// Local bindings shadow builtins too: (flet ((first (xs) ...)) ...)
-		// rebinds `first`, so calls to it in the body must not be checked
-		// against the builtin's arity.
-		collectBindingFormNames(pass.Exprs, userDefs)
 
 		// Collect AST nodes where arity checking should be skipped.
 		skipNodes := aritySkipNodes(pass.Exprs)
@@ -462,25 +458,39 @@ func bindingList(sexpr *lisp.LVal) (*lisp.LVal, bool) {
 	return binds, kind.funBinding
 }
 
-// collectBindingFormNames adds every name bound by let/let*/flet/labels/
-// macrolet — and the formals of flet/labels/macrolet functions — to defs, so
-// checks that compare against the builtin table skip locally shadowed names.
-func collectBindingFormNames(exprs []*lisp.LVal, defs map[string]bool) {
-	WalkSExprs(exprs, func(sexpr *lisp.LVal, depth int) {
-		binds, funBinding := bindingList(sexpr)
-		if binds == nil {
-			return
+// markLocallyShadowedCalls marks every call in form's subtree whose head is
+// one of the names form binds, so those calls are not checked against the
+// builtin arity table.
+//
+// The marking is scoped to the binding form's own subtree. A file-global name
+// set would be simpler but silently disables the check for that name
+// everywhere in the file: one unrelated (let ([map ...]) ...) in one function
+// would suppress a genuine (map 'list) arity error in another. builtin-arity
+// is a SeverityError check that gates the build, so it must not go quietly
+// dark outside the scope that actually rebinds the name.
+//
+// Scoping to the whole form rather than to each binding's body is a
+// deliberate over-approximation — it costs nothing in practice and avoids
+// duplicating let/let*/flet/labels scope rules here.
+func markLocallyShadowedCalls(form *lisp.LVal, binds *lisp.LVal, funBinding bool, skip map[*lisp.LVal]bool) {
+	local := make(map[string]bool)
+	for _, bind := range binds.Cells {
+		if bind == nil || bind.Type != lisp.LSExpr || len(bind.Cells) == 0 {
+			continue
 		}
-		for _, bind := range binds.Cells {
-			if bind == nil || bind.Type != lisp.LSExpr || len(bind.Cells) == 0 {
-				continue
-			}
-			if name := bind.Cells[0]; name.Type == lisp.LSymbol {
-				defs[name.Str] = true
-			}
-			if funBinding && len(bind.Cells) >= 2 {
-				CollectFormals(bind.Cells[1], defs)
-			}
+		if name := bind.Cells[0]; name.Type == lisp.LSymbol {
+			local[name.Str] = true
+		}
+		if funBinding && len(bind.Cells) >= 2 {
+			CollectFormals(bind.Cells[1], local)
+		}
+	}
+	if len(local) == 0 {
+		return
+	}
+	WalkSExprs([]*lisp.LVal{form}, func(sexpr *lisp.LVal, depth int) {
+		if head := HeadSymbol(sexpr); head != "" && local[head] {
+			skip[sexpr] = true
 		}
 	})
 }
@@ -529,6 +539,7 @@ func aritySkipNodes(exprs []*lisp.LVal) map[*lisp.LVal]bool {
 					skip[bind.Cells[1]] = true // formals list
 				}
 			}
+			markLocallyShadowedCalls(sexpr, binds, funBinding, skip)
 		}
 	})
 	return skip

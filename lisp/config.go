@@ -140,8 +140,8 @@ func WithContext(ctx context.Context) Config {
 //
 // The budget is per top-level evaluation: the counter is reset each time an
 // exported entry point (Eval, EvalContext, EvalSExpr, FunCall,
-// FunCallContext, SpecialOpCall, or any Load*) is entered from outside an
-// evaluation.  Nested evaluation — a builtin calling back into Eval, the
+// FunCallContext, SpecialOpCall, MacroCall, or any Load*) is entered from
+// outside an evaluation.  Nested evaluation — a builtin calling back into Eval, the
 // tail-call loops, forms evaluated by load — shares the enclosing budget and
 // does not refill it.  Without the reset the limit would be a lifetime quota
 // that permanently kills a long-lived Runtime once it was reached.

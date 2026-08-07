@@ -1079,6 +1079,7 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 
 // MacroCall invokes macro fun with argument list args.
 func (env *LEnv) MacroCall(fun, args *LVal) *LVal {
+	defer env.Runtime.beginEval()()
 	return env.macroCall(env.evalCtx, fun, args)
 }
 

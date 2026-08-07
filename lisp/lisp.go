@@ -734,6 +734,28 @@ func markMacExpand(expr *LVal) *LVal {
 	}
 }
 
+// IsInternalPanic reports whether v is an error produced by recovering a Go
+// panic that escaped host code during evaluation.
+//
+// This is the check `ignore-errors` and `handler-bind` use, and embedders
+// should use it too, rather than comparing the condition name against
+// CondInternalPanic.  The condition name alone is forgeable: lisp code can
+// write (error 'internal-panic "...") and, if the name were the only test,
+// would produce an error that no catch-all handler could contain.
+//
+// The marker is the Go stack snapshot the recover handler attaches to the
+// error's CallStack copy.  Nothing reachable from lisp can populate it — the
+// live Runtime stack's GoStack is always nil, so an error raised by the
+// `error` builtin always copies a nil GoStack.  A forged 'internal-panic is
+// therefore treated as an ordinary condition and stays containable.
+func IsInternalPanic(v *LVal) bool {
+	if v == nil || v.Type != LError || v.Str != CondInternalPanic {
+		return false
+	}
+	stack, ok := v.Native.(*CallStack)
+	return ok && stack != nil && len(stack.GoStack) > 0
+}
+
 func (v *LVal) CallStack() *CallStack {
 	if v.Type != LError {
 		panic("not an error: " + v.Type.String())
@@ -1002,15 +1024,7 @@ func (v *LVal) Equal(other *LVal) *LVal {
 		for i := range vEntries.Cells {
 			vPair := vEntries.Cells[i]
 			oPair := oEntries.Cells[i]
-			// Sorted-map keys are identified by name, not by whether they
-			// were written as a string or a symbol: get, key?, assoc and
-			// dissoc all accept either form for the same entry.  Comparing
-			// the reconstructed key LVals with Equal would instead compare
-			// LString against LSymbol and report two maps unequal even
-			// though no documented accessor can tell them apart.  Compare
-			// key names so equality follows the same key identity as
-			// lookup.
-			if vPair.Cells[0].Str != oPair.Cells[0].Str {
+			if !True(equalMapKey(vPair.Cells[0], oPair.Cells[0])) {
 				return Bool(false)
 			}
 			if !True(vPair.Cells[1].Equal(oPair.Cells[1])) {
@@ -1020,6 +1034,34 @@ func (v *LVal) Equal(other *LVal) *LVal {
 		return Bool(true)
 	}
 	return Bool(false)
+}
+
+// equalMapKey compares two sorted-map keys under the map's own notion of key
+// identity.
+//
+// For the string-like keys the stock sortedmap accepts, identity is the key
+// *name*: get, key?, assoc and dissoc all take either 'a or "a" for the same
+// entry (docs/lang.md), so equality must too.  The string/symbol distinction
+// is cosmetic — it reaches keys and printing, and nothing else.
+//
+// Every other key type falls back to Equal.  Map is an exported interface and
+// SortedMapFromData an exported extension point, so an embedder may back a
+// sorted-map with a store keyed by integers, tuples or anything else.  Those
+// keys carry no name at all: comparing Str would make every one of them equal
+// to every other, silently reporting structurally different maps as equal.
+// The name rule was reasoned about for string-like keys only, and it is
+// deliberately not extended past them.
+func equalMapKey(a, b *LVal) *LVal {
+	if isStringLike(a) && isStringLike(b) {
+		return Bool(a.Str == b.Str)
+	}
+	return a.Equal(b)
+}
+
+// isStringLike reports whether v is one of the name-carrying key types the
+// stock sortedmap accepts.
+func isStringLike(v *LVal) bool {
+	return v.Type == LString || v.Type == LSymbol
 }
 
 func (v *LVal) EqualNum(other *LVal) *LVal {

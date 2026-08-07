@@ -829,3 +829,65 @@ func TestHandlerBindCatchAllDoesNotSwallowPanic(t *testing.T) {
 		}
 	})
 }
+
+// TestForgedInternalPanicIsContainable pins that the containment carve-out
+// keys off a non-forgeable marker, not the condition name.
+//
+// If the name alone were the test, any lisp code could write
+// (error 'internal-panic "...") and produce an error that neither
+// ignore-errors nor a catch-all handler-bind could contain — an uncontainable
+// error available to any library — and a real host panic would be
+// indistinguishable from a forged one.
+func TestForgedInternalPanicIsContainable(t *testing.T) {
+	t.Parallel()
+	env := initSafetyTestEnv(t)
+	addPanicBuiltin(env, "test-real-panic", "genuine host defect")
+
+	forged := SExpr([]*LVal{
+		Symbol("error"), Quote(Symbol(CondInternalPanic)), String("forged"),
+	})
+
+	// A forged internal-panic is an ordinary condition: ignore-errors
+	// suppresses it.
+	res := env.Eval(SExpr([]*LVal{Symbol("ignore-errors"), forged}))
+	if res.Type == LError {
+		t.Fatalf("a forged internal-panic must stay containable, got: %v", res)
+	}
+	if !IsInternalPanic(env.Eval(forged.Copy())) {
+		// Confirm the negative directly too: the forged error carries the
+		// condition name but is not recognised as a real panic.
+		t.Log("forged error correctly not recognised as an internal panic")
+	} else {
+		t.Error("a forged internal-panic must not satisfy IsInternalPanic")
+	}
+
+	// A real panic still escapes.
+	res = env.Eval(SExpr([]*LVal{
+		Symbol("ignore-errors"),
+		SExpr([]*LVal{Symbol("test-real-panic")}),
+	}))
+	if res.Type != LError {
+		t.Fatalf("a real panic must still propagate, got: %v", res)
+	}
+	if !IsInternalPanic(res) {
+		t.Error("a real recovered panic must satisfy IsInternalPanic")
+	}
+
+	// And a catch-all handler-bind contains the forged one.
+	handler := SExpr([]*LVal{
+		Symbol("lambda"),
+		SExpr([]*LVal{Symbol(VarArgSymbol), Symbol("args")}),
+		String("handled"),
+	})
+	res = env.Eval(SExpr([]*LVal{
+		Symbol("handler-bind"),
+		SExpr([]*LVal{SExpr([]*LVal{Symbol("condition"), handler})}),
+		forged.Copy(),
+	}))
+	if res.Type == LError {
+		t.Fatalf("a catch-all must contain a forged internal-panic, got: %v", res)
+	}
+	if res.Str != "handled" {
+		t.Errorf("result = %v, want \"handled\"", res)
+	}
+}
