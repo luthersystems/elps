@@ -1976,8 +1976,18 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 // will have other behavior, and there is another func in this file called
 // appendBytes.
 func builtinAppend_Bytes(env *LEnv, args *LVal) *LVal {
-	// the type sequence has already been validated.
+	// The comment that used to sit here claimed the sequence "has already been
+	// validated".  It had not been: builtinAppend validates the type
+	// SPECIFIER (args.Cells[0] == 'bytes) and then dispatches here without
+	// looking at args.Cells[1], so `(append 'bytes 0)` reached LVal.Bytes()
+	// with an int and panicked ("not bytes: int").  Under an embedded
+	// interpreter that surfaces as an internal-panic condition -- an error no
+	// ordinary handler can contain -- and in a phylum it is a chaincode
+	// crash.  This is the same guard append-bytes has always had.
 	_, lbytes, xs := args.Cells[0], args.Cells[1], args.Cells[2:]
+	if lbytes.Type != LBytes {
+		return env.Errorf("second argument is not bytes: %v", lbytes.Type)
+	}
 	b := lbytes.Bytes()
 	xsVal := QExpr(xs)
 	resultLen := len(b) + xsVal.Len()
@@ -2627,10 +2637,17 @@ func mulFloat(x, args *LVal) *LVal {
 }
 
 func builtinDebugPrint(env *LEnv, args *LVal) *LVal {
-	if len(args.Cells) == 0 {
-		fmt.Println()
-		return Nil()
-	}
+	// There is deliberately no zero-argument special case here.  There used to
+	// be one, and it called fmt.Println -- writing the newline to os.Stdout,
+	// ignoring Runtime.Stderr entirely.  That contradicted both the builtin's
+	// documentation ("Prints all arguments to stderr") and its own non-empty
+	// branch, and it meant an embedder who had redirected debug output still
+	// got a stray newline on the host process's stdout, which for a
+	// stdout-is-the-protocol host (an LSP server, a JSON-RPC chaincode
+	// process) is a corrupted stream rather than cosmetic noise.
+	//
+	// fmt.Fprintln with no variadic arguments already writes exactly the
+	// newline, so removing the branch is the whole fix.
 	fmtargs := make([]interface{}, len(args.Cells))
 	for i := range args.Cells {
 		fmtargs[i] = args.Cells[i]

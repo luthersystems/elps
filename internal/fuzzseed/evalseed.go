@@ -51,8 +51,17 @@ func EvalRunaway() map[string]string {
 		// --- non-recursive infinite loop.  Neither stack limit can see this:
 		// it grows no frames and performs no tail calls.  Only a step budget
 		// or a context deadline stops it. ---
-		"dotimes-huge": `(dotimes (i 1000000000))`,
-		"foldl-huge":   `(foldl (lambda (acc x) acc) 0 (range 100000000))`,
+		//
+		// Note the control sequence: `(i 1000000000)`, NOT `([i 1000000000])`.
+		// `[` and `(` are interchangeable in ELPS, so the bracketed form reads
+		// as `((i 1000000000))` -- a control sequence whose first element is a
+		// list rather than a symbol -- and dotimes rejects it as a syntax
+		// error before consulting any budget.  Written that way this seed
+		// "passes" without ever having started a loop, which is exactly the
+		// wrong reason to pass and hid a real defect: the EMPTY-BODY form
+		// below never reaches a limit check at all.
+		"dotimes-empty-body": `(dotimes (i 1000000000))`,
+		"dotimes-with-body":  `(dotimes (i 1000000000) 1)`,
 
 		// --- unbounded macro expansion (MaxMacroExpansionDepth) ---
 		"macro-expands-forever": `(defmacro m () (quasiquote (m))) (m)`,
@@ -60,9 +69,9 @@ func EvalRunaway() map[string]string {
 		// --- unbounded allocation.  These describe an enormous result in a
 		// handful of bytes, which is the ratio that makes them dangerous:
 		// there is no input-size budget that catches them. ---
-		"make-sequence-huge": `(make-sequence 'list 0 1000000000)`,
-		"range-huge":         `(range 1000000000)`,
-		"concat-huge":        `(concat 'string (make-sequence 'list 0 100000000))`,
+		"make-sequence-huge": `(make-sequence 0 1000000000)`,
+		"map-huge":           `(map 'list to-string (make-sequence 0 100000000))`,
+		"concat-huge":        `(concat 'list (make-sequence 0 100000000) '(1))`,
 
 		// --- unbounded allocation via the expr placeholder index.  The
 		// formals slice is sized from an integer read straight out of the
@@ -92,7 +101,7 @@ func EvalRunaway() map[string]string {
 func EvalTerminating() map[string]string {
 	return map[string]string{
 		// --- trivial / boundary ---
-		"empty":     ``,
+		"empty": ``,
 		"whitespace": `
 `,
 		"nil":     `()`,
@@ -104,21 +113,25 @@ func EvalTerminating() map[string]string {
 		// and the tail-iteration counter, far below the default backstop. ---
 		"tail-recursion-bounded": `(defun countdown (n) (if (<= n 0) 'done (countdown (- n 1)))) (countdown 10000)`,
 
-		// --- bounded non-tail recursion, well under MaxHeightPhysical ---
-		"non-tail-recursion-bounded": `(defun sum (n) (if (<= n 0) 0 (+ n (sum (- n 1))))) (sum 1000)`,
+		// --- bounded non-tail recursion.  An ELPS recursion level costs more
+		// than one physical frame (measured: `(sum 1000)` reaches height
+		// 2001), so this is kept well clear of the harness's 2000-frame
+		// budget rather than nominally under it. ---
+		"non-tail-recursion-bounded": `(defun sum (n) (if (<= n 0) 0 (+ n (sum (- n 1))))) (sum 500)`,
 
 		// --- ordinary programs: closures, higher-order functions, maps,
 		// strings, sequences, error handling ---
-		"lambda-apply":     `((lambda (x y) (+ x y)) 1 2)`,
-		"let-binding":      `(let ([a 1] [b 2]) (+ a b))`,
-		"map-over-range":   `(map 'list (lambda (x) (* x x)) (range 100))`,
-		"foldl-bounded":    `(foldl + 0 (range 1000))`,
-		"sorted-map":       `(let ([m (sorted-map 'a 1 'b 2)]) (get m 'a))`,
-		"string-ops":       `(string:join (map 'list string (range 10)) ",")`,
-		"handler-bind":     `(handler-bind ([condition (lambda (c &rest args) 'caught)]) (error 'boom "x"))`,
-		"ignore-errors":    `(ignore-errors (error 'boom "x"))`,
-		"defmacro-bounded": `(defmacro twice (x) (quasiquote (progn (unquote x) (unquote x)))) (twice 1)`,
-		"dotimes-bounded":  `(dotimes (i 1000))`,
+		"lambda-apply":       `((lambda (x y) (+ x y)) 1 2)`,
+		"let-binding":        `(let ([a 1] [b 2]) (+ a b))`,
+		"map-over-sequence":  `(map 'list (lambda (x) (* x x)) (make-sequence 0 100))`,
+		"foldl-bounded":      `(foldl + 0 (make-sequence 0 1000))`,
+		"sorted-map":         `(let ([m (sorted-map 'a 1 'b 2)]) (get m 'a))`,
+		"string-ops":         `(string:join (map 'list to-string (make-sequence 0 10)) ",")`,
+		"handler-bind":       `(handler-bind ([condition (lambda (c &rest args) 'caught)]) (error 'boom "x"))`,
+		"ignore-errors":      `(ignore-errors (error 'boom "x"))`,
+		"defmacro-bounded":   `(defmacro twice (x) (quasiquote (progn (unquote x) (unquote x)))) (twice 1)`,
+		"dotimes-bounded":    `(dotimes (i 1000))`,
+		"dotimes-bounded-fn": `(dotimes (i 1000) (+ i 1))`,
 
 		// --- the expr special operator's legitimate forms.  A1/A2 guard the
 		// placeholder index; these pin that the guard did not also break
@@ -161,6 +174,15 @@ func EvalAdversarial() []string {
 		"#^%", "#^%1", "#^%-1", "#^%-0", "#^%+1", "#^%&rest", "#^%&optional",
 		"#^(%-1)", "#^(list %-1)", "#^(%1 %2)", "#^(%1 %)", "#^(%&rest %1)",
 		"#^%99999999999999999999", "#^(%0)", "#^(% %)",
+		"#^(list %1025)", // one past MaxExprFormals
+
+		// --- dotimes, whose Go-level loop is driven by a program-supplied
+		// count.  The empty-body form is the one that reached no limit check
+		// at all.  `[` and `(` are interchangeable, so the bracketed control
+		// sequence reads as a nested list and is a syntax error -- kept here
+		// deliberately, as a shape the mutator should be able to reach. ---
+		"(dotimes (i 100))", "(dotimes (i 100) 1)", "(dotimes ([i 100]))",
+		"(dotimes (i -1))", "(dotimes (i 0))", "(dotimes (i 1 2 3))",
 
 		// --- append / bytes type dispatch.  A3's minimised input is the
 		// first of these: the type specifier is validated, the sequence is
@@ -192,8 +214,8 @@ func EvalAdversarial() []string {
 
 		// --- allocation-shaped builtins at small sizes.  Small so they are
 		// cheap seeds; the mutator's job is to grow the integer. ---
-		"(make-sequence 'list 0 4)", "(make-sequence 'list 0 -1)",
-		"(range 4)", "(range -1)", "(range 0 10 0)",
+		"(make-sequence 0 4)", "(make-sequence 0 -1)", "(make-sequence 0 10 0)",
+
 		"(concat 'string \"a\" \"b\")", "(reverse 'list '(1 2))",
 		"(zip 'list '(1) '(2))",
 
