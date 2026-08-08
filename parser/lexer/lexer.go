@@ -149,7 +149,19 @@ func (lex *Lexer) readToken() []*token.Token {
 			if lex.scanner.Accept(func(c rune) bool { return c == '\n' }) {
 				return lex.errorf("unterminated string literal")
 			}
-			if lex.scanner.Rune() == '\\' {
+			// The run just accepted stopped at a '"' (or at EOF).  Whether
+			// that quote CLOSES the string depends on how many backslashes
+			// immediately precede it: an odd number means the last one
+			// escapes the quote, an even number means they escape each other
+			// and the quote is the terminator.
+			//
+			// The parity has to be counted, not read off the last rune.
+			// Testing `Rune() == '\\'` treats every run ending in a backslash
+			// as an escape, so "a\\" -- a string whose value is a single
+			// backslash -- consumed its own closing quote and then ran off the
+			// end of the input as an unterminated literal.  NO elps string
+			// could end in a backslash.  Found by FuzzGeneratedPipeline.
+			if trailingBackslashes(lex.scanner.Text())%2 == 1 {
 				// Wait until parsing to check the escaped character
 				if !lex.scanner.Accept(func(c rune) bool { return true }) {
 					return lex.errorf("unterminated string literal %q", lex.peekRune())
@@ -338,9 +350,6 @@ func (lex *Lexer) readNumber() []*token.Token {
 	case lex.scanner.AcceptRune('.'):
 		return lex.readFloatFraction()
 	case lex.scanner.AcceptAny("eE"):
-		if !lex.scanner.Accept(func(c rune) bool { return true }) {
-			return lex.errorf("invalid floating point literal starting: %v", lex.scanner.Text())
-		}
 		return lex.readFloatExponent()
 	default:
 		return lex.emitText(token.INT)
@@ -355,21 +364,37 @@ func (lex *Lexer) readFloatFraction() []*token.Token {
 	}
 	switch {
 	case lex.scanner.AcceptAny("eE"):
-		if !lex.scanner.Accept(func(c rune) bool { return true }) {
-			return lex.errorf("invalid floating point literal starting: %v", lex.scanner.Text())
-		}
 		return lex.readFloatExponent()
 	default:
 		return lex.emitText(token.FLOAT)
 	}
 }
 
+// readFloatExponent scans the exponent part of a float literal, with the 'e'
+// or 'E' already consumed by the caller.  The grammar is [+-]?digit+.
+//
+// Both callers used to consume one UNCONDITIONAL rune before getting here,
+// which made the exponent require TWO characters: "1e5" was rejected as an
+// invalid float while "1e55" was accepted, and so were "1e+5" and "1.5e-2"
+// (the sign supplying the extra rune).  Rejecting a literal every other lisp
+// accepts is a source-compatibility hole, not just a formatter bug -- elps
+// could not read back a float it printed itself.  Found by
+// FuzzGeneratedPipeline.
 func (lex *Lexer) readFloatExponent() []*token.Token {
 	lex.scanner.AcceptAny("+-") // optional sign
 	if lex.scanner.AcceptSeqDigit() == 0 {
 		return lex.errorf("invalid floating point literal starting: %v", lex.scanner.Text())
 	}
 	return lex.emitText(token.FLOAT)
+}
+
+// trailingBackslashes counts the backslashes at the end of s.
+func trailingBackslashes(s string) int {
+	n := 0
+	for i := len(s) - 1; i >= 0 && s[i] == '\\'; i-- {
+		n++
+	}
+	return n
 }
 
 func (lex *Lexer) skipWhitespace() {
