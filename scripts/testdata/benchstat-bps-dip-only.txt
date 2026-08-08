@@ -1,0 +1,67 @@
+# The shape that was mistaken for a gate bug (see scripts/ci-gates-test.sh).
+#
+# A PR made things slightly slower: sec/op rises a few percent (well under the
+# timing gate), B/op and allocs/op are flat, and the B/s throughput column --
+# where NEGATIVE means slower -- dips by several percent.
+#
+# The magnitudes in the B/s column (up to -5.97%) are the only ones in the run
+# above BENCH_ALLOC_THRESHOLD_PCT, which makes it tempting to conclude that B/s
+# is being judged against the allocation gate. It is not: is_alloc_metric()
+# requires a "/op" suffix, so B/s falls through to the timing gate, and the
+# report prints "(gate 15%) (higher is better)" on each of these rows.
+#
+# This fixture pins that. The gate must exit 0 here.
+#
+# Rows are verbatim from the live run on luthersystems/elps PR #310
+# (actions/runs/31222414614), minus the one row that legitimately fired --
+# a +8.44% B/op allocation regression, kept separately in
+# benchstat-alloc-regression-live.txt.
+goos: linux
+goarch: amd64
+pkg: github.com/luthersystems/elps/parser/rdparser
+cpu: AMD EPYC 7763 64-Core Processor
+                                       │     base     │                 pr                 │
+                                       │    sec/op    │    sec/op     vs base              │
+Parser/approx.lisp-4                     193.9µ ± ∞ ¹   194.4µ ± ∞ ¹       ~ (p=0.690 n=5)
+Parser/sicp.lisp-4                       832.8µ ± ∞ ¹   885.9µ ± ∞ ¹  +6.37% (p=0.008 n=5)
+ParserFaultTolerant/sicp.lisp-4          845.2µ ± ∞ ¹   878.4µ ± ∞ ¹  +3.92% (p=0.032 n=5)
+geomean                                  518.8µ         530.0µ        +2.16%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                                       │     base      │                 pr                  │
+                                       │     B/op      │     B/op       vs base              │
+Parser/approx.lisp-4                     239.6Ki ± ∞ ¹   239.6Ki ± ∞ ¹       ~ (p=0.730 n=5)
+Parser/sicp.lisp-4                       679.2Ki ± ∞ ¹   679.2Ki ± ∞ ¹  +0.00% (p=0.008 n=5)
+ParserFaultTolerant/stream.lisp-4        593.5Ki ± ∞ ¹   593.5Ki ± ∞ ¹  +0.00% (p=0.048 n=5)
+geomean                                  470.8Ki         470.8Ki        +0.00%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                                       │     base     │                  pr                  │
+                                       │  allocs/op   │  allocs/op    vs base                │
+Parser/approx.lisp-4                     3.566k ± ∞ ¹   3.566k ± ∞ ¹       ~ (p=1.000 n=5) ²
+Parser/sicp.lisp-4                       16.65k ± ∞ ¹   16.65k ± ∞ ¹       ~ (p=1.000 n=5) ²
+geomean                                  9.968k         9.968k        -0.00%
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+
+                                       │     base      │                 pr                  │
+                                       │      B/s      │      B/s       vs base              │
+Parser/approx.lisp-4                     8.583Mi ± ∞ ¹   8.564Mi ± ∞ ¹       ~ (p=0.595 n=5)
+Parser/sicp.lisp-4                       8.307Mi ± ∞ ¹   7.811Mi ± ∞ ¹  -5.97% (p=0.008 n=5)
+ParserFaultTolerant/complex.lisp-4       9.251Mi ± ∞ ¹   9.127Mi ± ∞ ¹  -1.34% (p=0.048 n=5)
+ParserFaultTolerant/scheme-math.lisp-4   9.031Mi ± ∞ ¹   8.974Mi ± ∞ ¹  -0.63% (p=0.048 n=5)
+ParserFaultTolerant/sicp.lisp-4          8.183Mi ± ∞ ¹   7.877Mi ± ∞ ¹  -3.73% (p=0.032 n=5)
+ParserFaultTolerant/stream.lisp-4        9.041Mi ± ∞ ¹   8.755Mi ± ∞ ¹  -3.16% (p=0.048 n=5)
+geomean                                  8.568Mi         8.388Mi        -2.10%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+pkg: github.com/luthersystems/elps/parser/regexparser
+                          │     base      │                 pr                  │
+                          │      B/s      │      B/s       vs base              │
+Parser/approx.lisp-4        1.192Mi ± ∞ ¹   1.173Mi ± ∞ ¹  -1.60% (p=0.008 n=5)
+Parser/complex.lisp-4       1.230Mi ± ∞ ¹   1.211Mi ± ∞ ¹  -1.55% (p=0.008 n=5)
+Parser/scheme-math.lisp-4   1.087Mi ± ∞ ¹   1.059Mi ± ∞ ¹  -2.63% (p=0.040 n=5)
+Parser/sicp.lisp-4          986.3Ki ± ∞ ¹   957.0Ki ± ∞ ¹  -2.97% (p=0.016 n=5)
+Parser/stream.lisp-4        1.125Mi ± ∞ ¹   1.097Mi ± ∞ ¹  -2.54% (p=0.008 n=5)
+geomean                     1.085Mi         1.061Mi        -2.22%
+¹ need >= 6 samples for confidence interval at level 0.95

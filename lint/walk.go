@@ -40,6 +40,12 @@ func UserDefined(exprs []*lisp.LVal) map[string]bool {
 	return astutil.UserDefined(exprs)
 }
 
+// CollectFormals extracts symbol names from a formals list into defs,
+// skipping the &rest, &optional and &key markers.
+func CollectFormals(formals *lisp.LVal, defs map[string]bool) {
+	astutil.CollectFormals(formals, defs)
+}
+
 // SourceOf returns the best source location for a node.
 // Prefers the node's own source, falls back to first child's source.
 func SourceOf(v *lisp.LVal) *lisp.LVal {

@@ -1,0 +1,25 @@
+# REAL elps output: the B/s (throughput) column benchstat emits because the
+# parser benchmarks call b.SetBytes(). Every delta here is POSITIVE, which for a
+# higher-is-better metric is an IMPROVEMENT -- a 2.8x throughput gain in places.
+# A gate that treats any positive delta as a regression (the upstream reference
+# implementation does, having no throughput metric) fails this table.
+goos: linux
+goarch: amd64
+pkg: github.com/luthersystems/elps/parser/rdparser
+cpu: Intel(R) Xeon(R) Processor @ 2.80GHz
+                                       │     base      │                  pr                   │
+                                       │      B/s      │      B/s       vs base                │
+Parser/approx.lisp-4                     2.756Mi ± ∞ ¹   4.759Mi ± ∞ ¹   +72.66% (p=0.008 n=5)
+Parser/complex.lisp-4                    1.869Mi ± ∞ ¹   4.749Mi ± ∞ ¹  +154.08% (p=0.008 n=5)
+Parser/diff.lisp-4                       1.354Mi ± ∞ ¹   3.767Mi ± ∞ ¹  +178.17% (p=0.008 n=5)
+Parser/scheme-math.lisp-4                2.260Mi ± ∞ ¹   5.445Mi ± ∞ ¹  +140.93% (p=0.008 n=5)
+Parser/sicp.lisp-4                       1.831Mi ± ∞ ¹   4.911Mi ± ∞ ¹  +168.23% (p=0.008 n=5)
+Parser/stream.lisp-4                     2.575Mi ± ∞ ¹   5.646Mi ± ∞ ¹  +119.26% (p=0.008 n=5)
+ParserFaultTolerant/approx.lisp-4        2.537Mi ± ∞ ¹   4.292Mi ± ∞ ¹   +69.17% (p=0.008 n=5)
+ParserFaultTolerant/complex.lisp-4       2.747Mi ± ∞ ¹   5.198Mi ± ∞ ¹   +89.24% (p=0.008 n=5)
+ParserFaultTolerant/diff.lisp-4          2.365Mi ± ∞ ¹   4.177Mi ± ∞ ¹   +76.61% (p=0.008 n=5)
+ParserFaultTolerant/scheme-math.lisp-4   4.120Mi ± ∞ ¹   5.684Mi ± ∞ ¹   +37.96% (p=0.008 n=5)
+ParserFaultTolerant/sicp.lisp-4          4.168Mi ± ∞ ¹   4.711Mi ± ∞ ¹   +13.04% (p=0.008 n=5)
+ParserFaultTolerant/stream.lisp-4        4.883Mi ± ∞ ¹   5.074Mi ± ∞ ¹         ~ (p=0.151 n=5)
+geomean                                  2.616Mi         4.834Mi         +84.78%
+¹ need >= 6 samples for confidence interval at level 0.95

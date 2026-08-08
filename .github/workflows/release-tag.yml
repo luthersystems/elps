@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # all tags + history for validation and release notes
       - name: Cut the release via Claude
@@ -93,7 +93,7 @@ jobs:
       # the transcript from the job log. Mirrors buildenv's release-patch.yml.
       - name: Capture agent trace (conversation log)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-tag-trace-${{ github.run_id }}
           path: ${{ runner.temp }}/claude-execution-output.json

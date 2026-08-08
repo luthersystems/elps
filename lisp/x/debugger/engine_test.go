@@ -1004,7 +1004,16 @@ func TestEngine_RequestPause(t *testing.T) {
 		return e.IsPaused()
 	}, 2*time.Second, 10*time.Millisecond, "engine did not pause after RequestPause")
 
-	// Verify stop reason is "pause".
+	// Verify stop reason is "pause". WaitIfPaused publishes pausedEnv (which
+	// is what IsPaused reads) BEFORE it invokes the event callback, so the
+	// reason can lag the paused flag by a scheduling quantum. Wait for the
+	// event rather than sampling immediately, otherwise this races under
+	// load.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return stopReason != ""
+	}, 2*time.Second, time.Millisecond, "no stopped event observed after pausing")
 	mu.Lock()
 	assert.Equal(t, StopPause, stopReason, "expected pause stop reason")
 	mu.Unlock()

@@ -297,6 +297,10 @@ func (env *LEnv) load(ctx context.Context, exprs []*LVal) *LVal {
 	if len(exprs) == 0 {
 		return Nil()
 	}
+	// load is the funnel for every exported Load* entry point.  Treat the
+	// whole load as one top-level evaluation so the step budget covers all
+	// of its forms rather than refilling per form.
+	defer env.Runtime.beginEval()()
 
 	// Remember the current package and restore it for the caller after
 	// evaluation completes.
@@ -919,6 +923,7 @@ func (env *LEnv) checkLimitsSlow(ctx context.Context) *LVal {
 //
 // Deprecated: Use EvalContext for cancellation and timeout support.
 func (env *LEnv) Eval(v *LVal) *LVal {
+	defer env.Runtime.beginEval()()
 	return env.eval(env.evalCtx, v)
 }
 
@@ -935,7 +940,12 @@ func (env *LEnv) Eval(v *LVal) *LVal {
 func (env *LEnv) eval(ctx context.Context, v *LVal) (result *LVal) {
 	defer func() {
 		if r := recover(); r != nil {
-			result = env.Errorf("internal error (recovered panic): %v", r)
+			// Tag the error with CondInternalPanic so it is distinguishable
+			// from a lisp-level error: a panic is a host-code bug, and
+			// ignore-errors / catch-all handler-bind must not silently
+			// swallow it.  See the CondInternalPanic doc comment.
+			result = env.ErrorConditionf(CondInternalPanic,
+				"internal error (recovered panic): %v", r)
 			// Capture the Go stack at the panic origin so any caller of
 			// (*ErrorVal).WriteTrace (or direct readers of CallStack.GoStack)
 			// can render it. This defer runs before the panic unwind
@@ -1033,6 +1043,7 @@ eval:
 
 // EvalSExpr evaluates s and returns the resulting LVal.
 func (env *LEnv) EvalSExpr(s *LVal) *LVal {
+	defer env.Runtime.beginEval()()
 	return env.evalSExpr(env.evalCtx, s)
 }
 
@@ -1068,6 +1079,7 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 
 // MacroCall invokes macro fun with argument list args.
 func (env *LEnv) MacroCall(fun, args *LVal) *LVal {
+	defer env.Runtime.beginEval()()
 	return env.macroCall(env.evalCtx, fun, args)
 }
 
@@ -1137,6 +1149,7 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 
 // SpecialOpCall invokes special operator fun with the argument list args.
 func (env *LEnv) SpecialOpCall(fun, args *LVal) *LVal {
+	defer env.Runtime.beginEval()()
 	return env.specialOpCall(env.evalCtx, fun, args)
 }
 
@@ -1175,8 +1188,10 @@ callf:
 	if r.Type == LMarkTailRec {
 		// Tail recursion optimization is occurring.
 		if decrementMarkTailRec(r) {
-			env.Runtime.Stack.Top().HeightLogical += r.tailRecElided()
-			err := env.Runtime.Stack.CheckHeight()
+			top := env.Runtime.Stack.Top()
+			top.HeightLogical += r.tailRecElided()
+			top.TailIterations++
+			err := env.Runtime.Stack.CheckTailCall()
 			if err != nil {
 				return env.Error(err)
 			}
@@ -1196,6 +1211,7 @@ callf:
 //
 // Deprecated: Use FunCallContext for cancellation and timeout support.
 func (env *LEnv) FunCall(fun, args *LVal) *LVal {
+	defer env.Runtime.beginEval()()
 	return env.funCall(env.evalCtx, fun, args)
 }
 
@@ -1203,6 +1219,7 @@ func (env *LEnv) FunCall(fun, args *LVal) *LVal {
 // its deadline expires during evaluation, a CondContextCancelled error is
 // returned.
 func (env *LEnv) EvalContext(ctx context.Context, v *LVal) *LVal {
+	defer env.Runtime.beginEval()()
 	return env.eval(ctx, v)
 }
 
@@ -1257,6 +1274,7 @@ func (env *LEnv) LoadLocationContext(ctx context.Context, name, loc string, r io
 // context.  If ctx is cancelled or its deadline expires during the call,
 // a CondContextCancelled error is returned.
 func (env *LEnv) FunCallContext(ctx context.Context, fun, args *LVal) *LVal {
+	defer env.Runtime.beginEval()()
 	return env.funCall(ctx, fun, args)
 }
 
@@ -1314,8 +1332,10 @@ callf:
 		// Tail recursion optimization is occurring.
 		done := decrementMarkTailRec(r)
 		if done {
-			env.Runtime.Stack.Top().HeightLogical += r.tailRecElided()
-			err := env.Runtime.Stack.CheckHeight()
+			top := env.Runtime.Stack.Top()
+			top.HeightLogical += r.tailRecElided()
+			top.TailIterations++
+			err := env.Runtime.Stack.CheckTailCall()
 			if err != nil {
 				return env.Error(err)
 			}

@@ -1,0 +1,10 @@
+# Old-format table in which EVERY data row is an "(all equal)" no-change row.
+# These rows are data, not footnotes -- but they contain the words "all equal"
+# and "samples", so a footnote filter written as a substring match discards them,
+# the table parses to zero rows, and the gate reports a spurious exit 2
+# ("cannot interpret") on a comparison that was in fact perfectly clean.
+# Anchoring the footnote filter on the LEADING superscript is what keeps these.
+name                       old allocs/op  new allocs/op  delta
+EnvGet-4                      128k ± 0%      128k ± 0%     ~     (all equal)
+Parser/diff.lisp-4           4.23k ± 0%     4.23k ± 0%     ~     (all equal)
+MacroDefun-4                  2.00 ± 0%      2.00 ± 0%     ~     (all equal)

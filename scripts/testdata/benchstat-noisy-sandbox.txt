@@ -1,0 +1,236 @@
+goos: linux
+goarch: amd64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Intel(R) Xeon(R) Processor @ 2.80GHz
+                             │     base     │                 pr                  │
+                             │    sec/op    │    sec/op     vs base               │
+EnvGet-4                       27.13m ± ∞ ¹   23.16m ± ∞ ¹        ~ (p=0.548 n=5)
+EnvFunCallBuiltin-4            1.596m ± ∞ ¹   1.221m ± ∞ ¹  -23.51% (p=0.008 n=5)
+EnvFunCallRecursion-4          17.11m ± ∞ ¹   15.91m ± ∞ ¹        ~ (p=0.056 n=5)
+EnvFunCallTailRec-4            8.893m ± ∞ ¹   6.336m ± ∞ ¹  -28.75% (p=0.008 n=5)
+EnvFunCallPos-4                3.815m ± ∞ ¹   2.986m ± ∞ ¹  -21.72% (p=0.008 n=5)
+EnvFunCallKey-4                4.491m ± ∞ ¹   3.471m ± ∞ ¹  -22.71% (p=0.008 n=5)
+EnvFunCallOpt-4                4.171m ± ∞ ¹   3.121m ± ∞ ¹  -25.17% (p=0.008 n=5)
+EnvFunCallVar-4                3.891m ± ∞ ¹   4.018m ± ∞ ¹        ~ (p=0.841 n=5)
+FormatStringSimple-4           1.175m ± ∞ ¹   1.166m ± ∞ ¹        ~ (p=0.690 n=5)
+FormatStringMultiple-4         1.312m ± ∞ ¹   1.334m ± ∞ ¹        ~ (p=0.841 n=5)
+FormatStringNoPlaceholders-4   1.052m ± ∞ ¹   1.051m ± ∞ ¹        ~ (p=0.841 n=5)
+FormatStringManyTokens-4       1.681m ± ∞ ¹   1.822m ± ∞ ¹   +8.39% (p=0.032 n=5)
+FormatStringMixed-4            1.363m ± ∞ ¹   1.352m ± ∞ ¹        ~ (p=0.841 n=5)
+FormatStringPositional-4       1.136m ± ∞ ¹   1.148m ± ∞ ¹        ~ (p=1.000 n=5)
+FormatStringConcat-4           1.296m ± ∞ ¹   1.113m ± ∞ ¹        ~ (p=0.151 n=5)
+MacroDefun-4                   64.62µ ± ∞ ¹   59.11µ ± ∞ ¹        ~ (p=0.056 n=5)
+geomean                        2.308m         2.069m        -10.35%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                             │     base      │                 pr                  │
+                             │     B/op      │     B/op       vs base              │
+EnvGet-4                       10.20Mi ± ∞ ¹   10.20Mi ± ∞ ¹       ~ (p=0.841 n=5)
+EnvFunCallBuiltin-4            829.4Ki ± ∞ ¹   829.4Ki ± ∞ ¹  -0.00% (p=0.048 n=5)
+EnvFunCallRecursion-4          3.768Mi ± ∞ ¹   3.768Mi ± ∞ ¹       ~ (p=0.103 n=5)
+EnvFunCallTailRec-4            3.454Mi ± ∞ ¹   3.454Mi ± ∞ ¹       ~ (p=0.952 n=5)
+EnvFunCallPos-4                1.813Mi ± ∞ ¹   1.813Mi ± ∞ ¹       ~ (p=1.000 n=5)
+EnvFunCallKey-4                1.889Mi ± ∞ ¹   1.889Mi ± ∞ ¹  -0.00% (p=0.008 n=5)
+EnvFunCallOpt-4                1.813Mi ± ∞ ¹   1.813Mi ± ∞ ¹  -0.00% (p=0.008 n=5)
+EnvFunCallVar-4                2.385Mi ± ∞ ¹   2.385Mi ± ∞ ¹       ~ (p=0.476 n=5)
+FormatStringSimple-4           727.9Ki ± ∞ ¹   727.9Ki ± ∞ ¹       ~ (p=1.000 n=5)
+FormatStringMultiple-4         798.2Ki ± ∞ ¹   798.2Ki ± ∞ ¹       ~ (p=0.143 n=5)
+FormatStringNoPlaceholders-4   696.6Ki ± ∞ ¹   696.6Ki ± ∞ ¹  -0.00% (p=0.024 n=5)
+FormatStringManyTokens-4       1.008Mi ± ∞ ¹   1.008Mi ± ∞ ¹       ~ (p=0.286 n=5)
+FormatStringMixed-4            817.7Ki ± ∞ ¹   817.7Ki ± ∞ ¹       ~ (p=0.270 n=5)
+FormatStringPositional-4       798.2Ki ± ∞ ¹   798.2Ki ± ∞ ¹       ~ (p=0.119 n=5)
+FormatStringConcat-4           727.9Ki ± ∞ ¹   727.9Ki ± ∞ ¹       ~ (p=0.921 n=5)
+MacroDefun-4                   33.31Ki ± ∞ ¹   33.31Ki ± ∞ ¹       ~ (p=0.508 n=5)
+geomean                        1.145Mi         1.145Mi        -0.00%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                             │     base     │                  pr                  │
+                             │  allocs/op   │  allocs/op    vs base                │
+EnvGet-4                       128.0k ± ∞ ¹   128.0k ± ∞ ¹       ~ (p=0.683 n=5)
+EnvFunCallBuiltin-4            8.015k ± ∞ ¹   8.015k ± ∞ ¹       ~ (p=1.000 n=5) ²
+EnvFunCallRecursion-4          40.08k ± ∞ ¹   40.08k ± ∞ ¹       ~ (p=1.000 n=5) ²
+EnvFunCallTailRec-4            44.07k ± ∞ ¹   44.07k ± ∞ ¹       ~ (p=1.000 n=5) ²
+EnvFunCallPos-4                22.06k ± ∞ ¹   22.06k ± ∞ ¹       ~ (p=1.000 n=5) ²
+EnvFunCallKey-4                23.06k ± ∞ ¹   23.06k ± ∞ ¹       ~ (p=1.000 n=5) ²
+EnvFunCallOpt-4                22.06k ± ∞ ¹   22.06k ± ∞ ¹       ~ (p=1.000 n=5) ²
+EnvFunCallVar-4                29.06k ± ∞ ¹   29.06k ± ∞ ¹       ~ (p=1.000 n=5) ²
+FormatStringSimple-4           9.015k ± ∞ ¹   9.015k ± ∞ ¹       ~ (p=1.000 n=5) ²
+FormatStringMultiple-4         9.015k ± ∞ ¹   9.015k ± ∞ ¹       ~ (p=1.000 n=5) ²
+FormatStringNoPlaceholders-4   8.015k ± ∞ ¹   8.015k ± ∞ ¹       ~ (p=1.000 n=5) ²
+FormatStringManyTokens-4       9.015k ± ∞ ¹   9.015k ± ∞ ¹       ~ (p=1.000 n=5) ²
+FormatStringMixed-4            10.02k ± ∞ ¹   10.02k ± ∞ ¹       ~ (p=1.000 n=5) ²
+FormatStringPositional-4       9.015k ± ∞ ¹   9.015k ± ∞ ¹       ~ (p=1.000 n=5) ²
+FormatStringConcat-4           9.015k ± ∞ ¹   9.015k ± ∞ ¹       ~ (p=1.000 n=5) ²
+MacroDefun-4                    475.0 ± ∞ ¹    475.0 ± ∞ ¹       ~ (p=1.000 n=5) ²
+geomean                        13.58k         13.58k        -0.00%
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+
+pkg: github.com/luthersystems/elps/lisp/lisplib/libjson
+                              │     base      │                 pr                  │
+                              │    sec/op     │    sec/op     vs base               │
+Encode-4                         34.26µ ± ∞ ¹   30.37µ ± ∞ ¹        ~ (p=0.421 n=5)
+Encode_stringNumbers-4           4.326µ ± ∞ ¹   4.465µ ± ∞ ¹        ~ (p=0.841 n=5)
+Package/$load-4                  2.220m ± ∞ ¹   2.354m ± ∞ ¹        ~ (p=0.421 n=5)
+Package/load-object-4            3.749m ± ∞ ¹   3.962m ± ∞ ¹        ~ (p=0.841 n=5)
+Package/load-array-4             5.457m ± ∞ ¹   4.728m ± ∞ ¹  -13.36% (p=0.008 n=5)
+Package/load-nested-4            5.935m ± ∞ ¹   5.250m ± ∞ ¹        ~ (p=0.151 n=5)
+Package/load-github-4            119.7m ± ∞ ¹   113.2m ± ∞ ¹        ~ (p=0.095 n=5)
+Package/get-nested-baseline-4    89.35m ± ∞ ¹   81.34m ± ∞ ¹        ~ (p=0.222 n=5)
+Package/dump-object-4            3.186m ± ∞ ¹   4.201m ± ∞ ¹  +31.86% (p=0.016 n=5)
+Package/dump-array-4             1.800m ± ∞ ¹   2.090m ± ∞ ¹        ~ (p=0.222 n=5)
+Package/dump-nested-4            6.039m ± ∞ ¹   5.621m ± ∞ ¹        ~ (p=1.000 n=5)
+Package/dump-github-4           110.35m ± ∞ ¹   91.97m ± ∞ ¹  -16.66% (p=0.008 n=5)
+geomean                          3.294m         3.235m         -1.81%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                              │     base      │                  pr                   │
+                              │     B/op      │     B/op       vs base                │
+Encode-4                        10.05Ki ± ∞ ¹   10.05Ki ± ∞ ¹       ~ (p=1.000 n=5)
+Encode_stringNumbers-4          1.297Ki ± ∞ ¹   1.297Ki ± ∞ ¹       ~ (p=1.000 n=5) ²
+Package/$load-4                 939.6Ki ± ∞ ¹   939.6Ki ± ∞ ¹       ~ (p=0.246 n=5)
+Package/load-object-4           1.437Mi ± ∞ ¹   1.437Mi ± ∞ ¹       ~ (p=0.587 n=5)
+Package/load-array-4            2.223Mi ± ∞ ¹   2.223Mi ± ∞ ¹  -0.00% (p=0.016 n=5)
+Package/load-nested-4           2.147Mi ± ∞ ¹   2.147Mi ± ∞ ¹       ~ (p=0.310 n=5)
+Package/load-github-4           32.73Mi ± ∞ ¹   32.73Mi ± ∞ ¹       ~ (p=1.000 n=5)
+Package/get-nested-baseline-4   34.62Mi ± ∞ ¹   34.62Mi ± ∞ ¹       ~ (p=0.841 n=5)
+Package/dump-object-4           1.735Mi ± ∞ ¹   1.735Mi ± ∞ ¹       ~ (p=0.238 n=5)
+Package/dump-array-4            807.5Ki ± ∞ ¹   807.5Ki ± ∞ ¹       ~ (p=0.651 n=5)
+Package/dump-nested-4           2.835Mi ± ∞ ¹   2.835Mi ± ∞ ¹       ~ (p=0.508 n=5)
+Package/dump-github-4           51.03Mi ± ∞ ¹   51.03Mi ± ∞ ¹  -0.00% (p=0.008 n=5)
+geomean                         1.270Mi         1.270Mi        -0.00%
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+
+                              │     base     │                  pr                  │
+                              │  allocs/op   │  allocs/op    vs base                │
+Encode-4                         214.0 ± ∞ ¹    214.0 ± ∞ ¹       ~ (p=1.000 n=5) ²
+Encode_stringNumbers-4           30.00 ± ∞ ¹    30.00 ± ∞ ¹       ~ (p=1.000 n=5) ²
+Package/$load-4                 22.74k ± ∞ ¹   22.74k ± ∞ ¹       ~ (p=0.167 n=5)
+Package/load-object-4           25.03k ± ∞ ¹   25.03k ± ∞ ¹       ~ (p=1.000 n=5) ²
+Package/load-array-4            41.03k ± ∞ ¹   41.03k ± ∞ ¹       ~ (p=0.444 n=5)
+Package/load-nested-4           39.03k ± ∞ ¹   39.03k ± ∞ ¹       ~ (p=1.000 n=5)
+Package/load-github-4           457.1k ± ∞ ¹   457.1k ± ∞ ¹       ~ (p=0.722 n=5)
+Package/get-nested-baseline-4   504.1k ± ∞ ¹   504.1k ± ∞ ¹       ~ (p=0.524 n=5)
+Package/dump-object-4           23.04k ± ∞ ¹   23.04k ± ∞ ¹       ~ (p=1.000 n=5) ²
+Package/dump-array-4            10.03k ± ∞ ¹   10.03k ± ∞ ¹       ~ (p=1.000 n=5) ²
+Package/dump-nested-4           37.06k ± ∞ ¹   37.06k ± ∞ ¹       ~ (p=1.000 n=5) ²
+Package/dump-github-4           387.5k ± ∞ ¹   387.5k ± ∞ ¹  -0.00% (p=0.008 n=5)
+geomean                         20.15k         20.15k        +0.00%
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+
+pkg: github.com/luthersystems/elps/parser/rdparser
+                                       │     base      │                 pr                  │
+                                       │    sec/op     │    sec/op     vs base               │
+Parser/approx.lisp-4                      603.7µ ± ∞ ¹   349.5µ ± ∞ ¹  -42.11% (p=0.008 n=5)
+Parser/complex.lisp-4                     2.716m ± ∞ ¹   1.068m ± ∞ ¹  -60.70% (p=0.008 n=5)
+Parser/diff.lisp-4                       1247.9µ ± ∞ ¹   449.5µ ± ∞ ¹  -63.98% (p=0.008 n=5)
+Parser/scheme-math.lisp-4                 5.091m ± ∞ ¹   2.116m ± ∞ ¹  -58.44% (p=0.008 n=5)
+Parser/sicp.lisp-4                        3.778m ± ∞ ¹   1.409m ± ∞ ¹  -62.71% (p=0.008 n=5)
+Parser/stream.lisp-4                      2.639m ± ∞ ¹   1.201m ± ∞ ¹  -54.48% (p=0.008 n=5)
+ParserFaultTolerant/approx.lisp-4         656.1µ ± ∞ ¹   387.5µ ± ∞ ¹  -40.95% (p=0.008 n=5)
+ParserFaultTolerant/complex.lisp-4       1846.9µ ± ∞ ¹   976.6µ ± ∞ ¹  -47.12% (p=0.008 n=5)
+ParserFaultTolerant/diff.lisp-4           713.9µ ± ∞ ¹   405.1µ ± ∞ ¹  -43.26% (p=0.008 n=5)
+ParserFaultTolerant/scheme-math.lisp-4    2.797m ± ∞ ¹   2.027m ± ∞ ¹  -27.52% (p=0.008 n=5)
+ParserFaultTolerant/sicp.lisp-4           1.660m ± ∞ ¹   1.470m ± ∞ ¹  -11.48% (p=0.008 n=5)
+ParserFaultTolerant/stream.lisp-4         1.391m ± ∞ ¹   1.339m ± ∞ ¹        ~ (p=0.151 n=5)
+geomean                                   1.699m         919.9µ        -45.87%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                                       │     base      │                 pr                  │
+                                       │     B/op      │     B/op       vs base              │
+Parser/approx.lisp-4                     239.6Ki ± ∞ ¹   239.6Ki ± ∞ ¹       ~ (p=0.984 n=5)
+Parser/complex.lisp-4                    462.5Ki ± ∞ ¹   462.5Ki ± ∞ ¹       ~ (p=0.889 n=5)
+Parser/diff.lisp-4                       269.4Ki ± ∞ ¹   269.4Ki ± ∞ ¹       ~ (p=0.087 n=5)
+Parser/scheme-math.lisp-4                905.9Ki ± ∞ ¹   905.8Ki ± ∞ ¹  -0.01% (p=0.008 n=5)
+Parser/sicp.lisp-4                       679.3Ki ± ∞ ¹   679.3Ki ± ∞ ¹       ~ (p=0.095 n=5)
+Parser/stream.lisp-4                     593.6Ki ± ∞ ¹   593.5Ki ± ∞ ¹       ~ (p=0.056 n=5)
+ParserFaultTolerant/approx.lisp-4        239.7Ki ± ∞ ¹   239.6Ki ± ∞ ¹  -0.00% (p=0.008 n=5)
+ParserFaultTolerant/complex.lisp-4       462.5Ki ± ∞ ¹   462.5Ki ± ∞ ¹       ~ (p=0.730 n=5)
+ParserFaultTolerant/diff.lisp-4          269.4Ki ± ∞ ¹   269.4Ki ± ∞ ¹       ~ (p=0.690 n=5)
+ParserFaultTolerant/scheme-math.lisp-4   905.8Ki ± ∞ ¹   905.8Ki ± ∞ ¹       ~ (p=0.056 n=5)
+ParserFaultTolerant/sicp.lisp-4          679.3Ki ± ∞ ¹   679.2Ki ± ∞ ¹       ~ (p=0.548 n=5)
+ParserFaultTolerant/stream.lisp-4        593.5Ki ± ∞ ¹   593.5Ki ± ∞ ¹       ~ (p=0.310 n=5)
+geomean                                  470.9Ki         470.9Ki        -0.00%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                                       │     base     │                  pr                  │
+                                       │  allocs/op   │  allocs/op    vs base                │
+Parser/approx.lisp-4                     3.566k ± ∞ ¹   3.566k ± ∞ ¹       ~ (p=1.000 n=5) ²
+Parser/complex.lisp-4                    10.75k ± ∞ ¹   10.75k ± ∞ ¹       ~ (p=1.000 n=5) ²
+Parser/diff.lisp-4                       4.232k ± ∞ ¹   4.232k ± ∞ ¹       ~ (p=1.000 n=5) ²
+Parser/scheme-math.lisp-4                24.81k ± ∞ ¹   24.81k ± ∞ ¹       ~ (p=1.000 n=5) ²
+Parser/sicp.lisp-4                       16.65k ± ∞ ¹   16.65k ± ∞ ¹       ~ (p=1.000 n=5)
+Parser/stream.lisp-4                     14.63k ± ∞ ¹   14.63k ± ∞ ¹       ~ (p=1.000 n=5)
+ParserFaultTolerant/approx.lisp-4        3.566k ± ∞ ¹   3.566k ± ∞ ¹       ~ (p=1.000 n=5) ²
+ParserFaultTolerant/complex.lisp-4       10.75k ± ∞ ¹   10.75k ± ∞ ¹       ~ (p=1.000 n=5) ²
+ParserFaultTolerant/diff.lisp-4          4.232k ± ∞ ¹   4.232k ± ∞ ¹       ~ (p=1.000 n=5) ²
+ParserFaultTolerant/scheme-math.lisp-4   24.81k ± ∞ ¹   24.81k ± ∞ ¹       ~ (p=1.000 n=5) ²
+ParserFaultTolerant/sicp.lisp-4          16.65k ± ∞ ¹   16.65k ± ∞ ¹       ~ (p=1.000 n=5)
+ParserFaultTolerant/stream.lisp-4        14.63k ± ∞ ¹   14.63k ± ∞ ¹       ~ (p=1.000 n=5)
+geomean                                  9.968k         9.968k        +0.00%
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+
+                                       │     base      │                  pr                   │
+                                       │      B/s      │      B/s       vs base                │
+Parser/approx.lisp-4                     2.756Mi ± ∞ ¹   4.759Mi ± ∞ ¹   +72.66% (p=0.008 n=5)
+Parser/complex.lisp-4                    1.869Mi ± ∞ ¹   4.749Mi ± ∞ ¹  +154.08% (p=0.008 n=5)
+Parser/diff.lisp-4                       1.354Mi ± ∞ ¹   3.767Mi ± ∞ ¹  +178.17% (p=0.008 n=5)
+Parser/scheme-math.lisp-4                2.260Mi ± ∞ ¹   5.445Mi ± ∞ ¹  +140.93% (p=0.008 n=5)
+Parser/sicp.lisp-4                       1.831Mi ± ∞ ¹   4.911Mi ± ∞ ¹  +168.23% (p=0.008 n=5)
+Parser/stream.lisp-4                     2.575Mi ± ∞ ¹   5.646Mi ± ∞ ¹  +119.26% (p=0.008 n=5)
+ParserFaultTolerant/approx.lisp-4        2.537Mi ± ∞ ¹   4.292Mi ± ∞ ¹   +69.17% (p=0.008 n=5)
+ParserFaultTolerant/complex.lisp-4       2.747Mi ± ∞ ¹   5.198Mi ± ∞ ¹   +89.24% (p=0.008 n=5)
+ParserFaultTolerant/diff.lisp-4          2.365Mi ± ∞ ¹   4.177Mi ± ∞ ¹   +76.61% (p=0.008 n=5)
+ParserFaultTolerant/scheme-math.lisp-4   4.120Mi ± ∞ ¹   5.684Mi ± ∞ ¹   +37.96% (p=0.008 n=5)
+ParserFaultTolerant/sicp.lisp-4          4.168Mi ± ∞ ¹   4.711Mi ± ∞ ¹   +13.04% (p=0.008 n=5)
+ParserFaultTolerant/stream.lisp-4        4.883Mi ± ∞ ¹   5.074Mi ± ∞ ¹         ~ (p=0.151 n=5)
+geomean                                  2.616Mi         4.834Mi         +84.78%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+pkg: github.com/luthersystems/elps/parser/regexparser
+                          │     base     │                 pr                  │
+                          │    sec/op    │    sec/op     vs base               │
+Parser/approx.lisp-4        2.282m ± ∞ ¹   2.105m ± ∞ ¹   -7.75% (p=0.016 n=5)
+Parser/complex.lisp-4       7.197m ± ∞ ¹   5.869m ± ∞ ¹  -18.44% (p=0.008 n=5)
+Parser/diff.lisp-4          3.485m ± ∞ ¹   2.889m ± ∞ ¹  -17.11% (p=0.016 n=5)
+Parser/scheme-math.lisp-4   17.75m ± ∞ ¹   15.02m ± ∞ ¹  -15.38% (p=0.008 n=5)
+Parser/sicp.lisp-4          11.92m ± ∞ ¹   12.69m ± ∞ ¹        ~ (p=0.421 n=5)
+Parser/stream.lisp-4        9.668m ± ∞ ¹   9.698m ± ∞ ¹        ~ (p=0.841 n=5)
+geomean                     6.995m         6.357m         -9.12%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                          │     base      │                 pr                  │
+                          │     B/op      │     B/op       vs base              │
+Parser/approx.lisp-4        861.3Ki ± ∞ ¹   863.4Ki ± ∞ ¹       ~ (p=0.151 n=5)
+Parser/complex.lisp-4       2.396Mi ± ∞ ¹   2.396Mi ± ∞ ¹       ~ (p=1.000 n=5)
+Parser/diff.lisp-4          1.124Mi ± ∞ ¹   1.126Mi ± ∞ ¹       ~ (p=1.000 n=5)
+Parser/scheme-math.lisp-4   5.560Mi ± ∞ ¹   5.564Mi ± ∞ ¹       ~ (p=1.000 n=5)
+Parser/sicp.lisp-4          4.043Mi ± ∞ ¹   4.043Mi ± ∞ ¹       ~ (p=1.000 n=5)
+Parser/stream.lisp-4        3.337Mi ± ∞ ¹   3.334Mi ± ∞ ¹       ~ (p=0.548 n=5)
+geomean                     2.354Mi         2.355Mi        +0.06%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                          │     base     │                 pr                 │
+                          │  allocs/op   │  allocs/op    vs base              │
+Parser/approx.lisp-4        12.08k ± ∞ ¹   12.08k ± ∞ ¹       ~ (p=1.000 n=5)
+Parser/complex.lisp-4       35.82k ± ∞ ¹   35.82k ± ∞ ¹       ~ (p=1.000 n=5)
+Parser/diff.lisp-4          16.39k ± ∞ ¹   16.39k ± ∞ ¹       ~ (p=1.000 n=5)
+Parser/scheme-math.lisp-4   84.05k ± ∞ ¹   84.05k ± ∞ ¹       ~ (p=1.000 n=5)
+Parser/sicp.lisp-4          60.87k ± ∞ ¹   60.87k ± ∞ ¹       ~ (p=0.643 n=5)
+Parser/stream.lisp-4        49.91k ± ∞ ¹   49.92k ± ∞ ¹       ~ (p=1.000 n=5)
+geomean                     34.91k         34.91k        +0.00%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                          │     base      │                  pr                  │
+                          │      B/s      │      B/s       vs base               │
+Parser/approx.lisp-4        742.2Ki ± ∞ ¹   810.5Ki ± ∞ ¹   +9.21% (p=0.016 n=5)
+Parser/complex.lisp-4       722.7Ki ± ∞ ¹   888.7Ki ± ∞ ¹  +22.97% (p=0.008 n=5)
+Parser/diff.lisp-4          498.0Ki ± ∞ ¹   595.7Ki ± ∞ ¹  +19.61% (p=0.016 n=5)
+Parser/scheme-math.lisp-4   664.1Ki ± ∞ ¹   781.2Ki ± ∞ ¹  +17.65% (p=0.008 n=5)
+Parser/sicp.lisp-4          595.7Ki ± ∞ ¹   556.6Ki ± ∞ ¹        ~ (p=0.381 n=5)
+Parser/stream.lisp-4        722.7Ki ± ∞ ¹   712.9Ki ± ∞ ¹        ~ (p=0.841 n=5)
+geomean                     651.3Ki         714.5Ki         +9.69%
+¹ need >= 6 samples for confidence interval at level 0.95

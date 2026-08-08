@@ -199,16 +199,27 @@ all builtins (`car`, `cdr`, `cons`, `=`, `not`, etc.), special operators
 (gensym)
 ```
 
-**Note:** User-defined functions that shadow builtin names (via `defun` or
-`defmacro`) are automatically detected and excluded from arity checking.
-Formals lists and threading macro (`thread-first`, `thread-last`) children
-are also excluded, since their static argument count differs from the
-runtime count after macro expansion.
+**Note:** User-defined functions that shadow builtin names are automatically
+detected and excluded from arity checking. This covers `defun`/`defmacro`
+names as well as names bound locally by `let`, `let*`, `flet`, `labels` and
+`macrolet`. Formals lists and threading macro (`thread-first`,
+`thread-last`) children are also excluded, since their static argument count
+differs from the runtime count after macro expansion.
+
+Binding forms are excluded too. A binding entry is shaped like a call —
+`(let ((map (sorted-map))) ...)` contains the s-expression
+`(map (sorted-map))` — but it binds a name rather than calling `map`, so it
+is never arity-checked.
+
+```lisp
+;; OK — these bind local names, they are not calls
+(let ((map (sorted-map 'a 1))) (get map 'a))
+(flet ((first (xs) (car xs))) (first '(1 2 3)))
+```
 
 ### `quote-call`
 
-**Warns when forms like `set` and `defconst` are called with an unquoted
-symbol name.**
+**Warns when `set` is called with an unquoted symbol name.**
 
 `set` expects a quoted symbol as its first argument. Passing a bare symbol
 causes it to be evaluated, which is usually not intended.
@@ -220,6 +231,11 @@ causes it to be evaluated, which is usually not intended.
 ;; GOOD
 (set 'x 42)
 ```
+
+**Note:** `set!` and `defconst` are not checked. `set!` takes an unquoted
+symbol by design, and `defconst` is a macro that quotes its own name
+argument — `(defconst x 42)` expands to `(set 'x 42)`, so the unquoted
+spelling is the correct one and `(defconst 'x 42)` fails at runtime.
 
 ### `cond-missing-else`
 
@@ -412,6 +428,13 @@ may have been fixed. This check also detects unknown analyzer names.
 ;; Self-suppression: suppress unused-nolint itself
 (+ 1 2) ; nolint:unused-nolint
 ```
+
+**Note:** when the analyzer set is narrowed with `--checks`, a directive is
+only reported if at least one analyzer it names actually ran. A directive
+naming a valid but disabled analyzer is not stale — that check simply never
+had a chance to fire — and a bare `; nolint` is never reported on a narrowed
+run. Unknown analyzer names are still reported, since a typo is a typo
+regardless of which checks ran.
 
 ## Extending the Linter
 

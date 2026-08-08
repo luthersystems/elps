@@ -15,6 +15,13 @@ type Config func(env *LEnv) *LVal
 // The logical height of the stack is the stack's physical height plus the
 // number of stack frames which have been elided due to tail recursive call
 // optimizations.
+//
+// This limit is disabled by default (see DefaultMaxLogicalStackHeight).  Its
+// unit is elided frames, not loop turns: one turn of a tail loop adds the
+// length of the elided terminal chain, which varies with the shape of the
+// loop body.  To bound how many turns a tail loop may take, use
+// WithMaxTailIterations instead; to bound total evaluation work, use
+// WithMaxSteps.
 func WithMaximumLogicalStackHeight(n int) Config {
 	return func(env *LEnv) *LVal {
 		env.Runtime.Stack.MaxHeightLogical = n
@@ -30,6 +37,22 @@ func WithMaximumLogicalStackHeight(n int) Config {
 func WithMaximumPhysicalStackHeight(n int) Config {
 	return func(env *LEnv) *LVal {
 		env.Runtime.Stack.MaxHeightPhysical = n
+		return Nil()
+	}
+}
+
+// WithMaxTailIterations returns a Config that bounds the number of tail-call
+// iterations a single stack frame may perform.  Tail calls run in constant
+// stack space, so neither stack-height limit can bound a runaway tail loop;
+// this is the limit that does.  Its unit is loop turns, independent of how
+// many frames each turn elides.
+//
+// A value of 0 disables the check.  The default is
+// DefaultMaxTailIterations, chosen as a runaway-loop backstop rather than a
+// business limit.
+func WithMaxTailIterations(n int) Config {
+	return func(env *LEnv) *LVal {
+		env.Runtime.Stack.MaxTailIterations = n
 		return Nil()
 	}
 }
@@ -114,6 +137,20 @@ func WithContext(ctx context.Context) Config {
 // steps before evaluation returns a CondStepLimitExceeded error.  A step is
 // counted for each Eval entry, each TRO iteration, and each macro
 // re-expansion.  A value of 0 means unlimited (the default).
+//
+// The budget is per top-level evaluation: the counter is reset each time an
+// exported entry point (Eval, EvalContext, EvalSExpr, FunCall,
+// FunCallContext, SpecialOpCall, MacroCall, or any Load*) is entered from
+// outside an evaluation.  Nested evaluation — a builtin calling back into Eval, the
+// tail-call loops, forms evaluated by load — shares the enclosing budget and
+// does not refill it.  Without the reset the limit would be a lifetime quota
+// that permanently kills a long-lived Runtime once it was reached.
+//
+// Runtime.Steps reports the current evaluation's usage; Runtime.TotalSteps
+// reports the lifetime total.
+//
+// A step budget is the only limit here that bounds an infinite loop which
+// neither recurses nor tail-calls; the stack limits cannot see such a loop.
 func WithMaxSteps(n int64) Config {
 	return func(env *LEnv) *LVal {
 		env.Runtime.maxSteps = n

@@ -317,7 +317,9 @@ var (
 			`Returns true if expr is a bytes value, false otherwise.`},
 		{"equal?", Formals("a", "b"), builtinEqual,
 			`Returns true if a and b are structurally equal, performing deep
-			comparison across all value types.`},
+			comparison across all value types. Sorted-map keys compare by
+			name, matching how get and key? identify them, so a map keyed
+			by 'a is equal? to a map keyed by "a".`},
 		{"all?", Formals("predicate", "seq"), builtinAllP,
 			`Returns true if predicate returns truthy for every element in
 			seq. Returns true for an empty sequence. Short-circuits on the
