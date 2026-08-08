@@ -322,14 +322,12 @@ func (p *Parser) ParseQuote() *lisp.LVal {
 	}
 	prefixNewlines := p.src.Token.PrecedingNewlines
 	prefixSpaces := p.src.Token.PrecedingSpaces
-	leading := p.takeLeadingComments()
 	quoteLoc := p.Location() // save ' location before parsing inner expression
 	inner := p.ParseExpression()
 	result := p.Quote(inner)
 	inheritEndPos(result, inner)
 	applyPrefixLocation(result, quoteLoc)
 	p.hoistOperandComments(result, inner)
-	p.attachLeadingComments(result, leading)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
 }
@@ -340,7 +338,6 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 	}
 	prefixNewlines := p.src.Token.PrecedingNewlines
 	prefixSpaces := p.src.Token.PrecedingSpaces
-	leading := p.takeLeadingComments()
 	prefixLoc := p.Location() // save #^ location before parsing inner expression
 	expr := p.ParseExpression()
 	if expr.Type == lisp.LError {
@@ -359,7 +356,6 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 	inheritEndPos(result, expr)
 	applyPrefixLocation(result, prefixLoc)
 	p.hoistOperandComments(result, expr)
-	p.attachLeadingComments(result, leading)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
 }
@@ -371,7 +367,6 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 	}
 	prefixNewlines := p.src.Token.PrecedingNewlines
 	prefixSpaces := p.src.Token.PrecedingSpaces
-	leading := p.takeLeadingComments()
 	prefixLoc := p.Location() // save #' location before parsing inner expression
 	name := p.ParseSymbol()
 	if name.Type == lisp.LError {
@@ -400,7 +395,6 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 	inheritEndPos(result, name)
 	applyPrefixLocation(result, prefixLoc)
 	p.hoistOperandComments(result, name)
-	p.attachLeadingComments(result, leading)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
 }
@@ -447,53 +441,37 @@ func applyPrefixLocation(v *lisp.LVal, loc *token.Location) {
 	}
 }
 
-// takeLeadingComments detaches the comments collected in front of the token a
-// prefix parser has just consumed, so that the operand parsed next does not
-// swallow them.
+// hoistOperandComments moves comments that landed on a prefix form's OPERAND
+// up onto the prefix node itself.
 //
 // tokenLVal drains p.pendingComments onto whatever LVal it is building, and
-// for a prefix form the FIRST LVal built is the operand -- not the node the
-// comments belong to.  For ' that was survivable by accident (lisp.Quote
-// shallow-copies the operand, Meta pointer included, so the outer node saw the
-// same comments), but #' and #^ build a fresh two-cell s-expression whose Meta
-// is new, and the printer's shorthand path writes only the prefix and the
-// operand.  The comments were therefore DELETED: `elps fmt` turned
+// for a prefix form the first LVal built is the operand.  Every comment
+// written anywhere in front of the operand therefore ends up attached to it --
+// the ones before the prefix token ("; c\n#\'a") and the ones in the gap after
+// it ("#^; c\na") alike.
+//
+// The printer reaches an operand through writeQuote or tryPrefixForm, and
+// neither writes a child's LeadingComments; the s-expression and list printers
+// do, but a prefix form is printed as neither.  Those comments were therefore
+// DELETED: `elps fmt` turned
 //
 //	; c
 //	#'a
 //
-// into "#'a".  Worse, when the operand could not be re-sugared the longhand
-// path printed the comment INSIDE the form, so "#!/usr/bin/env elps\n#':%"
-// formatted to "(lisp:function\n  #!/usr/bin/env elps\n  :%)" -- output the
-// parser then rejected, because a hash-bang is only legal at the start of a
-// program.  Found by FuzzGeneratedPipeline.
-func (p *Parser) takeLeadingComments() []*token.Token {
-	if !p.preserveFormat || len(p.pendingComments) == 0 {
-		return nil
-	}
-	comments := p.pendingComments
-	p.pendingComments = nil
-	return comments
-}
-
-// hoistOperandComments moves comments the OPERAND collected -- the ones
-// written between the prefix token and the thing it applies to -- up onto the
-// prefix node.
-//
-// The printer reaches a prefix node's operand through writeQuote or
-// tryPrefixForm, neither of which writes a child's LeadingComments (the
-// s-expression and list printers do, but a prefix form is not printed as
-// either).  Comments left on the operand are therefore DELETED: "'\n; c\n[a]"
-// formatted to "'[a]" and "#^; c\na" to "#^a".
+// into "#'a", and "'\n; c\n[a]" into "'[a]".  Worse, when the operand could
+// not be re-sugared the longhand path printed the comment INSIDE the form, so
+// "#!/usr/bin/env elps\n#':%" formatted to "(lisp:function\n  #!/usr/bin/env
+// elps\n  :%)" -- output the parser then rejected, because a hash-bang is only
+// legal at the start of a program.  Found by FuzzGeneratedPipeline.
 //
 // It only bites when the prefix node has a Meta of its OWN.  lisp.Quote
 // shallow-copies an unquoted operand, Meta pointer included, so "'\n; c\na"
-// happened to survive -- the comment simply moved above the quote.  Quoting an
-// ALREADY-quoted operand builds an LQuote node with a fresh Meta, and #'/#^
-// build a fresh two-cell s-expression, and those three lost the comment.
+// happened to survive -- the outer node saw the very same comments.  Quoting
+// an ALREADY-quoted operand builds an LQuote node with a fresh Meta, and #'
+// and #^ build a fresh two-cell s-expression, and those three lost them.
 //
-// Called before attachLeadingComments so the comments end up in source order:
-// the ones written before the prefix, then the ones written after it.
+// Must run BEFORE applyPrefixNewlines, which reads LeadingComments to decide
+// which gap the node's newline metadata describes.
 func (p *Parser) hoistOperandComments(outer, inner *lisp.LVal) {
 	if !p.preserveFormat || outer.Type == lisp.LError || inner == nil {
 		return
@@ -511,20 +489,6 @@ func (p *Parser) hoistOperandComments(outer, inner *lisp.LVal) {
 	}
 	outer.Meta.LeadingComments = append(outer.Meta.LeadingComments, inner.Meta.LeadingComments...)
 	inner.Meta.LeadingComments = nil
-}
-
-// attachLeadingComments puts comments taken by takeLeadingComments in front of
-// any the node picked up while its operand was parsed.  It must run BEFORE
-// applyPrefixNewlines, which reads LeadingComments to decide which gap the
-// node's newline metadata describes.
-func (p *Parser) attachLeadingComments(v *lisp.LVal, comments []*token.Token) {
-	if !p.preserveFormat || len(comments) == 0 || v.Type == lisp.LError {
-		return
-	}
-	if v.Meta == nil {
-		v.Meta = &lisp.SourceMeta{}
-	}
-	v.Meta.LeadingComments = append(comments, v.Meta.LeadingComments...)
 }
 
 // applyPrefixNewlines sets the newline and spacing metadata on a prefix form
@@ -552,17 +516,20 @@ func (p *Parser) applyPrefixNewlines(v *lisp.LVal, newlines int, spaces int) {
 		//
 		// NewlineBefore / BlankLinesBefore describe the gap before the FIRST
 		// COMMENT.  These used to be left alone on the premise that tokenLVal
-		// had already taken them from that comment -- true only while the
-		// comments were still reaching tokenLVal, which takeLeadingComments
-		// stopped.  tokenLVal now sees no comments and copies the OPERAND
-		// token's gap instead, and for #' the operand inherits the prefix's
-		// own PrecedingNewlines (readFunRef emits FUN_REF and its symbol from
-		// a single readToken, without an intervening skipWhitespace).  So
-		// "(a)\n; c\n\n#'f\n" reported one blank line before the comment and
-		// `elps fmt` inserted one -- reflowing a comment that describes the
-		// line above it.  It reaches real source: the `; <-` markers in
-		// editors/vscode/test/grammar/basics.lisp are syntax-test assertions
-		// ABOUT the preceding line, so moving them changes what they assert.
+		// had already taken them from that comment.  That held only while this
+		// branch was reachable ONLY for a node sharing its operand's Meta --
+		// the quote-a-plain-symbol case, where tokenLVal really did see the
+		// comments.  hoistOperandComments made it reachable for #', #^ and
+		// LQuote too, and those have a Meta of their OWN that tokenLVal filled
+		// in BEFORE the hoist, from the operand token.  For #' that operand
+		// inherits the prefix's own PrecedingNewlines -- readFunRef emits
+		// FUN_REF and its symbol from a single readToken, with no
+		// skipWhitespace between them -- so "(a)\n; c\n\n#'f\n" reported one
+		// blank line before the comment and `elps fmt` INSERTED one, reflowing
+		// a comment that describes the line above it.  It reaches real source:
+		// the `; <-` markers in editors/vscode/test/grammar/basics.lisp are
+		// syntax-test assertions ABOUT the preceding line, so moving them
+		// changes what they assert.
 		v.Meta.BlankLinesAfterComments = 0
 		if newlines > 1 {
 			v.Meta.BlankLinesAfterComments = newlines - 1
