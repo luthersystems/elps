@@ -156,6 +156,49 @@ func TestCommentBetweenPrefixAndOperand(t *testing.T) {
 	}
 }
 
+// TestLonghandPrefixFormKeepsComments covers the other direction: longhand a
+// human wrote out, with a comment somewhere inside it.
+//
+// The printer re-sugars "(lisp:function f)" to "#'f", and the shorthand has
+// nowhere to put a comment that sat between the brackets -- so re-sugaring
+// DELETED it.  Those forms now stay longhand.  The comment-free rows are the
+// controls: re-sugaring is the normal, desirable outcome and must not regress.
+func TestLonghandPrefixFormKeepsComments(t *testing.T) {
+	tests := []formatTest{
+		{
+			name:     "funref/leading",
+			input:    "(lisp:function\n; c\nf)\n",
+			expected: "(lisp:function\n  ; c\n  f)\n",
+		},
+		{
+			name:     "funref/trailing-on-head",
+			input:    "(lisp:function ; c\nf)\n",
+			expected: "(lisp:function ; c\n  f)\n",
+		},
+		{
+			name:     "funref/inner-trailing",
+			input:    "(lisp:function f\n; c\n)\n",
+			expected: "(lisp:function f\n               ; c\n               )\n",
+		},
+		{
+			name:     "unbound/trailing-on-head",
+			input:    "(lisp:expr ; c\n%)\n",
+			expected: "(lisp:expr ; c\n  %)\n",
+		},
+		// Controls: no comment, so the shorthand is still written.
+		{name: "funref/plain", input: "(lisp:function f)\n", expected: "#'f\n"},
+		{name: "unbound/plain", input: "(lisp:expr %)\n", expected: "#^%\n"},
+		{name: "funref/already-short", input: "#'f\n", expected: "#'f\n"},
+		// A comment INSIDE the operand belongs to the operand's own printer
+		// and survives the shorthand, so it must not block re-sugaring.
+		{name: "unbound/operand-inner", input: "#^(\n; c\n)\n", expected: "#^(\n   ; c\n   )\n"},
+	}
+	runFormatTests(t, tests)
+	for _, tt := range tests {
+		requireCommentsPreserved(t, tt.input)
+	}
+}
+
 // TestCommentInEmptySExpr covers a comment between the brackets of a form with
 // no children.
 //

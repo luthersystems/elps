@@ -515,11 +515,18 @@ func (p *printer) tryPrefixForm(v *lisp.LVal, indent int) bool {
 	if len(v.Cells) != 2 || v.Cells[0].Type != lisp.LSymbol {
 		return false
 	}
-	// The shorthand has nowhere to put a comment attached to the operand: it
-	// writes the prefix and the operand and nothing else.  rdparser hoists
-	// such comments onto the prefix node itself, so this only fires for
-	// longhand a human wrote out, but re-sugaring it would delete the comment.
-	if inner := v.Cells[1]; inner.Meta != nil && len(inner.Meta.LeadingComments) > 0 {
+	// The shorthand has nowhere to put a comment written inside the form: it
+	// writes the prefix and the operand and nothing else, so re-sugaring
+	// "(lisp:function ; c\n f)" to "#'f" DELETES the comment.  rdparser hoists
+	// comments in the gap after a #'/#^ onto the prefix node itself, so this
+	// only fires for longhand a human wrote out -- but that is exactly the
+	// input `elps fmt` is asked to tidy.  Falling through to the longhand
+	// printer keeps every comment.
+	//
+	// Skipped when comments are being stripped anyway (compact mode, which is
+	// what the minifier emits through): there is no comment left to lose, and
+	// refusing the shorthand there would only make the output bigger.
+	if !p.cfg.StripComments && hasComments(v) {
 		return false
 	}
 	switch v.Cells[0].Str {
@@ -537,6 +544,25 @@ func (p *printer) tryPrefixForm(v *lisp.LVal, indent int) bool {
 		p.writeString("#^")
 		p.writeExpr(v.Cells[1], indent)
 		return true
+	}
+	return false
+}
+
+// hasComments reports whether any comment is attached inside v: to one of its
+// children, or between the last child and the closing bracket.  v's OWN
+// leading and trailing comments are not included -- those are written by
+// whoever prints v, and survive the shorthand.
+func hasComments(v *lisp.LVal) bool {
+	if v.Meta != nil && len(v.Meta.InnerTrailingComments) > 0 {
+		return true
+	}
+	for _, c := range v.Cells {
+		// Only the comments the PARENT is responsible for writing.  A child's
+		// own inner comments are written by writeExpr when it prints the
+		// child, and survive the shorthand: "#^(\n; c\n)" keeps its comment.
+		if c.Meta != nil && (len(c.Meta.LeadingComments) > 0 || c.Meta.TrailingComment != nil) {
+			return true
+		}
 	}
 	return false
 }
