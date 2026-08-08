@@ -370,6 +370,24 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 	if name.Type == lisp.LError {
 		return name
 	}
+	// The operand has to be a name the reader gives back as a symbol. #' is
+	// shorthand, printed in longhand as "(lisp:function <name>)", so a name
+	// that reads back as anything else means the printer changed the program.
+	//
+	// "#'0" was rejected earlier by requiring a symbol-START rune in the
+	// lexer, but '-' and '+' ARE symbol-start runes, so "#'-0", "#'-1",
+	// "#'+0", "#'1.5" and "#'-1abc" all sailed past it and produced symbols
+	// that turn back into INTs in longhand -- `elps fmt` silently rewriting a
+	// function reference as a number. Found by FuzzFormatCompact on "#'-0".
+	//
+	// The check lives here and not in the lexer because the lexer is the
+	// wrong layer to ask: "--" and "-a" lex as NEGATIVE, and only become
+	// symbols when ParseNegative merges them. A token-level guard rejects
+	// those valid names; re-reading through the parser gets them right.
+	if !readsBackAsSymbol(name.Str) {
+		return p.errorf("parse-error",
+			"invalid symbol following #': %q does not read back as a symbol", name.Str)
+	}
 	result := p.SExpr([]*lisp.LVal{op, name})
 	p.recordSynthesizedBrackets(result)
 	inheritEndPos(result, name)
@@ -818,4 +836,23 @@ func (p *Parser) skipToNextExpression() {
 // LVal (e.g., trailing comments at end of file). Only useful in formatting mode.
 func (p *Parser) PendingComments() []*token.Token {
 	return p.pendingComments
+}
+
+// readsBackAsSymbol reports whether s, parsed on its own, yields exactly one
+// expression and that expression is a symbol named s.
+//
+// Used to reject #' operands that cannot survive the round trip through the
+// printer. Re-parsing rather than pattern-matching the name states the
+// requirement exactly: an earlier attempt used strconv.ParseInt/ParseFloat and
+// was wrong, because "-1abc" is not a number by either yet still reads back as
+// an INT. Re-parsing also stays correct if the number syntax ever changes.
+func readsBackAsSymbol(s string) bool {
+	if s == "" {
+		return false
+	}
+	exprs, err := New(token.NewScanner("", strings.NewReader(s))).ParseProgram()
+	if err != nil || len(exprs) != 1 {
+		return false
+	}
+	return exprs[0].Type == lisp.LSymbol && exprs[0].Str == s
 }
