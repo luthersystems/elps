@@ -2410,6 +2410,30 @@ func builtinPow(env *LEnv, args *LVal) *LVal {
 	return Float(math.Pow(toFloat(a), toFloat(b)))
 }
 
+// powInt raises a to the b-th power in int arithmetic, wrapping on overflow
+// exactly as Go's `*` does.
+//
+// Binary exponentiation: at most 63 iterations for any b, because b is
+// halved every turn.  The previous implementation doubled an exponent
+// accumulator instead --
+//
+//	n := 1; atob := a
+//	for 2*n < b { atob *= atob; n *= 2 }
+//	for n < b   { atob *= a;    n++ }
+//
+// -- and for b > 2^62 that loop never terminates.  n doubles 1, 2, ..., 2^62,
+// then 2^63 wraps to MinInt, then MinInt*2 wraps to exactly 0, and 2*0 < b is
+// true forever.  Zero is a true fixed point: the loop allocates nothing and
+// evaluates nothing, so it is invisible to MaxAlloc, to MaxSteps AND to a
+// context deadline -- none of those are consulted inside a builtin.
+// (pow -128 9223372036854775807) hung the process until something killed it.
+// Found by FuzzApplyStdlib as (pow -9223372036854775808 9223372036854775806).
+//
+// The result is unchanged wherever the old loop terminated.  Go's int
+// multiplication is arithmetic mod 2^64, which is a commutative ring, so the
+// order in which the b factors are associated cannot change the product --
+// squaring-and-multiplying and multiplying b times agree bit for bit,
+// including on the wrapped answers.  (pow 2 64) still returns 0.
 func powInt(a, b int) *LVal {
 	if b == 0 {
 		return Int(1)
@@ -2417,15 +2441,16 @@ func powInt(a, b int) *LVal {
 	if b < 0 {
 		return Float(math.Pow(float64(a), float64(b)))
 	}
-	n := 1
-	atob := a
-	for 2*n < b {
-		atob *= atob
-		n *= 2
-	}
-	for n < b {
-		atob *= a
-		n++
+	atob := 1
+	base := a
+	for b > 0 {
+		if b&1 == 1 {
+			atob *= base
+		}
+		b >>= 1
+		if b > 0 {
+			base *= base
+		}
 	}
 	return Int(atob)
 }
