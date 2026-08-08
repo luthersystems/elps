@@ -286,6 +286,86 @@ if [ "$old_pattern_fired" -eq 0 ]; then
 fi
 
 echo
+echo "== bench-arms-check: the two arms must be comparable ====================="
+
+# The failure this guards is silent by construction: when the arms cannot pair,
+# benchstat emits a normal-looking table with no comparison rows. Downstream the
+# gate does go red -- but only as "could not be interpreted", which names the
+# symptom and not the cause. These cases assert the cause is named.
+ARMS="${SCRIPT_DIR}/bench-arms-check.sh"
+
+ARMS_TMP="$(mktemp -d)"
+trap 'rm -rf "$ARMS_TMP"' EXIT
+
+# Six samples so the "need >= 6" advisory does not fire in the clean case.
+arms_fixture() { # <file> <cpu> <suffix> [extra-benchmark-name]
+	{
+		echo "goos: linux"
+		echo "goarch: arm64"
+		echo "pkg: github.com/luthersystems/elps/lisp"
+		echo "cpu: $2"
+		for _ in 1 2 3 4 5 6; do
+			printf 'BenchmarkEnvGet-%s\t  138022\t      8104 ns/op\t    1808 B/op\t      27 allocs/op\n' "$3"
+			printf 'BenchmarkEnvFunCall-%s\t   58022\t     18104 ns/op\t    3808 B/op\t      57 allocs/op\n' "$3"
+			if [ -n "${4:-}" ]; then
+				printf 'Benchmark%s-%s\t   58022\t     18104 ns/op\t    3808 B/op\t      57 allocs/op\n' "$4" "$3"
+			fi
+		done
+		echo "PASS"
+		echo "ok  	github.com/luthersystems/elps/lisp	1.5s"
+	} >"$1"
+}
+
+arms_fixture "${ARMS_TMP}/base.txt" "Neoverse-N1" 2
+arms_fixture "${ARMS_TMP}/pr.txt" "Neoverse-N1" 2
+assert_exit 0 "identical configuration and benchmark names -> comparable" \
+	"$ARMS" "${ARMS_TMP}/base.txt" "${ARMS_TMP}/pr.txt"
+
+# The footgun. Editing `runs-on` from a 4-core to a 2-core runner renames
+# EVERY benchmark, so the intersection is empty and benchstat pairs nothing --
+# with no error anywhere that says so.
+arms_fixture "${ARMS_TMP}/gomaxprocs4.txt" "Neoverse-N1" 4
+assert_exit 2 "GOMAXPROCS suffix mismatch (-4 vs -2) -> not comparable" \
+	"$ARMS" "${ARMS_TMP}/gomaxprocs4.txt" "${ARMS_TMP}/pr.txt"
+assert_contains "GOMAXPROCS suffix" "GOMAXPROCS mismatch is DIAGNOSED, not reported as generic unpairability" \
+	"$ARMS" "${ARMS_TMP}/gomaxprocs4.txt" "${ARMS_TMP}/pr.txt"
+
+# The heterogeneous-pool failure: benchstat keys its configuration off the
+# cpu: header, so two different CPU models pair nothing even at the same arch.
+arms_fixture "${ARMS_TMP}/othercpu.txt" "AMD EPYC 7763" 2
+assert_exit 2 "cpu-model mismatch between arms -> not comparable" \
+	"$ARMS" "${ARMS_TMP}/othercpu.txt" "${ARMS_TMP}/pr.txt"
+assert_contains "cpu:" "cpu mismatch names the header benchstat keys on" \
+	"$ARMS" "${ARMS_TMP}/othercpu.txt" "${ARMS_TMP}/pr.txt"
+
+# Adding or removing a benchmark is legitimate and must NOT fail the build --
+# only reported, so a benchmark silently dropping out of the comparison set is
+# visible rather than inferred.
+arms_fixture "${ARMS_TMP}/extra.txt" "Neoverse-N1" 2 "NewlyAdded"
+assert_exit 0 "a PR that ADDS a benchmark is still comparable" \
+	"$ARMS" "${ARMS_TMP}/base.txt" "${ARMS_TMP}/extra.txt"
+assert_contains "only in pr" "an unpaired benchmark is reported by name" \
+	"$ARMS" "${ARMS_TMP}/base.txt" "${ARMS_TMP}/extra.txt"
+
+: >"${ARMS_TMP}/empty.txt"
+assert_exit 2 "an empty arm fails rather than degrading to a one-sided report" \
+	"$ARMS" "${ARMS_TMP}/empty.txt" "${ARMS_TMP}/pr.txt"
+
+# Benchmarks that failed to build produce output with headers but no result
+# lines. That must not read as "nothing changed".
+{
+	echo "goos: linux"
+	echo "goarch: arm64"
+	echo "cpu: Neoverse-N1"
+	echo "FAIL	github.com/luthersystems/elps/lisp [build failed]"
+} >"${ARMS_TMP}/nobench.txt"
+assert_exit 2 "an arm with headers but no benchmark results fails" \
+	"$ARMS" "${ARMS_TMP}/nobench.txt" "${ARMS_TMP}/pr.txt"
+
+assert_exit 2 "missing file fails with the same 'unusable' code as the gate" \
+	"$ARMS" "${ARMS_TMP}/does-not-exist.txt" "${ARMS_TMP}/pr.txt"
+
+echo
 echo "== workflow shape guards ================================================="
 
 BENCH_WF="${REPO_ROOT}/.github/workflows/benchmark.yml"
@@ -392,15 +472,30 @@ else
 	ok "benchmark.yml restores no cached baseline (both arms measured in-job)"
 fi
 
+# GOMAXPROCS must be PINNED, not inherited from the runner's core count.
+# `go test` appends it to every benchmark name, and benchstat pairs rows by
+# the full name -- so arms measured at different core counts share no names
+# and pair nothing, from a table that looks entirely normal. The trap is that
+# it is sprung by editing `runs-on`, which does not look like touching this
+# gate. Prevention is the pin; detection is bench-arms-check.sh.
+if grep -qE '^\s*GOMAXPROCS:\s*"?[0-9]+"?\s*$' "$BENCH_WF"; then
+	ok "benchmark.yml pins GOMAXPROCS (the benchmark-name suffix cannot follow the runner)"
+else
+	bad "benchmark.yml does not pin GOMAXPROCS — a runner size change would silently unpair every benchmark"
+fi
+
+if [ -n "$(invoked_in "$BENCH_WF" 'scripts/bench-arms-check.sh')" ]; then
+	ok "benchmark.yml INVOKES scripts/bench-arms-check.sh before comparing"
+else
+	bad "benchmark.yml does not run the arm comparability pre-flight — an unpairable comparison would report only its symptom"
+fi
+
 # A job that relocates its checkout with `path:` has NOTHING from the
 # repository at the workspace root. Referring to a repo script as
 # `./scripts/foo.sh` there exits 127 "No such file or directory" -- which this
 # workflow then reported as "Benchmark regressions detected", a real-looking
 # failure with an entirely fictional cause. That is the class this guard
-# closes: a relocated checkout plus a root-relative repo path. It is a class,
-# not a one-off, because the two halves are introduced in different edits --
-# the two-tree checkout was added for measurement reasons by someone not
-# thinking about script paths.
+# closes: a relocated checkout plus a root-relative repo path.
 relocated="$(python3 - "$BENCH_WF" <<'PY_INNER'
 import re, sys
 
@@ -459,6 +554,116 @@ case "$relocated" in
 		echo "$relocated" | sed 's/^/        | /'
 		;;
 esac
+
+# Any job on a runner label that is not a standard GitHub-hosted one must be
+# watched by the queue watchdog. An unreachable label does not fail: the job
+# QUEUES, publishing no status at all, so the board shows the remaining checks
+# all green and reads as a pass. elps lost five consecutive pushes to exactly
+# that (`ubuntu-arm-4core-150gb`, real but shared with substrate, not elps).
+# `timeout-minutes` cannot cover it -- that clock starts when a job STARTS.
+watch_out="$(python3 - "$REPO_ROOT" <<'PY_INNER'
+import glob, os, re, sys
+
+root = sys.argv[1]
+try:
+    import yaml
+except ImportError:
+    print("__SKIP__ pyyaml unavailable")
+    sys.exit(0)
+
+# Labels GitHub always provides. Anything else -- a larger-runner label, a
+# self-hosted label, or an expression whose value cannot be read here -- is
+# only as reachable as the repo's runner settings happen to make it.
+STANDARD = re.compile(r"^(ubuntu|windows|macos)-[0-9a-z.]+$")
+
+failures, passes = [], []
+for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))):
+    base = os.path.basename(f)
+    try:
+        doc = yaml.safe_load(open(f))
+    except Exception:  # noqa: BLE001 -- the YAML-parse guard above owns this
+        continue
+    if not isinstance(doc, dict):
+        continue
+    jobs = doc.get("jobs") or {}
+
+    watched = set()
+    for job in jobs.values():
+        for st in (job.get("steps") or []):
+            name = ((st.get("env") or {}).get("WATCH_JOB"))
+            if name:
+                watched.add(str(name))
+
+    for job_id, job in jobs.items():
+        ro = job.get("runs-on")
+        labels = []
+        if isinstance(ro, str):
+            labels = [ro]
+        elif isinstance(ro, list):
+            labels = [str(x) for x in ro]
+        elif isinstance(ro, dict):
+            labels = [str(x) for x in (ro.get("labels") or [])] or ["<group>"]
+        if not labels:
+            continue
+        if all(STANDARD.match(x) for x in labels):
+            continue
+        display = job.get("name") or job_id
+        if display in watched:
+            passes.append(f"{base}: job {display!r} on non-standard runner {labels} is queue-watched")
+        else:
+            failures.append(
+                f"{base}: job {display!r} runs on {labels}, which is not a standard "
+                f"GitHub-hosted label, and no job in that workflow sets "
+                f"WATCH_JOB: {display}. An unreachable label QUEUES silently and "
+                f"publishes no status."
+            )
+
+for p in passes:
+    print(f"PASS  {p}")
+for f_ in failures:
+    print(f"FAIL  {f_}")
+print(f"__COUNTS__ {len(passes)} {len(failures)}")
+PY_INNER
+)"
+case "$watch_out" in
+	__SKIP__*) echo "SKIP  runner-reachability guard ($watch_out)" ;;
+	*)
+		echo "$watch_out" | grep -v '^__COUNTS__' || true
+		watch_counts="$(echo "$watch_out" | sed -n 's/^__COUNTS__ //p')"
+		if [ -n "$watch_counts" ]; then
+			read -r w_pass w_fail <<<"$watch_counts"
+			pass=$((pass + w_pass))
+			fail=$((fail + w_fail))
+		else
+			bad "runner-reachability guard did not run"
+		fi
+		;;
+esac
+
+# The watchdog must exist and must be wired to a job that is actually in the
+# workflow -- WATCH_JOB is matched against the job's `name:` EXACTLY, so a
+# rename on one side silently un-watches it.
+WATCHDOG="${SCRIPT_DIR}/ci-queue-watchdog.cjs"
+if [ -f "$WATCHDOG" ]; then
+	ok "scripts/ci-queue-watchdog.cjs exists"
+	if [ -n "$(invoked_in "$BENCH_WF" 'ci-queue-watchdog.cjs')" ]; then
+		ok "benchmark.yml INVOKES the queue watchdog"
+	else
+		bad "benchmark.yml does not invoke ci-queue-watchdog.cjs"
+	fi
+	if command -v node >/dev/null 2>&1; then
+		if node --check "$WATCHDOG" 2>/dev/null; then
+			ok "node --check ci-queue-watchdog.cjs"
+		else
+			bad "node --check ci-queue-watchdog.cjs"
+			node --check "$WATCHDOG" 2>&1 | sed 's/^/        | /'
+		fi
+	else
+		echo "SKIP  node not installed; cannot syntax-check the watchdog"
+	fi
+else
+	bad "scripts/ci-queue-watchdog.cjs is missing"
+fi
 
 wf_out="$(python3 - "$REPO_ROOT" <<'PY'
 import glob, os, re, sys
@@ -695,6 +900,7 @@ echo
 echo "== shell lint on the scripts this suite owns ============================="
 
 OWNED_SCRIPTS=(
+	"${SCRIPT_DIR}/bench-arms-check.sh"
 	"${SCRIPT_DIR}/benchstat-gate.sh"
 	"${SCRIPT_DIR}/ci-gates-test.sh"
 	"${SCRIPT_DIR}/fuzz.sh"

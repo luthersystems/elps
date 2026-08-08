@@ -40,10 +40,25 @@ env:
   # characterised is how a gate stops meaning anything.
   BENCH_REGRESSION_THRESHOLD_PCT: "15"
   BENCH_ALLOC_THRESHOLD_PCT: "5"
+  # Pinned, not inherited from the runner's core count. `go test` appends
+  # GOMAXPROCS to every benchmark name (EnvGet-2, EnvGet-4), and benchstat
+  # pairs rows by that full name -- so two arms measured at different core
+  # counts share NO names and benchstat pairs nothing, from a table that looks
+  # entirely normal. Pinning it means a change to `runs-on` -- a different
+  # line, in a different context, made by someone with no reason to think they
+  # touched this gate -- cannot move the suffix. scripts/bench-arms-check.sh
+  # is the backstop that names the failure if this pin is ever removed.
+  #
+  # 2 matches the ARM runner below. These benchmarks are single-goroutine, so
+  # this constrains only the runtime's own parallelism; keeping it fixed also
+  # keeps raw numbers comparable across runs as the runner pool changes.
+  GOMAXPROCS: "2"
 
 permissions:
   contents: read
   pull-requests: write
+  # Read-only access to this run's own job list, for the queue watchdog below.
+  actions: read
 
 jobs:
   # Proves the regression gate can actually FAIL. This job exists because the
@@ -75,6 +90,42 @@ jobs:
       - name: Run CI gate self-test
         run: bash scripts/ci-gates-test.sh
 
+  # A job whose `runs-on` label matches no runner available to THIS repository
+  # does not fail -- it queues, and a queued job publishes no check status at
+  # all. The board then shows the other checks, all green, and reads as a pass.
+  # That is not hypothetical here: `ubuntu-arm-4core-150gb` (real, but shared
+  # with substrate rather than elps) left the benchmark job queued across five
+  # consecutive pushes, reporting nothing each time.
+  #
+  # `timeout-minutes` cannot cover this -- its clock starts when a job begins
+  # running. So this watchdog runs on a runner that is always available and
+  # polls the run's own job list, turning "silently absent" into "loudly red".
+  # Logic lives in scripts/ci-queue-watchdog.cjs so it is reviewable and
+  # guarded by scripts/ci-gates-test.sh rather than buried in YAML.
+  queue-watchdog:
+    name: Runner Reachability Watchdog
+    runs-on: ubuntu-latest
+    # Generous: the budget below is the real bound, and this only backstops a
+    # watchdog that itself wedges.
+    timeout-minutes: 30
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Watch for a job that never starts
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
+        env:
+          # Must match the watched job's `name:` EXACTLY. The watchdog reports
+          # a mismatch rather than waiting out the budget on a typo.
+          WATCH_JOB: Benchmark Comparison
+          # Repo variable so a genuinely busy pool can be accommodated from
+          # settings, without a code change.
+          QUEUE_BUDGET_MINUTES: ${{ vars.BENCH_QUEUE_BUDGET_MINUTES || '15' }}
+        with:
+          script: |
+            const watchdog = require('./scripts/ci-queue-watchdog.cjs')
+            await watchdog({ github, context, core })
+
   benchmark:
     name: Benchmark Comparison
     # ARM, deliberately. The consumers that pin this module ship ARM, so
@@ -98,9 +149,11 @@ jobs:
     #
     # `vars.BENCH_RUNNER` is an escape hatch: if the ARM pool is unavailable
     # the runner can be repointed from repo settings without a code change.
-    # It is safe to flip because the baseline cache is namespaced by
-    # runner.arch (see below), so switching architectures misses the cache
-    # rather than comparing across them.
+    # It is safe to flip because both arms are measured in this job on
+    # whatever runner it lands on -- a swap changes the absolute numbers but
+    # never compares across architectures. It cannot move the benchmark-name
+    # suffix either, because GOMAXPROCS is pinned at the workflow level; see
+    # the note there for why that matters.
     #
     # NOTE: `runs-on` cannot read the `env` context, which is why this is a
     # literal plus a `vars` override rather than a workflow-level env var.
@@ -172,29 +225,33 @@ jobs:
           set -uo pipefail
 
           # BOTH trees live in subdirectories (pr/ and base/), so nothing from
-          # the repository is at the workspace root -- including this script.
+          # the repository is at the workspace root -- including these scripts.
           # A bare `./scripts/benchstat-gate.sh` here exits 127 "No such file",
           # which the final step then reported as "Benchmark regressions
-          # detected": a real-looking failure with an entirely fictional cause.
-          # The existence check below turns that class into a named error, and
-          # the final step no longer attributes unknown exit codes to
-          # regressions.
+          # detected", i.e. a real-looking failure with a fictional cause. The
+          # existence check below turns that class into a named error, and the
+          # final step no longer attributes unknown exit codes to regressions.
           #
-          # The gate comes from the PR arm deliberately: a PR that changes the
+          # The scripts come from the PR arm deliberately: a PR that changes the
           # gate must be adjudicated by its own version of it, not by main's.
           PR_TREE="${GITHUB_WORKSPACE}/pr"
           GATE="${PR_TREE}/scripts/benchstat-gate.sh"
+          ARMS="${PR_TREE}/scripts/bench-arms-check.sh"
 
-          if [ ! -f "$GATE" ]; then
-            echo "::error::benchmark gate script missing from the PR checkout: ${GATE}. The workflow expects the repository at \$GITHUB_WORKSPACE/pr (see the two-tree checkout above); if the checkout layout changed, this path must change with it."
+          missing=""
+          for s in "$GATE" "$ARMS"; do
+            [ -f "$s" ] || missing="${missing} ${s}"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::benchmark gate scripts missing from the PR checkout:${missing}. The workflow expects the repository at \$GITHUB_WORKSPACE/pr (see the two-tree checkout above); if the checkout layout changed, these paths must change with it."
             echo "gate_status=2" >> "$GITHUB_OUTPUT"
             {
               echo 'result<<BENCHSTAT_EOF'
               echo '## Benchmark gate could not run'
               echo ''
-              echo 'The gate script was not found in the PR checkout:'
+              echo 'The gate scripts were not found in the PR checkout:'
               echo '```'
-              echo "${GATE}"
+              echo "${missing}"
               echo '```'
               echo 'BENCHSTAT_EOF'
             } >> "$GITHUB_OUTPUT"
@@ -217,6 +274,30 @@ jobs:
               echo ''
               echo '```'
               cat bench-current.txt
+              echo '```'
+              echo 'BENCHSTAT_EOF'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Comparability BEFORE comparison. benchstat does not complain when
+          # the arms cannot pair -- it emits a normal-looking table with no
+          # comparison rows, and the gate downstream can only report the
+          # symptom ("could not be interpreted"). This names the cause: a
+          # goos/goarch/cpu mismatch, or a GOMAXPROCS suffix mismatch that
+          # makes EnvGet-4 and EnvGet-2 two unrelated benchmarks.
+          arms_rc=0
+          "$ARMS" bench-baseline.txt bench-current.txt > arms-check.txt 2>&1 || arms_rc=$?
+          cat arms-check.txt
+          if [ "$arms_rc" -ne 0 ]; then
+            echo "::error::The two benchmark arms are not comparable; see the pre-flight report above."
+            echo "gate_status=2" >> "$GITHUB_OUTPUT"
+            {
+              echo 'result<<BENCHSTAT_EOF'
+              echo '## Benchmark arms are NOT comparable — no comparison was made'
+              echo ''
+              echo '```'
+              cat arms-check.txt
               echo '```'
               echo 'BENCHSTAT_EOF'
             } >> "$GITHUB_OUTPUT"
@@ -331,10 +412,10 @@ jobs:
               echo "::error::The benchmark comparison could not be interpreted (gate exit 2). This is a hard failure by design — a gate that cannot read its input must never report success. See the job log above."
               ;;
             *)
-              # Anything else means the gate never reached a verdict -- e.g.
-              # exit 127, the script not being found. Reporting that as
-              # "regressions detected", which this branch used to do, sends the
-              # reader hunting for a performance problem that does not exist.
+              # Anything else means the gate did not reach a verdict at all --
+              # e.g. exit 127, the script not being found. Reporting that as
+              # "regressions detected" (which this branch used to do) sends the
+              # reader looking for a performance problem that does not exist.
               echo "::error::The benchmark gate did not run to completion (exit ${status:-<unset>}); it reached no verdict, so this is neither a pass nor a measured regression. See the job log above for the failing command."
               ;;
           esac
