@@ -3,6 +3,7 @@
 package fuzzval_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/internal/fuzzval"
@@ -44,11 +45,12 @@ func TestGeneratorIsDeterministic(t *testing.T) {
 }
 
 func renderN(g *fuzzval.Gen, n int) string {
-	out := ""
+	var out strings.Builder
 	for range n {
-		out += g.Value().String() + "\n"
+		out.WriteString(g.Value().String())
+		out.WriteByte('\n')
 	}
-	return out
+	return out.String()
 }
 
 // TestGeneratorCoversEveryLType asserts the generator actually reaches the

@@ -96,7 +96,7 @@ func FuzzApplyStdlib(f *testing.F) {
 	// entries (~1s) and still guarantees that every callable and every value
 	// shape appears at least once in the corpus the fuzzer descends from.
 	valueSeeds := fuzzval.Seeds()
-	for i := range len(names) {
+	for i := range names {
 		idx := uint16(i) //nolint:gosec // G115: i < len(names), a few hundred
 		for _, j := range []int{0, len(valueSeeds) / 2, len(valueSeeds) - 1} {
 			f.Add(idx, valueSeeds[j])
