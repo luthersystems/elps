@@ -392,6 +392,74 @@ else
 	ok "benchmark.yml restores no cached baseline (both arms measured in-job)"
 fi
 
+# A job that relocates its checkout with `path:` has NOTHING from the
+# repository at the workspace root. Referring to a repo script as
+# `./scripts/foo.sh` there exits 127 "No such file or directory" -- which this
+# workflow then reported as "Benchmark regressions detected", a real-looking
+# failure with an entirely fictional cause. That is the class this guard
+# closes: a relocated checkout plus a root-relative repo path. It is a class,
+# not a one-off, because the two halves are introduced in different edits --
+# the two-tree checkout was added for measurement reasons by someone not
+# thinking about script paths.
+relocated="$(python3 - "$BENCH_WF" <<'PY_INNER'
+import re, sys
+
+path = sys.argv[1]
+try:
+    import yaml
+except ImportError:
+    print("__SKIP__ pyyaml unavailable")
+    sys.exit(0)
+
+
+def strip_comments(run):
+    """Drop shell comments so a `run:` block that DOCUMENTS a path is not
+    mistaken for one that invokes it. Heuristic (a '#' opening a comment is
+    at line start or preceded by whitespace); adequate here because these
+    blocks contain no '#' inside string literals."""
+    out = []
+    for line in run.splitlines():
+        m = re.search(r"(?:^|\s)#", line)
+        out.append(line[: m.start()] if m else line)
+    return "\n".join(out)
+
+
+# A path REFERENCE starts at a token boundary: start of line, whitespace, or a
+# shell separator. `${PR_TREE}/scripts/foo.sh` is preceded by '/', so it is a
+# suffix of a longer path and not root-relative -- exactly the fixed form.
+REF = re.compile(r"(?:^|[\s;&|(])(?:\./)?(scripts/[\w./-]+)", re.M)
+
+doc = yaml.safe_load(open(path))
+hits = []
+for job_id, job in (doc.get("jobs") or {}).items():
+    steps = job.get("steps") or []
+    paths = []
+    for st in steps:
+        if "actions/checkout" in (st.get("uses") or ""):
+            p = (st.get("with") or {}).get("path")
+            paths.append(p.strip("/") if p else "")
+    # Only jobs where EVERY checkout is relocated are affected; a job that also
+    # checks out at the root still has the repo there.
+    if not paths or any(p == "" for p in paths):
+        continue
+    for st in steps:
+        run = st.get("run")
+        if not isinstance(run, str):
+            continue
+        for m in REF.finditer(strip_comments(run)):
+            hits.append(f"{job_id}: {m.group(1)}")
+print("\n".join(sorted(set(hits))))
+PY_INNER
+)"
+case "$relocated" in
+	__SKIP__*) echo "SKIP  relocated-checkout path guard ($relocated)" ;;
+	"") ok "no job with a relocated checkout refers to repo scripts as if they were at the workspace root" ;;
+	*)
+		bad "root-relative repo paths inside a job whose checkout is relocated (these exit 127, not a regression):"
+		echo "$relocated" | sed 's/^/        | /'
+		;;
+esac
+
 wf_out="$(python3 - "$REPO_ROOT" <<'PY'
 import glob, os, re, sys
 

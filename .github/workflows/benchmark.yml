@@ -170,6 +170,37 @@ jobs:
         id: benchstat
         run: |
           set -uo pipefail
+
+          # BOTH trees live in subdirectories (pr/ and base/), so nothing from
+          # the repository is at the workspace root -- including this script.
+          # A bare `./scripts/benchstat-gate.sh` here exits 127 "No such file",
+          # which the final step then reported as "Benchmark regressions
+          # detected": a real-looking failure with an entirely fictional cause.
+          # The existence check below turns that class into a named error, and
+          # the final step no longer attributes unknown exit codes to
+          # regressions.
+          #
+          # The gate comes from the PR arm deliberately: a PR that changes the
+          # gate must be adjudicated by its own version of it, not by main's.
+          PR_TREE="${GITHUB_WORKSPACE}/pr"
+          GATE="${PR_TREE}/scripts/benchstat-gate.sh"
+
+          if [ ! -f "$GATE" ]; then
+            echo "::error::benchmark gate script missing from the PR checkout: ${GATE}. The workflow expects the repository at \$GITHUB_WORKSPACE/pr (see the two-tree checkout above); if the checkout layout changed, this path must change with it."
+            echo "gate_status=2" >> "$GITHUB_OUTPUT"
+            {
+              echo 'result<<BENCHSTAT_EOF'
+              echo '## Benchmark gate could not run'
+              echo ''
+              echo 'The gate script was not found in the PR checkout:'
+              echo '```'
+              echo "${GATE}"
+              echo '```'
+              echo 'BENCHSTAT_EOF'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Both arms are produced by the step above, in this job. An empty
           # baseline is no longer a benign cache miss -- it means the base
           # checkout or its benchmark run failed, and silently degrading to
@@ -226,12 +257,13 @@ jobs:
           # (scripts/ci-gates-test.sh) and run locally (make ci-gates-test).
           # It exits 0 = clean, 1 = regression, 2 = could not interpret.
           gate_status=0
-          ./scripts/benchstat-gate.sh benchstat-output.txt || gate_status=$?
+          "$GATE" benchstat-output.txt || gate_status=$?
           echo "gate_status=${gate_status}" >> "$GITHUB_OUTPUT"
           case "$gate_status" in
             0) echo "No benchmark regression at or above the configured gates." ;;
             1) echo "::warning::Benchstat detected a significant benchmark regression." ;;
-            *) echo "::warning::The benchmark comparison could not be interpreted." ;;
+            2) echo "::warning::The benchmark comparison could not be interpreted." ;;
+            *) echo "::warning::${GATE} exited ${gate_status} — it did not run to completion." ;;
           esac
 
       - name: Post PR comment
@@ -291,9 +323,19 @@ jobs:
           steps.benchstat.outputs.gate_status != '0'
         run: |
           status='${{ steps.benchstat.outputs.gate_status }}'
-          if [ "$status" = '2' ]; then
-            echo "::error::The benchmark comparison could not be interpreted (gate exit 2). This is a hard failure by design — a gate that cannot read its input must never report success. See the job log above."
-          else
-            echo "::error::Benchmark regressions detected (gate exit ${status:-<unset>}). Review the benchstat comparison in the PR comment and the gate report in the job log."
-          fi
+          case "$status" in
+            1)
+              echo "::error::Benchmark regressions detected (gate exit 1). Review the benchstat comparison in the PR comment and the gate report in the job log."
+              ;;
+            2)
+              echo "::error::The benchmark comparison could not be interpreted (gate exit 2). This is a hard failure by design — a gate that cannot read its input must never report success. See the job log above."
+              ;;
+            *)
+              # Anything else means the gate never reached a verdict -- e.g.
+              # exit 127, the script not being found. Reporting that as
+              # "regressions detected", which this branch used to do, sends the
+              # reader hunting for a performance problem that does not exist.
+              echo "::error::The benchmark gate did not run to completion (exit ${status:-<unset>}); it reached no verdict, so this is neither a pass nor a measured regression. See the job log above for the failing command."
+              ;;
+          esac
           exit 1
