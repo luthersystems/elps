@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
@@ -34,6 +35,62 @@ func newTestEnv(t *testing.T, dbg *Engine) *lisp.LEnv {
 	rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
 	require.True(t, rc.IsNil(), "InPackage failed: %v", rc)
 	return env
+}
+
+// pauseGate is a rendezvous between the test goroutine and the eval
+// goroutine. Calling newPauseGate installs a `(debug-test-gate)` builtin in
+// env; the program under test calls it, which parks the eval goroutine until
+// the test calls release. That lets a test arm a pause while the program is
+// provably mid-flight, instead of racing a short program with a sleep or a
+// poll on EvalCount.
+type pauseGate struct {
+	entered     chan struct{}
+	release     chan struct{}
+	enteredOnce sync.Once
+	releaseOnce sync.Once
+}
+
+// newPauseGate installs the gate builtin into env's current package.
+func newPauseGate(t *testing.T, env *lisp.LEnv) *pauseGate {
+	t.Helper()
+	g := &pauseGate{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	// Never leave the eval goroutine parked if the test fails before it
+	// reaches its own release call.
+	t.Cleanup(g.Release)
+	env.AddBuiltins(true, gateBuiltin(g))
+	return g
+}
+
+// Release unparks the eval goroutine. Safe to call more than once.
+func (g *pauseGate) Release() {
+	g.releaseOnce.Do(func() { close(g.release) })
+}
+
+// WaitEntered blocks until the program reaches the gate.
+func (g *pauseGate) WaitEntered(t *testing.T) {
+	t.Helper()
+	select {
+	case <-g.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("program never reached debug-test-gate")
+	}
+}
+
+func (g *pauseGate) enter() {
+	g.enteredOnce.Do(func() { close(g.entered) })
+	<-g.release
+}
+
+// gateBuiltin exposes g to lisp as `(debug-test-gate)`.
+func gateBuiltin(g *pauseGate) lisp.LBuiltinDef {
+	return elpsutil.Function("debug-test-gate", lisp.Formals(),
+		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+			g.enter()
+			return lisp.Nil()
+		})
 }
 
 func snapshotPause(evt Event) pauseSnapshot {
@@ -989,15 +1046,27 @@ func TestEngine_RequestPause(t *testing.T) {
 	e.Enable()
 
 	env := newTestEnv(t, e)
+	gate := newPauseGate(t, env)
 
-	// Use a long-running program so we have time to request a pause.
-	// Large countdown ensures the program is still running when RequestPause
-	// takes effect — even on slow CI machines.
+	// The program must actually run to completion, otherwise the assertions
+	// below say nothing about pausing a live program.
+	//
+	// Keep the countdown small. Attaching a debugger disables tail-call
+	// optimisation globally (see lisp/env.go), so every turn of this loop
+	// costs a physical stack frame and anything past ~25k aborts with
+	// "physical stack height exceeded maximum". The historical (countdown
+	// 100000) never counted down at all: it burned ~1.5s hitting the frame
+	// cap and returned an error the test discarded.
+	//
+	// Correctness does not rest on the program being slow. debug-test-gate
+	// parks the eval goroutine until this test releases it, so the pause is
+	// armed while the program is provably mid-flight.
 	program := "(defun countdown (n)\n" +
 		"  (if (<= n 0)\n" +
 		"    0\n" +
 		"    (countdown (- n 1))))\n" +
-		"(countdown 100000)"
+		"(debug-test-gate)\n" +
+		"(countdown 200)"
 
 	resultCh := make(chan *lisp.LVal, 1)
 	go func() {
@@ -1005,13 +1074,10 @@ func TestEngine_RequestPause(t *testing.T) {
 		resultCh <- res
 	}()
 
-	// Wait for eval goroutine to be well into execution, then request pause.
-	// We wait for multiple evals (not just 1) so the program is solidly running
-	// and won't finish before RequestPause takes effect.
-	require.Eventually(t, func() bool {
-		return e.EvalCount() > 10
-	}, 2*time.Second, time.Millisecond, "eval goroutine did not start")
+	// Arm the pause while the program is parked at the gate, then let it run.
+	gate.WaitEntered(t)
 	e.RequestPause()
+	gate.Release()
 
 	// The engine should pause.
 	require.Eventually(t, func() bool {
@@ -1032,31 +1098,20 @@ func TestEngine_RequestPause(t *testing.T) {
 	assert.Equal(t, StopPause, stopReason, "expected pause stop reason")
 	mu.Unlock()
 
-	// Resume to let the program finish.
+	// Resume to let the program finish. A pause request is one-shot — it is
+	// consumed in WaitIfPaused and the stepper is reset on continue — so a
+	// single Resume is enough.
 	e.Resume()
 
-	// Keep resuming if needed (recursive calls may re-trigger).
-	resumeDone := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-resumeDone:
-				return
-			case <-ticker.C:
-				if e.IsPaused() {
-					e.Resume()
-				}
-			}
-		}
-	}()
-
 	select {
-	case <-resultCh:
-		close(resumeDone)
+	case res := <-resultCh:
+		// Assert the program ran to completion. Without this the test
+		// passes just as happily when the program dies at the physical
+		// frame cap, which is exactly how (countdown 100000) went
+		// unnoticed for the life of this test.
+		require.Equal(t, lisp.LInt, res.Type, "program did not run to completion: %v", res)
+		assert.Equal(t, 0, res.Int, "countdown should reach zero")
 	case <-time.After(5 * time.Second):
-		close(resumeDone)
 		if e.IsPaused() {
 			e.Resume()
 		}

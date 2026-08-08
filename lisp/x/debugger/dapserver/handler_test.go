@@ -9,11 +9,13 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
 
 	"github.com/google/go-dap"
+	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/lisp/x/debugger"
@@ -452,6 +454,54 @@ func newDAPTestEnv(t *testing.T, dbg *debugger.Engine) *lisp.LEnv {
 	rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
 	require.True(t, rc.IsNil(), "InPackage failed: %v", rc)
 	return env
+}
+
+// pauseGate is a rendezvous between the test goroutine and the eval
+// goroutine. newPauseGate installs a `(debug-test-gate)` builtin in env; the
+// program under test calls it, which parks the eval goroutine until the test
+// calls Release. That lets a test drive a DAP pause while the program is
+// provably mid-flight, instead of racing a short program with a sleep or a
+// poll on EvalCount. (Mirrors the helper in the debugger package — test
+// helpers do not cross package boundaries.)
+type pauseGate struct {
+	entered     chan struct{}
+	release     chan struct{}
+	enteredOnce sync.Once
+	releaseOnce sync.Once
+}
+
+// newPauseGate installs the gate builtin into env's current package.
+func newPauseGate(t *testing.T, env *lisp.LEnv) *pauseGate {
+	t.Helper()
+	g := &pauseGate{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	// Never leave the eval goroutine parked if the test fails before it
+	// reaches its own Release call.
+	t.Cleanup(g.Release)
+	env.AddBuiltins(true, elpsutil.Function("debug-test-gate", lisp.Formals(),
+		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+			g.enteredOnce.Do(func() { close(g.entered) })
+			<-g.release
+			return lisp.Nil()
+		}))
+	return g
+}
+
+// Release unparks the eval goroutine. Safe to call more than once.
+func (g *pauseGate) Release() {
+	g.releaseOnce.Do(func() { close(g.release) })
+}
+
+// WaitEntered blocks until the program reaches the gate.
+func (g *pauseGate) WaitEntered(t *testing.T) {
+	t.Helper()
+	select {
+	case <-g.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("program never reached debug-test-gate")
+	}
 }
 
 func sendDAPRequest(t *testing.T, w io.Writer, msg dap.Message) {
@@ -1669,15 +1719,27 @@ func TestDAPServer_PauseRequest(t *testing.T) {
 	s.configDone()
 
 	env := newDAPTestEnv(t, s.engine)
+	gate := newPauseGate(t, env)
 
-	// Use a long-running recursive program so we can pause mid-execution.
-	// Large countdown ensures the program is still running when the pause
-	// request takes effect — even on slow CI machines.
+	// The program must actually run to completion, otherwise the assertions
+	// below say nothing about pausing a live program.
+	//
+	// Keep the countdown small. Attaching a debugger disables tail-call
+	// optimisation globally (see lisp/env.go), so every turn of this loop
+	// costs a physical stack frame and anything past ~25k aborts with
+	// "physical stack height exceeded maximum". The historical (countdown
+	// 100000) never counted down at all: it burned ~2s hitting the frame cap
+	// and returned an error the test discarded.
+	//
+	// Correctness does not rest on the program being slow. debug-test-gate
+	// parks the eval goroutine until this test releases it, so the pause is
+	// armed while the program is provably mid-flight.
 	program := "(defun countdown (n)\n" +
 		"  (if (<= n 0)\n" +
 		"    0\n" +
 		"    (countdown (- n 1))))\n" +
-		"(countdown 100000)"
+		"(debug-test-gate)\n" +
+		"(countdown 200)"
 
 	resultCh := make(chan *lisp.LVal, 1)
 	go func() {
@@ -1685,12 +1747,11 @@ func TestDAPServer_PauseRequest(t *testing.T) {
 		resultCh <- res
 	}()
 
-	// Wait for eval goroutine to be well into execution before pausing.
-	require.Eventually(t, func() bool {
-		return s.engine.EvalCount() > 10
-	}, 2*time.Second, time.Millisecond, "eval goroutine did not start")
+	// Park the program at the gate before pausing.
+	gate.WaitEntered(t)
 
-	// Send Pause request.
+	// Send Pause request. The handler arms the engine before replying, so a
+	// successful response means the pause is already in effect.
 	s.send(&dap.PauseRequest{
 		Request: dap.Request{
 			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
@@ -1702,6 +1763,9 @@ func TestDAPServer_PauseRequest(t *testing.T) {
 	pauseResp, ok := msg.(*dap.PauseResponse)
 	require.True(t, ok, "expected PauseResponse, got %T", msg)
 	assert.True(t, pauseResp.Success)
+
+	// Let the program run on into the armed pause.
+	gate.Release()
 
 	// Wait for the engine to actually pause.
 	require.Eventually(t, func() bool {
@@ -1718,7 +1782,13 @@ func TestDAPServer_PauseRequest(t *testing.T) {
 	s.continueExec()
 
 	select {
-	case <-resultCh:
+	case res := <-resultCh:
+		// Assert the program ran to completion. Without this the test passes
+		// just as happily when the program dies at the physical frame cap,
+		// which is exactly how (countdown 100000) went unnoticed for the
+		// life of this test.
+		require.Equal(t, lisp.LInt, res.Type, "program did not run to completion: %v", res)
+		assert.Equal(t, 0, res.Int, "countdown should reach zero")
 	case <-time.After(5 * time.Second):
 		if s.engine.IsPaused() {
 			s.engine.Resume()
