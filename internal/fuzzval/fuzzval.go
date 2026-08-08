@@ -229,7 +229,15 @@ func (g *Gen) value(depth int) *lisp.LVal {
 		// hands one to a user function, which can then pass it anywhere.
 		return lisp.ErrorConditionf("fuzz-condition", "%s", g.pickString())
 	case kindQuote:
-		return lisp.Quote(g.value(depth + 1))
+		// lisp.Quote only produces an LQuote node when its operand is ALREADY
+		// quoted -- one level of quoting is just the Quoted flag on the value
+		// itself (''3, not '3). Quoting twice is the only way to reach the
+		// LQuote type at all, so half the corpus does.
+		v := lisp.Quote(g.value(depth + 1))
+		if g.Byte()&1 == 0 {
+			v = lisp.Quote(v)
+		}
+		return v
 	case kindSExpr:
 		return lisp.SExpr(g.cells(depth))
 	case kindQExpr:
