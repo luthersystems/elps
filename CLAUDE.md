@@ -16,6 +16,7 @@ ELPS is an embedded Lisp interpreter implemented in Go. It is a Lisp-1 dialect d
 | `go test ./lisp/...` | Run tests for a specific package |
 | `go test -run TestName ./lisp/` | Run a single test |
 | `make static-checks` | Run golangci-lint with gosec |
+| `make fieldalign-fix` | Reorder struct fields for the fieldalignment gate (uses betteralign — `fieldalignment -fix` deletes field comments) |
 | `make repl` | Build and launch the REPL |
 | `./elps run file.lisp` | Run a lisp file |
 | `./elps doc <query>` | Show function/package documentation |

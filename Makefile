@@ -68,6 +68,42 @@ tree-sitter-test:
 static-checks:
 	golangci-lint run ./...
 
+# Reorder struct fields to satisfy the fieldalignment gate in .golangci.yml.
+#
+# Uses betteralign, NOT `fieldalignment -fix`. The two agree on WHAT to flag:
+# inside the gate's enforced scope (lisp/ and parser/, excluding lisp/x/ and
+# _test.go) both report zero findings today, and every raw finding either
+# tool reports lives in the exempt lisp/x/ tree.
+#
+# They do NOT agree on how to fix it. `fieldalignment -fix` DELETES every
+# per-field comment on a struct it rewrites. Verified side by side on
+# identical input — a four-field struct with a doc comment on each field came
+# back from betteralign with all four intact, and from `fieldalignment -fix`
+# with all four gone, only the struct-level doc surviving. That is why every
+# struct in the alignment sweep was reordered by hand.
+#
+# ALWAYS review the diff. betteralign optimises layout and nothing else; it
+# does not know which field groupings are load-bearing for a reader (the
+# mu-guarded block in debugger.Engine, say, or a channel/sync.Once pair).
+#
+# The package list MUST mirror the gate's exclusions, which is why it filters
+# lisp/x/ rather than passing ./lisp/... wholesale. Written the naive way,
+# this target rewrote nine files under lisp/x/ on its first run — dissolving
+# exactly the field groupings the gate exempts on readability grounds. A
+# fixer whose scope is wider than the gate it serves does damage no CI check
+# will ever complain about.
+#
+# Requires Go >= 1.26 for the tool itself; `go run` will fetch a newer
+# toolchain if the local one is older. betteralign exits non-zero when it
+# finds anything, including when -apply has just fixed it, so `-` lets make
+# report the findings rather than aborting; re-run `make static-checks` to
+# confirm the gate is satisfied.
+FIELDALIGN_PKGS = $(shell go list ./lisp/... ./parser/... | grep -v '/lisp/x/')
+
+.PHONY: fieldalign-fix
+fieldalign-fix:
+	-go run github.com/dkorunic/betteralign/cmd/betteralign@v0.14.3 -apply ${FIELDALIGN_PKGS}
+
 # Self-test for the CI gate logic in scripts/. Run this after touching
 # scripts/benchstat-gate.sh or .github/workflows/benchmark.yml — it proves the
 # benchmark regression gate can actually FAIL, which is the property that was
