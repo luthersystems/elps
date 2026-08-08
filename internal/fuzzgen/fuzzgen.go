@@ -235,6 +235,13 @@ var stringBodies = []string{
 // A raw-string body may neither contain three consecutive quotes nor end in
 // one: the scanner closes the literal at the first triple quote it finds, so
 // either shape terminates the token early and leaves a stray quote behind.
+// Radix-macro bodies.  Both must stay inside int64 and must not be followed by
+// a word rune, which readHexLiteral and readOctalLiteral both reject.
+var (
+	hexDigits   = []string{"0", "FF", "dead", "7fffffff", "1", "aA"}
+	octalDigits = []string{"0", "7", "777", "17777777777", "1"}
+)
+
 var rawStringBodies = []string{
 	``, `a`, "a\nb", `; comment`, `\`, `\n`, `(a b)`, "\n\n", `a"b`, `x'y`,
 }
@@ -305,7 +312,7 @@ func (g *generator) rawComment() {
 	case 4:
 		g.raw("; λ 日本語")
 	case 5:
-		g.raw(";" + strings.Repeat("x", 200))
+		g.raw(";" + strings.Repeat("x", g.longRun(200)))
 	case 6:
 		g.raw("; -1")
 	default:
@@ -368,9 +375,9 @@ func (g *generator) atom() {
 	case 7, 8:
 		g.token(g.floatLiteral())
 	case 9:
-		g.token("#x" + []string{"0", "FF", "dead", "7fffffff", "1", "aA"}[g.pick(6)])
+		g.token("#x" + hexDigits[g.pick(len(hexDigits))])
 	case 10:
-		g.token("#o" + []string{"0", "7", "777", "17777777777", "1"}[g.pick(5)])
+		g.token("#o" + octalDigits[g.pick(len(octalDigits))])
 	case 11, 12:
 		g.token(`"` + stringBodies[g.pick(len(stringBodies))] + `"`)
 	case 13:
@@ -380,6 +387,16 @@ func (g *generator) atom() {
 	default:
 		g.token(symbols[g.pick(len(symbols))])
 	}
+}
+
+// longRun caps the repeat count of an oversized token once the byte budget is
+// spent, so a single production cannot blow past MaxBytes by an unbounded
+// amount.  Overshoot stays bounded by one long token plus the closing brackets.
+func (g *generator) longRun(n int) int {
+	if g.buf.Len() >= g.lim.MaxBytes {
+		return 1
+	}
+	return n
 }
 
 // pick chooses an index into a table, defaulting to 0 on an exhausted script.
@@ -476,6 +493,16 @@ func (g *generator) sexpr(depth int, open byte) {
 	n := g.pick(4)
 	for i := 0; i < n && !g.spent(); i++ {
 		g.form(depth + 1)
+		// A comment on the SAME line as the child it follows is attached to
+		// that child as a TrailingComment, not to whatever comes next -- a
+		// different parser path from the whole-line comment g.comment writes,
+		// and the one the sign-merge defect lived behind: with a trailing
+		// comment above it, a "-1" on the next line has nothing but its own
+		// PrecedingNewlines to say it belongs on a new line.
+		if !g.spent() && g.choose(8) == 0 {
+			g.raw(" ")
+			g.rawComment()
+		}
 	}
 	// A comment between the last child and the closing bracket lands in
 	// InnerTrailingComments, and a closing bracket on its own line is
@@ -515,11 +542,15 @@ func (g *generator) quote(depth int) {
 // then re-parses it, rejecting any name that does not read back as the same
 // symbol, so the operand pool is restricted to names that do.
 func (g *generator) funRef() {
-	names := []string{
-		"f", "foo", "car", "+", "-", "a.b", "λ", "lisp:car", "pkg:foo",
-		"x!", "defun", "日本語",
-	}
-	g.token("#'" + names[g.pick(len(names))])
+	g.token("#'" + funRefNames[g.pick(len(funRefNames))])
+}
+
+// funRefNames are operands ParseFunRef accepts.  It reads the operand with
+// ParseSymbol and then RE-PARSES it, rejecting any name that does not read back
+// as the same symbol, and the printer's canWriteFunRef mirrors that check.
+var funRefNames = []string{
+	"f", "foo", "car", "+", "-", "a.b", "λ", "lisp:car", "pkg:foo",
+	"x!", "defun", "日本語",
 }
 
 // unbound writes #^expr.  ParseUnbound rejects an operand containing a nested
@@ -695,18 +726,18 @@ func (g *generator) nestBurst(depth int) {
 func (g *generator) huge() {
 	switch g.choose(6) {
 	case 0:
-		g.token(strings.Repeat("z", 300))
+		g.token(strings.Repeat("z", g.longRun(300)))
 	case 1:
-		g.token(`"` + strings.Repeat("s", 400) + `"`)
+		g.token(`"` + strings.Repeat("s", g.longRun(400)) + `"`)
 	case 2:
-		g.token(`"""` + strings.Repeat("r", 400) + `"""`)
+		g.token(`"""` + strings.Repeat("r", g.longRun(400)) + `"""`)
 	case 3:
-		g.token(strings.Repeat("λ", 100))
+		g.token(strings.Repeat("λ", g.longRun(100)))
 	case 4:
-		g.token("pkg:" + strings.Repeat("q", 200))
+		g.token("pkg:" + strings.Repeat("q", g.longRun(200)))
 	default:
 		// 100 escaped backslashes: the trailing-backslash parity path at a
 		// size no byte-at-a-time mutator is going to build by accident.
-		g.token(`"` + strings.Repeat(`\\`, 100) + `"`)
+		g.token(`"` + strings.Repeat(`\\`, g.longRun(100)) + `"`)
 	}
 }

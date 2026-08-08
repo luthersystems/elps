@@ -128,7 +128,10 @@ func TestGenerateIsDeterministic(t *testing.T) {
 // level of nesting, and the tail of one special form.
 func TestGenerateRespectsLimits(t *testing.T) {
 	for _, lim := range limitProfiles {
-		slack := 512 + 4*lim.MaxDepth
+		// One long token may already have been in flight when the budget ran
+		// out (fuzzgen.longRun caps only the ones started after), plus a
+		// closing bracket and a short trailing comment per open level.
+		slack := 512 + 40*lim.MaxDepth
 		for _, script := range lcgScripts(3000, 3) {
 			src := fuzzgen.GenerateLimited(script, lim)
 			if len(src) > lim.MaxBytes+slack {
@@ -162,9 +165,10 @@ func maxParenDepth(src []byte) int {
 				i += 2
 			}
 		case inString:
-			if c == '\\' {
+			switch c {
+			case '\\':
 				i++
-			} else if c == '"' {
+			case '"':
 				inString = false
 			}
 		case c == ';':

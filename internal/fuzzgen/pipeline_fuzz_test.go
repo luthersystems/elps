@@ -136,10 +136,39 @@ func commentTexts(src []byte) []string {
 				out = append(out, tok.Text)
 			case token.EOF, token.ERROR, token.INVALID:
 				return out
+			default:
+				// Every other token type is irrelevant here.
 			}
 		}
 	}
 	return out
+}
+
+// interiorBlankLines counts blank lines strictly between the first and last
+// non-blank lines of src.  Leading and trailing blank runs are excluded so the
+// count survives the formatter's trailing-newline normalisation, which is not
+// what this is measuring.
+func interiorBlankLines(src []byte) int {
+	lines := strings.Split(string(src), "\n")
+	first, last := -1, -1
+	for i, l := range lines {
+		if strings.TrimSpace(l) != "" {
+			if first < 0 {
+				first = i
+			}
+			last = i
+		}
+	}
+	if first < 0 {
+		return 0
+	}
+	n := 0
+	for _, l := range lines[first : last+1] {
+		if strings.TrimSpace(l) == "" {
+			n++
+		}
+	}
+	return n
 }
 
 func sameStrings(a, b []string) bool {
@@ -156,7 +185,7 @@ func sameStrings(a, b []string) bool {
 
 func FuzzGeneratedPipeline(f *testing.F) {
 	for _, script := range seedScripts() {
-		for shape := range len(limitProfiles) {
+		for shape := range limitProfiles {
 			f.Add(script, uint8(shape)) //nolint:gosec // G115: bounded by len(limitProfiles)
 		}
 	}
@@ -205,7 +234,28 @@ func FuzzGeneratedPipeline(f *testing.F) {
 				beforeComments, afterComments, src, first)
 		}
 
-		// (5) Idempotence.  runFormatTests and TestEdgeIdempotency assert it
+		// (5) Blank lines are never INVENTED.  Every blank line the printer
+		// writes comes from a count the parser measured in the source and the
+		// printer then clamps to cfg.MaxBlankLines -- blankLinesBefore,
+		// writeBlankLinesAfterComments, writeInnerTrailingComments -- so the
+		// interior blank-line count can shrink but has no legitimate way to
+		// grow.
+		//
+		// This is the only assertion here that catches a formatter which
+		// REFLOWS rather than rewrites.  Inserting a blank line leaves the AST
+		// identical, leaves every comment in place, and leaves the output a
+		// perfectly stable fixed point, so (3), (4) and (6) all pass: the
+		// prefix-form blank-line regression turned "(a)\n; c\n\n#'f\n" into
+		// "(a)\n\n; c\n\n#'f\n" and nothing else could see it.  That matters
+		// because a comment's POSITION carries meaning -- the `; <-` markers
+		// in editors/vscode/test/grammar/basics.lisp are syntax-test
+		// assertions about the line above them.
+		if b, a := interiorBlankLines(src), interiorBlankLines(first); a > b {
+			t.Fatalf("Format invented %d blank line(s) (%d -> %d)\n--- source ---\n%q\n--- output ---\n%q",
+				a-b, b, a, src, first)
+		}
+
+		// (6) Idempotence.  runFormatTests and TestEdgeIdempotency assert it
 		// for fixed inputs; a non-idempotent formatter makes `elps fmt`
 		// produce diff churn forever.
 		second, err := formatter.Format(first, nil)
@@ -217,7 +267,7 @@ func FuzzGeneratedPipeline(f *testing.F) {
 				first, second, src)
 		}
 
-		// (6) Minification.  Its only failure mode is the parse it does
+		// (7) Minification.  Its only failure mode is the parse it does
 		// itself (minifier.parseFile), so rejecting formatted output that
 		// the parser accepts is unambiguously a defect.
 		minified, symbols, err := minifier.MinifySource(first, "fuzzgen.lisp", nil)
@@ -246,7 +296,7 @@ func FuzzGeneratedPipeline(f *testing.F) {
 			}
 		}
 
-		// (7) The minified program parses and has the shape it started with.
+		// (8) The minified program parses and has the shape it started with.
 		// Names are what minification is allowed to change, so only the type
 		// skeleton is compared -- the same contract FuzzMinifySource asserts.
 		after, err := parseProgram(minified)
@@ -258,7 +308,7 @@ func FuzzGeneratedPipeline(f *testing.F) {
 				want, got, minified)
 		}
 
-		// (8) Formatting the minified output.  This is the state a build
+		// (9) Formatting the minified output.  This is the state a build
 		// pipeline reaches when a shipped bundle is read back, and it is a
 		// different input class from anything a human writes: no comments, no
 		// blank lines, one-letter names, everything on as few lines as

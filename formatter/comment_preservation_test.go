@@ -38,6 +38,8 @@ func commentTokens(t *testing.T, src string) []string {
 				out = append(out, tok.Text)
 			case token.EOF, token.ERROR, token.INVALID:
 				return out
+			default:
+				// Every other token type is irrelevant here.
 			}
 		}
 	}

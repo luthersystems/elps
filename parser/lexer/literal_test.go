@@ -22,6 +22,8 @@ func lexAll(t *testing.T, src string) ([]*token.Token, bool) {
 				return out, true
 			case token.ERROR, token.INVALID:
 				return out, false
+			default:
+				// Anything else is a token the caller wants to see.
 			}
 			out = append(out, tok)
 		}
