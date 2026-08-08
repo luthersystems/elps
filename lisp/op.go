@@ -237,6 +237,34 @@ func opLambda(env *LEnv, args *LVal) *LVal {
 	return lval
 }
 
+// MaxExprFormals bounds the positional-placeholder index accepted by the
+// `expr` special operator (the #^ reader macro).
+//
+// The index is read out of the source text and used directly as the length of
+// the generated formals slice, so `#^(%N)` asks opExpr to construct N fresh
+// symbols -- each an *LVal plus a fmt.Sprintf'd name -- from an input whose
+// size is log10(N).  Measured on linux/amd64 that is ~136 bytes per formal, so
+// the unbounded form reached `fatal error: out of memory` (a runtime.throw,
+// which recover() cannot intercept and no handler-bind can contain) from 14
+// bytes of source.
+//
+// This is deliberately a dedicated bound and NOT Runtime.MaxAlloc.  MaxAlloc's
+// unit at every other call site is bytes of a buffer or elements of a slice
+// the caller already holds; here one unit is a whole constructed value, so the
+// two are ~130x apart in cost and no single number serves both.  The mismatch
+// is visible in both directions: MaxAlloc's 10,000,000 default still permits
+// ~1.3GB here, while a MaxAlloc of 8 -- reasonable for a byte buffer -- would
+// reject `#^(list %9)`, an ordinary nine-argument lambda.
+//
+// 1024 is chosen against real programs rather than against memory: C's
+// standard guarantees only 127 parameters (C99 5.2.4.1) and the JVM caps a
+// method at 255, so a bound 4-8x above the most permissive mainstream limit
+// cannot plausibly reject a program a human wrote, while capping this site at
+// ~136KB.  It is a constant rather than a Runtime knob because it bounds a
+// syntactic construct -- how many parameters a lambda literal may declare --
+// which is not something an embedder's workload varies.
+const MaxExprFormals = 1024
+
 func opExpr(env *LEnv, args *LVal) *LVal {
 	if args.Len() != 1 {
 		return env.Errorf("one argument expected (got %d)", args.Len())
@@ -251,8 +279,27 @@ func opExpr(env *LEnv, args *LVal) *LVal {
 		formals.Cells = make([]*LVal, 1, 3)
 		formals.Cells[0] = Symbol("%")
 	} else {
+		// countExprArgs has already range-checked every index it parsed, so
+		// this is a defensive backstop rather than the primary guard: it keeps
+		// the `make` from being reachable with a hostile length should a future
+		// caller reach opExpr by another route.  A cap alone would not do --
+		// `make([]*LVal, -1, 1)` panics, and a cap only rejects values ABOVE
+		// it -- so the negative case is checked separately.
+		if n < 0 || n > MaxExprFormals {
+			return env.Errorf("expr argument index out of range: %d (max %d)", n, MaxExprFormals)
+		}
 		formals.Cells = make([]*LVal, n, n+2)
 		for i := range formals.Cells {
+			// Bounded by MaxExprFormals, but still checked: this loop
+			// allocates per iteration, and a builtin that ignores the step
+			// budget and the context deadline is exactly what made the
+			// unbounded version of this site uninterruptible -- WithMaxSteps(10)
+			// plus a 100ms deadline did not stop `#^(list %8000000)` until it
+			// had run for 2.4s.  checkLimits costs two comparisons when no
+			// limit is configured.
+			if lerr := env.checkLimits(env.evalCtx); lerr != nil {
+				return lerr
+			}
 			formals.Cells[i] = Symbol(fmt.Sprintf("%%%d", i+1))
 		}
 	}
@@ -264,6 +311,35 @@ func opExpr(env *LEnv, args *LVal) *LVal {
 		formals.Cells = append(formals.Cells, Symbol(VarArgSymbol), Symbol("%"+VarArgSymbol))
 	}
 	return env.Lambda(formals, []*LVal{body})
+}
+
+// parseExprArgIndex parses the numeric part of an `expr` positional
+// placeholder (`%3` -> 3) and range-checks it.
+//
+// It is a single function rather than an inline strconv.Atoi at each of
+// countExprArgs' two branches because BOTH branches feed opExpr's formals
+// slice length, and only one of them was reachable by the input that found
+// this: `#^%-1` takes the bare-symbol branch, `#^(%555555591)` the s-expression
+// branch.  Validating where the integer is parsed makes it impossible for a
+// third placeholder syntax to be added without the check.
+//
+// Two separate rejections, because a cap only rejects values ABOVE it:
+// a negative index reaches `make([]*LVal, -1, 1)`, which panics with
+// "makeslice: len out of range", and an enormous one exhausts memory.
+func parseExprArgIndex(numStr string) (int, error) {
+	num, err := strconv.Atoi(numStr)
+	if err != nil {
+		// Includes the out-of-int64-range case (ErrRange), which Atoi
+		// reports rather than silently truncating.
+		return 0, fmt.Errorf("not an argument index: %s", numStr)
+	}
+	if num < 0 {
+		return 0, fmt.Errorf("argument index must not be negative: %d", num)
+	}
+	if num > MaxExprFormals {
+		return 0, fmt.Errorf("argument index %d exceeds the maximum of %d", num, MaxExprFormals)
+	}
+	return num, nil
 }
 
 func countExprArgs(expr *LVal) (nargs int, short bool, nopt int, vargs bool, err error) {
@@ -286,9 +362,9 @@ func countExprArgs(expr *LVal) (nargs int, short bool, nopt int, vargs bool, err
 			// multple optional args aren't supported currently
 			return 0, false, 1, false, nil
 		}
-		num, err := strconv.Atoi(numStr)
+		num, err := parseExprArgIndex(numStr)
 		if err != nil {
-			return 0, false, 0, false, fmt.Errorf("invalid expr argument symbol: %s", expr.Str)
+			return 0, false, 0, false, fmt.Errorf("invalid expr argument symbol %s: %w", expr.Str, err)
 		}
 		return num, false, 0, false, nil
 	case LSExpr:
@@ -324,9 +400,9 @@ func countExprArgs(expr *LVal) (nargs int, short bool, nopt int, vargs bool, err
 			if strings.HasPrefix(numStr, MetaArgPrefix) {
 				return 0, false, 0, false, fmt.Errorf("invalid expr argument symbol: %v", expr.Str)
 			}
-			num, err := strconv.Atoi(numStr)
+			num, err := parseExprArgIndex(numStr)
 			if err != nil {
-				return 0, false, 0, false, fmt.Errorf("invalid expr argument symbol: %s", expr.Str)
+				return 0, false, 0, false, fmt.Errorf("invalid expr argument symbol %s: %w", cell.Str, err)
 			}
 			if short {
 				err := fmt.Errorf("invalid mix of expr argument symbols: %s and %s", "%", cell.Str)
@@ -464,6 +540,48 @@ func opDoTimes(env *LEnv, args *LVal) *LVal {
 	loopenv := newEnvN(env, 1) // single loop variable
 	n := 0
 	for i := range count.Int {
+		// Count a step for the TURN ITSELF, not just for the forms in the
+		// body.  Without this, a dotimes with an EMPTY body evaluates nothing,
+		// so it increments no counter and consults no context:
+		// `(dotimes (i 1000000000))` ignored a 2s context deadline and a
+		// 2,000,000-step budget alike and was still running 30s later, and
+		// `(dotimes (i 2147483647))` measured 42s of uninterruptible CPU --
+		// unbounded above, since count.Int can be MaxInt.  MaxSteps, MaxAlloc,
+		// the stack limits and a context deadline were all blind to it, because
+		// every one of them is only reached through Eval.  Found independently
+		// by the evaluator and the stdlib fuzzers (issue #320, item B2).
+		//
+		// COST: exactly one extra step per turn.  As a FRACTION that depends
+		// entirely on the body, so do not quote a single percentage -- two
+		// earlier write-ups of this fix quoted "+16.6%" and "4 to 5 steps per
+		// turn", which are the same +1 seen through two different bodies.
+		// Measured at n=1000 on this tree, steps per turn:
+		//
+		//     body                 before  after
+		//     (empty)                   0      1   <- the defect
+		//     1                         1      2
+		//     (+ i 1)                   4      5
+		//     (+ (* i 2) (- i 1))      10     11
+		//     (+ i 1) (+ i 2) (+ i 3)  12     13
+		//
+		// So a budget pinned tightly against a measured figure for a
+		// dotimes-heavy program may need raising by one step per turn.
+		//
+		// CAVEAT, do not overclaim: checkLimits short-circuits when the runtime
+		// has NEITHER a context NOR a step limit configured (see
+		// LEnv.checkLimits), so a default embedding is still uninterruptible
+		// here.  What this buys is that a runtime which HAS configured one of
+		// them now actually gets it enforced.  For a caller that sets only a
+		// context (substrate's shape) that is cancellability, not a bound.
+		//
+		// env.evalCtx, not loopenv.evalCtx: newEnvN copies the parent's ctx at
+		// construction, so the two are equal here -- verified, in that the two
+		// independently written fixes for this defect each pass the other's
+		// tests -- but reading it live from the op's env cannot go stale should
+		// loopenv ever be hoisted out of the loop.
+		if lerr := loopenv.checkLimits(env.evalCtx); lerr != nil {
+			return lerr
+		}
 		n++
 		lerr := loopenv.Put(symbol, Int(i))
 		if lerr.Type == LError {

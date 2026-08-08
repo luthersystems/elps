@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("#^(list %10485760)")

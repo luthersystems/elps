@@ -45,6 +45,23 @@ func TestBytes(t *testing.T) {
 			// will be easier to reason about.
 			{`(to-string v1234)`, `"abce"`, ``},
 		}},
+		// `append` validates the type SPECIFIER and then dispatched to the
+		// bytes path without validating the sequence, so a non-bytes second
+		// argument reached LVal.Bytes() and panicked ("not bytes: int").  In
+		// an embedded interpreter that surfaces as an internal-panic
+		// condition, which ignore-errors and a catch-all handler-bind both
+		// refuse to contain by design; in a phylum it is a chaincode crash.
+		// append-bytes has always had this guard -- these rows pin that
+		// `append 'bytes` now mirrors it.  Found by FuzzEval (issue #320).
+		{"append 'bytes rejects a non-bytes sequence", elpstest.TestSequence{
+			{`(append 'bytes 0)`, `test:1:1: lisp:append: second argument is not bytes: int`, ``},
+			{`(append 'bytes "s")`, `test:1:1: lisp:append: second argument is not bytes: string`, ``},
+			{`(append 'bytes ())`, `test:1:1: lisp:append: second argument is not bytes: list`, ``},
+			{`(append 'bytes 'x)`, `test:1:1: lisp:append: second argument is not bytes: symbol`, ``},
+			{`(append 'bytes (vector 1))`, `test:1:1: lisp:append: second argument is not bytes: array`, ``},
+			// ...and the valid form still works.
+			{`(to-string (append 'bytes (to-bytes "ab") 99))`, `"abc"`, ``},
+		}},
 		{"append-bytes", elpstest.TestSequence{
 			{`(set 'v (to-bytes ""))`, `#<bytes>`, ``},
 			{`(set 'v1 (append-bytes v "a"))`, `#<bytes 97>`, ``},

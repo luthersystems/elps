@@ -128,6 +128,35 @@ func TestSpecialOp(t *testing.T) {
 			{`(#^'(cons 1 %))`, "'(cons 1 %)", ""},
 			{`(#^(list 1 '%))`, "'(1 '%)", ""},
 		}},
+		// The positional-placeholder index is read out of source text with
+		// strconv.Atoi and used as the length of the generated formals slice.
+		// Both ends of the range have to be rejected, and they are rejected by
+		// separate checks: a cap only rejects values ABOVE it, so it does
+		// nothing about a negative index.  Found by FuzzEval (issue #320).
+		{"#^ argument index bounds", elpstest.TestSequence{
+			// A negative index reached make([]*LVal, -1, 1) and panicked with
+			// "makeslice: len out of range", surfacing as an internal-panic
+			// condition that no ordinary handler can contain.
+			{`#^%-1`, `test:1:1: lisp:expr: invalid expr argument symbol %-1: argument index must not be negative: -1`, ""},
+			{`#^(%-1)`, `test:1:1: lisp:expr: invalid expr argument symbol %-1: argument index must not be negative: -1`, ""},
+			{`#^(list %-1)`, `test:1:1: lisp:expr: invalid expr argument symbol %-1: argument index must not be negative: -1`, ""},
+			// An enormous index allocated ~136 bytes per unit and reached
+			// "fatal error: out of memory" -- a runtime.throw, unrecoverable.
+			{`#^(%555555591)`, `test:1:1: lisp:expr: invalid expr argument symbol %555555591: argument index 555555591 exceeds the maximum of 1024`, ""},
+			{`#^(list %10485760)`, `test:1:1: lisp:expr: invalid expr argument symbol %10485760: argument index 10485760 exceeds the maximum of 1024`, ""},
+			// Beyond int range: Atoi reports ErrRange rather than truncating.
+			{`#^%99999999999999999999`, `test:1:1: lisp:expr: invalid expr argument symbol %99999999999999999999: not an argument index: 99999999999999999999`, ""},
+			// One past the bound.  The at-the-bound case builds a 1024-formal
+			// lambda whose printed form is far too large for a table row, so
+			// it is asserted in TestExprFormalsBoundIsInclusive instead.
+			{`#^(list %1025)`, `test:1:1: lisp:expr: invalid expr argument symbol %1025: argument index 1025 exceeds the maximum of 1024`, ""},
+			// Ordinary arities keep working.  A nine-argument lambda is the
+			// case a Runtime.MaxAlloc-based guard breaks at a MaxAlloc that is
+			// entirely reasonable for the byte buffers MaxAlloc otherwise
+			// bounds, which is why this site has its own limit.
+			{`(#^(list %1 %2 %3 %4 %5 %6 %7 %8 %9) 1 2 3 4 5 6 7 8 9)`, `'(1 2 3 4 5 6 7 8 9)`, ""},
+			{`(#^(list %64) 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64)`, `'(64)`, ""},
+		}},
 		{"threading", elpstest.TestSequence{
 			{`(thread-last 1 (+ 2) (< 2))`, `true`, ""},
 			{`(thread-last 1 (+ 2) (> 2))`, `false`, ""},
