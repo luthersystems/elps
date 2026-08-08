@@ -4,6 +4,7 @@ package perf
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"sort"
@@ -176,7 +177,7 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 						File:     fn.File,
 						Details:  details,
 						Trace: []TraceEntry{
-							{Function: name, Source: fn.Source, Note: fmt.Sprintf("defines function %s", name)},
+							{Function: name, Source: fn.Source, Note: "defines function " + name},
 							{Function: name, Source: edge.Source, Note: fmt.Sprintf("calls %s in loop (depth %d)", edge.Callee, edge.Context.LoopDepth)},
 						},
 					}
@@ -207,7 +208,7 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 				issue := Issue{
 					Rule:     PERF004,
 					Severity: SeverityWarning,
-					Message:  fmt.Sprintf("recursive cycle: %s", strings.Join(sorted, " -> ")),
+					Message:  "recursive cycle: " + strings.Join(sorted, " -> "),
 					Function: name,
 					Source:   fn.Source,
 					File:     fn.File,
@@ -282,7 +283,7 @@ func appendCycleIssueUnlessSuppressed(issues []Issue, graph *CallGraph, cycle []
 func fingerprint(issue Issue) string {
 	key := fmt.Sprintf("%s:%s:%s", issue.File, issue.Function, issue.Rule)
 	h := sha256.Sum256([]byte(key))
-	return fmt.Sprintf("%x", h[:8])
+	return hex.EncodeToString(h[:8])
 }
 
 // makeRuleFilter returns a set of enabled rules. When rules is empty,

@@ -3,6 +3,7 @@
 package lexer
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -43,10 +44,28 @@ func (lex *Lexer) readToken() []*token.Token {
 		if lex.scanner.EOF() {
 			return lex.emit(token.EOF, "")
 		}
-		err := lex.scanner.Err()
-		if err != nil {
-			lex.emitError(err, false)
+		if err := lex.scanner.Err(); err != nil {
+			return lex.emitError(err, false)
 		}
+		// The scanner could not produce a rune, is not at EOF, and reports no
+		// read error.  Either the input holds a byte sequence that is not
+		// valid UTF-8, or the current token has outgrown the scanner buffer.
+		// ScanRune reports which, and for an invalid sequence it also consumes
+		// the offending byte.
+		//
+		// Returning an ERROR token here is load-bearing.  Falling through to
+		// the dispatch below re-examines the PREVIOUS rune without having
+		// consumed any input, so the lexer re-emits the same zero-width token
+		// forever.  Found by FuzzParseProgram: the four bytes "abc\xff" made
+		// rdparser.ParseProgram append empty symbols until the process was
+		// killed -- a remotely triggerable hang for any embedder that parses
+		// untrusted source.  A wedged scanner keeps reporting ERROR on every
+		// subsequent call, which is exactly what TokenStream requires.
+		err := lex.scanner.ScanRune()
+		if err == nil {
+			err = errors.New("unable to scan rune in source text")
+		}
+		return lex.emitError(err, false)
 	}
 	switch lex.scanner.Rune() {
 	case '(':
@@ -74,7 +93,18 @@ func (lex *Lexer) readToken() []*token.Token {
 		case '!':
 			tok := lex.emitText(token.HASH_BANG)
 			lex.lex = (*Lexer).readHashBang
-			return lex.emitMacroChar(tok)
+			// Deliberately NOT routed through emitMacroChar.  That guard
+			// exists for #' and #^, which must be followed immediately by the
+			// symbol or expression they apply to.  A hash-bang has no such
+			// operand: readHashBang consumes the rest of the LINE, so an
+			// empty shebang body ("#!\n", or "#! /usr/bin/env elps") is
+			// well formed and the guard only rejected it spuriously.
+			//
+			// Found by FuzzFormat: the file "#!" (no trailing newline) parses,
+			// but `elps fmt` normalises it to "#!\n", which the guard then
+			// rejected -- the formatter turned a valid source file into one it
+			// could not read back.
+			return tok
 		case '\'':
 			tok := lex.emitText(token.FUN_REF)
 			lex.lex = (*Lexer).readFunRef
@@ -95,7 +125,20 @@ func (lex *Lexer) readToken() []*token.Token {
 			return lex.errorf("invalid dispatch macro character %q", lex.scanner.Rune())
 		}
 	case '-':
-		if unicode.IsSpace(lex.peekRune()) {
+		// '-' is the subtraction/negation symbol on its own, and the sign of
+		// a numeric or symbolic literal when something is glued to it.  It is
+		// a plain SYMBOL whenever nothing CAN be glued to it: at whitespace,
+		// at a closing bracket, and at end of input.
+		//
+		// Closing brackets and end of input were missing from that set, and
+		// the omission was observable.  "(-- )" lexed as NEGATIVE + SYMBOL,
+		// which ParseNegative merges into the single symbol "--"; the same
+		// run written "(--)" lexed as NEGATIVE + NEGATIVE and parsed as TWO
+		// symbols.  `elps fmt` does not write a space before ')', so it
+		// silently rewrote the one-symbol form into the two-symbol form --
+		// the formatter changing the program it was asked to tidy.  Found by
+		// FuzzFormatCompact on "(------ )".
+		if c, ok := lex.scanner.Peek(); !ok || unicode.IsSpace(c) || c == ')' || c == ']' {
 			return lex.emitText(token.SYMBOL)
 		}
 		return lex.emitText(token.NEGATIVE)
@@ -185,7 +228,7 @@ func (lex *Lexer) emitText(typ token.Type) []*token.Token {
 }
 
 func (lex *Lexer) emitError(err error, expectEOF bool) []*token.Token {
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		if expectEOF {
 			return lex.emit(token.EOF, "")
 		}
@@ -213,6 +256,34 @@ func (lex *Lexer) readHashBang() []*token.Token {
 
 func (lex *Lexer) readFunRef() []*token.Token {
 	lex.resetState()
+	// The operand of #' is a symbol, so its first rune has to be a symbol
+	// START rune.  isWord is the CONTINUATION class and admits digits;
+	// readSymbol gets away with using it because it is only ever entered
+	// after isWordStart or ':' has already matched.  Reusing it for the first
+	// rune here let "#'0" through as a symbol literally named "0" -- a name
+	// nothing else in the language can write, and one that turns back into an
+	// INTEGER the moment the form is printed in its longhand
+	// "(lisp:function 0)".  Found by FuzzMinifySource on the input "0'0#'0".
+	if !lex.scanner.Accept(isWordStart) {
+		if lex.scanner.AcceptRune(':') {
+			// A leading ':' yields a symbol the parser rejects with position
+			// information; let it do that rather than reporting here.
+			return lex.readSymbol()
+		}
+		// #' must name a function.  Without this guard the lexer emitted a
+		// ZERO-LENGTH symbol and the parser built (lisp:function ||) -- a
+		// reference to a symbol with no name.  emitMacroChar already rejected
+		// "#' " (whitespace), so the hole was "#'" at end of input, and "#'"
+		// followed by punctuation such as "#'(a b)", which parsed as an empty
+		// function reference followed by an unrelated expression.
+		// readOctalLiteral and readHexLiteral carry the same guard; this one
+		// was simply missing.
+		//
+		// Found by FuzzFormat: `elps fmt` accepted "#'" and emitted "#'\n",
+		// which the whitespace guard then rejected -- the formatter turned a
+		// file it could read into one it could not.
+		return lex.errorf("expected a symbol following #'")
+	}
 	lex.scanner.AcceptSeq(isWord)
 	if lex.scanner.AcceptRune(':') {
 		// This may produce an invalid symbol that should be detected during

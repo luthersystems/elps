@@ -13,7 +13,7 @@ import (
 func TestInspectFunction_Defun(t *testing.T) {
 	// (defun add (a b) "Add two numbers." (+ a b))
 	node := &LVal{
-		Type: LSExpr,
+		Type:   LSExpr,
 		Source: &token.Location{File: "test.lisp", Line: 1, Col: 1},
 		Cells: []*LVal{
 			{Type: LSymbol, Str: "defun"},
@@ -57,7 +57,7 @@ func TestInspectFunction_DefunNoDocstring(t *testing.T) {
 	require.NotNil(t, info)
 	assert.Equal(t, "noop", info.Name)
 	assert.Equal(t, "defun", info.Kind)
-	assert.Equal(t, "", info.DocString)
+	assert.Empty(t, info.DocString)
 	assert.Empty(t, info.Params)
 }
 
@@ -143,9 +143,9 @@ func TestInspectFunction_Lambda(t *testing.T) {
 
 	info := InspectFunction(node)
 	require.NotNil(t, info)
-	assert.Equal(t, "", info.Name)
+	assert.Empty(t, info.Name)
 	assert.Equal(t, "lambda", info.Kind)
-	assert.Equal(t, "", info.DocString)
+	assert.Empty(t, info.DocString)
 	require.Len(t, info.Params, 1)
 	assert.Equal(t, ParamInfo{Name: "x", Kind: ParamRequired}, info.Params[0])
 }

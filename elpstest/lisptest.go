@@ -4,6 +4,7 @@ package elpstest
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -25,7 +26,7 @@ func BenchmarkParse(path string, r func() lisp.Reader) func(*testing.B) {
 			b.Fatalf("Unable to read source file %v: %v", path, err)
 		}
 		b.SetBytes(int64(len(buf)))
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, err := r().Read("test", bytes.NewReader(buf))
 			if err != nil {
 				b.Fatalf("Parse failure: %v", err)
@@ -100,7 +101,7 @@ func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
 	env := lisp.NewEnvRuntime(runtime)
 	err := lisp.GoError(lisp.InitializeUserEnv(env))
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize lisp environment: %v", err)
+		return nil, fmt.Errorf("failed to initialize lisp environment: %w", err)
 	}
 	env.InPackage(lisp.String(lisp.DefaultUserPackage))
 	loader := r.LoaderFn
@@ -109,11 +110,11 @@ func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
 	}
 	err = lisp.GoError(loader(env))
 	if err != nil {
-		return nil, fmt.Errorf("failed to load package library: %v", err)
+		return nil, fmt.Errorf("failed to load package library: %w", err)
 	}
 	err = lisp.GoError(env.InPackage(lisp.String(lisp.DefaultUserPackage)))
 	if err != nil {
-		return nil, fmt.Errorf("failed to switch into user package: %v", err)
+		return nil, fmt.Errorf("failed to switch into user package: %w", err)
 	}
 
 	return env, nil
@@ -278,7 +279,7 @@ func (r *Runner) RunBenchmarkFile(b *testing.B, path string) {
 
 	var names []string
 	ok := b.Run("$load", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			names = r.LoadBenchmarks(b, path, bytes.NewReader(source))
 		}
 	})
@@ -299,7 +300,8 @@ func (r *Runner) RunBenchmarkFile(b *testing.B, path string) {
 }
 
 func (r *Runner) LispError(t testing.TB, err error) {
-	lerr, ok := err.(*lisp.ErrorVal)
+	var lerr *lisp.ErrorVal
+	ok := errors.As(err, &lerr)
 	if !ok {
 		t.Error(err)
 		return
@@ -388,7 +390,7 @@ func RunBenchmark(b *testing.B, source string) {
 	if err != nil {
 		b.Fatalf("parse error: %v", err)
 	}
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		env := lisp.NewEnv(nil)
 		err := lisp.GoError(lisp.InitializeUserEnv(env,
 			lisp.WithMaximumLogicalStackHeight(50000),

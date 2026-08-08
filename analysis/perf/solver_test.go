@@ -94,7 +94,7 @@ func TestSolve_Suppressed(t *testing.T) {
 			hotPathIssues++
 		}
 	}
-	require.Greater(t, hotPathIssues, 0, "unsuppressed source must produce issues for this test to be valid")
+	require.Positive(t, hotPathIssues, "unsuppressed source must produce issues for this test to be valid")
 
 	// Now verify suppression prevents those issues
 	suppressedSrc := `
@@ -139,11 +139,13 @@ func TestSolve_RuleSpecificSuppression(t *testing.T) {
 			perf003++
 		case PERF004:
 			perf004++
+		case PERF002, UNKNOWN001:
+			// Not counted by this test.
 		}
 	}
 
-	assert.Greater(t, perf001, 0, "rule-specific suppression should not hide PERF001")
-	assert.Greater(t, perf003, 0, "rule-specific suppression should not hide PERF003")
+	assert.Positive(t, perf001, "rule-specific suppression should not hide PERF001")
+	assert.Positive(t, perf003, "rule-specific suppression should not hide PERF003")
 	assert.Zero(t, perf004, "PERF004 should be suppressed for this function")
 }
 
@@ -175,7 +177,7 @@ func TestSolve_MultiRuleSuppression(t *testing.T) {
 			perf003++
 		}
 	}
-	assert.Greater(t, perf003, 0, "multi-rule suppression should still allow other findings")
+	assert.Positive(t, perf003, "multi-rule suppression should still allow other findings")
 }
 
 func TestSolve_PERF004SuppressionOnAnyCycleMember(t *testing.T) {
@@ -251,7 +253,7 @@ func TestSolve_FingerprintStability(t *testing.T) {
 	summaries2 := ScanFile(exprs, "test.lisp", cfg)
 	_, issues2 := Solve(BuildGraph(summaries2), cfg)
 
-	require.Equal(t, len(issues1), len(issues2))
+	require.Len(t, issues2, len(issues1))
 	for i := range issues1 {
 		assert.Equal(t, issues1[i].Fingerprint, issues2[i].Fingerprint,
 			"fingerprints should be stable across runs")

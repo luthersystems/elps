@@ -127,13 +127,19 @@ func TestEngine_BreakpointPauseAndResume(t *testing.T) {
 	}()
 
 	// Wait for the engine to pause (event callback fires).
+	// Wait on the callback, not on IsPaused(). The engine publishes the
+	// paused state before it invokes the event callback, so IsPaused() goes
+	// true first and a read of callback-written state has no happens-before
+	// with the write -- see the comment on Engine.IsPaused.
 	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause")
+		mu.Lock()
+		defer mu.Unlock()
+		return len(events) > 0
+	}, 2*time.Second, time.Millisecond, "engine did not pause")
 
 	// Verify exactly one stopped event was sent.
 	mu.Lock()
-	assert.Equal(t, 1, len(events))
+	assert.Len(t, events, 1)
 	assert.Equal(t, EventStopped, events[0].Type)
 	mu.Unlock()
 
@@ -314,9 +320,15 @@ func TestEngine_ExceptionBreakpoint(t *testing.T) {
 	}()
 
 	// Should pause on the error.
+	// Wait on the callback, not on IsPaused(). The engine publishes the
+	// paused state before it invokes the event callback, so IsPaused() goes
+	// true first and a read of callback-written state has no happens-before
+	// with the write -- see the comment on Engine.IsPaused.
 	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause on exception")
+		mu.Lock()
+		defer mu.Unlock()
+		return stopReason != ""
+	}, 2*time.Second, time.Millisecond, "engine did not pause on exception")
 
 	// Verify stop reason is exception.
 	mu.Lock()
@@ -600,7 +612,7 @@ func TestEngine_StepOut(t *testing.T) {
 
 	// Record stack depth inside function.
 	insideDepth := len(pausedEnv.Runtime.Stack.Frames)
-	require.Greater(t, insideDepth, 0, "should have stack frames inside function call")
+	require.Positive(t, insideDepth, "should have stack frames inside function call")
 
 	// Clear breakpoints and step out — should return to caller.
 	e.Breakpoints().ClearFile("test")
@@ -887,13 +899,15 @@ func TestEngine_SetEventCallback(t *testing.T) {
 		resultCh <- res
 	}()
 
+	// Wait on the callback, not on IsPaused(). The engine publishes the
+	// paused state before it invokes the event callback, so IsPaused() goes
+	// true first and a read of callback-written state has no happens-before
+	// with the write -- see the comment on Engine.IsPaused.
 	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-
-	mu.Lock()
-	assert.True(t, called, "replacement callback should have fired")
-	mu.Unlock()
+		mu.Lock()
+		defer mu.Unlock()
+		return called
+	}, 2*time.Second, time.Millisecond, "replacement callback should have fired")
 
 	e.Resume()
 
@@ -1078,9 +1092,15 @@ func TestEngine_FunctionBreakpoint(t *testing.T) {
 	}()
 
 	// Should pause when "add" is entered.
+	// Wait on the callback, not on IsPaused(). The engine publishes the
+	// paused state before it invokes the event callback, so IsPaused() goes
+	// true first and a read of callback-written state has no happens-before
+	// with the write -- see the comment on Engine.IsPaused.
 	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause on function breakpoint")
+		mu.Lock()
+		defer mu.Unlock()
+		return stopReason != ""
+	}, 2*time.Second, time.Millisecond, "engine did not pause on function breakpoint")
 
 	// Verify stop reason is "function breakpoint".
 	mu.Lock()
@@ -1130,13 +1150,15 @@ func TestEngine_FunctionBreakpoint_QualifiedName(t *testing.T) {
 	}()
 
 	// Should pause when "myfn" is entered (matched via qualified name).
+	// Wait on the callback, not on IsPaused(). The engine publishes the
+	// paused state before it invokes the event callback, so IsPaused() goes
+	// true first and a read of callback-written state has no happens-before
+	// with the write -- see the comment on Engine.IsPaused.
 	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause on qualified function breakpoint")
-
-	mu.Lock()
-	assert.True(t, stopped)
-	mu.Unlock()
+		mu.Lock()
+		defer mu.Unlock()
+		return stopped
+	}, 2*time.Second, time.Millisecond, "engine did not pause on qualified function breakpoint")
 
 	e.Resume()
 
@@ -1174,7 +1196,7 @@ func TestEngine_SourceRoot(t *testing.T) {
 	assert.Equal(t, "/my/project/dir", e.SourceRoot())
 
 	e2 := New()
-	assert.Equal(t, "", e2.SourceRoot())
+	assert.Empty(t, e2.SourceRoot())
 }
 
 func TestEngine_NotifyExit(t *testing.T) {
@@ -1293,6 +1315,8 @@ func TestEngine_LogPoint(t *testing.T) {
 			outputs = append(outputs, evt.Output)
 		case EventStopped:
 			stopCount++
+		case EventContinued, EventExited:
+			// Not counted by this test.
 		}
 	}))
 	e.Enable()
@@ -1445,9 +1469,15 @@ func TestInspectFunctionLocals(t *testing.T) {
 		resultCh <- res
 	}()
 
+	// Wait on the callback, not on IsPaused(). The engine publishes the
+	// paused state before it invokes the event callback, so IsPaused() goes
+	// true first and a read of callback-written state has no happens-before
+	// with the write -- see the comment on Engine.IsPaused.
 	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause")
+		mu.Lock()
+		defer mu.Unlock()
+		return capturedEnv != nil
+	}, 2*time.Second, time.Millisecond, "engine did not pause")
 
 	mu.Lock()
 	testEnv := capturedEnv
@@ -1596,7 +1626,7 @@ func TestEngine_SourceRefRegistry(t *testing.T) {
 
 	// Allocate a ref.
 	ref1 := e.AllocSourceRef("test.lisp", "(+ 1 2)")
-	assert.Greater(t, ref1, 0)
+	assert.Positive(t, ref1)
 
 	content, ok := e.GetSourceRef(ref1)
 	assert.True(t, ok)
@@ -2058,7 +2088,7 @@ func TestEngine_Commands(t *testing.T) {
 		})
 
 		require.NotNil(t, e.Command("ping"), "handler should still be registered without description")
-		assert.Equal(t, "", e.CommandDescription("ping"))
+		assert.Empty(t, e.CommandDescription("ping"))
 	})
 
 	t.Run("CommandDescriptions", func(t *testing.T) {
@@ -2092,7 +2122,7 @@ func TestEngine_Commands(t *testing.T) {
 		}))
 
 		// WithCommands commands have empty descriptions.
-		assert.Equal(t, "", e.CommandDescription("ping"))
+		assert.Empty(t, e.CommandDescription("ping"))
 
 		descs := e.CommandDescriptions()
 		assert.Equal(t, map[string]string{"ping": ""}, descs)
@@ -2101,7 +2131,7 @@ func TestEngine_Commands(t *testing.T) {
 	t.Run("CommandDescriptionUnknown", func(t *testing.T) {
 		t.Parallel()
 		e := New()
-		assert.Equal(t, "", e.CommandDescription("nonexistent"))
+		assert.Empty(t, e.CommandDescription("nonexistent"))
 	})
 
 	t.Run("CommandDescriptionsEmpty", func(t *testing.T) {
@@ -2116,4 +2146,116 @@ func TestEngine_Commands(t *testing.T) {
 		assert.Nil(t, e.Command("anything"))
 		assert.Nil(t, e.CommandNames())
 	})
+}
+
+// TestEngine_PausedUnannouncedExcludesInFlightStop pins the ordering
+// contract between the paused state and the stopped event.
+//
+// WaitIfPaused publishes the pause before it hands EventStopped to the
+// callback, so there is a window in which the engine is paused and the
+// event is still in flight. dapserver's late-connect path in
+// onConfigurationDone used to fire on (!stoppedSent && IsPaused()), which
+// is true inside that window -- so it could send the client a second
+// stopped event for a pause the engine was already announcing.
+//
+// The blocking callback holds the window open, so this is deterministic
+// rather than a stress test.
+func TestEngine_PausedUnannouncedExcludesInFlightStop(t *testing.T) {
+	t.Parallel()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+
+	e := New(WithEventCallback(func(evt Event) {
+		if evt.Type != EventStopped {
+			return
+		}
+		close(entered)
+		<-release
+	}))
+	e.Enable()
+
+	env := newTestEnv(t, e)
+	e.SetFunctionBreakpoints([]string{"add"})
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", `(defun add (a b) (+ a b)) (add 10 20)`)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stopped event was never delivered")
+	}
+
+	// Inside the window. The pause is real...
+	assert.True(t, e.IsPaused(), "engine should report the pause immediately")
+
+	// ...but it is not unannounced: an event is in flight, so a consumer
+	// must not synthesize its own.
+	assert.False(t, e.PausedUnannounced(),
+		"a stop already dispatched to a callback must not look unannounced")
+
+	// Both answered while the callback is still blocked. That is the point:
+	// neither may wait on the callback to return, because the callback is
+	// allowed to block on the consumer asking the question. Gating either on
+	// callback completion deadlocks the dapserver, whose callback writes to a
+	// client connection that the caller has not read yet.
+
+	// The paused state must also stay answerable throughout the window: a
+	// DAP client replies to the stopped event with stackTrace and scopes
+	// requests served on another goroutine, and those call PausedState.
+	// This assertion fails anyone who "fixes" the window by deferring the
+	// publish until after the callback.
+	pausedEnv, pausedExpr := e.PausedState()
+	assert.NotNil(t, pausedEnv, "PausedState must be answerable during the stopped callback")
+	assert.NotNil(t, pausedExpr, "PausedState must be answerable during the stopped callback")
+
+	close(release)
+
+	e.Resume()
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, lisp.LInt, res.Type)
+		assert.Equal(t, 30, res.Int)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for eval result")
+	}
+}
+
+// TestEngine_PausedUnannouncedWithNoCallback covers the case the
+// late-connect path exists for: the engine paused while no callback was
+// installed, so nothing was told and a consumer must synthesize the event.
+func TestEngine_PausedUnannouncedWithNoCallback(t *testing.T) {
+	t.Parallel()
+
+	e := New() // no event callback
+	e.Enable()
+
+	env := newTestEnv(t, e)
+	e.SetFunctionBreakpoints([]string{"add"})
+
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", `(defun add (a b) (+ a b)) (add 10 20)`)
+	}()
+
+	require.Eventually(t, e.PausedUnannounced, 2*time.Second, time.Millisecond,
+		"a pause with no callback installed must report as unannounced")
+
+	e.Resume()
+	select {
+	case res := <-resultCh:
+		assert.Equal(t, 30, res.Int)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for eval result")
+	}
+
+	// Not asserted here: that WaitIfPaused clears stopDispatched on resume.
+	// PausedUnannounced conjoins the flag with pausedEnv, which is nil once
+	// the pause ends, so such an assertion passes whether or not the clear
+	// happens -- it would be a test that cannot fail. The clear is in fact
+	// redundant (every pause reassigns the flag before publishing) and is
+	// kept only so the field never reads stale outside a pause.
 }

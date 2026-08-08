@@ -3,6 +3,7 @@
 package rdparser
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestComments(t *testing.T) {
@@ -190,18 +192,18 @@ func TestEndPos_Quote(t *testing.T) {
 	// 'foo — the quote wrapper Source starts at the ' prefix token.
 	v := parseOne(t, "'foo")
 	assert.Equal(t, 1, v.Source.Line)
-	assert.Equal(t, 1, v.Source.Col)     // ' starts at col 1
+	assert.Equal(t, 1, v.Source.Col) // ' starts at col 1
 	assert.Equal(t, 1, v.Source.EndLine)
-	assert.Equal(t, 5, v.Source.EndCol)  // "foo" ends at col 4, EndCol is 5
+	assert.Equal(t, 5, v.Source.EndCol) // "foo" ends at col 4, EndCol is 5
 }
 
 func TestEndPos_FunRef(t *testing.T) {
 	// #'myfun — the fun-ref wrapper Source starts at the #' prefix token.
 	v := parseOne(t, "#'myfun")
 	assert.Equal(t, 1, v.Source.Line)
-	assert.Equal(t, 1, v.Source.Col)     // #' starts at col 1
+	assert.Equal(t, 1, v.Source.Col) // #' starts at col 1
 	assert.Equal(t, 1, v.Source.EndLine)
-	assert.Equal(t, 8, v.Source.EndCol)  // "myfun" ends at col 7, EndCol is 8
+	assert.Equal(t, 8, v.Source.EndCol) // "myfun" ends at col 7, EndCol is 8
 }
 
 func TestEndPos_Float(t *testing.T) {
@@ -214,7 +216,7 @@ func TestEndPos_ExprPrefix(t *testing.T) {
 	// #^(+ 1 2) — the expr prefix wrapper Source starts at the #^ prefix token.
 	v := parseOne(t, "#^(+ 1 2)")
 	assert.Equal(t, 1, v.Source.Line)
-	assert.Equal(t, 1, v.Source.Col)     // #^ starts at col 1
+	assert.Equal(t, 1, v.Source.Col) // #^ starts at col 1
 	assert.Equal(t, 1, v.Source.EndLine)
 	assert.Equal(t, 10, v.Source.EndCol) // inherited from inner expr: ")" at col 9, EndCol is 10
 }
@@ -264,7 +266,8 @@ func parseErrorCondition(t *testing.T, source string) string {
 	if err == nil {
 		t.Fatal("expected parse error")
 	}
-	ev, ok := err.(*lisp.ErrorVal)
+	var ev *lisp.ErrorVal
+	ok := errors.As(err, &ev)
 	if !ok {
 		t.Fatalf("expected *ErrorVal, got %T: %v", err, err)
 	}
@@ -376,7 +379,7 @@ func TestFaultTolerant_NoErrors(t *testing.T) {
 	// Should produce identical output to ParseProgram.
 	p2 := New(token.NewScanner("test", strings.NewReader(source)))
 	exprs, err := p2.ParseProgram()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Len(t, exprs, len(result.Exprs))
 	for i := range exprs {
 		assert.Equal(t, exprs[i].String(), result.Exprs[i].String())
@@ -390,7 +393,8 @@ func TestFaultTolerant_ErrorInMiddle(t *testing.T) {
 	p := New(token.NewScanner("test", strings.NewReader(source)))
 	result := p.ParseProgramFaultTolerant()
 	assert.Len(t, result.Errors, 1, "should have one error for the mismatched bracket")
-	ev, ok := result.Errors[0].(*lisp.ErrorVal)
+	var ev *lisp.ErrorVal
+	ok := errors.As(result.Errors[0], &ev)
 	assert.True(t, ok, "error should be *lisp.ErrorVal")
 	assert.Equal(t, lisp.CondMismatchedSyntax, ev.Condition())
 	assert.Len(t, result.Exprs, 2, "should recover (a 1) and (b 2)")
@@ -416,7 +420,8 @@ func TestFaultTolerant_ErrorAtEnd(t *testing.T) {
 	p := New(token.NewScanner("test", strings.NewReader(source)))
 	result := p.ParseProgramFaultTolerant()
 	assert.Len(t, result.Errors, 1)
-	ev, ok := result.Errors[0].(*lisp.ErrorVal)
+	var ev *lisp.ErrorVal
+	ok := errors.As(result.Errors[0], &ev)
 	assert.True(t, ok, "error should be *lisp.ErrorVal")
 	assert.Equal(t, lisp.CondUnmatchedSyntax, ev.Condition())
 	assert.Len(t, result.Exprs, 1, "should recover (a 1)")
@@ -481,7 +486,8 @@ func TestFaultTolerant_ErrorPositions(t *testing.T) {
 	p := New(token.NewScanner("test", strings.NewReader(source)))
 	result := p.ParseProgramFaultTolerant()
 	assert.Len(t, result.Errors, 1)
-	ev, ok := result.Errors[0].(*lisp.ErrorVal)
+	var ev *lisp.ErrorVal
+	ok := errors.As(result.Errors[0], &ev)
 	assert.True(t, ok, "error should be *lisp.ErrorVal")
 	assert.NotNil(t, ev.Source, "error should have source location")
 	assert.Equal(t, 2, ev.Source.Line, "error should be on line 2")

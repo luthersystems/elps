@@ -209,7 +209,7 @@ func TestTranslateVariables_WithRefAllocator(t *testing.T) {
 
 	assert.Equal(t, "items", vars[1].Name)
 	assert.Equal(t, "(1 2)", vars[1].Value)
-	assert.Greater(t, vars[1].VariablesReference, 0, "list should have expandable ref")
+	assert.Positive(t, vars[1].VariablesReference, "list should have expandable ref")
 }
 
 func TestExpandVariable_List(t *testing.T) {

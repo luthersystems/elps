@@ -32,7 +32,7 @@ func TestLocationError_Unwrap(t *testing.T) {
 		Source: &Location{File: "test.lisp", Line: 1, Col: 1},
 	}
 	assert.Equal(t, inner, lerr.Unwrap())
-	assert.True(t, errors.Is(lerr, inner))
+	assert.ErrorIs(t, lerr, inner)
 }
 
 func TestLocationError_Code(t *testing.T) {

@@ -4,6 +4,7 @@ package lsp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -144,7 +145,7 @@ func TestWordAtPosition(t *testing.T) {
 		assert.Equal(t, "x", wordAtPosition(content, 1, 5))
 	})
 	t.Run("on paren", func(t *testing.T) {
-		assert.Equal(t, "", wordAtPosition(content, 0, 0))
+		assert.Empty(t, wordAtPosition(content, 0, 0))
 	})
 	t.Run("end of line", func(t *testing.T) {
 		// Cursor at end of "(my-" should find "my-"
@@ -152,11 +153,11 @@ func TestWordAtPosition(t *testing.T) {
 		assert.Equal(t, "my-add", wordAtPosition(partial, 0, 7))
 	})
 	t.Run("empty content", func(t *testing.T) {
-		assert.Equal(t, "", wordAtPosition("", 0, 0))
+		assert.Empty(t, wordAtPosition("", 0, 0))
 	})
 	t.Run("out of bounds", func(t *testing.T) {
-		assert.Equal(t, "", wordAtPosition("hello", -1, 0))
-		assert.Equal(t, "", wordAtPosition("hello", 5, 0))
+		assert.Empty(t, wordAtPosition("hello", -1, 0))
+		assert.Empty(t, wordAtPosition("hello", 5, 0))
 	})
 	t.Run("special chars", func(t *testing.T) {
 		assert.Equal(t, "*global*", wordAtPosition("*global*", 0, 0))
@@ -894,7 +895,7 @@ func TestSplitPackageQualified(t *testing.T) {
 	pkg, partial, ok = splitPackageQualified("math:")
 	assert.True(t, ok)
 	assert.Equal(t, "math", pkg)
-	assert.Equal(t, "", partial)
+	assert.Empty(t, partial)
 
 	_, _, ok = splitPackageQualified(":keyword")
 	assert.False(t, ok)
@@ -1625,7 +1626,7 @@ func TestParseErrorRange(t *testing.T) {
 	})
 	t.Run("LocationError with source", func(t *testing.T) {
 		locErr := &token.LocationError{
-			Err:    fmt.Errorf("unexpected token"),
+			Err:    errors.New("unexpected token"),
 			Source: &token.Location{File: "test.lisp", Line: 1, Col: 10},
 		}
 		r := parseErrorRange(locErr)
@@ -1633,7 +1634,7 @@ func TestParseErrorRange(t *testing.T) {
 		assert.Equal(t, protocol.UInteger(9), r.Start.Character)
 	})
 	t.Run("plain error", func(t *testing.T) {
-		r := parseErrorRange(fmt.Errorf("some error"))
+		r := parseErrorRange(errors.New("some error"))
 		assert.Equal(t, protocol.UInteger(0), r.Start.Line)
 		assert.Equal(t, protocol.UInteger(0), r.Start.Character)
 	})
@@ -1652,7 +1653,7 @@ func TestConvertLintDiagnostic(t *testing.T) {
 	assert.Equal(t, protocol.UInteger(2), d.Range.Start.Line)
 	assert.Equal(t, protocol.UInteger(4), d.Range.Start.Character)
 	require.NotNil(t, d.CodeDescription)
-	assert.Equal(t, "https://github.com/luthersystems/elps/blob/main/docs/lint-checks.md#test-check", string(d.CodeDescription.HRef))
+	assert.Equal(t, "https://github.com/luthersystems/elps/blob/main/docs/lint-checks.md#test-check", d.CodeDescription.HRef)
 	data, ok := d.Data.(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "test-check", data["analyzer"])
@@ -1967,7 +1968,6 @@ func TestHoverOnQualifiedSymbolAllPositions(t *testing.T) {
 
 	// "string:join" starts at col 1, ends at col 11 (0-based).
 	for col := protocol.UInteger(1); col <= 11; col++ {
-		col := col // capture for subtest
 		t.Run(fmt.Sprintf("col=%d", col), func(t *testing.T) {
 			hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
 				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
@@ -1984,7 +1984,6 @@ func TestHoverOnQualifiedSymbolAllPositions(t *testing.T) {
 	// Note: col 12 is the space right after "join" — wordAtPosition
 	// correctly returns the adjacent word, so it still shows hover.
 	for _, col := range []protocol.UInteger{0, 13, 14} {
-		col := col // capture for subtest
 		t.Run(fmt.Sprintf("col=%d_outside", col), func(t *testing.T) {
 			hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
 				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
@@ -2014,7 +2013,6 @@ func TestHoverOnShortQualifiedSymbol(t *testing.T) {
 
 	// "math:abs" spans cols 1-8 (0-based).
 	for col := protocol.UInteger(1); col <= 8; col++ {
-		col := col // capture for subtest
 		t.Run(fmt.Sprintf("col=%d", col), func(t *testing.T) {
 			hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
 				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
@@ -2029,7 +2027,6 @@ func TestHoverOnShortQualifiedSymbol(t *testing.T) {
 
 	// Columns outside the symbol should NOT return hover for "abs".
 	for _, col := range []protocol.UInteger{0, 10, 11} {
-		col := col // capture for subtest
 		t.Run(fmt.Sprintf("col=%d_outside", col), func(t *testing.T) {
 			hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
 				TextDocumentPositionParams: protocol.TextDocumentPositionParams{
@@ -2441,7 +2438,7 @@ func TestUpdateFileRefs(t *testing.T) {
 		totalRefs += len(refs)
 	}
 	s.workspaceRefsMu.RUnlock()
-	assert.Greater(t, totalRefs, 0, "updateFileRefs should populate workspace refs")
+	assert.Positive(t, totalRefs, "updateFileRefs should populate workspace refs")
 
 	// Verify the ref is for "target".
 	targetKey := analysis.SymbolKey{Package: "user", Name: "target", Kind: analysis.SymFunction}.String()
@@ -3333,7 +3330,7 @@ func TestWatchedFiles_Changed(t *testing.T) {
 	// Simulate a file change event.
 	err = s.workspaceDidChangeWatchedFiles(mockContext(), &protocol.DidChangeWatchedFilesParams{
 		Changes: []protocol.FileEvent{
-			{URI: protocol.DocumentUri(uri), Type: protocol.FileChangeTypeChanged},
+			{URI: uri, Type: protocol.FileChangeTypeChanged},
 		},
 	})
 	require.NoError(t, err)
@@ -3362,7 +3359,7 @@ func TestWatchedFiles_Deleted(t *testing.T) {
 	uri := pathToURI(filePath)
 	err := s.workspaceDidChangeWatchedFiles(mockContext(), &protocol.DidChangeWatchedFilesParams{
 		Changes: []protocol.FileEvent{
-			{URI: protocol.DocumentUri(uri), Type: protocol.FileChangeTypeDeleted},
+			{URI: uri, Type: protocol.FileChangeTypeDeleted},
 		},
 	})
 	require.NoError(t, err)
@@ -3844,7 +3841,7 @@ func TestHandlerWrapper_InlayHintRoute(t *testing.T) {
 	result, validMethod, validParams, err := wrapper.Handle(ctx)
 	assert.True(t, validMethod, "inlayHint should be a valid method")
 	assert.True(t, validParams, "params should be valid")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	hints, ok := result.([]InlayHint)
 	require.True(t, ok, "result should be []InlayHint")
@@ -3892,7 +3889,7 @@ func TestCrossFileDuplicateDefinition(t *testing.T) {
 	assert.Contains(t, dupDiags[0].Message, "foo")
 	require.Len(t, dupDiags[0].RelatedInformation, 1)
 	assert.Equal(t, "also defined here", dupDiags[0].RelatedInformation[0].Message)
-	assert.Equal(t, "file:///workspace/other.lisp", string(dupDiags[0].RelatedInformation[0].Location.URI))
+	assert.Equal(t, "file:///workspace/other.lisp", dupDiags[0].RelatedInformation[0].Location.URI)
 }
 
 func TestCrossFileDuplicateDefinition_DifferentPackages(t *testing.T) {
@@ -4063,7 +4060,7 @@ func TestWatchedFiles_UpdatesDefinitions(t *testing.T) {
 	// Simulate file creation event.
 	err := s.workspaceDidChangeWatchedFiles(mockContext(), &protocol.DidChangeWatchedFilesParams{
 		Changes: []protocol.FileEvent{
-			{URI: protocol.DocumentUri(uri), Type: protocol.FileChangeTypeCreated},
+			{URI: uri, Type: protocol.FileChangeTypeCreated},
 		},
 	})
 	require.NoError(t, err)
@@ -4083,7 +4080,7 @@ func TestWatchedFiles_UpdatesDefinitions(t *testing.T) {
 	require.NoError(t, os.WriteFile(filePath, []byte("(defun renamed-fn () 2)"), 0o600))
 	err = s.workspaceDidChangeWatchedFiles(mockContext(), &protocol.DidChangeWatchedFilesParams{
 		Changes: []protocol.FileEvent{
-			{URI: protocol.DocumentUri(uri), Type: protocol.FileChangeTypeChanged},
+			{URI: uri, Type: protocol.FileChangeTypeChanged},
 		},
 	})
 	require.NoError(t, err)
@@ -4103,7 +4100,7 @@ func TestWatchedFiles_UpdatesDefinitions(t *testing.T) {
 	require.NoError(t, os.Remove(filePath))
 	err = s.workspaceDidChangeWatchedFiles(mockContext(), &protocol.DidChangeWatchedFilesParams{
 		Changes: []protocol.FileEvent{
-			{URI: protocol.DocumentUri(uri), Type: protocol.FileChangeTypeDeleted},
+			{URI: uri, Type: protocol.FileChangeTypeDeleted},
 		},
 	})
 	require.NoError(t, err)

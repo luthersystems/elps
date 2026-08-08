@@ -43,12 +43,12 @@ const DefaultMaxParseDepth = 10000
 
 // Parser is a lisp parser.
 type Parser struct {
-	parsing         bool
 	src             *TokenSource
-	preserveFormat  bool
 	pendingComments []*token.Token
 	depth           int
 	maxDepth        int
+	parsing         bool
+	preserveFormat  bool
 }
 
 // NewFromSource initializes and returns a Parser that reads tokens from src.
@@ -108,7 +108,7 @@ func (p *Parser) ParseProgram() ([]*lisp.LVal, error) {
 
 	for {
 		expr, err := p.Parse()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -351,6 +351,7 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 		}
 	}
 	result := p.SExpr([]*lisp.LVal{sym, expr})
+	p.recordSynthesizedBrackets(result)
 	inheritEndPos(result, expr)
 	applyPrefixLocation(result, prefixLoc)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
@@ -369,11 +370,46 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 	if name.Type == lisp.LError {
 		return name
 	}
+	// The operand has to be a name the reader gives back as a symbol. #' is
+	// shorthand, printed in longhand as "(lisp:function <name>)", so a name
+	// that reads back as anything else means the printer changed the program.
+	//
+	// "#'0" was rejected earlier by requiring a symbol-START rune in the
+	// lexer, but '-' and '+' ARE symbol-start runes, so "#'-0", "#'-1",
+	// "#'+0", "#'1.5" and "#'-1abc" all sailed past it and produced symbols
+	// that turn back into INTs in longhand -- `elps fmt` silently rewriting a
+	// function reference as a number. Found by FuzzFormatCompact on "#'-0".
+	//
+	// The check lives here and not in the lexer because the lexer is the
+	// wrong layer to ask: "--" and "-a" lex as NEGATIVE, and only become
+	// symbols when ParseNegative merges them. A token-level guard rejects
+	// those valid names; re-reading through the parser gets them right.
+	if !readsBackAsSymbol(name.Str) {
+		return p.errorf("parse-error",
+			"invalid symbol following #': %q does not read back as a symbol", name.Str)
+	}
 	result := p.SExpr([]*lisp.LVal{op, name})
+	p.recordSynthesizedBrackets(result)
 	inheritEndPos(result, name)
 	applyPrefixLocation(result, prefixLoc)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
+}
+
+// recordSynthesizedBrackets stamps the paren bracket kind onto an s-expression
+// the parser BUILT rather than read -- the desugared forms behind #^ and #',
+// which have no bracket of their own in the source.
+//
+// Without it those nodes reach the formatter with BracketType unset, and
+// printer.bracketOpen falls back to '[' for any quoted value.  A quoted
+// shorthand therefore printed as '[lisp:expr 0] -- the bracket quotes the
+// value a second time, so it re-parses with a level of quoting the source
+// never had.  Found by FuzzFormat on the input "'#^0".
+func (p *Parser) recordSynthesizedBrackets(v *lisp.LVal) {
+	if !p.preserveFormat || v.Meta == nil {
+		return
+	}
+	v.Meta.BracketType = '('
 }
 
 // inheritEndPos copies end position from inner to outer, for prefix forms
@@ -412,11 +448,30 @@ func (p *Parser) applyPrefixNewlines(v *lisp.LVal, newlines int, spaces int) {
 	if v.Meta == nil {
 		v.Meta = &lisp.SourceMeta{}
 	}
-	if newlines >= 1 {
-		v.Meta.NewlineBefore = true
-	}
-	if newlines > 1 {
-		v.Meta.BlankLinesBefore = newlines - 1
+	if len(v.Meta.LeadingComments) > 0 {
+		// With leading comments attached, NewlineBefore / BlankLinesBefore
+		// describe the gap before the first COMMENT, which tokenLVal already
+		// took from that comment -- overwriting them from the prefix token
+		// would double-count.  What the prefix token measures is the gap
+		// between the last comment and this node, because the prefix IS this
+		// node's first token.
+		//
+		// tokenLVal derived that gap from the INNER expression's token, which
+		// sits after the prefix and so measures the wrong whitespace.  For
+		// ";\n'\n\n0" it recorded the blank line between ' and 0 instead of
+		// the (none) between ; and ', so the blank line moved on every
+		// re-format and Format stopped being idempotent.  Found by FuzzFormat.
+		v.Meta.BlankLinesAfterComments = 0
+		if newlines > 1 {
+			v.Meta.BlankLinesAfterComments = newlines - 1
+		}
+	} else {
+		if newlines >= 1 {
+			v.Meta.NewlineBefore = true
+		}
+		if newlines > 1 {
+			v.Meta.BlankLinesBefore = newlines - 1
+		}
 	}
 	v.Meta.PrecedingSpaces = spaces
 }
@@ -722,7 +777,7 @@ func (p *Parser) ParseProgramFaultTolerant() ParseResult {
 
 	for {
 		expr, err := p.Parse()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -781,4 +836,23 @@ func (p *Parser) skipToNextExpression() {
 // LVal (e.g., trailing comments at end of file). Only useful in formatting mode.
 func (p *Parser) PendingComments() []*token.Token {
 	return p.pendingComments
+}
+
+// readsBackAsSymbol reports whether s, parsed on its own, yields exactly one
+// expression and that expression is a symbol named s.
+//
+// Used to reject #' operands that cannot survive the round trip through the
+// printer. Re-parsing rather than pattern-matching the name states the
+// requirement exactly: an earlier attempt used strconv.ParseInt/ParseFloat and
+// was wrong, because "-1abc" is not a number by either yet still reads back as
+// an INT. Re-parsing also stays correct if the number syntax ever changes.
+func readsBackAsSymbol(s string) bool {
+	if s == "" {
+		return false
+	}
+	exprs, err := New(token.NewScanner("", strings.NewReader(s))).ParseProgram()
+	if err != nil || len(exprs) != 1 {
+		return false
+	}
+	return exprs[0].Type == lisp.LSymbol && exprs[0].Str == s
 }

@@ -1,6 +1,7 @@
 package elpstest
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -11,29 +12,29 @@ import (
 // AssertSortedMap runs tests to ensure that m satisfies constraints required
 // for sorted maps.  The following properties are tested by AssertSortedMap:
 //
-//		The m.Keys and m.Entries produce lists with the expected length,
-//		m.Len()
+//	The m.Keys and m.Entries produce lists with the expected length,
+//	m.Len()
 //
-//		Repeated calls to m.Entries() return equal lists of pairs
+//	Repeated calls to m.Entries() return equal lists of pairs
 //
-//		Repeated calls to m.Keys() return equal lists
+//	Repeated calls to m.Keys() return equal lists
 //
-//		The lists returned by m.Keys() and m.Entries() have consistent elements
-//		and order.
+//	The lists returned by m.Keys() and m.Entries() have consistent elements
+//	and order.
 //
-//		Calling m.Get() with a key from m.Entries() returns a value consistent
-//		with that entry.
+//	Calling m.Get() with a key from m.Entries() returns a value consistent
+//	with that entry.
 //
 // AssertSortedMap does not test any of the following properties:
 //
-//		Success/Failure of insertions or deletions -- m must already be
-//		populated with values.
+//	Success/Failure of insertions or deletions -- m must already be
+//	populated with values.
 //
-//		Restrictions the implementation places on the types of keys/values.
+//	Restrictions the implementation places on the types of keys/values.
 //
-//		Any measure of correctness in the ordering of entries/keys.  The only
-//		requirement is that the order be fixed for a given set of key-value
-//		pairs.
+//	Any measure of correctness in the ordering of entries/keys.  The only
+//	requirement is that the order be fixed for a given set of key-value
+//	pairs.
 func AssertSortedMap(t *testing.T, m lisp.Map) bool {
 	t.Helper()
 	if !assert.NotEqual(t, 0, m.Len(), "Cannot test an empty sorted-map") {
@@ -60,7 +61,7 @@ func testFixed(t *testing.T, method string, n int, fn func() (*lisp.LVal, error)
 	if !assert.NoError(t, err) {
 		return false
 	}
-	for i := 0; i < n; i++ {
+	for range n {
 		v, err := fn()
 		if !assert.NoError(t, err) {
 			return false
@@ -138,10 +139,10 @@ func mapKeys(m lisp.Map) (*lisp.LVal, error) {
 		return nil, err
 	}
 	if v.Type != lisp.LSExpr {
-		return nil, fmt.Errorf("keys did not return a list")
+		return nil, errors.New("keys did not return a list")
 	}
 	if v.Len() != m.Len() {
-		return nil, fmt.Errorf("keys has an invalid length")
+		return nil, errors.New("keys has an invalid length")
 	}
 	return v, nil
 }

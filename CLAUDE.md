@@ -13,9 +13,12 @@ ELPS is an embedded Lisp interpreter implemented in Go. It is a Lisp-1 dialect d
 | `make` | Build the `./elps` binary |
 | `make test` | Run all tests (Go tests + example lisp files) |
 | `make go-test` | Run Go tests only: `go test -cover ./...` |
+| `make fuzz` | Run every native go fuzz target, 30s each (`FUZZTIME=10m make fuzz` for longer) |
+| `make fuzz-list` | List the discovered fuzz targets without running them |
 | `go test ./lisp/...` | Run tests for a specific package |
 | `go test -run TestName ./lisp/` | Run a single test |
 | `make static-checks` | Run golangci-lint with gosec |
+| `make fieldalign-fix` | Reorder struct fields for the fieldalignment gate (uses betteralign — `fieldalignment -fix` deletes field comments) |
 | `make repl` | Build and launch the REPL |
 | `./elps run file.lisp` | Run a lisp file |
 | `./elps doc <query>` | Show function/package documentation |
@@ -65,9 +68,10 @@ rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
 
 ### Test Infrastructure
 
-Tests exist in two forms:
+Tests exist in three forms:
 1. **Go unit tests** — Standard `_test.go` files using `testify/assert`.
 2. **Lisp test files** — `.lisp` files executed via `elpstest.Runner`, which loads them and runs as Go subtests. The `libtesting` stdlib package provides `test`, `test-let`, `assert=`, `assert-equal`, `assert-nil`, etc.
+3. **Fuzz targets** — native `go test -fuzz` targets in `fuzz_test.go` files, covering the parser (strict, fault-tolerant and format-preserving), the lexer and byte scanner, the formatter and minifier round-trips, and the JSON decoder. Seeds come from `internal/fuzzseed` (the repository's real `.lisp` sources plus hand-written adversarial input); each package's `testdata/fuzz/<Target>/` holds the crashers found so far, which plain `go test` replays as regression cases. Run with `make fuzz`; CI runs `.github/workflows/fuzz.yml` (30s/target on PRs, 10m/target nightly).
 
 Go test suites typically use `elpstest.TestSuite` with `TestSequence` entries that define `{expression, expected-result, expected-output}` triples.
 

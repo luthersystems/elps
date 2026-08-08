@@ -12,12 +12,12 @@ import (
 
 func TestHeadSymbol_Empty(t *testing.T) {
 	v := &lisp.LVal{Type: lisp.LSExpr}
-	assert.Equal(t, "", HeadSymbol(v))
+	assert.Empty(t, HeadSymbol(v))
 }
 
 func TestHeadSymbol_NonSExpr(t *testing.T) {
 	v := &lisp.LVal{Type: lisp.LInt}
-	assert.Equal(t, "", HeadSymbol(v))
+	assert.Empty(t, HeadSymbol(v))
 }
 
 func TestHeadSymbol_NonSymbolHead(t *testing.T) {
@@ -25,7 +25,7 @@ func TestHeadSymbol_NonSymbolHead(t *testing.T) {
 		Type:  lisp.LSExpr,
 		Cells: []*lisp.LVal{{Type: lisp.LInt}},
 	}
-	assert.Equal(t, "", HeadSymbol(v))
+	assert.Empty(t, HeadSymbol(v))
 }
 
 func TestHeadSymbol_SymbolHead(t *testing.T) {

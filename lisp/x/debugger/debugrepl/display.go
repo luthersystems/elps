@@ -104,7 +104,7 @@ func showBreakpoints(w io.Writer, store *debugger.BreakpointStore) {
 		}
 		line := fmt.Sprintf("  #%d  %s:%d  %s", bp.ID, bp.File, bp.Line, status)
 		if bp.Condition != "" {
-			line += fmt.Sprintf("  if %s", bp.Condition)
+			line += "  if " + bp.Condition
 		}
 		fmt.Fprintln(w, line) //nolint:errcheck
 	}
@@ -134,7 +134,7 @@ func resolveSourceFile(file, sourceRoot string) string {
 		}
 		// Walk sourceRoot looking for the basename.
 		var found string
-		_ = filepath.Walk(sourceRoot, func(path string, info os.FileInfo, err error) error { //nolint:errcheck
+		_ = filepath.Walk(sourceRoot, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() || found != "" {
 				return err
 			}
@@ -150,4 +150,3 @@ func resolveSourceFile(file, sourceRoot string) string {
 	}
 	return file
 }
-

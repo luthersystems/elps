@@ -190,37 +190,52 @@ type MacroExpansionContext struct {
 // It is only allocated when a debugger is attached (Runtime.Debugger != nil),
 // so production code pays zero allocation cost.
 type MacroExpansionInfo struct {
-	*MacroExpansionContext        // shared across all nodes in one expansion
-	ID                    int64   // unique per node, monotonically increasing
+	*MacroExpansionContext       // shared across all nodes in one expansion
+	ID                     int64 // unique per node, monotonically increasing
 }
 
 // SourceMeta holds formatting metadata for an LVal, populated only when
 // parsing in format-preserving mode. Nil in normal parsing — zero cost.
 type SourceMeta struct {
-	OriginalText            string         // original token text for literals (preserves escapes, numeric bases)
-	BracketType             rune           // '(' or '[' for LSExpr nodes
-	LeadingComments         []*token.Token // comment tokens preceding this node
 	TrailingComment         *token.Token   // inline comment on same line after this node
+	OriginalText            string         // original token text for literals (preserves escapes, numeric bases)
+	LeadingComments         []*token.Token // comment tokens preceding this node
 	InnerTrailingComments   []*token.Token // comments between last child and closing bracket
 	BlankLinesBefore        int            // blank lines (newline count - 1) before this node (or before its leading comments)
 	BlankLinesAfterComments int            // blank lines between last leading comment and the expression
 	PrecedingSpaces         int            // spaces before this token on the same line (for column alignment)
+	BracketType             rune           // '(' or '[' for LSExpr nodes
 	NewlineBefore           bool           // true if at least one newline preceded this node in source
 	ClosingBracketNewline   bool           // true if closing bracket was on its own line in source
 }
 
 // LVal is a lisp value
+//
+// Field order is chosen so that every pointer-bearing word sits in the leading
+// 64 bytes: the GC only scans up to the last pointer word, so grouping the
+// pointers first and letting Str/Cells contribute their pointer word last
+// leaves their len/cap tails (and all the scalars) outside the scan range.
+// This cuts the GC scan extent from 112 bytes to 64 without changing the
+// struct's overall size. LVal is allocated for every value in the
+// interpreter, so keep the pointers first when adding fields — `govet`'s
+// fieldalignment check (see .golangci.yml) enforces this.
 type LVal struct {
 	// Native is generic storage for data which cannot be represented as an
 	// LVal (and thus can't be stored in Cells).
-
 	Native interface{}
 
 	// Source is the values originating location in source code.  Programs
 	// should not modify the contents of Source as the reference may be shared
 	// by multiple LVals.
-
 	Source *token.Location
+
+	// Meta holds formatting metadata, only populated in format-preserving mode.
+	Meta *SourceMeta
+
+	// MacroExpansion holds debug metadata for nodes produced by macro
+	// expansion. Only populated when a debugger is attached — nil in
+	// production (zero overhead: 8-byte nil pointer).
+	MacroExpansion *MacroExpansionInfo
 
 	// Str used by LSymbol and LString values
 	Str string
@@ -246,14 +261,6 @@ type LVal struct {
 
 	// Spliced denotes the value as needing to be spliced into a parent value.
 	Spliced bool
-
-	// Meta holds formatting metadata, only populated in format-preserving mode.
-	Meta *SourceMeta
-
-	// MacroExpansion holds debug metadata for nodes produced by macro
-	// expansion. Only populated when a debugger is attached — nil in
-	// production (zero overhead: 8-byte nil pointer).
-	MacroExpansion *MacroExpansionInfo
 }
 
 // GetType returns a quoted symbol denoting v's type.
@@ -956,23 +963,19 @@ func (v *LVal) IsSpecialOp() bool {
 }
 
 // IsNil returns true if v represents a nil value.
+//
+// Only the empty list is nil.  Written as an expression rather than a switch:
+// there is exactly one interesting type, so a switch would have to name the
+// other seventeen LTypes to say nothing about them.
 func (v *LVal) IsNil() bool {
-	switch v.Type {
-	case LSExpr:
-		return len(v.Cells) == 0
-	}
-	return false
+	return v.Type == LSExpr && len(v.Cells) == 0
 }
 
 // IsNumeric returns true if v has a primitive numeric type (int, float64).
+//
+// See IsNil for why this is an expression and not a switch.
 func (v *LVal) IsNumeric() bool {
-	switch v.Type {
-	case LInt:
-		return true
-	case LFloat:
-		return true
-	}
-	return false
+	return v.Type == LInt || v.Type == LFloat
 }
 
 // Equal returns a non-nil value if v and other are logically equal, under the
@@ -1032,6 +1035,17 @@ func (v *LVal) Equal(other *LVal) *LVal {
 			}
 		}
 		return Bool(true)
+	case LInvalid, LInt, LFloat, LError, LQSymbol, LFun, LQuote, LBytes,
+		LNative, LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
+		// No structural equality is defined for these types, so equal? reports
+		// false even when both operands are the same object.  Enumerated
+		// rather than left to fall through so that a new LType has to make
+		// this choice explicitly.
+		//
+		// LInt and LFloat are unreachable: the IsNumeric shortcut above
+		// diverts every numeric comparison to equalNum.  LInvalid, the LMark*
+		// sentinels and LTypeMax are not values an application can hold.
+		return Bool(false)
 	}
 	return Bool(false)
 }
@@ -1242,7 +1256,7 @@ func (v *LVal) str(onTheRecord bool) string {
 			quote = QUOTE
 		}
 		if v.Builtin() != nil {
-			return fmt.Sprintf("%s#<builtin>", quote)
+			return quote + "#<builtin>"
 		}
 		vars := lambdaVars(v.Cells[0], boundVars(v))
 		return fmt.Sprintf("%s(lambda %v%v)", quote, vars, bodyStr(v.Cells[1:]))
@@ -1337,6 +1351,9 @@ func isSeq(v *LVal) bool {
 }
 
 func seqCells(v *LVal) []*LVal {
+	// Callers must guard with isSeq.  The panic is the assertion for that
+	// contract -- it is in a default clause so that reaching seqCells with a
+	// type nobody thought about is loud rather than silent.
 	switch v.Type {
 	case LSExpr:
 		return v.Cells
@@ -1345,8 +1362,9 @@ func seqCells(v *LVal) []*LVal {
 			panic("multi-dimensional array is not a sequence")
 		}
 		return v.Cells[1].Cells
+	default:
+		panic("type is not a sequence")
 	}
-	panic("type is not a sequence")
 }
 
 func makeByteSeq(v *LVal) *LVal {

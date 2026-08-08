@@ -40,7 +40,7 @@ func BenchmarkParserFaultTolerant(b *testing.B) {
 				b.Fatalf("Unable to read source file %v: %v", path, err)
 			}
 			b.SetBytes(int64(len(buf)))
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				s := token.NewScanner("test", bytes.NewReader(buf))
 				p := rdparser.New(s)
 				result := p.ParseProgramFaultTolerant()

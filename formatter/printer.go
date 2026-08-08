@@ -32,7 +32,7 @@ func newPrinter(cfg *Config) *printer {
 func (p *printer) writeTopLevel(exprs []*lisp.LVal, trailingComments []*token.Token) {
 	for i, expr := range exprs {
 		if i > 0 {
-			for j := 0; j < p.blankLinesBefore(expr); j++ {
+			for range p.blankLinesBefore(expr) {
 				p.newline()
 			}
 		}
@@ -57,7 +57,7 @@ func (p *printer) writeTopLevel(exprs []*lisp.LVal, trailingComments []*token.To
 					blankLines = p.cfg.MaxBlankLines
 				}
 			}
-			for j := 0; j < blankLines; j++ {
+			for range blankLines {
 				p.newline()
 			}
 		}
@@ -82,7 +82,7 @@ func (p *printer) writeLeadingComments(v *lisp.LVal, indent int) {
 			if blankLines > p.cfg.MaxBlankLines {
 				blankLines = p.cfg.MaxBlankLines
 			}
-			for j := 0; j < blankLines; j++ {
+			for range blankLines {
 				p.newline()
 			}
 		}
@@ -106,7 +106,7 @@ func (p *printer) writeBlankLinesAfterComments(v *lisp.LVal) {
 	if n > p.cfg.MaxBlankLines {
 		n = p.cfg.MaxBlankLines
 	}
-	for i := 0; i < n; i++ {
+	for range n {
 		p.newline()
 	}
 }
@@ -123,7 +123,7 @@ func (p *printer) writeTrailingComment(v *lisp.LVal) {
 		if v.Meta.TrailingComment.PrecedingSpaces > 1 {
 			spaces = v.Meta.TrailingComment.PrecedingSpaces
 		}
-		for i := 0; i < spaces; i++ {
+		for range spaces {
 			p.buf.WriteByte(' ')
 		}
 		p.col += spaces
@@ -147,7 +147,7 @@ func (p *printer) writeInnerTrailingComments(v *lisp.LVal, indent int) {
 			if blankLines > p.cfg.MaxBlankLines {
 				blankLines = p.cfg.MaxBlankLines
 			}
-			for j := 0; j < blankLines; j++ {
+			for range blankLines {
 				p.newline()
 			}
 		}
@@ -204,7 +204,12 @@ func (p *printer) writeExpr(v *lisp.LVal, indent int) {
 				p.writeListInner(v, indent)
 			} else {
 				p.writeString("'")
-				p.writeListInner(v, indent)
+				// A quoted #^/#' keeps its shorthand.  writeSExpr does this
+				// for the unquoted case; without it here, 'ing a shorthand
+				// silently expanded it to '(lisp:expr ...).
+				if !p.tryPrefixForm(v, indent) {
+					p.writeListInner(v, indent)
+				}
 			}
 		} else {
 			p.writeSExpr(v, indent)
@@ -263,6 +268,14 @@ func (p *printer) writeAtom(v *lisp.LVal) {
 		p.writeString(strconv.Itoa(v.Int))
 	case lisp.LFloat:
 		p.writeString(strconv.FormatFloat(v.Float, 'g', -1, 64))
+	default:
+		// Both call sites dispatch here only for LInt/LFloat, so this is
+		// unreachable today.  It used to write nothing at all, which in a
+		// formatter means silently deleting the node from the output. Fall
+		// back to the same v.String() the callers use for types they do not
+		// recognise, so a future numeric LType degrades to "printed
+		// generically" instead of "dropped".
+		p.writeString(v.String())
 	}
 }
 
@@ -374,7 +387,7 @@ func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 
 		if onNewLine {
 			p.newline()
-			for j := 0; j < p.blankLinesBefore(child); j++ {
+			for range p.blankLinesBefore(child) {
 				p.newline()
 			}
 			if child.Meta != nil && len(child.Meta.LeadingComments) > 0 {
@@ -415,7 +428,7 @@ func (p *printer) writeListInner(v *lisp.LVal, indent int) {
 			childIndent := openCol
 			if hasNewlineBefore(child) {
 				p.newline()
-				for j := 0; j < p.blankLinesBefore(child); j++ {
+				for range p.blankLinesBefore(child) {
 					p.newline()
 				}
 				if child.Meta != nil && len(child.Meta.LeadingComments) > 0 {
@@ -429,7 +442,7 @@ func (p *printer) writeListInner(v *lisp.LVal, indent int) {
 		} else if hasNewlineBefore(child) {
 			// First child on a new line — preserve bracket-on-its-own-line style
 			p.newline()
-			for j := 0; j < p.blankLinesBefore(child); j++ {
+			for range p.blankLinesBefore(child) {
 				p.newline()
 			}
 			if child.Meta != nil && len(child.Meta.LeadingComments) > 0 {
@@ -457,21 +470,70 @@ func (p *printer) writeListInner(v *lisp.LVal, indent int) {
 }
 
 // tryPrefixForm checks if this s-expr is a known prefix shorthand and renders it.
+//
+// The shorthand is only written when the parser can read it back as the SAME
+// tree.  #' and #^ are narrower than the forms they abbreviate, so re-sugaring
+// unconditionally produced source that no longer parses -- `elps fmt`
+// destroying the file it was asked to tidy:
+//
+//	(lisp:expr (+ 1 (f x)))  ->  #^(+ 1 (f x))
+//	    unbound-expression-error: unbound expression cannot contain nested expressions
+//	(lisp:function (f x))    ->  #'(f x)
+//	    parse-error: invalid symbol
+//
+// Found by FuzzFormat.
 func (p *printer) tryPrefixForm(v *lisp.LVal, indent int) bool {
 	if len(v.Cells) != 2 || v.Cells[0].Type != lisp.LSymbol {
 		return false
 	}
 	switch v.Cells[0].Str {
 	case "lisp:function":
+		if !canWriteFunRef(v.Cells[1]) {
+			return false
+		}
 		p.writeString("#'")
 		p.writeExpr(v.Cells[1], indent)
 		return true
 	case "lisp:expr":
+		if !canWriteUnbound(v.Cells[1]) {
+			return false
+		}
 		p.writeString("#^")
 		p.writeExpr(v.Cells[1], indent)
 		return true
 	}
 	return false
+}
+
+// canWriteFunRef reports whether inner can be written as the operand of #'.
+// rdparser.ParseFunRef reads that operand with ParseSymbol, so only a plain
+// symbol -- unqualified, or package-qualified with a non-empty name on both
+// sides of the single colon -- reads back as the same tree.
+func canWriteFunRef(inner *lisp.LVal) bool {
+	if inner.Type != lisp.LSymbol || inner.Quoted {
+		return false
+	}
+	pieces := strings.Split(inner.Str, ":")
+	switch len(pieces) {
+	case 1:
+		return pieces[0] != ""
+	case 2:
+		return pieces[0] != "" && pieces[1] != ""
+	default:
+		return false
+	}
+}
+
+// canWriteUnbound reports whether inner can be written as the operand of #^.
+// rdparser.ParseUnbound rejects an operand holding a nested unquoted
+// s-expression, so this mirrors that check exactly.
+func canWriteUnbound(inner *lisp.LVal) bool {
+	for _, c := range inner.Cells {
+		if c.Type == lisp.LSExpr && !c.Quoted {
+			return false
+		}
+	}
+	return true
 }
 
 // computeChildIndent determines the indentation for child at index i.
@@ -501,7 +563,7 @@ func (p *printer) writeSameLineSpacing(v *lisp.LVal) {
 	if v.Meta != nil && v.Meta.PrecedingSpaces > 1 {
 		spaces = v.Meta.PrecedingSpaces
 	}
-	for i := 0; i < spaces; i++ {
+	for range spaces {
 		p.buf.WriteByte(' ')
 	}
 	p.col += spaces
@@ -512,7 +574,7 @@ func (p *printer) writeIndent(col int) {
 	if !p.atBOL {
 		return
 	}
-	for i := 0; i < col; i++ {
+	for range col {
 		p.buf.WriteByte(' ')
 	}
 	p.col = col

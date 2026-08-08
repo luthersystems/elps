@@ -18,9 +18,9 @@ type Source interface {
 }
 
 type Token struct {
-	Type              Type
-	Text              string
 	Source            *Location
+	Text              string
+	Type              Type
 	PrecedingNewlines int // newlines in whitespace before this token
 	PrecedingSpaces   int // spaces in whitespace before this token (same-line only)
 }

@@ -38,11 +38,11 @@ type ParamInfo struct {
 // FunctionInfo holds metadata extracted from a defun, defmacro, or lambda
 // s-expression.
 type FunctionInfo struct {
-	Name      string           // empty for lambda
-	Kind      string           // "defun", "defmacro", or "lambda"
-	Params    []ParamInfo
-	DocString string
 	Source    *token.Location
+	Name      string // empty for lambda
+	Kind      string // "defun", "defmacro", or "lambda"
+	DocString string
+	Params    []ParamInfo
 }
 
 // InspectFunction extracts metadata from a defun, defmacro, or lambda

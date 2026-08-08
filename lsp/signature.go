@@ -126,7 +126,7 @@ func enclosingCallText(content string, line, col int) (string, int) {
 
 	// Build the text up to the cursor position.
 	var sb strings.Builder
-	for i := 0; i < line; i++ {
+	for i := range line {
 		sb.WriteString(lines[i])
 		sb.WriteByte('\n')
 	}
@@ -141,7 +141,6 @@ func enclosingCallText(content string, line, col int) (string, int) {
 	depth := 0
 	inString := false
 	openIdx := -1
-	argCount := 0
 
 	for i := len(text) - 1; i >= 0; i-- {
 		ch := text[i]
@@ -182,9 +181,7 @@ func enclosingCallText(content string, line, col int) (string, int) {
 	// Count arguments: number of top-level whitespace-separated tokens
 	// after the function name in the text between openIdx and cursor.
 	afterName := rest[len(name):]
-	argCount = countTopLevelArgs(afterName)
-
-	return name, argCount
+	return name, countTopLevelArgs(afterName)
 }
 
 // extractLeadingSymbol extracts the first symbol-like token from text.
@@ -209,7 +206,7 @@ func countTopLevelArgs(text string) int {
 	inString := false
 	inArg := false
 
-	for i := 0; i < len(text); i++ {
+	for i := range len(text) {
 		ch := text[i]
 
 		if ch == '"' && (i == 0 || text[i-1] != '\\') {

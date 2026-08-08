@@ -73,7 +73,17 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 func checkLoaderExpr(v *LVal) error {
 	switch v.Type {
 	case LBytes, LSortMap, LArray, LNative:
+		// Reference types share mutable state with every copy of the cached
+		// expression, so a cached loader would hand the same backing store to
+		// each caller.
 		return fmt.Errorf("cannot cache reference type expression: %v", v.Type)
+	case LInvalid, LInt, LFloat, LError, LSymbol, LQSymbol, LSExpr, LFun,
+		LQuote, LString, LTaggedVal,
+		LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
+		// Value types are safe to cache; composite ones (LSExpr, LQuote,
+		// LTaggedVal) are covered by the recursion over Cells below.  Listed
+		// explicitly because this switch is a denylist: a new LType that
+		// wraps shared state would otherwise be cached silently.
 	}
 	for _, cell := range v.Cells {
 		err := checkLoaderExpr(cell)

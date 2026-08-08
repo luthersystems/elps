@@ -129,6 +129,10 @@ func (h *debugHandler) onEvent(evt debugger.Event) {
 		close(h.exitCh)
 	case debugger.EventOutput:
 		fmt.Fprintln(h.stderr, evt.Output) //nolint:errcheck
+	case debugger.EventContinued:
+		// Ignored on purpose: this REPL is the thing that resumes execution,
+		// so doContinue/doStep already cleared h.paused before the engine
+		// fired this event.
 	}
 }
 

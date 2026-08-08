@@ -101,17 +101,17 @@ func MaxSeverity(diags []Diagnostic) Severity {
 	if len(diags) == 0 {
 		return SeverityInfo
 	}
-	max := SeverityInfo // start at least severe
+	maxSev := SeverityInfo // start at least severe
 	for _, d := range diags {
 		sev := d.Severity
 		if sev == severityUnset {
 			sev = SeverityWarning // matches MarshalJSON behavior
 		}
-		if sev < max {
-			max = sev // lower numeric value = more severe
+		if sev < maxSev {
+			maxSev = sev // lower numeric value = more severe
 		}
 	}
-	return max
+	return maxSev
 }
 
 // ShouldFail returns true if the diagnostics contain at least one finding
@@ -273,11 +273,12 @@ func (p Position) String() string {
 // String returns the diagnostic in go vet style: file:line: message (analyzer)
 // with optional note lines appended.
 func (d Diagnostic) String() string {
-	s := fmt.Sprintf("%s: %s (%s)", d.Pos, d.Message, d.Analyzer)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s: %s (%s)", d.Pos, d.Message, d.Analyzer)
 	for _, n := range d.Notes {
-		s += "\n  = note: " + n
+		sb.WriteString("\n  = note: " + n)
 	}
-	return s
+	return sb.String()
 }
 
 // Linter runs a set of analyzers over source files.
@@ -586,8 +587,7 @@ func (l *Linter) LintFileWithContext(source []byte, filename string, semantics *
 				}
 			}
 			if len(unknown) > 0 {
-				msg = fmt.Sprintf("nolint directive references unknown analyzer(s): %s",
-					strings.Join(unknown, ", "))
+				msg = "nolint directive references unknown analyzer(s): " + strings.Join(unknown, ", ")
 			}
 		}
 		unusedNolints = append(unusedNolints, Diagnostic{

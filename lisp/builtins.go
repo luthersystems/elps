@@ -2077,7 +2077,7 @@ func builtinIsType(env *LEnv, args *LVal) *LVal {
 	}
 	typesym := typespec.Str
 	if typespec.Type == LTaggedVal {
-		if typesym != fmt.Sprintf("%s:typedef", env.Runtime.Registry.Lang) {
+		if typesym != env.Runtime.Registry.Lang+":typedef" {
 			return env.Errorf("first argument is not a valid type specifier: %v", typesym)
 		}
 		typesym = typespec.Cells[0].Cells[0].Str
@@ -2230,35 +2230,35 @@ func builtinAnyP(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinMax(env *LEnv, args *LVal) *LVal {
-	max := args.Cells[0]
-	if !max.IsNumeric() {
-		return env.Errorf("argument is not a number: %s", max.Type)
+	maxVal := args.Cells[0]
+	if !maxVal.IsNumeric() {
+		return env.Errorf("argument is not a number: %s", maxVal.Type)
 	}
 	for _, x := range args.Cells[1:] {
 		if !x.IsNumeric() {
 			return env.Errorf("argument is not a number: %s", x.Type)
 		}
-		if lessNumeric(max, x) {
-			max = x
+		if lessNumeric(maxVal, x) {
+			maxVal = x
 		}
 	}
-	return max
+	return maxVal
 }
 
 func builtinMin(env *LEnv, args *LVal) *LVal {
-	min := args.Cells[0]
-	if !min.IsNumeric() {
-		return env.Errorf("argument is not a number: %s", min.Type)
+	minVal := args.Cells[0]
+	if !minVal.IsNumeric() {
+		return env.Errorf("argument is not a number: %s", minVal.Type)
 	}
 	for _, x := range args.Cells[1:] {
 		if !x.IsNumeric() {
 			return env.Errorf("argument is not a number: %s", x.Type)
 		}
-		if lessNumeric(x, min) {
-			min = x
+		if lessNumeric(x, minVal) {
+			minVal = x
 		}
 	}
-	return min
+	return minVal
 }
 
 func builtinStringLEq(env *LEnv, args *LVal) *LVal {
@@ -2756,13 +2756,13 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 		}
 
 		// Find the closing '}'.
-		close := strings.IndexByte(f[j+1:], '}')
-		if close < 0 {
+		closeIdx := strings.IndexByte(f[j+1:], '}')
+		if closeIdx < 0 {
 			return env.Errorf("unclosed '{' in format string")
 		}
-		close += j + 1 // absolute index of '}'
+		closeIdx += j + 1 // absolute index of '}'
 
-		inner := f[j+1 : close]
+		inner := f[j+1 : closeIdx]
 
 		// Determine argument index.
 		var argIdx int
@@ -2805,7 +2805,7 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 			buf.WriteString(val.String())
 		}
 
-		i = close + 1
+		i = closeIdx + 1
 	}
 
 	return String(buf.String())
@@ -2813,7 +2813,7 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 
 // isAllSpaces returns true if s contains only spaces and tabs.
 func isAllSpaces(s string) bool {
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] != ' ' && s[i] != '\t' {
 			return false
 		}

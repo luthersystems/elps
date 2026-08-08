@@ -24,7 +24,7 @@ func (s *Server) textDocumentDidOpen(ctx *glsp.Context, params *protocol.DidOpen
 	s.captureNotify(ctx)
 	doc := s.docs.Open(
 		params.TextDocument.URI,
-		int32(params.TextDocument.Version),
+		params.TextDocument.Version,
 		params.TextDocument.Text,
 	)
 	s.analyzeAndPublish(doc)
@@ -47,7 +47,7 @@ func (s *Server) textDocumentDidChange(ctx *glsp.Context, params *protocol.DidCh
 
 	doc := s.docs.Change(
 		params.TextDocument.URI,
-		int32(params.TextDocument.Version),
+		params.TextDocument.Version,
 		content,
 	)
 
@@ -233,12 +233,12 @@ func convertLintDiagnostic(d lint.Diagnostic) protocol.Diagnostic {
 		Data:     diagnosticData(d),
 	}
 	if href := diagnosticCodeDescriptionHref(d.Analyzer); href != "" {
-		diag.CodeDescription = &protocol.CodeDescription{HRef: protocol.URI(href)}
+		diag.CodeDescription = &protocol.CodeDescription{HRef: href}
 	}
 	for _, related := range d.Related {
 		diag.RelatedInformation = append(diag.RelatedInformation, protocol.DiagnosticRelatedInformation{
 			Location: protocol.Location{
-				URI:   protocol.DocumentUri(diagnosticURI(related.Location.File)),
+				URI:   diagnosticURI(related.Location.File),
 				Range: diagnosticPositionRange(related.Location),
 			},
 			Message: related.Message,

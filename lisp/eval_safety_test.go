@@ -4,7 +4,7 @@ package lisp
 
 import (
 	"bytes"
-	"fmt"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -151,7 +151,7 @@ func TestPanicWithNonStringValues(t *testing.T) {
 	}{
 		{"integer", 42, "42"},
 		{"nil", nil, "nil"},
-		{"error", fmt.Errorf("wrapped error"), "wrapped error"},
+		{"error", errors.New("wrapped error"), "wrapped error"},
 		{"struct", struct{ X int }{99}, "{99}"},
 	}
 

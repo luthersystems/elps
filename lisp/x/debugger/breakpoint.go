@@ -104,10 +104,10 @@ func parseHitCondition(s string) (hitOp, int) {
 // satisfies the hit condition. Returns true if there is no hit condition
 // or if the condition is met.
 func (bp *Breakpoint) checkHitCondition() bool {
-	if bp.parsedHitOp == hitOpNone {
-		return true
-	}
 	switch bp.parsedHitOp {
+	case hitOpNone:
+		// No hit condition: always fire.
+		return true
 	case hitOpEQ:
 		return bp.hitCount == bp.parsedHitVal
 	case hitOpGT:
@@ -145,17 +145,17 @@ func InterpolateLogMessage(env *lisp.LEnv, template string) string {
 		}
 		buf.WriteString(template[:open])
 		rest := template[open+1:]
-		close := strings.Index(rest, "}")
-		if close < 0 {
+		closeIdx := strings.Index(rest, "}")
+		if closeIdx < 0 {
 			// Unterminated brace — emit remainder literally.
 			buf.WriteByte('{')
 			buf.WriteString(rest)
 			break
 		}
-		expr := rest[:close]
+		expr := rest[:closeIdx]
 		result := EvalInContext(env, expr)
 		buf.WriteString(FormatValue(result))
-		template = rest[close+1:]
+		template = rest[closeIdx+1:]
 	}
 	return buf.String()
 }

@@ -29,6 +29,9 @@ import (
 // The only thread-safe operations are GenEnvID and GenSym, which use atomic
 // counters internally.  All other fields — including Registry, Package,
 // Stack, conditionStack, and the LEnv Scope maps — are unprotected.
+//
+// Field order is layout-sensitive: pointer-bearing fields lead so the GC scan
+// extent stops at 112 bytes instead of 144. Add scalars below conditionStack.
 type Runtime struct {
 	Registry               *PackageRegistry
 	Package                *Package
@@ -38,13 +41,13 @@ type Runtime struct {
 	Library                SourceLibrary
 	Profiler               Profiler
 	Debugger               Debugger // nil = disabled (zero overhead on hot path)
-	MaxAlloc               int      // Per-operation allocation size cap (0 = use default). Not cumulative.
-	MaxMacroExpansionDepth int      // Maximum macro expansion iterations (0 = use default).
-	maxSteps               int64    // Per-evaluation step limit (0 = unlimited).
-	steps                  int64    // Steps consumed by the current top-level evaluation.
-	totalSteps             int64    // Steps consumed by all completed top-level evaluations.
-	evalDepth              int      // Re-entrancy depth of top-level evaluation entry points.
 	conditionStack         []*LVal
+	MaxAlloc               int   // Per-operation allocation size cap (0 = use default). Not cumulative.
+	MaxMacroExpansionDepth int   // Maximum macro expansion iterations (0 = use default).
+	evalDepth              int   // Re-entrancy depth of top-level evaluation entry points.
+	maxSteps               int64 // Per-evaluation step limit (0 = unlimited).
+	steps                  int64 // Steps consumed by the current top-level evaluation.
+	totalSteps             int64 // Steps consumed by all completed top-level evaluations.
 	numenv                 atomicCounter
 	numsym                 atomicCounter
 	macroExpSeq            int64 // monotonic counter for MacroExpansionInfo.ID
@@ -75,9 +78,9 @@ func (r *Runtime) MaxMacroExpansions() int {
 // not a cumulative memory tracker.  Callers should use this before allocating
 // buffers or sequences whose size is determined by user input.
 func (r *Runtime) CheckAlloc(n int) string {
-	max := r.MaxAllocBytes()
-	if n > max {
-		return fmt.Sprintf("allocation size %d exceeds maximum (%d)", n, max)
+	maxAlloc := r.MaxAllocBytes()
+	if n > maxAlloc {
+		return fmt.Sprintf("allocation size %d exceeds maximum (%d)", n, maxAlloc)
 	}
 	return ""
 }

@@ -94,7 +94,7 @@ func TestLoadFile_noSourceLibrary(t *testing.T) {
 	}
 	env.Runtime.Reader = parser.NewReader()
 	lok := env.LoadFile("testfixtures/test1.lisp")
-	assert.Equal(t, lok.Type, lisp.LError)
+	assert.Equal(t, lisp.LError, lok.Type)
 }
 
 // plainReader wraps a lisp.Reader, exposing only the Read method so that the

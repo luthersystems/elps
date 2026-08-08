@@ -9,6 +9,7 @@ import (
 	"github.com/luthersystems/elps/lisp/x/profiler"
 	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -30,13 +31,13 @@ func TestNewOpenTelemetryAnnotator(t *testing.T) {
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
 	ppa := profiler.NewOpenTelemetryAnnotator(env.Runtime, context.Background())
-	assert.NoError(t, ppa.Enable())
+	require.NoError(t, ppa.Enable())
 	lerr := lisp.InitializeUserEnv(env)
-	assert.NoError(t, lisp.GoError(lerr))
+	require.NoError(t, lisp.GoError(lerr))
 	testsrc := env.LoadString("test.lisp", testLisp)
 	lerr = env.Eval(testsrc)
 	assert.NotEqual(t, lisp.LError, lerr.Type, lerr.Str)
-	assert.NoError(t, ppa.Complete())
+	require.NoError(t, ppa.Complete())
 
 	spans := exporter.GetSpans()
 	assert.GreaterOrEqual(t, len(spans), 3, "Expected at least three spans")
@@ -60,16 +61,16 @@ func TestNewOpenTelemetryAnnotatorSkip(t *testing.T) {
 	ppa := profiler.NewOpenTelemetryAnnotator(env.Runtime, context.Background(),
 		profiler.WithELPSDocFilter(),
 		profiler.WithELPSDocLabeler())
-	assert.NoError(t, ppa.Enable())
+	require.NoError(t, ppa.Enable())
 	lerr := lisp.InitializeUserEnv(env)
-	assert.NoError(t, lisp.GoError(lerr))
+	require.NoError(t, lisp.GoError(lerr))
 	testsrc := env.LoadString("test.lisp", testLisp)
 	lerr = env.Eval(testsrc)
 	assert.NotEqual(t, lisp.LError, lerr.Type, lerr.Str)
-	assert.NoError(t, ppa.Complete())
+	require.NoError(t, ppa.Complete())
 
 	spans := exporter.GetSpans()
-	assert.Equal(t, 7, len(spans), "Expected selective spans")
+	assert.Len(t, spans, 7, "Expected selective spans")
 	assert.Equal(t, "Add-It", spans[0].Name, "Expected custom label")
 	assert.Equal(t, "Add-It-Again", spans[3].Name, "Expected custom label")
 	assert.Equal(t, "lambda", spans[4].Name, "Expected custom label")

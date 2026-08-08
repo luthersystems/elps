@@ -195,18 +195,18 @@ func (h *handler) onInitialize(req *dap.InitializeRequest) {
 	resp := &dap.InitializeResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	resp.Body = dap.Capabilities{
-		SupportsConfigurationDoneRequest:      true,
-		SupportsFunctionBreakpoints:           true,
-		SupportsConditionalBreakpoints:        true,
-		SupportsHitConditionalBreakpoints:     true,
-		SupportsLogPoints:                     true,
-		SupportsSetVariable:                   true,
-		SupportsEvaluateForHovers:             true,
-		SupportTerminateDebuggee:              true,
-		SupportsSteppingGranularity:           true,
-		SupportsStepInTargetsRequest:          true,
-		SupportsCompletionsRequest:            true,
-		CompletionTriggerCharacters:           []string{"(", ":", "'", "/"},
+		SupportsConfigurationDoneRequest:  true,
+		SupportsFunctionBreakpoints:       true,
+		SupportsConditionalBreakpoints:    true,
+		SupportsHitConditionalBreakpoints: true,
+		SupportsLogPoints:                 true,
+		SupportsSetVariable:               true,
+		SupportsEvaluateForHovers:         true,
+		SupportTerminateDebuggee:          true,
+		SupportsSteppingGranularity:       true,
+		SupportsStepInTargetsRequest:      true,
+		SupportsCompletionsRequest:        true,
+		CompletionTriggerCharacters:       []string{"(", ":", "'", "/"},
 		ExceptionBreakpointFilters: []dap.ExceptionBreakpointsFilter{
 			{
 				Filter:  "all",
@@ -295,12 +295,26 @@ func (h *handler) onConfigurationDone(req *dap.ConfigurationDoneRequest) {
 	// the client connected), handle according to client preference:
 	// - If client sent attach/launch with stopOnEntry:false, resume silently
 	// - Otherwise, send the stopped event (late-connect case)
+	// PausedUnannounced, not IsPaused. The engine publishes the paused state
+	// before it hands the stopped event to our callback, so IsPaused() is
+	// true for a window in which the event is already in flight -- landing
+	// here inside that window would send the client a second stopped event
+	// for the same pause. PausedUnannounced excludes it.
+	//
+	// stoppedSent is still needed for the pause the engine announced to a
+	// callback installed before this handler existed. Read it under the same
+	// lock acquisition rather than sampling separately.
+	//
+	// Lock order h.mu -> engine.mu is safe: the engine always releases its
+	// own mutex before invoking a callback (see WaitIfPaused), so it never
+	// holds engine.mu while acquiring h.mu.
 	h.mu.Lock()
 	alreadySent := h.stoppedSent
 	clientSet := h.stopOnEntrySet
 	clientStopOnEntry := h.stopOnEntry
+	unannounced := h.engine.PausedUnannounced()
 	h.mu.Unlock()
-	if !alreadySent && h.engine.IsPaused() {
+	if !alreadySent && unannounced {
 		if clientSet && !clientStopOnEntry {
 			h.engine.Resume()
 		} else {
@@ -737,7 +751,7 @@ func (h *handler) onSetVariable(req *dap.SetVariableRequest) {
 	result := h.engine.EvalSingleInContext(env, valueExpr)
 	if result != nil && result.Type == lisp.LError {
 		resp.Success = false
-		resp.Message = fmt.Sprintf("failed to evaluate value: %s", debugger.FormatValueWith(result, h.engine))
+		resp.Message = "failed to evaluate value: " + debugger.FormatValueWith(result, h.engine)
 		h.send(resp)
 		return
 	}
@@ -776,7 +790,7 @@ func (h *handler) onSetVariable(req *dap.SetVariableRequest) {
 
 	if updateErr != nil && updateErr.Type == lisp.LError {
 		resp.Success = false
-		resp.Message = fmt.Sprintf("failed to update variable: %s", debugger.FormatValueWith(updateErr, h.engine))
+		resp.Message = "failed to update variable: " + debugger.FormatValueWith(updateErr, h.engine)
 		h.send(resp)
 		return
 	}
@@ -872,7 +886,7 @@ func (h *handler) handleFilterCommand(req *dap.EvaluateRequest) bool {
 	h.mu.Lock()
 	h.mapKeyFilter = re
 	h.mu.Unlock()
-	resp.Body.Result = fmt.Sprintf("filter set: %s", pattern)
+	resp.Body.Result = "filter set: " + pattern
 	h.send(resp)
 	h.sendInvalidatedVariables()
 	return true

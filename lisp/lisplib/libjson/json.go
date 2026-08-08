@@ -5,6 +5,7 @@ package libjson
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -119,14 +120,13 @@ func (s *Serializer) Load(b []byte, stringNums bool) *lisp.LVal {
 func (s *Serializer) LoadMax(b []byte, stringNums bool, maxAlloc int) *lisp.LVal {
 	var x interface{}
 	err := s.jsonDecode(b, &x, stringNums)
-	switch err.(type) {
-	case nil:
-		break
-	case *json.SyntaxError:
-		lerr := lisp.Error(err)
-		lerr.Str = "json:syntax-error"
-		return lerr
-	default:
+	if err != nil {
+		var syntaxErr *json.SyntaxError
+		if errors.As(err, &syntaxErr) {
+			lerr := lisp.Error(err)
+			lerr.Str = "json:syntax-error"
+			return lerr
+		}
 		return lisp.Error(err)
 	}
 	return s.loadInterfaceMax(x, maxAlloc)
@@ -141,12 +141,12 @@ func (s *Serializer) jsonDecode(b []byte, dst interface{}, stringNums bool) erro
 	err := d.Decode(dst)
 	rest := failUnmarshal()
 	if d.Decode(&rest) != io.EOF {
-		return fmt.Errorf("not a valid json object")
+		return errors.New("not a valid json object")
 	}
 	return err
 }
 
-var errUnexpectedJSON = fmt.Errorf("unexpected json in stream")
+var errUnexpectedJSON = errors.New("unexpected json in stream")
 
 type unmarshalFailer struct{}
 
@@ -383,6 +383,20 @@ func (s *Serializer) GoValue(v *lisp.LVal, stringNums bool) interface{} {
 	case lisp.LSortMap:
 		m, _ := s.GoMap(v, stringNums)
 		return m
+	case lisp.LInvalid, lisp.LQSymbol, lisp.LFun, lisp.LTaggedVal,
+		lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand,
+		lisp.LTypeMax:
+		// Returned as the *LVal itself -- the documented behaviour for
+		// functions ("Functions are returned as is") and what the other
+		// entries here have always done.
+		//
+		// This is NOT the serialization path.  Dump/DumpString go through
+		// encoder.encode in encode.go, which dispatches on the encoderFuncs
+		// table and returns "invalid type encountered" for any LType with no
+		// registered function -- see TestEncoderTypeCoverage.  GoValue is
+		// deprecated and kept only for outside callers, so its pass-through
+		// is preserved rather than turned into an error.
+		return v
 	}
 	return v
 }

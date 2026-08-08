@@ -74,7 +74,7 @@ func TestFormatJSON_EmptyCollections(t *testing.T) {
 		require.NoError(t, json.Unmarshal(buf.Bytes(), &parsed))
 		slice, ok := parsed.([]any)
 		require.True(t, ok, "empty JSON output should decode as an array")
-		assert.Len(t, slice, 0)
+		assert.Empty(t, slice)
 	}
 	require.Len(t, outputs, 2)
 	assert.Equal(t, outputs[0], outputs[1])

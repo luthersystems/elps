@@ -78,7 +78,7 @@ func InitializeTypedef(env *LEnv) *LVal {
 	// Create a typedef for the typedef type that will use ctor to create new
 	// typedefs. Pretty simple, really. *brain explosion*
 	pkg := env.Runtime.Registry.Lang
-	fqname := Symbol(fmt.Sprintf("%s:typedef", pkg))
+	fqname := Symbol(pkg + ":typedef")
 	typedef := env.TaggedValue(fqname, QExpr([]*LVal{fqname, ctor}))
 	if typedef.Type == LError {
 		return typedef
@@ -90,14 +90,17 @@ func InitializeTypedef(env *LEnv) *LVal {
 // TODO(elps2): Remove the field LEnv.FunName
 
 // LEnv is a lisp environment.
+//
+// Field order is layout-sensitive: the pointer-bearing fields lead so the GC
+// scan extent stops at 56 bytes instead of 64. Keep scalars (ID) trailing.
 type LEnv struct {
 	Loc     *token.Location
 	Scope   map[string]*LVal
 	FunName map[string]string
 	Parent  *LEnv
 	Runtime *Runtime
-	ID      uint
 	evalCtx context.Context // transient: set by call() at builtin boundary
+	ID      uint
 }
 
 // Context returns the context.Context currently associated with this
@@ -644,7 +647,7 @@ func (env *LEnv) New(typ *LVal, args *LVal) *LVal {
 	if typ.Type != LTaggedVal {
 		return env.Errorf("first argument is not a typedef: %v", GetType(typ))
 	}
-	if typ.Str != fmt.Sprintf("%s:typedef", env.Runtime.Registry.Lang) {
+	if typ.Str != env.Runtime.Registry.Lang+":typedef" {
 		return env.Errorf("first argument is not a typedef: %v", GetType(typ))
 	}
 	if args.Type != LSExpr {
@@ -1498,7 +1501,7 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 	}
 	body := list.Cells
 	var ret *LVal
-	for i := 0; i < len(body)-1; i++ {
+	for i := range len(body) - 1 {
 		ret = fenv.eval(ctx, body[i])
 		if ret.Type == LError {
 			return ret

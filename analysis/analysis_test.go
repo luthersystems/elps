@@ -164,7 +164,7 @@ func TestSignature_MinMaxArity(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.wantMin, tt.sig.MinArity())
-			assert.Equal(t, tt.sig.MaxArity(), tt.wantMax)
+			assert.Equal(t, tt.wantMax, tt.sig.MaxArity())
 		})
 	}
 }
@@ -771,7 +771,7 @@ func TestAnalyze_Quasiquote_UnquoteInBracketList(t *testing.T) {
   (quasiquote (let ([(unquote patt) 42]) (unquote patt))))`)
 	for _, sym := range result.Symbols {
 		if sym.Name == "patt" && sym.Kind == SymParameter {
-			assert.Greater(t, sym.References, 0, "patt should be used via unquote inside bracket list")
+			assert.Positive(t, sym.References, "patt should be used via unquote inside bracket list")
 			return
 		}
 	}
