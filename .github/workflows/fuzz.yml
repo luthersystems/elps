@@ -26,6 +26,12 @@ on:
   pull_request:
     branches:
       - main
+      # Stacked PRs. Multi-part work here is reviewed as a chain of PRs
+      # whose base is another claude/* branch. This filter matches the
+      # PR's BASE, so with `main` alone none of these workflows fired on
+      # such a PR -- and a board showing only the two branch-agnostic
+      # Socket checks reads as a pass when in fact nothing ran.
+      - 'claude/**'
   push:
     branches:
       - main
