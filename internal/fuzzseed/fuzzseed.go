@@ -74,7 +74,10 @@ func LispSources() [][]byte {
 		}
 		var paths []string
 		for _, dir := range lispDirs {
-			//nolint:errcheck // the walk func never returns an error
+			// The walk func never returns an error, so the result is
+			// deliberately discarded. (Plain comment, not //nolint:errcheck --
+			// the explicit `_ =` already satisfies errcheck, which made the
+			// directive dead weight that nolintlint flags.)
 			_ = filepath.WalkDir(filepath.Join(root, dir), func(path string, d fs.DirEntry, err error) error {
 				if err != nil {
 					// A missing or unreadable directory is not fatal here:

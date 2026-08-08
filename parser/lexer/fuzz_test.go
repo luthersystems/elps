@@ -125,7 +125,7 @@ func TestLexerTerminatesOnUndecodableInput(t *testing.T) {
 // would loop forever against a lexer that went quiet.
 func TestLexerReportsErrorRepeatedly(t *testing.T) {
 	lx := lexer.New(token.NewScanner("fuzz", bytes.NewReader([]byte("\xe4\xb8"))))
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		toks := lx.ReadToken()
 		if len(toks) == 0 {
 			t.Fatalf("read %d: empty token slice", i)

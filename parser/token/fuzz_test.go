@@ -60,7 +60,7 @@ func FuzzScanner(f *testing.F) {
 		if n > maxScannerOps {
 			n = maxScannerOps
 		}
-		for i := 0; i < n; i++ {
+		for i := range n {
 			switch script[i] % 6 {
 			case 0:
 				_ = s.ScanRune()
