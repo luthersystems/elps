@@ -465,6 +465,23 @@ func opDoTimes(env *LEnv, args *LVal) *LVal {
 	n := 0
 	for i := range count.Int {
 		n++
+		// Count a step for the TURN ITSELF, not just for the forms in the
+		// body.  Without this, (dotimes (i 2147483647)) with an EMPTY body
+		// evaluates nothing, so it increments no counter and consults no
+		// context: measured 42s of uninterruptible CPU for 2e8 turns, and
+		// unbounded above -- count.Int can be MaxInt.  MaxSteps, MaxAlloc,
+		// the stack limits and a context deadline were all blind to it,
+		// because every one of them is only reached through Eval.
+		//
+		// CAVEAT, do not overclaim: checkLimits short-circuits when the
+		// runtime has NEITHER a context NOR a step limit configured (see
+		// LEnv.checkLimits), so a default embedding is still uninterruptible
+		// here.  What this buys is that a runtime which HAS configured one of
+		// them now actually gets it enforced.  For a caller that sets only a
+		// context (substrate's shape) that is cancellability, not a bound.
+		if lerr := loopenv.checkLimits(env.evalCtx); lerr != nil {
+			return lerr
+		}
 		lerr := loopenv.Put(symbol, Int(i))
 		if lerr.Type == LError {
 			return lerr

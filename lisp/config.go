@@ -135,8 +135,16 @@ func WithContext(ctx context.Context) Config {
 
 // WithMaxSteps returns a Config that sets the maximum number of evaluation
 // steps before evaluation returns a CondStepLimitExceeded error.  A step is
-// counted for each Eval entry, each TRO iteration, and each macro
-// re-expansion.  A value of 0 means unlimited (the default).
+// counted for each Eval entry, each TRO iteration, each macro re-expansion,
+// and each turn of a dotimes loop.  A value of 0 means unlimited (the
+// default).
+//
+// The dotimes turn is counted because an empty-bodied loop evaluates nothing:
+// (dotimes (i 2147483647)) consumed no budget and could not be interrupted.
+// One consequence is that a dotimes-heavy program costs one more step per
+// turn than it did before that was fixed — a one-form body went from 4 to 5
+// steps per turn — so a budget pinned tightly against a measured figure may
+// need raising.
 //
 // The budget is per top-level evaluation: the counter is reset each time an
 // exported entry point (Eval, EvalContext, EvalSExpr, FunCall,
