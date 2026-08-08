@@ -348,44 +348,48 @@ else
 	bad "benchmark.yml does not run ci-gates-test.sh — the gate would be unguarded again"
 fi
 
-# Every benchmark-baseline cache key must be namespaced by runner.arch.
+# The benchmark comparison must measure BOTH arms in this job, on one runner.
 #
-# benchstat keys its configuration off the goos/goarch/cpu headers `go test`
-# emits. Restore a baseline recorded on different silicon and it does not
-# produce a caveated comparison -- it produces two standalone one-column
-# tables with ZERO comparison rows, which benchstat-gate.sh reports as exit 2
-# and the workflow turns into a hard failure. An un-namespaced restore-keys
-# prefix is enough on its own: it matches the most recent baseline of ANY
-# architecture.
+# The gate previously compared the PR against a baseline restored from
+# actions/cache -- results recorded on a different machine at a different
+# time, with the hardware delta attributed to the code delta. GitHub's hosted
+# pool is heterogeneous: consecutive runs of IDENTICAL code landed on an EPYC
+# 7763 and an EPYC 9V74, and because benchstat keys its configuration off the
+# goos/goarch/cpu headers `go test` emits, it refused to pair them and emitted
+# zero comparison rows -- which benchstat-gate.sh correctly calls exit 2 and
+# the workflow turns into a hard failure. A gate that flaps on which machine
+# it drew teaches people to re-run it, which is how a real regression gets
+# waved through.
 #
-# This is not theoretical. The keys were bare `benchmark-baseline-` when the
-# benchmark job moved from amd64 ubuntu-latest to the ARM pool, and every PR
-# would have failed that way until a push to main happened to regenerate a
-# baseline. Guarding the whole class rather than that one instance: any key or
-# restore-keys line naming a benchmark baseline must carry runner.arch.
-bad_keys="$(python3 - "$BENCH_WF" <<'PY'
+# Two halves, both required, both able to fail independently:
+#   1. the base revision is checked out for measurement, and
+#   2. no cached benchmark baseline is restored.
+# Guard 2 alone would pass on a workflow that compares against nothing;
+# guard 1 alone would pass on one that checks out the base and then ignores it
+# in favour of the cache.
+if [ -n "$(invoked_in "$BENCH_WF" 'pull_request.base.sha')" ]; then
+	ok "benchmark.yml checks out the PR base revision to measure it in-job"
+else
+	bad "benchmark.yml does not check out the PR base — the baseline is not measured on this runner"
+fi
+
+cached_baseline="$(python3 - "$BENCH_WF" <<'PY_INNER'
 import re, sys
 path = sys.argv[1]
-bad = []
+hits = []
 for i, line in enumerate(open(path), 1):
-    stripped = line.lstrip()
-    if stripped.startswith("#"):          # comments ABOUT the keys are fine
+    if line.lstrip().startswith("#"):     # comments ABOUT the old design are fine
         continue
-    m = re.match(r"(key|restore-keys):\s*(\S.*)$", stripped)
-    if not m:
-        continue
-    value = m.group(2).strip()
-    if "benchmark-baseline-" not in value:
-        continue
-    if "runner.arch" not in value:
-        bad.append(f"{i}: {stripped.rstrip()}")
-print("\n".join(bad))
-PY
+    code = line.split("#", 1)[0]
+    if re.search(r"(key|restore-keys):", code) and "benchmark-baseline" in code:
+        hits.append(f"{i}: {line.strip()}")
+print("\n".join(hits))
+PY_INNER
 )"
-if [ -n "$bad_keys" ]; then
-	bad "benchmark baseline cache key is not namespaced by runner.arch — a cross-architecture baseline would be restored and fail the gate as 'cannot interpret': $bad_keys"
+if [ -n "$cached_baseline" ]; then
+	bad "benchmark.yml restores a CACHED benchmark baseline — that compares across machines and is what made this gate flap: $cached_baseline"
 else
-	ok "every benchmark-baseline cache key is namespaced by runner.arch"
+	ok "benchmark.yml restores no cached baseline (both arms measured in-job)"
 fi
 
 wf_out="$(python3 - "$REPO_ROOT" <<'PY'

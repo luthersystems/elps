@@ -4,16 +4,21 @@ on:
   pull_request:
     branches:
       - main
-  push:
-    branches:
-      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  BENCH_COUNT: "5"
+  # 10, not benchstat's bare minimum of 6. Below 6 benchstat cannot compute a
+  # confidence interval at all and prints "need >= 6 samples"; at 5 the
+  # Mann-Whitney p-value floors at 0.008, which means only "every sample
+  # ranked one way" and is exactly how environment bias masquerades as
+  # significance. This was previously pinned at 5 and could not be raised,
+  # because the cached baseline had been recorded at 5 and benchstat will not
+  # pair arms of unequal sample count. Measuring both arms in this job
+  # removes that coupling.
+  BENCH_COUNT: "10"
   GO_VERSION: "1.25"
   # Regression gates, applied per metric class by scripts/benchstat-gate.sh.
   # elps' allocation metrics are near-deterministic (worst-case noise measured on
@@ -72,91 +77,83 @@ jobs:
     # literal plus a `vars` override rather than a workflow-level env var.
     runs-on: ${{ vars.BENCH_RUNNER || 'ubuntu-arm-4core-150gb' }}
     steps:
-      - name: Check out code
+      # Two working trees, measured on the SAME runner in the SAME job. This
+      # replaces the cached-baseline design, which compared this PR against
+      # results recorded on a different machine at a different time and
+      # attributed the hardware delta to the code delta. GitHub's hosted pool
+      # is heterogeneous -- consecutive runs of IDENTICAL code landed on an
+      # EPYC 7763 and an EPYC 9V74 and benchstat refused to pair them at all,
+      # failing the gate with "cannot interpret". Same silicon, same thermal
+      # state, same toolchain is the only way the comparison means anything.
+      - name: Check out PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          path: pr
+
+      - name: Check out PR base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+          # Both trees are checked out into subdirectories, so there is no
+          # go.sum at the workspace root for setup-go to key its cache on.
+          cache-dependency-path: pr/go.sum
 
       - name: Install benchstat
         run: go install golang.org/x/perf/cmd/benchstat@latest
 
-      # On PRs: try to restore cached baseline results from the latest main push.
-      # Each main push saves with a unique key
-      # (benchmark-baseline-<arch>-<sha>); restore-keys prefix matching finds
-      # the most recent one for the SAME architecture.
+      # Interleaved, alternating arms every round rather than running all of
+      # one arm then all of the other. A runner that slows down partway
+      # through -- thermal throttling, a noisy neighbour -- biases a
+      # block-ordered run entirely into whichever arm ran second. Alternating
+      # spreads that drift across both arms instead of pooling it into one.
+      # Each round contributes one sample per arm, so BENCH_COUNT rounds give
+      # BENCH_COUNT samples each.
       #
-      # The runner.arch segment is load-bearing, not decoration. benchstat
-      # keys its configuration off the goos/goarch/cpu headers `go test`
-      # emits, so handing it two arms recorded on different machines does not
-      # produce a comparison with caveats -- it produces two standalone
-      # one-column tables and ZERO comparison rows, which benchstat-gate.sh
-      # correctly reports as exit 2, "cannot interpret", a hard failure.
-      # Without the arch segment, the amd64 baselines already in the cache
-      # would be restored for ARM PRs and every PR would fail that way until
-      # a push to main happened to regenerate one.
-      #
-      # With it, an architecture with no stored baseline MISSES, which the
-      # comparison step below reports as gate_status=skipped and passes. The
-      # gate then resumes on its own after the next push to main. A missing
-      # baseline is a known-benign "nothing to compare"; a cross-machine
-      # baseline is a wrong answer, and those must not be conflated.
-      - name: Restore cached baseline
-        if: github.event_name == 'pull_request'
-        id: cache-baseline
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
-        with:
-          path: bench-baseline.txt
-          key: benchmark-baseline-${{ runner.arch }}-${{ github.event.pull_request.base.sha }}
-          restore-keys: benchmark-baseline-${{ runner.arch }}-
-
-      - name: Run benchmarks
+      # `set -o pipefail` is load-bearing: without it the exit status of
+      # `go test ... | tee` is tee's, which is 0 even when the benchmarks fail
+      # to compile or panic. The step would go green, the output files would
+      # hold error text, and the comparison downstream would be meaningless.
+      # GitHub's default shell is `bash -e` WITHOUT pipefail, so it must be
+      # set explicitly.
+      - name: Run benchmarks (both arms, interleaved)
         run: |
-          # `set -o pipefail` is load-bearing: without it the exit status of
-          # `go test ... | tee` is tee's, which is 0 even when the benchmarks
-          # fail to compile or panic. The step would go green, bench-current.txt
-          # would hold error text, and the comparison downstream would be
-          # meaningless. GitHub's default shell is `bash -e` WITHOUT pipefail,
-          # so this has to be set explicitly.
           set -o pipefail
-          go test -bench=. -benchmem -benchtime=100ms -count=${{ env.BENCH_COUNT }} \
-            -run='^$' -timeout=10m ./... | tee bench-current.txt
-
-      # On push to main: save results as the new baseline for future PRs.
-      # Uses a per-arch, per-SHA key so each push creates a new entry. The PR
-      # restore step uses restore-keys prefix matching within the same
-      # architecture to find the most recent one. The path must match the
-      # restore step (bench-baseline.txt).
-      - name: Save baseline to cache
-        if: github.event_name == 'push'
-        run: cp bench-current.txt bench-baseline.txt
-
-      - name: Upload baseline cache
-        if: github.event_name == 'push'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
-        with:
-          path: bench-baseline.txt
-          key: benchmark-baseline-${{ runner.arch }}-${{ github.sha }}
+          : > bench-baseline.txt
+          : > bench-current.txt
+          for round in $(seq 1 ${{ env.BENCH_COUNT }}); do
+            echo "::group::round ${round}/${{ env.BENCH_COUNT }}"
+            (cd base && go test -bench=. -benchmem -benchtime=100ms -count=1 \
+              -run='^$' -timeout=10m ./...) | tee -a bench-baseline.txt
+            (cd pr && go test -bench=. -benchmem -benchtime=100ms -count=1 \
+              -run='^$' -timeout=10m ./...) | tee -a bench-current.txt
+            echo "::endgroup::"
+          done
 
       - name: Compare with benchstat
         if: github.event_name == 'pull_request'
         id: benchstat
         run: |
           set -uo pipefail
+          # Both arms are produced by the step above, in this job. An empty
+          # baseline is no longer a benign cache miss -- it means the base
+          # checkout or its benchmark run failed, and silently degrading to
+          # "PR results only" would hide that. Fail loudly.
           if [ ! -s bench-baseline.txt ]; then
-            echo "No cached baseline found — showing PR results only."
-            # `skipped` (not 0) so the gate step below can tell "nothing to
-            # compare" apart from "compared and found clean".
-            echo "gate_status=skipped" >> "$GITHUB_OUTPUT"
+            echo "::error::bench-baseline.txt is empty — the base arm did not produce results."
+            echo "gate_status=2" >> "$GITHUB_OUTPUT"
             {
               echo 'result<<BENCHSTAT_EOF'
-              echo '## Benchmark Results (no baseline to compare)'
+              echo '## Benchmark Results (base arm FAILED — no comparison)'
               echo ''
-              echo 'No cached baseline from main found. Results will be cached'
-              echo 'once this PR merges and the next push to main runs.'
+              echo 'The base checkout or its benchmark run produced nothing.'
+              echo 'These are the PR-side numbers only; they are NOT a comparison.'
               echo ''
               echo '```'
               cat bench-current.txt
@@ -192,7 +189,7 @@ jobs:
             echo ''
             echo '</details>'
             echo ''
-            echo '_Compared against cached baseline from the latest main push._'
+            echo '_Both arms measured on the same runner in the same job, interleaved, n=${{ env.BENCH_COUNT }} each._'
             echo 'BENCHSTAT_EOF'
           } >> "$GITHUB_OUTPUT"
 
