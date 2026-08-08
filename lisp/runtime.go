@@ -90,8 +90,8 @@ func (r *Runtime) CheckAlloc(n int) string {
 // Four things increment the counter by one: each call to Eval, each
 // tail-recursion iteration, each macro re-expansion, and each turn of a
 // dotimes loop.  The last of those exists because an empty-bodied dotimes
-// evaluates nothing and would otherwise consume no budget at all — see
-// opDoTimes.
+// evaluates nothing and would otherwise consume no budget at all -- see
+// opDoTimes, which also records the measured per-turn cost.
 //
 // The counter is reset when a new top-level evaluation begins (see
 // WithMaxSteps), so it is not a lifetime total.  Use TotalSteps for that.

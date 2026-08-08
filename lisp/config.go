@@ -140,11 +140,12 @@ func WithContext(ctx context.Context) Config {
 // default).
 //
 // The dotimes turn is counted because an empty-bodied loop evaluates nothing:
-// (dotimes (i 2147483647)) consumed no budget and could not be interrupted.
-// One consequence is that a dotimes-heavy program costs one more step per
-// turn than it did before that was fixed — a one-form body went from 4 to 5
-// steps per turn — so a budget pinned tightly against a measured figure may
-// need raising.
+// (dotimes (i 2147483647)) consumed no budget and could not be interrupted at
+// all.  It costs exactly one extra step per turn, so a dotimes-heavy program
+// now uses more budget than it did -- proportionally most for a small body (a
+// constant body goes from 1 step per turn to 2; a three-form body from 12 to
+// 13).  A budget pinned tightly against a previously measured figure may need
+// raising.  opDoTimes carries the full measurement table.
 //
 // The budget is per top-level evaluation: the counter is reset each time an
 // exported entry point (Eval, EvalContext, EvalSExpr, FunCall,

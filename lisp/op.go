@@ -464,24 +464,49 @@ func opDoTimes(env *LEnv, args *LVal) *LVal {
 	loopenv := newEnvN(env, 1) // single loop variable
 	n := 0
 	for i := range count.Int {
-		n++
 		// Count a step for the TURN ITSELF, not just for the forms in the
-		// body.  Without this, (dotimes (i 2147483647)) with an EMPTY body
-		// evaluates nothing, so it increments no counter and consults no
-		// context: measured 42s of uninterruptible CPU for 2e8 turns, and
-		// unbounded above -- count.Int can be MaxInt.  MaxSteps, MaxAlloc,
-		// the stack limits and a context deadline were all blind to it,
-		// because every one of them is only reached through Eval.
+		// body.  Without this, a dotimes with an EMPTY body evaluates nothing,
+		// so it increments no counter and consults no context:
+		// `(dotimes (i 1000000000))` ignored a 2s context deadline and a
+		// 2,000,000-step budget alike and was still running 30s later, and
+		// `(dotimes (i 2147483647))` measured 42s of uninterruptible CPU --
+		// unbounded above, since count.Int can be MaxInt.  MaxSteps, MaxAlloc,
+		// the stack limits and a context deadline were all blind to it, because
+		// every one of them is only reached through Eval.  Found independently
+		// by the evaluator and the stdlib fuzzers (issue #320, item B2).
 		//
-		// CAVEAT, do not overclaim: checkLimits short-circuits when the
-		// runtime has NEITHER a context NOR a step limit configured (see
+		// COST: exactly one extra step per turn.  As a FRACTION that depends
+		// entirely on the body, so do not quote a single percentage -- two
+		// earlier write-ups of this fix quoted "+16.6%" and "4 to 5 steps per
+		// turn", which are the same +1 seen through two different bodies.
+		// Measured at n=1000 on this tree, steps per turn:
+		//
+		//     body                 before  after
+		//     (empty)                   0      1   <- the defect
+		//     1                         1      2
+		//     (+ i 1)                   4      5
+		//     (+ (* i 2) (- i 1))      10     11
+		//     (+ i 1) (+ i 2) (+ i 3)  12     13
+		//
+		// So a budget pinned tightly against a measured figure for a
+		// dotimes-heavy program may need raising by one step per turn.
+		//
+		// CAVEAT, do not overclaim: checkLimits short-circuits when the runtime
+		// has NEITHER a context NOR a step limit configured (see
 		// LEnv.checkLimits), so a default embedding is still uninterruptible
 		// here.  What this buys is that a runtime which HAS configured one of
 		// them now actually gets it enforced.  For a caller that sets only a
 		// context (substrate's shape) that is cancellability, not a bound.
+		//
+		// env.evalCtx, not loopenv.evalCtx: newEnvN copies the parent's ctx at
+		// construction, so the two are equal here -- verified, in that the two
+		// independently written fixes for this defect each pass the other's
+		// tests -- but reading it live from the op's env cannot go stale should
+		// loopenv ever be hoisted out of the loop.
 		if lerr := loopenv.checkLimits(env.evalCtx); lerr != nil {
 			return lerr
 		}
+		n++
 		lerr := loopenv.Put(symbol, Int(i))
 		if lerr.Type == LError {
 			return lerr
