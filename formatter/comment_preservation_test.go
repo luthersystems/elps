@@ -170,7 +170,7 @@ func TestLonghandPrefixFormKeepsComments(t *testing.T) {
 		{
 			name:     "funref/leading",
 			input:    "(lisp:function\n; c\nf)\n",
-			expected: "(lisp:function\n  ; c\n  f)\n",
+			expected: "(lisp:function\n; c\n  f)\n",
 		},
 		{
 			name:     "funref/trailing-on-head",
@@ -240,11 +240,16 @@ func TestCommentInEmptySExpr(t *testing.T) {
 // child's leading comments, which is why the bracketed forms are the controls.
 func TestCommentBeforeSExprHead(t *testing.T) {
 	tests := []formatTest{
-		{name: "call", input: "(\n; c\nf x)\n", expected: "(\n ; c\n f x)\n"},
-		{name: "call/two", input: "(\n; a\n; b\nf x)\n", expected: "(\n ; a\n ; b\n f x)\n"},
-		{name: "data-list", input: "(\n; c\n1 2)\n", expected: "(\n ; c\n 1 2)\n"},
-		{name: "brace", input: "[\n; c\nf x]\n", expected: "[\n ; c\n f x]\n"},
-		{name: "nested", input: "(g (\n; c\nf x))\n", expected: "(g (\n    ; c\n    f x))\n"},
+		{name: "call", input: "(\n; c\nf x)\n", expected: "(\n; c\n f x)\n"},
+		{name: "call/two", input: "(\n; a\n; b\nf x)\n", expected: "(\n; a\n; b\n f x)\n"},
+		{name: "data-list", input: "(\n; c\n1 2)\n", expected: "(\n; c\n 1 2)\n"},
+		{name: "brace", input: "[\n; c\nf x]\n", expected: "[\n; c\n f x]\n"},
+		{name: "nested", input: "(g (\n; c\nf x))\n", expected: "(g (\n; c\n    f x))\n"},
+		// Same shapes with the comment INDENTED in the source: it is re-indented
+		// to the form, which is what pins that commentIndent keys off the
+		// comment's ORIGINAL column rather than always writing column 0.
+		{name: "call/indented", input: "(\n ; c\nf x)\n", expected: "(\n ; c\n f x)\n"},
+		{name: "nested/indented", input: "(g (\n    ; c\nf x))\n", expected: "(g (\n    ; c\n    f x))\n"},
 		// Controls: no comment, so the head keeps being pulled up next to the
 		// bracket for a call and left in place for a data list.
 		{name: "call-newline", input: "(\nf x)\n", expected: "(f x)\n"},
@@ -272,7 +277,8 @@ func TestNegativeLiteralAfterComment(t *testing.T) {
 		{name: "float", input: "(a ; c\n-1.5)\n", expected: "(a ; c\n  -1.5)\n"},
 		{name: "symbol", input: "(a ; c\n-x)\n", expected: "(a ; c\n  -x)\n"},
 		{name: "exponent", input: "(a ; c\n-1e5)\n", expected: "(a ; c\n  -1e5)\n"},
-		{name: "leading-comment", input: "(a\n; c\n-1)\n", expected: "(a\n  ; c\n  -1)\n"},
+		{name: "leading-comment", input: "(a\n; c\n-1)\n", expected: "(a\n; c\n  -1)\n"},
+		{name: "leading-comment/indented", input: "(a\n  ; c\n-1)\n", expected: "(a\n  ; c\n  -1)\n"},
 		{name: "top-level", input: "; c\n-1\n", expected: "; c\n-1\n"},
 		// Controls: an unsigned literal in the same position, and a signed one
 		// with no comment in play.
