@@ -19,10 +19,10 @@ const DefaultPackageName = "help"
 
 // SymbolDoc describes a documented symbol for JSON output.
 type SymbolDoc struct {
-	Name    string      `json:"name"`
-	Kind    string      `json:"kind"`             // "function", "macro", "operator", "variable"
-	Doc     string      `json:"doc,omitempty"`
 	Formals *FormalsDoc `json:"formals,omitempty"` // nil for non-functions
+	Name    string      `json:"name"`
+	Kind    string      `json:"kind"` // "function", "macro", "operator", "variable"
+	Doc     string      `json:"doc,omitempty"`
 }
 
 // FormalsDoc describes a function's parameter list.

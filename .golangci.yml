@@ -7,11 +7,10 @@ linters:
   settings:
     govet:
       enable:
-        # fieldalignment guards the struct layout of the interpreter core.
-        # LVal/LEnv/Runtime/CallStack are allocated per value / per env / per
-        # call, so their field order decides how many bytes the GC must scan
-        # on every mark. It is scoped to the hot packages by the exclusion
-        # rules below — see .golangci.yml exclusions and issue #304.
+        # fieldalignment guards the struct layout of the interpreter. LVal,
+        # LEnv, Runtime and CallStack are allocated per value / per env / per
+        # call, so their field order decides how many bytes the GC must scan on
+        # every mark. It is scoped by the exclusion rules below — see #304.
         - fieldalignment
     staticcheck:
       checks:
@@ -21,27 +20,46 @@ linters:
   exclusions:
     rules:
       # --- fieldalignment scope -------------------------------------------
-      # fieldalignment is enforced ONLY on the interpreter core (lisp/*.go)
-      # and the parser/lexer (parser/**), where structs are allocated per
-      # value, per env, per call and per token — the places where field order
-      # actually costs something at run time.
+      # Enforced across the whole interpreter (lisp/...) and the parser/lexer
+      # (parser/...). The point of this check is to be a REGRESSION GUARD, not
+      # an optimisation — the alignment sweep that introduced it produced no
+      # measurable speedup. So the guard deliberately covers whole trees rather
+      # than only the files that happen to be hot today: a newly-added struct
+      # in, say, lisp/lisplib/libjson (hot for every statedb read/write in
+      # substrate) must be covered the day it lands, not the day someone
+      # notices. Narrowing this to today's hot files is how CallFrame grew
+      # unnoticed in the first place.
       #
-      # Everywhere else (lsp/, mcpserver/, analysis/, lint/, formatter/,
-      # minifier/, diagnostic/, cmd/, repl/, elpstest/, lisp/lisplib/ and the
-      # experimental lisp/x/ debugger + profiler) the flagged structs are
-      # allocated once per process, per request or per debug session. There,
-      # reordering buys a handful of bytes on a single allocation and costs
-      # the logical grouping and per-field doc comments that make the structs
-      # readable, so the check is off.
+      # Everything outside those two trees is tooling — lsp/, mcpserver/,
+      # analysis/, lint/, formatter/, minifier/, diagnostic/, cmd/, repl/,
+      # elpstest/ — where structs are built once per process or per request.
+      # Those are excluded simply because they are cold and the churn is not
+      # worth it, NOT because of any ordering constraint: the repo has zero
+      # JSONEq assertions and no golden files, and of the six flagged
+      # mcpserver structs only Location carries json tags at all (Server,
+      # serviceConfig, service, workspaceState and workspaceFile have no tags
+      # and are never marshalled).
       #
       # This exclusion can only shrink: to protect another package, remove it
       # from the negative lookahead below and fix its findings.
       - linters:
           - govet
         text: "fieldalignment:"
-        path-except: '^(lisp/[^/]+\.go|parser/)'
+        path-except: '^(lisp/|parser/)'
 
-      # Test files are exempt: table-driven test fixtures and mock structs are
+      # lisp/x/ is the experimental debugger + profiler: off by default and
+      # allocated once per debug session. fieldalignment's suggested order
+      # dissolves ~15 documented field groupings in Engine and dapserver's
+      # handler (things like the mu-guarded block, the pauseCh/pausedEnv pair
+      # and the readyCh/readyOnce pair) to reclaim 8-16 bytes once per session.
+      # Readability wins. Delete this rule and fix the findings if any of it
+      # ever moves onto a hot path.
+      - linters:
+          - govet
+        text: "fieldalignment:"
+        path: '^lisp/x/'
+
+      # Test files are exempt: table-driven fixtures and mock structs are
       # written for readability and are not on any hot path.
       - linters:
           - govet
