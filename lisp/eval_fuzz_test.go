@@ -5,7 +5,6 @@ package lisp_test
 import (
 	"bytes"
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -168,6 +167,22 @@ type fatalf interface {
 func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
 	t.Helper()
 
+	// Decide "did this parse?" with the reader itself rather than by pattern-
+	// matching the returned error's text.  Both a parse failure and an
+	// evaluation failure come back from Load* as an LError, so a message
+	// heuristic is the only alternative -- and it is unsound in the direction
+	// that matters: a program that evaluates `(load-string "(")` produces an
+	// EVALUATION result whose message contains the reader's wording, and a
+	// heuristic would silently discard it.  Discarding inputs is how a fuzz
+	// target goes quiet.
+	//
+	// Running it FIRST also means unparsable input -- most of what the mutator
+	// produces -- skips the environment construction below, which dominates
+	// the per-input cost.
+	if _, err := parser.NewReader().Read("fuzz", bytes.NewReader(src)); err != nil {
+		return evalOutcome{}, false
+	}
+
 	env, stderr, rc := newFuzzEnv()
 	if rc != nil {
 		t.Fatalf("could not build the fuzz environment: %v", rc)
@@ -195,14 +210,6 @@ func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
 			t.Fatalf("evaluation returned a nil LVal")
 			return evalOutcome{}, false
 		}
-		// A parse failure is reported as an LError too, and is not this
-		// target's concern.  Distinguish it by the source text never having
-		// been evaluated: the reader fails before load() runs, so no steps
-		// are consumed.  Checking the message is the only reliable
-		// discriminator available, since both paths return LError.
-		if d.result.Type == lisp.LError && isParseError(d.result) {
-			return evalOutcome{}, false
-		}
 		return evalOutcome{
 			Result:  d.result,
 			Stderr:  stderr.String(),
@@ -221,17 +228,6 @@ func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
 			len(src), src)
 		return evalOutcome{}, false
 	}
-}
-
-// isParseError reports whether an LError came from the reader rather than
-// from evaluation.
-func isParseError(v *lisp.LVal) bool {
-	msg := v.String()
-	return strings.Contains(msg, "parse error") ||
-		strings.Contains(msg, "scan-error") ||
-		strings.Contains(msg, "unexpected token") ||
-		strings.Contains(msg, "unexpected EOF") ||
-		strings.Contains(msg, "maximum depth")
 }
 
 // assertNoInternalPanic is the assertion the whole target exists to make.
