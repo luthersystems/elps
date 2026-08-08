@@ -1039,10 +1039,16 @@ func (h *handler) applyLaunchConfig(cfg launchConfig) {
 }
 
 func (h *handler) onPause(req *dap.PauseRequest) {
+	// Arm the engine BEFORE acknowledging. A client that receives a
+	// successful pause response is entitled to assume the request has taken
+	// effect; replying first leaves a window in which a short-lived program
+	// can run to completion and terminate without ever stopping, even though
+	// the client was told the pause succeeded.
+	h.engine.RequestPause()
+
 	resp := &dap.PauseResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	h.send(resp)
-	h.engine.RequestPause()
 }
 
 func (h *handler) onSource(req *dap.SourceRequest) {
