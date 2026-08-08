@@ -7,8 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/internal/fuzzval"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/libjson"
+	"github.com/luthersystems/elps/parser"
 )
 
 // libjson decodes untrusted JSON: in substrate this is chaincode state and
@@ -104,4 +106,120 @@ func FuzzLoadJSON(f *testing.F) {
 			t.Fatalf("Dump is not deterministic\n--- run 1 ---\n%s\n--- run 2 ---\n%s", enc, enc2)
 		}
 	})
+}
+
+// FuzzDumpJSON fuzzes the ENCODE direction, which FuzzLoadJSON structurally
+// cannot reach.
+//
+// FuzzLoadJSON only ever hands Dump a value that Load produced, and Load emits
+// exactly six shapes: string, float, bool, nil, array, sorted-map. Everything
+// else a phylum can put in front of json:dump-string -- a tagged-value from
+// deftype/new, an LNative handed in by host code, a multi-dimensional array,
+// an integer, a byte slice, a function, an error value, a symbol-keyed
+// sorted-map -- has never been encoded under fuzzing. In substrate the value
+// being serialised is phylum state, so its shape is chosen by the phylum
+// author, not by the decoder.
+//
+// INVARIANTS
+//
+//  1. Dump does not panic. An unsupported type must come back as an error.
+//  2. Dump is deterministic. Sorted-map iteration is the part that could
+//     drift, and a phylum that hashes or compares serialised state depends on
+//     it.
+//  3. Whatever Dump accepts, Load must be able to read back, and the value
+//     must then be STABLE under further round trips. Emitting bytes that the
+//     package's own decoder rejects is the strongest form of encoder bug
+//     there is.
+//  4. The shared singletons are unmutated.
+//
+// NOT ASSERTED: that Load's result equals the ORIGINAL value, and not that
+// re-encoding reproduces the ORIGINAL bytes. Neither holds, for reasons that
+// are known and out of scope:
+//
+//   - A tagged-value, an integer or a byte slice does not survive a JSON round
+//     trip as itself.
+//   - json.Load rounds every number through float64 (the >2^53 rounding).
+//   - encoding/json replaces invalid UTF-8 with U+FFFD, and escapes it as
+//     \ufffd on the way out; decoding that yields a real U+FFFD rune, which
+//     re-encodes as the literal character. So Dump("\xfd") != Dump(Load(Dump(
+//     "\xfd"))) at the byte level even though the VALUE is stable. Measured on
+//     the seed corpus, so asserting byte identity against the first encode
+//     would be permanent noise rather than a finding.
+//
+// The comparison is therefore made on the far side of every lossy conversion:
+// the SECOND decode against the FIRST, exactly as FuzzLoadJSON does.
+func FuzzDumpJSON(f *testing.F) {
+	for _, seed := range fuzzval.Seeds() {
+		for _, mode := range stringNumberModes() {
+			f.Add(seed, mode)
+		}
+	}
+	f.Fuzz(func(t *testing.T, data []byte, stringNums bool) {
+		before := lisp.TakeSingletonSnapshot()
+
+		env := newJSONEnv(t)
+		gen := fuzzval.New(data, env)
+		v := gen.Value()
+
+		enc, err := libjson.Dump(v, stringNums)
+		if err != nil {
+			// Refusing a value it cannot represent is correct behaviour, not
+			// a finding. Rendering the value is still exercised: every error
+			// path in the interpreter formats its operands.
+			_ = v.String()
+			return
+		}
+
+		enc2, err := libjson.Dump(v, stringNums)
+		if err != nil {
+			t.Fatalf("Dump succeeded then failed on the same value: %v\n--- value ---\n%s", err, v)
+		}
+		if !bytes.Equal(enc, enc2) {
+			t.Fatalf("Dump is not deterministic\n--- run 1 ---\n%s\n--- run 2 ---\n%s\n--- value ---\n%s",
+				enc, enc2, v)
+		}
+
+		back := libjson.Load(enc, stringNums)
+		if back == nil {
+			t.Fatalf("Load returned a nil LVal for Dump's output\n--- encoded ---\n%s", enc)
+		}
+		if back.Type == lisp.LError {
+			t.Fatalf("Load rejected Dump's own output: %s\n--- encoded ---\n%s\n--- value ---\n%s",
+				back, enc, v)
+		}
+		reenc, err := libjson.Dump(back, stringNums)
+		if err != nil {
+			t.Fatalf("Dump rejected the value its own output decoded to: %v\n--- encoded ---\n%s", err, enc)
+		}
+		again := libjson.Load(reenc, stringNums)
+		if again == nil || again.Type == lisp.LError {
+			t.Fatalf("Load rejected the re-encoded output: %v\n--- re-encoded ---\n%s", again, reenc)
+		}
+		if got, want := again.String(), back.String(); got != want {
+			t.Fatalf("the value drifted across a second round trip\n--- first decode ---\n%s\n--- second decode ---\n%s\n--- encoded ---\n%s\n--- re-encoded ---\n%s",
+				want, got, enc, reenc)
+		}
+
+		if drift := before.Verify(); drift != "" {
+			t.Fatalf("Dump/Load mutated the shared singleton %s\n--- value ---\n%s", drift, v)
+		}
+	})
+}
+
+// newJSONEnv exists only so the generator can build tagged-values, which need
+// an LEnv to stamp a source location. libjson itself is package-level.
+func newJSONEnv(tb testing.TB) *lisp.LEnv {
+	tb.Helper()
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	if rc := lisp.InitializeUserEnv(env); rc.Type == lisp.LError {
+		tb.Fatalf("initialize-user-env: %v", rc)
+	}
+	if rc := libjson.LoadPackage(env); rc.Type == lisp.LError {
+		tb.Fatalf("load libjson: %v", rc)
+	}
+	if rc := env.InPackage(lisp.String(lisp.DefaultUserPackage)); rc.Type == lisp.LError {
+		tb.Fatalf("in-package: %v", rc)
+	}
+	return env
 }
