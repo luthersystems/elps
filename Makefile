@@ -67,6 +67,16 @@ tree-sitter-test:
 .PHONY: static-checks
 static-checks:
 	golangci-lint run ./...
+	# Second pass under the elpscheck build tag. golangci-lint analyses only
+	# the DEFAULT build, so a file guarded by a build tag is invisible to every
+	# linter — `golangci-lint run ./...` can report "0 issues" on a tree that
+	# has findings in a tagged file. That is not hypothetical: enabling the
+	# expanded linter set cleared the default build to zero while
+	# lisp/singleton_check_elpscheck_test.go still carried a testifylint
+	# finding nobody could see. Scoped to ./lisp/... because that is where the
+	# only tagged files live (see lisp/singleton_check_*.go and issue #274);
+	# widen it if tagged files appear elsewhere.
+	golangci-lint run --build-tags elpscheck ./lisp/...
 
 # Reorder struct fields to satisfy the fieldalignment gate in .golangci.yml.
 #

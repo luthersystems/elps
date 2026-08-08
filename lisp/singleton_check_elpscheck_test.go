@@ -5,7 +5,6 @@
 package lisp
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -36,7 +35,7 @@ func TestCheckSingleton_DetectsCorruption(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected panic to be a string, got %T: %v", r, r)
 		}
-		assert.True(t, strings.Contains(msg, "Bool(true)"),
+		assert.Contains(t, msg, "Bool(true)",
 			"panic message should name the offending singleton; got: %s", msg)
 	}()
 
