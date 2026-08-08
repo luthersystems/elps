@@ -351,6 +351,7 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 		}
 	}
 	result := p.SExpr([]*lisp.LVal{sym, expr})
+	p.recordSynthesizedBrackets(result)
 	inheritEndPos(result, expr)
 	applyPrefixLocation(result, prefixLoc)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
@@ -370,10 +371,27 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 		return name
 	}
 	result := p.SExpr([]*lisp.LVal{op, name})
+	p.recordSynthesizedBrackets(result)
 	inheritEndPos(result, name)
 	applyPrefixLocation(result, prefixLoc)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
+}
+
+// recordSynthesizedBrackets stamps the paren bracket kind onto an s-expression
+// the parser BUILT rather than read -- the desugared forms behind #^ and #',
+// which have no bracket of their own in the source.
+//
+// Without it those nodes reach the formatter with BracketType unset, and
+// printer.bracketOpen falls back to '[' for any quoted value.  A quoted
+// shorthand therefore printed as '[lisp:expr 0] -- the bracket quotes the
+// value a second time, so it re-parses with a level of quoting the source
+// never had.  Found by FuzzFormat on the input "'#^0".
+func (p *Parser) recordSynthesizedBrackets(v *lisp.LVal) {
+	if !p.preserveFormat || v.Meta == nil {
+		return
+	}
+	v.Meta.BracketType = '('
 }
 
 // inheritEndPos copies end position from inner to outer, for prefix forms
@@ -412,11 +430,30 @@ func (p *Parser) applyPrefixNewlines(v *lisp.LVal, newlines int, spaces int) {
 	if v.Meta == nil {
 		v.Meta = &lisp.SourceMeta{}
 	}
-	if newlines >= 1 {
-		v.Meta.NewlineBefore = true
-	}
-	if newlines > 1 {
-		v.Meta.BlankLinesBefore = newlines - 1
+	if len(v.Meta.LeadingComments) > 0 {
+		// With leading comments attached, NewlineBefore / BlankLinesBefore
+		// describe the gap before the first COMMENT, which tokenLVal already
+		// took from that comment -- overwriting them from the prefix token
+		// would double-count.  What the prefix token measures is the gap
+		// between the last comment and this node, because the prefix IS this
+		// node's first token.
+		//
+		// tokenLVal derived that gap from the INNER expression's token, which
+		// sits after the prefix and so measures the wrong whitespace.  For
+		// ";\n'\n\n0" it recorded the blank line between ' and 0 instead of
+		// the (none) between ; and ', so the blank line moved on every
+		// re-format and Format stopped being idempotent.  Found by FuzzFormat.
+		v.Meta.BlankLinesAfterComments = 0
+		if newlines > 1 {
+			v.Meta.BlankLinesAfterComments = newlines - 1
+		}
+	} else {
+		if newlines >= 1 {
+			v.Meta.NewlineBefore = true
+		}
+		if newlines > 1 {
+			v.Meta.BlankLinesBefore = newlines - 1
+		}
 	}
 	v.Meta.PrecedingSpaces = spaces
 }

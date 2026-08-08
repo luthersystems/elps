@@ -114,10 +114,30 @@ FIELDALIGN_PKGS = $(shell go list ./lisp/... ./parser/... | grep -v '/lisp/x/')
 fieldalign-fix:
 	-go run github.com/dkorunic/betteralign/cmd/betteralign@v0.14.3 -apply ${FIELDALIGN_PKGS}
 
+# Run every native go fuzz target for a bounded time. `go test -fuzz` has no
+# default limit, so scripts/fuzz.sh refuses to run without a parsable FUZZTIME
+# and additionally caps each invocation with a hard -timeout. The seed corpus
+# in each package's testdata/fuzz/ is executed by plain `make test` as
+# regression cases; this target is for DISCOVERING new inputs.
+#
+#   make fuzz                  # 30s per target, as on the PR path
+#   make fuzz FUZZTIME=10m     # as on the nightly schedule
+#   make fuzz FUZZ_PKGS=./parser/rdparser/...
+FUZZTIME ?= 30s
+FUZZ_PKGS ?= ./...
+.PHONY: fuzz
+fuzz:
+	FUZZTIME=$(FUZZTIME) bash scripts/fuzz.sh $(FUZZ_PKGS)
+
+.PHONY: fuzz-list
+fuzz-list:
+	bash scripts/fuzz.sh --list
+
 # Self-test for the CI gate logic in scripts/. Run this after touching
-# scripts/benchstat-gate.sh or .github/workflows/benchmark.yml — it proves the
-# benchmark regression gate can actually FAIL, which is the property that was
-# missing while the gate sat dead for 473 workflow runs.
+# scripts/benchstat-gate.sh, scripts/fuzz.sh, .github/workflows/benchmark.yml
+# or .github/workflows/fuzz.yml — it proves the benchmark regression gate and
+# the fuzz gate can actually FAIL, which is the property that was missing while
+# the benchmark gate sat dead for 473 workflow runs.
 .PHONY: ci-gates-test
 ci-gates-test:
 	bash scripts/ci-gates-test.sh

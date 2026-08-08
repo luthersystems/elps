@@ -482,11 +482,154 @@ else
 fi
 
 echo
+echo "== fuzz gate: time bounding =============================================="
+
+FUZZ="${SCRIPT_DIR}/fuzz.sh"
+FUZZ_WF="${REPO_ROOT}/.github/workflows/fuzz.yml"
+
+# `go test -fuzz` has no default limit: without -fuzztime it runs until
+# something kills it. Every one of these guards exists to keep that from
+# reaching CI.
+
+assert_exit 2 "an unparsable FUZZTIME is refused rather than guessed" \
+	env FUZZTIME=forever "$FUZZ" --list
+assert_contains "refusing to run unbounded" \
+	"the refusal says why" \
+	env FUZZTIME=forever "$FUZZ" --list
+assert_exit 2 "a bare number (no unit) is refused" \
+	env FUZZTIME=60 "$FUZZ" --list
+assert_exit 2 "an empty FUZZTIME is refused" \
+	env FUZZTIME= "$FUZZ" --list
+
+# Every LIVE `go test -fuzz` in this repository must carry -fuzztime. Logical
+# lines, not physical ones: the invocation in fuzz.sh spreads its flags over a
+# backslash continuation, and a per-line scan would read the `-fuzz` line as
+# unbounded. Anchored on `go test` so that prose, this checker's own source,
+# and workflow comments are not mistaken for invocations.
+unbounded="$(python3 - "$REPO_ROOT" <<'PY'
+import glob, os, re, sys
+root = sys.argv[1]
+files = sorted(
+    glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))
+    + glob.glob(os.path.join(root, "scripts", "*.sh"))
+    + [os.path.join(root, "Makefile")]
+)
+hits = []
+for f in files:
+    if not os.path.exists(f):
+        continue
+    logical, buf, start = [], "", 1
+    for i, line in enumerate(open(f), 1):
+        if line.lstrip().startswith("#"):
+            continue
+        code = line.split("#", 1)[0].rstrip("\n")
+        if not buf:
+            start = i
+        if code.rstrip().endswith("\\"):
+            buf += code.rstrip()[:-1] + " "
+            continue
+        logical.append((start, buf + code))
+        buf = ""
+    if buf:
+        logical.append((start, buf))
+    for lineno, code in logical:
+        if not re.search(r"\bgo\s+test\b", code):
+            continue
+        if not re.search(r"(^|\s)-fuzz(\s|=|$)", code):
+            continue
+        if "-fuzztime" not in code:
+            hits.append(f"{os.path.relpath(f, root)}:{lineno}")
+print("\n".join(hits))
+PY
+)"
+if [ -n "$unbounded" ]; then
+	bad "a 'go test -fuzz' invocation has no -fuzztime bound: $unbounded"
+else
+	ok "every live 'go test -fuzz' invocation is bounded by -fuzztime"
+fi
+
+echo
+echo "== fuzz gate: discovery and proof it can FAIL ============================"
+
+# Everything from here needs a Go toolchain matching go.mod. The `gates` job in
+# benchmark.yml deliberately has none -- it is the fast, build-free gate that
+# must report even when the benchmark job is cancelled -- so it sets
+# CI_GATES_SKIP_GO and these run in the `fuzz` workflow instead, which already
+# has Go set up and its module cache warm.
+if [ "${CI_GATES_SKIP_GO:-0}" = "1" ] || ! command -v go >/dev/null 2>&1; then
+	echo "SKIP  Go-backed fuzz-gate checks (CI_GATES_SKIP_GO=${CI_GATES_SKIP_GO:-0}," \
+		"go present: $(command -v go >/dev/null 2>&1 && echo yes || echo no))"
+	echo "SKIP  they run in .github/workflows/fuzz.yml, which sets up Go"
+else
+	# Discovery is dynamic, so it can silently discover nothing -- which would
+	# look exactly like a clean run.
+	assert_exit 2 "discovering ZERO targets is an error, not a clean run" \
+		env FUZZTIME=1s "$FUZZ" ./lint/...
+	assert_contains "cannot fail" "the empty-discovery error explains itself" \
+		env FUZZTIME=1s "$FUZZ" ./lint/...
+
+	# The targets really are found. Listed once and asserted against, so the
+	# package set is only compiled a single extra time.
+	discovered="$(env FUZZTIME=1s "$FUZZ" --list 2>&1)"
+	for want in FuzzParseProgram FuzzLexer FuzzScanner FuzzFormat FuzzMinifySource FuzzLoadJSON; do
+		if echo "$discovered" | grep -q "$want"; then
+			ok "discovery finds ${want}"
+		else
+			bad "discovery no longer finds ${want}"
+		fi
+	done
+
+	# The headline assertion, and the reason FuzzGateSelfTest exists. A gate
+	# that has only ever reported success is indistinguishable from a gate that
+	# cannot fail -- precisely how the benchmark gate above stayed dead for 473
+	# runs. FuzzGateSelfTest is a deliberately-failing target, inert unless
+	# ELPS_FUZZ_GATE_SELFTEST is set, so this exercises the whole path end to
+	# end: discovery, invocation, and the failure reaching the exit status.
+	assert_exit 1 "an armed failing target makes fuzz.sh exit non-zero" \
+		env ELPS_FUZZ_GATE_SELFTEST=1 FUZZTIME=5s FUZZMINIMIZETIME=1s \
+		"$FUZZ" ./internal/fuzzseed/...
+	assert_contains "FuzzGateSelfTest" "the failing target is named in the summary" \
+		env ELPS_FUZZ_GATE_SELFTEST=1 FUZZTIME=5s FUZZMINIMIZETIME=1s \
+		"$FUZZ" ./internal/fuzzseed/...
+	# ...and the mirror: disarmed, the same package is clean. Without this, an
+	# always-failing script would satisfy the assertion above for the wrong
+	# reason.
+	assert_exit 0 "the same target is inert when NOT armed" \
+		env FUZZTIME=5s "$FUZZ" ./internal/fuzzseed/...
+
+	# An armed run can leave a generated crasher in the source tree; it is
+	# meaningless outside that run, so do not let it linger.
+	rm -rf "${REPO_ROOT}/internal/fuzzseed/testdata/fuzz/FuzzGateSelfTest"
+fi
+
+echo
+echo "== fuzz gate: workflow shape ============================================"
+
+if [ -n "$(invoked_in "$FUZZ_WF" 'scripts/fuzz.sh')" ]; then
+	ok "fuzz.yml INVOKES scripts/fuzz.sh (not just mentions it)"
+else
+	bad "fuzz.yml no longer invokes scripts/fuzz.sh — logic reinlined or removed?"
+fi
+
+if grep -qE '^\s*timeout-minutes:' "$FUZZ_WF"; then
+	ok "fuzz.yml sets a job-level timeout-minutes backstop"
+else
+	bad "fuzz.yml has no timeout-minutes — the job has no outer bound"
+fi
+
+if grep -q 'FUZZTIME' "$FUZZ_WF"; then
+	ok "fuzz.yml sets an explicit FUZZTIME budget"
+else
+	bad "fuzz.yml does not set FUZZTIME — the PR path would take the default"
+fi
+
+echo
 echo "== shell lint on the scripts this suite owns ============================="
 
 OWNED_SCRIPTS=(
 	"${SCRIPT_DIR}/benchstat-gate.sh"
 	"${SCRIPT_DIR}/ci-gates-test.sh"
+	"${SCRIPT_DIR}/fuzz.sh"
 )
 
 for s in "${OWNED_SCRIPTS[@]}"; do

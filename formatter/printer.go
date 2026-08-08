@@ -204,7 +204,12 @@ func (p *printer) writeExpr(v *lisp.LVal, indent int) {
 				p.writeListInner(v, indent)
 			} else {
 				p.writeString("'")
-				p.writeListInner(v, indent)
+				// A quoted #^/#' keeps its shorthand.  writeSExpr does this
+				// for the unquoted case; without it here, 'ing a shorthand
+				// silently expanded it to '(lisp:expr ...).
+				if !p.tryPrefixForm(v, indent) {
+					p.writeListInner(v, indent)
+				}
 			}
 		} else {
 			p.writeSExpr(v, indent)
@@ -465,21 +470,70 @@ func (p *printer) writeListInner(v *lisp.LVal, indent int) {
 }
 
 // tryPrefixForm checks if this s-expr is a known prefix shorthand and renders it.
+//
+// The shorthand is only written when the parser can read it back as the SAME
+// tree.  #' and #^ are narrower than the forms they abbreviate, so re-sugaring
+// unconditionally produced source that no longer parses -- `elps fmt`
+// destroying the file it was asked to tidy:
+//
+//	(lisp:expr (+ 1 (f x)))  ->  #^(+ 1 (f x))
+//	    unbound-expression-error: unbound expression cannot contain nested expressions
+//	(lisp:function (f x))    ->  #'(f x)
+//	    parse-error: invalid symbol
+//
+// Found by FuzzFormat.
 func (p *printer) tryPrefixForm(v *lisp.LVal, indent int) bool {
 	if len(v.Cells) != 2 || v.Cells[0].Type != lisp.LSymbol {
 		return false
 	}
 	switch v.Cells[0].Str {
 	case "lisp:function":
+		if !canWriteFunRef(v.Cells[1]) {
+			return false
+		}
 		p.writeString("#'")
 		p.writeExpr(v.Cells[1], indent)
 		return true
 	case "lisp:expr":
+		if !canWriteUnbound(v.Cells[1]) {
+			return false
+		}
 		p.writeString("#^")
 		p.writeExpr(v.Cells[1], indent)
 		return true
 	}
 	return false
+}
+
+// canWriteFunRef reports whether inner can be written as the operand of #'.
+// rdparser.ParseFunRef reads that operand with ParseSymbol, so only a plain
+// symbol -- unqualified, or package-qualified with a non-empty name on both
+// sides of the single colon -- reads back as the same tree.
+func canWriteFunRef(inner *lisp.LVal) bool {
+	if inner.Type != lisp.LSymbol || inner.Quoted {
+		return false
+	}
+	pieces := strings.Split(inner.Str, ":")
+	switch len(pieces) {
+	case 1:
+		return pieces[0] != ""
+	case 2:
+		return pieces[0] != "" && pieces[1] != ""
+	default:
+		return false
+	}
+}
+
+// canWriteUnbound reports whether inner can be written as the operand of #^.
+// rdparser.ParseUnbound rejects an operand holding a nested unquoted
+// s-expression, so this mirrors that check exactly.
+func canWriteUnbound(inner *lisp.LVal) bool {
+	for _, c := range inner.Cells {
+		if c.Type == lisp.LSExpr && !c.Quoted {
+			return false
+		}
+	}
+	return true
 }
 
 // computeChildIndent determines the indentation for child at index i.

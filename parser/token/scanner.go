@@ -311,10 +311,23 @@ func (s *Scanner) AcceptString(literal string) (int, bool) {
 }
 
 func (s *Scanner) checkRuneError() error {
-	if s.c.IsRuneError() {
-		return fmt.Errorf("invalid utf-8 sequence in source text starting with byte %q", s.buf[s.pos])
+	if !s.c.IsRuneError() {
+		return nil
 	}
-	return nil
+	// s.pos indexes the current rune within buf, but buf is a sliding window.
+	// Ignore() moves start past the current rune, and the next extend() then
+	// discards everything before start -- which leaves pos pointing before the
+	// start of the buffer.  The offending byte is simply no longer buffered,
+	// so report the error without quoting it rather than indexing out of
+	// range.
+	//
+	// Found by FuzzParseProgramFaultTolerant on the two-byte input
+	// "\xe4\xb8" (a truncated three-byte UTF-8 sequence): the second
+	// ReadToken panicked with "index out of range [-1]".
+	if s.pos < 0 || s.pos >= len(s.buf) {
+		return errors.New("invalid utf-8 sequence in source text")
+	}
+	return fmt.Errorf("invalid utf-8 sequence in source text starting with byte %q", s.buf[s.pos])
 }
 
 // LocStart returns a Location referencing the beginning of the current token,

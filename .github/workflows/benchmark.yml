@@ -49,6 +49,16 @@ jobs:
   gates:
     name: CI Gate Self-Test
     runs-on: ubuntu-latest
+    env:
+      # This job has no Go toolchain on purpose -- see the comment above: it
+      # must be fast and must report even when the benchmark job is cancelled.
+      # The fuzz-gate checks that need `go list` / `go test` (dynamic target
+      # discovery and the FuzzGateSelfTest negative control) therefore run in
+      # the `fuzz` workflow, which already sets up Go and has its module cache
+      # warm. Everything Go-free in the fuzz gate -- FUZZTIME parsing, the
+      # "-fuzz must carry -fuzztime" scan, the workflow-shape guards and
+      # shellcheck -- still runs here.
+      CI_GATES_SKIP_GO: "1"
     steps:
       - name: Check out code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v6

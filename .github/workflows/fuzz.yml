@@ -1,0 +1,127 @@
+name: Fuzz
+
+# elps parses untrusted input.  Downstream (luthersystems/substrate) a phylum is
+# customer-supplied source uploaded and executed as Hyperledger Fabric
+# chaincode, so a parser panic, a stack overflow or a non-terminating token loop
+# is a chaincode-process crash -- remotely triggerable by anyone who can upload
+# a phylum.  This workflow keeps a continuous fuzzing budget pointed at that
+# surface: the recursive-descent parser (strict, fault-tolerant and
+# format-preserving modes), the lexer and byte scanner, the formatter and
+# minifier round-trips, and the JSON decoder that reads chaincode state.
+#
+# TIME BOUNDING IS THE LOAD-BEARING PART.  `go test -fuzz` has no default limit;
+# without -fuzztime it runs until something kills it.  All logic, including the
+# refusal to run with an unparsable budget, lives in scripts/fuzz.sh so it can
+# be shellchecked and self-tested (scripts/ci-gates-test.sh, `make
+# ci-gates-test`) rather than hiding in YAML.  Two independent bounds apply:
+# fuzz.sh's own per-target -fuzztime plus a hard `go test -timeout`, and the
+# job-level timeout-minutes below.
+#
+# The PR path is deliberately short.  The seed corpus in each package's
+# testdata/fuzz/ -- which includes every crasher found so far -- is ALSO run by
+# the ordinary `make test` in CI Tests, so regressions are caught there in
+# milliseconds regardless of what this job finds.
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  schedule:
+    # 04:17 UTC daily. Off the hour to avoid the top-of-hour runner crush.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "Per-target fuzzing budget (e.g. 60s, 10m)"
+        required: false
+        default: "60s"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz targets
+    runs-on: ubuntu-latest
+    # Backstop for the whole job. fuzz.sh already bounds each target twice
+    # over; this catches a hang OUTSIDE any single `go test` (a wedged build,
+    # a stuck module download) that neither of those can see.
+    #
+    # Sized for the scheduled run: 10 targets x 10m plus build. The PR path
+    # measures far below it -- see the measured cost in the run summary.
+    timeout-minutes: 120
+    env:
+      # 30s on a PR, 10m on the nightly schedule, whatever was asked for on a
+      # manual dispatch. The PR budget is intentionally small: this job is a
+      # continuous-discovery gate, not the regression gate. Regressions are the
+      # committed seed corpus, and those run in `make test`.
+      FUZZTIME: >-
+        ${{ github.event_name == 'schedule' && '10m'
+         || github.event_name == 'workflow_dispatch' && inputs.fuzztime
+         || '30s' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      # The generated corpus lives in GOCACHE/fuzz, outside the source tree, so
+      # it is lost between runs unless it is cached. Restoring it lets each run
+      # start from the coverage the previous ones reached instead of
+      # rediscovering the grammar from the seeds every time. A miss is
+      # harmless: the seed corpus alone is a valid starting point.
+      - name: Restore generated fuzz corpus
+        id: corpus
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: ~/.cache/go-build/fuzz
+          key: fuzz-corpus-${{ github.sha }}
+          restore-keys: fuzz-corpus-
+
+      # The Go-backed half of the fuzz gate's own self-test: dynamic discovery
+      # really finds the targets, and an armed FuzzGateSelfTest really turns
+      # the run red. The `gates` job in benchmark.yml skips these because it
+      # has no Go toolchain. Runs BEFORE the sweep so a broken gate is reported
+      # even when the sweep is cancelled.
+      - name: Fuzz gate self-test
+        run: bash scripts/ci-gates-test.sh
+
+      - name: List discovered targets
+        run: ./scripts/fuzz.sh --list
+
+      - name: Fuzz
+        run: ./scripts/fuzz.sh
+
+      # Only from main/schedule: a corpus grown from an unmerged branch would
+      # otherwise be handed to every other PR.
+      - name: Save generated fuzz corpus
+        if: github.event_name != 'pull_request'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: ~/.cache/go-build/fuzz
+          key: fuzz-corpus-${{ github.sha }}
+
+      # A crash is only useful if the input survives the runner. go test writes
+      # it into <package>/testdata/fuzz/<Target>/, so upload that tree whenever
+      # the run failed; the file is committed as a regression case.
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: fuzz-crashers-${{ github.run_id }}
+          path: "**/testdata/fuzz/**"
+          if-no-files-found: warn
+          retention-days: 30

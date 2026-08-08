@@ -489,7 +489,26 @@ func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSe
 }
 
 func applyAssignments(file *parsedFile, assignments map[*analysis.Symbol]string, assignmentKeys map[string]string, cfg *Config) {
-	for sym, newName := range assignments {
+	// Iterate the file's symbols in analysis order rather than ranging over
+	// the assignments MAP.  Two distinct *analysis.Symbol records can share
+	// one AST node -- `(defun f (e 'e))` registers the parameter twice at the
+	// same location -- so these writes are order dependent, and Go randomises
+	// map iteration: the same source minified to `(defun x1 (x2 'e))` on one
+	// run and `(defun x1 (x3 'e))` on the next.
+	//
+	// That breaks the determinism guarantee TestMinifySource_DeterministicAnd-
+	// ScopeAware pins, and determinism is what makes a phylum build
+	// reproducible and its symbol map usable for decoding a stack trace from
+	// a deployed chaincode.  Found by FuzzMinifySource on "(())(defun 2(e'e))".
+	//
+	// Ranging over this file's symbols is also strictly less work: the caller
+	// invokes applyAssignments once per file, so the old loop re-applied every
+	// other file's assignments on every pass.
+	for _, sym := range file.analysis.Symbols {
+		newName, ok := assignments[sym]
+		if !ok {
+			continue
+		}
 		if sym.Node != nil && sym.Node.Type == lisp.LSymbol {
 			sym.Node.Str = newName
 		}
