@@ -139,6 +139,8 @@ func TestSolve_RuleSpecificSuppression(t *testing.T) {
 			perf003++
 		case PERF004:
 			perf004++
+		case PERF002, UNKNOWN001:
+			// Not counted by this test.
 		}
 	}
 

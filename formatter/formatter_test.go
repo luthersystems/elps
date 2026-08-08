@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
@@ -1783,6 +1784,26 @@ func TestAtomFallbackNoMeta(t *testing.T) {
 			expected: "\"hello\\tworld\\n\"\n",
 		},
 	})
+}
+
+// TestWriteAtomUnexpectedType pins the writeAtom fallback for a value that is
+// neither LInt nor LFloat.  No caller can reach it today -- writeExpr and
+// writeCompactExpr both dispatch to writeAtom only for the two numeric types
+// -- but writeAtom used to emit nothing at all in that case, which in a
+// formatter is silent deletion of source.  It now degrades to v.String(), the
+// same fallback the two callers use for types they do not recognise.
+func TestWriteAtomUnexpectedType(t *testing.T) {
+	p := newPrinter(DefaultConfig())
+	p.writeAtom(lisp.Symbol("some-symbol"))
+	if got := p.buf.String(); got != "some-symbol" {
+		t.Errorf("writeAtom(symbol) = %q, want %q", got, "some-symbol")
+	}
+
+	p = newPrinter(DefaultConfig())
+	p.writeAtom(lisp.String("txt"))
+	if got := p.buf.String(); got == "" {
+		t.Error("writeAtom(string) wrote nothing; the fallback must not drop the node")
+	}
 }
 
 // --- Inner trailing comment blank line tests ---

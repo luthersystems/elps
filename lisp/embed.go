@@ -66,6 +66,18 @@ func GoValue(v *LVal) interface{} {
 		}
 	case LNative:
 		return v.Native
+	case LInvalid, LQSymbol, LFun, LTaggedVal,
+		LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
+		// Returned as the *LVal itself, which is the documented behaviour for
+		// functions and the de-facto behaviour for everything else here.
+		// Enumerated so a new LType has to decide whether it has a natural Go
+		// representation instead of inheriting this one by accident.
+		//
+		// LTaggedVal is the interesting one: libjson's encoder unwraps a
+		// tagged value to its user-data (encodeTaggedVal), so GoValue and the
+		// JSON encoder disagree about it.  Left alone deliberately -- GoValue
+		// is an exported API with outside callers.
+		return v
 	}
 	return v
 }

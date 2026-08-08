@@ -1296,6 +1296,8 @@ func formatSignature(sig *analysis.Signature) string {
 			part = "&optional " + part
 		case lisp.ParamKey:
 			part = "&key " + part
+		case lisp.ParamRequired:
+			// Required parameters carry no marker.
 		}
 		parts = append(parts, part)
 	}

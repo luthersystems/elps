@@ -488,134 +488,77 @@ func builtinRegexp(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	})
 }
 
-// Checks length of a string, bytes or array
-func builtinLen(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+// constraintLen returns the length of input for the three types the s:len*
+// constraints know how to measure, and false for every other type.
+//
+// The false case is what the constraints have always done for, say, an int or
+// a list: the constraint simply passes.  That is preserved here, but the
+// switch now names every LType so that adding one forces a decision instead
+// of quietly joining the "no length, always passes" group.
+//
+// Worth a second look: LSExpr (a list) and LSortMap are in that group today
+// even though both have an obvious length, so (s:len 4) accepts a list of any
+// size.  Deliberately left alone -- tightening it turns schema validations
+// that pass today into failures for existing callers.  See
+// TestLenConstraintUnmeasuredTypes, which pins the current behaviour.
+func constraintLen(input *lisp.LVal) (int, bool) {
+	switch input.Type {
+	case lisp.LString:
+		return len(input.Str), true
+	case lisp.LBytes:
+		return len(input.Bytes()), true
+	case lisp.LArray:
+		return input.Len(), true
+	case lisp.LInvalid, lisp.LInt, lisp.LFloat, lisp.LError, lisp.LSymbol,
+		lisp.LQSymbol, lisp.LSExpr, lisp.LFun, lisp.LQuote, lisp.LSortMap,
+		lisp.LNative, lisp.LTaggedVal, lisp.LMarkTerminal, lisp.LMarkTailRec,
+		lisp.LMarkMacExpand, lisp.LTypeMax:
+		return 0, false
+	}
+	return 0, false
+}
+
+// lenConstraint builds a validator that fails when input has a measurable
+// length and cmp reports that length as out of bounds.  Inputs with no
+// measurable length pass.
+func lenConstraint(args *lisp.LVal, cmp func(length, comparison int) bool) *lisp.LVal {
 	comparison, ok := lisp.GoInt(args.Cells[0])
 	if !ok {
 		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
-		switch input.Type {
-		case lisp.LString:
-			if len(input.Str) != comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
-		case lisp.LBytes:
-			if len(input.Bytes()) != comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
-		case lisp.LArray:
-			if input.Len() != comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
+		length, ok := constraintLen(input)
+		if ok && cmp(length, comparison) {
+			return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
 		}
 		return lisp.Nil()
 	})
+}
+
+// Checks length of a string, bytes or array
+func builtinLen(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return lenConstraint(args, func(length, comparison int) bool { return length != comparison })
 }
 
 // Checks length of a string, bytes or array
 func builtinLenGreaterThan(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	comparison, ok := lisp.GoInt(args.Cells[0])
-	if !ok {
-		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
-	}
-	// NB these aren't normal functions - they aren't looking for an array of args
-	return newValidator(lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
-		switch input.Type {
-		case lisp.LString:
-			if len(input.Str) <= comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
-		case lisp.LBytes:
-			if len(input.Bytes()) <= comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
-		case lisp.LArray:
-			if input.Len() <= comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
-		}
-		return lisp.Nil()
-	})
+	return lenConstraint(args, func(length, comparison int) bool { return length <= comparison })
 }
 
 // Checks length of a string, bytes or array
 func builtinLenGreaterThanOrEqual(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	comparison, ok := lisp.GoInt(args.Cells[0])
-	if !ok {
-		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
-	}
-	// NB these aren't normal functions - they aren't looking for an array of args
-	return newValidator(lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
-		switch input.Type {
-		case lisp.LString:
-			if len(input.Str) < comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
-		case lisp.LBytes:
-			if len(input.Bytes()) < comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
-		case lisp.LArray:
-			if input.Len() < comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
-		}
-		return lisp.Nil()
-	})
+	return lenConstraint(args, func(length, comparison int) bool { return length < comparison })
 }
 
 // Checks length of a string, bytes or array
 func builtinLenLessThan(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	comparison, ok := lisp.GoInt(args.Cells[0])
-	if !ok {
-		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
-	}
-	// NB these aren't normal functions - they aren't looking for an array of args
-	return newValidator(lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
-		switch input.Type {
-		case lisp.LString:
-			if len(input.Str) >= comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
-		case lisp.LBytes:
-			if len(input.Bytes()) >= comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
-		case lisp.LArray:
-			if input.Len() >= comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
-		}
-		return lisp.Nil()
-	})
+	return lenConstraint(args, func(length, comparison int) bool { return length >= comparison })
 }
 
 // Checks length of a string, bytes or array
 func builtinLenLessThanOrEqual(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	comparison, ok := lisp.GoInt(args.Cells[0])
-	if !ok {
-		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
-	}
-	// NB these aren't normal functions - they aren't looking for an array of args
-	return newValidator(lisp.Formals("input"), func(env *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
-		switch input.Type {
-		case lisp.LString:
-			if len(input.Str) > comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
-		case lisp.LBytes:
-			if len(input.Bytes()) > comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
-		case lisp.LArray:
-			if input.Len() > comparison {
-				return lisp.ErrorConditionf(FailedConstraint, "Length was not %d", comparison)
-			}
-		}
-		return lisp.Nil()
-	})
+	return lenConstraint(args, func(length, comparison int) bool { return length > comparison })
 }
 
 // Checks value is greater than specified value
@@ -1002,6 +945,14 @@ func builtinIsTruthy(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 			if input.Float > 0.0 {
 				return lisp.Nil()
 			}
+		case lisp.LInvalid, lisp.LError, lisp.LSymbol, lisp.LQSymbol,
+			lisp.LSExpr, lisp.LFun, lisp.LQuote, lisp.LNative, lisp.LTaggedVal,
+			lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand,
+			lisp.LTypeMax:
+			// Not truthy.  Symbols other than 'true are handled by the
+			// TrueSymbol check above; everything else here has no truthiness
+			// rule and is rejected.  Enumerated so a new LType has to pick a
+			// side rather than defaulting to "not truthy".
 		}
 		return lisp.ErrorConditionf(FailedConstraint, "Value %v is not truthy", input)
 	})

@@ -104,10 +104,10 @@ func parseHitCondition(s string) (hitOp, int) {
 // satisfies the hit condition. Returns true if there is no hit condition
 // or if the condition is met.
 func (bp *Breakpoint) checkHitCondition() bool {
-	if bp.parsedHitOp == hitOpNone {
-		return true
-	}
 	switch bp.parsedHitOp {
+	case hitOpNone:
+		// No hit condition: always fire.
+		return true
 	case hitOpEQ:
 		return bp.hitCount == bp.parsedHitVal
 	case hitOpGT:

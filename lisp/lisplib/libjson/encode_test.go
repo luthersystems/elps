@@ -111,6 +111,52 @@ func testEncode_stringNumbers(t testing.TB) {
 func TestEncode(t *testing.T)               { testEncode(t) }
 func TestEncode_stringNumbers(t *testing.T) { testEncode_stringNumbers(t) }
 
+// unencodableTypes lists every lisp.LType the JSON encoder deliberately
+// refuses.  Anything not listed here must have an entry in encoderFuncs.
+var unencodableTypes = map[lisp.LType]string{
+	lisp.LInvalid:       "not a real type",
+	lisp.LError:         "errors are a control-flow value, not data",
+	lisp.LQSymbol:       "legacy type with no JSON meaning",
+	lisp.LFun:           "functions have no serialized form",
+	lisp.LMarkTerminal:  "interpreter-internal marker",
+	lisp.LMarkTailRec:   "interpreter-internal marker",
+	lisp.LMarkMacExpand: "interpreter-internal marker",
+}
+
+// TestEncoderTypeCoverage is a drift guard on the JSON serialization surface.
+//
+// The encoder dispatches on the encoderFuncs table rather than a switch, so
+// the exhaustive linter cannot see it: a newly added lisp.LType would get a
+// nil table entry with nothing flagging it at build time.  Downstream this
+// output is chaincode state, so a type that quietly serialized to nothing
+// would be written to a ledger.  This test forces the choice -- register an
+// encoder, or record here why the type has no JSON form -- and pins the
+// runtime behaviour for the refused types (an error, never empty output).
+func TestEncoderTypeCoverage(t *testing.T) {
+	for typ := lisp.LInvalid; typ < lisp.LTypeMax; typ++ {
+		reason, refused := unencodableTypes[typ]
+		hasFunc := encoderFuncs[typ] != nil
+		switch {
+		case refused && hasFunc:
+			t.Errorf("LType %v is listed as unencodable (%s) but has an encoder", typ, reason)
+		case !refused && !hasFunc:
+			t.Errorf("LType %v has no encoder and is not listed in unencodableTypes: "+
+				"register an encoder in encode.go or add it to the list with a reason", typ)
+		}
+	}
+}
+
+// TestEncodeUnregisteredTypeErrors proves the refused types fail loudly.
+func TestEncodeUnregisteredTypeErrors(t *testing.T) {
+	for typ, reason := range unencodableTypes {
+		enc := newEncoder(false)
+		err := enc.encode(&lisp.LVal{Type: typ})
+		require.Error(t, err, "encoding %v (%s) must fail", typ, reason)
+		assert.Contains(t, err.Error(), "invalid type encountered")
+		assert.Empty(t, enc.bytes(), "a refused type must not write partial output")
+	}
+}
+
 func BenchmarkEncode(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		testEncode(b)

@@ -1315,6 +1315,8 @@ func TestEngine_LogPoint(t *testing.T) {
 			outputs = append(outputs, evt.Output)
 		case EventStopped:
 			stopCount++
+		case EventContinued, EventExited:
+			// Not counted by this test.
 		}
 	}))
 	e.Enable()

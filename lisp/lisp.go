@@ -963,23 +963,19 @@ func (v *LVal) IsSpecialOp() bool {
 }
 
 // IsNil returns true if v represents a nil value.
+//
+// Only the empty list is nil.  Written as an expression rather than a switch:
+// there is exactly one interesting type, so a switch would have to name the
+// other seventeen LTypes to say nothing about them.
 func (v *LVal) IsNil() bool {
-	switch v.Type {
-	case LSExpr:
-		return len(v.Cells) == 0
-	}
-	return false
+	return v.Type == LSExpr && len(v.Cells) == 0
 }
 
 // IsNumeric returns true if v has a primitive numeric type (int, float64).
+//
+// See IsNil for why this is an expression and not a switch.
 func (v *LVal) IsNumeric() bool {
-	switch v.Type {
-	case LInt:
-		return true
-	case LFloat:
-		return true
-	}
-	return false
+	return v.Type == LInt || v.Type == LFloat
 }
 
 // Equal returns a non-nil value if v and other are logically equal, under the
@@ -1039,6 +1035,17 @@ func (v *LVal) Equal(other *LVal) *LVal {
 			}
 		}
 		return Bool(true)
+	case LInvalid, LInt, LFloat, LError, LQSymbol, LFun, LQuote, LBytes,
+		LNative, LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
+		// No structural equality is defined for these types, so equal? reports
+		// false even when both operands are the same object.  Enumerated
+		// rather than left to fall through so that a new LType has to make
+		// this choice explicitly.
+		//
+		// LInt and LFloat are unreachable: the IsNumeric shortcut above
+		// diverts every numeric comparison to equalNum.  LInvalid, the LMark*
+		// sentinels and LTypeMax are not values an application can hold.
+		return Bool(false)
 	}
 	return Bool(false)
 }
@@ -1344,6 +1351,9 @@ func isSeq(v *LVal) bool {
 }
 
 func seqCells(v *LVal) []*LVal {
+	// Callers must guard with isSeq.  The panic is the assertion for that
+	// contract -- it is in a default clause so that reaching seqCells with a
+	// type nobody thought about is loud rather than silent.
 	switch v.Type {
 	case LSExpr:
 		return v.Cells
@@ -1352,8 +1362,9 @@ func seqCells(v *LVal) []*LVal {
 			panic("multi-dimensional array is not a sequence")
 		}
 		return v.Cells[1].Cells
+	default:
+		panic("type is not a sequence")
 	}
-	panic("type is not a sequence")
 }
 
 func makeByteSeq(v *LVal) *LVal {

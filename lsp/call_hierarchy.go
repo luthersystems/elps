@@ -268,6 +268,9 @@ func isCallable(kind analysis.SymbolKind) bool {
 	switch kind {
 	case analysis.SymFunction, analysis.SymMacro, analysis.SymBuiltin, analysis.SymSpecialOp:
 		return true
+	case analysis.SymVariable, analysis.SymParameter, analysis.SymType:
+		// Bindings and deftype names, not call targets.
+		return false
 	}
 	return false
 }

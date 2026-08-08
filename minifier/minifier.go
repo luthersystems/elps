@@ -583,6 +583,13 @@ func renameable(sym *analysis.Symbol, cfg *Config, preserved *preservationSet) b
 		switch sym.Kind {
 		case analysis.SymMacro, analysis.SymVariable:
 			return false
+		case analysis.SymFunction, analysis.SymParameter,
+			analysis.SymSpecialOp, analysis.SymBuiltin, analysis.SymType:
+			// Renameable at global scope.  SymBuiltin and SymSpecialOp never
+			// get here (rejected above); SymParameter cannot be global.
+			// SymType is renamed along with its references -- deftype names
+			// reach LTaggedVal.Str and therefore serialized output, so this
+			// is only safe for a closed set of input files.
 		}
 	}
 	if preserved != nil && preserved.names[name] {
@@ -841,6 +848,14 @@ func recordQualifiedReferences(node *lisp.LVal, refs map[string]bool) {
 		for _, child := range node.Cells {
 			recordQualifiedReferences(child, refs)
 		}
+	case lisp.LInvalid, lisp.LInt, lisp.LFloat, lisp.LError, lisp.LQSymbol,
+		lisp.LFun, lisp.LQuote, lisp.LString, lisp.LBytes, lisp.LSortMap,
+		lisp.LArray, lisp.LNative, lisp.LTaggedVal, lisp.LMarkTerminal,
+		lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LTypeMax:
+		// Nothing to record.  Literals carry no package qualification, and
+		// LQuote is skipped for the same reason the quoted-LSExpr branch
+		// above bails out: a quoted form is data, not a reference.  The rest
+		// are runtime-only values that never appear in a parsed file.
 	}
 }
 

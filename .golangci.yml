@@ -3,8 +3,26 @@ run:
   timeout: 2m
 linters:
   enable:
+    - exhaustive
     - gosec
   settings:
+    exhaustive:
+      # The class of defect this guards is a switch over lisp.LType — the
+      # interpreter's core value tag — that silently produces nothing for a
+      # type nobody thought about. Downstream (substrate) that output becomes
+      # chaincode state, so "serialised as nothing" means "written to a
+      # ledger".
+      #
+      # A switch that already carries a `default:` has made an explicit
+      # decision about the types it does not name, so it is not a silent
+      # fallthrough. Without this setting the linter reports 75 switches; with
+      # it, 26 — the ones with NO default. All 26 were resolved rather than
+      # excluded.
+      #
+      # NOTE when re-measuring: golangci-lint's default `max-same-issues: 3`
+      # collapses identical messages, so a plain run under-reports these as
+      # 50/24. Use `issues.max-same-issues: 0` to see the real counts.
+      default-signifies-exhaustive: true
     govet:
       enable:
         # fieldalignment guards the struct layout of the interpreter. LVal,

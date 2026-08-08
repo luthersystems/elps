@@ -651,6 +651,8 @@ func isGlobalUserSymbol(sym *Symbol) bool {
 	switch sym.Kind {
 	case SymBuiltin, SymSpecialOp, SymParameter:
 		return false
+	case SymVariable, SymFunction, SymMacro, SymType:
+		// User-definable kinds -- fall through to the scope checks below.
 	}
 	// Skip symbols without a real source location (builtins registered
 	// in populateBuiltins have nil Source).
@@ -662,6 +664,9 @@ func isGlobalUserSymbol(sym *Symbol) bool {
 		switch sym.Scope.Kind {
 		case ScopeGlobal, ScopeFunction:
 			return true
+		case ScopeLambda, ScopeLet, ScopeFlet, ScopeMacrolet, ScopeDotimes:
+			// Locals: not visible to other files, so not workspace symbols.
+			return false
 		}
 		return false
 	}

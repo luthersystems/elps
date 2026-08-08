@@ -263,6 +263,14 @@ func (p *printer) writeAtom(v *lisp.LVal) {
 		p.writeString(strconv.Itoa(v.Int))
 	case lisp.LFloat:
 		p.writeString(strconv.FormatFloat(v.Float, 'g', -1, 64))
+	default:
+		// Both call sites dispatch here only for LInt/LFloat, so this is
+		// unreachable today.  It used to write nothing at all, which in a
+		// formatter means silently deleting the node from the output. Fall
+		// back to the same v.String() the callers use for types they do not
+		// recognise, so a future numeric LType degrades to "printed
+		// generically" instead of "dropped".
+		p.writeString(v.String())
 	}
 }
 

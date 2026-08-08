@@ -159,6 +159,16 @@ func collectSemanticTokens(
 			collectSemanticTokens(child, defs, refs, content, tokens)
 		}
 		return
+
+	case lisp.LInvalid, lisp.LError, lisp.LQSymbol, lisp.LFun, lisp.LQuote,
+		lisp.LBytes, lisp.LSortMap, lisp.LArray, lisp.LNative,
+		lisp.LTaggedVal, lisp.LMarkTerminal, lisp.LMarkTailRec,
+		lisp.LMarkMacExpand, lisp.LTypeMax:
+		// No token.  All but LQuote are runtime-only values that a parsed
+		// document never contains.  LQuote does occur -- it is how the reader
+		// represents two or more levels of quoting (''x) -- so ''x and its
+		// contents currently go unhighlighted.  Cosmetic, and left as-is
+		// rather than changed under a lint fix.
 	}
 }
 
