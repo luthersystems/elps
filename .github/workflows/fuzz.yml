@@ -7,10 +7,14 @@ name: Fuzz
 # a phylum.  This workflow keeps a continuous fuzzing budget pointed at that
 # surface: the recursive-descent parser (strict, fault-tolerant and
 # format-preserving modes), the lexer and byte scanner, the formatter and
-# minifier round-trips, the JSON decoder that reads chaincode state, and the
-# EVALUATOR itself -- where the same untrusted source is actually run, so a
-# panic is a crashed chaincode process and a non-terminating evaluation is a
-# wedged transaction.
+# minifier round-trips, the JSON decoder that reads chaincode state and the
+# JSON encoder that writes it, the EVALUATOR itself -- where that same
+# untrusted source is actually run, so a panic is a crashed chaincode process
+# and a non-terminating evaluation is a wedged transaction -- and, the widest
+# surface of all, every builtin, special operator, macro and stdlib export,
+# applied to generated typed LVals.  A phylum calls those with arguments of
+# its own choosing, so a panic or a hang in any of them is as reachable as a
+# parser crash.
 #
 # TIME BOUNDING IS THE LOAD-BEARING PART.  `go test -fuzz` has no default limit;
 # without -fuzztime it runs until something kills it.  All logic, including the
@@ -59,20 +63,32 @@ jobs:
   fuzz:
     name: Fuzz targets
     runs-on: ubuntu-latest
-    # Backstop for the whole job. fuzz.sh already bounds each target twice
-    # over; this catches a hang OUTSIDE any single `go test` (a wedged build,
-    # a stuck module download) that neither of those can see.
+    # A BACKSTOP, NOT A BUDGET -- and the number must not be read as an
+    # accurate target count.  Discovery is dynamic (scripts/fuzz.sh enumerates
+    # targets at run time), so a new target silently costs another FUZZTIME on
+    # the nightly sweep, and a value sized for yesterday's count truncates the
+    # sweep with the last targets never executing at all.
     #
-    # Sized for the scheduled run. Discovery is dynamic, so this has to be
-    # re-checked whenever a target is added -- FuzzEval (the evaluator) took
-    # the count to 12, of which 10 actually fuzz (FuzzGateSelfTest is inert
-    # unless armed and FuzzParseLVal skips), so the nightly is ~10 x 10m plus
-    # build.
+    # Re-derive rather than trusting this literal: `make fuzz-list` prints the
+    # targets actually discovered on the current tree.  The arithmetic is
+    # (targets that really fuzz) x FUZZTIME + build + corpus cache restore.
+    # FuzzGateSelfTest is inert unless armed and does not count.
     #
-    # Measured on a 4-core linux/amd64 runner, PR path (FUZZTIME=30s, all 12
-    # targets): 5m44s wall, of which FuzzEval is 32s. That is the marginal
-    # cost of adding the evaluator target to every PR.
-    timeout-minutes: 140
+    # 180 is sized for the fully-landed round-2 state: main carries 11
+    # targets, the evaluator work adds FuzzEval, the stdlib work adds
+    # FuzzApplyStdlib / FuzzDumpJSON / FuzzSchemaValidate, and retiring
+    # regexparser removes FuzzParseLVal -- 14 that really fuzz, so 14 x 10m =
+    # 140 minutes plus overhead.  It is deliberately above every intermediate
+    # merge order as well, because over-provisioning a backstop costs nothing
+    # while under-provisioning drops coverage silently.
+    #
+    # Measured PR-path cost (FUZZTIME=30s, 4-core linux/amd64): the whole
+    # sweep is ~6 minutes; FuzzEval 32s, FuzzApplyStdlib 33s, FuzzDumpJSON
+    # 33s, FuzzSchemaValidate 34s.
+    #
+    # The durable fix is a derived gate asserting
+    # (target count x nightly budget) <= timeout-minutes -- tracked in #320.
+    timeout-minutes: 180
     env:
       # 30s on a PR, 10m on the nightly schedule, whatever was asked for on a
       # manual dispatch. The PR budget is intentionally small: this job is a
