@@ -7,7 +7,6 @@ require (
 	github.com/google/go-dap v0.12.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/muesli/reflow v0.3.0
-	github.com/prataprc/goparsec v0.0.0-20211219142520-daac0e635e7e
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1

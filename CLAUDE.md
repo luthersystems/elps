@@ -38,7 +38,7 @@ ELPS is an embedded Lisp interpreter implemented in Go. It is a Lisp-1 dialect d
 ### Core Packages
 
 - **`lisp/`** — The interpreter core. Contains `LVal` (lisp values), `LEnv` (environment/evaluator), builtins, special operators, macros, package system, call stack, error handling, and Go interop.
-- **`parser/`** — Lexer (`lexer/`), tokens (`token/`), and two parser implementations: `rdparser/` (recursive descent, primary) and `regexparser/` (regex-based, alternative).
+- **`parser/`** — Lexer (`lexer/`), tokens (`token/`), and the `rdparser/` recursive-descent parser. `parser.NewReader` returns an `rdparser` reader; pass `WithFormatPreserving()` for the tooling (formatter/LSP) variant.
 - **`lisp/lisplib/`** — Standard library packages loaded by `LoadLibrary()`: time, help, golang, math, string, base64, json, regexp, testing, schema.
 - **`cmd/`** — Cobra CLI commands: `run`, `repl`, `doc`, `lint`, `fmt`, `lsp`.
 - **`repl/`** — Interactive REPL using readline.
