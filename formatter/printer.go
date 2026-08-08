@@ -68,6 +68,58 @@ func (p *printer) writeTopLevel(exprs []*lisp.LVal, trailingComments []*token.To
 	}
 }
 
+// beganInColumnOne reports whether c started at the very beginning of its
+// source line.
+//
+// Source.Col is 1-based, and 0 when the reader did not track positions, so
+// there is a fallback: a comment with a newline before it and no spaces after
+// that newline also began in column one.  (PrecedingSpaces is same-line only,
+// so it is the indentation of the comment's own line.)
+func beganInColumnOne(c *token.Token) bool {
+	if c.Source != nil && c.Source.Col > 0 {
+		return c.Source.Col == 1
+	}
+	return c.PrecedingNewlines > 0 && c.PrecedingSpaces == 0
+}
+
+// commentIndent returns the column a LEADING comment should be written at:
+// normally the enclosing form's indent, but column 0 for a comment that began
+// in column 0.
+//
+// Leading comments only, deliberately. This rule exists because a flush-left
+// comment is column-aligned against the line ABOVE it; an inner-trailing
+// comment sits between the last child and the closing bracket, where there is
+// no such line and nothing to align with, so it keeps the form's indent (see
+// writeInnerTrailingComments).
+//
+// This mirrors gofmt, which leaves a `//` comment starting in column 1 in
+// column 1, and for the same reason: a flush-left comment inside an indented
+// body is a deliberate signal, not an accident of layout, so re-indenting it
+// destroys information the author put in the column.
+//
+// The case that forced it here is editors/vscode/test/grammar/basics.lisp,
+// whose TextMate syntax-test assertions look like
+//
+//	(defun f (x &optional y)
+//	;           ^^^^^^^^^ variable.parameter.elps
+//
+// The caret column IS the assertion -- it points at characters on the line
+// above -- so indenting the comment by the form's indent silently changes
+// what the test asserts, and `elps fmt` corrupted the fixture while appearing
+// to succeed.  Anything else whose content is column-aligned against the
+// preceding line (ASCII diagrams, ruler comments, commented-out code kept
+// flush so diffs stay readable) has the same property.
+//
+// Deliberately NOT special-cased to `;` followed by `<`/`^`: the rule is
+// about the author having chosen column 0, not about one downstream tool's
+// assertion syntax.
+func commentIndent(c *token.Token, indent int) int {
+	if indent == 0 || beganInColumnOne(c) {
+		return 0
+	}
+	return indent
+}
+
 // writeLeadingComments writes comments that precede a node.
 func (p *printer) writeLeadingComments(v *lisp.LVal, indent int) {
 	if p.cfg.StripComments {
@@ -86,7 +138,7 @@ func (p *printer) writeLeadingComments(v *lisp.LVal, indent int) {
 				p.newline()
 			}
 		}
-		p.writeIndent(indent)
+		p.writeIndent(commentIndent(c, indent))
 		p.writeString(c.Text)
 		p.newline()
 		p.first = false

@@ -368,8 +368,17 @@ func TestCommentInsideSExpr(t *testing.T) {
 func TestCommentInsideList(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
+			// A comment written in column 0 stays in column 0 (see
+			// commentIndent); the sibling it precedes is still indented.
 			name:  "comment inside brackets",
 			input: "[a\n; comment\nb]",
+			expected: "[a\n" +
+				"; comment\n" +
+				" b]\n",
+		},
+		{
+			name:  "comment inside brackets, indented in source",
+			input: "[a\n ; comment\nb]",
 			expected: "[a\n" +
 				" ; comment\n" +
 				" b]\n",
@@ -1276,8 +1285,20 @@ func TestPatternBlankLineAfterComment(t *testing.T) {
 			expected: "; storage key format\n; prefix:id\n\n(set 'storage-prefix \"data\")\n",
 		},
 		{
+			// The comment was written flush left, so it stays flush left --
+			// see commentIndent. gofmt does the same for a `//` comment in
+			// column 1 inside a function body. The blank line after it, which
+			// is what this test is actually about, is preserved either way.
 			name:  "blank line after comment inside body",
 			input: "(defun foo ()\n; setup\n\n(init)\n(run))",
+			expected: "(defun foo ()\n" +
+				"; setup\n\n" +
+				"  (init)\n" +
+				"  (run))\n",
+		},
+		{
+			name:  "blank line after indented comment inside body",
+			input: "(defun foo ()\n  ; setup\n\n(init)\n(run))",
 			expected: "(defun foo ()\n" +
 				"  ; setup\n\n" +
 				"  (init)\n" +
