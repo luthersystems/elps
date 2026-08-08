@@ -348,6 +348,46 @@ else
 	bad "benchmark.yml does not run ci-gates-test.sh — the gate would be unguarded again"
 fi
 
+# Every benchmark-baseline cache key must be namespaced by runner.arch.
+#
+# benchstat keys its configuration off the goos/goarch/cpu headers `go test`
+# emits. Restore a baseline recorded on different silicon and it does not
+# produce a caveated comparison -- it produces two standalone one-column
+# tables with ZERO comparison rows, which benchstat-gate.sh reports as exit 2
+# and the workflow turns into a hard failure. An un-namespaced restore-keys
+# prefix is enough on its own: it matches the most recent baseline of ANY
+# architecture.
+#
+# This is not theoretical. The keys were bare `benchmark-baseline-` when the
+# benchmark job moved from amd64 ubuntu-latest to the ARM pool, and every PR
+# would have failed that way until a push to main happened to regenerate a
+# baseline. Guarding the whole class rather than that one instance: any key or
+# restore-keys line naming a benchmark baseline must carry runner.arch.
+bad_keys="$(python3 - "$BENCH_WF" <<'PY'
+import re, sys
+path = sys.argv[1]
+bad = []
+for i, line in enumerate(open(path), 1):
+    stripped = line.lstrip()
+    if stripped.startswith("#"):          # comments ABOUT the keys are fine
+        continue
+    m = re.match(r"(key|restore-keys):\s*(\S.*)$", stripped)
+    if not m:
+        continue
+    value = m.group(2).strip()
+    if "benchmark-baseline-" not in value:
+        continue
+    if "runner.arch" not in value:
+        bad.append(f"{i}: {stripped.rstrip()}")
+print("\n".join(bad))
+PY
+)"
+if [ -n "$bad_keys" ]; then
+	bad "benchmark baseline cache key is not namespaced by runner.arch — a cross-architecture baseline would be restored and fail the gate as 'cannot interpret': $bad_keys"
+else
+	ok "every benchmark-baseline cache key is namespaced by runner.arch"
+fi
+
 wf_out="$(python3 - "$REPO_ROOT" <<'PY'
 import glob, os, re, sys
 
