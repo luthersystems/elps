@@ -32,7 +32,7 @@ func newPrinter(cfg *Config) *printer {
 func (p *printer) writeTopLevel(exprs []*lisp.LVal, trailingComments []*token.Token) {
 	for i, expr := range exprs {
 		if i > 0 {
-			for j := 0; j < p.blankLinesBefore(expr); j++ {
+			for range p.blankLinesBefore(expr) {
 				p.newline()
 			}
 		}
@@ -57,7 +57,7 @@ func (p *printer) writeTopLevel(exprs []*lisp.LVal, trailingComments []*token.To
 					blankLines = p.cfg.MaxBlankLines
 				}
 			}
-			for j := 0; j < blankLines; j++ {
+			for range blankLines {
 				p.newline()
 			}
 		}
@@ -82,7 +82,7 @@ func (p *printer) writeLeadingComments(v *lisp.LVal, indent int) {
 			if blankLines > p.cfg.MaxBlankLines {
 				blankLines = p.cfg.MaxBlankLines
 			}
-			for j := 0; j < blankLines; j++ {
+			for range blankLines {
 				p.newline()
 			}
 		}
@@ -106,7 +106,7 @@ func (p *printer) writeBlankLinesAfterComments(v *lisp.LVal) {
 	if n > p.cfg.MaxBlankLines {
 		n = p.cfg.MaxBlankLines
 	}
-	for i := 0; i < n; i++ {
+	for range n {
 		p.newline()
 	}
 }
@@ -123,7 +123,7 @@ func (p *printer) writeTrailingComment(v *lisp.LVal) {
 		if v.Meta.TrailingComment.PrecedingSpaces > 1 {
 			spaces = v.Meta.TrailingComment.PrecedingSpaces
 		}
-		for i := 0; i < spaces; i++ {
+		for range spaces {
 			p.buf.WriteByte(' ')
 		}
 		p.col += spaces
@@ -147,7 +147,7 @@ func (p *printer) writeInnerTrailingComments(v *lisp.LVal, indent int) {
 			if blankLines > p.cfg.MaxBlankLines {
 				blankLines = p.cfg.MaxBlankLines
 			}
-			for j := 0; j < blankLines; j++ {
+			for range blankLines {
 				p.newline()
 			}
 		}
@@ -382,7 +382,7 @@ func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 
 		if onNewLine {
 			p.newline()
-			for j := 0; j < p.blankLinesBefore(child); j++ {
+			for range p.blankLinesBefore(child) {
 				p.newline()
 			}
 			if child.Meta != nil && len(child.Meta.LeadingComments) > 0 {
@@ -423,7 +423,7 @@ func (p *printer) writeListInner(v *lisp.LVal, indent int) {
 			childIndent := openCol
 			if hasNewlineBefore(child) {
 				p.newline()
-				for j := 0; j < p.blankLinesBefore(child); j++ {
+				for range p.blankLinesBefore(child) {
 					p.newline()
 				}
 				if child.Meta != nil && len(child.Meta.LeadingComments) > 0 {
@@ -437,7 +437,7 @@ func (p *printer) writeListInner(v *lisp.LVal, indent int) {
 		} else if hasNewlineBefore(child) {
 			// First child on a new line — preserve bracket-on-its-own-line style
 			p.newline()
-			for j := 0; j < p.blankLinesBefore(child); j++ {
+			for range p.blankLinesBefore(child) {
 				p.newline()
 			}
 			if child.Meta != nil && len(child.Meta.LeadingComments) > 0 {
@@ -509,7 +509,7 @@ func (p *printer) writeSameLineSpacing(v *lisp.LVal) {
 	if v.Meta != nil && v.Meta.PrecedingSpaces > 1 {
 		spaces = v.Meta.PrecedingSpaces
 	}
-	for i := 0; i < spaces; i++ {
+	for range spaces {
 		p.buf.WriteByte(' ')
 	}
 	p.col += spaces
@@ -520,7 +520,7 @@ func (p *printer) writeIndent(col int) {
 	if !p.atBOL {
 		return
 	}
-	for i := 0; i < col; i++ {
+	for range col {
 		p.buf.WriteByte(' ')
 	}
 	p.col = col

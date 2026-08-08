@@ -20,27 +20,35 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// mustJSON marshals v or panics. The JSON-RPC helpers below build static,
+// string-keyed maps from literals, so marshalling cannot fail in practice;
+// panicking keeps the helpers' signatures free of a *testing.T argument
+// across their ~70 call sites while still surfacing an encoding failure.
+func mustJSON(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(fmt.Sprintf("e2e: marshal JSON-RPC message: %v", err))
+	}
+	return b
+}
+
 // jsonRPCRequest builds a JSON-RPC 2.0 request.
 func jsonRPCRequest(id int, method string, params any) []byte {
-	msg := map[string]any{
+	return mustJSON(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"method":  method,
 		"params":  params,
-	}
-	b, _ := json.Marshal(msg)
-	return b
+	})
 }
 
 // jsonRPCNotification builds a JSON-RPC 2.0 notification (no id).
 func jsonRPCNotification(method string, params any) []byte {
-	msg := map[string]any{
+	return mustJSON(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  method,
 		"params":  params,
-	}
-	b, _ := json.Marshal(msg)
-	return b
+	})
 }
 
 // lspMessage wraps JSON content with the LSP Content-Length header.
@@ -70,7 +78,7 @@ func readLSPMessage(t *testing.T, r *bufio.Reader) map[string]any {
 			contentLength = n
 		}
 	}
-	require.Greater(t, contentLength, 0, "Content-Length must be positive")
+	require.Positive(t, contentLength, "Content-Length must be positive")
 
 	// Read content body.
 	body := make([]byte, contentLength)
@@ -131,7 +139,8 @@ func e2eServer(t *testing.T) (net.Conn, func()) {
 	srv := New(WithEnv(env))
 
 	// Find a free port.
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	listener, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	addr := listener.Addr().String()
 	_ = listener.Close()
@@ -144,8 +153,9 @@ func e2eServer(t *testing.T) (net.Conn, func()) {
 
 	// Give server a moment to start listening, then connect.
 	var conn net.Conn
+	var dialer net.Dialer
 	for range 50 {
-		conn, err = net.Dial("tcp", addr)
+		conn, err = dialer.DialContext(t.Context(), "tcp", addr)
 		if err == nil {
 			break
 		}
@@ -249,7 +259,12 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	defResult := defResp["result"].(map[string]any)
 	defRange := defResult["range"].(map[string]any)
 	defStart := defRange["start"].(map[string]any)
-	assert.Equal(t, float64(0), defStart["line"], "definition should point to line 0")
+	// encoding/json decodes the LSP line number into a float64, so this has to
+	// be a float comparison. Delta 0 keeps it an EXACT equality check (same as
+	// the assert.Equal it replaces) while satisfying testifylint's
+	// float-compare rule; InEpsilon cannot be used because testify rejects a
+	// zero expected value there.
+	assert.InDelta(t, 0, defStart["line"], 0, "definition should point to line 0")
 
 	// --- Step 6: Document Symbols ---
 	send(t, conn, jsonRPCRequest(4, "textDocument/documentSymbol", map[string]any{

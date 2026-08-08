@@ -463,7 +463,7 @@ func opDoTimes(env *LEnv, args *LVal) *LVal {
 	}
 	loopenv := newEnvN(env, 1) // single loop variable
 	n := 0
-	for i := 0; i < count.Int; i++ {
+	for i := range count.Int {
 		n++
 		lerr := loopenv.Put(symbol, Int(i))
 		if lerr.Type == LError {
@@ -486,9 +486,10 @@ func opDoTimes(env *LEnv, args *LVal) *LVal {
 // NOTE: Labels is similar to what you might image a flet* being but flet* is
 // not appropriate because the defined lambdas can have "forward references" in
 // labels.
-//		(labels [(f1 () (f2))
-//		         (f2 () (debug-print "f2"))])
-//		  (f1))
+//
+//	(labels [(f1 () (f2))
+//	         (f2 () (debug-print "f2"))])
+//	  (f1))
 func opLabels(env *LEnv, args *LVal) *LVal {
 	bindlist := args.Cells[0]
 	fletenv := newEnvN(env, len(bindlist.Cells))

@@ -49,7 +49,7 @@ Exit codes:
   1  Runtime error (use elps lint to catch common mistakes before running)`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if err := runElps(args, os.Stdout); err != nil {
-			if err != errRendered {
+			if !errors.Is(err, errRendered) {
 				fmt.Fprintf(os.Stderr, "%v\n", err)
 			}
 			os.Exit(1)

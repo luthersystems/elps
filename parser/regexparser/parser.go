@@ -72,7 +72,7 @@ var nodeTypeStrings = []string{
 }
 
 // Parse parses a lisp expression.
-func Parse(env *lisp.LEnv, print bool, text []byte) (bool, error) {
+func Parse(env *lisp.LEnv, printResult bool, text []byte) (bool, error) {
 	s := parsec.NewScanner(text)
 	parser := newParsecParser()
 
@@ -80,7 +80,7 @@ func Parse(env *lisp.LEnv, print bool, text []byte) (bool, error) {
 	evaled := false
 	root, s := parser(s)
 	for root != nil {
-		evaled, err = evalParsecRoot(env, print, root)
+		evaled, err = evalParsecRoot(env, printResult, root)
 		if err != nil {
 			return evaled, err
 		}
@@ -123,7 +123,7 @@ func newParsecParser() parsec.Parser {
 	closeB := parsec.Atom("]", "CLOSEB")
 	q := parsec.Atom("'", "QUOTE")
 	ubexprMark := parsec.Atom("#^", "UBEXPRMARK") // Mark preceding lambda shorthand syntax (unbound expression)
-	any := parsec.Token(`.*`, "ANY")
+	anyTok := parsec.Token(`.*`, "ANY")
 	rawstring := parsec.Token(`"""(?:[^"]|"[^"]|""[^"])*"""`, "RAWSTRING")
 	comment := parsec.Token(`;([^\n]*[^\s])?`, "COMMENT")
 	decimal := parsec.Token(`[+-]?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?`, "DECIMAL")
@@ -151,7 +151,7 @@ func newParsecParser() parsec.Parser {
 	simpleQExpr := parsec.And(astNode(nodeQExpr), q, simpleSExpr)
 	simpleExpr := parsec.OrdChoice(nil, comment, term, qterm, simpleSExpr, simpleQExpr)
 	ubexpr := parsec.And(astNode(nodeUBExpr), ubexprMark, simpleExpr)
-	ubexprBad := parsec.And(astNode(nodeUBExpr), ubexprMark, any)
+	ubexprBad := parsec.And(astNode(nodeUBExpr), ubexprMark, anyTok)
 	expr = parsec.OrdChoice(nil,
 		comment,
 		term,
@@ -381,7 +381,7 @@ func getLVal(root parsec.ParsecNode) *lisp.LVal {
 	return lval
 }
 
-func evalParsecRoot(env *lisp.LEnv, print bool, root parsec.ParsecNode) (bool, error) {
+func evalParsecRoot(env *lisp.LEnv, printResult bool, root parsec.ParsecNode) (bool, error) {
 	v := getLVal(root)
 	if v == nil {
 		return false, nil
@@ -391,7 +391,7 @@ func evalParsecRoot(env *lisp.LEnv, print bool, root parsec.ParsecNode) (bool, e
 	if err != nil {
 		return true, err
 	}
-	if print {
+	if printResult {
 		fmt.Println(r)
 	}
 	return true, nil

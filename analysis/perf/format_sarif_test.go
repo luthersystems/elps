@@ -144,7 +144,7 @@ func TestFormatSARIF_AllRules(t *testing.T) {
 		require.True(t, ok)
 		results, ok := run["results"].([]any)
 		require.True(t, ok, "empty SARIF results should decode as an array")
-		assert.Len(t, results, 0)
+		assert.Empty(t, results)
 	}
 	require.Len(t, outputs, 2)
 	assert.Equal(t, outputs[0], outputs[1])

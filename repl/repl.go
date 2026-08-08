@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -284,17 +285,16 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		for {
 			var line []byte
 			line, err = rl.ReadSlice()
-			if err != nil && err != readline.ErrInterrupt {
+			if err != nil && !errors.Is(err, readline.ErrInterrupt) {
 				return []*token.Token{{
 					Type: token.EOF,
 					Text: "",
 				}}
 			}
-			if err == readline.ErrInterrupt {
+			if errors.Is(err, readline.ErrInterrupt) {
 				if cfg.interruptFn != nil {
 					cfg.interruptFn()
 				}
-				line = nil
 				continue
 			}
 			line = bytes.TrimSpace(line)
@@ -334,7 +334,7 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 
 	for {
 		expr, err := p.Parse()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -377,7 +377,7 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 	}
 	if len(exprs) == 0 {
 		if cfg.json {
-			emitParseError(stdout, fmt.Errorf("no expression"))
+			emitParseError(stdout, errors.New("no expression"))
 		} else {
 			fmt.Fprintln(errw, "no expression") //nolint:errcheck // best-effort error display
 		}
@@ -451,7 +451,7 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 
 	for {
 		expr, err := p.Parse()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -473,6 +473,19 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 	}
 }
 
+// emitJSONLine marshals obj and writes it to w as a single line.  The jsonResult
+// / jsonError / jsonParseError structs hold only strings, so json.Marshal cannot
+// actually fail here; the error is still handled so a future field that is not
+// encodable degrades to a machine-readable error line instead of an empty one.
+func emitJSONLine(w io.Writer, obj any) {
+	data, err := json.Marshal(obj)
+	if err != nil {
+		fmt.Fprintf(w, "{\"type\":\"error\",\"message\":%q}\n", err.Error()) //nolint:errcheck // best-effort output
+		return
+	}
+	fmt.Fprintln(w, string(data)) //nolint:errcheck // best-effort output
+}
+
 // emitResult writes a JSON object for a result (success or error) to w.
 func emitResult(w io.Writer, val *lisp.LVal) {
 	if val.Type == lisp.LError {
@@ -483,27 +496,22 @@ func emitResult(w io.Writer, val *lisp.LVal) {
 		if val.Source != nil && val.Source.Pos >= 0 {
 			obj.Source = val.Source.String()
 		}
-		data, _ := json.Marshal(obj) //nolint:errcheck // marshaling known types
-		fmt.Fprintln(w, string(data)) //nolint:errcheck // best-effort output
+		emitJSONLine(w, obj)
 		return
 	}
-	obj := jsonResult{
+	emitJSONLine(w, jsonResult{
 		Type:      "result",
 		ValueType: val.Type.String(),
 		Value:     val.String(),
-	}
-	data, _ := json.Marshal(obj) //nolint:errcheck // marshaling known types
-	fmt.Fprintln(w, string(data)) //nolint:errcheck // best-effort output
+	})
 }
 
 // emitParseError writes a JSON parse_error object to w.
 func emitParseError(w io.Writer, err error) {
-	obj := jsonParseError{
+	emitJSONLine(w, jsonParseError{
 		Type:    "parse_error",
 		Message: err.Error(),
-	}
-	data, _ := json.Marshal(obj) //nolint:errcheck // marshaling known types
-	fmt.Fprintln(w, string(data)) //nolint:errcheck // best-effort output
+	})
 }
 
 func historyPath() string {

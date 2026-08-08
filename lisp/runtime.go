@@ -78,9 +78,9 @@ func (r *Runtime) MaxMacroExpansions() int {
 // not a cumulative memory tracker.  Callers should use this before allocating
 // buffers or sequences whose size is determined by user input.
 func (r *Runtime) CheckAlloc(n int) string {
-	max := r.MaxAllocBytes()
-	if n > max {
-		return fmt.Sprintf("allocation size %d exceeds maximum (%d)", n, max)
+	maxAlloc := r.MaxAllocBytes()
+	if n > maxAlloc {
+		return fmt.Sprintf("allocation size %d exceeds maximum (%d)", n, maxAlloc)
 	}
 	return ""
 }

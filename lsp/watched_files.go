@@ -30,7 +30,7 @@ func (s *Server) initialized(ctx *glsp.Context, _ *protocol.InitializedParams) e
 				Registrations: []protocol.Registration{
 					{
 						ID:     "elps-watcher",
-						Method: string(protocol.MethodWorkspaceDidChangeWatchedFiles),
+						Method: protocol.MethodWorkspaceDidChangeWatchedFiles,
 						RegisterOptions: protocol.DidChangeWatchedFilesRegistrationOptions{
 							Watchers: []protocol.FileSystemWatcher{
 								{GlobPattern: "**/*.lisp"},
@@ -53,7 +53,7 @@ func (s *Server) initialized(ctx *glsp.Context, _ *protocol.InitializedParams) e
 // changed, or deleted externally.
 func (s *Server) workspaceDidChangeWatchedFiles(_ *glsp.Context, params *protocol.DidChangeWatchedFilesParams) error {
 	for _, event := range params.Changes {
-		uri := string(event.URI)
+		uri := event.URI
 
 		// Only process .lisp files.
 		if !strings.HasSuffix(uri, ".lisp") {

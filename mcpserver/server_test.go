@@ -646,21 +646,21 @@ func TestWorkspaceValidationRaceSafety(t *testing.T) {
 
 	// Concurrently read and mark validated — should not race with -race flag.
 	done := make(chan struct{})
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go func() {
 			defer func() { done <- struct{}{} }()
-			for j := 0; j < 50; j++ {
+			for range 50 {
 				_, _ = srv.service.workspace(tmp)
 			}
 		}()
 		go func() {
 			defer func() { done <- struct{}{} }()
-			for j := 0; j < 50; j++ {
+			for range 50 {
 				srv.service.markWorkspaceValidated(tmp)
 			}
 		}()
 	}
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		<-done
 	}
 }
@@ -1666,9 +1666,9 @@ func TestWordAtPosition(t *testing.T) {
 func TestPaginateSlice(t *testing.T) {
 	items := []int{1, 2, 3, 4, 5}
 	tests := []struct {
-		name           string
-		offset, limit  int
-		wantLen        int
+		name          string
+		offset, limit int
+		wantLen       int
 	}{
 		{"no pagination", 0, 0, 5},
 		{"limit only", 0, 3, 3},

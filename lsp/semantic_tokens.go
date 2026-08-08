@@ -30,24 +30,24 @@ const (
 // Semantic token modifier bit flags — must match the order in semanticTokenLegend().
 const (
 	semModDefinition     = 1 << iota
-	semModDefaultLibrary //nolint:unused // reserved for future use
+	semModDefaultLibrary // reserved for future use
 )
 
 // semanticTokenLegend returns the legend that the client uses to decode tokens.
 func semanticTokenLegend() protocol.SemanticTokensLegend {
 	return protocol.SemanticTokensLegend{
 		TokenTypes: []string{
-			"namespace",  // 0
-			"type",       // 1
-			"parameter",  // 2
-			"variable",   // 3
-			"function",   // 4
-			"macro",      // 5
-			"keyword",    // 6
-			"comment",    // 7
-			"string",     // 8
-			"number",     // 9
-			"operator",   // 10
+			"namespace", // 0
+			"type",      // 1
+			"parameter", // 2
+			"variable",  // 3
+			"function",  // 4
+			"macro",     // 5
+			"keyword",   // 6
+			"comment",   // 7
+			"string",    // 8
+			"number",    // 9
+			"operator",  // 10
 		},
 		TokenModifiers: []string{
 			"definition",     // bit 0
@@ -218,7 +218,7 @@ var specialOps = map[string]bool{
 	"in-package": true, "use-package": true, "export": true,
 	"quote": true, "quasiquote": true, "unquote": true,
 	"funcall": true, "apply": true,
-	"debug-print": true,
+	"debug-print":  true,
 	"assert-equal": true, "assert-nil": true, "assert-not-nil": true,
 	"test": true, "test-let": true,
 	"thread-first": true, "thread-last": true,

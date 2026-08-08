@@ -200,7 +200,7 @@ func TestGetFunNameBugLogStillFires(t *testing.T) {
 	// Construct a package-less LFun via the deprecated constructor.
 	// We intentionally use lisp.Fun (not FunInPackage) here — that's
 	// the path whose detector we are verifying still fires.
-	pkgless := lisp.Fun("regression-271-positive-control", lisp.Formals("x"), //nolint:staticcheck // SA1019: intentional use of deprecated constructor — we are testing the detector for its empty-Package path
+	pkgless := lisp.Fun("regression-271-positive-control", lisp.Formals("x"), // deprecated constructor on purpose: we test the detector for its empty-Package path
 		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal { return lisp.Nil() })
 	if pkgless.Package() != "" {
 		t.Fatalf("test setup: expected package-less LFun, got Package=%q", pkgless.Package())

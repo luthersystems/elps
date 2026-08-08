@@ -822,7 +822,7 @@ func ScanWorkspaceRefs(root string, cfg *Config, scanCfg *ScanConfig) map[string
 		go func() {
 			defer wg.Done()
 			for i := range work {
-				fileSrc, readErr := os.ReadFile(paths[i]) //nolint:gosec // CLI tool reads user-specified files
+				fileSrc, readErr := os.ReadFile(paths[i]) // CLI tool: reads user-specified files by design
 				if readErr != nil {
 					continue
 				}
@@ -935,7 +935,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		go func() {
 			defer wg.Done()
 			for i := range work {
-				fileSrc, readErr := os.ReadFile(paths[i]) //nolint:gosec // CLI tool reads user-specified files
+				fileSrc, readErr := os.ReadFile(paths[i]) // CLI tool: reads user-specified files by design
 				if readErr != nil {
 					continue
 				}

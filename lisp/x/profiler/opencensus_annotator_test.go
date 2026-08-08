@@ -8,6 +8,7 @@ import (
 	"github.com/luthersystems/elps/lisp/x/profiler"
 	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opencensus.io/trace"
 )
 
@@ -30,13 +31,13 @@ func TestNewOpenCensusAnnotator(t *testing.T) {
 	})
 
 	ppa := profiler.NewOpenCensusAnnotator(env.Runtime, context.Background())
-	assert.NoError(t, ppa.Enable())
+	require.NoError(t, ppa.Enable())
 	lerr := lisp.InitializeUserEnv(env)
-	assert.NoError(t, lisp.GoError(lerr))
+	require.NoError(t, lisp.GoError(lerr))
 	testsrc := env.LoadString("test.lisp", testLisp)
 	lerr = env.Eval(testsrc)
 	assert.NotEqual(t, lisp.LError, lerr.Type)
-	assert.NoError(t, ppa.Complete())
+	require.NoError(t, ppa.Complete())
 
 	assert.GreaterOrEqual(t, len(exporter.spans), 1, "Expected at least one span")
 }

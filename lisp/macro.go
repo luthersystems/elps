@@ -343,7 +343,7 @@ func doUnquoteValue(env *LEnv, v *LVal, quoteLevel int) *LVal {
 	if x.Type == LError {
 		return x
 	}
-	for i := 0; i < quoteLevel; i++ {
+	for range quoteLevel {
 		x = Quote(x)
 	}
 	return x
@@ -385,7 +385,7 @@ func doUnquoteSExpr(env *LEnv, v *LVal, depth int, quoteLevel int) *LVal {
 	}
 	expr := SExpr(cells)
 	expr.Source = v.Source
-	for i := 0; i < quoteLevel; i++ {
+	for range quoteLevel {
 		expr = Quote(expr)
 	}
 	return expr

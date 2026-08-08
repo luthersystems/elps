@@ -1,7 +1,7 @@
 package profiler
 
 import (
-	"fmt"
+	"errors"
 	"regexp"
 
 	"github.com/luthersystems/elps/lisp"
@@ -32,7 +32,7 @@ func (p *profiler) applyConfigs(opts ...Option) {
 
 func (p *profiler) Enable() error {
 	if p.enabled {
-		return fmt.Errorf("profiler already enabled")
+		return errors.New("profiler already enabled")
 	}
 	p.enabled = true
 	return nil

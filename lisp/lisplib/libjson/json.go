@@ -5,6 +5,7 @@ package libjson
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -119,14 +120,13 @@ func (s *Serializer) Load(b []byte, stringNums bool) *lisp.LVal {
 func (s *Serializer) LoadMax(b []byte, stringNums bool, maxAlloc int) *lisp.LVal {
 	var x interface{}
 	err := s.jsonDecode(b, &x, stringNums)
-	switch err.(type) {
-	case nil:
-		break
-	case *json.SyntaxError:
-		lerr := lisp.Error(err)
-		lerr.Str = "json:syntax-error"
-		return lerr
-	default:
+	if err != nil {
+		var syntaxErr *json.SyntaxError
+		if errors.As(err, &syntaxErr) {
+			lerr := lisp.Error(err)
+			lerr.Str = "json:syntax-error"
+			return lerr
+		}
 		return lisp.Error(err)
 	}
 	return s.loadInterfaceMax(x, maxAlloc)
@@ -141,12 +141,12 @@ func (s *Serializer) jsonDecode(b []byte, dst interface{}, stringNums bool) erro
 	err := d.Decode(dst)
 	rest := failUnmarshal()
 	if d.Decode(&rest) != io.EOF {
-		return fmt.Errorf("not a valid json object")
+		return errors.New("not a valid json object")
 	}
 	return err
 }
 
-var errUnexpectedJSON = fmt.Errorf("unexpected json in stream")
+var errUnexpectedJSON = errors.New("unexpected json in stream")
 
 type unmarshalFailer struct{}
 

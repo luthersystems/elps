@@ -195,18 +195,18 @@ func (h *handler) onInitialize(req *dap.InitializeRequest) {
 	resp := &dap.InitializeResponse{}
 	resp.Response = h.newResponse(req.Seq, req.Command)
 	resp.Body = dap.Capabilities{
-		SupportsConfigurationDoneRequest:      true,
-		SupportsFunctionBreakpoints:           true,
-		SupportsConditionalBreakpoints:        true,
-		SupportsHitConditionalBreakpoints:     true,
-		SupportsLogPoints:                     true,
-		SupportsSetVariable:                   true,
-		SupportsEvaluateForHovers:             true,
-		SupportTerminateDebuggee:              true,
-		SupportsSteppingGranularity:           true,
-		SupportsStepInTargetsRequest:          true,
-		SupportsCompletionsRequest:            true,
-		CompletionTriggerCharacters:           []string{"(", ":", "'", "/"},
+		SupportsConfigurationDoneRequest:  true,
+		SupportsFunctionBreakpoints:       true,
+		SupportsConditionalBreakpoints:    true,
+		SupportsHitConditionalBreakpoints: true,
+		SupportsLogPoints:                 true,
+		SupportsSetVariable:               true,
+		SupportsEvaluateForHovers:         true,
+		SupportTerminateDebuggee:          true,
+		SupportsSteppingGranularity:       true,
+		SupportsStepInTargetsRequest:      true,
+		SupportsCompletionsRequest:        true,
+		CompletionTriggerCharacters:       []string{"(", ":", "'", "/"},
 		ExceptionBreakpointFilters: []dap.ExceptionBreakpointsFilter{
 			{
 				Filter:  "all",
@@ -751,7 +751,7 @@ func (h *handler) onSetVariable(req *dap.SetVariableRequest) {
 	result := h.engine.EvalSingleInContext(env, valueExpr)
 	if result != nil && result.Type == lisp.LError {
 		resp.Success = false
-		resp.Message = fmt.Sprintf("failed to evaluate value: %s", debugger.FormatValueWith(result, h.engine))
+		resp.Message = "failed to evaluate value: " + debugger.FormatValueWith(result, h.engine)
 		h.send(resp)
 		return
 	}
@@ -790,7 +790,7 @@ func (h *handler) onSetVariable(req *dap.SetVariableRequest) {
 
 	if updateErr != nil && updateErr.Type == lisp.LError {
 		resp.Success = false
-		resp.Message = fmt.Sprintf("failed to update variable: %s", debugger.FormatValueWith(updateErr, h.engine))
+		resp.Message = "failed to update variable: " + debugger.FormatValueWith(updateErr, h.engine)
 		h.send(resp)
 		return
 	}
@@ -886,7 +886,7 @@ func (h *handler) handleFilterCommand(req *dap.EvaluateRequest) bool {
 	h.mu.Lock()
 	h.mapKeyFilter = re
 	h.mu.Unlock()
-	resp.Body.Result = fmt.Sprintf("filter set: %s", pattern)
+	resp.Body.Result = "filter set: " + pattern
 	h.send(resp)
 	h.sendInvalidatedVariables()
 	return true

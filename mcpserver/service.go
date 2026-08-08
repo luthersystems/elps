@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -562,7 +563,7 @@ func (s *service) loadDocument(path string, content *string, workspaceRoot *stri
 	_, contentString, err := s.readSource(resolvedPath, content)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil, newToolErr("file_not_found", fmt.Sprintf("file not found: %s", resolvedPath), resolvedPath)
+			return nil, nil, newToolErr("file_not_found", "file not found: "+resolvedPath, resolvedPath)
 		}
 		return nil, nil, err
 	}
@@ -1000,7 +1001,7 @@ func (s *service) workspaceFingerprint(root string) (string, error) {
 	for _, file := range files {
 		_, _ = fmt.Fprintf(h, "%s\x00%d\x00%d\x00", file.path, file.size, file.modTime.UnixNano())
 	}
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func (s *service) shouldValidateWorkspace(state *workspaceState) bool {
@@ -1743,10 +1744,10 @@ func (s *service) testTool(_ context.Context, _ *mcp.CallToolRequest, in TestInp
 	if in.Content != nil {
 		source = []byte(*in.Content)
 	} else {
-		source, err = os.ReadFile(path) //nolint:gosec // tool reads user-selected paths
+		source, err = os.ReadFile(path) // MCP tool: reads user-selected paths by design
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return nil, TestResponse{}, newToolErr("file_not_found", fmt.Sprintf("file not found: %s", path), path)
+				return nil, TestResponse{}, newToolErr("file_not_found", "file not found: "+path, path)
 			}
 			return nil, TestResponse{}, newToolErr("invalid_input", err.Error(), path)
 		}
@@ -1760,7 +1761,7 @@ func (s *service) testTool(_ context.Context, _ *mcp.CallToolRequest, in TestInp
 	// Load and evaluate the test file.
 	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
 	if lisp.GoError(lerr) != nil {
-		return nil, TestResponse{}, fmt.Errorf("package error: %v", lisp.GoError(lerr))
+		return nil, TestResponse{}, fmt.Errorf("package error: %w", lisp.GoError(lerr))
 	}
 	autoImportTesting(env)
 	exprs, parseErr := env.Runtime.Reader.Read(path, strings.NewReader(string(source)))
@@ -1842,11 +1843,11 @@ func (s *service) newTestEnv() (*lisp.LEnv, error) {
 	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
 	rc := lisp.InitializeUserEnv(env)
 	if lisp.GoError(rc) != nil {
-		return nil, fmt.Errorf("env init: %v", lisp.GoError(rc))
+		return nil, fmt.Errorf("env init: %w", lisp.GoError(rc))
 	}
 	rc = lisplib.LoadLibrary(env)
 	if lisp.GoError(rc) != nil {
-		return nil, fmt.Errorf("load library: %v", lisp.GoError(rc))
+		return nil, fmt.Errorf("load library: %w", lisp.GoError(rc))
 	}
 	return env, nil
 }
@@ -1877,7 +1878,7 @@ func (s *service) evalTool(_ context.Context, _ *mcp.CallToolRequest, in EvalInp
 	}
 	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
 	if lisp.GoError(lerr) != nil {
-		return nil, EvalResponse{}, fmt.Errorf("package error: %v", lisp.GoError(lerr))
+		return nil, EvalResponse{}, fmt.Errorf("package error: %w", lisp.GoError(lerr))
 	}
 
 	exprs, parseErr := env.Runtime.Reader.Read("<eval>", strings.NewReader(in.Expression))
@@ -2111,10 +2112,10 @@ func (s *service) formatTool(_ context.Context, _ *mcp.CallToolRequest, in Forma
 	if in.Content != nil {
 		source = []byte(*in.Content)
 	} else {
-		source, err = os.ReadFile(path) //nolint:gosec // tool reads user-selected paths
+		source, err = os.ReadFile(path) // MCP tool: reads user-selected paths by design
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return nil, FormatResponse{}, newToolErr("file_not_found", fmt.Sprintf("file not found: %s", path), path)
+				return nil, FormatResponse{}, newToolErr("file_not_found", "file not found: "+path, path)
 			}
 			return nil, FormatResponse{}, newToolErr("invalid_input", err.Error(), path)
 		}
@@ -2162,10 +2163,10 @@ func (s *service) lintTool(_ context.Context, _ *mcp.CallToolRequest, in LintInp
 	if in.Content != nil {
 		source = []byte(*in.Content)
 	} else {
-		source, err = os.ReadFile(path) //nolint:gosec // tool reads user-selected paths
+		source, err = os.ReadFile(path) // MCP tool: reads user-selected paths by design
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return nil, LintResponse{}, newToolErr("file_not_found", fmt.Sprintf("file not found: %s", path), path)
+				return nil, LintResponse{}, newToolErr("file_not_found", "file not found: "+path, path)
 			}
 			return nil, LintResponse{}, newToolErr("invalid_input", err.Error(), path)
 		}
@@ -2278,4 +2279,3 @@ func makeMeta(workspaceRoot string, elapsed time.Duration, fileCount int) *Respo
 		FileCount:     fileCount,
 	}
 }
-

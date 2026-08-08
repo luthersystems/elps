@@ -3,6 +3,7 @@
 package token
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -163,7 +164,7 @@ func (s *Scanner) Err() error {
 	if s.readErr == nil {
 		return nil
 	}
-	if s.readErr == io.EOF {
+	if errors.Is(s.readErr, io.EOF) {
 		return nil
 	}
 	if len(s.buf) == s.next {
@@ -189,7 +190,7 @@ func (s *Scanner) EOF() bool {
 	if s.readErr == nil {
 		return false
 	}
-	if s.readErr != io.EOF {
+	if !errors.Is(s.readErr, io.EOF) {
 		return false
 	}
 	return s.next >= len(s.buf)
@@ -355,7 +356,7 @@ func (s *Scanner) checkExtend() error {
 	if s.next == len(s.buf) {
 		// If this is happening then we haven't seen EOF and the extension
 		// routine was unable to do anything to extend the buffer.
-		return fmt.Errorf("token exceeds maximum allowable size")
+		return errors.New("token exceeds maximum allowable size")
 	}
 	return nil
 }
@@ -376,7 +377,7 @@ func (s *Scanner) extend() bool {
 }
 
 func (s *Scanner) fill(end int) {
-	if s.readErr == io.EOF {
+	if errors.Is(s.readErr, io.EOF) {
 		s.buf = s.buf[:end]
 	}
 	n, err := io.ReadFull(s.r, s.buf[end:])

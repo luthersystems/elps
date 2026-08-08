@@ -145,17 +145,17 @@ func InterpolateLogMessage(env *lisp.LEnv, template string) string {
 		}
 		buf.WriteString(template[:open])
 		rest := template[open+1:]
-		close := strings.Index(rest, "}")
-		if close < 0 {
+		closeIdx := strings.Index(rest, "}")
+		if closeIdx < 0 {
 			// Unterminated brace — emit remainder literally.
 			buf.WriteByte('{')
 			buf.WriteString(rest)
 			break
 		}
-		expr := rest[:close]
+		expr := rest[:closeIdx]
 		result := EvalInContext(env, expr)
 		buf.WriteString(FormatValue(result))
-		template = rest[close+1:]
+		template = rest[closeIdx+1:]
 	}
 	return buf.String()
 }

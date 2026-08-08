@@ -129,7 +129,7 @@ var AnalyzerLetBindings = &Analyzer{
 			headNode := sexpr.Cells[0]
 			if ArgCount(sexpr) < 1 {
 				pass.Report(Diagnostic{
-					Message: fmt.Sprintf("%s requires a binding list and body", head),
+					Message: head + " requires a binding list and body",
 					Pos:     posFromSource(headNode.Source),
 					EndPos:  endPosFromNode(headNode),
 				})
@@ -564,8 +564,8 @@ func buildArityTable() map[string]aritySpec {
 		if formals == nil || formals.Type != lisp.LSExpr {
 			return
 		}
-		min := 0
-		max := 0
+		minArity := 0
+		maxArity := 0
 		variadic := false
 		inOptional := false
 		inKey := false
@@ -586,17 +586,17 @@ func buildArityTable() map[string]aritySpec {
 					// The symbol after &rest is the variadic param name, skip
 					continue
 				}
-				max++
+				maxArity++
 				if !inOptional && !inKey {
-					min++
+					minArity++
 				}
 			}
 		}
 
 		if variadic || inKey {
-			table[name] = aritySpec{min: min, max: -1}
+			table[name] = aritySpec{min: minArity, max: -1}
 		} else {
-			table[name] = aritySpec{min: min, max: max}
+			table[name] = aritySpec{min: minArity, max: maxArity}
 		}
 	}
 
@@ -972,7 +972,7 @@ var AnalyzerUserArity = &Analyzer{
 					Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, minArity, argc),
 					Pos:     posFromSource(src.Source),
 					EndPos:  endPosFromNode(src),
-					Notes:   []string{fmt.Sprintf("defined at %s", sourceString(sym.Source))},
+					Notes:   []string{"defined at " + sourceString(sym.Source)},
 					Related: relatedFromSource(sym.Source, "defined here"),
 				})
 			}
@@ -982,7 +982,7 @@ var AnalyzerUserArity = &Analyzer{
 					Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, maxArity, argc),
 					Pos:     posFromSource(src.Source),
 					EndPos:  endPosFromNode(src),
-					Notes:   []string{fmt.Sprintf("defined at %s", sourceString(sym.Source))},
+					Notes:   []string{"defined at " + sourceString(sym.Source)},
 					Related: relatedFromSource(sym.Source, "defined here"),
 				})
 			}
@@ -1032,7 +1032,7 @@ var AnalyzerUndefinedSymbol = &Analyzer{
 			}
 			pass.Report(Diagnostic{
 				Severity: sev,
-				Message:  fmt.Sprintf("undefined symbol: %s", u.Name),
+				Message:  "undefined symbol: " + u.Name,
 				Pos:      posFromSource(u.Source),
 				EndPos:   endPosFromNode(u.Node),
 				Notes:    notes,
@@ -1124,7 +1124,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 					Message: fmt.Sprintf("duplicate definition: %s '%s' already defined", sym.Kind, sym.Name),
 					Pos:     posFromSource(sym.Source),
 					EndPos:  endPosFromNode(sym.Node),
-					Notes:   []string{fmt.Sprintf("first defined at %s", sourceString(first.Source))},
+					Notes:   []string{"first defined at " + sourceString(first.Source)},
 					Related: relatedFromSource(first.Source, "first defined here"),
 				})
 			}
@@ -1147,7 +1147,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 					Message: fmt.Sprintf("duplicate definition: %s '%s' is also defined externally", first.Kind, first.Name),
 					Pos:     posFromSource(first.Source),
 					EndPos:  endPosFromNode(first.Node),
-					Notes:   []string{fmt.Sprintf("also defined at %s", sourceString(ext.Source))},
+					Notes:   []string{"also defined at " + sourceString(ext.Source)},
 					Related: relatedFromSource(ext.Source, "also defined here"),
 				})
 			}

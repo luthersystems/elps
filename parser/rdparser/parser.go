@@ -108,7 +108,7 @@ func (p *Parser) ParseProgram() ([]*lisp.LVal, error) {
 
 	for {
 		expr, err := p.Parse()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -722,7 +722,7 @@ func (p *Parser) ParseProgramFaultTolerant() ParseResult {
 
 	for {
 		expr, err := p.Parse()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

@@ -3,6 +3,7 @@
 package lexer
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -185,7 +186,7 @@ func (lex *Lexer) emitText(typ token.Type) []*token.Token {
 }
 
 func (lex *Lexer) emitError(err error, expectEOF bool) []*token.Token {
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		if expectEOF {
 			return lex.emit(token.EOF, "")
 		}

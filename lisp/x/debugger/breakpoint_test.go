@@ -317,11 +317,11 @@ func TestParseHitCondition(t *testing.T) {
 		{" >= 5 ", hitOpGTE, 5},
 		{"abc", hitOpNone, 0},
 		{">abc", hitOpNone, 0},
-		{">-1", hitOpGT, -1},    // negative numbers are parsed
-		{"==-3", hitOpEQ, -3},   // negative numbers are parsed
-		{"%0", hitOpMod, 0},      // zero modulus parsed but guarded at check time
-		{"   ", hitOpNone, 0},    // whitespace-only
-		{"==0", hitOpEQ, 0},      // zero value
+		{">-1", hitOpGT, -1},        // negative numbers are parsed
+		{"==-3", hitOpEQ, -3},       // negative numbers are parsed
+		{"%0", hitOpMod, 0},         // zero modulus parsed but guarded at check time
+		{"   ", hitOpNone, 0},       // whitespace-only
+		{"==0", hitOpEQ, 0},         // zero value
 		{"999999", hitOpEQ, 999999}, // large value
 	}
 	for _, tt := range tests {
@@ -394,7 +394,7 @@ func TestInterpolateLogMessage(t *testing.T) {
 	assert.Equal(t, "start {rest", InterpolateLogMessage(env, "start {rest"))
 
 	// Empty template.
-	assert.Equal(t, "", InterpolateLogMessage(env, ""))
+	assert.Empty(t, InterpolateLogMessage(env, ""))
 
 	// Expression that errors — should render as error.
 	result := InterpolateLogMessage(env, "val={undefined_sym}")

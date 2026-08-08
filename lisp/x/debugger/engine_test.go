@@ -139,7 +139,7 @@ func TestEngine_BreakpointPauseAndResume(t *testing.T) {
 
 	// Verify exactly one stopped event was sent.
 	mu.Lock()
-	assert.Equal(t, 1, len(events))
+	assert.Len(t, events, 1)
 	assert.Equal(t, EventStopped, events[0].Type)
 	mu.Unlock()
 
@@ -612,7 +612,7 @@ func TestEngine_StepOut(t *testing.T) {
 
 	// Record stack depth inside function.
 	insideDepth := len(pausedEnv.Runtime.Stack.Frames)
-	require.Greater(t, insideDepth, 0, "should have stack frames inside function call")
+	require.Positive(t, insideDepth, "should have stack frames inside function call")
 
 	// Clear breakpoints and step out — should return to caller.
 	e.Breakpoints().ClearFile("test")
@@ -1196,7 +1196,7 @@ func TestEngine_SourceRoot(t *testing.T) {
 	assert.Equal(t, "/my/project/dir", e.SourceRoot())
 
 	e2 := New()
-	assert.Equal(t, "", e2.SourceRoot())
+	assert.Empty(t, e2.SourceRoot())
 }
 
 func TestEngine_NotifyExit(t *testing.T) {
@@ -1626,7 +1626,7 @@ func TestEngine_SourceRefRegistry(t *testing.T) {
 
 	// Allocate a ref.
 	ref1 := e.AllocSourceRef("test.lisp", "(+ 1 2)")
-	assert.Greater(t, ref1, 0)
+	assert.Positive(t, ref1)
 
 	content, ok := e.GetSourceRef(ref1)
 	assert.True(t, ok)
@@ -2088,7 +2088,7 @@ func TestEngine_Commands(t *testing.T) {
 		})
 
 		require.NotNil(t, e.Command("ping"), "handler should still be registered without description")
-		assert.Equal(t, "", e.CommandDescription("ping"))
+		assert.Empty(t, e.CommandDescription("ping"))
 	})
 
 	t.Run("CommandDescriptions", func(t *testing.T) {
@@ -2122,7 +2122,7 @@ func TestEngine_Commands(t *testing.T) {
 		}))
 
 		// WithCommands commands have empty descriptions.
-		assert.Equal(t, "", e.CommandDescription("ping"))
+		assert.Empty(t, e.CommandDescription("ping"))
 
 		descs := e.CommandDescriptions()
 		assert.Equal(t, map[string]string{"ping": ""}, descs)
@@ -2131,7 +2131,7 @@ func TestEngine_Commands(t *testing.T) {
 	t.Run("CommandDescriptionUnknown", func(t *testing.T) {
 		t.Parallel()
 		e := New()
-		assert.Equal(t, "", e.CommandDescription("nonexistent"))
+		assert.Empty(t, e.CommandDescription("nonexistent"))
 	})
 
 	t.Run("CommandDescriptionsEmpty", func(t *testing.T) {

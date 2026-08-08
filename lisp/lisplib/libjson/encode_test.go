@@ -158,13 +158,13 @@ func TestEncodeUnregisteredTypeErrors(t *testing.T) {
 }
 
 func BenchmarkEncode(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		testEncode(b)
 	}
 }
 
 func BenchmarkEncode_stringNumbers(b *testing.B) {
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		testEncode_stringNumbers(b)
 	}
 }
@@ -185,7 +185,7 @@ func TestEncode_largeBytes(t *testing.T) {
 
 func TestEncoded_stringCompat(t *testing.T) {
 	rand := mathrand.New(mathrand.NewSource(1234)) //#nosec G404
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		s := string(randBytes(rand, 1024))
 		canonical, err := json.Marshal(s)
 		if !assert.NoError(t, err, "canonical encoding of %q", s) {

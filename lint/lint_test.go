@@ -5,6 +5,7 @@ package lint
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -125,7 +126,7 @@ func TestLintFile_AnalyzerError(t *testing.T) {
 		Name: "fail",
 		Doc:  "Always fails.",
 		Run: func(pass *Pass) error {
-			return fmt.Errorf("intentional failure")
+			return errors.New("intentional failure")
 		},
 	}
 	l := &Linter{Analyzers: []*Analyzer{errAnalyzer}}
@@ -195,7 +196,7 @@ func TestSetUsage_Positive_SamePackageRepeated(t *testing.T) {
 	// Repeated set within the same package should still be flagged.
 	source := `(in-package 'pkg-a) (set 'x 1) (set 'x 2)`
 	diags := lintCheck(t, AnalyzerSetUsage, source)
-	assert.Equal(t, 1, len(diags))
+	assert.Len(t, diags, 1)
 }
 
 // --- in-package-toplevel ---
@@ -1098,7 +1099,7 @@ func TestNolint_MultipleNames_NotMatched(t *testing.T) {
 }
 
 func TestNolint_SuppressSetUsage(t *testing.T) {
-	// nolint should work for set-usage findings, not just if-arity
+	// A "; nolint" comment should work for set-usage findings, not just if-arity
 	source := "(set 'x 1)\n(set 'x 2) ; nolint:set-usage\n"
 	diags := lintSource(t, source)
 	assertNoDiags(t, diags)
@@ -1266,7 +1267,7 @@ func TestAnalyzerDoc(t *testing.T) {
 
 func TestHeadSymbol_Empty(t *testing.T) {
 	v := &lisp.LVal{Type: lisp.LSExpr}
-	assert.Equal(t, "", HeadSymbol(v))
+	assert.Empty(t, HeadSymbol(v))
 }
 
 func TestUserDefined(t *testing.T) {
@@ -1285,7 +1286,7 @@ func TestUserDefined_NestedDefun(t *testing.T) {
 
 func TestHeadSymbol_NonSExpr(t *testing.T) {
 	v := &lisp.LVal{Type: lisp.LInt}
-	assert.Equal(t, "", HeadSymbol(v))
+	assert.Empty(t, HeadSymbol(v))
 }
 
 func TestHeadSymbol_NonSymbolHead(t *testing.T) {
@@ -1293,7 +1294,7 @@ func TestHeadSymbol_NonSymbolHead(t *testing.T) {
 		Type:  lisp.LSExpr,
 		Cells: []*lisp.LVal{{Type: lisp.LInt}},
 	}
-	assert.Equal(t, "", HeadSymbol(v))
+	assert.Empty(t, HeadSymbol(v))
 }
 
 func TestArgCount_Empty(t *testing.T) {
@@ -1421,7 +1422,7 @@ func TestNolint_RegularCommentDoesNotSuppress(t *testing.T) {
 }
 
 func TestNolint_LeadingCommentDoesNotSuppress(t *testing.T) {
-	// nolint in a leading comment is on a different line than the expression,
+	// A "; nolint" in a leading comment is on a different line than the expression,
 	// so it does not suppress the if-arity finding. The nolint itself is unused.
 	source := "; nolint\n(if true 1)\n"
 	diags := lintSource(t, source)
@@ -2347,9 +2348,9 @@ func TestDiagnosticRanges_IssueExample(t *testing.T) {
 
 	// Every diagnostic must have a valid position.
 	for _, d := range diags {
-		assert.True(t, d.Pos.Line > 0,
+		assert.Positive(t, d.Pos.Line,
 			"diagnostic %q should have Pos.Line > 0", d.Message)
-		assert.True(t, d.Pos.Col > 0,
+		assert.Positive(t, d.Pos.Col,
 			"diagnostic %q should have Pos.Col > 0", d.Message)
 	}
 
@@ -2357,11 +2358,11 @@ func TestDiagnosticRanges_IssueExample(t *testing.T) {
 	for _, d := range diags {
 		if d.EndPos.Line > 0 {
 			if d.EndPos.Line == d.Pos.Line {
-				assert.True(t, d.EndPos.Col >= d.Pos.Col,
+				assert.GreaterOrEqual(t, d.EndPos.Col, d.Pos.Col,
 					"diagnostic %q has inverted range: Pos.Col=%d > EndPos.Col=%d",
 					d.Message, d.Pos.Col, d.EndPos.Col)
 			}
-			assert.True(t, d.EndPos.Line >= d.Pos.Line,
+			assert.GreaterOrEqual(t, d.EndPos.Line, d.Pos.Line,
 				"diagnostic %q has inverted range: Pos.Line=%d > EndPos.Line=%d",
 				d.Message, d.Pos.Line, d.EndPos.Line)
 		}
@@ -2745,7 +2746,7 @@ func TestDuplicateDefinition_HasNotes(t *testing.T) {
 // --- unused-nolint ---
 
 func TestUnusedNolint_Unused(t *testing.T) {
-	// nolint:set-usage on a line with no set-usage finding
+	// "; nolint:set-usage" on a line with no set-usage finding
 	source := "(+ 1 2) ; nolint:set-usage\n"
 	diags := lintSource(t, source)
 	assert.Len(t, diags, 1)
@@ -2755,7 +2756,7 @@ func TestUnusedNolint_Unused(t *testing.T) {
 }
 
 func TestUnusedNolint_Used(t *testing.T) {
-	// nolint:set-usage that actually suppresses a finding — no warning
+	// "; nolint:set-usage" that actually suppresses a finding — no warning
 	source := "(set 'x 1)\n(set 'x 2) ; nolint:set-usage\n"
 	diags := lintSource(t, source)
 	// Should have no diagnostics: set-usage is suppressed, nolint is used
@@ -2763,7 +2764,7 @@ func TestUnusedNolint_Used(t *testing.T) {
 }
 
 func TestUnusedNolint_UnknownAnalyzer(t *testing.T) {
-	// nolint references a non-existent analyzer
+	// The "; nolint" directive references a non-existent analyzer
 	source := "(+ 1 2) ; nolint:nonexistent\n"
 	diags := lintSource(t, source)
 	assert.Len(t, diags, 1)
@@ -2843,7 +2844,7 @@ func TestUnusedNolint_Position(t *testing.T) {
 	diags := lintSource(t, source)
 	require.Len(t, diags, 1)
 	assert.Equal(t, 1, diags[0].Pos.Line)
-	assert.Greater(t, diags[0].Pos.Col, 0, "should point to the nolint comment, not column 0")
+	assert.Positive(t, diags[0].Pos.Col, "should point to the nolint comment, not column 0")
 }
 
 func TestUnusedNolint_MultipleDirectives_MixedUsage(t *testing.T) {
@@ -2858,7 +2859,7 @@ func TestUnusedNolint_MultipleDirectives_MixedUsage(t *testing.T) {
 // --- unused-nolint: semantic mode handling ---
 
 func TestUnusedNolint_SemanticNolintInSyntacticMode(t *testing.T) {
-	// nolint:unused-function in syntactic mode (no semantics) should NOT
+	// "; nolint:unused-function" in syntactic mode (no semantics) should NOT
 	// produce an unused-nolint warning — the analyzer is semantic-only.
 	source := "(defun incr (x) (+ x 1)) ; nolint:unused-function\n"
 	diags := lintSource(t, source)
@@ -2880,14 +2881,14 @@ func TestUnusedNolint_AllSemanticAnalyzersInSyntacticMode(t *testing.T) {
 }
 
 func TestUnusedNolint_MultipleSemanticNamesInSyntacticMode(t *testing.T) {
-	// nolint:unused-function,user-arity — both semantic, should be tolerated
+	// "; nolint:unused-function,user-arity" — both semantic, should be tolerated
 	source := "(+ 1 2) ; nolint:unused-function,user-arity\n"
 	diags := lintSource(t, source)
 	assertNoDiags(t, diags)
 }
 
 func TestUnusedNolint_MixedSemanticSyntacticInSyntacticMode(t *testing.T) {
-	// nolint:unused-function,set-usage in syntactic mode — set-usage is
+	// "; nolint:unused-function,set-usage" in syntactic mode — set-usage is
 	// a syntactic analyzer that didn't fire, so the directive is not
 	// purely semantic. Should still warn.
 	source := "(+ 1 2) ; nolint:unused-function,set-usage\n"

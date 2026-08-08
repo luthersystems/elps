@@ -78,7 +78,7 @@ func InitializeTypedef(env *LEnv) *LVal {
 	// Create a typedef for the typedef type that will use ctor to create new
 	// typedefs. Pretty simple, really. *brain explosion*
 	pkg := env.Runtime.Registry.Lang
-	fqname := Symbol(fmt.Sprintf("%s:typedef", pkg))
+	fqname := Symbol(pkg + ":typedef")
 	typedef := env.TaggedValue(fqname, QExpr([]*LVal{fqname, ctor}))
 	if typedef.Type == LError {
 		return typedef
@@ -647,7 +647,7 @@ func (env *LEnv) New(typ *LVal, args *LVal) *LVal {
 	if typ.Type != LTaggedVal {
 		return env.Errorf("first argument is not a typedef: %v", GetType(typ))
 	}
-	if typ.Str != fmt.Sprintf("%s:typedef", env.Runtime.Registry.Lang) {
+	if typ.Str != env.Runtime.Registry.Lang+":typedef" {
 		return env.Errorf("first argument is not a typedef: %v", GetType(typ))
 	}
 	if args.Type != LSExpr {
@@ -1501,7 +1501,7 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 	}
 	body := list.Cells
 	var ret *LVal
-	for i := 0; i < len(body)-1; i++ {
+	for i := range len(body) - 1 {
 		ret = fenv.eval(ctx, body[i])
 		if ret.Type == LError {
 			return ret

@@ -4,9 +4,11 @@ package formatter
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -50,7 +52,7 @@ func roundTripEqual(t *testing.T, original, formatted string) {
 		var parts []string
 		for {
 			expr, err := p.Parse()
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			require.NoError(t, err)
@@ -62,14 +64,7 @@ func roundTripEqual(t *testing.T, original, formatted string) {
 }
 
 func joinParts(parts []string) string {
-	result := ""
-	for i, p := range parts {
-		if i > 0 {
-			result += " "
-		}
-		result += p
-	}
-	return result
+	return strings.Join(parts, " ")
 }
 
 // --- Basic indentation tests ---
@@ -947,7 +942,7 @@ func TestNestedMixedRules(t *testing.T) {
 func TestEdgeEmptyInput(t *testing.T) {
 	got, err := Format([]byte(""), nil)
 	require.NoError(t, err)
-	assert.Equal(t, "", string(got))
+	assert.Empty(t, string(got))
 }
 
 func TestEdgeSingleAtom(t *testing.T) {
@@ -1579,7 +1574,7 @@ func TestFormatFile(t *testing.T) {
 	t.Run("empty input", func(t *testing.T) {
 		got, err := FormatFile([]byte(""), "empty.lisp", nil)
 		require.NoError(t, err)
-		assert.Equal(t, "", string(got))
+		assert.Empty(t, string(got))
 	})
 }
 

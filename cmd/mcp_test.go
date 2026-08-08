@@ -36,6 +36,7 @@ func TestMain(m *testing.M) {
 // buildTestBinary builds the elps binary once and reuses it across integration tests.
 func buildTestBinary(t *testing.T) string {
 	t.Helper()
+	ctx := t.Context()
 	testBinOnce.Do(func() {
 		wd, err := os.Getwd()
 		if err != nil {
@@ -50,7 +51,7 @@ func buildTestBinary(t *testing.T) string {
 		}
 		testBinDir = dir
 		testBinPath = filepath.Join(dir, "elps")
-		build := exec.Command("go", "build", "-o", testBinPath, ".") //nolint:gosec // test builds local binary in temp dir
+		build := exec.CommandContext(ctx, "go", "build", "-o", testBinPath, ".") //nolint:gosec // test builds local binary in temp dir
 		build.Dir = root
 		output, err := build.CombinedOutput()
 		if err != nil {
@@ -69,7 +70,7 @@ func TestMCPCommand_StdioRoundTrip(t *testing.T) {
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v1.0.0"}, nil)
 	session, err := client.Connect(context.Background(), &mcp.CommandTransport{
-		Command: exec.Command(bin, "mcp"), //nolint:gosec // test executes freshly built local binary
+		Command: exec.CommandContext(t.Context(), bin, "mcp"), //nolint:gosec // test executes freshly built local binary
 	}, nil)
 	require.NoError(t, err)
 	defer closeMCPClientSession(t, session)
@@ -99,7 +100,7 @@ func TestMCPCommand_StdioRoundTripWithConfigFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".elps.yaml"), []byte("color: never\n"), 0o600))
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v1.0.0"}, nil)
-	cmd := exec.Command(bin, "mcp") //nolint:gosec // test executes freshly built local binary
+	cmd := exec.CommandContext(t.Context(), bin, "mcp") //nolint:gosec // test executes freshly built local binary
 	cmd.Env = append(os.Environ(), "HOME="+home)
 	session, err := client.Connect(context.Background(), &mcp.CommandTransport{Command: cmd}, nil)
 	require.NoError(t, err)
@@ -118,7 +119,7 @@ func TestMCPCommand_ProvidesStdlibQualifiedSymbolsByDefault(t *testing.T) {
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v1.0.0"}, nil)
 	session, err := client.Connect(context.Background(), &mcp.CommandTransport{
-		Command: exec.Command(bin, "mcp"), //nolint:gosec // test executes freshly built local binary
+		Command: exec.CommandContext(t.Context(), bin, "mcp"), //nolint:gosec // test executes freshly built local binary
 	}, nil)
 	require.NoError(t, err)
 	defer closeMCPClientSession(t, session)

@@ -9,6 +9,7 @@ import (
 	"github.com/luthersystems/elps/lisp/x/profiler"
 	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // This is a bit of a silly test but it demonstrates the issue
@@ -22,7 +23,7 @@ func TestNewPprofAnnotator(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NoError(t, pprof.StartCPUProfile(file))
 	defer pprof.StopCPUProfile()
-	assert.NoError(t, ppa.Enable())
+	require.NoError(t, ppa.Enable())
 	lerr := lisp.InitializeUserEnv(env)
 	if lisp.GoError(lerr) != nil {
 		t.Fatal(lisp.GoError(lerr))

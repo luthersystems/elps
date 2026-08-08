@@ -1,10 +1,37 @@
 version: "2"
 run:
-  timeout: 2m
+  timeout: 5m
+issues:
+  # Report EVERY finding. golangci-lint's defaults (max-issues-per-linter: 50,
+  # max-same-issues: 3) silently collapse repeats, which makes `golangci-lint
+  # run` under-report by a wide margin: on the tree that enabled the linters
+  # below, the defaults showed ~110 findings where there were ~350 (testifylint
+  # 32 shown / 173 real, perfsprint 12 / 47, intrange 6 / 43). The exit code is
+  # correct either way, but a truncated list makes "fix and re-run" an
+  # open-ended loop and makes any measurement of lint debt wrong. A gate that
+  # hides findings lies about how much is left.
+  max-issues-per-linter: 0
+  max-same-issues: 0
 linters:
   enable:
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errchkjson
+    - errorlint
     - exhaustive
     - gosec
+    - intrange
+    - makezero
+    - nilerr
+    - noctx
+    - nolintlint
+    - perfsprint
+    - predeclared
+    - testifylint
+    - unconvert
+    - usestdlibvars
+    - wastedassign
   settings:
     exhaustive:
       # The class of defect this guards is a switch over lisp.LType — the
@@ -83,3 +110,87 @@ linters:
           - govet
         text: "fieldalignment:"
         path: '_test\.go'
+
+      # --- nilerr: "error means absent / reported in the payload" ----------
+      # nilerr flags `if err != nil { return nil }`. In these three files that
+      # shape is the contract, not a swallowed error, and "fixing" it would
+      # change runtime behaviour:
+      #
+      #   analysis/workspace.go   — inside filepath.Walk's WalkFunc. Returning
+      #                             the walk error aborts the ENTIRE workspace
+      #                             scan; returning nil skips one unreadable
+      #                             entry and keeps indexing. A single
+      #                             permission-denied directory must not blank
+      #                             the LSP's cross-file symbol table.
+      #   lsp/formatting.go       — textDocument/formatting on a file that does
+      #                             not parse yet. The handler already carries
+      #                             the comment "return nil edits (not an
+      #                             error) so the editor doesn't show an error
+      #                             dialog for incomplete code" — an LSP error
+      #                             response pops a modal on every keystroke.
+      #   mcpserver/service.go    — MCP tool handlers. A lookup miss or a parse
+      #                             error is part of the tool RESULT
+      #                             (DocResponse{Found: false},
+      #                             TestResponse{...Error: parseErr.Error()},
+      #                             EvalResponse{Error: ...}), not a
+      #                             protocol-level failure. Returning a Go
+      #                             error here turns a well-formed "not found"
+      #                             into an MCP transport error.
+      #
+      # Scoped to the three exact files, not their directories. This exclusion
+      # can only shrink: delete a path here and fix its findings.
+      - linters:
+          - nilerr
+        path: '^(analysis/workspace\.go|lsp/formatting\.go|mcpserver/service\.go)$'
+
+      # --- noctx: dapserver's context-free exported listeners --------------
+      # Server.ServeTCP(addr string) and Server.ServeTCPLoop(addr string) are
+      # exported API consumed by embedders (substrate attaches to the DAP
+      # server), and neither takes a context.Context. The only way to satisfy
+      # noctx without an API change is
+      # `(&net.ListenConfig{}).Listen(context.Background(), ...)`, which is
+      # byte-for-byte what net.Listen already does — pure ceremony that adds
+      # no cancellation. The honest fix is a ctx-taking ServeTCPContext /
+      # ServeTCPLoopContext pair, which is an API addition and not part of a
+      # lint-enablement change.
+      #
+      # Every other noctx finding WAS fixed (t.Context() threaded through
+      # exec.CommandContext in cmd/mcp_test.go, net.Dialer.DialContext and
+      # net.ListenConfig.Listen in lsp/e2e_test.go and dapserver's
+      # handler_test.go), so this exclusion is exactly two call sites. It can
+      # only shrink: delete it when the ctx-taking variants land.
+      - linters:
+          - noctx
+        path: '^lisp/x/debugger/dapserver/server\.go$'
+
+      # --- testifylint require-error: assert.* used as a VALUE -------------
+      # testifylint's require-error check wants assert.NoError -> require.NoError.
+      # It cannot apply where the assertion's bool result drives control flow,
+      # because require.* returns nothing:
+      #
+      #   elpstest/sortedmap.go              — `if !assert.NoError(t, err) {
+      #                                         return false }`. This is the
+      #                                         body of the EXPORTED helper
+      #                                         elpstest.AssertSortedMap(t, m)
+      #                                         bool. require.NoError calls
+      #                                         t.FailNow() and never returns,
+      #                                         so the helper could no longer
+      #                                         report "this map is bad" to its
+      #                                         caller — an exported-API change
+      #                                         to satisfy a linter.
+      #   lisp/lisplib/libjson/encode_test.go — `if !assert.NoError(...) {
+      #                                         continue }` inside a
+      #                                         100-iteration fuzz-ish loop.
+      #                                         require aborts the whole test on
+      #                                         the first bad sample instead of
+      #                                         reporting every failing input.
+      #
+      # Every other require-error finding WAS fixed (23 bare `assert.Error` /
+      # `assert.NoError` statements followed by a deref of the value under
+      # test became require.*), and the one float-compare finding was fixed by
+      # comparing the JSON-decoded LSP line number as an int. This exclusion is
+      # scoped to the two exact files and can only shrink.
+      - linters:
+          - testifylint
+        text: 'require-error'
+        path: '^(elpstest/sortedmap\.go|lisp/lisplib/libjson/encode_test\.go)$'

@@ -3,6 +3,7 @@
 package lsp
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/luthersystems/elps/analysis"
@@ -57,7 +58,7 @@ func (s *Server) textDocumentPrepareRename(_ *glsp.Context, params *protocol.Pre
 func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenameParams) (*protocol.WorkspaceEdit, error) {
 	doc := s.docs.Get(params.TextDocument.URI)
 	if doc == nil {
-		return nil, fmt.Errorf("document not found")
+		return nil, errors.New("document not found")
 	}
 	s.ensureAnalysis(doc)
 
@@ -66,7 +67,7 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 
 	sym, _ := symbolAtPosition(doc, line, col)
 	if sym == nil {
-		return nil, fmt.Errorf("no symbol at position")
+		return nil, errors.New("no symbol at position")
 	}
 
 	if sym.Kind == analysis.SymBuiltin || sym.Kind == analysis.SymSpecialOp {

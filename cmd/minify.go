@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -80,7 +81,7 @@ func buildMinifyConfig() (*minifier.Config, error) {
 
 func runMinify(args []string, stdin io.Reader, stdout io.Writer) error {
 	if len(args) > 1 && !minifyWrite {
-		return fmt.Errorf("multiple files require --write")
+		return errors.New("multiple files require --write")
 	}
 
 	cfg, err := buildMinifyConfig()
@@ -97,7 +98,7 @@ func runMinify(args []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 	if len(expanded) == 0 {
-		return fmt.Errorf("no .lisp files found")
+		return errors.New("no .lisp files found")
 	}
 
 	inputs := make([]minifier.InputFile, 0, len(expanded))

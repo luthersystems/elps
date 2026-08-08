@@ -277,7 +277,7 @@ func TestMaxStepsIsPerEvaluation(t *testing.T) {
 	// Each of these is under the budget on its own. Cumulatively they are
 	// far over it.
 	const iterations = 50
-	for i := 0; i < iterations; i++ {
+	for i := range iterations {
 		res := env.LoadString("test", `(+ 1 2)`)
 		require.NotEqual(t, lisp.LError, res.Type,
 			"evaluation %d must get a fresh budget, got: %v", i, res)

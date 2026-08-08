@@ -190,8 +190,8 @@ type MacroExpansionContext struct {
 // It is only allocated when a debugger is attached (Runtime.Debugger != nil),
 // so production code pays zero allocation cost.
 type MacroExpansionInfo struct {
-	*MacroExpansionContext        // shared across all nodes in one expansion
-	ID                    int64   // unique per node, monotonically increasing
+	*MacroExpansionContext       // shared across all nodes in one expansion
+	ID                     int64 // unique per node, monotonically increasing
 }
 
 // SourceMeta holds formatting metadata for an LVal, populated only when
@@ -1256,7 +1256,7 @@ func (v *LVal) str(onTheRecord bool) string {
 			quote = QUOTE
 		}
 		if v.Builtin() != nil {
-			return fmt.Sprintf("%s#<builtin>", quote)
+			return quote + "#<builtin>"
 		}
 		vars := lambdaVars(v.Cells[0], boundVars(v))
 		return fmt.Sprintf("%s(lambda %v%v)", quote, vars, bodyStr(v.Cells[1:]))
