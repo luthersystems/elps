@@ -38,6 +38,15 @@ env:
   # the gate starts firing spuriously, re-measure on identical code before
   # widening a threshold -- widening it to silence real noise you have not
   # characterised is how a gate stops meaning anything.
+  #
+  # One ARM datapoint exists so far (the first run where this gate reached a
+  # verdict): 82 delta rows, ONE significant bad-direction move, libjson
+  # Package/get-nested-baseline-2 at +1.65% (p=0.043) -- same order as the
+  # +1.52% worst case measured on amd64. It bounds nothing, because that
+  # comparison DOES change Go code and the move may be real rather than noise.
+  # It is recorded only so the next person does not read "not re-measured" as
+  # "possibly catastrophic". A proper characterisation still needs a null
+  # comparison (identical code on both arms) on this pool.
   BENCH_REGRESSION_THRESHOLD_PCT: "15"
   BENCH_ALLOC_THRESHOLD_PCT: "5"
   # Pinned, not inherited from the runner's core count. `go test` appends

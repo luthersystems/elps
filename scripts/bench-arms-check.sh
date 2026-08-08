@@ -112,6 +112,14 @@ done
 # The CPU model is the one that bit this repo. benchstat treats it as part of
 # the configuration key, so two arms drawn from a heterogeneous pool pair
 # nothing even though goos/goarch agree.
+#
+# NOTE: `go test` emits no `cpu:` header on linux/arm64 -- confirmed on the
+# runner this gate uses, where every measured run logs "header absent ...
+# skipping". So on ARM this particular check is INERT, and it is the one-job
+# design (both arms on one runner) that actually prevents the failure; this is
+# a backstop for amd64 and for anyone who reintroduces a cross-machine
+# baseline. It reports "skipping" rather than "match" on purpose: a check that
+# cannot run must not be mistaken for one that passed.
 bcpu="$(headers cpu "$base" | paste -sd' | ' -)"
 pcpu="$(headers cpu "$pr" | paste -sd' | ' -)"
 if [ -n "$bcpu" ] && [ -n "$pcpu" ]; then
