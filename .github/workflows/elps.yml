@@ -51,7 +51,15 @@ jobs:
       - name: Check formatting
         run: |
           go build -o elps .
-          ./elps fmt -l --exclude 'grammar' ./...
+          # No --exclude here, deliberately. The 'grammar' carve-out existed
+          # only because `elps fmt` rewrote editors/vscode/test/grammar/*.lisp,
+          # whose `; <-` / `; ^^^` comments are POSITIONAL assertions about the
+          # line above -- so the reflow changed what the fixture asserted. The
+          # carve-out made CI green by not looking, which also meant CI could
+          # never catch a future formatter change that broke those files again.
+          # Now that a column-0 comment stays in column 0 they are fixed points,
+          # so the fixtures are back under the gate.
+          ./elps fmt -l ./...
 
       - name: Lint ELPS source
         run: ./elps lint --workspace=. --exclude 'grammar' --include '_examples' ./...

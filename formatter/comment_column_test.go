@@ -100,10 +100,18 @@ func TestCommentInColumnZeroIsPreserved(t *testing.T) {
 // changes what the fixture asserts, so the formatter must leave these files
 // byte-identical.
 //
-// CI runs `elps fmt -l --exclude 'grammar'`, which skips these files, so
-// nothing else in the build would notice a regression here -- the exclusion
-// hides it. That is exactly why this guard reads the real files instead of
-// trusting the CLI's exclusion list.
+// CI used to run `elps fmt -l --exclude 'grammar'`, which skipped these files
+// entirely -- green by not looking. The exclusion is removed in the same
+// change that added this test, so `elps fmt -l ./...` now covers them too.
+//
+// This test is kept alongside that, not replaced by it, for two reasons: it
+// exercises the library rather than the CLI, so it still fires if the two ever
+// diverge; and it fails with a message that says WHY these particular files
+// must not move, which a bare "file is not formatted" from `fmt -l` does not.
+//
+// The same fixtures exist in luthersystems/substrate (with one more,
+// substrate.lisp). Measured there: 4 of its 6 are not fixed points under the
+// old behaviour and all 6 are under this change.
 func TestGrammarFixturesAreFormatFixedPoints(t *testing.T) {
 	dir := filepath.Join("..", "editors", "vscode", "test", "grammar")
 	entries, err := filepath.Glob(filepath.Join(dir, "*.lisp"))
