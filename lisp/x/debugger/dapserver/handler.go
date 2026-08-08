@@ -295,12 +295,26 @@ func (h *handler) onConfigurationDone(req *dap.ConfigurationDoneRequest) {
 	// the client connected), handle according to client preference:
 	// - If client sent attach/launch with stopOnEntry:false, resume silently
 	// - Otherwise, send the stopped event (late-connect case)
+	// PausedUnannounced, not IsPaused. The engine publishes the paused state
+	// before it hands the stopped event to our callback, so IsPaused() is
+	// true for a window in which the event is already in flight -- landing
+	// here inside that window would send the client a second stopped event
+	// for the same pause. PausedUnannounced excludes it.
+	//
+	// stoppedSent is still needed for the pause the engine announced to a
+	// callback installed before this handler existed. Read it under the same
+	// lock acquisition rather than sampling separately.
+	//
+	// Lock order h.mu -> engine.mu is safe: the engine always releases its
+	// own mutex before invoking a callback (see WaitIfPaused), so it never
+	// holds engine.mu while acquiring h.mu.
 	h.mu.Lock()
 	alreadySent := h.stoppedSent
 	clientSet := h.stopOnEntrySet
 	clientStopOnEntry := h.stopOnEntry
+	unannounced := h.engine.PausedUnannounced()
 	h.mu.Unlock()
-	if !alreadySent && h.engine.IsPaused() {
+	if !alreadySent && unannounced {
 		if clientSet && !clientStopOnEntry {
 			h.engine.Resume()
 		} else {

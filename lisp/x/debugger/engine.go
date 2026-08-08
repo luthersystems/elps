@@ -104,6 +104,12 @@ type Engine struct {
 	pausedEnv  *lisp.LEnv
 	pausedExpr *lisp.LVal
 
+	// stopDispatched records whether an EventStopped was handed to a
+	// callback for the current pause. It is written in the same critical
+	// section that publishes pausedEnv, and cleared when the pause ends, so
+	// the pair is never observed torn -- see PausedUnannounced.
+	stopDispatched bool
+
 	// readyCh is closed when SignalReady is called, indicating that the
 	// external consumer (e.g., DAP client) has finished configuration.
 	// Embedders can wait on ReadyCh() before starting evaluation.
@@ -465,10 +471,47 @@ func (e *Engine) IsEnabled() bool {
 
 // IsPaused returns true if the eval goroutine is currently blocked in
 // WaitIfPaused.
+//
+// It goes true *before* the EventStopped callback for that pause has run to
+// completion, and callers must not treat it as a signal that the callback
+// has finished. Waiting on IsPaused() and then reading state the callback
+// produces is a race: there is no happens-before between the two, so the
+// read can return the value from before the stop. Wait on something the
+// callback itself signals instead.
+//
+// It cannot be made to mean "the callback has returned". The callback runs
+// on the eval goroutine and is allowed to block on its consumer -- the DAP
+// server writes the stopped event to the client connection from inside it.
+// A consumer that both blocks the callback and waits on IsPaused() would
+// deadlock. (Tried; it hangs five dapserver tests, whose pipe writes block
+// until the test reads.)
+//
+// PausedUnannounced is the safe question for "is this a pause nobody has
+// been told about", and it is answered without waiting on any consumer.
 func (e *Engine) IsPaused() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.pausedEnv != nil
+}
+
+// PausedUnannounced reports whether the eval goroutine is paused *and* no
+// EventStopped was handed to a callback for that pause -- so nothing has
+// told the consumer about it and it is safe to synthesize a stopped event.
+//
+// Sampling IsPaused() alone cannot answer this. WaitIfPaused must publish
+// the paused state before invoking the callback, because a DAP client
+// answers the stopped event with stackTrace/scopes requests served on
+// another goroutine, and those call PausedState -- deferring the publish
+// would answer them with an empty stack. That leaves a window where the
+// engine is paused and the event is in flight, and a consumer polling
+// IsPaused() inside it will synthesize a duplicate.
+//
+// Both fields are written under one lock acquisition, so an observer sees
+// either "not paused" or "paused, and the event is already accounted for".
+func (e *Engine) PausedUnannounced() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.pausedEnv != nil && !e.stopDispatched
 }
 
 // PausedState returns the env and expr where execution is paused, or
@@ -641,12 +684,15 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 	}
 	e.pausedEnv = env
 	e.pausedExpr = expr
+	// Latch whether this pause gets an EventStopped in the same critical
+	// section that publishes it, so no observer can see the pause before it
+	// knows an event is coming. Set before the callback runs, never after:
+	// the callback may block on the very consumer doing the observing.
+	cb := e.onEvent
+	e.stopDispatched = cb != nil
 	e.mu.Unlock()
 
 	// Notify the DAP server that we're paused.
-	e.mu.Lock()
-	cb := e.onEvent
-	e.mu.Unlock()
 	if cb != nil {
 		cb(Event{
 			Type:   EventStopped,
@@ -663,6 +709,10 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 	e.mu.Lock()
 	e.pausedEnv = nil
 	e.pausedExpr = nil
+	// Redundant for correctness -- every pause reassigns the flag before
+	// publishing itself -- but keeps the field from reading stale outside a
+	// pause, for anyone who later reads it without the pausedEnv conjunction.
+	e.stopDispatched = false
 	e.mu.Unlock()
 
 	// Suppress breakpoint re-hit on the same source line for all resume
