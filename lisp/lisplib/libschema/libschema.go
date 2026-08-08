@@ -368,10 +368,10 @@ type validatorTag struct{}
 // Cells[validatorMarkerIndex].  Its identity is the credential.
 var validatorMarker = lisp.Native(&validatorTag{})
 
-// A validator LFun's cells are [formals, docstring, marker].  lisp.
-// FunInPackage builds the first two; newValidator appends the third.  Only
-// Cells[1] is read by LVal.Docstring for a builtin, so the extra cell is
-// invisible to the rest of the interpreter.
+// A validator LFun's cells are [formals, docstring, marker].  The first two
+// come from lisp.FunInPackage; newValidator appends the third.  For a builtin
+// LVal.Docstring reads only Cells[1], and nothing else in the interpreter
+// walks an LFun's cells, so the extra cell is invisible.
 const (
 	validatorMarkerIndex = 2
 	validatorCellCount   = 3
@@ -407,10 +407,11 @@ func isValidator(v *lisp.LVal) bool {
 
 // applyConstraint is the ONE place a schema constraint is invoked.
 //
-// Every call site in this file routes through it, and
-// TestNoUnroutedConstraintInvocation fails the build if a sixteenth appears.
-// The check has to live in one place: fifteen copies of it is fifteen chances
-// to write the next one without it, which is how the original defect looked.
+// All sixteen former call sites in this file route through it, and
+// TestNoUnroutedConstraintInvocation fails if a second raw invocation ever
+// appears.  The check has to live in one place: sixteen copies of it would be
+// sixteen chances to write the next one without it, which is exactly how the
+// original defect looked.
 func applyConstraint(env *lisp.LEnv, constraint *lisp.LVal, input *lisp.LVal) *lisp.LVal {
 	if constraint == nil {
 		return lisp.ErrorConditionf(BadArgs, "Missing constraint")
