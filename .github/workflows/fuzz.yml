@@ -7,7 +7,11 @@ name: Fuzz
 # a phylum.  This workflow keeps a continuous fuzzing budget pointed at that
 # surface: the recursive-descent parser (strict, fault-tolerant and
 # format-preserving modes), the lexer and byte scanner, the formatter and
-# minifier round-trips, and the JSON decoder that reads chaincode state.
+# minifier round-trips, the JSON decoder that reads chaincode state and the
+# JSON encoder that writes it, and -- the widest surface of all -- every
+# builtin, special operator, macro and stdlib export, applied to generated
+# typed LVals.  A phylum calls those with arguments of its own choosing, so a
+# panic or a hang in any of them is as reachable as a parser crash.
 #
 # TIME BOUNDING IS THE LOAD-BEARING PART.  `go test -fuzz` has no default limit;
 # without -fuzztime it runs until something kills it.  All logic, including the
@@ -60,9 +64,16 @@ jobs:
     # over; this catches a hang OUTSIDE any single `go test` (a wedged build,
     # a stuck module download) that neither of those can see.
     #
-    # Sized for the scheduled run: 10 targets x 10m plus build. The PR path
-    # measures far below it -- see the measured cost in the run summary.
-    timeout-minutes: 120
+    # MUST BE RAISED WHENEVER A TARGET IS ADDED. Discovery is dynamic, so a
+    # new target silently costs another FUZZTIME on the nightly run; at 120
+    # minutes the 14 targets present today would be cut off mid-sweep and the
+    # last ones would never run at all. Sized for the scheduled run: 14
+    # targets x 10m plus build and the corpus cache restore. The PR path
+    # measures far below it: each of the three targets added with this comment
+    # measured 33-34s wall for a 30s budget (FuzzApplyStdlib 33s,
+    # FuzzDumpJSON 33s, FuzzSchemaValidate 34s), so 14 x ~33s is ~8 minutes
+    # end to end.
+    timeout-minutes: 165
     env:
       # 30s on a PR, 10m on the nightly schedule, whatever was asked for on a
       # manual dispatch. The PR budget is intentionally small: this job is a
