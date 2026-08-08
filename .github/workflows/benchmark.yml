@@ -77,11 +77,24 @@ jobs:
 
   benchmark:
     name: Benchmark Comparison
-    # ARM, deliberately. substrate -- the consumer that pins this module --
-    # runs its CI and its own benchmarks on ubuntu-arm-4core-150gb and ships
-    # ARM. Benchmarking elps on amd64 tuned against a machine nobody runs, and
-    # that matters most for exactly what this gate exists to catch: struct
-    # layout, padding and GC scan extent are not architecture-invariant.
+    # ARM, deliberately. The consumers that pin this module ship ARM, so
+    # benchmarking elps on amd64 tuned against a machine nobody runs -- and
+    # that matters most for exactly what this gate exists to catch, since
+    # struct layout, padding and GC scan extent are not arch-invariant.
+    #
+    # `2vcpu-ubuntu-2204-arm` is the ARM runner actually shared with THIS repo
+    # (Settings -> Actions -> Runners). An earlier revision named
+    # ubuntu-arm-4core-150gb, which substrate uses but elps cannot reach, so
+    # the job sat queued across five pushes -- silently, because a job that
+    # never starts reports no status to fail on.
+    #
+    # Two vCPUs is enough, and arguably better: these benchmarks are
+    # single-goroutine, so the extra cores only served the runtime, and fewer
+    # cores means less scheduler noise in the timings. It does halve the
+    # GOMAXPROCS suffix benchstat keys on (EnvGet-2, not EnvGet-4) -- harmless
+    # now that both arms are measured in one job, but it would have been fatal
+    # to the old cached-baseline design, which would have compared EnvGet-4
+    # against EnvGet-2 and paired nothing at all.
     #
     # `vars.BENCH_RUNNER` is an escape hatch: if the ARM pool is unavailable
     # the runner can be repointed from repo settings without a code change.
@@ -91,7 +104,7 @@ jobs:
     #
     # NOTE: `runs-on` cannot read the `env` context, which is why this is a
     # literal plus a `vars` override rather than a workflow-level env var.
-    runs-on: ${{ vars.BENCH_RUNNER || 'ubuntu-arm-4core-150gb' }}
+    runs-on: ${{ vars.BENCH_RUNNER || '2vcpu-ubuntu-2204-arm' }}
     steps:
       # Two working trees, measured on the SAME runner in the SAME job. This
       # replaces the cached-baseline design, which compared this PR against
