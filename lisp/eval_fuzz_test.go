@@ -403,10 +403,10 @@ func TestInternalPanicMarkerIsNotForgeable(t *testing.T) {
 		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			panic("genuine host defect")
 		}))
-	real := env.Eval(lisp.SExpr([]*lisp.LVal{lisp.Symbol("fuzz-panic")}))
-	if !lisp.IsInternalPanic(real) {
+	genuine := env.Eval(lisp.SExpr([]*lisp.LVal{lisp.Symbol("fuzz-panic")}))
+	if !lisp.IsInternalPanic(genuine) {
 		t.Fatalf("a genuine recovered panic did not satisfy IsInternalPanic;"+
-			" FuzzEval would be blind to every defect it exists to find: %v", real)
+			" FuzzEval would be blind to every defect it exists to find: %v", genuine)
 	}
 }
 

@@ -7,7 +7,10 @@ name: Fuzz
 # a phylum.  This workflow keeps a continuous fuzzing budget pointed at that
 # surface: the recursive-descent parser (strict, fault-tolerant and
 # format-preserving modes), the lexer and byte scanner, the formatter and
-# minifier round-trips, and the JSON decoder that reads chaincode state.
+# minifier round-trips, the JSON decoder that reads chaincode state, and the
+# EVALUATOR itself -- where the same untrusted source is actually run, so a
+# panic is a crashed chaincode process and a non-terminating evaluation is a
+# wedged transaction.
 #
 # TIME BOUNDING IS THE LOAD-BEARING PART.  `go test -fuzz` has no default limit;
 # without -fuzztime it runs until something kills it.  All logic, including the
@@ -60,9 +63,16 @@ jobs:
     # over; this catches a hang OUTSIDE any single `go test` (a wedged build,
     # a stuck module download) that neither of those can see.
     #
-    # Sized for the scheduled run: 10 targets x 10m plus build. The PR path
-    # measures far below it -- see the measured cost in the run summary.
-    timeout-minutes: 120
+    # Sized for the scheduled run. Discovery is dynamic, so this has to be
+    # re-checked whenever a target is added -- FuzzEval (the evaluator) took
+    # the count to 12, of which 10 actually fuzz (FuzzGateSelfTest is inert
+    # unless armed and FuzzParseLVal skips), so the nightly is ~10 x 10m plus
+    # build.
+    #
+    # Measured on a 4-core linux/amd64 runner, PR path (FUZZTIME=30s, all 12
+    # targets): 5m44s wall, of which FuzzEval is 32s. That is the marginal
+    # cost of adding the evaluator target to every PR.
+    timeout-minutes: 140
     env:
       # 30s on a PR, 10m on the nightly schedule, whatever was asked for on a
       # manual dispatch. The PR budget is intentionally small: this job is a
