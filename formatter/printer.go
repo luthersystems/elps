@@ -330,8 +330,22 @@ func (p *printer) blankLinesBefore(v *lisp.LVal) int {
 // writeSExpr writes an unquoted s-expression (function call, special form, etc).
 func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 	if len(v.Cells) == 0 {
+		// An s-expression with no children still has two pieces of metadata
+		// between its brackets: comments captured by captureInnerTrailingComments
+		// and a closing bracket that stood on its own line.  This branch used to
+		// write "()" and return, DELETING the comments -- "(\n; c\n)" formatted
+		// to "()".  Only the unquoted-paren path was affected; "[...]", "'(...)"
+		// and non-empty forms all reach writeListInner, which handles both.
+		// Found by FuzzGeneratedPipeline's comment-preservation check, the same
+		// invariant that catches the prefix-form comment loss.
 		bracket := bracketOpen(v)
 		p.writeString(string(bracket))
+		openCol := p.col
+		p.writeInnerTrailingComments(v, openCol)
+		if v.Meta != nil && (len(v.Meta.InnerTrailingComments) > 0 || v.Meta.ClosingBracketNewline) {
+			p.newline()
+			p.writeIndent(openCol)
+		}
 		p.writeString(string(bracketClose(bracket)))
 		return
 	}
@@ -348,7 +362,22 @@ func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 	// Write the first child (head).
 	// For data lists (non-symbol head), preserve first-child-on-new-line.
 	isCall := v.Cells[0].Type == lisp.LSymbol
-	if !isCall && hasNewlineBefore(v.Cells[0]) {
+	head := v.Cells[0]
+	if head.Meta != nil && len(head.Meta.LeadingComments) > 0 {
+		// A comment written between the opening bracket and the head is
+		// attached to the head, and neither branch below wrote it: "(\n; c\n f
+		// x)" formatted to "(f x)", DELETING it.  writeListInner has always
+		// written a first child's leading comments; the s-expression printer
+		// only ever considered the head's newline, and only for a data list.
+		// Found by FuzzGeneratedPipeline's comment-preservation check.
+		p.newline()
+		for range p.blankLinesBefore(head) {
+			p.newline()
+		}
+		p.writeLeadingComments(head, bracketCol+1)
+		p.writeBlankLinesAfterComments(head)
+		p.writeIndent(bracketCol + 1)
+	} else if !isCall && hasNewlineBefore(head) {
 		p.newline()
 		p.writeIndent(bracketCol + 1)
 	}
@@ -486,6 +515,20 @@ func (p *printer) tryPrefixForm(v *lisp.LVal, indent int) bool {
 	if len(v.Cells) != 2 || v.Cells[0].Type != lisp.LSymbol {
 		return false
 	}
+	// The shorthand has nowhere to put a comment written inside the form: it
+	// writes the prefix and the operand and nothing else, so re-sugaring
+	// "(lisp:function ; c\n f)" to "#'f" DELETES the comment.  rdparser hoists
+	// comments in the gap after a #'/#^ onto the prefix node itself, so this
+	// only fires for longhand a human wrote out -- but that is exactly the
+	// input `elps fmt` is asked to tidy.  Falling through to the longhand
+	// printer keeps every comment.
+	//
+	// Skipped when comments are being stripped anyway (compact mode, which is
+	// what the minifier emits through): there is no comment left to lose, and
+	// refusing the shorthand there would only make the output bigger.
+	if !p.cfg.StripComments && hasComments(v) {
+		return false
+	}
 	switch v.Cells[0].Str {
 	case "lisp:function":
 		if !canWriteFunRef(v.Cells[1]) {
@@ -501,6 +544,25 @@ func (p *printer) tryPrefixForm(v *lisp.LVal, indent int) bool {
 		p.writeString("#^")
 		p.writeExpr(v.Cells[1], indent)
 		return true
+	}
+	return false
+}
+
+// hasComments reports whether any comment is attached inside v: to one of its
+// children, or between the last child and the closing bracket.  v's OWN
+// leading and trailing comments are not included -- those are written by
+// whoever prints v, and survive the shorthand.
+func hasComments(v *lisp.LVal) bool {
+	if v.Meta != nil && len(v.Meta.InnerTrailingComments) > 0 {
+		return true
+	}
+	for _, c := range v.Cells {
+		// Only the comments the PARENT is responsible for writing.  A child's
+		// own inner comments are written by writeExpr when it prints the
+		// child, and survive the shorthand: "#^(\n; c\n)" keeps its comment.
+		if c.Meta != nil && (len(c.Meta.LeadingComments) > 0 || c.Meta.TrailingComment != nil) {
+			return true
+		}
 	}
 	return false
 }

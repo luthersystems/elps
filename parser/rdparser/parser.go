@@ -327,6 +327,7 @@ func (p *Parser) ParseQuote() *lisp.LVal {
 	result := p.Quote(inner)
 	inheritEndPos(result, inner)
 	applyPrefixLocation(result, quoteLoc)
+	p.hoistOperandComments(result, inner)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
 }
@@ -354,6 +355,7 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 	p.recordSynthesizedBrackets(result)
 	inheritEndPos(result, expr)
 	applyPrefixLocation(result, prefixLoc)
+	p.hoistOperandComments(result, expr)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
 }
@@ -392,6 +394,7 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 	p.recordSynthesizedBrackets(result)
 	inheritEndPos(result, name)
 	applyPrefixLocation(result, prefixLoc)
+	p.hoistOperandComments(result, name)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
 }
@@ -438,6 +441,56 @@ func applyPrefixLocation(v *lisp.LVal, loc *token.Location) {
 	}
 }
 
+// hoistOperandComments moves comments that landed on a prefix form's OPERAND
+// up onto the prefix node itself.
+//
+// tokenLVal drains p.pendingComments onto whatever LVal it is building, and
+// for a prefix form the first LVal built is the operand.  Every comment
+// written anywhere in front of the operand therefore ends up attached to it --
+// the ones before the prefix token ("; c\n#\'a") and the ones in the gap after
+// it ("#^; c\na") alike.
+//
+// The printer reaches an operand through writeQuote or tryPrefixForm, and
+// neither writes a child's LeadingComments; the s-expression and list printers
+// do, but a prefix form is printed as neither.  Those comments were therefore
+// DELETED: `elps fmt` turned
+//
+//	; c
+//	#'a
+//
+// into "#'a", and "'\n; c\n[a]" into "'[a]".  Worse, when the operand could
+// not be re-sugared the longhand path printed the comment INSIDE the form, so
+// "#!/usr/bin/env elps\n#':%" formatted to "(lisp:function\n  #!/usr/bin/env
+// elps\n  :%)" -- output the parser then rejected, because a hash-bang is only
+// legal at the start of a program.  Found by FuzzGeneratedPipeline.
+//
+// It only bites when the prefix node has a Meta of its OWN.  lisp.Quote
+// shallow-copies an unquoted operand, Meta pointer included, so "'\n; c\na"
+// happened to survive -- the outer node saw the very same comments.  Quoting
+// an ALREADY-quoted operand builds an LQuote node with a fresh Meta, and #'
+// and #^ build a fresh two-cell s-expression, and those three lost them.
+//
+// Must run BEFORE applyPrefixNewlines, which reads LeadingComments to decide
+// which gap the node's newline metadata describes.
+func (p *Parser) hoistOperandComments(outer, inner *lisp.LVal) {
+	if !p.preserveFormat || outer.Type == lisp.LError || inner == nil {
+		return
+	}
+	if inner.Meta == nil || len(inner.Meta.LeadingComments) == 0 {
+		return
+	}
+	if outer.Meta == inner.Meta {
+		// Shared Meta: the comments are already on the node the printer
+		// writes.  Moving them would move them onto themselves.
+		return
+	}
+	if outer.Meta == nil {
+		outer.Meta = &lisp.SourceMeta{}
+	}
+	outer.Meta.LeadingComments = append(outer.Meta.LeadingComments, inner.Meta.LeadingComments...)
+	inner.Meta.LeadingComments = nil
+}
+
 // applyPrefixNewlines sets the newline and spacing metadata on a prefix form
 // (quote, #', #^) using the prefix token's values, which would otherwise be
 // lost because tokenLVal reads from the inner expression's token.
@@ -449,21 +502,42 @@ func (p *Parser) applyPrefixNewlines(v *lisp.LVal, newlines int, spaces int) {
 		v.Meta = &lisp.SourceMeta{}
 	}
 	if len(v.Meta.LeadingComments) > 0 {
-		// With leading comments attached, NewlineBefore / BlankLinesBefore
-		// describe the gap before the first COMMENT, which tokenLVal already
-		// took from that comment -- overwriting them from the prefix token
-		// would double-count.  What the prefix token measures is the gap
-		// between the last comment and this node, because the prefix IS this
-		// node's first token.
+		// Two independent gaps have to be recorded here, and NEITHER can be
+		// left to tokenLVal.
 		//
-		// tokenLVal derived that gap from the INNER expression's token, which
-		// sits after the prefix and so measures the wrong whitespace.  For
-		// ";\n'\n\n0" it recorded the blank line between ' and 0 instead of
-		// the (none) between ; and ', so the blank line moved on every
-		// re-format and Format stopped being idempotent.  Found by FuzzFormat.
+		// BlankLinesAfterComments is the gap between the last comment and
+		// this node, which the prefix token measures because the prefix IS
+		// this node's first token.  tokenLVal derived it from the INNER
+		// expression's token, which sits after the prefix and so measures the
+		// wrong whitespace: for ";\n'\n\n0" it recorded the blank line
+		// between ' and 0 instead of the (none) between ; and ', so the blank
+		// line moved on every re-format and Format stopped being idempotent.
+		// Found by FuzzFormat.
+		//
+		// NewlineBefore / BlankLinesBefore describe the gap before the FIRST
+		// COMMENT.  These used to be left alone on the premise that tokenLVal
+		// had already taken them from that comment.  That held only while this
+		// branch was reachable ONLY for a node sharing its operand's Meta --
+		// the quote-a-plain-symbol case, where tokenLVal really did see the
+		// comments.  hoistOperandComments made it reachable for #', #^ and
+		// LQuote too, and those have a Meta of their OWN that tokenLVal filled
+		// in BEFORE the hoist, from the operand token.  For #' that operand
+		// inherits the prefix's own PrecedingNewlines -- readFunRef emits
+		// FUN_REF and its symbol from a single readToken, with no
+		// skipWhitespace between them -- so "(a)\n; c\n\n#'f\n" reported one
+		// blank line before the comment and `elps fmt` INSERTED one, reflowing
+		// a comment that describes the line above it.  It reaches real source:
+		// the `; <-` markers in editors/vscode/test/grammar/basics.lisp are
+		// syntax-test assertions ABOUT the preceding line, so moving them
+		// changes what they assert.
 		v.Meta.BlankLinesAfterComments = 0
 		if newlines > 1 {
 			v.Meta.BlankLinesAfterComments = newlines - 1
+		}
+		v.Meta.NewlineBefore = true
+		v.Meta.BlankLinesBefore = 0
+		if n := v.Meta.LeadingComments[0].PrecedingNewlines; n > 1 {
+			v.Meta.BlankLinesBefore = n - 1
 		}
 	} else {
 		if newlines >= 1 {
@@ -482,7 +556,22 @@ func (p *Parser) ParseNegative() *lisp.LVal {
 	}
 	switch p.PeekType() {
 	case token.INT, token.FLOAT, token.SYMBOL:
+		// The sign and the digits are two tokens that become one literal, so
+		// the merged token has to inherit the SIGN's position AND its
+		// whitespace bookkeeping -- the sign is the literal's first character,
+		// so it is the sign that measures the gap in front of it.  The digits
+		// are glued to the sign and always report a gap of zero.
+		//
+		// Only Source was carried over.  PrecedingNewlines therefore collapsed
+		// to zero, tokenLVal cleared NewlineBefore, and the formatter put the
+		// literal back on the previous line -- which, when that line ended in
+		// a comment, meant "(a ; c\n-1)" formatted to "(a ; c -1)" and the
+		// -1 was swallowed by the comment.  `elps fmt` silently deleting a
+		// term from the program it was tidying.  Found by
+		// FuzzGeneratedPipeline.
 		p.src.Peek().Source = p.Location()
+		p.src.Peek().PrecedingNewlines = p.src.Token.PrecedingNewlines
+		p.src.Peek().PrecedingSpaces = p.src.Token.PrecedingSpaces
 		p.src.Peek().Text = p.TokenText() + p.src.Peek().Text
 	default:
 		return p.Symbol(p.TokenText())
