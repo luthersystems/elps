@@ -328,6 +328,7 @@ func (p *Parser) ParseQuote() *lisp.LVal {
 	result := p.Quote(inner)
 	inheritEndPos(result, inner)
 	applyPrefixLocation(result, quoteLoc)
+	p.hoistOperandComments(result, inner)
 	p.attachLeadingComments(result, leading)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
@@ -357,6 +358,7 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 	p.recordSynthesizedBrackets(result)
 	inheritEndPos(result, expr)
 	applyPrefixLocation(result, prefixLoc)
+	p.hoistOperandComments(result, expr)
 	p.attachLeadingComments(result, leading)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
@@ -397,6 +399,7 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 	p.recordSynthesizedBrackets(result)
 	inheritEndPos(result, name)
 	applyPrefixLocation(result, prefixLoc)
+	p.hoistOperandComments(result, name)
 	p.attachLeadingComments(result, leading)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
@@ -471,6 +474,43 @@ func (p *Parser) takeLeadingComments() []*token.Token {
 	comments := p.pendingComments
 	p.pendingComments = nil
 	return comments
+}
+
+// hoistOperandComments moves comments the OPERAND collected -- the ones
+// written between the prefix token and the thing it applies to -- up onto the
+// prefix node.
+//
+// The printer reaches a prefix node's operand through writeQuote or
+// tryPrefixForm, neither of which writes a child's LeadingComments (the
+// s-expression and list printers do, but a prefix form is not printed as
+// either).  Comments left on the operand are therefore DELETED: "'\n; c\n[a]"
+// formatted to "'[a]" and "#^; c\na" to "#^a".
+//
+// It only bites when the prefix node has a Meta of its OWN.  lisp.Quote
+// shallow-copies an unquoted operand, Meta pointer included, so "'\n; c\na"
+// happened to survive -- the comment simply moved above the quote.  Quoting an
+// ALREADY-quoted operand builds an LQuote node with a fresh Meta, and #'/#^
+// build a fresh two-cell s-expression, and those three lost the comment.
+//
+// Called before attachLeadingComments so the comments end up in source order:
+// the ones written before the prefix, then the ones written after it.
+func (p *Parser) hoistOperandComments(outer, inner *lisp.LVal) {
+	if !p.preserveFormat || outer.Type == lisp.LError || inner == nil {
+		return
+	}
+	if inner.Meta == nil || len(inner.Meta.LeadingComments) == 0 {
+		return
+	}
+	if outer.Meta == inner.Meta {
+		// Shared Meta: the comments are already on the node the printer
+		// writes.  Moving them would move them onto themselves.
+		return
+	}
+	if outer.Meta == nil {
+		outer.Meta = &lisp.SourceMeta{}
+	}
+	outer.Meta.LeadingComments = append(outer.Meta.LeadingComments, inner.Meta.LeadingComments...)
+	inner.Meta.LeadingComments = nil
 }
 
 // attachLeadingComments puts comments taken by takeLeadingComments in front of

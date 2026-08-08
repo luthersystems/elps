@@ -330,8 +330,22 @@ func (p *printer) blankLinesBefore(v *lisp.LVal) int {
 // writeSExpr writes an unquoted s-expression (function call, special form, etc).
 func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 	if len(v.Cells) == 0 {
+		// An s-expression with no children still has two pieces of metadata
+		// between its brackets: comments captured by captureInnerTrailingComments
+		// and a closing bracket that stood on its own line.  This branch used to
+		// write "()" and return, DELETING the comments -- "(\n; c\n)" formatted
+		// to "()".  Only the unquoted-paren path was affected; "[...]", "'(...)"
+		// and non-empty forms all reach writeListInner, which handles both.
+		// Found by FuzzGeneratedPipeline's comment-preservation check, the same
+		// invariant that catches the prefix-form comment loss.
 		bracket := bracketOpen(v)
 		p.writeString(string(bracket))
+		openCol := p.col
+		p.writeInnerTrailingComments(v, openCol)
+		if v.Meta != nil && (len(v.Meta.InnerTrailingComments) > 0 || v.Meta.ClosingBracketNewline) {
+			p.newline()
+			p.writeIndent(openCol)
+		}
 		p.writeString(string(bracketClose(bracket)))
 		return
 	}
@@ -348,7 +362,22 @@ func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 	// Write the first child (head).
 	// For data lists (non-symbol head), preserve first-child-on-new-line.
 	isCall := v.Cells[0].Type == lisp.LSymbol
-	if !isCall && hasNewlineBefore(v.Cells[0]) {
+	head := v.Cells[0]
+	if head.Meta != nil && len(head.Meta.LeadingComments) > 0 {
+		// A comment written between the opening bracket and the head is
+		// attached to the head, and neither branch below wrote it: "(\n; c\n f
+		// x)" formatted to "(f x)", DELETING it.  writeListInner has always
+		// written a first child's leading comments; the s-expression printer
+		// only ever considered the head's newline, and only for a data list.
+		// Found by FuzzGeneratedPipeline's comment-preservation check.
+		p.newline()
+		for range p.blankLinesBefore(head) {
+			p.newline()
+		}
+		p.writeLeadingComments(head, bracketCol+1)
+		p.writeBlankLinesAfterComments(head)
+		p.writeIndent(bracketCol + 1)
+	} else if !isCall && hasNewlineBefore(head) {
 		p.newline()
 		p.writeIndent(bracketCol + 1)
 	}
@@ -484,6 +513,13 @@ func (p *printer) writeListInner(v *lisp.LVal, indent int) {
 // Found by FuzzFormat.
 func (p *printer) tryPrefixForm(v *lisp.LVal, indent int) bool {
 	if len(v.Cells) != 2 || v.Cells[0].Type != lisp.LSymbol {
+		return false
+	}
+	// The shorthand has nowhere to put a comment attached to the operand: it
+	// writes the prefix and the operand and nothing else.  rdparser hoists
+	// such comments onto the prefix node itself, so this only fires for
+	// longhand a human wrote out, but re-sugaring it would delete the comment.
+	if inner := v.Cells[1]; inner.Meta != nil && len(inner.Meta.LeadingComments) > 0 {
 		return false
 	}
 	switch v.Cells[0].Str {
