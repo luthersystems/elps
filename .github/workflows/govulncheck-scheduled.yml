@@ -1,0 +1,117 @@
+name: govulncheck (scheduled)
+
+# Scheduled companion to the govulncheck gate that already runs on pull
+# requests in .github/workflows/govulncheck.yml. That workflow is NOT modified
+# and NOT duplicated here: it fires on `pull_request`, this one only on
+# `schedule` / `workflow_dispatch`, so the two never scan the same event.
+#
+# Why a schedule: a PR-triggered gate only re-scans when someone opens a PR,
+# but the Go vulnerability database updates continuously -- a repo nobody has
+# touched for a month can go from clean to vulnerable with no code change at
+# all. Pinning the toolchain to `stable` also means this picks up Go stdlib
+# advisories, which track toolchain patch releases rather than any dependency.
+#
+# A finding opens (and later auto-closes) a `govulncheck-drift` issue, so it
+# is visible without anyone subscribing to cron failures. The issue logic
+# lives in scripts/govulncheck-drift.cjs, not inline here.
+#
+# The cron minute/hour is staggered against the other luthersystems repos
+# running this same workflow (06:10 reliable, 06:20 ui-core, 06:30 mars,
+# 06:40 sandbox, 06:50 insideout-terraform-presets, 07:00 svc, 07:10
+# lutherauth, 07:20 lutherauth-sdk-go, 07:30 insideout-mcp) so they do not all
+# hit the vulndb and the Actions queue in the same minute.
+
+on:
+  schedule:
+    - cron: "40 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # SHA-pinned, and reusing SHAs already present elsewhere in this tree, so
+      # the pin is verifiable from the repository itself. scripts/ci-gates-test.sh
+      # hard-fails any new workflow that uses a floating action tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
+        with:
+          go-version: "stable"
+          cache: true
+
+      # Do not fold this into the scan step. A refactor elsewhere in the fleet
+      # dropped it and the scripts below then ran against a govulncheck binary
+      # that was never installed.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        id: scan
+        run: bash scripts/govulncheck-scan.sh
+
+      # Second, ADDITIVE pass over the built binaries. NOT a substitute for the
+      # source scan above and must not become one: source mode reports
+      # vulnerabilities in imported packages even when the linker dropped the
+      # code, which binary mode cannot see. Run together, neither loses
+      # coverage.
+      #
+      # What binary mode adds: reflection-reached code. Per the govulncheck
+      # docs, calls made via package reflect "will not be reported in source
+      # scan mode" -- binary mode keys off symbol presence instead. It also
+      # scans the stdlib at the version the binary was BUILT with rather than
+      # the version the scanner runs under.
+      #
+      # Library modules have no main packages; there the step is a no-op.
+      # elps has exactly one (the root `elps` CLI), so this pass does apply.
+      #
+      # This pass has to `go build` each main package before it has anything to
+      # scan, so it goes red for two unrelated reasons: a compile error, or an
+      # actual finding. Both still FAIL -- a package that did not compile was
+      # not scanned, and an unscanned package is not a clean one -- but the
+      # script reports them as separate outputs (`build_failed` /
+      # `vulns_found`) and emits a distinct `::error::` for each, so the check
+      # name "govulncheck" stops turning a build break into a phantom security
+      # finding.
+      #
+      # The script exits NON-ZERO on either condition, which is why the two
+      # steps below carry `!cancelled()` guards -- without them a failure here
+      # would skip the tracking-issue writer.
+      - name: Run govulncheck (binary mode)
+        id: binscan
+        run: bash scripts/govulncheck-binary-scan.sh
+
+      # `!cancelled()` + the outcome guard keeps this reachable now that the
+      # binary pass can exit non-zero, while preserving the behaviour that a
+      # setup failure (checkout / install) skips the writer entirely -- a
+      # skipped scan must never be read as "clean" and auto-close the issue.
+      - name: Open, refresh or close the tracking issue
+        if: ${{ !cancelled() && steps.binscan.outcome != 'skipped' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
+        env:
+          FOUND: ${{ steps.scan.outputs.exit != '0' || steps.binscan.outputs.exit != '0' }}
+          # Split out so the issue does not describe a compile error as a
+          # "reachable vulnerability" and send its reader hunting a CVE that
+          # does not exist.
+          VULN_FOUND: ${{ steps.scan.outputs.exit != '0' || steps.binscan.outputs.vulns_found == '1' }}
+          BUILD_FAILED: ${{ steps.binscan.outputs.build_failed == '1' }}
+          REPORT_PATH: /tmp/govulncheck.txt
+        with:
+          script: |
+            const run = require('./scripts/govulncheck-drift.cjs');
+            await run({ github, context, core });
+
+      # Named for what it actually gates: a finding OR a build break. The
+      # script only reports which condition tripped (log + job summary) and
+      # then fails; it never decides whether to fail.
+      - name: Fail if govulncheck reported a finding or a build break
+        if: ${{ !cancelled() && (steps.scan.outputs.exit != '0' || steps.binscan.outputs.exit != '0') }}
+        env:
+          SOURCE_SCAN_EXIT: ${{ steps.scan.outputs.exit }}
+          BINARY_BUILD_FAILED: ${{ steps.binscan.outputs.build_failed }}
+          BINARY_VULNS_FOUND: ${{ steps.binscan.outputs.vulns_found }}
+        run: bash scripts/govulncheck-fail-summary.sh
