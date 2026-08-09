@@ -1298,11 +1298,31 @@ func bodyStr(exprs []*LVal) string {
 	return buf.String()
 }
 
+// lambdaVars renders a function's formals and closure bindings as a
+// single unquoted list, for (*LVal).str.
+//
+// builtinConcat does NOT always hand back a freshly allocated list --
+// the comment that used to sit on the unquote here claimed it did, and
+// that was the bug in issue #333. builtinConcatSeq short-circuits the
+// empty case with `return Nil()`, so a function with no formals AND no
+// bound vars made this write `Quoted = false` straight into the
+// process-wide singletonNil. It stored the value the field already
+// held, which made it invisible to SingletonSnapshot.Verify (see the
+// note on checkSingleton), but it was still a write to shared memory
+// and raced with every concurrent (*LEnv).eval reading `v.Quoted` off a
+// Nil().
+//
+// shallowUnquote copies before clearing Quoted, so lambdaVars mutates
+// only a value it owns. It copies unconditionally rather than only when
+// builtinConcat happens to share, which makes the contract the simple
+// one -- lambdaVars returns a value the caller owns -- instead of the
+// fragile one, "the result is usually fresh, but don't write to it."
+// That contract is checkable without the race detector; see
+// TestLambdaVarsDoesNotReturnSingleton. The extra LVal is noise next to
+// the fmt.Sprintf this feeds, and only printing a function reaches it.
 func lambdaVars(formals *LVal, bound *LVal) *LVal {
 	s := SExpr([]*LVal{Quote(Symbol("list")), formals, bound})
-	s = builtinConcat(nil, s)
-	s.Quoted = false // This is fine because builtinConcat returns a new list
-	return s
+	return shallowUnquote(builtinConcat(nil, s))
 }
 
 func boundVars(v *LVal) *LVal {
