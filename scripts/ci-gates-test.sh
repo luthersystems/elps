@@ -1130,15 +1130,29 @@ case "$req_out" in
 esac
 
 echo
-echo "== shell lint on the scripts this suite owns ============================="
+echo "== shell lint on every script in scripts/ ================================"
 
-OWNED_SCRIPTS=(
-	"${SCRIPT_DIR}/bench-arms-check.sh"
-	"${SCRIPT_DIR}/benchstat-gate.sh"
-	"${SCRIPT_DIR}/ci-gates-test.sh"
-	"${SCRIPT_DIR}/fuzz-budget-check.sh"
-	"${SCRIPT_DIR}/fuzz.sh"
-)
+# DISCOVERED, not enumerated. This was a hardcoded five-entry array, and the
+# consequence was exactly what a hardcoded list always produces: scripts landed
+# in scripts/ and were never linted by anything. scripts/fuzz-classify-test.sh
+# sat unlinted from the day it was added, and the four govulncheck-* scripts
+# would have joined it. A lint list that has to be edited by hand is a lint
+# list that silently shrinks in relative terms every time the directory grows.
+#
+# The floor below is the other half of the guard: a glob that matches nothing
+# (wrong SCRIPT_DIR, a `set -f` somewhere above, a rename of the directory)
+# would otherwise report "clean on all 0 scripts" and pass.
+OWNED_SCRIPTS=()
+while IFS= read -r s; do
+	OWNED_SCRIPTS+=("$s")
+done < <(find "$SCRIPT_DIR" -maxdepth 1 -name '*.sh' -type f | LC_ALL=C sort)
+
+SCRIPT_FLOOR=5
+if [ "${#OWNED_SCRIPTS[@]}" -ge "$SCRIPT_FLOOR" ]; then
+	ok "discovered ${#OWNED_SCRIPTS[@]} shell scripts in scripts/ (floor ${SCRIPT_FLOOR})"
+else
+	bad "discovered only ${#OWNED_SCRIPTS[@]} shell scripts in scripts/, expected >= ${SCRIPT_FLOOR} — the glob is broken, not the tree"
+fi
 
 for s in "${OWNED_SCRIPTS[@]}"; do
 	if bash -n "$s" 2>/dev/null; then
@@ -1158,6 +1172,29 @@ if command -v shellcheck >/dev/null 2>&1; then
 	fi
 else
 	echo "SKIP  shellcheck not installed"
+fi
+
+# Same treatment for the .cjs helpers. ci-queue-watchdog.cjs already had a
+# node --check above as part of its own workflow-wiring assertions; this covers
+# every .cjs in the directory, including any added later with no wiring test.
+OWNED_CJS=()
+while IFS= read -r s; do
+	OWNED_CJS+=("$s")
+done < <(find "$SCRIPT_DIR" -maxdepth 1 -name '*.cjs' -type f | LC_ALL=C sort)
+
+if [ "${#OWNED_CJS[@]}" -eq 0 ]; then
+	bad "no .cjs helpers discovered in scripts/ — the glob is broken, not the tree"
+elif command -v node >/dev/null 2>&1; then
+	for s in "${OWNED_CJS[@]}"; do
+		if node --check "$s" 2>/dev/null; then
+			ok "node --check $(basename "$s")"
+		else
+			bad "node --check $(basename "$s")"
+			node --check "$s" 2>&1 | sed 's/^/        | /'
+		fi
+	done
+else
+	echo "SKIP  node not installed (${#OWNED_CJS[@]} .cjs helpers unchecked)"
 fi
 
 echo
