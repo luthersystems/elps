@@ -253,6 +253,15 @@ const DefaultMaxMacroExpansionDepth = 1000
 // "fatal error: stack overflow" (~1.4KB of Go stack per level). 100,000 sits
 // 7-8x below that, matching the margin DefaultMaxPhysicalStackHeight keeps.
 //
+// THAT MARGIN IS POINTER-SIZE DEPENDENT. Go caps a goroutine stack at 1GB on
+// 64-bit but 250MB on 32-bit (runtime/proc.go: maxstacksize). At ~1.4KB per
+// level the default costs ~140MB, so the same 100,000 is a 7-8x margin on
+// amd64 and roughly 1.8x on a 32-bit build -- and an embedder whose own call
+// stack is already deep when it enters Eval eats into what is left. Nothing
+// here is exercised on 32-bit: CI builds ubuntu-latest and windows-latest,
+// both amd64. A 32-bit embedder should lower this with WithMaxEvalNesting
+// rather than trust the default.
+//
 // It also sits comfortably above ordinary recursion. Measured with
 // (defun sum (n) (if (<= n 0) 0 (+ n (sum (- n 1))))), the physical limit
 // binds first for any MaxEvalNesting of 38,000 or more: that recursion costs
