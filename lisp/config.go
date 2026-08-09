@@ -5,6 +5,7 @@ package lisp
 import (
 	"context"
 	"io"
+	"time"
 )
 
 // Config is a function that configures a root environment or its runtime.
@@ -58,6 +59,33 @@ func WithMaximumPhysicalStackHeight(n int) Config {
 func WithMaxEvalNesting(n int) Config {
 	return func(env *LEnv) *LVal {
 		env.Runtime.MaxEvalNesting = n
+		return Nil()
+	}
+}
+
+// WithMaxSleep returns a Config that sets a HARD CEILING on how long a single
+// (time:sleep d) may block, in the host's hands rather than the program's.
+//
+// This is the containment bound, and it is not the same knob as
+// DefaultMaxSleep. A sleep with no explicit :max is capped at
+// DefaultMaxSleep, which program source may raise per call with
+// (time:sleep d :max m). That is a guard against accidents. The ceiling set
+// here is what :max may not exceed, so a program cannot opt itself out of
+// it — which matters when the program is untrusted, as customer-supplied
+// phylum source is downstream in luthersystems/substrate.
+//
+// Zero or negative means no ceiling: :max may name any duration. That is the
+// default, because the interpreter cannot know what wall-clock budget the
+// host is willing to spend.
+//
+// Note what this does NOT do: it bounds one sleep call, not their sum. A
+// loop of N sleeps each just under the ceiling still blocks for N times the
+// ceiling. Bounding total elapsed time is what a context deadline is for
+// (see WithContext) -- sleep observes that too, and refuses immediately
+// rather than blocking to the deadline.
+func WithMaxSleep(d time.Duration) Config {
+	return func(env *LEnv) *LVal {
+		env.Runtime.MaxSleep = d
 		return Nil()
 	}
 }

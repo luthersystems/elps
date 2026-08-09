@@ -115,14 +115,26 @@ var builtins = []*libutil.Builtin{
 		`Returns the number of nanoseconds in the duration as an integer.
 		The argument must be a native duration value. Returns an error
 		if the value overflows an int.`),
-	libutil.FunctionDoc("sleep", lisp.Formals("time-duration"), BuiltinSleep,
+	libutil.FunctionDoc("sleep", lisp.Formals("time-duration", lisp.KeyArgSymbol, "max"), BuiltinSleep,
 		`Pauses execution for the specified duration. The argument must
 		be a native duration value (from parse-duration). Returns nil.
-		The pause is interruptible: if the evaluation's context is
-		cancelled, or its deadline would expire before the duration
-		elapses, sleep wakes at that point and raises a
-		context-cancelled condition instead of returning nil. With no
-		context configured the full duration is always slept.`),
+
+		A sleep that cannot succeed is REFUSED IMMEDIATELY rather than
+		blocked on. Two things refuse it, both before any time passes:
+
+		  1. A duration longer than one hour raises
+		     sleep-limit-exceeded. Pass :max with a longer duration to
+		     allow it -- (time:sleep d :max m) -- which makes an
+		     unusually long sleep explicit at the call site. The host
+		     may set a ceiling that :max cannot exceed.
+		  2. A duration that would outlast the evaluation's context
+		     deadline raises context-cancelled. The sleep could not
+		     have completed, so waiting out the remaining time would
+		     only consume the budget the caller has left to react in.
+
+		Once started, the pause is still interruptible: if the context
+		is cancelled while sleeping, sleep wakes at that point and
+		raises context-cancelled instead of returning nil.`),
 }
 
 func BuiltinUTCNow(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -340,7 +352,7 @@ func BuiltinDurationNS(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // wakes early if the context is cancelled, and never sleeps past the
 // context's deadline.  See sleepContext for the full rationale.
 func BuiltinSleep(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	lt := args.Cells[0]
+	lt, lmax := args.Cells[0], args.Cells[1]
 	if lt.Type != lisp.LNative {
 		return env.Errorf("argument is not a duration: %v", lt.Type)
 	}
@@ -348,7 +360,61 @@ func BuiltinSleep(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if !ok {
 		return env.Errorf("argument is not a duration: %v", lt)
 	}
+	limit, lerr := sleepCap(env, lmax)
+	if lerr != nil {
+		return lerr
+	}
+	if limit > 0 && d > limit {
+		return env.ErrorConditionf(lisp.CondSleepLimitExceeded,
+			"sleep of %v exceeds the maximum %v"+
+				" (pass :max to allow a longer sleep, subject to any host ceiling)",
+			d, limit)
+	}
 	return sleepContext(env, d)
+}
+
+// sleepCap resolves the longest sleep this call may request, or 0 for no
+// limit.  It returns a non-nil second value if the :max argument is unusable.
+//
+// Three inputs, in increasing authority:
+//
+//	lisp.DefaultMaxSleep   the cap when :max is absent
+//	:max                   raises it for this call, at the program's discretion
+//	Runtime.MaxSleep       the host's ceiling, which :max may not exceed
+//
+// The last is what makes this a bound rather than a suggestion: program
+// source can relax the default but cannot relax the ceiling, so an untrusted
+// program cannot grant itself an unbounded sleep.  See lisp.WithMaxSleep.
+func sleepCap(env *lisp.LEnv, lmax *lisp.LVal) (time.Duration, *lisp.LVal) {
+	ceiling := env.Runtime.MaxSleepCeiling()
+	if lmax.IsNil() {
+		limit := lisp.DefaultMaxSleep
+		if ceiling > 0 && ceiling < limit {
+			// A host ceiling below the default lowers the default too;
+			// otherwise the default would quietly exceed the ceiling.
+			limit = ceiling
+		}
+		return limit, nil
+	}
+	if lmax.Type != lisp.LNative {
+		return 0, env.Errorf("max is not a duration: %v", lmax.Type)
+	}
+	m, ok := lmax.Native.(time.Duration)
+	if !ok {
+		return 0, env.Errorf("max is not a duration: %v", lmax)
+	}
+	if m <= 0 {
+		// Reject rather than treat as "no limit": a non-positive :max most
+		// likely came from arithmetic that underflowed, and reading it as
+		// "unlimited" would turn a bug into the very unbounded sleep this
+		// exists to prevent.
+		return 0, env.Errorf("max is not a positive duration: %v", m)
+	}
+	if ceiling > 0 && m > ceiling {
+		return 0, env.ErrorConditionf(lisp.CondSleepLimitExceeded,
+			"max %v exceeds the host ceiling %v", m, ceiling)
+	}
+	return m, nil
 }
 
 // sleepContext pauses for d, bounded by env's context.
@@ -396,28 +462,32 @@ func sleepContext(env *lisp.LEnv, d time.Duration) *lisp.LVal {
 	if err := ctx.Err(); err != nil {
 		return errContextCancelled(env, err)
 	}
-	truncated := false
+	// FAIL FAST rather than sleeping out a doomed wait.  When the deadline is
+	// nearer than d the sleep provably cannot complete: the outcome is already
+	// decided on entry, and the only question is whether the caller learns now
+	// or after its remaining budget has been burned.  This used to wait and
+	// then report (issue #338), which spent the caller's last chance to flush a
+	// partial result or run cleanup on a call whose answer was already known.
+	//
+	// The objection to failing fast was that (while true (ignore-errors
+	// (time:sleep 1))) stops being throttled and becomes a busy loop.  That is
+	// real, but it is not this branch's doing: the loop is already unbounded
+	// and MaxSteps is what bounds it.  Trading a caller's usable budget for a
+	// throttle on catch-and-continue code is the wrong way round, and the
+	// throttle was never durable anyway -- it lasted only until the deadline.
 	if hasDeadline {
 		if remaining := time.Until(deadline); remaining < d {
-			d, truncated = remaining, true
+			return errContextCancelled(env, context.DeadlineExceeded)
 		}
 	}
-	if d > 0 {
-		timer := time.NewTimer(d)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-done:
-		}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-done:
 	}
 	if err := ctx.Err(); err != nil {
 		return errContextCancelled(env, err)
-	}
-	if truncated {
-		// The wait ended at the deadline but ctx has not observed it yet
-		// (a nil Done channel, or a race with the context's own timer).
-		// Report it anyway: the sleep did not run to completion.
-		return errContextCancelled(env, context.DeadlineExceeded)
 	}
 	return lisp.Nil()
 }
