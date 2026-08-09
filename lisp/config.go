@@ -41,6 +41,27 @@ func WithMaximumPhysicalStackHeight(n int) Config {
 	}
 }
 
+// WithMaxEvalNesting returns a Config that bounds how deeply the evaluator may
+// recurse into itself while evaluating a single expression.
+//
+// This is a distinct quantity from stack height and is not implied by it.  A
+// call's arguments are evaluated before the call's frame is pushed, so
+// ((lambda (x) x) ((lambda (x) x) ... )) recurses through the Go evaluator
+// while the physical stack height stays at zero — the exact shape
+// WithMaximumPhysicalStackHeight exists to stop and the one shape it cannot
+// see (issue #316).  Nesting is bounded here instead.
+//
+// A value of 0 selects DefaultMaxEvalNesting.  A negative value disables the
+// check, which re-exposes the host process to an unrecoverable
+// "fatal error: stack overflow"; do that only when some other bound on
+// expression depth is guaranteed.
+func WithMaxEvalNesting(n int) Config {
+	return func(env *LEnv) *LVal {
+		env.Runtime.MaxEvalNesting = n
+		return Nil()
+	}
+}
+
 // WithMaxTailIterations returns a Config that bounds the number of tail-call
 // iterations a single stack frame may perform.  Tail calls run in constant
 // stack space, so neither stack-height limit can bound a runaway tail loop;

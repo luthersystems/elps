@@ -937,11 +937,23 @@ func (env *LEnv) Eval(v *LVal) *LVal {
 // evaluation into an LError, preventing panics from crashing the host process
 // when ELPS is embedded.
 //
+// eval also carries the evaluator's recursion-depth guard.  Every nested
+// evaluation passes through here, so incrementing a counter on entry and
+// decrementing it on exit measures the Go stack the evaluator is consuming.
+// This is NOT the same quantity as CallStack height: evalSExprCells evaluates
+// a call's arguments before any frame is pushed, so nested arguments recurse
+// through eval at physical height zero and MaxHeightPhysical never sees them
+// (issue #316).  A counter rather than a frame is deliberate -- a frame here
+// would corrupt the error messages and stack dumps produced while an argument
+// is being evaluated, which is why evalSExprCells pushes none.
+//
 // NOTE:  eval shouldn't unquote v during evaluation -- a difference between
 // Eval and the "eval" builtin function, but it does.  For some reason macros
 // won't work without this unquoting.
 func (env *LEnv) eval(ctx context.Context, v *LVal) (result *LVal) {
+	env.Runtime.evalNesting++
 	defer func() {
+		env.Runtime.evalNesting--
 		if r := recover(); r != nil {
 			// Tag the error with CondInternalPanic so it is distinguishable
 			// from a lisp-level error: a panic is a host-code bug, and
@@ -961,6 +973,14 @@ func (env *LEnv) eval(ctx context.Context, v *LVal) (result *LVal) {
 			}
 		}
 	}()
+	if env.Runtime.evalNestingExceeded() {
+		return env.ErrorConditionf(CondEvalNestingExceeded,
+			"evaluation nesting depth exceeded maximum: %d"+
+				" (expressions nested this deeply consume Go stack without pushing"+
+				" call frames, so the limit stops the Go runtime from aborting the"+
+				" process with an unrecoverable stack overflow; raise or disable it"+
+				" with WithMaxEvalNesting)", env.Runtime.evalNesting)
+	}
 	macroDepth := 0
 eval:
 	if lerr := env.checkLimits(ctx); lerr != nil {

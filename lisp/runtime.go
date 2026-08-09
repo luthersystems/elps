@@ -44,7 +44,9 @@ type Runtime struct {
 	conditionStack         []*LVal
 	MaxAlloc               int   // Per-operation allocation size cap (0 = use default). Not cumulative.
 	MaxMacroExpansionDepth int   // Maximum macro expansion iterations (0 = use default).
+	MaxEvalNesting         int   // Evaluator recursion depth cap (0 = use default, negative = disabled).
 	evalDepth              int   // Re-entrancy depth of top-level evaluation entry points.
+	evalNesting            int   // Current recursion depth of LEnv.eval (the Go-stack guard).
 	maxSteps               int64 // Per-evaluation step limit (0 = unlimited).
 	steps                  int64 // Steps consumed by the current top-level evaluation.
 	totalSteps             int64 // Steps consumed by all completed top-level evaluations.
@@ -71,6 +73,41 @@ func (r *Runtime) MaxMacroExpansions() int {
 		return r.MaxMacroExpansionDepth
 	}
 	return DefaultMaxMacroExpansionDepth
+}
+
+// MaxEvalNestingDepth returns the effective evaluator recursion-depth cap.
+// Zero means "use DefaultMaxEvalNesting"; a negative value disables the check
+// and is reported as zero.
+func (r *Runtime) MaxEvalNestingDepth() int {
+	if r.MaxEvalNesting == 0 {
+		return DefaultMaxEvalNesting
+	}
+	if r.MaxEvalNesting < 0 {
+		return 0
+	}
+	return r.MaxEvalNesting
+}
+
+// EvalNesting reports how deeply LEnv.eval is currently recursed into itself.
+// It is zero outside of an evaluation.  See DefaultMaxEvalNesting for what the
+// quantity measures and why it is bounded separately from stack height.
+func (r *Runtime) EvalNesting() int {
+	return r.evalNesting
+}
+
+// evalNestingExceeded reports whether the evaluator has recursed past its
+// depth cap.  It runs once per LEnv.eval call -- the interpreter's hottest
+// path -- so it is deliberately a couple of loads and compares against a
+// counter the caller has already incremented, with no function call in the
+// common case (it inlines).
+func (r *Runtime) evalNestingExceeded() bool {
+	limit := r.MaxEvalNesting
+	if limit == 0 {
+		limit = DefaultMaxEvalNesting
+	} else if limit < 0 {
+		return false
+	}
+	return r.evalNesting > limit
 }
 
 // CheckAlloc returns a non-empty error message if n exceeds the per-operation
@@ -192,6 +229,49 @@ const DefaultMaxMacroExpansionDepth = 1000
 // tail-recursive loop runs at constant physical height no matter how many
 // iterations it performs.
 //
+// It bounds FRAMES, not evaluation depth. A frame is pushed when a function is
+// invoked, and LEnv.evalSExprCells deliberately evaluates a call's arguments
+// BEFORE pushing anything (pushing there would corrupt the error messages and
+// stack dumps produced while an argument is being evaluated). Nested arguments
+// therefore recurse through the Go evaluator at physical height zero, which is
+// exactly the shape this limit exists to stop and exactly the shape it cannot
+// see. DefaultMaxEvalNesting covers that path; see issue #316.
+//
+// # DefaultMaxEvalNesting — the same memory guard, on the evaluator's own recursion
+//
+// This bounds how deeply LEnv.eval may recurse into itself, which is the true
+// measure of Go stack consumed by the evaluator. Every nested evaluation
+// passes through eval — a call's arguments, a special operator's subforms, a
+// builtin re-entering via env.Eval — so a single counter incremented on entry
+// and decremented on exit bounds all of them, and unlike a stack frame it
+// costs no allocation and does not appear in a stack trace.
+//
+// Measured on linux/amd64 against the 1GB default goroutine stack:
+// argument-nesting depth 700,000 completes, 800,000 aborts the process with
+// "fatal error: stack overflow" (~1.4KB of Go stack per level). 100,000 sits
+// 7-8x below that, matching the margin DefaultMaxPhysicalStackHeight keeps.
+//
+// It also sits comfortably above ordinary recursion. Measured with
+// (defun sum (n) (if (<= n 0) 0 (+ n (sum (- n 1))))), the physical limit
+// binds first for any MaxEvalNesting of 38,000 or more: that recursion costs
+// ~1.5 eval levels per physical frame, so it reaches physical height 25,001
+// at nesting ~38,000. Only code whose body nests expressions more than ~4
+// deep per recursion level can reach 100,000 nesting before 25,000 frames --
+// such code costs 4 eval levels per frame, ~2.6x what ordinary recursion
+// costs, so it really is consuming that much more Go stack per frame.
+//
+// The two limits bound different quantities and neither implies the other.
+// Deeply nested arguments raise nesting at constant height; a long chain of
+// tail-position calls raises neither.
+//
+// Before this limit existed the only thing bounding evaluator recursion was
+// rdparser.DefaultMaxParseDepth (10,000) — incidentally, because nesting had
+// to be parsed before it could be evaluated. That bound was never sound: a
+// recursive macro generates nesting at expansion time from an integer
+// argument, so ~120 bytes of source reached the fatal overflow with every
+// documented limit at its default. Parse depth is no longer load-bearing for
+// stack safety.
+//
 // # DefaultMaxTailIterations — the runaway-loop backstop
 //
 // This bounds how many turns a single tail-recursive loop may take. Its unit
@@ -233,10 +313,23 @@ const DefaultMaxMacroExpansionDepth = 1000
 // single step may perform an arbitrary amount of work inside a builtin. A
 // context deadline is the only real time bound; see WithContext and the
 // *Context methods on LEnv.
+//
+// # Bounding total memory
+//
+// Runtime.MaxAlloc is PER-OPERATION, not cumulative: each builtin checks its
+// own output size against it, so a program that allocates a thousand buffers
+// of MaxAlloc-1 bytes passes every check. Nothing here tracks total heap. The
+// incidental bound is whatever limit stops the loop doing the allocating —
+// MaxTailIterations for a tail loop, MaxSteps for a stepped one — multiplied
+// by MaxAlloc, which is not a memory budget in any useful sense. A host that
+// must bound total memory has to do it outside the interpreter (a cgroup, a
+// container limit, or Go's GOMEMLIMIT plus a watchdog); see Runtime.MaxAlloc
+// and CheckAlloc.
 const (
 	DefaultMaxLogicalStackHeight  = 0
 	DefaultMaxPhysicalStackHeight = 25000
 	DefaultMaxTailIterations      = 1000000
+	DefaultMaxEvalNesting         = 100000
 )
 
 // StandardRuntime returns a new Runtime with an empty package registry and

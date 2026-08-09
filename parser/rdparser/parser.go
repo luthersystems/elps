@@ -39,6 +39,14 @@ func (*reader) ReadLocation(name string, loc string, r io.Reader) ([]*lisp.LVal,
 // Deeply nested input (e.g. 50K+ unmatched parens) can overflow the Go
 // goroutine stack with a fatal crash that recover() cannot catch.  This
 // limit converts the fatal crash into a parse error.
+//
+// It bounds the PARSER's recursion only.  It used to be, incidentally, the
+// only thing bounding the EVALUATOR's recursion as well -- nesting had to be
+// parsed before it could be evaluated -- but that composition was never
+// sound: a recursive macro generates nesting at expansion time and never
+// passes through here, as does any embedder building an AST through the Go
+// API.  lisp.DefaultMaxEvalNesting is the limit that bounds evaluation depth
+// (issue #316); this one is not load-bearing for it.
 const DefaultMaxParseDepth = 10000
 
 // Parser is a lisp parser.

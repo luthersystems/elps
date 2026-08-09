@@ -94,6 +94,19 @@ const (
 	fuzzMaxAlloc          = 1_000_000
 	fuzzMacroDepth        = 100
 
+	// fuzzMaxEvalNesting bounds the evaluator's recursion into itself, which
+	// is a different quantity from physical height: a call's arguments are
+	// evaluated before its frame is pushed, so nested arguments recurse
+	// through the evaluator at height zero and fuzzMaxPhysicalHeight cannot
+	// see them (issue #316).  Sized against the physical budget by the
+	// measured ~1.5 eval levels per physical frame, with headroom, so the
+	// physical bound stays the one that fires on ordinary recursion.
+	//
+	// Before this existed, a macro that generates nesting at expansion time
+	// was stopped here only by the 2s context deadline -- i.e. by wall clock,
+	// after hundreds of thousands of Go frames had already been pushed.
+	fuzzMaxEvalNesting = 20_000
+
 	// fuzzDeadline is the context deadline every evaluation runs under.  It
 	// is the only limit that bounds wall-clock time, and it is checked at
 	// each evaluation step.
@@ -128,6 +141,7 @@ func newFuzzEnv() (*lisp.LEnv, *bytes.Buffer, *lisp.LVal) {
 		lisp.WithMaxSteps(fuzzMaxSteps),
 		lisp.WithMaxTailIterations(fuzzMaxTailIterations),
 		lisp.WithMaximumPhysicalStackHeight(fuzzMaxPhysicalHeight),
+		lisp.WithMaxEvalNesting(fuzzMaxEvalNesting),
 		lisp.WithMaxAlloc(fuzzMaxAlloc),
 		lisp.WithMaxMacroExpansionDepth(fuzzMacroDepth),
 	)

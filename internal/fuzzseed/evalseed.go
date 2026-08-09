@@ -48,6 +48,20 @@ func EvalRunaway() map[string]string {
 		"non-tail-recursion-forever": `(defun rec (n) (+ 1 (rec n))) (rec 0)`,
 		"non-tail-mutual":            `(defun p (n) (+ 1 (q n))) (defun q (n) (+ 1 (p n))) (p 0)`,
 
+		// --- unbounded ARGUMENT nesting (MaxEvalNesting).  Same failure
+		// mode as the two above -- Go stack exhaustion -- reached by a
+		// shape no stack-height limit can see: evalSExprCells evaluates a
+		// call's arguments BEFORE pushing the call's frame, so this
+		// recurses through the whole evaluator at physical height zero.
+		//
+		// The nesting is generated during macro expansion from an integer,
+		// so the source is constant-size and rdparser's parse-depth limit
+		// -- which was the only thing incidentally bounding this -- never
+		// sees it.  Measured against the pre-fix tree at stock defaults,
+		// the 800000 form aborted the process with "fatal error: stack
+		// overflow" (issue #316).  MaxEvalNesting is what stops it now. ---
+		"macro-generated-arg-nesting": `(defmacro nest (n) (if (<= n 0) 1 (quasiquote (identity (nest (unquote (- n 1))))))) (nest 800000)`,
+
 		// --- non-recursive infinite loop.  Neither stack limit can see this:
 		// it grows no frames and performs no tail calls.  Only a step budget
 		// or a context deadline stops it. ---

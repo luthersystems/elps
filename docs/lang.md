@@ -942,11 +942,17 @@ an embedder can identify the offending Go function.
 
 ## Execution Limits
 
-ELPS bounds evaluation with four independent mechanisms: **context
-cancellation**, **step limits**, **stack height limits** and a
-**tail-iteration limit**.  Context cancellation and step limits are optional
-and impose negligible overhead when not configured; the physical stack limit
-and the tail-iteration limit are on by default.
+ELPS bounds evaluation with five independent mechanisms: **context
+cancellation**, **step limits**, **stack height limits**, an **evaluation
+nesting limit** and a **tail-iteration limit**.  Context cancellation and step
+limits are optional and impose negligible overhead when not configured; the
+physical stack limit, the evaluation nesting limit and the tail-iteration
+limit are on by default.
+
+None of them bound *total* memory: `Runtime.MaxAlloc` caps the output size of
+a single builtin call, not the sum across calls, so a loop that allocates many
+smaller values is bounded only by whatever stops the loop.  A host that must
+bound total memory has to do it outside the interpreter.
 
 ### Context Cancellation
 
@@ -1010,9 +1016,9 @@ inside a builtin.  **Context cancellation with a deadline is the only limit
 here that measures elapsed time**, and it is what you want if the real
 requirement is "give up after N seconds".
 
-### Stack Height and Tail-Call Limits
+### Stack Height, Nesting and Tail-Call Limits
 
-ELPS distinguishes three things that a naive "stack limit" conflates.
+ELPS distinguishes four things that a naive "stack limit" conflates.
 
 **Physical stack height** is the number of frames actually on the call
 stack.  This is the memory guard: unbounded *non-tail* recursion exhausts the
@@ -1023,6 +1029,42 @@ below the measured crash threshold, and exceeding it produces an ordinary,
 catchable ELPS error.  Override with
 `lisp.WithMaximumPhysicalStackHeight(n)`; 0 disables the check, which is not
 recommended.
+
+It bounds *frames*, not evaluation depth — see below.
+
+**Evaluation nesting** is how deeply the evaluator recurses into itself, which
+is the true measure of Go stack consumed.  It is not the same as stack height
+and is not implied by it: a call's arguments are evaluated *before* the call's
+frame is pushed, so
+
+```lisp
+(identity (identity (identity ... 1)))
+```
+
+recurses through the whole evaluator while the physical stack height stays at
+**zero**.  That is the exact shape the physical limit exists to stop and the
+one shape it cannot see.  Nesting does not have to be written out by hand
+either — a recursive macro generates it at expansion time from an integer, so
+neither the parser's depth limit nor the source size bounds it:
+
+```lisp
+(defmacro nest (n)
+  (if (<= n 0) 1 (quasiquote (identity (nest (unquote (- n 1)))))))
+(nest 800000)   ; without the nesting limit: fatal error: stack overflow
+```
+
+Nesting is bounded by default (`DefaultMaxEvalNesting`, 100000), several times
+below the measured crash threshold and well above the nesting an ordinary
+recursion reaches before it hits the 25000-frame physical limit.  Exceeding it
+raises a catchable `eval-nesting-exceeded` condition:
+
+```lisp
+(handler-bind ((eval-nesting-exceeded (lambda (c &rest args) 'too-deep)))
+    (nest 800000))
+```
+
+Override with `lisp.WithMaxEvalNesting(n)`; a negative value disables the
+check, which re-exposes the host process to an unrecoverable stack overflow.
 
 **Tail-call iterations** count the turns of a tail-recursive loop.  Tail
 calls run in constant stack space, so no stack-height limit can bound a
