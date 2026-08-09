@@ -19,6 +19,11 @@ import (
 // panic. The test restores the singleton before returning so it does
 // not poison the rest of the suite (TestMain would otherwise fail).
 func TestCheckSingleton_DetectsCorruption(t *testing.T) {
+	// Deliberate singleton mutation — pause the write watchdog so it is
+	// not reported as a data race under -race. See
+	// singleton_watchdog_test.go.
+	defer pauseSingletonWatchdog()()
+
 	orig := singletonTrue.Source
 	defer func() {
 		singletonTrue.Source = orig
