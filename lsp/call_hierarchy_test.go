@@ -120,6 +120,60 @@ func TestCallHierarchyOutgoing(t *testing.T) {
 	assert.Equal(t, protocol.UInteger(1), result[0].FromRanges[0].Start.Line)
 }
 
+// TestCallHierarchyOutgoingToBuiltin pins the crash found by FuzzLSPSession
+// (issue #347).
+//
+// A builtin's analysis.Symbol has Source == nil -- that is the definition of
+// isBuiltin in virtual.go -- so any function that calls one has a source-less
+// callee. The incoming-calls loop skipped those; the outgoing-calls loop did
+// not, and symbolToCallHierarchyItem dereferenced the nil. "Show call
+// hierarchy" on `(defun f (x) (+ x 1))` therefore killed the language server
+// process outright: a nil dereference is not something glsp recovers, so the
+// editor simply lost its server.
+//
+// Every existing call-hierarchy test used setTestAnalysisCfg(&analysis.Config{}),
+// an EMPTY config in which no builtin resolves to a symbol at all, which is why
+// a two-line reproducer survived a 400-line test file.
+func TestCallHierarchyOutgoingToBuiltin(t *testing.T) {
+	s := testServerWithWorkspaceIndex(t)
+
+	doc := openDoc(s, "file:///test/builtin-callee.lisp", "(defun f (x) (+ x 1))\n(f 1)\n")
+	s.ensureAnalysis(doc)
+
+	items, err := s.textDocumentPrepareCallHierarchy(mockContext(), &protocol.CallHierarchyPrepareParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+			Position:     protocol.Position{Line: 0, Character: 7}, // cursor on "f"
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+
+	// Must not panic. Builtin callees carry no location, so they are omitted
+	// rather than reported at a fabricated one.
+	result, err := s.callHierarchyOutgoingCalls(mockContext(), &protocol.CallHierarchyOutgoingCallsParams{
+		Item: items[0],
+	})
+	require.NoError(t, err)
+	for _, call := range result {
+		assert.NotEqual(t, "+", call.To.Name, "a source-less builtin must not be reported as a callee")
+	}
+}
+
+// TestPositionConversionToleratesNilLocation pins the class rather than the
+// instance. Every LSP range in this package is produced by these two
+// functions, and nil is a value the domain model produces on purpose, so a
+// forgotten guard anywhere upstream must degrade to a zero range rather than
+// take the process down.
+func TestPositionConversionToleratesNilLocation(t *testing.T) {
+	assert.Equal(t, protocol.Position{}, elpsToLSPPosition(nil))
+	assert.Equal(t, protocol.Range{}, elpsToLSPRange(nil, 0))
+	assert.Equal(t, protocol.Range{
+		Start: protocol.Position{Line: 0, Character: 0},
+		End:   protocol.Position{Line: 0, Character: 5},
+	}, elpsToLSPRange(nil, 5))
+}
+
 func TestCallHierarchyOutgoing_MultiPackageSameName(t *testing.T) {
 	s := testServer()
 	setTestAnalysisCfg(s, &analysis.Config{})

@@ -13,7 +13,18 @@ import (
 )
 
 // elpsToLSPPosition converts a 1-based ELPS location to a 0-based LSP position.
+//
+// A nil location is the origin. This package's own domain model uses a nil
+// Source to mean "this symbol has no location in any document" -- isBuiltin in
+// virtual.go is literally `sym.Source == nil || sym.Source.Pos < 0` -- so nil
+// reaches here whenever a caller forgets the guard, and 27 call sites funnel
+// through this function. Crashing on it took the whole language server process
+// down with a nil dereference (issue #347, TestCallHierarchyOutgoingToBuiltin).
+// The worst a zero range can do is put a marker at the top of the file.
 func elpsToLSPPosition(loc *token.Location) protocol.Position {
+	if loc == nil {
+		return protocol.Position{}
+	}
 	line := loc.Line
 	col := loc.Col
 	if line > 0 {
@@ -43,7 +54,7 @@ func safeUint(n int) protocol.UInteger {
 func elpsToLSPRange(loc *token.Location, nameLen int) protocol.Range {
 	start := elpsToLSPPosition(loc)
 	var end protocol.Position
-	if loc.EndLine > 0 && loc.EndCol > 0 {
+	if loc != nil && loc.EndLine > 0 && loc.EndCol > 0 {
 		end = protocol.Position{
 			Line:      safeUint(loc.EndLine - 1),
 			Character: safeUint(loc.EndCol - 1),

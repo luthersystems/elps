@@ -214,6 +214,14 @@ func (s *Server) callHierarchyOutgoingCalls(_ *glsp.Context, params *protocol.Ca
 
 	var result []protocol.CallHierarchyOutgoingCall
 	for _, c := range callees {
+		// Skip callees with no location, exactly as the incoming-calls loop
+		// above does. A builtin's Symbol has Source == nil (see isBuiltin),
+		// so `(defun f (x) (+ x 1))` has `+` among its callees -- and without
+		// this the item construction below dereferenced that nil and killed
+		// the server process on an everyday "show call hierarchy".
+		if c.sym.Source == nil || c.sym.Source.Line == 0 {
+			continue
+		}
 		// Determine the URI for the callee. If the symbol is defined in
 		// another file (External with a Source.File), resolve its URI.
 		calleeURI := data.URI
@@ -233,9 +241,12 @@ func (s *Server) callHierarchyOutgoingCalls(_ *glsp.Context, params *protocol.Ca
 // symbolToCallHierarchyItem creates a CallHierarchyItem from an analysis symbol.
 func symbolToCallHierarchyItem(sym *analysis.Symbol, uri string) protocol.CallHierarchyItem {
 	selRange := elpsToLSPRange(sym.Source, len(sym.Name))
-	// For the enclosing range, use EndLine if available.
+	// For the enclosing range, use EndLine if available. Both callers filter
+	// out source-less symbols, but the nil check stays: this helper is the
+	// only place in the package that reaches through Source without one, and
+	// that is precisely how it came to crash.
 	encRange := selRange
-	if sym.Source.EndLine > 0 {
+	if sym.Source != nil && sym.Source.EndLine > 0 {
 		encRange = protocol.Range{
 			Start: selRange.Start,
 			End: protocol.Position{

@@ -1006,15 +1006,25 @@ else
 	# Sharding must be a PARTITION: every target in exactly one shard. A shard
 	# assignment that drops a target loses coverage silently, and one that
 	# duplicates a target just wastes budget.
+	#
+	# The shard count is READ FROM THE WORKFLOW rather than written here. It was
+	# hardcoded to 4, so resharding CI would have left this proving the
+	# partition for a shard count CI no longer uses -- the same
+	# derive-don't-remember failure fuzz-budget-check.sh exists to prevent.
+	shard_n="$(grep -oE '^ +shard: \[[0-9, ]+\]' "$FUZZ_WF" | grep -oE '[0-9]+' | wc -l | tr -d ' ')"
+	if [ "${shard_n:-0}" -lt 1 ]; then
+		bad "cannot read strategy.matrix.shard out of ${FUZZ_WF} — the partition check below would be testing a made-up shard count"
+		shard_n=1
+	fi
 	shard_tmp="$(mktemp -d)"
 	"${SCRIPT_DIR}/fuzz.sh" --list 2>/dev/null | LC_ALL=C sort >"${shard_tmp}/full"
 	: >"${shard_tmp}/union"
-	for i in 1 2 3 4; do
-		"${SCRIPT_DIR}/fuzz.sh" --list --shard "${i}/4" 2>/dev/null >>"${shard_tmp}/union"
+	for ((i = 1; i <= shard_n; i++)); do
+		"${SCRIPT_DIR}/fuzz.sh" --list --shard "${i}/${shard_n}" 2>/dev/null >>"${shard_tmp}/union"
 	done
 	LC_ALL=C sort "${shard_tmp}/union" >"${shard_tmp}/union.sorted"
 	if diff -q "${shard_tmp}/full" "${shard_tmp}/union.sorted" >/dev/null; then
-		ok "the 4 shards are a partition of the full target list (no target lost)"
+		ok "the ${shard_n} shards are a partition of the full target list (no target lost)"
 	else
 		bad "sharding is not a partition — targets are lost or duplicated"
 		diff "${shard_tmp}/full" "${shard_tmp}/union.sorted" | sed 's/^/        | /'
