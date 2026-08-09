@@ -56,10 +56,48 @@
 # COUNT is the only thing balanced here -- targets are not equal-cost, but the
 # per-target budget is fixed, so count is the right proxy.
 #
+# Did it find a bug, or did the harness fall over?
+# ------------------------------------------------
+# `go test -fuzz` exits 1 for both, and from the outside they are identical --
+# which is how issue #318 ended up carrying an "unexplained" FuzzFormat failure
+# for weeks.  A REAL finding always leaves a new file under
+# <pkg>/testdata/fuzz/<Target>/ (or says why it could not write one), so this
+# script snapshots that directory around every target and reports which
+# happened.  Three classifications:
+#
+#   CRASHER    new file(s) appeared.  A defect.  Always fails the sweep, and
+#              the files are copied to $FUZZ_CRASH_DIR so CI can upload the
+#              genuinely-new inputs instead of the whole committed corpus.
+#   SEED       the seed corpus itself failed ("failure while testing seed
+#              corpus entry").  Also a defect; the input is already committed,
+#              which is why no new file appears.  Always fails.
+#   HARNESS    the run failed without producing any input to blame.  The one
+#              signature recognised here is the upstream `-fuzztime` race
+#              described below; anything else in this class still fails, loudly
+#              labelled as unattributed.
+#
+# The upstream -fuzztime race (issue #335)
+# ----------------------------------------
+# internal/fuzz.CoordinateFuzzing applies -fuzztime as a context deadline and
+# suppresses it as normal termination by comparing the PARENT context's error
+# against the CHILD's:
+#
+#     case <-doneC:  stop(ctx.Err())
+#     stop := func(err error) { if err == fuzzCtx.Err() { err = nil } ... }
+#
+# context.cancelCtx.cancel stores the parent's error and CLOSES the parent's
+# done channel before it walks its children, and cancelCtx.Err() is a lock-free
+# atomic load.  If the cancelling thread is preempted in that window, the
+# coordinator reads parent=DeadlineExceeded / child=nil, the suppression misses,
+# and the target is failed with a bare "context deadline exceeded" -- having
+# found nothing.  Reproduced by widening that window with a build overlay; see
+# issue #335.  It is target-independent and writes no crasher.
+#
+# A target that fails ONLY that way, with no new crasher, is retried once (see
+# FUZZ_MAX_RETRIES).  The retry runs the full budget, so nothing is detected
+# less; if the retry fails too, the sweep fails.
+#
 # Exit status: 0 if every target survived its budget, 1 if any target failed.
-# A failing target writes its crasher to <pkg>/testdata/fuzz/<Target>/ , which
-# the CI job uploads as an artifact and a developer commits as a regression
-# case.
 
 set -uo pipefail
 
@@ -73,6 +111,20 @@ FUZZTIME="${FUZZTIME-30s}"
 FUZZ_TIMEOUT_SLACK="${FUZZ_TIMEOUT_SLACK:-300}"
 FUZZMINIMIZETIME="${FUZZMINIMIZETIME:-30s}"
 FUZZ_TAGS="${FUZZ_TAGS:-}"
+
+# Where genuinely-new crashers are collected, so CI uploads those rather than
+# `**/testdata/fuzz/**` -- which is the entire COMMITTED corpus and therefore
+# uploads ~60 files whether or not anything was found.  An artifact that always
+# exists cannot be evidence that a crasher exists.
+FUZZ_CRASH_DIR="${FUZZ_CRASH_DIR:-${REPO_ROOT}/fuzz-crashers}"
+
+# Retries are budgeted for the WHOLE sweep, not per target, because the fuzz
+# job's timeout-minutes is derived from ceil(targets/shards) x FUZZTIME plus a
+# fixed overhead (scripts/fuzz-budget-check.sh).  One retry is exactly the
+# headroom that arithmetic leaves; per-target retries would silently overrun the
+# job timeout, which truncates the sweep -- the failure mode the budget check
+# exists to prevent.  Set to 0 to make the harness race fail immediately.
+FUZZ_MAX_RETRIES="${FUZZ_MAX_RETRIES:-1}"
 
 # Built once and reused, so discovery and execution can never disagree about
 # which build they are looking at -- a sweep that DISCOVERS the default build
@@ -161,7 +213,16 @@ list_targets() {
 	go test ${tagflags+"${tagflags[@]}"} -list '^Fuzz' "$1" 2>/dev/null | grep -E '^Fuzz[A-Za-z0-9_]*$'
 }
 
-mapfile -t pkg_list < <(go list ${tagflags+"${tagflags[@]}"} "${packages[@]}" 2>/dev/null)
+# Import path AND source directory in one pass: the directory is where
+# testdata/fuzz/<Target>/ lives, and the crasher snapshot below needs it.
+# Resolving it lazily per target would re-invoke `go list` once per target.
+declare -A pkg_dir=()
+declare -a pkg_list=()
+while IFS=$'\t' read -r _ip _dir; do
+	[ -n "$_ip" ] || continue
+	pkg_dir["$_ip"]="$_dir"
+	pkg_list+=("$_ip")
+done < <(go list ${tagflags+"${tagflags[@]}"} -f '{{.ImportPath}}'$'\t''{{.Dir}}' "${packages[@]}" 2>/dev/null)
 if [ "${#pkg_list[@]}" -eq 0 ]; then
 	echo "fuzz.sh: no packages matched ${packages[*]}" >&2
 	exit 2
@@ -198,9 +259,104 @@ if [ "$shard_total" -gt 1 ]; then
 	echo "fuzz.sh: shard ${shard_index}/${shard_total} -- ${#pairs[@]} of ${discovered} target(s)" >&2
 fi
 
+# corpus_snapshot prints the sorted file names currently in a target's
+# committed-crasher directory, or nothing if it does not exist yet.
+corpus_snapshot() {
+	local dir="$1"
+	[ -d "$dir" ] || return 0
+	find "$dir" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | LC_ALL=C sort
+}
+
+# classify_failure names what a non-zero `go test -fuzz` actually means, given
+# the log and whether new crasher files appeared.  Ordered most-specific first:
+# any evidence of a real finding wins over the harness signature, so a genuine
+# crash can never be reclassified as a flake.
+classify_failure() {
+	local log="$1" new_count="$2"
+	if [ "$new_count" -gt 0 ]; then
+		echo crasher
+		return
+	fi
+	# A seed-corpus failure writes no new file -- the input is already
+	# committed -- so it MUST be checked before the harness signature.
+	if grep -q 'failure while testing seed corpus entry' "$log"; then
+		echo seed
+		return
+	fi
+	# A crash the engine found but could not persist. Still a finding.
+	if grep -qE 'Failing input written to|could not write.*corpus' "$log"; then
+		echo crasher
+		return
+	fi
+	# The upstream -fuzztime race (issue #335): the ONLY output is the bare
+	# deadline error. Every other marker of a real failure disqualifies it --
+	# a panic, a signal death, a named failing input, or a build error.
+	if grep -qE '^[[:space:]]*context deadline exceeded[[:space:]]*$' "$log" &&
+		! grep -qE 'panic:|terminated by unexpected signal|--- FAIL: [A-Za-z0-9_]+/|\[build failed\]|cannot find|undefined:' "$log"; then
+		echo harness
+		return
+	fi
+	echo unattributed
+}
+
+# run_target runs one target once and prints its classification. Sets the
+# globals rc, elapsed, verdict and new_crashers.
+run_target() {
+	local pkg="$1" target="$2" attempt="$3"
+	local dir="${pkg_dir[$pkg]:-}"
+	local crashdir="${dir}/testdata/fuzz/${target}"
+	local log="${tmpdir}/${target}.${attempt}.log"
+
+	corpus_snapshot "$crashdir" >"${tmpdir}/before"
+
+	local start=$SECONDS
+	# -run '^$' skips the ordinary unit tests: the seed corpus is executed by
+	# the fuzzing engine anyway, and re-running the package's whole test suite
+	# per target would multiply the job's cost by the number of targets.
+	go test ${tagflags+"${tagflags[@]}"} "$pkg" \
+		-run '^$' \
+		-fuzz "^${target}\$" \
+		-fuzztime "$FUZZTIME" \
+		-fuzzminimizetime "$FUZZMINIMIZETIME" \
+		-timeout "${hard_timeout}s" 2>&1 | tee "$log"
+	rc="${PIPESTATUS[0]}"
+	elapsed=$((SECONDS - start))
+
+	corpus_snapshot "$crashdir" >"${tmpdir}/after"
+	mapfile -t new_crashers < <(LC_ALL=C comm -13 "${tmpdir}/before" "${tmpdir}/after")
+
+	if [ "$rc" -eq 0 ]; then
+		verdict=ok
+		return
+	fi
+	verdict="$(classify_failure "$log" "${#new_crashers[@]}")"
+
+	# Collect the genuinely-new inputs where CI can upload just those.
+	if [ "${#new_crashers[@]}" -gt 0 ]; then
+		local out="${FUZZ_CRASH_DIR}/${pkg//\//_}/${target}"
+		mkdir -p "$out"
+		local f
+		for f in "${new_crashers[@]}"; do
+			cp "${crashdir}/${f}" "${out}/${f}"
+			printf '%s\t%s\t%s\tgo test %s -run %s/%s\n' \
+				"$pkg" "$target" "$f" "$pkg" "$target" "$f" \
+				>>"${FUZZ_CRASH_DIR}/MANIFEST.tsv"
+		done
+	fi
+}
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
 total=0
 failed=0
+retries_left="$FUZZ_MAX_RETRIES"
 declare -a failures=()
+declare -a flakes=()
+declare -a new_crashers=()
+rc=0
+elapsed=0
+verdict=ok
 
 for pair in ${pairs+"${pairs[@]}"}; do
 	pkg="${pair%%	*}"
@@ -212,23 +368,41 @@ for pair in ${pairs+"${pairs[@]}"}; do
 			continue
 		fi
 		echo "=== fuzz ${target}  (${pkg}, ${FUZZTIME}) ==================="
-		start=$SECONDS
-		# -run '^$' skips the ordinary unit tests: the seed corpus is
-		# executed by the fuzzing engine anyway, and re-running the package's
-		# whole test suite per target would multiply the job's cost by the
-		# number of targets.
-		go test ${tagflags+"${tagflags[@]}"} "$pkg" \
-			-run '^$' \
-			-fuzz "^${target}\$" \
-			-fuzztime "$FUZZTIME" \
-			-fuzzminimizetime "$FUZZMINIMIZETIME" \
-			-timeout "${hard_timeout}s"
-		rc=$?
-		elapsed=$((SECONDS - start))
+		run_target "$pkg" "$target" 1
+
+		# The harness race found nothing and blamed no input, so re-running is
+		# not "hoping for green": it spends another full budget on the same
+		# target. Bounded per sweep, and only ever reached when the run
+		# produced no crasher at all.
+		if [ "$verdict" = harness ] && [ "$retries_left" -gt 0 ]; then
+			retries_left=$((retries_left - 1))
+			echo "--- ${target}: failed with the upstream -fuzztime race and NO crasher (issue #335); retrying once ---"
+			first_elapsed="$elapsed"
+			run_target "$pkg" "$target" 2
+			if [ "$rc" -eq 0 ]; then
+				flakes+=("${pkg} ${target} (harness -fuzztime race after ${first_elapsed}s, clean on retry in ${elapsed}s)")
+				echo "--- ok ${target} in ${elapsed}s (after one harness flake) ---"
+				continue
+			fi
+		fi
+
 		if [ "$rc" -ne 0 ]; then
 			failed=$((failed + 1))
-			failures+=("${pkg} ${target} (exit ${rc}, ${elapsed}s)")
-			echo "--- FAIL ${target} after ${elapsed}s ---"
+			case "$verdict" in
+			crasher)
+				failures+=("${pkg} ${target} (exit ${rc}, ${elapsed}s) CRASHER: ${new_crashers[*]}")
+				;;
+			seed)
+				failures+=("${pkg} ${target} (exit ${rc}, ${elapsed}s) SEED CORPUS entry failed; no new crasher (the input is already committed)")
+				;;
+			harness)
+				failures+=("${pkg} ${target} (exit ${rc}, ${elapsed}s) HARNESS: the upstream -fuzztime race (issue #335) recurred; NO crasher was produced")
+				;;
+			*)
+				failures+=("${pkg} ${target} (exit ${rc}, ${elapsed}s) UNATTRIBUTED: failed without producing a crasher; read the log above")
+				;;
+			esac
+			echo "--- FAIL ${target} after ${elapsed}s (${verdict}) ---"
 		else
 			echo "--- ok ${target} in ${elapsed}s ---"
 		fi
@@ -259,13 +433,40 @@ if [ "$total" -eq 0 ]; then
 	exit 2
 fi
 echo "fuzz.sh: ${total} target(s), ${failed} failure(s), ${FUZZTIME} each${FUZZ_TAGS:+, -tags ${FUZZ_TAGS}}"
+
+# Reported even on a green sweep: a retried flake is not nothing, and burying
+# it is how #318 ended up with an unexplained result carried forward.
+if [ "${#flakes[@]}" -gt 0 ]; then
+	echo
+	echo "fuzz.sh: ${#flakes[@]} target(s) hit the upstream -fuzztime race and passed on retry:"
+	for f in "${flakes[@]}"; do
+		echo "  FLAKE $f"
+	done
+	echo "  This is golang/go's fuzzing coordinator, not this repository's code."
+	echo "  See issue #335. No input was implicated and no crasher was written."
+fi
+
 if [ "$failed" -ne 0 ]; then
+	echo
 	for f in "${failures[@]}"; do
 		echo "  FAIL  $f"
 	done
 	echo
-	echo "Crashing inputs were written under <package>/testdata/fuzz/<Target>/."
-	echo "Reproduce with: go test <package> -run '<Target>/<file>'"
+	if [ -d "$FUZZ_CRASH_DIR" ] && [ -f "${FUZZ_CRASH_DIR}/MANIFEST.tsv" ]; then
+		echo "New crashing inputs were written under <package>/testdata/fuzz/<Target>/"
+		echo "and collected in ${FUZZ_CRASH_DIR#"${REPO_ROOT}/"}/ :"
+		while IFS=$'\t' read -r _pkg _target _file _repro; do
+			echo "  ${_target}/${_file}    reproduce with: ${_repro}"
+		done <"${FUZZ_CRASH_DIR}/MANIFEST.tsv"
+	else
+		# The distinction #318 lacked. Saying this plainly is worth as much as
+		# any fix: it tells the reader not to go looking for an input.
+		echo "NO new crasher was produced by this run."
+		echo "Nothing was written under <package>/testdata/fuzz/<Target>/, so no"
+		echo "input is implicated -- do not go looking for one. Read the failure"
+		echo "classification above: a SEED failure names a committed input, and"
+		echo "HARNESS / UNATTRIBUTED mean the run itself fell over."
+	fi
 	exit 1
 fi
 echo "fuzz.sh: all targets survived their budget"
