@@ -834,6 +834,98 @@ if [ "${CI_GATES_SKIP_GO:-0}" = "1" ] || ! command -v go >/dev/null 2>&1; then
 		"go present: $(command -v go >/dev/null 2>&1 && echo yes || echo no))"
 	echo "SKIP  they run in .github/workflows/fuzz.yml, which sets up Go"
 else
+	# The derived budget gate. It reads real discovery plus the workflow, so
+	# it needs Go; the negative controls below drive it at a scratch copy of
+	# the workflow via FUZZ_WORKFLOW.
+	BUDGET="${SCRIPT_DIR}/fuzz-budget-check.sh"
+	assert_exit 0 "the nightly sweep fits its timeout as configured today" \
+		"$BUDGET"
+
+	budget_tmp="$(mktemp -d)"
+	budget_wf="${budget_tmp}/fuzz.yml"
+
+	# Each control reverts ONE property of the real workflow. A budget gate
+	# that has never been watched failing is worth nothing -- the value it
+	# guards went stale twice before this existed (120 sized for 10 targets
+	# when there were 12; 140 vs 165 when two branches each counted only their
+	# own additions).
+	cp "$FUZZ_WF" "$budget_wf"
+	sed -i 's/^    timeout-minutes: [0-9]*$/    timeout-minutes: 5/' "$budget_wf"
+	assert_exit 1 "a timeout too small for the sweep FAILS" \
+		env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+
+	cp "$FUZZ_WF" "$budget_wf"
+	sed -i 's/^        shard: \[.*\]$/        shard: [1]/' "$budget_wf"
+	assert_exit 1 "unsharding (one shard, whole sweep serial) FAILS" \
+		env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+
+	cp "$FUZZ_WF" "$budget_wf"
+	sed -i '/^    timeout-minutes: [0-9]*$/d' "$budget_wf"
+	assert_exit 2 "a fuzz job with NO timeout-minutes is unreadable, not fine" \
+		env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+
+	cp "$FUZZ_WF" "$budget_wf"
+	sed -i "s/'schedule' && '[0-9]*[smh]'/'schedule' \&\& 'BOGUS'/" "$budget_wf"
+	assert_exit 2 "an unparsable scheduled FUZZTIME is refused, not guessed" \
+		env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+
+	assert_exit 2 "a missing workflow is an error" \
+		env FUZZ_WORKFLOW="${budget_tmp}/nope.yml" "$BUDGET"
+
+	rm -rf "$budget_tmp"
+
+	# FUZZ_TAGS must reach BOTH discovery and execution. Reaching only one
+	# would enumerate one build and fuzz the other -- reporting success over
+	# targets it never ran. Same blind spot golangci-lint has (it analyses one
+	# build), which is why `make static-checks` makes a second tagged pass.
+	if FUZZ_TAGS=elpscheck "${SCRIPT_DIR}/fuzz.sh" --list >/dev/null 2>&1; then
+		ok "FUZZ_TAGS is accepted by target discovery"
+	else
+		bad "FUZZ_TAGS=elpscheck breaks target discovery"
+	fi
+	assert_contains "-tags elpscheck" \
+		"a tagged sweep SAYS so (a tagged run must not read as a default one)" \
+		env FUZZTIME=1s FUZZ_TAGS=elpscheck "${SCRIPT_DIR}/fuzz.sh" --shard 1/15
+	tagged_go="$(grep -c 'go test ${tagflags' "${SCRIPT_DIR}/fuzz.sh")"
+	if [ "$tagged_go" -ge 2 ]; then
+		ok "both go test invocations (discovery and fuzzing) carry FUZZ_TAGS"
+	else
+		bad "only ${tagged_go} go test invocation(s) carry FUZZ_TAGS — discovery and execution can disagree about the build"
+	fi
+
+	# Sharding must be a PARTITION: every target in exactly one shard. A shard
+	# assignment that drops a target loses coverage silently, and one that
+	# duplicates a target just wastes budget.
+	shard_tmp="$(mktemp -d)"
+	"${SCRIPT_DIR}/fuzz.sh" --list 2>/dev/null | LC_ALL=C sort >"${shard_tmp}/full"
+	: >"${shard_tmp}/union"
+	for i in 1 2 3 4; do
+		"${SCRIPT_DIR}/fuzz.sh" --list --shard "${i}/4" 2>/dev/null >>"${shard_tmp}/union"
+	done
+	LC_ALL=C sort "${shard_tmp}/union" >"${shard_tmp}/union.sorted"
+	if diff -q "${shard_tmp}/full" "${shard_tmp}/union.sorted" >/dev/null; then
+		ok "the 4 shards are a partition of the full target list (no target lost)"
+	else
+		bad "sharding is not a partition — targets are lost or duplicated"
+		diff "${shard_tmp}/full" "${shard_tmp}/union.sorted" | sed 's/^/        | /'
+	fi
+	dupes=$(($(wc -l <"${shard_tmp}/union.sorted") - $(sort -u "${shard_tmp}/union.sorted" | wc -l)))
+	if [ "$dupes" -eq 0 ]; then
+		ok "no target is claimed by more than one shard"
+	else
+		bad "${dupes} target(s) appear in more than one shard"
+	fi
+	rm -rf "$shard_tmp"
+
+	# A shard spec that cannot be read must not silently run a SUBSET and exit
+	# 0 -- indistinguishable from a clean full sweep.
+	for bad_spec in "0/4" "5/4" "abc" "1/0"; do
+		assert_exit 2 "--shard ${bad_spec} is refused rather than guessed" \
+			"${SCRIPT_DIR}/fuzz.sh" --list --shard "$bad_spec"
+	done
+	assert_exit 2 "more shards than targets is an error, not an empty green run" \
+		"${SCRIPT_DIR}/fuzz.sh" --shard 99/99
+
 	# Discovery is dynamic, so it can silently discover nothing -- which would
 	# look exactly like a clean run.
 	assert_exit 2 "discovering ZERO targets is an error, not a clean run" \
@@ -896,6 +988,147 @@ else
 	bad "fuzz.yml does not set FUZZTIME — the PR path would take the default"
 fi
 
+if [ -n "$(invoked_in "$FUZZ_WF" 'scripts/fuzz-budget-check.sh')" ]; then
+	ok "fuzz.yml RUNS the derived budget check (timeout is not a remembered number)"
+else
+	bad "fuzz.yml does not run fuzz-budget-check.sh — timeout-minutes is unguarded again"
+fi
+
+# ONE REQUIRED CHECK PER WORKFLOW, AND IT MUST COVER EVERYTHING.
+#
+# Branch protection matches a required status check by NAME. Requiring the
+# individual jobs means editing repo settings whenever a job is added, renamed
+# or resharded -- and forgetting to leaves the new job unguarded while the board
+# still reads fully green. Two traps this repo has been one edit away from:
+#
+#   * sharding renamed "Fuzz targets" to "Fuzz shard i/4". Had the old name
+#     been required, every PR would have become unmergeable, because a required
+#     check that never reports blocks forever.
+#   * adding a job to a workflow silently leaves it outside the required set.
+#
+# So every pull_request-triggered workflow carries exactly one fixed-name
+# `Required: <area>` job, and that name is the only thing in branch protection.
+# This guard enforces the properties that make that safe: the aggregate exists,
+# its name is FIXED, it carries if: always() (since `needs` alone SKIPS it on
+# upstream failure and a skipped required check reads as green), and it `needs`
+# EVERY other job -- an aggregate that has stopped covering a job is worse than
+# none, because it looks like coverage.
+req_out="$(python3 - "$REPO_ROOT" <<'PY_INNER'
+import glob, os, sys
+
+root = sys.argv[1]
+try:
+    import yaml
+except ImportError:
+    print("__SKIP__ pyyaml unavailable")
+    sys.exit(0)
+
+MARKER = "Required:"
+failures, passes = [], []
+
+for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))):
+    base = os.path.basename(f)
+    try:
+        doc = yaml.safe_load(open(f))
+    except Exception:  # noqa: BLE001 -- the YAML-parse guard owns this
+        continue
+    if not isinstance(doc, dict):
+        continue
+
+    # Only a pull_request check can be a REQUIRED check, so release/tag
+    # workflows are out of scope. `on` parses as boolean True in YAML 1.1.
+    triggers = doc.get("on", doc.get(True)) or {}
+    if isinstance(triggers, str):
+        triggers = {triggers: None}
+    if isinstance(triggers, list):
+        triggers = {t: None for t in triggers}
+    if "pull_request" not in triggers:
+        continue
+
+    jobs = {k: v for k, v in (doc.get("jobs") or {}).items() if isinstance(v, dict)}
+    if not jobs:
+        continue
+
+    def jobname(jid, _jobs=jobs):
+        return str(_jobs[jid].get("name") or jid)
+
+    # A path-filtered workflow does not run at all on a PR that touches nothing
+    # it matches, so its checks never report -- and a REQUIRED check that never
+    # reports blocks the PR forever, clearable only by editing repo settings.
+    # Since a `Required:` aggregate exists precisely to be required, its
+    # workflow must fire on every PR.
+    #
+    # Caught for real: tree-sitter.yml was filtered to tree-sitter-elps/**, so
+    # "Required: tree-sitter" did not report on the PR that introduced it, and
+    # adding it to branch protection would have wedged every PR that does not
+    # touch the grammar.
+    pr_cfg = triggers.get("pull_request") or {}
+    filtered = isinstance(pr_cfg, dict) and (pr_cfg.get("paths") or pr_cfg.get("paths-ignore"))
+
+    aggs = [j for j in jobs if jobname(j).startswith(MARKER)]
+    if aggs and filtered:
+        failures.append(
+            f"{base}: has a '{MARKER} ...' aggregate but its pull_request trigger is "
+            f"path-filtered, so the check does not report on PRs that miss the filter. "
+            f"Required + never-reports = permanently unmergeable. Drop the paths filter, "
+            f"or do not make this workflow's aggregate a required check."
+        )
+        continue
+    if not aggs:
+        failures.append(
+            f"{base}: no fixed-name '{MARKER} ...' aggregate job. Every job would have to "
+            f"be listed in branch protection by hand, and a job added later would be "
+            f"unguarded while the board still looks green."
+        )
+        continue
+    if len(aggs) > 1:
+        failures.append(f"{base}: more than one '{MARKER} ...' job ({aggs}); exactly one is the check to require")
+        continue
+
+    agg = aggs[0]
+    if "${{" in jobname(agg):
+        failures.append(f"{base}: aggregate {agg!r} has an interpolated name ({jobname(agg)!r}); a required check's name must be fixed")
+        continue
+
+    needs = jobs[agg].get("needs")
+    needs = [needs] if isinstance(needs, str) else list(needs or [])
+    missing = sorted(set(jobs) - set(needs) - {agg})
+    if missing:
+        failures.append(
+            f"{base}: aggregate {jobname(agg)!r} does not depend on {missing}. "
+            f"Those jobs can fail while the one required check goes green."
+        )
+    else:
+        passes.append(f"{base}: '{jobname(agg)}' covers all {len(jobs) - 1} other job(s)")
+
+    if "always()" not in str(jobs[agg].get("if", "")):
+        failures.append(
+            f"{base}: aggregate {jobname(agg)!r} lacks `if: always()`; it would be SKIPPED "
+            f"on upstream failure, and a skipped required check reads as green"
+        )
+
+for p_ in passes:
+    print(f"PASS  {p_}")
+for f_ in failures:
+    print(f"FAIL  {f_}")
+print(f"__COUNTS__ {len(passes)} {len(failures)}")
+PY_INNER
+)"
+case "$req_out" in
+	__SKIP__*) echo "SKIP  required-check aggregate guard ($req_out)" ;;
+	*)
+		echo "$req_out" | grep -v '^__COUNTS__' || true
+		req_counts="$(echo "$req_out" | sed -n 's/^__COUNTS__ //p')"
+		if [ -n "$req_counts" ]; then
+			read -r rq_pass rq_fail <<<"$req_counts"
+			pass=$((pass + rq_pass))
+			fail=$((fail + rq_fail))
+		else
+			bad "required-check aggregate guard did not run"
+		fi
+		;;
+esac
+
 echo
 echo "== shell lint on the scripts this suite owns ============================="
 
@@ -903,6 +1136,7 @@ OWNED_SCRIPTS=(
 	"${SCRIPT_DIR}/bench-arms-check.sh"
 	"${SCRIPT_DIR}/benchstat-gate.sh"
 	"${SCRIPT_DIR}/ci-gates-test.sh"
+	"${SCRIPT_DIR}/fuzz-budget-check.sh"
 	"${SCRIPT_DIR}/fuzz.sh"
 )
 

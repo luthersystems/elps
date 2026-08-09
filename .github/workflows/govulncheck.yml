@@ -33,3 +33,43 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+  # THE ONE CHECK TO REQUIRE FOR THIS WORKFLOW.
+  #
+  # Branch protection matches a required status check by NAME, so requiring the
+  # individual jobs means editing repo settings every time a job is added,
+  # renamed or resharded -- and forgetting to leaves the new job unguarded
+  # while the board still looks fully green. That is the same "green by not
+  # looking" shape as an excluded path or a queued job.
+  #
+  # This job has a fixed name and depends on every other job in the workflow,
+  # so it is the only name that ever needs to be in the required list. Adding a
+  # job means adding it to `needs:` here -- and scripts/ci-gates-test.sh fails
+  # the PR if you don't, so the aggregate cannot silently stop covering
+  # something.
+  #
+  # always() plus an explicit success check, because `needs` alone would SKIP
+  # this job when an upstream one fails, and a skipped required check reads as
+  # green rather than red.
+  required:
+    name: "Required: govulncheck"
+    runs-on: ubuntu-latest
+    needs: [govulncheck]
+    if: always()
+    steps:
+      - name: Assert every job in this workflow succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "upstream job results: ${RESULTS}"
+          rc=0
+          for r in ${RESULTS}; do
+            # success is the ONLY pass. failure, cancelled and skipped all mean
+            # the work was not demonstrably done.
+            [ "$r" = "success" ] || rc=1
+          done
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::A job in this workflow did not succeed (results: ${RESULTS}). Open the individual jobs above."
+            exit 1
+          fi
+          echo "All jobs in this workflow succeeded."
