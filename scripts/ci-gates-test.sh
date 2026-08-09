@@ -1052,7 +1052,28 @@ for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml")))
     def jobname(jid, _jobs=jobs):
         return str(_jobs[jid].get("name") or jid)
 
+    # A path-filtered workflow does not run at all on a PR that touches nothing
+    # it matches, so its checks never report -- and a REQUIRED check that never
+    # reports blocks the PR forever, clearable only by editing repo settings.
+    # Since a `Required:` aggregate exists precisely to be required, its
+    # workflow must fire on every PR.
+    #
+    # Caught for real: tree-sitter.yml was filtered to tree-sitter-elps/**, so
+    # "Required: tree-sitter" did not report on the PR that introduced it, and
+    # adding it to branch protection would have wedged every PR that does not
+    # touch the grammar.
+    pr_cfg = triggers.get("pull_request") or {}
+    filtered = isinstance(pr_cfg, dict) and (pr_cfg.get("paths") or pr_cfg.get("paths-ignore"))
+
     aggs = [j for j in jobs if jobname(j).startswith(MARKER)]
+    if aggs and filtered:
+        failures.append(
+            f"{base}: has a '{MARKER} ...' aggregate but its pull_request trigger is "
+            f"path-filtered, so the check does not report on PRs that miss the filter. "
+            f"Required + never-reports = permanently unmergeable. Drop the paths filter, "
+            f"or do not make this workflow's aggregate a required check."
+        )
+        continue
     if not aggs:
         failures.append(
             f"{base}: no fixed-name '{MARKER} ...' aggregate job. Every job would have to "

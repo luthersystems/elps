@@ -9,8 +9,19 @@ on:
       # such a PR -- and a board showing only the two branch-agnostic
       # Socket checks reads as a pass when in fact nothing ran.
       - 'claude/**'
-    paths:
-      - "tree-sitter-elps/**"
+    # NO `paths:` filter, deliberately -- see the "Required: tree-sitter" job
+    # below. A path-filtered workflow does not run at all on a PR that touches
+    # nothing it matches, so its checks never report; and a REQUIRED check that
+    # never reports blocks the PR forever, with only a settings edit to clear
+    # it. Since this workflow's aggregate is meant to be a required check, it
+    # has to report on every PR.
+    #
+    # The cost is one small job (checkout, Go, `go test` on a single module)
+    # per PR, which is a fair price for a gate that is honest about whether the
+    # grammar still builds.
+    #
+    # The `push` trigger below keeps its filter: pushes have no required
+    # checks, so skipping there blocks nothing.
   push:
     branches:
       - main
