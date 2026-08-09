@@ -172,7 +172,8 @@ var builtins = []*libutil.Builtin{
 		`Returns a constraint for sorted-maps that checks if the key
 		exists, and if so, validates its value matches one of the
 		allowed types. If the key is absent, validation passes.
-		Returns the key name on success (used by no-other-keys).`),
+		key is a string, matching has-key. Returns the key name on
+		success (used by no-other-keys).`),
 	libutil.FunctionDoc("no-other-keys", lisp.Formals("&rest", "constraints"), builtinNoOtherKeys,
 		`Returns a constraint for sorted-maps that rejects maps with
 		keys not declared by the given has-key or may-have-key
@@ -850,6 +851,34 @@ func builtinCheckNumber(env *lisp.LEnv, name string, constraints []*lisp.LVal) *
 	})
 }
 
+// schemaKey is the ONE place a schema key string is turned into the LVal used
+// to look it up in a sorted-map.  Every `.Get(` in this file goes through it,
+// and TestSchemaKeysAreLookedUpAsStrings fails if a raw key LVal ever appears
+// at a lookup again.
+//
+// THE KEY'S LVAL TYPE IS PART OF THE LOOKUP, NOT A LABEL ON IT.  lisp.Map is
+// an interface with more than one implementation and they do NOT agree:
+//
+//   - the built-in sortedmap (lisp/maps.go) keys on LVal.Str for both LString
+//     and LSymbol, so there a string lookup and a symbol lookup are the same
+//     lookup -- and a string lookup also finds a symbol-keyed entry; but
+//   - libjson.SortedMap -- what json:load-string returns -- REJECTS any key
+//     whose Type is not LString, returning (LError, false).
+//
+// s:may-have-key looked its key up as lisp.Symbol(key) while s:has-key,
+// s:when and s:no-other-keys all used strings.  On a JSON-decoded map that
+// made Get return "not found" unconditionally, and may-have-key's "key is
+// absent, so pass" branch swallowed it: the constraint was a silent no-op on
+// exactly the maps it is most often written for.  Wrong answer, not a crash,
+// so no fuzz target could see it.  See issue #325.
+//
+// STRING IS CANONICAL: it is what the other three constraints already used,
+// it is the only key type a strict Map accepts, and it loses nothing on the
+// built-in map where it matches symbol-keyed entries too.
+func schemaKey(key string) *lisp.LVal {
+	return lisp.String(key)
+}
+
 // Checks sorted-map has specified key and its type and constraints
 func builtinHasKey(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	key, ok := lisp.GoString(args.Cells[0])
@@ -871,7 +900,11 @@ func builtinHasKey(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			return lisp.ErrorConditionf(WrongType, "Input is not sorted map")
 		}
 		matched := false
-		val, ok := input.Map().Get(lisp.String(key))
+		// The !ok branch here is already the LOUD one: a map that cannot be
+		// searched for this key and a map that simply lacks it both fail.
+		// s:may-have-key's equivalent branch PASSES, which is why it needs the
+		// extra distinction the sibling below draws.
+		val, ok := input.Map().Get(schemaKey(key))
 		if !ok {
 			return lisp.ErrorConditionf(FailedConstraint, "Map does not have key %s", key)
 		}
@@ -909,8 +942,20 @@ func builtinMayHaveKey(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			return lisp.ErrorConditionf(WrongType, "Input is not sorted map")
 		}
 		matched := false
-		val, ok := input.Map().Get(lisp.Symbol(key))
+		val, ok := input.Map().Get(schemaKey(key))
 		if !ok {
+			// Get signals two different things through the same false: "no
+			// such key" (val is nil-ish) and "this map cannot hold a key of
+			// that type at all" (val is an LError).  Only the first means
+			// absent.  Treating the second as absent is precisely how #325
+			// hid -- the constraint passed on every input it was given.  No
+			// in-tree Map reaches this branch now that the key is always an
+			// LString; it is here so a future strict Map implementation
+			// cannot silently reproduce the same no-op.
+			if val != nil && val.Type == lisp.LError {
+				return lisp.ErrorConditionf(WrongType,
+					"Map cannot be searched for key %s: %v", key, val)
+			}
 			return lisp.String(key)
 		}
 		for _, compare := range compares {
@@ -979,10 +1024,18 @@ func builtinNoOtherKeys(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // that quietly approves invalid data is worse.  Rejecting at construction, the
 // way s:not does, is the only placement where the inversion cannot bite.
 func builtinWhen(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	if _, ok := lisp.GoString(args.Cells[0]); !ok {
+	// Both keys are captured as Go strings at CONSTRUCTION and re-minted
+	// through schemaKey at application, rather than the argument LVals being
+	// handed to Get directly.  Behaviour is unchanged -- GoString only
+	// succeeds for an LString, so these were already string lookups -- but it
+	// puts s:when under the same single funnel as its siblings, which is what
+	// makes the drift guard able to see every lookup in the file.  See #325.
+	whenKey, ok := lisp.GoString(args.Cells[0])
+	if !ok {
 		return lisp.ErrorConditionf(FailedConstraint, "You must specify a key")
 	}
-	if _, ok := lisp.GoString(args.Cells[2]); !ok {
+	matchKey, ok := lisp.GoString(args.Cells[2])
+	if !ok {
 		return lisp.ErrorConditionf(FailedConstraint, "You must specify a match key")
 	}
 	whenConstraint := getHandler(env, args.Cells[1], "x", []*lisp.LVal{})
@@ -1010,8 +1063,8 @@ func builtinWhen(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			return lisp.ErrorConditionf(WrongType, "Input is not sorted map")
 		}
 		lMap := input.Map()
-		whenVal, _ := lMap.Get(args.Cells[0])
-		testVal, _ := lMap.Get(args.Cells[2])
+		whenVal, _ := lMap.Get(schemaKey(whenKey))
+		testVal, _ := lMap.Get(schemaKey(matchKey))
 		val := applyConstraint(env, whenConstraint, whenVal)
 		if val.Type == lisp.LError {
 			// Guard not satisfied: this clause does not apply. Safe only
