@@ -224,3 +224,39 @@
                           (s:validate v (new mynil))))
   (assert-equal "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
                           (s:validate v "a"))))
+
+; Issue #325.  s:may-have-key looked its key up as a symbol while s:has-key
+; looked the same key up as a string.  lisp.Map is an interface: the built-in
+; sorted-map keys on the string value either way, so the asymmetry is
+; invisible here, but the map json:load-string returns rejects a non-string
+; key outright -- so may-have-key never found anything and silently passed
+; whatever it was given.  The key type is now string everywhere.
+(test "may-have-key-key-type"
+  (s:deftype "optstr" s:sorted-map (s:may-have-key "a" s:string))
+
+  ; string-keyed literal map
+  (assert-nil (s:validate optstr (sorted-map "a" "str")))
+  (assert-nil (s:validate optstr (sorted-map "z" 0)))
+  (assert-equal "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                          (s:validate optstr (sorted-map "a" 1))))
+
+  ; symbol-keyed literal map -- a string lookup must still match it
+  (assert-nil (s:validate optstr (sorted-map 'a "str")))
+  (assert-nil (s:validate optstr (sorted-map 'z 0)))
+  (assert-equal "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                          (s:validate optstr (sorted-map 'a 1))))
+
+  ; json-decoded map -- the case that silently passed before the fix
+  (assert-nil (s:validate optstr (json:load-string "{\"a\": \"str\"}")))
+  (assert-nil (s:validate optstr (json:load-string "{\"z\": 0}")))
+  (assert-equal "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                          (s:validate optstr (json:load-string "{\"a\": 1}"))))
+
+  ; s:has-key must give the same verdict whenever the key is present
+  (s:deftype "reqstr" s:sorted-map (s:has-key "a" s:string))
+  (assert-nil (s:validate reqstr (sorted-map "a" "str")))
+  (assert-nil (s:validate reqstr (sorted-map 'a "str")))
+  (assert-nil (s:validate reqstr (json:load-string "{\"a\": \"str\"}")))
+  (assert-equal "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                          (s:validate reqstr (json:load-string "{\"a\": 1}"))))
+  )
