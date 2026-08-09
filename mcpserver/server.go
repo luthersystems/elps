@@ -18,10 +18,30 @@ const (
 
 type Option func(*Server)
 
+// RequestEnvFactory creates an environment for a single tool request and
+// returns a release function that the server calls exactly once, when the
+// request no longer needs the environment.
+//
+// The context is the request context of the tool call being served: it carries
+// the request's deadline and is cancelled once the request completes, so it can
+// also be used to correlate an environment with the request that created it.
+//
+// The returned release function must be safe to call once. It may be nil, in
+// which case the server treats it as a no-op. When the factory returns a
+// non-nil error it must release any partially constructed resources itself; the
+// server does not call release in that case.
+//
+// Release is called when the environment becomes unreachable to the server,
+// which is before the tool handler returns — not when the context is cancelled.
+// Tools that build several environments for one request (batch `eval`) release
+// each one as soon as it is done, so peak usage stays at one environment.
+type RequestEnvFactory func(ctx context.Context) (env *lisp.LEnv, release func(), err error)
+
 type Server struct {
 	registry        *lisp.PackageRegistry
 	env             *lisp.LEnv
-	envFactory      func() (*lisp.LEnv, error)
+	docEnv          *lisp.LEnv
+	envFactory      RequestEnvFactory
 	workspaceRoot   string
 	perfConfig      *perf.Config
 	excludePatterns []string
@@ -42,6 +62,23 @@ func WithRegistry(reg *lisp.PackageRegistry) Option {
 
 func WithEnv(env *lisp.LEnv) Option {
 	return func(s *Server) { s.env = env }
+}
+
+// WithDocEnv sets a shared, reusable environment used only by the read-only
+// `doc` tool. Documentation lookup is a symbol query that mutates nothing, so
+// it needs no per-request isolation; supplying an environment here avoids
+// building one per `doc` call.
+//
+// Unlike WithEnv, this option does not redirect the diagnostics path
+// (workspace macro loading and macro expansion), so it can be used as a
+// doc-only override alongside WithRegistry or WithRequestEnvFactory.
+//
+// The environment is shared across concurrent requests and is never released
+// by the server; the embedder owns its lifetime. Precedence for the `doc` tool
+// is WithDocEnv, then WithEnv, then the request env factory, then a default
+// stdlib doc environment.
+func WithDocEnv(env *lisp.LEnv) Option {
+	return func(s *Server) { s.docEnv = env }
 }
 
 func WithWorkspaceRoot(root string) Option {
@@ -74,10 +111,45 @@ func WithLogger(logger *slog.Logger) Option {
 }
 
 // WithEnvFactory sets a factory function that creates fresh LEnv instances
-// for the eval and test tools. Each call gets an isolated environment.
+// for the doc, eval, and test tools. Each call gets an isolated environment.
 // Embedders (e.g., substrate) should use this to inject their full runtime
-// (shirocore builtins, test harness, etc.) into eval/test environments.
+// (shirocore builtins, test harness, etc.) into those environments.
+//
+// Deprecated: use WithRequestEnvFactory. This signature has no way to report
+// that an environment is finished with, so an environment owning OS resources
+// or background goroutines is never released and the server leaks one per
+// request. Migration is mechanical:
+//
+//	WithEnvFactory(func() (*lisp.LEnv, error) { ... })
+//
+//	WithRequestEnvFactory(func(context.Context) (*lisp.LEnv, func(), error) {
+//		env, err := ...
+//		if err != nil {
+//			return nil, nil, err
+//		}
+//		return env, func() { /* release env resources */ }, nil
+//	})
 func WithEnvFactory(factory func() (*lisp.LEnv, error)) Option {
+	return func(s *Server) {
+		if factory != nil {
+			s.envFactory = func(context.Context) (*lisp.LEnv, func(), error) {
+				env, err := factory()
+				return env, nil, err
+			}
+		}
+	}
+}
+
+// WithRequestEnvFactory sets a factory that creates a fresh LEnv for a single
+// tool request (doc, eval, or test) and returns a release function the server
+// calls when it is finished with the environment. It supersedes WithEnvFactory:
+// the release handle lets embedders whose environments own external resources
+// (open files, background goroutines, embedded databases) tie their lifetime to
+// the request that created them.
+//
+// See RequestEnvFactory for the release contract. Only the last of
+// WithEnvFactory / WithRequestEnvFactory takes effect.
+func WithRequestEnvFactory(factory RequestEnvFactory) Option {
 	return func(s *Server) {
 		if factory != nil {
 			s.envFactory = factory
@@ -119,6 +191,7 @@ func New(opts ...Option) *Server {
 	s.service = newService(serviceConfig{
 		registry:        s.registry,
 		env:             s.env,
+		docEnv:          s.docEnv,
 		envFactory:      s.envFactory,
 		workspaceRoot:   s.workspaceRoot,
 		perfConfig:      s.perfConfig,
