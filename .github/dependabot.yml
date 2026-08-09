@@ -1,4 +1,21 @@
 version: 2
+
+# EVERY dependency manifest in the repository must have an entry here.
+#
+# Dependabot only looks where it is told. A manifest with no matching
+# `directory:` gets no security updates and no version bumps, and nothing
+# anywhere reports that — the dashboard shows green because it is not looking,
+# which is indistinguishable from green because there is nothing to find.
+#
+# That is not hypothetical here: tree-sitter-elps/ is a separate Go module AND
+# an npm package with a lockfile, it is built and tested on every PR by
+# .github/workflows/tree-sitter.yml, and it had no entry at all. Its
+# go-tree-sitter, node-addon-api and tree-sitter-cli dependencies were frozen
+# at whatever they were when they were added.
+#
+# scripts/ci-gates-test.sh enforces the rule: it walks the tree for go.mod and
+# package.json (ignoring vendor/ and node_modules/) and fails if any of them
+# lacks a matching entry below. Adding a module means adding an entry here.
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -18,6 +35,18 @@ updates:
     groups:
       go-deps:
         patterns: ["*"]
+  # Separate Go module (`github.com/luthersystems/elps/tree-sitter-elps`), so
+  # the root entry above does not reach it — `./...` from the repo root does
+  # not descend into a nested module, and neither does Dependabot.
+  - package-ecosystem: "gomod"
+    directory: "/tree-sitter-elps"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      tree-sitter-go-deps:
+        patterns: ["*"]
   - package-ecosystem: "npm"
     directory: "/editors/vscode"
     schedule:
@@ -26,4 +55,15 @@ updates:
     open-pull-requests-limit: 5
     groups:
       vscode-deps:
+        patterns: ["*"]
+  # The grammar's npm side (node-addon-api, node-gyp-build, prebuildify,
+  # tree-sitter-cli), with a committed package-lock.json.
+  - package-ecosystem: "npm"
+    directory: "/tree-sitter-elps"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      tree-sitter-npm-deps:
         patterns: ["*"]

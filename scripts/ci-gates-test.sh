@@ -755,6 +755,116 @@ else
 fi
 
 echo
+echo "== dependabot covers every dependency manifest ==========================="
+
+# Dependabot only looks where it is told, and says nothing about where it does
+# not. A manifest with no matching `directory:` gets no version bumps and no
+# security updates, and the only symptom is an absence -- the dashboard is
+# green because it is not looking, which reads exactly like green because
+# there is nothing to find.
+#
+# Triggering example: tree-sitter-elps/ is a separate Go module AND an npm
+# package with a committed lockfile, built and tested on every PR by
+# .github/workflows/tree-sitter.yml, and it had no entry at all. Its
+# go-tree-sitter / node-addon-api / tree-sitter-cli pins were frozen from the
+# day they were written.
+#
+# This walks the tree rather than reading a list, so a module added later is
+# covered by construction.
+dep_out="$(python3 - "$REPO_ROOT" <<'PY'
+import os, sys
+try:
+    import yaml
+except ImportError:
+    print("__SKIP__ PyYAML not installed")
+    sys.exit(0)
+
+root = sys.argv[1]
+passes, failures = [], []
+
+cfg_path = os.path.join(root, ".github", "dependabot.yml")
+if not os.path.exists(cfg_path):
+    print("FAIL  .github/dependabot.yml is missing")
+    print("__COUNTS__ 0 1")
+    sys.exit(0)
+
+with open(cfg_path) as fh:
+    cfg = yaml.safe_load(fh)
+
+# (ecosystem, normalised directory) pairs the config declares. `directories:`
+# is the newer plural spelling; accept both so switching to it does not read
+# as a regression.
+def norm(d):
+    d = "/" + str(d).strip().strip("/")
+    return "/" if d == "/" else d
+
+declared = set()
+for u in (cfg.get("updates") or []):
+    eco = u.get("package-ecosystem")
+    dirs = u.get("directories") or ([u.get("directory")] if u.get("directory") else [])
+    for d in dirs:
+        declared.add((eco, norm(d)))
+
+# Manifests actually present, excluding vendored and installed trees.
+IGNORE = {"node_modules", "vendor", ".git", "testdata", "build"}
+MANIFESTS = {"go.mod": "gomod", "package.json": "npm"}
+found = set()
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames[:] = [d for d in dirnames if d not in IGNORE]
+    for fn in filenames:
+        eco = MANIFESTS.get(fn)
+        if eco is None:
+            continue
+        rel = os.path.relpath(dirpath, root)
+        found.add((eco, "/" if rel == "." else "/" + rel.replace(os.sep, "/")))
+
+missing = sorted(m for m in found if m not in declared)
+for eco, d in missing:
+    failures.append(
+        f"{eco} manifest at {d} has no dependabot entry — it gets no version "
+        f"bumps and no security updates, silently"
+    )
+if not missing:
+    passes.append(
+        f"every dependency manifest has a dependabot entry "
+        f"({len(found)} manifests: " +
+        ", ".join(f"{e}{d}" for e, d in sorted(found)) + ")"
+    )
+
+# A `directory:` pointing at nothing is the same failure seen from the other
+# side: the entry looks like coverage and provides none.
+stale = sorted(
+    (e, d) for (e, d) in declared
+    if e in MANIFESTS.values() and (e, d) not in found
+)
+for eco, d in stale:
+    failures.append(f"dependabot declares {eco} at {d}, but no such manifest exists")
+if not stale:
+    passes.append("no dependabot entry points at a manifest that does not exist")
+
+for p in passes:
+    print(f"PASS  {p}")
+for f_ in failures:
+    print(f"FAIL  {f_}")
+print(f"__COUNTS__ {len(passes)} {len(failures)}")
+PY
+)"
+
+if echo "$dep_out" | grep -q '^__SKIP__'; then
+	echo "SKIP  $(echo "$dep_out" | sed -n 's/^__SKIP__ //p')"
+else
+	echo "$dep_out" | grep -v '^__COUNTS__' || true
+	dep_counts="$(echo "$dep_out" | sed -n 's/^__COUNTS__ //p')"
+	if [ -n "$dep_counts" ]; then
+		read -r dep_pass dep_fail <<<"$dep_counts"
+		pass=$((pass + dep_pass))
+		fail=$((fail + dep_fail))
+	else
+		bad "dependabot coverage guard did not run"
+	fi
+fi
+
+echo
 echo "== fuzz gate: time bounding =============================================="
 
 FUZZ="${SCRIPT_DIR}/fuzz.sh"
