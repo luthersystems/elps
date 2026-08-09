@@ -30,6 +30,15 @@
 #                      spent when a target actually fails.
 #   FUZZ_SHARD         "i/n" -- run only shard i of n (1-based).  Equivalent
 #                      to --shard; the env form is what the CI matrix uses.
+#   FUZZ_TAGS          go build tags to fuzz under, e.g. FUZZ_TAGS=elpscheck.
+#                      Empty (the default) fuzzes the ordinary build.  Tagged
+#                      code is INVISIBLE to the default build, so a target
+#                      guarded by a tag is not merely unfuzzed -- it is not
+#                      even discovered, and the sweep reports success having
+#                      never seen it.  The same blind spot golangci-lint has
+#                      (it analyses one build), which is why `make
+#                      static-checks` makes a second pass under -tags
+#                      elpscheck.
 #
 # Sharding
 # --------
@@ -63,6 +72,15 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 FUZZTIME="${FUZZTIME-30s}"
 FUZZ_TIMEOUT_SLACK="${FUZZ_TIMEOUT_SLACK:-300}"
 FUZZMINIMIZETIME="${FUZZMINIMIZETIME:-30s}"
+FUZZ_TAGS="${FUZZ_TAGS:-}"
+
+# Built once and reused, so discovery and execution can never disagree about
+# which build they are looking at -- a sweep that DISCOVERS the default build
+# and FUZZES the tagged one would report on targets it never ran.
+declare -a tagflags=()
+if [ -n "$FUZZ_TAGS" ]; then
+	tagflags=(-tags "$FUZZ_TAGS")
+fi
 
 list_only=0
 shard_spec="${FUZZ_SHARD-}"
@@ -140,10 +158,10 @@ cd "$REPO_ROOT" || exit 2
 # -list` prints the matching names followed by a summary line ("ok <pkg> ..."),
 # so the output is filtered to bare target names.
 list_targets() {
-	go test -list '^Fuzz' "$1" 2>/dev/null | grep -E '^Fuzz[A-Za-z0-9_]*$'
+	go test ${tagflags+"${tagflags[@]}"} -list '^Fuzz' "$1" 2>/dev/null | grep -E '^Fuzz[A-Za-z0-9_]*$'
 }
 
-mapfile -t pkg_list < <(go list "${packages[@]}" 2>/dev/null)
+mapfile -t pkg_list < <(go list ${tagflags+"${tagflags[@]}"} "${packages[@]}" 2>/dev/null)
 if [ "${#pkg_list[@]}" -eq 0 ]; then
 	echo "fuzz.sh: no packages matched ${packages[*]}" >&2
 	exit 2
@@ -199,7 +217,7 @@ for pair in ${pairs+"${pairs[@]}"}; do
 		# executed by the fuzzing engine anyway, and re-running the package's
 		# whole test suite per target would multiply the job's cost by the
 		# number of targets.
-		go test "$pkg" \
+		go test ${tagflags+"${tagflags[@]}"} "$pkg" \
 			-run '^$' \
 			-fuzz "^${target}\$" \
 			-fuzztime "$FUZZTIME" \
@@ -240,7 +258,7 @@ if [ "$total" -eq 0 ]; then
 	echo "fuzz.sh: a fuzz gate that runs nothing cannot fail — treating as an error"
 	exit 2
 fi
-echo "fuzz.sh: ${total} target(s), ${failed} failure(s), ${FUZZTIME} each"
+echo "fuzz.sh: ${total} target(s), ${failed} failure(s), ${FUZZTIME} each${FUZZ_TAGS:+, -tags ${FUZZ_TAGS}}"
 if [ "$failed" -ne 0 ]; then
 	for f in "${failures[@]}"; do
 		echo "  FAIL  $f"
