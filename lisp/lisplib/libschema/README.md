@@ -227,6 +227,11 @@ Requires the value to match the supplied pattern. Any regular expression that ca
 * `(s:may-have-key name[ type [type2 typeN]])`
   If a map has the key `name` set, optionally require the value therein to be of type `type` (or `type2` ... `typeN`). 
   You may wish to use this without a type set when using `no-more-keys`.
+  `name` is a string and is looked up as a string, exactly as `s:has-key` looks its key up. Before
+  [#325](https://github.com/luthersystems/elps/issues/325) it was looked up as a symbol, which a
+  map decoded by `json:load-string` rejects outright — so on JSON-derived maps the constraint
+  silently behaved as though the key were always absent. A string key matches symbol-keyed entries
+  of a literal `sorted-map` too, so nothing is lost.
   
 
 * `(s:no-more-keys field-constraint[ field-constraint2 field-constraintN])`
