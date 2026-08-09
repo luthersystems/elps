@@ -975,6 +975,431 @@ else
 	bad "fuzz.yml does not run fuzz-budget-check.sh — timeout-minutes is unguarded again"
 fi
 
+# ONE REQUIRED CHECK PER WORKFLOW, AND IT MUST COVER EVERYTHING.
+#
+# Branch protection matches a required status check by NAME. Requiring the
+# individual jobs means editing repo settings whenever a job is added, renamed
+# or resharded -- and forgetting to leaves the new job unguarded while the board
+# still reads fully green. Two concrete traps this repo has been one edit away
+# from:
+#
+#   * sharding renamed "Fuzz targets" to "Fuzz shard i/4". Had the old name
+#     been required, every PR would have become unmergeable, because a required
+#     check that never reports blocks forever.
+#   * adding a job to a workflow silently leaves it outside the required set.
+#
+# So every pull_request-triggered workflow carries exactly one fixed-name
+# `Required: <area>` job, and that name is the only thing in branch protection.
+# This guard enforces the two properties that make that safe:
+#
+#   1. the aggregate exists and its name is FIXED (no ${{ }} interpolation), and
+#   2. it `needs` EVERY other job in its workflow -- otherwise the aggregate
+#      goes green while an uncovered job is red, which is strictly worse than
+#      having no aggregate at all, because it looks like coverage.
+req_out="$(python3 - "$REPO_ROOT" <<'PY_INNER'
+import glob, os, sys
+
+root = sys.argv[1]
+try:
+    import yaml
+except ImportError:
+    print("__SKIP__ pyyaml unavailable")
+    sys.exit(0)
+
+MARKER = "Required:"
+failures, passes = [], []
+
+for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))):
+    base = os.path.basename(f)
+    try:
+        doc = yaml.safe_load(open(f))
+    except Exception:  # noqa: BLE001 -- the YAML-parse guard owns this
+        continue
+    if not isinstance(doc, dict):
+        continue
+
+    # Only a pull_request check can be a REQUIRED check, so release/tag
+    # workflows are out of scope. `on` parses as boolean True in YAML 1.1.
+    triggers = doc.get("on", doc.get(True)) or {}
+    if isinstance(triggers, str):
+        triggers = {triggers: None}
+    if isinstance(triggers, list):
+        triggers = {t: None for t in triggers}
+    if "pull_request" not in triggers:
+        continue
+
+    jobs = {k: v for k, v in (doc.get("jobs") or {}).items() if isinstance(v, dict)}
+    if not jobs:
+        continue
+
+    def jobname(jid):
+        return str(jobs[jid].get("name") or jid)
+
+    aggs = [j for j in jobs if jobname(j).startswith(MARKER)]
+    if not aggs:
+        failures.append(
+            f"{base}: no fixed-name '{MARKER} ...' aggregate job. Every job in it would "
+            f"have to be listed in branch protection by hand, and a job added later "
+            f"would be unguarded while the board still looks green."
+        )
+        continue
+    if len(aggs) > 1:
+        failures.append(f"{base}: more than one '{MARKER} ...' job ({aggs}); exactly one is the check to require")
+        continue
+
+    agg = aggs[0]
+    if "${{" in jobname(agg):
+        failures.append(f"{base}: aggregate {agg!r} has an interpolated name ({jobname(agg)!r}); a required check's name must be fixed")
+        continue
+
+    needs = jobs[agg].get("needs")
+    needs = [needs] if isinstance(needs, str) else list(needs or [])
+    missing = sorted(set(jobs) - set(needs) - {agg})
+    if missing:
+        failures.append(
+            f"{base}: aggregate {jobname(agg)!r} does not depend on {missing}. "
+            f"Those jobs can fail while the one required check goes green."
+        )
+    else:
+        passes.append(f"{base}: '{jobname(agg)}' covers all {len(jobs) - 1} other job(s)")
+
+    # `needs` alone SKIPS the aggregate when an upstream job fails, and a
+    # skipped required check reads as green, so always() is load-bearing.
+    if str(jobs[agg].get("if", "")).find("always()") < 0:
+        failures.append(f"{base}: aggregate {jobname(agg)!r} lacks `if: always()`; it would be SKIPPED on upstream failure, and a skipped required check reads as green")
+
+for p_ in passes:
+    print(f"PASS  {p_}")
+for f_ in failures:
+    print(f"FAIL  {f_}")
+print(f"__COUNTS__ {len(passes)} {len(failures)}")
+PY_INNER
+)"
+case "$req_out" in
+	__SKIP__*) echo "SKIP  required-check aggregate guard ($req_out)" ;;
+	*)
+		echo "$req_out" | grep -v '^__COUNTS__' || true
+		req_counts="$(echo "$req_out" | sed -n 's/^__COUNTS__ //p')"
+		if [ -n "$req_counts" ]; then
+			read -r rq_pass rq_fail <<<"$req_counts"
+			pass=$((pass + rq_pass))
+			fail=$((fail + rq_fail))
+		else
+			bad "required-check aggregate guard did not run"
+		fi
+		;;
+esac
+
+wf_out="$(python3 - "$REPO_ROOT" <<'PY'
+import glob, os, re, sys
+
+root = sys.argv[1]
+failures, passes = [], []
+
+files = sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.yml")) +
+               glob.glob(os.path.join(root, ".github", "workflows", "*.yaml")))
+if not files:
+    failures.append("no workflow files found")
+
+try:
+    import yaml
+    docs = {}
+    for f in files:
+        try:
+            docs[f] = yaml.safe_load(open(f))
+        except Exception as e:  # noqa: BLE001
+            failures.append(f"{os.path.basename(f)} does not parse: {e}")
+    if not failures:
+        passes.append(f"all {len(files)} workflow files parse as YAML")
+
+    # No two workflows may publish the same top-level `name:` -- duplicate names
+    # produce indistinguishable check contexts, which lets a trivially-green
+    # workflow impersonate a real gate.
+    names = {}
+    for f, doc in docs.items():
+        if isinstance(doc, dict) and doc.get("name"):
+            names.setdefault(doc["name"], []).append(os.path.basename(f))
+    dupes = {n: v for n, v in names.items() if len(v) > 1}
+    for n, v in dupes.items():
+        failures.append(f"duplicate workflow name {n!r} in {', '.join(v)}")
+    if not dupes:
+        passes.append("no two workflows declare the same top-level name")
+except ImportError:
+    passes.append("(pyyaml unavailable; YAML-parse guards skipped)")
+
+# Every third-party `uses:` should be SHA-pinned (local ./ actions are exempt).
+# CONTRACT.md for this check: the repo pinned its actions in f5b12e3 ("chore: pin
+# GitHub Actions to SHAs and add Dependabot config"), but two workflows added
+# later drifted back to floating tags. Those are pre-existing and out of scope
+# for the benchmark-gate fix, so they are ALLOWLISTED rather than silently
+# ignored -- they print as WARN and the list may only ever shrink. Any NEW
+# unpinned action, or any unpinned action in a workflow this change owns, is a
+# hard failure.
+UNPINNED_ALLOWLIST = {
+    # file: reason (delete the row once the workflow is pinned)
+    "govulncheck.yml": "pre-existing, added in #303; not touched by this change",
+    "release-tag.yml": "pre-existing, added in #302; not touched by this change",
+}
+sha = re.compile(r"^[0-9a-f]{40}$")
+unpinned, warned = [], []
+for f in files:
+    base = os.path.basename(f)
+    for i, line in enumerate(open(f), 1):
+        m = re.search(r"uses:\s*(\S+)", line)
+        if not m:
+            continue
+        ref = m.group(1)
+        if ref.startswith("./"):
+            continue
+        if "@" not in ref or not sha.match(ref.rsplit("@", 1)[1]):
+            (warned if base in UNPINNED_ALLOWLIST else unpinned).append(f"{base}:{i} {ref}")
+for u in unpinned:
+    failures.append(f"unpinned action: {u}")
+if not unpinned:
+    passes.append(f"every non-allowlisted `uses:` is pinned to a 40-char commit SHA "
+                  f"({len(warned)} allowlisted)")
+for w in warned:
+    print(f"WARN  unpinned action (allowlisted, should be pinned): {w}")
+
+for p in passes:
+    print(f"PASS  {p}")
+for f_ in failures:
+    print(f"FAIL  {f_}")
+print(f"__COUNTS__ {len(passes)} {len(failures)}")
+PY
+)"
+
+echo "$wf_out" | grep -v '^__COUNTS__' || true
+wf_counts="$(echo "$wf_out" | sed -n 's/^__COUNTS__ //p')"
+if [ -n "$wf_counts" ]; then
+	read -r wf_pass wf_fail <<<"$wf_counts"
+	pass=$((pass + wf_pass))
+	fail=$((fail + wf_fail))
+else
+	bad "workflow shape guards did not run"
+fi
+
+echo
+echo "== fuzz gate: time bounding =============================================="
+
+FUZZ="${SCRIPT_DIR}/fuzz.sh"
+FUZZ_WF="${REPO_ROOT}/.github/workflows/fuzz.yml"
+
+# `go test -fuzz` has no default limit: without -fuzztime it runs until
+# something kills it. Every one of these guards exists to keep that from
+# reaching CI.
+
+assert_exit 2 "an unparsable FUZZTIME is refused rather than guessed" \
+	env FUZZTIME=forever "$FUZZ" --list
+assert_contains "refusing to run unbounded" \
+	"the refusal says why" \
+	env FUZZTIME=forever "$FUZZ" --list
+assert_exit 2 "a bare number (no unit) is refused" \
+	env FUZZTIME=60 "$FUZZ" --list
+assert_exit 2 "an empty FUZZTIME is refused" \
+	env FUZZTIME= "$FUZZ" --list
+
+# Every LIVE `go test -fuzz` in this repository must carry -fuzztime. Logical
+# lines, not physical ones: the invocation in fuzz.sh spreads its flags over a
+# backslash continuation, and a per-line scan would read the `-fuzz` line as
+# unbounded. Anchored on `go test` so that prose, this checker's own source,
+# and workflow comments are not mistaken for invocations.
+unbounded="$(python3 - "$REPO_ROOT" <<'PY'
+import glob, os, re, sys
+root = sys.argv[1]
+files = sorted(
+    glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))
+    + glob.glob(os.path.join(root, "scripts", "*.sh"))
+    + [os.path.join(root, "Makefile")]
+)
+hits = []
+for f in files:
+    if not os.path.exists(f):
+        continue
+    logical, buf, start = [], "", 1
+    for i, line in enumerate(open(f), 1):
+        if line.lstrip().startswith("#"):
+            continue
+        code = line.split("#", 1)[0].rstrip("\n")
+        if not buf:
+            start = i
+        if code.rstrip().endswith("\\"):
+            buf += code.rstrip()[:-1] + " "
+            continue
+        logical.append((start, buf + code))
+        buf = ""
+    if buf:
+        logical.append((start, buf))
+    for lineno, code in logical:
+        if not re.search(r"\bgo\s+test\b", code):
+            continue
+        if not re.search(r"(^|\s)-fuzz(\s|=|$)", code):
+            continue
+        if "-fuzztime" not in code:
+            hits.append(f"{os.path.relpath(f, root)}:{lineno}")
+print("\n".join(hits))
+PY
+)"
+if [ -n "$unbounded" ]; then
+	bad "a 'go test -fuzz' invocation has no -fuzztime bound: $unbounded"
+else
+	ok "every live 'go test -fuzz' invocation is bounded by -fuzztime"
+fi
+
+echo
+echo "== fuzz gate: discovery and proof it can FAIL ============================"
+
+# Everything from here needs a Go toolchain matching go.mod. The `gates` job in
+# benchmark.yml deliberately has none -- it is the fast, build-free gate that
+# must report even when the benchmark job is cancelled -- so it sets
+# CI_GATES_SKIP_GO and these run in the `fuzz` workflow instead, which already
+# has Go set up and its module cache warm.
+if [ "${CI_GATES_SKIP_GO:-0}" = "1" ] || ! command -v go >/dev/null 2>&1; then
+	echo "SKIP  Go-backed fuzz-gate checks (CI_GATES_SKIP_GO=${CI_GATES_SKIP_GO:-0}," \
+		"go present: $(command -v go >/dev/null 2>&1 && echo yes || echo no))"
+	echo "SKIP  they run in .github/workflows/fuzz.yml, which sets up Go"
+else
+	# The derived budget gate. It reads real discovery plus the workflow, so
+	# it needs Go; the negative controls below drive it at a scratch copy of
+	# the workflow via FUZZ_WORKFLOW.
+	BUDGET="${SCRIPT_DIR}/fuzz-budget-check.sh"
+	assert_exit 0 "the nightly sweep fits its timeout as configured today" \
+		"$BUDGET"
+
+	budget_tmp="$(mktemp -d)"
+	budget_wf="${budget_tmp}/fuzz.yml"
+
+	# Each control reverts ONE property of the real workflow. A budget gate
+	# that has never been watched failing is worth nothing -- the value it
+	# guards went stale twice before this existed (120 sized for 10 targets
+	# when there were 12; 140 vs 165 when two branches each counted only their
+	# own additions).
+	cp "$FUZZ_WF" "$budget_wf"
+	sed -i 's/^    timeout-minutes: [0-9]*$/    timeout-minutes: 5/' "$budget_wf"
+	assert_exit 1 "a timeout too small for the sweep FAILS" \
+		env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+
+	cp "$FUZZ_WF" "$budget_wf"
+	sed -i 's/^        shard: \[.*\]$/        shard: [1]/' "$budget_wf"
+	assert_exit 1 "unsharding (one shard, whole sweep serial) FAILS" \
+		env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+
+	cp "$FUZZ_WF" "$budget_wf"
+	sed -i '/^    timeout-minutes: [0-9]*$/d' "$budget_wf"
+	assert_exit 2 "a fuzz job with NO timeout-minutes is unreadable, not fine" \
+		env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+
+	cp "$FUZZ_WF" "$budget_wf"
+	sed -i "s/'schedule' && '[0-9]*[smh]'/'schedule' \&\& 'BOGUS'/" "$budget_wf"
+	assert_exit 2 "an unparsable scheduled FUZZTIME is refused, not guessed" \
+		env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+
+	assert_exit 2 "a missing workflow is an error" \
+		env FUZZ_WORKFLOW="${budget_tmp}/nope.yml" "$BUDGET"
+
+	rm -rf "$budget_tmp"
+
+	# Sharding must be a PARTITION: every target in exactly one shard. A shard
+	# assignment that drops a target loses coverage silently, and one that
+	# duplicates a target just wastes budget.
+	shard_tmp="$(mktemp -d)"
+	"${SCRIPT_DIR}/fuzz.sh" --list 2>/dev/null | LC_ALL=C sort >"${shard_tmp}/full"
+	: >"${shard_tmp}/union"
+	for i in 1 2 3 4; do
+		"${SCRIPT_DIR}/fuzz.sh" --list --shard "${i}/4" 2>/dev/null >>"${shard_tmp}/union"
+	done
+	LC_ALL=C sort "${shard_tmp}/union" >"${shard_tmp}/union.sorted"
+	if diff -q "${shard_tmp}/full" "${shard_tmp}/union.sorted" >/dev/null; then
+		ok "the 4 shards are a partition of the full target list (no target lost)"
+	else
+		bad "sharding is not a partition — targets are lost or duplicated"
+		diff "${shard_tmp}/full" "${shard_tmp}/union.sorted" | sed 's/^/        | /'
+	fi
+	dupes=$(($(wc -l <"${shard_tmp}/union.sorted") - $(sort -u "${shard_tmp}/union.sorted" | wc -l)))
+	if [ "$dupes" -eq 0 ]; then
+		ok "no target is claimed by more than one shard"
+	else
+		bad "${dupes} target(s) appear in more than one shard"
+	fi
+	rm -rf "$shard_tmp"
+
+	# A shard spec that cannot be read must not silently run a SUBSET and exit
+	# 0 -- indistinguishable from a clean full sweep.
+	for bad_spec in "0/4" "5/4" "abc" "1/0"; do
+		assert_exit 2 "--shard ${bad_spec} is refused rather than guessed" \
+			"${SCRIPT_DIR}/fuzz.sh" --list --shard "$bad_spec"
+	done
+	assert_exit 2 "more shards than targets is an error, not an empty green run" \
+		"${SCRIPT_DIR}/fuzz.sh" --shard 99/99
+
+	# Discovery is dynamic, so it can silently discover nothing -- which would
+	# look exactly like a clean run.
+	assert_exit 2 "discovering ZERO targets is an error, not a clean run" \
+		env FUZZTIME=1s "$FUZZ" ./lint/...
+	assert_contains "cannot fail" "the empty-discovery error explains itself" \
+		env FUZZTIME=1s "$FUZZ" ./lint/...
+
+	# The targets really are found. Listed once and asserted against, so the
+	# package set is only compiled a single extra time.
+	discovered="$(env FUZZTIME=1s "$FUZZ" --list 2>&1)"
+	for want in FuzzParseProgram FuzzLexer FuzzScanner FuzzFormat FuzzMinifySource FuzzLoadJSON; do
+		if echo "$discovered" | grep -q "$want"; then
+			ok "discovery finds ${want}"
+		else
+			bad "discovery no longer finds ${want}"
+		fi
+	done
+
+	# The headline assertion, and the reason FuzzGateSelfTest exists. A gate
+	# that has only ever reported success is indistinguishable from a gate that
+	# cannot fail -- precisely how the benchmark gate above stayed dead for 473
+	# runs. FuzzGateSelfTest is a deliberately-failing target, inert unless
+	# ELPS_FUZZ_GATE_SELFTEST is set, so this exercises the whole path end to
+	# end: discovery, invocation, and the failure reaching the exit status.
+	assert_exit 1 "an armed failing target makes fuzz.sh exit non-zero" \
+		env ELPS_FUZZ_GATE_SELFTEST=1 FUZZTIME=5s FUZZMINIMIZETIME=1s \
+		"$FUZZ" ./internal/fuzzseed/...
+	assert_contains "FuzzGateSelfTest" "the failing target is named in the summary" \
+		env ELPS_FUZZ_GATE_SELFTEST=1 FUZZTIME=5s FUZZMINIMIZETIME=1s \
+		"$FUZZ" ./internal/fuzzseed/...
+	# ...and the mirror: disarmed, the same package is clean. Without this, an
+	# always-failing script would satisfy the assertion above for the wrong
+	# reason.
+	assert_exit 0 "the same target is inert when NOT armed" \
+		env FUZZTIME=5s "$FUZZ" ./internal/fuzzseed/...
+
+	# An armed run can leave a generated crasher in the source tree; it is
+	# meaningless outside that run, so do not let it linger.
+	rm -rf "${REPO_ROOT}/internal/fuzzseed/testdata/fuzz/FuzzGateSelfTest"
+fi
+
+echo
+echo "== fuzz gate: workflow shape ============================================"
+
+if [ -n "$(invoked_in "$FUZZ_WF" 'scripts/fuzz.sh')" ]; then
+	ok "fuzz.yml INVOKES scripts/fuzz.sh (not just mentions it)"
+else
+	bad "fuzz.yml no longer invokes scripts/fuzz.sh — logic reinlined or removed?"
+fi
+
+if grep -qE '^\s*timeout-minutes:' "$FUZZ_WF"; then
+	ok "fuzz.yml sets a job-level timeout-minutes backstop"
+else
+	bad "fuzz.yml has no timeout-minutes — the job has no outer bound"
+fi
+
+if grep -q 'FUZZTIME' "$FUZZ_WF"; then
+	ok "fuzz.yml sets an explicit FUZZTIME budget"
+else
+	bad "fuzz.yml does not set FUZZTIME — the PR path would take the default"
+fi
+
+if [ -n "$(invoked_in "$FUZZ_WF" 'scripts/fuzz-budget-check.sh')" ]; then
+	ok "fuzz.yml RUNS the derived budget check (timeout is not a remembered number)"
+else
+	bad "fuzz.yml does not run fuzz-budget-check.sh — timeout-minutes is unguarded again"
+fi
+
 # A required status check is matched by NAME. A job whose name interpolates a
 # matrix value changes name when the matrix is resized, so if such a name were
 # ever added to branch protection, resizing the matrix would leave a required

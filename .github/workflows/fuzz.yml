@@ -189,8 +189,8 @@ jobs:
   # `always()` because a skipped or cancelled shard must not let this report
   # success by default -- `needs` alone would skip this job too, and a skipped
   # required check reads as green.
-  fuzz-result:
-    name: Fuzz targets
+  required:
+    name: "Required: fuzz"
     runs-on: ubuntu-latest
     needs: fuzz
     if: always()
