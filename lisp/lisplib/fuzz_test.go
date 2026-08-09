@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/luthersystems/elps/internal/fuzzval"
+	"github.com/luthersystems/elps/internal/fuzzwatch"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
@@ -149,9 +150,10 @@ func FuzzApplyStdlib(f *testing.F) {
 // loop is reported rather than eating the target's whole -fuzztime.
 const callDeadline = 5 * time.Second
 
-// watchdogGrace is how long past callDeadline the watchdog waits before
-// declaring the call unbounded.  A call that has blown the context deadline by
-// this much is not "slow": it is in a loop that never consults the context.
+// watchdogGrace is how much SCHEDULED time past callDeadline the watchdog
+// waits before declaring the call unbounded.  A call that has blown the
+// context deadline by this much is not "slow": it is in a loop that never
+// consults the context.
 const watchdogGrace = 10 * time.Second
 
 // fuzzMaxAlloc is the per-operation allocation cap.  Deliberately tiny.  The
@@ -168,7 +170,12 @@ const fuzzMaxAlloc = 4096
 const fuzzMaxSteps = 20000
 
 // applyWithWatchdog applies fun to args on a separate goroutine and fails the
-// test if the call outlives the context deadline by watchdogGrace.
+// test if the call outlives the context deadline by watchdogGrace of SCHEDULED
+// time -- wall clock during which this process was not being run by the OS is
+// not charged to the callable.  See internal/fuzzwatch for why: at a measured
+// 0.73ms mean per input the 15s bound is already ~20,000x the work, so a
+// watchdog that fires is either a real hang or a starved runner, and only the
+// first is a defect.
 //
 // A watchdog is necessary because neither of the interpreter's own bounds sees
 // every loop.  checkLimits is consulted per EVALUATION; a builtin that loops
@@ -192,17 +199,37 @@ func applyWithWatchdog(t *testing.T, env *lisp.LEnv, name string, fun, args *lis
 		}()
 		done <- apply(env, fun, args)
 	}()
-	select {
-	case v := <-done:
-		return v
-	case r := <-panicked:
-		// Re-panic on the test goroutine so the fuzzing engine records the
-		// crasher and prints the stack.
-		panic(r)
-	case <-time.After(callDeadline + watchdogGrace):
-		t.Fatalf("%s did not terminate within %v despite a %v context deadline and a %d-step limit\n--- args ---\n%s",
-			name, callDeadline+watchdogGrace, callDeadline, fuzzMaxSteps, args)
-		return nil
+	// The budget is SCHEDULED time, not wall clock: see internal/fuzzwatch.  A
+	// plain time.After here charges the code under test for every second this
+	// process spent descheduled on a contended runner, which is a red board
+	// nobody can reproduce rather than a defect.
+	budget := fuzzwatch.New(callDeadline + watchdogGrace)
+	wait := budget.Total()
+	for {
+		select {
+		case v := <-done:
+			return v
+		case r := <-panicked:
+			// Re-panic on the test goroutine so the fuzzing engine records the
+			// crasher and prints the stack.
+			panic(r)
+		case <-time.After(wait):
+			verdict, more, report := budget.Check()
+			switch verdict {
+			case fuzzwatch.Continue:
+				wait = more
+			case fuzzwatch.Inconclusive:
+				// The machine never gave us the CPU. Whether this call
+				// terminates is unknown, and guessing in either direction is
+				// worse than declining to answer for one input out of millions.
+				t.Skipf("%s: no verdict, the process was starved throughout (%s)", name, report)
+				return nil
+			default:
+				t.Fatalf("%s did not terminate within %v of SCHEDULED time despite a %v context deadline and a %d-step limit (%s)\n--- args ---\n%s",
+					name, budget.Total(), callDeadline, fuzzMaxSteps, report, args)
+				return nil
+			}
+		}
 	}
 }
 
