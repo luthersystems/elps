@@ -256,8 +256,9 @@ const DefaultMaxMacroExpansionDepth = 1000
 // binds first for any MaxEvalNesting of 38,000 or more: that recursion costs
 // ~1.5 eval levels per physical frame, so it reaches physical height 25,001
 // at nesting ~38,000. Only code whose body nests expressions more than ~4
-// deep per recursion level can reach 100,000 nesting before 25,000 frames,
-// and such code really is consuming ~4x the Go stack per frame.
+// deep per recursion level can reach 100,000 nesting before 25,000 frames --
+// such code costs 4 eval levels per frame, ~2.6x what ordinary recursion
+// costs, so it really is consuming that much more Go stack per frame.
 //
 // The two limits bound different quantities and neither implies the other.
 // Deeply nested arguments raise nesting at constant height; a long chain of
