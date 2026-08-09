@@ -131,6 +131,30 @@ func TestDigitBeforeColonSplitsTokens(t *testing.T) {
 	assert.Equal(t, ":1", exprs[1].Str)
 }
 
+// TestQualifiedSymbolCheckIsMemoizedPerName guards the cache behind the check.
+//
+// Parser.readsBackAsSymbol memoizes per NAME, and both halves of every
+// qualified symbol go through it, so a program that mentions a package
+// repeatedly seeds the cache with entries that must not be mistaken for a
+// verdict on the local half. "(a:b a:1)" is the shape that would break if the
+// cache were keyed on the whole symbol, or consulted once per symbol rather
+// than once per half: "a" is already cached as good when "a:1" is reached.
+func TestQualifiedSymbolCheckIsMemoizedPerName(t *testing.T) {
+	t.Parallel()
+
+	_, err := rdparser.New(token.NewScannerString("test", "(a:b a:1)")).ParseProgram()
+	require.Error(t, err, "a cached verdict for the package half must not excuse the local half")
+	assert.Contains(t, err.Error(), `"1" does not read back as a symbol`)
+
+	// ...and the mirror: a name cached as BAD must not condemn a later good
+	// one that merely shares a package.
+	exprs, err := rdparser.New(token.NewScannerString("test", "(a:b a:b a:c)")).ParseProgram()
+	require.NoError(t, err)
+	require.Len(t, exprs, 1)
+	require.Len(t, exprs[0].Cells, 3)
+	assert.Equal(t, "a:c", exprs[0].Cells[2].Str)
+}
+
 // parseCondition returns the lisp condition reported by the parse error for
 // src, or "" when src parses cleanly.
 func parseCondition(t *testing.T, src string) string {

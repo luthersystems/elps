@@ -71,7 +71,7 @@ func NewScanner(file string, r io.Reader) *Scanner {
 // pointless cost on ordinary source and an allocation amplification an
 // attacker controls, in a parser whose job is to survive untrusted phylum
 // source.
-func NewScannerString(file string, src string) *Scanner {
+func NewScannerString(file, src string) *Scanner {
 	return newScannerBuf(file, strings.NewReader(src), make([]byte, len(src)))
 }
 
