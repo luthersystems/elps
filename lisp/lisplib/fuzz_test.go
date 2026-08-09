@@ -287,15 +287,15 @@ func genArgs(gen *fuzzval.Gen, fun *lisp.LVal) []*lisp.LVal {
 // the gate.
 func skipCallable(name string) bool {
 	switch name {
-	case "time:sleep":
-		// BuiltinSleep blocks for a caller-supplied duration inside a single
-		// evaluation step.  No budget in the interpreter can bound it: the
-		// step counter is not consulted mid-builtin and the context is not
-		// threaded into time.Sleep.  That is issue #314 and is out of scope
-		// here -- fixing it means changing the builtin's contract, not the
-		// fuzz harness.  Excluded by NAME rather than by a duration cap so
-		// the exclusion is visible and reviewable.
-		return true
+	// time:sleep was excluded here until issue #314 was fixed: it blocked for
+	// a caller-supplied duration inside a single evaluation step and no
+	// budget in the interpreter could bound it.  It now selects on the
+	// evaluation context and caps its wait at the context deadline, so
+	// callDeadline bounds it like everything else and it is back in the
+	// sweep.  Coverage of the sleeping path is nominal rather than real:
+	// fuzzval has no time.Duration among its nativeValues, so generated
+	// arguments reach the builtin's type check and stop there.  The bound
+	// itself is asserted directly in libtime's TestSleep* tests.
 	case "testing:test", "testing:test-let", "testing:test-let*",
 		"testing:benchmark", "testing:benchmark-simple":
 		// libtesting drives the Go testing runner through the environment and

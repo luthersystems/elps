@@ -969,6 +969,14 @@ If the context is cancelled or its deadline expires during evaluation, a
     (long-running-computation))
 ```
 
+The context is normally observed *between* evaluation steps, so a builtin
+that blocks for a long time inside a single step can outlive the deadline.
+`time:sleep` is the exception that is checked explicitly: it waits on the
+context as well as on its timer, so it wakes on cancellation and never sleeps
+past the deadline, raising `context-cancelled` instead of returning nil when
+it is cut short.  With no context configured, `time:sleep` sleeps for the
+full duration it was given, however long that is.
+
 ### Step Limits
 
 A step limit caps the number of evaluation steps in a **single top-level

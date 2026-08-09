@@ -3,6 +3,7 @@
 package libtime
 
 import (
+	"context"
 	"time"
 
 	"github.com/luthersystems/elps/lisp"
@@ -116,7 +117,12 @@ var builtins = []*libutil.Builtin{
 		if the value overflows an int.`),
 	libutil.FunctionDoc("sleep", lisp.Formals("time-duration"), BuiltinSleep,
 		`Pauses execution for the specified duration. The argument must
-		be a native duration value (from parse-duration). Returns nil.`),
+		be a native duration value (from parse-duration). Returns nil.
+		The pause is interruptible: if the evaluation's context is
+		cancelled, or its deadline would expire before the duration
+		elapses, sleep wakes at that point and raises a
+		context-cancelled condition instead of returning nil. With no
+		context configured the full duration is always slept.`),
 }
 
 func BuiltinUTCNow(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -328,7 +334,11 @@ func BuiltinDurationNS(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return lisp.Int(int(d))
 }
 
-// BulitinSleep sleeps for the given duration before returning.
+// BuiltinSleep sleeps for the given duration before returning.
+//
+// The sleep is bounded by the evaluation's context (see LEnv.Context): it
+// wakes early if the context is cancelled, and never sleeps past the
+// context's deadline.  See sleepContext for the full rationale.
 func BuiltinSleep(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	lt := args.Cells[0]
 	if lt.Type != lisp.LNative {
@@ -338,6 +348,83 @@ func BuiltinSleep(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if !ok {
 		return env.Errorf("argument is not a duration: %v", lt)
 	}
-	time.Sleep(d)
+	return sleepContext(env, d)
+}
+
+// sleepContext pauses for d, bounded by env's context.
+//
+// WHY THIS IS NOT time.Sleep(d).  A plain time.Sleep blocks inside a single
+// evaluation step, and no containment mechanism the interpreter offers can
+// see it: MaxSteps is not consulted mid-builtin, MaxAlloc sees no allocation,
+// the stack limits see no frames and no tail calls, and the context deadline
+// is only observed BETWEEN steps.  A caller-supplied duration therefore had
+// no upper bound at all -- "9223372036854775807ns" parses cleanly and blocks
+// for roughly 292 years.  Downstream (luthersystems/substrate) the caller is
+// customer-supplied phylum source running as chaincode, which made this the
+// only known unbounded-execution shape no embedder configuration could stop.
+// See issue #314.
+//
+// The fix makes the EXISTING context deadline authoritative rather than
+// adding a new knob nobody sets: select on a timer and on ctx.Done(), and cap
+// the wait at the remaining time before the deadline.
+//
+// The deadline cap is belt-and-braces alongside the ctx.Done() select, not a
+// substitute for it.  The Context interface permits an implementation to
+// report a Deadline while returning a nil Done channel; the stdlib's own
+// types do not, but wrappers written by embedders can, and selecting on a nil
+// channel blocks forever -- exactly the bug being fixed.  Capping the timer
+// means the wait ends at the deadline either way.
+//
+// WHAT DOES NOT CHANGE.  When the context has neither a Done channel nor a
+// deadline -- which is the default, context.Background(), for every embedder
+// that uses Eval rather than EvalContext and never passes WithContext -- this
+// is a plain time.Sleep with the historical behaviour, 292-year sleeps
+// included.  Bounding that case would require a new default limit, which
+// would break every program that legitimately sleeps longer than it.
+func sleepContext(env *lisp.LEnv, d time.Duration) *lisp.LVal {
+	if d <= 0 {
+		// time.Sleep returns immediately for a non-positive duration.
+		return lisp.Nil()
+	}
+	ctx := env.Context()
+	done := ctx.Done()
+	deadline, hasDeadline := ctx.Deadline()
+	if done == nil && !hasDeadline {
+		time.Sleep(d)
+		return lisp.Nil()
+	}
+	if err := ctx.Err(); err != nil {
+		return errContextCancelled(env, err)
+	}
+	truncated := false
+	if hasDeadline {
+		if remaining := time.Until(deadline); remaining < d {
+			d, truncated = remaining, true
+		}
+	}
+	if d > 0 {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-done:
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return errContextCancelled(env, err)
+	}
+	if truncated {
+		// The wait ended at the deadline but ctx has not observed it yet
+		// (a nil Done channel, or a race with the context's own timer).
+		// Report it anyway: the sleep did not run to completion.
+		return errContextCancelled(env, context.DeadlineExceeded)
+	}
 	return lisp.Nil()
+}
+
+// errContextCancelled renders the interruption using the same condition and
+// message shape the interpreter's own between-steps check produces, so a
+// handler-bind on context-cancelled sees one consistent error.
+func errContextCancelled(env *lisp.LEnv, err error) *lisp.LVal {
+	return env.ErrorConditionf(lisp.CondContextCancelled, "context cancelled: %v", err)
 }
