@@ -1,4 +1,4 @@
-// Copyright © 2025 The ELPS authors
+// Copyright © 2026 The ELPS authors
 
 package lisp
 
