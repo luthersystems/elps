@@ -12,6 +12,8 @@ const (
 	CondInvalidSymbol       = "invalid-symbol"
 	CondInvalidOctalLiteral = "invalid-octal-literal"
 	CondInvalidHexLiteral   = "invalid-hex-literal"
+	CondInvalidFloat        = "invalid-float"
+	CondInvalidString       = "invalid-string"
 	CondOverflow            = "integer-overflow-error"
 )
 
