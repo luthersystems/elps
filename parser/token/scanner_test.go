@@ -5,6 +5,7 @@ package token
 import (
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -211,4 +212,41 @@ func TestSeqFiller(t *testing.T) {
 		t.Fatal(err)
 	}
 	assert.Equal(t, "xxxxxxxxx\nxxxxxxxxx\nxxxx", string(buf1)+string(buf2))
+}
+
+// TestNewScannerString pins that sizing the window to the source changes
+// nothing about what the scanner does.
+//
+// NewScanner allocates its 128KiB window per SCANNER, not per byte scanned,
+// and rdparser.readsBackAsSymbol builds one scanner per #' operand and two per
+// package-qualified symbol.  NewScannerString exists to make those re-reads
+// cheap (issue #319); it is only safe because a window the size of the whole
+// source cannot be overrun by a token drawn from that source, so the two
+// constructors must agree rune for rune.
+func TestNewScannerString(t *testing.T) {
+	srcs := []string{
+		"", "a", "ab", "abc", "a:b", "1", "-1", "  x  ", "a\nb\n",
+		"(defun f (x) (+ x 1))", "\xff", "\xe4\xb8", "日本語",
+	}
+	for _, src := range srcs {
+		t.Run(src, func(t *testing.T) {
+			big := NewScanner("test", strings.NewReader(src))
+			small := NewScannerString("test", src)
+			for i := 0; ; i++ {
+				errBig := big.ScanRune()
+				errSmall := small.ScanRune()
+				assert.Equal(t, errBig == nil, errSmall == nil,
+					"rune %d: error disagreement: %v vs %v", i, errBig, errSmall)
+				assert.Equal(t, big.Rune(), small.Rune(), "rune %d", i)
+				assert.Equal(t, big.EOF(), small.EOF(), "rune %d: EOF", i)
+				assert.Equal(t, big.Text(), small.Text(), "rune %d: text", i)
+				if errBig != nil || errSmall != nil {
+					break
+				}
+				if i > len(src)+4 {
+					t.Fatal("scanner did not terminate")
+				}
+			}
+		})
+	}
 }

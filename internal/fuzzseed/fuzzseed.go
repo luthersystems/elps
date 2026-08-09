@@ -190,6 +190,13 @@ func Adversarial() [][]byte {
 		"a:",
 		":a",
 		"::",
+		// The local half of a qualified symbol has to be a name; the local
+		// half of a KEYWORD does not (issue #319).  Both spellings reach the
+		// same readSymbol loop, so seed both sides of that split.
+		"a:1",
+		":1",
+		"a:+1",
+		"1:1",
 		strings.Repeat("a", 256),
 
 		// --- comments and hash-bang ---

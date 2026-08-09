@@ -45,10 +45,34 @@ func newScannerBuf(file string, r io.Reader, buf []byte) *Scanner {
 	return s
 }
 
-// NewScanner initializes and returns a new Scanner.
+// DefaultBufSize is the size of the sliding window NewScanner allocates.  It
+// is also the largest single token NewScanner can scan: the window never
+// grows, so a token that fills it fails with "token exceeds maximum allowable
+// size".
+const DefaultBufSize = 128 << 10
+
+// NewScanner initializes and returns a new Scanner reading through a
+// DefaultBufSize sliding window.
 func NewScanner(file string, r io.Reader) *Scanner {
-	buf := make([]byte, 128<<10)
+	buf := make([]byte, DefaultBufSize)
 	return newScannerBuf(file, r, buf)
+}
+
+// NewScannerString initializes and returns a new Scanner reading src, sizing
+// the sliding window to src rather than allocating the DefaultBufSize window
+// NewScanner uses.  src is already in memory, so the window costs nothing
+// extra and no token can overrun it.
+//
+// This exists because the fixed window is charged per SCANNER, not per byte
+// scanned, and the parser re-reads short strings: readsBackAsSymbol scans each
+// #' operand and each half of every package-qualified symbol to check that it
+// reads back as a symbol (issue #319).  Through NewScanner that is 128KiB per
+// check -- 2.6GB and 1.7s to parse 10k qualified symbols, which is both a
+// pointless cost on ordinary source and an allocation amplification an
+// attacker controls, in a parser whose job is to survive untrusted phylum
+// source.
+func NewScannerString(file string, src string) *Scanner {
+	return newScannerBuf(file, strings.NewReader(src), make([]byte, len(src)))
 }
 
 // SetPath associates a physical location (e.g. filesystem path) with s to aid
