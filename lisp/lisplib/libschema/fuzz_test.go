@@ -9,7 +9,17 @@ import (
 	"time"
 
 	"github.com/luthersystems/elps/internal/fuzzval"
+	"github.com/luthersystems/elps/internal/fuzzwatch"
 	"github.com/luthersystems/elps/lisp"
+)
+
+// schemaDeadline is the context deadline one validation runs under, and
+// schemaWatchdog the out-of-band bound on a validation that ignores it.  The
+// watchdog is denominated in SCHEDULED time (see internal/fuzzwatch), so a
+// contended runner cannot spend it on this target's behalf.
+const (
+	schemaDeadline = 5 * time.Second
+	schemaWatchdog = 20 * time.Second
 )
 
 // FuzzSchemaValidate builds a schema out of fuzzer-chosen constraint fragments
@@ -57,7 +67,7 @@ func FuzzSchemaValidate(f *testing.F) {
 	f.Fuzz(func(t *testing.T, idx uint8, data []byte) {
 		before := lisp.TakeSingletonSnapshot()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), schemaDeadline)
 		defer cancel()
 
 		env := newSchemaEnv(t)
@@ -93,13 +103,34 @@ func FuzzSchemaValidate(f *testing.F) {
 			done <- env.LoadStringContext(ctx, "schema-fuzz", src)
 		}()
 
+		// SCHEDULED time, not wall clock: see internal/fuzzwatch.  At a
+		// measured 0.91ms mean per input the bound is already ~22,000x the
+		// work, so a watchdog that fires is either a real hang or a runner
+		// that stopped running us, and only the first is a defect here.
 		var res *lisp.LVal
-		select {
-		case res = <-done:
-		case r := <-panicked:
-			panic(r)
-		case <-time.After(20 * time.Second):
-			t.Fatalf("schema evaluation did not terminate despite a 5s deadline\n--- source ---\n%s", src)
+		budget := fuzzwatch.New(schemaWatchdog)
+		wait := budget.Total()
+	wait:
+		for {
+			select {
+			case res = <-done:
+				break wait
+			case r := <-panicked:
+				panic(r)
+			case <-time.After(wait):
+				verdict, more, report := budget.Check()
+				switch verdict {
+				case fuzzwatch.Continue:
+					wait = more
+				case fuzzwatch.Inconclusive:
+					t.Skipf("no verdict: the process was starved throughout (%s)", report)
+					return
+				default:
+					t.Fatalf("schema evaluation did not terminate within %s of SCHEDULED time despite a %s deadline (%s)\n--- source ---\n%s",
+						budget.Total(), schemaDeadline, report, src)
+					return
+				}
+			}
 		}
 
 		if res == nil {

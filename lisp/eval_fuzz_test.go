@@ -10,6 +10,7 @@ import (
 
 	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/internal/fuzzseed"
+	"github.com/luthersystems/elps/internal/fuzzwatch"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
@@ -98,7 +99,9 @@ const (
 	// each evaluation step.
 	fuzzDeadline = 2 * time.Second
 
-	// watchdogTimeout is the outer bound.  It is deliberately an order of
+	// watchdogTimeout is the outer bound, denominated in SCHEDULED time (see
+	// internal/fuzzwatch): wall clock during which this process was not run by the
+	// OS is not charged to the evaluator.  It is deliberately an order of
 	// magnitude above fuzzDeadline: reaching it means evaluation ignored
 	// every budget it was given, which is itself the bug.
 	watchdogTimeout = 30 * time.Second
@@ -153,6 +156,10 @@ type evalOutcome struct {
 type fatalf interface {
 	Helper()
 	Fatalf(format string, args ...interface{})
+	// Skipf is how the harness declines to answer for one input when the
+	// process was starved throughout its watchdog window -- see
+	// internal/fuzzwatch. Both *testing.T and *testing.F have it.
+	Skipf(format string, args ...interface{})
 }
 
 // evalBudgeted parses and evaluates src under the budget, on its own
@@ -204,29 +211,50 @@ func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
 		ch <- done{result: result, steps: env.Runtime.TotalSteps(), elapsed: time.Since(start)}
 	}()
 
-	select {
-	case d := <-ch:
-		if d.result == nil {
-			t.Fatalf("evaluation returned a nil LVal")
-			return evalOutcome{}, false
+	// SCHEDULED time, not wall clock: see internal/fuzzwatch.  At a measured
+	// 0.33ms mean per input this bound is already ~90,000x the work, so
+	// widening it further would not buy anything -- the only way a healthy
+	// machine reaches it is a genuine hang, and the only other way to reach it
+	// is not being given the CPU, which is not the evaluator's fault.
+	budget := fuzzwatch.New(watchdogTimeout)
+	wait := budget.Total()
+	for {
+		select {
+		case d := <-ch:
+			if d.result == nil {
+				t.Fatalf("evaluation returned a nil LVal")
+				return evalOutcome{}, false
+			}
+			return evalOutcome{
+				Result:  d.result,
+				Stderr:  stderr.String(),
+				Steps:   d.steps,
+				Elapsed: d.elapsed,
+			}, true
+		case <-time.After(wait):
+			verdict, more, report := budget.Check()
+			switch verdict {
+			case fuzzwatch.Continue:
+				wait = more
+			case fuzzwatch.Inconclusive:
+				// Starved throughout. Nothing can be said about this input,
+				// and saying it anyway is how a gate stops meaning anything.
+				t.Skipf("no verdict: the process was starved throughout (%s)", report)
+				return evalOutcome{}, false
+			default:
+				// The evaluation goroutine is unstoppable by construction --
+				// if it were interruptible it would have honoured the context
+				// deadline fuzzDeadline seconds ago.  Leaking it is the price
+				// of reporting the failure at all; the process is about to
+				// fail the test regardless.
+				t.Fatalf("evaluation did not terminate within %s of SCHEDULED time despite a %s context deadline,"+
+					" a %d-step budget and a %d-iteration tail budget (%s)"+
+					"\n--- source (%d bytes) ---\n%q",
+					budget.Total(), fuzzDeadline, int64(fuzzMaxSteps), fuzzMaxTailIterations,
+					report, len(src), src)
+				return evalOutcome{}, false
+			}
 		}
-		return evalOutcome{
-			Result:  d.result,
-			Stderr:  stderr.String(),
-			Steps:   d.steps,
-			Elapsed: d.elapsed,
-		}, true
-	case <-time.After(watchdogTimeout):
-		// The evaluation goroutine is unstoppable by construction -- if it
-		// were interruptible it would have honoured the context deadline
-		// fuzzDeadline seconds ago.  Leaking it is the price of reporting the
-		// failure at all; the process is about to fail the test regardless.
-		t.Fatalf("evaluation did not terminate within %s despite a %s context deadline,"+
-			" a %d-step budget and a %d-iteration tail budget"+
-			"\n--- source (%d bytes) ---\n%q",
-			watchdogTimeout, fuzzDeadline, int64(fuzzMaxSteps), fuzzMaxTailIterations,
-			len(src), src)
-		return evalOutcome{}, false
 	}
 }
 

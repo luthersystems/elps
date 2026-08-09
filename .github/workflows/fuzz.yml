@@ -137,6 +137,14 @@ jobs:
       - name: Fuzz gate self-test
         run: bash scripts/ci-gates-test.sh
 
+      # The complement: ci-gates-test proves the gate can FAIL, this proves it
+      # fails for the right REASON. A crasher, a seed-corpus failure, a panic, a
+      # signal death and the upstream -fuzztime race (issue #335) must each be
+      # reported as what they are, and only the last may be retried. Runs
+      # against a stub toolchain, so it is seconds and needs no fuzzing budget.
+      - name: Fuzz failure-classifier self-test
+        run: bash scripts/fuzz-classify-test.sh
+
       - name: List discovered targets
         run: ./scripts/fuzz.sh --list
 
@@ -161,16 +169,27 @@ jobs:
           # no error anywhere.
           key: fuzz-corpus-${{ matrix.shard }}-${{ github.sha }}
 
-      # A crash is only useful if the input survives the runner. go test writes
-      # it into <package>/testdata/fuzz/<Target>/, so upload that tree whenever
-      # the run failed; the file is committed as a regression case.
+      # A crash is only useful if the input survives the runner -- but only the
+      # NEW input is a crash. This used to upload `**/testdata/fuzz/**`, which
+      # is the entire COMMITTED corpus: the failing run on PR #330 uploaded 62
+      # files and had found nothing, and the presence of the artifact was read
+      # as proof that a crasher existed. An artifact that is always produced
+      # cannot be evidence.
+      #
+      # scripts/fuzz.sh now diffs each target's testdata/fuzz/<Target>/ around
+      # the run and copies only genuinely-new inputs into fuzz-crashers/, with a
+      # MANIFEST.tsv carrying the reproduce command. The hashFiles guard means
+      # the step is skipped -- visibly -- when nothing new was written, so
+      # "no artifact" positively means "no crasher was produced", and
+      # if-no-files-found: error catches fuzz.sh promising files it did not
+      # write.
       - name: Upload crashing inputs
-        if: failure()
+        if: failure() && hashFiles('fuzz-crashers/**') != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: fuzz-crashers-${{ github.run_id }}-shard${{ matrix.shard }}
-          path: "**/testdata/fuzz/**"
-          if-no-files-found: warn
+          path: fuzz-crashers/
+          if-no-files-found: error
           retention-days: 30
 
   # A STABLE check name over a matrix whose size may change.
