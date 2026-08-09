@@ -19,6 +19,12 @@ const (
 const (
 	CondContextCancelled  = "context-cancelled"
 	CondStepLimitExceeded = "step-limit-exceeded"
+
+	// CondEvalNestingExceeded reports that the evaluator recursed into
+	// itself more deeply than Runtime.MaxEvalNesting allows.  It is the
+	// recoverable substitute for a Go stack overflow, which is a
+	// runtime.throw that neither recover() nor handler-bind can intercept.
+	CondEvalNestingExceeded = "eval-nesting-exceeded"
 )
 
 // CondInternalPanic is the condition type of an error produced by recovering
