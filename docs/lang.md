@@ -1123,6 +1123,38 @@ depending on the shape of the loop.  It is **disabled by default**
 (`DefaultMaxLogicalStackHeight`, 0).  Callers who specifically want it can
 opt in with `lisp.WithMaximumLogicalStackHeight(n)`.
 
+**Sleep length** is the one limit whose unit is wall clock rather than work.
+Every limit above counts something the interpreter *does* — steps, frames,
+turns, bytes, nesting — and a sleeping goroutine does none of them, so
+`time:sleep` was bounded by none of them at once and
+`"9223372036854775807ns"` blocked for roughly 292 years.
+
+A single sleep is capped at one hour (`lisp.DefaultMaxSleep`).  Over that
+raises `sleep-limit-exceeded` **immediately**, without sleeping:
+
+```lisp
+(time:sleep (time:parse-duration "2h"))
+; sleep-limit-exceeded: sleep of 2h0m0s exceeds the maximum 1h0m0s
+
+(time:sleep (time:parse-duration "2h") :max (time:parse-duration "3h"))
+; sleeps, because the caller said so explicitly
+```
+
+`:max` makes an unusually long sleep visible at the call site instead of
+being an accident of arithmetic.  A host that does not trust the program can
+set a ceiling `:max` cannot exceed with `lisp.WithMaxSleep(d)` — program
+source may relax the default, only the host may relax the ceiling.
+
+A sleep that would outlast the context deadline is also refused immediately,
+with `context-cancelled`, rather than blocking until the deadline first: it
+could not have completed, so waiting would only burn the budget the caller
+has left to react in.  A sleep already under way is still interrupted if the
+context is cancelled.
+
+Note this bounds one call, not their sum — N sleeps just under the cap still
+block for N times the cap.  A context deadline is what bounds total elapsed
+time.
+
 Because tail calls are optimized, a correctly written tail-recursive loop
 runs in constant stack space for an unbounded number of iterations:
 

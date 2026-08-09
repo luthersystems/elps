@@ -27,6 +27,13 @@ const (
 	// recoverable substitute for a Go stack overflow, which is a
 	// runtime.throw that neither recover() nor handler-bind can intercept.
 	CondEvalNestingExceeded = "eval-nesting-exceeded"
+
+	// CondSleepLimitExceeded reports that a requested sleep was longer than
+	// the caller is allowed to sleep for, and was refused WITHOUT sleeping.
+	// It is distinct from context-cancelled: nothing was cancelled and no
+	// time passed, the request was rejected on entry.  See
+	// DefaultMaxSleep and Runtime.MaxSleep.
+	CondSleepLimitExceeded = "sleep-limit-exceeded"
 )
 
 // CondInternalPanic is the condition type of an error produced by recovering

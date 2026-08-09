@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sync/atomic"
+	"time"
 )
 
 // Runtime is an object underlying a family of tree of LEnv values.  It is
@@ -42,14 +43,15 @@ type Runtime struct {
 	Profiler               Profiler
 	Debugger               Debugger // nil = disabled (zero overhead on hot path)
 	conditionStack         []*LVal
-	MaxAlloc               int   // Per-operation allocation size cap (0 = use default). Not cumulative.
-	MaxMacroExpansionDepth int   // Maximum macro expansion iterations (0 = use default).
-	MaxEvalNesting         int   // Evaluator recursion depth cap (0 = use default, negative = disabled).
-	evalDepth              int   // Re-entrancy depth of top-level evaluation entry points.
-	evalNesting            int   // Current recursion depth of LEnv.eval (the Go-stack guard).
-	maxSteps               int64 // Per-evaluation step limit (0 = unlimited).
-	steps                  int64 // Steps consumed by the current top-level evaluation.
-	totalSteps             int64 // Steps consumed by all completed top-level evaluations.
+	MaxAlloc               int           // Per-operation allocation size cap (0 = use default). Not cumulative.
+	MaxMacroExpansionDepth int           // Maximum macro expansion iterations (0 = use default).
+	MaxEvalNesting         int           // Evaluator recursion depth cap (0 = use default, negative = disabled).
+	MaxSleep               time.Duration // Hard ceiling on a single time:sleep (0 or negative = none). See MaxSleepCeiling.
+	evalDepth              int           // Re-entrancy depth of top-level evaluation entry points.
+	evalNesting            int           // Current recursion depth of LEnv.eval (the Go-stack guard).
+	maxSteps               int64         // Per-evaluation step limit (0 = unlimited).
+	steps                  int64         // Steps consumed by the current top-level evaluation.
+	totalSteps             int64         // Steps consumed by all completed top-level evaluations.
 	numenv                 atomicCounter
 	numsym                 atomicCounter
 	macroExpSeq            int64 // monotonic counter for MacroExpansionInfo.ID
@@ -331,6 +333,47 @@ const (
 	DefaultMaxTailIterations      = 1000000
 	DefaultMaxEvalNesting         = 100000
 )
+
+// DefaultMaxSleep bounds a single (time:sleep d) that does not pass an
+// explicit :max, and is the last of the execution limits because it bounds
+// WALL CLOCK rather than work.
+//
+// Every other limit here counts something the interpreter does — steps,
+// frames, iterations, bytes, nesting. A sleeping goroutine does none of
+// them, which is why time:sleep was unbounded by all of them at once and
+// "9223372036854775807ns" blocked for ~292 years (issue #314). Bounding it
+// needs a wall-clock number, and there is no work-based limit that implies
+// one.
+//
+// One hour is chosen to be far above any plausible legitimate sleep in an
+// embedded interpreter — a backoff, a poll interval, a test delay are all
+// orders of magnitude below it — while still refusing the 292-year shape
+// immediately rather than after 292 years. A caller who genuinely wants
+// longer says so with :max, which is the point: the length becomes explicit
+// at the call site instead of being an accident of arithmetic.
+//
+// :max raises the per-call cap but CANNOT exceed Runtime.MaxSleep when the
+// embedder has set one. That split is deliberate. Program source and the
+// embedder are different trust domains: downstream (luthersystems/substrate)
+// the program is customer-supplied phylum running as chaincode, so a cap
+// that program source could raise would be decorative. DefaultMaxSleep is a
+// guard against accidents, which the program may relax; Runtime.MaxSleep is
+// a containment bound, which only the host may relax.
+const DefaultMaxSleep = time.Hour
+
+// MaxSleepCeiling returns the hard upper bound on a single sleep, or 0 when
+// the embedder has set none.  A negative Runtime.MaxSleep disables the bound
+// explicitly and is also reported as 0.
+//
+// This is the ceiling on what (time:sleep d :max m) may request, NOT the cap
+// applied when :max is absent — that is DefaultMaxSleep. See its doc comment
+// for why the two are separate.
+func (r *Runtime) MaxSleepCeiling() time.Duration {
+	if r.MaxSleep <= 0 {
+		return 0
+	}
+	return r.MaxSleep
+}
 
 // StandardRuntime returns a new Runtime with an empty package registry and
 // Stderr set to os.Stderr.
