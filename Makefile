@@ -133,6 +133,19 @@ fuzz:
 fuzz-list:
 	bash scripts/fuzz.sh --list
 
+# Prove the nightly sweep still fits its timeout:
+#
+#     ceil(targets / shards) x FUZZTIME + overhead <= timeout-minutes
+#
+# Every input is read from a source of truth — targets from the same discovery
+# the sweep uses, and shards / FUZZTIME / timeout-minutes from
+# .github/workflows/fuzz.yml — so the backstop cannot go stale as targets are
+# added. Run this instead of raising timeout-minutes by hand; it prints the
+# arithmetic and the options.
+.PHONY: fuzz-budget-check
+fuzz-budget-check:
+	bash scripts/fuzz-budget-check.sh
+
 # Self-test for the CI gate logic in scripts/. Run this after touching
 # scripts/benchstat-gate.sh, scripts/fuzz.sh, .github/workflows/benchmark.yml
 # or .github/workflows/fuzz.yml — it proves the benchmark regression gate and

@@ -834,6 +834,79 @@ if [ "${CI_GATES_SKIP_GO:-0}" = "1" ] || ! command -v go >/dev/null 2>&1; then
 		"go present: $(command -v go >/dev/null 2>&1 && echo yes || echo no))"
 	echo "SKIP  they run in .github/workflows/fuzz.yml, which sets up Go"
 else
+	# The derived budget gate. It reads real discovery plus the workflow, so
+	# it needs Go; the negative controls below drive it at a scratch copy of
+	# the workflow via FUZZ_WORKFLOW.
+	BUDGET="${SCRIPT_DIR}/fuzz-budget-check.sh"
+	assert_exit 0 "the nightly sweep fits its timeout as configured today" \
+		"$BUDGET"
+
+	budget_tmp="$(mktemp -d)"
+	budget_wf="${budget_tmp}/fuzz.yml"
+
+	# Each control reverts ONE property of the real workflow. A budget gate
+	# that has never been watched failing is worth nothing -- the value it
+	# guards went stale twice before this existed (120 sized for 10 targets
+	# when there were 12; 140 vs 165 when two branches each counted only their
+	# own additions).
+	cp "$FUZZ_WF" "$budget_wf"
+	sed -i 's/^    timeout-minutes: [0-9]*$/    timeout-minutes: 5/' "$budget_wf"
+	assert_exit 1 "a timeout too small for the sweep FAILS" \
+		env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+
+	cp "$FUZZ_WF" "$budget_wf"
+	sed -i 's/^        shard: \[.*\]$/        shard: [1]/' "$budget_wf"
+	assert_exit 1 "unsharding (one shard, whole sweep serial) FAILS" \
+		env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+
+	cp "$FUZZ_WF" "$budget_wf"
+	sed -i '/^    timeout-minutes: [0-9]*$/d' "$budget_wf"
+	assert_exit 2 "a fuzz job with NO timeout-minutes is unreadable, not fine" \
+		env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+
+	cp "$FUZZ_WF" "$budget_wf"
+	sed -i "s/'schedule' && '[0-9]*[smh]'/'schedule' \&\& 'BOGUS'/" "$budget_wf"
+	assert_exit 2 "an unparsable scheduled FUZZTIME is refused, not guessed" \
+		env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+
+	assert_exit 2 "a missing workflow is an error" \
+		env FUZZ_WORKFLOW="${budget_tmp}/nope.yml" "$BUDGET"
+
+	rm -rf "$budget_tmp"
+
+	# Sharding must be a PARTITION: every target in exactly one shard. A shard
+	# assignment that drops a target loses coverage silently, and one that
+	# duplicates a target just wastes budget.
+	shard_tmp="$(mktemp -d)"
+	"${SCRIPT_DIR}/fuzz.sh" --list 2>/dev/null | LC_ALL=C sort >"${shard_tmp}/full"
+	: >"${shard_tmp}/union"
+	for i in 1 2 3 4; do
+		"${SCRIPT_DIR}/fuzz.sh" --list --shard "${i}/4" 2>/dev/null >>"${shard_tmp}/union"
+	done
+	LC_ALL=C sort "${shard_tmp}/union" >"${shard_tmp}/union.sorted"
+	if diff -q "${shard_tmp}/full" "${shard_tmp}/union.sorted" >/dev/null; then
+		ok "the 4 shards are a partition of the full target list (no target lost)"
+	else
+		bad "sharding is not a partition — targets are lost or duplicated"
+		diff "${shard_tmp}/full" "${shard_tmp}/union.sorted" | sed 's/^/        | /'
+	fi
+	dupes=$(($(wc -l <"${shard_tmp}/union.sorted") - $(sort -u "${shard_tmp}/union.sorted" | wc -l)))
+	if [ "$dupes" -eq 0 ]; then
+		ok "no target is claimed by more than one shard"
+	else
+		bad "${dupes} target(s) appear in more than one shard"
+	fi
+	rm -rf "$shard_tmp"
+
+	# A shard spec that cannot be read must not silently run a SUBSET and exit
+	# 0 -- indistinguishable from a clean full sweep.
+	for bad_spec in "0/4" "5/4" "abc" "1/0"; do
+		assert_exit 2 "--shard ${bad_spec} is refused rather than guessed" \
+			"${SCRIPT_DIR}/fuzz.sh" --list --shard "$bad_spec"
+	done
+	assert_exit 2 "more shards than targets is an error, not an empty green run" \
+		"${SCRIPT_DIR}/fuzz.sh" --shard 99/99
+
 	# Discovery is dynamic, so it can silently discover nothing -- which would
 	# look exactly like a clean run.
 	assert_exit 2 "discovering ZERO targets is an error, not a clean run" \
@@ -896,6 +969,98 @@ else
 	bad "fuzz.yml does not set FUZZTIME — the PR path would take the default"
 fi
 
+if [ -n "$(invoked_in "$FUZZ_WF" 'scripts/fuzz-budget-check.sh')" ]; then
+	ok "fuzz.yml RUNS the derived budget check (timeout is not a remembered number)"
+else
+	bad "fuzz.yml does not run fuzz-budget-check.sh — timeout-minutes is unguarded again"
+fi
+
+# A required status check is matched by NAME. A job whose name interpolates a
+# matrix value changes name when the matrix is resized, so if such a name were
+# ever added to branch protection, resizing the matrix would leave a required
+# check that can never report and every PR would be unmergeable until someone
+# edited repo settings. Every matrix job therefore needs a fixed-name
+# aggregate job downstream of it, and that is the name to require.
+stable_out="$(python3 - "$REPO_ROOT" <<'PY_INNER'
+import glob, os, sys
+
+root = sys.argv[1]
+try:
+    import yaml
+except ImportError:
+    print("__SKIP__ pyyaml unavailable")
+    sys.exit(0)
+
+failures, passes = [], []
+for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))):
+    base = os.path.basename(f)
+    try:
+        doc = yaml.safe_load(open(f))
+    except Exception:  # noqa: BLE001
+        continue
+    if not isinstance(doc, dict):
+        continue
+    # Only a check that runs on pull_request can be listed as a REQUIRED
+    # status check, so a tag/release workflow's matrix names cannot cause the
+    # rename trap. `on` parses as the boolean True in YAML 1.1.
+    triggers = doc.get("on", doc.get(True)) or {}
+    if isinstance(triggers, str):
+        triggers = {triggers: None}
+    if isinstance(triggers, list):
+        triggers = {t: None for t in triggers}
+    if "pull_request" not in triggers:
+        continue
+
+    jobs = doc.get("jobs") or {}
+    for jid, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        if not (job.get("strategy") or {}).get("matrix"):
+            continue
+        name = str(job.get("name") or jid)
+        if "${{" not in name:
+            passes.append(f"{base}: matrix job {jid!r} has a fixed name; safe to require directly")
+            continue
+        # find a fixed-name job that depends on this one
+        def needs_of(j):
+            n = j.get("needs")
+            if isinstance(n, str):
+                return [n]
+            return list(n or [])
+        agg = [f"{k}" for k, v in jobs.items()
+               if isinstance(v, dict) and jid in needs_of(v)
+               and "${{" not in str(v.get("name") or k)]
+        if agg:
+            passes.append(f"{base}: matrix job {jid!r} is fronted by fixed-name job(s) {agg}")
+        else:
+            failures.append(
+                f"{base}: matrix job {jid!r} has an interpolated name ({name!r}) and no "
+                f"fixed-name aggregate job depends on it. Resizing the matrix renames the "
+                f"check, and a renamed REQUIRED check can never report."
+            )
+
+for p in passes:
+    print(f"PASS  {p}")
+for f_ in failures:
+    print(f"FAIL  {f_}")
+print(f"__COUNTS__ {len(passes)} {len(failures)}")
+PY_INNER
+)"
+case "$stable_out" in
+	__SKIP__*) echo "SKIP  stable-check-name guard ($stable_out)" ;;
+	*)
+		echo "$stable_out" | grep -v '^__COUNTS__' || true
+		stable_counts="$(echo "$stable_out" | sed -n 's/^__COUNTS__ //p')"
+		if [ -n "$stable_counts" ]; then
+			read -r st_pass st_fail <<<"$stable_counts"
+			pass=$((pass + st_pass))
+			fail=$((fail + st_fail))
+		else
+			bad "stable-check-name guard did not run"
+		fi
+		;;
+esac
+
 echo
 echo "== shell lint on the scripts this suite owns ============================="
 
@@ -903,6 +1068,7 @@ OWNED_SCRIPTS=(
 	"${SCRIPT_DIR}/bench-arms-check.sh"
 	"${SCRIPT_DIR}/benchstat-gate.sh"
 	"${SCRIPT_DIR}/ci-gates-test.sh"
+	"${SCRIPT_DIR}/fuzz-budget-check.sh"
 	"${SCRIPT_DIR}/fuzz.sh"
 )
 

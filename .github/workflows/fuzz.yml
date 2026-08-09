@@ -61,34 +61,38 @@ permissions:
 
 jobs:
   fuzz:
-    name: Fuzz targets
+    name: Fuzz shard ${{ matrix.shard }}/4
     runs-on: ubuntu-latest
-    # A BACKSTOP, NOT A BUDGET -- and the number must not be read as an
-    # accurate target count.  Discovery is dynamic (scripts/fuzz.sh enumerates
-    # targets at run time), so a new target silently costs another FUZZTIME on
-    # the nightly sweep, and a value sized for yesterday's count truncates the
-    # sweep with the last targets never executing at all.
+    strategy:
+      # Sharded so wall clock is set by the LARGEST shard rather than by the
+      # total. Serial, the nightly sweep cost (targets x FUZZTIME) grew every
+      # time a target was added, and the backstop below was a number somebody
+      # had to remember to recompute. It went stale twice: 120 sized for 10
+      # targets when there were 12, and 140 vs 165 when two branches each
+      # counted only their own additions.
+      #
+      # The shard COUNT here is the single source of truth -- scripts/fuzz.sh
+      # takes `--shard i/n` and assigns round-robin over the sorted target
+      # list, and scripts/fuzz-budget-check.sh reads this matrix to derive the
+      # timeout below. Adding a shard is a one-line change and the gate
+      # re-derives.
+      #
+      # fail-fast off: one shard finding a crasher must not cancel the others,
+      # or a single failure costs the whole night's coverage.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    # DERIVED, not remembered. scripts/fuzz-budget-check.sh asserts
     #
-    # Re-derive rather than trusting this literal: `make fuzz-list` prints the
-    # targets actually discovered on the current tree.  The arithmetic is
-    # (targets that really fuzz) x FUZZTIME + build + corpus cache restore.
-    # FuzzGateSelfTest is inert unless armed and does not count.
+    #     ceil(targets / shards) x FUZZTIME + overhead <= timeout-minutes
     #
-    # 180 is sized for the fully-landed round-2 state: main carries 11
-    # targets, the evaluator work adds FuzzEval, the stdlib work adds
-    # FuzzApplyStdlib / FuzzDumpJSON / FuzzSchemaValidate, and retiring
-    # regexparser removes FuzzParseLVal -- 14 that really fuzz, so 14 x 10m =
-    # 140 minutes plus overhead.  It is deliberately above every intermediate
-    # merge order as well, because over-provisioning a backstop costs nothing
-    # while under-provisioning drops coverage silently.
+    # on every PR, so this number cannot silently stop covering the sweep. At
+    # 15 targets over 4 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
+    # worth of headroom for a target being added before anyone reshards.
     #
-    # Measured PR-path cost (FUZZTIME=30s, 4-core linux/amd64): the whole
-    # sweep is ~6 minutes; FuzzEval 32s, FuzzApplyStdlib 33s, FuzzDumpJSON
-    # 33s, FuzzSchemaValidate 34s.
-    #
-    # The durable fix is a derived gate asserting
-    # (target count x nightly budget) <= timeout-minutes -- tracked in #320.
-    timeout-minutes: 180
+    # Do not raise this by hand to make a red gate green -- run
+    # `make fuzz-budget-check`, which prints the arithmetic and the options.
+    timeout-minutes: 60
     env:
       # 30s on a PR, 10m on the nightly schedule, whatever was asked for on a
       # manual dispatch. The PR budget is intentionally small: this job is a
@@ -120,8 +124,10 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
         with:
           path: ~/.cache/go-build/fuzz
-          key: fuzz-corpus-${{ github.sha }}
-          restore-keys: fuzz-corpus-
+          key: fuzz-corpus-${{ matrix.shard }}-${{ github.sha }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.shard }}-
+            fuzz-corpus-
 
       # The Go-backed half of the fuzz gate's own self-test: dynamic discovery
       # really finds the targets, and an armed FuzzGateSelfTest really turns
@@ -134,8 +140,13 @@ jobs:
       - name: List discovered targets
         run: ./scripts/fuzz.sh --list
 
+      # Whole-sweep budget arithmetic, run once per shard because it is
+      # sub-second and must not depend on a shard succeeding.
+      - name: Fuzz budget check
+        run: ./scripts/fuzz-budget-check.sh
+
       - name: Fuzz
-        run: ./scripts/fuzz.sh
+        run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/4
 
       # Only from main/schedule: a corpus grown from an unmerged branch would
       # otherwise be handed to every other PR.
@@ -144,7 +155,11 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
         with:
           path: ~/.cache/go-build/fuzz
-          key: fuzz-corpus-${{ github.sha }}
+          # Shard-scoped, matching the restore key. A single key shared by four
+          # shards means the first write wins and the other three are discarded
+          # -- three quarters of the night's coverage growth thrown away, with
+          # no error anywhere.
+          key: fuzz-corpus-${{ matrix.shard }}-${{ github.sha }}
 
       # A crash is only useful if the input survives the runner. go test writes
       # it into <package>/testdata/fuzz/<Target>/, so upload that tree whenever
@@ -153,7 +168,42 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
-          name: fuzz-crashers-${{ github.run_id }}
+          name: fuzz-crashers-${{ github.run_id }}-shard${{ matrix.shard }}
           path: "**/testdata/fuzz/**"
           if-no-files-found: warn
           retention-days: 30
+
+  # A STABLE check name over a matrix whose size may change.
+  #
+  # Sharding renames the job that actually does the work -- "Fuzz targets"
+  # became "Fuzz shard 1/4" and friends. A required status check is matched by
+  # NAME, so if "Fuzz targets" had been in the branch-protection required list,
+  # that rename would have left a required check that can never report, and
+  # every PR would be unmergeable until someone edited repo settings. Adding a
+  # shard later would do the same thing again.
+  #
+  # So the shards stay anonymous and this job carries the stable name. It is
+  # the one to put in required checks: it passes only if every shard passed,
+  # and its name does not move when the matrix is resized.
+  #
+  # `always()` because a skipped or cancelled shard must not let this report
+  # success by default -- `needs` alone would skip this job too, and a skipped
+  # required check reads as green.
+  fuzz-result:
+    name: Fuzz targets
+    runs-on: ubuntu-latest
+    needs: fuzz
+    if: always()
+    steps:
+      - name: Check shard results
+        env:
+          RESULT: ${{ needs.fuzz.result }}
+        run: |
+          echo "fuzz matrix result: ${RESULT}"
+          # success is the only pass. failure, cancelled and skipped all mean
+          # the sweep did not demonstrably run to completion.
+          if [ "${RESULT}" != "success" ]; then
+            echo "::error::The fuzz sweep did not succeed (matrix result: ${RESULT}). Open the individual shard jobs for the failing target."
+            exit 1
+          fi
+          echo "All fuzz shards passed."
