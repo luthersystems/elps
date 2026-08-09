@@ -262,6 +262,52 @@ For convenience, `lisplib.NewDocEnv()` creates a standard environment with the
 stdlib loaded. Embedders can use this as a starting point or create their own
 environment from scratch.
 
+### MCP Server Environments
+
+The `mcpserver` package exposes ELPS language tooling over MCP. Its `doc`,
+`eval`, and `test` tools each need an environment, which the embedder supplies
+with `mcpserver.WithRequestEnvFactory`:
+
+```go
+srv := mcpserver.New(
+    mcpserver.WithRegistry(env.Runtime.Registry),
+    mcpserver.WithWorkspaceRoot(root),
+    mcpserver.WithRequestEnvFactory(func(ctx context.Context) (*lisp.LEnv, func(), error) {
+        env, closeEnv, err := NewRuntime(ctx) // embedder runtime, may own a DB, files, goroutines
+        if err != nil {
+            return nil, nil, err // the factory cleans up after its own failure
+        }
+        return env, closeEnv, nil
+    }),
+)
+```
+
+The server calls `release` exactly once, as soon as it is finished with the
+environment — before the tool handler returns, and per environment in batch
+`eval`, so peak usage stays at one environment rather than one per expression.
+Do not tie the environment's lifetime to `ctx` alone: the request context is
+cancelled only after the response is written, and it outlives every individual
+environment a batch request builds. The context is there for the request's
+deadline and for correlating an environment with its request.
+
+An environment that owns nothing beyond memory can return a `nil` release; the
+server treats it as a no-op.
+
+`WithEnvFactory(func() (*lisp.LEnv, error))` is the older form of the same
+option and is deprecated: it has no way to signal that an environment is
+finished with, so environments backed by OS resources or background goroutines
+accumulate for the life of the process.
+
+Two related options control which environment a tool sees:
+
+| Option | Effect |
+|--------|--------|
+| `mcpserver.WithDocEnv(env)` | One shared, reusable environment for the read-only `doc` tool. Documentation lookup is a symbol query, so it needs no per-request isolation. Never released by the server. |
+| `mcpserver.WithEnv(env)` | Backs `doc` *and* the diagnostics path (workspace macro loading and expansion). Use `WithDocEnv` when only the `doc` tool should be redirected. |
+
+For the `doc` tool the precedence is `WithDocEnv`, then `WithEnv`, then the
+request env factory, then a default stdlib documentation environment.
+
 ### Reusing the CLI Commands (Recommended)
 
 The `cmd` package exports `LintCommand()` and `DocCommand()` factory functions
