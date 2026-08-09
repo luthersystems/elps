@@ -37,6 +37,11 @@ func TestAssertNotSingleton_AllowsNonSingleton(t *testing.T) {
 }
 
 func TestSingletonSnapshot_DetectsMutation(t *testing.T) {
+	// This test writes to a singleton on purpose. Pause the write
+	// watchdog so the deliberate mutation is ordered against its reads
+	// and does not show up as a data race under `make race`.
+	defer pauseSingletonWatchdog()()
+
 	// Save originals so we can restore after the test — TestMain
 	// snapshot will verify singletons are intact at suite end.
 	origSource := singletonTrue.Source

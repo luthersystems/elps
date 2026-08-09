@@ -77,6 +77,13 @@ func TakeSingletonSnapshot() SingletonSnapshot {
 // Verify compares the current singleton state to the snapshot. If any
 // singleton has drifted it returns the name of the offender; otherwise
 // it returns the empty string.
+//
+// Verify detects drift in VALUES. A write that stores the value a field
+// already holds leaves no drift and Verify reports nothing, even though
+// such a write still races with every concurrent reader — that was issue
+// #333. Do not read an empty return as "no code mutated a singleton".
+// See the "What this does NOT catch" section on checkSingleton in
+// singleton_check_elpscheck.go for what covers that case.
 func (s SingletonSnapshot) Verify() string {
 	if !singletonLValEqual(&s.nilV, singletonNil) {
 		return "Nil()"
