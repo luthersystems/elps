@@ -276,7 +276,7 @@ func (p *Parser) ParseLiteralFloat() *lisp.LVal {
 	text := p.TokenText()
 	x, err := strconv.ParseFloat(text, 64)
 	if err != nil {
-		return p.errorf("invalid-float", "invalid floating point literal: %v", text)
+		return p.errorf(lisp.CondInvalidFloat, "invalid floating point literal: %v", text)
 	}
 	v := p.Float(x)
 	if p.preserveFormat && v.Meta != nil {
@@ -292,7 +292,7 @@ func (p *Parser) ParseLiteralString() *lisp.LVal {
 	text := p.TokenText()
 	s, err := strconv.Unquote(text)
 	if err != nil {
-		return p.errorf("invalid-float", "invalid string literal: %v", text)
+		return p.errorf(lisp.CondInvalidString, "invalid string literal: %v", text)
 	}
 	v := p.String(s)
 	if p.preserveFormat && v.Meta != nil {

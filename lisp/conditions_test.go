@@ -46,5 +46,7 @@ func TestConditionConstants(t *testing.T) {
 	assert.Equal(t, "invalid-symbol", CondInvalidSymbol)
 	assert.Equal(t, "invalid-octal-literal", CondInvalidOctalLiteral)
 	assert.Equal(t, "invalid-hex-literal", CondInvalidHexLiteral)
+	assert.Equal(t, "invalid-float", CondInvalidFloat)
+	assert.Equal(t, "invalid-string", CondInvalidString)
 	assert.Equal(t, "integer-overflow-error", CondOverflow)
 }

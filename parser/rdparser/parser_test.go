@@ -298,6 +298,25 @@ func TestCondition_InvalidHexLiteral(t *testing.T) {
 	assert.Equal(t, lisp.CondInvalidHexLiteral, parseErrorCondition(t, "#xG"))
 }
 
+// A float literal the lexer accepts but strconv.ParseFloat rejects (out of
+// range) reports invalid-float.  Pinned as a companion to
+// TestCondition_InvalidString: the string path used to report this same
+// condition, so the fix for issue #317 has to leave THIS path alone.
+func TestCondition_InvalidFloat(t *testing.T) {
+	assert.Equal(t, lisp.CondInvalidFloat, parseErrorCondition(t, "1e999"))
+}
+
+// A string literal the lexer accepts but strconv.Unquote rejects (bad escape)
+// reports invalid-string.  Regression test for issue #317: ParseLiteralString
+// raised invalid-float here, copy-pasted from the neighbouring float path.
+//
+// The lexer deliberately defers escape validation to the parser ("Wait until
+// parsing to check the escaped character" in lexer.go), which is what makes
+// this path reachable at all.
+func TestCondition_InvalidString(t *testing.T) {
+	assert.Equal(t, lisp.CondInvalidString, parseErrorCondition(t, `"\q"`))
+}
+
 func TestCondition_ParseError(t *testing.T) {
 	assert.Equal(t, lisp.CondParseError, parseErrorCondition(t, "#!/usr/bin/env elps\n#!/usr/bin/env foo\n"))
 }
