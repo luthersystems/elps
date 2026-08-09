@@ -26,6 +26,29 @@ number.
 
 Symbols are currently case sensitive although this may change.
 
+A symbol may also be written in its package-qualified form, `pkg:name` (see
+[Packages](#packages)).  Both halves are identifiers and the rule above applies
+to each of them independently, so `a:1` is not a symbol: the reader rejects it
+with an `invalid-symbol` condition rather than producing a symbol named `1` in
+package `a`, a name no other part of the language can write.  Note that `+1`
+and `.1` *are* identifiers — `+` and `.` are ordinary symbol characters — so
+`a:+1` and `a:.1` are both fine.
+
+### Keywords
+
+A symbol written with a leading colon and no package, `:name`, is a *keyword*.
+
+Keywords are values, not identifiers.  A keyword evaluates to itself, is never
+looked up in a package, and cannot be assigned to — `(set ':k 1)` is an error.
+Because a keyword names no binding, the "identifiers cannot start with a
+number" rule does not apply to it: `:1` is an ordinary keyword whose name is
+`1`, in the same way that `:foo` is one whose name is `foo`.
+
+Keywords are used to label [keyword arguments](#keyword-arguments), and a
+keyword only matches a formal argument spelled the same way.  A keyword whose
+name is not also a legal identifier therefore cannot match any formal argument,
+so `:1` is only useful as data.
+
 ### Numbers
 
 Numbers can be either int or floating point and will be converted between the
@@ -640,6 +663,10 @@ of whether it was exported.
 NOTE:  Qualified access (`pkg:sym`) works for all symbols in a package, not
 just exported ones.  Exports only control what `use-package` imports into the
 caller's namespace — they do not restrict visibility.
+
+NOTE:  Both halves of a qualified symbol must be [identifiers](#symbols).
+Qualified access is another way to spell a name, not a way to introduce one
+that could not be written unqualified, so `a:1` is rejected by the reader.
 
 Scheme-like symbol bindings and assignment are also possible using the `define`
 and `set!` operators.

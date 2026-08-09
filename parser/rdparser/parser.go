@@ -52,6 +52,7 @@ const DefaultMaxParseDepth = 10000
 // Parser is a lisp parser.
 type Parser struct {
 	src             *TokenSource
+	nameReadback    map[string]bool
 	pendingComments []*token.Token
 	depth           int
 	maxDepth        int
@@ -394,7 +395,7 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 	// wrong layer to ask: "--" and "-a" lex as NEGATIVE, and only become
 	// symbols when ParseNegative merges them. A token-level guard rejects
 	// those valid names; re-reading through the parser gets them right.
-	if !readsBackAsSymbol(name.Str) {
+	if !p.readsBackAsSymbol(name.Str) {
 		return p.errorf("parse-error",
 			"invalid symbol following #': %q does not read back as a symbol", name.Str)
 	}
@@ -598,6 +599,39 @@ func (p *Parser) ParseSymbol() *lisp.LVal {
 	}
 	if len(pieces) == 2 && pieces[1] == "" {
 		return p.errorf("invalid-symbol", "invalid symbol %q", tok.Text)
+	}
+	// A package-qualified symbol NAMES A BINDING: "pkg:name" is the qualified
+	// spelling of the symbol "name" inside package "pkg", so both halves have
+	// to be names the reader gives back as symbols on their own.
+	//
+	// They were not checked, and "a:1" was the result -- the symbol named "1"
+	// in package "a". Nothing else in the language can write that name: a bare
+	// 1 is an INT, and docs/lang.md has said since the beginning that
+	// identifiers cannot start with a number. The binding it creates is
+	// reachable only through the qualified spelling and can never be imported
+	// usefully by use-package, so it is a trap rather than a capability.
+	//
+	// This is the same defect as "#'0", recorded in lexer.readFunRef: isWord
+	// is the CONTINUATION rune class and admits digits, and readSymbol gets
+	// away with using it only because it is entered after isWordStart or ':'
+	// has already matched. Matching ':' is what admits the digit here. The
+	// fix is deliberately the same one ParseFunRef got -- re-read the name and
+	// require a symbol back -- rather than a second, differently-worded rune
+	// test. Re-reading also states the requirement exactly: it accepts "+1"
+	// and ".1", which ARE writable as bare symbols, and it keeps working if
+	// the number syntax changes. Issue #319.
+	//
+	// A LEADING ':' IS NOT COVERED, deliberately: ":1" is a keyword, and a
+	// keyword names no binding. It is a self-evaluating literal that PutGlobal
+	// explicitly refuses to bind, so the rule above has nothing to say about
+	// it. See docs/lang.md, "Keywords".
+	if len(pieces) == 2 && pieces[0] != "" {
+		for _, piece := range pieces {
+			if !p.readsBackAsSymbol(piece) {
+				return p.errorf("invalid-symbol",
+					"invalid symbol %q: %q does not read back as a symbol", tok.Text, piece)
+			}
+		}
 	}
 	return p.Symbol(tok.Text)
 }
@@ -935,19 +969,48 @@ func (p *Parser) PendingComments() []*token.Token {
 	return p.pendingComments
 }
 
+// readsBackAsSymbol memoizes readsBackAsSymbol over the lifetime of p.
+//
+// The predicate is a pure function of the string, and source repeats names:
+// substrate's phylum sources hold thousands of qualified-symbol occurrences
+// drawn from ~200 distinct names, and ParseSymbol asks about both halves of
+// every one of them. Without the cache the check costs +18% on the wall clock
+// of parsing that corpus; with it the sub-parse runs once per distinct name
+// per file.
+func (p *Parser) readsBackAsSymbol(s string) bool {
+	if ok, seen := p.nameReadback[s]; seen {
+		return ok
+	}
+	ok := readsBackAsSymbol(s)
+	if p.nameReadback == nil {
+		p.nameReadback = make(map[string]bool)
+	}
+	p.nameReadback[s] = ok
+	return ok
+}
+
 // readsBackAsSymbol reports whether s, parsed on its own, yields exactly one
 // expression and that expression is a symbol named s.
 //
-// Used to reject #' operands that cannot survive the round trip through the
-// printer. Re-parsing rather than pattern-matching the name states the
-// requirement exactly: an earlier attempt used strconv.ParseInt/ParseFloat and
-// was wrong, because "-1abc" is not a number by either yet still reads back as
-// an INT. Re-parsing also stays correct if the number syntax ever changes.
+// Used by ParseFunRef to reject #' operands that cannot survive the round trip
+// through the printer, and by ParseSymbol to reject either half of a
+// package-qualified symbol that is not a name (issue #319). Re-parsing rather
+// than pattern-matching the name states the requirement exactly: an earlier
+// attempt used strconv.ParseInt/ParseFloat and was wrong, because "-1abc" is
+// not a number by either yet still reads back as an INT. Re-parsing also stays
+// correct if the number syntax ever changes.
+//
+// s never contains a ':' at either call site -- ParseSymbol has already split
+// on it and rejected any symbol with more than one -- so the ParseSymbol call
+// below cannot recurse back into here.
 func readsBackAsSymbol(s string) bool {
 	if s == "" {
 		return false
 	}
-	exprs, err := New(token.NewScanner("", strings.NewReader(s))).ParseProgram()
+	// NewScannerString, not NewScanner: this runs once per #' operand and
+	// twice per package-qualified symbol, and NewScanner charges a 128KiB
+	// sliding window per call regardless of how few bytes it scans.
+	exprs, err := New(token.NewScannerString("", s)).ParseProgram()
 	if err != nil || len(exprs) != 1 {
 		return false
 	}
