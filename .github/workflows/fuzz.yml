@@ -61,7 +61,7 @@ permissions:
 
 jobs:
   fuzz:
-    name: Fuzz shard ${{ matrix.shard }}/4
+    name: Fuzz shard ${{ matrix.shard }}/5
     runs-on: ubuntu-latest
     strategy:
       # Sharded so wall clock is set by the LARGEST shard rather than by the
@@ -81,14 +81,25 @@ jobs:
       # or a single failure costs the whole night's coverage.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     # DERIVED, not remembered. scripts/fuzz-budget-check.sh asserts
     #
     #     ceil(targets / shards) x FUZZTIME + overhead <= timeout-minutes
     #
     # on every PR, so this number cannot silently stop covering the sweep. At
-    # 15 targets over 4 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
+    # 17 targets over 5 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
     # worth of headroom for a target being added before anyone reshards.
+    #
+    # THE HEADROOM IS THE POINT, NOT THE GREEN TICK. The gate's condition is
+    # `needed > timeout`, so a sweep sized at exactly timeout-minutes PASSES --
+    # while being the silently-truncated run the gate exists to prevent, since
+    # observed shard durations already vary from 4m25s to 5m42s. Adding the
+    # 17th target (lsp.FuzzLSPSession) took 4 shards to ceil(17/4) = 5 x 10m +
+    # 10m = 60 min against a 60-minute timeout: zero headroom, reported as
+    # "the sweep fits". A fifth shard puts the largest shard back at 4 targets
+    # and restores the 10 minutes. Prefer adding a shard to raising the
+    # timeout: shards are parallel, so it cuts wall clock instead of extending
+    # the backstop.
     #
     # Do not raise this by hand to make a red gate green -- run
     # `make fuzz-budget-check`, which prints the arithmetic and the options.
@@ -154,7 +165,7 @@ jobs:
         run: ./scripts/fuzz-budget-check.sh
 
       - name: Fuzz
-        run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/4
+        run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/5
 
       # Only from main/schedule: a corpus grown from an unmerged branch would
       # otherwise be handed to every other PR.
