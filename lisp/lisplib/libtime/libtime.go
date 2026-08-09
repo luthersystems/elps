@@ -369,11 +369,11 @@ func BuiltinSleep(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // the wait at the remaining time before the deadline.
 //
 // The deadline cap is belt-and-braces alongside the ctx.Done() select, not a
-// substitute for it.  A context.Context may legally report a Deadline while
-// returning a nil Done channel (context.WithoutCancel over a deadline-bearing
-// parent used to be the awkward case, and custom implementations still are),
-// and selecting on a nil channel blocks forever -- exactly the bug being
-// fixed.  Capping the timer means the wait ends at the deadline either way.
+// substitute for it.  The Context interface permits an implementation to
+// report a Deadline while returning a nil Done channel; the stdlib's own
+// types do not, but wrappers written by embedders can, and selecting on a nil
+// channel blocks forever -- exactly the bug being fixed.  Capping the timer
+// means the wait ends at the deadline either way.
 //
 // WHAT DOES NOT CHANGE.  When the context has neither a Done channel nor a
 // deadline -- which is the default, context.Background(), for every embedder
