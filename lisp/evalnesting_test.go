@@ -39,7 +39,7 @@ import (
 // not apply.
 func nestedCallGo(depth int) *lisp.LVal {
 	v := lisp.Int(1)
-	for i := 0; i < depth; i++ {
+	for range depth {
 		v = lisp.SExpr([]*lisp.LVal{lisp.Symbol("identity"), v})
 	}
 	return v

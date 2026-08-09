@@ -101,13 +101,13 @@ func (r *Runtime) EvalNesting() int {
 // counter the caller has already incremented, with no function call in the
 // common case (it inlines).
 func (r *Runtime) evalNestingExceeded() bool {
-	max := r.MaxEvalNesting
-	if max == 0 {
-		max = DefaultMaxEvalNesting
-	} else if max < 0 {
+	limit := r.MaxEvalNesting
+	if limit == 0 {
+		limit = DefaultMaxEvalNesting
+	} else if limit < 0 {
 		return false
 	}
-	return r.evalNesting > max
+	return r.evalNesting > limit
 }
 
 // CheckAlloc returns a non-empty error message if n exceeds the per-operation
