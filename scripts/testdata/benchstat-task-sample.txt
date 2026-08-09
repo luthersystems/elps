@@ -1,0 +1,8 @@
+goos: linux
+goarch: amd64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Intel(R) Xeon(R) Processor @ 2.80GHz
+        │     base     │                 pr                 │
+        │    sec/op    │    sec/op     vs base              │
+Eval-4     1.000µ ± 2%   1.500µ ± 3%  +50.00% (p=0.000 n=10)
+geomean    1.414µ        1.737µ       +22.83%

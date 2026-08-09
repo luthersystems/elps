@@ -541,6 +541,12 @@ func TestWorkspaceTraversalErrorsAreLoggedAndSkipped(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission-based traversal failure is not reliable on windows")
 	}
+	// Root (and any process holding CAP_DAC_OVERRIDE) bypasses the mode-0
+	// directory permission this test relies on, so the traversal succeeds and
+	// no "unreadable path" is ever logged. Common in CI/dev containers.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode-0 directory permissions do not block traversal")
+	}
 
 	tmp := t.TempDir()
 	writeTestFile(t, filepath.Join(tmp, "ok.lisp"), `(defun ok () 1)`)
@@ -640,21 +646,21 @@ func TestWorkspaceValidationRaceSafety(t *testing.T) {
 
 	// Concurrently read and mark validated — should not race with -race flag.
 	done := make(chan struct{})
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go func() {
 			defer func() { done <- struct{}{} }()
-			for j := 0; j < 50; j++ {
+			for range 50 {
 				_, _ = srv.service.workspace(tmp)
 			}
 		}()
 		go func() {
 			defer func() { done <- struct{}{} }()
-			for j := 0; j < 50; j++ {
+			for range 50 {
 				srv.service.markWorkspaceValidated(tmp)
 			}
 		}()
 	}
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		<-done
 	}
 }
@@ -1660,9 +1666,9 @@ func TestWordAtPosition(t *testing.T) {
 func TestPaginateSlice(t *testing.T) {
 	items := []int{1, 2, 3, 4, 5}
 	tests := []struct {
-		name           string
-		offset, limit  int
-		wantLen        int
+		name          string
+		offset, limit int
+		wantLen       int
 	}{
 		{"no pagination", 0, 0, 5},
 		{"limit only", 0, 3, 3},

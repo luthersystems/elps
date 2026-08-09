@@ -74,8 +74,8 @@ func TestRunAnalyze_DefaultExcludesTestFiles(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 0, code)
-	assert.Equal(t, "", stdout.String())
-	assert.Equal(t, "", stderr.String())
+	assert.Empty(t, stdout.String())
+	assert.Empty(t, stderr.String())
 }
 
 func TestRunAnalyze_IncludeTestsFlagIncludesTestFiles(t *testing.T) {

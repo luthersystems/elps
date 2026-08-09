@@ -3,6 +3,7 @@
 package token
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -163,7 +164,7 @@ func (s *Scanner) Err() error {
 	if s.readErr == nil {
 		return nil
 	}
-	if s.readErr == io.EOF {
+	if errors.Is(s.readErr, io.EOF) {
 		return nil
 	}
 	if len(s.buf) == s.next {
@@ -189,7 +190,7 @@ func (s *Scanner) EOF() bool {
 	if s.readErr == nil {
 		return false
 	}
-	if s.readErr != io.EOF {
+	if !errors.Is(s.readErr, io.EOF) {
 		return false
 	}
 	return s.next >= len(s.buf)
@@ -310,10 +311,23 @@ func (s *Scanner) AcceptString(literal string) (int, bool) {
 }
 
 func (s *Scanner) checkRuneError() error {
-	if s.c.IsRuneError() {
-		return fmt.Errorf("invalid utf-8 sequence in source text starting with byte %q", s.buf[s.pos])
+	if !s.c.IsRuneError() {
+		return nil
 	}
-	return nil
+	// s.pos indexes the current rune within buf, but buf is a sliding window.
+	// Ignore() moves start past the current rune, and the next extend() then
+	// discards everything before start -- which leaves pos pointing before the
+	// start of the buffer.  The offending byte is simply no longer buffered,
+	// so report the error without quoting it rather than indexing out of
+	// range.
+	//
+	// Found by FuzzParseProgramFaultTolerant on the two-byte input
+	// "\xe4\xb8" (a truncated three-byte UTF-8 sequence): the second
+	// ReadToken panicked with "index out of range [-1]".
+	if s.pos < 0 || s.pos >= len(s.buf) {
+		return errors.New("invalid utf-8 sequence in source text")
+	}
+	return fmt.Errorf("invalid utf-8 sequence in source text starting with byte %q", s.buf[s.pos])
 }
 
 // LocStart returns a Location referencing the beginning of the current token,
@@ -355,7 +369,7 @@ func (s *Scanner) checkExtend() error {
 	if s.next == len(s.buf) {
 		// If this is happening then we haven't seen EOF and the extension
 		// routine was unable to do anything to extend the buffer.
-		return fmt.Errorf("token exceeds maximum allowable size")
+		return errors.New("token exceeds maximum allowable size")
 	}
 	return nil
 }
@@ -376,7 +390,7 @@ func (s *Scanner) extend() bool {
 }
 
 func (s *Scanner) fill(end int) {
-	if s.readErr == io.EOF {
+	if errors.Is(s.readErr, io.EOF) {
 		s.buf = s.buf[:end]
 	}
 	n, err := io.ReadFull(s.r, s.buf[end:])

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -120,7 +121,7 @@ func (r *Renderer) writeSpan(ew *errWriter, span Span, p palette) {
 		return
 	}
 
-	lineStr := fmt.Sprintf("%d", span.Line)
+	lineStr := strconv.Itoa(span.Line)
 	pad := strings.Repeat(" ", len(lineStr))
 
 	// Empty gutter line

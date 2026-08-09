@@ -4,84 +4,282 @@ on:
   pull_request:
     branches:
       - main
-  push:
-    branches:
-      - main
+      # Stacked PRs. Multi-part work here is reviewed as a chain of PRs
+      # whose base is another claude/* branch. This filter matches the
+      # PR's BASE, so with `main` alone none of these workflows fired on
+      # such a PR -- and a board showing only the two branch-agnostic
+      # Socket checks reads as a pass when in fact nothing ran.
+      - 'claude/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  BENCH_COUNT: "5"
+  # 10, not benchstat's bare minimum of 6. Below 6 benchstat cannot compute a
+  # confidence interval at all and prints "need >= 6 samples"; at 5 the
+  # Mann-Whitney p-value floors at 0.008, which means only "every sample
+  # ranked one way" and is exactly how environment bias masquerades as
+  # significance. This was previously pinned at 5 and could not be raised,
+  # because the cached baseline had been recorded at 5 and benchstat will not
+  # pair arms of unequal sample count. Measuring both arms in this job
+  # removes that coupling.
+  BENCH_COUNT: "10"
   GO_VERSION: "1.25"
+  # Regression gates, applied per metric class by scripts/benchstat-gate.sh.
+  # elps' allocation metrics are near-deterministic (worst-case noise measured on
+  # identical code: 0.18%) while sec/op noise reaches ~1.5%, and far more on a
+  # contended machine -- so one threshold cannot serve both. Both are set with
+  # generous headroom over the measured floor; read the threshold note in that
+  # script before changing either.
+  #
+  # CAVEAT: those noise figures were measured on the amd64 ubuntu-latest fleet,
+  # before the move to ARM. They have NOT been re-measured on the ARM pool. If
+  # the gate starts firing spuriously, re-measure on identical code before
+  # widening a threshold -- widening it to silence real noise you have not
+  # characterised is how a gate stops meaning anything.
+  #
+  # One ARM datapoint exists so far (the first run where this gate reached a
+  # verdict): 82 delta rows, ONE significant bad-direction move, libjson
+  # Package/get-nested-baseline-2 at +1.65% (p=0.043) -- same order as the
+  # +1.52% worst case measured on amd64. It bounds nothing, because that
+  # comparison DOES change Go code and the move may be real rather than noise.
+  # It is recorded only so the next person does not read "not re-measured" as
+  # "possibly catastrophic". A proper characterisation still needs a null
+  # comparison (identical code on both arms) on this pool.
+  BENCH_REGRESSION_THRESHOLD_PCT: "15"
+  BENCH_ALLOC_THRESHOLD_PCT: "5"
+  # Pinned, not inherited from the runner's core count. `go test` appends
+  # GOMAXPROCS to every benchmark name (EnvGet-2, EnvGet-4), and benchstat
+  # pairs rows by that full name -- so two arms measured at different core
+  # counts share NO names and benchstat pairs nothing, from a table that looks
+  # entirely normal. Pinning it means a change to `runs-on` -- a different
+  # line, in a different context, made by someone with no reason to think they
+  # touched this gate -- cannot move the suffix. scripts/bench-arms-check.sh
+  # is the backstop that names the failure if this pin is ever removed.
+  #
+  # 2 matches the ARM runner below. These benchmarks are single-goroutine, so
+  # this constrains only the runtime's own parallelism; keeping it fixed also
+  # keeps raw numbers comparable across runs as the runner pool changes.
+  GOMAXPROCS: "2"
 
 permissions:
   contents: read
   pull-requests: write
+  # Read-only access to this run's own job list, for the queue watchdog below.
+  actions: read
 
 jobs:
-  benchmark:
-    name: Benchmark Comparison
+  # Proves the regression gate can actually FAIL. This job exists because the
+  # gate it guards was dead for 473 runs -- an inline `grep -E '^\S.*\+$'` that
+  # no benchstat line can match -- and nothing noticed, because a gate that can
+  # only report success is indistinguishable from a gate that works. It is
+  # deliberately independent of the `benchmark` job: it is fast, needs no Go
+  # build, and must report even when the benchmark job is cancelled or skipped.
+  gates:
+    name: CI Gate Self-Test
     runs-on: ubuntu-latest
+    env:
+      # This job has no Go toolchain on purpose -- see the comment above: it
+      # must be fast and must report even when the benchmark job is cancelled.
+      # The fuzz-gate checks that need `go list` / `go test` (dynamic target
+      # discovery and the FuzzGateSelfTest negative control) therefore run in
+      # the `fuzz` workflow, which already sets up Go and has its module cache
+      # warm. Everything Go-free in the fuzz gate -- FUZZTIME parsing, the
+      # "-fuzz must carry -fuzztime" scan, the workflow-shape guards and
+      # shellcheck -- still runs here.
+      CI_GATES_SKIP_GO: "1"
     steps:
       - name: Check out code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v6
 
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run CI gate self-test
+        run: bash scripts/ci-gates-test.sh
+
+  # A job whose `runs-on` label matches no runner available to THIS repository
+  # does not fail -- it queues, and a queued job publishes no check status at
+  # all. The board then shows the other checks, all green, and reads as a pass.
+  # That is not hypothetical here: `ubuntu-arm-4core-150gb` (real, but shared
+  # with substrate rather than elps) left the benchmark job queued across five
+  # consecutive pushes, reporting nothing each time.
+  #
+  # `timeout-minutes` cannot cover this -- its clock starts when a job begins
+  # running. So this watchdog runs on a runner that is always available and
+  # polls the run's own job list, turning "silently absent" into "loudly red".
+  # Logic lives in scripts/ci-queue-watchdog.cjs so it is reviewable and
+  # guarded by scripts/ci-gates-test.sh rather than buried in YAML.
+  queue-watchdog:
+    name: Runner Reachability Watchdog
+    runs-on: ubuntu-latest
+    # Generous: the budget below is the real bound, and this only backstops a
+    # watchdog that itself wedges.
+    timeout-minutes: 30
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Watch for a job that never starts
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
+        env:
+          # Must match the watched job's `name:` EXACTLY. The watchdog reports
+          # a mismatch rather than waiting out the budget on a typo.
+          WATCH_JOB: Benchmark Comparison
+          # Repo variable so a genuinely busy pool can be accommodated from
+          # settings, without a code change.
+          QUEUE_BUDGET_MINUTES: ${{ vars.BENCH_QUEUE_BUDGET_MINUTES || '15' }}
+        with:
+          script: |
+            const watchdog = require('./scripts/ci-queue-watchdog.cjs')
+            await watchdog({ github, context, core })
+
+  benchmark:
+    name: Benchmark Comparison
+    # ARM, deliberately. The consumers that pin this module ship ARM, so
+    # benchmarking elps on amd64 tuned against a machine nobody runs -- and
+    # that matters most for exactly what this gate exists to catch, since
+    # struct layout, padding and GC scan extent are not arch-invariant.
+    #
+    # `2vcpu-ubuntu-2204-arm` is the ARM runner actually shared with THIS repo
+    # (Settings -> Actions -> Runners). An earlier revision named
+    # ubuntu-arm-4core-150gb, which substrate uses but elps cannot reach, so
+    # the job sat queued across five pushes -- silently, because a job that
+    # never starts reports no status to fail on.
+    #
+    # Two vCPUs is enough, and arguably better: these benchmarks are
+    # single-goroutine, so the extra cores only served the runtime, and fewer
+    # cores means less scheduler noise in the timings. It does halve the
+    # GOMAXPROCS suffix benchstat keys on (EnvGet-2, not EnvGet-4) -- harmless
+    # now that both arms are measured in one job, but it would have been fatal
+    # to the old cached-baseline design, which would have compared EnvGet-4
+    # against EnvGet-2 and paired nothing at all.
+    #
+    # `vars.BENCH_RUNNER` is an escape hatch: if the ARM pool is unavailable
+    # the runner can be repointed from repo settings without a code change.
+    # It is safe to flip because both arms are measured in this job on
+    # whatever runner it lands on -- a swap changes the absolute numbers but
+    # never compares across architectures. It cannot move the benchmark-name
+    # suffix either, because GOMAXPROCS is pinned at the workflow level; see
+    # the note there for why that matters.
+    #
+    # NOTE: `runs-on` cannot read the `env` context, which is why this is a
+    # literal plus a `vars` override rather than a workflow-level env var.
+    runs-on: ${{ vars.BENCH_RUNNER || '2vcpu-ubuntu-2204-arm' }}
+    steps:
+      # Two working trees, measured on the SAME runner in the SAME job. This
+      # replaces the cached-baseline design, which compared this PR against
+      # results recorded on a different machine at a different time and
+      # attributed the hardware delta to the code delta. GitHub's hosted pool
+      # is heterogeneous -- consecutive runs of IDENTICAL code landed on an
+      # EPYC 7763 and an EPYC 9V74 and benchstat refused to pair them at all,
+      # failing the gate with "cannot interpret". Same silicon, same thermal
+      # state, same toolchain is the only way the comparison means anything.
+      - name: Check out PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          path: pr
+
+      - name: Check out PR base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+          # Both trees are checked out into subdirectories, so there is no
+          # go.sum at the workspace root for setup-go to key its cache on.
+          cache-dependency-path: pr/go.sum
 
       - name: Install benchstat
         run: go install golang.org/x/perf/cmd/benchstat@latest
 
-      # On PRs: try to restore cached baseline results from the latest main push.
-      # Each main push saves with a unique key (benchmark-baseline-<sha>).
-      # restore-keys prefix matching finds the most recent one.
-      - name: Restore cached baseline
-        if: github.event_name == 'pull_request'
-        id: cache-baseline
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v5
-        with:
-          path: bench-baseline.txt
-          key: benchmark-baseline-${{ github.event.pull_request.base.sha }}
-          restore-keys: benchmark-baseline-
-
-      - name: Run benchmarks
+      # Interleaved, alternating arms every round rather than running all of
+      # one arm then all of the other. A runner that slows down partway
+      # through -- thermal throttling, a noisy neighbour -- biases a
+      # block-ordered run entirely into whichever arm ran second. Alternating
+      # spreads that drift across both arms instead of pooling it into one.
+      # Each round contributes one sample per arm, so BENCH_COUNT rounds give
+      # BENCH_COUNT samples each.
+      #
+      # `set -o pipefail` is load-bearing: without it the exit status of
+      # `go test ... | tee` is tee's, which is 0 even when the benchmarks fail
+      # to compile or panic. The step would go green, the output files would
+      # hold error text, and the comparison downstream would be meaningless.
+      # GitHub's default shell is `bash -e` WITHOUT pipefail, so it must be
+      # set explicitly.
+      - name: Run benchmarks (both arms, interleaved)
         run: |
-          go test -bench=. -benchmem -benchtime=100ms -count=${{ env.BENCH_COUNT }} \
-            -run='^$' -timeout=10m ./... | tee bench-current.txt
-
-      # On push to main: save results as the new baseline for future PRs.
-      # Uses a per-SHA key so each push creates a new entry. The PR restore
-      # step uses restore-keys prefix matching to find the most recent one.
-      # The path must match the restore step (bench-baseline.txt).
-      - name: Save baseline to cache
-        if: github.event_name == 'push'
-        run: cp bench-current.txt bench-baseline.txt
-
-      - name: Upload baseline cache
-        if: github.event_name == 'push'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v5
-        with:
-          path: bench-baseline.txt
-          key: benchmark-baseline-${{ github.sha }}
+          set -o pipefail
+          : > bench-baseline.txt
+          : > bench-current.txt
+          for round in $(seq 1 ${{ env.BENCH_COUNT }}); do
+            echo "::group::round ${round}/${{ env.BENCH_COUNT }}"
+            (cd base && go test -bench=. -benchmem -benchtime=100ms -count=1 \
+              -run='^$' -timeout=10m ./...) | tee -a bench-baseline.txt
+            (cd pr && go test -bench=. -benchmem -benchtime=100ms -count=1 \
+              -run='^$' -timeout=10m ./...) | tee -a bench-current.txt
+            echo "::endgroup::"
+          done
 
       - name: Compare with benchstat
         if: github.event_name == 'pull_request'
         id: benchstat
         run: |
-          if [ ! -s bench-baseline.txt ]; then
-            echo "No cached baseline found — showing PR results only."
-            echo "has_comparison=false" >> "$GITHUB_OUTPUT"
+          set -uo pipefail
+
+          # BOTH trees live in subdirectories (pr/ and base/), so nothing from
+          # the repository is at the workspace root -- including these scripts.
+          # A bare `./scripts/benchstat-gate.sh` here exits 127 "No such file",
+          # which the final step then reported as "Benchmark regressions
+          # detected", i.e. a real-looking failure with a fictional cause. The
+          # existence check below turns that class into a named error, and the
+          # final step no longer attributes unknown exit codes to regressions.
+          #
+          # The scripts come from the PR arm deliberately: a PR that changes the
+          # gate must be adjudicated by its own version of it, not by main's.
+          PR_TREE="${GITHUB_WORKSPACE}/pr"
+          GATE="${PR_TREE}/scripts/benchstat-gate.sh"
+          ARMS="${PR_TREE}/scripts/bench-arms-check.sh"
+
+          missing=""
+          for s in "$GATE" "$ARMS"; do
+            [ -f "$s" ] || missing="${missing} ${s}"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::benchmark gate scripts missing from the PR checkout:${missing}. The workflow expects the repository at \$GITHUB_WORKSPACE/pr (see the two-tree checkout above); if the checkout layout changed, these paths must change with it."
+            echo "gate_status=2" >> "$GITHUB_OUTPUT"
             {
               echo 'result<<BENCHSTAT_EOF'
-              echo '## Benchmark Results (no baseline to compare)'
+              echo '## Benchmark gate could not run'
               echo ''
-              echo 'No cached baseline from main found. Results will be cached'
-              echo 'once this PR merges and the next push to main runs.'
+              echo 'The gate scripts were not found in the PR checkout:'
+              echo '```'
+              echo "${missing}"
+              echo '```'
+              echo 'BENCHSTAT_EOF'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Both arms are produced by the step above, in this job. An empty
+          # baseline is no longer a benign cache miss -- it means the base
+          # checkout or its benchmark run failed, and silently degrading to
+          # "PR results only" would hide that. Fail loudly.
+          if [ ! -s bench-baseline.txt ]; then
+            echo "::error::bench-baseline.txt is empty — the base arm did not produce results."
+            echo "gate_status=2" >> "$GITHUB_OUTPUT"
+            {
+              echo 'result<<BENCHSTAT_EOF'
+              echo '## Benchmark Results (base arm FAILED — no comparison)'
+              echo ''
+              echo 'The base checkout or its benchmark run produced nothing.'
+              echo 'These are the PR-side numbers only; they are NOT a comparison.'
               echo ''
               echo '```'
               cat bench-current.txt
@@ -91,10 +289,42 @@ jobs:
             exit 0
           fi
 
-          echo "has_comparison=true" >> "$GITHUB_OUTPUT"
+          # Comparability BEFORE comparison. benchstat does not complain when
+          # the arms cannot pair -- it emits a normal-looking table with no
+          # comparison rows, and the gate downstream can only report the
+          # symptom ("could not be interpreted"). This names the cause: a
+          # goos/goarch/cpu mismatch, or a GOMAXPROCS suffix mismatch that
+          # makes EnvGet-4 and EnvGet-2 two unrelated benchmarks.
+          arms_rc=0
+          "$ARMS" bench-baseline.txt bench-current.txt > arms-check.txt 2>&1 || arms_rc=$?
+          cat arms-check.txt
+          if [ "$arms_rc" -ne 0 ]; then
+            echo "::error::The two benchmark arms are not comparable; see the pre-flight report above."
+            echo "gate_status=2" >> "$GITHUB_OUTPUT"
+            {
+              echo 'result<<BENCHSTAT_EOF'
+              echo '## Benchmark arms are NOT comparable — no comparison was made'
+              echo ''
+              echo '```'
+              cat arms-check.txt
+              echo '```'
+              echo 'BENCHSTAT_EOF'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
+          # benchstat's own exit code is captured rather than discarded with
+          # `|| true`: if it crashed, its error text is all that lands in
+          # benchstat-output.txt, and benchstat-gate.sh turns that into a hard
+          # exit 2 ("cannot interpret") instead of a silent pass. Swallowing it
+          # here is what made a benchstat failure indistinguishable from a clean
+          # comparison.
+          bench_rc=0
           benchstat base=bench-baseline.txt pr=bench-current.txt \
-            > benchstat-output.txt 2>&1 || true
+            > benchstat-output.txt 2>&1 || bench_rc=$?
+          if [ "$bench_rc" -ne 0 ]; then
+            echo "::warning::benchstat exited ${bench_rc}; the gate will adjudicate its output."
+          fi
 
           {
             echo 'result<<BENCHSTAT_EOF'
@@ -109,16 +339,22 @@ jobs:
             echo ''
             echo '</details>'
             echo ''
-            echo '_Compared against cached baseline from the latest main push._'
+            echo '_Both arms measured on the same runner in the same job, interleaved, n=${{ env.BENCH_COUNT }} each._'
             echo 'BENCHSTAT_EOF'
           } >> "$GITHUB_OUTPUT"
 
-          if grep -E '^\S.*\+$' benchstat-output.txt | grep -qv '^name'; then
-            echo "has_regression=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Benchstat detected statistically significant regressions."
-          else
-            echo "has_regression=false" >> "$GITHUB_OUTPUT"
-          fi
+          # The gate lives in scripts/benchstat-gate.sh so it can be unit-tested
+          # (scripts/ci-gates-test.sh) and run locally (make ci-gates-test).
+          # It exits 0 = clean, 1 = regression, 2 = could not interpret.
+          gate_status=0
+          "$GATE" benchstat-output.txt || gate_status=$?
+          echo "gate_status=${gate_status}" >> "$GITHUB_OUTPUT"
+          case "$gate_status" in
+            0) echo "No benchmark regression at or above the configured gates." ;;
+            1) echo "::warning::Benchstat detected a significant benchmark regression." ;;
+            2) echo "::warning::The benchmark comparison could not be interpreted." ;;
+            *) echo "::warning::${GATE} exited ${gate_status} — it did not run to completion." ;;
+          esac
 
       - name: Post PR comment
         if: github.event_name == 'pull_request'
@@ -166,8 +402,70 @@ jobs:
               core.warning(`Could not post PR comment: ${e.message}. This is expected for PRs from forks.`);
             }
 
+      # `always()` so this cannot be silently skipped when an earlier step is
+      # cancelled or fails: a gate that only runs on the happy path is not a
+      # gate. `skipped` (no cached baseline) and `0` (clean) are the only values
+      # that pass; 1 = regression and 2 = uninterpretable both fail.
       - name: Fail on regressions
-        if: steps.benchstat.outputs.has_regression == 'true'
+        if: >-
+          always() && github.event_name == 'pull_request' &&
+          steps.benchstat.outputs.gate_status != 'skipped' &&
+          steps.benchstat.outputs.gate_status != '0'
         run: |
-          echo "::error::Benchmark regressions detected. Review the benchstat comparison in the PR comment."
+          status='${{ steps.benchstat.outputs.gate_status }}'
+          case "$status" in
+            1)
+              echo "::error::Benchmark regressions detected (gate exit 1). Review the benchstat comparison in the PR comment and the gate report in the job log."
+              ;;
+            2)
+              echo "::error::The benchmark comparison could not be interpreted (gate exit 2). This is a hard failure by design — a gate that cannot read its input must never report success. See the job log above."
+              ;;
+            *)
+              # Anything else means the gate did not reach a verdict at all --
+              # e.g. exit 127, the script not being found. Reporting that as
+              # "regressions detected" (which this branch used to do) sends the
+              # reader looking for a performance problem that does not exist.
+              echo "::error::The benchmark gate did not run to completion (exit ${status:-<unset>}); it reached no verdict, so this is neither a pass nor a measured regression. See the job log above for the failing command."
+              ;;
+          esac
           exit 1
+
+  # THE ONE CHECK TO REQUIRE FOR THIS WORKFLOW.
+  #
+  # Branch protection matches a required status check by NAME, so requiring the
+  # individual jobs means editing repo settings every time a job is added,
+  # renamed or resharded -- and forgetting to leaves the new job unguarded
+  # while the board still looks fully green. That is the same "green by not
+  # looking" shape as an excluded path or a queued job.
+  #
+  # This job has a fixed name and depends on every other job in the workflow,
+  # so it is the only name that ever needs to be in the required list. Adding a
+  # job means adding it to `needs:` here -- and scripts/ci-gates-test.sh fails
+  # the PR if you don't, so the aggregate cannot silently stop covering
+  # something.
+  #
+  # always() plus an explicit success check, because `needs` alone would SKIP
+  # this job when an upstream one fails, and a skipped required check reads as
+  # green rather than red.
+  required:
+    name: "Required: benchmark"
+    runs-on: ubuntu-latest
+    needs: [gates, queue-watchdog, benchmark]
+    if: always()
+    steps:
+      - name: Assert every job in this workflow succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "upstream job results: ${RESULTS}"
+          rc=0
+          for r in ${RESULTS}; do
+            # success is the ONLY pass. failure, cancelled and skipped all mean
+            # the work was not demonstrably done.
+            [ "$r" = "success" ] || rc=1
+          done
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::A job in this workflow did not succeed (results: ${RESULTS}). Open the individual jobs above."
+            exit 1
+          fi
+          echo "All jobs in this workflow succeeded."

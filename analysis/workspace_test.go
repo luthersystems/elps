@@ -1698,7 +1698,7 @@ func TestPrescanWorkspace_NoMainLisp(t *testing.T) {
 
 	prescan, err := PrescanWorkspace(dir, nil)
 	require.NoError(t, err)
-	assert.Equal(t, "", prescan.DefaultPackage)
+	assert.Empty(t, prescan.DefaultPackage)
 
 	for _, d := range prescan.AllDefs {
 		if d.Name == "lib-fn" {

@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -154,7 +155,7 @@ Examples:
 
 func runAnalyze(args []string, stdout, stderr io.Writer, runCfg analyzeRunConfig, analyzeOpts ...AnalyzeOption) (int, error) {
 	if len(args) == 0 {
-		return 2, fmt.Errorf("no files specified")
+		return 2, errors.New("no files specified")
 	}
 
 	analyzeConfig, err := loadAnalyzeConfig(runCfg.configFile)
@@ -187,7 +188,7 @@ func runAnalyze(args []string, stdout, stderr io.Writer, runCfg analyzeRunConfig
 		return 2, err
 	}
 	if len(expanded) == 0 {
-		return 2, fmt.Errorf("no .lisp files found")
+		return 2, errors.New("no .lisp files found")
 	}
 
 	result, err := perf.AnalyzeFiles(expanded, analyzeConfig)
@@ -264,17 +265,17 @@ func showTopFunctions(solved []*perf.SolvedFunction, n int) {
 	if n > len(sorted) {
 		n = len(sorted)
 	}
-	fmt.Fprintf(os.Stderr, "Top %d functions by score:\n", n) //nolint:errcheck
-	for i := 0; i < n; i++ {
+	fmt.Fprintf(os.Stderr, "Top %d functions by score:\n", n)
+	for i := range n {
 		sf := sorted[i]
 		loc := "unknown"
 		if sf.Source != nil {
 			loc = sf.Source.String()
 		}
-		fmt.Fprintf(os.Stderr, "  %d. %s (score=%d, scaling=O(N^%d)) at %s\n", //nolint:errcheck
+		fmt.Fprintf(os.Stderr, "  %d. %s (score=%d, scaling=O(N^%d)) at %s\n",
 			i+1, sf.Name, sf.TotalScore, sf.ScalingOrder, loc)
 	}
-	fmt.Fprintln(os.Stderr) //nolint:errcheck
+	fmt.Fprintln(os.Stderr)
 }
 
 func init() {

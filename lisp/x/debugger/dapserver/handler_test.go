@@ -9,11 +9,13 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
 
 	"github.com/google/go-dap"
+	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/lisp/x/debugger"
@@ -331,7 +333,7 @@ func TestDAPServer_FullSession(t *testing.T) {
 	stResp, ok := msg.(*dap.StackTraceResponse)
 	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
 	assert.True(t, stResp.Success)
-	require.Greater(t, len(stResp.Body.StackFrames), 0, "expected at least one stack frame")
+	require.NotEmpty(t, stResp.Body.StackFrames, "expected at least one stack frame")
 
 	topFrameID := stResp.Body.StackFrames[0].Id
 
@@ -357,7 +359,7 @@ func TestDAPServer_FullSession(t *testing.T) {
 			break
 		}
 	}
-	require.Greater(t, localRef, 0, "expected local scope reference")
+	require.Positive(t, localRef, "expected local scope reference")
 
 	// === Variables ===
 	sendDAPRequest(t, client, &dap.VariablesRequest{
@@ -452,6 +454,54 @@ func newDAPTestEnv(t *testing.T, dbg *debugger.Engine) *lisp.LEnv {
 	rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
 	require.True(t, rc.IsNil(), "InPackage failed: %v", rc)
 	return env
+}
+
+// pauseGate is a rendezvous between the test goroutine and the eval
+// goroutine. newPauseGate installs a `(debug-test-gate)` builtin in env; the
+// program under test calls it, which parks the eval goroutine until the test
+// calls Release. That lets a test drive a DAP pause while the program is
+// provably mid-flight, instead of racing a short program with a sleep or a
+// poll on EvalCount. (Mirrors the helper in the debugger package — test
+// helpers do not cross package boundaries.)
+type pauseGate struct {
+	entered     chan struct{}
+	release     chan struct{}
+	enteredOnce sync.Once
+	releaseOnce sync.Once
+}
+
+// newPauseGate installs the gate builtin into env's current package.
+func newPauseGate(t *testing.T, env *lisp.LEnv) *pauseGate {
+	t.Helper()
+	g := &pauseGate{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	// Never leave the eval goroutine parked if the test fails before it
+	// reaches its own Release call.
+	t.Cleanup(g.Release)
+	env.AddBuiltins(true, elpsutil.Function("debug-test-gate", lisp.Formals(),
+		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+			g.enteredOnce.Do(func() { close(g.entered) })
+			<-g.release
+			return lisp.Nil()
+		}))
+	return g
+}
+
+// Release unparks the eval goroutine. Safe to call more than once.
+func (g *pauseGate) Release() {
+	g.releaseOnce.Do(func() { close(g.release) })
+}
+
+// WaitEntered blocks until the program reaches the gate.
+func (g *pauseGate) WaitEntered(t *testing.T) {
+	t.Helper()
+	select {
+	case <-g.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("program never reached debug-test-gate")
+	}
 }
 
 func sendDAPRequest(t *testing.T, w io.Writer, msg dap.Message) {
@@ -732,7 +782,7 @@ func TestDAPServer_StepNext(t *testing.T) {
 	stResp, ok := msg.(*dap.StackTraceResponse)
 	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
 	initialFrameCount := len(stResp.Body.StackFrames)
-	require.Greater(t, initialFrameCount, 0)
+	require.Positive(t, initialFrameCount)
 	assert.Equal(t, 3, stResp.Body.StackFrames[0].Line, "should be on line 3")
 
 	// Clear breakpoints to avoid re-fire.
@@ -899,7 +949,7 @@ func TestDAPServer_StepOut(t *testing.T) {
 	stResp, ok := msg.(*dap.StackTraceResponse)
 	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
 	insideFrameCount := len(stResp.Body.StackFrames)
-	require.Greater(t, insideFrameCount, 0, "should have at least 1 frame inside function")
+	require.Positive(t, insideFrameCount, "should have at least 1 frame inside function")
 	assert.Equal(t, 2, stResp.Body.StackFrames[0].Line,
 		"should be paused on line 2 inside function body")
 
@@ -1059,7 +1109,7 @@ func TestDAPServer_StackTracePaging(t *testing.T) {
 	stResp, ok := msg.(*dap.StackTraceResponse)
 	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
 	totalFrames := stResp.Body.TotalFrames
-	require.Greater(t, totalFrames, 0, "expected at least one stack frame")
+	require.Positive(t, totalFrames, "expected at least one stack frame")
 
 	// Paged request: start at frame 0, limit 1.
 	s.send(&dap.StackTraceRequest{
@@ -1139,7 +1189,7 @@ func TestDAPServer_PackageScopeVariables(t *testing.T) {
 	msg := s.read()
 	stResp, ok := msg.(*dap.StackTraceResponse)
 	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
-	require.Greater(t, len(stResp.Body.StackFrames), 0, "expected stack frames")
+	require.NotEmpty(t, stResp.Body.StackFrames, "expected stack frames")
 
 	topFrameID := stResp.Body.StackFrames[0].Id
 
@@ -1164,7 +1214,7 @@ func TestDAPServer_PackageScopeVariables(t *testing.T) {
 			break
 		}
 	}
-	require.Greater(t, pkgRef, 0, "expected package scope reference")
+	require.Positive(t, pkgRef, "expected package scope reference")
 
 	// Request package scope variables.
 	s.send(&dap.VariablesRequest{
@@ -1179,7 +1229,7 @@ func TestDAPServer_PackageScopeVariables(t *testing.T) {
 	require.True(t, ok, "expected VariablesResponse, got %T", msg)
 	assert.True(t, varsResp.Success)
 	// Package scope should contain user-defined symbols (at least 'add').
-	require.Greater(t, len(varsResp.Body.Variables), 0, "expected package variables")
+	require.NotEmpty(t, varsResp.Body.Variables, "expected package variables")
 	// Verify the 'add' function is among the package variables.
 	var foundAdd bool
 	for _, v := range varsResp.Body.Variables {
@@ -1461,7 +1511,7 @@ func TestDAPServer_FileDebugSession(t *testing.T) {
 	msg = s.read()
 	stResp, ok := msg.(*dap.StackTraceResponse)
 	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
-	require.Greater(t, len(stResp.Body.StackFrames), 0, "expected stack frames")
+	require.NotEmpty(t, stResp.Body.StackFrames, "expected stack frames")
 	// Top frame should reference simple.lisp.
 	assert.Contains(t, stResp.Body.StackFrames[0].Source.Path, "simple.lisp")
 
@@ -1486,7 +1536,7 @@ func TestDAPServer_FileDebugSession(t *testing.T) {
 			break
 		}
 	}
-	require.Greater(t, localRef, 0, "expected local scope reference")
+	require.Positive(t, localRef, "expected local scope reference")
 
 	s.send(&dap.VariablesRequest{
 		Request: dap.Request{
@@ -1544,8 +1594,9 @@ func TestDAPServer_FileDebugSession(t *testing.T) {
 func dialWithRetry(t *testing.T, addr string, timeout time.Duration) net.Conn {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
+	dialer := net.Dialer{Timeout: 100 * time.Millisecond}
 	for {
-		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		conn, err := dialer.DialContext(t.Context(), "tcp", addr)
 		if err == nil {
 			return conn
 		}
@@ -1569,7 +1620,8 @@ func TestServeTCPLoop_MultipleConnections(t *testing.T) {
 	srv := New(e)
 
 	// Use a random available port.
-	ln, err := net.Listen("tcp", "localhost:0")
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "localhost:0")
 	require.NoError(t, err)
 	addr := ln.Addr().String()
 	ln.Close() //nolint:errcheck,gosec // best-effort cleanup for port reservation
@@ -1605,7 +1657,7 @@ func TestServeTCPLoop_MultipleConnections(t *testing.T) {
 	})
 	readDAPMessage(t, reader1) // DisconnectResponse
 	readDAPMessage(t, reader1) // TerminatedEvent
-	conn1.Close() //nolint:errcheck,gosec // best-effort cleanup
+	conn1.Close()              //nolint:errcheck,gosec // best-effort cleanup
 
 	// --- Second connection (retry until server re-enters Accept) ---
 	conn2 := dialWithRetry(t, addr, 2*time.Second)
@@ -1667,15 +1719,27 @@ func TestDAPServer_PauseRequest(t *testing.T) {
 	s.configDone()
 
 	env := newDAPTestEnv(t, s.engine)
+	gate := newPauseGate(t, env)
 
-	// Use a long-running recursive program so we can pause mid-execution.
-	// Large countdown ensures the program is still running when the pause
-	// request takes effect — even on slow CI machines.
+	// The program must actually run to completion, otherwise the assertions
+	// below say nothing about pausing a live program.
+	//
+	// Keep the countdown small. Attaching a debugger disables tail-call
+	// optimisation globally (see lisp/env.go), so every turn of this loop
+	// costs a physical stack frame and anything past ~25k aborts with
+	// "physical stack height exceeded maximum". The historical (countdown
+	// 100000) never counted down at all: it burned ~2s hitting the frame cap
+	// and returned an error the test discarded.
+	//
+	// Correctness does not rest on the program being slow. debug-test-gate
+	// parks the eval goroutine until this test releases it, so the pause is
+	// armed while the program is provably mid-flight.
 	program := "(defun countdown (n)\n" +
 		"  (if (<= n 0)\n" +
 		"    0\n" +
 		"    (countdown (- n 1))))\n" +
-		"(countdown 100000)"
+		"(debug-test-gate)\n" +
+		"(countdown 200)"
 
 	resultCh := make(chan *lisp.LVal, 1)
 	go func() {
@@ -1683,12 +1747,11 @@ func TestDAPServer_PauseRequest(t *testing.T) {
 		resultCh <- res
 	}()
 
-	// Wait for eval goroutine to be well into execution before pausing.
-	require.Eventually(t, func() bool {
-		return s.engine.EvalCount() > 10
-	}, 2*time.Second, time.Millisecond, "eval goroutine did not start")
+	// Park the program at the gate before pausing.
+	gate.WaitEntered(t)
 
-	// Send Pause request.
+	// Send Pause request. The handler arms the engine before replying, so a
+	// successful response means the pause is already in effect.
 	s.send(&dap.PauseRequest{
 		Request: dap.Request{
 			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
@@ -1700,6 +1763,9 @@ func TestDAPServer_PauseRequest(t *testing.T) {
 	pauseResp, ok := msg.(*dap.PauseResponse)
 	require.True(t, ok, "expected PauseResponse, got %T", msg)
 	assert.True(t, pauseResp.Success)
+
+	// Let the program run on into the armed pause.
+	gate.Release()
 
 	// Wait for the engine to actually pause.
 	require.Eventually(t, func() bool {
@@ -1716,7 +1782,13 @@ func TestDAPServer_PauseRequest(t *testing.T) {
 	s.continueExec()
 
 	select {
-	case <-resultCh:
+	case res := <-resultCh:
+		// Assert the program ran to completion. Without this the test passes
+		// just as happily when the program dies at the physical frame cap,
+		// which is exactly how (countdown 100000) went unnoticed for the
+		// life of this test.
+		require.Equal(t, lisp.LInt, res.Type, "program did not run to completion: %v", res)
+		assert.Equal(t, 0, res.Int, "countdown should reach zero")
 	case <-time.After(5 * time.Second):
 		if s.engine.IsPaused() {
 			s.engine.Resume()
@@ -1801,7 +1873,7 @@ func TestDAPServer_StackTraceUsesPausedExpr(t *testing.T) {
 	msg := s.read()
 	stResp, ok := msg.(*dap.StackTraceResponse)
 	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 
 	topFrame := stResp.Body.StackFrames[0]
 	assert.Equal(t, 2, topFrame.Line,
@@ -1967,7 +2039,7 @@ func TestDAPServer_SourceRootResolvesAbsolutePaths(t *testing.T) {
 	msg := s.read()
 	stResp, ok := msg.(*dap.StackTraceResponse)
 	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 
 	// Stack frame Source.Path should be resolved to an absolute path
 	// using the sourceRoot prefix.
@@ -2191,7 +2263,7 @@ func TestDAPServer_EvaluateWatch(t *testing.T) {
 	msg := s.read()
 	stResp, ok := msg.(*dap.StackTraceResponse)
 	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrameID := stResp.Body.StackFrames[0].Id
 
 	// Evaluate with "watch" context — VS Code sends this for watch expressions.
@@ -2316,7 +2388,7 @@ func TestDAPServer_EvaluateWhilePausedInRecursion(t *testing.T) {
 	msg = s.read()
 	stResp, ok := msg.(*dap.StackTraceResponse)
 	require.True(t, ok, "expected StackTraceResponse, got %T", msg)
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrameID := stResp.Body.StackFrames[0].Id
 
 	// Verify local variables are visible (the core of the locals bug fix).
@@ -2336,7 +2408,7 @@ func TestDAPServer_EvaluateWhilePausedInRecursion(t *testing.T) {
 			localRef = scope.VariablesReference
 		}
 	}
-	require.Greater(t, localRef, 0, "expected local scope reference")
+	require.Positive(t, localRef, "expected local scope reference")
 
 	s.send(&dap.VariablesRequest{
 		Request: dap.Request{
@@ -2496,7 +2568,7 @@ func TestDAPServer_VariableExpansion(t *testing.T) {
 
 	// Get stack trace and local variables.
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 	localRef := s.localScopeRef(topFrame)
 	vars := s.variables(localRef)
@@ -2510,7 +2582,7 @@ func TestDAPServer_VariableExpansion(t *testing.T) {
 	// --- List expansion ---
 	listVar, ok := varMap["items"]
 	require.True(t, ok, "should find items variable, got vars: %v", varNames(vars))
-	assert.Greater(t, listVar.VariablesReference, 0,
+	assert.Positive(t, listVar.VariablesReference,
 		"list should have expandable children")
 	children := s.variables(listVar.VariablesReference)
 	require.Len(t, children, 3, "list should have 3 elements")
@@ -2524,7 +2596,7 @@ func TestDAPServer_VariableExpansion(t *testing.T) {
 	// --- Sorted-map expansion ---
 	mapVar, ok := varMap["m"]
 	require.True(t, ok, "should find m variable, got vars: %v", varNames(vars))
-	assert.Greater(t, mapVar.VariablesReference, 0,
+	assert.Positive(t, mapVar.VariablesReference,
 		"sorted-map should have expandable children")
 	mapChildren := s.variables(mapVar.VariablesReference)
 	require.Len(t, mapChildren, 2, "sorted-map should have 2 entries")
@@ -2583,13 +2655,13 @@ func TestDAPServer_EvaluateResultExpansion(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// Evaluate a list expression — result should be expandable.
 	evalResp := s.evaluate("(list 1 2 3)", topFrame)
 	assert.True(t, evalResp.Success, "evaluate should succeed")
-	assert.Greater(t, evalResp.Body.VariablesReference, 0,
+	assert.Positive(t, evalResp.Body.VariablesReference,
 		"list evaluate result should be expandable")
 
 	// Expand the result's children.
@@ -2755,7 +2827,7 @@ func TestDAPServer_VariableFormatterNative(t *testing.T) {
 
 	// Request stack trace → scopes → variables through the DAP protocol.
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 
 	// Evaluate the native value through the DAP evaluate handler.
 	evalResp := s.evaluate("person", stResp.Body.StackFrames[0].Id)
@@ -2803,18 +2875,18 @@ func TestDAPServer_StepIntoNestedCalls(t *testing.T) {
 	resultCh := make(chan *lisp.LVal, 1)
 	go func() {
 		res := env.LoadString("test",
-			"(defun inner (x)\n"+   //  1
-				"  (+ x 100))\n"+   //  2
-				"\n"+               //  3
-				"(defun middle (x)\n"+     //  4
+			"(defun inner (x)\n"+ //  1
+				"  (+ x 100))\n"+ //  2
+				"\n"+ //  3
+				"(defun middle (x)\n"+ //  4
 				"  (set 'tmp (inner (* x 2)))\n"+ //  5
-				"  tmp)\n"+         //  6
-				"\n"+               //  7
-				"(defun outer ()\n"+       //  8
+				"  tmp)\n"+ //  6
+				"\n"+ //  7
+				"(defun outer ()\n"+ //  8
 				"  (set 'res (middle 5))\n"+ //  9
-				"  res)\n"+         // 10
-				"\n"+               // 11
-				"(outer)\n")        // 12
+				"  res)\n"+ // 10
+				"\n"+ // 11
+				"(outer)\n") // 12
 		resultCh <- res
 	}()
 
@@ -2826,7 +2898,7 @@ func TestDAPServer_StepIntoNestedCalls(t *testing.T) {
 
 	st0 := s.stackTrace()
 	outerDepth := len(st0.Body.StackFrames)
-	require.Greater(t, outerDepth, 0, "should have frames inside outer")
+	require.Positive(t, outerDepth, "should have frames inside outer")
 	assert.Equal(t, 9, st0.Body.StackFrames[0].Line, "should be at line 9")
 
 	// Clear breakpoints to avoid re-fire inside nested calls.
@@ -2900,7 +2972,7 @@ func TestDAPServer_StepIntoNestedCalls(t *testing.T) {
 
 	select {
 	case res := <-resultCh:
-		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for program to finish")
 	}
@@ -2959,7 +3031,7 @@ func TestDAPServer_RapidStepSequence(t *testing.T) {
 
 	select {
 	case res := <-resultCh:
-		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")
 	}
@@ -2996,11 +3068,11 @@ func TestDAPServer_StepOutTailPosition(t *testing.T) {
 		res := env.LoadString("test",
 			"(defun inner (x)\n"+ //  1
 				"  (+ x 100))\n"+ //  2
-				"(defun middle (x)\n"+  //  3
+				"(defun middle (x)\n"+ //  3
 				"  (inner (* x 2)))\n"+ //  4
-				"(defun outer ()\n"+    //  5
-				"  (middle 5))\n"+      //  6
-				"(outer)\n")            //  7
+				"(defun outer ()\n"+ //  5
+				"  (middle 5))\n"+ //  6
+				"(outer)\n") //  7
 		resultCh <- res
 	}()
 
@@ -3011,7 +3083,7 @@ func TestDAPServer_StepOutTailPosition(t *testing.T) {
 	s.read() // StoppedEvent
 
 	st := s.stackTrace()
-	require.Greater(t, len(st.Body.StackFrames), 0)
+	require.NotEmpty(t, st.Body.StackFrames)
 	assert.Equal(t, 2, st.Body.StackFrames[0].Line)
 	innerDepth := len(st.Body.StackFrames)
 
@@ -3045,7 +3117,7 @@ func TestDAPServer_StepOutTailPosition(t *testing.T) {
 	s.read() // StoppedEvent
 
 	st2 := s.stackTrace()
-	require.Greater(t, len(st2.Body.StackFrames), 0)
+	require.NotEmpty(t, st2.Body.StackFrames)
 	assert.Less(t, len(st2.Body.StackFrames), innerDepth,
 		"step-out should decrease stack depth")
 	assert.NotEqual(t, 2, st2.Body.StackFrames[0].Line,
@@ -3063,7 +3135,7 @@ func TestDAPServer_StepOutTailPosition(t *testing.T) {
 
 	select {
 	case res := <-resultCh:
-		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
 		assert.Equal(t, 110, res.Int, "inner(5*2) = 10+100 = 110")
 	case <-time.After(5 * time.Second):
 		if s.engine.IsPaused() {
@@ -3465,11 +3537,11 @@ func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
 	// skipping sub-expressions (inner, 5) that are on line 4.
 	go func() {
 		res := env.LoadString("test",
-			"(defun inner (x)\n"+  // line 1
-				"  (+ x 100))\n"+      // line 2 (inner's body)
-				"(defun outer ()\n"+   // line 3
-				"  (inner 5))\n"+      // line 4
-				"(outer)")             // line 5
+			"(defun inner (x)\n"+ // line 1
+				"  (+ x 100))\n"+ // line 2 (inner's body)
+				"(defun outer ()\n"+ // line 3
+				"  (inner 5))\n"+ // line 4
+				"(outer)") // line 5
 		resultCh <- res
 	}()
 
@@ -3480,7 +3552,7 @@ func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
 	s.read() // StoppedEvent
 
 	st0 := s.stackTrace()
-	require.Greater(t, len(st0.Body.StackFrames), 0)
+	require.NotEmpty(t, st0.Body.StackFrames)
 	assert.Equal(t, 4, st0.Body.StackFrames[0].Line, "should be on line 4")
 	outerDepth := len(st0.Body.StackFrames)
 
@@ -3514,7 +3586,7 @@ func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
 	s.read() // StoppedEvent
 
 	st1 := s.stackTrace()
-	require.Greater(t, len(st1.Body.StackFrames), 0)
+	require.NotEmpty(t, st1.Body.StackFrames)
 	// Should have entered inner's body — stack is deeper and line is 2.
 	assert.Greater(t, len(st1.Body.StackFrames), outerDepth,
 		"step-in should enter inner (deeper stack)")
@@ -3526,7 +3598,7 @@ func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
 
 	select {
 	case res := <-resultCh:
-		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
 		assert.Equal(t, 105, res.Int, "expected (inner 5) = 105")
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")
@@ -3687,7 +3759,7 @@ func TestDAPServer_StepNext_LineGranularity(t *testing.T) {
 
 	select {
 	case res := <-resultCh:
-		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")
 	}
@@ -3795,7 +3867,7 @@ func TestDAPServer_CustomScopeProvider(t *testing.T) {
 
 	// Get stack trace to get frame ID.
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrameID := stResp.Body.StackFrames[0].Id
 
 	// Request scopes — should have Local, Package, State DB.
@@ -3817,7 +3889,7 @@ func TestDAPServer_CustomScopeProvider(t *testing.T) {
 
 	assert.Equal(t, "account", vars[1].Name)
 	assert.Equal(t, "{...}", vars[1].Value)
-	assert.Greater(t, vars[1].VariablesReference, 0, "variable with children should have ref > 0")
+	assert.Positive(t, vars[1].VariablesReference, "variable with children should have ref > 0")
 
 	// Verify the env parameter was passed to the provider.
 	require.NotNil(t, capturedEnv, "Variables() should receive non-nil env")
@@ -3834,11 +3906,11 @@ func TestDAPServer_CustomScopeProvider(t *testing.T) {
 
 	// Drill into the cluster variable (3-level nesting).
 	assert.Equal(t, "cluster", vars[2].Name)
-	assert.Greater(t, vars[2].VariablesReference, 0)
+	assert.Positive(t, vars[2].VariablesReference)
 	clusterChildren := s.variables(vars[2].VariablesReference)
 	require.Len(t, clusterChildren, 1)
 	assert.Equal(t, "node-1", clusterChildren[0].Name)
-	assert.Greater(t, clusterChildren[0].VariablesReference, 0, "nested node should have children ref")
+	assert.Positive(t, clusterChildren[0].VariablesReference, "nested node should have children ref")
 
 	// Drill to leaf level (3rd level).
 	nodeChildren := s.variables(clusterChildren[0].VariablesReference)
@@ -3913,14 +3985,14 @@ func TestDAPServer_CustomScopeProvider_Cleanup(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrameID := stResp.Body.StackFrames[0].Id
 
 	allScopes := s.scopes(topFrameID)
 	require.Len(t, allScopes, 3)
 	vars := s.variables(allScopes[2].VariablesReference)
 	require.Len(t, vars, 1)
-	assert.Greater(t, vars[0].VariablesReference, 0)
+	assert.Positive(t, vars[0].VariablesReference)
 
 	// Save the old drill-down ref.
 	oldChildRef := vars[0].VariablesReference
@@ -4005,7 +4077,7 @@ func TestDAPServer_MultipleScopeProviders(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrameID := stResp.Body.StackFrames[0].Id
 
 	// Should have 4 scopes: Local, Package, State DB, Cache.
@@ -4077,14 +4149,14 @@ func TestDAPServer_CustomScopeProvider_Empty(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrameID := stResp.Body.StackFrames[0].Id
 
 	// Scope should appear even when empty.
 	allScopes := s.scopes(topFrameID)
 	require.Len(t, allScopes, 3)
 	assert.Equal(t, "Empty Scope", allScopes[2].Name)
-	assert.Greater(t, allScopes[2].VariablesReference, 0,
+	assert.Positive(t, allScopes[2].VariablesReference,
 		"empty scope should still have a valid VariablesReference for DAP clients")
 
 	// Variables request returns empty list.
@@ -4152,11 +4224,11 @@ func TestDAPServer_StepInTargets(t *testing.T) {
 	resultCh := make(chan *lisp.LVal, 1)
 	go func() {
 		res := env.LoadString("test",
-			"(defun f (x) (+ x 1))\n"+   // line 1
+			"(defun f (x) (+ x 1))\n"+ // line 1
 				"(defun g (x) (+ x 2))\n"+ // line 2
-				"(defun main ()\n"+          // line 3
-				"  (f (g 10)))\n"+           // line 4
-				"(main)")                    // line 5
+				"(defun main ()\n"+ // line 3
+				"  (f (g 10)))\n"+ // line 4
+				"(main)") // line 5
 		resultCh <- res
 	}()
 
@@ -4168,7 +4240,7 @@ func TestDAPServer_StepInTargets(t *testing.T) {
 
 	// Get stack trace to find the top frame ID.
 	st := s.stackTrace()
-	require.Greater(t, len(st.Body.StackFrames), 0)
+	require.NotEmpty(t, st.Body.StackFrames)
 	topFrameID := st.Body.StackFrames[0].Id
 
 	// Request step-in targets.
@@ -4217,7 +4289,7 @@ func TestDAPServer_StepInTargets(t *testing.T) {
 
 	// Verify we paused inside f (line 1).
 	st2 := s.stackTrace()
-	require.Greater(t, len(st2.Body.StackFrames), 0)
+	require.NotEmpty(t, st2.Body.StackFrames)
 	assert.Equal(t, 1, st2.Body.StackFrames[0].Line,
 		"should be paused inside f's body on line 1")
 
@@ -4226,7 +4298,7 @@ func TestDAPServer_StepInTargets(t *testing.T) {
 
 	select {
 	case res := <-resultCh:
-		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result")
 		assert.Equal(t, 13, res.Int, "f(g(10)) = f(12) = 13")
 	case <-time.After(5 * time.Second):
@@ -4294,9 +4366,9 @@ func TestDAPServer_StepInTargets_RegularStepIn(t *testing.T) {
 	resultCh := make(chan *lisp.LVal, 1)
 	go func() {
 		res := env.LoadString("test",
-			"(defun f (x)\n"+  // line 1
+			"(defun f (x)\n"+ // line 1
 				"  (+ x 1))\n"+ // line 2
-				"(f 10)")        // line 3
+				"(f 10)") // line 3
 		resultCh <- res
 	}()
 
@@ -4336,7 +4408,7 @@ func TestDAPServer_StepInTargets_RegularStepIn(t *testing.T) {
 
 	// Should be inside f's body (line 2).
 	st := s.stackTrace()
-	require.Greater(t, len(st.Body.StackFrames), 0)
+	require.NotEmpty(t, st.Body.StackFrames)
 	assert.Equal(t, 2, st.Body.StackFrames[0].Line,
 		"regular step-in should enter f's body on line 2")
 
@@ -4345,7 +4417,7 @@ func TestDAPServer_StepInTargets_RegularStepIn(t *testing.T) {
 
 	select {
 	case res := <-resultCh:
-		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")
 	}
@@ -4442,7 +4514,7 @@ func TestDAPServer_EvaluateContextSemantics(t *testing.T) {
 	s.read() // StoppedEvent (breakpoint)
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrameID := stResp.Body.StackFrames[0].Id
 
 	// --- Repl: multi-expression with progn semantics ---
@@ -4537,7 +4609,7 @@ func TestDAPServer_Completions(t *testing.T) {
 
 	// Get stack trace to cache frame environments.
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrameID := stResp.Body.StackFrames[0].Id
 
 	// --- Test 1: Complete local variable "a" (and verify "b" is excluded) ---
@@ -4692,14 +4764,14 @@ func TestDAPServer_VariablePagination(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// Evaluate a 5-element list to get an expandable reference.
 	evalResp := s.evaluate("(list 10 20 30 40 50)", topFrame)
 	assert.True(t, evalResp.Success)
 	ref := evalResp.Body.VariablesReference
-	require.Greater(t, ref, 0, "list should be expandable")
+	require.Positive(t, ref, "list should be expandable")
 
 	// Request with Start=1, Count=2 — should get elements [1] and [2].
 	page := s.variablesWithPagination(ref, 1, 2)
@@ -4747,13 +4819,13 @@ func TestDAPServer_VariablePaginationStartOnly(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	evalResp := s.evaluate("(list 10 20 30 40 50)", topFrame)
 	assert.True(t, evalResp.Success)
 	ref := evalResp.Body.VariablesReference
-	require.Greater(t, ref, 0)
+	require.Positive(t, ref)
 
 	// Start=3, Count=0 (no count) — should return tail from [3] onward.
 	page := s.variablesWithPagination(ref, 3, 0)
@@ -4801,13 +4873,13 @@ func TestDAPServer_VariablePaginationBeyondEnd(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	evalResp := s.evaluate("(list 1 2 3)", topFrame)
 	assert.True(t, evalResp.Success)
 	ref := evalResp.Body.VariablesReference
-	require.Greater(t, ref, 0)
+	require.Positive(t, ref)
 
 	// Start past end — should return empty.
 	page := s.variablesWithPagination(ref, 100, 0)
@@ -4871,7 +4943,7 @@ func TestDAPServer_EvaluatePaginationHints(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// Evaluate a list — IndexedVariables should be set.
@@ -4885,7 +4957,7 @@ func TestDAPServer_EvaluatePaginationHints(t *testing.T) {
 	// Evaluate a sorted-map — NamedVariables should be set.
 	mapResp := s.evaluate(`(sorted-map :a 1 :b 2)`, topFrame)
 	assert.True(t, mapResp.Success)
-	assert.Greater(t, mapResp.Body.VariablesReference, 0,
+	assert.Positive(t, mapResp.Body.VariablesReference,
 		"map should be expandable")
 	assert.Equal(t, 0, mapResp.Body.IndexedVariables,
 		"map eval should report 0 indexed children")
@@ -4985,13 +5057,13 @@ func TestDAPServer_FilterCommand_SetAndClear(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// Evaluate the map to get an expandable variable reference.
 	evalResp := s.evaluate("m", topFrame)
 	require.True(t, evalResp.Success, "evaluate m should succeed")
-	require.Greater(t, evalResp.Body.VariablesReference, 0, "map should be expandable")
+	require.Positive(t, evalResp.Body.VariablesReference, "map should be expandable")
 	mapRef := evalResp.Body.VariablesReference
 
 	// Without filter: all 4 entries.
@@ -5006,7 +5078,7 @@ func TestDAPServer_FilterCommand_SetAndClear(t *testing.T) {
 	// Re-evaluate to get a fresh variable reference (filter applies at expand time).
 	evalResp2 := s.evaluate("m", topFrame)
 	require.True(t, evalResp2.Success)
-	require.Greater(t, evalResp2.Body.VariablesReference, 0)
+	require.Positive(t, evalResp2.Body.VariablesReference)
 
 	filtered := s.variables(evalResp2.Body.VariablesReference)
 	assert.Len(t, filtered, 2, "filtered map should have 2 entries matching ^\"a")
@@ -5025,7 +5097,7 @@ func TestDAPServer_FilterCommand_SetAndClear(t *testing.T) {
 	// Re-evaluate and verify all entries are back.
 	evalResp3 := s.evaluate("m", topFrame)
 	require.True(t, evalResp3.Success)
-	require.Greater(t, evalResp3.Body.VariablesReference, 0)
+	require.Positive(t, evalResp3.Body.VariablesReference)
 
 	allVars := s.variables(evalResp3.Body.VariablesReference)
 	assert.Len(t, allVars, 4, "cleared filter should show all 4 entries")
@@ -5069,7 +5141,7 @@ func TestDAPServer_FilterCommand_InvalidRegex(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// Set a valid filter first, then send an invalid one.
@@ -5100,7 +5172,7 @@ func TestDAPServer_FilterCommand_InvalidRegex(t *testing.T) {
 	// Evaluate a sorted-map and expand — "valid" filter should apply.
 	mapResp := s.evaluate(`(sorted-map "valid-key" 1 "other" 2)`, topFrame)
 	require.True(t, mapResp.Success)
-	require.Greater(t, mapResp.Body.VariablesReference, 0)
+	require.Positive(t, mapResp.Body.VariablesReference)
 	vars := s.variables(mapResp.Body.VariablesReference)
 	assert.Len(t, vars, 1, "previous valid filter should still be active")
 	assert.Equal(t, `"valid-key"`, vars[0].Name)
@@ -5148,7 +5220,7 @@ func TestDAPServer_FilterCommand_InvalidatedEvent(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// Set filter — should get EvaluateResponse followed by InvalidatedEvent.
@@ -5212,7 +5284,7 @@ func TestDAPServer_FilterCommand_NoInvalidatedEventWhenUnsupported(t *testing.T)
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// Set filter — should get EvaluateResponse but NO InvalidatedEvent.
@@ -5266,7 +5338,7 @@ func TestDAPServer_FilterCommand_WithPagination(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// Set filter to only show "a" keys (a1, a2, a3 = 3 matches).
@@ -5276,7 +5348,7 @@ func TestDAPServer_FilterCommand_WithPagination(t *testing.T) {
 	// Evaluate map to get a reference.
 	evalResp := s.evaluate("m", topFrame)
 	require.True(t, evalResp.Success)
-	require.Greater(t, evalResp.Body.VariablesReference, 0)
+	require.Positive(t, evalResp.Body.VariablesReference)
 	mapRef := evalResp.Body.VariablesReference
 
 	// Request with pagination: Start=1, Count=1 (skip first, take 1).
@@ -5343,7 +5415,7 @@ func TestDAPServer_CustomCommand_Dispatch(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// Dispatch custom command with refresh=false.
@@ -5397,7 +5469,7 @@ func TestDAPServer_CustomCommand_Refresh(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// Dispatch command that returns refresh=true.
@@ -5449,7 +5521,7 @@ func TestDAPServer_CustomCommand_Error(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// Dispatch command that returns an error.
@@ -5497,7 +5569,7 @@ func TestDAPServer_CustomCommand_UnknownFallsThrough(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// Unknown /xxx command should fall through to Lisp eval (and fail).
@@ -5552,7 +5624,7 @@ func TestDAPServer_CustomCommand_Completions(t *testing.T) {
 	s.read() // StoppedEvent (breakpoint)
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// "/" prefix should return all commands (filter, reload, reset).
@@ -5644,7 +5716,7 @@ func TestDAPServer_HelpCommand_ListsBuiltinAndCustomCommands(t *testing.T) {
 	s.read() // StoppedEvent
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// /help should list built-in commands (filter, help) plus registered (reload).
@@ -5710,7 +5782,7 @@ func TestDAPServer_HelpCommand_ShowsCustomDescriptions(t *testing.T) {
 	s.read() // StoppedEvent (breakpoint)
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	evalResp := s.evaluate("/help", topFrame)
@@ -5780,7 +5852,7 @@ func TestDAPServer_HelpCommand_CompletionsIncludeDescriptions(t *testing.T) {
 	s.read() // StoppedEvent (breakpoint)
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrame := stResp.Body.StackFrames[0].Id
 
 	// "/" should include /help in completions.
@@ -5886,7 +5958,7 @@ func TestDAPServer_SetVariableLocal(t *testing.T) {
 
 	// Get stack trace to cache frame environments.
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrameID := stResp.Body.StackFrames[0].Id
 
 	// Get the local scope ref.
@@ -5991,7 +6063,7 @@ func TestDAPServer_SetVariablePackage(t *testing.T) {
 
 	// Get stack trace.
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrameID := stResp.Body.StackFrames[0].Id
 
 	// Get the package scope ref.
@@ -6081,7 +6153,7 @@ func TestDAPServer_SetVariableExpression(t *testing.T) {
 	s.read() // StoppedEvent (breakpoint)
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrameID := stResp.Body.StackFrames[0].Id
 	localRef := s.localScopeRef(topFrameID)
 
@@ -6152,7 +6224,7 @@ func TestDAPServer_SetVariableInvalidExpression(t *testing.T) {
 	s.read() // StoppedEvent (breakpoint)
 
 	stResp := s.stackTrace()
-	require.Greater(t, len(stResp.Body.StackFrames), 0)
+	require.NotEmpty(t, stResp.Body.StackFrames)
 	topFrameID := stResp.Body.StackFrames[0].Id
 	localRef := s.localScopeRef(topFrameID)
 
@@ -6406,7 +6478,7 @@ func TestDAPServer_StepIn_BuiltinAutoStepOver(t *testing.T) {
 	s.continueExec()
 	select {
 	case res := <-resultCh:
-		require.False(t, res.Type == lisp.LError, "program error: %v", res)
+		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for program to finish")
 	}

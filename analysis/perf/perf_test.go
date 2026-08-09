@@ -74,6 +74,6 @@ func TestAnalyzeFiles_MultiFile(t *testing.T) {
 
 	// Should see functions from both files
 	assert.NotEmpty(t, result.Graph.Functions)
-	assert.True(t, len(result.Graph.Functions) >= 5,
+	assert.GreaterOrEqual(t, len(result.Graph.Functions), 5,
 		"expected functions from both files, got %d", len(result.Graph.Functions))
 }

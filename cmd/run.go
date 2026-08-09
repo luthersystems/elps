@@ -3,7 +3,9 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -26,7 +28,8 @@ var runCmd = &cobra.Command{
 	Long: `Run ELPS Lisp code from files or command-line expressions.
 
 With file arguments, each file is loaded and executed in order. With -e,
-arguments are interpreted as Lisp expressions and evaluated directly.
+arguments are interpreted as Lisp expressions and evaluated directly. With
+-p, the value of each file or expression is printed to stdout.
 
 The runtime loads all standard library packages automatically. User code
 starts in the "user" package and can import other packages with use-package.
@@ -45,53 +48,73 @@ Exit codes:
   0  Success
   1  Runtime error (use elps lint to catch common mistakes before running)`,
 	Run: func(cmd *cobra.Command, args []string) {
-		rootDir := runRootDir
-		if rootDir == "" {
-			wd, err := os.Getwd()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "cannot determine working directory: %v\n", err)
-				os.Exit(1)
+		if err := runElps(args, os.Stdout); err != nil {
+			if !errors.Is(err, errRendered) {
+				fmt.Fprintf(os.Stderr, "%v\n", err)
 			}
-			rootDir = wd
-		}
-		rootDir, err := filepath.Abs(rootDir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "cannot resolve root directory: %v\n", err)
 			os.Exit(1)
-		}
-
-		env := lisp.NewEnv(nil)
-		reader := parser.NewReader()
-		env.Runtime.Reader = reader
-		env.Runtime.Library = &lisp.FSLibrary{FS: os.DirFS(rootDir)}
-		rc := lisp.InitializeUserEnv(env)
-		if !rc.IsNil() {
-			fmt.Fprintln(os.Stderr, rc)
-			os.Exit(1)
-		}
-		rc = lisplib.LoadLibrary(env)
-		if !rc.IsNil() {
-			fmt.Fprintln(os.Stderr, rc)
-			os.Exit(1)
-		}
-		rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
-		if !rc.IsNil() {
-			fmt.Fprintln(os.Stderr, rc)
-			os.Exit(1)
-		}
-		for i := range args {
-			arg, ferr := toRelativePath(rootDir, args[i])
-			if ferr != nil {
-				fmt.Fprintf(os.Stderr, "%v\n", ferr)
-				os.Exit(1)
-			}
-			res := env.LoadFile(arg)
-			if res.Type == lisp.LError {
-				renderLispError(res, args[i])
-				os.Exit(1)
-			}
 		}
 	},
+}
+
+// errRendered signals that the failure has already been written to stderr in
+// diagnostic form, so the caller must not print it again.
+var errRendered = errors.New("elps: error already rendered")
+
+// runElps loads each argument — a source file, or with -e a Lisp expression —
+// into a fresh environment, writing values to stdout when -p is set.
+func runElps(args []string, stdout io.Writer) error {
+	rootDir := runRootDir
+	if rootDir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("cannot determine working directory: %w", err)
+		}
+		rootDir = wd
+	}
+	rootDir, err := filepath.Abs(rootDir)
+	if err != nil {
+		return fmt.Errorf("cannot resolve root directory: %w", err)
+	}
+
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	env.Runtime.Library = &lisp.FSLibrary{FS: os.DirFS(rootDir)}
+	for _, rc := range []*lisp.LVal{
+		lisp.InitializeUserEnv(env),
+		lisplib.LoadLibrary(env),
+		env.InPackage(lisp.String(lisp.DefaultUserPackage)),
+	} {
+		if !rc.IsNil() {
+			return fmt.Errorf("%v", rc)
+		}
+	}
+
+	for i := range args {
+		var res *lisp.LVal
+		// name selects the source shown in the "try: elps lint" hint. An
+		// expression has no file to lint, so it is left empty.
+		name := ""
+		if runExpression {
+			res = env.LoadString(fmt.Sprintf("expression %d", i+1), args[i])
+		} else {
+			arg, ferr := toRelativePath(rootDir, args[i])
+			if ferr != nil {
+				return ferr
+			}
+			res = env.LoadFile(arg)
+			name = args[i]
+		}
+		if res.Type == lisp.LError {
+			renderLispError(res, name)
+			return errRendered
+		}
+		if runPrint {
+			//nolint:errcheck // best-effort output to stdout
+			fmt.Fprintln(stdout, res.String())
+		}
+	}
+	return nil
 }
 
 // toRelativePath converts a file path to be relative to rootDir.

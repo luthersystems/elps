@@ -43,12 +43,12 @@ const DefaultMaxParseDepth = 10000
 
 // Parser is a lisp parser.
 type Parser struct {
-	parsing         bool
 	src             *TokenSource
-	preserveFormat  bool
 	pendingComments []*token.Token
 	depth           int
 	maxDepth        int
+	parsing         bool
+	preserveFormat  bool
 }
 
 // NewFromSource initializes and returns a Parser that reads tokens from src.
@@ -108,7 +108,7 @@ func (p *Parser) ParseProgram() ([]*lisp.LVal, error) {
 
 	for {
 		expr, err := p.Parse()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -327,6 +327,7 @@ func (p *Parser) ParseQuote() *lisp.LVal {
 	result := p.Quote(inner)
 	inheritEndPos(result, inner)
 	applyPrefixLocation(result, quoteLoc)
+	p.hoistOperandComments(result, inner)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
 }
@@ -351,8 +352,10 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 		}
 	}
 	result := p.SExpr([]*lisp.LVal{sym, expr})
+	p.recordSynthesizedBrackets(result)
 	inheritEndPos(result, expr)
 	applyPrefixLocation(result, prefixLoc)
+	p.hoistOperandComments(result, expr)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
 }
@@ -369,11 +372,47 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 	if name.Type == lisp.LError {
 		return name
 	}
+	// The operand has to be a name the reader gives back as a symbol. #' is
+	// shorthand, printed in longhand as "(lisp:function <name>)", so a name
+	// that reads back as anything else means the printer changed the program.
+	//
+	// "#'0" was rejected earlier by requiring a symbol-START rune in the
+	// lexer, but '-' and '+' ARE symbol-start runes, so "#'-0", "#'-1",
+	// "#'+0", "#'1.5" and "#'-1abc" all sailed past it and produced symbols
+	// that turn back into INTs in longhand -- `elps fmt` silently rewriting a
+	// function reference as a number. Found by FuzzFormatCompact on "#'-0".
+	//
+	// The check lives here and not in the lexer because the lexer is the
+	// wrong layer to ask: "--" and "-a" lex as NEGATIVE, and only become
+	// symbols when ParseNegative merges them. A token-level guard rejects
+	// those valid names; re-reading through the parser gets them right.
+	if !readsBackAsSymbol(name.Str) {
+		return p.errorf("parse-error",
+			"invalid symbol following #': %q does not read back as a symbol", name.Str)
+	}
 	result := p.SExpr([]*lisp.LVal{op, name})
+	p.recordSynthesizedBrackets(result)
 	inheritEndPos(result, name)
 	applyPrefixLocation(result, prefixLoc)
+	p.hoistOperandComments(result, name)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
+}
+
+// recordSynthesizedBrackets stamps the paren bracket kind onto an s-expression
+// the parser BUILT rather than read -- the desugared forms behind #^ and #',
+// which have no bracket of their own in the source.
+//
+// Without it those nodes reach the formatter with BracketType unset, and
+// printer.bracketOpen falls back to '[' for any quoted value.  A quoted
+// shorthand therefore printed as '[lisp:expr 0] -- the bracket quotes the
+// value a second time, so it re-parses with a level of quoting the source
+// never had.  Found by FuzzFormat on the input "'#^0".
+func (p *Parser) recordSynthesizedBrackets(v *lisp.LVal) {
+	if !p.preserveFormat || v.Meta == nil {
+		return
+	}
+	v.Meta.BracketType = '('
 }
 
 // inheritEndPos copies end position from inner to outer, for prefix forms
@@ -402,6 +441,56 @@ func applyPrefixLocation(v *lisp.LVal, loc *token.Location) {
 	}
 }
 
+// hoistOperandComments moves comments that landed on a prefix form's OPERAND
+// up onto the prefix node itself.
+//
+// tokenLVal drains p.pendingComments onto whatever LVal it is building, and
+// for a prefix form the first LVal built is the operand.  Every comment
+// written anywhere in front of the operand therefore ends up attached to it --
+// the ones before the prefix token ("; c\n#\'a") and the ones in the gap after
+// it ("#^; c\na") alike.
+//
+// The printer reaches an operand through writeQuote or tryPrefixForm, and
+// neither writes a child's LeadingComments; the s-expression and list printers
+// do, but a prefix form is printed as neither.  Those comments were therefore
+// DELETED: `elps fmt` turned
+//
+//	; c
+//	#'a
+//
+// into "#'a", and "'\n; c\n[a]" into "'[a]".  Worse, when the operand could
+// not be re-sugared the longhand path printed the comment INSIDE the form, so
+// "#!/usr/bin/env elps\n#':%" formatted to "(lisp:function\n  #!/usr/bin/env
+// elps\n  :%)" -- output the parser then rejected, because a hash-bang is only
+// legal at the start of a program.  Found by FuzzGeneratedPipeline.
+//
+// It only bites when the prefix node has a Meta of its OWN.  lisp.Quote
+// shallow-copies an unquoted operand, Meta pointer included, so "'\n; c\na"
+// happened to survive -- the outer node saw the very same comments.  Quoting
+// an ALREADY-quoted operand builds an LQuote node with a fresh Meta, and #'
+// and #^ build a fresh two-cell s-expression, and those three lost them.
+//
+// Must run BEFORE applyPrefixNewlines, which reads LeadingComments to decide
+// which gap the node's newline metadata describes.
+func (p *Parser) hoistOperandComments(outer, inner *lisp.LVal) {
+	if !p.preserveFormat || outer.Type == lisp.LError || inner == nil {
+		return
+	}
+	if inner.Meta == nil || len(inner.Meta.LeadingComments) == 0 {
+		return
+	}
+	if outer.Meta == inner.Meta {
+		// Shared Meta: the comments are already on the node the printer
+		// writes.  Moving them would move them onto themselves.
+		return
+	}
+	if outer.Meta == nil {
+		outer.Meta = &lisp.SourceMeta{}
+	}
+	outer.Meta.LeadingComments = append(outer.Meta.LeadingComments, inner.Meta.LeadingComments...)
+	inner.Meta.LeadingComments = nil
+}
+
 // applyPrefixNewlines sets the newline and spacing metadata on a prefix form
 // (quote, #', #^) using the prefix token's values, which would otherwise be
 // lost because tokenLVal reads from the inner expression's token.
@@ -412,11 +501,51 @@ func (p *Parser) applyPrefixNewlines(v *lisp.LVal, newlines int, spaces int) {
 	if v.Meta == nil {
 		v.Meta = &lisp.SourceMeta{}
 	}
-	if newlines >= 1 {
+	if len(v.Meta.LeadingComments) > 0 {
+		// Two independent gaps have to be recorded here, and NEITHER can be
+		// left to tokenLVal.
+		//
+		// BlankLinesAfterComments is the gap between the last comment and
+		// this node, which the prefix token measures because the prefix IS
+		// this node's first token.  tokenLVal derived it from the INNER
+		// expression's token, which sits after the prefix and so measures the
+		// wrong whitespace: for ";\n'\n\n0" it recorded the blank line
+		// between ' and 0 instead of the (none) between ; and ', so the blank
+		// line moved on every re-format and Format stopped being idempotent.
+		// Found by FuzzFormat.
+		//
+		// NewlineBefore / BlankLinesBefore describe the gap before the FIRST
+		// COMMENT.  These used to be left alone on the premise that tokenLVal
+		// had already taken them from that comment.  That held only while this
+		// branch was reachable ONLY for a node sharing its operand's Meta --
+		// the quote-a-plain-symbol case, where tokenLVal really did see the
+		// comments.  hoistOperandComments made it reachable for #', #^ and
+		// LQuote too, and those have a Meta of their OWN that tokenLVal filled
+		// in BEFORE the hoist, from the operand token.  For #' that operand
+		// inherits the prefix's own PrecedingNewlines -- readFunRef emits
+		// FUN_REF and its symbol from a single readToken, with no
+		// skipWhitespace between them -- so "(a)\n; c\n\n#'f\n" reported one
+		// blank line before the comment and `elps fmt` INSERTED one, reflowing
+		// a comment that describes the line above it.  It reaches real source:
+		// the `; <-` markers in editors/vscode/test/grammar/basics.lisp are
+		// syntax-test assertions ABOUT the preceding line, so moving them
+		// changes what they assert.
+		v.Meta.BlankLinesAfterComments = 0
+		if newlines > 1 {
+			v.Meta.BlankLinesAfterComments = newlines - 1
+		}
 		v.Meta.NewlineBefore = true
-	}
-	if newlines > 1 {
-		v.Meta.BlankLinesBefore = newlines - 1
+		v.Meta.BlankLinesBefore = 0
+		if n := v.Meta.LeadingComments[0].PrecedingNewlines; n > 1 {
+			v.Meta.BlankLinesBefore = n - 1
+		}
+	} else {
+		if newlines >= 1 {
+			v.Meta.NewlineBefore = true
+		}
+		if newlines > 1 {
+			v.Meta.BlankLinesBefore = newlines - 1
+		}
 	}
 	v.Meta.PrecedingSpaces = spaces
 }
@@ -427,7 +556,22 @@ func (p *Parser) ParseNegative() *lisp.LVal {
 	}
 	switch p.PeekType() {
 	case token.INT, token.FLOAT, token.SYMBOL:
+		// The sign and the digits are two tokens that become one literal, so
+		// the merged token has to inherit the SIGN's position AND its
+		// whitespace bookkeeping -- the sign is the literal's first character,
+		// so it is the sign that measures the gap in front of it.  The digits
+		// are glued to the sign and always report a gap of zero.
+		//
+		// Only Source was carried over.  PrecedingNewlines therefore collapsed
+		// to zero, tokenLVal cleared NewlineBefore, and the formatter put the
+		// literal back on the previous line -- which, when that line ended in
+		// a comment, meant "(a ; c\n-1)" formatted to "(a ; c -1)" and the
+		// -1 was swallowed by the comment.  `elps fmt` silently deleting a
+		// term from the program it was tidying.  Found by
+		// FuzzGeneratedPipeline.
 		p.src.Peek().Source = p.Location()
+		p.src.Peek().PrecedingNewlines = p.src.Token.PrecedingNewlines
+		p.src.Peek().PrecedingSpaces = p.src.Token.PrecedingSpaces
 		p.src.Peek().Text = p.TokenText() + p.src.Peek().Text
 	default:
 		return p.Symbol(p.TokenText())
@@ -722,7 +866,7 @@ func (p *Parser) ParseProgramFaultTolerant() ParseResult {
 
 	for {
 		expr, err := p.Parse()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -781,4 +925,23 @@ func (p *Parser) skipToNextExpression() {
 // LVal (e.g., trailing comments at end of file). Only useful in formatting mode.
 func (p *Parser) PendingComments() []*token.Token {
 	return p.pendingComments
+}
+
+// readsBackAsSymbol reports whether s, parsed on its own, yields exactly one
+// expression and that expression is a symbol named s.
+//
+// Used to reject #' operands that cannot survive the round trip through the
+// printer. Re-parsing rather than pattern-matching the name states the
+// requirement exactly: an earlier attempt used strconv.ParseInt/ParseFloat and
+// was wrong, because "-1abc" is not a number by either yet still reads back as
+// an INT. Re-parsing also stays correct if the number syntax ever changes.
+func readsBackAsSymbol(s string) bool {
+	if s == "" {
+		return false
+	}
+	exprs, err := New(token.NewScanner("", strings.NewReader(s))).ParseProgram()
+	if err != nil || len(exprs) != 1 {
+		return false
+	}
+	return exprs[0].Type == lisp.LSymbol && exprs[0].Str == s
 }

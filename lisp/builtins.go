@@ -317,7 +317,9 @@ var (
 			`Returns true if expr is a bytes value, false otherwise.`},
 		{"equal?", Formals("a", "b"), builtinEqual,
 			`Returns true if a and b are structurally equal, performing deep
-			comparison across all value types.`},
+			comparison across all value types. Sorted-map keys compare by
+			name, matching how get and key? identify them, so a map keyed
+			by 'a is equal? to a map keyed by "a".`},
 		{"all?", Formals("predicate", "seq"), builtinAllP,
 			`Returns true if predicate returns truthy for every element in
 			seq. Returns true for an empty sequence. Short-circuits on the
@@ -1974,8 +1976,18 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 // will have other behavior, and there is another func in this file called
 // appendBytes.
 func builtinAppend_Bytes(env *LEnv, args *LVal) *LVal {
-	// the type sequence has already been validated.
+	// The comment that used to sit here claimed the sequence "has already been
+	// validated".  It had not been: builtinAppend validates the type
+	// SPECIFIER (args.Cells[0] == 'bytes) and then dispatches here without
+	// looking at args.Cells[1], so `(append 'bytes 0)` reached LVal.Bytes()
+	// with an int and panicked ("not bytes: int").  Under an embedded
+	// interpreter that surfaces as an internal-panic condition -- an error no
+	// ordinary handler can contain -- and in a phylum it is a chaincode
+	// crash.  This is the same guard append-bytes has always had.
 	_, lbytes, xs := args.Cells[0], args.Cells[1], args.Cells[2:]
+	if lbytes.Type != LBytes {
+		return env.Errorf("second argument is not bytes: %v", lbytes.Type)
+	}
 	b := lbytes.Bytes()
 	xsVal := QExpr(xs)
 	resultLen := len(b) + xsVal.Len()
@@ -2075,7 +2087,7 @@ func builtinIsType(env *LEnv, args *LVal) *LVal {
 	}
 	typesym := typespec.Str
 	if typespec.Type == LTaggedVal {
-		if typesym != fmt.Sprintf("%s:typedef", env.Runtime.Registry.Lang) {
+		if typesym != env.Runtime.Registry.Lang+":typedef" {
 			return env.Errorf("first argument is not a valid type specifier: %v", typesym)
 		}
 		typesym = typespec.Cells[0].Cells[0].Str
@@ -2228,35 +2240,35 @@ func builtinAnyP(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinMax(env *LEnv, args *LVal) *LVal {
-	max := args.Cells[0]
-	if !max.IsNumeric() {
-		return env.Errorf("argument is not a number: %s", max.Type)
+	maxVal := args.Cells[0]
+	if !maxVal.IsNumeric() {
+		return env.Errorf("argument is not a number: %s", maxVal.Type)
 	}
 	for _, x := range args.Cells[1:] {
 		if !x.IsNumeric() {
 			return env.Errorf("argument is not a number: %s", x.Type)
 		}
-		if lessNumeric(max, x) {
-			max = x
+		if lessNumeric(maxVal, x) {
+			maxVal = x
 		}
 	}
-	return max
+	return maxVal
 }
 
 func builtinMin(env *LEnv, args *LVal) *LVal {
-	min := args.Cells[0]
-	if !min.IsNumeric() {
-		return env.Errorf("argument is not a number: %s", min.Type)
+	minVal := args.Cells[0]
+	if !minVal.IsNumeric() {
+		return env.Errorf("argument is not a number: %s", minVal.Type)
 	}
 	for _, x := range args.Cells[1:] {
 		if !x.IsNumeric() {
 			return env.Errorf("argument is not a number: %s", x.Type)
 		}
-		if lessNumeric(x, min) {
-			min = x
+		if lessNumeric(x, minVal) {
+			minVal = x
 		}
 	}
-	return min
+	return minVal
 }
 
 func builtinStringLEq(env *LEnv, args *LVal) *LVal {
@@ -2408,6 +2420,30 @@ func builtinPow(env *LEnv, args *LVal) *LVal {
 	return Float(math.Pow(toFloat(a), toFloat(b)))
 }
 
+// powInt raises a to the b-th power in int arithmetic, wrapping on overflow
+// exactly as Go's `*` does.
+//
+// Binary exponentiation: at most 63 iterations for any b, because b is
+// halved every turn.  The previous implementation doubled an exponent
+// accumulator instead --
+//
+//	n := 1; atob := a
+//	for 2*n < b { atob *= atob; n *= 2 }
+//	for n < b   { atob *= a;    n++ }
+//
+// -- and for b > 2^62 that loop never terminates.  n doubles 1, 2, ..., 2^62,
+// then 2^63 wraps to MinInt, then MinInt*2 wraps to exactly 0, and 2*0 < b is
+// true forever.  Zero is a true fixed point: the loop allocates nothing and
+// evaluates nothing, so it is invisible to MaxAlloc, to MaxSteps AND to a
+// context deadline -- none of those are consulted inside a builtin.
+// (pow -128 9223372036854775807) hung the process until something killed it.
+// Found by FuzzApplyStdlib as (pow -9223372036854775808 9223372036854775806).
+//
+// The result is unchanged wherever the old loop terminated.  Go's int
+// multiplication is arithmetic mod 2^64, which is a commutative ring, so the
+// order in which the b factors are associated cannot change the product --
+// squaring-and-multiplying and multiplying b times agree bit for bit,
+// including on the wrapped answers.  (pow 2 64) still returns 0.
 func powInt(a, b int) *LVal {
 	if b == 0 {
 		return Int(1)
@@ -2415,15 +2451,16 @@ func powInt(a, b int) *LVal {
 	if b < 0 {
 		return Float(math.Pow(float64(a), float64(b)))
 	}
-	n := 1
-	atob := a
-	for 2*n < b {
-		atob *= atob
-		n *= 2
-	}
-	for n < b {
-		atob *= a
-		n++
+	atob := 1
+	base := a
+	for b > 0 {
+		if b&1 == 1 {
+			atob *= base
+		}
+		b >>= 1
+		if b > 0 {
+			base *= base
+		}
 	}
 	return Int(atob)
 }
@@ -2625,10 +2662,17 @@ func mulFloat(x, args *LVal) *LVal {
 }
 
 func builtinDebugPrint(env *LEnv, args *LVal) *LVal {
-	if len(args.Cells) == 0 {
-		fmt.Println()
-		return Nil()
-	}
+	// There is deliberately no zero-argument special case here.  There used to
+	// be one, and it called fmt.Println -- writing the newline to os.Stdout,
+	// ignoring Runtime.Stderr entirely.  That contradicted both the builtin's
+	// documentation ("Prints all arguments to stderr") and its own non-empty
+	// branch, and it meant an embedder who had redirected debug output still
+	// got a stray newline on the host process's stdout, which for a
+	// stdout-is-the-protocol host (an LSP server, a JSON-RPC chaincode
+	// process) is a corrupted stream rather than cosmetic noise.
+	//
+	// fmt.Fprintln with no variadic arguments already writes exactly the
+	// newline, so removing the branch is the whole fix.
 	fmtargs := make([]interface{}, len(args.Cells))
 	for i := range args.Cells {
 		fmtargs[i] = args.Cells[i]
@@ -2754,13 +2798,13 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 		}
 
 		// Find the closing '}'.
-		close := strings.IndexByte(f[j+1:], '}')
-		if close < 0 {
+		closeIdx := strings.IndexByte(f[j+1:], '}')
+		if closeIdx < 0 {
 			return env.Errorf("unclosed '{' in format string")
 		}
-		close += j + 1 // absolute index of '}'
+		closeIdx += j + 1 // absolute index of '}'
 
-		inner := f[j+1 : close]
+		inner := f[j+1 : closeIdx]
 
 		// Determine argument index.
 		var argIdx int
@@ -2803,7 +2847,7 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 			buf.WriteString(val.String())
 		}
 
-		i = close + 1
+		i = closeIdx + 1
 	}
 
 	return String(buf.String())
@@ -2811,7 +2855,7 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 
 // isAllSpaces returns true if s contains only spaces and tabs.
 func isAllSpaces(s string) bool {
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if s[i] != ' ' && s[i] != '\t' {
 			return false
 		}

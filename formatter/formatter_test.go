@@ -4,11 +4,14 @@ package formatter
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
@@ -49,7 +52,7 @@ func roundTripEqual(t *testing.T, original, formatted string) {
 		var parts []string
 		for {
 			expr, err := p.Parse()
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			require.NoError(t, err)
@@ -61,14 +64,7 @@ func roundTripEqual(t *testing.T, original, formatted string) {
 }
 
 func joinParts(parts []string) string {
-	result := ""
-	for i, p := range parts {
-		if i > 0 {
-			result += " "
-		}
-		result += p
-	}
-	return result
+	return strings.Join(parts, " ")
 }
 
 // --- Basic indentation tests ---
@@ -372,8 +368,17 @@ func TestCommentInsideSExpr(t *testing.T) {
 func TestCommentInsideList(t *testing.T) {
 	runFormatTests(t, []formatTest{
 		{
+			// A comment written in column 0 stays in column 0 (see
+			// commentIndent); the sibling it precedes is still indented.
 			name:  "comment inside brackets",
 			input: "[a\n; comment\nb]",
+			expected: "[a\n" +
+				"; comment\n" +
+				" b]\n",
+		},
+		{
+			name:  "comment inside brackets, indented in source",
+			input: "[a\n ; comment\nb]",
 			expected: "[a\n" +
 				" ; comment\n" +
 				" b]\n",
@@ -946,7 +951,7 @@ func TestNestedMixedRules(t *testing.T) {
 func TestEdgeEmptyInput(t *testing.T) {
 	got, err := Format([]byte(""), nil)
 	require.NoError(t, err)
-	assert.Equal(t, "", string(got))
+	assert.Empty(t, string(got))
 }
 
 func TestEdgeSingleAtom(t *testing.T) {
@@ -1280,8 +1285,20 @@ func TestPatternBlankLineAfterComment(t *testing.T) {
 			expected: "; storage key format\n; prefix:id\n\n(set 'storage-prefix \"data\")\n",
 		},
 		{
+			// The comment was written flush left, so it stays flush left --
+			// see commentIndent. gofmt does the same for a `//` comment in
+			// column 1 inside a function body. The blank line after it, which
+			// is what this test is actually about, is preserved either way.
 			name:  "blank line after comment inside body",
 			input: "(defun foo ()\n; setup\n\n(init)\n(run))",
+			expected: "(defun foo ()\n" +
+				"; setup\n\n" +
+				"  (init)\n" +
+				"  (run))\n",
+		},
+		{
+			name:  "blank line after indented comment inside body",
+			input: "(defun foo ()\n  ; setup\n\n(init)\n(run))",
 			expected: "(defun foo ()\n" +
 				"  ; setup\n\n" +
 				"  (init)\n" +
@@ -1578,7 +1595,7 @@ func TestFormatFile(t *testing.T) {
 	t.Run("empty input", func(t *testing.T) {
 		got, err := FormatFile([]byte(""), "empty.lisp", nil)
 		require.NoError(t, err)
-		assert.Equal(t, "", string(got))
+		assert.Empty(t, string(got))
 	})
 }
 
@@ -1783,6 +1800,26 @@ func TestAtomFallbackNoMeta(t *testing.T) {
 			expected: "\"hello\\tworld\\n\"\n",
 		},
 	})
+}
+
+// TestWriteAtomUnexpectedType pins the writeAtom fallback for a value that is
+// neither LInt nor LFloat.  No caller can reach it today -- writeExpr and
+// writeCompactExpr both dispatch to writeAtom only for the two numeric types
+// -- but writeAtom used to emit nothing at all in that case, which in a
+// formatter is silent deletion of source.  It now degrades to v.String(), the
+// same fallback the two callers use for types they do not recognise.
+func TestWriteAtomUnexpectedType(t *testing.T) {
+	p := newPrinter(DefaultConfig())
+	p.writeAtom(lisp.Symbol("some-symbol"))
+	if got := p.buf.String(); got != "some-symbol" {
+		t.Errorf("writeAtom(symbol) = %q, want %q", got, "some-symbol")
+	}
+
+	p = newPrinter(DefaultConfig())
+	p.writeAtom(lisp.String("txt"))
+	if got := p.buf.String(); got == "" {
+		t.Error("writeAtom(string) wrote nothing; the fallback must not drop the node")
+	}
 }
 
 // --- Inner trailing comment blank line tests ---

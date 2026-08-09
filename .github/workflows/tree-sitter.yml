@@ -3,8 +3,25 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - "tree-sitter-elps/**"
+      # Stacked PRs. Multi-part work here is reviewed as a chain of PRs
+      # whose base is another claude/* branch. This filter matches the
+      # PR's BASE, so with `main` alone none of these workflows fired on
+      # such a PR -- and a board showing only the two branch-agnostic
+      # Socket checks reads as a pass when in fact nothing ran.
+      - 'claude/**'
+    # NO `paths:` filter, deliberately -- see the "Required: tree-sitter" job
+    # below. A path-filtered workflow does not run at all on a PR that touches
+    # nothing it matches, so its checks never report; and a REQUIRED check that
+    # never reports blocks the PR forever, with only a settings edit to clear
+    # it. Since this workflow's aggregate is meant to be a required check, it
+    # has to report on every PR.
+    #
+    # The cost is one small job (checkout, Go, `go test` on a single module)
+    # per PR, which is a fair price for a gate that is honest about whether the
+    # grammar still builds.
+    #
+    # The `push` trigger below keeps its filter: pushes have no required
+    # checks, so skipping there blocks nothing.
   push:
     branches:
       - main
@@ -20,10 +37,10 @@ jobs:
     name: Tree-sitter Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
         with:
           go-version: "1.25"
           cache: true
@@ -36,3 +53,43 @@ jobs:
       - name: Tests
         working-directory: tree-sitter-elps
         run: go test -v ./...
+
+  # THE ONE CHECK TO REQUIRE FOR THIS WORKFLOW.
+  #
+  # Branch protection matches a required status check by NAME, so requiring the
+  # individual jobs means editing repo settings every time a job is added,
+  # renamed or resharded -- and forgetting to leaves the new job unguarded
+  # while the board still looks fully green. That is the same "green by not
+  # looking" shape as an excluded path or a queued job.
+  #
+  # This job has a fixed name and depends on every other job in the workflow,
+  # so it is the only name that ever needs to be in the required list. Adding a
+  # job means adding it to `needs:` here -- and scripts/ci-gates-test.sh fails
+  # the PR if you don't, so the aggregate cannot silently stop covering
+  # something.
+  #
+  # always() plus an explicit success check, because `needs` alone would SKIP
+  # this job when an upstream one fails, and a skipped required check reads as
+  # green rather than red.
+  required:
+    name: "Required: tree-sitter"
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: always()
+    steps:
+      - name: Assert every job in this workflow succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "upstream job results: ${RESULTS}"
+          rc=0
+          for r in ${RESULTS}; do
+            # success is the ONLY pass. failure, cancelled and skipped all mean
+            # the work was not demonstrably done.
+            [ "$r" = "success" ] || rc=1
+          done
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::A job in this workflow did not succeed (results: ${RESULTS}). Open the individual jobs above."
+            exit 1
+          fi
+          echo "All jobs in this workflow succeeded."

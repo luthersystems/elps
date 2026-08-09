@@ -3,6 +3,7 @@
 package lisp_test
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/luthersystems/elps/elpstest"
@@ -206,6 +207,128 @@ func TestSortedMapCopyViaSort(t *testing.T) {
 	elpstest.RunTestSuite(t, tests)
 }
 
+// TestSortedMapEqualIgnoresKeySpelling pins that sorted-map equality follows
+// the same key identity as lookup.
+//
+// docs/lang.md documents that a sorted-map key may be written as a string or
+// a symbol and that "looking up values by key can be done with either a
+// string or a symbol, regardless which type was used to insert/set the value
+// originally" — get, key?, assoc and dissoc all honour that. Equal() used to
+// compare the reconstructed key LVals with LVal.Equal, which is type
+// sensitive, so it disagreed with every one of those accessors.
+//
+// The map's remembered key spelling is also sticky: Set with a string key
+// does not clear a symbol spelling recorded by an earlier Set. That made
+// equality depend on a map's construction *history* rather than its
+// contents — two maps holding identical entries compared unequal purely
+// because one of them had once been keyed with a symbol.
+func TestSortedMapEqualIgnoresKeySpelling(t *testing.T) {
+	strKeyed := lisp.SortedMap()
+	strKeyed.Map().Set(lisp.String("a"), lisp.Int(1))
+
+	symKeyed := lisp.SortedMap()
+	symKeyed.Map().Set(lisp.Symbol("a"), lisp.Int(1))
+
+	// Every documented accessor agrees these hold the same entry.
+	for _, key := range []*lisp.LVal{lisp.String("a"), lisp.Symbol("a")} {
+		s, sok := strKeyed.Map().Get(key)
+		y, yok := symKeyed.Map().Get(key)
+		assert.True(t, sok && yok, "both maps must contain key %v", key)
+		assert.True(t, lisp.True(s.Equal(y)), "both maps must map %v to the same value", key)
+	}
+	assert.Equal(t, strKeyed.Map().Len(), symKeyed.Map().Len())
+
+	assert.True(t, lisp.True(strKeyed.Equal(symKeyed)),
+		`(sorted-map "a" 1) and (sorted-map 'a 1) must be equal?`)
+	assert.True(t, lisp.True(symKeyed.Equal(strKeyed)),
+		"equality must be symmetric")
+
+	// Sticky key spelling: overwriting a symbol-keyed entry with a string
+	// key leaves the symbol spelling in place. Equality must not see it.
+	historyDependent := lisp.SortedMap()
+	historyDependent.Map().Set(lisp.Symbol("a"), lisp.Int(0))
+	historyDependent.Map().Set(lisp.String("a"), lisp.Int(1))
+	assert.True(t, lisp.True(historyDependent.Equal(strKeyed)),
+		"equality must depend on contents, not on construction history")
+
+	// Different key names still differ.
+	other := lisp.SortedMap()
+	other.Map().Set(lisp.Symbol("b"), lisp.Int(1))
+	assert.True(t, lisp.Not(strKeyed.Equal(other)),
+		"keys with different names must not be equal")
+}
+
+// TestSortedMapKeySpellingIsStickyOnSymbol pins ACCEPTED behaviour, not a bug.
+// It exists so the next reader does not rediscover it as one.
+//
+// A sorted-map remembers whether each key was last *seen* as a symbol, and
+// that memory is monotonic within an entry's lifetime: any symbol write turns
+// it on, a string write never turns it off, and only deleting the entry
+// clears it. Measured:
+//
+//	(sorted-map "a" 1)                            => (sorted-map "a" 1)
+//	(sorted-map 'a 0)  + (assoc! m "a" 1)         => (sorted-map 'a 1)   <- string write does NOT clear
+//	(sorted-map "a" 0) + (assoc! m 'a 1)          => (sorted-map 'a 1)   <- symbol write sets it
+//	(sorted-map 'a 0)  + dissoc + (assoc! "a" 1)  => (sorted-map "a" 1)  <- delete clears it
+//
+// So the displayed spelling reflects the entry's history rather than its last
+// write. That is arbitrary rather than designed, but it is only ever
+// COSMETIC: it reaches `keys` and printing, and nothing else. Lookup has
+// always ignored key spelling (docs/lang.md), and as of
+// TestSortedMapEqualIgnoresKeySpelling so does equality -- which is the bug
+// that was actually fixed. Nothing in the language depends on which spelling
+// comes back.
+//
+// Changing this would alter `keys` and printed output for every existing
+// program, which is a far larger blast radius than the cosmetic inconsistency
+// justifies. If that trade is ever revisited, this test is the record of what
+// the behaviour was and why it was left alone.
+func TestSortedMapKeySpellingIsStickyOnSymbol(t *testing.T) {
+	symbolKey := lisp.Symbol("a")
+	stringKey := lisp.String("a")
+
+	// spelling reports the type of the single key returned by Keys().
+	spelling := func(m *lisp.LVal) lisp.LType {
+		keys := m.Map().Keys()
+		if len(keys.Cells) != 1 {
+			t.Fatalf("expected exactly one key, got %d", len(keys.Cells))
+		}
+		return keys.Cells[0].Type
+	}
+
+	neverSymbol := lisp.SortedMap()
+	neverSymbol.Map().Set(stringKey, lisp.Int(1))
+	assert.Equal(t, lisp.LString, spelling(neverSymbol),
+		"a key only ever written as a string stays a string")
+
+	stringWriteDoesNotClear := lisp.SortedMap()
+	stringWriteDoesNotClear.Map().Set(symbolKey, lisp.Int(0))
+	stringWriteDoesNotClear.Map().Set(stringKey, lisp.Int(1))
+	assert.Equal(t, lisp.LSymbol, spelling(stringWriteDoesNotClear),
+		"overwriting with a string key does NOT clear the remembered symbol spelling")
+
+	symbolWriteSets := lisp.SortedMap()
+	symbolWriteSets.Map().Set(stringKey, lisp.Int(0))
+	symbolWriteSets.Map().Set(symbolKey, lisp.Int(1))
+	assert.Equal(t, lisp.LSymbol, spelling(symbolWriteSets),
+		"a symbol write sets the remembered spelling")
+
+	deleteClears := lisp.SortedMap()
+	deleteClears.Map().Set(symbolKey, lisp.Int(0))
+	deleteClears.Map().Del(stringKey)
+	deleteClears.Map().Set(stringKey, lisp.Int(1))
+	assert.Equal(t, lisp.LString, spelling(deleteClears),
+		"deleting the entry clears the remembered spelling")
+
+	// The whole point: none of the above is observable through equality.
+	// Every map here holding value 1 must be equal? to every other, however
+	// its key was spelled along the way.
+	for _, m := range []*lisp.LVal{stringWriteDoesNotClear, symbolWriteSets, deleteClears} {
+		assert.True(t, lisp.True(neverSymbol.Equal(m)),
+			"key spelling must not be observable through equality")
+	}
+}
+
 // TestSortedMapEqualELPS verifies sorted-map equality from the ELPS level.
 func TestSortedMapEqualELPS(t *testing.T) {
 	tests := elpstest.TestSuite{
@@ -234,7 +357,115 @@ func TestSortedMapEqualELPS(t *testing.T) {
 			{`(equal? (sorted-map) ())`, `false`, ""},
 			{`(equal? (sorted-map 'a 1) 42)`, `false`, ""},
 			{`(equal? (sorted-map 'a 1) "hello")`, `false`, ""},
+
+			// Key spelling is not part of key identity: get/key?/assoc all
+			// accept either spelling for the same entry, so equal? must
+			// too. See TestSortedMapEqualIgnoresKeySpelling.
+			{`(equal? (sorted-map "a" 1) (sorted-map 'a 1))`, `true`, ""},
+			{`(equal? (sorted-map "a" 1 'b 2) (sorted-map 'a 1 "b" 2))`, `true`, ""},
+			{`(equal? (sorted-map "a" 1) (sorted-map 'a 2))`, `false`, ""},
+			{`(equal? (sorted-map "a" 1) (sorted-map 'b 1))`, `false`, ""},
+			// Equality follows contents, not construction history.
+			{`(set 'mh (sorted-map 'a 0))`, `(sorted-map 'a 0)`, ""},
+			{`(assoc! mh "a" 1)`, `(sorted-map 'a 1)`, ""},
+			{`(equal? mh (sorted-map "a" 1))`, `true`, ""},
 		}},
 	}
 	elpstest.RunTestSuite(t, tests)
+}
+
+// intKeyedMap is a minimal custom lisp.Map backed by integer keys. Map is an
+// exported interface and SortedMapFromData an exported extension point, so an
+// embedder can legitimately build one of these — the stock sortedmap's
+// string/symbol-only key restriction is not part of the Map contract, and
+// elpstest.AssertSortedMap does not test for it.
+type intKeyedMap struct{ m map[int]*lisp.LVal }
+
+func newIntKeyedMap(pairs map[int]string) *lisp.LVal {
+	im := &intKeyedMap{m: make(map[int]*lisp.LVal, len(pairs))}
+	for k, v := range pairs {
+		im.m[k] = lisp.String(v)
+	}
+	return lisp.SortedMapFromData(&lisp.MapData{Map: im})
+}
+
+func (im *intKeyedMap) Len() int { return len(im.m) }
+
+func (im *intKeyedMap) Get(k *lisp.LVal) (*lisp.LVal, bool) {
+	v, ok := im.m[k.Int]
+	if !ok {
+		return lisp.Nil(), false
+	}
+	return v, true
+}
+
+func (im *intKeyedMap) Set(k, v *lisp.LVal) *lisp.LVal {
+	im.m[k.Int] = v
+	return lisp.Nil()
+}
+
+func (im *intKeyedMap) Del(k *lisp.LVal) *lisp.LVal {
+	delete(im.m, k.Int)
+	return lisp.Nil()
+}
+
+func (im *intKeyedMap) Keys() *lisp.LVal {
+	ks := make([]int, 0, len(im.m))
+	for k := range im.m {
+		ks = append(ks, k)
+	}
+	sort.Ints(ks)
+	cells := make([]*lisp.LVal, len(ks))
+	for i, k := range ks {
+		cells[i] = lisp.Int(k)
+	}
+	return lisp.QExpr(cells)
+}
+
+func (im *intKeyedMap) Entries(buf []*lisp.LVal) *lisp.LVal {
+	keys := im.Keys()
+	for i, k := range keys.Cells {
+		v, _ := im.Get(k)
+		buf[i] = lisp.QExpr([]*lisp.LVal{k, v})
+	}
+	return lisp.Int(len(im.m))
+}
+
+// TestSortedMapEqualNonStringKeys pins that the key-name comparison used for
+// string-like keys is NOT applied to key types that carry no name.
+//
+// Comparing keys by .Str unconditionally is safe for the stock sortedmap,
+// which rejects anything but LString/LSymbol. But a custom lisp.Map may be
+// keyed by integers or tuples, whose .Str is always "" — so every key would
+// compare equal to every other, and two structurally different maps would
+// report as equal?. That is a silent wrong answer in a public API: an
+// embedder comparing snapshots for change detection would see "no change"
+// and skip a write.
+func TestSortedMapEqualNonStringKeys(t *testing.T) {
+	a := newIntKeyedMap(map[int]string{1: "x", 2: "y"})
+	b := newIntKeyedMap(map[int]string{7: "x", 9: "y"})
+
+	// The maps are plainly different through their keys.
+	assert.Equal(t, `'(1 2)`, a.Map().Keys().String())
+	assert.Equal(t, `'(7 9)`, b.Map().Keys().String())
+
+	assert.True(t, lisp.Not(a.Equal(b)),
+		"integer-keyed maps with different keys must not be equal")
+	assert.True(t, lisp.Not(b.Equal(a)), "inequality must be symmetric")
+
+	// Same keys and values still compare equal.
+	assert.True(t, lisp.True(a.Equal(newIntKeyedMap(map[int]string{1: "x", 2: "y"}))),
+		"integer-keyed maps with identical entries must be equal")
+
+	// Same keys, different values.
+	assert.True(t, lisp.Not(a.Equal(newIntKeyedMap(map[int]string{1: "x", 2: "z"}))),
+		"differing values must not be equal")
+
+	// And the string-like rule still applies where it was reasoned about.
+	strKeyed := lisp.SortedMap()
+	strKeyed.Map().Set(lisp.String("a"), lisp.Int(1))
+	symKeyed := lisp.SortedMap()
+	symKeyed.Map().Set(lisp.Symbol("a"), lisp.Int(1))
+	assert.True(t, lisp.True(strKeyed.Equal(symKeyed)),
+		"string-like keys must still compare by name")
 }

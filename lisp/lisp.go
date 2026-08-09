@@ -190,37 +190,52 @@ type MacroExpansionContext struct {
 // It is only allocated when a debugger is attached (Runtime.Debugger != nil),
 // so production code pays zero allocation cost.
 type MacroExpansionInfo struct {
-	*MacroExpansionContext        // shared across all nodes in one expansion
-	ID                    int64   // unique per node, monotonically increasing
+	*MacroExpansionContext       // shared across all nodes in one expansion
+	ID                     int64 // unique per node, monotonically increasing
 }
 
 // SourceMeta holds formatting metadata for an LVal, populated only when
 // parsing in format-preserving mode. Nil in normal parsing — zero cost.
 type SourceMeta struct {
-	OriginalText            string         // original token text for literals (preserves escapes, numeric bases)
-	BracketType             rune           // '(' or '[' for LSExpr nodes
-	LeadingComments         []*token.Token // comment tokens preceding this node
 	TrailingComment         *token.Token   // inline comment on same line after this node
+	OriginalText            string         // original token text for literals (preserves escapes, numeric bases)
+	LeadingComments         []*token.Token // comment tokens preceding this node
 	InnerTrailingComments   []*token.Token // comments between last child and closing bracket
 	BlankLinesBefore        int            // blank lines (newline count - 1) before this node (or before its leading comments)
 	BlankLinesAfterComments int            // blank lines between last leading comment and the expression
 	PrecedingSpaces         int            // spaces before this token on the same line (for column alignment)
+	BracketType             rune           // '(' or '[' for LSExpr nodes
 	NewlineBefore           bool           // true if at least one newline preceded this node in source
 	ClosingBracketNewline   bool           // true if closing bracket was on its own line in source
 }
 
 // LVal is a lisp value
+//
+// Field order is chosen so that every pointer-bearing word sits in the leading
+// 64 bytes: the GC only scans up to the last pointer word, so grouping the
+// pointers first and letting Str/Cells contribute their pointer word last
+// leaves their len/cap tails (and all the scalars) outside the scan range.
+// This cuts the GC scan extent from 112 bytes to 64 without changing the
+// struct's overall size. LVal is allocated for every value in the
+// interpreter, so keep the pointers first when adding fields — `govet`'s
+// fieldalignment check (see .golangci.yml) enforces this.
 type LVal struct {
 	// Native is generic storage for data which cannot be represented as an
 	// LVal (and thus can't be stored in Cells).
-
 	Native interface{}
 
 	// Source is the values originating location in source code.  Programs
 	// should not modify the contents of Source as the reference may be shared
 	// by multiple LVals.
-
 	Source *token.Location
+
+	// Meta holds formatting metadata, only populated in format-preserving mode.
+	Meta *SourceMeta
+
+	// MacroExpansion holds debug metadata for nodes produced by macro
+	// expansion. Only populated when a debugger is attached — nil in
+	// production (zero overhead: 8-byte nil pointer).
+	MacroExpansion *MacroExpansionInfo
 
 	// Str used by LSymbol and LString values
 	Str string
@@ -246,14 +261,6 @@ type LVal struct {
 
 	// Spliced denotes the value as needing to be spliced into a parent value.
 	Spliced bool
-
-	// Meta holds formatting metadata, only populated in format-preserving mode.
-	Meta *SourceMeta
-
-	// MacroExpansion holds debug metadata for nodes produced by macro
-	// expansion. Only populated when a debugger is attached — nil in
-	// production (zero overhead: 8-byte nil pointer).
-	MacroExpansion *MacroExpansionInfo
 }
 
 // GetType returns a quoted symbol denoting v's type.
@@ -734,6 +741,28 @@ func markMacExpand(expr *LVal) *LVal {
 	}
 }
 
+// IsInternalPanic reports whether v is an error produced by recovering a Go
+// panic that escaped host code during evaluation.
+//
+// This is the check `ignore-errors` and `handler-bind` use, and embedders
+// should use it too, rather than comparing the condition name against
+// CondInternalPanic.  The condition name alone is forgeable: lisp code can
+// write (error 'internal-panic "...") and, if the name were the only test,
+// would produce an error that no catch-all handler could contain.
+//
+// The marker is the Go stack snapshot the recover handler attaches to the
+// error's CallStack copy.  Nothing reachable from lisp can populate it — the
+// live Runtime stack's GoStack is always nil, so an error raised by the
+// `error` builtin always copies a nil GoStack.  A forged 'internal-panic is
+// therefore treated as an ordinary condition and stays containable.
+func IsInternalPanic(v *LVal) bool {
+	if v == nil || v.Type != LError || v.Str != CondInternalPanic {
+		return false
+	}
+	stack, ok := v.Native.(*CallStack)
+	return ok && stack != nil && len(stack.GoStack) > 0
+}
+
 func (v *LVal) CallStack() *CallStack {
 	if v.Type != LError {
 		panic("not an error: " + v.Type.String())
@@ -934,23 +963,19 @@ func (v *LVal) IsSpecialOp() bool {
 }
 
 // IsNil returns true if v represents a nil value.
+//
+// Only the empty list is nil.  Written as an expression rather than a switch:
+// there is exactly one interesting type, so a switch would have to name the
+// other seventeen LTypes to say nothing about them.
 func (v *LVal) IsNil() bool {
-	switch v.Type {
-	case LSExpr:
-		return len(v.Cells) == 0
-	}
-	return false
+	return v.Type == LSExpr && len(v.Cells) == 0
 }
 
 // IsNumeric returns true if v has a primitive numeric type (int, float64).
+//
+// See IsNil for why this is an expression and not a switch.
 func (v *LVal) IsNumeric() bool {
-	switch v.Type {
-	case LInt:
-		return true
-	case LFloat:
-		return true
-	}
-	return false
+	return v.Type == LInt || v.Type == LFloat
 }
 
 // Equal returns a non-nil value if v and other are logically equal, under the
@@ -1002,7 +1027,7 @@ func (v *LVal) Equal(other *LVal) *LVal {
 		for i := range vEntries.Cells {
 			vPair := vEntries.Cells[i]
 			oPair := oEntries.Cells[i]
-			if !True(vPair.Cells[0].Equal(oPair.Cells[0])) {
+			if !True(equalMapKey(vPair.Cells[0], oPair.Cells[0])) {
 				return Bool(false)
 			}
 			if !True(vPair.Cells[1].Equal(oPair.Cells[1])) {
@@ -1010,8 +1035,47 @@ func (v *LVal) Equal(other *LVal) *LVal {
 			}
 		}
 		return Bool(true)
+	case LInvalid, LInt, LFloat, LError, LQSymbol, LFun, LQuote, LBytes,
+		LNative, LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
+		// No structural equality is defined for these types, so equal? reports
+		// false even when both operands are the same object.  Enumerated
+		// rather than left to fall through so that a new LType has to make
+		// this choice explicitly.
+		//
+		// LInt and LFloat are unreachable: the IsNumeric shortcut above
+		// diverts every numeric comparison to equalNum.  LInvalid, the LMark*
+		// sentinels and LTypeMax are not values an application can hold.
+		return Bool(false)
 	}
 	return Bool(false)
+}
+
+// equalMapKey compares two sorted-map keys under the map's own notion of key
+// identity.
+//
+// For the string-like keys the stock sortedmap accepts, identity is the key
+// *name*: get, key?, assoc and dissoc all take either 'a or "a" for the same
+// entry (docs/lang.md), so equality must too.  The string/symbol distinction
+// is cosmetic — it reaches keys and printing, and nothing else.
+//
+// Every other key type falls back to Equal.  Map is an exported interface and
+// SortedMapFromData an exported extension point, so an embedder may back a
+// sorted-map with a store keyed by integers, tuples or anything else.  Those
+// keys carry no name at all: comparing Str would make every one of them equal
+// to every other, silently reporting structurally different maps as equal.
+// The name rule was reasoned about for string-like keys only, and it is
+// deliberately not extended past them.
+func equalMapKey(a, b *LVal) *LVal {
+	if isStringLike(a) && isStringLike(b) {
+		return Bool(a.Str == b.Str)
+	}
+	return a.Equal(b)
+}
+
+// isStringLike reports whether v is one of the name-carrying key types the
+// stock sortedmap accepts.
+func isStringLike(v *LVal) bool {
+	return v.Type == LString || v.Type == LSymbol
 }
 
 func (v *LVal) EqualNum(other *LVal) *LVal {
@@ -1192,7 +1256,7 @@ func (v *LVal) str(onTheRecord bool) string {
 			quote = QUOTE
 		}
 		if v.Builtin() != nil {
-			return fmt.Sprintf("%s#<builtin>", quote)
+			return quote + "#<builtin>"
 		}
 		vars := lambdaVars(v.Cells[0], boundVars(v))
 		return fmt.Sprintf("%s(lambda %v%v)", quote, vars, bodyStr(v.Cells[1:]))
@@ -1287,6 +1351,9 @@ func isSeq(v *LVal) bool {
 }
 
 func seqCells(v *LVal) []*LVal {
+	// Callers must guard with isSeq.  The panic is the assertion for that
+	// contract -- it is in a default clause so that reaching seqCells with a
+	// type nobody thought about is loud rather than silent.
 	switch v.Type {
 	case LSExpr:
 		return v.Cells
@@ -1295,8 +1362,9 @@ func seqCells(v *LVal) []*LVal {
 			panic("multi-dimensional array is not a sequence")
 		}
 		return v.Cells[1].Cells
+	default:
+		panic("type is not a sequence")
 	}
-	panic("type is not a sequence")
 }
 
 func makeByteSeq(v *LVal) *LVal {

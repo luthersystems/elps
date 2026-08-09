@@ -5,6 +5,7 @@ package debugger
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/luthersystems/elps/lisp"
@@ -32,7 +33,7 @@ type NativeChild struct {
 // with no children. Useful when you only need custom display text.
 type FormatterFunc func(v any) string
 
-func (f FormatterFunc) FormatValue(v any) string   { return f(v) }
+func (f FormatterFunc) FormatValue(v any) string     { return f(v) }
 func (f FormatterFunc) Children(v any) []NativeChild { return nil }
 
 // ScopeBinding represents a single variable binding in a scope.
@@ -153,7 +154,7 @@ func FormatValue(v *lisp.LVal) string {
 	}
 	switch v.Type {
 	case lisp.LInt:
-		return fmt.Sprintf("%d", v.Int)
+		return strconv.Itoa(v.Int)
 	case lisp.LFloat:
 		return fmt.Sprintf("%g", v.Float)
 	case lisp.LString:
@@ -192,7 +193,7 @@ func FormatValue(v *lisp.LVal) string {
 	case lisp.LSortMap:
 		return fmt.Sprintf("<sorted-map len=%d>", v.Len())
 	case lisp.LQSymbol:
-		return fmt.Sprintf("'%s", v.Str)
+		return "'" + v.Str
 	case lisp.LBytes:
 		return fmt.Sprintf("<bytes len=%d>", len(v.Bytes()))
 	default:
@@ -208,11 +209,11 @@ func formatList(v *lisp.LVal) string {
 	for _, cell := range v.Cells {
 		parts = append(parts, FormatValue(cell))
 	}
-	open, close := "(", ")"
+	openTok, closeTok := "(", ")"
 	if v.Quoted {
-		open, close = "[", "]"
+		openTok, closeTok = "[", "]"
 	}
-	return open + strings.Join(parts, " ") + close
+	return openTok + strings.Join(parts, " ") + closeTok
 }
 
 // FormatValueWith returns a human-readable string representation of an LVal,

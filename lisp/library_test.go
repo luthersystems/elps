@@ -10,6 +10,7 @@ import (
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // testSourceContext implements lisp.SourceContext for unit tests.
@@ -97,7 +98,7 @@ func TestRootDirConfinement_BlocksSymlinksOutsideRoot(t *testing.T) {
 	// Loading via the symlink should be blocked because the real path
 	// is outside the root directory.
 	_, _, _, err := lib.LoadSource(ctx, symlinkPath)
-	assert.Error(t, err, "symlink pointing outside root should be blocked")
+	require.Error(t, err, "symlink pointing outside root should be blocked")
 	assert.Contains(t, err.Error(), "access denied")
 
 	// Loading a real file inside the root should still work.
@@ -106,7 +107,7 @@ func TestRootDirConfinement_BlocksSymlinksOutsideRoot(t *testing.T) {
 		t.Fatal(werr)
 	}
 	_, _, data, err := lib.LoadSource(ctx, realFile)
-	assert.NoError(t, err, "real file inside root should load")
+	require.NoError(t, err, "real file inside root should load")
 	assert.Equal(t, "(+ 2 3)", string(data))
 }
 
@@ -137,7 +138,7 @@ func TestRootDirConfinement_ReadsResolvedPath(t *testing.T) {
 
 	// The returned trueloc should be the resolved path, not the symlink.
 	_, trueloc, data, err := lib.LoadSource(ctx, symlinkPath)
-	assert.NoError(t, err, "symlink within root should be allowed")
+	require.NoError(t, err, "symlink within root should be allowed")
 	assert.Equal(t, "(+ 10 20)", string(data))
 	// Resolve realFile too — on macOS, /var is a symlink to /private/var.
 	resolvedReal, rerr := filepath.EvalSymlinks(realFile)
@@ -164,7 +165,7 @@ func TestRootDirConfinement_EvalSymlinksErrorOnLoc(t *testing.T) {
 	ctx := &testSourceContext{name: "test", loc: ""}
 
 	_, _, _, err := lib.LoadSource(ctx, brokenLink)
-	assert.Error(t, err, "broken symlink should produce an error when RootDir is set")
+	require.Error(t, err, "broken symlink should produce an error when RootDir is set")
 	assert.Contains(t, err.Error(), "cannot resolve path")
 }
 
@@ -175,7 +176,7 @@ func TestRootDirConfinement_EvalSymlinksErrorOnRoot(t *testing.T) {
 	ctx := &testSourceContext{name: "test", loc: ""}
 
 	_, _, _, err := lib.LoadSource(ctx, "/some/file.lisp")
-	assert.Error(t, err, "non-existent RootDir should produce an error")
+	require.Error(t, err, "non-existent RootDir should produce an error")
 	assert.Contains(t, err.Error(), "cannot resolve root directory")
 }
 
@@ -204,7 +205,7 @@ func TestRootDirConfinement_BlocksSymlinkChain(t *testing.T) {
 	ctx := &testSourceContext{name: "test", loc: ""}
 
 	_, _, _, err := lib.LoadSource(ctx, link1)
-	assert.Error(t, err, "symlink chain escaping root should be blocked")
+	require.Error(t, err, "symlink chain escaping root should be blocked")
 	assert.Contains(t, err.Error(), "access denied")
 }
 
@@ -229,7 +230,7 @@ func TestRootDirConfinement_BlocksSymlinkInParentDir(t *testing.T) {
 	ctx := &testSourceContext{name: "test", loc: ""}
 
 	_, _, _, err := lib.LoadSource(ctx, filepath.Join(linkDir, "escape.lisp"))
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "access denied")
 }
 
@@ -255,7 +256,7 @@ func TestRootDirConfinement_PrefixBoundary(t *testing.T) {
 	ctx := &testSourceContext{name: "test", loc: ""}
 
 	_, _, _, err := lib.LoadSource(ctx, siblingFile)
-	assert.Error(t, err, "file in sibling directory with shared prefix should be blocked")
+	require.Error(t, err, "file in sibling directory with shared prefix should be blocked")
 	assert.Contains(t, err.Error(), "access denied")
 }
 

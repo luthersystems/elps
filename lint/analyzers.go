@@ -129,7 +129,7 @@ var AnalyzerLetBindings = &Analyzer{
 			headNode := sexpr.Cells[0]
 			if ArgCount(sexpr) < 1 {
 				pass.Report(Diagnostic{
-					Message: fmt.Sprintf("%s requires a binding list and body", head),
+					Message: head + " requires a binding list and body",
 					Pos:     posFromSource(headNode.Source),
 					EndPos:  endPosFromNode(headNode),
 				})
@@ -176,16 +176,22 @@ var AnalyzerLetBindings = &Analyzer{
 	},
 }
 
-// AnalyzerQuoteCall warns when set or defconst is called with an unquoted symbol
+// AnalyzerQuoteCall warns when set is called with an unquoted symbol
 // as the first argument, which is almost always a mistake.
+//
+// NOTE: defconst is deliberately NOT checked. It is a macro that quotes its
+// own name argument — (defconst x 42) expands to (set 'x 42) — so the
+// correct spelling is the unquoted one. Flagging it reported every correct
+// use, and the suggested "fix" of (defconst 'x 42) makes the program fail at
+// runtime with "lisp:set: first argument is not a symbol: quote".
 var AnalyzerQuoteCall = &Analyzer{
 	Name:     "quote-call",
 	Severity: SeverityWarning,
-	Doc:      "Warn when set is called with an unquoted symbol argument.\n\nThe first argument to set should be a quoted symbol: (set 'x 42). Writing (set x 42) evaluates x first, which is rarely intended. This check does not flag set!, which takes an unquoted symbol by design.",
+	Doc:      "Warn when set is called with an unquoted symbol argument.\n\nThe first argument to set should be a quoted symbol: (set 'x 42). Writing (set x 42) evaluates x first, which is rarely intended. This check does not flag set!, which takes an unquoted symbol by design, nor defconst, which quotes its own name argument.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			head := HeadSymbol(sexpr)
-			if head != "set" && head != "defconst" {
+			if head != "set" {
 				return
 			}
 			if ArgCount(sexpr) < 1 {
@@ -375,7 +381,7 @@ var AnalyzerCondStructure = &Analyzer{
 var AnalyzerBuiltinArity = &Analyzer{
 	Name:     "builtin-arity",
 	Severity: SeverityError,
-	Doc:      "Check argument counts for calls to known builtin functions and special forms.\n\nELPS builtin functions have well-defined argument signatures. This check catches calls with too few or too many arguments before runtime. User-defined functions that shadow builtin names are automatically excluded. Formals lists and threading macro children are also excluded.",
+	Doc:      "Check argument counts for calls to known builtin functions and special forms.\n\nELPS builtin functions have well-defined argument signatures. This check catches calls with too few or too many arguments before runtime. User-defined functions that shadow builtin names are automatically excluded, including names bound by let/let*/flet/labels/macrolet. Binding lists, formals lists and threading macro children are also excluded.",
 	Run: func(pass *Pass) error {
 		// Collect user-defined names so we don't flag shadowed builtins.
 		userDefs := UserDefined(pass.Exprs)
@@ -422,13 +428,84 @@ var AnalyzerBuiltinArity = &Analyzer{
 	},
 }
 
+// bindingForms are the special operators whose first argument is a list of
+// bindings rather than an expression to evaluate. Their binding entries look
+// like function calls to a naive walk — (let ((map (sorted-map))) ...)
+// contains the s-expression (map (sorted-map)) — so they must be excluded
+// from call-shaped checks.
+//
+// letBinding entries are (name value); funBinding entries are
+// (name (formals...) body...).
+var bindingForms = map[string]struct{ funBinding bool }{
+	"let":      {funBinding: false},
+	"let*":     {funBinding: false},
+	"flet":     {funBinding: true},
+	"labels":   {funBinding: true},
+	"macrolet": {funBinding: true},
+}
+
+// bindingList returns the binding list of a binding form, or nil if sexpr is
+// not a binding form or is malformed.
+func bindingList(sexpr *lisp.LVal) (*lisp.LVal, bool) {
+	kind, ok := bindingForms[HeadSymbol(sexpr)]
+	if !ok || ArgCount(sexpr) < 1 {
+		return nil, false
+	}
+	binds := sexpr.Cells[1]
+	if binds == nil || binds.Type != lisp.LSExpr {
+		return nil, false
+	}
+	return binds, kind.funBinding
+}
+
+// markLocallyShadowedCalls marks every call in form's subtree whose head is
+// one of the names form binds, so those calls are not checked against the
+// builtin arity table.
+//
+// The marking is scoped to the binding form's own subtree. A file-global name
+// set would be simpler but silently disables the check for that name
+// everywhere in the file: one unrelated (let ([map ...]) ...) in one function
+// would suppress a genuine (map 'list) arity error in another. builtin-arity
+// is a SeverityError check that gates the build, so it must not go quietly
+// dark outside the scope that actually rebinds the name.
+//
+// Scoping to the whole form rather than to each binding's body is a
+// deliberate over-approximation — it costs nothing in practice and avoids
+// duplicating let/let*/flet/labels scope rules here.
+func markLocallyShadowedCalls(form *lisp.LVal, binds *lisp.LVal, funBinding bool, skip map[*lisp.LVal]bool) {
+	local := make(map[string]bool)
+	for _, bind := range binds.Cells {
+		if bind == nil || bind.Type != lisp.LSExpr || len(bind.Cells) == 0 {
+			continue
+		}
+		if name := bind.Cells[0]; name.Type == lisp.LSymbol {
+			local[name.Str] = true
+		}
+		if funBinding && len(bind.Cells) >= 2 {
+			CollectFormals(bind.Cells[1], local)
+		}
+	}
+	if len(local) == 0 {
+		return
+	}
+	WalkSExprs([]*lisp.LVal{form}, func(sexpr *lisp.LVal, depth int) {
+		if head := HeadSymbol(sexpr); head != "" && local[head] {
+			skip[sexpr] = true
+		}
+	})
+}
+
 // aritySkipNodes returns a set of AST nodes that should be excluded from
-// arity checking. This covers two cases:
+// arity checking. This covers three cases:
 //
 //  1. Formals lists — (defun f (x y) ...) the (x y) is a parameter list,
 //     not a function call.
 //  2. Threading macro children — (thread-first v (get "key")) expands to
 //     (get v "key"), so the static arg count is one less than the runtime count.
+//  3. Binding-form entries — the (map (sorted-map)) inside
+//     (let ((map (sorted-map))) ...) binds the name `map`; it is not a call
+//     to the builtin `map`. Same for let*, flet, labels and macrolet, whose
+//     entries additionally carry a formals list.
 func aritySkipNodes(exprs []*lisp.LVal) map[*lisp.LVal]bool {
 	skip := make(map[*lisp.LVal]bool)
 	WalkSExprs(exprs, func(sexpr *lisp.LVal, depth int) {
@@ -450,6 +527,19 @@ func aritySkipNodes(exprs []*lisp.LVal) map[*lisp.LVal]bool {
 			for i := 2; i < len(sexpr.Cells); i++ {
 				skip[sexpr.Cells[i]] = true
 			}
+		}
+		if binds, funBinding := bindingList(sexpr); binds != nil {
+			skip[binds] = true
+			for _, bind := range binds.Cells {
+				if bind == nil || bind.Type != lisp.LSExpr {
+					continue
+				}
+				skip[bind] = true
+				if funBinding && len(bind.Cells) >= 2 {
+					skip[bind.Cells[1]] = true // formals list
+				}
+			}
+			markLocallyShadowedCalls(sexpr, binds, funBinding, skip)
 		}
 	})
 	return skip
@@ -474,8 +564,8 @@ func buildArityTable() map[string]aritySpec {
 		if formals == nil || formals.Type != lisp.LSExpr {
 			return
 		}
-		min := 0
-		max := 0
+		minArity := 0
+		maxArity := 0
 		variadic := false
 		inOptional := false
 		inKey := false
@@ -496,17 +586,17 @@ func buildArityTable() map[string]aritySpec {
 					// The symbol after &rest is the variadic param name, skip
 					continue
 				}
-				max++
+				maxArity++
 				if !inOptional && !inKey {
-					min++
+					minArity++
 				}
 			}
 		}
 
 		if variadic || inKey {
-			table[name] = aritySpec{min: min, max: -1}
+			table[name] = aritySpec{min: minArity, max: -1}
 		} else {
-			table[name] = aritySpec{min: min, max: max}
+			table[name] = aritySpec{min: minArity, max: maxArity}
 		}
 	}
 
@@ -882,7 +972,7 @@ var AnalyzerUserArity = &Analyzer{
 					Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, minArity, argc),
 					Pos:     posFromSource(src.Source),
 					EndPos:  endPosFromNode(src),
-					Notes:   []string{fmt.Sprintf("defined at %s", sourceString(sym.Source))},
+					Notes:   []string{"defined at " + sourceString(sym.Source)},
 					Related: relatedFromSource(sym.Source, "defined here"),
 				})
 			}
@@ -892,7 +982,7 @@ var AnalyzerUserArity = &Analyzer{
 					Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, maxArity, argc),
 					Pos:     posFromSource(src.Source),
 					EndPos:  endPosFromNode(src),
-					Notes:   []string{fmt.Sprintf("defined at %s", sourceString(sym.Source))},
+					Notes:   []string{"defined at " + sourceString(sym.Source)},
 					Related: relatedFromSource(sym.Source, "defined here"),
 				})
 			}
@@ -942,7 +1032,7 @@ var AnalyzerUndefinedSymbol = &Analyzer{
 			}
 			pass.Report(Diagnostic{
 				Severity: sev,
-				Message:  fmt.Sprintf("undefined symbol: %s", u.Name),
+				Message:  "undefined symbol: " + u.Name,
 				Pos:      posFromSource(u.Source),
 				EndPos:   endPosFromNode(u.Node),
 				Notes:    notes,
@@ -1034,7 +1124,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 					Message: fmt.Sprintf("duplicate definition: %s '%s' already defined", sym.Kind, sym.Name),
 					Pos:     posFromSource(sym.Source),
 					EndPos:  endPosFromNode(sym.Node),
-					Notes:   []string{fmt.Sprintf("first defined at %s", sourceString(first.Source))},
+					Notes:   []string{"first defined at " + sourceString(first.Source)},
 					Related: relatedFromSource(first.Source, "first defined here"),
 				})
 			}
@@ -1057,7 +1147,7 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 					Message: fmt.Sprintf("duplicate definition: %s '%s' is also defined externally", first.Kind, first.Name),
 					Pos:     posFromSource(first.Source),
 					EndPos:  endPosFromNode(first.Node),
-					Notes:   []string{fmt.Sprintf("also defined at %s", sourceString(ext.Source))},
+					Notes:   []string{"also defined at " + sourceString(ext.Source)},
 					Related: relatedFromSource(ext.Source, "also defined here"),
 				})
 			}

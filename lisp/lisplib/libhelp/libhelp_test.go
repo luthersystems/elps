@@ -33,7 +33,7 @@ func TestDocstring(t *testing.T) {
 	for _, name := range builtinSymbols {
 		fun := env.Get(lisp.Symbol(name))
 		if assert.Equal(t, lisp.LFun, fun.Type) {
-			assert.NotEqual(t, "", fun.Docstring())
+			assert.NotEmpty(t, fun.Docstring())
 		}
 	}
 
@@ -45,13 +45,13 @@ func TestDocstring(t *testing.T) {
 
 	lisp1 := env.Get(lisp.Symbol("const-string1"))
 	if assert.Equal(t, lisp.LFun, lisp1.Type) {
-		assert.Equal(t, "", lisp1.Docstring())
+		assert.Empty(t, lisp1.Docstring())
 	}
 	// (defun f () "abc" "") — body is all strings, so no docstring
 	// (it's a constant function returning "")
 	lisp2 := env.Get(lisp.Symbol("const-string2"))
 	if assert.Equal(t, lisp.LFun, lisp2.Type) {
-		assert.Equal(t, "", lisp2.Docstring())
+		assert.Empty(t, lisp2.Docstring())
 	}
 
 	// Multi-string docstrings are concatenated with spaces
@@ -88,7 +88,7 @@ func TestDocstring(t *testing.T) {
 	require.True(t, rc.IsNil())
 	allStr := env.Get(lisp.Symbol("all-strings"))
 	if assert.Equal(t, lisp.LFun, allStr.Type) {
-		assert.Equal(t, "", allStr.Docstring())
+		assert.Empty(t, allStr.Docstring())
 	}
 }
 
@@ -115,7 +115,7 @@ func TestPackageDoc(t *testing.T) {
 	for _, name := range packages {
 		pkg := env.Runtime.Registry.Packages[name]
 		if assert.NotNilf(t, pkg, "package %q should exist", name) {
-			assert.NotEqualf(t, "", pkg.Doc, "package %q should have a doc string", name)
+			assert.NotEmptyf(t, pkg.Doc, "package %q should have a doc string", name)
 		}
 	}
 }
@@ -202,7 +202,7 @@ func TestSymbolDoc(t *testing.T) {
 	(set 'undoc 0)
 	`)
 	require.NotEqualf(t, lisp.LError, rc.Type, "LoadString failed: %v", rc)
-	assert.Equal(t, "", pkg.SymbolDocs["undoc"])
+	assert.Empty(t, pkg.SymbolDocs["undoc"])
 }
 
 func TestDefconstMacro(t *testing.T) {
@@ -516,7 +516,7 @@ func TestQueryPackages(t *testing.T) {
 	}
 
 	// Verify no duplicates.
-	assert.Equal(t, len(names), len(pkgs), "QueryPackages should not return duplicate packages")
+	assert.Len(t, pkgs, len(names), "QueryPackages should not return duplicate packages")
 }
 
 func TestQueryPackage(t *testing.T) {
@@ -555,16 +555,16 @@ func TestQueryPackage_CoreBuiltins(t *testing.T) {
 	for _, sym := range pd.Symbols {
 		kindCounts[sym.Kind]++
 	}
-	assert.Greater(t, kindCounts["function"], 0, "lisp package should have functions")
-	assert.Greater(t, kindCounts["operator"], 0, "lisp package should have operators")
-	assert.Greater(t, kindCounts["macro"], 0, "lisp package should have macros")
+	assert.Positive(t, kindCounts["function"], "lisp package should have functions")
+	assert.Positive(t, kindCounts["operator"], "lisp package should have operators")
+	assert.Positive(t, kindCounts["macro"], "lisp package should have macros")
 }
 
 func TestQueryPackageNotFound(t *testing.T) {
 	env := newTestEnv(t)
 
 	_, err := libhelp.QueryPackage(env, "nonexistent-pkg")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nonexistent-pkg")
 }
 
@@ -622,7 +622,7 @@ func TestQuerySymbol_NotFound(t *testing.T) {
 	env := newTestEnv(t)
 
 	_, err := libhelp.QuerySymbol(env, "nonexistent-sym-xyz")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nonexistent-sym-xyz")
 }
 
@@ -630,7 +630,7 @@ func TestQuerySymbol_QualifiedNotFound(t *testing.T) {
 	env := newTestEnv(t)
 
 	_, err := libhelp.QuerySymbol(env, "math:nonexistent-sym")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "math:nonexistent-sym")
 }
 
@@ -691,13 +691,13 @@ func TestQueryPackages_JSONSerializable(t *testing.T) {
 	var decoded []libhelp.PackageDoc
 	err = json.Unmarshal(data, &decoded)
 	require.NoError(t, err)
-	require.Equal(t, len(pkgs), len(decoded))
+	require.Len(t, decoded, len(pkgs))
 
 	// Spot-check: math package fields survive the round trip.
 	for i, pkg := range decoded {
 		if pkg.Name == "math" {
 			assert.Equal(t, pkgs[i].Doc, pkg.Doc, "math doc should survive round-trip")
-			assert.Equal(t, len(pkgs[i].Symbols), len(pkg.Symbols), "math symbol count should survive round-trip")
+			assert.Len(t, pkg.Symbols, len(pkgs[i].Symbols), "math symbol count should survive round-trip")
 			break
 		}
 	}

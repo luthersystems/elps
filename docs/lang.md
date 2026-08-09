@@ -566,6 +566,18 @@ It is a peculiarity of elps that `assoc` on `()` will return a new sorted-map
 with the corresponding key and value set.
 Similarly, `get` on `()` will return `()`.
 
+A map remembers whether a key was written as a symbol or a string and prints
+it back that way, so `keys` and the printed representation preserve the
+original spelling.  That spelling is presentation only: it is not part of the
+key's identity.  `get`, `key?`, `assoc` and `dissoc` all treat `'alice` and
+`"alice"` as the same key, and `equal?` follows the same rule.
+
+```lisp
+(equal? (sorted-map 'alice 0) (sorted-map "alice" 0))  ; evaluates to true
+(keys (sorted-map 'alice 0))                           ; evaluates to '('alice)
+(keys (sorted-map "alice" 0))                          ; evaluates to '("alice")
+```
+
 ### User-Defined Types
 
 Programs can define new types with the `deftype` macro and instantiate types
@@ -892,11 +904,49 @@ It is worth saying again, and louder, that **the use of ignore-errors is
 greatly discouraged in general**.  If you must attempt to handle errors in lisp
 code try to use handler-bind.
 
+### Host Panics (`internal-panic`)
+
+If Go code called during evaluation — a builtin or special operator supplied
+by the application embedding the interpreter — panics, the interpreter
+recovers the panic instead of letting it kill the host process, and turns it
+into an error with the condition `internal-panic`.
+
+That condition is deliberately **not** treated as an ordinary error.  A panic
+means the host's Go code hit a bug (a nil dereference, an out-of-range index,
+a failed invariant) and left its own data structures in an unknown state.
+Letting a catch-all handler swallow it would make a genuine defect look
+exactly like `(error 'my-condition "...")` and let the program keep running
+on top of it.  So:
+
+* `ignore-errors` does **not** suppress `internal-panic`; it propagates.
+* the catch-all `condition` handler specifier does **not** match
+  `internal-panic`.
+
+The carve-out keys off a Go stack snapshot the interpreter attaches when it
+recovers the panic — not off the condition name — so `(error 'internal-panic
+"...")` written in lisp is an ordinary, containable condition.  Only a
+genuine recovered panic escapes.  Embedders testing for one should use
+`lisp.IsInternalPanic(v)` rather than comparing the condition name.
+
+A handler that genuinely wants to intercept host panics must name the
+condition explicitly:
+
+```lisp
+(handler-bind ((internal-panic (lambda (c &rest args)
+                                 (debug-print "host code panicked:" args))))
+    (risky-builtin))
+```
+
+The resulting error also carries the Go stack captured at the panic site, so
+an embedder can identify the offending Go function.
+
 ## Execution Limits
 
-ELPS supports two mechanisms for bounding evaluation time: **context
-cancellation** and **step limits**.  Both are optional and impose negligible
-overhead when not configured.
+ELPS bounds evaluation with four independent mechanisms: **context
+cancellation**, **step limits**, **stack height limits** and a
+**tail-iteration limit**.  Context cancellation and step limits are optional
+and impose negligible overhead when not configured; the physical stack limit
+and the tail-iteration limit are on by default.
 
 ### Context Cancellation
 
@@ -921,18 +971,88 @@ If the context is cancelled or its deadline expires during evaluation, a
 
 ### Step Limits
 
-A step limit caps the total number of evaluation steps.  Each entry to
-`Eval`, each tail-recursion iteration, and each macro re-expansion counts
-as one step.
+A step limit caps the number of evaluation steps in a **single top-level
+evaluation**.  Each entry to `Eval`, each tail-recursion iteration, and each
+macro re-expansion counts as one step.
 
 ```go
 env := lisp.NewEnv(nil)
 lisp.InitializeUserEnv(env, lisp.WithMaxSteps(1000000))
 ```
 
+The counter is reset each time an exported entry point (`Eval`,
+`EvalContext`, `EvalSExpr`, `FunCall`, `FunCallContext`, `SpecialOpCall`,
+`MacroCall`, or any `Load*`) is entered from outside an evaluation.  Nested evaluation — a
+builtin calling back into `Eval`, a tail-call loop, the forms evaluated by a
+single `Load` — shares the enclosing budget and does not refill it.  Without
+that reset, `WithMaxSteps(n)` would be a *lifetime* quota: once a long-lived
+runtime had executed `n` steps in total, every later evaluation would fail
+however small it was.
+
 When the limit is reached, a `step-limit-exceeded` condition is raised.
-Use `Runtime.Steps()` to read the counter and `Runtime.ResetSteps()` to
-reset it between evaluations.
+Use `Runtime.Steps()` to read the current evaluation's usage,
+`Runtime.TotalSteps()` for the lifetime total, and `Runtime.ResetSteps()`
+to reset the current counter explicitly.
+
+A step limit is the only mechanism here that bounds a loop which neither
+recurses nor tail-calls — no stack limit can see such a loop.
+
+It is not a time bound: a single step may run an arbitrary amount of work
+inside a builtin.  **Context cancellation with a deadline is the only limit
+here that measures elapsed time**, and it is what you want if the real
+requirement is "give up after N seconds".
+
+### Stack Height and Tail-Call Limits
+
+ELPS distinguishes three things that a naive "stack limit" conflates.
+
+**Physical stack height** is the number of frames actually on the call
+stack.  This is the memory guard: unbounded *non-tail* recursion exhausts the
+Go goroutine stack, which aborts the whole process with a stack overflow that
+no `handler-bind` can catch.  It is bounded by default
+(`DefaultMaxPhysicalStackHeight`, 25000) at roughly an order of magnitude
+below the measured crash threshold, and exceeding it produces an ordinary,
+catchable ELPS error.  Override with
+`lisp.WithMaximumPhysicalStackHeight(n)`; 0 disables the check, which is not
+recommended.
+
+**Tail-call iterations** count the turns of a tail-recursive loop.  Tail
+calls run in constant stack space, so no stack-height limit can bound a
+runaway loop; this is the limit that does.  It is bounded by default
+(`DefaultMaxTailIterations`, 1,000,000) purely as a backstop against a loop
+that never terminates.  Override with `lisp.WithMaxTailIterations(n)`; 0
+disables the check.
+
+It is **not** a time bound.  A million turns of a trivial body costs a few
+seconds, but turns say nothing about the work done per turn — a body that
+conses onto a list or calls any O(n) builtin can run for minutes inside the
+same turn budget:
+
+```lisp
+(defun grow (n acc) (if (= n 0) (length acc) (grow (- n 1) (cons n acc))))
+(grow 60000 ())   ; 60,000 turns — well under the backstop — but ~17s
+```
+
+A step limit does not help here either, since an O(n) builtin call is one
+step.  To bound elapsed time, use a context deadline (below).
+
+**Logical (virtual) stack height** is the physical height plus every frame
+elided by tail-call optimization.  It is a useful stack-trace diagnostic but
+a poor limit, because its unit is *elided frames*, not loop turns: one turn
+of a tail loop adds the length of the elided terminal chain, which is 2 for a
+trivial body and more when the body nests terminal forms more deeply.  The
+same numeric bound therefore permits a different number of iterations
+depending on the shape of the loop.  It is **disabled by default**
+(`DefaultMaxLogicalStackHeight`, 0).  Callers who specifically want it can
+opt in with `lisp.WithMaximumLogicalStackHeight(n)`.
+
+Because tail calls are optimized, a correctly written tail-recursive loop
+runs in constant stack space for an unbounded number of iterations:
+
+```lisp
+(defun spin (n) (if (= n 0) 'done (spin (- n 1))))
+(spin 500000)   ; constant stack space; evaluates to 'done
+```
 
 ### Available Context Methods
 

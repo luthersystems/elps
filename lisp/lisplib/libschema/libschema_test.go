@@ -19,6 +19,66 @@ func TestPackage(t *testing.T) {
 	r.RunTestFile(t, "libschema_test.lisp")
 }
 
+// TestLenConstraintTypes pins the behaviour of the s:len* family across LType.
+//
+// The five constraints used to be five copies of the same type switch, each
+// falling through silently for any type that is not a string, bytes or array.
+// They now share constraintLen, which enumerates every LType so a new one has
+// to make a choice. This test is the behavioural half of that guard: it fixes
+// both the measured cases and -- importantly -- the "no length, so the
+// constraint passes" cases, which include sorted-maps. If someone decides
+// those should be measured, this test is what has to change first.
+func TestLenConstraintTypes(t *testing.T) {
+	cases := []struct {
+		name  string
+		def   string
+		value string
+		valid bool
+	}{
+		// Measured types: the constraint really does check.
+		{"string len ok", `(s:deftype "T" s:string (s:len 3))`, `"abc"`, true},
+		{"string len wrong", `(s:deftype "T" s:string (s:len 3))`, `"abcd"`, false},
+		// "bytes" is not a deftype base type, so bytes reach the constraint
+		// through the "any" base.
+		{"bytes len ok", `(s:deftype "T" "any" (s:len 3))`, `(to-bytes "abc")`, true},
+		{"bytes len wrong", `(s:deftype "T" "any" (s:len 3))`, `(to-bytes "ab")`, false},
+		{"array len ok", `(s:deftype "T" s:array (s:len 3))`, `(vector 1 2 3)`, true},
+		{"array len wrong", `(s:deftype "T" s:array (s:len 3))`, `(vector 1 2)`, false},
+		{"lengt ok", `(s:deftype "T" s:string (s:lengt 2))`, `"abc"`, true},
+		{"lengt too short", `(s:deftype "T" s:string (s:lengt 3))`, `"abc"`, false},
+		{"lengte ok", `(s:deftype "T" s:string (s:lengte 3))`, `"abc"`, true},
+		{"lengte too short", `(s:deftype "T" s:string (s:lengte 4))`, `"abc"`, false},
+		{"lenlt ok", `(s:deftype "T" s:string (s:lenlt 4))`, `"abc"`, true},
+		{"lenlt too long", `(s:deftype "T" s:string (s:lenlt 3))`, `"abc"`, false},
+		{"lenlte ok", `(s:deftype "T" s:string (s:lenlte 3))`, `"abc"`, true},
+		{"lenlte too long", `(s:deftype "T" s:string (s:lenlte 2))`, `"abc"`, false},
+
+		// Unmeasured types: no length, so the constraint passes whatever the
+		// bound is. Locked in deliberately -- see constraintLen.
+		{"int has no length", `(s:deftype "T" s:int (s:len 3))`, `12345`, true},
+		{"float has no length", `(s:deftype "T" "float" (s:len 3))`, `1.5`, true},
+		{"sorted-map has no length", `(s:deftype "T" s:sorted-map (s:len 3))`, `(sorted-map "a" 1)`, true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := newSchemaEnv(t)
+			if rc := env.LoadStringContext(context.Background(), "len-def", c.def); rc.Type == lisp.LError {
+				t.Fatalf("deftype: %v", rc)
+			}
+			res := env.LoadStringContext(context.Background(), "len-validate",
+				"(s:validate T "+c.value+")")
+			isErr := res.Type == lisp.LError
+			if c.valid && isErr {
+				t.Fatalf("%s / %s: expected the constraint to pass, got error: %v", c.def, c.value, res)
+			}
+			if !c.valid && !isErr {
+				t.Fatalf("%s / %s: expected the constraint to fail, got: %v", c.def, c.value, res)
+			}
+		})
+	}
+}
+
 // newSchemaEnv bootstraps a complete env with the standard library
 // (including libschema) loaded and the current package set to "user".
 func newSchemaEnv(t *testing.T) *lisp.LEnv {
@@ -140,7 +200,7 @@ func TestGetFunNameBugLogStillFires(t *testing.T) {
 	// Construct a package-less LFun via the deprecated constructor.
 	// We intentionally use lisp.Fun (not FunInPackage) here — that's
 	// the path whose detector we are verifying still fires.
-	pkgless := lisp.Fun("regression-271-positive-control", lisp.Formals("x"), //nolint:staticcheck // SA1019: intentional use of deprecated constructor — we are testing the detector for its empty-Package path
+	pkgless := lisp.Fun("regression-271-positive-control", lisp.Formals("x"), // deprecated constructor on purpose: we test the detector for its empty-Package path
 		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal { return lisp.Nil() })
 	if pkgless.Package() != "" {
 		t.Fatalf("test setup: expected package-less LFun, got Package=%q", pkgless.Package())

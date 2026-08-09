@@ -14,6 +14,7 @@ package dapserver
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -71,7 +72,7 @@ func (s *Server) ServeConn(conn io.ReadWriteCloser) error {
 			case <-s.done:
 				return nil
 			default:
-				if err == io.EOF {
+				if errors.Is(err, io.EOF) {
 					return nil
 				}
 				return err
@@ -165,7 +166,7 @@ func (s *Server) ServeStdio(r io.Reader, w io.Writer) error {
 			case <-s.done:
 				return nil
 			default:
-				if err == io.EOF {
+				if errors.Is(err, io.EOF) {
 					return nil
 				}
 				return err

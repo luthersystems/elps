@@ -242,7 +242,7 @@ func suppressLintAction(uri string, diag protocol.Diagnostic, analyzer, content 
 	kind := protocol.CodeActionKindQuickFix
 	insertPos := protocol.Position{Line: diag.Range.Start.Line, Character: safeUint(lineEnd)}
 	return protocol.CodeAction{
-		Title:       fmt.Sprintf("Suppress with ; nolint:%s", analyzer),
+		Title:       "Suppress with ; nolint:" + analyzer,
 		Kind:        &kind,
 		Diagnostics: []protocol.Diagnostic{diag},
 		Edit: &protocol.WorkspaceEdit{

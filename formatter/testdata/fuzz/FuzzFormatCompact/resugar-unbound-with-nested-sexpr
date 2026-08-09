@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("(lisp:expr (+ 1 (f x)))")

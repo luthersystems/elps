@@ -50,12 +50,12 @@ func TestErrorVal_NilReceiver(t *testing.T) {
 
 	require.NotPanics(t, func() {
 		s := e.Condition()
-		assert.Equal(t, "", s)
+		assert.Empty(t, s)
 	}, "Condition() on nil receiver must not panic")
 
 	require.NotPanics(t, func() {
 		s := e.FunName()
-		assert.Equal(t, "", s)
+		assert.Empty(t, s)
 	}, "FunName() on nil receiver must not panic")
 
 	require.NotPanics(t, func() {

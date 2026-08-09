@@ -1,0 +1,209 @@
+name: Fuzz
+
+# elps parses untrusted input.  Downstream (luthersystems/substrate) a phylum is
+# customer-supplied source uploaded and executed as Hyperledger Fabric
+# chaincode, so a parser panic, a stack overflow or a non-terminating token loop
+# is a chaincode-process crash -- remotely triggerable by anyone who can upload
+# a phylum.  This workflow keeps a continuous fuzzing budget pointed at that
+# surface: the recursive-descent parser (strict, fault-tolerant and
+# format-preserving modes), the lexer and byte scanner, the formatter and
+# minifier round-trips, the JSON decoder that reads chaincode state and the
+# JSON encoder that writes it, the EVALUATOR itself -- where that same
+# untrusted source is actually run, so a panic is a crashed chaincode process
+# and a non-terminating evaluation is a wedged transaction -- and, the widest
+# surface of all, every builtin, special operator, macro and stdlib export,
+# applied to generated typed LVals.  A phylum calls those with arguments of
+# its own choosing, so a panic or a hang in any of them is as reachable as a
+# parser crash.
+#
+# TIME BOUNDING IS THE LOAD-BEARING PART.  `go test -fuzz` has no default limit;
+# without -fuzztime it runs until something kills it.  All logic, including the
+# refusal to run with an unparsable budget, lives in scripts/fuzz.sh so it can
+# be shellchecked and self-tested (scripts/ci-gates-test.sh, `make
+# ci-gates-test`) rather than hiding in YAML.  Two independent bounds apply:
+# fuzz.sh's own per-target -fuzztime plus a hard `go test -timeout`, and the
+# job-level timeout-minutes below.
+#
+# The PR path is deliberately short.  The seed corpus in each package's
+# testdata/fuzz/ -- which includes every crasher found so far -- is ALSO run by
+# the ordinary `make test` in CI Tests, so regressions are caught there in
+# milliseconds regardless of what this job finds.
+
+on:
+  pull_request:
+    branches:
+      - main
+      # Stacked PRs. Multi-part work here is reviewed as a chain of PRs
+      # whose base is another claude/* branch. This filter matches the
+      # PR's BASE, so with `main` alone none of these workflows fired on
+      # such a PR -- and a board showing only the two branch-agnostic
+      # Socket checks reads as a pass when in fact nothing ran.
+      - 'claude/**'
+  push:
+    branches:
+      - main
+  schedule:
+    # 04:17 UTC daily. Off the hour to avoid the top-of-hour runner crush.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "Per-target fuzzing budget (e.g. 60s, 10m)"
+        required: false
+        default: "60s"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz shard ${{ matrix.shard }}/4
+    runs-on: ubuntu-latest
+    strategy:
+      # Sharded so wall clock is set by the LARGEST shard rather than by the
+      # total. Serial, the nightly sweep cost (targets x FUZZTIME) grew every
+      # time a target was added, and the backstop below was a number somebody
+      # had to remember to recompute. It went stale twice: 120 sized for 10
+      # targets when there were 12, and 140 vs 165 when two branches each
+      # counted only their own additions.
+      #
+      # The shard COUNT here is the single source of truth -- scripts/fuzz.sh
+      # takes `--shard i/n` and assigns round-robin over the sorted target
+      # list, and scripts/fuzz-budget-check.sh reads this matrix to derive the
+      # timeout below. Adding a shard is a one-line change and the gate
+      # re-derives.
+      #
+      # fail-fast off: one shard finding a crasher must not cancel the others,
+      # or a single failure costs the whole night's coverage.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    # DERIVED, not remembered. scripts/fuzz-budget-check.sh asserts
+    #
+    #     ceil(targets / shards) x FUZZTIME + overhead <= timeout-minutes
+    #
+    # on every PR, so this number cannot silently stop covering the sweep. At
+    # 15 targets over 4 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
+    # worth of headroom for a target being added before anyone reshards.
+    #
+    # Do not raise this by hand to make a red gate green -- run
+    # `make fuzz-budget-check`, which prints the arithmetic and the options.
+    timeout-minutes: 60
+    env:
+      # 30s on a PR, 10m on the nightly schedule, whatever was asked for on a
+      # manual dispatch. The PR budget is intentionally small: this job is a
+      # continuous-discovery gate, not the regression gate. Regressions are the
+      # committed seed corpus, and those run in `make test`.
+      FUZZTIME: >-
+        ${{ github.event_name == 'schedule' && '10m'
+         || github.event_name == 'workflow_dispatch' && inputs.fuzztime
+         || '30s' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      # The generated corpus lives in GOCACHE/fuzz, outside the source tree, so
+      # it is lost between runs unless it is cached. Restoring it lets each run
+      # start from the coverage the previous ones reached instead of
+      # rediscovering the grammar from the seeds every time. A miss is
+      # harmless: the seed corpus alone is a valid starting point.
+      - name: Restore generated fuzz corpus
+        id: corpus
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: ~/.cache/go-build/fuzz
+          key: fuzz-corpus-${{ matrix.shard }}-${{ github.sha }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.shard }}-
+            fuzz-corpus-
+
+      # The Go-backed half of the fuzz gate's own self-test: dynamic discovery
+      # really finds the targets, and an armed FuzzGateSelfTest really turns
+      # the run red. The `gates` job in benchmark.yml skips these because it
+      # has no Go toolchain. Runs BEFORE the sweep so a broken gate is reported
+      # even when the sweep is cancelled.
+      - name: Fuzz gate self-test
+        run: bash scripts/ci-gates-test.sh
+
+      - name: List discovered targets
+        run: ./scripts/fuzz.sh --list
+
+      # Whole-sweep budget arithmetic, run once per shard because it is
+      # sub-second and must not depend on a shard succeeding.
+      - name: Fuzz budget check
+        run: ./scripts/fuzz-budget-check.sh
+
+      - name: Fuzz
+        run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/4
+
+      # Only from main/schedule: a corpus grown from an unmerged branch would
+      # otherwise be handed to every other PR.
+      - name: Save generated fuzz corpus
+        if: github.event_name != 'pull_request'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
+        with:
+          path: ~/.cache/go-build/fuzz
+          # Shard-scoped, matching the restore key. A single key shared by four
+          # shards means the first write wins and the other three are discarded
+          # -- three quarters of the night's coverage growth thrown away, with
+          # no error anywhere.
+          key: fuzz-corpus-${{ matrix.shard }}-${{ github.sha }}
+
+      # A crash is only useful if the input survives the runner. go test writes
+      # it into <package>/testdata/fuzz/<Target>/, so upload that tree whenever
+      # the run failed; the file is committed as a regression case.
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: fuzz-crashers-${{ github.run_id }}-shard${{ matrix.shard }}
+          path: "**/testdata/fuzz/**"
+          if-no-files-found: warn
+          retention-days: 30
+
+  # A STABLE check name over a matrix whose size may change.
+  #
+  # Sharding renames the job that actually does the work -- "Fuzz targets"
+  # became "Fuzz shard 1/4" and friends. A required status check is matched by
+  # NAME, so if "Fuzz targets" had been in the branch-protection required list,
+  # that rename would have left a required check that can never report, and
+  # every PR would be unmergeable until someone edited repo settings. Adding a
+  # shard later would do the same thing again.
+  #
+  # So the shards stay anonymous and this job carries the stable name. It is
+  # the one to put in required checks: it passes only if every shard passed,
+  # and its name does not move when the matrix is resized.
+  #
+  # `always()` because a skipped or cancelled shard must not let this report
+  # success by default -- `needs` alone would skip this job too, and a skipped
+  # required check reads as green.
+  required:
+    name: "Required: fuzz"
+    runs-on: ubuntu-latest
+    needs: fuzz
+    if: always()
+    steps:
+      - name: Check shard results
+        env:
+          RESULT: ${{ needs.fuzz.result }}
+        run: |
+          echo "fuzz matrix result: ${RESULT}"
+          # success is the only pass. failure, cancelled and skipped all mean
+          # the sweep did not demonstrably run to completion.
+          if [ "${RESULT}" != "success" ]; then
+            echo "::error::The fuzz sweep did not succeed (matrix result: ${RESULT}). Open the individual shard jobs for the failing target."
+            exit 1
+          fi
+          echo "All fuzz shards passed."

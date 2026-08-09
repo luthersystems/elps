@@ -32,7 +32,7 @@ func newPrinter(cfg *Config) *printer {
 func (p *printer) writeTopLevel(exprs []*lisp.LVal, trailingComments []*token.Token) {
 	for i, expr := range exprs {
 		if i > 0 {
-			for j := 0; j < p.blankLinesBefore(expr); j++ {
+			for range p.blankLinesBefore(expr) {
 				p.newline()
 			}
 		}
@@ -57,7 +57,7 @@ func (p *printer) writeTopLevel(exprs []*lisp.LVal, trailingComments []*token.To
 					blankLines = p.cfg.MaxBlankLines
 				}
 			}
-			for j := 0; j < blankLines; j++ {
+			for range blankLines {
 				p.newline()
 			}
 		}
@@ -66,6 +66,58 @@ func (p *printer) writeTopLevel(exprs []*lisp.LVal, trailingComments []*token.To
 		p.newline()
 		p.first = false
 	}
+}
+
+// beganInColumnOne reports whether c started at the very beginning of its
+// source line.
+//
+// Source.Col is 1-based, and 0 when the reader did not track positions, so
+// there is a fallback: a comment with a newline before it and no spaces after
+// that newline also began in column one.  (PrecedingSpaces is same-line only,
+// so it is the indentation of the comment's own line.)
+func beganInColumnOne(c *token.Token) bool {
+	if c.Source != nil && c.Source.Col > 0 {
+		return c.Source.Col == 1
+	}
+	return c.PrecedingNewlines > 0 && c.PrecedingSpaces == 0
+}
+
+// commentIndent returns the column a LEADING comment should be written at:
+// normally the enclosing form's indent, but column 0 for a comment that began
+// in column 0.
+//
+// Leading comments only, deliberately. This rule exists because a flush-left
+// comment is column-aligned against the line ABOVE it; an inner-trailing
+// comment sits between the last child and the closing bracket, where there is
+// no such line and nothing to align with, so it keeps the form's indent (see
+// writeInnerTrailingComments).
+//
+// This mirrors gofmt, which leaves a `//` comment starting in column 1 in
+// column 1, and for the same reason: a flush-left comment inside an indented
+// body is a deliberate signal, not an accident of layout, so re-indenting it
+// destroys information the author put in the column.
+//
+// The case that forced it here is editors/vscode/test/grammar/basics.lisp,
+// whose TextMate syntax-test assertions look like
+//
+//	(defun f (x &optional y)
+//	;           ^^^^^^^^^ variable.parameter.elps
+//
+// The caret column IS the assertion -- it points at characters on the line
+// above -- so indenting the comment by the form's indent silently changes
+// what the test asserts, and `elps fmt` corrupted the fixture while appearing
+// to succeed.  Anything else whose content is column-aligned against the
+// preceding line (ASCII diagrams, ruler comments, commented-out code kept
+// flush so diffs stay readable) has the same property.
+//
+// Deliberately NOT special-cased to `;` followed by `<`/`^`: the rule is
+// about the author having chosen column 0, not about one downstream tool's
+// assertion syntax.
+func commentIndent(c *token.Token, indent int) int {
+	if indent == 0 || beganInColumnOne(c) {
+		return 0
+	}
+	return indent
 }
 
 // writeLeadingComments writes comments that precede a node.
@@ -82,11 +134,11 @@ func (p *printer) writeLeadingComments(v *lisp.LVal, indent int) {
 			if blankLines > p.cfg.MaxBlankLines {
 				blankLines = p.cfg.MaxBlankLines
 			}
-			for j := 0; j < blankLines; j++ {
+			for range blankLines {
 				p.newline()
 			}
 		}
-		p.writeIndent(indent)
+		p.writeIndent(commentIndent(c, indent))
 		p.writeString(c.Text)
 		p.newline()
 		p.first = false
@@ -106,7 +158,7 @@ func (p *printer) writeBlankLinesAfterComments(v *lisp.LVal) {
 	if n > p.cfg.MaxBlankLines {
 		n = p.cfg.MaxBlankLines
 	}
-	for i := 0; i < n; i++ {
+	for range n {
 		p.newline()
 	}
 }
@@ -123,7 +175,7 @@ func (p *printer) writeTrailingComment(v *lisp.LVal) {
 		if v.Meta.TrailingComment.PrecedingSpaces > 1 {
 			spaces = v.Meta.TrailingComment.PrecedingSpaces
 		}
-		for i := 0; i < spaces; i++ {
+		for range spaces {
 			p.buf.WriteByte(' ')
 		}
 		p.col += spaces
@@ -147,7 +199,7 @@ func (p *printer) writeInnerTrailingComments(v *lisp.LVal, indent int) {
 			if blankLines > p.cfg.MaxBlankLines {
 				blankLines = p.cfg.MaxBlankLines
 			}
-			for j := 0; j < blankLines; j++ {
+			for range blankLines {
 				p.newline()
 			}
 		}
@@ -204,7 +256,12 @@ func (p *printer) writeExpr(v *lisp.LVal, indent int) {
 				p.writeListInner(v, indent)
 			} else {
 				p.writeString("'")
-				p.writeListInner(v, indent)
+				// A quoted #^/#' keeps its shorthand.  writeSExpr does this
+				// for the unquoted case; without it here, 'ing a shorthand
+				// silently expanded it to '(lisp:expr ...).
+				if !p.tryPrefixForm(v, indent) {
+					p.writeListInner(v, indent)
+				}
 			}
 		} else {
 			p.writeSExpr(v, indent)
@@ -263,6 +320,14 @@ func (p *printer) writeAtom(v *lisp.LVal) {
 		p.writeString(strconv.Itoa(v.Int))
 	case lisp.LFloat:
 		p.writeString(strconv.FormatFloat(v.Float, 'g', -1, 64))
+	default:
+		// Both call sites dispatch here only for LInt/LFloat, so this is
+		// unreachable today.  It used to write nothing at all, which in a
+		// formatter means silently deleting the node from the output. Fall
+		// back to the same v.String() the callers use for types they do not
+		// recognise, so a future numeric LType degrades to "printed
+		// generically" instead of "dropped".
+		p.writeString(v.String())
 	}
 }
 
@@ -317,8 +382,22 @@ func (p *printer) blankLinesBefore(v *lisp.LVal) int {
 // writeSExpr writes an unquoted s-expression (function call, special form, etc).
 func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 	if len(v.Cells) == 0 {
+		// An s-expression with no children still has two pieces of metadata
+		// between its brackets: comments captured by captureInnerTrailingComments
+		// and a closing bracket that stood on its own line.  This branch used to
+		// write "()" and return, DELETING the comments -- "(\n; c\n)" formatted
+		// to "()".  Only the unquoted-paren path was affected; "[...]", "'(...)"
+		// and non-empty forms all reach writeListInner, which handles both.
+		// Found by FuzzGeneratedPipeline's comment-preservation check, the same
+		// invariant that catches the prefix-form comment loss.
 		bracket := bracketOpen(v)
 		p.writeString(string(bracket))
+		openCol := p.col
+		p.writeInnerTrailingComments(v, openCol)
+		if v.Meta != nil && (len(v.Meta.InnerTrailingComments) > 0 || v.Meta.ClosingBracketNewline) {
+			p.newline()
+			p.writeIndent(openCol)
+		}
 		p.writeString(string(bracketClose(bracket)))
 		return
 	}
@@ -335,7 +414,22 @@ func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 	// Write the first child (head).
 	// For data lists (non-symbol head), preserve first-child-on-new-line.
 	isCall := v.Cells[0].Type == lisp.LSymbol
-	if !isCall && hasNewlineBefore(v.Cells[0]) {
+	head := v.Cells[0]
+	if head.Meta != nil && len(head.Meta.LeadingComments) > 0 {
+		// A comment written between the opening bracket and the head is
+		// attached to the head, and neither branch below wrote it: "(\n; c\n f
+		// x)" formatted to "(f x)", DELETING it.  writeListInner has always
+		// written a first child's leading comments; the s-expression printer
+		// only ever considered the head's newline, and only for a data list.
+		// Found by FuzzGeneratedPipeline's comment-preservation check.
+		p.newline()
+		for range p.blankLinesBefore(head) {
+			p.newline()
+		}
+		p.writeLeadingComments(head, bracketCol+1)
+		p.writeBlankLinesAfterComments(head)
+		p.writeIndent(bracketCol + 1)
+	} else if !isCall && hasNewlineBefore(head) {
 		p.newline()
 		p.writeIndent(bracketCol + 1)
 	}
@@ -374,7 +468,7 @@ func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 
 		if onNewLine {
 			p.newline()
-			for j := 0; j < p.blankLinesBefore(child); j++ {
+			for range p.blankLinesBefore(child) {
 				p.newline()
 			}
 			if child.Meta != nil && len(child.Meta.LeadingComments) > 0 {
@@ -415,7 +509,7 @@ func (p *printer) writeListInner(v *lisp.LVal, indent int) {
 			childIndent := openCol
 			if hasNewlineBefore(child) {
 				p.newline()
-				for j := 0; j < p.blankLinesBefore(child); j++ {
+				for range p.blankLinesBefore(child) {
 					p.newline()
 				}
 				if child.Meta != nil && len(child.Meta.LeadingComments) > 0 {
@@ -429,7 +523,7 @@ func (p *printer) writeListInner(v *lisp.LVal, indent int) {
 		} else if hasNewlineBefore(child) {
 			// First child on a new line — preserve bracket-on-its-own-line style
 			p.newline()
-			for j := 0; j < p.blankLinesBefore(child); j++ {
+			for range p.blankLinesBefore(child) {
 				p.newline()
 			}
 			if child.Meta != nil && len(child.Meta.LeadingComments) > 0 {
@@ -457,21 +551,103 @@ func (p *printer) writeListInner(v *lisp.LVal, indent int) {
 }
 
 // tryPrefixForm checks if this s-expr is a known prefix shorthand and renders it.
+//
+// The shorthand is only written when the parser can read it back as the SAME
+// tree.  #' and #^ are narrower than the forms they abbreviate, so re-sugaring
+// unconditionally produced source that no longer parses -- `elps fmt`
+// destroying the file it was asked to tidy:
+//
+//	(lisp:expr (+ 1 (f x)))  ->  #^(+ 1 (f x))
+//	    unbound-expression-error: unbound expression cannot contain nested expressions
+//	(lisp:function (f x))    ->  #'(f x)
+//	    parse-error: invalid symbol
+//
+// Found by FuzzFormat.
 func (p *printer) tryPrefixForm(v *lisp.LVal, indent int) bool {
 	if len(v.Cells) != 2 || v.Cells[0].Type != lisp.LSymbol {
 		return false
 	}
+	// The shorthand has nowhere to put a comment written inside the form: it
+	// writes the prefix and the operand and nothing else, so re-sugaring
+	// "(lisp:function ; c\n f)" to "#'f" DELETES the comment.  rdparser hoists
+	// comments in the gap after a #'/#^ onto the prefix node itself, so this
+	// only fires for longhand a human wrote out -- but that is exactly the
+	// input `elps fmt` is asked to tidy.  Falling through to the longhand
+	// printer keeps every comment.
+	//
+	// Skipped when comments are being stripped anyway (compact mode, which is
+	// what the minifier emits through): there is no comment left to lose, and
+	// refusing the shorthand there would only make the output bigger.
+	if !p.cfg.StripComments && hasComments(v) {
+		return false
+	}
 	switch v.Cells[0].Str {
 	case "lisp:function":
+		if !canWriteFunRef(v.Cells[1]) {
+			return false
+		}
 		p.writeString("#'")
 		p.writeExpr(v.Cells[1], indent)
 		return true
 	case "lisp:expr":
+		if !canWriteUnbound(v.Cells[1]) {
+			return false
+		}
 		p.writeString("#^")
 		p.writeExpr(v.Cells[1], indent)
 		return true
 	}
 	return false
+}
+
+// hasComments reports whether any comment is attached inside v: to one of its
+// children, or between the last child and the closing bracket.  v's OWN
+// leading and trailing comments are not included -- those are written by
+// whoever prints v, and survive the shorthand.
+func hasComments(v *lisp.LVal) bool {
+	if v.Meta != nil && len(v.Meta.InnerTrailingComments) > 0 {
+		return true
+	}
+	for _, c := range v.Cells {
+		// Only the comments the PARENT is responsible for writing.  A child's
+		// own inner comments are written by writeExpr when it prints the
+		// child, and survive the shorthand: "#^(\n; c\n)" keeps its comment.
+		if c.Meta != nil && (len(c.Meta.LeadingComments) > 0 || c.Meta.TrailingComment != nil) {
+			return true
+		}
+	}
+	return false
+}
+
+// canWriteFunRef reports whether inner can be written as the operand of #'.
+// rdparser.ParseFunRef reads that operand with ParseSymbol, so only a plain
+// symbol -- unqualified, or package-qualified with a non-empty name on both
+// sides of the single colon -- reads back as the same tree.
+func canWriteFunRef(inner *lisp.LVal) bool {
+	if inner.Type != lisp.LSymbol || inner.Quoted {
+		return false
+	}
+	pieces := strings.Split(inner.Str, ":")
+	switch len(pieces) {
+	case 1:
+		return pieces[0] != ""
+	case 2:
+		return pieces[0] != "" && pieces[1] != ""
+	default:
+		return false
+	}
+}
+
+// canWriteUnbound reports whether inner can be written as the operand of #^.
+// rdparser.ParseUnbound rejects an operand holding a nested unquoted
+// s-expression, so this mirrors that check exactly.
+func canWriteUnbound(inner *lisp.LVal) bool {
+	for _, c := range inner.Cells {
+		if c.Type == lisp.LSExpr && !c.Quoted {
+			return false
+		}
+	}
+	return true
 }
 
 // computeChildIndent determines the indentation for child at index i.
@@ -501,7 +677,7 @@ func (p *printer) writeSameLineSpacing(v *lisp.LVal) {
 	if v.Meta != nil && v.Meta.PrecedingSpaces > 1 {
 		spaces = v.Meta.PrecedingSpaces
 	}
-	for i := 0; i < spaces; i++ {
+	for range spaces {
 		p.buf.WriteByte(' ')
 	}
 	p.col += spaces
@@ -512,7 +688,7 @@ func (p *printer) writeIndent(col int) {
 	if !p.atBOL {
 		return
 	}
-	for i := 0; i < col; i++ {
+	for range col {
 		p.buf.WriteByte(' ')
 	}
 	p.col = col

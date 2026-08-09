@@ -3,6 +3,7 @@
 package token
 
 import (
+	"errors"
 	"io"
 	"testing"
 
@@ -14,7 +15,7 @@ func TestScannerTokenLength(t *testing.T) {
 	r := byteFiller('x')
 	s := newScannerBuf("", r, make([]byte, bufsize))
 	var err error
-	for i := 0; i < bufsize; i++ {
+	for range bufsize {
 		err = s.ScanRune()
 		if err != nil {
 			t.Error(err)
@@ -32,7 +33,7 @@ func TestScannerEOF(t *testing.T) {
 		N: 10,
 	}
 	s := newScannerBuf("", r, make([]byte, 20))
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		err := s.ScanRune()
 		if err != nil {
 			t.Fatalf("Scan failure: %v", err)
@@ -41,13 +42,13 @@ func TestScannerEOF(t *testing.T) {
 	s.EmitToken(0)
 
 	t.Log(s.start, s.pos, s.next, string(s.buf))
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		tok := s.EmitToken(0)
 		if tok.Text != "" {
 			t.Errorf("Bad token text: %q", tok.Text)
 		}
 		err := s.ScanRune()
-		if err != io.EOF {
+		if !errors.Is(err, io.EOF) {
 			t.Fatalf("Not EOF: %q %q %v", s.Rune(), s.buf, err)
 		}
 		if !s.EOF() {
@@ -77,21 +78,21 @@ func TestScanner(t *testing.T) {
 	s := newScannerBuf("", r, make([]byte, 20))
 
 	var tokens []*Token
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		err := s.ScanRune()
 		if err != nil {
 			t.Fatalf("Scan failure: %v", err)
 		}
 	}
 	tokens = append(tokens, s.EmitToken(0))
-	for i := 0; i < 7; i++ {
+	for range 7 {
 		err := s.ScanRune()
 		if err != nil {
 			t.Fatalf("Scan failure: %v", err)
 		}
 	}
 	tokens = append(tokens, s.EmitToken(1))
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		err := s.ScanRune()
 		if err != nil {
 			t.Fatalf("Scan failure: %v", err)
@@ -116,28 +117,28 @@ func TestScannerLoc(t *testing.T) {
 	s := newScannerBuf("test", r, make([]byte, 15))
 
 	var tokens []*Token
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		err := s.ScanRune()
 		if err != nil {
 			t.Fatalf("Scan failure: %v", err)
 		}
 	}
 	tokens = append(tokens, s.EmitToken(0))
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		err := s.ScanRune()
 		if err != nil {
 			t.Fatalf("Scan failure: %v", err)
 		}
 	}
 	tokens = append(tokens, s.EmitToken(1))
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		err := s.ScanRune()
 		if err != nil {
 			t.Fatalf("Scan failure: %v", err)
 		}
 	}
 	tokens = append(tokens, s.EmitToken(2))
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		err := s.ScanRune()
 		if err != nil {
 			t.Fatalf("Scan failure: %v", err)

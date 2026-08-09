@@ -132,7 +132,7 @@ func buildCycleEdgeSet(issues []Issue) map[string]bool {
 			continue
 		}
 		// Cycle members are listed in Details; create edges between consecutive members.
-		for i := 0; i < len(issue.Details)-1; i++ {
+		for i := range len(issue.Details) - 1 {
 			set[issue.Details[i]+" -> "+issue.Details[i+1]] = true
 		}
 		// Close the cycle.

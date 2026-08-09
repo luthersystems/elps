@@ -41,7 +41,7 @@ func TestFormatMermaid_BasicGraph(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 
 	// First line must be the flowchart header.
-	require.True(t, len(lines) > 0)
+	require.NotEmpty(t, lines)
 	assert.Equal(t, "flowchart TD", lines[0])
 
 	output := buf.String()
@@ -121,7 +121,7 @@ func TestFormatMermaid_CycleHighlight(t *testing.T) {
 
 	// Non-cycle edge (ping->helper) should use solid arrow.
 	// Sorted: helper=n0, ping=n1, pong=n2
-	assert.Contains(t, output, "n1 --> n0") // ping -> helper (solid)
+	assert.Contains(t, output, "n1 --> n0")  // ping -> helper (solid)
 	assert.Contains(t, output, "n1 -.-> n2") // ping -> pong (dashed cycle)
 	assert.Contains(t, output, "n2 -.-> n1") // pong -> ping (dashed cycle)
 }

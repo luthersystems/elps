@@ -198,7 +198,7 @@ func docJSON(makeEnv func() (*lisp.LEnv, error), sourceFile string, pkgFlag, lis
 	}
 
 	if len(args) != 1 {
-		return fmt.Errorf("--json requires exactly one argument (or use -l for all packages)")
+		return errors.New("--json requires exactly one argument (or use -l for all packages)")
 	}
 	query := args[0]
 
