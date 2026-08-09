@@ -155,6 +155,16 @@ fuzz-budget-check:
 ci-gates-test:
 	bash scripts/ci-gates-test.sh
 
+# The complement to ci-gates-test: that suite proves the fuzz gate can FAIL,
+# this one proves it fails for the RIGHT REASON. It drives scripts/fuzz.sh
+# against a stub toolchain and asserts that a crasher, a seed-corpus failure,
+# a panic, a signal death and the upstream -fuzztime race (issue #335) are each
+# reported as what they are — the distinction that was missing when a harness
+# failure on PR #330 read as a minifier bug. No Go toolchain, runs in seconds.
+.PHONY: fuzz-classify-test
+fuzz-classify-test:
+	bash scripts/fuzz-classify-test.sh
+
 # Adjudicate a benchstat comparison locally, exactly as CI does:
 #   go test -bench=. -benchmem -benchtime=100ms -count=5 -run='^$$' ./... > pr.txt
 #   git stash && go test ... > base.txt && git stash pop
