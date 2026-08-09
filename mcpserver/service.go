@@ -36,7 +36,8 @@ const builtinScheme = "elps-builtin"
 type serviceConfig struct {
 	registry        *lisp.PackageRegistry
 	env             *lisp.LEnv
-	envFactory      func() (*lisp.LEnv, error)
+	docEnv          *lisp.LEnv
+	envFactory      RequestEnvFactory
 	workspaceRoot   string
 	perfConfig      *perf.Config
 	excludePatterns []string
@@ -47,7 +48,8 @@ type serviceConfig struct {
 type service struct {
 	registry        *lisp.PackageRegistry
 	env             *lisp.LEnv
-	envFactory      func() (*lisp.LEnv, error)
+	sharedDocEnv    *lisp.LEnv
+	envFactory      RequestEnvFactory
 	workspaceRoot   string
 	perfConfig      *perf.Config
 	excludePatterns []string
@@ -81,6 +83,7 @@ func newService(cfg serviceConfig) *service {
 	return &service{
 		registry:                    cfg.registry,
 		env:                         cfg.env,
+		sharedDocEnv:                cfg.docEnv,
 		envFactory:                  cfg.envFactory,
 		workspaceRoot:               cfg.workspaceRoot,
 		perfConfig:                  clonePerfConfig(cfg.perfConfig),
@@ -1636,15 +1639,16 @@ func paginateSlice[T any](items []T, offset, limit int) []T {
 	return items
 }
 
-func (s *service) docTool(_ context.Context, _ *mcp.CallToolRequest, in DocInput) (*mcp.CallToolResult, DocResponse, error) {
+func (s *service) docTool(ctx context.Context, _ *mcp.CallToolRequest, in DocInput) (*mcp.CallToolResult, DocResponse, error) {
 	start := time.Now()
 	if in.Query == "" && len(in.Queries) == 0 {
 		return nil, DocResponse{}, newToolErr("invalid_input", "query or queries is required", "")
 	}
-	env, err := s.docEnv()
+	env, release, err := s.docEnv(ctx)
 	if err != nil {
 		return nil, DocResponse{}, err
 	}
+	defer release()
 
 	// Batch mode: look up multiple symbols at once.
 	if len(in.Queries) > 0 {
@@ -1702,16 +1706,45 @@ func docSymbolFromLib(sd libhelp.SymbolDoc) DocSymbol {
 	return ds
 }
 
-func (s *service) docEnv() (*lisp.LEnv, error) {
+// noopRelease is the release function used for environments the service does
+// not own: shared environments supplied by the embedder, and factories that
+// return no release handle.
+func noopRelease() {}
+
+// callEnvFactory invokes the embedder's request env factory and normalizes the
+// release handle so callers can always `defer release()`. A factory that
+// returns an error is assumed to have cleaned up after itself, per the
+// RequestEnvFactory contract.
+func (s *service) callEnvFactory(ctx context.Context) (*lisp.LEnv, func(), error) {
+	env, release, err := s.envFactory(ctx)
+	if err != nil {
+		return nil, noopRelease, err
+	}
+	if release == nil {
+		release = noopRelease
+	}
+	return env, release, nil
+}
+
+// docEnv resolves the environment backing the read-only doc tool. It returns a
+// release function that the caller must invoke when it is done with the
+// environment; for shared environments the release is a no-op.
+func (s *service) docEnv(ctx context.Context) (*lisp.LEnv, func(), error) {
+	// A doc-only shared env wins: doc is a symbol lookup that needs no
+	// isolation, so an embedder can opt out of per-request construction here
+	// without redirecting the diagnostics path the way WithEnv does.
+	if s.sharedDocEnv != nil {
+		return s.sharedDocEnv, noopRelease, nil
+	}
 	if s.env != nil {
-		return s.env, nil
+		return s.env, noopRelease, nil
 	}
 	if s.envFactory != nil {
-		return s.envFactory()
+		return s.callEnvFactory(ctx)
 	}
 	env, err := lisplib.NewDocEnv()
 	if err != nil {
-		return nil, err
+		return nil, noopRelease, err
 	}
 	if s.registry != nil {
 		for name, pkg := range s.registry.Packages {
@@ -1720,10 +1753,10 @@ func (s *service) docEnv() (*lisp.LEnv, error) {
 			}
 		}
 	}
-	return env, nil
+	return env, noopRelease, nil
 }
 
-func (s *service) testTool(_ context.Context, _ *mcp.CallToolRequest, in TestInput) (*mcp.CallToolResult, TestResponse, error) {
+func (s *service) testTool(ctx context.Context, _ *mcp.CallToolRequest, in TestInput) (*mcp.CallToolResult, TestResponse, error) {
 	start := time.Now()
 	if in.Path == "" && in.Content == nil {
 		return nil, TestResponse{}, newToolErr("invalid_input", "path or content is required", "")
@@ -1753,10 +1786,11 @@ func (s *service) testTool(_ context.Context, _ *mcp.CallToolRequest, in TestInp
 		}
 	}
 
-	env, testErr := s.newTestEnv()
+	env, release, testErr := s.newTestEnv(ctx)
 	if testErr != nil {
 		return nil, TestResponse{}, testErr
 	}
+	defer release()
 
 	// Load and evaluate the test file.
 	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
@@ -1834,35 +1868,39 @@ func (s *service) testTool(_ context.Context, _ *mcp.CallToolRequest, in TestInp
 	}, nil
 }
 
-func (s *service) newTestEnv() (*lisp.LEnv, error) {
+// newTestEnv builds an isolated environment for the eval and test tools. It
+// returns a release function that the caller must invoke once it is done with
+// the environment.
+func (s *service) newTestEnv(ctx context.Context) (*lisp.LEnv, func(), error) {
 	if s.envFactory != nil {
-		return s.envFactory()
+		return s.callEnvFactory(ctx)
 	}
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
 	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
 	rc := lisp.InitializeUserEnv(env)
 	if lisp.GoError(rc) != nil {
-		return nil, fmt.Errorf("env init: %w", lisp.GoError(rc))
+		return nil, noopRelease, fmt.Errorf("env init: %w", lisp.GoError(rc))
 	}
 	rc = lisplib.LoadLibrary(env)
 	if lisp.GoError(rc) != nil {
-		return nil, fmt.Errorf("load library: %w", lisp.GoError(rc))
+		return nil, noopRelease, fmt.Errorf("load library: %w", lisp.GoError(rc))
 	}
-	return env, nil
+	return env, noopRelease, nil
 }
 
-func (s *service) evalTool(_ context.Context, _ *mcp.CallToolRequest, in EvalInput) (*mcp.CallToolResult, EvalResponse, error) {
+func (s *service) evalTool(ctx context.Context, _ *mcp.CallToolRequest, in EvalInput) (*mcp.CallToolResult, EvalResponse, error) {
 	start := time.Now()
 	if in.Expression == "" && len(in.Expressions) == 0 {
 		return nil, EvalResponse{}, newToolErr("invalid_input", "expression or expressions is required", "")
 	}
 
-	// Batch mode: each expression gets its own isolated env.
+	// Batch mode: each expression gets its own isolated env, released as soon
+	// as that expression is done so peak usage stays at one environment.
 	if len(in.Expressions) > 0 {
 		batch := make([]EvalResult, 0, len(in.Expressions))
 		for _, expr := range in.Expressions {
-			result := s.evalSingle(expr)
+			result := s.evalSingle(ctx, expr)
 			batch = append(batch, result)
 		}
 		return nil, EvalResponse{
@@ -1872,10 +1910,11 @@ func (s *service) evalTool(_ context.Context, _ *mcp.CallToolRequest, in EvalInp
 	}
 
 	// Single expression mode.
-	env, err := s.newTestEnv()
+	env, release, err := s.newTestEnv(ctx)
 	if err != nil {
 		return nil, EvalResponse{}, err
 	}
+	defer release()
 	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
 	if lisp.GoError(lerr) != nil {
 		return nil, EvalResponse{}, fmt.Errorf("package error: %w", lisp.GoError(lerr))
@@ -1917,11 +1956,12 @@ func (s *service) evalTool(_ context.Context, _ *mcp.CallToolRequest, in EvalInp
 	}, nil
 }
 
-func (s *service) evalSingle(expression string) EvalResult {
-	env, err := s.newTestEnv()
+func (s *service) evalSingle(ctx context.Context, expression string) EvalResult {
+	env, release, err := s.newTestEnv(ctx)
 	if err != nil {
 		return EvalResult{Expression: expression, Error: err.Error()}
 	}
+	defer release()
 	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
 	if lisp.GoError(lerr) != nil {
 		return EvalResult{Expression: expression, Error: lisp.GoError(lerr).Error()}
