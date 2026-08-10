@@ -404,7 +404,10 @@ func DefaultBuiltins() []LBuiltinDef {
 }
 
 func builtinLoadString(env *LEnv, args *LVal) *LVal {
-	source, name := args.KeyArg(0), args.KeyArg(1)
+	source, name := args.ReqArg(env, 0), args.KeyArg(1)
+	if source.Type == LError {
+		return source
+	}
 	if source.Type != LString {
 		return env.Errorf("first argument is not a string: %v", source.Type)
 	}
@@ -429,7 +432,10 @@ func builtinLoadString(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinLoadBytes(env *LEnv, args *LVal) *LVal {
-	source, name := args.KeyArg(0), args.KeyArg(1)
+	source, name := args.ReqArg(env, 0), args.KeyArg(1)
+	if source.Type == LError {
+		return source
+	}
 	if source.Type != LBytes {
 		return env.Errorf("first argument is not bytes: %v", source.Type)
 	}

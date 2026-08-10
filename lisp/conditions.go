@@ -55,4 +55,13 @@ const (
 //
 //	(handler-bind ((internal-panic (lambda (c &rest args) ...)))
 //	    (risky))
+//
+// CondMissingArgument reports that a builtin was invoked with fewer argument
+// cells than it reads. The evaluator supplies one cell per declared formal, so
+// this cannot arise from lisp; it means an embedder bound the builtin to
+// formals declaring fewer arguments than the Go function requires. Raised as
+// an ordinary condition so a caller can handler-bind it, rather than panicking
+// in the embedder's process.
+const CondMissingArgument = "missing-argument"
+
 const CondInternalPanic = "internal-panic"

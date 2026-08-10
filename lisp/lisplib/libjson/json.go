@@ -257,7 +257,10 @@ func (s *Serializer) DumpMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.L
 }
 
 func (s *Serializer) DumpBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	obj, stringNums := args.KeyArg(0), args.KeyArg(1)
+	obj, stringNums := args.ReqArg(env, 0), args.KeyArg(1)
+	if obj.Type == lisp.LError {
+		return obj
+	}
 	if stringNums.IsNil() {
 		stringNums = s.useStringNumbers(env)
 		if stringNums.Type == lisp.LError {
@@ -272,7 +275,10 @@ func (s *Serializer) DumpBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVa
 }
 
 func (s *Serializer) LoadMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	lmsg, stringNums := args.KeyArg(0), args.KeyArg(1)
+	lmsg, stringNums := args.ReqArg(env, 0), args.KeyArg(1)
+	if lmsg.Type == lisp.LError {
+		return lmsg
+	}
 	if lmsg.Type != lisp.LNative {
 		return env.Errorf("argument is not a raw json-message: %v", lmsg.Type)
 	}
@@ -284,7 +290,10 @@ func (s *Serializer) LoadMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.L
 }
 
 func (s *Serializer) LoadBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	js, stringNums := args.KeyArg(0), args.KeyArg(1)
+	js, stringNums := args.ReqArg(env, 0), args.KeyArg(1)
+	if js.Type == lisp.LError {
+		return js
+	}
 	if js.Type != lisp.LBytes {
 		return env.Errorf("argument is not bytes: %v", js.Type)
 	}
@@ -298,7 +307,10 @@ func (s *Serializer) LoadBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVa
 }
 
 func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	obj, stringNums := args.KeyArg(0), args.KeyArg(1)
+	obj, stringNums := args.ReqArg(env, 0), args.KeyArg(1)
+	if obj.Type == lisp.LError {
+		return obj
+	}
 	if stringNums.IsNil() {
 		stringNums = s.useStringNumbers(env)
 		if stringNums.Type == lisp.LError {
@@ -313,7 +325,10 @@ func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 }
 
 func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	js, stringNums := args.KeyArg(0), args.KeyArg(1)
+	js, stringNums := args.ReqArg(env, 0), args.KeyArg(1)
+	if js.Type == lisp.LError {
+		return js
+	}
 	if js.Type != lisp.LString {
 		return env.Errorf("argument is not a string: %v", js.Type)
 	}

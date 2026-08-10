@@ -837,11 +837,38 @@ func (v *LVal) Len() int {
 // signature is identical either way, so nothing catches it at compile time.
 //
 // An absent cell is reported as Nil, which is what the evaluator itself passes
-// for an unsupplied &key argument. Builtins must therefore read optional and
-// &key cells through KeyArg rather than indexing Cells directly.
+// for an unsupplied &optional or &key argument. Builtins must therefore read
+// those cells through KeyArg rather than indexing Cells directly.
+//
+// Use it ONLY for optional and &key cells, never for a required argument.
+// Reporting an absent cell as Nil conflates "the caller supplied nothing" with
+// "the caller supplied nil", and that is only safe where nil already means
+// "not supplied". For a required argument whose valid domain includes Nil it
+// is actively harmful: json:dump-string would answer "null" for a binding that
+// supplied no argument at all, turning a panic into a silent wrong answer.
+// Required arguments use ReqArg instead.
 func (v *LVal) KeyArg(i int) *LVal {
 	if i < 0 || i >= len(v.Cells) {
 		return Nil()
+	}
+	return v.Cells[i]
+}
+
+// ReqArg returns the i'th cell of a builtin's argument list, or an error if the
+// list is shorter than that.
+//
+// This is the required-argument counterpart to KeyArg. Indexing Cells directly
+// panics when an embedder binds the builtin to formals declaring fewer
+// arguments than it reads, and a panic in an embedder's process is a far worse
+// outcome than an error value -- the evaluator can only report it as an opaque
+// internal-panic, and a host embedding elps has no way to recover context from
+// it. Reporting the absent cell as Nil is not an option either, for the reason
+// given on KeyArg. So: an error, naming the mismatch.
+func (v *LVal) ReqArg(env *LEnv, i int) *LVal {
+	if i < 0 || i >= len(v.Cells) {
+		return env.ErrorConditionf(CondMissingArgument,
+			"missing required argument %d: this builtin reads at least %d argument(s)"+
+				" but was bound to formals declaring only %d", i, i+1, len(v.Cells))
 	}
 	return v.Cells[i]
 }
