@@ -195,7 +195,10 @@ var builtinTanh = realFunc(math.Tanh).builtin
 // builtinAtan does not have the same signature as other trigonometric
 // functions and must be implemented specially.
 func builtinAtan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	x, q := args.Cells[0], args.Cells[1]
+	x, q := args.ReqArg(env, 0), args.KeyArg(1)
+	if x.Type == lisp.LError {
+		return x
+	}
 	if !x.IsNumeric() {
 		return env.Errorf("argument is not a number: %v", x.Type)
 	}

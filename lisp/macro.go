@@ -392,7 +392,10 @@ func doUnquoteSExpr(env *LEnv, v *LVal, depth int, quoteLevel int) *LVal {
 }
 
 func macroTrace(env *LEnv, args *LVal) *LVal {
-	expr, msg := args.Cells[0], args.Cells[1]
+	expr, msg := args.ReqArg(env, 0), args.KeyArg(1)
+	if expr.Type == LError {
+		return expr
+	}
 	sym := env.GenSym()
 	if msg.IsNil() {
 		msg = String("TRACE")
