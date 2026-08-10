@@ -1070,8 +1070,20 @@ func encodeDefs(out []byte, defs []seedDef) []byte {
 
 // buildSpec encodes a whole spec. strategy is an index into strategyLabels.
 func buildSpec(strategy int, pkgs ...seedPkg) []byte {
+	if len(pkgs) == 0 || len(pkgs) > maxPackages {
+		panic(fmt.Sprintf("elpsutil fuzz seed: %d packages, want 1..%d", len(pkgs), maxPackages))
+	}
 	out := []byte{byte(len(pkgs) - 1)}
 	for _, p := range pkgs {
+		// The decoder reads the doc length modulo 8, so a longer doc would
+		// desynchronise every field after it and the seed would silently
+		// describe something other than what it says.
+		if len(p.doc) >= 8 {
+			panic("elpsutil fuzz seed: package doc must be under 8 bytes: " + p.doc)
+		}
+		if len(p.builtins) > maxDefs || len(p.ops) > maxDefs || len(p.macros) > maxDefs {
+			panic(fmt.Sprintf("elpsutil fuzz seed: more than %d defs of one kind", maxDefs))
+		}
 		out = append(out,
 			idxPkgType(p.typ),
 			idx(pkgNames, p.name),
