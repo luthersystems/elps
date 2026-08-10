@@ -179,3 +179,44 @@ func TestCollectFormals_SkipsMarkers(t *testing.T) {
 	assert.False(t, defs["&optional"])
 	assert.False(t, defs["&rest"])
 }
+
+// TestSourceOf_Nil covers the nil parent that Walk documents it will pass for
+// top-level expressions (issue #354).
+func TestSourceOf_Nil(t *testing.T) {
+	assert.Nil(t, SourceOf(nil))
+}
+
+// TestHeadSymbol_Nil and TestArgCount_Nil cover the same nil-parent shape for
+// the sibling accessors, which are exported alongside Walk from lint/walk.go.
+func TestHeadSymbol_Nil(t *testing.T) {
+	assert.Empty(t, HeadSymbol(nil))
+}
+
+func TestArgCount_Nil(t *testing.T) {
+	assert.Zero(t, ArgCount(nil))
+}
+
+// TestWalk_NilParentAccessors is the issue #354 reproducer: pairing Walk with
+// the astutil accessors on the parent must not panic on top-level forms.
+func TestWalk_NilParentAccessors(t *testing.T) {
+	exprs := []*lisp.LVal{{
+		Type: lisp.LSExpr,
+		Cells: []*lisp.LVal{
+			{Type: lisp.LSymbol, Str: "defun"},
+			{Type: lisp.LSymbol, Str: "f"},
+		},
+	}}
+
+	var sawNilParent bool
+	assert.NotPanics(t, func() {
+		Walk(exprs, func(_ *lisp.LVal, parent *lisp.LVal, _ int) {
+			if parent == nil {
+				sawNilParent = true
+			}
+			_ = SourceOf(parent)
+			_ = HeadSymbol(parent)
+			_ = ArgCount(parent)
+		})
+	})
+	assert.True(t, sawNilParent, "Walk must pass a nil parent for top-level forms")
+}
