@@ -315,9 +315,10 @@ func runLint(root string, src, wsSrc, scriptBytes []byte) (lintStats, error) {
 	exp := &analysis.EnvMacroExpander{Env: env}
 
 	wsDefs := analysis.ExtractFileDefinitions(wsSrc, lintFileB)
+	stdlibExports := analysis.ExtractPackageExports(env.Runtime.Registry)
 	acfg := &analysis.Config{
 		ExtraGlobals:   wsDefs,
-		PackageExports: analysis.ExtractPackageExports(env.Runtime.Registry),
+		PackageExports: stdlibExports,
 		PackageSymbols: groupByPackage(wsDefs),
 		MacroExpander:  exp,
 	}
@@ -372,7 +373,7 @@ func runLint(root string, src, wsSrc, scriptBytes []byte) (lintStats, error) {
 	if sc.bit() {
 		// Skips defaultStdlibExports' fresh env boot, which is the reason the
 		// field exists.
-		lcfg.StdlibExports = analysis.ExtractPackageExports(env.Runtime.Registry)
+		lcfg.StdlibExports = stdlibExports
 	}
 
 	files := []string{pathA, pathB}[:1+sc.intn(2)]
@@ -383,8 +384,16 @@ func runLint(root string, src, wsSrc, scriptBytes []byte) (lintStats, error) {
 			return stats, err
 		}
 	}
-	if _, err := BuildAnalysisConfig(lcfg); err != nil {
-		_ = err // a workspace that cannot be scanned is a legitimate outcome
+	// The CLI's stdin path calls BuildAnalysisConfig directly rather than
+	// through LintFiles. Only occasionally: LintFiles has already called it
+	// once, and a second call re-walks the workspace and re-runs
+	// ScanWorkspaceRefs over every file. Measured on the first campaign, that
+	// doubled cost put this target at ~65 exec/sec against FuzzAnalyzeSource's
+	// ~280, and the second call reaches no branch the first did not.
+	if sc.intn(4) == 0 {
+		if _, err := BuildAnalysisConfig(lcfg); err != nil {
+			_ = err // a workspace that cannot be scanned is a legitimate outcome
+		}
 	}
 
 	// --- output, severity and the AST helpers -------------------------------
