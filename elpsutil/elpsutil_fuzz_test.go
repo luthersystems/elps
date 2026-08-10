@@ -1106,6 +1106,8 @@ func buildSpec(strategy int, pkgs ...seedPkg) []byte {
 //  4. Evaluating src against the installed builtins terminates (the watchdog),
 //     returns a non-nil *LVal, never recovers a Go panic (IsInternalPanic),
 //     and produces a renderable result.
+//  5. The same three properties for every call autoCall makes, which is where
+//     fuzzer-chosen arguments meet fuzzer-chosen formals.
 //
 // NOT asserted: that any package installs successfully, that any name survives
 // the pre-check, or that src evaluates without error. An LError is the right
