@@ -541,3 +541,99 @@ func TestEnvMacroExpander_Reset_ClearsCache(t *testing.T) {
 	require.NotNil(t, expanded, "after Reset, newly-defined macro should expand")
 	assert.Equal(t, "if", expanded.Cells[0].Str)
 }
+
+// ---------------------------------------------------------------------------
+// Swallowed-panic detection
+//
+// ExpandMacro's blanket recover sets result = nil, which is ALSO the answer for
+// "not a macro" — the overwhelmingly common case. Before ExpansionPanics there
+// was no way for any caller, test or fuzz target to tell the two apart, so a
+// panic in analysis-time macro expansion was a silent class of defect. These
+// tests are the two halves of that claim: the detector fires on a real panic,
+// and it does not fire on anything a lisp program can arrange.
+// ---------------------------------------------------------------------------
+
+// TestExpandMacroPanicIsCounted drives a real nil-pointer dereference through
+// ExpandMacro's own code (a nil form reaches `len(form.Cells)`) rather than
+// through a test-only hook, and checks that the recover leaves a record.
+func TestExpandMacroPanicIsCounted(t *testing.T) {
+	env := newTestEnv(t)
+	expander := &EnvMacroExpander{Env: env}
+
+	require.Equal(t, uint64(0), expander.ExpansionPanics())
+	require.Nil(t, expander.LastExpansionPanic())
+
+	// A nil form panics inside ExpandMacro. Env is non-nil so the
+	// short-circuit in the guard does not save it.
+	result := expander.ExpandMacro(nil, "user")
+
+	assert.Nil(t, result, "a recovered panic must still yield the nil the analyzer expects")
+	assert.Equal(t, uint64(1), expander.ExpansionPanics(),
+		"the recovered panic was not counted; it is invisible again")
+
+	rec := expander.LastExpansionPanic()
+	require.NotNil(t, rec)
+	assert.NotNil(t, rec.Value, "recover() returned nil for a genuine panic?")
+	assert.Contains(t, string(rec.GoStack), "goroutine ",
+		"GoStack should be a runtime.Stack dump")
+	assert.Contains(t, string(rec.GoStack), "ExpandMacro",
+		"GoStack should have been captured before the unwind completed")
+	assert.Equal(t, "user", rec.Package)
+
+	// Monotonic, and Reset does not erase the evidence.
+	expander.Reset()
+	assert.Equal(t, uint64(1), expander.ExpansionPanics(),
+		"Reset cleared the abort count; the code being watched must not be able"+
+			" to clear its own record")
+}
+
+// TestExpandMacroNoPanicNotCounted is the false-positive half. Every one of
+// these returns nil, and none of them is a panic — if any bumped the counter
+// the signal would be useless, since nil is what ExpandMacro almost always
+// returns.
+func TestExpandMacroNoPanicNotCounted(t *testing.T) {
+	env := newTestEnv(t)
+	evalSource(t, env, `
+(defmacro good (x) (quasiquote (+ (unquote x) 1)))
+(defmacro boom (x) (error 'macro-boom "deliberate lisp-level error"))
+(defmacro deep (x) (quasiquote (deep (unquote x))))
+(defun notmac (x) x)`)
+
+	expander := &EnvMacroExpander{Env: env}
+
+	sexpr := func(cells ...*lisp.LVal) *lisp.LVal { return lisp.SExpr(cells) }
+
+	cases := []struct {
+		name string
+		form *lisp.LVal
+	}{
+		{"successful expansion", sexpr(lisp.Symbol("good"), lisp.Int(1))},
+		{"not a macro", sexpr(lisp.Symbol("notmac"), lisp.Int(1))},
+		{"unbound symbol", sexpr(lisp.Symbol("no-such-symbol-anywhere"), lisp.Int(1))},
+		{"head is not a symbol", sexpr(lisp.Int(1), lisp.Int(2))},
+		{"empty form", sexpr()},
+		{"macro body raises a lisp error", sexpr(lisp.Symbol("boom"), lisp.Int(1))},
+		{"macro expands to itself forever", sexpr(lisp.Symbol("deep"), lisp.Int(1))},
+		{"wrong arity", sexpr(lisp.Symbol("good"))},
+		{"too many args", sexpr(lisp.Symbol("good"), lisp.Int(1), lisp.Int(2), lisp.Int(3))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			expander.ExpandMacro(tc.form, "user")
+		})
+	}
+
+	assert.Equal(t, uint64(0), expander.ExpansionPanics(),
+		"a lisp-reachable outcome was counted as a swallowed panic (last: %+v)",
+		expander.LastExpansionPanic())
+}
+
+// TestEnvMacroExpanderIsPanicReporter pins the optional interface, which is how
+// callers holding a MacroExpander (lint's LintConfig, the LSP's analysis.Config)
+// reach the count without knowing the concrete type.
+func TestEnvMacroExpanderIsPanicReporter(t *testing.T) {
+	var expander MacroExpander = &EnvMacroExpander{Env: newTestEnv(t)}
+	pr, ok := expander.(PanicReporter)
+	require.True(t, ok, "EnvMacroExpander must satisfy PanicReporter")
+	assert.Equal(t, uint64(0), pr.ExpansionPanics())
+}
