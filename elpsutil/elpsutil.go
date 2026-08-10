@@ -1,10 +1,18 @@
 package elpsutil
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/luthersystems/elps/lisp"
 )
 
 // Function is a helper to construct builtins.
+//
+// formals must be a list of symbols, as returned by lisp.Formals.  A function
+// that takes no arguments is declared with lisp.Formals(), the empty list; a
+// nil formals list is not a valid spelling of that and is rejected by
+// PackageLoader and Validate.
 func Function(name string, formals *lisp.LVal, fun lisp.LBuiltin) *Builtin {
 	return &Builtin{formals, fun, name}
 }
@@ -113,8 +121,14 @@ func packageMacros(p Package) []lisp.LBuiltinDef {
 }
 
 // Load loads an elps package implemented in Go.
+//
+// A loader that returns a Go nil *LVal, rather than lisp.Nil(), is reported as
+// an error naming the loader instead of panicking.
 func Load(env *lisp.LEnv, fn Loader) *lisp.LVal {
-	lerr := fn(env)
+	if fn == nil {
+		return lisp.Errorf("loader is nil")
+	}
+	lerr := loaderResult(fn(env), "loader "+loaderName(fn))
 	if lerr.Type == lisp.LError {
 		return lerr
 	}
@@ -128,10 +142,18 @@ func Load(env *lisp.LEnv, fn Loader) *lisp.LVal {
 }
 
 // LoadAll loads multiple elps files implemented in Go.
-func LoadAll(fn ...Loader) Loader {
+//
+// A loader that returns a Go nil *LVal, rather than lisp.Nil(), is reported as
+// an error naming the loader and its position in the chain instead of
+// panicking.
+func LoadAll(fns ...Loader) Loader {
 	return func(env *lisp.LEnv) *lisp.LVal {
-		for _, fn := range fn {
-			lerr := fn(env)
+		for i, fn := range fns {
+			what := fmt.Sprintf("loader %d of %d, %s", i+1, len(fns), loaderName(fn))
+			if fn == nil {
+				return lisp.Errorf("%s is nil", what)
+			}
+			lerr := loaderResult(fn(env), what)
 			if lerr.Type == lisp.LError {
 				return lerr
 			}
@@ -149,7 +171,10 @@ func LoadAll(fn ...Loader) Loader {
 // LibraryLoader loads multiple elps packages implemented in Go.
 func LibraryLoader(ps ...Package) Loader {
 	return func(env *lisp.LEnv) *lisp.LVal {
-		for _, p := range ps {
+		for i, p := range ps {
+			if p == nil {
+				return lisp.Errorf("package %d of %d is nil", i+1, len(ps))
+			}
 			lerr := Load(env, PackageLoader(p))
 			if lerr.Type == lisp.LError {
 				return lerr
@@ -160,9 +185,24 @@ func LibraryLoader(ps ...Package) Loader {
 }
 
 // PackageLoader loads an elps package implemented in Go.
+//
+// PackageLoader validates the package definition before registering anything,
+// and returns an *LVal error identifying the package and the offending
+// definition rather than letting lisp panic or deferring a nil dereference to
+// call time.  A definition lisp accepts today is still accepted.
 func PackageLoader(p Package) Loader {
 	return func(env *lisp.LEnv) *lisp.LVal {
-		name := lisp.Symbol(p.PackageName())
+		if p == nil {
+			return lisp.Errorf("package is nil")
+		}
+		pkgName := p.PackageName()
+		// A method meant to implement one of the optional Package interfaces
+		// but declared with the wrong signature registers nothing at all, with
+		// no diagnostic on any path.  Report it before the silent load.
+		if problems := checkPackageMethods(p); len(problems) > 0 {
+			return lisp.Errorf("package %q: %s", pkgName, strings.Join(problems, "; "))
+		}
+		name := lisp.Symbol(pkgName)
 		e := env.DefinePackage(name)
 		if !e.IsNil() {
 			return e
@@ -175,18 +215,21 @@ func PackageLoader(p Package) Loader {
 			env.SetPackageDoc(dp.PackageDoc())
 		}
 		initLoader := packageInit(p)
-		e = initLoader(env)
+		e = loaderResult(initLoader(env), fmt.Sprintf("package %q: PackageInit", pkgName))
 		if e.Type == lisp.LError {
 			return e
 		}
-		for _, fn := range packageBuiltins(p) {
-			env.AddBuiltins(true, fn)
+		e = addDefs(env, pkgName, kindBuiltin, packageBuiltins(p), env.AddBuiltins)
+		if e.Type == lisp.LError {
+			return e
 		}
-		for _, fn := range packageSpecialOps(p) {
-			env.AddSpecialOps(true, fn)
+		e = addDefs(env, pkgName, kindSpecialOp, packageSpecialOps(p), env.AddSpecialOps)
+		if e.Type == lisp.LError {
+			return e
 		}
-		for _, fn := range packageMacros(p) {
-			env.AddMacros(true, fn)
+		e = addDefs(env, pkgName, kindMacro, packageMacros(p), env.AddMacros)
+		if e.Type == lisp.LError {
+			return e
 		}
 		return lisp.Nil()
 	}
