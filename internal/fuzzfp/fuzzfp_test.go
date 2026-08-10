@@ -296,8 +296,26 @@ func TestGuardDetectsSourceCorruption(t *testing.T) {
 		},
 		{
 			name: "shared synthetic edited in place",
-			make: func() *lisp.LVal { return lisp.Int(1) },
-			mut:  func(v *lisp.LVal) { v.Source.Pos = 7 },
+			// The value gets its OWN synthetic location rather than the one
+			// lisp.Int hands it. nativeSource() returns defaultSourceLocation,
+			// a package-level singleton shared by every value constructed
+			// anywhere in this binary -- editing it in place here corrupted it
+			// for every other test, and TestGuardPermitsEveryReplacementOfA-
+			// SyntheticLocation then failed its own precondition whenever it
+			// happened to run afterwards. With t.Parallel() that is a race:
+			// measured at 2 failures in 8 runs of this package.
+			//
+			// The guard's rule is about the POINTER being unchanged while the
+			// pointee is edited, so a location this test owns exercises it
+			// identically. Which particular synthetic location it is does not
+			// matter to the guard, and mutating a shared one is precisely the
+			// defect class this package exists to detect.
+			make: func() *lisp.LVal {
+				v := lisp.Int(1)
+				v.Source = &token.Location{File: "<native code>", Pos: -1}
+				return v
+			},
+			mut: func(v *lisp.LVal) { v.Source.Pos = 7 },
 		},
 		{
 			name: "real location edited in place",
