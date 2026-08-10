@@ -91,8 +91,7 @@ func TestKeyArgBuiltinsTolerateShortArgLists(t *testing.T) {
 			// The evaluator passes one cell per NAMED formal; the &key marker
 			// itself is not an argument.
 			full := namedFormalCount(b.formals)
-			for n := 0; n < full; n++ {
-				n := n
+			for n := range full {
 				t.Run(fmt.Sprintf("%d_of_%d_cells", n, full), func(t *testing.T) {
 					cells := make([]*lisp.LVal, n)
 					for i := range cells {
