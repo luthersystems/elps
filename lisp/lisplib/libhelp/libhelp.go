@@ -435,11 +435,14 @@ func opHelpPackage(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 }
 
 func opPackageSymbols(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	name := args.Cells[0]
+	name := args.ReqArg(env, 0)
+	if name.Type == lisp.LError {
+		return name
+	}
 	if name.Type != lisp.LSymbol {
 		return env.Errorf("argument is not a symbol: %v", lisp.GetType(name))
 	}
-	printAll := env.Eval(args.Cells[1])
+	printAll := env.Eval(args.KeyArg(1))
 	if printAll.Type == lisp.LError {
 		return printAll
 	}
