@@ -56,10 +56,12 @@ func sleepEnv(t *testing.T, ctx context.Context) *lisp.LEnv {
 // Direct application is what the fuzz sweep does and it keeps the timing
 // assertions free of parser and evaluator noise.
 //
-// The nil second cell is the unsupplied :max keyword.  BuiltinSleep reads
-// args.Cells[1] unconditionally, as every builtin with a keyword formal in
-// this repo does (see builtinLoadString) -- the formals machinery guarantees
-// the cell exists, so a direct caller has to supply it too.
+// The nil second cell is the unsupplied :max keyword, which is what the
+// evaluator passes for a keyword the caller omitted.  BuiltinSleep reads it
+// through args.KeyArg(1) rather than indexing Cells, so a caller that supplies
+// a shorter list gets Nil instead of a panic -- see
+// TestBuiltinSleepShortArgList and lisplib's
+// TestKeyArgBuiltinsTolerateShortArgLists for why that matters.
 func callSleep(env *lisp.LEnv, d time.Duration) *lisp.LVal {
 	return callSleepMax(env, d, lisp.Nil())
 }
@@ -453,4 +455,52 @@ func TestSleepMaxThroughEval(t *testing.T) {
 	if elapsed > time.Second {
 		t.Fatalf("took %v to refuse, expected immediate", elapsed)
 	}
+}
+
+// TestBuiltinSleepShortArgList reproduces, at the elps end, the defect that
+// luthersystems/substrate hit when it moved to elps v1.49.0.
+//
+// substrate binds BuiltinSleep under its own name with its own formals:
+//
+//	ielpsutil.FunctionDoc("sleep", lisp.Formals("seconds"), libtime.BuiltinSleep, ...)
+//
+// One formal, so one argument cell. That was correct until
+// luthersystems/elps#346 added the optional :max keyword and BuiltinSleep
+// started reading Cells[1]; from then on every call panicked with an
+// index-out-of-range, which the evaluator could only report as an opaque
+// internal-panic with no argument attached. BuiltinSleep's Go signature never
+// changed, so nothing failed to compile.
+//
+// A one-cell call must now behave exactly as if :max were omitted.
+func TestBuiltinSleepShortArgList(t *testing.T) {
+	env := sleepEnv(t, nil)
+	d := 10 * time.Millisecond
+
+	var short, full *lisp.LVal
+	assertNotPanics(t, "one-cell call", func() {
+		short = libtime.BuiltinSleep(env, lisp.SExpr([]*lisp.LVal{libtime.Duration(d)}))
+	})
+	assertNotPanics(t, "zero-cell call", func() {
+		_ = libtime.BuiltinSleep(env, lisp.SExpr(nil))
+	})
+	full = libtime.BuiltinSleep(env, lisp.SExpr([]*lisp.LVal{libtime.Duration(d), lisp.Nil()}))
+
+	if short.Type == lisp.LError {
+		t.Fatalf("one-cell sleep returned an error: %v", short)
+	}
+	if short.Type != full.Type {
+		t.Errorf("one-cell sleep returned %v, want the same as an explicit nil :max (%v)",
+			short.Type, full.Type)
+	}
+}
+
+func assertNotPanics(t *testing.T, what string, fn func()) {
+	t.Helper()
+	defer func() {
+		t.Helper()
+		if r := recover(); r != nil {
+			t.Fatalf("%s panicked: %v", what, r)
+		}
+	}()
+	fn()
 }

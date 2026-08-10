@@ -825,6 +825,27 @@ func (v *LVal) Len() int {
 	}
 }
 
+// KeyArg returns the i'th cell of a builtin's argument list, or Nil if the
+// list is shorter than that.
+//
+// The evaluator always passes one cell per declared formal, so for a builtin
+// reached from lisp this is just Cells[i]. It differs for the builtins this
+// package exports for embedding: an embedder binds the Go function to formals
+// of its own, and one that declares fewer formals than the builtin reads --
+// easily done for an &key argument, which is invisible at the call site --
+// would otherwise index past the end of Cells and panic on every call. The Go
+// signature is identical either way, so nothing catches it at compile time.
+//
+// An absent cell is reported as Nil, which is what the evaluator itself passes
+// for an unsupplied &key argument. Builtins must therefore read optional and
+// &key cells through KeyArg rather than indexing Cells directly.
+func (v *LVal) KeyArg(i int) *LVal {
+	if i < 0 || i >= len(v.Cells) {
+		return Nil()
+	}
+	return v.Cells[i]
+}
+
 // UserData returns the user-data associated with an LTaggedVal.
 // UserData returns an error if v is not an LTaggedVal.
 func (v *LVal) UserData() *LVal {
