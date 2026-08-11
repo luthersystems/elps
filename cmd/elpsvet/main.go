@@ -1,7 +1,9 @@
 // Copyright © 2026 The ELPS authors
 
-// Command elpsvet is a go/analysis prototype with exactly one rule: no
-// package-level variable may keep a *lisp.LVal reachable.
+// Command elpsvet is a go/analysis prototype with two rules: no
+// package-level variable may keep a *lisp.LVal reachable (elpsownership,
+// below), and no function may write a lisp.LVal field on a value it did not
+// construct (elpsfreshness, freshness.go).
 //
 // A package-level var whose type transitively contains *lisp.LVal is the
 // producer pattern behind issue #363 — `var builtins = []*libutil.Builtin{...}`
@@ -33,7 +35,7 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
-	"golang.org/x/tools/go/analysis/singlechecker"
+	"golang.org/x/tools/go/analysis/multichecker"
 )
 
 const lispPkgPath = "github.com/luthersystems/elps/lisp"
@@ -44,7 +46,7 @@ var analyzer = &analysis.Analyzer{
 	Run:  run,
 }
 
-func main() { singlechecker.Main(analyzer) }
+func main() { multichecker.Main(analyzer, freshnessAnalyzer) }
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	for _, file := range pass.Files {
