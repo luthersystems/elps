@@ -345,6 +345,51 @@ func TestErrorAssociateCopiesLocation(t *testing.T) {
 	}
 }
 
+// TestErrorConstructorsCopyLocation is the constructor-side companion of
+// TestErrorAssociateCopiesLocation: ErrorCondition and ErrorConditionf (and
+// through them Error/Errorf) build error values that escape to the caller
+// while evaluation continues, so the location they record must be a copy of
+// env.Loc, never the pointer itself.
+func TestErrorConstructorsCopyLocation(t *testing.T) {
+	t.Parallel()
+	env := initSafetyTestEnv(t)
+
+	loc := &token.Location{File: "ctor-test.lisp", Pos: 7, Line: 5, Col: 2}
+	env.Loc = loc
+
+	for name, lerr := range map[string]*LVal{
+		"ErrorConditionf": env.ErrorConditionf("test-condition", "boom"),
+		"ErrorCondition":  env.ErrorCondition("test-condition", String("boom")),
+	} {
+		if lerr.source == nil {
+			t.Fatalf("%s: error should carry a source location", name)
+		}
+		if lerr.source == loc {
+			t.Fatalf("%s: error aliases env.Loc; it must store an independent copy", name)
+		}
+		if *lerr.source != *loc {
+			t.Fatalf("%s: copied location differs: got %+v want %+v", name, *lerr.source, *loc)
+		}
+	}
+
+	// Mutate env.Loc in place as a producer might; recorded locations must
+	// not move with it.
+	lerr := env.Errorf("boom")
+	loc.Line = 999
+	if lerr.source.Line == 999 {
+		t.Fatal("mutating env.Loc changed an existing error's location")
+	}
+
+	// A nil env.Loc must stay nil on the error (native-code convention).
+	env.Loc = nil
+	if lerr := env.ErrorConditionf("test-condition", "boom"); lerr.source != nil {
+		t.Fatalf("nil env.Loc must yield nil error source, got %+v", lerr.source)
+	}
+	if lerr := env.ErrorCondition("test-condition", String("boom")); lerr.source != nil {
+		t.Fatalf("nil env.Loc must yield nil error source, got %+v", lerr.source)
+	}
+}
+
 // --- LVal method error-return tests (formerly panics) ---
 
 func TestUserDataOnNonTagged(t *testing.T) {

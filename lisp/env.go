@@ -854,8 +854,13 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 		}
 	}
 	lerr := &LVal{
-		Type:   LError,
-		source: env.Loc,
+		Type: LError,
+		// Copy the location instead of aliasing env.Loc: the error value
+		// escapes to the caller while evaluation continues, so it must not
+		// share a *token.Location the evaluator (or a producing parser) may
+		// still fix up in place.  Mirrors ErrorAssociate (d922290);
+		// copyLocation preserves nil (the "<native code>" convention).
+		source: copyLocation(env.Loc),
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
 		Cells:  cells,
@@ -883,7 +888,8 @@ func (env *LEnv) Errorf(format string, v ...interface{}) *LVal {
 // with a copy env.Runtime.Stack.
 func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
 	lerr := &LVal{
-		source: env.Loc,
+		// Copied, not aliased — see the ErrorCondition comment.
+		source: copyLocation(env.Loc),
 		Type:   LError,
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
