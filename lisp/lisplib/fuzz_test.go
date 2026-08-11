@@ -61,6 +61,20 @@ import (
 //     elpscheck` the same corruption is additionally caught at the next
 //     Bool()/Nil() read, which localises it far better -- run
 //     `make test-elpscheck` for that.
+//  4b. Sealed arguments are bit-identical afterwards (the issue #372
+//     corruption oracle, sharing the canonical fingerprint in
+//     lisp/sealfp.go).  Before each application every generated argument is
+//     run through SealAST, which marks exactly the values a parsed program
+//     literal could have supplied (lists, symbols, strings, numbers) and
+//     leaves runtime-only shapes (vectors, maps, natives) mutable.  That
+//     mirrors how these callables meet literals in production: a macro or
+//     special operator receives the sealed call-form nodes unevaluated, and
+//     a function receives a sealed node whenever its argument was a quoted
+//     literal, because literal evaluation returns the sealed parse node
+//     itself (lisp/seal.go).  The seal contract says NOTHING may write such
+//     a value in place -- guarded mutators copy first -- so any fingerprint
+//     drift across the call is a copy-on-write failure of the
+//     substrate#378 class, whichever of the 240 callables performed it.
 //  5. The call terminates.  Bounded by a context deadline, a step limit and,
 //     because neither of those can see a loop that evaluates nothing, an
 //     out-of-band watchdog.  Two of the three defects this target found were
@@ -127,7 +141,18 @@ func FuzzApplyStdlib(f *testing.F) {
 		}
 
 		gen := fuzzval.New(data, env)
-		args := lisp.SExpr(genArgs(gen, fun))
+		rawArgs := genArgs(gen, fun)
+		// Seal each argument as a parsed literal would arrive sealed (see
+		// invariant 4b above).  The outer args SExpr stays unsealed on
+		// purpose: in real evaluation the argument LIST header is runtime
+		// storage the kernel may legitimately rework; only the argument
+		// VALUES can be shared parse nodes.
+		for _, a := range rawArgs {
+			a.SealAST()
+		}
+		sealedRoots := collectSealedRoots(rawArgs)
+		fpBefore := lisp.SealedASTFingerprint(sealedRoots)
+		args := lisp.SExpr(rawArgs)
 
 		result := applyWithWatchdog(t, env, name, fun, args)
 
@@ -140,6 +165,12 @@ func FuzzApplyStdlib(f *testing.F) {
 
 		if drift := before.Verify(); drift != "" {
 			t.Fatalf("%s mutated the shared singleton %s\n--- args ---\n%s", name, drift, args)
+		}
+		if fpAfter := lisp.SealedASTFingerprint(sealedRoots); fpAfter != fpBefore {
+			t.Fatalf("%s mutated a sealed argument in place (fingerprint %016x -> %016x):"+
+				" a program literal handed to this callable would be corrupted for every"+
+				" environment sharing the parse (the substrate#378 class)\n--- args ---\n%s",
+				name, fpBefore, fpAfter, args)
 		}
 	})
 }
@@ -246,6 +277,35 @@ func apply(env *lisp.LEnv, fun, args *lisp.LVal) *lisp.LVal {
 	default:
 		return env.FunCall(fun, args)
 	}
+}
+
+// collectSealedRoots returns the maximal sealed subtrees reachable from
+// the given values: a sealed node is collected whole (its descendants are
+// covered by the fingerprint walk), an unsealed container is descended in
+// case sealed values sit inside runtime storage (a vector of sealed
+// symbols, say).  The roots are held by pointer so the oracle compares
+// the same storage before and after the call — a callable legitimately
+// dropping a sealed value from an unsealed container does not (and must
+// not) affect the comparison.
+func collectSealedRoots(vs []*lisp.LVal) []*lisp.LVal {
+	var roots []*lisp.LVal
+	var walk func(v *lisp.LVal, depth int)
+	walk = func(v *lisp.LVal, depth int) {
+		if v == nil || depth > 64 {
+			return
+		}
+		if v.IsSealed() {
+			roots = append(roots, v)
+			return
+		}
+		for _, c := range v.Cells {
+			walk(c, depth+1)
+		}
+	}
+	for _, v := range vs {
+		walk(v, 0)
+	}
+	return roots
 }
 
 // genArgs builds an argument list sized against the callable's declared

@@ -163,6 +163,22 @@ func EvalTerminating() map[string]string {
 		"append-bytes-valid": `(append 'bytes (to-bytes "ab") 99)`,
 		"append-list-valid":  `(append 'list '(1 2) 3)`,
 
+		// --- copy-on-write guards on sealed program literals (issue #372;
+		// see lisp/seal.go).  Each seed drives a kernel mutator at a parsed
+		// literal, or at a backing-sharing view of one (cdr / slice), and
+		// completes without error -- but before the CoW guards existed each
+		// one rewrote the literal in place (stable-sort's in-place sort,
+		// append 'vector's spare-capacity write: the substrate#378 class).
+		// The eval fuzz harness fingerprints every input's sealed parse
+		// before and after evaluation, so if a guard regresses, these seeds
+		// make the very first corpus pass fail loudly instead of leaving
+		// detection to the mutator's luck. ---
+		"cow-stable-sort-literal":       `(set 'q '(9 3 7 1 8)) (stable-sort > q) q`,
+		"cow-stable-sort-literal-view":  `(stable-sort < (cdr '(9 3 7 1 8)))`,
+		"cow-stable-sort-defun-literal": `(defun s () (let ([q '(3 1 2)]) (stable-sort > q) q)) (s) (s)`,
+		"cow-append-vector-slice":       `(set 'lit '(1 2 3)) (append 'vector (slice 'list lit 0 1) 99) lit`,
+		"cow-append-vector-cdr":         `(append 'vector (cdr '(1 2 3)) 99)`,
+
 		// --- debug-print: A4's site.  Both branches must reach the runtime's
 		// configured Stderr, which the harness captures. ---
 		"debug-print-empty": `(debug-print)`,

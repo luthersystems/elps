@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/luthersystems/elps/elpsutil"
+	"github.com/luthersystems/elps/internal/astraw"
 	"github.com/luthersystems/elps/internal/fuzzseed"
 	"github.com/luthersystems/elps/internal/fuzzwatch"
 	"github.com/luthersystems/elps/lisp"
@@ -181,6 +182,15 @@ type fatalf interface {
 // source evaluated, and (zero, false) when it did not parse -- a parse error
 // is the parser targets' business, not this one's.
 //
+// The input is parsed ONCE, and the sealed parse tree that gets evaluated is
+// fingerprinted before and after the evaluation (lisp/sealfp.go).  That is
+// the corruption oracle of issue #372: the seal design promises the sealed
+// bytes never change after parse, so any drift between the two fingerprints
+// is a copy-on-write guard failure -- the class of luthersystems/substrate#378
+// -- reported with the offending source attached.  Because every corpus test
+// in this file funnels through evalBudgeted, the oracle also runs on every
+// seed during plain `go test`.
+//
 // The watchdog failure is Fatalf rather than a returned error because there is
 // nothing a caller could usefully do with it: the evaluation goroutine is
 // still running and cannot be stopped.  Leaking it is acceptable precisely
@@ -199,10 +209,17 @@ func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
 	//
 	// Running it FIRST also means unparsable input -- most of what the mutator
 	// produces -- skips the environment construction below, which dominates
-	// the per-input cost.
-	if _, err := parser.NewReader().Read("fuzz", bytes.NewReader(src)); err != nil {
+	// the per-input cost.  The parse is kept and evaluated below
+	// (LoadProgramContext evaluates exactly as LoadStringContext would --
+	// both funnel into LEnv.load), which is what lets the oracle fingerprint
+	// the very nodes the evaluator ran, and drops the second parse the
+	// harness used to pay for.
+	prog, err := lisp.ReadProgram(parser.NewReader(), "fuzz", bytes.NewReader(src))
+	if err != nil {
 		return evalOutcome{}, false
 	}
+	sealed := astraw.Exprs(prog)
+	fpBefore := lisp.SealedASTFingerprint(sealed)
 
 	env, stderr, rc := newFuzzEnv()
 	if rc != nil {
@@ -221,7 +238,7 @@ func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
 	ch := make(chan done, 1)
 	go func() {
 		start := time.Now()
-		result := env.LoadStringContext(ctx, "fuzz", string(src))
+		result := env.LoadProgramContext(ctx, prog)
 		ch <- done{result: result, steps: env.Runtime.TotalSteps(), elapsed: time.Since(start)}
 	}()
 
@@ -237,6 +254,21 @@ func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
 		case d := <-ch:
 			if d.result == nil {
 				t.Fatalf("evaluation returned a nil LVal")
+				return evalOutcome{}, false
+			}
+			// The corruption oracle: the sealed parse must be bit-for-bit
+			// what it was before evaluation, error results included.  Any
+			// drift means a kernel mutation path wrote shared program
+			// storage instead of copying (see lisp/seal.go's guarded-site
+			// list) -- with a shared parse cache that is cross-environment
+			// corruption, whether or not this evaluation misbehaved
+			// observably.
+			if fpAfter := lisp.SealedASTFingerprint(sealed); fpAfter != fpBefore {
+				t.Fatalf("evaluation corrupted the sealed parse tree (fingerprint %016x -> %016x):"+
+					" a copy-on-write guard failed and shared program storage was written in place"+
+					" (the luthersystems/substrate#378 class)"+
+					"\n--- source (%d bytes) ---\n%q",
+					fpBefore, fpAfter, len(src), src)
 				return evalOutcome{}, false
 			}
 			return evalOutcome{
@@ -291,6 +323,11 @@ func assertNoInternalPanic(t fatalf, src []byte, out evalOutcome) {
 //  3. It never returns a nil LVal.
 //  4. The result is printable -- every error path in the interpreter renders
 //     values, so an unprintable result is as fatal as an unevaluable one.
+//  5. The sealed parse tree is bit-identical after evaluation (the issue
+//     #372 corruption oracle in evalBudgeted): the input is parsed once,
+//     fingerprinted, evaluated, and re-fingerprinted, so any kernel path
+//     that writes shared program storage in place fails the run no matter
+//     which builtin or metadata stamp performed the write.
 //
 // NOT asserted: that any given input evaluates successfully.  Almost all
 // mutator output is nonsense and an LError is the correct answer for it.
