@@ -204,7 +204,12 @@ func opQuote(env *LEnv, args *LVal) *LVal {
 	// determine if that were possible but it is unclear whether it's possible
 	// for ``quote'' to resolve differently or for this macro to be called
 	// under a different name.
-	return Quote(args.Cells[0])
+	//
+	// Leak point (a): quote receives its argument unevaluated, so
+	// args.Cells[0] may be a node of a cached expression tree; Quote alone
+	// would alias it (Quote's shallow copy shares Cells).  Seal the subtree
+	// before quoting (astseal.go).
+	return Quote(astToValue(args.Cells[0]))
 }
 
 func opQuasiquote(env *LEnv, args *LVal) *LVal {
@@ -967,7 +972,13 @@ func opQualifiedSymbol(env *LEnv, args *LVal) *LVal {
 		return pieces
 	}
 	if pieces.Len() == 2 {
+		// sym may be an atom of a cached expression tree; sealed only when
+		// copyAtomsAtLeakPoints is set (see astseal.go).  Quote already
+		// copies the header of an unquoted symbol.
 		if sym.Quoted {
+			if copyAtomsAtLeakPoints {
+				return astToValue(sym)
+			}
 			return sym
 		}
 		return Quote(sym)

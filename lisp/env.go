@@ -409,7 +409,11 @@ func (env *LEnv) get(k *LVal) *LVal {
 		return env.getSimple(k)
 	}
 	if colonIdx == 0 {
-		// keyword like :foo
+		// keyword like :foo — leaf atom, sealed only when
+		// copyAtomsAtLeakPoints is set (see astseal.go).
+		if copyAtomsAtLeakPoints {
+			return astToValue(k)
+		}
 		return k
 	}
 	ns := k.Str[:colonIdx]
@@ -678,9 +682,18 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	if formals.Type != LSExpr {
 		return env.Errorf("formals is not a list of symbols: %v", formals.Type)
 	}
+	// Seal the code the function object embeds: formals and body may be
+	// nodes of a cached expression tree (lambda, flet, labels, macrolet and
+	// #^ hand them over straight from the input expression), and the LFun is
+	// a first-class value whose Cells are reachable from the value domain.
+	// Copying here makes function creation O(body), once, instead of adding
+	// any per-call cost — funCall evaluates the same sealed cells on every
+	// invocation (astseal.go).
 	cells := make([]*LVal, 0, len(body)+1)
-	cells = append(cells, formals)
-	cells = append(cells, body...)
+	cells = append(cells, astToValue(formals))
+	for _, expr := range body {
+		cells = append(cells, astToValue(expr))
+	}
 	fenv := NewEnv(env)
 	fun := &LVal{
 		Type:   LFun,
@@ -1034,7 +1047,10 @@ eval:
 		}
 	}
 	if v.Quoted {
-		return v
+		// Leak point (a): a quoted expression evaluates to itself, and v may
+		// be a node of a cached expression tree shared with other runtimes.
+		// Hand the value domain a copy instead of the tree node (astseal.go).
+		return astToValue(v)
 	}
 	switch v.Type {
 	case LSymbol:
@@ -1044,7 +1060,11 @@ eval:
 			return env.Get(v)
 		}
 		if colonIdx == 0 {
-			// Keyword like :foo
+			// Keyword like :foo.  Self-evaluating atom; sealed only when
+			// copyAtomsAtLeakPoints is set (see astseal.go).
+			if copyAtomsAtLeakPoints {
+				return astToValue(v)
+			}
 			return v
 		}
 		// Qualified symbol like pkg:name — check for extra colons.
@@ -1096,6 +1116,17 @@ eval:
 		v = v.Cells[0]
 		goto eval
 	default:
+		// Self-evaluating values.  Strings and numbers are the only types on
+		// this branch the parser can produce; they are leaf atoms, sealed
+		// only when copyAtomsAtLeakPoints is set (see astseal.go).  All other
+		// types reaching here were constructed at runtime and must keep
+		// their identity.
+		if copyAtomsAtLeakPoints {
+			switch v.Type { //nolint:exhaustive // only parser-producible atom types need sealing
+			case LString, LInt, LFloat:
+				return astToValue(v)
+			}
+		}
 		return v
 	}
 }
@@ -1149,6 +1180,14 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	if !fun.IsMacro() {
 		return env.Errorf("not a special function: %v", fun.FunType)
 	}
+
+	// Leak point (c): macro arguments arrive UNEVALUATED — without sealing,
+	// nodes of a cached expression tree would be bound directly to the
+	// macro's formals, where the macro body sees them as first-class values
+	// it can store or embed in the returned expansion.  Seal the argument
+	// list so everything the macro can reach is a value-domain copy
+	// (astseal.go).
+	args = sealMacroArgs(args)
 
 	// Capture the call-site location before entering the macro body so we
 	// can stamp it onto expanded nodes that lack real source info.
