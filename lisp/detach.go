@@ -160,8 +160,15 @@ func (d *detacher) detachCells(cells []*LVal) ([]*LVal, error) {
 // detachMapData rebuilds md as a fresh stock sortedmap whose keys and values
 // are both detached.
 func (d *detacher) detachMapData(md *MapData) (*MapData, error) {
-	if md == nil || md.Map == nil {
-		return md, nil
+	if md == nil {
+		return nil, nil
+	}
+	if md.Map == nil {
+		// Degenerate MapData with no implementation (possible via
+		// SortedMapFromData(&MapData{})).  Return a fresh struct rather
+		// than md itself so the detached value shares no memory with the
+		// original — the Detach contract — while preserving the nil Map.
+		return &MapData{}, nil
 	}
 	entries := sortedMapEntries(md)
 	if entries.Type == LError {

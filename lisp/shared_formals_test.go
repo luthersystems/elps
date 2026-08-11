@@ -155,13 +155,18 @@ func TestNoCrossEnvironmentLValSharing(t *testing.T) {
 	env1 := newFullEnv(t)
 	env2 := newFullEnv(t)
 
-	// Allowlist: the process-wide boolean singletons.  LEnv.get and
-	// Package.get answer true/false lookups with shared singleton values by
-	// design, and lisp code that stores the result of such a lookup (e.g.
-	// (set 'x true)) legitimately puts the same pointer in both registries.
-	// Nil has no singleton — Nil() allocates — so it can never be shared and
-	// needs no entry.
+	// Allowlist: the three process-wide singletons (lisp/singleton.go).
+	// LEnv.get and Package.get answer true/false lookups with shared
+	// singleton values by design, and lisp code that stores the result of
+	// such a lookup (e.g. (set 'x true)) legitimately puts the same pointer
+	// in both registries.  Nil() likewise returns the shared singletonNil,
+	// so a global binding whose value evaluates to nil (e.g. an else-less
+	// if) stores the same pointer in every registry; without this entry a
+	// harmless nil-valued global in lisplib would trip the assertion with a
+	// baffling failure.  All three are immutable by decree and guarded by
+	// checkSingleton, so sharing them is safe.
 	allowed := map[*lisp.LVal]bool{
+		lisp.Nil():                              true,
 		env1.Get(lisp.Symbol(lisp.TrueSymbol)):  true,
 		env1.Get(lisp.Symbol(lisp.FalseSymbol)): true,
 		env2.Get(lisp.Symbol(lisp.TrueSymbol)):  true,
