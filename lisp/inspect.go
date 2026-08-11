@@ -58,8 +58,12 @@ func InspectFunction(node *LVal) *FunctionInfo {
 	}
 
 	info := &FunctionInfo{
-		Kind:   head.Str,
-		Source: node.source,
+		Kind: head.Str,
+		// Copied, not aliased: FunctionInfo escapes to embedders through an
+		// exported pointer field, and handing out node's own *token.Location
+		// would let a caller rewrite a (possibly sealed) node's recorded
+		// position in place.  copyLocation preserves nil.
+		Source: copyLocation(node.source),
 	}
 
 	switch head.Str {

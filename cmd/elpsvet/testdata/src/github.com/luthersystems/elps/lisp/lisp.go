@@ -1,9 +1,15 @@
 // Package lisp is a minimal stub of github.com/luthersystems/elps/lisp for
-// analysistest.  Only the shapes the elpsfreshness analyzer inspects matter:
-// the LVal struct fields, the constructor names, and the method names.
+// analysistest.  Only the shapes the elpsfreshness and elpsescape analyzers
+// inspect matter: the LVal struct fields, the constructor names, the method
+// names, and the *token.Location-typed runtime state (LVal.source,
+// LEnv.Loc) plus the copyLocation cleanser.
 package lisp
 
+import "github.com/luthersystems/elps/parser/token"
+
 type LType int
+
+const LError LType = 1
 
 type LFunType int
 
@@ -11,6 +17,7 @@ type LBuiltin func(env *LEnv, args *LVal) *LVal
 
 type LVal struct {
 	Native  interface{}
+	source  *token.Location
 	Str     string
 	Cells   []*LVal
 	Type    LType
@@ -21,7 +28,30 @@ type LVal struct {
 	Spliced bool
 }
 
-type LEnv struct{}
+func (v *LVal) SetSource(loc *token.Location) {
+	v.source = loc
+}
+
+type CallStack struct{}
+
+func (s *CallStack) Copy() *CallStack { return &CallStack{} }
+
+type Runtime struct {
+	Stack *CallStack
+}
+
+type LEnv struct {
+	Loc     *token.Location
+	Runtime *Runtime
+}
+
+func copyLocation(loc *token.Location) *token.Location {
+	if loc == nil {
+		return nil
+	}
+	cp := *loc
+	return &cp
+}
 
 var singletonNil = &LVal{}
 var singletonTrue = &LVal{Str: "true"}

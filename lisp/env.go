@@ -160,6 +160,7 @@ func newEnvN(parent *LEnv, n int) *LEnv {
 		Runtime: runtime,
 		evalCtx: evalCtx,
 	}
+	//elps:aliases the child env's Loc register deliberately aliases the parent's current location: LEnv is runtime-internal state, both registers are rebound on every eval step, and no consumer-facing value is built from this pointer
 	return env
 }
 
@@ -644,6 +645,7 @@ func (env *LEnv) TaggedValue(typ *LVal, val *LVal) *LVal {
 		return env.Errorf("first argument is not a symbol: %v", GetType(typ))
 	}
 	return &LVal{
+		//elps:aliases deliberate in-runtime alias: a tagged value is constructed and consumed inside the same runtime whose evaluator owns env.Loc, and its location is display metadata only — nothing fixes up a tagged value's location after construction
 		source: env.Loc,
 		Type:   LTaggedVal,
 		Str:    typ.Str,
@@ -688,7 +690,8 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	cells = append(cells, body...)
 	fenv := NewEnv(env)
 	fun := &LVal{
-		Type:   LFun,
+		Type: LFun,
+		//elps:aliases deliberate in-runtime alias: a lambda's location is the defining form's parse location, already frozen before evaluation reaches this constructor, and the function value lives inside the same runtime as env.Loc
 		source: env.Loc,
 		Native: &LFunData{
 			FID:     fenv.getFID(),

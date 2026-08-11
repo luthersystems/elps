@@ -116,10 +116,21 @@ func runFreshness(pass *analysis.Pass) (interface{}, error) {
 
 // mutatesLines collects the file lines carrying an //elps:mutates comment.
 func mutatesLines(fset *token.FileSet, file *ast.File) map[int]bool {
+	return markerLines(fset, file, mutatesMarker)
+}
+
+func hasMutates(cg *ast.CommentGroup) bool {
+	return hasMarker(cg, mutatesMarker)
+}
+
+// markerLines collects the file lines carrying the given //elps:* marker.
+// Shared between the freshness/alias rules (elps:mutates) and the escape
+// rule (elps:aliases) so the placement conventions never diverge.
+func markerLines(fset *token.FileSet, file *ast.File, marker string) map[int]bool {
 	lines := make(map[int]bool)
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
-			if commentIsMutates(c.Text) {
+			if commentHasMarker(c.Text, marker) {
 				lines[fset.Position(c.Pos()).Line] = true
 			}
 		}
@@ -127,22 +138,22 @@ func mutatesLines(fset *token.FileSet, file *ast.File) map[int]bool {
 	return lines
 }
 
-func hasMutates(cg *ast.CommentGroup) bool {
+func hasMarker(cg *ast.CommentGroup, marker string) bool {
 	if cg == nil {
 		return false
 	}
 	for _, c := range cg.List {
-		if commentIsMutates(c.Text) {
+		if commentHasMarker(c.Text, marker) {
 			return true
 		}
 	}
 	return false
 }
 
-func commentIsMutates(text string) bool {
+func commentHasMarker(text, marker string) bool {
 	text = strings.TrimPrefix(text, "//")
 	text = strings.TrimPrefix(text, "/*")
-	return strings.HasPrefix(strings.TrimSpace(text), mutatesMarker)
+	return strings.HasPrefix(strings.TrimSpace(text), marker)
 }
 
 // checkFreshness walks a function body in source order, tracking which local
