@@ -725,18 +725,38 @@ func (env *LEnv) root() *LEnv {
 	return env
 }
 
-// copyFormals returns a deep copy of a builtin definition's formal argument
-// list for registration into env's package.  Builtin definitions are commonly
-// stored in package-level tables (var builtins = ...) whose Formals() lists
-// are constructed once at Go program initialization; registering such a list
-// directly would alias the same formals cells — and the parameter-name symbol
-// cells inside them — across every environment built in the process (issue
-// #363).  The copy must be recursive: a shallow copy of the list cell alone
-// would still share the symbol cells, just moving the trap one level down.
-// (*LVal).Copy is a deep copy over Cells, so it severs the whole graph while
-// leaving Source location pointers shared, which is by design — locations are
-// immutable.
-func copyFormals(formals *LVal) *LVal {
+// registrationFormals returns a builtin definition's formal argument list in
+// a form safe to register into env's package.  Builtin definitions are
+// commonly stored in package-level tables (var builtins = ...) whose
+// Formals() lists are constructed once at Go program initialization;
+// registering such a list directly would alias the same MUTABLE formals
+// cells — and the parameter-name symbol cells inside them — across every
+// environment built in the process (issue #363).
+//
+// Sealed formals are shared as-is.  The lisp package's own definition
+// tables (langBuiltins/langMacros/langSpecialOps and the RegisterDefault*
+// user tables) are sealed at construction — see sealDefaultFormals in
+// builtins.go — which puts them under exactly the protection lisp-defined
+// functions already rely on: a lambda's formals ARE sealed parser output
+// aliased into every closure that shares the parse, guarded by the
+// copy-on-write mutation checks (lisp/seal.go) and, in checked builds, the
+// fingerprint verifier (VerifySealedASTs).  Sharing the sealed list keeps
+// environment initialization from paying a deep copy per builtin per env:
+// the eager copy this replaces cost ~90KiB and >1000 allocations on every
+// LoadLibrary environment (the CI benchmark gate flagged it as a +9.3%
+// B/op regression on libjson's Package/$load).
+//
+// Unsealed formals — a third-party LBuiltinDef implementation whose
+// Formals() returns hand-built, unsealed, potentially shared cells — get
+// the defensive deep copy.  The copy must be recursive: a shallow copy of
+// the list cell alone would still share the symbol cells, just moving the
+// trap one level down.  (*LVal).Copy is a deep copy over Cells, so it
+// severs the whole graph while leaving Source location pointers shared,
+// which is by design — locations are immutable.
+func registrationFormals(formals *LVal) *LVal {
+	if formals.IsSealed() {
+		return formals
+	}
 	return formals.Copy()
 }
 
@@ -754,7 +774,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 			panic(fmt.Sprintf("macro already defined: %v (= %v)", k, exist))
 		}
 		id := fmt.Sprintf("<builtin-macro ``%s''>", mac.Name())
-		fn := MacroInPackage(pkg.Name, id, copyFormals(mac.Formals()), mac.Eval)
+		fn := MacroInPackage(pkg.Name, id, registrationFormals(mac.Formals()), mac.Eval)
 		fn.Cells[1] = String(builtinDocstring(mac))
 		pkg.Put(k, fn)
 		if external {
@@ -777,7 +797,7 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 			panic(fmt.Sprintf("macro already defined: %v (= %v)", k, exist))
 		}
 		id := fmt.Sprintf("<special-op ``%s''>", op.Name())
-		fn := SpecialOpInPackage(pkg.Name, id, copyFormals(op.Formals()), op.Eval)
+		fn := SpecialOpInPackage(pkg.Name, id, registrationFormals(op.Formals()), op.Eval)
 		fn.Cells[1] = String(builtinDocstring(op))
 		pkg.Put(k, fn)
 		if external {
@@ -800,7 +820,7 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 			panic("symbol already defined: " + f.Name())
 		}
 		id := fmt.Sprintf("<builtin-function ``%s''>", f.Name())
-		v := FunInPackage(pkg.Name, id, copyFormals(f.Formals()), f.Eval)
+		v := FunInPackage(pkg.Name, id, registrationFormals(f.Formals()), f.Eval)
 		v.Cells[1] = String(builtinDocstring(f))
 		pkg.Put(k, v)
 		if external {

@@ -159,6 +159,26 @@ LVal-bearing surface. An embedder that hand-builds expression trees and
 shares them across environments may call `SealAST()` itself for the same
 protection.
 
+### 2.6 Sealed builtin formals
+
+The repository's own definition tables are the first in-tree consumer of
+that hand-seal contract. Builtin, macro and special-op formals are built
+once at Go program initialization in package-level tables (`langBuiltins`
+et al. in `lisp/`, the `libutil.Function`/`FunctionDoc` tables in
+`lisp/lisplib/`) and consulted by every Runtime in the process — the
+mutable-aliasing producer pattern behind issue #363. The tables' formals
+are sealed at construction (`sealDefaultFormals` in `lisp/builtins.go`, the
+`libutil` constructors, `libgolang`'s package init), and registration
+(`registrationFormals` in `lisp/env.go`) aliases the sealed list into each
+environment — the same treatment lisp-defined functions get, whose formals
+are sealed parser output aliased into every closure. An unsealed formals
+list from a third-party `LBuiltinDef` still gets a defensive deep copy at
+registration. Sealing instead of eagerly copying keeps environment
+construction free of per-builtin formals copies (the eager copy measured
+~90KiB and >1000 allocations per `LoadLibrary` environment);
+`TestNoCrossEnvironmentLValSharing` (`lisp/shared_formals_test.go`)
+asserts the resulting sharing is sealed-only.
+
 ## 3. Verification layers: what each prevents, and its blind spots
 
 The seal design reduces to one checkable sentence: **the bytes of a sealed

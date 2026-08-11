@@ -11,20 +11,32 @@ import (
 	"github.com/luthersystems/elps/parser"
 )
 
-// Two independently constructed environments must not share any *LVal
-// pointers.  Before the registration boundary in AddBuiltins, AddSpecialOps
-// and AddMacros deep-copied builtin formals lists, two fresh environments
+// Two independently constructed environments must not share any MUTABLE
+// *LVal pointers.  Before issue #363 was addressed, two fresh environments
 // shared 620 of 1,189 reachable LVal pointers — every one of them a formals
-// list (220) or a parameter-name symbol inside one (400) — because nine
-// lisplib packages and the lisp core register builtins out of package-level
-// tables whose Formals() lists are built once at Go program init (issue
-// #363).  libjson was the control: it builds its builtin table inside a
-// function, so its formals were never shared.
+// list (220) or a parameter-name symbol inside one (400), all of them
+// writable — because nine lisplib packages and the lisp core register
+// builtins out of package-level tables whose Formals() lists are built once
+// at Go program init.  libjson was the control: it builds its builtin table
+// inside a function, so its formals were never shared.
+//
+// The fix is sealing, not copying: the definition tables' formals are
+// sealed at construction (sealDefaultFormals in builtins.go, the libutil
+// constructors) and registration aliases the sealed list into each
+// environment (registrationFormals in env.go).  A sealed value is
+// immutable by contract — the copy-on-write guards (lisp/seal.go) and, in
+// checked builds, the fingerprint verifier (VerifySealedASTs) police that —
+// so sharing it across environments is exactly as safe as the sealed parser
+// output that lisp-defined functions already alias as their formals, and it
+// spares every environment a deep copy per builtin at construction time
+// (the eager copy cost ~90KiB and >1000 allocations per LoadLibrary env;
+// the CI benchmark gate flagged it at +9.3% B/op on libjson's $load).
 //
 // This test makes the whole class regression-proof: it walks the complete
-// registry symbol graphs of two fully loaded environments and asserts the
-// pointer intersection is empty, modulo an explicit allowlist of the
-// process-wide boolean singletons.
+// registry symbol graphs of two fully loaded environments and asserts that
+// every pointer in the intersection is either a process-wide singleton or a
+// SEALED value.  An unsealed shared pointer — the mutable aliasing that was
+// issue #363 — still fails the test.
 
 // walkStats records what a pointer walk saw, so assertions can prove the walk
 // actually traversed the graph it claims to cover (anti-vacuity).
@@ -117,22 +129,38 @@ func describeLVal(v *lisp.LVal) string {
 		v, v.Type, v.Str, len(v.Cells), v.Quoted, v.String())
 }
 
-// assertDisjoint asserts the two pointer sets intersect only in allowed.
-func assertDisjoint(t *testing.T, phase string, seen1, seen2, allowed map[*lisp.LVal]bool) {
+// assertNoMutableSharing asserts that every pointer common to the two sets
+// is either explicitly allowed (the boolean/nil singletons) or sealed.
+// Sealed values are immutable by contract and safe to share; an unsealed
+// shared pointer is exactly the issue-#363 aliasing this test polices.
+func assertNoMutableSharing(t *testing.T, phase string, seen1, seen2, allowed map[*lisp.LVal]bool) {
 	t.Helper()
 	shared := 0
+	sealedShared := 0
 	for p := range seen1 {
 		if !seen2[p] || allowed[p] {
 			continue
 		}
+		if p.IsSealed() {
+			sealedShared++
+			continue
+		}
 		shared++
 		if shared <= 20 { // don't drown the log; the count is reported below
-			t.Errorf("%s: shared LVal: %s", phase, describeLVal(p))
+			t.Errorf("%s: shared mutable LVal: %s", phase, describeLVal(p))
 		}
 	}
 	if shared > 0 {
-		t.Fatalf("%s: %d LVal pointers shared between independently built environments (of %d and %d reachable)",
-			phase, shared, len(seen1), len(seen2))
+		t.Fatalf("%s: %d mutable LVal pointers shared between independently built environments (of %d and %d reachable; %d sealed pointers legitimately shared)",
+			phase, shared, len(seen1), len(seen2), sealedShared)
+	}
+	// Anti-vacuity for the seal path: builtin formals ARE shared by design
+	// now.  If nothing sealed is shared, the walk stopped reaching the
+	// formals graph and the assertion above proves nothing about it.  The
+	// measured baseline shares 620+ sealed pointers; 100 leaves slack for
+	// library churn.
+	if sealedShared < 100 {
+		t.Fatalf("%s: only %d sealed pointers shared (want >= 100); the walk no longer reaches the shared formals graph and this test is vacuous", phase, sealedShared)
 	}
 }
 
@@ -177,7 +205,7 @@ func TestNoCrossEnvironmentLValSharing(t *testing.T) {
 	seen2, stats2 := collectRegistry(env2)
 	requireNonVacuous(t, "post-init env1", seen1, stats1)
 	requireNonVacuous(t, "post-init env2", seen2, stats2)
-	assertDisjoint(t, "post-init", seen1, seen2, allowed)
+	assertNoMutableSharing(t, "post-init", seen1, seen2, allowed)
 
 	// Extend the property past construction: run a program that exercises
 	// defun/defmacro/quoted literals (and stores a boolean singleton, which
@@ -199,13 +227,14 @@ func TestNoCrossEnvironmentLValSharing(t *testing.T) {
 	seen2, stats2 = collectRegistry(env2)
 	requireNonVacuous(t, "post-load env1", seen1, stats1)
 	requireNonVacuous(t, "post-load env2", seen2, stats2)
-	assertDisjoint(t, "post-load", seen1, seen2, allowed)
+	assertNoMutableSharing(t, "post-load", seen1, seen2, allowed)
 }
 
 // BenchmarkEnvInit measures full environment construction — NewEnv +
-// InitializeUserEnv + lisplib.LoadLibrary — which is where the formals
-// deep-copy performed at the builtin registration boundary lands.  The copy
-// is load-time only; evaluation hot paths never touch it.
+// InitializeUserEnv + lisplib.LoadLibrary — which is where builtin
+// registration lands.  Registration aliases the sealed table formals
+// (registrationFormals in env.go) instead of deep-copying them per
+// environment, and this benchmark is the regression tripwire for that.
 func BenchmarkEnvInit(b *testing.B) {
 	b.ReportAllocs()
 	for range b.N {

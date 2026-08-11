@@ -99,7 +99,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	return lisp.Nil()
 }
 
-//elpsvet:allow package builtin table; formals reach a Runtime only through copyFormals at registration (lisp.LEnv.AddBuiltins)
+//elpsvet:allow package builtin table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddBuiltins)
 var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("deftype", lisp.Formals("name", "type", lisp.VarArgSymbol, "constraints"), builtinDefType,
 		`Defines a named schema type and binds it as a global symbol.

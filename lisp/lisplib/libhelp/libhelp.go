@@ -373,7 +373,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	return lisp.Nil()
 }
 
-//elpsvet:allow package op table; formals reach a Runtime only through copyFormals at registration (lisp.LEnv.AddSpecialOps)
+//elpsvet:allow package op table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddSpecialOps)
 var ops = []*libutil.Builtin{
 	libutil.FunctionDoc("help", lisp.Formals("var-name"), opHelp,
 		`

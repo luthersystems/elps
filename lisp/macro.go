@@ -8,10 +8,10 @@ import (
 	"github.com/luthersystems/elps/parser/token"
 )
 
-//elpsvet:allow user-registered macro table; formals reach a Runtime only through copyFormals at registration (env.go AddMacros)
+//elpsvet:allow user-registered macro table; formals are sealed (see sealDefaultFormals init in builtins.go / RegisterDefaultMacro) and shared via registrationFormals (env.go AddMacros)
 var userMacros []*langBuiltin
 
-//elpsvet:allow default macro table; formals reach a Runtime only through copyFormals at registration (env.go AddMacros)
+//elpsvet:allow default macro table; formals are sealed (see sealDefaultFormals init in builtins.go / RegisterDefaultMacro) and shared via registrationFormals (env.go AddMacros)
 var langMacros = []*langBuiltin{
 	{"defmacro", Formals("name", "formals", VarArgSymbol, "expr"), macroDefmacro,
 		`Defines a named macro in the current package. The body receives
@@ -52,7 +52,7 @@ var langMacros = []*langBuiltin{
 // RegisterDefaultMacro adds the given function to the list returned by
 // DefaultMacros.
 func RegisterDefaultMacro(name string, formals *LVal, fn LBuiltin) {
-	userMacros = append(userMacros, &langBuiltin{name, formals.Copy(), fn, ""})
+	userMacros = append(userMacros, &langBuiltin{name, sealedFormalsCopy(formals), fn, ""})
 }
 
 // DefaultMacros returns the default set of LBuiltinDef added to LEnv objects

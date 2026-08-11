@@ -9,10 +9,10 @@ import (
 	"strings"
 )
 
-//elpsvet:allow user-registered special-op table; formals reach a Runtime only through copyFormals at registration (env.go AddSpecialOps)
+//elpsvet:allow user-registered special-op table; formals are sealed (see sealDefaultFormals init in builtins.go / RegisterDefaultSpecialOp) and shared via registrationFormals (env.go AddSpecialOps)
 var userSpecialOps []*langBuiltin
 
-//elpsvet:allow default special-op table; formals reach a Runtime only through copyFormals at registration (env.go AddSpecialOps)
+//elpsvet:allow default special-op table; formals are sealed (see sealDefaultFormals init in builtins.go / RegisterDefaultSpecialOp) and shared via registrationFormals (env.go AddSpecialOps)
 var langSpecialOps = []*langBuiltin{
 	{"function", Formals("name"), opFunction,
 		`Returns the function bound to the given symbol without calling
@@ -128,7 +128,7 @@ var langSpecialOps = []*langBuiltin{
 // RegisterDefaultSpecialOp adds the given function to the list returned by
 // DefaultSpecialOps.
 func RegisterDefaultSpecialOp(name string, formals *LVal, fn LBuiltin) {
-	userSpecialOps = append(userSpecialOps, &langBuiltin{name, formals.Copy(), fn, ""})
+	userSpecialOps = append(userSpecialOps, &langBuiltin{name, sealedFormalsCopy(formals), fn, ""})
 }
 
 // DefaultSpecialOps returns the default set of LBuiltinDef added to LEnv
