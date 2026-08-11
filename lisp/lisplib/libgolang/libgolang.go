@@ -57,7 +57,12 @@ func (fun *builtin) Docstring() string {
 	return fun.docs
 }
 
-//elpsvet:allow package builtin table; formals reach a Runtime only through copyFormals at registration (lisp.LEnv.AddBuiltins)
+// The shared table's formals are sealed at package init (below), so
+// lisp.LEnv.AddBuiltins aliases them into each environment under
+// copy-on-write protection instead of deep-copying per environment (see
+// registrationFormals in lisp/env.go).
+//
+//elpsvet:allow package builtin table; formals are sealed at package init and shared via registrationFormals (lisp.LEnv.AddBuiltins)
 var builtins = []*builtin{
 	{lisp.Formals("native-value"), BuiltinString, "string",
 		`Extracts a Go string from a native value and returns it as an
@@ -77,6 +82,14 @@ var builtins = []*builtin{
 		reflection. field-name is a string or symbol naming the field
 		(must start with an uppercase letter). Returns the field value
 		as a native value. Automatically dereferences pointers.`},
+}
+
+// Package init is single-threaded and runs before any environment exists,
+// so sealing the shared table's formals here cannot race with a reader.
+func init() {
+	for _, def := range builtins {
+		def.formals.SealAST()
+	}
 }
 
 // BuiltinString returns a string held by the native value (it does not convert

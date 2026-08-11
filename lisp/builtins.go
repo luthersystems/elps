@@ -56,9 +56,9 @@ func (fun *langBuiltin) Docstring() string {
 }
 
 var (
-	//elpsvet:allow user-registered builtin table; formals reach a Runtime only through copyFormals at registration (env.go AddBuiltins)
+	//elpsvet:allow user-registered builtin table; formals are sealed at registration (RegisterDefaultBuiltin) and shared via registrationFormals (env.go AddBuiltins)
 	userBuiltins []*langBuiltin
-	//elpsvet:allow default builtin table; formals reach a Runtime only through copyFormals at registration (env.go AddBuiltins)
+	//elpsvet:allow default builtin table; formals are sealed at package init (sealDefaultFormals) and shared via registrationFormals (env.go AddBuiltins)
 	langBuiltins = []*langBuiltin{
 		{"load-string", Formals("source-code", KeyArgSymbol, "name"), builtinLoadString,
 			`Parses and evaluates source-code (a string) as ELPS source. The
@@ -388,10 +388,42 @@ var (
 	}
 )
 
+// sealDefaultFormals seals the formals of every definition in the package's
+// shared builtin, macro and special-op tables.  The tables are constructed
+// once at Go program initialization and consulted by every Runtime in the
+// process; sealing their formals here — package init is single-threaded and
+// runs before any environment can exist — makes that sharing explicit and
+// safe.  Registration (registrationFormals in env.go) aliases a sealed list
+// instead of deep-copying it per environment, and the seal's copy-on-write
+// guards (lisp/seal.go) catch any code path that would mutate the shared
+// cells, exactly as they do for the sealed parser output that lisp-defined
+// functions alias as their formals.
+func init() { sealDefaultFormals() }
+
+func sealDefaultFormals() {
+	for _, table := range [][]*langBuiltin{langBuiltins, langMacros, langSpecialOps} {
+		for _, def := range table {
+			def.formals.SealAST()
+		}
+	}
+}
+
 // RegisterDefaultBuiltin adds the given function to the list returned by
 // DefaultBuiltins.
 func RegisterDefaultBuiltin(name string, formals *LVal, fn LBuiltin) {
-	userBuiltins = append(userBuiltins, &langBuiltin{name, formals.Copy(), fn, ""})
+	userBuiltins = append(userBuiltins, &langBuiltin{name, sealedFormalsCopy(formals), fn, ""})
+}
+
+// sealedFormalsCopy deep-copies a caller-supplied formals list for entry
+// into one of the RegisterDefault* tables and seals the copy.  The copy
+// keeps the caller's own value mutable and unaliased (the caller may reuse
+// or modify it after registration); the seal marks the table's private copy
+// as shared-immutable so registrationFormals (env.go) can alias it into
+// every environment without a further per-env copy.
+func sealedFormalsCopy(formals *LVal) *LVal {
+	c := formals.Copy()
+	c.SealAST()
+	return c
 }
 
 // DefaultBuiltins returns the default set of LBuiltinDefs added to LEnv

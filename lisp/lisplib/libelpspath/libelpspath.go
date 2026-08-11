@@ -55,11 +55,12 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 
 // builtins are functions exported to elps.
 //
-// The formal lists below are read-only templates: AddBuiltins copies formals
-// (copyFormals) before binding them into a package, so no Runtime ever holds
-// these package-level LVals.
+// The formal lists below are read-only templates: libutil seals them at
+// construction, and AddBuiltins (registrationFormals) aliases the sealed
+// lists into each environment under copy-on-write protection, so no Runtime
+// can mutate these package-level LVals.
 //
-//elpsvet:allow read-only formal templates; AddBuiltins copies formals per env
+//elpsvet:allow read-only formal templates; sealed by libutil at construction and shared via registrationFormals
 var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("?", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryGet,
 		`Get value at a path specified by positional args.
