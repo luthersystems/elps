@@ -53,6 +53,38 @@ if lerr.Type != LError {
 }
 ```
 
+### Parse once, load many: sealed Programs
+
+An embedder that caches parse results (for example, keyed by a hash of the
+source) should cache `lisp.Program` values rather than raw `[]*lisp.LVal`
+slices.  A `Program` is an opaque handle produced where the parse happens —
+`env.ParseProgram`, `lisp.ReadProgram`, or `lisp.ReadLocationProgram` — and
+consumed by `env.LoadProgram` / `env.LoadProgramContext`:
+
+```go
+p, err := env.ParseProgram("code.lisp", "code.lisp", strings.NewReader(lispcode))
+if err != nil {
+    // handle parse error
+}
+ret := env.LoadProgram(p)
+if ret.Type == lisp.LError {
+    // handle execution error
+}
+```
+
+Because `Program` exposes no accessor for its expressions, a cache built on
+it cannot hand raw AST nodes to callers — the aliasing bugs that come from
+sharing `*lisp.LVal` pointers between caches and environments are ruled out
+at compile time, at zero runtime cost.  Code that genuinely needs the AST
+(tooling, serialization, transfer between runtimes) calls `Program.Detach`,
+which returns hermetic deep copies.
+
+Note the scope of the guarantee: `Program` seals the parse/cache boundary so
+AST nodes cannot *escape* to the embedder.  Full hermetic sealing is the
+composition of this boundary type with seals on evaluation's own AST leak
+points (quote and macro paths inside eval) — see the `Program` godoc for
+details.
+
 ## Writing Functions
 
 Programs embedding elps can write functions in Go which can be loaded into
