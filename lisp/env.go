@@ -913,7 +913,11 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	// the env's current location is probably more accurate than native
 	// source (or it may also be native source).
 	if lerr.source == nil || lerr.source.Pos < 0 {
-		lerr.source = env.Loc
+		// Copy the location instead of aliasing env.Loc.  The error value
+		// escapes to the caller while evaluation continues, so it must not
+		// share a *token.Location the evaluator may still reference.
+		// copyLocation preserves nil (the "<native code>" convention).
+		lerr.source = copyLocation(env.Loc)
 	}
 	return nil
 }

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // initSafetyTestEnv creates a minimal ELPS environment for safety tests.
@@ -297,6 +299,49 @@ func TestErrorAssociateWithError(t *testing.T) {
 	}
 	if lerr.CallStack() == nil {
 		t.Error("ErrorAssociate should attach call stack to error")
+	}
+}
+
+// TestErrorAssociateCopiesLocation guards against location aliasing: the
+// *token.Location that ErrorAssociate stores on an error must be
+// pointer-independent of env.Loc, because the error escapes to the caller
+// while the evaluator keeps using (and rebinding) env.Loc.
+func TestErrorAssociateCopiesLocation(t *testing.T) {
+	t.Parallel()
+	env := initSafetyTestEnv(t)
+
+	loc := &token.Location{File: "assoc-test.lisp", Pos: 12, Line: 3, Col: 4}
+	env.Loc = loc
+
+	lerr := Errorf("test error")
+	if res := env.ErrorAssociate(lerr); res != nil {
+		t.Fatalf("ErrorAssociate failed: %v", res)
+	}
+	if lerr.source == nil {
+		t.Fatal("associated error should carry a source location")
+	}
+	if lerr.source == loc {
+		t.Fatal("associated error aliases env.Loc; it must store an independent copy")
+	}
+	if *lerr.source != *loc {
+		t.Fatalf("copied location differs: got %+v want %+v", *lerr.source, *loc)
+	}
+	// Mutate env.Loc in place as evaluation would; the error's recorded
+	// location must not move with it.
+	loc.Line = 999
+	loc.File = "elsewhere.lisp"
+	if lerr.source.Line == 999 || lerr.source.File == "elsewhere.lisp" {
+		t.Fatal("mutating env.Loc changed the associated error's location")
+	}
+
+	// A nil env.Loc must stay nil on the error (native-code convention).
+	env.Loc = nil
+	lerr2 := Errorf("second error")
+	if res := env.ErrorAssociate(lerr2); res != nil {
+		t.Fatalf("ErrorAssociate failed: %v", res)
+	}
+	if lerr2.source != nil {
+		t.Fatalf("nil env.Loc must yield nil error source, got %+v", lerr2.source)
 	}
 }
 
