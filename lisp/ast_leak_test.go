@@ -322,3 +322,77 @@ func TestValueMutationDoesNotCorruptCachedAST(t *testing.T) {
 		t.Fatalf("mutating evaluator-returned values corrupted the cached AST:\n  before %s\n  after  %s", before, after)
 	}
 }
+
+// TestSubstrate378ClassKilled reproduces, ELPS-side, the exact shape of
+// luthersystems/substrate#378: a program is parsed once into a shared cache;
+// runtime 1 evaluates it and native code then mutates the returned value's
+// backing storage in place (substrate's elpspath did exactly this to the
+// list bound to q).  Without the evaluator seals (exp-ast-leakpoints) that
+// surgery rewrote the cached tree, so every later runtime evaluating the
+// same cache saw the corrupted program.  With the seals merged the cache
+// fingerprint is unchanged and a second runtime sees pristine data.
+// TestValueMutationDoesNotCorruptCachedAST covers the general class; this
+// test pins the #378 reproduction specifically.
+func TestSubstrate378ClassKilled(t *testing.T) {
+	const src = `
+(set 'q '(10 20 30))
+q
+`
+	exprs := parseCached(t, src)
+	before := fingerprintAST(exprs)
+
+	// Runtime 1: evaluate the cached program and take q's returned value.
+	env1 := newLeakTestEnv(t)
+	var q1 *lisp.LVal
+	for i, e := range exprs {
+		r := env1.Eval(e)
+		if r.Type == lisp.LError {
+			t.Fatalf("env1 eval expr %d: %v", i, r)
+		}
+		q1 = r
+	}
+	if q1 == nil || len(q1.Cells) != 3 {
+		t.Fatalf("anti-vacuity: expected q = (10 20 30), got %v", q1)
+	}
+	// Native-code surgery on the value's backing storage, elpspath-style:
+	// overwrite an element, grow the list, reorder the remainder.
+	q1.Cells[0] = lisp.Int(999)
+	q1.Cells = append(q1.Cells, lisp.String("injected"))
+	q1.Cells[1], q1.Cells[2] = q1.Cells[2], q1.Cells[1]
+	// Corrupt through the durable binding too, not just the returned value.
+	if g := env1.Get(lisp.Symbol("q")); g.Type != lisp.LError {
+		corruptValue(g, leakWalkDepth, map[*lisp.LVal]bool{})
+	}
+
+	// The cached AST must be exactly what it was before runtime 1 ran.
+	if after := fingerprintAST(exprs); after != before {
+		t.Fatalf("substrate#378 shape reproduced: value surgery in runtime 1 corrupted the shared parse cache\n  before %s\n  after  %s", before, after)
+	}
+
+	// Runtime 2 evaluates the same cached exprs and must see pristine data.
+	// Under elpscheck the ownership checker forbids this sharing pattern by
+	// design (one tree, two Runtimes), so the replay only runs in the
+	// production configuration — the one substrate's cache actually uses.
+	if elpscheckActive {
+		t.Log("elpscheck build: skipping the second-runtime replay (ownership checker forbids cross-runtime AST sharing by design); fingerprint assertion above still ran")
+		return
+	}
+	env2 := newLeakTestEnv(t)
+	var q2 *lisp.LVal
+	for i, e := range exprs {
+		r := env2.Eval(e)
+		if r.Type == lisp.LError {
+			t.Fatalf("env2 eval expr %d: %v", i, r)
+		}
+		q2 = r
+	}
+	want := []int{10, 20, 30}
+	if len(q2.Cells) != len(want) {
+		t.Fatalf("runtime 2 saw corrupted q: %v", q2)
+	}
+	for i, n := range want {
+		if q2.Cells[i].Type != lisp.LInt || q2.Cells[i].Int != n {
+			t.Fatalf("runtime 2 saw corrupted q[%d]: %v (want %d)", i, q2.Cells[i], n)
+		}
+	}
+}
