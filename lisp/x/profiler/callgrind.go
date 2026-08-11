@@ -163,11 +163,13 @@ func (p *callgrindProfiler) Start(fun *lisp.LVal) func() {
 	prettyLabel, _ := p.prettyFunName(fun)
 	// Mark the time and point of entry. It feels like we're building the call stack in Runtime
 	// again, but we're not - it's called, not callers.
-	var funLoc *token.Location
-	if loc, ok := fun.Source(); ok {
-		funLoc = &loc
-	}
-	p.incrementCallRef(prettyLabel, funLoc)
+	//
+	// Source() reports the synthetic "<native code>" location for values
+	// with no recorded source, which is exactly what builtins historically
+	// carried here; use it unconditionally so callgrind output keeps its
+	// fl=<native code> attribution instead of an empty file ref.
+	loc, _ := fun.Source()
+	p.incrementCallRef(prettyLabel, &loc)
 
 	return func() {
 		p.end(fun)
