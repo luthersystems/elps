@@ -335,7 +335,17 @@ func (s *chainPath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 
 func deleteChain(in *lisp.LVal, paths []Path) (*lisp.LVal, error) {
 	if len(paths) == 0 {
-		return nil, nil
+		// Deleting the whole document leaves nothing, which is lisp nil --
+		// the same answer nullChain gives for the same empty chain.
+		//
+		// IMPORTANT: this must be lisp.Nil() and not a bare Go nil. An
+		// untyped nil *LVal escapes into the returned structure and panics
+		// the first thing that touches it (json:dump-bytes, printing, a
+		// further path op) rather than raising a catchable condition. The
+		// empty chain is reached both by the root path ((?del v)) and by
+		// every element of a bare iterator ((?del v '*)), so a Go nil here
+		// poisons a whole array, not just one value.
+		return lisp.Nil(), nil
 	}
 	head := paths[0]
 	if len(paths) > 1 {
@@ -517,14 +527,31 @@ func (s *indexPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-	index := s.index
-	if index < 0 {
-		index = len(cells) + index
-	}
-	if len(cells) <= index {
+	index, ok := resolveIndex(len(cells), s.index)
+	if !ok {
 		return lisp.Nil(), nil
 	}
 	return cells[index], nil
+}
+
+// resolveIndex converts a (possibly negative) path index into a real offset
+// into an n-element sequence, reporting whether it lands inside it.
+//
+// IMPORTANT: a negative index counts back from the end, so it must be
+// re-checked against zero after being folded. Without that second check an
+// index whose magnitude exceeds the sequence length ((? v -1) on an empty
+// array, (? v -5) on a two-element one) stays negative and indexes out of
+// bounds, panicking instead of raising a condition lisp code can catch.
+// Both out-of-range directions take the same branch, which is the
+// long-standing behaviour for indexes past the end.
+func resolveIndex(n int, index int) (int, bool) {
+	if index < 0 {
+		index = n + index
+	}
+	if index < 0 || index >= n {
+		return 0, false
+	}
+	return index, true
 }
 
 func (s *indexPath) SetMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
@@ -542,11 +569,8 @@ func (s *indexPath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 	if err != nil {
 		return nil, err
 	}
-	index := s.index
-	if index < 0 {
-		index = len(cells) + index
-	}
-	if len(cells) <= index {
+	index, ok := resolveIndex(len(cells), s.index)
+	if !ok {
 		return lisp.Nil(), nil
 	}
 	cells[index] = newIn
@@ -598,11 +622,8 @@ func (s *indexPath) deleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-	index := s.index
-	if index < 0 {
-		index = len(cells) + index
-	}
-	if len(cells) <= index {
+	index, ok := resolveIndex(len(cells), s.index)
+	if !ok {
 		return lisp.Nil(), nil
 	}
 	vals := append(cells[:index], cells[index+1:]...)
