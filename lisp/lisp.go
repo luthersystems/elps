@@ -1146,6 +1146,10 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 }
 
 // Copy creates a deep copy of the receiver.
+//
+// Copy has within-runtime semantics — an LArray's backing storage is shared
+// with the receiver, so it is not a tool for transferring values between
+// Runtimes; use Detach for that.
 func (v *LVal) Copy() *LVal {
 	if v == nil {
 		return nil
