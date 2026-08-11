@@ -192,16 +192,25 @@ func TestWhenRejectsNonMapInput(t *testing.T) {
 // package accepts -- otherwise "we kept the extension point" would be a claim
 // with nothing behind it.
 func TestNewValidatorIsAcceptedAsAConstraint(t *testing.T) {
-	even := libschema.NewValidator(lisp.Formals("input"),
-		func(_ *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
-			if input.Type == lisp.LInt && input.Int%2 == 0 {
-				return lisp.Nil()
-			}
-			return lisp.ErrorConditionf(libschema.FailedConstraint, "not even: %v", input)
-		})
+	// One validator per environment, NOT one validator shared by all of
+	// them: each newSchemaEnv is a separate Runtime, and an LVal must not
+	// be used by two Runtimes — the validator LFun's Cells and FunData are
+	// unguarded shared mutable state, the same hazard class as the shared
+	// builtin formals of issue #363.  The elpscheck ownership checker
+	// (lisp/ownership_check_elpscheck.go) caught the original sharing here
+	// on its first full-suite run.
+	newEven := func() *lisp.LVal {
+		return libschema.NewValidator(lisp.Formals("input"),
+			func(_ *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
+				if input.Type == lisp.LInt && input.Int%2 == 0 {
+					return lisp.Nil()
+				}
+				return lisp.ErrorConditionf(libschema.FailedConstraint, "not even: %v", input)
+			})
+	}
 
 	env := newSchemaEnv(t)
-	if rc := env.PutGlobal(lisp.Symbol("even?"), even); rc.Type == lisp.LError {
+	if rc := env.PutGlobal(lisp.Symbol("even?"), newEven()); rc.Type == lisp.LError {
 		t.Fatalf("bind: %v", rc)
 	}
 
@@ -216,7 +225,7 @@ func TestNewValidatorIsAcceptedAsAConstraint(t *testing.T) {
 		{`(s:deftype "T" s:sorted-map (s:when "a" even? "b" (s:gt 100))) (s:validate T (sorted-map "a" 2 "b" 1))`, false},
 	} {
 		e := newSchemaEnv(t)
-		if rc := e.PutGlobal(lisp.Symbol("even?"), even); rc.Type == lisp.LError {
+		if rc := e.PutGlobal(lisp.Symbol("even?"), newEven()); rc.Type == lisp.LError {
 			t.Fatalf("bind: %v", rc)
 		}
 		res := e.LoadStringContext(context.Background(), "newvalidator", c.src)

@@ -502,6 +502,11 @@ func (env *LEnv) pkgFunName(f *LVal) (string, error) {
 // Put takes an LSymbol k and binds it to v in env.  If k is already bound to a
 // value the binding is updated so that k is bound to v.
 func (env *LEnv) Put(k, v *LVal) *LVal {
+	// Ownership check (elpscheck builds only; no-op otherwise): a binding
+	// is the durable way a value enters a runtime, so both the key and the
+	// value are adopted/asserted here.
+	checkOwnership(env.Runtime, k)
+	checkOwnership(env.Runtime, v)
 	if k.Type != LSymbol && k.Type != LQSymbol {
 		return env.Errorf("key is not a symbol: %v", k.Type)
 	}
@@ -579,6 +584,13 @@ func (env *LEnv) GetGlobal(k *LVal) *LVal {
 
 // PutGlobal takes an LSymbol k and binds it to v in current package.
 func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
+	// Ownership check (elpscheck builds only; no-op otherwise).  This entry
+	// covers the package-scope binding path, including the pkg.Put calls
+	// below.  Package.Put itself is not instrumented — a Package has no
+	// *Runtime reference to assert against; every evaluator-driven global
+	// write funnels through here first.
+	checkOwnership(env.Runtime, k)
+	checkOwnership(env.Runtime, v)
 	pieces := SplitSymbol(k)
 	if pieces.Type == LError {
 		if err := env.ErrorAssociate(pieces); err != nil {
@@ -969,6 +981,10 @@ func (env *LEnv) eval(ctx context.Context, v *LVal) (result *LVal) {
 	defer func() {
 		env.Runtime.evalNesting--
 		if r := recover(); r != nil {
+			// Ownership violations (elpscheck builds only) must stay hard
+			// panics: re-panic before the conversion below can launder the
+			// finding into a catchable LError.  No-op in release builds.
+			rethrowOwnershipViolation(r)
 			// Tag the error with CondInternalPanic so it is distinguishable
 			// from a lisp-level error: a panic is a host-code bug, and
 			// ignore-errors / catch-all handler-bind must not silently
@@ -987,6 +1003,12 @@ func (env *LEnv) eval(ctx context.Context, v *LVal) (result *LVal) {
 			}
 		}
 	}()
+	// Ownership check (elpscheck builds only; no-op otherwise): eval is the
+	// funnel every expression passes through, so the first evaluation of a
+	// value adopts it for this Runtime and any later evaluation under a
+	// different Runtime panics.  Placed after the deferred recover so the
+	// evalNesting counter stays balanced when the check panics.
+	checkOwnership(env.Runtime, v)
 	if env.Runtime.evalNestingExceeded() {
 		return env.ErrorConditionf(CondEvalNestingExceeded,
 			"evaluation nesting depth exceeded maximum: %d"+

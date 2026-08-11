@@ -28,10 +28,15 @@ import (
 // need a mutable nil value (e.g., to build up a list), use SExpr(nil)
 // directly instead of Nil(). Tree walkers that mutate LVal fields MUST
 // guard with isSingleton(v) / assertNotSingleton(v) before writing.
+// The //elpsvet:allow markers below suppress cmd/elpsvet's rule against
+// package-level LVals: these three are the deliberate, guarded exception —
+// shared across every Runtime by design, immutable by decree, snapshotted by
+// checkSingleton in elpscheck builds, and exempt from the runtime ownership
+// checker (lisp/ownership_check_elpscheck.go).  Nothing else earns this.
 var (
-	singletonNil   = &LVal{Type: LSExpr}
-	singletonTrue  = &LVal{Type: LSymbol, Str: TrueSymbol}
-	singletonFalse = &LVal{Type: LSymbol, Str: FalseSymbol}
+	singletonNil   = &LVal{Type: LSExpr}                    //elpsvet:allow guarded singleton
+	singletonTrue  = &LVal{Type: LSymbol, Str: TrueSymbol}  //elpsvet:allow guarded singleton
+	singletonFalse = &LVal{Type: LSymbol, Str: FalseSymbol} //elpsvet:allow guarded singleton
 )
 
 // isSingleton reports whether v is one of the three shared, immutable
