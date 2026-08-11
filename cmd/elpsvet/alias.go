@@ -33,7 +33,10 @@
 // aliasing storage this function allocated is this function's business.
 //
 // Depth: taint is tracked TRANSITIVELY through local identifier assignments
-// (a := v.Cells; b := a; b[i] = x flags at any depth) and through slice
+// (a := v.Cells; b := a; b[i] = x flags at any depth), through plain var
+// declarations (var a = v.Cells is a ValueSpec, not an AssignStmt), through
+// slice type conversions (cellSlice(a) shares backing — the
+// sort.Sort(mapEntriesByKey(buf)) shape from lisp/maps.go), and through slice
 // expressions (b := a[1:3] shares backing, so it inherits taint).  Tracking
 // is last-assignment-wins in source order and path-insensitive, exactly like
 // the freshness map: reassigning the variable to provably fresh storage
@@ -163,6 +166,32 @@ func (t *aliasTracker) handleAssign(stmt *ast.AssignStmt) {
 	}
 }
 
+// handleValueSpec tracks taint through plain var declarations
+// (var cells = list.Cells), which reach the walker as ValueSpecs rather
+// than AssignStmts.  Only the one-value-per-name form can name a slice
+// alias; tuple declarations (var a, b = f()) cannot, because a
+// multi-result function is not a taint source (resultIsLValSlice requires
+// a single result).
+func (t *aliasTracker) handleValueSpec(spec *ast.ValueSpec) {
+	if len(spec.Values) != len(spec.Names) {
+		return
+	}
+	for i, name := range spec.Names {
+		if name.Name == "_" {
+			continue
+		}
+		obj := t.pass.TypesInfo.Defs[name]
+		if obj == nil {
+			continue
+		}
+		if _, isSlice := obj.Type().Underlying().(*types.Slice); isSlice {
+			t.tainted[obj] = t.sliceTaint(spec.Values[i])
+		} else {
+			t.carrier[obj] = t.carrierTaint(spec.Values[i])
+		}
+	}
+}
+
 // handleIncDec flags cells[i]++ / b[i]-- through a tainted alias.
 func (t *aliasTracker) handleIncDec(stmt *ast.IncDecStmt) {
 	if x := ast.Unparen(stmt.X); t.isAliasIndexWrite(x) {
@@ -273,6 +302,15 @@ func (t *aliasTracker) sliceTaint(e ast.Expr) bool {
 func (t *aliasTracker) callTaint(call *ast.CallExpr) bool {
 	if t.isBuiltin(call, "append") {
 		return len(call.Args) > 0 && t.sliceTaint(call.Args[0])
+	}
+	// A slice-to-slice type conversion (cellSlice(cells), []*lisp.LVal(cs))
+	// shares the operand's backing array: it inherits taint rather than
+	// laundering it.  Conversions to non-slice types (string(b)) copy.
+	if tv, ok := t.pass.TypesInfo.Types[call.Fun]; ok && tv.IsType() && len(call.Args) == 1 {
+		if _, isSlice := tv.Type.Underlying().(*types.Slice); isSlice {
+			return t.sliceTaint(call.Args[0])
+		}
+		return false
 	}
 	fn, ok := typeutil.Callee(t.pass.TypesInfo, call).(*types.Func)
 	if !ok {

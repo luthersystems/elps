@@ -164,6 +164,8 @@ func checkFreshness(pass *analysis.Pass, body *ast.BlockStmt, ann map[int]bool) 
 			aliases.handleIncDec(stmt)
 		case *ast.CallExpr:
 			aliases.checkCall(stmt)
+		case *ast.ValueSpec:
+			aliases.handleValueSpec(stmt)
 		}
 		return true
 	})
