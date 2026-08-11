@@ -203,9 +203,12 @@ var (
 			`Returns a new sequence with item inserted at the given index.
 			The type-specifier ('list or 'vector) determines the return type.`},
 		{"stable-sort", Formals("less-predicate", "list", VarArgSymbol, "key-fun"), builtinSortStable,
-			`Sorts list in-place using the binary less-predicate and returns
-			the mutated list. The sort is stable. An optional key-fun
-			extracts comparison keys from elements.`},
+			`Sorts list using the binary less-predicate and returns the
+			sorted list. The sort is stable. A mutable list is sorted in
+			place; a quoted program literal is never modified -- its
+			elements are sorted into a fresh list -- so always use the
+			return value. An optional key-fun extracts comparison keys
+			from elements.`},
 		{"insert-sorted", Formals("type-specifier", "list", "predicate", "item", VarArgSymbol, "key-fun"), builtinInsertSorted,
 			`Returns a new sequence with item inserted at its sorted position
 			according to predicate. An optional key-fun extracts comparison
