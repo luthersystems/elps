@@ -162,8 +162,8 @@ func ownershipViolationMessage(owner, second *Runtime, v *LVal) string {
 		str = str[:64] + "..."
 	}
 	loc := "<nil>"
-	if v.Source != nil {
-		loc = v.Source.String()
+	if src, ok := v.Source(); ok {
+		loc = src.String()
 	}
 	return fmt.Sprintf("ownership violation: LVal used by two Runtimes\n"+
 		"  value: %p type=%s str=%q cells=%d source=%s\n"+
