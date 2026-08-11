@@ -95,4 +95,3 @@
    (nested-val (list (sorted-map "a" 1) (sorted-map "a" 2))))
   (assert (string= (elpspath:? val "hello" 0) "world"))
   (assert-equal (list 1 2) (elpspath:? nested-val '* "a")))
-
