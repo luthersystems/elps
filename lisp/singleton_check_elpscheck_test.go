@@ -29,7 +29,11 @@ func TestCheckSingleton_DetectsCorruption(t *testing.T) {
 		singletonTrue.source = orig
 	}()
 
-	singletonTrue.source = nil
+	// Singletons are constructed with a nil source (issue #362 removed the
+	// shared "<native code>" Location), so corruption is simulated by
+	// installing a location.
+	loc := nativeLocation()
+	singletonTrue.source = &loc
 
 	defer func() {
 		r := recover()

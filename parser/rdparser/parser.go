@@ -398,6 +398,11 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 
 func (p *Parser) ParseFunRef() *lisp.LVal {
 	op := lisp.Symbol("lisp:function")
+	// The synthesized head symbol has no token of its own.  It has always
+	// reported the "<native code>" location; constructors no longer stamp
+	// one (issue #362), so give it a private copy explicitly.
+	opLoc := token.NativeLocation()
+	op.SetSource(&opLoc)
 	if !p.Accept(token.FUN_REF) {
 		return p.errorf("parse-error", "invalid quote: %v", p.PeekType())
 	}

@@ -43,10 +43,8 @@ func (e *ErrorVal) Error() string {
 		log.Printf("elps: ErrorVal.Error called on nil receiver; returning sentinel")
 		return nilErrorMessage
 	}
-	if e.source != nil {
-		return fmt.Sprintf("%s: %s", e.source, e.baseMessage())
-	}
-	return e.baseMessage()
+	loc, _ := (*LVal)(e).Source()
+	return fmt.Sprintf("%s: %s", &loc, e.baseMessage())
 }
 
 // Source returns a copy of the error's originating source location.  It has

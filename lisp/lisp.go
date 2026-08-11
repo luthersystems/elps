@@ -275,10 +275,15 @@ type LVal struct {
 // other LVal.  The stored reference may be shared by many LVals, which is
 // why no pointer accessor exists (issue #362).
 //
-// Source is nil-receiver safe: a nil LVal reports no location.
+// Source is nil-receiver safe: a nil LVal reports no recorded location.
+//
+// When v has no recorded location the boolean is false and the returned
+// value is the synthetic "<native code>" location (File "<native code>",
+// Pos -1) — the same location that values constructed by Go code have
+// always reported — so the result is printable either way.
 func (v *LVal) Source() (token.Location, bool) {
 	if v == nil || v.source == nil {
-		return token.Location{}, false
+		return nativeLocation(), false
 	}
 	return *v.source, true
 }
@@ -344,34 +349,30 @@ func Bool(b bool) *LVal {
 // Int returns an LVal representing the number x.
 func Int(x int) *LVal {
 	return &LVal{
-		source: nativeSource(),
-		Type:   LInt,
-		Int:    x,
+		Type: LInt,
+		Int:  x,
 	}
 }
 
 // Float returns an LVal representation of the number x
 func Float(x float64) *LVal {
 	return &LVal{
-		source: nativeSource(),
-		Type:   LFloat,
-		Float:  x,
+		Type:  LFloat,
+		Float: x,
 	}
 }
 
 // String returns an LVal representing the string str.
 func String(str string) *LVal {
 	return &LVal{
-		source: nativeSource(),
-		Type:   LString,
-		Str:    str,
+		Type: LString,
+		Str:  str,
 	}
 }
 
 // Bytes returns an LVal representing binary data b.
 func Bytes(b []byte) *LVal {
 	return &LVal{
-		source: nativeSource(),
 		Type:   LBytes,
 		Native: &b,
 	}
@@ -395,18 +396,16 @@ func SplitSymbol(sym *LVal) *LVal {
 // Symbol returns an LVal representing the symbol s
 func Symbol(s string) *LVal {
 	return &LVal{
-		source: nativeSource(),
-		Type:   LSymbol,
-		Str:    s,
+		Type: LSymbol,
+		Str:  s,
 	}
 }
 
 // QSymbol returns an LVal representing the quoted symbol
 func QSymbol(s string) *LVal {
 	return &LVal{
-		source: nativeSource(),
-		Type:   LQSymbol,
-		Str:    s,
+		Type: LQSymbol,
+		Str:  s,
 	}
 }
 
@@ -423,7 +422,6 @@ func Nil() *LVal {
 // Native returns an LVal containng a native Go value.
 func Native(v interface{}) *LVal {
 	return &LVal{
-		source: nativeSource(),
 		Type:   LNative,
 		Native: v,
 	}
@@ -434,9 +432,8 @@ func Native(v interface{}) *LVal {
 // are not copied.
 func SExpr(cells []*LVal) *LVal {
 	return &LVal{
-		source: nativeSource(),
-		Type:   LSExpr,
-		Cells:  cells,
+		Type:  LSExpr,
+		Cells: cells,
 	}
 }
 
@@ -445,7 +442,6 @@ func SExpr(cells []*LVal) *LVal {
 // are not copied.
 func QExpr(cells []*LVal) *LVal {
 	return &LVal{
-		source: nativeSource(),
 		Type:   LSExpr,
 		Quoted: true,
 		Cells:  cells,
@@ -500,8 +496,7 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 	}
 
 	return &LVal{
-		source: nativeSource(),
-		Type:   LArray,
+		Type: LArray,
 		Cells: []*LVal{
 			dims.Copy(),
 			QExpr(cells),
@@ -519,7 +514,6 @@ func SortedMap() *LVal {
 // provided satisfies the semantics of Map methods.
 func SortedMapFromData(data *MapData) *LVal {
 	return &LVal{
-		source: nativeSource(),
 		Type:   LSortMap,
 		Native: data,
 	}
@@ -545,8 +539,7 @@ func FunRef(symbol, fun *LVal) *LVal {
 // produces "BUG: GetFunName" log spam (issue #271).
 func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
-		source: nativeSource(),
-		Type:   LFun,
+		Type: LFun,
 		Native: &LFunData{
 			FID:     fid,
 			Builtin: fn,
@@ -572,7 +565,6 @@ func Fun(fid string, formals *LVal, fn LBuiltin) *LVal {
 // over Fun. See issue #271.
 func MacroInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
-		source:  nativeSource(),
 		Type:    LFun,
 		FunType: LFunMacro,
 		Native: &LFunData{
@@ -600,7 +592,6 @@ func Macro(fid string, formals *LVal, fn LBuiltin) *LVal {
 // is preferred over Fun. See issue #271.
 func SpecialOpInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
-		source:  nativeSource(),
 		Type:    LFun,
 		FunType: LFunSpecialOp,
 		Native: &LFunData{
@@ -649,10 +640,9 @@ func Error(err error) *LVal {
 // value.
 func ErrorCondition(condition string, err error) *LVal {
 	return &LVal{
-		source: nativeSource(),
-		Type:   LError,
-		Str:    condition,
-		Cells:  []*LVal{Native(err)},
+		Type:  LError,
+		Str:   condition,
+		Cells: []*LVal{Native(err)},
 	}
 }
 
@@ -678,10 +668,9 @@ func Errorf(format string, v ...interface{}) *LVal {
 // appropriate value.
 func ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
 	return &LVal{
-		source: nativeSource(),
-		Type:   LError,
-		Str:    condition,
-		Cells:  []*LVal{String(fmt.Sprintf(format, v...))},
+		Type:  LError,
+		Str:   condition,
+		Cells: []*LVal{String(fmt.Sprintf(format, v...))},
 	}
 }
 
@@ -694,7 +683,6 @@ func Quote(v *LVal) *LVal {
 		return cp
 	}
 	quote := &LVal{
-		source: nativeSource(),
 		Type:   LQuote,
 		Quoted: true,
 		Cells:  []*LVal{v},
@@ -1481,15 +1469,12 @@ func makeByteSeq(v *LVal) *LVal {
 	}
 }
 
-var defaultSourceLocation = &token.Location{
-	File: "<native code>",
-	Pos:  -1,
-}
-
-// nativeSource returns the shared location used for values constructed by Go
-// code rather than read from a source file.  The reference is shared by
-// every native-constructed LVal; it is safe only because LVal.source is
-// unexported and external packages can no longer write through it (#362).
-func nativeSource() *token.Location {
-	return defaultSourceLocation
+// nativeLocation returns the synthetic location reported for values that
+// were constructed by Go code rather than read from a source file.  It is
+// produced by value on demand: there is no shared "<native code>" Location
+// object anymore, so issue #362's shared-singleton corruption vector no
+// longer exists — constructors simply leave LVal.source nil and the
+// accessor/print paths synthesize this location.
+func nativeLocation() token.Location {
+	return token.NativeLocation()
 }

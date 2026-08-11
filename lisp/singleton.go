@@ -29,9 +29,9 @@ import (
 // directly instead of Nil(). Tree walkers that mutate LVal fields MUST
 // guard with isSingleton(v) / assertNotSingleton(v) before writing.
 var (
-	singletonNil   = &LVal{source: nativeSource(), Type: LSExpr}
-	singletonTrue  = &LVal{source: nativeSource(), Type: LSymbol, Str: TrueSymbol}
-	singletonFalse = &LVal{source: nativeSource(), Type: LSymbol, Str: FalseSymbol}
+	singletonNil   = &LVal{Type: LSExpr}
+	singletonTrue  = &LVal{Type: LSymbol, Str: TrueSymbol}
+	singletonFalse = &LVal{Type: LSymbol, Str: FalseSymbol}
 )
 
 // isSingleton reports whether v is one of the three shared, immutable

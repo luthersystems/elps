@@ -15,9 +15,9 @@ func TestStampMacroExpansion_NoContext(t *testing.T) {
 
 	inner := Symbol("+")
 	// Give it a synthetic source (Pos < 0).
-	inner.source = nativeSource()
+	inner.source = nil
 	expr := SExpr([]*LVal{inner, Int(1), Int(2)})
-	expr.source = nativeSource()
+	expr.source = nil
 
 	stampMacroExpansion(expr, callSite, nil, rt)
 
@@ -42,13 +42,13 @@ func TestStampMacroExpansion_WithContext(t *testing.T) {
 	}
 
 	inner := Symbol("+")
-	inner.source = nativeSource()
+	inner.source = nil
 	arg1 := Int(1)
-	arg1.source = nativeSource()
+	arg1.source = nil
 	arg2 := Int(2)
-	arg2.source = nativeSource()
+	arg2.source = nil
 	expr := SExpr([]*LVal{inner, arg1, arg2})
-	expr.source = nativeSource()
+	expr.source = nil
 
 	stampMacroExpansion(expr, callSite, ctx, rt)
 
@@ -90,10 +90,10 @@ func TestStampMacroExpansion_PreservesRealSource(t *testing.T) {
 
 	// Node with synthetic source.
 	synth := Symbol("+")
-	synth.source = nativeSource()
+	synth.source = nil
 
 	expr := SExpr([]*LVal{synth, node})
-	expr.source = nativeSource()
+	expr.source = nil
 
 	stampMacroExpansion(expr, callSite, ctx, rt)
 

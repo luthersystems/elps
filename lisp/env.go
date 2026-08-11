@@ -150,7 +150,6 @@ func newEnvN(parent *LEnv, n int) *LEnv {
 		evalCtx = parent.evalCtx
 	} else {
 		runtime = StandardRuntime()
-		loc = nativeSource()
 	}
 	env := &LEnv{
 		ID:      runtime.GenEnvID(),
@@ -881,9 +880,9 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	if lerr.CallStack() == nil {
 		lerr.SetCallStack(env.Runtime.Stack.Copy())
 	}
-	// This check smells a little funny.  All objects are given a source
-	// which may be a nativeSource() value which does not correspond to a
-	// file and has an invalid position (-1).  When associating an error
+	// This check smells a little funny.  An object's source may be absent
+	// (nil — the "<native code>" convention) or carry an invalid position
+	// (-1).  When associating an error
 	// the env's current location is probably more accurate than native
 	// source (or it may also be native source).
 	if lerr.source == nil || lerr.source.Pos < 0 {

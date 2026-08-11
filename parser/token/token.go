@@ -106,6 +106,15 @@ type Location struct {
 	EndCol  int // end column (1-based, exclusive, 0 = not tracked)
 }
 
+// NativeLocation returns the conventional location reported for values that
+// originate in Go code rather than in a source file.  It is returned by
+// value on purpose: callers that need a pointer take the address of their
+// own copy, so no shared "<native code>" Location object exists anywhere
+// (see luthersystems/elps#362).
+func NativeLocation() Location {
+	return Location{File: "<native code>", Pos: -1}
+}
+
 func (loc *Location) String() string {
 	switch {
 	case loc.Pos < 0:

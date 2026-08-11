@@ -50,8 +50,11 @@ func TestSingletonSnapshot_DetectsMutation(t *testing.T) {
 	snap := TakeSingletonSnapshot()
 	require.Empty(t, snap.Verify(), "fresh snapshot should match current state")
 
-	// Mutate a singleton (test only — restored in defer).
-	singletonTrue.source = nil
+	// Mutate a singleton (test only — restored in defer).  Singletons are
+	// constructed with a nil source, so drift is created by installing a
+	// location.
+	loc := nativeLocation()
+	singletonTrue.source = &loc
 	drift := snap.Verify()
 	assert.Equal(t, "Bool(true)", drift, "Verify should report which singleton drifted")
 
