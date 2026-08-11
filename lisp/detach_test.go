@@ -462,6 +462,29 @@ func TestDetachBytesAndMapDisjoint(t *testing.T) {
 	}
 }
 
+// TestDetachEmptyMapDataDisjoint: a degenerate MapData with a nil Map
+// implementation (constructible via SortedMapFromData(&MapData{})) must
+// still detach to an independent struct — returning the original *MapData
+// would alias Native between the copy and the original in the one tool
+// whose contract is "shares no memory".
+func TestDetachEmptyMapDataDisjoint(t *testing.T) {
+	md := &lisp.MapData{}
+	v := lisp.SortedMapFromData(md)
+	cp, err := v.Detach()
+	if err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if cp.Native == nil {
+		t.Fatal("detached copy lost its MapData")
+	}
+	if cp.Native == v.Native {
+		t.Fatal("detached copy shares its *MapData with the original")
+	}
+	if cp.Native.(*lisp.MapData).Map != nil {
+		t.Fatal("detached copy of a nil-Map MapData should preserve the nil Map")
+	}
+}
+
 // TestDetachPreservesInternalAliasing: internal sharing WITHIN a value is
 // legitimate structure and must be mirrored in the copy — copied once,
 // referenced twice — while still not aliasing the original.
