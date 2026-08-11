@@ -171,7 +171,10 @@ func (s *sealFP) walk(v *LVal, depth int) {
 	if !v.sealed {
 		// Runtime storage: legitimately mutable, so its contents cannot
 		// participate in a stability digest.  Mark the hole, do not
-		// descend.  (Singletons land here too: they are never sealed.)
+		// descend.  (The Nil/true/false singletons do NOT land here: they
+		// are born sealed — issue #376 — and hash as full nodes, which is
+		// what lets the checked-mode inspector hold them as permanent
+		// roots.)
 		s.mixByte(sealFPMarkHole)
 		return
 	}
