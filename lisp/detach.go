@@ -84,6 +84,9 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	}
 	cp := &LVal{}
 	*cp = *v
+	// A detached copy shares no storage with the original, so a sealed
+	// original's copy is freely mutable (see lisp/seal.go).
+	cp.sealed = false
 	// Register the copy before descending so a value reachable twice maps to
 	// one copy and a cycle in v becomes the same cycle in the copy instead of
 	// infinite recursion.

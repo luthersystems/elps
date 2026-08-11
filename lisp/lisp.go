@@ -263,6 +263,25 @@ type LVal struct {
 
 	// Spliced denotes the value as needing to be spliced into a parent value.
 	Spliced bool
+
+	// sealed marks a node of a parsed program: the value (and, for
+	// containers, its Cells backing array) may be shared by every
+	// environment that evaluates the same parse — substrate's parse cache
+	// shares one tree process-wide — so kernel code must never mutate it in
+	// place.  Guarded mutation sites copy first (copy-on-write); see
+	// lisp/seal.go for the design and the full list of guarded sites.
+	//
+	// The field occupies an existing padding byte: LVal is 112 bytes with
+	// or without it (TestLValSizeUnchanged pins this).
+	//
+	// The flag is monotone: it is set (only) by SealAST after parsing
+	// completes, propagated by header copies (Quote, Splice,
+	// shallowUnquote — `*cp = *v` — which share the Cells backing array and
+	// therefore inherit the constraint) and by the kernel sites that create
+	// new headers over shared backing (cdr, rest, slice), and cleared only
+	// on fresh storage (Copy, Detach).  It is never written after a tree
+	// becomes shared, so concurrent readers are race-free.
+	sealed bool
 }
 
 // Source returns a copy of v's originating location in source code.  The
@@ -293,7 +312,17 @@ func (v *LVal) Source() (token.Location, bool) {
 // parser) may retain loc and continue to fix up its fields after the call —
 // but once an LVal escapes to consumers the location must be treated as
 // frozen, because the reference may be shared by many LVals (issue #362).
+//
+// A sealed value (a parsed program node — see lisp/seal.go) keeps its
+// parse-time location forever: SetSource on a sealed value is a no-op,
+// because the node may be shared by every environment evaluating the same
+// parse and restamping it would be a cross-environment write.  The parser
+// itself always stamps locations before sealing, so no in-repo caller is
+// affected.
 func (v *LVal) SetSource(loc *token.Location) {
+	if v.sealed {
+		return
+	}
 	v.source = loc
 }
 
@@ -1173,6 +1202,12 @@ func (v *LVal) Copy() *LVal {
 	}
 	cp := &LVal{}
 	*cp = *v // shallow copy of all fields including Map and Bytes
+	// The copy owns fresh top-level storage (copyCells below), so the
+	// sealed constraint on v's own header/backing does not apply to it.
+	// Elements shared with a sealed tree remain individually sealed, which
+	// is exactly the copy-on-write contract: mutate the copy's structure
+	// freely, never the shared nodes inside it.
+	cp.sealed = false
 	switch v.Type {
 	case LArray:
 		// Arrays are memory references but use Cells as backing storage.

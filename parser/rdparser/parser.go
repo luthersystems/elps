@@ -150,7 +150,18 @@ func (p *Parser) ParseExpression() *lisp.LVal {
 		defer func() { p.parsing = false }()
 	}
 
-	return fn(p)
+	expr := fn(p)
+	if p.depth == 1 {
+		// Seal each completed top-level expression: from here the tree may
+		// be cached and shared by every environment that evaluates this
+		// parse, and the sealed flag is what stops kernel mutation sites
+		// from writing it in place (lisp/seal.go).  Sealing happens at
+		// depth 1 — after every nested ParseExpression call has finished
+		// its construction-time fixups — so the parser never writes a
+		// sealed node's fields.  SealAST ignores error values.
+		expr.SealAST()
+	}
+	return expr
 }
 
 func (p *Parser) ignoreHashBang() {

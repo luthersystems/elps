@@ -244,6 +244,20 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionC
 	if isSingleton(v) {
 		return
 	}
+	// Sealed subtrees are parsed program nodes spliced into the expansion
+	// (macros receive their arguments unevaluated, so argument expressions
+	// arrive as shared parse-tree nodes).  They must not be stamped: the
+	// same node may be under evaluation in every environment sharing the
+	// parse, so the write below would be cross-environment visible — and a
+	// data race under concurrent environments.  Most parser nodes carry a
+	// real location (Pos >= 0) and were never stamped, but the parser CAN
+	// emit synthetic Pos < 0 locations (a funref's lisp:function head
+	// symbol, a #^ head symbol mirroring a location-less operand), so
+	// without this guard the stamp is reachable on shared storage.  A
+	// sealed node's descendants are all sealed; skip the whole subtree.
+	if v.sealed {
+		return
+	}
 	if v.source == nil || v.source.Pos < 0 {
 		v.source = callSite
 		if ctx != nil {

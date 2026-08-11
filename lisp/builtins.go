@@ -814,8 +814,11 @@ func builtinCDR(env *LEnv, args *LVal) *LVal {
 	if len(v.Cells) < 2 {
 		return Nil()
 	}
-	// TODO:  Copy cells into a new list of cells?
-	return QExpr(v.Cells[1:])
+	r := QExpr(v.Cells[1:])
+	// The result shares v's backing array, so a sealed v's constraint
+	// travels with it (lisp/seal.go).
+	r.sealed = v.sealed
+	return r
 }
 
 func builtinRest(env *LEnv, args *LVal) *LVal {
@@ -827,8 +830,11 @@ func builtinRest(env *LEnv, args *LVal) *LVal {
 	if len(cells) < 2 {
 		return Nil()
 	}
-	// TODO:  Copy cells into a new list of cells?
-	return QExpr(cells[1:])
+	r := QExpr(cells[1:])
+	// The result shares v's backing array, so a sealed v's constraint
+	// travels with it (lisp/seal.go).
+	r.sealed = v.sealed
+	return r
 }
 
 func builtinFirst(env *LEnv, args *LVal) *LVal {
@@ -1375,6 +1381,23 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("third argument is not a function: %v", keyFun.Type)
 		}
 	}
+	if list.sealed {
+		// Copy-on-write: list is (or shares storage with) a parsed program
+		// literal — (stable-sort < '(3 1 2)) — and sorting it in place
+		// would rewrite the program for every environment sharing the
+		// parse (the substrate#378 class; see lisp/seal.go).  Sort a fresh
+		// header with a fresh backing array instead — element pointers are
+		// shared, sorting only permutes them — and return it: the
+		// documented in-place effect is preserved for every mutable input,
+		// and for a literal the only observable in-place effect was the
+		// corruption itself.
+		cp := &LVal{}
+		*cp = *list
+		cp.sealed = false
+		cp.Cells = make([]*LVal, len(list.Cells))
+		copy(cp.Cells, list.Cells)
+		list = cp
+	}
 	cells := seqCells(list)
 	sortCells := &lvalByFun{
 		env:    env,
@@ -1821,7 +1844,12 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 	case LBytes:
 		list = Bytes(list.Bytes()[i:j])
 	default: // isSeq(list)
+		sealed := list.sealed
 		list = QExpr(seqCells(list)[i:j])
+		// A two-index slice keeps the original backing array (and its spare
+		// capacity), so a sealed input's constraint travels with the
+		// intermediate value (lisp/seal.go).
+		list.sealed = sealed
 	}
 
 	// Convert the intermediate sliced value into the desired type
@@ -1862,14 +1890,25 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 		if list.Type == LString || list.Type == LBytes {
 			list = makeByteSeq(list)
 		}
-		// list is now known to be LSExpr
-		return QExpr(list.Cells)
+		// list is now known to be LSExpr.  The intermediate above already
+		// carries the sealed flag when the backing is shared with a sealed
+		// input, so returning it directly keeps the constraint attached.
+		return list
 	case "vector":
 		if list.Type == LString || list.Type == LBytes {
 			list = makeByteSeq(list)
 		}
 		// list is now known to be LSExpr
-		return Array(QExpr([]*LVal{Int(len(list.Cells))}), list.Cells)
+		cells := list.Cells
+		if list.sealed {
+			// Copy-on-write: vectors are mutable (append! writes their
+			// backing in place) and are never sealed, so wrapping a sealed
+			// list's backing array in a vector would hand the value domain
+			// a mutable window onto the shared program (lisp/seal.go).
+			cells = make([]*LVal, len(list.Cells))
+			copy(cells, list.Cells)
+		}
+		return Array(QExpr([]*LVal{Int(len(cells))}), cells)
 	default:
 		return env.Errorf("type specifier is not valid: %v", typespec)
 	}
@@ -1972,6 +2011,18 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		// The Cells of the returned vector may intersect with seqCells(seq)
 		// when chaining calls to ``append'' so that vectors may be used in a
 		// manner akin to go slices.
+		if seq.sealed {
+			// Copy-on-write: append into spare backing capacity writes the
+			// shared program's storage when seq is (or shares backing with)
+			// a sealed list — (append 'vector (slice 'list '(1 2 3) 0 1) x)
+			// used to overwrite the literal's second element — and the
+			// returned vector would remain a mutable window onto it
+			// (lisp/seal.go).  Chaining continues to share: the copy made
+			// here is unsealed, so subsequent appends extend it in place.
+			fresh := make([]*LVal, len(cells), len(cells)+len(vals))
+			copy(fresh, cells)
+			cells = fresh
+		}
 		return Array(nil, append(cells, vals...))
 	default:
 		return env.Errorf("type specifier is invalid: %v", typespec)
