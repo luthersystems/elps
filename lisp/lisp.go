@@ -1202,11 +1202,14 @@ func (v *LVal) Copy() *LVal {
 	}
 	cp := &LVal{}
 	*cp = *v // shallow copy of all fields including Map and Bytes
-	// The copy owns fresh top-level storage (copyCells below), so the
-	// sealed constraint on v's own header/backing does not apply to it.
-	// Elements shared with a sealed tree remain individually sealed, which
-	// is exactly the copy-on-write contract: mutate the copy's structure
-	// freely, never the shared nodes inside it.
+	// The copy owns fresh storage, so the sealed constraint on v does not
+	// apply to it.  In the default case copyCells recurses through Copy,
+	// which clears the flag on every fresh node it creates, so copying a
+	// sealed tree yields a fully unsealed, fully private tree — the
+	// sanctioned way to obtain a mutable version of a program literal
+	// (lisp/seal.go).  (Values that share storage with v — an LArray's
+	// backing — are never sealed: SealAST marks parser-producible types
+	// only.)
 	cp.sealed = false
 	switch v.Type {
 	case LArray:
