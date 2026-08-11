@@ -68,7 +68,7 @@ import (
 	"golang.org/x/tools/go/types/typeutil"
 )
 
-const tokenPkgPath = "github.com/luthersystems/elps/parser/token"
+const tokenPkgPath = "github.com/luthersystems/elps/parser/token" //nolint:gosec // an import path (gosec G101 keys on the word "token"), not a credential
 
 const aliasesMarker = "elps:aliases"
 
