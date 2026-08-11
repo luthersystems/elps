@@ -304,7 +304,11 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 	if inner.Type != LSExpr {
 		// back out of the entire quote chain and return v to leave the value
 		// unchanged in the quasiquote.
-		return v
+		//
+		// Leak point (b): v is a literal (non-unquoted) leaf of the
+		// quasiquoted form and may be a node of a cached expression tree;
+		// the quasiquote result is a value, so hand it a copy (astseal.go).
+		return astToValue(v)
 	}
 	v = inner
 
