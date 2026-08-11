@@ -3044,12 +3044,12 @@ func TestLintFiles_Registry_ResolvesEmbedderSymbols(t *testing.T) {
 	env := lisp.NewEnv(nil)
 	lisp.InitializeUserEnv(env)
 	pkg := env.Runtime.Registry.DefinePackage("embedder")
-	pkg.Symbols["embedder-fn"] = lisp.Fun("embedder-fn",
+	pkg.Put(lisp.Symbol("embedder-fn"), lisp.Fun("embedder-fn",
 		lisp.Formals("a", "b", "c"),
 		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			return lisp.Nil()
-		})
-	pkg.Externals = append(pkg.Externals, "embedder-fn")
+		}))
+	pkg.Export("embedder-fn")
 
 	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
 	diags, err := l.LintFiles(&LintConfig{
@@ -3169,12 +3169,12 @@ func TestBuildAnalysisConfig_WithRegistry(t *testing.T) {
 	env := lisp.NewEnv(nil)
 	lisp.InitializeUserEnv(env)
 	ccPkg := env.Runtime.Registry.DefinePackage("cc")
-	ccPkg.Symbols["storage-put"] = lisp.Fun("storage-put",
+	ccPkg.Put(lisp.Symbol("storage-put"), lisp.Fun("storage-put",
 		lisp.Formals("key", "value"),
 		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			return lisp.Nil()
-		})
-	ccPkg.Externals = append(ccPkg.Externals, "storage-put")
+		}))
+	ccPkg.Export("storage-put")
 
 	cfg, err := BuildAnalysisConfig(&LintConfig{
 		Workspace: dir,

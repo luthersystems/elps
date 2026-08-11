@@ -25,7 +25,7 @@ const DefaultUserPackage = "user"
 func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 	env.Runtime.Registry.DefinePackage(DefaultLangPackage)
 	env.Runtime.Registry.Lang = DefaultLangPackage
-	env.Runtime.Package = env.Runtime.Registry.Packages[env.Runtime.Registry.Lang]
+	env.Runtime.Package = env.Runtime.Registry.packages[env.Runtime.Registry.Lang]
 	env.Runtime.Package.Doc = `The core ELPS language package. Provides fundamental data types,
 		control flow, function and macro definition, package management,
 		error handling, collections, I/O, and the type system.`
@@ -37,7 +37,7 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 		return rc
 	}
 	env.Runtime.Registry.DefinePackage(DefaultUserPackage)
-	env.Runtime.Registry.Packages[DefaultUserPackage].Doc = "The default user package for application code."
+	env.Runtime.Registry.packages[DefaultUserPackage].Doc = "The default user package for application code."
 	rc = env.InPackage(Symbol(DefaultUserPackage))
 	if GoError(rc) != nil {
 		return rc
@@ -83,7 +83,7 @@ func InitializeTypedef(env *LEnv) *LVal {
 	if typedef.Type == LError {
 		return typedef
 	}
-	env.Runtime.Registry.Packages[pkg].Put(Symbol("typedef"), typedef)
+	env.Runtime.Registry.packages[pkg].Put(Symbol("typedef"), typedef)
 	return Nil()
 }
 
@@ -186,14 +186,14 @@ func (env *LEnv) SetPackageDoc(doc string) {
 
 // SetSymbolDoc sets the documentation string for a symbol in the current package.
 func (env *LEnv) SetSymbolDoc(name, doc string) {
-	env.Runtime.Package.SymbolDocs[name] = doc
+	env.Runtime.Package.symbolDocs[name] = doc
 }
 
 func (env *LEnv) InPackage(name *LVal) *LVal {
 	if name.Type != LSymbol && name.Type != LString {
 		return env.Errorf("argument cannot be converted to string: %v", name.Type)
 	}
-	pkg := env.Runtime.Registry.Packages[name.Str]
+	pkg := env.Runtime.Registry.packages[name.Str]
 	if pkg == nil {
 		return env.Errorf("unknown package: %v", name.Str)
 	}
@@ -205,11 +205,11 @@ func (env *LEnv) UsePackage(name *LVal) *LVal {
 	if name.Type != LSymbol && name.Type != LString {
 		return env.Errorf("argument cannot be converted to string: %v", name.Type)
 	}
-	pkg := env.Runtime.Registry.Packages[name.Str]
+	pkg := env.Runtime.Registry.packages[name.Str]
 	if pkg == nil {
 		return env.Errorf("unknown package: %v", name.Str)
 	}
-	for _, sym := range pkg.Externals {
+	for _, sym := range pkg.externals {
 		v := pkg.Get(Symbol(sym))
 		if v.Type == LError {
 			return env.Errorf("package %s: %v", name.Str, v)
@@ -421,7 +421,7 @@ func (env *LEnv) get(k *LVal) *LVal {
 		}
 		return lerr
 	}
-	pkg := env.Runtime.Registry.Packages[ns]
+	pkg := env.Runtime.Registry.packages[ns]
 	if pkg == nil {
 		return env.Errorf("unknown package: %q", ns)
 	}
@@ -492,11 +492,11 @@ func (env *LEnv) pkgFunName(f *LVal) (string, error) {
 	if pkgname == "" {
 		return "", fmt.Errorf("unknown package for function %s", f.FID())
 	}
-	pkg := env.Runtime.Registry.Packages[pkgname]
+	pkg := env.Runtime.Registry.packages[pkgname]
 	if pkg == nil {
 		return "", fmt.Errorf("package not found: %q", pkgname)
 	}
-	return pkg.FunNames[f.FID()], nil
+	return pkg.funNames[f.FID()], nil
 }
 
 // Put takes an LSymbol k and binds it to v in env.  If k is already bound to a
@@ -567,7 +567,7 @@ func (env *LEnv) GetGlobal(k *LVal) *LVal {
 			// keyword
 			return k
 		}
-		pkg := env.Runtime.Registry.Packages[ns]
+		pkg := env.Runtime.Registry.packages[ns]
 		if pkg == nil {
 			return env.Errorf("unknown package: %q", ns)
 		}
@@ -603,7 +603,7 @@ func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
 		if ns == "" {
 			return env.Errorf("value cannot be assigned to a keyword: %s", k.Str)
 		}
-		pkg := env.Runtime.Registry.Packages[ns]
+		pkg := env.Runtime.Registry.packages[ns]
 		if pkg == nil {
 			return env.Errorf("unknown package: %q", ns)
 		}
@@ -750,7 +750,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 		fn.Cells[1] = String(builtinDocstring(mac))
 		pkg.Put(k, fn)
 		if external {
-			pkg.Externals = append(pkg.Externals, k.Str)
+			pkg.externals = append(pkg.externals, k.Str)
 		}
 	}
 }
@@ -773,7 +773,7 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 		fn.Cells[1] = String(builtinDocstring(op))
 		pkg.Put(k, fn)
 		if external {
-			pkg.Externals = append(pkg.Externals, k.Str)
+			pkg.externals = append(pkg.externals, k.Str)
 		}
 	}
 }
@@ -796,7 +796,7 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 		v.Cells[1] = String(builtinDocstring(f))
 		pkg.Put(k, v)
 		if external {
-			pkg.Externals = append(pkg.Externals, k.Str)
+			pkg.externals = append(pkg.externals, k.Str)
 		}
 	}
 }
@@ -1053,7 +1053,7 @@ eval:
 		if strings.IndexByte(name, ':') >= 0 {
 			return env.Errorf("illegal symbol: %q", v.Str)
 		}
-		pkg := env.Runtime.Registry.Packages[ns]
+		pkg := env.Runtime.Registry.packages[ns]
 		if pkg == nil {
 			return env.Errorf("unknown package: %q", ns)
 		}
@@ -1543,7 +1543,7 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 	outer := env.Runtime.Package
 	pkg := fun.Package()
 	if outer.Name != pkg {
-		inner := env.Runtime.Registry.Packages[pkg]
+		inner := env.Runtime.Registry.packages[pkg]
 		if inner != nil {
 			env.Runtime.Package = inner
 			defer func() {

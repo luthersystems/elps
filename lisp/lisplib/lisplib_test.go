@@ -70,7 +70,7 @@ func TestNewDocEnv(t *testing.T) {
 		"string", "base64", "json", "regexp", "testing", "s",
 	}
 	for _, name := range expectedPkgs {
-		assert.NotNilf(t, env.Runtime.Registry.Packages[name],
+		assert.NotNilf(t, env.Runtime.Registry.Package(name),
 			"NewDocEnv should include package %q", name)
 	}
 

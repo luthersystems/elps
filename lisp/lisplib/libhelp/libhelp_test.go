@@ -113,7 +113,7 @@ func TestPackageDoc(t *testing.T) {
 	packages := []string{"lisp", "user", "time", "math", "string", "base64",
 		"json", "regexp", "golang", "testing", "help", "s"}
 	for _, name := range packages {
-		pkg := env.Runtime.Registry.Packages[name]
+		pkg := env.Runtime.Registry.Package(name)
 		if assert.NotNilf(t, pkg, "package %q should exist", name) {
 			assert.NotEmptyf(t, pkg.Doc, "package %q should have a doc string", name)
 		}
@@ -147,7 +147,7 @@ func TestPackageDocBuiltin(t *testing.T) {
 	`)
 	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
 
-	pkg := env.Runtime.Registry.Packages["test-pkg"]
+	pkg := env.Runtime.Registry.Package("test-pkg")
 	require.NotNil(t, pkg)
 	assert.Equal(t, "A test package for unit testing.", pkg.Doc)
 
@@ -168,7 +168,7 @@ func TestPackageDocBuiltin(t *testing.T) {
 		"Second paragraph.")
 	`)
 	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
-	paraPkg := env.Runtime.Registry.Packages["para-pkg"]
+	paraPkg := env.Runtime.Registry.Package("para-pkg")
 	require.NotNil(t, paraPkg)
 	assert.Equal(t, "First paragraph.\n\nSecond paragraph.", paraPkg.Doc)
 }
@@ -184,9 +184,9 @@ func TestSymbolDoc(t *testing.T) {
 	`)
 	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
 
-	pkg := env.Runtime.Registry.Packages["sym-doc-pkg"]
+	pkg := env.Runtime.Registry.Package("sym-doc-pkg")
 	require.NotNil(t, pkg)
-	assert.Equal(t, "The answer to everything.", pkg.SymbolDocs["my-const"])
+	assert.Equal(t, "The answer to everything.", pkg.SymbolDoc("my-const"))
 
 	// set with paragraph breaks in docs
 	rc = env.LoadString("test2.lisp", `
@@ -194,7 +194,7 @@ func TestSymbolDoc(t *testing.T) {
 	(set 'documented 100 "First para." "" "Second para.")
 	`)
 	require.NotEqualf(t, lisp.LError, rc.Type, "LoadString failed: %v", rc)
-	assert.Equal(t, "First para.\n\nSecond para.", pkg.SymbolDocs["documented"])
+	assert.Equal(t, "First para.\n\nSecond para.", pkg.SymbolDoc("documented"))
 
 	// set without docs — no doc entry
 	rc = env.LoadString("test3.lisp", `
@@ -202,7 +202,7 @@ func TestSymbolDoc(t *testing.T) {
 	(set 'undoc 0)
 	`)
 	require.NotEqualf(t, lisp.LError, rc.Type, "LoadString failed: %v", rc)
-	assert.Empty(t, pkg.SymbolDocs["undoc"])
+	assert.Empty(t, pkg.SymbolDoc("undoc"))
 }
 
 func TestDefconstMacro(t *testing.T) {
@@ -217,7 +217,7 @@ func TestDefconstMacro(t *testing.T) {
 	`)
 	require.Truef(t, rc.IsNil(), "LoadString failed: %v", rc)
 
-	pkg := env.Runtime.Registry.Packages["const-pkg"]
+	pkg := env.Runtime.Registry.Package("const-pkg")
 	require.NotNil(t, pkg)
 
 	// Value is bound
@@ -226,12 +226,12 @@ func TestDefconstMacro(t *testing.T) {
 	assert.Equal(t, 3, val.Int)
 
 	// Symbol is exported
-	assert.Contains(t, pkg.Externals, "max-retries")
-	assert.Contains(t, pkg.Externals, "pi-approx")
+	assert.Contains(t, pkg.Externals(), "max-retries")
+	assert.Contains(t, pkg.Externals(), "pi-approx")
 
 	// Doc is set
-	assert.Equal(t, "Maximum number of retries.", pkg.SymbolDocs["max-retries"])
-	assert.Equal(t, "Approximate value of pi. Good enough for most uses.", pkg.SymbolDocs["pi-approx"])
+	assert.Equal(t, "Maximum number of retries.", pkg.SymbolDoc("max-retries"))
+	assert.Equal(t, "Approximate value of pi. Good enough for most uses.", pkg.SymbolDoc("pi-approx"))
 }
 
 func TestRenderVarWithDoc(t *testing.T) {

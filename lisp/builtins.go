@@ -482,12 +482,12 @@ func builtinInPackage(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("first argument is not a symbol or a string: %v", args.Cells[0].Type)
 	}
 	name := args.Cells[0].Str
-	pkg := env.Runtime.Registry.Packages[name]
+	pkg := env.Runtime.Registry.packages[name]
 	newpkg := false
 	if pkg == nil {
 		newpkg = true
 		env.Runtime.Registry.DefinePackage(name)
-		pkg = env.Runtime.Registry.Packages[name]
+		pkg = env.Runtime.Registry.packages[name]
 	}
 	env.Runtime.Package = pkg
 	if newpkg && env.Runtime.Registry.Lang != "" {
@@ -556,7 +556,7 @@ func builtinSet(env *LEnv, v *LVal) *LVal {
 			}
 			parts = append(parts, arg.Str)
 		}
-		env.Runtime.Package.SymbolDocs[v.Cells[0].Str] = JoinDocStrings(parts)
+		env.Runtime.Package.symbolDocs[v.Cells[0].Str] = JoinDocStrings(parts)
 	}
 	return env.GetGlobal(v.Cells[0])
 }

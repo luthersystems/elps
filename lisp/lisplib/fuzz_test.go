@@ -321,12 +321,14 @@ func callableNames(tb testing.TB) []string {
 	tb.Helper()
 	env := newStdlibEnv(tb)
 	var names []string
-	for pkgName, pkg := range env.Runtime.Registry.Packages {
-		for sym, v := range pkg.Symbols {
+	for _, pkgName := range env.Runtime.Registry.PackageNames() {
+		if pkgName == lisp.DefaultUserPackage {
+			continue
+		}
+		pkg := env.Runtime.Registry.Package(pkgName)
+		for _, sym := range pkg.SymbolNames() {
+			v, _ := pkg.Symbol(sym)
 			if v == nil || v.Type != lisp.LFun {
-				continue
-			}
-			if pkgName == lisp.DefaultUserPackage {
 				continue
 			}
 			names = append(names, pkgName+":"+sym)

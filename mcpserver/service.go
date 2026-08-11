@@ -1749,10 +1749,8 @@ func (s *service) docEnv(ctx context.Context) (*lisp.LEnv, func(), error) {
 		return nil, noopRelease, err
 	}
 	if s.registry != nil {
-		for name, pkg := range s.registry.Packages {
-			if _, exists := env.Runtime.Registry.Packages[name]; !exists {
-				env.Runtime.Registry.Packages[name] = pkg
-			}
+		for _, name := range s.registry.PackageNames() {
+			env.Runtime.Registry.AddPackage(s.registry.Package(name))
 		}
 	}
 	return env, noopRelease, nil

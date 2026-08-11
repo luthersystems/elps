@@ -402,7 +402,7 @@ type Test struct {
 }
 
 func EnvTestSuite(env *lisp.LEnv) *TestSuite {
-	lsuite := env.Runtime.Registry.Packages[DefaultPackageName].Get(lisp.Symbol(DefaultSuiteSymbol))
+	lsuite := env.Runtime.Registry.Package(DefaultPackageName).Get(lisp.Symbol(DefaultSuiteSymbol))
 	if lsuite.Type != lisp.LNative {
 		return nil
 	}
