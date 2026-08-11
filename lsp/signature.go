@@ -300,10 +300,10 @@ func walkNodeForCall(node *lisp.LVal, line, col, depth int, fn func(name string,
 // positionInside checks whether the 1-based line:col position falls
 // within the source range of an s-expression node.
 func positionInside(node *lisp.LVal, line, col int) bool {
-	if node.Source == nil || node.Source.Line == 0 {
+	src, ok := node.Source()
+	if !ok || src.Line == 0 {
 		return false
 	}
-	src := node.Source
 	startLine := src.Line
 	startCol := src.Col
 
@@ -336,12 +336,13 @@ func computeArgIndex(node *lisp.LVal, line, col int) int {
 	argIdx := 0
 	for i := 1; i < len(node.Cells); i++ {
 		child := node.Cells[i]
-		if child.Source == nil || child.Source.Line == 0 {
+		childLoc, ok := child.Source()
+		if !ok || childLoc.Line == 0 {
 			continue
 		}
 		// If cursor is before this child's start, we're on the
 		// previous argument (or before any arg).
-		if line < child.Source.Line || (line == child.Source.Line && col < child.Source.Col) {
+		if line < childLoc.Line || (line == childLoc.Line && col < childLoc.Col) {
 			break
 		}
 		argIdx = i - 1 // 0-based argument index
@@ -349,8 +350,8 @@ func computeArgIndex(node *lisp.LVal, line, col int) int {
 		// s-expression we should recurse into (handled by caller).
 		if i < len(node.Cells)-1 {
 			next := node.Cells[i+1]
-			if next.Source != nil && next.Source.Line > 0 {
-				if line > next.Source.Line || (line == next.Source.Line && col >= next.Source.Col) {
+			if nextLoc, ok := next.Source(); ok && nextLoc.Line > 0 {
+				if line > nextLoc.Line || (line == nextLoc.Line && col >= nextLoc.Col) {
 					continue
 				}
 			}
@@ -359,11 +360,11 @@ func computeArgIndex(node *lisp.LVal, line, col int) int {
 	// If cursor is past all children, point to the last arg position + 1.
 	if len(node.Cells) > 1 {
 		last := node.Cells[len(node.Cells)-1]
-		if last.Source != nil && last.Source.Line > 0 {
+		if lastLoc, ok := last.Source(); ok && lastLoc.Line > 0 {
 			pastLast := false
-			if last.Source.EndLine > 0 && last.Source.EndCol > 0 {
-				pastLast = line > last.Source.EndLine ||
-					(line == last.Source.EndLine && col >= last.Source.EndCol)
+			if lastLoc.EndLine > 0 && lastLoc.EndCol > 0 {
+				pastLast = line > lastLoc.EndLine ||
+					(line == lastLoc.EndLine && col >= lastLoc.EndCol)
 			}
 			if pastLast {
 				argIdx = len(node.Cells) - 1 // next arg position (past all children)
@@ -395,7 +396,7 @@ func packageAtLine(ast []*lisp.LVal, line int) string {
 		if expr == nil || expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
 			continue
 		}
-		if expr.Source != nil && expr.Source.Line > line {
+		if exprLoc, ok := expr.Source(); ok && exprLoc.Line > line {
 			break
 		}
 		head := expr.Cells[0]

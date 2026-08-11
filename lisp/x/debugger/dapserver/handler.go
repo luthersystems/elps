@@ -1317,9 +1317,9 @@ func (h *handler) collectStepInTargets(env *lisp.LEnv, expr *lisp.LVal) []dap.St
 						Id:    id,
 						Label: name,
 					}
-					if head.Source != nil {
-						target.Line = head.Source.Line
-						target.Column = head.Source.Col
+					if loc, ok := head.Source(); ok {
+						target.Line = loc.Line
+						target.Column = loc.Col
 					}
 					targets = append(targets, target)
 				}
@@ -1363,9 +1363,9 @@ func (h *handler) collectStepInTargets(env *lisp.LEnv, expr *lisp.LVal) []dap.St
 						Id:    id,
 						Label: name,
 					}
-					if head.Source != nil {
-						target.Line = head.Source.Line
-						target.Column = head.Source.Col
+					if loc, ok := head.Source(); ok {
+						target.Line = loc.Line
+						target.Column = loc.Col
 					}
 					targets = append(targets, target)
 				}

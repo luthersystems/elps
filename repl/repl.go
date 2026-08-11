@@ -493,8 +493,8 @@ func emitResult(w io.Writer, val *lisp.LVal) {
 			Type:    "error",
 			Message: (*lisp.ErrorVal)(val).Error(),
 		}
-		if val.Source != nil && val.Source.Pos >= 0 {
-			obj.Source = val.Source.String()
+		if loc, ok := val.Source(); ok && loc.Pos >= 0 {
+			obj.Source = loc.String()
 		}
 		emitJSONLine(w, obj)
 		return

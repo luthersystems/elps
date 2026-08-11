@@ -20,6 +20,7 @@ import (
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/lisp/x/debugger"
 	"github.com/luthersystems/elps/parser"
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -889,8 +890,8 @@ func TestDAPServer_StepIn(t *testing.T) {
 	// Verify we paused on line 2.
 	_, pausedExpr := s.engine.PausedState()
 	require.NotNil(t, pausedExpr, "step-in should have paused on an expression")
-	require.NotNil(t, pausedExpr.Source, "paused expression should have source location")
-	assert.Equal(t, 2, pausedExpr.Source.Line, "step-in should advance to line 2")
+	require.True(t, hasSourceLoc(pausedExpr), "paused expression should have source location")
+	assert.Equal(t, 2, mustSourceLoc(pausedExpr).Line, "step-in should advance to line 2")
 
 	// Continue to finish.
 	s.continueExec()
@@ -3657,8 +3658,8 @@ func TestDAPServer_StepIn_InstructionGranularity(t *testing.T) {
 	// Verify we paused on a sub-expression (still line 1, but a different expr).
 	_, pausedExpr := s.engine.PausedState()
 	require.NotNil(t, pausedExpr)
-	require.NotNil(t, pausedExpr.Source)
-	assert.Equal(t, 1, pausedExpr.Source.Line,
+	require.True(t, hasSourceLoc(pausedExpr))
+	assert.Equal(t, 1, mustSourceLoc(pausedExpr).Line,
 		"instruction granularity should pause on same-line sub-expression")
 	// The paused expression must be a sub-expression of (+ 1 2), not the
 	// s-expression itself — confirming we advanced within the same line.
@@ -6446,8 +6447,8 @@ func TestDAPServer_StepIn_BuiltinAutoStepOver(t *testing.T) {
 	// Verify we're on line 1: the (+ 1 2) builtin call.
 	_, pausedExpr := s.engine.PausedState()
 	require.NotNil(t, pausedExpr)
-	require.NotNil(t, pausedExpr.Source)
-	assert.Equal(t, 1, pausedExpr.Source.Line, "should start on line 1")
+	require.True(t, hasSourceLoc(pausedExpr))
+	assert.Equal(t, 1, mustSourceLoc(pausedExpr).Line, "should start on line 1")
 
 	// Step-in on the builtin — should auto step-over to line 2.
 	s.send(&dap.StepInRequest{
@@ -6470,8 +6471,8 @@ func TestDAPServer_StepIn_BuiltinAutoStepOver(t *testing.T) {
 
 	_, pausedExpr = s.engine.PausedState()
 	require.NotNil(t, pausedExpr, "should be paused on an expression")
-	require.NotNil(t, pausedExpr.Source)
-	assert.Equal(t, 2, pausedExpr.Source.Line,
+	require.True(t, hasSourceLoc(pausedExpr))
+	assert.Equal(t, 2, mustSourceLoc(pausedExpr).Line,
 		"step-in on builtin should auto step-over to line 2")
 
 	// Continue to finish.
@@ -6530,8 +6531,8 @@ func TestDAPServer_StepIn_BuiltinSkipDisabledDuringStep(t *testing.T) {
 
 	_, pausedExpr := s.engine.PausedState()
 	require.NotNil(t, pausedExpr)
-	require.NotNil(t, pausedExpr.Source)
-	assert.Equal(t, 3, pausedExpr.Source.Line, "should be at (f) on line 3")
+	require.True(t, hasSourceLoc(pausedExpr))
+	assert.Equal(t, 3, mustSourceLoc(pausedExpr).Line, "should be at (f) on line 3")
 
 	// Step-in to enter f — should go to line 2: (+ 1 2).
 	s.send(&dap.StepInRequest{
@@ -6549,8 +6550,8 @@ func TestDAPServer_StepIn_BuiltinSkipDisabledDuringStep(t *testing.T) {
 
 	_, pausedExpr = s.engine.PausedState()
 	require.NotNil(t, pausedExpr)
-	require.NotNil(t, pausedExpr.Source)
-	assert.Equal(t, 2, pausedExpr.Source.Line,
+	require.True(t, hasSourceLoc(pausedExpr))
+	assert.Equal(t, 2, mustSourceLoc(pausedExpr).Line,
 		"step-in should enter f at line 2: (+ 1 2)")
 
 	// Now step-in again on (+ 1 2). This is a builtin, but lastStopWasStep
@@ -6665,8 +6666,8 @@ func TestDAPServer_LaunchConfig_SkipBuiltins(t *testing.T) {
 	// Verify we start on line 1.
 	_, pausedExpr := s.engine.PausedState()
 	require.NotNil(t, pausedExpr)
-	require.NotNil(t, pausedExpr.Source)
-	assert.Equal(t, 1, pausedExpr.Source.Line)
+	require.True(t, hasSourceLoc(pausedExpr))
+	assert.Equal(t, 1, mustSourceLoc(pausedExpr).Line)
 
 	// With skipBuiltins=false, step-in on (+ 1 2) should behave as
 	// regular step-in (no auto step-over). The result should be the
@@ -6696,4 +6697,17 @@ func TestDAPServer_LaunchConfig_SkipBuiltins(t *testing.T) {
 		t.Fatal("timeout waiting for program to finish")
 	}
 	s.disconnect()
+}
+
+// hasSourceLoc reports whether v carries a source location.
+func hasSourceLoc(v *lisp.LVal) bool {
+	_, ok := v.Source()
+	return ok
+}
+
+// mustSourceLoc returns v's source location, or a zero Location when v has
+// none (tests guard with hasSourceLoc first).
+func mustSourceLoc(v *lisp.LVal) token.Location {
+	loc, _ := v.Source()
+	return loc
 }

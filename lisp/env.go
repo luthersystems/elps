@@ -150,7 +150,6 @@ func newEnvN(parent *LEnv, n int) *LEnv {
 		evalCtx = parent.evalCtx
 	} else {
 		runtime = StandardRuntime()
-		loc = nativeSource()
 	}
 	env := &LEnv{
 		ID:      runtime.GenEnvID(),
@@ -628,7 +627,7 @@ func (env *LEnv) TaggedValue(typ *LVal, val *LVal) *LVal {
 		return env.Errorf("first argument is not a symbol: %v", GetType(typ))
 	}
 	return &LVal{
-		Source: env.Loc,
+		source: env.Loc,
 		Type:   LTaggedVal,
 		Str:    typ.Str,
 		Cells:  []*LVal{val},
@@ -673,7 +672,7 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	fenv := NewEnv(env)
 	fun := &LVal{
 		Type:   LFun,
-		Source: env.Loc,
+		source: env.Loc,
 		Native: &LFunData{
 			FID:     fenv.getFID(),
 			Package: env.Runtime.Package.Name,
@@ -829,7 +828,7 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 	}
 	lerr := &LVal{
 		Type:   LError,
-		Source: env.Loc,
+		source: env.Loc,
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
 		Cells:  cells,
@@ -857,7 +856,7 @@ func (env *LEnv) Errorf(format string, v ...interface{}) *LVal {
 // with a copy env.Runtime.Stack.
 func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
 	lerr := &LVal{
-		Source: env.Loc,
+		source: env.Loc,
 		Type:   LError,
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
@@ -881,13 +880,13 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	if lerr.CallStack() == nil {
 		lerr.SetCallStack(env.Runtime.Stack.Copy())
 	}
-	// This check smells a little funny.  All objects are given a source
-	// which may be a nativeSource() value which does not correspond to a
-	// file and has an invalid position (-1).  When associating an error
+	// This check smells a little funny.  An object's source may be absent
+	// (nil — the "<native code>" convention) or carry an invalid position
+	// (-1).  When associating an error
 	// the env's current location is probably more accurate than native
 	// source (or it may also be native source).
-	if lerr.Source == nil || lerr.Source.Pos < 0 {
-		lerr.Source = env.Loc
+	if lerr.source == nil || lerr.source.Pos < 0 {
+		lerr.source = env.Loc
 	}
 	return nil
 }
@@ -989,8 +988,8 @@ eval:
 	if v.Spliced {
 		return env.Errorf("spliced value used as expression")
 	}
-	env.Loc = v.Source
-	if v.Source != nil {
+	env.Loc = v.source
+	if v.source != nil {
 		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
 			if d.OnEval(env, v) {
 				d.WaitIfPaused(env, v)
@@ -1034,7 +1033,7 @@ eval:
 		// frame has been popped and depth has decreased. If the debugger
 		// is stepping out, this is where we catch tail-position returns
 		// that would otherwise unwind without hitting OnEval.
-		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() && v.Source != nil {
+		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() && v.source != nil {
 			if d.AfterFunCall(env) {
 				d.WaitIfPaused(env, v)
 			}
@@ -1154,7 +1153,7 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 		mctx = &MacroExpansionContext{
 			CallSite: callSite,
 			Name:     qualName,
-			DefSite:  fun.Source,
+			DefSite:  fun.source,
 			Args:     args.Cells,
 		}
 	}

@@ -336,7 +336,7 @@ func topLevelDef(expr *lisp.LVal, kind analysis.SymbolKind, pkg string) *analysi
 		Name:    expr.Cells[1].Str,
 		Kind:    kind,
 		Package: pkg,
-		Source:  expr.Cells[1].Source,
+		Source:  astutil.SourceLoc(expr.Cells[1]),
 	}
 }
 
@@ -352,7 +352,7 @@ func topLevelSet(expr *lisp.LVal, pkg string) *analysis.ExternalSymbol {
 		Name:    name,
 		Kind:    analysis.SymVariable,
 		Package: pkg,
-		Source:  expr.Cells[1].Source,
+		Source:  astutil.SourceLoc(expr.Cells[1]),
 	}
 }
 
@@ -379,7 +379,7 @@ func topLevelCustomDef(expr *lisp.LVal, pkg string, cfg *Config) *analysis.Exter
 			Name:    expr.Cells[spec.NameIndex].Str,
 			Kind:    kind,
 			Package: pkg,
-			Source:  expr.Cells[spec.NameIndex].Source,
+			Source:  astutil.SourceLoc(expr.Cells[spec.NameIndex]),
 		}
 	}
 	return nil

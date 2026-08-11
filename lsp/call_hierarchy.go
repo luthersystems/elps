@@ -169,7 +169,11 @@ func (s *Server) callHierarchyOutgoingCalls(_ *glsp.Context, params *protocol.Ca
 
 	// Find the scope of the target function.
 	funcScope := findFunctionScope(res.RootScope, data)
-	if funcScope == nil || funcScope.Node == nil || funcScope.Node.Source == nil {
+	if funcScope == nil {
+		return nil, nil
+	}
+	funcLoc, funcLocOK := funcScope.Node.Source()
+	if !funcLocOK {
 		return nil, nil
 	}
 
@@ -180,8 +184,8 @@ func (s *Server) callHierarchyOutgoingCalls(_ *glsp.Context, params *protocol.Ca
 	}
 	callees := make(map[string]*calleeInfo)
 
-	startLine := funcScope.Node.Source.Line
-	endLine := funcScope.Node.Source.EndLine
+	startLine := funcLoc.Line
+	endLine := funcLoc.EndLine
 	if endLine == 0 {
 		endLine = startLine + 10000 // heuristic
 	}
@@ -320,8 +324,8 @@ func findFunctionScope(root *analysis.Scope, data *callHierarchyData) *analysis.
 				if !symbolMatchesCallHierarchyData(sym, data) {
 					continue
 				}
-				if child.Node != nil && sym.Source != nil &&
-					child.Node.Source != nil && child.Node.Source.Line == sym.Source.Line {
+				if childLoc, ok := child.Node.Source(); ok && sym.Source != nil &&
+					childLoc.Line == sym.Source.Line {
 					return child
 				}
 			}

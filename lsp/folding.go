@@ -40,14 +40,15 @@ func (s *Server) textDocumentFoldingRange(_ *glsp.Context, params *protocol.Fold
 // collectFoldingRanges recursively walks the AST and emits a folding range
 // for each s-expression that spans more than one line.
 func collectFoldingRanges(v *lisp.LVal, ranges *[]protocol.FoldingRange) {
-	if v == nil || v.Source == nil {
+	loc, ok := v.Source()
+	if !ok {
 		return
 	}
 
 	// Only fold list expressions (s-expressions).
-	if v.Type == lisp.LSExpr && v.Source.Line > 0 && v.Source.EndLine > 0 {
-		startLine := v.Source.Line - 1 // convert to 0-based
-		endLine := v.Source.EndLine - 1
+	if v.Type == lisp.LSExpr && loc.Line > 0 && loc.EndLine > 0 {
+		startLine := loc.Line - 1 // convert to 0-based
+		endLine := loc.EndLine - 1
 		if endLine > startLine {
 			kind := string(protocol.FoldingRangeKindRegion)
 			*ranges = append(*ranges, protocol.FoldingRange{

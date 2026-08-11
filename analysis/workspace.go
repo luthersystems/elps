@@ -262,8 +262,8 @@ func scanFilePackage(exprs []*lisp.LVal) (string, int) {
 		if astutil.HeadSymbol(expr) == "in-package" {
 			if name := scanPackageName(expr); name != "" {
 				line := 0
-				if expr.Source != nil {
-					line = expr.Source.Line
+				if loc, ok := expr.Source(); ok {
+					line = loc.Line
 				}
 				return name, line
 			}
@@ -490,7 +490,7 @@ func scanDefun(expr *lisp.LVal, kind SymbolKind) *ExternalSymbol {
 		Name:      nameVal.Str,
 		Kind:      kind,
 		Signature: signatureFromFormals(formalsVal),
-		Source:    nameVal.Source,
+		Source:    astutil.SourceLoc(nameVal),
 		DocString: docStr,
 	}
 }
@@ -507,7 +507,7 @@ func scanDeftype(expr *lisp.LVal) *ExternalSymbol {
 	return &ExternalSymbol{
 		Name:   nameVal.Str,
 		Kind:   SymType,
-		Source: nameVal.Source,
+		Source: astutil.SourceLoc(nameVal),
 	}
 }
 
@@ -528,7 +528,7 @@ func scanSet(expr *lisp.LVal) *ExternalSymbol {
 	return &ExternalSymbol{
 		Name:   name,
 		Kind:   SymVariable,
-		Source: arg.Source,
+		Source: astutil.SourceLoc(arg),
 	}
 }
 
@@ -679,8 +679,11 @@ func FindEnclosingFunction(root *Scope, line, col int) *Symbol {
 	scope := ScopeAtPosition(root, line, col)
 	for scope != nil {
 		if scope.Kind == ScopeFunction {
-			if scope.Node != nil && scope.Node.Source != nil && scope.Parent != nil {
-				nodeLoc := scope.Node.Source
+			nodeLoc, nodeOK := token.Location{}, false
+			if scope.Node != nil {
+				nodeLoc, nodeOK = scope.Node.Source()
+			}
+			if nodeOK && scope.Parent != nil {
 				var found *Symbol
 				scope.Parent.forEachSymbol(func(sym *Symbol) bool {
 					if sym.Kind != SymFunction && sym.Kind != SymMacro {
@@ -754,10 +757,13 @@ func ScopeAtPosition(root *Scope, line, col int) *Scope {
 // scopeContainingAnalysis checks if a scope's node contains the position
 // and recursively checks children for the most specific match.
 func scopeContainingAnalysis(scope *Scope, line, col int) *Scope {
-	if scope.Node == nil || scope.Node.Source == nil {
+	if scope.Node == nil {
 		return nil
 	}
-	loc := scope.Node.Source
+	loc, ok := scope.Node.Source()
+	if !ok {
+		return nil
+	}
 	if loc.Line == 0 {
 		return nil
 	}

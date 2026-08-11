@@ -12,6 +12,7 @@ import (
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/x/debugger"
+	"github.com/luthersystems/elps/parser/token"
 )
 
 const sourceContextLines = 5
@@ -67,8 +68,13 @@ func showBacktrace(w io.Writer, stack *lisp.CallStack, pausedExpr *lisp.LVal, so
 		}
 		loc := "unknown"
 		// For the top frame, use the paused expression's location.
-		if i == len(stack.Frames)-1 && pausedExpr != nil && pausedExpr.Source != nil {
-			loc = fmt.Sprintf("%s:%d:%d", pausedExpr.Source.File, pausedExpr.Source.Line, pausedExpr.Source.Col)
+		var pausedLoc token.Location
+		pausedOK := false
+		if pausedExpr != nil {
+			pausedLoc, pausedOK = pausedExpr.Source()
+		}
+		if i == len(stack.Frames)-1 && pausedOK {
+			loc = fmt.Sprintf("%s:%d:%d", pausedLoc.File, pausedLoc.Line, pausedLoc.Col)
 		} else if frame.Source != nil {
 			loc = frame.Source.String()
 		}

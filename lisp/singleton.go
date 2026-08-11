@@ -29,9 +29,9 @@ import (
 // directly instead of Nil(). Tree walkers that mutate LVal fields MUST
 // guard with isSingleton(v) / assertNotSingleton(v) before writing.
 var (
-	singletonNil   = &LVal{Source: nativeSource(), Type: LSExpr}
-	singletonTrue  = &LVal{Source: nativeSource(), Type: LSymbol, Str: TrueSymbol}
-	singletonFalse = &LVal{Source: nativeSource(), Type: LSymbol, Str: FalseSymbol}
+	singletonNil   = &LVal{Type: LSExpr}
+	singletonTrue  = &LVal{Type: LSymbol, Str: TrueSymbol}
+	singletonFalse = &LVal{Type: LSymbol, Str: FalseSymbol}
 )
 
 // isSingleton reports whether v is one of the three shared, immutable
@@ -103,7 +103,7 @@ func (s SingletonSnapshot) Verify() string {
 // (singletons should always have len == 0). The Native interface field
 // is compared with == (singletons should always be nil).
 func singletonLValEqual(a, b *LVal) bool {
-	return a.Source == b.Source &&
+	return a.source == b.source &&
 		a.Type == b.Type &&
 		a.Str == b.Str &&
 		a.Int == b.Int &&

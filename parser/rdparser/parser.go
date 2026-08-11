@@ -334,8 +334,24 @@ func (p *Parser) ParseQuote() *lisp.LVal {
 	quoteLoc := p.Location() // save ' location before parsing inner expression
 	inner := p.ParseExpression()
 	result := p.Quote(inner)
-	inheritEndPos(result, inner)
-	applyPrefixLocation(result, quoteLoc)
+	if inner.Type == lisp.LError {
+		// p.Quote returns errors untouched, so the historical in-place
+		// position fixups rewrote the error's own location to start at the
+		// quote token.  Replicate that on a private copy of the location —
+		// LVal locations are read-only outside package lisp (issue #362).
+		if src, ok := inner.Source(); ok {
+			applyPrefixLocation(&src, quoteLoc)
+			inner.SetSource(&src)
+		}
+	} else {
+		// p.Quote stamped result with the current token's Location and
+		// tokenLVal consumes no tokens, so p.Location() is the same
+		// *token.Location the result now holds; fix it up through the
+		// parser's own reference.
+		resultLoc := p.Location()
+		inheritEndPos(resultLoc, inner)
+		applyPrefixLocation(resultLoc, quoteLoc)
+	}
 	p.hoistOperandComments(result, inner)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
@@ -353,7 +369,6 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 		return expr
 	}
 	sym := lisp.Symbol("lisp:expr")
-	sym.Source = expr.Source
 	// Ensure that the expression doesn't contain nested cons expressions.
 	for _, c := range expr.Cells {
 		if c.Type == lisp.LSExpr && !c.Quoted {
@@ -361,9 +376,21 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 		}
 	}
 	result := p.SExpr([]*lisp.LVal{sym, expr})
+	// p.SExpr stamped result with the current token's Location; keep the
+	// parser's own reference to it for the fixups below (issue #362).
+	resultLoc := p.Location()
 	p.recordSynthesizedBrackets(result)
-	inheritEndPos(result, expr)
-	applyPrefixLocation(result, prefixLoc)
+	inheritEndPos(resultLoc, expr)
+	applyPrefixLocation(resultLoc, prefixLoc)
+	// sym mirrors expr's location.  It historically shared expr's *Location
+	// pointer (assigned before the fixups above, which mutate expr's
+	// location in place when expr is an atom); copying the location after
+	// the fixups yields the same observable positions.
+	if loc, ok := expr.Source(); ok {
+		sym.SetSource(&loc)
+	} else {
+		sym.SetSource(nil)
+	}
 	p.hoistOperandComments(result, expr)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
@@ -371,6 +398,11 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 
 func (p *Parser) ParseFunRef() *lisp.LVal {
 	op := lisp.Symbol("lisp:function")
+	// The synthesized head symbol has no token of its own.  It has always
+	// reported the "<native code>" location; constructors no longer stamp
+	// one (issue #362), so give it a private copy explicitly.
+	opLoc := token.NativeLocation()
+	op.SetSource(&opLoc)
 	if !p.Accept(token.FUN_REF) {
 		return p.errorf("parse-error", "invalid quote: %v", p.PeekType())
 	}
@@ -400,9 +432,12 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 			"invalid symbol following #': %q does not read back as a symbol", name.Str)
 	}
 	result := p.SExpr([]*lisp.LVal{op, name})
+	// p.SExpr stamped result with the current token's Location; keep the
+	// parser's own reference to it for the fixups below (issue #362).
+	resultLoc := p.Location()
 	p.recordSynthesizedBrackets(result)
-	inheritEndPos(result, name)
-	applyPrefixLocation(result, prefixLoc)
+	inheritEndPos(resultLoc, name)
+	applyPrefixLocation(resultLoc, prefixLoc)
 	p.hoistOperandComments(result, name)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
@@ -424,29 +459,31 @@ func (p *Parser) recordSynthesizedBrackets(v *lisp.LVal) {
 	v.Meta.BracketType = '('
 }
 
-// inheritEndPos copies end position from inner to outer, for prefix forms
-// where the outer node starts at the prefix token but ends at the inner
-// expression's end.
-func inheritEndPos(outer, inner *lisp.LVal) {
-	if outer.Source != nil && inner.Source != nil {
-		outer.Source.EndPos = inner.Source.EndPos
-		outer.Source.EndLine = inner.Source.EndLine
-		outer.Source.EndCol = inner.Source.EndCol
+// inheritEndPos copies the end position from inner's location onto outerLoc,
+// for prefix forms where the outer node starts at the prefix token but ends
+// at the inner expression's end.  outerLoc is the parser-owned Location most
+// recently stamped onto the outer node by tokenLVal.
+func inheritEndPos(outerLoc *token.Location, inner *lisp.LVal) {
+	innerLoc, ok := inner.Source()
+	if outerLoc != nil && ok {
+		outerLoc.EndPos = innerLoc.EndPos
+		outerLoc.EndLine = innerLoc.EndLine
+		outerLoc.EndCol = innerLoc.EndCol
 	}
 }
 
-// applyPrefixLocation overwrites the start position of a prefix form (quote,
-// #', #^) with the prefix token's location. tokenLVal sets Source from the
-// last consumed token, which for prefix forms is the inner expression — not
-// the prefix. This corrects it so that e.g. '() has its Source at the '
-// rather than at the (.
-func applyPrefixLocation(v *lisp.LVal, loc *token.Location) {
-	if v.Source != nil && loc != nil {
-		v.Source.File = loc.File
-		v.Source.Path = loc.Path
-		v.Source.Line = loc.Line
-		v.Source.Col = loc.Col
-		v.Source.Pos = loc.Pos
+// applyPrefixLocation overwrites the start position of a prefix form's
+// location dst (quote, #', #^) with the prefix token's location. tokenLVal
+// sets the node's source from the last consumed token, which for prefix
+// forms is the inner expression — not the prefix. This corrects it so that
+// e.g. '() has its location at the ' rather than at the (.
+func applyPrefixLocation(dst, loc *token.Location) {
+	if dst != nil && loc != nil {
+		dst.File = loc.File
+		dst.Path = loc.Path
+		dst.Line = loc.Line
+		dst.Col = loc.Col
+		dst.Pos = loc.Pos
 	}
 }
 
@@ -656,11 +693,13 @@ func (p *Parser) ParseConsExpression() *lisp.LVal {
 			return p.errorf("mismatched-syntax", "expected ) to close %s opened at %s, but found ]", open.Text, open.Source)
 		}
 		if p.Accept(token.PAREN_R) {
-			// Set end position from closing bracket.
-			if p.src.Token.Source != nil && expr.Source != nil {
-				expr.Source.EndPos = p.src.Token.Source.Pos + 1
-				expr.Source.EndLine = p.src.Token.Source.Line
-				expr.Source.EndCol = p.src.Token.Source.Col + 1
+			// Set end position from closing bracket.  p.SExpr stamped expr
+			// with the opening bracket token's Location, so open.Source is
+			// the parser's own reference to expr's location (issue #362).
+			if p.src.Token.Source != nil && open.Source != nil {
+				open.Source.EndPos = p.src.Token.Source.Pos + 1
+				open.Source.EndLine = p.src.Token.Source.Line
+				open.Source.EndCol = p.src.Token.Source.Col + 1
 			}
 			p.recordClosingBracketNewline(expr)
 			break
@@ -695,11 +734,13 @@ func (p *Parser) ParseList() *lisp.LVal {
 			return p.errorf("mismatched-syntax", "expected ] to close %s opened at %s, but found )", open.Text, open.Source)
 		}
 		if p.Accept(token.BRACE_R) {
-			// Set end position from closing bracket.
-			if p.src.Token.Source != nil && expr.Source != nil {
-				expr.Source.EndPos = p.src.Token.Source.Pos + 1
-				expr.Source.EndLine = p.src.Token.Source.Line
-				expr.Source.EndCol = p.src.Token.Source.Col + 1
+			// Set end position from closing bracket.  p.QExpr stamped expr
+			// with the opening bracket token's Location, so open.Source is
+			// the parser's own reference to expr's location (issue #362).
+			if p.src.Token.Source != nil && open.Source != nil {
+				open.Source.EndPos = p.src.Token.Source.Pos + 1
+				open.Source.EndLine = p.src.Token.Source.Line
+				open.Source.EndCol = p.src.Token.Source.Col + 1
 			}
 			p.recordClosingBracketNewline(expr)
 			break
@@ -825,14 +866,22 @@ func (p *Parser) QExpr(cells []*lisp.LVal) *lisp.LVal {
 }
 
 func (p *Parser) tokenLVal(v *lisp.LVal) *lisp.LVal {
-	v.Source = p.Location()
+	// The parser owns the current token's Location, so it mutates the
+	// end-position fields through its own reference before handing the same
+	// reference to the LVal.  Callers that need to fix up positions after
+	// tokenLVal returns (prefix forms, bracket-close fixups) likewise keep
+	// their own *token.Location references instead of reading them back
+	// through the LVal — LVal locations are read-only outside package lisp
+	// (issue #362).
+	loc := p.Location()
 	// Set end position from the current token.
-	if v.Source != nil && p.src.Token != nil {
+	if loc != nil && p.src.Token != nil {
 		endLine, endCol, endPos := token.TokenEnd(p.src.Token)
-		v.Source.EndLine = endLine
-		v.Source.EndCol = endCol
-		v.Source.EndPos = endPos
+		loc.EndLine = endLine
+		loc.EndCol = endCol
+		loc.EndPos = endPos
 	}
+	v.SetSource(loc)
 	if p.preserveFormat {
 		if v.Meta == nil {
 			v.Meta = &lisp.SourceMeta{}
@@ -869,19 +918,19 @@ func (p *Parser) Accept(typ ...token.Type) bool {
 
 func (p *Parser) errorf(condition string, format string, v ...interface{}) *lisp.LVal {
 	err := lisp.ErrorConditionf(condition, format, v...)
-	err.Source = p.Location()
+	err.SetSource(p.Location())
 	return err
 }
 
 func (p *Parser) errorAtf(source *token.Location, condition, format string, v ...interface{}) *lisp.LVal {
 	err := lisp.ErrorConditionf(condition, format, v...)
-	err.Source = source
+	err.SetSource(source)
 	return err
 }
 
 func (p *Parser) scanError(condition string) *lisp.LVal {
 	err := lisp.ErrorCondition(condition, errors.New(p.TokenText()))
-	err.Source = p.Location()
+	err.SetSource(p.Location())
 	return err
 }
 

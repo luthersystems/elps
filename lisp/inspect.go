@@ -59,7 +59,7 @@ func InspectFunction(node *LVal) *FunctionInfo {
 
 	info := &FunctionInfo{
 		Kind:   head.Str,
-		Source: node.Source,
+		Source: node.source,
 	}
 
 	switch head.Str {

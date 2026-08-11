@@ -6,8 +6,8 @@ import (
 	"os"
 
 	"github.com/luthersystems/elps/diagnostic"
-	"github.com/luthersystems/elps/lisp"
 	lintpkg "github.com/luthersystems/elps/lint"
+	"github.com/luthersystems/elps/lisp"
 )
 
 func colorMode() diagnostic.ColorMode {
@@ -43,15 +43,15 @@ func lispErrorToDiagnostic(lerr *lisp.LVal) diagnostic.Diagnostic {
 	}
 
 	// Add source span if available
-	if lerr.Source != nil && lerr.Source.Pos >= 0 {
+	if loc, ok := lerr.Source(); ok && loc.Pos >= 0 {
 		span := diagnostic.Span{
-			File: lerr.Source.File,
-			Line: lerr.Source.Line,
-			Col:  lerr.Source.Col,
+			File: loc.File,
+			Line: loc.Line,
+			Col:  loc.Col,
 		}
 		// Prefer physical path for reading source
-		if lerr.Source.Path != "" {
-			span.File = lerr.Source.Path
+		if loc.Path != "" {
+			span.File = loc.Path
 		}
 		d.Spans = append(d.Spans, span)
 	}
