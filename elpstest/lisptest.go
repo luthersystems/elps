@@ -401,8 +401,19 @@ func RunBenchmark(b *testing.B, source string) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		b.StartTimer()
+		// Each iteration runs in a fresh Runtime, so it must evaluate its
+		// own copy of the parsed AST rather than sharing one tree across
+		// every iteration's runtime.  This is the same rule TextLoader
+		// applies (it Copy()s per load for the same reason), and the
+		// elpscheck ownership checker (lisp/ownership_check_elpscheck.go)
+		// enforces it.  The copies are made outside the timed region so
+		// ns/op remains comparable with historical numbers.
+		iterExprs := make([]*lisp.LVal, len(exprs))
 		for i, expr := range exprs {
+			iterExprs[i] = expr.Copy()
+		}
+		b.StartTimer()
+		for i, expr := range iterExprs {
 			lerr := env.Eval(expr)
 			if lerr.Type == lisp.LError {
 				b.Fatalf("expr %d: %v", i, lerr)
