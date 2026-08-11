@@ -61,7 +61,7 @@ import (
 //     elpscheck` the same corruption is additionally caught at the next
 //     Bool()/Nil() read, which localises it far better -- run
 //     `make test-elpscheck` for that.
-//  4b. Sealed arguments are bit-identical afterwards (the issue #372
+//  5. Sealed arguments are bit-identical afterwards (the issue #372
 //     corruption oracle, sharing the canonical fingerprint in
 //     lisp/sealfp.go).  Before each application every generated argument is
 //     run through SealAST, which marks exactly the values a parsed program
@@ -75,7 +75,7 @@ import (
 //     a value in place -- guarded mutators copy first -- so any fingerprint
 //     drift across the call is a copy-on-write failure of the
 //     substrate#378 class, whichever of the 240 callables performed it.
-//  5. The call terminates.  Bounded by a context deadline, a step limit and,
+//  6. The call terminates.  Bounded by a context deadline, a step limit and,
 //     because neither of those can see a loop that evaluates nothing, an
 //     out-of-band watchdog.  Two of the three defects this target found were
 //     invisible to the first two: (pow -128 <MaxInt>) allocates nothing and
@@ -143,7 +143,7 @@ func FuzzApplyStdlib(f *testing.F) {
 		gen := fuzzval.New(data, env)
 		rawArgs := genArgs(gen, fun)
 		// Seal each argument as a parsed literal would arrive sealed (see
-		// invariant 4b above).  The outer args SExpr stays unsealed on
+		// invariant 5 above).  The outer args SExpr stays unsealed on
 		// purpose: in real evaluation the argument LIST header is runtime
 		// storage the kernel may legitimately rework; only the argument
 		// VALUES can be shared parse nodes.
