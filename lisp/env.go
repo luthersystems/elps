@@ -917,7 +917,7 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 		// escapes to the caller while evaluation continues, so it must not
 		// share a *token.Location the evaluator may still reference.
 		// copyLocation preserves nil (the "<native code>" convention).
-		lerr.source = copyLocation(env.Loc)
+		lerr.source = copyLocation(env.Loc) //elps:mutates stamps a location onto an in-flight error that had none; the location itself is copied, not aliased
 	}
 	return nil
 }
@@ -1126,7 +1126,7 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 	}
 	fun := call.Cells[0] // call is not an empty expression -- fun is known LFun
 	args := call
-	args.Cells = args.Cells[1:]
+	args.Cells = args.Cells[1:] //elps:mutates decap of the call value evalSExprCells constructed just above with fresh backing
 
 	switch fun.FunType {
 	case LFunNone:
@@ -1429,7 +1429,7 @@ func decrementMarkTailRec(mark *LVal) (done bool) {
 	if len(mark.Cells) != 4 {
 		panic("invalid mark")
 	}
-	mark.Cells[0].Int--
+	mark.Cells[0].Int-- //elps:mutates LMarkTailRec is evaluator-internal bookkeeping built by markTailRec; decrementing its counter is the mechanism
 	return mark.Cells[0].Int <= 0
 }
 

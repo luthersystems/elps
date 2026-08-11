@@ -99,6 +99,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	return lisp.Nil()
 }
 
+//elpsvet:allow package builtin table; formals reach a Runtime only through copyFormals at registration (lisp.LEnv.AddBuiltins)
 var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("deftype", lisp.Formals("name", "type", lisp.VarArgSymbol, "constraints"), builtinDefType,
 		`Defines a named schema type and binds it as a global symbol.
@@ -451,7 +452,7 @@ func newNamedValidator(name string, formals *lisp.LVal, fn lisp.LBuiltin) *lisp.
 }
 
 func markValidator(fun *lisp.LVal) *lisp.LVal {
-	fun.Cells = append(fun.Cells, validatorMarker)
+	fun.Cells = append(fun.Cells, validatorMarker) //elps:mutates fun is the fresh result of Fun/FunInPackage at every call site; the marker append is construction-time tagging
 	return fun
 }
 

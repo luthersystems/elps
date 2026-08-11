@@ -510,7 +510,7 @@ func applyAssignments(file *parsedFile, assignments map[*analysis.Symbol]string,
 			continue
 		}
 		if sym.Node != nil && sym.Node.Type == lisp.LSymbol {
-			sym.Node.Str = newName
+			sym.Node.Str = newName //elps:mutates the minifier renames symbols in the AST it parsed for this run; the tree is tool-owned and never shared with an evaluator
 		}
 	}
 
@@ -564,13 +564,13 @@ func rewriteExports(exprs []*lisp.LVal, scope *analysis.Scope, assignments map[*
 			case arg.Type == lisp.LSymbol:
 				if sym := scope.LookupLocalInPackage(arg.Str, currentPkg); sym != nil {
 					if newName, ok := assignments[sym]; ok {
-						arg.Str = newName
+						arg.Str = newName //elps:mutates the minifier renames symbols in the AST it parsed for this run; the tree is tool-owned and never shared with an evaluator
 					}
 				}
 			case arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol:
 				if sym := scope.LookupLocalInPackage(arg.Cells[0].Str, currentPkg); sym != nil {
 					if newName, ok := assignments[sym]; ok {
-						arg.Cells[0].Str = newName
+						arg.Cells[0].Str = newName //elps:mutates the minifier renames symbols in the AST it parsed for this run; the tree is tool-owned and never shared with an evaluator
 					}
 				}
 			}
@@ -883,10 +883,10 @@ func rewriteReferenceNode(node *lisp.LVal, newName string) {
 		return
 	}
 	if pkg, _, ok := splitQualifiedSymbol(node.Str); ok {
-		node.Str = pkg + ":" + newName
+		node.Str = pkg + ":" + newName //elps:mutates the minifier renames symbols in the AST it parsed for this run; the tree is tool-owned and never shared with an evaluator
 		return
 	}
-	node.Str = newName
+	node.Str = newName //elps:mutates the minifier renames symbols in the AST it parsed for this run; the tree is tool-owned and never shared with an evaluator
 }
 
 func splitQualifiedSymbol(name string) (string, string, bool) {

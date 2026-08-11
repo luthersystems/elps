@@ -57,6 +57,7 @@ func (fun *builtin) Docstring() string {
 	return fun.docs
 }
 
+//elpsvet:allow package builtin table; formals reach a Runtime only through copyFormals at registration (lisp.LEnv.AddBuiltins)
 var builtins = []*builtin{
 	{lisp.Formals("native-value"), BuiltinString, "string",
 		`Extracts a Go string from a native value and returns it as an

@@ -323,7 +323,7 @@ func (v *LVal) SetSource(loc *token.Location) {
 	if v.sealed {
 		return
 	}
-	v.source = loc
+	v.source = loc //elps:mutates the audited setter for source metadata; sealed (shared) nodes are skipped above
 }
 
 // GetType returns a quoted symbol denoting v's type.
@@ -824,7 +824,7 @@ func (v *LVal) SetCallStack(stack *CallStack) {
 	if v.Type != LError {
 		panic("not an error: " + v.Type.String())
 	}
-	v.Native = stack.Copy()
+	v.Native = stack.Copy() //elps:mutates the audited setter stamping a copied stack onto an in-flight error at its capture point
 }
 
 func (v *LVal) FunData() *LFunData {

@@ -99,7 +99,7 @@ func (p *Parser) Parse() (*lisp.LVal, error) {
 		p.ignoreComments()
 		if len(p.pendingComments) > 0 && p.pendingComments[0].PrecedingNewlines == 0 {
 			if expr.Meta == nil {
-				expr.Meta = &lisp.SourceMeta{}
+				expr.Meta = &lisp.SourceMeta{} //elps:mutates format-preserving Meta stamp on a node this parse produced; the tree is parser-owned until Parse returns
 			}
 			expr.Meta.TrailingComment = p.pendingComments[0]
 			p.pendingComments = p.pendingComments[1:]
@@ -542,7 +542,7 @@ func (p *Parser) hoistOperandComments(outer, inner *lisp.LVal) {
 		return
 	}
 	if outer.Meta == nil {
-		outer.Meta = &lisp.SourceMeta{}
+		outer.Meta = &lisp.SourceMeta{} //elps:mutates format-preserving Meta stamp on a node this parse produced; the tree is parser-owned until Parse returns
 	}
 	outer.Meta.LeadingComments = append(outer.Meta.LeadingComments, inner.Meta.LeadingComments...)
 	inner.Meta.LeadingComments = nil
@@ -556,7 +556,7 @@ func (p *Parser) applyPrefixNewlines(v *lisp.LVal, newlines int, spaces int) {
 		return
 	}
 	if v.Meta == nil {
-		v.Meta = &lisp.SourceMeta{}
+		v.Meta = &lisp.SourceMeta{} //elps:mutates format-preserving Meta stamp on a node this parse produced; the tree is parser-owned until Parse returns
 	}
 	if len(v.Meta.LeadingComments) > 0 {
 		// Two independent gaps have to be recorded here, and NEITHER can be
@@ -719,7 +719,7 @@ func (p *Parser) ParseConsExpression() *lisp.LVal {
 		if x.Type == lisp.LError {
 			return x
 		}
-		expr.Cells = append(expr.Cells, x)
+		expr.Cells = append(expr.Cells, x) //elps:mutates children accumulate onto this parse's own node (p.SExpr/p.QExpr above) while the tree is parser-owned
 	}
 	p.captureInnerTrailingComments(expr)
 	return expr
@@ -760,7 +760,7 @@ func (p *Parser) ParseList() *lisp.LVal {
 		if x.Type == lisp.LError {
 			return x
 		}
-		expr.Cells = append(expr.Cells, x)
+		expr.Cells = append(expr.Cells, x) //elps:mutates children accumulate onto this parse's own node (p.SExpr/p.QExpr above) while the tree is parser-owned
 	}
 	p.captureInnerTrailingComments(expr)
 	return expr
@@ -785,7 +785,7 @@ func (p *Parser) attachTrailingComment(parent *lisp.LVal) {
 	if p.pendingComments[0].PrecedingNewlines == 0 {
 		last := parent.Cells[len(parent.Cells)-1]
 		if last.Meta == nil {
-			last.Meta = &lisp.SourceMeta{}
+			last.Meta = &lisp.SourceMeta{} //elps:mutates format-preserving Meta stamp on a node this parse produced; the tree is parser-owned until Parse returns
 		}
 		last.Meta.TrailingComment = p.pendingComments[0]
 		p.pendingComments = p.pendingComments[1:]
@@ -800,7 +800,7 @@ func (p *Parser) recordClosingBracketNewline(expr *lisp.LVal) {
 	}
 	if p.src.Token.PrecedingNewlines > 0 {
 		if expr.Meta == nil {
-			expr.Meta = &lisp.SourceMeta{}
+			expr.Meta = &lisp.SourceMeta{} //elps:mutates format-preserving Meta stamp on a node this parse produced; the tree is parser-owned until Parse returns
 		}
 		expr.Meta.ClosingBracketNewline = true
 	}
@@ -814,7 +814,7 @@ func (p *Parser) captureInnerTrailingComments(expr *lisp.LVal) {
 		return
 	}
 	if expr.Meta == nil {
-		expr.Meta = &lisp.SourceMeta{}
+		expr.Meta = &lisp.SourceMeta{} //elps:mutates format-preserving Meta stamp on a node this parse produced; the tree is parser-owned until Parse returns
 	}
 	expr.Meta.InnerTrailingComments = p.pendingComments
 	p.pendingComments = nil
@@ -895,7 +895,7 @@ func (p *Parser) tokenLVal(v *lisp.LVal) *lisp.LVal {
 	v.SetSource(loc)
 	if p.preserveFormat {
 		if v.Meta == nil {
-			v.Meta = &lisp.SourceMeta{}
+			v.Meta = &lisp.SourceMeta{} //elps:mutates format-preserving Meta stamp on a node this parse produced; the tree is parser-owned until Parse returns
 		}
 		if len(p.pendingComments) > 0 {
 			v.Meta.LeadingComments = p.pendingComments

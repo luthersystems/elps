@@ -149,6 +149,7 @@ func (m sortedmap) Keys() *LVal {
 	for i := range keys.Cells {
 		// Modifying lvals is shady in general but because they are generated
 		// internally we know their structure.
+		//elps:mutates keys and its pair cells are freshly built by sortedMapEntries above; rewriting the slots drops the values in place
 		keys.Cells[i] = keys.Cells[i].Cells[0]
 	}
 	return keys
