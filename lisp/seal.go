@@ -95,6 +95,16 @@ package lisp
 // a sealed node's descendants are always sealed, so revisiting them is
 // pointless and the check doubles as cycle protection.
 func (v *LVal) SealAST() {
+	v.sealAST()
+	// Checked builds record the tree's fingerprint here — SealAST is the
+	// one point every parse path (Reader, LoadString, ParseProgram, the
+	// REPL) exits through, so recording at the root of each seal covers
+	// all of them.  A no-op in production builds; see
+	// lisp/seal_check_elpscheck.go.
+	recordSealedRoot(v)
+}
+
+func (v *LVal) sealAST() {
 	if v == nil || v.sealed || isSingleton(v) {
 		return
 	}
@@ -109,7 +119,7 @@ func (v *LVal) SealAST() {
 	// monotone flag that forbids all further writes.
 	v.sealed = true //elps:mutates -- parse-completion sealing; single-threaded, pre-sharing, sets the flag that freezes the node
 	for _, c := range v.Cells {
-		c.SealAST()
+		c.sealAST()
 	}
 }
 

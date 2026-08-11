@@ -221,6 +221,17 @@ func (r *Runner) RunTestFile(t *testing.T, path string) {
 			r.RunTest(t, i, path, bytes.NewReader(source))
 		})
 	}
+
+	// Checked-mode seal verification (issue #372): after the file's tests
+	// have run, re-fingerprint every sealed parse recorded in this process
+	// and fail the file if any parsed program tree was mutated in place.
+	// Complements the per-test singleton snapshot above the same way the
+	// checked-mode inspector complements checkSingleton: value-drift
+	// detection at a test boundary, no elpscheck tag required here because
+	// the call is a free nil in untagged builds.
+	if err := lisp.VerifySealedASTs(); err != nil {
+		t.Errorf("sealed AST verification failed after %s: %v", path, err)
+	}
 }
 
 // RunBenchmark runs the benchmark at index i read from source.  Path is only

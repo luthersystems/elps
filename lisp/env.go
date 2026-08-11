@@ -317,9 +317,14 @@ func (env *LEnv) load(ctx context.Context, exprs []*LVal) *LVal {
 	for _, expr := range exprs {
 		ret = env.eval(ctx, expr)
 		if ret.Type == LError {
-			return ret
+			break
 		}
 	}
+	// Checked builds re-verify this load's sealed parse against its
+	// seal-time fingerprint, on the error path too — an evaluation error
+	// does not excuse corrupting the shared tree.  A no-op in production
+	// builds; see lisp/seal_check_elpscheck.go.
+	verifySealedLoadRoots(exprs)
 	return ret
 }
 
