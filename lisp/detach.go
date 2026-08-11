@@ -89,7 +89,11 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	// infinite recursion.
 	d.seen[v] = cp
 
-	cp.Source = copyLocation(v.Source)
+	// Under the unexported-source API (issue #362) a value constructed by Go
+	// code carries a nil location; copyLocation preserves nil, so a detached
+	// native-constructed value stays nil-source rather than materializing a
+	// synthetic location.
+	cp.source = copyLocation(v.source)
 	cp.Meta = detachMeta(v.Meta)
 	// Debugger-only metadata; its context aliases unevaluated argument
 	// values inside the source runtime, so a detached value carries none.

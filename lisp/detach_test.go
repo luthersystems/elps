@@ -105,7 +105,7 @@ func collectMem(v *lisp.LVal) map[unsafe.Pointer]string {
 		if len(n.Cells) > 0 {
 			add(sliceDataOf(n.Cells), "Cells backing of "+n.Type.String())
 		}
-		add(ptrOf(n.Source), "Source location")
+		add(ptrOf(lisp.SourceLocForTest(n)), "Source location")
 		if n.Meta != nil {
 			add(ptrOf(n.Meta), "Meta")
 			for _, t := range n.Meta.LeadingComments {
@@ -149,7 +149,7 @@ func collectMem(v *lisp.LVal) map[unsafe.Pointer]string {
 
 // assertDisjoint fails the test naming every pointer identity retained by
 // both graphs.
-func assertDisjoint(t *testing.T, orig, detached *lisp.LVal) {
+func assertDetachDisjoint(t *testing.T, orig, detached *lisp.LVal) {
 	t.Helper()
 	a := collectMem(orig)
 	b := collectMem(detached)
@@ -189,8 +189,8 @@ func (f *fingerprinter) walk(v *lisp.LVal) {
 	id := len(f.ids)
 	f.ids[v] = id
 	fmt.Fprintf(&f.sb, "#%d:%s q=%t str=%q int=%d float=%v", id, v.Type, v.Quoted, v.Str, v.Int, v.Float)
-	if v.Source != nil {
-		fmt.Fprintf(&f.sb, " src=%s:%d:%d", v.Source.File, v.Source.Line, v.Source.Col)
+	if loc := lisp.SourceLocForTest(v); loc != nil {
+		fmt.Fprintf(&f.sb, " src=%s:%d:%d", loc.File, loc.Line, loc.Col)
 	}
 	switch v.Type {
 	case lisp.LBytes:
@@ -257,9 +257,9 @@ func mutateDeep(v *lisp.LVal) {
 			}
 		default:
 		}
-		if n.Source != nil {
-			n.Source.Line += 1000
-			n.Source.File += "-mutated"
+		if loc := lisp.SourceLocForTest(n); loc != nil {
+			loc.Line += 1000
+			loc.File += "-mutated"
 		}
 	})
 }
@@ -306,7 +306,7 @@ func TestDetachPointerDisjoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("detach: %v", err)
 	}
-	assertDisjoint(t, orig, detached)
+	assertDetachDisjoint(t, orig, detached)
 	if fp := fingerprint(orig); fp != before {
 		t.Errorf("detach mutated the original:\nbefore: %s\nafter:  %s", before, fp)
 	}
@@ -351,7 +351,7 @@ func TestDetachParserOutput(t *testing.T) {
 			if derr != nil {
 				t.Fatalf("detach: %v", derr)
 			}
-			assertDisjoint(t, orig, detached)
+			assertDetachDisjoint(t, orig, detached)
 			mutateDeep(detached)
 			if fp := fingerprint(orig); fp != before {
 				t.Errorf("mutating the detached copy changed the original:\nbefore: %s\nafter:  %s", before, fp)
