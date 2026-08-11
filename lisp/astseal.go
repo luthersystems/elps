@@ -58,10 +58,14 @@ package lisp
 //     self-evaluating literal (the 1 in (+ x 1)) and a quoted symbol (the 'k
 //     in (get m 'k)) evaluate with zero allocations, exactly as before the
 //     seals.  Atom copying turns every constant reference in every function
-//     body into an allocation per call; measured on the quote/atom stress
-//     benchmarks (BenchmarkSealQuotedAtom) it is the difference between 0
-//     and 1 alloc on the per-literal fast path, and it is visible in the
-//     arithmetic-heavy repo benchmarks.
+//     body into an allocation per call.  Measured (5 interleaved rounds,
+//     benchstat, this file's stress benchmarks plus the repo suite): atoms-on
+//     vs atoms-off costs +103% on literal-heavy arithmetic
+//     (BenchmarkAtomLiteralArith), +90% on builtin calls with literal
+//     arguments (BenchmarkEnvFunCallBuiltin), +9% on BenchmarkEnvGet, +315%
+//     on a flat 50-atom quoted literal (BenchmarkQuoteLiteral50), +56%
+//     geomean across the measured set.  Atoms-off, all of those rows are
+//     statistically flat against the unsealed tree.
 //   - The safety loss is bounded and covered elsewhere: an atom has no Cells,
 //     so the only way to corrupt a shared atom is a direct Go field write
 //     (.Str/.Int/.Float/.Quoted) on a value that was not freshly constructed
