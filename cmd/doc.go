@@ -51,10 +51,8 @@ func DocCommand(opts ...Option) *cobra.Command {
 		}
 		// Merge embedder registry packages that don't already exist.
 		if cfg.registry != nil {
-			for name, pkg := range cfg.registry.Packages {
-				if _, exists := env.Runtime.Registry.Packages[name]; !exists {
-					env.Runtime.Registry.Packages[name] = pkg
-				}
+			for _, name := range cfg.registry.PackageNames() {
+				env.Runtime.Registry.AddPackage(cfg.registry.Package(name))
 			}
 		}
 		return env, nil

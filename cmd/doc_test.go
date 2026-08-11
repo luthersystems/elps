@@ -10,6 +10,7 @@ import (
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDocCommand_DefaultFlags(t *testing.T) {
@@ -45,9 +46,9 @@ func TestDocCommand_WithEnvInjectsEnv(t *testing.T) {
 		"WithEnv should store the env in cmdConfig")
 
 	// Verify the custom package is accessible via the env's registry.
-	pkg, ok := env.Runtime.Registry.Packages["mypkg"]
-	assert.True(t, ok, "mypkg should be registered")
-	assert.Contains(t, pkg.Externals, "my-helper",
+	pkg := env.Runtime.Registry.Package("mypkg")
+	require.NotNil(t, pkg, "mypkg should be registered")
+	assert.Contains(t, pkg.Externals(), "my-helper",
 		"my-helper should be exported from mypkg")
 }
 
@@ -72,6 +73,6 @@ func TestDocCommand_WithRegistryMergesIntoDocEnv(t *testing.T) {
 
 	assert.Same(t, env.Runtime.Registry, cfg.resolveRegistry(),
 		"resolveRegistry should return the injected registry")
-	assert.NotNil(t, cfg.registry.Packages["custpkg"],
+	assert.NotNil(t, cfg.registry.Package("custpkg"),
 		"custpkg should be in the registry")
 }

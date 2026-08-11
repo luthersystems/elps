@@ -480,7 +480,7 @@ func (h *handler) onVariables(req *dap.VariablesRequest) {
 		if env != nil && env.Runtime.Package != nil {
 			pkg := env.Runtime.Package
 			var bindings []debugger.ScopeBinding
-			for name := range pkg.Symbols {
+			for _, name := range pkg.SymbolNames() {
 				v := pkg.Get(lisp.Symbol(name))
 				if v.Type != lisp.LError {
 					bindings = append(bindings, debugger.ScopeBinding{Name: name, Value: v})

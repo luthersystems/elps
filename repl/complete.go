@@ -50,7 +50,7 @@ func (c *symbolCompleter) collectSymbols(prefix string) []string {
 
 	// Symbols from the current package.
 	if pkg := c.env.Runtime.Package; pkg != nil {
-		for name := range pkg.Symbols {
+		for _, name := range pkg.SymbolNames() {
 			if strings.HasPrefix(name, prefix) && !seen[name] {
 				seen[name] = true
 				result = append(result, name)
@@ -59,13 +59,14 @@ func (c *symbolCompleter) collectSymbols(prefix string) []string {
 	}
 
 	// Exported symbols from all packages (as qualified names).
-	for pkgName, pkg := range c.env.Runtime.Registry.Packages {
+	for _, pkgName := range c.env.Runtime.Registry.PackageNames() {
+		pkg := c.env.Runtime.Registry.Package(pkgName)
 		// Check for qualified prefix like "string:jo".
 		qualPrefix := pkgName + ":"
 		if strings.HasPrefix(prefix, qualPrefix) {
 			// Complete within this package.
 			symPrefix := prefix[len(qualPrefix):]
-			for _, ext := range pkg.Externals {
+			for _, ext := range pkg.Externals() {
 				if strings.HasPrefix(ext, symPrefix) {
 					name := qualPrefix + ext
 					if !seen[name] {
@@ -83,7 +84,7 @@ func (c *symbolCompleter) collectSymbols(prefix string) []string {
 		}
 
 		// Unqualified exported symbols from used packages.
-		for _, ext := range pkg.Externals {
+		for _, ext := range pkg.Externals() {
 			if strings.HasPrefix(ext, prefix) && !seen[ext] {
 				seen[ext] = true
 				result = append(result, ext)

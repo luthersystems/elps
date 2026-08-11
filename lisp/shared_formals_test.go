@@ -83,8 +83,10 @@ func collectLVals(v *lisp.LVal, depth int, seen map[*lisp.LVal]bool, stats *walk
 func collectRegistry(env *lisp.LEnv) (map[*lisp.LVal]bool, *walkStats) {
 	seen := make(map[*lisp.LVal]bool)
 	stats := &walkStats{}
-	for _, pkg := range env.Runtime.Registry.Packages {
-		for _, v := range pkg.Symbols {
+	for _, name := range env.Runtime.Registry.PackageNames() {
+		pkg := env.Runtime.Registry.Package(name)
+		for _, sym := range pkg.SymbolNames() {
+			v, _ := pkg.Symbol(sym)
 			collectLVals(v, maxWalkDepth, seen, stats)
 		}
 	}
