@@ -100,7 +100,7 @@ The cost moves to the *mutation* sites, which are rare.
 The constraint follows the **storage**, not the header:
 
 - Kernel sites that create a *new header over sealed backing* propagate the
-  flag explicitly: `builtinCdr`, `builtinRest`, and the two-index
+  flag explicitly: `builtinCDR`, `builtinRest`, and the two-index
   intermediate in `builtinSlice` set `r.sealed = v.sealed`
   (`lisp/builtins.go`).
 - Header copies that share backing (`Quote`, `Splice`, `shallowUnquote` —
