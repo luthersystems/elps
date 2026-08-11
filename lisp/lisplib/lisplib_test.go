@@ -8,6 +8,7 @@ import (
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/lisp/lisplib/libbase64"
+	"github.com/luthersystems/elps/lisp/lisplib/libelpspath"
 	"github.com/luthersystems/elps/lisp/lisplib/libgolang"
 	"github.com/luthersystems/elps/lisp/lisplib/libhelp"
 	"github.com/luthersystems/elps/lisp/lisplib/libjson"
@@ -45,6 +46,7 @@ func TestLoadLibrary_EachPackageRestoresPrevious(t *testing.T) {
 		{"base64", libbase64.LoadPackage},
 		{"json", libjson.LoadPackage},
 		{"regexp", libregexp.LoadPackage},
+		{"elpspath", libelpspath.LoadPackage},
 		{"testing", libtesting.LoadPackage},
 		{"schema", libschema.LoadPackage},
 	}
@@ -67,7 +69,7 @@ func TestNewDocEnv(t *testing.T) {
 	// Should have all stdlib packages loaded.
 	expectedPkgs := []string{
 		"lisp", "user", "time", "help", "golang", "math",
-		"string", "base64", "json", "regexp", "testing", "s",
+		"string", "base64", "json", "regexp", "elpspath", "testing", "s",
 	}
 	for _, name := range expectedPkgs {
 		assert.NotNilf(t, env.Runtime.Registry.Package(name),

@@ -10,6 +10,7 @@ import (
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/libbase64"
+	"github.com/luthersystems/elps/lisp/lisplib/libelpspath"
 	"github.com/luthersystems/elps/lisp/lisplib/libgolang"
 	"github.com/luthersystems/elps/lisp/lisplib/libhelp"
 	"github.com/luthersystems/elps/lisp/lisplib/libjson"
@@ -54,6 +55,10 @@ func LoadLibrary(env *lisp.LEnv) *lisp.LVal {
 		return e
 	}
 	e = libregexp.LoadPackage(env)
+	if !e.IsNil() {
+		return e
+	}
+	e = libelpspath.LoadPackage(env)
 	if !e.IsNil() {
 		return e
 	}
