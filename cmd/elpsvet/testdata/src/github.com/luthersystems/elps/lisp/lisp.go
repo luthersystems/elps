@@ -48,6 +48,8 @@ func Native(v interface{}) *LVal { return &LVal{Native: v} }
 func SExpr(cells []*LVal) *LVal { return &LVal{Cells: cells} }
 func QExpr(cells []*LVal) *LVal { return &LVal{Cells: cells, Quoted: true} }
 
+func Array(dims *LVal, cells []*LVal) *LVal { return &LVal{Cells: cells} }
+
 func Fun(fid string, formals *LVal, fn LBuiltin) *LVal { return &LVal{Str: fid} }
 
 func Formals(argSymbols ...string) *LVal { return &LVal{} }

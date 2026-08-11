@@ -9,7 +9,10 @@ import (
 	"strings"
 )
 
+//elpsvet:allow user-registered special-op table; formals reach a Runtime only through copyFormals at registration (env.go AddSpecialOps)
 var userSpecialOps []*langBuiltin
+
+//elpsvet:allow default special-op table; formals reach a Runtime only through copyFormals at registration (env.go AddSpecialOps)
 var langSpecialOps = []*langBuiltin{
 	{"function", Formals("name"), opFunction,
 		`Returns the function bound to the given symbol without calling
@@ -182,7 +185,7 @@ func opAssert(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("assertion failure: %s", test)
 	}
 	for i := range formatArgs {
-		formatArgs[i] = env.Eval(formatArgs[i])
+		formatArgs[i] = env.Eval(formatArgs[i]) //elps:mutates writes evaluated results into this call's arglist backing, which evalSExprCells allocates fresh per call
 		if formatArgs[i].Type == LError {
 			return formatArgs[i]
 		}
@@ -480,7 +483,7 @@ func opThreadFirst(env *LEnv, args *LVal) *LVal {
 func opFlet(env *LEnv, args *LVal) *LVal {
 	bindlist := args.Cells[0]
 	fletenv := newEnvN(env, len(bindlist.Cells))
-	args.Cells = args.Cells[1:] // decap so we can call builtinProgn on args.
+	args.Cells = args.Cells[1:] //elps:mutates decap of the per-call arglist header (evalSExprCells builds fresh backing per call) so we can call builtinProgn on args.
 	if bindlist.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %s", bindlist.Type)
 	}
@@ -611,7 +614,7 @@ func opDoTimes(env *LEnv, args *LVal) *LVal {
 func opLabels(env *LEnv, args *LVal) *LVal {
 	bindlist := args.Cells[0]
 	fletenv := newEnvN(env, len(bindlist.Cells))
-	args.Cells = args.Cells[1:] // decap so we can call builtinProgn on args.
+	args.Cells = args.Cells[1:] //elps:mutates decap of the per-call arglist header (evalSExprCells builds fresh backing per call) so we can call builtinProgn on args.
 	if bindlist.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %s", bindlist.Type)
 	}
@@ -649,7 +652,7 @@ func opLabels(env *LEnv, args *LVal) *LVal {
 func opMacrolet(env *LEnv, args *LVal) *LVal {
 	bindlist := args.Cells[0]
 	fletenv := newEnvN(env, len(bindlist.Cells))
-	args.Cells = args.Cells[1:] // decap so we can call builtinProgn on args.
+	args.Cells = args.Cells[1:] //elps:mutates decap of the per-call arglist header (evalSExprCells builds fresh backing per call) so we can call builtinProgn on args.
 	if bindlist.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %s", bindlist.Type)
 	}
@@ -666,7 +669,7 @@ func opMacrolet(env *LEnv, args *LVal) *LVal {
 		if lval.Type == LError {
 			return lval
 		}
-		lval.FunType = LFunMacro // evaluate as a macro
+		lval.FunType = LFunMacro //elps:mutates evaluate as a macro: lval is the closure fenv.Lambda freshly allocated above
 		lerr := fletenv.Put(name, lval)
 		if lerr.Type == LError {
 			return lerr
@@ -678,7 +681,7 @@ func opMacrolet(env *LEnv, args *LVal) *LVal {
 func opLet(env *LEnv, args *LVal) *LVal {
 	bindlist := args.Cells[0]
 	letenv := newEnvN(env, len(bindlist.Cells))
-	args.Cells = args.Cells[1:] // decap so we can call builtinProgn on args.
+	args.Cells = args.Cells[1:] //elps:mutates decap of the per-call arglist header (evalSExprCells builds fresh backing per call) so we can call builtinProgn on args.
 	if bindlist.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %s", bindlist.Type)
 	}
@@ -707,7 +710,7 @@ func opLet(env *LEnv, args *LVal) *LVal {
 func opLetSeq(env *LEnv, args *LVal) *LVal {
 	bindlist := args.Cells[0]
 	letenv := newEnvN(env, len(bindlist.Cells))
-	args.Cells = args.Cells[1:] // decap so we can call builtinProgn on args.
+	args.Cells = args.Cells[1:] //elps:mutates decap of the per-call arglist header (evalSExprCells builds fresh backing per call) so we can call builtinProgn on args.
 	if bindlist.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %s", bindlist.Type)
 	}

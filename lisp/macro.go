@@ -8,7 +8,10 @@ import (
 	"github.com/luthersystems/elps/parser/token"
 )
 
+//elpsvet:allow user-registered macro table; formals reach a Runtime only through copyFormals at registration (env.go AddMacros)
 var userMacros []*langBuiltin
+
+//elpsvet:allow default macro table; formals reach a Runtime only through copyFormals at registration (env.go AddMacros)
 var langMacros = []*langBuiltin{
 	{"defmacro", Formals("name", "formals", VarArgSymbol, "expr"), macroDefmacro,
 		`Defines a named macro in the current package. The body receives
@@ -76,7 +79,7 @@ func macroDefmacro(env *LEnv, args *LVal) *LVal {
 		fun.SetCallStack(env.Runtime.Stack.Copy())
 		return fun
 	}
-	fun.FunType = LFunMacro // evaluate as a macro
+	fun.FunType = LFunMacro //elps:mutates evaluate as a macro: fun is the closure env.Lambda freshly allocated above
 	return SExpr([]*LVal{
 		Symbol("lisp:progn"),
 		SExpr([]*LVal{
@@ -259,8 +262,9 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionC
 		return
 	}
 	if v.source == nil || v.source.Pos < 0 {
-		v.source = callSite
+		v.source = callSite //elps:mutates debug-metadata stamp on macro-expansion output; sealed (shared) subtrees are skipped above
 		if ctx != nil {
+			//elps:mutates debug-metadata stamp on macro-expansion output; sealed (shared) subtrees are skipped above
 			v.MacroExpansion = &MacroExpansionInfo{
 				MacroExpansionContext: ctx,
 				ID:                    rt.nextMacroExpID(),

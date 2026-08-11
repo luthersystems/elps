@@ -56,6 +56,7 @@ func GetDuration(v *lisp.LVal) (time.Duration, bool) {
 	return d, ok
 }
 
+//elpsvet:allow package builtin table; formals reach a Runtime only through copyFormals at registration (lisp.LEnv.AddBuiltins)
 var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("utc-now", lisp.Formals(), BuiltinUTCNow,
 		`Returns the current time in UTC as a native time value. Takes no

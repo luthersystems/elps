@@ -56,7 +56,9 @@ func (fun *langBuiltin) Docstring() string {
 }
 
 var (
+	//elpsvet:allow user-registered builtin table; formals reach a Runtime only through copyFormals at registration (env.go AddBuiltins)
 	userBuiltins []*langBuiltin
+	//elpsvet:allow default builtin table; formals reach a Runtime only through copyFormals at registration (env.go AddBuiltins)
 	langBuiltins = []*langBuiltin{
 		{"load-string", Formals("source-code", KeyArgSymbol, "name"), builtinLoadString,
 			`Parses and evaluates source-code (a string) as ELPS source. The
@@ -1219,7 +1221,7 @@ func builtinSortedMap(env *LEnv, args *LVal) *LVal {
 		if !err.IsNil() {
 			return err
 		}
-		args.Cells = args.Cells[2:]
+		args.Cells = args.Cells[2:] //elps:mutates decap of the per-call arglist header (evalSExprCells builds fresh backing per call) to walk the key/value pairs
 	}
 	return m
 }
@@ -1949,8 +1951,8 @@ func builtinAppendMutate(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("%s", msg)
 	}
 	dims := vec.Cells[0]
-	dims.Cells[0].Int += len(vals)
-	vec.Cells[1].Cells = append(vec.Cells[1].Cells, vals...)
+	dims.Cells[0].Int += len(vals)                           //elps:mutates append! is the documented mutating variant: it extends its vector argument in place
+	vec.Cells[1].Cells = append(vec.Cells[1].Cells, vals...) //elps:mutates append! is the documented mutating variant: it extends its vector argument in place
 	return vec
 }
 
@@ -1962,7 +1964,7 @@ func appendMutateBytes(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("%s", msg)
 	}
 	err := appendBytes(env, xsVal, func(x byte) {
-		b = append(b, x)
+		b = append(b, x) //elps:mutates append! 'bytes is the documented mutating variant: b is written back into lbytes' backing below
 	})
 	if err != nil {
 		return env.Error(err)
@@ -1982,12 +1984,12 @@ func builtinAppendBytesMutate(env *LEnv, args *LVal) *LVal {
 	}
 	switch byteseq.Type {
 	case LString:
-		b = append(b, byteseq.Str...)
+		b = append(b, byteseq.Str...) //elps:mutates append-bytes! is the documented mutating variant: b is written back into lbytes' backing below
 	case LBytes:
-		b = append(b, byteseq.Bytes()...)
+		b = append(b, byteseq.Bytes()...) //elps:mutates append-bytes! is the documented mutating variant: b is written back into lbytes' backing below
 	default:
 		err := appendBytes(env, byteseq, func(x byte) {
-			b = append(b, x)
+			b = append(b, x) //elps:mutates append-bytes! is the documented mutating variant: b is written back into lbytes' backing below
 		})
 		if err != nil {
 			return env.Error(err)
@@ -2067,7 +2069,7 @@ func builtinAppend_Bytes(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("%s", msg)
 	}
 	err := appendBytes(env, xsVal, func(x byte) {
-		b = append(b, x)
+		b = append(b, x) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
 	})
 	if err != nil {
 		return env.Error(err)
@@ -2083,12 +2085,12 @@ func builtinAppendBytes(env *LEnv, args *LVal) *LVal {
 	b := lbytes.Bytes()
 	switch byteseq.Type {
 	case LString:
-		b = append(b, byteseq.Str...)
+		b = append(b, byteseq.Str...) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
 	case LBytes:
-		b = append(b, byteseq.Bytes()...)
+		b = append(b, byteseq.Bytes()...) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
 	default:
 		err := appendBytes(env, byteseq, func(x byte) {
-			b = append(b, x)
+			b = append(b, x) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
 		})
 		if err != nil {
 			return env.Error(err)

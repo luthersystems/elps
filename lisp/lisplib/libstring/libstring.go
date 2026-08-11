@@ -34,6 +34,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	return lisp.Nil()
 }
 
+//elpsvet:allow package builtin table; formals reach a Runtime only through copyFormals at registration (lisp.LEnv.AddBuiltins)
 var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("lowercase", lisp.Formals("str"), builtinLower,
 		`Returns a copy of str with all Unicode characters converted to

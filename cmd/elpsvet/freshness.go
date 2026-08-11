@@ -29,6 +29,10 @@
 // A value-typed LVal variable is always fresh at its top level (Go value
 // semantics give the function its own struct), so `v2 := *shared;
 // v2.Quoted = false` — the shallowUnquote idiom — passes.
+//
+// The rule also tracks local slice aliases of LVal backing storage
+// (cells := seqCells(list); cells[i] = x) and flags the mutating operations
+// on them — the #369 laundering gap.  See alias.go for the taint design.
 package main
 
 import (
@@ -43,7 +47,7 @@ import (
 
 var freshnessAnalyzer = &analysis.Analyzer{
 	Name: "elpsfreshness",
-	Doc:  "flag writes to lisp.LVal fields on values the writing function did not construct (issues #333/#334's corruption pattern); suppress with //elps:mutates",
+	Doc:  "flag writes to lisp.LVal fields on values the writing function did not construct (issues #333/#334's corruption pattern), and mutations laundered through local slice aliases of LVal backing storage (issue #369's laundering gap); suppress with //elps:mutates",
 	Run:  runFreshness,
 }
 
@@ -149,12 +153,19 @@ func commentIsMutates(text string) bool {
 // treated as fresh (intraprocedural approximation).
 func checkFreshness(pass *analysis.Pass, body *ast.BlockStmt, ann map[int]bool) {
 	fresh := make(map[types.Object]bool)
+	aliases := newAliasTracker(pass, fresh, ann)
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch stmt := n.(type) {
 		case *ast.AssignStmt:
 			handleAssign(pass, stmt, fresh, ann)
+			aliases.handleAssign(stmt)
 		case *ast.IncDecStmt:
 			checkWrite(pass, stmt.X, stmt.Pos(), fresh, ann)
+			aliases.handleIncDec(stmt)
+		case *ast.CallExpr:
+			aliases.checkCall(stmt)
+		case *ast.ValueSpec:
+			aliases.handleValueSpec(stmt)
 		}
 		return true
 	})
