@@ -486,3 +486,50 @@ func TestSealedSetSourceFrozen(t *testing.T) {
 		t.Fatalf("SetSource modified a sealed node: before %v/%v after %v/%v", locBefore, okBefore, locAfter, okAfter)
 	}
 }
+
+// TestMacroexpandRestDoesNotLaunderSealedBacking pins a leak the original CoW
+// sweep missed: the macroexpand / macroexpand-1 builtins used to slice
+// form.Cells[1:] of a (possibly sealed) input directly and hand it to the
+// macro, so a `&rest` parameter became an UNSEALED header over the sealed
+// literal's backing array.  An in-place mutator in the macro body
+// (stable-sort, or append! through slice 'vector) then rewrote the shared
+// literal — the substrate#378 class, reachable from pure lisp through
+// (macroexpand '(m ...)).  The normal call path never had this hole because
+// evalSExprCells copies arguments into a fresh newCells slice; the
+// macroexpand builtins are the one path that reached a macro without copying.
+func TestMacroexpandRestDoesNotLaunderSealedBacking(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"macroexpand+stable-sort", `
+(defmacro sortm (&rest xs) (stable-sort > xs) '())
+(set 'lit '(sortm 1 3 2))
+(macroexpand lit)
+`},
+		{"macroexpand-1+stable-sort", `
+(defmacro sortm (&rest xs) (stable-sort > xs) '())
+(macroexpand-1 '(sortm 5 1 9))
+`},
+		{"macroexpand+append!-slice-vector", `
+(defmacro clob (&rest xs) (append! (slice 'vector xs 0 1) 99) '())
+(set 'lit '(clob 1 2 3))
+(macroexpand lit)
+`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exprs := parseCached(t, tc.src)
+			before := fingerprintAST(exprs)
+			env := newCowTestEnv(t)
+			for i, e := range exprs {
+				if r := env.Eval(e); r.Type == lisp.LError {
+					t.Fatalf("eval expr %d: %v", i, r)
+				}
+			}
+			if after := fingerprintAST(exprs); after != before {
+				t.Fatalf("macroexpand laundered sealed backing into a mutable &rest binding:"+
+					" the parsed literal was rewritten in place\n  before %s\n  after  %s", before, after)
+			}
+		})
+	}
+}

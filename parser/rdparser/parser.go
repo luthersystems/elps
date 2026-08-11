@@ -151,7 +151,7 @@ func (p *Parser) ParseExpression() *lisp.LVal {
 	}
 
 	expr := fn(p)
-	if p.depth == 1 {
+	if p.depth == 1 && !p.preserveFormat {
 		// Seal each completed top-level expression: from here the tree may
 		// be cached and shared by every environment that evaluates this
 		// parse, and the sealed flag is what stops kernel mutation sites
@@ -159,6 +159,16 @@ func (p *Parser) ParseExpression() *lisp.LVal {
 		// depth 1 — after every nested ParseExpression call has finished
 		// its construction-time fixups — so the parser never writes a
 		// sealed node's fields.  SealAST ignores error values.
+		//
+		// Format-preserving parses are excluded: they are the one path where
+		// construction of a top-level node is NOT finished here — Parse()
+		// attaches a same-line trailing comment to expr.Meta after this
+		// point (`(foo) ;; c`), which would be a write to an already-sealed
+		// node and would stale the fingerprint recorded at seal time.
+		// Format trees are never evaluated or shared across environments
+		// (the formatter only reads Meta), so they need no seal, and the
+		// documented seal scope (Reader.Read, LoadString, ParseProgram, the
+		// REPL — all non-format) already excludes them.
 		expr.SealAST()
 	}
 	return expr

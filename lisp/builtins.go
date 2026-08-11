@@ -582,12 +582,12 @@ func builtinMacroExpand(env *LEnv, args *LVal) *LVal {
 		if form.IsNil() {
 			return form
 		}
-		macsym, macargs := form.Cells[0], form.Cells[1:]
+		macsym := form.Cells[0]
 		if macsym.Type != LSymbol {
 			return form
 		}
 		mac := env.Get(macsym)
-		r, ok := macroExpand1(env, mac, SExpr(macargs))
+		r, ok := macroExpand1(env, mac, macroExpandArgs(form))
 		if !ok {
 			return form
 		}
@@ -598,6 +598,21 @@ func builtinMacroExpand(env *LEnv, args *LVal) *LVal {
 	}
 }
 
+// macroExpandArgs builds the fresh, owned argument list that the macroexpand
+// builtins hand to a macro.  form may be a sealed program literal
+// (`(macroexpand '(m 1 2 3))`), so slicing form.Cells[1:] directly would
+// alias the sealed backing array into the macro's &rest binding, where an
+// in-place mutator (stable-sort, append!) could rewrite the literal for every
+// environment sharing the parse — the substrate#378 class (see lisp/seal.go).
+// The normal evaluator already copies here (evalSExprCells builds a fresh
+// newCells slice); these builtins are the one call path that reached a macro
+// without doing so.
+func macroExpandArgs(form *LVal) *LVal {
+	macargs := make([]*LVal, len(form.Cells)-1)
+	copy(macargs, form.Cells[1:])
+	return SExpr(macargs)
+}
+
 func builtinMacroExpand1(env *LEnv, args *LVal) *LVal {
 	form := args.Cells[0]
 	if form.Type != LSExpr {
@@ -606,12 +621,12 @@ func builtinMacroExpand1(env *LEnv, args *LVal) *LVal {
 	if form.IsNil() {
 		return form
 	}
-	macsym, macargs := form.Cells[0], form.Cells[1:]
+	macsym := form.Cells[0]
 	if macsym.Type != LSymbol {
 		return form
 	}
 	mac := env.Get(macsym)
-	r, ok := macroExpand1(env, mac, SExpr(macargs))
+	r, ok := macroExpand1(env, mac, macroExpandArgs(form))
 	if !ok {
 		return form
 	}
