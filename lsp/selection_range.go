@@ -72,10 +72,10 @@ func buildSelectionRangeChain(chain []*lisp.LVal) protocol.SelectionRange {
 
 // nodeRange converts an LVal's Source location to an LSP range.
 func nodeRange(node *lisp.LVal) protocol.Range {
-	if node.Source == nil {
+	loc, ok := node.Source()
+	if !ok {
 		return protocol.Range{}
 	}
-	loc := node.Source
 	start := protocol.Position{
 		Line:      safeUint(loc.Line - 1),
 		Character: safeUint(loc.Col - 1),
@@ -115,10 +115,11 @@ func nodesAtPosition(exprs []*lisp.LVal, line, col int) []*lisp.LVal {
 // nodeChainAt recursively builds a chain of enclosing nodes for the
 // given position. Returns nil if the node does not contain the position.
 func nodeChainAt(node *lisp.LVal, line, col int) []*lisp.LVal {
-	if node == nil || node.Source == nil {
+	loc, ok := node.Source()
+	if !ok {
 		return nil
 	}
-	if !locContainsPosition(node.Source, line, col) {
+	if !locContainsPosition(&loc, line, col) {
 		return nil
 	}
 

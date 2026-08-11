@@ -156,7 +156,7 @@ func opSetUpdate(env *LEnv, args *LVal) *LVal {
 	if val.Type == LError {
 		return val
 	}
-	env.Loc = key.Source
+	env.Loc = key.source
 	return env.Update(key, val)
 }
 

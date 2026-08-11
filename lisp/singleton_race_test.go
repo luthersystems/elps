@@ -2,7 +2,7 @@
 
 // Singleton mutation regression test for issue #274.
 //
-// Pre-fix: stampMacroExpansion (macro.go) mutated LVal.Source and
+// Pre-fix: stampMacroExpansion (macro.go) mutated LVal.source and
 // .MacroExpansion on every recursive node, and its singleton guard
 // checked only for empty LSExpr (Nil), missing singletonTrue /
 // singletonFalse (LSymbol values with Source.Pos == -1). Every macro
@@ -30,8 +30,8 @@ func TestSingletonRaceRegression(t *testing.T) {
 		iterations = 2000
 	)
 
-	origTrueSource := Bool(true).Source
-	origFalseSource := Bool(false).Source
+	origTrueSource := Bool(true).source
+	origFalseSource := Bool(false).source
 
 	rt := &Runtime{}
 	var wg sync.WaitGroup
@@ -59,17 +59,17 @@ func TestSingletonRaceRegression(t *testing.T) {
 
 	wg.Wait()
 
-	if Bool(true).Source != origTrueSource {
-		t.Errorf("Bool(true).Source mutated by concurrent macro stamping: got %+v want %+v",
-			Bool(true).Source, origTrueSource)
+	if Bool(true).source != origTrueSource {
+		t.Errorf("Bool(true).source mutated by concurrent macro stamping: got %+v want %+v",
+			Bool(true).source, origTrueSource)
 	}
 	if Bool(true).MacroExpansion != nil {
 		t.Errorf("Bool(true).MacroExpansion mutated by concurrent macro stamping: got %+v",
 			Bool(true).MacroExpansion)
 	}
-	if Bool(false).Source != origFalseSource {
-		t.Errorf("Bool(false).Source mutated by concurrent macro stamping: got %+v want %+v",
-			Bool(false).Source, origFalseSource)
+	if Bool(false).source != origFalseSource {
+		t.Errorf("Bool(false).source mutated by concurrent macro stamping: got %+v want %+v",
+			Bool(false).source, origFalseSource)
 	}
 	if Bool(false).MacroExpansion != nil {
 		t.Errorf("Bool(false).MacroExpansion mutated by concurrent macro stamping: got %+v",

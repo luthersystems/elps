@@ -114,12 +114,13 @@ func collectSemanticTokens(
 	content string,
 	tokens *[]rawToken,
 ) {
-	if v == nil || v.Source == nil || v.Source.Line == 0 {
+	vLoc, ok := v.Source()
+	if !ok || vLoc.Line == 0 {
 		return
 	}
 
-	line := v.Source.Line - 1 // convert to 0-based
-	col := max(v.Source.Col-1, 0)
+	line := vLoc.Line - 1 // convert to 0-based
+	col := max(vLoc.Col-1, 0)
 
 	switch v.Type {
 	case lisp.LInt, lisp.LFloat:
@@ -284,13 +285,14 @@ func symbolKindToTokenType(kind analysis.SymbolKind) int {
 // tokenLength computes the display length of a token. Falls back to
 // heuristics when source end info is unavailable.
 func tokenLength(v *lisp.LVal, content string) int {
-	if v.Source.EndCol > 0 && v.Source.EndLine == v.Source.Line {
-		return v.Source.EndCol - v.Source.Col
+	loc, _ := v.Source()
+	if loc.EndCol > 0 && loc.EndLine == loc.Line {
+		return loc.EndCol - loc.Col
 	}
 	// Fall back: extract from source text.
 	lines := strings.Split(content, "\n")
-	line := v.Source.Line - 1
-	col := v.Source.Col - 1
+	line := loc.Line - 1
+	col := loc.Col - 1
 	if line >= 0 && line < len(lines) && col >= 0 && col < len(lines[line]) {
 		// Scan forward to find end of number/atom.
 		end := col

@@ -60,8 +60,10 @@ func TestNewReader_FormatPreserving_LocationReader(t *testing.T) {
 	exprs, err := lr.ReadLocation("logical", "/path/to/file.lisp", strings.NewReader("(foo)"))
 	require.NoError(t, err)
 	require.Len(t, exprs, 1)
-	assert.Equal(t, "logical", exprs[0].Source.File)
-	assert.Equal(t, "/path/to/file.lisp", exprs[0].Source.Path)
+	loc, ok := exprs[0].Source()
+	require.True(t, ok)
+	assert.Equal(t, "logical", loc.File)
+	assert.Equal(t, "/path/to/file.lisp", loc.Path)
 }
 
 func TestNewReader_Standard_ParseError(t *testing.T) {
@@ -84,6 +86,8 @@ func TestNewReader_Standard_LocationReader(t *testing.T) {
 	exprs, err := lr.ReadLocation("logical", "/path/to/file.lisp", strings.NewReader("(bar)"))
 	require.NoError(t, err)
 	require.Len(t, exprs, 1)
-	assert.Equal(t, "logical", exprs[0].Source.File)
-	assert.Equal(t, "/path/to/file.lisp", exprs[0].Source.Path)
+	loc, ok := exprs[0].Source()
+	require.True(t, ok)
+	assert.Equal(t, "logical", loc.File)
+	assert.Equal(t, "/path/to/file.lisp", loc.Path)
 }

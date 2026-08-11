@@ -317,8 +317,10 @@ func severity(s protocol.DiagnosticSeverity) *protocol.DiagnosticSeverity {
 func parseErrorRange(err error) protocol.Range {
 	// Try *lisp.ErrorVal (parser-level errors).
 	var errVal *lisp.ErrorVal
-	if errors.As(err, &errVal) && errVal.Source != nil && errVal.Source.Line > 0 {
-		return elpsToLSPRange(errVal.Source, 1)
+	if errors.As(err, &errVal) {
+		if loc, ok := errVal.Source(); ok && loc.Line > 0 {
+			return elpsToLSPRange(&loc, 1)
+		}
 	}
 	// Try *token.LocationError (scanner-level errors).
 	var locErr *token.LocationError

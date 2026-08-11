@@ -44,18 +44,18 @@ func TestSingletonSnapshot_DetectsMutation(t *testing.T) {
 
 	// Save originals so we can restore after the test — TestMain
 	// snapshot will verify singletons are intact at suite end.
-	origSource := singletonTrue.Source
-	defer func() { singletonTrue.Source = origSource }()
+	origSource := singletonTrue.source
+	defer func() { singletonTrue.source = origSource }()
 
 	snap := TakeSingletonSnapshot()
 	require.Empty(t, snap.Verify(), "fresh snapshot should match current state")
 
 	// Mutate a singleton (test only — restored in defer).
-	singletonTrue.Source = nil
+	singletonTrue.source = nil
 	drift := snap.Verify()
 	assert.Equal(t, "Bool(true)", drift, "Verify should report which singleton drifted")
 
 	// Restore.
-	singletonTrue.Source = origSource
+	singletonTrue.source = origSource
 	assert.Empty(t, snap.Verify(), "after restore Verify should pass")
 }

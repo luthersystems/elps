@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -52,7 +53,7 @@ var AnalyzerSetUsage = &Analyzer{
 				src := SourceOf(sexpr)
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("use set! instead of set to mutate '%s (already bound)", name),
-					Pos:     posFromSource(src.Source),
+					Pos:     posFromSource(astutil.SourceLoc(src)),
 					EndPos:  endPosFromNode(src),
 					Notes:   []string{"set creates a new binding; set! mutates an existing one"},
 				})
@@ -73,7 +74,7 @@ var AnalyzerInPackageToplevel = &Analyzer{
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			if HeadSymbol(sexpr) == "in-package" && depth > 0 {
 				src := SourceOf(sexpr)
-				pass.Reportf(src.Source, "in-package should only be used at the top level")
+				pass.Reportf(astutil.SourceLoc(src), "in-package should only be used at the top level")
 			}
 		})
 		return nil
@@ -98,14 +99,14 @@ var AnalyzerIfArity = &Analyzer{
 			if argc < 3 {
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("if requires 3 arguments (condition, then, else), got too few (%d)", argc),
-					Pos:     posFromSource(head.Source),
+					Pos:     posFromSource(astutil.SourceLoc(head)),
 					EndPos:  endPosFromNode(head),
 					Notes:   []string{"use cond for multi-branch conditionals, or provide an else branch"},
 				})
 			} else {
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("if requires 3 arguments (condition, then, else), got too many (%d)", argc),
-					Pos:     posFromSource(head.Source),
+					Pos:     posFromSource(astutil.SourceLoc(head)),
 					EndPos:  endPosFromNode(head),
 					Notes:   []string{"if takes exactly (condition then-expr else-expr); use progn to group multiple expressions"},
 				})
@@ -130,7 +131,7 @@ var AnalyzerLetBindings = &Analyzer{
 			if ArgCount(sexpr) < 1 {
 				pass.Report(Diagnostic{
 					Message: head + " requires a binding list and body",
-					Pos:     posFromSource(headNode.Source),
+					Pos:     posFromSource(astutil.SourceLoc(headNode)),
 					EndPos:  endPosFromNode(headNode),
 				})
 				return
@@ -140,7 +141,7 @@ var AnalyzerLetBindings = &Analyzer{
 
 			// Bindings must be a list
 			if bindings.Type != lisp.LSExpr {
-				pass.Reportf(src.Source, "%s bindings must be a list, got %s", head, bindings.Type)
+				pass.Reportf(astutil.SourceLoc(src), "%s bindings must be a list, got %s", head, bindings.Type)
 				return
 			}
 
@@ -206,7 +207,7 @@ var AnalyzerQuoteCall = &Analyzer{
 				src := SourceOf(sexpr)
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s first argument should be quoted: (set '%s ...) not (set %s ...)", head, arg.Str, arg.Str),
-					Pos:     posFromSource(src.Source),
+					Pos:     posFromSource(astutil.SourceLoc(src)),
 					EndPos:  endPosFromNode(src),
 					Notes:   []string{fmt.Sprintf("did you mean (%s '%s ...)?", head, arg.Str)},
 				})
@@ -242,7 +243,7 @@ var AnalyzerCondMissingElse = &Analyzer{
 			src := SourceOf(sexpr)
 			pass.Report(Diagnostic{
 				Message: "cond has no default (else) clause",
-				Pos:     posFromSource(src.Source),
+				Pos:     posFromSource(astutil.SourceLoc(src)),
 				EndPos:  endPosFromNode(src),
 				Notes:   []string{"add (else ...) or (true ...) as the last clause to handle unmatched cases"},
 			})
@@ -269,10 +270,13 @@ func posFromSource(src *token.Location) Position {
 // from the source location if available, otherwise estimates from the symbol
 // name length. Returns zero Position when no end can be determined.
 func endPosFromNode(node *lisp.LVal) Position {
-	if node == nil || node.Source == nil {
+	if node == nil {
 		return Position{}
 	}
-	src := node.Source
+	src, ok := node.Source()
+	if !ok {
+		return Position{}
+	}
 	if src.EndLine > 0 && src.EndCol > 0 {
 		return Position{File: src.File, Line: src.EndLine, Col: src.EndCol}
 	}
@@ -283,10 +287,10 @@ func endPosFromNode(node *lisp.LVal) Position {
 }
 
 func bindingSource(binding *lisp.LVal, fallback *lisp.LVal) *token.Location {
-	if binding.Source != nil && binding.Source.Line > 0 {
-		return binding.Source
+	if loc := astutil.SourceLoc(binding); loc != nil && loc.Line > 0 {
+		return loc
 	}
-	return fallback.Source
+	return astutil.SourceLoc(fallback)
 }
 
 // AnalyzerDefunStructure checks for malformed `defun` and `defmacro` forms.
@@ -305,7 +309,7 @@ var AnalyzerDefunStructure = &Analyzer{
 			if argc < 2 {
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s requires at least a name and formals list (got %d argument(s))", head, argc),
-					Pos:     posFromSource(headNode.Source),
+					Pos:     posFromSource(astutil.SourceLoc(headNode)),
 					EndPos:  endPosFromNode(headNode),
 				})
 				return
@@ -314,7 +318,7 @@ var AnalyzerDefunStructure = &Analyzer{
 			if name.Type != lisp.LSymbol {
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s name must be a symbol, got %s", head, name.Type),
-					Pos:     posFromSource(headNode.Source),
+					Pos:     posFromSource(astutil.SourceLoc(headNode)),
 					EndPos:  endPosFromNode(headNode),
 				})
 			}
@@ -322,7 +326,7 @@ var AnalyzerDefunStructure = &Analyzer{
 			if formals.Type != lisp.LSExpr {
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s formals must be a list, got %s", head, formals.Type),
-					Pos:     posFromSource(headNode.Source),
+					Pos:     posFromSource(astutil.SourceLoc(headNode)),
 					EndPos:  endPosFromNode(headNode),
 				})
 			}
@@ -347,28 +351,28 @@ var AnalyzerCondStructure = &Analyzer{
 			for i := 1; i < len(sexpr.Cells); i++ {
 				clause := sexpr.Cells[i]
 				clauseSrc := SourceOf(clause)
-				if clauseSrc.Source == nil || clauseSrc.Source.Line == 0 {
+				if loc := astutil.SourceLoc(clauseSrc); loc == nil || loc.Line == 0 {
 					clauseSrc = src
 				}
 
 				if clause.Type != lisp.LSExpr {
 					pass.Report(Diagnostic{
 						Message: fmt.Sprintf("cond clause %d is not a list", i),
-						Pos:     posFromSource(clauseSrc.Source),
+						Pos:     posFromSource(astutil.SourceLoc(clauseSrc)),
 						EndPos:  endPosFromNode(clauseSrc),
 						Notes:   []string{"cond clauses must be lists: (cond ((test1) body1) ((test2) body2) (else default))"},
 					})
 					continue
 				}
 				if len(clause.Cells) == 0 {
-					pass.Reportf(clauseSrc.Source, "cond clause %d is empty", i)
+					pass.Reportf(astutil.SourceLoc(clauseSrc), "cond clause %d is empty", i)
 					continue
 				}
 
 				// Check for misplaced else
 				if clause.Cells[0].Type == lisp.LSymbol && isCondDefault(clause.Cells[0].Str) {
 					if i != last {
-						pass.Reportf(clauseSrc.Source, "cond else clause must be last (is clause %d of %d)", i, last)
+						pass.Reportf(astutil.SourceLoc(clauseSrc), "cond else clause must be last (is clause %d of %d)", i, last)
 					}
 				}
 			}
@@ -410,7 +414,7 @@ var AnalyzerBuiltinArity = &Analyzer{
 			if argc < spec.min {
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, spec.min, argc),
-					Pos:     posFromSource(headNode.Source),
+					Pos:     posFromSource(astutil.SourceLoc(headNode)),
 					EndPos:  endPosFromNode(headNode),
 					Notes:   []string{helpNote},
 				})
@@ -418,7 +422,7 @@ var AnalyzerBuiltinArity = &Analyzer{
 			if spec.max >= 0 && argc > spec.max {
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, spec.max, argc),
-					Pos:     posFromSource(headNode.Source),
+					Pos:     posFromSource(astutil.SourceLoc(headNode)),
 					EndPos:  endPosFromNode(headNode),
 					Notes:   []string{helpNote},
 				})
@@ -635,7 +639,7 @@ var AnalyzerRethrowContext = &Analyzer{
 			src := SourceOf(sexpr)
 			pass.Report(Diagnostic{
 				Message: "rethrow used outside handler-bind",
-				Pos:     posFromSource(src.Source),
+				Pos:     posFromSource(astutil.SourceLoc(src)),
 				EndPos:  endPosFromNode(src),
 				Notes:   []string{"rethrow can only be called from within a handler-bind handler"},
 			})
@@ -734,7 +738,7 @@ var AnalyzerUnnecessaryProgn = &Analyzer{
 			}
 			pass.Report(Diagnostic{
 				Message: msg,
-				Pos:     posFromSource(src.Source),
+				Pos:     posFromSource(astutil.SourceLoc(src)),
 				EndPos:  endPosFromNode(src),
 				Notes:   []string{fmt.Sprintf("remove the progn and move its contents directly into the %s body", head)},
 			})
@@ -754,7 +758,7 @@ var AnalyzerUnnecessaryProgn = &Analyzer{
 					src := SourceOf(clause.Cells[1])
 					pass.Report(Diagnostic{
 						Message: "progn is unnecessary in cond clause body (it supports multiple expressions)",
-						Pos:     posFromSource(src.Source),
+						Pos:     posFromSource(astutil.SourceLoc(src)),
 						EndPos:  endPosFromNode(src),
 						Notes:   []string{"remove the progn and move its contents directly into the cond clause"},
 					})
@@ -970,7 +974,7 @@ var AnalyzerUserArity = &Analyzer{
 				src := SourceOf(sexpr)
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, minArity, argc),
-					Pos:     posFromSource(src.Source),
+					Pos:     posFromSource(astutil.SourceLoc(src)),
 					EndPos:  endPosFromNode(src),
 					Notes:   []string{"defined at " + sourceString(sym.Source)},
 					Related: relatedFromSource(sym.Source, "defined here"),
@@ -980,7 +984,7 @@ var AnalyzerUserArity = &Analyzer{
 				src := SourceOf(sexpr)
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, maxArity, argc),
-					Pos:     posFromSource(src.Source),
+					Pos:     posFromSource(astutil.SourceLoc(src)),
 					EndPos:  endPosFromNode(src),
 					Notes:   []string{"defined at " + sourceString(sym.Source)},
 					Related: relatedFromSource(sym.Source, "defined here"),

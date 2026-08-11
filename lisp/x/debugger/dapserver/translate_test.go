@@ -106,13 +106,13 @@ func TestTranslateStackFrames_CrossFileSource(t *testing.T) {
 	// Paused expression is in a different file.
 	pausedExpr := &lisp.LVal{
 		Type: lisp.LSExpr,
-		Source: &token.Location{
-			File: "callee.lisp",
-			Path: "callee.lisp",
-			Line: 3,
-			Col:  5,
-		},
 	}
+	pausedExpr.SetSource(&token.Location{
+		File: "callee.lisp",
+		Path: "callee.lisp",
+		Line: 3,
+		Col:  5,
+	})
 
 	frames := translateStackFrames(stack, pausedExpr, "/root")
 	require.Len(t, frames, 1)
@@ -146,13 +146,13 @@ func TestTranslateStackFrames_SameFileOverride(t *testing.T) {
 
 	pausedExpr := &lisp.LVal{
 		Type: lisp.LSExpr,
-		Source: &token.Location{
-			File: "test.lisp",
-			Path: "test.lisp",
-			Line: 5,
-			Col:  10,
-		},
 	}
+	pausedExpr.SetSource(&token.Location{
+		File: "test.lisp",
+		Path: "test.lisp",
+		Line: 5,
+		Col:  10,
+	})
 
 	frames := translateStackFrames(stack, pausedExpr, "")
 	require.Len(t, frames, 1)

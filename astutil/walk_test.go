@@ -63,24 +63,25 @@ func TestArgCount_WithArgs(t *testing.T) {
 
 func TestSourceOf_PreferOwnSource(t *testing.T) {
 	v := &lisp.LVal{
-		Source: &token.Location{File: "test.lisp", Line: 5},
-		Cells: []*lisp.LVal{
-			{Source: &token.Location{File: "test.lisp", Line: 10}},
-		},
+		Cells: []*lisp.LVal{{}},
 	}
+	v.SetSource(&token.Location{File: "test.lisp", Line: 5})
+	v.Cells[0].SetSource(&token.Location{File: "test.lisp", Line: 10})
 	result := SourceOf(v)
-	assert.Equal(t, 5, result.Source.Line)
+	loc, ok := result.Source()
+	assert.True(t, ok)
+	assert.Equal(t, 5, loc.Line)
 }
 
 func TestSourceOf_FallbackToChild(t *testing.T) {
 	v := &lisp.LVal{
-		Source: nil,
-		Cells: []*lisp.LVal{
-			{Source: &token.Location{File: "test.lisp", Line: 10}},
-		},
+		Cells: []*lisp.LVal{{}},
 	}
+	v.Cells[0].SetSource(&token.Location{File: "test.lisp", Line: 10})
 	result := SourceOf(v)
-	assert.Equal(t, 10, result.Source.Line)
+	loc, ok := result.Source()
+	assert.True(t, ok)
+	assert.Equal(t, 10, loc.Line)
 }
 
 func TestSourceOf_FallbackToSelf(t *testing.T) {

@@ -1614,9 +1614,9 @@ func TestMultipleDocuments(t *testing.T) {
 
 func TestParseErrorRange(t *testing.T) {
 	t.Run("ErrorVal with source", func(t *testing.T) {
-		errVal := &lisp.ErrorVal{
-			Source: &token.Location{File: "test.lisp", Line: 3, Col: 5},
-		}
+		errLV := &lisp.LVal{}
+		errLV.SetSource(&token.Location{File: "test.lisp", Line: 3, Col: 5})
+		errVal := (*lisp.ErrorVal)(errLV)
 		r := parseErrorRange(errVal)
 		assert.Equal(t, protocol.UInteger(2), r.Start.Line)
 		assert.Equal(t, protocol.UInteger(4), r.Start.Character)

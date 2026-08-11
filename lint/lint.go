@@ -191,12 +191,12 @@ func (p *Pass) ReportNode(node *lisp.LVal, format string, args ...interface{}) {
 	d := Diagnostic{
 		Message: fmt.Sprintf(format, args...),
 	}
-	if node != nil && node.Source != nil {
-		d.Pos = Position{File: node.Source.File, Line: node.Source.Line, Col: node.Source.Col}
-		if node.Source.EndLine > 0 && node.Source.EndCol > 0 {
-			d.EndPos = Position{File: node.Source.File, Line: node.Source.EndLine, Col: node.Source.EndCol}
-		} else if node.Type == lisp.LSymbol && len(node.Str) > 0 && node.Source.Col > 0 {
-			d.EndPos = Position{File: node.Source.File, Line: node.Source.Line, Col: node.Source.Col + len(node.Str)}
+	if loc, ok := node.Source(); ok {
+		d.Pos = Position{File: loc.File, Line: loc.Line, Col: loc.Col}
+		if loc.EndLine > 0 && loc.EndCol > 0 {
+			d.EndPos = Position{File: loc.File, Line: loc.EndLine, Col: loc.EndCol}
+		} else if node.Type == lisp.LSymbol && len(node.Str) > 0 && loc.Col > 0 {
+			d.EndPos = Position{File: loc.File, Line: loc.Line, Col: loc.Col + len(node.Str)}
 		}
 	}
 	p.Report(d)

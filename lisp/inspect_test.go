@@ -14,7 +14,7 @@ func TestInspectFunction_Defun(t *testing.T) {
 	// (defun add (a b) "Add two numbers." (+ a b))
 	node := &LVal{
 		Type:   LSExpr,
-		Source: &token.Location{File: "test.lisp", Line: 1, Col: 1},
+		source: &token.Location{File: "test.lisp", Line: 1, Col: 1},
 		Cells: []*LVal{
 			{Type: LSymbol, Str: "defun"},
 			{Type: LSymbol, Str: "add"},

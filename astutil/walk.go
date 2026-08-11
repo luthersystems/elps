@@ -6,7 +6,10 @@
 // traversing parsed ELPS expressions.
 package astutil
 
-import "github.com/luthersystems/elps/lisp"
+import (
+	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/token"
+)
 
 // Walk calls fn for every node in the tree, depth-first.
 // parent is nil for top-level expressions.
@@ -127,14 +130,30 @@ func PackageNameArg(arg *lisp.LVal) string {
 	return ""
 }
 
+// SourceLoc returns v's source location as a pointer, or nil when v is nil
+// or carries no location.  The pointer refers to a private copy — mutating
+// it never affects v or any other LVal (lisp.LVal exposes locations by value
+// only; see issue #362).
+func SourceLoc(v *lisp.LVal) *token.Location {
+	if v == nil {
+		return nil
+	}
+	if loc, ok := v.Source(); ok {
+		return &loc
+	}
+	return nil
+}
+
 // SourceOf returns the best source location for a node.
 // Prefers the node's own source, falls back to first child's source.
 func SourceOf(v *lisp.LVal) *lisp.LVal {
-	if v.Source != nil && v.Source.Line > 0 {
+	if loc, ok := v.Source(); ok && loc.Line > 0 {
 		return v
 	}
-	if len(v.Cells) > 0 && v.Cells[0].Source != nil {
-		return v.Cells[0]
+	if len(v.Cells) > 0 {
+		if _, ok := v.Cells[0].Source(); ok {
+			return v.Cells[0]
+		}
 	}
 	return v
 }

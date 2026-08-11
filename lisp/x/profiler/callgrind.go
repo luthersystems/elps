@@ -163,7 +163,11 @@ func (p *callgrindProfiler) Start(fun *lisp.LVal) func() {
 	prettyLabel, _ := p.prettyFunName(fun)
 	// Mark the time and point of entry. It feels like we're building the call stack in Runtime
 	// again, but we're not - it's called, not callers.
-	p.incrementCallRef(prettyLabel, fun.Source)
+	var funLoc *token.Location
+	if loc, ok := fun.Source(); ok {
+		funLoc = &loc
+	}
+	p.incrementCallRef(prettyLabel, funLoc)
 
 	return func() {
 		p.end(fun)

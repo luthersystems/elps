@@ -15,7 +15,7 @@ import (
 //
 //	go test -tags elpscheck -run TestCheckSingleton_DetectsCorruption ./lisp/
 //
-// We mutate Bool(true).Source, then call checkSingleton — it should
+// We mutate Bool(true).source, then call checkSingleton — it should
 // panic. The test restores the singleton before returning so it does
 // not poison the rest of the suite (TestMain would otherwise fail).
 func TestCheckSingleton_DetectsCorruption(t *testing.T) {
@@ -24,12 +24,12 @@ func TestCheckSingleton_DetectsCorruption(t *testing.T) {
 	// singleton_watchdog_test.go.
 	defer pauseSingletonWatchdog()()
 
-	orig := singletonTrue.Source
+	orig := singletonTrue.source
 	defer func() {
-		singletonTrue.Source = orig
+		singletonTrue.source = orig
 	}()
 
-	singletonTrue.Source = nil
+	singletonTrue.source = nil
 
 	defer func() {
 		r := recover()

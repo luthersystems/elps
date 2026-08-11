@@ -244,8 +244,8 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionC
 	if isSingleton(v) {
 		return
 	}
-	if v.Source == nil || v.Source.Pos < 0 {
-		v.Source = callSite
+	if v.source == nil || v.source.Pos < 0 {
+		v.source = callSite
 		if ctx != nil {
 			v.MacroExpansion = &MacroExpansionInfo{
 				MacroExpansionContext: ctx,
@@ -310,14 +310,14 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 
 	unquote, err := getUnquoteType(v)
 	if err != nil {
-		env.Loc = v.Source
+		env.Loc = v.source
 		return env.Error(err)
 	}
 	if unquote == unquoteSpliced {
 		// v looks like ``(unquote-splicing expr)''
 		expr := v.Cells[1]
 		if depth == 0 || quoteLevel > 0 {
-			env.Loc = v.Source
+			env.Loc = v.source
 			return env.Errorf("unquote-splicing used in an invalid context")
 		}
 		return doUnquoteSpliced(env, expr)
@@ -384,7 +384,7 @@ func doUnquoteSExpr(env *LEnv, v *LVal, depth int, quoteLevel int) *LVal {
 		cells = newcells
 	}
 	expr := SExpr(cells)
-	expr.Source = v.Source
+	expr.source = v.source
 	for range quoteLevel {
 		expr = Quote(expr)
 	}

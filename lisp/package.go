@@ -86,7 +86,7 @@ func (pkg *Package) get(k *LVal) *LVal {
 		return v
 	}
 	lerr := Errorf("unbound symbol: %v", k)
-	lerr.Source = k.Source
+	lerr.source = k.source
 	return lerr
 }
 
