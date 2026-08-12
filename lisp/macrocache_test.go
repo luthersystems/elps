@@ -460,7 +460,7 @@ func TestMacroCachePurityProver(t *testing.T) {
 		if fun.Type != lisp.LFun {
 			t.Fatalf("%s did not resolve to a function: %v", name, fun)
 		}
-		if got := lisp.MacroCacheIdentityForTest(fun); got != want {
+		if got := lisp.MacroCacheIdentityForTest(env, fun); got != want {
 			t.Errorf("admission for builtin %s: got %t want %t", name, got, want)
 		}
 	}
@@ -623,7 +623,7 @@ func TestMacroCacheTextLoaderSealed(t *testing.T) {
 	if !lisp.SealedForTest(fun.Cells[0]) {
 		t.Fatalf("loader-defined macro has unsealed formals; loader output was not sealed")
 	}
-	if !lisp.MacroCacheIdentityForTest(fun) {
+	if !lisp.MacroCacheIdentityForTest(env, fun) {
 		t.Fatalf("loader-defined pure macro not admitted for caching")
 	}
 	// The loader-installed function's macro callsite lives in the sealed

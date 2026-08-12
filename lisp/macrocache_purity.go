@@ -39,26 +39,98 @@ package lisp
 // non-binding position, unsealed (runtime-constructed) macro bodies —
 // fails the proof and the callsite quietly bypasses the cache.
 //
-// KNOWN BOUNDARY: the prover recognizes the structural operators (if, let,
-// let*, progn, quasiquote, gensym, quote, unquote, unquote-splicing) by
-// name, assuming they resolve to the kernel bindings.  A program that
-// shadows those names with different semantics in the macro's package could
-// fool the analysis; that pattern is outside the supported embedder model
-// (the same assumption underlies quasiquote processing itself, which
-// matches "unquote" by name — see getUnquoteType).
+// # Name resolution: the syntactic verdict is NOT the whole admission test
+//
+// Matching an operator by NAME proves nothing on its own.  `if`, `let`,
+// `let*`, `progn`, `quasiquote` and `gensym` are ordinary bindings in ELPS,
+// and a program that rebinds one of them — by defun, by defmacro, by set, or
+// by inheriting a shadowed binding from a used package — changes what the
+// body does without changing a character of its syntax.  Every one of those
+// shadows was demonstrated to return a WRONG ANSWER under caching (the
+// macro's expansion stopped being a pure rewrite, and the cache froze the
+// first one), so the prover does not assume kernel semantics: it RECORDS the
+// operator spellings it interpreted and requires them to resolve to the
+// kernel bindings before any expansion is cached.
+//
+// The verdict is therefore split in two:
+//
+//   - proveUserMacroPure returns a macroPurity whose `pure` bit is purely
+//     SYNTACTIC — a function of the macro's (sealed, immutable) formals and
+//     body nodes and nothing else.  That is what may be memoized on the
+//     formals node.
+//   - macroPurity.defRefs / .callRefs list the name→kernel-binding
+//     obligations the syntactic verdict rests on.  They are ENVIRONMENT
+//     dependent, so they are re-checked on every dispatch (macrocache.go,
+//     opsResolveToKernel) and are never memoized.  Re-checking is also what
+//     makes a LATER `(set 'if ...)` take effect: a verdict cached against an
+//     environment could not see it.
+//
+// defRefs are resolved in the macro's DEFINING environment (funData.env),
+// which is where the body actually evaluates at expansion time; callRefs in
+// the CALLING environment, which is where the expansion evaluates.  If any
+// obligation fails to resolve to the kernel binding the macro is simply not
+// cacheable — refusing to cache is always sound.
+//
+// Names the prover interprets but does NOT need to resolve, and why:
+//
+//   - `quote` in template position, and the parser's own quote flags/LQuote
+//     wrappers.  Reading a form as a quote only ever INCREASES the quote
+//     depth, and quote depth is used in exactly one place: rejecting a
+//     gensym that escapes as data.  Mis-reading a shadowed `quote` as the
+//     kernel one can therefore only reject a macro that might have been
+//     admissible — it can never admit one.  (`quote` in body position is
+//     not accepted by the body grammar at all.)
+//   - `unquote` / `unquote-splicing`.  These are not bindings: quasiquote
+//     consumes them as syntax, matching the name on an LSymbol head
+//     (getUnquoteType, lisp/macro.go).  Requiring the enclosing
+//     `quasiquote` to BE the kernel quasiquote — which defRefs does — is
+//     what makes that reading correct.
+//
+// # Remaining boundary
+//
+// The obligations cover the operators the prover interprets.  They do not
+// cover the CONTENT of a template, which is output code evaluated at the
+// callsite: `(quasiquote (if ...))` is inert to the prover and reused
+// verbatim, so whatever `if` means at the callsite it means identically with
+// and without the cache.  The one place template content is interpreted is
+// the binder-syntax discharge (see pureMacroTemplate), which is why those
+// binder spellings become callRefs whenever the macro mints a gensym.
+
+// kernelRef is one name→kernel-binding obligation: the operator SPELLING as
+// written in the macro source (so a `lisp:`-qualified spelling is resolved
+// as written) and the funData FID the binding must have.
+type kernelRef struct {
+	spelling string
+	fid      string
+}
+
+// macroPurity is the memoizable half of the admission test: a syntactic
+// verdict plus the name-resolution obligations it rests on.
+type macroPurity struct {
+	defRefs  []kernelRef // resolved in the macro's defining environment
+	callRefs []kernelRef // resolved in the calling environment
+	pure     bool
+}
+
+// specialOpFID mirrors the FID format AddSpecialOps assigns; builtinFunFID
+// mirrors AddBuiltins.  Tests pin both against the registration code.
+func specialOpFID(name string) string  { return "<special-op ``" + name + "''>" }
+func builtinFunFID(name string) string { return "<builtin-function ``" + name + "''>" }
 
 // proveUserMacroPure reports whether fun (an LFunMacro with lisp cells:
 // Cells[0] formals, Cells[1:] body) provably performs a pure structural
-// rewrite, making its expansions safe to cache per callsite.
-func proveUserMacroPure(fun *LVal) bool {
+// rewrite, making its expansions safe to cache per callsite — SUBJECT to the
+// name-resolution obligations in the returned macroPurity.
+func proveUserMacroPure(fun *LVal) macroPurity {
+	p := &prover{}
 	formals := fun.Cells[0]
 	if formals.Type != LSExpr {
-		return false
+		return macroPurity{}
 	}
 	scope := make(map[string]symKind, len(formals.Cells))
 	for _, f := range formals.Cells {
 		if f.Type != LSymbol {
-			return false
+			return macroPurity{}
 		}
 		if f.Str == VarArgSymbol || f.Str == OptArgSymbol || f.Str == KeyArgSymbol {
 			continue
@@ -67,14 +139,62 @@ func proveUserMacroPure(fun *LVal) bool {
 	}
 	body := fun.Cells[1:]
 	if len(body) == 0 {
-		return false
+		return macroPurity{}
 	}
 	for _, e := range body {
-		if !pureMacroExpr(e, scope) {
-			return false
+		if !p.pureMacroExpr(e, scope) {
+			return macroPurity{}
 		}
 	}
-	return true
+	// The binder-syntax discharge inside templates (pureMacroTemplate) reads
+	// let/let*/labels/flet/lambda in the OUTPUT code as syntax rather than
+	// data.  That reading matters in exactly one case — it is what admits a
+	// gensym written into a binding position — so the callsite obligation is
+	// only incurred when the macro actually mints a gensym.
+	if p.hasGensym {
+		for _, ref := range p.binderRefs {
+			p.callRefs = addRef(p.callRefs, ref)
+		}
+	}
+	return macroPurity{pure: true, defRefs: p.defRefs, callRefs: p.callRefs}
+}
+
+// prover carries the name-resolution obligations accumulated while walking a
+// macro body.  It holds no environment: the walk is purely syntactic.
+type prover struct {
+	defRefs    []kernelRef
+	callRefs   []kernelRef
+	binderRefs []kernelRef
+	hasGensym  bool
+}
+
+func addRef(refs []kernelRef, ref kernelRef) []kernelRef {
+	for _, r := range refs {
+		if r == ref {
+			return refs
+		}
+	}
+	return append(refs, ref)
+}
+
+// needSpecialOp records that the walk read `spelling` as the kernel special
+// operator `op`, evaluated in the macro's DEFINING environment.
+func (p *prover) needSpecialOp(spelling, op string) {
+	p.defRefs = addRef(p.defRefs, kernelRef{spelling: spelling, fid: specialOpFID(op)})
+}
+
+// needBuiltin records a builtin-function obligation in the defining
+// environment (gensym is the only one).
+func (p *prover) needBuiltin(spelling, name string) {
+	p.defRefs = addRef(p.defRefs, kernelRef{spelling: spelling, fid: builtinFunFID(name)})
+}
+
+// needBinder records that the walk read `spelling` in TEMPLATE (output-code)
+// position as the kernel binding operator `op`, evaluated in the CALLING
+// environment.  Promoted to a real obligation only if the macro mints a
+// gensym — see proveUserMacroPure.
+func (p *prover) needBinder(spelling, op string) {
+	p.binderRefs = addRef(p.binderRefs, kernelRef{spelling: spelling, fid: specialOpFID(op)})
 }
 
 type symKind uint8
@@ -86,7 +206,8 @@ const (
 
 // kernelOp strips a "lisp:" package qualifier so the operator checks accept
 // both spellings; any other qualifier is left intact (and thus rejected by
-// the operator switch).
+// the operator switch).  The UNSTRIPPED spelling is what gets resolved — see
+// kernelRef.
 func kernelOp(name string) string {
 	const q = "lisp:"
 	if len(name) > len(q) && name[:len(q)] == q {
@@ -95,7 +216,7 @@ func kernelOp(name string) string {
 	return name
 }
 
-func pureMacroExpr(e *LVal, scope map[string]symKind) bool {
+func (p *prover) pureMacroExpr(e *LVal, scope map[string]symKind) bool {
 	if e == nil {
 		return false
 	}
@@ -108,6 +229,7 @@ func pureMacroExpr(e *LVal, scope map[string]symKind) bool {
 	}
 	if e.quoted || e.Type == LQuote {
 		// Fully-quoted constant data: deterministic expansion content.
+		// Parser-level quoting, not a name lookup — nothing to resolve.
 		return true
 	}
 	switch e.Type {
@@ -126,18 +248,29 @@ func pureMacroExpr(e *LVal, scope map[string]symKind) bool {
 		if head.Type != LSymbol || head.quoted {
 			return false
 		}
-		switch kernelOp(head.Str) {
+		op := kernelOp(head.Str)
+		switch op {
 		case "quasiquote":
-			return len(e.Cells) == 2 && pureMacroTemplate(e.Cells[1], scope, 0)
+			if len(e.Cells) != 2 {
+				return false
+			}
+			p.needSpecialOp(head.Str, op)
+			return p.pureMacroTemplate(e.Cells[1], scope, 0)
 		case "if":
 			if len(e.Cells) < 3 || len(e.Cells) > 4 {
 				return false
 			}
-			return allPureMacroExprs(e.Cells[1:], scope)
+			p.needSpecialOp(head.Str, op)
+			return p.allPureMacroExprs(e.Cells[1:], scope)
 		case "progn":
-			return allPureMacroExprs(e.Cells[1:], scope)
+			p.needSpecialOp(head.Str, op)
+			return p.allPureMacroExprs(e.Cells[1:], scope)
 		case "let", "let*":
-			return pureMacroLet(e, scope)
+			if !p.pureMacroLet(e, scope) {
+				return false
+			}
+			p.needSpecialOp(head.Str, op)
+			return true
 		default:
 			return false
 		}
@@ -146,9 +279,9 @@ func pureMacroExpr(e *LVal, scope map[string]symKind) bool {
 	}
 }
 
-func allPureMacroExprs(es []*LVal, scope map[string]symKind) bool {
+func (p *prover) allPureMacroExprs(es []*LVal, scope map[string]symKind) bool {
 	for _, e := range es {
-		if !pureMacroExpr(e, scope) {
+		if !p.pureMacroExpr(e, scope) {
 			return false
 		}
 	}
@@ -159,7 +292,7 @@ func allPureMacroExprs(es []*LVal, scope map[string]symKind) bool {
 // expressions are either the literal call (gensym) — introducing a gensym
 // local — or themselves pure.  let evaluates bindings in the outer scope;
 // let* extends the scope sequentially.
-func pureMacroLet(e *LVal, scope map[string]symKind) bool {
+func (p *prover) pureMacroLet(e *LVal, scope map[string]symKind) bool {
 	if len(e.Cells) < 3 {
 		return false
 	}
@@ -184,22 +317,37 @@ func pureMacroLet(e *LVal, scope map[string]symKind) bool {
 		if sym.Type != LSymbol {
 			return false
 		}
-		if isGensymCall(val) {
+		// (gensym) is the ONE expression the body grammar admits without
+		// proving it from its own structure, so the proof has to come from
+		// somewhere: the head must resolve to the kernel gensym builtin in
+		// the defining environment, and the call must take no arguments.
+		// Shadowing `gensym` with an impure function is otherwise a clean
+		// defeat — the binding value is never examined at all.
+		if spelling, ok := gensymCallSpelling(val); ok {
+			p.needBuiltin(spelling, "gensym")
+			p.hasGensym = true
 			inner[sym.Str] = symGensym
 			continue
 		}
-		if !pureMacroExpr(val, bindScope) {
+		if !p.pureMacroExpr(val, bindScope) {
 			return false
 		}
 		inner[sym.Str] = symFormal
 	}
-	return allPureMacroExprs(e.Cells[2:], inner)
+	return p.allPureMacroExprs(e.Cells[2:], inner)
 }
 
-func isGensymCall(v *LVal) bool {
-	return v.Type == LSExpr && !v.quoted && len(v.Cells) == 1 &&
-		v.Cells[0].Type == LSymbol && !v.Cells[0].quoted &&
-		kernelOp(v.Cells[0].Str) == "gensym"
+// gensymCallSpelling reports whether v is a zero-argument call whose head
+// names gensym, returning the head's spelling for resolution.
+func gensymCallSpelling(v *LVal) (string, bool) {
+	if v.Type != LSExpr || v.quoted || len(v.Cells) != 1 {
+		return "", false
+	}
+	head := v.Cells[0]
+	if head.Type != LSymbol || head.quoted || kernelOp(head.Str) != "gensym" {
+		return "", false
+	}
+	return head.Str, true
 }
 
 // pureMacroTemplate scans quasiquote template content.  quoteDepth counts
@@ -217,8 +365,14 @@ func isGensymCall(v *LVal) bool {
 // list, so `(let* ([(unquote g) ...]) ...)` is accepted while any deeper
 // quoting — `'(unquote g)` in a binding value, a quoted body form — still
 // counts and still rejects a gensym underneath it.
-func pureMacroTemplate(t *LVal, scope map[string]symKind, quoteDepth int) bool {
-	return pureMacroTemplateQ(t, scope, quoteDepth, false)
+//
+// The discharge is the one place the prover INTERPRETS template content, so
+// it is the one place a shadow in the CALLING environment can make the
+// reading wrong: a `let*` that treats its binding list as data leaks the
+// gensym name.  Those spellings are recorded as callRefs (only when the
+// macro mints a gensym, the sole case where the reading matters).
+func (p *prover) pureMacroTemplate(t *LVal, scope map[string]symKind, quoteDepth int) bool {
+	return p.pureMacroTemplateQ(t, scope, quoteDepth, false)
 }
 
 // templateQuoteLevels mirrors findAndUnquote's quote-level counting and
@@ -238,7 +392,7 @@ func templateQuoteLevels(t *LVal) (*LVal, int) {
 	return t, levels
 }
 
-func pureMacroTemplateQ(t *LVal, scope map[string]symKind, quoteDepth int, syntaxQuote bool) bool {
+func (p *prover) pureMacroTemplateQ(t *LVal, scope map[string]symKind, quoteDepth int, syntaxQuote bool) bool {
 	if t == nil || isSingleton(t) {
 		return true
 	}
@@ -285,44 +439,51 @@ func pureMacroTemplateQ(t *LVal, scope map[string]symKind, quoteDepth int, synta
 		}
 	}
 	if head.Type == LSymbol && !head.quoted {
-		switch kernelOp(head.Str) {
+		op := kernelOp(head.Str)
+		switch op {
 		case "quasiquote":
 			return false // nested quasiquote: rejected for the POC
 		case "quote":
+			// Reading a form as a quote only RAISES the quote depth, which
+			// only ever rejects; no resolution obligation (see the file
+			// comment).
 			for _, c := range t.Cells[1:] {
-				if !pureMacroTemplateQ(c, scope, qd+1, false) {
+				if !p.pureMacroTemplateQ(c, scope, qd+1, false) {
 					return false
 				}
 			}
 			return true
 		case "let", "let*":
 			if qd == 0 && len(t.Cells) >= 2 {
-				return pureTemplateBindings(t.Cells[1], scope, false) &&
-					allPureTemplates(t.Cells[2:], scope, qd)
+				p.needBinder(head.Str, op)
+				return p.pureTemplateBindings(t.Cells[1], scope, false) &&
+					p.allPureTemplates(t.Cells[2:], scope, qd)
 			}
 		case "labels", "flet":
 			if qd == 0 && len(t.Cells) >= 2 {
-				return pureTemplateBindings(t.Cells[1], scope, true) &&
-					allPureTemplates(t.Cells[2:], scope, qd)
+				p.needBinder(head.Str, op)
+				return p.pureTemplateBindings(t.Cells[1], scope, true) &&
+					p.allPureTemplates(t.Cells[2:], scope, qd)
 			}
 		case "lambda":
 			if qd == 0 && len(t.Cells) >= 2 {
-				return pureMacroTemplateQ(t.Cells[1], scope, qd, true) &&
-					allPureTemplates(t.Cells[2:], scope, qd)
+				p.needBinder(head.Str, op)
+				return p.pureMacroTemplateQ(t.Cells[1], scope, qd, true) &&
+					p.allPureTemplates(t.Cells[2:], scope, qd)
 			}
 		}
 	}
 	for _, c := range t.Cells {
-		if !pureMacroTemplateQ(c, scope, qd, false) {
+		if !p.pureMacroTemplateQ(c, scope, qd, false) {
 			return false
 		}
 	}
 	return true
 }
 
-func allPureTemplates(ts []*LVal, scope map[string]symKind, qd int) bool {
+func (p *prover) allPureTemplates(ts []*LVal, scope map[string]symKind, qd int) bool {
 	for _, c := range ts {
-		if !pureMacroTemplateQ(c, scope, qd, false) {
+		if !p.pureMacroTemplateQ(c, scope, qd, false) {
 			return false
 		}
 	}
@@ -333,7 +494,7 @@ func allPureTemplates(ts []*LVal, scope map[string]symKind, qd int) bool {
 // template, discharging the syntactic bracket quotes: one on the list, one
 // on each binding, and (for function binders) one on each binding's formals
 // list.  Everything else inside the bindings is scanned normally.
-func pureTemplateBindings(list *LVal, scope map[string]symKind, funBinder bool) bool {
+func (p *prover) pureTemplateBindings(list *LVal, scope map[string]symKind, funBinder bool) bool {
 	if list == nil || isSingleton(list) {
 		return true
 	}
@@ -342,7 +503,7 @@ func pureTemplateBindings(list *LVal, scope map[string]symKind, funBinder bool) 
 		return false // more than binder syntax: quoted data
 	}
 	if inner == nil || inner.Type != LSExpr {
-		return pureMacroTemplateQ(list, scope, 0, true)
+		return p.pureMacroTemplateQ(list, scope, 0, true)
 	}
 	for _, b := range inner.Cells {
 		bi, blev := templateQuoteLevels(b)
@@ -350,7 +511,7 @@ func pureTemplateBindings(list *LVal, scope map[string]symKind, funBinder bool) 
 			return false
 		}
 		if bi == nil || bi.Type != LSExpr {
-			if !pureMacroTemplateQ(b, scope, 0, true) {
+			if !p.pureMacroTemplateQ(b, scope, 0, true) {
 				return false
 			}
 			continue
@@ -359,7 +520,7 @@ func pureTemplateBindings(list *LVal, scope map[string]symKind, funBinder bool) 
 			// A function binder's formals list ([name formals body...])
 			// gets one more syntactic-quote discharge at index 1.
 			syntax := funBinder && i == 1
-			if !pureMacroTemplateQ(cell, scope, 0, syntax) {
+			if !p.pureMacroTemplateQ(cell, scope, 0, syntax) {
 				return false
 			}
 		}

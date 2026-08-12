@@ -26,10 +26,15 @@ package lisp
 //     verify, from the macro function's own (sealed, shared) body, that the
 //     expansion is a pure template instantiation: quasiquote templates whose
 //     unquotes are bare formals or gensym-bound locals, glued together by a
-//     tiny allowlist of structural operators.  Anything else — free symbol
-//     reads, arbitrary computation, nested quasiquote, a gensym leaked under
-//     quote (fresh-symbol-as-data semantics) — is rejected and the callsite
-//     simply bypasses the cache.  See macrocache_purity.go.
+//     tiny allowlist of structural operators, AND when every operator
+//     spelling the proof interpreted resolves to the kernel binding — in the
+//     macro's defining environment for its body, at the callsite for the
+//     binder syntax of its output.  Anything else — free symbol reads,
+//     arbitrary computation, nested quasiquote, a gensym leaked under quote
+//     (fresh-symbol-as-data semantics), a shadowed `if`/`let*`/`gensym` — is
+//     rejected and the callsite simply bypasses the cache.  The resolution
+//     obligations are re-checked on EVERY dispatch, so a `(set 'if ...)`
+//     after the fact takes effect immediately.  See macrocache_purity.go.
 //  3. Everything else bypasses: unsealed callsites (runtime-constructed
 //     code), debugger-attached runtimes (MacroExpansionInfo IDs must stay
 //     unique per expansion), and macros that fail 1 and 2.
@@ -258,9 +263,16 @@ type macroCacheEntry struct {
 
 // macroCacheIdentity classifies fun for caching.  ok reports whether fun is
 // admissible at all (pure); the returned identity is meaningful only when
-// ok.  Purity verdicts for user macros are memoized process-wide keyed by
-// the (sealed, shared) formals node.
-func macroCacheIdentity(fun *LVal) (macroIdentity, bool) {
+// ok.  callerEnv is the environment the callsite is being evaluated in.
+//
+// Admission has two halves (see macrocache_purity.go):
+//
+//   - the SYNTACTIC verdict, a function of the macro's sealed formals and
+//     body nodes alone, memoized process-wide on the formals node; and
+//   - the NAME-RESOLUTION obligations that verdict rests on, re-checked on
+//     every dispatch because they depend on environments that can change
+//     under any binding form — including `set` after the fact.
+func macroCacheIdentity(callerEnv *LEnv, fun *LVal) (macroIdentity, bool) {
 	if fun.Type != LFun {
 		return macroIdentity{}, false
 	}
@@ -284,18 +296,71 @@ func macroCacheIdentity(fun *LVal) (macroIdentity, bool) {
 		// identity and no purity guarantee.  Bypass.
 		return macroIdentity{}, false
 	}
-	if !userMacroPurity(fun, formals) {
+	p := userMacroPurity(fun, formals)
+	if !p.pure {
+		return macroIdentity{}, false
+	}
+	// The body evaluates in the macro's DEFINING environment; the expansion
+	// evaluates at the CALLSITE.  Each obligation is checked where the
+	// corresponding code runs.  A name that does not resolve to the kernel
+	// binding simply makes the macro uncacheable.
+	if !opsResolveToKernel(fd.env, p.defRefs) {
+		return macroIdentity{}, false
+	}
+	if !opsResolveToKernel(callerEnv, p.callRefs) {
 		return macroIdentity{}, false
 	}
 	return macroIdentity{formals: formals}, true
 }
 
-//elpsvet:allow process-wide purity-verdict memo keyed by sealed formals node pointers; stores bools, never mutates the keys
-var userMacroPurityMemo sync.Map // *LVal (formals node) -> bool
+// opsResolveToKernel reports whether every recorded operator spelling
+// resolves, in env, to the kernel binding the prover assumed it meant.
+func opsResolveToKernel(env *LEnv, refs []kernelRef) bool {
+	if len(refs) == 0 {
+		return true
+	}
+	if env == nil {
+		return false
+	}
+	for _, ref := range refs {
+		if !resolvesToKernelBinding(env, ref) {
+			return false
+		}
+	}
+	return true
+}
 
-func userMacroPurity(fun, formals *LVal) bool {
+// resolvesToKernelBinding looks ref.spelling up in env and reports whether it
+// is bound to the kernel-registered function with ref.fid.  Kernel special
+// operators and builtins are registered in the language package with a FID
+// derived from their registration name (AddSpecialOps/AddBuiltins), and
+// nothing else can mint those: a user redefinition binds either a lisp-cells
+// function (no builtin, no FID match) or a builtin registered under a
+// different name or package.
+func resolvesToKernelBinding(env *LEnv, ref kernelRef) bool {
+	v := env.get(Symbol(ref.spelling))
+	if v == nil || v.Type != LFun {
+		return false
+	}
+	fd := v.funData()
+	return fd != nil && fd.builtin != nil &&
+		fd.pkg == DefaultLangPackage && fd.fid == ref.fid
+}
+
+// userMacroPurityMemo caches the SYNTACTIC half of the admission test.  The
+// key is the macro's sealed formals node: sealed nodes are immutable and a
+// given formals node belongs to exactly one defmacro source form, so the
+// body the verdict was computed from cannot change under the key.  Nothing
+// environment-dependent is stored here — that was the leak the reviewer
+// found, where a verdict proven in an unshadowed environment licensed
+// caching in a shadowed one.
+//
+//elpsvet:allow process-wide purity-verdict memo keyed by sealed formals node pointers; stores syntactic verdicts, never mutates the keys
+var userMacroPurityMemo sync.Map // *LVal (formals node) -> macroPurity
+
+func userMacroPurity(fun, formals *LVal) macroPurity {
 	if v, ok := userMacroPurityMemo.Load(formals); ok {
-		return v.(bool)
+		return v.(macroPurity)
 	}
 	verdict := proveUserMacroPure(fun)
 	userMacroPurityMemo.Store(formals, verdict)
@@ -429,7 +494,7 @@ func (env *LEnv) macroCallCached(ctx context.Context, callsite, fun, args *LVal)
 		macroCacheStats.bypassUnsealed.Add(1)
 		return env.macroCall(ctx, fun, args)
 	}
-	id, ok := macroCacheIdentity(fun)
+	id, ok := macroCacheIdentity(env, fun)
 	if !ok {
 		macroCacheStats.bypassImpure.Add(1)
 		return env.macroCall(ctx, fun, args)
