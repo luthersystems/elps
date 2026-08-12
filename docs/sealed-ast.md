@@ -9,6 +9,11 @@ inline.
 Audience: reviewers of the sealing work, and authors of Go code that embeds
 elps or extends it with builtins.
 
+The invariant this document establishes also pays a construction dividend:
+`LEnv.Fork` clones a loaded environment by *sharing* every sealed value and
+copying only the mutable remainder. See [docs/fork.md](fork.md) for that
+API and its embedder contract.
+
 ---
 
 ## 1. Threat model: cross-environment corruption of shared parses
