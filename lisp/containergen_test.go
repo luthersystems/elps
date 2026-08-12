@@ -393,6 +393,22 @@ type containerOp struct {
 	// contract even for a mutating op — `(assoc! m k v)` may rewrite m and
 	// must not touch k or v.
 	mutatesArg int
+	// skipValueOracle suppresses the per-argument value comparison for this
+	// call while leaving the sealed oracle fully armed.
+	//
+	// It exists for exactly one situation: a higher-order operation running
+	// a CALLER-SUPPLIED function that mutates what it is handed.  There the
+	// write is the caller's, not the builtin's, and it can land on any of
+	// several arguments — a fold's callback writes the ACCUMULATOR, a map's
+	// writes an ELEMENT of the sequence — so no single mutatesArg index
+	// describes it.  Naming one (the sequence) was wrong in the direction
+	// that matters: it reported `foldl` for a write its own callback
+	// performed on the accumulator.
+	//
+	// The clause with teeth survives the suppression: a callback may rewrite
+	// a mutable value it is given and must NEVER rewrite a program literal,
+	// and that is the sealed oracle's sentence, not this one's.
+	skipValueOracle bool
 }
 
 // containerCall applies one op and makes every assertion the family shares.
@@ -437,7 +453,7 @@ func containerCall(t *testing.T, env *lisp.LEnv, op containerOp, args []*lisp.LV
 	fpArgs := make([]string, len(args))
 	skip := make([]bool, len(args))
 	for i, a := range args {
-		if i == op.mutatesArg {
+		if op.skipValueOracle || i == op.mutatesArg {
 			skip[i] = true
 			continue
 		}
@@ -808,6 +824,24 @@ func newContainerEnv(t *testing.T, ctx context.Context) *lisp.LEnv {
 	}
 	env.Runtime.Library = nil
 	return env
+}
+
+// containerProbeBytes builds the deterministic driver bytes the coverage
+// gates below sweep over.
+//
+// LENGTH IS LOAD-BEARING.  The generator consumes a byte per decision, and
+// reads past the end return 0 — so a short driver builds its structures and
+// then answers "0 more steps" to everything afterwards.  An eight-byte probe
+// measured a mean of 1.05 steps per sequence and was therefore grading the
+// harness on sequences that never got past step one, which is precisely the
+// case a coverage gate must not be blind to.  Thirty-two bytes leaves the
+// step-count draw with real entropy.
+func containerProbeBytes(i int) []byte {
+	b := make([]byte, 32)
+	for j := range b {
+		b[j] = byte(i*(j+1)*7 + i>>uint(j%8) + j*13)
+	}
+	return b
 }
 
 // TestContainerGenCoverage is the generator's own gate.

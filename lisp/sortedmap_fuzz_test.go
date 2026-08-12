@@ -194,10 +194,7 @@ func TestSortedMapSequencesRunToCompletion(t *testing.T) {
 	const samples = 4000
 	completed, wantedTotal, ranTotal := 0, 0, 0
 	for i := range samples {
-		g := newContainerGen([]byte{
-			byte(i), byte(i >> 8), byte(i >> 4), byte(i * 7),
-			byte(i * 13), byte(i * 31), byte(i * 3), byte(i * 5),
-		})
+		g := newContainerGen(containerProbeBytes(i))
 		wanted, ran := runSortedMapSequence(t, env, g)
 		wantedTotal += wanted
 		ranTotal += ran
