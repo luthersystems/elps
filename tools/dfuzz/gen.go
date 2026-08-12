@@ -93,18 +93,76 @@ var (
 	predicates = []string{"int?", "string?", "nil?", "list?", "vector?", "number?", "true?"}
 )
 
+// intLit emits an integer in one of the syntaxes the lexer accepts.  The
+// sealed branch rewrote 283 lines of the recursive-descent parser and moved
+// the seal to the end of each top-level expression, so the SYNTAX a value
+// arrives in is part of the surface under test, not incidental.
+func (g *Gen) intLit() string {
+	v := g.pick(intLits)
+	if !g.chance(6) || strings.HasPrefix(v, "-") {
+		return v
+	}
+	n := 0
+	for _, c := range v {
+		n = n*10 + int(c-'0')
+	}
+	if g.chance(2) {
+		return fmt.Sprintf("#x%x", n)
+	}
+	return fmt.Sprintf("#o%o", n)
+}
+
+// strLit emits a string in either the ordinary or the raw syntax.
+func (g *Gen) strLit() string {
+	v := g.pick(strLits)
+	if g.chance(6) {
+		return `"""` + strings.Trim(v, `"`) + `"""`
+	}
+	if g.chance(8) {
+		return `"a\tb"`
+	}
+	return v
+}
+
+// bracketList emits `[a b c]`, which reads as a LIST LITERAL rather than a
+// call -- a distinct parser path from the quote macro that produces the same
+// kind of value.
+func (g *Gen) bracketList() string {
+	n := 1 + g.rng.Intn(3)
+	parts := make([]string, n)
+	for i := range parts {
+		parts[i] = g.unquotedAtom()
+	}
+	return "[" + strings.Join(parts, " ") + "]"
+}
+
+// comment returns a comment to hang off the end of a line, sometimes.  The
+// parser attaches a same-line trailing comment to an expression's formatting
+// metadata, and the seal explicitly excludes the format-preserving path, so a
+// comment sitting next to a sealed top-level form is worth generating.
+func (g *Gen) comment() string {
+	switch g.rng.Intn(8) {
+	case 0:
+		return " ;; c"
+	case 1:
+		return " ; " + g.pick(strLits)
+	default:
+		return ""
+	}
+}
+
 func (g *Gen) atom() string {
 	switch g.rng.Intn(6) {
 	case 0:
 		return g.pick(floatLits)
 	case 1:
-		return g.pick(strLits)
+		return g.strLit()
 	case 2:
 		return g.pick(boolLits)
 	case 3:
 		return g.pick(atomLits)
 	default:
-		return g.pick(intLits)
+		return g.intLit()
 	}
 }
 
@@ -142,13 +200,13 @@ func (g *Gen) quotedInner() string {
 func (g *Gen) unquotedAtom() string {
 	switch g.rng.Intn(5) {
 	case 0:
-		return g.pick(strLits)
+		return g.strLit()
 	case 1:
 		return g.pick(floatLits)
 	case 2:
 		return g.pick(boolLits)
 	default:
-		return g.pick(intLits)
+		return g.intLit()
 	}
 }
 
@@ -196,7 +254,7 @@ func (g *Gen) mapValue() string {
 // `<` is a legitimate program and its error is compared like any other, but a
 // generator that does it most of the time spends its budget proving that both
 // trees reject bad types identically, which nobody doubted.
-func (g *Gen) numAtom() string { return g.pick(intLits) }
+func (g *Gen) numAtom() string { return g.intLit() }
 
 // numQuotedList is a quoted literal whose elements are all numbers, so the
 // ordering builtins accept it.  This is the shape the stable-sort defect
@@ -259,8 +317,10 @@ func (g *Gen) listySeq() string {
 	switch g.rng.Intn(6) {
 	case 0, 1, 2:
 		return g.quotedList()
-	case 3, 4:
+	case 3:
 		return g.vectorLit()
+	case 4:
+		return g.bracketList()
 	default:
 		return fmt.Sprintf("(list %s %s)", g.atom(), g.atom())
 	}
@@ -312,6 +372,9 @@ func (g *Gen) lambda1() string {
 
 func (g *Gen) pred1() string {
 	if g.chance(2) {
+		if g.chance(2) {
+			return "#'" + g.pick(predicates)
+		}
 		return "(function " + g.pick(predicates) + ")"
 	}
 	v := g.name("p")
@@ -531,7 +594,7 @@ func (g *Gen) Program() string {
 	fn := g.name("f")
 	b.WriteString("(defun " + fn + " (n)\n")
 	for i := 0; i < nStmt; i++ {
-		b.WriteString("  " + g.shape() + "\n")
+		b.WriteString("  " + g.shape() + g.comment() + "\n")
 	}
 	b.WriteString("  (list n " + g.genExpr(2) + "))\n")
 
@@ -553,7 +616,7 @@ func (g *Gen) TopLevelProgram() string {
 	b.WriteString(preamble())
 	n := 2 + g.rng.Intn(4)
 	for i := 0; i < n; i++ {
-		b.WriteString(g.shape() + "\n")
+		b.WriteString(g.shape() + g.comment() + "\n")
 	}
 	b.WriteString(g.genExpr(3) + "\n")
 	return b.String()
