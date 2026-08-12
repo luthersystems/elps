@@ -414,6 +414,13 @@ func RunBenchmark(b *testing.B, source string) {
 	//
 	// An unsealed program (a Reader that does not seal) still gets #365's
 	// per-iteration copy, made outside the timed region as before.
+	//
+	// The ROOT-level test is sufficient here, and only here: the reader is
+	// the parser.NewReader() two lines up, and the parser produces only the
+	// types SealAST marks, so a sealed root implies a sealed tree.  Where
+	// the Reader is the caller's, that implication fails and the deep
+	// question is required instead — see sealedThroughout in lisp/loader.go
+	// and TestTextLoaderCopiesPartiallySealedAST.
 	allSealed := true
 	for _, expr := range exprs {
 		if !expr.IsSealed() {
