@@ -764,9 +764,9 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 		Type:   LFun,
 		source: env.loc,
 		Native: &funData{
-			FID:     fenv.getFID(),
-			Package: env.Runtime.Package.Name,
-			Env:     fenv,
+			fid: fenv.getFID(),
+			pkg: env.Runtime.Package.Name,
+			env: fenv,
 		},
 		Cells: cells,
 	}

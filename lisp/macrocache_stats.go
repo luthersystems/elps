@@ -200,7 +200,7 @@ func recordMacroExpandEvent(callsite, fun *LVal) {
 		name := "?"
 		if fun.Type == LFun {
 			if fd := fun.funData(); fd != nil {
-				name = fd.Package + ":" + fd.FID
+				name = fd.pkg + ":" + fd.fid
 			}
 		}
 		v, _ = macroExpandStats.sites.LoadOrStore(callsite, &macroSiteStat{

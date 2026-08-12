@@ -268,11 +268,11 @@ func macroCacheIdentity(fun *LVal) (macroIdentity, bool) {
 	if fd == nil {
 		return macroIdentity{}, false
 	}
-	if fd.Builtin != nil {
-		if !isPureNativeMacro(fd.Package, fd.FID) {
+	if fd.builtin != nil {
+		if !isPureNativeMacro(fd.pkg, fd.fid) {
 			return macroIdentity{}, false
 		}
-		return macroIdentity{pkg: fd.Package, fid: fd.FID}, true
+		return macroIdentity{pkg: fd.pkg, fid: fd.fid}, true
 	}
 	// User macro: cells are [formals, body...].
 	if len(fun.Cells) < 2 {
