@@ -48,7 +48,11 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 		err := checkLoaderExpr(expr)
 		if err != nil {
 			lerr := Error(err)
-			lerr.source = expr.source
+			// Copied, not aliased: the error escapes to the embedder through
+			// GoError while expr stays part of the loaded program, so the
+			// two must not share a *token.Location (cold path; the copy is
+			// free in practice).
+			lerr.source = copyLocation(expr.source)
 			return nil, GoError(lerr)
 		}
 	}
