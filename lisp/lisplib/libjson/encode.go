@@ -27,7 +27,7 @@ func init() {
 	encoderFuncs[lisp.LTaggedVal] = (*encoder).encodeTaggedVal
 }
 
-var encoderFuncs [lisp.LTypeMax]func(enc *encoder, v *lisp.LVal) error
+var encoderFuncs [lisp.LTypeMax]func(enc *encoder, v *lisp.LVal, g encodeGuard) error
 
 type encodeInvalidNumberError float64
 
@@ -35,30 +35,32 @@ func (e encodeInvalidNumberError) Error() string {
 	return fmt.Sprintf("unable to encode number %g", float64(e))
 }
 
+// encoder is heap-allocated once per document, so every byte of it is charged
+// to every encode whether or not that encode ever uses the byte.  It fills the
+// 112-byte size class exactly, which is why the cycle guard below is carried
+// down the walk as an argument instead of being parked in fields here: one
+// more word rounds the encoder up to the next size class, and every document
+// in the process -- almost none of which have anything to do with cycles --
+// pays the 16 bytes.  TestEncoderFitsItsSizeClass pins the size.
 type encoder struct {
-	// path holds the values between the root of the encoding and the value
-	// being encoded now.  It stays nil until the encoder nests deeper than
-	// encodeGuardDepth, so an ordinary document allocates nothing for it.
-	//
-	// It leads the struct for the fieldalignment gate: its pointer sits next
-	// to buf's, which keeps the run of pointer bytes the GC must scan short.
-	path map[*lisp.LVal]struct{}
-
 	buf bytes.Buffer
 
 	scratch    [64]byte
-	depth      int
 	stringNums bool
 }
 
-// encodeGuardDepth is the nesting depth past which the encoder stops assuming
-// the value it is serializing is a tree and starts tracking the path it is on.
+// encodeGuardDepth is the nesting depth at which the encoder stops assuming
+// the value it is serializing is a tree.
 //
 // assoc! and append! mutate a container in place, so a program can store a
 // container inside itself, and an unguarded encoder walks such a value until
 // the goroutine stack overflows and the Go runtime kills the process -- which
 // recover() cannot catch, so it is not something the evaluator can turn into a
 // condition.  See lisp/cycle.go and issue #390.
+//
+// It is chosen well above the nesting real documents reach and well below
+// anything that troubles a goroutine stack.  Nothing depends on the exact
+// number.
 const encodeGuardDepth = 64
 
 // errCyclicValue reports a value that contains itself.  JSON has no
@@ -67,31 +69,69 @@ const encodeGuardDepth = 64
 // handler-bind can catch.
 var errCyclicValue = errors.New("cannot serialize a value that contains itself")
 
-// enter descends into v, and reports an error if v is already on the path
-// being encoded.  A caller that gets nil back must pair it with leave(v).
+// errDeepValue is internal to encode: it aborts the counting pass of a
+// document that nests past encodeGuardDepth so the pass that can tell a deep
+// tree from a cycle can start.  It never reaches a caller.
+var errDeepValue = errors.New("value nests past the encoder's guard depth")
+
+// encodeGuard bounds the encoder's recursion over an LVal graph.  It is copied
+// by value down the walk, and which of its two fields is set says which of the
+// encoder's two passes this is.
 //
-// The path set is scoped to the current path rather than the whole document
-// so that a value which merely shares a substructure with itself -- a DAG,
-// (list x x) -- still serializes as the two copies it has always been.
-func (enc *encoder) enter(v *lisp.LVal) error {
-	enc.depth++
-	if enc.depth < encodeGuardDepth {
-		return nil
-	}
-	if enc.path == nil {
-		enc.path = make(map[*lisp.LVal]struct{}, encodeGuardDepth)
-	} else if _, ok := enc.path[v]; ok {
-		return errCyclicValue
-	}
-	enc.path[v] = struct{}{}
-	return nil
+// The first pass carries nothing but depth: an int on the stack, incremented
+// and compared, which is free next to the serialization the walk exists to do
+// and -- the point of the split -- allocates nothing and puts no field on the
+// encoder.  A document that nests past encodeGuardDepth abandons that pass
+// with errDeepValue.
+//
+// The second pass carries path, the set of values between the root of the
+// document and the current frame, and no depth bound.  A value found on the
+// path is on the walk's own ancestry and so contains itself.  The set is
+// path-scoped rather than document-scoped, unwound by leave, because a
+// document that merely mentions a value twice -- a DAG, (list x x) -- is not
+// cyclic and must still serialize as the two copies it has always been.
+//
+// The set is made once, by encode, before the walk starts.  A guard that made
+// its own on the way down would make one per value sitting at the depth that
+// starts tracking, because every such value inherits a nil set from its parent
+// one level up; making it up front is also what lets the guard stay a value
+// with no shared state hanging off it.
+//
+// The second pass has no depth bound on purpose.  What is being bounded is the
+// cycle, not the nesting: an acyclic document recurses as far as its own
+// structure goes, exactly as it did before any of this existed, and a document
+// deep enough to trouble a goroutine stack needs a value per level to build,
+// which is not the 32-bytes-of-lisp denial of service issue #390 is about.
+type encodeGuard struct {
+	path map[*lisp.LVal]struct{}
+
+	depth int
 }
 
-// leave ascends out of v.
-func (enc *encoder) leave(v *lisp.LVal) {
-	enc.depth--
-	if enc.path != nil {
-		delete(enc.path, v)
+// enter descends into v.  It reports errCyclicValue if v is already on the
+// path being encoded, and errDeepValue if this is the counting pass and the
+// document has nested past encodeGuardDepth.  A caller that gets nil back must
+// pair it with leave(v) on the returned guard.
+func (g encodeGuard) enter(v *lisp.LVal) (encodeGuard, error) {
+	if g.path == nil {
+		g.depth++
+		if g.depth < encodeGuardDepth {
+			return g, nil
+		}
+		return g, errDeepValue
+	}
+	if _, ok := g.path[v]; ok {
+		return g, errCyclicValue
+	}
+	g.path[v] = struct{}{}
+	return g, nil
+}
+
+// leave ascends out of v, removing it from the current path.  It is a no-op in
+// the counting pass, which has no path to unwind.
+func (g encodeGuard) leave(v *lisp.LVal) {
+	if g.path != nil {
+		delete(g.path, v)
 	}
 }
 
@@ -103,37 +143,67 @@ func (enc *encoder) bytes() []byte {
 	return enc.buf.Bytes()
 }
 
+// encode serializes v, the root of a document.  It is the entry point for a
+// whole document and the only place a guard is created.
+//
+// Almost every document is written by the counting pass alone, which carries
+// one int down the stack and allocates nothing.  A document that nests past
+// encodeGuardDepth is written twice, and that is the deliberate trade: the
+// alternative is to keep the path set reachable from the encoder so the first
+// pass can start tracking where it stands, and a field on the encoder is two
+// words charged to every document in the process, including the overwhelming
+// majority that are three levels deep.  Paying a second pass on documents that
+// nest past 64 -- deeper than most JSON parsers will even accept -- is the
+// cheaper half of that trade by a wide margin.
 func (enc *encoder) encode(v *lisp.LVal) error {
+	mark := enc.buf.Len()
+	err := enc.encodeValue(v, encodeGuard{})
+	if !errors.Is(err, errDeepValue) {
+		return err
+	}
+	// The counting pass abandoned the document partway through, so its output
+	// is a fragment.  Drop it and start the value over.
+	enc.buf.Truncate(mark)
+	return enc.encodeValue(v, encodeGuard{path: make(map[*lisp.LVal]struct{}, encodeGuardDepth)})
+}
+
+// encodeValue serializes one value of a document already in progress.  Every
+// nested encode must call this and pass g down rather than calling encode, or
+// the bound is lost.
+func (enc *encoder) encodeValue(v *lisp.LVal, g encodeGuard) error {
 	if v.IsNil() {
 		enc.buf.WriteString("null")
 		return nil
 	}
-	if fn := encoderFuncs[v.Type]; fn != nil {
-		if err := enc.enter(v); err != nil {
-			return err
-		}
-		defer enc.leave(v)
-		return fn(enc, v)
+	fn := encoderFuncs[v.Type]
+	if fn == nil {
+		return fmt.Errorf("invalid type encountered: %v", lisp.GetType(v))
 	}
-	return fmt.Errorf("invalid type encountered: %v", lisp.GetType(v))
+	g, err := g.enter(v)
+	if err != nil {
+		return err
+	}
+	err = fn(enc, v, g)
+	g.leave(v)
+	return err
 }
 
-func (enc *encoder) encodeLQuote(v *lisp.LVal) error {
-	return enc.encode(v.Cells[0])
+func (enc *encoder) encodeLQuote(v *lisp.LVal, g encodeGuard) error {
+	return enc.encodeValue(v.Cells[0], g)
 }
 
-func (enc *encoder) encodeArray(v *lisp.LVal) (err error) {
+func (enc *encoder) encodeArray(v *lisp.LVal, g encodeGuard) (err error) {
 	switch v.Cells[0].Len() {
 	case 0:
-		return enc.encode(v.Cells[1].Cells[0])
+		return enc.encodeValue(v.Cells[1].Cells[0], g)
 	case 1:
-		return enc.encodeSExpr(v.Cells[1].Cells)
+		return enc.encodeSExpr(v.Cells[1].Cells, g)
 	default:
 		return fmt.Errorf("cannot serialize array with dimensions: %v", v.Cells[0])
 	}
 }
 
-func (enc *encoder) encodeSortMap(v *lisp.LVal) (err error) {
+func (enc *encoder) encodeSortMap(v *lisp.LVal, g encodeGuard) (err error) {
 	// TODO:  Cache map entries slices to help with "widely nested" objects
 	enc.buf.WriteByte('{')
 	ents := v.MapEntries()
@@ -146,7 +216,7 @@ func (enc *encoder) encodeSortMap(v *lisp.LVal) (err error) {
 			return err
 		}
 		enc.buf.WriteByte(':')
-		err = enc.encode(ents.Cells[i].Cells[1])
+		err = enc.encodeValue(ents.Cells[i].Cells[1], g)
 		if err != nil {
 			return err
 		}
@@ -168,24 +238,24 @@ func (e invalidKeyTypeError) Error() string {
 	return fmt.Sprintf("invalid map key type: %v", lisp.LType(e))
 }
 
-func (enc *encoder) encodeTaggedVal(v *lisp.LVal) error {
+func (enc *encoder) encodeTaggedVal(v *lisp.LVal, g encodeGuard) error {
 	// Eventually there may be a way for lisp objects to implement custom
 	// serialization but for now tagged values just have the user-data
 	// serialized directly.
-	return enc.encode(v.Cells[0])
+	return enc.encodeValue(v.Cells[0], g)
 }
 
-func (enc *encoder) encodeLSExpr(v *lisp.LVal) error {
-	return enc.encodeSExpr(v.Cells)
+func (enc *encoder) encodeLSExpr(v *lisp.LVal, g encodeGuard) error {
+	return enc.encodeSExpr(v.Cells, g)
 }
 
-func (enc *encoder) encodeSExpr(cells []*lisp.LVal) (err error) {
+func (enc *encoder) encodeSExpr(cells []*lisp.LVal, g encodeGuard) (err error) {
 	enc.buf.WriteByte('[')
 	for i, v := range cells {
 		if i > 0 {
 			enc.buf.WriteByte(',')
 		}
-		err = enc.encode(v)
+		err = enc.encodeValue(v, g)
 		if err != nil {
 			return err
 		}
@@ -194,7 +264,7 @@ func (enc *encoder) encodeSExpr(cells []*lisp.LVal) (err error) {
 	return nil
 }
 
-func (enc *encoder) encodeLNative(v *lisp.LVal) error {
+func (enc *encoder) encodeLNative(v *lisp.LVal, _ encodeGuard) error {
 	return enc.encodeNative(v.Native)
 }
 
@@ -204,7 +274,7 @@ func (enc *encoder) encodeNative(v interface{}) error {
 	return err
 }
 
-func (enc *encoder) encodeLInt(v *lisp.LVal) error {
+func (enc *encoder) encodeLInt(v *lisp.LVal, _ encodeGuard) error {
 	return enc.encodeInt(v.Int)
 }
 
@@ -220,7 +290,7 @@ func (enc *encoder) encodeInt(x int) (err error) {
 	return err
 }
 
-func (enc *encoder) encodeLFloat(v *lisp.LVal) error {
+func (enc *encoder) encodeLFloat(v *lisp.LVal, _ encodeGuard) error {
 	return enc.encodeFloat(v.Float)
 }
 
@@ -270,7 +340,7 @@ func (enc *encoder) scratchFloat(x float64) []byte {
 	return b
 }
 
-func (enc *encoder) encodeLBytes(v *lisp.LVal) (err error) {
+func (enc *encoder) encodeLBytes(v *lisp.LVal, _ encodeGuard) (err error) {
 	return enc.encodeBytes(v.Bytes())
 }
 
@@ -309,7 +379,7 @@ func (enc *encoder) encodeBytes(b []byte) (err error) {
 	return nil
 }
 
-func (enc *encoder) encodeLSymbol(v *lisp.LVal) (err error) {
+func (enc *encoder) encodeLSymbol(v *lisp.LVal, _ encodeGuard) (err error) {
 	if v.Str == lisp.TrueSymbol || v.Str == lisp.FalseSymbol {
 		enc.buf.WriteString(v.Str)
 		return nil
@@ -317,7 +387,7 @@ func (enc *encoder) encodeLSymbol(v *lisp.LVal) (err error) {
 	return enc.encodeString(v.Str)
 }
 
-func (enc *encoder) encodeLString(v *lisp.LVal) error {
+func (enc *encoder) encodeLString(v *lisp.LVal, _ encodeGuard) error {
 	return enc.encodeString(v.Str)
 }
 

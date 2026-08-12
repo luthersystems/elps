@@ -9,6 +9,7 @@ import (
 	mathrand "math/rand"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/assert"
@@ -285,10 +286,34 @@ func TestEncodeCyclicValueErrors(t *testing.T) {
 			err := enc.encode(test.v)
 			require.ErrorIs(t, err, errCyclicValue)
 
-			_, err = Dump(test.v, false)
+			b, err := Dump(test.v, false)
 			require.ErrorIs(t, err, errCyclicValue, "the error must reach the builtins")
+			assert.Empty(t, b, "a refused value must not produce a partial document")
 		})
 	}
+}
+
+// TestEncoderFitsItsSizeClass is the guard on the regression the CI benchmark
+// gate caught: adding two fields to the encoder for cycle tracking took it
+// from 112 bytes to 120, which the allocator rounds to the 128-byte size
+// class.  The encoder is heap-allocated once per document, so that charged 16
+// bytes to every json:dump-* call in the process -- +5.6% of BenchmarkEncode's
+// bytes, +7.2% of BenchmarkEncode_stringNumbers', with the allocation *count*
+// unchanged, which is why an allocs-only assertion would not have seen it.
+//
+// The guard lives in encodeGuard, on the stack, for this reason.  A field
+// added here is not free even when it is nil.
+//
+// Red-proof: adding `path map[*lisp.LVal]struct{}` and `depth int` back to
+// encoder fails this at 128.
+func TestEncoderFitsItsSizeClass(t *testing.T) {
+	// The size class the encoder occupied before the cycle guard existed.
+	// Growing past it is a cost paid by every document, so the field has to
+	// earn it; shrinking below it is free to update this number downward.
+	const sizeClass = 112
+	assert.LessOrEqual(t, int(unsafe.Sizeof(encoder{})), sizeClass,
+		"the encoder no longer fits the %d-byte size class, so every json:dump-* "+
+			"in the process now allocates a larger block", sizeClass)
 }
 
 // TestEncodeAcyclicValueIsUnchangedBelowAndAboveTheGuard pins the property the
