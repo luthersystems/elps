@@ -401,6 +401,26 @@ func RunBenchmark(b *testing.B, source string) {
 	if err != nil {
 		b.Fatalf("parse error: %v", err)
 	}
+	// Each iteration runs in a fresh Runtime evaluating the SAME parsed
+	// program.  The sharing is safe because the parser seals its output
+	// (lisp.SealAST): sealed nodes are frozen storage under copy-on-write
+	// protection, and cross-runtime sharing of sealed trees is sanctioned —
+	// the elpscheck ownership checker exempts sealed nodes for exactly this
+	// reason (lisp/ownership_check_elpscheck.go, Allowlist section).  This
+	// replaces the per-iteration deep copy added for issue #365; the seal
+	// upgraded #365's rule from "no cross-runtime sharing" to "no MUTABLE
+	// cross-runtime sharing", and the VerifySealedASTs call below is the
+	// oracle that the shared tree stayed pristine.
+	//
+	// An unsealed program (a Reader that does not seal) still gets #365's
+	// per-iteration copy, made outside the timed region as before.
+	allSealed := true
+	for _, expr := range exprs {
+		if !expr.IsSealed() {
+			allSealed = false
+			break
+		}
+	}
 	for range b.N {
 		env := lisp.NewEnv(nil)
 		err := lisp.GoError(lisp.InitializeUserEnv(env,
@@ -412,16 +432,12 @@ func RunBenchmark(b *testing.B, source string) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		// Each iteration runs in a fresh Runtime, so it must evaluate its
-		// own copy of the parsed AST rather than sharing one tree across
-		// every iteration's runtime.  This is the same rule TextLoader
-		// applies (it Copy()s per load for the same reason), and the
-		// elpscheck ownership checker (lisp/ownership_check_elpscheck.go)
-		// enforces it.  The copies are made outside the timed region so
-		// ns/op remains comparable with historical numbers.
-		iterExprs := make([]*lisp.LVal, len(exprs))
-		for i, expr := range exprs {
-			iterExprs[i] = expr.Copy()
+		iterExprs := exprs
+		if !allSealed {
+			iterExprs = make([]*lisp.LVal, len(exprs))
+			for i, expr := range exprs {
+				iterExprs[i] = expr.Copy()
+			}
 		}
 		b.StartTimer()
 		for i, expr := range iterExprs {
@@ -431,5 +447,12 @@ func RunBenchmark(b *testing.B, source string) {
 			}
 		}
 		b.StopTimer()
+	}
+	// Checked-mode oracle (issue #372 machinery): re-fingerprint every
+	// sealed parse recorded in this process and fail the benchmark if any
+	// iteration mutated the shared program tree in place.  A free nil in
+	// untagged builds.
+	if err := lisp.VerifySealedASTs(); err != nil {
+		b.Fatalf("sealed AST verification failed after benchmark: %v", err)
 	}
 }

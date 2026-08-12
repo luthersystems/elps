@@ -144,3 +144,48 @@ func TestOwnershipCheck_ResetForgets(t *testing.T) {
 		t.Fatalf("put in runtime B after reset failed: %v", lerr)
 	}
 }
+
+// TestOwnershipCheck_SealedASTExempt pins the seal exemption (#379): a
+// sealed program tree evaluated — and Put — under two Runtimes must NOT
+// trip the checker.  Sealed nodes are frozen storage under copy-on-write
+// protection, and cross-runtime sharing of sealed trees is the seal's
+// sanctioned purpose (substrate's warm parse cache, and the shared sealed
+// program in elpstest.RunBenchmark).
+//
+// The second half is the red-proof that keeps the gate honest: an UNSEALED
+// tree of the exact same shape, crossing the same two runtimes, must still
+// panic.  The exemption is "sealed", not "looks like an AST".
+func TestOwnershipCheck_SealedASTExempt(t *testing.T) {
+	envA := newOwnershipTestEnv()
+	envB := newOwnershipTestEnv()
+
+	mk := func() *LVal {
+		v := SExpr([]*LVal{Int(1), Int(2), Int(3)})
+		v.quoted = true
+		return v
+	}
+
+	sealed := mk()
+	sealed.SealAST()
+	if res := envA.Eval(sealed); res.Type == LError {
+		t.Fatalf("eval of a sealed tree in runtime A failed: %v", res)
+	}
+	if res := envB.Eval(sealed); res.Type == LError {
+		t.Fatalf("eval of a sealed tree in runtime B must be exempt: %v", res)
+	}
+	if lerr := envA.Put(Symbol("x"), sealed); lerr.Type == LError {
+		t.Fatalf("put of a sealed tree in runtime A failed: %v", lerr)
+	}
+	if lerr := envB.Put(Symbol("x"), sealed); lerr.Type == LError {
+		t.Fatalf("put of a sealed tree in runtime B must be exempt: %v", lerr)
+	}
+
+	// Red-proof: identical shape, no seal — the gate must still fail.
+	unsealed := mk()
+	if res := envA.Eval(unsealed); res.Type == LError {
+		t.Fatalf("eval of the unsealed tree in runtime A failed: %v", res)
+	}
+	expectOwnershipPanic(t, func() {
+		envB.Eval(unsealed)
+	})
+}

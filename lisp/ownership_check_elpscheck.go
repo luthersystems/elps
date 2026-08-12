@@ -58,8 +58,23 @@ import (
 //
 // # Allowlist
 //
-// Exactly the three singletons (Nil()/Bool(true)/Bool(false)); they are
-// shared by design, immutable by decree, and guarded by checkSingleton.
+// Two categories, each shared by design and immutable by construction:
+//
+//   - The three singletons (Nil()/Bool(true)/Bool(false)): immutable by
+//     decree and guarded by checkSingleton.
+//   - SEALED nodes (v.sealed — lisp/seal.go).  A sealed node is frozen
+//     program-literal storage under copy-on-write protection: every kernel
+//     mutation site copies before writing, the evaluator's metadata writes
+//     (stampMacroExpansion, SetSource) skip sealed nodes, and checked
+//     builds fingerprint every sealed parse (VerifySealedASTs) so a hole
+//     in that protection is a test failure, not a silently-trusted
+//     exemption.  Cross-runtime sharing of sealed trees is therefore
+//     SANCTIONED — it is the seal's purpose (substrate's warm parse cache
+//     hands one sealed tree to many runtimes; elpstest.RunBenchmark shares
+//     the sealed program across per-iteration runtimes; #379 item 2).  The
+//     rule this checker enforces keeps its spirit: no MUTABLE value may be
+//     used by two Runtimes.  Sealing is what makes "not mutable" provable.
+//
 // Values whose Source is the shared native location need NO exemption —
 // the Location is shared (#362) but the LVals carrying it are per-value.
 // Nothing else is exempt.  If the suite finds a new cross-runtime flow,
@@ -118,7 +133,7 @@ func (v ownershipViolation) String() string { return v.msg }
 // LEnv.Put, LEnv.PutGlobal, and env.eval — see the file comment for why
 // those three points and what they miss.
 func checkOwnership(rt *Runtime, v *LVal) {
-	if v == nil || rt == nil || isSingleton(v) {
+	if v == nil || rt == nil || v.sealed || isSingleton(v) {
 		return
 	}
 	m := ownershipTable.m.Load()

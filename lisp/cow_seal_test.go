@@ -371,13 +371,12 @@ q
 	}
 
 	// Runtime 2 evaluates the same cached exprs and must see pristine data.
-	// Under elpscheck the ownership checker forbids this sharing pattern by
-	// design (one tree, two Runtimes), so the replay only runs in the
-	// production configuration — the one substrate's cache actually uses.
-	if elpscheckActive {
-		t.Log("elpscheck build: skipping the second-runtime replay (ownership checker forbids cross-runtime AST sharing by design); fingerprint assertion above still ran")
-		return
-	}
+	// This replay now runs in checked builds too: the ownership checker
+	// exempts sealed nodes (cross-runtime sharing of sealed trees is the
+	// sanctioned design — see the Allowlist section of
+	// lisp/ownership_check_elpscheck.go), so the elpscheck configuration
+	// exercises the exact sharing pattern substrate's cache uses instead
+	// of skipping it.
 	env2 := newCowTestEnv(t)
 	var q2 *lisp.LVal
 	for i, e := range exprs {
