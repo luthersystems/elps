@@ -117,7 +117,7 @@ func singletonLValEqual(a, b *LVal) bool {
 		a.quoted == b.quoted &&
 		a.spliced == b.spliced &&
 		a.Meta == b.Meta &&
-		a.MacroExpansion == b.MacroExpansion &&
+		a.macroExpansion == b.macroExpansion &&
 		a.Native == b.Native &&
 		len(a.Cells) == len(b.Cells)
 }

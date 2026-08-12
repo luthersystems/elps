@@ -5,8 +5,31 @@ package lisp
 import (
 	"fmt"
 
+	macroexphook "github.com/luthersystems/elps/internal/macroexp/hook"
 	"github.com/luthersystems/elps/parser/token"
 )
+
+func init() {
+	// Inject the test-only metadata fabricator for in-repo debugger tests.
+	// The typed surface lives in internal/macroexp; the untyped slot in
+	// internal/macroexp/hook exists only to break the import cycle
+	// (macroexp needs lisp's types, so lisp cannot import macroexp).  This
+	// is deliberately the ONLY way to attach macro-expansion metadata from
+	// outside the in-kernel stamp (stampMacroExpansion below), and
+	// internal/ visibility limits it to this module.
+	macroexphook.Attach = func(v *LVal, name string, callSite, defSite *token.Location, args []*LVal, id int64) {
+		//elps:mutates test-only fabrication of debug metadata via internal/macroexp; unreachable outside this module
+		v.macroExpansion = &macroExpansionInfo{
+			macroExpansionContext: &macroExpansionContext{
+				CallSite: callSite,
+				Name:     name,
+				DefSite:  defSite,
+				Args:     args,
+			},
+			ID: id,
+		}
+	}
+}
 
 //elpsvet:allow user-registered macro table; formals are sealed (see sealDefaultFormals init in builtins.go / RegisterDefaultMacro) and shared via registrationFormals (env.go AddMacros)
 var userMacros []*langBuiltin
@@ -230,7 +253,7 @@ func macroDeftype(env *LEnv, args *LVal) *LVal {
 // locations (from parser or unquote) are left unchanged.
 //
 // When ctx is non-nil (debugger attached), each stamped node also gets a
-// MacroExpansionInfo with a unique, monotonically-increasing ID. The
+// macroExpansionInfo with a unique, monotonically-increasing ID. The
 // runtime's sequence counter is used to generate IDs.
 //
 // Singleton values (Nil(), Bool(true), Bool(false)) are skipped via
@@ -241,7 +264,7 @@ func macroDeftype(env *LEnv, args *LVal) *LVal {
 // handed to stampMacroExpansion can contain itself, and an unguarded walk over
 // one overflows the goroutine stack and kills the process.  The walk is
 // bounded the same way rendering is; see lisp/cycle.go and issue #390.
-func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionContext, rt *Runtime) {
+func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionContext, rt *Runtime) {
 	var st cycleState
 	stampGuarded(v, callSite, ctx, rt, cycleGuard{state: &st})
 	if st.cyclic {
@@ -253,7 +276,7 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionC
 	}
 }
 
-func stampGuarded(v *LVal, callSite *token.Location, ctx *MacroExpansionContext, rt *Runtime, g cycleGuard) {
+func stampGuarded(v *LVal, callSite *token.Location, ctx *macroExpansionContext, rt *Runtime, g cycleGuard) {
 	if v == nil || callSite == nil {
 		return
 	}
@@ -297,8 +320,8 @@ func stampGuarded(v *LVal, callSite *token.Location, ctx *MacroExpansionContext,
 		v.source = callSite //elps:mutates debug-metadata stamp on macro-expansion output; sealed (shared) subtrees are skipped above
 		if ctx != nil {
 			//elps:mutates debug-metadata stamp on macro-expansion output; sealed (shared) subtrees are skipped above
-			v.MacroExpansion = &MacroExpansionInfo{
-				MacroExpansionContext: ctx,
+			v.macroExpansion = &macroExpansionInfo{
+				macroExpansionContext: ctx,
 				ID:                    rt.nextMacroExpID(),
 			}
 		}

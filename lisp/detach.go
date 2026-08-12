@@ -105,7 +105,7 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	cp.Meta = detachMeta(v.Meta)
 	// Debugger-only metadata; its context aliases unevaluated argument
 	// values inside the source runtime, so a detached value carries none.
-	cp.MacroExpansion = nil
+	cp.macroExpansion = nil
 
 	// The struct copy above aliased v.Native.  Every payload a detachable
 	// type is documented to carry is replaced with a hermetic copy; anything

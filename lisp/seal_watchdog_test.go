@@ -170,7 +170,7 @@ func sealWatchRead(v *LVal, depth int, budget *int, acc uint64) uint64 {
 	if v.Meta != nil {
 		acc ^= 1 << 19
 	}
-	if v.MacroExpansion != nil {
+	if v.macroExpansion != nil {
 		acc ^= 1 << 20
 	}
 	if v.Native != nil {

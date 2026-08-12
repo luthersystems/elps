@@ -54,7 +54,7 @@ type Runtime struct {
 	totalSteps             int64         // Steps consumed by all completed top-level evaluations.
 	numenv                 atomicCounter
 	numsym                 atomicCounter
-	macroExpSeq            int64 // monotonic counter for MacroExpansionInfo.ID
+	macroExpSeq            int64 // monotonic counter for macroExpansionInfo.ID
 }
 
 // MaxAllocBytes returns the effective per-operation allocation size cap.

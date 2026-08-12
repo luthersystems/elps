@@ -1214,15 +1214,15 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	// Stamp expanded nodes that have synthetic source locations (Pos < 0)
 	// with the call-site location so errors point to where the macro was
 	// invoked rather than "<native code>" or the macro definition site.
-	// When a debugger is attached, also populate MacroExpansionInfo on
+	// When a debugger is attached, also populate macroExpansionInfo on
 	// each stamped node with unique IDs for step-into differentiation.
-	var mctx *MacroExpansionContext
+	var mctx *macroExpansionContext
 	if env.Runtime.Debugger != nil {
 		qualName := env.GetFunName(fun)
 		if pkg := fun.Package(); pkg != "" {
 			qualName = pkg + ":" + qualName
 		}
-		mctx = &MacroExpansionContext{
+		mctx = &macroExpansionContext{
 			CallSite: callSite,
 			Name:     qualName,
 			DefSite:  fun.source,
