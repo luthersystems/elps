@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/fmtraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -75,7 +76,7 @@ func New(scanner *token.Scanner) *Parser {
 
 // NewFormatting initializes a Parser in format-preserving mode.
 // Comments, bracket types, original literal text, and blank lines are
-// attached to LVal.Meta fields on the returned AST.
+// attached as formatting metadata (internal/fmtmeta) on the returned AST.
 func NewFormatting(scanner *token.Scanner) *Parser {
 	p := New(scanner)
 	p.preserveFormat = true
@@ -98,10 +99,7 @@ func (p *Parser) Parse() (*lisp.LVal, error) {
 	if p.preserveFormat {
 		p.ignoreComments()
 		if len(p.pendingComments) > 0 && p.pendingComments[0].PrecedingNewlines == 0 {
-			if expr.Meta == nil {
-				expr.Meta = &lisp.SourceMeta{} //elps:mutates format-preserving Meta stamp on a node this parse produced; the tree is parser-owned until Parse returns
-			}
-			expr.Meta.TrailingComment = p.pendingComments[0]
+			fmtraw.EnsureMeta(expr).TrailingComment = p.pendingComments[0]
 			p.pendingComments = p.pendingComments[1:]
 		}
 	}
@@ -162,7 +160,7 @@ func (p *Parser) ParseExpression() *lisp.LVal {
 		//
 		// Format-preserving parses are excluded: they are the one path where
 		// construction of a top-level node is NOT finished here — Parse()
-		// attaches a same-line trailing comment to expr.Meta after this
+		// attaches a same-line trailing comment to the expression's formatting metadata after this
 		// point (`(foo) ;; c`), which would be a write to an already-sealed
 		// node and would stale the fingerprint recorded at seal time.
 		// Format trees are never evaluated or shared across environments
@@ -247,8 +245,8 @@ func (p *Parser) ParseLiteralInt() *lisp.LVal {
 		return p.errorf("integer-overflow-error", "integer literal overflows int: %v", text)
 	}
 	v := p.Int(x)
-	if p.preserveFormat && v.Meta != nil {
-		v.Meta.OriginalText = text
+	if m := fmtraw.Meta(v); p.preserveFormat && m != nil {
+		m.OriginalText = text
 	}
 	return v
 }
@@ -270,8 +268,8 @@ func (p *Parser) ParseLiteralIntOctal() *lisp.LVal {
 		return p.errorf("integer-overflow-error", "octal literal overflows int: %v", text)
 	}
 	v := p.Int(int(x))
-	if p.preserveFormat && v.Meta != nil {
-		v.Meta.OriginalText = macroText + text
+	if m := fmtraw.Meta(v); p.preserveFormat && m != nil {
+		m.OriginalText = macroText + text
 	}
 	return v
 }
@@ -293,8 +291,8 @@ func (p *Parser) ParseLiteralIntHex() *lisp.LVal {
 		return p.errorf("integer-overflow-error", "hex literal overflows int: %v", text)
 	}
 	v := p.Int(int(x))
-	if p.preserveFormat && v.Meta != nil {
-		v.Meta.OriginalText = macroText + text
+	if m := fmtraw.Meta(v); p.preserveFormat && m != nil {
+		m.OriginalText = macroText + text
 	}
 	return v
 }
@@ -309,8 +307,8 @@ func (p *Parser) ParseLiteralFloat() *lisp.LVal {
 		return p.errorf(lisp.CondInvalidFloat, "invalid floating point literal: %v", text)
 	}
 	v := p.Float(x)
-	if p.preserveFormat && v.Meta != nil {
-		v.Meta.OriginalText = text
+	if m := fmtraw.Meta(v); p.preserveFormat && m != nil {
+		m.OriginalText = text
 	}
 	return v
 }
@@ -325,8 +323,8 @@ func (p *Parser) ParseLiteralString() *lisp.LVal {
 		return p.errorf(lisp.CondInvalidString, "invalid string literal: %v", text)
 	}
 	v := p.String(s)
-	if p.preserveFormat && v.Meta != nil {
-		v.Meta.OriginalText = text
+	if m := fmtraw.Meta(v); p.preserveFormat && m != nil {
+		m.OriginalText = text
 	}
 	return v
 }
@@ -340,8 +338,8 @@ func (p *Parser) ParseLiteralStringRaw() *lisp.LVal {
 		return p.errorf("parse-error", "invalid raw string literal: too short")
 	}
 	v := p.String(text[3 : len(text)-3])
-	if p.preserveFormat && v.Meta != nil {
-		v.Meta.OriginalText = text
+	if m := fmtraw.Meta(v); p.preserveFormat && m != nil {
+		m.OriginalText = text
 	}
 	return v
 }
@@ -474,10 +472,11 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 // value a second time, so it re-parses with a level of quoting the source
 // never had.  Found by FuzzFormat on the input "'#^0".
 func (p *Parser) recordSynthesizedBrackets(v *lisp.LVal) {
-	if !p.preserveFormat || v.Meta == nil {
+	m := fmtraw.Meta(v)
+	if !p.preserveFormat || m == nil {
 		return
 	}
-	v.Meta.BracketType = '('
+	m.BracketType = '('
 }
 
 // inheritEndPos copies the end position from inner's location onto outerLoc,
@@ -543,19 +542,18 @@ func (p *Parser) hoistOperandComments(outer, inner *lisp.LVal) {
 	if !p.preserveFormat || outer.Type == lisp.LError || inner == nil {
 		return
 	}
-	if inner.Meta == nil || len(inner.Meta.LeadingComments) == 0 {
+	im := fmtraw.Meta(inner)
+	if im == nil || len(im.LeadingComments) == 0 {
 		return
 	}
-	if outer.Meta == inner.Meta {
+	if fmtraw.Meta(outer) == im {
 		// Shared Meta: the comments are already on the node the printer
 		// writes.  Moving them would move them onto themselves.
 		return
 	}
-	if outer.Meta == nil {
-		outer.Meta = &lisp.SourceMeta{} //elps:mutates format-preserving Meta stamp on a node this parse produced; the tree is parser-owned until Parse returns
-	}
-	outer.Meta.LeadingComments = append(outer.Meta.LeadingComments, inner.Meta.LeadingComments...)
-	inner.Meta.LeadingComments = nil
+	om := fmtraw.EnsureMeta(outer)
+	om.LeadingComments = append(om.LeadingComments, im.LeadingComments...)
+	im.LeadingComments = nil
 }
 
 // applyPrefixNewlines sets the newline and spacing metadata on a prefix form
@@ -565,10 +563,8 @@ func (p *Parser) applyPrefixNewlines(v *lisp.LVal, newlines int, spaces int) {
 	if !p.preserveFormat || v.Type == lisp.LError {
 		return
 	}
-	if v.Meta == nil {
-		v.Meta = &lisp.SourceMeta{} //elps:mutates format-preserving Meta stamp on a node this parse produced; the tree is parser-owned until Parse returns
-	}
-	if len(v.Meta.LeadingComments) > 0 {
+	m := fmtraw.EnsureMeta(v)
+	if len(m.LeadingComments) > 0 {
 		// Two independent gaps have to be recorded here, and NEITHER can be
 		// left to tokenLVal.
 		//
@@ -597,24 +593,24 @@ func (p *Parser) applyPrefixNewlines(v *lisp.LVal, newlines int, spaces int) {
 		// the `; <-` markers in editors/vscode/test/grammar/basics.lisp are
 		// syntax-test assertions ABOUT the preceding line, so moving them
 		// changes what they assert.
-		v.Meta.BlankLinesAfterComments = 0
+		m.BlankLinesAfterComments = 0
 		if newlines > 1 {
-			v.Meta.BlankLinesAfterComments = newlines - 1
+			m.BlankLinesAfterComments = newlines - 1
 		}
-		v.Meta.NewlineBefore = true
-		v.Meta.BlankLinesBefore = 0
-		if n := v.Meta.LeadingComments[0].PrecedingNewlines; n > 1 {
-			v.Meta.BlankLinesBefore = n - 1
+		m.NewlineBefore = true
+		m.BlankLinesBefore = 0
+		if n := m.LeadingComments[0].PrecedingNewlines; n > 1 {
+			m.BlankLinesBefore = n - 1
 		}
 	} else {
 		if newlines >= 1 {
-			v.Meta.NewlineBefore = true
+			m.NewlineBefore = true
 		}
 		if newlines > 1 {
-			v.Meta.BlankLinesBefore = newlines - 1
+			m.BlankLinesBefore = newlines - 1
 		}
 	}
-	v.Meta.PrecedingSpaces = spaces
+	m.PrecedingSpaces = spaces
 }
 
 func (p *Parser) ParseNegative() *lisp.LVal {
@@ -700,8 +696,8 @@ func (p *Parser) ParseConsExpression() *lisp.LVal {
 	}
 	open := p.src.Token
 	expr := p.SExpr(nil)
-	if p.preserveFormat && expr.Meta != nil {
-		expr.Meta.BracketType = '('
+	if m := fmtraw.Meta(expr); p.preserveFormat && m != nil {
+		m.BracketType = '('
 	}
 	for {
 		p.ignoreComments()
@@ -741,8 +737,8 @@ func (p *Parser) ParseList() *lisp.LVal {
 	}
 	open := p.src.Token
 	expr := p.QExpr(nil)
-	if p.preserveFormat && expr.Meta != nil {
-		expr.Meta.BracketType = '['
+	if m := fmtraw.Meta(expr); p.preserveFormat && m != nil {
+		m.BracketType = '['
 	}
 	for {
 		p.ignoreComments()
@@ -794,10 +790,7 @@ func (p *Parser) attachTrailingComment(parent *lisp.LVal) {
 	}
 	if p.pendingComments[0].PrecedingNewlines == 0 {
 		last := parent.Cells[len(parent.Cells)-1]
-		if last.Meta == nil {
-			last.Meta = &lisp.SourceMeta{} //elps:mutates format-preserving Meta stamp on a node this parse produced; the tree is parser-owned until Parse returns
-		}
-		last.Meta.TrailingComment = p.pendingComments[0]
+		fmtraw.EnsureMeta(last).TrailingComment = p.pendingComments[0]
 		p.pendingComments = p.pendingComments[1:]
 	}
 }
@@ -809,10 +802,7 @@ func (p *Parser) recordClosingBracketNewline(expr *lisp.LVal) {
 		return
 	}
 	if p.src.Token.PrecedingNewlines > 0 {
-		if expr.Meta == nil {
-			expr.Meta = &lisp.SourceMeta{} //elps:mutates format-preserving Meta stamp on a node this parse produced; the tree is parser-owned until Parse returns
-		}
-		expr.Meta.ClosingBracketNewline = true
+		fmtraw.EnsureMeta(expr).ClosingBracketNewline = true
 	}
 }
 
@@ -823,10 +813,7 @@ func (p *Parser) captureInnerTrailingComments(expr *lisp.LVal) {
 	if !p.preserveFormat || len(p.pendingComments) == 0 {
 		return
 	}
-	if expr.Meta == nil {
-		expr.Meta = &lisp.SourceMeta{} //elps:mutates format-preserving Meta stamp on a node this parse produced; the tree is parser-owned until Parse returns
-	}
-	expr.Meta.InnerTrailingComments = p.pendingComments
+	fmtraw.EnsureMeta(expr).InnerTrailingComments = p.pendingComments
 	p.pendingComments = nil
 }
 
@@ -904,11 +891,9 @@ func (p *Parser) tokenLVal(v *lisp.LVal) *lisp.LVal {
 	}
 	v.SetSource(loc)
 	if p.preserveFormat {
-		if v.Meta == nil {
-			v.Meta = &lisp.SourceMeta{} //elps:mutates format-preserving Meta stamp on a node this parse produced; the tree is parser-owned until Parse returns
-		}
+		m := fmtraw.EnsureMeta(v)
 		if len(p.pendingComments) > 0 {
-			v.Meta.LeadingComments = p.pendingComments
+			m.LeadingComments = p.pendingComments
 			p.pendingComments = nil
 		}
 		// Compute newline info from the first pending comment or the current token.
@@ -916,19 +901,19 @@ func (p *Parser) tokenLVal(v *lisp.LVal) *lisp.LVal {
 		// last comment and the expression itself.
 		tokenNewlines := p.src.Token.PrecedingNewlines
 		newlines := tokenNewlines
-		if len(v.Meta.LeadingComments) > 0 {
-			newlines = v.Meta.LeadingComments[0].PrecedingNewlines
+		if len(m.LeadingComments) > 0 {
+			newlines = m.LeadingComments[0].PrecedingNewlines
 			if tokenNewlines > 1 {
-				v.Meta.BlankLinesAfterComments = tokenNewlines - 1
+				m.BlankLinesAfterComments = tokenNewlines - 1
 			}
 		}
 		if newlines >= 1 {
-			v.Meta.NewlineBefore = true
+			m.NewlineBefore = true
 		}
 		if newlines > 1 {
-			v.Meta.BlankLinesBefore = newlines - 1
+			m.BlankLinesBefore = newlines - 1
 		}
-		v.Meta.PrecedingSpaces = p.src.Token.PrecedingSpaces
+		m.PrecedingSpaces = p.src.Token.PrecedingSpaces
 	}
 	return v
 }

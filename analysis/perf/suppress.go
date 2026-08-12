@@ -5,6 +5,7 @@ package perf
 import (
 	"strings"
 
+	"github.com/luthersystems/elps/internal/fmtraw"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -15,13 +16,17 @@ type suppression struct {
 
 func parseSuppression(node *lisp.LVal, prefix string) suppression {
 	var out suppression
-	if node == nil || node.Meta == nil {
+	if node == nil {
+		return out
+	}
+	m := fmtraw.Meta(node)
+	if m == nil {
 		return out
 	}
 	if prefix == "" {
 		prefix = "elps-analyze-disable"
 	}
-	for _, tok := range node.Meta.LeadingComments {
+	for _, tok := range m.LeadingComments {
 		if tok == nil {
 			continue
 		}
