@@ -85,6 +85,23 @@
   (assert (sorted-map? (get js-val "c")))
   (assert= 0 (length (keys (get js-val "c")))))
 
+; A value that contains itself has no JSON representation, and before issue
+; #390 serializing one killed the host process with a stack overflow that
+; recover() could not catch.  json:dump-* now refuses with an ordinary
+; condition that handler-bind can catch.
+(test "dump-cyclic-value"
+  (let ([m (sorted-map)])
+    (assoc! m "k" m)
+    (assert-string= "caught"
+                    (handler-bind ([error (lambda (_c _) "caught")])
+                      (json:dump-string m)))
+    (assert-string= "caught"
+                    (handler-bind ([error (lambda (_c _) "caught")])
+                      (json:dump-bytes m))))
+  ; Sharing a value is not a cycle: both copies still serialize.
+  (let ([x (sorted-map "a" 1)])
+    (assert-string= """[{"a":1},{"a":1}]""" (json:dump-string (vector x x)))))
+
 (test "unmarshal-syntax-error"
   (assert-string= "syntax-error"
                   (handler-bind ([json:syntax-error (lambda (_c _) "syntax-error")])
