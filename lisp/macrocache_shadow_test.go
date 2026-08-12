@@ -465,3 +465,66 @@ func TestMacroCacheFIDFormatsPinned(t *testing.T) {
 		}
 	}
 }
+
+// TestMacroCacheSharedFormalsTwoBodiesNotCached: a defeat of the memo KEY
+// rather than of an operator name.  The purity verdict is memoized on the
+// macro's sealed formals node, which assumes a formals node belongs to one
+// defmacro form.  A macro-generating macro breaks that: splicing the SAME
+// argument node into two defmacro forms gives both macros that one node,
+// and the verdict proven from the first body licensed the second.  Here `p`
+// (body `7`) is provably pure and `q` (body `(bump)`) is not pure by any
+// reading — the only thing that could admit it is p's verdict.
+//
+// Cache off: (7 1) (7 2) (7 3).  Before the fix, cached: (7 1) (7 1) (7 1).
+func TestMacroCacheSharedFormalsTwoBodiesNotCached(t *testing.T) {
+	const setup = `
+		(set 'ctr 0)
+		(defun bump () (set 'ctr (+ ctr 1)) ctr)
+		(defmacro two (fs)
+		  (quasiquote (progn
+		    (defmacro p (unquote fs) 7)
+		    (defmacro q (unquote fs) (bump)))))
+		(two (a))
+		(defun probe () (list (p 0) (q 0)))
+	`
+	// The premise, asserted rather than assumed: p and q really do share
+	// one sealed formals node.  Without this the test could pass for the
+	// boring reason.
+	env := newMacroCacheTestEnv(t)
+	evalStr(t, env, setup)
+	fp := lisp.MacroFormalsForTest(env.GetGlobal(lisp.Symbol("p")))
+	fq := lisp.MacroFormalsForTest(env.GetGlobal(lisp.Symbol("q")))
+	if fp == nil || fp != fq {
+		t.Fatalf("premise lost: p and q no longer share a formals node (%p vs %p)", fp, fq)
+	}
+	if !lisp.SealedForTest(fp) {
+		t.Fatalf("premise lost: the shared formals node is not sealed")
+	}
+
+	assertCacheModesAgree(t, "shared-formals-two-bodies", setup,
+		`(list (probe) (probe) (probe))`)
+}
+
+// TestMacroCacheSameFormalsDifferentDefiningEnv is the same key under the
+// other kind of pressure: ONE source form (hence one formals node and one
+// body) evaluated twice, in defining environments that resolve `if`
+// differently.  The syntactic verdict is legitimately shared here — it is a
+// function of the nodes — and what must not be shared is the resolution,
+// which is why the obligations are re-checked per dispatch.  Attempted as a
+// defeat, held: the second instance's `if` is a counter, and both cached
+// modes report the counter advancing exactly as cache-off does.
+func TestMacroCacheSameFormalsDifferentDefiningEnv(t *testing.T) {
+	assertCacheModesAgree(t, "same-formals-two-defining-envs", `
+		(set 'ctr 0)
+		(defun impure-if (c a b) (set 'ctr (+ ctr 1)) ctr)
+		(defun install (f)
+		  (let ([if f])
+		    (defmacro m () (if true (quasiquote 1) (quasiquote 2)))))
+		(defun probe () (m))
+	`, `
+		(progn
+		  (install lisp:if)
+		  (let ([a (list (probe) (probe))])
+		    (install impure-if)
+		    (list a (probe) (probe))))`)
+}

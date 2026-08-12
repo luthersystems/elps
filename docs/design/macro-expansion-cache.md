@@ -149,11 +149,37 @@ Two names the prover interprets carry *no* obligation, deliberately:
   which the defining-environment obligations do — is what licenses that
   reading.
 
-The memo key was itself a defeat: keyed on the formals node while the checks
-were environment dependent, a verdict computed in an unshadowed environment
-licensed caching in a shadowed one (one sealed parse, two runtimes). Keying
-on what the verdict actually depends on — pure syntax — removes the leak
-rather than documenting it.
+The memo key was itself a defeat, twice. Keyed on the formals node while the
+checks were environment dependent, a verdict computed in an unshadowed
+environment licensed caching in a shadowed one (one sealed parse, two
+runtimes); keying on what the verdict actually depends on — pure syntax —
+removes that leak rather than documenting it. The key then still assumed
+"one formals node, one macro", which a macro-generating macro breaks: a
+template that splices ONE argument node into two `defmacro` forms
+
+```lisp
+(defmacro two (fs)
+  (quasiquote (progn (defmacro p (unquote fs) 7)
+                     (defmacro q (unquote fs) (bump)))))
+(two (a))
+```
+
+gives `p` and `q` the same sealed formals node with different bodies, and
+the verdict proven from `p`'s body admitted `q` — whose body is not pure by
+any reading. Cache off: `(7 1) (7 2) (7 3)`; cached, before the fix:
+`(7 1) (7 1) (7 1)`. The verdict now records the body nodes it was proven
+from and is reused only for that body; a second body under the same key is
+refused rather than re-proven, which also keeps the *identity* honest —
+only one body per formals node is ever cacheable, so an entry cannot be
+validated against a macro that merely shares its key
+(`TestMacroCacheSharedFormalsTwoBodiesNotCached`, which asserts the shared
+node as a premise so it cannot pass vacuously).
+
+The legitimate version of the same shape is admitted unchanged: one source
+form evaluated twice in defining environments that resolve `if` differently
+shares a formals node AND a body, so the syntactic verdict is genuinely
+shared, and it is the per-dispatch obligations that separate the two
+instances (`TestMacroCacheSameFormalsDifferentDefiningEnv`).
 
 Cost of the narrowing: **zero measured reuse**. The committed synthetic
 corpus reproduces bit-identically before and after (706 entries, 5,000 hits,
@@ -179,9 +205,12 @@ that check existed (`TestMacroCacheShadowedBinderAtCallsiteNotCached`).
 Beyond that: the prover reasons about the macro's own body, not about what
 the *arguments* at a callsite evaluate to (they are spliced by reference,
 identically either way) and not about native macros, which remain a
-hand-audited whitelist rather than a proof.
+hand-audited whitelist rather than a proof — the whitelist now at least
+distinguishes two implementations that share a registration name (§5), but
+whether one implementation deserves to be on the list is still an assertion
+by whoever put it there.
 
-Tests: `lisp/macrocache_shadow_test.go` — twelve defeat shapes, each asserted
+Tests: `lisp/macrocache_shadow_test.go` — fourteen defeat shapes, each asserted
 behaviourally (the cached and uncached evaluations of the same program must
 agree; nothing inspects the classification), plus pins on which obligations
 each admitted shape records and on the FID formats the admission path builds

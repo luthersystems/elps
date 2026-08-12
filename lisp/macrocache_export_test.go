@@ -100,3 +100,13 @@ func MacroRegistrationIDForTest(fun *LVal) uint64 {
 	}
 	return fd.impl
 }
+
+// MacroFormalsForTest returns the formals node of a macro function, so a
+// test can assert that two macros really do share one (otherwise a test
+// about shared formals nodes is vacuous).
+func MacroFormalsForTest(fun *LVal) *LVal {
+	if fun.Type != LFun || len(fun.Cells) < 2 {
+		return nil
+	}
+	return fun.Cells[0]
+}

@@ -107,6 +107,11 @@ type kernelRef struct {
 // macroPurity is the memoizable half of the admission test: a syntactic
 // verdict plus the name-resolution obligations it rests on.
 type macroPurity struct {
+	// body is the macro body this verdict was proven from.  The memo is
+	// keyed on the formals node, and a macro-generating macro can give two
+	// macros one formals node with different bodies — see
+	// userMacroPurityMemo (macrocache.go).
+	body     []*LVal
 	defRefs  []kernelRef // resolved in the macro's defining environment
 	callRefs []kernelRef // resolved in the calling environment
 	pure     bool

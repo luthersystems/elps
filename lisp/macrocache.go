@@ -440,23 +440,64 @@ func lookupOperatorBinding(env *LEnv, pkg *Package, spelling string) *LVal {
 }
 
 // userMacroPurityMemo caches the SYNTACTIC half of the admission test.  The
-// key is the macro's sealed formals node: sealed nodes are immutable and a
-// given formals node belongs to exactly one defmacro source form, so the
-// body the verdict was computed from cannot change under the key.  Nothing
-// environment-dependent is stored here — that was the leak the reviewer
-// found, where a verdict proven in an unshadowed environment licensed
-// caching in a shadowed one.
+// key is the macro's sealed formals node, which is immutable and, for macros
+// that come from a parse, belongs to exactly one defmacro source form.
+// Nothing environment-dependent is stored here — that was the leak where a
+// verdict proven in an unshadowed environment licensed caching in a shadowed
+// one.
 //
-//elpsvet:allow process-wide purity-verdict memo keyed by sealed formals node pointers; stores syntactic verdicts, never mutates the keys
+// "One formals node, one macro" is nonetheless an assumption, and a
+// macro-generating macro can break it: splicing ONE argument node into two
+// defmacro forms
+//
+//	(defmacro two (fs)
+//	  (quasiquote (progn (defmacro p (unquote fs) 7)
+//	                     (defmacro q (unquote fs) (bump)))))
+//
+// gives p and q the same sealed formals node with different bodies, and the
+// first verdict computed licensed the other macro (cache off: 7,1 / 7,2 /
+// 7,3; cached: 7,1 / 7,1 / 7,1).  The verdict therefore records the body
+// nodes it was proven from and is only reused for that body; a second body
+// arriving under the same key is refused outright rather than re-proven,
+// which also keeps macroIdentity's formals pointer honest — only one body
+// per formals node is ever cacheable, so an entry cannot be validated
+// against a macro that merely shares the key.
+//
+//elpsvet:allow process-wide purity-verdict memo keyed by sealed formals node pointers; stores syntactic verdicts plus the sealed body nodes they were proven from, never mutates either
 var userMacroPurityMemo sync.Map // *LVal (formals node) -> macroPurity
 
 func userMacroPurity(fun, formals *LVal) macroPurity {
+	body := fun.Cells[1:]
 	if v, ok := userMacroPurityMemo.Load(formals); ok {
-		return v.(macroPurity)
+		p := v.(macroPurity)
+		if sameMacroBody(p.body, body) {
+			return p
+		}
+		// Two macros under one formals node: the stored verdict says
+		// nothing about this body, and admitting a second body would make
+		// the identity ambiguous as well.  Refuse.
+		return macroPurity{}
 	}
 	verdict := proveUserMacroPure(fun)
+	verdict.body = body
 	userMacroPurityMemo.Store(formals, verdict)
 	return verdict
+}
+
+// sameMacroBody compares body node identity, not content: the nodes are
+// sealed, so identical pointers mean identical (and unchangeable) source.
+// Two environments evaluating one shared parse present the same nodes and
+// share the verdict; anything else is a different macro.
+func sameMacroBody(a, b []*LVal) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // sharedMacroCache is the process-wide expansion table (MacroCacheShared).
