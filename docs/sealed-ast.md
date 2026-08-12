@@ -234,7 +234,7 @@ over a production-scale downstream embedder.
 | `LVal.Quoted` | 1 read | 6 | wide | unexported, `IsQuoted()` |
 | `LVal.Native`/`Str`/`Cells`/`Type`/`Int`/`Float`/`FunType` | ~3,000 | — | wide | **stay exported** |
 | `LEnv.Scope`/`FunName`/`Parent`/`Loc` | 0 | 0 | 4 / 0 / 5 / 0 reads | unexported, mediated reads |
-| `LEnv.Runtime`/`ID` | 16 / 3 reads | 17 / 0 | 110 / wide | **stay exported** |
+| `LEnv.Runtime`/`ID` | 16 / 3 reads | 17 / 0 | 110 reads / 0 | **stay exported** |
 | `Runtime.*` (`Stderr`, `Reader`, `Library`, `Debugger`, `Profiler`, `Registry`, `Package`, `Stack`) | 8 writes, 7 reads | 15 | 20 writes, 89 reads | **stay exported** |
 | `CallStack.Frames`/`GoStack`, `CallFrame.*` | 0 | 1 read | 30 reads, 0 writes | **stay exported** |
 
