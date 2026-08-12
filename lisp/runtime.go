@@ -41,7 +41,8 @@ type Runtime struct {
 	Reader                 Reader
 	Library                SourceLibrary
 	Profiler               Profiler
-	Debugger               Debugger // nil = disabled (zero overhead on hot path)
+	Debugger               Debugger                   // nil = disabled (zero overhead on hot path)
+	macroCache             map[*LVal]*macroCacheEntry // per-runtime expansion cache (MacroCacheRuntime); lazily allocated
 	conditionStack         []*LVal
 	MaxAlloc               int           // Per-operation allocation size cap (0 = use default). Not cumulative.
 	MaxMacroExpansionDepth int           // Maximum macro expansion iterations (0 = use default).

@@ -1165,6 +1165,12 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 	case LFunSpecialOp:
 		return env.specialOpCall(ctx, fun, args)
 	case LFunMacro:
+		// Experimental per-callsite expansion caching (issue #381): the
+		// instrumented path is taken only when a cache mode or stats
+		// collection is active; the default is the plain call.
+		if GetMacroCacheMode() != MacroCacheOff || macroExpandStats.enabled.Load() {
+			return env.macroCallCached(ctx, s, fun, args)
+		}
 		return env.macroCall(ctx, fun, args)
 	default:
 		return env.Errorf("internal error: invalid function type %v", fun.FunType)
