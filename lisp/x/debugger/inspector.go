@@ -49,8 +49,8 @@ func InspectLocals(env *lisp.LEnv) []ScopeBinding {
 	if env == nil {
 		return nil
 	}
-	bindings := make([]ScopeBinding, 0, len(env.Scope))
-	for name, val := range env.Scope {
+	bindings := make([]ScopeBinding, 0, env.NumBindings())
+	for name, val := range env.Bindings() {
 		bindings = append(bindings, ScopeBinding{Name: name, Value: val})
 	}
 	sort.Slice(bindings, func(i, j int) bool {
@@ -70,13 +70,13 @@ func InspectScope(env *lisp.LEnv) []ScopeBinding {
 	var bindings []ScopeBinding
 	current := env
 	for current != nil {
-		for name, val := range current.Scope {
+		for name, val := range current.Bindings() {
 			if !seen[name] {
 				seen[name] = true
 				bindings = append(bindings, ScopeBinding{Name: name, Value: val})
 			}
 		}
-		current = current.Parent
+		current = current.Parent()
 	}
 	sort.Slice(bindings, func(i, j int) bool {
 		return bindings[i].Name < bindings[j].Name
@@ -101,16 +101,16 @@ func InspectFunctionLocals(env *lisp.LEnv) []ScopeBinding {
 	for current != nil {
 		// Stop at the root env (builtins). Package symbols are in
 		// Runtime.Package.Symbols, not in env.Scope.
-		if current.Parent == nil {
+		if current.Parent() == nil {
 			break
 		}
-		for name, val := range current.Scope {
+		for name, val := range current.Bindings() {
 			if !seen[name] {
 				seen[name] = true
 				bindings = append(bindings, ScopeBinding{Name: name, Value: val})
 			}
 		}
-		current = current.Parent
+		current = current.Parent()
 	}
 	sort.Slice(bindings, func(i, j int) bool {
 		return bindings[i].Name < bindings[j].Name

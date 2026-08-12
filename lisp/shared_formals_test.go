@@ -66,7 +66,7 @@ func collectLVals(v *lisp.LVal, depth int, seen map[*lisp.LVal]bool, stats *walk
 			collectLVals(c, depth-1, seen, stats)
 		}
 		if fenv := funraw.Env(v); fenv != nil {
-			for _, sv := range fenv.Scope {
+			for _, sv := range fenv.Bindings() {
 				collectLVals(sv, depth-1, seen, stats)
 			}
 		}
