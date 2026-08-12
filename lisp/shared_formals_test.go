@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
@@ -64,7 +65,7 @@ func collectLVals(v *lisp.LVal, depth int, seen map[*lisp.LVal]bool, stats *walk
 		for _, c := range v.Cells {
 			collectLVals(c, depth-1, seen, stats)
 		}
-		if fenv := v.Env(); fenv != nil {
+		if fenv := funraw.Env(v); fenv != nil {
 			for _, sv := range fenv.Scope {
 				collectLVals(sv, depth-1, seen, stats)
 			}

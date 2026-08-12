@@ -16,7 +16,7 @@ import (
 // this function is internal because users are not supposed to construct
 // literal SortedMap values in their applications =\
 func literalSortedMap(m SortedMap) *lisp.LVal {
-	return lisp.SortedMapFromData(&lisp.MapData{Map: m})
+	return lisp.SortedMapFromData(lisp.NewMapData(m))
 }
 
 type encodeTest struct {
