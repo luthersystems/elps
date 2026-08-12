@@ -156,18 +156,18 @@ type valuePair struct {
 // cyclic is a pair, not a value: a comparison can revisit a without revisiting
 // b.
 //
-// Unlike cycleGuard the strict path set is never unwound *and* never wrong to
-// keep: a pair reached a second time either is still under comparison further
-// up the path, where taking it to be equal is the co-inductive answer Equal
-// documents, or has already been compared, and a pair that compared unequal
-// returned false all the way to the root instead of being reached again.
+// Unlike cycleGuard its path set is never unwound, and keeping a pair on it
+// forever is not an approximation.  A pair reached a second time either is
+// still under comparison further up the path, where taking it to be equal is
+// the co-inductive answer Equal documents, or has already been compared and
+// found equal -- a pair that compared unequal returned false out of every
+// frame up to the root instead of ever being reached again.
 type pairGuard struct {
 	state *cycleState
 
 	path map[valuePair]struct{}
 
-	depth int
-
+	depth  int
 	strict bool
 }
 
@@ -178,12 +178,24 @@ func strictPairGuard() pairGuard {
 }
 
 // descend returns the guard for a comparison one level below g, entering the
-// pair (a, b), and reports whether that pair is already being compared further
-// up the current path.
+// pair (a, b), and reports whether the caller must stop -- because the pair is
+// already on the path, or because another frame has found a cycle and the
+// whole comparison is being unwound for a rerun in strict mode.  Both answers
+// are "return equal and do not recurse": in the first case that is the
+// co-inductive answer, in the second the result is discarded.
+//
+// Only a comparison that is about to recurse calls this.  A pair of leaves
+// reaches nothing, so putting it on the path would tax every int and string
+// comparison to bound a walk that cannot recurse.
 func (g pairGuard) descend(a, b *LVal) (pairGuard, bool) {
-	g.depth++
-	if !g.strict && g.depth < cycleGuardDepth {
-		return g, false
+	if !g.strict {
+		if g.state.cyclic {
+			return g, true
+		}
+		g.depth++
+		if g.depth < cycleGuardDepth {
+			return g, false
+		}
 	}
 	p := valuePair{a, b}
 	if g.path == nil {
@@ -194,22 +206,4 @@ func (g pairGuard) descend(a, b *LVal) (pairGuard, bool) {
 	}
 	g.path[p] = struct{}{}
 	return g, false
-}
-
-// ascend leaves the pair (a, b).
-func (g pairGuard) ascend(a, b *LVal) {
-	if g.path != nil && !g.strict {
-		delete(g.path, valuePair{a, b})
-	}
-}
-
-// tracking reports whether g is recording a path.
-func (g pairGuard) tracking() bool {
-	return g.path != nil
-}
-
-// abandoned reports that this comparison has found a cycle and is being
-// unwound so its caller can rerun it in strict mode.
-func (g pairGuard) abandoned() bool {
-	return !g.strict && g.state.cyclic
 }

@@ -42,5 +42,5 @@ const OptArgSymbol = "&optional"
 const KeyArgSymbol = "&key"
 
 // AnonArgSymbolPrefix is used to indicate unnamed arguments in the anonymous
-// function shorthand ``(expr ...)''.
+// function shorthand “(expr ...)”.
 const AnonArgSymbolPrefix = "%"

@@ -92,6 +92,31 @@ func TestEqualOfCyclicValue(t *testing.T) {
 	assert.False(t, True(cyclicVector(1).Equal(cyclicVector(2))))
 }
 
+// TestCopyOfCyclicValueTerminates pins the reasoning that keeps (*LVal).Copy
+// out of the guarded set.  Copy recurses through Cells, but a cycle a program
+// can build has to pass through a sorted-map or an array, and Copy descends
+// into neither: a map's data is rebuilt entry by entry, sharing the value
+// pointers, and an array keeps its backing storage by reference.  So the deep
+// copy stops one level into the cycle on its own.  If that ever stops being
+// true -- if Copy starts copying either container's contents deeply -- this
+// test is where it will be noticed, and Copy will need the guard too.
+func TestCopyOfCyclicValueTerminates(t *testing.T) {
+	for _, v := range []*LVal{
+		cyclicMap("k"),
+		cyclicVector(1),
+		SExpr([]*LVal{Int(1), cyclicMap("k")}),
+		SExpr([]*LVal{Int(1), cyclicVector(1)}),
+	} {
+		cp := v.Copy()
+		require.NotNil(t, cp)
+		// The copy renders one level deeper than the original: its root is a
+		// fresh node whose child is the original cycle, so the walk reaches a
+		// repeat one step later.  What is being pinned here is that Copy
+		// returned at all.
+		assert.Contains(t, cp.String(), cycleMark)
+	}
+}
+
 func TestGoValueOfCyclicValue(t *testing.T) {
 	m := cyclicMap("k")
 	// A cyclic value has no Go representation, so it comes back as itself.

@@ -1019,6 +1019,19 @@ func (v *LVal) IsNil() bool {
 	return v.Type == LSExpr && len(v.Cells) == 0
 }
 
+// mayNest reports whether a walk over v can reach another value through it.
+//
+// Cells is where every nested value lives except a sorted-map's, which lives
+// in a MapData behind Native.  Anything else -- an int, a string, a symbol, a
+// byte slice, a native Go value, the empty list -- is a leaf: a walk that
+// reaches it stops there, so it never needs a place on a cycle guard's path.
+//
+// This is what keeps the guard off the common path.  Rendering and comparing
+// leaves is most of what those walks do, and this check is a length test.
+func (v *LVal) mayNest() bool {
+	return len(v.Cells) > 0 || v.Type == LSortMap
+}
+
 // IsNumeric returns true if v has a primitive numeric type (int, float64).
 //
 // See IsNil for why this is an expression and not a switch.
@@ -1052,18 +1065,11 @@ func (v *LVal) Equal(other *LVal) *LVal {
 
 // equal is Equal, with g bounding the walk.  Every nested comparison must pass
 // g down rather than calling Equal, or the bound is lost.
+//
+// The guard sits inside the cases that recurse rather than at the top of the
+// function, so that comparing two ints or two strings runs exactly the code it
+// ran before the guard existed.
 func (v *LVal) equal(other *LVal, g pairGuard) *LVal {
-	if g.abandoned() {
-		// The result is discarded; Equal is about to rerun the comparison.
-		return Bool(false)
-	}
-	g, cyclic := g.descend(v, other)
-	if cyclic {
-		return Bool(true)
-	}
-	if g.tracking() {
-		defer g.ascend(v, other)
-	}
 	if v.Type != other.Type {
 		if v.IsNumeric() && other.IsNumeric() {
 			return v.equalNum(other)
@@ -1080,6 +1086,10 @@ func (v *LVal) equal(other *LVal, g pairGuard) *LVal {
 		if v.Len() != other.Len() {
 			return Bool(false)
 		}
+		g, stop := g.descend(v, other)
+		if stop {
+			return Bool(true)
+		}
 		for i := range v.Cells {
 			if !True(v.Cells[i].equal(other.Cells[i], g)) {
 				return Bool(false)
@@ -1087,6 +1097,10 @@ func (v *LVal) equal(other *LVal, g pairGuard) *LVal {
 		}
 		return Bool(true)
 	case LArray:
+		g, stop := g.descend(v, other)
+		if stop {
+			return Bool(true)
+		}
 		// NOTE:  This is a pretty cheeky for loop.  The first comparison it
 		// does will compare array dimensions, which will ensure that we don't
 		// hit an index out of bounds while comparing later indices.
@@ -1100,10 +1114,18 @@ func (v *LVal) equal(other *LVal, g pairGuard) *LVal {
 		if v.Str != other.Str {
 			return Bool(false)
 		}
+		g, stop := g.descend(v, other)
+		if stop {
+			return Bool(true)
+		}
 		return v.Cells[0].equal(other.Cells[0], g)
 	case LSortMap:
 		if v.Map().Len() != other.Map().Len() {
 			return Bool(false)
+		}
+		g, stop := g.descend(v, other)
+		if stop {
+			return Bool(true)
 		}
 		vEntries := sortedMapEntries(v.Map())
 		oEntries := sortedMapEntries(other.Map())
@@ -1317,17 +1339,12 @@ func (v *LVal) Docstring() string {
 // renders cycleMark instead of recursing until the process dies.  Every
 // nested render must pass g down rather than starting a fresh walk with
 // String, or the bound is lost.  See lisp/cycle.go.
+//
+// The types that render from their own fields and reach nothing are handled
+// here, ahead of the guard and running exactly the code they ran before it
+// existed.  Rendering leaves is most of what this walk does, and none of them
+// can be part of a cycle.
 func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
-	if g.abandoned() {
-		return ""
-	}
-	g, cyclic := g.descend(v)
-	if cyclic {
-		return cycleMark
-	}
-	if g.tracking() {
-		defer g.ascend(v)
-	}
 	const QUOTE = `'`
 	// All types which may evaluate to things other than themselves must check
 	// v.Quoted.
@@ -1351,17 +1368,45 @@ func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
 			return quote + "#<bytes>"
 		}
 		return quote + "#<bytes " + strings.Trim(fmt.Sprint(b), "[]") + ">" //nolint:staticcheck // fmt.Sprint gives byte slice repr, not string conversion
+	case LSymbol:
+		if v.Quoted {
+			quote = QUOTE
+		}
+		return quote + v.Str
+	case LNative:
+		return fmt.Sprintf("#<native value: %T>", v.Native)
+	}
+	// Everything left renders values reachable from v, so it is entered on the
+	// guard's path.
+	if g.abandoned() {
+		return ""
+	}
+	g, cyclic := g.descend(v)
+	if cyclic {
+		return cycleMark
+	}
+	s := v.strNested(onTheRecord, g)
+	if g.tracking() {
+		g.ascend(v)
+	}
+	return s
+}
+
+// strNested renders the types that reach other values.  It is only ever
+// reached through str, which has already put v on g's path.
+func (v *LVal) strNested(onTheRecord bool, g cycleGuard) string {
+	const QUOTE = `'`
+	quote := ""
+	if onTheRecord {
+		quote = QUOTE
+	}
+	switch v.Type {
 	case LError:
 		if v.Quoted {
 			quote = QUOTE
 			return quote + fmt.Sprintf("(error '%s %s)", v.Str, v.Cells[0].str(false, g))
 		}
 		return (*ErrorVal)(v).errorString(g)
-	case LSymbol:
-		if v.Quoted {
-			quote = QUOTE
-		}
-		return quote + v.Str
 	case LSExpr:
 		if v.Quoted {
 			quote = QUOTE
@@ -1390,8 +1435,6 @@ func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
 			}
 		}
 		return fmt.Sprintf("#<array dims=%s>", v.Cells[0].str(false, g))
-	case LNative:
-		return fmt.Sprintf("#<native value: %T>", v.Native)
 	case LTaggedVal:
 		return fmt.Sprintf("#{%s %s}", v.Str, v.Cells[0].str(false, g))
 	case LMarkTerminal:

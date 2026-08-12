@@ -251,7 +251,7 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionC
 }
 
 func stampGuarded(v *LVal, callSite *token.Location, ctx *MacroExpansionContext, rt *Runtime, g cycleGuard) {
-	if v == nil || callSite == nil || g.abandoned() {
+	if v == nil || callSite == nil {
 		return
 	}
 	// Identity-based guard: a type-based check would catch only the empty-
@@ -260,12 +260,18 @@ func stampGuarded(v *LVal, callSite *token.Location, ctx *MacroExpansionContext,
 	if isSingleton(v) {
 		return
 	}
-	g, cyclic := g.descend(v)
-	if cyclic {
-		return
-	}
-	if g.tracking() {
-		defer g.ascend(v)
+	// Only a node with children is entered on the guard's path: a leaf stamps
+	// itself and reaches nothing, and stamping runs on every macro expansion.
+	nested := len(v.Cells) > 0
+	if nested {
+		if g.abandoned() {
+			return
+		}
+		var cyclic bool
+		g, cyclic = g.descend(v)
+		if cyclic {
+			return
+		}
 	}
 	if v.Source == nil || v.Source.Pos < 0 {
 		v.Source = callSite
@@ -278,6 +284,9 @@ func stampGuarded(v *LVal, callSite *token.Location, ctx *MacroExpansionContext,
 	}
 	for _, child := range v.Cells {
 		stampGuarded(child, callSite, ctx, rt, g)
+	}
+	if nested && g.tracking() {
+		g.ascend(v)
 	}
 }
 

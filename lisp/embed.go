@@ -45,20 +45,28 @@ func GoValue(v *LVal) interface{} {
 }
 
 func goValue(v *LVal, g cycleGuard) interface{} {
-	if g.abandoned() {
-		// The result is discarded; GoValue is about to return v itself.
+	if v.IsNil() {
 		return nil
 	}
-	if v.IsNil() {
+	if !v.mayNest() {
+		return v.goValueNode(g)
+	}
+	if g.abandoned() {
+		// The result is discarded; GoValue is about to return v itself.
 		return nil
 	}
 	g, cyclic := g.descend(v)
 	if cyclic {
 		return v
 	}
+	x := v.goValueNode(g)
 	if g.tracking() {
-		defer g.ascend(v)
+		g.ascend(v)
 	}
+	return x
+}
+
+func (v *LVal) goValueNode(g cycleGuard) interface{} {
 	switch v.Type {
 	case LError:
 		return (error)((*ErrorVal)(v))
