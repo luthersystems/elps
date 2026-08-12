@@ -49,8 +49,8 @@ for ((b = 0; b < BLOCKS; b++)); do
 	2)
 		rc_overall=2
 		echo "!!! PROCESS-FATAL CRASH in block $b (seeds $start..$((start + SIZE - 1)))"
-		echo "!!! isolating the seed single-threaded"
 		if [ "${DFUZZ_ISOLATE:-1}" = "1" ]; then
+			echo "!!! isolating the seed single-threaded"
 			"$BIN" -start "$start" -n "$SIZE" -workers 1 -trace "$@" 2>"$WORKDIR/trace-$b.err" >/dev/null
 			echo "!!! last seed attempted: $(grep '^TRY seed=' "$WORKDIR/trace-$b.err" | tail -1)"
 			echo "!!! NOTE: a value built through corrupted memory is not stable between"

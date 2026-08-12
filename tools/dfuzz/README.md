@@ -35,8 +35,29 @@ tools/dfuzz/setup.sh origin/main claude/exp-seal-tooling /tmp/dfuzz
 ```
 
 `setup.sh` takes `<left-ref> <right-ref> <workdir>`. Left is the baseline
-("stock"), right is the tree under test ("sealed"). Exit status is non-zero if
-any finding survived the allowlist, so it drops into CI unchanged.
+("stock"), right is the tree under test ("sealed"). Exit status is 1 if any
+finding survived the allowlist, so it drops into CI unchanged. Status 2 is
+reserved for the Go runtime's own fatal error and 3 is a usage error.
+
+For a long run, put `run.sh` in front of it:
+
+```sh
+tools/dfuzz/run.sh /tmp/dfuzz 40 20000 -workers 2
+```
+
+That runs the harness in seed blocks and survives a **process-fatal crash** —
+which is not a hypothetical. The elpspath write-back defect lets a lisp program
+build a value that contains itself; printing it exhausts the goroutine stack,
+and a Go stack overflow is a `fatal error`, not a panic, so `recover()` cannot
+see it and the process dies where it stands. Losing the rest of a run to the
+most valuable thing a differential harness can find would be perverse. A block
+that dies is re-run single-threaded with `-trace` to name the seed, reported,
+and the run carries on (`DFUZZ_ISOLATE=0` skips the isolation pass).
+
+Note what the isolation pass can and cannot promise: a value built through
+corrupted memory is not stable between runs — the same prefix crashed at seed
+1247 once and 614 the next time — so the seed names the block, not a
+reproducer. Reducing it takes a hand, and it is worth the hand.
 
 Useful flags: `-n` (program count instead of `-duration`), `-start` (first
 seed — a seed reproduces its program exactly), `-shrink=false` (skip
@@ -80,12 +101,24 @@ Three things make this safe rather than clever:
    error whenever the trees' APIs drift apart, which is a signal worth having.
 
 The alternative design — two subprocess evaluators diffing stdout over a shared
-corpus — needs no trickery and would have worked. It was not chosen for two
-reasons. A Go panic reaches it only as an exit status, with no stack and no way
-to distinguish a crash from a clean non-zero exit. And it pays a process spawn
-plus a full standard-library load per program, against roughly 3ms for an
-in-process pair here (SUBPROCESS_COST) — the difference between a bounded run
-that fits in a coffee break and one that does not.
+corpus — needs no trickery and would have worked. It was not chosen, and the
+ordering of the reasons matters because the obvious one is the weaker one.
+
+The **speed** difference is real but modest: `elps run` on a one-expression file
+costs ~6.6ms of CPU (measured over 200 spawns), against ~3.0ms per evaluation
+in-process (measured over the 909,650 evaluations of a 23-minute run). Call it
+2x, most of it the standard-library load that both designs pay anyway.
+
+The **fidelity** difference is the one that decided it. A Go panic reaches a
+subprocess harness only as an exit status: no stack, no way to distinguish an
+interpreter-recovered panic from an ordinary error condition, and no way to
+tell a crash from a clean non-zero exit. In-process, `IsInternalPanic` and a
+`recover()` in the harness separate those three cases, and the side-effect
+oracle can read every global back out of the environment after the program
+ends. A subprocess design would have to serialize all of that through stdout,
+which means changing the interpreter to help the harness — and a harness that
+needs the tree under test to cooperate is a harness that can be fooled by the
+tree under test.
 
 ## What the generator aims at
 
@@ -121,7 +154,8 @@ seed reproduces its program exactly.
 ## `elpspath` needs a different baseline
 
 `elpspath` **does not exist on `origin/main`** — it was adopted onto the sealed
-branch (`b7ad5ca`) from a production-scale phylum's runtime. Diffing an
+branch (`b7ad5ca`) from the substrate runtime, where it had been in production
+use against a production-scale phylum. Diffing an
 addition against its own absence yields `unknown package: elpspath` on every
 program, which is noise. So the elpspath shapes are gated behind `-elpspath`
 and diffed in a second run whose **left-hand tree is the adoption commit**:

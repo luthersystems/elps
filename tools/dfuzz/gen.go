@@ -47,13 +47,14 @@ import (
 // enableElpspath gates every shape that uses the `elpspath` package.
 //
 // It has to be a switch rather than a constant because elpspath does NOT
-// exist on origin/main -- it was adopted onto the sealed branch from a
-// production-scale phylum's runtime (b7ad5ca).  Against origin/main the whole
-// package is an ADDITION, and diffing an addition against its own absence
-// produces "unknown package: elpspath" on every single program, which is
-// noise, not signal.  The elpspath surface is instead diffed in a second run
-// whose left-hand tree is the adoption commit itself, which isolates exactly
-// the seal-era changes to it (0442c52, 95bbd0c).  See README.md.
+// exist on origin/main -- it was adopted onto the sealed branch from the
+// substrate runtime (b7ad5ca), where it had been in production use.  Against
+// origin/main the whole package is an ADDITION, and diffing it against its
+// own absence produces "unknown package: elpspath" on every single program,
+// which is noise, not signal.  The elpspath surface is instead diffed in a
+// second run whose left-hand tree is the adoption commit itself, which
+// isolates exactly the seal-era changes to it (0442c52, 95bbd0c).  See
+// README.md.
 var enableElpspath = false
 
 // Gen holds the generator state for one program.
