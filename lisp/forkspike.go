@@ -34,9 +34,10 @@ import (
 
 // SpikeForkStats reports what one SpikeFork call touched.
 type SpikeForkStats struct {
-	EnvsRemapped  int // fresh LEnv copies created
-	ValsRemapped  int // fresh LVal copies created (shared nodes excluded)
-	SharedNatives int // LNative payloads shared into the fork by policy
+	EnvsRemapped      int // fresh LEnv copies created
+	ValsRemapped      int // fresh LVal copies created (shared nodes excluded)
+	SharedNatives     int // LNative payloads shared into the fork by policy
+	SharedNativeTypes map[string]int
 }
 
 // SpikeFork clones a quiescent, fully loaded template environment into a
@@ -92,7 +93,7 @@ func SpikeFork(root *LEnv) (*LEnv, *SpikeForkStats, error) {
 		rt:    newRT,
 		envs:  make(map[*LEnv]*LEnv, 256),
 		vals:  make(map[*LVal]*LVal, 4096),
-		stats: &SpikeForkStats{},
+		stats: &SpikeForkStats{SharedNativeTypes: make(map[string]int)},
 	}
 	newRoot := f.env(root)
 	for name, opkg := range old.Registry.packages {
@@ -194,6 +195,7 @@ func (f *spikeForker) val(v *LVal) *LVal {
 		// SPIKE policy: share the payload, count it.  The header copy above
 		// already aliases v.Native.
 		f.stats.SharedNatives++
+		f.stats.SharedNativeTypes[fmt.Sprintf("%T", v.Native)]++
 	default:
 		switch native := v.Native.(type) {
 		case nil:
@@ -210,6 +212,7 @@ func (f *spikeForker) val(v *LVal) *LVal {
 			// Unknown payload on a non-LNative type: share it and count it
 			// with the natives so the measurement stays honest.
 			f.stats.SharedNatives++
+			f.stats.SharedNativeTypes[fmt.Sprintf("%T", v.Native)]++
 		}
 	}
 	if len(v.Cells) > 0 {
