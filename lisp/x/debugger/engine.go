@@ -59,8 +59,8 @@ const (
 type Event struct {
 	Type     EventType
 	Reason   StopReason
-	ExitCode int    // set for EventExited
-	Output   string // set for EventOutput (log points)
+	ExitCode int // set for EventExited
+	Output   string       // set for EventOutput (log points)
 	Env      *lisp.LEnv
 	Expr     *lisp.LVal
 	BP       *Breakpoint // non-nil for breakpoint stops
@@ -82,16 +82,16 @@ type Engine struct {
 	mu                  sync.Mutex
 	enabled             bool
 	stopOnEntry         bool
-	stoppedOnEntry      bool              // set by OnEval when stopOnEntry fires, read by WaitIfPaused
+	stoppedOnEntry      bool // set by OnEval when stopOnEntry fires, read by WaitIfPaused
 	pauseRequested      bool              // set by RequestPause(), cleared in WaitIfPaused
 	pauseReason         StopReason        // reason for pauseRequested (StopPause or StopFunctionBreakpoint)
 	evaluatingCondition bool              // re-entrancy guard for conditional breakpoints
 	lastContinuedKey    string            // suppress breakpoint re-hit after continue on same line
 	funBreakpoints      map[string]string // qualified name → user-provided name
 
-	stepInTarget      string // qualified function name to target (smart step-into)
-	stepInTargetCount int    // how many OnFunEntry matches to skip (0 = first match)
-	stepInTargetSeen  int    // matches seen so far
+	stepInTarget        string            // qualified function name to target (smart step-into)
+	stepInTargetCount   int               // how many OnFunEntry matches to skip (0 = first match)
+	stepInTargetSeen    int               // matches seen so far
 
 	stepGranularity string // DAP stepping granularity ("instruction" or line-level default)
 	stepOutReturned bool   // set by OnFunReturn when step-out condition detected pre-pop

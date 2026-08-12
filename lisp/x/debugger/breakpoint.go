@@ -42,7 +42,7 @@ type Breakpoint struct {
 	LogMessage   string // optional: log point message template with {expr} interpolation
 	Enabled      bool
 
-	hitCount     int // number of times this breakpoint has been reached
+	hitCount     int    // number of times this breakpoint has been reached
 	parsedHitOp  hitOp
 	parsedHitVal int
 }

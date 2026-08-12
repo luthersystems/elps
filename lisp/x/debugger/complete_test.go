@@ -294,3 +294,4 @@ func findCandidate(candidates []CompletionCandidate, label string) (CompletionCa
 	}
 	return CompletionCandidate{}, false
 }
+

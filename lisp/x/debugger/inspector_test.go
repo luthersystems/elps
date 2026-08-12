@@ -312,7 +312,7 @@ func TestInspectMacroExpansion_WithContext(t *testing.T) {
 	expr := lisp.Symbol("+")
 	expr.MacroExpansion = &lisp.MacroExpansionInfo{
 		MacroExpansionContext: callSite,
-		ID:                    42,
+		ID:                   42,
 	}
 
 	bindings := InspectMacroExpansion(expr)
@@ -345,7 +345,7 @@ func TestInspectMacroExpansion_WithCallSite(t *testing.T) {
 	expr := lisp.Symbol("+")
 	expr.MacroExpansion = &lisp.MacroExpansionInfo{
 		MacroExpansionContext: ctx,
-		ID:                    1,
+		ID:                   1,
 	}
 
 	bindings := InspectMacroExpansion(expr)
@@ -362,7 +362,7 @@ func TestInspectMacroExpansion_NilContext(t *testing.T) {
 	expr := lisp.Symbol("+")
 	expr.MacroExpansion = &lisp.MacroExpansionInfo{
 		MacroExpansionContext: nil,
-		ID:                    1,
+		ID:                   1,
 	}
 	assert.Nil(t, InspectMacroExpansion(expr))
 }

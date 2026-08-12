@@ -111,10 +111,10 @@ type debugHandler struct {
 	exitCh     chan struct{} // closed when eval goroutine exits
 	doneCh     chan struct{} // closed by doQuit to signal REPL to stop
 
-	mu      sync.Mutex
-	paused  bool
-	exited  bool
-	lastCmd string
+	mu       sync.Mutex
+	paused   bool
+	exited   bool
+	lastCmd  string
 }
 
 // onEvent is the debugger event callback. It runs on the eval goroutine.
