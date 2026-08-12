@@ -181,6 +181,9 @@ func main() {
 		findings atomic.Int64
 		errs     atomic.Int64
 		starved  atomic.Int64
+		classMu  sync.Mutex
+		classN   = map[string]int{}
+		classEg  = map[string]result{}
 		selfBad  atomic.Int64
 		selfRun  atomic.Int64
 		nextSeed atomic.Int64
@@ -256,6 +259,16 @@ func main() {
 					continue
 				}
 				diverged.Add(1)
+				if len(r.Class.Intended) > 0 {
+					classMu.Lock()
+					for name := range r.Class.Intended {
+						classN[name]++
+						if _, seen := classEg[name]; !seen {
+							classEg[name] = r
+						}
+					}
+					classMu.Unlock()
+				}
 				if len(r.Class.Findings) == 0 {
 					intended.Add(1)
 					continue
@@ -310,6 +323,26 @@ func main() {
 	fmt.Printf("self-checks        %d, nondeterministic %d\n", selfRun.Load(), selfBad.Load())
 	fmt.Printf("diverged           %d\n", diverged.Load())
 	fmt.Printf("  intended         %d\n", intended.Load())
+	classMu.Lock()
+	names := make([]string, 0, len(classN))
+	for n := range classN {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		fmt.Printf("    %-34s %d programs\n", n, classN[n])
+	}
+	egs := make([]result, 0, len(names))
+	for _, n := range names {
+		egs = append(egs, classEg[n])
+	}
+	classMu.Unlock()
+	// One exemplar per intended class.  A classified divergence is never
+	// hidden -- only excused from failing the run.
+	for i, n := range names {
+		fmt.Printf("\n===== INTENDED exemplar (%s) =====\n", n)
+		reportResult(os.Stdout, egs[i], "INTENDED")
+	}
 	fmt.Printf("  findings         %d (%d distinct)\n", findings.Load(), len(reported))
 	if findings.Load() > 0 {
 		os.Exit(1)
@@ -351,7 +384,7 @@ func evalPair(seed int64, src string, allow map[string]bool) result {
 	r.Stock = evalStock(src)
 	r.Sealed = evalSealed(src)
 	r.Diverged = Compare(r.Stock, r.Sealed)
-	r.Class = Classify(r.Diverged, r.Stock, r.Sealed, allow)
+	r.Class = Classify(src, r.Diverged, r.Stock, r.Sealed, allow)
 	return r
 }
 
@@ -425,7 +458,7 @@ func reportResult(w *os.File, r result, tag string) {
 	if !strings.HasSuffix(r.Src, "\n") {
 		fmt.Fprintln(w)
 	}
-	isFinding := make(map[Divergence]bool, len(r.Class.Findings))
+	isFinding := make(map[Divergence]bool, len(r.Class.Findings)) //nolint:gocritic
 	for _, f := range r.Class.Findings {
 		isFinding[f] = true
 	}
@@ -438,7 +471,12 @@ func reportResult(w *os.File, r result, tag string) {
 		fmt.Fprintf(w, "  [%s] %s\n", mark, d)
 	}
 	if len(r.Class.Intended) > 0 {
-		fmt.Fprintf(w, "--- allowlist rules applied: %s\n", strings.Join(r.Class.Intended, ", "))
+		names := make([]string, 0, len(r.Class.Intended))
+		for n := range r.Class.Intended {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		fmt.Fprintf(w, "--- allowlist rules applied: %s\n", strings.Join(names, ", "))
 	}
 	fmt.Fprintf(w, "--- stock  --- type=%s err=%v cond=%s panic=%v steps=%d\n  value: %s\n",
 		r.Stock.Type, r.Stock.IsError, r.Stock.Cond, r.Stock.InternalPanic, r.Stock.Steps, trunc(r.Stock.Value))

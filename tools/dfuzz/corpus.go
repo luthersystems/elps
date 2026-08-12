@@ -42,6 +42,21 @@ var SeedCorpus = []string{
 	`(defun f () (reverse 'list '(1 2 3)))
 (list (f) (f))`,
 
+	// The literal must be OBSERVED after the call, not just the result: a
+	// literal sorted in place returns the same sorted list every time, so a
+	// program that keeps only the result cannot see the damage.
+	`(defun f () (let ([q '(3 1 2)]) (list (stable-sort < q) q)))
+(list (f) (f))`,
+
+	`(defun f () (let ([q '(3 1 2 5 4)]) (list (insert-sorted 'list q < 0) q)))
+(list (f) (f))`,
+
+	`(defun f () (let ([q '(3 1 2)]) (list (reverse 'list q) q)))
+(list (f) (f))`,
+
+	`(defun f () (let ([q (vector 3 1 2)]) (list (stable-sort < q) q)))
+(list (f) (f))`,
+
 	// --- slice/append capacity aliasing ------------------------------------
 	`(defun f ()
   (let ([s (slice 'list '(1 2 3 4) 0 2)])

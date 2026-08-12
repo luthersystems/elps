@@ -458,13 +458,18 @@ func (g *Gen) shape() string {
 		return fmt.Sprintf("(set 'byt (append-bytes! %s %s))", g.bytesLit(), g.pick([]string{`"z"`, `""`, `(to-bytes "q")`}))
 
 	// --- 2. sort, the shape whose defect only showed on the SECOND call ----
+	//
+	// These go through mutateAndObserve, because the result alone does not
+	// show the defect: a literal sorted in place returns the same sorted list
+	// every time.  What changes is the LITERAL, and the only way to see that
+	// is to keep a reference to it and print it afterwards.
 	case 3:
-		return fmt.Sprintf("(set 'lst (stable-sort %s %s))", g.pick(numPreds), g.numQuotedList())
+		return g.mutateAndObserve(fmt.Sprintf("(stable-sort %s %%s)", g.pick(numPreds)), g.numQuotedList())
 	case 4:
-		return fmt.Sprintf("(set 'vec (stable-sort %s %s))", g.pick(numPreds), g.numVector())
+		return g.mutateAndObserve(fmt.Sprintf("(stable-sort %s %%s)", g.pick(numPreds)), g.numVector())
 	case 5:
-		return fmt.Sprintf("(set 'lst (insert-sorted %s %s %s %s))",
-			g.pick(typeSpecs), g.numQuotedList(), g.pick(numPreds), g.numAtom())
+		return g.mutateAndObserve(fmt.Sprintf("(insert-sorted %s %%s %s %s)",
+			g.pick(typeSpecs), g.pick(numPreds), g.numAtom()), g.numQuotedList())
 
 	// --- 3. capacity games on append/slice/concat -------------------------
 	case 6:
@@ -480,6 +485,9 @@ func (g *Gen) shape() string {
 		return fmt.Sprintf("(let ([%s %s]) (set 'g0 (append! %s %s)) (set 'g1 %s))",
 			q, g.numVector(), q, g.atom(), q)
 	case 8:
+		if g.chance(2) {
+			return g.mutateAndObserve(fmt.Sprintf("(reverse %s %%s)", g.pick(typeSpecs)), g.quotedList())
+		}
 		return fmt.Sprintf("(set 'lst (concat %s %s %s %s))",
 			g.pick(typeSpecs), g.listySeq(), g.listySeq(), g.listySeq())
 
@@ -489,7 +497,10 @@ func (g *Gen) shape() string {
 		return fmt.Sprintf("(let ([%s %s]) (assoc! %s %s %s) (dissoc! %s %s) (set 'sm %s))",
 			m, g.mapLit(), m, g.pick(strLits), g.genExpr(1), m, g.pick([]string{`"k0"`, `"k1"`, `"nope"`}), m)
 	case 10:
-		return fmt.Sprintf("(set 'sm (assoc %s %s %s))", g.mapLit(), g.pick(strLits), g.genExpr(1))
+		if g.chance(2) {
+			return g.mutateAndObserve(fmt.Sprintf("(slice %s %%s 0 1)", g.pick(typeSpecs)), g.quotedList())
+		}
+		return fmt.Sprintf("(set 'sm (assoc %s %s %s))", g.mapLit(), g.strLit(), g.genExpr(1))
 
 	// --- 5. elpspath, copying and mutating -------------------------------
 	case 11:
@@ -536,6 +547,24 @@ func (g *Gen) shape() string {
 	default:
 		return fmt.Sprintf("(set 'acc %s)", g.genExpr(2+g.rng.Intn(2)))
 	}
+}
+
+// mutateAndObserve binds a literal to a name, applies op to it -- op is a
+// format string with one %s where the bound name goes -- and stores BOTH the
+// operation's result and the literal itself.
+//
+// This is the single most important shape in the generator, and the reason is
+// worth stating.  A builtin that sorts a quoted literal IN PLACE returns the
+// correct sorted list on every call, so a program that keeps only the result
+// can never see the damage.  What changed is the parse tree: the literal is
+// now sorted, and the next evaluation of that same form starts from a
+// different value.  Observing the literal after the call is what turns an
+// invisible corruption into a value that differs between the trees -- and it
+// is exactly the shape the stable-sort defect was found on.
+func (g *Gen) mutateAndObserve(op, lit string) string {
+	q := g.name("q")
+	return fmt.Sprintf("(let ([%s %s]) (set 'g0 %s) (set 'g1 %s) (set 'acc (list g0 g1)))",
+		q, lit, fmt.Sprintf(op, q), q)
 }
 
 // pathStep emits one elpspath step, covering keys, indices, negative indices,
