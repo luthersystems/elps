@@ -36,11 +36,18 @@
 //   - a field write rooted at a package-level variable — the
 //     registry-reachable shape.
 //
-// CLEAN: a location routed through copyLocation (or any func(*Location)
-// *Location named copyLocation), a &token.Location{...} literal, and
-// &local where local is a value-typed variable (the parser's deref-copy
-// idiom: src := *loc; v.SetSource(&src)) — all of these give the escaping
-// value its own memory.
+// CLEAN: a &token.Location{...} literal, &local where local is a
+// value-typed variable (the parser's deref-copy idiom: src := *loc;
+// v.SetSource(&src)), and — the cross-package part — the result of ANY
+// function or method PROVEN to allocate the location it returns.  That
+// proof is the freshLocation fact (locfact.go): the analyzer summarises
+// each location-returning function in the package it is analysing and
+// exports the summary along the import graph, so copyLocation,
+// lisp.LEnv.Source (which returns copyLocation(env.loc)) and
+// token.Scanner.LocStart (which mints a &Location{...} per token) are clean
+// at every call site, in every package, WITHOUT an annotation.  An embedder
+// using the sanctioned copying accessor must never have to annotate; only a
+// deliberate alias should.
 //
 // Out of scope (documented limitations, consistent with the freshness
 // rule's intraprocedural approximation): function parameters are not taint
@@ -49,7 +56,10 @@
 // (stampMacroExpansion receives callSite by parameter); whole-struct copies
 // (*cp = *v) alias the source field implicitly and remain the freshness
 // rule's and the seal design's concern; index reads (locs[i]) are not taint
-// sources.
+// sources.  A callee with NO freshness fact — an un-analysed package, an
+// interface method, a function whose body has one leaking return — keeps
+// the conservative treatment, so the fact can only ever retire a proven
+// false positive, never open a hole.
 //
 // Escape hatch: //elps:aliases trailing the flagged line, standing alone on
 // the line directly above it, or in the enclosing function's doc comment.
@@ -75,12 +85,17 @@ const tokenPkgPath = "github.com/luthersystems/elps/parser/token" //nolint:gosec
 const aliasesMarker = "elps:aliases"
 
 var escapeAnalyzer = &analysis.Analyzer{
-	Name: "elpsescape",
-	Doc:  "flag runtime-owned *token.Location pointers (env.Loc, v.source, parser token locations) stored uncopied into fields of escaping values (the pre-fix ErrorCondition/ErrorConditionf and ErrorAssociate aliasing, issue #375); suppress with //elps:aliases",
-	Run:  runEscape,
+	Name:      "elpsescape",
+	Doc:       "flag runtime-owned *token.Location pointers (env.Loc, v.source, parser token locations) stored uncopied into fields of escaping values (the pre-fix ErrorCondition/ErrorConditionf and ErrorAssociate aliasing, issue #375); suppress with //elps:aliases",
+	Run:       runEscape,
+	FactTypes: []analysis.Fact{new(freshLocation)},
 }
 
 func runEscape(pass *analysis.Pass) (interface{}, error) {
+	// Summarise this package's location-returning functions first: an
+	// in-package call site below must be able to consult the fact, and the
+	// callee may live in a file this loop has not reached yet.
+	exportFreshLocationFacts(pass)
 	for _, file := range pass.Files {
 		ann := markerLines(pass.Fset, file, aliasesMarker)
 		for _, decl := range file.Decls {
@@ -367,10 +382,13 @@ func (t *escTracker) locTaint(e ast.Expr) bool {
 	return false
 }
 
-// callLocTaint decides taint for a call in location position: copyLocation
-// cleanses; a location-returning method aliases its receiver's state
-// (p.Location()); a plain location-returning function propagates its
-// arguments' taint (intraprocedural helper approximation).
+// callLocTaint decides taint for a call in location position: a callee
+// PROVEN to allocate its result cleanses (the freshLocation fact — see
+// locfact.go; this is what makes copyLocation, lisp.LEnv.Source and
+// token.Scanner.LocStart safe at any call site, in any package, with no
+// annotation); a location-returning method with no such proof aliases its
+// receiver's state (p.Location()); a plain location-returning function
+// propagates its arguments' taint (intraprocedural helper approximation).
 func (t *escTracker) callLocTaint(call *ast.CallExpr) bool {
 	fn, ok := typeutil.Callee(t.pass.TypesInfo, call).(*types.Func)
 	if !ok {
@@ -380,8 +398,8 @@ func (t *escTracker) callLocTaint(call *ast.CallExpr) bool {
 	if !ok || sig.Results().Len() != 1 || !isLocationPtr(sig.Results().At(0).Type()) {
 		return false
 	}
-	if fn.Name() == "copyLocation" {
-		return false // the sanctioned cleanser (lisp/detach.go)
+	if freshLocationCallee(t.pass, fn) {
+		return false // proven to hand back memory it allocated
 	}
 	if sig.Recv() != nil {
 		if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
@@ -456,7 +474,15 @@ func isLocationPtr(t types.Type) bool {
 	if !ok {
 		return false
 	}
-	named, ok := types.Unalias(p.Elem()).(*types.Named)
+	return isLocationValue(p.Elem())
+}
+
+// isLocationValue reports whether t is token.Location itself.
+func isLocationValue(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	named, ok := types.Unalias(t).(*types.Named)
 	if !ok {
 		return false
 	}

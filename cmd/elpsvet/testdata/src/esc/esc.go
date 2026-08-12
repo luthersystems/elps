@@ -13,8 +13,15 @@
 // is exactly the live-tree metadata-translation shape carrying the audited
 // annotations in lsp/definition.go and mcpserver/service.go, so the fixtures
 // take their taint from funcInfo.Source, the struct this package owns.
-// lisp.LEnv's one remaining external route, the copying Source() accessor,
-// is covered by envSourceAccessor at the bottom of the file.
+//
+// The bottom half of the file exercises the CROSS-PACKAGE freshness fact
+// (locfact.go): lisp.LEnv's one remaining external route is the copying
+// Source() accessor, which is clean here with no annotation because the
+// fact travels from package lisp, while the by-reference LocRef() with the
+// identical signature is still flagged.  Each pair below is deliberately
+// both-directions — proven-fresh clean, unproven flagged — because the
+// whole point of the fact is that it distinguishes callees a signature
+// cannot.
 package esc
 
 import (
@@ -122,7 +129,7 @@ func copyCleansed(src *funcInfo) *funcInfo {
 
 // copyLocation mirrors lisp/detach.go's cleanser for the cross-package
 // fixtures (the real one is unexported in package lisp).
-func copyLocation(loc *token.Location) *token.Location {
+func copyLocation(loc *token.Location) *token.Location { // want copyLocation:"freshLocation"
 	if loc == nil {
 		return nil
 	}
@@ -164,20 +171,122 @@ func compositeLiteralAnnotation(src *funcInfo) *funcInfo {
 
 // envSourceAccessor pins what became of the old env.Loc route after #382.
 // lisp.LEnv.loc is unexported now, so the only way out of an environment is
-// the Source() accessor — which returns a COPY and is therefore safe to
-// store.  The rule cannot see that: its method-taint approximation is
-// deliberately intraprocedural, so a location-returning method on a receiver
-// the function did not construct is tainted regardless of what the callee
-// does.  This is the same known false-positive class the live tree annotates
-// at parser/token/scanner.go (LocStart), and an embedder resolves it the
-// same way, with an audited annotation.
+// the Source() accessor — which returns copyLocation(env.loc), a COPY that
+// is safe to store.  It is CLEAN with NO annotation: the freshLocation fact
+// crosses the package boundary from lisp, one call deep through
+// copyLocation.  An embedder using the sanctioned API never annotates.
 func envSourceAccessor(env *lisp.LEnv, v *lisp.LVal) {
-	v.SetSource(env.Source()) // want `SetSource call stores a runtime-owned \*token\.Location`
+	v.SetSource(env.Source())
 }
 
-// envSourceAccessorAnnotated is how that false positive is meant to be
-// retired at a real call site.
-func envSourceAccessorAnnotated(env *lisp.LEnv, v *lisp.LVal) {
-	//elps:aliases fixture justification — LEnv.Source returns a copy (#382); the intraprocedural method-taint approximation cannot see inside the callee
-	v.SetSource(env.Source())
+// envLocRefAccessor is the other direction, and the whole point of proving
+// rather than assuming: same signature, same receiver, but the callee hands
+// out the environment's OWN pointer, so the store is still flagged.
+func envLocRefAccessor(env *lisp.LEnv, v *lisp.LVal) {
+	v.SetSource(env.LocRef()) // want `SetSource call stores a runtime-owned \*token\.Location`
+}
+
+// envLocMaybeAccessor pins that the summary is all-or-nothing: LocMaybe
+// returns a fresh literal on one path and the env's pointer on the other,
+// so it earns no fact and its callers stay flagged.
+func envLocMaybeAccessor(env *lisp.LEnv, v *lisp.LVal) {
+	v.SetSource(env.LocMaybe()) // want `SetSource call stores a runtime-owned \*token\.Location`
+}
+
+// envLocDerefAccessor pins the deref-copy shape as an accessor: &cp where cp
+// is the callee's own token.Location value is fresh, so this is clean too.
+func envLocDerefAccessor(env *lisp.LEnv, v *lisp.LVal) {
+	v.SetSource(env.LocDeref())
+}
+
+// lvalSourceValueAccessor pins the OTHER copying accessor shape:
+// (*lisp.LVal).Source (and ErrorVal.Source, which delegates to it) returns a
+// token.Location BY VALUE, so nothing that reaches the store can alias the
+// LVal's storage — no fact is needed and none is computed (the fact only
+// summarises single *token.Location results).
+func lvalSourceValueAccessor(src, v *lisp.LVal) {
+	loc, ok := src.Source()
+	if !ok {
+		return
+	}
+	v.SetSource(&loc)
+}
+
+// wrapCopy proves the fact is transitive: it is fresh only because
+// copyLocation is, and it is defined AFTER its own callee's users, so the
+// fixpoint — not source order — is what proves it.
+func wrapCopy(loc *token.Location) *token.Location { // want wrapCopy:"freshLocation"
+	return copyLocation(loc)
+}
+
+// wrapCopyStore stores the wrapper's result into an escaping literal.
+func wrapCopyStore(src *funcInfo) *funcInfo {
+	return &funcInfo{Source: wrapCopy(src.Source)}
+}
+
+// passthrough is the counterexample for the plain-function case: handing a
+// parameter straight back proves nothing, so it earns no fact.
+func passthrough(loc *token.Location) *token.Location {
+	return loc
+}
+
+// passthroughStore stays flagged: the argument's taint reaches the store.
+func passthroughStore(src *funcInfo) *funcInfo {
+	return &funcInfo{Source: passthrough(src.Source)} // want `returning a value whose composite literal captured a field stores a runtime-owned \*token\.Location`
+}
+
+// mintFresh is the local mirror of token.Scanner.LocStart: a literal minted
+// per call.  Its call site is clean without the annotation the live tree
+// used to need at parser/token/scanner.go.
+func mintFresh(p *parser) *token.Location { // want mintFresh:"freshLocation"
+	return &token.Location{File: "minted"}
+}
+
+// mintFreshStore is the EmitToken shape: the minted location captured by a
+// composite literal that is returned.
+func mintFreshStore(p *parser) *funcInfo {
+	info := &funcInfo{Source: mintFresh(p)}
+	return info
+}
+
+// loopRebound is why the summary treats location locals FLOW-INSENSITIVELY.
+// Its only two returns are `loc` and nil, and a source-order,
+// last-assignment-wins walk reaches the `return loc` before ever seeing the
+// assignment below it — so it would call loc fresh and hand this function a
+// fact.  On the second iteration `loc` holds the PREVIOUS token's shared
+// pointer.  Requiring every assignment to be fresh removes the ordering
+// question, so no fact is recorded here (analysistest fails on an
+// unexpected one) and the call site stays flagged.
+func (p *parser) loopRebound(toks []*token.Token) *token.Location {
+	var loc *token.Location
+	for _, tok := range toks {
+		if tok.Text == "" {
+			return loc
+		}
+		loc = tok.Source
+	}
+	return nil
+}
+
+func loopReboundStore(p *parser, toks []*token.Token, v *lisp.LVal) {
+	v.SetSource(p.loopRebound(toks)) // want `SetSource call stores a runtime-owned \*token\.Location`
+}
+
+// loopFresh is the same loop with the aliasing assignment replaced by a
+// copy.  Every assignment is fresh, so the fact IS earned despite the return
+// sitting above the assignment — the flow-insensitive rule rejects the
+// ordering hazard, not the loop.
+func (p *parser) loopFresh(toks []*token.Token) *token.Location { // want loopFresh:"freshLocation"
+	var loc *token.Location
+	for _, tok := range toks {
+		if tok.Text == "" {
+			return loc
+		}
+		loc = copyLocation(tok.Source)
+	}
+	return nil
+}
+
+func loopFreshStore(p *parser, toks []*token.Token, v *lisp.LVal) {
+	v.SetSource(p.loopFresh(toks))
 }

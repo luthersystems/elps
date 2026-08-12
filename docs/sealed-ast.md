@@ -299,11 +299,25 @@ Three `go/analysis` rules, run as `go run ./cmd/elpsvet -test=false ./...`:
   `ErrorAssociate` (d922290) bugs stored `env.Loc` into freshly built
   errors — fresh write targets, so freshness was structurally blind; this
   rule retro-catches all three shapes (fixtures in
-  `cmd/elpsvet/testdata`). The cleanser is `copyLocation` (or an explicit
-  deref copy). Suppression: `//elps:aliases` with a justification.
+  `cmd/elpsvet/testdata`). The cleanser is any function PROVEN to allocate
+  the location it returns: `copyLocation`, an explicit deref copy, a
+  `&token.Location{...}` literal, or anything built only out of those.
+  That proof is a `go/analysis` **fact** (`locfact.go`), computed per
+  location-returning function from its own body and exported along the
+  import graph, so the sanctioned copying accessors — `lisp.LEnv.Source`
+  (returns `copyLocation(env.loc)`) and `token.Scanner.LocStart` (mints a
+  literal per token) — are clean at every call site in every package with
+  no annotation, while a by-reference accessor of identical signature
+  (`rdparser.Parser.Location`) is still flagged. A callee with no fact —
+  un-analysed package, interface method, a body with one leaking return —
+  keeps the conservative treatment, so the fact can only ever retire a
+  proven false positive. Suppression: `//elps:aliases` with a
+  justification.
 
 *Blind spots (documented in the analyzers' own headers):* intraprocedural
-only — `[]*LVal` function parameters are not taint sources in the callee
+within a function body — the escape rule's location-freshness fact is the
+one summary that crosses a call, and it carries a single bit, nothing about
+arguments or aliasing. `[]*LVal` function parameters are not taint sources in the callee
 (and neither are `*token.Location` parameters for the escape rule);
 storing a tainted slice into a field of a pre-existing struct escapes
 tracking; a tainted location passed as a call argument escapes the escape

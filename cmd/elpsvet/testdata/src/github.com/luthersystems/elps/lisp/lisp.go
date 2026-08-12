@@ -39,6 +39,24 @@ func (v *LVal) SetSource(loc *token.Location) {
 	v.source = loc
 }
 
+// Source mirrors the real (*LVal).Source: the location comes back BY VALUE
+// alongside a boolean, so nothing the caller holds can alias v's storage.
+// It needs no freshLocation fact — the fact summarises single
+// *token.Location results, and a value result is unaliasable by
+// construction.
+func (v *LVal) Source() (token.Location, bool) {
+	if v == nil || v.source == nil {
+		return token.Location{}, false
+	}
+	return *v.source, true
+}
+
+// ErrorVal mirrors lisp.ErrorVal, whose Source delegates to (*LVal).Source
+// and is value-returning for the same reason.
+type ErrorVal LVal
+
+func (e *ErrorVal) Source() (token.Location, bool) { return (*LVal)(e).Source() }
+
 type CallStack struct{}
 
 func (s *CallStack) Copy() *CallStack { return &CallStack{} }
@@ -54,15 +72,44 @@ type LEnv struct {
 
 // Source mirrors the real accessor: the exported read of the env's location
 // hands out a COPY, because the evaluator rebinds and mutates its own
-// register (#382).
-func (env *LEnv) Source() *token.Location {
+// register (#382).  It is the SANCTIONED way out of an environment, and the
+// freshLocation fact must prove it — through copyLocation, one call deep —
+// so no caller in any package has to annotate.
+func (env *LEnv) Source() *token.Location { // want Source:"freshLocation"
 	if env == nil {
 		return nil
 	}
 	return copyLocation(env.loc)
 }
 
-func copyLocation(loc *token.Location) *token.Location {
+// LocRef is Source's counterexample: the same signature, the same
+// not-constructed-here receiver, but it hands out the env's OWN pointer.
+// No fact, so the call site stays flagged.  Source and LocRef differ only
+// in what the callee does, which is exactly what the fact is for.
+func (env *LEnv) LocRef() *token.Location {
+	return env.loc
+}
+
+// LocMaybe proves the summary is all-or-nothing: one leaking return sinks
+// the whole function, even though the other return is a fresh literal.
+func (env *LEnv) LocMaybe() *token.Location {
+	if env.loc == nil {
+		return &token.Location{File: "<native code>"}
+	}
+	return env.loc
+}
+
+// LocDeref mirrors the parser's deref-copy idiom as an accessor: the local
+// is this call's own struct, so its address is fresh.
+func (env *LEnv) LocDeref() *token.Location { // want LocDeref:"freshLocation"
+	if env.loc == nil {
+		return nil
+	}
+	cp := *env.loc
+	return &cp
+}
+
+func copyLocation(loc *token.Location) *token.Location { // want copyLocation:"freshLocation"
 	if loc == nil {
 		return nil
 	}

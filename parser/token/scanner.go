@@ -90,7 +90,6 @@ func (s *Scanner) EmitToken(typ Type) *Token {
 		Source: s.LocStart(),
 	}
 	s.Ignore()
-	//elps:aliases false positive of the intraprocedural method-taint approximation: LocStart mints a fresh Location per token (the analyzer cannot see inside the call), and the token's Location entering the parser's producer-fixup pipeline afterwards is the documented convention
 	return tok
 }
 
