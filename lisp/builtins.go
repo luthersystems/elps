@@ -199,6 +199,17 @@ var (
 		{"concat", Formals("type-specifier", VarArgSymbol, "args"), builtinConcat,
 			`Concatenates sequences into one of the specified type. Accepts
 			'list, 'vector, 'string, or 'bytes as type-specifier.`},
+		{"copy", Formals("value"), builtinCopy,
+			`Returns a deep copy of value that shares no storage with it:
+			lists, vectors, sorted-maps and bytes are rebuilt with fresh
+			backing, recursively, so mutating the copy at any depth cannot
+			be observed through the original. Function and native values
+			are shared by reference (they hold no lisp-mutable state);
+			strings and numbers are immutable values. Internal sharing --
+			including cycles -- is preserved within the copy. Use copy to
+			take ownership of data whose provenance you do not control:
+			the result is always mutable, even when the input is (or came
+			from) a quoted program literal.`},
 		{"insert-index", Formals("type-specifier", "seq", "index", "item"), builtinInsertIndex,
 			`Returns a new sequence with item inserted at the given index.
 			The type-specifier ('list or 'vector) determines the return type.`},

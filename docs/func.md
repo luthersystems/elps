@@ -415,6 +415,43 @@ elps> (concat 'list '("A" "B" "C") '(1 2 3))
 '("A" "B" "C" 1 2 3)
 ```
 
+## `copy`
+
+Returns a deep copy of a value that shares no storage with it. Lists, vectors,
+sorted-maps and bytes are rebuilt with fresh backing, recursively, so mutating
+the copy at any depth is never observable through the original. Function and
+native values are shared by reference — they hold no lisp-mutable state — and
+strings and numbers are immutable values. Sharing inside the value (including
+cycles) is preserved within the copy.
+
+`copy` is how lisp code takes ownership of data whose provenance it does not
+control. Its result is always mutable, even when the input is (or is derived
+from) a quoted program literal, which is otherwise read-only shared storage
+(see [sealed-ast.md](sealed-ast.md)). It replaces the one-level `(concat 'list
+x)` idiom, hand-rolled recursive copiers, and `json:dump-string`/`json:load`
+round-trips used as deep copies.
+
+```Lisp
+elps> (set 'lit '(3 1 2))
+'(3 1 2)
+elps> (stable-sort < (copy lit))    ; sorts a private copy in place
+'(1 2 3)
+elps> lit                           ; the literal is untouched
+'(3 1 2)
+elps> (set 'orig (sorted-map "k" (vector 1 2)))
+(sorted-map "k" (vector 1 2))
+elps> (append! (get (copy orig) "k") 99)
+(vector 1 2 99)
+elps> orig                          ; deep: the nested vector was copied too
+(sorted-map "k" (vector 1 2))
+```
+
+There is deliberately no `sealed?` predicate to pair with `copy`. Whether a
+value came from program text is not the same question as whether you own it —
+an unsealed value can still be aliased by another binding, a container, or a
+closure. Code that intends to mutate data it did not construct takes a `copy`
+unconditionally.
+
 ## `insert-index`
 
 Inserts a value into a sequence at a specific index.
