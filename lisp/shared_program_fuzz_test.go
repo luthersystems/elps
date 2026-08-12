@@ -358,8 +358,20 @@ func loadProgramBudgeted(t *testing.T, env *lisp.LEnv, prog lisp.Program, envIdx
 				return nil, false
 			}
 			// Rendering runs the same walk every error path in the
-			// interpreter runs when it formats an operand.
-			_ = result.String()
+			// interpreter runs when it formats an operand — but only when
+			// the value can be rendered at all.  A program is free to build
+			// a self-referential container ((set 'v (vector)) (append! v v)),
+			// and LVal.String() has no cycle or depth bound, so rendering
+			// one exhausts the goroutine stack: a FATAL runtime error that
+			// recover() cannot intercept.  That is a separately-reported
+			// defect (see containerRenderable in lisp/containergen_test.go
+			// for the full note); reporting it from here as well would
+			// crash the worker before this target could say anything about
+			// the shared parse.  The differential assertions are unaffected
+			// — valueFingerprint terminates on cycles by construction.
+			if containerRenderable([]*lisp.LVal{result}) {
+				_ = result.String()
+			}
 			return result, true
 		case <-time.After(wait):
 			verdict, more, report := budget.Check()
