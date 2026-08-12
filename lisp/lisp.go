@@ -1660,8 +1660,8 @@ func boundVars(v *LVal) *LVal {
 	if env == nil {
 		return Nil()
 	}
-	keys := make([]string, 0, len(env.Scope))
-	for k := range env.Scope {
+	keys := make([]string, 0, len(env.scope))
+	for k := range env.scope {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)

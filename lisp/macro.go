@@ -386,14 +386,14 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 
 	unquote, err := getUnquoteType(v)
 	if err != nil {
-		env.Loc = v.source
+		env.loc = v.source
 		return env.Error(err)
 	}
 	if unquote == unquoteSpliced {
 		// v looks like ``(unquote-splicing expr)''
 		expr := v.Cells[1]
 		if depth == 0 || quoteLevel > 0 {
-			env.Loc = v.source
+			env.loc = v.source
 			return env.Errorf("unquote-splicing used in an invalid context")
 		}
 		return doUnquoteSpliced(env, expr)
