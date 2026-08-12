@@ -45,6 +45,46 @@ environment construction:
 Fork is O(mutable + closure fraction) — milliseconds at production scale.
 Run it at pool-refill time, in the background; never on the request path.
 
+## Measured numbers
+
+Fork beats a full load at every scale measured, and the margin widens with
+program size — a full load re-evaluates every top-level form, while a fork
+walks only the mutable and closure fraction, which shrinks proportionally
+as programs grow (program AST is sealed parser output).
+
+**Stdlib scale** — `BenchmarkEnvConstruction` in `lisp/lisplib/fork_test.go`,
+the in-repo pair CI can track. Template: `InitializeUserEnv` + `LoadLibrary`
++ a small program with closures, macros, `labels` mutual recursion and
+mutable globals. `benchstat -col /mode`, n=20:
+
+```
+          │     fork     │               fullload                │
+          │    sec/op    │    sec/op     vs base                 │
+EnvConst    366.8µ ± 17%   844.6µ ± 17%  +130.28% (p=0.000 n=20)
+          │     B/op     │     B/op      vs base                 │
+EnvConst    284.4Ki ± 0%   525.9Ki ± 0%   +84.94% (p=0.000 n=20)
+          │  allocs/op   │  allocs/op    vs base                 │
+EnvConst    1.257k ± 0%    5.354k ± 0%   +325.93% (p=0.000 n=20)
+```
+
+2.3× wall, 4.3× fewer allocations. The in-package implementation also beats
+the exported-API prototype the feasibility pass measured (471 µs / 1,367
+allocs) by cloning symbol maps directly instead of replaying `Package.Put`.
+
+**Embedder-runtime scale** — an embedder's own lisp runtime library
+(~11k lines) plus a loaded program, measured out-of-tree against this
+implementation: fork **8.7 ms / 36.8k allocs / 4.3 MiB churn** vs full load
+**50.9 ms / 440.9k allocs / 106 MiB churn** — 5.9× wall, 12.0× fewer
+allocations (n=20, p=0.000). The full-load arm includes the embedder's
+per-environment fixture setup, so read the ratio as indicative rather than
+as a pure interpreter measurement.
+
+**Production scale** — the POC numbers quoted above (15.2 ms vs 71.4 ms,
+4.7× wall / 7.1× allocs on a ~72k-line phylum), measured with the same
+algorithm against a proprietary corpus. Those remain the production-scale
+evidence; the corpus is not reproducible in-repo, which is why the two
+smaller scales are reported alongside.
+
 ## The contract
 
 ### Quiescence (asserted, no bypass)
