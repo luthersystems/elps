@@ -3,6 +3,7 @@ package debugger
 import (
 	"testing"
 
+	"github.com/luthersystems/elps/internal/macroexp"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
@@ -301,15 +302,12 @@ func TestInspectMacroExpansion_Nil(t *testing.T) {
 }
 
 func TestInspectMacroExpansion_WithContext(t *testing.T) {
-	callSite := &lisp.MacroExpansionContext{
-		Name: "lisp:defun",
-		Args: []*lisp.LVal{lisp.Symbol("my-fn"), lisp.SExpr([]*lisp.LVal{lisp.Symbol("x")})},
-	}
 	expr := lisp.Symbol("+")
-	expr.MacroExpansion = &lisp.MacroExpansionInfo{
-		MacroExpansionContext: callSite,
-		ID:                   42,
-	}
+	// Fabricate expansion metadata through the module-internal bridge — the
+	// field and its types are unexported (issue #382) and the in-kernel
+	// stamp is the only production writer.
+	macroexp.Attach(expr, "lisp:defun", nil, nil,
+		[]*lisp.LVal{lisp.Symbol("my-fn"), lisp.SExpr([]*lisp.LVal{lisp.Symbol("x")})}, 42)
 
 	bindings := InspectMacroExpansion(expr)
 	require.NotNil(t, bindings)
@@ -334,15 +332,9 @@ func TestInspectMacroExpansion_WithContext(t *testing.T) {
 }
 
 func TestInspectMacroExpansion_WithCallSite(t *testing.T) {
-	ctx := &lisp.MacroExpansionContext{
-		Name:     "lisp:defun",
-		CallSite: &token.Location{File: "test.lisp", Line: 5, Col: 1},
-	}
 	expr := lisp.Symbol("+")
-	expr.MacroExpansion = &lisp.MacroExpansionInfo{
-		MacroExpansionContext: ctx,
-		ID:                   1,
-	}
+	macroexp.Attach(expr, "lisp:defun",
+		&token.Location{File: "test.lisp", Line: 5, Col: 1}, nil, nil, 1)
 
 	bindings := InspectMacroExpansion(expr)
 	require.NotNil(t, bindings)
@@ -354,11 +346,3 @@ func TestInspectMacroExpansion_WithCallSite(t *testing.T) {
 	assert.Contains(t, bindings[1].Value.Str, "test.lisp")
 }
 
-func TestInspectMacroExpansion_NilContext(t *testing.T) {
-	expr := lisp.Symbol("+")
-	expr.MacroExpansion = &lisp.MacroExpansionInfo{
-		MacroExpansionContext: nil,
-		ID:                   1,
-	}
-	assert.Nil(t, InspectMacroExpansion(expr))
-}

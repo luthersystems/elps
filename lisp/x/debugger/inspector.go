@@ -123,24 +123,21 @@ func InspectFunctionLocals(env *lisp.LEnv) []ScopeBinding {
 // positional index, and the call-site location. Returns nil if the
 // expression has no macro expansion info.
 func InspectMacroExpansion(expr *lisp.LVal) []ScopeBinding {
-	if expr == nil || expr.MacroExpansion == nil {
-		return nil
-	}
-	ctx := expr.MacroExpansion.MacroExpansionContext
-	if ctx == nil {
+	m, ok := expr.MacroExpansion()
+	if !ok {
 		return nil
 	}
 	bindings := []ScopeBinding{
-		{Name: "(macro)", Value: lisp.String(ctx.Name)},
+		{Name: "(macro)", Value: lisp.String(m.Name)},
 	}
-	for i, arg := range ctx.Args {
+	for i, arg := range m.Args {
 		name := fmt.Sprintf("arg[%d]", i)
 		bindings = append(bindings, ScopeBinding{Name: name, Value: arg})
 	}
-	if ctx.CallSite != nil {
+	if m.CallSite != nil {
 		bindings = append(bindings, ScopeBinding{
 			Name:  "(call-site)",
-			Value: lisp.String(ctx.CallSite.String()),
+			Value: lisp.String(m.CallSite.String()),
 		})
 	}
 	return bindings
