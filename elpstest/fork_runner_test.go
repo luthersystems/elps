@@ -86,3 +86,31 @@ func TestForkServedRunner(t *testing.T) {
 		t.Errorf("template mutated by fork-served tests: %v", res)
 	}
 }
+
+// TestForkServedRunnerStderrContract: a fork-served runner that forgets
+// ForkWithStderr is the easy mistake — a plain Fork shares the TEMPLATE's
+// Stderr, which for a template built outside a test is os.Stderr, not an
+// *elpstest.Logger.  The runner must name the contract violation instead of
+// dying in an interface-conversion panic inside a deferred flush.
+func TestForkServedRunnerStderrContract(t *testing.T) {
+	template := lisp.NewEnv(nil)
+	template.Runtime.Reader = parser.NewReader()
+	if rc := lisp.InitializeUserEnv(template); !rc.IsNil() {
+		t.Fatalf("init: %v", rc)
+	}
+	if rc := template.InPackage(lisp.String(lisp.DefaultUserPackage)); !rc.IsNil() {
+		t.Fatalf("in-package: %v", rc)
+	}
+	r := &elpstest.Runner{
+		NewEnvFn: func(testing.TB) (*lisp.LEnv, error) {
+			return template.Fork() // no ForkWithStderr: the mistake
+		},
+	}
+	_, err := r.NewEnv(t)
+	if err == nil {
+		t.Fatalf("NewEnv accepted an environment with a non-Logger Stderr")
+	}
+	if !strings.Contains(err.Error(), "ForkWithStderr") {
+		t.Errorf("error does not name the fix: %v", err)
+	}
+}

@@ -170,6 +170,35 @@ func TestForkIsolationFingerprint(t *testing.T) {
 	}
 }
 
+// TestForkSpareCapacityIsolation is the lisp-level form of the empty-Cells
+// aliasing case pinned structurally by lisp.TestForkEmptyCellsSpareCapacity.
+// (list) allocates a cell slice with len 0 and spare capacity, and
+// (append 'vector seq x) deliberately appends into a sequence's spare
+// capacity rather than reallocating — so if a fork inherits the template's
+// slice header, the two runtimes write and read the same array slot.  This
+// is the isolation failure a length-and-content comparison cannot see:
+// both sides read "empty" right up until the writes collide.
+func TestForkSpareCapacityIsolation(t *testing.T) {
+	env := newLoadedForkEnv(t)
+	if r := env.LoadString("tmpl.lisp", `(set 'e (list))`); r.Type == lisp.LError {
+		t.Fatalf("template: %v", r)
+	}
+	fork := mustFork(t, env)
+
+	if r := fork.LoadString("f.lisp", `(set 'fv (append 'vector e 'fork))`); r.Type == lisp.LError {
+		t.Fatalf("fork append: %v", r)
+	}
+	if r := env.LoadString("m.lisp", `(set 'tv (append 'vector e 'template))`); r.Type == lisp.LError {
+		t.Fatalf("template append: %v", r)
+	}
+	if r := fork.LoadString("f2.lisp", `(nth fv 0)`); r.Type == lisp.LError || r.Str != "fork" {
+		t.Errorf("fork's own vector element was overwritten by the template: %v", r)
+	}
+	if r := env.LoadString("m2.lisp", `(nth tv 0)`); r.Type == lisp.LError || r.Str != "template" {
+		t.Errorf("template's own vector element was overwritten by the fork: %v", r)
+	}
+}
+
 // TestForkLambdaFIDContinuity: lambdas minted after the fork — on either
 // side — must not collide with any FID inherited from the template (FIDs
 // are "_fun<envID>"; the forked runtime continues the template's env-ID

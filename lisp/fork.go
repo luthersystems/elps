@@ -197,6 +197,12 @@ func (env *LEnv) Fork(opts ...ForkOption) (*LEnv, error) {
 	// gensym counter continues so runtime gensyms cannot re-mint load-time
 	// gensym names.  The template is quiescent, so a plain copy of the
 	// atomic counters is stable.
+	//
+	// The Runtime's third monotonic counter, macroExpSeq, deliberately does
+	// NOT continue: it numbers macro-expansion debug records, which are only
+	// minted under an attached debugger and which a fork drops wholesale
+	// (see val).  A fork starts with an empty macro-expansion ID space, so
+	// unlike env IDs and gensyms it has nothing inherited to collide with.
 	newRT.numenv = old.numenv
 	newRT.numsym = old.numsym
 
@@ -374,6 +380,16 @@ func (f *forker) val(v *LVal) *LVal {
 			cells[i] = f.val(c)
 		}
 		cp.Cells = cells
+	} else {
+		// The struct copy above aliased v.Cells' slice HEADER, and a
+		// zero-length slice can still carry spare capacity pointing into the
+		// template's backing array ((list) allocates len 0 / cap 2).  elps
+		// grows cell slices in place -- append! extends a vector's storage,
+		// and (append 'vector seq x) deliberately appends into a sequence's
+		// spare capacity -- so keeping the header would let a fork-side
+		// append write template memory and vice versa.  Drop it, exactly as
+		// detach does (detachCells returns nil for an empty slice).
+		cp.Cells = nil
 	}
 	return cp
 }

@@ -232,6 +232,17 @@ func (a *forkAuditor) val(path string, o, n *LVal) {
 		a.t.Errorf("%s: copied value differs from template: %v vs %v", path, n, o)
 		return
 	}
+	// Content equality is not isolation.  A Cells slice header copied from
+	// the template still points at the template's backing array, and the
+	// zero-length case is invisible to a length/content comparison: elps
+	// grows cell slices in place (append!, and (append 'vector seq x)
+	// deliberately appends into seq's spare capacity), so a shared backing
+	// is a live cross-runtime write channel even when both sides read empty.
+	if sameCellsBacking(o, n) {
+		a.t.Errorf("%s: Cells backing array shared with template (len=%d cap=%d)",
+			path, len(o.Cells), cap(o.Cells))
+		return
+	}
 	if len(n.Cells) != len(o.Cells) {
 		a.t.Errorf("%s: cell count differs: %d vs %d", path, len(n.Cells), len(o.Cells))
 		return
@@ -328,6 +339,52 @@ func (a *forkAuditor) env(path string, o, n *LEnv) {
 	a.env(path+".Parent", o.Parent, n.Parent)
 }
 
+// sameCellsBacking reports whether two values' Cells slices point at the
+// same backing array.  Reslicing to cap is what makes the zero-length case
+// visible: a len-0/cap-2 slice has no element to compare, but its backing
+// array is exactly the memory an in-place append would write.
+func sameCellsBacking(a, b *LVal) bool {
+	if cap(a.Cells) == 0 || cap(b.Cells) == 0 {
+		return false
+	}
+	return &a.Cells[:cap(a.Cells)][0] == &b.Cells[:cap(b.Cells)][0]
+}
+
+// TestForkEmptyCellsSpareCapacity pins the zero-length/spare-capacity case
+// directly.  Fork copies the LVal struct, which aliases the Cells slice
+// HEADER; replacing the header only when len > 0 left every empty-but-
+// allocated cell slice sharing the template's backing array.  (list) is
+// exactly that shape (len 0, cap 2), so the leak was reachable from lisp:
+// (append 'vector e x) on the template and on a fork both wrote slot 0 of
+// one array and each read the other's element.
+func TestForkEmptyCellsSpareCapacity(t *testing.T) {
+	env := newForkTestEnv(t)
+	empty := QExpr(make([]*LVal, 0, 4))
+	env.PutGlobal(Symbol("emptycap"), empty)
+
+	fork, err := env.Fork()
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	fempty := fork.Runtime.Registry.packages[env.Runtime.Package.Name].symbols["emptycap"]
+	if fempty == nil || fempty == empty {
+		t.Fatalf("value not copied: %v", fempty)
+	}
+	if sameCellsBacking(empty, fempty) {
+		t.Errorf("fork shares the template's empty Cells backing array (cap %d)", cap(empty.Cells))
+	}
+	// The observable consequence, independent of the pointer check: an
+	// append on each side must not overwrite the other's element.
+	empty.Cells = append(empty.Cells, Symbol("template"))
+	fempty.Cells = append(fempty.Cells, Symbol("fork"))
+	if empty.Cells[0].Str != "template" {
+		t.Errorf("fork's append overwrote the template's cell: got %q", empty.Cells[0].Str)
+	}
+	if fempty.Cells[0].Str != "fork" {
+		t.Errorf("template's append overwrote the fork's cell: got %q", fempty.Cells[0].Str)
+	}
+}
+
 // TestForkSharingContract audits the complete forked graph against the
 // template: sealed shared, mutable copied, aliasing preserved.  The floor
 // assertions keep the test honest — if sharing (or copying) silently
@@ -348,6 +405,10 @@ func TestForkSharingContract(t *testing.T) {
 	cyc := SExpr([]*LVal{Nil()})
 	cyc.Cells[0] = cyc
 	env.PutGlobal(Symbol("cyclic"), cyc)
+	// A zero-length cell slice with spare capacity — the shape whose slice
+	// header the struct copy would otherwise carry into the fork.  It is here
+	// so the auditor's backing-array assertion has a live case to fail on.
+	env.PutGlobal(Symbol("empty-cap"), QExpr(make([]*LVal, 0, 4)))
 
 	fork, err := env.Fork()
 	if err != nil {

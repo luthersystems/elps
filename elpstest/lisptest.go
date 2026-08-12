@@ -48,7 +48,8 @@ type Runner struct {
 	// instead of paying a full load per test file.  The returned
 	// environment's Runtime.Stderr must be an *elpstest.Logger for the
 	// test's output to be captured (fork with
-	// lisp.ForkWithStderr(elpstest.NewLogger(t))).
+	// lisp.ForkWithStderr(elpstest.NewLogger(t))); NewEnv rejects anything
+	// else with a named error rather than letting it panic later.
 	NewEnvFn func(t testing.TB) (*lisp.LEnv, error)
 
 	// SetupFn runs code to setup a loaded environment after before the test
@@ -102,7 +103,26 @@ func (r *Runner) Close() {
 
 func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
 	if r != nil && r.NewEnvFn != nil {
-		return r.NewEnvFn(t)
+		env, err := r.NewEnvFn(t)
+		if err != nil {
+			return nil, err
+		}
+		// The runner's callers flush this environment's Stderr as a *Logger
+		// — that is how a test's output gets captured — so a hook returning
+		// anything else dies in an interface-conversion panic several frames
+		// away from the mistake.  The mistake is easy to make and the
+		// default invites it: a plain Fork() SHARES the template's Stderr,
+		// which for a template built outside a test is os.Stderr.  Report
+		// the contract violation here, where the fix can be named.
+		if env == nil || env.Runtime == nil {
+			return nil, errors.New("NewEnvFn returned no environment")
+		}
+		if _, ok := env.Runtime.Stderr.(*Logger); !ok {
+			return nil, fmt.Errorf("NewEnvFn returned an environment whose Runtime.Stderr is %T, not *elpstest.Logger; "+
+				"test output cannot be captured (fork with lisp.ForkWithStderr(elpstest.NewLogger(t)))",
+				env.Runtime.Stderr)
+		}
+		return env, nil
 	}
 	logger := NewLogger(t)
 	runtime := &lisp.Runtime{
