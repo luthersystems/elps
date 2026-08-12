@@ -41,6 +41,13 @@ type Runner struct {
 	// When LoaderFn is nil lisplib.LoadLibrary is used.
 	LoaderFn func(*lisp.LEnv) *lisp.LVal
 
+	// NewEnvFn, when non-nil, replaces the default environment construction
+	// performed by NewEnv (fresh runtime + InitializeUserEnv + LoaderFn).
+	// SPIKE (issue #380): lets an embedder harness serve forked template
+	// environments to the runner instead of paying a full load per test.
+	// The returned env's Runtime.Stderr must be an *elpstest.Logger.
+	NewEnvFn func(t testing.TB) (*lisp.LEnv, error)
+
 	// SetupFn runs code to setup a loaded environment after before the test
 	// is run.
 	SetupFn func(*lisp.LEnv) *lisp.LVal
@@ -91,6 +98,9 @@ func (r *Runner) Close() {
 }
 
 func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
+	if r != nil && r.NewEnvFn != nil {
+		return r.NewEnvFn(t)
+	}
 	logger := NewLogger(t)
 	runtime := &lisp.Runtime{
 		Registry: lisp.NewRegistry(),
