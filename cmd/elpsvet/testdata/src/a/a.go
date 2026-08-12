@@ -59,16 +59,15 @@ func freshChain() *lisp.LVal {
 	return v
 }
 
-// copyDetachPattern is the Copy/Detach idiom: a struct copy through a fresh
-// pointer stays fresh.
-func copyDetachPattern(v *lisp.LVal) *lisp.LVal {
+// copyPattern is the Copy idiom: a struct copy through a fresh pointer
+// stays fresh.  (The in-kernel detach is blessed by the same rule but is
+// unexported, so no cross-package fixture can exercise it.)
+func copyPattern(v *lisp.LVal) *lisp.LVal {
 	cp := &lisp.LVal{}
 	*cp = *v
 	cp.Quoted = true
 	c := v.Copy()
 	c.Str = "y"
-	d, _ := v.Detach()
-	d.Cells = nil
 	return cp
 }
 

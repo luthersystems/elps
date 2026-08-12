@@ -112,8 +112,8 @@ The constraint follows the **storage**, not the header:
 - Header copies that share backing (`Quote`, `Splice`, `shallowUnquote` —
   the `*cp = *v` struct-copy idiom) inherit the flag through the struct
   copy.
-- `Copy()` and `Detach()` **clear** the flag on the fresh storage they
-  create (`lisp/lisp.go`, `lisp/detach.go`). A `Copy` owns fresh top-level
+- `Copy()` and the in-kernel `detach()` **clear** the flag on the fresh
+  storage they create (`lisp/lisp.go`, `lisp/detach.go`). A `Copy` owns fresh top-level
   backing, so the constraint on the original does not apply to it; elements
   shared with the sealed tree remain individually sealed, which is exactly
   the copy-on-write contract — restructure the copy freely, never the
@@ -153,9 +153,12 @@ unsealed by construction.
 ### 2.5 The embedder boundary
 
 The parse/cache boundary exposes no raw AST: `lisp.Program`
-(`lisp/program.go`) wraps parse output opaquely (its `Detach()` is the
-sanctioned way to get owned expressions), and the package registry seals its
-LVal-bearing surface. An embedder that hand-builds expression trees and
+(`lisp/program.go`) wraps parse output opaquely, and the package registry
+seals its LVal-bearing surface. Deep-copy machinery for owned expressions
+exists in-kernel (`detach()`, `lisp/detach.go` — it backs the planned
+lisp-level copy builtin, elps#378) but is unexported: it will be re-exported
+when a real embedder consumer (debugger workflows, cross-runtime transfer)
+materializes. An embedder that hand-builds expression trees and
 shares them across environments may call `SealAST()` itself for the same
 protection.
 
@@ -178,6 +181,89 @@ construction free of per-builtin formals copies (the eager copy measured
 ~90KiB and >1000 allocations per `LoadLibrary` environment);
 `TestNoCrossEnvironmentLValSharing` (`lisp/shared_formals_test.go`)
 asserts the resulting sharing is sealed-only.
+
+### 2.7 The exported-field surface (issues #362, #382)
+
+The seal is a runtime layer; the field-privatization layer closes the same
+write channels at compile time.  Every historical metadata corruption went
+through an exported `LVal` field — the #333/#334 singleton race wrote
+`Quoted`, #370's stamp wrote `MacroExpansion` and source metadata onto
+shared parser nodes, and the post-seal leak fixes were `Meta`-adjacent
+writes — so those fields are unexported (#362 for `source`, #382 for
+`quoted`, `spliced`, `meta`, `macroExpansion`):
+
+- **Reads are mediated**: `Source()` returns a location copy, `IsQuoted()`
+  reads the quote flag, `MacroExpansion()` returns a `MacroExpansionMeta`
+  snapshot, and function identity stays on nil-safe `FID()`/`Package()`/
+  `Builtin()`.  Formatting metadata has no exported reader at all — it is
+  typed by `internal/fmtmeta` and reachable only inside this module through
+  `internal/fmtraw`.
+- **Writes are construction-time or in-kernel only**: `Quote`/`Splice`/the
+  parser set the flags, `stampMacroExpansion` is the only expansion-metadata
+  writer, and the format-preserving parser is the only `meta` writer, on
+  trees it owns.
+- **In-repo tooling crosses on internal hook bridges** (`internal/astraw`
+  precedent): `internal/fmtraw` (formatting metadata), `internal/funraw`
+  (captured closure environments — the deepest aliasing channel `Env()`
+  used to hand embedders), `internal/macroexp` (test-only metadata
+  fabrication for debugger tests).
+- **The remaining exported fields are the deliberate data-read surface**:
+  `Native`, `Str`, `Cells`, `Type`, `Int`, `Float`, `FunType` (accessor
+  migration priced at ~3,000 downstream sites and rejected; writes there
+  are covered by the seal, elpsvet, and checked mode).  `MapData`'s backing
+  is fixed at construction (`NewMapData`).  `TestLValFieldSeal`
+  (`lisp/lval_fields_seal_test.go`) is the regression guard: re-exporting a
+  metadata field, or adding a new exported field without a review
+  conversation, fails the suite.
+- **`LEnv` got the same treatment one layer up.**  `LVal` was never the
+  only mutable channel an embedder holds: every builtin is handed an
+  `*LEnv`, and while its scope map was exported, `env.Scope[sym] = v`
+  rebound a symbol in a live environment — or, through a closure's captured
+  environment, in every function value that closed over it — without
+  passing `Put`, the seal, or elpsvet; `env.Loc = loc` aliased a caller's
+  mutable location into every error and frame stamped afterwards (the #362
+  class).  `scope`, `funName`, `parent` and `loc` are unexported; reads go
+  through `Bindings()` (an `iter.Seq2` over the immediate scope),
+  `NumBindings()`, `Parent()` and `Source()` (a location *copy*).
+  `Runtime` and `ID` stay exported — neither is a container an embedder can
+  corrupt in place.  `TestLEnvFieldSeal` guards it.
+
+The decisions are census-driven, not aesthetic: each field was counted with
+a type-checked selector census over this repo (outside package `lisp`) and
+over a production-scale downstream embedder.
+
+| Field | Downstream prod | Downstream test | In-repo (outside `lisp`) | Verdict |
+|---|---|---|---|---|
+| `LVal.Spliced` | 0 | 0 | 0 | unexported, no accessor |
+| `LVal.Meta` | 0 | 0 | format tooling | unexported, `internal/fmtraw` bridge |
+| `LVal.MacroExpansion` | 0 | 0 | debugger | unexported, snapshot accessor |
+| `LVal.Quoted` | 1 read | 6 | wide | unexported, `IsQuoted()` |
+| `LVal.Native`/`Str`/`Cells`/`Type`/`Int`/`Float`/`FunType` | ~3,000 | — | wide | **stay exported** |
+| `LEnv.Scope`/`FunName`/`Parent`/`Loc` | 0 | 0 | 4 / 0 / 5 / 0 reads | unexported, mediated reads |
+| `LEnv.Runtime`/`ID` | 16 / 3 reads | 17 / 0 | 110 reads / 0 | **stay exported** |
+| `Runtime.*` (`Stderr`, `Reader`, `Library`, `Debugger`, `Profiler`, `Registry`, `Package`, `Stack`) | 8 writes, 7 reads | 15 | 20 writes, 89 reads | **stay exported** |
+| `CallStack.Frames`/`GoStack`, `CallFrame.*` | 0 | 1 read | 30 reads, 0 writes | **stay exported** |
+
+`Runtime` is the deliberate non-break, and that reasoning deserves to be as
+explicit as the breaks.  Its exported fields are embedder *configuration* —
+`Stderr`, `Reader`, `Library`, `Debugger` and `Profiler` are set by the host
+before or between evaluations, the documented way to attach a logger, a
+debugger or a source library — and its live fields (`Registry`, `Package`,
+`Stack`) are per-interpreter state, not shared parse-tree bytes: a bad write
+corrupts *that* interpreter, in its own goroutine, where the damage is
+observable.  None of the incidents this design answers (#333/#334, #369,
+#370) travelled through a `Runtime` field.  Splitting it into a config
+struct plus sealed live state would break 8 downstream production writes
+and 15 downstream test sites to close a channel with no incident history
+and no cross-value blast radius: cost without the argument the other breaks
+have.  It stays open knowingly, not by omission.
+
+`CallStack` is the same call, cheaper to make: no downstream production site
+touches it, but the 30 in-repo reads (diagnostics, the DAP server, the REPL)
+would all need a copying accessor, and the worst an exported `Frames` slice
+buys an attacker is a wrong stack trace in their own interpreter — no shared
+bytes, no other goroutine.  Deferred, with the numbers on the table rather
+than an implicit "nobody asked".
 
 ## 3. Verification layers: what each prevents, and its blind spots
 
@@ -326,8 +412,8 @@ of Go slices.
 
 - **The copy idiom is `concat`**: `(concat 'list xs)`, `(concat 'vector v)`,
   `(concat 'bytes b)` allocate fresh exactly-sized backing (safe on the
-  empty case since #334). The Go-side deep copy for transfer cases is
-  `Detach()`.
+  empty case since #334). The Go-side deep copy for transfer cases is the
+  in-kernel `detach()` (unexported until a consumer appears).
 - **Under evaluation** (#373 work item 3, open): capacity-clamped slice
   results — Go's three-index `s[a:b:b]` idiom built in — so `append` on a
   slice result can never write into the source's retained tail. Not
@@ -353,9 +439,12 @@ text": refuse or `Copy()`, never write.
   header (the `macroexpand` bug shape). If you build a new header over
   cells you did not allocate, either propagate the seal
   (`r.sealed = v.sealed` — kernel-internal) or copy the cells.
-- Do **not** stamp metadata (`SetSource`, `Meta`, `MacroExpansion`) onto
-  nodes you did not construct; `SetSource` no-ops on sealed values, but the
-  fields are exported and a direct write compiles.
+- Do **not** stamp metadata (`SetSource`, formatting metadata, macro-
+  expansion metadata) onto nodes you did not construct; `SetSource` no-ops
+  on sealed values, and since issue #382 the metadata fields are unexported
+  — a direct write no longer compiles outside the kernel, so the remaining
+  in-repo write paths (`internal/fmtraw`, the stamp) carry the whole
+  ownership burden.
 - Do **not** suppress an elpsvet finding without a justification that a
   reviewer can audit; `//elps:mutates` is a claim of deliberate, owned
   mutation, not an off switch.
@@ -364,9 +453,10 @@ text": refuse or `Copy()`, never write.
 
 1. **Parse through a sealing path.** `Reader.Read`, `LoadString`,
    `ParseProgram`/`ReadProgram` all seal. Prefer `lisp.Program` at your
-   cache boundary; use `Program.Detach()` when you need owned expressions.
-   If you build trees by hand and share them across environments, call
-   `SealAST()` on each root yourself.
+   cache boundary. (Owned expressions need the in-kernel `detach()`
+   machinery, which is unexported today; it will be re-exported when a real
+   embedder consumer materializes.) If you build trees by hand and share
+   them across environments, call `SealAST()` on each root yourself.
 2. **Never install a format-preserving reader into an evaluating runtime.**
    `parser.NewReader(parser.WithFormatPreserving())` produces *unsealed*
    trees for tooling (formatter/minifier/lint); it satisfies `lisp.Reader`,
@@ -375,8 +465,10 @@ text": refuse or `Copy()`, never write.
    `v.IsSealed()` first; refuse with an error or operate on `v.Copy()`.
    Remember slices of `Cells` share backing — copy the cells, not just the
    header, before restructuring.
-4. **Use `concat` (lisp) / `Detach()` (Go) as the copy idioms** when you
-   need storage that no one else can write (§4.1).
+4. **Use `concat` (lisp) / `Copy()` (Go) as the copy idioms** when you
+   need storage that no one else can write (§4.1). (The hermetic
+   cross-runtime deep copy lives in-kernel as `detach()`, unexported until
+   a consumer appears.)
 5. **Run the verification stack you can afford:** `go run ./cmd/elpsvet
    -test=false ./...` over code living in this module; `go test -tags
    elpscheck` (inspector) and `-race` (watchdog) in CI; call

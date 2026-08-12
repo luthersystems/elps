@@ -2,14 +2,14 @@
 // pre-fix bodies of ErrorCondition/ErrorConditionf (fixed in ac0a326) and
 // ErrorAssociate (fixed in d922290), mirrored from the historical
 // lisp/env.go.  The analyzer must flag each exactly where the aliased
-// env.Loc store sat, proving the rule would have caught both bugs before
+// env.loc store sat, proving the rule would have caught both bugs before
 // review did.  The Fixed* variants mirror the post-fix bodies and must
 // stay clean, and the deliberate-alias variants carry the //elps:aliases
 // annotation the real tree uses.
 
 package lisp
 
-// ErrorCondition mirrors the pre-ac0a326 body: env.Loc aliased into the
+// ErrorCondition mirrors the pre-ac0a326 body: env.loc aliased into the
 // escaping error's source field through the composite literal.
 func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 	cells := make([]*LVal, 0, len(v))
@@ -18,7 +18,7 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 	}
 	lerr := &LVal{
 		Type:   LError,
-		source: env.Loc, // want `LVal composite literal field \.source stores a runtime-owned \*token\.Location`
+		source: env.loc, // want `LVal composite literal field \.source stores a runtime-owned \*token\.Location`
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
 		Cells:  cells,
@@ -29,7 +29,7 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 // ErrorConditionf mirrors the pre-ac0a326 body of the formatting variant.
 func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
 	lerr := &LVal{
-		source: env.Loc, // want `LVal composite literal field \.source stores a runtime-owned \*token\.Location`
+		source: env.loc, // want `LVal composite literal field \.source stores a runtime-owned \*token\.Location`
 		Type:   LError,
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
@@ -38,7 +38,7 @@ func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface
 	return lerr
 }
 
-// ErrorAssociate mirrors the pre-d922290 body: env.Loc aliased into an
+// ErrorAssociate mirrors the pre-d922290 body: env.loc aliased into an
 // in-flight error the caller keeps.  The target LVal is a parameter — the
 // freshness rule's fresh/not-fresh axis says nothing here; the escape rule
 // flags the tainted store itself.
@@ -47,7 +47,7 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 		return &LVal{Type: LError}
 	}
 	if lerr.source == nil {
-		lerr.source = env.Loc // want `write to LVal field \.source stores a runtime-owned \*token\.Location`
+		lerr.source = env.loc // want `write to LVal field \.source stores a runtime-owned \*token\.Location`
 	}
 	return nil
 }
@@ -56,7 +56,7 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 // routed through copyLocation, so the store is clean.
 func (env *LEnv) FixedErrorConditionf(condition string, format string, v ...interface{}) *LVal {
 	lerr := &LVal{
-		source: copyLocation(env.Loc),
+		source: copyLocation(env.loc),
 		Type:   LError,
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
@@ -68,7 +68,7 @@ func (env *LEnv) FixedErrorConditionf(condition string, format string, v ...inte
 // FixedErrorAssociate mirrors the post-d922290 body.
 func (env *LEnv) FixedErrorAssociate(lerr *LVal) *LVal {
 	if lerr.source == nil {
-		lerr.source = copyLocation(env.Loc)
+		lerr.source = copyLocation(env.loc)
 	}
 	return nil
 }
@@ -79,7 +79,7 @@ func (env *LEnv) FixedErrorAssociate(lerr *LVal) *LVal {
 func (env *LEnv) TaggedValue(typ *LVal, val *LVal) *LVal {
 	return &LVal{
 		//elps:aliases fixture justification — runtime-internal value; see lisp/env.go
-		source: env.Loc,
+		source: env.loc,
 		Str:    typ.Str,
 		Cells:  []*LVal{val},
 	}
@@ -88,11 +88,11 @@ func (env *LEnv) TaggedValue(typ *LVal, val *LVal) *LVal {
 // taintThroughLocal proves taint follows local assignments: the location
 // read off runtime state keeps its taint through an intermediate variable.
 func (env *LEnv) taintThroughLocal(lerr *LVal) {
-	loc := env.Loc
+	loc := env.loc
 	lerr.source = loc // want `write to LVal field \.source stores a runtime-owned \*token\.Location`
 }
 
-// sourceOffLVal proves v.source reads taint like env.Loc reads: aliasing
+// sourceOffLVal proves v.source reads taint like env.loc reads: aliasing
 // one value's location into another escaping value is the same bug.
 func sourceOffLVal(dst, src *LVal) {
 	dst.source = src.source // want `write to LVal field \.source stores a runtime-owned \*token\.Location`

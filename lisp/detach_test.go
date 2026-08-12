@@ -10,13 +10,14 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/luthersystems/elps/internal/fmtraw"
 	"github.com/luthersystems/elps/internal/fuzzval"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
 )
 
-// These tests prove the Detach contract (issues #362/#363): the detached
+// These tests prove the detach contract (issues #362/#363): the detached
 // value shares NO memory with the original.  "Prove" means two independent
 // mechanisms, because each catches what the other cannot:
 //
@@ -31,7 +32,7 @@ import (
 //     know to look for.
 //
 // The LArray backing is the case LVal.Copy deliberately fails, so a control
-// test pins the difference: Copy DOES alias the array backing, Detach does
+// test pins the difference: Copy DOES alias the array backing, detach does
 // not.
 
 // detachTestEnv builds a full user env (needed for tagged values, lambda
@@ -78,7 +79,7 @@ func walkGraph(v *lisp.LVal, seen map[*lisp.LVal]bool, visit func(*lisp.LVal)) {
 	}
 	if v.Type == lisp.LSortMap && v.Native != nil {
 		md := v.Map()
-		if md == nil || md.Map == nil {
+		if md == nil || lisp.MapBacking(md) == nil {
 			return
 		}
 		buf := make([]*lisp.LVal, md.Len())
@@ -106,17 +107,17 @@ func collectMem(v *lisp.LVal) map[unsafe.Pointer]string {
 			add(sliceDataOf(n.Cells), "Cells backing of "+n.Type.String())
 		}
 		add(ptrOf(lisp.SourceLocForTest(n)), "Source location")
-		if n.Meta != nil {
-			add(ptrOf(n.Meta), "Meta")
-			for _, t := range n.Meta.LeadingComments {
+		if m := fmtraw.Meta(n); m != nil {
+			add(ptrOf(m), "Meta")
+			for _, t := range m.LeadingComments {
 				add(ptrOf(t), "Meta leading comment token")
 				add(ptrOf(t.Source), "Meta leading comment location")
 			}
-			for _, t := range n.Meta.InnerTrailingComments {
+			for _, t := range m.InnerTrailingComments {
 				add(ptrOf(t), "Meta inner trailing comment token")
 				add(ptrOf(t.Source), "Meta inner trailing comment location")
 			}
-			if t := n.Meta.TrailingComment; t != nil {
+			if t := m.TrailingComment; t != nil {
 				add(ptrOf(t), "Meta trailing comment token")
 				add(ptrOf(t.Source), "Meta trailing comment location")
 			}
@@ -188,7 +189,7 @@ func (f *fingerprinter) walk(v *lisp.LVal) {
 	}
 	id := len(f.ids)
 	f.ids[v] = id
-	fmt.Fprintf(&f.sb, "#%d:%s q=%t str=%q int=%d float=%v", id, v.Type, v.Quoted, v.Str, v.Int, v.Float)
+	fmt.Fprintf(&f.sb, "#%d:%s q=%t str=%q int=%d float=%v", id, v.Type, v.IsQuoted(), v.Str, v.Int, v.Float)
 	if loc := lisp.SourceLocForTest(v); loc != nil {
 		fmt.Fprintf(&f.sb, " src=%s:%d:%d", loc.File, loc.Line, loc.Col)
 	}
@@ -221,7 +222,7 @@ func (f *fingerprinter) walkMapEntries(v *lisp.LVal) {
 		return
 	}
 	md := v.Map()
-	if md == nil || md.Map == nil {
+	if md == nil || lisp.MapBacking(md) == nil {
 		return
 	}
 	buf := make([]*lisp.LVal, md.Len())
@@ -302,7 +303,7 @@ func TestDetachPointerDisjoint(t *testing.T) {
 	env := detachTestEnv(t)
 	orig := buildRichValue(t, env)
 	before := fingerprint(orig)
-	detached, err := orig.Detach()
+	detached, err := lisp.Detach(orig)
 	if err != nil {
 		t.Fatalf("detach: %v", err)
 	}
@@ -347,7 +348,7 @@ func TestDetachParserOutput(t *testing.T) {
 			}
 			orig := lisp.QExpr(forms)
 			before := fingerprint(orig)
-			detached, derr := orig.Detach()
+			detached, derr := lisp.Detach(orig)
 			if derr != nil {
 				t.Fatalf("detach: %v", derr)
 			}
@@ -361,7 +362,7 @@ func TestDetachParserOutput(t *testing.T) {
 }
 
 // TestCopyAliasesArrayBacking is the CONTROL: it pins the exact behavior of
-// Copy that makes it unusable as a transfer tool, so the Detach tests above
+// Copy that makes it unusable as a transfer tool, so the detach tests above
 // are demonstrably testing a real difference and not a property Copy already
 // had.
 func TestCopyAliasesArrayBacking(t *testing.T) {
@@ -386,7 +387,7 @@ func TestDetachArrayBackingDisjoint(t *testing.T) {
 	if arr.Type == lisp.LError {
 		t.Fatalf("array: %v", arr)
 	}
-	detached, err := arr.Detach()
+	detached, err := lisp.Detach(arr)
 	if err != nil {
 		t.Fatalf("detach: %v", err)
 	}
@@ -404,7 +405,7 @@ func TestDetachArrayBackingDisjoint(t *testing.T) {
 }
 
 // TestCopyAliasesBytesAndMapValues pins the two other within-runtime sharing
-// behaviors of Copy so the corresponding Detach assertions have controls.
+// behaviors of Copy so the corresponding detach assertions have controls.
 func TestCopyAliasesBytesAndMapValues(t *testing.T) {
 	b := lisp.Bytes([]byte("abc"))
 	cp := b.Copy()
@@ -428,7 +429,7 @@ func TestCopyAliasesBytesAndMapValues(t *testing.T) {
 
 func TestDetachBytesAndMapDisjoint(t *testing.T) {
 	b := lisp.Bytes([]byte("abc"))
-	db, err := b.Detach()
+	db, err := lisp.Detach(b)
 	if err != nil {
 		t.Fatalf("detach bytes: %v", err)
 	}
@@ -442,7 +443,7 @@ func TestDetachBytesAndMapDisjoint(t *testing.T) {
 	if lerr := m.MapSet("k", val); lerr.Type == lisp.LError {
 		t.Fatalf("map-set: %v", lerr)
 	}
-	dm, err := m.Detach()
+	dm, err := lisp.Detach(m)
 	if err != nil {
 		t.Fatalf("detach map: %v", err)
 	}
@@ -463,14 +464,14 @@ func TestDetachBytesAndMapDisjoint(t *testing.T) {
 }
 
 // TestDetachEmptyMapDataDisjoint: a degenerate MapData with a nil Map
-// implementation (constructible via SortedMapFromData(&MapData{})) must
+// implementation (constructible via SortedMapFromData(NewMapData(nil))) must
 // still detach to an independent struct — returning the original *MapData
 // would alias Native between the copy and the original in the one tool
 // whose contract is "shares no memory".
 func TestDetachEmptyMapDataDisjoint(t *testing.T) {
-	md := &lisp.MapData{}
+	md := lisp.NewMapData(nil)
 	v := lisp.SortedMapFromData(md)
-	cp, err := v.Detach()
+	cp, err := lisp.Detach(v)
 	if err != nil {
 		t.Fatalf("detach: %v", err)
 	}
@@ -480,7 +481,7 @@ func TestDetachEmptyMapDataDisjoint(t *testing.T) {
 	if cp.Native == v.Native {
 		t.Fatal("detached copy shares its *MapData with the original")
 	}
-	if cp.Native.(*lisp.MapData).Map != nil {
+	if lisp.MapBacking(cp.Native.(*lisp.MapData)) != nil {
 		t.Fatal("detached copy of a nil-Map MapData should preserve the nil Map")
 	}
 }
@@ -491,7 +492,7 @@ func TestDetachEmptyMapDataDisjoint(t *testing.T) {
 func TestDetachPreservesInternalAliasing(t *testing.T) {
 	shared := lisp.QExpr([]*lisp.LVal{lisp.Int(42)})
 	orig := lisp.QExpr([]*lisp.LVal{shared, shared})
-	detached, err := orig.Detach()
+	detached, err := lisp.Detach(orig)
 	if err != nil {
 		t.Fatalf("detach: %v", err)
 	}
@@ -503,12 +504,12 @@ func TestDetachPreservesInternalAliasing(t *testing.T) {
 	}
 }
 
-// TestDetachCycle: lisp data can cycle; Detach must terminate and reproduce
+// TestDetachCycle: lisp data can cycle; detach must terminate and reproduce
 // the same cycle within the copy.
 func TestDetachCycle(t *testing.T) {
 	orig := lisp.QExpr([]*lisp.LVal{lisp.Int(1), nil})
 	orig.Cells[1] = orig
-	detached, err := orig.Detach()
+	detached, err := lisp.Detach(orig)
 	if err != nil {
 		t.Fatalf("detach: %v", err)
 	}
@@ -532,7 +533,7 @@ func TestDetachRejectsNativeWithPath(t *testing.T) {
 			lisp.Native(&now),
 		}),
 	})
-	_, err := orig.Detach()
+	_, err := lisp.Detach(orig)
 	if err == nil {
 		t.Fatalf("expected an error detaching a native value")
 	}
@@ -542,7 +543,7 @@ func TestDetachRejectsNativeWithPath(t *testing.T) {
 	}
 
 	// A native at the root has no path prefix.
-	_, err = lisp.Native(&now).Detach()
+	_, err = lisp.Detach(lisp.Native(&now))
 	if err == nil || err.Error() != "native value (*time.Time) cannot be detached" {
 		t.Errorf("wrong root error: %v", err)
 	}
@@ -557,7 +558,7 @@ func TestDetachRejectsNativeInsideMap(t *testing.T) {
 		t.Fatalf("map-set: %v", lerr)
 	}
 	orig := lisp.QExpr([]*lisp.LVal{lisp.Int(0), m})
-	_, err := orig.Detach()
+	_, err := lisp.Detach(orig)
 	if err == nil {
 		t.Fatalf("expected an error detaching a native map value")
 	}
@@ -577,7 +578,7 @@ func TestDetachRejectsFunctions(t *testing.T) {
 	if builtin.Type != lisp.LFun {
 		t.Fatalf("lookup car: got %v (%v)", builtin.Type, builtin)
 	}
-	_, err := lisp.QExpr([]*lisp.LVal{lisp.Int(0), builtin}).Detach()
+	_, err := lisp.Detach(lisp.QExpr([]*lisp.LVal{lisp.Int(0), builtin}))
 	if err == nil {
 		t.Fatalf("expected an error detaching a builtin")
 	}
@@ -589,7 +590,7 @@ func TestDetachRejectsFunctions(t *testing.T) {
 	if lambda.Type != lisp.LFun {
 		t.Fatalf("lambda: got %v (%v)", lambda.Type, lambda)
 	}
-	_, err = lisp.QExpr([]*lisp.LVal{lambda}).Detach()
+	_, err = lisp.Detach(lisp.QExpr([]*lisp.LVal{lambda}))
 	if err == nil {
 		t.Fatalf("expected an error detaching a lambda")
 	}
@@ -599,14 +600,14 @@ func TestDetachRejectsFunctions(t *testing.T) {
 }
 
 // TestDetachedASTEvaluates is the customer scenario end-to-end
-// (substrate#375): parse once, Detach the cached AST, evaluate the detached
+// (substrate#375): parse once, detach the cached AST, evaluate the detached
 // copy in a completely different runtime.
 func TestDetachedASTEvaluates(t *testing.T) {
 	forms, err := parser.NewReader().Read("cached.lisp", strings.NewReader(`(+ 1 2)`))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	detached, derr := lisp.QExpr(forms).Detach()
+	detached, derr := lisp.Detach(lisp.QExpr(forms))
 	if derr != nil {
 		t.Fatalf("detach: %v", derr)
 	}
@@ -630,7 +631,7 @@ func FuzzDetach(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		g := fuzzval.New(data, env)
 		orig := g.Value()
-		detached, err := orig.Detach()
+		detached, err := lisp.Detach(orig)
 		if err != nil {
 			if err.Error() == "" {
 				t.Fatalf("rejection with empty error message")
@@ -670,7 +671,7 @@ func synthesizeSource(n int) string {
 }
 
 // BenchmarkParse50KB is the baseline substrate pays today on every cache
-// miss (and, absent Detach, what it would pay to avoid aliasing): parse the
+// miss (and, absent detach, what it would pay to avoid aliasing): parse the
 // source from scratch.
 func BenchmarkParse50KB(b *testing.B) {
 	src := synthesizeSource(50 * 1024)
@@ -688,7 +689,7 @@ func BenchmarkParse50KB(b *testing.B) {
 	}
 }
 
-// BenchmarkDetach50KB is what a Detach-on-Get parse cache pays instead
+// BenchmarkDetach50KB is what a detach-on-Get parse cache pays instead
 // (substrate#375): one deep, hermetic copy of the cached AST.
 func BenchmarkDetach50KB(b *testing.B) {
 	src := synthesizeSource(50 * 1024)
@@ -701,7 +702,7 @@ func BenchmarkDetach50KB(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		detached, derr := program.Detach()
+		detached, derr := lisp.Detach(program)
 		if derr != nil {
 			b.Fatalf("detach: %v", derr)
 		}

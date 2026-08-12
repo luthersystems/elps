@@ -6,16 +6,22 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/fmtmeta"
 	"github.com/luthersystems/elps/parser/token"
 )
 
-// Detach returns a copy of v that shares no memory with v.
+// detach returns a copy of v that shares no memory with v.
 //
-// Detach is the sanctioned way to move a value between Runtimes (issues #362
-// and #363; substrate's parse cache is the motivating consumer).  Copy is a
-// within-runtime tool — it deliberately shares an LArray's backing storage
+// detach is the sanctioned way to move a value between Runtimes (issues #362
+// and #363; substrate's parse cache is the motivating consumer).  It is
+// deliberately unexported: it has no production consumers today, and the
+// kernel philosophy is not to expose machinery until a real embedder
+// consumer — debugger workflows, cross-runtime transfer — materializes.
+// Re-exporting later is additive and easy; the machinery also backs the
+// planned lisp-level copy builtin (elps#378).  Copy is a within-runtime
+// tool — it deliberately shares an LArray's backing storage
 // and a sorted-map's value pointers — so a Copy handed to another Runtime
-// still aliases the original.  Detach copies everything:
+// still aliases the original.  detach copies everything:
 //
 //   - Cells, recursively.
 //   - LArray backing storage (the storage Copy deliberately shares).
@@ -32,10 +38,10 @@ import (
 // dropped (nil in the copy): it exists only while a debugger is attached and
 // its context holds unevaluated argument values inside the source runtime.
 //
-// Two shapes cannot be hermetically copied, and Detach rejects them rather
+// Two shapes cannot be hermetically copied, and detach rejects them rather
 // than silently sharing state while claiming isolation:
 //
-//   - LNative values wrap arbitrary Go data that Detach cannot clone.
+//   - LNative values wrap arbitrary Go data that detach cannot clone.
 //   - LFun values.  A builtin holds a Go function; a lambda captures its
 //     defining LEnv and, through it, the whole source runtime.  Either way a
 //     by-value copy would smuggle the source runtime across the transfer.
@@ -47,7 +53,7 @@ import (
 // Internal aliasing within v — the same *LVal reachable along two paths,
 // including cycles — is preserved as the same aliasing within the copy.  Only
 // sharing between v and the copy is eliminated.
-func (v *LVal) Detach() (*LVal, error) {
+func (v *LVal) detach() (*LVal, error) {
 	if v == nil {
 		return nil, nil
 	}
@@ -55,7 +61,7 @@ func (v *LVal) Detach() (*LVal, error) {
 	return d.detach(v)
 }
 
-// detacher tracks original→copy correspondences for one Detach call so that
+// detacher tracks original→copy correspondences for one detach call so that
 // values reachable along multiple paths (or cyclically) are copied exactly
 // once and the copy reproduces the original's internal aliasing.
 type detacher struct {
@@ -97,10 +103,10 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	// native-constructed value stays nil-source rather than materializing a
 	// synthetic location.
 	cp.source = copyLocation(v.source)
-	cp.Meta = detachMeta(v.Meta)
+	cp.meta = detachMeta(v.meta)
 	// Debugger-only metadata; its context aliases unevaluated argument
 	// values inside the source runtime, so a detached value carries none.
-	cp.MacroExpansion = nil
+	cp.macroExpansion = nil
 
 	// The struct copy above aliased v.Native.  Every payload a detachable
 	// type is documented to carry is replaced with a hermetic copy; anything
@@ -163,11 +169,11 @@ func (d *detacher) detachMapData(md *MapData) (*MapData, error) {
 	if md == nil {
 		return nil, nil
 	}
-	if md.Map == nil {
+	if md.mapBacking == nil {
 		// Degenerate MapData with no implementation (possible via
-		// SortedMapFromData(&MapData{})).  Return a fresh struct rather
+		// SortedMapFromData(NewMapData(nil))).  Return a fresh struct rather
 		// than md itself so the detached value shares no memory with the
-		// original — the Detach contract — while preserving the nil Map.
+		// original — the detach contract — while preserving the nil Map.
 		return &MapData{}, nil
 	}
 	entries := sortedMapEntries(md)
@@ -210,7 +216,7 @@ func detachCallStack(s *CallStack) *CallStack {
 
 // detachMeta deep-copies format-preserving metadata, including the comment
 // tokens and their locations.
-func detachMeta(m *SourceMeta) *SourceMeta {
+func detachMeta(m *fmtmeta.Meta) *fmtmeta.Meta {
 	if m == nil {
 		return nil
 	}
@@ -250,7 +256,7 @@ func copyLocation(loc *token.Location) *token.Location {
 }
 
 func funDetachError(v *LVal) error {
-	if fd, ok := v.Native.(*LFunData); ok && fd != nil && fd.Builtin != nil {
+	if fd, ok := v.Native.(*funData); ok && fd != nil && fd.builtin != nil {
 		return &detachError{msg: "builtin function cannot be detached: builtins hold Go code and a reference to the defining environment"}
 	}
 	return &detachError{msg: "function cannot be detached: closures capture the defining environment and through it the source runtime"}
@@ -260,8 +266,8 @@ func unexpectedNativeError(v *LVal) error {
 	return &detachError{msg: fmt.Sprintf("unexpected native payload (%T) on %v value cannot be detached", v.Native, v.Type)}
 }
 
-// detachError is the error returned by Detach.  path holds the segments from
-// the value passed to Detach down to the offending cell; segments are
+// detachError is the error returned by detach.  path holds the segments from
+// the value passed to detach down to the offending cell; segments are
 // prepended as the recursion unwinds, so the slice is stored innermost-first
 // and rendered outermost-first.
 type detachError struct {

@@ -28,7 +28,7 @@ func newDetachOwnershipEnv(t *testing.T) *LEnv {
 }
 
 // TestOwnershipCheck_DetachedValueCrossesRuntimes is the integration proof
-// that Detach and the runtime ownership checker compose: Detach's whole
+// that detach and the runtime ownership checker compose: detach's whole
 // purpose is a hermetic hand-off between Runtimes, so a value adopted by
 // runtime A, detached, and then used in runtime B must NOT trip the tag.
 // If it does, the detacher's seen-table leaked a node (or some backing
@@ -65,7 +65,7 @@ func TestOwnershipCheck_DetachedValueCrossesRuntimes(t *testing.T) {
 		}
 	}
 
-	detached, err := orig.Detach()
+	detached, err := orig.detach()
 	if err != nil {
 		t.Fatalf("detach: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestOwnershipCheck_DetachedASTCrossesRuntimes(t *testing.T) {
 		t.Fatalf("eval cached AST in runtime A: %v", out)
 	}
 
-	detached, err := ast.Detach()
+	detached, err := ast.detach()
 	if err != nil {
 		t.Fatalf("detach AST: %v", err)
 	}

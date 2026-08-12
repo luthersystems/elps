@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/fmtmeta"
 	"github.com/luthersystems/elps/parser/token"
 )
 
@@ -49,7 +50,7 @@ const (
 	LSExpr
 	// LFun values use the following fields in an LVal:
 	// 		LVal.Str      The local name used to reference the function (if any)
-	// 		LVal.Native   An LFunData object
+	// 		LVal.Native   A funData object
 	//
 	// In addition to these fields, a function defined in lisp (with defun,
 	// lambda, defmacro, etc) uses the LVal.Cells field to store the following
@@ -71,8 +72,8 @@ const (
 	// LQuote values are special values only used to represents two or more
 	// levels of quoting (e.g. ''3 or '''''''()).  The quoted value is stored
 	// in LVals.Cells[0].  The first level of quoting takes places by setting
-	// the LVal.Quoted field on a value with a normal value in LVal.Type.
-	// LQuote values must always have a true LVal.Quoted field.
+	// the LVal.quoted field on a value with a normal value in LVal.Type.
+	// LQuote values must always have a true LVal.quoted field.
 	LQuote
 	// LString values store a string in the LVal.Str field.
 	LString
@@ -162,51 +163,111 @@ func (ft LFunType) String() string {
 	return lfunTypeStrings[ft]
 }
 
-type LFunData struct {
-	Builtin LBuiltin
-	Env     *LEnv
-	FID     string
-	Package string
+// funData is the Native payload of every LFun value: the builtin
+// implementation or the captured environment, plus the function's identity
+// (FID, package).  Unexported (issue #382): the captured environment was
+// the deepest aliasing channel left in the exported API — handing an
+// embedder the *LEnv exposes the live Scope of every closure sharing it,
+// invisible to the runtime seal.  External readers keep the narrow
+// identity accessors (FID, Package, Builtin); in-repo tooling reaches the
+// captured environment through internal/funraw.
+//
+// The FIELDS are unexported too, not just the type.  An unexported type
+// reached through an exported field is not sealed: LFun values carry their
+// funData in the exported LVal.Native, and reflect can read an EXPORTED
+// field of an unexported struct and hand back a usable value
+// (reflect.Value.Interface does not set the read-only flag for it).  With
+// `Env` exported, an embedder could recover a closure's captured *LEnv
+// with plain reflection and rebind inside it through the public Put — the
+// exact channel this comment claims is closed.  Unexported fields make
+// reflect.Value.Interface panic instead, so every other privatized field
+// (LVal.source/meta/macroExpansion, LEnv.scope/parent/loc, MapData's
+// backing) was already unreachable; these are now too.
+type funData struct {
+	builtin LBuiltin
+	env     *LEnv
+	fid     string
+	pkg     string
 }
 
-func (fd *LFunData) Copy() *LFunData {
-	cp := &LFunData{}
+func (fd *funData) Copy() *funData {
+	cp := &funData{}
 	*cp = *fd
-	cp.Env = fd.Env.Copy()
+	cp.env = fd.env.Copy()
 	return cp
 }
 
-// MacroExpansionContext is shared by all nodes in a single macro expansion.
+// macroExpansionContext is shared by all nodes in a single macro expansion.
 // It records the macro call site, name, definition site, and unevaluated
-// arguments for debugger inspection.
-type MacroExpansionContext struct {
+// arguments for debugger inspection.  Unexported (issue #382): #370's stamp
+// wrote expansion metadata onto shared parser nodes, so the only write path
+// is the in-kernel stamp; external tooling reads a snapshot through the
+// MacroExpansion accessor.
+type macroExpansionContext struct {
 	CallSite *token.Location // where the macro was invoked
 	Name     string          // qualified macro name (e.g. "lisp:defun")
 	DefSite  *token.Location // macro definition location (nil for builtins)
 	Args     []*LVal         // unevaluated call-site arguments (for debugger scope)
 }
 
-// MacroExpansionInfo is attached to LVal nodes produced by macro expansion.
+// macroExpansionInfo is attached to LVal nodes produced by macro expansion.
 // It is only allocated when a debugger is attached (Runtime.Debugger != nil),
 // so production code pays zero allocation cost.
-type MacroExpansionInfo struct {
-	*MacroExpansionContext       // shared across all nodes in one expansion
+type macroExpansionInfo struct {
+	*macroExpansionContext       // shared across all nodes in one expansion
 	ID                     int64 // unique per node, monotonically increasing
 }
 
-// SourceMeta holds formatting metadata for an LVal, populated only when
-// parsing in format-preserving mode. Nil in normal parsing — zero cost.
-type SourceMeta struct {
-	TrailingComment         *token.Token   // inline comment on same line after this node
-	OriginalText            string         // original token text for literals (preserves escapes, numeric bases)
-	LeadingComments         []*token.Token // comment tokens preceding this node
-	InnerTrailingComments   []*token.Token // comments between last child and closing bracket
-	BlankLinesBefore        int            // blank lines (newline count - 1) before this node (or before its leading comments)
-	BlankLinesAfterComments int            // blank lines between last leading comment and the expression
-	PrecedingSpaces         int            // spaces before this token on the same line (for column alignment)
-	BracketType             rune           // '(' or '[' for LSExpr nodes
-	NewlineBefore           bool           // true if at least one newline preceded this node in source
-	ClosingBracketNewline   bool           // true if closing bracket was on its own line in source
+// MacroExpansionMeta is a read-only snapshot of the debug metadata attached
+// to values produced by macro expansion while a debugger is attached.  It is
+// returned by (*LVal).MacroExpansion; the metadata itself lives in
+// unexported storage (issue #382) because the historical corruption in #370
+// was a write of expansion metadata onto shared parser nodes — reads get a
+// copy, and the in-kernel stamp is the only writer.
+type MacroExpansionMeta struct {
+	// CallSite is a copy of the location where the macro was invoked.
+	CallSite *token.Location
+	// DefSite is a copy of the macro definition location (nil for builtins).
+	DefSite *token.Location
+	// Name is the qualified macro name (e.g. "lisp:defun").
+	Name string
+	// Args holds the unevaluated call-site arguments.  The slice is a copy
+	// but the nodes are the shared originals — read-only by contract (they
+	// are typically sealed parse-tree nodes).
+	Args []*LVal
+	// ID is unique per stamped node, monotonically increasing within a
+	// runtime.
+	ID int64
+}
+
+// MacroExpansion returns a snapshot of v's macro-expansion debug metadata
+// and reports whether v carries any.  Metadata exists only on nodes stamped
+// during macro expansion while a debugger is attached (Runtime.Debugger !=
+// nil); in production runs every value reports false.  The snapshot is a
+// copy: mutating it does not touch v.
+//
+// MacroExpansion is nil-receiver safe: a nil LVal reports false.
+func (v *LVal) MacroExpansion() (MacroExpansionMeta, bool) {
+	if v == nil || v.macroExpansion == nil || v.macroExpansion.macroExpansionContext == nil {
+		return MacroExpansionMeta{}, false
+	}
+	ctx := v.macroExpansion.macroExpansionContext
+	m := MacroExpansionMeta{
+		Name: ctx.Name,
+		ID:   v.macroExpansion.ID,
+	}
+	if ctx.CallSite != nil {
+		loc := *ctx.CallSite
+		m.CallSite = &loc
+	}
+	if ctx.DefSite != nil {
+		loc := *ctx.DefSite
+		m.DefSite = &loc
+	}
+	if len(ctx.Args) > 0 {
+		m.Args = append([]*LVal(nil), ctx.Args...)
+	}
+	return m, true
 }
 
 // LVal is a lisp value
@@ -231,13 +292,21 @@ type LVal struct {
 	// SetSource().  See issue #362.
 	source *token.Location
 
-	// Meta holds formatting metadata, only populated in format-preserving mode.
-	Meta *SourceMeta
+	// meta holds formatting metadata, only populated in format-preserving
+	// mode.  Unexported (issue #382), typed by an internal package: only
+	// this module's format tooling (parser/rdparser writes, formatter
+	// reads) can touch it, through internal/fmtraw.  Format-preserving
+	// trees are never sealed, evaluated, or shared, so nothing outside
+	// that tooling has ever had a legitimate use.
+	meta *fmtmeta.Meta
 
-	// MacroExpansion holds debug metadata for nodes produced by macro
+	// macroExpansion holds debug metadata for nodes produced by macro
 	// expansion. Only populated when a debugger is attached — nil in
-	// production (zero overhead: 8-byte nil pointer).
-	MacroExpansion *MacroExpansionInfo
+	// production (zero overhead: 8-byte nil pointer).  Unexported (issue
+	// #382): external packages read a snapshot through the MacroExpansion
+	// accessor; the in-kernel stamp (stampMacroExpansion) is the only
+	// writer.
+	macroExpansion *macroExpansionInfo
 
 	// Str used by LSymbol and LString values
 	Str string
@@ -258,11 +327,18 @@ type LVal struct {
 	// FunType used to further classify LFun values.
 	FunType LFunType
 
-	// Quoted is a flag indicating a single level of quoting.
-	Quoted bool
+	// quoted is a flag indicating a single level of quoting.  It is
+	// unexported (issue #382): external packages read it through IsQuoted;
+	// the only write paths are construction-time (Quote, Splice,
+	// shallowUnquote) because the #333/#334 singleton race was an external
+	// in-place write to this field.
+	quoted bool
 
-	// Spliced denotes the value as needing to be spliced into a parent value.
-	Spliced bool
+	// spliced denotes the value as needing to be spliced into a parent
+	// value.  Unexported (issue #382): the flag is pure evaluator plumbing
+	// between Splice and quasiquote expansion — no external package has
+	// ever had a legitimate read or write.
+	spliced bool
 
 	// sealed marks a node of a parsed program: the value (and, for
 	// containers, its Cells backing array) may be shared by every
@@ -279,7 +355,7 @@ type LVal struct {
 	// shallowUnquote — `*cp = *v` — which share the Cells backing array and
 	// therefore inherit the constraint) and by the kernel sites that create
 	// new headers over shared backing (cdr, rest, slice), and cleared only
-	// on fresh storage (Copy, Detach).  It is never written after a tree
+	// on fresh storage (Copy, detach).  It is never written after a tree
 	// becomes shared, so concurrent readers are race-free.
 	sealed bool
 }
@@ -326,10 +402,23 @@ func (v *LVal) SetSource(loc *token.Location) {
 	v.source = loc //elps:mutates the audited setter for source metadata; sealed (shared) nodes are skipped above
 }
 
+// IsQuoted reports whether v carries a single level of quoting — the flag
+// behind the LQuote wrapper and the ['(...)/[...]] display forms.  The
+// underlying field is unexported (issue #382): quoting is established at
+// construction time (Quote, Splice, QExpr, QSymbol, the parser) and removed
+// only by the evaluator's own unquote step, so external packages get a read
+// but never a write — an in-place external write to the flag on a shared
+// value was exactly the #333/#334 singleton corruption.
+//
+// IsQuoted is nil-receiver safe: a nil LVal reports false.
+func (v *LVal) IsQuoted() bool {
+	return v != nil && v.quoted
+}
+
 // GetType returns a quoted symbol denoting v's type.
 func GetType(v *LVal) *LVal {
 	t := Symbol(v.Str)
-	t.Quoted = true
+	t.quoted = true
 	if v.Type != LTaggedVal {
 		t.Str = v.Type.String()
 	}
@@ -472,7 +561,7 @@ func SExpr(cells []*LVal) *LVal {
 func QExpr(cells []*LVal) *LVal {
 	return &LVal{
 		Type:   LSExpr,
-		Quoted: true,
+		quoted: true,
 		Cells:  cells,
 	}
 }
@@ -569,17 +658,17 @@ func FunRef(symbol, fun *LVal) *LVal {
 func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
 		Type: LFun,
-		Native: &LFunData{
-			FID:     fid,
-			Builtin: fn,
-			Package: pkg,
+		Native: &funData{
+			fid:     fid,
+			builtin: fn,
+			pkg:     pkg,
 		},
 		Cells: []*LVal{formals, String("")},
 	}
 }
 
 // Fun returns an LVal representing a function. Package is left empty;
-// callers MUST set v.FunData().Package before the value is invoked, or
+// callers MUST set the funData Package before the value is invoked, or
 // GetFunName will log "BUG: ..." at every call site that observes a
 // package-less LFun.
 //
@@ -596,17 +685,17 @@ func MacroInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
 		Type:    LFun,
 		FunType: LFunMacro,
-		Native: &LFunData{
-			FID:     fid,
-			Builtin: fn,
-			Package: pkg,
+		Native: &funData{
+			fid:     fid,
+			builtin: fn,
+			pkg:     pkg,
 		},
 		Cells: []*LVal{formals, String("")},
 	}
 }
 
 // Macro returns an LVal representing a macro. Package is left empty;
-// callers MUST set v.FunData().Package before the value is invoked, or
+// callers MUST set the funData Package before the value is invoked, or
 // GetFunName will log "BUG: ..." at every call site that observes a
 // package-less LFun.
 //
@@ -623,10 +712,10 @@ func SpecialOpInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
 		Type:    LFun,
 		FunType: LFunSpecialOp,
-		Native: &LFunData{
-			FID:     fid,
-			Builtin: fn,
-			Package: pkg,
+		Native: &funData{
+			fid:     fid,
+			builtin: fn,
+			pkg:     pkg,
 		},
 		Cells: []*LVal{formals, String("")},
 	}
@@ -637,7 +726,7 @@ func SpecialOpInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 // However values returned by special operations do not require further
 // evaluation, unlike macros.
 //
-// Package is left empty; callers MUST set v.FunData().Package before the
+// Package is left empty; callers MUST set the funData Package before the
 // value is invoked, or GetFunName will log "BUG: ..." at every call site
 // that observes a package-less LFun.
 //
@@ -705,15 +794,15 @@ func ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
 
 // Quote quotes v and returns the quoted value.  The LVal v is modified.
 func Quote(v *LVal) *LVal {
-	if !v.Quoted {
+	if !v.quoted {
 		cp := &LVal{}
 		*cp = *v
-		cp.Quoted = true
+		cp.quoted = true
 		return cp
 	}
 	quote := &LVal{
 		Type:   LQuote,
-		Quoted: true,
+		quoted: true,
 		Cells:  []*LVal{v},
 	}
 	return quote
@@ -724,7 +813,7 @@ func Quote(v *LVal) *LVal {
 func Splice(v *LVal) *LVal {
 	cp := &LVal{}
 	*cp = *v
-	cp.Spliced = true
+	cp.spliced = true
 	return cp
 }
 
@@ -733,7 +822,7 @@ func Splice(v *LVal) *LVal {
 func shallowUnquote(v *LVal) *LVal {
 	cp := &LVal{}
 	*cp = *v
-	cp.Quoted = false
+	cp.quoted = false
 	return cp
 }
 
@@ -827,27 +916,56 @@ func (v *LVal) SetCallStack(stack *CallStack) {
 	v.Native = stack.Copy() //elps:mutates the audited setter stamping a copied stack onto an in-flight error at its capture point
 }
 
-func (v *LVal) FunData() *LFunData {
+// funData returns the function payload of an LFun value.  It panics on
+// non-function values.  Unexported (issue #382): external packages read
+// function identity through FID, Package, and Builtin, and in-repo tooling
+// reaches the captured environment through internal/funraw.
+func (v *LVal) funData() *funData {
 	if v.Type != LFun {
 		panic("not a function: " + v.Type.String())
 	}
-	return v.Native.(*LFunData)
+	return v.Native.(*funData)
 }
 
+// Package returns the name of the package a function value was defined in,
+// or "" for a function value carrying no function data.  It panics on
+// non-function values.
 func (v *LVal) Package() string {
-	return v.FunData().Package
+	if fd := v.funData(); fd != nil {
+		return fd.pkg
+	}
+	return ""
 }
 
+// Builtin returns the native implementation of a builtin function value,
+// or nil for user-defined functions and function values carrying no
+// function data.  It panics on non-function values.
 func (v *LVal) Builtin() LBuiltin {
-	return v.FunData().Builtin
+	if fd := v.funData(); fd != nil {
+		return fd.builtin
+	}
+	return nil
 }
 
+// FID returns the function value's unique identifier, or "" for a function
+// value carrying no function data.  It panics on non-function values.
 func (v *LVal) FID() string {
-	return v.FunData().FID
+	if fd := v.funData(); fd != nil {
+		return fd.fid
+	}
+	return ""
 }
 
-func (v *LVal) Env() *LEnv {
-	return v.FunData().Env
+// funEnv returns the environment captured by a function value (nil for
+// builtins).  Unexported (issue #382): the captured environment is the
+// deepest aliasing channel into shared interpreter state, so external
+// packages cannot reach it at all; in-repo tooling goes through
+// internal/funraw.
+func (v *LVal) funEnv() *LEnv {
+	if fd := v.funData(); fd != nil {
+		return fd.env
+	}
+	return nil
 }
 
 // Len returns the length of the list v.
@@ -1195,7 +1313,8 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 //
 // Copy has within-runtime semantics — an LArray's backing storage is shared
 // with the receiver, so it is not a tool for transferring values between
-// Runtimes; use Detach for that.
+// Runtimes; the in-kernel detach (lisp/detach.go, unexported until a real
+// consumer appears) covers that.
 func (v *LVal) Copy() *LVal {
 	if v == nil {
 		return nil
@@ -1321,7 +1440,7 @@ func (v *LVal) Docstring() string {
 func (v *LVal) str(onTheRecord bool) string {
 	const QUOTE = `'`
 	// All types which may evaluate to things other than themselves must check
-	// v.Quoted.
+	// v.quoted.
 	quote := ""
 	if onTheRecord {
 		quote = QUOTE
@@ -1343,23 +1462,23 @@ func (v *LVal) str(onTheRecord bool) string {
 		}
 		return quote + "#<bytes " + strings.Trim(fmt.Sprint(b), "[]") + ">" //nolint:staticcheck // fmt.Sprint gives byte slice repr, not string conversion
 	case LError:
-		if v.Quoted {
+		if v.quoted {
 			quote = QUOTE
 			return quote + fmt.Sprintf("(error '%s %v)", v.Str, v.Cells[0])
 		}
 		return GoError(v).Error()
 	case LSymbol:
-		if v.Quoted {
+		if v.quoted {
 			quote = QUOTE
 		}
 		return quote + v.Str
 	case LSExpr:
-		if v.Quoted {
+		if v.quoted {
 			quote = QUOTE
 		}
 		return exprString(v, 0, quote+"(", ")")
 	case LFun:
-		if v.Quoted {
+		if v.quoted {
 			quote = QUOTE
 		}
 		if v.Builtin() != nil {
@@ -1416,7 +1535,7 @@ func bodyStr(exprs []*LVal) string {
 // process-wide singletonNil. It stored the value the field already
 // held, which made it invisible to SingletonSnapshot.Verify (see the
 // note on checkSingleton), but it was still a write to shared memory
-// and raced with every concurrent (*LEnv).eval reading `v.Quoted` off a
+// and raced with every concurrent (*LEnv).eval reading `v.quoted` off a
 // Nil().
 //
 // shallowUnquote copies before clearing Quoted, so lambdaVars mutates
@@ -1433,12 +1552,12 @@ func lambdaVars(formals *LVal, bound *LVal) *LVal {
 }
 
 func boundVars(v *LVal) *LVal {
-	env := v.Env()
+	env := v.funEnv()
 	if env == nil {
 		return Nil()
 	}
-	keys := make([]string, 0, len(env.Scope))
-	for k := range env.Scope {
+	keys := make([]string, 0, len(env.scope))
+	for k := range env.scope {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)

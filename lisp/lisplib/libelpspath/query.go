@@ -1,9 +1,9 @@
-// elpspath v2 — positional-arg path operations
+// elpspath — positional-arg path operations
 //
-// v2 provides a Lisp-native alternative to the v1 string-based path DSL.
-// Instead of encoding paths as jq-style strings (".foo[0].bar"), path steps
-// are passed as ordinary ELPS values — no mini-language to learn and no
-// runtime string parsing.
+// The elpspath API addresses locations inside nested data structures with
+// positional path steps: each step is an ordinary ELPS value — no
+// mini-language to learn and no runtime string parsing. (A legacy jq-string
+// path DSL exists downstream in luthersystems/substrate; see below.)
 //
 // # Builtins
 //
@@ -24,8 +24,8 @@
 //
 // # Path step types
 //
-//	Type             Meaning        Example        Equivalent v1
-//	─────────────    ───────        ───────        ─────────────
+//	Type             Meaning        Example        jq analogue
+//	─────────────    ───────        ───────        ───────────
 //	string           map key        "foo"          .foo
 //	int              array index    0, -1          [0], [-1]
 //	symbol '*        iterate all    '*             []
@@ -67,7 +67,7 @@
 //	(elpspath:?nil! record "deprecated")              ; null a field in place
 //	(set redacted (elpspath:?nil patient "ssn"))       ; null with copy
 //
-// Dynamic paths (the main advantage over v1):
+// Dynamic paths (steps are plain values, so no string splicing is needed):
 //
 //	(defun get-field (obj field)
 //	  (elpspath:? obj field))
@@ -75,13 +75,14 @@
 //	(defun get-nth-result (resp n)
 //	  (elpspath:? resp "results" n "value"))
 //
-// # Relationship to v1
+// # Legacy jq-string DSL
 //
-// The deprecated v1 operations (get-path, set-path!, etc.), which encode
+// The deprecated legacy operations (get-path, set-path!, etc.), which encode
 // paths as jq-style strings, did not move here: they remain downstream in
 // luthersystems/substrate, whose loader composes them into this same
-// lisp-visible elpspath package. v2 is ~3-4x faster because it skips
-// regex-based string parsing — path steps are dispatched by type switch.
+// lisp-visible elpspath package. The positional-arg API is ~3-4x faster
+// because it skips regex-based string parsing — path steps are dispatched
+// by type switch.
 package libelpspath
 
 import (

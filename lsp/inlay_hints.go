@@ -101,7 +101,7 @@ func walkForHints(ctx *hintContext, node *lisp.LVal) {
 	}
 
 	// Process this node if it's an unquoted s-expression with a symbol head.
-	if node.Type == lisp.LSExpr && !node.Quoted && len(node.Cells) >= 2 {
+	if node.Type == lisp.LSExpr && !node.IsQuoted() && len(node.Cells) >= 2 {
 		head := node.Cells[0]
 		if head.Type == lisp.LSymbol {
 			processCallNode(ctx, node, head.Str)

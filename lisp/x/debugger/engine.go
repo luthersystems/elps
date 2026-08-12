@@ -787,14 +787,13 @@ func (e *Engine) OnFunEntry(env *lisp.LEnv, fun *lisp.LVal, fenv *lisp.LEnv) {
 	e.mu.Lock()
 
 	// Build qualified and unqualified names from the function value.
-	funData := fun.FunData()
 	localName := fun.Str
-	if localName == "" && funData != nil {
-		localName = funData.FID
+	if localName == "" {
+		localName = fun.FID()
 	}
 	qualifiedName := localName
-	if funData != nil && funData.Package != "" {
-		qualifiedName = funData.Package + ":" + localName
+	if pkg := fun.Package(); pkg != "" {
+		qualifiedName = pkg + ":" + localName
 	}
 
 	// Check function breakpoints.
@@ -995,8 +994,8 @@ func exprStepLocation(env *lisp.LEnv, expr *lisp.LVal) StepLocation {
 	}
 	if expr != nil {
 		loc.IsSExpr = expr.Type == lisp.LSExpr
-		if expr.MacroExpansion != nil {
-			loc.MacroID = expr.MacroExpansion.ID
+		if m, ok := expr.MacroExpansion(); ok {
+			loc.MacroID = m.ID
 		}
 	}
 	return loc

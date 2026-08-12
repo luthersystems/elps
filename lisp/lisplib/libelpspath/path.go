@@ -145,6 +145,38 @@ func errMutateList(in *lisp.LVal) error {
 	return nil
 }
 
+// storeCells writes a reworked cell slice back into the sequence it came
+// from, honouring that sequence's LAYOUT.
+//
+// IMPORTANT: the two sequence types toCells accepts do not store their cells
+// the same way. An array is [dims, data] — the cells live in Cells[1] and
+// the element count is bookkeeping in Cells[0] — while a list holds its
+// cells directly. The del and range-set paths used to write the array shape
+// unconditionally (`in.Cells[1].Cells = vals`), which is correct only
+// because the MUTATING entry points reject lists (errMutateList).
+//
+// The non-mutating Set/Delete/Nil reach the same write-back through the
+// unguarded setMutate/deleteMutate on a private copy, and that copy is a
+// LIST whenever the input was one. On such a copy the array write either
+// panicked — a one-element list has no Cells[1], which is how a fuzz input
+// found this — or, worse, silently wrote the new cell slice into an
+// ELEMENT of the list and then corrupted a second element's Int field as
+// "dims". A caller asking for a copy got a mangled structure back and no
+// error. Dispatching on the layout is what makes the unguarded paths
+// correct for both types.
+func storeCells(in *lisp.LVal, vals []*lisp.LVal) {
+	if in.Type == lisp.LArray {
+		//elps:mutates documented in-place rework of a caller-owned array's cell storage (del-path!/?del!/set-path! range splice); list inputs are rejected by errMutateList on the mutating entry points, and the non-mutating ones pass a private copy
+		in.Cells[1].Cells = vals
+		dims := in.Cells[0]
+		//elps:mutates dims bookkeeping for the array rework above
+		dims.Cells[0].Int = len(vals)
+		return
+	}
+	//elps:mutates list cell storage; reachable only from the non-mutating Set/Delete/Nil, which pass a freshly constructed private copy (copyLVal), never a caller-owned or program-literal list
+	in.Cells = vals
+}
+
 // toVector converts a slice of LVal cells into an elps vector.
 func toVector(cells []*lisp.LVal) *lisp.LVal {
 	return lisp.Array(nil, cells)
@@ -627,11 +659,7 @@ func (s *indexPath) deleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 		return lisp.Nil(), nil
 	}
 	vals := append(cells[:index], cells[index+1:]...)
-	//elps:mutates documented in-place del-path!/?del! element removal on a caller-owned array; list (LSExpr) inputs, whose cells can alias program literals, are rejected by errMutateList before this write
-	in.Cells[1].Cells = vals
-	dims := in.Cells[0]
-	//elps:mutates dims bookkeeping for the in-place array shrink above; only reachable for LArray values (errMutateList rejects lists)
-	dims.Cells[0].Int = len(vals)
+	storeCells(in, vals)
 	return in, nil
 }
 
@@ -706,11 +734,7 @@ func (s *rangePath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 	if to < n {
 		vals = append(vals, cells[to:]...)
 	}
-	//elps:mutates documented in-place set-path!/?set! range splice on a caller-owned array; list (LSExpr) inputs, whose cells can alias program literals, are rejected by errMutateList before this write
-	in.Cells[1].Cells = vals
-	dims := in.Cells[0]
-	//elps:mutates dims bookkeeping for the in-place range splice above; only reachable for LArray values (errMutateList rejects lists)
-	dims.Cells[0].Int = len(vals)
+	storeCells(in, vals)
 	return in, nil
 }
 
@@ -757,11 +781,7 @@ func (s *rangePath) deleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	if to < n {
 		vals = append(vals, cells[to:]...)
 	}
-	//elps:mutates documented in-place del-path!/?del! range removal on a caller-owned array; list (LSExpr) inputs, whose cells can alias program literals, are rejected by errMutateList before this write
-	in.Cells[1].Cells = vals
-	dims := in.Cells[0]
-	//elps:mutates dims bookkeeping for the in-place range removal above; only reachable for LArray values (errMutateList rejects lists)
-	dims.Cells[0].Int = len(vals)
+	storeCells(in, vals)
 	return in, nil
 }
 

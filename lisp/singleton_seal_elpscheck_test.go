@@ -52,13 +52,13 @@ func TestPermanentSingletonRoots_LoadVerifyCatchesMutation(t *testing.T) {
 func TestPermanentSingletonRoots_TeardownVerifyCatchesMutation(t *testing.T) {
 	defer pauseSingletonWatchdog()()
 
-	orig := singletonNil.Quoted
-	defer func() { singletonNil.Quoted = orig }()
+	orig := singletonNil.quoted
+	defer func() { singletonNil.quoted = orig }()
 
 	// The #333 write shape (s.Quoted on the Nil singleton) — but storing a
 	// CHANGED value so the fingerprint moves; the same-value flavor remains
 	// -race/watchdog territory by design (see checkSingleton's notes).
-	singletonNil.Quoted = true
+	singletonNil.quoted = true
 
 	err := VerifySealedASTs()
 	if err == nil {
@@ -69,7 +69,7 @@ func TestPermanentSingletonRoots_TeardownVerifyCatchesMutation(t *testing.T) {
 	}
 
 	// Restore and prove the report clears — the suite continues clean.
-	singletonNil.Quoted = orig
+	singletonNil.quoted = orig
 	if err := VerifySealedASTs(); err != nil {
 		t.Fatalf("VerifySealedASTs still failing after restore: %v", err)
 	}

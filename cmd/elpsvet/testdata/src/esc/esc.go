@@ -3,6 +3,18 @@
 // return-escape through a composite literal, field writes on returned
 // values and package-level state, method taint sources, and the
 // //elps:aliases escape hatch.
+//
+// Taint sources here are deliberately NOT lisp runtime fields.  After the
+// #382 privatization lisp.LEnv.loc is unexported, so no external package can
+// read a runtime-owned location off an environment -- the escape route this
+// file used to model through env.Loc no longer exists in the real tree.  The
+// shape it stood for does: a *token.Location field read off a struct the
+// function did not construct, then stored into something that escapes.  That
+// is exactly the live-tree metadata-translation shape carrying the audited
+// annotations in lsp/definition.go and mcpserver/service.go, so the fixtures
+// take their taint from funcInfo.Source, the struct this package owns.
+// lisp.LEnv's one remaining external route, the copying Source() accessor,
+// is covered by envSourceAccessor at the bottom of the file.
 package esc
 
 import (
@@ -32,10 +44,11 @@ var registry = struct {
 	LastLoc *token.Location
 }{} // package-level: stores into its fields escape process-wide
 
-// setSourceTainted stores a location read off runtime state through the
-// exported setter — the same field write as lerr.source = env.Loc.
-func setSourceTainted(env *lisp.LEnv, v *lisp.LVal) {
-	v.SetSource(env.Loc) // want `SetSource call stores a runtime-owned \*token\.Location`
+// setSourceTainted stores a location read off a struct this function did not
+// construct through the exported setter — the same field write as the
+// in-kernel lerr.source = env.loc.
+func setSourceTainted(src *funcInfo, v *lisp.LVal) {
+	v.SetSource(src.Source) // want `SetSource call stores a runtime-owned \*token\.Location`
 }
 
 // setSourceMethodTainted proves method results taint: a location-returning
@@ -70,41 +83,41 @@ func setSourceAnnotated(p *parser, v *lisp.LVal) {
 
 // returnEscapeComposite captures a tainted location in a composite literal
 // that is returned — the InspectFunction shape.
-func returnEscapeComposite(env *lisp.LEnv) *funcInfo {
-	return &funcInfo{Source: env.Loc} // want `returning a value whose composite literal captured a field stores a runtime-owned \*token\.Location`
+func returnEscapeComposite(src *funcInfo) *funcInfo {
+	return &funcInfo{Source: src.Source} // want `returning a value whose composite literal captured a field stores a runtime-owned \*token\.Location`
 }
 
 // returnEscapeLocal captures the same shape through a local.
-func returnEscapeLocal(env *lisp.LEnv) *funcInfo {
-	info := &funcInfo{Source: env.Loc}
+func returnEscapeLocal(src *funcInfo) *funcInfo {
+	info := &funcInfo{Source: src.Source}
 	info.Name = "f"
 	return info // want `returning a value whose composite literal captured a field stores a runtime-owned \*token\.Location`
 }
 
 // returnedFieldStore stores a tainted location into a field of a value the
 // function returns.
-func returnedFieldStore(env *lisp.LEnv) *funcInfo {
+func returnedFieldStore(src *funcInfo) *funcInfo {
 	info := &funcInfo{Name: "f"}
-	info.Source = env.Loc // want `write to field \.Source of a value this function returns stores a runtime-owned \*token\.Location`
+	info.Source = src.Source // want `write to field \.Source of a value this function returns stores a runtime-owned \*token\.Location`
 	return info
 }
 
 // localFieldStoreDoesNotEscape stores a tainted location into a local that
 // never leaves the function: out of the rule's escape scope.
-func localFieldStoreDoesNotEscape(env *lisp.LEnv) string {
+func localFieldStoreDoesNotEscape(src *funcInfo) string {
 	info := &funcInfo{Name: "f"}
-	info.Source = env.Loc
+	info.Source = src.Source
 	return info.Name
 }
 
 // registryStore stores a tainted location into package-level state.
-func registryStore(env *lisp.LEnv) {
-	registry.LastLoc = env.Loc // want `write to field \.LastLoc of package-level state stores a runtime-owned \*token\.Location`
+func registryStore(src *funcInfo) {
+	registry.LastLoc = src.Source // want `write to field \.LastLoc of package-level state stores a runtime-owned \*token\.Location`
 }
 
 // copyCleansed routes the location through the copyLocation cleanser.
-func copyCleansed(env *lisp.LEnv) *funcInfo {
-	return &funcInfo{Source: copyLocation(env.Loc)}
+func copyCleansed(src *funcInfo) *funcInfo {
+	return &funcInfo{Source: copyLocation(src.Source)}
 }
 
 // copyLocation mirrors lisp/detach.go's cleanser for the cross-package
@@ -141,10 +154,30 @@ func setSourceStandaloneAnnotation(p *parser, v, w *lisp.LVal) {
 // placement).  A standalone marker inside a multi-line literal still counts
 // as standalone, which is what makes the lisp/env.go field placement work
 // for the diagnostics reported at the field itself.
-func compositeLiteralAnnotation(env *lisp.LEnv) *funcInfo {
+func compositeLiteralAnnotation(src *funcInfo) *funcInfo {
 	//elps:aliases fixture justification for the returned literal below
 	return &funcInfo{
 		Name:   "f",
-		Source: env.Loc,
+		Source: src.Source,
 	}
+}
+
+// envSourceAccessor pins what became of the old env.Loc route after #382.
+// lisp.LEnv.loc is unexported now, so the only way out of an environment is
+// the Source() accessor — which returns a COPY and is therefore safe to
+// store.  The rule cannot see that: its method-taint approximation is
+// deliberately intraprocedural, so a location-returning method on a receiver
+// the function did not construct is tainted regardless of what the callee
+// does.  This is the same known false-positive class the live tree annotates
+// at parser/token/scanner.go (LocStart), and an embedder resolves it the
+// same way, with an audited annotation.
+func envSourceAccessor(env *lisp.LEnv, v *lisp.LVal) {
+	v.SetSource(env.Source()) // want `SetSource call stores a runtime-owned \*token\.Location`
+}
+
+// envSourceAccessorAnnotated is how that false positive is meant to be
+// retired at a real call site.
+func envSourceAccessorAnnotated(env *lisp.LEnv, v *lisp.LVal) {
+	//elps:aliases fixture justification — LEnv.Source returns a copy (#382); the intraprocedural method-taint approximation cannot see inside the callee
+	v.SetSource(env.Source())
 }

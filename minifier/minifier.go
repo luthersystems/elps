@@ -273,7 +273,7 @@ func scanProgramSymbols(exprs []*lisp.LVal, cfg *Config) ([]analysis.ExternalSym
 	packages := map[string]bool{"user": true}
 
 	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 || expr.Cells[0].Type != lisp.LSymbol {
+		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 || expr.Cells[0].Type != lisp.LSymbol {
 			continue
 		}
 		switch expr.Cells[0].Str {
@@ -393,7 +393,7 @@ func packageName(args []*lisp.LVal) string {
 	if arg.Type == lisp.LString || arg.Type == lisp.LSymbol {
 		return arg.Str
 	}
-	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+	if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
 		return arg.Cells[0].Str
 	}
 	return ""
@@ -405,7 +405,7 @@ func exportNames(args []*lisp.LVal) []string {
 		switch {
 		case arg.Type == lisp.LSymbol:
 			out = append(out, arg.Str)
-		case arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol:
+		case arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol:
 			out = append(out, arg.Cells[0].Str)
 		}
 	}
@@ -416,7 +416,7 @@ func setName(arg *lisp.LVal) string {
 	if arg.Type == lisp.LSymbol {
 		return arg.Str
 	}
-	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+	if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
 		return arg.Cells[0].Str
 	}
 	return ""
@@ -426,7 +426,7 @@ func setSymbolNode(arg *lisp.LVal) *lisp.LVal {
 	if arg.Type == lisp.LSymbol {
 		return arg
 	}
-	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+	if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
 		return arg.Cells[0]
 	}
 	return nil
@@ -547,7 +547,7 @@ func symbolLookupKey(sym *analysis.Symbol) string {
 func rewriteExports(exprs []*lisp.LVal, scope *analysis.Scope, assignments map[*analysis.Symbol]string) {
 	currentPkg := lisp.DefaultUserPackage
 	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		if expr.Cells[0].Type == lisp.LSymbol && expr.Cells[0].Str == "in-package" && len(expr.Cells) > 1 {
@@ -567,7 +567,7 @@ func rewriteExports(exprs []*lisp.LVal, scope *analysis.Scope, assignments map[*
 						arg.Str = newName //elps:mutates the minifier renames symbols in the AST it parsed for this run; the tree is tool-owned and never shared with an evaluator
 					}
 				}
-			case arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol:
+			case arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol:
 				if sym := scope.LookupLocalInPackage(arg.Cells[0].Str, currentPkg); sym != nil {
 					if newName, ok := assignments[sym]; ok {
 						arg.Cells[0].Str = newName //elps:mutates the minifier renames symbols in the AST it parsed for this run; the tree is tool-owned and never shared with an evaluator
@@ -648,7 +648,7 @@ func preservePackageSurfaceSymbols(files []parsedFile, cfg *Config, protected *p
 	for i := range files {
 		currentPkg := "user"
 		for _, expr := range files[i].exprs {
-			if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+			if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 				continue
 			}
 			if expr.Cells[0].Type == lisp.LSymbol && expr.Cells[0].Str == "in-package" {
@@ -727,7 +727,7 @@ func packageSurfaceSymbolNode(expr *lisp.LVal, spec PackageSurfaceFormSpec) *lis
 	if spec.QuotedName {
 		return setSymbolNode(arg)
 	}
-	if arg.Type == lisp.LSymbol && !arg.Quoted {
+	if arg.Type == lisp.LSymbol && !arg.IsQuoted() {
 		return arg
 	}
 	return nil
@@ -743,7 +743,7 @@ func configuredTopLevelNameNode(expr *lisp.LVal, cfg *Config) *lisp.LVal {
 			continue
 		}
 		node := expr.Cells[spec.NameIndex]
-		if node.Type == lisp.LSymbol && !node.Quoted {
+		if node.Type == lisp.LSymbol && !node.IsQuoted() {
 			return node
 		}
 	}
@@ -782,7 +782,7 @@ func nodeSymbol(result *analysis.Result, node *lisp.LVal) *analysis.Symbol {
 }
 
 func collectProtectedMacroTemplateSymbols(expr *lisp.LVal, root *analysis.Scope, protected *preservationSet) {
-	if expr == nil || root == nil || expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) < 4 {
+	if expr == nil || root == nil || expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) < 4 {
 		return
 	}
 	if expr.Cells[0].Type != lisp.LSymbol || expr.Cells[0].Str != "defmacro" {
@@ -801,7 +801,7 @@ func walkMacroBodyForQuasiquote(node *lisp.LVal, scope *analysis.Scope, protecte
 	if node == nil || node.Type != lisp.LSExpr {
 		return
 	}
-	if !node.Quoted && len(node.Cells) > 0 && node.Cells[0].Type == lisp.LSymbol && node.Cells[0].Str == "quasiquote" {
+	if !node.IsQuoted() && len(node.Cells) > 0 && node.Cells[0].Type == lisp.LSymbol && node.Cells[0].Str == "quasiquote" {
 		if len(node.Cells) > 1 {
 			collectTemplateSymbols(node.Cells[1], scope, protected)
 		}
@@ -826,7 +826,7 @@ func collectTemplateSymbols(node *lisp.LVal, scope *analysis.Scope, protected *p
 	if node.Type != lisp.LSExpr {
 		return
 	}
-	if !node.Quoted && len(node.Cells) > 0 && node.Cells[0].Type == lisp.LSymbol {
+	if !node.IsQuoted() && len(node.Cells) > 0 && node.Cells[0].Type == lisp.LSymbol {
 		switch node.Cells[0].Str {
 		case "unquote", "unquote-splicing":
 			return
@@ -861,7 +861,7 @@ func recordQualifiedReferences(node *lisp.LVal, refs map[string]bool) {
 			refs[pkg+"/"+name] = true
 		}
 	case lisp.LSExpr:
-		if node.Quoted {
+		if node.IsQuoted() {
 			return
 		}
 		for _, child := range node.Cells {

@@ -256,7 +256,7 @@ func sliceContains(ss []string, s string) bool {
 // along with its 1-based line number. Returns ("", 0) for bare files.
 func scanFilePackage(exprs []*lisp.LVal) (string, int) {
 	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		if astutil.HeadSymbol(expr) == "in-package" {
@@ -315,7 +315,7 @@ func walkLoadFile(filePath, currentPkg string, result map[string]string, visited
 
 	dir := filepath.Dir(absPath)
 	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		head := astutil.HeadSymbol(expr)
@@ -369,7 +369,7 @@ func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkg
 	// order. LoadWorkspaceMacros evals these to replay the package setup
 	// and register macros/functions/globals, mirroring (load) behavior.
 	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		switch astutil.HeadSymbol(expr) {
@@ -389,7 +389,7 @@ func extractDefinitions(exprs []*lisp.LVal) []ExternalSymbol {
 	currentPkg := lisp.DefaultUserPackage
 
 	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		head := astutil.HeadSymbol(expr)
@@ -436,7 +436,7 @@ func scanExportedDefinitionKeys(exprs []*lisp.LVal) map[string]bool {
 	exported := make(map[string]bool)
 	currentPkg := lisp.DefaultUserPackage
 	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		switch astutil.HeadSymbol(expr) {
@@ -519,7 +519,7 @@ func scanSet(expr *lisp.LVal) *ExternalSymbol {
 	name := ""
 	if arg.Type == lisp.LSymbol {
 		name = arg.Str
-	} else if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+	} else if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
 		name = arg.Cells[0].Str
 	}
 	if name == "" {
@@ -538,7 +538,7 @@ func scanExportNames(expr *lisp.LVal) []string {
 		name := ""
 		if arg.Type == lisp.LSymbol {
 			name = arg.Str
-		} else if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+		} else if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
 			name = arg.Cells[0].Str
 		}
 		if name != "" {
@@ -555,7 +555,7 @@ func scanUsePackages(exprs []*lisp.LVal) map[string][]string {
 	result := make(map[string][]string)
 	currentPkg := lisp.DefaultUserPackage
 	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		head := astutil.HeadSymbol(expr)

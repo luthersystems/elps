@@ -2,7 +2,14 @@
 // analysistest.  Only the shapes the elpsfreshness and elpsescape analyzers
 // inspect matter: the LVal struct fields, the constructor names, the method
 // names, and the *token.Location-typed runtime state (LVal.source,
-// LEnv.Loc) plus the copyLocation cleanser.
+// LEnv.loc) plus the copyLocation cleanser.
+//
+// LEnv.loc is UNEXPORTED here because it is unexported in the real package
+// after the #382 privatization.  That is load-bearing for the fixtures: the
+// in-package retro-catch shapes (retro.go) read it directly, exactly as the
+// kernel does, while an external package can no longer reach an env's
+// location field at all -- which is why the cross-package fixture (esc/)
+// takes its taint from the struct fields it does own.
 package lisp
 
 import "github.com/luthersystems/elps/parser/token"
@@ -41,8 +48,18 @@ type Runtime struct {
 }
 
 type LEnv struct {
-	Loc     *token.Location
+	loc     *token.Location
 	Runtime *Runtime
+}
+
+// Source mirrors the real accessor: the exported read of the env's location
+// hands out a COPY, because the evaluator rebinds and mutates its own
+// register (#382).
+func (env *LEnv) Source() *token.Location {
+	if env == nil {
+		return nil
+	}
+	return copyLocation(env.loc)
 }
 
 func copyLocation(loc *token.Location) *token.Location {
@@ -99,7 +116,7 @@ func (v *LVal) Copy() *LVal {
 	return cp
 }
 
-func (v *LVal) Detach() (*LVal, error) { return v.Copy(), nil }
+func (v *LVal) detach() (*LVal, error) { return v.Copy(), nil }
 
 func (v *LVal) Bytes() []byte {
 	b, _ := v.Native.(*[]byte)

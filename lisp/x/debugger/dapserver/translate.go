@@ -61,8 +61,8 @@ func translateStackFrames(stack *lisp.CallStack, pausedExpr *lisp.LVal, sourceRo
 			}
 			// Annotate with macro expansion name when paused inside a
 			// macro expansion, so the user can see which macro is active.
-			if pausedExpr.MacroExpansion != nil && pausedExpr.MacroExpansion.MacroExpansionContext != nil {
-				sf.Name = sf.Name + " [macro: " + pausedExpr.MacroExpansion.Name + "]"
+			if m, ok := pausedExpr.MacroExpansion(); ok {
+				sf.Name = sf.Name + " [macro: " + m.Name + "]"
 			}
 		}
 		frames = append(frames, sf)

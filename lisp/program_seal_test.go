@@ -14,15 +14,17 @@ import (
 // moment someone adds `func (p Program) Exprs() []*LVal` the boundary
 // guarantee is gone, silently, for every embedder.  A negative-compilation
 // testdata harness would prove the same thing with far more machinery; this
-// test walks the reflected method set instead and fails if any method other
-// than Detach can reach a *lisp.LVal through its results.
+// test walks the reflected method set instead and fails if any exported
+// method can reach a *lisp.LVal through its results.
 //
-// Detach is exempt BY NAME because it is the documented escape hatch — it
-// returns deep copies, never the sealed nodes (program_test.go proves the
-// copying; this test only polices the surface).
+// There is no exemption: the deep-copy escape hatch (Program.detach,
+// lisp/program.go) is unexported until a real embedder consumer
+// materializes, so today NO exported method may expose *LVal.  The bridge
+// in export_test.go is a package-level function, not a Program method, so
+// it never appears in this method set.
 //
 // Anti-vacuity: the test also asserts the surface it expects to exist
-// (Detach, Len, String, and the LEnv producers/consumers), so an accidental
+// (Len, String, and the LEnv producers/consumers), so an accidental
 // mass-deletion cannot pass as "no leaks found".
 func TestProgramSeal(t *testing.T) {
 	lvalPtr := reflect.TypeOf((*lisp.LVal)(nil))
@@ -77,9 +79,6 @@ func TestProgramSeal(t *testing.T) {
 	for i := range typ.NumMethod() {
 		m := typ.Method(i)
 		found[m.Name] = true
-		if m.Name == "Detach" {
-			continue // the documented, deep-copying escape hatch
-		}
 		for j := range m.Type.NumOut() {
 			if exposes(m.Type.Out(j)) {
 				t.Errorf("Program.%s result %d (%s) can expose *lisp.LVal — the seal is broken",
@@ -89,17 +88,17 @@ func TestProgramSeal(t *testing.T) {
 	}
 
 	// Anti-vacuity: the expected surface exists with the expected shapes.
-	if !found["Len"] || !found["String"] || !found["Detach"] {
-		t.Fatalf("Program method set %v is missing expected methods Len/String/Detach", found)
+	if !found["Len"] || !found["String"] {
+		t.Fatalf("Program method set %v is missing expected methods Len/String", found)
 	}
 	lenM, _ := typ.MethodByName("Len")
 	if lenM.Type.NumOut() != 1 || lenM.Type.Out(0).Kind() != reflect.Int {
 		t.Errorf("Len has unexpected signature %v", lenM.Type)
 	}
-	detachM, _ := typ.MethodByName("Detach")
-	wantDetach := reflect.TypeOf(func(*lisp.Program) ([]*lisp.LVal, error) { return nil, nil })
-	if detachM.Type != wantDetach {
-		t.Errorf("Detach signature = %v, want %v", detachM.Type, wantDetach)
+	// The escape hatch stays unexported: re-exporting Detach is a conscious
+	// API decision (it needs a consumer), not something that should slip in.
+	if _, ok := typ.MethodByName("Detach"); ok {
+		t.Error("Program.Detach is exported; the escape hatch is meant to stay unexported until a real consumer appears")
 	}
 
 	// No exported fields: an exported exprs slice would be a leak without

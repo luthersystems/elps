@@ -40,7 +40,7 @@ func TestSingletonsBornSealed(t *testing.T) {
 		t.Fatal("Copy() of Nil() returned the singleton itself")
 	}
 	cp.Cells = append(cp.Cells, Int(1))
-	cp.Quoted = true
+	cp.quoted = true
 	if drift := snap.Verify(); drift != "" {
 		t.Fatalf("mutating a Copy() of Nil() drifted singleton %s", drift)
 	}

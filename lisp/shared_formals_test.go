@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
@@ -64,8 +65,8 @@ func collectLVals(v *lisp.LVal, depth int, seen map[*lisp.LVal]bool, stats *walk
 		for _, c := range v.Cells {
 			collectLVals(c, depth-1, seen, stats)
 		}
-		if fenv := v.Env(); fenv != nil {
-			for _, sv := range fenv.Scope {
+		if fenv := funraw.Env(v); fenv != nil {
+			for _, sv := range fenv.Bindings() {
 				collectLVals(sv, depth-1, seen, stats)
 			}
 		}
@@ -126,7 +127,7 @@ func newFullEnv(t *testing.T) *lisp.LEnv {
 // describeLVal renders enough about a shared value to debug a failure.
 func describeLVal(v *lisp.LVal) string {
 	return fmt.Sprintf("%p type=%v str=%q cells=%d quoted=%v (%s)",
-		v, v.Type, v.Str, len(v.Cells), v.Quoted, v.String())
+		v, v.Type, v.Str, len(v.Cells), v.IsQuoted(), v.String())
 }
 
 // assertNoMutableSharing asserts that every pointer common to the two sets

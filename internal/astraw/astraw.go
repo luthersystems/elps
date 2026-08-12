@@ -6,7 +6,7 @@
 // lisp.Program deliberately has no accessor returning its AST nodes — that
 // is the whole point of the type (see lisp/program.go).  But analysis, lint,
 // and lsp code inside this module reads ASTs without evaluating them, and
-// forcing a Detach deep copy on every analysis pass would be pure waste.
+// forcing a detach deep copy on every analysis pass would be pure waste.
 // This package is the sanctioned bypass: it lives under internal/, so the Go
 // compiler limits it to this module — an embedder importing elps cannot
 // reach it, and the compile-time seal on Program holds at the module

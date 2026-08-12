@@ -5,8 +5,31 @@ package lisp
 import (
 	"fmt"
 
+	macroexphook "github.com/luthersystems/elps/internal/macroexp/hook"
 	"github.com/luthersystems/elps/parser/token"
 )
+
+func init() {
+	// Inject the test-only metadata fabricator for in-repo debugger tests.
+	// The typed surface lives in internal/macroexp; the untyped slot in
+	// internal/macroexp/hook exists only to break the import cycle
+	// (macroexp needs lisp's types, so lisp cannot import macroexp).  This
+	// is deliberately the ONLY way to attach macro-expansion metadata from
+	// outside the in-kernel stamp (stampMacroExpansion below), and
+	// internal/ visibility limits it to this module.
+	macroexphook.Attach = func(v *LVal, name string, callSite, defSite *token.Location, args []*LVal, id int64) {
+		//elps:mutates test-only fabrication of debug metadata via internal/macroexp; unreachable outside this module
+		v.macroExpansion = &macroExpansionInfo{
+			macroExpansionContext: &macroExpansionContext{
+				CallSite: callSite,
+				Name:     name,
+				DefSite:  defSite,
+				Args:     args,
+			},
+			ID: id,
+		}
+	}
+}
 
 //elpsvet:allow user-registered macro table; formals are sealed (see sealDefaultFormals init in builtins.go / RegisterDefaultMacro) and shared via registrationFormals (env.go AddMacros)
 var userMacros []*langBuiltin
@@ -230,14 +253,14 @@ func macroDeftype(env *LEnv, args *LVal) *LVal {
 // locations (from parser or unquote) are left unchanged.
 //
 // When ctx is non-nil (debugger attached), each stamped node also gets a
-// MacroExpansionInfo with a unique, monotonically-increasing ID. The
+// macroExpansionInfo with a unique, monotonically-increasing ID. The
 // runtime's sequence counter is used to generate IDs.
 //
 // Singleton values (Nil(), Bool(true), Bool(false)) are skipped via
 // identity check — they are shared, immutable, pre-allocated values
 // and mutating one corrupts every reader of that singleton for the
 // remainder of the process lifetime. See issue #274.
-func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionContext, rt *Runtime) {
+func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionContext, rt *Runtime) {
 	if v == nil || callSite == nil {
 		return
 	}
@@ -265,8 +288,8 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionC
 		v.source = callSite //elps:mutates debug-metadata stamp on macro-expansion output; sealed (shared) subtrees are skipped above
 		if ctx != nil {
 			//elps:mutates debug-metadata stamp on macro-expansion output; sealed (shared) subtrees are skipped above
-			v.MacroExpansion = &MacroExpansionInfo{
-				MacroExpansionContext: ctx,
+			v.macroExpansion = &macroExpansionInfo{
+				macroExpansionContext: ctx,
 				ID:                    rt.nextMacroExpID(),
 			}
 		}
@@ -312,7 +335,7 @@ func getUnquoteType(v *LVal) (unquoteType, error) {
 func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 	inner := v
 	quoteLevel := 0
-	if inner.Quoted {
+	if inner.quoted {
 		quoteLevel += 1
 	}
 	for inner.Type == LQuote {
@@ -328,14 +351,14 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 
 	unquote, err := getUnquoteType(v)
 	if err != nil {
-		env.Loc = v.source
+		env.loc = v.source
 		return env.Error(err)
 	}
 	if unquote == unquoteSpliced {
 		// v looks like ``(unquote-splicing expr)''
 		expr := v.Cells[1]
 		if depth == 0 || quoteLevel > 0 {
-			env.Loc = v.source
+			env.loc = v.source
 			return env.Errorf("unquote-splicing used in an invalid context")
 		}
 		return doUnquoteSpliced(env, expr)
@@ -377,7 +400,7 @@ func doUnquoteSExpr(env *LEnv, v *LVal, depth int, quoteLevel int) *LVal {
 		if cells[i].Type == LError {
 			return cells[i]
 		}
-		if cells[i].Spliced {
+		if cells[i].spliced {
 			numSpliced += 1
 			numExtended += len(cells[i].Cells)
 		}
@@ -388,7 +411,7 @@ func doUnquoteSExpr(env *LEnv, v *LVal, depth int, quoteLevel int) *LVal {
 		newlen := len(cells) - numSpliced + numExtended
 		newcells := make([]*LVal, 0, newlen)
 		for _, v := range cells {
-			if v.Spliced {
+			if v.spliced {
 				if v.Type != LSExpr {
 					// TODO:  I believe it is incorrect to error out here.  But
 					// splicing non-lists is not a major concern at the moment.

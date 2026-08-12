@@ -274,7 +274,7 @@ func walkForCall(exprs []*lisp.LVal, line, col, depth int, fn func(name string, 
 }
 
 func walkNodeForCall(node *lisp.LVal, line, col, depth int, fn func(name string, argIdx, depth int)) {
-	if node == nil || node.Type != lisp.LSExpr || node.Quoted || len(node.Cells) == 0 {
+	if node == nil || node.Type != lisp.LSExpr || node.IsQuoted() || len(node.Cells) == 0 {
 		return
 	}
 
@@ -393,7 +393,7 @@ func lookupCallable(result *analysis.Result, name, currentPkg string) *analysis.
 func packageAtLine(ast []*lisp.LVal, line int) string {
 	pkg := lisp.DefaultUserPackage
 	for _, expr := range ast {
-		if expr == nil || expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr == nil || expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		if exprLoc, ok := expr.Source(); ok && exprLoc.Line > line {

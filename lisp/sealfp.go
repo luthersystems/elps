@@ -187,8 +187,8 @@ func (s *sealFP) walk(v *LVal, depth int) {
 	s.mixByte(sealFPMarkNode)
 	s.mixUint64(uint64(v.Type))
 	s.mixUint64(uint64(v.FunType))
-	s.mixBool(v.Quoted)
-	s.mixBool(v.Spliced)
+	s.mixBool(v.quoted)
+	s.mixBool(v.spliced)
 	s.mixString(v.Str)
 	s.mixInt(v.Int)
 	s.mixUint64(math.Float64bits(v.Float))
@@ -205,8 +205,8 @@ func (s *sealFP) walk(v *LVal, depth int) {
 		s.mixInt(src.EndLine)
 		s.mixInt(src.EndCol)
 	}
-	s.mixBool(v.Meta != nil)
-	s.mixBool(v.MacroExpansion != nil)
+	s.mixBool(v.meta != nil)
+	s.mixBool(v.macroExpansion != nil)
 	s.mixInt(len(v.Cells))
 	for _, c := range v.Cells {
 		s.walk(c, depth+1)

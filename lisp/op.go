@@ -159,7 +159,7 @@ func opSetUpdate(env *LEnv, args *LVal) *LVal {
 	if val.Type == LError {
 		return val
 	}
-	env.Loc = key.source
+	env.loc = key.source
 	return env.Update(key, val)
 }
 
@@ -346,7 +346,7 @@ func parseExprArgIndex(numStr string) (int, error) {
 }
 
 func countExprArgs(expr *LVal) (nargs int, short bool, nopt int, vargs bool, err error) {
-	if expr.Quoted {
+	if expr.quoted {
 		return 0, false, 0, false, nil
 	}
 	switch expr.Type {
@@ -373,7 +373,7 @@ func countExprArgs(expr *LVal) (nargs int, short bool, nopt int, vargs bool, err
 	case LSExpr:
 		short := false
 		for _, cell := range expr.Cells {
-			if cell.Quoted {
+			if cell.quoted {
 				continue
 			}
 			if !strings.HasPrefix(cell.Str, "%") {
@@ -426,7 +426,7 @@ func countExprArgs(expr *LVal) (nargs int, short bool, nopt int, vargs bool, err
 func opThreadLast(env *LEnv, args *LVal) *LVal {
 	val, exprs := args.Cells[0], args.Cells[1:]
 	for _, expr := range exprs {
-		if expr.Type != LSExpr || expr.Quoted {
+		if expr.Type != LSExpr || expr.quoted {
 			return env.Errorf("expression argument is not a function call")
 		}
 		if expr.Len() < 1 {
@@ -454,7 +454,7 @@ func opThreadLast(env *LEnv, args *LVal) *LVal {
 func opThreadFirst(env *LEnv, args *LVal) *LVal {
 	val, exprs := args.Cells[0], args.Cells[1:]
 	for _, expr := range exprs {
-		if expr.Type != LSExpr || expr.Quoted {
+		if expr.Type != LSExpr || expr.quoted {
 			return env.Errorf("expression argument is not a function call")
 		}
 		if expr.Len() < 1 {
@@ -970,7 +970,7 @@ func opQualifiedSymbol(env *LEnv, args *LVal) *LVal {
 		return pieces
 	}
 	if pieces.Len() == 2 {
-		if sym.Quoted {
+		if sym.quoted {
 			return sym
 		}
 		return Quote(sym)
