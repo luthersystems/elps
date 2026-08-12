@@ -236,7 +236,7 @@ func (p *printer) writeExpr(v *lisp.LVal, indent int) {
 		return
 	}
 	// Handle quoting prefix for non-LQuote types
-	if v.Quoted && v.Type != lisp.LQuote && v.Type != lisp.LSExpr {
+	if v.IsQuoted() && v.Type != lisp.LQuote && v.Type != lisp.LSExpr {
 		p.writeString("'")
 	}
 	switch v.Type {
@@ -249,7 +249,7 @@ func (p *printer) writeExpr(v *lisp.LVal, indent int) {
 	case lisp.LSymbol:
 		p.writeString(v.Str)
 	case lisp.LSExpr:
-		if v.Quoted {
+		if v.IsQuoted() {
 			// [] brackets in source are parsed as QExpr (Quoted: true), but
 			// the bracket itself serves as the quote — no ' prefix needed.
 			if v.Meta != nil && v.Meta.BracketType == '[' {
@@ -274,7 +274,7 @@ func (p *printer) writeExpr(v *lisp.LVal, indent int) {
 }
 
 func (p *printer) writeCompactExpr(v *lisp.LVal) {
-	if v.Quoted && v.Type != lisp.LQuote && v.Type != lisp.LSExpr {
+	if v.IsQuoted() && v.Type != lisp.LQuote && v.Type != lisp.LSExpr {
 		p.writeString("'")
 	}
 	switch v.Type {
@@ -296,7 +296,7 @@ func (p *printer) writeCompactExpr(v *lisp.LVal) {
 
 func (p *printer) writeCompactList(v *lisp.LVal) {
 	bracket := bracketOpen(v)
-	if v.Quoted && (v.Meta == nil || v.Meta.BracketType != '[') {
+	if v.IsQuoted() && (v.Meta == nil || v.Meta.BracketType != '[') {
 		p.writeString("'")
 	}
 	p.writeString(string(bracket))
@@ -624,7 +624,7 @@ func hasComments(v *lisp.LVal) bool {
 // symbol -- unqualified, or package-qualified with a non-empty name on both
 // sides of the single colon -- reads back as the same tree.
 func canWriteFunRef(inner *lisp.LVal) bool {
-	if inner.Type != lisp.LSymbol || inner.Quoted {
+	if inner.Type != lisp.LSymbol || inner.IsQuoted() {
 		return false
 	}
 	pieces := strings.Split(inner.Str, ":")
@@ -643,7 +643,7 @@ func canWriteFunRef(inner *lisp.LVal) bool {
 // s-expression, so this mirrors that check exactly.
 func canWriteUnbound(inner *lisp.LVal) bool {
 	for _, c := range inner.Cells {
-		if c.Type == lisp.LSExpr && !c.Quoted {
+		if c.Type == lisp.LSExpr && !c.IsQuoted() {
 			return false
 		}
 	}
@@ -720,7 +720,7 @@ func bracketOpen(v *lisp.LVal) rune {
 	if v.Meta != nil && v.Meta.BracketType != 0 {
 		return v.Meta.BracketType
 	}
-	if v.Quoted {
+	if v.IsQuoted() {
 		return '['
 	}
 	return '('

@@ -2950,7 +2950,7 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 		}
 
 		val := fvals[argIdx]
-		if val.Type == LString && !val.Quoted {
+		if val.Type == LString && !val.quoted {
 			buf.WriteString(val.Str)
 		} else {
 			buf.WriteString(val.String())

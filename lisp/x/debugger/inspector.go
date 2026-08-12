@@ -210,7 +210,7 @@ func formatList(v *lisp.LVal) string {
 		parts = append(parts, FormatValue(cell))
 	}
 	openTok, closeTok := "(", ")"
-	if v.Quoted {
+	if v.IsQuoted() {
 		openTok, closeTok = "[", "]"
 	}
 	return openTok + strings.Join(parts, " ") + closeTok

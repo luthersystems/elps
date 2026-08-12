@@ -52,7 +52,7 @@ func TestOwnershipCheck_CatchesCrossRuntimePut(t *testing.T) {
 	envB := newOwnershipTestEnv()
 
 	v := SExpr([]*LVal{Int(1), Int(2), Int(3)})
-	v.Quoted = true
+	v.quoted = true
 	if lerr := envA.Put(Symbol("x"), v); lerr.Type == LError {
 		t.Fatalf("put in runtime A failed: %v", lerr)
 	}

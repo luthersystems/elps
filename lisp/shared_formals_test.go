@@ -126,7 +126,7 @@ func newFullEnv(t *testing.T) *lisp.LEnv {
 // describeLVal renders enough about a shared value to debug a failure.
 func describeLVal(v *lisp.LVal) string {
 	return fmt.Sprintf("%p type=%v str=%q cells=%d quoted=%v (%s)",
-		v, v.Type, v.Str, len(v.Cells), v.Quoted, v.String())
+		v, v.Type, v.Str, len(v.Cells), v.IsQuoted(), v.String())
 }
 
 // assertNoMutableSharing asserts that every pointer common to the two sets

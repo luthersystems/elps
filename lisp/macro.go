@@ -312,7 +312,7 @@ func getUnquoteType(v *LVal) (unquoteType, error) {
 func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 	inner := v
 	quoteLevel := 0
-	if inner.Quoted {
+	if inner.quoted {
 		quoteLevel += 1
 	}
 	for inner.Type == LQuote {
@@ -377,7 +377,7 @@ func doUnquoteSExpr(env *LEnv, v *LVal, depth int, quoteLevel int) *LVal {
 		if cells[i].Type == LError {
 			return cells[i]
 		}
-		if cells[i].Spliced {
+		if cells[i].spliced {
 			numSpliced += 1
 			numExtended += len(cells[i].Cells)
 		}
@@ -388,7 +388,7 @@ func doUnquoteSExpr(env *LEnv, v *LVal, depth int, quoteLevel int) *LVal {
 		newlen := len(cells) - numSpliced + numExtended
 		newcells := make([]*LVal, 0, newlen)
 		for _, v := range cells {
-			if v.Spliced {
+			if v.spliced {
 				if v.Type != LSExpr {
 					// TODO:  I believe it is incorrect to error out here.  But
 					// splicing non-lists is not a major concern at the moment.

@@ -95,7 +95,7 @@ func writeSkeleton(b *strings.Builder, v *lisp.LVal) {
 		b.WriteString("<nil>")
 		return
 	}
-	if v.Quoted {
+	if v.IsQuoted() {
 		b.WriteByte('\'')
 	}
 	b.WriteString(v.Type.String())

@@ -153,10 +153,10 @@ func sealWatchRead(v *LVal, depth int, budget *int, acc uint64) uint64 {
 	}
 	*budget--
 	acc ^= uint64(v.Type)<<1 ^ uint64(v.FunType)<<9
-	if v.Quoted {
+	if v.quoted {
 		acc ^= 1 << 17
 	}
-	if v.Spliced {
+	if v.spliced {
 		acc ^= 1 << 18
 	}
 	acc ^= wdBits(len(v.Str)) // loads the string header

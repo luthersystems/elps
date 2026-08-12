@@ -112,11 +112,7 @@ func TestFormatValue(t *testing.T) {
 		{"qsymbol", lisp.QSymbol("pkg:sym"), "'pkg:sym", ""},
 		{"bytes", lisp.Bytes([]byte{0x01, 0x02}), "<bytes len=2>", ""},
 		{"sexpr list", lisp.SExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)}), "(1 2 3)", ""},
-		{"sexpr quoted", func() *lisp.LVal {
-			v := lisp.SExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)})
-			v.Quoted = true
-			return v
-		}(), "[1 2 3]", ""},
+		{"sexpr quoted", lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)}), "[1 2 3]", ""},
 		{"long list", func() *lisp.LVal {
 			cells := make([]*lisp.LVal, 12)
 			for i := range cells {

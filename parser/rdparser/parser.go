@@ -392,7 +392,7 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 	sym := lisp.Symbol("lisp:expr")
 	// Ensure that the expression doesn't contain nested cons expressions.
 	for _, c := range expr.Cells {
-		if c.Type == lisp.LSExpr && !c.Quoted {
+		if c.Type == lisp.LSExpr && !c.IsQuoted() {
 			return p.errorf("unbound-expression-error", "unbound expression cannot contain nested expressions")
 		}
 	}
