@@ -252,6 +252,7 @@ test:
 | `needSpecialOp` on `if` | `…ShadowedStructuralOpsNotCached` | `'(1 1 1)` vs `'(1 2 3)` |
 | defining-package fall-through | `…ShadowedInDefiningPackageNotCached` | `'(1 1 1)` vs `'(1 2 3)` |
 | quoted-head unquote recognition | `…QuotedUnquoteHeadNotCached` | `'('(1 1) '(1 2) 1)` vs `'('(5 1) '(6 2) 6)` |
+| same, for `'unquote-splicing` | `…QuotedUnquoteSplicingHeadNotCached` | `'('(1 1) '(1 2) '(1 3) 1)` vs `'('(1 1) '(2 2) '(3 3) 3)` |
 | `sameMacroBody` memo-key check | `…SharedFormalsTwoBodiesNotCached` | `'(7 1)×3` vs `(7 1) (7 2) (7 3)` |
 | per-dispatch `defRefs` re-check | `…PurityMemoIsEnvironmentIndependent` | `'(1 1 1)` vs `'(1 2 3)` |
 | `callRefs` binder promotion | `…ShadowedBinderAtCallsiteNotCached` | one gensym vs two |
