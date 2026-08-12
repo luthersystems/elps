@@ -216,4 +216,41 @@ var ElpspathSeedCorpus = []string{
   (let ([d (sorted-map "v" (vector 1 2 3 4))])
     (list (elpspath:?del d "v" '(range 1 3)) d)))
 (list (f) (f))`,
+
+	// The copying ops accept a LIST as the root, and a list stores its cells
+	// where an array stores its dims.  These are the shapes that reach the
+	// write-back (0442c52): a one-element list has no second cell to write
+	// into, and a longer one silently absorbs the write.
+	`(use-package 'elpspath)
+(elpspath:?del '(1) 0)`,
+
+	`(use-package 'elpspath)
+(elpspath:?del '(1 2 3) 0)`,
+
+	`(use-package 'elpspath)
+(elpspath:?del '(1 2 3) '(range 0 2))`,
+
+	`(use-package 'elpspath)
+(elpspath:?set '(1 2 3) '(range 0 2) 9)`,
+
+	`(use-package 'elpspath)
+(elpspath:?nil '(1 2 3) 0)`,
+
+	`(use-package 'elpspath)
+(defun f ()
+  (let ([d (sorted-map "l" '(1 2 3))])
+    (list (elpspath:?del d "l" 0) d)))
+(list (f) (f))`,
+
+	`(use-package 'elpspath)
+(defun f ()
+  (let ([d (sorted-map "l" '(1))])
+    (list (elpspath:?del d "l" 0) d)))
+(list (f) (f))`,
+
+	`(use-package 'elpspath)
+(elpspath:?del '() 0)`,
+
+	`(use-package 'elpspath)
+(elpspath:?del '(1 2) -1)`,
 }

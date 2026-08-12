@@ -51,6 +51,17 @@ type Outcome struct {
 	// Stderr is what the program wrote to the captured stderr stream
 	// (debug-print and friends), normalized.
 	Stderr string
+	// Starved reports that this outcome was decided by WALL CLOCK rather than
+	// by the program: the evaluation's context deadline fired, or the harness
+	// watchdog did.  Such an outcome is not comparable -- it records how busy
+	// the machine was, not what the interpreter computed -- so a pair where
+	// either side is starved is retried and, if it starves again, dropped.
+	//
+	// This is not hypothetical.  On a loaded 4-core sandbox the first
+	// unfiltered run produced 31 "findings" in 52,000 programs and every one
+	// was a deadline firing at step 1 on one side only.  Reporting those as
+	// semantic divergences is how a differential harness goes to noise.
+	Starved bool
 	// Steps is the interpreter step count.  Recorded for triage only -- it is
 	// NOT compared, because the sealed branch legitimately changes the number
 	// of steps some operations take.

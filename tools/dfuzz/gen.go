@@ -268,9 +268,30 @@ func (g *Gen) listySeq() string {
 
 // nestedContainer is the elpspath surface: a document with maps, vectors and
 // quoted lists inside each other.
+//
+// The "l" key always holds a QUOTED LIST, and pathStep always has steps that
+// walk into it.  That is not decoration: the two sequence layouts elpspath
+// accepts store their cells differently -- an array is [dims, data] while a
+// list holds its cells directly -- and the write-back defect 0442c52 fixed was
+// exactly a list reaching a path that assumed the array layout.  A generator
+// that only ever put vectors under a path step could not have found it.
 func (g *Gen) nestedContainer() string {
-	return fmt.Sprintf(`(sorted-map "a" %s "b" (vector %s %s) "c" %s)`,
-		g.mapLit(), g.atom(), g.quotedList(), g.vectorLit())
+	return fmt.Sprintf(`(sorted-map "a" %s "b" (vector %s %s) "c" %s "l" %s)`,
+		g.mapLit(), g.atom(), g.quotedList(), g.vectorLit(), g.quotedList())
+}
+
+// pathRoot is the value a path operation is applied to.  Sometimes a whole
+// document, sometimes a bare sequence -- the copying ops accept a list as the
+// ROOT, and that is the position the fixed defect crashed in.
+func (g *Gen) pathRoot() string {
+	switch g.rng.Intn(6) {
+	case 0:
+		return g.quotedList()
+	case 1:
+		return g.vectorLit()
+	default:
+		return g.nestedContainer()
+	}
 }
 
 func (g *Gen) lambda1() string {
@@ -411,21 +432,21 @@ func (g *Gen) shape() string {
 	case 11:
 		d := g.name("d")
 		return fmt.Sprintf("(let ([%s %s]) (set 'g0 (elpspath:?set %s %s %s)) (set 'sm %s))",
-			d, g.nestedContainer(), d, g.pathStep(), g.genExpr(1), d)
+			d, g.pathRoot(), d, g.pathStep(), g.genExpr(1), d)
 	case 12:
 		d := g.name("d")
 		return fmt.Sprintf("(let ([%s %s]) (elpspath:?set! %s %s %s) (set 'sm %s))",
-			d, g.nestedContainer(), d, g.pathStep(), g.genExpr(1), d)
+			d, g.pathRoot(), d, g.pathStep(), g.genExpr(1), d)
 	case 13:
 		d := g.name("d")
 		return fmt.Sprintf("(let ([%s %s]) (set 'g0 (elpspath:?del %s %s)) (set 'sm %s))",
-			d, g.nestedContainer(), d, g.pathStep(), d)
+			d, g.pathRoot(), d, g.pathStep(), d)
 	case 14:
 		d := g.name("d")
 		return fmt.Sprintf("(let ([%s %s]) (elpspath:?%s! %s %s) (set 'sm %s))",
-			d, g.nestedContainer(), g.pick([]string{"del", "nil"}), d, g.pathStep(), d)
+			d, g.pathRoot(), g.pick([]string{"del", "nil"}), d, g.pathStep(), d)
 	case 15:
-		return fmt.Sprintf("(set 'g0 (elpspath:? %s %s))", g.nestedContainer(), g.pathStep())
+		return fmt.Sprintf("(set 'g0 (elpspath:?%s %s %s))", g.pick([]string{"", "nil", "del"}), g.pathRoot(), g.pathStep())
 
 	// --- 6. macros with quoted arguments and quasiquote splices ----------
 	case 16:
@@ -457,7 +478,7 @@ func (g *Gen) shape() string {
 // pathStep emits one elpspath step, covering keys, indices, negative indices,
 // the iterator and ranges.
 func (g *Gen) pathStep() string {
-	switch g.rng.Intn(8) {
+	switch g.rng.Intn(14) {
 	case 0:
 		return `"a" "k0"`
 	case 1:
@@ -472,8 +493,22 @@ func (g *Gen) pathStep() string {
 		return `"b" '(range 0 1)`
 	case 6:
 		return `"nope"`
-	default:
+	case 7:
 		return `"a"`
+	// Steps into the LIST-backed key, and bare-sequence roots.  See
+	// nestedContainer for why the list layout is generated deliberately.
+	case 8:
+		return `"l" 0`
+	case 9:
+		return `"l" -1`
+	case 10:
+		return `"l" '(range 0 1)`
+	case 11:
+		return `"l" '*`
+	case 12:
+		return g.pick([]string{"0", "-1", "1"})
+	default:
+		return `'(range 0 1)`
 	}
 }
 

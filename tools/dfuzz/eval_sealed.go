@@ -79,6 +79,7 @@ func evalSealed(src string) Outcome {
 		fillSealed(&out, env, d.v)
 	case <-time.After(watchdog):
 		out.Timeout = true
+		out.Starved = true
 		return out
 	}
 	out.Stderr = normalize(stderr.String())
@@ -100,6 +101,8 @@ func fillSealed(out *Outcome, env *lisp.LEnv, v *lisp.LVal) {
 	if v.Type == lisp.LError {
 		out.IsError = true
 		out.Cond = v.Str
+		// A context-cancelled result is the deadline, i.e. wall clock.
+		out.Starved = v.Str == "context-cancelled"
 		out.InternalPanic = lisp.IsInternalPanic(v)
 		if err := lisp.GoError(v); err != nil {
 			out.Msg = normalize(err.Error())

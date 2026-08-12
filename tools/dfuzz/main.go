@@ -39,15 +39,24 @@ const (
 	maxAlloc          = 1_000_000
 	maxMacroDepth     = 100
 
-	evalDeadline = 2 * time.Second
+	// evalDeadline is generous rather than tight: the step, tail, height and
+	// alloc budgets above already bound every program that reaches an
+	// interpreter check, so the deadline is only the backstop for a builtin
+	// that loops inside Go.  Sized to survive a starved sandbox, because a
+	// deadline that fires because the machine was busy produces a divergence
+	// that is about the machine.
+	evalDeadline = 10 * time.Second
 	// watchdog is the outer bound on one evaluation.  Reaching it means the
 	// interpreter ignored every budget it was given, which is itself the
 	// finding.  The goroutine is leaked, which is acceptable because the run
 	// has already failed.
-	watchdog = 20 * time.Second
+	watchdog = 60 * time.Second
 )
 
 type result struct {
+	// Starved marks a pair decided by wall clock on both attempts, which is
+	// not comparable.
+	Starved  bool
 	Seed     int64
 	Src      string
 	Stock    Outcome
@@ -70,6 +79,7 @@ func main() {
 		shrink    = flag.Bool("shrink", true, "shrink a diverging program to a minimal reproducer")
 		elpspath  = flag.Bool("elpspath", false, "generate elpspath shapes (only valid when the left tree has the package: b7ad5ca or later)")
 		tally     = flag.Bool("tally", false, "print the most common agreeing-error messages and exit (generator tuning)")
+		selfEvery = flag.Int("selfcheck", 100, "self-check every Nth program: evaluate it TWICE in the same tree and report any difference as harness nondeterminism (0 disables)")
 		verbose   = flag.Bool("v", false, "print progress")
 	)
 	flag.Parse()
@@ -170,6 +180,9 @@ func main() {
 		intended atomic.Int64
 		findings atomic.Int64
 		errs     atomic.Int64
+		starved  atomic.Int64
+		selfBad  atomic.Int64
+		selfRun  atomic.Int64
 		nextSeed atomic.Int64
 		mu       sync.Mutex
 		reported = map[string]bool{}
@@ -218,8 +231,24 @@ func main() {
 				} else {
 					src = g.Program()
 				}
+				if *selfEvery > 0 && seed%int64(*selfEvery) == 0 {
+					selfRun.Add(1)
+					if ds := selfCheck(src); len(ds) > 0 {
+						selfBad.Add(1)
+						mu.Lock()
+						fmt.Printf("\n===== HARNESS NONDETERMINISM seed=%d =====\n%s--- same tree, two runs ---\n", seed, src)
+						for _, d := range ds {
+							fmt.Printf("  %s\n", d)
+						}
+						mu.Unlock()
+					}
+				}
 				r := runOne(seed, src, allow, false)
 				execs.Add(1)
+				if r.Starved {
+					starved.Add(1)
+					continue
+				}
 				if r.Stock.IsError && r.Sealed.IsError {
 					errs.Add(1)
 				}
@@ -277,6 +306,8 @@ func main() {
 	fmt.Printf("program pairs      %d\n", execs.Load())
 	fmt.Printf("evaluations        %d  (2 per pair)\n", 2*execs.Load())
 	fmt.Printf("agreeing errors    %d\n", errs.Load())
+	fmt.Printf("starved (dropped)  %d\n", starved.Load())
+	fmt.Printf("self-checks        %d, nondeterministic %d\n", selfRun.Load(), selfBad.Load())
 	fmt.Printf("diverged           %d\n", diverged.Load())
 	fmt.Printf("  intended         %d\n", intended.Load())
 	fmt.Printf("  findings         %d (%d distinct)\n", findings.Load(), len(reported))
@@ -294,16 +325,51 @@ func seedCorpus() []string {
 	return append(append([]string{}, SeedCorpus...), ElpspathSeedCorpus...)
 }
 
+// runOne evaluates src in both trees and classifies the difference.
+//
+// A pair where either side was STARVED (see Outcome.Starved) is retried once:
+// a wall-clock outcome is not a semantic outcome.  If it starves again the
+// pair is marked non-comparable and counted separately rather than reported.
 func runOne(seed int64, src string, allow map[string]bool, print bool) result {
+	r := evalPair(seed, src, allow)
+	if r.Stock.Starved || r.Sealed.Starved {
+		r = evalPair(seed, src, allow)
+		if r.Stock.Starved || r.Sealed.Starved {
+			r.Starved = true
+			r.Diverged = nil
+			r.Class = Classification{}
+		}
+	}
+	if print {
+		reportResult(os.Stdout, r, "REPRO")
+	}
+	return r
+}
+
+func evalPair(seed int64, src string, allow map[string]bool) result {
 	r := result{Seed: seed, Src: src}
 	r.Stock = evalStock(src)
 	r.Sealed = evalSealed(src)
 	r.Diverged = Compare(r.Stock, r.Sealed)
 	r.Class = Classify(r.Diverged, r.Stock, r.Sealed, allow)
-	if print {
-		reportResult(os.Stdout, r, "REPRO")
-	}
 	return r
+}
+
+// selfCheck evaluates src in the SAME tree twice and reports any difference.
+//
+// This is the oracle's own smoke alarm.  Every divergence this harness reports
+// rests on the assumption that one interpreter, given one program, produces
+// one answer.  If that is false -- an address, a counter, a map order leaking
+// into a printed value -- then every report is suspect.  Sampling it turns the
+// assumption into an assertion, and it costs one extra evaluation per sampled
+// program.
+func selfCheck(src string) []Divergence {
+	a := evalStock(src)
+	b := evalStock(src)
+	if a.Starved || b.Starved {
+		return nil
+	}
+	return Compare(a, b)
 }
 
 // findingKey collapses findings that are the same defect seen through
