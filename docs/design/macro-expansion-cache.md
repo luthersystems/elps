@@ -85,6 +85,16 @@ node.
 This tier is what captures the `when`/`unless`/`default` utility layer that
 dominates real request paths (§7).
 
+**Known boundary.** The prover recognizes its structural operators — `if`,
+`let`, `let*`, `progn`, `quasiquote`, `quote`, `unquote`,
+`unquote-splicing`, `gensym` — *by name*, assuming they resolve to the
+kernel bindings. A program that shadows one of those names with different
+semantics inside the macro's own package could therefore fool the analysis.
+This is the same assumption quasiquote processing itself already makes
+(`getUnquoteType` matches `"unquote"` by name), and the pattern is outside
+the supported embedder model — but it is an assumption, not a proof, and a
+reviewer should weigh it deliberately rather than discover it later.
+
 ### 3.3 Everything else bypasses
 
 Unsealed (runtime-constructed) callsites, debugger-attached runtimes — where
