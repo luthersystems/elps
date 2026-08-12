@@ -67,9 +67,9 @@ var cowCheck = cowCheckState{
 }
 
 type cowCheckState struct {
-	mu     sync.Mutex
 	counts map[string]uint64      // site → total events
 	seen   map[cowEventKey]uint64 // (site, location) → events at that location
+	mu     sync.Mutex
 }
 
 type cowEventKey struct {

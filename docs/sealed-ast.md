@@ -131,6 +131,13 @@ and copy first (`lisp/builtins.go`):
 on lists, and maps/vectors/bytes cannot be produced by the parser, so a
 sealed value cannot legally reach their mutation path.
 
+Each of those three copy-on-write sites also records the event under
+`-tags elpscheck` (§3.6), because whether they should copy at all is an open
+question (elps#378): the alternative is a catchable `cannot modify a program
+literal` condition, and the census exists to decide it on evidence. The
+lisp-level remedy either way is `(copy x)` (§4.4), which returns a fully
+unsealed deep copy, so the mutating builtin takes its ordinary in-place path.
+
 The evaluator's own metadata writes respect the flag too:
 `stampMacroExpansion` skips sealed subtrees (`lisp/macro.go` — a sealed
 node's descendants are all sealed, so the whole subtree is skipped), and
@@ -149,8 +156,9 @@ unsealed by construction.
 The parse/cache boundary exposes no raw AST: `lisp.Program`
 (`lisp/program.go`) wraps parse output opaquely, and the package registry
 seals its LVal-bearing surface. Deep-copy machinery for owned expressions
-exists in-kernel (`detach()`, `lisp/detach.go` — it backs the planned
-lisp-level copy builtin, elps#378) but is unexported: it will be re-exported
+exists in-kernel (`detach()`, `lisp/detach.go` — whose walker also backs the
+lisp-level `copy` builtin in a within-env mode, elps#378) but is unexported:
+it will be re-exported
 when a real embedder consumer (debugger workflows, cross-runtime transfer)
 materializes. An embedder that hand-builds expression trees and
 shares them across environments may call `SealAST()` itself for the same
@@ -358,6 +366,22 @@ release binary nothing observes them; they are benign in effect on the tree
 bytes but are still data races on shared storage. They are caught in
 development by the watchdog (§3.4) — that split is deliberate.
 
+### 3.6 Copy-on-write census (dynamic, tagged builds; `lisp/cow_check_elpscheck.go`)
+
+Under `-tags elpscheck`, every copy-on-write-on-sealed site (§2.4) records
+the event and the lisp-level frames that caused it, printing each distinct
+(site, location) pair once to stderr so that suite runs driven by external
+test binaries leave the evidence in their logs. This measures nothing about
+correctness — it answers the policy question of elps#378: if no real program
+reaches those sites, they can raise `cannot modify a program literal` instead
+of silently copying. Untagged builds carry no counter symbol and no site
+string (`go tool nm` assertion in `lisp/cow_counter_test.go`).
+
+*Blind spots:* it sees only executed paths, and it counts the kernel's three
+CoW sites — not libelpspath's list refusal (which already errors) nor the
+metadata no-ops (`SetSource`, `stampMacroExpansion`), which change no
+lisp-visible value.
+
 ## 4. Footguns
 
 ### 4.1 Go-style append/slice capacity sharing (elps#373)
@@ -413,6 +437,21 @@ text": refuse or `Copy()`, never write.
   reviewer can audit; `//elps:mutates` is a claim of deliberate, owned
   mutation, not an off switch.
 
+### 4.4 Lisp-side: `(copy x)`, unconditionally
+
+Lisp code has one ownership primitive, `copy` (elps#378): a deep copy with
+fresh backing for every container, the seal cleared, and function/native
+leaves shared by reference (a within-env copy cannot smuggle anything, and
+lisp cannot mutate a function's internals). It replaces the one-level
+`(concat 'list x)` idiom and the json round-trip.
+
+There is deliberately **no `sealed?` predicate**. `(if (sealed? x) (copy x) x)`
+looks like the careful version and is the footgun: the seal bit reports
+program-text provenance, not exclusive ownership, and an unsealed value can
+still be aliased by another binding, a container, or a closure. Code that
+intends to mutate data it did not construct copies unconditionally.
+`IsSealed()` stays a Go-side tool, where refuse-or-copy is a real choice.
+
 ## 5. Embedder checklist
 
 1. **Parse through a sealing path.** `Reader.Read`, `LoadString`,
@@ -429,10 +468,11 @@ text": refuse or `Copy()`, never write.
    `v.IsSealed()` first; refuse with an error or operate on `v.Copy()`.
    Remember slices of `Cells` share backing — copy the cells, not just the
    header, before restructuring.
-4. **Use `concat` (lisp) / `Copy()` (Go) as the copy idioms** when you
-   need storage that no one else can write (§4.1). (The hermetic
-   cross-runtime deep copy lives in-kernel as `detach()`, unexported until
-   a consumer appears.)
+4. **Use `copy` (lisp) / `Copy()` (Go) as the copy idioms** when you
+   need storage that no one else can write (§4.1). `copy` is deep and
+   unconditional -- prefer it to the one-level `(concat 'list x)`. (The
+   hermetic cross-runtime deep copy lives in-kernel as `detach()`,
+   unexported until a consumer appears; `copy` is its within-env mode.)
 5. **Run the verification stack you can afford:** `go run ./cmd/elpsvet
    -test=false ./...` over code living in this module; `go test -tags
    elpscheck` (inspector) and `-race` (watchdog) in CI; call

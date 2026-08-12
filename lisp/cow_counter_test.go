@@ -71,7 +71,7 @@ func TestNoCoWCounterSymbolsUntagged(t *testing.T) {
 			args[2] = out
 		}
 		args = append(args, ".")
-		cmd := exec.Command("go", args...)
+		cmd := exec.CommandContext(t.Context(), "go", args...) //nolint:gosec // fixed argv built from literals in this test
 		cmd.Dir = root
 		if b, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("go build -tags %q: %v\n%s", tags, err, b)
@@ -81,7 +81,7 @@ func TestNoCoWCounterSymbolsUntagged(t *testing.T) {
 
 	symbols := func(bin string) string {
 		t.Helper()
-		cmd := exec.Command("go", "tool", "nm", bin)
+		cmd := exec.CommandContext(t.Context(), "go", "tool", "nm", bin)
 		b, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("go tool nm: %v\n%s", err, b)
@@ -101,7 +101,7 @@ func TestNoCoWCounterSymbolsUntagged(t *testing.T) {
 			t.Errorf("untagged binary contains the counter symbol %q; the census must compile away entirely", sym)
 		}
 	}
-	image, err := os.ReadFile(untagged)
+	image, err := os.ReadFile(untagged) // #nosec G304 -- path is this test's own TempDir output
 	if err != nil {
 		t.Fatalf("read binary: %v", err)
 	}
