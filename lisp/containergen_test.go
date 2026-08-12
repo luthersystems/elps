@@ -368,7 +368,8 @@ func seqLen(v *lisp.LVal) int {
 	if v == nil {
 		return 0
 	}
-	switch v.Type { //nolint:exhaustive // only these shapes have a sequence length; everything else contributes 0
+	// Only these shapes have a sequence length; everything else contributes 0.
+	switch v.Type {
 	case lisp.LSExpr, lisp.LArray, lisp.LBytes, lisp.LString:
 		return v.Len()
 	default:
@@ -839,7 +840,8 @@ func newContainerEnv(t *testing.T, ctx context.Context) *lisp.LEnv {
 func containerProbeBytes(i int) []byte {
 	b := make([]byte, 32)
 	for j := range b {
-		b[j] = byte(i*(j+1)*7 + i>>uint(j%8) + j*13)
+		// Deliberate truncation: these are driver bytes, not a number.
+		b[j] = byte(i*(j+1)*7 + i>>(j%8) + j*13)
 	}
 	return b
 }

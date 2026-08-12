@@ -427,16 +427,16 @@ func envStateFingerprint(env *lisp.LEnv) string {
 		if pkg == nil {
 			continue
 		}
-		fmt.Fprintf(names, "pkg:%s;", pkgName)
+		_, _ = fmt.Fprintf(names, "pkg:%s;", pkgName)
 		for _, sym := range pkg.SymbolNames() {
-			fmt.Fprintf(names, "sym:%s;", sym)
+			_, _ = fmt.Fprintf(names, "sym:%s;", sym)
 			v, _ := pkg.Symbol(sym)
 			vals = append(vals, v)
 		}
 	}
 	// The current package is state too: `in-package` is one of the few ways
 	// a program changes an environment without binding anything.
-	fmt.Fprintf(names, "cur:%s;", env.Runtime.Package.Name)
+	_, _ = fmt.Fprintf(names, "cur:%s;", env.Runtime.Package.Name)
 	return fmt.Sprintf("%016x/%s", names.Sum64(), valueFingerprint(vals))
 }
 
