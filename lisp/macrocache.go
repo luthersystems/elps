@@ -68,7 +68,12 @@ package lisp
 //
 //   - MacroCacheRuntime keys a plain map on the Runtime (single-threaded by
 //     the Runtime contract).  Memory is duplicated per runtime and a fresh
-//     runtime starts cold.
+//     runtime starts cold.  Its memory bound is the RUNTIME'S LIFETIME, not
+//     a cap: in the warm-pool topology program identity is stable and the
+//     table settles at a few hundred entries, but a long-lived runtime that
+//     keeps evaluating FRESH parses pins the dead parse trees its callsite
+//     keys point into, exactly as an uncapped shared table does.
+//     SetMacroCacheCap bounds it for that case (see storeRuntimeEntry).
 //   - MacroCacheShared uses one process-wide table (sync.Map, or an LRU
 //     under SetMacroCacheCap).  Cached expansions are sealed before they
 //     are published, mirroring the sealed-formals precedent
@@ -83,7 +88,7 @@ package lisp
 //
 // The POC default is MacroCacheOff; nothing changes unless a host opts in
 // via SetMacroCacheMode or the ELPS_MACRO_CACHE environment variable
-// (values: off, runtime, shared; ELPS_MACRO_CACHE_CAP bounds the shared
+// (values: off, runtime, shared; ELPS_MACRO_CACHE_CAP bounds either
 // table).
 
 import (
@@ -111,7 +116,7 @@ const (
 //elpsvet:allow process-wide cache configuration; scalar atomics, no LVals
 var macroCacheConfig struct {
 	mode atomic.Int32
-	cap  atomic.Int64 // shared-table entry cap; <=0 = unbounded
+	cap  atomic.Int64 // per-table entry cap; <=0 = unbounded
 }
 
 // SetMacroCacheMode selects the macro-expansion cache mode for the process.
@@ -127,9 +132,22 @@ func GetMacroCacheMode() MacroCacheMode {
 	return MacroCacheMode(macroCacheConfig.mode.Load())
 }
 
-// SetMacroCacheCap bounds the process-shared cache to n entries with LRU
-// eviction.  n <= 0 removes the bound.  Takes effect for subsequent stores;
-// an over-capacity table evicts down as new entries arrive.
+// SetMacroCacheCap bounds each macro-expansion cache table to n entries.
+// n <= 0 removes the bound.  Takes effect for subsequent stores; an
+// over-capacity shared table evicts down as new entries arrive.
+//
+// The two tables enforce the bound differently, because their failure modes
+// differ.  The process-shared table evicts LRU: it is long-lived and holds
+// a mixture of live and dead program identities, so recency is meaningful.
+// A per-runtime table drops wholesale when it reaches the bound - its
+// lifetime is the runtime's, and the only topology where it can grow
+// without limit is a runtime that keeps evaluating fresh parses, where
+// every old key is a dead parse and recency says nothing.  Both count
+// discarded entries in the eviction counter.
+//
+// Neither table is bounded by default.  A cap is a policy decision for the
+// host: in the warm-pool topology this cache is built for, the working set
+// is a few hundred entries and any sane bound never fires.
 func SetMacroCacheCap(n int) {
 	macroCacheConfig.cap.Store(int64(n))
 }
@@ -481,6 +499,30 @@ func runtimeMacroCache(rt *Runtime) map[*LVal]*macroCacheEntry {
 	return rt.macroCache
 }
 
+// storeRuntimeEntry publishes an entry into the per-runtime table, honouring
+// the entry cap set by SetMacroCacheCap / ELPS_MACRO_CACHE_CAP.
+//
+// The per-runtime table's bound is a DROP, not an LRU.  Its lifetime is the
+// runtime's, so the bound exists for one topology - a long-lived runtime
+// that keeps evaluating fresh parses (a REPL, a host that hot-reloads
+// programs), where the callsite keys pin dead parse trees exactly as an
+// uncapped shared table does.  In that topology recency carries no
+// information (the old keys are dead parses that will never be evaluated
+// again), so paying for LRU bookkeeping on an unsynchronized hot-path map
+// would buy nothing.  In the topology the cache is FOR - a warm runtime
+// with stable program identity - the working set is a few hundred entries
+// and the bound never fires.
+func storeRuntimeEntry(rt *Runtime, callsite *LVal, entry *macroCacheEntry) {
+	m := runtimeMacroCache(rt)
+	if limit := macroCacheConfig.cap.Load(); limit > 0 && int64(len(m)) >= limit {
+		if _, replacing := m[callsite]; !replacing {
+			macroCacheStats.evictions.Add(int64(len(m)))
+			clear(m)
+		}
+	}
+	m[callsite] = entry
+}
+
 // macroCallCached wraps macroCall with per-callsite expansion caching (and
 // optional instrumentation).  callsite is the original s-expression node
 // being evaluated; fun/args are exactly what macroCall would receive.
@@ -528,7 +570,7 @@ func (env *LEnv) macroCallCached(ctx context.Context, callsite, fun, args *LVal)
 	if mode == MacroCacheShared {
 		sharedMacroCache.store(callsite, entry)
 	} else {
-		runtimeMacroCache(env.Runtime)[callsite] = entry
+		storeRuntimeEntry(env.Runtime, callsite, entry)
 	}
 	macroCacheStats.stores.Add(1)
 	return r

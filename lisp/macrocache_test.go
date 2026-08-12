@@ -376,6 +376,43 @@ func TestMacroCacheLRUCap(t *testing.T) {
 	}
 }
 
+// TestMacroCacheRuntimeCap proves the per-runtime table honours the entry
+// cap.  Without a bound the per-runtime cache is scoped only by the
+// runtime's LIFETIME - a long-lived runtime evaluating fresh parses pins
+// the dead parse trees its callsite keys point into, exactly like an
+// uncapped shared table.  The bound is a wholesale drop, so the assertion
+// is on the standing entry count, not on which entries survive.
+func TestMacroCacheRuntimeCap(t *testing.T) {
+	withMacroCacheMode(t, lisp.MacroCacheRuntime)
+	const limit = 8
+	lisp.SetMacroCacheCap(limit)
+	env := newMacroCacheTestEnv(t)
+	evalStr(t, env, `(defmacro op (a b) (quasiquote (+ (unquote a) (unquote b))))`)
+	// Each iteration parses a fresh callsite: the parse-churn shape.
+	for i := range 40 {
+		evalStr(t, env, fmt.Sprintf(`(defun p%d () (op %d 1))`, i, i))
+		for range 3 {
+			if got := evalStr(t, env, fmt.Sprintf(`(p%d)`, i)); got.Int != i+1 {
+				t.Fatalf("p%d: %v", i, got)
+			}
+		}
+		entries, _ := lisp.RuntimeMacroCacheFootprint(env.Runtime)
+		if entries > limit {
+			t.Fatalf("per-runtime cap=%d exceeded after %d callsites: %d entries",
+				limit, i+1, entries)
+		}
+	}
+	if st := lisp.SnapshotMacroCacheStats(); st.Evictions == 0 {
+		t.Fatalf("expected the per-runtime bound to have discarded entries: %+v", st)
+	}
+	// Correctness is unaffected by dropping: warm callsites re-expand.
+	for i := range 40 {
+		if got := evalStr(t, env, fmt.Sprintf(`(p%d)`, i)); got.Int != i+1 {
+			t.Fatalf("after eviction p%d: %v", i, got)
+		}
+	}
+}
+
 // TestMacroCachePurityProver pins prover verdicts on representative macro
 // shapes (admitted and rejected).
 func TestMacroCachePurityProver(t *testing.T) {

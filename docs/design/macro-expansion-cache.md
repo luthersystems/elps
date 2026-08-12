@@ -78,9 +78,7 @@ template instantiation:
 - every unquote is a bare formal parameter or a gensym-bound local.
 
 Rejected outright: free symbol reads, computed unquotes, nested quasiquote,
-any side-effecting form, and a gensym escaping under `quote` (§4). Verdicts
-are memoized process-wide keyed by the macro's sealed, parse-shared formals
-node.
+any side-effecting form, and a gensym escaping under `quote` (§4).
 
 The prover's unquote recognition must stay a *superset* of the evaluator's.
 `getUnquoteType` matches the operator name on an `LSymbol` head and ignores
@@ -93,15 +91,90 @@ to `getUnquoteType` has to be mirrored in `pureMacroTemplateQ`.
 This tier is what captures the `when`/`unless`/`default` utility layer that
 dominates real request paths (§7).
 
-**Known boundary.** The prover recognizes its structural operators — `if`,
-`let`, `let*`, `progn`, `quasiquote`, `quote`, `unquote`,
-`unquote-splicing`, `gensym` — *by name*, assuming they resolve to the
-kernel bindings. A program that shadows one of those names with different
-semantics inside the macro's own package could therefore fool the analysis.
-This is the same assumption quasiquote processing itself already makes
-(`getUnquoteType` matches `"unquote"` by name), and the pattern is outside
-the supported embedder model — but it is an assumption, not a proof, and a
-reviewer should weigh it deliberately rather than discover it later.
+### 3.2.1 The syntactic verdict is only half the admission test
+
+Matching an operator by name proves nothing on its own. `if`, `let`, `let*`,
+`progn`, `quasiquote` and `gensym` are ordinary bindings in ELPS, and
+rebinding one of them changes what a macro body does without changing a
+character of its syntax. Every such shadow was demonstrated to produce a
+**wrong answer** rather than a misclassification: the shapes below return
+`'(1 2 3)` with the cache off and `'(1 1 1)` with it on.
+
+| shadow | mechanism |
+|---|---|
+| `gensym` → impure function | `(gensym)` was the one expression the grammar admitted *without proving it*, short-circuited on the name; the binding value was never examined |
+| `if`, `progn`, `let`, `let*`, `quasiquote` | the operator switch matched the head symbol by name, admitting an impure body |
+| any of the above via `set`, after the macro was proven | a verdict cached against an environment cannot see a later rebinding |
+| any of the above inherited through `use-package` | the shadow need not live in the macro's own package |
+
+So admission is split in two:
+
+- **Syntactic verdict** (`macroPurity.pure`) — a function of the macro's
+  sealed, immutable formals and body nodes and *nothing else*. This is what
+  is memoized process-wide, keyed by the formals node.
+- **Name-resolution obligations** (`macroPurity.defRefs` / `.callRefs`) —
+  the operator spellings the proof interpreted, each of which must resolve
+  to the kernel binding. These are environment dependent, so they are
+  **re-checked on every dispatch** and never memoized. Re-checking is also
+  what makes a later `(set 'if ...)` take effect.
+
+Body operators resolve in the macro's **defining** environment, where the
+body evaluates. The template's binder syntax resolves at the **callsite**,
+where the expansion evaluates — see the boundary note below. A spelling that
+does not resolve to the kernel binding simply makes the macro uncacheable;
+refusing to cache is always sound.
+
+Two names the prover interprets carry *no* obligation, deliberately:
+
+- **`quote`** (and the parser's own quote flags / `LQuote` wrappers).
+  Reading a form as a quote only ever *raises* the quote depth, and quote
+  depth is used in exactly one place: rejecting a gensym that escapes as
+  data. Mis-reading a shadowed `quote` as the kernel one can only reject a
+  macro that might have been admissible — never admit one.
+- **`unquote` / `unquote-splicing`.** These are not bindings at all;
+  quasiquote consumes them as syntax, matching the name on an `LSymbol`
+  head. Requiring the enclosing `quasiquote` to *be* the kernel quasiquote —
+  which the defining-environment obligations do — is what licenses that
+  reading.
+
+The memo key was itself a defeat: keyed on the formals node while the checks
+were environment dependent, a verdict computed in an unshadowed environment
+licensed caching in a shadowed one (one sealed parse, two runtimes). Keying
+on what the verdict actually depends on — pure syntax — removes the leak
+rather than documenting it.
+
+Cost of the narrowing: **zero measured reuse**. The committed synthetic
+corpus reproduces bit-identically before and after (706 entries, 5,000 hits,
+98.0% hit rate), and no shape in the admitted tier acquires an obligation
+that a normal program fails: a `when`-class macro records one
+(`quasiquote`), a `default`-class macro four (`quasiquote`, `let*`, `gensym`
+in the defining environment; `let*` at the callsite).
+
+**Remaining boundary.** The obligations cover the operators the prover
+*interprets*. They do not cover the **content** of a template, which is
+output code evaluated at the callsite: `(quasiquote (if ...))` is inert to
+the prover and reused verbatim, so whatever `if` means at the callsite it
+means identically with and without the cache. The one place template content
+*is* interpreted is the binder-syntax discharge — the prover reads
+`[,g expr]` inside a template `let`/`let*`/`labels`/`flet`/`lambda` as
+binder syntax rather than data, which is what admits a gensym in a binding
+position. That is a claim about code that runs at the callsite, so those
+spellings become callsite obligations whenever the macro mints a gensym.
+A macro defined in a clean package and called from one that rebinds `let*`
+to something that treats its binding list as data was a live defeat before
+that check existed (`TestMacroCacheShadowedBinderAtCallsiteNotCached`).
+
+Beyond that: the prover reasons about the macro's own body, not about what
+the *arguments* at a callsite evaluate to (they are spliced by reference,
+identically either way) and not about native macros, which remain a
+hand-audited whitelist rather than a proof.
+
+Tests: `lisp/macrocache_shadow_test.go` — eight defeat shapes, each asserted
+behaviourally (the cached and uncached evaluations of the same program must
+agree; nothing inspects the classification), plus pins on which obligations
+each admitted shape records and on the FID formats the admission path builds
+by hand. Red-proof: neutering `opsResolveToKernel` fails all eight with
+wrong answers.
 
 ### 3.3 Everything else bypasses
 
@@ -158,11 +231,16 @@ Two scopes, selected by `MacroCacheMode`:
 
 A cross-runtime *hit* requires cross-runtime-shared sealed callsites, which
 is precisely the embedder parse-cache aliasing the sealing work exists to
-make safe. Under `-tags elpscheck` the ownership checker forbids
-cross-runtime AST sharing outright, so a cross-runtime hit is unreachable in
-checked builds by construction — a shared callsite would panic at eval entry
-before macro dispatch is ever reached. Within one runtime the checker is
-satisfied trivially.
+make safe — and which the `-tags elpscheck` ownership checker **permits**,
+because sealed nodes are exempt from it by design (that exemption is the
+whole point of sealing). The cross-runtime cache tests therefore RUN under
+the tag rather than skipping; an earlier revision skipped them and offered
+the skip as proof that a cross-runtime hit could not trip the checker, which
+was an assumption stated as a result. Their passing is backed by an executed
+positive control: the same two-runtime program shared *unsealed* must panic
+with an ownership violation
+(`TestMacroCacheCrossRuntimeCheckerStillFires`). Within one runtime the
+checker is satisfied trivially.
 
 ## 7. Where the reuse actually is
 
@@ -259,9 +337,9 @@ passes.
 
 Consequences:
 
-- **Per-runtime mode is the safe default recommendation.** It is
-  structurally immune — the cache dies with the runtime — and it is at least
-  as fast as shared mode.
+- **Per-runtime mode is the safe default recommendation.** Its footprint is
+  scoped to one runtime and released with it, and it is at least as fast as
+  shared mode. That scoping is a lifetime bound, not immunity — see below.
 - **The shared table must never run uncapped** outside tests. Note that
   entries published while the table was unbounded carry no LRU bookkeeping;
   `SetMacroCacheCap` adopts them (oldest-first) the next time a bounded
@@ -269,12 +347,18 @@ Consequences:
   bounds it. Without that adoption the eviction loop could only reach the
   entry it had just pushed, so every new store evicted itself while the
   untracked backlog stayed pinned forever — neither bound nor cache.
-- **Per-runtime mode has no cap and no eviction.** Its immunity is the
-  runtime's lifetime, not a bound: a long-lived runtime that keeps
+- **Per-runtime mode's bound is the runtime's LIFETIME**, and that is the
+  precise claim — not "structurally immune". A long-lived runtime that keeps
   evaluating *fresh parses* (a REPL, a host that hot-reloads programs) pins
-  dead parse trees exactly like uncapped shared mode. It is immune in the
+  dead parse trees exactly like uncapped shared mode. It is safe in the
   warm-pool topology because program identity there is stable, not because
-  the map is bounded.
+  the map was bounded. `SetMacroCacheCap` / `ELPS_MACRO_CACHE_CAP` now bound
+  it too, for hosts whose runtimes outlive their programs. The per-runtime
+  bound is a wholesale **drop**, not an LRU: the table is an unsynchronized
+  hot-path map, and in the only topology where it can grow without limit
+  every old key is a dead parse, so recency carries no information worth
+  paying for. Correctness is unaffected — a dropped callsite re-expands
+  (`TestMacroCacheRuntimeCap`, red-proven).
 - A weak-pointer keyed table (Go 1.24 `weak`) would remove the failure mode
   structurally, and is the natural next iteration if shared mode is wanted
   as more than an experiment.
