@@ -238,6 +238,88 @@ func TestCopySharesFunctionAndNativeLeaves(t *testing.T) {
 	}
 }
 
+// TestCopySharedClosureKeepsTheOriginalsBindings pins the consequence of
+// sharing LFun leaves that the docstring used to deny ("they hold no
+// lisp-mutable state").  A closure captures BINDINGS, not values, so a
+// lambda carried into the copy still reads and writes the containers its
+// defining scope holds: the copy's own method mutates the ORIGINAL, and a
+// mutation applied to the copy is invisible to it.
+//
+// This is not a bug that can be fixed at this layer — copying the LFun
+// would copy a pointer to the same *LEnv — so the behaviour is pinned here
+// and warned about in docs/func.md.  If a future change makes `copy` fork
+// captured environments, this test is the one that must be rewritten
+// deliberately rather than silently.
+func TestCopySharedClosureKeepsTheOriginalsBindings(t *testing.T) {
+	env := copyTestEnv(t)
+	mustEval(t, env, `
+(defun make-obj ()
+  (let ([state (vector 0)])
+    (sorted-map "bump"  (lambda () (append! state 1))
+                "state" state)))`)
+	mustEval(t, env, `(set 'orig (make-obj))`)
+	mustEval(t, env, `(set 'cp (copy orig))`)
+
+	// Anti-vacuity: the data half of the object really was copied.
+	orig := env.GetGlobal(lisp.Symbol("orig"))
+	cp := env.GetGlobal(lisp.Symbol("cp"))
+	if orig.MapGet(lisp.String("state")) == cp.MapGet(lisp.String("state")) {
+		t.Fatalf("anti-vacuity: the copy shares the original's state vector")
+	}
+
+	// The copy's own method writes what the ORIGINAL closes over.
+	mustEval(t, env, `((get cp "bump"))`)
+	if got := str(mustEval(t, env, `(get cp "state")`)); got != `(vector 0)` {
+		t.Errorf("the copy's method reached the copy's state: %s", got)
+	}
+	if got := str(mustEval(t, env, `(get orig "state")`)); got != `(vector 0 1)` {
+		t.Errorf("the copy's method did not reach the original's state: %s", got)
+	}
+
+	// And a mutation applied to the copy is invisible to the copy's method.
+	mustEval(t, env, `(append! (get cp "state") 7)`)
+	mustEval(t, env, `((get cp "bump"))`)
+	if got := str(mustEval(t, env, `(get cp "state")`)); got != `(vector 0 7)` {
+		t.Errorf("the copy's state changed behind the mutation: %s", got)
+	}
+	if got := str(mustEval(t, env, `(get orig "state")`)); got != `(vector 0 1 1)` {
+		t.Errorf("the second call did not land on the original: %s", got)
+	}
+}
+
+// TestCopyDoesNotPreserveBackingArraySharing pins the limit of "internal
+// sharing is preserved": preservation is at the *LVal level and no lower.
+// cdr, rest and (slice 'list …) return a DISTINCT *LVal over the SAME Cells
+// backing array, and that alias does not survive a copy — each value lands
+// on its own backing array.  The copy therefore has strictly fewer
+// accidental aliases than the original, which is the safe direction, but it
+// is a real behavioural difference and callers must not rely on the alias.
+func TestCopyDoesNotPreserveBackingArraySharing(t *testing.T) {
+	env := copyTestEnv(t)
+
+	// In the original, sorting the cdr in place is visible through the head.
+	mustEval(t, env, `(set 'l (list 9 3 1 2))`)
+	mustEval(t, env, `(stable-sort < (cdr l))`)
+	if got := str(env.GetGlobal(lisp.Symbol("l"))); got != `'(9 1 2 3)` {
+		t.Fatalf("anti-vacuity: cdr does not share the backing array any more: %s", got)
+	}
+
+	// After a copy the two are independent.
+	mustEval(t, env, `(set 'l2 (list 9 3 1 2))`)
+	mustEval(t, env, `(set 'cp (copy (list l2 (cdr l2))))`)
+	mustEval(t, env, `(stable-sort < (nth cp 1))`)
+	if got := str(mustEval(t, env, `(nth cp 1)`)); got != `'(1 2 3)` {
+		t.Errorf("the copied cdr did not sort in place: %s", got)
+	}
+	if got := str(mustEval(t, env, `(nth cp 0)`)); got != `'(9 3 1 2)` {
+		t.Errorf("the copied head still shares backing with the copied cdr: %s", got)
+	}
+	// The original is untouched by any of it.
+	if got := str(env.GetGlobal(lisp.Symbol("l2"))); got != `'(9 3 1 2)` {
+		t.Errorf("mutating the copy reached the original: %s", got)
+	}
+}
+
 // TestCopyPreservesInternalAliasingAndCycles asserts the walker's
 // correspondence table works in copy mode: a value reachable twice is
 // copied once, and a cycle becomes the same cycle in the copy — pointing

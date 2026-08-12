@@ -17,13 +17,27 @@ package lisp
 // are shared by reference instead of rejected:
 //
 //   - LFun: lisp code has no way to mutate a function's internals (its
-//     payload fields are unexported — issue #382), and the environment the
-//     closure captured is the environment the copy runs in.  A shared
-//     function value is therefore indistinguishable from a copied one, and
-//     refusing it would make `(copy m)` fail on any map that happens to
-//     hold a callback.
+//     payload fields are unexported — issue #382), and refusing functions
+//     would make `(copy m)` fail on any map that happens to hold a
+//     callback.
+//
+//     Sharing an LFun is NOT equivalent to copying it, and the difference
+//     is observable: a closure captures BINDINGS, not values, so a lambda
+//     carried into the copy keeps reading and writing the containers its
+//     defining scope holds.  For the object-with-methods idiom — a map of
+//     lambdas over a shared `let` binding — `((get (copy m) "bump"))`
+//     mutates what the ORIGINAL closes over, and a mutation applied to the
+//     copy is invisible to the copy's own methods.  Nothing at this layer
+//     can fix that: copying the LFun would copy a pointer to the same
+//     *LEnv, and copying the environment is a different primitive (a fork,
+//     not a copy) with its own semantics to settle.  Callers who need an
+//     independent object must rebuild it through its constructor.
+//     TestCopySharedClosureKeepsTheOriginalsBindings pins the behaviour and
+//     docs/func.md warns lisp authors about it.
+//
 //   - LNative: an opaque Go value the kernel cannot clone.  Sharing it is
 //     the same guarantee the rest of the language already gives it.
+//
 //   - The three singletons (Nil(), Bool(true), Bool(false)) are shared,
 //     immutable, and unmutable from lisp; copying them would allocate a
 //     distinct value with no observable difference (see lisp/singleton.go).
@@ -34,6 +48,22 @@ package lisp
 // Internal aliasing is preserved exactly as detach preserves it: a value
 // reachable along two paths is copied once, and a cycle becomes the same
 // cycle in the copy rather than infinite recursion.
+//
+// That preservation is at the *LVal level and no lower.  Two DISTINCT
+// *LVals that share a Cells backing array — what cdr, rest and (slice
+// 'list …) produce, and what lets `append 'vector` write a sibling's spare
+// capacity — land in the copy with separate backing arrays, so an in-place
+// write through one is no longer visible through the other:
+//
+//	(set 'l (list 9 3 1 2))
+//	(stable-sort < (cdr l))     ; l becomes '(9 1 2 3)
+//	(set 'c (copy (list l (cdr l))))
+//	(stable-sort < (nth c 1))   ; (nth c 0) is unchanged
+//
+// The copy has strictly fewer accidental aliases than the original, which
+// is the safe direction, but it is not "sharing preserved" and callers
+// must not rely on a backing-array alias surviving a copy.
+// TestCopyDoesNotPreserveBackingArraySharing pins it.
 //
 // The error return survives only for shapes lisp code cannot hold — the
 // internal marker types and an unrecognized Native payload — so that a

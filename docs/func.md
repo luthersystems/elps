@@ -420,9 +420,9 @@ elps> (concat 'list '("A" "B" "C") '(1 2 3))
 Returns a deep copy of a value that shares no storage with it. Lists, vectors,
 sorted-maps and bytes are rebuilt with fresh backing, recursively, so mutating
 the copy at any depth is never observable through the original. Function and
-native values are shared by reference — they hold no lisp-mutable state — and
-strings and numbers are immutable values. Sharing inside the value (including
-cycles) is preserved within the copy.
+native values are shared by reference rather than copied, and strings and
+numbers are immutable values. Sharing between values inside the input is
+preserved in the copy, including cycles.
 
 `copy` is how lisp code takes ownership of data whose provenance it does not
 control. Its result is always mutable, even when the input is (or is derived
@@ -445,6 +445,51 @@ elps> (append! (get (copy orig) "k") 99)
 elps> orig                          ; deep: the nested vector was copied too
 (sorted-map "k" (vector 1 2))
 ```
+
+### Two things `copy` does not do
+
+**It does not copy functions, so it does not copy an object's methods.** A
+lambda captures *bindings*, not values: a lambda carried into the copy keeps
+reading and writing the containers its defining scope holds. Copying a
+map-of-lambdas "object" therefore produces a copy whose own methods operate on
+the original.
+
+```Lisp
+(defun make-obj ()
+  (let ([state (vector 0)])
+    (sorted-map "bump"  (lambda () (append! state 1))
+                "state" state)))
+
+(set 'm (make-obj))
+(set 'c (copy m))
+((get c "bump"))        ; the COPY's method...
+(get c "state")         ; => (vector 0)    ...did not touch the copy
+(get m "state")         ; => (vector 0 1)  ...it mutated the original
+```
+
+To get an independent object, call its constructor again (`(make-obj)`); there
+is no primitive that copies a captured environment.
+
+**It does not preserve backing-array sharing.** `cdr`, `rest` and `(slice
+'list …)` return a value that shares the original's backing array, so an
+in-place mutation through one is visible through the other. That aliasing does
+not survive a copy — the two values land on separate backing arrays.
+
+```Lisp
+(set 'l (list 9 3 1 2))
+(stable-sort < (cdr l))   ; sorts in place, through the shared backing
+l                         ; => '(9 1 2 3)   the head sees it
+
+(set 'l2 (list 9 3 1 2))
+(set 'c (copy (list l2 (cdr l2))))
+(stable-sort < (nth c 1)) ; => '(1 2 3)     in the copy they are independent
+(nth c 0)                 ; => '(9 3 1 2)   the head does NOT see it
+```
+
+The copy has strictly fewer accidental aliases than the original, which is the
+safe direction, but code must not rely on such an alias surviving `copy`.
+
+### No `sealed?`
 
 There is deliberately no `sealed?` predicate to pair with `copy`. Whether a
 value came from program text is not the same question as whether you own it —

@@ -204,10 +204,14 @@ var (
 			lists, vectors, sorted-maps and bytes are rebuilt with fresh
 			backing, recursively, so mutating the copy at any depth cannot
 			be observed through the original. Function and native values
-			are shared by reference (they hold no lisp-mutable state);
-			strings and numbers are immutable values. Internal sharing --
-			including cycles -- is preserved within the copy. Use copy to
-			take ownership of data whose provenance you do not control:
+			are shared by reference, not copied: a lambda carried into the
+			copy still reads and writes the bindings it captured, so
+			calling one can be observed through the original. Strings and
+			numbers are immutable values. Sharing between values inside the
+			input is preserved in the copy, including cycles; sharing of a
+			backing array between distinct values -- what cdr, rest and
+			slice produce -- is not. Use copy to take ownership of data
+			whose provenance you do not control:
 			the result is always mutable, even when the input is (or came
 			from) a quoted program literal.`},
 		{"insert-index", Formals("type-specifier", "seq", "index", "item"), builtinInsertIndex,
