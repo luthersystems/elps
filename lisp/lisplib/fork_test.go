@@ -183,13 +183,32 @@ func TestForkLambdaFIDContinuity(t *testing.T) {
 	if len(inherited) == 0 {
 		t.Fatalf("no inherited FIDs; test is vacuous")
 	}
+	// Mint a run of lambdas, not one.  A single lambda is not a sensitive
+	// probe: with the env-ID counter reset the fork's IDs restart at 1, and
+	// the first collision with an inherited "_fun<envID>" only shows up a
+	// few lambdas in (empirically the third, against this template's 248
+	// inherited FIDs) — a one-shot check passes on a broken fork.
+	//
+	// Uniqueness is asserted per side: a fork and its template are separate
+	// runtimes whose counters advance independently, so the two
+	// legitimately mint the same FID as each other.  FIDs only have to be
+	// unique within one runtime — the scope funNames tables and tail-call
+	// TerminalFID matching work in.
 	for name, e := range map[string]*lisp.LEnv{"fork": fork, "template": env} {
-		fun := e.LoadString("fid.lisp", `(lambda (x) (+ x 1))`)
-		if fun.Type != lisp.LFun {
-			t.Fatalf("%s lambda: %v", name, fun)
-		}
-		if fid := fun.FID(); inherited[fid] {
-			t.Errorf("%s post-fork lambda FID %q collides with inherited FID", name, fid)
+		minted := make(map[string]bool)
+		for i := range 8 {
+			fun := e.LoadString("fid.lisp", `(lambda (x) (+ x 1))`)
+			if fun.Type != lisp.LFun {
+				t.Fatalf("%s lambda %d: %v", name, i, fun)
+			}
+			fid := fun.FID()
+			if inherited[fid] {
+				t.Errorf("%s post-fork lambda %d FID %q collides with an inherited FID", name, i, fid)
+			}
+			if minted[fid] {
+				t.Errorf("%s minted FID %q twice", name, fid)
+			}
+			minted[fid] = true
 		}
 	}
 }

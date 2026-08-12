@@ -106,15 +106,37 @@ func TestForkQuiescenceInFlight(t *testing.T) {
 
 func TestForkCounterContinuity(t *testing.T) {
 	env := newForkTestEnv(t)
+	// Advance the gensym counter before forking.  A template that never
+	// gensym'd leaves both counters at zero, and "fork == template == 0"
+	// passes whether or not the counter is carried across — the check has
+	// to start from a non-zero template to mean anything.
+	minted := map[string]bool{}
+	for range 4 {
+		minted[env.Runtime.GenSym()] = true
+	}
+
 	fork, err := env.Fork()
 	if err != nil {
 		t.Fatalf("fork: %v", err)
+	}
+	if got, want := uint64(env.Runtime.numenv), uint64(1); got < want {
+		t.Fatalf("template env-ID counter is %d; continuity check would be vacuous", got)
+	}
+	if got, want := uint64(env.Runtime.numsym), uint64(1); got < want {
+		t.Fatalf("template gensym counter is %d; continuity check would be vacuous", got)
 	}
 	if got, want := uint64(fork.Runtime.numenv), uint64(env.Runtime.numenv); got != want {
 		t.Errorf("env-ID counter not continued: fork %d, template %d", got, want)
 	}
 	if got, want := uint64(fork.Runtime.numsym), uint64(env.Runtime.numsym); got != want {
 		t.Errorf("gensym counter not continued: fork %d, template %d", got, want)
+	}
+	// The behavioral form of gensym continuity: a name the fork mints must
+	// not be one the template already handed out before the fork.
+	for range 4 {
+		if name := fork.Runtime.GenSym(); minted[name] {
+			t.Errorf("fork re-minted the load-time gensym %q", name)
+		}
 	}
 
 	// Inherited FIDs: every FID recorded anywhere in the forked registry.
@@ -146,11 +168,6 @@ func TestForkCounterContinuity(t *testing.T) {
 		if inherited[fid] {
 			t.Errorf("post-fork lambda FID %q collides with an inherited FID", fid)
 		}
-	}
-
-	// Post-fork gensyms must not re-mint load-time gensym names.
-	if got, want := fork.Runtime.GenSym(), env.Runtime.GenSym(); got != want {
-		t.Errorf("gensym sequences diverged immediately after fork: fork %q, template %q", got, want)
 	}
 }
 
