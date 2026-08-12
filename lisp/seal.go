@@ -88,8 +88,11 @@ package lisp
 // symbols, strings and numbers.  Any other type (functions, arrays, maps,
 // bytes, errors, natives) was necessarily constructed at runtime; SealAST
 // stops without descending rather than freeze storage the evaluator
-// legitimately mutates.  Singletons (Nil/true/false) are skipped: they are
-// already immutable by decree and writing even a flag to one would race.
+// legitimately mutates.  Singletons (Nil/true/false) are born sealed
+// (lisp/singleton.go, issue #376), so the already-sealed check stops the
+// walk before the write; the explicit isSingleton guard stays as a
+// belt-and-braces statement of intent — writing even a flag to a shared
+// singleton would race.
 //
 // Sealing is idempotent, and an already-sealed node terminates the walk —
 // a sealed node's descendants are always sealed, so revisiting them is

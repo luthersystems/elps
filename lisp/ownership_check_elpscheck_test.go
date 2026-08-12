@@ -145,6 +145,80 @@ func TestOwnershipCheck_ResetForgets(t *testing.T) {
 	}
 }
 
+// TestOwnershipCheck_SealedNodesExempt pins allowlist entry 2 in both
+// directions (issue #372).
+//
+// The positive direction is the one with consequences: a SEALED node —
+// what a parse cache hands to every environment that evaluates the same
+// program — must cross runtimes freely.  Before the exemption this panicked
+// on the first shared node, which meant an embedder running the supported
+// substrate#375/#378 topology could not use checked mode at all.
+//
+// The negative direction is what keeps the checker worth having: an
+// UNSEALED node with otherwise identical shape must still trip.  Copy and
+// detach clear the flag on fresh storage, so the values that actually are
+// per-runtime storage stay covered.
+func TestOwnershipCheck_SealedNodesExempt(t *testing.T) {
+	envA := newOwnershipTestEnv()
+	envB := newOwnershipTestEnv()
+
+	sealed := QExpr([]*LVal{Int(1), Int(2), Int(3)})
+	sealed.SealAST()
+	if !sealed.IsSealed() {
+		t.Fatal("SealAST did not seal the node; this test would prove nothing")
+	}
+	if lerr := envA.Put(Symbol("shared"), sealed); lerr.Type == LError {
+		t.Fatalf("put sealed node in runtime A: %v", lerr)
+	}
+	if lerr := envB.Put(Symbol("shared"), sealed); lerr.Type == LError {
+		t.Fatalf("put sealed node in runtime B: %v", lerr)
+	}
+	if res := envA.Eval(sealed); res.Type == LError {
+		t.Fatalf("eval sealed node in runtime A: %v", res)
+	}
+	if res := envB.Eval(sealed); res.Type == LError {
+		t.Fatalf("eval sealed node in runtime B: %v", res)
+	}
+	for _, cell := range sealed.Cells {
+		if res := envB.Eval(cell); res.Type == LError {
+			t.Fatalf("eval sealed cell in runtime B: %v", res)
+		}
+	}
+
+	// The control: the same shape UNSEALED must still trip the gate,
+	// otherwise the pass above proves only that the checker is off.
+	unsealed := QExpr([]*LVal{Int(1), Int(2), Int(3)})
+	if lerr := envA.Put(Symbol("private"), unsealed); lerr.Type == LError {
+		t.Fatalf("put unsealed node in runtime A: %v", lerr)
+	}
+	expectOwnershipPanic(t, func() {
+		envB.Put(Symbol("stolen"), unsealed)
+	})
+}
+
+// TestOwnershipCheck_CopyOfSealedIsChecked pins the boundary the exemption
+// depends on: Copy() produces FRESH storage with the seal cleared, so a
+// copy of a shared program node is ordinary per-runtime storage and is
+// covered by the checker again.  If Copy ever started preserving the flag,
+// the exemption above would silently widen to cover runtime values.
+func TestOwnershipCheck_CopyOfSealedIsChecked(t *testing.T) {
+	envA := newOwnershipTestEnv()
+	envB := newOwnershipTestEnv()
+
+	sealed := QExpr([]*LVal{Int(4), Int(5)})
+	sealed.SealAST()
+	cp := sealed.Copy()
+	if cp.IsSealed() {
+		t.Fatal("Copy preserved the seal flag; the ownership exemption now covers runtime storage")
+	}
+	if lerr := envA.Put(Symbol("c"), cp); lerr.Type == LError {
+		t.Fatalf("put copy in runtime A: %v", lerr)
+	}
+	expectOwnershipPanic(t, func() {
+		envB.Put(Symbol("c"), cp)
+	})
+}
+
 // TestOwnershipCheck_SealedASTExempt pins the seal exemption (#379): a
 // sealed program tree evaluated — and Put — under two Runtimes must NOT
 // trip the checker.  Sealed nodes are frozen storage under copy-on-write
@@ -155,6 +229,14 @@ func TestOwnershipCheck_ResetForgets(t *testing.T) {
 // The second half is the red-proof that keeps the gate honest: an UNSEALED
 // tree of the exact same shape, crossing the same two runtimes, must still
 // panic.  The exemption is "sealed", not "looks like an AST".
+//
+// This is the EVAL-path sibling of TestOwnershipCheck_SealedNodesExempt
+// above, which drives the same exemption through Put and builds a quoted
+// QExpr rather than an SExpr with .quoted set.  The two arrived from
+// different branches (#379 item 2 and #372) and are deliberately both
+// kept: checkOwnership is called from LEnv.Put, LEnv.PutGlobal AND
+// env.eval, and a red-proof through only one of those call sites would not
+// notice the exemption going wrong at the other.
 func TestOwnershipCheck_SealedASTExempt(t *testing.T) {
 	envA := newOwnershipTestEnv()
 	envB := newOwnershipTestEnv()

@@ -1,9 +1,11 @@
 // Copyright © 2026 The ELPS authors
 
-// Command elpsvet is a go/analysis prototype with two rules: no
+// Command elpsvet is a go/analysis prototype with three rules: no
 // package-level variable may keep a *lisp.LVal reachable (elpsownership,
-// below), and no function may write a lisp.LVal field on a value it did not
-// construct (elpsfreshness, freshness.go).
+// below), no function may write a lisp.LVal field on a value it did not
+// construct (elpsfreshness, freshness.go), and no function may store a
+// runtime-owned *token.Location uncopied into a field of an escaping value
+// (elpsescape, escape.go).
 //
 // A package-level var whose type transitively contains *lisp.LVal is the
 // producer pattern behind issue #363 — `var builtins = []*libutil.Builtin{...}`
@@ -46,7 +48,7 @@ var analyzer = &analysis.Analyzer{
 	Run:  run,
 }
 
-func main() { multichecker.Main(analyzer, freshnessAnalyzer) }
+func main() { multichecker.Main(analyzer, freshnessAnalyzer, escapeAnalyzer) }
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	for _, file := range pass.Files {
