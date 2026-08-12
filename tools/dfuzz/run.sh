@@ -50,8 +50,14 @@ for ((b = 0; b < BLOCKS; b++)); do
 		rc_overall=2
 		echo "!!! PROCESS-FATAL CRASH in block $b (seeds $start..$((start + SIZE - 1)))"
 		echo "!!! isolating the seed single-threaded"
-		"$BIN" -start "$start" -n "$SIZE" -workers 1 -trace "$@" 2>"$WORKDIR/trace-$b.err" >/dev/null
-		echo "!!! last seed attempted: $(grep -c . <"$WORKDIR/trace-$b.err" >/dev/null && tail -n 20 "$WORKDIR/trace-$b.err" | grep '^TRY seed=' | tail -1)"
+		if [ "${DFUZZ_ISOLATE:-1}" = "1" ]; then
+			"$BIN" -start "$start" -n "$SIZE" -workers 1 -trace "$@" 2>"$WORKDIR/trace-$b.err" >/dev/null
+			echo "!!! last seed attempted: $(grep '^TRY seed=' "$WORKDIR/trace-$b.err" | tail -1)"
+			echo "!!! NOTE: a value built through corrupted memory is not stable between"
+			echo "!!!       runs -- the same prefix crashed at seed 1247 once and 614 the"
+			echo "!!!       next time.  Treat the seed as a pointer to the block, not as a"
+			echo "!!!       reproducer, and reduce it by hand.  DFUZZ_ISOLATE=0 skips this."
+		fi
 		;;
 	*)
 		echo "!!! dfuzz exited $rc"
