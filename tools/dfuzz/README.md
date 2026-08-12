@@ -213,6 +213,22 @@ nondeterminism. Every divergence this tool reports rests on one interpreter
 given one program producing one answer; sampling turns that assumption into an
 assertion.
 
+## Red-proof
+
+A clean differential run proves nothing on its own: an oracle that cannot fail
+is indistinguishable from an oracle that is not looking. `redproof.sh` injects
+the exact defect class the harness exists to catch — `reverse` reversing its
+input in place as well as returning a reversed copy, written as a raw slice
+write so it goes around the copy-on-write guards the way a real regression
+would, on a builtin no allowlist rule names.
+
+```sh
+tools/dfuzz/redproof.sh /tmp/dfuzz-red
+```
+
+Measured: 2 of the 41 seeds and 94 of 2,041 generated programs report it, in 18
+distinct signatures, and the allowlist excuses none of them.
+
 ## Seed corpus
 
 `corpus.go` holds hand-written seeds covering the shapes above. They are
