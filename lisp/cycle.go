@@ -121,6 +121,7 @@ func strictCycleGuard() cycleGuard {
 // unwind.
 func (g cycleGuard) descend(v *LVal) (cycleGuard, bool) {
 	g.depth++
+	probeRecord("value", g.depth, &probeMaxValueDepth, &probeValueDescends)
 	if !g.strict && g.depth < cycleGuardDepth {
 		return g, false
 	}
@@ -216,6 +217,7 @@ func (g pairGuard) descend(a, b *LVal) (pairGuard, bool) {
 			return g, true
 		}
 		g.depth++
+		probeRecord("pair", g.depth, &probeMaxPairDepth, &probePairDescends)
 		if g.depth < cycleGuardDepth {
 			return g, false
 		}
