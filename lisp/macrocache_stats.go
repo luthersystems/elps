@@ -151,11 +151,11 @@ func treeBytes(v *LVal, exclude, counted map[*LVal]bool) int64 {
 
 //elpsvet:allow instrumentation state; enabled flag + counters keyed by callsite pointer, never mutates the keys
 var macroExpandStats struct {
-	enabled  atomic.Bool
 	sites    sync.Map // *LVal (callsite) -> *macroSiteStat
-	events   atomic.Int64
 	dumpPath string
+	events   atomic.Int64
 	dumpMu   sync.Mutex
+	enabled  atomic.Bool
 }
 
 type macroSiteStat struct {
@@ -221,8 +221,8 @@ func dumpMacroStatsFile() {
 	if err != nil {
 		return
 	}
-	defer f.Close()
 	_ = WriteMacroExpansionStats(f)
+	_ = f.Close()
 }
 
 // FlushMacroExpansionStats writes the per-callsite table to the

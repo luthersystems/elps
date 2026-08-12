@@ -54,7 +54,7 @@ func requestMix(routes int) []string {
 		`(sorted-map)`,
 	}
 	var mix []string
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		route := (i * 37) % routes
 		mix = append(mix, fmt.Sprintf(`(dispatch "route-%d" %s)`, route, reqs[i%len(reqs)]))
 	}
@@ -76,7 +76,7 @@ func TestCorpusShape(t *testing.T) {
 		whenSites += strings.Count(f.Content, "(s-when ")
 		defaultSites += strings.Count(f.Content, "(s-default ")
 		getdefSites += strings.Count(f.Content, "(get-default ")
-		for w := 0; w < 7; w++ {
+		for w := range 7 {
 			wrapperSites += strings.Count(f.Content, fmt.Sprintf("(def-w%d route-", w))
 		}
 	}
@@ -129,7 +129,7 @@ func TestCorpusModeEquivalence(t *testing.T) {
 		loadCorpus(t, env, files)
 		var rendered []string
 		// Two passes so cached expansions are reused at least once.
-		for pass := 0; pass < 2; pass++ {
+		for range 2 {
 			for _, call := range mix {
 				v := env.LoadString("dispatch.lisp", call)
 				if v.Type == lisp.LError {
@@ -177,7 +177,7 @@ func TestCorpusHitRate(t *testing.T) {
 	t.Logf("after load: %+v", loadStats)
 	mix := requestMix(routes)
 	const rounds = 50
-	for i := 0; i < rounds; i++ {
+	for range rounds {
 		for _, call := range mix {
 			v := env.LoadString("dispatch.lisp", call)
 			if v.Type == lisp.LError {
@@ -249,7 +249,7 @@ func BenchmarkDispatch(b *testing.B) {
 				}
 			}
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for i := 0; b.Loop(); i++ {
 				c := calls[i%len(calls)]
 				if v := env.Eval(c); v.Type == lisp.LError {
 					b.Fatalf("dispatch: %v", v)

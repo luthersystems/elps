@@ -106,7 +106,7 @@ func pureMacroExpr(e *LVal, scope map[string]symKind) bool {
 		// Runtime-constructed body; no shared identity, no proof.
 		return false
 	}
-	if e.Quoted || e.Type == LQuote {
+	if e.quoted || e.Type == LQuote {
 		// Fully-quoted constant data: deterministic expansion content.
 		return true
 	}
@@ -123,7 +123,7 @@ func pureMacroExpr(e *LVal, scope map[string]symKind) bool {
 			return true
 		}
 		head := e.Cells[0]
-		if head.Type != LSymbol || head.Quoted {
+		if head.Type != LSymbol || head.quoted {
 			return false
 		}
 		switch kernelOp(head.Str) {
@@ -197,8 +197,8 @@ func pureMacroLet(e *LVal, scope map[string]symKind) bool {
 }
 
 func isGensymCall(v *LVal) bool {
-	return v.Type == LSExpr && !v.Quoted && len(v.Cells) == 1 &&
-		v.Cells[0].Type == LSymbol && !v.Cells[0].Quoted &&
+	return v.Type == LSExpr && !v.quoted && len(v.Cells) == 1 &&
+		v.Cells[0].Type == LSymbol && !v.Cells[0].quoted &&
 		kernelOp(v.Cells[0].Str) == "gensym"
 }
 
@@ -225,7 +225,7 @@ func pureMacroTemplate(t *LVal, scope map[string]symKind, quoteDepth int) bool {
 // returns the unwrapped node.
 func templateQuoteLevels(t *LVal) (*LVal, int) {
 	levels := 0
-	if t.Quoted {
+	if t.quoted {
 		levels++
 	}
 	for t.Type == LQuote {
@@ -258,14 +258,14 @@ func pureMacroTemplateQ(t *LVal, scope map[string]symKind, quoteDepth int, synta
 		return true
 	}
 	head := t.Cells[0]
-	if head.Type == LSymbol && !head.Quoted {
+	if head.Type == LSymbol && !head.quoted {
 		switch head.Str {
 		case "unquote", "unquote-splicing":
 			if len(t.Cells) != 2 {
 				return false
 			}
 			arg := t.Cells[1]
-			if arg.Type != LSymbol || arg.Quoted {
+			if arg.Type != LSymbol || arg.quoted {
 				return false // computed unquote: not provably pure
 			}
 			kind, ok := scope[arg.Str]

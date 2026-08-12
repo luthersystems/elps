@@ -154,7 +154,7 @@ func TestMacroCacheSharedConcurrent(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan string, 2)
-	for g := 0; g < 2; g++ {
+	for range 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -171,7 +171,7 @@ func TestMacroCacheSharedConcurrent(t *testing.T) {
 					return
 				}
 			}
-			for i := 0; i < 200; i++ {
+			for range 200 {
 				if v := env.Eval(probe); v.Type == lisp.LError || v.Int != 42 {
 					errs <- "probe: " + v.String()
 					return

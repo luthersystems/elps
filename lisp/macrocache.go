@@ -220,7 +220,7 @@ func RegisterPureNativeMacro(qualifiedName string) {
 }
 
 func splitQualified(qualifiedName string) (pkg, name string, ok bool) {
-	for i := 0; i < len(qualifiedName); i++ {
+	for i := range len(qualifiedName) {
 		if qualifiedName[i] == ':' {
 			return qualifiedName[:i], qualifiedName[i+1:], i > 0 && i < len(qualifiedName)-1
 		}
@@ -244,16 +244,16 @@ func isPureNativeMacro(pkg, fid string) bool {
 // any redefinition (a fresh parse or a fresh defmacro) yields a fresh node
 // and therefore a miss.
 type macroIdentity struct {
+	formals *LVal // user macros only; nil for native
 	pkg     string
 	fid     string
-	formals *LVal // user macros only; nil for native
 }
 
 // macroCacheEntry is one cached expansion: the identity of the macro that
 // produced it and the sealed expansion tree.
 type macroCacheEntry struct {
-	id  macroIdentity
 	exp *LVal
+	id  macroIdentity
 }
 
 // macroCacheIdentity classifies fun for caching.  ok reports whether fun is
@@ -307,13 +307,14 @@ var sharedMacroCache sharedCache
 // sharedCache is an unbounded sync.Map with an optional LRU bound engaged
 // by SetMacroCacheCap.  The unbounded fast path takes no locks on lookup.
 type sharedCache struct {
-	m sync.Map // *LVal (callsite) -> *macroCacheEntry
-
 	// LRU bookkeeping, engaged only when a cap is set.
-	mu    sync.Mutex
 	order *list.List              // front = most recent; values are *LVal keys
 	elem  map[*LVal]*list.Element // callsite -> order element
+
+	m sync.Map // *LVal (callsite) -> *macroCacheEntry
+
 	count atomic.Int64
+	mu    sync.Mutex
 }
 
 func (c *sharedCache) lookup(callsite *LVal) (*macroCacheEntry, bool) {

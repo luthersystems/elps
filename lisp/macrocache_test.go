@@ -204,7 +204,7 @@ func TestMacroCacheHits(t *testing.T) {
 				(set 'm (sorted-map "a" 1))
 				(defun probe (k) (get-default m k 42))
 			`)
-			for i := 0; i < 10; i++ {
+			for range 10 {
 				evalStr(t, env, `(probe "a")`)
 			}
 			st := lisp.SnapshotMacroCacheStats()
@@ -228,7 +228,7 @@ func TestMacroCacheUserMacroHits(t *testing.T) {
 		  (quasiquote (if (unquote p) (progn (unquote-splicing body)) ())))
 		(defun probe (x) (my-when (> x 0) (* x 2)))
 	`)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		evalStr(t, env, `(probe 3)`)
 	}
 	st := lisp.SnapshotMacroCacheStats()
@@ -259,7 +259,7 @@ func TestMacroCacheInvalidationOnRedefinition(t *testing.T) {
 				t.Fatalf("v1 semantics wrong: %v", got)
 			}
 			// Warm the cache thoroughly.
-			for i := 0; i < 5; i++ {
+			for range 5 {
 				evalStr(t, env, `(probe 3 4)`)
 			}
 			evalStr(t, env, `
@@ -279,7 +279,7 @@ func TestMacroCacheInvalidationOnRedefinition(t *testing.T) {
 			if got := evalStr(t, env, `(probe "b")`); got.Int != 42 {
 				t.Fatalf("builtin semantics wrong: %v", got)
 			}
-			for i := 0; i < 5; i++ {
+			for range 5 {
 				evalStr(t, env, `(probe "b")`)
 			}
 			// Shadow the kernel macro in the user package: callsites in
@@ -359,7 +359,7 @@ func TestMacroCacheLRUCap(t *testing.T) {
 		(defun probe1 (k) (get-default m k 41))
 		(defun probe2 (k) (get-default m k 43))
 	`)
-	for i := 0; i < 6; i++ {
+	for range 6 {
 		if got := evalStr(t, env, `(probe1 "x")`); got.Int != 41 {
 			t.Fatalf("probe1: %v", got)
 		}
@@ -469,7 +469,7 @@ func TestMacroCacheStatsWriter(t *testing.T) {
 		(set 'm (sorted-map "a" 1))
 		(defun probe (k) (get-default m k 42))
 	`)
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		evalStr(t, env, `(probe "a")`)
 	}
 	var sb strings.Builder
@@ -559,12 +559,12 @@ func TestMacroCacheStableAcrossManyCallsites(t *testing.T) {
 	env := newMacroCacheTestEnv(t)
 	var b strings.Builder
 	b.WriteString(`(set 'm (sorted-map "a" 1))` + "\n")
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		fmt.Fprintf(&b, "(defun probe%d (k) (get-default m k %d))\n", i, 100+i)
 	}
 	evalStr(t, env, b.String())
-	for round := 0; round < 3; round++ {
-		for i := 0; i < 40; i++ {
+	for round := range 3 {
+		for i := range 40 {
 			got := evalStr(t, env, fmt.Sprintf(`(probe%d "miss")`, i))
 			if got.Int != 100+i {
 				t.Fatalf("round %d probe%d: got %v want %d", round, i, got, 100+i)

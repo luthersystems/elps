@@ -102,7 +102,7 @@ func (r *lcg) intn(n int) int {
 	if n <= 0 {
 		return 0
 	}
-	return int(r.next() % uint64(n))
+	return int(r.next() % uint64(n)) // #nosec G115 -- result < n, an int
 }
 
 // budget hands out remaining macro-site allowances.
@@ -136,14 +136,14 @@ func Generate(p Params) []File {
 	// Wrapper callsites round-robin across their per-wrapper budgets.
 	wrapperLeft := p.WrapperUses
 
-	for f := 0; f < contentFiles; f++ {
+	for f := range contentFiles {
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "; synthetic corpus file %d/%d (generated; see internal/synthphylum)\n", f+1, contentFiles)
 		nh := p.Helpers / contentFiles
 		if f == contentFiles-1 {
 			nh = p.Helpers - helperID
 		}
-		for i := 0; i < nh; i++ {
+		for range nh {
 			writeHelper(&sb, helperID, &rng, b, bodies)
 			helperID++
 		}
@@ -151,7 +151,7 @@ func Generate(p Params) []File {
 		if f == contentFiles-1 {
 			nr = totalRoutes - routeID
 		}
-		for i := 0; i < nr; i++ {
+		for range nr {
 			w := pickWrapper(&wrapperLeft, &rng)
 			writeRoute(&sb, routeID, w, helperID, &rng, b, bodies)
 			routeID++
@@ -195,7 +195,7 @@ func libFile() string {
 	// Seven wrappers; each layers handler-bind in its template (the
 	// reference corpus keeps ~10 handler-bind sites inside 7-8 wrapper
 	// macros).  Wrappers 0-2 add a second inner handler-bind layer.
-	for w := 0; w < 7; w++ {
+	for w := range 7 {
 		inner := "(progn (unquote-splicing body))"
 		if w < 3 {
 			inner = `(handler-bind ((error (lambda (&rest c) (sorted-map "error" "inner"))))
@@ -281,7 +281,7 @@ func writeHelper(sb *strings.Builder, id int, rng *lcg, b *budget, bodies int) {
 	fmt.Fprintf(sb, "  (let* ([a (get req \"f%d\")]\n", rng.intn(6))
 	fmt.Fprintf(sb, "         [acc %d])\n", rng.intn(100))
 	nsites := perBodySites(b, bodies, rng)
-	for s := 0; s < nsites; s++ {
+	for range nsites {
 		kind, ok := b.takeSite(rng)
 		if !ok {
 			break
@@ -292,7 +292,7 @@ func writeHelper(sb *strings.Builder, id int, rng *lcg, b *budget, bodies int) {
 	// bring per-function line volume to the measured average (~28 lines
 	// per defun).
 	nfill := 7 + rng.intn(3)
-	for j := 0; j < nfill; j++ {
+	for j := range nfill {
 		switch rng.intn(3) {
 		case 0:
 			fmt.Fprintf(sb, "    (if (nil? a)\n        (set! acc (+ acc %d))\n        (set! acc (+ acc 1)))\n", rng.intn(9)+1)
@@ -316,7 +316,7 @@ func writeRoute(sb *strings.Builder, id, wrapper, helperCount int, rng *lcg, b *
 	fmt.Fprintf(sb, "(def-w%d route-%d\n", wrapper, id)
 	fmt.Fprintf(sb, "  (let* ([acc 0])\n")
 	nsites := perBodySites(b, bodies, rng)
-	for s := 0; s < nsites; s++ {
+	for range nsites {
 		kind, ok := b.takeSite(rng)
 		if !ok {
 			break
@@ -328,7 +328,7 @@ func writeRoute(sb *strings.Builder, id, wrapper, helperCount int, rng *lcg, b *
 		fmt.Fprintf(sb, "    (set! acc (+ acc (helper-%d req)))\n", rng.intn(helperCount))
 	}
 	nfill := 2 + rng.intn(3)
-	for j := 0; j < nfill; j++ {
+	for range nfill {
 		fmt.Fprintf(sb, "    (if (> acc %d)\n        (set! acc (- acc %d))\n        (set! acc (+ acc %d)))\n",
 			rng.intn(500), rng.intn(9)+1, rng.intn(9)+1)
 	}
