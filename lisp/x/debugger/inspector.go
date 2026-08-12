@@ -165,8 +165,8 @@ func FormatValue(v *lisp.LVal) string {
 		return formatList(v)
 	case lisp.LFun:
 		name := v.Str
-		if name == "" && v.FunData() != nil {
-			name = v.FunData().FID
+		if name == "" {
+			name = v.FID()
 		}
 		switch {
 		case v.IsMacro():

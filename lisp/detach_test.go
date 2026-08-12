@@ -79,7 +79,7 @@ func walkGraph(v *lisp.LVal, seen map[*lisp.LVal]bool, visit func(*lisp.LVal)) {
 	}
 	if v.Type == lisp.LSortMap && v.Native != nil {
 		md := v.Map()
-		if md == nil || md.Map == nil {
+		if md == nil || lisp.MapBacking(md) == nil {
 			return
 		}
 		buf := make([]*lisp.LVal, md.Len())
@@ -222,7 +222,7 @@ func (f *fingerprinter) walkMapEntries(v *lisp.LVal) {
 		return
 	}
 	md := v.Map()
-	if md == nil || md.Map == nil {
+	if md == nil || lisp.MapBacking(md) == nil {
 		return
 	}
 	buf := make([]*lisp.LVal, md.Len())
@@ -464,12 +464,12 @@ func TestDetachBytesAndMapDisjoint(t *testing.T) {
 }
 
 // TestDetachEmptyMapDataDisjoint: a degenerate MapData with a nil Map
-// implementation (constructible via SortedMapFromData(&MapData{})) must
+// implementation (constructible via SortedMapFromData(NewMapData(nil))) must
 // still detach to an independent struct — returning the original *MapData
 // would alias Native between the copy and the original in the one tool
 // whose contract is "shares no memory".
 func TestDetachEmptyMapDataDisjoint(t *testing.T) {
-	md := &lisp.MapData{}
+	md := lisp.NewMapData(nil)
 	v := lisp.SortedMapFromData(md)
 	cp, err := lisp.Detach(v)
 	if err != nil {
@@ -481,7 +481,7 @@ func TestDetachEmptyMapDataDisjoint(t *testing.T) {
 	if cp.Native == v.Native {
 		t.Fatal("detached copy shares its *MapData with the original")
 	}
-	if cp.Native.(*lisp.MapData).Map != nil {
+	if lisp.MapBacking(cp.Native.(*lisp.MapData)) != nil {
 		t.Fatal("detached copy of a nil-Map MapData should preserve the nil Map")
 	}
 }

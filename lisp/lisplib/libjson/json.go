@@ -176,7 +176,7 @@ func (s *Serializer) loadInterfaceMax(x interface{}, maxAlloc int) *lisp.LVal {
 			}
 			m[k] = lval
 		}
-		return lisp.SortedMapFromData(&lisp.MapData{Map: m})
+		return lisp.SortedMapFromData(lisp.NewMapData(m))
 	case []interface{}:
 		if maxAlloc > 0 && len(x) > maxAlloc {
 			return lisp.Errorf("allocation size %d exceeds maximum (%d)", len(x), maxAlloc)

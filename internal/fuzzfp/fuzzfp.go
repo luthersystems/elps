@@ -149,7 +149,12 @@ func (g *Guard) walk(v *lisp.LVal, path string, seen map[*lisp.LVal]bool) {
 	}
 	if v.Type == lisp.LSortMap {
 		m := v.Map()
-		if m == nil || m.Map == nil {
+		// Only the MapData itself is nil-checked. The backing used to be a
+		// writable exported field, so "v.Map().Map == nil" was reachable; #382
+		// fixed the backing at construction (NewMapData / SortedMap /
+		// SortedMapFromData all set it) and unexported it, so there is no
+		// longer a nil-backing state to defend against from out here.
+		if m == nil {
 			return
 		}
 		// Keys() is documented sorted, so the traversal order is stable and a
