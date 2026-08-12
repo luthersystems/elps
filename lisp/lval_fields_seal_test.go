@@ -93,3 +93,50 @@ func TestLValFieldSeal(t *testing.T) {
 		}
 	}
 }
+
+// TestLEnvFieldSeal guards the environment half of the issue #382 close.
+// LVal was never the only mutable channel an embedder held: every builtin is
+// handed an *LEnv, and while its scope map was exported, `env.Scope[sym] = v`
+// rebound a symbol in a live environment — or, through a closure's captured
+// environment, in every function value sharing it — without passing Put, the
+// runtime seal, or elpsvet.  `env.Loc = loc` aliased a caller's mutable
+// location into every error and frame the evaluator stamped next, the #362
+// class one layer up.  Those fields are unexported; Runtime and ID stay
+// public (16 and 3 downstream production reads respectively, and neither is
+// a container an embedder can corrupt in place).
+func TestLEnvFieldSeal(t *testing.T) {
+	allowed := map[string]bool{
+		"Runtime": true,
+		"ID":      true,
+	}
+	typ := reflect.TypeOf(lisp.LEnv{})
+	exported := map[string]bool{}
+	for i := range typ.NumField() {
+		f := typ.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		exported[f.Name] = true
+		if !allowed[f.Name] {
+			t.Errorf("LEnv exports field %q outside the sanctioned surface; the "+
+				"binding state (scope, funName), the lexical chain (parent) and the "+
+				"evaluator location (loc) were unexported in issue #382 — a new "+
+				"exported field on the type every builtin receives needs a review "+
+				"conversation and an entry in this allowlist", f.Name)
+		}
+	}
+	for name := range allowed {
+		if !exported[name] {
+			t.Errorf("LEnv no longer exports %q — it is public API with downstream "+
+				"production readers; removing it is a break this test must not mask", name)
+		}
+	}
+
+	// Anti-vacuity: the mediated read surface that replaced the fields.
+	for _, method := range []string{"Bindings", "NumBindings", "Parent", "Source", "Get", "Put", "GetGlobal", "PutGlobal"} {
+		if _, ok := reflect.PtrTo(typ).MethodByName(method); !ok {
+			t.Errorf("(*LEnv).%s missing — the environment read/bind surface changed; "+
+				"update the #382 accessor set deliberately, not by accident", method)
+		}
+	}
+}
