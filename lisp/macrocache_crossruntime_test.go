@@ -3,13 +3,21 @@
 package lisp_test
 
 // Cross-runtime tests for the process-shared macro-expansion cache
-// (issue #381).  These reproduce substrate's production topology: one parse
-// (the parse cache) evaluated by many Runtimes.  The elpscheck ownership
-// checker conservatively forbids that sharing by design (substrate detaches
-// cache handoffs under the tag), so these tests skip in checked builds —
-// which is itself the proof that a cross-runtime cache hit cannot trip the
-// checker: a shared callsite panics at eval entry before macro dispatch is
-// ever reached.
+// (issue #381).  These reproduce the production parse-cache topology: one
+// parse evaluated by many Runtimes.
+//
+// These used to skip under `-tags elpscheck` on the grounds that the
+// ownership checker forbade the topology outright, and the skip was itself
+// offered as the proof that a cross-runtime cache hit could not trip the
+// checker.  That was an assumption stated as a result, and it is now stale:
+// the checker exempts SEALED nodes (ownership_check_elpscheck.go allowlist
+// entry 2 - sharing a sealed parse across runtimes is what sealing is FOR),
+// so the topology is permitted and these tests RUN under the tag.
+//
+// A gate that has never been seen to fail proves nothing, so their passing
+// under the tag is backed by an executed positive control rather than by
+// assumption: macrocache_crossruntime_elpscheck_test.go shares the same
+// program across two runtimes UNSEALED and requires the checker to panic.
 
 import (
 	"io"
@@ -43,9 +51,6 @@ func evalShared(t testing.TB, env *lisp.LEnv, exprs []*lisp.LVal) {
 // TestMacroCacheCrossRuntimeSharedHit: a second runtime evaluating the same
 // parsed program reuses the first runtime's cached expansions.
 func TestMacroCacheCrossRuntimeSharedHit(t *testing.T) {
-	if elpscheckActive {
-		t.Skip("cross-runtime parse sharing is forbidden by the ownership checker (by design)")
-	}
 	withMacroCacheMode(t, lisp.MacroCacheShared)
 	shared := parseShared(t, `
 		(set 'm (sorted-map "a" 1))
@@ -94,9 +99,6 @@ func TestMacroCacheCrossRuntimeSharedHit(t *testing.T) {
 // B expands it, minting B's gen00000001 into a tree evaluated INSIDE the
 // scope where A's gen00000001 is bound.
 func TestMacroCacheCrossRuntimeGensymCollision(t *testing.T) {
-	if elpscheckActive {
-		t.Skip("cross-runtime parse sharing is forbidden by the ownership checker (by design)")
-	}
 	withMacroCacheMode(t, lisp.MacroCacheShared)
 	shared := parseShared(t, `
 		(defmacro my-default (x d)
@@ -138,9 +140,6 @@ func TestMacroCacheCrossRuntimeGensymCollision(t *testing.T) {
 // shared parse — concurrent hits and competing stores on the same keys —
 // and (b) private parses — concurrent inserts on distinct keys.
 func TestMacroCacheSharedConcurrent(t *testing.T) {
-	if elpscheckActive {
-		t.Skip("cross-runtime parse sharing is forbidden by the ownership checker (by design)")
-	}
 	withMacroCacheMode(t, lisp.MacroCacheShared)
 	const src = `
 		(defmacro my-when (p &rest body)
