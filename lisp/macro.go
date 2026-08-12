@@ -234,7 +234,23 @@ func macroDeftype(env *LEnv, args *LVal) *LVal {
 // identity check — they are shared, immutable, pre-allocated values
 // and mutating one corrupts every reader of that singleton for the
 // remainder of the process lifetime. See issue #274.
+// A macro is free to build its expansion with assoc! or append!, so the value
+// handed to stampMacroExpansion can contain itself, and an unguarded walk over
+// one overflows the goroutine stack and kills the process.  The walk is
+// bounded the same way rendering is; see lisp/cycle.go and issue #390.
 func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionContext, rt *Runtime) {
+	var st cycleState
+	stampGuarded(v, callSite, ctx, rt, cycleGuard{state: &st})
+	if st.cyclic {
+		// The walk above stopped as soon as it knew the expansion contains
+		// itself, leaving part of it unstamped.  Stamping is idempotent -- a
+		// node that already has a real source location is left alone -- so
+		// the rerun, which visits each node once, finishes the job.
+		stampGuarded(v, callSite, ctx, rt, strictCycleGuard())
+	}
+}
+
+func stampGuarded(v *LVal, callSite *token.Location, ctx *MacroExpansionContext, rt *Runtime, g cycleGuard) {
 	if v == nil || callSite == nil {
 		return
 	}
@@ -243,6 +259,19 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionC
 	// LSymbol with Source.Pos == -1). See issue #274.
 	if isSingleton(v) {
 		return
+	}
+	// Only a node with children is entered on the guard's path: a leaf stamps
+	// itself and reaches nothing, and stamping runs on every macro expansion.
+	nested := len(v.Cells) > 0
+	if nested {
+		if g.abandoned() {
+			return
+		}
+		var cyclic bool
+		g, cyclic = g.descend(v)
+		if cyclic {
+			return
+		}
 	}
 	if v.Source == nil || v.Source.Pos < 0 {
 		v.Source = callSite
@@ -254,7 +283,10 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionC
 		}
 	}
 	for _, child := range v.Cells {
-		stampMacroExpansion(child, callSite, ctx, rt)
+		stampGuarded(child, callSite, ctx, rt, g)
+	}
+	if nested && g.tracking() {
+		g.ascend(v)
 	}
 }
 
@@ -392,7 +424,10 @@ func doUnquoteSExpr(env *LEnv, v *LVal, depth int, quoteLevel int) *LVal {
 }
 
 func macroTrace(env *LEnv, args *LVal) *LVal {
-	expr, msg := args.Cells[0], args.Cells[1]
+	expr, msg := args.ReqArg(env, 0), args.KeyArg(1)
+	if expr.Type == LError {
+		return expr
+	}
 	sym := env.GenSym()
 	if msg.IsNil() {
 		msg = String("TRACE")

@@ -207,7 +207,7 @@ func TestLoadWorkspaceMacros_PackageContext(t *testing.T) {
 }
 
 func TestLoadWorkspaceMacros_PackageAutoCreated(t *testing.T) {
-	// Workspace packages (e.g. "acre") don't exist in the boot env.
+	// Workspace packages (e.g. "app") don't exist in the boot env.
 	// in-package in the preamble auto-creates them.
 	env := newTestEnv(t)
 

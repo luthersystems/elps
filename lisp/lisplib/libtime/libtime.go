@@ -352,7 +352,10 @@ func BuiltinDurationNS(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // wakes early if the context is cancelled, and never sleeps past the
 // context's deadline.  See sleepContext for the full rationale.
 func BuiltinSleep(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	lt, lmax := args.Cells[0], args.Cells[1]
+	lt, lmax := args.ReqArg(env, 0), args.KeyArg(1)
+	if lt.Type == lisp.LError {
+		return lt
+	}
 	if lt.Type != lisp.LNative {
 		return env.Errorf("argument is not a duration: %v", lt.Type)
 	}
