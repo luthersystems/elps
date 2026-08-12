@@ -279,7 +279,7 @@ type LVal struct {
 	// shallowUnquote — `*cp = *v` — which share the Cells backing array and
 	// therefore inherit the constraint) and by the kernel sites that create
 	// new headers over shared backing (cdr, rest, slice), and cleared only
-	// on fresh storage (Copy, Detach).  It is never written after a tree
+	// on fresh storage (Copy, detach).  It is never written after a tree
 	// becomes shared, so concurrent readers are race-free.
 	sealed bool
 }
@@ -1195,7 +1195,8 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 //
 // Copy has within-runtime semantics — an LArray's backing storage is shared
 // with the receiver, so it is not a tool for transferring values between
-// Runtimes; use Detach for that.
+// Runtimes; the in-kernel detach (lisp/detach.go, unexported until a real
+// consumer appears) covers that.
 func (v *LVal) Copy() *LVal {
 	if v == nil {
 		return nil

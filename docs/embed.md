@@ -75,9 +75,10 @@ if ret.Type == lisp.LError {
 Because `Program` exposes no accessor for its expressions, a cache built on
 it cannot hand raw AST nodes to callers — the aliasing bugs that come from
 sharing `*lisp.LVal` pointers between caches and environments are ruled out
-at compile time, at zero runtime cost.  Code that genuinely needs the AST
-(tooling, serialization, transfer between runtimes) calls `Program.Detach`,
-which returns hermetic deep copies.
+at compile time, at zero runtime cost.  Deep-copy machinery for code that
+genuinely needs the AST (tooling, serialization, transfer between runtimes)
+exists in-kernel (`detach`, returning hermetic deep copies) but is
+unexported until a real embedder consumer materializes.
 
 Note the scope of the guarantee: `Program` seals the parse/cache boundary so
 AST nodes cannot *escape* to the embedder.  Full hermetic sealing is the

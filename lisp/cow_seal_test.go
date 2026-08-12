@@ -195,14 +195,14 @@ func TestSealPropagation(t *testing.T) {
 		// at any depth.
 		t.Errorf("Copy() left a sealed node in the copied tree: %v", cp)
 	}
-	dt, err := q.Detach()
+	dt, err := lisp.Detach(q)
 	if err != nil {
-		t.Fatalf("Detach: %v", err)
+		t.Fatalf("detach: %v", err)
 	}
 	seen := make(map[*lisp.LVal]bool)
 	walkAST(dt, seen, func(v *lisp.LVal) {
 		if v.IsSealed() {
-			t.Errorf("Detach() left a sealed node in the hermetic copy: %v", v)
+			t.Errorf("detach left a sealed node in the hermetic copy: %v", v)
 		}
 	})
 }

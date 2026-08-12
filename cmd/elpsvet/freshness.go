@@ -13,10 +13,10 @@
 //   - the receiver chain roots at a value constructed in the same function:
 //     a &LVal{...} composite literal, new(LVal), a call to a known fresh
 //     constructor (lisp.Int, SExpr, Errorf, ... — NOT Nil() or Bool(), which
-//     return shared singletons), or a (*LVal).Copy/Detach call; freshness is
+//     return shared singletons), or a (*LVal).Copy/detach call; freshness is
 //     tracked through simple := and = assignments of tracked values;
 //
-//   - the receiver roots at a fresh pointer used for the Copy/Detach struct
+//   - the receiver roots at a fresh pointer used for the Copy/detach struct
 //     copy idiom (cp := &LVal{}; *cp = *v; cp.Quoted = ... is fresh — the
 //     write lands in memory this function allocated);
 //
@@ -76,8 +76,10 @@ var freshConstructors = map[string]bool{
 
 // freshLValMethods are methods on *lisp.LVal whose result is a fresh LVal.
 var freshLValMethods = map[string]bool{
-	"Copy":   true,
-	"Detach": true,
+	"Copy": true,
+	// detach is unexported (lisp/detach.go) so only package lisp itself can
+	// call it; its result is a fresh hermetic copy all the same.
+	"detach": true,
 }
 
 // freshLEnvMethods are methods on *lisp.LEnv whose result is a freshly
@@ -224,7 +226,7 @@ func checkWrite(pass *analysis.Pass, lhs ast.Expr, stmtPos token.Pos, fresh map[
 	pass.Reportf(lhs.Pos(),
 		"%s on a lisp.LVal this function did not construct"+
 			" (the corruption pattern behind issues #333 and #334);"+
-			" construct the value locally, Copy/Detach it first,"+
+			" construct the value locally, Copy/detach it first,"+
 			" or annotate //elps:mutates with a justification", kind)
 }
 
@@ -279,7 +281,7 @@ func rootIsFresh(pass *analysis.Pass, recv ast.Expr, fresh map[types.Object]bool
 		case *ast.StarExpr:
 			recv = e.X
 		case *ast.CallExpr:
-			// v.Bytes()[i]: continue to the method receiver.  Copy/Detach
+			// v.Bytes()[i]: continue to the method receiver.  Copy/detach
 			// and constructor calls are fresh in their own right.
 			if isFreshExpr(pass, e, fresh) {
 				return true

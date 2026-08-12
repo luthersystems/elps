@@ -106,8 +106,8 @@ The constraint follows the **storage**, not the header:
 - Header copies that share backing (`Quote`, `Splice`, `shallowUnquote` —
   the `*cp = *v` struct-copy idiom) inherit the flag through the struct
   copy.
-- `Copy()` and `Detach()` **clear** the flag on the fresh storage they
-  create (`lisp/lisp.go`, `lisp/detach.go`). A `Copy` owns fresh top-level
+- `Copy()` and the in-kernel `detach()` **clear** the flag on the fresh
+  storage they create (`lisp/lisp.go`, `lisp/detach.go`). A `Copy` owns fresh top-level
   backing, so the constraint on the original does not apply to it; elements
   shared with the sealed tree remain individually sealed, which is exactly
   the copy-on-write contract — restructure the copy freely, never the
@@ -147,9 +147,12 @@ unsealed by construction.
 ### 2.5 The embedder boundary
 
 The parse/cache boundary exposes no raw AST: `lisp.Program`
-(`lisp/program.go`) wraps parse output opaquely (its `Detach()` is the
-sanctioned way to get owned expressions), and the package registry seals its
-LVal-bearing surface. An embedder that hand-builds expression trees and
+(`lisp/program.go`) wraps parse output opaquely, and the package registry
+seals its LVal-bearing surface. Deep-copy machinery for owned expressions
+exists in-kernel (`detach()`, `lisp/detach.go` — it backs the planned
+lisp-level copy builtin, elps#378) but is unexported: it will be re-exported
+when a real embedder consumer (debugger workflows, cross-runtime transfer)
+materializes. An embedder that hand-builds expression trees and
 shares them across environments may call `SealAST()` itself for the same
 protection.
 
@@ -290,8 +293,8 @@ of Go slices.
 
 - **The copy idiom is `concat`**: `(concat 'list xs)`, `(concat 'vector v)`,
   `(concat 'bytes b)` allocate fresh exactly-sized backing (safe on the
-  empty case since #334). The Go-side deep copy for transfer cases is
-  `Detach()`.
+  empty case since #334). The Go-side deep copy for transfer cases is the
+  in-kernel `detach()` (unexported until a consumer appears).
 - **Under evaluation** (#373 work item 3, open): capacity-clamped slice
   results — Go's three-index `s[a:b:b]` idiom built in — so `append` on a
   slice result can never write into the source's retained tail. Not
@@ -328,9 +331,10 @@ text": refuse or `Copy()`, never write.
 
 1. **Parse through a sealing path.** `Reader.Read`, `LoadString`,
    `ParseProgram`/`ReadProgram` all seal. Prefer `lisp.Program` at your
-   cache boundary; use `Program.Detach()` when you need owned expressions.
-   If you build trees by hand and share them across environments, call
-   `SealAST()` on each root yourself.
+   cache boundary. (Owned expressions need the in-kernel `detach()`
+   machinery, which is unexported today; it will be re-exported when a real
+   embedder consumer materializes.) If you build trees by hand and share
+   them across environments, call `SealAST()` on each root yourself.
 2. **Never install a format-preserving reader into an evaluating runtime.**
    `parser.NewReader(parser.WithFormatPreserving())` produces *unsealed*
    trees for tooling (formatter/minifier/lint); it satisfies `lisp.Reader`,
@@ -339,8 +343,10 @@ text": refuse or `Copy()`, never write.
    `v.IsSealed()` first; refuse with an error or operate on `v.Copy()`.
    Remember slices of `Cells` share backing — copy the cells, not just the
    header, before restructuring.
-4. **Use `concat` (lisp) / `Detach()` (Go) as the copy idioms** when you
-   need storage that no one else can write (§4.1).
+4. **Use `concat` (lisp) / `Copy()` (Go) as the copy idioms** when you
+   need storage that no one else can write (§4.1). (The hermetic
+   cross-runtime deep copy lives in-kernel as `detach()`, unexported until
+   a consumer appears.)
 5. **Run the verification stack you can afford:** `go run ./cmd/elpsvet
    -test=false ./...` over code living in this module; `go test -tags
    elpscheck` (inspector) and `-race` (watchdog) in CI; call
