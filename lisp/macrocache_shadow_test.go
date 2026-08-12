@@ -138,6 +138,132 @@ func TestMacroCacheShadowedInUsedPackageNotCached(t *testing.T) {
 	`, `(list (probe 1) (probe 1) (probe 1))`)
 }
 
+// TestMacroCacheShadowedInDefiningPackageNotCached is a defeat found by
+// attacking the fix rather than by the review, and it is the sharpest of
+// the set: the shadow is INVISIBLE from the caller.
+//
+// funCall switches the runtime into the function's own package for the
+// duration of a call (lisp/env.go), so a macro defined in package A resolves
+// its unqualified free symbols against A no matter who called it.  A first
+// cut at the resolution check looked names up through the caller's current
+// package, which meant a `if` rebound inside A — where the body actually
+// reads it — resolved to the kernel binding at the callsite and the macro
+// was admitted.  Cache off: 1,2,3.  Cache on: 1,1,1.
+//
+// The check now falls through to the macro's own package, mirroring the
+// swap the evaluator performs.
+func TestMacroCacheShadowedInDefiningPackageNotCached(t *testing.T) {
+	assertCacheModesAgree(t, "defining-package-shadow", `
+		(in-package 'shadowpkg)
+		(set 'ctr 0)
+		(defun if (a b c) (set 'ctr (+ ctr 1)) ctr)
+		(defmacro m (x) (if () (quasiquote (unquote x)) (quasiquote (unquote x))))
+		(export 'm)
+		(in-package 'user)
+		(use-package 'shadowpkg)
+		(defun probe (v) (m v))
+	`, `(list (probe 1) (probe 1) (probe 1))`)
+}
+
+// TestMacroCacheLateShadowInDefiningPackageInvalidates is the same shadow
+// installed AFTER the caller has warmed the cache, from a package the caller
+// is not even in.  Nothing about the macro changes — same function object,
+// same formals node, so identity-based invalidation cannot see it — only the
+// per-dispatch resolution can.
+func TestMacroCacheLateShadowInDefiningPackageInvalidates(t *testing.T) {
+	for _, m := range macroCacheModes[1:] {
+		t.Run(m.name, func(t *testing.T) {
+			withMacroCacheMode(t, m.mode)
+			env := newMacroCacheTestEnv(t)
+			evalStr(t, env, `
+				(in-package 'shadowpkg)
+				(set 'ctr 0)
+				(defun bump (a b c) (set 'ctr (+ ctr 1)) ctr)
+				(defmacro m (x) (if () (quasiquote (unquote x)) (quasiquote (unquote x))))
+				(export 'm)
+				(in-package 'user)
+				(use-package 'shadowpkg)
+				(defun probe (v) (m v))
+			`)
+			if got := evalStr(t, env, `(list (probe 1) (probe 1))`).String(); got != `'(1 1)` {
+				t.Fatalf("warm phase: got %s want '(1 1)", got)
+			}
+			evalStr(t, env, `(in-package 'shadowpkg) (set 'if bump) (in-package 'user)`)
+			if got := evalStr(t, env, `(list (probe 1) (probe 1) (probe 1))`).String(); got != `'(1 2 3)` {
+				t.Fatalf("late shadow in the defining package was not honoured: got %s want '(1 2 3)", got)
+			}
+		})
+	}
+}
+
+// TestMacroCacheQualifiedSpellingResolvedAsWritten: a body that writes
+// `lisp:if` names its package explicitly, so the obligation must be checked
+// against THAT package rather than against whatever `if` means where the
+// macro lives.  Rebinding the language package's own `if` must therefore
+// stop the macro being cached — and conversely, an unqualified shadow
+// elsewhere must not stop a `lisp:`-qualified body from being cached.
+func TestMacroCacheQualifiedSpellingResolvedAsWritten(t *testing.T) {
+	assertCacheModesAgree(t, "qualified-shadowed", `
+		(in-package 'lisp)
+		(set 'ctr 0)
+		(defun bump (a b c) (set 'ctr (+ ctr 1)) ctr)
+		(in-package 'user)
+		(defmacro m (x) (lisp:if () (quasiquote (unquote x)) (quasiquote (unquote x))))
+		(defun probe (v) (m v))
+		(in-package 'lisp)
+		(set 'if bump)
+		(in-package 'user)
+	`, `(list (probe 1) (probe 1) (probe 1))`)
+
+	// The positive half: a qualified body stays cacheable when an unrelated
+	// unqualified `if` is rebound in the caller's package.
+	withMacroCacheMode(t, lisp.MacroCacheRuntime)
+	env := newMacroCacheTestEnv(t)
+	evalStr(t, env, `
+		(defun bump (a b c) 0)
+		(defmacro m (x) (lisp:if () (quasiquote (unquote x)) (quasiquote (unquote x))))
+		(defun probe (v) (m v))
+		(set 'if bump)
+	`)
+	before := lisp.SnapshotMacroCacheStats()
+	for range 5 {
+		evalStr(t, env, `(probe 1)`)
+	}
+	if hits := lisp.SnapshotMacroCacheStats().Hits - before.Hits; hits < 3 {
+		t.Fatalf("a lisp:-qualified body should stay cacheable under an unqualified shadow: %d hits", hits)
+	}
+}
+
+// TestMacroCacheLexicalShadowNotCached: the shadow does not need to be a
+// package binding at all.  A defmacro evaluated inside a let that rebinds a
+// structural operator captures that let as its defining environment.
+func TestMacroCacheLexicalShadowNotCached(t *testing.T) {
+	assertCacheModesAgree(t, "lexical-shadow", `
+		(set 'ctr 0)
+		(defun bump (a b c) (set 'ctr (+ ctr 1)) ctr)
+		(let ([if bump])
+		  (defmacro m (x) (if () (quasiquote (unquote x)) (quasiquote (unquote x)))))
+		(defun probe (v) (m v))
+	`, `(list (probe 1) (probe 1) (probe 1))`)
+}
+
+// TestMacroCacheNestedImpureMacroStillReExpands covers an interaction rather
+// than a shadow.  Caching an admitted macro makes its expansion tree — and
+// therefore every macro callsite INSIDE it — a stable node, where
+// re-expansion mints a fresh subtree each time.  An impure inner macro must
+// still re-expand at that now-stable callsite rather than being frozen by
+// the outer macro's cache entry.
+func TestMacroCacheNestedImpureMacroStillReExpands(t *testing.T) {
+	assertCacheModesAgree(t, "nested-impure", `
+		(set 'ctr 0)
+		(defmacro impure (x)
+		  (set 'ctr (+ ctr 1))
+		  (quasiquote (list (unquote ctr) (unquote x))))
+		(defmacro outer (x) (quasiquote (impure (unquote x))))
+		(defun probe (v) (outer v))
+	`, `(list (probe 1) (probe 2) ctr)`)
+}
+
 // TestMacroCacheShadowedBinderAtCallsiteNotCached is the defeat that lives
 // in the CALLING environment rather than the defining one, and it was found
 // by attacking the fix rather than by the review.

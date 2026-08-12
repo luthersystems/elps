@@ -124,6 +124,18 @@ where the expansion evaluates — see the boundary note below. A spelling that
 does not resolve to the kernel binding simply makes the macro uncacheable;
 refusing to cache is always sound.
 
+Resolution has to mirror the evaluator exactly, including a detail that
+produced a further defeat found by attacking the fix: `funCall` switches the
+runtime into the *function's own* package for the duration of a call, so a
+macro defined in package A reads A's bindings whoever called it. A shadow
+installed in A is therefore invisible from the caller's package, and a check
+that looked names up through the caller's current package admitted it. The
+lookup now walks the lexical chain and falls through to the macro's own
+package. Package-qualified spellings (`lisp:if`) name their package
+explicitly and are resolved as written
+(`TestMacroCacheShadowedInDefiningPackageNotCached`,
+`TestMacroCacheQualifiedSpellingResolvedAsWritten`).
+
 Two names the prover interprets carry *no* obligation, deliberately:
 
 - **`quote`** (and the parser's own quote flags / `LQuote` wrappers).
@@ -169,12 +181,13 @@ the *arguments* at a callsite evaluate to (they are spliced by reference,
 identically either way) and not about native macros, which remain a
 hand-audited whitelist rather than a proof.
 
-Tests: `lisp/macrocache_shadow_test.go` — eight defeat shapes, each asserted
+Tests: `lisp/macrocache_shadow_test.go` — twelve defeat shapes, each asserted
 behaviourally (the cached and uncached evaluations of the same program must
 agree; nothing inspects the classification), plus pins on which obligations
 each admitted shape records and on the FID formats the admission path builds
-by hand. Red-proof: neutering `opsResolveToKernel` fails all eight with
-wrong answers.
+by hand. Red-proof: neutering `opsResolveToKernel` fails eight of them with
+wrong answers, and resolving through the caller's package instead of the
+macro's fails the defining-package pair the same way.
 
 ### 3.3 Everything else bypasses
 

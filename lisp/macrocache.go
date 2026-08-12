@@ -96,6 +96,7 @@ import (
 	"context"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -318,22 +319,42 @@ func macroCacheIdentity(callerEnv *LEnv, fun *LVal) (macroIdentity, bool) {
 	if !p.pure {
 		return macroIdentity{}, false
 	}
-	// The body evaluates in the macro's DEFINING environment; the expansion
-	// evaluates at the CALLSITE.  Each obligation is checked where the
-	// corresponding code runs.  A name that does not resolve to the kernel
-	// binding simply makes the macro uncacheable.
-	if !opsResolveToKernel(fd.env, p.defRefs) {
+	// The body evaluates in the macro's DEFINING environment, with the
+	// runtime switched into the macro's own package (funCall does that swap
+	// for the duration of every call); the expansion evaluates at the
+	// CALLSITE, in whatever package is current there.  Each obligation is
+	// checked where the corresponding code runs, resolving exactly as that
+	// code will.  A name that does not resolve to the kernel binding simply
+	// makes the macro uncacheable.
+	if !opsResolveToKernel(fd.env, macroDefiningPackage(callerEnv, fd), p.defRefs) {
 		return macroIdentity{}, false
 	}
-	if !opsResolveToKernel(callerEnv, p.callRefs) {
+	if callerEnv != nil && !opsResolveToKernel(callerEnv, callerEnv.Runtime.Package, p.callRefs) {
 		return macroIdentity{}, false
 	}
 	return macroIdentity{formals: formals}, true
 }
 
+// macroDefiningPackage returns the package the macro's body will resolve
+// its unqualified free symbols against.  funCall switches the runtime into
+// the function's own package for the duration of a call (lisp/env.go), so a
+// macro defined in package A reads A's bindings no matter which package
+// called it — and a shadow installed in A is invisible from the caller's
+// package.  That was a live defeat until the resolution mirrored the swap.
+func macroDefiningPackage(env *LEnv, fd *funData) *Package {
+	if env == nil || env.Runtime == nil || fd == nil {
+		return nil
+	}
+	if pkg := env.Runtime.Registry.packages[fd.pkg]; pkg != nil {
+		return pkg
+	}
+	return env.Runtime.Package
+}
+
 // opsResolveToKernel reports whether every recorded operator spelling
-// resolves, in env, to the kernel binding the prover assumed it meant.
-func opsResolveToKernel(env *LEnv, refs []kernelRef) bool {
+// resolves, in env (with pkg as the namespace an unqualified name falls
+// through to), to the kernel binding the prover assumed it meant.
+func opsResolveToKernel(env *LEnv, pkg *Package, refs []kernelRef) bool {
 	if len(refs) == 0 {
 		return true
 	}
@@ -341,28 +362,50 @@ func opsResolveToKernel(env *LEnv, refs []kernelRef) bool {
 		return false
 	}
 	for _, ref := range refs {
-		if !resolvesToKernelBinding(env, ref) {
+		if !resolvesToKernelBinding(env, pkg, ref) {
 			return false
 		}
 	}
 	return true
 }
 
-// resolvesToKernelBinding looks ref.spelling up in env and reports whether it
-// is bound to the kernel-registered function with ref.fid.  Kernel special
-// operators and builtins are registered in the language package with a FID
-// derived from their registration name (AddSpecialOps/AddBuiltins), and
-// nothing else can mint those: a user redefinition binds either a lisp-cells
-// function (no builtin, no FID match) or a builtin registered under a
-// different name or package.
-func resolvesToKernelBinding(env *LEnv, ref kernelRef) bool {
-	v := env.get(Symbol(ref.spelling))
+// resolvesToKernelBinding looks ref.spelling up the way the evaluator will —
+// lexical scope chain first, then the package namespace that will be current
+// when the code runs — and reports whether it is bound to the
+// kernel-registered function with ref.fid.  Kernel special operators and
+// builtins are registered in the language package with a FID derived from
+// their registration name (AddSpecialOps/AddBuiltins), and nothing else can
+// mint those: a user redefinition binds either a lisp-cells function (no
+// builtin, no FID match) or a builtin registered under a different name or
+// package.
+func resolvesToKernelBinding(env *LEnv, pkg *Package, ref kernelRef) bool {
+	v := lookupOperatorBinding(env, pkg, ref.spelling)
 	if v == nil || v.Type != LFun {
 		return false
 	}
 	fd := v.funData()
 	return fd != nil && fd.builtin != nil &&
 		fd.pkg == DefaultLangPackage && fd.fid == ref.fid
+}
+
+// lookupOperatorBinding mirrors LEnv.getSimple/packageGet, except that the
+// package a bare name falls through to is passed in rather than read from
+// Runtime.Package — the caller knows which package will be current when the
+// code being judged actually runs.  Qualified spellings (lisp:if) name their
+// package explicitly and go through the ordinary path.
+func lookupOperatorBinding(env *LEnv, pkg *Package, spelling string) *LVal {
+	if strings.IndexByte(spelling, ':') >= 0 {
+		return env.get(Symbol(spelling))
+	}
+	for e := env; e != nil; e = e.parent {
+		if v, ok := e.scope[spelling]; ok {
+			return v
+		}
+	}
+	if pkg == nil {
+		return nil
+	}
+	return pkg.Get(Symbol(spelling))
 }
 
 // userMacroPurityMemo caches the SYNTACTIC half of the admission test.  The
