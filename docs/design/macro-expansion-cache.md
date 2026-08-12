@@ -147,7 +147,15 @@ Two names the prover interprets carry *no* obligation, deliberately:
   quasiquote consumes them as syntax, matching the name on an `LSymbol`
   head. Requiring the enclosing `quasiquote` to *be* the kernel quasiquote —
   which the defining-environment obligations do — is what licenses that
-  reading.
+  reading. Asserted rather than argued: rebinding `unquote` to an impure
+  function leaves quasiquote's behaviour and the counter untouched
+  (`TestMacroCacheUnquoteIsNotABinding`).
+- **`true` / `false`,** the only *free* symbol reads the body grammar
+  admits. They are kernel constants — `set`, `defun`, `defmacro`, `let`,
+  `let*`, `labels` and `flet` all refuse to rebind them — so there is no
+  binding for an obligation to check. Every one of those routes is asserted
+  to refuse (`TestMacroCacheTrueFalseAreKernelConstants`); should one ever
+  stop refusing, this read needs an obligation exactly like `if`'s.
 
 The memo key was itself a defeat, twice. Keyed on the formals node while the
 checks were environment dependent, a verdict computed in an unshadowed
@@ -202,6 +210,19 @@ A macro defined in a clean package and called from one that rebinds `let*`
 to something that treats its binding list as data was a live defeat before
 that check existed (`TestMacroCacheShadowedBinderAtCallsiteNotCached`).
 
+One reading is known to be **wrong** and is nonetheless harmless, which is
+worth stating rather than leaving to be rediscovered. Defining-environment
+obligations resolve in `funData.env`, while the body evaluates one frame
+*below* that, in a call environment carrying the macro's own **formals**. A
+macro whose formal is named `if` (or `let*`, or `gensym`) is therefore
+admitted on the strength of a binding the body will never consult. It cannot
+change an answer, because a macro formal is bound to an *unevaluated
+argument node* and an argument node is never a function: the body's
+`(if ...)` can only fail to call it, deterministically and identically with
+the cache on or off. Pinned behaviourally by
+`TestMacroCacheFormalShadowingAnOperatorAgrees`; should macro formals ever
+carry callable values, the obligations must move to the call environment.
+
 Beyond that: the prover reasons about the macro's own body, not about what
 the *arguments* at a callsite evaluate to (they are spliced by reference,
 identically either way) and not about native macros, which remain a
@@ -214,9 +235,28 @@ Tests: `lisp/macrocache_shadow_test.go` — fourteen defeat shapes, each asserte
 behaviourally (the cached and uncached evaluations of the same program must
 agree; nothing inspects the classification), plus pins on which obligations
 each admitted shape records and on the FID formats the admission path builds
-by hand. Red-proof: neutering `opsResolveToKernel` fails eight of them with
-wrong answers, and resolving through the caller's package instead of the
-macro's fails the defining-package pair the same way.
+by hand. `lisp/macrocache_boundary_test.go` attacks the narrowed prover
+rather than re-testing the fixes: it pins the three readings above that carry
+no obligation, pins the gensym obligation as an *identity* check (a pure but
+non-kernel `gensym` must still be refused), and carries the memo-leak defeat
+into the shared **table** — two runtimes, one shared parse, the second
+shadowing the operator, where the entry's identity matches exactly and only
+the per-dispatch resolution can refuse it.
+
+Red-proofs, each executed by deleting the guard and re-running the named
+test:
+
+| guard removed | test that goes red | wrong answer it produces |
+|---|---|---|
+| `needBuiltin` gensym obligation | `…ShadowedGensymNotCached` | `'(1 1 1)` vs `'(1 2 3)` |
+| `needSpecialOp` on `if` | `…ShadowedStructuralOpsNotCached` | `'(1 1 1)` vs `'(1 2 3)` |
+| defining-package fall-through | `…ShadowedInDefiningPackageNotCached` | `'(1 1 1)` vs `'(1 2 3)` |
+| quoted-head unquote recognition | `…QuotedUnquoteHeadNotCached` | `'('(1 1) '(1 2) 1)` vs `'('(5 1) '(6 2) 6)` |
+| `sameMacroBody` memo-key check | `…SharedFormalsTwoBodiesNotCached` | `'(7 1)×3` vs `(7 1) (7 2) (7 3)` |
+| per-dispatch `defRefs` re-check | `…PurityMemoIsEnvironmentIndependent` | `'(1 1 1)` vs `'(1 2 3)` |
+| `callRefs` binder promotion | `…ShadowedBinderAtCallsiteNotCached` | one gensym vs two |
+| per-runtime cap enforcement | `TestMacroCacheRuntimeCap` | cap=8 exceeded at 9 entries |
+| `elpscheck` control's unsealed arm | `…CrossRuntimeCheckerStillFires` | checker did not fire |
 
 ### 3.3 Everything else bypasses
 
