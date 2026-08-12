@@ -420,9 +420,29 @@ func containerCall(t *testing.T, env *lisp.LEnv, op containerOp, args []*lisp.LV
 	// The value oracle covers every argument the op is not licensed to
 	// modify.  Fingerprinted individually so the failure message can name
 	// WHICH argument moved.
+	//
+	// An argument that SHARES STORAGE with the mutated one is exempt, and
+	// has to be: the generator draws operands from a pool, so `(append-bytes!
+	// b b)` — the same value in both positions — is an ordinary draw, and
+	// asserting that argument 1 is unchanged there is asserting that a
+	// documented in-place mutation did not happen.  The exemption is
+	// computed from the actual object graph rather than from pointer
+	// equality alone, because containment is the same problem one level
+	// down: if argument 1 CONTAINS the vector argument 0 rewrites, its
+	// digest legitimately moves too.
+	//
+	// Nothing is lost for the copying operations, which are the ones the
+	// contract is really about: mutatesArg is -1 for them, so no argument is
+	// ever exempt and the assertion runs at full strength.
 	fpArgs := make([]string, len(args))
+	skip := make([]bool, len(args))
 	for i, a := range args {
 		if i == op.mutatesArg {
+			skip[i] = true
+			continue
+		}
+		if op.mutatesArg >= 0 && op.mutatesArg < len(args) && sharesStorage(a, args[op.mutatesArg]) {
+			skip[i] = true
 			continue
 		}
 		fpArgs[i] = valueFingerprint([]*lisp.LVal{a})
@@ -470,7 +490,7 @@ func containerCall(t *testing.T, env *lisp.LEnv, op containerOp, args []*lisp.LV
 	}
 
 	for i, a := range args {
-		if i == op.mutatesArg {
+		if skip[i] {
 			continue
 		}
 		if after := valueFingerprint([]*lisp.LVal{a}); after != fpArgs[i] {
@@ -588,6 +608,74 @@ func collectContainerSealed(vs []*lisp.LVal) []*lisp.LVal {
 		walk(v, 0)
 	}
 	return roots
+}
+
+// sharesStorage reports whether a and b reach any LVal in common — the same
+// node, or one contained in the other, or a third node both hold.  It is the
+// exemption test for the value oracle: an argument that shares storage with
+// the one an operation is licensed to rewrite cannot be held to the
+// no-modification contract, because a write the docstring permits can show
+// up in either of them.
+//
+// Reachability is followed through Cells and through a sorted-map's Native
+// entries, and is bounded by a visited set (so aliasing and cycles
+// terminate) and a depth cap.
+func sharesStorage(a, b *lisp.LVal) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	nodes := map[*lisp.LVal]bool{}
+	collectNodes(a, nodes, 0)
+	found := false
+	var probe func(v *lisp.LVal, depth int)
+	seen := map[*lisp.LVal]bool{}
+	probe = func(v *lisp.LVal, depth int) {
+		if v == nil || found || depth > 64 || seen[v] {
+			return
+		}
+		seen[v] = true
+		if nodes[v] {
+			found = true
+			return
+		}
+		forEachChild(v, func(c *lisp.LVal) { probe(c, depth+1) })
+	}
+	probe(b, 0)
+	return found
+}
+
+func collectNodes(v *lisp.LVal, into map[*lisp.LVal]bool, depth int) {
+	if v == nil || depth > 64 || into[v] {
+		return
+	}
+	into[v] = true
+	forEachChild(v, func(c *lisp.LVal) { collectNodes(c, into, depth+1) })
+}
+
+// forEachChild visits the LVals a value directly holds.  A sorted-map's
+// entries live in Native, not Cells, so a plain Cells walk would treat every
+// map as a leaf — which is exactly how a sharing relationship through a map
+// would go unnoticed.
+func forEachChild(v *lisp.LVal, fn func(*lisp.LVal)) {
+	if v.Type == lisp.LSortMap {
+		m := v.Map()
+		if m == nil {
+			return
+		}
+		ks := m.Keys()
+		if ks == nil || ks.Type == lisp.LError {
+			return
+		}
+		for _, k := range ks.Cells {
+			if val, ok := m.Get(k); ok {
+				fn(val)
+			}
+		}
+		return
+	}
+	for _, c := range v.Cells {
+		fn(c)
+	}
 }
 
 // containerRenderMaxNodes bounds the expansion these targets are willing to
