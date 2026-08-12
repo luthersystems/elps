@@ -10,6 +10,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/luthersystems/elps/internal/fmtraw"
 	"github.com/luthersystems/elps/internal/fuzzval"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
@@ -78,7 +79,7 @@ func walkGraph(v *lisp.LVal, seen map[*lisp.LVal]bool, visit func(*lisp.LVal)) {
 	}
 	if v.Type == lisp.LSortMap && v.Native != nil {
 		md := v.Map()
-		if md == nil || md.Map == nil {
+		if md == nil || lisp.MapBacking(md) == nil {
 			return
 		}
 		buf := make([]*lisp.LVal, md.Len())
@@ -106,17 +107,17 @@ func collectMem(v *lisp.LVal) map[unsafe.Pointer]string {
 			add(sliceDataOf(n.Cells), "Cells backing of "+n.Type.String())
 		}
 		add(ptrOf(lisp.SourceLocForTest(n)), "Source location")
-		if n.Meta != nil {
-			add(ptrOf(n.Meta), "Meta")
-			for _, t := range n.Meta.LeadingComments {
+		if m := fmtraw.Meta(n); m != nil {
+			add(ptrOf(m), "Meta")
+			for _, t := range m.LeadingComments {
 				add(ptrOf(t), "Meta leading comment token")
 				add(ptrOf(t.Source), "Meta leading comment location")
 			}
-			for _, t := range n.Meta.InnerTrailingComments {
+			for _, t := range m.InnerTrailingComments {
 				add(ptrOf(t), "Meta inner trailing comment token")
 				add(ptrOf(t.Source), "Meta inner trailing comment location")
 			}
-			if t := n.Meta.TrailingComment; t != nil {
+			if t := m.TrailingComment; t != nil {
 				add(ptrOf(t), "Meta trailing comment token")
 				add(ptrOf(t.Source), "Meta trailing comment location")
 			}
@@ -221,7 +222,7 @@ func (f *fingerprinter) walkMapEntries(v *lisp.LVal) {
 		return
 	}
 	md := v.Map()
-	if md == nil || md.Map == nil {
+	if md == nil || lisp.MapBacking(md) == nil {
 		return
 	}
 	buf := make([]*lisp.LVal, md.Len())
@@ -463,12 +464,12 @@ func TestDetachBytesAndMapDisjoint(t *testing.T) {
 }
 
 // TestDetachEmptyMapDataDisjoint: a degenerate MapData with a nil Map
-// implementation (constructible via SortedMapFromData(&MapData{})) must
+// implementation (constructible via SortedMapFromData(NewMapData(nil))) must
 // still detach to an independent struct — returning the original *MapData
 // would alias Native between the copy and the original in the one tool
 // whose contract is "shares no memory".
 func TestDetachEmptyMapDataDisjoint(t *testing.T) {
-	md := &lisp.MapData{}
+	md := lisp.NewMapData(nil)
 	v := lisp.SortedMapFromData(md)
 	cp, err := lisp.Detach(v)
 	if err != nil {
@@ -480,7 +481,7 @@ func TestDetachEmptyMapDataDisjoint(t *testing.T) {
 	if cp.Native == v.Native {
 		t.Fatal("detached copy shares its *MapData with the original")
 	}
-	if cp.Native.(*lisp.MapData).Map != nil {
+	if lisp.MapBacking(cp.Native.(*lisp.MapData)) != nil {
 		t.Fatal("detached copy of a nil-Map MapData should preserve the nil Map")
 	}
 }

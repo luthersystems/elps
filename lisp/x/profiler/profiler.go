@@ -4,6 +4,7 @@ import (
 	"errors"
 	"regexp"
 
+	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -47,16 +48,12 @@ func defaultFunName(runtime *lisp.Runtime, fun *lisp.LVal) string {
 	if fun.Type != lisp.LFun {
 		return ""
 	}
-	funData := fun.FunData()
-	if funData == nil {
-		return ""
-	}
 	name := ""
-	if env := fun.Env(); env != nil {
+	if env := funraw.Env(fun); env != nil {
 		name = env.GetFunName(fun)
 	}
 	if name == "" {
-		name = getFunNameFromFID(runtime, funData.FID)
+		name = getFunNameFromFID(runtime, fun.FID())
 	}
 	return name
 }

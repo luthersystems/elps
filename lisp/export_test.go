@@ -19,3 +19,9 @@ func ProgramDetach(p Program) ([]*LVal, error) { return p.detach() }
 // plumbing, but the copy-on-write fingerprint tests hash it to prove sealed
 // trees survive evaluation bit-identically.
 func SplicedFlag(v *LVal) bool { return v.spliced }
+
+// MapBacking exposes MapData's unexported backing field to package
+// lisp_test.  The field went unexported in issue #382 (the backing is fixed
+// at construction); the detach tests still nil-probe it to walk degenerate
+// MapData values.
+func MapBacking(md *MapData) Map { return md.mapBacking }

@@ -386,7 +386,7 @@ func newIntKeyedMap(pairs map[int]string) *lisp.LVal {
 	for k, v := range pairs {
 		im.m[k] = lisp.String(v)
 	}
-	return lisp.SortedMapFromData(&lisp.MapData{Map: im})
+	return lisp.SortedMapFromData(lisp.NewMapData(im))
 }
 
 func (im *intKeyedMap) Len() int { return len(im.m) }

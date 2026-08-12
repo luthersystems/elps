@@ -16,7 +16,7 @@ import (
 
 // libschema invokes constraints through a PRIVATE calling convention: a
 // validator's Go closure takes the value under test directly, not an argument
-// list, so constraints are called by reaching into FunData().Builtin rather
+// list, so constraints are called by reaching into the raw Builtin closure rather
 // than through LEnv.FunCall. Nothing in the type system enforced that the
 // value in a constraint slot was actually built by this package, so any LFun
 // landed there and was invoked with a bare value:
@@ -238,7 +238,7 @@ func TestNewValidatorIsAcceptedAsAConstraint(t *testing.T) {
 // builtinInvocationRe matches an invocation of a raw LBuiltin closure, in
 // BOTH spellings this file has historically used:
 //
-//	rest.FunData().Builtin(env, input)
+//	rest.FunData().Builtin(env, input)      (historical, pre-#382)
 //	builtinIsTruthy(env, nil).Builtin()(env, input)
 //
 // A drift guard that only grepped the first spelling would have declared
@@ -278,7 +278,7 @@ func TestNoUnroutedConstraintInvocation(t *testing.T) {
 			"first. See isValidator.",
 			len(offenders), strings.Join(offenders, "\n  "))
 	}
-	if !strings.Contains(offenders[0], "constraint.FunData().Builtin(env, input)") {
+	if !strings.Contains(offenders[0], "constraint.Builtin()(env, input)") {
 		t.Fatalf("the single raw invocation is not the one in applyConstraint: %s", offenders[0])
 	}
 }

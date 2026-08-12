@@ -181,6 +181,40 @@ construction free of per-builtin formals copies (the eager copy measured
 `TestNoCrossEnvironmentLValSharing` (`lisp/shared_formals_test.go`)
 asserts the resulting sharing is sealed-only.
 
+### 2.7 The exported-field surface (issues #362, #382)
+
+The seal is a runtime layer; the field-privatization layer closes the same
+write channels at compile time.  Every historical metadata corruption went
+through an exported `LVal` field — the #333/#334 singleton race wrote
+`Quoted`, #370's stamp wrote `MacroExpansion` and source metadata onto
+shared parser nodes, and the post-seal leak fixes were `Meta`-adjacent
+writes — so those fields are unexported (#362 for `source`, #382 for
+`quoted`, `spliced`, `meta`, `macroExpansion`):
+
+- **Reads are mediated**: `Source()` returns a location copy, `IsQuoted()`
+  reads the quote flag, `MacroExpansion()` returns a `MacroExpansionMeta`
+  snapshot, and function identity stays on nil-safe `FID()`/`Package()`/
+  `Builtin()`.  Formatting metadata has no exported reader at all — it is
+  typed by `internal/fmtmeta` and reachable only inside this module through
+  `internal/fmtraw`.
+- **Writes are construction-time or in-kernel only**: `Quote`/`Splice`/the
+  parser set the flags, `stampMacroExpansion` is the only expansion-metadata
+  writer, and the format-preserving parser is the only `meta` writer, on
+  trees it owns.
+- **In-repo tooling crosses on internal hook bridges** (`internal/astraw`
+  precedent): `internal/fmtraw` (formatting metadata), `internal/funraw`
+  (captured closure environments — the deepest aliasing channel `Env()`
+  used to hand embedders), `internal/macroexp` (test-only metadata
+  fabrication for debugger tests).
+- **The remaining exported fields are the deliberate data-read surface**:
+  `Native`, `Str`, `Cells`, `Type`, `Int`, `Float`, `FunType` (accessor
+  migration priced at ~3,000 downstream sites and rejected; writes there
+  are covered by the seal, elpsvet, and checked mode).  `MapData`'s backing
+  is fixed at construction (`NewMapData`).  `TestLValFieldSeal`
+  (`lisp/lval_fields_seal_test.go`) is the regression guard: re-exporting a
+  metadata field, or adding a new exported field without a review
+  conversation, fails the suite.
+
 ## 3. Verification layers: what each prevents, and its blind spots
 
 The seal design reduces to one checkable sentence: **the bytes of a sealed
@@ -325,9 +359,12 @@ text": refuse or `Copy()`, never write.
   header (the `macroexpand` bug shape). If you build a new header over
   cells you did not allocate, either propagate the seal
   (`r.sealed = v.sealed` — kernel-internal) or copy the cells.
-- Do **not** stamp metadata (`SetSource`, `Meta`, `MacroExpansion`) onto
-  nodes you did not construct; `SetSource` no-ops on sealed values, but the
-  fields are exported and a direct write compiles.
+- Do **not** stamp metadata (`SetSource`, formatting metadata, macro-
+  expansion metadata) onto nodes you did not construct; `SetSource` no-ops
+  on sealed values, and since issue #382 the metadata fields are unexported
+  — a direct write no longer compiles outside the kernel, so the remaining
+  in-repo write paths (`internal/fmtraw`, the stamp) carry the whole
+  ownership burden.
 - Do **not** suppress an elpsvet finding without a justification that a
   reviewer can audit; `//elps:mutates` is a claim of deliberate, owned
   mutation, not an off switch.

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/fmtmeta"
 	"github.com/luthersystems/elps/parser/token"
 )
 
@@ -49,7 +50,7 @@ const (
 	LSExpr
 	// LFun values use the following fields in an LVal:
 	// 		LVal.Str      The local name used to reference the function (if any)
-	// 		LVal.Native   An LFunData object
+	// 		LVal.Native   A funData object
 	//
 	// In addition to these fields, a function defined in lisp (with defun,
 	// lambda, defmacro, etc) uses the LVal.Cells field to store the following
@@ -162,15 +163,23 @@ func (ft LFunType) String() string {
 	return lfunTypeStrings[ft]
 }
 
-type LFunData struct {
+// funData is the Native payload of every LFun value: the builtin
+// implementation or the captured environment, plus the function's identity
+// (FID, package).  Unexported (issue #382): the captured environment was
+// the deepest aliasing channel left in the exported API — handing an
+// embedder the *LEnv exposes the live Scope of every closure sharing it,
+// invisible to the runtime seal.  External readers keep the narrow
+// identity accessors (FID, Package, Builtin); in-repo tooling reaches the
+// captured environment through internal/funraw.
+type funData struct {
 	Builtin LBuiltin
 	Env     *LEnv
 	FID     string
 	Package string
 }
 
-func (fd *LFunData) Copy() *LFunData {
-	cp := &LFunData{}
+func (fd *funData) Copy() *funData {
+	cp := &funData{}
 	*cp = *fd
 	cp.Env = fd.Env.Copy()
 	return cp
@@ -249,21 +258,6 @@ func (v *LVal) MacroExpansion() (MacroExpansionMeta, bool) {
 	return m, true
 }
 
-// SourceMeta holds formatting metadata for an LVal, populated only when
-// parsing in format-preserving mode. Nil in normal parsing — zero cost.
-type SourceMeta struct {
-	TrailingComment         *token.Token   // inline comment on same line after this node
-	OriginalText            string         // original token text for literals (preserves escapes, numeric bases)
-	LeadingComments         []*token.Token // comment tokens preceding this node
-	InnerTrailingComments   []*token.Token // comments between last child and closing bracket
-	BlankLinesBefore        int            // blank lines (newline count - 1) before this node (or before its leading comments)
-	BlankLinesAfterComments int            // blank lines between last leading comment and the expression
-	PrecedingSpaces         int            // spaces before this token on the same line (for column alignment)
-	BracketType             rune           // '(' or '[' for LSExpr nodes
-	NewlineBefore           bool           // true if at least one newline preceded this node in source
-	ClosingBracketNewline   bool           // true if closing bracket was on its own line in source
-}
-
 // LVal is a lisp value
 //
 // Field order is chosen so that every pointer-bearing word sits in the leading
@@ -286,8 +280,13 @@ type LVal struct {
 	// SetSource().  See issue #362.
 	source *token.Location
 
-	// Meta holds formatting metadata, only populated in format-preserving mode.
-	Meta *SourceMeta
+	// meta holds formatting metadata, only populated in format-preserving
+	// mode.  Unexported (issue #382), typed by an internal package: only
+	// this module's format tooling (parser/rdparser writes, formatter
+	// reads) can touch it, through internal/fmtraw.  Format-preserving
+	// trees are never sealed, evaluated, or shared, so nothing outside
+	// that tooling has ever had a legitimate use.
+	meta *fmtmeta.Meta
 
 	// macroExpansion holds debug metadata for nodes produced by macro
 	// expansion. Only populated when a debugger is attached — nil in
@@ -647,7 +646,7 @@ func FunRef(symbol, fun *LVal) *LVal {
 func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
 		Type: LFun,
-		Native: &LFunData{
+		Native: &funData{
 			FID:     fid,
 			Builtin: fn,
 			Package: pkg,
@@ -657,7 +656,7 @@ func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 }
 
 // Fun returns an LVal representing a function. Package is left empty;
-// callers MUST set v.FunData().Package before the value is invoked, or
+// callers MUST set the funData Package before the value is invoked, or
 // GetFunName will log "BUG: ..." at every call site that observes a
 // package-less LFun.
 //
@@ -674,7 +673,7 @@ func MacroInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
 		Type:    LFun,
 		FunType: LFunMacro,
-		Native: &LFunData{
+		Native: &funData{
 			FID:     fid,
 			Builtin: fn,
 			Package: pkg,
@@ -684,7 +683,7 @@ func MacroInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 }
 
 // Macro returns an LVal representing a macro. Package is left empty;
-// callers MUST set v.FunData().Package before the value is invoked, or
+// callers MUST set the funData Package before the value is invoked, or
 // GetFunName will log "BUG: ..." at every call site that observes a
 // package-less LFun.
 //
@@ -701,7 +700,7 @@ func SpecialOpInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
 		Type:    LFun,
 		FunType: LFunSpecialOp,
-		Native: &LFunData{
+		Native: &funData{
 			FID:     fid,
 			Builtin: fn,
 			Package: pkg,
@@ -715,7 +714,7 @@ func SpecialOpInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 // However values returned by special operations do not require further
 // evaluation, unlike macros.
 //
-// Package is left empty; callers MUST set v.FunData().Package before the
+// Package is left empty; callers MUST set the funData Package before the
 // value is invoked, or GetFunName will log "BUG: ..." at every call site
 // that observes a package-less LFun.
 //
@@ -905,27 +904,56 @@ func (v *LVal) SetCallStack(stack *CallStack) {
 	v.Native = stack.Copy() //elps:mutates the audited setter stamping a copied stack onto an in-flight error at its capture point
 }
 
-func (v *LVal) FunData() *LFunData {
+// funData returns the function payload of an LFun value.  It panics on
+// non-function values.  Unexported (issue #382): external packages read
+// function identity through FID, Package, and Builtin, and in-repo tooling
+// reaches the captured environment through internal/funraw.
+func (v *LVal) funData() *funData {
 	if v.Type != LFun {
 		panic("not a function: " + v.Type.String())
 	}
-	return v.Native.(*LFunData)
+	return v.Native.(*funData)
 }
 
+// Package returns the name of the package a function value was defined in,
+// or "" for a function value carrying no function data.  It panics on
+// non-function values.
 func (v *LVal) Package() string {
-	return v.FunData().Package
+	if fd := v.funData(); fd != nil {
+		return fd.Package
+	}
+	return ""
 }
 
+// Builtin returns the native implementation of a builtin function value,
+// or nil for user-defined functions and function values carrying no
+// function data.  It panics on non-function values.
 func (v *LVal) Builtin() LBuiltin {
-	return v.FunData().Builtin
+	if fd := v.funData(); fd != nil {
+		return fd.Builtin
+	}
+	return nil
 }
 
+// FID returns the function value's unique identifier, or "" for a function
+// value carrying no function data.  It panics on non-function values.
 func (v *LVal) FID() string {
-	return v.FunData().FID
+	if fd := v.funData(); fd != nil {
+		return fd.FID
+	}
+	return ""
 }
 
-func (v *LVal) Env() *LEnv {
-	return v.FunData().Env
+// funEnv returns the environment captured by a function value (nil for
+// builtins).  Unexported (issue #382): the captured environment is the
+// deepest aliasing channel into shared interpreter state, so external
+// packages cannot reach it at all; in-repo tooling goes through
+// internal/funraw.
+func (v *LVal) funEnv() *LEnv {
+	if fd := v.funData(); fd != nil {
+		return fd.Env
+	}
+	return nil
 }
 
 // Len returns the length of the list v.
@@ -1512,7 +1540,7 @@ func lambdaVars(formals *LVal, bound *LVal) *LVal {
 }
 
 func boundVars(v *LVal) *LVal {
-	env := v.Env()
+	env := v.funEnv()
 	if env == nil {
 		return Nil()
 	}
