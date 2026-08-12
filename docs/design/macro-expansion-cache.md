@@ -182,7 +182,10 @@ Two conclusions, and they are the empirical justification for the boundary:
 - **The excluded kernel macros cost nothing and save a great deal.** `defun`
   is **80.6% of all dispatches** but yields **40** repeats across 633,590
   callsites, because each parse mints fresh callsites. Admitting it would
-  buy 0.05% more reuse for roughly **463 MB** of entries. The exclusion was
+  buy 0.05% more reuse for 633,590 entries — **0.46 GB** at the warm
+  topology's 730 B/expansion, or **2.1 GB** at the 3,281 B/entry this very
+  run measured (26.9 MB across 8,192 capped entries) — and that is before
+  counting the dead parse trees each key would pin (§9). The exclusion was
   argued from semantics in §3.1; it turns out to be the dominant *memory*
   decision as well.
 
