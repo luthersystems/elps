@@ -51,15 +51,13 @@ func TestSealWatchdogMacroStampEvalPath(t *testing.T) {
 	// A handful of fresh environments evaluating the same cached parse —
 	// the substrate cache shape.  Each evaluation macroexpands
 	// (pass-through #'list) and runs the stamp over the sealed argument.
-	// Under elpscheck the ownership checker forbids cross-runtime AST
-	// sharing by design, so the checked build evaluates repeatedly in ONE
-	// environment instead; the stamp runs on every iteration either way.
+	// The checked build runs the same cross-runtime sharing: the ownership
+	// checker exempts sealed nodes (see the Allowlist section of
+	// lisp/ownership_check_elpscheck.go), so no single-environment
+	// fallback is needed.
 	iterations := 4
-	var env *lisp.LEnv
 	for i := range iterations {
-		if env == nil || !elpscheckActive {
-			env = newCowTestEnv(t)
-		}
+		env := newCowTestEnv(t)
 		for j, e := range exprs {
 			if r := env.Eval(e); r.Type == lisp.LError {
 				t.Fatalf("iteration %d expr %d: %v", i, j, r)

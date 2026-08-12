@@ -118,7 +118,11 @@ func (pkg *Package) get(k *LVal) *LVal {
 		return v
 	}
 	lerr := Errorf("unbound symbol: %v", k)
-	lerr.source = k.source
+	// Copied, not aliased: the error escapes to the evaluator (and possibly
+	// the embedder) while k remains live program state, so the two must not
+	// share a *token.Location (cold error path; the copy is free in
+	// practice).  copyLocation preserves nil.
+	lerr.source = copyLocation(k.source)
 	return lerr
 }
 

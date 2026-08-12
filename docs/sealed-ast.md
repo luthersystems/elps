@@ -74,8 +74,14 @@ the seal point (see the 8d18071 entry above).
 (`LSExpr`, `LQuote`, `LSymbol`, `LQSymbol`, `LString`, `LInt`, `LFloat`);
 runtime-only types (functions, arrays, maps, bytes, natives) stop the walk —
 freezing storage the evaluator legitimately mutates would be wrong. The
-Nil/true/false singletons are skipped: they are already immutable by decree
-and writing even a flag to one would race. Atoms *are* sealed: unlike the
+Nil/true/false singletons are **born sealed** (elps#376): the flag is set in
+their composite literals at package init (`lisp/singleton.go`), so no
+post-construction write exists to race with anything and `SealAST`'s
+already-sealed check stops the walk at one. `IsSealed()` therefore reports
+the do-not-mutate contract on `Nil()`/`Bool()` results too, the CoW guards
+below treat a singleton operand exactly like a shared literal
+(`TestSingletonCoWContainerOps`, `lisp/singleton_seal_cow_test.go`), and
+`SetSource` on a singleton is a no-op. Atoms *are* sealed: unlike the
 eager-copy design, where copying atoms measured a +56% geomean regression,
 marking one costs a bit at parse time, and it makes `IsSealed` meaningful on
 every node a literal can produce.
@@ -136,6 +142,13 @@ and copy first (`lisp/builtins.go`):
 on lists, and maps/vectors/bytes cannot be produced by the parser, so a
 sealed value cannot legally reach their mutation path.
 
+Each of those three copy-on-write sites also records the event under
+`-tags elpscheck` (§3.6), because whether they should copy at all is an open
+question (elps#378): the alternative is a catchable `cannot modify a program
+literal` condition, and the census exists to decide it on evidence. The
+lisp-level remedy either way is `(copy x)` (§4.4), which returns a fully
+unsealed deep copy, so the mutating builtin takes its ordinary in-place path.
+
 The evaluator's own metadata writes respect the flag too:
 `stampMacroExpansion` skips sealed subtrees (`lisp/macro.go` — a sealed
 node's descendants are all sealed, so the whole subtree is skipped), and
@@ -154,8 +167,9 @@ unsealed by construction.
 The parse/cache boundary exposes no raw AST: `lisp.Program`
 (`lisp/program.go`) wraps parse output opaquely, and the package registry
 seals its LVal-bearing surface. Deep-copy machinery for owned expressions
-exists in-kernel (`detach()`, `lisp/detach.go` — it backs the planned
-lisp-level copy builtin, elps#378) but is unexported: it will be re-exported
+exists in-kernel (`detach()`, `lisp/detach.go` — whose walker also backs the
+lisp-level `copy` builtin in a within-env mode, elps#378) but is unexported:
+it will be re-exported
 when a real embedder consumer (debugger workflows, cross-runtime transfer)
 materializes. An embedder that hand-builds expression trees and
 shares them across environments may call `SealAST()` itself for the same
@@ -275,7 +289,7 @@ tool and silently missed by another.
 
 ### 3.1 elpsvet (static; `cmd/elpsvet`)
 
-Two `go/analysis` rules, run as `go run ./cmd/elpsvet -test=false ./...`:
+Three `go/analysis` rules, run as `go run ./cmd/elpsvet -test=false ./...`:
 
 - **elpsownership** (`main.go`): no package-level var may keep a
   `*lisp.LVal` reachable — the process-wide-shared-table producer pattern
@@ -288,14 +302,42 @@ Two `go/analysis` rules, run as `go run ./cmd/elpsvet -test=false ./...`:
   through assignments, var declarations, slice expressions and slice-type
   conversions (#369's laundering gap, #371). Suppression: `//elps:mutates`
   with a justification.
+- **elpsescape** (`escape.go`, #375): the mirror image of freshness — no
+  function may store a runtime-owned `*token.Location` (`env.Loc`,
+  `v.source`, parser/scanner token state, a location-returning method on a
+  non-fresh receiver) uncopied into a field of an escaping value: an LVal
+  field or composite literal, a `SetSource` call, a field of a returned
+  value, a returned location-capturing composite literal, or package-level
+  state. The pre-fix `ErrorCondition`/`ErrorConditionf` (ac0a326) and
+  `ErrorAssociate` (d922290) bugs stored `env.Loc` into freshly built
+  errors — fresh write targets, so freshness was structurally blind; this
+  rule retro-catches all three shapes (fixtures in
+  `cmd/elpsvet/testdata`). The cleanser is any function PROVEN to allocate
+  the location it returns: `copyLocation`, an explicit deref copy, a
+  `&token.Location{...}` literal, or anything built only out of those.
+  That proof is a `go/analysis` **fact** (`locfact.go`), computed per
+  location-returning function from its own body and exported along the
+  import graph, so the sanctioned copying accessors — `lisp.LEnv.Source`
+  (returns `copyLocation(env.loc)`) and `token.Scanner.LocStart` (mints a
+  literal per token) — are clean at every call site in every package with
+  no annotation, while a by-reference accessor of identical signature
+  (`rdparser.Parser.Location`) is still flagged. A callee with no fact —
+  un-analysed package, interface method, a body with one leaking return —
+  keeps the conservative treatment, so the fact can only ever retire a
+  proven false positive. Suppression: `//elps:aliases` with a
+  justification.
 
 *Blind spots (documented in the analyzers' own headers):* intraprocedural
-only — `[]*LVal` function parameters are not taint sources in the callee;
+within a function body — the escape rule's location-freshness fact is the
+one summary that crosses a call, and it carries a single bit, nothing about
+arguments or aliasing. `[]*LVal` function parameters are not taint sources in the callee
+(and neither are `*token.Location` parameters for the escape rule);
 storing a tainted slice into a field of a pre-existing struct escapes
-tracking; a value-typed LVal variable is treated as a fresh root even though
-its `Cells` still alias shared backing. And it is **elps-repo-only**: it
-sees nothing an embedder compiles outside this module. Every suppression is
-an audited claim, not a proof.
+tracking; a tainted location passed as a call argument escapes the escape
+rule's tracking; a value-typed LVal variable is treated as a fresh root
+even though its `Cells` still alias shared backing. And it is
+**elps-repo-only**: it sees nothing an embedder compiles outside this
+module. Every suppression is an audited claim, not a proof.
 
 ### 3.2 Fuzz corruption oracle (dynamic, offline; `lisp/eval_fuzz_test.go`)
 
@@ -321,6 +363,16 @@ of each test file; embedders can call it at their own teardown points.
 Untagged builds compile all of it out to empty inlined hooks
 (`seal_check_default.go`) — release binaries carry zero bookkeeping;
 tagged overhead is about +3% suite wall time (CI-only).
+
+The Nil/true/false singletons are held as **permanent roots** (elps#376):
+fingerprinted at package init, before any user code runs, and re-verified
+on every top-level load and at every teardown verification. Unlike the
+bounded roots table they are never part of a verify-and-drop cycle, so a
+singleton corruption is caught at the load that caused it for the life of
+the process — not only at the value-drift checkpoints `checkSingleton`
+covers. Red-proof: `TestPermanentSingletonRoots_*`
+(`lisp/singleton_seal_elpscheck_test.go`) mutates a singleton and proves
+both hooks report it, naming the root.
 
 *Blind spots:* fingerprint-value comparison is structurally blind to a write
 that stores what a field already holds, and to a metadata write that swaps a
@@ -361,7 +413,29 @@ in-repo code, and the `IsSealed()` contract for everything else:
 Second residual: same-value writes in untagged production builds. In a
 release binary nothing observes them; they are benign in effect on the tree
 bytes but are still data races on shared storage. They are caught in
-development by the watchdog (§3.4) — that split is deliberate.
+development by the watchdog (§3.4) — that split is deliberate, and it
+applies to the singletons the same way: the permanent inspector roots
+(§3.3) catch any value-changing singleton write at the next load, while a
+same-value singleton write remains `-race`-only by design, kept
+deterministic by the singleton write watchdog
+(`lisp/singleton_watchdog_test.go`; mprotect approaches were evaluated and
+rejected in #334).
+
+### 3.6 Copy-on-write census (dynamic, tagged builds; `lisp/cow_check_elpscheck.go`)
+
+Under `-tags elpscheck`, every copy-on-write-on-sealed site (§2.4) records
+the event and the lisp-level frames that caused it, printing each distinct
+(site, location) pair once to stderr so that suite runs driven by external
+test binaries leave the evidence in their logs. This measures nothing about
+correctness — it answers the policy question of elps#378: if no real program
+reaches those sites, they can raise `cannot modify a program literal` instead
+of silently copying. Untagged builds carry no counter symbol and no site
+string (`go tool nm` assertion in `lisp/cow_counter_test.go`).
+
+*Blind spots:* it sees only executed paths, and it counts the kernel's three
+CoW sites — not libelpspath's list refusal (which already errors) nor the
+metadata no-ops (`SetSource`, `stampMacroExpansion`), which change no
+lisp-visible value.
 
 ## 4. Footguns
 
@@ -418,6 +492,21 @@ text": refuse or `Copy()`, never write.
   reviewer can audit; `//elps:mutates` is a claim of deliberate, owned
   mutation, not an off switch.
 
+### 4.4 Lisp-side: `(copy x)`, unconditionally
+
+Lisp code has one ownership primitive, `copy` (elps#378): a deep copy with
+fresh backing for every container, the seal cleared, and function/native
+leaves shared by reference (a within-env copy cannot smuggle anything, and
+lisp cannot mutate a function's internals). It replaces the one-level
+`(concat 'list x)` idiom and the json round-trip.
+
+There is deliberately **no `sealed?` predicate**. `(if (sealed? x) (copy x) x)`
+looks like the careful version and is the footgun: the seal bit reports
+program-text provenance, not exclusive ownership, and an unsealed value can
+still be aliased by another binding, a container, or a closure. Code that
+intends to mutate data it did not construct copies unconditionally.
+`IsSealed()` stays a Go-side tool, where refuse-or-copy is a real choice.
+
 ## 5. Embedder checklist
 
 1. **Parse through a sealing path.** `Reader.Read`, `LoadString`,
@@ -434,10 +523,11 @@ text": refuse or `Copy()`, never write.
    `v.IsSealed()` first; refuse with an error or operate on `v.Copy()`.
    Remember slices of `Cells` share backing — copy the cells, not just the
    header, before restructuring.
-4. **Use `concat` (lisp) / `Copy()` (Go) as the copy idioms** when you
-   need storage that no one else can write (§4.1). (The hermetic
-   cross-runtime deep copy lives in-kernel as `detach()`, unexported until
-   a consumer appears.)
+4. **Use `copy` (lisp) / `Copy()` (Go) as the copy idioms** when you
+   need storage that no one else can write (§4.1). `copy` is deep and
+   unconditional -- prefer it to the one-level `(concat 'list x)`. (The
+   hermetic cross-runtime deep copy lives in-kernel as `detach()`,
+   unexported until a consumer appears; `copy` is its within-env mode.)
 5. **Run the verification stack you can afford:** `go run ./cmd/elpsvet
    -test=false ./...` over code living in this module; `go test -tags
    elpscheck` (inspector) and `-race` (watchdog) in CI; call

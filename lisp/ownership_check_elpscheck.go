@@ -58,23 +58,58 @@ import (
 //
 // # Allowlist
 //
-// Two classes, and only these two:
+// Two entries, and this file's own rule applies to both: an exemption is
+// either a real bug or a deliberate design, and a deliberate design gets
+// documented HERE with the reasoning.
 //
-//   - The three singletons (Nil()/Bool(true)/Bool(false)); they are
-//     shared by design, immutable by decree, and guarded by
-//     checkSingleton.
-//   - SEALED values (issue #380).  A sealed node is a parsed program node
-//     whose bytes never change after parsing completes (lisp/seal.go), so
-//     cross-runtime sharing of it is safe by exactly the same reasoning
-//     as the singletons — immutability, not per-runtime confinement, is
-//     what protects it.  Sealed sharing across runtimes is not
-//     hypothetical or accidental: substrate's parse cache hands one
-//     sealed tree to every environment in the process, and LEnv.Fork
-//     shares every sealed node between a template and its forks.  The
-//     immutability claim itself is machine-verified by the seal layers
-//     (fingerprint oracle, checked-mode inspector, -race watchdog — see
-//     docs/sealed-ast.md §3); this checker's job is per-runtime
-//     confinement of MUTABLE values, which sealed nodes are not.
+//  1. The three singletons (Nil()/Bool(true)/Bool(false)).  Shared by
+//     design, immutable by decree, guarded by checkSingleton.
+//
+//  2. SEALED nodes (LVal.sealed - lisp/seal.go), arrived at independently
+//     three times - for issue #372, for #379 item 2 and for #380 - and a
+//     deliberate design rather than a bug.  Worth spelling out, because
+//     without it the checker forbade the exact topology the seal exists to
+//     make safe.
+//
+//     The seal's contract, stated on the field itself in lisp/lisp.go, is
+//     that a sealed node "may be shared by every environment that evaluates
+//     the same parse - substrate's parse cache shares one tree
+//     process-wide".  Sharing a parse ACROSS RUNTIMES is not an accident to
+//     be caught; it is the point of sealing.  Three supported topologies
+//     do exactly that: substrate's warm parse cache hands one sealed tree
+//     to many runtimes, elpstest.RunBenchmark shares the sealed program
+//     across its per-iteration runtimes (#379 item 2), and LEnv.Fork
+//     shares every sealed node between a template environment and its
+//     forks (#380).  Before this exemption, evaluating one lisp.Program in
+//     two Runtimes under `-tags elpscheck` panicked on the first shared
+//     AST node - so an embedder running the supported parse-cache topology
+//     could not use checked mode at all, and the two halves of the #372
+//     verification tooling contradicted each other.  Found by
+//     lisp.FuzzSharedProgramMultiEnv, whose whole subject is that topology.
+//
+//     What licenses the exemption is that a sealed node's cross-runtime
+//     safety does not rest on ownership at all: sealed bytes never change
+//     after parse, and three independent mechanisms enforce that.  Every
+//     kernel mutation site copies before writing and the evaluator's
+//     metadata writes (stampMacroExpansion, SetSource) skip sealed nodes
+//     (lisp/seal.go); the fingerprint oracle re-checks every sealed parse
+//     in checked builds (lisp/sealfp.go, VerifySealedASTs), so a hole in
+//     that protection is a test failure rather than a silently-trusted
+//     exemption; and the -race seal watchdog covers the concurrent case.
+//     The layers are laid out together in docs/sealed-ast.md section 3.
+//     Immutability, not per-runtime confinement, is what protects a sealed
+//     node — the same reasoning that exempts the singletons.
+//
+//     Ownership remains the right question for MUTABLE runtime storage,
+//     and that stays fully checked: a value becomes unsealed the moment it
+//     becomes runtime storage (Copy and detach clear the flag on fresh
+//     storage), so crossing runtimes with one of those still trips the
+//     gate.  The rule this checker enforces therefore keeps its spirit -
+//     no MUTABLE value may be used by two Runtimes - and sealing is what
+//     makes "not mutable" provable.  TestOwnershipCheck_SealedNodesExempt
+//     (Put path, plus TestOwnershipCheck_CopyOfSealedIsChecked for the
+//     Copy boundary) and TestOwnershipCheck_SealedASTExempt (eval path)
+//     pin both directions.
 //
 // Values whose Source is the shared native location need NO exemption —
 // the Location is shared (#362) but the LVals carrying it are per-value.
@@ -134,10 +169,11 @@ func (v ownershipViolation) String() string { return v.msg }
 // LEnv.Put, LEnv.PutGlobal, and env.eval — see the file comment for why
 // those three points and what they miss.
 func checkOwnership(rt *Runtime, v *LVal) {
+	// v.sealed: see allowlist entry 2 in the file comment.  A sealed node is
+	// shared across runtimes BY DESIGN (that is what a parse cache is), and
+	// its safety is carried by the seal's own three checkers rather than by
+	// ownership.
 	if v == nil || rt == nil || isSingleton(v) || v.sealed {
-		// Sealed values are the sanctioned cross-runtime class — immutable
-		// after parse, shared by the parse cache and by LEnv.Fork.  See the
-		// Allowlist section of the file comment.
 		return
 	}
 	m := ownershipTable.m.Load()
