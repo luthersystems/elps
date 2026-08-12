@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -35,9 +36,60 @@ func (e encodeInvalidNumberError) Error() string {
 }
 
 type encoder struct {
-	buf        bytes.Buffer
+	buf bytes.Buffer
+
+	// path holds the values between the root of the encoding and the value
+	// being encoded now.  It stays nil until the encoder nests deeper than
+	// encodeGuardDepth, so an ordinary document allocates nothing for it.
+	path map[*lisp.LVal]struct{}
+
 	scratch    [64]byte
+	depth      int
 	stringNums bool
+}
+
+// encodeGuardDepth is the nesting depth past which the encoder stops assuming
+// the value it is serializing is a tree and starts tracking the path it is on.
+//
+// assoc! and append! mutate a container in place, so a program can store a
+// container inside itself, and an unguarded encoder walks such a value until
+// the goroutine stack overflows and the Go runtime kills the process -- which
+// recover() cannot catch, so it is not something the evaluator can turn into a
+// condition.  See lisp/cycle.go and issue #390.
+const encodeGuardDepth = 64
+
+// errCyclicValue reports a value that contains itself.  JSON has no
+// representation for one, so the encoder refuses rather than emitting a
+// truncated document: the builtins turn this into an ordinary elps error that
+// handler-bind can catch.
+var errCyclicValue = errors.New("cannot serialize a value that contains itself")
+
+// enter descends into v, and reports an error if v is already on the path
+// being encoded.  A caller that gets nil back must pair it with leave(v).
+//
+// The path set is scoped to the current path rather than the whole document
+// so that a value which merely shares a substructure with itself -- a DAG,
+// (list x x) -- still serializes as the two copies it has always been.
+func (enc *encoder) enter(v *lisp.LVal) error {
+	enc.depth++
+	if enc.depth < encodeGuardDepth {
+		return nil
+	}
+	if enc.path == nil {
+		enc.path = make(map[*lisp.LVal]struct{}, encodeGuardDepth)
+	} else if _, ok := enc.path[v]; ok {
+		return errCyclicValue
+	}
+	enc.path[v] = struct{}{}
+	return nil
+}
+
+// leave ascends out of v.
+func (enc *encoder) leave(v *lisp.LVal) {
+	enc.depth--
+	if enc.path != nil {
+		delete(enc.path, v)
+	}
 }
 
 func newEncoder(stringNums bool) *encoder {
@@ -54,6 +106,10 @@ func (enc *encoder) encode(v *lisp.LVal) error {
 		return nil
 	}
 	if fn := encoderFuncs[v.Type]; fn != nil {
+		if err := enc.enter(v); err != nil {
+			return err
+		}
+		defer enc.leave(v)
 		return fn(enc, v)
 	}
 	return fmt.Errorf("invalid type encountered: %v", lisp.GetType(v))
