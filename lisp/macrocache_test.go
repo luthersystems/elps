@@ -550,6 +550,15 @@ func TestMacroCacheExpansionSealed(t *testing.T) {
 	if st.Unsealable != 0 {
 		t.Fatalf("expansion refused as unsealable: %+v", st)
 	}
+	// The published entries must actually BE sealed trees, not just
+	// counted as stored: walk the shared table and verify every node.
+	entries, allSealed := lisp.SharedMacroCacheAllSealedForTest()
+	if entries == 0 {
+		t.Fatalf("no entries in the shared table")
+	}
+	if !allSealed {
+		t.Fatalf("shared cache published an unsealed expansion tree")
+	}
 }
 
 // TestMacroCacheStableAcrossManyCallsites stresses distinct callsites to
