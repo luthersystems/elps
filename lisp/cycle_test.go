@@ -3,12 +3,14 @@
 package lisp
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"runtime/debug"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,7 +32,7 @@ func cyclicMap(keys ...string) *LVal {
 // the value goes into the backing storage and the dimension is bumped.
 func cyclicVector(n int) *LVal {
 	v := Vector([]*LVal{Int(1)})
-	for i := 0; i < n; i++ {
+	for range n {
 		v.Cells[1].Cells = append(v.Cells[1].Cells, v)
 		v.Cells[0].Cells[0].Int++
 	}
@@ -40,7 +42,7 @@ func cyclicVector(n int) *LVal {
 // nestList returns a list nested depth levels deep, with inner at the bottom.
 func nestList(depth int, inner *LVal) *LVal {
 	v := inner
-	for i := 0; i < depth; i++ {
+	for range depth {
 		v = SExpr([]*LVal{v})
 	}
 	return v
@@ -212,8 +214,10 @@ const cyclicWalkEnv = "ELPS_TEST_CYCLIC_WALK"
 func TestCyclicValueDoesNotKillTheProcess(t *testing.T) {
 	for name, want := range cyclicWalks {
 		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
 			//nolint:gosec // os.Args[0] is this test binary
-			cmd := exec.Command(os.Args[0], "-test.run=TestCyclicWalkHelper", "-test.v")
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestCyclicWalkHelper", "-test.v")
 			cmd.Env = append(os.Environ(), cyclicWalkEnv+"="+name)
 			out, err := cmd.CombinedOutput()
 			require.NoError(t, err, "the %s walk must not kill the process:\n%s", name, out)

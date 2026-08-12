@@ -36,12 +36,15 @@ func (e encodeInvalidNumberError) Error() string {
 }
 
 type encoder struct {
-	buf bytes.Buffer
-
 	// path holds the values between the root of the encoding and the value
 	// being encoded now.  It stays nil until the encoder nests deeper than
 	// encodeGuardDepth, so an ordinary document allocates nothing for it.
+	//
+	// It leads the struct for the fieldalignment gate: its pointer sits next
+	// to buf's, which keeps the run of pointer bytes the GC must scan short.
 	path map[*lisp.LVal]struct{}
+
+	buf bytes.Buffer
 
 	scratch    [64]byte
 	depth      int

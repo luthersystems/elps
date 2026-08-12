@@ -150,7 +150,7 @@ func knot(v *lisp.LVal, gen *fuzzval.Gen, n int) {
 	if len(nodes) == 0 {
 		return
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		// The root is always a candidate target so that a knot is a cycle
 		// even when the generated value has a single container.
 		targets := append(nodes, v) //nolint:gocritic // deliberately a fresh slice
@@ -201,6 +201,10 @@ func containers(v *lisp.LVal) []*lisp.LVal {
 			if len(v.Cells) > 0 {
 				out = append(out, v)
 			}
+		default:
+			// Not a container: nothing can be knotted into it, but its cells
+			// are still walked below (a tagged value holds its user data
+			// there).
 		}
 		for _, c := range v.Cells {
 			walk(c)

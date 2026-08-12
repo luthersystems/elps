@@ -1375,6 +1375,11 @@ func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
 		return quote + v.Str
 	case LNative:
 		return fmt.Sprintf("#<native value: %T>", v.Native)
+	default:
+		// Every remaining type renders values reachable from v, and is
+		// handled by strNested below.  Enumerated as a default rather than
+		// left implicit so that a new LType has to decide which half of this
+		// function it belongs in.
 	}
 	// Everything left renders values reachable from v, so it is entered on the
 	// guard's path.

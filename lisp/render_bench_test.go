@@ -26,7 +26,7 @@ type benchValue struct {
 func benchValues() []benchValue {
 	nest := func(depth int, inner *lisp.LVal) *lisp.LVal {
 		v := inner
-		for i := 0; i < depth; i++ {
+		for i := range depth {
 			v = lisp.SExpr([]*lisp.LVal{lisp.Int(i), v})
 		}
 		return v
