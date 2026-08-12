@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"hash"
 	"hash/fnv"
+	"runtime"
 	"sort"
 	"testing"
 
@@ -297,6 +298,9 @@ func (fp *fingerprinter) val(v *lisp.LVal) {
 		}
 	case lisp.LNative:
 		fp.str(fmt.Sprintf("native:%T", v.Native))
+	default:
+		// Every other type is fully described by the scalar header hashed
+		// above plus the cells hashed below.
 	}
 	fp.str(fmt.Sprintf("cells:%d", len(v.Cells)))
 	for _, c := range v.Cells {
@@ -333,24 +337,30 @@ func (fp *fingerprinter) env(e *lisp.LEnv) {
 // stay in-repo so the ratio is tracked where CI can see it.
 // ---------------------------------------------------------------------------
 
-func BenchmarkForkTemplate(b *testing.B) {
-	env := newLoadedForkEnv(b)
-	loadForkTestProgram(b, env)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		fork, err := env.Fork()
-		if err != nil {
-			b.Fatal(err)
-		}
-		_ = fork
-	}
-}
-
-func BenchmarkForkFullLoad(b *testing.B) {
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+// BenchmarkEnvConstruction compares the two ways to obtain a loaded
+// environment.  The subtest split lets benchstat put them side by side
+// (`benchstat -col /mode`) and interleaves them within one run, so the two
+// arms see the same machine state.
+func BenchmarkEnvConstruction(b *testing.B) {
+	b.Run("mode=fork", func(b *testing.B) {
 		env := newLoadedForkEnv(b)
 		loadForkTestProgram(b, env)
-	}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			fork, err := env.Fork()
+			if err != nil {
+				b.Fatal(err)
+			}
+			runtime.KeepAlive(fork)
+		}
+	})
+	b.Run("mode=fullload", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			env := newLoadedForkEnv(b)
+			loadForkTestProgram(b, env)
+			runtime.KeepAlive(env)
+		}
+	})
 }

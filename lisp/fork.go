@@ -4,6 +4,7 @@ package lisp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -156,7 +157,7 @@ func ForkWithNativeReplacer(fn func(payload interface{}) (interface{}, bool)) Fo
 // at zero.
 func (env *LEnv) Fork(opts ...ForkOption) (*LEnv, error) {
 	if env == nil || env.Runtime == nil {
-		return nil, fmt.Errorf("fork: nil environment or runtime")
+		return nil, errors.New("fork: nil environment or runtime")
 	}
 	var config forkConfig
 	for _, opt := range opts {
@@ -167,7 +168,7 @@ func (env *LEnv) Fork(opts ...ForkOption) (*LEnv, error) {
 		return nil, err
 	}
 	if old.Registry == nil {
-		return nil, fmt.Errorf("fork: template runtime has no package registry")
+		return nil, errors.New("fork: template runtime has no package registry")
 	}
 	newRT := &Runtime{
 		Registry: NewRegistry(),
@@ -224,7 +225,7 @@ func (env *LEnv) Fork(opts ...ForkOption) (*LEnv, error) {
 // the environment are mid-mutation and a fork would capture torn state.
 func checkQuiescent(rt *Runtime) error {
 	if rt.Stack == nil {
-		return fmt.Errorf("fork: template runtime has no call stack")
+		return errors.New("fork: template runtime has no call stack")
 	}
 	if n := len(rt.Stack.Frames); n != 0 {
 		return fmt.Errorf("fork: template not quiescent: call stack height %d", n)
