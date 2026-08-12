@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/fmtmeta"
 	"github.com/luthersystems/elps/parser/token"
 )
 
@@ -176,37 +177,77 @@ func (fd *LFunData) Copy() *LFunData {
 	return cp
 }
 
-// MacroExpansionContext is shared by all nodes in a single macro expansion.
+// macroExpansionContext is shared by all nodes in a single macro expansion.
 // It records the macro call site, name, definition site, and unevaluated
-// arguments for debugger inspection.
-type MacroExpansionContext struct {
+// arguments for debugger inspection.  Unexported (issue #382): #370's stamp
+// wrote expansion metadata onto shared parser nodes, so the only write path
+// is the in-kernel stamp; external tooling reads a snapshot through the
+// MacroExpansion accessor.
+type macroExpansionContext struct {
 	CallSite *token.Location // where the macro was invoked
 	Name     string          // qualified macro name (e.g. "lisp:defun")
 	DefSite  *token.Location // macro definition location (nil for builtins)
 	Args     []*LVal         // unevaluated call-site arguments (for debugger scope)
 }
 
-// MacroExpansionInfo is attached to LVal nodes produced by macro expansion.
+// macroExpansionInfo is attached to LVal nodes produced by macro expansion.
 // It is only allocated when a debugger is attached (Runtime.Debugger != nil),
 // so production code pays zero allocation cost.
-type MacroExpansionInfo struct {
-	*MacroExpansionContext       // shared across all nodes in one expansion
+type macroExpansionInfo struct {
+	*macroExpansionContext       // shared across all nodes in one expansion
 	ID                     int64 // unique per node, monotonically increasing
 }
 
-// SourceMeta holds formatting metadata for an LVal, populated only when
-// parsing in format-preserving mode. Nil in normal parsing — zero cost.
-type SourceMeta struct {
-	TrailingComment         *token.Token   // inline comment on same line after this node
-	OriginalText            string         // original token text for literals (preserves escapes, numeric bases)
-	LeadingComments         []*token.Token // comment tokens preceding this node
-	InnerTrailingComments   []*token.Token // comments between last child and closing bracket
-	BlankLinesBefore        int            // blank lines (newline count - 1) before this node (or before its leading comments)
-	BlankLinesAfterComments int            // blank lines between last leading comment and the expression
-	PrecedingSpaces         int            // spaces before this token on the same line (for column alignment)
-	BracketType             rune           // '(' or '[' for LSExpr nodes
-	NewlineBefore           bool           // true if at least one newline preceded this node in source
-	ClosingBracketNewline   bool           // true if closing bracket was on its own line in source
+// MacroExpansionMeta is a read-only snapshot of the debug metadata attached
+// to values produced by macro expansion while a debugger is attached.  It is
+// returned by (*LVal).MacroExpansion; the metadata itself lives in
+// unexported storage (issue #382) because the historical corruption in #370
+// was a write of expansion metadata onto shared parser nodes — reads get a
+// copy, and the in-kernel stamp is the only writer.
+type MacroExpansionMeta struct {
+	// CallSite is a copy of the location where the macro was invoked.
+	CallSite *token.Location
+	// DefSite is a copy of the macro definition location (nil for builtins).
+	DefSite *token.Location
+	// Name is the qualified macro name (e.g. "lisp:defun").
+	Name string
+	// Args holds the unevaluated call-site arguments.  The slice is a copy
+	// but the nodes are the shared originals — read-only by contract (they
+	// are typically sealed parse-tree nodes).
+	Args []*LVal
+	// ID is unique per stamped node, monotonically increasing within a
+	// runtime.
+	ID int64
+}
+
+// MacroExpansion returns a snapshot of v's macro-expansion debug metadata
+// and reports whether v carries any.  Metadata exists only on nodes stamped
+// during macro expansion while a debugger is attached (Runtime.Debugger !=
+// nil); in production runs every value reports false.  The snapshot is a
+// copy: mutating it does not touch v.
+//
+// MacroExpansion is nil-receiver safe: a nil LVal reports false.
+func (v *LVal) MacroExpansion() (MacroExpansionMeta, bool) {
+	if v == nil || v.macroExpansion == nil || v.macroExpansion.macroExpansionContext == nil {
+		return MacroExpansionMeta{}, false
+	}
+	ctx := v.macroExpansion.macroExpansionContext
+	m := MacroExpansionMeta{
+		Name: ctx.Name,
+		ID:   v.macroExpansion.ID,
+	}
+	if ctx.CallSite != nil {
+		loc := *ctx.CallSite
+		m.CallSite = &loc
+	}
+	if ctx.DefSite != nil {
+		loc := *ctx.DefSite
+		m.DefSite = &loc
+	}
+	if len(ctx.Args) > 0 {
+		m.Args = append([]*LVal(nil), ctx.Args...)
+	}
+	return m, true
 }
 
 // LVal is a lisp value
@@ -231,13 +272,21 @@ type LVal struct {
 	// SetSource().  See issue #362.
 	source *token.Location
 
-	// Meta holds formatting metadata, only populated in format-preserving mode.
-	Meta *SourceMeta
+	// meta holds formatting metadata, only populated in format-preserving
+	// mode.  Unexported (issue #382), typed by an internal package: only
+	// this module's format tooling (parser/rdparser writes, formatter
+	// reads) can touch it, through internal/fmtraw.  Format-preserving
+	// trees are never sealed, evaluated, or shared, so nothing outside
+	// that tooling has ever had a legitimate use.
+	meta *fmtmeta.Meta
 
-	// MacroExpansion holds debug metadata for nodes produced by macro
+	// macroExpansion holds debug metadata for nodes produced by macro
 	// expansion. Only populated when a debugger is attached — nil in
-	// production (zero overhead: 8-byte nil pointer).
-	MacroExpansion *MacroExpansionInfo
+	// production (zero overhead: 8-byte nil pointer).  Unexported (issue
+	// #382): external packages read a snapshot through the MacroExpansion
+	// accessor; the in-kernel stamp (stampMacroExpansion) is the only
+	// writer.
+	macroExpansion *macroExpansionInfo
 
 	// Str used by LSymbol and LString values
 	Str string

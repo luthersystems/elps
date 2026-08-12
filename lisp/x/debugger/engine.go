@@ -995,8 +995,8 @@ func exprStepLocation(env *lisp.LEnv, expr *lisp.LVal) StepLocation {
 	}
 	if expr != nil {
 		loc.IsSExpr = expr.Type == lisp.LSExpr
-		if expr.MacroExpansion != nil {
-			loc.MacroID = expr.MacroExpansion.ID
+		if m, ok := expr.MacroExpansion(); ok {
+			loc.MacroID = m.ID
 		}
 	}
 	return loc

@@ -403,7 +403,7 @@ func (h *handler) onScopes(req *dap.ScopesRequest) {
 	// has macro expansion info.
 	if frameID == 1 {
 		_, pausedExpr := h.engine.PausedState()
-		if pausedExpr != nil && pausedExpr.MacroExpansion != nil {
+		if _, ok := pausedExpr.MacroExpansion(); ok {
 			scopes = append(scopes, dap.Scope{
 				Name:               "Macro Expansion",
 				VariablesReference: scopeMacroBase + frameID,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/fmtmeta"
 	"github.com/luthersystems/elps/parser/token"
 )
 
@@ -102,10 +103,10 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	// native-constructed value stays nil-source rather than materializing a
 	// synthetic location.
 	cp.source = copyLocation(v.source)
-	cp.Meta = detachMeta(v.Meta)
+	cp.meta = detachMeta(v.meta)
 	// Debugger-only metadata; its context aliases unevaluated argument
 	// values inside the source runtime, so a detached value carries none.
-	cp.MacroExpansion = nil
+	cp.macroExpansion = nil
 
 	// The struct copy above aliased v.Native.  Every payload a detachable
 	// type is documented to carry is replaced with a hermetic copy; anything
@@ -215,7 +216,7 @@ func detachCallStack(s *CallStack) *CallStack {
 
 // detachMeta deep-copies format-preserving metadata, including the comment
 // tokens and their locations.
-func detachMeta(m *SourceMeta) *SourceMeta {
+func detachMeta(m *fmtmeta.Meta) *fmtmeta.Meta {
 	if m == nil {
 		return nil
 	}

@@ -76,8 +76,8 @@ func TestSealWatchdogStampMacroExpansionGuard(t *testing.T) {
 		if _, ok := v.Source(); ok {
 			t.Errorf("stampMacroExpansion wrote source metadata into sealed node type=%s str=%q", v.Type, v.Str)
 		}
-		if v.MacroExpansion != nil {
-			t.Errorf("stampMacroExpansion attached MacroExpansionInfo to sealed node type=%s str=%q", v.Type, v.Str)
+		if v.macroExpansion != nil {
+			t.Errorf("stampMacroExpansion attached macroExpansionInfo to sealed node type=%s str=%q", v.Type, v.Str)
 		}
 		for _, c := range v.Cells {
 			assertUnstamped(c)
