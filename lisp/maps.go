@@ -29,10 +29,26 @@ type Map interface {
 	Entries(buf []*LVal) *LVal
 }
 
+// mapBacking aliases Map so MapData can embed the implementation (keeping
+// the interface's method set promoted) without exporting a writable field.
+// Swapping the backing of a sorted-map value in place — v.Map().Map = other
+// — was an open aliasing/mutation channel on values that may be shared and
+// sealed, the corruption class issue #382 closes; the backing is now fixed
+// at construction (NewMapData, SortedMap, SortedMapFromData).
+type mapBacking = Map
+
 // MapData is a concrete type to store in an interface as to avoid expensive
-// runtime interface type checking
+// runtime interface type checking.  Construct it with NewMapData; the
+// backing Map cannot be replaced after construction (issue #382).
 type MapData struct {
-	Map
+	mapBacking
+}
+
+// NewMapData returns a MapData backed by m.  Together with
+// SortedMapFromData it is the extension point for embedders that back a
+// sorted-map with a custom Map implementation.
+func NewMapData(m Map) *MapData {
+	return &MapData{m}
 }
 
 // a sentinal type used to describe string-like keys in a sortedmap.
