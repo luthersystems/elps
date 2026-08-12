@@ -15,6 +15,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
@@ -186,7 +187,7 @@ func TestForkLambdaFIDContinuity(t *testing.T) {
 		if fun.Type != lisp.LFun {
 			t.Fatalf("%s lambda: %v", name, fun)
 		}
-		if fid := fun.FunData().FID; inherited[fid] {
+		if fid := fun.FID(); inherited[fid] {
 			t.Errorf("%s post-fork lambda FID %q collides with inherited FID", name, fid)
 		}
 	}
@@ -199,9 +200,7 @@ func collectFIDs(env *lisp.LEnv) map[string]bool {
 		pkg := reg.Package(pname)
 		for _, sname := range pkg.SymbolNames() {
 			if v, ok := pkg.Symbol(sname); ok && v.Type == lisp.LFun {
-				if fd := v.FunData(); fd != nil {
-					fids[fd.FID] = true
-				}
+				fids[v.FID()] = true
 			}
 		}
 	}
@@ -277,14 +276,17 @@ func (fp *fingerprinter) val(v *lisp.LVal) {
 	fp.str(fmt.Sprintf("t:%d q:%d s:%s i:%d f:%g", v.Type, quoted, v.Str, v.Int, v.Float))
 	switch v.Type {
 	case lisp.LFun:
-		fd := v.FunData()
-		fp.str("fun:" + fd.FID + ":" + fd.Package)
-		fp.env(fd.Env)
+		// The captured environment is unexported (#382); in-repo tooling
+		// reaches it through internal/funraw, and a fingerprint that
+		// stopped at the function header would not see closure state —
+		// exactly the state fork must not share.
+		fp.str("fun:" + v.FID() + ":" + v.Package())
+		fp.env(funraw.Env(v))
 	case lisp.LBytes:
 		fp.str("bytes")
 		_, _ = fp.h.Write(v.Bytes())
 	case lisp.LSortMap:
-		if m := v.Map(); m != nil && m.Map != nil {
+		if m := v.Map(); m != nil {
 			keys := m.Keys()
 			fp.str(fmt.Sprintf("map:%d", len(keys.Cells)))
 			for _, k := range keys.Cells {

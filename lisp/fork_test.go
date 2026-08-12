@@ -125,7 +125,7 @@ func TestForkCounterContinuity(t *testing.T) {
 		}
 		for _, v := range pkg.symbols {
 			if v.Type == LFun {
-				if fd := v.FunData(); fd != nil {
+				if fd := v.funData(); fd != nil {
 					inherited[fd.FID] = true
 				}
 			}
@@ -142,7 +142,7 @@ func TestForkCounterContinuity(t *testing.T) {
 		if fun.Type != LFun {
 			t.Fatalf("lambda eval: %v", fun)
 		}
-		fid := fun.FunData().FID
+		fid := fun.funData().FID
 		if inherited[fid] {
 			t.Errorf("post-fork lambda FID %q collides with an inherited FID", fid)
 		}
@@ -224,7 +224,7 @@ func (a *forkAuditor) val(path string, o, n *LVal) {
 	}
 	switch o.Type {
 	case LFun:
-		ofd, nfd := o.FunData(), n.FunData()
+		ofd, nfd := o.funData(), n.funData()
 		if ofd == nil || nfd == nil {
 			if ofd != nfd {
 				a.t.Errorf("%s: fun data nil mismatch", path)
@@ -232,7 +232,7 @@ func (a *forkAuditor) val(path string, o, n *LVal) {
 			return
 		}
 		if nfd == ofd {
-			a.t.Errorf("%s: LFunData pointer-shared with template", path)
+			a.t.Errorf("%s: funData pointer-shared with template", path)
 			return
 		}
 		if nfd.FID != ofd.FID || nfd.Package != ofd.Package {
@@ -240,7 +240,7 @@ func (a *forkAuditor) val(path string, o, n *LVal) {
 		}
 		a.env(path+".Env", ofd.Env, nfd.Env)
 	default:
-		if omd, ok := o.Native.(*MapData); ok && omd != nil && omd.Map != nil {
+		if omd, ok := o.Native.(*MapData); ok && omd != nil && omd.mapBacking != nil {
 			nmd, ok := n.Native.(*MapData)
 			if !ok || nmd == omd {
 				a.t.Errorf("%s: sorted-map storage shared with template", path)

@@ -28,7 +28,7 @@ import (
 //     machine-verified elsewhere (fingerprint oracle, checked-mode
 //     inspector, -race watchdog; see docs/sealed-ast.md §3).
 //   - the three singletons (nil, true, false): shared by decree.
-//   - LFun: header copy; the LFunData is rebuilt with the captured
+//   - LFun: header copy; the funData is rebuilt with the captured
 //     environment remapped onto the fork's copies so closures close over
 //     fork state, never template state.  Builtin Go funcs travel by
 //     reference (Go code is immutable).  Formals and lambda bodies are
@@ -336,8 +336,8 @@ func (f *forker) val(v *LVal) *LVal {
 	cp.macroExpansion = nil
 	switch v.Type {
 	case LFun:
-		if fd, ok := v.Native.(*LFunData); ok && fd != nil {
-			cp.Native = &LFunData{
+		if fd, ok := v.Native.(*funData); ok && fd != nil {
+			cp.Native = &funData{
 				Builtin: fd.Builtin, // Go code: travels by reference
 				FID:     fd.FID,
 				Package: fd.Package,
@@ -402,9 +402,9 @@ func (f *forker) mapData(md *MapData) *MapData {
 	if md == nil {
 		return nil
 	}
-	if md.Map == nil {
+	if md.mapBacking == nil {
 		// Degenerate MapData with no implementation (possible via
-		// SortedMapFromData(&MapData{})): fresh struct, nil Map preserved.
+		// SortedMapFromData(NewMapData(nil))): fresh struct, nil backing preserved.
 		return &MapData{}
 	}
 	entries := sortedMapEntries(md)
@@ -414,7 +414,7 @@ func (f *forker) mapData(md *MapData) *MapData {
 		// implementation ever gets here.
 		panic(fmt.Sprintf("fork: sorted-map entries cannot be enumerated: %v", entries))
 	}
-	m := &MapData{newmap()}
+	m := NewMapData(newmap())
 	for _, pair := range entries.Cells {
 		if lerr := m.Set(f.val(pair.Cells[0]), f.val(pair.Cells[1])); lerr.Type == LError {
 			panic(fmt.Sprintf("fork: sorted-map key %s cannot be stored: %v", pair.Cells[0], lerr))
