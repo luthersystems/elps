@@ -1445,6 +1445,7 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 		}
 	}
 	if list.sealed {
+		recordCoWOnSealed(env, cowSiteSortStable)
 		// Copy-on-write: list is (or shares storage with) a parsed program
 		// literal — (stable-sort < '(3 1 2)) — and sorting it in place
 		// would rewrite the program for every environment sharing the
@@ -1964,6 +1965,7 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 		// list is now known to be LSExpr
 		cells := list.Cells
 		if list.sealed {
+			recordCoWOnSealed(env, cowSiteSliceVector)
 			// Copy-on-write: vectors are mutable (append! writes their
 			// backing in place) and are never sealed, so wrapping a sealed
 			// list's backing array in a vector would hand the value domain
@@ -2075,6 +2077,7 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		// when chaining calls to ``append'' so that vectors may be used in a
 		// manner akin to go slices.
 		if seq.sealed {
+			recordCoWOnSealed(env, cowSiteAppendVector)
 			// Copy-on-write: append into spare backing capacity writes the
 			// shared program's storage when seq is (or shares backing with)
 			// a sealed list — (append 'vector (slice 'list '(1 2 3) 0 1) x)
