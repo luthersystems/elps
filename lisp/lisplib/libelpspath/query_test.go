@@ -145,7 +145,7 @@ func TestArgsToPath(t *testing.T) {
 	}
 }
 
-func TestV2Operations(t *testing.T) {
+func TestPathOperations(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
 		Name     string
@@ -499,9 +499,9 @@ func TestV2Operations(t *testing.T) {
 	}
 }
 
-// TestV2MutateCopySemantics verifies that mutate operations modify the
+// TestMutateCopySemantics verifies that mutate operations modify the
 // original and copy operations leave the original unchanged.
-func TestV2MutateCopySemantics(t *testing.T) {
+func TestMutateCopySemantics(t *testing.T) {
 	t.Parallel()
 	mustJSON := func(v *lisp.LVal) string {
 		b, err := libjson.Dump(v, false)
