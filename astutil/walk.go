@@ -40,7 +40,7 @@ func walkNode(node *lisp.LVal, parent *lisp.LVal, depth int, fn func(*lisp.LVal,
 // call or special form) in the tree.
 func WalkSExprs(exprs []*lisp.LVal, fn func(sexpr *lisp.LVal, depth int)) {
 	Walk(exprs, func(node *lisp.LVal, _ *lisp.LVal, depth int) {
-		if node.Type == lisp.LSExpr && !node.Quoted && len(node.Cells) > 0 {
+		if node.Type == lisp.LSExpr && !node.IsQuoted() && len(node.Cells) > 0 {
 			fn(node, depth)
 		}
 	})
@@ -124,7 +124,7 @@ func PackageNameArg(arg *lisp.LVal) string {
 	if arg.Type == lisp.LString || arg.Type == lisp.LSymbol {
 		return arg.Str
 	}
-	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+	if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
 		return arg.Cells[0].Str
 	}
 	return ""

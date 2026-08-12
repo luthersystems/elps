@@ -89,7 +89,7 @@ func scanExpr(expr *lisp.LVal, caller string, loopDepth int, ctx *scanContext, s
 	}
 
 	// Only process unquoted s-expressions (calls/forms)
-	if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+	if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 		return
 	}
 

@@ -1057,7 +1057,7 @@ eval:
 	if lerr := env.checkLimits(ctx); lerr != nil {
 		return lerr
 	}
-	if v.Spliced {
+	if v.spliced {
 		return env.Errorf("spliced value used as expression")
 	}
 	env.Loc = v.source
@@ -1068,7 +1068,7 @@ eval:
 			}
 		}
 	}
-	if v.Quoted {
+	if v.quoted {
 		return v
 	}
 	switch v.Type {

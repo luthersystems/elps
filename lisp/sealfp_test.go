@@ -77,8 +77,8 @@ func TestSealedASTFingerprintSensitivity(t *testing.T) {
 		},
 		{
 			name:    "quote flag",
-			mutate:  func() { root.Cells[3].Quoted = true },  //elps:mutates -- deliberate, paused, restored
-			restore: func() { root.Cells[3].Quoted = false }, //elps:mutates -- restore
+			mutate:  func() { root.Cells[3].quoted = true },  //elps:mutates -- deliberate, paused, restored
+			restore: func() { root.Cells[3].quoted = false }, //elps:mutates -- restore
 		},
 		{
 			name: "cells swap",

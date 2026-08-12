@@ -6,13 +6,13 @@
 //
 //	s := SExpr([]*LVal{Quote(Symbol("list")), formals, bound})
 //	s = builtinConcat(nil, s)
-//	s.Quoted = false // This is fine because builtinConcat returns a new list
+//	s.quoted = false // This is fine because builtinConcat returns a new list
 //
 // The comment was wrong. builtinConcatSeq short-circuits the empty case
 // with `return Nil()` -- the process-wide shared singleton. So printing
 // any lambda with no formals AND no bound vars wrote straight into
 // singletonNil, racing with every concurrent (*LEnv).eval reading
-// `v.Quoted` off a Nil().
+// `v.quoted` off a Nil().
 //
 // The write stored the value the field already held, so it was
 // invisible to SingletonSnapshot.Verify() / the elpscheck build, which
@@ -71,7 +71,7 @@ func TestLambdaVarsDoesNotReturnSingleton(t *testing.T) {
 
 // TestSingletonRaceLambdaVars reproduces issue #333 under `go test
 // -race`: printers stringify a zero-formal lambda (write side, via
-// lambdaVars) while evaluators evaluate Nil() (read side, `if v.Quoted`
+// lambdaVars) while evaluators evaluate Nil() (read side, `if v.quoted`
 // in (*LEnv).eval). Pre-fix both touch singletonNil and the race
 // detector fires.
 //
@@ -103,7 +103,7 @@ func TestSingletonRaceLambdaVars(t *testing.T) {
 			<-start
 			for range iterations {
 				// Write side: str() -> lambdaVars -> builtinConcat
-				// returns Nil() for the empty case -> `s.Quoted = false`.
+				// returns Nil() for the empty case -> `s.quoted = false`.
 				_ = fn.String()
 			}
 		}(lambdas[i])
@@ -115,7 +115,7 @@ func TestSingletonRaceLambdaVars(t *testing.T) {
 			defer wg.Done()
 			<-start
 			for range iterations {
-				// Read side: (*LEnv).eval reads `v.Quoted` off the
+				// Read side: (*LEnv).eval reads `v.quoted` off the
 				// same singletonNil.
 				env.Eval(Nil())
 			}
@@ -129,8 +129,8 @@ func TestSingletonRaceLambdaVars(t *testing.T) {
 	// cannot catch the same-value write that started #333 (see the
 	// comment on checkSingleton), but it catches any future variant
 	// that writes a *different* value.
-	if singletonNil.Quoted {
-		t.Error("singletonNil.Quoted was set by concurrent lambda printing")
+	if singletonNil.quoted {
+		t.Error("singletonNil.quoted was set by concurrent lambda printing")
 	}
 	if singletonNil.Len() != 0 {
 		t.Errorf("singletonNil grew to %d cells", singletonNil.Len())

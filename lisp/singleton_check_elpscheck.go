@@ -36,14 +36,14 @@ func init() {
 // field ALREADY HOLDS is invisible to it — and so is the same write in
 // SingletonSnapshot.Verify, which shares the comparison.
 //
-// That gap is not theoretical. Issue #333 was `s.Quoted = false`
+// That gap is not theoretical. Issue #333 was `s.quoted = false`
 // executed against singletonNil, whose Quoted was already false:
 //
 //	s = builtinConcat(nil, s) // returns Nil() when the result is empty
-//	s.Quoted = false
+//	s.quoted = false
 //
 // A same-value write is still a write to shared memory, and it still
-// races with every concurrent reader — in #333, with `if v.Quoted` in
+// races with every concurrent reader — in #333, with `if v.quoted` in
 // (*LEnv).eval. Neither this function nor the "Singleton integrity
 // (elpscheck)" CI job could ever have seen it, no matter how often they
 // ran. Only `go test -race` did, and only on a loaded runner where two

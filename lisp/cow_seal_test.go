@@ -224,7 +224,7 @@ func fingerprintAST(exprs []*lisp.LVal) string {
 			return
 		}
 		seen[v] = len(seen)
-		_, _ = fmt.Fprintf(h, "(t=%d q=%v sp=%v s=%q i=%d f=%g n=%d", v.Type, v.Quoted, v.Spliced, v.Str, v.Int, v.Float, len(v.Cells))
+		_, _ = fmt.Fprintf(h, "(t=%d q=%v sp=%v s=%q i=%d f=%g n=%d", v.Type, v.IsQuoted(), lisp.SplicedFlag(v), v.Str, v.Int, v.Float, len(v.Cells))
 		for _, c := range v.Cells {
 			walk(c)
 		}

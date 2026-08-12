@@ -160,7 +160,7 @@ func preamblePkgName(v *lisp.LVal) string {
 		return v.Str
 	}
 	// (quote sym) or 'sym
-	if v.Type == lisp.LSExpr && v.Quoted && len(v.Cells) > 0 && v.Cells[0].Type == lisp.LSymbol {
+	if v.Type == lisp.LSExpr && v.IsQuoted() && len(v.Cells) > 0 && v.Cells[0].Type == lisp.LSymbol {
 		return v.Cells[0].Str
 	}
 	return ""

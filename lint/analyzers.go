@@ -43,7 +43,7 @@ var AnalyzerSetUsage = &Analyzer{
 			name := ""
 			if arg.Type == lisp.LSymbol {
 				name = arg.Str
-			} else if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+			} else if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
 				name = arg.Cells[0].Str
 			}
 			if name == "" {
@@ -203,7 +203,7 @@ var AnalyzerQuoteCall = &Analyzer{
 			// Quoted symbols have Quoted == true (e.g. 'x parses as
 			// LSymbol{Quoted: true}). A bare LSymbol with Quoted == false
 			// means the user forgot the quote.
-			if arg.Type == lisp.LSymbol && !arg.Quoted {
+			if arg.Type == lisp.LSymbol && !arg.IsQuoted() {
 				src := SourceOf(sexpr)
 				pass.Report(Diagnostic{
 					Message: fmt.Sprintf("%s first argument should be quoted: (set '%s ...) not (set %s ...)", head, arg.Str, arg.Str),
@@ -661,7 +661,7 @@ func walkRethrowNode(node *lisp.LVal, handlerDepth int, report func(*lisp.LVal))
 	if node == nil {
 		return
 	}
-	if node.Type != lisp.LSExpr || node.Quoted || len(node.Cells) == 0 {
+	if node.Type != lisp.LSExpr || node.IsQuoted() || len(node.Cells) == 0 {
 		for _, child := range node.Cells {
 			walkRethrowNode(child, handlerDepth, report)
 		}

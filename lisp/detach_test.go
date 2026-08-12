@@ -188,7 +188,7 @@ func (f *fingerprinter) walk(v *lisp.LVal) {
 	}
 	id := len(f.ids)
 	f.ids[v] = id
-	fmt.Fprintf(&f.sb, "#%d:%s q=%t str=%q int=%d float=%v", id, v.Type, v.Quoted, v.Str, v.Int, v.Float)
+	fmt.Fprintf(&f.sb, "#%d:%s q=%t str=%q int=%d float=%v", id, v.Type, v.IsQuoted(), v.Str, v.Int, v.Float)
 	if loc := lisp.SourceLocForTest(v); loc != nil {
 		fmt.Fprintf(&f.sb, " src=%s:%d:%d", loc.File, loc.Line, loc.Col)
 	}

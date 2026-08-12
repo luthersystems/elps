@@ -13,3 +13,9 @@ func Detach(v *LVal) (*LVal, error) { return v.detach() }
 
 // ProgramDetach exposes Program.detach to package lisp_test.
 func ProgramDetach(p Program) ([]*LVal, error) { return p.detach() }
+
+// SplicedFlag exposes the unexported spliced flag to package lisp_test.
+// The field has no production accessor (issue #382): splicing is evaluator
+// plumbing, but the copy-on-write fingerprint tests hash it to prove sealed
+// trees survive evaluation bit-identically.
+func SplicedFlag(v *LVal) bool { return v.spliced }

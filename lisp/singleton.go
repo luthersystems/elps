@@ -114,8 +114,8 @@ func singletonLValEqual(a, b *LVal) bool {
 		a.Int == b.Int &&
 		a.Float == b.Float &&
 		a.FunType == b.FunType &&
-		a.Quoted == b.Quoted &&
-		a.Spliced == b.Spliced &&
+		a.quoted == b.quoted &&
+		a.spliced == b.spliced &&
 		a.Meta == b.Meta &&
 		a.MacroExpansion == b.MacroExpansion &&
 		a.Native == b.Native &&

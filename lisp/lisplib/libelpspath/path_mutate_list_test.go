@@ -30,7 +30,7 @@ func fpAST(vs []*lisp.LVal) string {
 			return
 		}
 		seen[v] = len(seen)
-		_, _ = fmt.Fprintf(h, "t=%d q=%v s=%q i=%d f=%g", v.Type, v.Quoted, v.Str, v.Int, v.Float)
+		_, _ = fmt.Fprintf(h, "t=%d q=%v s=%q i=%d f=%g", v.Type, v.IsQuoted(), v.Str, v.Int, v.Float)
 		_, _ = fmt.Fprintf(h, " n=%d{", len(v.Cells))
 		for _, c := range v.Cells {
 			walk(c, d+1)

@@ -197,7 +197,7 @@ func TestInspectFunction_QuotedSExpr(t *testing.T) {
 	// '(defun foo () 42) — quoted, not a real definition
 	node := &LVal{
 		Type:   LSExpr,
-		Quoted: true,
+		quoted: true,
 		Cells: []*LVal{
 			{Type: LSymbol, Str: "defun"},
 			{Type: LSymbol, Str: "foo"},

@@ -117,14 +117,10 @@ func TestWalk_VisitsAllNodes(t *testing.T) {
 }
 
 func TestWalkSExprs_SkipsQuoted(t *testing.T) {
-	quoted := &lisp.LVal{
-		Type:   lisp.LSExpr,
-		Quoted: true,
-		Cells: []*lisp.LVal{
-			{Type: lisp.LSymbol, Str: "set"},
-			{Type: lisp.LSymbol, Str: "x"},
-		},
-	}
+	quoted := lisp.QExpr([]*lisp.LVal{
+		{Type: lisp.LSymbol, Str: "set"},
+		{Type: lisp.LSymbol, Str: "x"},
+	})
 	unquoted := &lisp.LVal{
 		Type: lisp.LSExpr,
 		Cells: []*lisp.LVal{

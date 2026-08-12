@@ -17,7 +17,7 @@
 //     tracked through simple := and = assignments of tracked values;
 //
 //   - the receiver roots at a fresh pointer used for the Copy/detach struct
-//     copy idiom (cp := &LVal{}; *cp = *v; cp.Quoted = ... is fresh — the
+//     copy idiom (cp := &LVal{}; *cp = *v; cp.quoted = ... is fresh — the
 //     write lands in memory this function allocated);
 //
 //   - the enclosing function's doc comment, or a comment on the assignment's
@@ -28,7 +28,7 @@
 // The analysis is intraprocedural and conservative: an unknown root flags.
 // A value-typed LVal variable is always fresh at its top level (Go value
 // semantics give the function its own struct), so `v2 := *shared;
-// v2.Quoted = false` — the shallowUnquote idiom — passes.
+// v2.quoted = false` — the shallowUnquote idiom — passes.
 //
 // The rule also tracks local slice aliases of LVal backing storage
 // (cells := seqCells(list); cells[i] = x) and flags the mutating operations

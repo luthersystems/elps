@@ -11,7 +11,7 @@ import (
 // checkSingleton: SingletonSnapshot.Verify compares *values*, so a write
 // that stores the value a field already holds is invisible to it. That
 // is not a hypothetical -- issue #333 was exactly that write
-// (`s.Quoted = false` into singletonNil, whose Quoted was already
+// (`s.quoted = false` into singletonNil, whose Quoted was already
 // false), and the only thing that ever caught it was `go test -race` on
 // a loaded CI runner where two goroutines happened to overlap.
 //

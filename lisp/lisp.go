@@ -71,8 +71,8 @@ const (
 	// LQuote values are special values only used to represents two or more
 	// levels of quoting (e.g. ''3 or '''''''()).  The quoted value is stored
 	// in LVals.Cells[0].  The first level of quoting takes places by setting
-	// the LVal.Quoted field on a value with a normal value in LVal.Type.
-	// LQuote values must always have a true LVal.Quoted field.
+	// the LVal.quoted field on a value with a normal value in LVal.Type.
+	// LQuote values must always have a true LVal.quoted field.
 	LQuote
 	// LString values store a string in the LVal.Str field.
 	LString
@@ -258,11 +258,18 @@ type LVal struct {
 	// FunType used to further classify LFun values.
 	FunType LFunType
 
-	// Quoted is a flag indicating a single level of quoting.
-	Quoted bool
+	// quoted is a flag indicating a single level of quoting.  It is
+	// unexported (issue #382): external packages read it through IsQuoted;
+	// the only write paths are construction-time (Quote, Splice,
+	// shallowUnquote) because the #333/#334 singleton race was an external
+	// in-place write to this field.
+	quoted bool
 
-	// Spliced denotes the value as needing to be spliced into a parent value.
-	Spliced bool
+	// spliced denotes the value as needing to be spliced into a parent
+	// value.  Unexported (issue #382): the flag is pure evaluator plumbing
+	// between Splice and quasiquote expansion — no external package has
+	// ever had a legitimate read or write.
+	spliced bool
 
 	// sealed marks a node of a parsed program: the value (and, for
 	// containers, its Cells backing array) may be shared by every
@@ -326,10 +333,23 @@ func (v *LVal) SetSource(loc *token.Location) {
 	v.source = loc //elps:mutates the audited setter for source metadata; sealed (shared) nodes are skipped above
 }
 
+// IsQuoted reports whether v carries a single level of quoting — the flag
+// behind the LQuote wrapper and the ['(...)/[...]] display forms.  The
+// underlying field is unexported (issue #382): quoting is established at
+// construction time (Quote, Splice, QExpr, QSymbol, the parser) and removed
+// only by the evaluator's own unquote step, so external packages get a read
+// but never a write — an in-place external write to the flag on a shared
+// value was exactly the #333/#334 singleton corruption.
+//
+// IsQuoted is nil-receiver safe: a nil LVal reports false.
+func (v *LVal) IsQuoted() bool {
+	return v != nil && v.quoted
+}
+
 // GetType returns a quoted symbol denoting v's type.
 func GetType(v *LVal) *LVal {
 	t := Symbol(v.Str)
-	t.Quoted = true
+	t.quoted = true
 	if v.Type != LTaggedVal {
 		t.Str = v.Type.String()
 	}
@@ -472,7 +492,7 @@ func SExpr(cells []*LVal) *LVal {
 func QExpr(cells []*LVal) *LVal {
 	return &LVal{
 		Type:   LSExpr,
-		Quoted: true,
+		quoted: true,
 		Cells:  cells,
 	}
 }
@@ -705,15 +725,15 @@ func ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
 
 // Quote quotes v and returns the quoted value.  The LVal v is modified.
 func Quote(v *LVal) *LVal {
-	if !v.Quoted {
+	if !v.quoted {
 		cp := &LVal{}
 		*cp = *v
-		cp.Quoted = true
+		cp.quoted = true
 		return cp
 	}
 	quote := &LVal{
 		Type:   LQuote,
-		Quoted: true,
+		quoted: true,
 		Cells:  []*LVal{v},
 	}
 	return quote
@@ -724,7 +744,7 @@ func Quote(v *LVal) *LVal {
 func Splice(v *LVal) *LVal {
 	cp := &LVal{}
 	*cp = *v
-	cp.Spliced = true
+	cp.spliced = true
 	return cp
 }
 
@@ -733,7 +753,7 @@ func Splice(v *LVal) *LVal {
 func shallowUnquote(v *LVal) *LVal {
 	cp := &LVal{}
 	*cp = *v
-	cp.Quoted = false
+	cp.quoted = false
 	return cp
 }
 
@@ -1407,7 +1427,7 @@ func (v *LVal) Docstring() string {
 func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
 	const QUOTE = `'`
 	// All types which may evaluate to things other than themselves must check
-	// v.Quoted.
+	// v.quoted.
 	quote := ""
 	if onTheRecord {
 		quote = QUOTE
@@ -1429,7 +1449,7 @@ func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
 		}
 		return quote + "#<bytes " + strings.Trim(fmt.Sprint(b), "[]") + ">" //nolint:staticcheck // fmt.Sprint gives byte slice repr, not string conversion
 	case LSymbol:
-		if v.Quoted {
+		if v.quoted {
 			quote = QUOTE
 		}
 		return quote + v.Str
@@ -1467,18 +1487,18 @@ func (v *LVal) strNested(onTheRecord bool, g cycleGuard) string {
 	}
 	switch v.Type {
 	case LError:
-		if v.Quoted {
+		if v.quoted {
 			quote = QUOTE
 			return quote + fmt.Sprintf("(error '%s %s)", v.Str, v.Cells[0].str(false, g))
 		}
 		return (*ErrorVal)(v).errorString(g)
 	case LSExpr:
-		if v.Quoted {
+		if v.quoted {
 			quote = QUOTE
 		}
 		return exprString(v, 0, quote+"(", ")", g)
 	case LFun:
-		if v.Quoted {
+		if v.quoted {
 			quote = QUOTE
 		}
 		if v.Builtin() != nil {
@@ -1533,7 +1553,7 @@ func bodyStr(exprs []*LVal, g cycleGuard) string {
 // process-wide singletonNil. It stored the value the field already
 // held, which made it invisible to SingletonSnapshot.Verify (see the
 // note on checkSingleton), but it was still a write to shared memory
-// and raced with every concurrent (*LEnv).eval reading `v.Quoted` off a
+// and raced with every concurrent (*LEnv).eval reading `v.quoted` off a
 // Nil().
 //
 // shallowUnquote copies before clearing Quoted, so lambdaVars mutates
