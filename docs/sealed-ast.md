@@ -209,6 +209,55 @@ writes — so those fields are unexported (#362 for `source`, #382 for
   (`lisp/lval_fields_seal_test.go`) is the regression guard: re-exporting a
   metadata field, or adding a new exported field without a review
   conversation, fails the suite.
+- **`LEnv` got the same treatment one layer up.**  `LVal` was never the
+  only mutable channel an embedder holds: every builtin is handed an
+  `*LEnv`, and while its scope map was exported, `env.Scope[sym] = v`
+  rebound a symbol in a live environment — or, through a closure's captured
+  environment, in every function value that closed over it — without
+  passing `Put`, the seal, or elpsvet; `env.Loc = loc` aliased a caller's
+  mutable location into every error and frame stamped afterwards (the #362
+  class).  `scope`, `funName`, `parent` and `loc` are unexported; reads go
+  through `Bindings()` (an `iter.Seq2` over the immediate scope),
+  `NumBindings()`, `Parent()` and `Source()` (a location *copy*).
+  `Runtime` and `ID` stay exported — neither is a container an embedder can
+  corrupt in place.  `TestLEnvFieldSeal` guards it.
+
+The decisions are census-driven, not aesthetic: each field was counted with
+a type-checked selector census over this repo (outside package `lisp`) and
+over a production-scale downstream embedder.
+
+| Field | Downstream prod | Downstream test | In-repo (outside `lisp`) | Verdict |
+|---|---|---|---|---|
+| `LVal.Spliced` | 0 | 0 | 0 | unexported, no accessor |
+| `LVal.Meta` | 0 | 0 | format tooling | unexported, `internal/fmtraw` bridge |
+| `LVal.MacroExpansion` | 0 | 0 | debugger | unexported, snapshot accessor |
+| `LVal.Quoted` | 1 read | 6 | wide | unexported, `IsQuoted()` |
+| `LVal.Native`/`Str`/`Cells`/`Type`/`Int`/`Float`/`FunType` | ~3,000 | — | wide | **stay exported** |
+| `LEnv.Scope`/`FunName`/`Parent`/`Loc` | 0 | 0 | 4 / 0 / 5 / 0 reads | unexported, mediated reads |
+| `LEnv.Runtime`/`ID` | 16 / 3 reads | 17 / 0 | 110 / wide | **stay exported** |
+| `Runtime.*` (`Stderr`, `Reader`, `Library`, `Debugger`, `Profiler`, `Registry`, `Package`, `Stack`) | 8 writes, 7 reads | 15 | 20 writes, 89 reads | **stay exported** |
+| `CallStack.Frames`/`GoStack`, `CallFrame.*` | 0 | 1 read | 30 reads, 0 writes | **stay exported** |
+
+`Runtime` is the deliberate non-break, and that reasoning deserves to be as
+explicit as the breaks.  Its exported fields are embedder *configuration* —
+`Stderr`, `Reader`, `Library`, `Debugger` and `Profiler` are set by the host
+before or between evaluations, the documented way to attach a logger, a
+debugger or a source library — and its live fields (`Registry`, `Package`,
+`Stack`) are per-interpreter state, not shared parse-tree bytes: a bad write
+corrupts *that* interpreter, in its own goroutine, where the damage is
+observable.  None of the incidents this design answers (#333/#334, #369,
+#370) travelled through a `Runtime` field.  Splitting it into a config
+struct plus sealed live state would break 8 downstream production writes
+and 15 downstream test sites to close a channel with no incident history
+and no cross-value blast radius: cost without the argument the other breaks
+have.  It stays open knowingly, not by omission.
+
+`CallStack` is the same call, cheaper to make: no downstream production site
+touches it, but the 30 in-repo reads (diagnostics, the DAP server, the REPL)
+would all need a copying accessor, and the worst an exported `Frames` slice
+buys an attacker is a wrong stack trace in their own interpreter — no shared
+bytes, no other goroutine.  Deferred, with the numbers on the table rather
+than an implicit "nobody asked".
 
 ## 3. Verification layers: what each prevents, and its blind spots
 
