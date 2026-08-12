@@ -85,6 +85,11 @@ package lisp
 //     (getUnquoteType, lisp/macro.go).  Requiring the enclosing
 //     `quasiquote` to BE the kernel quasiquote — which defRefs does — is
 //     what makes that reading correct.
+//   - `true` / `false`, the only free symbol reads the body grammar admits.
+//     They are kernel CONSTANTS: set, defun, defmacro, let, let*, labels and
+//     flet all refuse to rebind them, so there is no binding for an
+//     obligation to check.  Asserted, not assumed —
+//     TestMacroCacheTrueFalseAreKernelConstants.
 //
 // # Remaining boundary
 //
@@ -95,6 +100,18 @@ package lisp
 // and without the cache.  The one place template content is interpreted is
 // the binder-syntax discharge (see pureMacroTemplate), which is why those
 // binder spellings become callRefs whenever the macro mints a gensym.
+//
+// One reading is known to be WRONG and is nonetheless harmless, which is
+// worth stating rather than leaving to be rediscovered.  defRefs resolve in
+// funData.env, while the body evaluates one frame BELOW that, in a call
+// environment carrying the macro's own formals.  A macro whose formal is
+// named `if` (or `let*`, or `gensym`) is therefore admitted on the strength
+// of a binding the body will never consult.  It cannot change an answer,
+// because a macro formal is bound to an UNEVALUATED argument node and an
+// argument node is never a function: the body's `(if ...)` can only fail to
+// call it, deterministically and identically with the cache on or off
+// (TestMacroCacheFormalShadowingAnOperatorAgrees).  Should macro formals ever
+// carry callable values, the obligations must move to the call environment.
 
 // kernelRef is one name→kernel-binding obligation: the operator SPELLING as
 // written in the macro source (so a `lisp:`-qualified spelling is resolved
