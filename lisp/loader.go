@@ -56,7 +56,19 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 	fn := func(env *LEnv) *LVal {
 		var lval *LVal
 		for _, expr := range exprs {
-			lval = env.Eval(expr.Copy())
+			// Each environment evaluates a private deep copy so loaders
+			// never share AST nodes across runtimes.  The copy is re-sealed
+			// before evaluation: it is parser-shaped content (enforced by
+			// checkLoaderExpr above) that nothing mutates in place, so it
+			// keeps the immutability contract of the original parse.  Every
+			// other load path (Reader/LoadString/Program) already evaluates
+			// sealed trees; without this, code loaded through a Loader is
+			// invisibly second-class — e.g. a defmacro evaluated here binds
+			// an unsealed formals node, disqualifying the macro from
+			// per-callsite expansion caching in every environment (#381).
+			c := expr.Copy()
+			c.SealAST()
+			lval = env.Eval(c)
 			if lval.Type == LError {
 				return lval
 			}

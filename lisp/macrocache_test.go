@@ -576,3 +576,48 @@ func TestMacroCacheStableAcrossManyCallsites(t *testing.T) {
 		t.Fatalf("expected >=40 distinct entries: %+v", st)
 	}
 }
+
+// TestMacroCacheTextLoaderSealed pins the TextLoader seam: code loaded
+// through a lisp.Loader must evaluate as sealed AST, so a defmacro defined
+// by a loader binds a sealed formals node and stays eligible for expansion
+// caching (this is how substrate loads its shirocore layer — before the fix
+// every macro defined there was silently disqualified in every environment).
+func TestMacroCacheTextLoaderSealed(t *testing.T) {
+	withMacroCacheMode(t, lisp.MacroCacheRuntime)
+	const src = `
+		(defmacro l-when (p &rest body)
+		  (quasiquote (if (unquote p) (progn (unquote-splicing body)) ())))
+		(defun use-l-when (x) (l-when x 'yes))
+	`
+	loader, err := lisp.TextLoader(parser.NewReader(), "loader_test.lisp", strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("TextLoader: %v", err)
+	}
+	env := newMacroCacheTestEnv(t)
+	if v := loader(env); v.Type == lisp.LError {
+		t.Fatalf("loader: %v", v)
+	}
+	fun := env.Get(lisp.Symbol("l-when"))
+	if fun.Type != lisp.LFun {
+		t.Fatalf("l-when did not resolve to a function: %v", fun)
+	}
+	if !lisp.SealedForTest(fun.Cells[0]) {
+		t.Fatalf("loader-defined macro has unsealed formals; loader output was not sealed")
+	}
+	if !lisp.MacroCacheIdentityForTest(fun) {
+		t.Fatalf("loader-defined pure macro not admitted for caching")
+	}
+	// The loader-installed function's macro callsite lives in the sealed
+	// loader AST: calling it repeatedly must populate and then hit the cache.
+	before := lisp.SnapshotMacroCacheStats()
+	for range 5 {
+		if v := env.Eval(lisp.SExpr([]*lisp.LVal{lisp.Symbol("use-l-when"), lisp.Bool(true)})); v.Type == lisp.LError {
+			t.Fatalf("call: %v", v)
+		}
+	}
+	after := lisp.SnapshotMacroCacheStats()
+	if hits := after.Hits - before.Hits; hits < 4 {
+		t.Fatalf("expected >=4 cache hits through the loader-loaded callsite, got %d (stores=%d bypassImpure=%d bypassUnsealed=%d)",
+			hits, after.Stores-before.Stores, after.BypassImpure-before.BypassImpure, after.BypassUnsealed-before.BypassUnsealed)
+	}
+}
