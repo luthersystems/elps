@@ -543,7 +543,7 @@ func TestScanWorkspaceRefs_QuasiquoteTemplateCrossFile(t *testing.T) {
 	require.NoError(t, err)
 
 	// macro.lisp defines a macro whose quasiquote template references
-	// helpers:get-valid-me. This is the pattern from def-acre-route.
+	// helpers:get-valid-me. This is the pattern from def-app-route.
 	err = os.WriteFile(filepath.Join(dir, "macro.lisp"), []byte(`(in-package 'myapp)
 (export 'my-macro)
 (defmacro my-macro (name)
@@ -866,8 +866,8 @@ func TestExtractFileRefs_QualifiedSymbol(t *testing.T) {
 	t.Run("qualified symbol in quasiquote template", func(t *testing.T) {
 		// A qualified symbol inside a defmacro's quasiquote template should
 		// produce a cross-file reference, just like a direct call would.
-		// This is the pattern used by def-acre-route: the macro template
-		// references acre:get-valid-me which is defined in another file.
+		// This is the pattern used by def-app-route: the macro template
+		// references app:get-valid-me which is defined in another file.
 		cfgWithPkg := &Config{
 			PackageExports: map[string][]ExternalSymbol{
 				"helpers": {
