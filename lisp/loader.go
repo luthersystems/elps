@@ -53,10 +53,40 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 		}
 	}
 
+	// The Loader is called once per environment, and the SAME parsed exprs
+	// are what every call evaluates.  That used to require a deep copy per
+	// load, because an LVal shared by two Runtimes was unsafe under any
+	// circumstances (issue #365).
+	//
+	// The seal changes the premise.  A Reader that seals its output (every
+	// parse path in this repo does — see lisp/seal.go) hands back frozen
+	// program-literal storage under copy-on-write protection: kernel
+	// mutation sites copy before writing, the evaluator's metadata writes
+	// skip sealed nodes, and checked builds fingerprint every sealed parse
+	// so a hole in that protection is a test failure rather than a
+	// silently-trusted assumption.  #365's rule narrows to "no MUTABLE
+	// cross-runtime sharing", and the ownership checker exempts sealed
+	// nodes accordingly.  This is the formals precedent (#374) applied to
+	// the loader.
+	//
+	// A Reader that does NOT seal — an embedder's own implementation of the
+	// interface, which this package cannot constrain — keeps #365's
+	// per-load copy.  The decision is made once, here, rather than per load.
+	allSealed := true
+	for _, expr := range exprs {
+		if !expr.IsSealed() {
+			allSealed = false
+			break
+		}
+	}
+
 	fn := func(env *LEnv) *LVal {
 		var lval *LVal
 		for _, expr := range exprs {
-			lval = env.Eval(expr.Copy())
+			if !allSealed {
+				expr = expr.Copy()
+			}
+			lval = env.Eval(expr)
 			if lval.Type == LError {
 				return lval
 			}
