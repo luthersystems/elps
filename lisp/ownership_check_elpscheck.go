@@ -58,8 +58,24 @@ import (
 //
 // # Allowlist
 //
-// Exactly the three singletons (Nil()/Bool(true)/Bool(false)); they are
-// shared by design, immutable by decree, and guarded by checkSingleton.
+// Two classes, and only these two:
+//
+//   - The three singletons (Nil()/Bool(true)/Bool(false)); they are
+//     shared by design, immutable by decree, and guarded by
+//     checkSingleton.
+//   - SEALED values (issue #380).  A sealed node is a parsed program node
+//     whose bytes never change after parsing completes (lisp/seal.go), so
+//     cross-runtime sharing of it is safe by exactly the same reasoning
+//     as the singletons — immutability, not per-runtime confinement, is
+//     what protects it.  Sealed sharing across runtimes is not
+//     hypothetical or accidental: substrate's parse cache hands one
+//     sealed tree to every environment in the process, and LEnv.Fork
+//     shares every sealed node between a template and its forks.  The
+//     immutability claim itself is machine-verified by the seal layers
+//     (fingerprint oracle, checked-mode inspector, -race watchdog — see
+//     docs/sealed-ast.md §3); this checker's job is per-runtime
+//     confinement of MUTABLE values, which sealed nodes are not.
+//
 // Values whose Source is the shared native location need NO exemption —
 // the Location is shared (#362) but the LVals carrying it are per-value.
 // Nothing else is exempt.  If the suite finds a new cross-runtime flow,
@@ -118,7 +134,10 @@ func (v ownershipViolation) String() string { return v.msg }
 // LEnv.Put, LEnv.PutGlobal, and env.eval — see the file comment for why
 // those three points and what they miss.
 func checkOwnership(rt *Runtime, v *LVal) {
-	if v == nil || rt == nil || isSingleton(v) {
+	if v == nil || rt == nil || isSingleton(v) || v.sealed {
+		// Sealed values are the sanctioned cross-runtime class — immutable
+		// after parse, shared by the parse cache and by LEnv.Fork.  See the
+		// Allowlist section of the file comment.
 		return
 	}
 	m := ownershipTable.m.Load()

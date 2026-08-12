@@ -41,6 +41,16 @@ type Runner struct {
 	// When LoaderFn is nil lisplib.LoadLibrary is used.
 	LoaderFn func(*lisp.LEnv) *lisp.LVal
 
+	// NewEnvFn, when non-nil, replaces the environment construction NewEnv
+	// performs by default (fresh runtime + InitializeUserEnv + LoaderFn).
+	// It exists so an embedder harness can serve each test a fork of a
+	// preloaded template environment (lisp.LEnv.Fork; see docs/fork.md)
+	// instead of paying a full load per test file.  The returned
+	// environment's Runtime.Stderr must be an *elpstest.Logger for the
+	// test's output to be captured (fork with
+	// lisp.ForkWithStderr(elpstest.NewLogger(t))).
+	NewEnvFn func(t testing.TB) (*lisp.LEnv, error)
+
 	// SetupFn runs code to setup a loaded environment after before the test
 	// is run.
 	SetupFn func(*lisp.LEnv) *lisp.LVal
@@ -91,6 +101,9 @@ func (r *Runner) Close() {
 }
 
 func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
+	if r != nil && r.NewEnvFn != nil {
+		return r.NewEnvFn(t)
+	}
 	logger := NewLogger(t)
 	runtime := &lisp.Runtime{
 		Registry: lisp.NewRegistry(),
