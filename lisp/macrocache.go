@@ -580,22 +580,14 @@ func (env *LEnv) macroCallCached(ctx context.Context, callsite, fun, args *LVal)
 // every reachable node is now sealed (or a shared singleton).  A false
 // return means some node is not a parser-producible shape — a runtime value
 // embedded in the expansion — and the tree must not be shared.
+//
+// The deep check is sealedThroughout (lisp/seal.go), which the loader's
+// parse-sharing decision also uses: "may this tree be shared across
+// environments?" is one question and gets one walk.  It adds a depth bound
+// this site previously lacked, which only makes the answer safer — a macro
+// returning a pathologically deep tree now declines the cache instead of
+// recursing to the bottom of the stack.
 func sealExpansion(v *LVal) bool {
 	v.SealAST()
-	return expansionFullySealed(v)
-}
-
-func expansionFullySealed(v *LVal) bool {
-	if v == nil || isSingleton(v) {
-		return true
-	}
-	if !v.sealed {
-		return false
-	}
-	for _, c := range v.Cells {
-		if !expansionFullySealed(c) {
-			return false
-		}
-	}
-	return true
+	return sealedThroughout(v, 0)
 }

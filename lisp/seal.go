@@ -135,3 +135,47 @@ func (v *LVal) sealAST() {
 func (v *LVal) IsSealed() bool {
 	return v != nil && v.sealed
 }
+
+// sealedThroughout reports whether v and every value reachable through its
+// Cells is sealed — the DEEP form of IsSealed, which reports only on the
+// node it is handed.
+//
+// Two subsystems ask this exact question before they may share one tree
+// across environments, and they get the same answer from this one walk:
+//
+//   - TextLoader (lisp/loader.go) asks it of a parse before caching the
+//     Loader that hands the same expressions to every environment.
+//   - sealExpansion (lisp/macrocache.go) asks it of a macro expansion after
+//     SealAST, where a false answer means some node is a runtime value that
+//     SealAST declined to mark and the expansion must not be cached.
+//
+// A false answer is the SAFE answer for both: the caller falls back to
+// per-use copying, so being conservative costs work and never correctness.
+//
+// Native payloads are not walked.  For the loader that costs nothing —
+// checkLoaderExpr rejects every type carrying mutable state in Native
+// (LBytes, LSortMap, LArray, LNative) before this runs — and for the macro
+// cache those same types are precisely the ones SealAST declines to mark,
+// so they are rejected by the !v.sealed test on the way in rather than by a
+// walk of their contents.
+//
+// Bounded by sealFPMaxDepth, the same cap the fingerprint walk uses, so a
+// Reader returning a cyclic or pathologically deep tree — or a macro
+// returning one — answers "not sealed throughout" and gets the copying
+// path, rather than overflowing the stack.  The shared singletons are born
+// sealed (issue #376) and carry no Cells, so they terminate the walk on the
+// first test without needing a case of their own.
+func sealedThroughout(v *LVal, depth int) bool {
+	if v == nil {
+		return true
+	}
+	if !v.sealed || depth > sealFPMaxDepth {
+		return false
+	}
+	for _, c := range v.Cells {
+		if !sealedThroughout(c, depth+1) {
+			return false
+		}
+	}
+	return true
+}

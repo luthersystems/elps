@@ -82,7 +82,7 @@ func SharedMacroCacheAllSealedForTest() (entries int, allSealed bool) {
 	allSealed = true
 	sharedMacroCache.m.Range(func(_, v any) bool {
 		entries++
-		if !expansionFullySealed(v.(*macroCacheEntry).exp) {
+		if !sealedThroughout(v.(*macroCacheEntry).exp, 0) {
 			allSealed = false
 		}
 		return true

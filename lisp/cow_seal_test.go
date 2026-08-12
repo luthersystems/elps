@@ -81,19 +81,6 @@ func newCowTestEnv(t testing.TB) *lisp.LEnv {
 	return env
 }
 
-// walkAST visits every node of cached parser output.  Parser output is a
-// strict tree of Cells; the seen-set guards against surprises anyway.
-func walkAST(v *lisp.LVal, seen map[*lisp.LVal]bool, visit func(*lisp.LVal)) {
-	if v == nil || seen[v] {
-		return
-	}
-	seen[v] = true
-	visit(v)
-	for _, c := range v.Cells {
-		walkAST(c, seen, visit)
-	}
-}
-
 // TestParserSealsOutput asserts the set-point: every node of every parsed
 // top-level expression is sealed, before any evaluation happens.
 func TestParserSealsOutput(t *testing.T) {
@@ -101,7 +88,7 @@ func TestParserSealsOutput(t *testing.T) {
 	seen := make(map[*lisp.LVal]bool)
 	nodes, sealed := 0, 0
 	for _, e := range exprs {
-		walkAST(e, seen, func(v *lisp.LVal) {
+		walkValueGraph(e, seen, func(v *lisp.LVal) {
 			nodes++
 			if v.IsSealed() {
 				sealed++
@@ -200,7 +187,7 @@ func TestSealPropagation(t *testing.T) {
 		t.Fatalf("detach: %v", err)
 	}
 	seen := make(map[*lisp.LVal]bool)
-	walkAST(dt, seen, func(v *lisp.LVal) {
+	walkValueGraph(dt, seen, func(v *lisp.LVal) {
 		if v.IsSealed() {
 			t.Errorf("detach left a sealed node in the hermetic copy: %v", v)
 		}

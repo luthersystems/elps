@@ -635,64 +635,21 @@ func collectContainerSealed(vs []*lisp.LVal) []*lisp.LVal {
 // up in either of them.
 //
 // Reachability is followed through Cells and through a sorted-map's Native
-// entries, and is bounded by a visited set (so aliasing and cycles
-// terminate) and a depth cap.
+// entries by the shared walk in valuewalk_test.go, and is bounded by its
+// visited set, so aliasing and cycles terminate.
 func sharesStorage(a, b *lisp.LVal) bool {
 	if a == nil || b == nil {
 		return false
 	}
 	nodes := map[*lisp.LVal]bool{}
-	collectNodes(a, nodes, 0)
+	walkValueGraph(a, nodes, func(*lisp.LVal) {})
 	found := false
-	var probe func(v *lisp.LVal, depth int)
-	seen := map[*lisp.LVal]bool{}
-	probe = func(v *lisp.LVal, depth int) {
-		if v == nil || found || depth > 64 || seen[v] {
-			return
-		}
-		seen[v] = true
+	walkValueGraph(b, map[*lisp.LVal]bool{}, func(v *lisp.LVal) {
 		if nodes[v] {
 			found = true
-			return
 		}
-		forEachChild(v, func(c *lisp.LVal) { probe(c, depth+1) })
-	}
-	probe(b, 0)
+	})
 	return found
-}
-
-func collectNodes(v *lisp.LVal, into map[*lisp.LVal]bool, depth int) {
-	if v == nil || depth > 64 || into[v] {
-		return
-	}
-	into[v] = true
-	forEachChild(v, func(c *lisp.LVal) { collectNodes(c, into, depth+1) })
-}
-
-// forEachChild visits the LVals a value directly holds.  A sorted-map's
-// entries live in Native, not Cells, so a plain Cells walk would treat every
-// map as a leaf — which is exactly how a sharing relationship through a map
-// would go unnoticed.
-func forEachChild(v *lisp.LVal, fn func(*lisp.LVal)) {
-	if v.Type == lisp.LSortMap {
-		m := v.Map()
-		if m == nil {
-			return
-		}
-		ks := m.Keys()
-		if ks == nil || ks.Type == lisp.LError {
-			return
-		}
-		for _, k := range ks.Cells {
-			if val, ok := m.Get(k); ok {
-				fn(val)
-			}
-		}
-		return
-	}
-	for _, c := range v.Cells {
-		fn(c)
-	}
 }
 
 // containerRenderMaxNodes bounds the expansion these targets are willing to

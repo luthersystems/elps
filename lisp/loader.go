@@ -140,34 +140,6 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 	return fn, nil
 }
 
-// sealedThroughout reports whether v and every value reachable through its
-// Cells is sealed — the deep question TextLoader must answer before it may
-// share one parse with every environment.
-//
-// Native payloads are not walked and do not need to be: checkLoaderExpr
-// rejects every type that carries mutable state in Native (LBytes, LSortMap,
-// LArray, LNative) before this runs, so Cells is the whole reachable graph
-// of a cacheable expression.
-//
-// Bounded by sealFPMaxDepth, the same cap the fingerprint walk uses, so a
-// Reader returning a cyclic or pathologically deep tree answers "not sealed
-// throughout" — and gets the per-load copy — rather than overflowing the
-// stack.
-func sealedThroughout(v *LVal, depth int) bool {
-	if v == nil {
-		return true
-	}
-	if !v.sealed || depth > sealFPMaxDepth {
-		return false
-	}
-	for _, c := range v.Cells {
-		if !sealedThroughout(c, depth+1) {
-			return false
-		}
-	}
-	return true
-}
-
 func checkLoaderExpr(v *LVal) error {
 	switch v.Type {
 	case LBytes, LSortMap, LArray, LNative:

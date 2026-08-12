@@ -143,7 +143,7 @@ func TestCopyClearsSeal(t *testing.T) {
 	// The copy is unsealed at every depth...
 	cp := mustEval(t, env, `(copy g-deep)`)
 	seen := make(map[*lisp.LVal]bool)
-	walkAST(cp, seen, func(v *lisp.LVal) {
+	walkValueGraph(cp, seen, func(v *lisp.LVal) {
 		if v.IsSealed() {
 			t.Errorf("copy left a sealed node in the result: %v", v)
 		}

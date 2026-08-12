@@ -35,7 +35,7 @@ func TestSealWatchdogMacroStampEvalPath(t *testing.T) {
 	synthetic := 0
 	seen := make(map[*lisp.LVal]bool)
 	for _, e := range exprs {
-		walkAST(e, seen, func(v *lisp.LVal) {
+		walkValueGraph(e, seen, func(v *lisp.LVal) {
 			if loc, ok := v.Source(); ok && loc.Pos < 0 && v.IsSealed() {
 				synthetic++
 			}
@@ -71,7 +71,7 @@ func TestSealWatchdogMacroStampEvalPath(t *testing.T) {
 	after := 0
 	seen = make(map[*lisp.LVal]bool)
 	for _, e := range exprs {
-		walkAST(e, seen, func(v *lisp.LVal) {
+		walkValueGraph(e, seen, func(v *lisp.LVal) {
 			if loc, ok := v.Source(); ok && loc.Pos < 0 && v.IsSealed() {
 				after++
 			}
