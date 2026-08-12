@@ -202,7 +202,7 @@ func (s *sealFP) walk(v *LVal, depth int) {
 		s.mixInt(src.EndLine)
 		s.mixInt(src.EndCol)
 	}
-	s.mixBool(v.Meta != nil)
+	s.mixBool(v.meta != nil)
 	s.mixBool(v.macroExpansion != nil)
 	s.mixInt(len(v.Cells))
 	for _, c := range v.Cells {

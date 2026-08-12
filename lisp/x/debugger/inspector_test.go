@@ -345,4 +345,3 @@ func TestInspectMacroExpansion_WithCallSite(t *testing.T) {
 	assert.Equal(t, "(call-site)", bindings[1].Name)
 	assert.Contains(t, bindings[1].Value.Str, "test.lisp")
 }
-

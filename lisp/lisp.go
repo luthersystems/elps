@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/fmtmeta"
 	"github.com/luthersystems/elps/parser/token"
 )
 
@@ -249,21 +250,6 @@ func (v *LVal) MacroExpansion() (MacroExpansionMeta, bool) {
 	return m, true
 }
 
-// SourceMeta holds formatting metadata for an LVal, populated only when
-// parsing in format-preserving mode. Nil in normal parsing — zero cost.
-type SourceMeta struct {
-	TrailingComment         *token.Token   // inline comment on same line after this node
-	OriginalText            string         // original token text for literals (preserves escapes, numeric bases)
-	LeadingComments         []*token.Token // comment tokens preceding this node
-	InnerTrailingComments   []*token.Token // comments between last child and closing bracket
-	BlankLinesBefore        int            // blank lines (newline count - 1) before this node (or before its leading comments)
-	BlankLinesAfterComments int            // blank lines between last leading comment and the expression
-	PrecedingSpaces         int            // spaces before this token on the same line (for column alignment)
-	BracketType             rune           // '(' or '[' for LSExpr nodes
-	NewlineBefore           bool           // true if at least one newline preceded this node in source
-	ClosingBracketNewline   bool           // true if closing bracket was on its own line in source
-}
-
 // LVal is a lisp value
 //
 // Field order is chosen so that every pointer-bearing word sits in the leading
@@ -286,8 +272,13 @@ type LVal struct {
 	// SetSource().  See issue #362.
 	source *token.Location
 
-	// Meta holds formatting metadata, only populated in format-preserving mode.
-	Meta *SourceMeta
+	// meta holds formatting metadata, only populated in format-preserving
+	// mode.  Unexported (issue #382), typed by an internal package: only
+	// this module's format tooling (parser/rdparser writes, formatter
+	// reads) can touch it, through internal/fmtraw.  Format-preserving
+	// trees are never sealed, evaluated, or shared, so nothing outside
+	// that tooling has ever had a legitimate use.
+	meta *fmtmeta.Meta
 
 	// macroExpansion holds debug metadata for nodes produced by macro
 	// expansion. Only populated when a debugger is attached — nil in

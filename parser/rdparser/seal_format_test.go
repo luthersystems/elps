@@ -5,6 +5,7 @@ package rdparser
 import (
 	"testing"
 
+	"github.com/luthersystems/elps/internal/fmtraw"
 	"github.com/luthersystems/elps/parser/token"
 )
 
@@ -24,7 +25,8 @@ func TestSealNonFormatParse(t *testing.T) {
 
 // TestFormatParseTrailingCommentNotSealedWrite is a regression test: the
 // format-preserving Parse() attaches a same-line trailing comment to
-// expr.Meta AFTER the top-level expression is otherwise complete.  When
+// the formatting metadata AFTER the top-level expression is otherwise
+// complete.  When
 // ParseExpression sealed at depth 1 unconditionally, that attach was a write
 // to an already-sealed node — a violation of the "sealed bytes never change
 // after parse" invariant and, in checked builds, a stale-fingerprint
@@ -42,10 +44,11 @@ func TestFormatParseTrailingCommentNotSealedWrite(t *testing.T) {
 			" constructed by Parse(); the trailing-comment attach would write a sealed node")
 	}
 	// The formatter contract must still hold: the trailing comment is attached.
-	if expr.Meta == nil || expr.Meta.TrailingComment == nil {
-		t.Fatalf("format parse dropped the trailing comment; Meta=%v", expr.Meta)
+	m := fmtraw.Meta(expr)
+	if m == nil || m.TrailingComment == nil {
+		t.Fatalf("format parse dropped the trailing comment; Meta=%v", m)
 	}
-	if got := expr.Meta.TrailingComment.Text; got != ";; trailing" {
+	if got := m.TrailingComment.Text; got != ";; trailing" {
 		t.Fatalf("trailing comment text = %q, want %q", got, ";; trailing")
 	}
 }

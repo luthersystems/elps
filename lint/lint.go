@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/internal/fmtraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
@@ -706,12 +707,12 @@ func walkNodeForNolint(v *lisp.LVal, lines map[int]*nolintInfo) {
 	if v == nil {
 		return
 	}
-	if v.Meta != nil {
-		checkNolintToken(v.Meta.TrailingComment, lines)
-		for _, c := range v.Meta.LeadingComments {
+	if m := fmtraw.Meta(v); m != nil {
+		checkNolintToken(m.TrailingComment, lines)
+		for _, c := range m.LeadingComments {
 			checkNolintToken(c, lines)
 		}
-		for _, c := range v.Meta.InnerTrailingComments {
+		for _, c := range m.InnerTrailingComments {
 			checkNolintToken(c, lines)
 		}
 	}
