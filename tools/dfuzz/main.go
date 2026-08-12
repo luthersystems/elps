@@ -53,6 +53,16 @@ const (
 	watchdog = 60 * time.Second
 )
 
+// Exit statuses.  These matter because run.sh distinguishes them: a Go
+// runtime fatal error exits 2, and that is the status the supervisor treats as
+// a process-fatal crash worth isolating and reporting, so nothing else may use
+// it.
+const (
+	exitFindings = 1
+	// 2 is reserved: the Go runtime uses it for an unrecoverable fatal error.
+	exitUsage = 3
+)
+
 type result struct {
 	// Starved marks a pair decided by wall clock on both attempts, which is
 	// not comparable.
@@ -80,6 +90,7 @@ func main() {
 		elpspath  = flag.Bool("elpspath", false, "generate elpspath shapes (only valid when the left tree has the package: b7ad5ca or later)")
 		tally     = flag.Bool("tally", false, "print the most common agreeing-error messages and exit (generator tuning)")
 		selfEvery = flag.Int("selfcheck", 100, "self-check every Nth program: evaluate it TWICE in the same tree and report any difference as harness nondeterminism (0 disables)")
+		trace     = flag.Bool("trace", false, "print each seed to stderr before evaluating it; with -workers 1 the last line names the program that killed the process")
 		verbose   = flag.Bool("v", false, "print progress")
 	)
 	flag.Parse()
@@ -108,7 +119,7 @@ func main() {
 		src, err := os.ReadFile(*reproFile)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
+			os.Exit(exitUsage)
 		}
 		runOne(-1, string(src), allow, true)
 		return
@@ -125,7 +136,7 @@ func main() {
 		}
 		fmt.Printf("\nseeds=%d findings=%d\n", len(seedCorpus()), findings)
 		if findings > 0 {
-			os.Exit(1)
+			os.Exit(exitFindings)
 		}
 		return
 	}
@@ -226,6 +237,9 @@ func main() {
 				}
 				if !deadline.IsZero() && time.Now().After(deadline) {
 					return
+				}
+				if *trace {
+					fmt.Fprintf(os.Stderr, "TRY seed=%d\n", seed)
 				}
 				g := NewGen(seed)
 				var src string
@@ -345,7 +359,7 @@ func main() {
 	}
 	fmt.Printf("  findings         %d (%d distinct)\n", findings.Load(), len(reported))
 	if findings.Load() > 0 {
-		os.Exit(1)
+		os.Exit(exitFindings)
 	}
 }
 

@@ -80,11 +80,12 @@ Three things make this safe rather than clever:
    error whenever the trees' APIs drift apart, which is a signal worth having.
 
 The alternative design — two subprocess evaluators diffing stdout over a shared
-corpus — needs no trickery and would have worked. It was not chosen because it
-pays a process spawn per program (measured ~40x the in-process per-program
-cost, which turns a 20-minute run into most of a day) and because a Go panic
-reaches it only as an exit status, with no stack and no way to tell a crash
-from a clean non-zero exit.
+corpus — needs no trickery and would have worked. It was not chosen for two
+reasons. A Go panic reaches it only as an exit status, with no stack and no way
+to distinguish a crash from a clean non-zero exit. And it pays a process spawn
+plus a full standard-library load per program, against roughly 3ms for an
+in-process pair here (SUBPROCESS_COST) — the difference between a bounded run
+that fits in a coffee break and one that does not.
 
 ## What the generator aims at
 
@@ -136,15 +137,47 @@ That isolates exactly the seal-era changes to the ported engine.
 
 The sealed branch deliberately changes some observable behaviour; that is what
 it is for. `allowlist.go` names each such change with a one-line justification
-and the commit that made it intentional. Everything a rule does not match is a
-**finding**.
+and the commit that made it intentional. Everything no rule matches is a
+**finding**, and findings are what set the exit status.
 
-The bar for adding a rule is deliberately high: a rule is a permanent hole in
-the oracle. It must be narrow — keyed on the specific condition or message
-shape that changed, never on "the value differs" — and it must cite the commit
-or issue. A rule that would also swallow an unrelated regression is not
-admissible. Rules default to OFF where the class is worth seeing rather than
-hiding; `-allow=<name>` turns one on for a run.
+Two properties keep this from becoming a place where regressions hide.
+
+**A rule is narrow.** It is keyed on the specific condition, direction or
+builtin that changed — never on "the value differs" — and it must cite the
+commit. Rules see the program **source** as well as the two outcomes, because
+"the sealed tree declined to mutate a quoted literal" is a claim about which
+builtin ran, and a rule that cannot see the program can only make the useless
+claim. `error-instead-of-panic` is strictly directional: it never explains a
+*new* panic on the sealed side. `stable-sort/literal-not-mutated` requires the
+two trees to agree exactly on whether and how the program failed — which is not
+the same as requiring that neither failed, since a program that sorts a literal
+and then dies on an unrelated expression still shows the intended difference in
+the globals it set.
+
+**A matched divergence is classified, not hidden.** The run counts each class,
+prints one exemplar per class, and fails only on unclassified divergences. An
+allowlist that suppresses its matches turns a wrong rule into silence, and
+silence is indistinguishable from a clean run.
+
+## What the harness will not compare
+
+Two things are deliberately not treated as divergences.
+
+**Step counts.** The sealed branch legitimately changes how many steps some
+operations take. They are reported for triage and never compared.
+
+**Wall-clock outcomes.** An evaluation that ends because its deadline fired
+records how busy the machine was, not what the interpreter computed. `Starved`
+marks those, a starved pair is retried once, and a pair that starves twice is
+counted and dropped. This is not hypothetical: the first unfiltered run on a
+loaded 4-core sandbox reported 31 "findings" in 52,000 programs and every one
+was the deadline firing at step 1 on one side only.
+
+The harness also checks **itself**: `-selfcheck N` evaluates every Nth program
+twice in the *same* tree and reports any difference as harness
+nondeterminism. Every divergence this tool reports rests on one interpreter
+given one program producing one answer; sampling turns that assumption into an
+assertion.
 
 ## Seed corpus
 

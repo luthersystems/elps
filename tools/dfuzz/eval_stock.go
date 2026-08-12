@@ -14,8 +14,8 @@ import (
 	parser "github.com/luthersystems/elpsstock/parser"
 )
 
-// evalStock runs src in the STOCK tree (origin/main) and reduces the result to
-// a tree-independent Outcome.
+// evalStock runs src in the STOCK tree -- the left-hand ref, the baseline --
+// and reduces the result to a tree-independent Outcome.
 //
 // This file and eval_sealed.go are deliberate duplicates.  The two trees
 // export the same API but as DIFFERENT Go types -- github.com/luthersystems/

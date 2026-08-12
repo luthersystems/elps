@@ -14,8 +14,8 @@ import (
 	parser "github.com/luthersystems/elps/parser"
 )
 
-// evalSealed runs src in the SEALED tree (claude/exp-seal-tooling) and reduces the result to
-// a tree-independent Outcome.
+// evalSealed runs src in the SEALED tree -- the right-hand ref, the one under
+// test -- and reduces the result to a tree-independent Outcome.
 //
 // See eval_stock.go for why this file is a deliberate duplicate of it: the
 // two trees export the same API but as distinct Go types, so nothing can span

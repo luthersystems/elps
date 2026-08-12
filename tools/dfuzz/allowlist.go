@@ -76,6 +76,49 @@ var allowRules = []allowRule{
 			return d.Field == "value" || strings.HasPrefix(d.Field, "global:")
 		},
 	},
+	{
+		Name: "elpspath/copy-op-list-writeback",
+		Why:  "the copying path ops wrote the ARRAY layout back into a LIST copy (0442c52), which either corrupted the structure silently or built a self-referential value; the right-hand tree returns the correct list. Only meaningful when the left-hand tree is the elpspath adoption commit -- origin/main has no elpspath at all -- so this rule is OFF by default.",
+		Match: func(src string, d Divergence, stock, sealed Outcome) bool {
+			// Requires a NON-mutating path op in the program.  The mutating
+			// ones reject lists outright (errMutateList), so they never
+			// reached the defective write-back and this rule must not excuse
+			// anything about them.
+			if !hasCopyingPathOp(src) {
+				return false
+			}
+			// The two trees must agree exactly on whether and how the program
+			// failed; only computed values may differ.
+			if stock.IsError != sealed.IsError ||
+				stock.Cond != sealed.Cond ||
+				stock.Msg != sealed.Msg ||
+				sealed.InternalPanic || sealed.HardPanic != "" {
+				return false
+			}
+			return d.Field == "value" || strings.HasPrefix(d.Field, "global:")
+		},
+	},
+}
+
+// hasCopyingPathOp reports whether src calls one of the NON-mutating elpspath
+// operations.  The `!` variants are excluded deliberately: they reject lists
+// before reaching the write-back that 0442c52 fixed, so a divergence in one of
+// them is not explained by that fix.
+func hasCopyingPathOp(src string) bool {
+	for _, op := range []string{"?set", "?del", "?nil"} {
+		for i := 0; ; {
+			j := strings.Index(src[i:], "elpspath:"+op)
+			if j < 0 {
+				break
+			}
+			k := i + j + len("elpspath:"+op)
+			if k >= len(src) || src[k] != '!' {
+				return true
+			}
+			i = k
+		}
+	}
+	return false
 }
 
 // Classification is the verdict on one program's divergences.
@@ -118,5 +161,9 @@ func defaultAllow() map[string]bool {
 	return map[string]bool{
 		"error-instead-of-panic":          true,
 		"stable-sort/literal-not-mutated": true,
+		// OFF by default: it is specific to the elpspath adoption baseline,
+		// and origin/main has no elpspath to diverge about.  Enable it with
+		// -allow=elpspath/copy-op-list-writeback on that run.
+		"elpspath/copy-op-list-writeback": false,
 	}
 }
