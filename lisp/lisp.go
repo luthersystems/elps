@@ -1051,7 +1051,7 @@ func (v *LVal) IsNumeric() bool {
 // found at a finite depth, so no equality is claimed that a longer walk could
 // refute.  See lisp/cycle.go and issue #390.
 func (v *LVal) Equal(other *LVal) *LVal {
-	var st cycleState
+	var st pairState
 	eq := v.equal(other, pairGuard{state: &st})
 	if !st.cyclic {
 		return eq

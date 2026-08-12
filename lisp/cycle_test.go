@@ -196,6 +196,65 @@ func TestGuardedWalksDoNotAllocate(t *testing.T) {
 	}), "a value that stays below cycleGuardDepth must not allocate a path set")
 }
 
+// wideAtDepth returns a value nested depth levels deep whose innermost list
+// holds width single-element lists.  Those lists are the only wide layer of
+// containers in it, and they sit at depth+2 counting the outermost list as 1,
+// which is what lets a caller place them exactly at cycleGuardDepth.
+func wideAtDepth(depth, width int) *LVal {
+	kids := make([]*LVal, width)
+	for i := range kids {
+		kids[i] = SExpr([]*LVal{Int(i)})
+	}
+	return nestList(depth, SExpr(kids))
+}
+
+// TestGuardIsFlatAcrossTheGuardDepth is the half of the cost claim a deep but
+// narrow value cannot make: a value that is merely *wide* at exactly
+// cycleGuardDepth must not pay for the path set per node.
+//
+// The two shapes compared are the same width and differ by one level of
+// nesting, which places the wide layer either just below the guard depth or
+// exactly on it.  Rendering and comparing them therefore does the same work
+// bar a constant, and the whole difference is the guard.
+//
+// The path set is allocated once per walk because it lives on the shared
+// state.  Built in the by-value guard instead, each of the width nodes at the
+// guard depth would inherit a nil path from its parent and make its own --
+// turning a fixed cost into a linear one, for an acyclic value, which is
+// exactly what the guard promises not to do.
+//
+// Red-proof: moving path back into cycleGuard/pairGuard fails this at every
+// width, with the difference tracking width instead of staying constant.
+func TestGuardIsFlatAcrossTheGuardDepth(t *testing.T) {
+	// One less level of nesting puts the wide layer below the guard depth,
+	// where nothing is tracked at all.
+	const onGuard = cycleGuardDepth - 2
+	const below = onGuard - 1
+
+	// Whatever the guard costs at the boundary, it is a fixed number of
+	// allocations for the walk and not a number per node.
+	const constantCost = 32
+
+	for _, width := range []int{2, 64, 1024} {
+		t.Run(fmt.Sprintf("String/width=%d", width), func(t *testing.T) {
+			lo, hi := wideAtDepth(below, width), wideAtDepth(onGuard, width)
+			base := testing.AllocsPerRun(20, func() { _ = lo.String() })
+			got := testing.AllocsPerRun(20, func() { _ = hi.String() })
+			assert.Less(t, got-base, float64(constantCost),
+				"rendering a value wide at the guard depth allocated per node: %v vs %v", got, base)
+		})
+		t.Run(fmt.Sprintf("Equal/width=%d", width), func(t *testing.T) {
+			lo, hi := wideAtDepth(below, width), wideAtDepth(onGuard, width)
+			loOther, hiOther := wideAtDepth(below, width), wideAtDepth(onGuard, width)
+			base := testing.AllocsPerRun(20, func() { _ = lo.Equal(loOther) })
+			got := testing.AllocsPerRun(20, func() { _ = hi.Equal(hiOther) })
+			assert.Zero(t, base, "comparing below the guard depth must not allocate")
+			assert.Less(t, got-base, float64(constantCost),
+				"comparing values wide at the guard depth allocated per node: %v vs %v", got, base)
+		})
+	}
+}
+
 // cyclicWalkEnv names the walk a helper subprocess should run.  It is read,
 // never written, by anything that ships.
 const cyclicWalkEnv = "ELPS_TEST_CYCLIC_WALK"
