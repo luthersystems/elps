@@ -190,3 +190,78 @@ func TestMacroCacheSharedConcurrent(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+// nativeMacroDef is a minimal embedder-style builtin macro definition: the
+// public LBuiltinDef surface an embedder passes to LEnv.AddMacros.
+type nativeMacroDef struct {
+	name string
+	eval func(*lisp.LEnv, *lisp.LVal) *lisp.LVal
+}
+
+func (d nativeMacroDef) Name() string        { return d.name }
+func (d nativeMacroDef) Formals() *lisp.LVal { return lisp.Formals() }
+func (d nativeMacroDef) Eval(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return d.eval(env, args)
+}
+
+// TestMacroCacheNativeIdentityDistinguishesImplementations is a defeat of
+// the NATIVE admission tier, found by attacking the identity rather than
+// the prover.  A whitelisted native macro's cache identity was package +
+// FID, and the FID is derived from the REGISTRATION NAME
+// (AddMacros: "<builtin-macro “name”>").  Two runtimes that register
+// different implementations under the same qualified name are therefore
+// indistinguishable to the process-shared table, and a shared sealed
+// callsite serves the first runtime's expansion to the second: runtime A's
+// macro expands to 1, runtime B's to 2, and B evaluated to 1.
+//
+// Whitelisting asserts that a macro's expansion depends only on its
+// argument nodes.  It cannot assert anything about a DIFFERENT macro that
+// happens to share its name, which is why the identity — not the audit
+// contract — has to carry this.  The identity now includes the
+// implementation's function identity, so the two are distinct and B misses.
+func TestMacroCacheNativeIdentityDistinguishesImplementations(t *testing.T) {
+	lisp.RegisterPureNativeMacro("user:collide")
+	callsite := parseShared(t, `(collide)`)[0]
+	callsite.SealAST()
+
+	var want string
+	for _, m := range macroCacheModes {
+		t.Run(m.name, func(t *testing.T) {
+			withMacroCacheMode(t, m.mode)
+			mk := func(out int) *lisp.LEnv {
+				env := newMacroCacheTestEnv(t)
+				env.AddMacros(true, nativeMacroDef{"collide", func(*lisp.LEnv, *lisp.LVal) *lisp.LVal {
+					return lisp.Int(out)
+				}})
+				return env
+			}
+			envA, envB := mk(1), mk(2)
+			// The mechanism, stated directly next to the behaviour: the two
+			// environment-local definitions carry different registration
+			// ids, while a macro bound from a process-global table (every
+			// kernel macro, and everything RegisterDefaultMacro adds)
+			// carries the SAME id in both — which is what keeps
+			// TestMacroCacheCrossRuntimeSharedHit hitting across runtimes.
+			idA := lisp.MacroRegistrationIDForTest(envA.GetGlobal(lisp.Symbol("collide")))
+			idB := lisp.MacroRegistrationIDForTest(envB.GetGlobal(lisp.Symbol("collide")))
+			if idA == idB || idA == 0 || idB == 0 {
+				t.Fatalf("environment-local registrations share an id: %d, %d", idA, idB)
+			}
+			kernelA := lisp.MacroRegistrationIDForTest(envA.GetGlobal(lisp.Symbol("get-default")))
+			kernelB := lisp.MacroRegistrationIDForTest(envB.GetGlobal(lisp.Symbol("get-default")))
+			if kernelA != kernelB || kernelA == 0 {
+				t.Fatalf("process-global registration lost its shared id: %d, %d", kernelA, kernelB)
+			}
+			got := envA.Eval(callsite).String() + "," + envB.Eval(callsite).String() +
+				"," + envA.Eval(callsite).String()
+			if m.mode == lisp.MacroCacheOff {
+				want = got
+				return
+			}
+			if got != want {
+				t.Fatalf("cache changed the answer: %s mode gave %s, cache-off gave %s",
+					m.name, got, want)
+			}
+		})
+	}
+}

@@ -220,15 +220,30 @@ distinct symbols per call under every cache mode.
 
 Exact identity comparison; there is no epoch counter to bump.
 
-Every entry records the identity of the macro that produced it: package+FID
-for native macros, the sealed formals-node pointer for user macros. Every
-lookup validates the entry against the macro the callsite resolves to *right
-now*. Redefinition — whether by `defmacro` or by shadowing a kernel macro —
-necessarily creates a fresh function with a fresh formals node, so a stale
-entry can never be served; it is simply overwritten by the next expansion.
+Every entry records the identity of the macro that produced it:
+package+FID+registration id for native macros, the sealed formals-node
+pointer for user macros. Every lookup validates the entry against the macro
+the callsite resolves to *right now*. Redefinition — whether by `defmacro`
+or by shadowing a kernel macro — necessarily creates a fresh function with a
+fresh formals node, so a stale entry can never be served; it is simply
+overwritten by the next expansion.
 
-Test: `TestMacroCacheInvalidationOnRedefinition`, covering user redefinition
-and kernel-macro shadowing, in both cache modes.
+The registration id is there because a NAME is not an identity. A native
+macro's FID is derived from its registration name, so two environments that
+register different implementations under one qualified name were
+indistinguishable to the process-shared table and the second was served the
+first's expansion — a wrong answer, not a misclassification.
+`funData.impl` separates them: one id per process-global definition (every
+kernel macro, and everything `RegisterDefaultMacro` adds — so cross-runtime
+hits survive for that tier), a fresh id per registration for anything bound
+environment-locally through `AddMacros`, and no id at all — hence no
+caching — for a macro value built directly with `lisp.Macro`.
+
+Tests: `TestMacroCacheInvalidationOnRedefinition`, covering user
+redefinition and kernel-macro shadowing in both cache modes, and
+`TestMacroCacheNativeIdentityDistinguishesImplementations`, which runs two
+same-named implementations in two runtimes over one shared sealed callsite
+and requires every cache mode to agree with cache-off.
 
 ## 6. Sharing scope
 

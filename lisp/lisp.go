@@ -188,6 +188,18 @@ type funData struct {
 	env     *LEnv
 	fid     string
 	pkg     string
+	// impl identifies the REGISTRATION a builtin macro was bound from (see
+	// LEnv.AddMacros).  Package+FID name a macro, but the FID is derived
+	// from the registration NAME, so two environments that register
+	// different implementations under one name are indistinguishable by
+	// name alone — which is what the process-shared expansion cache used as
+	// identity (macrocache.go).  Registrations that come from a
+	// process-global table (the language's own macros, and anything added
+	// through RegisterDefaultMacro) share one id across every environment;
+	// any other definition gets a fresh id per registration, which keeps
+	// the comparison sound at the cost of cross-environment reuse.  Zero
+	// means "not registered through AddMacros" and is never cacheable.
+	impl uint64
 }
 
 func (fd *funData) Copy() *funData {

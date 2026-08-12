@@ -89,3 +89,14 @@ func SharedMacroCacheAllSealedForTest() (entries int, allSealed bool) {
 	})
 	return entries, allSealed
 }
+
+// MacroRegistrationIDForTest exposes the registration identity a builtin
+// macro was bound with (funData.impl; 0 for user macros and for macro
+// values built outside LEnv.AddMacros).
+func MacroRegistrationIDForTest(fun *LVal) uint64 {
+	fd := fun.funData()
+	if fd == nil {
+		return 0
+	}
+	return fd.impl
+}

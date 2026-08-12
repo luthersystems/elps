@@ -80,11 +80,15 @@ package lisp
 //     (registrationFormals): immutable content, copy-on-write protected.
 //     Cross-runtime hits require cross-runtime-shared sealed callsites,
 //     which is exactly substrate's production parse-cache aliasing
-//     (substrate#375).  Under -tags elpscheck the ownership checker forbids
-//     cross-runtime AST sharing outright (substrate detaches cache handoffs
-//     under the tag), so a cross-runtime cache hit is unreachable in checked
-//     builds: a shared callsite would panic at eval entry before macro
-//     dispatch.  Within one runtime the checker is satisfied trivially.
+//     (substrate#375).  That topology is PERMITTED under -tags elpscheck:
+//     the ownership checker exempts sealed nodes precisely because sharing
+//     one sealed parse across runtimes is what sealing exists for, so a
+//     cross-runtime hit is reachable in checked builds and the cross-runtime
+//     tests run under the tag (with an unsealed positive control asserting
+//     the checker still fires — macrocache_crossruntime_elpscheck_test.go).
+//     An earlier revision claimed the opposite, that checked builds made
+//     cross-runtime hits unreachable "by construction"; that was an
+//     unexecuted assumption and it was also stale.
 //
 // The POC default is MacroCacheOff; nothing changes unless a host opts in
 // via SetMacroCacheMode or the ELPS_MACRO_CACHE environment variable
@@ -235,6 +239,15 @@ func builtinMacroFID(name string) string {
 // caller asserts the macro's expansion depends only on its (unevaluated)
 // argument nodes and mints gensyms solely into binding positions.  Intended
 // for embedders that register macros via RegisterDefaultMacro/AddMacros.
+//
+// The assertion is about ONE implementation, so it cannot be the thing that
+// separates two implementations sharing a name.  That separation is carried
+// by the registration id in the cache identity (funData.impl): a macro bound
+// per-environment through AddMacros is cached per environment, and only a
+// definition registered once in a process-global table is reused across
+// environments.  A macro value built directly with lisp.Macro /
+// MacroInPackage, bypassing AddMacros, carries no registration and is never
+// cached.
 func RegisterPureNativeMacro(qualifiedName string) {
 	pkg, name, ok := splitQualified(qualifiedName)
 	if !ok {
@@ -260,8 +273,18 @@ func isPureNativeMacro(pkg, fid string) bool {
 // macroIdentity identifies the macro function that produced a cached
 // expansion, for exact invalidation on redefinition.
 //
-// Native macros: pkg + FID strings (process-stable per registration name;
-// identical across environments registering the same builtin table).
+// Native macros: pkg + FID strings, PLUS the registration id
+// (funData.impl).  The name is not identity on its own: the FID is derived
+// from the registration NAME, so two environments that register different
+// implementations under one qualified name are indistinguishable to the
+// process-shared table and the second is served the first's expansion — a
+// wrong answer, pinned by
+// TestMacroCacheNativeIdentityDistinguishesImplementations.  The
+// registration id is shared by every environment that binds the same
+// process-global definition (the kernel tier still hits across runtimes)
+// and fresh per registration otherwise, so an environment-local definition
+// is never confused with another environment's.
+//
 // User macros: the pointer identity of the function's sealed formals node —
 // unique per defmacro source form and shared by every environment that
 // evaluates the same parse, so identical source yields cross-env hits while
@@ -271,6 +294,7 @@ type macroIdentity struct {
 	formals *LVal // user macros only; nil for native
 	pkg     string
 	fid     string
+	impl    uint64 // native macros only; 0 for user macros
 }
 
 // macroCacheEntry is one cached expansion: the identity of the macro that
@@ -303,7 +327,14 @@ func macroCacheIdentity(callerEnv *LEnv, fun *LVal) (macroIdentity, bool) {
 		if !isPureNativeMacro(fd.pkg, fd.fid) {
 			return macroIdentity{}, false
 		}
-		return macroIdentity{pkg: fd.pkg, fid: fd.fid}, true
+		if fd.impl == 0 {
+			// Built outside LEnv.AddMacros (lisp.Macro / MacroInPackage
+			// called directly by an embedder), so this package has no
+			// registration to identify it by and cannot tell it apart from
+			// another macro sharing its name.  Refusing to cache is sound.
+			return macroIdentity{}, false
+		}
+		return macroIdentity{pkg: fd.pkg, fid: fd.fid, impl: fd.impl}, true
 	}
 	// User macro: cells are [formals, body...].
 	if len(fun.Cells) < 2 {

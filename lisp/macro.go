@@ -4,6 +4,7 @@ package lisp
 
 import (
 	"fmt"
+	"sync"
 
 	macroexphook "github.com/luthersystems/elps/internal/macroexp/hook"
 	"github.com/luthersystems/elps/parser/token"
@@ -70,6 +71,47 @@ var langMacros = []*langBuiltin{
 		set the documentation (concatenated; empty strings produce
 		paragraph breaks). Equivalent to (set 'name value docs...)
 		followed by (export 'name).`},
+}
+
+// macroRegistrationIDs assigns each builtin-macro REGISTRATION an identity
+// that outlives the environment it is bound into, so the expansion cache can
+// tell two implementations apart when they share a name (see funData.impl
+// and macrocache.go).
+//
+// A definition that lives in one of this package's process-global tables —
+// langMacros, and everything RegisterDefaultMacro appends to userMacros — is
+// the SAME *langBuiltin in every environment that registers it, so it keeps
+// one id and its expansions stay shareable between environments.  Any other
+// LBuiltinDef reaching AddMacros is an environment-local definition whose
+// implementation this package cannot compare, so it gets a fresh id per
+// registration: the cache then treats each environment's binding as a
+// distinct macro, which costs cross-environment reuse and never serves one
+// implementation's expansion for another.
+//
+//elpsvet:allow registration identity table; keys are process-global registration defs, values are ints, no LVals
+var macroRegistrationIDs = struct {
+	ids map[*langBuiltin]uint64
+	seq uint64
+	mu  sync.Mutex
+}{}
+
+func macroRegistrationID(def LBuiltinDef) uint64 {
+	macroRegistrationIDs.mu.Lock()
+	defer macroRegistrationIDs.mu.Unlock()
+	macroRegistrationIDs.seq++
+	fresh := macroRegistrationIDs.seq
+	lb, ok := def.(*langBuiltin)
+	if !ok {
+		return fresh
+	}
+	if id, ok := macroRegistrationIDs.ids[lb]; ok {
+		return id
+	}
+	if macroRegistrationIDs.ids == nil {
+		macroRegistrationIDs.ids = make(map[*langBuiltin]uint64)
+	}
+	macroRegistrationIDs.ids[lb] = fresh
+	return fresh
 }
 
 // RegisterDefaultMacro adds the given function to the list returned by

@@ -848,6 +848,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 		}
 		id := fmt.Sprintf("<builtin-macro ``%s''>", mac.Name())
 		fn := MacroInPackage(pkg.Name, id, registrationFormals(mac.Formals()), mac.Eval)
+		fn.funData().impl = macroRegistrationID(mac)
 		fn.Cells[1] = String(builtinDocstring(mac))
 		pkg.Put(k, fn)
 		if external {
