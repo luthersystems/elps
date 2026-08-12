@@ -76,6 +76,54 @@ type sealCheckState struct {
 	mu    sync.Mutex
 }
 
+// permanentSealRoots are the process-wide singletons (lisp/singleton.go),
+// which are born sealed (issue #376) and registered here at package init —
+// before any user code can run — as PERMANENT inspector roots.  Unlike the
+// bounded roots table they are never part of a verify-and-drop cycle:
+// their fingerprints are held for the life of the process and re-verified
+// at every top-level load (verifySealedLoadRoots) and at every teardown
+// verification (VerifySealedASTs), so a singleton corruption is caught at
+// the load that caused it, not just at the value-drift checkpoints
+// checkSingleton covers.  The slice is written once at init and read-only
+// afterwards, so verification needs no lock.
+var permanentSealRoots = func() []permanentSealRoot {
+	roots := make([]permanentSealRoot, 0, 3)
+	for _, s := range []struct {
+		v    *LVal
+		name string
+	}{
+		{singletonNil, "Nil()"},
+		{singletonTrue, "Bool(true)"},
+		{singletonFalse, "Bool(false)"},
+	} {
+		roots = append(roots, permanentSealRoot{
+			v:    s.v,
+			name: s.name,
+			fp:   SealedASTFingerprint([]*LVal{s.v}),
+		})
+	}
+	return roots
+}()
+
+type permanentSealRoot struct {
+	v    *LVal
+	name string
+	fp   uint64 // fingerprint at package init, before any user code
+}
+
+// verifyPermanentSealRoots re-fingerprints the three singleton roots and
+// panics on the first mismatch.  Called on every top-level load; the
+// singletons are tiny (three nodes, no cells), so the cost is noise even
+// in checked builds.
+func verifyPermanentSealRoots(context string) {
+	for _, r := range permanentSealRoots {
+		if got := SealedASTFingerprint([]*LVal{r.v}); got != r.fp {
+			panic(sealViolationMessage(r.v, r.fp, got,
+				"permanent singleton root "+r.name+", "+context))
+		}
+	}
+}
+
 // recordSealedRoot stores the parse-time fingerprint of a freshly sealed
 // tree.  Called from SealAST with the tree's root; unsealed values (an
 // LError from the parser, a runtime value SealAST declined to mark) are
@@ -106,6 +154,7 @@ func recordSealedRoot(v *LVal) {
 // error does not excuse corrupting the parse.  Panics on a mismatch so
 // the offending load is named while it is still on the stack.
 func verifySealedLoadRoots(exprs []*LVal) {
+	verifyPermanentSealRoots("re-verified after the load that just finished")
 	for i, e := range exprs {
 		if e == nil || !e.sealed {
 			continue
@@ -152,6 +201,17 @@ func VerifySealedASTs() error {
 		bad   int
 		first string
 	)
+	// The permanent singleton roots are verified with the same lens and
+	// reported through the same error, never dropped and never skipped.
+	for _, r := range permanentSealRoots {
+		if got := SealedASTFingerprint([]*LVal{r.v}); got != r.fp {
+			bad++
+			if first == "" {
+				first = sealViolationMessage(r.v, r.fp, got,
+					"permanent singleton root "+r.name+", recorded at package init")
+			}
+		}
+	}
 	for _, e := range entries {
 		if got := SealedASTFingerprint([]*LVal{e.root}); got != e.want {
 			bad++
@@ -161,8 +221,8 @@ func VerifySealedASTs() error {
 		}
 	}
 	if bad > 0 {
-		return fmt.Errorf("%d of %d sealed parse trees were mutated after parsing; first:\n%s",
-			bad, len(entries), first)
+		return fmt.Errorf("%d of %d sealed roots were mutated in place; first:\n%s",
+			bad, len(entries)+len(permanentSealRoots), first)
 	}
 	return nil
 }

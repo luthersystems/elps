@@ -111,7 +111,7 @@
   "error" "rethrow"
   "eval" "macroexpand" "macroexpand-1"
   "gensym" "identity"
-  "vector" "make-sequence" "insert-index" "insert-sorted"
+  "vector" "make-sequence" "copy" "insert-index" "insert-sorted"
   "search-sorted" "stable-sort"
   "append-bytes" "append-bytes!"
   "load-string" "load-bytes" "load-file"
