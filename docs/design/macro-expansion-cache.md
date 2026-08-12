@@ -180,6 +180,20 @@ Against that ceiling the implementation serves **81,584 of 81,894**
 repeat-dispatches — **99.62% of all achievable reuse**, across every macro
 including the ones it deliberately refuses.
 
+### 7.1 Why the user-macro prover has to exist
+
+Issue #381 offered "conservative whitelisting of kernel macros only" as one
+way to resolve the impurity hazard. The measurement rules that option out:
+the admissible native macros — `get-default`, the `testing:` family, an
+embedder logging wrapper — account for **695 repeat-dispatches, 0.85%** of
+the available reuse. The remaining **99.15%** lives in user `defmacro`
+template macros defined by the embedder, which a kernel-only whitelist
+cannot reach by construction.
+
+So the prover in §3.2 is not a refinement of the whitelist approach; it is
+the only tier that captures anything. That is the main design conclusion of
+this POC.
+
 ## 8. Cost
 
 Warm-transaction benchmark against the same phylum (one warm environment, a
