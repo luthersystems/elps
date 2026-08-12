@@ -229,7 +229,7 @@ func RunRepl(prompt string, opts ...Option) {
 
 // RunEnv runs a simple repl with env as a root environment.
 func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
-	if env.Parent != nil {
+	if env.Parent() != nil {
 		errlnf("REPL environment is not a root environment.")
 		os.Exit(1)
 	}

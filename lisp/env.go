@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 	"log"
 	"runtime"
 	"strings"
@@ -87,20 +88,92 @@ func InitializeTypedef(env *LEnv) *LVal {
 	return Nil()
 }
 
-// TODO(elps2): Remove the field LEnv.FunName
+// TODO(elps2): Remove the field LEnv.funName
 
 // LEnv is a lisp environment.
+//
+// The binding state (scope, funName), the lexical chain (parent) and the
+// evaluator's current location (loc) are unexported — the issue #382 close
+// applied one layer up from LVal.  `env.scope[sym] = v` used to let any
+// holder of an *LEnv rebind a symbol in a live environment — including a
+// closure's captured environment, shared by every function value that
+// closed over it — without going through Put, invisible to the runtime
+// seal and to elpsvet; `env.loc = loc` aliased a caller's mutable location
+// into every error and stack frame the evaluator stamped afterwards (the
+// #362 aliasing class).  Reads are mediated by Bindings, NumBindings,
+// Parent and Source; the writes are kernel-only.
 //
 // Field order is layout-sensitive: the pointer-bearing fields lead so the GC
 // scan extent stops at 56 bytes instead of 64. Keep scalars (ID) trailing.
 type LEnv struct {
-	Loc     *token.Location
-	Scope   map[string]*LVal
-	FunName map[string]string
-	Parent  *LEnv
+	loc     *token.Location
+	scope   map[string]*LVal
+	funName map[string]string
+	parent  *LEnv
 	Runtime *Runtime
 	evalCtx context.Context // transient: set by call() at builtin boundary
 	ID      uint
+}
+
+// Parent returns env's lexically enclosing environment, or nil when env is a
+// root environment.  The chain is read-only through this accessor: the field
+// went unexported in issue #382 because re-parenting a live environment
+// silently re-scopes every closure that captured it.
+//
+// Parent is nil-receiver safe.
+func (env *LEnv) Parent() *LEnv {
+	if env == nil {
+		return nil
+	}
+	return env.parent
+}
+
+// Bindings iterates the symbol bindings in env's immediate scope; parent
+// scopes are not included (walk Parent for those).  Iteration order is
+// unspecified, like Go map order.
+//
+// Bindings is the read half of the scope map, which went unexported in issue
+// #382: enumerating an environment is a legitimate need (the debugger's
+// variable panes), while the write that came free with an exported map —
+// rebinding a symbol in an environment the writer does not own — is not.
+// Use Put or PutGlobal to bind.
+//
+// Bindings is nil-receiver safe: a nil LEnv yields nothing.
+func (env *LEnv) Bindings() iter.Seq2[string, *LVal] {
+	return func(yield func(string, *LVal) bool) {
+		if env == nil {
+			return
+		}
+		for k, v := range env.scope {
+			if !yield(k, v) {
+				return
+			}
+		}
+	}
+}
+
+// NumBindings returns the number of symbols bound in env's immediate scope.
+//
+// NumBindings is nil-receiver safe.
+func (env *LEnv) NumBindings() int {
+	if env == nil {
+		return 0
+	}
+	return len(env.scope)
+}
+
+// Source returns a copy of the location the evaluator is currently stamping
+// onto values produced in env, or nil when it has none.  The location is
+// copied because the evaluator rebinds and mutates its own (issue #382,
+// closing the #362 aliasing class at the environment level): a caller
+// holding the pointer would watch it change under evaluation.
+//
+// Source is nil-receiver safe.
+func (env *LEnv) Source() *token.Location {
+	if env == nil {
+		return nil
+	}
+	return copyLocation(env.loc)
 }
 
 // Context returns the context.Context currently associated with this
@@ -125,8 +198,8 @@ func NewEnvRuntime(rt *Runtime) *LEnv {
 	}
 	env := &LEnv{
 		ID:      rt.GenEnvID(),
-		Scope:   make(map[string]*LVal),
-		FunName: make(map[string]string),
+		scope:   make(map[string]*LVal),
+		funName: make(map[string]string),
 		Runtime: rt,
 	}
 	return env
@@ -137,7 +210,7 @@ func NewEnv(parent *LEnv) *LEnv {
 	return newEnvN(parent, 0)
 }
 
-// newEnvN creates a child LEnv with its Scope map pre-sized to hold n
+// newEnvN creates a child LEnv with its scope map pre-sized to hold n
 // bindings.  Callers that know the number of bindings up front (let, let*,
 // dotimes, etc.) can avoid map growth by passing the exact count.
 func newEnvN(parent *LEnv, n int) *LEnv {
@@ -146,17 +219,17 @@ func newEnvN(parent *LEnv, n int) *LEnv {
 	var evalCtx context.Context
 	if parent != nil {
 		runtime = parent.Runtime
-		loc = parent.Loc
+		loc = parent.loc
 		evalCtx = parent.evalCtx
 	} else {
 		runtime = StandardRuntime()
 	}
 	env := &LEnv{
 		ID:      runtime.GenEnvID(),
-		Loc:     loc,
-		Scope:   make(map[string]*LVal, n),
-		FunName: make(map[string]string),
-		Parent:  parent,
+		loc:     loc,
+		scope:   make(map[string]*LVal, n),
+		funName: make(map[string]string),
+		parent:  parent,
 		Runtime: runtime,
 		evalCtx: evalCtx,
 	}
@@ -328,7 +401,7 @@ func (env *LEnv) load(ctx context.Context, exprs []*LVal) *LVal {
 	return ret
 }
 
-// Copy returns a new LEnv with a copy of env.Scope but a shared parent and
+// Copy returns a new LEnv with a copy of env.scope but a shared parent and
 // stack (not quite a deep copy).
 func (env *LEnv) Copy() *LEnv {
 	if env == nil {
@@ -336,9 +409,9 @@ func (env *LEnv) Copy() *LEnv {
 	}
 	cp := &LEnv{}
 	*cp = *env
-	cp.Scope = make(map[string]*LVal, len(env.Scope))
-	for k, v := range env.Scope {
-		cp.Scope[k] = v
+	cp.scope = make(map[string]*LVal, len(env.scope))
+	for k, v := range env.scope {
+		cp.scope[k] = v
 	}
 	return cp
 }
@@ -441,12 +514,12 @@ func (env *LEnv) get(k *LVal) *LVal {
 
 func (env *LEnv) getSimple(k *LVal) *LVal {
 	for {
-		v, ok := env.Scope[k.Str]
+		v, ok := env.scope[k.Str]
 		if ok {
 			return v
 		}
-		if env.Parent != nil {
-			env = env.Parent
+		if env.parent != nil {
+			env = env.parent
 			continue
 		}
 		return env.packageGet(k)
@@ -518,7 +591,7 @@ func (env *LEnv) Put(k, v *LVal) *LVal {
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
 		return env.Errorf("cannot rebind constant: %v", k.Str)
 	}
-	env.Scope[k.Str] = v
+	env.scope[k.Str] = v
 	return Nil()
 }
 
@@ -537,12 +610,12 @@ func (env *LEnv) Update(k, v *LVal) *LVal {
 
 func (env *LEnv) update(k, v *LVal) *LVal {
 	for {
-		_, ok := env.Scope[k.Str]
+		_, ok := env.scope[k.Str]
 		if ok {
-			env.Scope[k.Str] = v
+			env.scope[k.Str] = v
 			return Nil()
 		}
-		if env.Parent == nil {
+		if env.parent == nil {
 			lerr := env.Runtime.Package.Update(k, v)
 			if lerr.Type == LError {
 				if err := env.ErrorAssociate(lerr); err != nil {
@@ -552,7 +625,7 @@ func (env *LEnv) update(k, v *LVal) *LVal {
 			}
 			return Nil()
 		}
-		env = env.Parent
+		env = env.parent
 	}
 }
 
@@ -644,7 +717,7 @@ func (env *LEnv) TaggedValue(typ *LVal, val *LVal) *LVal {
 		return env.Errorf("first argument is not a symbol: %v", GetType(typ))
 	}
 	return &LVal{
-		source: env.Loc,
+		source: env.loc,
 		Type:   LTaggedVal,
 		Str:    typ.Str,
 		Cells:  []*LVal{val},
@@ -689,11 +762,11 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	fenv := NewEnv(env)
 	fun := &LVal{
 		Type:   LFun,
-		source: env.Loc,
+		source: env.loc,
 		Native: &funData{
-			FID:     fenv.getFID(),
-			Package: env.Runtime.Package.Name,
-			Env:     fenv,
+			fid: fenv.getFID(),
+			pkg: env.Runtime.Package.Name,
+			env: fenv,
 		},
 		Cells: cells,
 	}
@@ -716,8 +789,8 @@ func (env *LEnv) Terminal(expr *LVal) *LVal {
 }
 
 func (env *LEnv) root() *LEnv {
-	for env.Parent != nil {
-		env = env.Parent
+	for env.parent != nil {
+		env = env.parent
 	}
 	return env
 }
@@ -880,12 +953,12 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 	}
 	lerr := &LVal{
 		Type: LError,
-		// Copy the location instead of aliasing env.Loc: the error value
+		// Copy the location instead of aliasing env.loc: the error value
 		// escapes to the caller while evaluation continues, so it must not
 		// share a *token.Location the evaluator (or a producing parser) may
 		// still fix up in place.  Mirrors ErrorAssociate (d922290);
 		// copyLocation preserves nil (the "<native code>" convention).
-		source: copyLocation(env.Loc),
+		source: copyLocation(env.loc),
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
 		Cells:  cells,
@@ -914,7 +987,7 @@ func (env *LEnv) Errorf(format string, v ...interface{}) *LVal {
 func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
 	lerr := &LVal{
 		// Copied, not aliased — see the ErrorCondition comment.
-		source: copyLocation(env.Loc),
+		source: copyLocation(env.loc),
 		Type:   LError,
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
@@ -944,11 +1017,11 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	// the env's current location is probably more accurate than native
 	// source (or it may also be native source).
 	if lerr.source == nil || lerr.source.Pos < 0 {
-		// Copy the location instead of aliasing env.Loc.  The error value
+		// Copy the location instead of aliasing env.loc.  The error value
 		// escapes to the caller while evaluation continues, so it must not
 		// share a *token.Location the evaluator may still reference.
 		// copyLocation preserves nil (the "<native code>" convention).
-		lerr.source = copyLocation(env.Loc) //elps:mutates stamps a location onto an in-flight error that had none; the location itself is copied, not aliased
+		lerr.source = copyLocation(env.loc) //elps:mutates stamps a location onto an in-flight error that had none; the location itself is copied, not aliased
 	}
 	return nil
 }
@@ -1060,7 +1133,7 @@ eval:
 	if v.spliced {
 		return env.Errorf("spliced value used as expression")
 	}
-	env.Loc = v.source
+	env.loc = v.source
 	if v.source != nil {
 		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
 			if d.OnEval(env, v) {
@@ -1187,10 +1260,10 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 
 	// Capture the call-site location before entering the macro body so we
 	// can stamp it onto expanded nodes that lack real source info.
-	callSite := env.Loc
+	callSite := env.loc
 
 	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.PushFID(env.Loc, fun.FID(), fun.Package(), env.GetFunName(fun))
+	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
 	if err != nil {
 		return env.Error(err)
 	}
@@ -1256,7 +1329,7 @@ func (env *LEnv) specialOpCall(ctx context.Context, fun, args *LVal) *LVal {
 	}
 
 	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.PushFID(env.Loc, fun.FID(), fun.Package(), env.GetFunName(fun))
+	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
 	if err != nil {
 		return env.Error(err)
 	}
@@ -1403,7 +1476,7 @@ func (env *LEnv) funCall(ctx context.Context, fun, args *LVal) *LVal {
 	}
 
 	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.PushFID(env.Loc, fun.FID(), fun.Package(), env.GetFunName(fun))
+	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
 	if err != nil {
 		return env.Error(err)
 	}
@@ -1465,8 +1538,8 @@ func decrementMarkTailRec(mark *LVal) (done bool) {
 }
 
 func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
-	loc := env.Loc
-	defer func() { env.Loc = loc }()
+	loc := env.loc
+	defer func() { env.loc = loc }()
 
 	cells := s.Cells
 	newCells := make([]*LVal, 1, len(s.Cells))

@@ -294,21 +294,27 @@ func (f *forker) env(e *LEnv) *LEnv {
 		return ne
 	}
 	ne := &LEnv{
-		Loc:     e.Loc,
-		Scope:   make(map[string]*LVal, len(e.Scope)),
-		FunName: make(map[string]string, len(e.FunName)),
+		// The env location is mutable state: the evaluator rebinds and
+		// mutates its own in place (#382), so a fork that aliased the
+		// template's pointer would let each runtime's evaluation write
+		// through into the other's.  Copy it, exactly as the kernel's
+		// other env-location consumers now do (ErrorCondition,
+		// ErrorConditionf, ErrorAssociate).
+		loc:     copyLocation(e.loc),
+		scope:   make(map[string]*LVal, len(e.scope)),
+		funName: make(map[string]string, len(e.funName)),
 		Runtime: f.rt,
 		ID:      e.ID,
 	}
 	// Memo before descending: closures in scope may capture e.
 	f.envs[e] = ne
-	for k, v := range e.Scope {
-		ne.Scope[k] = f.val(v)
+	for k, v := range e.scope {
+		ne.scope[k] = f.val(v)
 	}
-	for k, v := range e.FunName {
-		ne.FunName[k] = v
+	for k, v := range e.funName {
+		ne.funName[k] = v
 	}
-	ne.Parent = f.env(e.Parent)
+	ne.parent = f.env(e.parent)
 	return ne
 }
 
@@ -345,10 +351,10 @@ func (f *forker) val(v *LVal) *LVal {
 	case LFun:
 		if fd, ok := v.Native.(*funData); ok && fd != nil {
 			cp.Native = &funData{
-				Builtin: fd.Builtin, // Go code: travels by reference
-				FID:     fd.FID,
-				Package: fd.Package,
-				Env:     f.env(fd.Env),
+				builtin: fd.builtin, // Go code: travels by reference
+				fid:     fd.fid,
+				pkg:     fd.pkg,
+				env:     f.env(fd.env),
 			}
 		}
 	case LNative:

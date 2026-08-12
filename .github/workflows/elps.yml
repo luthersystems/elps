@@ -24,6 +24,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
+      # Fails when a confidential customer name appears anywhere in the
+      # tracked tree.  The forbidden term is assembled from character codes
+      # inside the script -- never written literally -- so neither the
+      # script nor this workflow can trip the guard, and nothing has to be
+      # excluded from the scan.  Word-boundary matching keeps unrelated
+      # English words from false-positiving; the script self-tests both
+      # directions on every run.  See scripts/confidentiality-guard.sh.
+      - name: Confidentiality guard
+        run: bash scripts/confidentiality-guard.sh
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
         with:

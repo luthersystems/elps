@@ -304,14 +304,14 @@ func TestErrorAssociateWithError(t *testing.T) {
 
 // TestErrorAssociateCopiesLocation guards against location aliasing: the
 // *token.Location that ErrorAssociate stores on an error must be
-// pointer-independent of env.Loc, because the error escapes to the caller
-// while the evaluator keeps using (and rebinding) env.Loc.
+// pointer-independent of env.loc, because the error escapes to the caller
+// while the evaluator keeps using (and rebinding) env.loc.
 func TestErrorAssociateCopiesLocation(t *testing.T) {
 	t.Parallel()
 	env := initSafetyTestEnv(t)
 
 	loc := &token.Location{File: "assoc-test.lisp", Pos: 12, Line: 3, Col: 4}
-	env.Loc = loc
+	env.loc = loc
 
 	lerr := Errorf("test error")
 	if res := env.ErrorAssociate(lerr); res != nil {
@@ -321,27 +321,27 @@ func TestErrorAssociateCopiesLocation(t *testing.T) {
 		t.Fatal("associated error should carry a source location")
 	}
 	if lerr.source == loc {
-		t.Fatal("associated error aliases env.Loc; it must store an independent copy")
+		t.Fatal("associated error aliases env.loc; it must store an independent copy")
 	}
 	if *lerr.source != *loc {
 		t.Fatalf("copied location differs: got %+v want %+v", *lerr.source, *loc)
 	}
-	// Mutate env.Loc in place as evaluation would; the error's recorded
+	// Mutate env.loc in place as evaluation would; the error's recorded
 	// location must not move with it.
 	loc.Line = 999
 	loc.File = "elsewhere.lisp"
 	if lerr.source.Line == 999 || lerr.source.File == "elsewhere.lisp" {
-		t.Fatal("mutating env.Loc changed the associated error's location")
+		t.Fatal("mutating env.loc changed the associated error's location")
 	}
 
-	// A nil env.Loc must stay nil on the error (native-code convention).
-	env.Loc = nil
+	// A nil env.loc must stay nil on the error (native-code convention).
+	env.loc = nil
 	lerr2 := Errorf("second error")
 	if res := env.ErrorAssociate(lerr2); res != nil {
 		t.Fatalf("ErrorAssociate failed: %v", res)
 	}
 	if lerr2.source != nil {
-		t.Fatalf("nil env.Loc must yield nil error source, got %+v", lerr2.source)
+		t.Fatalf("nil env.loc must yield nil error source, got %+v", lerr2.source)
 	}
 }
 
@@ -349,13 +349,13 @@ func TestErrorAssociateCopiesLocation(t *testing.T) {
 // TestErrorAssociateCopiesLocation: ErrorCondition and ErrorConditionf (and
 // through them Error/Errorf) build error values that escape to the caller
 // while evaluation continues, so the location they record must be a copy of
-// env.Loc, never the pointer itself.
+// env.loc, never the pointer itself.
 func TestErrorConstructorsCopyLocation(t *testing.T) {
 	t.Parallel()
 	env := initSafetyTestEnv(t)
 
 	loc := &token.Location{File: "ctor-test.lisp", Pos: 7, Line: 5, Col: 2}
-	env.Loc = loc
+	env.loc = loc
 
 	for name, lerr := range map[string]*LVal{
 		"ErrorConditionf": env.ErrorConditionf("test-condition", "boom"),
@@ -365,28 +365,28 @@ func TestErrorConstructorsCopyLocation(t *testing.T) {
 			t.Fatalf("%s: error should carry a source location", name)
 		}
 		if lerr.source == loc {
-			t.Fatalf("%s: error aliases env.Loc; it must store an independent copy", name)
+			t.Fatalf("%s: error aliases env.loc; it must store an independent copy", name)
 		}
 		if *lerr.source != *loc {
 			t.Fatalf("%s: copied location differs: got %+v want %+v", name, *lerr.source, *loc)
 		}
 	}
 
-	// Mutate env.Loc in place as a producer might; recorded locations must
+	// Mutate env.loc in place as a producer might; recorded locations must
 	// not move with it.
 	lerr := env.Errorf("boom")
 	loc.Line = 999
 	if lerr.source.Line == 999 {
-		t.Fatal("mutating env.Loc changed an existing error's location")
+		t.Fatal("mutating env.loc changed an existing error's location")
 	}
 
-	// A nil env.Loc must stay nil on the error (native-code convention).
-	env.Loc = nil
+	// A nil env.loc must stay nil on the error (native-code convention).
+	env.loc = nil
 	if lerr := env.ErrorConditionf("test-condition", "boom"); lerr.source != nil {
-		t.Fatalf("nil env.Loc must yield nil error source, got %+v", lerr.source)
+		t.Fatalf("nil env.loc must yield nil error source, got %+v", lerr.source)
 	}
 	if lerr := env.ErrorCondition("test-condition", String("boom")); lerr.source != nil {
-		t.Fatalf("nil env.Loc must yield nil error source, got %+v", lerr.source)
+		t.Fatalf("nil env.loc must yield nil error source, got %+v", lerr.source)
 	}
 }
 

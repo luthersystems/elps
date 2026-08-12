@@ -256,7 +256,7 @@ func copyLocation(loc *token.Location) *token.Location {
 }
 
 func funDetachError(v *LVal) error {
-	if fd, ok := v.Native.(*funData); ok && fd != nil && fd.Builtin != nil {
+	if fd, ok := v.Native.(*funData); ok && fd != nil && fd.builtin != nil {
 		return &detachError{msg: "builtin function cannot be detached: builtins hold Go code and a reference to the defining environment"}
 	}
 	return &detachError{msg: "function cannot be detached: closures capture the defining environment and through it the source runtime"}

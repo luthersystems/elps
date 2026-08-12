@@ -2107,7 +2107,7 @@ func TestUnusedFunction_Positive_NotInQuasiquoteTemplate(t *testing.T) {
 func TestUnusedFunction_Negative_CrossFileRef_QuasiquoteTemplate(t *testing.T) {
 	// A function defined in one file, referenced via qualified symbol in
 	// another file's defmacro quasiquote template, should NOT be flagged.
-	// This simulates the acre:get-valid-me pattern.
+	// This simulates the app:get-valid-me pattern.
 	source := `(in-package 'helpers)
 (export 'get-valid-me)
 (defun get-valid-me () 42)`
@@ -3098,7 +3098,7 @@ func TestLintFiles_FileNotFound(t *testing.T) {
 func TestLintFiles_UnusedFunction_CrossFileQuasiquoteTemplate(t *testing.T) {
 	// End-to-end: a non-exported function referenced via qualified symbol
 	// in another file's quasiquote template must not be flagged as unused.
-	// This is the def-acre-route pattern where the helper is internal.
+	// This is the def-app-route pattern where the helper is internal.
 	dir := t.TempDir()
 
 	writeTempLisp(t, dir, "macro.lisp", `(in-package 'myapp)

@@ -366,17 +366,22 @@ func (fp *fingerprinter) env(e *lisp.LEnv) {
 		return
 	}
 	fp.envIdx[e] = len(fp.envIdx)
-	keys := make([]string, 0, len(e.Scope))
-	for k := range e.Scope {
+	// Scope went unexported in #382; Bindings is its sanctioned read half.
+	// Snapshot it so the fingerprint still walks the bindings in sorted key
+	// order (Bindings' iteration order is unspecified, like Go map order).
+	scope := make(map[string]*lisp.LVal, e.NumBindings())
+	keys := make([]string, 0, e.NumBindings())
+	for k, v := range e.Bindings() {
 		keys = append(keys, k)
+		scope[k] = v
 	}
 	sort.Strings(keys)
 	fp.str(fmt.Sprintf("env:%d", len(keys)))
 	for _, k := range keys {
 		fp.str("k:" + k)
-		fp.val(e.Scope[k])
+		fp.val(scope[k])
 	}
-	fp.env(e.Parent)
+	fp.env(e.Parent())
 }
 
 // ---------------------------------------------------------------------------

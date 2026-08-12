@@ -171,17 +171,29 @@ func (ft LFunType) String() string {
 // invisible to the runtime seal.  External readers keep the narrow
 // identity accessors (FID, Package, Builtin); in-repo tooling reaches the
 // captured environment through internal/funraw.
+//
+// The FIELDS are unexported too, not just the type.  An unexported type
+// reached through an exported field is not sealed: LFun values carry their
+// funData in the exported LVal.Native, and reflect can read an EXPORTED
+// field of an unexported struct and hand back a usable value
+// (reflect.Value.Interface does not set the read-only flag for it).  With
+// `Env` exported, an embedder could recover a closure's captured *LEnv
+// with plain reflection and rebind inside it through the public Put — the
+// exact channel this comment claims is closed.  Unexported fields make
+// reflect.Value.Interface panic instead, so every other privatized field
+// (LVal.source/meta/macroExpansion, LEnv.scope/parent/loc, MapData's
+// backing) was already unreachable; these are now too.
 type funData struct {
-	Builtin LBuiltin
-	Env     *LEnv
-	FID     string
-	Package string
+	builtin LBuiltin
+	env     *LEnv
+	fid     string
+	pkg     string
 }
 
 func (fd *funData) Copy() *funData {
 	cp := &funData{}
 	*cp = *fd
-	cp.Env = fd.Env.Copy()
+	cp.env = fd.env.Copy()
 	return cp
 }
 
@@ -647,9 +659,9 @@ func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
 		Type: LFun,
 		Native: &funData{
-			FID:     fid,
-			Builtin: fn,
-			Package: pkg,
+			fid:     fid,
+			builtin: fn,
+			pkg:     pkg,
 		},
 		Cells: []*LVal{formals, String("")},
 	}
@@ -674,9 +686,9 @@ func MacroInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 		Type:    LFun,
 		FunType: LFunMacro,
 		Native: &funData{
-			FID:     fid,
-			Builtin: fn,
-			Package: pkg,
+			fid:     fid,
+			builtin: fn,
+			pkg:     pkg,
 		},
 		Cells: []*LVal{formals, String("")},
 	}
@@ -701,9 +713,9 @@ func SpecialOpInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 		Type:    LFun,
 		FunType: LFunSpecialOp,
 		Native: &funData{
-			FID:     fid,
-			Builtin: fn,
-			Package: pkg,
+			fid:     fid,
+			builtin: fn,
+			pkg:     pkg,
 		},
 		Cells: []*LVal{formals, String("")},
 	}
@@ -920,7 +932,7 @@ func (v *LVal) funData() *funData {
 // non-function values.
 func (v *LVal) Package() string {
 	if fd := v.funData(); fd != nil {
-		return fd.Package
+		return fd.pkg
 	}
 	return ""
 }
@@ -930,7 +942,7 @@ func (v *LVal) Package() string {
 // function data.  It panics on non-function values.
 func (v *LVal) Builtin() LBuiltin {
 	if fd := v.funData(); fd != nil {
-		return fd.Builtin
+		return fd.builtin
 	}
 	return nil
 }
@@ -939,7 +951,7 @@ func (v *LVal) Builtin() LBuiltin {
 // value carrying no function data.  It panics on non-function values.
 func (v *LVal) FID() string {
 	if fd := v.funData(); fd != nil {
-		return fd.FID
+		return fd.fid
 	}
 	return ""
 }
@@ -951,7 +963,7 @@ func (v *LVal) FID() string {
 // internal/funraw.
 func (v *LVal) funEnv() *LEnv {
 	if fd := v.funData(); fd != nil {
-		return fd.Env
+		return fd.env
 	}
 	return nil
 }
@@ -1544,8 +1556,8 @@ func boundVars(v *LVal) *LVal {
 	if env == nil {
 		return Nil()
 	}
-	keys := make([]string, 0, len(env.Scope))
-	for k := range env.Scope {
+	keys := make([]string, 0, len(env.scope))
+	for k := range env.scope {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)

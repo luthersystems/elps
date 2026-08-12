@@ -148,7 +148,7 @@ func TestForkCounterContinuity(t *testing.T) {
 		for _, v := range pkg.symbols {
 			if v.Type == LFun {
 				if fd := v.funData(); fd != nil {
-					inherited[fd.FID] = true
+					inherited[fd.fid] = true
 				}
 			}
 		}
@@ -164,7 +164,7 @@ func TestForkCounterContinuity(t *testing.T) {
 		if fun.Type != LFun {
 			t.Fatalf("lambda eval: %v", fun)
 		}
-		fid := fun.funData().FID
+		fid := fun.funData().fid
 		if inherited[fid] {
 			t.Errorf("post-fork lambda FID %q collides with an inherited FID", fid)
 		}
@@ -263,10 +263,10 @@ func (a *forkAuditor) val(path string, o, n *LVal) {
 			a.t.Errorf("%s: funData pointer-shared with template", path)
 			return
 		}
-		if nfd.FID != ofd.FID || nfd.Package != ofd.Package {
-			a.t.Errorf("%s: fun header differs: %s/%s vs %s/%s", path, nfd.FID, nfd.Package, ofd.FID, ofd.Package)
+		if nfd.fid != ofd.fid || nfd.pkg != ofd.pkg {
+			a.t.Errorf("%s: fun header differs: %s/%s vs %s/%s", path, nfd.fid, nfd.pkg, ofd.fid, ofd.pkg)
 		}
-		a.env(path+".Env", ofd.Env, nfd.Env)
+		a.env(path+".Env", ofd.env, nfd.env)
 	default:
 		if omd, ok := o.Native.(*MapData); ok && omd != nil && omd.mapBacking != nil {
 			nmd, ok := n.Native.(*MapData)
@@ -324,19 +324,19 @@ func (a *forkAuditor) env(path string, o, n *LEnv) {
 	if n.Runtime == o.Runtime {
 		a.t.Errorf("%s: fork env shares the template Runtime", path)
 	}
-	if len(n.Scope) != len(o.Scope) {
-		a.t.Errorf("%s: scope size differs: %d vs %d", path, len(n.Scope), len(o.Scope))
+	if len(n.scope) != len(o.scope) {
+		a.t.Errorf("%s: scope size differs: %d vs %d", path, len(n.scope), len(o.scope))
 		return
 	}
-	for k, ov := range o.Scope {
-		nv, ok := n.Scope[k]
+	for k, ov := range o.scope {
+		nv, ok := n.scope[k]
 		if !ok {
 			a.t.Errorf("%s: scope key %q missing in fork", path, k)
 			return
 		}
 		a.val(path+"."+k, ov, nv)
 	}
-	a.env(path+".Parent", o.Parent, n.Parent)
+	a.env(path+".Parent", o.parent, n.parent)
 }
 
 // sameCellsBacking reports whether two values' Cells slices point at the

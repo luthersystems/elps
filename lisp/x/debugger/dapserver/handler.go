@@ -378,7 +378,7 @@ func (h *handler) cacheFrameEnvs(env *lisp.LEnv) {
 	current := env
 	for i := nframes; i >= 1 && current != nil; i-- {
 		h.frameEnvs[i] = current
-		current = current.Parent
+		current = current.Parent()
 	}
 }
 
