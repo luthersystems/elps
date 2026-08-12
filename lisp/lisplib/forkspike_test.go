@@ -321,6 +321,83 @@ func TestForkSpikePrototype(t *testing.T) {
 		len(f.envMemo), len(f.valMemo), f.sharedNatives)
 }
 
+// TestForkSpikeInPackage exercises the in-package fork (lisp.SpikeFork) on
+// the same scenario as the exported-API prototype, plus fingerprint-based
+// isolation checks.
+func TestForkSpikeInPackage(t *testing.T) {
+	env := newLoadedEnv(t)
+	res := env.LoadString("spike.lisp", spikeProgram)
+	if res.Type == lisp.LError {
+		t.Fatalf("program: %v", res)
+	}
+	fp0 := lisp.SpikeFingerprint(env)
+	fork, stats, err := lisp.SpikeFork(env)
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	if got := lisp.SpikeFingerprint(env); got != fp0 {
+		t.Fatalf("forking mutated the template: fp %x != %x", got, fp0)
+	}
+	if got := lisp.SpikeFingerprint(fork); got != fp0 {
+		t.Fatalf("fork does not match template state: fp %x != %x", got, fp0)
+	}
+
+	r := fork.LoadString("call.lisp", `(handler (sorted-map "x" 1))`)
+	if r.Type == lisp.LError || r.Int != 42 {
+		t.Fatalf("fork handler (closure add2): got %v", r)
+	}
+	r = fork.LoadString("call2.lisp", `(funcall evens 10)`)
+	if r.Type == lisp.LError || !lisp.True(r) {
+		t.Fatalf("fork labels closure: got %v", r)
+	}
+
+	// Bidirectional isolation, fingerprint edition: mutate the fork; the
+	// template's fingerprint must not move, and a second fork taken now
+	// must match the original template state.
+	r = fork.LoadString("mut.lisp", `(progn (append! counter-box 99) (assoc! config "a" 100))`)
+	if r.Type == lisp.LError {
+		t.Fatalf("fork mutate: %v", r)
+	}
+	if got := lisp.SpikeFingerprint(env); got != fp0 {
+		t.Fatalf("fork mutation visible in template: fp %x != %x", got, fp0)
+	}
+	fork2, _, err := lisp.SpikeFork(env)
+	if err != nil {
+		t.Fatalf("fork2: %v", err)
+	}
+	if got := lisp.SpikeFingerprint(fork2); got != fp0 {
+		t.Fatalf("second fork not pristine: fp %x != %x", got, fp0)
+	}
+	// And the reverse: template mutation invisible to existing forks.
+	r = env.LoadString("mut2.lisp", `(append! counter-box 7)`)
+	if r.Type == lisp.LError {
+		t.Fatalf("template mutate: %v", r)
+	}
+	r = fork2.LoadString("check.lisp", `(length counter-box)`)
+	if r.Type == lisp.LError || r.Int != 1 {
+		t.Fatalf("fork2 saw template mutation: %v", r)
+	}
+	fmt.Printf("SPIKE380 in-package: envs=%d vals=%d shared-natives=%d\n",
+		stats.EnvsRemapped, stats.ValsRemapped, stats.SharedNatives)
+}
+
+func BenchmarkForkSpikeInPackage(b *testing.B) {
+	env := newLoadedEnv(b)
+	res := env.LoadString("spike.lisp", spikeProgram)
+	if res.Type == lisp.LError {
+		b.Fatalf("program: %v", res)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fork, _, err := lisp.SpikeFork(env)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_ = fork
+	}
+}
+
 func BenchmarkForkSpikeFork(b *testing.B) {
 	env := newLoadedEnv(b)
 	res := env.LoadString("spike.lisp", spikeProgram)
