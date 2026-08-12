@@ -258,7 +258,13 @@ func pureMacroTemplateQ(t *LVal, scope map[string]symKind, quoteDepth int, synta
 		return true
 	}
 	head := t.Cells[0]
-	if head.Type == LSymbol && !head.quoted {
+	// Unquote recognition MUST mirror getUnquoteType (lisp/macro.go),
+	// which matches the operator name on an LSymbol head and IGNORES that
+	// symbol's quote flag.  ``('unquote (f))'' is therefore a real unquote
+	// to quasiquote — it evaluates (f) at expansion time — even though the
+	// head is quoted.  Scanning it as inert template content would admit
+	// arbitrary expansion-time computation into a "pure" macro.
+	if head.Type == LSymbol {
 		switch head.Str {
 		case "unquote", "unquote-splicing":
 			if len(t.Cells) != 2 {
@@ -277,6 +283,8 @@ func pureMacroTemplateQ(t *LVal, scope map[string]symKind, quoteDepth int, synta
 			}
 			return true
 		}
+	}
+	if head.Type == LSymbol && !head.quoted {
 		switch kernelOp(head.Str) {
 		case "quasiquote":
 			return false // nested quasiquote: rejected for the POC

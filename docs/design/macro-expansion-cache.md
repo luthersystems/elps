@@ -82,6 +82,14 @@ any side-effecting form, and a gensym escaping under `quote` (§4). Verdicts
 are memoized process-wide keyed by the macro's sealed, parse-shared formals
 node.
 
+The prover's unquote recognition must stay a *superset* of the evaluator's.
+`getUnquoteType` matches the operator name on an `LSymbol` head and ignores
+that symbol's quote flag, so `('unquote (f))` really does evaluate `(f)` at
+every expansion; a prover that skipped quoted heads scanned that form as
+inert template content and admitted an arbitrarily impure macro (fixed, and
+red-proven by `TestMacroCacheQuotedUnquoteHeadNotCached`). Any future change
+to `getUnquoteType` has to be mirrored in `pureMacroTemplateQ`.
+
 This tier is what captures the `when`/`unless`/`default` utility layer that
 dominates real request paths (§7).
 
@@ -254,7 +262,19 @@ Consequences:
 - **Per-runtime mode is the safe default recommendation.** It is
   structurally immune — the cache dies with the runtime — and it is at least
   as fast as shared mode.
-- **The shared table must never run uncapped** outside tests.
+- **The shared table must never run uncapped** outside tests. Note that
+  entries published while the table was unbounded carry no LRU bookkeeping;
+  `SetMacroCacheCap` adopts them (oldest-first) the next time a bounded
+  store sees the drift, so raising a cap onto an already-filled table still
+  bounds it. Without that adoption the eviction loop could only reach the
+  entry it had just pushed, so every new store evicted itself while the
+  untracked backlog stayed pinned forever — neither bound nor cache.
+- **Per-runtime mode has no cap and no eviction.** Its immunity is the
+  runtime's lifetime, not a bound: a long-lived runtime that keeps
+  evaluating *fresh parses* (a REPL, a host that hot-reloads programs) pins
+  dead parse trees exactly like uncapped shared mode. It is immune in the
+  warm-pool topology because program identity there is stable, not because
+  the map is bounded.
 - A weak-pointer keyed table (Go 1.24 `weak`) would remove the failure mode
   structurally, and is the natural next iteration if shared mode is wanted
   as more than an experiment.

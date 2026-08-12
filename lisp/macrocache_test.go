@@ -410,6 +410,10 @@ func TestMacroCachePurityProver(t *testing.T) {
 		(defmacro r-nested-qq (x)
 		  (quasiquote (quasiquote (unquote (unquote x)))))
 		(defmacro r-bare-gensym () (gensym))
+		(defmacro r-quoted-unquote-head (x)
+		  (quasiquote (list ('unquote (car x)) (unquote x))))
+		(defmacro r-quoted-splice-head (x)
+		  (quasiquote (list ('unquote-splicing (car x)) (unquote x))))
 	`
 	// r-free-read and r-computed-unquote reference symbols at expansion
 	// time that do not exist; defining them is fine, they are only proven.
@@ -426,6 +430,12 @@ func TestMacroCachePurityProver(t *testing.T) {
 		"r-gensym-quoted":    false,
 		"r-nested-qq":        false,
 		"r-bare-gensym":      false,
+		// quasiquote's getUnquoteType matches the unquote operators on an
+		// LSymbol head regardless of its quote flag, so ('unquote expr)
+		// really does evaluate expr at expansion time.  The prover must
+		// see it too or arbitrary computation passes as inert content.
+		"r-quoted-unquote-head": false,
+		"r-quoted-splice-head":  false,
 	}
 	for name, want := range cases {
 		fun := env.Get(lisp.Symbol(name))
@@ -628,5 +638,83 @@ func TestMacroCacheTextLoaderSealed(t *testing.T) {
 	if hits := after.Hits - before.Hits; hits < 4 {
 		t.Fatalf("expected >=4 cache hits through the loader-loaded callsite, got %d (stores=%d bypassImpure=%d bypassUnsealed=%d)",
 			hits, after.Stores-before.Stores, after.BypassImpure-before.BypassImpure, after.BypassUnsealed-before.BypassUnsealed)
+	}
+}
+
+// TestMacroCacheQuotedUnquoteHeadNotCached is the red-proof for the
+// quoted-head unquote hole: quasiquote's getUnquoteType matches "unquote"
+// on an LSymbol head and IGNORES that symbol's quote flag, so
+// ('unquote (f)) evaluates f at every expansion.  The prover used to skip
+// the unquote branch for a quoted head and scanned the form as inert
+// template content, admitting an arbitrarily impure macro; caching it froze
+// the first expansion's side effect and returned a different answer from
+// the same program with the cache off.  Guard: the unquote recognition in
+// pureMacroTemplateQ must not depend on head.quoted.
+func TestMacroCacheQuotedUnquoteHeadNotCached(t *testing.T) {
+	const setup = `
+		(set 'ctr 0)
+		(defun bump () (set 'ctr (+ ctr 1)) ctr)
+		(defmacro impure (x)
+		  (quasiquote (list ('unquote (bump)) (unquote x))))
+		(defun probe (v) (impure v))
+	`
+	const program = `(list (probe 1) (probe 2) ctr)`
+	var want string
+	for _, m := range macroCacheModes {
+		t.Run(m.name, func(t *testing.T) {
+			withMacroCacheMode(t, m.mode)
+			env := newMacroCacheTestEnv(t)
+			evalStr(t, env, setup)
+			// Run the probe repeatedly: with the cache active every
+			// evaluation must still re-expand and re-run (bump).
+			var got string
+			for range 3 {
+				got = evalStr(t, env, program).String()
+			}
+			if m.mode == lisp.MacroCacheOff {
+				want = got
+				return
+			}
+			if got != want {
+				t.Fatalf("impure macro was cached: %s mode gave %s, cache-off gave %s", m.name, got, want)
+			}
+		})
+	}
+}
+
+// TestMacroCacheCapAfterFill proves SetMacroCacheCap bounds a table that is
+// ALREADY over capacity.  Entries published while the table was unbounded
+// carry no LRU bookkeeping; without adopting them the eviction loop can only
+// reach the entry it just pushed, so every new store evicts itself while the
+// untracked backlog stays pinned — the cap is honoured by neither the entry
+// count nor the hit rate.
+func TestMacroCacheCapAfterFill(t *testing.T) {
+	withMacroCacheMode(t, lisp.MacroCacheShared)
+	env := newMacroCacheTestEnv(t)
+	evalStr(t, env, `(defmacro op (a b) (quasiquote (+ (unquote a) (unquote b))))`)
+	warm := func(lo, hi int) {
+		for i := lo; i < hi; i++ {
+			evalStr(t, env, fmt.Sprintf(`(defun p%d () (op %d 1))`, i, i))
+			for range 3 {
+				if got := evalStr(t, env, fmt.Sprintf(`(p%d)`, i)); got.Int != i+1 {
+					t.Fatalf("p%d: %v", i, got)
+				}
+			}
+		}
+	}
+	warm(0, 40)
+	if st := lisp.SnapshotMacroCacheStats(); st.SharedEntries < 40 {
+		t.Fatalf("expected an unbounded table of >=40 entries, got %+v", st)
+	}
+	const limit = 8
+	lisp.SetMacroCacheCap(limit)
+	before := lisp.SnapshotMacroCacheStats()
+	warm(40, 60)
+	st := lisp.SnapshotMacroCacheStats()
+	if st.SharedEntries > limit {
+		t.Fatalf("cap=%d not enforced on a pre-filled table: %+v", limit, st)
+	}
+	if st.Hits-before.Hits == 0 {
+		t.Fatalf("no post-cap hits: new entries are evicting themselves: %+v -> %+v", before, st)
 	}
 }

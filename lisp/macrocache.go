@@ -349,7 +349,7 @@ func (c *sharedCache) store(callsite *LVal, entry *macroCacheEntry) {
 		}
 		return
 	}
-	n := c.count.Add(1)
+	c.count.Add(1)
 	limit := macroCacheConfig.cap.Load()
 	if limit <= 0 {
 		return
@@ -360,16 +360,39 @@ func (c *sharedCache) store(callsite *LVal, entry *macroCacheEntry) {
 		c.elem = make(map[*LVal]*list.Element)
 	}
 	c.elem[callsite] = c.order.PushFront(callsite)
-	for n > limit && c.order.Len() > 0 {
+	// Entries published while the table was UNBOUNDED carry no LRU
+	// bookkeeping, so eviction cannot reach them.  Without adoption the cap
+	// would evict each freshly stored entry immediately (it is the only
+	// element on the list) while the untracked backlog stayed pinned
+	// forever: the table neither honours the bound nor serves any new hit.
+	// Adopt them as the oldest entries the first time the bound sees drift.
+	if int64(len(c.elem)) < c.count.Load() {
+		c.adoptUntrackedLocked()
+	}
+	for int64(c.order.Len()) > limit {
 		back := c.order.Back()
 		victim := back.Value.(*LVal)
 		c.order.Remove(back)
 		delete(c.elem, victim)
 		c.m.Delete(victim)
-		n = c.count.Add(-1)
+		c.count.Add(-1)
 		macroCacheStats.evictions.Add(1)
 	}
 	c.mu.Unlock()
+}
+
+// adoptUntrackedLocked gives LRU bookkeeping to every table entry that does
+// not have any, pushing them to the back (oldest) so they are the first
+// evicted.  c.mu must be held and c.order/c.elem must be initialized.
+func (c *sharedCache) adoptUntrackedLocked() {
+	c.m.Range(func(k, _ any) bool {
+		callsite := k.(*LVal)
+		if _, ok := c.elem[callsite]; !ok {
+			c.elem[callsite] = c.order.PushBack(callsite)
+		}
+		return true
+	})
+	c.count.Store(int64(c.order.Len()))
 }
 
 func (c *sharedCache) reset() {
