@@ -51,8 +51,10 @@
 // rule's and the seal design's concern; index reads (locs[i]) are not taint
 // sources.
 //
-// Escape hatch: //elps:aliases on the flagged line, the line above it, or
-// the enclosing function's doc comment.  Every annotation must carry a
+// Escape hatch: //elps:aliases trailing the flagged line, standing alone on
+// the line directly above it, or in the enclosing function's doc comment.
+// A TRAILING justification covers only the line it trails; a STANDALONE one
+// is a preamble and covers the statement below (see markerLines).  Every annotation must carry a
 // justification a reader can audit — the deliberate aliases are the ones
 // whose producers freeze the location before the value can escape
 // (post-parse sealed locations) or whose consumers are runtime-internal
@@ -169,7 +171,7 @@ func collectReturned(pass *analysis.Pass, body *ast.BlockStmt) map[types.Object]
 
 func (t *escTracker) report(pos token.Pos, what string) {
 	line := t.pass.Fset.Position(pos).Line
-	if t.ann[line] || t.ann[line-1] {
+	if t.ann[line] {
 		return
 	}
 	t.pass.Reportf(pos,

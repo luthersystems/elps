@@ -20,10 +20,12 @@
 //     copy idiom (cp := &LVal{}; *cp = *v; cp.Quoted = ... is fresh — the
 //     write lands in memory this function allocated);
 //
-//   - the enclosing function's doc comment, or a comment on the assignment's
-//     line (or the line directly above it), carries //elps:mutates — the
-//     audited annotation that the function deliberately mutates a value it
-//     does not own.
+//   - the enclosing function's doc comment carries //elps:mutates, or the
+//     assignment's own line carries it as a trailing comment, or the line
+//     directly above carries it as a STANDALONE comment — the audited
+//     annotation that the function deliberately mutates a value it does not
+//     own.  A trailing justification covers only the line it trails; see
+//     markerLines for why that distinction is load-bearing.
 //
 // The analysis is intraprocedural and conservative: an unknown root flags.
 // A value-typed LVal variable is always fresh at its top level (Go value
@@ -123,18 +125,62 @@ func hasMutates(cg *ast.CommentGroup) bool {
 	return hasMarker(cg, mutatesMarker)
 }
 
-// markerLines collects the file lines carrying the given //elps:* marker.
+// markerLines collects the file lines a given //elps:* marker SUPPRESSES.
 // Shared between the freshness/alias rules (elps:mutates) and the escape
 // rule (elps:aliases) so the placement conventions never diverge.
+//
+// The documented convention is "on the flagged line, or the line directly
+// above it", and the reach depends on which of those the author wrote:
+//
+//   - A STANDALONE marker comment — nothing but the comment on its line —
+//     is a preamble for the statement below, so it suppresses its own line
+//     (where nothing can be flagged anyway) and the next one.
+//   - A TRAILING marker comment — one sharing its line with code — belongs
+//     to the statement it trails and suppresses THAT LINE ONLY.
+//
+// Distinguishing them is the point.  Suppressing line+1 unconditionally
+// let a trailing justification silence the next statement's unrelated
+// violation, which is the opposite of an audited annotation: the flag
+// vanishes and nothing in the source says it was ever considered.
 func markerLines(fset *token.FileSet, file *ast.File, marker string) map[int]bool {
+	code := codeLines(fset, file)
 	lines := make(map[int]bool)
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
-			if commentHasMarker(c.Text, marker) {
-				lines[fset.Position(c.Pos()).Line] = true
+			if !commentHasMarker(c.Text, marker) {
+				continue
+			}
+			line := fset.Position(c.Pos()).Line
+			lines[line] = true
+			if !code[line] {
+				lines[line+1] = true
 			}
 		}
 	}
+	return lines
+}
+
+// codeLines reports which lines of file carry a non-comment token, so a
+// marker comment can be classified as trailing (shares its line with code)
+// or standalone.  A node's Pos and End lines are exactly the lines where
+// code begins and ends; a comment sitting alone inside a multi-line
+// expression falls between them and is correctly seen as standalone.
+func codeLines(fset *token.FileSet, file *ast.File) map[int]bool {
+	lines := make(map[int]bool)
+	ast.Inspect(file, func(n ast.Node) bool {
+		if n == nil {
+			return false
+		}
+		if _, ok := n.(*ast.CommentGroup); ok {
+			return false
+		}
+		if _, ok := n.(*ast.Comment); ok {
+			return false
+		}
+		lines[fset.Position(n.Pos()).Line] = true
+		lines[fset.Position(n.End()).Line] = true
+		return true
+	})
 	return lines
 }
 
@@ -226,7 +272,7 @@ func checkWrite(pass *analysis.Pass, lhs ast.Expr, stmtPos token.Pos, fresh map[
 		return
 	}
 	line := pass.Fset.Position(stmtPos).Line
-	if ann[line] || ann[line-1] {
+	if ann[line] {
 		return
 	}
 	if rootIsFresh(pass, recv, fresh) {

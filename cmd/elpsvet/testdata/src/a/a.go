@@ -126,3 +126,20 @@ type holder struct {
 func structField(h *holder) {
 	h.node.Str = "x" // want `write to LVal field \.Str on a lisp\.LVal this function did not construct`
 }
+
+// trailingAnnotationReach pins how far a TRAILING justification reaches: the
+// line it trails, and no further.  Suppressing line+1 unconditionally let one
+// audited annotation silence the next statement's unrelated write, which is
+// the opposite of what an audited annotation is for.
+func trailingAnnotationReach(v, w *lisp.LVal) {
+	v.Quoted = false //elps:mutates deliberate in-place unquote, this line only
+	w.Quoted = false // want `write to LVal field \.Quoted on a lisp\.LVal this function did not construct`
+}
+
+// standaloneAnnotationReach is the other half: a marker alone on its line is a
+// preamble for the statement below and must still cover it.
+func standaloneAnnotationReach(v, w *lisp.LVal) {
+	//elps:mutates deliberate rewrite on the next line
+	v.Quoted = false
+	w.Quoted = false // want `write to LVal field \.Quoted on a lisp\.LVal this function did not construct`
+}

@@ -116,3 +116,35 @@ func copyLocation(loc *token.Location) *token.Location {
 	cp := *loc
 	return &cp
 }
+
+// setSourceTrailingAnnotation pins how far a TRAILING justification reaches:
+// the line it trails, and no further.  A blanket line+1 suppression silenced
+// the next statement's unrelated violation with nothing in the source saying
+// it had ever been considered.
+func setSourceTrailingAnnotation(p *parser, v, w *lisp.LVal) {
+	v.SetSource(p.Location()) //elps:aliases fixture justification for this line only
+	w.SetSource(p.Location()) // want `SetSource call stores a runtime-owned \*token\.Location`
+}
+
+// setSourceStandaloneAnnotation is the other half: a marker alone on its line
+// is a preamble and must still cover the statement below it.
+func setSourceStandaloneAnnotation(p *parser, v, w *lisp.LVal) {
+	//elps:aliases fixture justification for the statement below
+	v.SetSource(p.Location())
+	w.SetSource(p.Location()) // want `SetSource call stores a runtime-owned \*token\.Location`
+}
+
+// compositeLiteralAnnotation pins where the justification must go for the
+// RETURN-ESCAPE shape: the diagnostic is reported at the return, so a marker
+// alone on its line inside the literal does not cover it and the annotation
+// belongs above the return (the lsp/definition.go and mcpserver/service.go
+// placement).  A standalone marker inside a multi-line literal still counts
+// as standalone, which is what makes the lisp/env.go field placement work
+// for the diagnostics reported at the field itself.
+func compositeLiteralAnnotation(env *lisp.LEnv) *funcInfo {
+	//elps:aliases fixture justification for the returned literal below
+	return &funcInfo{
+		Name:   "f",
+		Source: env.Loc,
+	}
+}
