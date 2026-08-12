@@ -87,10 +87,13 @@ jobs:
     #     ceil(targets / shards) x FUZZTIME + overhead <= timeout-minutes
     #
     # on every PR, so this number cannot silently stop covering the sweep. At
-    # 18 targets over 5 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
-    # worth of headroom for a target being added before anyone reshards. The
-    # 21st target is where that runs out: ceil(21/5) = 5 puts `needed` at
-    # exactly 60, which the gate passes while describing a truncated sweep.
+    # 20 targets over 5 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
+    # worth of headroom for a target being added before anyone reshards. That
+    # ceiling is now fully consumed: 20 targets is exactly ceil(20/5) = 4, so
+    # the NEXT target added is the one that runs out. ceil(21/5) = 5 puts
+    # `needed` at exactly 60, which the gate passes while describing a
+    # truncated sweep -- so the 21st target must arrive together with a sixth
+    # shard, not after it.
     #
     # THE HEADROOM IS THE POINT, NOT THE GREEN TICK. The gate's condition is
     # `needed > timeout`, so a sweep sized at exactly timeout-minutes PASSES --

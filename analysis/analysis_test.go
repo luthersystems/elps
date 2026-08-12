@@ -1967,7 +1967,7 @@ func parseAndAnalyzeWithExpander(t *testing.T, macroSource, callSource string) *
 }
 
 func TestAnalyze_MacroExpansion_LambdaParams(t *testing.T) {
-	// Pattern from def-acre-route: macro introduces lambda parameters.
+	// Pattern from def-app-route: macro introduces lambda parameters.
 	// Without expansion: req/resp flagged as undefined.
 	// With expansion: they resolve as lambda params.
 	// Note: macro name intentionally doesn't start with "def" to avoid
@@ -1996,7 +1996,7 @@ func TestAnalyze_MacroExpansion_LambdaParams(t *testing.T) {
 }
 
 func TestAnalyze_MacroExpansion_NestedMacros(t *testing.T) {
-	// Pattern from def-acre-route-get calling def-acre-route.
+	// Pattern from def-app-route-get calling def-app-route.
 	// Outer macro expands, inner macro expands on next recursion.
 	result := parseAndAnalyzeWithExpander(t,
 		`(defmacro make-route (name args &rest exprs)

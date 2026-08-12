@@ -17,6 +17,18 @@ func TestPackage(t *testing.T) {
 	r.RunTestFile(t, "libjson_test.lisp")
 }
 
+// TestPackageCyclicValue runs the lisp-level tests for values that contain
+// themselves (issue #390).  They live in a file of their own because
+// BenchmarkPackage's $load sub-benchmark parses and evaluates
+// libjson_test.lisp on every iteration: source added to that file is charged
+// to a benchmark that exists to measure the loader, and the CI benchmark gate
+// reads the jump as a regression in the loader itself.
+func TestPackageCyclicValue(t *testing.T) {
+	r := &elpstest.Runner{}
+	defer r.Close()
+	r.RunTestFile(t, "libjson_cycle_test.lisp")
+}
+
 func BenchmarkPackage(b *testing.B) {
 	r := &elpstest.Runner{}
 	defer r.Close()
