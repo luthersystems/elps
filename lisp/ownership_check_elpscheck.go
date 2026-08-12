@@ -118,7 +118,10 @@ func (v ownershipViolation) String() string { return v.msg }
 // LEnv.Put, LEnv.PutGlobal, and env.eval — see the file comment for why
 // those three points and what they miss.
 func checkOwnership(rt *Runtime, v *LVal) {
-	if v == nil || rt == nil || isSingleton(v) {
+	if v == nil || rt == nil || isSingleton(v) || v.sealed {
+		// SPIKE (issue #380): sealed nodes are immutable after parse, so
+		// cross-runtime sharing of them is safe by the same reasoning as
+		// singletons.  Feasibility experiment only.
 		return
 	}
 	m := ownershipTable.m.Load()
