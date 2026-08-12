@@ -1224,6 +1224,7 @@ func qualifiedSymbolDefinition(state *workspaceState, word string) *Location {
 }
 
 func externalToSymbol(ext *analysis.ExternalSymbol) *analysis.Symbol {
+	//elps:aliases deliberate metadata translation between sibling analysis structs: symbol locations are frozen once analysis produces them, and both structs are read-only views for MCP consumers
 	return &analysis.Symbol{
 		Name:      ext.Name,
 		Package:   ext.Package,

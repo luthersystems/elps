@@ -150,17 +150,12 @@ func TestMutateListRejected(t *testing.T) {
 				t.Errorf("(b) AST literal fingerprint CHANGED after env1 evaluation — shared-AST corruption")
 			}
 
-			if elpscheckEnabled {
-				// Evaluating the same AST in a second runtime is exactly
-				// the cross-runtime sharing the elpscheck ownership
-				// checker forbids (panic: "LVal used by two Runtimes").
-				// The modeled deployment — a warm parse cache handing one
-				// AST to many environments — predates that invariant, so
-				// assertion (c) only runs in the default build.
-				t.Log("skipping (c): elpscheck ownership checker forbids cross-runtime AST sharing")
-				return
-			}
-
+			// Assertion (c) runs in checked builds too: the ownership
+			// checker exempts sealed nodes (cross-runtime sharing of a
+			// sealed parse is the sanctioned warm-cache design — see the
+			// Allowlist section of lisp/ownership_check_elpscheck.go),
+			// so elpscheck exercises the modeled deployment instead of
+			// skipping it.
 			env2 := newMutateTestEnv(t)
 			results2, panicked2 := evalAll(env2, exprs)
 			if panicked2 != nil {

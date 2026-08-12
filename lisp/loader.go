@@ -48,27 +48,85 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 		err := checkLoaderExpr(expr)
 		if err != nil {
 			lerr := Error(err)
-			lerr.source = expr.source
+			// Copied, not aliased: the error escapes to the embedder through
+			// GoError while expr stays part of the loaded program, so the
+			// two must not share a *token.Location (cold path; the copy is
+			// free in practice).
+			lerr.source = copyLocation(expr.source)
 			return nil, GoError(lerr)
+		}
+	}
+
+	// The Loader is called once per environment, and the SAME parsed exprs
+	// are what every call evaluates.  That used to require a deep copy per
+	// load, because an LVal shared by two Runtimes was unsafe under any
+	// circumstances (issue #365).
+	//
+	// The seal changes the premise.  A Reader that seals its output (every
+	// parse path in this repo does — see lisp/seal.go) hands back frozen
+	// program-literal storage under copy-on-write protection: kernel
+	// mutation sites copy before writing, the evaluator's metadata writes
+	// skip sealed nodes, and checked builds fingerprint every sealed parse
+	// so a hole in that protection is a test failure rather than a
+	// silently-trusted assumption.  #365's rule narrows to "no MUTABLE
+	// cross-runtime sharing", and the ownership checker exempts sealed
+	// nodes accordingly.  This is the formals precedent (#374) applied to
+	// the loader.
+	//
+	// A Reader that does NOT seal — an embedder's own implementation of the
+	// interface, which this package cannot constrain — keeps #365's
+	// per-load copy.  The decision is made once, here, rather than per load.
+	//
+	// The question must be asked of the WHOLE tree, not of the roots.  The
+	// Copy() this replaces was deep, and a sealed root does not imply a
+	// sealed tree: SealAST marks only parser-producible shapes and stops
+	// WITHOUT DESCENDING at anything else, while checkLoaderExpr above
+	// explicitly admits two of those shapes into a cached loader (LFun and
+	// LTaggedVal).  A Reader that seals its roots can therefore hand back a
+	// tree with unsealed, mutable storage underneath it, and sharing that
+	// storage would give every environment the same buffer — exactly the
+	// #365 hazard the seal narrows but does not remove.
+	allSealed := true
+	for _, expr := range exprs {
+		if !sealedThroughout(expr, 0) {
+			allSealed = false
+			break
 		}
 	}
 
 	fn := func(env *LEnv) *LVal {
 		var lval *LVal
 		for _, expr := range exprs {
-			// Each environment evaluates a private deep copy so loaders
-			// never share AST nodes across runtimes.  The copy is re-sealed
-			// before evaluation: it is parser-shaped content (enforced by
-			// checkLoaderExpr above) that nothing mutates in place, so it
-			// keeps the immutability contract of the original parse.  Every
-			// other load path (Reader/LoadString/Program) already evaluates
-			// sealed trees; without this, code loaded through a Loader is
-			// invisibly second-class — e.g. a defmacro evaluated here binds
-			// an unsealed formals node, disqualifying the macro from
+			// Two requirements meet here, and the allSealed answer above
+			// satisfies both without either giving anything up.
+			//
+			// What every load path owes the rest of the kernel is that the
+			// tree it evaluates is SEALED.  Reader, LoadString, Program and
+			// the REPL all already do; TextLoader was the one seam that did
+			// not, and code loaded through a Loader was invisibly
+			// second-class for it — a defmacro evaluated here bound an
+			// UNSEALED formals node, disqualifying the macro from
 			// per-callsite expansion caching in every environment (#381).
-			c := expr.Copy()
-			c.SealAST()
-			lval = env.Eval(c)
+			//
+			// What #365 owes is that no MUTABLE storage is shared between
+			// runtimes.  When the tree is sealed throughout, nothing here
+			// is mutable and sharing it is the point of the seal, so the
+			// per-load deep copy is pure cost and goes away (#379/#380);
+			// when it is not, the copy stays.
+			//
+			// So: sealed throughout means share as-is, already sealed and
+			// already safe.  Not sealed throughout means take #365's
+			// private copy AND seal it, which is where the sealing
+			// obligation actually bites — the copy is parser-shaped content
+			// (checkLoaderExpr above rejects reference types), it is
+			// private to this environment, and nothing mutates loader
+			// output in place, so it keeps the immutability contract of the
+			// parse it was copied from.
+			if !allSealed {
+				expr = expr.Copy()
+				expr.SealAST()
+			}
+			lval = env.Eval(expr)
 			if lval.Type == LError {
 				return lval
 			}
@@ -80,6 +138,34 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 	}
 
 	return fn, nil
+}
+
+// sealedThroughout reports whether v and every value reachable through its
+// Cells is sealed — the deep question TextLoader must answer before it may
+// share one parse with every environment.
+//
+// Native payloads are not walked and do not need to be: checkLoaderExpr
+// rejects every type that carries mutable state in Native (LBytes, LSortMap,
+// LArray, LNative) before this runs, so Cells is the whole reachable graph
+// of a cacheable expression.
+//
+// Bounded by sealFPMaxDepth, the same cap the fingerprint walk uses, so a
+// Reader returning a cyclic or pathologically deep tree answers "not sealed
+// throughout" — and gets the per-load copy — rather than overflowing the
+// stack.
+func sealedThroughout(v *LVal, depth int) bool {
+	if v == nil {
+		return true
+	}
+	if !v.sealed || depth > sealFPMaxDepth {
+		return false
+	}
+	for _, c := range v.Cells {
+		if !sealedThroughout(c, depth+1) {
+			return false
+		}
+	}
+	return true
 }
 
 func checkLoaderExpr(v *LVal) error {
