@@ -92,6 +92,21 @@ func TestMacroCacheUnquoteIsNotABinding(t *testing.T) {
 	}
 }
 
+// TestMacroCacheQuotedUnquoteSplicingHeadNotCached is the second half of the
+// quoted-head defeat.  TestMacroCacheQuotedUnquoteHeadNotCached covers
+// the ('unquote (f)) shape; both names go through one switch arm, so the
+// guard is shared — but "shared code path" is an argument, and the reviewer
+// demonstrated TWO defeats, so the second one gets its own executed repro.
+func TestMacroCacheQuotedUnquoteSplicingHeadNotCached(t *testing.T) {
+	assertCacheModesAgree(t, "quoted-unquote-splicing-head", `
+		(set 'ctr 0)
+		(defun bump () (set 'ctr (+ ctr 1)) (list ctr))
+		(defmacro impure (x)
+		  (quasiquote (list ('unquote-splicing (bump)) (unquote x))))
+		(defun probe (v) (impure v))
+	`, `(list (probe 1) (probe 2) (probe 3) ctr)`)
+}
+
 // TestMacroCacheGensymShadowedByPureFunctionNotAdmitted separates the
 // implemented fix from the one the review recommended.  The review asked for
 // the `(gensym)` binding VALUE to be purity-checked; the implementation
