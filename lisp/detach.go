@@ -169,9 +169,9 @@ func (d *detacher) detachMapData(md *MapData) (*MapData, error) {
 	if md == nil {
 		return nil, nil
 	}
-	if md.Map == nil {
+	if md.mapBacking == nil {
 		// Degenerate MapData with no implementation (possible via
-		// SortedMapFromData(&MapData{})).  Return a fresh struct rather
+		// SortedMapFromData(NewMapData(nil))).  Return a fresh struct rather
 		// than md itself so the detached value shares no memory with the
 		// original — the detach contract — while preserving the nil Map.
 		return &MapData{}, nil
@@ -256,7 +256,7 @@ func copyLocation(loc *token.Location) *token.Location {
 }
 
 func funDetachError(v *LVal) error {
-	if fd, ok := v.Native.(*LFunData); ok && fd != nil && fd.Builtin != nil {
+	if fd, ok := v.Native.(*funData); ok && fd != nil && fd.Builtin != nil {
 		return &detachError{msg: "builtin function cannot be detached: builtins hold Go code and a reference to the defining environment"}
 	}
 	return &detachError{msg: "function cannot be detached: closures capture the defining environment and through it the source runtime"}

@@ -307,7 +307,7 @@ var _ lisp.Map = strictKeyMap{}
 // hands it and putting may-have-key straight back into "always passes".
 func TestMayHaveKeyCannotSilentlyPassOnAnUnsearchableMap(t *testing.T) {
 	env := newSchemaEnv(t)
-	m := lisp.SortedMapFromData(&lisp.MapData{Map: strictKeyMap{}})
+	m := lisp.SortedMapFromData(lisp.NewMapData(strictKeyMap{}))
 	if rc := env.PutGlobal(lisp.Symbol("hostile"), m); rc.Type == lisp.LError {
 		t.Fatalf("bind: %v", rc)
 	}
@@ -326,7 +326,7 @@ func TestMayHaveKeyCannotSilentlyPassOnAnUnsearchableMap(t *testing.T) {
 	// not merely observing that everything fails on a hostile map.
 	env2 := newSchemaEnv(t)
 	if rc := env2.PutGlobal(lisp.Symbol("hostile"),
-		lisp.SortedMapFromData(&lisp.MapData{Map: strictKeyMap{}})); rc.Type == lisp.LError {
+		lisp.SortedMapFromData(lisp.NewMapData(strictKeyMap{}))); rc.Type == lisp.LError {
 		t.Fatalf("bind: %v", rc)
 	}
 	if res := env2.LoadStringContext(context.Background(), "hostile-has",

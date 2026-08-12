@@ -690,7 +690,7 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	fun := &LVal{
 		Type:   LFun,
 		source: env.Loc,
-		Native: &LFunData{
+		Native: &funData{
 			FID:     fenv.getFID(),
 			Package: env.Runtime.Package.Name,
 			Env:     fenv,
@@ -1621,7 +1621,7 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	formals := argParser{args: fun.Cells[0].Cells}
 	narg := len(args.Cells)
 
-	funenv := fun.Env().Copy()
+	funenv := fun.funEnv().Copy()
 	putArg := func(k, v *LVal) {
 		funenv.Put(k, v)
 	}

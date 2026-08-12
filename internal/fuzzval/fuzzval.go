@@ -279,7 +279,7 @@ var funNames = []string{
 //   - an existing stdlib callable, including special operators and macros,
 //     which several builtins must reject rather than invoke.
 //
-// libschema's constraint calling convention reaches into FunData().Builtin
+// libschema's constraint calling convention reaches into the raw Builtin closure
 // directly, so shape 1 with mismatched arity indexes past the end of an empty
 // args list and shape 2 dereferences a nil Builtin.  Both are only reachable
 // with an LFun in the corpus.

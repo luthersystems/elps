@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/google/go-dap"
+	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/x/debugger"
 )
@@ -1219,8 +1220,7 @@ func isBuiltinCall(env *lisp.LEnv, expr *lisp.LVal) bool {
 	if resolved == nil || resolved.Type != lisp.LFun || resolved.FunType != lisp.LFunNone {
 		return false
 	}
-	funData := resolved.FunData()
-	if funData == nil || funData.Builtin == nil || funData.Env != nil {
+	if resolved.Builtin() == nil || funraw.Env(resolved) != nil {
 		return false
 	}
 	// The head is a builtin, but check if any argument contains a
@@ -1242,8 +1242,7 @@ func hasUserFunCall(env *lisp.LEnv, expr *lisp.LVal) bool {
 		if ch != nil && ch.Type == lisp.LSymbol {
 			resolved := env.Get(lisp.Symbol(ch.Str))
 			if resolved != nil && resolved.Type == lisp.LFun && resolved.FunType == lisp.LFunNone {
-				fd := resolved.FunData()
-				if fd != nil && fd.Env != nil {
+				if funraw.Env(resolved) != nil {
 					return true
 				}
 			}
@@ -1294,12 +1293,11 @@ func (h *handler) collectStepInTargets(env *lisp.LEnv, expr *lisp.LVal) []dap.St
 			name := head.Str
 			resolved := env.Get(lisp.Symbol(name))
 			if resolved != nil && resolved.Type == lisp.LFun && resolved.FunType == lisp.LFunNone {
-				funData := resolved.FunData()
-				if funData != nil && funData.Env != nil {
+				if funraw.Env(resolved) != nil {
 					// User-defined function — include as target.
 					qualifiedName := name
-					if funData.Package != "" {
-						qualifiedName = funData.Package + ":" + name
+					if pkg := resolved.Package(); pkg != "" {
+						qualifiedName = pkg + ":" + name
 					}
 					occ := occurrences[qualifiedName]
 					occurrences[qualifiedName]++
@@ -1341,11 +1339,10 @@ func (h *handler) collectStepInTargets(env *lisp.LEnv, expr *lisp.LVal) []dap.St
 			name := head.Str
 			resolved := env.Get(lisp.Symbol(name))
 			if resolved != nil && resolved.Type == lisp.LFun && resolved.FunType == lisp.LFunNone {
-				funData := resolved.FunData()
-				if funData != nil && funData.Env != nil {
+				if funraw.Env(resolved) != nil {
 					qualifiedName := name
-					if funData.Package != "" {
-						qualifiedName = funData.Package + ":" + name
+					if pkg := resolved.Package(); pkg != "" {
+						qualifiedName = pkg + ":" + name
 					}
 					occ := occurrences[qualifiedName]
 					occurrences[qualifiedName]++
