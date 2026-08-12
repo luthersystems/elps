@@ -261,7 +261,10 @@ type macroCacheEntry struct {
 // ok.  Purity verdicts for user macros are memoized process-wide keyed by
 // the (sealed, shared) formals node.
 func macroCacheIdentity(fun *LVal) (macroIdentity, bool) {
-	fd := fun.FunData()
+	if fun.Type != LFun {
+		return macroIdentity{}, false
+	}
+	fd := fun.funData()
 	if fd == nil {
 		return macroIdentity{}, false
 	}
