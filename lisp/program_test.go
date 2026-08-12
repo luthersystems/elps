@@ -139,9 +139,9 @@ func TestProgramZero(t *testing.T) {
 	if p.Len() != 0 {
 		t.Errorf("zero Len() = %d", p.Len())
 	}
-	exprs, err := p.Detach()
+	exprs, err := lisp.ProgramDetach(p)
 	if err != nil || exprs != nil {
-		t.Errorf("zero Detach() = %v, %v; want nil, nil", exprs, err)
+		t.Errorf("zero detach = %v, %v; want nil, nil", exprs, err)
 	}
 	env := programTestEnv(t)
 	if got := env.LoadProgram(p); !got.IsNil() {
@@ -161,7 +161,8 @@ func TestProgramString(t *testing.T) {
 	}
 }
 
-// TestProgramDetach proves Detach hands back copies: mutating the detached
+// TestProgramDetach proves the detach machinery hands back copies:
+// mutating the detached
 // expressions does not change what the sealed program evaluates to.
 func TestProgramDetach(t *testing.T) {
 	env := programTestEnv(t)
@@ -169,12 +170,12 @@ func TestProgramDetach(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	exprs, err := p.Detach()
+	exprs, err := lisp.ProgramDetach(p)
 	if err != nil {
-		t.Fatalf("Detach: %v", err)
+		t.Fatalf("detach: %v", err)
 	}
 	if len(exprs) != 1 {
-		t.Fatalf("Detach returned %d exprs, want 1", len(exprs))
+		t.Fatalf("detach returned %d exprs, want 1", len(exprs))
 	}
 	// Vandalize every node of the detached copy.
 	var vandalize func(v *lisp.LVal)

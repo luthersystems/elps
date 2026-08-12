@@ -24,9 +24,11 @@ import (
 // this package: ReadProgram, ReadLocationProgram, and (*LEnv).ParseProgram.
 // The consumer is (*LEnv).LoadProgram / LoadProgramContext, which evaluates
 // the sealed expressions exactly as (*LEnv).Load evaluates a Reader's output.
-// The only exit is Detach, which returns hermetic deep copies — never the
-// sealed nodes themselves.  A reflection test (program_seal_test.go) guards
-// the surface: no method other than Detach may expose *LVal.
+// There is no exported exit: the in-kernel detach machinery (lisp/detach.go)
+// can produce hermetic deep copies of the sealed expressions, but it stays
+// unexported until a real embedder consumer materializes.  A reflection test
+// (program_seal_test.go) guards the surface: no exported method may expose
+// *LVal.
 //
 // Scope of the guarantee: Program seals the parse/cache boundary — it stops
 // raw AST nodes from ESCAPING to embedders.  It does not, by itself, make one
@@ -37,7 +39,8 @@ import (
 // the two — Program at the boundary, leak seals inside eval.  Until then,
 // treat a shared Program like any shared AST: reuse within one runtime is
 // fine, cross-runtime reuse has the aliasing caveats of issues #288/#362,
-// and Detach is the sanctioned way to hand a private copy across.
+// and the in-kernel detach machinery is what a sanctioned hand-off of a
+// private copy would use (unexported until a consumer appears).
 //
 // The zero Program is valid, empty, and evaluates to nil.
 type Program struct {
@@ -53,17 +56,18 @@ func (p Program) String() string {
 	return fmt.Sprintf("<program %d exprs>", len(p.exprs))
 }
 
-// Detach returns hermetic deep copies of the program's expressions, sharing
-// no memory with the sealed AST (see (*LVal).Detach for exactly what is
-// copied).  It is the explicit escape hatch for tooling and transfer — code
-// that genuinely needs AST nodes, e.g. to analyze or serialize them outside
-// this module.  Evaluation does not need it: pass the Program itself to
-// (*LEnv).LoadProgram.
+// detach returns hermetic deep copies of the program's expressions, sharing
+// no memory with the sealed AST (see (*LVal).detach for exactly what is
+// copied).  It is the escape hatch for tooling and transfer — code that
+// genuinely needs AST nodes, e.g. to analyze or serialize them outside this
+// module.  Evaluation does not need it: pass the Program itself to
+// (*LEnv).LoadProgram.  Like (*LVal).detach it is unexported until a real
+// consumer appears; re-exporting is additive and easy.
 //
-// Parser output contains only syntax types, so Detach on a Program produced
+// Parser output contains only syntax types, so detach on a Program produced
 // by ReadProgram, ReadLocationProgram, or ParseProgram always succeeds; the
-// error mirrors (*LVal).Detach's contract for completeness.
-func (p Program) Detach() ([]*LVal, error) {
+// error mirrors (*LVal).detach's contract for completeness.
+func (p Program) detach() ([]*LVal, error) {
 	if len(p.exprs) == 0 {
 		return nil, nil
 	}

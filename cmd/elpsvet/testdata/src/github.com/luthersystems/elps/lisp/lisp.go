@@ -69,7 +69,7 @@ func (v *LVal) Copy() *LVal {
 	return cp
 }
 
-func (v *LVal) Detach() (*LVal, error) { return v.Copy(), nil }
+func (v *LVal) detach() (*LVal, error) { return v.Copy(), nil }
 
 func (v *LVal) Bytes() []byte {
 	b, _ := v.Native.(*[]byte)

@@ -57,7 +57,7 @@ package lisp
 //     stampMacroExpansion skips sealed subtrees (their location is the real
 //     parse location; stamping a shared node would be a cross-environment
 //     write and a data race), and SetSource is a no-op on sealed values.
-//   - Copy and Detach clear the flag on the fresh storage they create;
+//   - Copy and detach clear the flag on the fresh storage they create;
 //     Copy-then-mutate is the sanctioned pattern for Go code that needs to
 //     restructure a value that IsSealed reports as shared.
 //
