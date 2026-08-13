@@ -112,7 +112,7 @@ func enumeratePaths(v *lisp.LVal, maxDepth int) [][]*lisp.LVal {
 			out = append(out, append([]*lisp.LVal{step}, sub...))
 		}
 	}
-	switch v.Type {
+	switch v.Type { //nolint:exhaustive // the container types; everything else is a leaf with nothing below it
 	case lisp.LSortMap:
 		m := v.Map()
 		entries := make([]*lisp.LVal, m.Len())
@@ -310,7 +310,7 @@ func runAliasBattery(t *testing.T, ops aliasStrategy, copyDepth, maxDepth int) (
 						// split 0 writes straight through the copy;
 						// split k>0 re-queries the copy at the first k
 						// steps and writes through the result.
-						for split := 0; split < len(mpath); split++ {
+						for split := range mpath {
 							src := mk()
 							before := src.String()
 

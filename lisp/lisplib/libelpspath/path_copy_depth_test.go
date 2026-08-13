@@ -294,12 +294,12 @@ func TestPathDirectedCopySkipsTheSubtreeItReplaces(t *testing.T) {
 		src.MapSet("b", cyclicMap())
 
 		_, err := Root(Chain(Dot("a"))).Set(src, lisp.String("v"))
-		assert.ErrorIs(t, err, errCyclicValue,
+		require.ErrorIs(t, err, errCyclicValue,
 			"an off-path subtree is copied, so a cycle in one must still be refused (#393)")
 
 		seq := lisp.Vector([]*lisp.LVal{lisp.String("plain"), cyclicVec()})
 		_, err = Root(Chain(Index(0))).Delete(seq)
-		assert.ErrorIs(t, err, errCyclicValue,
+		require.ErrorIs(t, err, errCyclicValue,
 			"an off-path element is copied, so a cycle in one must still be refused (#393)")
 	})
 }
