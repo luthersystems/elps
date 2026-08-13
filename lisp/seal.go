@@ -132,3 +132,48 @@ func (v *LVal) sealAST() {
 func (v *LVal) IsSealed() bool {
 	return v != nil && v.sealed
 }
+
+// InheritSeal marks v sealed when src is.  It is for a v that was just
+// minted over storage BORROWED from src — a fresh LVal header wrapping a
+// (sub)slice of src's backing array — where the seal has to travel with the
+// storage, not with the header that happens to point at it.
+//
+// The kernel already does this by hand at every such site, and the comment
+// it repeats is the whole rule: "a two-index slice keeps the original
+// backing array (and its spare capacity), so a sealed input's constraint
+// travels with the intermediate value" (builtinSlice; builtinCdr and
+// builtinRest say the same).  Those sites live in package lisp and assign
+// the unexported field directly.  This method is that same assignment,
+// exported, for the value-restructuring libraries the seal design expects
+// to migrate into this module — libelpspath being the one named in the
+// commentary above, and the one that shipped without it (issue #392).
+//
+// It is deliberately NOT a general "seal this value" setter:
+//
+//   - Nothing happens unless src is already sealed.  A caller cannot invent
+//     a constraint, only propagate one that exists.
+//   - Only the node types SealAST itself marks are eligible.  In particular
+//     an array is never marked, because the kernel's mutating vector
+//     builtins (append!, assoc!) do not consult the flag at all — a "sealed"
+//     vector would be a lie that reads as protection.  Code wrapping sealed
+//     backing in a vector must copy instead, exactly as builtinSlice does
+//     for (slice 'vector …).
+//   - Singletons are skipped: they are born sealed, and writing even a flag
+//     to a value shared process-wide would race.
+//
+// Sealing is monotone, so this is idempotent and safe to call on a value
+// that is already sealed.
+func (v *LVal) InheritSeal(src *LVal) {
+	if v == nil || v.sealed || !src.IsSealed() || isSingleton(v) {
+		return
+	}
+	switch v.Type {
+	case LSExpr, LQuote, LSymbol, LQSymbol, LString, LInt, LFloat:
+	default:
+		return
+	}
+	// Same sanctioned write as sealAST's: v is a header the caller minted a
+	// moment ago and has not published, and the only thing being set is the
+	// monotone flag that forbids all further writes.
+	v.sealed = true //elps:mutates -- seal provenance for a freshly minted header over src's backing; monotone flag only
+}
