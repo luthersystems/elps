@@ -82,7 +82,12 @@ static-checks:
 # this checks the three rules that exist because a Go write can launder around
 # the seal bit (see cmd/elpsvet/main.go): no package-level var keeps an *LVal
 # reachable by every Runtime, no function writes an LVal field on a value it
-# did not construct, and no runtime-owned *token.Location escapes uncopied.
+# did not construct, and no LVal is minted over another LVal's backing array
+# without inheriting its sealed constraint (elpsseal, the #369/#392 class).
+#
+# NOTE: the elpsescape rule that an earlier draft of this comment named
+# (uncopied *token.Location) lives on claude/exp-vet-esc and is NOT on this
+# branch -- the three rules here are elpsownership, elpsfreshness, elpsseal.
 #
 # TWO PASSES, and the second one is not optional.  elpsvet ACCEPTS -tags and
 # SILENTLY IGNORES IT: x/tools registers that flag as a deliberate no-op

@@ -1,9 +1,11 @@
 // Copyright © 2026 The ELPS authors
 
-// Command elpsvet is a go/analysis prototype with two rules: no
-// package-level variable may keep a *lisp.LVal reachable (elpsownership,
-// below), and no function may write a lisp.LVal field on a value it did not
-// construct (elpsfreshness, freshness.go).
+// Command elpsvet is a go/analysis checker for the seal contract's static
+// half, with three rules: no package-level variable may keep a *lisp.LVal
+// reachable (elpsownership, below), no function may write a lisp.LVal field
+// on a value it did not construct (elpsfreshness, freshness.go), and no LVal
+// may be minted over another LVal's backing storage without carrying its
+// sealed constraint (elpsseal, seal.go).
 //
 // A package-level var whose type transitively contains *lisp.LVal is the
 // producer pattern behind issue #363 — `var builtins = []*libutil.Builtin{...}`
@@ -23,8 +25,9 @@
 //
 //	go run ./cmd/elpsvet -test=false ./...
 //
-// NOT wired into CI: no job in .github/workflows and no Makefile target runs
-// it, so it is a costed prototype invoked by hand.
+// Wired into CI as `make elpsvet` (two passes, untagged and
+// GOFLAGS=-tags=elpscheck; see the Makefile target for why the -tags flag
+// cannot do the second one).
 //
 // The boundary-copy experiment this rule was sized against — every
 // definition's formals deep-copied per registration — did land and was then
@@ -57,7 +60,7 @@ var analyzer = &analysis.Analyzer{
 	Run:  run,
 }
 
-func main() { multichecker.Main(analyzer, freshnessAnalyzer) }
+func main() { multichecker.Main(analyzer, freshnessAnalyzer, sealAnalyzer) }
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	for _, file := range pass.Files {

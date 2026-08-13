@@ -2109,6 +2109,7 @@ func builtinAppend_Bytes(env *LEnv, args *LVal) *LVal {
 	if err != nil {
 		return env.Error(err)
 	}
+	//elps:unsealed the borrowed backing is a BYTE array, which can never belong to a sealed value: SealAST marks only LSExpr/LQuote/LSymbol/LQSymbol/LString/LInt/LFloat (lisp/seal.go), and (*LVal).Bytes panics on any type but LBytes, so lbytes is provably unsealed. The go-slice-style capacity sharing this returns is the documented, audited behaviour of append/append-bytes (see the //elps:mutates notes above).
 	return Bytes(b)
 }
 
@@ -2131,6 +2132,7 @@ func builtinAppendBytes(env *LEnv, args *LVal) *LVal {
 			return env.Error(err)
 		}
 	}
+	//elps:unsealed the borrowed backing is a BYTE array, which can never belong to a sealed value: SealAST marks only LSExpr/LQuote/LSymbol/LQSymbol/LString/LInt/LFloat (lisp/seal.go), and (*LVal).Bytes panics on any type but LBytes, so lbytes is provably unsealed. The go-slice-style capacity sharing this returns is the documented, audited behaviour of append/append-bytes (see the //elps:mutates notes above).
 	return Bytes(b)
 }
 
@@ -2678,6 +2680,8 @@ func builtinDiv(env *LEnv, v *LVal) *LVal {
 
 // divInt tries to perform division as int if all quotients divide the previous
 // result.
+//
+//elps:unsealed args here is not a caller value: divInt/divFloat/mulInt/mulFloat are private arithmetic helpers, reachable only from builtinDiv/builtinMul and from each other, and every call passes a list built over the per-call arglist backing that evalSExprCells allocates fresh (make([]*LVal, 1, len(s.Cells))). No program-literal storage reaches this slice.
 func divInt(x, args *LVal) *LVal {
 	if x.Type != LInt {
 		return Errorf("internal error: divInt called with non-integer: %v", x.Type)
@@ -2733,6 +2737,8 @@ func builtinMul(env *LEnv, v *LVal) *LVal {
 }
 
 // mulInt tries to perform multiplication as int if all arguments are int.
+//
+//elps:unsealed args here is not a caller value: divInt/divFloat/mulInt/mulFloat are private arithmetic helpers, reachable only from builtinDiv/builtinMul and from each other, and every call passes a list built over the per-call arglist backing that evalSExprCells allocates fresh (make([]*LVal, 1, len(s.Cells))). No program-literal storage reaches this slice.
 func mulInt(x, args *LVal) *LVal {
 	if x.Type != LInt {
 		return Errorf("internal error: mulInt called with non-integer: %v", x.Type)

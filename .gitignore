@@ -1,4 +1,9 @@
+# NOTE: bare `elps` matches ANY path component named elps, not just the
+# root binary -- it silently swallowed a new file under
+# cmd/elpsvet/testdata/src/github.com/luthersystems/elps/. Left as-is for
+# compatibility; testdata under that path needs `git add -f`.
 elps
+elpsvet
 .firecrawl/
 .claude/settings.local.json
 .claude/worktrees/

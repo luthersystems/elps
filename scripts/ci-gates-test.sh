@@ -1376,6 +1376,126 @@ else
 	echo "SKIP  go not installed (GOFLAGS tag-propagation unchecked)"
 fi
 
+# --- elpsseal: the seal-laundering rule must be REGISTERED and NON-VACUOUS ---
+#
+# elpsseal (cmd/elpsvet/seal.go) is the only detector for a class that has
+# shipped twice: an LVal minted over another LVal's backing array without
+# inheriting its `sealed` constraint (#369 mechanism 2 in builtinAppend, #392
+# in libelpspath rangePath.Get). It runs inside the same `make elpsvet` target
+# the assertions above police, so the gate can only tell you the target ran --
+# not that this rule is still wired in, and not that it can still say no.
+#
+# Both failure modes are silent and both have HAPPENED here:
+#   - a rule dropped from multichecker.Main compiles, tests, and reports clean;
+#   - a rule whose discharge condition is too loose reports clean on a tree
+#     with the defect in it. Before the guard-ordering fix, deleting
+#     builtinSlice's seal propagation produced NO diagnostic, because a
+#     `list.sealed` read LATER in the same function excused the earlier borrow.
+#
+# So: assert the analyzer is registered, and RED-PROOF it by deleting a real
+# guard from a scratch copy of the tree and requiring a diagnostic.
+
+if grep -qE 'multichecker\.Main\(.*sealAnalyzer' "${REPO_ROOT}/cmd/elpsvet/main.go"; then
+	ok "elpsseal is registered with the elpsvet driver"
+else
+	bad "elpsseal is NOT registered in multichecker.Main — the seal-laundering class is undetected"
+fi
+
+if command -v go >/dev/null 2>&1; then
+	_seal_tmp="$(mktemp -d)"
+	# Copy only what the analyzer needs to build and to see the kernel guards.
+	# A scratch COPY, never the worktree: this deletes a correctness guard.
+	if cp -r "${REPO_ROOT}/." "${_seal_tmp}/" 2>/dev/null; then
+		# Delete builtinCDR's seal propagation -- the smallest, most
+		# unambiguous instance of the pattern in the kernel.
+		perl -0pi -e 's/\tr := QExpr\(v\.Cells\[1:\]\)\n(\t\/\/[^\n]*\n)*\tr\.sealed = v\.sealed\n\treturn r\n/\treturn QExpr(v.Cells[1:])\n/' \
+			"${_seal_tmp}/lisp/builtins.go"
+		if grep -q 'r.sealed = v.sealed' "${_seal_tmp}/lisp/builtins.go"; then
+			# builtinRest still has one; builtinCDR's must be gone.
+			:
+		fi
+		_seal_out="$(cd "${_seal_tmp}" && go run ./cmd/elpsvet -test=false ./lisp/ 2>&1 || true)"
+		if printf '%s' "$_seal_out" | grep -q 'without carrying its sealed constraint'; then
+			ok "elpsseal is non-vacuous (deleting builtinCDR's seal propagation is caught)"
+		else
+			bad "elpsseal reported CLEAN on a tree with builtinCDR's seal propagation deleted — the rule cannot say no"
+		fi
+	else
+		echo "SKIP  could not stage a scratch tree (elpsseal red-proof unchecked)"
+	fi
+	rm -rf "${_seal_tmp}"
+else
+	echo "SKIP  go not installed (elpsseal red-proof unchecked)"
+fi
+
+# --- elpsvet's own documentation must not lie about elpsvet ------------------
+#
+# cmd/elpsvet/main.go's package doc is the only prose describing what this
+# checker is and where it runs. It said "NOT wired into CI: no job in
+# .github/workflows and no Makefile target runs it, so it is a costed
+# prototype invoked by hand" for exactly one commit AFTER the commit that
+# wired it into CI -- corrected in e261c22, falsified again by 3859885.
+#
+# Every other assertion in this block checks that the gate RUNS. None checked
+# that the description of the gate stays true, which is the same
+# "green by not looking" shape the whole file exists to prevent.
+#
+# Keyed on identifiers, not prose: the literal target name `make elpsvet`, one
+# negation phrase, and the analyzer NAME strings taken from the driver
+# registration. A regex over English would produce false failures and get
+# deleted, which is worse than no check.
+
+ELPSVET_MAIN="${REPO_ROOT}/cmd/elpsvet/main.go"
+
+if [ -f "$ELPSVET_MAIN" ]; then
+	# The package doc block only: everything up to and including `package main`.
+	_vet_doc="$(sed -n '1,/^package main$/p' "$ELPSVET_MAIN")"
+
+	_doc_wired=0
+	printf '%s' "$_vet_doc" | grep -q 'make elpsvet' && _doc_wired=1
+	_doc_unwired=0
+	printf '%s' "$_vet_doc" | grep -qiE 'not wired into ci' && _doc_unwired=1
+	_ci_wired=0
+	grep -q 'make elpsvet' "$ELPS_YML" && _ci_wired=1
+
+	if [ "$_ci_wired" = 1 ] && [ "$_doc_unwired" = 1 ]; then
+		bad "cmd/elpsvet/main.go says elpsvet is NOT wired into CI, but elps.yml runs 'make elpsvet'"
+	elif [ "$_ci_wired" = 1 ] && [ "$_doc_wired" = 0 ]; then
+		bad "elps.yml runs 'make elpsvet' but cmd/elpsvet/main.go's package doc never mentions it — the doc is stale"
+	elif [ "$_ci_wired" = 0 ] && [ "$_doc_wired" = 1 ]; then
+		bad "cmd/elpsvet/main.go's package doc claims 'make elpsvet' runs in CI, but elps.yml does not invoke it"
+	else
+		ok "cmd/elpsvet/main.go's package doc agrees with elps.yml about whether elpsvet runs in CI"
+	fi
+
+	# Every analyzer the driver registers must be NAMED in that package doc.
+	# This is what actually goes stale: a rule gets added to multichecker.Main
+	# and the paragraph listing the rules is not touched, so the file describes
+	# a checker that no longer exists.
+	_registered="$(sed -n 's/.*multichecker\.Main(\(.*\)).*/\1/p' "$ELPSVET_MAIN" | tr ',' ' ')"
+	if [ -z "$_registered" ]; then
+		bad "could not read the analyzer list from multichecker.Main in cmd/elpsvet/main.go"
+	else
+		_undocumented=""
+		for _v in $_registered; do
+			_n="$(grep -h -A5 "^var ${_v} = &analysis.Analyzer{" "${REPO_ROOT}"/cmd/elpsvet/*.go 2>/dev/null |
+				sed -n 's/.*Name:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+			if [ -z "$_n" ]; then
+				_undocumented="${_undocumented} ${_v}(no-Name-field)"
+			elif ! printf '%s' "$_vet_doc" | grep -q "$_n"; then
+				_undocumented="${_undocumented} ${_n}"
+			fi
+		done
+		if [ -n "$_undocumented" ]; then
+			bad "analyzers registered with the elpsvet driver but absent from its package doc:${_undocumented}"
+		else
+			ok "cmd/elpsvet/main.go's package doc names every analyzer the driver registers"
+		fi
+	fi
+else
+	bad "cmd/elpsvet/main.go not found — cannot check the elpsvet documentation gate"
+fi
+
 echo
 echo "=========================================================================="
 echo "ci-gates-test: ${pass} passed, ${fail} failed"

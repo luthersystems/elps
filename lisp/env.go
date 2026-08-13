@@ -1738,6 +1738,7 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	if funenv == nil {
 		return env, QExpr(builtinArgs)
 	}
+	//elps:unsealed the borrowed array is the LFun's OWN storage, not the program's: LEnv.Lambda builds it with make([]*LVal, 0, len(body)+1) and LFun is outside SealAST's type switch, so fun.Cells is never a sealed backing array. Its ELEMENTS (the body forms) are sealed nodes, and sharing element pointers is the safe half of the boundary -- the constraint travels with the array, not the pointers.
 	return funenv, QExpr(fun.Cells[1:])
 }
 

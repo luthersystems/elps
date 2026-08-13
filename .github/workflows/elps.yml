@@ -61,8 +61,9 @@ jobs:
       # The seal contract's static half.  golangci-lint above checks Go style;
       # this checks the three rules that exist because a raw Go write can
       # launder around the seal bit -- package-level LVal tables, writes to
-      # LVal fields on values the function did not construct, and escaping
-      # uncopied *token.Location pointers.  ~3s.
+      # LVal fields on values the function did not construct, and LVals minted
+      # over another LVal's backing array without inheriting its sealed
+      # constraint (the #369/#392 seal-laundering class).  ~10s.
       #
       # Runs TWO passes.  The second is the whole reason this is a make target
       # rather than one line here: elpsvet accepts -tags and silently ignores

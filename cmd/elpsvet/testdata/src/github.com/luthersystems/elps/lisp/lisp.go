@@ -5,6 +5,13 @@ package lisp
 
 type LType int
 
+// The type tags elpsseal fixtures branch on.
+const (
+	LSExpr LType = iota
+	LArray
+	LBytes
+)
+
 type LFunType int
 
 type LBuiltin func(env *LEnv, args *LVal) *LVal
@@ -19,7 +26,13 @@ type LVal struct {
 	FunType LFunType
 	Quoted  bool
 	Spliced bool
+
+	// sealed mirrors the real field: unexported, so only package lisp can
+	// propagate it.  External packages get IsSealed and a copy.
+	sealed bool
 }
+
+func (v *LVal) IsSealed() bool { return v != nil && v.sealed }
 
 type LEnv struct{}
 
@@ -41,14 +54,20 @@ func Float(x float64) *LVal  { return &LVal{Float: x} }
 func String(s string) *LVal  { return &LVal{Str: s} }
 func Symbol(s string) *LVal  { return &LVal{Str: s} }
 func QSymbol(s string) *LVal { return &LVal{Str: s} }
-func Bytes(b []byte) *LVal   { return &LVal{Native: &b} }
+func Bytes(b []byte) *LVal   { return &LVal{Native: &b} } // want Bytes:"borrowsLValBacking\\(0\\)"
 
 func Native(v interface{}) *LVal { return &LVal{Native: v} }
 
-func SExpr(cells []*LVal) *LVal { return &LVal{Cells: cells} }
-func QExpr(cells []*LVal) *LVal { return &LVal{Cells: cells, Quoted: true} }
+func SExpr(cells []*LVal) *LVal { return &LVal{Cells: cells} }               // want SExpr:"borrowsLValBacking\\(0\\)"
+func QExpr(cells []*LVal) *LVal { return &LVal{Cells: cells, Quoted: true} } // want QExpr:"borrowsLValBacking\\(0\\)"
 
-func Array(dims *LVal, cells []*LVal) *LVal { return &LVal{Cells: cells} }
+func Vector(cells []*LVal) *LVal { return Array(nil, cells) } // want Vector:"borrowsLValBacking\\(0\\)"
+
+func Array(dims *LVal, cells []*LVal) *LVal { return &LVal{Cells: cells} } // want Array:"borrowsLValBacking\\(1\\)"
+
+// seqCells mirrors the real in-package helper: it returns a sequence's live
+// backing array.
+func seqCells(v *LVal) []*LVal { return v.Cells }
 
 func Fun(fid string, formals *LVal, fn LBuiltin) *LVal { return &LVal{Str: fid} }
 

@@ -53,6 +53,7 @@ func GoValue(v *LVal) interface{} {
 		return m
 	case LArray:
 		dims, storage := v.Cells[0], v.Cells[1]
+		//elps:unsealed transient read-only wrapper around an ARRAY's cell storage. Arrays are outside SealAST's type switch and can never share a sealed backing array -- builtinSlice's 'vector branch copy-on-writes precisely so that a vector is never a window onto a sealed list (lisp/seal.go) -- and GoSlice only reads, returning a fresh []interface{}. The header never escapes this expression.
 		s, _ := GoSlice(SExpr(storage.Cells))
 		switch dims.Len() {
 		case 0:

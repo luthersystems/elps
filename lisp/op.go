@@ -881,7 +881,15 @@ func opCond(env *LEnv, args *LVal) *LVal {
 		if Not(test) {
 			continue
 		}
-		return opProgn(env, SExpr(branch.Cells[1:]))
+		body := SExpr(branch.Cells[1:])
+		// branch is a clause of the cond form straight out of the parse, so
+		// its cells are sealed backing.  This is a new header over that
+		// backing, so it inherits the constraint — the same propagation
+		// builtinCdr/builtinRest/builtinSlice do (lisp/seal.go).  opProgn
+		// only reads today, so nothing corrupts; carrying the flag is what
+		// keeps that true if a future consumer of a progn body writes.
+		body.sealed = branch.sealed
+		return opProgn(env, body)
 	}
 	return Nil()
 }

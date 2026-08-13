@@ -88,6 +88,20 @@ type aliasTracker struct {
 	carrier map[types.Object]bool // vars whose composite literal captured a tainted slice
 	covered map[*ast.CallExpr]bool
 	ann     map[int]bool
+
+	// quiet silences this tracker's own diagnostics.  The elpsseal rule
+	// (seal.go) drives a second tracker purely for its taint state; the
+	// mutation findings belong to elpsfreshness and must be reported once,
+	// by it, with its annotation map.
+	quiet bool
+
+	// origin records, for each tainted slice variable, the LVal variables
+	// whose backing storage it may alias.  The mutation rules in this file
+	// do not need provenance — a write through a tainted alias is a write
+	// whoever owns the storage — but the seal rule (seal.go) does: its
+	// discharge condition is "the function consulted the seal of THIS
+	// source", so it has to know which source.
+	origin map[types.Object][]types.Object
 }
 
 func newAliasTracker(pass *analysis.Pass, fresh map[types.Object]bool, ann map[int]bool) *aliasTracker {
@@ -98,10 +112,122 @@ func newAliasTracker(pass *analysis.Pass, fresh map[types.Object]bool, ann map[i
 		carrier: make(map[types.Object]bool),
 		covered: make(map[*ast.CallExpr]bool),
 		ann:     ann,
+		origin:  make(map[types.Object][]types.Object),
 	}
 }
 
+// aliasSnapshot is a copy of a tracker's whole state, for the branch-scoped
+// walk in seal.go.  The mutation rules in this file are deliberately
+// path-insensitive (see the header comment), so they never take one; the
+// seal rule cannot afford to be, because path-insensitive FRESHNESS lets an
+// assignment in one switch case ("case LString: list = String(...)") mark a
+// variable fresh for a sibling case that never ran it — which silently
+// disarmed the rule over builtinSlice, the very function whose discipline it
+// exists to protect.
+type aliasSnapshot struct {
+	fresh   map[types.Object]bool
+	tainted map[types.Object]bool
+	carrier map[types.Object]bool
+	origin  map[types.Object][]types.Object
+}
+
+func (t *aliasTracker) snapshot() aliasSnapshot {
+	s := aliasSnapshot{
+		fresh:   make(map[types.Object]bool, len(t.fresh)),
+		tainted: make(map[types.Object]bool, len(t.tainted)),
+		carrier: make(map[types.Object]bool, len(t.carrier)),
+		origin:  make(map[types.Object][]types.Object, len(t.origin)),
+	}
+	for k, v := range t.fresh {
+		s.fresh[k] = v
+	}
+	for k, v := range t.tainted {
+		s.tainted[k] = v
+	}
+	for k, v := range t.carrier {
+		s.carrier[k] = v
+	}
+	for k, v := range t.origin {
+		s.origin[k] = append([]types.Object(nil), v...)
+	}
+	return s
+}
+
+// restore refills the tracker's existing maps in place, so callers holding a
+// reference to t.fresh (the freshness map elpsseal shares) keep seeing it.
+func (t *aliasTracker) restore(s aliasSnapshot) {
+	clear(t.fresh)
+	for k, v := range s.fresh {
+		t.fresh[k] = v
+	}
+	clear(t.tainted)
+	for k, v := range s.tainted {
+		t.tainted[k] = v
+	}
+	clear(t.carrier)
+	for k, v := range s.carrier {
+		t.carrier[k] = v
+	}
+	clear(t.origin)
+	for k, v := range s.origin {
+		t.origin[k] = v
+	}
+}
+
+// mergeSnapshots joins the states of mutually exclusive paths in the safe
+// direction: a value is FRESH only if the function constructed it on every
+// path, and TAINTED if it may alias foreign backing on any path.
+func mergeSnapshots(paths []aliasSnapshot) aliasSnapshot {
+	out := aliasSnapshot{
+		fresh:   make(map[types.Object]bool),
+		tainted: make(map[types.Object]bool),
+		carrier: make(map[types.Object]bool),
+		origin:  make(map[types.Object][]types.Object),
+	}
+	if len(paths) == 0 {
+		return out
+	}
+	for obj, v := range paths[0].fresh {
+		all := v
+		for _, p := range paths[1:] {
+			all = all && p.fresh[obj]
+		}
+		out.fresh[obj] = all
+	}
+	for _, p := range paths {
+		for obj, v := range p.tainted {
+			out.tainted[obj] = out.tainted[obj] || v
+		}
+		for obj, v := range p.carrier {
+			out.carrier[obj] = out.carrier[obj] || v
+		}
+		for obj, roots := range p.origin {
+			out.origin[obj] = appendUnique(out.origin[obj], roots)
+		}
+	}
+	return out
+}
+
+func appendUnique(dst []types.Object, src []types.Object) []types.Object {
+	for _, s := range src {
+		found := false
+		for _, d := range dst {
+			if d == s {
+				found = true
+				break
+			}
+		}
+		if !found {
+			dst = append(dst, s)
+		}
+	}
+	return dst
+}
+
 func (t *aliasTracker) report(pos token.Pos, op string) {
+	if t.quiet {
+		return
+	}
 	line := t.pass.Fset.Position(pos).Line
 	if t.ann[line] || t.ann[line-1] {
 		return
@@ -154,6 +280,7 @@ func (t *aliasTracker) handleAssign(stmt *ast.AssignStmt) {
 			}
 			if _, isSlice := obj.Type().Underlying().(*types.Slice); isSlice {
 				t.tainted[obj] = taint
+				t.recordOrigin(obj, taint, stmt, i, single)
 			} else {
 				t.carrier[obj] = carry
 			}
@@ -185,11 +312,36 @@ func (t *aliasTracker) handleValueSpec(spec *ast.ValueSpec) {
 			continue
 		}
 		if _, isSlice := obj.Type().Underlying().(*types.Slice); isSlice {
-			t.tainted[obj] = t.sliceTaint(spec.Values[i])
+			taint := t.sliceTaint(spec.Values[i])
+			t.tainted[obj] = taint
+			if taint {
+				t.origin[obj] = t.sliceOrigin(spec.Values[i])
+			} else {
+				delete(t.origin, obj)
+			}
 		} else {
 			t.carrier[obj] = t.carrierTaint(spec.Values[i])
 		}
 	}
+}
+
+// recordOrigin attaches (or clears) the provenance of a slice variable that
+// handleAssign has just re-bound.  Reassignment to fresh storage clears it,
+// exactly as it clears the taint bit — last-assignment-wins, in source order.
+func (t *aliasTracker) recordOrigin(obj types.Object, taint bool, stmt *ast.AssignStmt, i int, single bool) {
+	if !taint {
+		delete(t.origin, obj)
+		return
+	}
+	rhs := stmt.Rhs[0]
+	if !single {
+		if i >= len(stmt.Rhs) {
+			delete(t.origin, obj)
+			return
+		}
+		rhs = stmt.Rhs[i]
+	}
+	t.origin[obj] = t.sliceOrigin(rhs)
 }
 
 // handleIncDec flags cells[i]++ / b[i]-- through a tainted alias.
@@ -429,10 +581,120 @@ func resultIsSlice(sig *types.Signature) bool {
 	return ok
 }
 
+// resultIsLValSlice reports whether sig returns []*lisp.LVal in ANY result
+// position.  Multi-result is deliberate: libelpspath's toCells has signature
+// `([]*lisp.LVal, error)` and is the taint source for the whole path package
+// — restricting this to single-result signatures (as it originally did) made
+// every `cells, err := toCells(in)` launder the alias, which is precisely how
+// issue #392 stayed invisible to the rule.
 func resultIsLValSlice(sig *types.Signature) bool {
-	if sig.Results().Len() != 1 {
-		return false
+	for i := range sig.Results().Len() {
+		s, ok := sig.Results().At(i).Type().Underlying().(*types.Slice)
+		if ok && isLValPtr(s.Elem()) {
+			return true
+		}
 	}
-	s, ok := sig.Results().At(0).Type().Underlying().(*types.Slice)
-	return ok && isLValPtr(s.Elem())
+	return false
+}
+
+// sliceOrigin returns the LVal variables whose backing storage e may alias.
+// It mirrors sliceTaint's structure exactly — same cases, same order — and
+// returns the roots rather than a bit.  A nil result means "tainted, but the
+// source is not a variable this function can name" (a field of some other
+// struct, a call with no LVal argument); the seal rule treats that as
+// undischargeable by a seal consultation, because there is nothing to
+// consult.
+func (t *aliasTracker) sliceOrigin(e ast.Expr) []types.Object {
+	e = ast.Unparen(e)
+	switch x := e.(type) {
+	case *ast.Ident:
+		if obj := t.objectOf(x); obj != nil {
+			return t.origin[obj]
+		}
+	case *ast.SelectorExpr:
+		// v.Cells: the root is whatever v roots at.
+		if _, ok := lvalFieldSelection(t.pass, x); ok {
+			return lvalRoot(t.pass, x.X)
+		}
+	case *ast.SliceExpr:
+		return t.sliceOrigin(x.X)
+	case *ast.CallExpr:
+		return t.callOrigin(x)
+	}
+	return nil
+}
+
+func (t *aliasTracker) callOrigin(call *ast.CallExpr) []types.Object {
+	if t.isBuiltin(call, "append") {
+		if len(call.Args) > 0 {
+			return t.sliceOrigin(call.Args[0])
+		}
+		return nil
+	}
+	if tv, ok := t.pass.TypesInfo.Types[call.Fun]; ok && tv.IsType() && len(call.Args) == 1 {
+		return t.sliceOrigin(call.Args[0]) // slice conversion shares backing
+	}
+	if fn := methodCallee(t.pass, call); fn != nil && recvIsLisp(fn, "LVal") {
+		// v.Bytes(): the backing belongs to the receiver.
+		if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
+			return lvalRoot(t.pass, sel.X)
+		}
+		return nil
+	}
+	// seqCells(v) / toCells(v): the backing belongs to the LVal arguments,
+	// or to whatever an already-tainted slice argument came from.
+	var roots []types.Object
+	for _, arg := range call.Args {
+		at := t.pass.TypesInfo.TypeOf(arg)
+		if isLValValue(at) || isLValPtr(at) {
+			roots = append(roots, lvalRoot(t.pass, arg)...)
+			continue
+		}
+		if t.sliceTaint(arg) {
+			roots = append(roots, t.sliceOrigin(arg)...)
+		}
+	}
+	return roots
+}
+
+func (t *aliasTracker) objectOf(id *ast.Ident) types.Object {
+	if obj := t.pass.TypesInfo.Uses[id]; obj != nil {
+		return obj
+	}
+	return t.pass.TypesInfo.Defs[id]
+}
+
+// lvalRoot walks an LVal expression down to the variable it is rooted at.
+// v, v.Cells[0], (*v), v.Copy() all root at v.  A chain that does not bottom
+// out in an identifier (a package-level selector, a call with no receiver)
+// has no nameable root and returns nil.
+func lvalRoot(pass *analysis.Pass, e ast.Expr) []types.Object {
+	for {
+		e = ast.Unparen(e)
+		switch x := e.(type) {
+		case *ast.Ident:
+			obj := pass.TypesInfo.Uses[x]
+			if obj == nil {
+				obj = pass.TypesInfo.Defs[x]
+			}
+			if obj == nil {
+				return nil
+			}
+			return []types.Object{obj}
+		case *ast.SelectorExpr:
+			e = x.X
+		case *ast.IndexExpr:
+			e = x.X
+		case *ast.StarExpr:
+			e = x.X
+		case *ast.CallExpr:
+			if sel, ok := ast.Unparen(x.Fun).(*ast.SelectorExpr); ok && methodCallee(pass, x) != nil {
+				e = sel.X
+				continue
+			}
+			return nil
+		default:
+			return nil
+		}
+	}
 }

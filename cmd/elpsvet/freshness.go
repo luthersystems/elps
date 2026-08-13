@@ -192,21 +192,32 @@ func handleAssign(pass *analysis.Pass, stmt *ast.AssignStmt, fresh map[types.Obj
 }
 
 func trackOrCheck(pass *analysis.Pass, stmt *ast.AssignStmt, lhs ast.Expr, rhsFresh bool, fresh map[types.Object]bool, ann map[int]bool) {
-	lhs = ast.Unparen(lhs)
-	if id, ok := lhs.(*ast.Ident); ok {
-		if id.Name == "_" {
-			return
-		}
-		obj := pass.TypesInfo.Defs[id]
-		if obj == nil {
-			obj = pass.TypesInfo.Uses[id]
-		}
-		if obj != nil {
-			fresh[obj] = rhsFresh
-		}
+	if bindFresh(pass, lhs, rhsFresh, fresh) {
 		return
 	}
-	checkWrite(pass, lhs, stmt.Pos(), fresh, ann)
+	checkWrite(pass, ast.Unparen(lhs), stmt.Pos(), fresh, ann)
+}
+
+// bindFresh records lhs's freshness when lhs is a plain identifier, and
+// reports whether it did.  Split out of trackOrCheck so the elpsseal rule
+// (seal.go) can maintain the same freshness map without also emitting this
+// rule's diagnostics.
+func bindFresh(pass *analysis.Pass, lhs ast.Expr, rhsFresh bool, fresh map[types.Object]bool) bool {
+	id, ok := ast.Unparen(lhs).(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if id.Name == "_" {
+		return true
+	}
+	obj := pass.TypesInfo.Defs[id]
+	if obj == nil {
+		obj = pass.TypesInfo.Uses[id]
+	}
+	if obj != nil {
+		fresh[obj] = rhsFresh
+	}
+	return true
 }
 
 // checkWrite reports lhs when it is a write into lisp.LVal storage whose

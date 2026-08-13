@@ -605,10 +605,12 @@ func (s *indexPath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 	if !ok {
 		return lisp.Nil(), nil
 	}
+	//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops; list inputs are rejected by errMutateList on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here
 	cells[index] = newIn
 	return in, nil
 }
 
+//elps:unsealed transient header, never escapes: the value built below is handed straight to copyLVal, which deep-copies every cell into fresh storage before setMutate/deleteMutate/nilMutate writes anything, so a sealed input's backing is only ever READ here. rangePath.Get is the sibling whose header DID escape to the value domain -- that was issue #392, and it copies now.
 func (s *indexPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
@@ -625,6 +627,7 @@ func (s *indexPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 	return s.setMutate(copyLVal(newVal), newIn)
 }
 
+//elps:unsealed transient header, never escapes: the value built below is handed straight to copyLVal, which deep-copies every cell into fresh storage before setMutate/deleteMutate/nilMutate writes anything, so a sealed input's backing is only ever READ here. rangePath.Get is the sibling whose header DID escape to the value domain -- that was issue #392, and it copies now.
 func (s *indexPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
@@ -658,6 +661,7 @@ func (s *indexPath) deleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	if !ok {
 		return lisp.Nil(), nil
 	}
+	//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops; list inputs are rejected by errMutateList on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here
 	vals := append(cells[:index], cells[index+1:]...)
 	storeCells(in, vals)
 	return in, nil
@@ -697,6 +701,23 @@ func (s *rangePath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 	cells = cells[from:to]
+	if in.IsSealed() {
+		// Copy-on-write (issue #392).  in is — or shares backing with — a
+		// parsed program literal, and toList below would mint a FRESH,
+		// UNSEALED header over its live cells: a mutable window onto a tree
+		// the parse cache aliases into every warm environment, where one
+		// (stable-sort ...) or (append! ...) corrupts the program for every
+		// environment sharing it (the substrate#378 class; see lisp/seal.go).
+		//
+		// The kernel's slicing ops (builtinCdr, builtinRest, builtinSlice)
+		// answer this by copying the sealed flag onto the new header.
+		// libelpspath is outside package lisp, so the flag is not reachable
+		// from here and copying the range is the available fix.  It is paid
+		// only when the input is a program literal.
+		cp := make([]*lisp.LVal, len(cells))
+		copy(cp, cells)
+		cells = cp
+	}
 	var newVal *lisp.LVal
 	if in.Type == lisp.LArray {
 		newVal = toVector(cells)
@@ -730,14 +751,17 @@ func (s *rangePath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 	if err != nil {
 		return nil, err
 	}
+	//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops; list inputs are rejected by errMutateList on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here
 	vals := append(cells[:from], setCells...)
 	if to < n {
+		//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops; list inputs are rejected by errMutateList on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here
 		vals = append(vals, cells[to:]...)
 	}
 	storeCells(in, vals)
 	return in, nil
 }
 
+//elps:unsealed transient header, never escapes: the value built below is handed straight to copyLVal, which deep-copies every cell into fresh storage before setMutate/deleteMutate/nilMutate writes anything, so a sealed input's backing is only ever READ here. rangePath.Get is the sibling whose header DID escape to the value domain -- that was issue #392, and it copies now.
 func (s *rangePath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
@@ -779,12 +803,14 @@ func (s *rangePath) deleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	}
 	vals := cells[:from]
 	if to < n {
+		//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops; list inputs are rejected by errMutateList on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here
 		vals = append(vals, cells[to:]...)
 	}
 	storeCells(in, vals)
 	return in, nil
 }
 
+//elps:unsealed transient header, never escapes: the value built below is handed straight to copyLVal, which deep-copies every cell into fresh storage before setMutate/deleteMutate/nilMutate writes anything, so a sealed input's backing is only ever READ here. rangePath.Get is the sibling whose header DID escape to the value domain -- that was issue #392, and it copies now.
 func (s *rangePath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
@@ -840,6 +866,7 @@ func (s *rangePath) nilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	return s.setMutate(in, newVal)
 }
 
+//elps:unsealed transient header, never escapes: the value built below is handed straight to copyLVal, which deep-copies every cell into fresh storage before setMutate/deleteMutate/nilMutate writes anything, so a sealed input's backing is only ever READ here. rangePath.Get is the sibling whose header DID escape to the value domain -- that was issue #392, and it copies now.
 func (s *rangePath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {

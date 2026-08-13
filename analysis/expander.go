@@ -93,7 +93,20 @@ func (e *EnvMacroExpander) ExpandMacro(form *lisp.LVal, pkg string) (result *lis
 		return nil
 	}
 
-	args := lisp.SExpr(form.Cells[1:])
+	// Copy the argument cells instead of slicing form's backing array.
+	// form is parser output and therefore SEALED (rdparser.ParseExpression
+	// calls SealAST, and analysis/workspace.go parses every analyzed file
+	// that way), so lisp.SExpr(form.Cells[1:]) would alias the sealed
+	// backing into the macro's &rest binding, where an in-place mutator
+	// (stable-sort, append!) rewrites the program literal for every
+	// environment sharing the parse — the substrate#378 class; see
+	// lisp/seal.go.  This is the same defect lisp/builtins.go
+	// macroExpandArgs was written to close on the (macroexpand '(m 1 2 3))
+	// path; the analyzer's expander is the other call path that reached a
+	// macro without copying.  Found by elpsvet's elpsseal rule.
+	margs := make([]*lisp.LVal, len(form.Cells)-1)
+	copy(margs, form.Cells[1:])
+	args := lisp.SExpr(margs)
 	mark := e.Env.MacroCall(mac, args)
 	if mark.Type == lisp.LError || mark.Type != lisp.LMarkMacExpand {
 		return nil
