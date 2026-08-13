@@ -110,6 +110,32 @@ func copyMap(v *lisp.LVal) (*lisp.LVal, error) {
 
 // copyMapGuarded is copyMap continuing a walk already in progress.
 func copyMapGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
+	return copyMapExcept(v, nil, g)
+}
+
+// copyMapOffPath is copyMap with one entry left out: the entry at key, which
+// the caller is about to overwrite or delete.
+//
+// This is the path-directed half of the copy. The copy contract is
+// unchanged — the returned map shares no container with v, and the entry at
+// key is replaced by a value the caller has already built independently —
+// but the subtree under key is never walked, because every node of it would
+// be discarded the moment the caller writes. That waste was not one subtree:
+// setChain/deleteChain/nullChain rebuild the spine one level at a time, and
+// each level used to deep-copy its whole subtree including the next level
+// down, so the value under a d-step path was copied d times and thrown away
+// d-1 of them. Skipping the on-path entry at each level makes every node in
+// the value cost exactly one copy.
+//
+// IMPORTANT: what is skipped is the entry the caller's SetMutate/DeleteMutate
+// will land on, not "the entry whose key string matches". See sameMapSlot.
+func copyMapOffPath(v *lisp.LVal, key *lisp.LVal) (*lisp.LVal, error) {
+	return copyMapExcept(v, key, lisp.CycleGuard{})
+}
+
+// copyMapExcept is the shared body: skip is the key to leave out, or nil to
+// copy every entry.
+func copyMapExcept(v *lisp.LVal, skip *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 	m0 := v.Map()
 	if m0 == nil {
 		return nil, errors.New("first argument is not a map")
@@ -121,6 +147,9 @@ func copyMapGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 	sm := lisp.SortedMap()
 	m := sm.Map()
 	for _, pair := range entries.Cells {
+		if skip != nil && sameMapSlot(pair.Cells[0], skip) {
+			continue
+		}
 		// IMPORTANT: maps may contain containers, in which case we need to copy
 		// those containers — the rule copyList and copyVector have always
 		// carried. Storing the source's own value here instead, which is what
@@ -138,6 +167,25 @@ func copyMapGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 		}
 	}
 	return sameQuoting(v, sm), nil
+}
+
+// sameMapSlot reports whether two keys name the same entry of the map the
+// copy is being built into.
+//
+// The copy is always built into a lisp.SortedMap, whose backing keys strings
+// and symbols alike by their text and refuses everything else. Skipping an
+// entry because its key "looks equal" by some other rule would drop a
+// sibling from the copy, so this mirrors that backing exactly, and
+// TestMapSlotRuleMatchesTheMap pins the two together: a key type the backing
+// cannot hash is not equal to anything here, and falls through to the Set
+// below that reports it, which is what this function did before it was a
+// function.
+func sameMapSlot(a, b *lisp.LVal) bool {
+	return hashableMapKey(a) && hashableMapKey(b) && a.Str == b.Str
+}
+
+func hashableMapKey(k *lisp.LVal) bool {
+	return k.Type == lisp.LString || k.Type == lisp.LSymbol
 }
 
 func sortedMapEntries(m lisp.Map) *lisp.LVal {
@@ -191,6 +239,48 @@ func copyListGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 		cellsCopy[i] = c
 	}
 	return sameQuoting(v, toList(cellsCopy)), nil
+}
+
+// copySeqOffPath copies a sequence's cells into a fresh sequence of the same
+// layout, leaving the half-open range [from,to) uncopied.
+//
+// It is copyLVal(toVector(cells)) / copyLVal(toList(cells)) — the shape the
+// index and range operations have always built their private copy with —
+// minus the positions the caller is about to overwrite or splice out. As in
+// copyMapOffPath the result shares no container with the source: the skipped
+// positions hold nil until the caller fills or removes them, so a copy
+// abandoned partway through carries no reference back into the source
+// either.
+//
+// from == to skips nothing and is the plain deep copy.
+func copySeqOffPath(in *lisp.LVal, cells []*lisp.LVal, from, to int) (*lisp.LVal, error) {
+	out := make([]*lisp.LVal, len(cells))
+	var g lisp.CycleGuard
+	for i := range cells {
+		if i >= from && i < to {
+			out[i] = lisp.Nil()
+			continue
+		}
+		// IMPORTANT: sequences may contain containers, in which case we need
+		// to copy those containers.
+		c, err := copyGuarded(cells[i], g)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = c
+	}
+	// IMPORTANT: the quoting of the wrapper is toVector's and toList's, not
+	// in's. copyLVal(toVector(cells)) reached sameQuoting with two values
+	// this same pair of constructors had built, so it never changed
+	// anything, and the index and range operations have always handed back a
+	// sequence quoted the way these two build. Reading the quoting off in
+	// here instead would be a behaviour change smuggled in with a copy
+	// rework. The nested values keep their own quoting, which is the part
+	// #395 had to fix: copyGuarded restores it per value above.
+	if in.Type == lisp.LArray {
+		return toVector(out), nil
+	}
+	return toList(out), nil
 }
 
 // sameQuoting gives cp src's quoting.
@@ -602,7 +692,11 @@ func (s *dotPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 	}
 	switch in.Type {
 	case lisp.LSortMap:
-		cp, err := copyMap(in)
+		// The entry at this key is about to become newIn, which the chain
+		// has already rebuilt independently of in. Copying the source's
+		// subtree under the key first would build a value with exactly one
+		// use: being overwritten on the next line.
+		cp, err := copyMapOffPath(in, lisp.String(s.key))
 		if err != nil {
 			return nil, err
 		}
@@ -632,7 +726,10 @@ func (s *dotPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 	}
 	switch in.Type {
 	case lisp.LSortMap:
-		cp, err := copyMap(in)
+		// The entry at this key is about to be removed, so it is copied out
+		// by being left out. DeleteMutate below is then a no-op on it, which
+		// is the same answer it gave for an absent key before.
+		cp, err := copyMapOffPath(in, lisp.String(s.key))
 		if err != nil {
 			return nil, err
 		}
@@ -723,19 +820,25 @@ func (s *indexPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	var newVal *lisp.LVal
-	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
-	} else {
-		newVal = toList(cells)
-	}
-
-	cp, err := copyLVal(newVal)
+	from, to := skipIndex(len(cells), s.index)
+	cp, err := copySeqOffPath(in, cells, from, to)
 	if err != nil {
 		return nil, err
 	}
 	return s.setMutate(cp, newIn)
+}
+
+// skipIndex is the half-open range of positions an index operation is about
+// to overwrite or remove, and so the positions copySeqOffPath can leave
+// alone. An index that does not land inside the sequence skips nothing: the
+// copy is still made and still handed to the mutating half, which answers
+// the out-of-range index exactly as it did before.
+func skipIndex(n, index int) (int, int) {
+	i, ok := resolveIndex(n, index)
+	if !ok {
+		return 0, 0
+	}
+	return i, i + 1
 }
 
 func (s *indexPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
@@ -743,14 +846,8 @@ func (s *indexPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	var newVal *lisp.LVal
-	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
-	} else {
-		newVal = toList(cells)
-	}
-	cp, err := copyLVal(newVal)
+	from, to := skipIndex(len(cells), s.index)
+	cp, err := copySeqOffPath(in, cells, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -861,18 +958,12 @@ func (s *rangePath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 	n := len(cells)
-	_, _, err = validateRange(n, s.from, s.to, s.implicitTo)
+	from, to, err := validateRange(n, s.from, s.to, s.implicitTo)
 	if err != nil {
 		return nil, err
 	}
-
-	var newVal *lisp.LVal
-	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
-	} else {
-		newVal = toList(cells)
-	}
-	cp, err := copyLVal(newVal)
+	// The range is about to be spliced out and replaced by newIn's cells.
+	cp, err := copySeqOffPath(in, cells, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -912,19 +1003,12 @@ func (s *rangePath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 	n := len(cells)
-	_, _, err = validateRange(n, s.from, s.to, s.implicitTo)
+	from, to, err := validateRange(n, s.from, s.to, s.implicitTo)
 	if err != nil {
 		return nil, err
 	}
-
-	var newVal *lisp.LVal
-	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
-	} else {
-		newVal = toList(cells)
-	}
-
-	cp, err := copyLVal(newVal)
+	// The range is about to be removed.
+	cp, err := copySeqOffPath(in, cells, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -970,15 +1054,14 @@ func (s *rangePath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	var newVal *lisp.LVal
-	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
-	} else {
-		newVal = toList(cells)
+	// nilMutate below overwrites the range with nils, so the values in it
+	// are copied out by being left out. A range this validate rejects skips
+	// nothing and nilMutate reports the same error it did before.
+	from, to, err := validateRange(len(cells), s.from, s.to, s.implicitTo)
+	if err != nil {
+		from, to = 0, 0
 	}
-
-	cp, err := copyLVal(newVal)
+	cp, err := copySeqOffPath(in, cells, from, to)
 	if err != nil {
 		return nil, err
 	}

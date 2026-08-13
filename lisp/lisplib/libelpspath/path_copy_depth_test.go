@@ -227,3 +227,104 @@ func containerChildren(v *lisp.LVal) []*lisp.LVal {
 	}
 	return out
 }
+
+// TestPathDirectedCopySkipsTheSubtreeItReplaces pins the other half of the
+// copy: the value under the path is not walked at all, because it is about to
+// be replaced or removed.
+//
+// That is a performance property, and a performance property nothing asserts
+// drifts back. It has one deterministic observable: a value that contains
+// itself has no finite copy and the copy walk refuses it (#393), so a cycle
+// hanging under the on-path key is answered when it is skipped and refused
+// when it is walked. Off the path the refusal must still stand, which is the
+// second half of the test.
+//
+// These go through the Path API rather than the builtins because okSimpleType
+// refuses a cyclic value at the gate before any builtin reaches a copy.
+func TestPathDirectedCopySkipsTheSubtreeItReplaces(t *testing.T) {
+	t.Parallel()
+
+	cyclicMap := func() *lisp.LVal {
+		c := lisp.SortedMap()
+		c.MapSet("self", c)
+		return c
+	}
+	cyclicVec := func() *lisp.LVal {
+		c := lisp.Vector([]*lisp.LVal{lisp.Nil()})
+		c.Cells[1].Cells[0] = c
+		return c
+	}
+
+	t.Run("on the path, a map entry", func(t *testing.T) {
+		src := lisp.SortedMap()
+		src.MapSet("a", cyclicMap())
+		src.MapSet("b", lisp.String("keep"))
+
+		for name, op := range map[string]func(Path) (*lisp.LVal, error){
+			"Set":    func(p Path) (*lisp.LVal, error) { return p.Set(src, lisp.String("v")) },
+			"Delete": func(p Path) (*lisp.LVal, error) { return p.Delete(src) },
+			"Nil":    func(p Path) (*lisp.LVal, error) { return p.Nil(src) },
+		} {
+			out, err := op(Root(Chain(Dot("a"))))
+			require.NoError(t, err, "%s walked the subtree it was about to replace", name)
+			require.NotNil(t, out)
+		}
+	})
+
+	t.Run("on the path, a sequence element", func(t *testing.T) {
+		src := lisp.Vector([]*lisp.LVal{cyclicVec(), lisp.String("keep")})
+
+		for name, op := range map[string]func(Path) (*lisp.LVal, error){
+			"Set":    func(p Path) (*lisp.LVal, error) { return p.Set(src, lisp.String("v")) },
+			"Delete": func(p Path) (*lisp.LVal, error) { return p.Delete(src) },
+			"Nil":    func(p Path) (*lisp.LVal, error) { return p.Nil(src) },
+		} {
+			out, err := op(Root(Chain(Index(0))))
+			require.NoError(t, err, "%s walked the element it was about to replace", name)
+			require.NotNil(t, out)
+		}
+		out, err := Root(Chain(Range(0, 1, false))).Set(src, lisp.Vector([]*lisp.LVal{lisp.String("v")}))
+		require.NoError(t, err, "the range set walked the range it was about to replace")
+		require.NotNil(t, out)
+	})
+
+	t.Run("off the path, still refused", func(t *testing.T) {
+		src := lisp.SortedMap()
+		src.MapSet("a", lisp.String("plain"))
+		src.MapSet("b", cyclicMap())
+
+		_, err := Root(Chain(Dot("a"))).Set(src, lisp.String("v"))
+		assert.ErrorIs(t, err, errCyclicValue,
+			"an off-path subtree is copied, so a cycle in one must still be refused (#393)")
+
+		seq := lisp.Vector([]*lisp.LVal{lisp.String("plain"), cyclicVec()})
+		_, err = Root(Chain(Index(0))).Delete(seq)
+		assert.ErrorIs(t, err, errCyclicValue,
+			"an off-path element is copied, so a cycle in one must still be refused (#393)")
+	})
+}
+
+// TestMapSlotRuleMatchesTheMap pins sameMapSlot against the map the copy is
+// built into. sameMapSlot decides which entry the path-directed copy leaves
+// out; if it disagreed with the backing's own key rule the copy would drop a
+// sibling, or keep one the caller is about to overwrite.
+func TestMapSlotRuleMatchesTheMap(t *testing.T) {
+	t.Parallel()
+
+	keys := []*lisp.LVal{
+		lisp.String("a"), lisp.Symbol("a"),
+		lisp.String("b"), lisp.Symbol("b"),
+		lisp.String(""), lisp.Int(1), lisp.Bool(true),
+	}
+	marker := lisp.String("marker")
+	for _, a := range keys {
+		for _, b := range keys {
+			m := lisp.SortedMap().Map()
+			stored := m.Set(a, marker).Type != lisp.LError
+			got, found := m.Get(b)
+			want := stored && found && got == marker
+			assert.Equal(t, want, sameMapSlot(a, b),
+				"sameMapSlot(%s, %s) disagrees with the sorted-map backing", a, b)
+		}
+	}
+}
