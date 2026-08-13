@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -101,15 +102,17 @@ import (
 //     the init one can reach) is dead code unless some package declines to
 //     implement them. Four concrete Go types cover the lattice; see pkgTypes.
 //
-//   - FORMALS are fuzzer-controlled because elpsutil.Function takes an
-//     arbitrary *LVal and performs NO validation on it, and lisp.FunInPackage
-//     performs none either. Whatever an embedder passes is stored verbatim in
-//     Cells[0] and is not looked at again until call time, deep inside
-//     LEnv.bind. The formals table therefore includes shapes an embedder can
-//     plausibly produce by accident -- an LError (which is what
-//     lisp.Formals("&rest") returns), a non-QExpr scalar, a list whose cells
-//     are not symbols, duplicate names, a misplaced control symbol -- because
-//     each of those reaches argument binding as data.
+//   - FORMALS are fuzzer-controlled because the formals list is data the
+//     embedder constructs and can get wrong. elpsutil.Function stores
+//     whatever it is given; PackageLoader now checks the shape at install
+//     time (checkFormals), while lisp.FunInPackage still performs no
+//     validation at all. The table therefore carries both kinds of shape:
+//     well-formed ones, which register and reach argument binding deep inside
+//     LEnv.bind, and malformed ones an embedder can plausibly produce by
+//     accident -- an LError (which is what lisp.Formals("&rest") returns), a
+//     non-QExpr scalar, a list whose cells are not symbols -- which exercise
+//     the install-time refusal AND are still routed into bind through the
+//     validation bypass; see "Formals that elpsutil now refuses" below.
 //
 //   - ONE SHARED FORMALS VALUE, reused across several registrations, is a
 //     formals shape of its own (formalsShared). elpsutil.Builtin.Formals
@@ -196,6 +199,37 @@ import (
 // TestNilContractMistakesAreErrors pins the new behaviour in both directions,
 // so a regression toward the old panics is named there before the fuzzer
 // rediscovers it as a crash.
+//
+// # Formals that elpsutil now refuses, and how bind still sees them
+//
+// Five formals shapes in formalsTable -- error-value, scalar-int,
+// scalar-string, non-symbol-cells and nested -- used to flow through elpsutil
+// into LEnv.bind as data, which is why they are in the table at all: bind is
+// where a malformed formals list finally gets examined, and nothing else in
+// this repository's fuzz corpus reaches it with shapes like these.
+// PackageLoader now refuses them at install time (checkFormals), which is the
+// right boundary behaviour but would, left alone, quietly end that bind
+// coverage while the coverage labels kept passing on decode-time marks.
+//
+// The harness keeps both halves, honestly labelled:
+//
+//   - the def is handed to elpsutil anyway, and the refusal is proved rather
+//     than presumed: markRejectEvidence marks formals-reject/<shape> only
+//     when a load error names the def and carries the shape's problem text;
+//
+//   - buildDefs registers a copy of the def through env.AddBuiltins(true,
+//     ...) -- the documented route that bypasses elpsutil's validation,
+//     available to any embedder that skips PackageLoader -- under a fresh
+//     fz-bind-N name in the user package, so autoCall still drives the shape
+//     into bind, and formals/<shape> is marked at exactly that registration.
+//
+// go-nil is the exception: it takes the refusal half only. Calling a builtin
+// whose formals are Go nil still nil-derefs inside bind -- that panic is
+// lisp's, deliberately untouched by #351 -- and the harness asserts
+// IsInternalPanic on every call result, so a bypass copy would turn the known
+// finding into a permanent red. TestFormalsTableRejectionFlags pins each
+// entry's rejected flag and problem text against elpsutil.Validate, so the
+// table cannot drift from the rule elpsutil actually applies.
 //
 // # What is deliberately NOT fuzzer-controlled
 //
@@ -361,46 +395,80 @@ var formalsShared = lisp.Formals("shared-x", "shared-y")
 // formalsTable is every formals shape the fuzzer can attach to a def,
 // including the Go nil that used to be excluded (see "Go nil, which used to
 // be excluded" in the header).
+//
+// Shapes with rejected set are the ones PackageLoader refuses at install time
+// (checkFormals). They still matter twice over: handed to elpsutil they fuzz
+// the refusal itself (buildDefs records the expectation; markRejectEvidence
+// marks formals-reject/<label> only when a load error proves it), and --
+// except go-nil -- a copy is registered through the validation bypass so
+// LEnv.bind still meets the shape as data; see "Formals that elpsutil now
+// refuses" in the header. TestFormalsTableRejectionFlags pins every rejected
+// flag and problem string against elpsutil.Validate so this table cannot
+// drift from the real rule.
 var formalsTable = []struct {
 	label string
-	make  func() *lisp.LVal
+	// problem is a substring of checkFormals' report for this shape, distinct
+	// per shape, used to attribute a load error to this entry before its
+	// formals-reject/<label> may be marked. Empty for accepted shapes.
+	problem string
+	make    func() *lisp.LVal
+	// rejected marks shapes PackageLoader refuses at install time.
+	rejected bool
+	// bindBypass routes a copy of the def into LEnv.bind through
+	// env.AddBuiltins(true, ...). False only for go-nil: calling a builtin
+	// whose formals are Go nil still nil-derefs inside bind, and the harness
+	// asserts IsInternalPanic on every call result.
+	bindBypass bool
 }{
-	{"nullary", func() *lisp.LVal { return lisp.Formals() }},
-	{"unary", func() *lisp.LVal { return lisp.Formals("x") }},
-	{"binary", func() *lisp.LVal { return lisp.Formals("x", "y") }},
-	{"rest", func() *lisp.LVal { return lisp.Formals("&rest", "xs") }},
-	{"opt", func() *lisp.LVal { return lisp.Formals("x", "&optional", "y") }},
-	{"key", func() *lisp.LVal { return lisp.Formals("&key", "k") }},
+	{label: "nullary", make: func() *lisp.LVal { return lisp.Formals() }},
+	{label: "unary", make: func() *lisp.LVal { return lisp.Formals("x") }},
+	{label: "binary", make: func() *lisp.LVal { return lisp.Formals("x", "y") }},
+	{label: "rest", make: func() *lisp.LVal { return lisp.Formals("&rest", "xs") }},
+	{label: "opt", make: func() *lisp.LVal { return lisp.Formals("x", "&optional", "y") }},
+	{label: "key", make: func() *lisp.LVal { return lisp.Formals("&key", "k") }},
 	// lisp.Formals returns an LError for a misplaced control symbol. An
 	// embedder that ignores the return value stores the ERROR as its formals.
-	{"error-value", func() *lisp.LVal { return lisp.Formals("&rest") }},
+	{label: "error-value", rejected: true, bindBypass: true,
+		problem: "formals are an error value",
+		make:    func() *lisp.LVal { return lisp.Formals("&rest") }},
 	// A control symbol with nothing after it: accepted at registration,
 	// rejected by bindFormalNext at call time.
-	{"dangling-opt", func() *lisp.LVal { return lisp.Formals("&optional") }},
-	{"dangling-key", func() *lisp.LVal { return lisp.Formals("&key") }},
+	{label: "dangling-opt", make: func() *lisp.LVal { return lisp.Formals("&optional") }},
+	{label: "dangling-key", make: func() *lisp.LVal { return lisp.Formals("&key") }},
 	// Duplicate formal names: no error anywhere, second binding wins.
-	{"duplicate", func() *lisp.LVal { return lisp.Formals("x", "x") }},
+	{label: "duplicate", make: func() *lisp.LVal { return lisp.Formals("x", "x") }},
 	// Not a list at all. bind reads fun.Cells[0].Cells, which is empty for
-	// these, so they silently become nullary.
-	{"scalar-int", func() *lisp.LVal { return lisp.Int(3) }},
-	{"scalar-string", func() *lisp.LVal { return lisp.String("x") }},
+	// these, so through the bypass they silently become nullary.
+	{label: "scalar-int", rejected: true, bindBypass: true,
+		problem: "formals are a int, not a list",
+		make:    func() *lisp.LVal { return lisp.Int(3) }},
+	{label: "scalar-string", rejected: true, bindBypass: true,
+		problem: "formals are a string, not a list",
+		make:    func() *lisp.LVal { return lisp.String("x") }},
 	// A list whose cells are not symbols.
-	{"non-symbol-cells", func() *lisp.LVal {
-		return lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.String("s")})
-	}},
-	// An SExpr where a QExpr is expected.
-	{"sexpr", func() *lisp.LVal {
+	{label: "non-symbol-cells", rejected: true, bindBypass: true,
+		problem: "formal argument 0 is a int, not a symbol",
+		make: func() *lisp.LVal {
+			return lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.String("s")})
+		}},
+	// An SExpr where a QExpr is expected. checkFormals accepts it (same LType,
+	// symbol cells), so it reaches bind on the ordinary path.
+	{label: "sexpr", make: func() *lisp.LVal {
 		return lisp.SExpr([]*lisp.LVal{lisp.Symbol("x")})
 	}},
 	// Nested list as a formal.
-	{"nested", func() *lisp.LVal {
-		return lisp.QExpr([]*lisp.LVal{lisp.QExpr([]*lisp.LVal{lisp.Symbol("x")})})
-	}},
-	{"shared", func() *lisp.LVal { return formalsShared }},
+	{label: "nested", rejected: true, bindBypass: true,
+		problem: "formal argument 0 is a list, not a symbol",
+		make: func() *lisp.LVal {
+			return lisp.QExpr([]*lisp.LVal{lisp.QExpr([]*lisp.LVal{lisp.Symbol("x")})})
+		}},
+	{label: "shared", make: func() *lisp.LVal { return formalsShared }},
 	// Go nil where lisp.Formals() belongs: the plausible mis-spelling of
 	// "takes no arguments". PackageLoader refuses it at install time; see
-	// TestNilContractMistakesAreErrors.
-	{"go-nil", func() *lisp.LVal { return nil }},
+	// TestNilContractMistakesAreErrors. No bindBypass -- see that field.
+	{label: "go-nil", rejected: true,
+		problem: "formals are nil",
+		make:    func() *lisp.LVal { return nil }},
 }
 
 // bodyTable is every builtin body the fuzzer can attach to a def.
@@ -585,11 +653,30 @@ type install struct {
 	// what the target fuzzes.
 	ndefs int
 
-	// callable is every symbol the spec attached to a def, qualified, so the
-	// guards can call what the install described. A name whose package failed
-	// to load never registered, and calling it yields an unbound-symbol
-	// error, which is itself a fine input.
+	// callable is every symbol the spec attached to a def, qualified, plus
+	// the bind-bypass names, so the guards can call what the install
+	// described. A name whose package failed to load never registered, and
+	// calling it yields an unbound-symbol error, which is itself a fine
+	// input.
 	callable []string
+
+	// expectRejects records each def the spec gave an install-rejected
+	// formals shape, with the evidence markRejectEvidence must find in a load
+	// error before the shape's formals-reject/<label> may be marked.
+	expectRejects []expectReject
+
+	// nbypass numbers the bind-bypass registrations so their names are unique
+	// within this install; see buildDefs.
+	nbypass int
+}
+
+// expectReject is one predicted install-time refusal: the def's name as the
+// spec chose it, the formals shape's label, and the shape's problem text as
+// checkFormals reports it.
+type expectReject struct {
+	defName string
+	label   string
+	problem string
 }
 
 func (in *install) mark(label string) { in.reached[label] = true }
@@ -639,13 +726,41 @@ func (in *install) buildDefs(r *specReader, pkgName string, n int) []lisp.LBuilt
 		name := r.name(defNames)
 		fsel := formalsTable[int(r.next())%len(formalsTable)]
 		bsel := bodyTable[int(r.next())%len(bodyTable)]
-		// Nothing is filtered: a name that collides -- with another def in
-		// this input, with a symbol already bound in the target package, or
-		// with the reserved constants -- goes to elpsutil anyway, and the
-		// install-time refusal it produces is attributed to a reject/* label
-		// by markRejectEvidence.
-		in.mark("formals/" + fsel.label)
-		in.mark("body/" + bsel.label)
+		if fsel.rejected {
+			// The def still goes to elpsutil below -- the refusal is part of
+			// what this target fuzzes -- but formals/<label> may NOT be
+			// marked here: the shape will not reach LEnv.bind through
+			// elpsutil, and a coverage label must not claim more than the
+			// harness does. markRejectEvidence marks formals-reject/<label>
+			// instead, when a load error proves the refusal happened.
+			in.expectRejects = append(in.expectRejects, expectReject{
+				defName: name, label: fsel.label, problem: fsel.problem,
+			})
+			if fsel.bindBypass {
+				// Register a copy through the documented validation bypass so
+				// bind still meets the shape as data (see the header). This
+				// runs at decode time, before any loader: the env is fresh,
+				// the current package is `user`, and fz-bind-N cannot be
+				// bound yet, so AddBuiltins -- which panics on collision, see
+				// TestCollisionPanicIsReal -- cannot be handed one. A
+				// fuzzer-chosen def that later collides with this name is
+				// refused by PackageLoader like any other collision.
+				bname := fmt.Sprintf("fz-bind-%d", in.nbypass)
+				in.nbypass++
+				in.env.AddBuiltins(true, elpsutil.Function(bname, fsel.make(), bsel.fn))
+				in.mark("formals/" + fsel.label)
+				in.mark("body/" + bsel.label)
+				in.callable = append(in.callable, bname)
+			}
+		} else {
+			in.mark("formals/" + fsel.label)
+			in.mark("body/" + bsel.label)
+		}
+		// Nothing is filtered: a def whose formals are malformed, or whose
+		// name collides -- with another def in this input, with a symbol
+		// already bound in the target package, or with the reserved constants
+		// -- goes to elpsutil anyway, and the install-time refusal it
+		// produces is attributed to its label by markRejectEvidence.
 		defs = append(defs, elpsutil.Function(name, fsel.make(), bsel.fn))
 		in.ndefs++
 		if sym, ok := qualify(pkgName, name); ok {
@@ -852,9 +967,9 @@ func runBudgeted(t fatalf, spec, src []byte) *install {
 	}
 	in := newInstall(env)
 
-	// The spec is decoded on THIS goroutine, before the worker starts, so
-	// decode-time work on the environment is complete before run() begins and
-	// the two never race.
+	// The spec is decoded on THIS goroutine, before the worker starts:
+	// buildDefs registers the bind-bypass builtins straight into the
+	// environment, and nothing else may be touching the registry at the time.
 	loaders := in.build(spec)
 
 	ctx, cancel := context.WithTimeout(context.Background(), fuzzDeadline)
@@ -914,6 +1029,16 @@ func (in *install) markRejectEvidence(results []*lisp.LVal) {
 		// Go nil *LVal instead of lisp.Nil(); the string is loaderResult's.
 		if strings.Contains(msg, "returned a nil *LVal") {
 			in.mark("loader-nil/reported")
+		}
+		// Formals refusals are attributed to the table entry that predicted
+		// them: the error must name the def AND carry the shape's own problem
+		// text. Problem strings are distinct per shape, so a mark can only be
+		// earned by the refusal it claims.
+		for _, er := range in.expectRejects {
+			if strings.Contains(msg, strconv.Quote(er.defName)) &&
+				strings.Contains(msg, er.problem) {
+				in.mark("formals-reject/" + er.label)
+			}
 		}
 	}
 }
@@ -1406,9 +1531,21 @@ func TestElpsutilFuzzReachesEveryFeature(t *testing.T) {
 	}
 
 	// Every formals shape and every body must be reachable too, or the table
-	// entry is dead weight.
+	// entry is dead weight. What "reachable" means depends on the shape:
+	// accepted shapes must register through elpsutil (formals/<label>);
+	// install-rejected shapes must demonstrably be refused by PackageLoader
+	// (formals-reject/<label>, marked only on the refusal's own error text)
+	// and, where the bypass applies, must also reach LEnv.bind through it
+	// (formals/<label>, marked at the bypass registration).
 	for _, fs := range formalsTable {
-		if !reached["formals/"+fs.label] {
+		if fs.rejected {
+			if !reached["formals-reject/"+fs.label] {
+				t.Errorf("no guard-corpus load error proved PackageLoader refuses formals shape %q", fs.label)
+			}
+			if fs.bindBypass && !reached["formals/"+fs.label] {
+				t.Errorf("no guard-corpus input carried formals shape %q into LEnv.bind through the bypass", fs.label)
+			}
+		} else if !reached["formals/"+fs.label] {
 			t.Errorf("no guard-corpus input registered a builtin with formals shape %q", fs.label)
 		}
 	}
@@ -1416,6 +1553,44 @@ func TestElpsutilFuzzReachesEveryFeature(t *testing.T) {
 		if !reached["body/"+b.label] {
 			t.Errorf("no guard-corpus input registered a builtin with body %q", b.label)
 		}
+	}
+}
+
+// TestFormalsTableRejectionFlags pins each formalsTable entry's rejected flag
+// and problem text against elpsutil's real validation rule, through the
+// exported Validate. A shape the table calls accepted that elpsutil refuses
+// would silently lose its bind coverage; a shape the table calls rejected
+// that elpsutil accepts would make its formals-reject label unreachable and
+// the guard above permanently red. Either way the drift is named here, at the
+// table entry, rather than discovered from a coverage failure.
+func TestFormalsTableRejectionFlags(t *testing.T) {
+	t.Parallel()
+	for _, fs := range formalsTable {
+		t.Run(fs.label, func(t *testing.T) {
+			t.Parallel()
+			p := &pkgData{name: "probe", builtins: []lisp.LBuiltinDef{
+				elpsutil.Function("probe-fn", fs.make(), bodyTable[0].fn),
+			}}
+			err := elpsutil.Validate(defsPkg{p})
+			switch {
+			case fs.rejected && err == nil:
+				t.Fatalf("formalsTable calls shape %q install-rejected but elpsutil.Validate"+
+					" accepts it; if checkFormals relaxed, clear the entry's rejected flag so"+
+					" the shape goes back to reaching bind through elpsutil", fs.label)
+			case fs.rejected && !strings.Contains(err.Error(), fs.problem):
+				t.Fatalf("shape %q is refused but not with the recorded problem text %q: %v."+
+					" markRejectEvidence matches on that text, so the entry's formals-reject"+
+					" label could never be earned; update the entry's problem string", fs.label, fs.problem, err)
+			case !fs.rejected && err != nil:
+				t.Fatalf("formalsTable calls shape %q accepted but elpsutil.Validate refuses"+
+					" it: %v. Set the entry's rejected flag (and problem text) or the shape's"+
+					" coverage label claims a registration that can no longer happen", fs.label, err)
+			}
+			if fs.bindBypass && !fs.rejected {
+				t.Fatalf("shape %q sets bindBypass without rejected; the bypass exists only"+
+					" for shapes elpsutil refuses", fs.label)
+			}
+		})
 	}
 }
 
