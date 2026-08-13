@@ -58,6 +58,21 @@ jobs:
       - name: Singleton integrity (elpscheck)
         run: make test-elpscheck
 
+      # The seal contract's static half.  golangci-lint above checks Go style;
+      # this checks the three rules that exist because a raw Go write can
+      # launder around the seal bit -- package-level LVal tables, writes to
+      # LVal fields on values the function did not construct, and escaping
+      # uncopied *token.Location pointers.  ~3s.
+      #
+      # Runs TWO passes.  The second is the whole reason this is a make target
+      # rather than one line here: elpsvet accepts -tags and silently ignores
+      # it (x/tools registers that flag as a deliberate no-op), so the build
+      # config has to travel in GOFLAGS instead.  Without the tagged pass the
+      # entire -tags elpscheck surface is invisible to the gate.  See the
+      # comment on the `elpsvet` target in the Makefile.
+      - name: Seal contract (elpsvet)
+        run: make elpsvet
+
       - name: Check formatting
         run: |
           go build -o elps .

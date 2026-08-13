@@ -78,6 +78,34 @@ static-checks:
 	# widen it if tagged files appear elsewhere.
 	golangci-lint run --build-tags elpscheck ./lisp/...
 
+# elpsvet: the seal contract's static half.  golangci-lint checks Go style;
+# this checks the three rules that exist because a Go write can launder around
+# the seal bit (see cmd/elpsvet/main.go): no package-level var keeps an *LVal
+# reachable by every Runtime, no function writes an LVal field on a value it
+# did not construct, and no runtime-owned *token.Location escapes uncopied.
+#
+# TWO PASSES, and the second one is not optional.  elpsvet ACCEPTS -tags and
+# SILENTLY IGNORES IT: x/tools registers that flag as a deliberate no-op
+# (`flag.String("tags", "", "no effect (deprecated)")` in
+# go/analysis/internal/analysisflags), so `elpsvet -tags elpscheck` analyses
+# the DEFAULT build and reports clean on a tree with findings in tagged files.
+# Measured on this repo: the tagged pass surfaces package-level LVal tables in
+# lisp/seal_check_elpscheck.go and lisp/singleton_check_elpscheck.go that the
+# untagged pass cannot see -- the checked-build verification machinery is
+# exactly the #363 producer pattern the rule exists to catch.
+#
+# The build config is therefore carried in GOFLAGS, which reaches the driver
+# through go/packages' `go list` invocation, rather than through the flag that
+# does nothing.  `go vet -vettool=` also works and honours -tags, but it has no
+# -test=false, so it drags in ~30 test-file findings; GOFLAGS keeps both knobs.
+#
+# Same blindness, same shape, same reason as the second golangci-lint pass in
+# static-checks above.
+.PHONY: elpsvet
+elpsvet:
+	go run ./cmd/elpsvet -test=false ./...
+	GOFLAGS=-tags=elpscheck go run ./cmd/elpsvet -test=false ./...
+
 # Reorder struct fields to satisfy the fieldalignment gate in .golangci.yml.
 #
 # Uses betteralign, NOT `fieldalignment -fix`. The two agree on WHAT to flag:
