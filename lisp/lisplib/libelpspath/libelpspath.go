@@ -122,26 +122,23 @@ var builtins = []*libutil.Builtin{
 // recover() cannot intercept.  See lisp/cycle.go and issue #393.
 var errCyclicValue = errors.New("cannot operate on a value that contains itself")
 
-// okSimpleContainerType ensures that lval is a valid container that only
-// contains "simple" types compatible with `elpspath`.
+// okSimpleContainerTypeGuarded ensures that lval is a valid container that
+// only contains "simple" types compatible with `elpspath`.
 // It sucks that we have to traverse the entire object checking the type,
 // but better to be safe.
 //
-// This is the gate every builtin runs before touching a value, and the rest
-// of the package relies on what it rejects: copyLVal's multi-dimensional
-// array branch cannot construct a copy and says so, and stays unreachable
-// only because this function refuses such an array first.  A cycle is
-// refused here for the same reason, and the copy walk is guarded too because
-// the exported Path interface lets a Go embedder reach the copy without
-// coming through this gate.
-func okSimpleContainerType(in *lisp.LVal) error {
-	return okSimpleContainerTypeGuarded(in, lisp.CycleGuard{})
-}
-
-// okSimpleContainerTypeGuarded is okSimpleContainerType continuing a walk
-// already in progress rather than starting a fresh one.  Every nested check
-// must pass g down; starting a new walk resets the bound on every lap and it
-// never fires.
+// It continues the walk g is already on rather than starting a fresh one.
+// Every nested check must pass g down; starting a new walk per level resets
+// the bound on every lap and it never fires.  okSimpleType is the entry
+// point that begins a walk.
+//
+// With okSimpleType this is the gate every builtin runs before touching a
+// value, and the rest of the package relies on what it rejects: copyLVal's
+// multi-dimensional array branch cannot construct a copy and says so, and
+// stays unreachable only because this refuses such an array first.  A cycle
+// is refused here for the same reason, and the copy walk is guarded too
+// because the exported Path interface lets a Go embedder reach a copy
+// without coming through this gate.
 func okSimpleContainerTypeGuarded(in *lisp.LVal, g lisp.CycleGuard) error {
 	if in.IsNil() {
 		return errors.New("nil container type invalid")
