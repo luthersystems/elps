@@ -59,7 +59,7 @@ func InspectFunction(node *LVal) *FunctionInfo {
 
 	info := &FunctionInfo{
 		Kind:   head.Str,
-		Source: node.source,
+		Source: copyLocation(node.source), // a copy: the node's location may be shared across sealed trees (issue #362)
 	}
 
 	switch head.Str {
