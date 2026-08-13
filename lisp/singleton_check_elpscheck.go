@@ -10,6 +10,10 @@ import (
 
 // initSnapshot is the bit-pattern of all three singleton LVals captured
 // at package init time, before any user code can mutate them.
+//elpsvet:allow checked-build verification machinery, not program data: the snapshot
+// is the singletons' bit pattern captured at package init, and process-wide lifetime
+// is exactly what makes it a drift baseline. It is read-only after init and exists
+// only under -tags elpscheck.
 var initSnapshot SingletonSnapshot
 
 func init() {
