@@ -615,11 +615,14 @@ func (s *indexPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 
+	// in's LIVE backing array: mint through the borrow constructors even
+	// though the value is copied on the next line.  A transient launder
+	// is still a launder — nothing here guarantees the copy stays.
 	var newVal *lisp.LVal
 	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
+		newVal = lisp.BorrowVector(in, cells)
 	} else {
-		newVal = toList(cells)
+		newVal = lisp.BorrowCells(in, cells)
 	}
 
 	return s.setMutate(copyLVal(newVal), newIn)
@@ -631,11 +634,14 @@ func (s *indexPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 
+	// in's LIVE backing array: mint through the borrow constructors even
+	// though the value is copied on the next line.  A transient launder
+	// is still a launder — nothing here guarantees the copy stays.
 	var newVal *lisp.LVal
 	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
+		newVal = lisp.BorrowVector(in, cells)
 	} else {
-		newVal = toList(cells)
+		newVal = lisp.BorrowCells(in, cells)
 	}
 	return s.deleteMutate(copyLVal(newVal))
 }
@@ -697,11 +703,16 @@ func (s *rangePath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 	cells = cells[from:to]
+	// The window is a live subslice of in's backing array.  The borrow
+	// constructors take the source as a parameter, so the constraint
+	// transfer that rangePath.Get used to omit (#392: a sealed program
+	// literal laundered into an unsealed list) is now part of minting the
+	// value at all.  See lisp/borrow.go.
 	var newVal *lisp.LVal
 	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
+		newVal = lisp.BorrowVector(in, cells)
 	} else {
-		newVal = toList(cells)
+		newVal = lisp.BorrowCells(in, cells)
 	}
 	return newVal, nil
 }
@@ -749,11 +760,14 @@ func (s *rangePath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 
+	// in's LIVE backing array: mint through the borrow constructors even
+	// though the value is copied on the next line.  A transient launder
+	// is still a launder — nothing here guarantees the copy stays.
 	var newVal *lisp.LVal
 	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
+		newVal = lisp.BorrowVector(in, cells)
 	} else {
-		newVal = toList(cells)
+		newVal = lisp.BorrowCells(in, cells)
 	}
 	return s.setMutate(copyLVal(newVal), newIn)
 }
@@ -796,11 +810,14 @@ func (s *rangePath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 
+	// in's LIVE backing array: mint through the borrow constructors even
+	// though the value is copied on the next line.  A transient launder
+	// is still a launder — nothing here guarantees the copy stays.
 	var newVal *lisp.LVal
 	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
+		newVal = lisp.BorrowVector(in, cells)
 	} else {
-		newVal = toList(cells)
+		newVal = lisp.BorrowCells(in, cells)
 	}
 
 	return s.deleteMutate(copyLVal(newVal))
@@ -846,11 +863,14 @@ func (s *rangePath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 
+	// in's LIVE backing array: mint through the borrow constructors even
+	// though the value is copied on the next line.  A transient launder
+	// is still a launder — nothing here guarantees the copy stays.
 	var newVal *lisp.LVal
 	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
+		newVal = lisp.BorrowVector(in, cells)
 	} else {
-		newVal = toList(cells)
+		newVal = lisp.BorrowCells(in, cells)
 	}
 
 	return s.nilMutate(copyLVal(newVal))

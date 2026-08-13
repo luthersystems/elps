@@ -502,10 +502,12 @@ func String(str string) *LVal {
 
 // Bytes returns an LVal representing binary data b.
 func Bytes(b []byte) *LVal {
-	return &LVal{
+	v := &LVal{
 		Type:   LBytes,
 		Native: &b,
 	}
+	checkMintedOverConstrainedBytes(v, b)
+	return v
 }
 
 func SplitSymbol(sym *LVal) *LVal {
@@ -561,21 +563,25 @@ func Native(v interface{}) *LVal {
 // Provided cells are used as backing storage for the returned expression and
 // are not copied.
 func SExpr(cells []*LVal) *LVal {
-	return &LVal{
+	v := &LVal{
 		Type:  LSExpr,
 		Cells: cells,
 	}
+	checkMintedOverConstrained(v, cells)
+	return v
 }
 
 // QExpr returns an LVal representing an Q-expression, a quoted expression, a
 // list.  Provided cells are used as backing storage for the returned list and
 // are not copied.
 func QExpr(cells []*LVal) *LVal {
-	return &LVal{
+	v := &LVal{
 		Type:   LSExpr,
 		quoted: true,
 		Cells:  cells,
 	}
+	checkMintedOverConstrained(v, cells)
+	return v
 }
 
 // Vector returns an LVal representing a vector, a 1-dimensional array.
