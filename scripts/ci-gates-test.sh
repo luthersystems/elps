@@ -1376,6 +1376,61 @@ else
 	echo "SKIP  go not installed (GOFLAGS tag-propagation unchecked)"
 fi
 
+# --- fuzz sharding: the partition must be DERIVED from the matrix -----------
+#
+# fuzz.sh takes `--shard i/n` and divides the target list into n parts. n was
+# written as a LITERAL alongside a matrix that carries the real shard count,
+# and the two drifted the moment a shard was added: matrix [1..6] against a
+# hardcoded /5 meant shards 1-5 re-ran a FIVE-way partition -- largest shard 5,
+# exactly the truncation the sixth shard was added to prevent -- while shard 6
+# exited 2 with "shard 6/5 is out of range".
+#
+# Both halves of that are worth pinning. The out-of-range shard was loud, but
+# it was loud by luck: fuzz.sh happens to range-check. The silent half is that
+# fuzz-budget-check reads n from the MATRIX (len of the shard list) and had
+# been reporting "shards 6 / largest shard 4 / headroom 10 min" for a sweep
+# that was actually running 5 ways -- a budget gate green about arithmetic
+# nobody was performing.
+#
+# So: the denominator must be the derived matrix size, never a literal.
+FUZZ_YML="${REPO_ROOT}/.github/workflows/fuzz.yml"
+
+if [ -f "$FUZZ_YML" ]; then
+	# The whole line: the argument contains `${{ ... }}` with spaces inside,
+	# so any word-wise extraction truncates it and reports a false FAIL.
+	_shard_arg="$(grep -E 'scripts/fuzz\.sh --shard' "$FUZZ_YML" | head -1 | sed 's/^[[:space:]]*//')"
+	if [ -z "$_shard_arg" ]; then
+		bad "fuzz.yml no longer invokes scripts/fuzz.sh --shard — the sharded sweep is gone"
+	elif printf '%s' "$_shard_arg" | grep -q 'strategy.job-total'; then
+		ok "fuzz.yml derives the shard denominator from the matrix (strategy.job-total)"
+	else
+		bad "fuzz.yml hardcodes the shard denominator (${_shard_arg}) — it will drift from the matrix and silently reshard the sweep"
+	fi
+
+	# The job LABEL too. It was already derived when the run line was not,
+	# which produced the worst possible combination: a board reading
+	# "Fuzz shard 6/6" over a runner executing `--shard 6/5`. A correct
+	# display over a wrong execution is harder to catch than both being wrong.
+	_shard_name="$(grep -E '^\s+name: Fuzz shard' "$FUZZ_YML" | head -1)"
+	if [ -z "$_shard_name" ]; then
+		bad "fuzz.yml has no 'Fuzz shard' job name — the shard label is gone"
+	elif printf '%s' "$_shard_name" | grep -q 'strategy.job-total'; then
+		ok "fuzz.yml derives the shard label from the matrix (strategy.job-total)"
+	else
+		bad "fuzz.yml hardcodes the shard label denominator — the board will misreport the sweep width"
+	fi
+
+	# And the budget gate must keep reading the matrix, since that is the
+	# number the assertion above ties the run to.
+	if grep -q 'matrix.get("shard")' "${REPO_ROOT}/scripts/fuzz-budget-check.sh"; then
+		ok "fuzz-budget-check derives the shard count from the workflow matrix"
+	else
+		bad "fuzz-budget-check no longer reads the matrix shard list — the budget and the run can disagree again"
+	fi
+else
+	bad "fuzz.yml is missing"
+fi
+
 echo
 echo "=========================================================================="
 echo "ci-gates-test: ${pass} passed, ${fail} failed"
