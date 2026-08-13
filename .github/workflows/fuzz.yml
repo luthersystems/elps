@@ -61,7 +61,13 @@ permissions:
 
 jobs:
   fuzz:
-    name: Fuzz shard ${{ matrix.shard }}/5
+    # strategy.job-total, not a literal: the "/5" that used to be here did not
+    # move when the matrix gained a sixth shard, and the board read
+    # "Fuzz shard 6/5". Harmless to the gate -- these shards are deliberately
+    # anonymous and "Required: fuzz" is the stable required check (see below)
+    # -- but it is a remembered number in a file whose whole argument is that
+    # the shard count must be derived. This one now derives itself.
+    name: Fuzz shard ${{ matrix.shard }}/${{ strategy.job-total }}
     runs-on: ubuntu-latest
     strategy:
       # Sharded so wall clock is set by the LARGEST shard rather than by the
