@@ -866,11 +866,10 @@ func builtinCDR(env *LEnv, args *LVal) *LVal {
 	if len(v.Cells) < 2 {
 		return Nil()
 	}
-	r := QExpr(v.Cells[1:])
-	// The result shares v's backing array, so a sealed v's constraint
-	// travels with it (lisp/seal.go).
-	r.sealed = v.sealed
-	return r
+	// sliceCells is the borrow helper: the receiver supplies the
+	// provenance, so the transfer cannot be forgotten here the way it was
+	// in opCond and in libelpspath (#392).  See lisp/borrow.go.
+	return v.sliceCells(1, len(v.Cells))
 }
 
 func builtinRest(env *LEnv, args *LVal) *LVal {
@@ -882,11 +881,7 @@ func builtinRest(env *LEnv, args *LVal) *LVal {
 	if len(cells) < 2 {
 		return Nil()
 	}
-	r := QExpr(cells[1:])
-	// The result shares v's backing array, so a sealed v's constraint
-	// travels with it (lisp/seal.go).
-	r.sealed = v.sealed
-	return r
+	return v.sliceCells(1, len(cells))
 }
 
 func builtinFirst(env *LEnv, args *LVal) *LVal {
@@ -1894,14 +1889,12 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 	case LString:
 		list = String(list.Str[i:j])
 	case LBytes:
-		list = Bytes(list.Bytes()[i:j])
+		list = list.sliceBytes(i, j)
 	default: // isSeq(list)
-		sealed := list.sealed
-		list = QExpr(seqCells(list)[i:j])
 		// A two-index slice keeps the original backing array (and its spare
 		// capacity), so a sealed input's constraint travels with the
-		// intermediate value (lisp/seal.go).
-		list.sealed = sealed
+		// intermediate value (lisp/borrow.go, lisp/seal.go).
+		list = list.sliceCells(i, j)
 	}
 
 	// Convert the intermediate sliced value into the desired type

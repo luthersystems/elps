@@ -890,9 +890,18 @@ func opCond(env *LEnv, args *LVal) *LVal {
 		// reads the header today, so nothing is corrupted yet — which is
 		// precisely the "safe by accident" state rangePath.Get was in
 		// before an escape route to it appeared.
-		body := SExpr(branch.Cells[1:])
-		body.sealed = branch.sealed //elps:mutates -- seal provenance for a freshly minted header over branch's backing; monotone flag only
-		return opProgn(env, body)
+		// The header below is minted over branch's LIVE cell backing, and
+		// branch is a node of the parsed program — sealed whenever the
+		// parse is shared.  A header over another value's backing must
+		// carry that value's storage-scoped constraints or it is a
+		// laundering step, exactly as in #392.  opProgn only reads the
+		// header today, so nothing is corrupted yet — which is precisely
+		// the "safe by accident" state rangePath.Get was in before an
+		// escape route to it appeared.  The read-half detector named this
+		// site (lisp/borrow_check_elpscheck.go); mintBorrowedSExpr is the
+		// borrow helper that takes the provenance as a parameter
+		// (lisp/borrow.go).
+		return opProgn(env, mintBorrowedSExpr(branch, branch.Cells[1:]))
 	}
 	return Nil()
 }
