@@ -143,3 +143,50 @@ func sealAnnotatedLineAbove(v *lisp.LVal) *lisp.LVal {
 func sealAnnotatedFunction(v *lisp.LVal) *lisp.LVal {
 	return lisp.SExpr(v.Cells)
 }
+
+// aliasCarriesSeal mirrors libelpspath's `alias(in, cells)` — the helper the
+// #392 fix introduced.  It is a borrowing constructor (it hands `cells`
+// straight to lisp.SExpr) but it also propagates the constraint itself, so
+// the discipline lives in ONE place and its call sites are clean.  A rule
+// that could not see this would report every caller of the fix.
+func aliasCarriesSeal(in *lisp.LVal, cells []*lisp.LVal) *lisp.LVal { // want aliasCarriesSeal:"borrowsLValBacking\\(1\\)\\+carriesSeal"
+	out := lisp.SExpr(cells)
+	out.InheritSeal(in)
+	return out
+}
+
+// callsCarryingConstructor is the shape of every fixed libelpspath op: the
+// backing is borrowed, and there is no seal handling here at all — because
+// the callee did it.
+func callsCarryingConstructor(in *lisp.LVal, from, to int) (*lisp.LVal, error) {
+	cells, err := toCells(in)
+	if err != nil {
+		return nil, err
+	}
+	return aliasCarriesSeal(in, cells[from:to]), nil
+}
+
+// aliasWithoutInherit is the same helper with the propagation removed: still
+// a borrowing constructor, no longer a carrying one, so its callers flag.
+func aliasWithoutInherit(cells []*lisp.LVal) *lisp.LVal { // want aliasWithoutInherit:"borrowsLValBacking\\(0\\)"
+	return lisp.SExpr(cells)
+}
+
+func callsNonCarryingConstructor(in *lisp.LVal, from, to int) (*lisp.LVal, error) {
+	cells, err := toCells(in)
+	if err != nil {
+		return nil, err
+	}
+	return aliasWithoutInherit(cells[from:to]), nil // want `aliasWithoutInherit constructs a lisp\.LVal over backing storage borrowed from .in. without carrying its sealed constraint`
+}
+
+// inheritSealAtTheCallSite: the out-of-package propagation spelled inline.
+func inheritSealAtTheCallSite(in *lisp.LVal, from, to int) (*lisp.LVal, error) {
+	cells, err := toCells(in)
+	if err != nil {
+		return nil, err
+	}
+	out := toList(cells[from:to])
+	out.InheritSeal(in)
+	return out, nil
+}

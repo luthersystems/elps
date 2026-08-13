@@ -34,6 +34,15 @@ type LVal struct {
 
 func (v *LVal) IsSealed() bool { return v != nil && v.sealed }
 
+// InheritSeal is the exported propagation helper: it marks v sealed when src
+// is, for code outside package lisp that mints a header over src's backing.
+func (v *LVal) InheritSeal(src *LVal) {
+	if v == nil || v.sealed || !src.IsSealed() {
+		return
+	}
+	v.sealed = true
+}
+
 type LEnv struct{}
 
 var singletonNil = &LVal{}

@@ -178,13 +178,69 @@ func storeCells(in *lisp.LVal, vals []*lisp.LVal) {
 }
 
 // toVector converts a slice of LVal cells into an elps vector.
+//
+// IMPORTANT: the cells become the vector's backing storage; they are not
+// copied. Only call this with FRESH storage the caller owns. To wrap cells
+// BORROWED from an existing sequence, call alias, which carries the
+// source's seal across.
 func toVector(cells []*lisp.LVal) *lisp.LVal {
 	return lisp.Array(nil, cells)
 }
 
 // toList converts a slice of LVal cells into an elps list.
+//
+// IMPORTANT: as toVector — fresh storage only; use alias for borrowed cells.
 func toList(cells []*lisp.LVal) *lisp.LVal {
 	return lisp.SExpr(cells)
+}
+
+// alias mints a fresh LVal of in's sequence type over cells, which are
+// BORROWED from in: a whole or partial window onto the same backing array
+// that in stores its elements in.
+//
+// This is the one constructor allowed to wrap storage the package does not
+// own, and it exists to enforce a single rule:
+//
+//	any LVal minted over borrowed backing inherits the source's constraint.
+//
+// The constraint is the sealed flag (lisp/seal.go). A program literal
+// arrives here sealed, the parse behind it is shared by every environment
+// the host runs, and the kernel's copy-on-write sites — stable-sort,
+// append 'vector, slice 'vector — are what keep those environments from
+// treading on each other. Every one of them keys off the flag on the value
+// they are handed. A fresh header minted by lisp.SExpr or lisp.Array has
+// sealed == false, so handing one back over a literal's live cells turns
+// all three guards off at once and the literal is mutated in place,
+// permanently, process-wide (issue #392, and substrate#378 before it).
+//
+// The kernel hits the identical situation in builtinSlice, builtinCdr and
+// builtinRest, and resolves it the same way: "a two-index slice keeps the
+// original backing array (and its spare capacity), so a sealed input's
+// constraint travels with the intermediate value."
+//
+// Propagation, not copying, is deliberate. It is what the kernel does; it
+// keeps this a genuinely O(1) query, which is what the ?-family is for and
+// how substrate uses it on the transaction path; and it is sufficient,
+// because the constraint is honoured by everything downstream that could
+// write through the window. Copying instead would also be correct and would
+// cost an allocation proportional to the window on every sealed read —
+// measured, and rejected, in the commit that added this.
+//
+// For an ARRAY input this is a plain wrap: arrays are runtime values, are
+// never sealed (SealAST declines to mark them), and lisp.Array always mints
+// its own data holder, so there is no constraint to carry. InheritSeal
+// enforces that rather than trusting it — it refuses to mark an array,
+// because a "sealed" vector would be a lie: append! and assoc! write vector
+// backing without consulting the flag.
+func alias(in *lisp.LVal, cells []*lisp.LVal) *lisp.LVal {
+	var out *lisp.LVal
+	if in.Type == lisp.LArray {
+		out = toVector(cells)
+	} else {
+		out = toList(cells)
+	}
+	out.InheritSeal(in)
+	return out
 }
 
 // rootPath wraps the top level path. This is mainly to handle the special
@@ -563,6 +619,11 @@ func (s *indexPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 	if !ok {
 		return lisp.Nil(), nil
 	}
+	// An element pointer, not a new header over borrowed backing: it
+	// carries whatever flags it already had, so a sealed literal's element
+	// stays sealed and the alias rule is satisfied by construction. This is
+	// the step that hands rangePath.Get a sealed list out of an UNSEALED
+	// runtime array in (? (vector (cfg)) 0 '(range 0 3)) — issue #392.
 	return cells[index], nil
 }
 
@@ -605,41 +666,29 @@ func (s *indexPath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 	if !ok {
 		return lisp.Nil(), nil
 	}
-	//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops; list inputs are rejected by errMutateList on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here
+	//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops. Surfaced by widening the alias tracker's taint sources to multi-result functions (toCells returns ([]*lisp.LVal, error)); the design is unchanged and already audited: errMutateList rejects lists on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here.
 	cells[index] = newIn
 	return in, nil
 }
 
-//elps:unsealed transient header, never escapes: the value built below is handed straight to copyLVal, which deep-copies every cell into fresh storage before setMutate/deleteMutate/nilMutate writes anything, so a sealed input's backing is only ever READ here. rangePath.Get is the sibling whose header DID escape to the value domain -- that was issue #392, and it copies now.
 func (s *indexPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
 		return nil, err
 	}
 
-	var newVal *lisp.LVal
-	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
-	} else {
-		newVal = toList(cells)
-	}
+	newVal := alias(in, cells)
 
 	return s.setMutate(copyLVal(newVal), newIn)
 }
 
-//elps:unsealed transient header, never escapes: the value built below is handed straight to copyLVal, which deep-copies every cell into fresh storage before setMutate/deleteMutate/nilMutate writes anything, so a sealed input's backing is only ever READ here. rangePath.Get is the sibling whose header DID escape to the value domain -- that was issue #392, and it copies now.
 func (s *indexPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
 		return nil, err
 	}
 
-	var newVal *lisp.LVal
-	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
-	} else {
-		newVal = toList(cells)
-	}
+	newVal := alias(in, cells)
 	return s.deleteMutate(copyLVal(newVal))
 }
 
@@ -661,7 +710,7 @@ func (s *indexPath) deleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	if !ok {
 		return lisp.Nil(), nil
 	}
-	//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops; list inputs are rejected by errMutateList on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here
+	//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops. Surfaced by widening the alias tracker's taint sources to multi-result functions (toCells returns ([]*lisp.LVal, error)); the design is unchanged and already audited: errMutateList rejects lists on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here.
 	vals := append(cells[:index], cells[index+1:]...)
 	storeCells(in, vals)
 	return in, nil
@@ -700,31 +749,11 @@ func (s *rangePath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-	cells = cells[from:to]
-	if in.IsSealed() {
-		// Copy-on-write (issue #392).  in is — or shares backing with — a
-		// parsed program literal, and toList below would mint a FRESH,
-		// UNSEALED header over its live cells: a mutable window onto a tree
-		// the parse cache aliases into every warm environment, where one
-		// (stable-sort ...) or (append! ...) corrupts the program for every
-		// environment sharing it (the substrate#378 class; see lisp/seal.go).
-		//
-		// The kernel's slicing ops (builtinCdr, builtinRest, builtinSlice)
-		// answer this by copying the sealed flag onto the new header.
-		// libelpspath is outside package lisp, so the flag is not reachable
-		// from here and copying the range is the available fix.  It is paid
-		// only when the input is a program literal.
-		cp := make([]*lisp.LVal, len(cells))
-		copy(cp, cells)
-		cells = cp
-	}
-	var newVal *lisp.LVal
-	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
-	} else {
-		newVal = toList(cells)
-	}
-	return newVal, nil
+	// The window is a two-index slice of in's LIVE backing array, kept
+	// deliberately: ? is a query and returning an O(1) view is the point.
+	// alias is what makes that safe — see its doc comment, and issue #392
+	// for what this line did before it went through alias.
+	return alias(in, cells[from:to]), nil
 }
 
 func (s *rangePath) SetMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
@@ -751,17 +780,16 @@ func (s *rangePath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 	if err != nil {
 		return nil, err
 	}
-	//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops; list inputs are rejected by errMutateList on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here
+	//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops. Surfaced by widening the alias tracker's taint sources to multi-result functions (toCells returns ([]*lisp.LVal, error)); the design is unchanged and already audited: errMutateList rejects lists on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here.
 	vals := append(cells[:from], setCells...)
 	if to < n {
-		//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops; list inputs are rejected by errMutateList on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here
+		//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops. Surfaced by widening the alias tracker's taint sources to multi-result functions (toCells returns ([]*lisp.LVal, error)); the design is unchanged and already audited: errMutateList rejects lists on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here.
 		vals = append(vals, cells[to:]...)
 	}
 	storeCells(in, vals)
 	return in, nil
 }
 
-//elps:unsealed transient header, never escapes: the value built below is handed straight to copyLVal, which deep-copies every cell into fresh storage before setMutate/deleteMutate/nilMutate writes anything, so a sealed input's backing is only ever READ here. rangePath.Get is the sibling whose header DID escape to the value domain -- that was issue #392, and it copies now.
 func (s *rangePath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
@@ -773,12 +801,7 @@ func (s *rangePath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 
-	var newVal *lisp.LVal
-	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
-	} else {
-		newVal = toList(cells)
-	}
+	newVal := alias(in, cells)
 	return s.setMutate(copyLVal(newVal), newIn)
 }
 
@@ -803,14 +826,13 @@ func (s *rangePath) deleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	}
 	vals := cells[:from]
 	if to < n {
-		//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops; list inputs are rejected by errMutateList on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here
+		//elps:mutates in-place rework of a caller-owned sequence's live cell backing — the documented effect of the mutating path ops. Surfaced by widening the alias tracker's taint sources to multi-result functions (toCells returns ([]*lisp.LVal, error)); the design is unchanged and already audited: errMutateList rejects lists on the mutating entry points, and the non-mutating Set/Delete/Nil pass a private copy (copyLVal), so a sealed program literal never reaches here.
 		vals = append(vals, cells[to:]...)
 	}
 	storeCells(in, vals)
 	return in, nil
 }
 
-//elps:unsealed transient header, never escapes: the value built below is handed straight to copyLVal, which deep-copies every cell into fresh storage before setMutate/deleteMutate/nilMutate writes anything, so a sealed input's backing is only ever READ here. rangePath.Get is the sibling whose header DID escape to the value domain -- that was issue #392, and it copies now.
 func (s *rangePath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
@@ -822,12 +844,7 @@ func (s *rangePath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 
-	var newVal *lisp.LVal
-	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
-	} else {
-		newVal = toList(cells)
-	}
+	newVal := alias(in, cells)
 
 	return s.deleteMutate(copyLVal(newVal))
 }
@@ -856,6 +873,8 @@ func (s *rangePath) nilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 		newCells = append(newCells, lisp.Nil())
 	}
 
+	// newCells is fresh storage built above; nothing is borrowed from in,
+	// so this is toList/toVector rather than alias.
 	var newVal *lisp.LVal
 	if in.Type == lisp.LArray {
 		newVal = toVector(newCells)
@@ -866,19 +885,13 @@ func (s *rangePath) nilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	return s.setMutate(in, newVal)
 }
 
-//elps:unsealed transient header, never escapes: the value built below is handed straight to copyLVal, which deep-copies every cell into fresh storage before setMutate/deleteMutate/nilMutate writes anything, so a sealed input's backing is only ever READ here. rangePath.Get is the sibling whose header DID escape to the value domain -- that was issue #392, and it copies now.
 func (s *rangePath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
 		return nil, err
 	}
 
-	var newVal *lisp.LVal
-	if in.Type == lisp.LArray {
-		newVal = toVector(cells)
-	} else {
-		newVal = toList(cells)
-	}
+	newVal := alias(in, cells)
 
 	return s.nilMutate(copyLVal(newVal))
 }
@@ -974,6 +987,9 @@ func (s *iterPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 		}
 	}
 
+	// results is storage this function built with append; it borrows
+	// nothing from in, so toList/toVector (not alias) is correct here — a
+	// fresh container must not come back sealed.
 	var newVal *lisp.LVal
 	if in.Type == lisp.LArray {
 		newVal = toVector(results)
@@ -1022,6 +1038,9 @@ func (s *iterPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 		results = append(results, in)
 	}
 
+	// results is storage this function built with append; it borrows
+	// nothing from in, so toList/toVector (not alias) is correct here — a
+	// fresh container must not come back sealed.
 	var newVal *lisp.LVal
 	if in.Type == lisp.LArray {
 		newVal = toVector(results)
@@ -1066,6 +1085,9 @@ func (s *iterPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 		results = append(results, in)
 	}
 
+	// results is storage this function built with append; it borrows
+	// nothing from in, so toList/toVector (not alias) is correct here — a
+	// fresh container must not come back sealed.
 	var newVal *lisp.LVal
 	if in.Type == lisp.LArray {
 		newVal = toVector(results)
@@ -1110,6 +1132,9 @@ func (s *iterPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 		results = append(results, in)
 	}
 
+	// results is storage this function built with append; it borrows
+	// nothing from in, so toList/toVector (not alias) is correct here — a
+	// fresh container must not come back sealed.
 	var newVal *lisp.LVal
 	if in.Type == lisp.LArray {
 		newVal = toVector(results)

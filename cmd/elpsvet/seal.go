@@ -79,14 +79,24 @@
 //
 // # Discharge
 //
-// Two ways out, matching the two things the kernel actually does.
+// Three ways out, matching what the tree actually does.
 //
 // PROPAGATE — the constructed value's `sealed` field is assigned anywhere in
-// the function.  Position-insensitive, because the idiom writes it after the
-// construction:
+// the function, or (*LVal).InheritSeal is called on it.  Position-insensitive,
+// because the idiom writes it after the construction:
 //
-//	r := QExpr(v.Cells[1:])   // builtinCdr, builtinRest
+//	r := QExpr(v.Cells[1:])   // builtinCdr, builtinRest, inside package lisp
 //	r.sealed = v.sealed
+//
+//	out := toList(cells)      // libelpspath, outside it
+//	out.InheritSeal(in)
+//
+// CARRIED BY THE CALLEE — the borrowing constructor propagates the seal
+// itself, so its call sites need no discharge at all.  libelpspath's #392 fix
+// collapsed six hand-written borrow sites into one `alias(in, cells)` helper
+// ending `out.InheritSeal(in)`; that property is inferred and travels as part
+// of the borrowsFact, so factoring the discipline into a helper makes the
+// diagnostics disappear instead of multiplying them.
 //
 // GUARD — the source LVal's seal is READ before the construction, so the code
 // had the chance to copy:
@@ -167,8 +177,9 @@ const unsealedMarker = "elps:unsealed"
 // sealFieldName is the LVal field that carries the constraint.  IsSealed is
 // its exported reader — the only handle out-of-package code has.
 const (
-	sealFieldName  = "sealed"
-	sealReaderName = "IsSealed"
+	sealFieldName   = "sealed"
+	sealReaderName  = "IsSealed"
+	sealInheritName = "InheritSeal"
 )
 
 // seedBorrowers are the kernel's LVal allocation primitives that retain the
@@ -196,7 +207,18 @@ var seedBorrowers = map[string]bool{
 // borrowsFact marks a function as a borrowing LVal constructor: calling it
 // yields a *lisp.LVal whose backing storage IS the caller's slice argument at
 // each recorded parameter index.
-type borrowsFact struct{ Params []int }
+//
+// Carries records that the function ALSO propagates the seal onto the header
+// it returns — it calls (*LVal).InheritSeal or assigns .sealed on a value it
+// returns.  Such a constructor discharges the rule at every call site,
+// because the discipline has been moved inside it.  libelpspath's `alias(in,
+// cells)` is the motivating case: the #392 fix collapsed six hand-written
+// borrow sites into one helper that ends `out.InheritSeal(in)`, and a rule
+// that could not see that would report all six and be deleted for it.
+type borrowsFact struct {
+	Params  []int
+	Carries bool
+}
 
 func (*borrowsFact) AFact() {}
 
@@ -205,7 +227,11 @@ func (f *borrowsFact) String() string {
 	for i, p := range f.Params {
 		ps[i] = strconv.Itoa(p)
 	}
-	return "borrowsLValBacking(" + strings.Join(ps, ",") + ")"
+	out := "borrowsLValBacking(" + strings.Join(ps, ",") + ")"
+	if f.Carries {
+		out += "+carriesSeal"
+	}
+	return out
 }
 
 func runSeal(pass *analysis.Pass) (interface{}, error) {
@@ -253,8 +279,9 @@ func inferBorrowers(pass *analysis.Pass) {
 			if _, done := lookupBorrows(pass, fn); done {
 				continue
 			}
-			if params := inferBorrowParams(pass, fn, decl); len(params) > 0 {
-				pass.ExportObjectFact(fn, &borrowsFact{Params: params})
+			params, carries := inferBorrowParams(pass, fn, decl)
+			if len(params) > 0 {
+				pass.ExportObjectFact(fn, &borrowsFact{Params: params, Carries: carries})
 				changed = true
 			}
 		}
@@ -320,15 +347,16 @@ func checkSeeds(pass *analysis.Pass, found map[string]bool) {
 }
 
 // inferBorrowParams reports the parameter indexes of fn whose slice backing
-// reaches a borrowing constructor whose result fn returns.
-func inferBorrowParams(pass *analysis.Pass, fn *types.Func, decl *ast.FuncDecl) []int {
+// reaches a borrowing constructor whose result fn returns, and whether fn
+// carries the seal onto that result itself.
+func inferBorrowParams(pass *analysis.Pass, fn *types.Func, decl *ast.FuncDecl) ([]int, bool) {
 	sig, ok := fn.Type().(*types.Signature)
 	if !ok || !resultHasLValPtr(sig) {
-		return nil
+		return nil, false
 	}
 	candidates := sliceParamIndexes(sig)
 	if len(candidates) == 0 {
-		return nil
+		return nil, false
 	}
 	returned := returnedIdents(pass, decl.Body)
 	var params []int
@@ -338,7 +366,26 @@ func inferBorrowParams(pass *analysis.Pass, fn *types.Func, decl *ast.FuncDecl) 
 			params = append(params, i)
 		}
 	}
-	return params
+	if len(params) == 0 {
+		return nil, false
+	}
+	return params, carriesSeal(pass, decl.Body, returned)
+}
+
+// carriesSeal reports whether the function propagates a seal onto a value it
+// returns — `out.InheritSeal(in)` or `out.sealed = in.sealed`.  Such a
+// borrowing constructor has absorbed the discipline, so its call sites need
+// no discharge of their own: that is the whole point of factoring the borrow
+// into one helper, and the rule has to be able to see it or the refactor
+// makes the diagnostics worse instead of better.
+func carriesSeal(pass *analysis.Pass, body *ast.BlockStmt, returned map[types.Object]bool) bool {
+	facts := collectSealFacts(pass, body)
+	for obj := range returned {
+		if facts.assigned[obj] {
+			return true
+		}
+	}
+	return false
 }
 
 // paramReachesBorrowingCall reports whether the body passes param (possibly
@@ -375,7 +422,8 @@ func paramReachesBorrowingCall(pass *analysis.Pass, body *ast.BlockStmt, param *
 		if !ok || !escapes[call] {
 			return true
 		}
-		for _, pos := range borrowPositions(pass, call) {
+		bpos, _ := borrowPositions(pass, call)
+		for _, pos := range bpos {
 			if pos < len(call.Args) && sliceRootsAtParam(pass, call.Args[pos], param) {
 				hit = true
 			}
@@ -441,16 +489,16 @@ func sliceRootsAtParam(pass *analysis.Pass, e ast.Expr, param *types.Var) bool {
 // borrowPositions returns the argument positions of call that the callee
 // retains as LVal backing storage, or nil when the callee is not a known
 // borrowing constructor.
-func borrowPositions(pass *analysis.Pass, call *ast.CallExpr) []int {
+func borrowPositions(pass *analysis.Pass, call *ast.CallExpr) ([]int, bool) {
 	fn, ok := typeutil.Callee(pass.TypesInfo, call).(*types.Func)
 	if !ok {
-		return nil
+		return nil, false
 	}
 	fact, ok := lookupBorrows(pass, fn)
 	if !ok {
-		return nil
+		return nil, false
 	}
-	return fact.Params
+	return fact.Params, fact.Carries
 }
 
 func lookupBorrows(pass *analysis.Pass, fn *types.Func) (*borrowsFact, bool) {
@@ -917,9 +965,15 @@ func trackFresh(pass *analysis.Pass, stmt *ast.AssignStmt, fresh map[types.Objec
 // the construction borrowed at all, so the caller can record that the result
 // is a header over FOREIGN storage rather than storage this function owns.
 func checkConstruction(pass *analysis.Pass, aliases *aliasTracker, call *ast.CallExpr, result types.Object, facts *sealFacts, ann map[int]bool) bool {
-	positions := borrowPositions(pass, call)
+	positions, carries := borrowPositions(pass, call)
 	if len(positions) == 0 {
 		return false
+	}
+	if carries {
+		// The callee propagates the seal itself.  Still a borrow (the result
+		// is a header over foreign storage, so a further borrow from it is
+		// one too), but not a defect.
+		return true
 	}
 	for _, pos := range positions {
 		if pos >= len(call.Args) {
@@ -1039,6 +1093,7 @@ func collectSealFacts(pass *analysis.Pass, body *ast.BlockStmt) *sealFacts {
 			return true
 		}
 		var roots []types.Object
+		write := written[sel]
 		switch sel.Sel.Name {
 		case sealFieldName:
 			if name, ok := lvalFieldSelection(pass, sel); !ok || name != sealFieldName {
@@ -1051,14 +1106,43 @@ func collectSealFacts(pass *analysis.Pass, body *ast.BlockStmt) *sealFacts {
 				return true
 			}
 			roots = lvalRoot(pass, sel.X)
+		case sealInheritName:
+			return true // handled at the call node below
 		default:
 			return true
 		}
 		for _, obj := range roots {
-			if written[sel] {
+			if write {
 				f.assigned[obj] = true
 			} else {
 				f.reads[obj] = append(f.reads[obj], sel.Pos())
+			}
+		}
+		return true
+	})
+	// dst.InheritSeal(src) IS the propagation, spelled for code outside
+	// package lisp where `sealed` is unreachable: a write to dst's seal and a
+	// read of src's.  Missing it would report every caller of the very helper
+	// the #392 fix introduced.
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != sealInheritName {
+			return true
+		}
+		fn, ok := pass.TypesInfo.Uses[sel.Sel].(*types.Func)
+		if !ok || !recvIsLisp(fn, "LVal") {
+			return true
+		}
+		for _, obj := range lvalRoot(pass, sel.X) {
+			f.assigned[obj] = true
+		}
+		for _, arg := range call.Args {
+			for _, src := range lvalRoot(pass, arg) {
+				f.reads[src] = append(f.reads[src], call.Pos())
 			}
 		}
 		return true
