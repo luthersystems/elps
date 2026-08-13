@@ -172,6 +172,15 @@ func knot(v *lisp.LVal, gen *fuzzval.Gen, n int) {
 
 // containers collects the nodes of v that can be written to, bounded so that a
 // value already carrying a cycle cannot make this walk the unbounded one.
+//
+// A sealed node is never a candidate.  fuzzval builds its values inside a real
+// environment, so a generated value can alias a parsed program node, and those
+// are shared by every environment evaluating the same parse: knotting one is a
+// cross-environment write, which the checked build's sealed-AST verifier
+// reports as corruption rather than as the cycle this target is trying to
+// build.  Skipping them costs nothing -- a knot needs a mutable container and
+// fuzzval produces plenty -- and keeps the target testing the walks rather
+// than the seal.  See lisp/seal.go.
 func containers(v *lisp.LVal) []*lisp.LVal {
 	const maxNodes = 256
 	var out []*lisp.LVal
@@ -185,6 +194,9 @@ func containers(v *lisp.LVal) []*lisp.LVal {
 			return
 		}
 		seen[v] = struct{}{}
+		if v.IsSealed() {
+			return
+		}
 		switch v.Type {
 		case lisp.LSortMap:
 			out = append(out, v)
