@@ -65,7 +65,7 @@ func benchGet(b *testing.B, src *lisp.LVal, path Path) {
 	b.Helper()
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		out, err := path.Get(src)
 		if err != nil {
 			b.Fatal(err)
