@@ -17,3 +17,12 @@ func TestPackage(t *testing.T) {
 	defer r.Close()
 	r.RunTestFile(t, "libelpspath_test.lisp")
 }
+
+// TestPackageCyclicValue runs the tests for values that contain themselves
+// (issue #393). They live in their own file so that source added for them is
+// not charged to a benchmark that loads libelpspath_test.lisp.
+func TestPackageCyclicValue(t *testing.T) {
+	r := &elpstest.Runner{}
+	defer r.Close()
+	r.RunTestFile(t, "libelpspath_cycle_test.lisp")
+}

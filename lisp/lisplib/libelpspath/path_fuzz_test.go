@@ -72,10 +72,14 @@ import (
 //   - Any particular error message, or WHICH inputs fail.  A step that
 //     misses is a legitimate answer, not a defect; query_test.go pins the
 //     specific outcomes.
-//   - Deep-copy semantics of the copying operations.  copyMap shares its
-//     values by design while copyVector recurses; asserting one contract for
-//     both would report intended behaviour as a bug.  Invariant 5 asserts
-//     what the package documents: the ORIGINAL is unchanged.
+//   - Deep-copy semantics of the copying operations.  All three copy helpers
+//     are deep and agree on how deep, which is a property about pointer
+//     identity that a value-shaped fuzzer cannot see: a shallow copy and a
+//     deep one are equal by value and differ only in what a later write
+//     reaches.  TestCopyHelpersAgreeOnNestingDepth asserts it directly.
+//     Invariant 5 asserts what this target can see: the ORIGINAL is
+//     unchanged.  (Until issue #395 copyMap was shallow where its siblings
+//     were deep, and this target was silent throughout.)
 //
 // SEEDS.  Synthesized here — every seed is a byte string written in this
 // file, chosen to reach each of the seven operations and each generator

@@ -112,14 +112,62 @@ var builtins = []*libutil.Builtin{
 		(?nil patient "ssn")           => new obj with ssn=nil`),
 }
 
+// errCyclicValue reports a value that contains itself.  append! and assoc!
+// mutate a container in place, so a program can put a container inside
+// itself, and elpspath has no answer for one: a path into a cyclic value has
+// no finite result and a copy of one has no finite representation.  The
+// walkers below refuse it with an ordinary error, which the builtins turn
+// into a condition handler-bind can catch, rather than recursing until the
+// goroutine stack overflows and the runtime kills the process -- a failure
+// recover() cannot intercept.  See lisp/cycle.go and issue #393.
+var errCyclicValue = errors.New("cannot operate on a value that contains itself")
+
 // okSimpleContainerType ensures that lval is a valid container that only
 // contains "simple" types compatible with `elpspath`.
 // It sucks that we have to traverse the entire object checking the type,
 // but better to be safe.
+//
+// This is the gate every builtin runs before touching a value, and the rest
+// of the package relies on what it rejects: copyLVal's multi-dimensional
+// array branch cannot construct a copy and says so, and stays unreachable
+// only because this function refuses such an array first.  A cycle is
+// refused here for the same reason, and the copy walk is guarded too because
+// the exported Path interface lets a Go embedder reach the copy without
+// coming through this gate.
 func okSimpleContainerType(in *lisp.LVal) error {
+	return okSimpleContainerTypeGuarded(in, lisp.CycleGuard{})
+}
+
+// okSimpleContainerTypeGuarded is okSimpleContainerType continuing a walk
+// already in progress rather than starting a fresh one.  Every nested check
+// must pass g down; starting a new walk resets the bound on every lap and it
+// never fires.
+func okSimpleContainerTypeGuarded(in *lisp.LVal, g lisp.CycleGuard) error {
 	if in.IsNil() {
 		return errors.New("nil container type invalid")
 	}
+	switch in.Type {
+	case lisp.LSortMap, lisp.LArray, lisp.LSExpr:
+		// The three types that reach other values, and so the only ones
+		// entered on the guard's path.  Handled below.
+	default:
+		return fmt.Errorf("invalid container type: %v", in.Type)
+	}
+	g, cyclic := g.Descend(in)
+	if cyclic {
+		return errCyclicValue
+	}
+	err := okSimpleContainerContents(in, g)
+	if g.Tracking() {
+		g.Ascend(in)
+	}
+	return err
+}
+
+// okSimpleContainerContents checks the values a container reaches.  It is
+// only ever called through okSimpleContainerTypeGuarded, which has already
+// established that in is a container and put it on g's path.
+func okSimpleContainerContents(in *lisp.LVal, g lisp.CycleGuard) error {
 	switch in.Type {
 	case lisp.LSortMap:
 		m0 := in.Map()
@@ -129,7 +177,7 @@ func okSimpleContainerType(in *lisp.LVal) error {
 		}
 		for _, ent := range entries.Cells {
 			v := ent.Cells[1]
-			err := okSimpleType(v)
+			err := okSimpleTypeGuarded(v, g)
 			if err != nil {
 				return err
 			}
@@ -141,7 +189,7 @@ func okSimpleContainerType(in *lisp.LVal) error {
 		}
 		cells := in.Cells[1].Cells
 		for _, v := range cells {
-			err := okSimpleType(v)
+			err := okSimpleTypeGuarded(v, g)
 			if err != nil {
 				return err
 			}
@@ -150,7 +198,7 @@ func okSimpleContainerType(in *lisp.LVal) error {
 	case lisp.LSExpr:
 		cells := in.Cells
 		for _, v := range cells {
-			err := okSimpleType(v)
+			err := okSimpleTypeGuarded(v, g)
 			if err != nil {
 				return err
 			}
@@ -166,6 +214,14 @@ func okSimpleContainerType(in *lisp.LVal) error {
 // It sucks that we have to traverse the entire object checking the type,
 // but better to be safe.
 func okSimpleType(in *lisp.LVal) error {
+	return okSimpleTypeGuarded(in, lisp.CycleGuard{})
+}
+
+// okSimpleTypeGuarded is okSimpleType continuing a walk already in progress.
+// The guard is threaded through rather than re-created because the recursion
+// that overflows the stack is okSimpleType <-> okSimpleContainerType, so a
+// bound either survives the round trip or does nothing.
+func okSimpleTypeGuarded(in *lisp.LVal, g lisp.CycleGuard) error {
 	if in.IsNil() {
 		// allow nil as a placeholder for removed elements
 		return nil
@@ -181,8 +237,8 @@ func okSimpleType(in *lisp.LVal) error {
 		if in.Str == lisp.TrueSymbol || in.Str == lisp.FalseSymbol {
 			return nil
 		}
-		return okSimpleContainerType(in)
+		return okSimpleContainerTypeGuarded(in, g)
 	default:
-		return okSimpleContainerType(in)
+		return okSimpleContainerTypeGuarded(in, g)
 	}
 }

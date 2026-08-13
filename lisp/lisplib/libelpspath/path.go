@@ -37,41 +37,107 @@ type Path interface {
 
 // copyLVal creates a copy of an LVal. For non-containers this is a NOP, since
 // non-containers are immutable.
-func copyLVal(v *lisp.LVal) *lisp.LVal {
+//
+// The copy is deep: every container reachable from v is rebuilt, so no write
+// through the copy can reach the source. All three container helpers agree on
+// that, which TestCopyHelpersAgreeOnNestingDepth pins — a helper that stopped
+// one level short would hand back a value that looks independent and is not,
+// which is what issue #395 was.
+//
+// It returns an error rather than a value when v contains itself: such a value
+// has no finite copy, and walking one until the goroutine stack overflows
+// kills the process in a way recover() cannot intercept. See issue #393.
+func copyLVal(v *lisp.LVal) (*lisp.LVal, error) {
+	return copyGuarded(v, lisp.CycleGuard{})
+}
+
+// copyGuarded is copyLVal continuing a walk already in progress rather than
+// starting a fresh one. Every nested copy must pass g down; a fresh walk per
+// level resets the bound on every lap and it never fires.
+func copyGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 	switch v.Type {
-	case lisp.LSortMap:
-		return copyMap(v)
-	case lisp.LArray:
-		if v.Cells[0].Len() > 1 {
-			// IMPORTANT: we cannnot recover from this!
-			return lisp.Nil()
-		}
-		return copyVector(v)
-	case lisp.LSExpr:
-		return copyList(v)
+	case lisp.LSortMap, lisp.LArray, lisp.LSExpr:
+		// The three types that reach other values, and so the only ones
+		// entered on the guard's path. Handled below. Entering a leaf would
+		// tax every string and int in the value to bound a walk that cannot
+		// recurse.
 	default:
 		// non-containers do not need to be copied since LVals are otherwise
 		// immutable
-		return v
+		return v, nil
+	}
+	g, cyclic := g.Descend(v)
+	if cyclic {
+		return nil, errCyclicValue
+	}
+	out, err := copyContainer(v, g)
+	if g.Tracking() {
+		g.Ascend(v)
+	}
+	return out, err
+}
+
+// copyContainer copies the container types. It is only ever called through
+// copyGuarded, which has already established that v is one and put it on g's
+// path.
+func copyContainer(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
+	switch v.Type {
+	case lisp.LSortMap:
+		return copyMapGuarded(v, g)
+	case lisp.LArray:
+		if v.Cells[0].Len() > 1 {
+			// IMPORTANT: we cannnot recover from this!
+			//
+			// Unreachable through the builtins, and deliberately still so:
+			// okSimpleContainerType refuses a multi-dimensional array before
+			// any builtin reaches a copy. The cycle guard above adds a
+			// rejection to that gate, it does not remove this one.
+			return lisp.Nil(), nil
+		}
+		return copyVectorGuarded(v, g)
+	case lisp.LSExpr:
+		return copyListGuarded(v, g)
+	default:
+		return nil, fmt.Errorf("invalid container type: %v", v.Type)
 	}
 }
 
 // copyMap creates a new map LVal that contains the same elements in the original
 // map.
-func copyMap(v *lisp.LVal) *lisp.LVal {
+func copyMap(v *lisp.LVal) (*lisp.LVal, error) {
+	return copyMapGuarded(v, lisp.CycleGuard{})
+}
+
+// copyMapGuarded is copyMap continuing a walk already in progress.
+func copyMapGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 	m0 := v.Map()
 	if m0 == nil {
-		return nil
+		return nil, errors.New("first argument is not a map")
+	}
+	entries := sortedMapEntries(m0)
+	if err := lisp.GoError(entries); err != nil {
+		return nil, err
 	}
 	sm := lisp.SortedMap()
 	m := sm.Map()
-	for _, pair := range sortedMapEntries(m0).Cells {
-		lerr := m.Set(pair.Cells[0], pair.Cells[1])
+	for _, pair := range entries.Cells {
+		// IMPORTANT: maps may contain containers, in which case we need to copy
+		// those containers — the rule copyList and copyVector have always
+		// carried. Storing the source's own value here instead, which is what
+		// this did before issue #395, produces a map that shares every nested
+		// container with its source: the package's own redaction example,
+		// (?nil patient "ssn") followed by a ?set! into the result, rewrote
+		// the patient record it was supposed to leave alone.
+		val, err := copyGuarded(pair.Cells[1], g)
+		if err != nil {
+			return nil, err
+		}
+		lerr := m.Set(pair.Cells[0], val)
 		if lerr.Type == lisp.LError {
-			return lerr
+			return nil, lisp.GoError(lerr)
 		}
 	}
-	return sm
+	return sameQuoting(v, sm), nil
 }
 
 func sortedMapEntries(m lisp.Map) *lisp.LVal {
@@ -85,28 +151,63 @@ func sortedMapEntries(m lisp.Map) *lisp.LVal {
 
 // copyVector creates a new LVal that contains the same elements in the
 // original vector.
-func copyVector(v *lisp.LVal) *lisp.LVal {
+func copyVector(v *lisp.LVal) (*lisp.LVal, error) {
+	return copyVectorGuarded(v, lisp.CycleGuard{})
+}
+
+// copyVectorGuarded is copyVector continuing a walk already in progress.
+func copyVectorGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 	cells := v.Cells[1].Cells
 	cellsCopy := make([]*lisp.LVal, len(cells))
 	for i := range cells {
 		// IMPORTANT: vectors may contain containers, in which case we need to copy
 		// those containers
-		cellsCopy[i] = copyLVal(cells[i])
+		c, err := copyGuarded(cells[i], g)
+		if err != nil {
+			return nil, err
+		}
+		cellsCopy[i] = c
 	}
-	return toVector(cellsCopy)
+	return sameQuoting(v, toVector(cellsCopy)), nil
 }
 
 // copyList creates a new LVal that contains the same elements in the
 // original list.
-func copyList(v *lisp.LVal) *lisp.LVal {
+func copyList(v *lisp.LVal) (*lisp.LVal, error) {
+	return copyListGuarded(v, lisp.CycleGuard{})
+}
+
+// copyListGuarded is copyList continuing a walk already in progress.
+func copyListGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 	cells := v.Cells
 	cellsCopy := make([]*lisp.LVal, len(cells))
 	for i := range cells {
 		// IMPORTANT: lists may contain containers, in which case we need to copy
 		// those containers
-		cellsCopy[i] = copyLVal(cells[i])
+		c, err := copyGuarded(cells[i], g)
+		if err != nil {
+			return nil, err
+		}
+		cellsCopy[i] = c
 	}
-	return toList(cellsCopy)
+	return sameQuoting(v, toList(cellsCopy)), nil
+}
+
+// sameQuoting gives cp src's quoting.
+//
+// The quote flag is part of the value, not decoration: an unquoted LSExpr is
+// an expression the evaluator will try to apply, and a list is a quoted one.
+// toList and toVector build unquoted, so a copy silently demoted a quoted
+// list to an s-expression — visible before #395 only on a list or vector
+// argument, and reachable through every sorted-map value once copyMap
+// started rebuilding what it used to share. Quote copies the LVal header
+// rather than writing through to a shared one, so this never mutates cp's
+// source (issues #333/#382).
+func sameQuoting(src, cp *lisp.LVal) *lisp.LVal {
+	if src.IsQuoted() && !cp.IsQuoted() {
+		return lisp.Quote(cp)
+	}
+	return cp
 }
 
 // toCells gets a slice of LVal cells from an elps vector.
@@ -501,7 +602,11 @@ func (s *dotPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 	}
 	switch in.Type {
 	case lisp.LSortMap:
-		return s.SetMutate(copyMap(in), newIn)
+		cp, err := copyMap(in)
+		if err != nil {
+			return nil, err
+		}
+		return s.SetMutate(cp, newIn)
 	default:
 		return nil, errors.New("first argument is not a map")
 	}
@@ -527,7 +632,11 @@ func (s *dotPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 	}
 	switch in.Type {
 	case lisp.LSortMap:
-		return s.DeleteMutate(copyMap(in))
+		cp, err := copyMap(in)
+		if err != nil {
+			return nil, err
+		}
+		return s.DeleteMutate(cp)
 	default:
 		return nil, errors.New("first argument is not a map")
 	}
@@ -622,7 +731,11 @@ func (s *indexPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 		newVal = toList(cells)
 	}
 
-	return s.setMutate(copyLVal(newVal), newIn)
+	cp, err := copyLVal(newVal)
+	if err != nil {
+		return nil, err
+	}
+	return s.setMutate(cp, newIn)
 }
 
 func (s *indexPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
@@ -637,7 +750,11 @@ func (s *indexPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 	} else {
 		newVal = toList(cells)
 	}
-	return s.deleteMutate(copyLVal(newVal))
+	cp, err := copyLVal(newVal)
+	if err != nil {
+		return nil, err
+	}
+	return s.deleteMutate(cp)
 }
 
 func (s *indexPath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
@@ -755,7 +872,11 @@ func (s *rangePath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 	} else {
 		newVal = toList(cells)
 	}
-	return s.setMutate(copyLVal(newVal), newIn)
+	cp, err := copyLVal(newVal)
+	if err != nil {
+		return nil, err
+	}
+	return s.setMutate(cp, newIn)
 }
 
 func (s *rangePath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
@@ -803,7 +924,11 @@ func (s *rangePath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 		newVal = toList(cells)
 	}
 
-	return s.deleteMutate(copyLVal(newVal))
+	cp, err := copyLVal(newVal)
+	if err != nil {
+		return nil, err
+	}
+	return s.deleteMutate(cp)
 }
 
 func (s *rangePath) NilMutate(in *lisp.LVal) (*lisp.LVal, error) {
@@ -853,7 +978,11 @@ func (s *rangePath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 		newVal = toList(cells)
 	}
 
-	return s.nilMutate(copyLVal(newVal))
+	cp, err := copyLVal(newVal)
+	if err != nil {
+		return nil, err
+	}
+	return s.nilMutate(cp)
 }
 
 func (s *rangePath) String() string {
@@ -990,7 +1119,10 @@ func (s *iterPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 			// IMPORTANT: when iterating we ignore paths where set fails,
 			// and return orig. item. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.
-			in = copyLVal(item)
+			in, err = copyLVal(item)
+			if err != nil {
+				return nil, err
+			}
 		}
 		results = append(results, in)
 	}
@@ -1034,7 +1166,10 @@ func (s *iterPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 			// IMPORTANT: when iterating we ignore paths where del fails,
 			// and return orig. item. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.
-			in = copyLVal(item)
+			in, err = copyLVal(item)
+			if err != nil {
+				return nil, err
+			}
 		}
 		results = append(results, in)
 	}
@@ -1078,7 +1213,10 @@ func (s *iterPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 			// IMPORTANT: when iterating we ignore paths where nil fails,
 			// and return orig. item. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.
-			in = copyLVal(item)
+			in, err = copyLVal(item)
+			if err != nil {
+				return nil, err
+			}
 		}
 		results = append(results, in)
 	}
