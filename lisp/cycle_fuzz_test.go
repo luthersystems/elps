@@ -139,12 +139,12 @@ func walkAll(v, other *lisp.LVal) string {
 // knot ties up to n self-references into v, turning the tree fuzzval built
 // into a graph with cycles in it.
 //
-// Only sorted-maps, arrays and non-empty lists are written to: the shared Nil
-// and Bool singletons are an empty list and two symbols, and writing through
-// one of those corrupts every other holder of it (issue #274).  Every target
-// value is a node from v itself, so a knot that lands on an ancestor is a real
-// cycle and one that lands elsewhere is shared structure -- both are shapes
-// the walks have to survive.
+// Only sorted-maps, arrays and non-empty lists are written to, and only ones
+// containers() collected: the shared Nil and Bool singletons are an empty
+// list and two symbols, and writing through one of those corrupts every other
+// holder of it (issue #274).  Every target value is a node from v itself, so
+// a knot that lands on an ancestor is a real cycle and one that lands
+// elsewhere is shared structure -- both are shapes the walks have to survive.
 func knot(v *lisp.LVal, gen *fuzzval.Gen, n int) {
 	nodes := containers(v)
 	if len(nodes) == 0 {
@@ -170,8 +170,33 @@ func knot(v *lisp.LVal, gen *fuzzval.Gen, n int) {
 	}
 }
 
-// containers collects the nodes of v that can be written to, bounded so that a
-// value already carrying a cycle cannot make this walk the unbounded one.
+// containers collects the nodes of v that THIS INPUT BUILT and that can be
+// written to, bounded so that a value already carrying a cycle cannot make
+// this walk the unbounded one.
+//
+// "This input built" is the load-bearing half, and it was missing.  A
+// generated value may CONTAIN a function -- fuzzval's fun() kinds 2 and 3
+// return the environment's own globals, straight from the seed corpus via
+// []byte{kindFun, 2} -- and an LFun's cells are its formals and its body.
+// For a builtin, Cells[0] is the formals list from the package-level builtin
+// table: constructed once when the lisp package is initialized, stored into
+// every LFun by pointer, and therefore shared by every LEnv the process will
+// ever create.  Collecting it handed knot() the standard library to write
+// through, which is what issue #398 was: one seed rewrote lisp:car's
+// signature, every assertion here still passed, and environments built
+// afterwards -- in later tests, in later targets -- got a car that rejects
+// its own argument.
+//
+// So nothing below an LFun is collected or descended into.  The subtree is
+// not ours: for a builtin it is shared process-wide, and for a lambda it is a
+// body the interpreter may hold references into.  On the sealed-AST branches
+// the same rule is spelled `if v.IsSealed() { return }`; main has no seal
+// bit, and on main the sealed subtrees a generated value can reach are
+// exactly the ones under a function.
+//
+// The cost is two seeds' worth of container, and only for values that are
+// nothing BUT a function -- see TestCycleSeedsStillTieCycles, which pins how
+// much of the corpus still ties a real cycle.
 func containers(v *lisp.LVal) []*lisp.LVal {
 	const maxNodes = 256
 	var out []*lisp.LVal
@@ -186,6 +211,10 @@ func containers(v *lisp.LVal) []*lisp.LVal {
 		}
 		seen[v] = struct{}{}
 		switch v.Type {
+		case lisp.LFun:
+			// Not ours to write, and not ours to walk into.  See the doc
+			// comment above and issue #398.
+			return
 		case lisp.LSortMap:
 			out = append(out, v)
 			for _, pair := range v.MapEntries().Cells {
