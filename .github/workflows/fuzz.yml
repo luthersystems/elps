@@ -81,7 +81,7 @@ jobs:
       # or a single failure costs the whole night's coverage.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6]
     # DERIVED, not remembered. scripts/fuzz-budget-check.sh asserts
     #
     #     ceil(targets / shards) x FUZZTIME + overhead <= timeout-minutes
@@ -105,6 +105,16 @@ jobs:
     # and restores the 10 minutes. Prefer adding a shard to raising the
     # timeout: shards are parallel, so it cuts wall clock instead of extending
     # the backstop.
+    #
+    # AND IT HAPPENED, exactly as written above. The forward-merge of `main`
+    # into claude/exp-seal-tooling brought the cycle-walk targets (#391) and
+    # the elpsutil target (#357) onto this branch together, taking the sweep
+    # from 18 to 21 targets in one commit -- so the 21st target did not arrive
+    # alone and there was no moment at which anyone was going to notice it. At
+    # 5 shards that measured "targets 21 / largest shard 5 / required 60 /
+    # headroom 0", the passing-but-truncated state this comment predicted. The
+    # sixth shard restores ceil(21/6) = 4 x 10m + 10m = 50 against 60, and the
+    # 10 minutes with it.
     #
     # Do not raise this by hand to make a red gate green -- run
     # `make fuzz-budget-check`, which prints the arithmetic and the options.
