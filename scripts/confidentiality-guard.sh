@@ -11,14 +11,25 @@
 #     guard, and this file never needs to be excluded from the scan -- an
 #     exclusion would be a hole a future violation could hide in.
 #
-#  2. The scan uses a case-insensitive WORD-BOUNDARY pattern (\b...\b), so
-#     ordinary English words that merely contain the term as a substring
-#     (e.g. "massacre", "acreage", "wiseacre") never false-positive.  The
+#  2. The scan uses a case-insensitive LETTER-BOUNDARY pattern, so ordinary
+#     English words that merely contain the term as a substring (e.g.
+#     "massacre", "acreage", "wiseacre") never false-positive.  The
 #     self-test below proves both directions on every run: those substring
 #     words must NOT match, and runtime-constructed bounded occurrences
-#     (bare, hyphenated identifier, package-qualified) MUST match.  Note
-#     the negative fixtures are safe to write literally here precisely
-#     because they do not match the bounded pattern.
+#     (bare, hyphenated identifier, package-qualified, and every
+#     UNDERSCORE form) MUST match.  Note the negative fixtures are safe to
+#     write literally here precisely because they do not match.
+#
+#     The boundary is "not adjacent to an ASCII LETTER", not \b.  \b was
+#     the original pattern and it had a hole: `_` is a word character, so
+#     \bterm\b finds no boundary in TERM_PHYLUM, term_corpus or run_term
+#     and silently passed all three.  Underscore-joined identifiers are
+#     exactly the shape a leaked term takes in code (env vars, Go
+#     identifiers, test fixtures), so the one form most likely to appear
+#     was the one form not covered -- and the self-test never tried an
+#     underscore, which is why the hole shipped.  Digits are treated as
+#     boundaries too (term2024 matches); the term contains "r", which is
+#     not a hex digit, so this cannot false-positive on a commit SHA.
 #
 # On a hit the script prints file:line locations only -- not the matched
 # text -- so the term does not end up echoed into public CI logs.
@@ -31,7 +42,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 # Forbidden term, assembled from octal codes so it never appears literally.
 TERM_="$(printf '\141\143\162\145')"
-PATTERN="\\b${TERM_}\\b"
+PATTERN="(^|[^[:alpha:]])${TERM_}([^[:alpha:]]|$)"
 
 # --- self-test: boundary handling -------------------------------------------
 
@@ -46,7 +57,9 @@ done
 # Bounded occurrences (constructed at runtime, never stored literally)
 # MUST match: bare word, mixed case, hyphenated identifier, pkg-qualified.
 UP="$(printf '%s' "$TERM_" | tr '[:lower:]' '[:upper:]')"
-for fixture in "$TERM_" "$UP" "def-${TERM_}-route" "${TERM_}:helper" "(${TERM_})"; do
+for fixture in "$TERM_" "$UP" "def-${TERM_}-route" "${TERM_}:helper" "(${TERM_})" \
+	"${UP}_PHYLUM" "${TERM_}_corpus" "run_${TERM_}" "_${TERM_}_" \
+	"${TERM_}2024" "path/to/${TERM_}.lisp" "\"${TERM_}\""; do
 	if ! printf '%s\n' "$fixture" | grep -qiE "$PATTERN"; then
 		echo "guard self-test failed: pattern missed a bounded occurrence" >&2
 		exit 2
