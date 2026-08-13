@@ -5,6 +5,7 @@
 package lisp
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -132,11 +133,21 @@ func verifySealedLoadRoots(exprs []*LVal) {
 	}
 }
 
-// VerifySealedASTs re-fingerprints every sealed parse recorded in this
-// process and reports the first mismatch (plus a count of the rest).  A
-// non-nil error means a sealed program tree was mutated in place after
-// parsing — the corruption class of luthersystems/substrate#378 — and the
-// run's results cannot be trusted.
+// VerifySealedASTs reports what the checked build observed about sealed
+// program trees, in two complementary halves:
+//
+//   - CORRUPTION: every sealed parse recorded in this process is
+//     re-fingerprinted, and the first mismatch is reported (plus a count of
+//     the rest).  A mismatch means a sealed tree was mutated in place after
+//     parsing — the class of luthersystems/substrate#378.
+//   - PROVENANCE: every LVal minted over sealed backing storage that never
+//     inherited the constraint is reported with its mint site.  That is the
+//     READ half — the laundering step, before any write — and it is the
+//     signal luthersystems/elps#392 needed and did not have
+//     (lisp/borrow_check_elpscheck.go).
+//
+// A non-nil error means the run's results cannot be trusted.  Both halves
+// are reported when both fire.
 //
 // It is called by the lisp package's TestMain after the suite completes
 // and by elpstest.Runner at the end of each lisp test file; embedders
@@ -167,9 +178,10 @@ func VerifySealedASTs() error {
 			}
 		}
 	}
+	var errs []error
 	if bad > 0 {
-		return fmt.Errorf("%d of %d sealed parse trees were mutated after parsing; first:\n%s",
-			bad, len(entries), first)
+		errs = append(errs, fmt.Errorf("%d of %d sealed parse trees were mutated after parsing; first:\n%s",
+			bad, len(entries), first))
 	}
 	// The fingerprint walk above is the CORRUPTION-time half: it fires only
 	// once something has already written a sealed tree.  The borrowed-
@@ -181,11 +193,16 @@ func VerifySealedASTs() error {
 	// elpstest.Runner, elpstest.RunBenchmark, libelpspath's TestMain, and
 	// any embedder's teardown) picks it up with no change and the detector
 	// adds no public API.  See lisp/borrow_check_elpscheck.go.
+	//
+	// Both halves are reported, never one instead of the other: a run that
+	// corrupts a sealed tree usually laundered a header first, and the
+	// launder is the line a human has to edit.  Short-circuiting on the
+	// fingerprint mismatch would hide exactly the more actionable signal.
 	if faults := borrowProvenanceFaults(); len(faults) > 0 {
-		return fmt.Errorf("%d borrowed-backing provenance fault site(s):\n%s",
-			len(faults), strings.Join(faults, "\n\n"))
+		errs = append(errs, fmt.Errorf("%d borrowed-backing provenance fault site(s):\n%s",
+			len(faults), strings.Join(faults, "\n\n")))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // verifySealCheckTableLocked verifies every recorded root before the

@@ -17,9 +17,12 @@ func recordSealedRoot(_ *LVal) {}
 // that corrupted its own parse.
 func verifySealedLoadRoots(_ []*LVal) {}
 
-// VerifySealedASTs re-verifies every sealed parse recorded in this
-// process against its parse-time fingerprint.  Production builds (no
-// elpscheck tag) record nothing, so this always returns nil at zero
-// cost; under `go test -tags elpscheck` it performs the real check.  See
-// lisp/seal_check_elpscheck.go.
+// VerifySealedASTs reports what the checked build observed about sealed
+// program trees: sealed parses re-verified against their parse-time
+// fingerprint (the corruption half), and LVals minted over sealed backing
+// that never inherited the constraint (the provenance half, elps#392).
+// Production builds (no elpscheck tag) record neither, so this always
+// returns nil at zero cost; under `go test -tags elpscheck` it performs
+// the real checks.  See lisp/seal_check_elpscheck.go and
+// lisp/borrow_check_elpscheck.go.
 func VerifySealedASTs() error { return nil }
