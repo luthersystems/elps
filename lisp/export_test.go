@@ -14,6 +14,14 @@ func Detach(v *LVal) (*LVal, error) { return v.detach() }
 // ProgramDetach exposes Program.detach to package lisp_test.
 func ProgramDetach(p Program) ([]*LVal, error) { return p.detach() }
 
+// ProgramExprs exposes a Program's sealed expressions to package lisp_test
+// WITHOUT copying, which detach cannot do.  Only the seal tests need it: the
+// property they assert — every node the constructor admitted is sealed — is
+// destroyed by the copy detach makes (Copy clears the flag).  It is a
+// package-level function, not a Program method, so lisp.Program's exported
+// method set stays free of *LVal and TestProgramSeal keeps passing.
+func ProgramExprs(p Program) []*LVal { return p.exprs }
+
 // SplicedFlag exposes the unexported spliced flag to package lisp_test.
 // The field has no production accessor (issue #382): splicing is evaluator
 // plumbing, but the copy-on-write fingerprint tests hash it to prove sealed

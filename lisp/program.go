@@ -85,9 +85,104 @@ func (p Program) detach() ([]*LVal, error) {
 	return out, nil
 }
 
+// newProgram wraps a reader's output in a Program, taking responsibility for
+// the seal the reader may not have applied.  Every Program constructor goes
+// through here; nothing else may build a non-zero Program.
+//
+// Why the constructors must ask this at all (issue #394).  Program's promise
+// is that an embedder's parse cache cannot leak *LVal pointers between
+// environments.  Read literally that is a promise about SHARING, not a
+// precondition on the caller: "by construction" names the mechanism (there
+// is no accessor to misuse), not an obligation the caller has to discharge.
+// Reader, however, is a public interface this package cannot constrain, and
+// one supported reader in this very repo does not seal — rdparser skips
+// SealAST in format-preserving mode (parser/rdparser/parser.go), which is
+// deliberate and documented there.  An embedder who writes
+//
+//	env.Runtime.Reader = parser.NewReader(parser.WithFormatPreserving())
+//
+// and then caches a Program used to get an unsealed tree shared by every
+// environment: the first environment's stable-sort rewrote the program
+// literal's cells in place and every later environment read the mutated
+// literal before evaluating anything of its own.
+//
+// Why repair rather than reject.  Rejecting an unsealed tree would be the
+// stronger-sounding rule, but it is the wrong one here, for three reasons.
+//
+//   - It inverts the promise.  A type whose premise is "sharing this is safe
+//     by construction" keeps that premise by MAKING it true, not by pushing
+//     the obligation back onto a caller who has no way to discharge it: the
+//     seal is unexported behaviour of somebody else's Reader.
+//   - It would contradict the rest of the file family.  TextLoader, forty
+//     lines away in loader.go, asks exactly this question and answers it with
+//     a private copy plus SealAST.  env.LoadString and env.Load accept a
+//     format-preserving runtime reader today and work.  Making only
+//     ParseProgram fail on the same runtime reader would be an incoherent
+//     surface, and it would break a working embedder configuration whose
+//     seal-skipping is documented, supported behaviour.
+//   - The predicate cannot support a rejection.  sealedThroughout is
+//     deliberately CONSERVATIVE: it is bounded by sealFPMaxDepth and answers
+//     "not sealed throughout" for a cyclic or pathologically deep tree that
+//     may in fact be perfectly sealed.  A conservative predicate may trigger
+//     a conservative REPAIR, whose only cost is a copy; wiring it to a hard
+//     error would reject valid, already-safe input.
+//
+// What is rejected is the case repair cannot fix.  SealAST marks
+// parser-producible shapes only, so a tree carrying a reference type
+// (LBytes, LSortMap, LArray, LNative) cannot be sealed and cannot be shared:
+// Copy preserves an array's backing storage and a native payload by design,
+// so one copy at construction would still hand every environment the same
+// mutable buffer.  checkLoaderExpr is the codified form of that question and
+// is reused verbatim.  The check costs nothing on the normal path and can
+// never fire there: a tree containing a reference type is never sealed
+// throughout (SealAST refuses to mark those types), so it always reaches the
+// repair path first.  No parser in this repo can produce one — TextLoader
+// has applied the same rule to every lisplib load for years.
+//
+// Residual: checkLoaderExpr admits LFun and LTaggedVal, which SealAST also
+// declines to descend into, so a Reader synthesising those would still share
+// their storage.  That is TextLoader's existing cacheability contract, not
+// something #394 changes; no parser produces either from source text.
+func newProgram(exprs []*LVal) (Program, error) {
+	sealed := true
+	for _, expr := range exprs {
+		if !sealedThroughout(expr, 0) {
+			sealed = false
+			break
+		}
+	}
+	if sealed {
+		// Already frozen by the reader: share as-is, which is the whole
+		// point of the seal and costs nothing.
+		return Program{exprs: exprs}, nil
+	}
+	for _, expr := range exprs {
+		if err := checkLoaderExpr(expr); err != nil {
+			return Program{}, fmt.Errorf("cannot seal program: %w", err)
+		}
+	}
+	// The copy is what makes the seal ours to apply: the reader still holds
+	// its tree (a format-preserving reader hands the same nodes to a
+	// formatter, which goes on writing their metadata), so sealing in place
+	// would freeze a value the caller owns.  Copy clears the sealed flag on
+	// the fresh storage it creates, so SealAST must follow it, not precede
+	// it.  This happens once per Program, not once per load.
+	out := make([]*LVal, len(exprs))
+	for i, expr := range exprs {
+		cp := expr.Copy()
+		cp.SealAST()
+		out[i] = cp
+	}
+	return Program{exprs: out}, nil
+}
+
 // ReadProgram parses the contents of r using reader and seals the result as
 // a Program.  The parsed expression slice never leaves this package: it goes
 // directly from the reader's return value into the sealed Program.
+//
+// A reader that does not seal its own output (the format-preserving reader,
+// or any implementation outside this module) gets a private, sealed copy —
+// see newProgram for why the unsealed tree is repaired rather than refused.
 func ReadProgram(reader Reader, name string, r io.Reader) (Program, error) {
 	if reader == nil {
 		return Program{}, errors.New("nil reader")
@@ -96,7 +191,7 @@ func ReadProgram(reader Reader, name string, r io.Reader) (Program, error) {
 	if err != nil {
 		return Program{}, err
 	}
-	return Program{exprs: exprs}, nil
+	return newProgram(exprs)
 }
 
 // ReadLocationProgram is ReadProgram for a LocationReader, assigning physical
@@ -109,7 +204,7 @@ func ReadLocationProgram(reader LocationReader, name, loc string, r io.Reader) (
 	if err != nil {
 		return Program{}, err
 	}
-	return Program{exprs: exprs}, nil
+	return newProgram(exprs)
 }
 
 // ParseProgram parses the contents of r using env.Runtime.Reader and seals
