@@ -16,6 +16,12 @@ import (
 // and cells recursively. Any in-place write to a parsed AST changes the
 // digest. This mirrors the parse-cache audit harness in
 // internal/substrate/elpsutil.
+//
+// IMPORTANT: a sorted-map keeps its entries off Cells, so a walk over Cells
+// alone stops dead at the first map and every assertion built on it goes
+// blind — which is the shape this package mostly serves. Entries are walked
+// explicitly below, in the sorted order sortedMapEntries gives, so the
+// digest stays stable.
 func fpAST(vs []*lisp.LVal) string {
 	h := sha256.New()
 	seen := map[*lisp.LVal]int{}
@@ -31,6 +37,22 @@ func fpAST(vs []*lisp.LVal) string {
 		}
 		seen[v] = len(seen)
 		_, _ = fmt.Fprintf(h, "t=%d q=%v s=%q i=%d f=%g", v.Type, v.Quoted, v.Str, v.Int, v.Float)
+		if v.Type == lisp.LSortMap {
+			if m := v.Map(); m != nil {
+				entries := sortedMapEntries(m)
+				if entries.Type == lisp.LError {
+					_, _ = fmt.Fprint(h, " m=<err>")
+					return
+				}
+				_, _ = fmt.Fprintf(h, " m=%d{", len(entries.Cells))
+				for _, ent := range entries.Cells {
+					_, _ = fmt.Fprintf(h, "k=%q:", ent.Cells[0].Str)
+					walk(ent.Cells[1], d+1)
+				}
+				_, _ = fmt.Fprint(h, "}")
+				return
+			}
+		}
 		_, _ = fmt.Fprintf(h, " n=%d{", len(v.Cells))
 		for _, c := range v.Cells {
 			walk(c, d+1)

@@ -162,10 +162,19 @@ func TestCopyOpOnListDoesNotWriteThroughASharedLeaf(t *testing.T) {
 					"a deep copy shares immutable leaves; if it stops, this "+
 						"test no longer covers the defect it was written for")
 
-				_, err = op.run(Root(Chain(tc.step)), cpList)
-				if err != nil {
-					t.Logf("%s %s: %v", op.name, tc.name, err)
-				}
+				// A panic is a failure, not a crash: the source assertion
+				// below is the one this test exists for, and it must still
+				// run when the write-back blows up on the way there.
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							t.Errorf("%s %s through the copy panicked: %v", op.name, tc.name, r)
+						}
+					}()
+					if _, err := op.run(Root(Chain(tc.step)), cpList); err != nil {
+						t.Logf("%s %s: %v", op.name, tc.name, err)
+					}
+				}()
 
 				assert.Equal(t, before, fpAST([]*lisp.LVal{doc}),
 					"%s %s through the copy reached the source document: %v",
