@@ -175,6 +175,16 @@ type pendingMint struct {
 }
 
 
+//elpsvet:allow checked-build diagnostic machinery, not program data: this table exists
+// only under -tags elpscheck (release binaries carry none of it -- borrow_check_default.go),
+// and the *LVal it holds are never handed to a Runtime as values. A pending entry is read
+// for exactly one bit, v.sealed, to decide whether the borrow discharged; the extent
+// registry holds cell slices solely so a recorded ADDRESS cannot be reused underneath a
+// later comparison. Outliving every Runtime is the POINT, the same way it is for the seal
+// checker's fingerprint table (seal_check_elpscheck.go): a laundered header is only
+// detectable against a record of the parse that outlives the environment that made it.
+// Both halves are bounded -- pending resets at borrowCheckSweepAt, extents stop being
+// recorded at borrowCheckMaxExtents.
 var borrowCheck struct {
 	pages   map[uintptr][]constrainedExtent
 	faults  map[string]int // site → number of undischarged mints
