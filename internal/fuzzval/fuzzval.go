@@ -30,9 +30,13 @@
 package fuzzval
 
 import (
+	"encoding/json"
 	"math"
+	"regexp"
+	"time"
 
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // Budget caps how many LVals one Gen will construct across all calls.  The
@@ -60,6 +64,9 @@ type Gen struct {
 	b      []byte
 	i      int
 	budget int
+	// nloc counts the real source locations handed out, so each is distinct
+	// and so the whole assignment stays a pure function of the input bytes.
+	nloc int
 }
 
 // New returns a Gen driven by data.
@@ -195,7 +202,18 @@ func (g *Gen) value(depth int) *lisp.LVal {
 	}
 	g.budget--
 
-	kind := g.Intn(kindNumKinds)
+	// One byte carries two independent decisions. The kind comes from it
+	// modulo the number of kinds, and the source-location decision from its
+	// top bit -- which that modulo leaves essentially unused, and every kind
+	// is reachable with the bit both set and clear.
+	//
+	// Two decisions from one byte rather than two bytes so that adding the
+	// second decision does not shift the byte stream: a saved crasher keeps
+	// selecting the values it selected when it was saved. A regression corpus
+	// that silently starts testing something else is worse than no regression
+	// corpus.
+	sel := g.Byte()
+	kind := int(sel) % kindNumKinds
 	// Past the depth limit, collapse every compound shape onto a scalar
 	// rather than truncating mid-structure: a half-built array with a
 	// dimension header that disagrees with its cell count is not a value any
@@ -205,6 +223,72 @@ func (g *Gen) value(depth int) *lisp.LVal {
 		kind = g.Intn(kindQuote)
 	}
 
+	return g.locate(g.construct(kind, depth), sel)
+}
+
+// locate gives a generated value a REAL source location about half the time.
+//
+// WHY.  Before this, every generated value carried lisp.nativeSource's shared
+// synthetic Location (Pos < 0), and the only write the interpreter makes to
+// Source -- stampMacroExpansion -- is guarded by `Source == nil || Source.Pos
+// < 0`.  A corpus of exclusively synthetic values therefore never presents the
+// case that a corrupting builtin would have to be caught on, and
+// internal/fuzzfp's Source rule has nothing to bite on.
+//
+// It is also the more faithful model, not merely the more testable one.  Every
+// callable that receives an UNEVALUATED fragment -- every special operator,
+// every macro -- receives it straight from the reader, so in production those
+// nodes all carry real, distinct, per-node locations.  Synthetic locations are
+// what a computed value has.  Generating a mix covers both.
+//
+// Locations come from a fixed process-wide pool rather than being allocated
+// per node, for two reasons.
+//
+//   - Reproducibility.  LVal.String() renders an LQSymbol with %#v, which
+//     prints the Source POINTER.  A freshly allocated Location per node would
+//     therefore make the rendering of a generated value depend on the
+//     allocator, and TestGeneratorIsDeterministic -- the property every saved
+//     crasher rests on -- would fail.
+//   - Fidelity.  LVal.Source documents itself as shared: "the reference may be
+//     shared by multiple LVals".  A pool models that, and it is the sharing
+//     that gives an in-place edit of a Location its real blast radius.
+//
+// NOT applied to the singletons (mutating one corrupts every holder -- see
+// issue #274) or to LFun values (kinds 2 and 3 of fun() return the
+// environment's own global function objects; writing to one would corrupt the
+// environment rather than test a builtin).
+func (g *Gen) locate(v *lisp.LVal, sel byte) *lisp.LVal {
+	if sel&0x80 == 0 || v == nil {
+		return v
+	}
+	if v.Type == lisp.LFun || v == lisp.Nil() || v == lisp.Bool(true) || v == lisp.Bool(false) {
+		return v
+	}
+	v.Source = realLocations[g.nloc%len(realLocations)]
+	g.nloc++
+	return v
+}
+
+// realLocations is the pool locate draws from: distinct, REAL (Pos >= 0)
+// locations of the shape the reader produces.
+//
+// Shared across iterations on purpose, in the same spirit as feeding the
+// singletons in: if a builtin writes through a Source pointer, the value it
+// wrote is visible to the guard that recorded it.
+var realLocations = func() []*token.Location {
+	const n = 64
+	locs := make([]*token.Location, n)
+	for i := range locs {
+		locs[i] = &token.Location{
+			File: "fuzz", Path: "fuzz",
+			Pos: i, Line: 1 + i/16, Col: 1 + i%16,
+			EndPos: i + 1, EndLine: 1 + i/16, EndCol: 2 + i%16,
+		}
+	}
+	return locs
+}()
+
+func (g *Gen) construct(kind, depth int) *lisp.LVal {
 	switch kind {
 	case kindNil:
 		return lisp.Nil()
@@ -448,12 +532,61 @@ func (g *Gen) tagged(depth int) *lisp.LVal {
 	return v
 }
 
-// nativeValues are the Go values an LNative can wrap.  Host applications
-// embed ELPS and hand natives across the boundary, so a builtin that type
-// switches on Native without a default is reachable from real code even
-// though no lisp source can spell these.
+// fuzzDurations are the durations handed to time:sleep and the rest of
+// libtime.
+//
+// Bounded deliberately.  BuiltinSleep refuses a duration over an hour and one
+// that would outlast the evaluation deadline, both instantly -- but anything
+// in between it actually sleeps for, and the fuzz environment's deadline is 5
+// seconds.  A generated 4-second duration would therefore cost four seconds of
+// the target's budget for one input.  The values here cover the refusal paths
+// (negative, over-the-hour, saturated) at zero cost and the SLEEPING path at a
+// worst case of two milliseconds, which is what the tracker recorded as
+// missing: "fuzzval has no time.Duration among its nativeValues, so generated
+// arguments reach the builtin's type check and stop there".
+var fuzzDurations = []time.Duration{
+	0,
+	1,
+	-1,
+	time.Millisecond,
+	2 * time.Millisecond,
+	-time.Hour,
+	2 * time.Hour, // over BuiltinSleep's ceiling: refused, no wait
+	math.MaxInt64,
+	math.MinInt64,
+}
+
+// fuzzPatterns are compiled to *regexp.Regexp, which is what libregexp hands
+// back to lisp and therefore what a later builtin can receive.
+var fuzzPatterns = []string{
+	``, `a`, `(a|b)+`, `^$`, `\p{L}{2,3}`, `(?i)x(y)?z`, `.*`, `[^\x00-\x7f]`,
+}
+
+// native returns an LNative.
+//
+// TWO POPULATIONS, for two different reasons.
+//
+// The first is the embedder's: nil, an empty struct, a string, an int, a byte
+// slice, a map.  Host applications embed ELPS and hand natives across the
+// boundary, so a builtin that type switches on Native without a default is
+// reachable from real code even though no lisp source can spell these.
+//
+// The second is the standard library's own: time.Time, time.Duration,
+// *regexp.Regexp and json.RawMessage are all produced by libtime, libregexp
+// and libjson and handed straight back to lisp, so a phylum can obtain one
+// from one builtin and pass it to any other.  Before these were here, the only
+// natives in the corpus were shapes no stdlib function had a branch for, so
+// every one of them stopped at a type check.  They are also what gives
+// internal/fuzzfp's LNative rule something to guard: a *regexp.Regexp is a
+// compiled program a few hundred nodes deep and a time.Time carries a pointer
+// to a shared *time.Location, so "a builtin mutated a native's internals" is a
+// reachable defect rather than a hypothetical one.
+// nativeNumKinds is the number of shapes native() can build. Named so the
+// seed corpus and the switch cannot drift apart silently.
+const nativeNumKinds = 10
+
 func (g *Gen) native() *lisp.LVal {
-	switch g.Intn(6) {
+	switch g.Intn(nativeNumKinds) {
 	case 0:
 		return lisp.Native(nil)
 	case 1:
@@ -464,9 +597,81 @@ func (g *Gen) native() *lisp.LVal {
 		return lisp.Native(g.pickInt())
 	case 4:
 		return lisp.Native([]byte(g.pickString()))
-	default:
+	case 5:
 		return lisp.Native(map[string]int{"a": 1})
+	case 6:
+		// Deterministic instants only: time.Now() would make a saved crasher
+		// irreproducible, which is the one property a regression corpus has to
+		// have.  UTC for the same reason -- the process's local zone is not an
+		// input to the fuzzer.
+		return lisp.Native(time.Unix(int64(g.pickInt()), int64(g.Intn(1000))).UTC())
+	case 7:
+		return lisp.Native(fuzzDurations[g.Intn(len(fuzzDurations))])
+	case 8:
+		// Compiled fresh rather than shared from a package-level table: a
+		// builtin that mutated a shared *regexp.Regexp would corrupt every
+		// LATER iteration instead of failing the one that did it, and a
+		// crasher that only reproduces after its predecessors is not a
+		// crasher.
+		re, err := regexp.Compile(fuzzPatterns[g.Intn(len(fuzzPatterns))])
+		if err != nil {
+			return lisp.Native(nil)
+		}
+		return lisp.Native(re)
+	default:
+		return lisp.Native(json.RawMessage(g.pickString()))
 	}
+}
+
+// KindSeeds returns exactly one seed per value kind.
+//
+// Seeds() is a grab-bag sized for the mutator to descend from; this is the
+// smaller, structural list a caller uses when it needs the GUARANTEE that
+// every value shape is represented -- for instance a target crossing seeds
+// against callables, which must not leave a builtin having seen only six of
+// the nineteen shapes because six was the sample size.
+//
+// It is derived from kindNumKinds rather than written out, so a kind added to
+// value() is covered by every such caller without anyone remembering to
+// update a list.
+func KindSeeds() [][]byte {
+	seeds := make([][]byte, 0, kindNumKinds)
+	for k := range byte(kindNumKinds) {
+		seeds = append(seeds, []byte{k, 1, 2, 3, 4, 5, 6, 7})
+	}
+	return seeds
+}
+
+// LocatedKindSeeds is KindSeeds with the real-source-location bit set: one
+// seed per kind, each producing a value carrying a REAL token.Location rather
+// than the shared synthetic one.
+//
+// Kept separate from KindSeeds because the two populations cost the same and
+// buy different things. Measured, crossing the located population against
+// every callable moved statement coverage of lisp/lisplib not at all -- a
+// location does not steer control flow -- while roughly doubling what the seed
+// corpus costs on every `go test`. What it buys instead is the ONLY population
+// internal/fuzzfp's "a real location is never replaced" rule can bite on, so a
+// caller should spend it where that matters rather than everywhere.
+func LocatedKindSeeds() [][]byte {
+	seeds := make([][]byte, 0, kindNumKinds)
+	for k := range byte(kindNumKinds) {
+		seeds = append(seeds, []byte{stamped(k), 1, 2, 3, 4, 5, 6, 7})
+	}
+	return seeds
+}
+
+// stamped returns a selector byte that chooses kind k AND sets the
+// real-source-location bit -- the smallest byte >= 0x80 congruent to k modulo
+// kindNumKinds. Setting the top bit of k directly would not do: the bit is
+// part of the value the modulus is taken of, so `k | 0x80` selects a different
+// kind entirely.
+func stamped(k byte) byte {
+	b := int(k)
+	for b < 0x80 {
+		b += kindNumKinds
+	}
+	return byte(b)
 }
 
 // Seeds returns the shared seed corpus for the value-driven targets.
@@ -488,6 +693,13 @@ func Seeds() [][]byte {
 			[]byte{k, 0, 0, 0, 0, 0, 0, 0},
 			[]byte{k, 1, 2, 3, 4, 5, 6, 7},
 			[]byte{k, 0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa, 0xf9},
+			// The same kind with a REAL source location (see Gen.locate: the
+			// selector's top bit). Reaching the located population by mutation
+			// means flipping one specific bit of one specific byte, which for
+			// a 19-way modulus is a needle the mutator has no reason to look
+			// for.
+			[]byte{stamped(k), 0, 0, 0, 0, 0, 0, 0},
+			[]byte{stamped(k), 1, 2, 3, 4, 5, 6, 7},
 		)
 	}
 	// Deep and wide shapes: repeated compound tags nest, repeated scalar
@@ -497,11 +709,23 @@ func Seeds() [][]byte {
 		[]byte{kindArrayND, 3, 2, 2, 2, kindInt, 0, 1},
 		[]byte{kindSortMap, 8, 0, kindString, 0, 1, 0, kindSymbol, 0, 1},
 		[]byte{kindTagged, 0, 0, kindTagged, 0, 0, kindTagged, 0, 0},
-		[]byte{kindNative, 0}, []byte{kindNative, 5},
 		[]byte{kindFun, 0}, []byte{kindFun, 1}, []byte{kindFun, 2}, []byte{kindFun, 3},
 		[]byte{kindInt, 0, 7},   // math.MaxInt
 		[]byte{kindInt, 0, 8},   // math.MinInt
 		[]byte{kindFloat, 0, 6}, // NaN
 	)
+	// One seed per NATIVE shape. The kind tag alone is not enough: native()
+	// switches again on its own byte, so a corpus carrying only
+	// {kindNative, 0} and {kindNative, 5} reached two of ten shapes and left
+	// the rest -- including every type the standard library itself produces --
+	// to be found by mutation. TestGeneratorProducesStdlibNativeTypes fails if
+	// this drifts out of step with native().
+	for k := range byte(nativeNumKinds) {
+		seeds = append(seeds,
+			[]byte{kindNative, k},
+			[]byte{kindNative, k, 1, 2, 3, 4},
+			[]byte{stamped(kindNative), k, 1, 2, 3, 4},
+		)
+	}
 	return seeds
 }
