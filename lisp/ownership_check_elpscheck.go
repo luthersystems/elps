@@ -75,17 +75,34 @@ import (
 //     that a sealed node "may be shared by every environment that evaluates
 //     the same parse - substrate's parse cache shares one tree
 //     process-wide".  Sharing a parse ACROSS RUNTIMES is not an accident to
-//     be caught; it is the point of sealing.  Three supported topologies
-//     do exactly that: substrate's warm parse cache hands one sealed tree
-//     to many runtimes, elpstest.RunBenchmark shares the sealed program
-//     across its per-iteration runtimes (#379 item 2), and LEnv.Fork
-//     shares every sealed node between a template environment and its
-//     forks (#380).  Before this exemption, evaluating one lisp.Program in
-//     two Runtimes under `-tags elpscheck` panicked on the first shared
-//     AST node - so an embedder running the supported parse-cache topology
-//     could not use checked mode at all, and the two halves of the #372
-//     verification tooling contradicted each other.  Found by
-//     lisp.FuzzSharedProgramMultiEnv, whose whole subject is that topology.
+//     be caught; it is the point of sealing, and it is what
+//     substrate#375/#378 does in production.  Before this exemption,
+//     evaluating one lisp.Program in two Runtimes under `-tags elpscheck`
+//     panicked on the first shared AST node — so an embedder running the
+//     supported parse-cache topology could not use checked mode at all, and
+//     the two halves of the #372 verification tooling contradicted each
+//     other: the mode that hosts the sealed-AST inspector rejected the
+//     topology the seal exists to sanction.  What the exemption permits is
+//     therefore narrow and stated positively — a node that is sealed, and
+//     only while it stays sealed, may be reached by more than one Runtime.
+//
+//     SANCTIONED SHARING TOPOLOGIES, which is what the exemption is sized
+//     to.  Each was arrived at independently, which is itself the argument
+//     that this is a design and not a bug:
+//
+//     - substrate's warm parse cache hands one sealed tree to many runtimes
+//     (substrate#375/#378).
+//     - elpstest.RunBenchmark shares the sealed program across its
+//     per-iteration runtimes (#379 item 2, #387).
+//     - LEnv.Fork shares every sealed node between a template environment
+//     and its forks (#380, this branch).
+//
+//     Found by lisp.FuzzSharedProgramMultiEnv (#389), whose whole subject is
+//     the first of those.  The exemption itself lives on
+//     claude/exp-seal-tooling, where sealing is introduced and where the
+//     contradiction it resolves is created; the branches named above are
+//     where it was discovered and where the topologies are added, not where
+//     it belongs.
 //
 //     What licenses the exemption is that a sealed node's cross-runtime
 //     safety does not rest on ownership at all: sealed bytes never change

@@ -346,7 +346,9 @@ func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 // The value Nil() is converted to nil.  Functions are returned as is.
 //
 // Deprecated:  GoValue is no longer used internally for serialization and
-// should be avoided.
+// should be avoided.  It also walks its argument without a bound, so a value
+// that contains itself takes the process down with it (issue #390); Dump
+// refuses such a value with an error instead.
 func (s *Serializer) GoValue(v *lisp.LVal, stringNums bool) interface{} {
 	if v.IsNil() {
 		return nil
