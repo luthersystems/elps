@@ -4,9 +4,12 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	mathrand "math/rand"
+	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/assert"
@@ -239,4 +242,101 @@ func TestLoadMaxAllocMap(t *testing.T) {
 		require.NotEqual(t, lisp.LError, result.Type, "unexpected error: %v", result)
 		assert.Equal(t, 2, result.Len())
 	})
+}
+
+// cyclicMap returns a sorted-map holding itself under every key in keys, which
+// is what (set 'm (sorted-map)) (assoc! m "k" m) builds.  See issue #390.
+func cyclicMap(keys ...string) *lisp.LVal {
+	m := lisp.SortedMap()
+	for _, k := range keys {
+		m.MapSet(k, m)
+	}
+	return m
+}
+
+// nestMaps returns depth maps nested one inside the next under key "k", with
+// inner at the bottom.
+func nestMaps(depth int, inner *lisp.LVal) *lisp.LVal {
+	v := inner
+	for range depth {
+		m := lisp.SortedMap()
+		m.MapSet("k", v)
+		v = m
+	}
+	return v
+}
+
+// TestEncodeCyclicValueErrors pins the answer for a value that contains
+// itself.  JSON has no representation for one, so the encoder refuses: an
+// error the builtins turn into an ordinary elps condition, rather than a
+// truncated document or -- as before the guard -- a stack overflow that kills
+// the host process.  See issue #390.
+func TestEncodeCyclicValueErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		v    *lisp.LVal
+	}{
+		{"map holding itself", cyclicMap("k")},
+		{"map holding itself twice", cyclicMap("a", "b")},
+		{"cycle below an acyclic root", nestMaps(3, cyclicMap("k"))},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			enc := newEncoder(false)
+			err := enc.encode(test.v)
+			require.ErrorIs(t, err, errCyclicValue)
+
+			b, err := Dump(test.v, false)
+			require.ErrorIs(t, err, errCyclicValue, "the error must reach the builtins")
+			assert.Empty(t, b, "a refused value must not produce a partial document")
+		})
+	}
+}
+
+// TestEncoderFitsItsSizeClass is the guard on the regression the CI benchmark
+// gate caught: adding two fields to the encoder for cycle tracking took it
+// from 112 bytes to 120, which the allocator rounds to the 128-byte size
+// class.  The encoder is heap-allocated once per document, so that charged 16
+// bytes to every json:dump-* call in the process -- +5.6% of BenchmarkEncode's
+// bytes, +7.2% of BenchmarkEncode_stringNumbers', with the allocation *count*
+// unchanged, which is why an allocs-only assertion would not have seen it.
+//
+// The guard lives in encodeGuard, on the stack, for this reason.  A field
+// added here is not free even when it is nil.
+//
+// Red-proof: adding `path map[*lisp.LVal]struct{}` and `depth int` back to
+// encoder fails this at 128.
+func TestEncoderFitsItsSizeClass(t *testing.T) {
+	// The size class the encoder occupied before the cycle guard existed.
+	// Growing past it is a cost paid by every document, so the field has to
+	// earn it; shrinking below it is free to update this number downward.
+	const sizeClass = 112
+	assert.LessOrEqual(t, int(unsafe.Sizeof(encoder{})), sizeClass,
+		"the encoder no longer fits the %d-byte size class, so every json:dump-* "+
+			"in the process now allocates a larger block", sizeClass)
+}
+
+// TestEncodeAcyclicValueIsUnchangedBelowAndAboveTheGuard pins the property the
+// guard exists to preserve: it is invisible to any value that is not cyclic,
+// at any depth.
+func TestEncodeAcyclicValueIsUnchangedBelowAndAboveTheGuard(t *testing.T) {
+	for _, depth := range []int{1, encodeGuardDepth - 1, encodeGuardDepth, encodeGuardDepth + 1, 4 * encodeGuardDepth} {
+		t.Run(fmt.Sprintf("depth=%d", depth), func(t *testing.T) {
+			want := strings.Repeat(`{"k":`, depth) + "1" + strings.Repeat("}", depth)
+			b, err := Dump(nestMaps(depth, lisp.Int(1)), false)
+			require.NoError(t, err)
+			assert.Equal(t, want, string(b))
+		})
+	}
+
+	// Shared substructure is a DAG, not a cycle: both occurrences must
+	// serialize in full even though the second reaches a value the encoder has
+	// already written.
+	shared := lisp.SortedMap()
+	shared.MapSet("a", lisp.Int(1))
+	dag := nestMaps(2*encodeGuardDepth, lisp.SExpr([]*lisp.LVal{shared, shared}))
+	want := strings.Repeat(`{"k":`, 2*encodeGuardDepth) + `[{"a":1},{"a":1}]` + strings.Repeat("}", 2*encodeGuardDepth)
+	b, err := Dump(dag, false)
+	require.NoError(t, err)
+	assert.Equal(t, want, string(b))
 }
