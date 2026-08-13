@@ -174,31 +174,30 @@ import (
 // and the fuzz function, so a panic during install is an ordinary crash that
 // `go test -fuzz` attributes to its input and writes to testdata.
 //
+// # Go nil, which used to be excluded and is now fuzzer-controlled
+//
+// Earlier versions of this target never generated a Go nil, in two places,
+// and recorded both exclusions as findings: a builtin registered with nil
+// formals (`elpsutil.Function(name, nil, fn)`, the plausible mis-spelling of
+// lisp.Formals()) registered cleanly and then nil-derefed inside LEnv.bind on
+// the first call, and a Loader or PackageInit returning a Go nil *LVal
+// nil-derefed immediately inside elpsutil itself, as an uncaught panic in the
+// embedder's process. Both were contract violations only a public-API change
+// could fix, and this header used to say that decision was not this target's
+// to take.
+//
+// That decision has since been taken (#351): elpsutil now validates at the
+// boundary. PackageLoader refuses nil formals at INSTALL time with an error
+// naming the package and definition, and every loader entry point reports a
+// nil loader result as an error naming the loader. Both shapes are therefore
+// generated like any other input: formalsTable carries a go-nil entry and
+// initTable carries init/go-nil, and the resulting loads must fail with
+// ordinary errors -- never a panic, never an internal-panic LVal.
+// TestNilContractMistakesAreErrors pins the new behaviour in both directions,
+// so a regression toward the old panics is named there before the fuzzer
+// rediscovers it as a crash.
+//
 // # What is deliberately NOT fuzzer-controlled
-//
-// GO NIL IS NEVER GENERATED, in two places, and both are recorded findings
-// rather than oversights:
-//
-//   - `elpsutil.Function(name, nil, fn)` -- a plausible way to write "takes no
-//     arguments", the correct spelling being lisp.Formals() -- registers
-//     without complaint and then nil-derefs inside LEnv.bind at
-//     `fun.Cells[0].Cells` on the first call. The panic is laundered by
-//     lisp.eval's recover into an internal-panic LError, so the embedder sees
-//     a lisp error rather than a crash, at call time rather than at install
-//     time.
-//
-//   - A Loader (or PackageInit) that returns a Go nil *LVal nil-derefs
-//     immediately, in elpsutil itself, at `lerr.Type == lisp.LError` in Load /
-//     LoadAll and at `e.Type == lisp.LError` in PackageLoader. That one is an
-//     uncaught panic in the embedder's process.
-//
-// Both are contract violations by the embedder rather than defects in
-// elpsutil's own logic, and fixing either means adding validation to a public
-// constructor, which is an API decision and not this target's to take. They
-// are excluded from generation so the target is not permanently red on two
-// known inputs; TestKnownNilContractViolations pins the current behaviour so
-// that a future fix is noticed here rather than silently diverging from this
-// comment.
 //
 // NO FILESYSTEM. Runtime.Library is left nil for the same reason FuzzEval
 // leaves it nil: it is what makes load-file return an error rather than
@@ -359,8 +358,9 @@ var defNames = []string{
 // aliasing in the header.
 var formalsShared = lisp.Formals("shared-x", "shared-y")
 
-// formalsTable is every formals shape the fuzzer can attach to a def. Nothing
-// here is a Go nil -- see "What is deliberately NOT fuzzer-controlled".
+// formalsTable is every formals shape the fuzzer can attach to a def,
+// including the Go nil that used to be excluded (see "Go nil, which used to
+// be excluded" in the header).
 var formalsTable = []struct {
 	label string
 	make  func() *lisp.LVal
@@ -397,6 +397,10 @@ var formalsTable = []struct {
 		return lisp.QExpr([]*lisp.LVal{lisp.QExpr([]*lisp.LVal{lisp.Symbol("x")})})
 	}},
 	{"shared", func() *lisp.LVal { return formalsShared }},
+	// Go nil where lisp.Formals() belongs: the plausible mis-spelling of
+	// "takes no arguments". PackageLoader refuses it at install time; see
+	// TestNilContractMistakesAreErrors.
+	{"go-nil", func() *lisp.LVal { return nil }},
 }
 
 // bodyTable is every builtin body the fuzzer can attach to a def.
@@ -499,6 +503,11 @@ var initTable = []struct {
 		delete(env.Runtime.Registry.Packages, lisp.DefaultUserPackage)
 		return lisp.Nil()
 	}},
+	// A PackageInit that returns a Go nil *LVal: the loader-side nil mistake,
+	// and the only fuzzer-reachable route to loaderResult's nil branch inside
+	// PackageLoader. Reported as an error naming the package and PackageInit;
+	// see TestNilContractMistakesAreErrors.
+	{"init/go-nil", func(env *lisp.LEnv) *lisp.LVal { return nil }},
 }
 
 // strategyLabels are the four ways the generated packages get installed. Every
@@ -900,6 +909,11 @@ func (in *install) markRejectEvidence(results []*lisp.LVal) {
 		}
 		if strings.Contains(msg, "is a reserved constant") {
 			in.mark("reject/reserved-name")
+		}
+		// loaderResult's report of a loader (here: a PackageInit) returning a
+		// Go nil *LVal instead of lisp.Nil(); the string is loaderResult's.
+		if strings.Contains(msg, "returned a nil *LVal") {
+			in.mark("loader-nil/reported")
 		}
 	}
 }
@@ -1333,6 +1347,9 @@ func FuzzElpsutilEmbed(f *testing.F) {
 //	reject/*    -> PackageLoader refused a definition -- a name collision or
 //	               a reserved constant -- with an error where lisp would have
 //	               panicked; marked only on the refusal's own error text
+//	loader-nil/reported -> loaderResult reported a loader returning a Go nil
+//	               *LVal (via init/go-nil), likewise marked on the report's
+//	               own error text
 //
 // #348 is why this exists: there, seed-script ordering silently starved whole
 // functions, and measuring was the only way to see it.
@@ -1340,6 +1357,7 @@ var requiredFeatures = []string{
 	"strategy/load-each", "strategy/library-loader", "strategy/load-all", "strategy/nested",
 	"type/plain", "type/defs", "type/init", "type/full",
 	"init/nil", "init/error", "init/eval", "init/switch", "init/doc", "init/drop-user",
+	"init/go-nil", "loader-nil/reported",
 	"load/ok", "load/error", "autocall/ran",
 	"reject/collision", "reject/reserved-name",
 }
@@ -1550,19 +1568,22 @@ func TestCollisionPanicIsReal(t *testing.T) {
 	}
 }
 
-// TestKnownNilContractViolations pins the two Go-nil behaviours the fuzzer is
-// deliberately kept away from, so that the header's account of them cannot
-// silently go stale.
+// TestNilContractMistakesAreErrors pins the boundary validation that lets the
+// fuzzer generate Go nil at all: formalsTable's go-nil shape and initTable's
+// init/go-nil body exist on the strength of the behaviour asserted here.
 //
-// Neither is asserted to be CORRECT. They are asserted to be what they
-// currently are, with a message saying what a change means: if elpsutil grows
-// validation for either, this test is the thing that says the header's
-// "deliberately not fuzzer-controlled" section can be narrowed and those
-// inputs handed back to the fuzzer.
-func TestKnownNilContractViolations(t *testing.T) {
+// This test replaces TestKnownNilContractViolations, which pinned the
+// opposite -- nil formals deferring to a call-time internal panic, and a nil
+// loader result panicking uncaught inside elpsutil.Load -- back when the
+// fuzzer was deliberately kept away from both inputs. #351 moved the check to
+// the install boundary, so the tripwire now points the other way: if either
+// behaviour regresses toward a panic, this test names the change before
+// FuzzElpsutilEmbed rediscovers it as a crash, and the two table entries must
+// be pulled back out of the fuzzer's reach.
+func TestNilContractMistakesAreErrors(t *testing.T) {
 	t.Parallel()
 
-	t.Run("nil-formals-defers-to-call-time", func(t *testing.T) {
+	t.Run("nil-formals-rejected-at-install", func(t *testing.T) {
 		t.Parallel()
 		env, rc := newEnv()
 		if rc != nil {
@@ -1572,32 +1593,54 @@ func TestKnownNilContractViolations(t *testing.T) {
 			// The plausible mistake: nil where lisp.Formals() belongs.
 			elpsutil.Function("boom", nil, bodyTable[0].fn),
 		}}
-		if lrc := elpsutil.Load(env, elpsutil.PackageLoader(defsPkg{p})); lrc.Type == lisp.LError {
-			t.Fatalf("registering a builtin with nil formals now fails at INSTALL time: %v."+
-				" That is an improvement; FuzzElpsutilEmbed's header says it does not, and"+
-				" formalsTable may now include a nil entry.", lrc)
+		lrc := elpsutil.Load(env, elpsutil.PackageLoader(defsPkg{p}))
+		if lrc == nil || lrc.Type != lisp.LError {
+			t.Fatalf("registering a builtin with nil formals did not fail at install time"+
+				" (got %v). The old behaviour -- registering cleanly and nil-derefing inside"+
+				" LEnv.bind at first call -- is exactly what formalsTable's go-nil entry would"+
+				" turn into a permanent fuzz crash; restore the install-time check or pull the"+
+				" entry.", lrc)
 		}
+		msg := lrc.String()
+		for _, want := range []string{`"nilformals"`, `"boom"`, "formals are nil"} {
+			if !strings.Contains(msg, want) {
+				t.Fatalf("the install error does not name the mistake: missing %q in %q", want, msg)
+			}
+		}
+		// Nothing may have been half-installed: the call must fail as an
+		// ordinary unbound-symbol error, never as a recovered Go panic.
 		res := env.LoadString("t", "(nilformals:boom)")
-		if !lisp.IsInternalPanic(res) {
-			t.Fatalf("calling a builtin with nil formals no longer produces an internal panic"+
-				" (got %v). FuzzElpsutilEmbed excludes nil formals on the strength of this"+
-				" behaviour; re-read its header before changing either.", res)
+		if res == nil || res.Type != lisp.LError {
+			t.Fatalf("the rejected builtin is still callable: %v", res)
+		}
+		if lisp.IsInternalPanic(res) {
+			t.Fatalf("calling the rejected builtin recovered a Go panic: %v", res)
 		}
 	})
 
-	t.Run("nil-loader-return-panics", func(t *testing.T) {
+	t.Run("nil-loader-return-reported", func(t *testing.T) {
 		t.Parallel()
 		env, rc := newEnv()
 		if rc != nil {
 			t.Fatalf("env: %v", rc)
 		}
-		defer func() {
-			if r := recover(); r == nil {
-				t.Fatal("a Loader returning a Go nil *LVal no longer panics in elpsutil.Load." +
-					" FuzzElpsutilEmbed excludes that input on the strength of this behaviour;" +
-					" if Load now tolerates nil, the exclusion can be lifted.")
-			}
+		var lrc *lisp.LVal
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("a Loader returning a Go nil *LVal panics inside elpsutil.Load"+
+						" again: %v. initTable's init/go-nil entry generates exactly this input,"+
+						" so the fuzzer would report the panic as a crash on its first pass;"+
+						" restore the nil check or pull the entry.", r)
+				}
+			}()
+			lrc = elpsutil.Load(env, func(env *lisp.LEnv) *lisp.LVal { return nil })
 		}()
-		_ = elpsutil.Load(env, func(env *lisp.LEnv) *lisp.LVal { return nil })
+		if lrc == nil || lrc.Type != lisp.LError {
+			t.Fatalf("a nil loader result was not reported as an error: %v", lrc)
+		}
+		if !strings.Contains(lrc.String(), "returned a nil *LVal") {
+			t.Fatalf("the error does not say what the loader did wrong: %v", lrc)
+		}
 	})
 }
