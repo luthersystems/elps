@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,31 +135,44 @@ import (
 //     something calls it. This is also the only way the fuzzer supplies the
 //     ARGUMENTS a builtin binds, which is where malformed formals bite.
 //
-// # The panic that is designed in, and why names are pre-checked
+// # The panic that is designed in, and where it went
 //
 // lisp.AddBuiltins ends with
 //
 //	if exist.Type != LError { panic("symbol already defined: " + f.Name()) }
 //
 // and AddMacros/AddSpecialOps have the same shape. That is a deliberate
-// programming-error panic, it is not elpsutil's, and it is trivially reachable
-// -- `Function("true", ...)` alone does it, because Package.get answers the
-// reserved symbols `true` and `false` without consulting the symbol table, so
-// they are "already defined" in a package that is brand new and empty.
+// programming-error panic, it is not elpsutil's, and it used to be trivially
+// reachable through elpsutil -- `Function("true", ...)` alone did it, because
+// Package.get answers the reserved symbols `true` and `false` without
+// consulting the symbol table, so they are "already defined" in a package that
+// is brand new and empty.
 //
-// A harness that let the fuzzer hit it would find that crasher in the first
-// second and then report the same one forever, covering nothing. So the
-// harness PRE-CHECKS every name against the package it is about to be bound in
-// and drops the ones that would collide (nameAvailable). The check is
-// conservative -- it demands an unbound symbol, which is the strictest of the
-// three Add* rules -- so it cannot leave a collision behind for any of them.
+// It is no longer reachable through elpsutil (#351): PackageLoader now
+// refuses a colliding definition with an *LVal error, mirroring each Add*
+// function's own rule, before lisp ever sees the definition. The harness
+// therefore no longer filters names. Earlier versions pre-checked every name
+// against the package it was about to be bound in and dropped the ones that
+// would collide (nameAvailable), which was the only way to fuzz at all while
+// the panic was reachable. Now colliding names are handed straight to
+// elpsutil and the refusal is part of what is fuzzed: markRejectEvidence
+// attributes "already defined" and "reserved constant" load errors to the
+// reject/collision and reject/reserved-name labels, and the guard corpus is
+// required to produce both.
 //
-// The payoff is that the assertion needs no qualification: NO panic is
-// tolerated. There is no recover in elpsutil, none between it and the fuzz
-// function, so a panic during install is an ordinary crash that `go test
-// -fuzz` attributes to its input and writes to testdata. TestCollisionPanicIsReal
-// pins the panic the pre-check exists for, so the pre-check cannot quietly
-// become a filter that suppresses everything.
+// lisp's panic itself is still real, and this harness still depends on it
+// being real: elpsutil's checkPackageName exists only to mirror it, so if the
+// panic changed shape, elpsutil could refuse definitions lisp accepts (or
+// stop refusing ones it rejects) without any test noticing.
+// TestCollisionPanicIsReal pins the panic at its source -- env.AddBuiltins,
+// env.AddSpecialOps and env.AddMacros, called directly -- so that account
+// cannot silently expire.
+//
+// The payoff is that the assertion needs no qualification and no longer rests
+// on a filter: NO panic is tolerated, and nothing is dropped from the input
+// space to keep one at bay. There is no recover in elpsutil, none between it
+// and the fuzz function, so a panic during install is an ordinary crash that
+// `go test -fuzz` attributes to its input and writes to testdata.
 //
 // # What is deliberately NOT fuzzer-controlled
 //
@@ -233,8 +247,9 @@ const (
 	maxNameBytes = 16
 
 	// initSwitchPackage is where the "switch package during init" body goes.
-	// It is a fixed name rather than a fuzzer-chosen one so that nameAvailable
-	// can check candidate names against it; see reserveName.
+	// It is a fixed name rather than a fuzzer-chosen one so the init body can
+	// define and enter it without consuming spec bytes, and so the package a
+	// switching init leaves behind is one the corpus can name.
 	initSwitchPackage = "elpsutil-fuzz-init-switch"
 )
 
@@ -321,9 +336,10 @@ var pkgNames = []string{
 	"fuzz-", // trailing separator-ish
 }
 
-// defNames are symbol names. Names that would collide are still listed: the
-// pre-check drops them, and having them in the table is how the pre-check
-// itself stays exercised.
+// defNames are symbol names. Names that collide are deliberately listed:
+// PackageLoader now refuses them with an install-time error where lisp would
+// have panicked, and having them in the table is how those refusal paths
+// (reject/collision, reject/reserved-name) stay exercised.
 var defNames = []string{
 	"fz-a", "fz-b", "fz-c", "fz-d",
 	"true",   // reserved: Package.get answers it without a symbol-table lookup
@@ -553,68 +569,21 @@ type install struct {
 	// TestElpsutilFuzzReachesEveryFeature.
 	reached map[string]bool
 
-	// nregistered counts defs that survived the name pre-check. The reach
-	// guard asserts it is non-zero across the seed corpus, so a pre-check that
-	// started rejecting everything would be caught.
-	nregistered int
+	// ndefs counts defs decoded from the spec and handed to elpsutil. The
+	// reach guard asserts it is non-zero across the seed corpus, so a decoder
+	// change that quietly stopped describing defs would be caught. A counted
+	// def may still be refused at install time -- that refusal is part of
+	// what the target fuzzes.
+	ndefs int
 
-	// claimed tracks names already spoken for, per package name, across this
-	// whole input. The registry cannot answer on its own: within one
-	// LibraryLoader call, package A's builtins are in the symbol table by the
-	// time package B loads, but the harness reserves ALL names up front.
-	claimed map[string]map[string]bool
-
-	// callable is every symbol actually registered, qualified, so the seed
-	// programs and the guards can call what was installed.
+	// callable is every symbol the spec attached to a def, qualified, so the
+	// guards can call what the install described. A name whose package failed
+	// to load never registered, and calling it yields an unbound-symbol
+	// error, which is itself a fine input.
 	callable []string
 }
 
 func (in *install) mark(label string) { in.reached[label] = true }
-
-// nameAvailable reports whether name can be bound in pkg without taking the
-// documented programming-error panic in lisp's Add* functions.
-//
-// The condition is the strictest of the three: AddBuiltins panics unless the
-// symbol is UNBOUND (Type == LError), while AddMacros and AddSpecialOps also
-// tolerate a symbol bound to nil. Demanding unbound is therefore safe for all
-// three, and it is deliberately not a copy of any one rule -- if lisp's rules
-// ever diverge further, a conservative check stays correct where a mirrored
-// one would not.
-func nameAvailable(pkg *lisp.Package, name string) bool {
-	return pkg.Get(lisp.Symbol(name)).Type == lisp.LError
-}
-
-// reserveName decides whether a def may keep the name the spec gave it.
-//
-// It checks the target package AND initSwitchPackage, because a package whose
-// PackageInit switches packages installs its builtins somewhere other than the
-// package PackageLoader selected, and the harness does not know at reservation
-// time which init body the spec will pick.
-func (in *install) reserveName(pkgName, name string) bool {
-	if in.claimed[pkgName] == nil {
-		in.claimed[pkgName] = map[string]bool{}
-	}
-	if in.claimed[pkgName][name] {
-		return false
-	}
-	for _, target := range []string{pkgName, initSwitchPackage} {
-		// DefinePackage is idempotent and returns the existing package when
-		// there is one, so this creates only what PackageLoader would have
-		// created a moment later.
-		if !nameAvailable(in.env.Runtime.Registry.DefinePackage(target), name) {
-			return false
-		}
-	}
-	if in.claimed[initSwitchPackage] == nil {
-		in.claimed[initSwitchPackage] = map[string]bool{}
-	}
-	if in.claimed[initSwitchPackage][name] {
-		return false
-	}
-	in.claimed[pkgName][name] = true
-	in.claimed[initSwitchPackage][name] = true
-	return true
-}
 
 // plainSymbol reports whether s can appear verbatim in source text and read
 // back as the same symbol. Deliberately strict: the point of qualify is to
@@ -661,16 +630,15 @@ func (in *install) buildDefs(r *specReader, pkgName string, n int) []lisp.LBuilt
 		name := r.name(defNames)
 		fsel := formalsTable[int(r.next())%len(formalsTable)]
 		bsel := bodyTable[int(r.next())%len(bodyTable)]
-		if !in.reserveName(pkgName, name) {
-			// Dropped by the pre-check. Recorded so the reach guard can prove
-			// the pre-check runs and is not vacuous.
-			in.mark("precheck/dropped")
-			continue
-		}
+		// Nothing is filtered: a name that collides -- with another def in
+		// this input, with a symbol already bound in the target package, or
+		// with the reserved constants -- goes to elpsutil anyway, and the
+		// install-time refusal it produces is attributed to a reject/* label
+		// by markRejectEvidence.
 		in.mark("formals/" + fsel.label)
 		in.mark("body/" + bsel.label)
 		defs = append(defs, elpsutil.Function(name, fsel.make(), bsel.fn))
-		in.nregistered++
+		in.ndefs++
 		if sym, ok := qualify(pkgName, name); ok {
 			in.callable = append(in.callable, sym)
 		}
@@ -732,11 +700,11 @@ func (in *install) build(spec []byte) []elpsutil.Loader {
 		//
 		// The packages are SPLIT between the two rather than passed to both.
 		// Passing both would install every package twice, and the second pass
-		// re-registers names the first pass just bound -- which is the
-		// designed-in "symbol already defined" panic, reached by the harness
-		// itself rather than by anything under test. The split keeps every
-		// registration unique, which is the invariant the name pre-check
-		// assumes.
+		// re-registers names the first pass just bound -- a collision
+		// PackageLoader now refuses with an error, so no nested input could
+		// ever load cleanly. The split keeps every registration unique so
+		// this strategy exercises the success path too; the fuzzer is free to
+		// mutate specs into colliding shapes on its own.
 		k := max(1, npkg/2)
 		return []elpsutil.Loader{elpsutil.LoadAll(
 			elpsutil.LibraryLoader(pkgs[:k]...),
@@ -751,7 +719,6 @@ func newInstall(env *lisp.LEnv) *install {
 	return &install{
 		env:     env,
 		reached: map[string]bool{},
-		claimed: map[string]map[string]bool{},
 	}
 }
 
@@ -876,9 +843,9 @@ func runBudgeted(t fatalf, spec, src []byte) *install {
 	}
 	in := newInstall(env)
 
-	// The spec is decoded on THIS goroutine, before the worker starts, because
-	// reserveName reads and writes the registry and nothing else may be
-	// touching it at the time.
+	// The spec is decoded on THIS goroutine, before the worker starts, so
+	// decode-time work on the environment is complete before run() begins and
+	// the two never race.
 	loaders := in.build(spec)
 
 	ctx, cancel := context.WithTimeout(context.Background(), fuzzDeadline)
@@ -916,9 +883,32 @@ func runBudgeted(t fatalf, spec, src []byte) *install {
 	return in
 }
 
+// markRejectEvidence turns install-time refusals into coverage marks, so that
+// a reject/* label can only ever claim a refusal that demonstrably happened:
+// each mark requires the refusal's own error text in a load result. Nothing
+// here asserts -- an input with no refusals simply marks nothing.
+func (in *install) markRejectEvidence(results []*lisp.LVal) {
+	for _, rc := range results {
+		if rc == nil || rc.Type != lisp.LError {
+			continue
+		}
+		msg := rc.String()
+		// The two refusals that replaced lisp's "symbol already defined"
+		// panic on the elpsutil path; the strings are checkPackageName's.
+		if strings.Contains(msg, "already defined in package") {
+			in.mark("reject/collision")
+		}
+		if strings.Contains(msg, "is a reserved constant") {
+			in.mark("reject/reserved-name")
+		}
+	}
+}
+
 // check applies every assertion this target makes.
 func (in *install) check(t fatalf, out *outcome, spec, src []byte) {
 	t.Helper()
+
+	in.markRejectEvidence(out.loadResults)
 
 	for i, rc := range out.loadResults {
 		if rc == nil {
@@ -1109,8 +1099,10 @@ func buildSpec(strategy int, pkgs ...seedPkg) []byte {
 //  1. Nothing panics. There is no recover in elpsutil and none between it and
 //     this function, so an install panic is an ordinary crash that `go test
 //     -fuzz` attributes to its input. The one panic that IS designed in --
-//     lisp's "symbol already defined" -- is kept unreachable by the name
-//     pre-check rather than tolerated; see the header.
+//     lisp's "symbol already defined" -- is answered rather than avoided:
+//     PackageLoader refuses the colliding definition with an error before
+//     lisp can panic, and no input is filtered to keep clear of it; see the
+//     header, and TestCollisionPanicIsReal for the panic itself.
 //  2. Every elpsutil.Load returns a non-nil *LVal that is either nil or an
 //     LError, and never an internal-panic error.
 //  3. When every load succeeded, the interpreter is back in the `user`
@@ -1121,9 +1113,8 @@ func buildSpec(strategy int, pkgs ...seedPkg) []byte {
 //  5. The same three properties for every call autoCall makes, which is where
 //     fuzzer-chosen arguments meet fuzzer-chosen formals.
 //
-// NOT asserted: that any package installs successfully, that any name survives
-// the pre-check, or that src evaluates without error. An LError is the right
-// answer for almost all mutator output.
+// NOT asserted: that any package installs successfully, or that src evaluates
+// without error. An LError is the right answer for almost all mutator output.
 func FuzzElpsutilEmbed(f *testing.F) {
 	add := func(spec []byte, src string) { f.Add(spec, []byte(src)) }
 
@@ -1234,9 +1225,11 @@ func FuzzElpsutilEmbed(f *testing.F) {
 	), `(list (fuzzpkg:fz-a 1 2) (fuzzpkg2:fz-b 3 4) (fuzzpkg:fz-a 5 6))`)
 
 	// Registering into packages that already exist, which is what an embedder
-	// adding to `user` or extending `lisp` does. The pre-check keeps the
-	// colliding names out; the point is the non-colliding ones landing in a
-	// populated package.
+	// adding to `user` or extending `lisp` does. The colliding second def
+	// makes each load fail with PackageLoader's install-time refusal (where
+	// lisp used to panic); the first def is already registered by then, so
+	// the seed covers both halves: a def landing in a populated package, and
+	// the refusal naming the collision.
 	add(buildSpec(0, seedPkg{
 		typ: "type/defs", name: "user", init: "init/nil",
 		builtins: []seedDef{{"fz-a", "unary", "echo"}, {"+", "unary", "echo"}},
@@ -1245,6 +1238,12 @@ func FuzzElpsutilEmbed(f *testing.F) {
 		typ: "type/defs", name: "lisp", init: "init/nil",
 		builtins: []seedDef{{"fz-b", "unary", "echo"}, {"car", "unary", "echo"}},
 	}), `(fz-b 1)`)
+	// A duplicate within a single package: the second fz-a arrives after the
+	// first is already in the symbol table, and the load is refused.
+	add(buildSpec(0, seedPkg{
+		typ: "type/defs", name: "fuzzpkg", init: "init/nil",
+		builtins: []seedDef{{"fz-a", "unary", "echo"}, {"fz-a", "binary", "echo"}},
+	}), `(fuzzpkg:fz-a 1)`)
 
 	// Names that are legal registry keys but not legal source text. These
 	// register and are never callable from src, which is the point: the value
@@ -1331,8 +1330,9 @@ func FuzzElpsutilEmbed(f *testing.F) {
 //	type/full   -> the ok branch of all four
 //	init/error  -> PackageLoader's `if e.Type == lisp.LError` after init
 //	load/error  -> the error returns in Load, LoadAll and LibraryLoader
-//	precheck/*  -> the name pre-check actually ran and actually dropped
-//	               something, so it is neither vacuous nor total
+//	reject/*    -> PackageLoader refused a definition -- a name collision or
+//	               a reserved constant -- with an error where lisp would have
+//	               panicked; marked only on the refusal's own error text
 //
 // #348 is why this exists: there, seed-script ordering silently starved whole
 // functions, and measuring was the only way to see it.
@@ -1341,7 +1341,7 @@ var requiredFeatures = []string{
 	"type/plain", "type/defs", "type/init", "type/full",
 	"init/nil", "init/error", "init/eval", "init/switch", "init/doc", "init/drop-user",
 	"load/ok", "load/error", "autocall/ran",
-	"precheck/dropped",
+	"reject/collision", "reject/reserved-name",
 }
 
 // TestElpsutilFuzzReachesEveryFeature runs the seed corpus through the harness
@@ -1361,15 +1361,15 @@ func TestElpsutilFuzzReachesEveryFeature(t *testing.T) {
 		if in == nil {
 			continue
 		}
-		total += in.nregistered
+		total += in.ndefs
 		for k := range in.reached {
 			reached[k] = true
 		}
 	}
 
 	if total == 0 {
-		t.Fatal("the guard corpus registered NO builtins at all: the name pre-check is" +
-			" rejecting everything, so this target installs nothing and asserts nothing")
+		t.Fatal("the guard corpus decoded NO defs at all: the spec decoder is describing" +
+			" empty installs, so this target installs nothing and asserts nothing")
 	}
 
 	var missing []string
@@ -1455,10 +1455,17 @@ func guardCorpus() []guardCase {
 				builtins: []seedDef{{"fz-b", "unary", "echo"}}},
 		), `(fuzzpkg:fz-a 1)`)
 	}
-	// Guarantees precheck/dropped: `true` is "already defined" in any package.
+	// Guarantees reject/reserved-name: `true` can never be bound, and
+	// PackageLoader refuses it with an error where lisp would have panicked.
 	addSpec(buildSpec(0, seedPkg{
 		typ: "type/defs", name: "fuzzpkg", init: "init/nil",
 		builtins: []seedDef{{"true", "unary", "echo"}, {"fz-a", "unary", "echo"}},
+	}), `(fuzzpkg:fz-a 1)`)
+	// Guarantees reject/collision: the second fz-a arrives after the first is
+	// already in the package's symbol table.
+	addSpec(buildSpec(0, seedPkg{
+		typ: "type/defs", name: "fuzzpkg", init: "init/nil",
+		builtins: []seedDef{{"fz-a", "unary", "echo"}, {"fz-a", "binary", "echo"}},
 	}), `(fuzzpkg:fz-a 1)`)
 	return out
 }
@@ -1476,63 +1483,70 @@ func TestElpsutilSeedsTerminate(t *testing.T) {
 	}
 }
 
-// TestCollisionPanicIsReal pins the panic the name pre-check exists to avoid.
+// TestCollisionPanicIsReal pins lisp's designed-in duplicate-registration
+// panic at its source: env.AddBuiltins, env.AddSpecialOps and env.AddMacros,
+// called directly.
 //
-// If lisp ever stops panicking on a duplicate registration, nameAvailable
-// becomes a filter that costs coverage and buys nothing, and the header's
-// claim that "NO panic is tolerated" would be resting on an assumption that
-// had quietly expired. This fails in that case, which is the moment to delete
-// the pre-check rather than the moment to discover it was never needed.
+// The panic is deliberately untouched by #351 but is no longer reachable
+// through elpsutil -- PackageLoader refuses the colliding definition with an
+// error first -- so going through elpsutil.Load here would test the refusal,
+// not the panic. Two things still rest on the panic being real: elpsutil's
+// checkPackageName exists only to mirror these functions' collision rules,
+// and the harness registers its bind-bypass builtins through env.AddBuiltins
+// on the assumption that a fresh name in a fresh environment cannot collide.
+// If lisp's rule ever changes, update checkPackageName and this test
+// together; a divergence between them means elpsutil refuses definitions lisp
+// accepts, or stops refusing ones that panic.
 func TestCollisionPanicIsReal(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range []struct {
+	kinds := []struct {
 		name string
-		pkg  *pkgData
+		add  func(env *lisp.LEnv, def lisp.LBuiltinDef)
 	}{
-		{"duplicate-builtin", &pkgData{name: "collide1", builtins: []lisp.LBuiltinDef{
-			elpsutil.Function("dup", lisp.Formals("x"), bodyTable[0].fn),
-			elpsutil.Function("dup", lisp.Formals("x"), bodyTable[0].fn),
-		}}},
-		{"reserved-symbol", &pkgData{name: "collide2", builtins: []lisp.LBuiltinDef{
-			elpsutil.Function(lisp.TrueSymbol, lisp.Formals("x"), bodyTable[0].fn),
-		}}},
-		{"existing-lang-symbol", &pkgData{name: "lisp", builtins: []lisp.LBuiltinDef{
-			elpsutil.Function("car", lisp.Formals("x"), bodyTable[0].fn),
-		}}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			env, rc := newEnv()
-			if rc != nil {
-				t.Fatalf("env: %v", rc)
-			}
-			// The pre-check must agree that this is a collision, or it is
-			// checking something other than what panics.
-			in := newInstall(env)
-			target := tc.pkg.name
-			if in.reserveName(target, tc.pkg.builtins[0].Name()) &&
-				len(tc.pkg.builtins) == 1 {
-				t.Fatalf("nameAvailable says %q is free in package %q, but registering it"+
-					" panics; the pre-check and lisp's rule have diverged",
-					tc.pkg.builtins[0].Name(), target)
-			}
-
-			defer func() {
-				if r := recover(); r == nil {
-					t.Fatalf("registering %q in package %q did NOT panic."+
-						" lisp's duplicate-symbol panic is the only reason FuzzElpsutilEmbed"+
-						" pre-checks names; if it is gone, delete nameAvailable and let the"+
-						" fuzzer use the whole name table.",
-						tc.pkg.builtins[0].Name(), tc.pkg.name)
+		{"builtin", func(env *lisp.LEnv, def lisp.LBuiltinDef) { env.AddBuiltins(true, def) }},
+		{"special-op", func(env *lisp.LEnv, def lisp.LBuiltinDef) { env.AddSpecialOps(true, def) }},
+		{"macro", func(env *lisp.LEnv, def lisp.LBuiltinDef) { env.AddMacros(true, def) }},
+	}
+	cases := []struct {
+		name string
+		// pkg is the package registered into; defined first if absent.
+		pkg string
+		// names are registered in order and the LAST one must panic.
+		names []string
+	}{
+		{"duplicate-symbol", "collide1", []string{"dup", "dup"}},
+		{"reserved-symbol", "collide2", []string{lisp.TrueSymbol}},
+		{"existing-lang-symbol", "lisp", []string{"car"}},
+	}
+	for _, kind := range kinds {
+		for _, tc := range cases {
+			t.Run(kind.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				env, rc := newEnv()
+				if rc != nil {
+					t.Fatalf("env: %v", rc)
 				}
-			}()
-			env2, rc2 := newEnv()
-			if rc2 != nil {
-				t.Fatalf("env: %v", rc2)
-			}
-			_ = elpsutil.Load(env2, elpsutil.PackageLoader(defsPkg{tc.pkg}))
-		})
+				env.Runtime.Registry.DefinePackage(tc.pkg)
+				if lrc := env.InPackage(lisp.String(tc.pkg)); lrc.Type == lisp.LError {
+					t.Fatalf("in-package %q: %v", tc.pkg, lrc)
+				}
+				for _, name := range tc.names[:len(tc.names)-1] {
+					kind.add(env, elpsutil.Function(name, lisp.Formals("x"), bodyTable[0].fn))
+				}
+				last := tc.names[len(tc.names)-1]
+				defer func() {
+					if r := recover(); r == nil {
+						t.Fatalf("registering %s %q in package %q did NOT panic."+
+							" lisp's duplicate-symbol panic is what elpsutil's checkPackageName"+
+							" mirrors and what the fuzz harness's bind-bypass registrations"+
+							" assume; if lisp's rule changed, change checkPackageName and this"+
+							" test together.", kind.name, last, tc.pkg)
+					}
+				}()
+				kind.add(env, elpsutil.Function(last, lisp.Formals("x"), bodyTable[0].fn))
+			})
+		}
 	}
 }
 
