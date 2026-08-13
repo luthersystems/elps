@@ -302,7 +302,23 @@ func macroDeftype(env *LEnv, args *LVal) *LVal {
 // identity check — they are shared, immutable, pre-allocated values
 // and mutating one corrupts every reader of that singleton for the
 // remainder of the process lifetime. See issue #274.
+// A macro is free to build its expansion with assoc! or append!, so the value
+// handed to stampMacroExpansion can contain itself, and an unguarded walk over
+// one overflows the goroutine stack and kills the process.  The walk is
+// bounded the same way rendering is; see lisp/cycle.go and issue #390.
 func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionContext, rt *Runtime) {
+	var st cycleState
+	stampGuarded(v, callSite, ctx, rt, cycleGuard{state: &st})
+	if st.cyclic {
+		// The walk above stopped as soon as it knew the expansion contains
+		// itself, leaving part of it unstamped.  Stamping is idempotent -- a
+		// node that already has a real source location is left alone -- so
+		// the rerun, which visits each node once, finishes the job.
+		stampGuarded(v, callSite, ctx, rt, strictCycleGuard())
+	}
+}
+
+func stampGuarded(v *LVal, callSite *token.Location, ctx *macroExpansionContext, rt *Runtime, g cycleGuard) {
 	if v == nil || callSite == nil {
 		return
 	}
@@ -326,6 +342,19 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionC
 	if v.sealed {
 		return
 	}
+	// Only a node with children is entered on the guard's path: a leaf stamps
+	// itself and reaches nothing, and stamping runs on every macro expansion.
+	nested := len(v.Cells) > 0
+	if nested {
+		if g.abandoned() {
+			return
+		}
+		var cyclic bool
+		g, cyclic = g.descend(v)
+		if cyclic {
+			return
+		}
+	}
 	if v.source == nil || v.source.Pos < 0 {
 		v.source = callSite //elps:mutates debug-metadata stamp on macro-expansion output; sealed (shared) subtrees are skipped above
 		if ctx != nil {
@@ -337,7 +366,10 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionC
 		}
 	}
 	for _, child := range v.Cells {
-		stampMacroExpansion(child, callSite, ctx, rt)
+		stampGuarded(child, callSite, ctx, rt, g)
+	}
+	if nested && g.tracking() {
+		g.ascend(v)
 	}
 }
 
