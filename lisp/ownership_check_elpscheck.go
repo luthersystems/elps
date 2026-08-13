@@ -79,8 +79,16 @@ import (
 //     panicked on the first shared AST node — so an embedder running the
 //     supported parse-cache topology could not use checked mode at all, and
 //     the two halves of the #372 verification tooling contradicted each
-//     other.  Found by lisp.FuzzSharedProgramMultiEnv, whose whole subject
-//     is that topology.
+//     other: the mode that hosts the sealed-AST inspector rejected the
+//     topology the seal exists to sanction.  What the exemption permits is
+//     therefore narrow and stated positively — a node that is sealed, and
+//     only while it stays sealed, may be reached by more than one Runtime.
+//
+//     Found by lisp.FuzzSharedProgramMultiEnv (added on this branch), whose
+//     whole subject is that topology.  The exemption itself lives on
+//     claude/exp-seal-tooling, where sealing is introduced and where the
+//     contradiction it resolves is created; this branch is where it was
+//     discovered, not where it belongs.
 //
 //     What licenses the exemption is that a sealed node's cross-runtime
 //     safety does not rest on ownership at all: sealed bytes never change

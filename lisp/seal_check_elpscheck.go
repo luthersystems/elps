@@ -62,6 +62,12 @@ import (
 // each full verification.  All of it compiles out under the default
 // build tag (see seal_check_default.go): release binaries carry empty
 // inlined hooks and zero bookkeeping.
+//elpsvet:allow checked-build verification machinery, not program data: this table is
+// the seal checker's own record of parse-time fingerprints, it exists only under
+// -tags elpscheck, and the *LVal keys are never handed to a Runtime as values --
+// they are compared by identity and read for fingerprinting. Reaching every Runtime
+// is the POINT: a corruption is only detectable against a record that outlives the
+// environment that made it. Release binaries carry none of this (seal_check_default.go).
 var sealCheck = sealCheckState{roots: make(map[*LVal]uint64)}
 
 // sealCheckMaxRoots bounds the table: past this many recorded roots the
@@ -86,6 +92,15 @@ type sealCheckState struct {
 // the load that caused it, not just at the value-drift checkpoints
 // checkSingleton covers.  The slice is written once at init and read-only
 // afterwards, so verification needs no lock.
+//elpsvet:allow checked-build verification machinery, not program data: every *LVal in
+// this slice is one of the three singletons from lisp/singleton.go, which are ALREADY
+// package-level and already reachable by every Runtime by design -- each carries its
+// own //elpsvet:allow marker there. This table adds no new cross-Runtime reachability;
+// it is a derived index over values that are shared by decree, holding their init-time
+// fingerprints so that drift in them can be DETECTED. Process-wide lifetime is the
+// point: a baseline captured before any user code runs is worthless if it does not
+// outlive the environments it indicts. Written once at init, read-only afterwards, and
+// absent from release binaries (seal_check_default.go).
 var permanentSealRoots = func() []permanentSealRoot {
 	roots := make([]permanentSealRoot, 0, 3)
 	for _, s := range []struct {
