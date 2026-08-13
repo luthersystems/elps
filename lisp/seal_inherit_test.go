@@ -85,6 +85,17 @@ func TestInheritSealCannotInventAConstraint(t *testing.T) {
 // must COPY, as builtinSlice does for (slice 'vector ...) -- and
 // TestSealPropagation pins that behaviour on the kernel side.
 func TestInheritSealRefusesArrays(t *testing.T) {
+	// The "vector" row below deliberately mints a vector over a SEALED
+	// list's live cells -- the undischargeable form of the borrowed-backing
+	// fault, since InheritSeal refuses arrays by design and the only
+	// correct production response is to copy. The read-half detector
+	// (lisp/borrow_check_elpscheck.go) reports it, correctly, and this test
+	// is its own subject, so the notes are dropped afterwards rather than
+	// left to fail the package's TestMain -- the same hygiene
+	// TestCheckSingleton_DetectsCorruption applies to the singleton it
+	// deliberately corrupts. A no-op in untagged builds.
+	defer lisp.DropBorrowNotesForTest()
+
 	src := sealedList(t, 4)
 	for _, tc := range []struct {
 		name string

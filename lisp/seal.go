@@ -118,6 +118,13 @@ func (v *LVal) sealAST() {
 	// completes and before the tree can be shared, and it only sets the
 	// monotone flag that forbids all further writes.
 	v.sealed = true //elps:mutates -- parse-completion sealing; single-threaded, pre-sharing, sets the flag that freezes the node
+	// Register this node's cell backing as CONSTRAINED storage so that a
+	// header later minted over it and never given the constraint is
+	// reported by the read-half oracle (lisp/borrow_check_elpscheck.go).
+	// Registration is per NODE, not per parse root: a borrow lands on some
+	// interior node's cells, which is exactly where #392 landed.  A no-op
+	// untagged.
+	recordConstrainedCells(v.Cells)
 	for _, c := range v.Cells {
 		c.sealAST()
 	}

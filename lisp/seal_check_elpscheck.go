@@ -6,6 +6,7 @@ package lisp
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -169,6 +170,20 @@ func VerifySealedASTs() error {
 	if bad > 0 {
 		return fmt.Errorf("%d of %d sealed parse trees were mutated after parsing; first:\n%s",
 			bad, len(entries), first)
+	}
+	// The fingerprint walk above is the CORRUPTION-time half: it fires only
+	// once something has already written a sealed tree.  The borrowed-
+	// backing detector is the READ-time half — it fires when a header is
+	// minted over sealed storage and never inherits the constraint, before
+	// any write, which is the signal #392 needed and did not have.  It is
+	// reported through this function rather than through an exported one of
+	// its own so that every existing caller (the lisp package's TestMain,
+	// elpstest.Runner, elpstest.RunBenchmark, libelpspath's TestMain, and
+	// any embedder's teardown) picks it up with no change and the detector
+	// adds no public API.  See lisp/borrow_check_elpscheck.go.
+	if faults := borrowProvenanceFaults(); len(faults) > 0 {
+		return fmt.Errorf("%d borrowed-backing provenance fault site(s):\n%s",
+			len(faults), strings.Join(faults, "\n\n"))
 	}
 	return nil
 }
