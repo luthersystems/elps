@@ -92,6 +92,15 @@ type sealCheckState struct {
 // the load that caused it, not just at the value-drift checkpoints
 // checkSingleton covers.  The slice is written once at init and read-only
 // afterwards, so verification needs no lock.
+//elpsvet:allow checked-build verification machinery, not program data: every *LVal in
+// this slice is one of the three singletons from lisp/singleton.go, which are ALREADY
+// package-level and already reachable by every Runtime by design -- each carries its
+// own //elpsvet:allow marker there. This table adds no new cross-Runtime reachability;
+// it is a derived index over values that are shared by decree, holding their init-time
+// fingerprints so that drift in them can be DETECTED. Process-wide lifetime is the
+// point: a baseline captured before any user code runs is worthless if it does not
+// outlive the environments it indicts. Written once at init, read-only afterwards, and
+// absent from release binaries (seal_check_default.go).
 var permanentSealRoots = func() []permanentSealRoot {
 	roots := make([]permanentSealRoot, 0, 3)
 	for _, s := range []struct {
