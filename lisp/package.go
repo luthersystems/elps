@@ -48,6 +48,44 @@ func (r *PackageRegistry) PackageNames() []string {
 // already.  AddPackage returns true when p was added and false when a
 // package named p.Name was already registered (in which case the registry
 // is unchanged).
+//
+// Ownership: AddPackage stores p BY POINTER and copies nothing.  Registering
+// one *Package with the registries of two environments therefore gives both
+// environments the same bindings and the same *LVal values — a fact both
+// in-repo callers (cmd/doc.go, mcpserver/service.go) rely on to merge an
+// embedder's packages into freshly built documentation environments.
+//
+// The caller owns what that sharing means for the VALUES it installs.  An
+// unsealed list value shared this way is mutable storage shared between
+// runtimes: (stable-sort > shared:data) evaluated in one environment
+// rewrites the list in place and every other environment holding the package
+// reads the sorted result (lisp/package_sharing_test.go pins both halves of
+// this).  Call SealAST on any value a package may carry into more than one
+// environment — the kernel's mutation sites copy-on-write a sealed value
+// (lisp/seal.go), which is exactly the protection the parser gives program
+// literals.
+//
+// This is a contract rather than a check, deliberately, and it is NOT the
+// same situation as lisp.Program (issue #394), which repairs an unsealed
+// tree at construction:
+//
+//   - There is nothing to repair.  A Package's symbols are arbitrary runtime
+//     values — builtin LFun closures, LNative payloads, sorted maps — which
+//     Copy cannot deep-copy and SealAST explicitly declines to descend into.
+//     The private-copy-and-seal that works for a parse tree has no analogue
+//     for a package.
+//   - A check here would run at the wrong time.  Packages are registered
+//     empty and populated afterwards (DefinePackage, then Put/Export), so
+//     AddPackage inspecting p's contents would inspect nothing.
+//   - The only guard AddPackage could actually implement — refusing a
+//     *Package already registered elsewhere — would forbid the sharing its
+//     two in-repo callers exist to perform, and would make *Package
+//     single-registry for its whole lifetime.
+//
+// Tightening this is a design change to Package (sealing at Put time for
+// parser-shaped values, or an ownership assertion under the elpscheck build
+// tag, which does not currently fire here) and belongs in its own issue, not
+// in #394's fix.
 func (r *PackageRegistry) AddPackage(p *Package) bool {
 	if p == nil {
 		return false

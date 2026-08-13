@@ -16,9 +16,14 @@ import (
 // outside this module can hold, cache, and evaluate a Program but can never
 // reach the raw AST nodes inside it, so an embedder's parse cache cannot leak
 // *LVal pointers between environments by construction.  The class of bug is
-// eliminated at compile time (there is no accessor to misuse) and at zero
-// runtime cost (Program is a slice header behind a struct; sealing copies
-// nothing).
+// eliminated at compile time (there is no accessor to misuse) and, for a
+// reader that seals its own output, at zero runtime cost (Program is a slice
+// header behind a struct; sealing copies nothing).  A reader that does NOT
+// seal — the format-preserving reader, or any Reader implemented outside
+// this module — is repaired at construction with a private, sealed copy, so
+// the guarantee no longer depends on which reader the embedder wired in
+// (issue #394); see newProgram for the reasoning and the one input that is
+// refused instead of repaired.
 //
 // Producers live where the parse happens so raw-slice custody never leaves
 // this package: ReadProgram, ReadLocationProgram, and (*LEnv).ParseProgram.
