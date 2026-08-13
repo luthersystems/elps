@@ -3,6 +3,7 @@
 package libelpspath
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -52,15 +53,16 @@ import (
 //     where lisp code expected a condition.
 //  3. The result renders.  LVal.String() terminates and does not panic; every
 //     error path in the interpreter formats its operands.
-//  4. LIST nodes are bit-identical afterwards, for ALL SEVEN operations
-//     including the mutating ones.  A list is the shape a parsed program
-//     literal supplies, and the parse cache aliases one into every warm
-//     environment, so an in-place write to a list corrupts a value the
-//     caller never handed over.  A mutating operation is free to rework a
-//     vector or a sorted-map in place — that is the documented meaning of
-//     the "!" names — and must refuse to touch a list: errMutateList is the
-//     guard, and a fingerprint drift here is that guard failing, which is
-//     the substrate#378 shared-AST corruption class.
+//  4. Every LIST node's own cell layout is unchanged afterwards, for ALL
+//     SEVEN operations including the mutating ones.  A list is the shape a
+//     parsed program literal supplies, and the parse cache aliases one into
+//     every warm environment, so an in-place write to a list corrupts a
+//     value the caller never handed over.  A mutating operation is free to
+//     rework a vector or a sorted-map in place — that is the documented
+//     meaning of the "!" names — and must refuse to touch a list:
+//     errMutateList is the guard, and a drift here is that guard failing,
+//     which is the substrate#378 shared-AST corruption class.  See
+//     fpListSpines for why the digest stops at the list's own cells.
 //  5. Copy-vs-mutate.  The non-mutating operations (?, ?set, ?del, ?nil) must
 //     leave the input document structurally unchanged — the documented
 //     contract of the names without "!".  The mutating operations carry no
@@ -74,7 +76,13 @@ import (
 // so the invariant is narrowed to the list nodes: the shape errMutateList is
 // actually about, and the only parser-producible shape a path operation can
 // write through.  Symbols, strings and numbers are leaf LVals that no path
-// operation writes to, so the narrowing costs no reachable coverage.
+// operation writes to, so the narrowing costs no reachable coverage there.
+// What it does cost: the seal drew the mutable/immutable line for the whole
+// document at once, so a sealed scalar deep inside a runtime container was
+// covered too.  The shared-leaf write that TestCopyOpOnListDoesNotWrite-
+// ThroughASharedLeaf pins is exactly such a write, and here it is caught by
+// invariant 5 (for the copying ops, which is where it is reachable) and by
+// that test rather than by this invariant.
 //
 // NOT ASSERTED
 //
@@ -127,7 +135,7 @@ func FuzzPathEngine(f *testing.F) {
 		// The list nodes are the parser-producible, cache-shared shapes;
 		// vectors and sorted-maps are runtime values the "!" ops may rework.
 		listRoots := collectLists(doc)
-		fpListsBefore := fpAST(listRoots)
+		fpListsBefore := fpListSpines(listRoots)
 		fpDocBefore := fpAST([]*lisp.LVal{doc})
 
 		args := make([]*lisp.LVal, 0, len(steps)+2)
@@ -154,7 +162,7 @@ func FuzzPathEngine(f *testing.F) {
 		_ = result.String()
 
 		// Invariant 4.
-		if fpAfter := fpAST(listRoots); fpAfter != fpListsBefore {
+		if fpAfter := fpListSpines(listRoots); fpAfter != fpListsBefore {
 			t.Fatalf("%s mutated a list node in place (fingerprint %s -> %s):"+
 				" a program literal handed to this operation would be corrupted for"+
 				" every environment sharing the parse (the substrate#378 class)"+
@@ -220,25 +228,41 @@ func fuzzPathEnv(t *testing.T) *lisp.LEnv {
 	return env
 }
 
-// collectLists returns the outermost list nodes reachable from v.
+// collectLists returns every list node reachable from v.
 //
-// Outermost, not every list: fpAST already walks a node's whole subtree, so
-// fingerprinting a nested list again would only make the digest longer.  The
-// walk goes through sorted-map entries as well as Cells, because a map's
-// values are not in Cells and a list held as a map value is exactly the case
-// the dot-then-index paths reach.
+// Every list, not the outermost: a list nested inside another list, a vector
+// or a map is just as much a program literal, and each is checked on its own
+// spine below.
+//
+// IMPORTANT: an LArray is [dims, data] and BOTH of those wrapper nodes are
+// LSExpr — the array's element storage is a list by Type.  Reworking a
+// vector in place is the documented meaning of the "!" names, so collecting
+// those two would report every legitimate vector mutation as list
+// corruption.  The walk therefore steps over an array's wrapper straight to
+// its elements.
 func collectLists(v *lisp.LVal) []*lisp.LVal {
 	var roots []*lisp.LVal
+	seen := map[*lisp.LVal]bool{}
 	var walk func(v *lisp.LVal, depth int)
 	walk = func(v *lisp.LVal, depth int) {
-		if v == nil || depth > 64 {
+		if v == nil || depth > 64 || seen[v] {
 			return
 		}
-		if v.Type == lisp.LSExpr {
+		seen[v] = true
+		// Only the container shapes reach other values.
+		switch v.Type {
+		case lisp.LSExpr:
 			roots = append(roots, v)
-			return
-		}
-		if v.Type == lisp.LSortMap {
+			for _, c := range v.Cells {
+				walk(c, depth+1)
+			}
+		case lisp.LArray:
+			if len(v.Cells) == 2 {
+				for _, c := range v.Cells[1].Cells {
+					walk(c, depth+1)
+				}
+			}
+		case lisp.LSortMap:
 			m := v.Map()
 			if m == nil {
 				return
@@ -252,14 +276,39 @@ func collectLists(v *lisp.LVal) []*lisp.LVal {
 					walk(e.Cells[1], depth+1)
 				}
 			}
-			return
-		}
-		for _, c := range v.Cells {
-			walk(c, depth+1)
+		default:
+			for _, c := range v.Cells {
+				walk(c, depth+1)
+			}
 		}
 	}
 	walk(v, 0)
 	return roots
+}
+
+// fpListSpines fingerprints each list node's OWN cell layout: its quote flag
+// and the identity of the cells it holds, one level, no recursion.
+//
+// That is exactly what an in-place write to a list changes — toCells hands
+// back the live backing and the operations shift it or store a new slice
+// over it — and it is deliberately blind to what happens further down.  A
+// mutating operation is allowed to rework a vector or a sorted-map that
+// happens to hang off a list, and a recursive digest would report those as
+// list corruption.  Every list below is collected in its own right, so
+// nesting costs no coverage.
+//
+// Cell identity is the pointer.  Go's collector does not move heap objects,
+// so a pointer is stable across the operation under test.
+func fpListSpines(lists []*lisp.LVal) string {
+	var sb strings.Builder
+	for _, l := range lists {
+		fmt.Fprintf(&sb, "%p q=%v n=%d[", l, l.Quoted, len(l.Cells))
+		for _, c := range l.Cells {
+			fmt.Fprintf(&sb, "%p,", c)
+		}
+		sb.WriteString("];")
+	}
+	return sb.String()
 }
 
 func renderSteps(steps []*lisp.LVal) string {

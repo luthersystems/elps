@@ -919,6 +919,19 @@ func Range(from int, to int, implicitTo bool) Path {
 	return &rangePath{from: from, to: to, implicitTo: implicitTo}
 }
 
+// Get returns a sequence over the input's OWN backing array.
+//
+// IMPORTANT: this is a two-index slice, so the result keeps the source's
+// spare capacity, and a later (append 'vector ...) into that capacity writes
+// through to the source — including to a quoted program literal a parse
+// cache shares between environments. That is the repo-wide aliasing class
+// tracked in issues #369 and #373, not something this package opens: the
+// kernel's own (slice 'vector ...) hands back exactly the same thing, and
+// the identical corruption reproduces with no path operation involved at
+// all. Clamping the capacity here would close #369 for one producer and
+// leave every other one open. When #369 is settled — a three-index slice, a
+// copy, or a documented rule — this call site is one the settlement applies
+// to.
 func (s *rangePath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {

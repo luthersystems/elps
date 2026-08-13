@@ -5,6 +5,7 @@ package libelpspath
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -240,7 +241,7 @@ func TestCycleGuardAllocationCost(t *testing.T) {
 					t.Fatal(err)
 				}
 			})
-			assert.Equal(t, 1.0, guarded-unguarded,
+			assert.InDelta(t, 1.0, guarded-unguarded, 0.001,
 				"the gate's guard must cost exactly one allocation per walk "+
 					"(the shared cycleState), got %v vs %v", guarded, unguarded)
 		})
@@ -271,10 +272,10 @@ func TestCycleGuardAllocationDoesNotScale(t *testing.T) {
 		for i := range n {
 			inner := lisp.SortedMap()
 			inner.MapSet("v", lisp.Int(i))
-			m.MapSet("k"+fmt.Sprint(i), inner)
+			m.MapSet("k"+strconv.Itoa(i), inner)
 		}
 		return m
 	}
-	assert.Equal(t, overhead(wide(4)), overhead(wide(64)),
+	assert.InDelta(t, overhead(wide(4)), overhead(wide(64)), 0.001,
 		"the guard's allocation must not grow with the width of the value")
 }
