@@ -59,7 +59,7 @@ func leakEnv(tb testing.TB, reader lisp.Reader) *lisp.LEnv {
 func runThreeEnvs(tb testing.TB, reader lisp.Reader, p lisp.Program) []string {
 	tb.Helper()
 	out := make([]string, 0, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		env := leakEnv(tb, reader)
 		res := env.LoadProgram(p)
 		if res.Type == lisp.LError {
