@@ -44,6 +44,14 @@ type Path interface {
 // one level short would hand back a value that looks independent and is not,
 // which is what issue #395 was.
 //
+// The path operations do not reach it directly. They know which entry or
+// which cells they are about to write, and use copyMapOffPath and
+// copySeqOffPath to leave that one subtree unwalked — it is discarded on the
+// next line either way. Everything OFF the path is copied here, in full:
+// sharing an off-path subtree is what #395 was, one query removed. This
+// entry point remains for the copies that have no path to be directed by,
+// which is the iterator's fallback when an element's own operation fails.
+//
 // It returns an error rather than a value when v contains itself: such a value
 // has no finite copy, and walking one until the goroutine stack overflows
 // kills the process in a way recover() cannot intercept. See issue #393.
@@ -104,6 +112,12 @@ func copyContainer(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 
 // copyMap creates a new map LVal that contains the same elements in the original
 // map.
+//
+// Nothing in the package calls it any more — the map path operations know
+// their key and use copyMapOffPath — but it is one of the three helpers
+// TestCopyHelpersAgreeOnNestingDepth holds to a common contract, and that
+// test is the drift guard issue #395 asked for. Deleting the helper deletes
+// a third of the guard.
 func copyMap(v *lisp.LVal) (*lisp.LVal, error) {
 	return copyMapGuarded(v, lisp.CycleGuard{})
 }
