@@ -39,12 +39,25 @@ const corruptedNativeMessage = "<corrupted error: cell native deref panicked>"
 // be invoked from a deferred recover handler where the LVal pointer can be
 // stale or zeroed.
 func (e *ErrorVal) Error() string {
+	var st cycleState
+	s := e.errorString(cycleGuard{state: &st})
+	if !st.cyclic {
+		return s
+	}
+	return e.errorString(strictCycleGuard())
+}
+
+// errorString is Error, continuing a walk already in progress instead of
+// starting a fresh one.  An error's cells are rendered as ordinary values, so
+// an error reachable from a value it itself contains would otherwise reset the
+// bound on every lap and never terminate.  See lisp/cycle.go.
+func (e *ErrorVal) errorString(g cycleGuard) string {
 	if e == nil {
 		log.Printf("elps: ErrorVal.Error called on nil receiver; returning sentinel")
 		return nilErrorMessage
 	}
 	loc, _ := (*LVal)(e).Source()
-	return fmt.Sprintf("%s: %s", &loc, e.baseMessage())
+	return fmt.Sprintf("%s: %s", &loc, e.baseMessage(g))
 }
 
 // Source returns a copy of the error's originating source location.  It has
@@ -55,12 +68,12 @@ func (e *ErrorVal) Source() (token.Location, bool) {
 	return (*LVal)(e).Source()
 }
 
-func (e *ErrorVal) baseMessage() string {
+func (e *ErrorVal) baseMessage(g cycleGuard) string {
 	if e == nil {
 		log.Printf("elps: ErrorVal.baseMessage called on nil receiver; returning sentinel")
 		return nilErrorMessage
 	}
-	msg := e.ErrorMessage()
+	msg := e.errorMessage(g)
 	if e.Str != "error" {
 		return fmt.Sprintf("%s: %s", e.Str, msg)
 	}
@@ -108,7 +121,18 @@ func (e *ErrorVal) FunName() string {
 // The recovered panic is logged so the operator sees that something is
 // corrupting the error's Cells[0].Native — silently swallowing would hide a
 // real bug.
-func (e *ErrorVal) ErrorMessage() (msg string) {
+func (e *ErrorVal) ErrorMessage() string {
+	var st cycleState
+	s := e.errorMessage(cycleGuard{state: &st})
+	if !st.cyclic {
+		return s
+	}
+	return e.errorMessage(strictCycleGuard())
+}
+
+// errorMessage is ErrorMessage, continuing a walk already in progress.  See
+// errorString.
+func (e *ErrorVal) errorMessage(g cycleGuard) (msg string) {
 	if e == nil {
 		log.Printf("elps: ErrorVal.ErrorMessage called on nil receiver; returning sentinel")
 		return nilErrorMessage
@@ -128,7 +152,7 @@ func (e *ErrorVal) ErrorMessage() (msg string) {
 		}
 	}
 
-	return errorCellMessage(e.Cells)
+	return errorCellMessage(e.Cells, g)
 }
 
 // WriteTrace writes the error and a stack trace to w.
@@ -178,7 +202,7 @@ func (e *ErrorVal) WriteTrace(w io.Writer) (int, error) {
 
 // errorCellMessage renders the cells of an LError as a human-readable
 // message. Nil cells are rendered as "<nil>" rather than dereferenced.
-func errorCellMessage(ecells []*LVal) string {
+func errorCellMessage(ecells []*LVal, g cycleGuard) string {
 	var buf bytes.Buffer
 	for i, cell := range ecells {
 		if i > 0 {
@@ -192,7 +216,7 @@ func errorCellMessage(ecells []*LVal) string {
 		if cell.Type == LString {
 			buf.WriteString(cell.Str)
 		} else {
-			buf.WriteString(cell.String())
+			buf.WriteString(cell.str(false, g))
 		}
 	}
 	return buf.String()

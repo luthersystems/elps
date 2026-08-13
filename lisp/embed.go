@@ -29,9 +29,44 @@ func Not(v *LVal) bool {
 // NOTE:  These semantics may change.  It's unclear what the exact need is in
 // corner cases.
 func GoValue(v *LVal) interface{} {
+	var st cycleState
+	x := goValue(v, cycleGuard{state: &st})
+	if st.cyclic {
+		// A value that contains itself has no Go representation -- every
+		// conversion of one is infinite -- so it is returned as the *LVal it
+		// is, which is already what GoValue does for the types with no
+		// natural Go form.  Without the bound the walk would overflow the
+		// goroutine stack and kill the process; see lisp/cycle.go and issue
+		// #390.  GoValue is not reachable from lisp, but an embedder holding
+		// a value a program built is exactly the case #390 is about.
+		return v
+	}
+	return x
+}
+
+func goValue(v *LVal, g cycleGuard) interface{} {
 	if v.IsNil() {
 		return nil
 	}
+	if !v.mayNest() {
+		return v.goValueNode(g)
+	}
+	if g.abandoned() {
+		// The result is discarded; GoValue is about to return v itself.
+		return nil
+	}
+	g, cyclic := g.descend(v)
+	if cyclic {
+		return v
+	}
+	x := v.goValueNode(g)
+	if g.tracking() {
+		g.ascend(v)
+	}
+	return x
+}
+
+func (v *LVal) goValueNode(g cycleGuard) interface{} {
 	switch v.Type {
 	case LError:
 		return (error)((*ErrorVal)(v))
@@ -44,16 +79,16 @@ func GoValue(v *LVal) interface{} {
 	case LFloat:
 		return v.Float
 	case LQuote:
-		return GoValue(v.Cells[0])
+		return goValue(v.Cells[0], g)
 	case LSExpr:
-		s, _ := GoSlice(v)
+		s, _ := goSlice(v, g)
 		return s
 	case LSortMap:
-		m, _ := GoMap(v)
+		m, _ := goMap(v, g)
 		return m
 	case LArray:
 		dims, storage := v.Cells[0], v.Cells[1]
-		s, _ := GoSlice(SExpr(storage.Cells))
+		s, _ := goSlice(SExpr(storage.Cells), g)
 		switch dims.Len() {
 		case 0:
 			return s[0]
@@ -139,12 +174,23 @@ func GoFloat64(v *LVal) (float64, bool) {
 // GoSlice returns the string that v represents and the value true.  If v does
 // not represent a string GoSlice returns a false second argument
 func GoSlice(v *LVal) ([]interface{}, bool) {
+	var st cycleState
+	vs, ok := goSlice(v, cycleGuard{state: &st})
+	if st.cyclic {
+		// See GoValue: a value that contains itself has no Go representation,
+		// and "not representable" is what a false second argument means.
+		return nil, false
+	}
+	return vs, ok
+}
+
+func goSlice(v *LVal, g cycleGuard) ([]interface{}, bool) {
 	if v.Type != LSExpr {
 		return nil, false
 	}
 	vs := make([]interface{}, len(v.Cells))
 	for i := range vs {
-		vs[i] = GoValue(v.Cells[i])
+		vs[i] = goValue(v.Cells[i], g)
 	}
 	return vs, true
 }
@@ -155,26 +201,44 @@ func GoSlice(v *LVal) ([]interface{}, bool) {
 // arbitrary keys may not be able to construct a native Go map, in which case
 // GoMap returns (nil, true).
 func GoMap(v *LVal) (map[interface{}]interface{}, bool) {
+	var st cycleState
+	m, ok := goMap(v, cycleGuard{state: &st})
+	if st.cyclic {
+		// See GoValue: a value that contains itself has no Go representation.
+		return nil, false
+	}
+	return m, ok
+}
+
+func goMap(v *LVal, g cycleGuard) (map[interface{}]interface{}, bool) {
 	if v.Type != LSortMap {
 		return nil, false
 	}
 	data := v.Map()
 	m := make(gomap, data.Len())
 	for _, pair := range sortedMapEntries(data).Cells {
-		if !checkGoMapInsert(m, pair.Cells[0], pair.Cells[1]) {
+		if !checkGoMapInsert(m, pair.Cells[0], pair.Cells[1], g) {
 			return nil, true
 		}
 	}
 	return m, true
 }
 
-func checkGoMapInsert(m gomap, lk, lv *LVal) (ok bool) {
+func checkGoMapInsert(m gomap, lk, lv *LVal, g cycleGuard) (ok bool) {
 	// k is definitely assignable to m's key type (interface{}) but map keys
 	// must also be comparable which is not known without reflection on k's
 	// type (or through recovering a failed map assignment).
-	k := GoValue(lk)
+	k := goValue(lk, g)
+	if k == nil {
+		// Either the walk has been abandoned -- goValue returns nil rather
+		// than descending, and the caller is about to discard this map -- or
+		// the key really converts to nil, which no Go map can hold as a key
+		// either.  reflect.TypeOf(nil) is nil and panics on Comparable, so
+		// this has to be checked before the reflection below.
+		return false
+	}
 	if reflect.TypeOf(k).Comparable() {
-		m[k] = GoValue(lv)
+		m[k] = goValue(lv, g)
 		return true
 	}
 	return false

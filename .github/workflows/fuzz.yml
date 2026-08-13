@@ -61,7 +61,13 @@ permissions:
 
 jobs:
   fuzz:
-    name: Fuzz shard ${{ matrix.shard }}/6
+    # strategy.job-total, not a literal: the "/5" that used to be here did not
+    # move when the matrix gained a sixth shard, and the board read
+    # "Fuzz shard 6/5". Harmless to the gate -- these shards are deliberately
+    # anonymous and "Required: fuzz" is the stable required check (see below)
+    # -- but it is a remembered number in a file whose whole argument is that
+    # the shard count must be derived. This one now derives itself.
+    name: Fuzz shard ${{ matrix.shard }}/${{ strategy.job-total }}
     runs-on: ubuntu-latest
     strategy:
       # Sharded so wall clock is set by the LARGEST shard rather than by the
@@ -81,14 +87,19 @@ jobs:
       # or a single failure costs the whole night's coverage.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7]
     # DERIVED, not remembered. scripts/fuzz-budget-check.sh asserts
     #
     #     ceil(targets / shards) x FUZZTIME + overhead <= timeout-minutes
     #
     # on every PR, so this number cannot silently stop covering the sweep. At
-    # 22 targets over 6 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
-    # worth of headroom for a target being added before anyone reshards.
+    # 20 targets over 5 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
+    # worth of headroom for a target being added before anyone reshards. That
+    # ceiling is now fully consumed: 20 targets is exactly ceil(20/5) = 4, so
+    # the NEXT target added is the one that runs out. ceil(21/5) = 5 puts
+    # `needed` at exactly 60, which the gate passes while describing a
+    # truncated sweep -- so the 21st target must arrive together with a sixth
+    # shard, not after it.
     #
     # THE HEADROOM IS THE POINT, NOT THE GREEN TICK. The gate's condition is
     # `needed > timeout`, so a sweep sized at exactly timeout-minutes PASSES --
@@ -103,6 +114,49 @@ jobs:
     # minutes are back. Prefer adding a shard to raising the
     # timeout: shards are parallel, so it cuts wall clock instead of extending
     # the backstop.
+    #
+    # AND IT HAPPENED, exactly as written above. The forward-merge of `main`
+    # into claude/exp-seal-tooling brought the cycle-walk targets (#391) and
+    # the elpsutil target (#357) onto this branch together, taking the sweep
+    # from 18 to 21 targets in one commit -- so the 21st target did not arrive
+    # alone and there was no moment at which anyone was going to notice it. At
+    # 5 shards that measured "targets 21 / largest shard 5 / required 60 /
+    # headroom 0", the passing-but-truncated state this comment predicted. The
+    # sixth shard restores ceil(21/6) = 4 x 10m + 10m = 50 against 60, and the
+    # 10 minutes with it.
+    #
+    # WHY SIX AND NOT SEVEN, derived rather than assumed. At 21 targets the
+    # shard count that matters is the one that keeps ceil(targets/shards) at 4,
+    # because 4 x 10m + 10m = 50 is the last value with a shard's worth of
+    # headroom under the 60-minute backstop. Six holds that up to 24 targets;
+    # the 25th moves the largest shard to 5 and eats the headroom, so 24 is the
+    # number to watch, not 21. That ceiling is close: `claude/fix-394-program-seal`
+    # and `claude/fix-393-395-libelpspath` are both adding test files, and
+    # #358 independently carries a [1..6] matrix on the `main` line, which this
+    # will meet as an identical matrix rather than a conflicting one.
+    #
+    # THE DENOMINATOR IS LOAD-BEARING, NOT JUST THE COUNT. fuzz.sh takes
+    # `--shard i/n` and partitions the target list into n. That n was once a
+    # literal next to this matrix, and when the sixth shard was added the two
+    # drifted: shards 1-5 re-ran a five-way partition while shard 6 exited 2,
+    # and fuzz-budget-check -- which reads n from THIS matrix and never looked
+    # at the run line -- reported "6 shards / headroom 10 min" for a sweep that
+    # was running five ways. Both the run line and the job label now derive n
+    # from strategy.job-total, and scripts/ci-gates-test.sh fails the PR if
+    # either goes back to a literal.
+    #
+    # AND THE 24-TARGET CEILING WAS REACHED ONE LINK LATER, on schedule. This
+    # branch adds four corruption-fuzz targets (FuzzSharedProgramMultiEnv and
+    # the three container-family targets), taking the sweep from 21 to 25. At
+    # six shards that measured "largest shard 5 / required 60 / headroom 0" --
+    # the passing-but-truncated state again, reached from the other direction:
+    # not by a merge landing three targets at once, but by a branch adding
+    # exactly the targets it exists to add.
+    #
+    # A SEVENTH shard: ceil(25/7) = 4 x 10m + 10m = 50 against 60, headroom
+    # back to 10. Verified against the real partition -- 4+4+4+4+3+3+3 = 25,
+    # every target assigned exactly once, largest shard 4. Seven holds through
+    # 28 targets; the 29th is the next one to watch.
     #
     # Do not raise this by hand to make a red gate green -- run
     # `make fuzz-budget-check`, which prints the arithmetic and the options.
@@ -168,7 +222,17 @@ jobs:
         run: ./scripts/fuzz-budget-check.sh
 
       - name: Fuzz
-        run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/6
+        # The DENOMINATOR IS THE PARTITION, not a label. fuzz.sh divides the
+        # target list into n and runs the i-th part, so a stale n here does not
+        # mis-title a job, it runs the wrong sweep: with the matrix at 6 and
+        # this at 5, shards 1-5 re-ran a five-way partition (largest shard 5,
+        # the truncation the sixth shard was added to prevent) and shard 6 died
+        # with "shard 6/5 is out of range". fuzz-budget-check read 6 from the
+        # matrix and reported headroom the run did not have.
+        #
+        # strategy.job-total is the matrix size, so the partition and the
+        # matrix cannot drift apart again.
+        run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/${{ strategy.job-total }}
 
       # Only from main/schedule: a corpus grown from an unmerged branch would
       # otherwise be handed to every other PR.
