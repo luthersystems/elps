@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"unsafe"
 )
@@ -36,10 +37,16 @@ import (
 // corruption oracle had nothing to see and the bug shipped.
 //
 // This detector fires at the read half.  Every parse registers the extent
-// of its sealed backing arrays; every raw constructor (SExpr, QExpr,
-// Bytes) notes a header minted inside a registered extent.  That is
-// precisely "an LVal was minted over constrained backing", with no
-// mutation required to observe it.
+// of its sealed backing arrays; the raw cell constructors (SExpr, QExpr)
+// note a header minted inside a registered extent.  That is precisely "an
+// LVal was minted over constrained backing", with no mutation required to
+// observe it.
+//
+// LBytes is deliberately out of scope: SealAST cannot mark one (the parser
+// cannot emit an LBytes), so there is never a constraint for a byte view to
+// inherit.  #373 is the bytes shape of the class, and it is a RETAINED
+// CAPACITY problem rather than a provenance one — only a three-index slice
+// at the producer closes it, which is prevention, not detection.
 //
 // # Discharge: why the check is DEFERRED, not mint-time
 //
@@ -153,8 +160,8 @@ const borrowCheckSweepAt = 1 << 16
 const borrowCheckMaxExtents = 1 << 20
 
 type constrainedExtent struct {
-	lo, hi uintptr
 	keep   any // strong ref: the address cannot be reused while registered
+	lo, hi uintptr
 }
 
 // pendingMint is a header noted at mint time and not yet discharged.  The
@@ -167,12 +174,13 @@ type pendingMint struct {
 	n    int
 }
 
+
 var borrowCheck struct {
-	mu      sync.RWMutex
 	pages   map[uintptr][]constrainedExtent
-	extents int
-	pending []pendingMint
 	faults  map[string]int // site → number of undischarged mints
+	pending []pendingMint
+	mu      sync.RWMutex
+	extents int
 }
 
 func addExtent(lo, hi uintptr, keep any) {
@@ -222,20 +230,23 @@ func withinExtent(p uintptr) bool {
 	return false
 }
 
+// sliceBase is the ONE place this file converts a pointer to an integer.
+// It is the whole of the mechanism's `unsafe` surface: the address is
+// compared against registered extents and never converted back, never
+// dereferenced, and never stored anywhere a production build can see (this
+// file does not exist without -tags elpscheck).  See "The uintptr caveat"
+// above for why a stale address can only ever cost a spurious or missing
+// diagnostic, never a wrong computation.
+func sliceBase(cells []*LVal) uintptr {
+	return uintptr(unsafe.Pointer(unsafe.SliceData(cells))) //nolint:gosec // G103: audited above; diagnostic-only address comparison
+}
+
 func cellsExtent(cells []*LVal) (uintptr, uintptr) {
 	if cap(cells) == 0 {
 		return 0, 0
 	}
-	base := uintptr(unsafe.Pointer(unsafe.SliceData(cells)))
+	base := sliceBase(cells)
 	return base, base + uintptr(cap(cells))*unsafe.Sizeof((*LVal)(nil))
-}
-
-func bytesExtent(b []byte) (uintptr, uintptr) {
-	if cap(b) == 0 {
-		return 0, 0
-	}
-	base := uintptr(unsafe.Pointer(unsafe.SliceData(b)))
-	return base, base + uintptr(cap(b))
 }
 
 // recordConstrainedCells registers cells as constrained backing storage.
@@ -245,18 +256,6 @@ func recordConstrainedCells(cells []*LVal) {
 	lo, hi := cellsExtent(cells)
 	addExtent(lo, hi, cells)
 	runtime.KeepAlive(cells)
-}
-
-// recordConstrainedBytes registers b as constrained backing storage.  No
-// in-kernel producer constrains bytes today — the parser cannot emit an
-// LBytes — so this hook has no caller in the kernel.  It exists because
-// the detector's rule is about STORAGE, not about the seal: the day an
-// embedder marks a byte blob immutable, the read-half oracle covers it
-// without a second mechanism.
-func recordConstrainedBytes(b []byte) {
-	lo, hi := bytesExtent(b)
-	addExtent(lo, hi, b)
-	runtime.KeepAlive(b)
 }
 
 // notePending records a header minted over constrained storage.  It is not
@@ -308,14 +307,7 @@ func borrowFaultMessage(p *pendingMint) string {
 				break
 			}
 		}
-		where = ""
-		for i, s := range sites {
-			if i == 0 {
-				where = s
-				continue
-			}
-			where += "\n      from: " + s
-		}
+		where = strings.Join(sites, "\n      from: ")
 	}
 	return fmt.Sprintf(
 		"borrowcheck: an LVal (%s) was minted over CONSTRAINED backing storage and never inherited the constraint.\n"+
@@ -332,23 +324,10 @@ func noteMintOverConstrainedCells(v *LVal, cells []*LVal) {
 	if v == nil || v.sealed || len(cells) == 0 {
 		return
 	}
-	base := uintptr(unsafe.Pointer(unsafe.SliceData(cells)))
-	if withinExtent(base) {
+	if withinExtent(sliceBase(cells)) {
 		notePending("cells", v)
 	}
 	runtime.KeepAlive(cells)
-}
-
-// noteMintOverConstrainedBytes is noteMintOverConstrainedCells for LBytes.
-func noteMintOverConstrainedBytes(v *LVal, b []byte) {
-	if v == nil || v.sealed || len(b) == 0 {
-		return
-	}
-	base := uintptr(unsafe.Pointer(unsafe.SliceData(b)))
-	if withinExtent(base) {
-		notePending("bytes", v)
-	}
-	runtime.KeepAlive(b)
 }
 
 // borrowProvenanceFaults sweeps the pending table and returns one message

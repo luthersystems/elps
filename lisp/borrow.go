@@ -96,11 +96,3 @@ func mintBorrowed(src *LVal, cells []*LVal, quoted bool) *LVal {
 	return r
 }
 
-// mintBorrowedBytes is mintBorrowedCells for LBytes.
-func mintBorrowedBytes(src *LVal, b []byte) *LVal {
-	r := &LVal{Type: LBytes, Native: &b}
-	borrowFrom(r, src)
-	noteMintOverConstrainedBytes(r, b)
-	return r
-}
-

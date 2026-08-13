@@ -1889,7 +1889,7 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 	case LString:
 		list = String(list.Str[i:j])
 	case LBytes:
-		list = mintBorrowedBytes(list, list.Bytes()[i:j])
+		list = Bytes(list.Bytes()[i:j])
 	default: // isSeq(list)
 		// A two-index slice keeps the original backing array (and its spare
 		// capacity), so a sealed input's constraint travels with the

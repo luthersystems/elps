@@ -490,12 +490,10 @@ func String(str string) *LVal {
 
 // Bytes returns an LVal representing binary data b.
 func Bytes(b []byte) *LVal {
-	v := &LVal{
+	return &LVal{
 		Type:   LBytes,
 		Native: &b,
 	}
-	noteMintOverConstrainedBytes(v, b) // see SExpr; no-op untagged
-	return v
 }
 
 func SplitSymbol(sym *LVal) *LVal {
