@@ -16,18 +16,29 @@
 // eventually lands looks innocuous at the call site and is found by luck.
 //
 // Suppression: a `//elpsvet:allow` comment on the var block, the spec, or the
-// same line marks sharing as deliberate (the three guarded singletons in
-// lisp/singleton.go).  Every allow must carry a justification a reader can
-// audit.
+// same line marks sharing as deliberate — the three guarded singletons in
+// lisp/singleton.go, and the shared builtin/macro/special-op definition
+// tables whose formals are sealed (see below).  Every allow must carry a
+// justification a reader can audit.
 //
 // Run it over the module with:
 //
 //	go run ./cmd/elpsvet -test=false ./...
 //
-// NOT wired into CI: this is a costed prototype.  If the boundary-copy
-// experiment (formals copied per registration) lands, the flagged tables
-// become harmless at the interpreter boundary and this rule shrinks to
-// belt-and-braces for embedder-side tables handed to APIs other than Add*.
+// NOT wired into CI: no job in .github/workflows and no Makefile target runs
+// it, so it is a costed prototype invoked by hand.
+//
+// The boundary-copy experiment this rule was sized against — every
+// definition's formals deep-copied per registration — did land and was then
+// withdrawn: the copy cost ~90KiB and >1000 allocations per LoadLibrary
+// environment and tripped the CI benchmark gate.  What shipped instead is
+// seal-and-share: the shared tables' formals are sealed at construction
+// (sealDefaultFormals in lisp/builtins.go, the libutil constructors, the
+// RegisterDefault* functions) and aliased into each environment by
+// registrationFormals in lisp/env.go.  So the tables remain process-wide
+// shared and remain flagged; each carries an //elpsvet:allow whose
+// justification is the seal.  This rule is what forces that justification to
+// be written down, rather than belt-and-braces.
 package main
 
 import (

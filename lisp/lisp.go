@@ -1183,6 +1183,19 @@ func (v *LVal) IsNil() bool {
 	return v.Type == LSExpr && len(v.Cells) == 0
 }
 
+// mayNest reports whether a walk over v can reach another value through it.
+//
+// Cells is where every nested value lives except a sorted-map's, which lives
+// in a MapData behind Native.  Anything else -- an int, a string, a symbol, a
+// byte slice, a native Go value, the empty list -- is a leaf: a walk that
+// reaches it stops there, so it never needs a place on a cycle guard's path.
+//
+// This is what keeps the guard off the common path.  Rendering and comparing
+// leaves is most of what those walks do, and this check is a length test.
+func (v *LVal) mayNest() bool {
+	return len(v.Cells) > 0 || v.Type == LSortMap
+}
+
 // IsNumeric returns true if v has a primitive numeric type (int, float64).
 //
 // See IsNil for why this is an expression and not a switch.
@@ -1192,7 +1205,35 @@ func (v *LVal) IsNumeric() bool {
 
 // Equal returns a non-nil value if v and other are logically equal, under the
 // rules used by the "equal?" function.
+//
+// Cyclic operands terminate.  Comparison is co-inductive: when the walk
+// reaches a pair of values it is already comparing further up the current
+// path, it takes that pair to be equal and moves on.  That is the greatest
+// fixed point -- equality of the two values' infinite unfoldings, the same
+// answer R7RS requires of equal? on circular structure -- and it is an answer
+// rather than a guess: false is only ever returned for a difference actually
+// found at a finite depth, so no equality is claimed that a longer walk could
+// refute.  See lisp/cycle.go and issue #390.
 func (v *LVal) Equal(other *LVal) *LVal {
+	var st pairState
+	eq := v.equal(other, pairGuard{state: &st})
+	if !st.cyclic {
+		return eq
+	}
+	// Both operands reach a pair that is already under comparison.  The walk
+	// above stopped as soon as it knew that, because unrolling a cycle to
+	// cycleGuardDepth levels is exponential in the width of the cycle; the
+	// rerun compares each pair once.
+	return v.equal(other, strictPairGuard())
+}
+
+// equal is Equal, with g bounding the walk.  Every nested comparison must pass
+// g down rather than calling Equal, or the bound is lost.
+//
+// The guard sits inside the cases that recurse rather than at the top of the
+// function, so that comparing two ints or two strings runs exactly the code it
+// ran before the guard existed.
+func (v *LVal) equal(other *LVal, g pairGuard) *LVal {
 	if v.Type != other.Type {
 		if v.IsNumeric() && other.IsNumeric() {
 			return v.equalNum(other)
@@ -1209,18 +1250,26 @@ func (v *LVal) Equal(other *LVal) *LVal {
 		if v.Len() != other.Len() {
 			return Bool(false)
 		}
+		g, stop := g.descend(v, other)
+		if stop {
+			return Bool(true)
+		}
 		for i := range v.Cells {
-			if !True(v.Cells[i].Equal(other.Cells[i])) {
+			if !True(v.Cells[i].equal(other.Cells[i], g)) {
 				return Bool(false)
 			}
 		}
 		return Bool(true)
 	case LArray:
+		g, stop := g.descend(v, other)
+		if stop {
+			return Bool(true)
+		}
 		// NOTE:  This is a pretty cheeky for loop.  The first comparison it
 		// does will compare array dimensions, which will ensure that we don't
 		// hit an index out of bounds while comparing later indices.
 		for i := range v.Cells {
-			if Not(v.Cells[i].Equal(other.Cells[i])) {
+			if Not(v.Cells[i].equal(other.Cells[i], g)) {
 				return Bool(false)
 			}
 		}
@@ -1229,20 +1278,28 @@ func (v *LVal) Equal(other *LVal) *LVal {
 		if v.Str != other.Str {
 			return Bool(false)
 		}
-		return v.Cells[0].Equal(other.Cells[0])
+		g, stop := g.descend(v, other)
+		if stop {
+			return Bool(true)
+		}
+		return v.Cells[0].equal(other.Cells[0], g)
 	case LSortMap:
 		if v.Map().Len() != other.Map().Len() {
 			return Bool(false)
+		}
+		g, stop := g.descend(v, other)
+		if stop {
+			return Bool(true)
 		}
 		vEntries := sortedMapEntries(v.Map())
 		oEntries := sortedMapEntries(other.Map())
 		for i := range vEntries.Cells {
 			vPair := vEntries.Cells[i]
 			oPair := oEntries.Cells[i]
-			if !True(equalMapKey(vPair.Cells[0], oPair.Cells[0])) {
+			if !True(equalMapKey(vPair.Cells[0], oPair.Cells[0], g)) {
 				return Bool(false)
 			}
-			if !True(vPair.Cells[1].Equal(oPair.Cells[1])) {
+			if !True(vPair.Cells[1].equal(oPair.Cells[1], g)) {
 				return Bool(false)
 			}
 		}
@@ -1277,11 +1334,11 @@ func (v *LVal) Equal(other *LVal) *LVal {
 // to every other, silently reporting structurally different maps as equal.
 // The name rule was reasoned about for string-like keys only, and it is
 // deliberately not extended past them.
-func equalMapKey(a, b *LVal) *LVal {
+func equalMapKey(a, b *LVal, g pairGuard) *LVal {
 	if isStringLike(a) && isStringLike(b) {
 		return Bool(a.Str == b.Str)
 	}
-	return a.Equal(b)
+	return a.equal(b, g)
 }
 
 // isStringLike reports whether v is one of the name-carrying key types the
@@ -1376,12 +1433,31 @@ func (v *LVal) copyCells() []*LVal {
 	return cells
 }
 
+// String renders v as lisp source.
+//
+// A value that contains itself renders the marker "#<cycle>" at the point the
+// walk reaches it a second time, so the result is finite and the walk cannot
+// overflow the goroutine stack and kill the process.  Rendering is otherwise
+// unchanged: an acyclic value renders in full, at any nesting depth, exactly
+// as it always did.  See lisp/cycle.go and issue #390.
 func (v *LVal) String() string {
+	var st cycleState
+	s := v.stringGuard(cycleGuard{state: &st})
+	if !st.cyclic {
+		return s
+	}
+	// v contains itself.  The walk above stopped as soon as it knew that,
+	// because unrolling a cycle to cycleGuardDepth levels is exponential in
+	// the width of the cycle; the rerun visits each node once.
+	return v.stringGuard(strictCycleGuard())
+}
+
+func (v *LVal) stringGuard(g cycleGuard) string {
 	const QUOTE = `'`
 	if v.Type == LQuote {
-		return QUOTE + v.Cells[0].str(true)
+		return QUOTE + v.Cells[0].str(true, g)
 	}
-	return v.str(false)
+	return v.str(false, g)
 }
 
 // JoinDocStrings joins multiple doc string parts into a single string.
@@ -1437,7 +1513,16 @@ func (v *LVal) Docstring() string {
 	return ""
 }
 
-func (v *LVal) str(onTheRecord bool) string {
+// str renders v, with g bounding the walk so that a value containing itself
+// renders cycleMark instead of recursing until the process dies.  Every
+// nested render must pass g down rather than starting a fresh walk with
+// String, or the bound is lost.  See lisp/cycle.go.
+//
+// The types that render from their own fields and reach nothing are handled
+// here, ahead of the guard and running exactly the code they ran before it
+// existed.  Rendering leaves is most of what this walk does, and none of them
+// can be part of a cycle.
+func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
 	const QUOTE = `'`
 	// All types which may evaluate to things other than themselves must check
 	// v.quoted.
@@ -1461,22 +1546,55 @@ func (v *LVal) str(onTheRecord bool) string {
 			return quote + "#<bytes>"
 		}
 		return quote + "#<bytes " + strings.Trim(fmt.Sprint(b), "[]") + ">" //nolint:staticcheck // fmt.Sprint gives byte slice repr, not string conversion
-	case LError:
-		if v.quoted {
-			quote = QUOTE
-			return quote + fmt.Sprintf("(error '%s %v)", v.Str, v.Cells[0])
-		}
-		return GoError(v).Error()
 	case LSymbol:
 		if v.quoted {
 			quote = QUOTE
 		}
 		return quote + v.Str
+	case LNative:
+		return fmt.Sprintf("#<native value: %T>", v.Native)
+	default:
+		// Every remaining type renders values reachable from v, and is
+		// handled by strNested below.  Enumerated as a default rather than
+		// left implicit so that a new LType has to decide which half of this
+		// function it belongs in.
+	}
+	// Everything left renders values reachable from v, so it is entered on the
+	// guard's path.
+	if g.abandoned() {
+		return ""
+	}
+	g, cyclic := g.descend(v)
+	if cyclic {
+		return cycleMark
+	}
+	s := v.strNested(onTheRecord, g)
+	if g.tracking() {
+		g.ascend(v)
+	}
+	return s
+}
+
+// strNested renders the types that reach other values.  It is only ever
+// reached through str, which has already put v on g's path.
+func (v *LVal) strNested(onTheRecord bool, g cycleGuard) string {
+	const QUOTE = `'`
+	quote := ""
+	if onTheRecord {
+		quote = QUOTE
+	}
+	switch v.Type {
+	case LError:
+		if v.quoted {
+			quote = QUOTE
+			return quote + fmt.Sprintf("(error '%s %s)", v.Str, v.Cells[0].str(false, g))
+		}
+		return (*ErrorVal)(v).errorString(g)
 	case LSExpr:
 		if v.quoted {
 			quote = QUOTE
 		}
-		return exprString(v, 0, quote+"(", ")")
+		return exprString(v, 0, quote+"(", ")", g)
 	case LFun:
 		if v.quoted {
 			quote = QUOTE
@@ -1485,41 +1603,39 @@ func (v *LVal) str(onTheRecord bool) string {
 			return quote + "#<builtin>"
 		}
 		vars := lambdaVars(v.Cells[0], boundVars(v))
-		return fmt.Sprintf("%s(lambda %v%v)", quote, vars, bodyStr(v.Cells[1:]))
+		return fmt.Sprintf("%s(lambda %s%s)", quote, vars.str(false, g), bodyStr(v.Cells[1:], g))
 	case LQuote:
 		// TODO: make more efficient
-		return QUOTE + v.Cells[0].str(true)
+		return QUOTE + v.Cells[0].str(true, g)
 	case LSortMap:
-		return quote + sortedMapString(v)
+		return quote + sortedMapString(v, g)
 	case LArray:
 		if v.Cells[0].Len() == 1 {
 			if v.Len() > 0 {
-				return exprString(v.Cells[1], 0, quote+"(vector ", ")")
+				return exprString(v.Cells[1], 0, quote+"(vector ", ")", g)
 			} else {
 				return quote + "(vector)"
 			}
 		}
-		return fmt.Sprintf("#<array dims=%s>", v.Cells[0])
-	case LNative:
-		return fmt.Sprintf("#<native value: %T>", v.Native)
+		return fmt.Sprintf("#<array dims=%s>", v.Cells[0].str(false, g))
 	case LTaggedVal:
-		return fmt.Sprintf("#{%s %v}", v.Str, v.Cells[0])
+		return fmt.Sprintf("#{%s %s}", v.Str, v.Cells[0].str(false, g))
 	case LMarkTerminal:
-		return quote + fmt.Sprintf("#<terminal-expression %s>", v.Cells[0])
+		return quote + fmt.Sprintf("#<terminal-expression %s>", v.Cells[0].str(false, g))
 	case LMarkTailRec:
-		return quote + fmt.Sprintf("#<tail-recursion frames=%d (%s %s)>", v.Cells[0].Int, v.Cells[1], v.Cells[2])
+		return quote + fmt.Sprintf("#<tail-recursion frames=%d (%s %s)>", v.Cells[0].Int, v.Cells[1].str(false, g), v.Cells[2].str(false, g))
 	case LMarkMacExpand:
-		return quote + fmt.Sprintf("#<macro-expansion %s)>", v.Cells[0])
+		return quote + fmt.Sprintf("#<macro-expansion %s)>", v.Cells[0].str(false, g))
 	default:
 		return quote + fmt.Sprintf("#<%s %#v>", v.Type, v)
 	}
 }
 
-func bodyStr(exprs []*LVal) string {
+func bodyStr(exprs []*LVal, g cycleGuard) string {
 	var buf bytes.Buffer
 	for i := range exprs {
 		buf.WriteString(" ")
-		buf.WriteString(exprs[i].String())
+		buf.WriteString(exprs[i].str(false, g))
 	}
 	return buf.String()
 }
@@ -1572,7 +1688,7 @@ func boundVars(v *LVal) *LVal {
 	return bound
 }
 
-func exprString(v *LVal, offset int, left string, right string) string {
+func exprString(v *LVal, offset int, left string, right string, g cycleGuard) string {
 	if len(v.Cells[offset:]) == 0 {
 		return left + right
 	}
@@ -1582,7 +1698,7 @@ func exprString(v *LVal, offset int, left string, right string) string {
 		if i > 0 {
 			buf.WriteString(" ")
 		}
-		buf.WriteString(c.String())
+		buf.WriteString(c.str(false, g))
 	}
 	buf.WriteString(right)
 	return buf.String()
