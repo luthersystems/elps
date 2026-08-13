@@ -1,0 +1,64 @@
+From 2487f45df78f19e3406e30187c1214c6f41cf9ee Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 21:05:32 +0000
+Subject: [PATCH 3/3] analysis, lint: nil-guard LastExpansionPanic in harness
+ error paths
+
+recordAbort increments the aborted counter before storing lastPanic
+under lastMu, so a reader that sees ExpansionPanics() > 0 can in
+principle still read a nil LastExpansionPanic. The lsp harness's
+checkExpansionPanics guards rec != nil; the three fuzz-harness
+reporting paths in analysis and lint dereferenced the record
+unconditionally. Substitute a zero ExpansionPanic when the record is
+not yet visible so the failure report itself cannot panic.
+---
+ analysis/analysis_fuzz_test.go  | 3 +++
+ analysis/workspace_fuzz_test.go | 3 +++
+ lint/lint_fuzz_test.go          | 3 +++
+ 3 files changed, 9 insertions(+)
+
+diff --git a/analysis/analysis_fuzz_test.go b/analysis/analysis_fuzz_test.go
+index d93e40d..af1d83d 100644
+--- a/analysis/analysis_fuzz_test.go
++++ b/analysis/analysis_fuzz_test.go
+@@ -422,6 +422,9 @@ func runAnalyze(src, wsSrc, scriptBytes []byte) (analyzeResult, error) {
+ 	var reporter PanicReporter = exp
+ 	if n := reporter.ExpansionPanics(); n > 0 {
+ 		rec := exp.inner.LastExpansionPanic()
++		if rec == nil { // recordAbort counts before it stores, so nil is observable
++			rec = &ExpansionPanic{}
++		}
+ 		return stats, fmt.Errorf(
+ 			"EnvMacroExpander swallowed %d panic(s) during analysis-time macro expansion."+
+ 				" ExpandMacro's recover() returns nil, which is also the ordinary"+
+diff --git a/analysis/workspace_fuzz_test.go b/analysis/workspace_fuzz_test.go
+index 0140064..f7e349c 100644
+--- a/analysis/workspace_fuzz_test.go
++++ b/analysis/workspace_fuzz_test.go
+@@ -291,6 +291,9 @@ func runWorkspaceScan(root string, a, b, scriptBytes []byte) (scanStats, error)
+ 
+ 	if n := exp.ExpansionPanics(); n > 0 {
+ 		rec := exp.inner.LastExpansionPanic()
++		if rec == nil { // recordAbort counts before it stores, so nil is observable
++			rec = &ExpansionPanic{}
++		}
+ 		return stats, fmt.Errorf(
+ 			"EnvMacroExpander swallowed %d panic(s) during the workspace scan"+
+ 				"\n  macro:   %s\n  package: %s\n  value:   %v\n  stack:\n%s",
+diff --git a/lint/lint_fuzz_test.go b/lint/lint_fuzz_test.go
+index 17afda6..c7aa925 100644
+--- a/lint/lint_fuzz_test.go
++++ b/lint/lint_fuzz_test.go
+@@ -409,6 +409,9 @@ func runLint(root string, src, wsSrc, scriptBytes []byte) (lintStats, error) {
+ 	// have shown this.
+ 	if n := exp.ExpansionPanics(); n > 0 {
+ 		rec := exp.LastExpansionPanic()
++		if rec == nil { // recordAbort counts before it stores, so nil is observable
++			rec = &analysis.ExpansionPanic{}
++		}
+ 		return stats, fmt.Errorf(
+ 			"EnvMacroExpander swallowed %d panic(s) while lint ran semantic analysis"+
+ 				"\n  macro:   %s\n  package: %s\n  value:   %v\n  stack:\n%s",
+-- 
+2.43.0
+

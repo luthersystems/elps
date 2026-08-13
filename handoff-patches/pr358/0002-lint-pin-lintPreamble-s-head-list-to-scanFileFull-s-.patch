@@ -1,0 +1,105 @@
+From 915bd03fa1e8b5e795aa2ce995933aad87256f86 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 13 Aug 2026 21:05:19 +0000
+Subject: [PATCH 2/3] lint: pin lintPreamble's head list to scanFileFull's
+ switch
+
+lintPreamble carried a third copy of the preamble-head list with no
+drift guard: analysis pins its copy to scanFileFull's switch via
+TestFuzzPreambleHeadsMatchScan, but the lint copy could silently fall
+out of step and replay a subset of what production replays.
+
+Hoist the inline map to lintPreambleHeads and add
+TestLintFuzzPreambleHeadsMatchScan, the same regexp-over-source guard
+as analysis's, reading ../analysis/workspace.go. Verified the guard
+fails when a head is removed from the map. Test-only change; no new
+exported symbols in production code.
+---
+ lint/lint_fuzz_guard_test.go | 29 +++++++++++++++++++++++++++++
+ lint/lint_fuzz_test.go       | 15 ++++++++++-----
+ 2 files changed, 39 insertions(+), 5 deletions(-)
+
+diff --git a/lint/lint_fuzz_guard_test.go b/lint/lint_fuzz_guard_test.go
+index 939bd2e..96d54d6 100644
+--- a/lint/lint_fuzz_guard_test.go
++++ b/lint/lint_fuzz_guard_test.go
+@@ -4,6 +4,9 @@ package lint
+ 
+ import (
+ 	"bytes"
++	"os"
++	"path/filepath"
++	"regexp"
+ 	"strings"
+ 	"testing"
+ 
+@@ -120,6 +123,32 @@ func TestLintFuzzDeterminismCheckIsLive(t *testing.T) {
+ 	assert.Equal(t, first, second)
+ }
+ 
++// TestLintFuzzPreambleHeadsMatchScan pins the harness's copy of the preamble
++// head list to the switch it was copied from, the same way analysis's
++// TestFuzzPreambleHeadsMatchScan pins that package's copy. If scanFileFull
++// starts collecting a new form and this list does not, lintPreamble replays a
++// SUBSET of what production replays and the difference is invisible.
++func TestLintFuzzPreambleHeadsMatchScan(t *testing.T) {
++	src, err := os.ReadFile(filepath.Join("..", "analysis", "workspace.go"))
++	require.NoError(t, err)
++
++	// The `case "in-package", "use-package", ...:` arm inside scanFileFull.
++	re := regexp.MustCompile(`(?s)switch astutil\.HeadSymbol\(expr\) \{\s*case ([^:]+):\s*preamble = append`)
++	m := re.FindSubmatch(src)
++	require.NotNil(t, m, "could not locate scanFileFull's preamble switch in analysis/workspace.go;"+
++		" this guard has gone stale and must be repointed, not deleted")
++
++	found := map[string]bool{}
++	for _, lit := range strings.Split(string(m[1]), ",") {
++		if s := strings.Trim(strings.TrimSpace(lit), `"`); s != "" {
++			found[s] = true
++		}
++	}
++	assert.Equal(t, found, lintPreambleHeads,
++		"the lint fuzz harness's lintPreambleHeads no longer matches scanFileFull's"+
++			" switch; lintPreamble would replay a different preamble than production does")
++}
++
+ func parseForGuard(t *testing.T, src string) []*lisp.LVal {
+ 	t.Helper()
+ 	return rdparser.New(token.NewScanner(lintFileA, bytes.NewReader([]byte(src)))).
+diff --git a/lint/lint_fuzz_test.go b/lint/lint_fuzz_test.go
+index c7dca14..17afda6 100644
+--- a/lint/lint_fuzz_test.go
++++ b/lint/lint_fuzz_test.go
+@@ -508,19 +508,24 @@ func walkSurface(src []byte) {
+ 	_ = UserDefined(res.Exprs)
+ }
+ 
++// lintPreambleHeads are the top-level forms scanFileFull collects into
++// Prescan.Preamble and LoadWorkspaceMacros then evaluates. Kept in step with
++// the switch in analysis/workspace.go; TestLintFuzzPreambleHeadsMatchScan
++// asserts it.
++var lintPreambleHeads = map[string]bool{
++	"in-package": true, "use-package": true, "export": true,
++	"defmacro": true, "defun": true, "set": true,
++}
++
+ // lintPreamble extracts the forms a workspace scan would replay into the env.
+ func lintPreamble(src []byte) []*lisp.LVal {
+ 	res := rdparser.New(token.NewScanner(lintFileB, bytes.NewReader(src))).ParseProgramFaultTolerant()
+-	heads := map[string]bool{
+-		"in-package": true, "use-package": true, "export": true,
+-		"defmacro": true, "defun": true, "set": true,
+-	}
+ 	var out []*lisp.LVal
+ 	for _, expr := range res.Exprs {
+ 		if expr == nil || expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+ 			continue
+ 		}
+-		if heads[HeadSymbol(expr)] {
++		if lintPreambleHeads[HeadSymbol(expr)] {
+ 			out = append(out, expr)
+ 		}
+ 	}
+-- 
+2.43.0
+
