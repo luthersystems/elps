@@ -164,14 +164,14 @@ func sortedMapEntries(m Map) *LVal {
 	return QExpr(cells)
 }
 
-func sortedMapString(m *LVal) string {
+func sortedMapString(m *LVal, g cycleGuard) string {
 	var buf bytes.Buffer
 	buf.WriteString("(sorted-map")
 	for _, pair := range sortedMapEntries(m.Map()).Cells {
 		buf.WriteString(" ")
-		buf.WriteString(pair.Cells[0].String())
+		buf.WriteString(pair.Cells[0].str(false, g))
 		buf.WriteString(" ")
-		buf.WriteString(pair.Cells[1].String())
+		buf.WriteString(pair.Cells[1].str(false, g))
 	}
 	buf.WriteString(")")
 	return buf.String()
