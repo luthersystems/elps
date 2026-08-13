@@ -16,7 +16,8 @@ package lisp
 // PARAMETER instead of a rule to remember: there is no way to spell a
 // borrowed view here without naming what it was borrowed from, and the
 // transfer happens in one function, so a future storage-scoped flag is
-// added once.
+// added once.  They are kept small enough to inline, so the kernel pays
+// nothing for the indirection.
 //
 // THEY ARE DELIBERATELY UNEXPORTED, and that is the whole shape of this
 // arm.  Exporting them would be a six-function public API for a property
@@ -25,7 +26,8 @@ package lisp
 // worth having for two reasons that do not need an API:
 //
 //   - PREVENTION where prevention is possible.  A new kernel producer that
-//     reaches for sliceCells cannot forget the transfer.
+//     reaches for mintBorrowedCells cannot forget the transfer: the source
+//     is the first parameter and there is no overload without it.
 //   - COST.  A helper sets the constraint BEFORE the checked-build
 //     detector looks at the header, so an in-kernel borrow is discharged
 //     structurally and never enters the detector's pending table.  That
@@ -102,24 +104,3 @@ func mintBorrowedBytes(src *LVal, b []byte) *LVal {
 	return r
 }
 
-// sliceCells returns a list header over v's cells in the half-open range
-// [i, j).  The result SHARES v's backing array — no copy is made — and
-// inherits every constraint v carries.
-//
-// v may be a list or a vector; the cells taken are the sequence's cells in
-// either case and the result is always a list.  A caller that needs a
-// VECTOR view must not use this: a vector is mutable through append! and
-// assoc!, neither of which consults the flag, so wrapping constrained
-// storage in one must copy (builtinSlice does exactly that).
-//
-// Bounds are the caller's responsibility, as for a Go slice expression.
-func (v *LVal) sliceCells(i, j int) *LVal {
-	return mintBorrowedCells(v, seqCells(v)[i:j])
-}
-
-// sliceBytes returns an LBytes over v's bytes in the half-open range
-// [i, j), sharing v's backing array and inheriting v's constraints.  v
-// must be an LBytes (LVal.Bytes' contract).
-func (v *LVal) sliceBytes(i, j int) *LVal {
-	return mintBorrowedBytes(v, v.Bytes()[i:j])
-}

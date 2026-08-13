@@ -869,7 +869,7 @@ func builtinCDR(env *LEnv, args *LVal) *LVal {
 	// sliceCells is the borrow helper: the receiver supplies the
 	// provenance, so the transfer cannot be forgotten here the way it was
 	// in opCond and in libelpspath (#392).  See lisp/borrow.go.
-	return v.sliceCells(1, len(v.Cells))
+	return mintBorrowedCells(v, v.Cells[1:])
 }
 
 func builtinRest(env *LEnv, args *LVal) *LVal {
@@ -881,7 +881,7 @@ func builtinRest(env *LEnv, args *LVal) *LVal {
 	if len(cells) < 2 {
 		return Nil()
 	}
-	return v.sliceCells(1, len(cells))
+	return mintBorrowedCells(v, cells[1:])
 }
 
 func builtinFirst(env *LEnv, args *LVal) *LVal {
@@ -1889,12 +1889,12 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 	case LString:
 		list = String(list.Str[i:j])
 	case LBytes:
-		list = list.sliceBytes(i, j)
+		list = mintBorrowedBytes(list, list.Bytes()[i:j])
 	default: // isSeq(list)
 		// A two-index slice keeps the original backing array (and its spare
 		// capacity), so a sealed input's constraint travels with the
 		// intermediate value (lisp/borrow.go, lisp/seal.go).
-		list = list.sliceCells(i, j)
+		list = mintBorrowedCells(list, seqCells(list)[i:j])
 	}
 
 	// Convert the intermediate sliced value into the desired type
