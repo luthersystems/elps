@@ -976,10 +976,32 @@ func (s *rangePath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 	if err != nil {
 		return nil, err
 	}
-	vals := append(cells[:from], setCells...)
-	if to < n {
-		vals = append(vals, cells[to:]...)
-	}
+	// IMPORTANT: the splice is built in a slice this function allocates, not
+	// by appending onto cells' own prefix.
+	//
+	// `append(cells[:from], setCells...)` writes setCells THROUGH cells'
+	// backing array starting at from, and the tail read two lines later —
+	// cells[to:] — comes out of that same, already-overwritten array. Whenever
+	// the replacement is longer than the range it replaces, the elements in
+	// [to, from+len(setCells)) are clobbered before they are read and the
+	// result repeats the replacement's own tail instead of the source's:
+	//
+	//	(?set (vector 1 2 3 4 5) '(range 0 1) (vector 97 98 99))
+	//	  gave (vector 97 98 99 98 99 4 5)
+	//	  want (vector 97 98 99 2 3 4 5)
+	//
+	// Silent — no error, just a wrong answer. It bit deterministically on the
+	// copying Set, whose private copy from copySeqOffPath always has
+	// cap == len, so short splices never escaped into a reallocation.
+	//
+	// This is the same defect as #373/#392: appending into a backing array the
+	// function does not own. The capacity below is exact, but correctness does
+	// not rest on it — every element is copied into a slice nothing else
+	// references, so a wrong capacity would cost an allocation, not an answer.
+	vals := make([]*lisp.LVal, 0, from+len(setCells)+(n-to))
+	vals = append(vals, cells[:from]...)
+	vals = append(vals, setCells...)
+	vals = append(vals, cells[to:]...)
 	storeCells(in, vals)
 	return in, nil
 }

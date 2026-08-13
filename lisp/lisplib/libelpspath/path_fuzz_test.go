@@ -67,6 +67,43 @@ import (
 //     leave the input document structurally unchanged — the documented
 //     contract of the names without "!".  The mutating operations carry no
 //     such obligation, and are held only to invariant 4.
+//  6. The splice keeps what it did not replace.  When the whole path is a
+//     single (range a b) over a sequence document, the six operations that
+//     rewrite the sequence must return a result that BEGINS with the
+//     source's elements before `a` and ENDS with the source's elements from
+//     `b` on, by value and in order.  Only the middle is theirs to change.
+//     See "THE RESULT AXIS" below for why this had to be added.
+//
+// THE RESULT AXIS (issue found in review of #402).  Invariants 1-5 all watch
+// the INPUT: they ask whether the document was left alone, never whether the
+// answer was right.  That blind spot hid a real defect for the whole life of
+// this target.  rangePath.setMutate built the splice with
+// `append(cells[:from], setCells...)`, writing the replacement through the
+// document's own backing array, and then read the tail `cells[to:]` back out
+// of that overwritten array — so a replacement longer than the range it
+// replaced returned the replacement's own cells where the source's tail
+// belonged.  The input was untouched (the copying path splices a private
+// copy), no error was raised, no list was written, and nothing panicked:
+// every one of invariants 1-5 passed on a wrong answer.
+//
+// Two changes were needed, and either alone is insufficient:
+//
+//   - The VALUE axis.  The trailing value argument was always the string
+//     "REPLACEMENT", which toCells rejects before the splice, so no input
+//     this target could generate ever reached the splice with a usable
+//     replacement — let alone one longer than the range.  g.value now
+//     produces sequences of varying length as well.
+//   - Invariant 6.  With sequences flowing in, the corruption still lands
+//     only in the result, which nothing was reading.
+//
+// Invariant 6 is deliberately a SUB-property, not a reimplementation of the
+// splice: it says nothing about the middle, only that the untouched ends
+// survive.  That is the part the defect broke, and it holds identically for
+// ?set (middle becomes the replacement), ?del (middle vanishes) and ?nil
+// (middle becomes nils), so one check covers all six.  It borrows toCells
+// and validateRange to agree with the engine on WHICH range is meant —
+// neither is implicated in the defect, and an oracle that disagreed about
+// bounds would report false positives instead of finding splice bugs.
 //
 // UPSTREAM NOTE on invariant 4: on the branch this target came from, it was
 // expressed with lisp.LVal.SealAST and lisp.SealedASTFingerprint — the
@@ -138,11 +175,16 @@ func FuzzPathEngine(f *testing.F) {
 		fpListsBefore := fpListSpines(listRoots)
 		fpDocBefore := fpAST([]*lisp.LVal{doc})
 
+		// Invariant 6 setup, taken BEFORE the call: the "!" operations
+		// rework the document in place, so the source's ends have to be
+		// rendered now or there is nothing left to compare against.
+		splice, spliceOK := newSpliceOracle(doc, steps)
+
 		args := make([]*lisp.LVal, 0, len(steps)+2)
 		args = append(args, doc)
 		args = append(args, steps...)
 		if op.needsValue {
-			args = append(args, lisp.String("REPLACEMENT"))
+			args = append(args, g.value())
 		}
 
 		fun := env.GetGlobal(lisp.Symbol("elpspath:" + op.name))
@@ -178,26 +220,126 @@ func FuzzPathEngine(f *testing.F) {
 					op.name, doc, renderSteps(steps))
 			}
 		}
+
+		// Invariant 6.
+		if spliceOK && op.splices && result.Type != lisp.LError {
+			if why := splice.check(result); why != "" {
+				t.Fatalf("%s spliced a range and lost what it did not replace: %s"+
+					"\n--- steps ---\n%s\n--- source ends ---\n%v ... %v"+
+					"\n--- result ---\n%s",
+					op.name, why, renderSteps(steps),
+					splice.prefix, splice.suffix, result)
+			}
+		}
 	})
 }
 
-// pathOp names one of the seven operations and the two facts the harness
-// needs about it: whether a trailing new-value argument is required, and
-// whether it is allowed to change its input.
+// spliceOracle holds the two ends of a sequence document that a single
+// top-level range step is not allowed to disturb: everything before `from`
+// and everything from `to` on, rendered by value before the operation runs.
+type spliceOracle struct {
+	prefix []string
+	suffix []string
+}
+
+// newSpliceOracle recognises the isolated-splice shape — the whole path is
+// one (range a b) and the document is a sequence — and snapshots its ends.
+// Anything else returns false and the invariant simply does not apply.
+func newSpliceOracle(doc *lisp.LVal, steps []*lisp.LVal) (spliceOracle, bool) {
+	if len(steps) != 1 {
+		return spliceOracle{}, false
+	}
+	step := steps[0]
+	if step.Type != lisp.LSExpr || len(step.Cells) != 3 {
+		return spliceOracle{}, false
+	}
+	if head := step.Cells[0]; head.Type != lisp.LSymbol || head.Str != "range" {
+		return spliceOracle{}, false
+	}
+	lo, hi := step.Cells[1], step.Cells[2]
+	if lo.Type != lisp.LInt || hi.Type != lisp.LInt {
+		return spliceOracle{}, false
+	}
+	cells, err := toCells(doc)
+	if err != nil {
+		return spliceOracle{}, false
+	}
+	from, to, err := validateRange(len(cells), lo.Int, hi.Int, false)
+	if err != nil {
+		// A range the engine refuses is an error answer, not a splice.
+		return spliceOracle{}, false
+	}
+	return spliceOracle{
+		prefix: fpValues(cells[:from]),
+		suffix: fpValues(cells[to:]),
+	}, true
+}
+
+// check reports why result violates the invariant, or "" if it does not.
+func (o spliceOracle) check(result *lisp.LVal) string {
+	cells, err := toCells(result)
+	if err != nil {
+		// ?nil on an empty range can answer with a nil-ish value; that is
+		// not a lost-tail report to make from here.
+		return ""
+	}
+	got := fpValues(cells)
+	if len(got) < len(o.prefix)+len(o.suffix) {
+		return fmt.Sprintf("result holds %d cells, fewer than the %d untouched ones"+
+			" it had to keep", len(got), len(o.prefix)+len(o.suffix))
+	}
+	for i, want := range o.prefix {
+		if got[i] != want {
+			return fmt.Sprintf("element %d is before the range and should still be %s, got %s",
+				i, want, got[i])
+		}
+	}
+	off := len(got) - len(o.suffix)
+	for i, want := range o.suffix {
+		if got[off+i] != want {
+			return fmt.Sprintf("the element at result position %d is the source's"+
+				" position %d, from after the range, and should still be %s, got %s"+
+				" — the splice overwrote the tail before reading it",
+				off+i, off+i-len(got)+len(o.suffix), want, got[off+i])
+		}
+	}
+	return ""
+}
+
+// fpValues renders a cell slice for value comparison.  By value, not by
+// pointer: a correct splice is free to hand back the source's own element
+// LVals or copies of them, and invariant 6 is about content.
+func fpValues(cells []*lisp.LVal) []string {
+	out := make([]string, len(cells))
+	for i, c := range cells {
+		out[i] = c.String()
+	}
+	return out
+}
+
+// pathOp names one of the seven operations and the three facts the harness
+// needs about it: whether a trailing new-value argument is required, whether
+// it is allowed to change its input, and whether a range step makes it
+// rewrite the whole sequence (invariant 6) rather than just read part of it.
 type pathOp struct {
 	name       string
 	needsValue bool
 	mutates    bool
+	splices    bool
 }
 
+// Every operation but "?" splices: a range step has ?set/?del/?nil rebuild
+// the sequence around the range, so the elements outside it must survive.
+// "?" is excluded because it returns the range and nothing else, so it has
+// no ends to keep.
 var pathOps = []pathOp{
 	{name: "?"},
-	{name: "?set!", needsValue: true, mutates: true},
-	{name: "?set", needsValue: true},
-	{name: "?del!", mutates: true},
-	{name: "?del"},
-	{name: "?nil!", mutates: true},
-	{name: "?nil"},
+	{name: "?set!", needsValue: true, mutates: true, splices: true},
+	{name: "?set", needsValue: true, splices: true},
+	{name: "?del!", mutates: true, splices: true},
+	{name: "?del", splices: true},
+	{name: "?nil!", mutates: true, splices: true},
+	{name: "?nil", splices: true},
 }
 
 const numPathOps = 7
@@ -438,6 +580,69 @@ func (g *pathGen) doc(depth int) *lisp.LVal {
 	default:
 		return lisp.Nil()
 	}
+}
+
+// Value kinds for the trailing new-value argument of ?set / ?set!.
+//
+// This axis used to be the constant string "REPLACEMENT".  A string is not a
+// sequence, so toCells rejected it and the range splice — the one code path
+// in the engine that consumes the value's CELLS rather than storing the
+// value whole — was structurally unreachable from this target.  It could not
+// generate a replacement longer than the range it replaced, which is exactly
+// the input that corrupts, and the defect described in the target's doc
+// comment survived every campaign.
+//
+// The string stays in the pool (it is the value shape a caller most often
+// passes, and the one every existing corpus entry decodes to), joined by
+// vectors and lists of VARYING length so the splice sees replacements
+// shorter than, equal to and longer than the range.
+const (
+	valueString = iota
+	valueScalar
+	valueVector
+	valueList
+	valueNested
+	numValueShapes
+)
+
+// pathValueMaxLen bounds a generated sequence value.  One longer than
+// pathGenMaxLen, so a replacement can exceed the longest sequence the
+// document generator builds — that is the corner where the splice has to
+// grow past the source's own capacity instead of writing inside it.
+const pathValueMaxLen = 6
+
+// value builds the trailing new-value argument.
+func (g *pathGen) value() *lisp.LVal {
+	switch g.intn(numValueShapes) {
+	case valueScalar:
+		return lisp.Int(pathIndices[g.intn(len(pathIndices))])
+	case valueVector:
+		return lisp.Vector(g.markerCells())
+	case valueList:
+		return lisp.QExpr(g.markerCells())
+	case valueNested:
+		// A container value, so a replacement can itself hold structure
+		// the copy helpers have to walk.
+		return g.doc(pathGenMaxDepth - 1)
+	default:
+		return lisp.String("REPLACEMENT")
+	}
+}
+
+// markerCells builds a replacement body of 0..pathValueMaxLen cells.
+//
+// The markers are "R0", "R1", ... — disjoint from pathKeys, pathIndices and
+// every other value the document generator produces.  That disjointness is
+// what makes invariant 6's report unambiguous: a marker sitting where a
+// source element belongs can only have come from the replacement, so the
+// failure names the defect instead of describing a coincidence.
+func (g *pathGen) markerCells() []*lisp.LVal {
+	n := g.intn(pathValueMaxLen + 1)
+	cells := make([]*lisp.LVal, n)
+	for i := range cells {
+		cells[i] = lisp.String(fmt.Sprintf("R%d", i))
+	}
+	return cells
 }
 
 func (g *pathGen) cells(depth int) []*lisp.LVal {
