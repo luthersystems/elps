@@ -4,11 +4,15 @@ package lisplib_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/elpsutil"
+	"github.com/luthersystems/elps/internal/fuzzfp"
 	"github.com/luthersystems/elps/internal/fuzzval"
 	"github.com/luthersystems/elps/internal/fuzzwatch"
 	"github.com/luthersystems/elps/lisp"
@@ -49,11 +53,14 @@ import (
 // INVARIANTS
 //
 //  1. No panic escapes the call.
+//
 //  2. The result is never a nil *LVal.  A nil return is a contract violation
 //     that env.call would have to paper over with a synthesised error.
+//
 //  3. LVal.String() of the result terminates and does not panic.  Every error
 //     path in the interpreter renders its operands, so an unprintable value is
 //     a latent crash in the error path.
+//
 //  4. The three shared singletons (Nil(), Bool(true), Bool(false)) are
 //     bit-identical afterwards.  fuzzval deliberately feeds the singletons in
 //     as arguments; anything that writes through one corrupts every other
@@ -61,6 +68,21 @@ import (
 //     elpscheck` the same corruption is additionally caught at the next
 //     Bool()/Nil() read, which localises it far better -- run
 //     `make test-elpscheck` for that.
+//     4a. No LNative's contents were changed.  See internal/fuzzfp for why
+//     that and not "the arguments are unchanged": several callables mutate an
+//     argument by design.  Issue #318 recorded it as unwatchable; it is not,
+//     and until now NOTHING about an argument was checked at all -- only the
+//     three singletons were, so a builtin that reached into a host's native
+//     produced no signal whatsoever.
+//
+//     fuzzfp's OTHER half -- "no argument's source location was rewritten" --
+//     is deliberately not ported.  It reads the exported LVal.Source field
+//     through a process-wide native-location singleton, and this branch
+//     deletes both (#362, commits 9edf260 and 69be094), so that half no
+//     longer compiles here.  Nothing is lost: assertion 5's fingerprint
+//     hashes source contents, so location drift on any sealed argument is
+//     caught with a sharper signal than the fuzzfp check gave.
+//
 //  5. Sealed arguments are bit-identical afterwards (the issue #372
 //     corruption oracle, sharing the canonical fingerprint in
 //     lisp/sealfp.go).  Before each application every generated argument is
@@ -75,6 +97,7 @@ import (
 //     a value in place -- guarded mutators copy first -- so any fingerprint
 //     drift across the call is a copy-on-write failure of the
 //     substrate#378 class, whichever of the 240 callables performed it.
+//
 //  6. The call terminates.  Bounded by a context deadline, a step limit and,
 //     because neither of those can see a loop that evaluates nothing, an
 //     out-of-band watchdog.  Two of the three defects this target found were
@@ -104,75 +127,192 @@ func FuzzApplyStdlib(f *testing.F) {
 		f.Fatalf("enumerated only %d callables; the stdlib surface should be far larger", len(names))
 	}
 
-	// The seed corpus is the cross of two axes, sampled rather than fully
-	// crossed. A full cross is 240 callables x 57 value seeds = 13,680 entries,
-	// and each entry builds a fresh environment (measured 1.08ms), so the full
-	// cross would add ~15s to every `make test`. The sampled cross is ~890
-	// entries (~1s) and still guarantees that every callable and every value
-	// shape appears at least once in the corpus the fuzzer descends from.
-	valueSeeds := fuzzval.Seeds()
-	for i := range names {
-		idx := uint16(i) //nolint:gosec // G115: i < len(names), a few hundred
-		for _, j := range []int{0, len(valueSeeds) / 2, len(valueSeeds) - 1} {
-			f.Add(idx, valueSeeds[j])
+	seedCross(f, names)
+	f.Fuzz(func(t *testing.T, idx uint16, data []byte) {
+		applyOne(t, names, idx, data)
+	})
+}
+
+// thinPackages are the three standard-library packages that had no budget of
+// their own.
+//
+// Issue #318 recorded them as the sharpest of the thin-coverage cases:
+// libtesting, libhelp and libgolang shared FuzzApplyStdlib's budget with
+// libtime, libregexp, libbase64, libjson, libschema, libmath and libstring, so
+// "nothing found" for them meant "nothing found in whatever fraction of 400k
+// executions the mutator happened to spend on their index range".
+//
+// They are also the three with the most host-side surface per callable, which
+// is what makes a shared budget worst for them specifically: libgolang
+// reflects over arbitrary Go values, libhelp walks the package registry and
+// renders docstrings, and libtesting reaches into the Go testing runner.
+var thinPackages = []string{"testing:", "help:", "golang:"}
+
+// FuzzApplyThinStdlib is FuzzApplyStdlib restricted to thinPackages.
+//
+// Same harness, same assertions, same generator -- the ONLY difference is the
+// callable set, and therefore the budget. A separate target rather than a
+// weighting inside the existing one because the fuzzing engine allocates
+// -fuzztime per target: a weighting would still be spending one budget, which
+// is the thing being fixed.
+//
+// The broad target still covers these packages. This is additive: a dedicated
+// budget on top, not a partition.
+func FuzzApplyThinStdlib(f *testing.F) {
+	names := thinCallables(f)
+	// Per package rather than a single total. The three are very unevenly
+	// sized -- testing registers 11 callables, help and golang 4 each -- so a
+	// total floor generous enough not to be brittle would not notice help or
+	// golang vanishing from LoadLibrary entirely, and this target would stay
+	// green while covering a third less than it claims to.
+	for _, pkg := range thinPackages {
+		n := 0
+		for _, name := range names {
+			if strings.HasPrefix(name, pkg) {
+				n++
+			}
+		}
+		if n == 0 {
+			f.Fatalf("package %q registered no callables; it has been dropped from LoadLibrary"+
+				" and this target would silently cover only %v", pkg, thinPackages)
 		}
 	}
+	if len(names) < 15 {
+		// 19 today. The floor is one package's worth below that.
+		f.Fatalf("enumerated only %d callables across %v", len(names), thinPackages)
+	}
+	seedCross(f, names)
+	f.Fuzz(func(t *testing.T, idx uint16, data []byte) {
+		applyOne(t, names, idx, data)
+	})
+}
+
+// thinCallables is callableNames filtered to thinPackages.
+func thinCallables(tb fuzzT) []string {
+	tb.Helper()
+	var out []string
+	for _, name := range callableNames(tb) {
+		for _, pkg := range thinPackages {
+			if strings.HasPrefix(name, pkg) {
+				out = append(out, name)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// seedCross builds the seed corpus as the cross of two axes, sampled rather
+// than fully crossed. A full cross is 240 callables x 132 value seeds =
+// 31,680 entries, and each entry builds a fresh environment (measured 1.08ms),
+// so the full cross would add ~34s to every `make test`. The sampled cross is
+// ~1100 entries and still guarantees that every callable and every value shape
+// appears at least once in the corpus the fuzzer descends from.
+func seedCross(f *testing.F, names []string) {
+	f.Helper()
+	valueSeeds := fuzzval.Seeds()
+
+	// Every callable is applied to at least one value of EVERY shape.
+	//
+	// This replaced sampling three fixed offsets (0, len/2, len-1) into the
+	// seed list, and the replacement is not cosmetic. fuzzval.Seeds() is
+	// ordered by kind tag, so a fixed offset names a kind -- and growing the
+	// seed list slid those offsets onto different kinds, silently changing
+	// what the entire corpus tests. Measured, the slide took libmath from
+	// 73.8% to 47.5% mean per-function coverage with libmath.toFloat at zero
+	// (not one math builtin received a number any more); re-sampling six
+	// spread offsets instead fixed libmath and took four libjson builtins to
+	// zero in exchange.
+	//
+	// A sampled cross always starves someone, and which someone is decided by
+	// arithmetic nobody is looking at. fuzzval.KindSeeds() is the small
+	// structural list that makes the guarantee explicit instead, and it is
+	// derived from the kind count, so a value shape added to the generator is
+	// crossed against every callable without anyone remembering to.
+	kindSeeds := fuzzval.KindSeeds()
+	located := fuzzval.LocatedKindSeeds()
+	for i := range names {
+		idx := uint16(i) //nolint:gosec // G115: i < len(names), a few hundred
+		for _, seed := range kindSeeds {
+			f.Add(idx, seed)
+		}
+		// Plus ONE value carrying a real source location, with the kind
+		// rotating by callable index. Every callable therefore meets the
+		// population that internal/fuzzfp's "a real location is never
+		// replaced" rule needs, and across the name list every kind appears
+		// located -- at one extra seed per callable rather than nineteen,
+		// which measured as a doubling of the whole corpus's cost for no
+		// statement-coverage gain at all.
+		f.Add(idx, located[i%len(located)])
+	}
+	// And every value seed appears at least once, against callables spread
+	// through the name list.
 	for i, seed := range valueSeeds {
 		for _, j := range []int{0, len(names) / 2, len(names) - 1} {
 			f.Add(uint16((i+j)%len(names)), seed) //nolint:gosec // G115: modulo len(names)
 		}
 	}
+}
 
-	f.Fuzz(func(t *testing.T, idx uint16, data []byte) {
-		name := names[int(idx)%len(names)]
-		if skipCallable(name) {
-			return
-		}
+// applyOne is the body both targets share.
+func applyOne(t fuzzT, names []string, idx uint16, data []byte) {
+	t.Helper()
+	name := names[int(idx)%len(names)]
+	if skipCallable(name) {
+		return
+	}
 
-		before := lisp.TakeSingletonSnapshot()
+	before := lisp.TakeSingletonSnapshot()
 
-		ctx, cancel := context.WithTimeout(context.Background(), callDeadline)
-		defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), callDeadline)
+	defer cancel()
 
-		env := fuzzEnv(t, ctx)
-		fun := env.GetGlobal(lisp.Symbol(name))
-		if fun.Type != lisp.LFun {
-			t.Fatalf("%s: expected a function, got %v", name, fun.Type)
-		}
+	env := fuzzEnv(t, ctx)
+	fun := env.GetGlobal(lisp.Symbol(name))
+	if fun.Type != lisp.LFun {
+		t.Fatalf("%s: expected a function, got %v", name, fun.Type)
+	}
 
-		gen := fuzzval.New(data, env)
-		rawArgs := genArgs(gen, fun)
-		// Seal each argument as a parsed literal would arrive sealed (see
-		// invariant 5 above).  The outer args SExpr stays unsealed on
-		// purpose: in real evaluation the argument LIST header is runtime
-		// storage the kernel may legitimately rework; only the argument
-		// VALUES can be shared parse nodes.
-		for _, a := range rawArgs {
-			a.SealAST()
-		}
-		sealedRoots := collectSealedRoots(rawArgs)
-		fpBefore := lisp.SealedASTFingerprint(sealedRoots)
-		args := lisp.SExpr(rawArgs)
+	gen := fuzzval.New(data, env)
+	rawArgs := genArgs(gen, fun)
+	// Seal each argument as a parsed literal would arrive sealed (see
+	// invariant 5 above).  The outer args SExpr stays unsealed on
+	// purpose: in real evaluation the argument LIST header is runtime
+	// storage the kernel may legitimately rework; only the argument
+	// VALUES can be shared parse nodes.
+	for _, a := range rawArgs {
+		a.SealAST()
+	}
+	sealedRoots := collectSealedRoots(rawArgs)
+	fpBefore := lisp.SealedASTFingerprint(sealedRoots)
+	args := lisp.SExpr(rawArgs)
 
-		result := applyWithWatchdog(t, env, name, fun, args)
+	// Recorded BEFORE the call and while the arguments are still exactly what
+	// the generator built. See internal/fuzzfp for what it watches and, more
+	// importantly, for what it deliberately does not.
+	guard := fuzzfp.Watch(args)
 
-		if result == nil {
-			t.Fatalf("%s returned a nil *LVal", name)
-		}
-		// Rendering the result exercises the same code every error path in the
-		// interpreter runs when it formats an operand.
-		_ = result.String()
+	result := applyWithWatchdog(t, env, name, fun, args)
 
-		if drift := before.Verify(); drift != "" {
-			t.Fatalf("%s mutated the shared singleton %s\n--- args ---\n%s", name, drift, args)
-		}
-		if fpAfter := lisp.SealedASTFingerprint(sealedRoots); fpAfter != fpBefore {
-			t.Fatalf("%s mutated a sealed argument in place (fingerprint %016x -> %016x):"+
-				" a program literal handed to this callable would be corrupted for every"+
-				" environment sharing the parse (the substrate#378 class)\n--- args ---\n%s",
-				name, fpBefore, fpAfter, args)
-		}
-	})
+	if result == nil {
+		t.Fatalf("%s returned a nil *LVal", name)
+	}
+	// Rendering the result exercises the same code every error path in the
+	// interpreter runs when it formats an operand.
+	_ = result.String()
+
+	if drift := before.Verify(); drift != "" {
+		t.Fatalf("%s mutated the shared singleton %s\n--- args ---\n%s", name, drift, args)
+	}
+	if fpAfter := lisp.SealedASTFingerprint(sealedRoots); fpAfter != fpBefore {
+		t.Fatalf("%s mutated a sealed argument in place (fingerprint %016x -> %016x):"+
+			" a program literal handed to this callable would be corrupted for every"+
+			" environment sharing the parse (the substrate#378 class)\n--- args ---\n%s",
+			name, fpBefore, fpAfter, args)
+	}
+	if damage := guard.Check(); damage != "" {
+		t.Fatalf("%s corrupted an argument\n%s\n--- args ---\n%s", name, damage, args)
+	}
 }
 
 // callDeadline bounds one application.  Generous relative to the work any
@@ -218,7 +358,7 @@ const fuzzMaxSteps = 20000
 // The goroutine is deliberately leaked on timeout: it cannot be interrupted
 // (that is the defect being reported), and a fuzz worker that reports a
 // crasher exits immediately afterwards.
-func applyWithWatchdog(t *testing.T, env *lisp.LEnv, name string, fun, args *lisp.LVal) *lisp.LVal {
+func applyWithWatchdog(t fuzzT, env *lisp.LEnv, name string, fun, args *lisp.LVal) *lisp.LVal {
 	t.Helper()
 	done := make(chan *lisp.LVal, 1)
 	panicked := make(chan any, 1)
@@ -377,7 +517,7 @@ func skipCallable(name string) bool {
 // Sorting matters more than it looks: Go map iteration is randomised, so an
 // unsorted list would make a saved crasher select a DIFFERENT callable on
 // replay, and the regression case would silently stop testing what it caught.
-func callableNames(tb testing.TB) []string {
+func callableNames(tb fuzzT) []string {
 	tb.Helper()
 	env := newStdlibEnv(tb)
 	var names []string
@@ -405,7 +545,7 @@ func callableNames(tb testing.TB) []string {
 // would make iteration N's result depend on iterations 0..N-1, so a saved
 // crasher would not reproduce from a clean start -- which is the one property
 // a regression corpus has to have.
-func fuzzEnv(tb testing.TB, ctx context.Context) *lisp.LEnv {
+func fuzzEnv(tb fuzzT, ctx context.Context) *lisp.LEnv {
 	tb.Helper()
 	env := newStdlibEnv(tb,
 		lisp.WithContext(ctx),
@@ -419,10 +559,23 @@ func fuzzEnv(tb testing.TB, ctx context.Context) *lisp.LEnv {
 	// filesystem read into a clean lisp-level error instead of letting a
 	// generated string name a path on the runner.
 	env.Runtime.Library = nil
+	if fuzzEnvHook != nil {
+		fuzzEnvHook(env)
+	}
 	return env
 }
 
-func newStdlibEnv(tb testing.TB, configs ...lisp.Config) *lisp.LEnv {
+// fuzzEnvHook is nil except while TestArgumentGuardIsWiredIn runs.
+//
+// It exists because "internal/fuzzfp detects a corrupted argument" and "this
+// target would report one" are different claims, and only the first is
+// testable in fuzzfp's own package. A guard constructed AFTER the call, or
+// over a copy of the arguments, or whose result was assigned to _, would pass
+// every test in internal/fuzzfp and catch nothing here. One nil check per
+// input is the price of testing the wiring rather than reading it.
+var fuzzEnvHook func(*lisp.LEnv)
+
+func newStdlibEnv(tb fuzzT, configs ...lisp.Config) *lisp.LEnv {
 	tb.Helper()
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
@@ -442,3 +595,152 @@ func newStdlibEnv(tb testing.TB, configs ...lisp.Config) *lisp.LEnv {
 	}
 	return env
 }
+
+// TestArgumentGuardIsWiredIn is the negative control for assertions 4a and 5,
+// in the same spirit as TestInternalPanicMarkerIsNotForgeable in
+// lisp/eval_fuzz_test.go: it installs a builtin that commits each defect the
+// guards claim to catch and asserts the target's own body reports it.
+//
+// Everything FuzzApplyStdlib says about arguments rests on applyOne recording
+// state before the call and checking it after. Those few lines are executed by
+// no other test, and getting them subtly wrong -- watching a copy, checking
+// before applying, dropping the result -- leaves the target green and blind.
+//
+// TWO CASES WERE DELETED HERE, and their absence is the point rather than an
+// omission. "corrupt-source" (relocating a node) and "corrupt-shared-location"
+// (editing a Location many values point at) both drove the source half of
+// internal/fuzzfp, which this branch removes: #362 deleted the process-wide
+// native-source Location and 69be094 put the field behind a value-copy
+// accessor, so neither corruption can be expressed from a builtin any more --
+// SetSource is a no-op on the sealed arguments applyOne builds, and Source()
+// hands back a copy there is no point editing. A red-proof for a rule that no
+// longer exists passes by doing nothing, which is the failure mode this test
+// exists to prevent. "corrupt-sealed-cells" replaces them: it drives the
+// assertion that took over the job, and it is a strictly harder corruption to
+// miss because it changes the value rather than its metadata.
+func TestArgumentGuardIsWiredIn(t *testing.T) {
+	// NOT parallel: fuzzEnvHook is package state.
+	corrupt := []struct {
+		name string
+		want string // the substring that proves the RIGHT guard fired
+		fn   lisp.LBuiltin
+	}{{
+		// A builtin that reaches inside a host's native value. This is the
+		// case issue #318 recorded as uncatchable.
+		name: "corrupt-native",
+		want: "corrupted an argument",
+		fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+			for _, a := range args.Cells {
+				if a.Type == lisp.LNative {
+					if m, ok := a.Native.(map[string]int); ok {
+						m["injected"] = 1
+						return lisp.Nil()
+					}
+				}
+			}
+			return lisp.Nil()
+		},
+	}, {
+		// A builtin that writes through a SEALED argument's cells. Cells stays
+		// exported -- roughly 3,000 downstream sites read it -- so this is a
+		// write the type system still permits and the seal contract forbids:
+		// applyOne seals every argument, and a sealed node is shared with
+		// every environment evaluating the same parse.
+		//
+		// This is the negative control for assertion 5, which nothing else
+		// here drives. It is also what now covers the deleted source cases:
+		// SealedASTFingerprint hashes source contents as well as structure, so
+		// the fingerprint is what a location rewrite would trip today.
+		name: "corrupt-sealed-cells",
+		want: "mutated a sealed argument in place",
+		fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+			for _, a := range args.Cells {
+				if a.IsSealed() && len(a.Cells) > 0 {
+					a.Cells[0] = lisp.Int(0x5EA1ED)
+					return lisp.Nil()
+				}
+			}
+			return lisp.Nil()
+		},
+	}}
+
+	for _, c := range corrupt {
+		t.Run(c.name, func(t *testing.T) {
+			name := "user:" + c.name
+			fuzzEnvHook = func(env *lisp.LEnv) {
+				// A FIXED arity of one. genArgs draws the variadic count from
+				// the input before generating anything, so `&rest` would shift
+				// every seed by a byte and the shapes these builtins attack
+				// would mostly not be generated -- which looks exactly like a
+				// guard that does not work.
+				env.AddBuiltins(true, elpsutil.Function(c.name, lisp.Formals("x"), c.fn))
+			}
+			t.Cleanup(func() { fuzzEnvHook = nil })
+
+			// Drive the REAL target body, with the corrupting builtin as the
+			// only callable it can select. Any seed that produces an argument
+			// of the shape this builtin attacks must be reported.
+			var reported, ran int
+			var lastMsg string
+			for _, seed := range fuzzval.Seeds() {
+				st := &spyT{}
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							if _, ok := r.(spyFatal); !ok {
+								panic(r)
+							}
+						}
+					}()
+					applyOne(st, []string{name}, 0, seed)
+				}()
+				ran++
+				if st.failed {
+					reported++
+					lastMsg = st.msg
+				}
+			}
+			if reported == 0 {
+				t.Fatalf("%s corrupted an argument and the target reported nothing across %d seeds;"+
+					" the matching assertion is not wired into applyOne", name, ran)
+			}
+			if !strings.Contains(lastMsg, c.want) {
+				t.Fatalf("%s was reported, but not by the guard under test (wanted %q) -- the failure was: %s",
+					name, c.want, lastMsg)
+			}
+			t.Logf("%s: reported on %d of %d seeds", name, reported, ran)
+		})
+	}
+}
+
+// fuzzT is the subset of *testing.T and *testing.F the harness uses, so the
+// same body serves both fuzz targets AND can be driven by a spy in
+// TestArgumentGuardIsWiredIn. lisp/eval_fuzz_test.go carries the same
+// interface for the same reason.
+type fuzzT interface {
+	Helper()
+	Fatalf(format string, args ...interface{})
+	Skipf(format string, args ...interface{})
+}
+
+// spyT records a Fatalf instead of failing the test, so the wiring test can
+// assert that the harness WOULD have reported a defect.
+//
+// Fatalf panics with a sentinel rather than returning, because every call site
+// in the harness treats Fatalf as terminal (`t.Fatalf(...); return nil` and
+// the like); letting it fall through would exercise paths the real target
+// never takes.
+type spyT struct {
+	msg    string
+	failed bool
+}
+
+type spyFatal struct{}
+
+func (s *spyT) Helper() {}
+func (s *spyT) Fatalf(format string, args ...interface{}) {
+	s.failed = true
+	s.msg = fmt.Sprintf(format, args...)
+	panic(spyFatal{})
+}
+func (s *spyT) Skipf(format string, args ...interface{}) { panic(spyFatal{}) }
