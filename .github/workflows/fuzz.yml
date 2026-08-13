@@ -122,6 +122,26 @@ jobs:
     # sixth shard restores ceil(21/6) = 4 x 10m + 10m = 50 against 60, and the
     # 10 minutes with it.
     #
+    # WHY SIX AND NOT SEVEN, derived rather than assumed. At 21 targets the
+    # shard count that matters is the one that keeps ceil(targets/shards) at 4,
+    # because 4 x 10m + 10m = 50 is the last value with a shard's worth of
+    # headroom under the 60-minute backstop. Six holds that up to 24 targets;
+    # the 25th moves the largest shard to 5 and eats the headroom, so 24 is the
+    # number to watch, not 21. That ceiling is close: `claude/fix-394-program-seal`
+    # and `claude/fix-393-395-libelpspath` are both adding test files, and
+    # #358 independently carries a [1..6] matrix on the `main` line, which this
+    # will meet as an identical matrix rather than a conflicting one.
+    #
+    # THE DENOMINATOR IS LOAD-BEARING, NOT JUST THE COUNT. fuzz.sh takes
+    # `--shard i/n` and partitions the target list into n. That n was once a
+    # literal next to this matrix, and when the sixth shard was added the two
+    # drifted: shards 1-5 re-ran a five-way partition while shard 6 exited 2,
+    # and fuzz-budget-check -- which reads n from THIS matrix and never looked
+    # at the run line -- reported "6 shards / headroom 10 min" for a sweep that
+    # was running five ways. Both the run line and the job label now derive n
+    # from strategy.job-total, and scripts/ci-gates-test.sh fails the PR if
+    # either goes back to a literal.
+    #
     # Do not raise this by hand to make a red gate green -- run
     # `make fuzz-budget-check`, which prints the arithmetic and the options.
     timeout-minutes: 60
@@ -186,7 +206,17 @@ jobs:
         run: ./scripts/fuzz-budget-check.sh
 
       - name: Fuzz
-        run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/5
+        # The DENOMINATOR IS THE PARTITION, not a label. fuzz.sh divides the
+        # target list into n and runs the i-th part, so a stale n here does not
+        # mis-title a job, it runs the wrong sweep: with the matrix at 6 and
+        # this at 5, shards 1-5 re-ran a five-way partition (largest shard 5,
+        # the truncation the sixth shard was added to prevent) and shard 6 died
+        # with "shard 6/5 is out of range". fuzz-budget-check read 6 from the
+        # matrix and reported headroom the run did not have.
+        #
+        # strategy.job-total is the matrix size, so the partition and the
+        # matrix cannot drift apart again.
+        run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/${{ strategy.job-total }}
 
       # Only from main/schedule: a corpus grown from an unmerged branch would
       # otherwise be handed to every other PR.
