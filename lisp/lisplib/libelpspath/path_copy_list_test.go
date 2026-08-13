@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -96,6 +99,77 @@ func TestCopyOpsOnList(t *testing.T) {
 							op.name, tc.name, n, res.Type, res)
 					}
 				}
+			})
+		}
+	}
+}
+
+// TestCopyOpOnListDoesNotWriteThroughASharedLeaf is the reach the write-back
+// defect has that TestCopyOpsOnList cannot see, and the one a parallel audit
+// of substrate's copy of this engine surfaced first.
+//
+// A correct deep copy shares its LEAVES with the source.  It has to: an int
+// or a string is an immutable LVal, so rebuilding one buys nothing and costs
+// an allocation per scalar, and every copy helper in this package returns a
+// leaf unchanged.  The array-layout write-back then aimed its two stores at
+// `in.Cells[1]` and `in.Cells[0].Cells[0]`.  On a LIST copy those index the
+// list's own ELEMENTS — which are the source's leaves — so the write landed
+// on an integer the source was still holding, and `(?del cp "l" 0)` rewrote
+// `'(1 2)` to `'(1 1)` in a document the operation was never given.
+//
+// TestCopyOpsOnList checks a list in isolation, where the leaves belong to
+// nobody else and the corruption is invisible.  This test puts the list
+// inside a document, copies the document, and asserts on the SOURCE.
+func TestCopyOpOnListDoesNotWriteThroughASharedLeaf(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		step Path
+	}{
+		{"index-0", Index(0)},
+		{"index-1", Index(1)},
+		{"range-0-1", Range(0, 1, false)},
+	} {
+		for _, op := range []struct {
+			name string
+			run  func(p Path, in *lisp.LVal) (*lisp.LVal, error)
+		}{
+			{"?set", func(p Path, in *lisp.LVal) (*lisp.LVal, error) { return p.Set(in, lisp.String("NEW")) }},
+			{"?del", func(p Path, in *lisp.LVal) (*lisp.LVal, error) { return p.Delete(in) }},
+			{"?nil", func(p Path, in *lisp.LVal) (*lisp.LVal, error) { return p.Nil(in) }},
+		} {
+			t.Run(tc.name+"/"+op.name, func(t *testing.T) {
+				t.Parallel()
+
+				src := lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)})
+				doc := lisp.SortedMap()
+				doc.MapSet("l", src)
+				before := fpAST([]*lisp.LVal{doc})
+
+				// The copy an ordinary ?set on an unrelated key returns.
+				cp, err := copyLVal(doc)
+				require.NoError(t, err)
+				cpList, ok := cp.Map().Get(lisp.String("l"))
+				require.True(t, ok)
+
+				// The copy owns its containers...
+				require.NotSame(t, src, cpList,
+					"the deep copy must not share the list container")
+				// ...and shares its leaves, which is why the write-back has
+				// to know what layout it is writing into.
+				require.Same(t, src.Cells[1], cpList.Cells[1],
+					"a deep copy shares immutable leaves; if it stops, this "+
+						"test no longer covers the defect it was written for")
+
+				_, err = op.run(Root(Chain(tc.step)), cpList)
+				if err != nil {
+					t.Logf("%s %s: %v", op.name, tc.name, err)
+				}
+
+				assert.Equal(t, before, fpAST([]*lisp.LVal{doc}),
+					"%s %s through the copy reached the source document: %v",
+					op.name, tc.name, doc)
 			})
 		}
 	}
