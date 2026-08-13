@@ -62,6 +62,12 @@ import (
 // each full verification.  All of it compiles out under the default
 // build tag (see seal_check_default.go): release binaries carry empty
 // inlined hooks and zero bookkeeping.
+//elpsvet:allow checked-build verification machinery, not program data: this table is
+// the seal checker's own record of parse-time fingerprints, it exists only under
+// -tags elpscheck, and the *LVal keys are never handed to a Runtime as values --
+// they are compared by identity and read for fingerprinting. Reaching every Runtime
+// is the POINT: a corruption is only detectable against a record that outlives the
+// environment that made it. Release binaries carry none of this (seal_check_default.go).
 var sealCheck = sealCheckState{roots: make(map[*LVal]uint64)}
 
 // sealCheckMaxRoots bounds the table: past this many recorded roots the

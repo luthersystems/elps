@@ -1317,6 +1317,65 @@ else
 	echo "SKIP  node not installed (${#OWNED_CJS[@]} .cjs helpers unchecked)"
 fi
 
+# --- elpsvet gate: the tagged pass must stay armed ---------------------------
+#
+# elpsvet ACCEPTS -tags and SILENTLY IGNORES IT: x/tools registers it as a
+# deliberate no-op, so `elpsvet -tags elpscheck ./...` analyses the DEFAULT
+# build and reports clean on a tree with findings in tagged files.  The gate
+# therefore carries the build config in GOFLAGS, which reaches the driver via
+# go/packages' `go list`.  That is a non-obvious mechanism, and "simplifying"
+# it back to -tags would leave a gate that passes while seeing nothing --
+# exactly the silent death this whole file exists to prevent.
+#
+# So: assert the workflow invokes the target, assert the target keeps BOTH
+# passes, and prove the GOFLAGS route actually changes what the toolchain
+# sees rather than trusting that it does.
+
+ELPS_YML="${REPO_ROOT}/.github/workflows/elps.yml"
+MAKEFILE="${REPO_ROOT}/Makefile"
+
+if grep -q "make elpsvet" "$ELPS_YML"; then
+	ok "elps.yml invokes the elpsvet gate"
+else
+	bad "elps.yml no longer invokes 'make elpsvet' — the seal contract is unchecked in CI"
+fi
+
+if grep -qE '^\s+GOFLAGS=-tags=elpscheck go run \./cmd/elpsvet' "$MAKEFILE"; then
+	ok "elpsvet target keeps its tagged (GOFLAGS) pass"
+else
+	bad "elpsvet target lost its GOFLAGS pass — the entire -tags elpscheck surface is now invisible"
+fi
+
+if grep -qE '^\s+go run \./cmd/elpsvet -test=false \./\.\.\.' "$MAKEFILE"; then
+	ok "elpsvet target keeps its untagged pass"
+else
+	bad "elpsvet target lost its untagged pass"
+fi
+
+# The mechanism itself. If GOFLAGS ever stops reaching `go list`, both passes
+# analyse the same files and the second one is decoration.
+#
+# Assert on file NAMES, not on a count. The checked-mode files are PAIRED with
+# `//go:build !elpscheck` twins (seal_check_default.go <-> seal_check_elpscheck.go
+# and friends), so the tag SWAPS one for the other and the file count is
+# identical in both modes -- a count comparison passes vacuously in one
+# direction and fails spuriously in the other. This assertion was written as a
+# count first and reported "GOFLAGS did NOT change the file set (29 vs 29)" on
+# a tree where GOFLAGS demonstrably worked.
+if command -v go >/dev/null 2>&1; then
+	_untagged="$(cd "$REPO_ROOT" && go list -f '{{join .GoFiles "\n"}}' ./lisp/ 2>/dev/null)"
+	_tagged="$(cd "$REPO_ROOT" && GOFLAGS=-tags=elpscheck go list -f '{{join .GoFiles "\n"}}' ./lisp/ 2>/dev/null)"
+	if [ -z "$_tagged" ] || [ -z "$_untagged" ]; then
+		bad "go list produced no file set — cannot verify GOFLAGS tag propagation"
+	elif echo "$_tagged" | grep -q '_elpscheck\.go$' && ! echo "$_untagged" | grep -q '_elpscheck\.go$'; then
+		ok "GOFLAGS carries the build tag into go list (tagged file set includes *_elpscheck.go, untagged does not)"
+	else
+		bad "GOFLAGS did NOT swap in the *_elpscheck.go files — the tagged elpsvet pass sees the default build"
+	fi
+else
+	echo "SKIP  go not installed (GOFLAGS tag-propagation unchecked)"
+fi
+
 echo
 echo "=========================================================================="
 echo "ci-gates-test: ${pass} passed, ${fail} failed"
