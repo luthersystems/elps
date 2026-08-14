@@ -201,7 +201,10 @@ func enumerateSpans(n int) [][2]int {
 	seen := map[[2]int]bool{}
 	var out [][2]int
 	for _, c := range candidates {
-		if c[0] < 0 || c[1] > n || c[0] > c[1] || seen[c] {
+		// c is [2]int, so c[0] and c[1] are bounds-checked by the type; the
+		// conditions below are range validation against n, not indexing.
+		lo, hi := c[0], c[1]
+		if lo < 0 || hi > n || lo > hi || seen[c] {
 			continue
 		}
 		seen[c] = true
@@ -479,12 +482,12 @@ func TestEnumeratePathsCoversEveryStepForm(t *testing.T) {
 				}
 			}
 			for _, want := range []string{"key", "index", "range"} {
-				assert.Greater(t, forms[want], 0,
+				assert.Positive(t, forms[want],
 					"the battery enumerates no %s step for the %s source, so every "+
 						"path operation reached only through one is untested: %v",
 					want, name, forms)
 			}
-			assert.Greater(t, belowRange, 0,
+			assert.Positive(t, belowRange,
 				"no enumerated path continues below a span step, so the "+
 					"query-a-span-then-write-through-it route is untested")
 		})
