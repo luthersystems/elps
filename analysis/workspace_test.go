@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1865,4 +1866,131 @@ func TestPrescanWorkspace_Preamble(t *testing.T) {
 	assert.Equal(t, 2, heads["defmacro"], "should collect both defmacro forms")
 	assert.Equal(t, 1, heads["defun"], "should collect defun forms")
 	assert.Equal(t, 1, heads["set"], "should collect set forms")
+}
+
+// countingExpander records how many times the analyzer asked it to expand.
+// It never actually expands (returns nil), so it changes no analysis result —
+// it only observes whether Config.MacroExpander reached the analyzer.
+type countingExpander struct {
+	calls int
+}
+
+func (c *countingExpander) ExpandMacro(_ *lisp.LVal, _ string) *lisp.LVal {
+	c.calls++
+	return nil
+}
+
+// TestAnalyzeFile_ForwardsMacroExpander is the issue #353 reproducer:
+// AnalyzeFile must not silently drop Config.MacroExpander. The same source
+// analysed through Analyze and through AnalyzeFile must reach the expander
+// the same number of times.
+func TestAnalyzeFile_ForwardsMacroExpander(t *testing.T) {
+	src := []byte("(in-package 'user)\n(no-such-head 1 2)\n")
+
+	direct := &countingExpander{}
+	exprs, err := rdparser.New(token.NewScanner("x.lisp", strings.NewReader(string(src)))).ParseProgram()
+	require.NoError(t, err)
+	Analyze(exprs, &Config{MacroExpander: direct, Filename: "x.lisp"})
+	require.Positive(t, direct.calls, "sanity: Analyze must consult the expander")
+
+	viaFile := &countingExpander{}
+	require.NotNil(t, AnalyzeFile(src, "x.lisp", &Config{MacroExpander: viaFile}))
+
+	assert.Equal(t, direct.calls, viaFile.calls,
+		"AnalyzeFile must forward Config.MacroExpander to Analyze")
+}
+
+// TestConfigForFile_CarriesEveryField guards the whole class of bug that
+// issue #353 (MacroExpander) and the earlier DefForms/PackageImports drop
+// both belong to: a new Config field added without updating a per-file config.
+// Every field except Filename must survive the copy.
+func TestConfigForFile_CarriesEveryField(t *testing.T) {
+	src := &Config{
+		ExtraGlobals:   []ExternalSymbol{{Name: "g"}},
+		PackageExports: map[string][]ExternalSymbol{"p": {{Name: "e"}}},
+		PackageSymbols: map[string][]ExternalSymbol{"p": {{Name: "s"}}},
+		DefForms:       []DefFormSpec{{Head: "defthing"}},
+		PackageImports: map[string][]string{"p": {"q"}},
+		DefaultPackage: "svc",
+		WorkspaceRefs:  map[string][]FileReference{"k": {{File: "a.lisp"}}},
+		MacroExpander:  &countingExpander{},
+		Filename:       "original.lisp",
+	}
+
+	// Every field must be non-zero above, or the test proves nothing.
+	sv := reflect.ValueOf(*src)
+	for i := range sv.NumField() {
+		require.False(t, sv.Field(i).IsZero(),
+			"test fixture must set Config.%s", sv.Type().Field(i).Name)
+	}
+
+	got := ConfigForFile(src, "other.lisp")
+	require.NotSame(t, src, got, "ConfigForFile must not alias the caller's Config")
+	assert.Equal(t, "other.lisp", got.Filename)
+
+	gv := reflect.ValueOf(*got)
+	for i := range gv.NumField() {
+		name := sv.Type().Field(i).Name
+		if name == "Filename" {
+			continue
+		}
+		assert.Equal(t, sv.Field(i).Interface(), gv.Field(i).Interface(),
+			"ConfigForFile dropped Config.%s", name)
+	}
+}
+
+// TestScanWorkspaceRefs_MacroExpansionKeepsRefsInOwnFile pins the invariant
+// that File and Source.File agree for every workspace reference.
+//
+// Now that AnalyzeFile honours Config.MacroExpander (issue #353),
+// ScanWorkspaceRefs analyses expanded ASTs. Expansion splices nodes from the
+// macro's definition site into the calling file, so those nodes carry the
+// macro file's location. lsp/rename.go takes the edit URI from File and the
+// edit range from Source, so recording such a node under the calling file
+// would aim a rename at coordinates that belong to a different file.
+func TestScanWorkspaceRefs_MacroExpansionKeepsRefsInOwnFile(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.lisp"), []byte(
+		"(in-package 'user)\n"+
+			"(defun helper-fn (x) (+ x 1))\n"+
+			"(defmacro call-helper (v) (quasiquote (helper-fn (unquote v))))\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(
+		"(in-package 'user)\n"+
+			"(defun use-it (y) (call-helper y))\n"), 0o600))
+
+	pre, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+
+	env := newTestEnv(t)
+	require.Empty(t, LoadWorkspaceMacros(env, pre.Preamble))
+
+	cfg := &Config{
+		ExtraGlobals:   pre.AllDefs,
+		PackageExports: pre.PkgExports,
+		PackageSymbols: pre.PkgAllSymbols,
+		DefForms:       pre.DefForms,
+		PackageImports: pre.PackageImports,
+		DefaultPackage: pre.DefaultPackage,
+		MacroExpander:  &EnvMacroExpander{Env: env},
+	}
+
+	refs := ScanWorkspaceRefs(dir, cfg, nil)
+	require.NotEmpty(t, refs)
+
+	var checked int
+	for key, list := range refs {
+		for _, ref := range list {
+			require.NotNil(t, ref.Source)
+			assert.Equal(t, filepath.Base(ref.File), filepath.Base(ref.Source.File),
+				"%s: reference recorded in %s but sourced in %s",
+				key, ref.File, ref.Source.File)
+			checked++
+		}
+	}
+	assert.Positive(t, checked)
+
+	// The macro's own body reference to helper-fn stays attributed to a.lisp.
+	helper := refs[SymbolKey{Package: "user", Name: "helper-fn", Kind: SymFunction}.String()]
+	require.Len(t, helper, 1)
+	assert.Equal(t, "a.lisp", filepath.Base(helper[0].File))
 }
