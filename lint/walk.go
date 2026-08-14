@@ -20,11 +20,13 @@ func WalkSExprs(exprs []*lisp.LVal, fn func(sexpr *lisp.LVal, depth int)) {
 }
 
 // HeadSymbol returns the symbol name at the head of an s-expression, or "".
+// A nil sexpr yields "".
 func HeadSymbol(sexpr *lisp.LVal) string {
 	return astutil.HeadSymbol(sexpr)
 }
 
 // ArgCount returns the number of arguments in an s-expression (excluding the head).
+// A nil sexpr yields 0.
 func ArgCount(sexpr *lisp.LVal) int {
 	return astutil.ArgCount(sexpr)
 }
@@ -48,6 +50,7 @@ func CollectFormals(formals *lisp.LVal, defs map[string]bool) {
 
 // SourceOf returns the best source location for a node.
 // Prefers the node's own source, falls back to first child's source.
+// Returns nil for a nil node.
 func SourceOf(v *lisp.LVal) *lisp.LVal {
 	return astutil.SourceOf(v)
 }

@@ -93,13 +93,21 @@ import (
 //	                                       lsp_test.go already guards this way,
 //	                                       "fail fast if index build silently
 //	                                       panicked".
-//	EnvMacroExpander.ExpandMacro           NOT COVERED. Its recover sets
-//	  (analysis/expander.go)               result = nil, which is also the
-//	                                       ordinary "not a macro" answer, so
-//	                                       there is no marker to key off. A
-//	                                       panic in macro expansion at analysis
-//	                                       time is invisible to this target.
-//	                                       Stated rather than papered over.
+//	EnvMacroExpander.ExpandMacro           DETECTED, since analysis/ grew the
+//	  (analysis/expander.go)               marker this row used to say it
+//	                                       lacked. Its recover still sets
+//	                                       result = nil -- also the ordinary
+//	                                       "not a macro" answer, so the RETURN
+//	                                       VALUE still cannot carry the fact --
+//	                                       but the expander now counts calls
+//	                                       that failed to complete, keyed off a
+//	                                       local in ExpandMacro's own frame that
+//	                                       only a normal return sets.
+//	                                       checkExpansionPanics reads that count
+//	                                       through analysis.PanicReporter. Same
+//	                                       family of non-forgeable marker as
+//	                                       IsInternalPanic and the analysisCfg
+//	                                       check above.
 //
 // Everything else runs with no recover between the handler body and the fuzz
 // function, because the harness calls the server's handler methods directly
@@ -428,6 +436,49 @@ func (s *session) checkIndexBuilt() error {
 			" swallowed the panic")
 	}
 	return nil
+}
+
+// checkExpansionPanics is the swallowed-panic detector for analysis-time macro
+// expansion, which the table above used to list as NOT COVERED.
+//
+// Analysing a document CALLS env.MacroCall on macros that came off disk, so a
+// macro body is evaluated while a file is merely open in an editor. The recover
+// around that returns nil, and nil is also the answer for "not a macro" -- the
+// answer the analyser gets for almost every head symbol it asks about -- so no
+// return value could ever have distinguished the two.
+//
+// analysis.EnvMacroExpander now counts calls that did not complete, keyed off a
+// local variable in ExpandMacro's own frame. Nothing reachable from lisp, and
+// nothing an embedder holds, can set that local; the count is unexported and
+// only ever increases. Reading it here is the same move as asserting
+// analysisCfg != nil after ensureWorkspaceIndex, one layer down.
+func (s *session) checkExpansionPanics() error {
+	s.srv.analysisCfgMu.RLock()
+	cfg := s.srv.analysisCfg
+	s.srv.analysisCfgMu.RUnlock()
+	if cfg == nil {
+		return nil // already reported by checkIndexBuilt
+	}
+	reporter, ok := cfg.MacroExpander.(analysis.PanicReporter)
+	if !ok {
+		return nil
+	}
+	n := reporter.ExpansionPanics()
+	if n == 0 {
+		return nil
+	}
+	detail := ""
+	if exp, ok := cfg.MacroExpander.(*analysis.EnvMacroExpander); ok {
+		if rec := exp.LastExpansionPanic(); rec != nil {
+			detail = fmt.Sprintf("\n  macro:   %s\n  package: %s\n  value:   %v\n  stack:\n%s",
+				rec.Macro, rec.Package, rec.Value, rec.GoStack)
+		}
+	}
+	return fmt.Errorf(
+		"EnvMacroExpander swallowed %d panic(s) during analysis-time macro expansion."+
+			" A document merely being open evaluated a macro body that crashed host"+
+			" code, and ExpandMacro's recover() turned that into the same nil it"+
+			" returns for \"not a macro\"%s", n, detail)
 }
 
 func (s *session) checkMarshal(what string, v any) {
@@ -871,7 +922,10 @@ func runSession(srcA, srcB, script []byte) error {
 	// Any timer still armed would fire after the session is over, on a
 	// goroutine belonging to no input.
 	_ = s.srv.shutdown(s.ctx)
-	return s.checkIndexBuilt()
+	if err := s.checkIndexBuilt(); err != nil {
+		return err
+	}
+	return s.checkExpansionPanics()
 }
 
 // fatalf is the subset of *testing.T the harness needs, so the same driver
@@ -1226,5 +1280,54 @@ func TestLSPFuzzSeedsTerminate(t *testing.T) {
 			t.Parallel()
 			runSessionBudgeted(t, seed, seed, allOpsScript())
 		})
+	}
+}
+
+// TestLSPFuzzDetectsSwallowedExpansionPanic proves checkExpansionPanics is
+// wired to the object the analyser actually uses, and that it fires.
+//
+// The detector is worth exactly nothing if it reads a different expander from
+// the one buildWorkspaceIndex installed, and that mistake is invisible: the
+// check would return nil forever and every input would pass. So this reaches
+// into the built config, makes THAT expander swallow a real panic (a nil form
+// dereferences inside ExpandMacro), and requires the session-level check to
+// report it.
+func TestLSPFuzzDetectsSwallowedExpansionPanic(t *testing.T) {
+	s, err := newSession(nil)
+	if err != nil {
+		t.Fatalf("newSession: %v", err)
+	}
+
+	s.srv.analysisCfgMu.RLock()
+	cfg := s.srv.analysisCfg
+	s.srv.analysisCfgMu.RUnlock()
+	if cfg == nil {
+		t.Fatal("no analysis config after ensureWorkspaceIndex")
+	}
+	exp, ok := cfg.MacroExpander.(*analysis.EnvMacroExpander)
+	if !ok {
+		t.Fatalf("buildWorkspaceIndex installed a %T, not an *analysis.EnvMacroExpander;"+
+			" checkExpansionPanics reads analysis.PanicReporter, so if the new"+
+			" expander does not implement it this target silently stops detecting"+
+			" swallowed panics", cfg.MacroExpander)
+	}
+
+	if err := s.checkExpansionPanics(); err != nil {
+		t.Fatalf("a fresh session already reports a swallowed panic: %v", err)
+	}
+
+	// A nil form panics inside ExpandMacro. The recover swallows it and returns
+	// nil -- exactly what "not a macro" returns -- so only the count shows it.
+	if v := exp.ExpandMacro(nil, "user"); v != nil {
+		t.Fatalf("ExpandMacro(nil) returned %v, expected the recovered nil", v)
+	}
+	err = s.checkExpansionPanics()
+	if err == nil {
+		t.Fatal("checkExpansionPanics did not report a swallowed panic in the very" +
+			" expander buildWorkspaceIndex installed; the detector is not wired to" +
+			" the object the analyser uses")
+	}
+	if !strings.Contains(err.Error(), "swallowed") {
+		t.Errorf("unexpected error text: %v", err)
 	}
 }

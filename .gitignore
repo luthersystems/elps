@@ -14,3 +14,8 @@ editors/vscode/bin/
 # rather than the whole committed corpus. Regenerated per run; never committed
 # (the crasher itself belongs in <package>/testdata/fuzz/<Target>/).
 fuzz-crashers/
+
+# scripts/ci-gates-test.sh synthesises a throwaway package here for its
+# empty-discovery control and deletes it again. Ignored so an interrupted run
+# cannot leave the tree looking dirty.
+internal/citest-emptyfuzz.*/

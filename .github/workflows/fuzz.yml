@@ -87,15 +87,19 @@ jobs:
     #     ceil(targets / shards) x FUZZTIME + overhead <= timeout-minutes
     #
     # on every PR, so this number cannot silently stop covering the sweep. At
-    # 21 targets over 6 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
+    # 24 targets over 6 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
     # worth of headroom for a target being added before anyone reshards.
     #
-    # The note this replaces called it exactly: at 20 targets over 5 shards
-    # the ceiling was fully consumed, ceil(21/5) = 5 puts `needed` at exactly
-    # 60, and the gate would have passed while describing a truncated sweep --
-    # so the 21st target had to arrive together with a sixth shard. It is
-    # libelpspath.FuzzPathEngine, and this is that sixth shard: ceil(21/6) = 4
-    # and the 10 minutes are back.
+    # Both sides of this history hit the same ceiling from opposite ends. The
+    # sixth shard already arrived on main with the analysis/lint targets that
+    # took the count to 23. This branch adds libelpspath.FuzzPathEngine, the
+    # 24th, and ceil(24/6) = 4 keeps the 10 minutes -- so the shard count does
+    # not move again here, only the number it is derived from.
+    #
+    # The rule both changes were obeying: a target must never land without
+    # re-deriving this. At 20 targets over 5 shards the ceiling was fully
+    # consumed, and ceil(21/5) = 5 would have put `needed` at exactly 60 --
+    # which the gate PASSES while describing a truncated sweep.
     #
     # THE HEADROOM IS THE POINT, NOT THE GREEN TICK. The gate's condition is
     # `needed > timeout`, so a sweep sized at exactly timeout-minutes PASSES --
@@ -127,7 +131,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
         with:
-          go-version: "1.25"
+          go-version: "1.25.13"
           cache: true
 
       - name: Download dependencies
