@@ -285,9 +285,9 @@ func (enc *encoder) encodeNative(v interface{}) error {
 // Every other encoder here builds its own bytes from a lisp value, so it
 // controls what it emits -- encodeFloat already rejects Inf and NaN for exactly
 // this reason. A native is the one case where bytes reach the output without
-// libjson having produced them: a json.RawMessage (and likewise a json.Number)
-// is a json.Marshaler that emits its contents verbatim, so an embedder's bytes
-// pass straight through.
+// libjson having produced them: a json.RawMessage is a json.Marshaler that
+// emits its contents verbatim, so an embedder's bytes pass straight through,
+// and any other json.Marshaler reachable from the value does the same.
 //
 // That is elps#410. `1E1000` is syntactically valid JSON -- the grammar puts no
 // bound on the exponent -- so json.Marshal is happy to pass it along, and
@@ -296,35 +296,75 @@ func (enc *encoder) encodeNative(v interface{}) error {
 // wrote and json:load then rejected: not corruption, but a value that cannot
 // be read back, which for a phylum persisting its state is worse.
 //
-// The check calls jsonDecode -- the decoder's own function -- so the two agree
-// by construction rather than by a rule restated here and left to drift.
+// # What this checks, and what it leaves to json.Marshal
+//
+// Load accepts a document when three things hold, and this is called at the
+// one point in the program where the first of them is already settled:
+//
+//  1. SYNTAX -- well-formed JSON, no trailing content, nothing unterminated.
+//     encodeNative has just called json.Marshal on the value, and json.Marshal
+//     compacts every json.Marshaler's output through the same scanner
+//     json.Valid uses; invalid bytes come back as an error rather than as a
+//     document. Everything else it emits it generated itself. So b is already
+//     known to be well-formed JSON, and re-establishing that here is a second
+//     full pass over the bytes for an answer already in hand.
+//     TestMarshalRefusesWhatItCannotParse pins that guarantee, so a standard
+//     library that stopped validating fails there rather than silently
+//     widening what dump emits.
+//
+//  2. NESTING within encoding/json's limit of 10000. Marshal does NOT settle
+//     this one. It applies the limit when it PARSES -- inside Unmarshal, and
+//     inside the compaction above -- but a plain Go value is walked
+//     structurally and never parsed, so an ordinary []interface{} nested 10001
+//     deep marshals without complaint into a document Load refuses.
+//     TestDumpRefusesNativeTooDeepToLoad holds that line.
+//
+//  3. NUMBERS that fit a float64, which is #410 itself.
+//
+// So the check counts brackets and range-checks number literals, in one pass
+// that allocates nothing. It is not a JSON parser and must not be mistaken for
+// one: it is only a total predicate on input that is already well-formed,
+// which is exactly the input it gets. TestCheckLoadableMatchesLoad compares it
+// against Load directly on that class of input, and compares the whole
+// composition -- Marshal then this -- against Load on everything else.
+//
 // stringNums is honoured because it changes the answer: Load uses UseNumber in
-// that mode, which keeps a number as text and never converts it, so `1E1000` IS
-// loadable there and must not be refused. The fuzz reproduction pins
+// that mode, which keeps a number as text and never converts it, so `1E1000`
+// IS loadable there and must not be refused. Nesting still applies in that
+// mode, so only the number half is skipped. The fuzz reproduction pins
 // stringNums=false for exactly that reason.
 //
-// The cost is a full decode per native encoded, and it is not small: it takes
-// BenchmarkEncodeNativeLarge (a 60-element document) from 3 allocs to 1159 and
-// roughly quadruples its time, because decoding into an interface{}
-// materialises the whole value only to throw it away. It is charged per
-// NATIVE, not per document -- a document containing no native pays nothing,
-// since nothing else reaches here -- but BenchmarkEncode does contain natives
-// and does pay: see the comment on that benchmark in nativebench_test.go for
-// the measured figures.
+// # Rejected alternatives, recorded so they are not retried blind
 //
-// Two cheaper designs were tried and rejected on evidence, recorded here so
-// they are not retried blind.
+// Decoding the bytes -- jsonDecode into an interface{}, which is what shipped
+// first -- is correct by construction and far too expensive: it materialises
+// the whole value only to throw it away, taking BenchmarkEncodeNativeLarge
+// from 3 allocs to 1159 and roughly quadrupling its time. The scan replaces it
+// because the parity test made the swap checkable rather than merely
+// plausible.
 //
-// Token-scanning avoids building the value, but TestCheckLoadableMatchesLoad
-// showed it accepts `""` and `{` -- an unterminated container ends the scan at
-// EOF with no complaint -- and encoding/json applies a nesting limit inside
-// Unmarshal that a token stream never sees, so it also passed documents Load
-// rejects. Worse, it was not even cheaper: Token boxes every value it yields,
-// measuring 4034 allocs against the decode's 1159.
+// json.Valid instead of leaning on Marshal is redundant, not safer: it is the
+// same scanner Marshal has already run over the same bytes. Measured on its
+// own over the 4KiB document BenchmarkEncodeNativeLarge encodes, json.Valid
+// costs about 14us -- more than half the base cost of the entire encode --
+// against about 6us for this scan, which answers the two questions Marshal
+// leaves open instead of re-answering the one it has settled. Note also that
+// json.Valid would NOT have covered nesting on its own terms here: it would
+// have covered it by accident, and dropping it without adding the depth count
+// would have reopened the hole described above.
 //
-// A pre-filter that only decodes when the bytes could hold an out-of-range
-// number does not help either: an exponent marker is just `e`, which appears in
-// most strings, so the filter fires on ordinary documents.
+// A hand-rolled Decoder.Token scan was tried before any of this and rejected
+// on evidence: the parity test caught it accepting `""` and `{`, since an
+// unterminated container ends the scan at EOF with no complaint, and Token
+// does not apply the nesting limit Unmarshal does. It was not even cheaper --
+// Token boxes every value it yields, 4034 allocs against the decode's 1159.
+// Note what is different here: this scan is not asked to decide syntax at all.
+//
+// A pre-filter over the whole document keyed on the presence of `e` does not
+// help: an exponent marker is just `e`, which appears in most strings, so the
+// filter fires on ordinary documents. String context is what makes the scan
+// below able to use that signal -- `e` inside a string or an object key is
+// text, not an exponent.
 //
 // Narrowing by TYPE -- checking only a json.RawMessage or json.Number, on the
 // theory that everything else is marshalled by encoding/json and so cannot
@@ -333,12 +373,8 @@ func (enc *encoder) encodeNative(v interface{}) error {
 // library, and such a value can sit in a struct field, map value or slice
 // element at any depth behind an interface. The property is only decidable on
 // the bytes. TestDumpRefusesUnloadableNativeBeyondRawMessage holds that line.
-//
-// If this ever shows up in a profile, the parity test is the safety net that
-// makes a faster check safe to attempt.
 func (enc *encoder) checkLoadable(b []byte) error {
-	var x interface{}
-	if err := jsonDecode(b, &x, enc.stringNums); err != nil {
+	if err := checkNativeLoadable(b, enc.stringNums); err != nil {
 		return encodeUnloadableNativeError{err: err}
 	}
 	return nil

@@ -5,6 +5,7 @@ package libjson_test
 import (
 	"encoding/json"
 	"math/big"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -183,6 +184,68 @@ func TestDumpRefusesUnloadableNativeBeyondRawMessage(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "unable to encode native value") {
 				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// deepNative builds a native Go value nested n levels deep. It is deliberately
+// NOT a json.RawMessage: the point of the rows below is a value encoding/json
+// serializes itself.
+func deepNative(n int) interface{} {
+	var v interface{} = 1
+	for range n {
+		v = []interface{}{v}
+	}
+	return v
+}
+
+// TestDumpRefusesNativeTooDeepToLoad is the second way a native can dump into a
+// document that will not load, and the one a syntax check does not catch.
+//
+// encoding/json applies a nesting limit of 10000 when it PARSES -- inside
+// Unmarshal, and inside the compaction it runs over any json.Marshaler's
+// output. It applies no such limit when it SERIALIZES a plain Go value, which
+// it walks structurally and never parses. So a native that is an ordinary
+// nested slice marshals happily at any depth and produces a document Load then
+// refuses, exactly as `1E1000` does.
+//
+// This is why the check cannot be narrowed to number literals: the depth rows
+// here and the range rows above are independent holes in the same invariant,
+// and json.Marshal closes neither of them for a value of this shape. The two
+// rows either side of the limit are what pin the boundary, so a check that is
+// off by one shows up here.
+func TestDumpRefusesNativeTooDeepToLoad(t *testing.T) {
+	for _, depth := range []int{64, 9999, 10000, 10001, 12000} {
+		t.Run(strconv.Itoa(depth), func(t *testing.T) {
+			v := deepNative(depth)
+
+			// Establish the premise rather than assuming it: json.Marshal is
+			// perfectly happy with the value at every depth here, so nothing
+			// upstream of the check has refused it.
+			b, err := json.Marshal(v)
+			if err != nil {
+				t.Fatalf("premise broken: the value does not marshal: %v", err)
+			}
+
+			// Whatever Load makes of those bytes is what Dump must agree with.
+			loadable := libjson.Load(b, false).Type != lisp.LError
+
+			enc, derr := libjson.Dump(lisp.Native(v), false)
+			if loadable {
+				if derr != nil {
+					t.Fatalf("Dump refused a %d-deep native, which Load accepts: %v", depth, derr)
+				}
+				if back := libjson.Load(enc, false); back.Type == lisp.LError {
+					t.Fatalf("Load rejected Dump's own output at depth %d: %v", depth, back)
+				}
+				return
+			}
+			if derr == nil {
+				t.Fatalf("Dump emitted a %d-deep document, which Load rejects -- elps#410", depth)
+			}
+			if !strings.Contains(derr.Error(), "unable to encode native value") {
+				t.Fatalf("unexpected error at depth %d: %v", depth, derr)
 			}
 		})
 	}

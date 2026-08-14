@@ -20,34 +20,52 @@ import (
 // simply wrong. Three of the 36 rows in stdEncodeTests are natives --
 // lisp.Value on a map[string]interface{} falls through Value's type switch to
 // lisp.Native, a map not being one of the kinds it converts -- so
-// BenchmarkEncode pays for three validating decodes per iteration and moves
-// measurably:
+// BenchmarkEncode pays for the check three times per iteration.
 //
-//	                         base (origin/main)          with the check
-//	Encode-4                 19.22µs  10.05KiB   214     21.45µs  11.30KiB   231
-//	Encode_stringNumbers-4   2.660µs  1.297KiB    30     2.699µs  1.297KiB    30
-//	EncodeNativeSmall-4      412.3ns     208B      3     1.565µs     848B     17
-//	EncodeNativeLarge-4      24.37µs  8.112KiB     3     101.4µs  45.53KiB  1159
+// The check shipped first as a full decode of the marshalled bytes, and these
+// benchmarks are what showed that it could not stay one. Against origin/main,
+// 12 interleaved rounds per arm at GOMAXPROCS=4, -benchtime 500ms, compared
+// with benchstat:
 //
-// 10 interleaved rounds per arm, GOMAXPROCS=4, base = origin/main, compared
-// with benchstat. Encode is +12.4% bytes and +7.9% allocs (p<0.001, and both
-// exact -- every sample identical, since allocation counts here are
-// deterministic) and +11.6% time. Treat the time figure as the soft one: it
-// measured +8.4% on an earlier run of the same comparison on the same host,
-// while the byte and alloc deltas reproduced exactly. The stringNumbers row
-// does not move on any metric (p=0.27 on time, byte-identical otherwise).
+//	                        base (origin/main)      decode          scan (now)
+//	Encode-4                24.65us 10.05KiB 214    +11.6%  +12.4%  ~  =    =
+//	Encode_stringNumbers-4  3.630us 1.297KiB  30      ~       =     ~  =    =
+//	EncodeNativeSmall-4     490.2ns    208B    3    +280%   +308%  +11.6% = =
+//	EncodeNativeLarge-4     26.70us 8.112KiB   3    +316%   +461%  +19.8% = =
+//
+// The decode column is the figure recorded when the fix landed, measured the
+// same way on the same host but in a different session -- treat it as an order
+// of magnitude, not as a number comparable digit for digit with the other two.
+// The scan column is measured against the base beside it.
+//
+// What the scan restores exactly is ALLOCATION. Every arm is back to its base
+// count with every sample equal: 214, 30, 3 and 3, against the decode's 231,
+// 30, 17 and 1159. Bytes per op return to base too (the 0.02% on
+// EncodeNativeLarge is two bytes of buffer-growth rounding, not work). That is
+// the number that mattered: the decode allocated in proportion to the
+// DOCUMENT, so a service passing large opaque blobs around as natives paid GC
+// pressure proportional to its traffic.
+//
+// What it does NOT restore is time, and the two native rows are still
+// significantly slower than main: +11.6% (p=0.001) and +19.8% (p=0.000) on 12
+// samples. That is not noise and should not be reported as noise. It is also
+// not removable: the check has to READ the bytes, and reading them costs a
+// pass. The base row for EncodeNativeLarge is very nearly json.Marshal's own
+// compaction of the same 4KiB document, which is itself a pass over the bytes
+// at roughly 6ns each; this scan adds one at roughly 1.3ns each. Parity with
+// main would mean checking the bytes without looking at them.
+//
+// The two whole-document rows ARE at parity (p=0.319 and p=0.630), which is
+// the shape to expect: the check is charged per native encoded and per byte of
+// that native, so a document that is 8% native by count barely moves.
 //
 // The stringNumbers row is flat for a mundane reason, stated here so it is not
-// misread as evidence the check is free in that mode: stringNumberEncodeTests
-// holds only lisp.Int and lisp.Float rows and contains no native at all, so it
-// never reaches encodeNative. The asymmetry is between the two TABLES, not
-// between the two modes -- under :string-numbers the check still runs, and
-// still costs, whenever a document actually holds a native.
-//
-// Read the Encode row as the cost for a document that is ~8% native by count,
-// not as a fleet-wide 8%: the check is charged per native encoded, and a
-// document holding no native pays nothing because nothing else reaches
-// encodeNative.
+// misread as evidence the check is free in that mode:
+// stringNumberEncodeTests holds only lisp.Int and lisp.Float rows and contains
+// no native at all, so it never reaches encodeNative. The asymmetry is between
+// the two TABLES, not between the two modes -- under :string-numbers the check
+// still walks the bytes to count nesting, and still costs, whenever a document
+// actually holds a native. Only the number half of it is skipped.
 func benchNative(b *testing.B, src string) {
 	b.Helper()
 	raw := json.RawMessage(src)
