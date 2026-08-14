@@ -41,17 +41,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
         with:
-          # Kept in step with .github/workflows/govulncheck.yml and with the
-          # version the build jobs pin -- see the long note there. In short:
-          # govulncheck reports stdlib advisories against whatever Go compiled
-          # the scan, so scanning a different major than the repo ships makes
-          # this gate answer a question nobody asked. "stable" resolved to a
-          # toolchain one patch behind the fix, and setup-go sets
-          # GOTOOLCHAIN=local so Go could not make up the difference.
+          # EXACT, and identical to every other workflow here -- see the long
+          # note in .github/workflows/govulncheck.yml for why every looser
+          # spelling ("stable", "1.25", ">=1.25.13") resolved somewhere
+          # unintended, and why the 1.25 line is a golangci-lint constraint
+          # rather than a preference.
           #
           # This scheduled run is the one that reports on main, so it is the
-          # one where a mismatch would be least visible and most misleading.
-          go-version: ">=1.25.13"
+          # one where a toolchain mismatch would be least visible and most
+          # misleading.
+          go-version: "1.25.13"
           check-latest: true
           cache: true
 
