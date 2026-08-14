@@ -125,6 +125,38 @@
 # That is left as a follow-up so this change stays a gate fix rather than a
 # benchmark-tuning change.
 #
+# Reviewed waivers
+# ---------------
+# Sometimes a regression is real, understood and deliberately accepted.  The
+# answer to that is NOT a higher threshold -- the thresholds are per-metric-class
+# noise floors, and raising one to accept a single benchmark blinds every other
+# benchmark in the repository to the same magnitude of move, permanently.  It is
+# a per-row waiver, declared in scripts/benchstat-waivers.txt, reviewed in the
+# diff that needs it, and bounded:
+#
+#   * it names ONE package, ONE benchmark and ONE metric column, all matched
+#     exactly, so it cannot reach a row it was not written for;
+#   * it records a CEILING, and the row fails again the moment its regression
+#     grows past what was accepted;
+#   * it carries a reason and a tracking issue, and an entry missing either is a
+#     hard exit 2 rather than a silently-ignored line;
+#   * it EXPIRES, after which it stops suppressing and the row is judged
+#     normally again.
+#
+# A waived row is still parsed, still counted, and still printed -- as WAIVED,
+# with its delta, its ceiling and its issue -- in both the job log and the PR
+# comment.  Dropping it from the report would recreate this gate's founding
+# defect (a check that looks green because it stopped looking) one benchmark at
+# a time, so the waiver changes the VERDICT and never the visibility.
+#
+# Waivers that match nothing are reported too: WAIVER-STALE when the row is
+# absent from the comparison entirely (renamed benchmark, deleted package,
+# typo), waiver-unused when the row is present and no longer regressing.
+#
+# See scripts/benchstat-waivers.txt for the file format; BENCH_WAIVERS overrides
+# the path (set it EMPTY to adjudicate with no waivers at all, which can only
+# ever make the gate stricter).
+#
 # Both benchstat table formats are handled:
 #   new (golang.org/x/perf, box-drawing columns):
 #     EnvGet-4   27.13m ± ∞ ¹   29.16m ± ∞ ¹  +7.14% (p=0.008 n=5)
@@ -138,21 +170,41 @@
 #   1  regression detected
 #   2  the input could not be interpreted (missing/empty file, or NO comparison
 #      row at all -- which means benchstat's output format changed or benchstat
-#      crashed).  Exiting 2 rather than 0 is deliberate: an uninterpretable
-#      comparison must fail loudly instead of reporting "no regression", which
-#      is exactly how the old gate stayed green for 473 runs.
+#      crashed), or the waiver file could not be interpreted.  Exiting 2 rather
+#      than 0 is deliberate: an uninterpretable comparison must fail loudly
+#      instead of reporting "no regression", which is exactly how the old gate
+#      stayed green for 473 runs.  The same reasoning covers the waiver file: a
+#      malformed waiver list must never be read as an empty one.
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ALPHA="${BENCH_ALPHA:-0.05}"
 THRESHOLD="${BENCH_REGRESSION_THRESHOLD_PCT:-15}"
 ALLOC_THRESHOLD="${BENCH_ALLOC_THRESHOLD_PCT:-5}"
+
+# Overridable so the self-test can drive the waiver logic with fixtures, and so
+# a run can be adjudicated with waivers switched OFF (BENCH_WAIVERS= empty).
+# Disabling them only ever makes the gate stricter, so it is not a bypass.
+DEFAULT_WAIVERS="${SCRIPT_DIR}/benchstat-waivers.txt"
+waivers_set=1
+if [ -z "${BENCH_WAIVERS+x}" ]; then
+	waivers_set=0
+fi
+WAIVERS="${BENCH_WAIVERS-$DEFAULT_WAIVERS}"
+
+# Today, as the waiver expiry check sees it. Overridable so the self-test can
+# exercise both sides of an expiry without waiting for a date to arrive.
+TODAY="${BENCH_WAIVER_TODAY:-$(date -u +%Y-%m-%d)}"
 
 if [ "$#" -ne 1 ]; then
 	echo "usage: $0 <benchstat-output-file>" >&2
 	echo "  env: BENCH_REGRESSION_THRESHOLD_PCT (default 15)  timing metrics: sec/op, B/s" >&2
 	echo "       BENCH_ALLOC_THRESHOLD_PCT      (default 5)   allocation metrics: B/op, allocs/op" >&2
 	echo "       BENCH_ALPHA                    (default 0.05)" >&2
+	echo "       BENCH_WAIVERS                  (default scripts/benchstat-waivers.txt; empty = none)" >&2
+	echo "       BENCH_WAIVER_TODAY             (default today, UTC; YYYY-MM-DD)" >&2
 	exit 2
 fi
 
@@ -168,13 +220,41 @@ if [ ! -s "$input" ]; then
 	exit 2
 fi
 
-report=$(mktemp)
-trap 'rm -f "$report"' EXIT
+if ! printf '%s' "$TODAY" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+	echo "benchstat-gate: BENCH_WAIVER_TODAY='${TODAY}' is not a YYYY-MM-DD date." >&2
+	exit 2
+fi
 
+# An EXPLICIT BENCH_WAIVERS pointing at nothing is an error -- you asked for a
+# specific file and it is not there. The default file being absent is not: the
+# gate still works, it just has no waivers, which is the strict direction.
+waiver_input=$(mktemp)
+trap 'rm -f "$waiver_input"' EXIT
+if [ -n "$WAIVERS" ]; then
+	if [ -f "$WAIVERS" ]; then
+		cat "$WAIVERS" >"$waiver_input"
+	elif [ "$waivers_set" -eq 1 ]; then
+		echo "benchstat-gate: BENCH_WAIVERS points at a file that does not exist: $WAIVERS" >&2
+		exit 2
+	else
+		echo "benchstat-gate: no waiver file at ${WAIVERS}; adjudicating with no waivers."
+	fi
+fi
+
+report=$(mktemp)
+trap 'rm -f "$report" "$waiver_input"' EXIT
+
+# Two inputs: the waiver list first, then the benchstat table. They are told
+# apart by FILENAME rather than by the usual FNR==NR trick, which mis-attributes
+# the first record of the second file whenever the first file is empty -- and an
+# empty waiver list is the normal case.
+#
 # The awk program emits one human-readable line per interesting row, then a
 # final machine-readable line:
-#   "VERDICT <regressions> <significant> <compared> <tilde> <badp>".
-awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRESHOLD" '
+#   "VERDICT <regressions> <significant> <compared> <tilde> <badp> <waived>
+#            <waiver_bad> <waiver_stale> <waiver_unused> <waiver_expired>".
+awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRESHOLD" \
+	-v wfile="$waiver_input" -v wsource="${WAIVERS:-<none>}" -v today="$TODAY" '
 	# Last signed-percentage token (e.g. +7.14% / -1.20%) inside s, "" if none.
 	function last_signed_pct(s,   pos, tok, best, rest) {
 		best = ""
@@ -223,10 +303,117 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 		return 0
 	}
 
+	function trim(s) {
+		gsub(/^[ \t]+|[ \t]+$/, "", s)
+		return s
+	}
+
+	# `go test` appends -<GOMAXPROCS> to every benchmark name (and omits it
+	# entirely at GOMAXPROCS=1), so the suffix follows the RUNNER, not the code.
+	# Waivers are written without it and rows are stripped down to match; that is
+	# what keeps a waiver from silently unbinding when `runs-on` changes.
+	function base_name(n) {
+		sub(/-[0-9]+$/, "", n)
+		return n
+	}
+
+	function waiver_err(lineno, msg) {
+		wbad++
+		printf "  WAIVER-BAD  %s:%d  %s\n", wsource, lineno, msg
+	}
+
+	# One or more tracking references, space separated: elps#412, #412,
+	# luthersystems/elps#412, or a GitHub issue/PR URL. Anything else is not a
+	# reference somebody can be sent to.
+	function issues_ok(s,   i, n, parts, t, good) {
+		n = split(s, parts, /[ \t,]+/)
+		good = 0
+		for (i = 1; i <= n; i++) {
+			t = parts[i]
+			if (t == "") continue
+			if (t ~ /^[A-Za-z0-9._\/-]*#[0-9]+$/) { good++; continue }
+			if (t ~ /^https:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+\/(issues|pull)\/[0-9]+$/) { good++; continue }
+			return 0
+		}
+		# At least one reference, and nothing that is not one. Counting rather
+		# than merely not-rejecting matters: a field of "," splits into two
+		# empty tokens, every one of which passes a not-rejected test.
+		return good > 0
+	}
+
+	# Index of the waiver covering this row, or 0. Exact on all three keys.
+	function find_waiver(p, b, m,   i) {
+		for (i = 1; i <= nw; i++) {
+			if (wpkg[i] == p && wbench[i] == b && wmetric[i] == m) return i
+		}
+		return 0
+	}
+
+	# ---- waiver file -----------------------------------------------------
+	FILENAME == wfile {
+		wl = $0
+		sub(/\r$/, "", wl)
+		if (wl ~ /^[ \t]*(#|$)/) next
+
+		nf = split(wl, wf, /\|/)
+		if (nf != 7) {
+			waiver_err(FNR, sprintf("expected 7 |-separated fields (pkg | benchmark | metric | ceiling | expires | issue | reason), found %d: %s", nf, trim(wl)))
+			next
+		}
+		for (i = 1; i <= 7; i++) wf[i] = trim(wf[i])
+
+		bad = 0
+		if (wf[1] == "") { waiver_err(FNR, "empty pkg field; a waiver must name the package it covers"); bad = 1 }
+		if (wf[2] == "") { waiver_err(FNR, "empty benchmark field; a waiver must name the benchmark it covers"); bad = 1 }
+		else if (wf[2] ~ /-[0-9]+$/) {
+			waiver_err(FNR, sprintf("benchmark %s carries a -<GOMAXPROCS> suffix; write it as %s so the waiver does not unbind when the runner changes", wf[2], base_name(wf[2])))
+			bad = 1
+		}
+		if (wf[3] == "") { waiver_err(FNR, "empty metric field; a waiver covers one metric column, not the whole row"); bad = 1 }
+		if (wf[4] !~ /^[0-9]+(\.[0-9]+)?$/ || wf[4] + 0 <= 0) {
+			waiver_err(FNR, sprintf("ceiling %s is not a positive percentage; an unbounded waiver is a threshold increase in disguise", (wf[4] == "" ? "<empty>" : wf[4])))
+			bad = 1
+		}
+		if (wf[5] !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/) {
+			waiver_err(FNR, sprintf("expires %s is not a YYYY-MM-DD date; a waiver with no end date is never revisited", (wf[5] == "" ? "<empty>" : wf[5])))
+			bad = 1
+		}
+		if (!issues_ok(wf[6])) {
+			waiver_err(FNR, sprintf("issue %s is not a tracking reference (elps#412, #412, owner/repo#412 or a github.com issue/PR URL); a waiver nobody has to come back to is just a silent threshold increase", (wf[6] == "" ? "<empty>" : wf[6])))
+			bad = 1
+		}
+		if (length(wf[7]) < 10) {
+			waiver_err(FNR, "reason is missing or too short; say what the regression buys and what the alternative cost")
+			bad = 1
+		}
+		if (bad) next
+
+		nw++
+		wpkg[nw] = wf[1]; wbench[nw] = wf[2]; wmetric[nw] = wf[3]
+		wceil[nw] = wf[4] + 0; wceilstr[nw] = wf[4]
+		wexp[nw] = wf[5]; wissue[nw] = wf[6]
+		wline[nw] = FNR
+		# ISO dates compare correctly as strings, so no date arithmetic and no
+		# dependency on how the platform date(1) parses things.
+		wexpired[nw] = (today > wf[5]) ? 1 : 0
+		next
+	}
+
+	# ---- benchstat table -------------------------------------------------
 	{
 		line = $0
 
 		if (line ~ /^[ \t]*$/) next
+
+		# `#` comments. benchstat never emits one, but the fixtures in
+		# scripts/testdata/ are annotated with the history of the run they
+		# capture -- and those annotations QUOTE benchstat rows, deltas and
+		# p-values included. Without this, the explanation a fixture carries
+		# is adjudicated as data: the note above the table in
+		# benchstat-libjson-encode-411.txt produced four phantom comparison
+		# rows, one of them a "below-gate" verdict on a sentence. A fixture
+		# must not be able to move the verdict by explaining itself.
+		if (line ~ /^[ \t]*#/) next
 
 		# Context headers.  elps benchmark output carries all four (the `cpu:`
 		# line names the runner CPU, e.g. "Intel(R) Xeon(R) @ 2.80GHz").
@@ -234,6 +421,7 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 			if (line ~ /^pkg:/) {
 				pkg = substr(line, 6)
 				gsub(/^[ \t]+|[ \t]+$/, "", pkg)
+				pkgseen[pkg] = 1
 			}
 			next
 		}
@@ -296,17 +484,29 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 		lastpm = last_spread(region)
 		if (lastpm > 0) region = substr(region, lastpm + 1)
 
+		# The waiver keyed to this row, if any. Looked up here -- before the
+		# significance and threshold tests -- so that a row which is present but
+		# NOT regressing still counts as "the waiver found its row". That is what
+		# separates a waiver that is merely no longer needed (delete it) from one
+		# pointing at a benchmark that no longer exists (it is protecting
+		# nothing, while looking like it is).
+		wi = find_waiver(pkg, base_name(name), metric)
+
 		delta_tok = last_signed_pct(region)
 		if (delta_tok == "") {
 			# A "~" row IS a successfully interpreted comparison -- it just
 			# found no significant difference. Tally it separately so a table
 			# in which nothing moved is not mistaken for "could not parse
 			# anything" and turned into a spurious exit 2.
-			if (index(line, "~") > 0) tilde++
+			if (index(line, "~") > 0) {
+				tilde++
+				if (wi) wseen[wi] = 1
+			}
 			next
 		}
 
 		compared++
+		if (wi) wseen[wi] = 1
 
 		numstr = substr(delta_tok, 1, length(delta_tok) - 1)
 		sub(/^\+/, "", numstr)
@@ -335,26 +535,98 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 		if (regr <= 0) next          # improvement or no change
 
 		significant++
-		if (regr >= gate) {
-			regressions++
-			printf "  REGRESSION  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) %s\n",
-				pkg, metric, name, delta_tok, pval_str, gate, dir
-		} else {
+		if (regr < gate) {
 			printf "  below-gate  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) %s\n",
 				pkg, metric, name, delta_tok, pval_str, gate, dir
+			next
 		}
+
+		# At or above the gate. A waiver can turn this into a PASS, but only
+		# a live one, and only while the move stays inside the ceiling it
+		# recorded. Every outcome below is printed either way: the waiver
+		# changes the verdict, never the visibility.
+		if (wi && wexpired[wi]) {
+			regressions++
+			wexpiredhit[wi] = 1
+			printf "  REGRESSION  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) WAIVER EXPIRED %s (%s), no longer suppressing %s\n",
+				pkg, metric, name, delta_tok, pval_str, gate, wexp[wi], wissue[wi], dir
+			next
+		}
+		if (wi && regr > wceil[wi]) {
+			regressions++
+			wexceeded[wi] = 1
+			printf "  REGRESSION  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) EXCEEDS its waiver ceiling %s%% (%s) %s\n",
+				pkg, metric, name, delta_tok, pval_str, gate, wceilstr[wi], wissue[wi], dir
+			next
+		}
+		if (wi) {
+			waived++
+			wused[wi] = 1
+			printf "  WAIVED      %-46s %-9s %-40s delta=%s p=%s (gate %s%%) accepted: ceiling %s%%, expires %s, %s %s\n",
+				pkg, metric, name, delta_tok, pval_str, gate, wceilstr[wi], wexp[wi], wissue[wi], dir
+			next
+		}
+
+		regressions++
+		printf "  REGRESSION  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) %s\n",
+			pkg, metric, name, delta_tok, pval_str, gate, dir
 	}
 
 	END {
-		printf "VERDICT %d %d %d %d %d\n",
-			regressions + 0, significant + 0, compared + 0, tilde + 0, badp + 0
+		# A waiver that matched no row in this comparison, or matched a row it
+		# did not need to suppress, is reported EVERY run. A stale waiver that
+		# rots quietly is how a per-row exception turns back into a blanket one.
+		for (i = 1; i <= nw; i++) {
+			if (!(wpkg[i] in pkgseen)) {
+				# The comparison did not cover this package AT ALL, so there is
+				# nothing to say about the waiver -- it was not exercised, and
+				# calling that "stale" would flood every partial comparison
+				# (every fixture in scripts/testdata/, for one) with warnings
+				# about waivers that are perfectly healthy. Counted, not
+				# printed, so a package that has genuinely disappeared still
+				# shows up as a nonzero number rather than as silence.
+				woutscope++
+			} else if (!(i in wseen)) {
+				wstale++
+				printf "  WAIVER-STALE  %s:%d waives %s / %s / %s -- that package IS in this comparison and that row is not, so the benchmark was renamed or removed and the waiver is protecting nothing. %s\n",
+					wsource, wline[i], wpkg[i], wbench[i], wmetric[i], wissue[i]
+			} else if (!(i in wused) && !(i in wexceeded) && !(i in wexpiredhit)) {
+				wunused++
+				printf "  waiver-unused %s:%d waives %s / %s / %s, and that row is not regressing above its gate -- the waiver can be deleted. %s\n",
+					wsource, wline[i], wpkg[i], wbench[i], wmetric[i], wissue[i]
+			}
+			if (wexpired[i] && (wpkg[i] in pkgseen)) {
+				wexp_n++
+				printf "  WAIVER-EXPIRED %s:%d %s / %s / %s expired on %s and no longer suppresses anything. %s\n",
+					wsource, wline[i], wpkg[i], wbench[i], wmetric[i], wexp[i], wissue[i]
+			}
+		}
+		printf "VERDICT %d %d %d %d %d %d %d %d %d %d %d %d\n",
+			regressions + 0, significant + 0, compared + 0, tilde + 0, badp + 0,
+			waived + 0, wbad + 0, wstale + 0, wunused + 0, wexp_n + 0, nw + 0,
+			woutscope + 0
 	}
-' "$input" >"$report"
+' "$waiver_input" "$input" >"$report"
 
 verdict_line=$(tail -n 1 "$report")
 sed '$d' "$report"
 
-read -r _ n_regressions n_significant n_compared n_tilde n_badp <<<"$verdict_line"
+read -r _ n_regressions n_significant n_compared n_tilde n_badp \
+	n_waived n_waiver_bad n_waiver_stale n_waiver_unused n_waiver_expired n_waivers \
+	n_waiver_outscope <<<"$verdict_line"
+
+if [ "$n_waiver_bad" -gt 0 ]; then
+	cat >&2 <<-EOF
+		benchstat-gate: ${n_waiver_bad} malformed entr(y/ies) in ${WAIVERS} -- see the
+		WAIVER-BAD line(s) above.
+
+		Refusing to report a verdict rather than skipping the bad entries: a waiver
+		list that cannot be read must never be treated as an empty one, and a waiver
+		that silently does not parse is a regression nobody is told about. Fix the
+		entry, or delete it. The format is documented at the top of that file.
+	EOF
+	exit 2
+fi
 
 if [ "$n_badp" -gt 0 ]; then
 	echo "benchstat-gate: ${n_badp} row(s) carried a p-value this gate cannot read -- refusing to report a verdict." >&2
@@ -376,6 +648,12 @@ if [ "$((n_compared + n_tilde))" -eq 0 ]; then
 fi
 
 echo "benchstat-gate: interpreted ${n_compared} delta row(s) + ${n_tilde} no-change row(s); ${n_significant} significant move(s) in the bad direction; ${n_regressions} at or above the gate (timing ${THRESHOLD}%, allocation ${ALLOC_THRESHOLD}%)."
+
+# Printed on EVERY run, including clean ones. A waiver is a standing decision,
+# and a standing decision that stops being visible stops being reviewed.
+if [ "$n_waivers" -gt 0 ] || [ "$n_waived" -gt 0 ]; then
+	echo "benchstat-gate: ${n_waivers} reviewed waiver(s) loaded from ${WAIVERS}; ${n_waived} row(s) WAIVED (measured, reported, and excluded from the verdict), ${n_waiver_stale} stale, ${n_waiver_unused} currently unused, ${n_waiver_expired} expired, ${n_waiver_outscope} for a package this comparison does not cover."
+fi
 
 if [ "$n_regressions" -gt 0 ]; then
 	exit 1

@@ -1,0 +1,4 @@
+# Self-test fixture: a waiver whose benchmark appears nowhere in the comparison
+# (renamed, deleted, or a typo). It protects nothing while looking like it does,
+# so it must be REPORTED on every run rather than rotting silently.
+github.com/luthersystems/elps/lisp/lisplib/libjson | EncodeRenamedAwayLongAgo | allocs/op | 9 | 2099-01-01 | elps#412 | points at a benchmark that no longer exists

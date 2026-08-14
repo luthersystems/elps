@@ -1,0 +1,4 @@
+# Self-test fixture: right benchmark and metric, WRONG package. A waiver must
+# not reach across packages, so this must leave the libjson rows failing -- and
+# be reported as stale, since it matched nothing.
+github.com/luthersystems/elps/lisp | Encode | allocs/op | 9 | 2099-01-01 | elps#412 | wrong package on purpose
