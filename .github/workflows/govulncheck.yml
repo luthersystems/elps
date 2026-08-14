@@ -2,8 +2,14 @@ name: govulncheck
 
 # Known-vulnerability gate: govulncheck is call-graph-aware, so it only fails
 # on vulnerabilities whose vulnerable code this module actually reaches —
-# low-noise by design. Uses the latest stable Go toolchain so the stdlib is
-# scanned at a current patch level.
+# low-noise by design. Scans against a patched stdlib, so a finding here is
+# about this module rather than about the runner's Go build.
+#
+# Note what a green tick from this gate does and does not mean. govulncheck
+# queries a live advisory database, so success is a statement about that
+# database at that moment, not a durable property of the commit. A branch that
+# passed hours ago can fail unchanged when an advisory lands — elps#404 was
+# exactly that, and nothing in the failing branch touched a reported trace.
 
 on:
   pull_request:
@@ -27,7 +33,21 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "stable"
+          # A floor, not "stable". setup-go resolves "stable" against its own
+          # version manifest and will serve whatever the hosted tool cache
+          # already holds -- it handed back go1.26.5 after go1.26.6 had
+          # shipped, and go1.26.6 is where the four stdlib advisories this
+          # gate reported are fixed. setup-go also exports GOTOOLCHAIN=local,
+          # so Go cannot upgrade past what it installed: re-running the job
+          # can never clear such a finding, which is why elps#404 needed a
+          # workflow change rather than a retry.
+          #
+          # check-latest makes setup-go consult the manifest instead of
+          # settling for the cached build, and the >= floor keeps this on the
+          # newest patch release rather than pinning it to go stale. Raise the
+          # floor when a future advisory names a newer fix.
+          go-version: ">=1.26.6"
+          check-latest: true
           cache: true
       - name: Run govulncheck
         run: |
