@@ -582,12 +582,12 @@ func builtinMacroExpand(env *LEnv, args *LVal) *LVal {
 		if form.IsNil() {
 			return form
 		}
-		macsym, macargs := form.Cells[0], form.Cells[1:]
+		macsym := form.Cells[0]
 		if macsym.Type != LSymbol {
 			return form
 		}
 		mac := env.Get(macsym)
-		r, ok := macroExpand1(env, mac, SExpr(macargs))
+		r, ok := macroExpand1(env, mac, macroArgList(form))
 		if !ok {
 			return form
 		}
@@ -606,16 +606,50 @@ func builtinMacroExpand1(env *LEnv, args *LVal) *LVal {
 	if form.IsNil() {
 		return form
 	}
-	macsym, macargs := form.Cells[0], form.Cells[1:]
+	macsym := form.Cells[0]
 	if macsym.Type != LSymbol {
 		return form
 	}
 	mac := env.Get(macsym)
-	r, ok := macroExpand1(env, mac, SExpr(macargs))
+	r, ok := macroExpand1(env, mac, macroArgList(form))
 	if !ok {
 		return form
 	}
 	return r
+}
+
+// macroArgList builds the argument list for expanding the macro call `form`,
+// over storage this call owns rather than over form's own backing array
+// (elps#396).
+//
+// SExpr does not copy — it wraps the slice it is handed — so SExpr(form.Cells[1:])
+// produces a header carrying the CALLER'S backing array. Macro arguments are
+// not evaluated, so that array arrives at the macro's parameters untouched:
+// LEnv.bindFormalNext binds a variadic parameter to QExpr(args.Rest()), and
+// argParser.Rest returns p.args[p.i:], one more window onto the same storage.
+// Any destructive builtin in the macro body (stable-sort, append!) then
+// writes through into `form`. For (macroexpand form) called from lisp, `form`
+// is the evaluated first argument — typically the caller's own quoted literal,
+// a node of the source program — so expanding a form silently rewrote it.
+//
+// This is the discipline the evaluator already has. LEnv.evalSExprCells is the
+// runtime's normal route to a macro, and on its IsSpecialFun branch it builds
+// the argument list over a FRESH array (`make([]*LVal, 1, len(s.Cells))` then
+// `append(newCells, cells...)`) holding the caller's element pointers. This
+// reproduces that exactly, so (macroexpand form) now perturbs form neither more
+// nor less than evaluating it does. Before the fix the introspective operation
+// was strictly MORE destructive than the one that actually runs the macro.
+//
+// The copy is shallow for the same reason the runtime's is. The ELEMENTS must
+// stay the caller's nodes: the expansion splices them into its result and
+// callers read source positions off exactly those nodes, so deep-copying would
+// both diverge from eval and change what the language means. What must not be
+// shared is the ARRAY — the only thing an in-place mutator applied to the &rest
+// list itself can reach.
+func macroArgList(form *LVal) *LVal {
+	margs := make([]*LVal, len(form.Cells)-1)
+	copy(margs, form.Cells[1:])
+	return SExpr(margs)
 }
 
 func macroExpand1(env *LEnv, mac *LVal, args *LVal) (*LVal, bool) {
