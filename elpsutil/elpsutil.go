@@ -1,10 +1,18 @@
 package elpsutil
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/luthersystems/elps/lisp"
 )
 
 // Function is a helper to construct builtins.
+//
+// formals must be a list of symbols, as returned by lisp.Formals.  A function
+// that takes no arguments is declared with lisp.Formals(), the empty list; a
+// nil formals list is not a valid spelling of that and is rejected by
+// PackageLoader and Validate.
 func Function(name string, formals *lisp.LVal, fun lisp.LBuiltin) *Builtin {
 	return &Builtin{formals, fun, name}
 }
@@ -34,10 +42,10 @@ func (fun *Builtin) Eval(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // Loader is a generic function to initialize/load an LEnv.  A Loader should
 // first define and switch into the package(s) it loads.  The helpers in this
 // package (Load, LoadAll, LibraryLoader and PackageLoader) restore the package
-// that was active when they were called, so that symbols defined after a load
-// end up where the caller expects them.  A load performed from the user
-// package -- the conventional top-level usage -- therefore ends in the user
-// package, as it always has.
+// that was active when they were called, whether the load succeeds or fails,
+// so that symbols defined after a load end up where the caller expects them.
+// A load performed from the user package -- the conventional top-level usage
+// -- therefore ends in the user package, as it always has.
 //
 // A chain of loaders may be formed to load a library.
 type Loader = lisp.Loader
@@ -115,30 +123,66 @@ func packageMacros(p Package) []lisp.LBuiltinDef {
 	return _p.Macros()
 }
 
-// Load loads an elps package implemented in Go.  Load restores the package
-// that was active when it was called so that further defined symbols end up in
-// that package by default.
-func Load(env *lisp.LEnv, fn Loader) *lisp.LVal {
-	prevPkg := env.Runtime.Package.Name
-	lerr := fn(env)
+// currentPackageName returns the name of env's current package, or an error
+// when there is no current package to restore into.  An LEnv that has not been
+// through lisp.InitializeUserEnv has a nil Runtime.Package (and a
+// hand-constructed one may have a nil Runtime); dereferencing either panics,
+// which is the class of defect issue #351 is about.
+func currentPackageName(env *lisp.LEnv) (string, *lisp.LVal) {
+	if env == nil || env.Runtime == nil || env.Runtime.Package == nil {
+		return "", lisp.Errorf("environment has no current package -- initialize it with lisp.InitializeUserEnv before loading")
+	}
+	return env.Runtime.Package.Name, nil
+}
+
+// runLoader runs a non-nil fn and restores the package that was active on
+// entry, whether or not fn succeeds.  When fn returns an error that error is
+// returned, even if the restore itself also fails.  what identifies fn in any
+// diagnostic.
+func runLoader(env *lisp.LEnv, fn Loader, what string) *lisp.LVal {
+	prevPkg, cerr := currentPackageName(env)
+	if cerr != nil {
+		return cerr
+	}
+	lerr := loaderResult(fn(env), what)
+	rerr := env.InPackage(lisp.String(prevPkg))
 	if lerr.Type == lisp.LError {
 		return lerr
 	}
-	lerr = env.InPackage(lisp.String(prevPkg))
-	if lerr.Type == lisp.LError {
-		return lerr
+	if rerr.Type == lisp.LError {
+		return rerr
 	}
 	return lisp.Nil()
 }
 
+// Load loads an elps package implemented in Go.  Load restores the package
+// that was active when it was called, whether or not fn succeeds, so that
+// further defined symbols end up in that package by default.
+//
+// A loader that returns a Go nil *LVal, rather than lisp.Nil(), is reported as
+// an error naming the loader instead of panicking.
+func Load(env *lisp.LEnv, fn Loader) *lisp.LVal {
+	if fn == nil {
+		return lisp.Errorf("loader is nil")
+	}
+	return runLoader(env, fn, "loader "+loaderName(fn))
+}
+
 // LoadAll loads multiple elps files implemented in Go.  Like Load, LoadAll
-// restores the package that was active when it was called, and runs each
-// loader from that package.
-func LoadAll(fn ...Loader) Loader {
+// restores the package that was active when it was called, whether or not the
+// loaders succeed, and runs each loader from that package.
+//
+// A loader that returns a Go nil *LVal, rather than lisp.Nil(), is reported as
+// an error naming the loader and its position in the chain instead of
+// panicking.
+func LoadAll(fns ...Loader) Loader {
 	return func(env *lisp.LEnv) *lisp.LVal {
-		for _, fn := range fn {
-			lerr := Load(env, fn)
-			if lerr.Type == lisp.LError {
+		for i, fn := range fns {
+			what := fmt.Sprintf("loader %d of %d, %s", i+1, len(fns), loaderName(fn))
+			if fn == nil {
+				return lisp.Errorf("%s is nil", what)
+			}
+			if lerr := runLoader(env, fn, what); lerr.Type == lisp.LError {
 				return lerr
 			}
 		}
@@ -149,7 +193,10 @@ func LoadAll(fn ...Loader) Loader {
 // LibraryLoader loads multiple elps packages implemented in Go.
 func LibraryLoader(ps ...Package) Loader {
 	return func(env *lisp.LEnv) *lisp.LVal {
-		for _, p := range ps {
+		for i, p := range ps {
+			if p == nil {
+				return lisp.Errorf("package %d of %d is nil", i+1, len(ps))
+			}
 			lerr := Load(env, PackageLoader(p))
 			if lerr.Type == lisp.LError {
 				return lerr
@@ -161,19 +208,37 @@ func LibraryLoader(ps ...Package) Loader {
 
 // PackageLoader loads an elps package implemented in Go.
 //
-// PackageLoader restores the package that was active when it was called, the
-// same invariant the stdlib LoadPackage functions honor
-// (https://github.com/luthersystems/elps/issues/99).  It also re-establishes
-// the loaded package after PackageInit returns, so that a PackageInit which
-// switches packages -- directly, or indirectly through a nested Load -- does
-// not cause the package's builtins, special operators and macros to be
-// registered and exported somewhere else
+// PackageLoader restores the package that was active when it was called,
+// whether or not the load succeeds, the same invariant the stdlib LoadPackage
+// functions honor (https://github.com/luthersystems/elps/issues/99).  It also
+// re-establishes the loaded package after PackageInit returns, so that a
+// PackageInit which switches packages -- directly, or indirectly through a
+// nested Load -- does not cause the package's builtins, special operators and
+// macros to be registered and exported somewhere else
 // (https://github.com/luthersystems/elps/issues/352).
+//
+// PackageLoader validates the package definition before registering anything,
+// and returns an *LVal error identifying the package and the offending
+// definition rather than letting lisp panic or deferring a nil dereference to
+// call time.  A definition lisp accepts today is still accepted.
 func PackageLoader(p Package) Loader {
 	return func(env *lisp.LEnv) *lisp.LVal {
-		prevPkg := env.Runtime.Package.Name
+		if p == nil {
+			return lisp.Errorf("package is nil")
+		}
+		prevPkg, cerr := currentPackageName(env)
+		if cerr != nil {
+			return cerr
+		}
 		defer env.InPackage(lisp.Symbol(prevPkg))
-		name := lisp.Symbol(p.PackageName())
+		pkgName := p.PackageName()
+		// A method meant to implement one of the optional Package interfaces
+		// but declared with the wrong signature registers nothing at all, with
+		// no diagnostic on any path.  Report it before the silent load.
+		if problems := checkPackageMethods(p); len(problems) > 0 {
+			return lisp.Errorf("package %q: %s", pkgName, strings.Join(problems, "; "))
+		}
+		name := lisp.Symbol(pkgName)
 		e := env.DefinePackage(name)
 		if !e.IsNil() {
 			return e
@@ -186,7 +251,7 @@ func PackageLoader(p Package) Loader {
 			env.SetPackageDoc(dp.PackageDoc())
 		}
 		initLoader := packageInit(p)
-		e = initLoader(env)
+		e = loaderResult(initLoader(env), fmt.Sprintf("package %q: PackageInit", pkgName))
 		if e.Type == lisp.LError {
 			return e
 		}
@@ -197,14 +262,17 @@ func PackageLoader(p Package) Loader {
 		if !e.IsNil() {
 			return e
 		}
-		for _, fn := range packageBuiltins(p) {
-			env.AddBuiltins(true, fn)
+		e = addDefs(env, pkgName, kindBuiltin, packageBuiltins(p), env.AddBuiltins)
+		if e.Type == lisp.LError {
+			return e
 		}
-		for _, fn := range packageSpecialOps(p) {
-			env.AddSpecialOps(true, fn)
+		e = addDefs(env, pkgName, kindSpecialOp, packageSpecialOps(p), env.AddSpecialOps)
+		if e.Type == lisp.LError {
+			return e
 		}
-		for _, fn := range packageMacros(p) {
-			env.AddMacros(true, fn)
+		e = addDefs(env, pkgName, kindMacro, packageMacros(p), env.AddMacros)
+		if e.Type == lisp.LError {
+			return e
 		}
 		return lisp.Nil()
 	}
