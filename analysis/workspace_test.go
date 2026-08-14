@@ -1868,14 +1868,14 @@ func TestPrescanWorkspace_Preamble(t *testing.T) {
 	assert.Equal(t, 1, heads["set"], "should collect set forms")
 }
 
-// countingExpander records how many times the analyzer asked it to expand.
+// countingStubExpander records how many times the analyzer asked it to expand.
 // It never actually expands (returns nil), so it changes no analysis result —
 // it only observes whether Config.MacroExpander reached the analyzer.
-type countingExpander struct {
+type countingStubExpander struct {
 	calls int
 }
 
-func (c *countingExpander) ExpandMacro(_ *lisp.LVal, _ string) *lisp.LVal {
+func (c *countingStubExpander) ExpandMacro(_ *lisp.LVal, _ string) *lisp.LVal {
 	c.calls++
 	return nil
 }
@@ -1887,13 +1887,13 @@ func (c *countingExpander) ExpandMacro(_ *lisp.LVal, _ string) *lisp.LVal {
 func TestAnalyzeFile_ForwardsMacroExpander(t *testing.T) {
 	src := []byte("(in-package 'user)\n(no-such-head 1 2)\n")
 
-	direct := &countingExpander{}
+	direct := &countingStubExpander{}
 	exprs, err := rdparser.New(token.NewScanner("x.lisp", strings.NewReader(string(src)))).ParseProgram()
 	require.NoError(t, err)
 	Analyze(exprs, &Config{MacroExpander: direct, Filename: "x.lisp"})
 	require.Positive(t, direct.calls, "sanity: Analyze must consult the expander")
 
-	viaFile := &countingExpander{}
+	viaFile := &countingStubExpander{}
 	require.NotNil(t, AnalyzeFile(src, "x.lisp", &Config{MacroExpander: viaFile}))
 
 	assert.Equal(t, direct.calls, viaFile.calls,
@@ -1913,7 +1913,7 @@ func TestConfigForFile_CarriesEveryField(t *testing.T) {
 		PackageImports: map[string][]string{"p": {"q"}},
 		DefaultPackage: "svc",
 		WorkspaceRefs:  map[string][]FileReference{"k": {{File: "a.lisp"}}},
-		MacroExpander:  &countingExpander{},
+		MacroExpander:  &countingStubExpander{},
 		Filename:       "original.lisp",
 	}
 
