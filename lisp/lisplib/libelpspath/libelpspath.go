@@ -117,7 +117,7 @@ var builtins = []*libutil.Builtin{
 // walkers below refuse it with an ordinary error, which the builtins turn
 // into a condition handler-bind can catch, rather than recursing until the
 // goroutine stack overflows and the runtime kills the process -- a failure
-// recover() cannot intercept.  See lisp/cycle.go and issue #393.
+// recover() cannot intercept.  See cycle.go and issue #393.
 var errCyclicValue = errors.New("cannot operate on a value that contains itself")
 
 // okSimpleContainerTypeGuarded ensures that lval is a valid container that
@@ -137,7 +137,7 @@ var errCyclicValue = errors.New("cannot operate on a value that contains itself"
 // is refused here for the same reason, and the copy walk is guarded too
 // because the exported Path interface lets a Go embedder reach a copy
 // without coming through this gate.
-func okSimpleContainerTypeGuarded(in *lisp.LVal, g lisp.CycleGuard) error {
+func okSimpleContainerTypeGuarded(in *lisp.LVal, g cycleGuard) error {
 	if in.IsNil() {
 		return errors.New("nil container type invalid")
 	}
@@ -148,13 +148,13 @@ func okSimpleContainerTypeGuarded(in *lisp.LVal, g lisp.CycleGuard) error {
 	default:
 		return fmt.Errorf("invalid container type: %v", in.Type)
 	}
-	g, cyclic := g.Descend(in)
+	g, cyclic := g.descend(in)
 	if cyclic {
 		return errCyclicValue
 	}
 	err := okSimpleContainerContents(in, g)
-	if g.Tracking() {
-		g.Ascend(in)
+	if g.tracking() {
+		g.ascend(in)
 	}
 	return err
 }
@@ -162,7 +162,7 @@ func okSimpleContainerTypeGuarded(in *lisp.LVal, g lisp.CycleGuard) error {
 // okSimpleContainerContents checks the values a container reaches.  It is
 // only ever called through okSimpleContainerTypeGuarded, which has already
 // established that in is a container and put it on g's path.
-func okSimpleContainerContents(in *lisp.LVal, g lisp.CycleGuard) error {
+func okSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 	switch in.Type {
 	case lisp.LSortMap:
 		m0 := in.Map()
@@ -209,14 +209,15 @@ func okSimpleContainerContents(in *lisp.LVal, g lisp.CycleGuard) error {
 // It sucks that we have to traverse the entire object checking the type,
 // but better to be safe.
 func okSimpleType(in *lisp.LVal) error {
-	return okSimpleTypeGuarded(in, lisp.CycleGuard{})
+	var st cycleState
+	return okSimpleTypeGuarded(in, newCycleGuard(&st))
 }
 
 // okSimpleTypeGuarded is okSimpleType continuing a walk already in progress.
 // The guard is threaded through rather than re-created because the recursion
 // that overflows the stack is okSimpleType <-> okSimpleContainerType, so a
 // bound either survives the round trip or does nothing.
-func okSimpleTypeGuarded(in *lisp.LVal, g lisp.CycleGuard) error {
+func okSimpleTypeGuarded(in *lisp.LVal, g cycleGuard) error {
 	if in.IsNil() {
 		// allow nil as a placeholder for removed elements
 		return nil

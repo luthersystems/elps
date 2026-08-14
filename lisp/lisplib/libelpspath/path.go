@@ -56,13 +56,14 @@ type Path interface {
 // has no finite copy, and walking one until the goroutine stack overflows
 // kills the process in a way recover() cannot intercept. See issue #393.
 func copyLVal(v *lisp.LVal) (*lisp.LVal, error) {
-	return copyGuarded(v, lisp.CycleGuard{})
+	var st cycleState
+	return copyGuarded(v, newCycleGuard(&st))
 }
 
 // copyGuarded is copyLVal continuing a walk already in progress rather than
 // starting a fresh one. Every nested copy must pass g down; a fresh walk per
 // level resets the bound on every lap and it never fires.
-func copyGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
+func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	switch v.Type {
 	case lisp.LSortMap, lisp.LArray, lisp.LSExpr:
 		// The three types that reach other values, and so the only ones
@@ -74,13 +75,13 @@ func copyGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 		// immutable
 		return v, nil
 	}
-	g, cyclic := g.Descend(v)
+	g, cyclic := g.descend(v)
 	if cyclic {
 		return nil, errCyclicValue
 	}
 	out, err := copyContainer(v, g)
-	if g.Tracking() {
-		g.Ascend(v)
+	if g.tracking() {
+		g.ascend(v)
 	}
 	return out, err
 }
@@ -88,7 +89,7 @@ func copyGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 // copyContainer copies the container types. It is only ever called through
 // copyGuarded, which has already established that v is one and put it on g's
 // path.
-func copyContainer(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
+func copyContainer(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	switch v.Type {
 	case lisp.LSortMap:
 		return copyMapGuarded(v, g)
@@ -119,11 +120,12 @@ func copyContainer(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 // test is the drift guard issue #395 asked for. Deleting the helper deletes
 // a third of the guard.
 func copyMap(v *lisp.LVal) (*lisp.LVal, error) {
-	return copyMapGuarded(v, lisp.CycleGuard{})
+	var st cycleState
+	return copyMapGuarded(v, newCycleGuard(&st))
 }
 
 // copyMapGuarded is copyMap continuing a walk already in progress.
-func copyMapGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
+func copyMapGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	return copyMapExcept(v, nil, g)
 }
 
@@ -144,12 +146,13 @@ func copyMapGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 // IMPORTANT: what is skipped is the entry the caller's SetMutate/DeleteMutate
 // will land on, not "the entry whose key string matches". See sameMapSlot.
 func copyMapOffPath(v *lisp.LVal, key *lisp.LVal) (*lisp.LVal, error) {
-	return copyMapExcept(v, key, lisp.CycleGuard{})
+	var st cycleState
+	return copyMapExcept(v, key, newCycleGuard(&st))
 }
 
 // copyMapExcept is the shared body: skip is the key to leave out, or nil to
 // copy every entry.
-func copyMapExcept(v *lisp.LVal, skip *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
+func copyMapExcept(v *lisp.LVal, skip *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	m0 := v.Map()
 	if m0 == nil {
 		return nil, errors.New("first argument is not a map")
@@ -214,11 +217,12 @@ func sortedMapEntries(m lisp.Map) *lisp.LVal {
 // copyVector creates a new LVal that contains the same elements in the
 // original vector.
 func copyVector(v *lisp.LVal) (*lisp.LVal, error) {
-	return copyVectorGuarded(v, lisp.CycleGuard{})
+	var st cycleState
+	return copyVectorGuarded(v, newCycleGuard(&st))
 }
 
 // copyVectorGuarded is copyVector continuing a walk already in progress.
-func copyVectorGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
+func copyVectorGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	cells := v.Cells[1].Cells
 	cellsCopy := make([]*lisp.LVal, len(cells))
 	for i := range cells {
@@ -236,11 +240,12 @@ func copyVectorGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 // copyList creates a new LVal that contains the same elements in the
 // original list.
 func copyList(v *lisp.LVal) (*lisp.LVal, error) {
-	return copyListGuarded(v, lisp.CycleGuard{})
+	var st cycleState
+	return copyListGuarded(v, newCycleGuard(&st))
 }
 
 // copyListGuarded is copyList continuing a walk already in progress.
-func copyListGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
+func copyListGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	cells := v.Cells
 	cellsCopy := make([]*lisp.LVal, len(cells))
 	for i := range cells {
@@ -269,7 +274,8 @@ func copyListGuarded(v *lisp.LVal, g lisp.CycleGuard) (*lisp.LVal, error) {
 // from == to skips nothing and is the plain deep copy.
 func copySeqOffPath(in *lisp.LVal, cells []*lisp.LVal, from, to int) (*lisp.LVal, error) {
 	out := make([]*lisp.LVal, len(cells))
-	var g lisp.CycleGuard
+	var st cycleState
+	g := newCycleGuard(&st)
 	for i := range cells {
 		if i >= from && i < to {
 			out[i] = lisp.Nil()
