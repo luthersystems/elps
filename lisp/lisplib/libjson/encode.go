@@ -270,9 +270,90 @@ func (enc *encoder) encodeLNative(v *lisp.LVal, _ encodeGuard) error {
 
 func (enc *encoder) encodeNative(v interface{}) error {
 	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	if err := enc.checkLoadable(b); err != nil {
+		return err
+	}
 	enc.buf.Write(b)
-	return err
+	return nil
 }
+
+// checkLoadable refuses native bytes this package would not read back.
+//
+// Every other encoder here builds its own bytes from a lisp value, so it
+// controls what it emits -- encodeFloat already rejects Inf and NaN for exactly
+// this reason. A native is the one case where bytes reach the output without
+// libjson having produced them: a json.RawMessage (and likewise a json.Number)
+// is a json.Marshaler that emits its contents verbatim, so an embedder's bytes
+// pass straight through.
+//
+// That is elps#410. `1E1000` is syntactically valid JSON -- the grammar puts no
+// bound on the exponent -- so json.Marshal is happy to pass it along, and
+// json.Valid would agree. It only fails at UNMARSHAL time, where the target is
+// a float64 and the value overflows. The result was a document json:dump
+// wrote and json:load then rejected: not corruption, but a value that cannot
+// be read back, which for a phylum persisting its state is worse.
+//
+// The check calls jsonDecode -- the decoder's own function -- so the two agree
+// by construction rather than by a rule restated here and left to drift.
+// stringNums is honoured because it changes the answer: Load uses UseNumber in
+// that mode, which keeps a number as text and never converts it, so `1E1000` IS
+// loadable there and must not be refused. The fuzz reproduction pins
+// stringNums=false for exactly that reason.
+//
+// The cost is a full decode per native encoded, and it is not small: it takes
+// BenchmarkEncodeNativeLarge (a 60-element document) from 3 allocs to 1159 and
+// roughly quadruples its time, because decoding into an interface{}
+// materialises the whole value only to throw it away. It is charged per
+// NATIVE, not per document -- a document containing no native pays nothing,
+// since nothing else reaches here -- but BenchmarkEncode does contain natives
+// and does pay: see the comment on that benchmark in nativebench_test.go for
+// the measured figures.
+//
+// Two cheaper designs were tried and rejected on evidence, recorded here so
+// they are not retried blind.
+//
+// Token-scanning avoids building the value, but TestCheckLoadableMatchesLoad
+// showed it accepts `""` and `{` -- an unterminated container ends the scan at
+// EOF with no complaint -- and encoding/json applies a nesting limit inside
+// Unmarshal that a token stream never sees, so it also passed documents Load
+// rejects. Worse, it was not even cheaper: Token boxes every value it yields,
+// measuring 4034 allocs against the decode's 1159.
+//
+// A pre-filter that only decodes when the bytes could hold an out-of-range
+// number does not help either: an exponent marker is just `e`, which appears in
+// most strings, so the filter fires on ordinary documents.
+//
+// Narrowing by TYPE -- checking only a json.RawMessage or json.Number, on the
+// theory that everything else is marshalled by encoding/json and so cannot
+// print an out-of-range literal -- is not an optimisation but a hole. Any
+// json.Marshaler emits its own bytes, math/big.Int is one in the standard
+// library, and such a value can sit in a struct field, map value or slice
+// element at any depth behind an interface. The property is only decidable on
+// the bytes. TestDumpRefusesUnloadableNativeBeyondRawMessage holds that line.
+//
+// If this ever shows up in a profile, the parity test is the safety net that
+// makes a faster check safe to attempt.
+func (enc *encoder) checkLoadable(b []byte) error {
+	var x interface{}
+	if err := jsonDecode(b, &x, enc.stringNums); err != nil {
+		return encodeUnloadableNativeError{err: err}
+	}
+	return nil
+}
+
+// encodeUnloadableNativeError reports a native value whose JSON this package
+// would refuse to read back.  It wraps the decoder's own error, so the message
+// names the offending literal.
+type encodeUnloadableNativeError struct{ err error }
+
+func (e encodeUnloadableNativeError) Error() string {
+	return fmt.Sprintf("unable to encode native value: %v", e.err)
+}
+
+func (e encodeUnloadableNativeError) Unwrap() error { return e.err }
 
 func (enc *encoder) encodeLInt(v *lisp.LVal, _ encodeGuard) error {
 	return enc.encodeInt(v.Int)
