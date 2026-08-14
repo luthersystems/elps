@@ -310,17 +310,30 @@ func (enc *encoder) encodeFloat(x float64) error {
 }
 
 // scratchFloat encodes x to enc.scratch and returns a slice of that array.
-//
-// NOTE:  scratchFloat is adapted from floatEncoder.encode in encoding/json,
-// simplified to only work with native float64 values.
-// https://cs.opensource.google/go/go/+/refs/tags/go1.16.4:src/encoding/json/encode.go;l=575
 func (enc *encoder) scratchFloat(x float64) []byte {
+	return appendJSONFloat(enc.scratch[:0], x)
+}
+
+// appendJSONFloat appends the canonical JSON text of x to b.
+//
+// "Canonical" is meant literally and is depended upon outside the encoder:
+// this is the ONLY rendering of a float this package ever emits, so the decode
+// side can ask whether a number literal it is looking at is already the
+// canonical text of the float it parses to.  That question is what separates a
+// document elps can read back unchanged from one it can only round -- see
+// loadNumber in json.go.  Any caller that formatted floats separately would
+// let the two sides drift, and the drift would show up as this package
+// refusing to load its own output.
+//
+// NOTE:  adapted from floatEncoder.encode in encoding/json, simplified to only
+// work with native float64 values.
+// https://cs.opensource.google/go/go/+/refs/tags/go1.16.4:src/encoding/json/encode.go;l=575
+func appendJSONFloat(b []byte, x float64) []byte {
 	// Convert as if by ES6 number to string conversion.
 	// This matches most other JSON generators.
 	// See golang.org/issue/6384 and golang.org/issue/14135.
 	// Like fmt %g, but the exponent cutoffs are different
 	// and exponents themselves are not padded to two digits.
-	b := enc.scratch[:0]
 	abs := math.Abs(x)
 	fmt := byte('f')
 	// NOTE:   Because ELPS only natively supports float64 values the exponent
@@ -328,13 +341,14 @@ func (enc *encoder) scratchFloat(x float64) []byte {
 	if abs != 0 && (abs < 1e-6 || abs >= 1e21) {
 		fmt = 'e'
 	}
+	n := len(b)
 	b = strconv.AppendFloat(b, x, fmt, -1, 64)
 	if fmt == 'e' {
 		// clean up e-09 to e-9
-		n := len(b)
-		if n >= 4 && b[n-4] == 'e' && b[n-3] == '-' && b[n-2] == '0' {
-			b[n-2] = b[n-1]
-			b = b[:n-1]
+		m := len(b)
+		if m-n >= 4 && b[m-4] == 'e' && b[m-3] == '-' && b[m-2] == '0' {
+			b[m-2] = b[m-1]
+			b = b[:m-1]
 		}
 	}
 	return b
