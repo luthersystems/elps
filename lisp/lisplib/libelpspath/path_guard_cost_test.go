@@ -221,12 +221,26 @@ func TestUnguardedReplicasMatchTheShippedWalkers(t *testing.T) {
 // TestCycleGuardAllocationCost pins the guard's allocation price, which is the
 // half of the cost a benchmark's noise can hide.
 //
-// The claim in lisp/cycleexport.go is that a walk allocates ONE cycleState for
-// the whole walk however wide or deep the value is, and reaches the path set
-// only once it nests past the guard depth.  So the difference between the
-// guarded and unguarded arms must be exactly one allocation on a value that
-// stays below that depth — not one per node, and not one per level, which is
-// the regression #391 had to back out of the kernel's walks.
+// The claim in cycle.go is that a walk allocates ONE cycleState for the whole
+// walk however wide or deep the value is, that the state is the caller's local
+// so it never reaches the heap, and that the path set is touched only once the
+// walk nests past the guard depth.  So the difference between the guarded and
+// unguarded arms must be exactly ZERO allocations on a value that stays below
+// that depth — not one per node, and not one per level, which is the
+// regression #391 had to back out of the kernel's walks.
+//
+// The number used to be one.  While the guard was lisp.CycleGuard the shared
+// state was allocated by the exported Descend, on the far side of a package
+// boundary, where nothing could prove it did not outlive the walk; an exported
+// guard also has to work from its zero value, so there was nowhere else to put
+// it.  Unexporting the guard into this package let the walk's entry point own
+// the state as a local (see newCycleGuard), and escape analysis keeps it on
+// the stack.  wantGuardAllocs is spelled out below rather than folded into the
+// assertion so that a future change that reintroduces a per-walk allocation
+// has to say so here, in a diff a reviewer reads, rather than by relaxing a
+// delta.
+const wantGuardAllocs = 0.0
+
 func TestCycleGuardAllocationCost(t *testing.T) {
 	const runs = 200
 	for name, doc := range guardCostDocs() {
@@ -241,9 +255,9 @@ func TestCycleGuardAllocationCost(t *testing.T) {
 					t.Fatal(err)
 				}
 			})
-			assert.InDelta(t, 1.0, guarded-unguarded, 0.001,
-				"the gate's guard must cost exactly one allocation per walk "+
-					"(the shared cycleState), got %v vs %v", guarded, unguarded)
+			assert.InDelta(t, wantGuardAllocs, guarded-unguarded, 0.001,
+				"the gate's guard must cost exactly %v allocations per walk, "+
+					"got %v vs %v", wantGuardAllocs, guarded, unguarded)
 		})
 	}
 }
@@ -252,6 +266,14 @@ func TestCycleGuardAllocationCost(t *testing.T) {
 // above is only interesting because of: doubling the width of the value must
 // not double the guard's allocation.  A guard that built its path set in the
 // by-value struct would fail this at every width.
+//
+// It is checked twice, because the two widths matter for different reasons.
+// Shallow, the walk never reaches the path set at all and the property is that
+// the per-walk cost of the guard itself does not multiply.  DEEP — past
+// cycleGuardDepth, where the path set exists and every node really is entered
+// on it — is where a per-node path set would actually be built, and is the
+// arm that still has teeth now that the shallow overhead is zero and its
+// equality is 0 == 0.
 func TestCycleGuardAllocationDoesNotScale(t *testing.T) {
 	const runs = 100
 	overhead := func(doc *lisp.LVal) float64 {
@@ -267,7 +289,7 @@ func TestCycleGuardAllocationDoesNotScale(t *testing.T) {
 		})
 		return guarded - unguarded
 	}
-	wide := func(n int) *lisp.LVal {
+	wideMap := func(n int) *lisp.LVal {
 		m := lisp.SortedMap()
 		for i := range n {
 			inner := lisp.SortedMap()
@@ -276,6 +298,29 @@ func TestCycleGuardAllocationDoesNotScale(t *testing.T) {
 		}
 		return m
 	}
-	assert.InDelta(t, overhead(wide(4)), overhead(wide(64)), 0.001,
+	assert.InDelta(t, overhead(wideMap(4)), overhead(wideMap(64)), 0.001,
 		"the guard's allocation must not grow with the width of the value")
+
+	// deepWide puts n siblings at EXACTLY cycleGuardDepth, which is the one
+	// place a per-node path set is built: a guard copy inherits a nil path
+	// from its parent one level above the threshold and makes its own, while
+	// every node below inherits a non-nil one and shares it.  So the spine
+	// carries the wide map to depth cycleGuardDepth-1 and its children are
+	// the nodes at the threshold.  Hanging the wide map deeper than that
+	// measures nothing — one node allocates and the rest inherit — which is
+	// how the first draft of this arm passed against a deliberately per-node
+	// guard.
+	deepWide := func(n int) *lisp.LVal {
+		v := wideMap(n)
+		for i := range cycleGuardDepth - 2 {
+			m := lisp.SortedMap()
+			m.MapSet("child", v)
+			m.MapSet("tag", lisp.String("level"+strconv.Itoa(i)))
+			v = m
+		}
+		return v
+	}
+	assert.InDelta(t, overhead(deepWide(4)), overhead(deepWide(64)), 0.001,
+		"past the guard depth the path set must still be allocated once for "+
+			"the whole walk, not once per node entered on it")
 }
