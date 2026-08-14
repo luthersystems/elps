@@ -295,7 +295,14 @@ echo "== bench-arms-check: the two arms must be comparable =====================
 ARMS="${SCRIPT_DIR}/bench-arms-check.sh"
 
 ARMS_TMP="$(mktemp -d)"
-trap 'rm -rf "$ARMS_TMP"' EXIT
+
+# Set by the empty-discovery control far below, which synthesises a throwaway
+# Go package INSIDE the module (it has to be inside for `go list` to match it).
+# Cleaned up on every exit path so an interrupted run cannot leave a stray
+# package sitting in the tree.
+EMPTY_PKG_DIR=""
+
+trap 'rm -rf "$ARMS_TMP" ${EMPTY_PKG_DIR:+"$EMPTY_PKG_DIR"}' EXIT
 
 # Six samples so the "need >= 6" advisory does not fire in the clean case.
 arms_fixture() { # <file> <cpu> <suffix> [extra-benchmark-name]
@@ -1048,10 +1055,52 @@ else
 
 	# Discovery is dynamic, so it can silently discover nothing -- which would
 	# look exactly like a clean run.
+	#
+	# This control needs a package set that MATCHES at least one package (so it
+	# reaches fuzz.sh's zero-TARGET error rather than its "no packages matched"
+	# one) while defining no fuzz target. It used to name ./lint/... -- a real
+	# package that merely happened to have none -- and the moment FuzzLintSource
+	# landed in lint/ the control quietly stopped being a control: the assertion
+	# still ran, it just no longer exercised the empty path. A self-test whose
+	# entire purpose is proving the gate CAN fail is the last place that should
+	# depend on a real package staying empty by luck.
+	#
+	# So the empty package is synthesised here, fresh, on every run. It is empty
+	# by construction: nobody can add a fuzz target to a directory that exists
+	# only for the length of these three assertions, and it stays empty no
+	# matter what lands anywhere in the real tree. It carries an ordinary Test
+	# function so this also proves discovery selects on the Fuzz* prefix rather
+	# than merely finding a package with no tests at all.
+	EMPTY_PKG_DIR="$(mktemp -d "${REPO_ROOT}/internal/citest-emptyfuzz.XXXXXX")"
+	cat >"${EMPTY_PKG_DIR}/empty.go" <<-'EOF'
+		// Package emptyfuzz is synthesised by scripts/ci-gates-test.sh and
+		// deleted again as soon as the empty-discovery control has run. It
+		// deliberately defines no fuzz target.
+		package emptyfuzz
+	EOF
+	cat >"${EMPTY_PKG_DIR}/empty_test.go" <<-'EOF'
+		package emptyfuzz
+
+		import "testing"
+
+		// A test, but NOT a fuzz target: discovery must select on the Fuzz
+		// prefix, so an ordinary Test must not read as something to fuzz.
+		func TestNotAFuzzTarget(t *testing.T) {}
+	EOF
+	empty_pkg_pat="./internal/$(basename "$EMPTY_PKG_DIR")/..."
 	assert_exit 2 "discovering ZERO targets is an error, not a clean run" \
-		env FUZZTIME=1s "$FUZZ" ./lint/...
+		env FUZZTIME=1s "$FUZZ" "$empty_pkg_pat"
 	assert_contains "cannot fail" "the empty-discovery error explains itself" \
-		env FUZZTIME=1s "$FUZZ" ./lint/...
+		env FUZZTIME=1s "$FUZZ" "$empty_pkg_pat"
+	# ...and the control is honestly a control. A synthetic package introduces a
+	# second way to exit 2 -- the pattern matching nothing at all -- which would
+	# satisfy the assertion above for entirely the wrong reason, leaving the
+	# zero-target path as unexercised as ./lint/... left it.
+	assert_not_contains "no packages matched" \
+		"the empty case reaches zero-target discovery, not an unmatched pattern" \
+		env FUZZTIME=1s "$FUZZ" "$empty_pkg_pat"
+	rm -rf "$EMPTY_PKG_DIR"
+	EMPTY_PKG_DIR=""
 
 	# The targets really are found. Listed once and asserted against, so the
 	# package set is only compiled a single extra time.

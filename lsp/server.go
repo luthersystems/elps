@@ -446,20 +446,7 @@ func (s *Server) getAnalysisConfig(uri string) *analysis.Config {
 	base := s.analysisCfg
 	s.analysisCfgMu.RUnlock()
 
-	cfg := &analysis.Config{
-		Filename: uriToPath(uri),
-	}
-	if base != nil {
-		cfg.ExtraGlobals = base.ExtraGlobals
-		cfg.PackageExports = base.PackageExports
-		cfg.PackageSymbols = base.PackageSymbols
-		cfg.DefForms = base.DefForms
-		cfg.PackageImports = base.PackageImports
-		cfg.DefaultPackage = base.DefaultPackage
-		cfg.WorkspaceRefs = base.WorkspaceRefs
-		cfg.MacroExpander = base.MacroExpander
-	}
-	return cfg
+	return analysis.ConfigForFile(base, uriToPath(uri))
 }
 
 // ensureAnalysis ensures the document has a current analysis result.

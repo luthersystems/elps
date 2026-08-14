@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testPackage is a Package assembled from whatever the test needs it to
+// validationPackage is a Package assembled from whatever the test needs it to
 // contribute.  The optional Package interfaces are all satisfied, so the
 // registration paths under test are always reached.
-type testPackage struct {
+type validationPackage struct {
 	name       string
 	builtins   []lisp.LBuiltinDef
 	specialOps []lisp.LBuiltinDef
@@ -22,15 +22,15 @@ type testPackage struct {
 	initFn     elpsutil.Loader
 }
 
-func (p *testPackage) PackageName() string { return p.name }
+func (p *validationPackage) PackageName() string { return p.name }
 
-func (p *testPackage) Builtins() []lisp.LBuiltinDef { return p.builtins }
+func (p *validationPackage) Builtins() []lisp.LBuiltinDef { return p.builtins }
 
-func (p *testPackage) SpecialOps() []lisp.LBuiltinDef { return p.specialOps }
+func (p *validationPackage) SpecialOps() []lisp.LBuiltinDef { return p.specialOps }
 
-func (p *testPackage) Macros() []lisp.LBuiltinDef { return p.macros }
+func (p *validationPackage) Macros() []lisp.LBuiltinDef { return p.macros }
 
-func (p *testPackage) PackageInit(env *lisp.LEnv) *lisp.LVal {
+func (p *validationPackage) PackageInit(env *lisp.LEnv) *lisp.LVal {
 	if p.initFn == nil {
 		return lisp.Nil()
 	}
@@ -58,19 +58,19 @@ func testEnv(t *testing.T) *lisp.LEnv {
 // in TestPackageLoaderKindsAreCovered fails.
 type defKind struct {
 	name  string
-	build func(defs ...lisp.LBuiltinDef) *testPackage
+	build func(defs ...lisp.LBuiltinDef) *validationPackage
 }
 
 func defKinds(pkgName string) []defKind {
 	return []defKind{
-		{"builtin", func(defs ...lisp.LBuiltinDef) *testPackage {
-			return &testPackage{name: pkgName, builtins: defs}
+		{"builtin", func(defs ...lisp.LBuiltinDef) *validationPackage {
+			return &validationPackage{name: pkgName, builtins: defs}
 		}},
-		{"special operator", func(defs ...lisp.LBuiltinDef) *testPackage {
-			return &testPackage{name: pkgName, specialOps: defs}
+		{"special operator", func(defs ...lisp.LBuiltinDef) *validationPackage {
+			return &validationPackage{name: pkgName, specialOps: defs}
 		}},
-		{"macro", func(defs ...lisp.LBuiltinDef) *testPackage {
-			return &testPackage{name: pkgName, macros: defs}
+		{"macro", func(defs ...lisp.LBuiltinDef) *validationPackage {
+			return &validationPackage{name: pkgName, macros: defs}
 		}},
 	}
 }
@@ -177,14 +177,14 @@ func TestPackageLoaderRejectsBadDefinitions(t *testing.T) {
 // "symbol already defined" at registration.
 func TestPackageLoaderRejectsDuplicateNames(t *testing.T) {
 	env := testEnv(t)
-	first := &testPackage{
+	first := &validationPackage{
 		name:     "dup",
 		builtins: []lisp.LBuiltinDef{elpsutil.Function("f", lisp.Formals(), nopBuiltin)},
 	}
 	rc := elpsutil.Load(env, elpsutil.PackageLoader(first))
 	require.NotEqual(t, lisp.LError, rc.Type, "first load failed: %v", rc)
 
-	second := &testPackage{
+	second := &validationPackage{
 		name:     "dup",
 		builtins: []lisp.LBuiltinDef{elpsutil.Function("f", lisp.Formals(), nopBuiltin)},
 	}
@@ -201,7 +201,7 @@ func TestPackageLoaderRejectsDuplicateNames(t *testing.T) {
 // the same symbol twice in its own definitions, which Validate can catch
 // without an env.
 func TestPackageLoaderRejectsIntraPackageDuplicates(t *testing.T) {
-	pkg := &testPackage{
+	pkg := &validationPackage{
 		name: "dup2",
 		builtins: []lisp.LBuiltinDef{
 			elpsutil.Function("f", lisp.Formals(), nopBuiltin),
@@ -225,7 +225,7 @@ func TestPackageLoaderRejectsIntraPackageDuplicates(t *testing.T) {
 // builtins are still callable, and the values they return are unchanged.
 func TestPackageLoaderAcceptsGoodDefinitions(t *testing.T) {
 	env := testEnv(t)
-	pkg := &testPackage{
+	pkg := &validationPackage{
 		name: "good",
 		builtins: []lisp.LBuiltinDef{
 			elpsutil.Function("nullary", lisp.Formals(), func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {

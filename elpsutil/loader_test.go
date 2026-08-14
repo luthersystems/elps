@@ -57,13 +57,13 @@ func loaderEntryPoints() []loaderEntryPoint {
 		run: func(env *lisp.LEnv, fn elpsutil.Loader) *lisp.LVal {
 			// PackageLoader runs exactly one embedder loader, the package's
 			// PackageInit.
-			return elpsutil.PackageLoader(&testPackage{name: "initpkg", initFn: fn})(env)
+			return elpsutil.PackageLoader(&validationPackage{name: "initpkg", initFn: fn})(env)
 		},
 		wantNil: []string{"nil *LVal", "lisp.Nil()", "initpkg", "PackageInit"},
 	}, {
 		name: "LibraryLoader",
 		run: func(env *lisp.LEnv, fn elpsutil.Loader) *lisp.LVal {
-			return elpsutil.LibraryLoader(&testPackage{name: "libpkg", initFn: fn})(env)
+			return elpsutil.LibraryLoader(&validationPackage{name: "libpkg", initFn: fn})(env)
 		},
 		wantNil: []string{"nil *LVal", "lisp.Nil()", "libpkg", "PackageInit"},
 	}}

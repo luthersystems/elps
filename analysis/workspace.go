@@ -575,8 +575,31 @@ func scanUsePackages(exprs []*lisp.LVal) map[string][]string {
 	return result
 }
 
+// ConfigForFile returns a copy of cfg with Filename set to filename, leaving
+// the caller's Config untouched. A nil cfg yields an empty Config.
+//
+// This is a whole-struct copy rather than a field-by-field rebuild on purpose.
+// The rebuild it replaces silently dropped fields twice: DefForms and
+// PackageImports, and then MacroExpander, which did not exist when the
+// rebuild was written and was never added to it (issue #353). Copying carries
+// new Config fields through automatically, so the omission cannot recur.
+// Use this anywhere a workspace-wide Config is specialised for one file.
+func ConfigForFile(cfg *Config, filename string) *Config {
+	fileCfg := &Config{}
+	if cfg != nil {
+		*fileCfg = *cfg
+	}
+	fileCfg.Filename = filename
+	return fileCfg
+}
+
 // AnalyzeFile parses and performs full semantic analysis on a single file.
 // Returns nil if the file fails to parse.
+//
+// Every field of cfg is honoured, including MacroExpander: analysis through
+// AnalyzeFile resolves the same symbols as analysis through Analyze. Callers
+// that scan many files and do not want to pay for macro expansion should leave
+// cfg.MacroExpander nil.
 func AnalyzeFile(source []byte, filename string, cfg *Config) *Result {
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	p := rdparser.New(s)
@@ -586,26 +609,17 @@ func AnalyzeFile(source []byte, filename string, cfg *Config) *Result {
 		return nil
 	}
 
-	fileCfg := cfg
-	if fileCfg == nil {
-		fileCfg = &Config{}
-	}
-	fileCfg = &Config{
-		ExtraGlobals:   fileCfg.ExtraGlobals,
-		PackageExports: fileCfg.PackageExports,
-		PackageSymbols: fileCfg.PackageSymbols,
-		DefForms:       fileCfg.DefForms,
-		PackageImports: fileCfg.PackageImports,
-		DefaultPackage: fileCfg.DefaultPackage,
-		WorkspaceRefs:  fileCfg.WorkspaceRefs,
-		Filename:       filename,
-	}
-	return Analyze(exprs, fileCfg)
+	return Analyze(exprs, ConfigForFile(cfg, filename))
 }
 
 // ExtractFileRefs extracts cross-file-trackable references from an
 // analysis result. Only references to global-scope, non-builtin symbols
 // are included (builtins, special ops, parameters, and locals are skipped).
+//
+// File and Source.File of every returned FileReference denote the same file.
+// The workspace index pairs the two when building document edits (lsp/rename.go
+// takes the URI from File and the range from Source), so a reference whose text
+// lives in a different file must not be recorded under filePath.
 func ExtractFileRefs(result *Result, filePath string) []FileReference {
 	if result == nil {
 		return nil
@@ -618,6 +632,15 @@ func ExtractFileRefs(result *Result, filePath string) []FileReference {
 		}
 		// Skip builtins, special ops, parameters, and locals.
 		if !isGlobalUserSymbol(ref.Symbol) {
+			continue
+		}
+		// Skip references whose text lives in another file. Macro expansion
+		// (Config.MacroExpander) splices nodes from the macro's definition
+		// site into this file's AST, and those nodes carry the *other*
+		// file's location. Recording them under filePath would aim rename
+		// at the wrong file; they are captured correctly when the defining
+		// file is itself scanned.
+		if !sameSourceFile(ref.Source.File, filePath) {
 			continue
 		}
 
@@ -643,6 +666,22 @@ func ExtractFileRefs(result *Result, filePath string) []FileReference {
 		refs = append(refs, fref)
 	}
 	return refs
+}
+
+// sameSourceFile reports whether two file paths denote the same file.
+// Callers mix absolute and relative paths (ScanWorkspaceRefs analyses a
+// possibly-relative path but indexes under the absolute one), and an empty
+// source file is treated as "the file being analysed".
+func sameSourceFile(sourceFile, filePath string) bool {
+	if sourceFile == "" || sourceFile == filePath {
+		return true
+	}
+	a, errA := filepath.Abs(sourceFile)
+	b, errB := filepath.Abs(filePath)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return a == b
 }
 
 // isGlobalUserSymbol returns true if a symbol is a user-defined global
@@ -788,6 +827,11 @@ func scopeContainingAnalysis(scope *Scope, line, col int) *Scope {
 // analysis on each .lisp file, and extracts cross-file references.
 // The cfg should have ExtraGlobals and PackageExports populated from
 // a prior ScanWorkspaceFull call. Parsing is done concurrently.
+//
+// If cfg.MacroExpander is set it is used for every file, so the index agrees
+// with per-document analysis about symbols reachable only through a macro
+// expansion. Expansion is only attempted for heads that are user macros or
+// unresolved, so the added cost is small; leave the field nil to skip it.
 // The optional scanCfg controls file collection limits and excludes.
 //
 // Returns a map from SymbolKey.String() to FileReference slices.

@@ -61,7 +61,7 @@ permissions:
 
 jobs:
   fuzz:
-    name: Fuzz shard ${{ matrix.shard }}/5
+    name: Fuzz shard ${{ matrix.shard }}/6
     runs-on: ubuntu-latest
     strategy:
       # Sharded so wall clock is set by the LARGEST shard rather than by the
@@ -81,19 +81,21 @@ jobs:
       # or a single failure costs the whole night's coverage.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6]
     # DERIVED, not remembered. scripts/fuzz-budget-check.sh asserts
     #
     #     ceil(targets / shards) x FUZZTIME + overhead <= timeout-minutes
     #
     # on every PR, so this number cannot silently stop covering the sweep. At
-    # 20 targets over 5 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
-    # worth of headroom for a target being added before anyone reshards. That
-    # ceiling is now fully consumed: 20 targets is exactly ceil(20/5) = 4, so
-    # the NEXT target added is the one that runs out. ceil(21/5) = 5 puts
-    # `needed` at exactly 60, which the gate passes while describing a
-    # truncated sweep -- so the 21st target must arrive together with a sixth
-    # shard, not after it.
+    # 23 targets over 6 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
+    # worth of headroom for a target being added before anyone reshards.
+    #
+    # This branch is what consumed the previous ceiling. Five shards held to
+    # exactly 20 targets; the three targets added here take it to 23, and
+    # ceil(23/5) = 5 puts `needed` at exactly 60 -- which the gate PASSES while
+    # describing a truncated sweep. So the sixth shard arrives HERE, in the
+    # same change as the targets that need it, rather than being left for
+    # whoever next notices. ceil(23/6) = 4 restores the 10 minutes.
     #
     # THE HEADROOM IS THE POINT, NOT THE GREEN TICK. The gate's condition is
     # `needed > timeout`, so a sweep sized at exactly timeout-minutes PASSES --
@@ -124,7 +126,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
         with:
-          go-version: "1.25"
+          go-version: "1.25.13"
           cache: true
 
       - name: Download dependencies
@@ -170,7 +172,7 @@ jobs:
         run: ./scripts/fuzz-budget-check.sh
 
       - name: Fuzz
-        run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/5
+        run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/6
 
       # Only from main/schedule: a corpus grown from an unmerged branch would
       # otherwise be handed to every other PR.

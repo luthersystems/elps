@@ -579,17 +579,7 @@ func (s *service) loadDocument(path string, content *string, workspaceRoot *stri
 	parser := rdparser.New(scanner)
 	parsed := parser.ParseProgramFaultTolerant()
 
-	cfg := &analysis.Config{
-		Filename:       resolvedPath,
-		ExtraGlobals:   state.cfg.ExtraGlobals,
-		PackageExports: state.cfg.PackageExports,
-		PackageSymbols: state.cfg.PackageSymbols,
-		DefForms:       state.cfg.DefForms,
-		PackageImports: state.cfg.PackageImports,
-		DefaultPackage: state.cfg.DefaultPackage,
-		WorkspaceRefs:  state.cfg.WorkspaceRefs,
-		MacroExpander:  state.cfg.MacroExpander,
-	}
+	cfg := analysis.ConfigForFile(state.cfg, resolvedPath)
 	var result *analysis.Result
 	if parsed.Exprs != nil {
 		result = analysis.Analyze(parsed.Exprs, cfg)
