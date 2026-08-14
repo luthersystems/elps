@@ -34,6 +34,14 @@ import (
 // Red-proof: TestAliasBatteryDetectsSharing below rebuilds the pre-#395
 // shallow map copy and runs the same battery over it, requiring it to fail.
 // A battery that cannot fail is not evidence.
+//
+// A battery is also not evidence about code its paths cannot reach.  Until
+// enumeratePaths grew spans, the only steps it emitted were map keys and
+// integer indices, so rangePath -- every operation's splice, and the getter
+// whose result slices the source's own backing array -- was outside the
+// sweep entirely.  Adding spans took the battery from 8,007 written-through
+// combinations to 117,633, and the red-proof from 1,044 failures to 2,184.
+// TestEnumeratePathsCoversEveryStepForm keeps that from silently regressing.
 
 // aliasDoc is the document the battery walks: sorted-maps, vectors and a
 // quoted list, nested three container levels deep, with several siblings at
@@ -97,19 +105,61 @@ var aliasSources = map[string]func() *lisp.LVal{
 }
 
 // enumeratePaths lists every step sequence of length 1..maxDepth that names
-// a value inside v: map keys as strings, sequence positions as ints.  The
-// battery copies at each of these and mutates at each of these, so on-path,
-// off-path and cross-depth combinations are covered by construction rather
-// than by a hand-picked list that can miss the interesting one.
+// a value inside v: map keys as strings, sequence positions as ints, and
+// spans of a sequence as (range a b).  The battery copies at each of these
+// and mutates at each of these, so on-path, off-path and cross-depth
+// combinations are covered by construction rather than by a hand-picked list
+// that can miss the interesting one.
+//
+// RANGE STEPS were missing until they were added here, and their absence was
+// a hole rather than an omission: this enumerator is the ONLY source of paths
+// the battery uses, so with only keys and indices in it, rangePath was
+// unreachable from the battery entirely.  Every aliasing question a range
+// raises -- rangePath.Get hands back a slice over the source's OWN backing
+// array (issues #369/#373), and the splice rebuilds a sequence around a span
+// -- was therefore outside the one test in the package whose job is to catch
+// a write through a copy reaching the source.  The range-splice corruption
+// lived in exactly that unreachable code.
+//
+// The spans are a fixed small set per sequence rather than all O(n^2) of
+// them, chosen so that each one is a splice shape the others are not:
+//
+//	(0,n)  the whole sequence -- no prefix and no tail
+//	(0,0)  an insertion point -- replaces nothing, tail is everything
+//	(0,1)  anchored at the front WITH a tail, which is the shape a
+//	       replacement longer than its span corrupts: the tail is the part
+//	       the splice must not overwrite before it reads it
+//	(1,2)  a span with elements on BOTH sides, the only one that exercises a
+//	       non-zero `from` and a non-empty tail together
+//
+// Enumerating every span instead multiplies the battery's already-quadratic
+// sweep for shapes that repeat.
 func enumeratePaths(v *lisp.LVal, maxDepth int) [][]*lisp.LVal {
 	if maxDepth == 0 {
 		return nil
 	}
 	var out [][]*lisp.LVal
-	each := func(step *lisp.LVal, child *lisp.LVal) {
+	eachBelow := func(step *lisp.LVal, child *lisp.LVal, below int) {
 		out = append(out, []*lisp.LVal{step})
-		for _, sub := range enumeratePaths(child, maxDepth-1) {
+		for _, sub := range enumeratePaths(child, below) {
 			out = append(out, append([]*lisp.LVal{step}, sub...))
+		}
+	}
+	each := func(step *lisp.LVal, child *lisp.LVal) {
+		eachBelow(step, child, maxDepth-1)
+	}
+	// eachSeq enumerates a sequence's positions and its spans.  cells is the
+	// sequence's own cell slice; wrap rebuilds a span into a value of the
+	// same layout, which is what a range step's result is and so what the
+	// enumeration below the step has to walk.
+	eachSeq := func(cells []*lisp.LVal, wrap func([]*lisp.LVal) *lisp.LVal) {
+		for i, c := range cells {
+			each(lisp.Int(i), c)
+		}
+		for _, span := range enumerateSpans(len(cells)) {
+			sub := make([]*lisp.LVal, span[1]-span[0])
+			copy(sub, cells[span[0]:span[1]])
+			eachBelow(rangeStep(span[0], span[1]), wrap(sub), min(maxDepth-1, spanSubDepth))
 		}
 	}
 	switch v.Type { //nolint:exhaustive // the container types; everything else is a leaf with nothing below it
@@ -123,13 +173,39 @@ func enumeratePaths(v *lisp.LVal, maxDepth int) [][]*lisp.LVal {
 			each(lisp.String(ent.Cells[0].Str), ent.Cells[1])
 		}
 	case lisp.LArray:
-		for i, c := range v.Cells[1].Cells {
-			each(lisp.Int(i), c)
-		}
+		eachSeq(v.Cells[1].Cells, toVector)
 	case lisp.LSExpr:
-		for i, c := range v.Cells {
-			each(lisp.Int(i), c)
+		eachSeq(v.Cells, toList)
+	}
+	return out
+}
+
+// spanSubDepth bounds how far the enumeration goes BELOW a range step.
+//
+// One step is what the aliasing question needs and the whole battery can
+// afford.  A range's result is a sequence the operation synthesised, so the
+// route that matters is "query the copy at a span, then write through an
+// element of what comes back" -- which is one step below the span, and is
+// precisely the reachability rangePath.Get's two-index slice over the
+// source's own backing array (#369/#373) would open.  Letting the sweep
+// recurse the full maxDepth below every span instead multiplies both path
+// sets in an already-quadratic battery: measured, it takes the run from 15s
+// to a minute under -race for combinations that repeat the same shapes
+// deeper down.
+const spanSubDepth = 1
+
+// enumerateSpans is the fixed span set described above, deduplicated and
+// kept in a stable order so the battery's combination count is reproducible.
+func enumerateSpans(n int) [][2]int {
+	candidates := [][2]int{{0, n}, {0, 0}, {0, 1}, {1, 2}}
+	seen := map[[2]int]bool{}
+	var out [][2]int
+	for _, c := range candidates {
+		if c[0] < 0 || c[1] > n || c[0] > c[1] || seen[c] {
+			continue
 		}
+		seen[c] = true
+		out = append(out, c)
 	}
 	return out
 }
@@ -364,6 +440,54 @@ func requireBatteryWrote(t *testing.T, ran map[string]int, floor int, sources ..
 		require.Greater(t, ran[name], floor,
 			"the battery wrote through only %d copies of the %s source: "+
 				"it is passing because it is not writing", ran[name], name)
+	}
+}
+
+// TestEnumeratePathsCoversEveryStepForm is the battery's own gate, in the
+// spirit of TestPathGenCoverage: enumeratePaths is the ONLY source of paths
+// the battery has, so a step form missing from it is a whole family of the
+// engine the battery silently cannot reach.  That is not hypothetical --
+// range steps were missing for the entire life of this file, which is why
+// the range-splice corruption was never a candidate for it to find.
+//
+// It also pins that a span step is reachable with a step BELOW it, since
+// that is the route (query the copy at a span, write through what comes
+// back) the spans were added for.
+func TestEnumeratePathsCoversEveryStepForm(t *testing.T) {
+	t.Parallel()
+
+	for name, mk := range aliasSources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			forms := map[string]int{}
+			belowRange := 0
+			for _, p := range enumeratePaths(mk(), 3) {
+				for i, s := range p {
+					switch s.Type {
+					case lisp.LString:
+						forms["key"]++
+					case lisp.LInt:
+						forms["index"]++
+					case lisp.LSExpr:
+						forms["range"]++
+						if i < len(p)-1 {
+							belowRange++
+						}
+					default:
+						forms["other"]++
+					}
+				}
+			}
+			for _, want := range []string{"key", "index", "range"} {
+				assert.Greater(t, forms[want], 0,
+					"the battery enumerates no %s step for the %s source, so every "+
+						"path operation reached only through one is untested: %v",
+					want, name, forms)
+			}
+			assert.Greater(t, belowRange, 0,
+				"no enumerated path continues below a span step, so the "+
+					"query-a-span-then-write-through-it route is untested")
+		})
 	}
 }
 
