@@ -365,10 +365,12 @@ jobs:
             echo '## Benchmark Comparison (main baseline vs PR)'
             echo ''
             if [ -n "$waiver_lines" ]; then
-              echo '### Reviewed waivers applied to this comparison'
+              echo '### Reviewed waivers'
               echo ''
-              echo 'These rows were measured and DID move; they are declared in'
-              echo '`scripts/benchstat-waivers.txt` and reviewed there, not suppressed.'
+              echo 'Declared in `scripts/benchstat-waivers.txt`. A `WAIVED` row was measured,'
+              echo 'DID move, and was accepted within the ceiling recorded there — it is not'
+              echo 'suppressed. `waiver-unused` means that row is no longer regressing and the'
+              echo 'entry can be deleted; `WAIVER-STALE` means it protects nothing at all.'
               echo ''
               echo '```'
               echo "$waiver_lines"
