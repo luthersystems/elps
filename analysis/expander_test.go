@@ -637,3 +637,94 @@ func TestEnvMacroExpanderIsPanicReporter(t *testing.T) {
 	require.True(t, ok, "EnvMacroExpander must satisfy PanicReporter")
 	assert.Equal(t, uint64(0), pr.ExpansionPanics())
 }
+
+// TestExpandMacroDoesNotAliasCallerForm pins elps#396.
+//
+// ExpandMacro used to build the macro's argument list as
+// lisp.SExpr(form.Cells[1:]) — a fresh LVal header over the CALLER'S OWN
+// backing array. Macro arguments are not evaluated, so that array travels
+// unchanged into the macro's &rest binding: LEnv.bindFormalNext hands the
+// variadic parameter QExpr(args.Rest()), and argParser.Rest returns
+// p.args[p.i:], another window onto the same array. A macro body that calls
+// any in-place mutator (stable-sort here; append! and the rest of the kernel's
+// destructive builtins have the same shape) therefore writes straight through
+// into the tree the ANALYZER is holding.
+//
+// The tree the analyzer is holding is not a scratch copy. It is what backs
+// diagnostics, go-to-definition and lint results, and since #359 widened where
+// ExpandMacro runs — workspace scans across NumCPU workers, updateFileRefs —
+// the mutation can also be latched into the LSP's long-lived workspaceRefs
+// index. One expansion poisons every later query for the life of the process.
+//
+// The assertion is deliberately on the SOURCE TREE, not on the expansion's
+// result: the expansion returning something sensible is exactly what made this
+// invisible. What is wrong is the side effect on the caller's form.
+//
+// The second subtest states the invariant the fix is actually pinned to.
+// LEnv.evalSExprCells is the runtime's only other route to a macro, and on its
+// IsSpecialFun branch it copies the caller's cells into a fresh array. So the
+// runtime already leaves `(sort-my-args 3 1 2)` alone, and merely ANALYZING a
+// file was more destructive than RUNNING it. Comparing the two directly, rather
+// than hardcoding "unchanged", is what keeps this honest if the language's
+// macro-argument semantics are ever revised: whatever eval does to a form,
+// expansion-for-analysis must do no more.
+func TestExpandMacroDoesNotAliasCallerForm(t *testing.T) {
+	const macros = `
+(defmacro sort-my-args (&rest body)
+  (stable-sort < body)
+  (quasiquote 0))`
+
+	// parseForm parses one top-level form the way the analyzer does, so the
+	// cells under test are genuine parse-tree storage and not a hand-built
+	// slice that happens to have spare capacity.
+	parseForm := func(t *testing.T, src string) *lisp.LVal {
+		t.Helper()
+		s := token.NewScanner("alias_test.lisp", strings.NewReader(src))
+		exprs, err := rdparser.New(s).ParseProgram()
+		require.NoError(t, err)
+		require.Len(t, exprs, 1)
+		return exprs[0]
+	}
+	argInts := func(form *lisp.LVal) []int {
+		out := make([]int, 0, len(form.Cells)-1)
+		for _, c := range form.Cells[1:] {
+			out = append(out, c.Int)
+		}
+		return out
+	}
+
+	const src = "(sort-my-args 3 1 2)"
+
+	t.Run("expansion leaves the caller's form alone", func(t *testing.T) {
+		env := newTestEnv(t)
+		evalSource(t, env, macros)
+
+		form := parseForm(t, src)
+		require.Len(t, form.Cells, 4)
+		require.Equal(t, []int{3, 1, 2}, argInts(form), "precondition: source order")
+
+		expander := &EnvMacroExpander{Env: env}
+		_ = expander.ExpandMacro(form, lisp.DefaultUserPackage)
+
+		assert.Equal(t, []int{3, 1, 2}, argInts(form),
+			"macro expansion rewrote the caller's parse tree in place —"+
+				" the analyzer's own AST was corrupted by expanding a macro over it")
+	})
+
+	t.Run("expansion perturbs the form no more than eval does", func(t *testing.T) {
+		evalEnv := newTestEnv(t)
+		evalSource(t, evalEnv, macros)
+		evaled := parseForm(t, src)
+		require.NotEqual(t, lisp.LError, evalEnv.Eval(evaled).Type)
+
+		expandEnv := newTestEnv(t)
+		evalSource(t, expandEnv, macros)
+		expanded := parseForm(t, src)
+		_ = (&EnvMacroExpander{Env: expandEnv}).ExpandMacro(expanded, lisp.DefaultUserPackage)
+
+		assert.Equal(t, argInts(evaled), argInts(expanded),
+			"analyzing the form mutated it differently than evaluating it did —"+
+				" ExpandMacro must build the macro's argument list the same way"+
+				" LEnv.evalSExprCells does")
+	})
+}
