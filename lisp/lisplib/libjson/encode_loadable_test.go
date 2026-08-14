@@ -5,7 +5,6 @@ package libjson
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -14,20 +13,18 @@ import (
 
 // loadableCase is one input to the parity table below.
 //
+// EVERY row gets both comparisons: against the shipped path, Dump on a native
+// holding exactly these bytes, and against checkLoadable directly.
+// checkLoadable decodes, so it is a total predicate on arbitrary bytes and
+// there is no class of input it declines to answer for.
+//
 // wellFormed records whether src is syntactically well-formed JSON APART FROM
-// nesting depth. It is written down rather than computed with json.Valid
-// because json.Valid enforces the depth limit too, and the rows either side of
-// that limit are the ones the check is most likely to get wrong -- computing
-// the flag would quietly drop exactly those rows from the direct comparison.
-//
-// It is what decides which of the two comparisons a row gets:
-//
-//   - every row is run through the SHIPPED path, Dump on a native holding
-//     exactly these bytes, and must agree with Load;
-//   - a well-formed row is additionally compared against checkLoadable
-//     directly, because checkLoadable is only a total predicate on input that
-//     is already well-formed -- see its comment for why syntax is established
-//     before it runs.
+// nesting depth. It survives because a second test still needs the split:
+// TestMarshalRefusesWhatItCannotParse hands exactly the malformed rows to
+// json.Marshal and requires it to refuse them. It is written down rather than
+// computed with json.Valid because json.Valid enforces the depth limit too,
+// and the rows either side of that limit are the ones a check is most likely
+// to get wrong -- computing the flag would silently reclassify exactly those.
 type loadableCase struct {
 	src        string
 	wellFormed bool
@@ -37,8 +34,13 @@ func ok(src string) loadableCase  { return loadableCase{src: src, wellFormed: tr
 func bad(src string) loadableCase { return loadableCase{src: src} }
 
 // loadableCases is the parity table: inputs where "does libjson accept this?"
-// is decided, chosen so that a byte scanner which gets any of them wrong shows
-// up here rather than in production.
+// is decided, chosen so that a check which gets any of them wrong shows up here
+// rather than in production.
+//
+// The table is much wider than the bug on purpose. It is what makes the
+// implementation of checkLoadable REPLACEABLE: it has already caught a token
+// scan accepting `""` and `{`, and it is what a future attempt at a cheaper
+// check -- see elps#412 for the one worth making -- would have to pass.
 func loadableCases() []loadableCase {
 	cases := []loadableCase{
 		// The #410 family: valid syntax, out of float64 range.
@@ -94,9 +96,9 @@ func loadableCases() []loadableCase {
 		ok("0." + strings.Repeat("9", 400)),    // 400 digits, value below 1
 		ok(strings.Repeat("9", 400) + "e-500"), // 400 digits pulled back into range
 
-		// Numbers that are NOT numbers: string contents and object keys. A
-		// scan that ignores string context refuses these, and every one of
-		// them loads perfectly well.
+		// Numbers that are NOT numbers: string contents and object keys.
+		// Every one of these loads perfectly well, and a check that read the
+		// bytes without tracking string context would refuse them all.
 		ok(`"1E1000"`),
 		ok(`"a 1E1000 b"`),
 		ok(`["a 1E1000 b"]`),
@@ -106,9 +108,9 @@ func loadableCases() []loadableCase {
 		ok(`"` + strings.Repeat("9", 400) + `"`),
 		ok(`{"` + strings.Repeat("9", 400) + `":1}`),
 
-		// Escapes. A scan that skips strings must honour backslashes, or it
-		// loses track of where the string ends and starts reading text as
-		// numbers (or the reverse).
+		// Escapes. Any check that skips over strings has to honour
+		// backslashes, or it loses track of where the string ends and starts
+		// reading text as numbers (or the reverse).
 		ok(`["\"1E1000",1]`), // an escaped quote immediately before a number
 		ok(`["\"1E1000",1E1000]`),
 		ok(`["\\",1E1000]`),    // string ends in an escaped backslash
@@ -120,8 +122,8 @@ func loadableCases() []loadableCase {
 		ok(`["\\"]`),
 		ok(`["\""]`),
 
-		// Adjacent and repeated numbers, where a scanner can lose a literal by
-		// mis-computing how far to advance past the previous one.
+		// Adjacent and repeated numbers, where a check that advances literal
+		// by literal can lose one by mis-computing where the previous ended.
 		ok("[1,2,3]"),
 		ok("[1E1000,1]"),
 		ok("[1,1E1000]"),
@@ -192,24 +194,26 @@ func loadableCases() []loadableCase {
 //
 // It compares two things against Load, for every row of the table:
 //
+//   - checkLoadable on its own. It decodes with the decoder's own function, so
+//     it is total: every row gets this comparison, malformed rows included.
 //   - the SHIPPED path -- Dump on a native holding exactly these bytes, which
 //     is json.Marshal followed by checkLoadable, the composition that actually
-//     decides what libjson emits. Every row gets this comparison, malformed
-//     rows included, and when Dump accepts a row its own output is loaded back
-//     to close the loop.
-//   - checkLoadable on its own, for rows that are well-formed. checkLoadable
-//     is a total predicate there and nowhere else: json.Marshal establishes
-//     syntax before it runs, so it is not asked about `{` or `tru` on the
-//     shipped path and does not answer for them here either.
+//     decides what libjson emits. When Dump accepts a row its own output is
+//     loaded back to close the loop.
 //
-// This is the whole safety net for replacing the implementation of
-// checkLoadable, so the table is deliberately much wider than the bug. It was
-// first written as a hand-rolled token scan, and this test caught it accepting
-// `""` and `{` and accepting documents nested past the limit Unmarshal
-// enforces. The rows covering string context, escapes, object keys, adjacent
-// literals and long digit runs are there for the byte scanner that replaced
-// the decode: each of them is a way for a scan to lose track of where a number
-// literal begins and ends.
+// Both comparisons are kept even though the first now implies most of the
+// second, because they can come apart: the shipped path is a composition, and
+// a change to encodeNative -- to what it marshals, or to whether it checks at
+// all -- breaks it while leaving checkLoadable itself correct.
+//
+// This is the safety net that makes the implementation of checkLoadable
+// replaceable, so the table is deliberately much wider than the bug. It has
+// already caught a hand-rolled token scan accepting `""` and `{`, and
+// accepting documents nested past the limit Unmarshal enforces. The rows
+// covering string context, escapes, object keys, adjacent literals and long
+// digit runs are the ones a byte-level check gets wrong: each is a way to lose
+// track of where a number literal begins and ends. They cost nothing to keep
+// and they are precisely what the next attempt would have to survive.
 //
 // If the standard library moves its nesting limit or changes number handling,
 // this fails here instead of shipping a document that dumps and will not load.
@@ -220,12 +224,10 @@ func TestCheckLoadableMatchesLoad(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				loadOK := Load([]byte(tc.src), stringNums).Type != lisp.LError
 
-				if tc.wellFormed {
-					checkOK := newEncoder(stringNums).checkLoadable([]byte(tc.src)) == nil
-					if loadOK != checkOK {
-						t.Fatalf("checkLoadable and Load disagree\n  input:          %s\n  Load accepts:   %v\n  check accepts:  %v",
-							label(tc.src), loadOK, checkOK)
-					}
+				checkOK := newEncoder(stringNums).checkLoadable([]byte(tc.src)) == nil
+				if loadOK != checkOK {
+					t.Fatalf("checkLoadable and Load disagree\n  input:          %s\n  Load accepts:   %v\n  check accepts:  %v",
+						label(tc.src), loadOK, checkOK)
 				}
 
 				raw := json.RawMessage(tc.src)
@@ -248,8 +250,10 @@ func TestCheckLoadableMatchesLoad(t *testing.T) {
 // list of inputs a cheaper implementation is most likely to get wrong, so a
 // failure points at the mistake instead of at one row of a large table.
 //
-// These go through Dump rather than checkLoadable because most of them are
-// malformed, and malformed input is json.Marshal's to refuse: empty and
+// These go through Dump, the composition, rather than through checkLoadable
+// alone: most of them are malformed, and on the shipped path malformed input
+// is json.Marshal's to refuse, so this is the arrangement that has to agree
+// with Load whatever the check itself does. The rows are empty and
 // whitespace-only documents, unterminated containers and strings, trailing
 // data, and the #410 literal itself.
 func TestCheckLoadableIsTheDecoder(t *testing.T) {
@@ -267,14 +271,21 @@ func TestCheckLoadableIsTheDecoder(t *testing.T) {
 	}
 }
 
-// TestLoadNestingLimitIsWhereWeThinkItIs pins the boundary the depth check
-// copies, so a change in the standard library fails here -- next to the
-// constant that has to move -- rather than as a mysterious parity failure.
+// maxLoadDepth is the deepest document Load accepts. It restates
+// encoding/json's maxNestingDepth, which is unexported and has no accessor.
 //
-// The check cannot ask encoding/json what its limit is: maxNestingDepth is
-// unexported and there is no accessor. So the constant is restated, and this
-// test is the thing that keeps the restatement honest by finding the boundary
-// empirically and asserting it is exactly where the constant says.
+// checkLoadable does not need it -- the decode applies the limit itself -- so
+// it lives here, in the tests that DO depend on knowing where the boundary
+// falls: the depth rows of the parity table above and
+// TestDumpRefusesNativeTooDeepToLoad both straddle exactly this value, and are
+// only meaningful if it is where they assume.
+const maxLoadDepth = 10000
+
+// TestLoadNestingLimitIsWhereWeThinkItIs finds the nesting boundary
+// empirically and asserts it is where the constant above says, so a standard
+// library that moves its limit fails here -- next to the number that has to
+// move with it -- rather than as a set of depth rows that quietly stop testing
+// a boundary.
 func TestLoadNestingLimitIsWhereWeThinkItIs(t *testing.T) {
 	load := func(depth int) bool {
 		src := strings.Repeat("[", depth) + strings.Repeat("]", depth)
@@ -299,20 +310,23 @@ func label(s string) string {
 	return fmt.Sprintf("<%d bytes, starts %q>", len(s), s[:12])
 }
 
-// TestMarshalRefusesWhatItCannotParse pins the premise checkLoadable rests on:
-// json.Marshal does not return bytes that are not well-formed JSON.
+// TestMarshalRefusesWhatItCannotParse pins where syntax is settled on the path
+// that emits a native: json.Marshal does not return bytes that are not
+// well-formed JSON.
 //
-// checkLoadable is called on Marshal's output and nothing else, and it does not
-// check syntax -- it counts brackets and range-checks numbers, which are the
-// two questions Marshal leaves open. That is only sound because Marshal
-// compacts every json.Marshaler's output through the same scanner json.Valid
-// uses, and generates everything else itself. The rows below are exactly the
-// inputs the parity table marks as malformed, handed to Marshal through a
-// Marshaler that returns them verbatim.
+// checkLoadable decodes, so it does not RELY on this -- it would refuse
+// malformed bytes on its own, and the parity table checks that it does. What
+// this pins is the division of labour, which is what any cheaper check would
+// have to lean on: Marshal compacts every json.Marshaler's output through the
+// same scanner json.Valid uses, and generates everything else itself, so by
+// the time bytes reach the check the only open questions are nesting and
+// number range. The rows below are exactly the inputs the parity table marks
+// as malformed, handed to Marshal through a Marshaler that returns them
+// verbatim.
 //
-// If a future encoding/json stopped validating, dump would start emitting
-// documents load refuses, and the failure would show up here -- next to the
-// reasoning it invalidates -- rather than as a puzzling parity failure.
+// If a future encoding/json stopped validating, that division would no longer
+// hold, and the failure shows up here -- next to the reasoning it invalidates
+// -- rather than inside whatever check was built on it.
 func TestMarshalRefusesWhatItCannotParse(t *testing.T) {
 	for _, tc := range loadableCases() {
 		if tc.wellFormed {
@@ -321,114 +335,9 @@ func TestMarshalRefusesWhatItCannotParse(t *testing.T) {
 		t.Run(label(tc.src), func(t *testing.T) {
 			raw := json.RawMessage(tc.src)
 			if _, err := json.Marshal(&raw); err == nil {
-				t.Fatalf("json.Marshal accepted malformed JSON %s, so checkLoadable "+
-					"can no longer assume its input is well formed", label(tc.src))
+				t.Fatalf("json.Marshal accepted malformed JSON %s, so a check on its "+
+					"output can no longer assume its input is well formed", label(tc.src))
 			}
 		})
 	}
-}
-
-// TestCheckLoadableDoesNotAllocate is the guard on the cost that made the
-// original implementation untenable.
-//
-// The decode this replaced allocated in proportion to the DOCUMENT -- 1159
-// allocations for the 4KiB document BenchmarkEncodeNativeLarge encodes,
-// because decoding into an interface{} materialises every value only to throw
-// it away. The scan reads the bytes where they lie. The budget is generous on
-// purpose: what is being pinned is the order of magnitude, so that an edit
-// which quietly reintroduces a decode fails loudly here instead of showing up
-// as a downstream latency report.
-func TestCheckLoadableDoesNotAllocate(t *testing.T) {
-	var large strings.Builder
-	large.WriteString(`{"users":[`)
-	for i := range 60 {
-		if i > 0 {
-			large.WriteByte(',')
-		}
-		large.WriteString(`{"id":12345,"name":"a name here","tags":["x","y","z"],"score":1.5}`)
-	}
-	large.WriteString(`]}`)
-
-	docs := []struct {
-		name string
-		src  string
-	}{
-		{"small", `{"a":1,"b":[2,3],"c":"str"}`},
-		{"large", large.String()},
-		{"deeply nested", strings.Repeat("[", 9999) + "1" + strings.Repeat("]", 9999)},
-		{"long digit runs", "[" + strings.Repeat(strings.Repeat("9", 400)+",", 20) + "1]"},
-		{"exponents", "[" + strings.Repeat("1.5e300,", 50) + "1]"},
-		{"numbers inside strings", `["1E1000","1E1000","1E1000"]`},
-		{"refused", "[1,2,1E1000]"},
-	}
-
-	const budget = 2
-	for _, mode := range []bool{false, true} {
-		enc := newEncoder(mode)
-		for _, doc := range docs {
-			b := []byte(doc.src)
-			name := fmt.Sprintf("stringNums=%v/%s", mode, doc.name)
-			t.Run(name, func(t *testing.T) {
-				if n := testing.AllocsPerRun(50, func() { _ = enc.checkLoadable(b) }); n > budget {
-					t.Errorf("checkLoadable allocated %v times per run over %d bytes (budget %d)",
-						n, len(b), budget)
-				}
-			})
-		}
-	}
-}
-
-// TestNumberInFloat64RangeMatchesParseFloat checks the range decision against
-// the conversion Load actually performs, over far more literals than the
-// parity table can carry.
-//
-// numberInFloat64Range answers from the literal's SHAPE wherever the shape
-// settles it, and converts only in the single decade that straddles
-// MaxFloat64. That is an argument about decimal exponents, and an argument is
-// not evidence: this sweeps mantissas against exponents either side of the
-// ceiling and requires the shape-based answer to agree with strconv.ParseFloat
-// on every one. Underflow is included deliberately, because ParseFloat treats
-// it as success and a check that confused "tiny" with "out of range" would
-// refuse documents that load.
-func TestNumberInFloat64RangeMatchesParseFloat(t *testing.T) {
-	mantissas := []string{
-		"0", "1", "2", "5", "9", "10", "17", "18",
-		"1.5", "9.9", "0.1", "0.9", "0.0001", "0.00001",
-		"1.7976931348623157", "1.7976931348623159",
-		"17976931348623157", "17976931348623159",
-		"100000", "1000000", "0.0", "0.000",
-		strings.Repeat("9", 20), strings.Repeat("9", 308),
-		strings.Repeat("9", 309), strings.Repeat("9", 400),
-		"0." + strings.Repeat("9", 400),
-	}
-	exponents := []string{""}
-	for e := -320; e <= 320; e++ {
-		exponents = append(exponents, "e"+strconv.Itoa(e))
-	}
-	exponents = append(exponents,
-		"e+308", "e+309", "E308", "E309", "e0", "e-0", "e+0",
-		"e999999", "e-999999", "e99999999999999999999999",
-		"e-99999999999999999999999")
-
-	checked := 0
-	for _, m := range mantissas {
-		for _, e := range exponents {
-			for _, sign := range []string{"", "-"} {
-				lit := sign + m + e
-				want := true
-				if _, err := strconv.ParseFloat(lit, 64); err != nil {
-					want = false
-				}
-				n, got := numberInFloat64Range([]byte(lit))
-				if n != len(lit) {
-					t.Fatalf("%s: scanned %d of %d bytes", lit, n, len(lit))
-				}
-				if got != want {
-					t.Errorf("%s: ParseFloat in range=%v, scan says %v", lit, want, got)
-				}
-				checked++
-			}
-		}
-	}
-	t.Logf("checked %d literals", checked)
 }

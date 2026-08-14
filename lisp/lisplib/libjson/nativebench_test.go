@@ -22,50 +22,49 @@ import (
 // lisp.Native, a map not being one of the kinds it converts -- so
 // BenchmarkEncode pays for the check three times per iteration.
 //
-// The check shipped first as a full decode of the marshalled bytes, and these
-// benchmarks are what showed that it could not stay one. Against origin/main,
-// 12 interleaved rounds per arm at GOMAXPROCS=4, -benchtime 500ms, compared
-// with benchstat:
+// The check is a full DECODE of the marshalled bytes -- jsonDecode, the
+// function Load itself decodes with -- and these benchmarks are what price it.
+// Against origin/main (00b6c29), 12 interleaved rounds per arm at
+// GOMAXPROCS=4, -benchtime 500ms, compared with benchstat:
 //
-//	                        base (origin/main)      decode          scan (now)
-//	Encode-4                24.65us 10.05KiB 214    +11.6%  +12.4%  ~  =    =
-//	Encode_stringNumbers-4  3.630us 1.297KiB  30      ~       =     ~  =    =
-//	EncodeNativeSmall-4     490.2ns    208B    3    +280%   +308%  +11.6% = =
-//	EncodeNativeLarge-4     26.70us 8.112KiB   3    +316%   +461%  +19.8% = =
+//	                        base (origin/main)     with the check
+//	Encode-4                22.76us 10.05KiB 214   +11.65%  +12.44%   +7.94%
+//	Encode_stringNumbers-4  3.402us 1.297KiB  30      ~        =        =
+//	EncodeNativeSmall-4     461.7ns    208B    3   +319.2%  +307.7%  +466.7%
+//	EncodeNativeLarge-4     25.56us 8.113KiB   3   +334.9%  +461.2%  +38533%
 //
-// The decode column is the figure recorded when the fix landed, measured the
-// same way on the same host but in a different session -- treat it as an order
-// of magnitude, not as a number comparable digit for digit with the other two.
-// The scan column is measured against the base beside it.
+// Every moved row is p<=0.001 over 12 samples; both stringNumbers cells that
+// read "=" are all-samples-equal, and its time row is p=0.551. The allocation
+// column is the one to read first: 3 -> 1159 on EncodeNativeLarge is not a
+// constant overhead but a count proportional to the DOCUMENT, because decoding
+// into an interface{} materialises every value in it only to throw the whole
+// thing away. A service passing large opaque blobs around as natives pays GC
+// pressure in proportion to its traffic.
 //
-// What the scan restores exactly is ALLOCATION. Every arm is back to its base
-// count with every sample equal: 214, 30, 3 and 3, against the decode's 231,
-// 30, 17 and 1159. Bytes per op return to base too (the 0.02% on
-// EncodeNativeLarge is two bytes of buffer-growth rounding, not work). That is
-// the number that mattered: the decode allocated in proportion to the
-// DOCUMENT, so a service passing large opaque blobs around as natives paid GC
-// pressure proportional to its traffic.
+// That cost was measured, disliked, and then accepted on evidence. A
+// hand-rolled byte scan restored allocations to base EXACTLY on all four arms
+// and cut the native-encode time overhead to about +12% and +20%. It was
+// dropped anyway, because measuring the two implementations END TO END in the
+// downstream platform that is libjson's only heavy user -- interleaved, n=12,
+// benchstat -- moved none of that platform's 20 benchmark rows: its natives
+// are small (177 encodes across the whole suite, mean 25 bytes, largest 487),
+// and a per-byte difference on bytes there are few of does not clear the noise
+// floor of the gate that would have to defend it. See the comment on
+// encoder.checkLoadable in encode.go for the full reasoning, and elps#412 for
+// the change that would actually remove this cost instead of shrinking it.
 //
-// What it does NOT restore is time, and the two native rows are still
-// significantly slower than main: +11.6% (p=0.001) and +19.8% (p=0.000) on 12
-// samples. That is not noise and should not be reported as noise. It is also
-// not removable: the check has to READ the bytes, and reading them costs a
-// pass. The base row for EncodeNativeLarge is very nearly json.Marshal's own
-// compaction of the same 4KiB document, which is itself a pass over the bytes
-// at roughly 6ns each; this scan adds one at roughly 1.3ns each. Parity with
-// main would mean checking the bytes without looking at them.
-//
-// The two whole-document rows ARE at parity (p=0.319 and p=0.630), which is
-// the shape to expect: the check is charged per native encoded and per byte of
-// that native, so a document that is 8% native by count barely moves.
+// So these benchmarks are not a regression report to be explained away. They
+// are the standing price of the invariant, kept measurable so that elps#412 --
+// or any future attempt at a cheaper check -- has a number to beat and a place
+// to prove it.
 //
 // The stringNumbers row is flat for a mundane reason, stated here so it is not
 // misread as evidence the check is free in that mode:
 // stringNumberEncodeTests holds only lisp.Int and lisp.Float rows and contains
 // no native at all, so it never reaches encodeNative. The asymmetry is between
 // the two TABLES, not between the two modes -- under :string-numbers the check
-// still walks the bytes to count nesting, and still costs, whenever a document
-// actually holds a native. Only the number half of it is skipped.
+// still decodes, and still costs, whenever a document actually holds a native.
+// UseNumber only changes which numbers it accepts.
 func benchNative(b *testing.B, src string) {
 	b.Helper()
 	raw := json.RawMessage(src)

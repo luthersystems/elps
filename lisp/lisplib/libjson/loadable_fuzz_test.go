@@ -18,19 +18,21 @@ import (
 // accept -- and it is checked as an EQUIVALENCE in both directions, because
 // the two ways to be wrong are opposite and equally bad. Accepting bytes Load
 // refuses is #410 itself: a document written and then unreadable. Refusing
-// bytes Load accepts is the failure mode a byte scanner falls into instead,
-// mistaking string content or an object key for a number literal, and it turns
-// a working phylum into a broken one just as effectively.
+// bytes Load accepts is the opposite failure, and it turns a working phylum
+// into a broken one just as effectively.
 //
-// It matters that this drives the SHIPPED composition rather than the check
-// alone. What decides whether libjson emits a native is json.Marshal followed
-// by checkLoadable, in that order, and the two have different jobs: Marshal
-// settles syntax, checkLoadable settles nesting depth and number range. Fuzzing
-// checkLoadable on raw bytes in isolation would assert a contract it does not
-// have and never needs -- it is a total predicate only on well-formed input,
-// which is the only input it is ever handed. So malformed input is checked
-// through the composition, and the direct comparison is made where it is
-// meaningful, on input json.Valid accepts.
+// checkLoadable decodes with the decoder's own function, so today the
+// equivalence holds by construction and this target cannot fail on the
+// arithmetic of number literals. It is kept for the two things construction
+// does not cover. First, it drives the SHIPPED composition -- json.Marshal
+// then checkLoadable, which is what actually decides whether libjson emits a
+// native -- so a change to encodeNative that stops checking, or checks the
+// wrong bytes, is caught here. Second, it is the differential harness any
+// cheaper implementation would be judged against, and a cheaper implementation
+// is exactly what elps#412 contemplates; a check that reads the bytes rather
+// than decoding them CAN mistake string content or an object key for a number
+// literal, and this is where that shows up on inputs nobody thought to write
+// down.
 //
 // The enumerated table remains the right tool for the nesting boundary, which
 // is a hard edge at exactly 10000 that no fuzzer will find by chance. This is
@@ -80,13 +82,12 @@ func FuzzCheckLoadableMatchesLoad(f *testing.F) {
 			}
 		}
 
-		// checkLoadable on its own, over the input class where it is total.
-		if json.Valid(b) {
-			checkOK := newEncoder(stringNums).checkLoadable(b) == nil
-			if loadOK != checkOK {
-				t.Fatalf("checkLoadable and Load disagree\n  stringNums: %v\n  input:      %q\n  Load accepts:  %v\n  check accepts: %v",
-					stringNums, b, loadOK, checkOK)
-			}
+		// checkLoadable on its own, on arbitrary bytes: it decodes, so it is
+		// total and owes an answer for malformed input too.
+		checkOK := newEncoder(stringNums).checkLoadable(b) == nil
+		if loadOK != checkOK {
+			t.Fatalf("checkLoadable and Load disagree\n  stringNums: %v\n  input:      %q\n  Load accepts:  %v\n  check accepts: %v",
+				stringNums, b, loadOK, checkOK)
 		}
 	})
 }
