@@ -62,7 +62,6 @@ jobs:
           # security fixes to the two most recent minors, so staying on 1.25
           # costs nothing in patch coverage: 1.25.13 scans clean.
           go-version: "1.25.13"
-          go-version: "1.25.13"
           check-latest: true
           cache: true
       - name: Run govulncheck
