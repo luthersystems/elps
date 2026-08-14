@@ -51,7 +51,7 @@ jobs:
           #
           # This scheduled run is the one that reports on main, so it is the
           # one where a mismatch would be least visible and most misleading.
-          go-version: "1.25"
+          go-version: ">=1.25.13"
           check-latest: true
           cache: true
 

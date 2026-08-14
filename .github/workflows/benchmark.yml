@@ -25,7 +25,7 @@ env:
   # pair arms of unequal sample count. Measuring both arms in this job
   # removes that coupling.
   BENCH_COUNT: "10"
-  GO_VERSION: "1.25"
+  GO_VERSION: ">=1.25.13"
   # Regression gates, applied per metric class by scripts/benchstat-gate.sh.
   # elps' allocation metrics are near-deterministic (worst-case noise measured on
   # identical code: 0.18%) while sec/op noise reaches ~1.5%, and far more on a

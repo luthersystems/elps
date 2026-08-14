@@ -33,32 +33,31 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          # Scan the toolchain this repo actually builds with -- the same
-          # "1.25" the build, test, fuzz and benchmark jobs pin. govulncheck
-          # reports standard-library advisories against whatever Go compiled
-          # the scan, so a scan on a different major reports on a binary
-          # nobody ships: it can go green while the artifact you release still
-          # carries the findings, or red about a Go you do not use. The latter
-          # is what elps#404 was.
+          # A PATCH FLOOR, and the same one every other workflow here pins.
+          # Keep them identical: govulncheck reports standard-library
+          # advisories against whatever Go compiled the scan, so a scan on a
+          # different toolchain than the build answers a question nobody
+          # asked. It can go green while the artifact you ship still carries
+          # the findings, or red about a Go you do not use.
           #
-          # "stable" did the second of those. setup-go resolved it against its
-          # own manifest, served go1.26.5 -- one patch behind the go1.26.6 that
-          # fixes those four advisories -- and this job became the only one in
-          # the repo running a vulnerable toolchain, reporting largely on
-          # itself. The supported 1.25 line was never affected: go1.25.13
-          # scans clean, because Go backports security fixes to the two most
-          # recent minors.
+          # elps#404 was both of those at once. This job asked for "stable"
+          # and setup-go served go1.26.5 -- one patch behind the fix -- while
+          # every build job asked for "1.25" and got go1.25.12, also one patch
+          # behind. The scan was the only job being asked, so it looked like
+          # the scan's problem; in fact the whole repo was a patch short.
           #
-          # setup-go also exports GOTOOLCHAIN=local, so Go cannot upgrade past
-          # what setup-go installed. That is why re-running the job could not
-          # clear the finding and a workflow change was needed.
+          # A bare "1.25" does NOT fix that: setup-go resolves it to the newest
+          # 1.25.x in its own manifest, which lagged at 1.25.12. Only an
+          # explicit floor forces the download. That is also why re-running
+          # never helped -- setup-go exports GOTOOLCHAIN=local, so Go cannot
+          # upgrade past whatever setup-go installed.
           #
-          # check-latest makes setup-go consult the manifest rather than settle
-          # for whatever the hosted tool cache holds, so this tracks the newest
-          # 1.25 patch. Move this in step with the build jobs, not ahead of
-          # them: a scan greener than the build is the failure this comment
-          # exists to prevent.
-          go-version: "1.25"
+          # This stays on the supported 1.25 line; Go backports security fixes
+          # to the two most recent minors, so 1.25.13 scans clean. Raise this
+          # floor across ALL workflows together when a future advisory names a
+          # newer fix -- a scan greener than the build is the failure this
+          # comment exists to prevent.
+          go-version: ">=1.25.13"
           check-latest: true
           cache: true
       - name: Run govulncheck
