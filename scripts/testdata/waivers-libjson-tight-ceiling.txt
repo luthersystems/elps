@@ -1,0 +1,6 @@
+# Self-test fixture: a waiver on the right row whose CEILING is below the
+# measured move (+7.94% against a 5% ceiling). A waiver that has been outgrown
+# must fail again -- that is the whole difference between bounding a cost and
+# blessing a benchmark.
+github.com/luthersystems/elps/lisp/lisplib/libjson | Encode | allocs/op | 5 | 2099-01-01 | elps#412 | ceiling deliberately below the measured move
+github.com/luthersystems/elps/lisp/lisplib/libjson | Encode | B/op | 14 | 2099-01-01 | elps#412 | the same 17 allocations weighed instead of counted

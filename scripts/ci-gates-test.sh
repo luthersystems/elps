@@ -209,6 +209,154 @@ assert_exit 0 "with only the ALLOCATION gate raised, the live table passes" \
 	env BENCH_ALLOC_THRESHOLD_PCT=10 "$GATE" "${TESTDATA}/benchstat-alloc-regression-live.txt"
 
 echo
+echo "== benchstat-gate: reviewed waivers ======================================"
+
+# A waiver is a per-row exception, declared in scripts/benchstat-waivers.txt and
+# reviewed in the diff that needs it. It is the one construct in this gate whose
+# whole job is to make something PASS, so it is the one that most needs proving
+# it cannot make the wrong thing pass. Everything here is driven against
+# benchstat-libjson-encode-411.txt -- the REAL comparison from PR #411, verbatim
+# from the workflow's own PR comment -- rather than a synthetic table, because a
+# waiver that only works on a fixture written to suit it proves nothing.
+WAIVED_FIXTURE="${TESTDATA}/benchstat-libjson-encode-411.txt"
+
+# The before half of the round trip. With waivers switched off, the real run has
+# TWO rows at or above a gate. Note that this is not the "one failing row" the
+# change was described as: B/op is an ALLOCATION metric, judged against the 5%
+# allocation gate rather than the 15% timing one, and +12.45% is over it.
+assert_exit 1 "PR #411's REAL benchstat output fires the gate with no waivers" \
+	env BENCH_WAIVERS= "$GATE" "$WAIVED_FIXTURE"
+assert_contains "+7.94%" "the allocs/op row is named when unwaived" \
+	env BENCH_WAIVERS= "$GATE" "$WAIVED_FIXTURE"
+assert_contains "+12.45%" "the B/op row is named too — it is over the allocation gate as well" \
+	env BENCH_WAIVERS= "$GATE" "$WAIVED_FIXTURE"
+
+# The after half: the waivers this repository actually ships, with no env
+# override at all, make that same comparison pass. This is the assertion that
+# keeps scripts/benchstat-waivers.txt honest -- it fails if the file is deleted,
+# emptied, malformed, or edited so it no longer covers what it claims to.
+assert_exit 0 "the SHIPPED waiver file makes PR #411's real comparison pass" \
+	"$GATE" "$WAIVED_FIXTURE"
+
+# ...and it passes because it was WAIVED, not because the gate stopped looking.
+# The row must still appear, with its delta, its ceiling and its issue.
+# Anchored on the per-ROW marker, not the bare word: the summary line already
+# says "row(s) WAIVED", so a substring check for "WAIVED" stays green even after
+# the per-row lines are deleted -- which is exactly the regression that matters.
+assert_contains "WAIVED      github.com/luthersystems/elps/lisp/lisplib/libjson" \
+	"a waived row is still reported by name, not silently dropped" \
+	"$GATE" "$WAIVED_FIXTURE"
+assert_contains "+7.94%" "the waived row still carries its measured delta" \
+	"$GATE" "$WAIVED_FIXTURE"
+assert_contains "elps#412" "the waived row names its tracking issue in the report" \
+	"$GATE" "$WAIVED_FIXTURE"
+assert_contains "row(s) WAIVED" "the summary line counts the waivers" \
+	"$GATE" "$WAIVED_FIXTURE"
+
+# NARROWNESS. A waiver covers one package, one benchmark, one metric column.
+# Waiving allocs/op alone must leave B/op of the SAME benchmark failing --
+# otherwise "per-row" is a description rather than a property.
+assert_exit 1 "waiving allocs/op does NOT waive B/op of the same benchmark" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-allocs.txt" "$GATE" "$WAIVED_FIXTURE"
+assert_contains "B/op" "the un-waived neighbouring metric is the row that fails" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-allocs.txt" "$GATE" "$WAIVED_FIXTURE"
+# Right benchmark, right metric, WRONG package: must not reach across packages.
+assert_exit 1 "a waiver for another package does not reach libjson" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-wrong-pkg.txt" "$GATE" "$WAIVED_FIXTURE"
+# And the control for the two above: with both columns waived it does pass, so
+# the failures above are the narrowness and not some unrelated breakage.
+assert_exit 0 "with both allocation columns waived, the same table passes" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
+
+# BOUNDEDNESS. The ceiling is what makes a waiver an accepted COST rather than a
+# blessed benchmark: the moment the regression grows past what was reviewed, it
+# fails again.
+assert_exit 1 "a regression that EXCEEDS its waiver ceiling fails" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-tight-ceiling.txt" "$GATE" "$WAIVED_FIXTURE"
+assert_contains "EXCEEDS its waiver ceiling" \
+	"outgrowing a waiver says so, rather than reading as a fresh regression" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-tight-ceiling.txt" "$GATE" "$WAIVED_FIXTURE"
+
+# EXPIRY. Past its date a waiver stops suppressing and the row is judged
+# normally again, so the decision is re-made rather than inherited.
+assert_exit 1 "an EXPIRED waiver no longer suppresses its row" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-expired.txt" "$GATE" "$WAIVED_FIXTURE"
+assert_contains "WAIVER EXPIRED" "an expired waiver says why the row came back" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-expired.txt" "$GATE" "$WAIVED_FIXTURE"
+# The same proof against the waivers this repo actually ships: wind the clock
+# past their expiry and PR #411's comparison reds again. Without this, "expires"
+# could be a field nothing reads.
+assert_exit 1 "the SHIPPED waivers genuinely expire (clock wound past the date)" \
+	env BENCH_WAIVER_TODAY=2099-01-01 "$GATE" "$WAIVED_FIXTURE"
+
+# JUSTIFICATION. A waiver with no tracking reference is a threshold increase
+# with better manners; the gate must refuse to run rather than honour it. Note
+# the exit code: 2, the same "cannot be interpreted" hard failure as an
+# unreadable benchstat table, because a waiver list that does not parse must
+# never be treated as an empty one.
+assert_exit 2 "a waiver with NO issue reference is rejected" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-no-issue.txt" "$GATE" "$WAIVED_FIXTURE"
+assert_contains "not a tracking reference" "the rejection says what is missing" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-no-issue.txt" "$GATE" "$WAIVED_FIXTURE"
+
+# Every other malformation is the same hard failure, and each is NAMED with its
+# line number -- a waiver that silently fails to parse is a regression nobody is
+# told about.
+assert_exit 2 "malformed waiver entries are refused, not skipped" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-malformed.txt" "$GATE" "$WAIVED_FIXTURE"
+for want in "expected 7 |-separated fields" "is not a positive percentage" \
+	"is not a YYYY-MM-DD date" "reason is missing or too short" \
+	"empty pkg field"; do
+	assert_contains "$want" "malformed waiver diagnosed: ${want}" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-malformed.txt" "$GATE" "$WAIVED_FIXTURE"
+done
+
+# `go test` appends -<GOMAXPROCS> to every benchmark name, so a waiver written
+# with the suffix would silently unbind the day `runs-on` or the GOMAXPROCS pin
+# changes -- the single failure mode this repository has been bitten by most
+# (see the GOMAXPROCS notes in benchmark.yml and bench-arms-check.sh). Rejected
+# at parse time rather than left to fail open years later.
+assert_exit 2 "a waiver naming Encode-2 (with the GOMAXPROCS suffix) is rejected" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-gomaxprocs-suffix.txt" "$GATE" "$WAIVED_FIXTURE"
+assert_contains "GOMAXPROCS" "the suffix rejection explains the trap" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-gomaxprocs-suffix.txt" "$GATE" "$WAIVED_FIXTURE"
+
+# An explicitly-named waiver file that is not there is an error. Silently
+# adjudicating with no waivers would be the strict direction, but it would also
+# mean a typo'd path reads as "no waivers configured".
+assert_exit 2 "BENCH_WAIVERS pointing at a missing file is an error" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-does-not-exist.txt" "$GATE" "$WAIVED_FIXTURE"
+
+# STALENESS. A waiver that protects nothing must not rot quietly: the benchmark
+# it names was renamed or removed, so it is dead weight that still looks like
+# coverage.
+assert_contains "WAIVER-STALE" "a waiver whose benchmark no longer exists is REPORTED" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-stale.txt" "$GATE" "$WAIVED_FIXTURE"
+assert_contains "WAIVER-STALE" "a waiver aimed at the wrong package is reported as stale too" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-wrong-pkg.txt" "$GATE" "$WAIVED_FIXTURE"
+# ...and the softer half: the row is there and simply is not regressing, which
+# is the signal to delete the entry rather than carry it forever.
+assert_contains "waiver-unused" "a waiver whose row is no longer regressing is REPORTED" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-unused.txt" "$GATE" "$WAIVED_FIXTURE"
+# Reporting a stale waiver must not, by itself, turn a clean comparison red --
+# otherwise a renamed benchmark reds every PR until someone edits a file, and
+# the pressure is to delete the mechanism rather than the entry.
+assert_exit 0 "a stale waiver is reported but does not fail an otherwise clean run" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-stale.txt" "$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
+
+# THE HOLE THIS COULD HAVE BEEN. The shipped waiver file must not rescue any of
+# the fixtures the gate is supposed to fail on. If a waiver ever widens into
+# something that matches broadly, this is where it shows up.
+for fx in benchstat-regression-new benchstat-regression-old benchstat-task-sample \
+	benchstat-alloc-regression benchstat-alloc-regression-live \
+	benchstat-bps-regression benchstat-noisy-sandbox; do
+	assert_exit 1 "the shipped waivers do NOT rescue ${fx}" \
+		"$GATE" "${TESTDATA}/${fx}.txt"
+done
+assert_exit 2 "the shipped waivers do NOT turn an uninterpretable table green" \
+	"$GATE" "${TESTDATA}/benchstat-crash.txt"
+
+echo
 echo "== benchstat-gate: the threshold is the only thing holding it back ======="
 
 # Proves the parser genuinely SEES the real comparison's significant deltas and
@@ -402,6 +550,26 @@ if [ -n "$(invoked_in "$BENCH_WF" 'scripts/benchstat-gate.sh')" ]; then
 	ok "benchmark.yml INVOKES scripts/benchstat-gate.sh (not just mentions it)"
 else
 	bad "benchmark.yml no longer invokes scripts/benchstat-gate.sh — logic reinlined or removed?"
+fi
+
+# The waiver file the gate reads by default must exist in the repository, or
+# every waiver silently stops applying. That direction is the strict one, so it
+# does not fail a build -- which is precisely why nothing else would notice.
+if [ -f "${SCRIPT_DIR}/benchstat-waivers.txt" ]; then
+	ok "scripts/benchstat-waivers.txt exists (the gate's default waiver list)"
+else
+	bad "scripts/benchstat-waivers.txt is missing — waivers would silently stop applying"
+fi
+
+# A waived row that only ever appears in the job log is an accepted regression
+# nobody reviews. The gate's report must reach the PR comment, which means the
+# workflow has to capture it and put it in the comment body -- two halves, both
+# checkable, and the failure of either is invisible from the outside.
+gate_report_hits="$(invoked_in "$BENCH_WF" 'gate-report.txt')"
+if [ "$(echo "$gate_report_hits" | wc -w)" -ge 2 ]; then
+	ok "benchmark.yml captures the gate report AND feeds it into the PR comment"
+else
+	bad "benchmark.yml does not carry the gate report into the PR comment — a WAIVED row would be visible only to whoever opens the job log"
 fi
 
 # The dead pattern must never come back, in any workflow. Match an INVOCATION,

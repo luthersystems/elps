@@ -88,6 +88,36 @@ benchstat base=/tmp/bench-before.txt pr=/tmp/bench-after.txt
 
 The repo has a benchmark CI workflow (`.github/workflows/benchmark.yml`) that automatically runs benchstat comparisons on PRs. It posts results as a PR comment.
 
+The comparison is adjudicated by `scripts/benchstat-gate.sh`, which fails the PR
+on a significant bad-direction move at or above the threshold for that metric
+class (15% for timing, 5% for allocations — set in `benchmark.yml`).
+
+### When the gate fires on a regression you mean to accept
+
+Do **not** raise either threshold, and do not skip the gate. Those are
+per-metric-class noise floors; moving one to accept a single benchmark blinds
+every other benchmark in the repo to the same magnitude of move. Add a **waiver**
+to `scripts/benchstat-waivers.txt` instead:
+
+```
+pkg | benchmark | metric | ceiling | expires | issue | reason
+```
+
+It covers exactly one package, one benchmark and one metric column; it records a
+ceiling, so the row fails again if the regression grows; it must name a tracking
+issue and it expires. A waived row is still measured, still printed in the job
+log, and still shown in the PR comment marked `WAIVED` — the waiver changes the
+verdict, never the visibility. The format is documented at the top of that file,
+and `scripts/ci-gates-test.sh` covers the mechanism.
+
+Run the gate locally against a saved comparison before pushing:
+
+```bash
+benchstat base=/tmp/bench-before.txt pr=/tmp/bench-after.txt > /tmp/benchstat.txt
+scripts/benchstat-gate.sh /tmp/benchstat.txt              # as CI will judge it
+BENCH_WAIVERS= scripts/benchstat-gate.sh /tmp/benchstat.txt  # with waivers off
+```
+
 ## Checklist
 
 - [ ] Baseline benchmarks captured before changes

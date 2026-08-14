@@ -326,10 +326,55 @@ jobs:
             echo "::warning::benchstat exited ${bench_rc}; the gate will adjudicate its output."
           fi
 
+          # The gate lives in scripts/benchstat-gate.sh so it can be unit-tested
+          # (scripts/ci-gates-test.sh) and run locally (make ci-gates-test).
+          # It exits 0 = clean, 1 = regression, 2 = could not interpret.
+          #
+          # Run BEFORE the comment is assembled, and its report captured, so the
+          # comment can carry the verdict rather than only the raw table. That
+          # matters most for a WAIVED row: an accepted regression that is only
+          # visible to whoever opens the job log is an accepted regression
+          # nobody reviews, which is the same "green because it stopped
+          # looking" shape this gate was written to fix.
+          #
+          # Redirected rather than piped through tee: this step runs under the
+          # default `bash -e`, and a pipeline whose first element exits 1 (the
+          # gate's normal way of saying "regression") would abort the step
+          # before the PR comment is ever assembled. `|| gate_status=$?` is the
+          # idiom the rest of this step already uses for exactly that reason.
+          gate_status=0
+          "$GATE" benchstat-output.txt > gate-report.txt 2>&1 || gate_status=$?
+          cat gate-report.txt
+          echo "gate_status=${gate_status}" >> "$GITHUB_OUTPUT"
+          case "$gate_status" in
+            0) echo "No benchmark regression at or above the configured gates." ;;
+            1) echo "::warning::Benchstat detected a significant benchmark regression." ;;
+            2) echo "::warning::The benchmark comparison could not be interpreted." ;;
+            *) echo "::warning::${GATE} exited ${gate_status} — it did not run to completion." ;;
+          esac
+
+          # Waived and stale-waiver lines are pulled out of the report and shown
+          # OUTSIDE the collapsed section, so a standing exception is read by
+          # everyone who reads the PR and not only by whoever expands a details
+          # block. `|| true` because grep exits 1 on no match, which is the
+          # normal case and must not fail the step under `set -o pipefail`.
+          waiver_lines="$(grep -E '^  (WAIVED|WAIVER-|waiver-)' gate-report.txt || true)"
+
           {
             echo 'result<<BENCHSTAT_EOF'
             echo '## Benchmark Comparison (main baseline vs PR)'
             echo ''
+            if [ -n "$waiver_lines" ]; then
+              echo '### Reviewed waivers applied to this comparison'
+              echo ''
+              echo 'These rows were measured and DID move; they are declared in'
+              echo '`scripts/benchstat-waivers.txt` and reviewed there, not suppressed.'
+              echo ''
+              echo '```'
+              echo "$waiver_lines"
+              echo '```'
+              echo ''
+            fi
             echo '<details>'
             echo '<summary>Click to expand benchstat output</summary>'
             echo ''
@@ -339,22 +384,18 @@ jobs:
             echo ''
             echo '</details>'
             echo ''
+            echo '<details>'
+            echo '<summary>Click to expand the gate report</summary>'
+            echo ''
+            echo '```'
+            cat gate-report.txt
+            echo '```'
+            echo ''
+            echo '</details>'
+            echo ''
             echo '_Both arms measured on the same runner in the same job, interleaved, n=${{ env.BENCH_COUNT }} each._'
             echo 'BENCHSTAT_EOF'
           } >> "$GITHUB_OUTPUT"
-
-          # The gate lives in scripts/benchstat-gate.sh so it can be unit-tested
-          # (scripts/ci-gates-test.sh) and run locally (make ci-gates-test).
-          # It exits 0 = clean, 1 = regression, 2 = could not interpret.
-          gate_status=0
-          "$GATE" benchstat-output.txt || gate_status=$?
-          echo "gate_status=${gate_status}" >> "$GITHUB_OUTPUT"
-          case "$gate_status" in
-            0) echo "No benchmark regression at or above the configured gates." ;;
-            1) echo "::warning::Benchstat detected a significant benchmark regression." ;;
-            2) echo "::warning::The benchmark comparison could not be interpreted." ;;
-            *) echo "::warning::${GATE} exited ${gate_status} — it did not run to completion." ;;
-          esac
 
       - name: Post PR comment
         if: github.event_name == 'pull_request'
