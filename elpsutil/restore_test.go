@@ -3,7 +3,6 @@
 package elpsutil_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/elpsutil"
@@ -140,8 +139,7 @@ func TestLoadersRejectUninitialisedEnv(t *testing.T) {
 			require.NotNil(t, rc)
 			require.Equal(t, lisp.LError, rc.Type,
 				"%s accepted an uninitialised environment: %v", e.name, rc)
-			require.True(t,
-				strings.Contains(rc.String(), "no current package"),
+			require.Contains(t, rc.String(), "no current package",
 				"%s should say what is wrong with the environment, got: %v", e.name, rc)
 		})
 	}
