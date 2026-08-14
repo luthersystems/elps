@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -133,17 +134,22 @@ func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 //
 // It also forwards ExpansionPanics, so the target's assertion goes through the
 // exported PanicReporter interface exactly as an embedder's would.
+// The counters are atomic because ScanWorkspaceRefs analyses files
+// concurrently and shares one Config -- and therefore one expander -- across
+// those goroutines. That only became reachable when AnalyzeFile started
+// honouring Config.MacroExpander; before that this expander was never called
+// from the parallel scan, so plain ints raced with nobody.
 type countingExpander struct {
 	inner    *EnvMacroExpander
-	expanded int
-	asked    int
+	expanded atomic.Int64
+	asked    atomic.Int64
 }
 
 func (c *countingExpander) ExpandMacro(form *lisp.LVal, pkg string) *lisp.LVal {
-	c.asked++
+	c.asked.Add(1)
 	v := c.inner.ExpandMacro(form, pkg)
 	if v != nil {
-		c.expanded++
+		c.expanded.Add(1)
 	}
 	return v
 }
@@ -412,7 +418,7 @@ func runAnalyze(src, wsSrc, scriptBytes []byte) (analyzeResult, error) {
 	// config copy and the strict parser.
 	_ = AnalyzeFile(src, fuzzAnalysisFile, cfg)
 
-	stats.asked, stats.expanded = exp.asked, exp.expanded
+	stats.asked, stats.expanded = int(exp.asked.Load()), int(exp.expanded.Load())
 	stats.symbols, stats.refs = len(result.Symbols), len(result.References)
 
 	probeResult(sc, result, src)

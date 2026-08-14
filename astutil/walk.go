@@ -44,7 +44,12 @@ func WalkSExprs(exprs []*lisp.LVal, fn func(sexpr *lisp.LVal, depth int)) {
 }
 
 // HeadSymbol returns the symbol name at the head of an s-expression, or "".
+// A nil sexpr yields "", so it is safe to call on the nil parent Walk passes
+// for top-level expressions.
 func HeadSymbol(sexpr *lisp.LVal) string {
+	if sexpr == nil {
+		return ""
+	}
 	if sexpr.Type != lisp.LSExpr || len(sexpr.Cells) == 0 {
 		return ""
 	}
@@ -56,7 +61,12 @@ func HeadSymbol(sexpr *lisp.LVal) string {
 }
 
 // ArgCount returns the number of arguments in an s-expression (excluding the head).
+// A nil sexpr yields 0, so it is safe to call on the nil parent Walk passes for
+// top-level expressions.
 func ArgCount(sexpr *lisp.LVal) int {
+	if sexpr == nil {
+		return 0
+	}
 	if len(sexpr.Cells) <= 1 {
 		return 0
 	}
@@ -129,7 +139,12 @@ func PackageNameArg(arg *lisp.LVal) string {
 
 // SourceOf returns the best source location for a node.
 // Prefers the node's own source, falls back to first child's source.
+// Returns nil for a nil node, so it is safe to call on the nil parent Walk
+// passes for top-level expressions.
 func SourceOf(v *lisp.LVal) *lisp.LVal {
+	if v == nil {
+		return nil
+	}
 	if v.Source != nil && v.Source.Line > 0 {
 		return v
 	}
