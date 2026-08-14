@@ -37,13 +37,13 @@ func TestBytes(t *testing.T) {
 			{`(to-string v123)`, `"abc"`, ``},
 			{`(to-string v1234)`, `"abcd"`, ``},
 			{`(set 'v1235 (append 'bytes v123 101))`, `#<bytes 97 98 99 101>`, ``},
-			// The above append reuses excess vector capacity allocated in the
-			// previous append to v12, creating v123.  Analogous to go slices,
-			// this causes side effects in the value of v1234.  The assumed
-			// performance benefit seems valuable but in general (append ...)
-			// should be used sparingly and with care.  The append!  function
-			// will be easier to reason about.
-			{`(to-string v1234)`, `"abce"`, ``},
+			// Two appends off the same source are independent (issue #373).
+			// This row used to assert "abce": the append above grew into
+			// spare capacity left in v123 and rewrote v1234, a value
+			// `append` had already returned and promised not to touch.
+			// `append 'bytes` now clamps its input so it reallocates
+			// instead; `append-bytes!` is the in-place variant.
+			{`(to-string v1234)`, `"abcd"`, ``},
 		}},
 		// `append` validates the type SPECIFIER and then dispatched to the
 		// bytes path without validating the sequence, so a non-bytes second
@@ -74,13 +74,11 @@ func TestBytes(t *testing.T) {
 			{`(to-string v123)`, `"abc"`, ``},
 			{`(to-string v1234)`, `"abcd"`, ``},
 			{`(set 'v1235 (append-bytes v123 "e"))`, `#<bytes 97 98 99 101>`, ``},
-			// The above append reuses excess vector capacity allocated in the
-			// previous append to v12, creating v123.  Analogous to go slices,
-			// this causes side effects in the value of v1234.  The assumed
-			// performance benefit seems valuable but in general (append-bytes
-			// ...) should be used sparingly and with care.  The append-bytes!
-			// function will be easier to reason about.
-			{`(to-string v1234)`, `"abce"`, ``},
+			// Two appends off the same source are independent (issue #373).
+			// This row used to assert "abce" -- see the note in the
+			// `append 'bytes` sequence above.  `append-bytes!` is the
+			// in-place variant and keeps its amortised growth.
+			{`(to-string v1234)`, `"abcd"`, ``},
 		}},
 	}
 	elpstest.RunTestSuite(t, tests)
