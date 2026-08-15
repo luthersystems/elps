@@ -3250,3 +3250,71 @@ func TestBuildAnalysisConfig_Excludes(t *testing.T) {
 	assert.Greater(t, countAll, countExcluded, "excluding a file should reduce symbols")
 	assert.Equal(t, 1, countExcluded, "only one helper should remain after excluding generated.lisp")
 }
+
+// TestBuildAnalysisConfig_DoesNotMutateStdlibExports is the regression test for
+// issue #437. BuildAnalysisConfig aliased the caller's LintConfig.StdlibExports
+// map and appended registry and workspace exports straight into it, so a map an
+// embedder kept around — which the field's doc comment explicitly invites —
+// silently acquired symbols from whatever workspace was last linted, and
+// accumulated a fresh duplicate of each on every call.
+func TestBuildAnalysisConfig_DoesNotMutateStdlibExports(t *testing.T) {
+	dir := t.TempDir()
+	writeTempLisp(t, dir, "ws.lisp", `
+(in-package 'mypkg)
+(export 'my-workspace-fn)
+(defun my-workspace-fn () 1)
+`)
+
+	shared := map[string][]analysis.ExternalSymbol{
+		"custom-pkg": {{Name: "custom-fn", Kind: analysis.SymFunction}},
+	}
+
+	cfg1, err := BuildAnalysisConfig(&LintConfig{Workspace: dir, StdlibExports: shared})
+	require.NoError(t, err)
+	// The workspace symbol must reach the analysis config...
+	require.Contains(t, cfg1.PackageExports, "mypkg",
+		"workspace exports should be merged into the returned config")
+
+	// ...without reaching the caller's map.
+	assert.NotContains(t, shared, "mypkg",
+		"workspace exports leaked into the caller's StdlibExports map")
+	assert.Len(t, shared, 1, "caller's StdlibExports map gained packages")
+	assert.Len(t, shared["custom-pkg"], 1, "caller's slice gained symbols")
+
+	cfg2, err := BuildAnalysisConfig(&LintConfig{Workspace: dir, StdlibExports: shared})
+	require.NoError(t, err)
+	assert.Len(t, cfg2.PackageExports["mypkg"], len(cfg1.PackageExports["mypkg"]),
+		"repeated calls accumulated duplicate workspace symbols")
+	assert.Len(t, shared["custom-pkg"], 1,
+		"repeated calls accumulated symbols in the caller's map")
+}
+
+// TestBuildAnalysisConfig_DoesNotMutateStdlibExportsBackingArray covers the
+// inner half of issue #437: even with the map copied, appending to a borrowed
+// slice that has spare capacity writes through into the caller's backing array
+// — the same shape as #364.
+func TestBuildAnalysisConfig_DoesNotMutateStdlibExportsBackingArray(t *testing.T) {
+	dir := t.TempDir()
+	writeTempLisp(t, dir, "ws.lisp", `
+(in-package 'mypkg)
+(export 'my-workspace-fn)
+(defun my-workspace-fn () 1)
+`)
+
+	// Length 1, capacity 4: an append targets the caller's spare slots.
+	syms := make([]analysis.ExternalSymbol, 1, 4)
+	syms[0] = analysis.ExternalSymbol{Name: "caller-fn", Kind: analysis.SymFunction}
+	shared := map[string][]analysis.ExternalSymbol{"mypkg": syms}
+
+	_, err := BuildAnalysisConfig(&LintConfig{Workspace: dir, StdlibExports: shared})
+	require.NoError(t, err)
+
+	for i, sym := range syms[0:cap(syms)] {
+		if i == 0 {
+			continue // the caller's own symbol, asserted below
+		}
+		assert.Empty(t, sym.Name,
+			"BuildAnalysisConfig wrote into the caller's spare slice capacity at index %d", i)
+	}
+	assert.Equal(t, "caller-fn", syms[0].Name, "caller's own symbol was overwritten")
+}
