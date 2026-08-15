@@ -32,6 +32,93 @@ elps> (to-string (json:dump-bytes (sorted-map "K" "V")))
 "{\"K\":\"V\"}"
 ```
 
+## `json:load-string`
+
+Parses a JSON string into ELPS values.  JSON objects become sorted-maps, JSON
+arrays become arrays, and strings, numbers, booleans and `null` map naturally.
+
+```Lisp
+elps> (json:load-string "{\"K\":\"V\"}")
+(sorted-map "K" "V")
+elps> (json:load-string "[1, 2.5, true, null]")
+(vector 1 2.5 true ())
+```
+
+**WARNING**: by default *every* JSON number decodes as a float, and a float
+carries only 53 bits of integer precision, so an integer larger than 2^53 is
+silently rounded on the way in.
+
+```Lisp
+elps> (json:dump-string (json:load-string "9007199254740993"))
+"9007199254740992"
+elps> (json:dump-string (json:load-string "9223372036854775807"))
+"9223372036854776000"
+```
+
+Nothing reports this.  The rounded value still compares `=` to the integer it
+was meant to be, so a program can read a corrupted identifier, check it against
+the value it expected, match, and carry on.  Pass `:exact-integers true` to
+decode integer-shaped numbers as ints instead:
+
+```Lisp
+elps> (json:dump-string (json:load-string "9007199254740993" :exact-integers true))
+"9007199254740993"
+elps> (json:dump-string (json:load-string "9223372036854775807" :exact-integers true))
+"9223372036854775807"
+```
+
+The option changes more than the large numbers, and a document that used to
+load can now raise `json:integer-range-error`.  Read [JSON numbers and integer
+precision](lang.md#json-numbers-and-integer-precision) before turning it on.
+
+The `:string-numbers` keyword decodes every JSON number as a string holding its
+literal text.  It takes precedence over `:exact-integers` when both are given.
+
+## `json:load-bytes`
+
+Like `json:load-string`, but takes bytes rather than a string.  It accepts the
+same `:exact-integers` and `:string-numbers` keywords, and carries the same
+number-precision [warning](#json-load-string).
+
+```Lisp
+elps> (json:load-bytes (to-bytes "{\"K\":\"V\"}"))
+(sorted-map "K" "V")
+elps> (json:load-bytes (to-bytes "9007199254740993"))
+9.007199254740992e+15
+elps> (json:load-bytes (to-bytes "9007199254740993") :exact-integers true)
+9007199254740993
+```
+
+## `json:load-message`
+
+Parses a native JSON message object (`json.RawMessage`, as produced by
+`json:dump-message`) into ELPS values.  It accepts the same keywords as
+`json:load-string` and carries the same number-precision
+[warning](#json-load-string).
+
+```Lisp
+elps> (json:load-message (json:dump-message 9007199254740993))
+9.007199254740992e+15
+elps> (json:load-message (json:dump-message 9007199254740993) :exact-integers true)
+9007199254740993
+```
+
+## `json:use-exact-integers`
+
+Sets the default `:exact-integers` mode for the JSON serializer, so every later
+load that passes no explicit keyword uses it.  Returns nil.
+
+```Lisp
+elps> (progn (json:use-exact-integers true) (type (json:load-string "3")))
+'int
+```
+
+This is a process-wide switch and it changes the type of every number in every
+document the process loads.  Prefer the per-call `:exact-integers` keyword
+unless you have read [JSON numbers and integer
+precision](lang.md#json-numbers-and-integer-precision) and want the whole
+process migrated at once.
+
 ## `string:lowercase`
 
 Convert letters in a string to lowercase
