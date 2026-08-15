@@ -1,0 +1,6 @@
+# Self-test fixture: both allocation columns of libjson BenchmarkEncode, which
+# is what it actually takes to make the PR #411 comparison pass. Mirrors
+# scripts/benchstat-waivers.txt but with a far-future expiry so the assertions
+# do not start failing on a date.
+github.com/luthersystems/elps/lisp/lisplib/libjson | Encode | allocs/op | 9 | 2099-01-01 | elps#412 | accepted native round-trip validation cost, tracked for removal
+github.com/luthersystems/elps/lisp/lisplib/libjson | Encode | B/op | 14 | 2099-01-01 | elps#412 | the same 17 allocations weighed instead of counted, tracked for removal

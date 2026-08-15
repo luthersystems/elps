@@ -1,0 +1,5 @@
+# Self-test fixture: correctly formed, but past its expiry date. An expired
+# waiver stops suppressing; the row is judged normally again and the report says
+# why, so the decision has to be re-made rather than inherited.
+github.com/luthersystems/elps/lisp/lisplib/libjson | Encode | allocs/op | 9 | 2020-01-01 | elps#412 | accepted native round-trip validation cost, tracked for removal
+github.com/luthersystems/elps/lisp/lisplib/libjson | Encode | B/op | 14 | 2020-01-01 | elps#412 | the same 17 allocations weighed instead of counted

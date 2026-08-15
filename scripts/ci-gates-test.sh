@@ -209,6 +209,154 @@ assert_exit 0 "with only the ALLOCATION gate raised, the live table passes" \
 	env BENCH_ALLOC_THRESHOLD_PCT=10 "$GATE" "${TESTDATA}/benchstat-alloc-regression-live.txt"
 
 echo
+echo "== benchstat-gate: reviewed waivers ======================================"
+
+# A waiver is a per-row exception, declared in scripts/benchstat-waivers.txt and
+# reviewed in the diff that needs it. It is the one construct in this gate whose
+# whole job is to make something PASS, so it is the one that most needs proving
+# it cannot make the wrong thing pass. Everything here is driven against
+# benchstat-libjson-encode-411.txt -- the REAL comparison from PR #411, verbatim
+# from the workflow's own PR comment -- rather than a synthetic table, because a
+# waiver that only works on a fixture written to suit it proves nothing.
+WAIVED_FIXTURE="${TESTDATA}/benchstat-libjson-encode-411.txt"
+
+# The before half of the round trip. With waivers switched off, the real run has
+# TWO rows at or above a gate. Note that this is not the "one failing row" the
+# change was described as: B/op is an ALLOCATION metric, judged against the 5%
+# allocation gate rather than the 15% timing one, and +12.45% is over it.
+assert_exit 1 "PR #411's REAL benchstat output fires the gate with no waivers" \
+	env BENCH_WAIVERS= "$GATE" "$WAIVED_FIXTURE"
+assert_contains "+7.94%" "the allocs/op row is named when unwaived" \
+	env BENCH_WAIVERS= "$GATE" "$WAIVED_FIXTURE"
+assert_contains "+12.45%" "the B/op row is named too — it is over the allocation gate as well" \
+	env BENCH_WAIVERS= "$GATE" "$WAIVED_FIXTURE"
+
+# The after half: the waivers this repository actually ships, with no env
+# override at all, make that same comparison pass. This is the assertion that
+# keeps scripts/benchstat-waivers.txt honest -- it fails if the file is deleted,
+# emptied, malformed, or edited so it no longer covers what it claims to.
+assert_exit 0 "the SHIPPED waiver file makes PR #411's real comparison pass" \
+	"$GATE" "$WAIVED_FIXTURE"
+
+# ...and it passes because it was WAIVED, not because the gate stopped looking.
+# The row must still appear, with its delta, its ceiling and its issue.
+# Anchored on the per-ROW marker, not the bare word: the summary line already
+# says "row(s) WAIVED", so a substring check for "WAIVED" stays green even after
+# the per-row lines are deleted -- which is exactly the regression that matters.
+assert_contains "WAIVED      github.com/luthersystems/elps/lisp/lisplib/libjson" \
+	"a waived row is still reported by name, not silently dropped" \
+	"$GATE" "$WAIVED_FIXTURE"
+assert_contains "+7.94%" "the waived row still carries its measured delta" \
+	"$GATE" "$WAIVED_FIXTURE"
+assert_contains "elps#412" "the waived row names its tracking issue in the report" \
+	"$GATE" "$WAIVED_FIXTURE"
+assert_contains "row(s) WAIVED" "the summary line counts the waivers" \
+	"$GATE" "$WAIVED_FIXTURE"
+
+# NARROWNESS. A waiver covers one package, one benchmark, one metric column.
+# Waiving allocs/op alone must leave B/op of the SAME benchmark failing --
+# otherwise "per-row" is a description rather than a property.
+assert_exit 1 "waiving allocs/op does NOT waive B/op of the same benchmark" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-allocs.txt" "$GATE" "$WAIVED_FIXTURE"
+assert_contains "B/op" "the un-waived neighbouring metric is the row that fails" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-allocs.txt" "$GATE" "$WAIVED_FIXTURE"
+# Right benchmark, right metric, WRONG package: must not reach across packages.
+assert_exit 1 "a waiver for another package does not reach libjson" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-wrong-pkg.txt" "$GATE" "$WAIVED_FIXTURE"
+# And the control for the two above: with both columns waived it does pass, so
+# the failures above are the narrowness and not some unrelated breakage.
+assert_exit 0 "with both allocation columns waived, the same table passes" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
+
+# BOUNDEDNESS. The ceiling is what makes a waiver an accepted COST rather than a
+# blessed benchmark: the moment the regression grows past what was reviewed, it
+# fails again.
+assert_exit 1 "a regression that EXCEEDS its waiver ceiling fails" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-tight-ceiling.txt" "$GATE" "$WAIVED_FIXTURE"
+assert_contains "EXCEEDS its waiver ceiling" \
+	"outgrowing a waiver says so, rather than reading as a fresh regression" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-tight-ceiling.txt" "$GATE" "$WAIVED_FIXTURE"
+
+# EXPIRY. Past its date a waiver stops suppressing and the row is judged
+# normally again, so the decision is re-made rather than inherited.
+assert_exit 1 "an EXPIRED waiver no longer suppresses its row" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-expired.txt" "$GATE" "$WAIVED_FIXTURE"
+assert_contains "WAIVER EXPIRED" "an expired waiver says why the row came back" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-expired.txt" "$GATE" "$WAIVED_FIXTURE"
+# The same proof against the waivers this repo actually ships: wind the clock
+# past their expiry and PR #411's comparison reds again. Without this, "expires"
+# could be a field nothing reads.
+assert_exit 1 "the SHIPPED waivers genuinely expire (clock wound past the date)" \
+	env BENCH_WAIVER_TODAY=2099-01-01 "$GATE" "$WAIVED_FIXTURE"
+
+# JUSTIFICATION. A waiver with no tracking reference is a threshold increase
+# with better manners; the gate must refuse to run rather than honour it. Note
+# the exit code: 2, the same "cannot be interpreted" hard failure as an
+# unreadable benchstat table, because a waiver list that does not parse must
+# never be treated as an empty one.
+assert_exit 2 "a waiver with NO issue reference is rejected" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-no-issue.txt" "$GATE" "$WAIVED_FIXTURE"
+assert_contains "not a tracking reference" "the rejection says what is missing" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-no-issue.txt" "$GATE" "$WAIVED_FIXTURE"
+
+# Every other malformation is the same hard failure, and each is NAMED with its
+# line number -- a waiver that silently fails to parse is a regression nobody is
+# told about.
+assert_exit 2 "malformed waiver entries are refused, not skipped" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-malformed.txt" "$GATE" "$WAIVED_FIXTURE"
+for want in "expected 7 |-separated fields" "is not a positive percentage" \
+	"is not a YYYY-MM-DD date" "reason is missing or too short" \
+	"empty pkg field"; do
+	assert_contains "$want" "malformed waiver diagnosed: ${want}" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-malformed.txt" "$GATE" "$WAIVED_FIXTURE"
+done
+
+# `go test` appends -<GOMAXPROCS> to every benchmark name, so a waiver written
+# with the suffix would silently unbind the day `runs-on` or the GOMAXPROCS pin
+# changes -- the single failure mode this repository has been bitten by most
+# (see the GOMAXPROCS notes in benchmark.yml and bench-arms-check.sh). Rejected
+# at parse time rather than left to fail open years later.
+assert_exit 2 "a waiver naming Encode-2 (with the GOMAXPROCS suffix) is rejected" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-gomaxprocs-suffix.txt" "$GATE" "$WAIVED_FIXTURE"
+assert_contains "GOMAXPROCS" "the suffix rejection explains the trap" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-gomaxprocs-suffix.txt" "$GATE" "$WAIVED_FIXTURE"
+
+# An explicitly-named waiver file that is not there is an error. Silently
+# adjudicating with no waivers would be the strict direction, but it would also
+# mean a typo'd path reads as "no waivers configured".
+assert_exit 2 "BENCH_WAIVERS pointing at a missing file is an error" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-does-not-exist.txt" "$GATE" "$WAIVED_FIXTURE"
+
+# STALENESS. A waiver that protects nothing must not rot quietly: the benchmark
+# it names was renamed or removed, so it is dead weight that still looks like
+# coverage.
+assert_contains "WAIVER-STALE" "a waiver whose benchmark no longer exists is REPORTED" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-stale.txt" "$GATE" "$WAIVED_FIXTURE"
+assert_contains "WAIVER-STALE" "a waiver aimed at the wrong package is reported as stale too" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-wrong-pkg.txt" "$GATE" "$WAIVED_FIXTURE"
+# ...and the softer half: the row is there and simply is not regressing, which
+# is the signal to delete the entry rather than carry it forever.
+assert_contains "waiver-unused" "a waiver whose row is no longer regressing is REPORTED" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-unused.txt" "$GATE" "$WAIVED_FIXTURE"
+# Reporting a stale waiver must not, by itself, turn a clean comparison red --
+# otherwise a renamed benchmark reds every PR until someone edits a file, and
+# the pressure is to delete the mechanism rather than the entry.
+assert_exit 0 "a stale waiver is reported but does not fail an otherwise clean run" \
+	env BENCH_WAIVERS="${TESTDATA}/waivers-stale.txt" "$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
+
+# THE HOLE THIS COULD HAVE BEEN. The shipped waiver file must not rescue any of
+# the fixtures the gate is supposed to fail on. If a waiver ever widens into
+# something that matches broadly, this is where it shows up.
+for fx in benchstat-regression-new benchstat-regression-old benchstat-task-sample \
+	benchstat-alloc-regression benchstat-alloc-regression-live \
+	benchstat-bps-regression benchstat-noisy-sandbox; do
+	assert_exit 1 "the shipped waivers do NOT rescue ${fx}" \
+		"$GATE" "${TESTDATA}/${fx}.txt"
+done
+assert_exit 2 "the shipped waivers do NOT turn an uninterpretable table green" \
+	"$GATE" "${TESTDATA}/benchstat-crash.txt"
+
+echo
 echo "== benchstat-gate: the threshold is the only thing holding it back ======="
 
 # Proves the parser genuinely SEES the real comparison's significant deltas and
@@ -373,6 +521,182 @@ assert_exit 2 "missing file fails with the same 'unusable' code as the gate" \
 	"$ARMS" "${ARMS_TMP}/does-not-exist.txt" "${ARMS_TMP}/pr.txt"
 
 echo
+echo "== extracted workflow bodies: bench-gate-fail ============================"
+
+# These four scripts were `run: |` blocks in .github/workflows/benchmark.yml.
+# Inline bash is not syntax-checked, not shellchecked and not testable -- which
+# is exactly how a gate stayed dead for 473 runs. Now that they are files, the
+# discovery loop at the bottom lints them; this section exercises the LOGIC.
+
+GATE_FAIL="${SCRIPT_DIR}/bench-gate-fail.sh"
+
+# The three-way split is the whole point of this script, and the third branch is
+# the subtle one: an exit code the gate never produces means it reached NO
+# verdict, and calling that "regressions detected" (which this branch used to
+# do) sends the reader hunting a performance problem that does not exist.
+assert_exit 1 "bench-gate-fail: always fails the build" \
+	env GATE_STATUS=1 bash "$GATE_FAIL"
+assert_contains "::error::Benchmark regressions detected (gate exit 1)" \
+	"bench-gate-fail: exit 1 is reported as a measured regression" \
+	env GATE_STATUS=1 bash "$GATE_FAIL"
+assert_contains "::error::The benchmark comparison could not be interpreted (gate exit 2)" \
+	"bench-gate-fail: exit 2 is reported as uninterpretable, not as a regression" \
+	env GATE_STATUS=2 bash "$GATE_FAIL"
+assert_exit 1 "bench-gate-fail: an unrecognised code still fails" \
+	env GATE_STATUS=127 bash "$GATE_FAIL"
+assert_contains "did not run to completion (exit 127)" \
+	"bench-gate-fail: exit 127 is reported as 'no verdict reached'" \
+	env GATE_STATUS=127 bash "$GATE_FAIL"
+assert_not_contains "regressions detected" \
+	"bench-gate-fail: the no-verdict branch does NOT claim a regression" \
+	env GATE_STATUS=127 bash "$GATE_FAIL"
+# An empty or absent verdict must still be legible in the log rather than
+# rendering as an empty pair of parentheses.
+assert_contains "exit <unset>" \
+	"bench-gate-fail: an empty verdict prints <unset>" \
+	env GATE_STATUS= bash "$GATE_FAIL"
+assert_contains "exit <unset>" \
+	"bench-gate-fail: an UNSET verdict prints <unset> (not an unbound-variable crash)" \
+	env -u GATE_STATUS bash "$GATE_FAIL"
+
+echo "== extracted workflow bodies: require-jobs-succeeded ====================="
+
+REQ_JOBS="${SCRIPT_DIR}/require-jobs-succeeded.sh"
+
+# `success` is the ONLY pass. This is the body of the single job branch
+# protection requires, so each of the non-success results has to fail it --
+# a skipped or cancelled required check otherwise reads as green.
+assert_exit 0 "require-jobs: all success passes" \
+	env RESULTS='success success success' bash "$REQ_JOBS"
+assert_exit 1 "require-jobs: a failed job fails the aggregate" \
+	env RESULTS='success failure success' bash "$REQ_JOBS"
+assert_exit 1 "require-jobs: a SKIPPED job fails the aggregate" \
+	env RESULTS='success skipped success' bash "$REQ_JOBS"
+assert_exit 1 "require-jobs: a CANCELLED job fails the aggregate" \
+	env RESULTS='success cancelled' bash "$REQ_JOBS"
+assert_contains "::error::A job in this workflow did not succeed" \
+	"require-jobs: emits the ::error:: annotation naming the results" \
+	env RESULTS='success failure' bash "$REQ_JOBS"
+
+echo "== extracted workflow bodies: bench-compare =============================="
+
+BENCH_COMPARE_SH="${SCRIPT_DIR}/bench-compare.sh"
+
+# A sandbox mimicking the workflow's two-tree layout: $GITHUB_WORKSPACE/pr
+# holding stub gate scripts, and a working directory holding the two arms.
+# Stubs, not the real gate -- this section tests bench-compare.sh's plumbing
+# (branching, $GITHUB_OUTPUT, annotations), and benchstat-gate.sh's own verdict
+# logic is already covered by the fixture sections above.
+make_compare_sandbox() {
+	local dir="$1" arms_rc="$2" gate_rc="$3"
+	mkdir -p "${dir}/pr/scripts" "${dir}/work" "${dir}/bin"
+	{
+		echo '#!/usr/bin/env bash'
+		echo "echo 'stub arms-check output'"
+		echo "exit ${arms_rc}"
+	} > "${dir}/pr/scripts/bench-arms-check.sh"
+	{
+		echo '#!/usr/bin/env bash'
+		# Two leading spaces: the waiver extraction greps '^  (WAIVED|...)'.
+		echo "echo '  WAIVED      pkg B/op Encode-2 delta=+12.45% accepted: ceiling 14%'"
+		echo "echo 'stub gate report'"
+		echo "exit ${gate_rc}"
+	} > "${dir}/pr/scripts/benchstat-gate.sh"
+	{
+		echo '#!/usr/bin/env bash'
+		echo "echo 'stub benchstat table'"
+	} > "${dir}/bin/benchstat"
+	chmod +x "${dir}/pr/scripts/bench-arms-check.sh" \
+		"${dir}/pr/scripts/benchstat-gate.sh" "${dir}/bin/benchstat"
+	printf 'baseline rows\n' > "${dir}/work/bench-baseline.txt"
+	printf 'current rows\n' > "${dir}/work/bench-current.txt"
+}
+
+# compare_case <arms-rc> <gate-rc> [mode] -> prints the script's stdout, then
+# its exit status, then whatever it wrote to $GITHUB_OUTPUT, so a single
+# assertion can inspect any of the three.
+compare_case() {
+	local arms_rc="$1" gate_rc="$2" mode="${3:-normal}"
+	local dir rc
+	dir="$(mktemp -d)"
+	make_compare_sandbox "$dir" "$arms_rc" "$gate_rc"
+	case "$mode" in
+		missing-scripts) rm -f "${dir}/pr/scripts/benchstat-gate.sh" \
+			"${dir}/pr/scripts/bench-arms-check.sh" ;;
+		empty-baseline) : > "${dir}/work/bench-baseline.txt" ;;
+	esac
+	(
+		cd "${dir}/work" || exit 99
+		PATH="${dir}/bin:${PATH}" \
+			GITHUB_WORKSPACE="$dir" \
+			GITHUB_OUTPUT="${dir}/gh-output.txt" \
+			BENCH_COUNT=10 \
+			bash "$BENCH_COMPARE_SH"
+	)
+	rc=$?
+	echo "__EXIT__ ${rc}"
+	echo "__GITHUB_OUTPUT__"
+	cat "${dir}/gh-output.txt" 2>/dev/null
+	rm -rf "$dir"
+}
+
+# Every branch must exit 0: this script REPORTS a verdict via gate_status, and
+# bench-gate-fail.sh is the only thing allowed to turn that into a red build.
+# A non-zero exit here would abort the step before the PR comment is assembled.
+for case_args in "0 0 normal" "0 1 normal" "0 2 normal" "1 0 normal" \
+	"0 0 missing-scripts" "0 0 empty-baseline"; do
+	# Deliberate word splitting of the case tuple into three arguments.
+	# shellcheck disable=SC2086
+	assert_contains "__EXIT__ 0" \
+		"bench-compare: exits 0 so the PR comment is always assembled (${case_args})" \
+		compare_case $case_args
+done
+
+# The gate's verdict must reach $GITHUB_OUTPUT verbatim -- that value is what
+# the workflow's `if:` and bench-gate-fail.sh both key on.
+assert_contains "gate_status=0" "bench-compare: a clean gate reports gate_status=0" \
+	compare_case 0 0
+assert_contains "gate_status=1" "bench-compare: a regression reports gate_status=1" \
+	compare_case 0 1
+assert_contains "gate_status=2" "bench-compare: an uninterpretable gate reports gate_status=2" \
+	compare_case 0 2
+assert_contains "gate_status=127" \
+	"bench-compare: an unrecognised gate exit is passed through, not flattened" \
+	compare_case 0 127
+assert_contains "it did not run to completion" \
+	"bench-compare: warns when the gate exits an unrecognised code" \
+	compare_case 0 127
+
+# The three "could not run" branches each name their own cause. All report
+# gate_status=2, so only the annotation distinguishes them.
+assert_contains "::error::benchmark gate scripts missing from the PR checkout" \
+	"bench-compare: a missing gate script is named, not reported as a regression" \
+	compare_case 0 0 missing-scripts
+assert_contains "gate_status=2" \
+	"bench-compare: a missing gate script reports gate_status=2" \
+	compare_case 0 0 missing-scripts
+assert_contains "::error::bench-baseline.txt is empty" \
+	"bench-compare: an empty base arm fails loudly rather than degrading" \
+	compare_case 0 0 empty-baseline
+assert_not_contains "gate_status=0" \
+	"bench-compare: an empty base arm never reports a pass" \
+	compare_case 0 0 empty-baseline
+assert_contains "::error::The two benchmark arms are not comparable" \
+	"bench-compare: incomparable arms are named by the pre-flight" \
+	compare_case 1 0
+assert_not_contains "gate_status=0" \
+	"bench-compare: incomparable arms never report a pass" \
+	compare_case 1 0
+
+# A waived row that is only visible to whoever expands a <details> block is an
+# accepted regression nobody reviews. It must be surfaced ABOVE the fold.
+assert_contains "### Reviewed waivers" \
+	"bench-compare: a WAIVED row is lifted out of the collapsed section" \
+	compare_case 0 0
+assert_contains "n=10 each." \
+	"bench-compare: BENCH_COUNT reaches the comment footer from the environment" \
+	compare_case 0 0
+
 echo "== workflow shape guards ================================================="
 
 BENCH_WF="${REPO_ROOT}/.github/workflows/benchmark.yml"
@@ -398,10 +722,71 @@ print(" ".join(hits))
 PY
 }
 
-if [ -n "$(invoked_in "$BENCH_WF" 'scripts/benchstat-gate.sh')" ]; then
-	ok "benchmark.yml INVOKES scripts/benchstat-gate.sh (not just mentions it)"
+# invoked_in_any <script-path> <file>... -> non-comment hits across all files
+#
+# The benchmark job's step bodies were moved out of `run: |` blocks and into
+# scripts/bench-*.sh, so the invocations these guards anchor on no longer live
+# in the YAML. The guards follow them into the extracted scripts rather than
+# being deleted: the property being protected is "this logic is still wired
+# into CI", not "this string appears in a .yml file". BENCH_PLUMBING is the
+# workflow plus every script it calls, so a reinline, a deletion or an orphaned
+# script all still fail.
+invoked_in_any() {
+	local needle="$1"
+	shift
+	local f hits all=""
+	for f in "$@"; do
+		[ -f "$f" ] || continue
+		hits="$(invoked_in "$f" "$needle")"
+		[ -n "$hits" ] && all="${all} ${hits}"
+	done
+	echo "$all"
+}
+
+BENCH_COMPARE="${SCRIPT_DIR}/bench-compare.sh"
+BENCH_RUN_ARMS="${SCRIPT_DIR}/bench-run-arms.sh"
+BENCH_GATE_FAIL="${SCRIPT_DIR}/bench-gate-fail.sh"
+REQUIRE_JOBS="${SCRIPT_DIR}/require-jobs-succeeded.sh"
+BENCH_PLUMBING=("$BENCH_WF" "$BENCH_COMPARE" "$BENCH_RUN_ARMS" "$BENCH_GATE_FAIL" "$REQUIRE_JOBS")
+
+# Each extracted script must still be CALLED from the workflow. Without this,
+# deleting the `run:` line would leave a perfectly clean, perfectly linted
+# script that nothing executes -- the same "green because it stopped looking"
+# shape as the dead grep, one level up.
+for s in bench-run-arms.sh bench-compare.sh bench-gate-fail.sh require-jobs-succeeded.sh; do
+	if [ ! -f "${SCRIPT_DIR}/${s}" ]; then
+		bad "scripts/${s} is missing — the benchmark workflow calls it"
+	elif [ -n "$(invoked_in "$BENCH_WF" "scripts/${s}")" ]; then
+		ok "benchmark.yml INVOKES scripts/${s} (extracted body still wired in)"
+	else
+		bad "benchmark.yml does not invoke scripts/${s} — extracted body orphaned or reinlined"
+	fi
+done
+
+if [ -n "$(invoked_in_any 'scripts/benchstat-gate.sh' "${BENCH_PLUMBING[@]}")" ]; then
+	ok "the benchmark plumbing INVOKES scripts/benchstat-gate.sh (not just mentions it)"
 else
-	bad "benchmark.yml no longer invokes scripts/benchstat-gate.sh — logic reinlined or removed?"
+	bad "nothing in the benchmark plumbing invokes scripts/benchstat-gate.sh — logic reinlined or removed?"
+fi
+
+# The waiver file the gate reads by default must exist in the repository, or
+# every waiver silently stops applying. That direction is the strict one, so it
+# does not fail a build -- which is precisely why nothing else would notice.
+if [ -f "${SCRIPT_DIR}/benchstat-waivers.txt" ]; then
+	ok "scripts/benchstat-waivers.txt exists (the gate's default waiver list)"
+else
+	bad "scripts/benchstat-waivers.txt is missing — waivers would silently stop applying"
+fi
+
+# A waived row that only ever appears in the job log is an accepted regression
+# nobody reviews. The gate's report must reach the PR comment, which means the
+# workflow has to capture it and put it in the comment body -- two halves, both
+# checkable, and the failure of either is invisible from the outside.
+gate_report_hits="$(invoked_in_any 'gate-report.txt' "${BENCH_PLUMBING[@]}")"
+if [ "$(echo "$gate_report_hits" | wc -w)" -ge 2 ]; then
+	ok "the benchmark plumbing captures the gate report AND feeds it into the PR comment"
+else
+	bad "the benchmark plumbing does not carry the gate report into the PR comment — a WAIVED row would be visible only to whoever opens the job log"
 fi
 
 # The dead pattern must never come back, in any workflow. Match an INVOCATION,
@@ -491,10 +876,10 @@ else
 	bad "benchmark.yml does not pin GOMAXPROCS — a runner size change would silently unpair every benchmark"
 fi
 
-if [ -n "$(invoked_in "$BENCH_WF" 'scripts/bench-arms-check.sh')" ]; then
-	ok "benchmark.yml INVOKES scripts/bench-arms-check.sh before comparing"
+if [ -n "$(invoked_in_any 'scripts/bench-arms-check.sh' "${BENCH_PLUMBING[@]}")" ]; then
+	ok "the benchmark plumbing INVOKES scripts/bench-arms-check.sh before comparing"
 else
-	bad "benchmark.yml does not run the arm comparability pre-flight — an unpairable comparison would report only its symptom"
+	bad "the benchmark plumbing does not run the arm comparability pre-flight — an unpairable comparison would report only its symptom"
 fi
 
 # A job that relocates its checkout with `path:` has NOTHING from the
@@ -559,6 +944,69 @@ case "$relocated" in
 	*)
 		bad "root-relative repo paths inside a job whose checkout is relocated (these exit 127, not a regression):"
 		echo "$relocated" | sed 's/^/        | /'
+		;;
+esac
+
+# A job that RUNS a script from scripts/ must CHECK THE REPOSITORY OUT, or the
+# file is simply not there and the step exits 127 -- which this workflow has
+# already once reported as "Benchmark regressions detected", a real-looking
+# failure with an entirely fictional cause.
+#
+# This is not hypothetical bookkeeping: the `required` job carried its assertion
+# as inline bash and so needed no checkout at all. Moving that body into
+# scripts/require-jobs-succeeded.sh made a checkout mandatory, and nothing else
+# in this file would have noticed it missing -- the aggregate required check
+# would simply have gone red on every PR with a 127.
+nocheckout="$(python3 - "$REPO_ROOT" <<'PY_INNER'
+import glob, os, re, sys
+
+root = sys.argv[1]
+try:
+    import yaml
+except ImportError:
+    print("__SKIP__ pyyaml unavailable")
+    sys.exit(0)
+
+# Any reference to a repo script, however it is spelled: root-relative
+# (`scripts/x.sh`, `./scripts/x.sh`) or via a relocated checkout
+# (`${GITHUB_WORKSPACE}/pr/scripts/x.sh`). All of them need the repo present.
+REF = re.compile(r"(?:^|[\s;&|(\"'/])(?:\./)?scripts/[\w.-]+\.(?:sh|cjs)", re.M)
+
+hits = []
+for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))):
+    base = os.path.basename(f)
+    try:
+        doc = yaml.safe_load(open(f))
+    except Exception:  # noqa: BLE001 -- the YAML-parse guard owns this
+        continue
+    if not isinstance(doc, dict):
+        continue
+    for job_id, job in (doc.get("jobs") or {}).items():
+        steps = job.get("steps") or []
+        has_checkout = any("actions/checkout" in (st.get("uses") or "") for st in steps)
+        if has_checkout:
+            continue
+        for st in steps:
+            run = st.get("run")
+            if not isinstance(run, str):
+                continue
+            # Drop shell comments so a block that DOCUMENTS a path is not
+            # mistaken for one that invokes it.
+            code = "\n".join(
+                line[: m.start()] if (m := re.search(r"(?:^|\s)#", line)) else line
+                for line in run.splitlines()
+            )
+            for m in REF.finditer(code):
+                hits.append(f"{base}: job {job_id!r} runs {m.group(0).strip()} with no actions/checkout")
+print("\n".join(sorted(set(hits))))
+PY_INNER
+)"
+case "$nocheckout" in
+	__SKIP__*) echo "SKIP  script-without-checkout guard ($nocheckout)" ;;
+	"") ok "every job that runs a scripts/ helper also checks the repository out" ;;
+	*)
+		bad "a job runs a repo script without checking the repo out (the step exits 127, not a verdict):"
+		echo "$nocheckout" | sed 's/^/        | /'
 		;;
 esac
 

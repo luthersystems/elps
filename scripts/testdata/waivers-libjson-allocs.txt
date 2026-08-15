@@ -1,0 +1,6 @@
+# Self-test fixture: the narrow, well-formed waiver. Covers ONE package, ONE
+# benchmark and ONE metric column of the run in
+# benchstat-libjson-encode-411.txt -- deliberately NOT the B/op column of the
+# same benchmark, so the "a waiver does not spill onto the neighbouring metric"
+# assertion has something to prove.
+github.com/luthersystems/elps/lisp/lisplib/libjson | Encode | allocs/op | 9 | 2099-01-01 | elps#412 | accepted native round-trip validation cost, tracked for removal
