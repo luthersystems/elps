@@ -56,8 +56,28 @@ type service struct {
 	linter          *lint.Linter
 	logger          *slog.Logger
 
+	// expander is the one analysis-time macro expander for env, shared by
+	// every workspace state. One env backs every root the server indexes, so
+	// per-state expanders would be several mutexes over one piece of mutable
+	// state: a document request served from a cached state could expand a
+	// macro while another root's index build replayed its preamble into the
+	// same env. Nil when env is nil.
+	expander *analysis.EnvMacroExpander
+
 	mu         sync.RWMutex
 	workspaces map[string]*workspaceState
+
+	// buildMu serializes buildWorkspaceState. The build is not pure: it
+	// replays workspace macros into s.env and, since issue #403, expands
+	// macros against s.env from ScanWorkspaceRefs' worker pool. A single
+	// EnvMacroExpander serializes its own expansions, but two builds running
+	// at once hold two expanders over one env and nothing serializes them
+	// against each other or against LoadWorkspaceMacros.
+	//
+	// Only cache misses take this lock — s.workspace serves a validated
+	// cached state without calling the build at all — so a concurrent request
+	// for an already-indexed root does not wait behind another root's scan.
+	buildMu sync.Mutex
 
 	buildWorkspaceStateHook     func(string)
 	workspaceFingerprintHook    func(string)
@@ -80,9 +100,14 @@ type document struct {
 }
 
 func newService(cfg serviceConfig) *service {
+	var expander *analysis.EnvMacroExpander
+	if cfg.env != nil {
+		expander = &analysis.EnvMacroExpander{Env: cfg.env}
+	}
 	return &service{
 		registry:                    cfg.registry,
 		env:                         cfg.env,
+		expander:                    expander,
 		sharedDocEnv:                cfg.docEnv,
 		envFactory:                  cfg.envFactory,
 		workspaceRoot:               cfg.workspaceRoot,
@@ -619,10 +644,10 @@ func (s *service) workspace(root string) (*workspaceState, error) {
 	s.mu.RUnlock()
 
 	// NOTE: Between the RUnlock above and the Lock below, another goroutine
-	// may also build a workspace state for the same root. This is benign —
-	// buildWorkspaceState is pure and the last writer wins with an identical
-	// result. A full mutex around the build would serialize all workspace
-	// loads, which is worse than occasional duplicate work.
+	// may also decide to build a workspace state for the same root. The
+	// duplicate work is wasteful but harmless — the two builds produce equal
+	// results and the last writer wins. They do NOT run concurrently:
+	// buildWorkspaceState takes buildMu, because it mutates the shared env.
 	state, err := s.buildWorkspaceState(root, fingerprint, time.Now())
 	if err != nil {
 		return nil, err
@@ -634,6 +659,8 @@ func (s *service) workspace(root string) (*workspaceState, error) {
 }
 
 func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time.Time) (*workspaceState, error) {
+	s.buildMu.Lock()
+	defer s.buildMu.Unlock()
 	if s.buildWorkspaceStateHook != nil {
 		s.buildWorkspaceStateHook(root)
 	}
@@ -678,17 +705,33 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 	for pkgName, syms := range state.cfg.PackageExports {
 		state.cfg.PackageExports[pkgName] = deduplicateExports(syms)
 	}
-	if root != "" {
-		state.refs = analysis.ScanWorkspaceRefs(root, state.cfg, scanCfg)
-		state.cfg.WorkspaceRefs = state.refs
-	}
-	if s.env != nil {
-		if errs := analysis.LoadWorkspaceMacros(s.env, preamble); len(errs) > 0 {
+	// Install the macro expander BEFORE scanning references (issue #403).
+	// ScanWorkspaceRefs analyses every workspace file with this Config, and
+	// loadDocument analyses the open file with a per-file copy of the same
+	// Config. If the expander is only attached afterwards the two disagree:
+	// the index is built from unexpanded macro calls while per-document
+	// analysis expands them, so the workspace index gains references the
+	// language does not have (a symbol the macro rebinds looks like a call to
+	// the global of that name) and loses the ones it does (call-site forms the
+	// expansion moves from data position into code position).
+	//
+	// The expander is shared by ScanWorkspaceRefs' NumCPU workers, which is
+	// what lsp.buildWorkspaceIndex already does: EnvMacroExpander serializes
+	// every expansion on its own mutex, so only one worker at a time touches
+	// s.env. It is the service-wide expander rather than a fresh one per
+	// build so that expansions requested by an already-cached workspace state
+	// serialize against this build's expansions too — see s.expander.
+	if s.expander != nil {
+		if errs := s.expander.LoadWorkspaceMacros(preamble); len(errs) > 0 {
 			for _, err := range errs {
 				slog.Warn("failed to load workspace macro", "error", err)
 			}
 		}
-		state.cfg.MacroExpander = &analysis.EnvMacroExpander{Env: s.env}
+		state.cfg.MacroExpander = s.expander
+	}
+	if root != "" {
+		state.refs = analysis.ScanWorkspaceRefs(root, state.cfg, scanCfg)
+		state.cfg.WorkspaceRefs = state.refs
 	}
 	return state, nil
 }

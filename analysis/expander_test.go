@@ -490,6 +490,45 @@ func TestLoadWorkspaceMacros_ErrorReturned(t *testing.T) {
 	require.NotEmpty(t, errs, "malformed defmacro should return an error")
 }
 
+// TestEnvMacroExpanderLoadWorkspaceMacros_ClearsNegativeCache pins the reason
+// the method exists rather than a mutex taken at the call site: a symbol
+// recorded as "not a macro" before the preamble ran is a macro after it, and a
+// stale negative would make the analyzer walk it opaquely forever.
+func TestEnvMacroExpanderLoadWorkspaceMacros_ClearsNegativeCache(t *testing.T) {
+	env := newTestEnv(t)
+	expander := &EnvMacroExpander{Env: env}
+
+	form := lisp.SExpr([]*lisp.LVal{
+		lisp.Symbol("my-unless"),
+		lisp.Symbol("flag"),
+	})
+
+	require.Nil(t, expander.ExpandMacro(form, lisp.DefaultUserPackage),
+		"my-unless is not defined yet")
+	require.True(t, expander.notMacro[lisp.DefaultUserPackage+"\x00my-unless"],
+		"the miss should have been cached")
+
+	preamble := parsePreamble(t,
+		`(defmacro my-unless (cond &rest body) (quasiquote (if (unquote cond) () (progn (unquote-splicing body)))))`)
+	require.Empty(t, expander.LoadWorkspaceMacros(preamble))
+	assert.Nil(t, expander.notMacro, "loading a preamble must invalidate the cache")
+
+	expanded := expander.ExpandMacro(form, lisp.DefaultUserPackage)
+	require.NotNil(t, expanded, "my-unless must expand once the preamble is loaded")
+	assert.Equal(t, "if", expanded.Cells[0].Str)
+}
+
+func TestEnvMacroExpanderLoadWorkspaceMacros_NilEnv(t *testing.T) {
+	expander := &EnvMacroExpander{}
+	assert.Nil(t, expander.LoadWorkspaceMacros(parsePreamble(t, `(defmacro m () '1)`)))
+}
+
+func TestEnvMacroExpanderLoadWorkspaceMacros_ReportsErrors(t *testing.T) {
+	expander := &EnvMacroExpander{Env: newTestEnv(t)}
+	assert.NotEmpty(t, expander.LoadWorkspaceMacros(parsePreamble(t, `(defmacro)`)),
+		"the method must surface preamble failures exactly as the package-level function does")
+}
+
 func TestLoadWorkspaceMacros_MultiplePackages(t *testing.T) {
 	// Macros in different packages via in-package switching.
 	env := newTestEnv(t)
