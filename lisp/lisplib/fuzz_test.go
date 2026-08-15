@@ -524,6 +524,14 @@ func newStdlibEnv(tb fuzzT, configs ...lisp.Config) *lisp.LEnv {
 	return env
 }
 
+// sharedNativeLocation is the single process-wide Location that
+// lisp.nativeSource stamps on every Go-constructed LVal (it is package lisp's
+// unexported defaultSourceLocation, and a constructed value is the only handle
+// on it from out here). Writing through it corrupts the reported position of
+// every such value in the process -- issue #362 -- so the corruption cases
+// below identify it in order to leave it alone.
+var sharedNativeLocation = lisp.Symbol("shared-native-location-probe").Source
+
 // TestArgumentGuardIsWiredIn is the negative control for assertion 4a, in the
 // same spirit as TestInternalPanicMarkerIsNotForgeable in lisp/eval_fuzz_test.go:
 // it installs a builtin that commits each defect the guard claims to catch and
@@ -574,14 +582,27 @@ func TestArgumentGuardIsWiredIn(t *testing.T) {
 		// Source by POINTER, so this is invisible to the singleton check that
 		// was previously the only thing guarding an argument at all.
 		//
-		// This leaves internal/fuzzval's location pool perturbed for the rest
-		// of the test binary, which is harmless and unavoidable: undoing it is
-		// what would make the case vacuous, and nothing in this package reads
-		// a generated value's line number.
+		// It edits one of internal/fuzzval's pooled Locations, which several
+		// values in a generated tree share -- that is the sharing this case is
+		// about, and leaving it perturbed is harmless: nothing in this package
+		// reads a generated value's line number.
+		//
+		// It must NOT edit the process-wide "<native code>" Location that
+		// lisp.nativeSource stamps on every Go-constructed value, lisp.Nil()
+		// among them. That one is not "shared by many values in a tree", it is
+		// shared by every value in the process, and corrupting it poisons the
+		// rest of the test binary -- the exact trap issue #362 is filed about,
+		// and the exact way internal/fuzzfp's "shared synthetic edited in
+		// place" case broke an unrelated test before #356 gave it a location
+		// of its own. Since #362 the singleton snapshot covers it, so under
+		// `make test-elpscheck` the corruption panics here instead of
+		// surfacing somewhere unrelated. Skipping it costs the case nothing:
+		// fuzzval stamps every generated value with a pooled Location, so the
+		// seeds that exercise this guard still do.
 		name: "corrupt-shared-location",
 		fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			for _, a := range args.Cells {
-				if a.Source != nil {
+				if a.Source != nil && a.Source != sharedNativeLocation {
 					a.Source.Line++
 					return lisp.Nil()
 				}

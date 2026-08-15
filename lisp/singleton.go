@@ -4,6 +4,8 @@ package lisp
 
 import (
 	"fmt"
+
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // Singleton LVals for Nil, true, and false.
@@ -55,22 +57,34 @@ func assertNotSingleton(v *LVal) {
 }
 
 // SingletonSnapshot captures the current bit pattern of the three
-// singleton LVals. It is used by test infrastructure to detect
-// inadvertent mutations to shared singletons — see TestMain in lisp_
-// and the per-test guard in elpstest.Runner.
+// singleton LVals and of the shared native source Location. It is used
+// by test infrastructure to detect inadvertent mutations to shared
+// singletons — see TestMain in lisp_ and the per-test guard in
+// elpstest.Runner.
 type SingletonSnapshot struct {
 	nilV   LVal
 	trueV  LVal
 	falseV LVal
+
+	// nativeLoc is the pointee of defaultSourceLocation — the Location
+	// nativeSource hands to every natively-constructed LVal. It is a
+	// fourth shared mutable singleton, and it is the one this snapshot
+	// used not to cover (issue #362). The three LVal fields above
+	// record the Source POINTER, so they catch a singleton being
+	// re-pointed but never a write THROUGH the pointer all three (and
+	// every value from lisp.Int, lisp.Symbol, ...) share.
+	nativeLoc token.Location
 }
 
 // TakeSingletonSnapshot captures the current state of the three
-// singleton LVals so callers can later verify they were not mutated.
+// singleton LVals, and of the shared native source Location, so callers
+// can later verify they were not mutated.
 func TakeSingletonSnapshot() SingletonSnapshot {
 	return SingletonSnapshot{
-		nilV:   *singletonNil,
-		trueV:  *singletonTrue,
-		falseV: *singletonFalse,
+		nilV:      *singletonNil,
+		trueV:     *singletonTrue,
+		falseV:    *singletonFalse,
+		nativeLoc: *defaultSourceLocation,
 	}
 }
 
@@ -93,6 +107,9 @@ func (s SingletonSnapshot) Verify() string {
 	}
 	if !singletonLValEqual(&s.falseV, singletonFalse) {
 		return "Bool(false)"
+	}
+	if s.nativeLoc != *defaultSourceLocation {
+		return "nativeSource()"
 	}
 	return ""
 }

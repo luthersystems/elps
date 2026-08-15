@@ -828,8 +828,11 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 		}
 	}
 	lerr := &LVal{
-		Type:   LError,
-		Source: env.Loc,
+		Type: LError,
+		// Copied, not aliased: the error outlives the evaluator's
+		// current location and must not move when env.Loc's pointee
+		// does.  Same reasoning as ErrorAssociate below (issue #366).
+		Source: env.Loc.Copy(),
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
 		Cells:  cells,
@@ -857,7 +860,8 @@ func (env *LEnv) Errorf(format string, v ...interface{}) *LVal {
 // with a copy env.Runtime.Stack.
 func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
 	lerr := &LVal{
-		Source: env.Loc,
+		// Copied, not aliased -- see ErrorAssociate (issue #366).
+		Source: env.Loc.Copy(),
 		Type:   LError,
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
@@ -886,8 +890,20 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	// file and has an invalid position (-1).  When associating an error
 	// the env's current location is probably more accurate than native
 	// source (or it may also be native source).
+	//
+	// The location is COPIED rather than aliased (issue #366).  env.Loc
+	// is a pointer the evaluator keeps rebinding, and it points either
+	// at an AST node's Source or -- when the node was built by Go
+	// rather than parsed -- at the process-wide nativeSource singleton
+	// (issue #362).  Storing the pointer leaves the raised error and
+	// the still-running evaluator sharing one Location, so a later
+	// in-place write through either retroactively moves the position an
+	// already-reported error blames, and the damage surfaces nowhere
+	// near the write.  Copy preserves nil, so a nil env.Loc still
+	// yields a nil Source and the `Source == nil` convention on the
+	// line above is unchanged.
 	if lerr.Source == nil || lerr.Source.Pos < 0 {
-		lerr.Source = env.Loc
+		lerr.Source = env.Loc.Copy()
 	}
 	return nil
 }
