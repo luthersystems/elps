@@ -207,6 +207,12 @@ type session struct {
 	// failure is recorded and asserted by the caller.
 	marshalErr error
 	marshalCtx string
+
+	// tokenErr holds the first semantic token whose range did not lie inside
+	// the document it was computed for (elps#428). Like marshalErr it is
+	// recorded rather than raised, because the op that produced it has no way
+	// to fail the input on its own.
+	tokenErr error
 }
 
 // opArgs is the fuzzer's four bytes for one operation, already interpreted.
@@ -763,6 +769,72 @@ func (s *session) opFoldingRange(a opArgs) {
 func (s *session) opSemanticTokens(a opArgs) {
 	res, err := s.srv.textDocumentSemanticTokensFull(s.ctx, &protocol.SemanticTokensParams{TextDocument: a.ident()})
 	s.record("semanticTokens", res, err)
+	if err == nil && res != nil {
+		s.checkTokenBounds(a.uri, res.Data)
+	}
+}
+
+// checkTokenBounds is the one CONTENT assertion this target makes, and the
+// exception to "NOT asserted: that any request returns a particular result".
+//
+// It is admissible here because it does not say what the answer should be. It
+// says the answer has to be about THIS DOCUMENT: LSP 3.16 defines a semantic
+// token as (deltaLine, deltaStartChar, length) over the document text, so a
+// token whose range runs past the end of its line names no text at all, and no
+// document and no cursor position can make that the right response. It is
+// checkable from the response alone -- decode the deltas back to absolute
+// triples and compare against the content the harness sent -- which is why it
+// belongs on the fuzzer's arbitrary documents rather than only on the handful
+// of shapes a table test can name.
+//
+// The bound is a BYTE count, matching how every other line index in this
+// package is computed (position.go splits content on "\n" and slices by byte).
+// A client counting UTF-16 code units would be stricter still; this checks the
+// weaker property the server itself claims to satisfy.
+//
+// elps#428: the reader's synthesized #^ and #' heads were reported with the
+// length of their DESUGARED NAME ("lisp:expr", "lisp:function") over a
+// two-column span, so "#'foo" told the editor to decorate 13 characters of a
+// 5-character line. This assertion was left out of the target when that defect
+// was filed, because with it in place the target was red on its own seeds.
+func (s *session) checkTokenBounds(uri string, data []protocol.UInteger) {
+	if s.tokenErr != nil {
+		return
+	}
+	// The SERVER's copy, not the harness's mirror of it: the tokens were
+	// computed from that, so anything else would be checking the wrong text.
+	doc := s.srv.docs.Get(uri)
+	if doc == nil {
+		return
+	}
+	doc.mu.Lock()
+	content := doc.Content
+	doc.mu.Unlock()
+
+	lines := strings.Split(content, "\n")
+	prevLine, prevChar := 0, 0
+	for i := 0; i+4 < len(data); i += 5 {
+		line := prevLine + int(data[i])
+		char := int(data[i+1])
+		if data[i] == 0 {
+			char += prevChar
+		}
+		length := int(data[i+2])
+		prevLine, prevChar = line, char
+
+		if line >= len(lines) {
+			s.tokenErr = fmt.Errorf("semantic token [%d:%d,+%d) is on line %d of a %d-line document (%s)",
+				line, char, length, line, len(lines), uri)
+			return
+		}
+		// A CRLF document keeps its "\r" in the line; the editor does too, so
+		// it is part of the line for this purpose.
+		if char+length > len(lines[line]) {
+			s.tokenErr = fmt.Errorf("semantic token [%d:%d,+%d) overruns line %d, which is %d bytes: %q (%s)",
+				line, char, length, line, len(lines[line]), lines[line], uri)
+			return
+		}
+	}
 }
 
 func (s *session) opSelectionRange(a opArgs) {
@@ -917,6 +989,9 @@ func runSession(srcA, srcB, script []byte) error {
 		op.run(s, args)
 		if s.marshalErr != nil {
 			return fmt.Errorf("%s did not marshal: %w", s.marshalCtx, s.marshalErr)
+		}
+		if s.tokenErr != nil {
+			return s.tokenErr
 		}
 	}
 	// Any timer still armed would fire after the session is over, on a
@@ -1103,6 +1178,25 @@ func FuzzLSPSession(f *testing.F) {
 	add(";; only a comment", "", allOpsScript())
 	add(defs, uses, allOpsScript())
 
+	// The reader's PREFIX SHORTHANDS, which checkTokenBounds exists for
+	// (elps#428): #^e and #'f desugar to (lisp:expr e) and (lisp:function f),
+	// and the head symbol the reader synthesizes carries a 9- or 13-byte name
+	// over 2 bytes of source.
+	//
+	// Seeded here rather than relied on from fuzzseed, which does not reach the
+	// property despite containing the syntax. Of its five prefix seeds three
+	// fail to parse ("#^", "#' ", and fifty nested "#^"), and the other two --
+	// "#^(a (b))" and "#^(+ % 1)" -- are each exactly len("lisp:expr") = 9
+	// characters, so the over-long token ends exactly at the end of the line
+	// and the bound holds by arithmetic accident. An assertion no seed reaches
+	// is not an assertion.
+	add("#'foo", "", allOpsScript())
+	add("(defun g () #'g)", "", allOpsScript())
+	add("(f #^a)", "", allOpsScript())
+	add("'#^0", "", allOpsScript())
+	add("(list #'car\n      #'cdr)", "", allOpsScript())
+	add("(lisp:function foo)", "", allOpsScript()) // longhand: not synthesized
+
 	// Document B as the WORKSPACE FILE that defines a macro and document A as
 	// the file that calls it. This is the only shape that reaches
 	// env.MacroCall -- evaluation of a macro body during mere analysis -- so
@@ -1254,6 +1348,9 @@ func TestLSPFuzzScriptReachesEveryOp(t *testing.T) {
 	}
 	if s.marshalErr != nil {
 		t.Fatalf("%s did not marshal: %v", s.marshalCtx, s.marshalErr)
+	}
+	if s.tokenErr != nil {
+		t.Fatalf("%v", s.tokenErr)
 	}
 }
 

@@ -145,6 +145,11 @@ func collectSemanticTokens(
 		})
 
 	case lisp.LSymbol:
+		if isSynthesizedPrefixHead(v) {
+			// No token: this symbol is not text the user wrote.  See
+			// isSynthesizedPrefixHead.
+			return
+		}
 		name := v.Str
 		length := len(name)
 		tokType, mods := classifySymbol(name, line, col, defs, refs)
@@ -170,6 +175,57 @@ func collectSemanticTokens(
 		// contents currently go unhighlighted.  Cosmetic, and left as-is
 		// rather than changed under a lint fix.
 	}
+}
+
+// readerPrefixHeads maps the head symbol the READER synthesizes for a prefix
+// form to the prefix it was synthesized from.  The reader desugars #^e to
+// (lisp:expr e) and #'f to (lisp:function f); rdparser.locateSynthesized
+// (elps#419) then gives the manufactured head the prefix TOKEN's own location,
+// so the head stands for those two characters of source and nothing else.
+var readerPrefixHeads = map[string]string{
+	"lisp:expr":     "#^",
+	"lisp:function": "#'",
+}
+
+// isSynthesizedPrefixHead reports whether v is a head symbol the reader
+// manufactured for a #^ or #' prefix, rather than a symbol the user typed.
+//
+// Written out in longhand -- "(lisp:function f)", which is legal and is what
+// the printer emits when it cannot re-sugar -- the head is ordinary source text
+// and spans its whole name.  Synthesized from a prefix it spans exactly the
+// prefix, two columns, while carrying a 9- or 13-byte name that appears nowhere
+// in the document.  That is the difference, and it is the whole test.
+//
+// WHY NO TOKEN, RATHER THAN A TWO-CHARACTER ONE (elps#428).  A semantic token
+// is a claim about the meaning of the text it covers, and the only claim
+// available here is the one classifySymbol derives from the DESUGARED NAME --
+// a name that is not in the document.  What that yields is an accident of the
+// standard library: "lisp:function" resolves to the special operator `function`
+// and comes back a KEYWORD, while "lisp:expr" resolves to nothing and comes
+// back a VARIABLE.  So a length-only fix ships "#^" painted in the same colour
+// as the identifier beside it and "#'" painted in another, with the difference
+// determined by which desugared name happens to be bound.  Neither colour says
+// anything true about the two characters on screen.
+//
+// Suppressing instead leaves those characters to the client's syntax grammar,
+// which is the right owner for fixed punctuation the server knows nothing extra
+// about -- and it makes the three reader prefixes agree, since ' already
+// produces no token of its own (ParseQuote sets Quoted rather than synthesizing
+// a head, so there is no node at the quote to tokenize).  It is also what other
+// language servers do with nodes that stand for desugaring rather than for
+// text: rust-analyzer highlights the syntax tree of real tokens and never the
+// desugared HIR, and clangd drops highlightings whose range is not a plain
+// source range.  The operand keeps its token either way; only the prefix
+// changes hands.
+func isSynthesizedPrefixHead(v *lisp.LVal) bool {
+	prefix, ok := readerPrefixHeads[v.Str]
+	if !ok {
+		return false
+	}
+	if v.Source.EndLine != v.Source.Line {
+		return false
+	}
+	return v.Source.EndCol-v.Source.Col == len(prefix)
 }
 
 // symbolKey uniquely identifies a symbol occurrence by position.
