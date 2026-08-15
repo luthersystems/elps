@@ -223,3 +223,85 @@ func TestParserSurvivesPathologicalInput(t *testing.T) {
 		}
 	}
 }
+
+// FuzzParsedLocationInvariants states, over arbitrary input, the three
+// position properties elps#426 broke.  For every node the reader produces:
+//
+//  1. It owns its *token.Location.  No two distinct nodes in one parse tree
+//     may hold the same object.  Sharing is what let applyPrefixLocation move
+//     a prefix form and drag its operand along, and it is a live hazard
+//     independently of that: lsp/, lint/ and lisp.stampMacroExpansion all walk
+//     the tree writing positions, and a shared Location turns any one of those
+//     writes into an edit of an unrelated node's reported position.
+//
+//  2. Its span lies inside the source.  0 <= Pos <= EndPos <= len(src), so
+//     slicing the source by a reported span cannot panic -- which the LSP,
+//     the diagnostic renderer and `elps fmt` all effectively do.
+//
+//  3. Its span lies inside its parent's.  A child that escapes its parent
+//     produces an inverted or negative LSP range.  This is the property that
+//     detected the second-order damage: once applyPrefixLocation had moved a
+//     token's Location, token.TokenEnd computed the NEXT node's end position
+//     by walking the token text forward from the MOVED column, so "'#'car"
+//     reported its outer form as ending four columns before its own operand
+//     did.
+//
+// Locations are checked only for nodes that carry a real one (Pos >= 0);
+// synthetic locations are a separate invariant, pinned by
+// assertRealSourceLocations and TestParserEmitsNoSyntheticSourceLocations.
+func FuzzParsedLocationInvariants(f *testing.F) {
+	addSeeds(f)
+	for _, s := range []string{
+		"'a", "''a", "'''''test", "#'car", "#^a", "'#'car", "'#^a", "''#^a",
+		"#^#'a", "#^(+ %1 1)", "(quote x)", "(map 'list #'car '((1 2)))",
+		"(quasiquote ''(unquote-splicing '(+ 2 3)))",
+	} {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, src []byte) {
+		for _, formatting := range []bool{false, true} {
+			sc := token.NewScanner("fuzz", bytes.NewReader(src))
+			p := rdparser.New(sc)
+			if formatting {
+				p = rdparser.NewFormatting(sc)
+			}
+			exprs, err := p.ParseProgram()
+			if err != nil {
+				continue
+			}
+			owner := make(map[*token.Location]*lisp.LVal)
+			var check func(v, parent *lisp.LVal)
+			check = func(v, parent *lisp.LVal) {
+				loc := v.Source
+				if loc == nil {
+					return
+				}
+				if prev, dup := owner[loc]; dup {
+					t.Fatalf("formatting=%v: nodes %v %q and %v %q share one *token.Location %v; every node must own its position (#426)",
+						formatting, prev.Type, prev.Str, v.Type, v.Str, loc)
+				}
+				owner[loc] = v
+				if loc.Pos >= 0 && loc.EndPos > 0 {
+					if loc.EndPos < loc.Pos || loc.EndPos > len(src) {
+						t.Fatalf("formatting=%v: node %v %q reports span [%d,%d) outside a %d-byte source (#426)",
+							formatting, v.Type, v.Str, loc.Pos, loc.EndPos, len(src))
+					}
+					if parent != nil && parent.Source != nil &&
+						parent.Source.Pos >= 0 && parent.Source.EndPos > 0 {
+						if loc.Pos < parent.Source.Pos || loc.EndPos > parent.Source.EndPos {
+							t.Fatalf("formatting=%v: child %v %q spans [%d,%d), escaping parent %v %q span [%d,%d) (#426)",
+								formatting, v.Type, v.Str, loc.Pos, loc.EndPos,
+								parent.Type, parent.Str, parent.Source.Pos, parent.Source.EndPos)
+						}
+					}
+				}
+				for _, c := range v.Cells {
+					check(c, v)
+				}
+			}
+			for _, e := range exprs {
+				check(e, nil)
+			}
+		}
+	})
+}

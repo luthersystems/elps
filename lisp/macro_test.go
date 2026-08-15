@@ -37,9 +37,23 @@ func TestMacros(t *testing.T) {
 			{"(quasiquote (list (unquote-splicing test-symbol)))", "test:1:37: lisp:quasiquote: unbound symbol: test-symbol", ""},
 			{"(quasiquote (list (unquote-splicing 1 2)))", "test:1:19: lisp:quasiquote: unquote-splicing: one argument expected (got 2)", ""},
 			{"(quasiquote (list (unquote 1 2)))", "test:1:19: lisp:quasiquote: unquote: one argument expected (got 2)", ""},
+			// The three spellings blame the same node: the innermost form
+			// that directly contains unquote-splicing.  Its column is the
+			// column that form starts at -- col 13 for the bare list and for
+			// the singly-quoted one, and col 14 for the DOUBLY-quoted one,
+			// whose inner "'" is at 14.
+			//
+			// The last of the three read 13 before elps#426.  It was wrong,
+			// and wrong for a reason visible in the parse tree: the outer
+			// quote's node and the inner quoted list's node were one
+			// *token.Location, so applyPrefixLocation moving the outer form
+			// to the outer "'" moved the inner form there too.  On ce9798d
+			// both nodes reported "test:1:13..1:15" -- a 30-column form
+			// claiming to span two columns.  They now report 1:13..1:42 and
+			// 1:14..1:42.
 			{"(quasiquote (unquote-splicing '(+ 2 3)))", "test:1:13: lisp:quasiquote: unquote-splicing used in an invalid context", ""},
 			{"(quasiquote '(unquote-splicing '(+ 2 3)))", "test:1:13: lisp:quasiquote: unquote-splicing used in an invalid context", ""},
-			{"(quasiquote ''(unquote-splicing '(+ 2 3)))", "test:1:13: lisp:quasiquote: unquote-splicing used in an invalid context", ""},
+			{"(quasiquote ''(unquote-splicing '(+ 2 3)))", "test:1:14: lisp:quasiquote: unquote-splicing used in an invalid context", ""},
 			{"(quasiquote ((unquote-splicing '(+ 2 3))))", "'(+ 2 3)", ""},
 		}},
 		{"defmacro", elpstest.TestSequence{

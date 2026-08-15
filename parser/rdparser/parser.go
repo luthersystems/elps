@@ -53,6 +53,7 @@ const DefaultMaxParseDepth = 10000
 type Parser struct {
 	src             *TokenSource
 	nameReadback    map[string]bool
+	locGivenAway    *token.Location
 	pendingComments []*token.Token
 	depth           int
 	maxDepth        int
@@ -353,14 +354,21 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 	if expr.Type == lisp.LError {
 		return expr
 	}
-	if expr.Source != nil && expr.Source.Pos >= 0 {
-		// Preferred when it is real: the head stands for the whole #^ form,
-		// and pointing it at the operand keeps `#^x` reporting the same
-		// position it always has.  locateSynthesized above is the fallback,
-		// and it is not decorative -- see its comment for why the head must
-		// never be left on a synthetic location.
-		sym.Source = expr.Source
-	}
+	// The head keeps the location locateSynthesized gave it -- the #^ token's
+	// own -- and does NOT borrow the operand's.
+	//
+	// It used to borrow it, on the reasoning that "the head stands for the
+	// whole #^ form, and pointing it at the operand keeps `#^x` reporting the
+	// same position it always has" (#419).  That reasoning depended on the
+	// aliasing this file no longer has: the operand's Location was the same
+	// object as the enclosing form's, and applyPrefixLocation rewrote it to
+	// the prefix, so borrowing the operand's Location was in fact how the head
+	// ended up reporting the PREFIX.  Now that each node owns its Location,
+	// borrowing the operand's would move the head to the operand and lose the
+	// position it always had.  Keeping the #^ token's location preserves it,
+	// and makes #^ agree with #', whose lisp:function head has spanned its
+	// own "#'" since #419.
+
 	// Ensure that the expression doesn't contain nested cons expressions.
 	for _, c := range expr.Cells {
 		if c.Type == lisp.LSExpr && !c.Quoted {
@@ -451,10 +459,13 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 // teaching the stamp to recognise them, and it costs nothing at expansion
 // time.  TestParserEmitsNoSyntheticSourceLocations pins it.
 //
-// The token's own *Location is handed over rather than copied.  It is
-// allocated per token by Scanner.LocStart and, for a prefix token, no LVal is
-// built from it -- tokenLVal is never called on a #' or #^ -- so this node is
-// its only owner.  applyPrefixLocation reads it and writes elsewhere.
+// The Location handed over is this node's own -- Parser.Location gives each
+// caller a Location no other caller holds (elps#426) -- so the end positions
+// written into it below reach only this node.  In practice this is the second
+// ask about the prefix token, the first being prefixLoc in the caller, so what
+// this node gets is a copy and the scanner's token keeps its own; nothing
+// reads a token's end fields either way, since TokenEnd recomputes them from
+// the token text.
 func (p *Parser) locateSynthesized(v *lisp.LVal) *lisp.LVal {
 	loc := p.Location()
 	if loc == nil {
@@ -708,7 +719,9 @@ func (p *Parser) ParseConsExpression() *lisp.LVal {
 		p.ignoreComments()
 		p.attachTrailingComment(expr)
 		if p.src.IsEOF() {
-			return p.errorAtf(open.Source, "unmatched-syntax", "unclosed %s opened at %s", open.Text, open.Source)
+			// open.Source.Copy(): the error outlives the parse, and the
+			// token's Location belongs to the scanner (elps#426).
+			return p.errorAtf(open.Source.Copy(), "unmatched-syntax", "unclosed %s opened at %s", open.Text, open.Source)
 		}
 		if p.PeekType() == token.BRACE_R {
 			p.ReadToken()
@@ -747,7 +760,9 @@ func (p *Parser) ParseList() *lisp.LVal {
 		p.ignoreComments()
 		p.attachTrailingComment(expr)
 		if p.src.IsEOF() {
-			return p.errorAtf(open.Source, "unmatched-syntax", "unclosed %s opened at %s", open.Text, open.Source)
+			// open.Source.Copy(): the error outlives the parse, and the
+			// token's Location belongs to the scanner (elps#426).
+			return p.errorAtf(open.Source.Copy(), "unmatched-syntax", "unclosed %s opened at %s", open.Text, open.Source)
 		}
 		if p.PeekType() == token.PAREN_R {
 			p.ReadToken()
@@ -840,16 +855,78 @@ func (p *Parser) TokenType() token.Type {
 	return p.src.Token.Type
 }
 
+// Location returns the position of the token under the cursor, as a Location
+// the caller OWNS.  No two callers are ever given the same one.
+//
+// THE DEFECT (elps#426).  This used to return p.src.Token.Source -- the
+// scanner's own object -- so every caller asking about one token took joint
+// ownership of it with every other, and the parser has callers that WRITE
+// through what Location returns.  tokenLVal stores it on the LVal it is
+// building and then writes EndLine/EndCol/EndPos into it; a prefix form builds
+// TWO LVals from one token, because the operand is parsed first and nothing is
+// consumed after it, so the operand's token is still under the cursor when the
+// enclosing s-expression is built.  Both nodes held that one object, and
+// applyPrefixLocation then rewrote it to the prefix's column -- moving the
+// operand's reported position along with the form's.  "#'car" reported the
+// symbol "car" as spanning "#'car"; "#^a" gave all three of its nodes one
+// position.  Longhand "(quote x)" consumes a ")" after its operand, so its
+// form is built from a different token, and it reported "x" at "x" all along:
+// #426 is the two spellings disagreeing about where the operand is.
+//
+// THE MODEL.  A Location is MOVED, not shared.  Scanner.LocStart allocates one
+// per token; the parser hands that object to the FIRST caller to ask about the
+// token, which is the node the token produces, and gives every later caller an
+// independent copy.  The scanner's per-token allocation therefore becomes the
+// AST node's, rather than being duplicated by it.
+//
+// Ownership is tracked by comparing against the last object given away, which
+// is sufficient because the parser never returns to an earlier token: a
+// pointer equal to locGivenAway is necessarily the current token's, asked for
+// a second time.  A token whose Location has been given away is not thereby
+// corrupted -- the new owner writes only the End fields (tokenLVal) or is a
+// private copy (every prefix form's enclosing node, which is by construction
+// a second ask), and the start fields the parser reads back off a token, in
+// the "unclosed %s opened at %s" errors, are never written.
+//
+// Copying HERE rather than only in tokenLVal is the choice among the three
+// #426 lists.  It is the only one that also covers the next caller: errorf and
+// scanError put the result on an error value that outlives the parse, and
+// locateSynthesized writes end positions into it.
+//
+// The alternative -- copying unconditionally -- was implemented and measured
+// first.  It costs one extra Location per parsed node: +7.4% to +8.5%
+// allocs/op and +8.7% to +16.1% B/op across the six BenchmarkParser corpora,
+// deterministic (all rows p=0.000, +-0%).  That is a real cost on the parse
+// path for no additional safety, since a Location given away exactly once
+// cannot be shared.
 func (p *Parser) Location() *token.Location {
-	return p.src.Token.Source
+	loc := p.src.Token.Source
+	if loc == nil {
+		return nil
+	}
+	if loc == p.locGivenAway {
+		return loc.Copy()
+	}
+	p.locGivenAway = loc
+	return loc
 }
 
 func (p *Parser) PeekType() token.Type {
 	return p.src.Peek().Type
 }
 
+// PeekLocation returns the position of the NEXT token, as a Location the
+// caller owns.
+//
+// It copies unconditionally rather than taking ownership the way Location
+// does (elps#426).  Taking it would give away the Location of a token the
+// parser has not reached yet, so the node eventually built from that token
+// would be the one paying for a copy -- charging the parse path for a call it
+// did not make.  PeekLocation has no caller in this repository and is
+// exported, which is the whole reason it is closed here: an embedder's peek
+// must not be able to move a position the parser later reports.
 func (p *Parser) PeekLocation() *token.Location {
-	return p.src.Peek().Source
+	return p.src.Peek().Source.Copy()
 }
 
 func (p *Parser) String(s string) *lisp.LVal {
