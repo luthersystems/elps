@@ -114,6 +114,73 @@ func readTree(src []byte) ([]*lisp.LVal, bool) {
 	return exprs, true
 }
 
+// copyWalkCap bounds the paired walk in copyOwnsItsPositions.  The reader's
+// own nesting and size limits keep real inputs far below it; the cap is here
+// so a pathological one costs a bounded walk rather than the whole budget, and
+// a truncated walk says so rather than reporting a silent pass.
+const copyWalkCap = 200000
+
+// copyOwnsItsPositions asserts that LVal.Copy hands back a tree that shares no
+// *token.Location with the tree it copied -- the property lisp.TextLoader's
+// "each evaluation gets a private tree" rests on (elps#446).
+//
+// The one pointer allowed to be shared is nativeSource's process-wide
+// singleton, which LVal.Copy deliberately does not separate: it has a single
+// owner, it is read-only by contract, and the reader never emits it (#362,
+// #370, and parser/rdparser's TestParserDoesNotAliasSharedNativeLocation).
+// Allowed here rather than assumed absent so that a reader change that starts
+// emitting it fails at ITS own guard, not confusingly at this one.
+//
+// Iterative rather than recursive: the walk must not be the thing that
+// overflows the goroutine stack on a deeply nested input.
+func copyOwnsItsPositions(t *testing.T, exprs []*lisp.LVal, src []byte) {
+	t.Helper()
+
+	native := lisp.Int(0).Source // the shared singleton, by construction
+	seen := 0
+	for _, orig := range exprs {
+		stack := [][2]*lisp.LVal{{orig, orig.Copy()}}
+		for len(stack) > 0 {
+			pair := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			a, b := pair[0], pair[1]
+			if a == nil || b == nil {
+				continue
+			}
+			seen++
+			if seen > copyWalkCap {
+				t.Logf("copy-ownership walk truncated at %d nodes; the rest of"+
+					" this input was not checked", copyWalkCap)
+				return
+			}
+			if a.Source != nil && a.Source == b.Source && a.Source != native {
+				t.Fatalf("LVal.Copy handed back a node sharing the original's"+
+					" *token.Location (elps#446)"+
+					"\n  node type: %v"+
+					"\n  location:  %v"+
+					"\n--- source (%d bytes) ---\n%q",
+					a.Type, a.Source, len(src), src)
+				return
+			}
+			// LArray shares its Cells backing and LSortMap shares its value
+			// pointers, both deliberately, so a copy of either legitimately
+			// reaches the same child nodes.  Descend only where Copy did.
+			if a.Type == lisp.LArray || a.Type == lisp.LSortMap {
+				continue
+			}
+			if len(a.Cells) != len(b.Cells) {
+				t.Fatalf("LVal.Copy changed a node's arity: %d cells became %d"+
+					"\n--- source (%d bytes) ---\n%q",
+					len(a.Cells), len(b.Cells), len(src), src)
+				return
+			}
+			for i := range a.Cells {
+				stack = append(stack, [2]*lisp.LVal{a.Cells[i], b.Cells[i]})
+			}
+		}
+	}
+}
+
 // sharedTreeProperty is the body of the target, factored out so the corpus
 // tests below assert exactly what the fuzzer asserts.
 func sharedTreeProperty(t *testing.T, src []byte) {
@@ -130,6 +197,15 @@ func sharedTreeProperty(t *testing.T, src []byte) {
 	if !ok {
 		return
 	}
+	// The other way a consumer gets a private tree: LVal.Copy, which is what
+	// lisp.TextLoader hands every evaluation.  Same ownership question as the
+	// rest of this target, one step earlier -- a copy that shares position
+	// OBJECTS with the tree it came from is not private, and the retained
+	// cache then reports whatever the last writer through any copy left
+	// behind (elps#446).  Asserted before evaluation so the walk sees the
+	// reader's output and nothing else.  Costs one Copy and one paired walk;
+	// no extra evaluation.
+	copyOwnsItsPositions(t, shared, src)
 
 	done := make(chan struct{})
 	var want []string

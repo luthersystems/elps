@@ -302,6 +302,42 @@ func FuzzParsedLocationInvariants(f *testing.F) {
 			for _, e := range exprs {
 				check(e, nil)
 			}
+			// Property 1, one step downstream: LVal.Copy must hand back a
+			// tree that shares no position OBJECT with the tree it copied
+			// (elps#446).  `*cp = *v` carried Source across, so a "copy" and
+			// its original held one mutable Location at every depth -- which
+			// is what lisp.TextLoader's private-tree guarantee rests on.
+			//
+			// Walked through the SAME owner map the loop above filled, so
+			// this states both halves at once: no copied node may hold an
+			// original's Location, and no two copied nodes may hold one
+			// either.  Cells are descended unconditionally, exactly as the
+			// walk above does -- the reader emits no LArray or LSortMap, the
+			// two types whose children LVal.Copy deliberately shares.
+			//
+			// A node carrying lisp's shared native Location would also
+			// surface here, because a copy keeps that one pointer by design.
+			// The reader does not emit it; TestParserDoesNotAliasSharedNative
+			// Location is where that is stated (#362/#370).
+			var checkCopy func(v *lisp.LVal)
+			checkCopy = func(v *lisp.LVal) {
+				if v == nil {
+					return
+				}
+				if loc := v.Source; loc != nil {
+					if prev, dup := owner[loc]; dup {
+						t.Fatalf("formatting=%v: copied node %v %q holds the same *token.Location %v as %v %q; a copy must own its positions (#446)",
+							formatting, v.Type, v.Str, loc, prev.Type, prev.Str)
+					}
+					owner[loc] = v
+				}
+				for _, c := range v.Cells {
+					checkCopy(c)
+				}
+			}
+			for _, e := range exprs {
+				checkCopy(e.Copy())
+			}
 		}
 	})
 }
