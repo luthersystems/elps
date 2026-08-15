@@ -929,7 +929,15 @@ func (v *LVal) ArrayIndex(index ...*LVal) *LVal {
 	}
 	dims := v.Cells[0]
 	if len(index) != dims.Len() {
-		return Errorf("invalid index into array with dimenions %#v", v.Cells[0])
+		// %v, not %#v.  %#v prints the Go struct literal for the *LVal,
+		// which embeds the Source and Cells POINTERS -- so this message
+		// carried heap addresses and differed on every evaluation of the
+		// same program (elps#427).  Downstream a phylum runs as chaincode,
+		// where every endorsing peer must produce identical output for a
+		// transaction, and this condition is reachable from lisp with
+		// `(aref (vector))`.  An error message is program output.
+		return Errorf("invalid index into array with dimensions %v: got %d index(es), want %d",
+			dims, len(index), dims.Len())
 	}
 	if len(index) == 0 {
 		return v.Cells[1]
