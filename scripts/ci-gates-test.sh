@@ -357,6 +357,121 @@ assert_exit 2 "the shipped waivers do NOT turn an uninterpretable table green" \
 	"$GATE" "${TESTDATA}/benchstat-crash.txt"
 
 echo
+echo "== benchstat-gate: the resolution check (#443) ==========================="
+
+# A threshold is one number for a whole metric class, and it is only as good as
+# the assumption that rows in that class have comparable noise. On elps' timing
+# rows they do not: BenchmarkPackageGetFunParallel is a sub-100ns map lookup
+# under RunParallel, measured at -benchtime=100ms, and it has a ±24% spread on
+# IDENTICAL code -- above the 15% gate. It red PR #442, a parser-only change
+# that cannot reach it, and a re-run with no code change turned it green.
+#
+# So a timing row at or above its gate is called a regression only when the move
+# is bigger than the spread benchstat measured for that row, on those samples.
+# Everything below is the pair that has to hold together: the fix must silence
+# the noise AND still fire on a real move, or it is just the gate switched off.
+NOISE_FIXTURE="${TESTDATA}/benchstat-parallel-noise-443.txt"
+TRUE_FIXTURE="${TESTDATA}/benchstat-parallel-true-regression.txt"
+
+# The noise-only half: #443's row, +15.96% p=0.035 over a 15% gate, with the
+# ±24%/±25% spread the null comparison measured.
+assert_exit 0 "a timing move INSIDE the row's own measured spread is not a regression" \
+	env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
+# ...and it is NOT silence. A benchmark that cannot be adjudicated is a standing
+# problem with the benchmark, and a gate that quietly drops rows is the exact
+# defect this script exists to prevent.
+assert_contains "NOISE-FLOOR" "the unresolvable row is REPORTED, not dropped" \
+	env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
+assert_contains "+15.96%" "the unresolvable row still carries its measured delta" \
+	env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
+assert_contains "spread ±25%" "the report names the spread it was judged against" \
+	env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
+assert_contains "cannot resolve them" "the summary line counts unresolvable rows" \
+	env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
+
+# The true-regression half. Same benchmark, same spread, same flat allocation
+# columns; only the size of the move differs. If this ever stops failing, the
+# resolution check has become an off switch.
+assert_exit 1 "a timing move LARGER than the row's spread is still a regression" \
+	env BENCH_WAIVERS= "$GATE" "$TRUE_FIXTURE"
+assert_contains "REGRESSION" "the real move is reported as a regression" \
+	env BENCH_WAIVERS= "$GATE" "$TRUE_FIXTURE"
+assert_contains "+48.00%" "the real move is reported with its delta" \
+	env BENCH_WAIVERS= "$GATE" "$TRUE_FIXTURE"
+
+# The check is about RESOLUTION, not about size: the same +48% row is a
+# regression at any threshold below it, and the +15.96% row is suppressed only
+# because its spread is larger than the move -- not because 16% moves are now
+# allowed anywhere.
+assert_exit 0 "the noise row stays unresolvable even with the gate lowered to 1%" \
+	env BENCH_WAIVERS= BENCH_REGRESSION_THRESHOLD_PCT=1 "$GATE" "$NOISE_FIXTURE"
+assert_contains "NOISE-FLOOR" "...and says so, rather than passing silently" \
+	env BENCH_WAIVERS= BENCH_REGRESSION_THRESHOLD_PCT=1 "$GATE" "$NOISE_FIXTURE"
+
+# CLASS BOUNDARY. Allocation metrics are exempt, explicitly. They are exact
+# rather than sampled and they have caught every real regression this gate has
+# caught; the exemption must not depend on their spread happening to be 0%.
+# One fixture, three rows, same delta and same spread, differing only in class.
+ALLOC_SPREAD_FIXTURE="${TESTDATA}/benchstat-alloc-with-spread.txt"
+assert_exit 1 "an ALLOCATION row is judged on its threshold even with a large spread" \
+	env BENCH_WAIVERS= "$GATE" "$ALLOC_SPREAD_FIXTURE"
+assert_contains "REGRESSION  github.com/luthersystems/elps/lisp             B/op" \
+	"the B/op row with a ±30% spread is still a regression" \
+	env BENCH_WAIVERS= "$GATE" "$ALLOC_SPREAD_FIXTURE"
+assert_contains "REGRESSION  github.com/luthersystems/elps/lisp             allocs/op" \
+	"the allocs/op row with a ±30% spread is still a regression" \
+	env BENCH_WAIVERS= "$GATE" "$ALLOC_SPREAD_FIXTURE"
+assert_contains "NOISE-FLOOR github.com/luthersystems/elps/lisp             sec/op" \
+	"...while the sec/op row with the SAME delta and spread is not" \
+	env BENCH_WAIVERS= "$GATE" "$ALLOC_SPREAD_FIXTURE"
+
+# WHEN THERE IS NO INTERVAL. benchstat prints "± ∞ ¹" below 6 samples, so there
+# is no resolution to check against. Those rows fall back to the threshold alone
+# and must SAY SO -- a check that did not run must never look like one that ran
+# and passed. (CI uses n=10; this is the n=5 fixtures' case.)
+assert_exit 1 "a row with no computable interval is still gated on the threshold" \
+	env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-regression-new.txt"
+assert_contains "resolution check did not run" \
+	"a regression judged without an interval says the check did not run" \
+	env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-regression-new.txt"
+
+# THE MEASUREMENT ITSELF. A real null comparison -- one tree, two interleaved
+# runs, CI's sampling parameters -- kept as evidence for the spreads quoted
+# above. Nothing in it is significant, so it must be clean, which also shows the
+# NOISE-FLOOR verdicts come from the resolution check rather than from these
+# benchmarks being odd in some other way.
+assert_exit 0 "a measured null comparison on identical code is clean" \
+	env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-null-parallel-sandbox.txt"
+
+# AND THE ONE THAT ACTUALLY FIRED. Same procedure, one tree, both arms; on 2 of
+# 15 such comparisons the pre-#443 gate reported a REGRESSION. This is trial 8
+# verbatim: +18.48% p=0.009 over a 15% gate, on code that did not change, with
+# the offending arm measuring itself at ±19%. It is the live counterpart of the
+# CI failure in #443, and the reason this check is not a matter of taste.
+SPURIOUS_FIXTURE="${TESTDATA}/benchstat-null-spurious-firing.txt"
+assert_exit 0 "a NULL comparison that fired the old gate no longer reds the build" \
+	env BENCH_WAIVERS= "$GATE" "$SPURIOUS_FIXTURE"
+# NOISE-FLOOR is only ever printed for a row that reached the threshold, so this
+# is also the proof that the row genuinely WAS over the gate -- i.e. that the
+# assertion above passes because the row was adjudicated and found unresolvable,
+# not because it was quietly under the bar all along.
+assert_contains "NOISE-FLOOR" "...and says so: the row DID cross the gate and could not be resolved" \
+	env BENCH_WAIVERS= "$GATE" "$SPURIOUS_FIXTURE"
+assert_contains "+18.48%" "the false regression keeps its number in the report" \
+	env BENCH_WAIVERS= "$GATE" "$SPURIOUS_FIXTURE"
+# The allocation columns of that same run: exact, "all samples are equal". The
+# contrast is the argument for leaving the 5% allocation gate alone.
+assert_contains "no-change row" "the allocation rows of the same run are unmoved" \
+	env BENCH_WAIVERS= "$GATE" "$SPURIOUS_FIXTURE"
+
+# The shipped waivers must not be what makes any of this pass, and must not
+# rescue the true regression.
+assert_exit 0 "the noise-floor fixture passes with the SHIPPED waivers too" \
+	"$GATE" "$NOISE_FIXTURE"
+assert_exit 1 "the shipped waivers do NOT rescue the true regression" \
+	"$GATE" "$TRUE_FIXTURE"
+
+echo
 echo "== benchstat-gate: the threshold is the only thing holding it back ======="
 
 # Proves the parser genuinely SEES the real comparison's significant deltas and

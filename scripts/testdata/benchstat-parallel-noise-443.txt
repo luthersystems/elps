@@ -1,0 +1,51 @@
+# The row that red an innocent PR: luthersystems/elps#443.
+#
+# PR #442 changed parser/rdparser and nothing else. Its first CI Benchmark
+# Comparison failed on exactly one row:
+#
+#     REGRESSION  github.com/luthersystems/elps/lisp  sec/op  PackageGetFunParallel-2  delta=+15.96% p=0.035 (gate 15%)
+#
+# Re-running the job with no code change turned it green.
+#
+# BenchmarkPackageGetFunParallel builds its fixture entirely through the Go API
+# (NewPackage, Symbol, FunInPackage, Int) and never invokes the parser; its
+# measured loop is a map lookup under RunParallel. There is no path from
+# parser/rdparser to it. The deterministic columns agreed at the time and are
+# reproduced below: B/op and allocs/op both "all samples are equal".
+#
+# The spreads are the point. Two independent checkouts of the SAME commit
+# (ce9798d), interleaved, GOMAXPROCS=2, -benchtime=100ms, n=20, produced
+#
+#     base vs base2 (identical code)
+#     PackageGetFunParallel-2   38.70n ± 24%   38.94n ± 24%   ~ (p=0.841 n=20)
+#
+# so this benchmark has a ±24% noise floor on code that did not change. A +16%
+# move is inside that. The 15% timing threshold is below the resolution of this
+# row, which is why a p<=0.05 draw over the gate happens here by chance.
+#
+# Independently re-measured while fixing this, on a 4-core sandbox at the same
+# sampling parameters (preserved as benchstat-null-parallel-sandbox.txt): the
+# same benchmark showed ±31% / ±57% on identical code, and its two sibling rows
+# ±52% / ±102% and ±15% / ±27%. The allocation columns were ± 0% on all three.
+#
+# The gate must NOT call this a regression, and must not stay silent about it
+# either -- it is reported as NOISE-FLOOR, because a benchmark that cannot be
+# adjudicated is a standing problem rather than a clean result.
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Neoverse-N1
+                        │     base     │                  pr                  │
+                        │    sec/op    │    sec/op      vs base               │
+PackageGetFunParallel-2   38.70n ± 24%    44.88n ± 25%  +15.96% (p=0.035 n=20)
+geomean                   38.70n          44.88n        +15.96%
+
+                        │     base     │                 pr                  │
+                        │     B/op     │    B/op      vs base                │
+PackageGetFunParallel-2   0.000 ± 0%     0.000 ± 0%        ~ (p=1.000 n=20) ¹
+¹ all samples are equal
+
+                        │     base     │                 pr                  │
+                        │  allocs/op   │  allocs/op   vs base                │
+PackageGetFunParallel-2   0.000 ± 0%     0.000 ± 0%        ~ (p=1.000 n=20) ¹
+¹ all samples are equal
