@@ -1605,8 +1605,16 @@ var defaultSourceLocation = func() *token.Location {
 // is bounded from both ends instead:
 //
 //   - the PARSER never leaves this pointer in an AST it produces, which is
-//     the channel by which it reached user-reachable trees -- see
-//     TestParserDoesNotAliasSharedNativeLocation in parser/rdparser; and
+//     the channel by which it reached user-reachable trees.  That is not this
+//     issue's doing: rdparser.locateSynthesized gives the heads behind #' and
+//     #^ the prefix token's own real location, which issue #370 required for
+//     an unrelated reason (the macro-expansion stamp was writing into a
+//     caller's parse tree through exactly those nodes) and which removes the
+//     shared pointer as a side effect.  parser/rdparser's
+//     TestParserDoesNotAliasSharedNativeLocation guards the property in the
+//     terms this issue needs -- no pointer to the SHARED location -- next to
+//     #370's TestParserEmitsNoSyntheticSourceLocations, which guards it in
+//     the terms that one needs.
 //   - SingletonSnapshot records this Location's bit pattern, so a write
 //     through it is named ("nativeSource()") at the next singleton check
 //     rather than surfacing later in an unrelated test.
@@ -1619,7 +1627,7 @@ var defaultSourceLocation = func() *token.Location {
 // TODO(elps2): make the LVal.Source "immutable" (possibly an interface or a
 // string) so it won't matter that nativeSource returns a shared reference.
 // That is an API break for every embedder reading v.Source and is tracked on
-// issue #362; the guard and the parser fix above stand in for it until then.
+// issue #362; the guard above stands in for it until then.
 func nativeSource() *token.Location {
 	return defaultSourceLocation
 }

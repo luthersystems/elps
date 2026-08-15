@@ -45,6 +45,11 @@ func parseAll(t *testing.T, src string) []*lisp.LVal {
 // that mattered -- ParseFunRef synthesized its head symbol with lisp.Symbol
 // and never re-stamped it -- but the invariant is stated over the whole
 // grammar so a future synthesized node cannot reintroduce the leak quietly.
+//
+// GUARDS, NOT CATCHES.  The two tests below were written against the tree
+// before PR #419 (issue #370) landed and failed there; they pass unmodified on
+// current main, because #419 fixed the same reader defect from the other end
+// -- see the note on each.
 var funRefSources = []string{
 	"#'car",
 	"#'+",
@@ -60,16 +65,30 @@ var funRefSources = []string{
 	"()",
 }
 
-// TestParserDoesNotAliasSharedNativeLocation is the regression test for issue
-// #362's concrete instance.
+// TestParserDoesNotAliasSharedNativeLocation is a GUARD on current main, not a
+// catch.  It states issue #362's property over the reader's whole output: no
+// node the parser produces may hold the process-wide "<native code>" Location.
 //
-// Parsing "#'car" produced an AST whose head symbol (lisp:function) held a
-// pointer to the process-wide "<native code>" Location.  Nothing writes
-// through it in-tree today, which is why the issue calls it a latent trap
-// rather than a live defect -- but the pointer is reachable from any AST
-// walk, and a walker that stamps positions while descending corrupts the
-// reported position of every natively-constructed value in the process, with
-// the damage surfacing nowhere near the write.
+// It was a catch when written.  Parsing "#'car" produced an AST whose head
+// symbol (lisp:function) held that pointer, reachable from any AST walk, so a
+// walker stamping positions while descending corrupted the reported position
+// of every natively-constructed value in the process.
+//
+// PR #419 (issue #370) then fixed the same reader defect from the other end,
+// and better: locateSynthesized gives the synthesized head the PREFIX TOKEN's
+// own real Location, so the head reports where the user wrote "#'" instead of
+// "<native code>", and the shared pointer is gone as a side effect rather than
+// replaced by a private copy of itself.  #419 was chasing the stamp walk
+// writing into a caller's parse tree; this test was chasing the same node
+// holding process-global state.  Two routes to one line of the reader.
+//
+// It stays because the two issues bound different things and #419's fix is not
+// obliged to keep satisfying this one.  #419 pins that the reader emits no
+// SYNTHETIC location (TestParserEmitsNoSyntheticSourceLocations); this pins
+// that it emits no pointer to the SHARED one.  A future synthesized node given
+// a private nativeSource copy would satisfy neither, but a node given a
+// distinct Location whose Pos happens to be -1 would satisfy #419's and not
+// this one.
 func TestParserDoesNotAliasSharedNativeLocation(t *testing.T) {
 	t.Parallel()
 	shared := sharedNativeLocation()
@@ -90,6 +109,9 @@ func TestParserDoesNotAliasSharedNativeLocation(t *testing.T) {
 // TestFunRefHeadLocationIsPrivate demonstrates the consequence directly, and
 // without the race detector: editing one parse's location must not be visible
 // to an unrelated parse or to an unrelated constructed value.
+//
+// Also a GUARD on current main rather than a catch -- see the note above. It
+// failed before #419 with the second parse's Pos reading 7 instead of -1.
 func TestFunRefHeadLocationIsPrivate(t *testing.T) {
 	t.Parallel()
 
@@ -114,10 +136,12 @@ func TestFunRefHeadLocationIsPrivate(t *testing.T) {
 		"editing a parsed #' form's location moved the location of an unrelated constructed value (#362)")
 }
 
-// TestFunRefHeadLocationRace is the -race half.  Two goroutines parse their
-// own program and stamp their own AST -- no shared state by construction --
-// so under `go test -race` this is silent unless the two ASTs are handed the
-// same Location, which is what sharing the process-wide singleton did.
+// TestFunRefHeadLocationRace is the -race half, and likewise a GUARD on
+// current main.  Two goroutines parse their own program and stamp their own
+// AST -- no shared state by construction -- so under `go test -race` this is
+// silent unless the two ASTs are handed the same Location, which is what
+// sharing the process-wide singleton did.  Before #419 it reported
+// "WARNING: DATA RACE" on a data-segment address (defaultSourceLocation).
 func TestFunRefHeadLocationRace(t *testing.T) {
 	t.Parallel()
 

@@ -6,6 +6,7 @@ package libschema
 import (
 	"fmt"
 	"regexp"
+	"sync/atomic"
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
@@ -350,12 +351,34 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 	return res
 }
 
-var symcounter = 0
+// symcounter names anonymous validators.  It is ATOMIC, and it has to be
+// (issue #364).
+//
+// Every validator this package mints takes its FID from here: NewValidator
+// does, and so does every s: constructor reachable from ordinary ELPS source
+// -- s:int and s:gt each mint one, s:deftype mints another around them.  So
+// two runtimes evaluating schema code on two goroutines both land in
+// GenSymbol, and while it was a plain int++ that was a data race with no Go
+// embedder involvement required.  substrate runs dozens of environments
+// evaluating concurrently, so that is the normal case, not an exotic one.
+//
+// The damage from losing an increment is only a duplicate name in a stack
+// frame; the undefined behaviour of the unsynchronised read-modify-write is
+// the actual defect, and it is why this was invisible for so long.
+//
+// The counter is process-global rather than per-Runtime because NewValidator
+// has no runtime to hang it off: its signature is (formals, fn), and giving it
+// one would be an API break for an extension point whose whole point is that
+// the value it returns is runtime-independent.  Global-and-atomic also gives
+// FIDs that stay distinct across runtimes, which is what you want when reading
+// a stack trace out of a process running many.  lisp.Runtime.gensym is the
+// in-tree precedent for the atomic counter.
+var symcounter atomic.Uint64
 
-// Keep our symbols clean
+// GenSymbol returns a fresh name for an anonymous validator.  It is safe to
+// call from multiple goroutines.
 func GenSymbol() string {
-	symcounter++
-	return fmt.Sprintf("_validation_fun_%d", symcounter)
+	return fmt.Sprintf("_validation_fun_%d", symcounter.Add(1))
 }
 
 // validatorTag is a private zero-size type whose ADDRESS identifies a schema
@@ -444,8 +467,27 @@ func newNamedValidator(name string, formals *lisp.LVal, fn lisp.LBuiltin) *lisp.
 	return markValidator(lisp.FunInPackage(DefaultPackageName, name, formals, fn))
 }
 
+// markValidator stamps the credential onto fun's cells.
+//
+// The cell slice is allocated at EXACTLY its final length, so cap == len.
+// That is the issue #373 clamp applied to an LFun: a slice handed out with
+// spare capacity is a slice something else can append into, and that append
+// writes through into cells the owner still considers its own.  Before the
+// clamp, appending the marker onto the two-cell slice lisp.FunInPackage
+// returns grew the backing array to capacity 4, so every validator carried a
+// spare slot for life; append(v.Cells[:2], x) would have overwritten the
+// marker in place, silently revoking the credential of a value that -- per
+// NewValidator's contract below -- may be shared by every runtime in the
+// process.
+//
+// Nothing does that today.  The clamp is what stops "nothing does that" from
+// being load-bearing, and it is not a cost: one exact-length allocation
+// replaces one grow-on-append allocation, and allocates less.
 func markValidator(fun *lisp.LVal) *lisp.LVal {
-	fun.Cells = append(fun.Cells, validatorMarker)
+	cells := make([]*lisp.LVal, 0, len(fun.Cells)+1)
+	cells = append(cells, fun.Cells...)
+	cells = append(cells, validatorMarker)
+	fun.Cells = cells
 	return fun
 }
 
@@ -471,8 +513,34 @@ func markValidator(fun *lisp.LVal) *lisp.LVal {
 // There is no way to call one with libschema's convention, and the whole point
 // of the marker is that the refusal is a lisp-level error rather than a nil
 // dereference.
+//
+// RUNTIME SCOPE (issue #364): the returned value may be bound into ANY number
+// of lisp.LEnv / lisp.Runtime pairs, including concurrently.  That is the
+// natural reading of an extension point -- build the constraint set once at
+// process start, install it into every environment you create -- and it is now
+// a guarantee rather than something that happened to work:
+//
+//   - NewValidator is itself safe to call from multiple goroutines.
+//   - The returned value owns all of its own state.  The formals are COPIED,
+//     so a caller that keeps its formals list and writes through it later
+//     cannot reach into validators already built from it; and the cell slice
+//     is capacity-clamped, so no append through a view of it can overwrite the
+//     validator credential.
+//   - The interpreter does not write into a validator while running it.
+//     TestSharedValidatorIsNotMutatedByEvaluation pins that, so this line does
+//     not quietly become false.
+//
+// Two obligations stay with the caller, because they cannot be enforced here:
+// fn must be safe to call from multiple goroutines if the validator is shared
+// across them, and any value fn captures is shared on exactly the same terms.
 func NewValidator(formals *lisp.LVal, fn lisp.LBuiltin) *lisp.LVal {
-	return newValidator(formals, fn)
+	// Copy the caller's formals: see RUNTIME SCOPE above.  This is done at
+	// the exported boundary only.  The package-internal callers of
+	// newValidator all build a fresh lisp.Formals(...) inline on the call
+	// and drop the reference immediately, so making the copy unconditional
+	// would put a second allocation on the path every s: constructor takes
+	// -- and buy nothing, since there is no other holder to defend against.
+	return newValidator(formals.Copy(), fn)
 }
 
 // Checks constraints and type for boolean values

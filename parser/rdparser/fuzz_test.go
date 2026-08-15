@@ -67,6 +67,15 @@ func FuzzParseProgram(f *testing.F) {
 			// one.
 			_ = expr.String()
 		}
+		// Property 4: nothing the reader hands back carries a SYNTHETIC
+		// source location.  lisp.stampMacroExpansion rewrites Source on every
+		// expanded node whose location is nil or has Pos < 0, and macro
+		// arguments reach the expansion as the caller's own parse-tree nodes
+		// -- so a synthetic location here is a node the interpreter writes
+		// into, concurrently, across environments that share the tree
+		// (elps#370).  Stated over the whole tree rather than over the two
+		// heads that broke it, so the next desugaring is covered too.
+		assertRealSourceLocations(t, string(src), exprs)
 	})
 }
 
@@ -153,6 +162,11 @@ func FuzzParseFormatting(f *testing.F) {
 				t.Fatalf("expression %d mismatch:\n standard = %s\n formatting = %s", i, want, got)
 			}
 		}
+		// The elps#370 invariant again, this time for the mode the LSP and
+		// `elps fmt` parse in.  It builds the metadata-carrying tree that is
+		// held across requests, so a stampable node here is the longest-lived
+		// one there is.
+		assertRealSourceLocations(t, string(src), exprs)
 	})
 }
 

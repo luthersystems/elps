@@ -348,12 +348,19 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 	prefixNewlines := p.src.Token.PrecedingNewlines
 	prefixSpaces := p.src.Token.PrecedingSpaces
 	prefixLoc := p.Location() // save #^ location before parsing inner expression
+	sym := p.locateSynthesized(lisp.Symbol("lisp:expr"))
 	expr := p.ParseExpression()
 	if expr.Type == lisp.LError {
 		return expr
 	}
-	sym := lisp.Symbol("lisp:expr")
-	sym.Source = expr.Source
+	if expr.Source != nil && expr.Source.Pos >= 0 {
+		// Preferred when it is real: the head stands for the whole #^ form,
+		// and pointing it at the operand keeps `#^x` reporting the same
+		// position it always has.  locateSynthesized above is the fallback,
+		// and it is not decorative -- see its comment for why the head must
+		// never be left on a synthetic location.
+		sym.Source = expr.Source
+	}
 	// Ensure that the expression doesn't contain nested cons expressions.
 	for _, c := range expr.Cells {
 		if c.Type == lisp.LSExpr && !c.Quoted {
@@ -370,25 +377,13 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 }
 
 func (p *Parser) ParseFunRef() *lisp.LVal {
-	op := lisp.Symbol("lisp:function")
-	// The synthesized head symbol has no token of its own, so it keeps the
-	// "<native code>" location every Go-constructed LVal is stamped with.
-	// lisp.Symbol stamps the process-wide SHARED instance of that location
-	// though, and unlike ParseUnbound's "lisp:expr" head (which is re-stamped
-	// from expr.Source below) nothing here replaces it -- so every parsed #'
-	// form used to leave a node holding a pointer to process-global mutable
-	// state inside a user-reachable AST.  Any walker that stamps positions
-	// while descending then corrupts the location of every natively
-	// constructed value in the process (issue #362).  Give the node a
-	// location it owns; the reported position is unchanged.
-	opLoc := token.NativeLocation()
-	op.Source = &opLoc
 	if !p.Accept(token.FUN_REF) {
 		return p.errorf("parse-error", "invalid quote: %v", p.PeekType())
 	}
 	prefixNewlines := p.src.Token.PrecedingNewlines
 	prefixSpaces := p.src.Token.PrecedingSpaces
 	prefixLoc := p.Location() // save #' location before parsing inner expression
+	op := p.locateSynthesized(lisp.Symbol("lisp:function"))
 	name := p.ParseSymbol()
 	if name.Type == lisp.LError {
 		return name
@@ -418,6 +413,58 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 	p.hoistOperandComments(result, name)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
+}
+
+// locateSynthesized gives a node the parser SYNTHESIZED -- one that stands for
+// a prefix the reader desugared rather than for a token of its own -- the real
+// location of the prefix token it was synthesized from.  It must be called
+// while that token is still the one under the cursor, i.e. immediately after
+// the Accept that consumed it.
+//
+// WHY THIS IS NOT COSMETIC.  lisp.Symbol gives every new symbol
+// lisp.nativeSource(), the shared "<native code>" location whose Pos is -1,
+// and the head symbols behind #' and #^ were left carrying it.  That put a
+// PARSER-PRODUCED node into the population that lisp.stampMacroExpansion
+// treats as its own to rewrite: the stamp walk replaces any Source that is nil
+// or has Pos < 0 with the macro call site (and, with a debugger attached,
+// attaches a MacroExpansionInfo).
+//
+// Macro arguments are not evaluated, so a form containing #' reaches the
+// macro's parameters as the caller's own parse-tree nodes and is spliced into
+// the expansion; the stamp walk then wrote into the caller's parse tree.  The
+// AST is not private to one evaluation.  LEnv.load evaluates the reader's
+// nodes directly (it does not copy), a function body is the parse tree it was
+// defined from and is re-entered on every call, and a *Package -- LFun bodies
+// included -- is shared by pointer across the per-request environments an
+// embedder derives from one registry.  Two environments expanding the same
+// macro call therefore wrote to the same *LVal.Source word with nothing
+// between them: elps#370, reported by -race at macro.go:276/277.
+//
+// Fixing it here rather than in the stamp walk is deliberate.  A synthetic
+// location on a node the reader produced is wrong on its own terms -- a
+// function reference the user wrote reported itself as "<native code>" -- and
+// internal/fuzzval already documents the intended invariant: "every callable
+// that receives an UNEVALUATED fragment receives it straight from the reader,
+// so in production those nodes all carry real, distinct, per-node locations.
+// Synthetic locations are what a COMPUTED value has."  Restoring that
+// invariant empties the set of shared nodes the stamp can reach instead of
+// teaching the stamp to recognise them, and it costs nothing at expansion
+// time.  TestParserEmitsNoSyntheticSourceLocations pins it.
+//
+// The token's own *Location is handed over rather than copied.  It is
+// allocated per token by Scanner.LocStart and, for a prefix token, no LVal is
+// built from it -- tokenLVal is never called on a #' or #^ -- so this node is
+// its only owner.  applyPrefixLocation reads it and writes elsewhere.
+func (p *Parser) locateSynthesized(v *lisp.LVal) *lisp.LVal {
+	loc := p.Location()
+	if loc == nil {
+		return v
+	}
+	if tok := p.src.Token; tok != nil {
+		loc.EndLine, loc.EndCol, loc.EndPos = token.TokenEnd(tok)
+	}
+	v.Source = loc
+	return v
 }
 
 // recordSynthesizedBrackets stamps the paren bracket kind onto an s-expression

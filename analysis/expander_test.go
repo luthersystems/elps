@@ -3,6 +3,7 @@
 package analysis
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -727,4 +728,75 @@ func TestExpandMacroDoesNotAliasCallerForm(t *testing.T) {
 				" ExpandMacro must build the macro's argument list the same way"+
 				" LEnv.evalSExprCells does")
 	})
+}
+
+// TestExpandMacroDoesNotRestampCallerSourceLocations is the analyzer-side
+// guard for elps#370, the sibling of #396 above: not the argument ARRAY this
+// time, but the source locations recorded on the caller's nodes.
+//
+// lisp.stampMacroExpansion runs at the end of every MacroCall — the one
+// ExpandMacro makes included — and rewrites LVal.Source on each expanded node
+// whose location is synthetic (nil, or Pos < 0). Macro arguments are not
+// evaluated, so they reach the expansion as the analyzer's own parse-tree
+// nodes; and the reader used to emit two nodes with synthetic locations of its
+// own, the "lisp:function" head behind #' and the nil-source "lisp:expr" head
+// behind #^. Those were nodes the stamp would write into.
+//
+// This is a GUARD, not a catch: it passes on main. The stamp does fire on this
+// path, but its call site is env.Loc, and an expander env that has just
+// finished loading macros is left pointing at lisp.nativeSource — so the write
+// lands the same value the node already held and moves nothing observable. The
+// damage was demonstrable on the lisp side, where the call site is a real
+// location (lisp's TestMacroExpansionDoesNotRestampCallerParseTree, and
+// TestMacroExpansionSharedParseTreeIsRaceFree under -race).
+//
+// It is worth pinning here anyway, because this is where a moved position
+// costs the most. Position information is the analyzer's output — hover
+// ranges, go-to-definition and diagnostics are computed from it — and since
+// #359 the LSP holds this tree across requests in workspaceRefs and expands
+// over it from NumCPU workers. Whether the stamp's call site is real depends
+// on nothing more than which form the expander env last evaluated.
+//
+// The fix is in the reader: rdparser now gives those synthesized heads the
+// real location of the prefix token they stand for, so there is no node left
+// in a parsed form for the stamp to claim.
+func TestExpandMacroDoesNotRestampCallerSourceLocations(t *testing.T) {
+	env := newTestEnv(t)
+	evalSource(t, env, `
+(defmacro ident (x) x)
+(defun target () 1)`)
+
+	// Parsed, not hand-built: the point is that these are READER nodes, and
+	// only the reader produced the synthetic locations at issue.
+	s := token.NewScanner("caller.lisp", strings.NewReader(`(ident #'target)`))
+	exprs, err := rdparser.New(s).ParseProgram()
+	require.NoError(t, err)
+	require.Len(t, exprs, 1)
+	form := exprs[0]
+
+	type located struct{ desc, loc string }
+	var walk func(v *lisp.LVal, path string) []located
+	walk = func(v *lisp.LVal, path string) []located {
+		loc := "<nil>"
+		if v.Source != nil {
+			loc = v.Source.String()
+		}
+		out := []located{{path + "/" + v.Type.String() + " " + v.Str, loc}}
+		for i, c := range v.Cells {
+			out = append(out, walk(c, fmt.Sprintf("%s/%d", path, i))...)
+		}
+		return out
+	}
+
+	before := walk(form, "")
+	expander := &EnvMacroExpander{Env: env}
+	expanded := expander.ExpandMacro(form, lisp.DefaultUserPackage)
+	require.NotNil(t, expanded, "expansion should succeed")
+	after := walk(form, "")
+
+	require.Len(t, after, len(before))
+	for i := range before {
+		assert.Equal(t, before[i].loc, after[i].loc,
+			"expansion moved the source location of %s in the analyzer's parse tree", before[i].desc)
+	}
 }

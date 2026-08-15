@@ -54,6 +54,12 @@ so `:1` is only useful as data.
 Numbers can be either int or floating point and will be converted between the
 two forms as necessary.
 
+A float carries only 53 bits of integer precision, which matters when numbers
+arrive from outside the program: `json:load-string` and its siblings decode
+every JSON number as a float by default and silently round integers above
+2^53.  See [JSON numbers and integer
+precision](#json-numbers-and-integer-precision).
+
 ### Strings
 
 Strings are a sequence of utf-8 text delimited by double quotes `"`.  Strings
@@ -687,6 +693,230 @@ associates the type symbol with user data which can be any value.
 The core language only provides low-level functionality for defining and
 working with custom types.  For the time being it is left it up to the
 application to create more powerful abstractions over typed data.
+
+### JSON numbers and integer precision
+
+**By default `json:load-string`, `json:load-bytes` and `json:load-message`
+decode every JSON number as a float, and silently round any integer larger
+than 2^53.**  This is the single sharpest edge in the standard library, so it
+gets a section of its own.
+
+A float carries 53 bits of integer precision.  Above that the nearest
+representable float is not the integer in the document, and the difference is
+not reported anywhere:
+
+```lisp
+elps> (json:dump-string (json:load-string "9007199254740993"))
+"9007199254740992"
+elps> (json:dump-string (json:load-string "9223372036854775807"))
+"9223372036854776000"
+```
+
+The first has drifted by 1.  The second — an int64 maximum, the shape of a
+great many machine-generated identifiers — has drifted by 193, and is no
+longer even an int64.
+
+What makes this a footgun rather than a rounding error is that **nothing
+signals**.  The corrupted value still compares `=` to the integer it was
+supposed to be, so a program can read a corrupted identifier, check it against
+the value it expected, match, and carry on:
+
+```lisp
+elps> (= 9007199254740993 (json:load-string "9007199254740993"))
+true
+elps> (= (json:load-string "9007199254740993") (json:load-string "9007199254740992"))
+true
+```
+
+Two *different* documents are indistinguishable once loaded.  The only thing
+that gives it away is the type, and only if you go looking:
+
+```lisp
+elps> (type (json:load-string "1"))
+'float
+```
+
+#### Opting in with `:exact-integers`
+
+Every `json:load*` function takes an `:exact-integers` keyword.  With it, a
+JSON number **written as an integer** — no `.`, no exponent — decodes to a
+lisp int holding its exact value:
+
+```lisp
+elps> (json:dump-string (json:load-string "9007199254740993" :exact-integers true))
+"9007199254740993"
+elps> (json:dump-string (json:load-string "9223372036854775807" :exact-integers true))
+"9223372036854775807"
+elps> (= (json:load-string "9007199254740993" :exact-integers true)
+         (json:load-string "9007199254740992" :exact-integers true))
+false
+elps> (json:dump-string
+        (json:load-string "{\"id\": 9007199254740993}" :exact-integers true))
+"{\"id\":9007199254740993}"
+```
+
+The rule is **syntactic**: it looks at how the number is written, never at the
+value it denotes.  That is deliberate.  A rule that depends only on the bytes
+of a document gives every reader of those bytes the same answer, without
+depending on shared floating-point behaviour — which is the property that
+matters where this package decodes replicated state.
+
+#### It changes more than the large numbers
+
+`:exact-integers` is not a fix that applies only to the values that were
+broken.  *Every* integer-shaped number in the document becomes an int, down to
+`3`:
+
+```lisp
+elps> (type (get (json:load-string "{\"count\": 3}") "count"))
+'float
+elps> (type (get (json:load-string "{\"count\": 3}" :exact-integers true) "count"))
+'int
+```
+
+So `(type x)`, `int?`, `float?`, `to-string` and anything that requires an
+integer all change with it:
+
+```lisp
+elps> (int? (json:load-string "3" :exact-integers true))
+true
+elps> (float? (json:load-string "3" :exact-integers true))
+false
+elps> (to-string (json:load-string "9007199254740993"))
+"9.007199254740992e+15"
+elps> (to-string (json:load-string "9007199254740993" :exact-integers true))
+"9007199254740993"
+```
+
+Some of that is code that starts working.  `nth` rejects a float index, so an
+index read out of a JSON document is unusable today and usable under the
+option:
+
+```lisp
+elps> (nth (vector "a" "b" "c") (json:load-string "1"))
+error: lisp:nth: second argument is not an integer: float
+elps> (nth (vector "a" "b" "c") (json:load-string "1" :exact-integers true))
+"b"
+```
+
+Some of it is code that starts failing, which is the point of the next
+section.
+
+#### Oversized literals fail loudly
+
+Under the option an integer literal too large for a lisp int is an error —
+the catchable condition `json:integer-range-error` — instead of a rounded
+float.  A document that loaded before can now fail:
+
+```lisp
+elps> (json:dump-string (json:load-string "9223372036854775808"))
+"9223372036854776000"
+elps> (json:load-string "9223372036854775808" :exact-integers true)
+error: json:integer-range-error: json:load-string: json integer does not fit in a lisp int: 9223372036854775808
+```
+
+That is deliberate: a value elps cannot hold should say so rather than become
+a different value.  Handle it like any other condition:
+
+```lisp
+elps> (handler-bind ([json:integer-range-error (lambda (c &rest args) (list c args))])
+        (json:load-string "{\"id\": 9223372036854775808}" :exact-integers true))
+'('json:integer-range-error '("json integer does not fit in a lisp int: 9223372036854775808"))
+```
+
+Malformed input is still catchable as `json:syntax-error` under the option, so
+an existing `handler-bind` does not quietly stop firing.
+
+#### Numbers with a fraction or an exponent are unchanged
+
+The syntactic rule means anything written with a `.` or an `e` is untouched
+and still decodes as a float, exactly as it does by default:
+
+```lisp
+elps> (type (json:load-string "1.5" :exact-integers true))
+'float
+elps> (type (json:load-string "1.0" :exact-integers true))
+'float
+elps> (type (json:load-string "1e2" :exact-integers true))
+'float
+elps> (json:dump-string (json:load-string "-0" :exact-integers true))
+"-0"
+```
+
+`-0` is excluded on purpose so that it keeps re-serializing as `-0` rather
+than as `0`.
+
+#### Two edges worth knowing
+
+**Exponent form normalizes on a dump.**  Because the rule is syntactic and
+`json:dump` renders float text in its own normal form, a number written as
+`100e7` loads as a float, dumps as plain digits, and a *re-read* of that
+output makes it an int:
+
+```lisp
+elps> (type (json:load-string "100e7" :exact-integers true))
+'float
+elps> (json:dump-string (json:load-string "100e7" :exact-integers true))
+"1000000000"
+elps> (type (json:load-string "1000000000" :exact-integers true))
+'int
+```
+
+The value is correct at every step and stable from the second read onwards;
+what changed is the document, not the value, and every node reading the same
+bytes still agrees.  Machine-generated JSON does not hit this — Go,
+JavaScript and Python all render `1e9` as plain digits — so it is a footgun
+for hand-written JSON inside a phylum, not a data-loss risk.
+
+**An oversized literal is accepted when it is already canonical float text.**
+This is the one exception to the range error above:
+
+```lisp
+elps> (type (json:load-string "10000000000000000000" :exact-integers true))
+'float
+elps> (json:dump-string (json:load-string "10000000000000000000" :exact-integers true))
+"10000000000000000000"
+elps> (json:dump-string 1e19)
+"10000000000000000000"
+```
+
+elps renders every float between 2^63 and 1e21 as plain digits, so without
+this exception a program holding an ordinary float of `1e19` could dump its
+state and then be unable to read it back.  Nothing is discarded, so nothing is
+hidden.  A literal that is *not* canonical float text still fails loudly —
+`9223372036854775808` is rejected, as shown above.
+
+#### `:string-numbers` still wins
+
+When both keywords are given, `:string-numbers` takes precedence, so a caller
+already using it sees no change at all:
+
+```lisp
+elps> (type (json:load-string "9007199254740993" :string-numbers true :exact-integers true))
+'string
+elps> (json:load-string "9007199254740993" :string-numbers true :exact-integers true)
+"9007199254740993"
+```
+
+#### Why it is opt-in
+
+Turning this on by default would change `(type x)` for every integer in every
+document at once.  Two nodes running different elps versions would then
+disagree about what the same bytes *mean* — one seeing `'float` where the
+other sees `'int` — which is exactly the kind of divergence a replicated
+system cannot absorb.  A per-call-site keyword lets a program migrate one call
+at a time and observe each change; `json:use-exact-integers` flips the default
+for a whole process once that migration is done.
+
+**Practical advice.**  If a document can carry a number above 2^53 — an
+account number, a nanosecond timestamp, a snowflake id — either turn
+`:exact-integers` on at that call site, or carry the value as a JSON *string*
+and convert it explicitly:
+
+```lisp
+elps> (to-int (get (json:load-string "{\"id\": \"9007199254740993\"}") "id"))
+9007199254740993
+```
 
 ## Packages
 

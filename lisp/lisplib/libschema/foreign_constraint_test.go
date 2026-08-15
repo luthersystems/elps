@@ -191,6 +191,14 @@ func TestWhenRejectsNonMapInput(t *testing.T) {
 // the proof that the exported constructor really produces something the
 // package accepts -- otherwise "we kept the extension point" would be a claim
 // with nothing behind it.
+//
+// NOTE: this test deliberately mints ONE validator and binds it into six
+// separate runtimes. Issue #364 read that as the test misusing the API. It is
+// the other way round: sharing one validator across runtimes is the natural
+// reading of an extension point, so NewValidator was made to support it rather
+// than the test made to avoid it. See multi_runtime_test.go, and the RUNTIME
+// SCOPE section of NewValidator's doc comment. Do not "fix" this to mint one
+// validator per environment -- that would delete the coverage.
 func TestNewValidatorIsAcceptedAsAConstraint(t *testing.T) {
 	even := libschema.NewValidator(lisp.Formals("input"),
 		func(_ *lisp.LEnv, input *lisp.LVal) *lisp.LVal {
