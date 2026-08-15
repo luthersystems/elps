@@ -1,0 +1,291 @@
+# The REAL benchstat comparison from luthersystems/elps PR #411
+# (claude/fix-410-native-roundtrip @ 74c447d), copied verbatim out of the
+# benchmark workflow's PR comment. This is the run that fired the gate for the
+# first time on a consciously-accepted regression, and it is the fixture the
+# waiver mechanism is proved against.
+#
+# Run through the gate with waivers switched off, TWO rows in the whole
+# comparison sit at or above a gate -- both of them allocation columns of the
+# same benchmark, both judged against BENCH_ALLOC_THRESHOLD_PCT (5):
+#
+#     Encode-2  B/op       10.05Ki -> 11.30Ki  +12.45% (p=0.000 n=10)
+#     Encode-2  allocs/op    214.0 ->   231.0   +7.94% (p=0.000 n=10)
+#
+# The same 17 extra allocations, ~1.25 KiB of them, counted and weighed. Both
+# are waived in scripts/benchstat-waivers.txt, each with its own ceiling.
+#
+# The third column of the same benchmark is NOT waived:
+#
+#     Encode-2  sec/op     18.63u -> 20.68u   +11.00% (p=0.000 n=10)
+#
+# It moves, and significantly, but its gate is the 15% timing threshold and it
+# is under it. Leaving it unwaived keeps the timing cost of this change watched
+# at full strength.
+#
+# Everything else in the run is flat: every row in lisp and rdparser is "~" or
+# far under gate, and every realistic JSON benchmark -- Package/dump-object,
+# dump-array, dump-nested, dump-github -- is unchanged on all three metrics,
+# which is the evidence that the cost is confined to the microbenchmark whose
+# fixtures contain natives.
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/elps/lisp
+                             │     base     │                 pr                  │
+                             │    sec/op    │    sec/op     vs base               │
+EnvGet-2                        15.26m ± 9%   15.18m ±  6%       ~ (p=0.912 n=10)
+EnvFunCallBuiltin-2             886.4µ ± 6%   894.6µ ±  5%       ~ (p=1.000 n=10)
+EnvFunCallRecursion-2           8.378m ± 4%   8.437m ±  5%       ~ (p=0.796 n=10)
+EnvFunCallTailRec-2             3.526m ± 4%   3.473m ±  5%       ~ (p=0.247 n=10)
+EnvFunCallPos-2                 1.698m ± 3%   1.698m ±  4%       ~ (p=0.853 n=10)
+EnvFunCallKey-2                 1.993m ± 3%   1.960m ±  6%       ~ (p=0.529 n=10)
+EnvFunCallOpt-2                 1.686m ± 6%   1.696m ±  3%       ~ (p=0.393 n=10)
+EnvFunCallVar-2                 2.227m ± 3%   2.197m ±  3%       ~ (p=0.165 n=10)
+FormatStringSimple-2            696.2µ ± 3%   687.9µ ±  4%       ~ (p=0.529 n=10)
+FormatStringMultiple-2          751.6µ ± 3%   754.1µ ±  3%       ~ (p=0.481 n=10)
+FormatStringNoPlaceholders-2    636.9µ ± 1%   641.6µ ±  2%       ~ (p=0.280 n=10)
+FormatStringManyTokens-2       1012.3µ ± 2%   998.1µ ±  2%       ~ (p=0.218 n=10)
+FormatStringMixed-2             915.0µ ± 2%   912.2µ ±  5%       ~ (p=0.796 n=10)
+FormatStringPositional-2        785.4µ ± 3%   807.3µ ±  3%  +2.78% (p=0.023 n=10)
+FormatStringConcat-2            710.4µ ± 3%   713.7µ ±  2%       ~ (p=0.579 n=10)
+MacroDefun-2                    34.10µ ± 3%   34.11µ ±  4%       ~ (p=0.971 n=10)
+String/int-2                    10.92n ± 0%   10.94n ±  0%  +0.18% (p=0.001 n=10)
+String/string-2                 259.1n ± 0%   258.6n ±  1%       ~ (p=0.578 n=10)
+String/list-2                   237.1n ± 2%   231.8n ±  4%       ~ (p=0.149 n=10)
+String/wide-2                   1.264µ ± 1%   1.271µ ±  2%       ~ (p=0.565 n=10)
+String/map-2                    1.373µ ± 3%   1.362µ ±  3%       ~ (p=0.670 n=10)
+String/vector-2                 1.710µ ± 4%   1.707µ ±  4%       ~ (p=0.952 n=10)
+String/nested-2                 2.857µ ± 2%   2.874µ ±  3%       ~ (p=0.869 n=10)
+String/deep-2                   4.963µ ± 5%   4.872µ ±  3%       ~ (p=0.631 n=10)
+Equal/int-2                     3.997n ± 2%   4.073n ±  1%  +1.89% (p=0.011 n=10)
+Equal/string-2                  5.252n ± 1%   5.293n ±  1%       ~ (p=0.089 n=10)
+Equal/list-2                    20.79n ± 1%   20.68n ±  1%       ~ (p=0.147 n=10)
+Equal/wide-2                    288.9n ± 0%   288.9n ±  0%       ~ (p=0.493 n=10)
+Equal/map-2                     1.213µ ± 7%   1.189µ ± 12%       ~ (p=0.218 n=10)
+Equal/vector-2                  1.249µ ± 8%   1.284µ ±  4%       ~ (p=0.469 n=10)
+Equal/nested-2                  1.370µ ± 6%   1.387µ ±  5%       ~ (p=1.000 n=10)
+Equal/deep-2                    401.9n ± 1%   403.1n ±  0%       ~ (p=0.324 n=10)
+EqualDistinct/int-2             4.064n ± 0%   4.081n ±  1%  +0.41% (p=0.007 n=10)
+EqualDistinct/string-2          5.314n ± 1%   5.298n ±  0%  -0.31% (p=0.030 n=10)
+EqualDistinct/list-2            20.73n ± 1%   20.71n ±  0%       ~ (p=0.985 n=10)
+EqualDistinct/wide-2            291.6n ± 0%   291.6n ±  1%       ~ (p=0.617 n=10)
+EqualDistinct/map-2             1.234µ ± 3%   1.208µ ± 10%       ~ (p=0.529 n=10)
+EqualDistinct/vector-2          1.286µ ± 3%   1.262µ ± 11%       ~ (p=0.592 n=10)
+EqualDistinct/nested-2          1.358µ ± 6%   1.380µ ±  9%       ~ (p=0.469 n=10)
+EqualDistinct/deep-2            402.5n ± 0%   403.1n ±  0%       ~ (p=0.362 n=10)
+geomean                         7.080µ        7.074µ        -0.08%
+
+                             │      base      │                  pr                   │
+                             │      B/op      │     B/op      vs base                 │
+EnvGet-2                       10.20Mi ± 0%     10.20Mi ± 0%       ~ (p=0.065 n=10)
+EnvFunCallBuiltin-2            829.4Ki ± 0%     829.4Ki ± 0%       ~ (p=0.141 n=10)
+EnvFunCallRecursion-2          3.768Mi ± 0%     3.768Mi ± 0%       ~ (p=0.229 n=10)
+EnvFunCallTailRec-2            3.454Mi ± 0%     3.454Mi ± 0%  +0.00% (p=0.016 n=10)
+EnvFunCallPos-2                1.813Mi ± 0%     1.813Mi ± 0%       ~ (p=0.423 n=10)
+EnvFunCallKey-2                1.889Mi ± 0%     1.889Mi ± 0%       ~ (p=0.147 n=10)
+EnvFunCallOpt-2                1.813Mi ± 0%     1.813Mi ± 0%       ~ (p=0.052 n=10)
+EnvFunCallVar-2                2.385Mi ± 0%     2.385Mi ± 0%       ~ (p=0.492 n=10)
+FormatStringSimple-2           727.9Ki ± 0%     727.9Ki ± 0%       ~ (p=1.000 n=10) ¹
+FormatStringMultiple-2         798.2Ki ± 0%     798.2Ki ± 0%       ~ (p=0.474 n=10)
+FormatStringNoPlaceholders-2   696.6Ki ± 0%     696.6Ki ± 0%       ~ (p=1.000 n=10)
+FormatStringManyTokens-2       1.008Mi ± 0%     1.008Mi ± 0%       ~ (p=1.000 n=10)
+FormatStringMixed-2            817.7Ki ± 0%     817.7Ki ± 0%  -0.00% (p=0.035 n=10)
+FormatStringPositional-2       798.2Ki ± 0%     798.2Ki ± 0%       ~ (p=1.000 n=10)
+FormatStringConcat-2           727.9Ki ± 0%     727.9Ki ± 0%       ~ (p=1.000 n=10) ¹
+MacroDefun-2                   33.30Ki ± 0%     33.30Ki ± 0%       ~ (p=0.271 n=10)
+String/int-2                     0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=10) ¹
+String/string-2                  64.00 ± 0%       64.00 ± 0%       ~ (p=1.000 n=10) ¹
+String/list-2                    101.0 ± 0%       101.0 ± 0%       ~ (p=1.000 n=10) ¹
+String/wide-2                    640.0 ± 0%       640.0 ± 0%       ~ (p=1.000 n=10) ¹
+String/map-2                   1.258Ki ± 0%     1.258Ki ± 0%       ~ (p=1.000 n=10) ¹
+String/vector-2                1.547Ki ± 0%     1.547Ki ± 0%       ~ (p=1.000 n=10) ¹
+String/nested-2                3.258Ki ± 0%     3.258Ki ± 0%       ~ (p=1.000 n=10) ¹
+String/deep-2                  6.922Ki ± 0%     6.922Ki ± 0%       ~ (p=1.000 n=10) ¹
+Equal/int-2                      0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=10) ¹
+Equal/string-2                   0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=10) ¹
+Equal/list-2                     0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=10) ¹
+Equal/wide-2                     0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=10) ¹
+Equal/map-2                    1.938Ki ± 0%     1.938Ki ± 0%       ~ (p=1.000 n=10) ¹
+Equal/vector-2                 1.938Ki ± 0%     1.938Ki ± 0%       ~ (p=1.000 n=10) ¹
+Equal/nested-2                 1.938Ki ± 0%     1.938Ki ± 0%       ~ (p=1.000 n=10) ¹
+Equal/deep-2                     0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/int-2              0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/string-2           0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/list-2             0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/wide-2             0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/map-2            1.938Ki ± 0%     1.938Ki ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/vector-2         1.938Ki ± 0%     1.938Ki ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/nested-2         1.938Ki ± 0%     1.938Ki ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/deep-2             0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                     ²                 -0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                             │     base      │                  pr                  │
+                             │   allocs/op   │  allocs/op   vs base                 │
+EnvGet-2                       128.0k ± 0%     128.0k ± 0%       ~ (p=1.000 n=10)
+EnvFunCallBuiltin-2            8.015k ± 0%     8.015k ± 0%       ~ (p=1.000 n=10) ¹
+EnvFunCallRecursion-2          40.08k ± 0%     40.08k ± 0%       ~ (p=1.000 n=10) ¹
+EnvFunCallTailRec-2            44.07k ± 0%     44.07k ± 0%       ~ (p=1.000 n=10) ¹
+EnvFunCallPos-2                22.06k ± 0%     22.06k ± 0%       ~ (p=1.000 n=10) ¹
+EnvFunCallKey-2                23.06k ± 0%     23.06k ± 0%       ~ (p=1.000 n=10) ¹
+EnvFunCallOpt-2                22.06k ± 0%     22.06k ± 0%       ~ (p=1.000 n=10) ¹
+EnvFunCallVar-2                29.06k ± 0%     29.06k ± 0%       ~ (p=1.000 n=10) ¹
+FormatStringSimple-2           9.015k ± 0%     9.015k ± 0%       ~ (p=1.000 n=10) ¹
+FormatStringMultiple-2         9.015k ± 0%     9.015k ± 0%       ~ (p=1.000 n=10) ¹
+FormatStringNoPlaceholders-2   8.015k ± 0%     8.015k ± 0%       ~ (p=1.000 n=10) ¹
+FormatStringManyTokens-2       9.015k ± 0%     9.015k ± 0%       ~ (p=1.000 n=10) ¹
+FormatStringMixed-2            10.02k ± 0%     10.02k ± 0%       ~ (p=1.000 n=10) ¹
+FormatStringPositional-2       9.015k ± 0%     9.015k ± 0%       ~ (p=1.000 n=10) ¹
+FormatStringConcat-2           9.015k ± 0%     9.015k ± 0%       ~ (p=1.000 n=10) ¹
+MacroDefun-2                    475.0 ± 0%      475.0 ± 0%       ~ (p=1.000 n=10) ¹
+String/int-2                    0.000 ± 0%      0.000 ± 0%       ~ (p=1.000 n=10) ¹
+String/string-2                 2.000 ± 0%      2.000 ± 0%       ~ (p=1.000 n=10) ¹
+String/list-2                   4.000 ± 0%      4.000 ± 0%       ~ (p=1.000 n=10) ¹
+String/wide-2                   4.000 ± 0%      4.000 ± 0%       ~ (p=1.000 n=10) ¹
+String/map-2                    25.00 ± 0%      25.00 ± 0%       ~ (p=1.000 n=10) ¹
+String/vector-2                 30.00 ± 0%      30.00 ± 0%       ~ (p=1.000 n=10) ¹
+String/nested-2                 49.00 ± 0%      49.00 ± 0%       ~ (p=1.000 n=10) ¹
+String/deep-2                   82.00 ± 0%      82.00 ± 0%       ~ (p=1.000 n=10) ¹
+Equal/int-2                     0.000 ± 0%      0.000 ± 0%       ~ (p=1.000 n=10) ¹
+Equal/string-2                  0.000 ± 0%      0.000 ± 0%       ~ (p=1.000 n=10) ¹
+Equal/list-2                    0.000 ± 0%      0.000 ± 0%       ~ (p=1.000 n=10) ¹
+Equal/wide-2                    0.000 ± 0%      0.000 ± 0%       ~ (p=1.000 n=10) ¹
+Equal/map-2                     26.00 ± 0%      26.00 ± 0%       ~ (p=1.000 n=10) ¹
+Equal/vector-2                  26.00 ± 0%      26.00 ± 0%       ~ (p=1.000 n=10) ¹
+Equal/nested-2                  26.00 ± 0%      26.00 ± 0%       ~ (p=1.000 n=10) ¹
+Equal/deep-2                    0.000 ± 0%      0.000 ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/int-2             0.000 ± 0%      0.000 ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/string-2          0.000 ± 0%      0.000 ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/list-2            0.000 ± 0%      0.000 ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/wide-2            0.000 ± 0%      0.000 ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/map-2             26.00 ± 0%      26.00 ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/vector-2          26.00 ± 0%      26.00 ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/nested-2          26.00 ± 0%      26.00 ± 0%       ~ (p=1.000 n=10) ¹
+EqualDistinct/deep-2            0.000 ± 0%      0.000 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                    ²                +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+pkg: github.com/luthersystems/elps/lisp/lisplib/libjson
+                              │    base     │                  pr                  │
+                              │   sec/op    │    sec/op     vs base                │
+Encode-2                        18.63µ ± 3%   20.68µ ± 11%  +11.00% (p=0.000 n=10)
+Encode_stringNumbers-2          2.703µ ± 3%   2.688µ ±  3%        ~ (p=0.101 n=10)
+Package/$load-2                 1.287m ± 1%   1.288m ±  2%        ~ (p=0.796 n=10)
+Package/load-object-2           2.208m ± 6%   2.228m ±  2%        ~ (p=0.247 n=10)
+Package/load-array-2            2.873m ± 4%   2.859m ±  3%        ~ (p=0.579 n=10)
+Package/load-nested-2           3.319m ± 2%   3.335m ±  2%        ~ (p=0.684 n=10)
+Package/load-github-2           67.18m ± 1%   66.91m ±  1%        ~ (p=0.631 n=10)
+Package/get-nested-baseline-2   46.56m ± 1%   46.93m ±  1%        ~ (p=0.123 n=10)
+Package/dump-object-2           1.880m ± 4%   1.900m ±  5%        ~ (p=0.481 n=10)
+Package/dump-array-2            1.049m ± 1%   1.051m ±  3%        ~ (p=0.971 n=10)
+Package/dump-nested-2           2.922m ± 2%   2.971m ±  5%        ~ (p=0.481 n=10)
+Package/dump-github-2           45.88m ± 2%   46.19m ±  1%        ~ (p=0.218 n=10)
+EncodeNativeSmall-2                           1.322µ ±  3%
+EncodeNativeLarge-2                           89.32µ ±  2%
+geomean                         1.796m        875.1µ         +1.24%
+
+                              │     base     │                   pr                   │
+                              │     B/op     │     B/op      vs base                  │
+Encode-2                        10.05Ki ± 0%   11.30Ki ± 0%  +12.45% (p=0.000 n=10)
+Encode_stringNumbers-2          1.297Ki ± 0%   1.297Ki ± 0%        ~ (p=1.000 n=10) ¹
+Package/$load-2                 949.1Ki ± 0%   949.1Ki ± 0%   -0.00% (p=0.033 n=10)
+Package/load-object-2           1.437Mi ± 0%   1.437Mi ± 0%        ~ (p=0.299 n=10)
+Package/load-array-2            2.223Mi ± 0%   2.223Mi ± 0%        ~ (p=0.403 n=10)
+Package/load-nested-2           2.147Mi ± 0%   2.147Mi ± 0%        ~ (p=0.925 n=10)
+Package/load-github-2           32.73Mi ± 0%   32.73Mi ± 0%        ~ (p=0.751 n=10)
+Package/get-nested-baseline-2   34.61Mi ± 0%   34.61Mi ± 0%        ~ (p=0.383 n=10)
+Package/dump-object-2           1.735Mi ± 0%   1.735Mi ± 0%        ~ (p=0.784 n=10)
+Package/dump-array-2            807.5Ki ± 0%   807.5Ki ± 0%        ~ (p=1.000 n=10)
+Package/dump-nested-2           2.835Mi ± 0%   2.835Mi ± 0%        ~ (p=0.512 n=10)
+Package/dump-github-2           51.03Mi ± 0%   51.03Mi ± 0%        ~ (p=0.227 n=10)
+EncodeNativeSmall-2                              848.0 ± 0%
+EncodeNativeLarge-2                            45.51Ki ± 0%
+geomean                         1.271Mi        610.4Ki        +0.98%
+¹ all samples are equal
+
+                              │    base     │                  pr                  │
+                              │  allocs/op  │  allocs/op   vs base                 │
+Encode-2                         214.0 ± 0%    231.0 ± 0%  +7.94% (p=0.000 n=10)
+Encode_stringNumbers-2           30.00 ± 0%    30.00 ± 0%       ~ (p=1.000 n=10) ¹
+Package/$load-2                 23.01k ± 0%   23.01k ± 0%       ~ (p=1.000 n=10)
+Package/load-object-2           25.03k ± 0%   25.03k ± 0%       ~ (p=1.000 n=10) ¹
+Package/load-array-2            41.03k ± 0%   41.03k ± 0%       ~ (p=1.000 n=10) ¹
+Package/load-nested-2           39.03k ± 0%   39.03k ± 0%       ~ (p=1.000 n=10) ¹
+Package/load-github-2           457.0k ± 0%   457.0k ± 0%       ~ (p=1.000 n=10)
+Package/get-nested-baseline-2   504.1k ± 0%   504.1k ± 0%       ~ (p=0.400 n=10)
+Package/dump-object-2           23.04k ± 0%   23.04k ± 0%       ~ (p=1.000 n=10) ¹
+Package/dump-array-2            10.03k ± 0%   10.03k ± 0%       ~ (p=1.000 n=10) ¹
+Package/dump-nested-2           37.06k ± 0%   37.06k ± 0%       ~ (p=1.000 n=10) ¹
+Package/dump-github-2           387.5k ± 0%   387.5k ± 0%       ~ (p=0.370 n=10)
+EncodeNativeSmall-2                            17.00 ± 0%
+EncodeNativeLarge-2                           1.159k ± 0%
+geomean                         20.17k        9.973k       +0.64%
+¹ all samples are equal
+
+pkg: github.com/luthersystems/elps/parser/rdparser
+                                       │    base     │                 pr                 │
+                                       │   sec/op    │   sec/op     vs base               │
+Parser/approx.lisp-2                     187.0µ ± 4%   187.6µ ± 2%       ~ (p=0.796 n=10)
+Parser/complex.lisp-2                    530.9µ ± 4%   539.3µ ± 3%       ~ (p=0.481 n=10)
+Parser/diff.lisp-2                       222.6µ ± 1%   222.6µ ± 2%       ~ (p=0.971 n=10)
+Parser/scheme-math.lisp-2                1.240m ± 2%   1.264m ± 2%  +1.89% (p=0.035 n=10)
+Parser/sicp.lisp-2                       843.4µ ± 2%   849.8µ ± 2%       ~ (p=0.280 n=10)
+Parser/stream.lisp-2                     735.5µ ± 2%   728.8µ ± 1%       ~ (p=0.190 n=10)
+ParserFaultTolerant/approx.lisp-2        184.3µ ± 2%   183.2µ ± 2%       ~ (p=0.631 n=10)
+ParserFaultTolerant/complex.lisp-2       536.4µ ± 1%   534.2µ ± 2%       ~ (p=0.393 n=10)
+ParserFaultTolerant/diff.lisp-2          219.9µ ± 3%   220.2µ ± 2%       ~ (p=0.436 n=10)
+ParserFaultTolerant/scheme-math.lisp-2   1.252m ± 1%   1.265m ± 2%       ~ (p=0.436 n=10)
+ParserFaultTolerant/sicp.lisp-2          835.8µ ± 2%   843.2µ ± 1%       ~ (p=0.190 n=10)
+ParserFaultTolerant/stream.lisp-2        731.3µ ± 2%   741.7µ ± 1%       ~ (p=0.218 n=10)
+geomean                                  506.2µ        508.7µ       +0.51%
+
+                                       │     base     │                  pr                   │
+                                       │     B/op     │     B/op      vs base                 │
+Parser/approx.lisp-2                     239.5Ki ± 0%   239.5Ki ± 0%       ~ (p=1.000 n=10)
+Parser/complex.lisp-2                    464.4Ki ± 0%   464.4Ki ± 0%       ~ (p=0.164 n=10)
+Parser/diff.lisp-2                       269.3Ki ± 0%   269.3Ki ± 0%       ~ (p=1.000 n=10)
+Parser/scheme-math.lisp-2                907.5Ki ± 0%   907.5Ki ± 0%       ~ (p=0.312 n=10)
+Parser/sicp.lisp-2                       680.9Ki ± 0%   680.9Ki ± 0%       ~ (p=0.056 n=10)
+Parser/stream.lisp-2                     593.3Ki ± 0%   593.3Ki ± 0%       ~ (p=0.148 n=10)
+ParserFaultTolerant/approx.lisp-2        239.5Ki ± 0%   239.5Ki ± 0%       ~ (p=1.000 n=10)
+ParserFaultTolerant/complex.lisp-2       464.4Ki ± 0%   464.4Ki ± 0%       ~ (p=0.975 n=10)
+ParserFaultTolerant/diff.lisp-2          269.3Ki ± 0%   269.3Ki ± 0%       ~ (p=1.000 n=10) ¹
+ParserFaultTolerant/scheme-math.lisp-2   907.5Ki ± 0%   907.5Ki ± 0%       ~ (p=1.000 n=10)
+ParserFaultTolerant/sicp.lisp-2          680.9Ki ± 0%   680.9Ki ± 0%       ~ (p=0.729 n=10)
+ParserFaultTolerant/stream.lisp-2        593.3Ki ± 0%   593.3Ki ± 0%       ~ (p=0.637 n=10)
+geomean                                  471.5Ki        471.5Ki       +0.00%
+¹ all samples are equal
+
+                                       │    base     │                  pr                  │
+                                       │  allocs/op  │  allocs/op   vs base                 │
+Parser/approx.lisp-2                     3.565k ± 0%   3.565k ± 0%       ~ (p=1.000 n=10) ¹
+Parser/complex.lisp-2                    10.79k ± 0%   10.79k ± 0%       ~ (p=1.000 n=10) ¹
+Parser/diff.lisp-2                       4.233k ± 0%   4.233k ± 0%       ~ (p=1.000 n=10) ¹
+Parser/scheme-math.lisp-2                24.86k ± 0%   24.86k ± 0%       ~ (p=1.000 n=10) ¹
+Parser/sicp.lisp-2                       16.70k ± 0%   16.70k ± 0%       ~ (p=1.000 n=10) ¹
+Parser/stream.lisp-2                     14.63k ± 0%   14.63k ± 0%       ~ (p=1.000 n=10) ¹
+ParserFaultTolerant/approx.lisp-2        3.565k ± 0%   3.565k ± 0%       ~ (p=1.000 n=10) ¹
+ParserFaultTolerant/complex.lisp-2       10.79k ± 0%   10.79k ± 0%       ~ (p=1.000 n=10) ¹
+ParserFaultTolerant/diff.lisp-2          4.233k ± 0%   4.233k ± 0%       ~ (p=1.000 n=10) ¹
+ParserFaultTolerant/scheme-math.lisp-2   24.86k ± 0%   24.86k ± 0%       ~ (p=1.000 n=10) ¹
+ParserFaultTolerant/sicp.lisp-2          16.70k ± 0%   16.70k ± 0%       ~ (p=1.000 n=10) ¹
+ParserFaultTolerant/stream.lisp-2        14.63k ± 0%   14.63k ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                  9.982k        9.982k       +0.00%
+¹ all samples are equal
+
+                                       │     base     │                 pr                  │
+                                       │     B/s      │     B/s       vs base               │
+Parser/approx.lisp-2                     8.903Mi ± 4%   8.874Mi ± 2%       ~ (p=0.781 n=10)
+Parser/complex.lisp-2                    9.556Mi ± 4%   9.403Mi ± 3%       ~ (p=0.469 n=10)
+Parser/diff.lisp-2                       7.601Mi ± 1%   7.601Mi ± 2%       ~ (p=0.955 n=10)
+Parser/scheme-math.lisp-2                9.284Mi ± 2%   9.117Mi ± 1%  -1.80% (p=0.037 n=10)
+Parser/sicp.lisp-2                       8.202Mi ± 2%   8.140Mi ± 2%       ~ (p=0.270 n=10)
+Parser/stream.lisp-2                     9.227Mi ± 2%   9.308Mi ± 2%       ~ (p=0.210 n=10)
+ParserFaultTolerant/approx.lisp-2        9.027Mi ± 2%   9.084Mi ± 2%       ~ (p=0.617 n=10)
+ParserFaultTolerant/complex.lisp-2       9.456Mi ± 1%   9.494Mi ± 2%       ~ (p=0.404 n=10)
+ParserFaultTolerant/diff.lisp-2          7.691Mi ± 3%   7.687Mi ± 2%       ~ (p=0.481 n=10)
+ParserFaultTolerant/scheme-math.lisp-2   9.193Mi ± 1%   9.103Mi ± 2%       ~ (p=0.468 n=10)
+ParserFaultTolerant/sicp.lisp-2          8.278Mi ± 2%   8.206Mi ± 1%       ~ (p=0.196 n=10)
+ParserFaultTolerant/stream.lisp-2        9.279Mi ± 2%   9.151Mi ± 1%       ~ (p=0.209 n=10)
+geomean                                  8.783Mi        8.739Mi       -0.49%
