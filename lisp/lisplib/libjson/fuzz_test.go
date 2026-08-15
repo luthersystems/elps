@@ -210,6 +210,110 @@ func FuzzDumpJSON(f *testing.F) {
 	})
 }
 
+// FuzzDumpExactIntegers is FuzzDumpJSON's invariant -- whatever Dump emits,
+// Load must accept -- asked of the :exact-integers decoder instead of the
+// default one.
+//
+// It exists because of elps#412.  That change lets encodeNative skip the
+// elps#410 loadability check for libjson's own output, and the licence for the
+// skip is exactly this invariant.  FuzzDumpJSON tests it in both
+// string-numbers modes and in neither exact-integers mode, so before elps#412
+// the gap was theoretical; afterwards it is the premise of a check that no
+// longer runs.  A premise a fuzz target does not cover is an assumption, and
+// the whole point of the ticket was to settle these rather than assume them.
+//
+// The mode can refuse a number the default accepts -- that is what elps#350
+// bought -- so the risk is real rather than notional: it would take one
+// integer literal libjson emits and :exact-integers rejects to make
+// encoder.loadableBytes vouch for a document that does not load.  There is an
+// argument that it cannot happen (loadNumber falls back to a float only when
+// the literal is ALREADY appendJSONFloat's rendering, and appendJSONFloat is
+// the only float rendering this package emits, so the two sides cannot drift),
+// and TestOwnOutputLoadsWithExactIntegers pins the boundaries that argument
+// turns on.  This is the part that does not depend on the argument being
+// complete.
+//
+// Documents holding a NATIVE are out of scope here, as they are for
+// loadableBytes: a native's bytes are not this encoder's, they can hold a
+// thirty-digit integer this mode refuses, and that is precisely why
+// encoder.wroteNative exists.  fuzzval mints natives, so those runs are
+// skipped rather than asserted -- the target would otherwise report the
+// carve-out as a bug.
+func FuzzDumpExactIntegers(f *testing.F) {
+	for _, seed := range fuzzval.Seeds() {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		env := newJSONEnv(t)
+		gen := fuzzval.New(data, env)
+		v := gen.Value()
+
+		enc, err := libjson.Dump(v, false)
+		if err != nil {
+			return // Refusing a value it cannot represent is correct.
+		}
+		if containsNative(v) {
+			return // encoder.wroteNative: not vouched for, by design.
+		}
+
+		opts := libjson.LoadOpts{ExactIntegers: true}
+		back := libjson.LoadWith(enc, opts)
+		if back == nil {
+			t.Fatalf("LoadWith returned a nil LVal for Dump's output\n--- encoded ---\n%s", enc)
+		}
+		if back.Type == lisp.LError {
+			t.Fatalf("the :exact-integers decoder rejected Dump's own output: %s\n--- encoded ---\n%s\n--- value ---\n%s",
+				back, enc, v)
+		}
+
+		// And it is stable, for the same reason FuzzLoadExactIntegers asserts
+		// stability from the second decode: this mode's integer test is
+		// syntactic, and Dump normalises a float's text.
+		reenc, err := libjson.Dump(back, false)
+		if err != nil {
+			t.Fatalf("Dump rejected the value its own output decoded to: %v\n--- encoded ---\n%s", err, enc)
+		}
+		again := libjson.LoadWith(reenc, opts)
+		if again == nil || again.Type == lisp.LError {
+			t.Fatalf("the :exact-integers decoder rejected the re-encoded output: %v\n--- re-encoded ---\n%s", again, reenc)
+		}
+		if got, want := again.String(), back.String(); got != want {
+			t.Fatalf("the value drifted across a second round trip\n--- first decode ---\n%s\n--- second decode ---\n%s\n--- encoded ---\n%s",
+				want, got, enc)
+		}
+	})
+}
+
+// containsNative reports whether v holds a native anywhere, which is the
+// condition encoder.wroteNative records.  Depth is bounded by
+// lisp.NewCycleGuard's own limit rather than by a count here, because a
+// generated value can contain itself.
+func containsNative(v *lisp.LVal) bool {
+	found := false
+	seen := make(map[*lisp.LVal]bool)
+	var walk func(*lisp.LVal, int)
+	walk = func(v *lisp.LVal, depth int) {
+		if v == nil || found || depth > 64 || seen[v] {
+			return
+		}
+		seen[v] = true
+		if v.Type == lisp.LNative {
+			found = true
+			return
+		}
+		for _, c := range v.Cells {
+			walk(c, depth+1)
+		}
+		if v.Type == lisp.LSortMap {
+			for _, k := range v.MapKeys().Cells {
+				walk(v.MapGet(k), depth+1)
+			}
+		}
+	}
+	walk(v, 0)
+	return found
+}
+
 // newJSONEnv exists only so the generator can build tagged-values, which need
 // an LEnv to stamp a source location. libjson itself is package-level.
 func newJSONEnv(tb testing.TB) *lisp.LEnv {

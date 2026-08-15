@@ -42,11 +42,77 @@ func (e encodeInvalidNumberError) Error() string {
 // more word rounds the encoder up to the next size class, and every document
 // in the process -- almost none of which have anything to do with cycles --
 // pays the 16 bytes.  TestEncoderFitsItsSizeClass pins the size.
+//
+// What costs nothing is a bool.  stringNums leaves seven bytes of tail padding
+// before the struct rounds up to 112, so the two flags below sit in padding
+// the encoder was already paying for, and the size is unchanged --
+// TestEncoderFitsItsSizeClass would catch it if that ever stopped being true.
+// A WORD is what the paragraph above is about, and a word is still charged in
+// full.
 type encoder struct {
 	buf bytes.Buffer
 
 	scratch    [64]byte
 	stringNums bool
+
+	// nestedDeep and wroteNative record the two ways the bytes this encoder
+	// produces can fall outside what it is able to vouch for.  Both are read
+	// once, by loadableBytes, after the document is finished.
+	nestedDeep  bool
+	wroteNative bool
+}
+
+// loadableBytes reports whether this package can vouch, without reading them
+// back, that the bytes this encoder just wrote will load.
+//
+// The claim is exactly the FuzzDumpJSON invariant -- whatever Dump emits, Load
+// must accept -- so it is continuously tested rather than asserted here.  It
+// is not unconditional, though, which is the whole reason this function
+// exists.  Every number in the output was written by encodeInt or encodeFloat,
+// which refuse anything a float64 cannot carry, so the elps#410 literal cannot
+// appear; every string was written by encodeString, which escapes what
+// encoding/json escapes.  That leaves two gaps, and this reports the absence
+// of both:
+//
+//   - nestedDeep.  Nothing bounds how deep a lisp value nests, and
+//     encoding/json's DECODER stops at 10000, so a document nested deeper than
+//     that is one Dump writes and Load refuses.  That gap is real and predates
+//     this function -- `json:dump` of a 10001-deep value has always produced
+//     bytes `json:load` rejects -- and nothing here closes it; this only
+//     declines to make a claim about such a document.  The bound used is the
+//     counting pass's own: a document the counting pass finished nests less
+//     than encodeGuardDepth, two orders of magnitude inside the decoder's
+//     limit.  That is a much cheaper thing to know than the exact depth, and
+//     it covers every document anyone actually writes.
+//
+//   - wroteNative.  A native's bytes are not this encoder's.  checkLoadable
+//     clears them in isolation, but nesting composes: a native holding a
+//     10000-deep document, embedded in a two-deep lisp value, yields 10002.
+//     So a document that embedded any native at all is not vouched for --
+//     including one that embedded an ownMessage, which keeps this a statement
+//     about a single encode rather than an induction over a chain of them.
+//     It also covers a case elps#350 introduced after this function was
+//     written: a native can hold a thirty-digit integer literal, which the
+//     default decoder rounds to a float and an :exact-integers load REFUSES.
+//     Foreign number text only reaches a document through a native, so
+//     declining to vouch for a document that holds one closes that too --
+//     TestOwnOutputLoadsWithExactIntegers and FuzzDumpExactIntegers are what
+//     say the remaining, native-free case is safe under that option.
+//
+// Both flags are DEFENCE IN DEPTH rather than the only guard, and this is
+// worth knowing before anyone decides they are dead weight.  Measured, not
+// assumed: json.Marshal compacts whatever a MarshalJSON returns, that
+// compaction applies the same 10000-deep bound the decoder does, and so a
+// too-deep ownMessage is refused by encoding/json before checkLoadable would
+// have run -- with a different error, but refused.  There is at present no
+// document for which flipping these flags to true changes an OUTCOME.  They
+// are kept because the reasoning above is about what this package emits, and
+// leaning the whole exemption on an undocumented depth check inside
+// encoding/json would make a correctness property depend on an implementation
+// detail of another package.  They cost nothing: a document that trips either
+// one is off the hot path by construction.
+func (enc *encoder) loadableBytes() bool {
+	return !enc.nestedDeep && !enc.wroteNative
 }
 
 // encodeGuardDepth is the nesting depth at which the encoder stops assuming
@@ -163,6 +229,7 @@ func (enc *encoder) encode(v *lisp.LVal) error {
 	}
 	// The counting pass abandoned the document partway through, so its output
 	// is a fragment.  Drop it and start the value over.
+	enc.nestedDeep = true
 	enc.buf.Truncate(mark)
 	return enc.encodeValue(v, encodeGuard{path: make(map[*lisp.LVal]struct{}, encodeGuardDepth)})
 }
@@ -269,12 +336,30 @@ func (enc *encoder) encodeLNative(v *lisp.LVal, _ encodeGuard) error {
 }
 
 func (enc *encoder) encodeNative(v interface{}) error {
+	enc.wroteNative = true
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	if err := enc.checkLoadable(b); err != nil {
-		return err
+	// elps#412.  The check below asks whether bytes this package did not
+	// produce can be read back.  An ownMessage is the one native for which
+	// this package DID produce them, and the loadable flag says it produced
+	// them under the conditions loadableBytes checks -- so the answer is
+	// already known, and re-deriving it is duplicated work on substrate's
+	// per-response path, where every JSON-RPC response embeds one.
+	//
+	// The exemption is by TYPE, and the type is unexported with unexported
+	// fields, minted on one line of DumpMessageBuiltin from this package's own
+	// output: there is no expression an embedder can write that puts their
+	// bytes inside one, and none that flips loadable on a message that did not
+	// earn it.  TestEmbedderCannotObtainTheExemption is the guard.
+	//
+	// Nothing else is exempt.  Narrowing to *json.RawMessage instead of to our
+	// own type would be the hole described under checkLoadable.
+	if m, own := v.(*ownMessage); !own || !m.loadable {
+		if err := enc.checkLoadable(b); err != nil {
+			return err
+		}
 	}
 	enc.buf.Write(b)
 	return nil
@@ -342,11 +427,15 @@ func (enc *encoder) encodeNative(v interface{}) error {
 // regression gate cannot detect. Correct by construction wins on the evidence,
 // not by preference.
 //
-// elps#412 is the direction that would actually pay. On that platform's hot
-// path, json:dump-message wraps libjson's OWN output in a json.RawMessage, so
-// this check re-validates bytes this package produced microseconds earlier and
-// structurally cannot fire. Removing the work beats making it faster; do not
-// reach for a faster check before reading that ticket.
+// elps#412 was the direction that actually paid, and it has shipped: on that
+// platform's hot path json:dump-message wrapped libjson's OWN output, so this
+// check re-validated bytes this package had produced microseconds earlier and
+// structurally could not fire. encodeNative now skips it for an ownMessage the
+// encoder vouched for -- 70-78% off the time and up to 99.98% off the
+// allocations of an envelope carrying one. Removing the work beat making it
+// faster, which is the thing to remember before reaching for a faster check:
+// the remaining callers are bytes this package did NOT write, and for those
+// the decode is the point.
 //
 // # Other designs tried and rejected, recorded so they are not retried blind
 //

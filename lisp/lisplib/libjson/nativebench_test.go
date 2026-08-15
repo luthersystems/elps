@@ -50,13 +50,18 @@ import (
 // are small (177 encodes across the whole suite, mean 25 bytes, largest 487),
 // and a per-byte difference on bytes there are few of does not clear the noise
 // floor of the gate that would have to defend it. See the comment on
-// encoder.checkLoadable in encode.go for the full reasoning, and elps#412 for
-// the change that would actually remove this cost instead of shrinking it.
+// encoder.checkLoadable in encode.go for the full reasoning.
+//
+// elps#412 has since shipped the change that removes the cost instead of
+// shrinking it, and these two rows are exactly where it does NOT apply: the
+// exemption is for libjson's own output, and benchNative encodes an EMBEDDER's
+// *json.RawMessage. Both rows are flat across it, deliberately. The rows that
+// move are BenchmarkEncodeOwnMessage* in own_message_bench_test.go.
 //
 // So these benchmarks are not a regression report to be explained away. They
-// are the standing price of the invariant, kept measurable so that elps#412 --
-// or any future attempt at a cheaper check -- has a number to beat and a place
-// to prove it.
+// are the standing price of the invariant on the values that still pay it,
+// kept measurable so that any future attempt at a cheaper check has a number
+// to beat and a place to prove it.
 //
 // The stringNumbers row is flat for a mundane reason, stated here so it is not
 // misread as evidence the check is free in that mode:

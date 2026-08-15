@@ -54,16 +54,19 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 	return []*libutil.Builtin{
 		libutil.FunctionDoc("message-bytes", lisp.Formals("json-message"), s.MessageBytesBuiltin,
 			`Extracts the raw byte content from a native JSON message object
-			(json.RawMessage). Returns a bytes value. Use this to get the
+			(one produced by dump-message, or a json.RawMessage supplied by
+			an embedder). Returns a bytes value. Use this to get the
 			underlying bytes of a message for further processing.`),
 		libutil.FunctionDoc("dump-message", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpMessageBuiltin,
 			`Serializes an ELPS value to a native JSON message object
-			(json.RawMessage) suitable for embedding in Go structures.
-			The :string-numbers keyword controls whether numbers are
-			serialized as JSON strings (default: serializer setting).`),
+			suitable for embedding in Go structures, and in a value passed
+			back to dump. The :string-numbers keyword controls whether
+			numbers are serialized as JSON strings (default: serializer
+			setting).`),
 		libutil.FunctionDoc("load-message", lisp.Formals("json-message", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadMessageBuiltin,
-			`Parses a native JSON message object (json.RawMessage) into
-			ELPS values. The :string-numbers keyword controls whether
+			`Parses a native JSON message object (one produced by
+			dump-message, or a json.RawMessage supplied by an embedder)
+			into ELPS values. The :string-numbers keyword controls whether
 			JSON numbers are returned as strings (default: serializer
 			setting). The :exact-integers keyword controls whether JSON
 			integer literals are returned as ints rather than floats
@@ -453,11 +456,76 @@ func (s *Serializer) loadOpts(env *lisp.LEnv, stringNums, exactInts *lisp.LVal) 
 
 // Dump serializes v as JSON and returns any error.
 func (s *Serializer) Dump(v *lisp.LVal, stringNums bool) ([]byte, error) {
+	b, _, err := s.dump(v, stringNums)
+	return b, err
+}
+
+// dump serializes v and reports, alongside the bytes, whether this package can
+// vouch that they load back -- see encoder.loadableBytes.  It is the only
+// producer of that verdict, and DumpMessageBuiltin is its only consumer.
+func (s *Serializer) dump(v *lisp.LVal, stringNums bool) (b []byte, loadable bool, err error) {
 	enc := newEncoder(stringNums)
 	if err := enc.encode(v); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return enc.bytes(), nil
+	return enc.bytes(), enc.loadableBytes(), nil
+}
+
+// ownMessage is a JSON message this package produced: the value behind
+// `json:dump-message`.
+//
+// It exists so encodeNative can tell libjson's own output apart from an
+// embedder's bytes and skip the elps#410 loadability check on the former,
+// which is elps#412.  The whole design of the type is that separation:
+//
+//   - Unexported, with an unexported field, and every method on it is
+//     read-only.  There is no exported constructor, no exported field to
+//     assign through, and no exported type an embedder can convert from.  A
+//     value of it cannot be named outside this package, so it cannot be
+//     built, embedded, or reflected into with SetBytes.
+//
+//   - Minted on exactly one line -- DumpMessageBuiltin, below -- from bytes
+//     Serializer.dump just wrote, carrying that call's own loadable verdict.
+//     Nothing else in the package constructs one.
+//
+// loadable is carried per value rather than being implied by the type because
+// libjson's output is not unconditionally loadable (see
+// encoder.loadableBytes).  Minting the type only when it happens to be true
+// would make `json:dump-message` return one Go type for shallow documents and
+// another for deep ones, which is a far nastier trap for a consumer than a
+// single type that is honest about what it knows.
+type ownMessage struct {
+	msg      json.RawMessage
+	loadable bool
+}
+
+// MarshalJSON returns the message verbatim, as json.RawMessage does.  The
+// method is what makes json.Marshal emit the bytes rather than a struct, and
+// it hands out the slice the same way json.RawMessage.MarshalJSON does -- the
+// caller is encodeNative, which only writes it out.
+//
+// json.RawMessage substitutes "null" for a nil receiver; there is no such case
+// to reproduce here.  The one mint site takes msg from Serializer.dump, which
+// returns bytes or an error, never a nil slice with no error.
+func (m *ownMessage) MarshalJSON() ([]byte, error) { return m.msg, nil }
+
+var _ json.Marshaler = (*ownMessage)(nil)
+
+// jsonMessage returns the bytes behind a `json:dump-message` native, in either
+// of the shapes one can have.
+//
+// *json.RawMessage is still accepted because it is what an embedder building a
+// message on the Go side has always passed in, and elps#412 is not a reason to
+// stop reading those.  It is only the WRITE side -- which type gets the
+// loadability exemption -- that distinguishes the two.
+func jsonMessage(v interface{}) (json.RawMessage, bool) {
+	switch m := v.(type) {
+	case *ownMessage:
+		return m.msg, true
+	case *json.RawMessage:
+		return *m, true
+	}
+	return nil, false
 }
 
 func (s *Serializer) MessageBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -465,43 +533,59 @@ func (s *Serializer) MessageBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.
 	if lmsg.Type != lisp.LNative {
 		return env.Errorf("argument is not a raw json-message: %v", lmsg.Type)
 	}
-	msg, ok := lmsg.Native.(*json.RawMessage)
+	msg, ok := jsonMessage(lmsg.Native)
 	if !ok {
-		return env.Errorf("argument is not a raw json-message: %v", msg)
+		return errNotAMessage(env)
 	}
-	return lisp.Bytes([]byte(*msg))
+	return lisp.Bytes([]byte(msg))
+}
+
+// errNotAMessage reports a native that is not a json-message.
+//
+// The message names no value, which is not an oversight: the code this
+// replaced formatted the nil result of a failed type assertion, so it has
+// always read "... json-message: <nil>", and an error string is observable
+// from lisp.  Kept byte for byte rather than improved, so that elps#412
+// changes nothing a program can see.
+func errNotAMessage(env *lisp.LEnv) *lisp.LVal {
+	return env.Errorf("argument is not a raw json-message: %v", (*json.RawMessage)(nil))
 }
 
 func (s *Serializer) DumpMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	val := s.DumpBytesBuiltin(env, args)
-	if val.Type == lisp.LError {
-		return val
+	b, loadable, lerr := s.dumpBuiltin(env, args)
+	if lerr != nil {
+		return lerr
 	}
-	if val.Type != lisp.LBytes {
-		return env.Errorf("internal error: unexpected value type from JSON dump: %v", val.Type)
-	}
-	b := val.Bytes()
-	msg := (*json.RawMessage)(&b)
-	var _ json.Marshaler = msg
-	return lisp.Native(msg)
+	return lisp.Native(&ownMessage{msg: b, loadable: loadable})
 }
 
 func (s *Serializer) DumpBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	b, _, lerr := s.dumpBuiltin(env, args)
+	if lerr != nil {
+		return lerr
+	}
+	return lisp.Bytes(b)
+}
+
+// dumpBuiltin is the argument handling `json:dump-bytes` and
+// `json:dump-message` share, returning the loadable verdict only the latter
+// uses.  A non-nil third result is the error LVal to return.
+func (s *Serializer) dumpBuiltin(env *lisp.LEnv, args *lisp.LVal) ([]byte, bool, *lisp.LVal) {
 	obj, stringNums := args.ReqArg(env, 0), args.KeyArg(1)
 	if obj.Type == lisp.LError {
-		return obj
+		return nil, false, obj
 	}
 	if stringNums.IsNil() {
 		stringNums = s.useStringNumbers(env)
 		if stringNums.Type == lisp.LError {
-			return stringNums
+			return nil, false, stringNums
 		}
 	}
-	b, err := s.Dump(obj, lisp.True(stringNums))
+	b, loadable, err := s.dump(obj, lisp.True(stringNums))
 	if err != nil {
-		return env.Error(err)
+		return nil, false, env.Error(err)
 	}
-	return lisp.Bytes(b)
+	return b, loadable, nil
 }
 
 func (s *Serializer) LoadMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -512,11 +596,11 @@ func (s *Serializer) LoadMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.L
 	if lmsg.Type != lisp.LNative {
 		return env.Errorf("argument is not a raw json-message: %v", lmsg.Type)
 	}
-	msg, ok := lmsg.Native.(*json.RawMessage)
+	msg, ok := jsonMessage(lmsg.Native)
 	if !ok {
-		return env.Errorf("argument is not a raw json-message: %v", msg)
+		return errNotAMessage(env)
 	}
-	return s.LoadBytesBuiltin(env, lisp.SExpr([]*lisp.LVal{lisp.Bytes([]byte(*msg)), stringNums, exactInts}))
+	return s.LoadBytesBuiltin(env, lisp.SExpr([]*lisp.LVal{lisp.Bytes([]byte(msg)), stringNums, exactInts}))
 }
 
 func (s *Serializer) LoadBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
