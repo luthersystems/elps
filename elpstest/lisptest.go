@@ -383,6 +383,22 @@ func RunTestSuite(t *testing.T, tests TestSuite) {
 
 // RunBenchmark runs a standard benchmark that executes expressions parsed from
 // source.
+//
+// Each iteration gets a fresh environment and a fresh copy of the parsed
+// expressions.  The copy matters: an ELPS expression's quoted literals are AST
+// nodes, and evaluation can write to them -- `stable-sort` sorts a literal in
+// place, which lisp.TestSliceViewSharesElements pins as current behaviour.
+// Without the copy, one parsed tree was shared by every iteration, so a
+// benchmark over such a source measured its declared workload once and its own
+// output thereafter, and the reported number moved with b.N.  This is the same
+// hazard lisp.TextLoader copies to avoid.  See issue #365.
+//
+// Both the environment and the copy are built with the timer stopped, so
+// neither is charged to ns/op, B/op or allocs/op.  Note that the untimed
+// per-iteration setup still costs wall clock, and the framework sizes b.N from
+// the timed duration alone: a source whose timed region is microseconds will
+// run for many multiples of -benchtime in real time.  Sources here are
+// expected to do enough work per iteration for that ratio to stay sane.
 func RunBenchmark(b *testing.B, source string) {
 	b.StopTimer()
 	p := parser.NewReader()
@@ -401,8 +417,12 @@ func RunBenchmark(b *testing.B, source string) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		b.StartTimer()
+		iterExprs := make([]*lisp.LVal, len(exprs))
 		for i, expr := range exprs {
+			iterExprs[i] = expr.Copy()
+		}
+		b.StartTimer()
+		for i, expr := range iterExprs {
 			lerr := env.Eval(expr)
 			if lerr.Type == lisp.LError {
 				b.Fatalf("expr %d: %v", i, lerr)
