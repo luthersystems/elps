@@ -1,0 +1,67 @@
+# A SPURIOUS gate firing, caught live on a NULL comparison.
+#
+# This is not a synthetic table and not a transcription. Both arms are the SAME
+# tree at the same commit -- one checkout, two interleaved measurement runs, at
+# the sampling parameters CI uses (GOMAXPROCS=2, -benchtime=100ms, 10 rounds per
+# arm). Nothing whatsoever differs between "base" and "pr". Every number below
+# is noise by construction, so every REGRESSION verdict on it is a false one.
+#
+# Repeated 25 times. The gate as it stood before the resolution check reported a
+# REGRESSION on 3 of the 25 -- a 12% false-positive rate per comparison, on code
+# that did not change:
+#
+#     trial  6: REGRESSION ... sec/op PackageGetVal-2        delta=+94.25% p=0.015 (gate 15%)
+#     trial  8: REGRESSION ... sec/op PackageGetVal-2        delta=+18.48% p=0.009 (gate 15%)
+#     trial 23: REGRESSION ... sec/op PackageGetFunAliased-2 delta=+19.97% p=0.014 (gate 15%)
+#
+# With the resolution check: 0 of 25.
+#
+# This file is trial 8, kept because it is the same shape as the #443 CI failure
+# it was hunted to corroborate: a small sub-100ns row, a delta just over the 15%
+# threshold, and a p-value comfortably under alpha. On identical code. (Trial 6
+# is the same defect wearing a louder number: a +94% "regression" between two
+# runs of one binary.)
+#
+# Read the spread column and the reason is right there. On code that did not
+# change, these rows measure themselves at ±5% to ±66%, against a 15% gate.
+# PackageGetVal-2 says ±19% in the arm that "regressed" -- larger than the
+# +18.48% move the gate was about to fail a PR for. The comparison cannot
+# resolve what it was being asked to adjudicate.
+#
+# What the gate must do with this file: PASS, and say NOISE-FLOOR while doing
+# it. Passing silently would be the other half of the same disease.
+#
+# Note the allocation tables further down: every row "all samples are equal",
+# ± 0%, p=1.000. That is the contrast the two metric classes are judged by, and
+# it is why the 5% allocation gate is left exactly where it is.
+goos: linux
+goarch: amd64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Intel(R) Xeon(R) Processor @ 2.80GHz
+                        │     base     │                  pr                  │
+                        │    sec/op    │    sec/op     vs base                │
+PackageGetFun-2           32.30n ± 66%   29.64n ± 61%        ~ (p=0.684 n=10)
+PackageGetFunAliased-2    15.59n ± 42%   20.14n ± 29%        ~ (p=0.060 n=10)
+PackageGetVal-2           26.78n ±  5%   31.73n ± 19%  +18.48% (p=0.009 n=10)
+PackageGetFunParallel-2   32.38n ± 31%   32.15n ± 26%        ~ (p=0.971 n=10)
+geomean                   25.71n         27.93n         +8.67%
+
+                        │     base     │                 pr                  │
+                        │     B/op     │    B/op     vs base                 │
+PackageGetFun-2           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+PackageGetFunAliased-2    0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+PackageGetVal-2           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+PackageGetFunParallel-2   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                              ²               +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                        │     base     │                 pr                  │
+                        │  allocs/op   │ allocs/op   vs base                 │
+PackageGetFun-2           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+PackageGetFunAliased-2    0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+PackageGetVal-2           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+PackageGetFunParallel-2   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                              ²               +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean

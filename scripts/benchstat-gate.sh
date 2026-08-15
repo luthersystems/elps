@@ -125,6 +125,74 @@
 # That is left as a follow-up so this change stays a gate fix rather than a
 # benchmark-tuning change.
 #
+# A threshold cannot be right for every row: the resolution check
+# --------------------------------------------------------------
+# Both thresholds above are single numbers applied to every row of their metric
+# class, which is exactly as good as the assumption behind it: that the rows in
+# a class have comparable noise.  For the allocation metrics it holds --
+# identical code reproduces them EXACTLY, benchstat prints "± 0%" and routinely
+# annotates the row "all samples are equal".  For timing it does not.
+#
+# Issue #443 is the worked example.  BenchmarkPackageGetFunParallel failed the
+# gate on PR #442 -- a parser-only change with no path to a map lookup in the
+# lisp package -- at +15.96% (p=0.035), and a re-run with no code change turned
+# it green.  Its noise floor was then measured directly: two independent
+# checkouts of the SAME commit, interleaved, at the runner's GOMAXPROCS.
+#
+#     base vs base2 (identical code, n=20)
+#     PackageGetFunParallel-2   38.70n ± 24%   38.94n ± 24%   ~ (p=0.841 n=20)
+#
+# A row with a ±24% spread on identical code cannot resolve a 16% move.  The
+# 15% threshold is BELOW that row's own measurement resolution, so a p<=alpha
+# draw over 15% will happen there by chance at some rate on every PR that runs
+# the comparison -- on code that cannot reach the benchmark.  It is a sub-100ns
+# body measured under RunParallel at -benchtime=100ms: the worst case for these
+# sampling parameters, and the only such row in the comparison set today.
+#
+# Raising the threshold is the wrong answer, for the reason the waivers file
+# already gives: 15% is a per-class noise floor, and moving it to accommodate
+# one row blinds every serial benchmark in the repository to the same magnitude
+# of move, permanently.  A waiver is wrong too -- a waiver records a cost that
+# is REAL and accepted, and this one is not real.
+#
+# So the gate asks the row instead.  benchstat already prints, per arm, the 95%
+# confidence interval of that arm's median as a percentage -- the "± 24%" above.
+# That IS the row's measurement resolution, computed from the very samples being
+# adjudicated, and it is already in the table this script parses.  The rule:
+#
+#   A TIMING row at or above its threshold is called a REGRESSION only when the
+#   move is LARGER than the row's own measured spread.  When it is not, the row
+#   is reported as NOISE-FLOOR and excluded from the verdict.
+#
+# That is the "significant AND large enough to see" rule, with "large enough"
+# denominated in the row's own dispersion rather than in a constant somebody
+# chose once.  Note what it does NOT do:
+#
+#   * It never applies to B/op or allocs/op.  Those are the metrics that have
+#     caught every real regression this gate has caught; they are exact rather
+#     than sampled, and their spread is "± 0%", so a rule keyed on spread would
+#     be a no-op there anyway.  It is skipped explicitly regardless, so that
+#     stays true even if some future benchmark makes an allocation column
+#     jitter.
+#   * It cannot suppress a large move.  On the row above it would take a >24%
+#     regression to fire -- which is what "this row cannot resolve less than
+#     that" means.  A row whose noise is genuinely that large is not being
+#     protected; it is being reported as unmeasurable, every run, by name.
+#   * It does nothing when benchstat could not compute an interval ("± ∞ ¹",
+#     which it prints below 6 samples).  Those rows fall back to the threshold
+#     alone and SAY SO on the regression line, so a check that did not run is
+#     never mistaken for one that ran and passed.  CI runs n=10, so this is the
+#     fixtures' case rather than CI's.
+#
+# The honest cost: on a row whose spread exceeds the threshold, a real
+# regression BETWEEN the threshold and the spread is now reported rather than
+# gated.  It was never detectable there -- it sat inside the row's own null
+# distribution, and the gate's "detection" of it was a coin flip that landed the
+# other way on the re-run.  The fix for such a row is to make it quieter (a
+# longer -benchtime for that benchmark, or keeping a sub-100ns RunParallel body
+# out of the comparison set), and the NOISE-FLOOR line is what tells you which
+# rows need it.
+#
 # Reviewed waivers
 # ---------------
 # Sometimes a regression is real, understood and deliberately accepted.  The
@@ -252,7 +320,8 @@ trap 'rm -f "$report" "$waiver_input"' EXIT
 # The awk program emits one human-readable line per interesting row, then a
 # final machine-readable line:
 #   "VERDICT <regressions> <significant> <compared> <tilde> <badp> <waived>
-#            <waiver_bad> <waiver_stale> <waiver_unused> <waiver_expired>".
+#            <waiver_bad> <waiver_stale> <waiver_unused> <waiver_expired>
+#            <waivers> <waiver_outscope> <unresolved>".
 awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRESHOLD" \
 	-v wfile="$waiver_input" -v wsource="${WAIVERS:-<none>}" -v today="$TODAY" '
 	# Last signed-percentage token (e.g. +7.14% / -1.20%) inside s, "" if none.
@@ -280,6 +349,47 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 			best = pos + off - 1
 			pos = best + 1
 		}
+		return best
+	}
+
+	# The LARGEST per-arm spread benchstat printed on this row, as a percent, or
+	# -1 when it printed none it could compute.
+	#
+	# benchstat writes each arm as "<median> ± <pct>%": the half-width of the
+	# 95% confidence interval of the median of that arm, relative to it. That
+	# is how finely this comparison can see on this row, measured
+	# on the same samples the verdict is drawn from. Below 6 samples it cannot
+	# compute one and prints "± ∞ ¹" instead; that is reported as -1 (unknown)
+	# rather than as 0, because treating "no interval" as "a perfect interval"
+	# would suppress nothing while looking like it had checked.
+	#
+	# The LARGER of the two arms, not the base arm alone: dispersion in both
+	# arms feeds the uncertainty of the delta. Taking the max is the
+	# lenient direction of the two (it suppresses more), but the alternative --
+	# base only -- would let a change that ADDS variance be judged against the
+	# quiet arm it replaced, and this rule must never be easier to trip by
+	# making a benchmark noisier.
+	function max_spread(s,   pos, off, rest, tok, num, best, sawinf) {
+		best = -1
+		sawinf = 0
+		pos = 1
+		while (1) {
+			rest = substr(s, pos)
+			off = index(rest, "±")
+			if (off == 0) break
+			pos = pos + off + length("±") - 1
+			rest = substr(s, pos)
+			# "± 24%" and "±24%" both occur; "± ∞ ¹" is the no-interval case.
+			if (match(rest, /^[ \t]*[0-9]+(\.[0-9]+)?%/)) {
+				tok = substr(rest, RSTART, RLENGTH)
+				sub(/%$/, "", tok)
+				num = tok + 0
+				if (num > best) best = num
+			} else {
+				sawinf = 1
+			}
+		}
+		if (best < 0 && sawinf) return -1
 		return best
 	}
 
@@ -481,6 +591,12 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 			pval_str = "n/a"
 		}
 
+		# Read the per-arm spreads BEFORE the region is truncated past them:
+		# this is the measurement resolution of the row, and it is what the
+		# resolution check below is judged against. -1 means benchstat printed
+		# no interval it could compute.
+		spread = max_spread(region)
+
 		lastpm = last_spread(region)
 		if (lastpm > 0) region = substr(region, lastpm + 1)
 
@@ -541,6 +657,24 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 			next
 		}
 
+		# RESOLUTION. A timing row is only adjudicated when the move is larger
+		# than what that row can measure. See the "resolution check" note in the
+		# header: the threshold is one number for a whole metric class, and on a
+		# sub-100ns RunParallel body it sits BELOW the row own null distribution,
+		# so p<=alpha over the threshold happens there by chance (#443).
+		#
+		# Deliberately not applied to the allocation metrics, and deliberately
+		# skipped when benchstat could not compute an interval -- in that case
+		# the regression line says so, so a check that did not run is never
+		# mistaken for one that ran and passed.
+		if (!is_alloc_metric(metric) && spread >= 0 && regr <= spread) {
+			unresolved++
+			printf "  NOISE-FLOOR %-46s %-9s %-40s delta=%s p=%s (gate %s%%) spread ±%s%% -- the OWN measured spread of this row on these samples is at or above this move, so the comparison cannot resolve it; not a regression, and not suppressed either: make the benchmark quieter (longer -benchtime, or keep it out of the comparison set) if this row needs to be gateable %s\n",
+				pkg, metric, name, delta_tok, pval_str, gate, spread, dir
+			next
+		}
+		nospread = (!is_alloc_metric(metric) && spread < 0) ? " [no interval: benchstat needs >= 6 samples, so the resolution check did not run]" : ""
+
 		# At or above the gate. A waiver can turn this into a PASS, but only
 		# a live one, and only while the move stays inside the ceiling it
 		# recorded. Every outcome below is printed either way: the waiver
@@ -548,15 +682,15 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 		if (wi && wexpired[wi]) {
 			regressions++
 			wexpiredhit[wi] = 1
-			printf "  REGRESSION  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) WAIVER EXPIRED %s (%s), no longer suppressing %s\n",
-				pkg, metric, name, delta_tok, pval_str, gate, wexp[wi], wissue[wi], dir
+			printf "  REGRESSION  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) WAIVER EXPIRED %s (%s), no longer suppressing %s%s\n",
+				pkg, metric, name, delta_tok, pval_str, gate, wexp[wi], wissue[wi], dir, nospread
 			next
 		}
 		if (wi && regr > wceil[wi]) {
 			regressions++
 			wexceeded[wi] = 1
-			printf "  REGRESSION  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) EXCEEDS its waiver ceiling %s%% (%s) %s\n",
-				pkg, metric, name, delta_tok, pval_str, gate, wceilstr[wi], wissue[wi], dir
+			printf "  REGRESSION  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) EXCEEDS its waiver ceiling %s%% (%s) %s%s\n",
+				pkg, metric, name, delta_tok, pval_str, gate, wceilstr[wi], wissue[wi], dir, nospread
 			next
 		}
 		if (wi) {
@@ -568,8 +702,8 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 		}
 
 		regressions++
-		printf "  REGRESSION  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) %s\n",
-			pkg, metric, name, delta_tok, pval_str, gate, dir
+		printf "  REGRESSION  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) %s%s\n",
+			pkg, metric, name, delta_tok, pval_str, gate, dir, nospread
 	}
 
 	END {
@@ -601,10 +735,10 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 					wsource, wline[i], wpkg[i], wbench[i], wmetric[i], wexp[i], wissue[i]
 			}
 		}
-		printf "VERDICT %d %d %d %d %d %d %d %d %d %d %d %d\n",
+		printf "VERDICT %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
 			regressions + 0, significant + 0, compared + 0, tilde + 0, badp + 0,
 			waived + 0, wbad + 0, wstale + 0, wunused + 0, wexp_n + 0, nw + 0,
-			woutscope + 0
+			woutscope + 0, unresolved + 0
 	}
 ' "$waiver_input" "$input" >"$report"
 
@@ -613,7 +747,7 @@ sed '$d' "$report"
 
 read -r _ n_regressions n_significant n_compared n_tilde n_badp \
 	n_waived n_waiver_bad n_waiver_stale n_waiver_unused n_waiver_expired n_waivers \
-	n_waiver_outscope <<<"$verdict_line"
+	n_waiver_outscope n_unresolved <<<"$verdict_line"
 
 if [ "$n_waiver_bad" -gt 0 ]; then
 	cat >&2 <<-EOF
@@ -648,6 +782,16 @@ if [ "$((n_compared + n_tilde))" -eq 0 ]; then
 fi
 
 echo "benchstat-gate: interpreted ${n_compared} delta row(s) + ${n_tilde} no-change row(s); ${n_significant} significant move(s) in the bad direction; ${n_regressions} at or above the gate (timing ${THRESHOLD}%, allocation ${ALLOC_THRESHOLD}%)."
+
+# Printed whenever it is nonzero, and never folded into the regression count. A
+# NOISE-FLOOR row is a benchmark this comparison cannot adjudicate at all, which
+# is a standing problem with the benchmark rather than a clean result -- see the
+# resolution-check note in the header. Silence here would turn "we could not
+# measure it" into "it was fine", which is the shape of defect this whole gate
+# exists to fix.
+if [ "$n_unresolved" -gt 0 ]; then
+	echo "benchstat-gate: ${n_unresolved} timing row(s) moved past the gate but by LESS than their own measured spread, so this comparison cannot resolve them (reported as NOISE-FLOOR above, excluded from the verdict). They are not gateable as sampled; make them quieter or keep them out of the comparison set."
+fi
 
 # Printed on EVERY run, including clean ones. A waiver is a standing decision,
 # and a standing decision that stops being visible stops being reviewed.

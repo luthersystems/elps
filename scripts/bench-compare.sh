@@ -162,10 +162,33 @@ esac
 # normal case and must not fail the step under `set -o pipefail`.
 waiver_lines="$(grep -E '^  (WAIVED|WAIVER-|waiver-)' gate-report.txt || true)"
 
+# NOISE-FLOOR lines get the same treatment, and for the same reason. A row whose
+# own measured spread is larger than the move it just made cannot be adjudicated
+# by this comparison at all (see the resolution-check note in
+# scripts/benchstat-gate.sh). That is a standing problem with the benchmark, not
+# a clean result, and it is only ever fixed by someone who sees it -- so it goes
+# above the fold rather than inside a collapsed block nobody expands.
+noise_lines="$(grep -E '^  NOISE-FLOOR' gate-report.txt || true)"
+
 {
   echo 'result<<BENCHSTAT_EOF'
   echo '## Benchmark Comparison (main baseline vs PR)'
   echo ''
+  if [ -n "$noise_lines" ]; then
+    echo '### Rows this comparison could not resolve'
+    echo ''
+    echo 'These timing rows moved past the gate by LESS than their own measured'
+    echo 'spread, so this comparison cannot tell the move from noise. They are'
+    echo 'NOT counted as regressions and they are NOT suppressed — they are'
+    echo 'unmeasurable as sampled. A row that keeps appearing here needs a longer'
+    echo '`-benchtime`, or to be kept out of the comparison set; see the'
+    echo 'resolution-check note in `scripts/benchstat-gate.sh`.'
+    echo ''
+    echo '```'
+    echo "$noise_lines"
+    echo '```'
+    echo ''
+  fi
   if [ -n "$waiver_lines" ]; then
     echo '### Reviewed waivers'
     echo ''

@@ -1,0 +1,36 @@
+# The allocation metrics are NOT subject to the resolution check added for
+# #443, and this pins it.
+#
+# Every real regression this gate has caught, it caught on B/op or allocs/op:
+# they are exact rather than sampled, identical code reproduces them to the
+# byte, and benchstat prints "± 0%" and annotates the row "all samples are
+# equal". A rule keyed on measured spread would therefore be a no-op on them in
+# practice -- which is precisely why it must be switched off for them
+# EXPLICITLY rather than left to happen to be a no-op. A future benchmark whose
+# allocation column jitters (a map that resizes at a data-dependent point, a
+# sync.Pool that hits differently under load) would otherwise start suppressing
+# real allocation regressions silently.
+#
+# So: three rows of one benchmark carrying the SAME delta (+20.00%), the SAME
+# spread (±30%) and the SAME p-value, differing only in metric class. The
+# sec/op row is over its 15% gate but under its spread, so it is NOISE-FLOOR.
+# The B/op and allocs/op rows are over their 5% gate and under the same spread,
+# and must still be REGRESSIONs.
+#
+# One fixture, one controlled variable: the metric class is the only thing that
+# differs, so the different verdicts can only come from the class rule.
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Neoverse-N1
+                        │     base     │                 pr                  │
+                        │    sec/op    │    sec/op     vs base               │
+JitteryThing-2            100.0n ± 30%   120.0n ± 30%  +20.00% (p=0.008 n=10)
+
+                        │     base      │                  pr                  │
+                        │     B/op      │      B/op      vs base               │
+JitteryThing-2            1.000Ki ± 30%   1.200Ki ± 30%  +20.00% (p=0.008 n=10)
+
+                        │     base     │                 pr                  │
+                        │  allocs/op   │  allocs/op    vs base               │
+JitteryThing-2            100.0 ± 30%    120.0 ± 30%   +20.00% (p=0.008 n=10)
