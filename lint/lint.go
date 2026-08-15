@@ -311,6 +311,9 @@ type LintConfig struct {
 	// Embedders that already have a configured env can pass
 	// analysis.ExtractPackageExports(env.Runtime.Registry) here to avoid
 	// the overhead of creating a temporary environment.
+	//
+	// The map and its slices are copied before use, so a map shared across
+	// several runs is neither mutated nor read after the call returns.
 	StdlibExports map[string][]analysis.ExternalSymbol
 
 	// MacroExpander optionally expands user-macro calls at analysis time.
@@ -384,10 +387,25 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		return nil, fmt.Errorf("scanning workspace %s: %w", cfg.Workspace, err)
 	}
 
-	// Start with stdlib exports (either provided or extracted fresh)
-	pkgExports := cfg.StdlibExports
-	if pkgExports == nil {
+	// Start with stdlib exports (either provided or extracted fresh).
+	//
+	// A caller-supplied map is copied, keys and slices both, before anything is
+	// merged into it. Issue #437: this used to alias cfg.StdlibExports, so the
+	// registry and workspace merges below wrote registry and workspace symbols
+	// into the embedder's map — which the field's doc comment invites embedders
+	// to build once and reuse — and two calls with the same map appended each
+	// symbol twice. The inner copy matters as much as the outer one: appending
+	// to a borrowed slice with spare capacity writes into the caller's backing
+	// array (cf. #364). defaultStdlibExports() returns a map this function
+	// owns, so that path needs no copy.
+	var pkgExports map[string][]analysis.ExternalSymbol
+	if cfg.StdlibExports == nil {
 		pkgExports = defaultStdlibExports()
+	} else {
+		pkgExports = make(map[string][]analysis.ExternalSymbol, len(cfg.StdlibExports))
+		for pkg, syms := range cfg.StdlibExports {
+			pkgExports[pkg] = append([]analysis.ExternalSymbol(nil), syms...)
+		}
 	}
 
 	// Merge embedder registry exports
