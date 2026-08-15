@@ -88,8 +88,9 @@ func (s *Server) textDocumentSemanticTokensFull(_ *glsp.Context, params *protoco
 	symbolRefs := buildSymbolRefsMap(analysisResult)
 
 	var tokens []rawToken
+	src := &sourceText{content: content}
 	for _, expr := range ast {
-		collectSemanticTokens(expr, symbolDefs, symbolRefs, content, &tokens)
+		collectSemanticTokens(expr, symbolDefs, symbolRefs, src, &tokens)
 	}
 
 	// Sort by position (line, then character).
@@ -111,36 +112,38 @@ func collectSemanticTokens(
 	v *lisp.LVal,
 	defs map[symbolKey]*analysis.Symbol,
 	refs map[symbolKey]*analysis.Symbol,
-	content string,
+	src *sourceText,
 	tokens *[]rawToken,
 ) {
 	if v == nil || v.Source == nil || v.Source.Line == 0 {
 		return
 	}
 
+	// The NODE's position, which is what the analysis result is keyed by --
+	// buildSymbolDefsMap and buildSymbolRefsMap index by Source.Line/Col -- and
+	// which for a quoted atom is the quote, not the atom.  atomSpan below gives
+	// the position of the TEXT; classifySymbol must keep using this one or a
+	// quoted symbol stops matching its own analysis entry.
 	line := v.Source.Line - 1 // convert to 0-based
 	col := max(v.Source.Col-1, 0)
 
 	switch v.Type {
 	case lisp.LInt, lisp.LFloat:
-		length := tokenLength(v, content)
+		tokLine, tokCol, length := atomSpan(v, src, 1)
 		*tokens = append(*tokens, rawToken{
-			line: line, startChar: col, length: length,
+			line: tokLine, startChar: tokCol, length: length,
 			tokenType: semTokenNumber,
 		})
 
 	case lisp.LString:
-		// String length includes quotes.
-		length := len(v.Str) + 2
-		// For multi-line strings, just highlight the first line.
-		if strings.Contains(v.Str, "\n") {
-			lines := strings.Split(content, "\n")
-			if line < len(lines) {
-				length = len(lines[line]) - col
-			}
-		}
+		// The length comes from the SPAN, not from v.Str.  v.Str is the string
+		// after escape processing, so len(v.Str)+2 measured the decoded value:
+		// "x\ty" is six characters of source and three of value, and the token
+		// came out one short (elps#449).  The span is the source, escapes and
+		// all, and it is also what makes a raw literal's """ delimiters count.
+		tokLine, tokCol, length := atomSpan(v, src, len(v.Str)+2)
 		*tokens = append(*tokens, rawToken{
-			line: line, startChar: col, length: length,
+			line: tokLine, startChar: tokCol, length: length,
 			tokenType: semTokenString,
 		})
 
@@ -151,17 +154,17 @@ func collectSemanticTokens(
 			return
 		}
 		name := v.Str
-		length := len(name)
+		tokLine, tokCol, length := atomSpan(v, src, len(name))
 		tokType, mods := classifySymbol(name, line, col, defs, refs)
 		*tokens = append(*tokens, rawToken{
-			line: line, startChar: col, length: length,
+			line: tokLine, startChar: tokCol, length: length,
 			tokenType: tokType, modifiers: mods,
 		})
 
 	case lisp.LSExpr:
 		// For quoted lists like '(a b c), just recurse into children.
 		for _, child := range v.Cells {
-			collectSemanticTokens(child, defs, refs, content, tokens)
+			collectSemanticTokens(child, defs, refs, src, tokens)
 		}
 		return
 
@@ -337,35 +340,158 @@ func symbolKindToTokenType(kind analysis.SymbolKind) int {
 	}
 }
 
-// tokenLength computes the display length of a token. Falls back to
-// heuristics when source end info is unavailable.
-func tokenLength(v *lisp.LVal, content string) int {
-	if v.Source.EndCol > 0 && v.Source.EndLine == v.Source.Line {
-		return v.Source.EndCol - v.Source.Col
-	}
-	// Fall back: extract from source text.
-	lines := strings.Split(content, "\n")
-	line := v.Source.Line - 1
-	col := v.Source.Col - 1
-	if line >= 0 && line < len(lines) && col >= 0 && col < len(lines[line]) {
-		// Scan forward to find end of number/atom.
-		end := col
-		for end < len(lines[line]) && !isDelimiter(lines[line][end]) {
-			end++
-		}
-		if end > col {
-			return end - col
-		}
-	}
-	return 1
+// sourceText is a document, split into lines only if something asks for them.
+//
+// Almost every atom is located from its span alone and never touches the text;
+// the lines are wanted only for a reader prefix and for the first line of a
+// multi-line literal.  Splitting lazily keeps a document with neither at the
+// cost it had before this file started consulting the source at all.
+type sourceText struct {
+	content string
+	lines   []string
+	split   bool
 }
 
-func isDelimiter(c byte) bool {
-	switch c {
-	case ' ', '\t', '\n', '\r', '(', ')', '[', ']', '"', ';':
-		return true
+func (s *sourceText) Lines() []string {
+	if !s.split {
+		s.lines = strings.Split(s.content, "\n")
+		s.split = true
 	}
-	return false
+	return s.lines
+}
+
+// lineLen is the length of line l IN BYTES, or -1 if l is not a line of s.
+//
+// Bytes, because that is the unit every position in this package is counted
+// in: token.Location.Col is "byte offset within the line, plus one" (see
+// Scanner.LocStart), elpsToLSPPosition passes it through untouched, and
+// position.go slices lines by byte throughout.  See atomSpan on why this is
+// not the unit LSP asks for.
+func (s *sourceText) lineLen(l int) int {
+	lines := s.Lines()
+	if l < 0 || l >= len(lines) {
+		return -1
+	}
+	return len(lines[l])
+}
+
+// byteAt returns the byte at 0-based column c of line l, and whether there is
+// one.
+func (s *sourceText) byteAt(l, c int) (byte, bool) {
+	lines := s.Lines()
+	if l < 0 || l >= len(lines) || c < 0 || c >= len(lines[l]) {
+		return 0, false
+	}
+	return lines[l][c], true
+}
+
+// atomSpan locates the source text an ATOM occupies: its 0-based line, its
+// 0-based start column, and its length in bytes.
+//
+// It is the answer to elps#449, and the two things it does that taking a
+// length from a name or a decoded value does not are:
+//
+// THE LENGTH COMES FROM THE SOURCE SPAN.  Location.EndPos-Pos is the width of
+// the atom as the scanner measured it, in the same byte unit Col is counted
+// in.  So escape sequences count as the characters they are written with --
+// "x\ty" is six bytes of source and three of value, and len(v.Str)+2 gave it a
+// five-character token (elps#449) -- a raw literal's """ delimiters count, and
+// a \U escape counts as its twelve characters rather than the four bytes it
+// decodes to.
+//
+// Note that EndCol is NOT used, deliberately: TokenEnd derives it by counting
+// RUNES onto a Col that counts BYTES, so on a line with any multi-byte text it
+// is in neither unit.  EndPos and Pos are both byte offsets and their
+// difference is exact.
+//
+// A multi-line literal keeps the existing behaviour of being highlighted on its
+// first line only, but whether a literal IS multi-line is now decided by the
+// span rather than by looking for a newline in the DECODED value.  The old test
+// took a single-line "a\nb" -- one line of source, an escape, not a newline --
+// for a multi-line literal and gave it "the rest of the line", so the token ran
+// past the closing quote and over whatever followed.
+//
+// THE READER'S ' IS NOT PART OF THE ATOM.  rdparser.applyPrefixLocation moves a
+// quoted atom's Col back onto the quote so that 'a reports the position a
+// reader would point at, which leaves the atom starting one column inside its
+// own span.  PR #448 settled what a reader prefix gets -- no token, with those
+// characters left to the client's syntax grammar, which is the right owner for
+// punctuation the server has nothing to add about -- and cited ' as the
+// precedent #' and #^ were being made to match.  Skipping the quote here is
+// that same decision applied to the prefix that occasioned it: afterwards none
+// of ' , #' and #^ is inside any semantic token, and the atom after the prefix
+// gets exactly its own.
+//
+// ON UNITS AND LSP.  LSP 3.16 counts a position in UTF-16 code units unless
+// client and server negotiate otherwise, and this server neither offers
+// positionEncoding nor converts anything: every column it emits, from every
+// handler, is a byte offset.  That is a server-wide gap, filed separately; it
+// is not something a length can fix locally, and a length in some other unit
+// would only be inconsistent with the column it is added to.  What this
+// function guarantees is that a length is in the SAME unit as its start.
+//
+// fallbackLen is used when the node has no usable end position, which the
+// fault-tolerant parser can in principle produce; it is the length the case in
+// question computed before this function existed.
+func atomSpan(v *lisp.LVal, src *sourceText, fallbackLen int) (line, col, length int) {
+	loc := v.Source
+	line = loc.Line - 1
+	col = max(loc.Col-1, 0)
+
+	skipped := 0
+	if v.Quoted {
+		line, col, skipped = skipReaderQuote(src, line, col)
+	}
+
+	switch {
+	case loc.EndPos > loc.Pos && loc.EndLine-1 == line:
+		if n := loc.EndPos - loc.Pos - skipped; n > 0 {
+			return line, col, n
+		}
+	case loc.EndLine-1 > line:
+		// The atom continues onto a later line, which only a multi-line
+		// literal does.  Highlight its first line.
+		if n := src.lineLen(line) - col; n > 0 {
+			return line, col, n
+		}
+	}
+	return line, col, fallbackLen
+}
+
+// skipReaderQuote advances past a ' prefix that applyPrefixLocation folded into
+// a quoted atom's location, together with any whitespace or comment between the
+// quote and the atom -- "' a" and "'\na" are both legal, and with comments
+// preserved the reader allows one in the gap too.  It returns the atom's
+// position and the number of BYTES skipped, which is what the prefix costs the
+// span.
+//
+// It moves nothing unless the position really is a quote, so a node that is
+// Quoted for some other reason, or whose column does not line up with the text
+// the request was computed against, is left exactly where it was.
+func skipReaderQuote(src *sourceText, line, col int) (int, int, int) {
+	if c, ok := src.byteAt(line, col); !ok || c != '\'' {
+		return line, col, 0
+	}
+	startLine, startCol := line, col
+	skipped := 1
+	col++
+	for line < len(src.Lines()) {
+		c, ok := src.byteAt(line, col)
+		switch {
+		case !ok: // end of line: the newline is one byte too
+			line, col, skipped = line+1, 0, skipped+1
+		case c == ';': // a comment runs to the end of the line
+			skipped += src.lineLen(line) - col + 1
+			line, col = line+1, 0
+		case c == ' ' || c == '\t' || c == '\r' || c == '\f' || c == '\v':
+			col, skipped = col+1, skipped+1
+		default:
+			return line, col, skipped
+		}
+	}
+	// Nothing but space after the quote, so there is no atom to point at.
+	// Leave the caller where it started rather than off the end of the file.
+	return startLine, startCol, 0
 }
 
 // deltaEncode converts sorted raw tokens into the LSP delta-encoded format.
