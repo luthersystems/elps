@@ -69,7 +69,7 @@ func TestAccessorsBeforeFirstScan(t *testing.T) {
 		t.Parallel()
 		p := unstartedParser()
 		require.NotPanics(t, func() {
-			assert.Equal(t, "", p.TokenText())
+			assert.Empty(t, p.TokenText())
 		})
 	})
 
