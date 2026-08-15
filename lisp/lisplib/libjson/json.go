@@ -217,6 +217,18 @@ func (s *Serializer) jsonDecodeOpts(b []byte, dst interface{}, opts LoadOpts) er
 }
 
 func (s *Serializer) jsonDecode(b []byte, dst interface{}, stringNums bool) error {
+	return jsonDecode(b, dst, stringNums)
+}
+
+// jsonDecode is this package's single definition of "JSON libjson will accept".
+// It never depended on the Serializer, and it is package-level so the ENCODER
+// can ask the same question the decoder asks -- see encoder.checkLoadable.
+//
+// Keep the two using this one function. When they diverge, libjson emits
+// documents it then refuses to read, which is elps#410: `1E1000` is
+// syntactically valid JSON and encoding/json marshals it straight through a
+// json.RawMessage, but unmarshalling it into a float64 overflows.
+func jsonDecode(b []byte, dst interface{}, stringNums bool) error {
 	if !stringNums {
 		return json.Unmarshal(b, dst)
 	}

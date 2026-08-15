@@ -1,0 +1,5 @@
+# Self-test fixture: benchmark written WITH the -<GOMAXPROCS> suffix `go test`
+# appends. Accepting it would create a waiver that silently unbinds the day the
+# runner or the GOMAXPROCS pin changes, which is this repository's most-repeated
+# failure. It is a hard error instead.
+github.com/luthersystems/elps/lisp/lisplib/libjson | Encode-2 | allocs/op | 9 | 2099-01-01 | elps#412 | suffix written by hand, which is the trap

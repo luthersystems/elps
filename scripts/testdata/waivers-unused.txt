@@ -1,0 +1,5 @@
+# Self-test fixture: a waiver whose row IS present in the comparison and is not
+# regressing (Package/dump-github allocs/op is flat at 387.5k in the PR #411
+# run). The waiver is doing nothing, which is the signal to delete it -- so it
+# must be reported, not silently carried forever.
+github.com/luthersystems/elps/lisp/lisplib/libjson | Package/dump-github | allocs/op | 9 | 2099-01-01 | elps#412 | a waiver that is no longer needed
