@@ -177,7 +177,9 @@ elps> (car '("one" "two" "three"))
 
 ## `cdr`
 
-Returns the list after the first item.
+Returns the list after the first item.  Like `slice`, the result is a view
+that shares its elements with the source — see
+[Slices are views, not copies](#slices-are-views-not-copies).
 
 ```Lisp
 elps> (cdr '("head" "body" "tail"))
@@ -186,7 +188,9 @@ elps> (cdr '("head" "body" "tail"))
 
 ## `rest`
 
-Returns the sequence (list, vector) after the first item.
+Returns the sequence (list, vector) after the first item.  Like `slice`, the
+result is a view that shares its elements with the source — see
+[Slices are views, not copies](#slices-are-views-not-copies).
 
 ```Lisp
 elps> (rest (vector "one" "two" "three" "four"))
@@ -434,6 +438,27 @@ Performs a stable sort on a list using a predicate. The last argument can
 optionally be a function that takes the key and returns the comparison value.
 Mutates the list in-place.
 
+Two consequences of "in-place" are worth stating outright, because neither is
+visible at the call site:
+
+- Sorting a **slice, `cdr` or `rest` view** sorts that region of the source
+  too, since a view shares its elements — see
+  [Slices are views, not copies](#slices-are-views-not-copies).
+- Sorting a **quoted literal** rewrites the program's own text, and it stays
+  rewritten for the life of the process:
+
+  ```Lisp
+  elps> (defun probe () (let ([lit '(3 1 2)]) (stable-sort < lit) lit))
+  ()
+  elps> (probe)
+  '(1 2 3)
+  elps> (probe)  ; the literal in the function body is now sorted
+  '(1 2 3)
+  ```
+
+Sort a copy — `(stable-sort < (concat 'list lit))` — whenever the argument is a
+literal or a view you do not own.
+
 ```
 elps> (set 'test '(1 2 3))
 '(1 2 3)
@@ -566,6 +591,59 @@ elps> (slice 'vector "hello" 1 4)
 (vector 101 108 108)
 ```
 
+### Slices are views, not copies
+
+For `list`, `vector` and `bytes` sources the result **shares its elements with
+the source**, the way a Go slice does.  Reading is always safe, and appending
+to a slice is safe — a slice cannot grow into its source, so `append` and
+`append!` on the slice leave the source alone:
+
+```Lisp
+elps> (set 'v (vector 10 20 30 40))
+(vector 10 20 30 40)
+elps> (set 'view (slice 'vector v 0 2))
+(vector 10 20)
+elps> (append! view 999)
+(vector 10 20 999)
+elps> v  ; the source is untouched
+(vector 10 20 30 40)
+```
+
+What sharing still means is that an operation which mutates the slice's own
+elements *in place* is visible through the source.  `stable-sort` is the one to
+watch, because it sorts in place and returns the sequence it sorted:
+
+```Lisp
+elps> (set 'v (vector 5 4 3 2 1))
+(vector 5 4 3 2 1)
+elps> (stable-sort < (slice 'vector v 0 3))
+(vector 3 4 5)
+elps> v  ; the first three elements of v were sorted too
+(vector 3 4 5 2 1)
+```
+
+Take a copy with `concat` when you need a snapshot that nothing can write
+through — `concat` always allocates:
+
+```Lisp
+elps> (set 'v (vector 5 4 3 2 1))
+(vector 5 4 3 2 1)
+elps> (set 'copy (concat 'vector (slice 'vector v 0 3)))
+(vector 5 4 3)
+elps> (stable-sort < copy)
+(vector 3 4 5)
+elps> v  ; unchanged
+(vector 5 4 3 2 1)
+```
+
+This matters most when the source is a quoted literal, because a literal is
+part of the program text rather than a fresh value — sorting one in place
+changes it for the rest of the process.  `(concat 'list ...)` is the idiom for
+taking a literal you intend to mutate.
+
+`(slice 'string ...)` is exempt: strings are immutable, so a string slice can
+never be written through.
+
 ## `list`
 
 Returns a list compose of the supplied parameters.
@@ -588,7 +666,9 @@ elps> (vector 1 "2" 'three)
 
 ## `append`
 
-Appends to the vector, returning a copy without mutating the source vector.
+Appends to the sequence, returning a new sequence and leaving the source
+untouched.  The result never shares storage with the source, so appending to
+the same source twice gives two independent results.
 
 ```Lisp
 elps> (set 'test (vector 1 2))
@@ -597,11 +677,29 @@ elps> (append 'vector test 3)
 (vector 1 2 3)
 elps> test
 (vector 1 2)
+elps> (set 'a (append 'vector test 3))
+(vector 1 2 3)
+elps> (set 'b (append 'vector test 4))
+(vector 1 2 4)
+elps> a  ; unaffected by the append that produced b
+(vector 1 2 3)
 ```
+
+Because the source is never written to, `append` must copy, which makes it
+O(n) in the length of the source.  Building a sequence with repeated
+`(set 'v (append 'vector v x))` is therefore quadratic — use `append!` to
+accumulate.
+
+> Before ELPS fixed issue #373, `append` could grow into spare capacity left
+> in the source and overwrite a result it had already returned — in the
+> example above, `a` would have become `(vector 1 2 4)`.  Code written against
+> that behaviour will now see correct values and one extra copy per append.
 
 ## `append!`
 
-Appends to the vector, mutating the source vector in-place.
+Appends to the vector, mutating the source vector in-place.  This is the
+accumulator: it grows in amortised constant time and does not copy.  Use it in
+loops, and use `append` when the source must not change.
 
 ```Lisp
 elps> (set 'test (vector 1 2))
@@ -614,12 +712,13 @@ elps> test
 
 ## `append-bytes`
 
-Appends to the byte vector, returning a copy without mutating the source vector.
+Appends to the byte vector, returning new bytes and leaving the source
+untouched.  As with `append`, the result never shares storage with the source.
 
 ```
 elps> (set 'test (to-bytes "hello world"))
 #<bytes 104 101 108 108 111 32 119 111 114 108 100>
-elps> (append-bytes! test "!")
+elps> (append-bytes test "!")
 #<bytes 104 101 108 108 111 32 119 111 114 108 100 33>
 elps> (to-string test)
 "hello world"
