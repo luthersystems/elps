@@ -238,6 +238,12 @@ func macroDeftype(env *LEnv, args *LVal) *LVal {
 // handed to stampMacroExpansion can contain itself, and an unguarded walk over
 // one overflows the goroutine stack and kills the process.  The walk is
 // bounded the same way rendering is; see lisp/cycle.go and issue #390.
+//
+// callSite is stored by POINTER on every node the walk claims, so the caller
+// must pass a Location the expansion may own -- not one a live parse tree also
+// holds.  macroCall takes env.Loc.Copy() for exactly this reason; passing
+// env.Loc itself put the caller's node and the whole expansion on one mutable
+// object (issue #431).
 func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *MacroExpansionContext, rt *Runtime) {
 	var st cycleState
 	stampGuarded(v, callSite, ctx, rt, cycleGuard{state: &st})

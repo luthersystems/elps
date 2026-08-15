@@ -5,6 +5,8 @@ package lisp_test
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // Fuzzing the EVALUATOR, not the parser.
@@ -165,6 +168,116 @@ type evalOutcome struct {
 	Elapsed time.Duration
 }
 
+// locationWatch records, for every node the loader's reader produces, the
+// *token.Location that node held and the position that Location described --
+// so evaluation can be asked afterwards whether it moved either.
+//
+// WHAT THIS COVERS, and why it lives in FuzzEval rather than in a target of its
+// own (the fuzz sweep's budget has no spare shard-minutes: see
+// scripts/fuzz-budget-check.sh).
+//
+// A parse tree is not private to one evaluation.  LEnv.load evaluates the
+// reader's expressions directly without copying; a function body IS the parse
+// tree it was defined from, re-entered on every call; and a *Package -- LFun
+// bodies included -- is shared by pointer across the per-request environments
+// an embedder derives from one registry.  So a write into a parsed node's
+// position is not a local mistake, it is retroactive corruption of every error
+// message, stack frame and LSP range computed from that node, in every
+// evaluation that ever uses it.
+//
+// The evaluator has exactly one writer of LVal.Source: stampMacroExpansion.
+// It is supposed to claim only nodes the MACRO created.  It reached parser
+// output twice before -- elps#370, where the reader emitted synthetic locations
+// the stamp then rewrote, and elps#431, where the stamp wrote the caller's own
+// *token.Location onto every node of the expansion, leaving two trees on one
+// mutable object.  Both are fixed; this states the property they broke, over
+// arbitrary programs, rather than over the two shapes their regression tests
+// pin.
+//
+// GUARD, NOT A CATCH: this passes on the parent commit.  elps#431 is an
+// ownership defect, and its corruption is latent -- no in-tree writer can
+// currently reach a Location it does not own.  What this adds is that a future
+// one cannot arrive unnoticed.
+type locationWatch struct {
+	lisp.Reader
+	nodes     []*lisp.LVal
+	locs      []*token.Location
+	positions []token.Location
+	truncated bool
+}
+
+// locationWatchLimit bounds what one input may make the watch retain.  A
+// program is free to call `load-string` in a loop, and an unbounded watch would
+// turn that into memory pressure on the fuzz process.  Past the limit the watch
+// stops recording and says so, rather than recording a prefix and reporting as
+// if it had seen everything.
+const locationWatchLimit = 200_000
+
+// Read implements lisp.Reader, recording the tree on the way past.  Every
+// exported Load* entry point funnels through Runtime.Reader, so this sees the
+// program itself and anything it loads at runtime.
+func (w *locationWatch) Read(name string, r io.Reader) ([]*lisp.LVal, error) {
+	exprs, err := w.Reader.Read(name, r)
+	for _, e := range exprs {
+		w.record(e, make(map[*lisp.LVal]bool))
+	}
+	return exprs, err
+}
+
+func (w *locationWatch) record(v *lisp.LVal, seen map[*lisp.LVal]bool) {
+	// Bounded like every other walk over a value the fuzzer chose: a macro may
+	// build a structure that contains itself (elps#390), and the reader is not
+	// the only producer feeding this.
+	if v == nil || seen[v] {
+		return
+	}
+	if len(w.nodes) >= locationWatchLimit {
+		w.truncated = true
+		return
+	}
+	seen[v] = true
+	if v.Source != nil {
+		w.nodes = append(w.nodes, v)
+		w.locs = append(w.locs, v.Source)
+		w.positions = append(w.positions, *v.Source)
+	}
+	for _, c := range v.Cells {
+		w.record(c, seen)
+	}
+}
+
+// verify reports the first node whose position evaluation moved.
+func (w *locationWatch) verify(t fatalf, src []byte) {
+	t.Helper()
+	// A truncated watch still reports honestly on what it did record; it says
+	// so, so a failure is never read as "and nothing else moved".
+	scope := fmt.Sprintf("%d nodes watched", len(w.nodes))
+	if w.truncated {
+		scope = fmt.Sprintf("first %d nodes only; the watch was truncated at its limit", len(w.nodes))
+	}
+	for i, node := range w.nodes {
+		switch {
+		case node.Source == nil:
+			t.Fatalf("evaluation cleared the source location of a parsed %v %q (was %v) [%s]"+
+				"\n--- source (%d bytes) ---\n%q",
+				node.Type, node.Str, w.positions[i], scope, len(src), src)
+			return
+		case node.Source != w.locs[i]:
+			t.Fatalf("evaluation re-pointed the Source of a parsed %v %q from %v to %v;"+
+				" the stamp must claim only nodes the macro created (#370, #431) [%s]"+
+				"\n--- source (%d bytes) ---\n%q",
+				node.Type, node.Str, w.positions[i], node.Source, scope, len(src), src)
+			return
+		case *node.Source != w.positions[i]:
+			t.Fatalf("evaluation moved the recorded position of a parsed %v %q from %+v to %+v;"+
+				" a write through a *token.Location the evaluator does not own (#431) [%s]"+
+				"\n--- source (%d bytes) ---\n%q",
+				node.Type, node.Str, w.positions[i], *node.Source, scope, len(src), src)
+			return
+		}
+	}
+}
+
 // fatalf is the subset of *testing.T and *testing.F the harness needs, so the
 // same code serves the fuzz target and the ordinary corpus tests.
 type fatalf interface {
@@ -210,6 +323,14 @@ func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
 		return evalOutcome{}, false
 	}
 
+	// Watch the positions of every node the loader is about to evaluate.
+	// Installed AFTER newFuzzEnv so the stdlib's own parse trees -- tens of
+	// thousands of nodes, evaluated once during setup and never again -- are
+	// not recorded per input.  The wrapper adds one walk of the program's tree
+	// and no extra evaluation.
+	watch := &locationWatch{Reader: env.Runtime.Reader}
+	env.Runtime.Reader = watch
+
 	ctx, cancel := context.WithTimeout(context.Background(), fuzzDeadline)
 	defer cancel()
 
@@ -239,6 +360,10 @@ func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
 				t.Fatalf("evaluation returned a nil LVal")
 				return evalOutcome{}, false
 			}
+			// Only once the evaluation goroutine has finished: verify walks
+			// the same nodes it was writing to, and reading them while it runs
+			// is the race the property is about.
+			watch.verify(t, src)
 			return evalOutcome{
 				Result:  d.result,
 				Stderr:  stderr.String(),
