@@ -55,13 +55,23 @@ func TestArray(t *testing.T) {
 			{"v123", "(vector 1 2 3)", ""},
 			{"v1234", "(vector 1 2 3 4)", ""},
 			{"(set 'v1235 (append 'vector v123 5))", "(vector 1 2 3 5)", ""},
-			// The above append reuses excess vector capacity allocated in the
-			// previous append to v12, creating v123.  Analogous to go slices,
-			// this causes side effects in the value of v1234.  The assumed
-			// performance benefit seems valuable but in general (append
-			// 'vector ...) should be used sparingly and with care.  The
-			// append! function will be easier to reason about.
-			{"v1234", "(vector 1 2 3 5)", ""},
+			// Two appends off the same source are independent (issue #373).
+			//
+			// This row used to assert (vector 1 2 3 5).  The append above
+			// reused excess capacity left in v123 by the append that built
+			// it, so it wrote through the shared backing array and rewrote
+			// v1234 -- a value `append` had already returned.  The comment
+			// here called that an "assumed performance benefit" and told
+			// callers to use `append` "sparingly and with care".
+			//
+			// There was no care that helped: nothing about v1234 said it
+			// was still aliased, and `append` is the non-mutating
+			// constructor by contract and by docstring.  Producers now
+			// clamp the capacity of every view they hand out and `append`
+			// clamps its input, so an append needing room reallocates.
+			// `append!` is the in-place accumulator and still grows in
+			// amortised O(1).
+			{"v1234", "(vector 1 2 3 4)", ""},
 		}},
 	}
 	elpstest.RunTestSuite(t, tests)
