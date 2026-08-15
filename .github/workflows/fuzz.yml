@@ -61,7 +61,7 @@ permissions:
 
 jobs:
   fuzz:
-    name: Fuzz shard ${{ matrix.shard }}/7
+    name: Fuzz shard ${{ matrix.shard }}/8
     runs-on: ubuntu-latest
     strategy:
       # Sharded so wall clock is set by the LARGEST shard rather than by the
@@ -81,7 +81,7 @@ jobs:
       # or a single failure costs the whole night's coverage.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     # DERIVED, not remembered. scripts/fuzz-budget-check.sh asserts
     #
     #     ceil(targets / shards) x FUZZTIME + overhead <= timeout-minutes
@@ -182,7 +182,7 @@ jobs:
         run: ./scripts/fuzz-budget-check.sh
 
       - name: Fuzz
-        run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/7
+        run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/8
 
       # Only from main/schedule: a corpus grown from an unmerged branch would
       # otherwise be handed to every other PR.
