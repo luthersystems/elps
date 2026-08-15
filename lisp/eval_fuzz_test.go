@@ -5,6 +5,7 @@ package lisp_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -107,9 +108,26 @@ const (
 	// after hundreds of thousands of Go frames had already been pushed.
 	fuzzMaxEvalNesting = 20_000
 
-	// fuzzDeadline is the context deadline every evaluation runs under.  It
-	// is the only limit that bounds wall-clock time, and it is checked at
-	// each evaluation step.
+	// fuzzDeadline is the context deadline FUZZED input runs under.  It is
+	// the only limit that bounds wall-clock time, and it is checked at each
+	// evaluation step.
+	//
+	// It is deliberately NOT applied to the fixed corpora.  A wall-clock
+	// deadline is a THROUGHPUT bound: it keeps one pathological mutation from
+	// eating a whole fuzz job.  FuzzEval asserts nothing about whether an
+	// input succeeds, so the deadline firing there is an acceptable answer and
+	// costs only that input.  The corpus tests are different in kind --
+	// TestEvalTerminatingSeedsComplete asserts that a fixed, known-terminating
+	// program COMPLETES -- and enforcing a correctness property with a clock
+	// makes the assertion's outcome a function of how much CPU the process was
+	// given rather than of the program under test.  That is issue #435: on a
+	// loaded machine `tail-recursion-bounded` (35ms of CPU, 130k of 2,000,000
+	// budgeted steps) failed this assertion, stopping at a DIFFERENT step count
+	// on every run, and reported it as "either the program is wrong or a budget
+	// has been tuned into the range of correct programs" -- neither of which
+	// was true.
+	//
+	// See evalCorpusBudgeted for what the corpora run under instead.
 	fuzzDeadline = 2 * time.Second
 
 	// watchdogTimeout is the outer bound, denominated in SCHEDULED time (see
@@ -176,16 +194,56 @@ type fatalf interface {
 	Skipf(format string, args ...interface{})
 }
 
-// evalBudgeted parses and evaluates src under the budget, on its own
-// goroutine, with the watchdog running.  It returns (outcome, true) when the
-// source evaluated, and (zero, false) when it did not parse -- a parse error
-// is the parser targets' business, not this one's.
+// evalBudgeted parses and evaluates FUZZED src under the full budget,
+// including the wall-clock fuzzDeadline.  See evalCorpusBudgeted for the
+// fixed corpora.
+func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
+	t.Helper()
+	return evalUnderBudget(t, src, fuzzDeadline)
+}
+
+// evalCorpusBudgeted parses and evaluates a FIXED corpus program under the
+// deterministic budgets only -- no wall clock (issue #435).
+//
+// What still bounds it, and why that is enough:
+//
+//   - fuzzMaxSteps and friends.  Every corpus program is bounded by one of
+//     them, and their units are counts, not seconds, so a machine under load
+//     reaches exactly the same verdict as an idle one.
+//     TestEvalRunawaySeedsAreStopped runs through here, so it now also pins
+//     the property this removal depends on: every runaway seed is stopped by
+//     a DETERMINISTIC budget.  If a seed ever needed the clock, that test
+//     hangs into the watchdog and says so.
+//   - the watchdog.  It is the bound on a builtin that loops inside Go, which
+//     is step-blind and context-blind, so it was never the deadline's job in
+//     the first place -- see "Why there is also a watchdog" above.
+//
+// Why not simply denominate the deadline in SCHEDULED time, the way
+// watchdogTimeout is: fuzzwatch measures scheduler STALL -- wall clock during
+// which the process was not run at all -- which is the right instrument for a
+// 30s bound on sub-millisecond work.  It is not an instrument for CPU SHARE.
+// Measured on the 4-core sandbox that reproduces #435, with 200 competing
+// spinners, evaluation slowed by roughly 50x while fuzzwatch recorded ZERO
+// lost time: a heartbeat goroutine that sleeps 100ms and does nothing still
+// wakes promptly when the run queue is long, so its ticks stay inside the
+// tolerance.  A 2s scheduled-time deadline would have failed here exactly as
+// the wall-clock one did.  The fix has to be a budget with no clock in it.
+func evalCorpusBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
+	t.Helper()
+	return evalUnderBudget(t, src, 0)
+}
+
+// evalUnderBudget parses and evaluates src under the budget, on its own
+// goroutine, with the watchdog running.  A deadline of 0 means no wall-clock
+// deadline at all.  It returns (outcome, true) when the source evaluated, and
+// (zero, false) when it did not parse -- a parse error is the parser targets'
+// business, not this one's.
 //
 // The watchdog failure is Fatalf rather than a returned error because there is
 // nothing a caller could usefully do with it: the evaluation goroutine is
 // still running and cannot be stopped.  Leaking it is acceptable precisely
 // because the run has already failed.
-func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
+func evalUnderBudget(t fatalf, src []byte, deadline time.Duration) (evalOutcome, bool) {
 	t.Helper()
 
 	// Decide "did this parse?" with the reader itself rather than by pattern-
@@ -210,7 +268,7 @@ func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
 		return evalOutcome{}, false
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), fuzzDeadline)
+	ctx, cancel := evalContext(deadline)
 	defer cancel()
 
 	type done struct {
@@ -257,19 +315,39 @@ func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
 				return evalOutcome{}, false
 			default:
 				// The evaluation goroutine is unstoppable by construction --
-				// if it were interruptible it would have honoured the context
-				// deadline fuzzDeadline seconds ago.  Leaking it is the price
-				// of reporting the failure at all; the process is about to
-				// fail the test regardless.
-				t.Fatalf("evaluation did not terminate within %s of SCHEDULED time despite a %s context deadline,"+
+				// if it were interruptible it would have honoured its step
+				// budget long ago.  Leaking it is the price of reporting the
+				// failure at all; the process is about to fail the test
+				// regardless.
+				t.Fatalf("evaluation did not terminate within %s of SCHEDULED time despite %s,"+
 					" a %d-step budget and a %d-iteration tail budget (%s)"+
 					"\n--- source (%d bytes) ---\n%q",
-					budget.Total(), fuzzDeadline, int64(fuzzMaxSteps), fuzzMaxTailIterations,
+					budget.Total(), describeDeadline(deadline), int64(fuzzMaxSteps), fuzzMaxTailIterations,
 					report, len(src), src)
 				return evalOutcome{}, false
 			}
 		}
 	}
+}
+
+// evalContext builds the context an evaluation runs under.  A deadline of 0
+// yields a context that is cancellable but carries no deadline -- the shape
+// the fixed corpora need, where the bound must not be a clock (#435).
+func evalContext(deadline time.Duration) (context.Context, context.CancelFunc) {
+	if deadline <= 0 {
+		return context.WithCancel(context.Background())
+	}
+	return context.WithTimeout(context.Background(), deadline)
+}
+
+// describeDeadline renders the deadline for a failure message, so a watchdog
+// firing under the corpus budget does not claim a context deadline that is not
+// there.
+func describeDeadline(deadline time.Duration) string {
+	if deadline <= 0 {
+		return "no context deadline (the fixed-corpus budget: counts, not clocks)"
+	}
+	return fmt.Sprintf("a %s context deadline", deadline)
 }
 
 // assertNoInternalPanic is the assertion the whole target exists to make.
@@ -332,12 +410,21 @@ func FuzzEval(f *testing.F) {
 // that starts returning a value means a limit stopped working -- which is how
 // a fuzz target silently degrades into one that only ever runs terminating
 // programs.
+//
+// It runs under evalCorpusBudgeted, i.e. with NO wall-clock deadline, which
+// makes it also the guard for what #435's fix depends on: every runaway seed
+// must be stopped by a DETERMINISTIC budget.  Measured at the time of that
+// change, each of the fourteen seeds is stopped by a step, tail-iteration,
+// physical-height, eval-nesting, macro-depth or allocation limit, and none by
+// the clock.  If a seed ever came to need the clock, it would reach the
+// watchdog here and fail loudly rather than quietly change what this file
+// tests.
 func TestEvalRunawaySeedsAreStopped(t *testing.T) {
 	t.Parallel()
 	for name, src := range fuzzseed.EvalRunaway() {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			out, ok := evalBudgeted(t, []byte(src))
+			out, ok := evalCorpusBudgeted(t, []byte(src))
 			if !ok {
 				t.Fatalf("runaway seed %q does not parse; it can never have tested a budget", name)
 			}
@@ -359,23 +446,109 @@ func TestEvalRunawaySeedsAreStopped(t *testing.T) {
 // `deep-nested-progn` sit in the terminating corpus while actually returning
 // "physical stack height exceeded maximum" -- the split was enforced in one
 // direction only, so a budget firing on a correct program was invisible.
+//
+// The budgets it runs against are deterministic (evalCorpusBudgeted): the
+// verdict for a given seed is a property of the seed and the budgets, not of
+// how much CPU this process happened to be given.  Before #435 this ran under
+// a 2s wall-clock deadline and could fail a correct seed on a loaded machine,
+// which is the same defect in the opposite direction -- a check firing on
+// innocent code.
 func TestEvalTerminatingSeedsComplete(t *testing.T) {
 	t.Parallel()
 	for name, src := range fuzzseed.EvalTerminating() {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			out, ok := evalBudgeted(t, []byte(src))
+			out, ok := evalCorpusBudgeted(t, []byte(src))
 			if !ok {
 				t.Fatalf("terminating seed %q does not parse", name)
 			}
 			assertNoInternalPanic(t, []byte(src), out)
 			if out.Result.Type == lisp.LError {
 				t.Fatalf("terminating seed %q must complete without error, got: %v"+
-					" (%d steps, %s) -- either the program is wrong or a budget"+
-					" has been tuned into the range of correct programs",
-					name, out.Result, out.Steps, out.Elapsed)
+					" (%d steps of %d budgeted, %s) -- the program is wrong or a"+
+					" deterministic budget has been tuned into the range of correct"+
+					" programs; this assertion no longer depends on wall clock, so"+
+					" machine load is not a candidate explanation (#435)",
+					name, out.Result, out.Steps, int64(fuzzMaxSteps), out.Elapsed)
 			}
 		})
+	}
+}
+
+// TestTerminatingSeedVerdictIsNotAFunctionOfTheClock is the regression test
+// for #435, in a form that does not need a loaded machine to run.
+//
+// The defect was that a correctness assertion -- this known-terminating
+// program completes -- was enforced by a wall-clock deadline, so its outcome
+// moved with how much CPU the process was given.  On the sandbox that found
+// it, six concurrent runs of TestEvalTerminatingSeedsComplete under 200
+// competing spinners failed six times, the same fixed seed stopping at eight
+// different step counts across independent samples.  That is not reproducible
+// in a unit test, so this flips the same variable directly: it starves the
+// clock rather than the machine, and asserts the corpus path does not notice.
+//
+// The first half is what makes the second half mean anything.  If evaluation
+// stopped honouring context deadlines, the "immune" assertion below would pass
+// for the wrong reason, so the sensitivity is demonstrated rather than assumed.
+func TestTerminatingSeedVerdictIsNotAFunctionOfTheClock(t *testing.T) {
+	t.Parallel()
+
+	const seed = "tail-recursion-bounded"
+	src := []byte(fuzzseed.EvalTerminating()[seed])
+	if len(src) == 0 {
+		t.Fatalf("seed %q is gone from the terminating corpus; this test pins its verdict", seed)
+	}
+
+	// A wall clock that is already spent.  Under one, this seed reports an
+	// error -- the same verdict #435 saw against a 2s clock on a machine that
+	// was not running us, and for the same reason.
+	starved, ok := evalUnderBudget(t, src, time.Nanosecond)
+	if !ok {
+		t.Fatalf("terminating seed %q does not parse", seed)
+	}
+	if starved.Result.Type != lisp.LError {
+		t.Fatalf("a spent wall clock must stop evaluation of %q, got %v (%d steps)."+
+			" If the context deadline no longer bounds evaluation, the assertion below"+
+			" passes for the wrong reason and this test is not testing anything",
+			seed, starved.Result, starved.Steps)
+	}
+
+	// The corpus path has no clock in it, so there is nothing to starve and
+	// the seed reaches its real verdict.
+	out, ok := evalCorpusBudgeted(t, src)
+	if !ok {
+		t.Fatalf("terminating seed %q does not parse", seed)
+	}
+	if out.Result.Type == lisp.LError {
+		t.Fatalf("the corpus budget must not depend on wall clock, but %q returned %v"+
+			" (%d steps of %d budgeted)", seed, out.Result, out.Steps, int64(fuzzMaxSteps))
+	}
+}
+
+// TestEvalCorpusHasNoWallClockDeadline pins the shape of #435's fix: the fixed
+// corpora are handed a context with no deadline, and fuzzed input is still
+// handed one.
+//
+// It is deliberately narrow.  The behavioural assertion lives in
+// TestTerminatingSeedVerdictIsNotAFunctionOfTheClock; this one exists so that
+// re-introducing a clock on the corpus path fails immediately and by name,
+// rather than years later on somebody's loaded laptop.
+func TestEvalCorpusHasNoWallClockDeadline(t *testing.T) {
+	t.Parallel()
+
+	corpus, cancel := evalContext(0)
+	defer cancel()
+	if d, ok := corpus.Deadline(); ok {
+		t.Fatalf("the fixed-corpus budget must carry no wall-clock deadline, got one at %s."+
+			" A correctness assertion enforced by a clock measures machine load (#435)", d)
+	}
+
+	fuzzed, cancel := evalContext(fuzzDeadline)
+	defer cancel()
+	if _, ok := fuzzed.Deadline(); !ok {
+		t.Fatal("fuzzed input must still run under fuzzDeadline: it is the throughput bound" +
+			" that stops one pathological mutation from eating a whole fuzz job, and nothing" +
+			" in FuzzEval asserts that an input succeeds, so it cannot fail innocent code")
 	}
 }
 
@@ -383,6 +556,11 @@ func TestEvalTerminatingSeedsComplete(t *testing.T) {
 // These carry no expected outcome -- an error is a fine answer for most of
 // them -- so the only assertions are the universal ones: termination, no
 // recovered Go panic, no nil result.
+//
+// This one KEEPS the wall-clock deadline (evalBudgeted).  Nothing here asserts
+// that a seed succeeds, so a fired deadline is an acceptable answer and cannot
+// turn machine load into a failure; and the deadline bounds what this test
+// costs.  That is the same reasoning that leaves it in place for FuzzEval.
 func TestEvalAdversarialSeedsSurvive(t *testing.T) {
 	t.Parallel()
 	for _, src := range fuzzseed.EvalAdversarial() {
@@ -417,7 +595,7 @@ func TestInternalPanicMarkerIsNotForgeable(t *testing.T) {
 	t.Parallel()
 
 	forged := `(error 'internal-panic "forged")`
-	out, ok := evalBudgeted(t, []byte(forged))
+	out, ok := evalCorpusBudgeted(t, []byte(forged))
 	if !ok {
 		t.Fatal("the forged internal-panic program must parse")
 	}
@@ -448,16 +626,28 @@ func TestInternalPanicMarkerIsNotForgeable(t *testing.T) {
 	}
 }
 
-// TestEvalBudgetHeadroom reports what the terminating corpus actually costs
-// against the configured budget.  It is a measurement, not a threshold: the
-// pass/fail assertion lives in TestEvalTerminatingSeedsComplete.  Run with
-// -v to see the numbers when retuning a limit.
+// stepHeadroomCeiling is the largest fraction of fuzzMaxSteps any terminating
+// seed may consume.  Measured worst case is `tail-recursion-bounded` at
+// 130,019 steps, 6.5% of the 2,000,000 budgeted; 50% leaves an 8x margin over
+// that and still fails long before a seed can reach the budget.
+const stepHeadroomCeiling = 0.50
+
+// TestEvalBudgetHeadroom asserts that the terminating corpus stays clear of
+// the step budget, and reports by how much.
+//
+// It is the assertion that "a budget has been tuned into the range of correct
+// programs" deserves, in the unit that claim is actually about.  Steps are a
+// count: this test reaches the same verdict on a loaded machine and an idle
+// one, which is what distinguishes it from the wall-clock deadline the
+// terminating-seed assertion used to run into (#435).  Run with -v to see the
+// numbers when retuning a limit.
 func TestEvalBudgetHeadroom(t *testing.T) {
+	t.Parallel()
 	var worstSteps int64
 	var worstName string
 	var worstElapsed time.Duration
 	for name, src := range fuzzseed.EvalTerminating() {
-		out, ok := evalBudgeted(t, []byte(src))
+		out, ok := evalCorpusBudgeted(t, []byte(src))
 		if !ok {
 			continue
 		}
@@ -465,7 +655,13 @@ func TestEvalBudgetHeadroom(t *testing.T) {
 			worstSteps, worstName, worstElapsed = out.Steps, name, out.Elapsed
 		}
 	}
-	t.Logf("most expensive terminating seed: %s -- %d steps of %d budgeted (%.1f%%), %s of %s deadline",
-		worstName, worstSteps, int64(fuzzMaxSteps),
-		100*float64(worstSteps)/float64(fuzzMaxSteps), worstElapsed, fuzzDeadline)
+	used := float64(worstSteps) / float64(fuzzMaxSteps)
+	t.Logf("most expensive terminating seed: %s -- %d steps of %d budgeted (%.1f%%), %s elapsed",
+		worstName, worstSteps, int64(fuzzMaxSteps), 100*used, worstElapsed)
+	if used > stepHeadroomCeiling {
+		t.Fatalf("terminating seed %q used %d of %d budgeted steps (%.1f%%), over the %.0f%% ceiling:"+
+			" the corpus and the budget have converged, so a correct program is close to being"+
+			" stopped by a limit.  Raise fuzzMaxSteps or shrink the seed -- do not raise the ceiling",
+			worstName, worstSteps, int64(fuzzMaxSteps), 100*used, 100*stepHeadroomCeiling)
+	}
 }
