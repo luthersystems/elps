@@ -87,9 +87,11 @@ type EnvMacroExpander struct {
 	mu       sync.Mutex
 	notMacro map[string]bool // cache: symbols that are not macros in the env
 	// NOTE: notMacro assumes the env's macro set is stable for this
-	// expander's lifetime. If macros are added to the env after creation
-	// (e.g. LoadWorkspaceMacros), create a new EnvMacroExpander or call
-	// Reset() to clear the cache.
+	// expander's lifetime. If macros are added to the env after creation,
+	// create a new EnvMacroExpander or call Reset() to clear the cache.
+	// (*EnvMacroExpander).LoadWorkspaceMacros does both the loading and the
+	// invalidation, and is the safe way to add workspace macros to a live
+	// expander's env.
 
 	// aborted counts ExpandMacro calls that left the function without
 	// reaching the statement after expand() returned. Monotonic, and there
@@ -101,7 +103,9 @@ type EnvMacroExpander struct {
 }
 
 // Reset clears the not-a-macro cache. Call this after loading new macros
-// into the env (e.g. via LoadWorkspaceMacros) if the expander is reused.
+// into the env if the expander is reused. Prefer the expander's own
+// LoadWorkspaceMacros method, which loads and invalidates under one lock and
+// so cannot leave a window where the cache and the env disagree.
 //
 // Reset does NOT clear the abort count or the last recorded panic. Evidence
 // that host code crashed during analysis outlives a cache invalidation, and a
@@ -316,6 +320,34 @@ func (e *EnvMacroExpander) expand(form *lisp.LVal, pkg string) *lisp.LVal {
 	}
 
 	return mark.Cells[0]
+}
+
+// LoadWorkspaceMacros replays preamble forms into this expander's environment
+// while holding the same lock that serializes ExpandMacro, then clears the
+// not-a-macro cache.
+//
+// Prefer it to the package-level LoadWorkspaceMacros whenever the expander is
+// reachable from another goroutine. The package-level function evaluates the
+// preamble against the env directly, and an expansion running concurrently
+// reads and writes that very env — Runtime.Package, the call stack, the
+// package registry. ExpandMacro's mutex cannot help there: the loader never
+// asked for it. mcpserver reaches exactly that pairing, because one env backs
+// every workspace root it indexes, so replaying one root's preamble overlaps
+// with expanding macros for a document belonging to another (issue #403).
+//
+// Clearing the cache is why this is a method rather than a mutex taken at the
+// call site: the preamble defines macros, so any "not a macro" answer recorded
+// before it ran may now be wrong. Reset documents the same requirement; this
+// removes the chance to forget it.
+func (e *EnvMacroExpander) LoadWorkspaceMacros(preamble []*lisp.LVal) []error {
+	if e.Env == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	errs := LoadWorkspaceMacros(e.Env, preamble)
+	e.notMacro = nil
+	return errs
 }
 
 // LoadWorkspaceMacros replays workspace preamble forms (in-package,
