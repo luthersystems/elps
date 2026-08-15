@@ -4,6 +4,7 @@ package libtesting
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
@@ -41,13 +42,39 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 }
 
 // TestSuite is an ordered set of named tests.
+//
+// A TestSuite's own bookkeeping is safe for concurrent use, so one suite may
+// be registered into, and read from, any number of environments at once.
+// LoadPackage gives every environment its own suite, so the ordinary path never
+// shares one, but NewTestSuite and EnvTestSuite are exported with no stated
+// scope: an embedder that installs one suite into several runtimes is doing
+// something the API permits. Evaluating a `test` or `benchmark` form writes the
+// suite's maps, and two goroutines writing one Go map is `fatal error:
+// concurrent map writes`, which is thrown by the runtime and cannot be
+// recovered. The mutex below is what keeps that from being reachable. See
+// issue #420.
+//
+// What this does NOT promise is anything about running a registered test. A
+// Test's Fun is a lambda closed over the environment that defined it, so
+// evaluating it from a different runtime is environment sharing, which is a
+// separate question from whether the suite is a safe container.
 type TestSuite struct {
 	tests      map[string]*Test
 	benchmarks map[string]*Test
 	torder     []string
 	border     []string
+
+	// mu guards every field above it. Add and AddBenchmark run once per
+	// definition form, at load time, never inside an assertion or inside a
+	// running test body, so the lock is not on any hot path. It sits last
+	// rather than first because fieldalignment is enforced across lisp/...
+	// and a pointer-free mutex ahead of the maps would push the struct's
+	// pointer bytes from 48 to 72.
+	mu sync.RWMutex
 }
 
+// NewTestSuite returns an empty suite. The result may be installed into any
+// number of environments and used from all of them concurrently.
 func NewTestSuite() *TestSuite {
 	return &TestSuite{
 		tests:      make(map[string]*Test),
@@ -56,6 +83,8 @@ func NewTestSuite() *TestSuite {
 }
 
 func (s *TestSuite) Add(t *Test) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.tests[t.Name] != nil {
 		return fmt.Errorf("test with the same name already defined: %v", t.Name)
 	}
@@ -65,26 +94,36 @@ func (s *TestSuite) Add(t *Test) error {
 }
 
 func (s *TestSuite) Len() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return len(s.torder)
 }
 
 func (s *TestSuite) Tests() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	names := make([]string, len(s.torder))
 	copy(names, s.torder)
 	return names
 }
 
 func (s *TestSuite) Benchmarks() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	names := make([]string, len(s.border))
 	copy(names, s.border)
 	return names
 }
 
 func (s *TestSuite) Test(i int) *Test {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.tests[s.torder[i]]
 }
 
 func (s *TestSuite) AddBenchmark(b *Test) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.benchmarks[b.Name] != nil {
 		return fmt.Errorf("benchmark with the same name already defined: %v", b.Name)
 	}
@@ -94,6 +133,8 @@ func (s *TestSuite) AddBenchmark(b *Test) error {
 }
 
 func (s *TestSuite) Benchmark(i int) *Test {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.benchmarks[s.border[i]]
 }
 
@@ -401,6 +442,9 @@ type Test struct {
 	Name string
 }
 
+// EnvTestSuite returns the suite installed in env, or nil if there is none.
+// The suite is returned by pointer and is safe to use while other environments
+// holding the same suite are evaluating.
 func EnvTestSuite(env *lisp.LEnv) *TestSuite {
 	lsuite := env.Runtime.Registry.Packages[DefaultPackageName].Get(lisp.Symbol(DefaultSuiteSymbol))
 	if lsuite.Type != lisp.LNative {
