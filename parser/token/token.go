@@ -119,6 +119,50 @@ func (loc *Location) String() string {
 	}
 }
 
+// NativeFile is the File reported by a Location that does not come from a
+// source stream -- a value constructed by Go code rather than read from a
+// file.  Paired with Pos == -1, which is what Location.String and the
+// "is this a real position?" checks throughout the tree test for.
+const NativeFile = "<native code>"
+
+// NativeLocation returns the Location describing code that has no source
+// stream: values constructed by Go rather than read by the parser.
+//
+// It returns a VALUE, deliberately, and it is the only definition of that
+// location in the tree.  A function handing out a *Location here would hand
+// every caller a pointer into shared state that any one of them could write
+// through, which is issue #362 -- and lisp.nativeSource is exactly that
+// function.  Callers that need a *Location for a node they own take the
+// address of their own copy:
+//
+//	loc := token.NativeLocation()
+//	v.Source = &loc
+func NativeLocation() Location {
+	return Location{
+		File: NativeFile,
+		Pos:  -1,
+	}
+}
+
+// Copy returns a pointer to an independent copy of loc, or nil if loc is nil.
+//
+// Location holds no reference-typed fields, so the shallow copy is fully
+// independent: a later write through either pointer is invisible to the
+// other.  Nil is preserved rather than materialised into a zero Location
+// because a nil Source is meaningful throughout the tree ("no position
+// recorded") and distinct from a zero one ("position 0").
+//
+// Use it at every point where a Location owned by one object is stored into
+// another that outlives, or is mutated independently of, the first --
+// see issues #362 and #366.
+func (loc *Location) Copy() *Location {
+	if loc == nil {
+		return nil
+	}
+	cp := *loc
+	return &cp
+}
+
 // TokenEnd computes the end position of a token from its start position
 // and text. The end column is exclusive (one past the last character).
 // For multi-line tokens (e.g., raw strings), the line and column are

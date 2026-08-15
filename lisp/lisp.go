@@ -1568,13 +1568,58 @@ func makeByteSeq(v *LVal) *LVal {
 	}
 }
 
-var defaultSourceLocation = &token.Location{
-	File: "<native code>",
-	Pos:  -1,
-}
+// defaultSourceLocation is the single, process-wide Location stamped onto
+// every natively-constructed LVal.  It is a shared mutable singleton in the
+// same family as singletonNil/singletonTrue/singletonFalse, and like them it
+// is covered by SingletonSnapshot: TakeSingletonSnapshot records its bit
+// pattern and Verify names it as "nativeSource()" when it drifts.  Before
+// issue #362 nothing watched it at all, so a stray `v.Source.Pos = 7` on a
+// value from lisp.Int corrupted every value in the process and surfaced as a
+// mysterious failure in an unrelated test.
+//
+// It is initialised from token.NativeLocation, which is the one definition of
+// what "<native code>" means.
+var defaultSourceLocation = func() *token.Location {
+	loc := token.NativeLocation()
+	return &loc
+}()
 
+// nativeSource returns the shared Location for values constructed by Go code
+// rather than read from a source stream.
+//
+// THE RETURNED POINTER IS SHARED BY EVERY NATIVELY-CONSTRUCTED LVal IN THE
+// PROCESS AND MUST BE TREATED AS READ-ONLY.  A write through it -- including
+// a write to a single field of an LVal's Source -- corrupts the reported
+// position of every such value at once (issue #362).  Code that needs a
+// Location it may write to must take its own copy:
+//
+//	loc := token.NativeLocation()
+//	v.Source = &loc
+//
+// The sharing is deliberate, and measured.  Handing out a fresh Location per
+// call adds a heap allocation to every LVal Go builds: interleaved n=12
+// against this tree it costs +18.6% sec/op and +20.2% allocs/op geomean on
+// the lisp benchmarks, and +56% sec/op on EnvFunCallBuiltin.  (Issue #362
+// records an independent measurement, +22.9%/+48.3%.)  A fifth of
+// interpreter throughput is too much to pay for a latent trap, so the hazard
+// is bounded from both ends instead:
+//
+//   - the PARSER never leaves this pointer in an AST it produces, which is
+//     the channel by which it reached user-reachable trees -- see
+//     TestParserDoesNotAliasSharedNativeLocation in parser/rdparser; and
+//   - SingletonSnapshot records this Location's bit pattern, so a write
+//     through it is named ("nativeSource()") at the next singleton check
+//     rather than surfacing later in an unrelated test.
+//
+// Neither bound reaches an EMBEDDER that builds an LVal tree through the Go
+// API: its nodes carry this pointer by construction, and a walker of its own
+// that stamps positions corrupts the singleton for the whole process.  Only
+// making Source immutable closes that, which is:
+//
 // TODO(elps2): make the LVal.Source "immutable" (possibly an interface or a
 // string) so it won't matter that nativeSource returns a shared reference.
+// That is an API break for every embedder reading v.Source and is tracked on
+// issue #362; the guard and the parser fix above stand in for it until then.
 func nativeSource() *token.Location {
 	return defaultSourceLocation
 }

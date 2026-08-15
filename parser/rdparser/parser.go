@@ -371,6 +371,18 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 
 func (p *Parser) ParseFunRef() *lisp.LVal {
 	op := lisp.Symbol("lisp:function")
+	// The synthesized head symbol has no token of its own, so it keeps the
+	// "<native code>" location every Go-constructed LVal is stamped with.
+	// lisp.Symbol stamps the process-wide SHARED instance of that location
+	// though, and unlike ParseUnbound's "lisp:expr" head (which is re-stamped
+	// from expr.Source below) nothing here replaces it -- so every parsed #'
+	// form used to leave a node holding a pointer to process-global mutable
+	// state inside a user-reachable AST.  Any walker that stamps positions
+	// while descending then corrupts the location of every natively
+	// constructed value in the process (issue #362).  Give the node a
+	// location it owns; the reported position is unchanged.
+	opLoc := token.NativeLocation()
+	op.Source = &opLoc
 	if !p.Accept(token.FUN_REF) {
 		return p.errorf("parse-error", "invalid quote: %v", p.PeekType())
 	}
