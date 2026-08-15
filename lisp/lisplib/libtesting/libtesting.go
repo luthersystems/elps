@@ -445,8 +445,18 @@ type Test struct {
 // EnvTestSuite returns the suite installed in env, or nil if there is none.
 // The suite is returned by pointer and is safe to use while other environments
 // holding the same suite are evaluating.
+//
+// "None" includes a runtime that never loaded this package at all.  The map
+// index is comma-ok because the zero value of Registry.Packages is a nil
+// *Package and Package.Get dereferences pkg.Symbols, so indexing it unchecked
+// turned "does this runtime have a suite?" -- the question the nil return
+// advertises -- into a nil pointer dereference in the host.  See issue #425.
 func EnvTestSuite(env *lisp.LEnv) *TestSuite {
-	lsuite := env.Runtime.Registry.Packages[DefaultPackageName].Get(lisp.Symbol(DefaultSuiteSymbol))
+	pkg, ok := env.Runtime.Registry.Packages[DefaultPackageName]
+	if !ok || pkg == nil {
+		return nil
+	}
+	lsuite := pkg.Get(lisp.Symbol(DefaultSuiteSymbol))
 	if lsuite.Type != lisp.LNative {
 		return nil
 	}
