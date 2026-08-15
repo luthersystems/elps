@@ -2103,7 +2103,8 @@ explicit ` + "`(use-package 'testing)`" + ` in any package context.
 ## Diagnostics vs Lint
 - **diagnostics**: returns parse errors AND lint warnings for files. Use for "is this file healthy?"
   Supports ` + "`include_workspace`" + ` for cross-file analysis.
-- **lint**: runs specific analyzers only. Use ` + "`checks`" + ` to select which analyzers to run.
+- **lint**: runs specific analyzers only. Use ` + "`checks`" + ` to select which analyzers to run;
+  an unknown name there is an ` + "`invalid_input`" + ` error, not an empty result.
   Supports ` + "`severity`" + ` filter and pagination. Better for targeted analysis.
 
 ## Format check_only
@@ -2247,7 +2248,24 @@ func (s *service) lintTool(_ context.Context, _ *mcp.CallToolRequest, in LintInp
 
 	linter := s.linter
 	if len(in.Checks) > 0 {
-		linter = filterLinter(s.linter, in.Checks)
+		// Refuse an unknown check name rather than silently narrowing the
+		// check set, which answered "no diagnostics" for a file that had
+		// them (#438). An MCP client cannot see stderr and has no exit code
+		// to inspect, so the CLI's "unknown check" + exit 2 becomes the tool
+		// error the client already handles for a bad path. Naming the valid
+		// checks inline saves a round trip to the help tool.
+		filtered, unknown := filterLinter(s.linter, in.Checks)
+		if len(unknown) > 0 {
+			quoted := make([]string, len(unknown))
+			for i, name := range unknown {
+				quoted[i] = strconv.Quote(name)
+			}
+			return nil, LintResponse{}, newToolErr("invalid_input", fmt.Sprintf(
+				"unknown check: %s (valid checks: %s)",
+				strings.Join(quoted, ", "), strings.Join(lint.AnalyzerNames(), ", ")),
+				in.Path)
+		}
+		linter = filtered
 	}
 
 	// Parse first to collect parse errors.
@@ -2316,7 +2334,16 @@ func (s *service) lintTool(_ context.Context, _ *mcp.CallToolRequest, in LintInp
 	return nil, resp, nil
 }
 
-func filterLinter(original *lint.Linter, checks []string) *lint.Linter {
+// filterLinter narrows a linter to the named checks. It also returns the
+// requested names that match no analyzer, sorted, so the caller can refuse the
+// request rather than quietly run a smaller check set.
+//
+// Issue #438: this used to drop unknown names on the floor, so `checks:
+// ["typoed-name"]` answered with an empty diagnostics list — indistinguishable
+// from a clean file — while `elps lint --checks=typoed-name` printed "unknown
+// check" and exited 2. cmd/lint.go has carried the leftover-name loop all
+// along; this is that same loop.
+func filterLinter(original *lint.Linter, checks []string) (*lint.Linter, []string) {
 	selected := make(map[string]bool, len(checks))
 	for _, name := range checks {
 		selected[strings.TrimSpace(name)] = true
@@ -2325,9 +2352,15 @@ func filterLinter(original *lint.Linter, checks []string) *lint.Linter {
 	for _, a := range original.Analyzers {
 		if selected[a.Name] {
 			filtered = append(filtered, a)
+			delete(selected, a.Name)
 		}
 	}
-	return &lint.Linter{Analyzers: filtered}
+	unknown := make([]string, 0, len(selected))
+	for name := range selected {
+		unknown = append(unknown, name)
+	}
+	sort.Strings(unknown)
+	return &lint.Linter{Analyzers: filtered}, unknown
 }
 
 func newToolErr(code, message, path string) error {

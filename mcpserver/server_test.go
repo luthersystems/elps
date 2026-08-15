@@ -982,12 +982,26 @@ func TestEvalTool_EnvironmentIsolation(t *testing.T) {
 func TestLintTool_MixedValidInvalidChecks(t *testing.T) {
 	srv := New()
 	content := "(set 'x 1)\n(set 'x 2)\n(if true 1)"
-	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+	// Until #438 this required no error and asserted only that the surviving
+	// diagnostics came from the valid names — the typo in the middle was
+	// invisible to the client. It is now refused, as `elps lint --checks` has
+	// always refused it.
+	_, _, err := srv.service.lintTool(context.Background(), nil, LintInput{
 		Content: &content,
 		Checks:  []string{"set-usage", "nonexistent-analyzer", "if-arity"},
 	})
+	require.Error(t, err, "one unknown name among valid ones should still be reported")
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "invalid_input", te.Code)
+	assert.Contains(t, te.Message, "nonexistent-analyzer")
+
+	// The valid names on their own still filter as before.
+	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+		Checks:  []string{"set-usage", "if-arity"},
+	})
 	require.NoError(t, err)
-	// Only valid checks should produce results; invalid ones silently skipped.
 	for _, d := range resp.Diagnostics {
 		assert.Contains(t, []string{"set-usage", "if-arity"}, d.Code,
 			"diagnostic code %q should be from a valid requested analyzer", d.Code)
@@ -1718,12 +1732,18 @@ func TestHotspots_TopZeroErrors(t *testing.T) {
 func TestLintTool_InvalidCheckName(t *testing.T) {
 	srv := New()
 	content := "(defun foo () 1)"
-	_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+	// Until #438 this asserted the opposite ("invalid check names should not
+	// error, just produce no results"), which is exactly the wrong answer: an
+	// empty diagnostics list is how the tool reports a clean file.
+	_, _, err := srv.service.lintTool(context.Background(), nil, LintInput{
 		Content: &content,
 		Checks:  []string{"nonexistent-analyzer"},
 	})
-	require.NoError(t, err, "invalid check names should not error, just produce no results")
-	assert.Empty(t, resp.Diagnostics)
+	require.Error(t, err, "an unknown check name should be refused, not silently dropped")
+	var te *toolErr
+	require.ErrorAs(t, err, &te)
+	assert.Equal(t, "invalid_input", te.Code)
+	assert.Contains(t, te.Message, "nonexistent-analyzer")
 }
 
 func TestDiagnostics_SeverityFilterAllItems(t *testing.T) {
@@ -1970,4 +1990,83 @@ func workspaceSymbols(t *testing.T, session *mcp.ClientSession, root string, que
 	require.NoError(t, err)
 	require.False(t, res.IsError)
 	return decodeStructured[WorkspaceSymbolsResponse](t, res)
+}
+
+// TestLintTool_UnknownCheckName is the regression test for issue #438. The lint
+// tool dropped unknown names in `checks` on the floor: a client that misspelled
+// a check got `{"diagnostics": []}`, which is indistinguishable from a clean
+// file. `elps lint --checks` has always refused an unknown name and exited 2.
+func TestLintTool_UnknownCheckName(t *testing.T) {
+	srv := New()
+	content := "(set 'x 1)\n(set 'x 2)\n(if true 1)"
+
+	// Sanity: with no filter the content really does produce findings, so a
+	// zero-diagnostic answer below would be a wrong answer, not an empty file.
+	_, allResp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+		Content: &content,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, allResp.Diagnostics)
+
+	t.Run("all unknown", func(t *testing.T) {
+		_, _, err := srv.service.lintTool(context.Background(), nil, LintInput{
+			Content: &content,
+			Checks:  []string{"typoed-name"},
+		})
+		require.Error(t, err, "an unknown check name must not read as a clean file")
+		var te *toolErr
+		require.ErrorAs(t, err, &te)
+		assert.Equal(t, "invalid_input", te.Code)
+		assert.Contains(t, te.Message, "typoed-name")
+	})
+
+	t.Run("mixed with a valid check", func(t *testing.T) {
+		_, _, err := srv.service.lintTool(context.Background(), nil, LintInput{
+			Content: &content,
+			Checks:  []string{"set-usage", "typoed-name"},
+		})
+		require.Error(t, err, "a typo alongside a valid check must not be invisible")
+		var te *toolErr
+		require.ErrorAs(t, err, &te)
+		assert.Equal(t, "invalid_input", te.Code)
+		assert.Contains(t, te.Message, "typoed-name")
+		named, _, _ := strings.Cut(te.Message, " (valid checks:")
+		assert.NotContains(t, named, "set-usage",
+			"only the unknown names should be reported as unknown")
+	})
+
+	t.Run("several unknown names are all reported", func(t *testing.T) {
+		_, _, err := srv.service.lintTool(context.Background(), nil, LintInput{
+			Content: &content,
+			Checks:  []string{"zzz-check", "aaa-check"},
+		})
+		require.Error(t, err)
+		var te *toolErr
+		require.ErrorAs(t, err, &te)
+		assert.Contains(t, te.Message, "aaa-check")
+		assert.Contains(t, te.Message, "zzz-check")
+		assert.Less(t, strings.Index(te.Message, "aaa-check"), strings.Index(te.Message, "zzz-check"),
+			"unknown names should be listed in a deterministic order")
+	})
+
+	// GUARD (passes on main): a checks list of only valid names keeps working,
+	// and an explicit empty list still means syntax-only.
+	t.Run("guard: valid checks still filter", func(t *testing.T) {
+		_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+			Content: &content,
+			Checks:  []string{"set-usage"},
+		})
+		require.NoError(t, err)
+		for _, d := range resp.Diagnostics {
+			assert.Equal(t, "set-usage", d.Code)
+		}
+	})
+	t.Run("guard: empty checks list is unfiltered", func(t *testing.T) {
+		_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+			Content: &content,
+			Checks:  []string{},
+		})
+		require.NoError(t, err)
+		assert.Len(t, resp.Diagnostics, len(allResp.Diagnostics))
+	})
 }

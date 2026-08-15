@@ -332,8 +332,8 @@ func (s *Server) registerCoreTools() {
 	s.registerTool("format", "Format ELPS source code. Pass content for unsaved buffers or path for files on disk. Returns formatted source and whether it changed. Supports indent_size override.")
 	mcp.AddTool(s.server, &mcp.Tool{Name: "format", Description: "Format ELPS source code. Pass content for unsaved buffers or path for files on disk. Returns formatted source and whether it changed. Supports indent_size override."}, s.service.formatTool)
 
-	s.registerTool("lint", "Run specific lint analyzers on a file or inline content. Use checks to select analyzers (e.g., [\"undefined-symbol\", \"user-arity\"]). Supports severity filter, limit, and offset for pagination.")
-	mcp.AddTool(s.server, &mcp.Tool{Name: "lint", Description: "Run specific lint analyzers on a file or inline content. Use checks to select analyzers (e.g., [\"undefined-symbol\", \"user-arity\"]). Supports severity filter, limit, and offset for pagination."}, s.service.lintTool)
+	s.registerTool("lint", "Run specific lint analyzers on a file or inline content. Use checks to select analyzers (e.g., [\"undefined-symbol\", \"user-arity\"]); an unknown check name is rejected with invalid_input rather than ignored. Supports severity filter, limit, and offset for pagination.")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "lint", Description: "Run specific lint analyzers on a file or inline content. Use checks to select analyzers (e.g., [\"undefined-symbol\", \"user-arity\"]); an unknown check name is rejected with invalid_input rather than ignored. Supports severity filter, limit, and offset for pagination."}, s.service.lintTool)
 
 	s.registerTool("doc", "Look up documentation for an ELPS function, macro, operator, or package by name. Use package=true to list all symbols in a package. Supports qualified names like math:sin.")
 	mcp.AddTool(s.server, &mcp.Tool{Name: "doc", Description: "Look up documentation for an ELPS function, macro, operator, or package by name. Use package=true to list all symbols in a package. Supports qualified names like math:sin."}, s.service.docTool)
