@@ -543,6 +543,70 @@ whether the output should be a vector or a list.
 (map 'list double (vector 1 2 3))  ; evaluates to '(2 4 6)
 ```
 
+### Sharing, copying and mutation
+
+Lists and arrays are *references*.  Binding one to a second name does not copy
+it, and neither does taking a sub-sequence: `slice`, `cdr` and `rest` return
+**views** that share their elements with the source, much as slices of a Go
+array do.
+
+The library divides cleanly into functions that mutate and functions that do
+not, and the mutating ones are spelled with a trailing `!`:
+
+| Non-mutating (returns a new value) | Mutating (changes its argument) |
+| ---------------------------------- | ------------------------------- |
+| `append`, `append-bytes`           | `append!`, `append-bytes!`      |
+| `assoc`, `dissoc`                  | `assoc!`, `dissoc!`             |
+| `concat`, `insert-index`, `reverse`, `map`, `select` | `stable-sort` |
+
+`stable-sort` is the exception to the naming rule: it has no `!` but it sorts
+in place and returns the sequence it sorted.
+
+Two rules follow, and together they cover essentially every surprise in this
+area:
+
+1. **Appending to a view never disturbs its source.**  A view cannot grow into
+   the memory behind it; `append` and `append!` allocate instead.
+
+   ```lisp
+   (set 'v (vector 10 20 30 40))
+   (append! (slice 'vector v 0 2) 999)
+   v  ; still (vector 10 20 30 40)
+   ```
+
+2. **Mutating a view's own elements *is* visible through its source**, because
+   those are the same elements.
+
+   ```lisp
+   (set 'v (vector 5 4 3 2 1))
+   (stable-sort < (slice 'vector v 0 3))
+   v  ; (vector 3 4 5 2 1) -- the source was sorted too
+   ```
+
+When you need a value nothing else can write through, copy it with `concat`,
+which always allocates:
+
+```lisp
+(set 'snapshot (concat 'vector (slice 'vector v 0 3)))
+```
+
+This matters most for **quoted literals**.  A literal is part of the program
+text, not a fresh value made on each evaluation, so passing one to a mutating
+function edits the program — and the edit persists for the life of the
+process:
+
+```lisp
+(defun probe ()
+  (let ([lit '(3 1 2)])
+    (stable-sort < lit)   ; sorts the literal in the function body
+    lit))
+(probe)  ; '(1 2 3)
+(probe)  ; '(1 2 3) -- not '(3 1 2); the literal stayed sorted
+```
+
+Use `(concat 'list lit)` — or build the value with `(list ...)` instead of
+quoting it — whenever a literal is going to be mutated.
+
 ### Sorted Maps
 
 A sorted map is a mapping between keys and values which ensures that key

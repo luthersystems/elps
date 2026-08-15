@@ -134,10 +134,12 @@ var (
 			`Returns the first element of a list, or nil if empty.`},
 		{"cdr", Formals("lis"), builtinCDR,
 			`Returns a list of all elements except the first, or nil if the
-			list has fewer than two elements.`},
+			list has fewer than two elements. Like slice, the result is a
+			view sharing elements with lis.`},
 		{"rest", Formals("lis"), builtinRest,
 			`Returns a list of all elements except the first. Accepts lists
-			and vectors. Returns nil if fewer than two elements.`},
+			and vectors. Returns nil if fewer than two elements. Like slice,
+			the result is a view sharing elements with lis.`},
 		{"first", Formals("seq"), builtinFirst,
 			`Returns the first element of a sequence (list or vector), or nil
 			if empty.`},
@@ -203,7 +205,11 @@ var (
 		{"stable-sort", Formals("less-predicate", "list", VarArgSymbol, "key-fun"), builtinSortStable,
 			`Sorts list in-place using the binary less-predicate and returns
 			the mutated list. The sort is stable. An optional key-fun
-			extracts comparison keys from elements.`},
+			extracts comparison keys from elements. Because the sort is
+			in-place, sorting a slice view also sorts that region of its
+			source, and sorting a quoted literal rewrites the program's own
+			text for the life of the process; sort (concat 'list x) when x
+			is a literal or a view you do not own.`},
 		{"insert-sorted", Formals("type-specifier", "list", "predicate", "item", VarArgSymbol, "key-fun"), builtinInsertSorted,
 			`Returns a new sequence with item inserted at its sorted position
 			according to predicate. An optional key-fun extracts comparison
@@ -238,7 +244,11 @@ var (
 			type-specifier ('list or 'vector) determines the return type.`},
 		{"slice", Formals("type-specifier", "seq", "start", "end"), builtinSlice,
 			`Returns a subsequence from index start (inclusive) to end
-			(exclusive). Accepts lists, vectors, strings, and bytes.`},
+			(exclusive). Accepts lists, vectors, strings, and bytes. For
+			lists, vectors and bytes the result is a view sharing elements
+			with seq: appending to it cannot disturb seq, but sorting it in
+			place also sorts that region of seq. Use concat to take a copy.
+			String slices are always independent.`},
 		{"list", Formals(VarArgSymbol, "args"), builtinList,
 			`Returns a new list containing all the given arguments.`},
 		{"vector", Formals(VarArgSymbol, "args"), builtinVector,
@@ -250,7 +260,10 @@ var (
 		{"append", Formals("type-specifier", "vec", VarArgSymbol, "values"), builtinAppend,
 			`Returns a new sequence with values appended to vec. The
 			type-specifier ('list, 'vector, or 'bytes) determines the return
-			type. Does not mutate the original.`},
+			type. Does not mutate vec and never shares storage with it, so
+			appending to the same source twice yields independent results.
+			This costs a copy, making append O(n); use append! to accumulate
+			in a loop.`},
 		{"append-bytes!", Formals("bytes", "values"), builtinAppendBytesMutate,
 			`Appends values to bytes, mutating it in place. Values can be a
 			string, bytes, or list of integers. Returns the modified bytes.`},
@@ -258,7 +271,9 @@ var (
 		// because 'string would be equivalent to (concat 'string ...)
 		{"append-bytes", Formals("bytes", "byte-sequence"), builtinAppendBytes,
 			`Returns new bytes with byte-sequence appended. The byte-sequence
-			can be a string, bytes, or list of integers.`},
+			can be a string, bytes, or list of integers. Does not mutate
+			bytes and never shares storage with it; use append-bytes! to
+			accumulate in a loop.`},
 		{"aref", Formals("a", VarArgSymbol, "indices"), builtinARef,
 			`Returns the element at the given indices in an array. Multiple
 			indices access multi-dimensional arrays.`},
@@ -848,8 +863,37 @@ func builtinCDR(env *LEnv, args *LVal) *LVal {
 	if len(v.Cells) < 2 {
 		return Nil()
 	}
-	// TODO:  Copy cells into a new list of cells?
-	return QExpr(v.Cells[1:])
+	// The reslice is three-index so the tail's capacity stops at its length
+	// (issue #373).  A two-index `v.Cells[1:]` inherits whatever spare
+	// capacity v carries, and a later append to the tail grows into it,
+	// writing through this view into memory the caller never named.  The
+	// tail still SHARES its elements with v -- that is what a view is -- but
+	// it can no longer reach past its own end.
+	//
+	// NOTE:  The elements are still shared, so this is not a copy.  See the
+	// note on builtinSlice.
+	return QExpr(clampCap(v.Cells[1:]))
+}
+
+// clampCap returns cells with its capacity cut down to its length, so that a
+// subsequent append is forced to reallocate rather than write into whatever
+// spare capacity the backing array carries.
+//
+// This is the core of the issue #373 fix.  Every sequence view that escapes
+// into lisp is clamped where it is produced, and every non-mutating append
+// clamps its input where it is read; together those make it impossible for an
+// append to write through one value into another.  Clamping is free -- no
+// allocation, no copy -- and is a no-op for the exact-capacity slices that
+// make up the common case.  What it costs is that an append which previously
+// grew into a source's spare capacity must now reallocate.  That is the point
+// of the change, not an accident of it.
+func clampCap(cells []*LVal) []*LVal {
+	return cells[:len(cells):len(cells)]
+}
+
+// clampCapBytes is clampCap for byte slices.
+func clampCapBytes(b []byte) []byte {
+	return b[:len(b):len(b)]
 }
 
 func builtinRest(env *LEnv, args *LVal) *LVal {
@@ -861,8 +905,8 @@ func builtinRest(env *LEnv, args *LVal) *LVal {
 	if len(cells) < 2 {
 		return Nil()
 	}
-	// TODO:  Copy cells into a new list of cells?
-	return QExpr(cells[1:])
+	// Three-index reslice -- see builtinCDR (issue #373).
+	return QExpr(clampCap(cells[1:]))
 }
 
 func builtinFirst(env *LEnv, args *LVal) *LVal {
@@ -1848,14 +1892,33 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("end before start")
 	}
 
-	// Create an intermediate sliced list with a similar type
+	// Create an intermediate sliced list with a similar type.
+	//
+	// The bytes and sequence reslices are THREE-index (issue #373).  A
+	// two-index `cells[i:j]` keeps the source's capacity, so a later append
+	// to the returned view had spare room and grew into it -- writing through
+	// the view into source elements at index >= j, which the caller never
+	// named and cannot see in the value they were handed:
+	//
+	//	(set 'v (vector 10 20 30 40))
+	//	(append! (slice 'vector v 0 2) 999)
+	//	v  ; => (vector 10 20 999 40) before the fix
+	//
+	// Clamping the capacity to the view's length forces that append to
+	// reallocate instead.  The view still SHARES the elements in [i,j) with
+	// the source -- slice returns a view, not a copy, and an in-place
+	// mutation such as stable-sort is still visible through the source.  Use
+	// (concat 'vector (slice ...)) when a snapshot is wanted.
+	//
+	// The string case needs no clamp: Go strings are immutable, so a string
+	// view cannot be written through at all.
 	switch list.Type {
 	case LString:
 		list = String(list.Str[i:j])
 	case LBytes:
-		list = Bytes(list.Bytes()[i:j])
+		list = Bytes(clampCapBytes(list.Bytes()[i:j]))
 	default: // isSeq(list)
-		list = QExpr(seqCells(list)[i:j])
+		list = QExpr(clampCap(seqCells(list)[i:j]))
 	}
 
 	// Convert the intermediate sliced value into the desired type
@@ -1909,6 +1972,12 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 	}
 }
 
+// NOTE (issue #373):  builtinList and builtinVector are deliberately NOT
+// capacity-clamped.  They hand out the call's own argument slice, which the
+// evaluator has already discarded, so its spare capacity is not reachable from
+// any other live value -- there is nothing for an append to corrupt.  Clamping
+// them would not be free either: it would force the first (append! (vector
+// ...) x) to reallocate for no benefit.
 func builtinList(env *LEnv, v *LVal) *LVal {
 	return QExpr(v.Cells)
 }
@@ -1917,6 +1986,18 @@ func builtinVector(env *LEnv, args *LVal) *LVal {
 	return Array(nil, args.Cells)
 }
 
+// builtinAppendMutate implements the append! builtin.
+//
+// NOTE (issue #373):  This is deliberately NOT capacity-clamped.  append! is
+// the in-place accumulator -- it is documented to mutate its argument and
+// return it -- so it keeps Go's amortised growth and stays O(1) per element.
+// That is safe because the target's spare capacity is not reachable from any
+// other value: every producer of a view (slice, cdr, rest) clamps what it
+// hands out, and every non-mutating append clamps what it reads, so nothing
+// else can be looking at the bytes past vec's length.
+//
+// The caller who reaches for append! has already said they want mutation.
+// The bug in #373 was mutation nobody asked for.
 func builtinAppendMutate(env *LEnv, args *LVal) *LVal {
 	vec, vals := args.Cells[0], args.Cells[1:]
 	if vec.Type == LBytes {
@@ -1934,6 +2015,8 @@ func builtinAppendMutate(env *LEnv, args *LVal) *LVal {
 	return vec
 }
 
+// appendMutateBytes is the bytes path of append!.  Not capacity-clamped,
+// for the reason given on builtinAppendMutate (issue #373).
 func appendMutateBytes(env *LEnv, args *LVal) *LVal {
 	lbytes, xs := args.Cells[0], args.Cells[1:]
 	b := lbytes.Bytes()
@@ -1951,6 +2034,8 @@ func appendMutateBytes(env *LEnv, args *LVal) *LVal {
 	return lbytes
 }
 
+// builtinAppendBytesMutate implements append-bytes!.  Not capacity-clamped,
+// for the reason given on builtinAppendMutate (issue #373).
 func builtinAppendBytesMutate(env *LEnv, args *LVal) *LVal {
 	lbytes, byteseq := args.Cells[0], args.Cells[1]
 	if lbytes.Type != LBytes {
@@ -2003,10 +2088,32 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		list = append(list, vals...)
 		return QExpr(list)
 	case "vector":
-		// The Cells of the returned vector may intersect with seqCells(seq)
-		// when chaining calls to ``append'' so that vectors may be used in a
-		// manner akin to go slices.
-		return Array(nil, append(cells, vals...))
+		// The input is clamped so this append can never write into seq's
+		// spare capacity (issue #373).
+		//
+		// This reverses a deliberate old decision.  The comment here used to
+		// say the result "may intersect with seqCells(seq) when chaining
+		// calls to ``append'' so that vectors may be used in a manner akin
+		// to go slices", and array_test.go pinned that as intended: after
+		//
+		//	(set 'v123 (append 'vector v12 3))
+		//	(set 'v1234 (append 'vector v123 4))
+		//	(set 'v1235 (append 'vector v123 5))
+		//
+		// v1234 read (vector 1 2 3 5) -- the second append had overwritten
+		// the first one's result through their shared backing array.  The
+		// value that changed was one `append` had already handed back and
+		// promised not to touch, so no caller could have defended against
+		// it.  `append` is the non-mutating constructor; its docstring says
+		// so.  Sharing that can rewrite an already-returned value is not a
+		// contract anyone can use correctly, so it is gone.
+		//
+		// The cost is real and is the point: an append that could previously
+		// grow into spare capacity now reallocates and copies, so building a
+		// vector with repeated (set 'v (append 'vector v x)) is quadratic.
+		// `append!` is the in-place accumulator and keeps its amortised
+		// growth -- the docs now say to reach for it.
+		return Array(nil, append(clampCap(cells), vals...))
 	default:
 		return env.Errorf("type specifier is invalid: %v", typespec)
 	}
@@ -2028,7 +2135,10 @@ func builtinAppend_Bytes(env *LEnv, args *LVal) *LVal {
 	if lbytes.Type != LBytes {
 		return env.Errorf("second argument is not bytes: %v", lbytes.Type)
 	}
-	b := lbytes.Bytes()
+	// Clamped so this append cannot write into lbytes' spare capacity
+	// (issue #373) -- `append 'bytes` is non-mutating and must not disturb
+	// the source or any result it handed back earlier.
+	b := clampCapBytes(lbytes.Bytes())
 	xsVal := QExpr(xs)
 	resultLen := len(b) + xsVal.Len()
 	if msg := env.Runtime.CheckAlloc(resultLen); msg != "" {
@@ -2048,7 +2158,9 @@ func builtinAppendBytes(env *LEnv, args *LVal) *LVal {
 	if lbytes.Type != LBytes {
 		return env.Errorf("first argument is not bytes: %v", lbytes.Type)
 	}
-	b := lbytes.Bytes()
+	// Clamped so this append cannot write into lbytes' spare capacity
+	// (issue #373).  append-bytes! is the mutating variant.
+	b := clampCapBytes(lbytes.Bytes())
 	switch byteseq.Type {
 	case LString:
 		b = append(b, byteseq.Str...)
