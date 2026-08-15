@@ -1,0 +1,52 @@
+# A NULL comparison measured while fixing #443: two runs of the SAME tree, on
+# the same machine, interleaved, at the sampling parameters CI uses
+# (GOMAXPROCS=2, -benchtime=100ms, n=10 rounds per arm). Nothing changed between
+# the arms, so every number here is noise by construction.
+#
+# It is preserved because of the SPREAD column, not the deltas. On identical
+# code:
+#
+#     PackageGetFun-2           30.69n ±  52%   34.95n ± 102%
+#     PackageGetFunAliased-2    17.05n ±  15%   21.43n ±  27%
+#     PackageGetFunParallel-2   38.38n ±  31%   30.57n ±  57%
+#
+# ...against a 15% timing threshold. These sub-100ns bodies cannot resolve a 15%
+# move at these sampling parameters -- on THIS sandbox, which is noisier than a
+# CI runner; the CI measurement in #443 put the same parallel row at ±24%. Both
+# are far above the gate.
+#
+# Meanwhile every allocation row in the same run is "± 0%" with "all samples are
+# equal", which is the whole argument for judging the two metric classes
+# differently and for leaving the allocation gate exactly where it is.
+#
+# The gate must pass this file: no row here is significant (every p > 0.05), so
+# it is also the control proving the NOISE-FLOOR verdict comes from the
+# resolution check and not from these rows being unusual in some other way.
+goos: linux
+goarch: amd64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Intel(R) Xeon(R) Processor @ 2.80GHz
+                        │     base     │                  pr                  │
+                        │    sec/op    │    sec/op      vs base               │
+PackageGetFun-2           30.69n ± 52%   34.95n ± 102%       ~ (p=0.529 n=10)
+PackageGetFunAliased-2    17.05n ± 15%   21.43n ±  27%       ~ (p=0.289 n=10)
+PackageGetFunParallel-2   38.38n ± 31%   30.57n ±  57%       ~ (p=0.089 n=10)
+geomean                   27.18n         28.39n         +4.47%
+
+                        │     base     │                 pr                  │
+                        │     B/op     │    B/op     vs base                 │
+PackageGetFun-2           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+PackageGetFunAliased-2    0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+PackageGetFunParallel-2   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                              ²               +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                        │     base     │                 pr                  │
+                        │  allocs/op   │ allocs/op   vs base                 │
+PackageGetFun-2           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+PackageGetFunAliased-2    0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+PackageGetFunParallel-2   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                              ²               +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean

@@ -1,0 +1,35 @@
+# The control for benchstat-parallel-noise-443.txt, and the more important half
+# of the pair.
+#
+# SAME benchmark, SAME package, SAME measured spread (±24% / ±25%), SAME
+# unchanged allocation columns. The ONLY difference is the size of the move:
+# +48.00% instead of +15.96%.
+#
+# That is larger than what the row can measure, so it is a regression and the
+# gate must still fail on it. Without this fixture the resolution check added
+# for #443 would be indistinguishable from switching the row off -- and a check
+# that cannot fire is the defect this whole gate was written to fix (473 green
+# runs of a `grep` no benchstat line could ever match).
+#
+# Note that the allocation columns are deliberately FLAT here. A timing
+# regression this large must fail on the timing evidence alone; requiring
+# allocations to move too would have made the timing gate unfireable on any
+# change that is slower without allocating more, which is most of them.
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Neoverse-N1
+                        │     base     │                  pr                  │
+                        │    sec/op    │    sec/op      vs base               │
+PackageGetFunParallel-2   38.70n ± 24%    57.28n ± 25%  +48.00% (p=0.000 n=20)
+geomean                   38.70n          57.28n        +48.00%
+
+                        │     base     │                 pr                  │
+                        │     B/op     │    B/op      vs base                │
+PackageGetFunParallel-2   0.000 ± 0%     0.000 ± 0%        ~ (p=1.000 n=20) ¹
+¹ all samples are equal
+
+                        │     base     │                 pr                  │
+                        │  allocs/op   │  allocs/op   vs base                │
+PackageGetFunParallel-2   0.000 ± 0%     0.000 ± 0%        ~ (p=1.000 n=20) ¹
+¹ all samples are equal
