@@ -414,6 +414,56 @@ func TestSemanticTokensPrefixesEmitNoToken(t *testing.T) {
 	}
 }
 
+// TestSemanticTokensQuotedDefinitionKeepsItsModifier pins the COUPLING this
+// fix has to leave alone, and it is the one thing about part (a) that is not
+// visible in the tokens' spans.
+//
+// A quoted atom now has TWO positions: the node's, which applyPrefixLocation
+// put on the ', and the atom's, one or more bytes to the right.  The token
+// takes the second.  classifySymbol must keep taking the FIRST, because the
+// analysis result is keyed by the node's position -- buildSymbolDefsMap indexes
+// analysis.Symbol.Source, and for "(set 'x 1)" that Source is column 6, the
+// quote, not column 7.  Look the atom's column up instead and the map misses.
+//
+// A miss is SILENT.  classifySymbol falls through to its name-based default and
+// returns semTokenVariable, which is also what symbolKindToTokenType returns
+// for the SymVariable it failed to find -- so the token TYPE is unchanged and
+// only the "definition" modifier disappears.  Nothing else in this file would
+// notice: assertTokens compares types, not modifiers.  Verified by running,
+// with classifySymbol switched to the atom's column: the whole lsp package
+// stays green and this one token quietly goes from mods=1 to mods=0.
+//
+// So the modifier is asserted here explicitly.  Editors use it to italicise or
+// embolden a defining occurrence; losing it on every "(set 'x ...)" in a file
+// is a real change, and it should cost a red test rather than nothing at all.
+//
+// RED on 5ef6106 for the SPAN -- there the token is [0:5,+1), on the quote, so
+// the atom has none.  The modifier half of it is the guard.
+func TestSemanticTokensQuotedDefinitionKeepsItsModifier(t *testing.T) {
+	s := testServer()
+	const content = "(set 'x 1)\nx"
+	data := tokensFor(t, s, "file:///test/qdef.lisp", content)
+	var found bool
+	for _, tok := range decodeTokens(data) {
+		if tok.line != 0 || tok.startChar != 6 {
+			continue
+		}
+		found = true
+		if tok.length != 1 {
+			t.Errorf("quoted definition token is [0:6,+%d), want +1 (the atom, not the quote)", tok.length)
+		}
+		if tok.modifiers&semModDefinition == 0 {
+			t.Errorf("quoted definition token [0:6,+%d) has modifiers=%d, want the definition bit (%d) set: "+
+				"classifySymbol must be given the NODE's column (the quote), which is what the "+
+				"analysis result is keyed by, and not the atom's",
+				tok.length, tok.modifiers, semModDefinition)
+		}
+	}
+	if !found {
+		t.Errorf("no token at [0:6) for %q: the quoted definition lost its token entirely", content)
+	}
+}
+
 // assertTokens compares a decoded token stream against an exact expectation.
 func assertTokens(t *testing.T, data []protocol.UInteger, want []rawToken) {
 	t.Helper()
