@@ -30,12 +30,22 @@ func (r *PackageRegistry) DefinePackage(name string) *Package {
 // Package is a named set of bound symbols.  A package is interpreted code and
 // belongs to the LEnv that creates it.
 type Package struct {
-	Name       string
-	Doc        string
+	Name string
+	Doc  string
+	// Symbols holds the package's bindings.  Write it through Put or
+	// Update rather than assigning to the map directly: those maintain
+	// FunNames alongside it, and nothing on the read path repairs a
+	// FunNames entry that a direct assignment skipped.  A function bound
+	// by direct assignment still works; it just renders without its name
+	// in stack traces.
 	Symbols    map[string]*LVal
 	SymbolDocs map[string]string
-	FunNames   map[string]string
-	Externals  []string
+	// FunNames maps a function's FID to the name it was most recently
+	// bound under in this package.  It is populated exclusively by the
+	// write path (see put).  Reads must not write it: a *Package is
+	// routinely shared by pointer across goroutines.  See issue #397.
+	FunNames  map[string]string
+	Externals []string
 }
 
 // NewPackage initializes and returns a package with the given name.
@@ -49,17 +59,26 @@ func NewPackage(name string) *Package {
 }
 
 // Get takes an LSymbol k and returns the LVal it is bound to in pkg.
+//
+// Get is a pure read.  It used to record FunNames[fid] = k.Str on every
+// successful function lookup, so that the name the caller used won over the
+// name the binding was created with.  That made a read method write a map
+// that is shared by pointer across goroutines — embedders hand the same
+// *Package to concurrent requests — with no synchronisation.  Under -race it
+// is a data race; without -race the Go runtime kills the process outright
+// with "fatal error: concurrent map read and map write", which is a runtime
+// throw that neither recover() nor handler-bind can intercept.  See issue
+// #397.
+//
+// FunNames is maintained on the write path instead: put records the name for
+// every LFun that enters Symbols, so the map is already populated by the time
+// anything reads it.  The one behaviour that goes away is the "last lookup
+// wins" preference when a single function value is bound under several names
+// in the same package: GetFunName now reports the name most recently *bound*
+// rather than the name most recently *looked up*.  That is cosmetic — it
+// affects the function name rendered in stack traces and error messages only.
 func (pkg *Package) Get(k *LVal) *LVal {
-	v := pkg.get(k)
-	if v.Type == LFun {
-		// Set the function's name here in case the same function is defined
-		// with multiple names.  We want to try and use the name the programmer
-		// used.  The name may even come from a higher scope.
-		if fid := v.FID(); pkg.FunNames[fid] != k.Str {
-			pkg.FunNames[fid] = k.Str
-		}
-	}
-	return v
+	return pkg.get(k)
 }
 
 func (pkg *Package) get(k *LVal) *LVal {
@@ -75,14 +94,6 @@ func (pkg *Package) get(k *LVal) *LVal {
 	}
 	v, ok := pkg.Symbols[k.Str]
 	if ok {
-		if v.Type == LFun {
-			// Set the function's name here in case the same function is
-			// defined with multiple names.  We want to try and use the name
-			// the programmer used.
-			if fid := v.FID(); pkg.FunNames[fid] != k.Str {
-				pkg.FunNames[fid] = k.Str
-			}
-		}
 		return v
 	}
 	lerr := Errorf("unbound symbol: %v", k)
