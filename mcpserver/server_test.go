@@ -2070,3 +2070,136 @@ func TestLintTool_UnknownCheckName(t *testing.T) {
 		assert.Len(t, resp.Diagnostics, len(allResp.Diagnostics))
 	})
 }
+
+// TestSeverityFilter_UnknownValue is the regression test for issue #445. Both
+// tools took `severity` as a free-form string and compared it against each
+// diagnostic's severity with no validation, so an unrecognised value matched
+// nothing and the tool answered `{"diagnostics": []}` — the same bytes a clean
+// file returns. `elps lint --fail-on` has always validated the same vocabulary
+// through lint.ParseSeverity.
+//
+// The content below produces exactly two findings, one warning and one error,
+// so a zero-diagnostic answer to any of these is a wrong answer.
+func TestSeverityFilter_UnknownValue(t *testing.T) {
+	const content = "(set 'x 1)\n(set 'x 2)\n(if true 1)"
+
+	// The near-misses from the issue: a value borrowed from another linter's
+	// vocabulary, a title-cased plural, and plain nonsense.
+	unknown := []string{"warn", "Errors", "nonsense", "ERROR!", " "}
+
+	t.Run("lint tool", func(t *testing.T) {
+		srv := New()
+		body := content
+
+		// Sanity: unfiltered, this content really does have findings.
+		_, allResp, err := srv.service.lintTool(context.Background(), nil, LintInput{Content: &body})
+		require.NoError(t, err)
+		require.Len(t, allResp.Diagnostics, 2)
+
+		for _, sev := range unknown {
+			t.Run(sev, func(t *testing.T) {
+				severity := sev
+				_, _, err := srv.service.lintTool(context.Background(), nil, LintInput{
+					Content:  &body,
+					Severity: &severity,
+				})
+				require.Error(t, err, "an unknown severity must not read as a clean file")
+				var te *toolErr
+				require.ErrorAs(t, err, &te)
+				assert.Equal(t, "invalid_input", te.Code)
+				assert.Contains(t, te.Message, "error, warning, info",
+					"the error should name the valid severities")
+			})
+		}
+	})
+
+	t.Run("diagnostics tool, single file", func(t *testing.T) {
+		tmp := t.TempDir()
+		path := filepath.Join(tmp, "mixed.lisp")
+		writeTestFile(t, path, content)
+		srv := New(WithWorkspaceRoot(tmp))
+
+		_, allResp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{Path: &path})
+		require.NoError(t, err)
+		require.Len(t, allResp.Files, 1)
+		require.Len(t, allResp.Files[0].Diagnostics, 2)
+
+		for _, sev := range unknown {
+			t.Run(sev, func(t *testing.T) {
+				severity := sev
+				_, _, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+					Path:     &path,
+					Severity: &severity,
+				})
+				require.Error(t, err, "an unknown severity must not read as a clean file")
+				var te *toolErr
+				require.ErrorAs(t, err, &te)
+				assert.Equal(t, "invalid_input", te.Code)
+			})
+		}
+	})
+
+	// The workspace path drops whole files whose diagnostics all filter out
+	// (`if in.Severity != nil && len(fd.Diagnostics) == 0 { continue }`), so an
+	// unknown severity there answers with an empty file list: a clean
+	// workspace.
+	t.Run("diagnostics tool, include_workspace", func(t *testing.T) {
+		tmp := t.TempDir()
+		writeTestFile(t, filepath.Join(tmp, "mixed.lisp"), content)
+		srv := New(WithWorkspaceRoot(tmp))
+		srv.service.workspaceValidationInterval = 0
+
+		_, allResp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+			WorkspaceRoot:    &tmp,
+			IncludeWorkspace: true,
+		})
+		require.NoError(t, err)
+		require.NotEmpty(t, allResp.Files)
+
+		severity := "warn"
+		_, _, err = srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+			WorkspaceRoot:    &tmp,
+			IncludeWorkspace: true,
+			Severity:         &severity,
+		})
+		require.Error(t, err, "an unknown severity must not read as a clean workspace")
+		var te *toolErr
+		require.ErrorAs(t, err, &te)
+		assert.Equal(t, "invalid_input", te.Code)
+	})
+
+	// GUARDS (pass on main): the accepted vocabulary is unchanged. Every valid
+	// severity still filters, case-insensitively as before, and an absent or
+	// empty severity is still "no filter".
+	t.Run("guard: valid severities still filter", func(t *testing.T) {
+		srv := New()
+		body := content
+		for _, sev := range []string{"error", "warning", "info", "Warning", "ERROR"} {
+			severity := sev
+			_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+				Content:  &body,
+				Severity: &severity,
+			})
+			require.NoError(t, err, "severity %q was accepted before and must stay accepted", sev)
+			for _, d := range resp.Diagnostics {
+				assert.Equal(t, strings.ToLower(sev), strings.ToLower(d.Severity))
+			}
+		}
+	})
+
+	t.Run("guard: empty and absent severity are unfiltered", func(t *testing.T) {
+		srv := New()
+		body := content
+		empty := ""
+		_, resp, err := srv.service.lintTool(context.Background(), nil, LintInput{
+			Content:  &body,
+			Severity: &empty,
+		})
+		require.NoError(t, err)
+		assert.Len(t, resp.Diagnostics, 2)
+
+		_, resp, err = srv.service.lintTool(context.Background(), nil, LintInput{Content: &body})
+		require.NoError(t, err)
+		assert.Len(t, resp.Diagnostics, 2)
+	})
+}
