@@ -61,7 +61,7 @@ permissions:
 
 jobs:
   fuzz:
-    name: Fuzz shard ${{ matrix.shard }}/6
+    name: Fuzz shard ${{ matrix.shard }}/7
     runs-on: ubuntu-latest
     strategy:
       # Sharded so wall clock is set by the LARGEST shard rather than by the
@@ -81,7 +81,7 @@ jobs:
       # or a single failure costs the whole night's coverage.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7]
     # DERIVED, not remembered. scripts/fuzz-budget-check.sh asserts
     #
     #     ceil(targets / shards) x FUZZTIME + overhead <= timeout-minutes
@@ -107,6 +107,16 @@ jobs:
     # and restores the 10 minutes. Prefer adding a shard to raising the
     # timeout: shards are parallel, so it cuts wall clock instead of extending
     # the backstop.
+    #
+    # AND IT HAPPENED AGAIN, WHICH IS WHY THE SEVENTH SHARD IS HERE. main
+    # arrived at 26 targets over 6 shards: ceil(26/6) = 5 x 10m + 10m = 60
+    # against a 60-minute timeout. Zero headroom, gate green, sweep one slow
+    # shard away from being cut off mid-target -- exactly the state the
+    # paragraph above describes, re-entered by ordinary target growth. The
+    # 27th target lands in this change, so the seventh shard lands with it:
+    # ceil(27/7) = 4 x 10m + 10m = 50, and the 10 minutes are back. Adding
+    # the target without the shard would have left the gate green and the
+    # headroom at zero for the second time.
     #
     # Do not raise this by hand to make a red gate green -- run
     # `make fuzz-budget-check`, which prints the arithmetic and the options.
@@ -172,7 +182,7 @@ jobs:
         run: ./scripts/fuzz-budget-check.sh
 
       - name: Fuzz
-        run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/6
+        run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/7
 
       # Only from main/schedule: a corpus grown from an unmerged branch would
       # otherwise be handed to every other PR.
