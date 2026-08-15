@@ -281,7 +281,35 @@ func (e *EnvMacroExpander) expand(form *lisp.LVal, pkg string) *lisp.LVal {
 		return nil
 	}
 
-	args := lisp.SExpr(form.Cells[1:])
+	// Copy the argument cells into storage this call owns, rather than slicing
+	// form's backing array (elps#396).
+	//
+	// lisp.SExpr does not copy; it wraps the slice it is handed. Macro
+	// arguments are not evaluated, so a header over form.Cells[1:] reaches the
+	// macro's parameters unchanged — LEnv.bindFormalNext binds a variadic
+	// parameter to QExpr(args.Rest()), and argParser.Rest returns p.args[p.i:],
+	// yet another window onto the same array. Any destructive builtin in the
+	// macro body (stable-sort, sort, append!) then writes through into `form`,
+	// which is the analyzer's parse tree and not a scratch copy.
+	//
+	// This is the runtime's own discipline, which the analyzer was missing.
+	// LEnv.evalSExprCells is the only other path that reaches a macro, and on
+	// the IsSpecialFun branch it builds the argument list as
+	// `newCells := make([]*LVal, 1, len(s.Cells))` followed by
+	// `append(newCells, cells...)` — a FRESH array holding the caller's
+	// element pointers. The two lines below reproduce that exactly, so
+	// expanding a form here now perturbs it neither more nor less than
+	// evaluating it does.
+	//
+	// The copy is shallow for the same reason the runtime's is. The ELEMENTS
+	// must stay the caller's nodes: the expansion splices them into its result
+	// and the analyzer reads position information off exactly those nodes, so
+	// deep-copying would both diverge from eval and change what the language
+	// means. What must not be shared is the ARRAY — the only thing an in-place
+	// mutator applied to the &rest list itself can reach.
+	margs := make([]*lisp.LVal, len(form.Cells)-1)
+	copy(margs, form.Cells[1:])
+	args := lisp.SExpr(margs)
 	mark := e.Env.MacroCall(mac, args)
 	if mark.Type == lisp.LError || mark.Type != lisp.LMarkMacExpand {
 		return nil
