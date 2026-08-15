@@ -2259,11 +2259,38 @@ func (s *service) lintTool(_ context.Context, _ *mcp.CallToolRequest, in LintInp
 		diags = append(diags, parseDiagnostic(parseErr, path))
 	}
 
+	// Analyse from the cached workspace state, exactly as loadDocument (and so
+	// the diagnostics tool) does. Issue #424: this used to build a throwaway
+	// config with lint.BuildAnalysisConfig, which sets no Env, no Registry and
+	// no MacroExpander, so the two tools ran the same analyzers over the same
+	// file in the same workspace and contradicted each other — lint saw macro
+	// calls unexpanded and diagnostics saw them expanded.
+	//
+	// Going through s.workspace is what keeps that fix from reintroducing
+	// issue #403's race. Bolting Env onto LintConfig would make every lint
+	// request call the package-level analysis.LoadWorkspaceMacros against the
+	// shared env, unsynchronised against the expansions and preamble loads
+	// that index builds and document requests are already doing there.
+	// s.workspace serves the cached state, whose Config carries the one
+	// service-wide expander, and only a cache miss reaches buildWorkspaceState
+	// and its lock.
+	//
+	// Serving from cache also drops a full PrescanWorkspace plus
+	// ScanWorkspaceRefs (and, via defaultStdlibExports, a freshly booted env
+	// with the whole standard library loaded) from every lint request.
 	var semantics *analysis.Result
-	if root != "" && parsed.Exprs != nil {
-		lintCfg := &lint.LintConfig{Workspace: root}
-		if analysisCfg, buildErr := lint.BuildAnalysisConfig(lintCfg); buildErr == nil {
-			semantics = analysis.Analyze(parsed.Exprs, analysisCfg)
+	if parsed.Exprs != nil {
+		state, stateErr := s.workspace(root)
+		if stateErr != nil {
+			// Degrade to syntax-only rather than failing the request, which is
+			// what the previous BuildAnalysisConfig error path did. Logged so
+			// the loss of semantic checks is not silent.
+			if s.logger != nil {
+				s.logger.Warn("lint: workspace state unavailable, skipping semantic analysis",
+					"path", path, "workspace_root", root, "error", stateErr)
+			}
+		} else {
+			semantics = analysis.Analyze(parsed.Exprs, analysis.ConfigForFile(state.cfg, path))
 		}
 	}
 	lintDiags, _ := linter.LintFileWithContext(source, path, semantics)
