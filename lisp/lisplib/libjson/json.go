@@ -61,34 +61,50 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			(json.RawMessage) suitable for embedding in Go structures.
 			The :string-numbers keyword controls whether numbers are
 			serialized as JSON strings (default: serializer setting).`),
-		libutil.FunctionDoc("load-message", lisp.Formals("json-message", lisp.KeyArgSymbol, "string-numbers"), s.LoadMessageBuiltin,
+		libutil.FunctionDoc("load-message", lisp.Formals("json-message", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadMessageBuiltin,
 			`Parses a native JSON message object (json.RawMessage) into
 			ELPS values. The :string-numbers keyword controls whether
 			JSON numbers are returned as strings (default: serializer
-			setting).`),
+			setting). The :exact-integers keyword controls whether JSON
+			integer literals are returned as ints rather than floats
+			(default: serializer setting).`),
 		libutil.FunctionDoc("dump-bytes", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpBytesBuiltin,
 			`Serializes an ELPS value to JSON and returns the result as
 			bytes. Sorted-maps become JSON objects, arrays become JSON
 			arrays, strings/ints/floats map naturally. The :string-numbers
 			keyword controls whether numbers are serialized as strings.`),
-		libutil.FunctionDoc("load-bytes", lisp.Formals("json-bytes", lisp.KeyArgSymbol, "string-numbers"), s.LoadBytesBuiltin,
+		libutil.FunctionDoc("load-bytes", lisp.Formals("json-bytes", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadBytesBuiltin,
 			`Parses a JSON bytes value into ELPS values. JSON objects become
 			sorted-maps, arrays become ELPS arrays, strings/numbers map
 			naturally. The :string-numbers keyword controls whether JSON
-			numbers are returned as strings.`),
+			numbers are returned as strings. The :exact-integers keyword
+			controls whether JSON integer literals are returned as ints
+			rather than floats.`),
 		libutil.FunctionDoc("dump-string", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpStringBuiltin,
 			`Serializes an ELPS value to a JSON string. Like dump-bytes
 			but returns a string instead of bytes. The :string-numbers
 			keyword controls whether numbers are serialized as strings.`),
-		libutil.FunctionDoc("load-string", lisp.Formals("json-string", lisp.KeyArgSymbol, "string-numbers"), s.LoadStringBuiltin,
+		libutil.FunctionDoc("load-string", lisp.Formals("json-string", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadStringBuiltin,
 			`Parses a JSON string into ELPS values. Like load-bytes but
 			accepts a string argument. The :string-numbers keyword controls
-			whether JSON numbers are returned as strings.`),
+			whether JSON numbers are returned as strings. The
+			:exact-integers keyword controls whether JSON integer literals
+			are returned as ints rather than floats.`),
 		libutil.FunctionDoc("use-string-numbers", lisp.Formals("bool"), s.UseStringNumbersBuiltin,
 			`Sets the default string-numbers mode for the JSON serializer.
 			When true, numbers are serialized as JSON strings and JSON
 			numbers are parsed as strings. Affects all dump/load functions
 			that don't explicitly pass :string-numbers. Returns nil.`),
+		libutil.FunctionDoc("use-exact-integers", lisp.Formals("bool"), s.UseExactIntegersBuiltin,
+			`Sets the default exact-integers mode for the JSON serializer.
+			When true, a JSON number written as an integer is parsed as an
+			int holding its exact value instead of a float, and an integer
+			too large for an int raises json:integer-range-error instead of
+			silently rounding. Numbers written with a fraction or an
+			exponent are unaffected. When false (the default) every JSON
+			number is parsed as a float, so integers above 2^53 are rounded
+			without warning. Affects all load functions that don't
+			explicitly pass :exact-integers. Returns nil.`),
 	}
 }
 
@@ -102,12 +118,64 @@ func Load(b []byte, stringNums bool) *lisp.LVal {
 	return DefaultSerializer().Load(b, stringNums)
 }
 
+// LoadWith parses b as JSON under opts and returns an equivalent LVal.
+func LoadWith(b []byte, opts LoadOpts) *lisp.LVal {
+	return DefaultSerializer().LoadWith(b, opts)
+}
+
+// LoadOpts controls how a JSON document is decoded into lisp values.
+//
+// The zero value reproduces Load(b, false) exactly -- the behaviour every
+// caller of this package has had since 2018.  Every field is an opt-in.
+type LoadOpts struct {
+	// MaxAlloc bounds the number of elements in any single array or object in
+	// the document.  Zero means unbounded.
+	MaxAlloc int
+
+	// StringNumbers decodes every JSON number as a lisp string holding the
+	// number's literal text.  It takes precedence over ExactIntegers: a
+	// caller that sets both gets strings, exactly as it does today.
+	StringNumbers bool
+
+	// ExactIntegers decodes a JSON integer literal as a lisp int rather than
+	// a lisp float.
+	//
+	// encoding/json decodes every JSON number into a float64, and a float64
+	// carries 53 bits of integer precision.  So with ExactIntegers false --
+	// the default, and the only behaviour that existed before this option --
+	// an integer larger than 2^53 is rounded to the nearest float64 on the
+	// way in, and NOTHING reports it: the rounded value still compares = to
+	// the integer it was meant to be, so a program can read a corrupted
+	// identifier, check it against the value it expected, match, and carry
+	// on.  That is issue #350.
+	//
+	// With ExactIntegers true a JSON number whose literal text is written as
+	// an integer -- no '.', no exponent -- decodes to a lisp int holding its
+	// exact value, and one that does not fit in a lisp int is an ERROR
+	// (condition json:integer-range-error) rather than a rounded float.
+	// Numbers written with a fraction or an exponent are untouched and still
+	// decode as floats.
+	//
+	// The rule is SYNTACTIC on purpose.  "1e2" denotes an integer but is not
+	// written as one, and it keeps decoding to a float; so does "-0", which
+	// parses to the integer 0 and would therefore re-encode as "0" rather
+	// than the "-0" it produces today.  A rule that depends only on the bytes
+	// of the document, and never on the value they denote, is reproducible on
+	// every node that reads the same bytes -- which is the property that
+	// matters where this package decodes replicated state.
+	ExactIntegers bool
+}
+
 // Serializer defines JSON serialization rules for lisp values.
 type Serializer struct {
 	True             *lisp.LVal
 	False            *lisp.LVal
 	Null             *lisp.LVal
 	UseStringNumbers bool
+	// UseExactIntegers is the default for LoadOpts.ExactIntegers used by the
+	// package builtins when the caller passes no :exact-integers keyword.  It
+	// does NOT affect Load or LoadMax, which take their options as arguments.
+	UseExactIntegers bool
 }
 
 // Load parses b and returns an LVal representing its structure.
@@ -118,18 +186,34 @@ func (s *Serializer) Load(b []byte, stringNums bool) *lisp.LVal {
 // LoadMax is like Load but enforces a maximum allocation size for arrays
 // and maps parsed from JSON.  When maxAlloc is 0, no limit is enforced.
 func (s *Serializer) LoadMax(b []byte, stringNums bool, maxAlloc int) *lisp.LVal {
+	return s.LoadWith(b, LoadOpts{StringNumbers: stringNums, MaxAlloc: maxAlloc})
+}
+
+// LoadWith parses b under opts and returns an LVal representing its structure.
+func (s *Serializer) LoadWith(b []byte, opts LoadOpts) *lisp.LVal {
 	var x interface{}
-	err := s.jsonDecode(b, &x, stringNums)
+	err := s.jsonDecodeOpts(b, &x, opts)
 	if err != nil {
 		var syntaxErr *json.SyntaxError
-		if errors.As(err, &syntaxErr) {
+		var exactErr syntaxError
+		if errors.As(err, &syntaxErr) || errors.As(err, &exactErr) {
 			lerr := lisp.Error(err)
 			lerr.Str = "json:syntax-error"
 			return lerr
 		}
 		return lisp.Error(err)
 	}
-	return s.loadInterfaceMax(x, maxAlloc)
+	return s.loadInterfaceOpts(x, opts)
+}
+
+func (s *Serializer) jsonDecodeOpts(b []byte, dst interface{}, opts LoadOpts) error {
+	if opts.StringNumbers {
+		return s.jsonDecode(b, dst, true)
+	}
+	if !opts.ExactIntegers {
+		return s.jsonDecode(b, dst, false)
+	}
+	return decodeExactNumbers(b, dst)
 }
 
 func (s *Serializer) jsonDecode(b []byte, dst interface{}, stringNums bool) error {
@@ -158,6 +242,107 @@ func jsonDecode(b []byte, dst interface{}, stringNums bool) error {
 	return err
 }
 
+// syntaxError is a malformed-document error raised by the exact-integer decode
+// path.
+//
+// json.Unmarshal reports an empty document and trailing content after a
+// complete value as *json.SyntaxError, which LoadWith turns into the catchable
+// json:syntax-error condition.  json.Decoder -- which the exact-integer path
+// must use, because UseNumber only exists on a decoder -- reports the same two
+// documents as io.EOF and as the failing Unmarshaler's own error, neither of
+// which is a *json.SyntaxError.  Without this type an adopter's
+// (handler-bind ([json:syntax-error ...])) would quietly stop catching
+// malformed input the moment they turned the option on, which is precisely the
+// class of silent change this option exists to remove.
+type syntaxError string
+
+func (e syntaxError) Error() string { return string(e) }
+
+// decodeExactNumbers decodes b with numbers left as their literal text, so
+// loadNumber can decide per value whether it is an integer or a float.
+func decodeExactNumbers(b []byte, dst interface{}) error {
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.UseNumber()
+	if err := d.Decode(dst); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return syntaxError("unexpected end of JSON input")
+		}
+		return err
+	}
+	rest := failUnmarshal()
+	if err := d.Decode(&rest); !errors.Is(err, io.EOF) {
+		return syntaxError("invalid character after top-level value")
+	}
+	return nil
+}
+
+// loadNumber converts the literal text of a JSON number to a lisp value under
+// LoadOpts.ExactIntegers.  The decoder has already validated text against the
+// JSON number grammar, so the only thing that can go wrong here is range.
+func loadNumber(text string) *lisp.LVal {
+	if !isJSONInteger(text) {
+		return loadFloat(text)
+	}
+	// IntSize, not 64: lisp.Int takes a Go int, and on a 32-bit build a silent
+	// truncation to int32 would be the same defect in a smaller register.
+	// Parsing at the width of the destination makes the overflow a range error
+	// instead.
+	n, err := strconv.ParseInt(text, 10, strconv.IntSize)
+	if err == nil {
+		return lisp.Int(int(n))
+	}
+	// The integer is too large for a lisp int, so the only thing left is a
+	// float -- and taking one silently is the defect this option exists to
+	// remove.  It is taken in exactly one case: when text is ALREADY the
+	// canonical rendering of the float it parses to, so the float loses
+	// nothing the document was carrying.
+	//
+	// That case is not hypothetical, and refusing it outright is not an
+	// option.  This package renders every float above 2^63 and below 1e21 as
+	// plain digits, so a phylum holding an ordinary float of 1e19 would dump
+	// its state and then be unable to load it back -- a value that cannot read
+	// its own serialisation, which is worse than the rounding.  Anchoring the
+	// test on appendJSONFloat, the one function that renders a float here,
+	// makes "anything Dump can emit, Load can read" true by construction.
+	//
+	// Everything else -- 9223372036854775808, or a thirty-digit id -- is a
+	// document that says something elps cannot hold, and it fails loudly.
+	f, ferr := strconv.ParseFloat(text, 64)
+	if ferr == nil && string(appendJSONFloat(nil, f)) == text {
+		return lisp.Float(f)
+	}
+	lerr := lisp.Errorf("json integer does not fit in a lisp int: %s", text)
+	lerr.Str = "json:integer-range-error"
+	return lerr
+}
+
+func loadFloat(text string) *lisp.LVal {
+	f, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		// Matches the message encoding/json produces for the same document on
+		// the default path, so turning the option on does not change what a
+		// caller reading the error text sees.
+		return lisp.Errorf("json: cannot unmarshal number %s into Go value of type float64", text)
+	}
+	return lisp.Float(f)
+}
+
+// isJSONInteger reports whether text -- already validated by the decoder as a
+// JSON number -- is WRITTEN as an integer.  See LoadOpts.ExactIntegers for why
+// the test is on the text rather than on the value, and why "-0" is excluded.
+func isJSONInteger(text string) bool {
+	if text == "-0" {
+		return false
+	}
+	for i := range len(text) {
+		switch text[i] {
+		case '.', 'e', 'E':
+			return false
+		}
+	}
+	return true
+}
+
 var errUnexpectedJSON = errors.New("unexpected json in stream")
 
 type unmarshalFailer struct{}
@@ -170,7 +355,8 @@ func (*unmarshalFailer) UnmarshalJSON([]byte) error {
 	return errUnexpectedJSON
 }
 
-func (s *Serializer) loadInterfaceMax(x interface{}, maxAlloc int) *lisp.LVal {
+func (s *Serializer) loadInterfaceOpts(x interface{}, opts LoadOpts) *lisp.LVal {
+	maxAlloc := opts.MaxAlloc
 	// NOTE:  The order of types in this switch is deliberate to try and
 	// minimize the number of skipped branches.
 	switch x := x.(type) {
@@ -182,7 +368,7 @@ func (s *Serializer) loadInterfaceMax(x interface{}, maxAlloc int) *lisp.LVal {
 		}
 		m := SortedMap(x)
 		for k, v := range m {
-			lval := s.loadInterfaceMax(v, maxAlloc)
+			lval := s.loadInterfaceOpts(v, opts)
 			if lval.Type == lisp.LError {
 				return lval
 			}
@@ -195,7 +381,7 @@ func (s *Serializer) loadInterfaceMax(x interface{}, maxAlloc int) *lisp.LVal {
 		}
 		cells := make([]*lisp.LVal, len(x))
 		for i := range x {
-			cells[i] = s.loadInterfaceMax(x[i], maxAlloc)
+			cells[i] = s.loadInterfaceOpts(x[i], opts)
 			if cells[i].Type == lisp.LError {
 				return cells[i]
 			}
@@ -206,8 +392,13 @@ func (s *Serializer) loadInterfaceMax(x interface{}, maxAlloc int) *lisp.LVal {
 	case float64:
 		return lisp.Float(x)
 	case json.Number:
-		// This can only show up if stringNums was true.
-		return lisp.String(string(x))
+		// Only reachable when the decoder was put in UseNumber mode, which
+		// happens for exactly two options.  StringNumbers wins, so a caller
+		// that set both sees what it has always seen.
+		if opts.StringNumbers {
+			return lisp.String(string(x))
+		}
+		return loadNumber(string(x))
 	case nil:
 		return lisp.Nil()
 	default:
@@ -231,6 +422,33 @@ func (s *Serializer) UseStringNumbersBuiltin(env *lisp.LEnv, args *lisp.LVal) *l
 
 func (s *Serializer) useStringNumbers(_ *lisp.LEnv) *lisp.LVal {
 	return lisp.Bool(s.UseStringNumbers)
+}
+
+func (s *Serializer) UseExactIntegersBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	confirm := args.ReqArg(env, 0)
+	if confirm.Type == lisp.LError {
+		return confirm
+	}
+	s.UseExactIntegers = lisp.True(confirm)
+	return lisp.Nil()
+}
+
+// loadOpts resolves the load options for one builtin call.  An unsupplied
+// keyword (nil) falls back to the serializer default, which is what
+// :string-numbers has always done.
+func (s *Serializer) loadOpts(env *lisp.LEnv, stringNums, exactInts *lisp.LVal) LoadOpts {
+	opts := LoadOpts{
+		MaxAlloc:      env.Runtime.MaxAllocBytes(),
+		StringNumbers: s.UseStringNumbers,
+		ExactIntegers: s.UseExactIntegers,
+	}
+	if !stringNums.IsNil() {
+		opts.StringNumbers = lisp.True(stringNums)
+	}
+	if !exactInts.IsNil() {
+		opts.ExactIntegers = lisp.True(exactInts)
+	}
+	return opts
 }
 
 // Dump serializes v as JSON and returns any error.
@@ -287,7 +505,7 @@ func (s *Serializer) DumpBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVa
 }
 
 func (s *Serializer) LoadMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	lmsg, stringNums := args.ReqArg(env, 0), args.KeyArg(1)
+	lmsg, stringNums, exactInts := args.ReqArg(env, 0), args.KeyArg(1), args.KeyArg(2)
 	if lmsg.Type == lisp.LError {
 		return lmsg
 	}
@@ -298,24 +516,18 @@ func (s *Serializer) LoadMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.L
 	if !ok {
 		return env.Errorf("argument is not a raw json-message: %v", msg)
 	}
-	return s.LoadBytesBuiltin(env, lisp.SExpr([]*lisp.LVal{lisp.Bytes([]byte(*msg)), stringNums}))
+	return s.LoadBytesBuiltin(env, lisp.SExpr([]*lisp.LVal{lisp.Bytes([]byte(*msg)), stringNums, exactInts}))
 }
 
 func (s *Serializer) LoadBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	js, stringNums := args.ReqArg(env, 0), args.KeyArg(1)
+	js, stringNums, exactInts := args.ReqArg(env, 0), args.KeyArg(1), args.KeyArg(2)
 	if js.Type == lisp.LError {
 		return js
 	}
 	if js.Type != lisp.LBytes {
 		return env.Errorf("argument is not bytes: %v", js.Type)
 	}
-	if stringNums.IsNil() {
-		stringNums = s.useStringNumbers(env)
-		if stringNums.Type == lisp.LError {
-			return stringNums
-		}
-	}
-	return s.attachStack(env, s.LoadMax(js.Bytes(), lisp.True(stringNums), env.Runtime.MaxAllocBytes()))
+	return s.attachStack(env, s.LoadWith(js.Bytes(), s.loadOpts(env, stringNums, exactInts)))
 }
 
 func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -337,20 +549,14 @@ func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 }
 
 func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	js, stringNums := args.ReqArg(env, 0), args.KeyArg(1)
+	js, stringNums, exactInts := args.ReqArg(env, 0), args.KeyArg(1), args.KeyArg(2)
 	if js.Type == lisp.LError {
 		return js
 	}
 	if js.Type != lisp.LString {
 		return env.Errorf("argument is not a string: %v", js.Type)
 	}
-	if stringNums.IsNil() {
-		stringNums = s.useStringNumbers(env)
-		if stringNums.Type == lisp.LError {
-			return stringNums
-		}
-	}
-	return s.attachStack(env, s.LoadMax([]byte(js.Str), lisp.True(stringNums), env.Runtime.MaxAllocBytes()))
+	return s.attachStack(env, s.LoadWith([]byte(js.Str), s.loadOpts(env, stringNums, exactInts)))
 }
 
 // GoValue converts v to its natural representation in Go.  Quotes are ignored

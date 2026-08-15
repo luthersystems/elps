@@ -29,6 +29,14 @@ func TestPackageCyclicValue(t *testing.T) {
 	r.RunTestFile(t, "libjson_cycle_test.lisp")
 }
 
+// TestPackageExactIntegers runs the lisp-level tests for issue #350.  Same
+// reasoning as TestPackageCyclicValue for why they get their own file.
+func TestPackageExactIntegers(t *testing.T) {
+	r := &elpstest.Runner{}
+	defer r.Close()
+	r.RunTestFile(t, "libjson_integer_test.lisp")
+}
+
 func BenchmarkPackage(b *testing.B) {
 	r := &elpstest.Runner{}
 	defer r.Close()
