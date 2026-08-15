@@ -166,20 +166,34 @@ func TestSynthesizedHeadsCarryPrefixLocation(t *testing.T) {
 		assert.Equal(t, 1, head.Source.Line)
 		assert.Equal(t, 4, head.Source.Col, "head should sit on the #' prefix")
 		assert.GreaterOrEqual(t, head.Source.Pos, 0)
-		// The head gets a *token.Location of its own rather than borrowing
-		// the operand's.  It has to: tokenLVal gives the enclosing
-		// s-expression the OPERAND'S Location object, and applyPrefixLocation
-		// then rewrites that object in place to point at the prefix -- so
-		// `funref.Source` and `funref.Cells[1].Source` are already one object
-		// (long-standing behaviour, unchanged here).  Adding a third borrower
-		// would put the head on that same object too.
+		// The head gets a *token.Location of its own.  When this was written
+		// it had to have one specially: tokenLVal gave the enclosing
+		// s-expression the OPERAND'S Location OBJECT and applyPrefixLocation
+		// rewrote that object in place, so `funref.Source` and
+		// `funref.Cells[1].Source` were one object and a third borrower would
+		// have joined them on it.  elps#426 removed the sharing at the source
+		// -- Parser.Location copies -- so all three are distinct now and this
+		// assertion is one instance of the general rule
+		// TestPrefixFormNodesDoNotShareLocationObject states.
 		assert.NotSame(t, head.Source, funref.Cells[1].Source)
+		assert.NotSame(t, funref.Source, funref.Cells[1].Source)
 	})
 
 	t.Run("unbound expression", func(t *testing.T) {
-		// #^ keeps pointing its head at the operand, which is where it always
-		// pointed.  The change there is only the fallback for an operand with
-		// no real location of its own.
+		// The #^ head sits on the "#^" prefix, at column 1 -- the same rule as
+		// #' above, and the location locateSynthesized gives it.
+		//
+		// CHANGED BY #426, from column 3.  ParseUnbound used to overwrite the
+		// head's location with the operand's whenever the operand had a real
+		// one, on the reasoning that this "keeps `#^x` reporting the same
+		// position it always has".  That held only because of the aliasing:
+		// for "#^x" the operand's Location object WAS the enclosing form's,
+		// and applyPrefixLocation had moved it to the prefix -- so borrowing
+		// it reported column 1.  For "#^(+ %1 1)" the operand is a list, whose
+		// closing ")" is consumed before the form is built, so no aliasing
+		// occurred and the borrow reported column 3 instead.  The head's
+		// column therefore depended on whether the operand was a symbol or a
+		// list.  It no longer does.
 		exprs, err := rdparser.New(token.NewScanner("test.lisp", strings.NewReader("#^(+ %1 1)"))).ParseProgram()
 		require.NoError(t, err)
 		require.Len(t, exprs, 1)
@@ -187,6 +201,17 @@ func TestSynthesizedHeadsCarryPrefixLocation(t *testing.T) {
 		require.Equal(t, "lisp:expr", head.Str)
 		require.NotNil(t, head.Source)
 		assert.GreaterOrEqual(t, head.Source.Pos, 0)
-		assert.Equal(t, 3, head.Source.Col)
+		assert.Equal(t, 1, head.Source.Col, "head should sit on the #^ prefix")
+		assert.Equal(t, 3, head.Source.EndCol, "head spans exactly the two columns of #^")
+
+		// The same, with a SYMBOL operand: the head's column must not depend
+		// on the operand's shape.
+		exprs, err = rdparser.New(token.NewScanner("test.lisp", strings.NewReader("#^x"))).ParseProgram()
+		require.NoError(t, err)
+		require.Len(t, exprs, 1)
+		head = exprs[0].Cells[0]
+		require.Equal(t, "lisp:expr", head.Str)
+		assert.Equal(t, 1, head.Source.Col, "head should sit on the #^ prefix")
+		assert.Equal(t, 3, head.Source.EndCol, "head spans exactly the two columns of #^")
 	})
 }
