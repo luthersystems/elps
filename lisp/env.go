@@ -1132,7 +1132,36 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 
 	// Capture the call-site location before entering the macro body so we
 	// can stamp it onto expanded nodes that lack real source info.
-	callSite := env.Loc
+	//
+	// A COPY, not the pointer (elps#431).  env.Loc is set by eval to the
+	// Source of the node being evaluated, so it is a *token.Location owned by
+	// a node in the CALLER'S parse tree.  Handing that pointer to
+	// stampMacroExpansion gave every synthesized node of the expansion the
+	// caller's own object: one macro call put N+1 nodes -- the N stamped
+	// nodes plus the call site itself -- on one mutable Location, spanning two
+	// trees with independent lifetimes.  It is the same shape as elps#362 (the
+	// process-wide native singleton) and elps#426 (a prefix form and its
+	// operand sharing the scanner's object), and it was reproducible: writing
+	// `expansion.Source.Line = 99` moved the caller's node to line 99.
+	//
+	// One copy per macro call, not one per stamped node.  The distinction the
+	// copy has to buy is between two OWNERS -- the caller's tree and the
+	// expansion -- and one object per expansion buys exactly that.  The N
+	// stamped nodes still share, but they share a Location the expansion owns
+	// and that no other tree can see, and they genuinely all sit at the call
+	// site; collapsing that last bit of sharing is what making LVal.Source
+	// immutable is for, and it would cost an allocation per node on the
+	// expansion path (elps#421 measured a fresh Location per call on a hot
+	// path at +18.6% sec/op, +20.2% allocs/op geomean).  This costs one, next
+	// to the whole expansion tree the macro has just allocated.
+	//
+	// Copy() preserves nil, so a macro called with no location still stamps
+	// nothing -- stampMacroExpansion returns early on a nil callSite.
+	//
+	// The copy is taken here rather than inside stampMacroExpansion so that
+	// MacroExpansionContext.CallSite below, which outlives the expansion on
+	// every node's MacroExpansionInfo, is covered by the same allocation.
+	callSite := env.Loc.Copy()
 
 	// Push a frame onto the stack to represent the function's execution.
 	err := env.Runtime.Stack.PushFID(env.Loc, fun.FID(), fun.Package(), env.GetFunName(fun))

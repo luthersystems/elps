@@ -471,9 +471,11 @@ func (p *Parser) locateSynthesized(v *lisp.LVal) *lisp.LVal {
 	if loc == nil {
 		return v
 	}
-	if tok := p.src.Token; tok != nil {
-		loc.EndLine, loc.EndCol, loc.EndPos = token.TokenEnd(tok)
-	}
+	// No `p.src.Token != nil` here: Location returned a Location, so there is
+	// a token under the cursor.  The second instance of that unreachable
+	// conjunct, the one in tokenLVal, is what elps#430 is about; see the
+	// token-under-the-cursor note above Parser.TokenText.
+	loc.EndLine, loc.EndCol, loc.EndPos = token.TokenEnd(p.src.Token)
 	v.Source = loc
 	return v
 }
@@ -847,11 +849,50 @@ func (p *Parser) ReadToken() *token.Token {
 	return p.src.Token
 }
 
+// THE TOKEN-UNDER-THE-CURSOR INVARIANT (elps#430).
+//
+// TokenSource.Token starts nil and is only ever assigned by scan(), so "no
+// token under the cursor" is a real state; token.Source documents it -- "Token
+// returns nil if Scan has not been called."  Inside this file that state is
+// unreachable: every caller of TokenText, TokenType and Location runs after an
+// Accept or a ReadToken has consumed a token, and the parser never rewinds to
+// before the first one.
+//
+// It is reachable through the EXPORTED API, and it panicked.  All three
+// accessors are exported, NewFromSource is exported, and
+//
+//	p := rdparser.NewFromSource(rdparser.NewTokenStreamSource(stream))
+//	p.Location()
+//
+// dereferenced a nil *Token -- "invalid memory address or nil pointer
+// dereference" -- from an accessor whose entire job is to answer a question
+// about the parser's state.  An embedder driving a Parser through
+// NewFromSource/TokenStream/TokenGenerator, which is what those exist for, has
+// no way to ask "have you started yet?" except by calling one of these.
+//
+// So each answers with the value that already means "nothing here": nil, ""
+// and token.INVALID (the zero Type, which renders as "invalid").  Inside the
+// parser the branch is never taken, so this STATES the invariant rather than
+// weakening it -- once, here, instead of at each call site.  tokenLVal used to
+// carry such a restatement, `p.src.Token != nil`, one line after Location()
+// had already dereferenced that same pointer: it could not fail, and it
+// advertised a contract the rest of the file does not honour.
+
+// TokenText returns the text of the token under the cursor, or "" if no token
+// has been scanned yet.
 func (p *Parser) TokenText() string {
+	if p.src.Token == nil {
+		return ""
+	}
 	return p.src.Token.Text
 }
 
+// TokenType returns the type of the token under the cursor, or token.INVALID
+// if no token has been scanned yet.
 func (p *Parser) TokenType() token.Type {
+	if p.src.Token == nil {
+		return token.INVALID
+	}
 	return p.src.Token.Type
 }
 
@@ -899,7 +940,15 @@ func (p *Parser) TokenType() token.Type {
 // deterministic (all rows p=0.000, +-0%).  That is a real cost on the parse
 // path for no additional safety, since a Location given away exactly once
 // cannot be shared.
+//
+// A nil result means "no position": either no token has been scanned yet (see
+// the token-under-the-cursor note above, elps#430) or the token carries no
+// Location.  Callers store it on an LVal or an error, where nil Source already
+// means the same thing.
 func (p *Parser) Location() *token.Location {
+	if p.src.Token == nil {
+		return nil
+	}
 	loc := p.src.Token.Source
 	if loc == nil {
 		return nil
@@ -963,7 +1012,13 @@ func (p *Parser) QExpr(cells []*lisp.LVal) *lisp.LVal {
 func (p *Parser) tokenLVal(v *lisp.LVal) *lisp.LVal {
 	v.Source = p.Location()
 	// Set end position from the current token.
-	if v.Source != nil && p.src.Token != nil {
+	//
+	// A non-nil v.Source is by itself proof that there IS a token under the
+	// cursor: Location returns nil when p.src.Token is nil.  The `p.src.Token
+	// != nil` conjunct this condition used to carry could not fail -- and, in
+	// the shape it was written, could not have caught anything either, because
+	// Location() dereferenced p.src.Token one line above it (elps#430).
+	if v.Source != nil {
 		endLine, endCol, endPos := token.TokenEnd(p.src.Token)
 		v.Source.EndLine = endLine
 		v.Source.EndCol = endCol
