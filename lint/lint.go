@@ -650,6 +650,13 @@ func (l *Linter) LintFileWithContext(source []byte, filename string, semantics *
 // LintFileWithAnalysis parses, analyzes, and lints a source file in one call.
 // This is a convenience that runs semantic analysis and passes the result to
 // all analyzers.
+//
+// cfg is not modified. The filename is stamped on a shallow copy
+// (analysis.ConfigForFile), so one config may be reused across files and
+// shared between goroutines. Issue #444: this used to assign cfg.Filename in
+// place, which left the caller's config naming whichever file ran last and
+// raced two goroutines linting different files through one config. A nil cfg
+// is analysed as a zero config.
 func (l *Linter) LintFileWithAnalysis(source []byte, filename string, cfg *analysis.Config) ([]Diagnostic, error) {
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	p := rdparser.New(s)
@@ -659,11 +666,8 @@ func (l *Linter) LintFileWithAnalysis(source []byte, filename string, cfg *analy
 		return nil, fmt.Errorf("%s: %w", filename, err)
 	}
 
-	if cfg == nil {
-		cfg = &analysis.Config{}
-	}
-	cfg.Filename = filename
-	result := analysis.Analyze(exprs, cfg)
+	// ConfigForFile handles a nil cfg, so there is no nil branch here.
+	result := analysis.Analyze(exprs, analysis.ConfigForFile(cfg, filename))
 
 	return l.LintFileWithContext(source, filename, result)
 }
