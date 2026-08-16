@@ -130,19 +130,24 @@ jobs:
     needs: [lint-and-test, build-windows]
     if: always()
     steps:
+      # NOTE: this checkout is NEW, and is the one structural cost of moving
+      # the assertion into scripts/require-jobs-succeeded.sh (#493). The body
+      # used to be inline bash and so needed nothing from the repository; the
+      # shared script has to be present to be run. It adds a failure mode -- a
+      # checkout that does not complete now fails the required check -- which
+      # is the correct direction: it fails loudly rather than passing over an
+      # assertion that never executed. Same trade benchmark.yml took in #485,
+      # same SHA pin as the other jobs here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      # Delegated, NOT inlined (#493). This body was a verbatim copy of the
+      # pre-#485 script logic, and carried #485's hole with it: `for r in
+      # ${RESULTS}` never enters its body when RESULTS is empty, so the job
+      # printed "All jobs in this workflow succeeded" and exited 0 having
+      # checked nothing. Fixing the script did not fix the copies. The shared
+      # script is shellchecked and fixture-tested by scripts/ci-gates-test.sh;
+      # an inline copy is none of those things, and that file cannot see it.
       - name: Assert every job in this workflow succeeded
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
-        run: |
-          echo "upstream job results: ${RESULTS}"
-          rc=0
-          for r in ${RESULTS}; do
-            # success is the ONLY pass. failure, cancelled and skipped all mean
-            # the work was not demonstrably done.
-            [ "$r" = "success" ] || rc=1
-          done
-          if [ "$rc" -ne 0 ]; then
-            echo "::error::A job in this workflow did not succeed (results: ${RESULTS}). Open the individual jobs above."
-            exit 1
-          fi
-          echo "All jobs in this workflow succeeded."
+        run: bash scripts/require-jobs-succeeded.sh
