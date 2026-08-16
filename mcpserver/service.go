@@ -330,6 +330,12 @@ func (s *service) workspaceSymbolsTool(ctx context.Context, _ *mcp.CallToolReque
 
 func (s *service) diagnosticsTool(ctx context.Context, _ *mcp.CallToolRequest, in DiagnosticsInput) (*mcp.CallToolResult, DiagnosticsResponse, error) {
 	start := time.Now()
+	// Refuse an unknown severity before doing any work: filtering on one used
+	// to answer "no diagnostics" for a file that had them (#445).
+	severity, err := parseSeverityFilter(in.Severity)
+	if err != nil {
+		return nil, DiagnosticsResponse{}, err
+	}
 	if in.IncludeWorkspace {
 		root, err := s.resolveWorkspaceRoot(in.WorkspaceRoot, true)
 		if err != nil {
@@ -360,7 +366,7 @@ func (s *service) diagnosticsTool(ctx context.Context, _ *mcp.CallToolRequest, i
 			if filterPath != "" && path != filterPath {
 				continue
 			}
-			fd.Diagnostics = filterDiagnosticsBySeverity(fd.Diagnostics, in.Severity)
+			fd.Diagnostics = filterDiagnosticsBySeverity(fd.Diagnostics, severity)
 			if in.Severity != nil && len(fd.Diagnostics) == 0 {
 				continue
 			}
@@ -386,7 +392,7 @@ func (s *service) diagnosticsTool(ctx context.Context, _ *mcp.CallToolRequest, i
 	if err != nil {
 		return nil, DiagnosticsResponse{}, err
 	}
-	fd.Diagnostics = filterDiagnosticsBySeverity(fd.Diagnostics, in.Severity)
+	fd.Diagnostics = filterDiagnosticsBySeverity(fd.Diagnostics, severity)
 	resp := DiagnosticsResponse{
 		Files: []FileDiagnostics{fd},
 		Meta:  makeMeta(root, time.Since(start), 1),
@@ -1632,11 +1638,51 @@ func filterSolvedByRules(solved []*perf.SolvedFunction, issues []perf.Issue, rul
 	return filtered
 }
 
-func filterDiagnosticsBySeverity(diags []Diagnostic, severity *string) []Diagnostic {
+// parseSeverityFilter validates a client-supplied `severity` and returns the
+// lower-cased value to filter on, or "" for no filter.
+//
+// Issue #445: `severity` used to reach the filter unvalidated, so a value that
+// matched no diagnostic — "warn" from another linter's vocabulary, a
+// title-cased "Errors", a typo — filtered everything out and the tool answered
+// with an empty diagnostics list, which is exactly how it reports a clean
+// file. As with the `checks` names in #438, an MCP client sees only the
+// structured response: there is no field naming the severity that was applied,
+// so a mismatch has no second channel through which it could become visible.
+// The CLI has always validated the same vocabulary — `elps lint --fail-on`
+// runs it through lint.ParseSeverity — so this closes the same CLI/MCP split.
+//
+// Case is folded before the parse, which keeps the tolerance this filter has
+// always had ("Warning" works) while still refusing "warn". No trimming is
+// added: the filter never trimmed, so " " is a value that matched nothing and
+// is now reported rather than silently answering "clean".
+func parseSeverityFilter(severity *string) (string, error) {
 	if severity == nil || *severity == "" {
-		return diags
+		return "", nil
 	}
 	target := strings.ToLower(*severity)
+	if _, err := lint.ParseSeverity(target); err != nil {
+		// Validate the folded value, but name the value the client actually
+		// sent, the way #438's unknown-check refusal quotes the client's own
+		// names. ParseSeverity accepts only the lower-case names, so if the
+		// folded value is unknown the original is unknown too and this second
+		// call always fails; the folded message is kept as a fallback rather
+		// than relying on that.
+		if _, origErr := lint.ParseSeverity(*severity); origErr != nil {
+			err = origErr
+		}
+		return "", newToolErr("invalid_input", err.Error(), "")
+	}
+	return target, nil
+}
+
+// filterDiagnosticsBySeverity keeps the diagnostics matching target, which must
+// be a lower-cased severity from parseSeverityFilter (or "" for no filter).
+// Taking the parsed value rather than the raw request is what keeps an
+// unvalidated severity from reaching this loop again (#445).
+func filterDiagnosticsBySeverity(diags []Diagnostic, target string) []Diagnostic {
+	if target == "" {
+		return diags
+	}
 	filtered := make([]Diagnostic, 0, len(diags))
 	for _, d := range diags {
 		if strings.ToLower(d.Severity) == target {
@@ -2107,6 +2153,9 @@ explicit ` + "`(use-package 'testing)`" + ` in any package context.
   an unknown name there is an ` + "`invalid_input`" + ` error, not an empty result.
   Supports ` + "`severity`" + ` filter and pagination. Better for targeted analysis.
 
+Both tools take ` + "`severity`" + ` as one of error, warning or info; any other value
+is an ` + "`invalid_input`" + ` error, not an empty result.
+
 ## Format check_only
 Pass ` + "`check_only=true`" + ` to the format tool to check whether a file needs formatting
 without receiving the formatted content. Returns ` + "`changed: true/false`" + ` only.
@@ -2268,6 +2317,14 @@ func (s *service) lintTool(_ context.Context, _ *mcp.CallToolRequest, in LintInp
 		linter = filtered
 	}
 
+	// Same refusal for the severity filter, for the same reason: an
+	// unrecognised value matched no diagnostic and left the response
+	// indistinguishable from a clean file (#445).
+	severity, err := parseSeverityFilter(in.Severity)
+	if err != nil {
+		return nil, LintResponse{}, err
+	}
+
 	// Parse first to collect parse errors.
 	scanner := token.NewScanner(path, strings.NewReader(string(source)))
 	parsed := rdparser.New(scanner).ParseProgramFaultTolerant()
@@ -2316,7 +2373,7 @@ func (s *service) lintTool(_ context.Context, _ *mcp.CallToolRequest, in LintInp
 	for _, d := range lintDiags {
 		diags = append(diags, lintDiagnostic(d))
 	}
-	diags = filterDiagnosticsBySeverity(diags, in.Severity)
+	diags = filterDiagnosticsBySeverity(diags, severity)
 	sort.Slice(diags, func(i, j int) bool { return compareRange(diags[i].Range, diags[j].Range) })
 
 	resp := LintResponse{
