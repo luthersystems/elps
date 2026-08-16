@@ -56,6 +56,21 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 // object is not exported and it should not be handled without abstraction in
 // general because user error can break the type system.
 //
+// InitializeTypedef is a step inside InitializeUserEnv, not an alternative to
+// it.  It requires an environment that InitializeUserEnv has already
+// established: it reads env.Runtime.Package.Name, and it writes the typedef
+// into env.Runtime.Registry.Packages[env.Runtime.Registry.Lang].
+// StandardRuntime leaves Runtime.Package nil and Registry.Lang "" (and
+// Packages[""] is a nil *Package), so on a bare environment --
+// lisp.InitializeTypedef(lisp.NewEnv(nil)) -- this panics on the first of
+// those two before doing anything.
+//
+// The panics stay: under lisp/ a panic means a bug in the interpreter, or in
+// code that had no business calling this (issue #361).  Embedders establish a
+// top-level environment with InitializeUserEnv, which calls this itself; there
+// is no initialization order in which an embedder calls it directly.  See
+// issue #433.
+//
 // See LEnv.TaggedValue for more information about creating tagged-values.
 func InitializeTypedef(env *LEnv) *LVal {
 	ctor := env.builtin(&langBuiltin{"typedef-ctor", Formals("name", "ctor"), func(env *LEnv, args *LVal) *LVal {
@@ -640,9 +655,11 @@ func (env *LEnv) TaggedValue(typ *LVal, val *LVal) *LVal {
 // with the given arguments.  A typedef is an LTaggedVal itself that wraps a
 // list holding the defined type name along with a constructor.
 //
-// New requires that the system have typedef tagged-values.  Generally that
-// will be enabled by calling InitializeTypedef or InitializeUserEnv when
-// initializing the top-level enviornment.
+// New requires that the system have typedef tagged-values.  That is enabled
+// by calling InitializeUserEnv when initializing the top-level environment.
+// InitializeTypedef, which InitializeUserEnv calls, is a step inside it and
+// not a substitute for it: it panics on an environment InitializeUserEnv has
+// not already established.  See its doc comment, and issue #433.
 func (env *LEnv) New(typ *LVal, args *LVal) *LVal {
 	if typ.Type != LTaggedVal {
 		return env.Errorf("first argument is not a typedef: %v", GetType(typ))
