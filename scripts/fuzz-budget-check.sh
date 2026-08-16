@@ -19,11 +19,46 @@
 #
 # So the number is derived here instead of remembered:
 #
-#     ceil(targets / shards) x FUZZTIME + overhead  <=  timeout-minutes
+#     ceil(targets / shards) x FUZZTIME + overhead + FUZZTIME  <=  timeout-minutes
+#     \___________________ needed ____________________/  \_ margin _/
 #
 # and CI fails when it stops holding. `ceil(targets/shards)` is the largest
 # shard, which is what sets wall clock for a matrix -- the shards run in
 # parallel, so the total is irrelevant.
+#
+# Why the trailing margin (issue #458)
+# ------------------------------------
+# This condition used to be `needed > timeout` with no margin, so a sweep sized
+# at EXACTLY timeout-minutes printed "the sweep fits" and exited 0. Zero
+# headroom is not a fit. Two things make it a truncated sweep:
+#
+#   * The estimate is not the observation. OVERHEAD_MINUTES is a fixed guess
+#     and per-target cost is not constant -- observed shard durations already
+#     vary from 4m25s to 5m42s. A budget that is exactly consumed on paper is
+#     over-run in practice by whichever shard runs slow.
+#   * A truncated sweep is silent. The job is cancelled partway through, the
+#     last targets in the largest shard never execute, and the run looks the
+#     same as a finished one. That is the precise failure this gate exists to
+#     prevent, so passing at zero headroom made the gate unable to report it.
+#
+# The margin is DERIVED, not chosen. `needed` is
+# `ceil(targets/shards) x FUZZTIME + overhead`; the only term that moves as the
+# repo grows is `ceil(targets/shards)`, an integer. Adding targets therefore
+# steps `needed` up in units of exactly one FUZZTIME -- never a fraction of
+# one. So:
+#
+#   * a margin SMALLER than one FUZZTIME cannot survive the next step: the very
+#     next target that pushes the largest shard up by one lands straight past
+#     the timeout, which is the stale-matrix accident this gate is for;
+#   * one FUZZTIME is thus the smallest margin that is still standing after the
+#     next target lands, which is the whole job of a backstop.
+#
+# It is not a round number picked to feel safe -- it is the quantum this
+# arithmetic moves in. Concretely, at the 30 targets / 8 shards / 60 min that
+# main carries today: needed = 4 x 10 + 10 = 50, margin = 10, and 60 <= 60
+# holds with nothing to spare. That is deliberate. One FUZZTIME is at once the
+# minimum the derivation allows and the maximum the current matrix can pay, so
+# the gate is as tight as it can be without being wrong in either direction.
 #
 # Everything is read from the sources of truth rather than passed in: targets
 # from `scripts/fuzz.sh --list` (the same discovery the sweep uses), and the
@@ -34,8 +69,10 @@
 # Usage:  scripts/fuzz-budget-check.sh
 #
 # Exit codes:
-#   0  the budget fits
-#   1  it does not -- raise timeout-minutes, add shards, or lower FUZZTIME
+#   0  the budget fits, with at least one FUZZTIME of margin
+#   1  it does not -- add shards, lower FUZZTIME, or (last resort) raise
+#      timeout-minutes.  Exiting 1 at zero headroom is intentional: see the
+#      margin note above.
 #   2  the inputs could not be read (missing workflow, no targets discovered,
 #      unparsable duration).  2 rather than 0 on purpose: a budget gate that
 #      cannot read its inputs must not report "fits".
@@ -141,6 +178,31 @@ fi
 per_shard=$(((n_targets + shards - 1) / shards))
 needed=$((per_shard * per_target_minutes + OVERHEAD_MINUTES))
 
+# One FUZZTIME, because that is the step `needed` moves in when a target is
+# added (see the margin note in the header). Anything less is a margin that the
+# next target walks straight through.
+margin=$per_target_minutes
+required_timeout=$((needed + margin))
+
+# The smallest shard count that would satisfy the constraint, so the failure
+# message can name the actual remedy instead of leaving the reader to solve for
+# it -- the preferred fix is adding shards, and "add shards" without a number
+# invites picking one at random. Bounded above by n_targets: more shards than
+# targets draws empty shards, which fuzz.sh rejects outright.
+next_better_shards() {
+	local s ps
+	for ((s = shards + 1; s <= n_targets; s++)); do
+		ps=$(((n_targets + s - 1) / s))
+		if [ $((ps * per_target_minutes + OVERHEAD_MINUTES + margin)) -le "$timeout_minutes" ]; then
+			echo "$s"
+			return 0
+		fi
+	done
+	# Sharding alone cannot fix it: even one target per shard costs
+	# FUZZTIME + overhead + margin. Say so rather than naming a bogus count.
+	echo "no shard count (not even ${n_targets}, one target each)"
+}
+
 echo "fuzz-budget-check:"
 echo "  targets discovered      ${n_targets}"
 echo "  shards                  ${shards}"
@@ -148,28 +210,69 @@ echo "  largest shard           ${per_shard} target(s)"
 echo "  scheduled FUZZTIME      ${sched_fuzztime} (${per_target_minutes} min/target)"
 echo "  fixed overhead          ${OVERHEAD_MINUTES} min"
 echo "  required                ${needed} min"
+echo "  required margin         ${margin} min (one FUZZTIME -- the next target's cost)"
+echo "  required + margin       ${required_timeout} min"
 echo "  timeout-minutes         ${timeout_minutes} min"
 
-if [ "$needed" -gt "$timeout_minutes" ]; then
+if [ "$required_timeout" -gt "$timeout_minutes" ]; then
+	# Two distinct states end up here and they read very differently to a
+	# human, so say which one this is. "Over by 10" and "exactly on the line"
+	# both have to fail, but only the first is obviously broken on sight --
+	# the second is the one that used to pass, and a reader who is told only
+	# "does not fit" while the arithmetic plainly says 60 <= 60 will assume
+	# the gate is wrong rather than that the headroom is gone.
+	if [ "$needed" -gt "$timeout_minutes" ]; then
+		cat >&2 <<-EOF
+
+			fuzz-budget-check: the nightly sweep does NOT fit in its timeout.
+
+			  ${per_shard} x ${per_target_minutes} min + ${OVERHEAD_MINUTES} min = ${needed} min > ${timeout_minutes} min
+		EOF
+	else
+		cat >&2 <<-EOF
+
+			fuzz-budget-check: the nightly sweep fits with NO usable margin.
+
+			  ${per_shard} x ${per_target_minutes} min + ${OVERHEAD_MINUTES} min = ${needed} min
+			  vs timeout-minutes ${timeout_minutes} min -- headroom $((timeout_minutes - needed)) min,
+			  which is less than the ${margin} min (one FUZZTIME) a sweep must keep spare.
+
+			This is not a rounding complaint. \`needed\` grows in steps of exactly
+			one FUZZTIME, so the next fuzz target to land pushes this over the
+			timeout outright -- and observed shard durations already vary from
+			4m25s to 5m42s, so a budget that is exactly consumed on paper is
+			over-run in practice by whichever shard runs slow.
+		EOF
+	fi
 	cat >&2 <<-EOF
-
-		fuzz-budget-check: the nightly sweep does NOT fit in its timeout.
-
-		  ${per_shard} x ${per_target_minutes} min + ${OVERHEAD_MINUTES} min = ${needed} min > ${timeout_minutes} min
 
 		Left alone, the job is cancelled partway through and the last targets in
 		the largest shard never run -- silently, because a truncated sweep looks
 		exactly like a finished one.
 
-		Fix by one of:
-		  * raise timeout-minutes on the fuzz job to at least ${needed}
-		  * add shards to strategy.matrix.shard (parallel, so this cuts wall clock)
+		Fix by one of, in order of preference:
+		  * add shards to strategy.matrix.shard -- they are parallel, so this
+		    cuts wall clock rather than extending the backstop. ${shards} shards
+		    currently; $(next_better_shards) would bring this back under.
 		  * lower the scheduled FUZZTIME
+		  * raise timeout-minutes on the fuzz job to at least ${required_timeout}
+		    (${needed} needed + ${margin} margin). LAST RESORT: raising the
+		    backstop to make a red gate green is the same move as raising a
+		    benchmark threshold -- it silences the gate instead of the problem.
 	EOF
 	exit 1
 fi
 
 headroom=$((timeout_minutes - needed))
 echo "  headroom                ${headroom} min"
-echo "fuzz-budget-check: the sweep fits."
+
+# Report how many more targets this matrix absorbs before the gate goes red, so
+# the number is in front of whoever is adding one. `needed` steps by one
+# FUZZTIME each time ceil(targets/shards) increments, i.e. every `shards`
+# targets; spare_steps is how many such steps still fit inside the headroom
+# after the mandatory margin is set aside.
+spare_steps=$(((headroom - margin) / per_target_minutes))
+slack_targets=$((per_shard * shards - n_targets + spare_steps * shards))
+echo "  room for                ${slack_targets} more target(s) before this gate goes red"
+echo "fuzz-budget-check: the sweep fits, with ${headroom} min headroom (>= ${margin} min margin)."
 exit 0
