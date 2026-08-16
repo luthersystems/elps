@@ -1211,12 +1211,58 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 }
 
 // Copy creates a deep copy of the receiver.
+//
+// The copy owns its positions.  Every node Copy reaches gets its own
+// *token.Location, so a write through the copy cannot move what the original
+// reports, and the reverse.  The one Location left shared is nativeSource's
+// process-wide singleton -- see the comment on the copy below.
 func (v *LVal) Copy() *LVal {
 	if v == nil {
 		return nil
 	}
 	cp := &LVal{}
 	*cp = *v // shallow copy of all fields including Map and Bytes
+	if v.Source != defaultSourceLocation {
+		// Source rides along in the struct assignment above, so without this
+		// the copy and the original hold ONE mutable *token.Location, at
+		// every depth -- Cells are deep-copied just below, positions were
+		// not.  That is issue #446, and lisp.TextLoader is what it defeats:
+		// TextLoader's entire purpose is to hand each evaluation a PRIVATE
+		// tree (it is the entry point an embedder is pointed at for a
+		// reusable parse cache; the Load* entry points do not copy), and
+		// every one of those "private" trees reported its positions through
+		// the retained cache's own objects.
+		//
+		// One Location per NODE here, where issue #431 needed only one per
+		// macro CALL, because what has to be separated is different.  There
+		// the N stamped nodes genuinely sit at one position, so a single
+		// object owned by the expansion separated the two owners.  Here each
+		// node has a position of its own, so N nodes need N objects and no
+		// cheaper framing exists; the only way to drop the allocation is to
+		// stop these objects being mutable at all, which is the LVal.Source
+		// immutability work tracked on issue #362.
+		//
+		// The single Location deliberately left shared is nativeSource's
+		// process-wide singleton, stamped on every natively-constructed
+		// LVal.  Copying it would separate nothing: a copy separates two
+		// OWNERS, and that object has exactly one -- the process.  It is
+		// read-only by contract, SingletonSnapshot watches its bit pattern,
+		// and the parser never leaves it in an AST (parser/rdparser's
+		// TestParserDoesNotAliasSharedNativeLocation), so it cannot reach a
+		// parse cache in the first place.  Copying it would instead put a
+		// heap allocation on the interpreter's hottest path, where most
+		// values are ones Go built and therefore carry it.  Measured
+		// interleaved against this branch, n=5, allocs/op: AliasStableSort
+		// +25.1%, AliasCDR +11.0%, EnvFunCallPos +9.1%, geomean +7.2% -- all
+		// past the 5% allocation gate.  Skipping it leaves the tree flat
+		// instead: the only row this change moves at all is libjson's
+		// get-nested-baseline (+3.93% allocs/op, gate 5%), whose 5000
+		// `assert` forms each copy their test expression out of the parse
+		// tree in opAssert.  That is the same trade nativeSource itself
+		// records and takes; closing it belongs to issue #362's immutability
+		// work, not here.
+		cp.Source = v.Source.Copy()
+	}
 	switch v.Type {
 	case LArray:
 		// Arrays are memory references but use Cells as backing storage.
