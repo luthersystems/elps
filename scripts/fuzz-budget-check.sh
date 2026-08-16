@@ -157,8 +157,20 @@ to_minutes() {
 per_target_minutes="$(to_minutes "$sched_fuzztime")" || exit 2
 
 # Discovery, from the same code path the sweep uses.
-if ! targets="$("${SCRIPT_DIR}/fuzz.sh" --list 2>/dev/null)"; then
+#
+# stderr is CAPTURED AND REPLAYED, not discarded (issue #479). fuzz.sh reports
+# a package that failed to build on stderr and exits non-zero; with `2>/dev/null`
+# this printed the bare line "scripts/fuzz.sh --list failed" and threw away the
+# build errors that say WHICH package and WHY -- turning an actionable compile
+# error into a dead end, and re-hiding on this side exactly what fuzz.sh was
+# fixed to make loud.
+discovery_err="$(mktemp)"
+trap 'rm -f "$discovery_err"' EXIT
+if ! targets="$("${SCRIPT_DIR}/fuzz.sh" --list 2>"$discovery_err")"; then
 	echo "fuzz-budget-check: scripts/fuzz.sh --list failed" >&2
+	sed 's/^/  | /' "$discovery_err" >&2
+	echo "fuzz-budget-check: no trustworthy target count, so no budget can be" >&2
+	echo "fuzz-budget-check: derived -- refusing to report that the sweep fits." >&2
 	exit 2
 fi
 n_targets="$(printf '%s\n' "$targets" | grep -c . || true)"

@@ -1648,6 +1648,81 @@ else
 	fi
 	rm -rf "$shard_tmp"
 
+	# Issue #479: a package that FAILS TO BUILD must not look like a package
+	# with no fuzz targets.
+	#
+	# Discovery used to be `go test -list ... 2>/dev/null | grep`, discarding
+	# both stderr and exit status, so an uncompilable package contributed zero
+	# targets exactly as a target-free one does -- silently. Observed for real:
+	# 8 of 30 targets vanished on a cold cache and the sweep still exited 0.
+	#
+	# Tested against a THROWAWAY MODULE rather than by breaking this repo,
+	# because the assertion needs a genuinely uncompilable package and doing
+	# that in-tree would break every other check in this file. fuzz.sh derives
+	# its REPO_ROOT from its own location, so a copy inside the scratch module
+	# operates entirely on that module.
+	#
+	# Both directions are asserted. Only the pair is meaningful: "broken
+	# fails" alone is also satisfied by a discovery step that fails on
+	# everything, which would be a gate nobody can keep green.
+	disc_tmp="$(mktemp -d)"
+	mkdir -p "${disc_tmp}/scripts" "${disc_tmp}/notargets" "${disc_tmp}/hastarget"
+	cp "${SCRIPT_DIR}/fuzz.sh" "${disc_tmp}/scripts/fuzz.sh"
+	cat >"${disc_tmp}/go.mod" <<-EOF
+		module example.invalid/fuzzdisc
+
+		go $(awk '/^go /{print $2; exit}' "${REPO_ROOT}/go.mod")
+	EOF
+	# Compiles, and has no fuzz targets at all. Must be accepted in silence:
+	# most packages in any repo look like this, so a discovery step that
+	# complained here would be unusable.
+	cat >"${disc_tmp}/notargets/notargets.go" <<-'EOF'
+		package notargets
+
+		// Greet is ordinary code with no fuzz target anywhere near it.
+		func Greet() string { return "hello" }
+	EOF
+	# Compiles and defines a target, so the green case has something to find
+	# (fuzz.sh treats a repo with zero targets as an error in its own right).
+	cat >"${disc_tmp}/hastarget/hastarget_test.go" <<-'EOF'
+		package hastarget
+
+		import "testing"
+
+		func FuzzScratch(f *testing.F) {
+			f.Add("seed")
+			f.Fuzz(func(t *testing.T, s string) { _ = s })
+		}
+	EOF
+
+	assert_exit 0 "a package with NO fuzz targets is not mistaken for a broken one (#479)" \
+		"${disc_tmp}/scripts/fuzz.sh" --list
+	assert_contains "FuzzScratch" \
+		"the scratch module's one real target IS discovered (#479)" \
+		"${disc_tmp}/scripts/fuzz.sh" --list
+
+	# Now break a package for real -- a type error, not a mock.
+	mkdir -p "${disc_tmp}/broken"
+	cat >"${disc_tmp}/broken/broken.go" <<-'EOF'
+		package broken
+
+		// Deliberately uncompilable: the point of the assertion below.
+		func Broken() int { return "not an int" }
+	EOF
+	assert_exit 2 "a package that does NOT COMPILE fails discovery instead of contributing zero targets (#479)" \
+		"${disc_tmp}/scripts/fuzz.sh" --list
+	assert_contains "FAILED TO BUILD" \
+		"the build failure SAYS it was a build failure (#479)" \
+		"${disc_tmp}/scripts/fuzz.sh" --list
+	assert_contains "not an int" \
+		"the compiler's own error is replayed, not swallowed (#479)" \
+		"${disc_tmp}/scripts/fuzz.sh" --list
+	# The sweep itself, not just --list: the discovery path is shared, and it
+	# is the sweep that would otherwise go green having fuzzed nothing.
+	assert_exit 2 "the SWEEP also refuses to run over a partially-built tree (#479)" \
+		env FUZZTIME=1s "${disc_tmp}/scripts/fuzz.sh" --shard 1/1
+	rm -rf "$disc_tmp"
+
 	# A shard spec that cannot be read must not silently run a SUBSET and exit
 	# 0 -- indistinguishable from a clean full sweep.
 	for bad_spec in "0/4" "5/4" "abc" "1/0"; do
