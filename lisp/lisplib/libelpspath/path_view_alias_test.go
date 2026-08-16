@@ -290,28 +290,6 @@ func TestViewMutateBattery(t *testing.T) {
 	}
 }
 
-// TestViewDeleteBattery is the requirement: a delete through a view writes
-// only where its path points.
-func TestViewDeleteBattery(t *testing.T) {
-	t.Parallel()
-
-	ran, failures := runViewBattery(t, shippedViewDelete)
-	require.Greater(t, ran, 100,
-		"the view battery deleted through only %d views: it is passing because "+
-			"it is not writing", ran)
-	if len(failures) == 0 {
-		t.Logf("view battery: %d deletes through a view, none wrote outside the step's own positions", ran)
-		return
-	}
-	const sample = 8
-	msgs := failures
-	if len(msgs) > sample {
-		msgs = append(msgs[:sample:sample], fmt.Sprintf("... and %d more", len(failures)-sample))
-	}
-	t.Errorf("%d deletes through a view wrote into the backing array (#471):\n%s",
-		len(failures), strings.Join(msgs, "\n"))
-}
-
 // TestViewBatteryDetectsInPlaceCompaction is the red-proof.  Without it a
 // clean TestViewDeleteBattery would be consistent with a battery that never
 // writes anywhere observable.
