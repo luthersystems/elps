@@ -245,6 +245,11 @@ jobs:
   required:
     name: "Required: fuzz"
     runs-on: ubuntu-latest
+    # 5 minutes for one bash assertion over the matrix result. The `fuzz` job
+    # above already carries its own derived timeout-minutes; this aggregate had
+    # none, and it is the job whose NAME is in branch protection -- so a wedge
+    # here blocks the PR with a spinner and no red signal (#468).
+    timeout-minutes: 5
     needs: fuzz
     if: always()
     steps:

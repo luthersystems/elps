@@ -21,6 +21,11 @@ jobs:
   lint-and-test:
     name: Lint & Test
     runs-on: ubuntu-latest
+    # 30 minutes against an observed 3m57s (golangci-lint, make test,
+    # make race, elpscheck, elps fmt/lint/doc). `make race` alone is ~2m and is
+    # the part most sensitive to a slow runner, so the headroom is deliberate.
+    # A liveness bound, not a performance budget.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
@@ -80,6 +85,10 @@ jobs:
   build-windows:
     name: Build (Windows)
     runs-on: windows-latest
+    # 20 minutes against an observed 1m06s. Windows runners have the
+    # slowest and most variable image/toolchain setup of the pool, hence the
+    # wide margin on an otherwise trivial build+vet.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
@@ -115,6 +124,9 @@ jobs:
   required:
     name: "Required: build & test"
     runs-on: ubuntu-latest
+    # 5 minutes against an observed 2s. This job's name is the one in
+    # branch protection; wedged here means the PR is blocked with no red.
+    timeout-minutes: 5
     needs: [lint-and-test, build-windows]
     if: always()
     steps:

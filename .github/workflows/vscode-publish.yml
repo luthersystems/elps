@@ -9,6 +9,11 @@ jobs:
   build-binaries:
     name: Build elps (${{ matrix.target }})
     runs-on: ubuntu-latest
+    # A cross-compile per matrix leg. 20 minutes is a liveness bound: the
+    # `go build` is seconds, but Go module download reaches the network and
+    # this workflow gates a release, so a wedged leg stalls the publish with
+    # nothing going red until GitHub's 6h default expires.
+    timeout-minutes: 20
     strategy:
       matrix:
         include:
@@ -53,6 +58,10 @@ jobs:
     name: Publish (${{ matrix.target }})
     needs: build-binaries
     runs-on: ubuntu-latest
+    # `npm ci` and `npx vsce publish` both talk to third-party registries
+    # (npm, the VS Code Marketplace) which can and do hang. 20 minutes turns
+    # that into a red leg instead of a release that never finishes.
+    timeout-minutes: 20
     strategy:
       matrix:
         include:
@@ -102,6 +111,8 @@ jobs:
     name: Publish (universal)
     needs: build-binaries
     runs-on: ubuntu-latest
+    # Same third-party-registry exposure as publish-platform above.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 

@@ -79,6 +79,18 @@ jobs:
   gates:
     name: CI Gate Self-Test
     runs-on: ubuntu-latest
+    # 10 minutes against an observed 17-22s. Not a performance budget -- a
+    # liveness bound. This job is aggregated into the REQUIRED check below, and
+    # a required check that is stuck `in_progress` never goes red: the PR sits
+    # at mergeable_state=blocked with a spinner, indistinguishable from "CI is
+    # still warming up", forever. That is not hypothetical -- on PR #459 this
+    # job wedged in `apt-get` for 50 minutes and blocked the PR with no red
+    # signal, until someone thought to watch the clock.
+    #
+    # `queue-watchdog` below does NOT cover this. It watches for a job that
+    # never STARTS. This one started fine and then wedged mid-step, which only
+    # a job-level timeout can bound.
+    timeout-minutes: 10
     env:
       # This job has no Go toolchain on purpose -- see the comment above: it
       # must be fast and must report even when the benchmark job is cancelled.
@@ -89,13 +101,35 @@ jobs:
       # "-fuzz must carry -fuzztime" scan, the workflow-shape guards and
       # shellcheck -- still runs here.
       CI_GATES_SKIP_GO: "1"
+      # shellcheck is PREINSTALLED on the ubuntu-latest image, so the gate
+      # script's `command -v shellcheck` branch is always taken here. Without
+      # this variable the script only prints "SKIP shellcheck not installed"
+      # when it is absent -- a silent downgrade that would turn a shell-lint
+      # gate into nothing at all the day the image drops the package. Setting
+      # it makes absence LOUD (red), which is the whole point of running the
+      # lint in CI. See the shellcheck block in scripts/ci-gates-test.sh.
+      CI_GATES_REQUIRE_SHELLCHECK: "1"
     steps:
       - name: Check out code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v6
 
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
-
+      # There is deliberately NO `apt-get install shellcheck` step here.
+      #
+      # It never installed anything. Every run logged
+      #     shellcheck is already the newest version (0.9.0-1).
+      #     0 upgraded, 0 newly installed, 0 to remove
+      # because shellcheck ships in the ubuntu-latest image. What the step DID
+      # do was make this job -- part of a required check -- depend on reaching
+      # five package repositories (azure.archive.ubuntu.com,
+      # packages.microsoft.com, dl.google.com and friends) over the network on
+      # every single PR, for no benefit. On PR #459 one of those fetches hung
+      # and the job sat in `apt-get update` for 50 minutes.
+      #
+      # Deleting it removes the wedge at the source rather than merely bounding
+      # it: the timeout-minutes above is the backstop, this is the fix. The
+      # tool's presence is now asserted by the gate script itself, via
+      # CI_GATES_REQUIRE_SHELLCHECK, so dropping the install cannot silently
+      # drop the lint.
       - name: Run CI gate self-test
         run: bash scripts/ci-gates-test.sh
 
@@ -167,6 +201,14 @@ jobs:
     # NOTE: `runs-on` cannot read the `env` context, which is why this is a
     # literal plus a `vars` override rather than a workflow-level env var.
     runs-on: ${{ vars.BENCH_RUNNER || '2vcpu-ubuntu-2204-arm' }}
+    # 45 minutes against an observed 10m25s for BENCH_COUNT=10 interleaved
+    # rounds on the 2vcpu ARM runner. Deliberately loose -- benchmark wall time
+    # legitimately moves with the runner and with how many benchmarks the tree
+    # carries, and this bound exists to stop a hang holding the required check
+    # open, not to police benchmark duration. If it ever fires, read it as "the
+    # job wedged", not "the benchmarks got slower"; the budget to re-derive is
+    # BENCH_COUNT, not this number.
+    timeout-minutes: 45
     steps:
       # Two working trees, measured on the SAME runner in the SAME job. This
       # replaces the cached-baseline design, which compared this PR against
@@ -317,6 +359,11 @@ jobs:
   required:
     name: "Required: benchmark"
     runs-on: ubuntu-latest
+    # 5 minutes against an observed 6s (checkout plus one bash assertion).
+    # This is the job whose NAME is in branch protection, so it is the one job
+    # here for which "stuck in_progress" and "blocks the PR forever" are the
+    # same sentence.
+    timeout-minutes: 5
     needs: [gates, queue-watchdog, benchmark]
     if: always()
     steps:
