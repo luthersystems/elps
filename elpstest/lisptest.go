@@ -227,6 +227,11 @@ func (r *Runner) RunTestFile(t *testing.T, path string) {
 // used to determine a file basename to use in LEnv.Load().  RunBenchmark
 // returns true if the test, and any teardown function given, completed
 // successfully.
+//
+// Only the benchmark body is timed.  Building the environment, running SetupFn
+// and loading the benchmark file all happen with the timer stopped, so what a
+// Runner configures cannot change what its numbers mean: a Runner with a
+// SetupFn and a Runner without one measure the same region.
 func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader) {
 	b.StopTimer()
 	env, err := r.NewEnv(b)
@@ -236,11 +241,15 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 	}
 	defer env.Runtime.Stderr.(*Logger).Flush()
 
-	if r.SetupFn != nil {
-		b.StopTimer()
-		r.SetupFn(env)
-		b.StartTimer()
-	}
+	// Setup runs with the timer stopped and LEAVES it stopped.  Restarting it
+	// here would charge env.Load below -- parsing the whole benchmark file and
+	// evaluating every top-level form in it, including every benchmark
+	// definition -- to the measurement, and only for Runners that happen to
+	// set a SetupFn.  That was issue #434: this branch ended in StartTimer
+	// rather than restoring the timer to the state it found it in, so two
+	// Runners differing only in SetupFn reported numbers that were not
+	// comparable.
+	_ = r.Setup(env)
 
 	err = lisp.GoError(env.Load(filepath.Base(path), source))
 	if err != nil {
