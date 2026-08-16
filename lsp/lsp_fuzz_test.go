@@ -770,11 +770,11 @@ func (s *session) opSemanticTokens(a opArgs) {
 	res, err := s.srv.textDocumentSemanticTokensFull(s.ctx, &protocol.SemanticTokensParams{TextDocument: a.ident()})
 	s.record("semanticTokens", res, err)
 	if err == nil && res != nil {
-		s.checkTokenBounds(a.uri, res.Data)
+		s.checkTokenSpans(a.uri, res.Data)
 	}
 }
 
-// checkTokenBounds is the one CONTENT assertion this target makes, and the
+// checkTokenSpans is the one CONTENT assertion this target makes, and the
 // exception to "NOT asserted: that any request returns a particular result".
 //
 // It is admissible here because it does not say what the answer should be. It
@@ -797,7 +797,23 @@ func (s *session) opSemanticTokens(a opArgs) {
 // two-column span, so "#'foo" told the editor to decorate 13 characters of a
 // 5-character line. This assertion was left out of the target when that defect
 // was filed, because with it in place the target was red on its own seeds.
-func (s *session) checkTokenBounds(uri string, data []protocol.UInteger) {
+//
+// COVERAGE, ADDED FOR elps#449.  Bounds alone was too weak to be the whole
+// property.  It asks that a token name SOME text in the document; it does not
+// ask that it name the RIGHT text, and both defects in elps#449 were strictly
+// in bounds -- a quoted symbol's token slid one character left onto the ' and
+// stopped one character short of the symbol, and a string's length was measured
+// on the DECODED value so `"x\ty"` got five characters of a six-character
+// literal.  Every such token satisfies the bound and misinforms the editor.
+//
+// coverageDefect (semantic_tokens_span_test.go) is the stronger question, asked
+// of the same decoded triples: does the text a token claims look like the atom
+// it is classifying?  It is still checkable from the response alone and still
+// says nothing about which answer is right -- a token may be a variable or a
+// function, but it may not start on reader punctuation, span two atoms, or stop
+// in the middle of a string literal.  One definition of the property, shared
+// with the table tests next door, so the fuzzer and they cannot drift.
+func (s *session) checkTokenSpans(uri string, data []protocol.UInteger) {
 	if s.tokenErr != nil {
 		return
 	}
@@ -829,9 +845,21 @@ func (s *session) checkTokenBounds(uri string, data []protocol.UInteger) {
 		}
 		// A CRLF document keeps its "\r" in the line; the editor does too, so
 		// it is part of the line for this purpose.
-		if char+length > len(lines[line]) {
+		if char < 0 || length < 0 || char+length > len(lines[line]) {
 			s.tokenErr = fmt.Errorf("semantic token [%d:%d,+%d) overruns line %d, which is %d bytes: %q (%s)",
 				line, char, length, line, len(lines[line]), lines[line], uri)
+			return
+		}
+		cov := tokenCoverage{
+			tok: rawToken{
+				line: line, startChar: char, length: length,
+				tokenType: int(data[i+3]),
+			},
+			covered: lines[line][char : char+length],
+		}
+		if msg := coverageDefect(cov, lines[line]); msg != "" {
+			s.tokenErr = fmt.Errorf("semantic token [%d:%d,+%d) covers %q: %s (%s)",
+				line, char, length, cov.covered, msg, uri)
 			return
 		}
 	}
@@ -1196,6 +1224,25 @@ func FuzzLSPSession(f *testing.F) {
 	add("'#^0", "", allOpsScript())
 	add("(list #'car\n      #'cdr)", "", allOpsScript())
 	add("(lisp:function foo)", "", allOpsScript()) // longhand: not synthesized
+
+	// The shapes the COVERAGE half of checkTokenSpans exists for (elps#449).
+	//
+	// The quoted-atom half is already reached without these: `uses` above is
+	// "(in-package 'user)\n(use-package 'demo)\n...", and on 5ef6106 each of
+	// those quoted symbols covers "'use" and "'dem" respectively. The ESCAPED
+	// STRING half is reached by nothing in the corpus -- no seed here or in
+	// fuzzseed contains a string literal with an escape in it, and a literal
+	// without one has len(v.Str)+2 exactly right -- so the property would have
+	// held by the corpus never asking. Seeded rather than left to the mutator,
+	// which has to produce a balanced pair of quotes AND a backslash escape
+	// inside it before the length is ever wrong.
+	add(`(f "x\ty")`, "", allOpsScript())
+	add(`(f "a\nb" c)`, "", allOpsScript()) // escaped \n, not a newline
+	add(`(f """raw""" c)`, "", allOpsScript())
+	add("(f \"\"\"a\nb\"\"\" c)", "", allOpsScript()) // genuinely multi-line
+	add("(list 'a 'b)", "", allOpsScript())           // one-character quoted symbols
+	add("' a", "", allOpsScript())                    // whitespace after the prefix
+	add("'\na", "", allOpsScript())                   // and a newline after it
 
 	// Document B as the WORKSPACE FILE that defines a macro and document A as
 	// the file that calls it. This is the only shape that reaches
