@@ -925,19 +925,40 @@ func Range(from int, to int, implicitTo bool) Path {
 	return &rangePath{from: from, to: to, implicitTo: implicitTo}
 }
 
-// Get returns a sequence over the input's OWN backing array.
+// Get returns a sequence view over the input's own backing array, with the
+// capacity clamped to its length.
 //
-// IMPORTANT: this is a two-index slice, so the result keeps the source's
-// spare capacity, and a later (append 'vector ...) into that capacity writes
-// through to the source — including to a quoted program literal a parse
-// cache shares between environments. That is the repo-wide aliasing class
-// tracked in issues #369 and #373, not something this package opens: the
-// kernel's own (slice 'vector ...) hands back exactly the same thing, and
-// the identical corruption reproduces with no path operation involved at
-// all. Clamping the capacity here would close #369 for one producer and
-// leave every other one open. When #369 is settled — a three-index slice, a
-// copy, or a documented rule — this call site is one the settlement applies
-// to.
+// IMPORTANT: the clamp is load-bearing, and it is the settlement of issues
+// #369 and #373 applied to this call site.
+//
+// An earlier revision of this package left the slice two-index, so the view
+// kept the source's spare capacity and a later (append 'vector ...) into
+// that capacity wrote through to the source — including to a quoted program
+// literal a parse cache shares between environments. That was defensible
+// while the kernel's own (slice 'vector ...) did the same thing: clamping
+// one producer would have closed the class for one producer and left every
+// other one open.
+//
+// #373 has since settled it the other way. lisp.clampCap now runs at every
+// kernel producer — "every sequence view that escapes into lisp is clamped
+// where it is produced, and every non-mutating append clamps its input where
+// it is read" — so an unclamped view from here would be the ONLY remaining
+// producer of the aliasing, not one of many. Measured on the settled tree
+// before this clamp was added:
+//
+//	(set 'v (vector 1 2 3 4 5))
+//	(set 'w (? v '(range 0 3)))  (append! w 99)
+//	  view (vector 1 2 3 99)   src (vector 1 2 3 99 5)   <- through this Get
+//	(set 'w (slice 'vector v 0 3))  (append! w 99)
+//	  view (vector 1 2 3 99)   src (vector 1 2 3 4 5)    <- the kernel, clamped
+//
+// The clamp is free: no allocation, no copy, and a no-op for the
+// exact-capacity slices that are the common case. What it costs is that an
+// append which would have grown into the source's spare capacity now
+// reallocates, which is the point.
+//
+// lisp.clampCap itself is unexported, so the three-index slice is written
+// out here rather than called.
 func (s *rangePath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
@@ -948,7 +969,7 @@ func (s *rangePath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-	cells = cells[from:to]
+	cells = cells[from:to:to]
 	var newVal *lisp.LVal
 	if in.Type == lisp.LArray {
 		newVal = toVector(cells)

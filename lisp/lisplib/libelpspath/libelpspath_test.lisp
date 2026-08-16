@@ -123,3 +123,25 @@
    (cp (elpspath:?set src "k" "v")))
   (assert-equal '(1 2 3) (elpspath:? cp "l"))
   (assert-equal '(99 2 3) (elpspath:?set '(1 2 3) 0 99)))
+
+; The range getter's view must not carry the source's spare capacity, or an
+; (append! ...) into that capacity writes through to the source -- issues
+; #369 and #373.  The kernel settled that class by clamping every sequence
+; view where it is produced; this asserts rangePath.Get is clamped with it,
+; side by side with the kernel producer it has to match.
+(test-let* "range view does not alias through spare capacity"
+  ((src (vector 1 2 3 4 5))
+   (view (elpspath:? src '(range 0 3))))
+  (append! view 99)
+  (assert-equal (vector 1 2 3 99) view)
+  (assert-equal (vector 1 2 3 4 5) src))
+
+; The control: the kernel's own producer, whose answer this one now matches.
+; If this arm ever goes red the settlement moved and the clamp above should
+; move with it, not be dropped silently.
+(test-let* "kernel slice view does not alias either"
+  ((src (vector 1 2 3 4 5))
+   (view (slice 'vector src 0 3)))
+  (append! view 99)
+  (assert-equal (vector 1 2 3 99) view)
+  (assert-equal (vector 1 2 3 4 5) src))

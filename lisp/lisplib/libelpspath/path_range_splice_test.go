@@ -295,3 +295,46 @@ func TestRangeNilPreservesSurroundings(t *testing.T) {
 		})
 	}
 }
+
+// TestRangeGetClampsCapacity pins the three-index slice in rangePath.Get.
+//
+// A two-index `cells[from:to]` hands back a view carrying the source's spare
+// capacity, and an append into that capacity writes through to the source.
+// That is the aliasing class of issues #369 and #373, which the kernel has
+// since settled by clamping every sequence view where it is produced
+// (lisp.clampCap).  With that settled, an unclamped view from this Get would
+// be the only remaining producer of it in the tree.
+//
+// The assertion is on cap rather than on an observed corruption because cap
+// is the property the settlement is stated in.  The end-to-end arm --
+// (append! (? v '(range 0 3)) 99) leaving v alone -- is in
+// libelpspath_test.lisp next to the kernel control it has to match.
+//
+// Red-proof: revert to `cells[from:to]` and every sub-test whose range is a
+// strict prefix reports cap 5 against len 3.
+func TestRangeGetClampsCapacity(t *testing.T) {
+	t.Parallel()
+
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = nil
+
+	for _, shape := range []string{"vector", "list"} {
+		for _, r := range [][2]int{{0, 3}, {1, 4}, {2, 5}, {0, 5}} {
+			from, to := r[0], r[1]
+			name := shape + "/" + strconv.Itoa(from) + ":" + strconv.Itoa(to)
+			t.Run(name, func(t *testing.T) {
+				src := spliceSource(shape, 5)
+
+				got := callBuiltin(env, BuiltinQueryGet, src, rangeStep(from, to))
+				require.NotEqualf(t, lisp.LError, got.Type, "? errored: %v", got)
+
+				cells, err := toCells(got)
+				require.NoError(t, err)
+				require.Len(t, cells, to-from)
+				require.Equalf(t, len(cells), cap(cells),
+					"range view kept the source's spare capacity: len %d cap %d",
+					len(cells), cap(cells))
+			})
+		}
+	}
+}
