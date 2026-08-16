@@ -95,15 +95,42 @@ func (typ Type) String() string {
 	return typeStrings[typ] //nolint:gosec // bounds checked above
 }
 
+// Location is a span in a source stream.
+//
+// UNITS.  Every offset and column in this struct is counted in BYTES, and
+// says so on its own line below.  The unit is not a detail: Col and EndCol
+// are subtracted from and added to each other by consumers all over the tree
+// (analysis.scopeContainingAnalysis, lsp.locContainsCol, lsp.elpsToLSPRange,
+// lint.endPosFromNode), and a value in one unit compared against a value in
+// another is wrong without being obviously wrong.  Whatever unit is chosen,
+// the four position fields have to agree on it.
+//
+// They did not.  TokenEnd derived EndCol by counting RUNES onto Scanner's
+// byte-valued Col, so on any token containing a multi-byte rune EndCol was
+// short by len(text)-utf8.RuneCountInString(text) and was in neither unit.
+// Every LSP range built from EndCol was correspondingly short, and
+// textDocument/rename -- which builds its TextEdit ranges from the same
+// helper -- therefore replaced fewer bytes than the name occupied and left
+// the tail behind: renaming "éx" to "zz" produced "zzx", a different program,
+// silently (elps#463).  The absence of a stated unit is what allowed that, so
+// the unit is stated here.
+//
+// BYTES is an INTERNAL convention, not what LSP asks for: LSP 3.16 counts a
+// position in UTF-16 code units unless client and server negotiate otherwise,
+// and this server neither offers positionEncoding nor converts anything.
+// That server-wide gap is elps#464 and is deliberately not what this comment
+// settles.  #464 is about which unit crosses the wire; the requirement here
+// is only that these four fields agree with EACH OTHER, which they must under
+// any choice #464 goes on to make.
 type Location struct {
 	File    string // a name representing the source stream
 	Path    string // a physical location which may differ from File
-	Pos     int
-	Line    int // line number (starting at 1 when tracked)
-	Col     int // line column number (starting at 1 when tracked)
-	EndPos  int // byte position past end of token/expr (0 = not tracked)
-	EndLine int // end line (1-based, 0 = not tracked)
-	EndCol  int // end column (1-based, exclusive, 0 = not tracked)
+	Pos     int    // BYTE offset of the first byte of the token/expr
+	Line    int    // line number (starting at 1 when tracked)
+	Col     int    // BYTE column within the line (1-based; 0 = not tracked)
+	EndPos  int    // BYTE offset one past the last byte (0 = not tracked)
+	EndLine int    // end line (1-based, 0 = not tracked)
+	EndCol  int    // BYTE column one past the last byte (1-based, exclusive; 0 = not tracked)
 }
 
 func (loc *Location) String() string {
@@ -163,23 +190,57 @@ func (loc *Location) Copy() *Location {
 	return &cp
 }
 
-// TokenEnd computes the end position of a token from its start position
-// and text. The end column is exclusive (one past the last character).
-// For multi-line tokens (e.g., raw strings), the line and column are
-// adjusted accordingly.
+// TokenEnd computes the end position of a token from its start position and
+// text.  All three results are in the units Location documents: endCol is an
+// exclusive BYTE column, endPos an absolute BYTE offset.  For a multi-line
+// token (a raw string) the line and column are adjusted accordingly.
+//
+// THE DEFECT (elps#463).  This used to advance col by ONE PER RUNE:
+//
+//	for _, ch := range tok.Text {
+//		if ch == '\n' { line++; col = 1 } else { col++ }
+//	}
+//
+// `range` over a string iterates runes, so that produced Col + runeCount --
+// a rune width added to the byte base Scanner.LocStart computes as
+// `startPos - s.startLinePos + 1`.  On a pure-ASCII token the two units
+// coincide and it was right by accident; on a token holding any multi-byte
+// rune it was short by len(text)-runeCount(text) and was in neither unit,
+// while endPos beside it was already byte-exact.  A field that is correct for
+// most inputs and quietly wrong for the rest is the shape of bug that reaches
+// users, and this one reached them through textDocument/rename: the edit
+// range was narrower than the identifier, so the rename replaced a prefix and
+// left the tail, turning "éx" into "zzx" rather than "zz" with no diagnostic.
+// TestRenameNonASCIIIdentifierRewritesWholeName is the end-to-end pin.
+//
+// Counting BYTES rather than runes here is the whole fix, and it is a fix
+// under either answer to elps#464 (whether the SERVER should be emitting
+// UTF-16 code units on the wire): the invariant this restores is that endCol
+// agrees with the Col it is measured from, which any wire encoding needs
+// before it can convert anything.
+//
+// The loop scans bytes rather than runes deliberately.  A byte scan is exact
+// on invalid UTF-8, where `range` yields RuneError with a width that does not
+// describe the input; '\n' cannot occur as a UTF-8 continuation byte, so
+// looking for it bytewise finds exactly the newlines a rune scan would.
 func TokenEnd(tok *Token) (endLine, endCol, endPos int) {
 	if tok == nil || tok.Source == nil {
 		return 0, 0, 0
 	}
 	line := tok.Source.Line
-	col := tok.Source.Col
-	for _, ch := range tok.Text {
-		if ch == '\n' {
+	// lineStart is the index in tok.Text of the first byte of the last line
+	// the token covers, or -1 while the token has not crossed a newline and
+	// the end column is therefore still measured from tok.Source.Col.
+	lineStart := -1
+	for i := range len(tok.Text) {
+		if tok.Text[i] == '\n' {
 			line++
-			col = 1
-		} else {
-			col++
+			lineStart = i + 1
 		}
+	}
+	col := tok.Source.Col + len(tok.Text)
+	if lineStart >= 0 {
+		col = len(tok.Text) - lineStart + 1
 	}
 	return line, col, tok.Source.Pos + len(tok.Text)
 }

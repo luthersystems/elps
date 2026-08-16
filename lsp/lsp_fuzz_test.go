@@ -213,6 +213,11 @@ type session struct {
 	// recorded rather than raised, because the op that produced it has no way
 	// to fail the input on its own.
 	tokenErr error
+
+	// renameErr holds the first rename edit whose range did not cover the
+	// identifier being renamed (elps#463). Recorded, not raised, for the same
+	// reason as tokenErr.
+	renameErr error
 }
 
 // opArgs is the fuzzer's four bytes for one operation, already interpreted.
@@ -717,6 +722,98 @@ func (s *session) opRename(a opArgs) {
 		NewName:                    word([]byte(s.content[a.uri]), a.a, a.b),
 	})
 	s.record("rename", res, err)
+	if err == nil && res != nil {
+		s.checkRenameSpans(a, res)
+	}
+}
+
+// checkRenameSpans is the CONTENT assertion for textDocument/rename, and the
+// second exception to "NOT asserted: that any request returns a particular
+// result" -- checkTokenSpans above being the first, and the note there explains
+// why an exception is admissible at all.
+//
+// It does not say which symbol should be renamed, how many edits there should
+// be, or which files they should touch. It says that whatever the server chose
+// to replace, the range it chose has to COVER THE WHOLE IDENTIFIER. A rename is
+// the one request in the protocol whose answer is applied to the user's file
+// unread, so a range that is off by even one byte is not a cosmetic error the
+// way a wrong hover range is: it is a silent edit of a program into a different
+// program.
+//
+// elps#463. token.TokenEnd derived EndCol by counting RUNES onto Scanner's byte
+// Col, and elpsToLSPRange prefers EndCol whenever it is set, so on an
+// identifier containing a multi-byte rune every rename edit was short by
+// len-runeCount bytes. Renaming "éx" to "zz" replaced "é" and left "x", giving
+// "zzx" -- a valid program that is not the user's. Where the identifier's LAST
+// rune was multi-byte the leftover was a bare continuation byte and the file
+// stopped being valid UTF-8 at all.
+//
+// THE ORACLE is prepareRename, which the server answers from the same symbol
+// lookup rename uses and which returns the symbol's name as its Placeholder.
+// Asking it at the same position turns "is this range right?" into a comparison
+// against text the server itself named, with no second implementation of symbol
+// resolution in the test to disagree about the answer. Where prepareRename
+// declines -- a builtin, no symbol, an external with no source -- there is no
+// oracle and nothing is checked; that costs coverage only on inputs where
+// rename should have returned nothing anyway.
+//
+// Only edits against documents the SERVER holds are checked. A cross-file edit
+// may name a workspace file the harness never opened, and its content is not
+// available to compare against.
+//
+// UNITS: byte offsets, as everywhere else in this package (position.go splits
+// on "\n" and slices by byte). elps#464 is that LSP 3.16 actually specifies
+// UTF-16 code units and this server neither negotiates positionEncoding nor
+// converts; this assertion is deliberately the weaker, server-internal
+// property, which is a real property regardless of how #464 is answered -- a
+// range whose two ends are counted differently is broken before any encoding
+// question arises.
+func (s *session) checkRenameSpans(a opArgs, res *protocol.WorkspaceEdit) {
+	if s.renameErr != nil || res.Changes == nil {
+		return
+	}
+	pr, err := s.srv.textDocumentPrepareRename(s.ctx, &protocol.PrepareRenameParams{
+		TextDocumentPositionParams: a.tdpp(),
+	})
+	if err != nil || pr == nil {
+		return
+	}
+	rwp, ok := pr.(*protocol.RangeWithPlaceholder)
+	if !ok || rwp.Placeholder == "" {
+		return
+	}
+	name := rwp.Placeholder
+
+	for uri, edits := range res.Changes {
+		doc := s.srv.docs.Get(uri)
+		if doc == nil {
+			continue // a workspace file the harness never opened
+		}
+		doc.mu.Lock()
+		content := doc.Content
+		doc.mu.Unlock()
+		lines := strings.Split(content, "\n")
+
+		for _, e := range edits {
+			line, start, end := int(e.Range.Start.Line), int(e.Range.Start.Character), int(e.Range.End.Character)
+			if int(e.Range.End.Line) != line {
+				s.renameErr = fmt.Errorf("rename edit [%d:%d..%d:%d) on %s spans two lines; an identifier does not",
+					e.Range.Start.Line, start, e.Range.End.Line, end, uri)
+				return
+			}
+			if line >= len(lines) || start < 0 || end < start || end > len(lines[line]) {
+				s.renameErr = fmt.Errorf("rename edit [%d:%d..%d) on %s is not inside the document (%d lines)",
+					line, start, end, uri, len(lines))
+				return
+			}
+			if covered := lines[line][start:end]; covered != name {
+				s.renameErr = fmt.Errorf("rename edit [%d:%d..%d) on %s covers %q, but the identifier being renamed is %q:"+
+					" applying this edit replaces part of a name and leaves the rest (#463)",
+					line, start, end, uri, covered, name)
+				return
+			}
+		}
+	}
 }
 
 func (s *session) opPrepareRename(a opArgs) {
@@ -1021,6 +1118,9 @@ func runSession(srcA, srcB, script []byte) error {
 		if s.tokenErr != nil {
 			return s.tokenErr
 		}
+		if s.renameErr != nil {
+			return s.renameErr
+		}
 	}
 	// Any timer still armed would fire after the session is over, on a
 	// goroutine belonging to no input.
@@ -1201,6 +1301,29 @@ func FuzzLSPSession(f *testing.F) {
 	add("(defun f (x) x)\r\n(f 1)\r\n", "", allOpsScript())
 	add("(defun f (x) x)\r(f 1)", "", allOpsScript())
 	add("(defun éèê (x) x)\n(éèê 1)", "", allOpsScript())
+
+	// More NON-ASCII IDENTIFIERS, for checkRenameSpans (elps#463).  The one
+	// above already reaches the assertion, but it is a single shape: three
+	// two-byte runes.  These vary what the defect's arithmetic keys on -- how
+	// many bytes are lost is len(name)-runeCount(name), and whether the result
+	// is merely a WRONG program or is not valid UTF-8 at all depends on whether
+	// the identifier's LAST rune is multi-byte.
+	//
+	// Seeded deliberately rather than left to mutation, for the reason PR #462
+	// had to hand-seed its escaped-string case: an assertion no seed reaches is
+	// not an assertion, and random bytes rarely land on well-formed multi-byte
+	// UTF-8 inside an identifier the analyser will resolve.
+	add("(defun éx (a) a)\n(éx 1)", "", allOpsScript())                 // leading multi-byte
+	add("(defun xé (a) a)\n(xé 1)", "", allOpsScript())                 // TRAILING: leftover is a bare continuation byte
+	add("(defun 加算 (a b) (+ a b))\n(加算 1 2)", "", allOpsScript())       // three-byte runes
+	add("(defun 𝛼𝛽 (a) a)\n(𝛼𝛽 1)", "", allOpsScript())                 // four-byte runes, outside the BMP
+	add("(set λ 1)\nλ", "", allOpsScript())                             // a variable, not a function
+	add("(defun f (é) (g é))\n(defun g (x) x)", "", allOpsScript())     // ASCII name on a non-ASCII line
+	add("(in-package 'é)\n(defun é:f () 1)\n(é:f)", "", allOpsScript()) // non-ASCII package qualifier
+	// Cross-file: the definition is in A and the reference in B, so the rename
+	// has to produce edits for a document the cursor is not in.
+	add("(in-package 'demo)\n(defun éx (a) a)\n(export 'éx)",
+		"(in-package 'user)\n(use-package 'demo)\n(éx 1)", allOpsScript())
 	add("\t\t(defun f (x)\n\t\tx)", "", allOpsScript())
 	add("(defun f (x", "", allOpsScript())
 	add(";; only a comment", "", allOpsScript())
@@ -1398,6 +1521,9 @@ func TestLSPFuzzScriptReachesEveryOp(t *testing.T) {
 	}
 	if s.tokenErr != nil {
 		t.Fatalf("%v", s.tokenErr)
+	}
+	if s.renameErr != nil {
+		t.Fatalf("%v", s.renameErr)
 	}
 }
 
