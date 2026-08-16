@@ -2277,6 +2277,339 @@ case "$req_out" in
 esac
 
 echo
+echo "== required aggregates must not re-inline the job-success check =========="
+
+# GUARD (issue #493). Nothing below is a bug being fixed -- the three inline
+# copies are removed in this same change. This exists so the copy cannot come
+# back, because it has now come back once already.
+#
+# The history: benchmark.yml's aggregate body was extracted into
+# scripts/require-jobs-succeeded.sh so it would be shellchecked and fixture-
+# tested. Three other `Required:` aggregates carried a byte-identical copy of
+# that body and were left behind. When #485 fixed the empty-RESULTS hole in the
+# script, it fixed one of four required checks; the other three went on saying
+# "All jobs in this workflow succeeded" over zero results. The fixture tests in
+# this file could not see them, because a `run:` body inside a workflow is not
+# a script and nothing here was looking at it.
+#
+# So the property to hold is not "the script is correct" -- that is asserted
+# above -- but "no required aggregate decides anything with untested shell".
+#
+# Two independent checks, because either alone has a gap:
+#
+#   (A) STRUCTURAL / anti-duplication. A step that binds an env var to
+#       `join(needs.*.result, ...)` and then decides inline is re-implementing
+#       the shared script by definition, whatever shell it uses to do it. That
+#       is matched on the EXPRESSION, not on the loop: rewriting `for r in
+#       ${RESULTS}` as a `case`, a `grep`, or an `awk` still trips it.
+#
+#   (B) BEHAVIOURAL. Any inline body that reads a `needs.<job>.result` is
+#       EXTRACTED FROM THE LIVE WORKFLOW FILE and RUN, with its result vars
+#       empty and then unset. It must exit non-zero both times, and must still
+#       exit 0 on all-success so a body that merely always fails is not
+#       accepted as safe. This is the half that detects the SHAPE rather than
+#       any spelling of it: it does not care how the body is written, only
+#       whether the thing can report success having checked nothing.
+#
+# (B) is what keeps `Required: fuzz` legitimately inline. It compares a single
+# scalar `needs.fuzz.result` against "success" with `!=`, so the empty string
+# fails it -- there is no loop and therefore no never-entered loop body. It is
+# re-proved on every run of this file rather than trusted.
+#
+# WHAT THIS DOES NOT CATCH, stated plainly:
+#   * a `run:` body whose emptiness behaviour depends on the GitHub Actions
+#     runner (matrix context, another step's outputs, a file on disk) -- (B)
+#     runs it in a bare shell, so such a body is unrunnable here and is
+#     reported as such rather than passed;
+#   * a vacuous pass inside the SHARED SCRIPT -- that is the subject of the
+#     require-jobs-succeeded assertions and negative control further up;
+#   * an aggregate that covers the wrong jobs, or none -- the `needs:` coverage
+#     guard immediately above owns that;
+#   * a non-aggregate job that reports success having done nothing. Only jobs
+#     whose name begins "Required:" are in scope here.
+#
+# The checker is written to a file rather than run from a heredoc so the SAME
+# code can be pointed at a deliberately-broken copy of the tree below.
+agg_tmp="$(mktemp -d)"
+cat >"${agg_tmp}/check.py" <<'PY_AGG'
+import glob, os, re, subprocess, sys
+
+root = sys.argv[1]
+try:
+    import yaml
+except ImportError:
+    print("__SKIP__ pyyaml unavailable")
+    sys.exit(0)
+
+SHARED = "require-jobs-succeeded.sh"
+MARKER = "Required:"
+# `join(needs.*.result, ' ')` -- the whole-workflow fan-in. Whitespace-tolerant
+# so a reformat does not slip past.
+JOIN_ALL = re.compile(r"join\s*\(\s*needs\.\*\.results?\b", re.I)
+# Any result reference at all: a single job (`needs.fuzz.result`) or the
+# wildcard fan-in (`needs.*.result`). The `*` must be in the class -- leaving it
+# out made every `join(needs.*.result)` step look like a step that consults no
+# result, which routed the real defect to the wrong branch below.
+ANY_RESULT = re.compile(r"needs\.[A-Za-z0-9_*-]+\.results?\b", re.I)
+
+failures, passes, aggregates = [], [], []
+
+
+def uncommented(body):
+    """The body with comment-only lines dropped, so a body that MENTIONS the
+    shared script in a comment while inlining the logic is not mistaken for one
+    that invokes it."""
+    return "\n".join(
+        ln for ln in body.splitlines() if not ln.lstrip().startswith("#")
+    )
+
+
+for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))):
+    base = os.path.basename(f)
+    try:
+        doc = yaml.safe_load(open(f))
+    except Exception:  # noqa: BLE001 -- the YAML-parse guard owns this
+        continue
+    if not isinstance(doc, dict):
+        continue
+    triggers = doc.get("on", doc.get(True)) or {}
+    if isinstance(triggers, str):
+        triggers = {triggers: None}
+    if isinstance(triggers, list):
+        triggers = {t: None for t in triggers}
+    if "pull_request" not in triggers:
+        continue
+    jobs = {k: v for k, v in (doc.get("jobs") or {}).items() if isinstance(v, dict)}
+
+    for jid, job in jobs.items():
+        name = str(job.get("name") or jid)
+        if not name.startswith(MARKER):
+            continue
+        aggregates.append(f"{base}:{name}")
+        decided = False
+
+        for step in job.get("steps") or []:
+            body = step.get("run")
+            if not body:
+                continue
+            env = {k: str(v) for k, v in (step.get("env") or {}).items()}
+            joined = {k: v for k, v in env.items() if JOIN_ALL.search(v)}
+            resulty = {k: v for k, v in env.items() if ANY_RESULT.search(v)}
+
+            if re.search(re.escape(SHARED), uncommented(body)):
+                decided = True
+                passes.append(f"{base}: {name!r} DELEGATES to scripts/{SHARED}")
+                continue
+
+            if not resulty:
+                # A step that consults no job result is not the deciding step
+                # (checkout, setup, an echo). Leave it alone.
+                continue
+
+            decided = True
+
+            # (A) structural: fanning in every result and deciding inline is
+            # the duplication itself.
+            if joined:
+                failures.append(
+                    f"{base}: {name!r} INLINES a job-success check over "
+                    f"{sorted(joined)} instead of running scripts/{SHARED}. "
+                    f"An inline copy is not shellchecked and not fixture-tested, "
+                    f"and this file cannot see it -- which is how #485's empty-"
+                    f"results hole survived in three required checks after the "
+                    f"script was fixed (#493). Replace the body with "
+                    f"`run: bash scripts/{SHARED}` (add a checkout step)."
+                )
+                continue
+
+            # (B) behavioural: run the real body with no results.
+            def run(env_over, unset=()):
+                e = dict(os.environ)
+                for k in list(resulty) + list(unset):
+                    e.pop(k, None)
+                e.update(env_over)
+                return subprocess.run(
+                    ["bash", "-c", body],
+                    cwd=root, env=e, capture_output=True, text=True, timeout=60,
+                )
+
+            try:
+                empty = run({k: "" for k in resulty})
+                unset_ = run({}, unset=resulty)
+                good = run({k: "success" for k in resulty})
+            except (OSError, subprocess.SubprocessError) as exc:
+                failures.append(
+                    f"{base}: {name!r} has an inline body that could NOT be "
+                    f"executed here ({exc}), so it cannot be shown to fail on "
+                    f"empty input. An aggregate's decision must be runnable "
+                    f"outside the runner -- delegate to scripts/{SHARED} (#493)."
+                )
+                continue
+
+            bad_ = []
+            if empty.returncode == 0:
+                bad_.append("empty")
+            if unset_.returncode == 0:
+                bad_.append("unset")
+            if bad_:
+                failures.append(
+                    f"{base}: {name!r} inlines a check that EXITS 0 when "
+                    f"{sorted(resulty)} is {' and '.join(bad_)} -- it reports "
+                    f"success having verified nothing. No upstream result "
+                    f"reported is not a pass (#493, #485)."
+                )
+            elif good.returncode != 0:
+                failures.append(
+                    f"{base}: {name!r} inlines a check that fails even on "
+                    f"all-success (exit {good.returncode}), so its failure on "
+                    f"empty input proves nothing. Fix the body or delegate to "
+                    f"scripts/{SHARED} (#493)."
+                )
+            else:
+                passes.append(
+                    f"{base}: {name!r} is inline but PROVEN to fail on empty "
+                    f"and unset results, and to pass on all-success (#493)"
+                )
+
+        if not decided:
+            failures.append(
+                f"{base}: {name!r} has no step that either runs scripts/{SHARED} "
+                f"or consults a `needs.*.result`. A required aggregate that "
+                f"reads no upstream result is not aggregating anything (#493)."
+            )
+
+# NOTHING TO CHECK vs COULD NOT RUN. Zero aggregates discovered means the
+# discovery broke -- wrong root, renamed directory, every workflow unparseable
+# -- not that the repository is clean. Reporting a silent pass here would make
+# this guard the very thing it guards against.
+FLOOR = 4
+if len(aggregates) < FLOOR:
+    failures.append(
+        f"discovered only {len(aggregates)} 'Required:' aggregate(s) under "
+        f"{root}/.github/workflows (floor {FLOOR}): {aggregates}. The discovery "
+        f"is broken, not the tree -- refusing to report clean over an empty scan."
+    )
+else:
+    passes.append(f"discovered {len(aggregates)} 'Required:' aggregates (floor {FLOOR})")
+
+for p_ in passes:
+    print(f"PASS  {p_}")
+for f_ in failures:
+    print(f"FAIL  {f_}")
+print(f"__COUNTS__ {len(passes)} {len(failures)}")
+PY_AGG
+
+agg_out="$(python3 "${agg_tmp}/check.py" "$REPO_ROOT")"
+case "$agg_out" in
+	__SKIP__*) echo "SKIP  aggregate-delegation guard ($agg_out)" ;;
+	*)
+		echo "$agg_out" | grep -v '^__COUNTS__' || true
+		agg_counts="$(echo "$agg_out" | sed -n 's/^__COUNTS__ //p')"
+		if [ -n "$agg_counts" ]; then
+			read -r ag_pass ag_fail <<<"$agg_counts"
+			pass=$((pass + ag_pass))
+			fail=$((fail + ag_fail))
+		else
+			bad "aggregate-delegation guard did not run"
+		fi
+
+		# NEGATIVE CONTROLS for the guard above.
+		#
+		# Every assertion above is a PASS on a healthy tree, and a guard that
+		# has quietly stopped looking passes exactly the same way. So both
+		# halves are pointed at a deliberately broken copy and required to
+		# FAIL. The copies are GENERATED FROM THE LIVE WORKFLOW FILES by
+		# reintroducing the #493 defect, not kept as fixtures -- a fixture
+		# drifts away from the thing it stands for, and then the control is
+		# testing history instead of the guard.
+		#
+		# If a mutation cannot be applied, that is reported loudly rather than
+		# skipped: a negative control that stops finding its target has itself
+		# become a check that cannot fail.
+		mutate() {  # mutate <workflow> <python-mutator> -> populated tree dir
+			local wf="$1" mutator="$2" dst="${agg_tmp}/$3"
+			mkdir -p "${dst}/.github/workflows"
+			cp "$REPO_ROOT"/.github/workflows/*.y*ml "${dst}/.github/workflows/"
+			python3 - "${dst}/.github/workflows/${wf}" "$mutator" <<'PY_MUT'
+import re, sys
+path, which = sys.argv[1], sys.argv[2]
+src = open(path).read()
+if which == "reinline":
+    # Put back exactly what #493 removed: the delegation becomes the old
+    # inline loop, fanned in over join(needs.*.result).
+    new, n = re.subn(
+        r"run: bash scripts/require-jobs-succeeded\.sh",
+        "run: |\n"
+        "          echo \"upstream job results: ${RESULTS}\"\n"
+        "          rc=0\n"
+        "          for r in ${RESULTS}; do\n"
+        "            [ \"$r\" = \"success\" ] || rc=1\n"
+        "          done\n"
+        "          if [ \"$rc\" -ne 0 ]; then\n"
+        "            echo \"::error::A job did not succeed\"\n"
+        "            exit 1\n"
+        "          fi\n"
+        "          echo \"All jobs in this workflow succeeded.\"",
+        src, count=1,
+    )
+elif which == "vacuous-scalar":
+    # A DIFFERENT vacuous shape, deliberately not the join() one, so it slips
+    # past check (A) and only the behavioural check (B) can catch it. The
+    # scalar compare is replaced by a loop over the same single value.
+    new, n = re.subn(
+        r'if \[ "\$\{RESULT\}" != "success" \]; then',
+        'rc=0\n          for r in ${RESULT}; do [ "$r" = "success" ] || rc=1; done\n'
+        '          if [ "$rc" -ne 0 ]; then',
+        src, count=1,
+    )
+else:
+    sys.exit("unknown mutator")
+if n != 1:
+    sys.stderr.write("mutation %r applied %d times, expected 1\n" % (which, n))
+    sys.exit(3)
+open(path, "w").write(new)
+PY_MUT
+		}
+
+		# Control 1 -- check (A): re-inline the shared script's loop into a
+		# workflow that now delegates. The guard must object.
+		if mutate elps.yml reinline mut_reinline; then
+			if python3 "${agg_tmp}/check.py" "${agg_tmp}/mut_reinline" | grep -q '^FAIL.*INLINES a job-success check'; then
+				ok "negative control: RE-INLINING the shared loop into elps.yml is caught (#493)"
+			else
+				bad "negative control: an inlined job-success loop was NOT caught — the anti-duplication half of the guard is dead"
+			fi
+		else
+			bad "negative control: could not re-inline the loop into elps.yml — has the delegation line been reworded? (#493)"
+		fi
+
+		# Control 2 -- check (B): give fuzz.yml's scalar compare the vacuous
+		# loop shape, WITHOUT a join(needs.*.result) env. Check (A) cannot see
+		# this one, so only the behavioural run can catch it. This is what
+		# proves (B) is load-bearing rather than decorative.
+		if mutate fuzz.yml vacuous-scalar mut_scalar; then
+			if python3 "${agg_tmp}/check.py" "${agg_tmp}/mut_scalar" | grep -q '^FAIL.*verified nothing'; then
+				ok "negative control: a NON-join vacuous body is caught by running it (#493)"
+			else
+				bad "negative control: a vacuous inline aggregate body went undetected — the behavioural half of the guard is dead"
+			fi
+		else
+			bad "negative control: could not construct the vacuous-scalar fixture from fuzz.yml — has the body changed? (#493)"
+		fi
+
+		# Control 3 -- the discovery floor. Point the checker at a tree with no
+		# workflows at all; it must refuse rather than report clean over zero.
+		mkdir -p "${agg_tmp}/empty/.github/workflows"
+		if python3 "${agg_tmp}/check.py" "${agg_tmp}/empty" | grep -q '^FAIL.*floor'; then
+			ok "negative control: an EMPTY workflow tree fails the floor rather than passing vacuously (#493)"
+		else
+			bad "negative control: the aggregate guard reported clean over ZERO aggregates — it cannot fail"
+		fi
+		;;
+esac
+rm -rf "$agg_tmp"
+
+echo
 echo "== confidentiality guard: it must be able to FAIL ========================"
 
 # scripts/confidentiality-guard.sh had no behavioural coverage here at all --

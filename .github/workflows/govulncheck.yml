@@ -95,19 +95,14 @@ jobs:
     needs: [govulncheck]
     if: always()
     steps:
+      # NOTE: this checkout is NEW -- see the same note in elps.yml (#493).
+      # SHA-pinned deliberately: the scan job above still uses a floating
+      # `@v7`, which scripts/ci-gates-test.sh allowlists as pre-existing. A
+      # new action should not lean on that allowlist.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      # Delegated, NOT inlined (#493) -- see the note in elps.yml.
       - name: Assert every job in this workflow succeeded
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
-        run: |
-          echo "upstream job results: ${RESULTS}"
-          rc=0
-          for r in ${RESULTS}; do
-            # success is the ONLY pass. failure, cancelled and skipped all mean
-            # the work was not demonstrably done.
-            [ "$r" = "success" ] || rc=1
-          done
-          if [ "$rc" -ne 0 ]; then
-            echo "::error::A job in this workflow did not succeed (results: ${RESULTS}). Open the individual jobs above."
-            exit 1
-          fi
-          echo "All jobs in this workflow succeeded."
+        run: bash scripts/require-jobs-succeeded.sh
