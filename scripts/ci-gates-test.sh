@@ -2277,6 +2277,123 @@ case "$req_out" in
 esac
 
 echo
+echo "== confidentiality guard: it must be able to FAIL ========================"
+
+# scripts/confidentiality-guard.sh had no behavioural coverage here at all --
+# only `bash -n` and shellcheck, which prove it parses, not that it works.
+#
+# It reported "clean" and exited 0 in four distinct situations where it had
+# scanned nothing (issue #486): outside a repository, on a corrupt index, on a
+# dangling .git gitdir pointer, and over a tree whose tracked files are absent
+# from the working directory. The first three come back from `git grep` as exit
+# >=2, which the old truthiness test (`if matches="$(git grep ...)"`) routed
+# into the clean branch; the fourth comes back as exit 1, which is
+# indistinguishable from a genuinely clean tree by status alone.
+#
+# THE FORBIDDEN TERM IS NEVER WRITTEN LITERALLY, here or anywhere else. Every
+# fixture below constructs it at runtime from the same octal codes the guard
+# itself uses, and every one of them lives in a throwaway repository under
+# $TMPDIR -- never in this worktree, so nothing can ever be committed.
+GUARD_SH="${SCRIPT_DIR}/confidentiality-guard.sh"
+
+if [ ! -x "$GUARD_SH" ]; then
+	bad "scripts/confidentiality-guard.sh is missing or not executable"
+elif ! command -v git >/dev/null 2>&1; then
+	echo "SKIP  git unavailable — confidentiality guard assertions not run"
+else
+	guard_tmp="$(mktemp -d)"
+
+	# new_repo <dir> -- a throwaway git repo with one ordinary tracked file, so
+	# the guard has something real to scan.
+	new_repo() {
+		mkdir -p "$1"
+		git -C "$1" init -q
+		git -C "$1" config user.email guard@example.invalid
+		git -C "$1" config user.name "guard test"
+		printf 'package main\n\nfunc main() {}\n' >"$1/main.go"
+		git -C "$1" add -A
+		git -C "$1" -c commit.gpgsign=false commit -qm fixture
+	}
+
+	# (1) POSITIVE CONTROL -- the guard must still pass on a clean tree.
+	# Without this the assertions below are equally satisfied by a guard that
+	# fails on everything, which nobody could keep green.
+	new_repo "${guard_tmp}/clean"
+	assert_exit 0 "confidentiality guard: a clean tree passes (#486)" \
+		env -C "${guard_tmp}/clean" bash "$GUARD_SH"
+
+	# (2) NEGATIVE CONTROL -- the guard must still CATCH a real violation.
+	# This is the assertion that proves the exit-2 paths added for #486 did not
+	# turn the guard into something that merely never says "found". The term is
+	# assembled at runtime, exactly as the guard assembles it.
+	new_repo "${guard_tmp}/dirty"
+	guard_term="$(printf '\141\143\162\145')"
+	printf '// see the %s-handler for details\n' "$guard_term" \
+		>"${guard_tmp}/dirty/violation.go"
+	git -C "${guard_tmp}/dirty" add -A
+	git -C "${guard_tmp}/dirty" -c commit.gpgsign=false commit -qm violation
+	assert_exit 1 "confidentiality guard: a real bounded occurrence is still CAUGHT (#486)" \
+		env -C "${guard_tmp}/dirty" bash "$GUARD_SH"
+	assert_contains "violation.go" \
+		"confidentiality guard: the hit names the offending file (#486)" \
+		env -C "${guard_tmp}/dirty" bash "$GUARD_SH"
+
+	# (3) A substring word must still NOT trip it -- the boundary behaviour the
+	# guard's own self-test asserts, pinned end-to-end over a real tree so a
+	# future widening of the pattern fails here rather than in someone's PR.
+	new_repo "${guard_tmp}/substr"
+	printf 'const w = "massacre wiseacre acreage"\n' >"${guard_tmp}/substr/words.go"
+	git -C "${guard_tmp}/substr" add -A
+	git -C "${guard_tmp}/substr" -c commit.gpgsign=false commit -qm words
+	assert_exit 0 "confidentiality guard: substring words do not false-positive (#486)" \
+		env -C "${guard_tmp}/substr" bash "$GUARD_SH"
+
+	# (4) THE #486 PATHS. Each of these made the guard print "clean" and exit 0.
+	# Exit 2 (not 1) is asserted deliberately: "could not run" is a different
+	# outcome from "found the term", and conflating them would leave CI unable
+	# to tell a broken guard from a real violation.
+
+	# 4a. Not a repository at all.
+	mkdir -p "${guard_tmp}/norepo"
+	assert_exit 2 "confidentiality guard: OUTSIDE a repository refuses to report clean (#486)" \
+		env -C "${guard_tmp}/norepo" bash "$GUARD_SH"
+
+	# 4b. Corrupt index -- git grep exits 128.
+	new_repo "${guard_tmp}/badindex"
+	printf 'GARBAGE' >"${guard_tmp}/badindex/.git/index"
+	assert_exit 2 "confidentiality guard: a CORRUPT INDEX refuses to report clean (#486)" \
+		env -C "${guard_tmp}/badindex" bash "$GUARD_SH"
+
+	# 4c. Dangling gitdir pointer -- the shape a broken worktree/submodule has.
+	new_repo "${guard_tmp}/badgitdir"
+	rm -rf "${guard_tmp}/badgitdir/.git"
+	printf 'gitdir: /nonexistent/gitdir\n' >"${guard_tmp}/badgitdir/.git"
+	assert_exit 2 "confidentiality guard: a DANGLING gitdir refuses to report clean (#486)" \
+		env -C "${guard_tmp}/badgitdir" bash "$GUARD_SH"
+
+	# 4d. Tracked files absent from the working tree. git grep reads the WORKING
+	# TREE and skips missing files silently, so this returns exit 1 -- byte-for-
+	# byte the "clean" answer. Only the coverage check distinguishes it, which
+	# is why that check is load-bearing rather than belt-and-braces.
+	new_repo "${guard_tmp}/nocheckout"
+	rm -f "${guard_tmp}/nocheckout/main.go"
+	assert_exit 2 "confidentiality guard: an UNPOPULATED working tree refuses to report clean (#486)" \
+		env -C "${guard_tmp}/nocheckout" bash "$GUARD_SH"
+	assert_contains "ZERO readable files" \
+		"confidentiality guard: the empty scan SAYS nothing was looked at (#486)" \
+		env -C "${guard_tmp}/nocheckout" bash "$GUARD_SH"
+
+	# (5) The clean message must state the scan's extent. "clean" on its own is
+	# the string that was printed over zero files; a count makes an empty scan
+	# visible in the log even if some future path slips past the checks above.
+	assert_contains "files scanned" \
+		"confidentiality guard: a clean result reports HOW MUCH was scanned (#486)" \
+		env -C "${guard_tmp}/clean" bash "$GUARD_SH"
+
+	rm -rf "$guard_tmp"
+fi
+
+echo
 echo "== every job declares timeout-minutes ===================================="
 
 # A job with no `timeout-minutes` inherits GitHub's 360-minute default, which
