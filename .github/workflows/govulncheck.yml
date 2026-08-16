@@ -89,6 +89,9 @@ jobs:
   required:
     name: "Required: govulncheck"
     runs-on: ubuntu-latest
+    # 5 minutes for one bash assertion over `needs` results. The scanning
+    # job above already carries timeout-minutes: 15.
+    timeout-minutes: 5
     needs: [govulncheck]
     if: always()
     steps:

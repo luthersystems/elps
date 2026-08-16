@@ -1862,6 +1862,171 @@ case "$req_out" in
 esac
 
 echo
+echo "== every job declares timeout-minutes ===================================="
+
+# A job with no `timeout-minutes` inherits GitHub's 360-minute default, which
+# for a REQUIRED check is indistinguishable from no bound at all: a check stuck
+# `in_progress` never goes red. The PR sits at mergeable_state=blocked behind a
+# spinner, with no failure to notice, no notification, and nothing to tell it
+# apart from "CI is still warming up" except watching the clock.
+#
+# Observed for real (#468): `CI Gate Self-Test` wedged in `apt-get update` for
+# 50 minutes on PR #459 -- a job whose normal runtime is 17-22 seconds -- while
+# every other check on the board sat green. Cancelling and re-running cleared
+# it in 17s, so nothing about the change under test was involved.
+#
+# The `queue-watchdog` in benchmark.yml does NOT cover this. It watches for a
+# job that never STARTS; timeout-minutes is the only instrument that bounds a
+# job which started and then wedged mid-step. The two are complements, and the
+# repository had only one of them.
+#
+# This is a LIVENESS rule, not a performance budget. The values in the
+# workflows are deliberately several times the observed runtime; the question
+# each one answers is "has this wedged?", never "is this fast enough?". Raising
+# one because a job legitimately got slower is fine. Deleting one is not.
+timeout_probe() { # <root> -- prints PASS/FAIL lines plus __COUNTS__
+	python3 - "$1" <<'PY_INNER'
+import glob, os, sys
+
+root = sys.argv[1]
+try:
+    import yaml
+except ImportError:
+    print("__SKIP__ pyyaml unavailable")
+    sys.exit(0)
+
+# GitHub's implicit default. Declaring it explicitly buys nothing, so a job
+# that "declares" 360 is treated as undeclared rather than waved through on a
+# technicality.
+GITHUB_DEFAULT_MINUTES = 360
+
+failures, passes = [], []
+files = sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml")))
+if not files:
+    print("__SKIP__ no workflow files found under {}".format(root))
+    sys.exit(0)
+
+for f in files:
+    base = os.path.basename(f)
+    try:
+        doc = yaml.safe_load(open(f))
+    except Exception:  # noqa: BLE001 -- the YAML-parse guard above owns this
+        continue
+    if not isinstance(doc, dict):
+        continue
+
+    jobs = {k: v for k, v in (doc.get("jobs") or {}).items() if isinstance(v, dict)}
+    if not jobs:
+        continue
+
+    bounded = 0
+    for jid, spec in sorted(jobs.items()):
+        name = str(spec.get("name") or jid)
+        # A reusable-workflow call cannot carry timeout-minutes; the bound has
+        # to live in the called workflow's own jobs, which this same guard
+        # covers when that workflow is in this repository.
+        if "uses" in spec and "steps" not in spec:
+            bounded += 1
+            continue
+
+        raw = spec.get("timeout-minutes")
+        if raw is None:
+            failures.append(
+                f"{base}: job {name!r} declares no timeout-minutes, so it inherits "
+                f"GitHub's {GITHUB_DEFAULT_MINUTES}-minute default. A wedged step leaves the "
+                f"check pending, and a check that is pending is never red -- if this job "
+                f"feeds a required check it blocks the PR silently (#468)."
+            )
+            continue
+
+        # `timeout-minutes: ${{ ... }}` is legal YAML and legal Actions, but it
+        # is not checkable here, so it is accepted and named rather than
+        # silently counted as a pass.
+        if isinstance(raw, str) and "${{" in raw:
+            passes.append(f"{base}: job {name!r} bounds itself with an expression ({raw})")
+            bounded += 1
+            continue
+
+        try:
+            mins = int(raw)
+        except (TypeError, ValueError):
+            failures.append(f"{base}: job {name!r} has a non-numeric timeout-minutes ({raw!r})")
+            continue
+
+        if mins <= 0:
+            failures.append(f"{base}: job {name!r} has timeout-minutes: {mins}, which is not a bound")
+        elif mins >= GITHUB_DEFAULT_MINUTES:
+            failures.append(
+                f"{base}: job {name!r} has timeout-minutes: {mins}, at or above GitHub's "
+                f"{GITHUB_DEFAULT_MINUTES}-minute default -- that is the same as declaring nothing."
+            )
+        else:
+            bounded += 1
+
+    if bounded and not [x for x in failures if x.startswith(base + ":")]:
+        passes.append(f"{base}: all {bounded} job(s) declare a timeout-minutes bound")
+
+for p_ in passes:
+    print(f"PASS  {p_}")
+for f_ in failures:
+    print(f"FAIL  {f_}")
+print(f"__COUNTS__ {len(passes)} {len(failures)}")
+PY_INNER
+}
+
+to_out="$(timeout_probe "$REPO_ROOT")"
+case "$to_out" in
+	__SKIP__*) echo "SKIP  job timeout guard ($to_out)" ;;
+	*)
+		echo "$to_out" | grep -v '^__COUNTS__' || true
+		to_counts="$(echo "$to_out" | sed -n 's/^__COUNTS__ //p')"
+		if [ -n "$to_counts" ]; then
+			read -r to_pass to_fail <<<"$to_counts"
+			pass=$((pass + to_pass))
+			fail=$((fail + to_fail))
+		else
+			bad "job timeout guard did not run"
+		fi
+
+		# NEGATIVE CONTROL. The rule above is the kind that passes forever
+		# because it is looking at the wrong thing -- which is precisely the
+		# failure this whole script exists to catch, and precisely how the
+		# original benchstat grep stayed dead for 473 runs. So prove it fires:
+		# strip the bound from one real job in a throwaway copy of the tree and
+		# require the guard to report it. A green run below means the guard
+		# reported the tree clean AND demonstrated it can report otherwise.
+		TO_SANDBOX="$(mktemp -d)"
+		mkdir -p "${TO_SANDBOX}/.github/workflows"
+		cp "$REPO_ROOT"/.github/workflows/*.y*ml "${TO_SANDBOX}/.github/workflows/" 2>/dev/null || true
+		# benchmark.yml carries the job from #468 itself. Strip the FIRST
+		# job-level bound in it, whatever its value -- keyed on shape rather
+		# than on a literal, so re-sizing a timeout cannot quietly disarm the
+		# control.
+		neg_wf="${TO_SANDBOX}/.github/workflows/benchmark.yml"
+		if [ -f "$neg_wf" ] && grep -qE '^    timeout-minutes: [0-9]+$' "$neg_wf" &&
+			sed -i '0,/^    timeout-minutes: [0-9]\+$/{/^    timeout-minutes: [0-9]\+$/d}' "$neg_wf"; then
+			neg_out="$(timeout_probe "$TO_SANDBOX")"
+			neg_counts="$(echo "$neg_out" | sed -n 's/^__COUNTS__ //p')"
+			read -r _ neg_fail <<<"${neg_counts:-0 0}"
+			if [ "${neg_fail:-0}" -ge 1 ]; then
+				ok "negative control: a job whose timeout-minutes is deleted IS reported (${neg_fail} finding(s))"
+			else
+				bad "negative control: deleting a job's timeout-minutes was NOT reported — this guard cannot fail"
+			fi
+			if echo "$neg_out" | grep -q 'declares no timeout-minutes'; then
+				ok "negative control: the finding names the unbounded job and says why it matters"
+			else
+				bad "negative control: the guard fired but not with the unbounded-job diagnosis"
+				echo "$neg_out" | sed 's/^/        | /'
+			fi
+		else
+			bad "negative control: could not construct an unbounded-job fixture"
+		fi
+		rm -rf "$TO_SANDBOX"
+		;;
+esac
+
+echo
 echo "== shell lint on every script in scripts/ ================================"
 
 # DISCOVERED, not enumerated. This was a hardcoded five-entry array, and the
@@ -1902,8 +2067,17 @@ if command -v shellcheck >/dev/null 2>&1; then
 		bad "shellcheck -S warning reported findings"
 		echo "$sc_out" | sed 's/^/        | /'
 	fi
+elif [ -n "${CI_GATES_REQUIRE_SHELLCHECK:-}" ]; then
+	# In CI the tool is expected to be present (it ships in the ubuntu-latest
+	# image), so absence is a broken environment, not a reason to shrug. Left
+	# as a SKIP this would silently downgrade the shell lint to nothing at all
+	# the day the image drops the package, and the board would stay green --
+	# the same "a gate that cannot fail" shape this whole script exists to
+	# prevent. The benchmark.yml `gates` job sets this variable; the install
+	# step it replaced is gone deliberately (#468), so this IS the backstop.
+	bad "shellcheck not installed, but CI_GATES_REQUIRE_SHELLCHECK is set — ${#OWNED_SCRIPTS[@]} scripts went unlinted"
 else
-	echo "SKIP  shellcheck not installed"
+	echo "SKIP  shellcheck not installed (set CI_GATES_REQUIRE_SHELLCHECK=1 to make this fatal)"
 fi
 
 # Same treatment for the .cjs helpers. ci-queue-watchdog.cjs already had a
