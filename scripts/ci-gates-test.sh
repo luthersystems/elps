@@ -1539,6 +1539,47 @@ else
 	assert_exit 1 "unsharding (one shard, whole sweep serial) FAILS" \
 		env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
 
+	# Issue #458: the zero-headroom case. The condition used to be
+	# `needed > timeout`, so a sweep sized at EXACTLY timeout-minutes printed
+	# "the sweep fits" and exited 0 -- while being one slow shard away from
+	# the silently-truncated run this whole gate exists to prevent (observed
+	# shard durations vary 4m25s to 5m42s). It must now fail.
+	#
+	# The timeout is DERIVED from what the check itself reports as `required`
+	# rather than hardcoded, so this control cannot go stale as targets are
+	# added. Hardcoding the number here would reproduce the exact
+	# hand-maintained-constant defect the gate was built to kill.
+	#
+	# One invocation, both numbers: the check re-runs full target discovery
+	# (`go test -list` over every package), which is tens of seconds.
+	budget_report="$("$BUDGET" 2>/dev/null)"
+	budget_required="$(awk '$1 == "required" && $2 ~ /^[0-9]+$/ { print $2 }' <<<"$budget_report")"
+	budget_margin="$(awk '$1 == "required" && $2 == "margin" { print $3 }' <<<"$budget_report")"
+	if [ -z "$budget_required" ] || [ -z "$budget_margin" ]; then
+		bad "could not read 'required' / 'required margin' from the budget check's own output"
+	else
+		cp "$FUZZ_WF" "$budget_wf"
+		sed -i "s/^    timeout-minutes: [0-9]*\$/    timeout-minutes: ${budget_required}/" "$budget_wf"
+		assert_exit 1 "a sweep sized at EXACTLY timeout-minutes FAILS -- zero headroom is not a fit (#458)" \
+			env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+
+		# ...and exactly one FUZZTIME above that passes. The PAIR is the
+		# point: it pins the boundary at one FUZZTIME of margin, so neither
+		# dropping the margin nor inflating it past the derived quantum can
+		# pass this file.
+		cp "$FUZZ_WF" "$budget_wf"
+		sed -i "s/^    timeout-minutes: [0-9]*\$/    timeout-minutes: $((budget_required + budget_margin))/" "$budget_wf"
+		assert_exit 0 "one FUZZTIME above 'required' is the smallest timeout that passes (#458)" \
+			env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+
+		# One minute below that boundary must still fail, which is what makes
+		# the assertion above a boundary and not just "a big number passes".
+		cp "$FUZZ_WF" "$budget_wf"
+		sed -i "s/^    timeout-minutes: [0-9]*\$/    timeout-minutes: $((budget_required + budget_margin - 1))/" "$budget_wf"
+		assert_exit 1 "one minute short of a full FUZZTIME of margin still FAILS (#458)" \
+			env FUZZ_WORKFLOW="$budget_wf" "$BUDGET"
+	fi
+
 	cp "$FUZZ_WF" "$budget_wf"
 	sed -i '/^    timeout-minutes: [0-9]*$/d' "$budget_wf"
 	assert_exit 2 "a fuzz job with NO timeout-minutes is unreadable, not fine" \
