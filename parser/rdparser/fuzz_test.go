@@ -224,8 +224,9 @@ func TestParserSurvivesPathologicalInput(t *testing.T) {
 	}
 }
 
-// FuzzParsedLocationInvariants states, over arbitrary input, the three
-// position properties elps#426 broke.  For every node the reader produces:
+// FuzzParsedLocationInvariants states, over arbitrary input, the position
+// properties the reader has to satisfy.  Three are the ones elps#426 broke; the
+// fourth is elps#463.  For every node the reader produces:
 //
 //  1. It owns its *token.Location.  No two distinct nodes in one parse tree
 //     may hold the same object.  Sharing is what let applyPrefixLocation move
@@ -246,6 +247,29 @@ func TestParserSurvivesPathologicalInput(t *testing.T) {
 //     reported its outer form as ending four columns before its own operand
 //     did.
 //
+//  4. Its column span agrees with its byte span.  On a node that begins and
+//     ends on ONE line, EndCol-Col == EndPos-Pos.  This is elps#463: TokenEnd
+//     derived EndCol by counting RUNES onto the byte-valued Col that
+//     Scanner.LocStart computes, so on a token holding any multi-byte rune the
+//     two ends of a single Location were counted in different units and EndCol
+//     was short by len(text)-runeCount(text).
+//
+//     It belongs HERE, at the reader, rather than only in the LSP tests where
+//     the damage showed up.  EndCol has consumers in lsp/, lint/, analysis/ and
+//     mcpserver/ that each add it to or compare it against a byte column, and
+//     one wrong producer is what made all of them wrong at once; a property
+//     stated at the producer covers the consumers that exist and the ones that
+//     have not been written.  The rename corruption it caused is pinned
+//     separately and end-to-end in
+//     lsp.TestRenameNonASCIIIdentifierRewritesWholeName -- an integer here, the
+//     user's file there.
+//
+//     Note what this does NOT say: which unit.  It says the two ends agree,
+//     which they must whatever elps#464 concludes about the UTF-16 code units
+//     LSP asks for on the wire.  A multi-line node is exempt because its column
+//     restarts at its last newline, so the two spans measure different things
+//     by construction.
+//
 // Locations are checked only for nodes that carry a real one (Pos >= 0);
 // synthetic locations are a separate invariant, pinned by
 // assertRealSourceLocations and TestParserEmitsNoSyntheticSourceLocations.
@@ -255,6 +279,26 @@ func FuzzParsedLocationInvariants(f *testing.F) {
 		"'a", "''a", "'''''test", "#'car", "#^a", "'#'car", "'#^a", "''#^a",
 		"#^#'a", "#^(+ %1 1)", "(quote x)", "(map 'list #'car '((1 2)))",
 		"(quasiquote ''(unquote-splicing '(+ 2 3)))",
+		// NON-ASCII, for invariant 4 (elps#463).  Seeded deliberately and not
+		// relied on from fuzzseed.All(), for the reason PR #462 had to seed the
+		// escaped-string case by hand: an assertion no seed reaches is not an
+		// assertion, and mutation alone is a poor way to arrive at well-formed
+		// multi-byte UTF-8 inside an identifier.  Two, three and four byte
+		// runes, in a symbol, a keyword, a string, a comment, a package
+		// qualifier, quoted and prefixed forms, and spanning a line break.
+		"(defun éx (a) a)\n(éx 1)",
+		"(set λ 1)\nλ",
+		"(defun 加算 (a b) (+ a b))\n(加算 1 2)",
+		"(defun 𝛼𝛽 (a) a)\n(𝛼𝛽 1)",
+		"'éx", "#'éx", "#^éx", "''é",
+		":é", "é:ê", "(é:ê 1)",
+		`"é"`, `"a\té"`, `"""é\nê"""`,
+		"; é\n(f é)",
+		"(f é) ; ê",
+		"(défun f (é ê) (+ é ê))",
+		"(f\n  é\n  ê)",
+		"é\r\nê",
+		"\té\t(f é)",
 	} {
 		f.Add([]byte(s))
 	}
@@ -293,6 +337,16 @@ func FuzzParsedLocationInvariants(f *testing.F) {
 								formatting, v.Type, v.Str, loc.Pos, loc.EndPos,
 								parent.Type, parent.Str, parent.Source.Pos, parent.Source.EndPos)
 						}
+					}
+				}
+				// Invariant 4 (elps#463): on a single-line node the column
+				// span and the byte span are the same span, so they have the
+				// same width.  Guarded on all four fields being tracked --
+				// the fault-tolerant parser can leave end positions unset.
+				if loc.Line > 0 && loc.Col > 0 && loc.EndLine == loc.Line && loc.EndCol > 0 && loc.EndPos > 0 {
+					if colSpan, byteSpan := loc.EndCol-loc.Col, loc.EndPos-loc.Pos; colSpan != byteSpan {
+						t.Fatalf("formatting=%v: node %v %q at %v spans %d columns (Col %d..EndCol %d) but %d bytes (Pos %d..EndPos %d); Location's ends are in different units (#463)",
+							formatting, v.Type, v.Str, loc, colSpan, loc.Col, loc.EndCol, byteSpan, loc.Pos, loc.EndPos)
 					}
 				}
 				for _, c := range v.Cells {
