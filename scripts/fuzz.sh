@@ -206,11 +206,59 @@ hard_timeout=$((fuzz_seconds + FUZZ_TIMEOUT_SLACK))
 
 cd "$REPO_ROOT" || exit 2
 
+# Created BEFORE discovery, not after: discovery needs somewhere to put the
+# stderr of the `go list` / `go test -list` probes so it can be replayed to the
+# operator when one of them fails (issue #479).
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
 # list_targets prints the Fuzz* targets defined in one package.  `go test
 # -list` prints the matching names followed by a summary line ("ok <pkg> ..."),
 # so the output is filtered to bare target names.
+#
+# Silence must not be able to mean "no targets here" (issue #479)
+# ---------------------------------------------------------------
+# This used to be a single pipeline ending in `2>/dev/null | grep`, which threw
+# away BOTH the stderr and the exit status of `go test -list`. A package that
+# failed to BUILD therefore contributed zero targets in a way that was
+# byte-for-byte identical to a package that legitimately HAS none: no message,
+# no non-zero status, just a shorter list. Observed for real -- 8 of 30 targets
+# disappeared on a cold cache -- and the sweep still exited 0, so the fuzz job
+# went green having never run them.
+#
+# It compounds with the budget gate: scripts/fuzz-budget-check.sh derives the
+# job's timeout-minutes from THIS count, so a build failure quietly shrank the
+# number the backstop was computed from. The gate was checking arithmetic over
+# a target count that was not real.
+#
+# So the two cases are now separated explicitly:
+#
+#   exit 0  -- the package compiled. Zero matching targets is a legitimate
+#              answer and is returned as an empty list.
+#   exit 1  -- `go test -list` failed. The package did NOT compile (or its
+#              dependencies did not). The caller records it and the run dies;
+#              the captured stderr is replayed so the build error is visible
+#              rather than inferred from a count that looks a bit low.
+#
+# The distinction is the whole point: "no targets" and "no build" are the same
+# empty output, and only the exit status tells them apart.
 list_targets() {
-	go test ${tagflags+"${tagflags[@]}"} -list '^Fuzz' "$1" 2>/dev/null | grep -E '^Fuzz[A-Za-z0-9_]*$'
+	local pkg="$1" rc=0 out
+	out="$(go test ${tagflags+"${tagflags[@]}"} -list '^Fuzz' "$pkg" 2>"${tmpdir}/list.err")" || rc=$?
+	if [ "$rc" -ne 0 ]; then
+		{
+			echo "fuzz.sh: target discovery FAILED for ${pkg} (go test -list exit ${rc})"
+			sed 's/^/    | /' "${tmpdir}/list.err"
+		} >&2
+		return 1
+	fi
+	# `|| true`: grep exits 1 when nothing matches, and for a package that
+	# built cleanly that means "this package has no fuzz targets" -- an
+	# ordinary, correct answer. Letting grep's status escape here would put
+	# every target-free package into the build-failure branch above and make
+	# the loud path meaningless by firing it constantly.
+	printf '%s\n' "$out" | grep -E '^Fuzz[A-Za-z0-9_]*$' || true
+	return 0
 }
 
 # Import path AND source directory in one pass: the directory is where
@@ -218,11 +266,28 @@ list_targets() {
 # Resolving it lazily per target would re-invoke `go list` once per target.
 declare -A pkg_dir=()
 declare -a pkg_list=()
+# Same treatment as list_targets, and for the same reason (issue #479): this
+# also used to be `2>/dev/null` inside a process substitution, so its exit
+# status was unobservable. `go list` reports a package whose NON-test source
+# does not parse by writing to stderr and exiting non-zero while still printing
+# the packages it could load -- so the broken one simply never entered
+# pkg_list, was never probed for targets, and vanished without trace.
+go_list_rc=0
+go_list_out="$(go list ${tagflags+"${tagflags[@]}"} -f '{{.ImportPath}}'$'\t''{{.Dir}}' "${packages[@]}" 2>"${tmpdir}/golist.err")" || go_list_rc=$?
+if [ "$go_list_rc" -ne 0 ]; then
+	{
+		echo "fuzz.sh: go list failed for ${packages[*]} (exit ${go_list_rc})"
+		sed 's/^/    | /' "${tmpdir}/golist.err"
+		echo "fuzz.sh: a package that cannot be LOADED cannot be searched for fuzz"
+		echo "fuzz.sh: targets, and skipping it would silently shrink the sweep."
+	} >&2
+	exit 2
+fi
 while IFS=$'\t' read -r _ip _dir; do
 	[ -n "$_ip" ] || continue
 	pkg_dir["$_ip"]="$_dir"
 	pkg_list+=("$_ip")
-done < <(go list ${tagflags+"${tagflags[@]}"} -f '{{.ImportPath}}'$'\t''{{.Dir}}' "${packages[@]}" 2>/dev/null)
+done <<<"$go_list_out"
 if [ "${#pkg_list[@]}" -eq 0 ]; then
 	echo "fuzz.sh: no packages matched ${packages[*]}" >&2
 	exit 2
@@ -233,12 +298,45 @@ fi
 # stream past would make a target's shard depend on how many targets happened to
 # precede it.
 declare -a all_pairs=()
+declare -a broken_pkgs=()
 for pkg in "${pkg_list[@]}"; do
-	mapfile -t targets < <(list_targets "$pkg")
-	for target in "${targets[@]}"; do
+	# Command substitution rather than `mapfile < <(list_targets ...)`: process
+	# substitution runs in a subshell whose exit status the parent never sees,
+	# which is precisely how the build failure went unnoticed. `if cmd_sub`
+	# evaluates the status HERE, in the main shell, where it can be acted on.
+	if ! targets_out="$(list_targets "$pkg")"; then
+		broken_pkgs+=("$pkg")
+		continue
+	fi
+	while IFS= read -r target; do
+		# A clean package with no targets yields one empty line from the
+		# here-string; that is not a target.
+		[ -n "$target" ] || continue
 		all_pairs+=("${pkg}	${target}")
-	done
+	done <<<"$targets_out"
 done
+
+# A package that did not build is a HOLE in the sweep, not a package with
+# nothing to fuzz -- and the sweep must not be able to report success over a
+# target list it knows is incomplete. Fail before any fuzzing starts, and name
+# every broken package rather than only the first, so one CI run tells the
+# whole story instead of one package per run.
+if [ "${#broken_pkgs[@]}" -gt 0 ]; then
+	{
+		echo
+		echo "fuzz.sh: ${#broken_pkgs[@]} package(s) FAILED TO BUILD during target discovery:"
+		for pkg in "${broken_pkgs[@]}"; do
+			echo "    ${pkg}"
+		done
+		echo
+		echo "fuzz.sh: their fuzz targets, if any, were NOT discovered and would NOT"
+		echo "fuzz.sh: have been run. Refusing to continue: a sweep that silently"
+		echo "fuzz.sh: skips a package is indistinguishable from one that covered it,"
+		echo "fuzz.sh: and scripts/fuzz-budget-check.sh derives the job timeout from"
+		echo "fuzz.sh: this same count. Fix the build errors above and re-run."
+	} >&2
+	exit 2
+fi
 if [ "${#all_pairs[@]}" -gt 0 ]; then
 	# Guarded: `printf '%s\n'` with NO arguments still prints one newline, so
 	# an unguarded sort turns "no targets" into one empty target -- which made
@@ -344,9 +442,6 @@ run_target() {
 		done
 	fi
 }
-
-tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
 
 total=0
 failed=0
