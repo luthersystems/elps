@@ -1627,26 +1627,243 @@ else
 		bad "cannot read strategy.matrix.shard out of ${FUZZ_WF} — the partition check below would be testing a made-up shard count"
 		shard_n=1
 	fi
-	shard_tmp="$(mktemp -d)"
-	"${SCRIPT_DIR}/fuzz.sh" --list 2>/dev/null | LC_ALL=C sort >"${shard_tmp}/full"
-	: >"${shard_tmp}/union"
-	for ((i = 1; i <= shard_n; i++)); do
-		"${SCRIPT_DIR}/fuzz.sh" --list --shard "${i}/${shard_n}" 2>/dev/null >>"${shard_tmp}/union"
-	done
-	LC_ALL=C sort "${shard_tmp}/union" >"${shard_tmp}/union.sorted"
-	if diff -q "${shard_tmp}/full" "${shard_tmp}/union.sorted" >/dev/null; then
-		ok "the ${shard_n} shards are a partition of the full target list (no target lost)"
-	else
-		bad "sharding is not a partition — targets are lost or duplicated"
-		diff "${shard_tmp}/full" "${shard_tmp}/union.sorted" | sed 's/^/        | /'
-	fi
-	dupes=$(($(wc -l <"${shard_tmp}/union.sorted") - $(sort -u "${shard_tmp}/union.sorted" | wc -l)))
-	if [ "$dupes" -eq 0 ]; then
+	# "NOTHING TO CHECK" IS NOT "THE CHECK PASSED" (issue #484)
+	# ---------------------------------------------------------
+	# This block used to discard the exit status AND the stderr of every
+	# fuzz.sh invocation:
+	#
+	#   "${SCRIPT_DIR}/fuzz.sh" --list 2>/dev/null | LC_ALL=C sort >full
+	#
+	# Two things hid the failure. The `2>/dev/null` threw away the reason, and
+	# putting fuzz.sh in a PIPELINE meant `$?` reported `sort`'s status, never
+	# fuzz.sh's -- the same mechanism as #479, where `mapfile < <(...)` buried
+	# the status in a subshell. So when discovery broke, `full` and `union` were
+	# both empty, `diff` called two empty files equal, and BOTH assertions
+	# printed PASS. The duplicate count computed 0 - 0 = 0 and passed too.
+	#
+	# That is the worst possible coupling, and #482 made it live: fuzz.sh now
+	# exits non-zero when a package fails to build, so the vacuous-pass branch
+	# is taken PRECISELY when something is genuinely broken.
+	#
+	# There are two distinct ways to end up comparing two empty lists, and the
+	# fix has to close both -- checking the exit status alone is NOT enough:
+	#
+	#   1. discovery FAILS      -- fuzz.sh exits non-zero (a package did not
+	#                              build). Caught by testing the status.
+	#   2. discovery SUCCEEDS   -- fuzz.sh exits 0 having found nothing.
+	#      but finds NOTHING       Verified by running: `fuzz.sh --list` over a
+	#                              module that compiles cleanly and defines no
+	#                              fuzz target exits 0, by design (#482 asserts
+	#                              exactly that, so that ordinary target-free
+	#                              packages are not mistaken for broken ones).
+	#                              Only an explicit non-empty assertion catches
+	#                              this one.
+	#
+	# Case 2 is why the emptiness test below is load-bearing rather than
+	# belt-and-braces: a partition of nothing is not a partition, it is an
+	# absence of evidence, and this file exists to prove the other gates can
+	# actually fail.
+	#
+	# The computation lives in a function so the NEGATIVE CONTROL further down
+	# can run THE VERY SAME CODE against a tree where discovery is genuinely
+	# broken and require it to come back "cannot-run". A control that
+	# re-implemented the comparison would only prove the copy works.
+	#
+	# Prints a one-line verdict on stdout whose first token is one of
+	# `partition:`, `cannot-run:`, `not-a-partition:` or `duplicated:`, and
+	# returns 0 only for `partition:`.
+	shard_partition_probe() {
+		local sdir="$1" n="$2"
+		local tmp rc=0 i full dupes
+
+		tmp="$(mktemp -d)"
+
+		# Command substitution, NOT a pipeline and NOT `< <(...)`: both hide the
+		# status of the command that actually matters. `x="$(cmd)" || rc=$?`
+		# evaluates it here, in this shell, where it can be acted on.
+		full="$("${sdir}/fuzz.sh" --list 2>"${tmp}/full.err")" || rc=$?
+		if [ "$rc" -ne 0 ]; then
+			printf 'cannot-run: full target discovery exited %s\n' "$rc"
+			sed 's/^/          | /' "${tmp}/full.err"
+			rm -rf "$tmp"
+			return 1
+		fi
+
+		# Case 2 above. An empty target list means the partition is UNKNOWN, and
+		# unknown must not read as proven. This matches how the rest of the repo
+		# already treats a zero count: fuzz.sh exits 2 rather than sweeping
+		# nothing, and fuzz-budget-check.sh exits 2 rather than reporting that a
+		# zero-target sweep "fits".
+		if [ -z "${full//[[:space:]]/}" ]; then
+			printf 'cannot-run: full target discovery returned ZERO targets (exit 0), so there is no partition to verify\n'
+			rm -rf "$tmp"
+			return 1
+		fi
+
+		: >"${tmp}/union"
+		for ((i = 1; i <= n; i++)); do
+			rc=0
+			"${sdir}/fuzz.sh" --list --shard "${i}/${n}" \
+				>>"${tmp}/union" 2>"${tmp}/shard.err" || rc=$?
+			if [ "$rc" -ne 0 ]; then
+				printf 'cannot-run: shard %s/%s discovery exited %s\n' "$i" "$n" "$rc"
+				sed 's/^/          | /' "${tmp}/shard.err"
+				rm -rf "$tmp"
+				return 1
+			fi
+		done
+
+		printf '%s\n' "$full" | LC_ALL=C sort >"${tmp}/full.sorted"
+		LC_ALL=C sort "${tmp}/union" >"${tmp}/union.sorted"
+
+		if ! diff -q "${tmp}/full.sorted" "${tmp}/union.sorted" >/dev/null; then
+			printf 'not-a-partition: targets are lost or duplicated\n'
+			diff "${tmp}/full.sorted" "${tmp}/union.sorted" | sed 's/^/          | /'
+			rm -rf "$tmp"
+			return 1
+		fi
+
+		dupes=$(($(wc -l <"${tmp}/union.sorted") - $(sort -u "${tmp}/union.sorted" | wc -l)))
+		if [ "$dupes" -ne 0 ]; then
+			printf 'duplicated: %s target(s) appear in more than one shard\n' "$dupes"
+			rm -rf "$tmp"
+			return 1
+		fi
+
+		printf 'partition: %s targets across %s shards\n' \
+			"$(printf '%s\n' "$full" | grep -c .)" "$n"
+		rm -rf "$tmp"
+		return 0
+	}
+
+	# verdict_is <token> <verdict-line> -- true when the verdict carries <token>.
+	# A helper rather than inline `case` patterns because `|` is the pattern
+	# separator in `case`, which makes "match the token AND the return code" in
+	# one pattern quietly error-prone.
+	verdict_is() {
+		case "$2" in
+		"$1":*) return 0 ;;
+		*) return 1 ;;
+		esac
+	}
+
+	shard_verdict="$(shard_partition_probe "$SCRIPT_DIR" "$shard_n" 2>&1)" || true
+	case "$shard_verdict" in
+	partition:*)
+		ok "the ${shard_n} shards are a partition of the full target list (no target lost) — ${shard_verdict#partition: }"
 		ok "no target is claimed by more than one shard"
+		;;
+	cannot-run:*)
+		# The #484 path. Discovery could not be trusted, so the partition is
+		# unverified -- which is a FAILURE of this check, not a pass.
+		bad "the shard-partition check could not run, so the partition is UNVERIFIED (#484)"
+		printf '%s\n' "$shard_verdict" | sed 's/^/        | /'
+		;;
+	*)
+		bad "sharding is not a partition — targets are lost or duplicated"
+		printf '%s\n' "$shard_verdict" | sed 's/^/        | /'
+		;;
+	esac
+
+	# NEGATIVE CONTROL for the two assertions above (issue #484).
+	#
+	# The bar #480 set: a rule that has been fixed must ship something which
+	# STRIPS the condition and requires the rule to report it, so the rule keeps
+	# proving it can still go red. Before this fix the partition assertions
+	# could not fail at all under broken discovery -- they printed two PASS
+	# lines over zero targets -- and nothing in this file would have noticed.
+	#
+	# Run against a THROWAWAY MODULE, not a mock and not this repo: the control
+	# needs a genuinely uncompilable package, and breaking one in-tree would
+	# break every other check in this file. fuzz.sh derives REPO_ROOT from its
+	# own location, so a copy inside the scratch module operates entirely on
+	# that module (the technique #482 introduced for the same reason).
+	#
+	# All THREE cases are asserted, and only the set is meaningful. "Broken
+	# discovery is reported" alone is equally satisfied by a probe that fails on
+	# everything -- which would be a gate nobody can keep green -- so the
+	# healthy case is pinned in the same breath.
+	part_tmp="$(mktemp -d)"
+	mkdir -p "${part_tmp}/scripts" "${part_tmp}/hastarget" "${part_tmp}/notargets"
+	cp "${SCRIPT_DIR}/fuzz.sh" "${part_tmp}/scripts/fuzz.sh"
+	cat >"${part_tmp}/go.mod" <<-EOF
+		module example.invalid/shardpart
+
+		go $(awk '/^go /{print $2; exit}' "${REPO_ROOT}/go.mod")
+	EOF
+	cat >"${part_tmp}/hastarget/hastarget_test.go" <<-'EOF'
+		package hastarget
+
+		import "testing"
+
+		func FuzzShardAlpha(f *testing.F) {
+			f.Add("seed")
+			f.Fuzz(func(t *testing.T, s string) { _ = s })
+		}
+
+		func FuzzShardBeta(f *testing.F) {
+			f.Add("seed")
+			f.Fuzz(func(t *testing.T, s string) { _ = s })
+		}
+	EOF
+
+	# (a) HEALTHY: real targets, everything compiles. The probe must say
+	#     `partition:`. Without this the control below proves nothing.
+	part_rc=0
+	part_verdict="$(shard_partition_probe "${part_tmp}/scripts" "$shard_n" 2>&1)" || part_rc=$?
+	if [ "$part_rc" -eq 0 ] && verdict_is partition "$part_verdict"; then
+		ok "negative-control rig: a HEALTHY tree still reports a partition (the control is not a gate that fails on everything) (#484)"
 	else
-		bad "${dupes} target(s) appear in more than one shard"
+		bad "negative-control rig is broken — a healthy scratch module did not report a partition (#484): rc=${part_rc} ${part_verdict}"
 	fi
-	rm -rf "$shard_tmp"
+
+	# (b) DISCOVERY RETURNS NOTHING, exit 0. A module that compiles cleanly and
+	#     defines no fuzz target: `fuzz.sh --list` exits 0 with an empty list, so
+	#     ONLY the emptiness assertion catches this. This is the case the
+	#     exit-status check does not cover.
+	mv "${part_tmp}/hastarget" "${part_tmp}/.hastarget.off"
+	cat >"${part_tmp}/notargets/notargets.go" <<-'EOF'
+		package notargets
+
+		// Ordinary code, no fuzz target anywhere near it.
+		func Greet() string { return "hello" }
+	EOF
+	part_rc=0
+	part_verdict="$(shard_partition_probe "${part_tmp}/scripts" "$shard_n" 2>&1)" || part_rc=$?
+	if [ "$part_rc" -ne 0 ] && verdict_is cannot-run "$part_verdict"; then
+		ok "ZERO discovered targets is reported as unverified, not as a partition of nothing (#484)"
+	else
+		bad "zero-target discovery still reads as a passing partition (#484): rc=${part_rc} ${part_verdict}"
+	fi
+
+	# (c) DISCOVERY FAILS. A real type error, not a mock -- the exact condition
+	#     #482 made fatal, which is what turned this latent hole into a live one.
+	mv "${part_tmp}/.hastarget.off" "${part_tmp}/hastarget"
+	mkdir -p "${part_tmp}/broken"
+	cat >"${part_tmp}/broken/broken.go" <<-'EOF'
+		package broken
+
+		// Deliberately uncompilable: the point of the assertion below.
+		func Broken() int { return "not an int" }
+	EOF
+	part_rc=0
+	part_verdict="$(shard_partition_probe "${part_tmp}/scripts" "$shard_n" 2>&1)" || part_rc=$?
+	if [ "$part_rc" -ne 0 ] && verdict_is cannot-run "$part_verdict"; then
+		ok "a package that FAILS TO BUILD makes the partition check report UNVERIFIED instead of PASS (#484)"
+	else
+		bad "broken discovery still reads as a passing partition — #484 has regressed: rc=${part_rc} ${part_verdict}"
+	fi
+	# The compiler's own error must survive to the operator, not be swallowed by
+	# a `2>/dev/null` the way it was before (#479's lesson, applied on this side).
+	case "$part_verdict" in
+	*"not an int"*)
+		ok "the underlying build error is replayed, not swallowed (#484)"
+		;;
+	*)
+		bad "the partition check hid WHY discovery failed (#484): ${part_verdict}"
+		;;
+	esac
+	rm -rf "$part_tmp"
 
 	# Issue #479: a package that FAILS TO BUILD must not look like a package
 	# with no fuzz targets.
