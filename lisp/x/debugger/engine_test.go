@@ -15,6 +15,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// debugEventBackstop bounds how long a test will wait for a debug event that
+// the engine is expected to emit. It is a backstop against a genuine hang -- a
+// pause with no resume, a stopped event that never fires, a deadlock between
+// the eval goroutine and the test -- and it is *not* a performance budget.
+// Nothing in this file is timing the engine.
+//
+// The distinction is the whole point of #489. Every wait denominated in this
+// constant blocks on the event itself: the stopped event the engine publishes
+// to its callback, or the evaluation goroutine's result. Such a wait finishes
+// the instant the event lands, so its duration is a property of the program
+// under test rather than of how much CPU the machine felt like handing over.
+// The constant is reached only when the event never arrives at all, which is a
+// bug at any load.
+//
+// That is why it can be this large without weakening anything. The budgets it
+// replaces (2s on `require.Eventually`, 2s and 5s on channel waits) were the
+// opposite: they polled or raced a clock, so the machine's mood decided the
+// verdict. Measured on a 4-core sandbox these waits complete in single-digit
+// milliseconds idle; under 800 competing spinners, 15 Go-runtime hogs and 24
+// concurrent copies of this package they blew past 2s repeatedly. Raising
+// those numbers would only have moved the load at which the same thing
+// happens -- see #443/#452 and #435/#447 for why this project does not do
+// that.
+//
+// Sized so it cannot adjudicate: three orders of magnitude above the idle
+// time-to-event, and comfortably inside the 10m default `go test -timeout`, so
+// a real hang still reports here, by name, rather than as a binary-wide panic.
+//
+// TestEveryDebugEventWaitUsesTheBackstop pins this: no wait for a debug event
+// in the debugger tree may be denominated in a bare duration literal.
+const debugEventBackstop = 2 * time.Minute
+
 type pauseSnapshot struct {
 	env          *lisp.LEnv
 	expr         *lisp.LVal
@@ -74,8 +106,8 @@ func (g *pauseGate) WaitEntered(t *testing.T) {
 	t.Helper()
 	select {
 	case <-g.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("program never reached debug-test-gate")
+	case <-time.After(debugEventBackstop):
+		t.Fatalf("program never reached debug-test-gate within %v", debugEventBackstop)
 	}
 }
 
@@ -113,38 +145,73 @@ func waitForStoppedEvent(t *testing.T, ch <-chan pauseSnapshot, message string) 
 	select {
 	case snapshot := <-ch:
 		return snapshot
-	case <-time.After(2 * time.Second):
-		t.Fatal(message)
+	case <-time.After(debugEventBackstop):
+		t.Fatalf("%s (no stopped event in %v)", message, debugEventBackstop)
 		return pauseSnapshot{}
 	}
 }
 
-func waitForPauseStateChange(t *testing.T, e *Engine, previous *lisp.LVal) (*lisp.LEnv, *lisp.LVal) {
+// stopWatch turns the engine's stopped events into a queue a test can block
+// on. It is the generalisation of the `stoppedCh` idiom already used further
+// down this file, and it is what every wait that used to poll IsPaused() now
+// waits on -- see debugEventBackstop and #489.
+type stopWatch struct {
+	ch chan pauseSnapshot
+}
+
+// watchStops routes every EventStopped the engine emits onto w's queue,
+// without displacing a callback the test installed for itself.
+//
+// The chained callback runs the test's own callback *first*, so a wait that
+// returns from WaitStopped is guaranteed to see everything that callback
+// wrote: the write happens-before the queue send, which happens-before the
+// receive. Polling IsPaused() gave no such edge -- the engine publishes its
+// paused state before invoking the callback, so a poll could win the race and
+// then read pre-stop values. Engine.IsPaused documents this trap at length;
+// the tests that used to fall into it no longer can.
+//
+// Must be called before evaluation starts, so no stop can be missed.
+func watchStops(t *testing.T, e *Engine) *stopWatch {
 	t.Helper()
+	w := &stopWatch{ch: make(chan pauseSnapshot, 64)}
+	e.mu.Lock()
+	prev := e.onEvent
+	e.mu.Unlock()
+	e.SetEventCallback(func(evt Event) {
+		if prev != nil {
+			prev(evt)
+		}
+		if evt.Type != EventStopped {
+			return
+		}
+		select {
+		case w.ch <- snapshotPause(evt):
+		default:
+			// EventCallback runs on the eval goroutine and must not
+			// block. The buffer is far deeper than any test here
+			// needs, so a full queue means the test stopped
+			// consuming; dropping is the only safe answer and the
+			// waiting side reports the shortfall as a missing event.
+		}
+	})
+	return w
+}
 
-	require.Eventually(t, func() bool {
-		if !e.IsPaused() {
-			return false
-		}
-		_, current := e.PausedState()
-		if current == nil {
-			return false
-		}
-		if previous == nil {
-			return true
-		}
-		if current != previous {
-			return true
-		}
-		if current.Source == nil || previous.Source == nil {
-			return false
-		}
-		return current.Source.Line != previous.Source.Line ||
-			current.Source.Col != previous.Source.Col ||
-			current.Type != previous.Type
-	}, 2*time.Second, 10*time.Millisecond, "engine did not reach a new paused state")
+// WaitStopped blocks until the engine reports its next stop.
+func (w *stopWatch) WaitStopped(t *testing.T, message string) pauseSnapshot {
+	t.Helper()
+	return waitForStoppedEvent(t, w.ch, message)
+}
 
-	return e.PausedState()
+// pair returns the snapshot's env and expr, for the call sites that used to
+// read them back out of the engine with PausedState after a poll.
+//
+// Reading them from the event rather than from the engine is the stricter
+// form: the snapshot is the state at the moment of that stop, so there is no
+// window in which the test samples state belonging to a different pause, and
+// no dependence on the engine still being parked when the read happens.
+func (p pauseSnapshot) pair() (*lisp.LEnv, *lisp.LVal) {
+	return p.env, p.expr
 }
 
 func TestEngine_IsEnabled(t *testing.T) {
@@ -170,6 +237,7 @@ func TestEngine_BreakpointPauseAndResume(t *testing.T) {
 		events = append(events, evt)
 	}))
 	e.Enable()
+	w := watchStops(t, e)
 
 	env := newTestEnv(t, e)
 
@@ -188,11 +256,7 @@ func TestEngine_BreakpointPauseAndResume(t *testing.T) {
 	// paused state before it invokes the event callback, so IsPaused() goes
 	// true first and a read of callback-written state has no happens-before
 	// with the write -- see the comment on Engine.IsPaused.
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(events) > 0
-	}, 2*time.Second, time.Millisecond, "engine did not pause")
+	w.WaitStopped(t, "engine did not pause")
 
 	// Verify exactly one stopped event was sent.
 	mu.Lock()
@@ -208,7 +272,7 @@ func TestEngine_BreakpointPauseAndResume(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type)
 		assert.Equal(t, 3, res.Int)
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for eval result")
 	}
 }
@@ -217,6 +281,7 @@ func TestEngine_StepInto(t *testing.T) {
 	t.Parallel()
 	e := New(WithStopOnEntry(true))
 	e.Enable()
+	w := watchStops(t, e)
 	env := newTestEnv(t, e)
 
 	resultCh := make(chan *lisp.LVal, 1)
@@ -228,9 +293,7 @@ func TestEngine_StepInto(t *testing.T) {
 	}()
 
 	// Should stop on entry.
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not stop on entry")
+	w.WaitStopped(t, "engine did not stop on entry")
 
 	// Verify paused state has valid expression with source location.
 	_, entryExpr := e.PausedState()
@@ -240,7 +303,7 @@ func TestEngine_StepInto(t *testing.T) {
 
 	// Step into — should advance to line 2 (skipping sub-expressions on line 1).
 	e.StepInto()
-	_, stepExpr := waitForPauseStateChange(t, e, entryExpr)
+	_, stepExpr := w.WaitStopped(t, "step-into did not produce a stopped event").pair()
 	require.NotNil(t, stepExpr, "paused expression after step should not be nil")
 	require.NotNil(t, stepExpr.Source, "paused expression after step should have source location")
 	assert.Equal(t, 2, stepExpr.Source.Line, "step-into should advance to line 2")
@@ -252,7 +315,7 @@ func TestEngine_StepInto(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
 		assert.Equal(t, 7, res.Int)
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for eval result")
 	}
 }
@@ -261,6 +324,7 @@ func TestEngine_StepInto_EntersFunction(t *testing.T) {
 	t.Parallel()
 	e := New()
 	e.Enable()
+	w := watchStops(t, e)
 	// Set breakpoint on line 4 (the call to inner inside outer).
 	e.Breakpoints().Set("test", 4, "")
 	env := newTestEnv(t, e)
@@ -278,9 +342,7 @@ func TestEngine_StepInto_EntersFunction(t *testing.T) {
 	}()
 
 	// Hit breakpoint on line 4.
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
+	w.WaitStopped(t, "engine did not pause")
 	_, bpExpr := e.PausedState()
 	require.NotNil(t, bpExpr)
 	require.NotNil(t, bpExpr.Source)
@@ -291,7 +353,7 @@ func TestEngine_StepInto_EntersFunction(t *testing.T) {
 
 	// Step into — should enter inner's body on line 2.
 	e.StepInto()
-	_, stepExpr := waitForPauseStateChange(t, e, bpExpr)
+	_, stepExpr := w.WaitStopped(t, "step-into did not produce a stopped event").pair()
 	require.NotNil(t, stepExpr)
 	require.NotNil(t, stepExpr.Source)
 	assert.Equal(t, 2, stepExpr.Source.Line,
@@ -303,7 +365,7 @@ func TestEngine_StepInto_EntersFunction(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result")
 		assert.Equal(t, 105, res.Int)
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for eval result")
 	}
 }
@@ -312,6 +374,7 @@ func TestEngine_StepInto_InstructionGranularity(t *testing.T) {
 	t.Parallel()
 	e := New(WithStopOnEntry(true))
 	e.Enable()
+	w := watchStops(t, e)
 	env := newTestEnv(t, e)
 
 	resultCh := make(chan *lisp.LVal, 1)
@@ -323,9 +386,7 @@ func TestEngine_StepInto_InstructionGranularity(t *testing.T) {
 	}()
 
 	// Stop on entry at (+ 1 2).
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
+	w.WaitStopped(t, "engine did not pause")
 	_, entryExpr := e.PausedState()
 	require.NotNil(t, entryExpr)
 	assert.Equal(t, lisp.LSExpr, entryExpr.Type, "stop on entry at the s-expression")
@@ -334,7 +395,7 @@ func TestEngine_StepInto_InstructionGranularity(t *testing.T) {
 	// on the same line (unlike default line-level which would skip to end).
 	e.SetStepGranularity("instruction")
 	e.StepInto()
-	_, stepExpr := waitForPauseStateChange(t, e, entryExpr)
+	_, stepExpr := w.WaitStopped(t, "step-into did not produce a stopped event").pair()
 	require.NotNil(t, stepExpr)
 	require.NotNil(t, stepExpr.Source)
 	assert.Equal(t, 1, stepExpr.Source.Line, "instruction step pauses on same line")
@@ -347,7 +408,7 @@ func TestEngine_StepInto_InstructionGranularity(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type)
 		assert.Equal(t, 3, res.Int)
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for eval result")
 	}
 }
@@ -365,6 +426,7 @@ func TestEngine_ExceptionBreakpoint(t *testing.T) {
 		}
 	}))
 	e.Enable()
+	w := watchStops(t, e)
 	e.Breakpoints().SetExceptionBreak(ExceptionBreakAll)
 
 	env := newTestEnv(t, e)
@@ -381,11 +443,7 @@ func TestEngine_ExceptionBreakpoint(t *testing.T) {
 	// paused state before it invokes the event callback, so IsPaused() goes
 	// true first and a read of callback-written state has no happens-before
 	// with the write -- see the comment on Engine.IsPaused.
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return stopReason != ""
-	}, 2*time.Second, time.Millisecond, "engine did not pause on exception")
+	w.WaitStopped(t, "engine did not pause on exception")
 
 	// Verify stop reason is exception.
 	mu.Lock()
@@ -398,7 +456,7 @@ func TestEngine_ExceptionBreakpoint(t *testing.T) {
 	select {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LError, res.Type)
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for eval result")
 	}
 }
@@ -407,6 +465,7 @@ func TestEngine_Disconnect(t *testing.T) {
 	t.Parallel()
 	e := New(WithStopOnEntry(true))
 	e.Enable()
+	w := watchStops(t, e)
 	env := newTestEnv(t, e)
 
 	resultCh := make(chan *lisp.LVal, 1)
@@ -415,9 +474,7 @@ func TestEngine_Disconnect(t *testing.T) {
 		resultCh <- res
 	}()
 
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
+	w.WaitStopped(t, "engine did not pause")
 
 	// Disconnect should resume and disable.
 	e.Disconnect()
@@ -426,7 +483,7 @@ func TestEngine_Disconnect(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type)
 		assert.Equal(t, 3, res.Int)
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout after disconnect")
 	}
 
@@ -466,6 +523,7 @@ func TestEngine_ConditionalBreakpoint_True(t *testing.T) {
 	t.Parallel()
 	e := New()
 	e.Enable()
+	w := watchStops(t, e)
 
 	env := newTestEnv(t, e)
 
@@ -478,9 +536,7 @@ func TestEngine_ConditionalBreakpoint_True(t *testing.T) {
 		resultCh <- res
 	}()
 
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause on true condition")
+	w.WaitStopped(t, "engine did not pause on true condition")
 
 	e.Resume()
 
@@ -488,7 +544,7 @@ func TestEngine_ConditionalBreakpoint_True(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type)
 		assert.Equal(t, 3, res.Int)
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 }
@@ -547,7 +603,7 @@ func TestEngine_ConditionalBreakpoint_RuntimeVariable(t *testing.T) {
 	case res := <-resultCh:
 		close(resumeDone)
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		close(resumeDone)
 		if e.IsPaused() {
 			e.Resume()
@@ -565,6 +621,7 @@ func TestEngine_StepOver(t *testing.T) {
 	t.Parallel()
 	e := New()
 	e.Enable()
+	w := watchStops(t, e)
 	env := newTestEnv(t, e)
 
 	// Program with nested function calls. Breakpoint inside outer function body.
@@ -583,9 +640,7 @@ func TestEngine_StepOver(t *testing.T) {
 	}()
 
 	// Wait for breakpoint inside outer (line 3).
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	w.WaitStopped(t, "engine did not pause at breakpoint")
 
 	pausedEnv, expr := e.PausedState()
 	require.NotNil(t, expr)
@@ -602,7 +657,7 @@ func TestEngine_StepOver(t *testing.T) {
 
 	var lastExpr *lisp.LVal
 	for range 20 {
-		pausedEnv, lastExpr = waitForPauseStateChange(t, e, expr)
+		pausedEnv, lastExpr = w.WaitStopped(t, "step-over did not produce a stopped event").pair()
 		require.NotNil(t, lastExpr)
 
 		// Verify depth never went deeper than where we started (did NOT enter inner).
@@ -631,7 +686,7 @@ func TestEngine_StepOver(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
 		assert.Equal(t, 6, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		if e.IsPaused() {
 			e.Resume()
 		}
@@ -643,6 +698,7 @@ func TestEngine_StepOut(t *testing.T) {
 	t.Parallel()
 	e := New()
 	e.Enable()
+	w := watchStops(t, e)
 	env := newTestEnv(t, e)
 
 	// Multi-line program: breakpoint inside function body (line 2),
@@ -658,9 +714,7 @@ func TestEngine_StepOut(t *testing.T) {
 	}()
 
 	// Wait for breakpoint hit inside f's body (line 2).
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	w.WaitStopped(t, "engine did not pause at breakpoint")
 
 	pausedEnv, expr := e.PausedState()
 	require.NotNil(t, expr)
@@ -674,7 +728,7 @@ func TestEngine_StepOut(t *testing.T) {
 	// Clear breakpoints and step out — should return to caller.
 	e.Breakpoints().ClearFile("test")
 	e.StepOut()
-	pausedEnv, expr = waitForPauseStateChange(t, e, expr)
+	pausedEnv, expr = w.WaitStopped(t, "step-out did not produce a stopped event").pair()
 	require.NotNil(t, expr)
 	outsideDepth := len(pausedEnv.Runtime.Stack.Frames)
 	assert.Less(t, outsideDepth, insideDepth,
@@ -687,7 +741,7 @@ func TestEngine_StepOut(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
 		assert.Equal(t, 2, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		if e.IsPaused() {
 			e.Resume()
 		}
@@ -719,7 +773,7 @@ func TestEngine_ConditionalBreakpoint_ErrorInCondition(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
 		assert.Equal(t, 3, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		if e.IsPaused() {
 			e.Resume()
 		}
@@ -790,7 +844,7 @@ func TestEngine_BreakpointInLoop(t *testing.T) {
 	select {
 	case <-resultCh:
 		close(resumeDone)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		close(resumeDone)
 		if e.IsPaused() {
 			e.Resume()
@@ -822,6 +876,7 @@ func TestEngine_BreakpointSuppressedDuringStep(t *testing.T) {
 		}
 	}))
 	e.Enable()
+	w := watchStops(t, e)
 
 	env := newTestEnv(t, e)
 
@@ -838,9 +893,7 @@ func TestEngine_BreakpointSuppressedDuringStep(t *testing.T) {
 	}()
 
 	// Wait for the breakpoint to hit.
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
+	w.WaitStopped(t, "engine did not pause")
 
 	// Step-in with default (line-level) granularity from the breakpoint.
 	// The stepper skips same-line sub-expressions, but the breakpoint on
@@ -849,11 +902,11 @@ func TestEngine_BreakpointSuppressedDuringStep(t *testing.T) {
 	// suppressing the breakpoint.
 	e.StepInto()
 
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(stops) >= 2
-	}, 2*time.Second, 10*time.Millisecond, "expected a second stop after stepping")
+	// The first stop was consumed above, so this is the second one. Counting
+	// stops off the queue is exact where `len(stops) >= 2` was a poll: it
+	// cannot conclude early and it cannot time out because the machine was
+	// busy.
+	w.WaitStopped(t, "expected a second stop after stepping")
 
 	mu.Lock()
 	stopsCopy := make([]StopReason, len(stops))
@@ -869,7 +922,7 @@ func TestEngine_BreakpointSuppressedDuringStep(t *testing.T) {
 	e.Resume()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		if e.IsPaused() {
 			e.Resume()
 		}
@@ -881,6 +934,7 @@ func TestEngine_PausedState(t *testing.T) {
 	t.Parallel()
 	e := New(WithStopOnEntry(true))
 	e.Enable()
+	w := watchStops(t, e)
 	env := newTestEnv(t, e)
 
 	// Before pausing, PausedState should return nil.
@@ -894,9 +948,7 @@ func TestEngine_PausedState(t *testing.T) {
 		resultCh <- res
 	}()
 
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
+	w.WaitStopped(t, "engine did not pause")
 
 	// While paused, PausedState should return non-nil values with source info.
 	pEnv, pExpr = e.PausedState()
@@ -909,7 +961,7 @@ func TestEngine_PausedState(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 
@@ -948,6 +1000,10 @@ func TestEngine_SetEventCallback(t *testing.T) {
 		called = true
 	})
 
+	// Watch after the replacement, so the watcher chains onto the callback
+	// under test rather than onto the one it replaced.
+	w := watchStops(t, e)
+
 	env := newTestEnv(t, e)
 
 	resultCh := make(chan *lisp.LVal, 1)
@@ -959,18 +1015,21 @@ func TestEngine_SetEventCallback(t *testing.T) {
 	// Wait on the callback, not on IsPaused(). The engine publishes the
 	// paused state before it invokes the event callback, so IsPaused() goes
 	// true first and a read of callback-written state has no happens-before
-	// with the write -- see the comment on Engine.IsPaused.
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return called
-	}, 2*time.Second, time.Millisecond, "replacement callback should have fired")
+	// with the write -- see the comment on Engine.IsPaused. watchStops runs
+	// the callback under test before it publishes, so returning from here
+	// establishes that edge instead of hoping a poll lands on the right side
+	// of it.
+	w.WaitStopped(t, "replacement callback should have fired")
+
+	mu.Lock()
+	assert.True(t, called, "replacement callback should have fired")
+	mu.Unlock()
 
 	e.Resume()
 
 	select {
 	case <-resultCh:
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 }
@@ -994,7 +1053,7 @@ func TestEngine_ReadyCh(t *testing.T) {
 	select {
 	case <-e.ReadyCh():
 		// expected
-	case <-time.After(time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("ReadyCh should be closed after SignalReady")
 	}
 
@@ -1026,7 +1085,7 @@ func TestEngine_ReadyCh_WithTimeout(t *testing.T) {
 	select {
 	case <-e.ReadyCh():
 		// expected
-	case <-time.After(time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("ReadyCh should have been closed after SignalReady")
 	}
 }
@@ -1044,6 +1103,7 @@ func TestEngine_RequestPause(t *testing.T) {
 		}
 	}))
 	e.Enable()
+	w := watchStops(t, e)
 
 	env := newTestEnv(t, e)
 	gate := newPauseGate(t, env)
@@ -1079,21 +1139,15 @@ func TestEngine_RequestPause(t *testing.T) {
 	e.RequestPause()
 	gate.Release()
 
-	// The engine should pause.
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause after RequestPause")
+	// The engine should pause. One wait, not two.
+	//
+	// WaitIfPaused publishes pausedEnv (what IsPaused reads) BEFORE it
+	// invokes the event callback, so the reason lagged the paused flag and
+	// the old code needed a second poll to catch up with it. The watcher
+	// publishes only after the callback has returned, so arriving here
+	// already means stopReason is written and visible.
+	w.WaitStopped(t, "engine did not pause after RequestPause")
 
-	// Verify stop reason is "pause". WaitIfPaused publishes pausedEnv (which
-	// is what IsPaused reads) BEFORE it invokes the event callback, so the
-	// reason can lag the paused flag by a scheduling quantum. Wait for the
-	// event rather than sampling immediately, otherwise this races under
-	// load.
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return stopReason != ""
-	}, 2*time.Second, time.Millisecond, "no stopped event observed after pausing")
 	mu.Lock()
 	assert.Equal(t, StopPause, stopReason, "expected pause stop reason")
 	mu.Unlock()
@@ -1111,7 +1165,7 @@ func TestEngine_RequestPause(t *testing.T) {
 		// unnoticed for the life of this test.
 		require.Equal(t, lisp.LInt, res.Type, "program did not run to completion: %v", res)
 		assert.Equal(t, 0, res.Int, "countdown should reach zero")
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		if e.IsPaused() {
 			e.Resume()
 		}
@@ -1132,6 +1186,7 @@ func TestEngine_FunctionBreakpoint(t *testing.T) {
 		}
 	}))
 	e.Enable()
+	w := watchStops(t, e)
 
 	env := newTestEnv(t, e)
 
@@ -1151,11 +1206,7 @@ func TestEngine_FunctionBreakpoint(t *testing.T) {
 	// paused state before it invokes the event callback, so IsPaused() goes
 	// true first and a read of callback-written state has no happens-before
 	// with the write -- see the comment on Engine.IsPaused.
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return stopReason != ""
-	}, 2*time.Second, time.Millisecond, "engine did not pause on function breakpoint")
+	w.WaitStopped(t, "engine did not pause on function breakpoint")
 
 	// Verify stop reason is "function breakpoint".
 	mu.Lock()
@@ -1169,7 +1220,7 @@ func TestEngine_FunctionBreakpoint(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
 		assert.Equal(t, 30, res.Int)
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		if e.IsPaused() {
 			e.Resume()
 		}
@@ -1179,17 +1230,9 @@ func TestEngine_FunctionBreakpoint(t *testing.T) {
 
 func TestEngine_FunctionBreakpoint_QualifiedName(t *testing.T) {
 	t.Parallel()
-	var stopped bool
-	var mu sync.Mutex
-
-	e := New(WithEventCallback(func(evt Event) {
-		if evt.Type == EventStopped {
-			mu.Lock()
-			stopped = true
-			mu.Unlock()
-		}
-	}))
+	e := New()
 	e.Enable()
+	w := watchStops(t, e)
 
 	env := newTestEnv(t, e)
 
@@ -1209,11 +1252,7 @@ func TestEngine_FunctionBreakpoint_QualifiedName(t *testing.T) {
 	// paused state before it invokes the event callback, so IsPaused() goes
 	// true first and a read of callback-written state has no happens-before
 	// with the write -- see the comment on Engine.IsPaused.
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return stopped
-	}, 2*time.Second, time.Millisecond, "engine did not pause on qualified function breakpoint")
+	w.WaitStopped(t, "engine did not pause on qualified function breakpoint")
 
 	e.Resume()
 
@@ -1221,7 +1260,7 @@ func TestEngine_FunctionBreakpoint_QualifiedName(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type)
 		assert.Equal(t, 6, res.Int)
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		if e.IsPaused() {
 			e.Resume()
 		}
@@ -1297,6 +1336,7 @@ func TestEngine_HitCountBreakpoint(t *testing.T) {
 		}
 	}))
 	e.Enable()
+	w := watchStops(t, e)
 
 	env := newTestEnv(t, e)
 
@@ -1317,9 +1357,7 @@ func TestEngine_HitCountBreakpoint(t *testing.T) {
 	}()
 
 	// Should pause exactly once (on the 3rd hit).
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause on hit count")
+	w.WaitStopped(t, "engine did not pause on hit count")
 	e.Resume()
 
 	// Keep resuming any additional hits.
@@ -1342,7 +1380,7 @@ func TestEngine_HitCountBreakpoint(t *testing.T) {
 	select {
 	case <-resultCh:
 		close(resumeDone)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		close(resumeDone)
 		if e.IsPaused() {
 			e.Resume()
@@ -1440,6 +1478,7 @@ func TestEngine_EvalInContextWhilePaused(t *testing.T) {
 	t.Parallel()
 	e := New()
 	e.Enable()
+	w := watchStops(t, e)
 
 	env := newTestEnv(t, e)
 
@@ -1459,9 +1498,7 @@ func TestEngine_EvalInContextWhilePaused(t *testing.T) {
 	}()
 
 	// Wait for the engine to pause at the breakpoint.
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
+	w.WaitStopped(t, "engine did not pause at breakpoint")
 
 	// Evaluate an expression while paused. This previously deadlocked
 	// because OnEval would fire during evaluation and call WaitIfPaused.
@@ -1478,19 +1515,11 @@ func TestEngine_EvalInContextWhilePaused(t *testing.T) {
 	require.NotNil(t, result)
 	assert.Equal(t, lisp.LInt, result.Type, "expected int for 'n', got %v (type %s)", result, result.Type)
 
-	// Resume and drain remaining breakpoint hits.
+	// Resume and service remaining breakpoint hits.
 	e.Resume()
-	for waitForPause(t, e, 500*time.Millisecond) {
-		e.Resume()
-	}
-
-	select {
-	case res := <-resultCh:
-		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
-		assert.Equal(t, 120, res.Int)
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for eval result")
-	}
+	res := w.resumeUntilResult(t, e, resultCh)
+	assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
+	assert.Equal(t, 120, res.Int)
 }
 
 func TestInspectFunctionLocals(t *testing.T) {
@@ -1506,6 +1535,7 @@ func TestInspectFunctionLocals(t *testing.T) {
 		}
 	}))
 	e.Enable()
+	w := watchStops(t, e)
 
 	env := newTestEnv(t, e)
 
@@ -1528,11 +1558,7 @@ func TestInspectFunctionLocals(t *testing.T) {
 	// paused state before it invokes the event callback, so IsPaused() goes
 	// true first and a read of callback-written state has no happens-before
 	// with the write -- see the comment on Engine.IsPaused.
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return capturedEnv != nil
-	}, 2*time.Second, time.Millisecond, "engine did not pause")
+	w.WaitStopped(t, "engine did not pause")
 
 	mu.Lock()
 	testEnv := capturedEnv
@@ -1549,34 +1575,33 @@ func TestInspectFunctionLocals(t *testing.T) {
 	assert.Contains(t, names, "n",
 		"InspectFunctionLocals should find 'n' from enclosing function scope, got: %v", names)
 
-	// Resume and drain.
+	// Resume and service remaining breakpoint hits.
 	e.Resume()
-	for waitForPause(t, e, 500*time.Millisecond) {
-		e.Resume()
-	}
-
-	select {
-	case <-resultCh:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for eval result")
-	}
+	w.resumeUntilResult(t, e, resultCh)
 }
 
-// waitForPause waits for the engine to enter paused state, returning true
-// if it paused within the timeout, false otherwise.
-func waitForPause(t *testing.T, e *Engine, timeout time.Duration) bool {
+// resumeUntilResult services every further stop until the evaluation
+// goroutine delivers the program's result, and returns it.
+//
+// The loop this replaces asked "did another pause turn up within 500ms?" and
+// read silence as "no more pauses". That is a wall clock deciding a
+// control-flow question: on a loaded machine the next stop arrives late, the
+// loop exits with the program still parked at a breakpoint, and the wait for
+// the result then fails with a misleading message.
+//
+// There is no clock in this loop. "Stopped again" and "finished" are both
+// events, and racing them is the only clock-free way to tell them apart.
+func (w *stopWatch) resumeUntilResult(t *testing.T, e *Engine, resultCh <-chan *lisp.LVal) *lisp.LVal {
 	t.Helper()
-	deadline := time.After(timeout)
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
 	for {
 		select {
-		case <-deadline:
-			return false
-		case <-ticker.C:
-			if e.IsPaused() {
-				return true
-			}
+		case res := <-resultCh:
+			return res
+		case <-w.ch:
+			e.Resume()
+		case <-time.After(debugEventBackstop):
+			t.Fatalf("program neither stopped again nor finished in %v", debugEventBackstop)
+			return nil
 		}
 	}
 }
@@ -1762,7 +1787,7 @@ func TestEngine_StepOutTailPosition(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
 		assert.Equal(t, 110, res.Int) // inner(5*2) = 10+100 = 110
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		if e.IsPaused() {
 			e.Resume()
 		}
@@ -1939,7 +1964,7 @@ func TestEngine_StepInTarget(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result")
 		assert.Equal(t, 13, res.Int)
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for eval result")
 	}
 }
@@ -1996,7 +2021,7 @@ func TestEngine_StepInTarget_SkipsNonTarget(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type)
 		assert.Equal(t, 13, res.Int)
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for eval result")
 	}
 }
@@ -2052,7 +2077,7 @@ func TestEngine_StepInTarget_SecondOccurrence(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type)
 		assert.Equal(t, 32, res.Int) // (+ 11 21)
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for eval result")
 	}
 }
@@ -2240,7 +2265,7 @@ func TestEngine_PausedUnannouncedExcludesInFlightStop(t *testing.T) {
 
 	select {
 	case <-entered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("stopped event was never delivered")
 	}
 
@@ -2274,7 +2299,7 @@ func TestEngine_PausedUnannouncedExcludesInFlightStop(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type)
 		assert.Equal(t, 30, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for eval result")
 	}
 }
@@ -2296,14 +2321,23 @@ func TestEngine_PausedUnannouncedWithNoCallback(t *testing.T) {
 		resultCh <- env.LoadString("test", `(defun add (a b) (+ a b)) (add 10 20)`)
 	}()
 
-	require.Eventually(t, e.PausedUnannounced, 2*time.Second, time.Millisecond,
+	// This is one of the two waits in the debugger tree that cannot be made
+	// event-driven, and the reason is the subject of the test: the pause
+	// happens while no callback is installed, so the engine emits nothing to
+	// wait on. Installing a watcher to get an event would set stopDispatched
+	// and make PausedUnannounced false -- it would destroy the very
+	// condition under test. Polling is therefore unavoidable here; what is
+	// avoidable is letting a clock decide, so the poll runs against
+	// debugEventBackstop and only a pause that never happens fails it. The
+	// other such site is TestDAPServer_LateConnectStoppedEvent. See #489.
+	require.Eventually(t, e.PausedUnannounced, debugEventBackstop, time.Millisecond,
 		"a pause with no callback installed must report as unannounced")
 
 	e.Resume()
 	select {
 	case res := <-resultCh:
 		assert.Equal(t, 30, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for eval result")
 	}
 
