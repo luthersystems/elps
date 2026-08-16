@@ -893,11 +893,39 @@ func (s *indexPath) deleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-	index, ok := resolveIndex(len(cells), s.index)
+	n := len(cells)
+	index, ok := resolveIndex(n, s.index)
 	if !ok {
 		return lisp.Nil(), nil
 	}
-	vals := append(cells[:index], cells[index+1:]...)
+	// IMPORTANT: the compaction is built in a slice this function allocates,
+	// not by shifting cells down inside their own backing array.
+	//
+	// `append(cells[:index], cells[index+1:]...)` writes the tail one position
+	// to the left THROUGH cells' array. That array does not belong to this
+	// function whenever in is a VIEW over a longer sequence -- and the
+	// mutating builtins accept one, because a view is an ordinary array LVal
+	// (the kernel's (slice 'vector ...), or this package's own rangePath.Get).
+	// The shift then lands in the aliased source, which cannot shrink, so it
+	// is left scrambled rather than shortened:
+	//
+	//	(set 'v (vector 1 2 3 4 5))
+	//	(set 'w (slice 'vector v 0 3))
+	//	(?del! w 0)
+	//	  view (vector 2 3)   src (vector 2 3 3 4 5)   <- 1 gone, 3 duplicated
+	//
+	// Nothing raised, and the ANSWER was right: a left shift copies before it
+	// overwrites, so the view came out correct while the source was wrecked.
+	// That is why neither the suite nor the fuzzer caught it -- see issue
+	// #471, and rangePath.setMutate, which carries this same comment because
+	// its overlap corrupted its own answer and so was found immediately.
+	//
+	// This is the same class as #369/#373 but no capacity clamp reaches it:
+	// the write is WITHIN len, not past it. The capacity below is exact, so
+	// the cost is one allocation on a path that previously did none.
+	vals := make([]*lisp.LVal, 0, n-1)
+	vals = append(vals, cells[:index]...)
+	vals = append(vals, cells[index+1:]...)
 	storeCells(in, vals)
 	return in, nil
 }
@@ -1070,10 +1098,23 @@ func (s *rangePath) deleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-	vals := cells[:from]
-	if to < n {
-		vals = append(vals, cells[to:]...)
-	}
+	// IMPORTANT: allocated rather than compacted in place, for exactly the
+	// reason indexPath.deleteMutate above spells out -- `append(cells[:from],
+	// cells[to:]...)` shifts the tail left through a backing array this
+	// function does not own when in is a view, scrambling the source it
+	// aliases (issue #471). Both delete paths had it; the range one reaches it
+	// through '(range a b) rather than an integer step:
+	//
+	//	(?del! w '(range 0 1))   ->   src (vector 2 3 3 4 5)
+	//
+	// The old code skipped the append entirely when to == n, which is why a
+	// delete of a suffix -- including the whole view -- was accidentally
+	// correct: there was no tail to shift. Only a delete with a non-empty tail
+	// wrote through, which narrowed the shapes that could expose it without
+	// making any of them safe.
+	vals := make([]*lisp.LVal, 0, n-(to-from))
+	vals = append(vals, cells[:from]...)
+	vals = append(vals, cells[to:]...)
 	storeCells(in, vals)
 	return in, nil
 }
