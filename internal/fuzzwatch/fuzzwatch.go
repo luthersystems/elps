@@ -56,6 +56,64 @@
 // exactly the configured budget, and every target detects precisely what it
 // detected before. Detection is reduced only on a machine that is not running
 // us -- where the alternative is not detection but a coin flip.
+//
+// # What this does NOT measure: CPU share
+//
+// This instrument resolves scheduler STALL -- intervals during which the
+// process ran not at all. It does not measure CPU SHARE, and under Linux CFS
+// the two come apart completely. Do not reach for it as a load-aware budget.
+//
+// A stall is visible here only if it exceeds tolerance*tick, i.e. 400ms. What
+// starvation actually looks like on a busy machine is not one 400ms freeze but
+// a few microseconds of CPU handed out every millisecond, forever -- and every
+// one of those gaps is far below the resolution floor. Worse, the heartbeat
+// goroutine is by construction almost entirely idle, and CFS gives a waking,
+// near-idle task excellent latency no matter how long the run queue is. The
+// probe is precisely the kind of task starvation does not touch. It reports a
+// healthy machine while the worker beside it gets nothing.
+//
+// Measured on the 4-core sandbox, 200 competing spinners (load average > 50):
+//
+//   - The #453 probe -- create a Budget, sleep 3s, Check -- reports
+//     "wall=3.003s scheduled=3.003s lost=0s longest=0s". Zero lost time, under
+//     load heavy enough to make the machine unusable.
+//
+//   - A fixed lump of CPU work that takes 169ms on the idle box took 17.375s
+//     under that load: a 103x slowdown, at 0.9% CPU share. Over that window
+//     fuzzwatch charged 300ms as lost and reported scheduled=17.357s. It
+//     described a process that was starved for seventeen seconds as one that
+//     ran normally for seventeen seconds. A repeat run was starker still --
+//     12.279s for the same work at 1.2% share, reported as
+//     "12.66s scheduled, 0s lost". Not under-counted: not counted at all.
+//
+// So "scheduled time" is a truthful name only for the failure mode this
+// package was built for -- a process genuinely frozen (VM steal, cgroup
+// throttling with long periods, an SMR pause), where the gaps are seconds and
+// land well above the 400ms floor. Against that, it works as designed. Against
+// contention it degenerates to the wall clock, silently.
+//
+// # The regime in which it is honest, and the floor
+//
+// The nine (now eleven) watchdogs using this package are unaffected, because
+// they are sized 20,000x-90,000x above the mean work they bound: FuzzEval
+// averages 0.33ms per input against 30s, FuzzApplyStdlib 0.73ms against 15s,
+// FuzzSchemaValidate 0.91ms against 20s. A 100x slowdown still leaves two to
+// three orders of magnitude of headroom, so whether the instrument
+// distinguishes stall from share never arises. That headroom -- not the
+// accounting -- is what makes those targets robust.
+//
+// A budget close to the work it bounds gets no such protection, and this
+// package cannot supply it. That is not hypothetical: the first proposed fix
+// in #435 was to give a 2s budget this treatment, at ~57x headroom rather than
+// ~90,000x. PR #447 measured it, found it does not work, and rejected it for
+// that reason; #453 records the general boundary. Do not re-propose it.
+//
+// [MinHonestBudget] is the floor, enforced by a guard test over every call
+// site in the repository. If you want a budget below it, this is the wrong
+// instrument -- measure utime+stime deltas from /proc/self/stat against wall
+// clock instead, and note that those over-count whenever several goroutines of
+// the process are legitimately busy (parallel subtests), so it is not a
+// drop-in replacement either.
 package fuzzwatch
 
 import (
@@ -86,6 +144,27 @@ const (
 	// the honest answer for it.
 	hardWallFactor = 4
 )
+
+// MinHonestBudget is the smallest budget this instrument may be used for.
+//
+// It is not a property of the accounting -- New will happily construct
+// anything -- but of what the accounting can SEE. Stalls shorter than
+// tolerance*tick (400ms) are invisible, and CPU starvation, which is the
+// common case on a busy runner, is invisible at any duration; see the package
+// doc for the measurement. A watchdog is therefore only as trustworthy as its
+// headroom over the work it bounds, and below this floor there is not enough
+// headroom left for "the machine was busy" and "the code hung" to be
+// distinguishable at all.
+//
+// 10s is chosen to sit just under the smallest budget in the tree (15s, in
+// lisp/cycle_fuzz_test.go and lisp/lisplib/fuzz_test.go) and far above the
+// 2s budget that #435 proposed and PR #447 measured and rejected. It is a
+// backstop against a new call site, not a target to design against: every
+// existing watchdog clears it by 50x or more because it is sized against
+// sub-millisecond work, which is the property that actually makes it sound.
+//
+// TestEveryBudgetIsAboveTheHonestFloor enforces this across the repository.
+const MinHonestBudget = 10 * time.Second
 
 // monitor accumulates scheduler stall observed by a heartbeat goroutine.
 //
