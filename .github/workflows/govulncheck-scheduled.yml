@@ -118,10 +118,20 @@ jobs:
       # Named for what it actually gates: a finding OR a build break. The
       # script only reports which condition tripped (log + job summary) and
       # then fails; it never decides whether to fail.
+      #
+      # The `if:` is fail-safe on purpose: `'' != '0'` is TRUE in Actions
+      # expression syntax, so a MISSING scan output runs this step rather than
+      # skipping it. The script has to agree. It used to default empty inputs
+      # to `0` and report "nothing to fail", so the step ran BECAUSE the
+      # outputs were missing and then said nothing was wrong (#495). Every
+      # output this `if:` reads is now passed in below -- including
+      # binscan.outputs.exit, which was not -- so the script sees exactly the
+      # evidence the gate fires on, and exits 2 for anything it was not told.
       - name: Fail if govulncheck reported a finding or a build break
         if: ${{ !cancelled() && (steps.scan.outputs.exit != '0' || steps.binscan.outputs.exit != '0') }}
         env:
           SOURCE_SCAN_EXIT: ${{ steps.scan.outputs.exit }}
+          BINARY_SCAN_EXIT: ${{ steps.binscan.outputs.exit }}
           BINARY_BUILD_FAILED: ${{ steps.binscan.outputs.build_failed }}
           BINARY_VULNS_FOUND: ${{ steps.binscan.outputs.vulns_found }}
         run: bash scripts/govulncheck-fail-summary.sh
