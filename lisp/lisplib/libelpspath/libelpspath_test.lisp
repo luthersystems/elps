@@ -145,3 +145,88 @@
   (append! view 99)
   (assert-equal (vector 1 2 3 99) view)
   (assert-equal (vector 1 2 3 4 5) src))
+
+;;; ---- issue #471: a delete through a view must not touch the source ----
+;;;
+;;; A view is an ordinary array LVal whose cells are a window onto a longer
+;;; sequence, so the mutating builtins accept one and cannot tell.  The two
+;;; deleteMutate paths used to compact IN PLACE, shifting the tail left
+;;; through the aliased source's own backing array.  The view's answer came
+;;; out right -- a left shift copies before it overwrites -- and only the
+;;; source was wrecked, which is why nothing caught it.
+;;;
+;;; The source cannot shrink, so there is no "correct" amount for it to
+;;; change: the requirement is that it does not change at all.
+
+(test-let* "?del! index through a kernel slice view leaves the source alone"
+  ((src (vector 1 2 3 4 5))
+   (view (slice 'vector src 0 3)))
+  (elpspath:?del! view 0)
+  (assert-equal (vector 2 3) view)
+  (assert-equal (vector 1 2 3 4 5) src))
+
+(test-let* "?del! range through a kernel slice view leaves the source alone"
+  ((src (vector 1 2 3 4 5))
+   (view (slice 'vector src 0 3)))
+  (elpspath:?del! view '(range 0 1))
+  (assert-equal (vector 2 3) view)
+  (assert-equal (vector 1 2 3 4 5) src))
+
+; The other producer of a view in the tree is this package's own range Get,
+; and it reaches the same defect by a route that never mentions `slice`.
+(test-let* "?del! through elpspath's own range view leaves the source alone"
+  ((src (vector 1 2 3 4 5))
+   (view (elpspath:? src '(range 0 3))))
+  (elpspath:?del! view 0)
+  (assert-equal (vector 2 3) view)
+  (assert-equal (vector 1 2 3 4 5) src))
+
+; A view does not have to be anchored at 0, and the shift landed wherever the
+; window did: this arm reported (vector 1 2 4 5 5) before the fix.
+(test-let* "?del! through an offset view leaves the source alone"
+  ((src (vector 1 2 3 4 5))
+   (view (slice 'vector src 2 5)))
+  (elpspath:?del! view 0)
+  (assert-equal (vector 4 5) view)
+  (assert-equal (vector 1 2 3 4 5) src))
+
+; A full-length view aliases just as completely as a partial one; the window
+; being the whole sequence is not the same as owning it.  Reported
+; (vector 2 3 4 5 5) before the fix.
+(test-let* "?del! through a full-length view leaves the source alone"
+  ((src (vector 1 2 3 4 5))
+   (view (slice 'vector src 0 5)))
+  (elpspath:?del! view 0)
+  (assert-equal (vector 2 3 4 5) view)
+  (assert-equal (vector 1 2 3 4 5) src))
+
+; A view reached through a document, rather than bound to a variable the
+; caller thinks of as a view.
+(test-let* "?del! through a view stored in a document leaves the source alone"
+  ((src (vector 1 2 3 4 5))
+   (doc (sorted-map "v" (slice 'vector src 0 3))))
+  (elpspath:?del! doc "v" 0)
+  (assert-equal (vector 2 3) (elpspath:? doc "v"))
+  (assert-equal (vector 1 2 3 4 5) src))
+
+; The controls that separate #471 from what is expected and from what was
+; already fixed.  These are GUARDS: they pass both before and after the fix,
+; and exist so the semantics around it are re-decided rather than drifted.
+;
+; Assigning an element through a view is ordinary aliasing and is documented:
+; setMutate does cells[index] = newIn, and a view shares its elements.
+(test-let* "?set! at an index through a view does reach the source"
+  ((src (vector 1 2 3 4 5))
+   (view (slice 'vector src 0 3)))
+  (elpspath:?set! view 0 97)
+  (assert-equal (vector 97 2 3) view)
+  (assert-equal (vector 97 2 3 4 5) src))
+
+; The range splice was the same defect and was fixed earlier; it builds its
+; result in a slice it allocates.
+(test-let* "?set! range splice through a view does not reach the source"
+  ((src (vector 1 2 3 4 5))
+   (view (slice 'vector src 0 3)))
+  (elpspath:?set! view '(range 0 1) (vector 90 91))
+  (assert-equal (vector 90 91 2 3) view)
+  (assert-equal (vector 1 2 3 4 5) src))

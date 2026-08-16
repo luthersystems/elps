@@ -4,6 +4,7 @@ package libelpspath
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
@@ -73,6 +74,25 @@ import (
 //     source's elements before `a` and ENDS with the source's elements from
 //     `b` on, by value and in order.  Only the middle is theirs to change.
 //     See "THE RESULT AXIS" below for why this had to be added.
+//  7. A view is written only where the path points.  The same operation is
+//     run a second time against a VIEW — an array LVal whose cells are a
+//     window onto a longer backing array, which is what the kernel's
+//     (slice 'vector ...) and this package's rangePath.Get hand out — and
+//     the backing array may come back changed only at the positions the step
+//     names.  See viewWitness for why the harness's own documents cannot
+//     express this and why issue #471 therefore survived every campaign.
+//
+// THE OWNERSHIP AXIS (issue #471).  Invariants 1-6 watch documents the
+// harness BUILT, whose cells belong to nobody else.  A write that runs off
+// the end of what the path named lands in the harness's own array and no
+// invariant can see it.  #471 is exactly that write: the two deleteMutate
+// paths compacted with `append(cells[:i], cells[i+1:]...)`, shifting the tail
+// left through the caller's array — harmless on a document the operation
+// owns, and on a view it scrambles the longer sequence the view aliases.  The
+// answer stayed correct (a left shift copies before it overwrites), so
+// invariants 1-3 passed; no list was touched, so 4 passed; the mutating ops
+// are exempt from 5; and the ends survived, so 6 passed.  Seven invariants
+// are not more than six unless the seventh sees a shape the others cannot.
 //
 // THE RESULT AXIS (issue found in review of #402).  Invariants 1-5 all watch
 // the INPUT: they ask whether the document was left alone, never whether the
@@ -158,6 +178,19 @@ func FuzzPathEngine(f *testing.F) {
 			f.Add(seed)
 		}
 	}
+	// Invariant 7's seeds.  Added deliberately, and they are the whole
+	// difference between the property running and not running: the drivers
+	// above reach newViewWitness's shape ZERO times, because it needs a
+	// vector document AND a step sequence of length exactly one AND a step
+	// that names a strict, non-empty subset of that vector's positions, and
+	// nothing above lines all three up.  A property the corpus never reaches
+	// is a property that cannot fail, which is the failure mode #462 and #470
+	// both hit.  TestViewWitnessSeedsAreReached pins that these do reach it.
+	//
+	// One per operation per step form, found by search over short inputs.
+	for _, seed := range viewWitnessSeeds {
+		f.Add(seed)
+	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		env := fuzzPathEnv(t)
@@ -180,11 +213,27 @@ func FuzzPathEngine(f *testing.F) {
 		// rendered now or there is nothing left to compare against.
 		splice, spliceOK := newSpliceOracle(doc, steps)
 
+		// Invariant 7 setup, taken BEFORE the call for the same reason and a
+		// sharper one: the witness copies the document's cells, and a "!"
+		// operation run first would have already shrunk the document, so the
+		// window built afterwards is a different — and typically too small —
+		// shape than the one the property is about.  Built after the call,
+		// this property silently passes on a tree that has #471 in it.
+		witness, witnessOK := newViewWitness(doc, steps)
+
+		// The new value is drawn once and shared by both arms, so the view
+		// arm below exercises the same operation the main arm did rather than
+		// a second, unrelated draw from the generator.
+		var newVal *lisp.LVal
+		if op.needsValue {
+			newVal = g.value()
+		}
+
 		args := make([]*lisp.LVal, 0, len(steps)+2)
 		args = append(args, doc)
 		args = append(args, steps...)
 		if op.needsValue {
-			args = append(args, g.value())
+			args = append(args, newVal)
 		}
 
 		fun := env.GetGlobal(lisp.Symbol("elpspath:" + op.name))
@@ -231,7 +280,188 @@ func FuzzPathEngine(f *testing.F) {
 					splice.prefix, splice.suffix, result)
 			}
 		}
+
+		// Invariant 7.  Run the same operation again on a VIEW of the same
+		// shape, and require it to write only where its path points.
+		if witnessOK {
+			viewArgs := make([]*lisp.LVal, 0, len(steps)+2)
+			viewArgs = append(viewArgs, witness.view)
+			viewArgs = append(viewArgs, steps...)
+			if op.needsValue {
+				viewArgs = append(viewArgs, newVal)
+			}
+			_ = env.FunCall(fun, lisp.SExpr(viewArgs))
+			if why := witness.check(); why != "" {
+				t.Fatalf("%s through a view wrote into the backing array it does"+
+					" not own: %s\n--- steps ---\n%s\n--- view ---\n%s",
+					op.name, why, renderSteps(steps), witness.view)
+			}
+		}
 	})
+}
+
+// viewWitness is invariant 7's apparatus (issue #471).
+//
+// WHY THIS AXIS EXISTS.  Every document invariants 1-6 watch is one the
+// harness built and OWNS: its cells belong to no one else, so a write that
+// runs off the end of what the path named lands in the harness's own array
+// and is invisible.  A real caller has a second shape the harness never
+// produced -- a VIEW: an ordinary array LVal whose cells are a window onto a
+// LONGER sequence, handed out by the kernel's (slice 'vector ...) or by this
+// package's own rangePath.Get.  Mutating builtins accept one, because there
+// is nothing in an LVal that says "view".
+//
+// The alias battery has the same hole from the other side, and says so: it
+// writes through COPIES, and a view is not a copy.  So the one shape in which
+// an in-place compaction is visible was outside both.  That is why #471 --
+// `append(cells[:index], cells[index+1:]...)` shifting a view's tail left
+// through the aliased source's array -- survived every campaign and every
+// battery run, and was found by hand instead.
+//
+// THE PROPERTY.  A path operation applied to a view may change the backing
+// array only at the positions its path NAMES: {i} for an integer step,
+// [from,to) for a range step, nothing for a step that resolves to no
+// position.  Everything else in that array belongs to a sequence the caller
+// never passed.
+//
+// It is stated as "named positions" rather than "no change at all" because
+// element assignment through a view is legitimate and documented: (?set! w 0
+// 97) sets the source's element 0, exactly as writing through any alias
+// does.  #471 is not that.  It shifted every element after the deleted one,
+// so positions the path never named moved -- which this catches while
+// leaving the legitimate write alone.
+//
+// It is deliberately a SUB-property and applies only to the isolated
+// single-step-on-a-vector shape, the same restriction newSpliceOracle takes:
+// a longer path reaches its view through intermediate Gets whose own aliasing
+// is a separate question, and an oracle that guessed at those would report
+// false positives rather than find defects.
+type viewWitness struct {
+	view     *lisp.LVal
+	backing  []*lisp.LVal
+	snapshot []*lisp.LVal
+	named    map[int]bool
+	window   int
+}
+
+// newViewWitness builds a view over a padded copy of doc's cells, plus the
+// before-snapshot and the set of positions the step is allowed to touch.
+//
+// The view is built over a COPY of the document rather than the document
+// itself so that the extra call cannot disturb the assertions invariants 1-6
+// have already made about doc.
+//
+// The window is clamped three-index, so the view carries no spare capacity:
+// this is #471 and not #369/#373, and the clamp keeps the two apart.  A
+// capacity-retention bug would need an append past len to show; every write
+// this catches is WITHIN len, which is why no clamp anywhere prevents it.
+func newViewWitness(doc *lisp.LVal, steps []*lisp.LVal) (*viewWitness, bool) {
+	if len(steps) != 1 || doc.Type != lisp.LArray || len(doc.Cells) != 2 {
+		return nil, false
+	}
+	if doc.Cells[0].Len() > 1 {
+		return nil, false
+	}
+	named, ok := namedPositions(len(doc.Cells[1].Cells), steps[0])
+	if !ok {
+		return nil, false
+	}
+	cp, err := copyLVal(doc)
+	if err != nil || cp.Type != lisp.LArray || len(cp.Cells) != 2 {
+		return nil, false
+	}
+	cells := cp.Cells[1].Cells
+	n := len(cells)
+	if n == 0 {
+		// An empty window has no interior to shift and no elements to lose.
+		return nil, false
+	}
+	// The tail is what makes this a view rather than a whole sequence.  Its
+	// markers are disjoint from everything the generators produce, so a
+	// marker that moves names the defect instead of describing a coincidence.
+	const viewPad = 3
+	backing := make([]*lisp.LVal, n+viewPad)
+	copy(backing, cells)
+	for i := n; i < len(backing); i++ {
+		backing[i] = lisp.String(fmt.Sprintf("V%d", i-n))
+	}
+	snapshot := make([]*lisp.LVal, len(backing))
+	copy(snapshot, backing)
+	return &viewWitness{
+		view:     lisp.Array(nil, backing[0:n:n]),
+		backing:  backing,
+		snapshot: snapshot,
+		named:    named,
+		window:   n,
+	}, true
+}
+
+// namedPositions is the set of backing positions a single step points at.
+// It borrows resolveIndex and validateRange so the oracle agrees with the
+// engine about WHICH positions are meant; neither is implicated in #471, and
+// an oracle that disagreed about bounds would report false positives.
+func namedPositions(n int, step *lisp.LVal) (map[int]bool, bool) {
+	out := map[int]bool{}
+	switch step.Type {
+	case lisp.LInt:
+		if i, ok := resolveIndex(n, step.Int); ok {
+			out[i] = true
+		}
+		return out, true
+	case lisp.LSExpr:
+		if len(step.Cells) != 3 {
+			return nil, false
+		}
+		if head := step.Cells[0]; head.Type != lisp.LSymbol || head.Str != "range" {
+			return nil, false
+		}
+		lo, hi := step.Cells[1], step.Cells[2]
+		if lo.Type != lisp.LInt || hi.Type != lisp.LInt {
+			return nil, false
+		}
+		from, to, err := validateRange(n, lo.Int, hi.Int, false)
+		if err != nil {
+			// A range the engine refuses names nothing and must write nothing.
+			return out, true
+		}
+		for i := from; i < to; i++ {
+			out[i] = true
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+// check reports the first backing position that moved without being named.
+func (w *viewWitness) check() string {
+	for i := range w.snapshot {
+		if w.backing[i] == w.snapshot[i] || w.named[i] {
+			continue
+		}
+		where := fmt.Sprintf("position %d, inside the view's window", i)
+		if i >= w.window {
+			where = fmt.Sprintf("position %d, PAST the view's window of %d", i, w.window)
+		}
+		// Identity as well as rendering: two different elements can print the
+		// same (a vector of nils is the common case), and then a report that
+		// quoted only the text would read "changed from () to ()".
+		return fmt.Sprintf("%s changed from %s (%p) to %s (%p), and the path does not"+
+			" name it (named: %v) — the operation compacted through the source's"+
+			" array instead of one of its own",
+			where, w.snapshot[i], w.snapshot[i], w.backing[i], w.backing[i],
+			sortedNamed(w.named))
+	}
+	return ""
+}
+
+func sortedNamed(named map[int]bool) []int {
+	out := make([]int, 0, len(named))
+	for i := range named {
+		out = append(out, i)
+	}
+	sort.Ints(out)
+	return out
 }
 
 // spliceOracle holds the two ends of a sequence document that a single
@@ -777,4 +1007,112 @@ func TestPathGenCoverage(t *testing.T) {
 			t.Errorf("generator never produced a %s step: %v", form, stepForms)
 		}
 	}
+}
+
+// viewWitnessSeeds are the inputs that reach invariant 7's shape: a vector
+// document, a single step, and a step that names some but not all of the
+// vector's positions -- the configuration in which a compaction through the
+// source's array is observable.  One per operation per step form.
+//
+// They are byte strings written in this file, found by searching short random
+// inputs for the shape.  No seed is derived from any downstream corpus.
+var viewWitnessSeeds = [][]byte{
+	{0x62, 0xce, 0xe1, 0x20, 0xb4, 0xdb, 0xe0, 0x47, 0x15},                                     // ? index
+	{0xbd, 0x46, 0x4b, 0x50, 0x58, 0x2b, 0x10, 0xb7, 0x1b, 0x94, 0x4a, 0xbb, 0x16},             // ? range
+	{0xd3, 0xa6, 0xe1, 0x10, 0x94, 0x27, 0x20, 0x78, 0x11},                                     // ?set! index
+	{0x08, 0xbe, 0x6f, 0x83, 0x1a, 0xd0, 0x54, 0x5e, 0xf6, 0xcb, 0x07, 0xc4, 0x84, 0x99, 0xee}, // ?set! range
+	{0x3a, 0xa6, 0x4b, 0x40, 0x9a, 0x13, 0x90, 0xe1, 0xdd},                                     // ?set index
+	{0x10, 0xee, 0x15, 0x76, 0x60, 0xca, 0x38, 0x88, 0x5c, 0x9b, 0xdc, 0xae, 0xa3, 0x6b, 0x7a}, // ?set range
+	{0x0a, 0x3e, 0x81, 0x7c, 0xfb, 0x50, 0xb0, 0x5c, 0xe5, 0x81},                               // ?del! index
+	{0x9d, 0x8e, 0xab, 0x2c, 0xba, 0xe8, 0x20, 0xc5, 0xb7, 0xbd, 0x88, 0x6d, 0xf8, 0xed, 0xb4}, // ?del! range
+	{0x2e, 0x9e, 0x15, 0xd8, 0xc8, 0x1a, 0x46, 0xa9, 0x99},                                     // ?del index
+	{0xd6, 0xde, 0xc3, 0x8a, 0xf9, 0x13, 0x02, 0x20, 0x0f, 0x7b, 0xeb, 0xad, 0x43, 0x47},       // ?del range
+	{0x67, 0x36, 0x39, 0x25, 0x54, 0x09, 0x77, 0xe8, 0x16, 0xcd},                               // ?nil! index
+	{0x67, 0xce, 0x99, 0x92, 0xd6, 0xd0, 0xdb, 0xc4, 0xb7, 0xbb, 0x51, 0x93, 0x65},             // ?nil! range
+	{0x61, 0xb6, 0x75, 0xa0, 0xb8, 0xf0, 0xb0, 0x99, 0x1f},                                     // ?nil index
+	{0xfb, 0x66, 0xff, 0xa0, 0x94, 0x5c, 0x52, 0x28, 0x01, 0x2b, 0x0d, 0x6e, 0x4f},             // ?nil range
+}
+
+// TestViewWitnessSeedsAreReached is invariant 7's own gate, in the spirit of
+// TestPathGenCoverage and TestEnumeratePathsCoversEveryStepForm.
+//
+// A fuzz invariant that no input reaches is not an invariant, it is a comment
+// that compiles -- and nothing about that is visible from a green fuzz run.
+// This asserts two separate things, because they fail separately:
+//
+//  1. The general drivers reach the shape ZERO times.  That is not a defect
+//     to fix, it is the measurement that justifies viewWitnessSeeds existing;
+//     if it ever stops being zero this test says so rather than leaving the
+//     seeds looking like superstition.
+//  2. Every viewWitnessSeed does reach it, and between them they cover all
+//     seven operations and both sequence step forms.
+func TestViewWitnessSeedsAreReached(t *testing.T) {
+	t.Parallel()
+
+	reach := func(data []byte) (int, string, bool) {
+		g := &pathGen{b: data, budget: pathGenBudget}
+		opIdx := int(g.next()) % numPathOps
+		doc := g.doc(0)
+		steps := g.steps(doc)
+		if _, ok := newViewWitness(doc, steps); !ok {
+			return 0, "", false
+		}
+		form := "other"
+		if len(steps) == 1 {
+			switch steps[0].Type { //nolint:exhaustive // only the two sequence step forms reach the witness
+			case lisp.LInt:
+				form = "index"
+			case lisp.LSExpr:
+				form = "range"
+			}
+		}
+		return opIdx, form, true
+	}
+
+	drivers := [][]byte{
+		{}, {0x00}, {0x01, 0x02, 0x03},
+		{0x10, 0x21, 0x32, 0x43, 0x54},
+		{0xff, 0xfe, 0xfd, 0xfc, 0xfb, 0xfa},
+		{0x05, 0x00, 0x07, 0x01, 0x02, 0x00, 0x03, 0x09},
+		{0x02, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99},
+		{0x07, 0x03, 0x01, 0x04, 0x01, 0x05, 0x09, 0x02, 0x06},
+	}
+	generic := 0
+	for op := range numPathOps {
+		for _, d := range drivers {
+			if _, _, ok := reach(append([]byte{byte(op)}, d...)); ok { //nolint:gocritic // deliberate new slice per seed
+				generic++
+			}
+		}
+	}
+	if generic != 0 {
+		t.Logf("NOTE: %d of the general drivers now reach invariant 7; the dedicated"+
+			" seeds are no longer the only route (not a failure)", generic)
+	}
+
+	ops := map[string]bool{}
+	forms := map[string]bool{}
+	for i, seed := range viewWitnessSeeds {
+		opIdx, form, ok := reach(seed)
+		if !ok {
+			t.Errorf("viewWitnessSeeds[%d] no longer reaches invariant 7: the property"+
+				" it guards is not being exercised", i)
+			continue
+		}
+		ops[pathOps[opIdx].name] = true
+		forms[form] = true
+	}
+	for _, op := range pathOps {
+		if !ops[op.name] {
+			t.Errorf("no seed reaches invariant 7 for %s", op.name)
+		}
+	}
+	for _, form := range []string{"index", "range"} {
+		if !forms[form] {
+			t.Errorf("no seed reaches invariant 7 with a %s step", form)
+		}
+	}
+	t.Logf("invariant 7 reached by %d/%d dedicated seeds across %d operations and %d step forms;"+
+		" general drivers reach it %d times",
+		len(viewWitnessSeeds), len(viewWitnessSeeds), len(ops), len(forms), generic)
 }
