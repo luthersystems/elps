@@ -693,6 +693,88 @@ assert_contains "::error::A job in this workflow did not succeed" \
 	"require-jobs: emits the ::error:: annotation naming the results" \
 	env RESULTS='success failure' bash "$REQ_JOBS"
 
+# NO RESULTS IS NOT A PASS (issue #485).
+#
+# `for r in ${RESULTS}` never enters its body when RESULTS is empty, so rc
+# stayed 0 and this -- the aggregate whose NAME is in branch protection -- said
+# "All jobs in this workflow succeeded" and exited 0 having checked nothing.
+# Every non-success result was already covered above; the one input meaning
+# "nothing reported at all" was the one that passed.
+#
+# RESULTS is `${{ join(needs.*.result, ' ') }}`. It goes empty if the `needs:`
+# list is emptied or restructured, or if the expression is mistyped --
+# `needs.*.results` silently yields "" rather than erroring.
+#
+# All three spellings of "no results" are pinned, because they arrive by
+# different routes: unset (env var never set), empty (join over no jobs), and
+# separators-only (join over empty results).
+assert_exit 1 "require-jobs: EMPTY results fails — no upstream reported is not a pass (#485)" \
+	env RESULTS='' bash "$REQ_JOBS"
+assert_exit 1 "require-jobs: UNSET results fails (#485)" \
+	env -u RESULTS bash "$REQ_JOBS"
+assert_exit 1 "require-jobs: whitespace-only results fails (#485)" \
+	env RESULTS='   ' bash "$REQ_JOBS"
+assert_contains "::error::No upstream job results were reported" \
+	"require-jobs: the empty case SAYS nothing was verified rather than failing mutely (#485)" \
+	env RESULTS='' bash "$REQ_JOBS"
+# The old wording must not survive on the empty path: "All jobs in this workflow
+# succeeded" over zero jobs is the precise false statement this fixes.
+if env RESULTS='' bash "$REQ_JOBS" 2>&1 | grep -q "All jobs in this workflow succeeded"; then
+	bad "require-jobs still claims every job succeeded on empty input (#485)"
+else
+	ok "require-jobs no longer claims every job succeeded when none reported (#485)"
+fi
+
+# NEGATIVE CONTROL for the guard above (the bar #480 set).
+#
+# Strip the emptiness guard back out of a COPY of the script and require the
+# vacuous pass to come back. Without this, the guard could be deleted or
+# weakened in a refactor and every assertion above would still pass -- the
+# check would quietly return to being unable to fail, which is the whole defect
+# class this file exists to catch.
+#
+# The copy is produced by DELETING the guard from the real script rather than
+# by keeping a fixture, so the control cannot drift away from what it guards.
+# If the block can no longer be located the control fails loudly instead of
+# silently testing nothing -- a negative control that stops finding its target
+# is itself a check that cannot fail.
+reqjobs_tmp="$(mktemp -d)"
+reqjobs_strip_rc=0
+python3 - "$REQ_JOBS" "${reqjobs_tmp}/stripped.sh" <<'PY' || reqjobs_strip_rc=$?
+import re, sys
+
+src = open(sys.argv[1]).read()
+# Remove the emptiness guard, and only that: the `if [ -z "${RESULTS// /}" ]`
+# block up to its closing `fi`.
+out, n = re.subn(
+    r'\nif \[ -z "\$\{RESULTS// /\}" \]; then\n.*?\nfi\n',
+    "\n",
+    src,
+    flags=re.S,
+)
+if n != 1:
+    sys.stderr.write("expected exactly 1 guard block, removed %d\n" % n)
+    sys.exit(3)
+open(sys.argv[2], "w").write(out)
+PY
+if [ "$reqjobs_strip_rc" -ne 0 ]; then
+	bad "negative control could not strip the empty-RESULTS guard — has it been renamed or restructured? (#485)"
+else
+	# The stripped copy must still behave normally on real input, or the control
+	# is testing a script it accidentally broke rather than the missing guard.
+	assert_exit 0 "negative-control rig: the stripped copy still passes on all-success (#485)" \
+		env RESULTS='success success' bash "${reqjobs_tmp}/stripped.sh"
+	assert_exit 1 "negative-control rig: the stripped copy still fails on a failure (#485)" \
+		env RESULTS='success failure' bash "${reqjobs_tmp}/stripped.sh"
+	# And now the point: without the guard, empty input goes green again.
+	if env RESULTS='' bash "${reqjobs_tmp}/stripped.sh" >/dev/null 2>&1; then
+		ok "negative control: REMOVING the guard restores the vacuous pass, so the assertions above are load-bearing (#485)"
+	else
+		bad "negative control did not reproduce the #485 vacuous pass — the assertions above may be passing for the wrong reason"
+	fi
+fi
+rm -rf "$reqjobs_tmp"
+
 echo "== extracted workflow bodies: bench-compare =============================="
 
 BENCH_COMPARE_SH="${SCRIPT_DIR}/bench-compare.sh"
