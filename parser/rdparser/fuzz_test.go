@@ -214,6 +214,29 @@ func TestParserSurvivesPathologicalInput(t *testing.T) {
 				}()
 				select {
 				case <-done:
+
+				// WALL CLOCK, deliberately -- not internal/fuzzwatch (#454).
+				//
+				// The watchdogs that DO use fuzzwatch all bound
+				// mutator-generated input inside an f.Fuzz body, where the
+				// input set is open and a hang is a live possibility.  This is
+				// not that: fuzzseed.Pathological() is a fixed, checked-in
+				// corpus of inputs already known to terminate, replayed as a
+				// regression test.  Slowest subtest measured: 0.12s against
+				// this 30s bound.
+				//
+				// Converting would also buy nothing measurable.  fuzzwatch
+				// resolves scheduler stall above 400ms, not CPU share; #453
+				// measured it reporting lost=0s while real work ran 73-103x
+				// slower at ~1% CPU share.  Under the only load that could
+				// threaten a 30s bound it reports scheduled == wall, so a
+				// converted watchdog would fire at exactly the moment this one
+				// does -- the same clock, wearing a hat.
+				//
+				// Note also that parse() takes no *testing.T and this
+				// goroutine only closes a channel, so unlike the lexer's
+				// former lexAll(t, ...) there is no way for the worker to
+				// report a verdict from the wrong goroutine.
 				case <-time.After(30 * time.Second):
 					// A leaked goroutine is acceptable here: the run has
 					// already failed and the alternative is a hung CI job.
