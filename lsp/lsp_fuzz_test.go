@@ -785,7 +785,7 @@ func (s *session) checkRenameSpans(a opArgs, res *protocol.WorkspaceEdit) {
 	name := rwp.Placeholder
 
 	for uri, edits := range res.Changes {
-		doc := s.srv.docs.Get(string(uri))
+		doc := s.srv.docs.Get(uri)
 		if doc == nil {
 			continue // a workspace file the harness never opened
 		}

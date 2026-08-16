@@ -232,7 +232,7 @@ func TokenEnd(tok *Token) (endLine, endCol, endPos int) {
 	// the token covers, or -1 while the token has not crossed a newline and
 	// the end column is therefore still measured from tok.Source.Col.
 	lineStart := -1
-	for i := 0; i < len(tok.Text); i++ {
+	for i := range len(tok.Text) {
 		if tok.Text[i] == '\n' {
 			line++
 			lineStart = i + 1

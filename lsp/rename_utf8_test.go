@@ -5,6 +5,7 @@ package lsp
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -84,14 +85,14 @@ func renameAt(t *testing.T, s *Server, uri, content string, line, char int, newN
 	t.Helper()
 	edit, err := s.textDocumentRename(mockContext(), &protocol.RenameParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
-			TextDocument: protocol.TextDocumentIdentifier{URI: protocol.DocumentUri(uri)},
+			TextDocument: protocol.TextDocumentIdentifier{URI: uri},
 			Position:     protocol.Position{Line: safeUint(line), Character: safeUint(char)},
 		},
 		NewName: newName,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, edit, "rename returned no workspace edit")
-	edits := edit.Changes[protocol.DocumentUri(uri)]
+	edits := edit.Changes[uri]
 	require.NotEmpty(t, edits, "rename produced no edits for %s", uri)
 	return applyTextEdits(t, content, edits)
 }
@@ -231,7 +232,7 @@ func TestRenameNonASCIIRoundTripsThroughTheParser(t *testing.T) {
 		"(defun 加算 (a b) (+ a b))\n(加算 1 2)\n",
 		"(defun add (x y) (+ x y))\n(add 1 2)\n", // GUARD: ASCII, passed on 4737835
 	} {
-		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
 			s := testServer()
 			uri := fmt.Sprintf("file:///test/roundtrip%d.lisp", i)
 			openDoc(s, uri, content)
