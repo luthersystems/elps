@@ -87,15 +87,21 @@ jobs:
     #     ceil(targets / shards) x FUZZTIME + overhead <= timeout-minutes
     #
     # on every PR, so this number cannot silently stop covering the sweep. At
-    # 23 targets over 6 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
+    # 30 targets over 8 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
     # worth of headroom for a target being added before anyone reshards.
     #
-    # This branch is what consumed the previous ceiling. Five shards held to
-    # exactly 20 targets; the three targets added here take it to 23, and
-    # ceil(23/5) = 5 puts `needed` at exactly 60 -- which the gate PASSES while
-    # describing a truncated sweep. So the sixth shard arrives HERE, in the
-    # same change as the targets that need it, rather than being left for
-    # whoever next notices. ceil(23/6) = 4 restores the 10 minutes.
+    # This change adds the 30th target, libelpspath.FuzzPathEngine, and so
+    # re-derives: ceil(30/8) = 4, `needed` stays at 50 and the 10 minutes are
+    # untouched. No shard is added, because none is needed -- the eighth shard
+    # left room for two more targets and this is the second of them. The rule
+    # is that a target never lands without this line being recomputed, not
+    # that every target buys a shard.
+    #
+    # The line above previously read "23 targets over 6 shards" while the
+    # matrix below said 8: the seventh and eighth shards each updated their
+    # own paragraph without touching the derived summary. The number that
+    # matters is the one the gate computes, and it is checked on every PR --
+    # but the summary is what a reader trusts, so it is corrected here.
     #
     # THE HEADROOM IS THE POINT, NOT THE GREEN TICK. The gate's condition is
     # `needed > timeout`, so a sweep sized at exactly timeout-minutes PASSES --
