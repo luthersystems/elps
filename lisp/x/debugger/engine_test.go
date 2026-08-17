@@ -671,7 +671,6 @@ func TestEngine_StepOver(t *testing.T) {
 		}
 
 		// Keep stepping over sub-expressions on line 3.
-		expr = lastExpr
 		e.StepOver()
 	}
 
