@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1501,8 +1502,67 @@ func TestSeverity_String(t *testing.T) {
 	assert.Equal(t, "error", SeverityError.String())
 	assert.Equal(t, "warning", SeverityWarning.String())
 	assert.Equal(t, "info", SeverityInfo.String())
-	assert.Equal(t, "unknown", Severity(0).String())  // severityUnset zero value
-	assert.Equal(t, "unknown", Severity(99).String()) // out of range
+	// severityUnset: the documented default, the same answer MarshalJSON has
+	// always given for it (#461). It read "unknown" before.
+	assert.Equal(t, "warning", Severity(0).String())
+	// Out of range is a corrupt value, not an unset one — still "unknown".
+	assert.Equal(t, "unknown", Severity(99).String())
+}
+
+// TestSeverity_UnsetRendersTheSameEverywhere is the #461 repro, written in the
+// shape the issue says is the only way to reach an unset severity: an embedder
+// constructing a custom Analyzer — an exported struct with an exported field —
+// and omitting Severity. All 17 in-tree analyzers set it, and Pass.Report fills
+// an unset diagnostic severity from the analyzer, so only an unset *analyzer*
+// gets here.
+//
+// Before the fix String() answered "unknown" while MarshalJSON answered
+// "warning", so the same diagnostic had two names: mcpserver builds its wire
+// Severity from String(), `elps lint --format=json` from the marshaller. And
+// "unknown" is in neither UnmarshalJSON's nor ParseSeverity's vocabulary, so
+// the String() rendering could not be read back or filtered for.
+func TestSeverity_UnsetRendersTheSameEverywhere(t *testing.T) {
+	// An analyzer as an embedder would write it: no Severity field.
+	custom := &Analyzer{
+		Name: "embedder-check",
+		Doc:  "reports without setting a severity",
+		Run: func(pass *Pass) error {
+			pass.Reportf(&token.Location{File: "test.lisp", Line: 1, Col: 1}, "unset severity")
+			return nil
+		},
+	}
+	diags := lintCheck(t, custom, "(set 'x 1)\n")
+	require.Len(t, diags, 1)
+	d := diags[0]
+	require.Equal(t, severityUnset, d.Severity,
+		"precondition: an analyzer with no Severity leaves the diagnostic unset")
+
+	// 1. String() and MarshalJSON agree.
+	marshaled, err := json.Marshal(d.Severity)
+	require.NoError(t, err)
+	assert.Equal(t, `"warning"`, string(marshaled))
+	assert.Equal(t, "warning", d.Severity.String(),
+		"String() must not name the diagnostic differently from the marshaller")
+	assert.JSONEq(t, string(marshaled), strconv.Quote(d.Severity.String()))
+
+	// 2. The rendered name is in the accepted vocabulary, both ways in.
+	parsed, err := ParseSeverity(d.Severity.String())
+	require.NoError(t, err, "a rendered severity must be one ParseSeverity accepts")
+	assert.Equal(t, SeverityWarning, parsed)
+	var back Severity
+	require.NoError(t, json.Unmarshal(marshaled, &back))
+	assert.Equal(t, SeverityWarning, back)
+
+	// 3. And the whole diagnostic still round-trips through the JSON output
+	//    CI reads, resolving to the same severity MaxSeverity ranks it at.
+	var buf bytes.Buffer
+	require.NoError(t, FormatJSON(&buf, diags))
+	var reparsed []Diagnostic
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &reparsed))
+	require.Len(t, reparsed, 1)
+	assert.Equal(t, SeverityWarning, reparsed[0].Severity)
+	assert.Equal(t, MaxSeverity(diags), reparsed[0].Severity,
+		"MaxSeverity already resolved unset to warning; the renderers must match it")
 }
 
 func TestSeverity_AnalyzerDefaults(t *testing.T) {
