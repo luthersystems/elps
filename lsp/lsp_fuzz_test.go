@@ -761,13 +761,19 @@ func (s *session) opRename(a opArgs) {
 // may name a workspace file the harness never opened, and its content is not
 // available to compare against.
 //
-// UNITS: byte offsets, as everywhere else in this package (position.go splits
-// on "\n" and slices by byte). elps#464 is that LSP 3.16 actually specifies
-// UTF-16 code units and this server neither negotiates positionEncoding nor
-// converts; this assertion is deliberately the weaker, server-internal
-// property, which is a real property regardless of how #464 is answered -- a
-// range whose two ends are counted differently is broken before any encoding
-// question arises.
+// UNITS: the edit ranges arrive in the encoding the session negotiated, so
+// each column is converted back to a byte offset with byteColumnOf before the
+// line is sliced -- the same function the server converts with, which is
+// exactly what makes the check a round trip rather than a re-derivation. This
+// used to slice by byte directly, because the server emitted byte columns
+// unconditionally; elps#464 gave rename an encoding, and the session (see
+// newSession) drives both, so the property is now asserted under UTF-16 and
+// UTF-8 alike.
+//
+// The property itself is unchanged and still the weaker, server-internal one:
+// whatever unit is in force, the two ends of the range have to agree with each
+// other and cover the whole identifier. A range whose ends are counted
+// differently is broken before any encoding question arises (elps#463/#470).
 func (s *session) checkRenameSpans(a opArgs, res *protocol.WorkspaceEdit) {
 	if s.renameErr != nil || res.Changes == nil {
 		return
@@ -800,6 +806,10 @@ func (s *session) checkRenameSpans(a opArgs, res *protocol.WorkspaceEdit) {
 				s.renameErr = fmt.Errorf("rename edit [%d:%d..%d:%d) on %s spans two lines; an identifier does not",
 					e.Range.Start.Line, start, e.Range.End.Line, end, uri)
 				return
+			}
+			if s.srv.positionEncoding() != encodingUTF8 && line < len(lines) {
+				start = byteColumnOf(lines[line], start)
+				end = byteColumnOf(lines[line], end)
 			}
 			if line >= len(lines) || start < 0 || end < start || end > len(lines[line]) {
 				s.renameErr = fmt.Errorf("rename edit [%d:%d..%d) on %s is not inside the document (%d lines)",
@@ -1103,6 +1113,19 @@ func runSession(srcA, srcB, script []byte) error {
 	}
 	s.content[fuzzURIA] = string(srcA)
 	s.content[fuzzURIB] = string(srcB)
+
+	// elps#464: the position encoding decides the unit of every column that
+	// crosses the wire, so it is derived from the input rather than fixed.
+	// Odd-length scripts negotiate utf-8 (every conversion the identity, the
+	// pre-#464 behaviour), even-length ones stay on the UTF-16 default a
+	// client that negotiates nothing is owed. checkRenameSpans then asserts
+	// its invariant under both. The negotiation ITSELF -- parsing
+	// general.positionEncodings out of raw initialize params -- is unit-tested
+	// in position_encoding_test.go, not here: initialize is not one of the ops
+	// this session drives.
+	if len(script)%2 == 1 {
+		s.srv.posEncoding.Store(int32(encodingUTF8))
+	}
 
 	n := len(script) / bytesPerOp
 	if n > maxOps {
