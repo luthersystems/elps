@@ -25,6 +25,26 @@ type Token struct {
 	PrecedingSpaces   int // spaces in whitespace before this token (same-line only)
 }
 
+// Copy returns a pointer to an independent copy of tok, or nil if tok is nil.
+//
+// Source is copied rather than carried across, for the reason Location.Copy
+// documents: a Location stored into an object that outlives -- or is mutated
+// independently of -- the object it came from is issue #362's shape, and a
+// copied Token is by definition a second owner.  Text is a string and needs
+// no copy.
+//
+// Nil is preserved because a nil *Token is meaningful where these are held:
+// SourceMeta.TrailingComment nil means "no inline comment on this node", not
+// "an empty comment".
+func (tok *Token) Copy() *Token {
+	if tok == nil {
+		return nil
+	}
+	cp := *tok
+	cp.Source = tok.Source.Copy()
+	return &cp
+}
+
 type Type uint
 
 // Type constants used for the elps lexer/parser.  These constants aren't
