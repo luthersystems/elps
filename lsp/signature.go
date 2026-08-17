@@ -35,8 +35,9 @@ func (s *Server) textDocumentSignatureHelp(_ *glsp.Context, params *protocol.Sig
 	content := doc.Content
 	doc.mu.Unlock()
 
-	line := int(params.Position.Line)
-	col := int(params.Position.Character)
+	// elps#464: the client counts Character in the negotiated encoding
+	// (UTF-16 unless it asked for utf-8); everything below counts bytes.
+	line, col := s.cursorAt(doc, params.Position)
 
 	// Strategy 1: AST-based lookup.
 	var name string

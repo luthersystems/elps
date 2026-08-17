@@ -8,6 +8,7 @@ package lsp
 import (
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luthersystems/elps/analysis"
@@ -33,6 +34,13 @@ type Server struct {
 	analysisCfg   *analysis.Config
 	analysisCfgMu sync.RWMutex
 	indexOnce     sync.Once
+
+	// posEncoding holds the positionEncoding negotiated during initialize
+	// (elps#464). Zero -- the value before any handshake -- is encodingUTF16,
+	// which is what LSP specifies and what a client that negotiates nothing
+	// is owed. Written once from initialize and read from every request
+	// handler, hence atomic.
+	posEncoding atomic.Int32
 
 	// Linter instance shared across diagnostics runs.
 	linter *lint.Linter
@@ -196,6 +204,18 @@ func (s *Server) initialize(ctx *glsp.Context, params *protocol.InitializeParams
 		s.rootURI = pathToURI(s.rootPath)
 	}
 
+	// Negotiate the position encoding before anything else, because every
+	// column this server sends or receives for the rest of the session is
+	// counted in the unit chosen here (elps#464).
+	//
+	// The client's list arrives in capabilities.general.positionEncodings, an
+	// LSP 3.17 field that glsp's protocol_3_16 InitializeParams does not name
+	// and encoding/json therefore discards -- so it is read from the raw
+	// params glsp keeps on the Context. A client that offers nothing (every
+	// 3.16 client) gets UTF-16, which is what LSP specifies.
+	encoding := selectPositionEncoding(clientPositionEncodings(ctx.Params))
+	s.posEncoding.Store(int32(encoding))
+
 	capabilities := s.handler.CreateServerCapabilities()
 
 	// Override text document sync to full.
@@ -231,20 +251,33 @@ func (s *Server) initialize(ctx *glsp.Context, params *protocol.InitializeParams
 	version := "0.1.0"
 
 	// Wrap capabilities to advertise LSP 3.17 features (like
-	// inlayHintProvider) that protocol_3_16 doesn't include.
+	// inlayHintProvider and positionEncoding) that protocol_3_16 doesn't
+	// include.
 	type extendedCapabilities struct {
 		protocol.ServerCapabilities
-		InlayHintProvider bool `json:"inlayHintProvider,omitempty"`
+		InlayHintProvider bool   `json:"inlayHintProvider,omitempty"`
+		PositionEncoding  string `json:"positionEncoding,omitempty"`
 	}
 	type extendedInitResult struct {
 		Capabilities extendedCapabilities                 `json:"capabilities"`
 		ServerInfo   *protocol.InitializeResultServerInfo `json:"serverInfo,omitempty"`
 	}
 
+	// Declare the encoding only when it is utf-8. Omitting the field is how
+	// LSP 3.17 spells "utf-16" (it is the documented default for an absent
+	// positionEncoding), and a 3.16 client would not understand the field at
+	// all -- so the omission is both correct for the new clients and silent
+	// for the old ones.
+	var encodingName string
+	if encoding == encodingUTF8 {
+		encodingName = positionEncodingName(encoding)
+	}
+
 	return extendedInitResult{
 		Capabilities: extendedCapabilities{
 			ServerCapabilities: capabilities,
 			InlayHintProvider:  true,
+			PositionEncoding:   encodingName,
 		},
 		ServerInfo: &protocol.InitializeResultServerInfo{
 			Name:    serverName,

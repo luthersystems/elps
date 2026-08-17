@@ -225,10 +225,50 @@ expression-by-expression to recover as many valid top-level expressions as
 possible. This ensures that analysis, completion, and other features continue
 to work even when the document is temporarily invalid.
 
+### Position Encoding
+
+LSP counts `Position.character` in **UTF-16 code units**, while this server
+computes columns in **bytes** internally (the scanner's `Col` is a byte offset
+within the line). The two agree on ASCII and diverge on any line containing a
+non-ASCII character — by 1 per two-byte character, 2 per CJK character, and
+2 per non-BMP character such as an emoji.
+
+The server negotiates at `initialize`:
+
+- If the client advertises `general.positionEncodings` (LSP 3.17) including
+  `"utf-8"`, the server selects it and answers with
+  `capabilities.positionEncoding: "utf-8"`. Its native byte columns are then
+  correct as sent, and nothing is converted.
+- Otherwise — which includes every LSP 3.16 client — the server uses UTF-16,
+  as the specification requires, and converts.
+
+What is converted today:
+
+- **Every inbound position.** A cursor column from any request (hover,
+  definition, references, highlight, completion, signature help, rename,
+  prepare rename, linked editing, call hierarchy, selection range, inlay hint
+  ranges) is converted to a byte column once on entry.
+- **Outbound rename edits**, including cross-file edits, and the
+  `prepareRename` range that goes with them. Rename is converted because its
+  answer is applied to the file unread; a wrong unit there silently rewrites
+  the program rather than misplacing a highlight.
+
+What is **not** converted yet, and still ships byte columns under UTF-16:
+diagnostics, hover, definition, references, document highlight, document and
+workspace symbols, folding and selection ranges, call hierarchy, linked editing
+ranges, inlay hint positions, code action edits, and semantic tokens. Those
+misplace a range on a line with non-ASCII text; none of them writes to a file.
+(Code action `; nolint:` inserts use the byte length of the line, which is
+never smaller than the UTF-16 length, so clients clamp them to end of line and
+they land correctly either way.)
+
 ## Limitations
 
 - **Full document sync only**: Each edit sends the complete document content.
   Incremental sync may be added in the future.
+- **UTF-16 columns are only partly implemented**: see
+  [Position Encoding](#position-encoding) for exactly which responses are
+  converted and which still carry byte columns.
 - **Single-file analysis**: Rename and references operate within the current
   file. Cross-file rename is not yet supported.
 - **No formatting on save**: Use `elps fmt` separately or configure your editor

@@ -29,23 +29,29 @@ import (
 // would never have told anyone what was at stake; this one fails with the
 // corrupted source in the failure message.
 //
-// UNITS.  The edits are applied by treating Character as a BYTE offset, which
-// is what this server means by it (Scanner.LocStart counts bytes,
-// elpsToLSPPosition passes the column through unchanged, and position.go
-// slices lines by byte throughout).  That choice is what keeps this file about
-// elps#463 and not about elps#464.  #464 is that LSP 3.16 specifies UTF-16
-// code units and this server emits bytes without negotiating positionEncoding
-// -- a real gap, and orthogonal: applying these edits in the server's OWN
-// declared unit still corrupted the document, because Col and EndCol did not
+// UNITS.  This file originally applied the edits by treating Character as a
+// BYTE offset, which is what the server meant by it before elps#464
+// (Scanner.LocStart counts bytes, elpsToLSPPosition passed the column through
+// unchanged, and position.go slices lines by byte throughout).  #464 gave the
+// server an encoding to speak: UTF-16, as LSP specifies, unless the client
+// negotiates utf-8.  So the applier below now interprets Character in the
+// SERVER'S NEGOTIATED encoding, and every case runs twice -- once as a 3.16
+// client (UTF-16 on the wire) and once as a client that offered utf-8 (bytes
+// on the wire, the original arm, unchanged).
+//
+// That does not make this file a test of #464, and #463 remains the defect it
+// pins.  The two are still orthogonal in exactly the way this comment always
+// said: applying these edits in the server's OWN unit, whichever that is,
+// still corrupted the document on 4737835, because Col and EndCol did not
 // agree with EACH OTHER.  No wire encoding can rescue a range whose two ends
-// are counted differently, so #463 is a defect under every answer #464 might
-// get, and fixing it settles nothing about #464.  Nothing in this file asserts
-// that bytes are the right unit to send.
+// are counted differently.  The utf-8 arm below is byte-for-byte the test that
+// was here before, so #463's evidence is preserved rather than restated.
 
 // applyTextEdits applies LSP TextEdits to content the way a client does,
-// interpreting Range.Character as a BYTE offset into the line (see UNITS
-// above).  Edits are applied last-first so that earlier offsets stay valid.
-func applyTextEdits(t *testing.T, content string, edits []protocol.TextEdit) string {
+// interpreting Range.Character in the encoding the server negotiated (see
+// UNITS above).  Edits are applied last-first so that earlier offsets stay
+// valid.
+func applyTextEdits(t *testing.T, s *Server, content string, edits []protocol.TextEdit) string {
 	t.Helper()
 	lines := strings.Split(content, "\n")
 	// lineOffset[i] is the byte offset of the first byte of line i.  The +1 is
@@ -57,7 +63,11 @@ func applyTextEdits(t *testing.T, content string, edits []protocol.TextEdit) str
 	offsetOf := func(p protocol.Position) int {
 		line := int(p.Line)
 		require.Less(t, line, len(lines), "edit position names line %d of a %d-line document", line, len(lines))
-		off := lineOffset[line] + int(p.Character)
+		char := int(p.Character)
+		if s.positionEncoding() != encodingUTF8 {
+			char = byteColumnOf(lines[line], char)
+		}
+		off := lineOffset[line] + char
 		require.LessOrEqual(t, off, len(content), "edit position %d:%d is past the end of the document", p.Line, p.Character)
 		return off
 	}
@@ -81,12 +91,19 @@ func applyTextEdits(t *testing.T, content string, edits []protocol.TextEdit) str
 
 // renameAt runs textDocument/rename at a 0-based position and returns the
 // document text a client would end up with.
+//
+// char is a BYTE column, as it always was -- the tables below name a position
+// inside an identifier and a byte offset is how this file has always said
+// where that is.  It is converted to the server's negotiated encoding on the
+// way in, because that is what a real client would send (elps#464), which
+// keeps one table honest for both arms instead of duplicating every row with a
+// second column number.
 func renameAt(t *testing.T, s *Server, uri, content string, line, char int, newName string) string {
 	t.Helper()
 	edit, err := s.textDocumentRename(mockContext(), &protocol.RenameParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 			TextDocument: protocol.TextDocumentIdentifier{URI: uri},
-			Position:     protocol.Position{Line: safeUint(line), Character: safeUint(char)},
+			Position:     protocol.Position{Line: safeUint(line), Character: safeUint(wireChar(s, content, line, char))},
 		},
 		NewName: newName,
 	})
@@ -94,7 +111,36 @@ func renameAt(t *testing.T, s *Server, uri, content string, line, char int, newN
 	require.NotNil(t, edit, "rename returned no workspace edit")
 	edits := edit.Changes[uri]
 	require.NotEmpty(t, edits, "rename produced no edits for %s", uri)
-	return applyTextEdits(t, content, edits)
+	return applyTextEdits(t, s, content, edits)
+}
+
+// wireChar converts a byte column in content into the column a client speaking
+// the server's negotiated encoding would send for the same character.
+func wireChar(s *Server, content string, line, byteChar int) int {
+	if s.positionEncoding() == encodingUTF8 {
+		return byteChar
+	}
+	return utf16ColumnOf(lineOf(content, line), byteChar)
+}
+
+// renameEncodings is the pair of wire encodings every case in this file runs
+// under: UTF-16, which is what LSP specifies and what any client that
+// negotiates nothing gets, and UTF-8, which a 3.17 client can ask for and
+// which makes every conversion the identity (the behaviour before elps#464,
+// and the arm that preserves this file's original evidence for elps#463).
+var renameEncodings = []struct {
+	name string
+	enc  positionEncoding
+}{
+	{"utf-16", encodingUTF16},
+	{"utf-8", encodingUTF8},
+}
+
+// renameTestServer returns a server that has negotiated enc.
+func renameTestServer(enc positionEncoding) *Server {
+	s := testServer()
+	s.posEncoding.Store(int32(enc))
+	return s
 }
 
 // TestRenameNonASCIIIdentifierRewritesWholeName is the RED test for elps#463.
@@ -200,18 +246,25 @@ func TestRenameNonASCIIIdentifierRewritesWholeName(t *testing.T) {
 		if tc.guard {
 			name += "-GUARD"
 		}
-		t.Run(name, func(t *testing.T) {
-			s := testServer()
-			uri := fmt.Sprintf("file:///test/rename-%s.lisp", tc.name)
-			openDoc(s, uri, tc.content)
-			got := renameAt(t, s, uri, tc.content, tc.line, tc.char, tc.newName)
+		// Every row runs under both wire encodings (elps#464).  The utf-8 arm
+		// is the original test unchanged; the utf-16 arm is a client that
+		// negotiated nothing, which is what LSP 3.16 mandates and what this
+		// server used to get wrong in the other direction.  A rename that is
+		// correct in one unit and not the other is still a corrupted file.
+		for _, e := range renameEncodings {
+			t.Run(name+"/"+e.name, func(t *testing.T) {
+				s := renameTestServer(e.enc)
+				uri := fmt.Sprintf("file:///test/rename-%s.lisp", tc.name)
+				openDoc(s, uri, tc.content)
+				got := renameAt(t, s, uri, tc.content, tc.line, tc.char, tc.newName)
 
-			assert.Equal(t, tc.want, got, "rename produced a different program than the user asked for")
-			assert.True(t, utf8.ValidString(got),
-				"rename produced text that is not valid UTF-8: %q", got)
-			assert.NotContains(t, got, tc.newName+tc.newName,
-				"the new name appears doubled, which means an edit range overlapped another")
-		})
+				assert.Equal(t, tc.want, got, "rename produced a different program than the user asked for")
+				assert.True(t, utf8.ValidString(got),
+					"rename produced text that is not valid UTF-8: %q", got)
+				assert.NotContains(t, got, tc.newName+tc.newName,
+					"the new name appears doubled, which means an edit range overlapped another")
+			})
+		}
 	}
 }
 
@@ -232,31 +285,33 @@ func TestRenameNonASCIIRoundTripsThroughTheParser(t *testing.T) {
 		"(defun 加算 (a b) (+ a b))\n(加算 1 2)\n",
 		"(defun add (x y) (+ x y))\n(add 1 2)\n", // GUARD: ASCII, passed on 4737835
 	} {
-		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			s := testServer()
-			uri := fmt.Sprintf("file:///test/roundtrip%d.lisp", i)
-			openDoc(s, uri, content)
-			got := renameAt(t, s, uri, content, 0, 7, "renamed")
+		for _, e := range renameEncodings {
+			t.Run(strconv.Itoa(i)+"/"+e.name, func(t *testing.T) {
+				s := renameTestServer(e.enc)
+				uri := fmt.Sprintf("file:///test/roundtrip%d.lisp", i)
+				openDoc(s, uri, content)
+				got := renameAt(t, s, uri, content, 0, 7, "renamed")
 
-			require.True(t, utf8.ValidString(got), "renamed document is not valid UTF-8: %q", got)
+				require.True(t, utf8.ValidString(got), "renamed document is not valid UTF-8: %q", got)
 
-			// The renamed document must analyse, and the new name must be a
-			// symbol in it with as many references as the old name had.
-			s2 := testServer()
-			uri2 := uri + ".renamed"
-			openDoc(s2, uri2, got)
-			doc := s2.docs.Get(uri2)
-			require.NotNil(t, doc)
-			s2.ensureAnalysis(doc)
-			require.NotNil(t, doc.analysis, "renamed document did not analyse")
+				// The renamed document must analyse, and the new name must be a
+				// symbol in it with as many references as the old name had.
+				s2 := testServer()
+				uri2 := uri + ".renamed"
+				openDoc(s2, uri2, got)
+				doc := s2.docs.Get(uri2)
+				require.NotNil(t, doc)
+				s2.ensureAnalysis(doc)
+				require.NotNil(t, doc.analysis, "renamed document did not analyse")
 
-			var found bool
-			for _, sym := range doc.analysis.Symbols {
-				if sym.Name == "renamed" {
-					found = true
+				var found bool
+				for _, sym := range doc.analysis.Symbols {
+					if sym.Name == "renamed" {
+						found = true
+					}
 				}
-			}
-			assert.True(t, found, "renamed document has no symbol %q; got %q", "renamed", got)
-		})
+				assert.True(t, found, "renamed document has no symbol %q; got %q", "renamed", got)
+			})
+		}
 	}
 }

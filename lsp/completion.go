@@ -18,8 +18,9 @@ func (s *Server) textDocumentCompletion(_ *glsp.Context, params *protocol.Comple
 	}
 	s.ensureAnalysis(doc)
 
-	line := int(params.Position.Line)
-	col := int(params.Position.Character)
+	// elps#464: the client counts Character in the negotiated encoding
+	// (UTF-16 unless it asked for utf-8); everything below counts bytes.
+	line, col := s.cursorAt(doc, params.Position)
 
 	prefix := wordAtPosition(doc.Content, line, col)
 
