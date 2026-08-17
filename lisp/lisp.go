@@ -189,13 +189,64 @@ type MacroExpansionContext struct {
 // MacroExpansionInfo is attached to LVal nodes produced by macro expansion.
 // It is only allocated when a debugger is attached (Runtime.Debugger != nil),
 // so production code pays zero allocation cost.
+//
+// The embedded *MacroExpansionContext describes the macro CALL and is shared
+// by every node of one expansion, by design.  This struct is the per-node
+// half, so LVal.Copy gives a copy its own -- see MacroExpansionInfo.Copy.
 type MacroExpansionInfo struct {
-	*MacroExpansionContext       // shared across all nodes in one expansion
-	ID                     int64 // unique per node, monotonically increasing
+	*MacroExpansionContext // shared across all nodes in one expansion
+
+	// ID distinguishes one expansion node from another.  stampMacroExpansion
+	// assigns it from Runtime.nextMacroExpID, monotonically increasing, so no
+	// two nodes an expansion stamps share a value.
+	//
+	// It is NOT unique per *LVal* in the wider sense, and this comment used
+	// to claim it was.  LVal.Copy duplicates it, and cannot do otherwise:
+	// Copy takes no *Runtime, so it has no counter to draw a fresh value
+	// from, and there is no framing in which it could -- the value's whole
+	// purpose is to come from the runtime that did the expanding.  A copy of
+	// an expansion node therefore carries the ID of the node it came from.
+	//
+	// The consumer to know about is lisp/x/debugger: exprStepLocation reads
+	// this into StepLocation.MacroID and stepper.go steps on `loc.MacroID !=
+	// s.start.MacroID`, so two distinct nodes carrying one ID read to the
+	// stepper as one node and it does not pause between them.  Copying an
+	// expansion node under an attached debugger is what that would take; no
+	// in-tree path does it today (issue #466).
+	ID int64
+}
+
+// Copy returns a pointer to an independent copy of i, or nil if i is nil.
+//
+// The embedded *MacroExpansionContext is deliberately NOT copied.  A copy
+// separates two OWNERS, and the context has one owner -- the macro call --
+// which both nodes genuinely belong to.  It is documented shared across every
+// node of an expansion, and #456 already made CallSite an object the
+// expansion owns rather than one borrowed from a live parse tree, so there is
+// no third party to separate it from.  Copying it would separate nothing and
+// would make the "shared across all nodes in one expansion" comment above
+// false for copied nodes.
+//
+// What IS separated is this struct, which is per node.  ID rides across
+// unchanged -- see the field comment for why it cannot do otherwise.
+func (i *MacroExpansionInfo) Copy() *MacroExpansionInfo {
+	if i == nil {
+		return nil
+	}
+	cp := *i
+	return &cp
 }
 
 // SourceMeta holds formatting metadata for an LVal, populated only when
 // parsing in format-preserving mode. Nil in normal parsing — zero cost.
+//
+// It is per-node MUTABLE state rather than a shared description of one: the
+// parser writes every field below in place on nodes it has just built, and
+// rdparser.hoistOperandComments MOVES LeadingComments off one node onto
+// another with an append plus a `= nil`.  Two LVals holding one *SourceMeta
+// is consequently an anomaly the parser has to special-case -- the `outer.Meta
+// == inner.Meta` guard in that function -- which is why LVal.Copy gives a copy
+// its own; see SourceMeta.Copy.
 type SourceMeta struct {
 	TrailingComment         *token.Token   // inline comment on same line after this node
 	OriginalText            string         // original token text for literals (preserves escapes, numeric bases)
@@ -207,6 +258,50 @@ type SourceMeta struct {
 	BracketType             rune           // '(' or '[' for LSExpr nodes
 	NewlineBefore           bool           // true if at least one newline preceded this node in source
 	ClosingBracketNewline   bool           // true if closing bracket was on its own line in source
+}
+
+// Copy returns a pointer to a deep copy of m, or nil if m is nil.
+//
+// Deep, not shallow, at both levels the struct has:
+//
+//   - The two comment SLICES get their own backing arrays, because
+//     hoistOperandComments appends to LeadingComments and then nils the
+//     source out.  A shared header is the state that makes that move visible
+//     through both nodes.
+//
+//   - The comment TOKENS get their own objects, because each one holds a
+//     *token.Location.  #446 gave a copied node its own position; leaving
+//     these shared would leave that guarantee true only for the node itself
+//     and false one level down, which is exactly what issue #466 reports.
+//
+// Nil is preserved rather than materialised into a zero SourceMeta: a nil
+// Meta means "not parsed in format-preserving mode" and every reader in the
+// tree branches on it (rdparser, formatter, minifier).  Materialising one
+// would turn a copy of an ordinary parse tree into a format-preserving-
+// looking one and put an allocation on the hot path for nothing.
+func (m *SourceMeta) Copy() *SourceMeta {
+	if m == nil {
+		return nil
+	}
+	cp := *m
+	cp.TrailingComment = m.TrailingComment.Copy()
+	cp.LeadingComments = copyTokens(m.LeadingComments)
+	cp.InnerTrailingComments = copyTokens(m.InnerTrailingComments)
+	return &cp
+}
+
+// copyTokens returns a new slice holding independent copies of every token in
+// toks.  A nil slice stays nil, so a copy of a Meta with no comments allocates
+// nothing for them.
+func copyTokens(toks []*token.Token) []*token.Token {
+	if toks == nil {
+		return nil
+	}
+	cp := make([]*token.Token, len(toks))
+	for i, tok := range toks {
+		cp[i] = tok.Copy()
+	}
+	return cp
 }
 
 // LVal is a lisp value
@@ -1214,8 +1309,15 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 //
 // The copy owns its positions.  Every node Copy reaches gets its own
 // *token.Location, so a write through the copy cannot move what the original
-// reports, and the reverse.  The one Location left shared is nativeSource's
-// process-wide singleton -- see the comment on the copy below.
+// reports, and the reverse.  That holds for the Locations reachable THROUGH
+// Meta's comment tokens as well as for Source on the node.  The one Location
+// left shared is nativeSource's process-wide singleton -- see the comment on
+// the copy below.
+//
+// The copy also owns its per-node metadata: Meta and MacroExpansion.  The one
+// thing deliberately still shared is MacroExpansionInfo's embedded
+// *MacroExpansionContext, which describes the macro CALL rather than the node
+// -- see MacroExpansionInfo.Copy.
 func (v *LVal) Copy() *LVal {
 	if v == nil {
 		return nil
@@ -1263,6 +1365,24 @@ func (v *LVal) Copy() *LVal {
 		// work, not here.
 		cp.Source = v.Source.Copy()
 	}
+	// Meta and MacroExpansion ride along in the struct assignment above for
+	// the same reason Source did, and issue #466 is that they still do.  Both
+	// are PER-NODE mutable state -- SourceMeta is what the parser writes and
+	// hoistOperandComments moves between nodes; MacroExpansionInfo is the
+	// per-node half of an expansion record whose shared half is the context
+	// it embeds.  Sharing them makes a "deep copy" a second writer on one
+	// object, and in Meta's case it also reopens #446 one level down: the
+	// *token.Location on every comment token is reachable from both trees.
+	//
+	// The cost argument is the opposite of Source's.  Source is present on
+	// essentially every node, which is why copying it is the measured trade
+	// recorded above.  Meta is nil outside format-preserving parsing and
+	// MacroExpansion is nil unless a debugger is attached, so on the
+	// interpreter's hot path this is two nil checks and no allocation, and it
+	// allocates only on paths already doing per-node formatting or debug
+	// work.
+	cp.Meta = v.Meta.Copy()
+	cp.MacroExpansion = v.MacroExpansion.Copy()
 	switch v.Type {
 	case LArray:
 		// Arrays are memory references but use Cells as backing storage.
