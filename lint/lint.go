@@ -32,17 +32,41 @@ import (
 type Severity int
 
 const (
-	severityUnset Severity = iota // unexported zero sentinel for default detection
+	// severityUnset is the unexported zero sentinel used for default
+	// detection: a Diagnostic that never had a severity assigned holds it,
+	// and Pass.Report fills it in from the analyzer's default.
+	//
+	// It is not a value in the severity vocabulary — it never leaves this
+	// package under a name of its own. Every renderer resolves it to
+	// "warning": String and MarshalJSON below, MaxSeverity, and outside this
+	// package lsp.mapLintSeverity and cmd's diagnostic bridge, both of which
+	// already fall back to warning. An embedder that constructs a custom
+	// Analyzer and omits Severity therefore gets one answer everywhere
+	// rather than two (#461).
+	severityUnset Severity = iota
 	SeverityError
 	SeverityWarning
 	SeverityInfo
 )
 
+// String renders the severity in the same vocabulary MarshalJSON emits and
+// ParseSeverity/UnmarshalJSON accept: "error", "warning" or "info".
+//
+// The unset zero value renders as "warning", the documented default (#461).
+// It used to render as "unknown" — a word MarshalJSON never emitted and
+// UnmarshalJSON and ParseSeverity both refuse — so the same diagnostic was a
+// "warning" down the JSON path and an "unknown" down every path that called
+// String (mcpserver builds its wire struct from String), and "unknown" could
+// not be filtered for or read back under either name.
+//
+// A value outside the enum still renders as "unknown": that is a corrupt
+// Severity rather than an unset one, and there is no default it could be
+// taken to mean.
 func (s Severity) String() string {
 	switch s {
 	case SeverityError:
 		return "error"
-	case SeverityWarning:
+	case severityUnset, SeverityWarning:
 		return "warning"
 	case SeverityInfo:
 		return "info"
@@ -53,10 +77,10 @@ func (s Severity) String() string {
 
 // MarshalJSON serializes the severity as a JSON string.
 // An unset severity (zero value) is marshaled as "warning".
+//
+// This delegates to String rather than repeating the unset default, so the
+// two cannot drift apart again the way they did in #461.
 func (s Severity) MarshalJSON() ([]byte, error) {
-	if s == severityUnset {
-		return json.Marshal("warning")
-	}
 	return json.Marshal(s.String())
 }
 
