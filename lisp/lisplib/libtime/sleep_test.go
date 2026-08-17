@@ -406,22 +406,50 @@ func TestSleepRejectsNonDuration(t *testing.T) {
 	}
 }
 
+// The three tests below -- this one, TestSleepMaxCannotExceedHostCeiling and
+// TestSleepMaxThroughEval -- each used to follow their condition check with an
+// `elapsed > time.Second` assertion.  Those are gone, and this is why (#475).
+//
+// THEY WERE REDUNDANT.  Each enforced "the sleep was refused on entry rather
+// than performed", and each was already inside a runBounded(t, slack, ...)
+// that fails the test after 30s.  The durations being refused are 1h+1s, 1h
+// and 2h, and BuiltinSleep has no partial-sleep path: it either refuses
+// before reaching sleepContext, or sleeps the caller's full duration bounded
+// by the context -- and all three environments run on context.Background(),
+// so nothing can cut a sleep short.  elapsed is therefore either microseconds
+// or at least an hour.  There is no implementation that lands in the gap
+// between 1s and 30s by SLEEPING; the only way to land there is scheduling
+// delay, which is machine load.  That is the #435 shape -- a correctness
+// property enforced by a wall clock, where a correct implementation fails the
+// test for being slow -- and it is not fixed by widening the bound (#443/#452,
+// #435/#447).
+//
+// CHECKED BY MUTATION rather than by argument alone.  With the three checks
+// removed, a build in which the length cap refuses only AFTER sleeping (the
+// exact failure the old comment here said the elapsed assertion was
+// load-bearing for) still fails all three, through runBounded:
+//
+//	--- FAIL: TestSleepMaxThroughEval (30.03s)   sleep did not return within 30s
+//	--- FAIL: TestSleepLengthCapRefusesImmediately (30.03s)
+//	--- FAIL: TestSleepMaxCannotExceedHostCeiling (30.03s)
+//
+// So runBounded catches everything the deleted checks could, and nothing is
+// lost by letting it be the only clock.  It is a hang detector: no assertion
+// in these three tests succeeds on the strength of a wall-clock reading.
+//
+// Where a tighter statement IS wanted, TestSleepPastDeadlineFailsFast's
+// `elapsed > remaining/2` is the pattern -- relative to a duration the test
+// controls rather than to an absolute second.
+//
 // TestSleepLengthCapRefusesImmediately covers the length cap itself, with no
 // context involved: a duration over DefaultMaxSleep is refused on entry.
-//
-// The elapsed assertion is the load-bearing one. A cap that errored only
-// AFTER sleeping would satisfy a condition-only check while leaving the
-// unbounded-block defect entirely in place.
 func TestSleepLengthCapRefusesImmediately(t *testing.T) {
 	t.Parallel()
 	env := sleepEnv(t, nil)
-	v, elapsed := runBounded(t, slack, func() *lisp.LVal {
+	v, _ := runBounded(t, slack, func() *lisp.LVal {
 		return callSleep(env, lisp.DefaultMaxSleep+time.Second)
 	})
 	requireSleepLimit(t, v)
-	if elapsed > time.Second {
-		t.Fatalf("took %v to refuse an over-cap sleep, expected immediate", elapsed)
-	}
 }
 
 // TestSleepUnderCapStillSleeps is the negative control for the test above.
@@ -466,6 +494,12 @@ func TestSleepMaxRaisesTheCap(t *testing.T) {
 // source may raise the default cap, but not past a ceiling the host set --
 // otherwise untrusted source could grant itself an unbounded sleep and the
 // bound would be decorative.
+//
+// The first call's `elapsed > time.Second` check is gone; see the block above
+// TestSleepLengthCapRefusesImmediately (#475).  It is refused inside sleepCap,
+// before a sleep is reachable at all, and the only way past that is for
+// sleepCap to accept the 1h :max -- at which point the call sleeps an hour and
+// runBounded fails the test.
 func TestSleepMaxCannotExceedHostCeiling(t *testing.T) {
 	t.Parallel()
 	env := lisp.NewEnv(nil)
@@ -477,13 +511,10 @@ func TestSleepMaxCannotExceedHostCeiling(t *testing.T) {
 		t.Fatalf("load time package: %v", rc)
 	}
 
-	v, elapsed := runBounded(t, slack, func() *lisp.LVal {
+	v, _ := runBounded(t, slack, func() *lisp.LVal {
 		return callSleepMax(env, time.Hour, libtime.Duration(time.Hour))
 	})
 	requireSleepLimit(t, v)
-	if elapsed > time.Second {
-		t.Fatalf("took %v to refuse, expected immediate", elapsed)
-	}
 
 	// And the ceiling lowers the no-:max default too, so the default cannot
 	// quietly exceed it.
@@ -530,10 +561,16 @@ func TestSleepRejectsNonDurationMax(t *testing.T) {
 // TestSleepMaxThroughEval proves the keyword reaches the builtin through the
 // formals machinery, not just through a hand-built args list. The direct
 // callers above would all still pass if the formal were misdeclared.
+//
+// Its `elapsed > time.Second` check is gone; see the block above
+// TestSleepLengthCapRefusesImmediately (#475).  This was the most exposed of
+// the three, because it goes through LoadString -- read, parse, evaluate two
+// calls -- which is the same work the 2.29s LoadStringContext measurement on
+// #455 covers.
 func TestSleepMaxThroughEval(t *testing.T) {
 	t.Parallel()
 	env := sleepEnv(t, nil)
-	v, elapsed := runBounded(t, slack, func() *lisp.LVal {
+	v, _ := runBounded(t, slack, func() *lisp.LVal {
 		return env.LoadString("sleep_max_test.lisp",
 			`(time:sleep (time:parse-duration "2h") :max (time:parse-duration "1s"))`)
 	})
@@ -544,9 +581,6 @@ func TestSleepMaxThroughEval(t *testing.T) {
 	requireSleepLimit(t, v)
 	if !strings.Contains(v.String(), "maximum 1s") {
 		t.Fatalf("error = %v, want the 1s :max to be the reported maximum", v)
-	}
-	if elapsed > time.Second {
-		t.Fatalf("took %v to refuse, expected immediate", elapsed)
 	}
 }
 

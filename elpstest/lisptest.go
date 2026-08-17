@@ -229,9 +229,11 @@ func (r *Runner) RunTestFile(t *testing.T, path string) {
 // successfully.
 //
 // Only the benchmark body is timed.  Building the environment, running SetupFn
-// and loading the benchmark file all happen with the timer stopped, so what a
-// Runner configures cannot change what its numbers mean: a Runner with a
-// SetupFn and a Runner without one measure the same region.
+// and loading the benchmark file all happen before it with the timer stopped;
+// TeardownFn and the log flush happen after it with the timer stopped again.
+// So what a Runner configures cannot change what its numbers mean: a Runner
+// with a SetupFn or a TeardownFn and a Runner with neither measure the same
+// region, and RunBenchmark returns with the timer in the state it found it.
 func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader) {
 	b.StopTimer()
 	env, err := r.NewEnv(b)
@@ -256,13 +258,20 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 		r.LispError(b, err)
 		return
 	}
-	if r.TeardownFn != nil {
-		defer func() {
-			b.StopTimer()
-			r.TeardownFn(env)
-			b.StartTimer()
-		}()
-	}
+	// Teardown runs after the body, with the timer already stopped by the
+	// body's own StopTimer below, and does NOT restart it.  The measured
+	// region ends at the body, so there is nothing left for a running timer
+	// to measure except the deferred work itself -- which was issue #474:
+	// this branch ended in StartTimer, and the `defer ...Flush()` registered
+	// above runs after it, so the flush was charged to the benchmark.
+	//
+	// Written through the nil-safe wrapper rather than guarded on
+	// r.TeardownFn, matching RunTest and the SetupFn call above (#476).  The
+	// guard existed only to avoid the timer dance that is now gone.
+	defer func() {
+		_ = r.Teardown(env)
+	}()
+
 	suite := libtesting.EnvTestSuite(env)
 	if suite == nil {
 		b.Errorf("unable to locate test suite")
@@ -271,6 +280,13 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 	ltest := suite.Benchmark(i)
 	b.StartTimer()
 	err = lisp.GoError(env.Eval(lisp.SExpr([]*lisp.LVal{ltest.Fun, lisp.Int(b.N)})))
+	// The measured region ends HERE, before any deferred work.  Unstopped,
+	// the timer ran on through the teardown defer's restart and through the
+	// log flush, adding a fixed charge to every RunBenchmark call that grows
+	// with whatever the benchmark wrote to stderr (issue #474).  Stopped
+	// before the error check so that a failing benchmark takes the same path
+	// as a passing one.
+	b.StopTimer()
 	if err != nil {
 		r.LispError(b, err)
 		return
