@@ -24,6 +24,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// debugEventBackstop bounds how long a test will wait for a debug event that
+// the engine and the DAP server are expected to produce. It is a backstop
+// against a genuine hang -- a pause with no resume, a lost stopped event, a
+// deadlock between the eval goroutine and the connection -- and it is *not* a
+// performance budget. Nothing in this file is timing the debugger.
+//
+// The distinction is the whole point of #489. Every wait denominated in this
+// constant blocks on the event itself: a channel the server writes, or the
+// evaluation goroutine's result. The wait finishes the instant the event
+// lands, so its duration is a property of the program under test and not of
+// how much CPU the machine felt like handing over. The constant is reached
+// only when the event never arrives at all, which is a bug at any load.
+//
+// That is why it can be this large without weakening anything. The budgets it
+// replaces (2s on `require.Eventually`, 5s on message reads) were the
+// opposite: they polled or raced a clock, so the machine's mood decided the
+// verdict. Measured on a 4-core sandbox, the waits in this package complete in
+// single-digit milliseconds idle; under 800 competing spinners, 15 Go-runtime
+// hogs and 48 concurrent copies of this package, 21 of those 48 runs failed on
+// the 2s and 5s numbers. Raising them would only have moved the load at which
+// the same thing happens -- see #443/#452 and #435/#447 for why this project
+// does not do that.
+//
+// Sized so it cannot adjudicate: three orders of magnitude above the idle
+// time-to-event, and comfortably inside the 10m default `go test -timeout`, so
+// a real hang still reports here, by name, rather than as a binary-wide panic.
+//
+// TestEveryDebugEventWaitUsesTheBackstop pins this: no wait for a debug event
+// in this package may be denominated in a bare duration literal.
+const debugEventBackstop = 2 * time.Minute
+
 func TestDAPServer_InitializeAndDisconnect(t *testing.T) {
 	t.Parallel()
 	e := debugger.New()
@@ -292,13 +323,7 @@ func TestDAPServer_FullSession(t *testing.T) {
 	}()
 
 	// === First stop: stop-on-entry (top level) ===
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not stop on entry")
-
-	stoppedMsg := readDAPMessage(t, reader)
-	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
-	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	stoppedEvt := waitStoppedOn(t, reader, "engine did not stop on entry")
 	assert.Equal(t, elpsThreadID, stoppedEvt.Body.ThreadId)
 
 	// Continue past stop-on-entry — we want to hit the breakpoint inside add.
@@ -312,13 +337,7 @@ func TestDAPServer_FullSession(t *testing.T) {
 	readDAPMessage(t, reader) // ContinueResponse
 
 	// === Second stop: breakpoint inside add at line 2 ===
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
-
-	stoppedMsg = readDAPMessage(t, reader)
-	stoppedEvt, ok = stoppedMsg.(*dap.StoppedEvent)
-	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	stoppedEvt = waitStoppedOn(t, reader, "engine did not pause at breakpoint")
 	assert.Equal(t, "breakpoint", stoppedEvt.Body.Reason)
 
 	// === StackTrace (now inside function, should have frames) ===
@@ -417,7 +436,7 @@ func TestDAPServer_FullSession(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
 		assert.Equal(t, 3, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for program result")
 	}
 
@@ -499,9 +518,34 @@ func (g *pauseGate) WaitEntered(t *testing.T) {
 	t.Helper()
 	select {
 	case <-g.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("program never reached debug-test-gate")
+	case <-time.After(debugEventBackstop):
+		t.Fatalf("program never reached debug-test-gate within %v", debugEventBackstop)
 	}
+}
+
+// waitForUnannouncedPause waits for the engine to reach a pause that has no
+// consumer, and is the sole polling wait left in this package.
+//
+// It exists for the late-connect case, where the property under test is that
+// the pause happened while nothing was listening. Installing a callback to
+// get an event would destroy that property (it sets stopDispatched, so
+// PausedUnannounced goes false), so there is nothing to block on and polling
+// is unavoidable. What is avoidable is letting a clock decide: the poll runs
+// against debugEventBackstop, so a loaded machine reaches the same verdict as
+// an idle one and only a pause that never happens fails here.
+func waitForUnannouncedPause(t *testing.T, e *debugger.Engine, message string) {
+	t.Helper()
+	require.Eventually(t, e.PausedUnannounced, debugEventBackstop, time.Millisecond, message)
+}
+
+// waitStoppedOn is waitStopped for the tests that drive a raw reader rather
+// than a dapTestSession.
+func waitStoppedOn(t *testing.T, r *bufio.Reader, msgAndArgs ...any) *dap.StoppedEvent {
+	t.Helper()
+	msg := readDAPMessage(t, r)
+	evt, ok := msg.(*dap.StoppedEvent)
+	require.True(t, ok, "expected StoppedEvent, got %T %v", msg, msgAndArgs)
+	return evt
 }
 
 func sendDAPRequest(t *testing.T, w io.Writer, msg dap.Message) {
@@ -510,6 +554,11 @@ func sendDAPRequest(t *testing.T, w io.Writer, msg dap.Message) {
 	require.NoError(t, err)
 }
 
+// readDAPMessage blocks until the next DAP message arrives on r.
+//
+// The wait is on the message, not on a clock: it returns the instant the
+// server writes, so a loaded machine reaches the same verdict as an idle one.
+// debugEventBackstop only bounds a connection that has gone silent for good.
 func readDAPMessage(t *testing.T, r *bufio.Reader) dap.Message {
 	t.Helper()
 	done := make(chan dap.Message, 1)
@@ -528,23 +577,10 @@ func readDAPMessage(t *testing.T, r *bufio.Reader) dap.Message {
 	case err := <-errCh:
 		t.Fatalf("error reading DAP message: %v", err)
 		return nil
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout reading DAP message")
+	case <-time.After(debugEventBackstop):
+		t.Fatalf("no DAP message in %v: the server never wrote one", debugEventBackstop)
 		return nil
 	}
-}
-
-// tryReadDAPMessage attempts to read a DAP message within the given timeout
-// using a connection deadline (no leaked goroutines). The conn must be the
-// underlying net.Conn for the bufio.Reader.
-func tryReadDAPMessage(conn net.Conn, r *bufio.Reader, timeout time.Duration) (dap.Message, bool) {
-	_ = conn.SetReadDeadline(time.Now().Add(timeout))
-	msg, err := dap.ReadProtocolMessage(r)
-	_ = conn.SetReadDeadline(time.Time{}) // clear deadline
-	if err != nil {
-		return nil, false
-	}
-	return msg, true
 }
 
 // dapTestSession reduces boilerplate for DAP protocol tests.
@@ -554,6 +590,16 @@ type dapTestSession struct {
 	client net.Conn
 	reader *bufio.Reader
 	seq    int
+
+	// A read that was started but not consumed. Only one goroutine may read
+	// from reader at a time, so a wait that races an incoming message
+	// against some other event (continueUntilResult) or that gives up on
+	// one (tryRead) parks the in-flight read here instead of abandoning it.
+	// The next read picks it up. inFlight is touched only by the test
+	// goroutine; the reader goroutine only ever writes to the channels.
+	inFlight   bool
+	pendingMsg chan dap.Message
+	pendingErr chan error
 }
 
 func setupDAPSession(t *testing.T, opts ...debugger.Option) *dapTestSession {
@@ -570,10 +616,12 @@ func setupDAPSession(t *testing.T, opts ...debugger.Option) *dapTestSession {
 	}()
 
 	s := &dapTestSession{
-		t:      t,
-		engine: e,
-		client: client,
-		reader: bufio.NewReader(client),
+		t:          t,
+		engine:     e,
+		client:     client,
+		reader:     bufio.NewReader(client),
+		pendingMsg: make(chan dap.Message, 1),
+		pendingErr: make(chan error, 1),
 	}
 
 	// Initialize the DAP session.
@@ -605,8 +653,103 @@ func (s *dapTestSession) send(msg dap.Message) {
 	sendDAPRequest(s.t, s.client, msg)
 }
 
+// startRead begins a background read unless one is already in flight.
+func (s *dapTestSession) startRead() {
+	if s.inFlight {
+		return
+	}
+	s.inFlight = true
+	go func() {
+		msg, err := dap.ReadProtocolMessage(s.reader)
+		if err != nil {
+			s.pendingErr <- err
+			return
+		}
+		s.pendingMsg <- msg
+	}()
+}
+
+// read blocks until the next DAP message arrives.
+//
+// It waits on the message, not on a clock. debugEventBackstop bounds only a
+// connection that has stopped producing altogether.
 func (s *dapTestSession) read() dap.Message {
-	return readDAPMessage(s.t, s.reader)
+	s.t.Helper()
+	s.startRead()
+	select {
+	case msg := <-s.pendingMsg:
+		s.inFlight = false
+		return msg
+	case err := <-s.pendingErr:
+		s.inFlight = false
+		s.t.Fatalf("error reading DAP message: %v", err)
+		return nil
+	case <-time.After(debugEventBackstop):
+		s.t.Fatalf("no DAP message in %v: the server never wrote one", debugEventBackstop)
+		return nil
+	}
+}
+
+// waitStopped blocks until the server reports that execution has stopped, and
+// returns that event.
+//
+// This replaces `require.Eventually(func() bool { return engine.IsPaused() },
+// 2*time.Second, ...)` followed by a bare read. Two things were wrong with
+// that pair. The poll adjudicated with a wall clock, which is #489. And
+// IsPaused() is the wrong question even when it wins the race: the engine
+// publishes its paused state *before* it invokes the event callback, so
+// IsPaused() can be true while the stopped event is still in flight, and
+// there is no happens-before between the poll and anything the callback
+// writes -- Engine.IsPaused says so in as many words.
+//
+// The stopped event is the signal that answers both. It cannot be observed
+// early, and requiring its type asserts something the discarded read did not:
+// that the message the server produced at this point is in fact a stop.
+func (s *dapTestSession) waitStopped(msgAndArgs ...any) *dap.StoppedEvent {
+	s.t.Helper()
+	msg := s.read()
+	evt, ok := msg.(*dap.StoppedEvent)
+	require.True(s.t, ok, "expected StoppedEvent, got %T %v", msg, msgAndArgs)
+	return evt
+}
+
+// continueUntilResult resumes execution and services every further stop until
+// the evaluation goroutine delivers the program's result.
+//
+// The loop this replaces asked "did another pause turn up within 500ms?" and
+// read silence as "no more pauses". That is a wall clock deciding a
+// control-flow question: on a loaded machine the next stop arrives late, the
+// loop exits with the program still parked at a breakpoint, and the wait for
+// the result then fails with a misleading message. (Observed: three of the
+// failures in the #489 load reproduction were exactly this.)
+//
+// There is no clock in this loop. "Stopped again" and "finished" are both
+// events, and racing them is the only clock-free way to tell them apart --
+// the DAP server sends no terminal event of its own unless the embedder calls
+// NotifyExit, so the result channel is the terminator here.
+func (s *dapTestSession) continueUntilResult(resultCh <-chan *lisp.LVal) *lisp.LVal {
+	s.t.Helper()
+	for {
+		s.startRead()
+		select {
+		case res := <-resultCh:
+			// The program is done; any read still in flight stays
+			// parked on the session for the next reader (disconnect).
+			return res
+		case msg := <-s.pendingMsg:
+			s.inFlight = false
+			_, ok := msg.(*dap.StoppedEvent)
+			require.True(s.t, ok, "expected StoppedEvent while draining, got %T", msg)
+			s.continueExec()
+		case err := <-s.pendingErr:
+			s.inFlight = false
+			s.t.Fatalf("error reading DAP message: %v", err)
+			return nil
+		case <-time.After(debugEventBackstop):
+			s.t.Fatalf("program neither stopped again nor finished in %v", debugEventBackstop)
+			return nil
+		}
+	}
 }
 
 func (s *dapTestSession) configDone() {
@@ -630,10 +773,32 @@ func (s *dapTestSession) continueExec() {
 	s.read() // ContinueResponse
 }
 
-// tryRead attempts to read a DAP message within the given timeout.
-// Returns the message and true if received, or nil and false on timeout.
+// tryRead reports whether a DAP message arrives within timeout.
+//
+// This is the one wait in this file whose *timeout is the assertion*: every
+// caller uses it to show that the server sends nothing further, so a fired
+// timeout is the expected answer and machine load can only make it pass. It
+// is therefore not denominated in debugEventBackstop -- doing so would make
+// each negative check wait two minutes to conclude nothing happened. See
+// PR #447's "robust by direction" class.
+//
+// A message that arrives after the timeout is not discarded: the read stays
+// parked on the session and the next read consumes it, so a late event still
+// shows up rather than desynchronising the stream.
 func (s *dapTestSession) tryRead(timeout time.Duration) (dap.Message, bool) {
-	return tryReadDAPMessage(s.client, s.reader, timeout)
+	s.t.Helper()
+	s.startRead()
+	select {
+	case msg := <-s.pendingMsg:
+		s.inFlight = false
+		return msg, true
+	case err := <-s.pendingErr:
+		s.inFlight = false
+		s.t.Fatalf("error reading DAP message: %v", err)
+		return nil, false
+	case <-time.After(timeout):
+		return nil, false
+	}
 }
 
 func (s *dapTestSession) disconnect() {
@@ -765,10 +930,7 @@ func TestDAPServer_StepNext(t *testing.T) {
 	}()
 
 	// Wait for breakpoint inside outer (line 3).
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Get initial stack trace — should be inside outer.
 	s.send(&dap.StackTraceRequest{
@@ -809,10 +971,7 @@ func TestDAPServer_StepNext(t *testing.T) {
 		})
 		s.read() // NextResponse
 
-		require.Eventually(t, func() bool {
-			return s.engine.IsPaused()
-		}, 2*time.Second, 10*time.Millisecond)
-		s.read() // StoppedEvent
+		s.waitStopped()
 
 		// Check stack trace — frame count should NOT exceed initial (did not enter inner).
 		s.send(&dap.StackTraceRequest{
@@ -840,7 +999,7 @@ func TestDAPServer_StepNext(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 
@@ -862,10 +1021,7 @@ func TestDAPServer_StepIn(t *testing.T) {
 	}()
 
 	// Wait for stop-on-entry.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Send StepIn — should advance to line 2 (skipping line 1 sub-expressions).
 	s.send(&dap.StepInRequest{
@@ -881,10 +1037,7 @@ func TestDAPServer_StepIn(t *testing.T) {
 	assert.True(t, stepResp.Success)
 
 	// Should pause again on line 2.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Verify we paused on line 2.
 	_, pausedExpr := s.engine.PausedState()
@@ -897,7 +1050,7 @@ func TestDAPServer_StepIn(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 
@@ -932,10 +1085,7 @@ func TestDAPServer_StepOut(t *testing.T) {
 	}()
 
 	// Wait for breakpoint inside function (line 2).
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Get stack trace to record depth inside function.
 	s.send(&dap.StackTraceRequest{
@@ -980,10 +1130,7 @@ func TestDAPServer_StepOut(t *testing.T) {
 	assert.True(t, stepResp.Success)
 
 	// Should pause after returning from f.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause after step-out")
-	s.read() // StoppedEvent
+	s.waitStopped("engine did not pause after step-out")
 
 	// Verify stack depth decreased after step-out.
 	s.send(&dap.StackTraceRequest{
@@ -1004,7 +1151,7 @@ func TestDAPServer_StepOut(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 
@@ -1086,16 +1233,10 @@ func TestDAPServer_StackTracePaging(t *testing.T) {
 	}()
 
 	// Stop on entry, then continue to breakpoint.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped()
 	s.continueExec()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (breakpoint)
+	s.waitStopped()
 
 	// Full stack trace.
 	s.send(&dap.StackTraceRequest{
@@ -1134,7 +1275,7 @@ func TestDAPServer_StackTracePaging(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 
@@ -1167,16 +1308,10 @@ func TestDAPServer_PackageScopeVariables(t *testing.T) {
 	}()
 
 	// Stop on entry, then continue to breakpoint inside function.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped()
 	s.continueExec()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (breakpoint)
+	s.waitStopped()
 
 	// Get stack trace to trigger frame caching.
 	s.send(&dap.StackTraceRequest{
@@ -1252,7 +1387,7 @@ func TestDAPServer_PackageScopeVariables(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 
@@ -1279,9 +1414,16 @@ func TestDAPServer_LateConnectStoppedEvent(t *testing.T) {
 	}()
 
 	// Wait for the engine to actually pause.
-	require.Eventually(t, func() bool {
-		return e.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not stop on entry")
+	//
+	// This is one of the two waits in the debugger tree that cannot be made
+	// event-driven, and the reason is the subject of the test: the pause
+	// happens while nothing is listening, so the engine emits nothing. Any
+	// callback installed here to signal the pause would set stopDispatched
+	// and make PausedUnannounced false, which is exactly the condition
+	// configurationDone below is supposed to detect. Polling is the only
+	// instrument left, so it is denominated in debugEventBackstop rather
+	// than in a 2s budget that machine load can win. See #489.
+	waitForUnannouncedPause(t, e, "engine did not stop on entry")
 
 	// NOW connect a DAP client (late connect).
 	srv := New(e)
@@ -1340,7 +1482,7 @@ func TestDAPServer_LateConnectStoppedEvent(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type)
 		assert.Equal(t, 3, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for eval result")
 	}
 
@@ -1374,7 +1516,7 @@ func TestDAPServer_ReadyChSignaledOnConfigDone(t *testing.T) {
 	select {
 	case <-s.engine.ReadyCh():
 		// expected
-	case <-time.After(time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("ReadyCh should be closed after configurationDone")
 	}
 
@@ -1411,27 +1553,19 @@ func TestDAPServer_PathNormalization(t *testing.T) {
 	}()
 
 	// First stop: stop-on-entry.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped()
 	s.continueExec()
 
 	// Second stop: breakpoint on line 2 should fire even though the path
 	// was set as /Users/dev/project/phylum/test but runtime uses "test".
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "breakpoint should fire with normalized path")
-	msg := s.read()
-	stoppedEvt, ok := msg.(*dap.StoppedEvent)
-	require.True(t, ok, "expected StoppedEvent, got %T", msg)
+	stoppedEvt := s.waitStopped("breakpoint should fire with normalized path")
 	assert.Equal(t, "breakpoint", stoppedEvt.Body.Reason)
 
 	s.continueExec()
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 
@@ -1483,21 +1617,13 @@ func TestDAPServer_FileDebugSession(t *testing.T) {
 	}()
 
 	// === Stop on entry ===
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not stop on entry")
-	s.read() // StoppedEvent
+	s.waitStopped("engine did not stop on entry")
 
 	// Continue past stop-on-entry to hit breakpoint inside add.
 	s.continueExec()
 
 	// === Breakpoint inside add ===
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
-	stoppedMsg := s.read()
-	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
-	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	stoppedEvt := s.waitStopped("engine did not pause at breakpoint")
 	assert.Equal(t, "breakpoint", stoppedEvt.Body.Reason)
 
 	// === StackTrace ===
@@ -1582,7 +1708,7 @@ func TestDAPServer_FileDebugSession(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
 		assert.Equal(t, 3, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for program result")
 	}
 
@@ -1634,7 +1760,7 @@ func TestServeTCPLoop_MultipleConnections(t *testing.T) {
 	}()
 
 	// --- First connection (retry until server is listening) ---
-	conn1 := dialWithRetry(t, addr, 2*time.Second)
+	conn1 := dialWithRetry(t, addr, debugEventBackstop)
 	reader1 := bufio.NewReader(conn1)
 
 	sendDAPRequest(t, conn1, &dap.InitializeRequest{
@@ -1660,7 +1786,7 @@ func TestServeTCPLoop_MultipleConnections(t *testing.T) {
 	conn1.Close()              //nolint:errcheck,gosec // best-effort cleanup
 
 	// --- Second connection (retry until server re-enters Accept) ---
-	conn2 := dialWithRetry(t, addr, 2*time.Second)
+	conn2 := dialWithRetry(t, addr, debugEventBackstop)
 	reader2 := bufio.NewReader(conn2)
 
 	sendDAPRequest(t, conn2, &dap.InitializeRequest{
@@ -1767,15 +1893,8 @@ func TestDAPServer_PauseRequest(t *testing.T) {
 	// Let the program run on into the armed pause.
 	gate.Release()
 
-	// Wait for the engine to actually pause.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause after pause request")
-
-	// Read the stopped event.
-	stoppedMsg := s.read()
-	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
-	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	// Wait for the stopped event the pause request produces.
+	stoppedEvt := s.waitStopped("engine did not pause after pause request")
 	assert.Equal(t, "pause", stoppedEvt.Body.Reason)
 
 	// Continue to let the program finish.
@@ -1789,7 +1908,7 @@ func TestDAPServer_PauseRequest(t *testing.T) {
 		// life of this test.
 		require.Equal(t, lisp.LInt, res.Type, "program did not run to completion: %v", res)
 		assert.Equal(t, 0, res.Int, "countdown should reach zero")
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		if s.engine.IsPaused() {
 			s.engine.Resume()
 		}
@@ -1849,17 +1968,11 @@ func TestDAPServer_StackTraceUsesPausedExpr(t *testing.T) {
 	}()
 
 	// First stop: stop-on-entry.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped()
 	s.continueExec()
 
 	// Second stop: breakpoint on line 2 inside add.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
-	s.read() // StoppedEvent (breakpoint)
+	s.waitStopped("engine did not pause at breakpoint")
 
 	// Request stack trace — top frame should show line 2 (paused expression),
 	// not the call site line 3.
@@ -1884,7 +1997,7 @@ func TestDAPServer_StackTraceUsesPausedExpr(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 
@@ -1923,14 +2036,7 @@ func TestDAPServer_SetFunctionBreakpoints(t *testing.T) {
 	}()
 
 	// Should pause when "add" is entered.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause on function breakpoint")
-
-	// Read stopped event.
-	stoppedMsg := s.read()
-	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
-	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	stoppedEvt := s.waitStopped("engine did not pause on function breakpoint")
 	assert.Equal(t, "function breakpoint", stoppedEvt.Body.Reason)
 
 	// Continue to finish.
@@ -1940,7 +2046,7 @@ func TestDAPServer_SetFunctionBreakpoints(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type)
 		assert.Equal(t, 30, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		if s.engine.IsPaused() {
 			s.engine.Resume()
 		}
@@ -2023,10 +2129,7 @@ func TestDAPServer_SourceRootResolvesAbsolutePaths(t *testing.T) {
 	}()
 
 	// Wait for breakpoint hit inside function.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Request stack trace.
 	s.send(&dap.StackTraceRequest{
@@ -2053,7 +2156,7 @@ func TestDAPServer_SourceRootResolvesAbsolutePaths(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(2 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 
@@ -2136,12 +2239,7 @@ func TestDAPServer_SetBreakpointsWithHitCondition(t *testing.T) {
 	}()
 
 	// Should pause on 2nd hit.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause on hit condition")
-	stoppedMsg := s.read()
-	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
-	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	stoppedEvt := s.waitStopped("engine did not pause on hit condition")
 	assert.Equal(t, "breakpoint", stoppedEvt.Body.Reason)
 
 	// Continue to finish. The program should complete without further stops
@@ -2151,7 +2249,7 @@ func TestDAPServer_SetBreakpointsWithHitCondition(t *testing.T) {
 	select {
 	case <-resultCh:
 		// Program completed without additional stops — correct for ==2.
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		if s.engine.IsPaused() {
 			s.engine.Resume()
 		}
@@ -2208,7 +2306,7 @@ func TestDAPServer_LogPoint(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type)
 		assert.Equal(t, 7, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout — log point should not have paused")
 	}
 
@@ -2241,16 +2339,10 @@ func TestDAPServer_EvaluateWatch(t *testing.T) {
 	}()
 
 	// Stop on entry, then continue to breakpoint.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped()
 	s.continueExec()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
-	s.read() // StoppedEvent (breakpoint)
+	s.waitStopped("engine did not pause at breakpoint")
 
 	// Get stack trace to cache frame environments.
 	s.send(&dap.StackTraceRequest{
@@ -2307,7 +2399,7 @@ func TestDAPServer_EvaluateWatch(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 
@@ -2361,20 +2453,12 @@ func TestDAPServer_EvaluateWhilePausedInRecursion(t *testing.T) {
 	}()
 
 	// Stop on entry.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not stop on entry")
-	s.read() // StoppedEvent
+	s.waitStopped("engine did not stop on entry")
 
 	// Continue past stop-on-entry to hit breakpoint in factorial.
 	s.continueExec()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
-	stoppedMsg := s.read()
-	stoppedEvt, ok := stoppedMsg.(*dap.StoppedEvent)
-	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	stoppedEvt := s.waitStopped("engine did not pause at breakpoint")
 	assert.Equal(t, "breakpoint", stoppedEvt.Body.Reason)
 
 	// Get stack trace to find the top frame.
@@ -2447,41 +2531,13 @@ func TestDAPServer_EvaluateWhilePausedInRecursion(t *testing.T) {
 	assert.Equal(t, "105", evalResp.Body.Result,
 		"(+ n 100) should equal 105 when n=5")
 
-	// Continue to finish — drain any more breakpoint hits.
+	// Continue to finish — service any more breakpoint hits.
 	s.continueExec()
-	for waitForEnginePause(t, s.engine, 500*time.Millisecond) {
-		s.read() // StoppedEvent
-		s.continueExec()
-	}
-
-	select {
-	case res := <-resultCh:
-		assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
-		assert.Equal(t, 120, res.Int)
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for program result")
-	}
+	res := s.continueUntilResult(resultCh)
+	assert.Equal(t, lisp.LInt, res.Type, "expected int result, got %v", res)
+	assert.Equal(t, 120, res.Int)
 
 	s.disconnect()
-}
-
-// waitForEnginePause waits for the engine to enter paused state, returning true
-// if it paused within the timeout, false otherwise.
-func waitForEnginePause(t *testing.T, e *debugger.Engine, timeout time.Duration) bool {
-	t.Helper()
-	deadline := time.After(timeout)
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-deadline:
-			return false
-		case <-ticker.C:
-			if e.IsPaused() {
-				return true
-			}
-		}
-	}
 }
 
 func TestDAPServer_InitializeReportsHitAndLogCapabilities(t *testing.T) {
@@ -2561,10 +2617,7 @@ func TestDAPServer_VariableExpansion(t *testing.T) {
 		resultCh <- env.LoadString("test", program)
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Get stack trace and local variables.
 	stResp := s.stackTrace()
@@ -2617,7 +2670,7 @@ func TestDAPServer_VariableExpansion(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -2649,10 +2702,7 @@ func TestDAPServer_EvaluateResultExpansion(t *testing.T) {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -2679,7 +2729,7 @@ func TestDAPServer_EvaluateResultExpansion(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -2820,10 +2870,7 @@ func TestDAPServer_VariableFormatterNative(t *testing.T) {
 		resultCh <- env.LoadString("test", "(defun check ()\n  person)\n(check)")
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Request stack trace → scopes → variables through the DAP protocol.
 	stResp := s.stackTrace()
@@ -2838,7 +2885,7 @@ func TestDAPServer_VariableFormatterNative(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -2891,10 +2938,7 @@ func TestDAPServer_StepIntoNestedCalls(t *testing.T) {
 	}()
 
 	// Wait for breakpoint at line 9 (inside outer, on the (middle 5) call).
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (breakpoint)
+	s.waitStopped()
 
 	st0 := s.stackTrace()
 	outerDepth := len(st0.Body.StackFrames)
@@ -2929,10 +2973,7 @@ func TestDAPServer_StepIntoNestedCalls(t *testing.T) {
 				Arguments: dap.StepInArguments{ThreadId: elpsThreadID},
 			})
 			s.read() // StepInResponse
-			require.Eventually(t, func() bool {
-				return s.engine.IsPaused()
-			}, 2*time.Second, 10*time.Millisecond, "%s: engine did not pause", label)
-			s.read() // StoppedEvent
+			s.waitStopped("%s: engine did not pause", label)
 
 			st := s.stackTrace()
 			if len(st.Body.StackFrames) > baseline {
@@ -2958,10 +2999,7 @@ func TestDAPServer_StepIntoNestedCalls(t *testing.T) {
 		Arguments: dap.StepOutArguments{ThreadId: elpsThreadID},
 	})
 	s.read() // StepOutResponse
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	st3 := s.stackTrace()
 	assert.Less(t, len(st3.Body.StackFrames), innerDepth,
@@ -2973,7 +3011,7 @@ func TestDAPServer_StepIntoNestedCalls(t *testing.T) {
 	select {
 	case res := <-resultCh:
 		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for program to finish")
 	}
 
@@ -3002,10 +3040,7 @@ func TestDAPServer_RapidStepSequence(t *testing.T) {
 	}()
 
 	// Wait for stop-on-entry.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Perform 10 rapid step-in operations, verifying each one pauses.
 	for i := range 10 {
@@ -3020,10 +3055,7 @@ func TestDAPServer_RapidStepSequence(t *testing.T) {
 		_, ok := msg.(*dap.StepInResponse)
 		require.True(t, ok, "step %d: expected StepInResponse, got %T", i, msg)
 
-		require.Eventually(t, func() bool {
-			return s.engine.IsPaused()
-		}, 2*time.Second, 10*time.Millisecond, "step %d: engine did not pause", i)
-		s.read() // StoppedEvent
+		s.waitStopped("step %d: engine did not pause", i)
 	}
 
 	// Continue to finish.
@@ -3032,7 +3064,7 @@ func TestDAPServer_RapidStepSequence(t *testing.T) {
 	select {
 	case res := <-resultCh:
 		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 
@@ -3077,10 +3109,7 @@ func TestDAPServer_StepOutTailPosition(t *testing.T) {
 	}()
 
 	// Wait for breakpoint inside inner.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	st := s.stackTrace()
 	require.NotEmpty(t, st.Body.StackFrames)
@@ -3110,11 +3139,7 @@ func TestDAPServer_StepOutTailPosition(t *testing.T) {
 	s.read() // StepOutResponse
 
 	// Step-out from tail position should now pause at the call site.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond,
-		"step-out from tail position should pause at call site")
-	s.read() // StoppedEvent
+	s.waitStopped("step-out from tail position should pause at call site")
 
 	st2 := s.stackTrace()
 	require.NotEmpty(t, st2.Body.StackFrames)
@@ -3137,7 +3162,7 @@ func TestDAPServer_StepOutTailPosition(t *testing.T) {
 	case res := <-resultCh:
 		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
 		assert.Equal(t, 110, res.Int, "inner(5*2) = 10+100 = 110")
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		if s.engine.IsPaused() {
 			s.engine.Resume()
 		}
@@ -3209,13 +3234,7 @@ func TestDAPServer_StopOnEntry_AttachTrue(t *testing.T) {
 	}()
 
 	// Should stop on entry.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not stop on entry")
-
-	stoppedMsg := s.read()
-	stoppedEvent, ok := stoppedMsg.(*dap.StoppedEvent)
-	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	stoppedEvent := s.waitStopped("engine did not stop on entry")
 	assert.Equal(t, "entry", stoppedEvent.Body.Reason, "stopOnEntry should produce entry reason")
 
 	// Continue to let the program finish.
@@ -3225,7 +3244,7 @@ func TestDAPServer_StopOnEntry_AttachTrue(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type)
 		assert.Equal(t, 3, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for program result")
 	}
 
@@ -3275,7 +3294,7 @@ func TestDAPServer_StopOnEntry_AttachFalse(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result")
 		assert.Equal(t, 3, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout: program did not complete -- engine likely paused on entry when it should not have")
 	}
 
@@ -3326,7 +3345,7 @@ func TestDAPServer_StopOnEntry_AttachAbsent(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result")
 		assert.Equal(t, 3, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout: program did not complete -- engine likely paused on entry when it should not have")
 	}
 
@@ -3401,13 +3420,7 @@ func TestDAPServer_StopOnEntry_LaunchTrue(t *testing.T) {
 		resultCh <- res
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not stop on entry")
-
-	stoppedMsg := s.read()
-	stoppedEvent, ok := stoppedMsg.(*dap.StoppedEvent)
-	require.True(t, ok, "expected StoppedEvent, got %T", stoppedMsg)
+	stoppedEvent := s.waitStopped("engine did not stop on entry")
 	assert.Equal(t, "entry", stoppedEvent.Body.Reason, "stopOnEntry should produce entry reason")
 
 	s.continueExec()
@@ -3416,7 +3429,7 @@ func TestDAPServer_StopOnEntry_LaunchTrue(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type)
 		assert.Equal(t, 3, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for program result")
 	}
 
@@ -3459,7 +3472,7 @@ func TestDAPServer_StopOnEntry_LaunchFalse(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result")
 		assert.Equal(t, 3, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout: program did not complete -- engine likely paused on entry when it should not have")
 	}
 
@@ -3500,7 +3513,7 @@ func TestDAPServer_StopOnEntry_LaunchAbsent(t *testing.T) {
 	case res := <-resultCh:
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result")
 		assert.Equal(t, 3, res.Int)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout: program did not complete -- engine likely paused on entry when it should not have")
 	}
 
@@ -3546,10 +3559,7 @@ func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
 	}()
 
 	// Wait for breakpoint on line 4.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	st0 := s.stackTrace()
 	require.NotEmpty(t, st0.Body.StackFrames)
@@ -3580,10 +3590,7 @@ func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
 	})
 	s.read() // StepInResponse
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	st1 := s.stackTrace()
 	require.NotEmpty(t, st1.Body.StackFrames)
@@ -3600,7 +3607,7 @@ func TestDAPServer_StepIn_LineGranularity(t *testing.T) {
 	case res := <-resultCh:
 		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
 		assert.Equal(t, 105, res.Int, "expected (inner 5) = 105")
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -3624,10 +3631,7 @@ func TestDAPServer_StepIn_InstructionGranularity(t *testing.T) {
 	}()
 
 	// Wait for stop-on-entry.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Record the initial expression at stop-on-entry: (+ 1 2) is an s-expr.
 	_, entryExpr := s.engine.PausedState()
@@ -3649,10 +3653,7 @@ func TestDAPServer_StepIn_InstructionGranularity(t *testing.T) {
 	})
 	s.read() // StepInResponse
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Verify we paused on a sub-expression (still line 1, but a different expr).
 	_, pausedExpr := s.engine.PausedState()
@@ -3670,7 +3671,7 @@ func TestDAPServer_StepIn_InstructionGranularity(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -3710,10 +3711,7 @@ func TestDAPServer_StepNext_LineGranularity(t *testing.T) {
 	}()
 
 	// Wait for breakpoint on line 3.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	st0 := s.stackTrace()
 	assert.Equal(t, 3, st0.Body.StackFrames[0].Line)
@@ -3743,10 +3741,7 @@ func TestDAPServer_StepNext_LineGranularity(t *testing.T) {
 	})
 	s.read() // NextResponse
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	st1 := s.stackTrace()
 	assert.Equal(t, 4, st1.Body.StackFrames[0].Line,
@@ -3760,7 +3755,7 @@ func TestDAPServer_StepNext_LineGranularity(t *testing.T) {
 	select {
 	case res := <-resultCh:
 		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -3860,10 +3855,7 @@ func TestDAPServer_CustomScopeProvider(t *testing.T) {
 	}()
 
 	// Wait for breakpoint inside function.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Get stack trace to get frame ID.
 	stResp := s.stackTrace()
@@ -3925,7 +3917,7 @@ func TestDAPServer_CustomScopeProvider(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -3979,10 +3971,7 @@ func TestDAPServer_CustomScopeProvider_Cleanup(t *testing.T) {
 	}()
 
 	// First breakpoint (line 2 inside f).
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -4006,10 +3995,7 @@ func TestDAPServer_CustomScopeProvider_Cleanup(t *testing.T) {
 	s.continueExec()
 
 	// Second breakpoint (line 4 inside g).
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// The old drill-down ref should no longer resolve.
 	staleVars := s.variables(oldChildRef)
@@ -4020,7 +4006,7 @@ func TestDAPServer_CustomScopeProvider_Cleanup(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -4071,10 +4057,7 @@ func TestDAPServer_MultipleScopeProviders(t *testing.T) {
 		resultCh <- res
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -4105,7 +4088,7 @@ func TestDAPServer_MultipleScopeProviders(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -4143,10 +4126,7 @@ func TestDAPServer_CustomScopeProvider_Empty(t *testing.T) {
 		resultCh <- res
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -4166,7 +4146,7 @@ func TestDAPServer_CustomScopeProvider_Empty(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -4233,10 +4213,7 @@ func TestDAPServer_StepInTargets(t *testing.T) {
 	}()
 
 	// Wait for breakpoint on line 4.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Get stack trace to find the top frame ID.
 	st := s.stackTrace()
@@ -4282,10 +4259,7 @@ func TestDAPServer_StepInTargets(t *testing.T) {
 	// Step-in with target "f" — should pause inside f's body.
 	s.stepInWithTarget(fTargetID)
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Verify we paused inside f (line 1).
 	st2 := s.stackTrace()
@@ -4301,7 +4275,7 @@ func TestDAPServer_StepInTargets(t *testing.T) {
 		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
 		assert.Equal(t, lisp.LInt, res.Type, "expected int result")
 		assert.Equal(t, 13, res.Int, "f(g(10)) = f(12) = 13")
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -4321,10 +4295,7 @@ func TestDAPServer_StepInTargets_Empty(t *testing.T) {
 	}()
 
 	// Wait for stop-on-entry.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Request step-in targets — should be empty (+ is a builtin).
 	// On stop-on-entry the stack may be empty, so use frame 0.
@@ -4338,7 +4309,7 @@ func TestDAPServer_StepInTargets_Empty(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -4373,10 +4344,7 @@ func TestDAPServer_StepInTargets_RegularStepIn(t *testing.T) {
 	}()
 
 	// Wait for breakpoint on line 3.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Clear breakpoints.
 	s.send(&dap.SetBreakpointsRequest{
@@ -4401,10 +4369,7 @@ func TestDAPServer_StepInTargets_RegularStepIn(t *testing.T) {
 	})
 	s.read() // StepInResponse
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Should be inside f's body (line 2).
 	st := s.stackTrace()
@@ -4418,7 +4383,7 @@ func TestDAPServer_StepInTargets_RegularStepIn(t *testing.T) {
 	select {
 	case res := <-resultCh:
 		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -4502,16 +4467,10 @@ func TestDAPServer_EvaluateContextSemantics(t *testing.T) {
 		resultCh <- env.LoadString("test", "(defun add (a b)\n  (+ a b))\n(add 10 20)")
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped()
 	s.continueExec()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
-	s.read() // StoppedEvent (breakpoint)
+	s.waitStopped("engine did not pause at breakpoint")
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -4545,7 +4504,7 @@ func TestDAPServer_EvaluateContextSemantics(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -4596,16 +4555,10 @@ func TestDAPServer_Completions(t *testing.T) {
 	}()
 
 	// Stop on entry, then continue to breakpoint.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped()
 	s.continueExec()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
-	s.read() // StoppedEvent (breakpoint)
+	s.waitStopped("engine did not pause at breakpoint")
 
 	// Get stack trace to cache frame environments.
 	stResp := s.stackTrace()
@@ -4647,7 +4600,7 @@ func TestDAPServer_Completions(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -4758,10 +4711,7 @@ func TestDAPServer_VariablePagination(t *testing.T) {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -4784,7 +4734,7 @@ func TestDAPServer_VariablePagination(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -4813,10 +4763,7 @@ func TestDAPServer_VariablePaginationStartOnly(t *testing.T) {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -4838,7 +4785,7 @@ func TestDAPServer_VariablePaginationStartOnly(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -4867,10 +4814,7 @@ func TestDAPServer_VariablePaginationBeyondEnd(t *testing.T) {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -4908,7 +4852,7 @@ func TestDAPServer_VariablePaginationBeyondEnd(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -4937,10 +4881,7 @@ func TestDAPServer_EvaluatePaginationHints(t *testing.T) {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -4977,7 +4918,7 @@ func TestDAPServer_EvaluatePaginationHints(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -5000,10 +4941,12 @@ func setupDAPSessionWithClientCaps(t *testing.T, initArgs dap.InitializeRequestA
 	}()
 
 	s := &dapTestSession{
-		t:      t,
-		engine: e,
-		client: client,
-		reader: bufio.NewReader(client),
+		t:          t,
+		engine:     e,
+		client:     client,
+		reader:     bufio.NewReader(client),
+		pendingMsg: make(chan dap.Message, 1),
+		pendingErr: make(chan error, 1),
 	}
 
 	s.send(&dap.InitializeRequest{
@@ -5051,10 +4994,7 @@ func TestDAPServer_FilterCommand_SetAndClear(t *testing.T) {
 				"(f)")
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -5105,7 +5045,7 @@ func TestDAPServer_FilterCommand_SetAndClear(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -5135,10 +5075,7 @@ func TestDAPServer_FilterCommand_InvalidRegex(t *testing.T) {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -5180,7 +5117,7 @@ func TestDAPServer_FilterCommand_InvalidRegex(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -5214,10 +5151,7 @@ func TestDAPServer_FilterCommand_InvalidatedEvent(t *testing.T) {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -5229,8 +5163,8 @@ func TestDAPServer_FilterCommand_InvalidatedEvent(t *testing.T) {
 	assert.Equal(t, "filter set: test", filterResp.Body.Result)
 
 	// Read the InvalidatedEvent that should follow.
-	msg, ok := s.tryRead(2 * time.Second)
-	require.True(t, ok, "expected InvalidatedEvent after filter set")
+	// A positive expectation: block on the event, do not race a clock.
+	msg := s.read()
 	invEvt, ok := msg.(*dap.InvalidatedEvent)
 	require.True(t, ok, "expected InvalidatedEvent, got %T", msg)
 	assert.Contains(t, invEvt.Body.Areas, dap.InvalidatedAreas("variables"))
@@ -5239,8 +5173,7 @@ func TestDAPServer_FilterCommand_InvalidatedEvent(t *testing.T) {
 	clearResp := s.evaluate("/filter", topFrame)
 	assert.True(t, clearResp.Success)
 
-	msg, ok = s.tryRead(2 * time.Second)
-	require.True(t, ok, "expected InvalidatedEvent after filter clear")
+	msg = s.read()
 	invEvt2, ok := msg.(*dap.InvalidatedEvent)
 	require.True(t, ok, "expected InvalidatedEvent, got %T", msg)
 	assert.Contains(t, invEvt2.Body.Areas, dap.InvalidatedAreas("variables"))
@@ -5248,7 +5181,7 @@ func TestDAPServer_FilterCommand_InvalidatedEvent(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -5278,10 +5211,7 @@ func TestDAPServer_FilterCommand_NoInvalidatedEventWhenUnsupported(t *testing.T)
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -5298,7 +5228,7 @@ func TestDAPServer_FilterCommand_NoInvalidatedEventWhenUnsupported(t *testing.T)
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -5332,10 +5262,7 @@ func TestDAPServer_FilterCommand_WithPagination(t *testing.T) {
 				"(f)")
 	}()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -5375,7 +5302,7 @@ func TestDAPServer_FilterCommand_WithPagination(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -5411,8 +5338,7 @@ func TestDAPServer_CustomCommand_Dispatch(t *testing.T) {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
-	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -5431,7 +5357,7 @@ func TestDAPServer_CustomCommand_Dispatch(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -5465,8 +5391,7 @@ func TestDAPServer_CustomCommand_Refresh(t *testing.T) {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
-	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -5478,8 +5403,8 @@ func TestDAPServer_CustomCommand_Refresh(t *testing.T) {
 	assert.Equal(t, "refreshed", evalResp.Body.Result)
 
 	// Should receive InvalidatedEvent because refresh=true and client supports it.
-	msg, ok := s.tryRead(2 * time.Second)
-	require.True(t, ok, "expected InvalidatedEvent after refresh command")
+	// A positive expectation: block on the event, do not race a clock.
+	msg := s.read()
 	invEvt, ok := msg.(*dap.InvalidatedEvent)
 	require.True(t, ok, "expected InvalidatedEvent, got %T", msg)
 	assert.Contains(t, invEvt.Body.Areas, dap.InvalidatedAreas("variables"))
@@ -5487,7 +5412,7 @@ func TestDAPServer_CustomCommand_Refresh(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -5517,8 +5442,7 @@ func TestDAPServer_CustomCommand_Error(t *testing.T) {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
-	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -5539,7 +5463,7 @@ func TestDAPServer_CustomCommand_Error(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -5565,8 +5489,7 @@ func TestDAPServer_CustomCommand_UnknownFallsThrough(t *testing.T) {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
-	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -5586,7 +5509,7 @@ func TestDAPServer_CustomCommand_UnknownFallsThrough(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -5616,12 +5539,10 @@ func TestDAPServer_CustomCommand_Completions(t *testing.T) {
 	}()
 
 	// Stop on entry, then continue to breakpoint.
-	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped() // (entry)
 	s.continueExec()
 
-	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (breakpoint)
+	s.waitStopped() // (breakpoint)
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -5653,7 +5574,7 @@ func TestDAPServer_CustomCommand_Completions(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -5712,8 +5633,7 @@ func TestDAPServer_HelpCommand_ListsBuiltinAndCustomCommands(t *testing.T) {
 		resultCh <- env.LoadString("test", "(defun f (x)\n  (+ x 1))\n(f 10)")
 	}()
 
-	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -5741,7 +5661,7 @@ func TestDAPServer_HelpCommand_ListsBuiltinAndCustomCommands(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -5774,12 +5694,10 @@ func TestDAPServer_HelpCommand_ShowsCustomDescriptions(t *testing.T) {
 	}()
 
 	// Stop on entry, then continue to breakpoint.
-	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped() // (entry)
 	s.continueExec()
 
-	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (breakpoint)
+	s.waitStopped() // (breakpoint)
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -5814,7 +5732,7 @@ func TestDAPServer_HelpCommand_ShowsCustomDescriptions(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -5844,12 +5762,10 @@ func TestDAPServer_HelpCommand_CompletionsIncludeDescriptions(t *testing.T) {
 	}()
 
 	// Stop on entry, then continue to breakpoint.
-	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped() // (entry)
 	s.continueExec()
 
-	require.Eventually(t, func() bool { return s.engine.IsPaused() }, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (breakpoint)
+	s.waitStopped() // (breakpoint)
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -5886,7 +5802,7 @@ func TestDAPServer_HelpCommand_CompletionsIncludeDescriptions(t *testing.T) {
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -5945,16 +5861,10 @@ func TestDAPServer_SetVariableLocal(t *testing.T) {
 	}()
 
 	// Stop on entry, then continue to breakpoint.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped()
 	s.continueExec()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
-	s.read() // StoppedEvent (breakpoint)
+	s.waitStopped("engine did not pause at breakpoint")
 
 	// Get stack trace to cache frame environments.
 	stResp := s.stackTrace()
@@ -6017,7 +5927,7 @@ func TestDAPServer_SetVariableLocal(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -6050,16 +5960,10 @@ func TestDAPServer_SetVariablePackage(t *testing.T) {
 	}()
 
 	// Stop on entry, then continue to breakpoint.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped()
 	s.continueExec()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
-	s.read() // StoppedEvent (breakpoint)
+	s.waitStopped("engine did not pause at breakpoint")
 
 	// Get stack trace.
 	stResp := s.stackTrace()
@@ -6109,7 +6013,7 @@ func TestDAPServer_SetVariablePackage(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -6141,16 +6045,10 @@ func TestDAPServer_SetVariableExpression(t *testing.T) {
 	}()
 
 	// Stop on entry, then continue to breakpoint.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped()
 	s.continueExec()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
-	s.read() // StoppedEvent (breakpoint)
+	s.waitStopped("engine did not pause at breakpoint")
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -6180,7 +6078,7 @@ func TestDAPServer_SetVariableExpression(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -6212,16 +6110,10 @@ func TestDAPServer_SetVariableInvalidExpression(t *testing.T) {
 	}()
 
 	// Stop on entry, then continue to breakpoint.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped()
 	s.continueExec()
 
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine did not pause at breakpoint")
-	s.read() // StoppedEvent (breakpoint)
+	s.waitStopped("engine did not pause at breakpoint")
 
 	stResp := s.stackTrace()
 	require.NotEmpty(t, stResp.Body.StackFrames)
@@ -6251,7 +6143,7 @@ func TestDAPServer_SetVariableInvalidExpression(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -6270,10 +6162,7 @@ func TestDAPServer_SetVariableUnsupportedScope(t *testing.T) {
 	}()
 
 	// Stop on entry.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (entry)
+	s.waitStopped()
 
 	// Try to set variable in a custom/macro scope (unsupported).
 	s.send(&dap.SetVariableRequest{
@@ -6298,7 +6187,7 @@ func TestDAPServer_SetVariableUnsupportedScope(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout")
 	}
 	s.disconnect()
@@ -6438,10 +6327,7 @@ func TestDAPServer_StepIn_BuiltinAutoStepOver(t *testing.T) {
 	}()
 
 	// Wait for stop-on-entry.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Verify we're on line 1: the (+ 1 2) builtin call.
 	_, pausedExpr := s.engine.PausedState()
@@ -6460,12 +6346,7 @@ func TestDAPServer_StepIn_BuiltinAutoStepOver(t *testing.T) {
 	s.read() // StepInResponse
 
 	// Should pause at line 2 (the next expression), not enter the builtin.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond, "engine should pause after step-over")
-	msg := s.read() // StoppedEvent
-	stopped, ok := msg.(*dap.StoppedEvent)
-	require.True(t, ok, "expected StoppedEvent, got %T", msg)
+	stopped := s.waitStopped("engine should pause after step-over")
 	assert.Equal(t, "step", stopped.Body.Reason)
 
 	_, pausedExpr = s.engine.PausedState()
@@ -6479,7 +6360,7 @@ func TestDAPServer_StepIn_BuiltinAutoStepOver(t *testing.T) {
 	select {
 	case res := <-resultCh:
 		require.NotEqual(t, lisp.LError, res.Type, "program error: %v", res)
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for program to finish")
 	}
 	s.disconnect()
@@ -6509,10 +6390,7 @@ func TestDAPServer_StepIn_BuiltinSkipDisabledDuringStep(t *testing.T) {
 	}()
 
 	// Wait for stop on entry (line 1: defun).
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent
+	s.waitStopped()
 
 	// Step-over the defun to reach line 3: (f).
 	s.send(&dap.NextRequest{
@@ -6523,10 +6401,7 @@ func TestDAPServer_StepIn_BuiltinSkipDisabledDuringStep(t *testing.T) {
 		Arguments: dap.NextArguments{ThreadId: elpsThreadID},
 	})
 	s.read() // NextResponse
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (step)
+	s.waitStopped()
 
 	_, pausedExpr := s.engine.PausedState()
 	require.NotNil(t, pausedExpr)
@@ -6542,10 +6417,7 @@ func TestDAPServer_StepIn_BuiltinSkipDisabledDuringStep(t *testing.T) {
 		Arguments: dap.StepInArguments{ThreadId: elpsThreadID},
 	})
 	s.read() // StepInResponse
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	s.read() // StoppedEvent (step — inside f)
+	s.waitStopped()
 
 	_, pausedExpr = s.engine.PausedState()
 	require.NotNil(t, pausedExpr)
@@ -6583,7 +6455,7 @@ func TestDAPServer_StepIn_BuiltinSkipDisabledDuringStep(t *testing.T) {
 	}
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for program to finish")
 	}
 	s.disconnect()
@@ -6655,12 +6527,7 @@ func TestDAPServer_LaunchConfig_SkipBuiltins(t *testing.T) {
 	}()
 
 	// Wait for stop-on-entry.
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	msg := s.read()
-	_, ok := msg.(*dap.StoppedEvent)
-	require.True(t, ok, "expected StoppedEvent on entry")
+	s.waitStopped()
 
 	// Verify we start on line 1.
 	_, pausedExpr := s.engine.PausedState()
@@ -6681,18 +6548,13 @@ func TestDAPServer_LaunchConfig_SkipBuiltins(t *testing.T) {
 	s.read() // StepInResponse
 
 	// The engine should pause (regular step-in, not auto-skip).
-	require.Eventually(t, func() bool {
-		return s.engine.IsPaused()
-	}, 2*time.Second, 10*time.Millisecond)
-	msg = s.read() // StoppedEvent
-	_, ok = msg.(*dap.StoppedEvent)
-	require.True(t, ok, "expected StoppedEvent, got %T", msg)
+	s.waitStopped()
 
 	// Continue to finish.
 	s.continueExec()
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(debugEventBackstop):
 		t.Fatal("timeout waiting for program to finish")
 	}
 	s.disconnect()
