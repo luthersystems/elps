@@ -46,16 +46,54 @@
 //
 //   - Continue: the process was descheduled for part of the window, so the
 //     budget is not spent. Wait the returned amount longer.
-//   - Hung: the full budget of scheduled time elapsed with the process running
-//     normally. The call under test did not terminate; fail.
-//   - Inconclusive: the hard wall-clock cap was reached and the process was
-//     starved throughout. Nothing can be concluded about this input, so
+//   - Hung: a cap was reached and the process was NOT starved during the
+//     window. The call under test did not terminate; fail.
+//   - Inconclusive: a cap was reached but scheduler stall dominated the
+//     window ([Report.Starved]). Nothing can be concluded about this input, so
 //     nothing is asserted about it.
 //
 // On a healthy machine no stall is ever recorded, Check returns Hung at
 // exactly the configured budget, and every target detects precisely what it
 // detected before. Detection is reduced only on a machine that is not running
 // us -- where the alternative is not detection but a coin flip.
+//
+// # Starvation is consulted at BOTH caps
+//
+// [Budget.Check] has two caps: the budget of scheduled time, and a hard
+// wall-clock cap at [hardWallFactor] times it. Which one a window hits does
+// not change what the window means, so [Report.Starved] is consulted for both.
+//
+// It was not always. Check originally tested the scheduled-time cap first and
+// returned Hung from it unconditionally, without ever asking Starved. That
+// made Inconclusive unreachable for any process receiving more than about a
+// quarter of the CPU, because reaching the wall cap with the budget UNSPENT
+// requires Wall >= 4*total while Scheduled < total -- i.e. a CPU share below
+// 25%. Above that share the first cap always won and every window, however
+// starved, was reported as a hang. Observed live (#488): a 30s budget over a
+// window of "wall 1m24.561s, of which 30.561s scheduled and 54s lost to
+// scheduler stall (longest single stall 10.7s)" -- 36% of wall clock actually
+// scheduled, Starved() true -- was reported as Hung and failed a test.
+//
+// Starved() and Hung must not be able to co-occur: Starved() exists precisely
+// to mean "do not blame the code under test". A window in which measured stall
+// outweighs measured running time cannot support "this call did not
+// terminate", whichever cap it reached first.
+//
+// The same arithmetic shows the wall cap can only ever be reached in a starved
+// window: Wall >= 4*total with Scheduled < total gives Wall >= 4*total >
+// 2*Scheduled, which is Starved() by definition. So the two caps share one
+// branch rather than each carrying their own -- the old wall-cap "not starved,
+// therefore Hung" fallback was unreachable code.
+//
+// The cost is deliberate and is a real reduction in detection: a genuine hang
+// on a machine that was stalling for more than half the window now reports
+// Inconclusive instead of failing. That is the error this project prefers.
+// Fuzzing is a repeated-trial process -- a real hang is re-found by the next
+// run, or by the same input on a quieter machine -- whereas a false Hung
+// writes a crasher blaming an innocent input, which costs an investigation and
+// pollutes the corpus permanently. It also does not touch the healthy case at
+// all: with no stall recorded, Starved() is false and Hung fires at exactly
+// the configured budget, as before.
 //
 // # What this does NOT measure: CPU share
 //
@@ -230,12 +268,14 @@ const (
 	// Continue means the process was descheduled for part of the window, so
 	// the budget of scheduled time is not spent. Wait longer.
 	Continue Verdict = iota
-	// Hung means the budget of scheduled time elapsed while the process was
-	// running normally. The call under test did not terminate.
+	// Hung means a cap was reached while the process was running normally --
+	// the budget of scheduled time was spent, or the hard wall-clock cap was
+	// hit, without scheduler stall dominating the window. The call under test
+	// did not terminate.
 	Hung
-	// Inconclusive means the hard wall-clock cap was reached with the process
-	// starved throughout. Whether the call would have terminated is unknown,
-	// so nothing may be asserted about this input.
+	// Inconclusive means a cap was reached in a window that Report.Starved
+	// reports as dominated by scheduler stall. Whether the call would have
+	// terminated is unknown, so nothing may be asserted about this input.
 	Inconclusive
 )
 
@@ -336,13 +376,17 @@ func (b *Budget) Report() Report {
 // second value is how much longer to wait before checking again.
 func (b *Budget) Check() (Verdict, time.Duration, Report) {
 	r := b.Report()
-	switch {
-	case r.Scheduled() >= b.total:
-		return Hung, 0, r
-	case r.Wall >= b.hardWall:
-		// Out of wall clock without ever spending the budget. Either the
-		// machine never gave us the CPU (Inconclusive), or the stall
-		// accounting under-counted and this really is a hang.
+	// Two independent caps, one meaning. `spent` is the budget of scheduled
+	// time actually elapsing; `outOfWall` is the backstop that stops a
+	// permanently starved process waiting until `go test -timeout` kills the
+	// binary with no crasher written.
+	spent := r.Scheduled() >= b.total
+	outOfWall := r.Wall >= b.hardWall
+	if spent || outOfWall {
+		// Starvation is consulted for BOTH caps. Testing `spent` first and
+		// returning Hung from it without asking Starved is #488: it made
+		// Inconclusive unreachable above ~25% CPU share and reported a window
+		// that was 64% scheduler stall as a hang. See the package doc.
 		if r.Starved() {
 			return Inconclusive, 0, r
 		}

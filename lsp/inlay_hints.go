@@ -48,6 +48,7 @@ func (s *Server) textDocumentInlayHint(params *InlayHintParams) ([]InlayHint, er
 	doc.mu.Lock()
 	ast := doc.ast
 	docAnalysis := doc.analysis
+	content := doc.Content
 	doc.mu.Unlock()
 
 	if docAnalysis == nil || len(ast) == 0 {
@@ -55,10 +56,13 @@ func (s *Server) textDocumentInlayHint(params *InlayHintParams) ([]InlayHint, er
 	}
 
 	// Convert the requested range from 0-based LSP to 1-based ELPS coords.
+	// The columns arrive in the negotiated encoding and the node columns they
+	// are compared against are bytes (elps#464). The hint POSITIONS this
+	// handler emits are still byte columns -- outbound is on the unfixed list.
 	startLine := int(params.Range.Start.Line) + 1
-	startCol := int(params.Range.Start.Character) + 1
+	startCol := s.byteColumnFromWire(content, int(params.Range.Start.Line), int(params.Range.Start.Character)) + 1
 	endLine := int(params.Range.End.Line) + 1
-	endCol := int(params.Range.End.Character) + 1
+	endCol := s.byteColumnFromWire(content, int(params.Range.End.Line), int(params.Range.End.Character)) + 1
 
 	ctx := &hintContext{
 		analysis:  docAnalysis,

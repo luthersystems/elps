@@ -51,6 +51,13 @@ func safeUint(n int) protocol.UInteger {
 // elpsToLSPRange converts an ELPS location to an LSP range.
 // If the location has end information, it is used; otherwise nameLen
 // characters are used for the range width.
+//
+// UNITS: the returned columns are BYTE columns, because that is what
+// token.Location carries and what nameLen (a len() of a name) counts. Both
+// ends are therefore in the same unit, which is the invariant elps#470
+// restored. Converting them to the client's encoding is a separate step
+// (Server.wireRange), applied on the rename path only -- see elps#464 and the
+// Position Encoding section of docs/lsp-guide.md.
 func elpsToLSPRange(loc *token.Location, nameLen int) protocol.Range {
 	start := elpsToLSPPosition(loc)
 	var end protocol.Position
@@ -71,6 +78,11 @@ func elpsToLSPRange(loc *token.Location, nameLen int) protocol.Range {
 // symbolAtPosition finds the analysis symbol at the given 0-based LSP
 // position in the document's analysis result. It returns both the symbol
 // (definition) and the specific reference that was hit, if any.
+//
+// UNITS: col is a 0-based BYTE column, which is what token.Location.Col and
+// EndCol are counted in. A column taken off the wire is in the negotiated
+// position encoding and must be converted first -- handlers do that with
+// Server.cursorAt, the single inbound boundary for elps#464.
 func symbolAtPosition(doc *Document, line, col int) (*analysis.Symbol, *analysis.Reference) {
 	if doc == nil || doc.analysis == nil {
 		return nil, nil

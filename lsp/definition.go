@@ -18,8 +18,9 @@ func (s *Server) textDocumentDefinition(_ *glsp.Context, params *protocol.Defini
 	}
 	s.ensureAnalysis(doc)
 
-	line := int(params.Position.Line)
-	col := int(params.Position.Character)
+	// elps#464: the client counts Character in the negotiated encoding
+	// (UTF-16 unless it asked for utf-8); everything below counts bytes.
+	line, col := s.cursorAt(doc, params.Position)
 
 	sym, _ := symbolAtPosition(doc, line, col)
 	word := wordAtPosition(doc.Content, line, col)

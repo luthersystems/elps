@@ -26,7 +26,10 @@ func (s *Server) textDocumentPrepareCallHierarchy(_ *glsp.Context, params *proto
 	}
 	s.ensureAnalysis(doc)
 
-	sym, _ := symbolAtPosition(doc, int(params.Position.Line), int(params.Position.Character))
+	// elps#464: the client counts Character in the negotiated encoding
+	// (UTF-16 unless it asked for utf-8); symbolAtPosition counts bytes.
+	line, col := s.cursorAt(doc, params.Position)
+	sym, _ := symbolAtPosition(doc, line, col)
 	if sym == nil {
 		return nil, nil
 	}
@@ -264,6 +267,13 @@ func symbolToCallHierarchyItem(sym *analysis.Symbol, uri string) protocol.CallHi
 		URI:            uri,
 		Range:          encRange,
 		SelectionRange: selRange,
+		// Data is opaque to the client: it is echoed back verbatim on the
+		// incoming/outgoing calls request and compared against sym.Source.Col
+		// in symbolMatchesCallHierarchyData. Both sides of that comparison are
+		// BYTE columns, and selRange is unconverted here (call-hierarchy
+		// ranges are on elps#464's unfixed list), so the round trip stays
+		// self-consistent. If the outbound ranges are ever converted, this Col
+		// must keep taking the byte column rather than the converted one.
 		Data: callHierarchyData{
 			Name:    sym.Name,
 			Package: sym.Package,

@@ -1121,6 +1121,64 @@ func TestDiagnostics_SeverityFilterExcludesEmptyFiles(t *testing.T) {
 	}
 }
 
+// TestDiagnostics_EmptySeverityListsCleanFiles is #460: on the
+// include_workspace path an explicitly empty `severity` used to drop every
+// file with no diagnostics, even though an empty string means "no filter"
+// everywhere else — the filter keys off the parsed value
+// (`severity == nil || *severity == ""`), the drop used to key off the pointer
+// alone. A client that sends "" for an unset optional field, which generated
+// clients and form-filling agents do routinely, got a workspace listing
+// missing every healthy file and nothing in the response saying so.
+//
+// The assertion is that `severity: ""` and an absent `severity` return the
+// same listing, rather than a hard-coded file set: that is the property the
+// two notions of "a filter is set" were disagreeing about.
+func TestDiagnostics_EmptySeverityListsCleanFiles(t *testing.T) {
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "dirty.lisp"), "(set 'x 1)\n(set 'x 2)\n")
+	writeTestFile(t, filepath.Join(tmp, "clean.lisp"), "(defun ok () 1)\n(ok)\n")
+
+	srv := New(WithWorkspaceRoot(tmp))
+	srv.service.workspaceValidationInterval = 0
+
+	listing := func(severity *string) map[string]int {
+		t.Helper()
+		_, resp, err := srv.service.diagnosticsTool(context.Background(), nil, DiagnosticsInput{
+			WorkspaceRoot:    &tmp,
+			IncludeWorkspace: true,
+			Severity:         severity,
+		})
+		require.NoError(t, err)
+		out := map[string]int{}
+		for _, fd := range resp.Files {
+			out[filepath.Base(fd.Path)] = len(fd.Diagnostics)
+		}
+		return out
+	}
+
+	absent := listing(nil)
+	require.Contains(t, absent, "dirty.lisp")
+	require.NotEmpty(t, absent["dirty.lisp"], "the fixture must produce a diagnostic for the drop to be observable")
+	require.Contains(t, absent, "clean.lisp", "precondition: an absent severity lists the clean file")
+	require.Zero(t, absent["clean.lisp"], "precondition: the clean file has no diagnostics")
+
+	empty := ""
+	assert.Equal(t, absent, listing(&empty),
+		`severity: "" means no filter, so it must list exactly what an absent severity lists`)
+
+	// GUARD (passes on main): a real severity still drops files whose
+	// diagnostics all filtered out. That is the intended behaviour pinned by
+	// TestDiagnostics_SeverityFilterExcludesEmptyFiles and #460 does not
+	// widen it.
+	warning := "warning"
+	filtered := listing(&warning)
+	assert.NotContains(t, filtered, "clean.lisp",
+		"a set severity must still drop files with nothing left after filtering")
+	for name, n := range filtered {
+		assert.NotZero(t, n, "file %s survived a severity filter with no diagnostics", name)
+	}
+}
+
 func TestCallGraph_TopLimitsOutput(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "graph.lisp")

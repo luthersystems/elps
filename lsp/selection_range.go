@@ -29,9 +29,14 @@ func (s *Server) textDocumentSelectionRange(_ *glsp.Context, params *protocol.Se
 
 	result := make([]protocol.SelectionRange, len(params.Positions))
 	for i, pos := range params.Positions {
-		// Convert 0-based LSP position to 1-based ELPS coords.
-		line := int(pos.Line) + 1
-		col := int(pos.Character) + 1
+		// Convert 0-based LSP position to 1-based ELPS coords. The column
+		// arrives in the negotiated encoding and nodesAtPosition counts bytes
+		// (elps#464). The zero-width fallback below echoes `pos` back
+		// unconverted, which is correct in any encoding: it is the client's
+		// own number.
+		lspLine, byteCol := s.cursorAt(doc, pos)
+		line := lspLine + 1
+		col := byteCol + 1
 
 		chain := nodesAtPosition(ast, line, col)
 		if len(chain) == 0 {

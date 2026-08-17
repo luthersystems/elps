@@ -107,14 +107,112 @@ func TestCheckInconclusiveAtTheWallCap(t *testing.T) {
 	}
 }
 
-// The load-bearing negative: reaching the wall cap on a machine that WAS
-// running us is a hang, not an excuse. Without this, a slow-but-real hang on a
-// mildly noisy machine could be waved away.
+// The load-bearing negative: a long window on a machine that WAS running us is
+// a hang, not an excuse. Without this, a slow-but-real hang on a mildly noisy
+// machine could be waved away -- especially now that Starved() is consulted at
+// both caps (#488) rather than only at the wall cap.
+//
+// Note what this window actually exercises: 40s of wall clock with only 1s
+// lost is 39s SCHEDULED, so the budget is long spent and it is the
+// scheduled-time cap that fires, not the wall cap. That is the arm #488
+// changed, and it must still say Hung.
 func TestCheckHungAtTheWallCapWhenNotStarved(t *testing.T) {
 	b := New(10 * time.Second)
 	v, _, r := checkAt(b, 40*time.Second, time.Second)
 	if v != Hung {
 		t.Fatalf("verdict = %v, want Hung (%s)", v, r)
+	}
+	if r.Starved() {
+		t.Fatalf("window is starved, so it is not the not-starved negative it claims to be (%s)", r)
+	}
+}
+
+// #488, as filed and as observed live: a 30s budget over a window of
+// "wall 1m24.561s, of which 30.561s scheduled and 54s lost to scheduler stall
+// (longest single stall 10.7s)". Starved() is true AND the budget of scheduled
+// time is spent, so both facts are available to Check; before the fix the
+// scheduled-time arm was tested first and returned Hung without ever asking.
+func TestCheckDoesNotCallAStarvedWindowAHang(t *testing.T) {
+	b := New(30 * time.Second)
+	v, _, r := checkAt(b, 84561*time.Millisecond, 54*time.Second)
+	// Pin that this really is the co-occurrence, not some neighbouring window:
+	// the SCHEDULED cap is the one that fires, the wall cap is not reached,
+	// and the window is starved.
+	if r.Scheduled() < 30*time.Second {
+		t.Fatalf("window does not spend the budget, so it is not the #488 case (%s)", r)
+	}
+	if r.Wall >= 4*30*time.Second {
+		t.Fatalf("window reaches the hard wall cap, so it is not the #488 case (%s)", r)
+	}
+	if !r.Starved() {
+		t.Fatalf("window is not starved, so it is not the #488 case (%s)", r)
+	}
+	if v == Hung {
+		t.Fatalf("verdict = Hung for a window Check itself classifies as starved (%s) -- "+
+			"Starved() means 'do not blame the code under test' (#488)", r)
+	}
+	if v != Inconclusive {
+		t.Fatalf("verdict = %v, want Inconclusive (%s)", v, r)
+	}
+}
+
+// The property, over the share space rather than at the one observed point:
+// Starved() and Hung may never co-occur, and Inconclusive must be reachable at
+// shares well above the ~25% ceiling the old ordering imposed.
+func TestHungAndStarvedNeverCoOccur(t *testing.T) {
+	const total = 10 * time.Second
+	best := -1
+	for _, wallSec := range []int{10, 15, 20, 30, 40, 60, 90, 120} {
+		for lostPct := 0; lostPct <= 100; lostPct += 5 {
+			wall := time.Duration(wallSec) * time.Second
+			lost := wall * time.Duration(lostPct) / 100
+			b := New(total)
+			v, _, r := checkAt(b, wall, lost)
+			if v == Hung && r.Starved() {
+				t.Errorf("wall=%s lost=%s: verdict Hung for a starved window (%s)", wall, lost, r)
+			}
+			if v == Inconclusive && !r.Starved() {
+				t.Errorf("wall=%s lost=%s: verdict Inconclusive for a window that is not starved (%s)", wall, lost, r)
+			}
+			if v == Inconclusive && r.Wall > 0 {
+				if share := int(r.Scheduled() * 100 / r.Wall); share > best {
+					best = share
+				}
+			}
+		}
+	}
+	// Before #488 the highest CPU share that could ever yield Inconclusive was
+	// under 25%: it required Wall >= 4*total with Scheduled < total. The point
+	// of the fix is that the verdict is reachable above that ceiling.
+	if best <= 25 {
+		t.Fatalf("highest scheduled share yielding Inconclusive is %d%%, want above 25%% -- "+
+			"the ceiling #488 describes is still in place", best)
+	}
+	t.Logf("Inconclusive reachable up to %d%% scheduled share (the old ordering capped it below 25%%)", best)
+}
+
+// Why the two caps can share one branch: reaching the hard wall cap without
+// having spent the budget is, arithmetically, always a starved window. Wall >=
+// 4*total with Scheduled < total gives Wall > 2*Scheduled, which is Starved().
+// So the old wall-cap "not starved, therefore Hung" fallback could not fire.
+func TestTheWallCapIsAlwaysStarved(t *testing.T) {
+	const total = 10 * time.Second
+	const hardWall = total * hardWallFactor
+	checked := 0
+	for _, wall := range []time.Duration{hardWall, hardWall + time.Millisecond, 60 * time.Second, 120 * time.Second, 600 * time.Second} {
+		for lost := time.Duration(0); lost <= wall; lost += 250 * time.Millisecond {
+			r := Report{Wall: wall, Lost: lost}
+			if r.Scheduled() >= total {
+				continue // the budget cap fires first; not the wall-cap case
+			}
+			checked++
+			if !r.Starved() {
+				t.Fatalf("wall=%s lost=%s reaches the wall cap unspent but is not starved (%s)", wall, lost, r)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no wall-cap window was examined — the sweep is broken, not the property")
 	}
 }
 

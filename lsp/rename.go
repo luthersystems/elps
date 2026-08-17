@@ -20,8 +20,9 @@ func (s *Server) textDocumentPrepareRename(_ *glsp.Context, params *protocol.Pre
 	}
 	s.ensureAnalysis(doc)
 
-	line := int(params.Position.Line)
-	col := int(params.Position.Character)
+	// elps#464: the client counts Character in the negotiated encoding
+	// (UTF-16 unless it asked for utf-8); everything below counts bytes.
+	line, col := s.cursorAt(doc, params.Position)
 
 	sym, ref := symbolAtPosition(doc, line, col)
 	if sym == nil {
@@ -48,8 +49,13 @@ func (s *Server) textDocumentPrepareRename(_ *glsp.Context, params *protocol.Pre
 		return nil, nil
 	}
 
+	// elps#464: elpsToLSPRange returns BYTE columns; the client reads them in
+	// the negotiated encoding. prepareRename's range is what the editor
+	// pre-selects in its rename box, and checkRenameSpans in the fuzz harness
+	// uses it as the oracle for the edit ranges below, so it has to move in
+	// the same unit as they do.
 	return &protocol.RangeWithPlaceholder{
-		Range:       elpsToLSPRange(loc, len(sym.Name)),
+		Range:       s.wireRange(doc.Content, elpsToLSPRange(loc, len(sym.Name))),
 		Placeholder: sym.Name,
 	}, nil
 }
@@ -62,8 +68,9 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 	}
 	s.ensureAnalysis(doc)
 
-	line := int(params.Position.Line)
-	col := int(params.Position.Character)
+	// elps#464: the client counts Character in the negotiated encoding
+	// (UTF-16 unless it asked for utf-8); everything below counts bytes.
+	line, col := s.cursorAt(doc, params.Position)
 
 	sym, _ := symbolAtPosition(doc, line, col)
 	if sym == nil {
@@ -82,11 +89,19 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 	edits := make(map[protocol.DocumentUri][]protocol.TextEdit)
 	docURI := params.TextDocument.URI
 
+	// elps#464: elpsToLSPRange produces BYTE columns and the client applies
+	// these edits in the negotiated encoding, so every range below is
+	// converted against the text of the file it points into -- both ends
+	// together, which is the invariant elps#470 restored and the reason a
+	// rename edit is the one outbound range this PR converts: it is applied
+	// to the user's file unread.
+	texts := s.newDocumentTexts()
+
 	// Rename at the definition site.
 	if sym.Source != nil && sym.Source.Pos >= 0 && sym.Source.Line > 0 {
 		defURI := s.resolveURI(docURI, sym.Source.File)
 		edits[defURI] = append(edits[defURI], protocol.TextEdit{
-			Range:   elpsToLSPRange(sym.Source, len(sym.Name)),
+			Range:   texts.rangeFor(defURI, elpsToLSPRange(sym.Source, len(sym.Name))),
 			NewText: params.NewName,
 		})
 	}
@@ -99,7 +114,7 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 			}
 			refURI := s.resolveURI(docURI, ref.Source.File)
 			edits[refURI] = append(edits[refURI], protocol.TextEdit{
-				Range:   elpsToLSPRange(ref.Source, len(sym.Name)),
+				Range:   texts.rangeFor(refURI, elpsToLSPRange(ref.Source, len(sym.Name))),
 				NewText: params.NewName,
 			})
 		}
@@ -111,7 +126,7 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 	for _, wref := range s.getWorkspaceRefs(key, currentFile) {
 		refURI := s.resolveURI(docURI, wref.File)
 		edits[refURI] = append(edits[refURI], protocol.TextEdit{
-			Range:   elpsToLSPRange(wref.Source, len(sym.Name)),
+			Range:   texts.rangeFor(refURI, elpsToLSPRange(wref.Source, len(sym.Name))),
 			NewText: params.NewName,
 		})
 	}
