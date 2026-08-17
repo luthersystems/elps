@@ -775,6 +775,262 @@ else
 fi
 rm -rf "$reqjobs_tmp"
 
+echo "== govulncheck fail-summary: the gate must not un-fail its own caller ===="
+
+# scripts/govulncheck-fail-summary.sh is the final step of
+# .github/workflows/govulncheck-scheduled.yml. It had NO behavioural coverage
+# here at all -- only the `bash -n` and shellcheck sweep further down, which
+# prove it parses, not that it works.
+#
+# The defect (#495): the step's `if:` treats a missing scan output as tripped,
+# because `'' != '0'` is TRUE in Actions expression syntax, while the script
+# defaulted empty inputs to `0` with `${VAR:-0}` and reported "No govulncheck
+# condition tripped — nothing to fail", exit 0. The step therefore ran BECAUSE
+# the outputs were missing, and then said nothing was wrong.
+GV_SUMMARY="${SCRIPT_DIR}/govulncheck-fail-summary.sh"
+GV_SCHEDULED="${REPO_ROOT}/.github/workflows/govulncheck-scheduled.yml"
+
+# gv_summary <source> <binexit> <buildfailed> <vulnsfound>
+#
+# Every input passed explicitly, including empty ones, so a case can never
+# accidentally exercise the unset path when it means to exercise the empty one.
+gv_summary() {
+	env SOURCE_SCAN_EXIT="$1" BINARY_SCAN_EXIT="$2" \
+		BINARY_BUILD_FAILED="$3" BINARY_VULNS_FOUND="$4" \
+		bash "$GV_SUMMARY"
+}
+
+# Real inputs first, so a script that merely fails on everything cannot be
+# mistaken for one that works.
+assert_exit 0 "govulncheck-summary: all four outputs reported and clear passes" \
+	gv_summary 0 0 0 0
+assert_exit 1 "govulncheck-summary: a source-mode finding fails" \
+	gv_summary 3 0 0 0
+assert_exit 1 "govulncheck-summary: a binary-mode BUILD FAILURE fails" \
+	gv_summary 0 1 1 0
+assert_exit 1 "govulncheck-summary: a binary-mode finding fails" \
+	gv_summary 0 1 0 1
+assert_contains "This is NOT a vulnerability finding" \
+	"govulncheck-summary: a build break is not described as a security finding" \
+	gv_summary 0 1 1 0
+
+# NO SCAN OUTPUT IS NOT A PASS (issue #495).
+#
+# An empty step output means the scan's status never reached this step, not
+# that the scan was clean. Exit 2 ("could not determine") rather than 1, so a
+# broken gate stays distinguishable from a real finding -- the convention
+# fuzz.sh, fuzz-budget-check.sh and confidentiality-guard.sh already use.
+assert_exit 2 "govulncheck-summary: EMPTY scan outputs refuse to report clean (#495)" \
+	gv_summary '' '' '' ''
+assert_exit 2 "govulncheck-summary: UNSET scan outputs refuse to report clean (#495)" \
+	env -u SOURCE_SCAN_EXIT -u BINARY_SCAN_EXIT -u BINARY_BUILD_FAILED -u BINARY_VULNS_FOUND \
+	bash "$GV_SUMMARY"
+assert_exit 2 "govulncheck-summary: ONE missing output is enough to refuse (#495)" \
+	gv_summary 0 0 '' 0
+assert_contains "::error title=govulncheck gate could not run" \
+	"govulncheck-summary: the undetermined case SAYS nothing was verified (#495)" \
+	gv_summary '' '' '' ''
+assert_contains "SOURCE_SCAN_EXIT" \
+	"govulncheck-summary: the undetermined case NAMES the outputs it was not told (#495)" \
+	gv_summary '' '' '' ''
+# A missing input must not hide a condition that DID trip among the inputs that
+# arrived: the run is undetermined, but the finding is still actionable.
+assert_contains "the source-mode scan reported a finding" \
+	"govulncheck-summary: a tripped condition is still reported alongside a missing one (#495)" \
+	gv_summary 3 0 '' 0
+# The precise false statement this fixes must not survive on the empty path.
+assert_not_contains "No govulncheck condition tripped" \
+	"govulncheck-summary: no longer claims nothing tripped when it was told nothing (#495)" \
+	gv_summary '' '' '' ''
+
+# The other half of the same disagreement: the caller's `if:` also fires on
+# `steps.binscan.outputs.exit != '0'`, which the script was never passed. A
+# binary pass reporting an aggregate failure with neither specific condition
+# set is a failure this summary cannot name -- and "cannot name it" is not
+# "nothing happened".
+assert_exit 1 "govulncheck-summary: an UNATTRIBUTED binary-pass failure fails (#495)" \
+	gv_summary 0 1 0 0
+assert_contains "UNATTRIBUTED FAILURE" \
+	"govulncheck-summary: the unattributed case says so rather than reporting clear (#495)" \
+	gv_summary 0 1 0 0
+
+# WIRING (the structural half). #495 was a disagreement between a workflow
+# expression and a script; neither file is wrong on its own, only the pair is,
+# and nothing else in this suite reads both.
+#
+# Two directions, because either alone leaves a hole: every output the step's
+# `if:` decides on must reach the script, and every variable the script reads
+# must be bound by the step.
+gv_check_wiring() {
+	python3 - "$1" "$2" <<'PY'
+import re, sys
+
+wf_path, sh_path = sys.argv[1], sys.argv[2]
+wf = open(wf_path).read()
+sh = open(sh_path).read()
+
+# The step is identified by what it RUNS, not by its name, so renaming the step
+# cannot silently drop this check.
+steps = [s for s in re.split(r"\n      - ", wf)
+         if "run: bash scripts/govulncheck-fail-summary.sh" in s]
+if len(steps) != 1:
+    print("FLOOR: expected exactly 1 step running govulncheck-fail-summary.sh in %s, found %d"
+          % (wf_path, len(steps)))
+    sys.exit(2)
+step = steps[0]
+
+m = re.search(r"^        if: (.+)$", step, flags=re.M)
+if not m:
+    print("FLOOR: the fail-summary step has no `if:` — it is no longer a conditional gate")
+    sys.exit(2)
+gated_on = set(re.findall(r"steps\.(\w+)\.outputs\.(\w+)", m.group(1)))
+if not gated_on:
+    print("FLOOR: the fail-summary step's `if:` reads no step outputs — the extraction is broken")
+    sys.exit(2)
+
+env_block = re.search(r"^        env:\n((?:^          \S.*\n)+)", step, flags=re.M)
+if not env_block:
+    print("FLOOR: the fail-summary step has no `env:` block, so it is passed nothing")
+    sys.exit(2)
+bound = {}
+for line in env_block.group(1).splitlines():
+    k, _, v = line.strip().partition(":")
+    for ref in re.findall(r"steps\.(\w+)\.outputs\.(\w+)", v):
+        bound[ref] = k
+
+read_by_script = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)-\}", sh))
+if not read_by_script:
+    print("FLOOR: found no required inputs in %s — the extraction is broken, not the script"
+          % sh_path)
+    sys.exit(2)
+
+missing = sorted(gated_on - set(bound))
+for step_id, out in missing:
+    print("steps.%s.outputs.%s gates this step but is not passed to the script — the script "
+          "cannot agree with a condition it is never shown (#495)" % (step_id, out))
+unbound = sorted(read_by_script - set(bound.values()))
+for var in unbound:
+    print("the script reads %s but the workflow step does not set it, so it would be "
+          "permanently unreported (#495)" % var)
+
+sys.exit(1 if (missing or unbound) else 0)
+PY
+}
+
+gv_wiring_rc=0
+gv_wiring_out="$(gv_check_wiring "$GV_SCHEDULED" "$GV_SUMMARY")" || gv_wiring_rc=$?
+if [ "$gv_wiring_rc" -eq 0 ]; then
+	ok "govulncheck-summary: every output the step's if: gates on is passed to the script, and every input the script reads is bound (#495)"
+elif [ "$gv_wiring_rc" -eq 1 ] && [ -n "$gv_wiring_out" ]; then
+	bad "govulncheck-summary: the fail-summary step and its script disagree about their inputs (#495)"
+	echo "$gv_wiring_out" | sed 's/^/        | /'
+else
+	# Any other status is the checker failing to run, which is not the same as
+	# it finding nothing.
+	bad "govulncheck-summary: the wiring check could not run (rc=${gv_wiring_rc}) — it verified nothing (#495)"
+	echo "$gv_wiring_out" | sed 's/^/        | /'
+fi
+
+# NEGATIVE CONTROL 1 (behavioural). Put the `${VAR:-0}` collapse back into a
+# COPY of the live script and require the vacuous pass to return.
+#
+# The copy is produced by mutating the real file, never from a checked-in
+# fixture, so it cannot drift away from what it guards. If the block can no
+# longer be located the control fails loudly instead of silently testing
+# nothing -- a negative control that stops finding its target is itself a check
+# that cannot fail.
+#
+# The wiring check above is BLIND to this control by construction: it reads the
+# workflow and the script's variable NAMES, neither of which this mutation
+# touches. Only running the thing catches it, which is why both halves exist.
+gv_tmp="$(mktemp -d)"
+gv_strip_rc=0
+python3 - "$GV_SUMMARY" "${gv_tmp}/collapsed.sh" <<'PY' || gv_strip_rc=$?
+import sys
+
+src = open(sys.argv[1]).read()
+n = 0
+
+# 1. record() stops distinguishing "was not told" from "did not trip".
+guard = '''  if [ -z "$value" ]; then
+    unreported+=("$name")
+    return
+  fi
+'''
+if guard in src:
+    src = src.replace(guard, '''  if [ -z "$value" ]; then
+    value=0
+  fi
+''', 1)
+    n += 1
+
+# 2. the binary-mode aggregate stops being required.
+agg = '''if [ -z "${BINARY_SCAN_EXIT-}" ]; then
+  unreported+=("BINARY_SCAN_EXIT")
+elif'''
+if agg in src:
+    src = src.replace(agg, '''if [ -z "${BINARY_SCAN_EXIT-}" ]; then
+  :
+elif''', 1)
+    n += 1
+
+if n != 2:
+    sys.stderr.write("expected 2 mutation sites, applied %d\n" % n)
+    sys.exit(3)
+open(sys.argv[2], "w").write(src)
+PY
+if [ "$gv_strip_rc" -ne 0 ]; then
+	bad "negative control could not reinstate the empty-input collapse — has govulncheck-fail-summary.sh been restructured? (#495)"
+else
+	# The mutated copy must still behave normally on real inputs, or the
+	# control is testing a script it accidentally broke.
+	assert_exit 0 "negative-control rig: the collapsed copy still passes on all-clear (#495)" \
+		env SOURCE_SCAN_EXIT=0 BINARY_SCAN_EXIT=0 BINARY_BUILD_FAILED=0 BINARY_VULNS_FOUND=0 \
+		bash "${gv_tmp}/collapsed.sh"
+	assert_exit 1 "negative-control rig: the collapsed copy still fails on a real finding (#495)" \
+		env SOURCE_SCAN_EXIT=3 BINARY_SCAN_EXIT=0 BINARY_BUILD_FAILED=0 BINARY_VULNS_FOUND=0 \
+		bash "${gv_tmp}/collapsed.sh"
+	# And now the point: with empty collapsing to 0, the gate goes green over
+	# inputs it was never given.
+	if env SOURCE_SCAN_EXIT= BINARY_SCAN_EXIT= BINARY_BUILD_FAILED= BINARY_VULNS_FOUND= \
+		bash "${gv_tmp}/collapsed.sh" >/dev/null 2>&1; then
+		ok "negative control: REINSTATING the empty-input collapse restores the #495 vacuous pass, so the assertions above are load-bearing"
+	else
+		bad "negative control did not reproduce the #495 vacuous pass — the assertions above may be passing for the wrong reason"
+	fi
+fi
+rm -rf "$gv_tmp"
+
+# NEGATIVE CONTROL 2 (structural). Unbind BINARY_SCAN_EXIT in a COPY of the
+# live WORKFLOW -- exactly the state main was in -- and require the wiring
+# check to object. It runs the same gv_check_wiring the real assertion uses, so
+# the control cannot pass by exercising a different code path.
+gv_wf_tmp="$(mktemp -d)"
+gv_wf_rc=0
+python3 - "$GV_SCHEDULED" "${gv_wf_tmp}/govulncheck-scheduled.yml" <<'PY' || gv_wf_rc=$?
+import sys
+
+src = open(sys.argv[1]).read()
+line = "          BINARY_SCAN_EXIT: ${{ steps.binscan.outputs.exit }}\n"
+if src.count(line) != 1:
+    sys.stderr.write("expected exactly 1 BINARY_SCAN_EXIT binding, found %d\n" % src.count(line))
+    sys.exit(3)
+open(sys.argv[2], "w").write(src.replace(line, "", 1))
+PY
+if [ "$gv_wf_rc" -ne 0 ]; then
+	bad "negative control could not unbind BINARY_SCAN_EXIT from a copy of the workflow (#495)"
+else
+	gv_neg_rc=0
+	gv_neg_out="$(gv_check_wiring "${gv_wf_tmp}/govulncheck-scheduled.yml" "$GV_SUMMARY")" || gv_neg_rc=$?
+	if [ "$gv_neg_rc" -eq 1 ] && echo "$gv_neg_out" | grep -q "BINARY_SCAN_EXIT"; then
+		ok "negative control: UNBINDING binscan.outputs.exit is caught by the wiring check (#495)"
+	else
+		bad "negative control: a step gating on an output it never passes was NOT caught — the wiring check is dead (rc=${gv_neg_rc})"
+		echo "$gv_neg_out" | sed 's/^/        | /'
+	fi
+fi
+rm -rf "$gv_wf_tmp"
+
 echo "== extracted workflow bodies: bench-compare =============================="
 
 BENCH_COMPARE_SH="${SCRIPT_DIR}/bench-compare.sh"
