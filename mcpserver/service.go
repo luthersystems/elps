@@ -367,7 +367,17 @@ func (s *service) diagnosticsTool(ctx context.Context, _ *mcp.CallToolRequest, i
 				continue
 			}
 			fd.Diagnostics = filterDiagnosticsBySeverity(fd.Diagnostics, severity)
-			if in.Severity != nil && len(fd.Diagnostics) == 0 {
+			// Drop files with nothing left only when a filter actually ran.
+			// This used to key off the pointer (`in.Severity != nil`) while
+			// the filter keys off the parsed value, so `severity: ""` — what
+			// generated clients and form-filling agents send for an unset
+			// optional field — landed between the two: nothing was filtered,
+			// yet every clean file was still dropped from the listing, with
+			// nothing in the response saying a filter had been applied
+			// (#460). Reading the parsed value makes `""` behave exactly
+			// like an absent severity here, as it already does in the filter
+			// itself and as #451 settled for an empty `checks` array.
+			if severity != "" && len(fd.Diagnostics) == 0 {
 				continue
 			}
 			result = append(result, fd)
