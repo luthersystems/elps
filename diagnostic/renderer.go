@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/mattn/go-runewidth"
 )
 
 // Renderer formats diagnostics as Rust-style annotated source snippets.
@@ -129,10 +131,26 @@ func (r *Renderer) writeSpan(ew *errWriter, span Span, p palette) {
 
 	// Source line with line number
 	// Replace tabs with spaces for consistent alignment
-	displaySource := strings.ReplaceAll(source, "\t", "    ")
+	displaySource := strings.ReplaceAll(source, "\t", tabExpansion)
 	ew.printf(" %s%s |%s  %s\n", p.boldBlue, lineStr, p.reset, displaySource)
 
-	// Underline
+	// Underline.
+	//
+	// Both halves of it -- how far in the carets start, and how many there
+	// are -- have to be measured in the SAME unit, and that unit has to be
+	// TERMINAL CELLS, because a terminal is what lays the two lines out on
+	// top of each other.  Issue #469 was that they were not: the indent was
+	// computed with displayWidth (cells) and the length with `endCol - col +
+	// 1` (bytes), so any span containing a multi-byte rune got more carets
+	// than the text it pointed at and they ran on over what followed.  On
+	// "(f 加算 1)" the two-rune token got six carets.
+	//
+	// Bytes are not the unit and neither are runes.  A rune count is right
+	// for the common case only because most runes happen to occupy one cell;
+	// an East Asian wide character occupies two and a combining mark
+	// occupies none, so 加算 needs FOUR carets rather than two or six.  Both
+	// measurements below therefore go through displayWidth, which is the one
+	// place that decides what a cell is.
 	col := span.Col
 	endCol := span.EndCol
 	if col <= 0 {
@@ -144,14 +162,32 @@ func (r *Renderer) writeSpan(ew *errWriter, span Span, p palette) {
 	if endCol < col {
 		endCol = col
 	}
-	underLen := endCol - col + 1
 
-	// Account for tab expansion in positioning
-	prefix := ""
-	if col > 1 && col-1 <= len(source) {
-		prefix = source[:col-1]
+	// Byte indices into source: start inclusive, end exclusive.  Span.EndCol
+	// is an INCLUSIVE 1-based byte column (see its doc comment), so the
+	// exclusive end index is endCol itself.  Both are clamped because Col and
+	// EndCol arrive from a caller and nothing upstream promises they are
+	// inside this line.
+	start, end := col-1, endCol
+	if start > len(source) {
+		start = len(source)
 	}
-	displayCol := displayWidth(prefix)
+	if end > len(source) {
+		end = len(source)
+	}
+	if end < start {
+		end = start
+	}
+
+	displayCol := displayWidth(source[:start])
+	underLen := displayWidth(source[start:end])
+	if underLen < 1 {
+		// A zero-width span still has to point somewhere: a caret under the
+		// start column is more use than a blank line.  Reachable when the
+		// span names a position past the end of the line, and when the
+		// spanned text is nothing but zero-width marks.
+		underLen = 1
+	}
 
 	underPad := strings.Repeat(" ", displayCol)
 	underline := strings.Repeat("^", underLen)
@@ -208,15 +244,60 @@ func (r *Renderer) detectEndCol(source string, col int) int {
 	return end // convert back to 1-based end column
 }
 
-// displayWidth returns the display width of a string, expanding tabs to 4 spaces.
+const (
+	// tabWidth is how many terminal cells a tab is rendered as.  It is a
+	// choice, not a fact -- a real terminal advances to the next tab stop --
+	// but the renderer rewrites tabs into spaces before printing the source
+	// line, so within this package it becomes a fact.
+	tabWidth = 4
+
+	// tabExpansion is what writeSpan substitutes for a tab in the printed
+	// source line.  It MUST be tabWidth spaces: the source line and the caret
+	// line are laid out by two different pieces of code and only agree
+	// because these two constants do.
+	tabExpansion = "    "
+)
+
+// cells measures runes in terminal cells.
+//
+// It is an explicit Condition rather than runewidth's package-level default
+// because that default is configured from the environment: go-runewidth's
+// init reads LC_ALL/LC_CTYPE/LANG and sets EastAsianWidth, under which the
+// ~1000 codepoints in the Unicode "Ambiguous" width class (→, ①, Greek and
+// Cyrillic letters, box drawing) become two cells wide instead of one.  Left
+// on the default, the same diagnostic would be underlined differently
+// depending on the locale of the shell that ran it, and the package's own
+// golden tests would pass or fail on the same grounds.  Ambiguous-as-narrow
+// is the choice essentially every modern terminal makes.
+var cells = func() *runewidth.Condition {
+	c := runewidth.NewCondition()
+	c.EastAsianWidth = false
+	return c
+}()
+
+// displayWidth returns how many terminal cells s occupies, with tabs counted
+// as tabWidth.
+//
+// This is the single definition of "how wide is this text" for the renderer,
+// and both halves of the caret underline go through it -- that is the whole
+// of the fix for issue #469, which sized the underline in bytes while
+// indenting it in cells.
+//
+// It counts CELLS and not runes.  The two agree for the Latin text that most
+// diagnostics are about, which is why counting runes survived here as long as
+// it did, but they part company in both directions: an East Asian wide
+// character or an emoji occupies two cells, and a combining mark occupies
+// none.  Under a rune count "加算" indents following text by two columns when
+// the terminal has moved four, and "é" written as e + U+0301 indents by two
+// when the terminal has moved one.
 func displayWidth(s string) int {
 	w := 0
 	for _, ch := range s {
 		if ch == '\t' {
-			w += 4
-		} else {
-			w++
+			w += tabWidth
+			continue
 		}
+		w += cells.RuneWidth(ch)
 	}
 	return w
 }
