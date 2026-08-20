@@ -70,12 +70,26 @@ assert_contains() {
 }
 
 # assert_not_contains <needle> <description> <command...>
+#
+# IMPORTANT: this consults the exit status before reading the output, because
+# an absent needle is only evidence when the command actually ran.  A command
+# that could not execute produces no output, so the needle is trivially absent
+# and the assertion would otherwise report PASS having checked nothing (#502).
+#
+# The test is `> 125` rather than `-ne 0` because several commands under test
+# are EXPECTED to exit non-zero -- a gate that fires, a script that refuses --
+# and those are legitimate verdicts.  126 (not executable), 127 (not found) and
+# 128+ (killed by a signal) are not verdicts any script in scripts/ can return.
 assert_not_contains() {
 	local needle="$1" desc="$2"
 	shift 2
-	local out
+	local out rc
 	out=$("$@" 2>&1)
-	if echo "$out" | grep -qF -- "$needle"; then
+	rc=$?
+	if [ "$rc" -gt 125 ]; then
+		bad "$desc — the command could not run (exit $rc), so nothing was asserted"
+		echo "$out" | sed 's/^/        | /'
+	elif echo "$out" | grep -qF -- "$needle"; then
 		bad "$desc — output unexpectedly contained '$needle'"
 		echo "$out" | sed 's/^/        | /'
 	else
@@ -83,8 +97,62 @@ assert_not_contains() {
 	fi
 }
 
+# assert_helper_verdict <PASS|FAIL> <description> <helper> <helper-args...>
+#
+# Runs one of the assertion helpers above and checks the verdict it reported.
+# Nothing else in this suite asserts that its own assertions can fail, which is
+# the same blind spot the file exists to close everywhere else (#502).
+#
+# The helper runs inside a command substitution, so the pass/fail counters it
+# increments belong to that subshell and never reach the totals below.
+assert_helper_verdict() {
+	local want="$1" desc="$2"
+	shift 2
+	local out verdict
+	out=$("$@" 2>&1)
+	verdict=$(printf '%s\n' "$out" | head -n 1 | awk '{print $1}')
+	if [ "$verdict" = "$want" ]; then
+		ok "$desc"
+	else
+		bad "$desc — helper reported '${verdict:-no verdict}', want '$want'"
+		printf '%s\n' "$out" | sed 's/^/        | /'
+	fi
+}
+
 GATE="${SCRIPT_DIR}/benchstat-gate.sh"
 
+echo "== the assertion helpers themselves must be able to FAIL =================="
+
+# A path that cannot execute, to stand in for the real thing this suite hit:
+# a copy of the file with a wrong SCRIPT_DIR, where every assertion in a block
+# failed loudly and the one assert_not_contains sat there reporting PASS.
+NOT_A_SCRIPT="${SCRIPT_DIR}/testdata/definitely-not-an-executable-script.sh"
+
+assert_helper_verdict FAIL "assert_not_contains FAILS when the command does not exist (#502)" \
+	assert_not_contains "REGRESSION" "inner: missing command" "$NOT_A_SCRIPT"
+assert_helper_verdict FAIL "assert_not_contains FAILS when the needle is present" \
+	assert_not_contains "REGRESSION" "inner: needle present" printf 'REGRESSION\n'
+assert_helper_verdict PASS "assert_not_contains passes when the command ran and the needle is absent" \
+	assert_not_contains "REGRESSION" "inner: needle absent" printf 'all clean\n'
+# The legitimate non-zero verdicts the `> 125` test exists to preserve: a gate
+# that fires exits 1, and must still be readable as "it ran and said nothing".
+assert_helper_verdict PASS "assert_not_contains passes on a clean exit-1 verdict" \
+	assert_not_contains "REGRESSION" "inner: exit 1, no needle" false
+
+# The other two helpers already fail closed on a command that cannot run. Pin
+# that, so the property this section asserts is a property of all three.
+assert_helper_verdict FAIL "assert_contains FAILS when the command does not exist" \
+	assert_contains "REGRESSION" "inner: missing command" "$NOT_A_SCRIPT"
+assert_helper_verdict FAIL "assert_exit FAILS when the command does not exist" \
+	assert_exit 0 "inner: missing command" "$NOT_A_SCRIPT"
+
+if [ -e "$NOT_A_SCRIPT" ]; then
+	bad "the missing-command fixture exists, so the three assertions above proved nothing"
+else
+	ok "the missing-command fixture is genuinely absent"
+fi
+
+echo
 echo "== benchstat-gate: fires on regressions =================================="
 
 assert_exit 1 "new-format table with a +83.31% significant timing regression" \
