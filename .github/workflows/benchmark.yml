@@ -239,6 +239,16 @@ jobs:
           cache-dependency-path: pr/go.sum
 
       - name: Install benchstat
+        # setup-go pins GOTOOLCHAIN=local, which is what keeps the benchmarks
+        # themselves on GO_VERSION rather than silently switching toolchains
+        # mid-run. benchstat is not the code under measurement -- it only
+        # post-processes the text output -- so it does not need that pin, and
+        # honouring it here breaks the job outright whenever x/perf@latest
+        # starts requiring a newer Go than GO_VERSION (x/perf began requiring
+        # go >= 1.26.0 on 2026-08-19). Build the tool with whatever toolchain
+        # it asks for; every benchmark-running step below keeps the pin.
+        env:
+          GOTOOLCHAIN: auto
         run: go install golang.org/x/perf/cmd/benchstat@latest
 
       # Interleaved, alternating arms every round rather than running all of
