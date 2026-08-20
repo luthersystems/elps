@@ -48,6 +48,76 @@ func TestMonitorLongestIsAMaximum(t *testing.T) {
 	}
 }
 
+// #501: the ticker cannot charge a stall while the process is frozen, because
+// the tick that would charge it cannot be delivered. pending is what a reader
+// asks instead, and these pin its arithmetic without a clock.
+
+func TestMonitorPendingSeesAStallTheTickerHasNotCharged(t *testing.T) {
+	var m monitor
+	m.origin = time.Now().Add(-3 * time.Second)
+	// beatNanos still 0: the heartbeat has not run since origin, which is what
+	// a three-second freeze starting at origin looks like from a reader.
+	gap, lost := m.pending(time.Now(), tick)
+	if gap < 3*time.Second {
+		t.Fatalf("gap = %s, want at least the 3s since the last known heartbeat", gap)
+	}
+	if want := gap - tick; lost != want {
+		t.Fatalf("pending lost = %s, want %s (the excess over the nominal interval)", lost, want)
+	}
+	// Nothing was written: the ticker's accounting is the ticker's, and the
+	// delayed tick must charge this stall exactly once when it arrives.
+	if got := m.lost(); got != 0 {
+		t.Fatalf("pending charged %s to the accumulated total; it must only compute", got)
+	}
+	if got := m.longest(); got != 0 {
+		t.Fatalf("pending recorded a longest stall (%s); it must only compute", got)
+	}
+}
+
+func TestMonitorPendingIgnoresOrdinaryJitter(t *testing.T) {
+	var m monitor
+	m.origin = time.Now()
+	// A read landing between heartbeats is the normal case, not a stall.
+	if _, lost := m.pending(m.origin.Add(tick*tolerance), tick); lost != 0 {
+		t.Fatalf("a gap of exactly tolerance*tick was charged %s; the floor is unchanged (#501 "+
+			"fixes when a stall is READ, not how small a stall is visible)", lost)
+	}
+	if _, lost := m.pending(m.origin.Add(tick*tolerance+time.Millisecond), tick); lost == 0 {
+		t.Fatal("a gap just past tolerance*tick was not charged at all")
+	}
+}
+
+func TestMonitorPendingIsSilentBeforeTheHeartbeatStarts(t *testing.T) {
+	var m monitor
+	// No origin: there is no instant at which this monitor knows the process
+	// was running, so it may not claim a stall of the whole epoch.
+	gap, lost := m.pending(time.Now(), tick)
+	if gap != 0 || lost != 0 {
+		t.Fatalf("an unstarted monitor reported gap=%s lost=%s, want 0/0", gap, lost)
+	}
+}
+
+// The property that makes the read-time charge safe to fold in: it is the SAME
+// quantity the tick would charge for the same gap. A read at the instant a
+// freeze ends and a read two heartbeats later therefore agree, and neither is
+// the sum of both.
+func TestPendingChargesWhatTheTickWouldCharge(t *testing.T) {
+	for _, gap := range []time.Duration{
+		tick, tick * tolerance, tick*tolerance + time.Millisecond,
+		time.Second, 3 * time.Second, 30 * time.Second,
+	} {
+		var ticked, read monitor
+		ticked.observe(gap, tick)
+		read.origin = time.Now()
+		_, pending := read.pending(read.origin.Add(gap), tick)
+		if pending != ticked.lost() {
+			t.Errorf("gap %s: read-time charge %s, tick charge %s -- the two must agree or a "+
+				"window's verdict depends on which one happened to run first (#501)",
+				gap, pending, ticked.lost())
+		}
+	}
+}
+
 func TestReportScheduled(t *testing.T) {
 	r := Report{Wall: 10 * time.Second, Lost: 7 * time.Second}
 	if want, got := 3*time.Second, r.Scheduled(); got != want {

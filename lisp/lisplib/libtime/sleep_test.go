@@ -500,11 +500,42 @@ func TestSleepMaxRaisesTheCap(t *testing.T) {
 // before a sleep is reachable at all, and the only way past that is for
 // sleepCap to accept the 1h :max -- at which point the call sleeps an hour and
 // runBounded fails the test.
+//
+// The SECOND call is the exception in that family, and it does need a timing
+// assertion (#499).  The argument that lets runBounded be the only clock rests
+// on the refused duration dwarfing runBounded's 30s: 1h, 1h+1s and 2h all
+// either return in microseconds or not at all.  This call's duration is
+// ceilingProbe, which must exceed the 1s host ceiling but is otherwise as
+// small as the test likes -- and at 2s it is an order of magnitude SMALLER
+// than slack, so a build that slept it out and only then refused returns
+// comfortably inside runBounded's bound and looks identical to a refusal on
+// entry.  runBounded cannot separate the two here, so the elapsed time has to.
+//
+// The bound is relative to ceilingProbe, a duration this test picks, not to an
+// absolute second: it says "returned in well under the sleep it refused",
+// which is a statement about the implementation rather than about how fast the
+// machine is.  Pinning it to a wall-clock constant is the #435 shape that
+// #443/#452 and #435/#447 were about.  TestSleepPastDeadlineFailsFast's
+// `elapsed > remaining/2` is the same pattern.
 func TestSleepMaxCannotExceedHostCeiling(t *testing.T) {
 	t.Parallel()
+	// ceiling is the host's limit; ceilingProbe is the duration the second
+	// call asks for.  They are named together because the property being
+	// tested is entirely the relation between them: ceilingProbe > ceiling is
+	// what makes the sleep refusable at all.
+	const (
+		ceiling      = time.Second
+		ceilingProbe = 2 * time.Second
+	)
+	if ceilingProbe <= ceiling {
+		t.Fatalf("ceilingProbe %v does not exceed the %v ceiling: the default cap"+
+			" has nothing to refuse and the test would pass on the wrong evidence",
+			ceilingProbe, ceiling)
+	}
+
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
-	if rc := lisp.InitializeUserEnv(env, lisp.WithMaxSleep(time.Second)); rc.Type == lisp.LError {
+	if rc := lisp.InitializeUserEnv(env, lisp.WithMaxSleep(ceiling)); rc.Type == lisp.LError {
 		t.Fatalf("initialize-user-env: %v", rc)
 	}
 	if rc := libtime.LoadPackage(env); rc.Type == lisp.LError {
@@ -518,10 +549,14 @@ func TestSleepMaxCannotExceedHostCeiling(t *testing.T) {
 
 	// And the ceiling lowers the no-:max default too, so the default cannot
 	// quietly exceed it.
-	v2, _ := runBounded(t, slack, func() *lisp.LVal {
-		return callSleep(env, 2*time.Second)
+	v2, elapsed := runBounded(t, slack, func() *lisp.LVal {
+		return callSleep(env, ceilingProbe)
 	})
 	requireSleepLimit(t, v2)
+	if elapsed >= ceilingProbe/2 {
+		t.Fatalf("took %v to refuse a %v sleep, expected a refusal on entry",
+			elapsed, ceilingProbe)
+	}
 }
 
 // TestSleepRejectsNonPositiveMax: a negative :max is a bug in the caller's
