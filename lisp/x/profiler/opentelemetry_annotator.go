@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/luthersystems/elps/lisp"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
@@ -17,7 +16,6 @@ type otelAnnotator struct {
 	profiler
 	currentContext context.Context
 	currentSpan    trace.Span
-	tracer         trace.Tracer
 }
 
 func NewOpenTelemetryAnnotator(runtime *lisp.Runtime, parentContext context.Context, opts ...Option) *otelAnnotator {
@@ -26,9 +24,13 @@ func NewOpenTelemetryAnnotator(runtime *lisp.Runtime, parentContext context.Cont
 			runtime: runtime,
 		},
 		currentContext: parentContext,
-		tracer:         otel.GetTracerProvider().Tracer("elps"),
 	}
+	// The tracer is resolved after the options are applied: reading the
+	// global TracerProvider before them would capture whichever provider
+	// happened to be installed at construction, which is exactly what
+	// WithTracer and WithTracerProvider exist to avoid.
 	p.applyConfigs(opts...)
+	p.otelTracer = p.resolveOtelTracer()
 	return p
 }
 
@@ -53,7 +55,7 @@ func (p *otelAnnotator) Start(fun *lisp.LVal) func() {
 	}
 	oldContext := p.currentContext
 	prettyLabel, funName := p.prettyFunName(fun)
-	p.currentContext, p.currentSpan = p.tracer.Start(p.currentContext, prettyLabel)
+	p.currentContext, p.currentSpan = p.otelTracer.Start(p.currentContext, prettyLabel)
 	p.addCodeAttributes(fun, funName)
 	return func() {
 		p.currentSpan.End()
