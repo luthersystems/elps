@@ -6,6 +6,7 @@ import (
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // profiler is a minimal lisp.Profiler
@@ -14,6 +15,11 @@ type profiler struct {
 	enabled    bool
 	skipFilter SkipFilter
 	funLabeler FunLabeler
+	// otelTracer is consumed only by the OpenTelemetry annotator. It lives
+	// here because Option is func(*profiler), so it is the only place a
+	// shared option can write to. Set via WithTracer or WithTracerProvider;
+	// nil means fall back to the global TracerProvider.
+	otelTracer trace.Tracer
 }
 
 var _ lisp.Profiler = &profiler{}
