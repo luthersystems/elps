@@ -95,6 +95,34 @@
 // all: with no stall recorded, Starved() is false and Hung fires at exactly
 // the configured budget, as before.
 //
+// # A stall is charged when it is READ, not when its tick lands
+//
+// The monitor only learns about a stall from a tick, and a tick cannot be
+// delivered while the process is frozen. So at the instant a freeze ends the
+// accumulated total has not grown yet: [Budget.Report] read at that moment
+// used to count the whole freeze as scheduled time, and [Budget.Check] read at
+// that moment returned Hung with Starved() false -- the evidence exonerating
+// the input existed but had not landed. Observed with SIGSTOP (#501): a 1.5s
+// budget over a 3s freeze, read at resume, gave "wall=3.306s lost=0s
+// scheduled=3.306s starved=false", and the same freeze read two heartbeats
+// later gave "wall=4.704s lost=3s scheduled=1.704s starved=true". Same window,
+// opposite verdict, decided by whether the ticker goroutine happened to run
+// first.
+//
+// That instant is reachable and not merely a harness artefact: a caller arms
+// its timer for [Budget.Total] and calls Check when it fires, so any freeze
+// LONGER than the budget straddles the deadline and the first Check after it
+// necessarily runs at resume, with both timers overdue and no ordering between
+// them.
+//
+// Report therefore charges the unexplained interval since the last heartbeat
+// itself, by the same rule the ticker applies (see [monitor.pending]). The
+// charge is transient -- computed for that one Report, never written back --
+// so the ticker's accounting is untouched and the delayed tick, when it
+// arrives, charges the same stall exactly once. The fix is in the READING; the
+// resolution floor is unchanged, and no budget or threshold was widened
+// (#443/#452, #435/#447).
+//
 // # What this does NOT measure: CPU share
 //
 // This instrument resolves scheduler STALL -- intervals during which the
@@ -201,16 +229,42 @@ const (
 // existing watchdog clears it by 50x or more because it is sized against
 // sub-millisecond work, which is the property that actually makes it sound.
 //
+// One more floor sits underneath, and it is a property of the accounting
+// rather than of the load: the instrument resolves stall no finer than one
+// heartbeat. Report now charges a stall as soon as it is READ rather than
+// waiting for the tick that would explain it (#501, see the package doc), so a
+// Check landing exactly at the instant a freeze ends no longer charges the
+// freeze to the code under test. But the charge is still measured from the
+// last heartbeat OBSERVED, so it is quantised to within a tick and it still
+// only appears at all once the gap passes tolerance*tick. A budget sized close
+// enough to its work for a 400ms quantum to matter cannot be adjudicated by
+// this instrument, and no amount of verdict logic can lift that; it is the
+// same argument as the floor above, arriving from the accounting side.
+//
 // TestEveryBudgetIsAboveTheHonestFloor enforces this across the repository.
 const MinHonestBudget = 10 * time.Second
 
 // monitor accumulates scheduler stall observed by a heartbeat goroutine.
 //
-// Both fields are cumulative and monotonic, so a caller records a snapshot at
-// the start of a window and subtracts: no history, no lock, O(1).
+// The two charged fields are cumulative and monotonic, so a caller records a
+// snapshot at the start of a window and subtracts: no history, no lock, O(1).
+// beatNanos is not cumulative: it is when the heartbeat was last known to have
+// run, which is what lets a reader see a stall the ticker has not been able to
+// charge yet.
 type monitor struct {
 	lostNanos    atomic.Int64
 	longestNanos atomic.Int64
+
+	// beatNanos is the last observed heartbeat, as nanoseconds since origin.
+	// Zero means no tick has been received yet, in which case origin itself is
+	// the last instant the process was demonstrably running.
+	beatNanos atomic.Int64
+
+	// origin is set once, before the heartbeat goroutine starts, and read-only
+	// afterwards. Offsets from it are monotonic-clock differences, so the
+	// read-time accounting cannot be confused by a wall-clock step the way a
+	// stored Unix timestamp could.
+	origin time.Time
 }
 
 var (
@@ -222,6 +276,11 @@ var (
 // calls it, so a target never has to remember to.
 func start() {
 	startOnce.Do(func() {
+		// Set before the goroutine starts, so every reader that reached here
+		// through New -- which is all of them -- sees it. Until the first tick
+		// lands this is also the last instant the process is known to have been
+		// running, which is exactly what pending needs.
+		defaultMonitor.origin = time.Now()
 		go defaultMonitor.run(tick)
 	})
 }
@@ -229,8 +288,18 @@ func start() {
 func (m *monitor) run(d time.Duration) {
 	t := time.NewTicker(d)
 	defer t.Stop()
-	last := time.Now()
+	last := m.origin
 	for now := range t.C {
+		// Publish the heartbeat BEFORE charging the interval it closes, and
+		// note that pending's reader does the opposite: it reads the charged
+		// total first and this timestamp second. Those two orders together are
+		// what make double-counting impossible. If a reader's total already
+		// includes this Add, then this Store -- which precedes it -- had
+		// already happened when the reader looked, so the reader sees an
+		// up-to-date beat and computes no pending charge. The reverse
+		// interleaving costs one read that misses a stall still in flight,
+		// which is the direction this package already errs in.
+		m.beatNanos.Store(int64(now.Sub(m.origin)))
 		m.observe(now.Sub(last), d)
 		last = now
 	}
@@ -251,6 +320,33 @@ func (m *monitor) observe(gap, nominal time.Duration) {
 			return
 		}
 	}
+}
+
+// pending returns the interval since the last observed heartbeat, and the part
+// of it that is already scheduler stall by the same rule observe applies. It is
+// the answer to "what has this monitor not been able to tell me yet": a tick
+// cannot be delivered while the process is frozen, so a stall in progress, or
+// one that ended within the last heartbeat, is invisible in lostNanos and
+// visible only here (#501).
+//
+// It computes; it does not accumulate. Nothing here writes to the charged
+// totals, so the tick that eventually arrives charges the same stall exactly
+// once and a caller folding this into a Report cannot double-count it.
+func (m *monitor) pending(now time.Time, nominal time.Duration) (gap, lost time.Duration) {
+	if m.origin.IsZero() {
+		// Never started -- no heartbeat, and no instant at which the process
+		// was known to be running. Nothing may be claimed.
+		return 0, 0
+	}
+	gap = now.Sub(m.origin) - time.Duration(m.beatNanos.Load())
+	if gap <= nominal*tolerance {
+		return gap, 0
+	}
+	// Charge the same quantity observe would when the tick finally lands: the
+	// EXCESS over the nominal interval. Matching it is what makes the read at
+	// resume agree with the read two heartbeats later, which is the whole
+	// point.
+	return gap, gap - nominal
 }
 
 func (m *monitor) lost() time.Duration {
@@ -299,7 +395,8 @@ type Report struct {
 	// Wall is the total wall-clock time since the budget was created.
 	Wall time.Duration
 	// Lost is the part of Wall during which this process was demonstrably not
-	// being scheduled.
+	// being scheduled. It includes a gap since the last heartbeat that the
+	// ticker has not been able to charge yet; see Budget.Report.
 	Lost time.Duration
 	// LongestStall is the longest single heartbeat gap in the window.
 	LongestStall time.Duration
@@ -355,19 +452,51 @@ func New(d time.Duration) *Budget {
 func (b *Budget) Total() time.Duration { return b.total }
 
 // Report snapshots the window so far.
+//
+// The snapshot includes stall the heartbeat has not charged yet. A tick cannot
+// be delivered while the process is frozen, so at the instant a freeze ends the
+// accumulated total still reads zero and the window looks perfectly healthy --
+// which is #501: a Check landing there charged the whole freeze to the code
+// under test and called it Hung. Report therefore asks the monitor what it has
+// not been able to account for and folds it in.
+//
+// The fold is transient: monitor.pending only computes, so the ticker's
+// accounting is untouched and the delayed tick charges the stall exactly once
+// whenever it does arrive. The one interleaving that could count it twice --
+// reading a total that already includes the tick's charge alongside a beat
+// timestamp from before it -- is excluded by the store order in monitor.run
+// together with the read order below.
 func (b *Budget) Report() Report {
 	longest := defaultMonitor.longest()
 	if longest < b.longestAt {
 		longest = b.longestAt
 	}
+	now := time.Now()
 	r := Report{
-		Wall: time.Since(b.startedAt),
+		Wall: now.Sub(b.startedAt),
+		// Read the charged total FIRST, the beat timestamp second: see
+		// monitor.run.
 		Lost: defaultMonitor.lost() - b.lostAt,
 	}
 	// longestNanos is a process-wide maximum, so it is only meaningful for this
 	// window when it grew during it.
 	if longest > b.longestAt {
 		r.LongestStall = longest
+	}
+	if gap, unaccounted := defaultMonitor.pending(now, tick); unaccounted > 0 {
+		// A window cannot have lost more time than it has existed, and a gap
+		// that began before this budget did is not this window's to charge, so
+		// cap the read-time charge at whatever part of the window is not
+		// accounted for already.
+		if room := r.Wall - r.Lost; unaccounted > room {
+			unaccounted = room
+		}
+		if unaccounted > 0 {
+			r.Lost += unaccounted
+			if stall := min(gap, r.Wall); stall > r.LongestStall {
+				r.LongestStall = stall
+			}
+		}
 	}
 	return r
 }

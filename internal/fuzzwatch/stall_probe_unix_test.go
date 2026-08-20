@@ -26,6 +26,13 @@ import (
 // actually line up end to end on a live process. A synthetic Report cannot go
 // wrong in the way a real one can.
 //
+// Two probes share the rig, differing only in WHEN the child reads its budget.
+// TestCheckUnderARealSchedulerStall reads once the freeze has been accounted
+// for, and asks what a window containing a real freeze is called (#488). The
+// #501 probe reads at the instant the freeze ends, before any tick could have
+// been delivered, and asks what Check is told about the freeze at the one
+// moment the accounting has not caught up.
+//
 // The stall is manufactured with SIGSTOP/SIGCONT rather than with CPU load.
 // That is deliberate and is the only honest way to do it here: PR #483
 // measured that contention does NOT produce stalls this instrument can see
@@ -49,6 +56,11 @@ const (
 	// Let the child accumulate a little scheduled time before freezing it, so
 	// the budget is provably not spent at the moment the stall begins.
 	stallRunBefore = 300 * time.Millisecond
+	// How often a child looks at its budget. Short enough that the #501 child
+	// wakes essentially at the instant SIGCONT lands, and far below
+	// stallFreeze/2, which is how that child tells the sleep the freeze
+	// swallowed from an ordinary one.
+	stallPoll = 25 * time.Millisecond
 )
 
 // TestStallProbeChildProcess is not a test. It is the body of the child
@@ -65,13 +77,12 @@ func TestStallProbeChildProcess(t *testing.T) {
 	// budget of SCHEDULED time is spent. Whatever stall happens in between is
 	// the parent's doing, not ours.
 	//
-	// The settle is not cosmetic and is not there to steer the verdict. The
-	// monitor is sampled asynchronously, so at the instant a freeze ends the
-	// heartbeat that will charge it has not run yet and Report still counts
-	// the whole freeze as scheduled time. Re-reading after a couple of
-	// heartbeats is what a budget of any realistic size (the smallest live one
-	// is 15s) gets for free. Reported separately; it is not what #488 is
-	// about, and this test must not depend on it either way.
+	// This loop used to settle for two heartbeats before trusting a read that
+	// said the budget was spent, because at the instant a freeze ended the
+	// monitor had not charged it yet and Report counted the whole freeze as
+	// scheduled time. That was #501, and Report now charges an unexplained gap
+	// at read time, so a single read is enough and the settle is gone. The
+	// #488 assertions below are unchanged and never depended on it.
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		if time.Now().After(deadline) {
@@ -79,17 +90,57 @@ func TestStallProbeChildProcess(t *testing.T) {
 			return
 		}
 		if b.Report().Scheduled() >= b.Total() {
-			time.Sleep(2 * tick)
-			if b.Report().Scheduled() >= b.Total() {
-				break
-			}
-			continue
+			break
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(stallPoll)
 	}
 	v, _, r := b.Check()
 	fmt.Printf("FUZZWATCH-CHILD RESULT verdict=%s wall=%d lost=%d scheduled=%d starved=%t hardwall=%d\n",
 		v, r.Wall, r.Lost, r.Scheduled(), r.Starved(), b.hardWall)
+}
+
+// TestStallResumeProbeChildProcess is not a test either. It is the body of the
+// child TestReportAtTheInstantAStallEnds spawns.
+//
+// It differs from the child above in one respect, which is the entire point:
+// it reads at the WORST possible instant rather than the most convenient one.
+// It polls in short sleeps and calls Check as the very first thing after a
+// sleep that took far longer than it asked for -- i.e. the sleep the freeze
+// swallowed. That is not a contrived moment: a caller arms its timer for the
+// budget, so a freeze longer than the budget always straddles the deadline and
+// the first Check after it always lands here, with the caller's timer and the
+// heartbeat ticker both overdue and no ordering between them.
+//
+// Before #501 the answer at that instant was "lost=0s, starved=false, hung":
+// the freeze was real, the monitor was about to charge it, and the verdict was
+// taken a moment too early and blamed the code under test.
+func TestStallResumeProbeChildProcess(t *testing.T) {
+	if os.Getenv(stallChildEnv) != "1" {
+		t.Skip("helper process for TestReportAtTheInstantAStallEnds; not run directly")
+	}
+	b := New(stallChildBudget)
+	fmt.Println("FUZZWATCH-CHILD READY")
+
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		before := time.Now()
+		time.Sleep(stallPoll)
+		// FIRST, before anything else gets a chance to let the heartbeat catch
+		// up: this read is the measurement. Whether the sleep was the ordinary
+		// one or the one the freeze swallowed is decided afterwards, from the
+		// same instant.
+		v, _, r := b.Check()
+		if time.Since(before) < stallFreeze/2 {
+			if time.Now().After(deadline) {
+				fmt.Println("FUZZWATCH-CHILD ABORT never observed a freeze")
+				return
+			}
+			continue
+		}
+		fmt.Printf("FUZZWATCH-CHILD RESUME verdict=%s wall=%d lost=%d scheduled=%d starved=%t hardwall=%d\n",
+			v, r.Wall, r.Lost, r.Scheduled(), r.Starved(), b.hardWall)
+		return
+	}
 }
 
 // stallResult is one parsed RESULT line from the child.
@@ -126,7 +177,7 @@ func TestCheckUnderARealSchedulerStall(t *testing.T) {
 	var last stallResult
 	var got bool
 	for i := range attempts {
-		res, err := runStallProbe(t)
+		res, err := runStallProbe(t, "TestStallProbeChildProcess", "FUZZWATCH-CHILD RESULT ")
 		if err != nil {
 			t.Fatalf("attempt %d: %v", i+1, err)
 		}
@@ -157,13 +208,69 @@ func TestCheckUnderARealSchedulerStall(t *testing.T) {
 	}
 }
 
-// runStallProbe spawns this test binary as a child, freezes it mid-window with
-// SIGSTOP, resumes it, and returns what the child's Check() said.
-func runStallProbe(t *testing.T) (stallResult, error) {
+// #501, end to end: a Report taken at the INSTANT a freeze ends must already
+// show the freeze.
+//
+// The mechanism is accounting lag, not arm ordering, so #488's fix cannot
+// reach it: at that instant Starved() is honestly false, because the evidence
+// has not landed. The monitor learns of a stall from a tick and a tick cannot
+// be delivered while the process is frozen, so the whole freeze read as
+// scheduled time and Check called it a hang -- observed 3/3 on the unfixed
+// accounting as "verdict=hung wall=3.306s lost=0s scheduled=3.306s
+// starved=false", against a 1.5s budget and a 3s freeze.
+//
+// Every attempt is asserted rather than searched: unlike the #488 probe there
+// is no window shape to hunt for, so a single attempt that comes back healthy
+// is a regression, not a miss. Repeating simply gives the race more chances to
+// land the read before the heartbeat catches up.
+func TestReportAtTheInstantAStallEnds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns a child process and freezes it for several seconds")
+	}
+
+	const attempts = 3
+	for i := range attempts {
+		res, err := runStallProbe(t, "TestStallResumeProbeChildProcess", "FUZZWATCH-CHILD RESUME ")
+		if err != nil {
+			t.Fatalf("attempt %d: %v", i+1, err)
+		}
+		t.Logf("attempt %d: %s", i+1, res)
+
+		// The rig, first: the read has to have happened at the end of a real
+		// freeze, or the assertions below are vacuous.
+		if res.wall < stallFreeze {
+			t.Fatalf("attempt %d: %s -- the window is shorter than the %s freeze, so the child "+
+				"did not read at the end of it and this attempt asserts nothing", i+1, res, stallFreeze)
+		}
+
+		// The floor is deliberately generous: what is being distinguished is
+		// zero from three seconds, not one measurement from another. The
+		// charge is quantised to the last heartbeat OBSERVED, so a fraction of
+		// a tick either way is expected and uninteresting.
+		if res.lost < stallFreeze/2 {
+			t.Fatalf("attempt %d: %s -- a %s freeze was still unaccounted at the instant it "+
+				"ended, so the window reads as scheduled time and the freeze is charged to the "+
+				"code under test (#501)", i+1, res, stallFreeze)
+		}
+		if !res.starved {
+			t.Fatalf("attempt %d: %s -- a window that was frozen for most of its wall clock "+
+				"must be starved at the instant it resumes, not two heartbeats later (#501)", i+1, res)
+		}
+		if res.verdict == Hung.String() {
+			t.Fatalf("attempt %d: %s -- Check read at the end of a real freeze called it a hang "+
+				"(#501)", i+1, res)
+		}
+	}
+}
+
+// runStallProbe spawns this test binary as a child running childTest, freezes
+// it mid-window with SIGSTOP, resumes it, and returns the result line the child
+// emitted under prefix.
+func runStallProbe(t *testing.T, childTest, prefix string) (stallResult, error) {
 	t.Helper()
 
 	//nolint:gosec // os.Args[0] is this test binary, re-executed as its own child; no external input reaches it
-	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestStallProbeChildProcess$", "-test.count=1", "-test.v")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^"+childTest+"$", "-test.count=1", "-test.v")
 	cmd.Env = append(os.Environ(), stallChildEnv+"=1")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -205,11 +312,11 @@ func runStallProbe(t *testing.T) (stallResult, error) {
 		return stallResult{}, fmt.Errorf("SIGCONT: %w", err)
 	}
 
-	line, err := awaitLine(lines, "FUZZWATCH-CHILD RESULT ", 60*time.Second)
+	line, err := awaitLine(lines, prefix, 60*time.Second)
 	if err != nil {
 		return stallResult{}, fmt.Errorf("waiting for the child's verdict: %w", err)
 	}
-	return parseStallResult(strings.TrimPrefix(line, "FUZZWATCH-CHILD RESULT "))
+	return parseStallResult(strings.TrimPrefix(line, prefix))
 }
 
 func awaitLine(lines <-chan string, prefix string, timeout time.Duration) (string, error) {
