@@ -28,6 +28,12 @@ type LocationReader interface {
 
 // LoaderMust returns its first argument when err is nil.  If err is nil
 // LoaderMust panics.
+//
+// NOT LISP-REACHABLE (#367): this is the Go `Must` idiom, for an embedder
+// building a Loader from a source it controls (a //go:embed constant, a
+// literal) at start-up.  Nothing in the interpreter calls it, so no evaluated
+// program can reach it; an embedder wrapping a source a program supplies
+// should handle the error instead.
 func LoaderMust(fn Loader, err error) Loader {
 	if err != nil {
 		panic(err)

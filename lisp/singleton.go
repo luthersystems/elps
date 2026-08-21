@@ -50,6 +50,12 @@ func isSingleton(v *LVal) bool {
 // a guard at the entry of any function that walks an LVal tree and
 // writes to LVal fields. Cheap (one pointer compare against each of
 // three constants), documents intent, and surfaces regressions loudly.
+//
+// NOT LISP-REACHABLE (#367): it is a deliberate detector for a Go-side
+// defect -- host code writing through a pointer to shared memory (#274,
+// #333) -- and the condition it detects is a property of elps's own code,
+// not of any program's data. It has no callers today; a caller that adds
+// it is asserting its own correctness, so the panic stays a panic.
 func assertNotSingleton(v *LVal) {
 	if isSingleton(v) {
 		panic(fmt.Sprintf("internal error: attempt to mutate singleton LVal (%s)", v.Type))

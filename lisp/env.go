@@ -742,6 +742,10 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 		k := Symbol(mac.Name())
 		exist := pkg.Get(k)
 		if !exist.IsNil() && exist.Type != LError { // LError is ubound symbol
+			// NOT LISP-REACHABLE (#367): AddMacros is registration-time Go
+			// API.  No builtin, operator or macro calls it, so the only way to
+			// bind one name twice is an embedder registering it twice.  The
+			// embedder-facing half of that story is #351.
 			panic(fmt.Sprintf("macro already defined: %v (= %v)", k, exist))
 		}
 		id := fmt.Sprintf("<builtin-macro ``%s''>", mac.Name())
@@ -770,6 +774,8 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 		k := Symbol(op.Name())
 		exist := pkg.Get(k)
 		if !exist.IsNil() && exist.Type != LError { // LError is ubound symbol
+			// NOT LISP-REACHABLE (#367): see AddMacros above -- registration
+			// is Go API an embedder drives, never lisp source.
 			panic(fmt.Sprintf("macro already defined: %v (= %v)", k, exist))
 		}
 		id := fmt.Sprintf("<special-op ``%s''>", op.Name())
@@ -798,6 +804,8 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 		k := Symbol(f.Name())
 		exist := pkg.Get(k)
 		if exist.Type != LError {
+			// NOT LISP-REACHABLE (#367): see AddMacros above -- registration
+			// is Go API an embedder drives, never lisp source.
 			panic("symbol already defined: " + f.Name())
 		}
 		id := fmt.Sprintf("<builtin-function ``%s''>", f.Name())
@@ -1467,6 +1475,11 @@ func extractMarkTailRec(mark *LVal) (fun, args *LVal) {
 // mark must be LMarkTailRec
 func decrementMarkTailRec(mark *LVal) (done bool) {
 	if len(mark.Cells) != 4 {
+		// NOT LISP-REACHABLE (#367): markTailRec is the only producer of an
+		// LMarkTailRec and it always builds exactly four cells; the mark is
+		// consumed by funCall's own `r.Type == LMarkTailRec` branch and never
+		// reaches a lisp binding, a reader syntax or a builtin's arguments.  A
+		// wrong shape here is an evaluator bug, not program input.
 		panic("invalid mark")
 	}
 	mark.Cells[0].Int--

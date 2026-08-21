@@ -540,6 +540,23 @@ func MakeVector(n int) *LVal {
 // nil, in which case a vector (one dimensional array) is returned.  If dims is
 // non-nil then cells must either be nil or have one element for every array
 // element, in row-major order.
+//
+// When no backing storage is supplied every element is initialized to Nil,
+// the same value MakeVector gives an unset element.  It used to be left as
+// the zero value of the slice, a Go nil *LVal, which is not a value the rest
+// of the interpreter can hold: reading one dereferences it.  In-tree that was
+// latent -- every caller here fills the cells it asked for before the array
+// escapes -- but Array is exported and its documentation says cells may be
+// nil, so an embedder following it built a value that panicked the host the
+// first time lisp touched it:
+//
+//	env.PutGlobal(Symbol("a"), Array(QExpr([]*LVal{Int(3)}), nil))
+//	(aref a 0)    ; internal-panic: nil pointer dereference
+//
+// A panic is the wrong answer twice over: the read is not an error at all
+// (an unset element is nil, which is what the array now holds), and an
+// internal-panic is deliberately not catchable by handler-bind, so the host
+// had no way to contain it.  See issue #367.
 func Array(dims *LVal, cells []*LVal) *LVal {
 	if dims == nil {
 		dims = QExpr([]*LVal{Int(len(cells))})
@@ -563,6 +580,9 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 		return Errorf("array contents do not match size")
 	} else if len(cells) == 0 {
 		cells = make([]*LVal, totalSize)
+		for i := range cells {
+			cells[i] = Nil()
+		}
 	}
 
 	return &LVal{
@@ -808,6 +828,14 @@ func markTailRec(npop int, fun *LVal, args *LVal) *LVal {
 	}
 }
 
+// tailRecElided, tailRecFun and tailRecArgs read a tail-recursion mark.
+//
+// NOT LISP-REACHABLE (#367): the marks are produced only by markTailRec and
+// consumed only inside funCall, which reaches these three accessors from
+// behind its own `r.Type == LMarkTailRec` test.  LMarkTailRec has no reader
+// syntax, no constructor a builtin can call and no path into a lisp binding,
+// so no program can present a value of any other type here.  A panic marks a
+// missing type test in the evaluator.
 func (v *LVal) tailRecElided() int {
 	if v.Type != LMarkTailRec {
 		panic("not marker-tail-recursion")
@@ -858,6 +886,19 @@ func IsInternalPanic(v *LVal) bool {
 	return ok && stack != nil && len(stack.GoStack) > 0
 }
 
+// CallStack returns the call stack attached to the error v.  CallStack panics
+// if v.Type is not LError.
+//
+// NOT LISP-REACHABLE (#367): the panic guards a Go type assertion, not a
+// program's data.  Every in-tree caller -- builtinLoad*/builtinIsKey,
+// env.Error*, macroDefun/macroDefmacro, opLambda, libjson's attachStack, and
+// the two diagnostic renderers -- tests v.Type == LError first, so lisp source
+// has no way to route a non-error here.  Reaching it means embedder Go code
+// called the accessor on a value it had not classified, and that is the
+// #351/#355 shape rather than this one.  A caller that cannot classify the
+// value should test v.Type == LError itself: the type IS the check, so an
+// accessor that answered nil would be reporting "no stack recorded" for a
+// value that can never have one.
 func (v *LVal) CallStack() *CallStack {
 	if v.Type != LError {
 		panic("not an error: " + v.Type.String())
@@ -869,6 +910,11 @@ func (v *LVal) CallStack() *CallStack {
 	return stack
 }
 
+// SetCallStack attaches a copy of stack to the error v.  SetCallStack panics
+// if v.Type is not LError.
+//
+// NOT LISP-REACHABLE (#367): same argument as CallStack above -- every
+// in-tree caller guards on v.Type == LError.
 func (v *LVal) SetCallStack(stack *CallStack) {
 	if v.Type != LError {
 		panic("not an error: " + v.Type.String())
@@ -876,6 +922,17 @@ func (v *LVal) SetCallStack(stack *CallStack) {
 	v.Native = stack.Copy()
 }
 
+// FunData returns the function metadata of v.  FunData panics if v.Type is
+// not LFun.  Package, Builtin, FID and Env are thin readers over it and
+// inherit the same requirement.
+//
+// NOT LISP-REACHABLE (#367): calling a non-function is rejected before any of
+// these are consulted -- evalSExpr answers "unbound symbol"/"not a function",
+// and the builtins that take a function argument (map, foldl/foldr, sort,
+// apply, funcall) run it through GetFunGlobal and return an error for anything
+// that is not an LFun.  The remaining callers reach it from inside a
+// `Type == LFun` branch: Docstring, str, Package.put, funCall/MacroCall,
+// libschema's isValidator, and the debugger and profiler annotators.
 func (v *LVal) FunData() *LFunData {
 	if v.Type != LFun {
 		panic("not a function: " + v.Type.String())
@@ -978,6 +1035,19 @@ func (v *LVal) UserData() *LVal {
 }
 
 // Bytes returns the []byte stored in v.  Bytes panics if v.Type is not LBytes.
+//
+// NOT LISP-REACHABLE (#367), and the guard belongs to the CALLER: every
+// in-tree caller tests v.Type == LBytes (or reaches this from inside a
+// `case LBytes`) before calling.  `(append 'bytes 0)` was the counterexample
+// -- the type SPECIFIER was validated and the sequence was not -- and it is
+// now a seed in the eval fuzz corpus, replayed on every run.
+//
+// Deliberately not softened to "return nil for a non-LBytes": nil is a
+// perfectly good empty byte string, so a caller that skipped its type check
+// would get a silent wrong answer instead of a loud one.  That is the trade
+// KeyArg's doc comment rejects.  A caller that cannot vouch for the type must
+// test it and raise its own error; TestBuiltinRegistryNeverPanics
+// (lisp/lisplib) is what finds the caller that forgot.
 func (v *LVal) Bytes() []byte {
 	if v.Type != LBytes {
 		panic("not bytes: " + v.Type.String())
@@ -987,6 +1057,14 @@ func (v *LVal) Bytes() []byte {
 	return *v.Native.(*[]byte)
 }
 
+// Map returns the map data stored in v.  Map panics if v.Type is not
+// LSortMap.
+//
+// NOT LISP-REACHABLE (#367), on the same terms as Bytes above: every in-tree
+// caller -- the sorted-map builtins, Copy's LSortMap case, equal, libschema
+// and libelpspath's path walkers -- tests LSortMap first.  Returning nil for
+// a non-map would only move the crash to the caller's next method call on the
+// nil *MapData, so the type test stays the caller's job.
 func (v *LVal) Map() *MapData {
 	if v.Type != LSortMap {
 		panic("not sorted-map: " + v.Type.String())
@@ -1712,6 +1790,16 @@ func seqCells(v *LVal) []*LVal {
 	// Callers must guard with isSeq.  The panic is the assertion for that
 	// contract -- it is in a default clause so that reaching seqCells with a
 	// type nobody thought about is loud rather than silent.
+	//
+	// NOT LISP-REACHABLE (#367): every caller either tests isSeq(v) and
+	// returns "argument is not a proper sequence" first, or passes a
+	// one-dimensional array this function just built.  isSeq is what makes
+	// the multi-dimensional case unreachable too: it requires
+	// v.Cells[0].Len() == 1, so an array with more than one dimension is
+	// rejected as a sequence before it gets here.  A caller that forgets the
+	// guard is caught by TestBuiltinRegistryNeverPanics (lisp/lisplib), which
+	// offers a multi-dimensional array to every registered builtin in every
+	// argument position.
 	switch v.Type {
 	case LSExpr:
 		return v.Cells

@@ -291,6 +291,13 @@ func (s *CallStack) CheckTailCall() error {
 // is empty Pop returns nil.
 func (s *CallStack) Pop() CallFrame {
 	if len(s.Frames) < 1 {
+		// NOT LISP-REACHABLE (#367): all three callers (funCall, MacroCall,
+		// SpecialOpCall) install the Pop as a `defer` on the line after a
+		// PushFID that returned no error, so pushes and pops are balanced by
+		// construction along every exit path, panics included.  Tail-call
+		// elision does not pop frames -- it decrements a counter on the mark
+		// and reuses the frame already pushed -- so it cannot unbalance them
+		// either.  An empty stack here means a push/pop pair was separated.
 		panic("pop called on an empty stack")
 	}
 	f := s.Frames[len(s.Frames)-1]
