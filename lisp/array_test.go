@@ -6,6 +6,9 @@ import (
 	"testing"
 
 	"github.com/luthersystems/elps/elpstest"
+	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser"
+	"github.com/stretchr/testify/require"
 )
 
 func TestArray(t *testing.T) {
@@ -75,4 +78,64 @@ func TestArray(t *testing.T) {
 		}},
 	}
 	elpstest.RunTestSuite(t, tests)
+}
+
+// TestArrayWithoutBackingStorageIsReadable pins the fix for issue #367.
+//
+// lisp.Array documents that cells may be nil, and every internal caller uses
+// that form and then fills the storage itself.  An embedder following the
+// documentation does not fill it, and before this fix the array it got held
+// the slice's zero value -- a Go nil *LVal -- in every element.  A nil *LVal
+// is not a value the interpreter can hold, so the first lisp expression to
+// read one dereferenced it and took the host process down.  The evaluator
+// reported that as `internal-panic`, which handler-bind is documented NOT to
+// catch, so the embedder had no way to contain it either.
+//
+// The unit here is deliberately the CONSTRUCTOR, not any one reader: `aref`
+// was merely the first expression to touch the element.  `equal?`, `nth` and
+// printing reached the same nil by other routes, and a per-reader nil check
+// would have been one guard per reader against a value that should never have
+// existed.
+func TestArrayWithoutBackingStorageIsReadable(t *testing.T) {
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	rc := lisp.InitializeUserEnv(env)
+	require.NotEqual(t, lisp.LError, rc.Type, "initialize-user-env: %v", rc)
+	rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
+	require.NotEqual(t, lisp.LError, rc.Type, "in-package: %v", rc)
+
+	for _, test := range []struct {
+		name string
+		arr  *lisp.LVal
+	}{
+		{"vector", lisp.Array(lisp.QExpr([]*lisp.LVal{lisp.Int(3)}), nil)},
+		{"empty", lisp.Array(lisp.QExpr([]*lisp.LVal{lisp.Int(0)}), nil)},
+		// Zero dimensions is one element, not zero: the product of an empty
+		// list of sizes is 1.  It is the smallest array that has an element
+		// nobody supplied.
+		{"zero-dimensional", lisp.Array(lisp.QExpr(nil), nil)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require.NotEqual(t, lisp.LError, test.arr.Type, "constructing the array: %v", test.arr)
+			for _, cell := range test.arr.Cells[1].Cells {
+				require.NotNil(t, cell,
+					"Array left an element as a Go nil; every unset element must be Nil()")
+				require.True(t, cell.IsNil(), "an unset array element must be nil, got %v", cell)
+			}
+			env.PutGlobal(lisp.Symbol("a"), test.arr)
+			// Reading the array must produce values, not an internal-panic --
+			// and it must not produce an error either: an unset element is
+			// nil, which is an answer.
+			for _, expr := range []string{`(equal? a a)`, `(to-string (nth a 0))`} {
+				res := env.LoadString(test.name, expr)
+				require.False(t, lisp.IsInternalPanic(res),
+					"%s over an array with no backing storage panicked the host: %v", expr, res)
+			}
+			if test.name == "vector" {
+				res := env.LoadString(test.name, `(aref a 0)`)
+				require.False(t, lisp.IsInternalPanic(res), "(aref a 0) panicked the host: %v", res)
+				require.True(t, res.IsNil(), "an unset element must read as nil, got %v", res)
+			}
+		})
+	}
 }

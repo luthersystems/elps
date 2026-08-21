@@ -67,6 +67,11 @@ func init() {
 // If you are adding a mutation guard, prefer removing the mutation. The
 // codebase's copy-on-write helpers (Quote, Splice, shallowUnquote) exist
 // so that no caller has to reason about whether a value is shared.
+//
+// NOT LISP-REACHABLE (#367): a deliberate corruption detector, compiled only
+// under the `elpscheck` build tag, whose trigger is elps's own code having
+// written to shared memory. It stays a panic on purpose -- turning it into a
+// condition would let the corrupted process keep running.
 func checkSingleton(_ *LVal) {
 	if drift := initSnapshot.Verify(); drift != "" {
 		panic(fmt.Sprintf("singleton corruption detected: %s mutated\n  current Nil=%+v\n  current True=%+v\n  current False=%+v",

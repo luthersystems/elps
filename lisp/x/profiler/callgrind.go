@@ -195,6 +195,13 @@ func (p *callgrindProfiler) incrementCallRef(name string, loc *token.Location) *
 }
 
 // Finds a call ref for the current scope
+//
+// NOT LISP-REACHABLE (#367): the refs are pushed by Start and popped by the
+// closure Start returns, which the evaluator installs as a `defer`, so a
+// program's calls and returns are balanced no matter what the program does.
+// The one unbalanced pop is Complete() -- embedder lifecycle API -- called
+// before Enable() or called twice, which is Go API misuse at integration time
+// and stays a panic.
 func (p *callgrindProfiler) getCallRefAndDecrement() *callRef {
 	//C.GetGoId(thread)
 	thread := &([]int32{1}[0])

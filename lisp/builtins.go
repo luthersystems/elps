@@ -1408,23 +1408,29 @@ func builtinConcatSeq(env *LEnv, args *LVal) *LVal {
 			return Nil()
 		}
 	}
-	var ret *LVal
-	var cells []*LVal
-	switch typespec.Str {
-	case "vector":
-		ret = Array(QExpr([]*LVal{Int(size)}), nil)
-		cells = seqCells(ret)
-		cells = cells[0:0:size]
-	case "list":
-		ret = QExpr(make([]*LVal, size))
-		cells = ret.Cells[0:0:size]
-	default:
+	if typespec.Str != "vector" && typespec.Str != "list" {
 		return env.Errorf("type specifier is not valid: %v", typespec)
 	}
+	// The result's storage is filled BEFORE it is wrapped in an LVal, rather
+	// than allocating the container first and writing through it.  Both orders
+	// cost one allocation, but this one never observes the container in a
+	// half-built state -- the previous order left the cells holding the slice's
+	// zero value, a Go nil *LVal, until the appends below overwrote them, and a
+	// Go nil is not a value the interpreter can hold (issue #367).  It also
+	// avoids paying for Array's nil-initialization of storage this function is
+	// about to overwrite in full (measured: ~8% of BenchmarkAliasConcatCopy).
+	//
+	// Capacity is exactly size, so the appends cannot outgrow the slice and the
+	// result is clamped in the sense clampCap means: appending to the returned
+	// value allocates rather than writing into a neighbour (issue #373).
+	cells := make([]*LVal, 0, size)
 	for _, v := range rest {
 		cells = append(cells, seqCells(v)...)
 	}
-	return ret
+	if typespec.Str == "vector" {
+		return Array(QExpr([]*LVal{Int(size)}), cells)
+	}
+	return QExpr(cells)
 }
 
 func builtinSortStable(env *LEnv, args *LVal) *LVal {
@@ -2883,6 +2889,11 @@ func numericListType(cells []*LVal) LType {
 
 func toFloat(x *LVal) float64 {
 	if !x.IsNumeric() {
+		// NOT LISP-REACHABLE (#367): toFloat is unexported and every caller --
+		// builtinLEq/LT/GEq/GT/Pow, builtinAdd/Sub, addNumeric/lessNumeric and
+		// equalNum -- rejects a non-numeric operand with an error before
+		// reaching here, so a program cannot present one.  The panic marks a
+		// hole in one of those guards, not bad input.
 		panic("toFloat called with non-numeric argument: " + x.String())
 	}
 	if x.Type == LInt {

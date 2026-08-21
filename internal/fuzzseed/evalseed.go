@@ -167,6 +167,26 @@ func EvalTerminating() map[string]string {
 		// configured Stderr, which the harness captures. ---
 		"debug-print-empty": `(debug-print)`,
 		"debug-print-args":  `(debug-print 1 2 3)`,
+
+		// --- the sequence constructors that build their result through
+		// lisp.Array, whose unsupplied cells used to be Go nils (#367).  The
+		// empty forms are the interesting ones: they are the shapes that ask
+		// for storage and then fill none of it.
+		//
+		// concat is here for a second reason.  Its vector branch no longer
+		// allocates the container first and writes through it; it fills a
+		// slice and wraps the finished slice, so these rows are what pin that
+		// the rewrite still produces the same sequences.
+		"concat-vector-empty":  `(concat 'vector)`,
+		"concat-vector":        `(concat 'vector (vector 1 2) (vector 3))`,
+		"concat-list-empty":    `(concat 'list)`,
+		"concat-list":          `(concat 'list '(1 2) '(3))`,
+		"concat-vector-mixed":  `(concat 'vector '(1 2) (vector 3))`,
+		"map-vector":           `(map 'vector to-string (make-sequence 0 4))`,
+		"map-vector-empty":     `(map 'vector to-string ())`,
+		"zip-vector":           `(zip 'vector '(1 2) '(3 4))`,
+		"reverse-vector-empty": `(reverse 'vector (vector))`,
+		"sequence-vector-read": `(let ([v (concat 'vector (vector 1))]) (list (nth v 0) (aref v 0) (equal? v v)))`,
 	}
 }
 
@@ -240,5 +260,37 @@ func EvalAdversarial() []string {
 		// --- debug output.  A4's minimised input is the zero-argument form,
 		// which wrote to os.Stdout instead of the runtime's Stderr. ---
 		"(debug-print)", "(debug-print 1)", "(debug-stack)",
+
+		// --- type confusion at the interpreter's PANICKING accessors
+		// (issue #367).  LVal.Bytes, LVal.Map, LVal.FunData and seqCells all
+		// panic on a wrong-typed receiver, and each is unreachable from lisp
+		// only because every caller checks the type first.  Each line below
+		// offers a builtin the wrong type for the accessor it is about to
+		// reach, so a caller that drops its check turns one of these into an
+		// internal-panic instead of an error.
+		//
+		// `(append 'bytes 0)` above is the shape that actually shipped: the
+		// type SPECIFIER was validated and the sequence was not.  These
+		// generalise it across the accessors and give the mutator a starting
+		// point inside each one.
+		//
+		// LVal.Bytes:
+		"(concat 'bytes 0)", "(reverse 'bytes 0)", "(to-string 0)",
+		"(base64:std-encode 0)", "(json:dump-string (to-bytes \"a\"))",
+		// LVal.Map:
+		"(get 0 'a)", "(assoc 0 'a 1)", "(assoc! 0 'a 1)", "(keys 0)",
+		"(dissoc 0 'a)", "(key? 0 'a)", "(sorted-map 0 1)",
+		"(elpspath:? 0 \"a\")", "(elpspath:?set 0 \"a\" 1)",
+		// LVal.FunData, reached by anything that takes a function argument:
+		"(map 'list 0 '(1))", "(foldl 0 0 '(1))", "(sort 0 '(1))",
+		"(apply 0 '())", "(funcall 0)", "(select 'list 0 '(1))",
+		// seqCells, whose contract is "the caller guarded with isSeq":
+		"(nth 0 0)", "(first 0)", "(rest 0)", "(slice 'list 0 0 1)",
+		"(zip 'list 0 0)", "(insert-index 'list 0 0 1)",
+		// toFloat, reached once both operands are believed numeric:
+		"(< 1 'a)", "(max 1 \"a\")", "(min 'a 1)", "(pow 1 'a)",
+		"(make-sequence 0 1 'a)", "(equal? 1 'a)",
+		// LVal.CallStack, which panics on a non-error receiver:
+		"(ignore-errors (get 0 'a))", "(handler-bind ([condition (lambda (c &rest r) c)]) (get 0 'a))",
 	}
 }
