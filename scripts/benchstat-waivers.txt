@@ -94,32 +94,18 @@
 # pkg | benchmark | metric | ceiling | expires | issue | reason
 # ---------------------------------------------------------------------------
 #
-# elps#412 / elps#410 -- libjson BenchmarkEncode, PR #411.
-#
-# TWO entries, not one, and the second one deserves saying out loud.
-#
-# The regression was described going in as a single failing row, allocs/op at
-# +7.94%. It is not. Running the gate over that run's actual benchstat output
-# (preserved as scripts/testdata/benchstat-libjson-encode-411.txt) with waivers
-# switched off reports TWO rows at or above a gate:
-#
-#     Encode-2  B/op       10.05Ki -> 11.30Ki  +12.45% (p=0.000 n=10)   gate 5%
-#     Encode-2  allocs/op    214.0 ->   231.0   +7.94% (p=0.000 n=10)   gate 5%
-#
-# B/op is an ALLOCATION metric, so it is judged against BENCH_ALLOC_THRESHOLD_PCT
-# (5), not against the 15% timing threshold. At +12.45% it is over. Waiving only
-# the count would have produced a waiver that does not work: the build would have
-# stayed red, on a row nobody had reviewed, and the natural next move would have
-# been to widen the allocation threshold -- which is precisely the outcome this
-# mechanism exists to avoid.
-#
-# They are one cost measured two ways: the same 17 extra allocations, ~1.25 KiB
-# of them. Waiving one and not the other would not be narrower, only broken. So
-# both are here, each with its own ceiling, each nameable in review.
-#
-# sec/op is NOT waived. It moves too (+11.00%, p=0.000) but its gate is 15% and
-# it is under it, so it needs nothing -- and leaving it unwaived means the timing
-# cost of this change is still watched at full strength.
 
-github.com/luthersystems/elps/lisp/lisplib/libjson | Encode | allocs/op | 9 | 2027-02-28 | elps#412 elps#410 | Dump could emit a document Load refuses (elps#410); the fix marshals each native value and validates the bytes it produced. 3 of BenchmarkEncode's 36 stdEncodeTests rows are lisp.Value(map[string]interface{}{...}), i.e. natives, so this microbenchmark pays the check at 214->231 allocs/op (+7.94%) while documents without natives pay nothing -- every realistic JSON row (Package/dump-object, dump-array, dump-nested, dump-github) is flat on all three metrics. A hand-rolled scanner restoring allocation parity was built and measured: an end-to-end substrate benchmark (interleaved, n=12) could not distinguish it from the decode on any of that repo's 20 rows, and it cost ~130 lines of a second JSON parser required to agree with encoding/json forever. elps#412 tracks removing the redundant work instead. Ceiling 9% allows 233 allocs/op against the measured 231; a second regression landing on this benchmark still reds the build.
-github.com/luthersystems/elps/lisp/lisplib/libjson | Encode | B/op | 14 | 2027-02-28 | elps#412 elps#410 | The same 17 allocations as the allocs/op waiver above, weighed instead of counted: 10.05Ki -> 11.30Ki (+12.45%, p=0.000 n=10), ~1.25 KiB of marshalled bytes held while the native round-trip is validated. B/op is an allocation metric and so is judged against the 5% allocation gate, not the 15% timing one -- waiving the count alone would have left the build red on this row. Same fix, same tracking issue, same expiry: elps#412 removes the redundant marshal and both entries go with it. Ceiling 14% against a measured 12.45%.
+# elps#363 -- libjson Package/$load, the env-construction allocation cost.
+#
+# Every environment now copies the formals of every builtin it registers
+# instead of aliasing one process-wide LVal (elps#363): the copy is what the
+# fix IS, so the bytes are irreducible.  The cost lands once per environment
+# construction and never on the eval path; Package/$load is the one benchmark
+# that builds a full env per iteration, so it pays the whole bill in B/op
+# (+9.45% measured, interleaved n=12) while its sec/op is unchanged and every
+# eval-path benchmark is flat.  Ceiling 12% against the measured 9.45%: a
+# second allocation regression landing on env construction still reds the
+# build.  elps#379's interning work is the plausible future reducer; when a
+# cheaper representation lands, re-measure and delete this entry.
+
+github.com/luthersystems/elps/lisp/lisplib/libjson | Package/$load | B/op | 12 | 2027-02-28 | elps#363 | env construction copies every builtin's formals per environment (elps#363); the copy is the fix, paid once per env load, eval path flat; revisit when elps#379 interning lands

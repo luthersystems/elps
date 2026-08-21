@@ -299,27 +299,37 @@ assert_contains "+7.94%" "the allocs/op row is named when unwaived" \
 assert_contains "+12.45%" "the B/op row is named too — it is over the allocation gate as well" \
 	env BENCH_WAIVERS= "$GATE" "$WAIVED_FIXTURE"
 
-# The after half: the waivers this repository actually ships, with no env
-# override at all, make that same comparison pass. This is the assertion that
-# keeps scripts/benchstat-waivers.txt honest -- it fails if the file is deleted,
-# emptied, malformed, or edited so it no longer covers what it claims to.
-assert_exit 0 "the SHIPPED waiver file makes PR #411's real comparison pass" \
+# The after half: the shipped list no longer carries the two #411 Encode
+# entries -- they were deleted (#413) once elps#412's fix removed the
+# regression they accepted and the gate had reported both waiver-unused.
+# (The elps#363 env-construction entry it does carry names a different row
+# and cannot reach the Encode columns.)  What the DEFAULT path (no
+# BENCH_WAIVERS override) must prove now is the deletion's other side: with
+# the Encode entries gone, the same real comparison fires the gate again --
+# the rows came back the moment their acceptance was withdrawn, which is the
+# property that makes deleting a stale waiver safe to do.
+assert_exit 1 "with the shipped waiver list empty, PR #411's comparison fires again" \
+	"$GATE" "$WAIVED_FIXTURE"
+assert_contains "+7.94%" "the un-waived allocs/op row is judged again on the default path" \
+	"$GATE" "$WAIVED_FIXTURE"
+assert_contains "+12.45%" "the un-waived B/op row is judged again on the default path" \
 	"$GATE" "$WAIVED_FIXTURE"
 
-# ...and it passes because it was WAIVED, not because the gate stopped looking.
-# The row must still appear, with its delta, its ceiling and its issue.
-# Anchored on the per-ROW marker, not the bare word: the summary line already
-# says "row(s) WAIVED", so a substring check for "WAIVED" stays green even after
-# the per-row lines are deleted -- which is exactly the regression that matters.
+# A WAIVED row must still be visible: reported by name, with its delta, its
+# tracking issue, and counted in the summary.  Proven against the testdata
+# waivers now that the shipped list is empty.  Anchored on the per-ROW marker,
+# not the bare word: the summary line already says "row(s) WAIVED", so a
+# substring check for "WAIVED" stays green even after the per-row lines are
+# deleted -- which is exactly the regression that matters.
 assert_contains "WAIVED      github.com/luthersystems/elps/lisp/lisplib/libjson" \
 	"a waived row is still reported by name, not silently dropped" \
-	"$GATE" "$WAIVED_FIXTURE"
+	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
 assert_contains "+7.94%" "the waived row still carries its measured delta" \
-	"$GATE" "$WAIVED_FIXTURE"
+	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
 assert_contains "elps#412" "the waived row names its tracking issue in the report" \
-	"$GATE" "$WAIVED_FIXTURE"
+	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
 assert_contains "row(s) WAIVED" "the summary line counts the waivers" \
-	"$GATE" "$WAIVED_FIXTURE"
+	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
 
 # NARROWNESS. A waiver covers one package, one benchmark, one metric column.
 # Waiving allocs/op alone must leave B/op of the SAME benchmark failing --
@@ -351,11 +361,10 @@ assert_exit 1 "an EXPIRED waiver no longer suppresses its row" \
 	env BENCH_WAIVERS="${TESTDATA}/waivers-expired.txt" "$GATE" "$WAIVED_FIXTURE"
 assert_contains "WAIVER EXPIRED" "an expired waiver says why the row came back" \
 	env BENCH_WAIVERS="${TESTDATA}/waivers-expired.txt" "$GATE" "$WAIVED_FIXTURE"
-# The same proof against the waivers this repo actually ships: wind the clock
-# past their expiry and PR #411's comparison reds again. Without this, "expires"
-# could be a field nothing reads.
-assert_exit 1 "the SHIPPED waivers genuinely expire (clock wound past the date)" \
-	env BENCH_WAIVER_TODAY=2099-01-01 "$GATE" "$WAIVED_FIXTURE"
+# No shipped-waiver expiry proof against this fixture -- its over-gate rows
+# (the Encode columns) are no longer waived, so it reds at ANY clock and the
+# assertion would pass without reading the expiry field at all.  The expiry
+# property is carried by the waivers-expired.txt assertions above.
 
 # JUSTIFICATION. A waiver with no tracking reference is a threshold increase
 # with better manners; the gate must refuse to run rather than honour it. Note
