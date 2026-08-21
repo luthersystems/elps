@@ -705,7 +705,10 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 // method doesn't produce the expected behavior and can't be exported publicly
 // because of that.
 func (env *LEnv) builtin(f LBuiltinDef) *LVal {
-	return FunInPackage(env.Runtime.Package.Name, NewEnv(env).getFID(), f.Formals(), f.Eval)
+	// The formals are copied for the same reason the Add* methods copy
+	// theirs: an LBuiltinDef's formals typically belong to a process-wide
+	// table.  See formalsCopier and issue #363.
+	return FunInPackage(env.Runtime.Package.Name, NewEnv(env).getFID(), f.Formals().Copy(), f.Eval)
 }
 
 func (env *LEnv) Terminal(expr *LVal) *LVal {
@@ -725,10 +728,15 @@ func (env *LEnv) root() *LEnv {
 
 // AddMacros binds the given macros to their names in env.  When called with no
 // arguments AddMacros adds the DefaultMacros to env.
+//
+// Each macro's formal argument list is copied into env rather than installed by
+// reference, so environments never share one formals object; see formalsCopier
+// and issue #363.
 func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 	if len(macs) == 0 {
 		macs = DefaultMacros()
 	}
+	formals := newFormalsCopier(macs)
 	pkg := env.Runtime.Package
 	for _, mac := range macs {
 		k := Symbol(mac.Name())
@@ -737,7 +745,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 			panic(fmt.Sprintf("macro already defined: %v (= %v)", k, exist))
 		}
 		id := fmt.Sprintf("<builtin-macro ``%s''>", mac.Name())
-		fn := MacroInPackage(pkg.Name, id, mac.Formals(), mac.Eval)
+		fn := MacroInPackage(pkg.Name, id, formals.copy(mac.Formals()), mac.Eval)
 		fn.Cells[1] = String(builtinDocstring(mac))
 		pkg.Put(k, fn)
 		if external {
@@ -748,10 +756,15 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 
 // AddSpecialOps binds the given special operators to their names in env.  When
 // called with no arguments AddSpecialOps adds the DefaultSpecialOps to env.
+//
+// Each operator's formal argument list is copied into env rather than installed
+// by reference, so environments never share one formals object; see
+// formalsCopier and issue #363.
 func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 	if len(ops) == 0 {
 		ops = DefaultSpecialOps()
 	}
+	formals := newFormalsCopier(ops)
 	pkg := env.Runtime.Package
 	for _, op := range ops {
 		k := Symbol(op.Name())
@@ -760,7 +773,7 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 			panic(fmt.Sprintf("macro already defined: %v (= %v)", k, exist))
 		}
 		id := fmt.Sprintf("<special-op ``%s''>", op.Name())
-		fn := SpecialOpInPackage(pkg.Name, id, op.Formals(), op.Eval)
+		fn := SpecialOpInPackage(pkg.Name, id, formals.copy(op.Formals()), op.Eval)
 		fn.Cells[1] = String(builtinDocstring(op))
 		pkg.Put(k, fn)
 		if external {
@@ -771,10 +784,15 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 
 // AddBuiltins binds the given funs to their names in env.  When called with no
 // arguments AddBuiltins adds the DefaultBuiltins to env.
+//
+// Each function's formal argument list is copied into env rather than installed
+// by reference, so environments never share one formals object; see
+// formalsCopier and issue #363.
 func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 	if len(funs) == 0 {
 		funs = DefaultBuiltins()
 	}
+	formals := newFormalsCopier(funs)
 	pkg := env.Runtime.Package
 	for _, f := range funs {
 		k := Symbol(f.Name())
@@ -783,7 +801,7 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 			panic("symbol already defined: " + f.Name())
 		}
 		id := fmt.Sprintf("<builtin-function ``%s''>", f.Name())
-		v := FunInPackage(pkg.Name, id, f.Formals(), f.Eval)
+		v := FunInPackage(pkg.Name, id, formals.copy(f.Formals()), f.Eval)
 		v.Cells[1] = String(builtinDocstring(f))
 		pkg.Put(k, v)
 		if external {
