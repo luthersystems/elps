@@ -76,6 +76,10 @@ var builtins = []*libutil.Builtin{
 		The last argument is the new value; all preceding arguments are path
 		steps. Returns the mutated original.
 
+		The new value is stored BY REFERENCE, not copied: after the call it is
+		reachable and mutable through the result, and a later write through
+		either name is visible through the other.
+
 		(?set! obj "foo" "bar" "new")   => obj with foo.bar="new" (mutated)
 		(?set! obj "items" 0 "x")       => obj with items[0]="x" (mutated)
 		(?set! data '* "active" true)   => set active=true on all elements`),
@@ -84,6 +88,12 @@ var builtins = []*libutil.Builtin{
 
 		The last argument is the new value; all preceding arguments are path
 		steps. The original is not modified.
+
+		The copy is independent of the SOURCE document only. The new value is
+		stored BY REFERENCE, not copied: the value you supply becomes
+		reachable and mutable through the result, so a later in-place write
+		through the result (?set!, ?del!, append!) reaches the caller's
+		value, and vice versa. Pass a copy if the result must not alias it.
 
 		(?set obj "foo" "bar" "new")   => new obj with foo.bar="new"
 		(?set obj "items" 0 "x")       => new obj with items[0]="x"`),

@@ -95,4 +95,17 @@
 # ---------------------------------------------------------------------------
 #
 
-# (no active waivers)
+# elps#363 -- libjson Package/$load, the env-construction allocation cost.
+#
+# Every environment now copies the formals of every builtin it registers
+# instead of aliasing one process-wide LVal (elps#363): the copy is what the
+# fix IS, so the bytes are irreducible.  The cost lands once per environment
+# construction and never on the eval path; Package/$load is the one benchmark
+# that builds a full env per iteration, so it pays the whole bill in B/op
+# (+9.45% measured, interleaved n=12) while its sec/op is unchanged and every
+# eval-path benchmark is flat.  Ceiling 12% against the measured 9.45%: a
+# second allocation regression landing on env construction still reds the
+# build.  elps#379's interning work is the plausible future reducer; when a
+# cheaper representation lands, re-measure and delete this entry.
+
+github.com/luthersystems/elps/lisp/lisplib/libjson | Package/$load | B/op | 12 | 2027-02-28 | elps#363 | env construction copies every builtin's formals per environment (elps#363); the copy is the fix, paid once per env load, eval path flat; revisit when elps#379 interning lands
