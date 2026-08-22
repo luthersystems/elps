@@ -19,8 +19,8 @@
 // neighbourhood audit on the PR.  No non-test code writes THROUGH a borrowed
 // *token.Location: parser/rdparser's five write sites operate on Locations
 // the nodes they have just built own (#426/#442), lisp/env.go's three error
-// constructors take env.Loc.Copy() (#421), stampMacroExpansion ASSIGNS
-// v.Source rather than writing through it, and every position consumer
+// constructors take env.loc.Copy() (#421), stampMacroExpansion ASSIGNS
+// lisp.SourceRefForTest(v) rather than writing through it, and every position consumer
 // (lsp/, lint/, analysis/, mcpserver/, minifier/, formatter/, debugger/,
 // profiler/) reads a Location and formats it into its own value type.  So the
 // writes these tests perform are writes the TESTS perform: they demonstrate
@@ -61,12 +61,12 @@ func TestCopyDoesNotAliasSourceLocation(t *testing.T) {
 	orig := readOne(t, "(+ 1 2)")
 	cp := orig.Copy()
 
-	require.NotNil(t, orig.Source)
-	assert.NotSame(t, orig.Source, cp.Source,
+	require.NotNil(t, lisp.SourceRefForTest(orig))
+	assert.NotSame(t, lisp.SourceRefForTest(orig), lisp.SourceRefForTest(cp),
 		"a copy shares the original's *token.Location (#446)")
 
-	cp.Source.Line = 99
-	assert.Equal(t, 1, orig.Source.Line,
+	lisp.SourceRefForTest(cp).Line = 99
+	assert.Equal(t, 1, lisp.SourceRefForTest(orig).Line,
 		"a write through the copy moved the original's recorded position (#446)")
 }
 
@@ -85,7 +85,7 @@ func TestCopyDoesNotAliasSourceAtDepth(t *testing.T) {
 
 	shared := 0
 	for i := range origNodes {
-		if origNodes[i].Source != nil && origNodes[i].Source == cpNodes[i].Source {
+		if lisp.SourceRefForTest(origNodes[i]) != nil && lisp.SourceRefForTest(origNodes[i]) == lisp.SourceRefForTest(cpNodes[i]) {
 			shared++
 		}
 	}
@@ -109,7 +109,7 @@ func TestTextLoaderEvaluationsGetPrivatePositions(t *testing.T) {
 	var seen []*token.Location
 	env.AddBuiltins(true, elpsutil.Function("probe-loc", lisp.Formals("x"),
 		func(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-			seen = append(seen, args.Cells[0].Source)
+			seen = append(seen, lisp.SourceRefForTest(args.Cells[0]))
 			return lisp.Nil()
 		}))
 
@@ -120,7 +120,7 @@ func TestTextLoaderEvaluationsGetPrivatePositions(t *testing.T) {
 
 	retained := cr.exprs[0]
 	require.Len(t, retained.Cells, 2)
-	cached := retained.Cells[1].Source
+	cached := lisp.SourceRefForTest(retained.Cells[1])
 	require.NotNil(t, cached)
 	cachedLine := cached.Line
 
@@ -156,12 +156,12 @@ func TestCopyPreservesSourcePosition(t *testing.T) {
 	cpNodes := flatten(cp)
 	require.Len(t, cpNodes, len(origNodes))
 	for i := range origNodes {
-		if origNodes[i].Source == nil {
-			assert.Nil(t, cpNodes[i].Source, "node %d: nil Source became non-nil", i)
+		if lisp.SourceRefForTest(origNodes[i]) == nil {
+			assert.Nil(t, lisp.SourceRefForTest(cpNodes[i]), "node %d: nil Source became non-nil", i)
 			continue
 		}
-		require.NotNil(t, cpNodes[i].Source, "node %d: Source was dropped", i)
-		assert.Equal(t, *origNodes[i].Source, *cpNodes[i].Source,
+		require.NotNil(t, lisp.SourceRefForTest(cpNodes[i]), "node %d: Source was dropped", i)
+		assert.Equal(t, *lisp.SourceRefForTest(origNodes[i]), *lisp.SourceRefForTest(cpNodes[i]),
 			"node %d: copied position differs", i)
 	}
 }
@@ -172,35 +172,46 @@ func TestCopyPreservesSourcePosition(t *testing.T) {
 // GUARD: passes before the fix.
 func TestCopyPreservesNilSource(t *testing.T) {
 	v := lisp.SExpr([]*lisp.LVal{lisp.Symbol("a")})
-	v.Source = nil
-	v.Cells[0].Source = nil
+	v.SetSource(nil)
+	v.Cells[0].SetSource(nil)
 	cp := v.Copy()
-	assert.Nil(t, cp.Source)
+	assert.Nil(t, lisp.SourceRefForTest(cp))
 	require.Len(t, cp.Cells, 1)
-	assert.Nil(t, cp.Cells[0].Source)
+	assert.Nil(t, lisp.SourceRefForTest(cp.Cells[0]))
 }
 
-// TestCopyKeepsSharingTheNativeSingleton pins the ONE Location that is
-// deliberately shared and must stay shared: lisp.nativeSource's process-wide
-// singleton, stamped on every natively-constructed LVal.
+// TestCopyDoesNotShareANativeLocation is what became of #446's
+// "TestCopyKeepsSharingTheNativeSingleton".
 //
-// Copying it would buy nothing -- it has a single owner, the process; it is
-// read-only by contract; SingletonSnapshot watches its bit pattern; and the
-// parser never leaves it in an AST (#362/#421).  It would cost a heap
-// allocation on the interpreter's hottest path, which is the +18.6% sec/op,
-// +20.2% allocs/op that #362's own comment records and rejects.  Separating
-// two owners is what the copy is for, and here there is only one.
+// That test pinned the ONE Location deliberately shared and required to STAY
+// shared: nativeSource's process-wide singleton, stamped on every
+// natively-constructed LVal.  The argument was that copying it bought nothing
+// (one owner, the process; read-only by contract; watched by
+// SingletonSnapshot) and cost a heap allocation on the interpreter's hottest
+// path -- the +18.6% sec/op, +20.2% allocs/op #362's own comment records.
 //
-// GUARD: passes before the fix, and pins that the fix did not "improve" it.
-func TestCopyKeepsSharingTheNativeSingleton(t *testing.T) {
+// Issue #362's fix took the other exit: the singleton is DELETED.  A
+// Go-constructed value records no location at all, and nativeLocation()
+// synthesizes "<native code>" by value when someone asks.  So the allocation
+// the exception existed to avoid is avoided by there being nothing to
+// allocate, and the exception itself is gone with the object.
+//
+// The test is inverted rather than deleted, because "no node shares a
+// Location with any other" is now unconditional, and an unconditional
+// property deserves a test that says so.
+func TestCopyDoesNotShareANativeLocation(t *testing.T) {
 	a, b := lisp.Int(1), lisp.Int(2)
-	require.NotNil(t, a.Source)
-	require.Same(t, a.Source, b.Source, "premise: natively-constructed values share one Location")
+	require.Nil(t, lisp.SourceRefForTest(a),
+		"a natively-constructed value carries a *token.Location again; the #362 singleton is back")
+	require.Nil(t, lisp.SourceRefForTest(b))
 
 	cp := a.Copy()
-	assert.Same(t, a.Source, cp.Source,
-		"copying a native value allocated a private Location on a hot path (#362)")
-	assert.Equal(t, token.NativeFile, cp.Source.File)
+	assert.Nil(t, lisp.SourceRefForTest(cp), "copying a native value invented a Location")
+
+	loc, ok := cp.Source()
+	assert.False(t, ok, "a native value must report no RECORDED location")
+	assert.Equal(t, token.NativeFile, loc.File,
+		"a native value must still PRINT as <native code>")
 }
 
 // TestParseTreeCopyIsFullyPrivate closes the gap the native-singleton
@@ -226,13 +237,13 @@ func TestParseTreeCopyIsFullyPrivate(t *testing.T) {
 		require.Len(t, cpNodes, len(origNodes))
 		for i := range origNodes {
 			total++
-			if origNodes[i].Source == nil {
+			if lisp.SourceRefForTest(origNodes[i]) == nil {
 				continue
 			}
-			if origNodes[i].Source.File == token.NativeFile {
+			if lisp.SourceRefForTest(origNodes[i]).File == token.NativeFile {
 				native++
 			}
-			if origNodes[i].Source == cpNodes[i].Source {
+			if lisp.SourceRefForTest(origNodes[i]) == lisp.SourceRefForTest(cpNodes[i]) {
 				shared++
 			}
 		}
@@ -261,13 +272,13 @@ func TestCopyDoesNotAliasSourceOfReferenceTypes(t *testing.T) {
 			v := env.LoadString("ref.lisp", src)
 			require.NotEqual(t, lisp.LError, v.Type, "%v", v)
 			loc := token.Location{File: "ref.lisp", Pos: 3, Line: 1, Col: 4}
-			v.Source = &loc
+			v.SetSource(&loc)
 
 			cp := v.Copy()
 			require.NotEqual(t, lisp.LError, cp.Type, "%v", cp)
-			assert.NotSame(t, v.Source, cp.Source,
+			assert.NotSame(t, lisp.SourceRefForTest(v), lisp.SourceRefForTest(cp),
 				"a copied %s shares the original's *token.Location (#446)", v.Type)
-			assert.Equal(t, *v.Source, *cp.Source)
+			assert.Equal(t, *lisp.SourceRefForTest(v), *lisp.SourceRefForTest(cp))
 		})
 	}
 }

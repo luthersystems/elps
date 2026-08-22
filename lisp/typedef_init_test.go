@@ -77,12 +77,12 @@ func TestInitializeTypedefRequiresRuntimePackage(t *testing.T) {
 func TestInitializeTypedefRequiresRegistryLang(t *testing.T) {
 	env := lisp.NewEnv(nil)
 	env.Runtime.Registry.DefinePackage(lisp.DefaultLangPackage)
-	env.Runtime.Package = env.Runtime.Registry.Packages[lisp.DefaultLangPackage]
+	env.Runtime.Package = env.Runtime.Registry.Package(lisp.DefaultLangPackage)
 	if env.Runtime.Registry.Lang != "" {
 		t.Fatalf("expected Registry.Lang to be empty before InitializeUserEnv, got %q",
 			env.Runtime.Registry.Lang)
 	}
-	if env.Runtime.Registry.Packages[env.Runtime.Registry.Lang] != nil {
+	if env.Runtime.Registry.Package(env.Runtime.Registry.Lang) != nil {
 		t.Fatalf("expected Packages[%q] to be nil; this test can no longer observe"+
 			" the precondition it is about", env.Runtime.Registry.Lang)
 	}

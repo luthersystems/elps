@@ -2,39 +2,39 @@
 
 // Regression tests for elps#466 -- LVal.Copy sharing Meta and MacroExpansion.
 //
-// #446 (PR #467) separated LVal.Source, and the comment it left on Copy now
+// #446 (PR #467) separated LVal.source, and the comment it left on Copy now
 // says "the copy owns its positions".  The same `*cp = *v` carried the other
 // two metadata pointers across untouched, so that sentence was true of the
-// node and false one level down: SourceMeta holds []*token.Token, every token
+// node and false one level down: fmtmeta.Meta holds []*token.Token, every token
 // holds a *token.Location, and both trees reached the same objects.
 //
 // WHY THIS IS THE CODE AND NOT THE DOC COMMENT.  #466 leaves that open --
 // "these are metadata ABOUT a node which a copy legitimately shares" is a
 // coherent reading, and if it were the right one then Copy's doc comment and
-// MacroExpansionInfo.ID's would be what needed fixing.  The evidence says it
+// macroExpansionInfo.ID's would be what needed fixing.  The evidence says it
 // is the right reading for exactly one of the three pointers:
 //
-//   - SourceMeta is not a description of a node, it is per-node MUTABLE state
+//   - fmtmeta.Meta is not a description of a node, it is per-node MUTABLE state
 //     that the parser writes in place at a dozen sites, and that
 //     rdparser.hoistOperandComments MOVES between nodes (append onto outer,
 //     `= nil` on inner).  The parser already special-cases two LVals holding
-//     one *SourceMeta -- the `outer.Meta == inner.Meta` guard, whose comment
+//     one *fmtmeta.Meta -- the `outer meta == inner meta` guard, whose comment
 //     explains that moving the comments would move them onto themselves.  An
 //     in-tree guard against a state means the state is an anomaly, and
 //     LVal.Copy manufactured it deliberately.  The comment-hoist test below
 //     performs that exact move through a copy and watches the ORIGINAL's
 //     rendered output change.
 //
-//   - MacroExpansionInfo is per node too (the ID is what distinguishes one
+//   - macroExpansionInfo is per node too (the ID is what distinguishes one
 //     node from another), so the struct is separated.
 //
-//   - Its embedded *MacroExpansionContext genuinely is shared metadata: it
+//   - Its embedded *macroExpansionContext genuinely is shared metadata: it
 //     describes the macro CALL, it is documented "shared across all nodes in
 //     one expansion", and #456 already made its CallSite an object the
 //     expansion owns.  It stays shared, and the context test below pins that.
 //
 // The one place the doc comment WAS the thing that was wrong is
-// MacroExpansionInfo.ID, documented "unique per node".  LVal.Copy cannot
+// macroExpansionInfo.ID, documented "unique per node".  LVal.Copy cannot
 // honour that under any implementation -- it takes no *Runtime and so has no
 // counter to draw a fresh ID from -- so the comment now says what is true and
 // names the consumer that cares (lisp/x/debugger's stepper, which steps on
@@ -58,6 +58,8 @@ import (
 	"testing"
 
 	"github.com/luthersystems/elps/formatter"
+	"github.com/luthersystems/elps/internal/fmtmeta"
+	"github.com/luthersystems/elps/internal/fmtraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
@@ -85,16 +87,16 @@ const metaSource = "; lead\n(+ 1 2) ; trail\n"
 // CATCH: both assertions failed on 95e2e1a.
 func TestCopyDoesNotAliasSourceMeta(t *testing.T) {
 	orig := readFormatting(t, metaSource)[0]
-	require.NotNil(t, orig.Meta, "premise: format-preserving parsing populates Meta")
+	require.NotNil(t, fmtraw.Meta(orig), "premise: format-preserving parsing populates Meta")
 
 	cp := orig.Copy()
-	require.NotNil(t, cp.Meta, "the copy lost its formatting metadata")
-	assert.NotSame(t, orig.Meta, cp.Meta,
-		"a copy shares the original's *SourceMeta (#466)")
+	require.NotNil(t, fmtraw.Meta(cp), "the copy lost its formatting metadata")
+	assert.NotSame(t, fmtraw.Meta(orig), fmtraw.Meta(cp),
+		"a copy shares the original's *fmtmeta.Meta (#466)")
 
-	was := orig.Meta.BlankLinesBefore
-	cp.Meta.BlankLinesBefore = was + 99
-	assert.Equal(t, was, orig.Meta.BlankLinesBefore,
+	was := fmtraw.Meta(orig).BlankLinesBefore
+	fmtraw.Meta(cp).BlankLinesBefore = was + 99
+	assert.Equal(t, was, fmtraw.Meta(orig).BlankLinesBefore,
 		"a write through the copy moved the original's formatting metadata (#466)")
 }
 
@@ -105,14 +107,14 @@ func TestCopyDoesNotAliasSourceMeta(t *testing.T) {
 // CATCH: every assertion failed on 95e2e1a.
 func TestCopyDoesNotAliasMetaCommentTokens(t *testing.T) {
 	orig := readFormatting(t, metaSource)[0]
-	require.NotEmpty(t, orig.Meta.LeadingComments, "premise: the leading comment was recorded")
-	require.NotNil(t, orig.Meta.TrailingComment, "premise: the trailing comment was recorded")
+	require.NotEmpty(t, fmtraw.Meta(orig).LeadingComments, "premise: the leading comment was recorded")
+	require.NotNil(t, fmtraw.Meta(orig).TrailingComment, "premise: the trailing comment was recorded")
 
 	cp := orig.Copy()
-	require.Len(t, cp.Meta.LeadingComments, len(orig.Meta.LeadingComments))
+	require.Len(t, fmtraw.Meta(cp).LeadingComments, len(fmtraw.Meta(orig).LeadingComments))
 
-	for i := range orig.Meta.LeadingComments {
-		a, b := orig.Meta.LeadingComments[i], cp.Meta.LeadingComments[i]
+	for i := range fmtraw.Meta(orig).LeadingComments {
+		a, b := fmtraw.Meta(orig).LeadingComments[i], fmtraw.Meta(cp).LeadingComments[i]
 		assert.NotSame(t, a, b, "LeadingComments[%d]: copy shares the original's *token.Token (#466)", i)
 		assert.Equal(t, a.Text, b.Text, "LeadingComments[%d]: text differs", i)
 		if a.Source != nil {
@@ -123,17 +125,17 @@ func TestCopyDoesNotAliasMetaCommentTokens(t *testing.T) {
 		}
 	}
 
-	assert.NotSame(t, orig.Meta.TrailingComment, cp.Meta.TrailingComment,
+	assert.NotSame(t, fmtraw.Meta(orig).TrailingComment, fmtraw.Meta(cp).TrailingComment,
 		"TrailingComment: copy shares the original's *token.Token (#466)")
-	assert.Equal(t, orig.Meta.TrailingComment.Text, cp.Meta.TrailingComment.Text)
-	if orig.Meta.TrailingComment.Source != nil {
-		assert.NotSame(t, orig.Meta.TrailingComment.Source, cp.Meta.TrailingComment.Source,
+	assert.Equal(t, fmtraw.Meta(orig).TrailingComment.Text, fmtraw.Meta(cp).TrailingComment.Text)
+	if fmtraw.Meta(orig).TrailingComment.Source != nil {
+		assert.NotSame(t, fmtraw.Meta(orig).TrailingComment.Source, fmtraw.Meta(cp).TrailingComment.Source,
 			"TrailingComment: copy shares the original's *token.Location (#446 through Meta)")
 	}
 
 	// The corruption the sharing enables.  The write is this test's.
-	cp.Meta.LeadingComments[0].Source.Line = 9999
-	assert.NotEqual(t, 9999, orig.Meta.LeadingComments[0].Source.Line,
+	fmtraw.Meta(cp).LeadingComments[0].Source.Line = 9999
+	assert.NotEqual(t, 9999, fmtraw.Meta(orig).LeadingComments[0].Source.Line,
 		"a write through the copy's comment token moved the original's recorded position (#466)")
 }
 
@@ -157,18 +159,18 @@ func TestCopyDoesNotAliasMetaAtDepth(t *testing.T) {
 
 	shared, withMeta := 0, 0
 	for i := range origNodes {
-		if origNodes[i].Meta == nil {
-			assert.Nil(t, cpNodes[i].Meta, "node %d: nil Meta became non-nil", i)
+		if fmtraw.Meta(origNodes[i]) == nil {
+			assert.Nil(t, fmtraw.Meta(cpNodes[i]), "node %d: nil Meta became non-nil", i)
 			continue
 		}
 		withMeta++
-		if origNodes[i].Meta == cpNodes[i].Meta {
+		if fmtraw.Meta(origNodes[i]) == fmtraw.Meta(cpNodes[i]) {
 			shared++
 		}
 	}
 	require.Positive(t, withMeta, "no node carried a Meta; the test observed nothing")
 	assert.Zero(t, shared,
-		"%d of %d copied nodes with metadata share the original's *SourceMeta (#466)",
+		"%d of %d copied nodes with metadata share the original's *fmtmeta.Meta (#466)",
 		shared, withMeta)
 }
 
@@ -179,7 +181,7 @@ func TestCopyDoesNotAliasMetaAtDepth(t *testing.T) {
 // node: append onto the destination, `= nil` on the source.  That is a write
 // the parser really performs -- it is the fix for the comment loss described
 // in its own doc comment -- and it is destructive.  Performed through a copy
-// while a shared *SourceMeta is in place, it deletes the comment from the
+// while a shared *fmtmeta.Meta is in place, it deletes the comment from the
 // ORIGINAL tree, and the original then formats without it.
 //
 // The move here is this test's, not the parser's (the parser runs before
@@ -196,9 +198,9 @@ func TestCopyMetaSurvivesACommentHoist(t *testing.T) {
 
 	cp := orig.Copy()
 	// Exactly what hoistOperandComments does, performed on the copy.
-	moved := cp.Meta.LeadingComments
+	moved := fmtraw.Meta(cp).LeadingComments
 	require.NotEmpty(t, moved)
-	cp.Meta.LeadingComments = nil
+	fmtraw.Meta(cp).LeadingComments = nil
 
 	after := string(formatter.FormatProgram([]*lisp.LVal{orig}, nil, nil))
 	assert.Equal(t, before, after,
@@ -217,12 +219,12 @@ func TestCopyMetaCommentSlicesArePrivate(t *testing.T) {
 	orig := readFormatting(t, metaSource)[0]
 	cp := orig.Copy()
 
-	origLen := len(orig.Meta.LeadingComments)
+	origLen := len(fmtraw.Meta(orig).LeadingComments)
 	require.Positive(t, origLen)
 
-	cp.Meta.LeadingComments = append(cp.Meta.LeadingComments,
+	fmtraw.Meta(cp).LeadingComments = append(fmtraw.Meta(cp).LeadingComments,
 		&token.Token{Type: token.COMMENT, Text: "; added"})
-	assert.Len(t, orig.Meta.LeadingComments, origLen,
+	assert.Len(t, fmtraw.Meta(orig).LeadingComments, origLen,
 		"appending to the copy's LeadingComments changed the original's (#466)")
 }
 
@@ -233,17 +235,17 @@ func TestCopyMetaCommentSlicesArePrivate(t *testing.T) {
 func TestCopyPreservesMetaContent(t *testing.T) {
 	orig := readFormatting(t, "; lead\n\n[foo 1] ; trail\n")[0]
 	cp := orig.Copy()
-	require.NotNil(t, cp.Meta)
+	require.NotNil(t, fmtraw.Meta(cp))
 
-	assert.Equal(t, orig.Meta.OriginalText, cp.Meta.OriginalText)
-	assert.Equal(t, orig.Meta.BracketType, cp.Meta.BracketType)
-	assert.Equal(t, orig.Meta.BlankLinesBefore, cp.Meta.BlankLinesBefore)
-	assert.Equal(t, orig.Meta.BlankLinesAfterComments, cp.Meta.BlankLinesAfterComments)
-	assert.Equal(t, orig.Meta.PrecedingSpaces, cp.Meta.PrecedingSpaces)
-	assert.Equal(t, orig.Meta.NewlineBefore, cp.Meta.NewlineBefore)
-	assert.Equal(t, orig.Meta.ClosingBracketNewline, cp.Meta.ClosingBracketNewline)
-	assert.Len(t, cp.Meta.LeadingComments, len(orig.Meta.LeadingComments))
-	assert.Len(t, cp.Meta.InnerTrailingComments, len(orig.Meta.InnerTrailingComments))
+	assert.Equal(t, fmtraw.Meta(orig).OriginalText, fmtraw.Meta(cp).OriginalText)
+	assert.Equal(t, fmtraw.Meta(orig).BracketType, fmtraw.Meta(cp).BracketType)
+	assert.Equal(t, fmtraw.Meta(orig).BlankLinesBefore, fmtraw.Meta(cp).BlankLinesBefore)
+	assert.Equal(t, fmtraw.Meta(orig).BlankLinesAfterComments, fmtraw.Meta(cp).BlankLinesAfterComments)
+	assert.Equal(t, fmtraw.Meta(orig).PrecedingSpaces, fmtraw.Meta(cp).PrecedingSpaces)
+	assert.Equal(t, fmtraw.Meta(orig).NewlineBefore, fmtraw.Meta(cp).NewlineBefore)
+	assert.Equal(t, fmtraw.Meta(orig).ClosingBracketNewline, fmtraw.Meta(cp).ClosingBracketNewline)
+	assert.Len(t, fmtraw.Meta(cp).LeadingComments, len(fmtraw.Meta(orig).LeadingComments))
+	assert.Len(t, fmtraw.Meta(cp).InnerTrailingComments, len(fmtraw.Meta(orig).InnerTrailingComments))
 
 	// And the copy formats identically, which is the property a reader of
 	// Meta actually depends on.
@@ -260,12 +262,12 @@ func TestCopyPreservesMetaContent(t *testing.T) {
 // GUARD: passes before the fix.
 func TestCopyPreservesNilMeta(t *testing.T) {
 	v := lisp.SExpr([]*lisp.LVal{lisp.Symbol("a"), lisp.Int(1)})
-	require.Nil(t, v.Meta, "premise: a natively-built value has no Meta")
+	require.Nil(t, fmtraw.Meta(v), "premise: a natively-built value has no Meta")
 	cp := v.Copy()
-	assert.Nil(t, cp.Meta)
+	assert.Nil(t, fmtraw.Meta(cp))
 	require.Len(t, cp.Cells, 2)
 	for i, c := range cp.Cells {
-		assert.Nil(t, c.Meta, "cell %d gained a Meta", i)
+		assert.Nil(t, fmtraw.Meta(c), "cell %d gained a Meta", i)
 	}
 }
 
@@ -278,109 +280,15 @@ func TestCopyPreservesNilMeta(t *testing.T) {
 // materialising empty slices per node.
 func TestCopyPreservesNilComments(t *testing.T) {
 	v := lisp.Symbol("a")
-	v.Meta = &lisp.SourceMeta{OriginalText: "a"}
+	fmtraw.SetMeta(v, &fmtmeta.Meta{OriginalText: "a"})
 	cp := v.Copy()
-	require.NotNil(t, cp.Meta)
-	assert.Nil(t, cp.Meta.LeadingComments)
-	assert.Nil(t, cp.Meta.InnerTrailingComments)
-	assert.Nil(t, cp.Meta.TrailingComment)
+	require.NotNil(t, fmtraw.Meta(cp))
+	assert.Nil(t, fmtraw.Meta(cp).LeadingComments)
+	assert.Nil(t, fmtraw.Meta(cp).InnerTrailingComments)
+	assert.Nil(t, fmtraw.Meta(cp).TrailingComment)
 }
 
-// newExpansionNode builds a node in the state stampMacroExpansion leaves an
-// expansion node in: a MacroExpansionInfo with an ID, wrapping a context
-// shared with the rest of the expansion.
-func newExpansionNode(id int64, ctx *lisp.MacroExpansionContext) *lisp.LVal {
-	v := lisp.Symbol("expanded")
-	v.MacroExpansion = &lisp.MacroExpansionInfo{MacroExpansionContext: ctx, ID: id}
-	return v
-}
-
-// TestCopyDoesNotAliasMacroExpansionInfo is the second half of issue #466.
-// The struct is per node -- its ID is the thing that tells one expansion node
-// from another -- so a copy, which is a second node, must not write through
-// the original's.
-// CATCH: failed on 95e2e1a.
-func TestCopyDoesNotAliasMacroExpansionInfo(t *testing.T) {
-	loc := &token.Location{File: "m.lisp", Line: 3, Col: 5}
-	ctx := &lisp.MacroExpansionContext{CallSite: loc, Name: "lisp:defun"}
-	orig := newExpansionNode(7, ctx)
-
-	cp := orig.Copy()
-	require.NotNil(t, cp.MacroExpansion, "the copy lost its expansion info")
-	assert.NotSame(t, orig.MacroExpansion, cp.MacroExpansion,
-		"a copy shares the original's *MacroExpansionInfo (#466)")
-
-	cp.MacroExpansion.ID = 99
-	assert.Equal(t, int64(7), orig.MacroExpansion.ID,
-		"a write through the copy moved the original's expansion ID (#466)")
-}
-
-// TestCopyKeepsSharingTheMacroExpansionContext pins the pointer that is
-// deliberately NOT separated, and is the reason this issue is not simply
-// "copy everything".
-//
-// MacroExpansionContext describes the macro CALL, not the node.  It is
-// documented shared across every node of one expansion; #456 already made its
-// CallSite an object the expansion owns rather than one borrowed from a live
-// parse tree, so there is no third party to separate it from.  Copying it
-// would separate nothing and would make that documented sharing false for
-// copied nodes.
-//
-// GUARD: passes before the fix (everything was shared then) and pins that the
-// fix did not over-correct.
-func TestCopyKeepsSharingTheMacroExpansionContext(t *testing.T) {
-	loc := &token.Location{File: "m.lisp", Line: 3, Col: 5}
-	ctx := &lisp.MacroExpansionContext{CallSite: loc, Name: "lisp:defun"}
-	a, b := newExpansionNode(1, ctx), newExpansionNode(2, ctx)
-	require.Same(t, a.MacroExpansion.MacroExpansionContext, b.MacroExpansion.MacroExpansionContext,
-		"premise: one expansion's nodes share one context")
-
-	cp := a.Copy()
-	assert.Same(t, ctx, cp.MacroExpansion.MacroExpansionContext,
-		"copying an expansion node allocated a private MacroExpansionContext; the context"+
-			" is documented shared across an expansion and has only one owner")
-	assert.Same(t, loc, cp.MacroExpansion.CallSite,
-		"the call site moved; it belongs to the expansion (#456), not to the node")
-}
-
-// TestCopyDuplicatesTheMacroExpansionID is the half of #466 where the DOC
-// COMMENT was what was wrong rather than the code.
-//
-// ID was documented "unique per node".  LVal.Copy cannot honour that under
-// any implementation: it takes no *Runtime, so it has no counter to draw a
-// fresh value from, and drawing one from anywhere else would defeat the
-// point -- the value exists to come from the runtime that did the expanding.
-// So the behaviour stands and the comment now says what is true, and names
-// the consumer that has to know: lisp/x/debugger's stepper steps on
-// `loc.MacroID != s.start.MacroID`, so two nodes carrying one ID read to it
-// as one node.
-//
-// GUARD: passes before the fix.  It is here so that a later change which
-// starts renumbering copies fails against a stated decision instead of
-// quietly contradicting the field comment.
-func TestCopyDuplicatesTheMacroExpansionID(t *testing.T) {
-	ctx := &lisp.MacroExpansionContext{Name: "lisp:defun"}
-	orig := newExpansionNode(7, ctx)
-	cp := orig.Copy()
-	require.NotNil(t, cp.MacroExpansion)
-	assert.Equal(t, int64(7), cp.MacroExpansion.ID,
-		"a copy no longer carries the expansion ID of the node it came from;"+
-			" if that is intended, MacroExpansionInfo.ID's comment needs updating with it")
-}
-
-// TestCopyPreservesNilMacroExpansion pins the nil case, which is every node in
-// a process with no debugger attached -- i.e. the hot path.
-// GUARD: passes before the fix.
-func TestCopyPreservesNilMacroExpansion(t *testing.T) {
-	v := lisp.SExpr([]*lisp.LVal{lisp.Symbol("a")})
-	require.Nil(t, v.MacroExpansion)
-	cp := v.Copy()
-	assert.Nil(t, cp.MacroExpansion)
-	require.Len(t, cp.Cells, 1)
-	assert.Nil(t, cp.Cells[0].MacroExpansion)
-}
-
-// TestTokenCopy covers parser/token.Token.Copy directly, since SourceMeta.Copy
+// TestTokenCopy covers parser/token.Token.Copy directly, since the meta deep-copy
 // leans on it for the position separation.  A Token whose Copy shared its
 // Location would put #446 straight back through Meta.
 //

@@ -1407,8 +1407,10 @@ func rangeFromSource(loc *token.Location, nameLen int) Range {
 func parseDiagnostic(err error, path string) Diagnostic {
 	rng := Range{}
 	var errVal *lisp.ErrorVal
-	if errors.As(err, &errVal) && errVal.Source != nil && errVal.Source.Line > 0 {
-		rng = rangeFromSource(errVal.Source, 1)
+	if errors.As(err, &errVal) {
+		if loc, ok := errVal.Source(); ok && loc.Line > 0 {
+			rng = rangeFromSource(&loc, 1)
+		}
 	}
 	var locErr *token.LocationError
 	if errors.As(err, &locErr) && locErr.Source != nil && locErr.Source.Line > 0 {
@@ -1836,10 +1838,8 @@ func (s *service) docEnv(ctx context.Context) (*lisp.LEnv, func(), error) {
 		return nil, noopRelease, err
 	}
 	if s.registry != nil {
-		for name, pkg := range s.registry.Packages {
-			if _, exists := env.Runtime.Registry.Packages[name]; !exists {
-				env.Runtime.Registry.Packages[name] = pkg
-			}
+		for _, name := range s.registry.PackageNames() {
+			env.Runtime.Registry.AddPackage(s.registry.Package(name))
 		}
 	}
 	return env, noopRelease, nil

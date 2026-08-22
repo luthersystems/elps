@@ -20,7 +20,7 @@ type Debugger interface {
 	IsEnabled() bool
 
 	// OnEval is called before evaluating any expression with a real source
-	// location (v.Source != nil). Synthetic expressions from macro expansion
+	// location (v has a non-nil source). Synthetic expressions from macro expansion
 	// are skipped.
 	// Returns true if the debugger wants execution to pause (breakpoint hit
 	// or step complete).

@@ -48,7 +48,7 @@ type FunctionInfo struct {
 // InspectFunction extracts metadata from a defun, defmacro, or lambda
 // s-expression. Returns nil if node is not a recognized form.
 func InspectFunction(node *LVal) *FunctionInfo {
-	if node == nil || node.Type != LSExpr || node.Quoted || len(node.Cells) == 0 {
+	if node == nil || node.Type != LSExpr || node.quoted || len(node.Cells) == 0 {
 		return nil
 	}
 
@@ -59,7 +59,7 @@ func InspectFunction(node *LVal) *FunctionInfo {
 
 	info := &FunctionInfo{
 		Kind:   head.Str,
-		Source: node.Source,
+		Source: copyLocation(node.source), // a copy: the node's location may be shared across trees (issue #362)
 	}
 
 	switch head.Str {

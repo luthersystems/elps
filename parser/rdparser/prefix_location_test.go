@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/luthersystems/elps/internal/astraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -40,7 +41,7 @@ var prefixSources = []string{
 func locatedNodes(v *lisp.LVal) []*lisp.LVal {
 	var out []*lisp.LVal
 	walkLVal(v, func(n *lisp.LVal) {
-		if n.Source != nil {
+		if astraw.SourceRef(n) != nil {
 			out = append(out, n)
 		}
 	})
@@ -70,12 +71,12 @@ func TestPrefixFormNodesDoNotShareLocationObject(t *testing.T) {
 			for _, expr := range parseAll(t, src) {
 				owner := make(map[*token.Location]*lisp.LVal)
 				for _, n := range locatedNodes(expr) {
-					if prev, dup := owner[n.Source]; dup {
+					if prev, dup := owner[astraw.SourceRef(n)]; dup {
 						t.Errorf("parsing %q: nodes %v %q and %v %q share one *token.Location (%v); each node must own its position (#426)",
-							src, prev.Type, prev.Str, n.Type, n.Str, n.Source)
+							src, prev.Type, prev.Str, n.Type, n.Str, astraw.SourceRef(n))
 						continue
 					}
-					owner[n.Source] = n
+					owner[astraw.SourceRef(n)] = n
 				}
 			}
 		})
@@ -125,7 +126,7 @@ func TestSymbolLocationSpansItsOwnText(t *testing.T) {
 					if prefix, ok := synthesizedHeadText[n.Str]; ok {
 						want = prefix
 					}
-					loc := n.Source
+					loc := astraw.SourceRef(n)
 					if loc.Pos < 0 || loc.EndPos > len(src) || loc.EndPos < loc.Pos {
 						t.Errorf("parsing %q: symbol %q reports span [%d,%d), outside the source (#426)",
 							src, n.Str, loc.Pos, loc.EndPos)
@@ -162,7 +163,7 @@ func TestNestedPrefixFormEndPositionIsNotCorrupted(t *testing.T) {
 			t.Parallel()
 			exprs := parseAll(t, src)
 			require.Len(t, exprs, 1)
-			loc := exprs[0].Source
+			loc := astraw.SourceRef(exprs[0])
 			require.NotNil(t, loc)
 			assert.Equal(t, 0, loc.Pos, "outer form must start at the first column of %q", src)
 			assert.Equal(t, len(src), loc.EndPos,
@@ -194,11 +195,11 @@ func TestParsedNodeSpansContainTheirChildren(t *testing.T) {
 				var check func(v *lisp.LVal)
 				check = func(v *lisp.LVal) {
 					for _, c := range v.Cells {
-						if v.Source != nil && c.Source != nil && c.Source.EndPos > 0 {
-							if c.Source.Pos < v.Source.Pos || c.Source.EndPos > v.Source.EndPos {
+						if astraw.SourceRef(v) != nil && astraw.SourceRef(c) != nil && astraw.SourceRef(c).EndPos > 0 {
+							if astraw.SourceRef(c).Pos < astraw.SourceRef(v).Pos || astraw.SourceRef(c).EndPos > astraw.SourceRef(v).EndPos {
 								t.Errorf("parsing %q: child %v %q spans [%d,%d) which escapes parent %v %q span [%d,%d) (#426)",
-									src, c.Type, c.Str, c.Source.Pos, c.Source.EndPos,
-									v.Type, v.Str, v.Source.Pos, v.Source.EndPos)
+									src, c.Type, c.Str, astraw.SourceRef(c).Pos, astraw.SourceRef(c).EndPos,
+									v.Type, v.Str, astraw.SourceRef(v).Pos, astraw.SourceRef(v).EndPos)
 							}
 						}
 						check(c)
@@ -229,13 +230,13 @@ func TestParserGivesOneTokensLocationAwayOnce(t *testing.T) {
 	operand := funref.Cells[1]
 	require.Equal(t, "car", operand.Str)
 
-	require.NotSame(t, funref.Source, operand.Source,
+	require.NotSame(t, astraw.SourceRef(funref), astraw.SourceRef(operand),
 		"the #' form and its operand must not share one *token.Location (#426)")
 
 	// The write applyPrefixLocation makes, made by hand: moving the form must
 	// not move the operand.
-	funref.Source.Col = 99
-	funref.Source.Pos = 99
-	assert.Equal(t, 3, operand.Source.Col, "moving the #' form moved its operand (#426)")
-	assert.Equal(t, 2, operand.Source.Pos, "moving the #' form moved its operand (#426)")
+	astraw.SourceRef(funref).Col = 99
+	astraw.SourceRef(funref).Pos = 99
+	assert.Equal(t, 3, astraw.SourceRef(operand).Col, "moving the #' form moved its operand (#426)")
+	assert.Equal(t, 2, astraw.SourceRef(operand).Pos, "moving the #' form moved its operand (#426)")
 }

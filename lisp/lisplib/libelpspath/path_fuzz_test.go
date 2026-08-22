@@ -674,7 +674,7 @@ func collectLists(v *lisp.LVal) []*lisp.LVal {
 func fpListSpines(lists []*lisp.LVal) string {
 	var sb strings.Builder
 	for _, l := range lists {
-		fmt.Fprintf(&sb, "%p q=%v n=%d[", l, l.Quoted, len(l.Cells))
+		fmt.Fprintf(&sb, "%p q=%v n=%d[", l, l.IsQuoted(), len(l.Cells))
 		for _, c := range l.Cells {
 			fmt.Fprintf(&sb, "%p,", c)
 		}

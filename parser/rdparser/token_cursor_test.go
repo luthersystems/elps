@@ -110,15 +110,16 @@ func TestUnstartedParserParsesNormally(t *testing.T) {
 	exprs, err := p.ParseProgram()
 	require.NoError(t, err)
 	require.Len(t, exprs, 1)
-	require.NotNil(t, exprs[0].Source)
-	assert.Equal(t, "embedder.lisp:1:1", exprs[0].Source.String())
+	loc, ok := exprs[0].Source()
+	require.True(t, ok)
+	assert.Equal(t, "embedder.lisp:1:1", loc.String())
 }
 
 // TestTokenLValEndPositionGuard is the GUARD for the deleted conjunct.
 //
-// tokenLVal writes EndLine/EndCol/EndPos under `v.Source != nil`, which is now
-// the whole condition.  That is sound because Location() returns nil whenever
-// p.src.Token is nil -- so a non-nil v.Source is itself proof there is a token
+// tokenLVal writes EndLine/EndCol/EndPos under `loc != nil`, which is now the
+// whole condition.  That is sound because Location() returns nil whenever
+// p.src.Token is nil -- so a non-nil loc is itself proof there is a token
 // under the cursor, which is what the deleted `p.src.Token != nil` conjunct was
 // pretending to establish one line after Location() had dereferenced it.
 //
@@ -140,11 +141,12 @@ func TestTokenLValEndPositionGuard(t *testing.T) {
 			return
 		}
 		n++
-		require.NotNilf(t, v.Source, "node %v %q has no Source", v.Type, v.Str)
-		assert.NotZerof(t, v.Source.EndPos, "node %v %q has no end position", v.Type, v.Str)
-		assert.NotZerof(t, v.Source.EndLine, "node %v %q has no end line", v.Type, v.Str)
-		assert.NotZerof(t, v.Source.EndCol, "node %v %q has no end column", v.Type, v.Str)
-		assert.GreaterOrEqualf(t, v.Source.EndPos, v.Source.Pos,
+		loc, ok := v.Source()
+		require.Truef(t, ok, "node %v %q has no source location", v.Type, v.Str)
+		assert.NotZerof(t, loc.EndPos, "node %v %q has no end position", v.Type, v.Str)
+		assert.NotZerof(t, loc.EndLine, "node %v %q has no end line", v.Type, v.Str)
+		assert.NotZerof(t, loc.EndCol, "node %v %q has no end column", v.Type, v.Str)
+		assert.GreaterOrEqualf(t, loc.EndPos, loc.Pos,
 			"node %v %q ends before it starts", v.Type, v.Str)
 		for _, c := range v.Cells {
 			walk(c)

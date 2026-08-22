@@ -1,11 +1,14 @@
 // Copyright © 2026 The ELPS authors
 
 // Package fuzzfp watches the arguments a fuzz target hands to a builtin and
-// reports the two mutations that no builtin may ever perform: rewriting a
-// value's source location, and reaching inside an LNative to change the Go
-// value a host handed in.
+// reports the mutation that no builtin may ever perform: reaching inside an
+// LNative to change the Go value a host handed in.
 //
-// # Why only those two
+// It used to report a second one -- rewriting a value's source location -- and
+// that half is gone; see "# Source: removed on this branch" below for why, and
+// for what covers it now.
+//
+// # Why only that one
 //
 // A blanket "the arguments came back unchanged" assertion is not available
 // here, because several callables mutate an argument BY DESIGN -- `append!`
@@ -15,50 +18,21 @@
 // every callable in the library, and says so in one place rather than leaving
 // each target to decide.
 //
-// # Source
+// # Source: removed on this branch
 //
-// LVal.Source documents itself as shared: "Programs should not modify the
-// contents of Source as the reference may be shared by multiple LVals." Every
-// value the interpreter builds without a parser behind it points at ONE
-// process-wide token.Location (lisp.nativeSource), so a builtin that writes
-// through a Source pointer relocates a large fraction of every value alive in
-// the process.
+// This package used to watch a second property -- that no builtin rewrites a
+// value's source location -- and issue #318's tracker recorded that as its
+// headline result. It is gone, and it is not coming back in this form.
 //
-// One write to Source is legitimate, and it is the reason the tracker
-// (issue #318) recorded Source as unwatchable: stampMacroExpansion replaces a
-// SYNTHETIC location with the macro call site. Its guard is exactly
-//
-//	if v.Source == nil || v.Source.Pos < 0 { v.Source = callSite }
-//
-// so the legitimate transition is precisely "nil-or-synthetic pointer replaced
-// by a real one".
-//
-// That is worth stating as the interpreter's invariant rather than as a macro
-// special case, because it is not one site. LEnv.errorSource (lisp/env.go)
-// stamps an error's location under the SAME condition -- "All objects are
-// given a source which may be a nativeSource() value which does not correspond
-// to a file and has an invalid position (-1)", says the comment there -- and
-// those are the only two places in lisp/ that write Source onto a value they
-// did not just allocate. Neither writes over a real location.
-//
-// [Guard] permits that transition and watches everything else:
-//
-//   - the pointer is unchanged, so the Location VALUE must be unchanged. This
-//     is the case that matters most, because it is the shared one: an in-place
-//     edit of lisp.nativeSource's Location is invisible to
-//     lisp.SingletonSnapshot (which compares Source by pointer) and would
-//     otherwise be reported by nothing at all.
-//   - a REAL location (Pos >= 0) is never replaced, in any direction.
-//
-// And nothing at all is asserted about what a nil-or-synthetic Source becomes.
-// That is deliberately as permissive as the interpreter, not one step
-// stricter: LEnv.errorSource assigns env.Loc, env.Loc is assigned from an
-// evaluated node's Source, and a hand-built LVal may have a nil Source -- so a
-// synthetic location legitimately becoming nil is reachable. A rule that
-// reported it would fire on correct code at a rate low enough to look like an
-// intermittent defect, and a gate that does that gets switched off. The cost
-// is that a builtin which nils a synthetic Source is not reported; the two
-// rules above are the ones with teeth.
+// The rule read LVal.Source as an exported field, and its whole premise was
+// that every value the interpreter builds without a parser behind it points at
+// ONE process-wide token.Location (lisp.nativeSource), so an in-place edit
+// relocated a large fraction of the process. Both halves of that premise are
+// gone: issue #362 removed the shared native-source singleton and synthesizes
+// locations on demand, and LVal.Source became an unexported field behind a
+// value-copy accessor. There is no shared Location left to corrupt and no
+// exported pointer left to corrupt it through, so the rule cannot be expressed
+// here and would have nothing to catch.
 //
 // # LNative
 //
@@ -99,7 +73,6 @@ import (
 	"strings"
 
 	"github.com/luthersystems/elps/lisp"
-	"github.com/luthersystems/elps/parser/token"
 )
 
 // maxNodes caps how many LVal nodes one Guard watches. internal/fuzzval's own
@@ -122,15 +95,9 @@ const maxGoDepth = 32
 
 // watched is one LVal node and the properties of it that must survive a call.
 type watched struct {
-	v *lisp.LVal
-	// srcPtr is the Source pointer as it was. Kept alongside srcVal so the
-	// guard can tell "the pointer was replaced" from "the shared Location was
-	// edited in place" -- two different defects with two different blast
-	// radii.
-	srcPtr *token.Location
-	srcVal token.Location
 	// native is the structural fingerprint of v.Native, recorded only when
 	// typ is LNative.
+	v      *lisp.LVal
 	native string
 	path   string
 	typ    lisp.LType
@@ -162,10 +129,7 @@ func (g *Guard) walk(v *lisp.LVal, path string, seen map[*lisp.LVal]bool) {
 	}
 	seen[v] = true
 
-	w := watched{v: v, path: path, typ: v.Type, srcPtr: v.Source}
-	if v.Source != nil {
-		w.srcVal = *v.Source
-	}
+	w := watched{v: v, path: path, typ: v.Type}
 	if v.Type == lisp.LNative {
 		w.native = fingerprintGo(v.Native)
 	}
@@ -176,7 +140,12 @@ func (g *Guard) walk(v *lisp.LVal, path string, seen map[*lisp.LVal]bool) {
 	}
 	if v.Type == lisp.LSortMap {
 		m := v.Map()
-		if m == nil || m.Map == nil {
+		// Only the MapData itself is nil-checked. The backing used to be a
+		// writable exported field, so "v.Map().Map == nil" was reachable; #382
+		// fixed the backing at construction (NewMapData / SortedMap /
+		// SortedMapFromData all set it) and unexported it, so there is no
+		// longer a nil-backing state to defend against from out here.
+		if m == nil {
 			return
 		}
 		// Keys() is documented sorted, so the traversal order is stable and a
@@ -212,40 +181,7 @@ func (g *Guard) Check() string {
 }
 
 func (w *watched) check() string {
-	if msg := w.checkSource(); msg != "" {
-		return msg
-	}
 	return w.checkNative()
-}
-
-// checkSource implements the three rules in the package doc.
-func (w *watched) checkSource() string {
-	now := w.v.Source
-	switch {
-	case w.srcPtr == nil && now == nil:
-		return ""
-	case w.srcPtr == now:
-		// Same pointer: the Location itself must not have been edited. This is
-		// the shared-object case -- nearly every value in the process points
-		// at lisp.nativeSource's single Location.
-		if *now == w.srcVal {
-			return ""
-		}
-		return fmt.Sprintf("%s: the token.Location at %p was edited IN PLACE, which relocates every value sharing it"+
-			"\n  before: %+v\n  after:  %+v", w.path, now, w.srcVal, *now)
-	case w.srcPtr == nil || w.srcVal.Pos < 0:
-		// A synthetic (or absent) location may be replaced by anything. Both
-		// sites in lisp/ that write a Source they did not allocate are guarded
-		// by exactly this condition, and neither constrains what it writes.
-		// See the package doc for why matching that rather than tightening it
-		// is the right call.
-		return ""
-	default:
-		// A real location. Nothing in the interpreter rewrites one.
-		return fmt.Sprintf("%s: a REAL source location was replaced; stampMacroExpansion only ever replaces a"+
-			" synthetic one (Pos < 0)\n  before: %s\n  after:  %s",
-			w.path, describeLoc(w.srcPtr), describeLoc(now))
-	}
 }
 
 func (w *watched) checkNative() string {
@@ -260,13 +196,6 @@ func (w *watched) checkNative() string {
 			"\n  before: %s\n  after:  %s", w.path, w.native, now)
 	}
 	return ""
-}
-
-func describeLoc(l *token.Location) string {
-	if l == nil {
-		return "<nil>"
-	}
-	return fmt.Sprintf("%p%+v", l, *l)
 }
 
 // Fingerprint returns the structural fingerprint of a Go value. Exported for

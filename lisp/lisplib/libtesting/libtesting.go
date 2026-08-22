@@ -447,13 +447,13 @@ type Test struct {
 // holding the same suite are evaluating.
 //
 // "None" includes a runtime that never loaded this package at all.  The map
-// index is comma-ok because the zero value of Registry.Packages is a nil
-// *Package and Package.Get dereferences pkg.Symbols, so indexing it unchecked
+// lookup is nil-checked because Registry.Package returns a nil *Package for
+// an unregistered name and Package.Get dereferences pkg.symbols, so using it unchecked
 // turned "does this runtime have a suite?" -- the question the nil return
 // advertises -- into a nil pointer dereference in the host.  See issue #425.
 func EnvTestSuite(env *lisp.LEnv) *TestSuite {
-	pkg, ok := env.Runtime.Registry.Packages[DefaultPackageName]
-	if !ok || pkg == nil {
+	pkg := env.Runtime.Registry.Package(DefaultPackageName)
+	if pkg == nil {
 		return nil
 	}
 	lsuite := pkg.Get(lisp.Symbol(DefaultSuiteSymbol))

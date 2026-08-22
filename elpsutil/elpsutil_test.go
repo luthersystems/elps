@@ -70,12 +70,13 @@ func newTestEnv(t *testing.T) *lisp.LEnv {
 // that it is not present in any other package.
 func assertBoundIn(t *testing.T, env *lisp.LEnv, pkg string, sym string) {
 	t.Helper()
-	for name, p := range env.Runtime.Registry.Packages {
+	for _, name := range env.Runtime.Registry.PackageNames() {
+		p := env.Runtime.Registry.Package(name)
 		v := p.Get(lisp.Symbol(sym))
 		if name == pkg {
 			assert.NotEqualf(t, lisp.LError, v.Type,
 				"symbol %q should be bound in package %q", sym, pkg)
-			assert.Containsf(t, p.Externals, sym,
+			assert.Containsf(t, p.Externals(), sym,
 				"symbol %q should be exported from package %q", sym, pkg)
 			continue
 		}
@@ -180,7 +181,7 @@ func TestPackageLoader_RestoresNonUserCaller(t *testing.T) {
 // package.
 func TestPackageLoader_PackageDoc(t *testing.T) {
 	env := newTestEnv(t)
-	userDoc := env.Runtime.Registry.Packages[lisp.DefaultUserPackage].Doc
+	userDoc := env.Runtime.Registry.Package(lisp.DefaultUserPackage).Doc
 	p := &testPackage{
 		name: "documented",
 		doc:  "a documented package",
@@ -189,10 +190,10 @@ func TestPackageLoader_PackageDoc(t *testing.T) {
 		},
 	}
 	require.True(t, elpsutil.PackageLoader(p)(env).IsNil())
-	assert.Equal(t, "a documented package", env.Runtime.Registry.Packages["documented"].Doc)
-	assert.Equal(t, userDoc, env.Runtime.Registry.Packages[lisp.DefaultUserPackage].Doc,
+	assert.Equal(t, "a documented package", env.Runtime.Registry.Package("documented").Doc)
+	assert.Equal(t, userDoc, env.Runtime.Registry.Package(lisp.DefaultUserPackage).Doc,
 		"the user package documentation should be untouched")
-	assert.Empty(t, env.Runtime.Registry.Packages["documented-dep"].Doc)
+	assert.Empty(t, env.Runtime.Registry.Package("documented-dep").Doc)
 }
 
 // TestPackageLoader_ErrorRestoresPrevious checks that the caller's package is
@@ -338,8 +339,10 @@ func TestPackageLoader_SubstrateShape(t *testing.T) {
 						if lerr.Type == lisp.LError {
 							return lerr
 						}
-						pkg := env.Runtime.Registry.Packages[sub.PackageName()]
-						env.Runtime.Package.Externals = append(env.Runtime.Package.Externals, pkg.Externals...)
+						pkg := env.Runtime.Registry.Package(sub.PackageName())
+						for _, ext := range pkg.Externals() {
+							env.Runtime.Package.Export(ext)
+						}
 					}
 					return lisp.Nil()
 				},
@@ -350,19 +353,19 @@ func TestPackageLoader_SubstrateShape(t *testing.T) {
 			require.True(t, rc.IsNil(), "Load: %v", rc)
 			assert.Equal(t, lisp.DefaultUserPackage, env.Runtime.Package.Name)
 
-			ccPkg := env.Runtime.Registry.Packages["cc"]
+			ccPkg := env.Runtime.Registry.Package("cc")
 			require.NotNil(t, ccPkg)
 			// cc's own builtin must be bound in cc.
 			assert.NotEqual(t, lisp.LError, ccPkg.Get(lisp.Symbol("cc-fn")).Type,
 				"cc-fn should be bound in the cc package")
-			assert.Contains(t, ccPkg.Externals, "cc-fn")
+			assert.Contains(t, ccPkg.Externals(), "cc-fn")
 			// The re-exported sub-package symbols must be in cc, not user.
 			for _, sym := range []string{"sub-a-fn", "sub-b-fn"} {
 				assert.NotEqualf(t, lisp.LError, ccPkg.Get(lisp.Symbol(sym)).Type,
 					"%s should be re-exported into the cc package", sym)
-				assert.Containsf(t, ccPkg.Externals, sym, "%s should be external in cc", sym)
+				assert.Containsf(t, ccPkg.Externals(), sym, "%s should be external in cc", sym)
 			}
-			userPkg := env.Runtime.Registry.Packages[lisp.DefaultUserPackage]
+			userPkg := env.Runtime.Registry.Package(lisp.DefaultUserPackage)
 			for _, sym := range []string{"cc-fn", "sub-a-fn", "sub-b-fn"} {
 				assert.Equalf(t, lisp.LError, userPkg.Get(lisp.Symbol(sym)).Type,
 					"%s should not leak into the user package", sym)

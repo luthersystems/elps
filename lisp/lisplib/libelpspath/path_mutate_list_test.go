@@ -36,7 +36,7 @@ func fpAST(vs []*lisp.LVal) string {
 			return
 		}
 		seen[v] = len(seen)
-		_, _ = fmt.Fprintf(h, "t=%d q=%v s=%q i=%d f=%g", v.Type, v.Quoted, v.Str, v.Int, v.Float)
+		_, _ = fmt.Fprintf(h, "t=%d q=%v s=%q i=%d f=%g", v.Type, v.IsQuoted(), v.Str, v.Int, v.Float)
 		if v.Type == lisp.LSortMap {
 			if m := v.Map(); m != nil {
 				entries := sortedMapEntries(m)

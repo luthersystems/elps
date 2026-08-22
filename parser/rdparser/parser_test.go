@@ -112,7 +112,7 @@ func TestParser(t *testing.T) {
 }
 
 func testLValLocation(t *testing.T, v *lisp.LVal) {
-	if v.Source == nil {
+	if _, ok := v.Source(); !ok {
 		t.Errorf("value missing source location: %v", v)
 	}
 	for _, v := range v.Cells {
@@ -137,94 +137,94 @@ func parseOne(t *testing.T, source string) *lisp.LVal {
 
 func TestEndPos_Symbol(t *testing.T) {
 	v := parseOne(t, "foo")
-	assert.Equal(t, 1, v.Source.Line)
-	assert.Equal(t, 1, v.Source.Col)
-	assert.Equal(t, 1, v.Source.EndLine)
-	assert.Equal(t, 4, v.Source.EndCol)
+	assert.Equal(t, 1, mustSourceLoc(v).Line)
+	assert.Equal(t, 1, mustSourceLoc(v).Col)
+	assert.Equal(t, 1, mustSourceLoc(v).EndLine)
+	assert.Equal(t, 4, mustSourceLoc(v).EndCol)
 }
 
 func TestEndPos_Int(t *testing.T) {
 	v := parseOne(t, "42")
-	assert.Equal(t, 1, v.Source.EndLine)
-	assert.Equal(t, 3, v.Source.EndCol) // "42" is 2 chars, end col is 3
+	assert.Equal(t, 1, mustSourceLoc(v).EndLine)
+	assert.Equal(t, 3, mustSourceLoc(v).EndCol) // "42" is 2 chars, end col is 3
 }
 
 func TestEndPos_String(t *testing.T) {
 	v := parseOne(t, `"hello"`)
-	assert.Equal(t, 1, v.Source.EndLine)
-	assert.Equal(t, 8, v.Source.EndCol) // 7 chars including quotes, end col is 8
+	assert.Equal(t, 1, mustSourceLoc(v).EndLine)
+	assert.Equal(t, 8, mustSourceLoc(v).EndCol) // 7 chars including quotes, end col is 8
 }
 
 func TestEndPos_SExpr(t *testing.T) {
 	v := parseOne(t, "(+ 1 2)")
-	assert.Equal(t, 1, v.Source.Line)
-	assert.Equal(t, 1, v.Source.Col)
-	assert.Equal(t, 1, v.Source.EndLine)
-	assert.Equal(t, 8, v.Source.EndCol) // 7 chars, end col is 8
+	assert.Equal(t, 1, mustSourceLoc(v).Line)
+	assert.Equal(t, 1, mustSourceLoc(v).Col)
+	assert.Equal(t, 1, mustSourceLoc(v).EndLine)
+	assert.Equal(t, 8, mustSourceLoc(v).EndCol) // 7 chars, end col is 8
 }
 
 func TestEndPos_SExpr_MultiLine(t *testing.T) {
 	v := parseOne(t, "(foo\n  bar)")
-	assert.Equal(t, 1, v.Source.Line)
-	assert.Equal(t, 1, v.Source.Col)
-	assert.Equal(t, 2, v.Source.EndLine)
-	assert.Equal(t, 7, v.Source.EndCol) // ")" is at col 6, EndCol is 7
+	assert.Equal(t, 1, mustSourceLoc(v).Line)
+	assert.Equal(t, 1, mustSourceLoc(v).Col)
+	assert.Equal(t, 2, mustSourceLoc(v).EndLine)
+	assert.Equal(t, 7, mustSourceLoc(v).EndCol) // ")" is at col 6, EndCol is 7
 }
 
 func TestEndPos_BracketList(t *testing.T) {
 	v := parseOne(t, "[a b c]")
-	assert.Equal(t, 1, v.Source.EndLine)
-	assert.Equal(t, 8, v.Source.EndCol)
+	assert.Equal(t, 1, mustSourceLoc(v).EndLine)
+	assert.Equal(t, 8, mustSourceLoc(v).EndCol)
 }
 
 func TestEndPos_Nested(t *testing.T) {
 	// ((a b) c)
 	v := parseOne(t, "((a b) c)")
-	assert.Equal(t, 1, v.Source.EndLine)
-	assert.Equal(t, 10, v.Source.EndCol) // 9 chars, end col is 10
+	assert.Equal(t, 1, mustSourceLoc(v).EndLine)
+	assert.Equal(t, 10, mustSourceLoc(v).EndCol) // 9 chars, end col is 10
 	// Inner s-expr (a b)
 	inner := v.Cells[0]
-	assert.Equal(t, 1, inner.Source.EndLine)
-	assert.Equal(t, 7, inner.Source.EndCol) // "(a b)" is 5 chars starting at col 2, end col is 7
+	assert.Equal(t, 1, mustSourceLoc(inner).EndLine)
+	assert.Equal(t, 7, mustSourceLoc(inner).EndCol) // "(a b)" is 5 chars starting at col 2, end col is 7
 }
 
 func TestEndPos_Quote(t *testing.T) {
 	// 'foo — the quote wrapper Source starts at the ' prefix token.
 	v := parseOne(t, "'foo")
-	assert.Equal(t, 1, v.Source.Line)
-	assert.Equal(t, 1, v.Source.Col) // ' starts at col 1
-	assert.Equal(t, 1, v.Source.EndLine)
-	assert.Equal(t, 5, v.Source.EndCol) // "foo" ends at col 4, EndCol is 5
+	assert.Equal(t, 1, mustSourceLoc(v).Line)
+	assert.Equal(t, 1, mustSourceLoc(v).Col) // ' starts at col 1
+	assert.Equal(t, 1, mustSourceLoc(v).EndLine)
+	assert.Equal(t, 5, mustSourceLoc(v).EndCol) // "foo" ends at col 4, EndCol is 5
 }
 
 func TestEndPos_FunRef(t *testing.T) {
 	// #'myfun — the fun-ref wrapper Source starts at the #' prefix token.
 	v := parseOne(t, "#'myfun")
-	assert.Equal(t, 1, v.Source.Line)
-	assert.Equal(t, 1, v.Source.Col) // #' starts at col 1
-	assert.Equal(t, 1, v.Source.EndLine)
-	assert.Equal(t, 8, v.Source.EndCol) // "myfun" ends at col 7, EndCol is 8
+	assert.Equal(t, 1, mustSourceLoc(v).Line)
+	assert.Equal(t, 1, mustSourceLoc(v).Col) // #' starts at col 1
+	assert.Equal(t, 1, mustSourceLoc(v).EndLine)
+	assert.Equal(t, 8, mustSourceLoc(v).EndCol) // "myfun" ends at col 7, EndCol is 8
 }
 
 func TestEndPos_Float(t *testing.T) {
 	v := parseOne(t, "3.14")
-	assert.Equal(t, 1, v.Source.EndLine)
-	assert.Equal(t, 5, v.Source.EndCol) // "3.14" is 4 chars, end col is 5
+	assert.Equal(t, 1, mustSourceLoc(v).EndLine)
+	assert.Equal(t, 5, mustSourceLoc(v).EndCol) // "3.14" is 4 chars, end col is 5
 }
 
 func TestEndPos_ExprPrefix(t *testing.T) {
 	// #^(+ 1 2) — the expr prefix wrapper Source starts at the #^ prefix token.
 	v := parseOne(t, "#^(+ 1 2)")
-	assert.Equal(t, 1, v.Source.Line)
-	assert.Equal(t, 1, v.Source.Col) // #^ starts at col 1
-	assert.Equal(t, 1, v.Source.EndLine)
-	assert.Equal(t, 10, v.Source.EndCol) // inherited from inner expr: ")" at col 9, EndCol is 10
+	assert.Equal(t, 1, mustSourceLoc(v).Line)
+	assert.Equal(t, 1, mustSourceLoc(v).Col) // #^ starts at col 1
+	assert.Equal(t, 1, mustSourceLoc(v).EndLine)
+	assert.Equal(t, 10, mustSourceLoc(v).EndCol) // inherited from inner expr: ")" at col 9, EndCol is 10
 }
 
 func TestEndPos_Empty(t *testing.T) {
 	v := parseOne(t, "()")
-	assert.Equal(t, 1, v.Source.EndLine)
-	assert.Equal(t, 3, v.Source.EndCol)
+	assert.Equal(t, 1, mustSourceLoc(v).EndLine)
+	assert.Equal(t, 3, mustSourceLoc(v).EndCol)
 }
 
 func TestEndPos_TokenEnd(t *testing.T) {
@@ -508,8 +508,9 @@ func TestFaultTolerant_ErrorPositions(t *testing.T) {
 	var ev *lisp.ErrorVal
 	ok := errors.As(result.Errors[0], &ev)
 	assert.True(t, ok, "error should be *lisp.ErrorVal")
-	assert.NotNil(t, ev.Source, "error should have source location")
-	assert.Equal(t, 2, ev.Source.Line, "error should be on line 2")
+	evLoc, evOK := ev.Source()
+	assert.True(t, evOK, "error should have source location")
+	assert.Equal(t, 2, evLoc.Line, "error should be on line 2")
 	assert.Equal(t, lisp.CondMismatchedSyntax, ev.Condition())
 }
 
@@ -608,4 +609,11 @@ func TestParseDepthLimit(t *testing.T) {
 		}
 		assert.Contains(t, err.Error(), fmt.Sprintf("expression nesting exceeds maximum depth (%d)", DefaultMaxParseDepth))
 	})
+}
+
+// mustSourceLoc returns v's source location, or a zero Location when v has
+// none.
+func mustSourceLoc(v *lisp.LVal) token.Location {
+	loc, _ := v.Source()
+	return loc
 }

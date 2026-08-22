@@ -4,8 +4,6 @@ package lisp
 
 import (
 	"fmt"
-
-	"github.com/luthersystems/elps/parser/token"
 )
 
 // Singleton LVals for Nil, true, and false.
@@ -31,9 +29,9 @@ import (
 // directly instead of Nil(). Tree walkers that mutate LVal fields MUST
 // guard with isSingleton(v) / assertNotSingleton(v) before writing.
 var (
-	singletonNil   = &LVal{Source: nativeSource(), Type: LSExpr}
-	singletonTrue  = &LVal{Source: nativeSource(), Type: LSymbol, Str: TrueSymbol}
-	singletonFalse = &LVal{Source: nativeSource(), Type: LSymbol, Str: FalseSymbol}
+	singletonNil   = &LVal{Type: LSExpr}
+	singletonTrue  = &LVal{Type: LSymbol, Str: TrueSymbol}
+	singletonFalse = &LVal{Type: LSymbol, Str: FalseSymbol}
 )
 
 // isSingleton reports whether v is one of the three shared, immutable
@@ -72,25 +70,28 @@ type SingletonSnapshot struct {
 	trueV  LVal
 	falseV LVal
 
-	// nativeLoc is the pointee of defaultSourceLocation — the Location
-	// nativeSource hands to every natively-constructed LVal. It is a
-	// fourth shared mutable singleton, and it is the one this snapshot
-	// used not to cover (issue #362). The three LVal fields above
-	// record the Source POINTER, so they catch a singleton being
-	// re-pointed but never a write THROUGH the pointer all three (and
-	// every value from lisp.Int, lisp.Symbol, ...) share.
-	nativeLoc token.Location
+	// A FOURTH shared singleton used to be watched here: the pointee of
+	// defaultSourceLocation, the one Location nativeSource handed to every
+	// natively-constructed LVal (issue #362).  The three LVal fields above
+	// record the source POINTER, so they caught a singleton being re-pointed
+	// but never a write THROUGH the pointer all three -- and every value from
+	// lisp.Int, lisp.Symbol, ... -- shared.
+	//
+	// It is not watched any more because it no longer exists.  Constructors
+	// leave source nil and nativeLocation() synthesizes "<native code>" BY
+	// VALUE on demand, so there is no shared object left for a stray
+	// `v.Source.Pos = 7` to corrupt.  Deleting the guard is only sound
+	// BECAUSE the thing it guarded is gone; if a process-wide Location ever
+	// comes back, so does this field.
 }
 
 // TakeSingletonSnapshot captures the current state of the three
-// singleton LVals, and of the shared native source Location, so callers
-// can later verify they were not mutated.
+// singleton LVals so callers can later verify they were not mutated.
 func TakeSingletonSnapshot() SingletonSnapshot {
 	return SingletonSnapshot{
-		nilV:      *singletonNil,
-		trueV:     *singletonTrue,
-		falseV:    *singletonFalse,
-		nativeLoc: *defaultSourceLocation,
+		nilV:   *singletonNil,
+		trueV:  *singletonTrue,
+		falseV: *singletonFalse,
 	}
 }
 
@@ -114,9 +115,6 @@ func (s SingletonSnapshot) Verify() string {
 	if !singletonLValEqual(&s.falseV, singletonFalse) {
 		return "Bool(false)"
 	}
-	if s.nativeLoc != *defaultSourceLocation {
-		return "nativeSource()"
-	}
 	return ""
 }
 
@@ -126,16 +124,16 @@ func (s SingletonSnapshot) Verify() string {
 // (singletons should always have len == 0). The Native interface field
 // is compared with == (singletons should always be nil).
 func singletonLValEqual(a, b *LVal) bool {
-	return a.Source == b.Source &&
+	return a.source == b.source &&
 		a.Type == b.Type &&
 		a.Str == b.Str &&
 		a.Int == b.Int &&
 		a.Float == b.Float &&
 		a.FunType == b.FunType &&
-		a.Quoted == b.Quoted &&
-		a.Spliced == b.Spliced &&
-		a.Meta == b.Meta &&
-		a.MacroExpansion == b.MacroExpansion &&
+		a.quoted == b.quoted &&
+		a.spliced == b.spliced &&
+		a.meta == b.meta &&
+		a.macroExpansion == b.macroExpansion &&
 		a.Native == b.Native &&
 		len(a.Cells) == len(b.Cells)
 }

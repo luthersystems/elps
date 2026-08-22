@@ -14,10 +14,10 @@ import (
 )
 
 // This file covers issue #425: EnvTestSuite indexed
-// env.Runtime.Registry.Packages[DefaultPackageName] without a comma-ok and
+// env.Runtime.Registry.Package(DefaultPackageName) without a nil check and
 // called Get on the result. A runtime that never loaded the testing package
 // has no such key, the zero value of the map is a nil *Package, and
-// Package.get dereferences pkg.Symbols on it -- a nil pointer dereference
+// Package.get dereferences pkg.symbols on it -- a nil pointer dereference
 // inside a function whose documented contract is to return nil when there is
 // no suite.
 //
@@ -91,7 +91,7 @@ func TestEnvTestSuiteWithoutTestingPackage(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			env := test.build(t)
-			if _, ok := env.Runtime.Registry.Packages[libtesting.DefaultPackageName]; ok {
+			if env.Runtime.Registry.Package(libtesting.DefaultPackageName) != nil {
 				t.Fatalf("premise broken: %q is already in the registry, so this subtest does not exercise the missing-package path", libtesting.DefaultPackageName)
 			}
 			if suite := callEnvTestSuite(t, env); suite != nil {

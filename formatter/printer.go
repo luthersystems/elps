@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/fmtraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -125,10 +126,11 @@ func (p *printer) writeLeadingComments(v *lisp.LVal, indent int) {
 	if p.cfg.StripComments {
 		return
 	}
-	if v.Meta == nil || len(v.Meta.LeadingComments) == 0 {
+	m := fmtraw.Meta(v)
+	if m == nil || len(m.LeadingComments) == 0 {
 		return
 	}
-	for i, c := range v.Meta.LeadingComments {
+	for i, c := range m.LeadingComments {
 		if i > 0 && c.PrecedingNewlines > 1 {
 			blankLines := c.PrecedingNewlines - 1
 			if blankLines > p.cfg.MaxBlankLines {
@@ -151,10 +153,11 @@ func (p *printer) writeBlankLinesAfterComments(v *lisp.LVal) {
 	if p.cfg.StripComments {
 		return
 	}
-	if v.Meta == nil {
+	m := fmtraw.Meta(v)
+	if m == nil {
 		return
 	}
-	n := v.Meta.BlankLinesAfterComments
+	n := m.BlankLinesAfterComments
 	if n > p.cfg.MaxBlankLines {
 		n = p.cfg.MaxBlankLines
 	}
@@ -170,16 +173,16 @@ func (p *printer) writeTrailingComment(v *lisp.LVal) {
 	if p.cfg.StripComments {
 		return
 	}
-	if v.Meta != nil && v.Meta.TrailingComment != nil {
+	if m := fmtraw.Meta(v); m != nil && m.TrailingComment != nil {
 		spaces := 1
-		if v.Meta.TrailingComment.PrecedingSpaces > 1 {
-			spaces = v.Meta.TrailingComment.PrecedingSpaces
+		if m.TrailingComment.PrecedingSpaces > 1 {
+			spaces = m.TrailingComment.PrecedingSpaces
 		}
 		for range spaces {
 			p.buf.WriteByte(' ')
 		}
 		p.col += spaces
-		p.writeString(v.Meta.TrailingComment.Text)
+		p.writeString(m.TrailingComment.Text)
 	}
 }
 
@@ -189,10 +192,11 @@ func (p *printer) writeInnerTrailingComments(v *lisp.LVal, indent int) {
 	if p.cfg.StripComments {
 		return
 	}
-	if v.Meta == nil || len(v.Meta.InnerTrailingComments) == 0 {
+	m := fmtraw.Meta(v)
+	if m == nil || len(m.InnerTrailingComments) == 0 {
 		return
 	}
-	for i, c := range v.Meta.InnerTrailingComments {
+	for i, c := range m.InnerTrailingComments {
 		p.newline()
 		if i > 0 && c.PrecedingNewlines > 1 {
 			blankLines := c.PrecedingNewlines - 1
@@ -236,7 +240,7 @@ func (p *printer) writeExpr(v *lisp.LVal, indent int) {
 		return
 	}
 	// Handle quoting prefix for non-LQuote types
-	if v.Quoted && v.Type != lisp.LQuote && v.Type != lisp.LSExpr {
+	if v.IsQuoted() && v.Type != lisp.LQuote && v.Type != lisp.LSExpr {
 		p.writeString("'")
 	}
 	switch v.Type {
@@ -249,10 +253,10 @@ func (p *printer) writeExpr(v *lisp.LVal, indent int) {
 	case lisp.LSymbol:
 		p.writeString(v.Str)
 	case lisp.LSExpr:
-		if v.Quoted {
+		if v.IsQuoted() {
 			// [] brackets in source are parsed as QExpr (Quoted: true), but
 			// the bracket itself serves as the quote — no ' prefix needed.
-			if v.Meta != nil && v.Meta.BracketType == '[' {
+			if m := fmtraw.Meta(v); m != nil && m.BracketType == '[' {
 				p.writeListInner(v, indent)
 			} else {
 				p.writeString("'")
@@ -274,7 +278,7 @@ func (p *printer) writeExpr(v *lisp.LVal, indent int) {
 }
 
 func (p *printer) writeCompactExpr(v *lisp.LVal) {
-	if v.Quoted && v.Type != lisp.LQuote && v.Type != lisp.LSExpr {
+	if v.IsQuoted() && v.Type != lisp.LQuote && v.Type != lisp.LSExpr {
 		p.writeString("'")
 	}
 	switch v.Type {
@@ -296,7 +300,7 @@ func (p *printer) writeCompactExpr(v *lisp.LVal) {
 
 func (p *printer) writeCompactList(v *lisp.LVal) {
 	bracket := bracketOpen(v)
-	if v.Quoted && (v.Meta == nil || v.Meta.BracketType != '[') {
+	if m := fmtraw.Meta(v); v.IsQuoted() && (m == nil || m.BracketType != '[') {
 		p.writeString("'")
 	}
 	p.writeString(string(bracket))
@@ -311,8 +315,8 @@ func (p *printer) writeCompactList(v *lisp.LVal) {
 
 // writeAtom writes an integer or float, using original text if available.
 func (p *printer) writeAtom(v *lisp.LVal) {
-	if v.Meta != nil && v.Meta.OriginalText != "" {
-		p.writeString(v.Meta.OriginalText)
+	if m := fmtraw.Meta(v); m != nil && m.OriginalText != "" {
+		p.writeString(m.OriginalText)
 		return
 	}
 	switch v.Type {
@@ -333,8 +337,8 @@ func (p *printer) writeAtom(v *lisp.LVal) {
 
 // writeStringLiteral writes a string, using original text if available.
 func (p *printer) writeStringLiteral(v *lisp.LVal) {
-	if v.Meta != nil && v.Meta.OriginalText != "" {
-		p.writeString(v.Meta.OriginalText)
+	if m := fmtraw.Meta(v); m != nil && m.OriginalText != "" {
+		p.writeString(m.OriginalText)
 		return
 	}
 	p.writeString(fmt.Sprintf("%q", v.Str))
@@ -354,8 +358,8 @@ func (p *printer) writeQuote(v *lisp.LVal, indent int) {
 
 // hasNewlineBefore returns true if the node was on a new line in the source.
 func hasNewlineBefore(v *lisp.LVal) bool {
-	if v.Meta != nil {
-		return v.Meta.NewlineBefore || len(v.Meta.LeadingComments) > 0
+	if m := fmtraw.Meta(v); m != nil {
+		return m.NewlineBefore || len(m.LeadingComments) > 0
 	}
 	return false
 }
@@ -363,12 +367,13 @@ func hasNewlineBefore(v *lisp.LVal) bool {
 // blankLinesBefore returns the number of blank lines before a node,
 // clamped to the configured maximum.
 func (p *printer) blankLinesBefore(v *lisp.LVal) int {
-	if v.Meta == nil {
+	m := fmtraw.Meta(v)
+	if m == nil {
 		return 0
 	}
-	n := v.Meta.BlankLinesBefore
-	if n == 0 && len(v.Meta.LeadingComments) > 0 {
-		first := v.Meta.LeadingComments[0]
+	n := m.BlankLinesBefore
+	if n == 0 && len(m.LeadingComments) > 0 {
+		first := m.LeadingComments[0]
 		if first.PrecedingNewlines > 1 {
 			n = first.PrecedingNewlines - 1
 		}
@@ -394,7 +399,7 @@ func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 		p.writeString(string(bracket))
 		openCol := p.col
 		p.writeInnerTrailingComments(v, openCol)
-		if v.Meta != nil && (len(v.Meta.InnerTrailingComments) > 0 || v.Meta.ClosingBracketNewline) {
+		if m := fmtraw.Meta(v); m != nil && (len(m.InnerTrailingComments) > 0 || m.ClosingBracketNewline) {
 			p.newline()
 			p.writeIndent(openCol)
 		}
@@ -415,7 +420,7 @@ func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 	// For data lists (non-symbol head), preserve first-child-on-new-line.
 	isCall := v.Cells[0].Type == lisp.LSymbol
 	head := v.Cells[0]
-	if head.Meta != nil && len(head.Meta.LeadingComments) > 0 {
+	if m := fmtraw.Meta(head); m != nil && len(m.LeadingComments) > 0 {
 		// A comment written between the opening bracket and the head is
 		// attached to the head, and neither branch below wrote it: "(\n; c\n f
 		// x)" formatted to "(f x)", DELETING it.  writeListInner has always
@@ -471,7 +476,7 @@ func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 			for range p.blankLinesBefore(child) {
 				p.newline()
 			}
-			if child.Meta != nil && len(child.Meta.LeadingComments) > 0 {
+			if m := fmtraw.Meta(child); m != nil && len(m.LeadingComments) > 0 {
 				p.writeLeadingComments(child, childIndent)
 				p.writeBlankLinesAfterComments(child)
 			}
@@ -487,8 +492,9 @@ func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 	commentIndent := p.computeChildIndent(rule, len(v.Cells), firstArgCol, bracketCol, true)
 	p.writeInnerTrailingComments(v, commentIndent)
 
-	closingOnNewLine := v.Meta != nil && len(v.Meta.InnerTrailingComments) > 0
-	if !closingOnNewLine && v.Meta != nil && v.Meta.ClosingBracketNewline {
+	m := fmtraw.Meta(v)
+	closingOnNewLine := m != nil && len(m.InnerTrailingComments) > 0
+	if !closingOnNewLine && m != nil && m.ClosingBracketNewline {
 		closingOnNewLine = true
 	}
 	if closingOnNewLine {
@@ -512,7 +518,7 @@ func (p *printer) writeListInner(v *lisp.LVal, indent int) {
 				for range p.blankLinesBefore(child) {
 					p.newline()
 				}
-				if child.Meta != nil && len(child.Meta.LeadingComments) > 0 {
+				if m := fmtraw.Meta(child); m != nil && len(m.LeadingComments) > 0 {
 					p.writeLeadingComments(child, childIndent)
 					p.writeBlankLinesAfterComments(child)
 				}
@@ -526,7 +532,7 @@ func (p *printer) writeListInner(v *lisp.LVal, indent int) {
 			for range p.blankLinesBefore(child) {
 				p.newline()
 			}
-			if child.Meta != nil && len(child.Meta.LeadingComments) > 0 {
+			if m := fmtraw.Meta(child); m != nil && len(m.LeadingComments) > 0 {
 				p.writeLeadingComments(child, openCol)
 				p.writeBlankLinesAfterComments(child)
 			}
@@ -539,8 +545,9 @@ func (p *printer) writeListInner(v *lisp.LVal, indent int) {
 	// Write comments between last child and closing bracket
 	p.writeInnerTrailingComments(v, openCol)
 
-	closingOnNewLine := v.Meta != nil && len(v.Meta.InnerTrailingComments) > 0
-	if !closingOnNewLine && v.Meta != nil && v.Meta.ClosingBracketNewline {
+	m := fmtraw.Meta(v)
+	closingOnNewLine := m != nil && len(m.InnerTrailingComments) > 0
+	if !closingOnNewLine && m != nil && m.ClosingBracketNewline {
 		closingOnNewLine = true
 	}
 	if closingOnNewLine {
@@ -605,14 +612,14 @@ func (p *printer) tryPrefixForm(v *lisp.LVal, indent int) bool {
 // leading and trailing comments are not included -- those are written by
 // whoever prints v, and survive the shorthand.
 func hasComments(v *lisp.LVal) bool {
-	if v.Meta != nil && len(v.Meta.InnerTrailingComments) > 0 {
+	if m := fmtraw.Meta(v); m != nil && len(m.InnerTrailingComments) > 0 {
 		return true
 	}
 	for _, c := range v.Cells {
 		// Only the comments the PARENT is responsible for writing.  A child's
 		// own inner comments are written by writeExpr when it prints the
 		// child, and survive the shorthand: "#^(\n; c\n)" keeps its comment.
-		if c.Meta != nil && (len(c.Meta.LeadingComments) > 0 || c.Meta.TrailingComment != nil) {
+		if m := fmtraw.Meta(c); m != nil && (len(m.LeadingComments) > 0 || m.TrailingComment != nil) {
 			return true
 		}
 	}
@@ -624,7 +631,7 @@ func hasComments(v *lisp.LVal) bool {
 // symbol -- unqualified, or package-qualified with a non-empty name on both
 // sides of the single colon -- reads back as the same tree.
 func canWriteFunRef(inner *lisp.LVal) bool {
-	if inner.Type != lisp.LSymbol || inner.Quoted {
+	if inner.Type != lisp.LSymbol || inner.IsQuoted() {
 		return false
 	}
 	pieces := strings.Split(inner.Str, ":")
@@ -643,7 +650,7 @@ func canWriteFunRef(inner *lisp.LVal) bool {
 // s-expression, so this mirrors that check exactly.
 func canWriteUnbound(inner *lisp.LVal) bool {
 	for _, c := range inner.Cells {
-		if c.Type == lisp.LSExpr && !c.Quoted {
+		if c.Type == lisp.LSExpr && !c.IsQuoted() {
 			return false
 		}
 	}
@@ -674,8 +681,8 @@ func (p *printer) computeChildIndent(rule *IndentRule, childIdx int, firstArgCol
 // If the source had extra spaces (e.g., for column alignment), they are preserved.
 func (p *printer) writeSameLineSpacing(v *lisp.LVal) {
 	spaces := 1
-	if v.Meta != nil && v.Meta.PrecedingSpaces > 1 {
-		spaces = v.Meta.PrecedingSpaces
+	if m := fmtraw.Meta(v); m != nil && m.PrecedingSpaces > 1 {
+		spaces = m.PrecedingSpaces
 	}
 	for range spaces {
 		p.buf.WriteByte(' ')
@@ -717,10 +724,10 @@ func (p *printer) newline() {
 
 // bracketOpen returns the opening bracket for an s-expression.
 func bracketOpen(v *lisp.LVal) rune {
-	if v.Meta != nil && v.Meta.BracketType != 0 {
-		return v.Meta.BracketType
+	if m := fmtraw.Meta(v); m != nil && m.BracketType != 0 {
+		return m.BracketType
 	}
-	if v.Quoted {
+	if v.IsQuoted() {
 		return '['
 	}
 	return '('

@@ -46,15 +46,11 @@ func QueryPackages(env *lisp.LEnv) []PackageDoc {
 	// Collect core builtins into the "lisp" package.
 	lispSyms := queryCoreSymbols()
 
-	names := make([]string, 0, len(env.Runtime.Registry.Packages))
-	for name := range env.Runtime.Registry.Packages {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := env.Runtime.Registry.PackageNames()
 
 	var pkgs []PackageDoc
 	for _, name := range names {
-		pkg := env.Runtime.Registry.Packages[name]
+		pkg := env.Runtime.Registry.Package(name)
 		pd := PackageDoc{
 			Name: pkg.Name,
 			Doc:  cleanDocRaw(pkg.Doc),
@@ -71,7 +67,7 @@ func QueryPackages(env *lisp.LEnv) []PackageDoc {
 
 // QueryPackage returns structured documentation for a single package.
 func QueryPackage(env *lisp.LEnv, name string) (*PackageDoc, error) {
-	pkg := env.Runtime.Registry.Packages[name]
+	pkg := env.Runtime.Registry.Package(name)
 	if pkg == nil {
 		return nil, fmt.Errorf("no package: %q", name)
 	}
@@ -94,7 +90,7 @@ func QuerySymbol(env *lisp.LEnv, sym string) (*SymbolDoc, error) {
 	if i := strings.Index(sym, ":"); i >= 0 {
 		pkgName := sym[:i]
 		symName := sym[i+1:]
-		pkg := env.Runtime.Registry.Packages[pkgName]
+		pkg := env.Runtime.Registry.Package(pkgName)
 		if pkg == nil {
 			return nil, fmt.Errorf("no package: %q", pkgName)
 		}
@@ -108,7 +104,7 @@ func QuerySymbol(env *lisp.LEnv, sym string) (*SymbolDoc, error) {
 		if v.Type == lisp.LError {
 			return nil, fmt.Errorf("symbol not found: %s", sym)
 		}
-		return symbolDocFromLVal(symName, v, pkg.SymbolDocs[symName]), nil
+		return symbolDocFromLVal(symName, v, pkg.SymbolDoc(symName)), nil
 	}
 
 	// Unqualified: check core builtins first, then env.Get.
@@ -239,12 +235,12 @@ func parseFormals(formals *lisp.LVal) *FormalsDoc {
 // exported symbols.
 func queryPackageSymbols(pkg *lisp.Package) []SymbolDoc {
 	var syms []SymbolDoc
-	for _, exsym := range pkg.Externals {
+	for _, exsym := range pkg.Externals() {
 		v := pkg.Get(lisp.Symbol(exsym))
 		if v.Type == lisp.LError {
 			continue
 		}
-		syms = append(syms, *symbolDocFromLVal(exsym, v, pkg.SymbolDocs[exsym]))
+		syms = append(syms, *symbolDocFromLVal(exsym, v, pkg.SymbolDoc(exsym)))
 	}
 	return syms
 }
@@ -301,17 +297,16 @@ func CheckMissing(env *lisp.LEnv) []MissingDoc {
 	}
 
 	// Check package-level documentation.
-	allPkgNames := make([]string, 0, len(env.Runtime.Registry.Packages))
-	for name := range env.Runtime.Registry.Packages {
+	var allPkgNames []string
+	for _, name := range env.Runtime.Registry.PackageNames() {
 		if name == "user" {
 			continue // user package is the default workspace, no doc needed.
 		}
 		allPkgNames = append(allPkgNames, name)
 	}
-	sort.Strings(allPkgNames)
 
 	for _, pkgName := range allPkgNames {
-		pkg := env.Runtime.Registry.Packages[pkgName]
+		pkg := env.Runtime.Registry.Package(pkgName)
 		if strings.TrimSpace(pkg.Doc) == "" {
 			missing = append(missing, MissingDoc{Kind: "package", Name: pkgName})
 		}
@@ -319,25 +314,24 @@ func CheckMissing(env *lisp.LEnv) []MissingDoc {
 
 	// Check exported symbol docs (skip "lisp" — covered above via
 	// DefaultBuiltins/DefaultSpecialOps/DefaultMacros, and "user").
-	pkgNames := make([]string, 0, len(env.Runtime.Registry.Packages))
-	for name := range env.Runtime.Registry.Packages {
+	var pkgNames []string
+	for _, name := range env.Runtime.Registry.PackageNames() {
 		if name == "lisp" || name == "user" {
 			continue
 		}
 		pkgNames = append(pkgNames, name)
 	}
-	sort.Strings(pkgNames)
 
 	for _, pkgName := range pkgNames {
-		pkg := env.Runtime.Registry.Packages[pkgName]
-		for _, sym := range pkg.Externals {
+		pkg := env.Runtime.Registry.Package(pkgName)
+		for _, sym := range pkg.Externals() {
 			v := pkg.Get(lisp.Symbol(sym))
 			qualName := pkgName + ":" + sym
-			if v.Type == lisp.LFun && v.Docstring() == "" && pkg.SymbolDocs[sym] == "" {
+			if v.Type == lisp.LFun && v.Docstring() == "" && pkg.SymbolDoc(sym) == "" {
 				missing = append(missing, MissingDoc{Kind: v.FunType.String(), Name: qualName})
 			}
 			if v.Type != lisp.LFun && v.Type != lisp.LError {
-				if pkg.SymbolDocs[sym] == "" {
+				if pkg.SymbolDoc(sym) == "" {
 					missing = append(missing, MissingDoc{Kind: lisp.GetType(v).Str, Name: qualName})
 				}
 			}
@@ -446,20 +440,19 @@ func opPackageSymbols(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if printAll.Type == lisp.LError {
 		return printAll
 	}
-	pkg := env.Runtime.Registry.Packages[name.Str]
+	pkg := env.Runtime.Registry.Package(name.Str)
 	if pkg == nil {
 		return env.Errorf("no package: %q", name)
 	}
 	if lisp.True(printAll) {
-		for _, sym := range sortedSymbols(pkg.Symbols) {
+		for _, sym := range pkg.SymbolNames() {
 			_, err := fmt.Fprintln(env.Runtime.Stderr, sym)
 			if err != nil {
 				return env.Error(err)
 			}
 		}
 	} else {
-		exports := pkg.Externals
-		for _, exsym := range exports {
+		for _, exsym := range pkg.Externals() {
 			_, err := fmt.Fprintln(env.Runtime.Stderr, exsym)
 			if err != nil {
 				return env.Error(err)
@@ -469,37 +462,19 @@ func opPackageSymbols(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return lisp.Nil()
 }
 
-// NOTE:  A good symbol sorting function may want to specially handle
-// package-namespaced symbols (containing ":").  This function is sorting a
-// symbols within a single package so it uses a symbol lexical sort function.
-func sortedSymbols(smap map[string]*lisp.LVal) []string {
-	symbols := make([]string, 0, len(smap))
-	for s := range smap {
-		symbols = append(symbols, s)
-	}
-	sort.Strings(symbols)
-	return symbols
-}
-
 // RenderPackageList writes a summary of all loaded packages to w.
 // Each package is listed with its name, export count, and first line of
 // its doc string (if any). Packages are sorted alphabetically.
 func RenderPackageList(w io.Writer, env *lisp.LEnv) error {
-	names := make([]string, 0, len(env.Runtime.Registry.Packages))
-	for name := range env.Runtime.Registry.Packages {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
-		pkg := env.Runtime.Registry.Packages[name]
+	for _, name := range env.Runtime.Registry.PackageNames() {
+		pkg := env.Runtime.Registry.Package(name)
 		line := fmt.Sprintf("  %-12s", pkg.Name)
 		if pkg.Doc != "" {
 			first := strings.SplitN(strings.TrimSpace(pkg.Doc), "\n", 2)[0]
 			first = strings.TrimSpace(first)
 			line += "  " + first
 		}
-		nExports := len(pkg.Externals)
+		nExports := pkg.NumExternals()
 		if nExports > 0 {
 			line += fmt.Sprintf(" (%d exports)", nExports)
 		}
@@ -514,7 +489,7 @@ func RenderPackageList(w io.Writer, env *lisp.LEnv) error {
 // in the query package within env.  The exact formatting of the rendered
 // documentation is subject to change across elps versions.
 func RenderPkgExported(w io.Writer, env *lisp.LEnv, query string) error {
-	pkg := env.Runtime.Registry.Packages[query]
+	pkg := env.Runtime.Registry.Package(query)
 	if pkg == nil {
 		return fmt.Errorf("no package: %q", query)
 	}
@@ -533,8 +508,7 @@ func RenderPkgExported(w io.Writer, env *lisp.LEnv, query string) error {
 	if err != nil {
 		return err
 	}
-	exports := pkg.Externals
-	for i, exsym := range exports {
+	for i, exsym := range pkg.Externals() {
 		if i > 0 {
 			_, err := fmt.Fprintln(w)
 			if err != nil {
@@ -546,12 +520,12 @@ func RenderPkgExported(w io.Writer, env *lisp.LEnv, query string) error {
 		case lisp.LError:
 			fmt.Fprintln(w, v) //nolint:errcheck // best-effort error display
 		case lisp.LFun:
-			err := renderFun(w, exsym, v, pkg.SymbolDocs[exsym])
+			err := renderFun(w, exsym, v, pkg.SymbolDoc(exsym))
 			if err != nil {
 				return fmt.Errorf("function %s: %w", exsym, err)
 			}
 		default:
-			err := renderVal(w, exsym, v, pkg.SymbolDocs[exsym])
+			err := renderVal(w, exsym, v, pkg.SymbolDoc(exsym))
 			if err != nil {
 				return fmt.Errorf("variable %s: %w", exsym, err)
 			}
@@ -585,15 +559,15 @@ func LookupSymbolDoc(env *lisp.LEnv, sym string) string {
 		if env.Runtime.Registry == nil {
 			return ""
 		}
-		if pkg := env.Runtime.Registry.Packages[pkgName]; pkg != nil {
-			return pkg.SymbolDocs[symName]
+		if pkg := env.Runtime.Registry.Package(pkgName); pkg != nil {
+			return pkg.SymbolDoc(symName)
 		}
 		return ""
 	}
 	if env.Runtime.Package == nil {
 		return ""
 	}
-	return env.Runtime.Package.SymbolDocs[sym]
+	return env.Runtime.Package.SymbolDoc(sym)
 }
 
 func renderVal(w io.Writer, sym string, v *lisp.LVal, doc string) error {

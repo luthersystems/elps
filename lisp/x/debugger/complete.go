@@ -56,8 +56,9 @@ func CompleteInContext(env *lisp.LEnv, prefix string) []CompletionCandidate {
 
 	// 2. Current package symbols.
 	if pkg := env.Runtime.Package; pkg != nil {
-		for name, val := range pkg.Symbols {
+		for _, name := range pkg.SymbolNames() {
 			if strings.HasPrefix(name, prefix) {
+				val, _ := pkg.Symbol(name)
 				add(name, lvalCompletionType(val), pkg.Name)
 			}
 		}
@@ -65,16 +66,17 @@ func CompleteInContext(env *lisp.LEnv, prefix string) []CompletionCandidate {
 
 	// 3. Qualified package completion and package name completion.
 	if env.Runtime.Registry != nil {
-		for pkgName, pkg := range env.Runtime.Registry.Packages {
+		for _, pkgName := range env.Runtime.Registry.PackageNames() {
+			pkg := env.Runtime.Registry.Package(pkgName)
 			qualPrefix := pkgName + ":"
 			if strings.HasPrefix(prefix, qualPrefix) {
 				// Prefix contains "pkg:" — complete within that package's exports.
 				symPrefix := prefix[len(qualPrefix):]
-				for _, ext := range pkg.Externals {
+				for _, ext := range pkg.Externals() {
 					if strings.HasPrefix(ext, symPrefix) {
 						name := qualPrefix + ext
 						typ := "function"
-						if val, ok := pkg.Symbols[ext]; ok {
+						if val, ok := pkg.Symbol(ext); ok {
 							typ = lvalCompletionType(val)
 						}
 						add(name, typ, pkgName)
@@ -86,10 +88,10 @@ func CompleteInContext(env *lisp.LEnv, prefix string) []CompletionCandidate {
 			}
 
 			// 4. Unqualified exported symbols from all packages.
-			for _, ext := range pkg.Externals {
+			for _, ext := range pkg.Externals() {
 				if strings.HasPrefix(ext, prefix) {
 					typ := "function"
-					if val, ok := pkg.Symbols[ext]; ok {
+					if val, ok := pkg.Symbol(ext); ok {
 						typ = lvalCompletionType(val)
 					}
 					add(ext, typ, pkgName)
@@ -175,8 +177,9 @@ func collectKeywords(env *lisp.LEnv, prefix string, add func(string, string, str
 	if env.Runtime.Registry == nil {
 		return
 	}
-	for _, pkg := range env.Runtime.Registry.Packages {
-		for name := range pkg.Symbols {
+	for _, pkgName := range env.Runtime.Registry.PackageNames() {
+		pkg := env.Runtime.Registry.Package(pkgName)
+		for _, name := range pkg.SymbolNames() {
 			if strings.HasPrefix(name, prefix) && strings.HasPrefix(name, ":") {
 				add(name, "keyword", pkg.Name)
 			}

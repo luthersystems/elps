@@ -162,7 +162,7 @@ func checkPackageName(pkg *lisp.Package, kind, name string) string {
 	if pkg == nil {
 		return ""
 	}
-	exist, ok := pkg.Symbols[name]
+	exist, ok := pkg.Symbol(name)
 	if !ok {
 		return ""
 	}

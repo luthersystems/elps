@@ -268,10 +268,14 @@ func (w *locationWatch) record(v *lisp.LVal, seen map[*lisp.LVal]bool) {
 		return
 	}
 	seen[v] = true
-	if v.Source != nil {
+	// SourceRefForTest, not Source(): the property is about the IDENTITY of
+	// the stored *token.Location -- did evaluation re-point it, or write
+	// through it -- and Source() hands back a value copy precisely so that no
+	// caller can hold that pointer (issue #382).  See lisp/export_test.go.
+	if loc := lisp.SourceRefForTest(v); loc != nil {
 		w.nodes = append(w.nodes, v)
-		w.locs = append(w.locs, v.Source)
-		w.positions = append(w.positions, *v.Source)
+		w.locs = append(w.locs, loc)
+		w.positions = append(w.positions, *loc)
 	}
 	for _, c := range v.Cells {
 		w.record(c, seen)
@@ -288,23 +292,24 @@ func (w *locationWatch) verify(t fatalf, src []byte) {
 		scope = fmt.Sprintf("first %d nodes only; the watch was truncated at its limit", len(w.nodes))
 	}
 	for i, node := range w.nodes {
+		nodeLoc := lisp.SourceRefForTest(node)
 		switch {
-		case node.Source == nil:
+		case nodeLoc == nil:
 			t.Fatalf("evaluation cleared the source location of a parsed %v %q (was %v) [%s]"+
 				"\n--- source (%d bytes) ---\n%q",
 				node.Type, node.Str, w.positions[i], scope, len(src), src)
 			return
-		case node.Source != w.locs[i]:
+		case nodeLoc != w.locs[i]:
 			t.Fatalf("evaluation re-pointed the Source of a parsed %v %q from %v to %v;"+
 				" the stamp must claim only nodes the macro created (#370, #431) [%s]"+
 				"\n--- source (%d bytes) ---\n%q",
-				node.Type, node.Str, w.positions[i], node.Source, scope, len(src), src)
+				node.Type, node.Str, w.positions[i], nodeLoc, scope, len(src), src)
 			return
-		case *node.Source != w.positions[i]:
+		case *nodeLoc != w.positions[i]:
 			t.Fatalf("evaluation moved the recorded position of a parsed %v %q from %+v to %+v;"+
 				" a write through a *token.Location the evaluator does not own (#431) [%s]"+
 				"\n--- source (%d bytes) ---\n%q",
-				node.Type, node.Str, w.positions[i], *node.Source, scope, len(src), src)
+				node.Type, node.Str, w.positions[i], *nodeLoc, scope, len(src), src)
 			return
 		}
 	}

@@ -32,7 +32,7 @@ import (
 // exactly this shape were found and fixed in this repository: macro expansion
 // aliasing the form it expands (elps#396), the reader emitting nodes macro
 // expansion writes into (elps#370), sequence views writing through into their
-// source (elps#369/#373), and env.Loc aliasing (elps#362/#366).  Each was a
+// source (elps#369/#373), and env.loc aliasing (elps#362/#366).  Each was a
 // tree that two consumers shared and one of them mutated.
 //
 // # The invariant
@@ -124,19 +124,18 @@ const copyWalkCap = 200000
 // *token.Location with the tree it copied -- the property lisp.TextLoader's
 // "each evaluation gets a private tree" rests on (elps#446).
 //
-// The one pointer allowed to be shared is nativeSource's process-wide
-// singleton, which LVal.Copy deliberately does not separate: it has a single
-// owner, it is read-only by contract, and the reader never emits it (#362,
-// #370, and parser/rdparser's TestParserDoesNotAliasSharedNativeLocation).
-// Allowed here rather than assumed absent so that a reader change that starts
-// emitting it fails at ITS own guard, not confusingly at this one.
+// NO pointer is allowed to be shared.  The one exception this check used to
+// carry -- nativeSource's process-wide singleton, which LVal.Copy deliberately
+// did not separate -- went away with the singleton: issue #362 deleted it, so
+// a Go-constructed value records no location at all and there is nothing left
+// for two nodes to share.  The check is therefore unconditional now, which is
+// strictly stronger and one fewer thing to get wrong.
 //
 // Iterative rather than recursive: the walk must not be the thing that
 // overflows the goroutine stack on a deeply nested input.
 func copyOwnsItsPositions(t *testing.T, exprs []*lisp.LVal, src []byte) {
 	t.Helper()
 
-	native := lisp.Int(0).Source // the shared singleton, by construction
 	seen := 0
 	for _, orig := range exprs {
 		stack := [][2]*lisp.LVal{{orig, orig.Copy()}}
@@ -153,13 +152,17 @@ func copyOwnsItsPositions(t *testing.T, exprs []*lisp.LVal, src []byte) {
 					" this input was not checked", copyWalkCap)
 				return
 			}
-			if a.Source != nil && a.Source == b.Source && a.Source != native {
+			// SourceRefForTest, not Source(): the property is pointer
+			// IDENTITY, and Source() returns a value copy exactly so that no
+			// caller can hold the pointer (#382).  See lisp/export_test.go.
+			aLoc := lisp.SourceRefForTest(a)
+			if aLoc != nil && aLoc == lisp.SourceRefForTest(b) {
 				t.Fatalf("LVal.Copy handed back a node sharing the original's"+
 					" *token.Location (elps#446)"+
 					"\n  node type: %v"+
 					"\n  location:  %v"+
 					"\n--- source (%d bytes) ---\n%q",
-					a.Type, a.Source, len(src), src)
+					a.Type, aLoc, len(src), src)
 				return
 			}
 			// LArray shares its Cells backing and LSortMap shares its value

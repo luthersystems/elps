@@ -817,8 +817,8 @@ func TestExpandMacroDoesNotRestampCallerSourceLocations(t *testing.T) {
 	var walk func(v *lisp.LVal, path string) []located
 	walk = func(v *lisp.LVal, path string) []located {
 		loc := "<nil>"
-		if v.Source != nil {
-			loc = v.Source.String()
+		if src, ok := v.Source(); ok {
+			loc = src.String()
 		}
 		out := []located{{path + "/" + v.Type.String() + " " + v.Str, loc}}
 		for i, c := range v.Cells {

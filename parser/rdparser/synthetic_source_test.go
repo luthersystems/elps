@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/internal/astraw"
 	"github.com/luthersystems/elps/internal/fuzzseed"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
@@ -31,11 +32,11 @@ func syntheticSourceNodes(v *lisp.LVal, path string) []string {
 	var found []string
 	here := path + "/" + v.Type.String()
 	switch {
-	case v.Source == nil:
+	case astraw.SourceRef(v) == nil:
 		found = append(found, fmt.Sprintf("%s %q: Source is nil", here, v.Str))
-	case v.Source.Pos < 0:
+	case astraw.SourceRef(v).Pos < 0:
 		found = append(found, fmt.Sprintf("%s %q: synthetic Source %v (Pos=%d)",
-			here, v.Str, v.Source, v.Source.Pos))
+			here, v.Str, astraw.SourceRef(v), astraw.SourceRef(v).Pos))
 	}
 	for _, c := range v.Cells {
 		found = append(found, syntheticSourceNodes(c, here)...)
@@ -161,11 +162,11 @@ func TestSynthesizedHeadsCarryPrefixLocation(t *testing.T) {
 		funref := exprs[0].Cells[1]
 		require.Equal(t, "lisp:function", funref.Cells[0].Str)
 		head := funref.Cells[0]
-		require.NotNil(t, head.Source)
-		assert.Equal(t, "test.lisp", head.Source.File)
-		assert.Equal(t, 1, head.Source.Line)
-		assert.Equal(t, 4, head.Source.Col, "head should sit on the #' prefix")
-		assert.GreaterOrEqual(t, head.Source.Pos, 0)
+		require.NotNil(t, astraw.SourceRef(head))
+		assert.Equal(t, "test.lisp", astraw.SourceRef(head).File)
+		assert.Equal(t, 1, astraw.SourceRef(head).Line)
+		assert.Equal(t, 4, astraw.SourceRef(head).Col, "head should sit on the #' prefix")
+		assert.GreaterOrEqual(t, astraw.SourceRef(head).Pos, 0)
 		// The head gets a *token.Location of its own.  When this was written
 		// it had to have one specially: tokenLVal gave the enclosing
 		// s-expression the OPERAND'S Location OBJECT and applyPrefixLocation
@@ -175,8 +176,8 @@ func TestSynthesizedHeadsCarryPrefixLocation(t *testing.T) {
 		// -- Parser.Location copies -- so all three are distinct now and this
 		// assertion is one instance of the general rule
 		// TestPrefixFormNodesDoNotShareLocationObject states.
-		assert.NotSame(t, head.Source, funref.Cells[1].Source)
-		assert.NotSame(t, funref.Source, funref.Cells[1].Source)
+		assert.NotSame(t, astraw.SourceRef(head), astraw.SourceRef(funref.Cells[1]))
+		assert.NotSame(t, astraw.SourceRef(funref), astraw.SourceRef(funref.Cells[1]))
 	})
 
 	t.Run("unbound expression", func(t *testing.T) {
@@ -199,10 +200,10 @@ func TestSynthesizedHeadsCarryPrefixLocation(t *testing.T) {
 		require.Len(t, exprs, 1)
 		head := exprs[0].Cells[0]
 		require.Equal(t, "lisp:expr", head.Str)
-		require.NotNil(t, head.Source)
-		assert.GreaterOrEqual(t, head.Source.Pos, 0)
-		assert.Equal(t, 1, head.Source.Col, "head should sit on the #^ prefix")
-		assert.Equal(t, 3, head.Source.EndCol, "head spans exactly the two columns of #^")
+		require.NotNil(t, astraw.SourceRef(head))
+		assert.GreaterOrEqual(t, astraw.SourceRef(head).Pos, 0)
+		assert.Equal(t, 1, astraw.SourceRef(head).Col, "head should sit on the #^ prefix")
+		assert.Equal(t, 3, astraw.SourceRef(head).EndCol, "head spans exactly the two columns of #^")
 
 		// The same, with a SYMBOL operand: the head's column must not depend
 		// on the operand's shape.
@@ -211,7 +212,7 @@ func TestSynthesizedHeadsCarryPrefixLocation(t *testing.T) {
 		require.Len(t, exprs, 1)
 		head = exprs[0].Cells[0]
 		require.Equal(t, "lisp:expr", head.Str)
-		assert.Equal(t, 1, head.Source.Col, "head should sit on the #^ prefix")
-		assert.Equal(t, 3, head.Source.EndCol, "head spans exactly the two columns of #^")
+		assert.Equal(t, 1, astraw.SourceRef(head).Col, "head should sit on the #^ prefix")
+		assert.Equal(t, 3, astraw.SourceRef(head).EndCol, "head spans exactly the two columns of #^")
 	})
 }

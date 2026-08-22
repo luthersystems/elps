@@ -298,15 +298,15 @@ func TestEngine_StepInto(t *testing.T) {
 	// Verify paused state has valid expression with source location.
 	_, entryExpr := e.PausedState()
 	require.NotNil(t, entryExpr, "paused expression should not be nil")
-	require.NotNil(t, entryExpr.Source, "paused expression should have source location")
-	assert.Equal(t, 1, entryExpr.Source.Line, "should stop on entry at line 1")
+	require.True(t, hasSourceLoc(entryExpr), "paused expression should have source location")
+	assert.Equal(t, 1, mustSourceLoc(entryExpr).Line, "should stop on entry at line 1")
 
 	// Step into — should advance to line 2 (skipping sub-expressions on line 1).
 	e.StepInto()
 	_, stepExpr := w.WaitStopped(t, "step-into did not produce a stopped event").pair()
 	require.NotNil(t, stepExpr, "paused expression after step should not be nil")
-	require.NotNil(t, stepExpr.Source, "paused expression after step should have source location")
-	assert.Equal(t, 2, stepExpr.Source.Line, "step-into should advance to line 2")
+	require.True(t, hasSourceLoc(stepExpr), "paused expression after step should have source location")
+	assert.Equal(t, 2, mustSourceLoc(stepExpr).Line, "step-into should advance to line 2")
 
 	// Continue to finish.
 	e.Resume()
@@ -345,8 +345,8 @@ func TestEngine_StepInto_EntersFunction(t *testing.T) {
 	w.WaitStopped(t, "engine did not pause")
 	_, bpExpr := e.PausedState()
 	require.NotNil(t, bpExpr)
-	require.NotNil(t, bpExpr.Source)
-	assert.Equal(t, 4, bpExpr.Source.Line, "breakpoint should hit on line 4")
+	require.True(t, hasSourceLoc(bpExpr))
+	assert.Equal(t, 4, mustSourceLoc(bpExpr).Line, "breakpoint should hit on line 4")
 
 	// Clear breakpoint so it doesn't interfere with stepping.
 	e.Breakpoints().Remove("test", 4)
@@ -355,8 +355,8 @@ func TestEngine_StepInto_EntersFunction(t *testing.T) {
 	e.StepInto()
 	_, stepExpr := w.WaitStopped(t, "step-into did not produce a stopped event").pair()
 	require.NotNil(t, stepExpr)
-	require.NotNil(t, stepExpr.Source)
-	assert.Equal(t, 2, stepExpr.Source.Line,
+	require.True(t, hasSourceLoc(stepExpr))
+	assert.Equal(t, 2, mustSourceLoc(stepExpr).Line,
 		"step-into from line 4 should enter inner's body on line 2")
 
 	e.Resume()
@@ -397,8 +397,8 @@ func TestEngine_StepInto_InstructionGranularity(t *testing.T) {
 	e.StepInto()
 	_, stepExpr := w.WaitStopped(t, "step-into did not produce a stopped event").pair()
 	require.NotNil(t, stepExpr)
-	require.NotNil(t, stepExpr.Source)
-	assert.Equal(t, 1, stepExpr.Source.Line, "instruction step pauses on same line")
+	require.True(t, hasSourceLoc(stepExpr))
+	assert.Equal(t, 1, mustSourceLoc(stepExpr).Line, "instruction step pauses on same line")
 	assert.NotEqual(t, lisp.LSExpr, stepExpr.Type,
 		"instruction step should advance to a sub-expression (atom)")
 
@@ -644,8 +644,8 @@ func TestEngine_StepOver(t *testing.T) {
 
 	pausedEnv, expr := e.PausedState()
 	require.NotNil(t, expr)
-	require.NotNil(t, expr.Source)
-	assert.Equal(t, 3, expr.Source.Line, "should pause on line 3")
+	require.True(t, hasSourceLoc(expr))
+	assert.Equal(t, 3, mustSourceLoc(expr).Line, "should pause on line 3")
 	outerDepth := len(pausedEnv.Runtime.Stack.Frames)
 
 	// Clear breakpoints so they don't re-fire.
@@ -666,7 +666,7 @@ func TestEngine_StepOver(t *testing.T) {
 			"step-over should not increase stack depth (entered nested function)")
 
 		// If we've reached line 4, the step-over worked correctly.
-		if lastExpr.Source != nil && lastExpr.Source.Line == 4 {
+		if loc, ok := lastExpr.Source(); ok && loc.Line == 4 {
 			break
 		}
 
@@ -674,8 +674,8 @@ func TestEngine_StepOver(t *testing.T) {
 		e.StepOver()
 	}
 
-	require.NotNil(t, lastExpr.Source)
-	assert.Equal(t, 4, lastExpr.Source.Line,
+	require.True(t, hasSourceLoc(lastExpr))
+	assert.Equal(t, 4, mustSourceLoc(lastExpr).Line,
 		"step-over should eventually reach line 4 without entering inner")
 
 	// Resume to finish.
@@ -717,8 +717,8 @@ func TestEngine_StepOut(t *testing.T) {
 
 	pausedEnv, expr := e.PausedState()
 	require.NotNil(t, expr)
-	require.NotNil(t, expr.Source)
-	assert.Equal(t, 2, expr.Source.Line, "should be paused inside function body on line 2")
+	require.True(t, hasSourceLoc(expr))
+	assert.Equal(t, 2, mustSourceLoc(expr).Line, "should be paused inside function body on line 2")
 
 	// Record stack depth inside function.
 	insideDepth := len(pausedEnv.Runtime.Stack.Frames)
@@ -953,8 +953,8 @@ func TestEngine_PausedState(t *testing.T) {
 	pEnv, pExpr = e.PausedState()
 	assert.NotNil(t, pEnv, "expected non-nil env while paused")
 	require.NotNil(t, pExpr, "expected non-nil expr while paused")
-	require.NotNil(t, pExpr.Source, "expected source location on paused expr")
-	assert.Equal(t, "test", pExpr.Source.File, "expected paused expr from test source")
+	require.True(t, hasSourceLoc(pExpr), "expected source location on paused expr")
+	assert.Equal(t, "test", mustSourceLoc(pExpr).File, "expected paused expr from test source")
 
 	e.Resume()
 
@@ -1759,8 +1759,8 @@ func TestEngine_StepOutTailPosition(t *testing.T) {
 	firstStop := waitForStoppedEvent(t, stoppedCh, "engine did not pause at breakpoint")
 	expr := firstStop.expr
 	require.NotNil(t, expr)
-	require.NotNil(t, expr.Source)
-	assert.Equal(t, 2, expr.Source.Line, "should pause on line 2")
+	require.True(t, hasSourceLoc(expr))
+	assert.Equal(t, 2, mustSourceLoc(expr).Line, "should pause on line 2")
 	innerDepth := firstStop.stackDepth
 
 	// Clear breakpoints and step out.
@@ -1771,9 +1771,9 @@ func TestEngine_StepOutTailPosition(t *testing.T) {
 	secondStop := waitForStoppedEvent(t, stoppedCh, "step-out did not produce a stopped event")
 	expr = secondStop.expr
 	require.NotNil(t, expr)
-	require.NotNil(t, expr.Source, "paused expression should have source location")
-	assert.Equal(t, "test", expr.Source.File)
-	assert.NotEqual(t, 2, expr.Source.Line,
+	require.True(t, hasSourceLoc(expr), "paused expression should have source location")
+	assert.Equal(t, "test", mustSourceLoc(expr).File)
+	assert.NotEqual(t, 2, mustSourceLoc(expr).Line,
 		"should NOT still be on inner's body line after step-out")
 	outsideDepth := secondStop.stackDepth
 	assert.Less(t, outsideDepth, innerDepth,
@@ -1808,7 +1808,7 @@ func TestEngine_StepOutSafetyNet(t *testing.T) {
 
 	// Create a minimal expression with a source location for OnEval.
 	expr := lisp.Int(42)
-	expr.Source = &token.Location{File: "test", Line: 1}
+	expr.SetSource(&token.Location{File: "test", Line: 1})
 
 	// OnEval should return true (wants to pause) and clear the flag.
 	shouldPause := e.OnEval(env, expr)
@@ -1939,8 +1939,8 @@ func TestEngine_StepInTarget(t *testing.T) {
 	firstStop := waitForStoppedEvent(t, stoppedCh, "engine did not pause at breakpoint")
 	bpExpr := firstStop.expr
 	require.NotNil(t, bpExpr)
-	require.NotNil(t, bpExpr.Source)
-	assert.Equal(t, 4, bpExpr.Source.Line, "breakpoint should hit on line 4")
+	require.True(t, hasSourceLoc(bpExpr))
+	assert.Equal(t, 4, mustSourceLoc(bpExpr).Line, "breakpoint should hit on line 4")
 
 	// Clear breakpoint so it doesn't interfere.
 	e.Breakpoints().Remove("test", 4)
@@ -1953,8 +1953,8 @@ func TestEngine_StepInTarget(t *testing.T) {
 	secondStop := waitForStoppedEvent(t, stoppedCh, "targeted step-in did not stop")
 	stepExpr := secondStop.expr
 	require.NotNil(t, stepExpr)
-	require.NotNil(t, stepExpr.Source)
-	assert.Equal(t, 1, stepExpr.Source.Line,
+	require.True(t, hasSourceLoc(stepExpr))
+	assert.Equal(t, 1, mustSourceLoc(stepExpr).Line,
 		"targeted step-in should pause inside f's body on line 1")
 
 	e.Resume()
@@ -2006,12 +2006,12 @@ func TestEngine_StepInTarget_SkipsNonTarget(t *testing.T) {
 	stop := waitForStoppedEvent(t, stoppedCh, "targeted step-in should pause in f")
 	stepExpr := stop.expr
 	require.NotNil(t, stepExpr)
-	require.NotNil(t, stepExpr.Source)
+	require.True(t, hasSourceLoc(stepExpr))
 
 	// Verify we're in f, not g. Check the top frame on the stack.
 	assert.Equal(t, "f", stop.topFrameName,
 		"should be inside f's frame, not g's")
-	assert.Equal(t, 1, stepExpr.Source.Line,
+	assert.Equal(t, 1, mustSourceLoc(stepExpr).Line,
 		"should pause on f's body line (line 1)")
 
 	e.Resume()
@@ -2060,9 +2060,9 @@ func TestEngine_StepInTarget_SecondOccurrence(t *testing.T) {
 	stop := waitForStoppedEvent(t, stoppedCh, "targeted step-in should pause in second f invocation")
 	pausedEnv, stepExpr := stop.env, stop.expr
 	require.NotNil(t, stepExpr)
-	require.NotNil(t, stepExpr.Source)
+	require.True(t, hasSourceLoc(stepExpr))
 	require.Equal(t, "f", stop.topFrameName, "should be inside f")
-	assert.Equal(t, 1, stepExpr.Source.Line,
+	assert.Equal(t, 1, mustSourceLoc(stepExpr).Line,
 		"targeted step-in (2nd occurrence) should pause inside f's body")
 
 	// Verify we're in the second invocation (f 20), not the first (f 10).
@@ -2346,4 +2346,17 @@ func TestEngine_PausedUnannouncedWithNoCallback(t *testing.T) {
 	// happens -- it would be a test that cannot fail. The clear is in fact
 	// redundant (every pause reassigns the flag before publishing) and is
 	// kept only so the field never reads stale outside a pause.
+}
+
+// hasSourceLoc reports whether v carries a source location.
+func hasSourceLoc(v *lisp.LVal) bool {
+	_, ok := v.Source()
+	return ok
+}
+
+// mustSourceLoc returns v's source location, or a zero Location when v has
+// none (tests guard with hasSourceLoc first).
+func mustSourceLoc(v *lisp.LVal) token.Location {
+	loc, _ := v.Source()
+	return loc
 }

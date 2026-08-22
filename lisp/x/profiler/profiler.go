@@ -4,6 +4,7 @@ import (
 	"errors"
 	"regexp"
 
+	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 	"go.opentelemetry.io/otel/trace"
@@ -53,16 +54,12 @@ func defaultFunName(runtime *lisp.Runtime, fun *lisp.LVal) string {
 	if fun.Type != lisp.LFun {
 		return ""
 	}
-	funData := fun.FunData()
-	if funData == nil {
-		return ""
-	}
 	name := ""
-	if env := fun.Env(); env != nil {
+	if env := funraw.Env(fun); env != nil {
 		name = env.GetFunName(fun)
 	}
 	if name == "" {
-		name = getFunNameFromFID(runtime, funData.FID)
+		name = getFunNameFromFID(runtime, fun.FID())
 	}
 	return name
 }
@@ -102,14 +99,17 @@ func getFunNameFromFID(rt *lisp.Runtime, in string) string {
 	return builtinRegex.FindStringSubmatch(in)[1]
 }
 
+// getSourceLoc returns a copy of fun's best source location.  lisp.LVal
+// exposes locations by value only (issue #362), so the returned pointer is a
+// private copy.  A function with no recorded location (a builtin) reports
+// the synthetic "<native code>" location, matching what such functions
+// historically carried, so callgrind emitters keep their fl= attribution.
 func getSourceLoc(fun *lisp.LVal) *token.Location {
 	if len(fun.Cells) > 0 {
-		if cell := fun.Cells[0]; cell.Source != nil {
-			return cell.Source
+		if loc, ok := fun.Cells[0].Source(); ok {
+			return &loc
 		}
 	}
-	if fun.Source != nil {
-		return fun.Source
-	}
-	return nil
+	loc, _ := fun.Source()
+	return &loc
 }

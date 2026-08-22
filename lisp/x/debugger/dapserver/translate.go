@@ -10,6 +10,7 @@ import (
 	"github.com/google/go-dap"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/x/debugger"
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // elpsThreadID is the single thread ID used for ELPS (single-threaded interpreter).
@@ -46,17 +47,22 @@ func translateStackFrames(stack *lisp.CallStack, pausedExpr *lisp.LVal, sourceRo
 		// Always use the paused expression's file — when stepping into a
 		// function defined in a different file, the call frame still points
 		// to the caller's file, but we need to show the callee's source.
-		if len(frames) == 0 && pausedExpr != nil && pausedExpr.Source != nil {
-			sf.Line = pausedExpr.Source.Line
-			sf.Column = pausedExpr.Source.Col
+		var pausedLoc token.Location
+		pausedOK := false
+		if pausedExpr != nil {
+			pausedLoc, pausedOK = pausedExpr.Source()
+		}
+		if len(frames) == 0 && pausedOK {
+			sf.Line = pausedLoc.Line
+			sf.Column = pausedLoc.Col
 			sf.Source = &dap.Source{
-				Name: pausedExpr.Source.File,
-				Path: resolveSourcePath(pausedExpr.Source.Path, pausedExpr.Source.File, sourceRoot),
+				Name: pausedLoc.File,
+				Path: resolveSourcePath(pausedLoc.Path, pausedLoc.File, sourceRoot),
 			}
 			// Annotate with macro expansion name when paused inside a
 			// macro expansion, so the user can see which macro is active.
-			if pausedExpr.MacroExpansion != nil && pausedExpr.MacroExpansion.MacroExpansionContext != nil {
-				sf.Name = sf.Name + " [macro: " + pausedExpr.MacroExpansion.Name + "]"
+			if m, ok := pausedExpr.MacroExpansion(); ok {
+				sf.Name = sf.Name + " [macro: " + m.Name + "]"
 			}
 		}
 		frames = append(frames, sf)

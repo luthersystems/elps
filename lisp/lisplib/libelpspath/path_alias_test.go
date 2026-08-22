@@ -639,7 +639,7 @@ func TestCopyPreservesQuoting(t *testing.T) {
 					continue
 				}
 				require.NotEqual(t, lisp.LError, got.Type, "%v", got)
-				assert.Equal(t, want.Quoted, got.Quoted,
+				assert.Equal(t, want.IsQuoted(), got.IsQuoted(),
 					"the copy changed the quoting of %s", pathString(steps))
 				assert.Equal(t, want.Type, got.Type,
 					"the copy changed the type at %s", pathString(steps))
@@ -651,7 +651,7 @@ func TestCopyPreservesQuoting(t *testing.T) {
 			if cp2.Type != lisp.LError {
 				notes := callBuiltin(env, BuiltinQueryGet, cp2, lisp.String("notes"))
 				if notes.Type != lisp.LError && !notes.IsNil() {
-					assert.True(t, notes.Quoted, "?set demoted a quoted list to an s-expression")
+					assert.True(t, notes.IsQuoted(), "?set demoted a quoted list to an s-expression")
 				}
 			}
 		})

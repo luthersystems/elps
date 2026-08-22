@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/astraw"
 	"github.com/luthersystems/elps/internal/fuzzseed"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
@@ -339,7 +340,11 @@ func FuzzParsedLocationInvariants(f *testing.F) {
 			owner := make(map[*token.Location]*lisp.LVal)
 			var check func(v, parent *lisp.LVal)
 			check = func(v, parent *lisp.LVal) {
-				loc := v.Source
+				// astraw.SourceRef, not v.Source(): the invariant is pointer
+				// IDENTITY -- no two nodes may hold ONE Location -- and
+				// Source() returns a value copy precisely so that no caller
+				// can hold the pointer (#382).  See internal/astraw.
+				loc := astraw.SourceRef(v)
 				if loc == nil {
 					return
 				}
@@ -353,12 +358,13 @@ func FuzzParsedLocationInvariants(f *testing.F) {
 						t.Fatalf("formatting=%v: node %v %q reports span [%d,%d) outside a %d-byte source (#426)",
 							formatting, v.Type, v.Str, loc.Pos, loc.EndPos, len(src))
 					}
-					if parent != nil && parent.Source != nil &&
-						parent.Source.Pos >= 0 && parent.Source.EndPos > 0 {
-						if loc.Pos < parent.Source.Pos || loc.EndPos > parent.Source.EndPos {
+					parentLoc := astraw.SourceRef(parent)
+					if parent != nil && parentLoc != nil &&
+						parentLoc.Pos >= 0 && parentLoc.EndPos > 0 {
+						if loc.Pos < parentLoc.Pos || loc.EndPos > parentLoc.EndPos {
 							t.Fatalf("formatting=%v: child %v %q spans [%d,%d), escaping parent %v %q span [%d,%d) (#426)",
 								formatting, v.Type, v.Str, loc.Pos, loc.EndPos,
-								parent.Type, parent.Str, parent.Source.Pos, parent.Source.EndPos)
+								parent.Type, parent.Str, parentLoc.Pos, parentLoc.EndPos)
 						}
 					}
 				}
@@ -392,16 +398,17 @@ func FuzzParsedLocationInvariants(f *testing.F) {
 			// walk above does -- the reader emits no LArray or LSortMap, the
 			// two types whose children LVal.Copy deliberately shares.
 			//
-			// A node carrying lisp's shared native Location would also
-			// surface here, because a copy keeps that one pointer by design.
-			// The reader does not emit it; TestParserDoesNotAliasSharedNative
-			// Location is where that is stated (#362/#370).
+			// There is no exception to carve out any more.  This used to
+			// note that a node carrying lisp's shared native Location would
+			// surface here, because a copy kept that one pointer by design.
+			// Issue #362 deleted the singleton -- a Go-constructed value
+			// records no location at all -- so the check is unconditional.
 			var checkCopy func(v *lisp.LVal)
 			checkCopy = func(v *lisp.LVal) {
 				if v == nil {
 					return
 				}
-				if loc := v.Source; loc != nil {
+				if loc := astraw.SourceRef(v); loc != nil {
 					if prev, dup := owner[loc]; dup {
 						t.Fatalf("formatting=%v: copied node %v %q holds the same *token.Location %v as %v %q; a copy must own its positions (#446)",
 							formatting, v.Type, v.Str, loc, prev.Type, prev.Str)

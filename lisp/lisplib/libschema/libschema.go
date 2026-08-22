@@ -390,6 +390,12 @@ type validatorTag struct{}
 
 // validatorMarker is the single marker cell every validator LFun carries in
 // Cells[validatorMarkerIndex].  Its identity is the credential.
+//
+// Deliberately process-wide: the marker is an identity-only credential —
+// compared by pointer in isValidator, never evaluated, never bound into a
+// scope, and never written after init.  A per-runtime marker would break
+// nothing but would also credential nothing: its whole value is that every
+// runtime recognizes the same pointer.
 var validatorMarker = lisp.Native(&validatorTag{})
 
 // A validator LFun's cells are [formals, docstring, marker].  The first two
@@ -406,7 +412,7 @@ const (
 // WHY THIS EXISTS.  Every constraint in libschema is invoked through a PRIVATE
 // calling convention: the validator LFun's Go closure takes the value under
 // test DIRECTLY, not an argument list, so constraints are called by reaching
-// into FunData().Builtin rather than through LEnv.FunCall.  That convention is
+// into the Builtin accessor rather than through LEnv.FunCall.  That convention is
 // unenforceable by the type system -- s:validate, s:has-key, s:not, s:when and
 // the rest accepted ANY lisp.LFun -- so an ordinary function landing in a
 // constraint slot was invoked with a bare value:
@@ -426,7 +432,7 @@ func isValidator(v *lisp.LVal) bool {
 		v.Type == lisp.LFun &&
 		len(v.Cells) == validatorCellCount &&
 		v.Cells[validatorMarkerIndex] == validatorMarker &&
-		v.FunData().Builtin != nil
+		v.Builtin() != nil
 }
 
 // applyConstraint is the ONE place a schema constraint is invoked.
@@ -450,7 +456,7 @@ func applyConstraint(env *lisp.LEnv, constraint *lisp.LVal, input *lisp.LVal) *l
 			"Value is not a schema constraint: %v. Constraints must be built by the s package (s:int, s:has-key, s:gt, ...) or by libschema.NewValidator; an ordinary function cannot be used as one.",
 			constraint)
 	}
-	return constraint.FunData().Builtin(env, input)
+	return constraint.Builtin()(env, input)
 }
 
 // newValidator constructs an anonymous schema validator LFun bound to the
@@ -496,7 +502,7 @@ func markValidator(fun *lisp.LVal) *lisp.LVal {
 // This is the extension point the marker would otherwise have closed.  Before
 // the marker existed, a Go embedder could pass any lisp.LFun where libschema
 // expected a constraint and it worked by accident -- the call sites simply
-// invoked FunData().Builtin.  Requiring the marker ends that, so the capability
+// invoked the raw builtin closure.  Requiring the marker ends that, so the capability
 // is restored deliberately and with a documented contract instead of being
 // dropped silently.  Nothing in this repository, and nothing in substrate, uses
 // it today; it exists so that closing the crash does not also remove a

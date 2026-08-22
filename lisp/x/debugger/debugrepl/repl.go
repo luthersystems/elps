@@ -111,10 +111,10 @@ type debugHandler struct {
 	exitCh     chan struct{} // closed when eval goroutine exits
 	doneCh     chan struct{} // closed by doQuit to signal REPL to stop
 
-	mu       sync.Mutex
-	paused   bool
-	exited   bool
-	lastCmd  string
+	mu      sync.Mutex
+	paused  bool
+	exited  bool
+	lastCmd string
 }
 
 // onEvent is the debugger event callback. It runs on the eval goroutine.
@@ -356,8 +356,10 @@ func (h *debugHandler) showStopBanner(evt debugger.Event) {
 		reason = fmt.Sprintf("breakpoint %d", evt.BP.ID)
 	}
 	fmt.Fprintf(h.stderr, "stopped: %s\n", reason) //nolint:errcheck
-	if evt.Expr != nil && evt.Expr.Source != nil {
-		showSourceContext(h.stderr, evt.Expr.Source.File, evt.Expr.Source.Line, h.sourceRoot)
+	if evt.Expr != nil {
+		if loc, ok := evt.Expr.Source(); ok {
+			showSourceContext(h.stderr, loc.File, loc.Line, h.sourceRoot)
+		}
 	}
 }
 
@@ -443,11 +445,16 @@ func (h *debugHandler) doPrint(args []string) bool {
 
 func (h *debugHandler) doWhere() bool {
 	_, expr := h.engine.PausedState()
-	if expr == nil || expr.Source == nil {
+	if expr == nil {
 		fmt.Fprintln(h.stderr, "no source location") //nolint:errcheck
 		return true
 	}
-	showSourceContext(h.stderr, expr.Source.File, expr.Source.Line, h.sourceRoot)
+	loc, ok := expr.Source()
+	if !ok {
+		fmt.Fprintln(h.stderr, "no source location") //nolint:errcheck
+		return true
+	}
+	showSourceContext(h.stderr, loc.File, loc.Line, h.sourceRoot)
 	return true
 }
 

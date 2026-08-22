@@ -564,11 +564,26 @@ var initTable = []struct {
 	// reach the `if lerr.Type == lisp.LError { return lerr }` guarding
 	// InPackage(user) in Load and LoadAll -- every other argument elpsutil
 	// passes to DefinePackage/InPackage it constructed itself and cannot be
-	// wrong. Registry.Packages is an exported map, so a loader really can do
-	// this; whether an embedder should is a different question from whether
-	// Load reports it, and Load reporting it is what is covered here.
+	// wrong.
+	//
+	// It used to be a one-line `delete(Registry.Packages, ...)`. #382
+	// unexported the registry's map and added no removal method, so that
+	// write is gone and an embedder can no longer reach this state by
+	// mutating the map. The state itself is still reachable -- Runtime.Registry
+	// is an assignable field -- so the case is rebuilt rather than dropped:
+	// swapping in a registry that carries every package EXCEPT user leaves
+	// Load facing exactly the condition it is being asked to report.
 	{"init/drop-user", func(env *lisp.LEnv) *lisp.LVal {
-		delete(env.Runtime.Registry.Packages, lisp.DefaultUserPackage)
+		old := env.Runtime.Registry
+		fresh := lisp.NewRegistry()
+		fresh.Lang = old.Lang
+		for _, name := range old.PackageNames() {
+			if name == lisp.DefaultUserPackage {
+				continue
+			}
+			fresh.AddPackage(old.Package(name))
+		}
+		env.Runtime.Registry = fresh
 		return lisp.Nil()
 	}},
 	// A PackageInit that returns a Go nil *LVal: the loader-side nil mistake,

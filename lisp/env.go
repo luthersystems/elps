@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 	"log"
 	"runtime"
 	"strings"
@@ -25,7 +26,7 @@ const DefaultUserPackage = "user"
 func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 	env.Runtime.Registry.DefinePackage(DefaultLangPackage)
 	env.Runtime.Registry.Lang = DefaultLangPackage
-	env.Runtime.Package = env.Runtime.Registry.Packages[env.Runtime.Registry.Lang]
+	env.Runtime.Package = env.Runtime.Registry.packages[env.Runtime.Registry.Lang]
 	env.Runtime.Package.Doc = `The core ELPS language package. Provides fundamental data types,
 		control flow, function and macro definition, package management,
 		error handling, collections, I/O, and the type system.`
@@ -37,7 +38,7 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 		return rc
 	}
 	env.Runtime.Registry.DefinePackage(DefaultUserPackage)
-	env.Runtime.Registry.Packages[DefaultUserPackage].Doc = "The default user package for application code."
+	env.Runtime.Registry.packages[DefaultUserPackage].Doc = "The default user package for application code."
 	rc = env.InPackage(Symbol(DefaultUserPackage))
 	if GoError(rc) != nil {
 		return rc
@@ -59,7 +60,7 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 // InitializeTypedef is a step inside InitializeUserEnv, not an alternative to
 // it.  It requires an environment that InitializeUserEnv has already
 // established: it reads env.Runtime.Package.Name, and it writes the typedef
-// into env.Runtime.Registry.Packages[env.Runtime.Registry.Lang].
+// into the registry package named by env.Runtime.Registry.Lang.
 // StandardRuntime leaves Runtime.Package nil and Registry.Lang "" (and
 // Packages[""] is a nil *Package), so on a bare environment --
 // lisp.InitializeTypedef(lisp.NewEnv(nil)) -- this panics on the first of
@@ -98,24 +99,96 @@ func InitializeTypedef(env *LEnv) *LVal {
 	if typedef.Type == LError {
 		return typedef
 	}
-	env.Runtime.Registry.Packages[pkg].Put(Symbol("typedef"), typedef)
+	env.Runtime.Registry.packages[pkg].Put(Symbol("typedef"), typedef)
 	return Nil()
 }
 
-// TODO(elps2): Remove the field LEnv.FunName
+// TODO(elps2): Remove the field LEnv.funName
 
 // LEnv is a lisp environment.
+//
+// The binding state (scope, funName), the lexical chain (parent) and the
+// evaluator's current location (loc) are unexported — the issue #382 close
+// applied one layer up from LVal.  `env.scope[sym] = v` used to let any
+// holder of an *LEnv rebind a symbol in a live environment — including a
+// closure's captured environment, shared by every function value that
+// closed over it — without going through Put; `env.loc = loc` aliased a
+// caller's mutable location
+// into every error and stack frame the evaluator stamped afterwards (the
+// #362 aliasing class).  Reads are mediated by Bindings, NumBindings,
+// Parent and Source; the writes are kernel-only.
 //
 // Field order is layout-sensitive: the pointer-bearing fields lead so the GC
 // scan extent stops at 56 bytes instead of 64. Keep scalars (ID) trailing.
 type LEnv struct {
-	Loc     *token.Location
-	Scope   map[string]*LVal
-	FunName map[string]string
-	Parent  *LEnv
+	loc     *token.Location
+	scope   map[string]*LVal
+	funName map[string]string
+	parent  *LEnv
 	Runtime *Runtime
 	evalCtx context.Context // transient: set by call() at builtin boundary
 	ID      uint
+}
+
+// Parent returns env's lexically enclosing environment, or nil when env is a
+// root environment.  The chain is read-only through this accessor: the field
+// went unexported in issue #382 because re-parenting a live environment
+// silently re-scopes every closure that captured it.
+//
+// Parent is nil-receiver safe.
+func (env *LEnv) Parent() *LEnv {
+	if env == nil {
+		return nil
+	}
+	return env.parent
+}
+
+// Bindings iterates the symbol bindings in env's immediate scope; parent
+// scopes are not included (walk Parent for those).  Iteration order is
+// unspecified, like Go map order.
+//
+// Bindings is the read half of the scope map, which went unexported in issue
+// #382: enumerating an environment is a legitimate need (the debugger's
+// variable panes), while the write that came free with an exported map —
+// rebinding a symbol in an environment the writer does not own — is not.
+// Use Put or PutGlobal to bind.
+//
+// Bindings is nil-receiver safe: a nil LEnv yields nothing.
+func (env *LEnv) Bindings() iter.Seq2[string, *LVal] {
+	return func(yield func(string, *LVal) bool) {
+		if env == nil {
+			return
+		}
+		for k, v := range env.scope {
+			if !yield(k, v) {
+				return
+			}
+		}
+	}
+}
+
+// NumBindings returns the number of symbols bound in env's immediate scope.
+//
+// NumBindings is nil-receiver safe.
+func (env *LEnv) NumBindings() int {
+	if env == nil {
+		return 0
+	}
+	return len(env.scope)
+}
+
+// Source returns a copy of the location the evaluator is currently stamping
+// onto values produced in env, or nil when it has none.  The location is
+// copied because the evaluator rebinds and mutates its own (issue #382,
+// closing the #362 aliasing class at the environment level): a caller
+// holding the pointer would watch it change under evaluation.
+//
+// Source is nil-receiver safe.
+func (env *LEnv) Source() *token.Location {
+	if env == nil {
+		return nil
+	}
+	return copyLocation(env.loc)
 }
 
 // Context returns the context.Context currently associated with this
@@ -140,8 +213,8 @@ func NewEnvRuntime(rt *Runtime) *LEnv {
 	}
 	env := &LEnv{
 		ID:      rt.GenEnvID(),
-		Scope:   make(map[string]*LVal),
-		FunName: make(map[string]string),
+		scope:   make(map[string]*LVal),
+		funName: make(map[string]string),
 		Runtime: rt,
 	}
 	return env
@@ -152,7 +225,7 @@ func NewEnv(parent *LEnv) *LEnv {
 	return newEnvN(parent, 0)
 }
 
-// newEnvN creates a child LEnv with its Scope map pre-sized to hold n
+// newEnvN creates a child LEnv with its scope map pre-sized to hold n
 // bindings.  Callers that know the number of bindings up front (let, let*,
 // dotimes, etc.) can avoid map growth by passing the exact count.
 func newEnvN(parent *LEnv, n int) *LEnv {
@@ -161,18 +234,17 @@ func newEnvN(parent *LEnv, n int) *LEnv {
 	var evalCtx context.Context
 	if parent != nil {
 		runtime = parent.Runtime
-		loc = parent.Loc
+		loc = parent.loc
 		evalCtx = parent.evalCtx
 	} else {
 		runtime = StandardRuntime()
-		loc = nativeSource()
 	}
 	env := &LEnv{
 		ID:      runtime.GenEnvID(),
-		Loc:     loc,
-		Scope:   make(map[string]*LVal, n),
-		FunName: make(map[string]string),
-		Parent:  parent,
+		loc:     loc,
+		scope:   make(map[string]*LVal, n),
+		funName: make(map[string]string),
+		parent:  parent,
 		Runtime: runtime,
 		evalCtx: evalCtx,
 	}
@@ -202,14 +274,14 @@ func (env *LEnv) SetPackageDoc(doc string) {
 
 // SetSymbolDoc sets the documentation string for a symbol in the current package.
 func (env *LEnv) SetSymbolDoc(name, doc string) {
-	env.Runtime.Package.SymbolDocs[name] = doc
+	env.Runtime.Package.symbolDocs[name] = doc
 }
 
 func (env *LEnv) InPackage(name *LVal) *LVal {
 	if name.Type != LSymbol && name.Type != LString {
 		return env.Errorf("argument cannot be converted to string: %v", name.Type)
 	}
-	pkg := env.Runtime.Registry.Packages[name.Str]
+	pkg := env.Runtime.Registry.packages[name.Str]
 	if pkg == nil {
 		return env.Errorf("unknown package: %v", name.Str)
 	}
@@ -221,11 +293,11 @@ func (env *LEnv) UsePackage(name *LVal) *LVal {
 	if name.Type != LSymbol && name.Type != LString {
 		return env.Errorf("argument cannot be converted to string: %v", name.Type)
 	}
-	pkg := env.Runtime.Registry.Packages[name.Str]
+	pkg := env.Runtime.Registry.packages[name.Str]
 	if pkg == nil {
 		return env.Errorf("unknown package: %v", name.Str)
 	}
-	for _, sym := range pkg.Externals {
+	for _, sym := range pkg.externals {
 		v := pkg.Get(Symbol(sym))
 		if v.Type == LError {
 			return env.Errorf("package %s: %v", name.Str, v)
@@ -339,7 +411,7 @@ func (env *LEnv) load(ctx context.Context, exprs []*LVal) *LVal {
 	return ret
 }
 
-// Copy returns a new LEnv with a copy of env.Scope but a shared parent and
+// Copy returns a new LEnv with a copy of env.scope but a shared parent and
 // stack (not quite a deep copy).
 func (env *LEnv) Copy() *LEnv {
 	if env == nil {
@@ -347,9 +419,9 @@ func (env *LEnv) Copy() *LEnv {
 	}
 	cp := &LEnv{}
 	*cp = *env
-	cp.Scope = make(map[string]*LVal, len(env.Scope))
-	for k, v := range env.Scope {
-		cp.Scope[k] = v
+	cp.scope = make(map[string]*LVal, len(env.scope))
+	for k, v := range env.scope {
+		cp.scope[k] = v
 	}
 	return cp
 }
@@ -437,7 +509,7 @@ func (env *LEnv) get(k *LVal) *LVal {
 		}
 		return lerr
 	}
-	pkg := env.Runtime.Registry.Packages[ns]
+	pkg := env.Runtime.Registry.packages[ns]
 	if pkg == nil {
 		return env.Errorf("unknown package: %q", ns)
 	}
@@ -452,12 +524,12 @@ func (env *LEnv) get(k *LVal) *LVal {
 
 func (env *LEnv) getSimple(k *LVal) *LVal {
 	for {
-		v, ok := env.Scope[k.Str]
+		v, ok := env.scope[k.Str]
 		if ok {
 			return v
 		}
-		if env.Parent != nil {
-			env = env.Parent
+		if env.parent != nil {
+			env = env.parent
 			continue
 		}
 		return env.packageGet(k)
@@ -508,11 +580,11 @@ func (env *LEnv) pkgFunName(f *LVal) (string, error) {
 	if pkgname == "" {
 		return "", fmt.Errorf("unknown package for function %s", f.FID())
 	}
-	pkg := env.Runtime.Registry.Packages[pkgname]
+	pkg := env.Runtime.Registry.packages[pkgname]
 	if pkg == nil {
 		return "", fmt.Errorf("package not found: %q", pkgname)
 	}
-	return pkg.FunNames[f.FID()], nil
+	return pkg.funNames[f.FID()], nil
 }
 
 // Put takes an LSymbol k and binds it to v in env.  If k is already bound to a
@@ -524,7 +596,7 @@ func (env *LEnv) Put(k, v *LVal) *LVal {
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
 		return env.Errorf("cannot rebind constant: %v", k.Str)
 	}
-	env.Scope[k.Str] = v
+	env.scope[k.Str] = v
 	return Nil()
 }
 
@@ -543,12 +615,12 @@ func (env *LEnv) Update(k, v *LVal) *LVal {
 
 func (env *LEnv) update(k, v *LVal) *LVal {
 	for {
-		_, ok := env.Scope[k.Str]
+		_, ok := env.scope[k.Str]
 		if ok {
-			env.Scope[k.Str] = v
+			env.scope[k.Str] = v
 			return Nil()
 		}
-		if env.Parent == nil {
+		if env.parent == nil {
 			lerr := env.Runtime.Package.Update(k, v)
 			if lerr.Type == LError {
 				if err := env.ErrorAssociate(lerr); err != nil {
@@ -558,7 +630,7 @@ func (env *LEnv) update(k, v *LVal) *LVal {
 			}
 			return Nil()
 		}
-		env = env.Parent
+		env = env.parent
 	}
 }
 
@@ -578,7 +650,7 @@ func (env *LEnv) GetGlobal(k *LVal) *LVal {
 			// keyword
 			return k
 		}
-		pkg := env.Runtime.Registry.Packages[ns]
+		pkg := env.Runtime.Registry.packages[ns]
 		if pkg == nil {
 			return env.Errorf("unknown package: %q", ns)
 		}
@@ -607,7 +679,7 @@ func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
 		if ns == "" {
 			return env.Errorf("value cannot be assigned to a keyword: %s", k.Str)
 		}
-		pkg := env.Runtime.Registry.Packages[ns]
+		pkg := env.Runtime.Registry.packages[ns]
 		if pkg == nil {
 			return env.Errorf("unknown package: %q", ns)
 		}
@@ -643,7 +715,7 @@ func (env *LEnv) TaggedValue(typ *LVal, val *LVal) *LVal {
 		return env.Errorf("first argument is not a symbol: %v", GetType(typ))
 	}
 	return &LVal{
-		Source: env.Loc,
+		source: env.loc,
 		Type:   LTaggedVal,
 		Str:    typ.Str,
 		Cells:  []*LVal{val},
@@ -690,11 +762,11 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	fenv := NewEnv(env)
 	fun := &LVal{
 		Type:   LFun,
-		Source: env.Loc,
-		Native: &LFunData{
-			FID:     fenv.getFID(),
-			Package: env.Runtime.Package.Name,
-			Env:     fenv,
+		source: env.loc,
+		Native: &funData{
+			fid: fenv.getFID(),
+			pkg: env.Runtime.Package.Name,
+			env: fenv,
 		},
 		Cells: cells,
 	}
@@ -720,8 +792,8 @@ func (env *LEnv) Terminal(expr *LVal) *LVal {
 }
 
 func (env *LEnv) root() *LEnv {
-	for env.Parent != nil {
-		env = env.Parent
+	for env.parent != nil {
+		env = env.parent
 	}
 	return env
 }
@@ -753,7 +825,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 		fn.Cells[1] = String(builtinDocstring(mac))
 		pkg.Put(k, fn)
 		if external {
-			pkg.Externals = append(pkg.Externals, k.Str)
+			pkg.externals = append(pkg.externals, k.Str)
 		}
 	}
 }
@@ -783,7 +855,7 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 		fn.Cells[1] = String(builtinDocstring(op))
 		pkg.Put(k, fn)
 		if external {
-			pkg.Externals = append(pkg.Externals, k.Str)
+			pkg.externals = append(pkg.externals, k.Str)
 		}
 	}
 }
@@ -813,7 +885,7 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 		v.Cells[1] = String(builtinDocstring(f))
 		pkg.Put(k, v)
 		if external {
-			pkg.Externals = append(pkg.Externals, k.Str)
+			pkg.externals = append(pkg.externals, k.Str)
 		}
 	}
 }
@@ -872,10 +944,12 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 	}
 	lerr := &LVal{
 		Type: LError,
-		// Copied, not aliased: the error outlives the evaluator's
-		// current location and must not move when env.Loc's pointee
-		// does.  Same reasoning as ErrorAssociate below (issue #366).
-		Source: env.Loc.Copy(),
+		// Copied, not aliased: the error outlives the evaluator's current
+		// location and must not move when env.loc's pointee does.  The
+		// evaluator (or a producing parser) may still fix that Location up
+		// in place.  Same reasoning as ErrorAssociate below (issue #366).
+		// Copy preserves nil, which is the "<native code>" convention.
+		source: env.loc.Copy(),
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
 		Cells:  cells,
@@ -903,8 +977,9 @@ func (env *LEnv) Errorf(format string, v ...interface{}) *LVal {
 // with a copy env.Runtime.Stack.
 func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
 	lerr := &LVal{
-		// Copied, not aliased -- see ErrorAssociate (issue #366).
-		Source: env.Loc.Copy(),
+		// Copied, not aliased -- see ErrorCondition and ErrorAssociate
+		// (issue #366).
+		source: env.loc.Copy(),
 		Type:   LError,
 		Str:    condition,
 		Native: env.Runtime.Stack.Copy(),
@@ -928,25 +1003,27 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	if lerr.CallStack() == nil {
 		lerr.SetCallStack(env.Runtime.Stack.Copy())
 	}
-	// This check smells a little funny.  All objects are given a source
-	// which may be a nativeSource() value which does not correspond to a
-	// file and has an invalid position (-1).  When associating an error
+	// This check smells a little funny.  An object's source may be absent
+	// (nil — the "<native code>" convention) or carry an invalid position
+	// (-1).  When associating an error
 	// the env's current location is probably more accurate than native
 	// source (or it may also be native source).
 	//
-	// The location is COPIED rather than aliased (issue #366).  env.Loc
-	// is a pointer the evaluator keeps rebinding, and it points either
-	// at an AST node's Source or -- when the node was built by Go
-	// rather than parsed -- at the process-wide nativeSource singleton
-	// (issue #362).  Storing the pointer leaves the raised error and
-	// the still-running evaluator sharing one Location, so a later
-	// in-place write through either retroactively moves the position an
-	// already-reported error blames, and the damage surfaces nowhere
-	// near the write.  Copy preserves nil, so a nil env.Loc still
-	// yields a nil Source and the `Source == nil` convention on the
-	// line above is unchanged.
-	if lerr.Source == nil || lerr.Source.Pos < 0 {
-		lerr.Source = env.Loc.Copy()
+	// The location is COPIED rather than aliased (issue #366).  env.loc is a
+	// pointer the evaluator keeps rebinding, and it points at an AST node's
+	// own location -- storage that a shared parse tree owns.  Storing the
+	// pointer leaves
+	// the raised error and the still-running evaluator holding one Location,
+	// so a later in-place write through either retroactively moves the
+	// position an already-reported error blames, and the damage surfaces
+	// nowhere near the write.  (Values Go constructed carry no location at
+	// all now -- see nativeLocation -- so the process-wide singleton issue
+	// #362 also named is gone; what remains is the parse tree's own
+	// objects.)  Copy preserves nil, so a nil env.loc still yields a nil
+	// source and the `source == nil` convention on the line above is
+	// unchanged.
+	if lerr.source == nil || lerr.source.Pos < 0 {
+		lerr.source = env.loc.Copy()
 	}
 	return nil
 }
@@ -1045,18 +1122,18 @@ eval:
 	if lerr := env.checkLimits(ctx); lerr != nil {
 		return lerr
 	}
-	if v.Spliced {
+	if v.spliced {
 		return env.Errorf("spliced value used as expression")
 	}
-	env.Loc = v.Source
-	if v.Source != nil {
+	env.loc = v.source
+	if v.source != nil {
 		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
 			if d.OnEval(env, v) {
 				d.WaitIfPaused(env, v)
 			}
 		}
 	}
-	if v.Quoted {
+	if v.quoted {
 		return v
 	}
 	switch v.Type {
@@ -1076,7 +1153,7 @@ eval:
 		if strings.IndexByte(name, ':') >= 0 {
 			return env.Errorf("illegal symbol: %q", v.Str)
 		}
-		pkg := env.Runtime.Registry.Packages[ns]
+		pkg := env.Runtime.Registry.packages[ns]
 		if pkg == nil {
 			return env.Errorf("unknown package: %q", ns)
 		}
@@ -1093,7 +1170,7 @@ eval:
 		// frame has been popped and depth has decreased. If the debugger
 		// is stepping out, this is where we catch tail-position returns
 		// that would otherwise unwind without hitting OnEval.
-		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() && v.Source != nil {
+		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() && v.source != nil {
 			if d.AfterFunCall(env) {
 				d.WaitIfPaused(env, v)
 			}
@@ -1176,8 +1253,8 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	// Capture the call-site location before entering the macro body so we
 	// can stamp it onto expanded nodes that lack real source info.
 	//
-	// A COPY, not the pointer (elps#431).  env.Loc is set by eval to the
-	// Source of the node being evaluated, so it is a *token.Location owned by
+	// A COPY, not the pointer (elps#431).  env.loc is set by eval to the
+	// location of the node being evaluated, so it is a *token.Location owned by
 	// a node in the CALLER'S parse tree.  Handing that pointer to
 	// stampMacroExpansion gave every synthesized node of the expansion the
 	// caller's own object: one macro call put N+1 nodes -- the N stamped
@@ -1192,7 +1269,7 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	// expansion -- and one object per expansion buys exactly that.  The N
 	// stamped nodes still share, but they share a Location the expansion owns
 	// and that no other tree can see, and they genuinely all sit at the call
-	// site; collapsing that last bit of sharing is what making LVal.Source
+	// site; collapsing that last bit of sharing is what making LVal.source
 	// immutable is for, and it would cost an allocation per node on the
 	// expansion path (elps#421 measured a fresh Location per call on a hot
 	// path at +18.6% sec/op, +20.2% allocs/op geomean).  This costs one, next
@@ -1202,12 +1279,12 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	// nothing -- stampMacroExpansion returns early on a nil callSite.
 	//
 	// The copy is taken here rather than inside stampMacroExpansion so that
-	// MacroExpansionContext.CallSite below, which outlives the expansion on
-	// every node's MacroExpansionInfo, is covered by the same allocation.
-	callSite := env.Loc.Copy()
+	// macroExpansionContext.CallSite below, which outlives the expansion on
+	// every node's macroExpansionInfo, is covered by the same allocation.
+	callSite := env.loc.Copy()
 
 	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.PushFID(env.Loc, fun.FID(), fun.Package(), env.GetFunName(fun))
+	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
 	if err != nil {
 		return env.Error(err)
 	}
@@ -1231,18 +1308,18 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	// Stamp expanded nodes that have synthetic source locations (Pos < 0)
 	// with the call-site location so errors point to where the macro was
 	// invoked rather than "<native code>" or the macro definition site.
-	// When a debugger is attached, also populate MacroExpansionInfo on
+	// When a debugger is attached, also populate macroExpansionInfo on
 	// each stamped node with unique IDs for step-into differentiation.
-	var mctx *MacroExpansionContext
+	var mctx *macroExpansionContext
 	if env.Runtime.Debugger != nil {
 		qualName := env.GetFunName(fun)
 		if pkg := fun.Package(); pkg != "" {
 			qualName = pkg + ":" + qualName
 		}
-		mctx = &MacroExpansionContext{
+		mctx = &macroExpansionContext{
 			CallSite: callSite,
 			Name:     qualName,
-			DefSite:  fun.Source,
+			DefSite:  fun.source,
 			Args:     args.Cells,
 		}
 	}
@@ -1273,7 +1350,7 @@ func (env *LEnv) specialOpCall(ctx context.Context, fun, args *LVal) *LVal {
 	}
 
 	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.PushFID(env.Loc, fun.FID(), fun.Package(), env.GetFunName(fun))
+	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
 	if err != nil {
 		return env.Error(err)
 	}
@@ -1420,7 +1497,7 @@ func (env *LEnv) funCall(ctx context.Context, fun, args *LVal) *LVal {
 	}
 
 	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.PushFID(env.Loc, fun.FID(), fun.Package(), env.GetFunName(fun))
+	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
 	if err != nil {
 		return env.Error(err)
 	}
@@ -1487,8 +1564,8 @@ func decrementMarkTailRec(mark *LVal) (done bool) {
 }
 
 func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
-	loc := env.Loc
-	defer func() { env.Loc = loc }()
+	loc := env.loc
+	defer func() { env.loc = loc }()
 
 	cells := s.Cells
 	newCells := make([]*LVal, 1, len(s.Cells))
@@ -1600,7 +1677,7 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 	outer := env.Runtime.Package
 	pkg := fun.Package()
 	if outer.Name != pkg {
-		inner := env.Runtime.Registry.Packages[pkg]
+		inner := env.Runtime.Registry.packages[pkg]
 		if inner != nil {
 			env.Runtime.Package = inner
 			defer func() {
@@ -1637,7 +1714,7 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	formals := argParser{args: fun.Cells[0].Cells}
 	narg := len(args.Cells)
 
-	funenv := fun.Env().Copy()
+	funenv := fun.funEnv().Copy()
 	putArg := func(k, v *LVal) {
 		funenv.Put(k, v)
 	}

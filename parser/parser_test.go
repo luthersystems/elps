@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/internal/fmtraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,8 +18,8 @@ func TestNewReader_Standard(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, exprs, 1)
 	assert.Equal(t, lisp.LSExpr, exprs[0].Type)
-	// Standard reader does not populate Meta.
-	assert.Nil(t, exprs[0].Meta)
+	// Standard reader does not populate formatting metadata.
+	assert.Nil(t, fmtraw.Meta(exprs[0]))
 }
 
 func TestNewReader_FormatPreserving(t *testing.T) {
@@ -27,10 +28,11 @@ func TestNewReader_FormatPreserving(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, exprs, 1)
 	// Format-preserving reader populates Meta with comments and bracket type.
-	require.NotNil(t, exprs[0].Meta)
-	assert.Equal(t, '(', exprs[0].Meta.BracketType)
-	require.Len(t, exprs[0].Meta.LeadingComments, 1)
-	assert.Contains(t, exprs[0].Meta.LeadingComments[0].Text, "comment")
+	m := fmtraw.Meta(exprs[0])
+	require.NotNil(t, m)
+	assert.Equal(t, '(', m.BracketType)
+	require.Len(t, m.LeadingComments, 1)
+	assert.Contains(t, m.LeadingComments[0].Text, "comment")
 }
 
 func TestNewReader_FormatPreserving_BracketList(t *testing.T) {
@@ -38,8 +40,9 @@ func TestNewReader_FormatPreserving_BracketList(t *testing.T) {
 	exprs, err := r.Read("test", strings.NewReader("[a b c]"))
 	require.NoError(t, err)
 	require.Len(t, exprs, 1)
-	require.NotNil(t, exprs[0].Meta)
-	assert.Equal(t, '[', exprs[0].Meta.BracketType)
+	m := fmtraw.Meta(exprs[0])
+	require.NotNil(t, m)
+	assert.Equal(t, '[', m.BracketType)
 }
 
 func TestNewReader_BackwardsCompat(t *testing.T) {
@@ -60,8 +63,10 @@ func TestNewReader_FormatPreserving_LocationReader(t *testing.T) {
 	exprs, err := lr.ReadLocation("logical", "/path/to/file.lisp", strings.NewReader("(foo)"))
 	require.NoError(t, err)
 	require.Len(t, exprs, 1)
-	assert.Equal(t, "logical", exprs[0].Source.File)
-	assert.Equal(t, "/path/to/file.lisp", exprs[0].Source.Path)
+	loc, ok := exprs[0].Source()
+	require.True(t, ok)
+	assert.Equal(t, "logical", loc.File)
+	assert.Equal(t, "/path/to/file.lisp", loc.Path)
 }
 
 func TestNewReader_Standard_ParseError(t *testing.T) {
@@ -84,6 +89,8 @@ func TestNewReader_Standard_LocationReader(t *testing.T) {
 	exprs, err := lr.ReadLocation("logical", "/path/to/file.lisp", strings.NewReader("(bar)"))
 	require.NoError(t, err)
 	require.Len(t, exprs, 1)
-	assert.Equal(t, "logical", exprs[0].Source.File)
-	assert.Equal(t, "/path/to/file.lisp", exprs[0].Source.Path)
+	loc, ok := exprs[0].Source()
+	require.True(t, ok)
+	assert.Equal(t, "logical", loc.File)
+	assert.Equal(t, "/path/to/file.lisp", loc.Path)
 }

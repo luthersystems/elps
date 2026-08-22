@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/internal/fuzzseed"
 	"github.com/luthersystems/elps/internal/fuzzwatch"
 	"github.com/luthersystems/elps/lisp"
@@ -218,11 +219,11 @@ func embedderAnalyzer(sc *script) *Analyzer {
 				case 1:
 					pass.ReportWithNotes(Diagnostic{
 						Message:  msgReportWithNotes,
-						Pos:      posFromSource(SourceOf(sexpr).Source),
+						Pos:      posFromSource(astutil.SourceLoc(SourceOf(sexpr))),
 						Severity: sev,
 					}, "first note", "")
 				default:
-					pass.Reportf(SourceOf(sexpr).Source, msgReportf+" at depth %d", depth)
+					pass.Reportf(astutil.SourceLoc(SourceOf(sexpr)), msgReportf+" at depth %d", depth)
 				}
 			})
 			// A node with no source at all, which is what a synthesised or
@@ -517,7 +518,7 @@ func lintPreamble(src []byte) []*lisp.LVal {
 	}
 	var out []*lisp.LVal
 	for _, expr := range res.Exprs {
-		if expr == nil || expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr == nil || expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		if heads[HeadSymbol(expr)] {

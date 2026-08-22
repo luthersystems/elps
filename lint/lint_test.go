@@ -1313,24 +1313,25 @@ func TestArgCount_HeadOnly(t *testing.T) {
 
 func TestSourceOf_PreferOwnSource(t *testing.T) {
 	v := &lisp.LVal{
-		Source: &token.Location{File: "test.lisp", Line: 5},
-		Cells: []*lisp.LVal{
-			{Source: &token.Location{File: "test.lisp", Line: 10}},
-		},
+		Cells: []*lisp.LVal{{}},
 	}
+	v.SetSource(&token.Location{File: "test.lisp", Line: 5})
+	v.Cells[0].SetSource(&token.Location{File: "test.lisp", Line: 10})
 	result := SourceOf(v)
-	assert.Equal(t, 5, result.Source.Line)
+	loc, ok := result.Source()
+	assert.True(t, ok)
+	assert.Equal(t, 5, loc.Line)
 }
 
 func TestSourceOf_FallbackToChild(t *testing.T) {
 	v := &lisp.LVal{
-		Source: nil,
-		Cells: []*lisp.LVal{
-			{Source: &token.Location{File: "test.lisp", Line: 10}},
-		},
+		Cells: []*lisp.LVal{{}},
 	}
+	v.Cells[0].SetSource(&token.Location{File: "test.lisp", Line: 10})
 	result := SourceOf(v)
-	assert.Equal(t, 10, result.Source.Line)
+	loc, ok := result.Source()
+	assert.True(t, ok)
+	assert.Equal(t, 10, loc.Line)
 }
 
 func TestSourceOf_FallbackToSelf(t *testing.T) {
@@ -1343,36 +1344,42 @@ func TestSourceOf_FallbackToSelf(t *testing.T) {
 func TestSourceOf_FallbackZeroLine(t *testing.T) {
 	// Source exists but line is 0 — should fall back to child
 	v := &lisp.LVal{
-		Source: &token.Location{File: "test.lisp", Line: 0},
-		Cells: []*lisp.LVal{
-			{Source: &token.Location{File: "test.lisp", Line: 7}},
-		},
+		Cells: []*lisp.LVal{{}},
 	}
+	v.SetSource(&token.Location{File: "test.lisp", Line: 0})
+	v.Cells[0].SetSource(&token.Location{File: "test.lisp", Line: 7})
 	result := SourceOf(v)
-	assert.Equal(t, 7, result.Source.Line)
+	loc, ok := result.Source()
+	assert.True(t, ok)
+	assert.Equal(t, 7, loc.Line)
 }
 
 // --- bindingSource fallback ---
 
 func TestBindingSource_UsesBinding(t *testing.T) {
-	binding := &lisp.LVal{Source: &token.Location{File: "a.lisp", Line: 3}}
-	fallback := &lisp.LVal{Source: &token.Location{File: "b.lisp", Line: 1}}
+	binding := &lisp.LVal{}
+	binding.SetSource(&token.Location{File: "a.lisp", Line: 3})
+	fallback := &lisp.LVal{}
+	fallback.SetSource(&token.Location{File: "b.lisp", Line: 1})
 	loc := bindingSource(binding, fallback)
 	assert.Equal(t, 3, loc.Line)
 	assert.Equal(t, "a.lisp", loc.File)
 }
 
 func TestBindingSource_FallbackNilSource(t *testing.T) {
-	binding := &lisp.LVal{Source: nil}
-	fallback := &lisp.LVal{Source: &token.Location{File: "b.lisp", Line: 1}}
+	binding := &lisp.LVal{}
+	fallback := &lisp.LVal{}
+	fallback.SetSource(&token.Location{File: "b.lisp", Line: 1})
 	loc := bindingSource(binding, fallback)
 	assert.Equal(t, 1, loc.Line)
 	assert.Equal(t, "b.lisp", loc.File)
 }
 
 func TestBindingSource_FallbackZeroLine(t *testing.T) {
-	binding := &lisp.LVal{Source: &token.Location{File: "a.lisp", Line: 0}}
-	fallback := &lisp.LVal{Source: &token.Location{File: "b.lisp", Line: 5}}
+	binding := &lisp.LVal{}
+	binding.SetSource(&token.Location{File: "a.lisp", Line: 0})
+	fallback := &lisp.LVal{}
+	fallback.SetSource(&token.Location{File: "b.lisp", Line: 5})
 	loc := bindingSource(binding, fallback)
 	assert.Equal(t, 5, loc.Line)
 	assert.Equal(t, "b.lisp", loc.File)
@@ -3097,12 +3104,12 @@ func TestLintFiles_Registry_ResolvesEmbedderSymbols(t *testing.T) {
 	env := lisp.NewEnv(nil)
 	lisp.InitializeUserEnv(env)
 	pkg := env.Runtime.Registry.DefinePackage("embedder")
-	pkg.Symbols["embedder-fn"] = lisp.Fun("embedder-fn",
+	pkg.Put(lisp.Symbol("embedder-fn"), lisp.Fun("embedder-fn",
 		lisp.Formals("a", "b", "c"),
 		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			return lisp.Nil()
-		})
-	pkg.Externals = append(pkg.Externals, "embedder-fn")
+		}))
+	pkg.Export("embedder-fn")
 
 	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
 	diags, err := l.LintFiles(&LintConfig{
@@ -3222,12 +3229,12 @@ func TestBuildAnalysisConfig_WithRegistry(t *testing.T) {
 	env := lisp.NewEnv(nil)
 	lisp.InitializeUserEnv(env)
 	ccPkg := env.Runtime.Registry.DefinePackage("cc")
-	ccPkg.Symbols["storage-put"] = lisp.Fun("storage-put",
+	ccPkg.Put(lisp.Symbol("storage-put"), lisp.Fun("storage-put",
 		lisp.Formals("key", "value"),
 		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			return lisp.Nil()
-		})
-	ccPkg.Externals = append(ccPkg.Externals, "storage-put")
+		}))
+	ccPkg.Export("storage-put")
 
 	cfg, err := BuildAnalysisConfig(&LintConfig{
 		Workspace: dir,

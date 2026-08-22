@@ -4,7 +4,7 @@
 //
 // stampMacroExpansion walks a macro's expansion and replaces every SYNTHETIC
 // source location -- nil, or Pos < 0, i.e. lisp.nativeSource's "<native code>"
-// -- with the macro's call site, attaching a MacroExpansionInfo as well when a
+// -- with the macro's call site, attaching expansion metadata as well when a
 // debugger is attached.  Both are writes to *LVal fields.
 //
 // The walk is meant to reach only nodes the macro CREATED.  It reached parser
@@ -26,7 +26,7 @@
 //     the same sharing elps#397 turned into "fatal error: concurrent map read
 //     and map write".
 //
-// So two environments expanding the same macro call wrote to one *LVal.Source
+// So two environments expanding the same macro call wrote to one *LVal's location
 // word with no synchronisation between them.  Before the fix `go test -race`
 // reported it at macro.go:276 (the read) and macro.go:277 (the write).
 //
@@ -52,9 +52,9 @@ import (
 )
 
 // dormantDebugger is the cheapest thing that satisfies lisp.Debugger.  Only
-// its presence matters here: macroCall builds a MacroExpansionContext whenever
+// its presence matters here: macroCall builds a macro-expansion context whenever
 // Runtime.Debugger is non-nil, and that context is what stampMacroExpansion
-// turns into a MacroExpansionInfo on every node it claims.  It is never asked
+// turns into per-node expansion metadata on every node it claims.  It is never asked
 // to do anything, so every hook is dormant.
 type dormantDebugger struct{}
 
@@ -129,8 +129,8 @@ func snapshotSources(v *lisp.LVal, out map[*lisp.LVal]*struct {
 		return
 	}
 	loc := "<nil>"
-	if v.Source != nil {
-		loc = v.Source.String()
+	if src := lisp.SourceRefForTest(v); src != nil {
+		loc = src.String()
 	}
 	out[v] = &struct {
 		src  string
@@ -175,7 +175,7 @@ func TestMacroExpansionDoesNotRestampCallerParseTree(t *testing.T) {
 
 // TestMacroExpansionDoesNotStampMacroExpansionInfo is the other half of the
 // same write.  With a debugger attached the stamp also allocates a
-// MacroExpansionInfo onto each node it claims, which is a second field written
+// expansion metadata onto each node it claims, which is a second field written
 // into the shared tree -- and one that makes the node report itself to the
 // debugger as macro-generated when the user wrote it by hand.
 func TestMacroExpansionDoesNotStampMacroExpansionInfo(t *testing.T) {
@@ -188,8 +188,9 @@ func TestMacroExpansionDoesNotStampMacroExpansionInfo(t *testing.T) {
 	res := env.Eval(form)
 	require.NotEqual(t, lisp.LError, res.Type, "%v", res)
 
-	assert.Nil(t, head.MacroExpansion,
-		"macro expansion attached MacroExpansionInfo to a node the reader produced")
+	_, stamped := head.MacroExpansion()
+	assert.False(t, stamped,
+		"macro expansion attached expansion metadata to a node the reader produced")
 }
 
 // TestMacroExpansionSharedParseTreeIsRaceFree is the concurrency arm, and the
@@ -234,10 +235,11 @@ func TestMacroExpansionSharedParseTreeIsRaceFree(t *testing.T) {
 	for i, form := range shared {
 		head := findSymbol(form, "lisp:function")
 		require.NotNil(t, head)
-		require.NotNil(t, head.Source)
-		assert.GreaterOrEqualf(t, head.Source.Pos, 0,
+		headLoc := lisp.SourceRefForTest(head)
+		require.NotNil(t, headLoc)
+		assert.GreaterOrEqualf(t, headLoc.Pos, 0,
 			"form %d: the #' head lost its real source location", i)
-		assert.Equalf(t, "shared.lisp", head.Source.File,
+		assert.Equalf(t, "shared.lisp", headLoc.File,
 			"form %d: the #' head was relocated", i)
 	}
 }

@@ -16,7 +16,6 @@ import (
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
-	"github.com/luthersystems/elps/parser/token"
 )
 
 // cyclic is a Go value that points at itself. A native is an arbitrary host
@@ -262,141 +261,6 @@ func TestGuardDetectsNestedNativeMutation(t *testing.T) {
 	}
 }
 
-// TestGuardDetectsSourceCorruption is the (c) half.
-//
-// Each case is a write the interpreter must never perform, and the last two
-// are the ones the tracker's blanket exclusion was hiding: an in-place edit of
-// the shared synthetic Location relocates every value in the process and is
-// invisible to lisp.SingletonSnapshot, which compares Source by pointer.
-func TestGuardDetectsSourceCorruption(t *testing.T) {
-	t.Parallel()
-
-	real1 := &token.Location{File: "a.lisp", Pos: 10, Line: 2, Col: 3}
-	real2 := &token.Location{File: "b.lisp", Pos: 20, Line: 4, Col: 5}
-
-	for _, c := range []struct {
-		name string
-		mut  func(v *lisp.LVal)
-		make func() *lisp.LVal
-	}{
-		{
-			name: "real replaced by real",
-			make: func() *lisp.LVal { v := lisp.Int(1); v.Source = real1; return v },
-			mut:  func(v *lisp.LVal) { v.Source = real2 },
-		},
-		{
-			name: "real replaced by nil",
-			make: func() *lisp.LVal { v := lisp.Int(1); v.Source = real1; return v },
-			mut:  func(v *lisp.LVal) { v.Source = nil },
-		},
-		{
-			name: "real replaced by synthetic",
-			make: func() *lisp.LVal { v := lisp.Int(1); v.Source = real1; return v },
-			mut:  func(v *lisp.LVal) { v.Source = &token.Location{Pos: -1} },
-		},
-		{
-			name: "shared synthetic edited in place",
-			// The value gets its OWN synthetic location rather than the one
-			// lisp.Int hands it. nativeSource() returns defaultSourceLocation,
-			// a package-level singleton shared by every value constructed
-			// anywhere in this binary -- editing it in place here corrupted it
-			// for every other test, and TestGuardPermitsEveryReplacementOfA-
-			// SyntheticLocation then failed its own precondition whenever it
-			// happened to run afterwards. With t.Parallel() that is a race:
-			// measured at 2 failures in 8 runs of this package.
-			//
-			// The guard's rule is about the POINTER being unchanged while the
-			// pointee is edited, so a location this test owns exercises it
-			// identically. Which particular synthetic location it is does not
-			// matter to the guard, and mutating a shared one is precisely the
-			// defect class this package exists to detect.
-			make: func() *lisp.LVal {
-				v := lisp.Int(1)
-				v.Source = &token.Location{File: "<native code>", Pos: -1}
-				return v
-			},
-			mut: func(v *lisp.LVal) { v.Source.Pos = 7 },
-		},
-		{
-			name: "real location edited in place",
-			make: func() *lisp.LVal {
-				v := lisp.Int(1)
-				v.Source = &token.Location{File: "c.lisp", Pos: 1, Line: 1, Col: 1}
-				return v
-			},
-			mut: func(v *lisp.LVal) { v.Source.Line = 99 },
-		},
-		{
-			name: "nested cell relocated",
-			make: func() *lisp.LVal {
-				inner := lisp.Int(1)
-				inner.Source = real1
-				return lisp.SExpr([]*lisp.LVal{lisp.Symbol("f"), inner})
-			},
-			mut: func(v *lisp.LVal) { v.Cells[1].Source = real2 },
-		},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			// NOT parallel: the "shared synthetic" case mutates a
-			// process-wide Location and puts it back.
-			v := c.make()
-			g := fuzzfp.Watch(v)
-			if msg := g.Check(); msg != "" {
-				t.Fatalf("clean check reported a violation: %s", msg)
-			}
-			before := *v.Source
-			c.mut(v)
-			msg := g.Check()
-			if v.Source != nil && *v.Source != before {
-				*v.Source = before // restore the shared Location, if that is what was hit
-			}
-			if msg == "" {
-				t.Fatalf("%s was not reported; the Source half of the guard is blind", c.name)
-			}
-		})
-	}
-}
-
-// TestGuardPermitsTheMacroExpansionStamp is the false-positive half, and it is
-// the reason the tracker excluded Source in the first place.
-//
-// stampMacroExpansion replaces a synthetic location with the macro call site
-// on every node of an expansion, and it is correct to do so. A guard that
-// reported it would be off within a week, so the exact transition it performs
-// is permitted -- and only that one, which the test above pins in the other
-// direction.
-func TestGuardPermitsTheMacroExpansionStamp(t *testing.T) {
-	t.Parallel()
-
-	callSite := &token.Location{File: "caller.lisp", Pos: 100, Line: 9, Col: 1}
-
-	// A synthetic node, exactly as every constructor in lisp/ produces.
-	v := lisp.SExpr([]*lisp.LVal{lisp.Symbol("f"), lisp.Int(1)})
-	if v.Source == nil || v.Source.Pos >= 0 {
-		t.Fatalf("expected a synthetic Source on a constructed value, got %+v; the premise of"+
-			" the Source rule (stamping only ever overwrites Pos < 0) no longer holds", v.Source)
-	}
-	g := fuzzfp.Watch(v)
-	// What stampMacroExpansion does, with its own guard.
-	var stamp func(*lisp.LVal)
-	stamp = func(n *lisp.LVal) {
-		if n == lisp.Nil() || n == lisp.Bool(true) || n == lisp.Bool(false) {
-			return
-		}
-		if n.Source == nil || n.Source.Pos < 0 {
-			n.Source = callSite
-		}
-		for _, c := range n.Cells {
-			stamp(c)
-		}
-	}
-	stamp(v)
-	if msg := g.Check(); msg != "" {
-		t.Fatalf("the macro-expansion stamp was reported as corruption, which would make the"+
-			" guard unusable on every macro in the library: %s", msg)
-	}
-}
-
 // TestGuardIsDeterministicOverGeneratedValues runs the guard over the whole
 // generated corpus -- every shape internal/fuzzval can produce, from every
 // seed -- and asserts that Watch/Check on an untouched value is clean.
@@ -467,38 +331,4 @@ func longest(re *regexp.Regexp) *regexp.Regexp {
 	cp := re.Copy()
 	cp.Longest()
 	return cp
-}
-
-// TestGuardPermitsEveryReplacementOfASyntheticLocation is the other
-// false-positive guard, and it is why the Source rule stops where it does.
-//
-// LEnv.errorSource stamps an error's location under the same
-// `Source == nil || Source.Pos < 0` condition stampMacroExpansion uses, and it
-// assigns env.Loc -- which is itself assigned from an evaluated node's Source
-// and can therefore be nil. Every transition below is reachable from correct
-// interpreter code, so reporting any of them would make the gate flaky rather
-// than strict.
-func TestGuardPermitsEveryReplacementOfASyntheticLocation(t *testing.T) {
-	t.Parallel()
-	for _, c := range []struct {
-		name string
-		to   *token.Location
-	}{
-		{"to a real location", &token.Location{File: "x.lisp", Pos: 3, Line: 1, Col: 4}},
-		{"to nil", nil},
-		{"to another synthetic location", &token.Location{File: "<native code>", Pos: -1}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			v := lisp.Int(1)
-			if v.Source == nil || v.Source.Pos >= 0 {
-				t.Fatalf("expected a synthetic Source on a constructed value, got %+v", v.Source)
-			}
-			g := fuzzfp.Watch(v)
-			v.Source = c.to
-			if msg := g.Check(); msg != "" {
-				t.Fatalf("a transition the interpreter itself performs was reported: %s", msg)
-			}
-		})
-	}
 }

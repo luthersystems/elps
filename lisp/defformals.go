@@ -92,6 +92,13 @@ func (c *formalsCopier) copy(formals *LVal) *LVal {
 	if len(c.vals) < n+1 || len(c.ptrs) < n {
 		return formals.Copy()
 	}
+	// EVERY WRITE BELOW LANDS IN THE BLOCK, never in `formals`.  cp, syms and
+	// cells are all carved out of c.vals / c.ptrs, which newFormalsCopier
+	// allocated for this registration call and which nothing else can reach
+	// yet -- the values are installed into the environment's registry later
+	// in the same loop.  `formals` is READ ONLY here, and that is the whole
+	// point of the function: it is what makes the shared definition table
+	// safe to register from.
 	cp := &c.vals[0]
 	*cp = *formals
 	c.vals = c.vals[1:]
@@ -135,6 +142,13 @@ func blockCopyableFormals(v *LVal) bool {
 // nativeLeafLVal reports whether a shallow struct copy of v is a complete copy
 // of v's own fields -- that is, whether v carries none of the per-node mutable
 // state LVal.Copy duplicates explicitly.
+//
+// A nil source is what "natively constructed" looks like now: nothing stamps
+// a shared "<native code>" Location any more, so this reads `source == nil`
+// where it used to read `Source == defaultSourceLocation` (issue #362).  A
+// formals list built by lisp.Formals satisfies it; anything the parser
+// produced does not, and falls back to LVal.Copy, which duplicates the
+// location.
 func nativeLeafLVal(v *LVal) bool {
-	return v.Source == defaultSourceLocation && v.Meta == nil && v.MacroExpansion == nil
+	return v.source == nil && v.meta == nil && v.macroExpansion == nil
 }

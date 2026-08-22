@@ -13,10 +13,11 @@ func ExtractPackageExports(reg *lisp.PackageRegistry) map[string][]ExternalSymbo
 		return nil
 	}
 	result := make(map[string][]ExternalSymbol)
-	for name, pkg := range reg.Packages {
+	for _, name := range reg.PackageNames() {
+		pkg := reg.Package(name)
 		var syms []ExternalSymbol
-		for _, extName := range pkg.Externals {
-			val, ok := pkg.Symbols[extName]
+		for _, extName := range pkg.Externals() {
+			val, ok := pkg.Symbol(extName)
 			if !ok {
 				continue
 			}

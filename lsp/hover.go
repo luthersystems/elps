@@ -169,10 +169,10 @@ func (s *Server) registryHover(word string, ast []*lisp.LVal, elpsLine int) stri
 func usedPackagesAtLine(ast []*lisp.LVal, line int) []string {
 	var pkgs []string
 	for _, expr := range ast {
-		if expr == nil || expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr == nil || expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
-		if expr.Source != nil && expr.Source.Line > line {
+		if loc, ok := expr.Source(); ok && loc.Line > line {
 			break
 		}
 		head := expr.Cells[0]
