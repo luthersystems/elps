@@ -27,7 +27,7 @@ func programTestEnv(tb testing.TB) *lisp.LEnv {
 	return env
 }
 
-// TestLoadProgram proves the Program path evaluates exactly like the Reader
+// TestLoadProgram proves the sealed path evaluates exactly like the Reader
 // path: parse once into a Program, load it, and get the same result
 // LoadString produces for the same source.
 func TestLoadProgram(t *testing.T) {
@@ -133,11 +133,15 @@ func TestParseProgramErrors(t *testing.T) {
 }
 
 // TestProgramZero pins the zero value's behavior: empty, loadable, nil
-// result.
+// result, nothing to detach.
 func TestProgramZero(t *testing.T) {
 	var p lisp.Program
 	if p.Len() != 0 {
 		t.Errorf("zero Len() = %d", p.Len())
+	}
+	exprs, err := lisp.ProgramDetach(p)
+	if err != nil || exprs != nil {
+		t.Errorf("zero detach = %v, %v; want nil, nil", exprs, err)
 	}
 	env := programTestEnv(t)
 	if got := env.LoadProgram(p); !got.IsNil() {
@@ -154,5 +158,37 @@ func TestProgramString(t *testing.T) {
 	// only the expression count, never the expressions.
 	if got := p.String(); got != "<program 3 exprs>" {
 		t.Errorf("String() = %q, want \"<program 3 exprs>\"", got)
+	}
+}
+
+// TestProgramDetach proves the detach machinery hands back copies:
+// mutating the detached
+// expressions does not change what the sealed program evaluates to.
+func TestProgramDetach(t *testing.T) {
+	env := programTestEnv(t)
+	p, err := env.ParseProgram("d.lisp", "d.lisp", strings.NewReader(`'(1 2 3)`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	exprs, err := lisp.ProgramDetach(p)
+	if err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if len(exprs) != 1 {
+		t.Fatalf("detach returned %d exprs, want 1", len(exprs))
+	}
+	// Vandalize every node of the detached copy.
+	var vandalize func(v *lisp.LVal)
+	vandalize = func(v *lisp.LVal) {
+		v.Int = 999
+		v.Str = "vandalized"
+		for _, c := range v.Cells {
+			vandalize(c)
+		}
+	}
+	vandalize(exprs[0])
+	want := programTestEnv(t).LoadString("d.lisp", `'(1 2 3)`)
+	if got := env.LoadProgram(p); got.String() != want.String() {
+		t.Errorf("sealed program affected by writes to detached copy: got %v, want %v", got, want)
 	}
 }

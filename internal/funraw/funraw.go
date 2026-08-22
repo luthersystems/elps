@@ -7,7 +7,7 @@
 // captured environment was the deepest aliasing channel left in the exported
 // API — an *LEnv handed to an embedder reaches the bindings of every closure
 // sharing it, and rebinding one (Put, or the scope map itself before the
-// same issue unexported it) is invisible to every other guard.  Function
+// same issue unexported it) is invisible to the seal.  Function
 // identity stays on the exported surface (FID, Package, Builtin are string/
 // func reads), but the environment itself is now reachable only through
 // this package: it lives under internal/, so the Go compiler limits it to

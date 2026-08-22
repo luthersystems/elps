@@ -209,7 +209,7 @@ func (s *TestSuite) MacroBenchmarkSimple(env *lisp.LEnv, args *lisp.LVal) *lisp.
 		lisp.Symbol("lisp:dotimes"),
 		list(lisp.Symbol("_"), countsym),
 	)
-	body.Cells = append(body.Cells, exprs...)
+	body.Cells = append(body.Cells, exprs...) //elps:mutates body is freshly built by list() above; the helper hides its freshness from the intraprocedural rule
 	return list(
 		lisp.Symbol("benchmark"),
 		name,

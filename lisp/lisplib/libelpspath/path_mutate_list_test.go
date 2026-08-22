@@ -175,6 +175,19 @@ func TestMutateListRejected(t *testing.T) {
 			// Assertion (c): the same parsed AST is evaluated a second
 			// time in a fresh environment, which is what a warm parse
 			// cache does, and must still see the pristine literal.
+			//
+			// It runs in CHECKED builds too, which is worth a line because
+			// the sealing work briefly made it not.  The elpscheck ownership
+			// checker forbids one *LVal reaching two Runtimes, and this test
+			// hands one parse to two -- so it carried a build-tagged
+			// `elpscheckEnabled` skip that gave up assertion (c) under the
+			// tag.  The sealed-node exemption (allowlist entry 2 in
+			// lisp/ownership_check_elpscheck.go) is what removed the need:
+			// the exprs here ARE sealed, and sharing a sealed parse across
+			// runtimes is the topology sealing exists to sanction.  The
+			// constant and its two build-tagged files went with the skip.
+			// Coverage went up, not down: the checked build now runs the
+			// half it used to decline.
 			env2 := newMutateTestEnv(t)
 			results2, panicked2 := evalAll(env2, exprs)
 			if panicked2 != nil {

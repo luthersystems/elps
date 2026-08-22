@@ -97,13 +97,17 @@ func (c *formalsCopier) copy(formals *LVal) *LVal {
 	// allocated for this registration call and which nothing else can reach
 	// yet -- the values are installed into the environment's registry later
 	// in the same loop.  `formals` is READ ONLY here, and that is the whole
-	// point of the function: it is what makes the shared definition table
-	// safe to register from.
+	// point of the function: it is what makes the shared (and sealed)
+	// definition table safe to register from.  elpsvet cannot see that the
+	// destination is block storage rather than a caller's value, so each
+	// write is annotated rather than the rule relaxed.
 	cp := &c.vals[0]
+	//elps:mutates initialises a fresh LVal carved from this call's own block; `formals` is only read
 	*cp = *formals
 	c.vals = c.vals[1:]
 	if n == 0 {
 		// LVal.copyCells returns nil for an empty list; match it.
+		//elps:mutates initialises the block-allocated copy above, not the caller's list
 		cp.Cells = nil
 		return cp
 	}
@@ -115,6 +119,7 @@ func (c *formalsCopier) copy(formals *LVal) *LVal {
 		syms[i] = *cell
 		cells[i] = &syms[i]
 	}
+	//elps:mutates attaches the block-allocated cell slice to the block-allocated copy; neither is the caller's
 	cp.Cells = cells
 	return cp
 }

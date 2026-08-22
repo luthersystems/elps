@@ -112,8 +112,8 @@ func InitializeTypedef(env *LEnv) *LVal {
 // applied one layer up from LVal.  `env.scope[sym] = v` used to let any
 // holder of an *LEnv rebind a symbol in a live environment — including a
 // closure's captured environment, shared by every function value that
-// closed over it — without going through Put; `env.loc = loc` aliased a
-// caller's mutable location
+// closed over it — without going through Put, invisible to the runtime
+// seal and to elpsvet; `env.loc = loc` aliased a caller's mutable location
 // into every error and stack frame the evaluator stamped afterwards (the
 // #362 aliasing class).  Reads are mediated by Bindings, NumBindings,
 // Parent and Source; the writes are kernel-only.
@@ -405,9 +405,14 @@ func (env *LEnv) load(ctx context.Context, exprs []*LVal) *LVal {
 	for _, expr := range exprs {
 		ret = env.eval(ctx, expr)
 		if ret.Type == LError {
-			return ret
+			break
 		}
 	}
+	// Checked builds re-verify this load's sealed parse against its
+	// seal-time fingerprint, on the error path too — an evaluation error
+	// does not excuse corrupting the shared tree.  A no-op in production
+	// builds; see lisp/seal_check_elpscheck.go.
+	verifySealedLoadRoots(exprs)
 	return ret
 }
 
@@ -590,6 +595,11 @@ func (env *LEnv) pkgFunName(f *LVal) (string, error) {
 // Put takes an LSymbol k and binds it to v in env.  If k is already bound to a
 // value the binding is updated so that k is bound to v.
 func (env *LEnv) Put(k, v *LVal) *LVal {
+	// Ownership check (elpscheck builds only; no-op otherwise): a binding
+	// is the durable way a value enters a runtime, so both the key and the
+	// value are adopted/asserted here.
+	checkOwnership(env.Runtime, k)
+	checkOwnership(env.Runtime, v)
 	if k.Type != LSymbol && k.Type != LQSymbol {
 		return env.Errorf("key is not a symbol: %v", k.Type)
 	}
@@ -667,6 +677,13 @@ func (env *LEnv) GetGlobal(k *LVal) *LVal {
 
 // PutGlobal takes an LSymbol k and binds it to v in current package.
 func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
+	// Ownership check (elpscheck builds only; no-op otherwise).  This entry
+	// covers the package-scope binding path, including the pkg.Put calls
+	// below.  Package.Put itself is not instrumented — a Package has no
+	// *Runtime reference to assert against; every evaluator-driven global
+	// write funnels through here first.
+	checkOwnership(env.Runtime, k)
+	checkOwnership(env.Runtime, v)
 	pieces := SplitSymbol(k)
 	if pieces.Type == LError {
 		if err := env.ErrorAssociate(pieces); err != nil {
@@ -797,6 +814,38 @@ func (env *LEnv) root() *LEnv {
 	}
 	return env
 }
+
+// The definition tables' formals are SEALED, and every environment still gets
+// its OWN copy of them.  The two are not alternatives, and the reason they
+// coexist is worth writing down because each one closes what the other leaves
+// open.
+//
+// Builtin definitions are commonly stored in package-level tables
+// (var builtins = ...) whose Formals() lists are constructed once at Go
+// program initialization, so one *LVal per definition is reachable from every
+// environment in the process (issue #363).  formalsCopier (lisp/defformals.go,
+// issue #513) severs that: each registration carves a private formals list out
+// of a block sized for the whole call, so no two environments share one, and
+// a write through one environment's formals cannot be seen from another.
+//
+// Sealing the TEMPLATE is the other half.  sealDefaultFormals (builtins.go)
+// and libutil's constructors mark the tables' own lists sealed at
+// construction, which puts the shared originals under the copy-on-write
+// mutation guards (lisp/seal.go) and, in checked builds, under the
+// fingerprint verifier (VerifySealedASTs).  The per-env copy protects each
+// environment from the others; the seal protects the process-wide template
+// from all of them, including from Go code in this repository that never goes
+// near an LEnv.
+//
+// The copies are unsealed, deliberately: formalsCopier.copy clears the flag
+// exactly as (*LVal).Copy does, so a per-env formals list is ordinary mutable
+// storage that its one owner may write.  Sharing the sealed list instead --
+// which the sealing work prototyped, and which measured ~90KiB and >1000
+// allocations saved per LoadLibrary environment -- is a real optimization and
+// is deliberately NOT taken here; it belongs with the rest of the
+// seal-enabled sharing work (issues #379, #514), where the benchmark evidence
+// and the ownership-checker consequences can be weighed together rather than
+// smuggled in as a merge resolution.
 
 // AddMacros binds the given macros to their names in env.  When called with no
 // arguments AddMacros adds the DefaultMacros to env.
@@ -1011,8 +1060,8 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	//
 	// The location is COPIED rather than aliased (issue #366).  env.loc is a
 	// pointer the evaluator keeps rebinding, and it points at an AST node's
-	// own location -- storage that a shared parse tree owns.  Storing the
-	// pointer leaves
+	// own location -- which, once the node is SEALED, is storage every
+	// environment evaluating that parse shares.  Storing the pointer leaves
 	// the raised error and the still-running evaluator holding one Location,
 	// so a later in-place write through either retroactively moves the
 	// position an already-reported error blames, and the damage surfaces
@@ -1023,7 +1072,7 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	// source and the `source == nil` convention on the line above is
 	// unchanged.
 	if lerr.source == nil || lerr.source.Pos < 0 {
-		lerr.source = env.loc.Copy()
+		lerr.source = env.loc.Copy() //elps:mutates stamps a location onto an in-flight error that had none; the location itself is copied, not aliased
 	}
 	return nil
 }
@@ -1091,6 +1140,10 @@ func (env *LEnv) eval(ctx context.Context, v *LVal) (result *LVal) {
 	defer func() {
 		env.Runtime.evalNesting--
 		if r := recover(); r != nil {
+			// Ownership violations (elpscheck builds only) must stay hard
+			// panics: re-panic before the conversion below can launder the
+			// finding into a catchable LError.  No-op in release builds.
+			rethrowOwnershipViolation(r)
 			// Tag the error with CondInternalPanic so it is distinguishable
 			// from a lisp-level error: a panic is a host-code bug, and
 			// ignore-errors / catch-all handler-bind must not silently
@@ -1109,6 +1162,12 @@ func (env *LEnv) eval(ctx context.Context, v *LVal) (result *LVal) {
 			}
 		}
 	}()
+	// Ownership check (elpscheck builds only; no-op otherwise): eval is the
+	// funnel every expression passes through, so the first evaluation of a
+	// value adopts it for this Runtime and any later evaluation under a
+	// different Runtime panics.  Placed after the deferred recover so the
+	// evalNesting counter stays balanced when the check panics.
+	checkOwnership(env.Runtime, v)
 	if env.Runtime.evalNestingExceeded() {
 		return env.ErrorConditionf(CondEvalNestingExceeded,
 			"evaluation nesting depth exceeded maximum: %d"+
@@ -1222,7 +1281,7 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 	}
 	fun := call.Cells[0] // call is not an empty expression -- fun is known LFun
 	args := call
-	args.Cells = args.Cells[1:]
+	args.Cells = args.Cells[1:] //elps:mutates decap of the call value evalSExprCells constructed just above with fresh backing
 
 	switch fun.FunType {
 	case LFunNone:
@@ -1559,7 +1618,7 @@ func decrementMarkTailRec(mark *LVal) (done bool) {
 		// wrong shape here is an evaluator bug, not program input.
 		panic("invalid mark")
 	}
-	mark.Cells[0].Int--
+	mark.Cells[0].Int-- //elps:mutates LMarkTailRec is evaluator-internal bookkeeping built by markTailRec; decrementing its counter is the mechanism
 	return mark.Cells[0].Int <= 0
 }
 

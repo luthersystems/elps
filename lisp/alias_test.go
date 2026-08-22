@@ -225,25 +225,51 @@ func TestSliceCapacityAliasing(t *testing.T) {
 // region of the source.
 //
 // Closing that would require `slice` to copy (or quoted literals to be copied
-// on evaluation), which is a separate semantic decision with its own cost, and
-// is deliberately not made here.  These rows pin the current behaviour so the
-// decision is a visible test change whenever someone does make it.
+// on evaluation), which is #373 called "a separate semantic decision with its
+// own cost, and deliberately not made here", with the note that "these rows
+// pin the current behaviour so the decision is a visible test change whenever
+// someone does make it."
+//
+// HALF OF IT HAS NOW BEEN MADE, and this is that visible test change.
+// Sealing (lisp/seal.go) draws the line at PROVENANCE rather than at the
+// operation: a quoted program literal is sealed at parse time and every
+// in-place mutation site copies before writing, because a literal is shared by
+// every environment evaluating the same parse and rewriting it corrupts the
+// program process-wide (elps#369, luthersystems/substrate#378).  A view over
+// RUNTIME storage is not sealed, is owned by its caller, and keeps the
+// documented Go-slice sharing unchanged -- the first case below.
+//
+// So the two cases have diverged on purpose, and the pair is worth keeping for
+// exactly that reason: it is where the difference between "a view shares its
+// source" (still true) and "a mutation rewrites the program text" (no longer
+// true) is stated side by side.
 func TestSliceViewSharesElements(t *testing.T) {
 	tests := elpstest.TestSuite{
 		{"stable-sort through a view still reorders the source", elpstest.TestSequence{
 			{`(set 'src (vector 5 4 3 2 1))`, `(vector 5 4 3 2 1)`, ``},
 			{`(set 'view (slice 'vector src 0 3))`, `(vector 5 4 3)`, ``},
 			{`(stable-sort < view)`, `(vector 3 4 5)`, ``},
-			// Unchanged by this fix: the first three elements of src are
-			// the same cells the view sorted.
+			// Unchanged by sealing: src is runtime storage the caller owns,
+			// and the first three elements are the same cells the view
+			// sorted.
 			{`src`, `(vector 3 4 5 2 1)`, ``},
 		}},
-		{"stable-sort mutates a quoted literal in place", elpstest.TestSequence{
+		{"stable-sort does not mutate a quoted literal", elpstest.TestSequence{
 			{`(defun probe () (let ([lit '(3 1 2)]) (stable-sort < lit) lit))`, `()`, ``},
-			{`(probe)`, `'(1 2 3)`, ``},
-			// Unchanged by this fix: the literal in the function body was
-			// sorted, and stays sorted.
-			{`(probe)`, `'(1 2 3)`, ``},
+			// Sorted into a FRESH list, which the caller here discards, so
+			// the literal in the function body reads as written...
+			{`(probe)`, `'(3 1 2)`, ``},
+			// ...and still does on the second call.  Before sealing the
+			// literal came back '(1 2 3) here, and the second call was the
+			// tell: the program's own text had been rewritten for the life of
+			// the process (elps#369).
+			{`(probe)`, `'(3 1 2)`, ``},
+			// The sorted list is still available -- it is the return value,
+			// which the docstring now says to use.
+			{`(let ([lit '(3 1 2)]) (stable-sort < lit))`, `'(1 2 3)`, ``},
+			// And a copy of the literal sorts in place as any runtime list
+			// does, which is the sanctioned way to get the old behaviour.
+			{`(let ([lit (concat 'list '(3 1 2))]) (stable-sort < lit) lit)`, `'(1 2 3)`, ``},
 		}},
 	}
 	elpstest.RunTestSuite(t, tests)

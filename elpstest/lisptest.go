@@ -221,6 +221,17 @@ func (r *Runner) RunTestFile(t *testing.T, path string) {
 			r.RunTest(t, i, path, bytes.NewReader(source))
 		})
 	}
+
+	// Checked-mode seal verification (issue #372): after the file's tests
+	// have run, re-fingerprint every sealed parse recorded in this process
+	// and fail the file if any parsed program tree was mutated in place.
+	// Complements the per-test singleton snapshot above the same way the
+	// checked-mode inspector complements checkSingleton: value-drift
+	// detection at a test boundary, no elpscheck tag required here because
+	// the call is a free nil in untagged builds.
+	if err := lisp.VerifySealedASTs(); err != nil {
+		t.Errorf("sealed AST verification failed after %s: %v", path, err)
+	}
 }
 
 // RunBenchmark runs the benchmark at index i read from source.  Path is only
@@ -442,6 +453,13 @@ func RunBenchmark(b *testing.B, source string) {
 		if err != nil {
 			b.Fatal(err)
 		}
+		// Each iteration runs in a fresh Runtime, so it must evaluate its
+		// own copy of the parsed AST rather than sharing one tree across
+		// every iteration's runtime.  This is the same rule TextLoader
+		// applies (it Copy()s per load for the same reason), and the
+		// elpscheck ownership checker (lisp/ownership_check_elpscheck.go)
+		// enforces it.  The copies are made outside the timed region so
+		// ns/op remains comparable with historical numbers.
 		iterExprs := make([]*lisp.LVal, len(exprs))
 		for i, expr := range exprs {
 			iterExprs[i] = expr.Copy()

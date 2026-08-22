@@ -76,11 +76,29 @@ import (
 //     produced no signal whatsoever.
 //
 //     fuzzfp's OTHER half -- "no argument's source location was rewritten" --
-//     is deliberately not ported.  It read the exported LVal.Source field
+//     is deliberately not ported.  It reads the exported LVal.Source field
 //     through a process-wide native-location singleton, and this branch
-//     deletes both (#362), so that half no longer compiles here.
+//     deletes both (#362, commits 9edf260 and 69be094), so that half no
+//     longer compiles here.  Nothing is lost: assertion 5's fingerprint
+//     hashes source contents, so location drift on any sealed argument is
+//     caught with a sharper signal than the fuzzfp check gave.
 //
-//  5. The call terminates.  Bounded by a context deadline, a step limit and,
+//  5. Sealed arguments are bit-identical afterwards (the issue #372
+//     corruption oracle, sharing the canonical fingerprint in
+//     lisp/sealfp.go).  Before each application every generated argument is
+//     run through SealAST, which marks exactly the values a parsed program
+//     literal could have supplied (lists, symbols, strings, numbers) and
+//     leaves runtime-only shapes (vectors, maps, natives) mutable.  That
+//     mirrors how these callables meet literals in production: a macro or
+//     special operator receives the sealed call-form nodes unevaluated, and
+//     a function receives a sealed node whenever its argument was a quoted
+//     literal, because literal evaluation returns the sealed parse node
+//     itself (lisp/seal.go).  The seal contract says NOTHING may write such
+//     a value in place -- guarded mutators copy first -- so any fingerprint
+//     drift across the call is a copy-on-write failure of the
+//     substrate#378 class, whichever of the 240 callables performed it.
+//
+//  6. The call terminates.  Bounded by a context deadline, a step limit and,
 //     because neither of those can see a loop that evaluates nothing, an
 //     out-of-band watchdog.  Two of the three defects this target found were
 //     invisible to the first two: (pow -128 <MaxInt>) allocates nothing and
@@ -256,7 +274,18 @@ func applyOne(t fuzzT, names []string, idx uint16, data []byte) {
 	}
 
 	gen := fuzzval.New(data, env)
-	args := lisp.SExpr(genArgs(gen, fun))
+	rawArgs := genArgs(gen, fun)
+	// Seal each argument as a parsed literal would arrive sealed (see
+	// invariant 5 above).  The outer args SExpr stays unsealed on
+	// purpose: in real evaluation the argument LIST header is runtime
+	// storage the kernel may legitimately rework; only the argument
+	// VALUES can be shared parse nodes.
+	for _, a := range rawArgs {
+		a.SealAST()
+	}
+	sealedRoots := collectSealedRoots(rawArgs)
+	fpBefore := lisp.SealedASTFingerprint(sealedRoots)
+	args := lisp.SExpr(rawArgs)
 
 	// Recorded BEFORE the call and while the arguments are still exactly what
 	// the generator built. See internal/fuzzfp for what it watches and, more
@@ -274,6 +303,12 @@ func applyOne(t fuzzT, names []string, idx uint16, data []byte) {
 
 	if drift := before.Verify(); drift != "" {
 		t.Fatalf("%s mutated the shared singleton %s\n--- args ---\n%s", name, drift, args)
+	}
+	if fpAfter := lisp.SealedASTFingerprint(sealedRoots); fpAfter != fpBefore {
+		t.Fatalf("%s mutated a sealed argument in place (fingerprint %016x -> %016x):"+
+			" a program literal handed to this callable would be corrupted for every"+
+			" environment sharing the parse (the substrate#378 class)\n--- args ---\n%s",
+			name, fpBefore, fpAfter, args)
 	}
 	if damage := guard.Check(); damage != "" {
 		t.Fatalf("%s corrupted an argument\n%s\n--- args ---\n%s", name, damage, args)
@@ -382,6 +417,35 @@ func apply(env *lisp.LEnv, fun, args *lisp.LVal) *lisp.LVal {
 	default:
 		return env.FunCall(fun, args)
 	}
+}
+
+// collectSealedRoots returns the maximal sealed subtrees reachable from
+// the given values: a sealed node is collected whole (its descendants are
+// covered by the fingerprint walk), an unsealed container is descended in
+// case sealed values sit inside runtime storage (a vector of sealed
+// symbols, say).  The roots are held by pointer so the oracle compares
+// the same storage before and after the call — a callable legitimately
+// dropping a sealed value from an unsealed container does not (and must
+// not) affect the comparison.
+func collectSealedRoots(vs []*lisp.LVal) []*lisp.LVal {
+	var roots []*lisp.LVal
+	var walk func(v *lisp.LVal, depth int)
+	walk = func(v *lisp.LVal, depth int) {
+		if v == nil || depth > 64 {
+			return
+		}
+		if v.IsSealed() {
+			roots = append(roots, v)
+			return
+		}
+		for _, c := range v.Cells {
+			walk(c, depth+1)
+		}
+	}
+	for _, v := range vs {
+		walk(v, 0)
+	}
+	return roots
 }
 
 // genArgs builds an argument list sized against the callable's declared
@@ -532,10 +596,10 @@ func newStdlibEnv(tb fuzzT, configs ...lisp.Config) *lisp.LEnv {
 	return env
 }
 
-// TestArgumentGuardIsWiredIn is the negative control for assertion 4a, in the
-// same spirit as TestInternalPanicMarkerIsNotForgeable in
-// lisp/eval_fuzz_test.go: it installs a builtin that commits the defect the
-// guard claims to catch and asserts the target's own body reports it.
+// TestArgumentGuardIsWiredIn is the negative control for assertions 4a and 5,
+// in the same spirit as TestInternalPanicMarkerIsNotForgeable in
+// lisp/eval_fuzz_test.go: it installs a builtin that commits each defect the
+// guards claim to catch and asserts the target's own body reports it.
 //
 // Everything FuzzApplyStdlib says about arguments rests on applyOne recording
 // state before the call and checking it after. Those few lines are executed by
@@ -546,10 +610,14 @@ func newStdlibEnv(tb fuzzT, configs ...lisp.Config) *lisp.LEnv {
 // omission. "corrupt-source" (relocating a node) and "corrupt-shared-location"
 // (editing a Location many values point at) both drove the source half of
 // internal/fuzzfp, which this branch removes: #362 deleted the process-wide
-// native-source Location and put the field behind a value-copy accessor, so
-// neither corruption can be expressed from a builtin any more. A red-proof
-// for a rule that no longer exists passes by doing nothing, which is the
-// failure mode this test exists to prevent.
+// native-source Location and 69be094 put the field behind a value-copy
+// accessor, so neither corruption can be expressed from a builtin any more --
+// SetSource is a no-op on the sealed arguments applyOne builds, and Source()
+// hands back a copy there is no point editing. A red-proof for a rule that no
+// longer exists passes by doing nothing, which is the failure mode this test
+// exists to prevent. "corrupt-sealed-cells" replaces them: it drives the
+// assertion that took over the job, and it is a strictly harder corruption to
+// miss because it changes the value rather than its metadata.
 func TestArgumentGuardIsWiredIn(t *testing.T) {
 	// NOT parallel: fuzzEnvHook is package state.
 	corrupt := []struct {
@@ -568,6 +636,28 @@ func TestArgumentGuardIsWiredIn(t *testing.T) {
 						m["injected"] = 1
 						return lisp.Nil()
 					}
+				}
+			}
+			return lisp.Nil()
+		},
+	}, {
+		// A builtin that writes through a SEALED argument's cells. Cells stays
+		// exported -- roughly 3,000 downstream sites read it -- so this is a
+		// write the type system still permits and the seal contract forbids:
+		// applyOne seals every argument, and a sealed node is shared with
+		// every environment evaluating the same parse.
+		//
+		// This is the negative control for assertion 5, which nothing else
+		// here drives. It is also what now covers the deleted source cases:
+		// SealedASTFingerprint hashes source contents as well as structure, so
+		// the fingerprint is what a location rewrite would trip today.
+		name: "corrupt-sealed-cells",
+		want: "mutated a sealed argument in place",
+		fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+			for _, a := range args.Cells {
+				if a.IsSealed() && len(a.Cells) > 0 {
+					a.Cells[0] = lisp.Int(0x5EA1ED)
+					return lisp.Nil()
 				}
 			}
 			return lisp.Nil()

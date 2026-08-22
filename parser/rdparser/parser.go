@@ -150,7 +150,28 @@ func (p *Parser) ParseExpression() *lisp.LVal {
 		defer func() { p.parsing = false }()
 	}
 
-	return fn(p)
+	expr := fn(p)
+	if p.depth == 1 && !p.preserveFormat {
+		// Seal each completed top-level expression: from here the tree may
+		// be cached and shared by every environment that evaluates this
+		// parse, and the sealed flag is what stops kernel mutation sites
+		// from writing it in place (lisp/seal.go).  Sealing happens at
+		// depth 1 — after every nested ParseExpression call has finished
+		// its construction-time fixups — so the parser never writes a
+		// sealed node's fields.  SealAST ignores error values.
+		//
+		// Format-preserving parses are excluded: they are the one path where
+		// construction of a top-level node is NOT finished here — Parse()
+		// attaches a same-line trailing comment to the expression's formatting metadata after this
+		// point (`(foo) ;; c`), which would be a write to an already-sealed
+		// node and would stale the fingerprint recorded at seal time.
+		// Format trees are never evaluated or shared across environments
+		// (the formatter only reads Meta), so they need no seal, and the
+		// documented seal scope (Reader.Read, LoadString, ParseProgram, the
+		// REPL — all non-format) already excludes them.
+		expr.SealAST()
+	}
+	return expr
 }
 
 func (p *Parser) ignoreHashBang() {
@@ -764,7 +785,7 @@ func (p *Parser) ParseConsExpression() *lisp.LVal {
 		if x.Type == lisp.LError {
 			return x
 		}
-		expr.Cells = append(expr.Cells, x)
+		expr.Cells = append(expr.Cells, x) //elps:mutates children accumulate onto this parse's own node (p.SExpr/p.QExpr above) while the tree is parser-owned
 	}
 	p.captureInnerTrailingComments(expr)
 	return expr
@@ -807,7 +828,7 @@ func (p *Parser) ParseList() *lisp.LVal {
 		if x.Type == lisp.LError {
 			return x
 		}
-		expr.Cells = append(expr.Cells, x)
+		expr.Cells = append(expr.Cells, x) //elps:mutates children accumulate onto this parse's own node (p.SExpr/p.QExpr above) while the tree is parser-owned
 	}
 	p.captureInnerTrailingComments(expr)
 	return expr

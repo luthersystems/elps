@@ -12,7 +12,7 @@ import (
 )
 
 // TestAnalyzeProgram is the demonstration consumer for the internal/astraw
-// zero-copy hook: analysis reads a Program in place and produces the
+// zero-copy hook: analysis reads a sealed Program in place and produces the
 // same result it produces for raw parser output.
 func TestAnalyzeProgram(t *testing.T) {
 	const src = `

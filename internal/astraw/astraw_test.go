@@ -11,8 +11,10 @@ import (
 	"github.com/luthersystems/elps/parser"
 )
 
-// TestExprsZeroCopy proves the injected accessor hands back the program's
-// own expressions — the same nodes on every call, with no copying.
+// TestExprsZeroCopy proves the injected accessor hands back the sealed
+// expressions themselves — the same nodes on every call, with no copying —
+// and that those nodes really are the sealed originals (IsSealed), not
+// fresh copies (copies come out unsealed, see lisp/detach.go).
 func TestExprsZeroCopy(t *testing.T) {
 	p, err := lisp.ReadProgram(parser.NewReader(), "raw.lisp",
 		strings.NewReader(`(defun f (x) (+ x 1)) (f 41)`))
@@ -31,6 +33,9 @@ func TestExprsZeroCopy(t *testing.T) {
 	for i := range raw1 {
 		if raw1[i] != raw2[i] {
 			t.Errorf("expr %d: Exprs returned different nodes across calls — accessor is copying", i)
+		}
+		if !raw1[i].IsSealed() {
+			t.Errorf("expr %d: Exprs returned an unsealed node — a copy, not the sealed original", i)
 		}
 	}
 }

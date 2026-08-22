@@ -56,7 +56,9 @@ func (fun *langBuiltin) Docstring() string {
 }
 
 var (
+	//elpsvet:allow user-registered builtin table; formals are sealed at registration (RegisterDefaultBuiltin) and shared via registrationFormals (env.go AddBuiltins)
 	userBuiltins []*langBuiltin
+	//elpsvet:allow default builtin table; formals are sealed at package init (sealDefaultFormals) and shared via registrationFormals (env.go AddBuiltins)
 	langBuiltins = []*langBuiltin{
 		{"load-string", Formals("source-code", KeyArgSymbol, "name"), builtinLoadString,
 			`Parses and evaluates source-code (a string) as ELPS source. The
@@ -203,13 +205,13 @@ var (
 			`Returns a new sequence with item inserted at the given index.
 			The type-specifier ('list or 'vector) determines the return type.`},
 		{"stable-sort", Formals("less-predicate", "list", VarArgSymbol, "key-fun"), builtinSortStable,
-			`Sorts list in-place using the binary less-predicate and returns
-			the mutated list. The sort is stable. An optional key-fun
-			extracts comparison keys from elements. Because the sort is
-			in-place, sorting a slice view also sorts that region of its
-			source, and sorting a quoted literal rewrites the program's own
-			text for the life of the process; sort (concat 'list x) when x
-			is a literal or a view you do not own.`},
+			`Sorts list using the binary less-predicate and returns the
+			sorted list. The sort is stable. An optional key-fun extracts
+			comparison keys from elements. A mutable list is sorted in
+			place, so sorting a slice view also sorts that region of its
+			source; sort (concat 'list x) when x is a view you do not own.
+			A quoted program literal is never modified -- its elements are
+			sorted into a fresh list -- so always use the return value.`},
 		{"insert-sorted", Formals("type-specifier", "list", "predicate", "item", VarArgSymbol, "key-fun"), builtinInsertSorted,
 			`Returns a new sequence with item inserted at its sorted position
 			according to predicate. An optional key-fun extracts comparison
@@ -398,10 +400,42 @@ var (
 	}
 )
 
+// sealDefaultFormals seals the formals of every definition in the package's
+// shared builtin, macro and special-op tables.  The tables are constructed
+// once at Go program initialization and consulted by every Runtime in the
+// process; sealing their formals here — package init is single-threaded and
+// runs before any environment can exist — makes that sharing explicit and
+// safe.  Registration (registrationFormals in env.go) aliases a sealed list
+// instead of deep-copying it per environment, and the seal's copy-on-write
+// guards (lisp/seal.go) catch any code path that would mutate the shared
+// cells, exactly as they do for the sealed parser output that lisp-defined
+// functions alias as their formals.
+func init() { sealDefaultFormals() }
+
+func sealDefaultFormals() {
+	for _, table := range [][]*langBuiltin{langBuiltins, langMacros, langSpecialOps} {
+		for _, def := range table {
+			def.formals.SealAST()
+		}
+	}
+}
+
 // RegisterDefaultBuiltin adds the given function to the list returned by
 // DefaultBuiltins.
 func RegisterDefaultBuiltin(name string, formals *LVal, fn LBuiltin) {
-	userBuiltins = append(userBuiltins, &langBuiltin{name, formals.Copy(), fn, ""})
+	userBuiltins = append(userBuiltins, &langBuiltin{name, sealedFormalsCopy(formals), fn, ""})
+}
+
+// sealedFormalsCopy deep-copies a caller-supplied formals list for entry
+// into one of the RegisterDefault* tables and seals the copy.  The copy
+// keeps the caller's own value mutable and unaliased (the caller may reuse
+// or modify it after registration); the seal marks the table's private copy
+// as shared-immutable so registrationFormals (env.go) can alias it into
+// every environment without a further per-env copy.
+func sealedFormalsCopy(formals *LVal) *LVal {
+	c := formals.Copy()
+	c.SealAST()
+	return c
 }
 
 // DefaultBuiltins returns the default set of LBuiltinDefs added to LEnv
@@ -661,6 +695,14 @@ func builtinMacroExpand1(env *LEnv, args *LVal) *LVal {
 // both diverge from eval and change what the language means. What must not be
 // shared is the ARRAY — the only thing an in-place mutator applied to the &rest
 // list itself can reach.
+//
+// Sealing raises the stakes rather than changing the argument. `form` is
+// typically a SEALED program literal, so the aliased array above was the
+// literal's own backing, handed to a macro's &rest parameter as an UNSEALED
+// header — the one path that laundered a sealed node into mutable-looking
+// storage and so slipped past every copy-on-write guard in lisp/seal.go. The
+// fresh array here is what closes it (commit 8d18071 on the sealing line;
+// TestMacroexpandRestDoesNotLaunderSealedBacking in lisp/cow_seal_test.go).
 func macroArgList(form *LVal) *LVal {
 	margs := make([]*LVal, len(form.Cells)-1)
 	copy(margs, form.Cells[1:])
@@ -872,7 +914,15 @@ func builtinCDR(env *LEnv, args *LVal) *LVal {
 	//
 	// NOTE:  The elements are still shared, so this is not a copy.  See the
 	// note on builtinSlice.
-	return QExpr(clampCap(v.Cells[1:]))
+	r := QExpr(clampCap(v.Cells[1:]))
+	// The clamp stops an append reaching PAST the view; it does not stop a
+	// write WITHIN it, which for a sealed v is still a write to shared
+	// program storage.  So the constraint travels with the backing array the
+	// view still shares (lisp/seal.go), and the copy-on-write sites
+	// (stable-sort, slice 'vector) see it on the view exactly as they would
+	// on v itself.
+	r.sealed = v.sealed
+	return r
 }
 
 // clampCap returns cells with its capacity cut down to its length, so that a
@@ -906,7 +956,10 @@ func builtinRest(env *LEnv, args *LVal) *LVal {
 		return Nil()
 	}
 	// Three-index reslice -- see builtinCDR (issue #373).
-	return QExpr(clampCap(cells[1:]))
+	r := QExpr(clampCap(cells[1:]))
+	// The sealed constraint travels with the shared backing -- see builtinCDR.
+	r.sealed = v.sealed
+	return r
 }
 
 func builtinFirst(env *LEnv, args *LVal) *LVal {
@@ -1276,7 +1329,7 @@ func builtinSortedMap(env *LEnv, args *LVal) *LVal {
 		if !err.IsNil() {
 			return err
 		}
-		args.Cells = args.Cells[2:]
+		args.Cells = args.Cells[2:] //elps:mutates decap of the per-call arglist header (evalSExprCells builds fresh backing per call) to walk the key/value pairs
 	}
 	return m
 }
@@ -1458,6 +1511,23 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 		if keyFun.Type != LFun {
 			return env.Errorf("third argument is not a function: %v", keyFun.Type)
 		}
+	}
+	if list.sealed {
+		// Copy-on-write: list is (or shares storage with) a parsed program
+		// literal — (stable-sort < '(3 1 2)) — and sorting it in place
+		// would rewrite the program for every environment sharing the
+		// parse (the substrate#378 class; see lisp/seal.go).  Sort a fresh
+		// header with a fresh backing array instead — element pointers are
+		// shared, sorting only permutes them — and return it: the
+		// documented in-place effect is preserved for every mutable input,
+		// and for a literal the only observable in-place effect was the
+		// corruption itself.
+		cp := &LVal{}
+		*cp = *list
+		cp.sealed = false
+		cp.Cells = make([]*LVal, len(list.Cells))
+		copy(cp.Cells, list.Cells)
+		list = cp
 	}
 	cells := seqCells(list)
 	sortCells := &lvalByFun{
@@ -1924,7 +1994,13 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 	case LBytes:
 		list = Bytes(clampCapBytes(list.Bytes()[i:j]))
 	default: // isSeq(list)
+		sealed := list.sealed
 		list = QExpr(clampCap(seqCells(list)[i:j]))
+		// The clamp stops an append growing past the view (issue #373); the
+		// view still shares the original backing WITHIN its own bounds, so a
+		// sealed input's constraint travels with the intermediate value
+		// (lisp/seal.go) and the 'vector arm below copies on it.
+		list.sealed = sealed
 	}
 
 	// Convert the intermediate sliced value into the desired type
@@ -1965,14 +2041,25 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 		if list.Type == LString || list.Type == LBytes {
 			list = makeByteSeq(list)
 		}
-		// list is now known to be LSExpr
-		return QExpr(list.Cells)
+		// list is now known to be LSExpr.  The intermediate above already
+		// carries the sealed flag when the backing is shared with a sealed
+		// input, so returning it directly keeps the constraint attached.
+		return list
 	case "vector":
 		if list.Type == LString || list.Type == LBytes {
 			list = makeByteSeq(list)
 		}
 		// list is now known to be LSExpr
-		return Array(QExpr([]*LVal{Int(len(list.Cells))}), list.Cells)
+		cells := list.Cells
+		if list.sealed {
+			// Copy-on-write: vectors are mutable (append! writes their
+			// backing in place) and are never sealed, so wrapping a sealed
+			// list's backing array in a vector would hand the value domain
+			// a mutable window onto the shared program (lisp/seal.go).
+			cells = make([]*LVal, len(list.Cells))
+			copy(cells, list.Cells)
+		}
+		return Array(QExpr([]*LVal{Int(len(cells))}), cells)
 	default:
 		return env.Errorf("type specifier is not valid: %v", typespec)
 	}
@@ -2016,8 +2103,8 @@ func builtinAppendMutate(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("%s", msg)
 	}
 	dims := vec.Cells[0]
-	dims.Cells[0].Int += len(vals)
-	vec.Cells[1].Cells = append(vec.Cells[1].Cells, vals...)
+	dims.Cells[0].Int += len(vals)                           //elps:mutates append! is the documented mutating variant: it extends its vector argument in place
+	vec.Cells[1].Cells = append(vec.Cells[1].Cells, vals...) //elps:mutates append! is the documented mutating variant: it extends its vector argument in place
 	return vec
 }
 
@@ -2031,7 +2118,7 @@ func appendMutateBytes(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("%s", msg)
 	}
 	err := appendBytes(env, xsVal, func(x byte) {
-		b = append(b, x)
+		b = append(b, x) //elps:mutates append! 'bytes is the documented mutating variant: b is written back into lbytes' backing below
 	})
 	if err != nil {
 		return env.Error(err)
@@ -2053,12 +2140,12 @@ func builtinAppendBytesMutate(env *LEnv, args *LVal) *LVal {
 	}
 	switch byteseq.Type {
 	case LString:
-		b = append(b, byteseq.Str...)
+		b = append(b, byteseq.Str...) //elps:mutates append-bytes! is the documented mutating variant: b is written back into lbytes' backing below
 	case LBytes:
-		b = append(b, byteseq.Bytes()...)
+		b = append(b, byteseq.Bytes()...) //elps:mutates append-bytes! is the documented mutating variant: b is written back into lbytes' backing below
 	default:
 		err := appendBytes(env, byteseq, func(x byte) {
-			b = append(b, x)
+			b = append(b, x) //elps:mutates append-bytes! is the documented mutating variant: b is written back into lbytes' backing below
 		})
 		if err != nil {
 			return env.Error(err)
@@ -2119,6 +2206,32 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		// vector with repeated (set 'v (append 'vector v x)) is quadratic.
 		// `append!` is the in-place accumulator and keeps its amortised
 		// growth -- the docs now say to reach for it.
+		//
+		// The clamp is NOT sufficient on its own when seq is sealed, and the
+		// gap is narrow enough to be worth writing down.  `values` is &rest,
+		// so `(append 'vector lit)` with no values appends nothing:
+		// append(clampCap(cells)) then returns the input slice unchanged and
+		// Array wraps the SEALED literal's own backing in a fresh, UNSEALED
+		// vector -- a mutable window onto the shared program, which is the
+		// substrate#378 class arriving through the one input the clamp does
+		// not reallocate.  So the seal is answered where the seal is: a
+		// sealed input is copied outright (copy-on-write, lisp/seal.go), and
+		// the result is unsealed storage this call owns, so chaining extends
+		// it as before.  Exactly one allocation on each arm -- the sealed
+		// copy is sized for the append rather than clamped and regrown.
+		if seq.sealed {
+			fresh := make([]*LVal, len(cells), len(cells)+len(vals))
+			copy(fresh, cells)
+			//elps:mutates appends into `fresh`, which this function allocated two lines above with capacity for exactly this append; the sealed input is only read
+			return Array(nil, append(fresh, vals...))
+		}
+		// clampCap makes this append PROVABLY non-aliasing: it returns a
+		// three-index reslice whose cap equals its len, so append cannot
+		// write into seq's backing and must reallocate.  That is the whole
+		// content of the issue #373 fix.  elpsvet's alias rule does not
+		// follow the capacity through the helper call, so the proof is
+		// recorded here rather than the rule weakened.
+		//elps:mutates appends into a cap==len reslice (clampCap), which forces a reallocation; seq's backing is unreachable from the result
 		return Array(nil, append(clampCap(cells), vals...))
 	default:
 		return env.Errorf("type specifier is invalid: %v", typespec)
@@ -2151,7 +2264,7 @@ func builtinAppend_Bytes(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("%s", msg)
 	}
 	err := appendBytes(env, xsVal, func(x byte) {
-		b = append(b, x)
+		b = append(b, x) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
 	})
 	if err != nil {
 		return env.Error(err)
@@ -2169,12 +2282,12 @@ func builtinAppendBytes(env *LEnv, args *LVal) *LVal {
 	b := clampCapBytes(lbytes.Bytes())
 	switch byteseq.Type {
 	case LString:
-		b = append(b, byteseq.Str...)
+		b = append(b, byteseq.Str...) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
 	case LBytes:
-		b = append(b, byteseq.Bytes()...)
+		b = append(b, byteseq.Bytes()...) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
 	default:
 		err := appendBytes(env, byteseq, func(x byte) {
-			b = append(b, x)
+			b = append(b, x) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
 		})
 		if err != nil {
 			return env.Error(err)

@@ -7,18 +7,18 @@
 //
 // The struct used to be lisp.SourceMeta, carried in the exported LVal.Meta
 // field.  Both went unexported in issue #382: every value in a parse tree
-// can be shared across environments once the tree is cached, and metadata
-// writes landing on such shared nodes were a live corruption class.  The
-// metadata now lives in an
+// can be shared across environments once the tree is sealed, and the
+// post-seal leak fixes (macroexpand &rest, format Meta) were exactly
+// metadata writes landing on shared nodes.  The metadata now lives in an
 // unexported LVal field typed by this internal package, so code outside
 // this module cannot read or write it at all — the compile-time closure
 // holds at the module boundary.  In-repo tooling (parser/rdparser,
 // formatter, analysis/perf) reaches it through internal/fmtraw.
 //
-// Format-preserving parse trees are never evaluated: the parser owns the
-// tree it stamps, and the formatter only reads.  Keep it that way —
-// metadata writes on a shared tree are the corruption class this design
-// closes.
+// Format-preserving parse trees are never sealed and never evaluated (see
+// parser/rdparser's seal tests): the parser owns the tree it stamps, and
+// the formatter only reads.  Keep it that way — metadata writes on a
+// sealed or shared tree are the corruption class this design closes.
 package fmtmeta
 
 import (

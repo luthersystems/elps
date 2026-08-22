@@ -100,6 +100,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	return lisp.Nil()
 }
 
+//elpsvet:allow package builtin table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddBuiltins)
 var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("deftype", lisp.Formals("name", "type", lisp.VarArgSymbol, "constraints"), builtinDefType,
 		`Defines a named schema type and binds it as a global symbol.
@@ -391,12 +392,12 @@ type validatorTag struct{}
 // validatorMarker is the single marker cell every validator LFun carries in
 // Cells[validatorMarkerIndex].  Its identity is the credential.
 //
-// Deliberately process-wide: the marker is an identity-only credential —
-// compared by pointer in isValidator, never evaluated, never bound into a
-// scope, and never written after init.  A per-runtime marker would break
-// nothing but would also credential nothing: its whole value is that every
-// runtime recognizes the same pointer.
-var validatorMarker = lisp.Native(&validatorTag{})
+// Deliberately process-wide (hence elpsvet:allow): the marker is an
+// identity-only credential — compared by pointer in isValidator, never
+// evaluated, never bound into a scope, and never written after init.  A
+// per-runtime marker would break nothing but would also credential nothing:
+// its whole value is that every runtime recognizes the same pointer.
+var validatorMarker = lisp.Native(&validatorTag{}) //elpsvet:allow identity-only credential; read-only after init
 
 // A validator LFun's cells are [formals, docstring, marker].  The first two
 // come from lisp.FunInPackage; newValidator appends the third.  For a builtin
@@ -493,7 +494,7 @@ func markValidator(fun *lisp.LVal) *lisp.LVal {
 	cells := make([]*lisp.LVal, 0, len(fun.Cells)+1)
 	cells = append(cells, fun.Cells...)
 	cells = append(cells, validatorMarker)
-	fun.Cells = cells
+	fun.Cells = cells //elps:mutates construction-time tagging of a function value, over backing this call just allocated
 	return fun
 }
 
