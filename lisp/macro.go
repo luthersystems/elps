@@ -466,6 +466,7 @@ func doUnquoteSExpr(env *LEnv, v *LVal, depth int, quoteLevel int) *LVal {
 		cells = newcells
 	}
 	expr := SExpr(cells)
+	//elps:aliases deliberate in-runtime alias on the quasiquote hot path: v is the (sealed) quasiquote template node whose location was frozen at parse time, and the fresh expansion header mirrors it as display metadata — copying here would cost an allocation per quasiquote evaluation
 	expr.source = v.source
 	for range quoteLevel {
 		expr = Quote(expr)

@@ -201,6 +201,21 @@ var (
 		{"concat", Formals("type-specifier", VarArgSymbol, "args"), builtinConcat,
 			`Concatenates sequences into one of the specified type. Accepts
 			'list, 'vector, 'string, or 'bytes as type-specifier.`},
+		{"copy", Formals("value"), builtinCopy,
+			`Returns a deep copy of value that shares no storage with it:
+			lists, vectors, sorted-maps and bytes are rebuilt with fresh
+			backing, recursively, so mutating the copy at any depth cannot
+			be observed through the original. Function and native values
+			are shared by reference, not copied: a lambda carried into the
+			copy still reads and writes the bindings it captured, so
+			calling one can be observed through the original. Strings and
+			numbers are immutable values. Sharing between values inside the
+			input is preserved in the copy, including cycles; sharing of a
+			backing array between distinct values -- what cdr, rest and
+			slice produce -- is not. Use copy to take ownership of data
+			whose provenance you do not control:
+			the result is always mutable, even when the input is (or came
+			from) a quoted program literal.`},
 		{"insert-index", Formals("type-specifier", "seq", "index", "item"), builtinInsertIndex,
 			`Returns a new sequence with item inserted at the given index.
 			The type-specifier ('list or 'vector) determines the return type.`},
@@ -1513,6 +1528,7 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 		}
 	}
 	if list.sealed {
+		recordCoWOnSealed(env, cowSiteSortStable)
 		// Copy-on-write: list is (or shares storage with) a parsed program
 		// literal — (stable-sort < '(3 1 2)) — and sorting it in place
 		// would rewrite the program for every environment sharing the
@@ -2052,6 +2068,7 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 		// list is now known to be LSExpr
 		cells := list.Cells
 		if list.sealed {
+			recordCoWOnSealed(env, cowSiteSliceVector)
 			// Copy-on-write: vectors are mutable (append! writes their
 			// backing in place) and are never sealed, so wrapping a sealed
 			// list's backing array in a vector would hand the value domain
@@ -2220,6 +2237,7 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		// it as before.  Exactly one allocation on each arm -- the sealed
 		// copy is sized for the append rather than clamped and regrown.
 		if seq.sealed {
+			recordCoWOnSealed(env, cowSiteAppendVector)
 			fresh := make([]*LVal, len(cells), len(cells)+len(vals))
 			copy(fresh, cells)
 			//elps:mutates appends into `fresh`, which this function allocated two lines above with capacity for exactly this append; the sealed input is only read
