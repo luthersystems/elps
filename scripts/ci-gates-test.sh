@@ -1740,6 +1740,111 @@ else
 fi
 
 echo
+echo "== sealed-AST oracle is armed over the benchmarks ========================"
+
+# elpstest.RunBenchmark SHARES one sealed parse across every iteration's
+# Runtime instead of deep-copying it per iteration. The stated protection is
+# that an in-place write to the shared program fails the benchmark rather than
+# passing silently -- but the thing that notices, VerifySealedASTs, is a nil
+# call unless the `elpscheck` build tag is set, and benchmark.yml measures with
+# NO build tags. For as long as that was the only benchmark run in CI, the
+# safety net was there and switched off, and the absence was invisible:
+# corruption of a program literal is DETERMINISTIC, so it produces neither an
+# iteration-to-iteration value differential nor a divergence from an
+# independent fresh parse. Only the fingerprint sees it.
+#
+# `make bench-elpscheck-smoke` is the arming. These guards keep it armed. They
+# are deliberately Go-free so they run in the fast `gates` job.
+BENCH_SMOKE_TARGET="bench-elpscheck-smoke"
+MAKEFILE="${REPO_ROOT}/Makefile"
+
+# The recipe must carry all three properties, because dropping any one of them
+# leaves a target that still runs and still passes while checking nothing:
+# without -tags elpscheck the verifier is a nil call, without -bench no
+# benchmark executes at all, and without a bounded -benchtime this stops being
+# a smoke run and becomes a second measurement run nobody budgeted for.
+smoke_recipe="$(python3 - "$MAKEFILE" "$BENCH_SMOKE_TARGET" <<'PY'
+import re, sys
+path, target = sys.argv[1], sys.argv[2]
+lines, out, inside = open(path).read().splitlines(), [], False
+for line in lines:
+    if re.match(rf"^{re.escape(target)}\s*:", line):
+        inside = True
+        continue
+    if inside:
+        if line.startswith("\t"):
+            out.append(line.split("#", 1)[0])
+            continue
+        if line.strip() == "":
+            continue
+        break
+print("\n".join(out))
+PY
+)"
+if [ -z "$smoke_recipe" ]; then
+	bad "Makefile has no ${BENCH_SMOKE_TARGET} target — the checked-mode benchmark smoke run is gone, and with it the only CI execution of the benchmarked paths with VerifySealedASTs armed"
+else
+	ok "Makefile defines ${BENCH_SMOKE_TARGET}"
+	for flag in '-tags elpscheck' '-bench' '-benchtime'; do
+		case "$smoke_recipe" in
+		*"$flag"*)
+			ok "${BENCH_SMOKE_TARGET} recipe carries '${flag}'"
+			;;
+		*)
+			bad "${BENCH_SMOKE_TARGET} recipe does not carry '${flag}' — see the note above this check for what each one is load-bearing for"
+			;;
+		esac
+	done
+fi
+
+# Defined but never invoked is the same as absent. Match an invocation in a
+# non-comment `run:` line of some workflow, not the mere substring: both this
+# file and the Makefile discuss the target in prose.
+smoke_wired="$(python3 - "$REPO_ROOT" "$BENCH_SMOKE_TARGET" <<'PY'
+import glob, os, re, sys
+root, target = sys.argv[1], sys.argv[2]
+pat = re.compile(rf"\bmake\b[^\n#]*\b{re.escape(target)}\b")
+hits = []
+for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))):
+    for i, line in enumerate(open(f), 1):
+        if line.lstrip().startswith("#"):
+            continue
+        if pat.search(line.split("#", 1)[0]):
+            hits.append(f"{os.path.basename(f)}:{i}")
+print(" ".join(hits))
+PY
+)"
+if [ -n "$smoke_wired" ]; then
+	ok "a workflow INVOKES 'make ${BENCH_SMOKE_TARGET}' (${smoke_wired})"
+else
+	bad "no workflow invokes 'make ${BENCH_SMOKE_TARGET}' — the target exists but nothing in CI runs it, so the benchmarked paths run with their oracle switched off again"
+fi
+
+# The untagged measurement run must SURVIVE the arming. Adding the tag to
+# benchmark.yml's own `go test -bench` would have been the cheap fix and the
+# wrong one: `elpscheck` adds census bookkeeping and per-call integrity checks
+# to the timed region, so the numbers would stop being comparable with the
+# base arm and with every historical run. Correctness is adjudicated by the
+# smoke run; performance stays untagged.
+bench_tagged="$(python3 - "$BENCH_WF" <<'PY'
+import re, sys
+hits = []
+for i, line in enumerate(open(sys.argv[1]), 1):
+    if line.lstrip().startswith("#"):
+        continue
+    code = line.split("#", 1)[0]
+    if re.search(r"\bgo\s+test\b", code) and "-bench" in code and "-tags" in code:
+        hits.append(str(i))
+print(" ".join(hits))
+PY
+)"
+if [ -n "$bench_tagged" ]; then
+	bad "benchmark.yml measures with build tags (line(s) ${bench_tagged}) — a tagged timed region is not comparable with the base arm or with historical numbers"
+else
+	ok "benchmark.yml still measures UNTAGGED (the smoke run did not swallow the measurement run)"
+fi
+
+echo
 echo "== dependabot covers every dependency manifest ==========================="
 
 # Dependabot only looks where it is told, and says nothing about where it does

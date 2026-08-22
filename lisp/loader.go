@@ -63,6 +63,29 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 		}
 	}
 
+	// THE PER-LOAD COPY STAYS, and the sealing work is why it is worth
+	// saying so rather than leaving the Copy() unremarked.
+	//
+	// The seal makes sharing this parse SAFE -- sealed nodes are frozen
+	// storage under copy-on-write protection, and the ownership checker
+	// exempts them for exactly that reason -- and elpstest.RunBenchmark
+	// takes that share, because its consumer is in this repository and its
+	// contract is about measurement rather than about what a caller may do
+	// with the tree.
+	//
+	// TextLoader is different on both counts.  It is PUBLIC API whose
+	// documented behaviour is that every load gets its own tree: issue #446
+	// is specifically about that guarantee reaching positions as well as
+	// cells, and TestTextLoaderEvaluationsGetPrivatePositions pins it.
+	// Taking the share would move an embedder that mutates what a Loader
+	// handed it -- legal, if unwise, under the current contract -- from
+	// ownership to copy-on-write.  And it would buy nothing today: TextLoader
+	// has no callers in this repository, and the downstream sweep for issue
+	// #379 found that embedders reach elps through the Reader path, which
+	// never had this copy.  A public contract should not change for a
+	// speculative consumer, so the optimization is left on the table with
+	// its measurements recorded (#379 item 4: -72.3% sec/op, -61.9%
+	// allocs/op on a 50 KB source) for whoever has a caller to justify it.
 	fn := func(env *LEnv) *LVal {
 		var lval *LVal
 		for _, expr := range exprs {

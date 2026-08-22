@@ -31,6 +31,44 @@ race:
 test-elpscheck:
 	go test -tags elpscheck ./...
 
+# Execute every benchmark ONCE under the `elpscheck` build tag.
+#
+# This is a correctness gate wearing a benchmark's clothes, and it exists
+# because the benchmark harness now SHARES one sealed parse across every
+# iteration's Runtime (elpstest.RunBenchmark) instead of deep-copying it per
+# iteration. What licenses that share is VerifySealedASTs re-fingerprinting
+# the shared tree at the end of the run -- an in-place write to the program
+# fails the benchmark instead of passing silently.
+#
+# That verifier is a nil call in untagged builds, and the benchmark workflow
+# runs `go test -bench=.` with NO build tags. So the safety net the sharing
+# rests on was, in CI, never armed: every benchmarked path ran with the
+# oracle switched off. This target is the arming, and `-benchtime=1x` is why
+# it is affordable -- one iteration is all a fingerprint check needs, so the
+# whole suite executes in seconds rather than the minutes a measurement run
+# takes.
+#
+# It deliberately does NOT replace or perturb the untagged benchmark run in
+# .github/workflows/benchmark.yml: the numbers that gate compares must stay
+# untagged (the tag adds census bookkeeping and per-call integrity checks)
+# and comparable with the base arm. Correctness is adjudicated here;
+# performance is adjudicated there.
+#
+# `-run='^$$'` skips tests: `make test-elpscheck` above already ran them, and
+# repeating them would multiply this target's cost for no new coverage.
+#
+# An oracle only reports on the writes it is given, so coverage of the
+# copy-on-write sites by some benchmarked program is what makes this
+# non-vacuous -- see lisp/cow_seal_bench_test.go, which is the benchmark that
+# reaches all three.
+#
+# Wired into .github/workflows/elps.yml immediately after test-elpscheck, so
+# it inherits that step's warm tagged build cache; scripts/ci-gates-test.sh
+# fails the PR if that wiring disappears.
+.PHONY: bench-elpscheck-smoke
+bench-elpscheck-smoke:
+	go test -tags elpscheck -bench=. -benchtime=1x -run='^$$' -timeout=15m ./...
+
 .PHONY: examples
 examples:
 	$(MAKE) -C _examples
