@@ -1,4 +1,9 @@
-elps
+# Anchored: only the built binary at the repo root.  A bare `elps`
+# pattern matches ANY path component named elps -- including
+# cmd/elpsvet/testdata/src/github.com/luthersystems/elps/..., which
+# silently kept new analysistest stub packages out of the repository
+# (they existed locally, so tests passed locally and failed in CI).
+/elps
 .firecrawl/
 .claude/settings.local.json
 .claude/worktrees/

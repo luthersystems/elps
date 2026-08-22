@@ -17,8 +17,10 @@ import (
 // deliberately unexported: it has no production consumers today, and the
 // kernel philosophy is not to expose machinery until a real embedder
 // consumer — debugger workflows, cross-runtime transfer — materializes.
-// Re-exporting later is additive and easy; the machinery also backs the
-// planned lisp-level copy builtin (elps#378).  Copy is a within-runtime
+// Re-exporting later is additive and easy.  The same walker also backs the
+// lisp-level `copy` builtin, in its within-env mode (lisp/copy.go, issue
+// #378): same container copying, opaque leaves shared instead of
+// rejected.  Copy is a within-runtime
 // tool — it deliberately shares an LArray's backing storage
 // and a sorted-map's value pointers — so a Copy handed to another Runtime
 // still aliases the original.  detach copies everything:
@@ -66,6 +68,15 @@ func (v *LVal) detach() (*LVal, error) {
 // once and the copy reproduces the original's internal aliasing.
 type detacher struct {
 	seen map[*LVal]*LVal
+
+	// shareOpaque switches the walk from transfer semantics (detach) to
+	// within-env ownership semantics (deepCopy, lisp/copy.go): the two
+	// shapes that cannot be hermetically cloned — LFun and LNative — plus
+	// the process-wide singletons are returned by reference instead of
+	// rejected.  Every data container is still rebuilt with fresh backing
+	// either way; this flag only decides what happens at a leaf the
+	// kernel cannot clone.
+	shareOpaque bool
 }
 
 func (d *detacher) detach(v *LVal) (*LVal, error) {
@@ -75,10 +86,21 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	if cp, ok := d.seen[v]; ok {
 		return cp, nil
 	}
+	if d.shareOpaque && isSingleton(v) {
+		// Shared, immutable, and unmutable from lisp; a copy would differ
+		// only in its address (lisp/singleton.go).
+		return v, nil
+	}
 	switch v.Type {
 	case LNative:
+		if d.shareOpaque {
+			return v, nil
+		}
 		return nil, &detachError{msg: fmt.Sprintf("native value (%T) cannot be detached", v.Native)}
 	case LFun:
+		if d.shareOpaque {
+			return v, nil
+		}
 		return nil, funDetachError(v)
 	case LInvalid, LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
 		// Not values an application can hold; refuse loudly instead of

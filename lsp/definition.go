@@ -128,6 +128,7 @@ func (s *Server) qualifiedSymbolDefinition(word string) *protocol.Location {
 
 // externalToSymbol converts an ExternalSymbol to a Symbol for common helpers.
 func externalToSymbol(ext *analysis.ExternalSymbol) *analysis.Symbol {
+	//elps:aliases deliberate metadata translation between sibling analysis structs: symbol locations are frozen once analysis produces them, and both structs are read-only views for LSP consumers
 	return &analysis.Symbol{
 		Name:      ext.Name,
 		Kind:      ext.Kind,

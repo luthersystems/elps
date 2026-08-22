@@ -44,8 +44,7 @@ type budgetSite struct {
 // plus a description of each one that could not. Shared by the repository scan
 // and by the negative control below, so the control exercises the same code
 // path the real guard runs on.
-func budgetsIn(fset *token.FileSet, f *ast.File) (sites []budgetSite, unreadable []string) {
-	consts := durationConsts(f)
+func budgetsIn(fset *token.FileSet, f *ast.File, consts map[string]time.Duration) (sites []budgetSite, unreadable []string) {
 	ast.Inspect(f, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -133,7 +132,7 @@ func TestEveryBudgetIsAboveTheHonestFloor(t *testing.T) {
 			t.Errorf("%s: parse: %v", path, perr)
 			continue
 		}
-		sites, unreadable := budgetsIn(fset, f)
+		sites, unreadable := budgetsIn(fset, f, parseDirConsts(filepath.Dir(path)))
 		for _, u := range unreadable {
 			t.Errorf("%s: cannot evaluate the budget expression. Teach evalDuration this shape "+
 				"rather than leaving the call site unchecked -- an unreadable call site is an "+
@@ -183,7 +182,10 @@ func f() {
 		t.Fatalf("parsing the fixture: %v", err)
 	}
 
-	sites, unreadable := budgetsIn(fset, file)
+	// The fixture declares its own constant, so its const scope is the one
+	// file -- which is also a small check that the package-scope collection
+	// did not become a requirement to be handed sibling files.
+	sites, unreadable := budgetsIn(fset, file, durationConsts([]*ast.File{file}))
 	if len(unreadable) != 0 {
 		t.Fatalf("the evaluator could not read the fixture: %v", unreadable)
 	}
@@ -233,30 +235,71 @@ func repoRoot(t *testing.T) string {
 // are understood; every call site in this repository declares its watchdog
 // beside itself, and a cross-package constant would be reported as
 // unevaluatable rather than assumed safe.
-func durationConsts(f *ast.File) map[string]time.Duration {
+// durationConsts collects the duration-valued constants visible to a call
+// site, across EVERY file given -- which is every .go file in the call site's
+// directory, not just its own.
+//
+// Package scope, not file scope, because Go's is: lisp.FuzzSharedProgramMultiEnv
+// lives in shared_program_fuzz_test.go and writes `fuzzwatch.New(watchdogTimeout)`
+// against a constant declared in eval_fuzz_test.go, which is ordinary and
+// correct.  Read one file at a time, the guard could not resolve it and reported
+// the call site as UNREADABLE -- and its own message is the argument for fixing
+// it here rather than at the call site: "Teach evalDuration this shape rather
+// than leaving the call site unchecked -- an unreadable call site is an
+// unguarded one."  Duplicating the literal at the second call site would have
+// silenced the guard by making the two budgets independently editable, which is
+// the drift this whole file exists to catch.
+func durationConsts(files []*ast.File) map[string]time.Duration {
 	out := map[string]time.Duration{}
 	// Two passes, so `callDeadline + watchdogGrace` resolves regardless of the
-	// order the two constants are declared in.
+	// order the two constants are declared in -- now also regardless of which
+	// FILE each is declared in.
 	for range 2 {
-		for _, decl := range f.Decls {
-			gd, ok := decl.(*ast.GenDecl)
-			if !ok || (gd.Tok != token.CONST && gd.Tok != token.VAR) {
-				continue
-			}
-			for _, spec := range gd.Specs {
-				vs, ok := spec.(*ast.ValueSpec)
-				if !ok || len(vs.Names) != len(vs.Values) {
+		for _, f := range files {
+			for _, decl := range f.Decls {
+				gd, ok := decl.(*ast.GenDecl)
+				if !ok || (gd.Tok != token.CONST && gd.Tok != token.VAR) {
 					continue
 				}
-				for i, name := range vs.Names {
-					if d, ok := evalDuration(vs.Values[i], out); ok {
-						out[name.Name] = d
+				for _, spec := range gd.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok || len(vs.Names) != len(vs.Values) {
+						continue
+					}
+					for i, name := range vs.Names {
+						if d, ok := evalDuration(vs.Values[i], out); ok {
+							out[name.Name] = d
+						}
 					}
 				}
 			}
 		}
 	}
 	return out
+}
+
+// parseDirConsts parses every .go file in dir and returns the duration
+// constants they declare between them.  Files that do not parse are skipped
+// silently: the caller parses the file it actually checks and reports a parse
+// error there, so a broken sibling would otherwise be reported twice.
+func parseDirConsts(dir string) map[string]time.Duration {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return map[string]time.Duration{}
+	}
+	fset := token.NewFileSet()
+	var files []*ast.File
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		f, perr := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, 0)
+		if perr != nil {
+			continue
+		}
+		files = append(files, f)
+	}
+	return durationConsts(files)
 }
 
 // evalDuration understands the shapes this repository writes budgets in, and
