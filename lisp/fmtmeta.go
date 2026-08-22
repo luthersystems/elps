@@ -5,7 +5,6 @@ package lisp
 import (
 	"github.com/luthersystems/elps/internal/fmtmeta"
 	fmtrawhook "github.com/luthersystems/elps/internal/fmtraw/hook"
-	"github.com/luthersystems/elps/parser/token"
 )
 
 func init() {
@@ -19,50 +18,10 @@ func init() {
 	//
 	// Ownership contract: the format-preserving parser writes only nodes
 	// it produced during the current parse, and format trees are never
-	// evaluated or shared.
+	// sealed, evaluated, or shared (see parser/rdparser's seal tests), so
+	// these accessors need no seal guard.
 	fmtrawhook.Meta = func(v *LVal) *fmtmeta.Meta { return v.meta }
 	fmtrawhook.SetMeta = func(v *LVal, m *fmtmeta.Meta) {
-		v.meta = m
+		v.meta = m //elps:mutates format-preserving Meta stamp via internal/fmtraw; the parser owns the (unsealed, unshared) tree it stamps
 	}
-}
-
-// detachMeta deep-copies format-preserving metadata, including the comment
-// tokens and their locations.
-func detachMeta(m *fmtmeta.Meta) *fmtmeta.Meta {
-	if m == nil {
-		return nil
-	}
-	cp := *m
-	cp.TrailingComment = copyToken(m.TrailingComment)
-	cp.LeadingComments = copyTokens(m.LeadingComments)
-	cp.InnerTrailingComments = copyTokens(m.InnerTrailingComments)
-	return &cp
-}
-
-func copyTokens(toks []*token.Token) []*token.Token {
-	if toks == nil {
-		return nil
-	}
-	out := make([]*token.Token, len(toks))
-	for i := range toks {
-		out[i] = copyToken(toks[i])
-	}
-	return out
-}
-
-func copyToken(t *token.Token) *token.Token {
-	if t == nil {
-		return nil
-	}
-	cp := *t
-	cp.Source = copyLocation(t.Source)
-	return &cp
-}
-
-func copyLocation(loc *token.Location) *token.Location {
-	if loc == nil {
-		return nil
-	}
-	cp := *loc
-	return &cp
 }

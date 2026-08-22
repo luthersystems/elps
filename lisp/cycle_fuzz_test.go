@@ -210,6 +210,26 @@ func containers(v *lisp.LVal) []*lisp.LVal {
 			return
 		}
 		seen[v] = struct{}{}
+		// SEALED nodes are not candidates, and their subtrees are not walked.
+		//
+		// knot() writes through Cells on whatever this returns. A generated
+		// value can reach the environment's own function objects (fuzzval's
+		// fun() hands back globals), and a function's cells are its formals
+		// and BODY -- shared, sealed parse nodes belonging to the stdlib that
+		// InitializeUserEnv loaded. Knotting into one does not build a cyclic
+		// test value; it corrupts the standard library for every later test in
+		// the process, which is the substrate#378 class this branch exists to
+		// close. The sealed-AST teardown oracle caught exactly that: three
+		// mutated parse trees, reported by VerifySealedASTs and by nothing
+		// else.
+		//
+		// Nothing is lost. Everything the target means to knot -- the lists,
+		// vectors and sorted-maps fuzzval constructs -- is runtime storage and
+		// unsealed. A sealed node's descendants are all sealed, so returning
+		// here skips the whole subtree.
+		if v.IsSealed() {
+			return
+		}
 		switch v.Type {
 		case lisp.LFun:
 			// Not ours to write, and not ours to walk into.  See the doc

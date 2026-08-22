@@ -18,6 +18,7 @@ func init() {
 	// outside the in-kernel stamp (stampMacroExpansion below), and
 	// internal/ visibility limits it to this module.
 	macroexphook.Attach = func(v *LVal, name string, callSite, defSite *token.Location, args []*LVal, id int64) {
+		//elps:mutates test-only fabrication of debug metadata via internal/macroexp; unreachable outside this module
 		v.macroExpansion = &macroExpansionInfo{
 			macroExpansionContext: &macroExpansionContext{
 				CallSite: callSite,
@@ -30,8 +31,10 @@ func init() {
 	}
 }
 
+//elpsvet:allow user-registered macro table; formals are sealed (see sealDefaultFormals init in builtins.go / RegisterDefaultMacro) and shared via registrationFormals (env.go AddMacros)
 var userMacros []*langBuiltin
 
+//elpsvet:allow default macro table; formals are sealed (see sealDefaultFormals init in builtins.go / RegisterDefaultMacro) and shared via registrationFormals (env.go AddMacros)
 var langMacros = []*langBuiltin{
 	{"defmacro", Formals("name", "formals", VarArgSymbol, "expr"), macroDefmacro,
 		`Defines a named macro in the current package. The body receives
@@ -72,7 +75,7 @@ var langMacros = []*langBuiltin{
 // RegisterDefaultMacro adds the given function to the list returned by
 // DefaultMacros.
 func RegisterDefaultMacro(name string, formals *LVal, fn LBuiltin) {
-	userMacros = append(userMacros, &langBuiltin{name, formals.Copy(), fn, ""})
+	userMacros = append(userMacros, &langBuiltin{name, sealedFormalsCopy(formals), fn, ""})
 }
 
 // DefaultMacros returns the default set of LBuiltinDef added to LEnv objects
@@ -99,7 +102,7 @@ func macroDefmacro(env *LEnv, args *LVal) *LVal {
 		fun.SetCallStack(env.Runtime.Stack.Copy())
 		return fun
 	}
-	fun.FunType = LFunMacro
+	fun.FunType = LFunMacro //elps:mutates evaluate as a macro: fun is the closure env.Lambda freshly allocated above
 	return SExpr([]*LVal{
 		Symbol("lisp:progn"),
 		SExpr([]*LVal{
@@ -289,6 +292,23 @@ func stampGuarded(v *LVal, callSite *token.Location, ctx *macroExpansionContext,
 	if isSingleton(v) {
 		return
 	}
+	// Sealed subtrees are parsed program nodes spliced into the expansion
+	// (macros receive their arguments unevaluated, so argument expressions
+	// arrive as shared parse-tree nodes).  They must not be stamped: the
+	// same node may be under evaluation in every environment sharing the
+	// parse, so the write below would be cross-environment visible — and a
+	// data race under concurrent environments.  Most parser nodes carry a
+	// real location (Pos >= 0) and were never stamped, but the parser CAN
+	// emit synthetic Pos < 0 locations (a funref's lisp:function head
+	// symbol, a #^ head symbol mirroring a location-less operand), so
+	// without this guard the stamp is reachable on shared storage.  A
+	// sealed node's descendants are all sealed; skip the whole subtree.
+	//
+	// Checked before the cycle guard descends: a sealed subtree is skipped
+	// whole, so there is nothing below it to bound.
+	if v.sealed {
+		return
+	}
 	// Only a node with children is entered on the guard's path: a leaf stamps
 	// itself and reaches nothing, and stamping runs on every macro expansion.
 	nested := len(v.Cells) > 0
@@ -303,8 +323,9 @@ func stampGuarded(v *LVal, callSite *token.Location, ctx *macroExpansionContext,
 		}
 	}
 	if v.source == nil || v.source.Pos < 0 {
-		v.source = callSite
+		v.source = callSite //elps:mutates debug-metadata stamp on macro-expansion output; sealed (shared) subtrees are skipped above
 		if ctx != nil {
+			//elps:mutates debug-metadata stamp on macro-expansion output; sealed (shared) subtrees are skipped above
 			v.macroExpansion = &macroExpansionInfo{
 				macroExpansionContext: ctx,
 				ID:                    rt.nextMacroExpID(),

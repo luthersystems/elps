@@ -27,12 +27,21 @@
 // The rule read LVal.Source as an exported field, and its whole premise was
 // that every value the interpreter builds without a parser behind it points at
 // ONE process-wide token.Location (lisp.nativeSource), so an in-place edit
-// relocated a large fraction of the process. Both halves of that premise are
-// gone: issue #362 removed the shared native-source singleton and synthesizes
-// locations on demand, and LVal.Source became an unexported field behind a
-// value-copy accessor. There is no shared Location left to corrupt and no
-// exported pointer left to corrupt it through, so the rule cannot be expressed
-// here and would have nothing to catch.
+// relocated a large fraction of the process. Both halves of that premise were
+// deleted by the sealing work: #362 removed the shared native-source singleton
+// and synthesizes locations on demand (9edf260), and LVal.Source became an
+// unexported field behind a value-copy accessor (69be094). There is no shared
+// Location left to corrupt and no exported pointer left to corrupt it through,
+// so the rule cannot be expressed here and would have nothing to catch.
+//
+// What replaced it is stronger, not weaker. The sealed-AST fingerprint
+// (lisp/sealfp.go) hashes source CONTENTS as part of each sealed argument's
+// fingerprint, so a location rewrite on any sealed argument is caught by
+// assertion 5 in lisp/lisplib/fuzz_test.go -- and caught as a seal violation,
+// which names the corruption class directly. The one case the old rule covered
+// and the new one does not is a location rewrite on an UNSEALED argument
+// (vectors, maps, natives); that is runtime storage the kernel may legitimately
+// rework, which is why it is unsealed in the first place.
 //
 // # LNative
 //

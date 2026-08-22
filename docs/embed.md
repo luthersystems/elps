@@ -53,7 +53,7 @@ if lerr.Type != LError {
 }
 ```
 
-### Parse once, load many: Programs
+### Parse once, load many: sealed Programs
 
 An embedder that caches parse results (for example, keyed by a hash of the
 source) should cache `lisp.Program` values rather than raw `[]*lisp.LVal`
@@ -75,13 +75,16 @@ if ret.Type == lisp.LError {
 Because `Program` exposes no accessor for its expressions, a cache built on
 it cannot hand raw AST nodes to callers — the aliasing bugs that come from
 sharing `*lisp.LVal` pointers between caches and environments are ruled out
-at compile time, at zero runtime cost.
+at compile time, at zero runtime cost.  Deep-copy machinery for code that
+genuinely needs the AST (tooling, serialization, transfer between runtimes)
+exists in-kernel (`detach`, returning hermetic deep copies) but is
+unexported until a real embedder consumer materializes.
 
-Note the scope of the guarantee: `Program` closes the parse/cache boundary so
-AST nodes cannot *escape* to the embedder.  It does not by itself make one
-`Program` safe to evaluate in multiple runtimes concurrently — evaluation can
-still alias parts of the AST into runtime values through quote and macro
-paths inside eval.  See the `Program` godoc for details.
+Note the scope of the guarantee: `Program` seals the parse/cache boundary so
+AST nodes cannot *escape* to the embedder.  Full hermetic sealing is the
+composition of this boundary type with seals on evaluation's own AST leak
+points (quote and macro paths inside eval) — see the `Program` godoc for
+details.
 
 ## Writing Functions
 

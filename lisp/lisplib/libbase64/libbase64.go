@@ -32,6 +32,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	return lisp.Nil()
 }
 
+//elpsvet:allow package builtin table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddBuiltins)
 var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("encode", lisp.Formals("data"), builtinEncode,
 		`Encodes data using standard base64 encoding and returns the

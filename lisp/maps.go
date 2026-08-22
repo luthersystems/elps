@@ -32,9 +32,9 @@ type Map interface {
 // mapBacking aliases Map so MapData can embed the implementation (keeping
 // the interface's method set promoted) without exporting a writable field.
 // Swapping the backing of a sorted-map value in place — v.Map().Map = other
-// — was an open aliasing/mutation channel on values that may be shared, the
-// corruption class issue #382 closes; the backing is now fixed at
-// construction (NewMapData, SortedMap, SortedMapFromData).
+// — was an open aliasing/mutation channel on values that may be shared and
+// sealed, the corruption class issue #382 closes; the backing is now fixed
+// at construction (NewMapData, SortedMap, SortedMapFromData).
 type mapBacking = Map
 
 // MapData is a concrete type to store in an interface as to avoid expensive
@@ -165,6 +165,7 @@ func (m sortedmap) Keys() *LVal {
 	for i := range keys.Cells {
 		// Modifying lvals is shady in general but because they are generated
 		// internally we know their structure.
+		//elps:mutates keys and its pair cells are freshly built by sortedMapEntries above; rewriting the slots drops the values in place
 		keys.Cells[i] = keys.Cells[i].Cells[0]
 	}
 	return keys

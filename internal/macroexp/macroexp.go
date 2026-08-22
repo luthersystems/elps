@@ -1,7 +1,7 @@
 // Copyright © 2026 The ELPS authors
 
 // Package macroexp grants in-repo tests a construction path for the
-// macro-expansion debug metadata held inside package lisp.
+// macro-expansion debug metadata sealed inside package lisp.
 //
 // lisp.LVal deliberately has no exported way to attach macro-expansion
 // metadata — the #370 corruption was exactly such a write landing on shared

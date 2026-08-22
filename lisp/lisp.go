@@ -167,13 +167,13 @@ func (ft LFunType) String() string {
 // implementation or the captured environment, plus the function's identity
 // (FID, package).  Unexported (issue #382): the captured environment was
 // the deepest aliasing channel left in the exported API — handing an
-// embedder the *LEnv exposes the live Scope of every closure sharing it.
-// External readers keep the narrow
+// embedder the *LEnv exposes the live Scope of every closure sharing it,
+// invisible to the runtime seal.  External readers keep the narrow
 // identity accessors (FID, Package, Builtin); in-repo tooling reaches the
 // captured environment through internal/funraw.
 //
 // The FIELDS are unexported too, not just the type.  An unexported type
-// reached through an exported field is not closed: LFun values carry their
+// reached through an exported field is not sealed: LFun values carry their
 // funData in the exported LVal.Native, and reflect can read an EXPORTED
 // field of an unexported struct and hand back a usable value
 // (reflect.Value.Interface does not set the read-only flag for it).  With
@@ -276,7 +276,7 @@ type MacroExpansionMeta struct {
 	Name string
 	// Args holds the unevaluated call-site arguments.  The slice is a copy
 	// but the nodes are the shared originals — read-only by contract (they
-	// are typically parse-tree nodes).
+	// are typically sealed parse-tree nodes).
 	Args []*LVal
 	// ID is unique per stamped node, monotonically increasing within a
 	// runtime.
@@ -339,8 +339,8 @@ type LVal struct {
 	// mode.  Unexported (issue #382), typed by an internal package: only
 	// this module's format tooling (parser/rdparser writes, formatter
 	// reads) can touch it, through internal/fmtraw.  Format-preserving
-	// trees are never evaluated or shared, so nothing outside that
-	// tooling has ever had a legitimate use.
+	// trees are never sealed, evaluated, or shared, so nothing outside
+	// that tooling has ever had a legitimate use.
 	meta *fmtmeta.Meta
 
 	// macroExpansion holds debug metadata for nodes produced by macro
@@ -382,6 +382,25 @@ type LVal struct {
 	// between Splice and quasiquote expansion — no external package has
 	// ever had a legitimate read or write.
 	spliced bool
+
+	// sealed marks a node of a parsed program: the value (and, for
+	// containers, its Cells backing array) may be shared by every
+	// environment that evaluates the same parse — substrate's parse cache
+	// shares one tree process-wide — so kernel code must never mutate it in
+	// place.  Guarded mutation sites copy first (copy-on-write); see
+	// lisp/seal.go for the design and the full list of guarded sites.
+	//
+	// The field occupies an existing padding byte: LVal is 112 bytes with
+	// or without it (TestLValSizeUnchanged pins this).
+	//
+	// The flag is monotone: it is set (only) by SealAST after parsing
+	// completes, propagated by header copies (Quote, Splice,
+	// shallowUnquote — `*cp = *v` — which share the Cells backing array and
+	// therefore inherit the constraint) and by the kernel sites that create
+	// new headers over shared backing (cdr, rest, slice), and cleared only
+	// on fresh storage (Copy, detach).  It is never written after a tree
+	// becomes shared, so concurrent readers are race-free.
+	sealed bool
 }
 
 // Source returns a copy of v's originating location in source code.  The
@@ -412,8 +431,18 @@ func (v *LVal) Source() (token.Location, bool) {
 // parser) may retain loc and continue to fix up its fields after the call —
 // but once an LVal escapes to consumers the location must be treated as
 // frozen, because the reference may be shared by many LVals (issue #362).
+//
+// A sealed value (a parsed program node — see lisp/seal.go) keeps its
+// parse-time location forever: SetSource on a sealed value is a no-op,
+// because the node may be shared by every environment evaluating the same
+// parse and restamping it would be a cross-environment write.  The parser
+// itself always stamps locations before sealing, so no in-repo caller is
+// affected.
 func (v *LVal) SetSource(loc *token.Location) {
-	v.source = loc
+	if v.sealed {
+		return
+	}
+	v.source = loc //elps:mutates the audited setter for source metadata; sealed (shared) nodes are skipped above
 }
 
 // IsQuoted reports whether v carries a single level of quoting — the flag
@@ -973,7 +1002,7 @@ func (v *LVal) SetCallStack(stack *CallStack) {
 	if v.Type != LError {
 		panic("not an error: " + v.Type.String())
 	}
-	v.Native = stack.Copy()
+	v.Native = stack.Copy() //elps:mutates the audited setter stamping a copied stack onto an in-flight error at its capture point
 }
 
 // funData returns the function payload of an LFun value.  It panics on
@@ -1466,6 +1495,11 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 
 // Copy creates a deep copy of the receiver.
 //
+// Copy has within-runtime semantics — an LArray's backing storage is shared
+// with the receiver, so it is not a tool for transferring values between
+// Runtimes; the in-kernel detach (lisp/detach.go, unexported until a real
+// consumer appears) covers that.
+//
 // The copy owns its positions.  Every node Copy reaches gets its own
 // *token.Location, so a write through the copy cannot move what the original
 // reports, and the reverse.  That holds for the Locations reachable THROUGH
@@ -1485,6 +1519,15 @@ func (v *LVal) Copy() *LVal {
 	}
 	cp := &LVal{}
 	*cp = *v // shallow copy of all fields including Map and Bytes
+	// The copy owns fresh storage, so the sealed constraint on v does not
+	// apply to it.  In the default case copyCells recurses through Copy,
+	// which clears the flag on every fresh node it creates, so copying a
+	// sealed tree yields a fully unsealed, fully private tree — the
+	// sanctioned way to obtain a mutable version of a program literal
+	// (lisp/seal.go).  (Values that share storage with v — an LArray's
+	// backing — are never sealed: SealAST marks parser-producible types
+	// only.)
+	cp.sealed = false
 	// source rides along in the struct assignment above, so without this the
 	// copy and the original hold ONE mutable *token.Location, at every depth
 	// -- Cells are deep-copied just below, positions were not.  That is issue
@@ -1493,6 +1536,13 @@ func (v *LVal) Copy() *LVal {
 	// point an embedder is pointed at for a reusable parse cache; the Load*
 	// entry points do not copy), and every one of those "private" trees
 	// reported its positions through the retained cache's own objects.
+	//
+	// Sealing makes this MORE load-bearing, not less.  Copy is the sanctioned
+	// way to obtain a mutable version of a sealed program literal, and it
+	// clears the flag just above -- so SetSource, which is a no-op on the
+	// sealed original, is live on the copy.  Sharing the pointer here would
+	// let a write through the unsealed copy move a position in the sealed
+	// tree every environment in the process is evaluating.
 	//
 	// One Location per NODE here, where issue #431 needed only one per macro
 	// CALL, because what has to be separated is different.  There the N

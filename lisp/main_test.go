@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// TestMain wraps the package test suite with three complementary guards
-// over the state this process shares between every environment it builds.
+// TestMain wraps the package test suite with five complementary guards over
+// the state this process shares between every environment it builds.
 //
 // The singleton snapshot detects a singleton whose *value* differs at the
 // end of the run from the start — a tree-walker that failed to guard
@@ -24,17 +24,32 @@ import (
 //
 // The builtin-formals snapshot extends the first check from the three
 // singletons to the other process-wide shared structure: the formals lists
-// in the builtin tables, which AddBuiltins hands to every LEnv by pointer.
-// A test that reaches one through a function value and writes to it
-// corrupts every environment created afterwards, in this process, in any
-// later test — and issue #398 is exactly that, arriving from a fuzz
-// target's own seed corpus with every assertion in the package satisfied.
-// See builtin_formals_test.go.
+// in the builtin TABLES, which every environment copies out of.  A test that
+// reaches one through a function value and writes to it corrupts every
+// environment built afterwards, in this process, in any later test — and
+// issue #398 is exactly that, arriving from a fuzz target's own seed corpus
+// with every assertion in the package satisfied.  Note that this is the
+// TEMPLATE, not any environment's own list: since issue #513 each
+// environment carves a private copy (formalsCopier), and since the sealing
+// work the templates are additionally sealed, so a write to one has to get
+// past the copy-on-write guards first.  The snapshot is what says whether it
+// did.  See builtin_formals_test.go.
+//
+// The seal write watchdog and the sealed-AST verification extend the same
+// two-guard pattern to sealed program trees (issue #372): the watchdog
+// makes any unsynchronized write to a watched sealed node race
+// deterministically under `-race` (see seal_watchdog_test.go), and
+// VerifySealedASTs re-fingerprints every sealed parse recorded by the
+// checked-mode inspector — a value-drift check with the same role the
+// snapshot Verify plays for singletons.  Without the elpscheck tag the
+// inspector records nothing and the verification is a free nil.
 func TestMain(m *testing.M) {
 	snap := TakeSingletonSnapshot()
 	formals := takeBuiltinFormalsSnapshot()
 	stopWatchdog := startSingletonWriteWatchdog()
+	stopSealWatchdog := startSealWriteWatchdog()
 	code := m.Run()
+	stopSealWatchdog()
 	stopWatchdog()
 	if drift := snap.Verify(); drift != "" {
 		fmt.Fprintf(os.Stderr,
@@ -48,6 +63,12 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr,
 			"FATAL: the process-wide builtin formals were mutated during the test run;\n"+
 				"every LEnv built after the write saw the mutated list:\n%s", drift)
+		if code == 0 {
+			code = 1
+		}
+	}
+	if err := VerifySealedASTs(); err != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: sealed AST verification failed at end of test run\n%v\n", err)
 		if code == 0 {
 			code = 1
 		}

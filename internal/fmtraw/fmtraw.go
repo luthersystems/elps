@@ -7,8 +7,8 @@
 //
 // lisp.LVal deliberately has no exported metadata accessors: the metadata
 // only exists on format-preserving parse trees, which are produced and
-// owned by parser/rdparser, read by the formatter, and never evaluated or
-// shared.  This package is the sanctioned path between those
+// owned by parser/rdparser, read by the formatter, and never sealed,
+// evaluated, or shared.  This package is the sanctioned path between those
 // tools and the field: it lives under internal/, so the Go compiler limits
 // it to this module — an embedder importing elps cannot reach the field at
 // all.

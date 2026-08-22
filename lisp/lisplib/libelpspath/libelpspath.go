@@ -59,6 +59,15 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 // package initialisation and handed to AddBuiltins by every environment that
 // loads this package, exactly as every other lisplib package here does.
 // Nothing may mutate them after construction.
+//
+// Two mechanisms hold that, and the annotation below rests on both.  libutil
+// SEALS each formals list at construction, so the shared template is under
+// the kernel's copy-on-write guards; and AddBuiltins gives every environment
+// a PRIVATE copy of it (formalsCopier, lisp/defformals.go, issue #513), so no
+// two Runtimes hold one list in the first place.  See the long comment above
+// AddMacros in lisp/env.go for why both exist.
+//
+//elpsvet:allow read-only formal templates; sealed by libutil at construction, and copied per environment by formalsCopier (lisp/env.go AddBuiltins)
 var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("?", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryGet,
 		`Get value at a path specified by positional args.

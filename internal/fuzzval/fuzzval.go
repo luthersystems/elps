@@ -265,7 +265,9 @@ func (g *Gen) locate(v *lisp.LVal, sel byte) *lisp.LVal {
 		return v
 	}
 	// SetSource, not a field write: #362 unexported the field behind an
-	// audited setter.
+	// audited setter that skips sealed nodes.  That is the right behaviour
+	// here too -- locate runs on freshly generated values before applyOne
+	// seals them, so nothing is silently dropped.
 	v.SetSource(realLocations[g.nloc%len(realLocations)])
 	g.nloc++
 	return v

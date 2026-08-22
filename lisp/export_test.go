@@ -4,15 +4,28 @@ package lisp
 
 import "github.com/luthersystems/elps/parser/token"
 
+// Test-only bridges to the unexported detach machinery (lisp/detach.go).
+// detach has no production consumers and stays unexported until a real
+// embedder consumer materializes; the external test battery in package
+// lisp_test keeps exercising the full contract through these functions,
+// which exist only in test builds.
+
+// Detach exposes (*LVal).detach to package lisp_test.
+func Detach(v *LVal) (*LVal, error) { return v.detach() }
+
+// ProgramDetach exposes Program.detach to package lisp_test.
+func ProgramDetach(p Program) ([]*LVal, error) { return p.detach() }
+
 // SplicedFlag exposes the unexported spliced flag to package lisp_test.
 // The field has no production accessor (issue #382): splicing is evaluator
-// plumbing.
+// plumbing, but the copy-on-write fingerprint tests hash it to prove sealed
+// trees survive evaluation bit-identically.
 func SplicedFlag(v *LVal) bool { return v.spliced }
 
 // MapBacking exposes MapData's unexported backing field to package
 // lisp_test.  The field went unexported in issue #382 (the backing is fixed
-// at construction); tests still nil-probe it to walk degenerate MapData
-// values.
+// at construction); the detach tests still nil-probe it to walk degenerate
+// MapData values.
 func MapBacking(md *MapData) Map { return md.mapBacking }
 
 // --- test-only reads of the LVal fields issue #382 unexported ---
@@ -22,11 +35,11 @@ func MapBacking(md *MapData) Map { return md.mapBacking }
 // cannot write through, a Location another value holds.  That also makes the
 // aliasing property issue #446 is about ("the copy and the original hold ONE
 // mutable Location") unobservable from outside the package.  The property did
-// not stop mattering -- a copy of a parsed node is mutable storage whose
-// SetSource is live, and sharing the pointer would let a write through the
-// copy move a position in the tree every environment in the process is
-// evaluating -- so its regression tests need the field, and a
-// same-directory test build is the sanctioned way to have it.
+// not stop mattering -- LVal.Copy CLEARS the seal, so a copy of a parsed node
+// is mutable storage whose SetSource is live, and sharing the pointer would
+// let a write through the copy move a position in the sealed tree every
+// environment in the process is evaluating -- so its regression tests need the
+// field, and a same-directory test build is the sanctioned way to have it.
 //
 // Do NOT promote these to production accessors.  Handing out the stored
 // *token.Location is precisely what #362 removed.
@@ -38,6 +51,13 @@ func SourceRefForTest(v *LVal) *token.Location {
 		return nil
 	}
 	return v.source
+}
+
+// IsSealedForTest reports v's seal bit without going through the exported
+// IsSealed, so a test can assert on the bit itself while IsSealed's own
+// contract is under test.
+func IsSealedForTest(v *LVal) bool {
+	return v != nil && v.sealed
 }
 
 // SetEnvLocForTest sets env.loc, which eval owns and #382 unexported along
