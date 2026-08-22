@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/fmtmeta"
 	"github.com/luthersystems/elps/parser/token"
 )
 
@@ -49,7 +50,7 @@ const (
 	LSExpr
 	// LFun values use the following fields in an LVal:
 	// 		LVal.Str      The local name used to reference the function (if any)
-	// 		LVal.Native   An LFunData object
+	// 		LVal.Native   A funData object
 	//
 	// In addition to these fields, a function defined in lisp (with defun,
 	// lambda, defmacro, etc) uses the LVal.Cells field to store the following
@@ -71,8 +72,8 @@ const (
 	// LQuote values are special values only used to represents two or more
 	// levels of quoting (e.g. ''3 or '''''''()).  The quoted value is stored
 	// in LVals.Cells[0].  The first level of quoting takes places by setting
-	// the LVal.Quoted field on a value with a normal value in LVal.Type.
-	// LQuote values must always have a true LVal.Quoted field.
+	// the LVal.quoted field on a value with a normal value in LVal.Type.
+	// LQuote values must always have a true LVal.quoted field.
 	LQuote
 	// LString values store a string in the LVal.Str field.
 	LString
@@ -162,39 +163,62 @@ func (ft LFunType) String() string {
 	return lfunTypeStrings[ft]
 }
 
-type LFunData struct {
-	Builtin LBuiltin
-	Env     *LEnv
-	FID     string
-	Package string
+// funData is the Native payload of every LFun value: the builtin
+// implementation or the captured environment, plus the function's identity
+// (FID, package).  Unexported (issue #382): the captured environment was
+// the deepest aliasing channel left in the exported API — handing an
+// embedder the *LEnv exposes the live Scope of every closure sharing it.
+// External readers keep the narrow
+// identity accessors (FID, Package, Builtin); in-repo tooling reaches the
+// captured environment through internal/funraw.
+//
+// The FIELDS are unexported too, not just the type.  An unexported type
+// reached through an exported field is not closed: LFun values carry their
+// funData in the exported LVal.Native, and reflect can read an EXPORTED
+// field of an unexported struct and hand back a usable value
+// (reflect.Value.Interface does not set the read-only flag for it).  With
+// `Env` exported, an embedder could recover a closure's captured *LEnv
+// with plain reflection and rebind inside it through the public Put — the
+// exact channel this comment claims is closed.  Unexported fields make
+// reflect.Value.Interface panic instead, so every other privatized field
+// (LVal.source/meta/macroExpansion, LEnv.scope/parent/loc, MapData's
+// backing) was already unreachable; these are now too.
+type funData struct {
+	builtin LBuiltin
+	env     *LEnv
+	fid     string
+	pkg     string
 }
 
-func (fd *LFunData) Copy() *LFunData {
-	cp := &LFunData{}
+func (fd *funData) Copy() *funData {
+	cp := &funData{}
 	*cp = *fd
-	cp.Env = fd.Env.Copy()
+	cp.env = fd.env.Copy()
 	return cp
 }
 
-// MacroExpansionContext is shared by all nodes in a single macro expansion.
+// macroExpansionContext is shared by all nodes in a single macro expansion.
 // It records the macro call site, name, definition site, and unevaluated
-// arguments for debugger inspection.
-type MacroExpansionContext struct {
+// arguments for debugger inspection.  Unexported (issue #382): #370's stamp
+// wrote expansion metadata onto shared parser nodes, so the only write path
+// is the in-kernel stamp; external tooling reads a snapshot through the
+// MacroExpansion accessor.
+type macroExpansionContext struct {
 	CallSite *token.Location // where the macro was invoked
 	Name     string          // qualified macro name (e.g. "lisp:defun")
 	DefSite  *token.Location // macro definition location (nil for builtins)
 	Args     []*LVal         // unevaluated call-site arguments (for debugger scope)
 }
 
-// MacroExpansionInfo is attached to LVal nodes produced by macro expansion.
+// macroExpansionInfo is attached to LVal nodes produced by macro expansion.
 // It is only allocated when a debugger is attached (Runtime.Debugger != nil),
 // so production code pays zero allocation cost.
 //
-// The embedded *MacroExpansionContext describes the macro CALL and is shared
+// The embedded *macroExpansionContext describes the macro CALL and is shared
 // by every node of one expansion, by design.  This struct is the per-node
-// half, so LVal.Copy gives a copy its own -- see MacroExpansionInfo.Copy.
-type MacroExpansionInfo struct {
-	*MacroExpansionContext // shared across all nodes in one expansion
+// half, so LVal.Copy gives a copy its own -- see macroExpansionInfo.Copy.
+type macroExpansionInfo struct {
+	*macroExpansionContext // shared across all nodes in one expansion
 
 	// ID distinguishes one expansion node from another.  stampMacroExpansion
 	// assigns it from Runtime.nextMacroExpID, monotonically increasing, so no
@@ -218,7 +242,7 @@ type MacroExpansionInfo struct {
 
 // Copy returns a pointer to an independent copy of i, or nil if i is nil.
 //
-// The embedded *MacroExpansionContext is deliberately NOT copied.  A copy
+// The embedded *macroExpansionContext is deliberately NOT copied.  A copy
 // separates two OWNERS, and the context has one owner -- the macro call --
 // which both nodes genuinely belong to.  It is documented shared across every
 // node of an expansion, and #456 already made CallSite an object the
@@ -229,7 +253,7 @@ type MacroExpansionInfo struct {
 //
 // What IS separated is this struct, which is per node.  ID rides across
 // unchanged -- see the field comment for why it cannot do otherwise.
-func (i *MacroExpansionInfo) Copy() *MacroExpansionInfo {
+func (i *macroExpansionInfo) Copy() *macroExpansionInfo {
 	if i == nil {
 		return nil
 	}
@@ -237,71 +261,56 @@ func (i *MacroExpansionInfo) Copy() *MacroExpansionInfo {
 	return &cp
 }
 
-// SourceMeta holds formatting metadata for an LVal, populated only when
-// parsing in format-preserving mode. Nil in normal parsing — zero cost.
-//
-// It is per-node MUTABLE state rather than a shared description of one: the
-// parser writes every field below in place on nodes it has just built, and
-// rdparser.hoistOperandComments MOVES LeadingComments off one node onto
-// another with an append plus a `= nil`.  Two LVals holding one *SourceMeta
-// is consequently an anomaly the parser has to special-case -- the `outer.Meta
-// == inner.Meta` guard in that function -- which is why LVal.Copy gives a copy
-// its own; see SourceMeta.Copy.
-type SourceMeta struct {
-	TrailingComment         *token.Token   // inline comment on same line after this node
-	OriginalText            string         // original token text for literals (preserves escapes, numeric bases)
-	LeadingComments         []*token.Token // comment tokens preceding this node
-	InnerTrailingComments   []*token.Token // comments between last child and closing bracket
-	BlankLinesBefore        int            // blank lines (newline count - 1) before this node (or before its leading comments)
-	BlankLinesAfterComments int            // blank lines between last leading comment and the expression
-	PrecedingSpaces         int            // spaces before this token on the same line (for column alignment)
-	BracketType             rune           // '(' or '[' for LSExpr nodes
-	NewlineBefore           bool           // true if at least one newline preceded this node in source
-	ClosingBracketNewline   bool           // true if closing bracket was on its own line in source
+// MacroExpansionMeta is a read-only snapshot of the debug metadata attached
+// to values produced by macro expansion while a debugger is attached.  It is
+// returned by (*LVal).MacroExpansion; the metadata itself lives in
+// unexported storage (issue #382) because the historical corruption in #370
+// was a write of expansion metadata onto shared parser nodes — reads get a
+// copy, and the in-kernel stamp is the only writer.
+type MacroExpansionMeta struct {
+	// CallSite is a copy of the location where the macro was invoked.
+	CallSite *token.Location
+	// DefSite is a copy of the macro definition location (nil for builtins).
+	DefSite *token.Location
+	// Name is the qualified macro name (e.g. "lisp:defun").
+	Name string
+	// Args holds the unevaluated call-site arguments.  The slice is a copy
+	// but the nodes are the shared originals — read-only by contract (they
+	// are typically parse-tree nodes).
+	Args []*LVal
+	// ID is unique per stamped node, monotonically increasing within a
+	// runtime.
+	ID int64
 }
 
-// Copy returns a pointer to a deep copy of m, or nil if m is nil.
+// MacroExpansion returns a snapshot of v's macro-expansion debug metadata
+// and reports whether v carries any.  Metadata exists only on nodes stamped
+// during macro expansion while a debugger is attached (Runtime.Debugger !=
+// nil); in production runs every value reports false.  The snapshot is a
+// copy: mutating it does not touch v.
 //
-// Deep, not shallow, at both levels the struct has:
-//
-//   - The two comment SLICES get their own backing arrays, because
-//     hoistOperandComments appends to LeadingComments and then nils the
-//     source out.  A shared header is the state that makes that move visible
-//     through both nodes.
-//
-//   - The comment TOKENS get their own objects, because each one holds a
-//     *token.Location.  #446 gave a copied node its own position; leaving
-//     these shared would leave that guarantee true only for the node itself
-//     and false one level down, which is exactly what issue #466 reports.
-//
-// Nil is preserved rather than materialised into a zero SourceMeta: a nil
-// Meta means "not parsed in format-preserving mode" and every reader in the
-// tree branches on it (rdparser, formatter, minifier).  Materialising one
-// would turn a copy of an ordinary parse tree into a format-preserving-
-// looking one and put an allocation on the hot path for nothing.
-func (m *SourceMeta) Copy() *SourceMeta {
-	if m == nil {
-		return nil
+// MacroExpansion is nil-receiver safe: a nil LVal reports false.
+func (v *LVal) MacroExpansion() (MacroExpansionMeta, bool) {
+	if v == nil || v.macroExpansion == nil || v.macroExpansion.macroExpansionContext == nil {
+		return MacroExpansionMeta{}, false
 	}
-	cp := *m
-	cp.TrailingComment = m.TrailingComment.Copy()
-	cp.LeadingComments = copyTokens(m.LeadingComments)
-	cp.InnerTrailingComments = copyTokens(m.InnerTrailingComments)
-	return &cp
-}
-
-// copyTokens returns a new slice holding independent copies of every token in
-// toks.  A nil slice stays nil, so a copy of a Meta with no comments allocates
-// nothing for them.
-func copyTokens(toks []*token.Token) []*token.Token {
-	if toks == nil {
-		return nil
+	ctx := v.macroExpansion.macroExpansionContext
+	m := MacroExpansionMeta{
+		Name: ctx.Name,
+		ID:   v.macroExpansion.ID,
 	}
-	cp := make([]*token.Token, len(toks))
-	for i, tok := range toks {
-		cp[i] = tok.Copy()
+	if ctx.CallSite != nil {
+		loc := *ctx.CallSite
+		m.CallSite = &loc
 	}
-	return cp
+	if ctx.DefSite != nil {
+		loc := *ctx.DefSite
+		m.DefSite = &loc
+	}
+	if len(ctx.Args) > 0 {
+		m.Args = append([]*LVal(nil), ctx.Args...)
+	}
+	return m, true
 }
 
 // LVal is a lisp value
@@ -319,18 +328,28 @@ type LVal struct {
 	// LVal (and thus can't be stored in Cells).
 	Native interface{}
 
-	// Source is the values originating location in source code.  Programs
-	// should not modify the contents of Source as the reference may be shared
-	// by multiple LVals.
-	Source *token.Location
+	// source is the value's originating location in source code.  The
+	// reference may be shared by multiple LVals (and with scanner tokens),
+	// which is why the field is unexported: external packages read it
+	// through Source(), which returns a copy, and write it through
+	// SetSource().  See issue #362.
+	source *token.Location
 
-	// Meta holds formatting metadata, only populated in format-preserving mode.
-	Meta *SourceMeta
+	// meta holds formatting metadata, only populated in format-preserving
+	// mode.  Unexported (issue #382), typed by an internal package: only
+	// this module's format tooling (parser/rdparser writes, formatter
+	// reads) can touch it, through internal/fmtraw.  Format-preserving
+	// trees are never evaluated or shared, so nothing outside that
+	// tooling has ever had a legitimate use.
+	meta *fmtmeta.Meta
 
-	// MacroExpansion holds debug metadata for nodes produced by macro
+	// macroExpansion holds debug metadata for nodes produced by macro
 	// expansion. Only populated when a debugger is attached — nil in
-	// production (zero overhead: 8-byte nil pointer).
-	MacroExpansion *MacroExpansionInfo
+	// production (zero overhead: 8-byte nil pointer).  Unexported (issue
+	// #382): external packages read a snapshot through the MacroExpansion
+	// accessor; the in-kernel stamp (stampMacroExpansion) is the only
+	// writer.
+	macroExpansion *macroExpansionInfo
 
 	// Str used by LSymbol and LString values
 	Str string
@@ -351,17 +370,69 @@ type LVal struct {
 	// FunType used to further classify LFun values.
 	FunType LFunType
 
-	// Quoted is a flag indicating a single level of quoting.
-	Quoted bool
+	// quoted is a flag indicating a single level of quoting.  It is
+	// unexported (issue #382): external packages read it through IsQuoted;
+	// the only write paths are construction-time (Quote, Splice,
+	// shallowUnquote) because the #333/#334 singleton race was an external
+	// in-place write to this field.
+	quoted bool
 
-	// Spliced denotes the value as needing to be spliced into a parent value.
-	Spliced bool
+	// spliced denotes the value as needing to be spliced into a parent
+	// value.  Unexported (issue #382): the flag is pure evaluator plumbing
+	// between Splice and quasiquote expansion — no external package has
+	// ever had a legitimate read or write.
+	spliced bool
+}
+
+// Source returns a copy of v's originating location in source code.  The
+// boolean result reports whether v has a location at all — a false return
+// means v carries no location (and the returned zero Location is
+// meaningless), which is distinct from a real location whose fields happen
+// to be zero.
+//
+// The returned Location is a value copy: mutating it never affects v or any
+// other LVal.  The stored reference may be shared by many LVals, which is
+// why no pointer accessor exists (issue #362).
+//
+// Source is nil-receiver safe: a nil LVal reports no recorded location.
+//
+// When v has no recorded location the boolean is false and the returned
+// value is the synthetic "<native code>" location (File "<native code>",
+// Pos -1) — the same location that values constructed by Go code have
+// always reported — so the result is printable either way.
+func (v *LVal) Source() (token.Location, bool) {
+	if v == nil || v.source == nil {
+		return nativeLocation(), false
+	}
+	return *v.source, true
+}
+
+// SetSource sets v's originating location in source code.  A nil loc clears
+// the location.  The LVal stores the provided pointer, so a producer (e.g. a
+// parser) may retain loc and continue to fix up its fields after the call —
+// but once an LVal escapes to consumers the location must be treated as
+// frozen, because the reference may be shared by many LVals (issue #362).
+func (v *LVal) SetSource(loc *token.Location) {
+	v.source = loc
+}
+
+// IsQuoted reports whether v carries a single level of quoting — the flag
+// behind the LQuote wrapper and the ['(...)/[...]] display forms.  The
+// underlying field is unexported (issue #382): quoting is established at
+// construction time (Quote, Splice, QExpr, QSymbol, the parser) and removed
+// only by the evaluator's own unquote step, so external packages get a read
+// but never a write — an in-place external write to the flag on a shared
+// value was exactly the #333/#334 singleton corruption.
+//
+// IsQuoted is nil-receiver safe: a nil LVal reports false.
+func (v *LVal) IsQuoted() bool {
+	return v != nil && v.quoted
 }
 
 // GetType returns a quoted symbol denoting v's type.
 func GetType(v *LVal) *LVal {
 	t := Symbol(v.Str)
-	t.Quoted = true
+	t.quoted = true
 	if v.Type != LTaggedVal {
 		t.Str = v.Type.String()
 	}
@@ -410,34 +481,30 @@ func Bool(b bool) *LVal {
 // Int returns an LVal representing the number x.
 func Int(x int) *LVal {
 	return &LVal{
-		Source: nativeSource(),
-		Type:   LInt,
-		Int:    x,
+		Type: LInt,
+		Int:  x,
 	}
 }
 
 // Float returns an LVal representation of the number x
 func Float(x float64) *LVal {
 	return &LVal{
-		Source: nativeSource(),
-		Type:   LFloat,
-		Float:  x,
+		Type:  LFloat,
+		Float: x,
 	}
 }
 
 // String returns an LVal representing the string str.
 func String(str string) *LVal {
 	return &LVal{
-		Source: nativeSource(),
-		Type:   LString,
-		Str:    str,
+		Type: LString,
+		Str:  str,
 	}
 }
 
 // Bytes returns an LVal representing binary data b.
 func Bytes(b []byte) *LVal {
 	return &LVal{
-		Source: nativeSource(),
 		Type:   LBytes,
 		Native: &b,
 	}
@@ -461,18 +528,16 @@ func SplitSymbol(sym *LVal) *LVal {
 // Symbol returns an LVal representing the symbol s
 func Symbol(s string) *LVal {
 	return &LVal{
-		Source: nativeSource(),
-		Type:   LSymbol,
-		Str:    s,
+		Type: LSymbol,
+		Str:  s,
 	}
 }
 
 // QSymbol returns an LVal representing the quoted symbol
 func QSymbol(s string) *LVal {
 	return &LVal{
-		Source: nativeSource(),
-		Type:   LQSymbol,
-		Str:    s,
+		Type: LQSymbol,
+		Str:  s,
 	}
 }
 
@@ -489,7 +554,6 @@ func Nil() *LVal {
 // Native returns an LVal containng a native Go value.
 func Native(v interface{}) *LVal {
 	return &LVal{
-		Source: nativeSource(),
 		Type:   LNative,
 		Native: v,
 	}
@@ -500,9 +564,8 @@ func Native(v interface{}) *LVal {
 // are not copied.
 func SExpr(cells []*LVal) *LVal {
 	return &LVal{
-		Source: nativeSource(),
-		Type:   LSExpr,
-		Cells:  cells,
+		Type:  LSExpr,
+		Cells: cells,
 	}
 }
 
@@ -511,9 +574,8 @@ func SExpr(cells []*LVal) *LVal {
 // are not copied.
 func QExpr(cells []*LVal) *LVal {
 	return &LVal{
-		Source: nativeSource(),
 		Type:   LSExpr,
-		Quoted: true,
+		quoted: true,
 		Cells:  cells,
 	}
 }
@@ -586,8 +648,7 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 	}
 
 	return &LVal{
-		Source: nativeSource(),
-		Type:   LArray,
+		Type: LArray,
 		Cells: []*LVal{
 			dims.Copy(),
 			QExpr(cells),
@@ -605,7 +666,6 @@ func SortedMap() *LVal {
 // provided satisfies the semantics of Map methods.
 func SortedMapFromData(data *MapData) *LVal {
 	return &LVal{
-		Source: nativeSource(),
 		Type:   LSortMap,
 		Native: data,
 	}
@@ -631,19 +691,18 @@ func FunRef(symbol, fun *LVal) *LVal {
 // produces "BUG: GetFunName" log spam (issue #271).
 func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
-		Source: nativeSource(),
-		Type:   LFun,
-		Native: &LFunData{
-			FID:     fid,
-			Builtin: fn,
-			Package: pkg,
+		Type: LFun,
+		Native: &funData{
+			fid:     fid,
+			builtin: fn,
+			pkg:     pkg,
 		},
 		Cells: []*LVal{formals, String("")},
 	}
 }
 
 // Fun returns an LVal representing a function. Package is left empty;
-// callers MUST set v.FunData().Package before the value is invoked, or
+// callers MUST set the funData Package before the value is invoked, or
 // GetFunName will log "BUG: ..." at every call site that observes a
 // package-less LFun.
 //
@@ -658,20 +717,19 @@ func Fun(fid string, formals *LVal, fn LBuiltin) *LVal {
 // over Fun. See issue #271.
 func MacroInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
-		Source:  nativeSource(),
 		Type:    LFun,
 		FunType: LFunMacro,
-		Native: &LFunData{
-			FID:     fid,
-			Builtin: fn,
-			Package: pkg,
+		Native: &funData{
+			fid:     fid,
+			builtin: fn,
+			pkg:     pkg,
 		},
 		Cells: []*LVal{formals, String("")},
 	}
 }
 
 // Macro returns an LVal representing a macro. Package is left empty;
-// callers MUST set v.FunData().Package before the value is invoked, or
+// callers MUST set the funData Package before the value is invoked, or
 // GetFunName will log "BUG: ..." at every call site that observes a
 // package-less LFun.
 //
@@ -686,13 +744,12 @@ func Macro(fid string, formals *LVal, fn LBuiltin) *LVal {
 // is preferred over Fun. See issue #271.
 func SpecialOpInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 	return &LVal{
-		Source:  nativeSource(),
 		Type:    LFun,
 		FunType: LFunSpecialOp,
-		Native: &LFunData{
-			FID:     fid,
-			Builtin: fn,
-			Package: pkg,
+		Native: &funData{
+			fid:     fid,
+			builtin: fn,
+			pkg:     pkg,
 		},
 		Cells: []*LVal{formals, String("")},
 	}
@@ -703,7 +760,7 @@ func SpecialOpInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 // However values returned by special operations do not require further
 // evaluation, unlike macros.
 //
-// Package is left empty; callers MUST set v.FunData().Package before the
+// Package is left empty; callers MUST set the funData Package before the
 // value is invoked, or GetFunName will log "BUG: ..." at every call site
 // that observes a package-less LFun.
 //
@@ -735,10 +792,9 @@ func Error(err error) *LVal {
 // value.
 func ErrorCondition(condition string, err error) *LVal {
 	return &LVal{
-		Source: nativeSource(),
-		Type:   LError,
-		Str:    condition,
-		Cells:  []*LVal{Native(err)},
+		Type:  LError,
+		Str:   condition,
+		Cells: []*LVal{Native(err)},
 	}
 }
 
@@ -764,25 +820,23 @@ func Errorf(format string, v ...interface{}) *LVal {
 // appropriate value.
 func ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
 	return &LVal{
-		Source: nativeSource(),
-		Type:   LError,
-		Str:    condition,
-		Cells:  []*LVal{String(fmt.Sprintf(format, v...))},
+		Type:  LError,
+		Str:   condition,
+		Cells: []*LVal{String(fmt.Sprintf(format, v...))},
 	}
 }
 
 // Quote quotes v and returns the quoted value.  The LVal v is modified.
 func Quote(v *LVal) *LVal {
-	if !v.Quoted {
+	if !v.quoted {
 		cp := &LVal{}
 		*cp = *v
-		cp.Quoted = true
+		cp.quoted = true
 		return cp
 	}
 	quote := &LVal{
-		Source: nativeSource(),
 		Type:   LQuote,
-		Quoted: true,
+		quoted: true,
 		Cells:  []*LVal{v},
 	}
 	return quote
@@ -793,7 +847,7 @@ func Quote(v *LVal) *LVal {
 func Splice(v *LVal) *LVal {
 	cp := &LVal{}
 	*cp = *v
-	cp.Spliced = true
+	cp.spliced = true
 	return cp
 }
 
@@ -802,7 +856,7 @@ func Splice(v *LVal) *LVal {
 func shallowUnquote(v *LVal) *LVal {
 	cp := &LVal{}
 	*cp = *v
-	cp.Quoted = false
+	cp.quoted = false
 	return cp
 }
 
@@ -922,38 +976,65 @@ func (v *LVal) SetCallStack(stack *CallStack) {
 	v.Native = stack.Copy()
 }
 
-// FunData returns the function metadata of v.  FunData panics if v.Type is
-// not LFun.  Package, Builtin, FID and Env are thin readers over it and
-// inherit the same requirement.
+// funData returns the function payload of an LFun value.  It panics on
+// non-function values.  Unexported (issue #382): external packages read
+// function identity through FID, Package, and Builtin, and in-repo tooling
+// reaches the captured environment through internal/funraw.
 //
-// NOT LISP-REACHABLE (#367): calling a non-function is rejected before any of
-// these are consulted -- evalSExpr answers "unbound symbol"/"not a function",
-// and the builtins that take a function argument (map, foldl/foldr, sort,
-// apply, funcall) run it through GetFunGlobal and return an error for anything
-// that is not an LFun.  The remaining callers reach it from inside a
+// NOT LISP-REACHABLE (#367): calling a non-function is rejected before this
+// is consulted -- evalSExpr answers "unbound symbol"/"not a function", and
+// the builtins that take a function argument (map, foldl/foldr, sort, apply,
+// funcall) run it through GetFunGlobal and return an error for anything that
+// is not an LFun.  The remaining callers reach it from inside a
 // `Type == LFun` branch: Docstring, str, Package.put, funCall/MacroCall,
-// libschema's isValidator, and the debugger and profiler annotators.
-func (v *LVal) FunData() *LFunData {
+// libschema's isValidator, and the debugger and profiler annotators.  Its
+// thin readers (Package, Builtin, FID, funEnv) inherit the same argument.
+func (v *LVal) funData() *funData {
 	if v.Type != LFun {
 		panic("not a function: " + v.Type.String())
 	}
-	return v.Native.(*LFunData)
+	return v.Native.(*funData)
 }
 
+// Package returns the name of the package a function value was defined in,
+// or "" for a function value carrying no function data.  It panics on
+// non-function values.
 func (v *LVal) Package() string {
-	return v.FunData().Package
+	if fd := v.funData(); fd != nil {
+		return fd.pkg
+	}
+	return ""
 }
 
+// Builtin returns the native implementation of a builtin function value,
+// or nil for user-defined functions and function values carrying no
+// function data.  It panics on non-function values.
 func (v *LVal) Builtin() LBuiltin {
-	return v.FunData().Builtin
+	if fd := v.funData(); fd != nil {
+		return fd.builtin
+	}
+	return nil
 }
 
+// FID returns the function value's unique identifier, or "" for a function
+// value carrying no function data.  It panics on non-function values.
 func (v *LVal) FID() string {
-	return v.FunData().FID
+	if fd := v.funData(); fd != nil {
+		return fd.fid
+	}
+	return ""
 }
 
-func (v *LVal) Env() *LEnv {
-	return v.FunData().Env
+// funEnv returns the environment captured by a function value (nil for
+// builtins).  Unexported (issue #382): the captured environment is the
+// deepest aliasing channel into shared interpreter state, so external
+// packages cannot reach it at all; in-repo tooling goes through
+// internal/funraw.
+func (v *LVal) funEnv() *LEnv {
+	if fd := v.funData(); fd != nil {
+		return fd.env
+	}
+	return nil
 }
 
 // Len returns the length of the list v.
@@ -1388,79 +1469,62 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 // The copy owns its positions.  Every node Copy reaches gets its own
 // *token.Location, so a write through the copy cannot move what the original
 // reports, and the reverse.  That holds for the Locations reachable THROUGH
-// Meta's comment tokens as well as for Source on the node.  The one Location
-// left shared is nativeSource's process-wide singleton -- see the comment on
-// the copy below.
+// meta's comment tokens as well as for source on the node.  Values Go
+// constructed carry no location at all (source is nil and the accessor
+// synthesizes one by value), so there is nothing left to share -- the
+// process-wide "<native code>" singleton this used to except is deleted, see
+// nativeLocation.
 //
-// The copy also owns its per-node metadata: Meta and MacroExpansion.  The one
-// thing deliberately still shared is MacroExpansionInfo's embedded
-// *MacroExpansionContext, which describes the macro CALL rather than the node
-// -- see MacroExpansionInfo.Copy.
+// The copy also owns its per-node metadata: meta and macroExpansion.  The one
+// thing deliberately still shared is macroExpansionInfo's embedded
+// *macroExpansionContext, which describes the macro CALL rather than the node
+// -- see macroExpansionInfo.Copy.
 func (v *LVal) Copy() *LVal {
 	if v == nil {
 		return nil
 	}
 	cp := &LVal{}
 	*cp = *v // shallow copy of all fields including Map and Bytes
-	if v.Source != defaultSourceLocation {
-		// Source rides along in the struct assignment above, so without this
-		// the copy and the original hold ONE mutable *token.Location, at
-		// every depth -- Cells are deep-copied just below, positions were
-		// not.  That is issue #446, and lisp.TextLoader is what it defeats:
-		// TextLoader's entire purpose is to hand each evaluation a PRIVATE
-		// tree (it is the entry point an embedder is pointed at for a
-		// reusable parse cache; the Load* entry points do not copy), and
-		// every one of those "private" trees reported its positions through
-		// the retained cache's own objects.
-		//
-		// One Location per NODE here, where issue #431 needed only one per
-		// macro CALL, because what has to be separated is different.  There
-		// the N stamped nodes genuinely sit at one position, so a single
-		// object owned by the expansion separated the two owners.  Here each
-		// node has a position of its own, so N nodes need N objects and no
-		// cheaper framing exists; the only way to drop the allocation is to
-		// stop these objects being mutable at all, which is the LVal.Source
-		// immutability work tracked on issue #362.
-		//
-		// The single Location deliberately left shared is nativeSource's
-		// process-wide singleton, stamped on every natively-constructed
-		// LVal.  Copying it would separate nothing: a copy separates two
-		// OWNERS, and that object has exactly one -- the process.  It is
-		// read-only by contract, SingletonSnapshot watches its bit pattern,
-		// and the parser never leaves it in an AST (parser/rdparser's
-		// TestParserDoesNotAliasSharedNativeLocation), so it cannot reach a
-		// parse cache in the first place.  Copying it would instead put a
-		// heap allocation on the interpreter's hottest path, where most
-		// values are ones Go built and therefore carry it.  Measured
-		// interleaved against this branch, n=5, allocs/op: AliasStableSort
-		// +25.1%, AliasCDR +11.0%, EnvFunCallPos +9.1%, geomean +7.2% -- all
-		// past the 5% allocation gate.  Skipping it leaves the tree flat
-		// instead: the only row this change moves at all is libjson's
-		// get-nested-baseline (+3.93% allocs/op, gate 5%), whose 5000
-		// `assert` forms each copy their test expression out of the parse
-		// tree in opAssert.  That is the same trade nativeSource itself
-		// records and takes; closing it belongs to issue #362's immutability
-		// work, not here.
-		cp.Source = v.Source.Copy()
+	// source rides along in the struct assignment above, so without this the
+	// copy and the original hold ONE mutable *token.Location, at every depth
+	// -- Cells are deep-copied just below, positions were not.  That is issue
+	// #446, and lisp.TextLoader is what it defeats: TextLoader's entire
+	// purpose is to hand each evaluation a PRIVATE tree (it is the entry
+	// point an embedder is pointed at for a reusable parse cache; the Load*
+	// entry points do not copy), and every one of those "private" trees
+	// reported its positions through the retained cache's own objects.
+	//
+	// One Location per NODE here, where issue #431 needed only one per macro
+	// CALL, because what has to be separated is different.  There the N
+	// stamped nodes genuinely sit at one position, so a single object owned
+	// by the expansion separated the two owners.  Here each node has a
+	// position of its own, so N nodes need N objects.
+	//
+	// The exception main carried for nativeSource's process-wide singleton is
+	// gone with the singleton: values Go constructs now leave source nil and
+	// synthesize the "<native code>" location by value in the accessor (issue
+	// #362), so the nil check below is also the fast path this used to buy --
+	// no allocation on the interpreter's hot path, where most values are ones
+	// Go built.
+	if v.source != nil {
+		cp.source = v.source.Copy()
 	}
-	// Meta and MacroExpansion ride along in the struct assignment above for
-	// the same reason Source did, and issue #466 is that they still do.  Both
-	// are PER-NODE mutable state -- SourceMeta is what the parser writes and
-	// hoistOperandComments moves between nodes; MacroExpansionInfo is the
+	// meta and macroExpansion ride along in the struct assignment above for
+	// the same reason source did, and issue #466 is that they still do.  Both
+	// are PER-NODE mutable state -- fmtmeta.Meta is what the parser writes and
+	// hoistOperandComments moves between nodes; macroExpansionInfo is the
 	// per-node half of an expansion record whose shared half is the context
 	// it embeds.  Sharing them makes a "deep copy" a second writer on one
-	// object, and in Meta's case it also reopens #446 one level down: the
+	// object, and in meta's case it also reopens #446 one level down: the
 	// *token.Location on every comment token is reachable from both trees.
 	//
-	// The cost argument is the opposite of Source's.  Source is present on
-	// essentially every node, which is why copying it is the measured trade
-	// recorded above.  Meta is nil outside format-preserving parsing and
-	// MacroExpansion is nil unless a debugger is attached, so on the
-	// interpreter's hot path this is two nil checks and no allocation, and it
-	// allocates only on paths already doing per-node formatting or debug
-	// work.
-	cp.Meta = v.Meta.Copy()
-	cp.MacroExpansion = v.MacroExpansion.Copy()
+	// The cost argument is the opposite of source's.  meta is nil outside
+	// format-preserving parsing and macroExpansion is nil unless a debugger
+	// is attached, so on the interpreter's hot path this is two nil checks
+	// and no allocation, and it allocates only on paths already doing
+	// per-node formatting or debug work.
+	cp.meta = detachMeta(v.meta)
+	cp.macroExpansion = v.macroExpansion.Copy()
 	switch v.Type {
 	case LArray:
 		// Arrays are memory references but use Cells as backing storage.
@@ -1599,7 +1663,7 @@ func (v *LVal) Docstring() string {
 func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
 	const QUOTE = `'`
 	// All types which may evaluate to things other than themselves must check
-	// v.Quoted.
+	// v.quoted.
 	quote := ""
 	if onTheRecord {
 		quote = QUOTE
@@ -1621,7 +1685,7 @@ func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
 		}
 		return quote + "#<bytes " + strings.Trim(fmt.Sprint(b), "[]") + ">" //nolint:staticcheck // fmt.Sprint gives byte slice repr, not string conversion
 	case LSymbol:
-		if v.Quoted {
+		if v.quoted {
 			quote = QUOTE
 		}
 		return quote + v.Str
@@ -1659,18 +1723,18 @@ func (v *LVal) strNested(onTheRecord bool, g cycleGuard) string {
 	}
 	switch v.Type {
 	case LError:
-		if v.Quoted {
+		if v.quoted {
 			quote = QUOTE
 			return quote + fmt.Sprintf("(error '%s %s)", v.Str, v.Cells[0].str(false, g))
 		}
 		return (*ErrorVal)(v).errorString(g)
 	case LSExpr:
-		if v.Quoted {
+		if v.quoted {
 			quote = QUOTE
 		}
 		return exprString(v, 0, quote+"(", ")", g)
 	case LFun:
-		if v.Quoted {
+		if v.quoted {
 			quote = QUOTE
 		}
 		if v.Builtin() != nil {
@@ -1725,7 +1789,7 @@ func bodyStr(exprs []*LVal, g cycleGuard) string {
 // process-wide singletonNil. It stored the value the field already
 // held, which made it invisible to SingletonSnapshot.Verify (see the
 // note on checkSingleton), but it was still a write to shared memory
-// and raced with every concurrent (*LEnv).eval reading `v.Quoted` off a
+// and raced with every concurrent (*LEnv).eval reading `v.quoted` off a
 // Nil().
 //
 // shallowUnquote copies before clearing Quoted, so lambdaVars mutates
@@ -1742,12 +1806,12 @@ func lambdaVars(formals *LVal, bound *LVal) *LVal {
 }
 
 func boundVars(v *LVal) *LVal {
-	env := v.Env()
+	env := v.funEnv()
 	if env == nil {
 		return Nil()
 	}
-	keys := make([]string, 0, len(env.Scope))
-	for k := range env.Scope {
+	keys := make([]string, 0, len(env.scope))
+	for k := range env.scope {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
@@ -1830,66 +1894,12 @@ func makeByteSeq(v *LVal) *LVal {
 	}
 }
 
-// defaultSourceLocation is the single, process-wide Location stamped onto
-// every natively-constructed LVal.  It is a shared mutable singleton in the
-// same family as singletonNil/singletonTrue/singletonFalse, and like them it
-// is covered by SingletonSnapshot: TakeSingletonSnapshot records its bit
-// pattern and Verify names it as "nativeSource()" when it drifts.  Before
-// issue #362 nothing watched it at all, so a stray `v.Source.Pos = 7` on a
-// value from lisp.Int corrupted every value in the process and surfaced as a
-// mysterious failure in an unrelated test.
-//
-// It is initialised from token.NativeLocation, which is the one definition of
-// what "<native code>" means.
-var defaultSourceLocation = func() *token.Location {
-	loc := token.NativeLocation()
-	return &loc
-}()
-
-// nativeSource returns the shared Location for values constructed by Go code
-// rather than read from a source stream.
-//
-// THE RETURNED POINTER IS SHARED BY EVERY NATIVELY-CONSTRUCTED LVal IN THE
-// PROCESS AND MUST BE TREATED AS READ-ONLY.  A write through it -- including
-// a write to a single field of an LVal's Source -- corrupts the reported
-// position of every such value at once (issue #362).  Code that needs a
-// Location it may write to must take its own copy:
-//
-//	loc := token.NativeLocation()
-//	v.Source = &loc
-//
-// The sharing is deliberate, and measured.  Handing out a fresh Location per
-// call adds a heap allocation to every LVal Go builds: interleaved n=12
-// against this tree it costs +18.6% sec/op and +20.2% allocs/op geomean on
-// the lisp benchmarks, and +56% sec/op on EnvFunCallBuiltin.  (Issue #362
-// records an independent measurement, +22.9%/+48.3%.)  A fifth of
-// interpreter throughput is too much to pay for a latent trap, so the hazard
-// is bounded from both ends instead:
-//
-//   - the PARSER never leaves this pointer in an AST it produces, which is
-//     the channel by which it reached user-reachable trees.  That is not this
-//     issue's doing: rdparser.locateSynthesized gives the heads behind #' and
-//     #^ the prefix token's own real location, which issue #370 required for
-//     an unrelated reason (the macro-expansion stamp was writing into a
-//     caller's parse tree through exactly those nodes) and which removes the
-//     shared pointer as a side effect.  parser/rdparser's
-//     TestParserDoesNotAliasSharedNativeLocation guards the property in the
-//     terms this issue needs -- no pointer to the SHARED location -- next to
-//     #370's TestParserEmitsNoSyntheticSourceLocations, which guards it in
-//     the terms that one needs.
-//   - SingletonSnapshot records this Location's bit pattern, so a write
-//     through it is named ("nativeSource()") at the next singleton check
-//     rather than surfacing later in an unrelated test.
-//
-// Neither bound reaches an EMBEDDER that builds an LVal tree through the Go
-// API: its nodes carry this pointer by construction, and a walker of its own
-// that stamps positions corrupts the singleton for the whole process.  Only
-// making Source immutable closes that, which is:
-//
-// TODO(elps2): make the LVal.Source "immutable" (possibly an interface or a
-// string) so it won't matter that nativeSource returns a shared reference.
-// That is an API break for every embedder reading v.Source and is tracked on
-// issue #362; the guard above stands in for it until then.
-func nativeSource() *token.Location {
-	return defaultSourceLocation
+// nativeLocation returns the synthetic location reported for values that
+// were constructed by Go code rather than read from a source file.  It is
+// produced by value on demand: there is no shared "<native code>" Location
+// object anymore, so issue #362's shared-singleton corruption vector no
+// longer exists — constructors simply leave LVal.source nil and the
+// accessor/print paths synthesize this location.
+func nativeLocation() token.Location {
+	return token.NativeLocation()
 }

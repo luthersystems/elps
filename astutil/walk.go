@@ -6,7 +6,10 @@
 // traversing parsed ELPS expressions.
 package astutil
 
-import "github.com/luthersystems/elps/lisp"
+import (
+	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/token"
+)
 
 // Walk calls fn for every node in the tree, depth-first.
 // parent is nil for top-level expressions.
@@ -37,7 +40,7 @@ func walkNode(node *lisp.LVal, parent *lisp.LVal, depth int, fn func(*lisp.LVal,
 // call or special form) in the tree.
 func WalkSExprs(exprs []*lisp.LVal, fn func(sexpr *lisp.LVal, depth int)) {
 	Walk(exprs, func(node *lisp.LVal, _ *lisp.LVal, depth int) {
-		if node.Type == lisp.LSExpr && !node.Quoted && len(node.Cells) > 0 {
+		if node.Type == lisp.LSExpr && !node.IsQuoted() && len(node.Cells) > 0 {
 			fn(node, depth)
 		}
 	})
@@ -131,10 +134,24 @@ func PackageNameArg(arg *lisp.LVal) string {
 	if arg.Type == lisp.LString || arg.Type == lisp.LSymbol {
 		return arg.Str
 	}
-	if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+	if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
 		return arg.Cells[0].Str
 	}
 	return ""
+}
+
+// SourceLoc returns v's source location as a pointer, or nil when v is nil
+// or carries no location.  The pointer refers to a private copy — mutating
+// it never affects v or any other LVal (lisp.LVal exposes locations by value
+// only; see issue #362).
+func SourceLoc(v *lisp.LVal) *token.Location {
+	if v == nil {
+		return nil
+	}
+	if loc, ok := v.Source(); ok {
+		return &loc
+	}
+	return nil
 }
 
 // SourceOf returns the best source location for a node.
@@ -145,11 +162,13 @@ func SourceOf(v *lisp.LVal) *lisp.LVal {
 	if v == nil {
 		return nil
 	}
-	if v.Source != nil && v.Source.Line > 0 {
+	if loc, ok := v.Source(); ok && loc.Line > 0 {
 		return v
 	}
-	if len(v.Cells) > 0 && v.Cells[0].Source != nil {
-		return v.Cells[0]
+	if len(v.Cells) > 0 {
+		if _, ok := v.Cells[0].Source(); ok {
+			return v.Cells[0]
+		}
 	}
 	return v
 }

@@ -264,7 +264,9 @@ func (g *Gen) locate(v *lisp.LVal, sel byte) *lisp.LVal {
 	if v.Type == lisp.LFun || v == lisp.Nil() || v == lisp.Bool(true) || v == lisp.Bool(false) {
 		return v
 	}
-	v.Source = realLocations[g.nloc%len(realLocations)]
+	// SetSource, not a field write: #362 unexported the field behind an
+	// audited setter.
+	v.SetSource(realLocations[g.nloc%len(realLocations)])
 	g.nloc++
 	return v
 }
@@ -363,7 +365,7 @@ var funNames = []string{
 //   - an existing stdlib callable, including special operators and macros,
 //     which several builtins must reject rather than invoke.
 //
-// libschema's constraint calling convention reaches into FunData().Builtin
+// libschema's constraint calling convention reaches into the raw Builtin closure
 // directly, so shape 1 with mismatched arity indexes past the end of an empty
 // args list and shape 2 dereferences a nil Builtin.  Both are only reachable
 // with an LFun in the corpus.

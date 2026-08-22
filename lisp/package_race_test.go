@@ -2,7 +2,7 @@
 
 // Concurrent-Get regression test for issue #397.
 //
-// Pre-fix, (*Package).Get wrote pkg.FunNames on the read path: on every
+// Pre-fix, (*Package).Get wrote pkg.funNames on the read path: on every
 // successful lookup of an LFun it stored FunNames[fid] = k.Str, guarded
 // by nothing.  A *Package is shared by pointer across goroutines in
 // production (mcpserver's docEnv copies the shared registry's *Package
@@ -75,7 +75,7 @@ func hammerPackageGet(goroutines, iterations int) {
 	pkg, filler := newFunNameRacePackage()
 
 	// Writers alternate the two aliases of the same function value, so
-	// the pre-fix `if pkg.FunNames[fid] != k.Str` guard never settles
+	// the pre-fix `if pkg.funNames[fid] != k.Str` guard never settles
 	// and every iteration writes.  Readers walk the filler bindings,
 	// reading FunNames concurrently with those writes.
 	alpha := Symbol("alpha")
@@ -106,7 +106,7 @@ func hammerPackageGet(goroutines, iterations int) {
 }
 
 // TestPackageGetConcurrentReadsAreSafe is the in-process arm.  Under
-// `go test -race` it reports a data race on Package.FunNames without the
+// `go test -race` it reports a data race on Package.funNames without the
 // fix and is clean with it.  Without `-race` it is the body the
 // subprocess arm below runs, where the failure mode is a fatal runtime
 // error rather than a test failure.
@@ -197,11 +197,11 @@ func TestPackageFunNamesPopulatedByWritePath(t *testing.T) {
 
 	// A Get must not be required to populate FunNames, and must not
 	// mutate it.
-	before := fmt.Sprint(pkg.FunNames)
+	before := fmt.Sprint(pkg.funNames)
 	for range 10 {
 		pkg.Get(Symbol("f"))
 	}
-	if after := fmt.Sprint(pkg.FunNames); after != before {
+	if after := fmt.Sprint(pkg.funNames); after != before {
 		t.Fatalf("Package.Get mutated FunNames: before=%s after=%s", before, after)
 	}
 
@@ -216,9 +216,9 @@ func TestPackageFunNamesPopulatedByWritePath(t *testing.T) {
 	})
 	alias.Put(Symbol("one"), afn)
 	alias.Put(Symbol("two"), afn)
-	aliasBefore := fmt.Sprint(alias.FunNames)
+	aliasBefore := fmt.Sprint(alias.funNames)
 	alias.Get(Symbol("one"))
-	if got := fmt.Sprint(alias.FunNames); got != aliasBefore {
+	if got := fmt.Sprint(alias.funNames); got != aliasBefore {
 		t.Fatalf("Package.Get wrote FunNames on the read path: before=%s after=%s",
 			aliasBefore, got)
 	}

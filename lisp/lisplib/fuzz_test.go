@@ -18,7 +18,6 @@ import (
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
-	"github.com/luthersystems/elps/parser/token"
 )
 
 // FuzzApplyStdlib applies every callable the standard library registers -- the
@@ -54,11 +53,14 @@ import (
 // INVARIANTS
 //
 //  1. No panic escapes the call.
+//
 //  2. The result is never a nil *LVal.  A nil return is a contract violation
 //     that env.call would have to paper over with a synthesised error.
+//
 //  3. LVal.String() of the result terminates and does not panic.  Every error
 //     path in the interpreter renders its operands, so an unprintable value is
 //     a latent crash in the error path.
+//
 //  4. The three shared singletons (Nil(), Bool(true), Bool(false)) are
 //     bit-identical afterwards.  fuzzval deliberately feeds the singletons in
 //     as arguments; anything that writes through one corrupts every other
@@ -66,14 +68,18 @@ import (
 //     elpscheck` the same corruption is additionally caught at the next
 //     Bool()/Nil() read, which localises it far better -- run
 //     `make test-elpscheck` for that.
-//     4a. No argument's source location was rewritten, and no LNative's contents
-//     were changed.  See internal/fuzzfp for why those two and not "the
-//     arguments are unchanged": several callables mutate an argument by
-//     design.  Issue #318 recorded both of these as unwatchable; they are not,
+//     4a. No LNative's contents were changed.  See internal/fuzzfp for why
+//     that and not "the arguments are unchanged": several callables mutate an
+//     argument by design.  Issue #318 recorded it as unwatchable; it is not,
 //     and until now NOTHING about an argument was checked at all -- only the
-//     three singletons were, so a builtin that relocated every node of a
-//     parsed fragment, or reached into a host's native, produced no signal
-//     whatsoever.
+//     three singletons were, so a builtin that reached into a host's native
+//     produced no signal whatsoever.
+//
+//     fuzzfp's OTHER half -- "no argument's source location was rewritten" --
+//     is deliberately not ported.  It read the exported LVal.Source field
+//     through a process-wide native-location singleton, and this branch
+//     deletes both (#362), so that half no longer compiles here.
+//
 //  5. The call terminates.  Bounded by a context deadline, a step limit and,
 //     because neither of those can see a loop that evaluates nothing, an
 //     out-of-band watchdog.  Two of the three defects this target found were
@@ -451,12 +457,14 @@ func callableNames(tb fuzzT) []string {
 	tb.Helper()
 	env := newStdlibEnv(tb)
 	var names []string
-	for pkgName, pkg := range env.Runtime.Registry.Packages {
-		for sym, v := range pkg.Symbols {
+	for _, pkgName := range env.Runtime.Registry.PackageNames() {
+		if pkgName == lisp.DefaultUserPackage {
+			continue
+		}
+		pkg := env.Runtime.Registry.Package(pkgName)
+		for _, sym := range pkg.SymbolNames() {
+			v, _ := pkg.Symbol(sym)
 			if v == nil || v.Type != lisp.LFun {
-				continue
-			}
-			if pkgName == lisp.DefaultUserPackage {
 				continue
 			}
 			names = append(names, pkgName+":"+sym)
@@ -524,47 +532,35 @@ func newStdlibEnv(tb fuzzT, configs ...lisp.Config) *lisp.LEnv {
 	return env
 }
 
-// sharedNativeLocation is the single process-wide Location that
-// lisp.nativeSource stamps on every Go-constructed LVal (it is package lisp's
-// unexported defaultSourceLocation, and a constructed value is the only handle
-// on it from out here). Writing through it corrupts the reported position of
-// every such value in the process -- issue #362 -- so the corruption cases
-// below identify it in order to leave it alone.
-var sharedNativeLocation = lisp.Symbol("shared-native-location-probe").Source
-
 // TestArgumentGuardIsWiredIn is the negative control for assertion 4a, in the
-// same spirit as TestInternalPanicMarkerIsNotForgeable in lisp/eval_fuzz_test.go:
-// it installs a builtin that commits each defect the guard claims to catch and
-// asserts the target's own body reports it.
+// same spirit as TestInternalPanicMarkerIsNotForgeable in
+// lisp/eval_fuzz_test.go: it installs a builtin that commits the defect the
+// guard claims to catch and asserts the target's own body reports it.
 //
-// Everything FuzzApplyStdlib says about arguments rests on applyOne calling
-// Watch before the call and Check after it. That is four lines that no other
-// test executes, and getting them subtly wrong -- watching a copy, checking
+// Everything FuzzApplyStdlib says about arguments rests on applyOne recording
+// state before the call and checking it after. Those few lines are executed by
+// no other test, and getting them subtly wrong -- watching a copy, checking
 // before applying, dropping the result -- leaves the target green and blind.
+//
+// TWO CASES WERE DELETED HERE, and their absence is the point rather than an
+// omission. "corrupt-source" (relocating a node) and "corrupt-shared-location"
+// (editing a Location many values point at) both drove the source half of
+// internal/fuzzfp, which this branch removes: #362 deleted the process-wide
+// native-source Location and put the field behind a value-copy accessor, so
+// neither corruption can be expressed from a builtin any more. A red-proof
+// for a rule that no longer exists passes by doing nothing, which is the
+// failure mode this test exists to prevent.
 func TestArgumentGuardIsWiredIn(t *testing.T) {
 	// NOT parallel: fuzzEnvHook is package state.
 	corrupt := []struct {
 		name string
+		want string // the substring that proves the RIGHT guard fired
 		fn   lisp.LBuiltin
 	}{{
-		// A builtin that relocates a node it was handed. Nothing in the
-		// interpreter does this; stampMacroExpansion only ever writes over a
-		// SYNTHETIC location, and the generated argument here carries a real
-		// one.
-		name: "corrupt-source",
-		fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-			for _, a := range args.Cells {
-				if a.Source != nil && a.Source.Pos >= 0 {
-					a.Source = &token.Location{File: "elsewhere", Pos: 999, Line: 42, Col: 1}
-					return lisp.Nil()
-				}
-			}
-			return lisp.Nil()
-		},
-	}, {
 		// A builtin that reaches inside a host's native value. This is the
 		// case issue #318 recorded as uncatchable.
 		name: "corrupt-native",
+		want: "corrupted an argument",
 		fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			for _, a := range args.Cells {
 				if a.Type == lisp.LNative {
@@ -572,39 +568,6 @@ func TestArgumentGuardIsWiredIn(t *testing.T) {
 						m["injected"] = 1
 						return lisp.Nil()
 					}
-				}
-			}
-			return lisp.Nil()
-		},
-	}, {
-		// The shared-Location case: an in-place edit of a Location that many
-		// values in the process point at. lisp.SingletonSnapshot compares
-		// Source by POINTER, so this is invisible to the singleton check that
-		// was previously the only thing guarding an argument at all.
-		//
-		// It edits one of internal/fuzzval's pooled Locations, which several
-		// values in a generated tree share -- that is the sharing this case is
-		// about, and leaving it perturbed is harmless: nothing in this package
-		// reads a generated value's line number.
-		//
-		// It must NOT edit the process-wide "<native code>" Location that
-		// lisp.nativeSource stamps on every Go-constructed value, lisp.Nil()
-		// among them. That one is not "shared by many values in a tree", it is
-		// shared by every value in the process, and corrupting it poisons the
-		// rest of the test binary -- the exact trap issue #362 is filed about,
-		// and the exact way internal/fuzzfp's "shared synthetic edited in
-		// place" case broke an unrelated test before #356 gave it a location
-		// of its own. Since #362 the singleton snapshot covers it, so under
-		// `make test-elpscheck` the corruption panics here instead of
-		// surfacing somewhere unrelated. Skipping it costs the case nothing:
-		// fuzzval stamps every generated value with a pooled Location, so the
-		// seeds that exercise this guard still do.
-		name: "corrupt-shared-location",
-		fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-			for _, a := range args.Cells {
-				if a.Source != nil && a.Source != sharedNativeLocation {
-					a.Source.Line++
-					return lisp.Nil()
 				}
 			}
 			return lisp.Nil()
@@ -649,10 +612,11 @@ func TestArgumentGuardIsWiredIn(t *testing.T) {
 			}
 			if reported == 0 {
 				t.Fatalf("%s corrupted an argument and the target reported nothing across %d seeds;"+
-					" assertion 4a is not wired into applyOne", name, ran)
+					" the matching assertion is not wired into applyOne", name, ran)
 			}
-			if !strings.Contains(lastMsg, "corrupted an argument") {
-				t.Fatalf("%s was reported, but not by the argument guard -- the failure was: %s", name, lastMsg)
+			if !strings.Contains(lastMsg, c.want) {
+				t.Fatalf("%s was reported, but not by the guard under test (wanted %q) -- the failure was: %s",
+					name, c.want, lastMsg)
 			}
 			t.Logf("%s: reported on %d of %d seeds", name, reported, ran)
 		})

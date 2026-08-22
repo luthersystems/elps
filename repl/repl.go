@@ -229,7 +229,7 @@ func RunRepl(prompt string, opts ...Option) {
 
 // RunEnv runs a simple repl with env as a root environment.
 func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
-	if env.Parent != nil {
+	if env.Parent() != nil {
 		errlnf("REPL environment is not a root environment.")
 		os.Exit(1)
 	}
@@ -493,8 +493,8 @@ func emitResult(w io.Writer, val *lisp.LVal) {
 			Type:    "error",
 			Message: (*lisp.ErrorVal)(val).Error(),
 		}
-		if val.Source != nil && val.Source.Pos >= 0 {
-			obj.Source = val.Source.String()
+		if loc, ok := val.Source(); ok && loc.Pos >= 0 {
+			obj.Source = loc.String()
 		}
 		emitJSONLine(w, obj)
 		return

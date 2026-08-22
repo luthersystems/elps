@@ -261,7 +261,7 @@ func TestSharedValidatorIsNotMutatedByEvaluation(t *testing.T) {
 			cap:     cap(even.Cells),
 			fid:     even.FID(),
 			pkg:     even.Package(),
-			builtin: even.FunData().Builtin != nil,
+			builtin: even.Builtin() != nil,
 		}
 	}
 	before := take()

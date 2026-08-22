@@ -4,7 +4,7 @@
 //
 // stampMacroExpansion writes callSite onto every node of a macro expansion
 // that has no real position of its own, by POINTER.  macroCall used to pass
-// env.Loc -- which eval sets to the Source of the node it is evaluating, i.e.
+// env.loc -- which eval sets to the location of the node it is evaluating, i.e.
 // a *token.Location owned by a node in the CALLER'S parse tree.  One expansion
 // of a macro with N synthesized nodes therefore left N+1 nodes, in two trees
 // with unrelated lifetimes, holding one mutable object; writing through any of
@@ -20,7 +20,7 @@
 // the tree writes through a *token.Location it does not own, except the five
 // sites in parser/rdparser/parser.go -- which operate on nodes the reader has
 // just built, and since elps#426 on Locations those nodes own -- and
-// lisp/env.go's error constructors, which take env.Loc.Copy() since elps#421.
+// lisp/env.go's error constructors, which take env.loc.Copy() since elps#421.
 // lsp/, lint/, analysis/, analysis/perf/, mcpserver/, minifier/, formatter/,
 // lisp/x/debugger/ and lisp/x/profiler/ read a Location and format it into
 // their own Position/Range/Span value types; none writes through one.
@@ -32,11 +32,11 @@
 // elps#370 was a walk writing positions into a tree it did not own, and
 // elps#426 was a parser helper writing through a pointer two nodes held.
 //
-// NOT COVERED HERE, deliberately: LEnv.Lambda's `Source: env.Loc` puts the same
+// NOT COVERED HERE, deliberately: LEnv.Lambda's `source: env.loc` puts the same
 // caller-owned Location on the LFun a `defun` expansion builds.  elps#421's
 // neighbourhood audit found that, weighed it ("a copy here is a new allocation
 // on a path that has none, per lambda"), and left it reported and subsumed by
-// the LVal.Source immutability work.  It is still there; these tests use macros
+// the LVal.source immutability work.  It is still there; these tests use macros
 // whose expansions contain no lambda so they measure the stamp and not that.
 
 package lisp_test
@@ -62,8 +62,8 @@ func callSiteEnv(t testing.TB) *lisp.LEnv {
 	return env
 }
 
-// expandOnce drives a macro exactly as eval does -- env.Loc set to the calling
-// node's own Source -- and returns the expansion with MacroCall's
+// expandOnce drives a macro exactly as eval does -- env.loc set to the calling
+// node's own location -- and returns the expansion with MacroCall's
 // LMarkMacExpand wrapper removed.
 func expandOnce(t testing.TB, env *lisp.LEnv, name string, callNode *lisp.LVal, args ...*lisp.LVal) *lisp.LVal {
 	t.Helper()
@@ -71,9 +71,9 @@ func expandOnce(t testing.TB, env *lisp.LEnv, name string, callNode *lisp.LVal, 
 	require.Equal(t, lisp.LFun, fun.Type, "%s is not a macro: %v", name, fun)
 
 	if callNode != nil {
-		env.Loc = callNode.Source
+		lisp.SetEnvLocForTest(env, lisp.SourceRefForTest(callNode))
 	} else {
-		env.Loc = nil
+		lisp.SetEnvLocForTest(env, nil)
 	}
 	res := env.MacroCall(fun, lisp.SExpr(args))
 	require.NotEqual(t, lisp.LError, res.Type, "%v", res)
@@ -94,8 +94,8 @@ func collectSources(v *lisp.LVal) map[*token.Location]bool {
 			return
 		}
 		seen[v] = true
-		if v.Source != nil {
-			out[v.Source] = true
+		if loc := lisp.SourceRefForTest(v); loc != nil {
+			out[loc] = true
 		}
 		for _, c := range v.Cells {
 			walk(c)
@@ -111,7 +111,7 @@ func parseOne(t testing.TB, env *lisp.LEnv, name, src string) *lisp.LVal {
 	exprs, err := env.Runtime.Reader.Read(name, strings.NewReader(src))
 	require.NoError(t, err)
 	require.Len(t, exprs, 1)
-	require.NotNil(t, exprs[0].Source)
+	require.NotNil(t, lisp.SourceRefForTest(exprs[0]))
 	return exprs[0]
 }
 
@@ -135,13 +135,13 @@ func TestMacroExpansionDoesNotAliasCallerLocation(t *testing.T) {
 
 	// 1. No node of the expansion holds the caller's object.
 	for loc := range collectSources(expansion) {
-		assert.NotSame(t, callNode.Source, loc,
+		assert.NotSame(t, lisp.SourceRefForTest(callNode), loc,
 			"a macro expansion node shares the caller's *token.Location (#431)")
 	}
 
 	// 2. It still reports the call site, by value.
-	require.NotNil(t, expansion.Source)
-	assert.Equal(t, *callNode.Source, *expansion.Source,
+	require.NotNil(t, lisp.SourceRefForTest(expansion))
+	assert.Equal(t, *lisp.SourceRefForTest(callNode), *lisp.SourceRefForTest(expansion),
 		"the expansion must still report the call site's position")
 
 	// 3. The failure the aliasing enables: an in-place write through the
@@ -149,10 +149,10 @@ func TestMacroExpansionDoesNotAliasCallerLocation(t *testing.T) {
 	//    tree outlives the expansion -- a function body IS the parse tree it
 	//    was defined from, re-entered on every call -- and every error
 	//    message, stack frame and LSP range is computed from those positions.
-	before := callNode.Source.String()
-	expansion.Source.Line = 99
-	expansion.Source.Col = 42
-	assert.Equal(t, before, callNode.Source.String(),
+	before := lisp.SourceRefForTest(callNode).String()
+	lisp.SourceRefForTest(expansion).Line = 99
+	lisp.SourceRefForTest(expansion).Col = 42
+	assert.Equal(t, before, lisp.SourceRefForTest(callNode).String(),
 		"a write through the expansion moved the caller's recorded position (#431)")
 }
 
@@ -197,9 +197,17 @@ func TestMacroCallSiteCopyPreservesNil(t *testing.T) {
 	expansion := expandOnce(t, env, "lisp:defconst", nil,
 		lisp.Symbol("answer"), lisp.Int(42))
 
-	require.NotNil(t, expansion.Source)
-	assert.Equal(t, token.NativeFile, expansion.Source.File,
+	// The node records NO location, which is how "<native code>" is spelled
+	// since issue #362 deleted the shared singleton: Source() reports ok=false
+	// and synthesizes the native location by value.  The property under test
+	// is unchanged -- a nil call site must not relabel synthesized nodes from
+	// "<native code>" to ":0:0" -- only the representation of "no position" is.
+	assert.Nil(t, lisp.SourceRefForTest(expansion),
+		"a nil call site stamped a Location onto a synthesized node")
+	loc, ok := expansion.Source()
+	assert.False(t, ok, "a nil call site must leave synthesized nodes with no RECORDED position")
+	assert.Equal(t, token.NativeFile, loc.File,
 		"a nil call site must leave synthesized nodes on <native code>, not ':0:0'")
-	assert.Negative(t, expansion.Source.Pos,
+	assert.Negative(t, loc.Pos,
 		"a nil call site must leave the synthetic Pos < 0 marker in place")
 }

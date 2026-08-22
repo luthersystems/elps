@@ -173,7 +173,7 @@ func TestGeneratorProducesRealSourceLocations(t *testing.T) {
 			if v.Type == lisp.LFun || v == lisp.Nil() || v == lisp.Bool(true) || v == lisp.Bool(false) {
 				continue
 			}
-			if v.Source != nil && v.Source.Pos >= 0 {
+			if loc, ok := v.Source(); ok && loc.Pos >= 0 {
 				located++
 			} else {
 				synthetic++
@@ -196,19 +196,31 @@ func TestGeneratorProducesRealSourceLocations(t *testing.T) {
 // object -- either would make the generator, not the builtin, the defect.
 func TestGeneratorNeverRelocatesSharedValues(t *testing.T) {
 	env := genEnv(t)
-	nilSrc := lisp.Nil().Source
-	trueSrc := lisp.Bool(true).Source
-	falseSrc := lisp.Bool(false).Source
+	// Source() returns a value copy plus a "carries a location" bool (#362),
+	// so the singletons are compared BY VALUE here rather than by pointer.
+	// That is strictly stronger: the old pointer comparison could not see an
+	// edit made through the shared Location it pointed at.
+	nilSrc, nilOK := lisp.Nil().Source()
+	trueSrc, trueOK := lisp.Bool(true).Source()
+	falseSrc, falseOK := lisp.Bool(false).Source()
 	for _, seed := range fuzzval.Seeds() {
 		g := fuzzval.New(seed, env)
 		for range 40 {
 			v := g.Value()
-			if v.Type == lisp.LFun && v.Source != nil && v.Source.Pos >= 0 {
+			if v.Type != lisp.LFun {
+				continue
+			}
+			if loc, ok := v.Source(); ok && loc.Pos >= 0 {
 				t.Fatalf("the generator wrote a real location onto a function value (%s)", v.Str)
 			}
 		}
 	}
-	if lisp.Nil().Source != nilSrc || lisp.Bool(true).Source != trueSrc || lisp.Bool(false).Source != falseSrc {
+	nilNow, nilNowOK := lisp.Nil().Source()
+	trueNow, trueNowOK := lisp.Bool(true).Source()
+	falseNow, falseNowOK := lisp.Bool(false).Source()
+	if nilNow != nilSrc || nilNowOK != nilOK ||
+		trueNow != trueSrc || trueNowOK != trueOK ||
+		falseNow != falseSrc || falseNowOK != falseOK {
 		t.Fatalf("the generator relocated a shared singleton")
 	}
 }

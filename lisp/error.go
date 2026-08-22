@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // ErrorVal implements the error interface so that errors can be first class lisp
@@ -54,10 +56,16 @@ func (e *ErrorVal) errorString(g cycleGuard) string {
 		log.Printf("elps: ErrorVal.Error called on nil receiver; returning sentinel")
 		return nilErrorMessage
 	}
-	if e.Source != nil {
-		return fmt.Sprintf("%s: %s", e.Source, e.baseMessage(g))
-	}
-	return e.baseMessage(g)
+	loc, _ := (*LVal)(e).Source()
+	return fmt.Sprintf("%s: %s", &loc, e.baseMessage(g))
+}
+
+// Source returns a copy of the error's originating source location.  It has
+// the same semantics as (*LVal).Source: the boolean reports whether the
+// error carries a location, the returned value is a private copy, and a nil
+// receiver reports no location.
+func (e *ErrorVal) Source() (token.Location, bool) {
+	return (*LVal)(e).Source()
 }
 
 func (e *ErrorVal) baseMessage(g cycleGuard) string {

@@ -314,7 +314,7 @@ func copySeqOffPath(in *lisp.LVal, cells []*lisp.LVal, from, to int) (*lisp.LVal
 // rather than writing through to a shared one, so this never mutates cp's
 // source (issues #333/#382).
 func sameQuoting(src, cp *lisp.LVal) *lisp.LVal {
-	if src.Quoted && !cp.Quoted {
+	if src.IsQuoted() && !cp.IsQuoted() {
 		return lisp.Quote(cp)
 	}
 	return cp

@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // CommandHandler handles a custom slash command in the debug console.
@@ -59,8 +60,8 @@ const (
 type Event struct {
 	Type     EventType
 	Reason   StopReason
-	ExitCode int // set for EventExited
-	Output   string       // set for EventOutput (log points)
+	ExitCode int    // set for EventExited
+	Output   string // set for EventOutput (log points)
 	Env      *lisp.LEnv
 	Expr     *lisp.LVal
 	BP       *Breakpoint // non-nil for breakpoint stops
@@ -82,16 +83,16 @@ type Engine struct {
 	mu                  sync.Mutex
 	enabled             bool
 	stopOnEntry         bool
-	stoppedOnEntry      bool // set by OnEval when stopOnEntry fires, read by WaitIfPaused
+	stoppedOnEntry      bool              // set by OnEval when stopOnEntry fires, read by WaitIfPaused
 	pauseRequested      bool              // set by RequestPause(), cleared in WaitIfPaused
 	pauseReason         StopReason        // reason for pauseRequested (StopPause or StopFunctionBreakpoint)
 	evaluatingCondition bool              // re-entrancy guard for conditional breakpoints
 	lastContinuedKey    string            // suppress breakpoint re-hit after continue on same line
 	funBreakpoints      map[string]string // qualified name → user-provided name
 
-	stepInTarget        string            // qualified function name to target (smart step-into)
-	stepInTargetCount   int               // how many OnFunEntry matches to skip (0 = first match)
-	stepInTargetSeen    int               // matches seen so far
+	stepInTarget      string // qualified function name to target (smart step-into)
+	stepInTargetCount int    // how many OnFunEntry matches to skip (0 = first match)
+	stepInTargetSeen  int    // matches seen so far
 
 	stepGranularity string // DAP stepping granularity ("instruction" or line-level default)
 	stepOutReturned bool   // set by OnFunReturn when step-out condition detected pre-pop
@@ -557,8 +558,8 @@ func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
 
 	// Clear lastContinuedKey when we move to a different source line.
 	// This allows breakpoints to re-fire when the program loops back.
-	if e.lastContinuedKey != "" && expr.Source != nil {
-		key := breakpointKey(expr.Source.File, expr.Source.Line)
+	if src, ok := expr.Source(); ok && e.lastContinuedKey != "" {
+		key := breakpointKey(src.File, src.Line)
 		if key != e.lastContinuedKey {
 			e.lastContinuedKey = ""
 		}
@@ -595,7 +596,7 @@ func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
 	}
 
 	// Check breakpoints.
-	bp := e.breakpoints.Match(expr.Source)
+	bp := e.breakpoints.Match(exprSourceLoc(expr))
 	if bp == nil {
 		return false
 	}
@@ -664,7 +665,7 @@ func (e *Engine) OnEval(env *lisp.LEnv, expr *lisp.LVal) bool {
 func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction {
 	// Determine stop reason.
 	reason := StopStep
-	bp := e.breakpoints.Match(expr.Source)
+	bp := e.breakpoints.Match(exprSourceLoc(expr))
 	if bp != nil {
 		reason = StopBreakpoint
 	}
@@ -719,9 +720,9 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 	// actions (continue, step-in, step-over, step-out). Without this,
 	// stepping from a breakpoint would immediately re-trigger the same
 	// breakpoint, making the debugger appear stuck.
-	if expr.Source != nil {
+	if src, ok := expr.Source(); ok {
 		e.mu.Lock()
-		e.lastContinuedKey = breakpointKey(expr.Source.File, expr.Source.Line)
+		e.lastContinuedKey = breakpointKey(src.File, src.Line)
 		e.mu.Unlock()
 	}
 
@@ -786,14 +787,13 @@ func (e *Engine) OnFunEntry(env *lisp.LEnv, fun *lisp.LVal, fenv *lisp.LEnv) {
 	e.mu.Lock()
 
 	// Build qualified and unqualified names from the function value.
-	funData := fun.FunData()
 	localName := fun.Str
-	if localName == "" && funData != nil {
-		localName = funData.FID
+	if localName == "" {
+		localName = fun.FID()
 	}
 	qualifiedName := localName
-	if funData != nil && funData.Package != "" {
-		qualifiedName = funData.Package + ":" + localName
+	if pkg := fun.Package(); pkg != "" {
+		qualifiedName = pkg + ":" + localName
 	}
 
 	// Check function breakpoints.
@@ -966,21 +966,36 @@ func (e *Engine) SetStepInTarget(qualifiedName string, count int) {
 	e.stepInTargetSeen = 0
 }
 
+// exprSourceLoc returns a copy of expr's source location, or nil when expr
+// carries none.  lisp.LVal exposes locations by value only (issue #362), so
+// callers that need a *token.Location get a private copy.
+func exprSourceLoc(expr *lisp.LVal) *token.Location {
+	if expr == nil {
+		return nil
+	}
+	if loc, ok := expr.Source(); ok {
+		return &loc
+	}
+	return nil
+}
+
 // exprStepLocation builds a StepLocation from the current environment and
 // expression, extracting stack depth, source location, and macro expansion ID.
 func exprStepLocation(env *lisp.LEnv, expr *lisp.LVal) StepLocation {
 	loc := StepLocation{
 		Depth: len(env.Runtime.Stack.Frames),
 	}
-	if expr != nil && expr.Source != nil {
-		loc.File = expr.Source.File
-		loc.Line = expr.Source.Line
-		loc.Col = expr.Source.Col
+	if expr != nil {
+		if src, ok := expr.Source(); ok {
+			loc.File = src.File
+			loc.Line = src.Line
+			loc.Col = src.Col
+		}
 	}
 	if expr != nil {
 		loc.IsSExpr = expr.Type == lisp.LSExpr
-		if expr.MacroExpansion != nil {
-			loc.MacroID = expr.MacroExpansion.ID
+		if m, ok := expr.MacroExpansion(); ok {
+			loc.MacroID = m.ID
 		}
 	}
 	return loc

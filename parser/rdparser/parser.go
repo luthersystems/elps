@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/fmtraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -54,6 +55,7 @@ type Parser struct {
 	src             *TokenSource
 	nameReadback    map[string]bool
 	locGivenAway    *token.Location
+	lastNodeLoc     *token.Location
 	pendingComments []*token.Token
 	depth           int
 	maxDepth        int
@@ -76,7 +78,7 @@ func New(scanner *token.Scanner) *Parser {
 
 // NewFormatting initializes a Parser in format-preserving mode.
 // Comments, bracket types, original literal text, and blank lines are
-// attached to LVal.Meta fields on the returned AST.
+// attached as formatting metadata (internal/fmtmeta) on the returned AST.
 func NewFormatting(scanner *token.Scanner) *Parser {
 	p := New(scanner)
 	p.preserveFormat = true
@@ -99,10 +101,7 @@ func (p *Parser) Parse() (*lisp.LVal, error) {
 	if p.preserveFormat {
 		p.ignoreComments()
 		if len(p.pendingComments) > 0 && p.pendingComments[0].PrecedingNewlines == 0 {
-			if expr.Meta == nil {
-				expr.Meta = &lisp.SourceMeta{}
-			}
-			expr.Meta.TrailingComment = p.pendingComments[0]
+			fmtraw.EnsureMeta(expr).TrailingComment = p.pendingComments[0]
 			p.pendingComments = p.pendingComments[1:]
 		}
 	}
@@ -227,8 +226,8 @@ func (p *Parser) ParseLiteralInt() *lisp.LVal {
 		return p.errorf("integer-overflow-error", "integer literal overflows int: %v", text)
 	}
 	v := p.Int(x)
-	if p.preserveFormat && v.Meta != nil {
-		v.Meta.OriginalText = text
+	if m := fmtraw.Meta(v); p.preserveFormat && m != nil {
+		m.OriginalText = text
 	}
 	return v
 }
@@ -250,8 +249,8 @@ func (p *Parser) ParseLiteralIntOctal() *lisp.LVal {
 		return p.errorf("integer-overflow-error", "octal literal overflows int: %v", text)
 	}
 	v := p.Int(int(x))
-	if p.preserveFormat && v.Meta != nil {
-		v.Meta.OriginalText = macroText + text
+	if m := fmtraw.Meta(v); p.preserveFormat && m != nil {
+		m.OriginalText = macroText + text
 	}
 	return v
 }
@@ -273,8 +272,8 @@ func (p *Parser) ParseLiteralIntHex() *lisp.LVal {
 		return p.errorf("integer-overflow-error", "hex literal overflows int: %v", text)
 	}
 	v := p.Int(int(x))
-	if p.preserveFormat && v.Meta != nil {
-		v.Meta.OriginalText = macroText + text
+	if m := fmtraw.Meta(v); p.preserveFormat && m != nil {
+		m.OriginalText = macroText + text
 	}
 	return v
 }
@@ -289,8 +288,8 @@ func (p *Parser) ParseLiteralFloat() *lisp.LVal {
 		return p.errorf(lisp.CondInvalidFloat, "invalid floating point literal: %v", text)
 	}
 	v := p.Float(x)
-	if p.preserveFormat && v.Meta != nil {
-		v.Meta.OriginalText = text
+	if m := fmtraw.Meta(v); p.preserveFormat && m != nil {
+		m.OriginalText = text
 	}
 	return v
 }
@@ -305,8 +304,8 @@ func (p *Parser) ParseLiteralString() *lisp.LVal {
 		return p.errorf(lisp.CondInvalidString, "invalid string literal: %v", text)
 	}
 	v := p.String(s)
-	if p.preserveFormat && v.Meta != nil {
-		v.Meta.OriginalText = text
+	if m := fmtraw.Meta(v); p.preserveFormat && m != nil {
+		m.OriginalText = text
 	}
 	return v
 }
@@ -320,8 +319,8 @@ func (p *Parser) ParseLiteralStringRaw() *lisp.LVal {
 		return p.errorf("parse-error", "invalid raw string literal: too short")
 	}
 	v := p.String(text[3 : len(text)-3])
-	if p.preserveFormat && v.Meta != nil {
-		v.Meta.OriginalText = text
+	if m := fmtraw.Meta(v); p.preserveFormat && m != nil {
+		m.OriginalText = text
 	}
 	return v
 }
@@ -335,8 +334,22 @@ func (p *Parser) ParseQuote() *lisp.LVal {
 	quoteLoc := p.Location() // save ' location before parsing inner expression
 	inner := p.ParseExpression()
 	result := p.Quote(inner)
-	inheritEndPos(result, inner)
-	applyPrefixLocation(result, quoteLoc)
+	if inner.Type == lisp.LError {
+		// p.Quote returns errors untouched, so the historical in-place
+		// position fixups rewrote the error's own location to start at the
+		// quote token.  Replicate that on a private copy of the location —
+		// LVal locations are read-only outside package lisp (issue #362).
+		if src, ok := inner.Source(); ok {
+			applyPrefixLocation(&src, quoteLoc)
+			inner.SetSource(&src)
+		}
+	} else {
+		// Fix result up through the parser's own reference to the very
+		// Location p.Quote gave it -- see lastNodeLoc.
+		resultLoc := p.lastNodeLoc
+		inheritEndPos(resultLoc, inner)
+		applyPrefixLocation(resultLoc, quoteLoc)
+	}
 	p.hoistOperandComments(result, inner)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
@@ -371,14 +384,17 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 
 	// Ensure that the expression doesn't contain nested cons expressions.
 	for _, c := range expr.Cells {
-		if c.Type == lisp.LSExpr && !c.Quoted {
+		if c.Type == lisp.LSExpr && !c.IsQuoted() {
 			return p.errorf("unbound-expression-error", "unbound expression cannot contain nested expressions")
 		}
 	}
 	result := p.SExpr([]*lisp.LVal{sym, expr})
+	// Fix result up through the parser's own reference to the very Location
+	// p.SExpr gave it -- see lastNodeLoc.
+	resultLoc := p.lastNodeLoc
 	p.recordSynthesizedBrackets(result)
-	inheritEndPos(result, expr)
-	applyPrefixLocation(result, prefixLoc)
+	inheritEndPos(resultLoc, expr)
+	applyPrefixLocation(resultLoc, prefixLoc)
 	p.hoistOperandComments(result, expr)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
@@ -415,9 +431,12 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 			"invalid symbol following #': %q does not read back as a symbol", name.Str)
 	}
 	result := p.SExpr([]*lisp.LVal{op, name})
+	// Fix result up through the parser's own reference to the very Location
+	// p.SExpr gave it -- see lastNodeLoc.
+	resultLoc := p.lastNodeLoc
 	p.recordSynthesizedBrackets(result)
-	inheritEndPos(result, name)
-	applyPrefixLocation(result, prefixLoc)
+	inheritEndPos(resultLoc, name)
+	applyPrefixLocation(resultLoc, prefixLoc)
 	p.hoistOperandComments(result, name)
 	p.applyPrefixNewlines(result, prefixNewlines, prefixSpaces)
 	return result
@@ -476,7 +495,7 @@ func (p *Parser) locateSynthesized(v *lisp.LVal) *lisp.LVal {
 	// conjunct, the one in tokenLVal, is what elps#430 is about; see the
 	// token-under-the-cursor note above Parser.TokenText.
 	loc.EndLine, loc.EndCol, loc.EndPos = token.TokenEnd(p.src.Token)
-	v.Source = loc
+	v.SetSource(loc)
 	return v
 }
 
@@ -490,35 +509,38 @@ func (p *Parser) locateSynthesized(v *lisp.LVal) *lisp.LVal {
 // value a second time, so it re-parses with a level of quoting the source
 // never had.  Found by FuzzFormat on the input "'#^0".
 func (p *Parser) recordSynthesizedBrackets(v *lisp.LVal) {
-	if !p.preserveFormat || v.Meta == nil {
+	m := fmtraw.Meta(v)
+	if !p.preserveFormat || m == nil {
 		return
 	}
-	v.Meta.BracketType = '('
+	m.BracketType = '('
 }
 
-// inheritEndPos copies end position from inner to outer, for prefix forms
-// where the outer node starts at the prefix token but ends at the inner
-// expression's end.
-func inheritEndPos(outer, inner *lisp.LVal) {
-	if outer.Source != nil && inner.Source != nil {
-		outer.Source.EndPos = inner.Source.EndPos
-		outer.Source.EndLine = inner.Source.EndLine
-		outer.Source.EndCol = inner.Source.EndCol
+// inheritEndPos copies the end position from inner's location onto outerLoc,
+// for prefix forms where the outer node starts at the prefix token but ends
+// at the inner expression's end.  outerLoc is the parser-owned Location most
+// recently stamped onto the outer node by tokenLVal.
+func inheritEndPos(outerLoc *token.Location, inner *lisp.LVal) {
+	innerLoc, ok := inner.Source()
+	if outerLoc != nil && ok {
+		outerLoc.EndPos = innerLoc.EndPos
+		outerLoc.EndLine = innerLoc.EndLine
+		outerLoc.EndCol = innerLoc.EndCol
 	}
 }
 
-// applyPrefixLocation overwrites the start position of a prefix form (quote,
-// #', #^) with the prefix token's location. tokenLVal sets Source from the
-// last consumed token, which for prefix forms is the inner expression — not
-// the prefix. This corrects it so that e.g. '() has its Source at the '
-// rather than at the (.
-func applyPrefixLocation(v *lisp.LVal, loc *token.Location) {
-	if v.Source != nil && loc != nil {
-		v.Source.File = loc.File
-		v.Source.Path = loc.Path
-		v.Source.Line = loc.Line
-		v.Source.Col = loc.Col
-		v.Source.Pos = loc.Pos
+// applyPrefixLocation overwrites the start position of a prefix form's
+// location dst (quote, #', #^) with the prefix token's location. tokenLVal
+// sets the node's source from the last consumed token, which for prefix
+// forms is the inner expression — not the prefix. This corrects it so that
+// e.g. '() has its location at the ' rather than at the (.
+func applyPrefixLocation(dst, loc *token.Location) {
+	if dst != nil && loc != nil {
+		dst.File = loc.File
+		dst.Path = loc.Path
+		dst.Line = loc.Line
+		dst.Col = loc.Col
+		dst.Pos = loc.Pos
 	}
 }
 
@@ -557,19 +579,18 @@ func (p *Parser) hoistOperandComments(outer, inner *lisp.LVal) {
 	if !p.preserveFormat || outer.Type == lisp.LError || inner == nil {
 		return
 	}
-	if inner.Meta == nil || len(inner.Meta.LeadingComments) == 0 {
+	im := fmtraw.Meta(inner)
+	if im == nil || len(im.LeadingComments) == 0 {
 		return
 	}
-	if outer.Meta == inner.Meta {
+	if fmtraw.Meta(outer) == im {
 		// Shared Meta: the comments are already on the node the printer
 		// writes.  Moving them would move them onto themselves.
 		return
 	}
-	if outer.Meta == nil {
-		outer.Meta = &lisp.SourceMeta{}
-	}
-	outer.Meta.LeadingComments = append(outer.Meta.LeadingComments, inner.Meta.LeadingComments...)
-	inner.Meta.LeadingComments = nil
+	om := fmtraw.EnsureMeta(outer)
+	om.LeadingComments = append(om.LeadingComments, im.LeadingComments...)
+	im.LeadingComments = nil
 }
 
 // applyPrefixNewlines sets the newline and spacing metadata on a prefix form
@@ -579,10 +600,8 @@ func (p *Parser) applyPrefixNewlines(v *lisp.LVal, newlines int, spaces int) {
 	if !p.preserveFormat || v.Type == lisp.LError {
 		return
 	}
-	if v.Meta == nil {
-		v.Meta = &lisp.SourceMeta{}
-	}
-	if len(v.Meta.LeadingComments) > 0 {
+	m := fmtraw.EnsureMeta(v)
+	if len(m.LeadingComments) > 0 {
 		// Two independent gaps have to be recorded here, and NEITHER can be
 		// left to tokenLVal.
 		//
@@ -611,24 +630,24 @@ func (p *Parser) applyPrefixNewlines(v *lisp.LVal, newlines int, spaces int) {
 		// the `; <-` markers in editors/vscode/test/grammar/basics.lisp are
 		// syntax-test assertions ABOUT the preceding line, so moving them
 		// changes what they assert.
-		v.Meta.BlankLinesAfterComments = 0
+		m.BlankLinesAfterComments = 0
 		if newlines > 1 {
-			v.Meta.BlankLinesAfterComments = newlines - 1
+			m.BlankLinesAfterComments = newlines - 1
 		}
-		v.Meta.NewlineBefore = true
-		v.Meta.BlankLinesBefore = 0
-		if n := v.Meta.LeadingComments[0].PrecedingNewlines; n > 1 {
-			v.Meta.BlankLinesBefore = n - 1
+		m.NewlineBefore = true
+		m.BlankLinesBefore = 0
+		if n := m.LeadingComments[0].PrecedingNewlines; n > 1 {
+			m.BlankLinesBefore = n - 1
 		}
 	} else {
 		if newlines >= 1 {
-			v.Meta.NewlineBefore = true
+			m.NewlineBefore = true
 		}
 		if newlines > 1 {
-			v.Meta.BlankLinesBefore = newlines - 1
+			m.BlankLinesBefore = newlines - 1
 		}
 	}
-	v.Meta.PrecedingSpaces = spaces
+	m.PrecedingSpaces = spaces
 }
 
 func (p *Parser) ParseNegative() *lisp.LVal {
@@ -714,8 +733,8 @@ func (p *Parser) ParseConsExpression() *lisp.LVal {
 	}
 	open := p.src.Token
 	expr := p.SExpr(nil)
-	if p.preserveFormat && expr.Meta != nil {
-		expr.Meta.BracketType = '('
+	if m := fmtraw.Meta(expr); p.preserveFormat && m != nil {
+		m.BracketType = '('
 	}
 	for {
 		p.ignoreComments()
@@ -730,11 +749,13 @@ func (p *Parser) ParseConsExpression() *lisp.LVal {
 			return p.errorf("mismatched-syntax", "expected ) to close %s opened at %s, but found ]", open.Text, open.Source)
 		}
 		if p.Accept(token.PAREN_R) {
-			// Set end position from closing bracket.
-			if p.src.Token.Source != nil && expr.Source != nil {
-				expr.Source.EndPos = p.src.Token.Source.Pos + 1
-				expr.Source.EndLine = p.src.Token.Source.Line
-				expr.Source.EndCol = p.src.Token.Source.Col + 1
+			// Set end position from closing bracket.  p.SExpr stamped expr
+			// with the opening bracket token's Location, so open.Source is
+			// the parser's own reference to expr's location (issue #362).
+			if p.src.Token.Source != nil && open.Source != nil {
+				open.Source.EndPos = p.src.Token.Source.Pos + 1
+				open.Source.EndLine = p.src.Token.Source.Line
+				open.Source.EndCol = p.src.Token.Source.Col + 1
 			}
 			p.recordClosingBracketNewline(expr)
 			break
@@ -755,8 +776,8 @@ func (p *Parser) ParseList() *lisp.LVal {
 	}
 	open := p.src.Token
 	expr := p.QExpr(nil)
-	if p.preserveFormat && expr.Meta != nil {
-		expr.Meta.BracketType = '['
+	if m := fmtraw.Meta(expr); p.preserveFormat && m != nil {
+		m.BracketType = '['
 	}
 	for {
 		p.ignoreComments()
@@ -771,11 +792,13 @@ func (p *Parser) ParseList() *lisp.LVal {
 			return p.errorf("mismatched-syntax", "expected ] to close %s opened at %s, but found )", open.Text, open.Source)
 		}
 		if p.Accept(token.BRACE_R) {
-			// Set end position from closing bracket.
-			if p.src.Token.Source != nil && expr.Source != nil {
-				expr.Source.EndPos = p.src.Token.Source.Pos + 1
-				expr.Source.EndLine = p.src.Token.Source.Line
-				expr.Source.EndCol = p.src.Token.Source.Col + 1
+			// Set end position from closing bracket.  p.QExpr stamped expr
+			// with the opening bracket token's Location, so open.Source is
+			// the parser's own reference to expr's location (issue #362).
+			if p.src.Token.Source != nil && open.Source != nil {
+				open.Source.EndPos = p.src.Token.Source.Pos + 1
+				open.Source.EndLine = p.src.Token.Source.Line
+				open.Source.EndCol = p.src.Token.Source.Col + 1
 			}
 			p.recordClosingBracketNewline(expr)
 			break
@@ -808,10 +831,7 @@ func (p *Parser) attachTrailingComment(parent *lisp.LVal) {
 	}
 	if p.pendingComments[0].PrecedingNewlines == 0 {
 		last := parent.Cells[len(parent.Cells)-1]
-		if last.Meta == nil {
-			last.Meta = &lisp.SourceMeta{}
-		}
-		last.Meta.TrailingComment = p.pendingComments[0]
+		fmtraw.EnsureMeta(last).TrailingComment = p.pendingComments[0]
 		p.pendingComments = p.pendingComments[1:]
 	}
 }
@@ -823,10 +843,7 @@ func (p *Parser) recordClosingBracketNewline(expr *lisp.LVal) {
 		return
 	}
 	if p.src.Token.PrecedingNewlines > 0 {
-		if expr.Meta == nil {
-			expr.Meta = &lisp.SourceMeta{}
-		}
-		expr.Meta.ClosingBracketNewline = true
+		fmtraw.EnsureMeta(expr).ClosingBracketNewline = true
 	}
 }
 
@@ -837,10 +854,7 @@ func (p *Parser) captureInnerTrailingComments(expr *lisp.LVal) {
 	if !p.preserveFormat || len(p.pendingComments) == 0 {
 		return
 	}
-	if expr.Meta == nil {
-		expr.Meta = &lisp.SourceMeta{}
-	}
-	expr.Meta.InnerTrailingComments = p.pendingComments
+	fmtraw.EnsureMeta(expr).InnerTrailingComments = p.pendingComments
 	p.pendingComments = nil
 }
 
@@ -1010,26 +1024,40 @@ func (p *Parser) QExpr(cells []*lisp.LVal) *lisp.LVal {
 }
 
 func (p *Parser) tokenLVal(v *lisp.LVal) *lisp.LVal {
-	v.Source = p.Location()
+	// The parser owns the current token's Location, so it mutates the
+	// end-position fields through its own reference before handing the same
+	// reference to the LVal.  Callers that need to fix up positions after
+	// tokenLVal returns (prefix forms, bracket-close fixups) likewise keep
+	// their own *token.Location references instead of reading them back
+	// through the LVal — LVal locations are read-only outside package lisp
+	// (issue #362).
+	loc := p.Location()
 	// Set end position from the current token.
 	//
-	// A non-nil v.Source is by itself proof that there IS a token under the
+	// A non-nil loc is by itself proof that there IS a token under the
 	// cursor: Location returns nil when p.src.Token is nil.  The `p.src.Token
 	// != nil` conjunct this condition used to carry could not fail -- and, in
 	// the shape it was written, could not have caught anything either, because
 	// Location() dereferenced p.src.Token one line above it (elps#430).
-	if v.Source != nil {
+	if loc != nil {
 		endLine, endCol, endPos := token.TokenEnd(p.src.Token)
-		v.Source.EndLine = endLine
-		v.Source.EndCol = endCol
-		v.Source.EndPos = endPos
+		loc.EndLine = endLine
+		loc.EndCol = endCol
+		loc.EndPos = endPos
 	}
+	// Record the exact object handed to the node.  Prefix forms fix their
+	// result up afterwards and cannot read the pointer back out of the LVal
+	// (locations are read-only outside package lisp -- issue #362 -- and
+	// Source() returns a value copy), so the writable reference has to come
+	// from here.  Location() will not serve: under the give-away-once rule
+	// (elps#426) its second call for one token returns a COPY, and fixups
+	// applied to that copy would land on an object no node holds.
+	p.lastNodeLoc = loc
+	v.SetSource(loc)
 	if p.preserveFormat {
-		if v.Meta == nil {
-			v.Meta = &lisp.SourceMeta{}
-		}
+		m := fmtraw.EnsureMeta(v)
 		if len(p.pendingComments) > 0 {
-			v.Meta.LeadingComments = p.pendingComments
+			m.LeadingComments = p.pendingComments
 			p.pendingComments = nil
 		}
 		// Compute newline info from the first pending comment or the current token.
@@ -1037,19 +1065,19 @@ func (p *Parser) tokenLVal(v *lisp.LVal) *lisp.LVal {
 		// last comment and the expression itself.
 		tokenNewlines := p.src.Token.PrecedingNewlines
 		newlines := tokenNewlines
-		if len(v.Meta.LeadingComments) > 0 {
-			newlines = v.Meta.LeadingComments[0].PrecedingNewlines
+		if len(m.LeadingComments) > 0 {
+			newlines = m.LeadingComments[0].PrecedingNewlines
 			if tokenNewlines > 1 {
-				v.Meta.BlankLinesAfterComments = tokenNewlines - 1
+				m.BlankLinesAfterComments = tokenNewlines - 1
 			}
 		}
 		if newlines >= 1 {
-			v.Meta.NewlineBefore = true
+			m.NewlineBefore = true
 		}
 		if newlines > 1 {
-			v.Meta.BlankLinesBefore = newlines - 1
+			m.BlankLinesBefore = newlines - 1
 		}
-		v.Meta.PrecedingSpaces = p.src.Token.PrecedingSpaces
+		m.PrecedingSpaces = p.src.Token.PrecedingSpaces
 	}
 	return v
 }
@@ -1060,19 +1088,19 @@ func (p *Parser) Accept(typ ...token.Type) bool {
 
 func (p *Parser) errorf(condition string, format string, v ...interface{}) *lisp.LVal {
 	err := lisp.ErrorConditionf(condition, format, v...)
-	err.Source = p.Location()
+	err.SetSource(p.Location())
 	return err
 }
 
 func (p *Parser) errorAtf(source *token.Location, condition, format string, v ...interface{}) *lisp.LVal {
 	err := lisp.ErrorConditionf(condition, format, v...)
-	err.Source = source
+	err.SetSource(source)
 	return err
 }
 
 func (p *Parser) scanError(condition string) *lisp.LVal {
 	err := lisp.ErrorCondition(condition, errors.New(p.TokenText()))
-	err.Source = p.Location()
+	err.SetSource(p.Location())
 	return err
 }
 

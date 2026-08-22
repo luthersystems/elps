@@ -36,14 +36,14 @@ func lispErrorToDiag(lerr *lisp.LVal) diagnostic.Diagnostic {
 		d.Message = lerr.Str + ": " + d.Message
 	}
 
-	if lerr.Source != nil && lerr.Source.Pos >= 0 {
+	if loc, ok := lerr.Source(); ok && loc.Pos >= 0 {
 		span := diagnostic.Span{
-			File: lerr.Source.File,
-			Line: lerr.Source.Line,
-			Col:  lerr.Source.Col,
+			File: loc.File,
+			Line: loc.Line,
+			Col:  loc.Col,
 		}
-		if lerr.Source.Path != "" {
-			span.File = lerr.Source.Path
+		if loc.Path != "" {
+			span.File = loc.Path
 		}
 		d.Spans = append(d.Spans, span)
 	}

@@ -284,11 +284,13 @@ func registeredCallables(t *testing.T) []string {
 	env, err := lisplib.NewDocEnv()
 	require.NoError(t, err)
 	var names []string
-	for pkgName, pkg := range env.Runtime.Registry.Packages {
+	for _, pkgName := range env.Runtime.Registry.PackageNames() {
 		if pkgName == lisp.DefaultUserPackage {
 			continue
 		}
-		for sym, v := range pkg.Symbols {
+		pkg := env.Runtime.Registry.Package(pkgName)
+		for _, sym := range pkg.SymbolNames() {
+			v, _ := pkg.Symbol(sym)
 			if v == nil || v.Type != lisp.LFun || v.Builtin() == nil || len(v.Cells) == 0 {
 				continue
 			}
@@ -304,9 +306,9 @@ func lookupFormals(t *testing.T, env *lisp.LEnv, qualified string) *lisp.LVal {
 	t.Helper()
 	pkgName, sym, ok := strings.Cut(qualified, ":")
 	require.True(t, ok, "not a qualified symbol: %s", qualified)
-	pkg := env.Runtime.Registry.Packages[pkgName]
+	pkg := env.Runtime.Registry.Package(pkgName)
 	require.NotNil(t, pkg, "package not in registry: %s", pkgName)
-	v := pkg.Symbols[sym]
+	v, _ := pkg.Symbol(sym)
 	require.NotNil(t, v, "symbol not in package: %s", qualified)
 	require.NotEmpty(t, v.Cells, "function has no formals: %s", qualified)
 	return v.Cells[0]

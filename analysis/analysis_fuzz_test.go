@@ -203,7 +203,7 @@ func fuzzPreamble(src []byte) []*lisp.LVal {
 	res := rdparser.New(sc).ParseProgramFaultTolerant()
 	var preamble []*lisp.LVal
 	for _, expr := range res.Exprs {
-		if expr == nil || expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr == nil || expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		if preambleHeads[astutil.HeadSymbol(expr)] {

@@ -51,7 +51,7 @@ func ScanFile(exprs []*lisp.LVal, filename string, cfg *Config) []*FunctionSumma
 
 		summary := &FunctionSummary{
 			Name:   funcName,
-			Source: src.Source,
+			Source: astutil.SourceLoc(src),
 			File:   filename,
 		}
 		applySuppression(summary, parseSuppression(sexpr, cfg.SuppressionPrefix))
@@ -89,7 +89,7 @@ func scanExpr(expr *lisp.LVal, caller string, loopDepth int, ctx *scanContext, s
 	}
 
 	// Only process unquoted s-expressions (calls/forms)
-	if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+	if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 		return
 	}
 
@@ -100,7 +100,7 @@ func scanExpr(expr *lisp.LVal, caller string, loopDepth int, ctx *scanContext, s
 			summary.Calls = append(summary.Calls, CallEdge{
 				Caller:  caller,
 				Callee:  "<dynamic>",
-				Source:  astutil.SourceOf(expr).Source,
+				Source:  astutil.SourceLoc(astutil.SourceOf(expr)),
 				Context: CallContext{LoopDepth: loopDepth, InLoop: loopDepth > 0},
 			})
 		}
@@ -211,11 +211,7 @@ func isCallable(name string) bool {
 
 // callSource returns the best source location for a call expression.
 func callSource(expr *lisp.LVal) *token.Location {
-	src := astutil.SourceOf(expr)
-	if src != nil {
-		return src.Source
-	}
-	return nil
+	return astutil.SourceLoc(astutil.SourceOf(expr))
 }
 
 // matchesAnyPattern checks if name matches any of the glob patterns.

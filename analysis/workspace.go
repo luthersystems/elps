@@ -256,14 +256,14 @@ func sliceContains(ss []string, s string) bool {
 // along with its 1-based line number. Returns ("", 0) for bare files.
 func scanFilePackage(exprs []*lisp.LVal) (string, int) {
 	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		if astutil.HeadSymbol(expr) == "in-package" {
 			if name := scanPackageName(expr); name != "" {
 				line := 0
-				if expr.Source != nil {
-					line = expr.Source.Line
+				if loc, ok := expr.Source(); ok {
+					line = loc.Line
 				}
 				return name, line
 			}
@@ -315,7 +315,7 @@ func walkLoadFile(filePath, currentPkg string, result map[string]string, visited
 
 	dir := filepath.Dir(absPath)
 	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		head := astutil.HeadSymbol(expr)
@@ -369,7 +369,7 @@ func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkg
 	// order. LoadWorkspaceMacros evals these to replay the package setup
 	// and register macros/functions/globals, mirroring (load) behavior.
 	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		switch astutil.HeadSymbol(expr) {
@@ -389,7 +389,7 @@ func extractDefinitions(exprs []*lisp.LVal) []ExternalSymbol {
 	currentPkg := lisp.DefaultUserPackage
 
 	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		head := astutil.HeadSymbol(expr)
@@ -436,7 +436,7 @@ func scanExportedDefinitionKeys(exprs []*lisp.LVal) map[string]bool {
 	exported := make(map[string]bool)
 	currentPkg := lisp.DefaultUserPackage
 	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		switch astutil.HeadSymbol(expr) {
@@ -490,7 +490,7 @@ func scanDefun(expr *lisp.LVal, kind SymbolKind) *ExternalSymbol {
 		Name:      nameVal.Str,
 		Kind:      kind,
 		Signature: signatureFromFormals(formalsVal),
-		Source:    nameVal.Source,
+		Source:    astutil.SourceLoc(nameVal),
 		DocString: docStr,
 	}
 }
@@ -507,7 +507,7 @@ func scanDeftype(expr *lisp.LVal) *ExternalSymbol {
 	return &ExternalSymbol{
 		Name:   nameVal.Str,
 		Kind:   SymType,
-		Source: nameVal.Source,
+		Source: astutil.SourceLoc(nameVal),
 	}
 }
 
@@ -519,7 +519,7 @@ func scanSet(expr *lisp.LVal) *ExternalSymbol {
 	name := ""
 	if arg.Type == lisp.LSymbol {
 		name = arg.Str
-	} else if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+	} else if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
 		name = arg.Cells[0].Str
 	}
 	if name == "" {
@@ -528,7 +528,7 @@ func scanSet(expr *lisp.LVal) *ExternalSymbol {
 	return &ExternalSymbol{
 		Name:   name,
 		Kind:   SymVariable,
-		Source: arg.Source,
+		Source: astutil.SourceLoc(arg),
 	}
 }
 
@@ -538,7 +538,7 @@ func scanExportNames(expr *lisp.LVal) []string {
 		name := ""
 		if arg.Type == lisp.LSymbol {
 			name = arg.Str
-		} else if arg.Type == lisp.LSExpr && arg.Quoted && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
+		} else if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
 			name = arg.Cells[0].Str
 		}
 		if name != "" {
@@ -555,7 +555,7 @@ func scanUsePackages(exprs []*lisp.LVal) map[string][]string {
 	result := make(map[string][]string)
 	currentPkg := lisp.DefaultUserPackage
 	for _, expr := range exprs {
-		if expr.Type != lisp.LSExpr || expr.Quoted || len(expr.Cells) == 0 {
+		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
 		head := astutil.HeadSymbol(expr)
@@ -718,8 +718,11 @@ func FindEnclosingFunction(root *Scope, line, col int) *Symbol {
 	scope := ScopeAtPosition(root, line, col)
 	for scope != nil {
 		if scope.Kind == ScopeFunction {
-			if scope.Node != nil && scope.Node.Source != nil && scope.Parent != nil {
-				nodeLoc := scope.Node.Source
+			nodeLoc, nodeOK := token.Location{}, false
+			if scope.Node != nil {
+				nodeLoc, nodeOK = scope.Node.Source()
+			}
+			if nodeOK && scope.Parent != nil {
 				var found *Symbol
 				scope.Parent.forEachSymbol(func(sym *Symbol) bool {
 					if sym.Kind != SymFunction && sym.Kind != SymMacro {
@@ -793,10 +796,13 @@ func ScopeAtPosition(root *Scope, line, col int) *Scope {
 // scopeContainingAnalysis checks if a scope's node contains the position
 // and recursively checks children for the most specific match.
 func scopeContainingAnalysis(scope *Scope, line, col int) *Scope {
-	if scope.Node == nil || scope.Node.Source == nil {
+	if scope.Node == nil {
 		return nil
 	}
-	loc := scope.Node.Source
+	loc, ok := scope.Node.Source()
+	if !ok {
+		return nil
+	}
 	if loc.Line == 0 {
 		return nil
 	}

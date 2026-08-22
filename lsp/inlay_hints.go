@@ -23,7 +23,7 @@ type InlayHintParams struct {
 type InlayHint struct {
 	Position     protocol.Position `json:"position"`
 	Label        string            `json:"label"`
-	Kind         int               `json:"kind"`                   // 1=Type, 2=Parameter
+	Kind         int               `json:"kind"` // 1=Type, 2=Parameter
 	PaddingLeft  bool              `json:"paddingLeft,omitempty"`
 	PaddingRight bool              `json:"paddingRight,omitempty"`
 }
@@ -105,7 +105,7 @@ func walkForHints(ctx *hintContext, node *lisp.LVal) {
 	}
 
 	// Process this node if it's an unquoted s-expression with a symbol head.
-	if node.Type == lisp.LSExpr && !node.Quoted && len(node.Cells) >= 2 {
+	if node.Type == lisp.LSExpr && !node.IsQuoted() && len(node.Cells) >= 2 {
 		head := node.Cells[0]
 		if head.Type == lisp.LSymbol {
 			processCallNode(ctx, node, head.Str)
@@ -126,7 +126,8 @@ func processCallNode(ctx *hintContext, node *lisp.LVal, name string) {
 	}
 
 	// Look up the callable's signature.
-	currentPkg := packageAtLine(ctx.ast, node.Source.Line)
+	nodeLoc, _ := node.Source()
+	currentPkg := packageAtLine(ctx.ast, nodeLoc.Line)
 	sig := lookupSignature(ctx.analysis, ctx.server, name, currentPkg)
 	if sig == nil {
 		return
@@ -184,8 +185,8 @@ func countRequiredParams(sig *analysis.Signature) int {
 // nodeOverlapsRange checks if a node's source span overlaps the
 // given 1-based line:col range.
 func nodeOverlapsRange(node *lisp.LVal, startLine, startCol, endLine, endCol int) bool {
-	src := node.Source
-	if src == nil || src.Line == 0 {
+	src, ok := node.Source()
+	if !ok || src.Line == 0 {
 		return false
 	}
 	// Node starts after range end → no overlap.
@@ -231,14 +232,15 @@ func emitCallHints(hints []InlayHint, node *lisp.LVal, sig *analysis.Signature) 
 		}
 
 		// Need a source location to place the hint.
-		if arg.Source == nil || arg.Source.Line == 0 {
+		argLoc, ok := arg.Source()
+		if !ok || argLoc.Line == 0 {
 			continue
 		}
 
 		hints = append(hints, InlayHint{
 			Position: protocol.Position{
-				Line:      safeUint(arg.Source.Line - 1),
-				Character: safeUint(arg.Source.Col - 1),
+				Line:      safeUint(argLoc.Line - 1),
+				Character: safeUint(argLoc.Col - 1),
 			},
 			Label:        p.Name + ":",
 			Kind:         inlayHintKindParameter,

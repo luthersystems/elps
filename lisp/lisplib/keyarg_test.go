@@ -4,7 +4,6 @@ package lisplib_test
 
 import (
 	"fmt"
-	"sort"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -52,22 +51,14 @@ func TestOptionalArgBuiltinsTolerateShortArgLists(t *testing.T) {
 	}
 	var flexible []builtin
 
-	pkgNames := make([]string, 0, len(env.Runtime.Registry.Packages))
-	for name := range env.Runtime.Registry.Packages {
-		pkgNames = append(pkgNames, name)
-	}
-	sort.Strings(pkgNames)
+	pkgNames := env.Runtime.Registry.PackageNames()
 
 	for _, pkgName := range pkgNames {
-		pkg := env.Runtime.Registry.Packages[pkgName]
-		symNames := make([]string, 0, len(pkg.Symbols))
-		for sym := range pkg.Symbols {
-			symNames = append(symNames, sym)
-		}
-		sort.Strings(symNames)
+		pkg := env.Runtime.Registry.Package(pkgName)
+		symNames := pkg.SymbolNames()
 
 		for _, sym := range symNames {
-			v := pkg.Symbols[sym]
+			v, _ := pkg.Symbol(sym)
 			if v == nil || v.Type != lisp.LFun || v.Builtin() == nil {
 				continue
 			}

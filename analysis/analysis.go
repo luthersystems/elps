@@ -141,7 +141,7 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 	currentPkg := a.defaultPackage()
 	for _, expr := range exprs {
 		a.analyzeExpr(expr, root, currentPkg)
-		if expr != nil && expr.Type == lisp.LSExpr && !expr.Quoted && len(expr.Cells) > 0 &&
+		if expr != nil && expr.Type == lisp.LSExpr && !expr.IsQuoted() && len(expr.Cells) > 0 &&
 			astutil.HeadSymbol(expr) == "in-package" && len(expr.Cells) > 1 {
 			if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
 				currentPkg = pkgName

@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/internal/fmtraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
@@ -215,12 +216,12 @@ func (p *Pass) ReportNode(node *lisp.LVal, format string, args ...interface{}) {
 	d := Diagnostic{
 		Message: fmt.Sprintf(format, args...),
 	}
-	if node != nil && node.Source != nil {
-		d.Pos = Position{File: node.Source.File, Line: node.Source.Line, Col: node.Source.Col}
-		if node.Source.EndLine > 0 && node.Source.EndCol > 0 {
-			d.EndPos = Position{File: node.Source.File, Line: node.Source.EndLine, Col: node.Source.EndCol}
-		} else if node.Type == lisp.LSymbol && len(node.Str) > 0 && node.Source.Col > 0 {
-			d.EndPos = Position{File: node.Source.File, Line: node.Source.Line, Col: node.Source.Col + len(node.Str)}
+	if loc, ok := node.Source(); ok {
+		d.Pos = Position{File: loc.File, Line: loc.Line, Col: loc.Col}
+		if loc.EndLine > 0 && loc.EndCol > 0 {
+			d.EndPos = Position{File: loc.File, Line: loc.EndLine, Col: loc.EndCol}
+		} else if node.Type == lisp.LSymbol && len(node.Str) > 0 && loc.Col > 0 {
+			d.EndPos = Position{File: loc.File, Line: loc.Line, Col: loc.Col + len(node.Str)}
 		}
 	}
 	p.Report(d)
@@ -752,12 +753,12 @@ func walkNodeForNolint(v *lisp.LVal, lines map[int]*nolintInfo) {
 	if v == nil {
 		return
 	}
-	if v.Meta != nil {
-		checkNolintToken(v.Meta.TrailingComment, lines)
-		for _, c := range v.Meta.LeadingComments {
+	if m := fmtraw.Meta(v); m != nil {
+		checkNolintToken(m.TrailingComment, lines)
+		for _, c := range m.LeadingComments {
 			checkNolintToken(c, lines)
 		}
-		for _, c := range v.Meta.InnerTrailingComments {
+		for _, c := range m.InnerTrailingComments {
 			checkNolintToken(c, lines)
 		}
 	}

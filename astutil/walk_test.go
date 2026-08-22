@@ -63,24 +63,25 @@ func TestArgCount_WithArgs(t *testing.T) {
 
 func TestSourceOf_PreferOwnSource(t *testing.T) {
 	v := &lisp.LVal{
-		Source: &token.Location{File: "test.lisp", Line: 5},
-		Cells: []*lisp.LVal{
-			{Source: &token.Location{File: "test.lisp", Line: 10}},
-		},
+		Cells: []*lisp.LVal{{}},
 	}
+	v.SetSource(&token.Location{File: "test.lisp", Line: 5})
+	v.Cells[0].SetSource(&token.Location{File: "test.lisp", Line: 10})
 	result := SourceOf(v)
-	assert.Equal(t, 5, result.Source.Line)
+	loc, ok := result.Source()
+	assert.True(t, ok)
+	assert.Equal(t, 5, loc.Line)
 }
 
 func TestSourceOf_FallbackToChild(t *testing.T) {
 	v := &lisp.LVal{
-		Source: nil,
-		Cells: []*lisp.LVal{
-			{Source: &token.Location{File: "test.lisp", Line: 10}},
-		},
+		Cells: []*lisp.LVal{{}},
 	}
+	v.Cells[0].SetSource(&token.Location{File: "test.lisp", Line: 10})
 	result := SourceOf(v)
-	assert.Equal(t, 10, result.Source.Line)
+	loc, ok := result.Source()
+	assert.True(t, ok)
+	assert.Equal(t, 10, loc.Line)
 }
 
 func TestSourceOf_FallbackToSelf(t *testing.T) {
@@ -116,14 +117,10 @@ func TestWalk_VisitsAllNodes(t *testing.T) {
 }
 
 func TestWalkSExprs_SkipsQuoted(t *testing.T) {
-	quoted := &lisp.LVal{
-		Type:   lisp.LSExpr,
-		Quoted: true,
-		Cells: []*lisp.LVal{
-			{Type: lisp.LSymbol, Str: "set"},
-			{Type: lisp.LSymbol, Str: "x"},
-		},
-	}
+	quoted := lisp.QExpr([]*lisp.LVal{
+		{Type: lisp.LSymbol, Str: "set"},
+		{Type: lisp.LSymbol, Str: "x"},
+	})
 	unquoted := &lisp.LVal{
 		Type: lisp.LSExpr,
 		Cells: []*lisp.LVal{

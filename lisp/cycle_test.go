@@ -14,6 +14,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // cyclicMap returns a sorted-map holding itself under every key in keys.  It
@@ -138,10 +140,16 @@ func TestStampMacroExpansionOfCyclicValue(t *testing.T) {
 	v := cyclicVector(1)
 	// Mirror a macro that built its expansion with append!: every node carries
 	// the synthetic source location stampMacroExpansion is there to replace.
-	callSite := Symbol("x").Source
+	//
+	// The call site is built explicitly rather than taken from
+	// Symbol("x").source.  #362 deleted the process-wide native-source
+	// Location, so a constructed Symbol now has a NIL source -- and
+	// stampMacroExpansion returns immediately on a nil callSite, which would
+	// leave this test asserting nil == nil and cover nothing.
+	callSite := &token.Location{File: "test.lisp", Line: 5, Col: 1}
 	stampMacroExpansion(v, callSite, nil, env.Runtime)
-	assert.Equal(t, callSite, v.Source, "the root must be stamped")
-	assert.Equal(t, callSite, v.Cells[1].Source, "the storage list must be stamped")
+	assert.Equal(t, callSite, v.source, "the root must be stamped")
+	assert.Equal(t, callSite, v.Cells[1].source, "the storage list must be stamped")
 }
 
 // TestAcyclicRenderingIsUnchangedBelowAndAboveTheGuard pins the property the
@@ -333,7 +341,11 @@ func TestCyclicWalkHelper(t *testing.T) {
 	case "stamp":
 		env := initSafetyTestEnv(t)
 		v := cyclicVector(1)
-		stampMacroExpansion(v, Symbol("x").Source, nil, env.Runtime)
+		// A real call site, for the reason given in
+		// TestStampMacroExpansionOfCyclicValue: a nil one makes the walk
+		// return before it starts, so this subprocess would report "stamped"
+		// without having walked the cyclic value at all.
+		stampMacroExpansion(v, &token.Location{File: "test.lisp", Line: 5, Col: 1}, nil, env.Runtime)
 		result = "stamped"
 	default:
 		t.Fatalf("unknown walk: %s", walk)

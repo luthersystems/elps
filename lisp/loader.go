@@ -54,7 +54,7 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 		err := checkLoaderExpr(expr)
 		if err != nil {
 			lerr := Error(err)
-			lerr.Source = expr.Source
+			lerr.source = expr.source
 			return nil, GoError(lerr)
 		}
 	}

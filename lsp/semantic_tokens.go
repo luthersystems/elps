@@ -115,17 +115,18 @@ func collectSemanticTokens(
 	src *sourceText,
 	tokens *[]rawToken,
 ) {
-	if v == nil || v.Source == nil || v.Source.Line == 0 {
+	vLoc, ok := v.Source()
+	if !ok || vLoc.Line == 0 {
 		return
 	}
 
 	// The NODE's position, which is what the analysis result is keyed by --
-	// buildSymbolDefsMap and buildSymbolRefsMap index by Source.Line/Col -- and
-	// which for a quoted atom is the quote, not the atom.  atomSpan below gives
-	// the position of the TEXT; classifySymbol must keep using this one or a
-	// quoted symbol stops matching its own analysis entry.
-	line := v.Source.Line - 1 // convert to 0-based
-	col := max(v.Source.Col-1, 0)
+	// buildSymbolDefsMap and buildSymbolRefsMap index by the node's line/col
+	// -- and which for a quoted atom is the quote, not the atom.  atomSpan
+	// below gives the position of the TEXT; classifySymbol must keep using
+	// this one or a quoted symbol stops matching its own analysis entry.
+	line := vLoc.Line - 1 // convert to 0-based
+	col := max(vLoc.Col-1, 0)
 
 	switch v.Type {
 	case lisp.LInt, lisp.LFloat:
@@ -225,10 +226,11 @@ func isSynthesizedPrefixHead(v *lisp.LVal) bool {
 	if !ok {
 		return false
 	}
-	if v.Source.EndLine != v.Source.Line {
+	loc, ok := v.Source()
+	if !ok || loc.EndLine != loc.Line {
 		return false
 	}
-	return v.Source.EndCol-v.Source.Col == len(prefix)
+	return loc.EndCol-loc.Col == len(prefix)
 }
 
 // symbolKey uniquely identifies a symbol occurrence by position.
@@ -434,12 +436,12 @@ func (s *sourceText) byteAt(l, c int) (byte, bool) {
 // fault-tolerant parser can in principle produce; it is the length the case in
 // question computed before this function existed.
 func atomSpan(v *lisp.LVal, src *sourceText, fallbackLen int) (line, col, length int) {
-	loc := v.Source
+	loc, _ := v.Source()
 	line = loc.Line - 1
 	col = max(loc.Col-1, 0)
 
 	skipped := 0
-	if v.Quoted {
+	if v.IsQuoted() {
 		line, col, skipped = skipReaderQuote(src, line, col)
 	}
 

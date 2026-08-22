@@ -54,7 +54,7 @@ type Runtime struct {
 	totalSteps             int64         // Steps consumed by all completed top-level evaluations.
 	numenv                 atomicCounter
 	numsym                 atomicCounter
-	macroExpSeq            int64 // monotonic counter for MacroExpansionInfo.ID
+	macroExpSeq            int64 // monotonic counter for macroExpansionInfo.ID
 }
 
 // MaxAllocBytes returns the effective per-operation allocation size cap.
@@ -434,9 +434,19 @@ func (r *Runtime) nextMacroExpID() int64 {
 func (r *Runtime) sourceContext() SourceContext {
 	top := r.Stack.Top()
 	if top != nil {
+		// A frame's Source is nil when the call was constructed by Go code
+		// rather than read from a source file (issue #362: constructors no
+		// longer stamp a shared "<native code>" location).  Report the same
+		// synthetic native location those frames historically carried so
+		// SourceLibrary implementations see an unchanged context.
+		src := top.Source
+		if src == nil {
+			loc := nativeLocation()
+			src = &loc
+		}
 		return &sourceContext{
-			name: top.Source.File,
-			loc:  top.Source.Path,
+			name: src.File,
+			loc:  src.Path,
 		}
 	}
 	return &sourceContext{

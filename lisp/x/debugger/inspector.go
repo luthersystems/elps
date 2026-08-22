@@ -49,8 +49,8 @@ func InspectLocals(env *lisp.LEnv) []ScopeBinding {
 	if env == nil {
 		return nil
 	}
-	bindings := make([]ScopeBinding, 0, len(env.Scope))
-	for name, val := range env.Scope {
+	bindings := make([]ScopeBinding, 0, env.NumBindings())
+	for name, val := range env.Bindings() {
 		bindings = append(bindings, ScopeBinding{Name: name, Value: val})
 	}
 	sort.Slice(bindings, func(i, j int) bool {
@@ -70,13 +70,13 @@ func InspectScope(env *lisp.LEnv) []ScopeBinding {
 	var bindings []ScopeBinding
 	current := env
 	for current != nil {
-		for name, val := range current.Scope {
+		for name, val := range current.Bindings() {
 			if !seen[name] {
 				seen[name] = true
 				bindings = append(bindings, ScopeBinding{Name: name, Value: val})
 			}
 		}
-		current = current.Parent
+		current = current.Parent()
 	}
 	sort.Slice(bindings, func(i, j int) bool {
 		return bindings[i].Name < bindings[j].Name
@@ -101,16 +101,16 @@ func InspectFunctionLocals(env *lisp.LEnv) []ScopeBinding {
 	for current != nil {
 		// Stop at the root env (builtins). Package symbols are in
 		// Runtime.Package.Symbols, not in env.Scope.
-		if current.Parent == nil {
+		if current.Parent() == nil {
 			break
 		}
-		for name, val := range current.Scope {
+		for name, val := range current.Bindings() {
 			if !seen[name] {
 				seen[name] = true
 				bindings = append(bindings, ScopeBinding{Name: name, Value: val})
 			}
 		}
-		current = current.Parent
+		current = current.Parent()
 	}
 	sort.Slice(bindings, func(i, j int) bool {
 		return bindings[i].Name < bindings[j].Name
@@ -123,24 +123,21 @@ func InspectFunctionLocals(env *lisp.LEnv) []ScopeBinding {
 // positional index, and the call-site location. Returns nil if the
 // expression has no macro expansion info.
 func InspectMacroExpansion(expr *lisp.LVal) []ScopeBinding {
-	if expr == nil || expr.MacroExpansion == nil {
-		return nil
-	}
-	ctx := expr.MacroExpansion.MacroExpansionContext
-	if ctx == nil {
+	m, ok := expr.MacroExpansion()
+	if !ok {
 		return nil
 	}
 	bindings := []ScopeBinding{
-		{Name: "(macro)", Value: lisp.String(ctx.Name)},
+		{Name: "(macro)", Value: lisp.String(m.Name)},
 	}
-	for i, arg := range ctx.Args {
+	for i, arg := range m.Args {
 		name := fmt.Sprintf("arg[%d]", i)
 		bindings = append(bindings, ScopeBinding{Name: name, Value: arg})
 	}
-	if ctx.CallSite != nil {
+	if m.CallSite != nil {
 		bindings = append(bindings, ScopeBinding{
 			Name:  "(call-site)",
-			Value: lisp.String(ctx.CallSite.String()),
+			Value: lisp.String(m.CallSite.String()),
 		})
 	}
 	return bindings
@@ -168,8 +165,8 @@ func FormatValue(v *lisp.LVal) string {
 		return formatList(v)
 	case lisp.LFun:
 		name := v.Str
-		if name == "" && v.FunData() != nil {
-			name = v.FunData().FID
+		if name == "" {
+			name = v.FID()
 		}
 		switch {
 		case v.IsMacro():
@@ -210,7 +207,7 @@ func formatList(v *lisp.LVal) string {
 		parts = append(parts, FormatValue(cell))
 	}
 	openTok, closeTok := "(", ")"
-	if v.Quoted {
+	if v.IsQuoted() {
 		openTok, closeTok = "[", "]"
 	}
 	return openTok + strings.Join(parts, " ") + closeTok

@@ -32,23 +32,15 @@ func TestRegisteredFunctionsHaveWellFormedFormals(t *testing.T) {
 	env, err := lisplib.NewDocEnv()
 	require.NoError(t, err)
 
-	pkgNames := make([]string, 0, len(env.Runtime.Registry.Packages))
-	for name := range env.Runtime.Registry.Packages {
-		pkgNames = append(pkgNames, name)
-	}
-	sort.Strings(pkgNames)
+	pkgNames := env.Runtime.Registry.PackageNames()
 
 	nfun := 0
 	for _, pkgName := range pkgNames {
-		pkg := env.Runtime.Registry.Packages[pkgName]
-		symNames := make([]string, 0, len(pkg.Symbols))
-		for sym := range pkg.Symbols {
-			symNames = append(symNames, sym)
-		}
-		sort.Strings(symNames)
+		pkg := env.Runtime.Registry.Package(pkgName)
+		symNames := pkg.SymbolNames()
 
 		for _, sym := range symNames {
-			v := pkg.Symbols[sym]
+			v, _ := pkg.Symbol(sym)
 			if v == nil || v.Type != lisp.LFun {
 				continue
 			}
@@ -153,11 +145,13 @@ func TestRegisteredFormalsAreNotSharedAcrossEnvs(t *testing.T) {
 // package-qualified name.
 func registeredFuns(env *lisp.LEnv) map[string]*lisp.LVal {
 	funs := make(map[string]*lisp.LVal)
-	for pkgName, pkg := range env.Runtime.Registry.Packages {
+	for _, pkgName := range env.Runtime.Registry.PackageNames() {
+		pkg := env.Runtime.Registry.Package(pkgName)
 		if pkg == nil {
 			continue
 		}
-		for sym, v := range pkg.Symbols {
+		for _, sym := range pkg.SymbolNames() {
+			v, _ := pkg.Symbol(sym)
 			if v == nil || v.Type != lisp.LFun || len(v.Cells) == 0 || v.Cells[0] == nil {
 				continue
 			}
