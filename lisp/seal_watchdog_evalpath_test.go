@@ -58,6 +58,14 @@ func TestSealWatchdogMacroStampEvalPath(t *testing.T) {
 	// location-less call would make this test vacuous in a second way.
 	call := lisp.SExpr([]*lisp.LVal{lisp.Symbol("pass-through"), arg})
 	call.SetSource(&token.Location{File: "synthetic.lisp", Path: "synthetic.lisp", Pos: 0, Line: 1, Col: 1})
+	// Seal the WHOLE call, as the reader would have, and after stamping the
+	// location -- SetSource is a no-op on a sealed value.  Not decoration:
+	// the loop below evaluates this tree in a fresh environment per
+	// iteration, so an unsealed node crossing runtimes trips the elpscheck
+	// ownership checker.  A real parse hands over a tree that is sealed
+	// throughout; a hand-built one has to say so.  (arg is already sealed;
+	// SealAST stops at it, which is the monotone-flag contract.)
+	call.SealAST()
 
 	exprs := append(append([]*lisp.LVal{}, macroExprs...), call)
 
@@ -81,16 +89,18 @@ func TestSealWatchdogMacroStampEvalPath(t *testing.T) {
 
 	// A handful of fresh environments evaluating the same cached tree -- the
 	// substrate cache shape.  Each evaluation macroexpands the call and runs
-	// the stamp over the sealed argument.  Under elpscheck the ownership
-	// checker forbids cross-runtime AST sharing by design, so the checked
-	// build evaluates repeatedly in ONE environment instead; the stamp runs
-	// on every iteration either way.
+	// the stamp over the sealed argument.
+	//
+	// The checked build runs the same cross-runtime sharing, and used to
+	// decline to: it evaluated repeatedly in ONE environment because the
+	// ownership checker forbade one *LVal reaching two Runtimes.  The
+	// sealed-node exemption (see the Allowlist section of
+	// lisp/ownership_check_elpscheck.go) removed the reason, so the
+	// single-environment fallback and the build-tagged constant behind it are
+	// gone and the checked build now covers the topology it used to skip.
 	iterations := 4
-	var env *lisp.LEnv
 	for i := range iterations {
-		if env == nil || !elpscheckActive {
-			env = newCowTestEnv(t)
-		}
+		env := newCowTestEnv(t)
 		for j, e := range exprs {
 			if r := env.Eval(e); r.Type == lisp.LError {
 				t.Fatalf("iteration %d expr %d: %v", i, j, r)
