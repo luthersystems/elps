@@ -69,28 +69,38 @@ func TestRegisteredFunctionsHaveWellFormedFormals(t *testing.T) {
 }
 
 // TestRegisteredFormalsAreNotSharedAcrossEnvs asserts that two independently
-// constructed environments do not share a single formal-argument LVal for any
-// function either of them defines.
+// constructed environments never share a MUTABLE formal-argument LVal for any
+// function either of them defines.  Sealed sharing is the sanctioned design;
+// unsealed sharing is the issue-#363 bug.
 //
 // Nearly every builtin, special operator and macro in the process is described
 // by an LBuiltinDef held in a package-level table built once at Go package
 // initialization: lisp's own langBuiltins/langSpecialOps/langMacros, and a
 // `var builtins = []*libutil.Builtin{...}` in libtime, libregexp, libhelp,
 // libschema, libmath, libbase64 and libstring.  Each entry's formals were
-// constructed once, by lisp.Formals, at that moment.  Before this test's fix,
-// LEnv.AddBuiltins/AddSpecialOps/AddMacros installed that very *LVal into the
-// function value, so every environment in the process shared one formals
-// object per definition -- time:sleep, math:atan and lisp:map among them,
-// while json:dump-string escaped only because libjson happens to build its
-// table from a function called per load.  One in-place write to a formals cell
-// would then be a cross-environment correctness bug and, for the embedders that
-// run many environments concurrently, a data race.  See issue #363; issue #362
-// is the same class of assumption, written to.
+// constructed once, by lisp.Formals, at that moment.  Before issue #363 was
+// addressed, LEnv.AddBuiltins/AddSpecialOps/AddMacros installed that very
+// *LVal into the function value with no protection at all, so every
+// environment in the process shared one MUTABLE formals object per definition
+// -- time:sleep, math:atan and lisp:map among them.  One in-place write to a
+// formals cell was a cross-environment correctness bug and, for the embedders
+// that run many environments concurrently, a data race.  See issue #363;
+// issue #362 is the same class of assumption, written to.
+//
+// Today the tables' formals are SEALED at construction (sealDefaultFormals,
+// the libutil constructors) and registration aliases the sealed template into
+// each environment (registrationFormals, lisp/env.go; issues #379, #514) --
+// the same topology lisp-defined functions have always had, whose formals are
+// sealed parser output aliased into every closure.  A sealed value is
+// immutable by contract (copy-on-write guards, the -race seal watchdog, the
+// checked-mode fingerprint verifier), so pointer sharing of a sealed list is
+// safe by design and REQUIRED here as the anti-vacuity floor.  What must
+// never happen is two environments holding the same UNSEALED formals -- that
+// is the #363 shape, and any def whose formals escape sealing must get a
+// private deep copy (formalsCopier, lisp/defformals.go, issue #513).
 //
 // The sweep covers every function in both registries rather than a hand-picked
 // sample, so a new package-level table cannot reintroduce the class unnoticed.
-// It compares pointers, which is a stronger statement than "mutating one does
-// not disturb the other" and does not depend on finding a mutable field.
 func TestRegisteredFormalsAreNotSharedAcrossEnvs(t *testing.T) {
 	envA, err := lisplib.NewDocEnv()
 	require.NoError(t, err)
@@ -116,6 +126,7 @@ func TestRegisteredFormalsAreNotSharedAcrossEnvs(t *testing.T) {
 	sort.Strings(names)
 
 	nchecked := 0
+	nsealedShared := 0
 	for _, name := range names {
 		b, ok := funsB[name]
 		if !ok {
@@ -123,22 +134,48 @@ func TestRegisteredFormalsAreNotSharedAcrossEnvs(t *testing.T) {
 		}
 		a := funsA[name]
 		fa, fb := a.Cells[0], b.Cells[0]
-		require.NotSamef(t, fa, fb,
-			"%s: both environments hold the SAME formals object %p; a write through either is visible in the other (issue #363)",
-			name, fa)
+		if fa == fb {
+			// Sharing one formals object is legal exactly when it is sealed
+			// all the way down: immutability, not per-env confinement, is
+			// what protects it (registrationFormals in lisp/env.go).
+			require.Truef(t, fa.IsSealed(),
+				"%s: both environments hold the SAME UNSEALED formals object %p; a write through either is visible in the other (issue #363)",
+				name, fa)
+			for i, cell := range fa.Cells {
+				require.Truef(t, cell.IsSealed(),
+					"%s: shared formals %p is sealed but its cell %d (%v) is not; a write to the cell corrupts every environment (issue #363)",
+					name, fa, i, cell)
+			}
+			nsealedShared++
+			nchecked++
+			continue
+		}
+		// Distinct formals objects must be deeply private: a shallow copy
+		// still shares the mutable parameter symbols.
 		require.Lenf(t, fb.Cells, len(fa.Cells),
 			"%s: formals differ in length between environments", name)
 		for i := range fa.Cells {
+			if fa.Cells[i].IsSealed() && fa.Cells[i] == fb.Cells[i] {
+				continue // sealed leaf sharing is as safe as sealed list sharing
+			}
 			require.NotSamef(t, fa.Cells[i], fb.Cells[i],
-				"%s: both environments hold the SAME formal argument %d (%v); the copy is shallow (issue #363)",
+				"%s: both environments hold the SAME mutable formal argument %d (%v); the copy is shallow (issue #363)",
 				name, i, fa.Cells[i])
 		}
 		nchecked++
 	}
 
-	// Guard against the sweep silently finding nothing.
+	// Guard against the sweep silently finding nothing, and against the
+	// sealed-sharing path silently disappearing: every definition table in
+	// this repository seals its formals, so a fully loaded environment must
+	// alias hundreds of sealed lists.  A collapse to zero means either the
+	// walk went blind or registration quietly stopped sharing -- both worth
+	// failing loudly over.
 	require.NotZero(t, nchecked, "found no functions to check; the registry walk is broken")
-	t.Logf("checked the formals of %d functions defined in both environments", nchecked)
+	require.GreaterOrEqualf(t, nsealedShared, 100,
+		"only %d of %d functions share a sealed formals template; the sealed-sharing registration path (registrationFormals) is not being exercised",
+		nsealedShared, nchecked)
+	t.Logf("checked the formals of %d functions defined in both environments (%d sealed-shared)", nchecked, nsealedShared)
 }
 
 // registeredFuns returns every function bound in env's registry, keyed by its
