@@ -80,11 +80,15 @@ genuinely needs the AST (tooling, serialization, transfer between runtimes)
 exists in-kernel (`detach`, returning hermetic deep copies) but is
 unexported until a real embedder consumer materializes.
 
-Note the scope of the guarantee: `Program` seals the parse/cache boundary so
-AST nodes cannot *escape* to the embedder.  Full hermetic sealing is the
-composition of this boundary type with seals on evaluation's own AST leak
-points (quote and macro paths inside eval) — see the `Program` godoc for
-details.
+The guarantee runs in both directions.  Outward, `Program` seals the
+parse/cache boundary so AST nodes cannot *escape* to the embedder.  Inward,
+the constructors establish the hermetic seal (`docs/sealed-ast.md`) on the
+expressions they admit: reader output that is not already sealed throughout
+— a format-preserving parser, a caller-written `Reader` — is privately
+copied and sealed, and output the seal cannot protect (reference types,
+function values) is rejected with an error (elps#394).  A cached `Program`
+is therefore always safe to load from many environments — see the `Program`
+godoc for details.
 
 ## Writing Functions
 

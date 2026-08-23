@@ -511,14 +511,20 @@ intends to mutate data it did not construct copies unconditionally.
 
 1. **Parse through a sealing path.** `Reader.Read`, `LoadString`,
    `ParseProgram`/`ReadProgram` all seal. Prefer `lisp.Program` at your
-   cache boundary. (Owned expressions need the in-kernel `detach()`
-   machinery, which is unexported today; it will be re-exported when a real
-   embedder consumer materializes.) If you build trees by hand and share
-   them across environments, call `SealAST()` on each root yourself.
+   cache boundary: its constructors *establish* the seal at admission
+   (elps#394) — reader output that is not already sealed throughout is
+   privately copied and sealed, and output the seal cannot protect
+   (reference types, function values) is rejected with an error. (Owned
+   expressions need the in-kernel `detach()` machinery, which is unexported
+   today; it will be re-exported when a real embedder consumer
+   materializes.) If you build trees by hand and share them across
+   environments, call `SealAST()` on each root yourself.
 2. **Never install a format-preserving reader into an evaluating runtime.**
    `parser.NewReader(parser.WithFormatPreserving())` produces *unsealed*
    trees for tooling (formatter/minifier/lint); it satisfies `lisp.Reader`,
-   so nothing but this contract stops you.
+   so nothing but this contract stops you on the `Load*` paths. The
+   `Program` constructors are the exception: they detect the unsealed
+   parse and admit a private sealed copy instead (elps#394).
 3. **In every builtin or Go helper that mutates a value in place:** check
    `v.IsSealed()` first; refuse with an error or operate on `v.Copy()`.
    Remember slices of `Cells` share backing — copy the cells, not just the
