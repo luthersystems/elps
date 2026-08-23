@@ -31,17 +31,18 @@ import (
 // (program_seal_test.go) guards the surface: no exported method may expose
 // *LVal.
 //
-// Scope of the guarantee: Program seals the parse/cache boundary — it stops
-// raw AST nodes from ESCAPING to embedders.  It does not, by itself, make one
-// Program safe to evaluate in multiple runtimes concurrently: evaluation can
-// still alias parts of the AST into runtime values through quote and macro
-// paths inside eval.  Sealing those eval-side leak points is separate work
-// (the exp-ast-leakpoints line); full hermetic sealing is the composition of
-// the two — Program at the boundary, leak seals inside eval.  Until then,
-// treat a shared Program like any shared AST: reuse within one runtime is
-// fine, cross-runtime reuse has the aliasing caveats of issues #288/#362,
-// and the in-kernel detach machinery is what a sanctioned hand-off of a
-// private copy would use (unexported until a consumer appears).
+// Scope of the guarantee: Program seals the parse/cache boundary in both
+// directions.  Outward, it stops raw AST nodes from ESCAPING to embedders
+// (the compile-time seal above).  Inward, every constructor establishes the
+// hermetic seal (lisp/seal.go) on the expressions it admits — reader output
+// that is not already sealed throughout is privately copied and sealed, and
+// output the seal cannot cover is rejected (see newProgram, issue #394) —
+// so the sharing a parse cache does is always the sanctioned kind: sealed
+// nodes are frozen storage under copy-on-write protection, and evaluating
+// one Program from many environments cannot corrupt it for the others.
+// Concurrency is unchanged by any of this: a Runtime serves one goroutine,
+// so concurrent evaluation still means one environment per goroutine, all
+// of them free to share the sealed Program.
 //
 // The zero Program is valid, empty, and evaluates to nil.
 type Program struct {
@@ -88,7 +89,11 @@ func (p Program) detach() ([]*LVal, error) {
 
 // ReadProgram parses the contents of r using reader and seals the result as
 // a Program.  The parsed expression slice never leaves this package: it goes
-// directly from the reader's return value into the sealed Program.
+// from the reader's return value through newProgram's seal admission into
+// the sealed Program.  Reader output that is not already hermetically sealed
+// (a format-preserving parser, a caller-written Reader) is privately copied
+// and sealed; output the seal cannot protect — reference types, function
+// values — is rejected with an error.  See newProgram.
 func ReadProgram(reader Reader, name string, r io.Reader) (Program, error) {
 	if reader == nil {
 		return Program{}, errors.New("nil reader")
@@ -97,7 +102,7 @@ func ReadProgram(reader Reader, name string, r io.Reader) (Program, error) {
 	if err != nil {
 		return Program{}, err
 	}
-	return Program{exprs: exprs}, nil
+	return newProgram(exprs)
 }
 
 // ReadLocationProgram is ReadProgram for a LocationReader, assigning physical
@@ -110,7 +115,7 @@ func ReadLocationProgram(reader LocationReader, name, loc string, r io.Reader) (
 	if err != nil {
 		return Program{}, err
 	}
-	return Program{exprs: exprs}, nil
+	return newProgram(exprs)
 }
 
 // ParseProgram parses the contents of r using env.Runtime.Reader and seals
@@ -126,6 +131,113 @@ func (env *LEnv) ParseProgram(name, loc string, r io.Reader) (Program, error) {
 		return ReadLocationProgram(reader, name, loc, r)
 	}
 	return ReadProgram(env.Runtime.Reader, loc, r)
+}
+
+// newProgram is the single admission point for every Program constructor:
+// reader output becomes a Program only after the hermetic seal that makes
+// Program's boundary guarantee true is actually established (issue #394).
+//
+// Program's premise is that a cached parse "cannot leak *LVal pointers
+// between environments by construction", and before this check the premise
+// held only when the Reader happened to seal.  The standard parser does
+// (rdparser.ParseExpression calls SealAST on each completed top-level
+// expression); a format-preserving parser deliberately does not (its Meta
+// construction continues past the parser's seal point); and a
+// caller-supplied Reader may do anything at all, including handing the same
+// tree to every Read call.  Wrapping such output unchecked shared one
+// unsealed, mutable tree among every environment that loaded the Program —
+// the substrate#378 corruption class, with no diagnostic in a production
+// build.
+//
+// The admission asks TextLoader's questions, in TextLoader's order, adapted
+// to the different mechanism (TextLoader hands each load a private copy;
+// Program hands every load the same sealed tree):
+//
+//   - checkLoaderExpr runs first, verbatim.  Reference types (bytes, map,
+//     array, native) share mutable state through every copy AND every
+//     evaluation — SealAST declines to mark them and Copy preserves their
+//     reference semantics — so no admission can make them safe to share and
+//     they are rejected with TextLoader's error.
+//   - Output that is already sealed throughout is admitted as-is.  This is
+//     the standard-parser fast path, and the sharing it takes is the
+//     sanctioned kind: sealed nodes are frozen storage under copy-on-write
+//     protection, shared across runtimes by design (lisp/seal.go;
+//     elpstest.RunBenchmark takes the same share).  The check is a deep
+//     walk, not a root check: SealAST stops without descending at anything
+//     it declines to mark, so a Reader can hand back a sealed root over
+//     unsealed storage.  (RunBenchmark's root-only check is sound only
+//     because it constructed the parser itself; a Program's Reader belongs
+//     to the caller.)
+//   - Anything else gets the private-copy-and-seal treatment: Copy severs
+//     every alias the Reader may have retained (cells, locations, and
+//     format metadata are all detached), and SealAST freezes the copy.
+//     Sealing here is safe even for a format-preserving parse — the parser
+//     skips SealAST because Meta construction continues past its per-
+//     expression seal point, but Read has returned by now, so construction
+//     is complete.
+//   - A node that even the fresh copy cannot seal (a function value, say —
+//     no parser produces one, but the Reader interface cannot promise
+//     that) would reopen the same hole one Reader further out, so it is
+//     rejected.  This is the one place the admission is deliberately
+//     stricter than TextLoader: TextLoader's per-load copies mean its
+//     cached tree is never itself shared between environments, but for
+//     Program the seal is the only thing standing between environments, so
+//     "cannot seal" has to mean "cannot admit".
+func newProgram(exprs []*LVal) (Program, error) {
+	for _, expr := range exprs {
+		if err := checkLoaderExpr(expr); err != nil {
+			lerr := Error(err)
+			// Copied, not aliased: the error escapes to the caller through
+			// GoError while expr remains the Reader's property, so the two
+			// must not share a *token.Location (TextLoader's rule; cold
+			// path, the copy is free in practice).
+			lerr.source = copyLocation(expr.source)
+			return Program{}, GoError(lerr)
+		}
+	}
+	allSealed := true
+	for _, expr := range exprs {
+		if firstUnsealed(expr) != nil {
+			allSealed = false
+			break
+		}
+	}
+	if allSealed {
+		return Program{exprs: exprs}, nil
+	}
+	sealed := make([]*LVal, len(exprs))
+	for i, expr := range exprs {
+		cp := expr.Copy()
+		cp.SealAST()
+		if u := firstUnsealed(cp); u != nil {
+			lerr := Error(fmt.Errorf("cannot seal expression of type %v into a program", u.Type))
+			// Copied, not aliased, as above — u's location was already
+			// privately copied from the Reader's tree, but the program copy
+			// is discarded on this path while the error escapes, and the
+			// rule is cheaper to follow than to prove unnecessary.
+			lerr.source = copyLocation(u.source)
+			return Program{}, GoError(lerr)
+		}
+		sealed[i] = cp
+	}
+	return Program{exprs: sealed}, nil
+}
+
+// firstUnsealed returns the first node reachable through v's Cells that is
+// not sealed, or nil when the tree is sealed throughout.  The trees it
+// walks were admitted by checkLoaderExpr, whose recursion already assumes
+// finite, non-nil parser-shaped nodes; the same custody assumption applies
+// here.
+func firstUnsealed(v *LVal) *LVal {
+	if !v.IsSealed() {
+		return v
+	}
+	for _, c := range v.Cells {
+		if u := firstUnsealed(c); u != nil {
+			return u
+		}
+	}
+	return nil
 }
 
 // LoadProgram evaluates the program's expressions as if in a progn, exactly
