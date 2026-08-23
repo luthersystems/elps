@@ -302,8 +302,9 @@ assert_contains "+12.45%" "the B/op row is named too — it is over the allocati
 # The after half: the shipped list no longer carries the two #411 Encode
 # entries -- they were deleted (#413) once elps#412's fix removed the
 # regression they accepted and the gate had reported both waiver-unused.
-# (The elps#363 env-construction entry it does carry names a different row
-# and cannot reach the Encode columns.)  What the DEFAULT path (no
+# (The elps#363 env-construction entry that later joined the list was
+# deleted the same way once the gate reported it waiver-unused; the shipped
+# list is now empty.)  What the DEFAULT path (no
 # BENCH_WAIVERS override) must prove now is the deletion's other side: with
 # the Encode entries gone, the same real comparison fires the gate again --
 # the rows came back the moment their acceptance was withdrawn, which is the
