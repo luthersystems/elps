@@ -14,15 +14,16 @@ import (
 	"github.com/luthersystems/elps/parser"
 )
 
-// These tests prove the copy-on-write sealing design (lisp/seal.go): a
-// cached, shared parse tree evaluated by a runtime is handed to the value
-// domain by reference — no eager copies — and every kernel mutation path
-// that could write the shared tree either copies first or leaves the tree
-// untouched.  The property under test is therefore NOT pointer
-// disjointness (aliasing is the design) but corruption-freedom: after any
-// contract-respecting mutation activity in one runtime, the cached tree is
-// bit-identical and a second runtime evaluating the same cache sees
-// pristine data.
+// These tests prove the sealing design (lisp/seal.go): a cached, shared
+// parse tree evaluated by a runtime is handed to the value domain by
+// reference — no eager copies — and every kernel mutation path that could
+// write the shared tree either refuses with the catchable
+// modify-literal-error condition (issue #378; the guarded sites used to
+// copy-on-write silently) or leaves the tree untouched.  The property under
+// test is therefore NOT pointer disjointness (aliasing is the design) but
+// corruption-freedom: after any contract-respecting mutation activity in
+// one runtime, the cached tree is bit-identical and a second runtime
+// evaluating the same cache sees pristine data.
 //
 // The setup simulates substrate's parse cache: one program is parsed once
 // and the resulting []*LVal is retained (the "cache") while environments
@@ -170,9 +171,9 @@ func TestSealPropagation(t *testing.T) {
 		{`(append 'list q 50)`, false}, // fresh backing by construction
 		{`(reverse 'list q)`, false},   // fresh backing
 		{`(map 'list (lambda (x) x) q)`, false},
-		{`(slice 'vector q 0 2)`, false}, // vectors are mutable; must be copied, never sealed
-		{`(append 'vector q 50)`, false}, // ditto
-		{`(stable-sort > q)`, false},     // CoW result: fresh, mutable
+		{`(slice 'vector (copy q) 0 2)`, false}, // copy clears the seal; the vector owns fresh backing
+		{`(append 'vector (copy q) 50)`, false}, // ditto
+		{`(stable-sort > (copy q))`, false},     // ditto: in-place sort of the mutable copy
 	} {
 		v := env.LoadString("test.lisp", tc.src)
 		if v.Type == lisp.LError {
@@ -180,6 +181,23 @@ func TestSealPropagation(t *testing.T) {
 		}
 		if got := v.IsSealed(); got != tc.seal {
 			t.Errorf("%s: IsSealed() = %v, want %v", tc.src, got, tc.seal)
+		}
+	}
+
+	// The three guarded mutators refuse the sealed value itself: raising
+	// the catchable modify-literal-error condition replaced the silent
+	// copy-on-write these sites used to perform (issue #378).
+	for _, src := range []string{
+		`(slice 'vector q 0 2)`,
+		`(append 'vector q 50)`,
+		`(stable-sort > q)`,
+	} {
+		v := env.LoadString("test.lisp", src)
+		if v.Type != lisp.LError {
+			t.Fatalf("eval %q: expected modify-literal-error, got %v", src, v)
+		}
+		if v.Str != lisp.CondModifyLiteral {
+			t.Errorf("%s: condition = %q, want %q", src, v.Str, lisp.CondModifyLiteral)
 		}
 	}
 
@@ -265,7 +283,10 @@ func TestValueMutationDoesNotCorruptCachedAST(t *testing.T) {
 
 	// Lisp-reachable mutation attempts against the sealed values the
 	// program stored.  Every one of these rewrote (or could rewrite) the
-	// shared tree before the copy-on-write guards existed.
+	// shared tree before the seal guards existed; every one is now refused
+	// with the catchable modify-literal-error condition (issue #378 — the
+	// guards used to copy-on-write silently instead), and the tree stays
+	// bit-identical either way, which is the property this test exists for.
 	for _, src := range []string{
 		`(stable-sort > g-nums)`,
 		`(stable-sort < (cdr g-nums))`,
@@ -277,8 +298,12 @@ func TestValueMutationDoesNotCorruptCachedAST(t *testing.T) {
 		`(stable-sort > (num-quoter))`,
 		`(stable-sort > (cdr (num-quoter)))`,
 	} {
-		if v := env.LoadString("mutate.lisp", src); v.Type == lisp.LError {
-			t.Fatalf("mutation attempt %q: %v", src, v)
+		v := env.LoadString("mutate.lisp", src)
+		if v.Type != lisp.LError {
+			t.Fatalf("mutation attempt %q was not refused: %v", src, v)
+		}
+		if v.Str != lisp.CondModifyLiteral {
+			t.Errorf("mutation attempt %q: condition = %q, want %q", src, v.Str, lisp.CondModifyLiteral)
 		}
 	}
 
@@ -315,10 +340,11 @@ func TestValueMutationDoesNotCorruptCachedAST(t *testing.T) {
 // luthersystems/substrate#378: a program is parsed once into a shared
 // cache; runtime 1 evaluates it and then mutates the value bound to q.
 // Under the copy-on-write design the value IS the shared tree node, so the
-// mutation must either happen through a guarded lisp-level mutator (which
-// copies) or through the sanctioned embedder pattern (check IsSealed, copy
-// first — the elpspath contract).  Either way the cache fingerprint is
-// unchanged and a second runtime sees pristine data.
+// mutation is either refused by a guarded lisp-level mutator (the
+// catchable modify-literal-error condition) or happens through the
+// sanctioned embedder pattern (check IsSealed, copy first — the elpspath
+// contract).  Either way the cache fingerprint is unchanged and a second
+// runtime sees pristine data.
 func TestSubstrate378ClassKilled(t *testing.T) {
 	const src = `
 (set 'q '(10 20 30))
@@ -355,13 +381,19 @@ q
 	target.Cells = append(target.Cells, lisp.String("injected"))
 	target.Cells[1], target.Cells[2] = target.Cells[2], target.Cells[1]
 
-	// Lisp-level mutators driven at the durable binding must copy-on-write.
+	// Lisp-level mutators driven at the durable binding are refused with
+	// the catchable modify-literal-error condition (issue #378; they used
+	// to copy-on-write silently), leaving the cache untouched.
 	for _, msrc := range []string{
 		`(stable-sort > q)`,
 		`(append 'vector (slice 'list q 0 1) 999)`,
 	} {
-		if v := env1.LoadString("mutate.lisp", msrc); v.Type == lisp.LError {
-			t.Fatalf("env1 %q: %v", msrc, v)
+		v := env1.LoadString("mutate.lisp", msrc)
+		if v.Type != lisp.LError {
+			t.Fatalf("env1 %q was not refused: %v", msrc, v)
+		}
+		if v.Str != lisp.CondModifyLiteral {
+			t.Errorf("env1 %q: condition = %q, want %q", msrc, v.Str, lisp.CondModifyLiteral)
 		}
 	}
 
@@ -398,13 +430,15 @@ q
 }
 
 // TestStableSortLiteralPristine pins the stable-sort finding: before the
-// copy-on-write guard, (stable-sort > q) on a quoted literal sorted the
-// literal's cells in place, so the SECOND evaluation of the defun body saw
-// an already-sorted literal — observable in a single environment, and
-// cache corruption across environments.
+// seal guard, (stable-sort > q) on a quoted literal sorted the literal's
+// cells in place, so the SECOND evaluation of the defun body saw an
+// already-sorted literal — observable in a single environment, and cache
+// corruption across environments.  The guard now refuses the sort with the
+// catchable modify-literal-error condition (issue #378; it used to
+// copy-on-write silently), and the literal stays pristine on every call.
 func TestStableSortLiteralPristine(t *testing.T) {
 	env := newCowTestEnv(t)
-	setup := `(defun s () (let ([q '(1 2 3)]) (stable-sort > q) q))`
+	setup := `(defun s () (let ([q '(1 2 3)]) (ignore-errors (stable-sort > q)) q))`
 	if v := env.LoadString("test.lisp", setup); v.Type == lisp.LError {
 		t.Fatalf("setup: %v", v)
 	}
@@ -423,11 +457,19 @@ func TestStableSortLiteralPristine(t *testing.T) {
 			}
 		}
 	}
-	// The functional contract survives the CoW: the sorted result is
-	// returned even though the literal stays pristine.
+	// The refusal is the named condition, not a generic error.
 	v := env.LoadString("test.lisp", `(stable-sort > '(1 2 3))`)
+	if v.Type != lisp.LError {
+		t.Fatalf("sort of a literal was not refused: %v", v)
+	}
+	if v.Str != lisp.CondModifyLiteral {
+		t.Fatalf("sort of a literal raised %q, want %q", v.Str, lisp.CondModifyLiteral)
+	}
+	// The functional contract survives through copy — the sanctioned
+	// remedy the error message names.
+	v = env.LoadString("test.lisp", `(stable-sort > (copy '(1 2 3)))`)
 	if v.Type == lisp.LError {
-		t.Fatalf("sort: %v", v)
+		t.Fatalf("sort of a copy: %v", v)
 	}
 	if len(v.Cells) != 3 || v.Cells[0].Int != 3 || v.Cells[1].Int != 2 || v.Cells[2].Int != 1 {
 		t.Fatalf("stable-sort return value wrong: %v, want (3 2 1)", v)
@@ -438,17 +480,25 @@ func TestStableSortLiteralPristine(t *testing.T) {
 // guards, (append 'vector (slice 'list lit 0 1) 99) appended into the
 // literal's spare backing capacity, overwriting the literal's second
 // element ((1 2 3) became (1 99 3)) — observable in a single environment,
-// and cache corruption across environments.
+// and cache corruption across environments.  The guard now refuses the
+// append with the catchable modify-literal-error condition (issue #378; it
+// used to copy-on-write silently), and the literal stays pristine.
 func TestAppendVectorSliceBackingPristine(t *testing.T) {
 	env := newCowTestEnv(t)
 	for i, src := range []string{
 		`(set 'lit '(1 2 3))`,
 		`(set 's1 (slice 'list lit 0 1))`,
-		`(append 'vector s1 99)`,
 	} {
 		if v := env.LoadString("test.lisp", src); v.Type == lisp.LError {
 			t.Fatalf("expr %d %q: %v", i, src, v)
 		}
+	}
+	refused := env.LoadString("test.lisp", `(append 'vector s1 99)`)
+	if refused.Type != lisp.LError {
+		t.Fatalf("(append 'vector s1 99) was not refused: %v", refused)
+	}
+	if refused.Str != lisp.CondModifyLiteral {
+		t.Errorf("(append 'vector s1 99): condition = %q, want %q", refused.Str, lisp.CondModifyLiteral)
 	}
 	v := env.LoadString("test.lisp", `lit`)
 	if v.Type == lisp.LError {

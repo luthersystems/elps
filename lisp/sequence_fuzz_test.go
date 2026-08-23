@@ -300,8 +300,10 @@ func TestSequenceCapacitySharingIsReachable(t *testing.T) {
 }
 
 // TestSequenceSealedLiteralSurvivesTheSameShape is the other half: the exact
-// #369 mechanism-2 path, but with a SEALED source, where the seal's
-// copy-on-write must hold.  This is the property the fuzz target asserts on
+// #369 mechanism-2 path, but with a SEALED source, where the seal's guard
+// must hold — the append is refused with the catchable modify-literal-error
+// condition (issue #378; the site used to copy-on-write silently) and the
+// literal's bytes stay put.  This is the property the fuzz target asserts on
 // every step, pinned once at `go test` speed so a seal regression is caught
 // in milliseconds rather than only by a sweep.
 func TestSequenceSealedLiteralSurvivesTheSameShape(t *testing.T) {
@@ -326,12 +328,15 @@ func TestSequenceSealedLiteralSurvivesTheSameShape(t *testing.T) {
 	rc := env.FunCall(appendFun, lisp.SExpr([]*lisp.LVal{
 		lisp.Symbol("vector"), sub, lisp.Int(99),
 	}))
-	if rc.Type == lisp.LError {
-		t.Fatalf("append into the sealed slice failed: %v", rc)
+	if rc.Type != lisp.LError {
+		t.Fatalf("append into the sealed slice was not refused: %v", rc)
+	}
+	if rc.Str != lisp.CondModifyLiteral {
+		t.Errorf("append into the sealed slice raised %q, want %q: %v", rc.Str, lisp.CondModifyLiteral, rc)
 	}
 	if after := lisp.SealedASTFingerprint(roots); after != fp {
 		t.Fatalf("(append 'vector (slice 'list <literal> 0 1) 99) corrupted the literal"+
-			" (fingerprint %016x -> %016x): the seal's copy-on-write guard has regressed"+
+			" (fingerprint %016x -> %016x): the sealed-write guard has regressed"+
 			" and elps#369 mechanism 2 is live again; literal is now %v", fp, after, lit)
 	}
 }

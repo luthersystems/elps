@@ -55,24 +55,31 @@ func TestSliceCapacityAliasing(t *testing.T) {
 		// of the program's own source text.
 		{"append 'vector on a slice view does not corrupt a quoted literal", elpstest.TestSequence{
 			{`(set 'lit '(1 2 3))`, `'(1 2 3)`, ``},
-			{`(set 'view (slice 'vector lit 0 1))`, `(vector 1)`, ``},
+			// slice 'vector would wrap the literal's backing in a mutable
+			// window; the guard refuses it outright with the catchable
+			// modify-literal-error condition (issue #378; the site used to
+			// copy-on-write silently).
+			{`(slice 'vector lit 0 1)`,
+				`test:1:1: modify-literal-error: cannot modify a program literal; take a (copy ...) first`, ``},
+			// The sanctioned route: copy first, then slice and append freely.
+			{`(set 'view (slice 'vector (copy lit) 0 1))`, `(vector 1)`, ``},
 			{`(append 'vector view 99)`, `(vector 1 99)`, ``},
-			// Before the fix lit read '(1 99 3) -- and stayed that way for
-			// the rest of the process, because `lit` is the literal node in
-			// the function body, not a copy of it.
+			// Before the guards lit read '(1 99 3) -- and stayed that way
+			// for the rest of the process, because `lit` is the literal node
+			// in the function body, not a copy of it.
 			{`lit`, `'(1 2 3)`, ``},
 		}},
 
 		// The literal corruption in variant 2 is persistent, not per-call.
 		// Calling the same function twice must see a pristine literal both
-		// times.
+		// times, with the corrupting write refused on each call.
 		{"a corrupted literal does not persist across calls", elpstest.TestSequence{
 			{`(defun probe ()
 			    (let ([lit '(1 2 3)])
-			      (append 'vector (slice 'vector lit 0 1) 99)
+			      (ignore-errors (append 'vector (slice 'list lit 0 1) 99))
 			      lit))`, `()`, ``},
 			{`(probe)`, `'(1 2 3)`, ``},
-			// Before the fix the second call returned '(1 99 3).
+			// Before the guards the second call returned '(1 99 3).
 			{`(probe)`, `'(1 2 3)`, ``},
 		}},
 
@@ -255,20 +262,23 @@ func TestSliceViewSharesElements(t *testing.T) {
 			{`src`, `(vector 3 4 5 2 1)`, ``},
 		}},
 		{"stable-sort does not mutate a quoted literal", elpstest.TestSequence{
-			{`(defun probe () (let ([lit '(3 1 2)]) (stable-sort < lit) lit))`, `()`, ``},
-			// Sorted into a FRESH list, which the caller here discards, so
-			// the literal in the function body reads as written...
+			// Sorting a literal is refused with the catchable
+			// modify-literal-error condition (issue #378; the site used to
+			// copy-on-write silently), so the literal in the function body
+			// reads as written...
+			{`(defun probe () (let ([lit '(3 1 2)]) (ignore-errors (stable-sort < lit)) lit))`, `()`, ``},
 			{`(probe)`, `'(3 1 2)`, ``},
 			// ...and still does on the second call.  Before sealing the
 			// literal came back '(1 2 3) here, and the second call was the
 			// tell: the program's own text had been rewritten for the life of
 			// the process (elps#369).
 			{`(probe)`, `'(3 1 2)`, ``},
-			// The sorted list is still available -- it is the return value,
-			// which the docstring now says to use.
-			{`(let ([lit '(3 1 2)]) (stable-sort < lit))`, `'(1 2 3)`, ``},
+			// The refusal is an ordinary error with the pinned message.
+			{`(let ([lit '(3 1 2)]) (stable-sort < lit))`,
+				`test:1:23: modify-literal-error: cannot modify a program literal; take a (copy ...) first`, ``},
 			// And a copy of the literal sorts in place as any runtime list
-			// does, which is the sanctioned way to get the old behaviour.
+			// does, which is the sanctioned way to sort literal-derived data.
+			{`(let ([lit (copy '(3 1 2))]) (stable-sort < lit) lit)`, `'(1 2 3)`, ``},
 			{`(let ([lit (concat 'list '(3 1 2))]) (stable-sort < lit) lit)`, `'(1 2 3)`, ``},
 		}},
 	}

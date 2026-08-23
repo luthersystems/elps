@@ -27,6 +27,12 @@ package fuzzseed
 //     that fires on a correct, bounded program is as much a defect as a limit
 //     that never fires.  An infinite ELPS loop the budget stops is CORRECT
 //     behaviour; a 30-element list comprehension that trips a cap is not.
+//
+//   - EvalErroring: programs that MUST finish on their own AND finish with a
+//     specific ordinary, catchable error -- language-contract errors such as
+//     the sealed-write guard's modify-literal-error, not budget stops.  They
+//     cannot join EvalRunaway (they never test a budget) or EvalTerminating
+//     (erroring is their job).
 
 // EvalRunaway returns programs that must NOT run to completion under a
 // bounded evaluation budget.  Each entry names the limit that is expected to
@@ -163,21 +169,33 @@ func EvalTerminating() map[string]string {
 		"append-bytes-valid": `(append 'bytes (to-bytes "ab") 99)`,
 		"append-list-valid":  `(append 'list '(1 2) 3)`,
 
-		// --- copy-on-write guards on sealed program literals (issue #372;
-		// see lisp/seal.go).  Each seed drives a kernel mutator at a parsed
-		// literal, or at a backing-sharing view of one (cdr / slice), and
-		// completes without error -- but before the CoW guards existed each
-		// one rewrote the literal in place (stable-sort's in-place sort,
-		// append 'vector's spare-capacity write: the substrate#378 class).
+		// --- the seal guards on program literals (issue #372 machinery,
+		// issue #378 semantics; see lisp/seal.go).  The seeds that DRIVE a
+		// kernel mutator at a sealed literal live in EvalErroring now: those
+		// programs raise the catchable modify-literal-error condition, so
+		// they must error.  What belongs here is the other three quarters of
+		// the contract, which must keep completing without error:
+		//
+		//   - the error is catchable through the ordinary condition
+		//     machinery (handler-bind by name, ignore-errors),
+		//   - (copy lit) is the sanctioned remedy and takes the ordinary
+		//     mutable path, and
+		//   - the empty carve-out: cdr/rest return the shared sealed empty
+		//     list, and the guarded sites accept it rather than turning
+		//     (stable-sort < (rest xs)) into a data-dependent error.
+		//
 		// The eval fuzz harness fingerprints every input's sealed parse
-		// before and after evaluation, so if a guard regresses, these seeds
-		// make the very first corpus pass fail loudly instead of leaving
-		// detection to the mutator's luck. ---
-		"cow-stable-sort-literal":       `(set 'q '(9 3 7 1 8)) (stable-sort > q) q`,
-		"cow-stable-sort-literal-view":  `(stable-sort < (cdr '(9 3 7 1 8)))`,
-		"cow-stable-sort-defun-literal": `(defun s () (let ([q '(3 1 2)]) (stable-sort > q) q)) (s) (s)`,
-		"cow-append-vector-slice":       `(set 'lit '(1 2 3)) (append 'vector (slice 'list lit 0 1) 99) lit`,
-		"cow-append-vector-cdr":         `(append 'vector (cdr '(1 2 3)) 99)`,
+		// before and after evaluation, so these seeds also keep the
+		// literal-stays-pristine oracle pointed at the guarded sites. ---
+		"sealed-write-caught-by-name":  `(handler-bind ([modify-literal-error (lambda (c &rest args) 'caught)]) (stable-sort > '(9 3 7 1 8)))`,
+		"sealed-write-ignored":         `(ignore-errors (append 'vector (slice 'list '(1 2 3) 0 1) 99)) '(1 2 3)`,
+		"sealed-write-copy-remedy":     `(stable-sort > (copy '(9 3 7 1 8)))`,
+		"sealed-slice-vector-copy":     `(slice 'vector (copy '(1 2 3)) 0 2)`,
+		"sealed-append-vector-copy":    `(append 'vector (copy '(1 2 3)) 4)`,
+		"sealed-sort-empty-view":       `(stable-sort < (rest '(1)))`,
+		"sealed-append-empty-view":     `(append 'vector (cdr '(1)) 99)`,
+		"sealed-slice-vector-empty":    `(slice 'vector (rest '(1)) 0 0)`,
+		"sealed-slice-vector-empty-of": `(slice 'vector '(1 2 3) 1 1)`,
 
 		// --- debug-print: A4's site.  Both branches must reach the runtime's
 		// configured Stderr, which the harness captures. ---
@@ -203,6 +221,45 @@ func EvalTerminating() map[string]string {
 		"zip-vector":           `(zip 'vector '(1 2) '(3 4))`,
 		"reverse-vector-empty": `(reverse 'vector (vector))`,
 		"sequence-vector-read": `(let ([v (concat 'vector (vector 1))]) (list (nth v 0) (aref v 0) (equal? v v)))`,
+	}
+}
+
+// EvalErroring returns programs that must FINISH under the bounded budget --
+// no watchdog, no runaway -- and must finish with an ordinary, catchable
+// error that is neither a budget stop nor an internal panic.
+//
+// This is the third leg of the corpus split.  EvalRunaway seeds are stopped
+// BY a budget; EvalTerminating seeds must complete without error; these
+// seeds terminate almost immediately in a deterministic error condition that
+// is part of the language contract.  Filing them under EvalRunaway would
+// dilute the "a budget is holding" assertion (they never consult a budget),
+// and they cannot live in EvalTerminating because erroring is exactly what
+// they must do.
+//
+// Today the corpus is the sealed-write guard (issue #378): each seed drives
+// a kernel mutator at a parsed program literal, or at a backing-sharing view
+// of one (cdr / slice), and must raise the catchable modify-literal-error
+// condition.  Before issue #378 flipped the policy these were
+// EvalTerminating seeds -- the sites copy-on-wrote silently -- and before
+// the seal existed each one rewrote the literal in place (stable-sort's
+// in-place sort, append 'vector's spare-capacity write: the substrate#378
+// class).  The seal invariant they guard still needs fuzz coverage: the
+// eval fuzz harness fingerprints every input's sealed parse before and
+// after evaluation, so if a guard regresses to an in-place write, these
+// seeds fail the very first corpus pass loudly instead of leaving detection
+// to the mutator's luck.  TestEvalErroringSeedsError additionally pins that
+// each seed's error carries the modify-literal-error condition -- a seed
+// erroring for a different reason (a typo, a renamed builtin) is a broken
+// seed, not a passing one.
+func EvalErroring() map[string]string {
+	return map[string]string{
+		"sealed-write-stable-sort-literal":       `(set 'q '(9 3 7 1 8)) (stable-sort > q) q`,
+		"sealed-write-stable-sort-literal-view":  `(stable-sort < (cdr '(9 3 7 1 8)))`,
+		"sealed-write-stable-sort-defun-literal": `(defun s () (let ([q '(3 1 2)]) (stable-sort > q) q)) (s) (s)`,
+		"sealed-write-append-vector-slice":       `(set 'lit '(1 2 3)) (append 'vector (slice 'list lit 0 1) 99) lit`,
+		"sealed-write-append-vector-cdr":         `(append 'vector (cdr '(1 2 3)) 99)`,
+		"sealed-write-slice-vector-literal":      `(slice 'vector '(1 2 3) 0 2)`,
+		"sealed-write-append-vector-no-values":   `(append 'vector '(1 2 3))`,
 	}
 }
 

@@ -477,7 +477,7 @@ func RunBenchmark(b *testing.B, source string) {
 	}
 	// Each iteration runs in a fresh Runtime evaluating the SAME parsed
 	// program.  The sharing is safe because the parser seals its output
-	// (lisp.SealAST): sealed nodes are frozen storage under copy-on-write
+	// (lisp.SealAST): sealed nodes are frozen storage under the seal's write
 	// protection, and cross-runtime sharing of sealed trees is sanctioned —
 	// the elpscheck ownership checker exempts sealed nodes for exactly this
 	// reason (lisp/ownership_check_elpscheck.go, Allowlist section).  This

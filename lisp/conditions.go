@@ -65,3 +65,22 @@ const (
 const CondMissingArgument = "missing-argument"
 
 const CondInternalPanic = "internal-panic"
+
+// CondModifyLiteral reports an attempt to modify a sealed program literal in
+// place.  Quoted data, macro arguments and defun bodies are part of the
+// program text, shared by every environment evaluating the same parse
+// (lisp/seal.go), so the in-place mutators that could write them —
+// stable-sort on a sealed list, and the (slice 'vector ...) / (append
+// 'vector ...) forms that would wrap or write a sealed list's backing
+// array — raise this condition instead.  It is an ordinary catchable
+// condition: handler-bind can name it and ignore-errors swallows it.  The
+// remedy the message names is `(copy x)`, which returns a fresh, fully
+// mutable deep copy.
+//
+// The empty list is the deliberate carve-out: builtins such as cdr, rest and
+// keys return the shared (sealed) empty-list value, so erroring on it would
+// make `(stable-sort < (rest xs))` fail only when xs happens to have fewer
+// than two elements — a data-dependent error on correct runtime code.  An
+// empty list has no storage to write or alias, so the guarded sites accept
+// it and return fresh storage.
+const CondModifyLiteral = "modify-literal-error"

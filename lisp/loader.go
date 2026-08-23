@@ -67,7 +67,7 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 	// saying so rather than leaving the Copy() unremarked.
 	//
 	// The seal makes sharing this parse SAFE -- sealed nodes are frozen
-	// storage under copy-on-write protection, and the ownership checker
+	// storage under the seal's write protection, and the ownership checker
 	// exempts them for exactly that reason -- and elpstest.RunBenchmark
 	// takes that share, because its consumer is in this repository and its
 	// contract is about measurement rather than about what a caller may do
@@ -79,7 +79,7 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 	// cells, and TestTextLoaderEvaluationsGetPrivatePositions pins it.
 	// Taking the share would move an embedder that mutates what a Loader
 	// handed it -- legal, if unwise, under the current contract -- from
-	// ownership to copy-on-write.  And it would buy nothing today: TextLoader
+	// ownership to the seal's refusal.  And it would buy nothing today: TextLoader
 	// has no callers in this repository, and the downstream sweep for issue
 	// #379 found that embedders reach elps through the Reader path, which
 	// never had this copy.  A public contract should not change for a

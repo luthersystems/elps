@@ -37,10 +37,12 @@ import (
 // SEALED AT BIRTH (issue #376): the three are constructed with the sealed
 // flag already set, so they carry the same layered protection as parsed
 // program nodes.  IsSealed() communicates the do-not-mutate contract to
-// embedders, the copy-on-write mutation-site guards (lisp/seal.go) copy
-// instead of touching their storage when a container op reaches one
-// (stable-sort of a Nil result, append/slice 'vector over an empty
-// sequence), SetSource on one is a no-op, and in elpscheck builds they are
+// embedders, the sealed-write mutation-site guards (lisp/seal.go) hand
+// back fresh storage instead of touching theirs when a container op
+// reaches one (stable-sort of a Nil result, append/slice 'vector over an
+// empty sequence — the empty carve-out of CondModifyLiteral, since a
+// non-empty sealed input is refused outright), SetSource on one is a
+// no-op, and in elpscheck builds they are
 // permanent inspector roots re-verified at every load and teardown
 // (lisp/seal_check_elpscheck.go).  Setting the flag in the composite
 // literal means no post-construction write exists to race with anything.

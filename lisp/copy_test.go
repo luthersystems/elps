@@ -173,9 +173,10 @@ func TestCopyClearsSeal(t *testing.T) {
 }
 
 // TestCopySortsInPlaceWithoutCopyOnWrite pins the interaction with the
-// sealed-mutation (copy-on-write) sites: on a copy they never trigger, so
-// stable-sort returns the very value it was handed, and append 'vector
-// keeps sharing backing with it.
+// sealed-write guard sites: on a copy they never trigger, so stable-sort
+// returns the very value it was handed — the copy is the sanctioned way to
+// reach the ordinary in-place path with data that came from a literal
+// (issue #378).
 func TestCopySortsInPlaceWithoutCopyOnWrite(t *testing.T) {
 	env := copyTestEnv(t)
 	mustEval(t, env, `(set 'lit '(3 1 2))`)
@@ -190,11 +191,17 @@ func TestCopySortsInPlaceWithoutCopyOnWrite(t *testing.T) {
 		t.Errorf("the copy was not sorted in place: %s", got)
 	}
 
-	// The sealed original still copy-on-writes, unchanged by any of this.
+	// The sealed original is refused outright — the catchable
+	// modify-literal-error condition whose message names copy as the
+	// remedy (issue #378; this site used to copy-on-write silently) — and
+	// stays pristine.
 	lit := env.GetGlobal(lisp.Symbol("lit"))
-	cow := mustEval(t, env, `(stable-sort < lit)`)
-	if cow == lit {
-		t.Errorf("stable-sort mutated the sealed literal in place")
+	refused := env.LoadString("copy_test.lisp", `(stable-sort < lit)`)
+	if refused.Type != lisp.LError {
+		t.Fatalf("stable-sort on the sealed literal did not error: %v", refused)
+	}
+	if cond := refused.Str; cond != lisp.CondModifyLiteral {
+		t.Errorf("stable-sort on the sealed literal raised %q, want %q", cond, lisp.CondModifyLiteral)
 	}
 	if got := str(lit); got != `'(3 1 2)` {
 		t.Errorf("the sealed literal changed: %s", got)

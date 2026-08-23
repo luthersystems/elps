@@ -49,8 +49,15 @@ import (
 // literal's head BEFORE the sort touches anything, so the returned value is
 // an immutable snapshot of what this environment saw: 10 from a pristine
 // literal, 30 from the wreckage a previous environment left behind.
+//
+// The sort attempt sits under ignore-errors because on a properly SEALED
+// tree it is refused with the modify-literal-error condition (issue #378).
+// That refusal is not what this file tests, and swallowing it keeps the
+// probe alive for what it does test: on an UNSEALED tree — the #394 gap —
+// stable-sort raises nothing, sorts the shared literal in place, and the
+// next environment's `pre` reads 30.
 const sealGapSrc = `(defun limits () '(10 20 30))
-(let ([pre (car (limits))]) (stable-sort > (limits)) pre)
+(let ([pre (car (limits))]) (ignore-errors (stable-sort > (limits))) pre)
 `
 
 // sealGapWant is what every load must return: the pristine literal's head.

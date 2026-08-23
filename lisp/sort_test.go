@@ -11,8 +11,11 @@ import (
 func TestSort(t *testing.T) {
 	tests := elpstest.TestSuite{
 		{"sort lists", elpstest.TestSequence{
-			// sorting primitive values
-			{"(set 'lis '(3 1 2 5 4))", "'(3 1 2 5 4)", ""},
+			// sorting primitive values.  The list is runtime-constructed:
+			// stable-sort sorts in place, and a quoted literal input raises
+			// modify-literal-error (issue #378; pinned by
+			// TestSealedWriteRaisesCatchableCondition).
+			{"(set 'lis (list 3 1 2 5 4))", "'(3 1 2 5 4)", ""},
 			{"(stable-sort < lis)", "'(1 2 3 4 5)", ""},
 			{"(stable-sort < lis identity)", "'(1 2 3 4 5)", ""},
 			{"(stable-sort > lis)", "'(5 4 3 2 1)", ""},
@@ -23,8 +26,10 @@ func TestSort(t *testing.T) {
 			{"(sort-desc lis)", "'(5 4 3 2 1)", ""},
 		}},
 		{"sort complex lists", elpstest.TestSequence{
-			// sorting structured values
-			{"(set 'lis '('(3 'c) '(1 'a) '(2 'b)))", "'('(3 'c) '(1 'a) '(2 'b))", ""},
+			// sorting structured values.  The outer list is
+			// runtime-constructed (sorting only permutes its cells; the
+			// quoted elements are never written).
+			{"(set 'lis (list '(3 'c) '(1 'a) '(2 'b)))", "'('(3 'c) '(1 'a) '(2 'b))", ""},
 			{"(stable-sort < lis first)", "'('(1 'a) '(2 'b) '(3 'c))", ""},
 		}},
 		{"insert-sorted", elpstest.TestSequence{

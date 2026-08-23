@@ -129,6 +129,12 @@ func FuzzSharedProgramMultiEnv(f *testing.F) {
 	for _, src := range fuzzseed.EvalTerminating() {
 		add(src)
 	}
+	// Deterministic-error programs (the sealed-write guard, issue #378):
+	// cheap to run, and both differential assertions hold on them -- the
+	// error result and the pristine shared parse are the contract.
+	for _, src := range fuzzseed.EvalErroring() {
+		add(src)
+	}
 	for _, src := range fuzzseed.EvalAdversarial() {
 		add(src)
 	}

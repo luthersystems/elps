@@ -575,6 +575,9 @@ func FuzzEval(f *testing.F) {
 	for _, src := range fuzzseed.EvalRunaway() {
 		f.Add([]byte(src))
 	}
+	for _, src := range fuzzseed.EvalErroring() {
+		f.Add([]byte(src))
+	}
 	// A handful of the parser corpus's small adversarial inputs, so the
 	// mutator also starts from shapes that stress the reader/evaluator
 	// boundary.  fuzzseed.All() is NOT used: it carries the repository's real
@@ -663,6 +666,42 @@ func TestEvalTerminatingSeedsComplete(t *testing.T) {
 					" programs; this assertion no longer depends on wall clock, so"+
 					" machine load is not a candidate explanation (#435)",
 					name, out.Result, out.Steps, int64(fuzzMaxSteps), out.Elapsed)
+			}
+		})
+	}
+}
+
+// TestEvalErroringSeedsError is the third leg of the corpus split: every
+// seed in fuzzseed.EvalErroring must FINISH under the same deterministic
+// budgets (no watchdog, no runaway) and must finish in an ordinary,
+// catchable error carrying the exact condition the seed exists to pin --
+// today that is modify-literal-error, the sealed-write guard of issue #378.
+//
+// Both halves have teeth.  A seed that completes without error means a
+// guard was removed (or regressed to the silent copy-on-write this corpus
+// replaced); a seed that errors with a DIFFERENT condition -- a typo, a
+// renamed builtin, a budget stop -- is a broken seed passing for the wrong
+// reason, which is how assertion corpora rot.  The internal-panic check is
+// the same one every eval assertion carries: env.eval converts Go panics
+// into ordinary-looking errors, so an error result alone proves nothing.
+func TestEvalErroringSeedsError(t *testing.T) {
+	t.Parallel()
+	for name, src := range fuzzseed.EvalErroring() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			out, ok := evalCorpusBudgeted(t, []byte(src))
+			if !ok {
+				t.Fatalf("erroring seed %q does not parse; it can never have tested a guard", name)
+			}
+			assertNoInternalPanic(t, []byte(src), out)
+			if out.Result.Type != lisp.LError {
+				t.Fatalf("erroring seed %q completed and returned %v; the guard it"+
+					" exists to pin is not raising", name, out.Result)
+			}
+			if cond := out.Result.Str; cond != lisp.CondModifyLiteral {
+				t.Fatalf("erroring seed %q errored with condition %q, want %q: %v --"+
+					" the seed is failing for a reason other than the one it pins",
+					name, cond, lisp.CondModifyLiteral, out.Result)
 			}
 		})
 	}

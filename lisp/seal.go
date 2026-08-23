@@ -2,7 +2,7 @@
 
 package lisp
 
-// AST sealing: copy-on-write protection for parsed program literals.
+// AST sealing: write protection for parsed program literals.
 //
 // A host that caches parser output and evaluates the same expression tree in
 // many environments (substrate's parse cache is the motivating consumer)
@@ -33,17 +33,30 @@ package lisp
 //     argument binding, quasiquote literal leaves and lambda body embedding
 //     hand out the sealed nodes directly, exactly as the unsealed evaluator
 //     always has.  Zero copies, zero allocations, zero per-evaluation cost.
-//   - The kernel's mutation sites check the flag and copy first
-//     (copy-on-write) instead of writing shared storage:
+//   - The kernel's mutation sites check the flag and raise the catchable
+//     modify-literal-error condition ("cannot modify a program literal;
+//     take a (copy ...) first") instead of writing shared storage:
 //
-//       stable-sort        sorts a fresh copy of a sealed list and returns
-//                          it (builtinSortStable); the documented in-place
+//       stable-sort        refuses to sort a sealed list in place
+//                          (builtinSortStable); the documented in-place
 //                          effect on a program literal was never useful —
 //                          observing it WAS the corruption.
-//       append 'vector     copies a sealed sequence's cells before
-//                          appending within spare capacity (builtinAppend).
-//       slice 'vector      copies instead of wrapping sealed backing in a
-//                          mutable vector (builtinSlice).
+//       append 'vector     refuses a sealed sequence: appending within
+//                          spare capacity would write the shared program's
+//                          storage (builtinAppend).
+//       slice 'vector      refuses to wrap sealed backing in a mutable
+//                          vector (builtinSlice).
+//
+//     These sites originally copy-on-wrote silently; issue #378 flipped
+//     them to the hard error after two censuses found zero non-test code
+//     reaching them (the tagged counter ran over this repository, the
+//     production phylum corpus, and the downstream consumer's full suites).
+//     A silent copy also bifurcated the semantics of one expression by its
+//     input's provenance and could mask code that believed it owned the
+//     value.  The lisp-level remedy is (copy x); the EMPTY sealed list is
+//     carved out and accepted (see CondModifyLiteral in lisp/conditions.go:
+//     ordinary builtins return the shared sealed empty list, and an empty
+//     input has no storage to write or alias).
 //
 //     assoc!/dissoc!/append!/append-bytes! need no guard: they type-error on
 //     lists, and maps/vectors/bytes cannot be produced by the parser, so a
@@ -134,6 +147,15 @@ func (v *LVal) sealAST() {
 // (whose fresh storage IsSealed reports false).
 func (v *LVal) IsSealed() bool {
 	return v != nil && v.sealed
+}
+
+// errModifyLiteral builds the CondModifyLiteral condition every guarded
+// mutation site raises on a sealed, non-empty input (see lisp/conditions.go
+// for the semantics and the empty-list carve-out).  The message text is
+// pinned by tests — it names the remedy, and downstream suites match on it.
+func errModifyLiteral(env *LEnv) *LVal {
+	return env.ErrorConditionf(CondModifyLiteral,
+		"cannot modify a program literal; take a (copy ...) first")
 }
 
 // InheritSeal marks v sealed when src is.  It is for a v that was just

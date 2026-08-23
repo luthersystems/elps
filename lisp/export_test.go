@@ -18,8 +18,8 @@ func ProgramDetach(p Program) ([]*LVal, error) { return p.detach() }
 
 // SplicedFlag exposes the unexported spliced flag to package lisp_test.
 // The field has no production accessor (issue #382): splicing is evaluator
-// plumbing, but the copy-on-write fingerprint tests hash it to prove sealed
-// trees survive evaluation bit-identically.
+// plumbing, but the seal fingerprint tests hash it to prove sealed trees
+// survive evaluation bit-identically.
 func SplicedFlag(v *LVal) bool { return v.spliced }
 
 // MapBacking exposes MapData's unexported backing field to package

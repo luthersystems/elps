@@ -12,7 +12,7 @@ import (
 // Checked-mode AST inspector — the dynamic verifier for the seal invariant
 // (issue #372).
 //
-// The copy-on-write seal design (lisp/seal.go) promises that the bytes of
+// The seal design (lisp/seal.go) promises that the bytes of
 // a sealed program node never change after parsing completes.  Issues
 // #369 and #370 shipped past a manual audit and the elpsvet census, so
 // that promise now gets checked mechanism-blind: this file records the

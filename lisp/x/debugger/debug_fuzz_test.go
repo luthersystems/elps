@@ -381,6 +381,13 @@ func FuzzDebugEval(f *testing.F) {
 	for _, src := range fuzzseed.EvalRunaway() {
 		add(src, "\x00", "")
 	}
+	// Deterministic-error programs (the sealed-write guard): the debugger
+	// disables TRO and stamps macro-expansion metadata, so the guarded
+	// mutators run on a materially different path here and the seeds keep
+	// the literal-stays-pristine oracle pointed at them.
+	for _, src := range fuzzseed.EvalErroring() {
+		add(src, "\x01\x02\x03\x00", "(+ 1 2)")
+	}
 
 	// Shapes chosen for the two things a debugger changes about evaluation.
 	// Macro-heavy programs drive stampMacroExpansion, which allocates and
@@ -506,6 +513,9 @@ func TestDebugSeedsTerminate(t *testing.T) {
 	}
 	for name, src := range fuzzseed.EvalRunaway() {
 		seeds["runaway/"+name] = src
+	}
+	for name, src := range fuzzseed.EvalErroring() {
+		seeds["erroring/"+name] = src
 	}
 	for i, src := range fuzzseed.EvalAdversarial() {
 		seeds[fmt.Sprintf("adversarial/%d", i)] = src
