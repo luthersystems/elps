@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/mattn/go-runewidth"
 )
 
 // Renderer formats diagnostics as Rust-style annotated source snippets.
@@ -258,23 +256,6 @@ const (
 	tabExpansion = "    "
 )
 
-// cells measures runes in terminal cells.
-//
-// It is an explicit Condition rather than runewidth's package-level default
-// because that default is configured from the environment: go-runewidth's
-// init reads LC_ALL/LC_CTYPE/LANG and sets EastAsianWidth, under which the
-// ~1000 codepoints in the Unicode "Ambiguous" width class (→, ①, Greek and
-// Cyrillic letters, box drawing) become two cells wide instead of one.  Left
-// on the default, the same diagnostic would be underlined differently
-// depending on the locale of the shell that ran it, and the package's own
-// golden tests would pass or fail on the same grounds.  Ambiguous-as-narrow
-// is the choice essentially every modern terminal makes.
-var cells = func() *runewidth.Condition {
-	c := runewidth.NewCondition()
-	c.EastAsianWidth = false
-	return c
-}()
-
 // displayWidth returns how many terminal cells s occupies, with tabs counted
 // as tabWidth.
 //
@@ -290,6 +271,17 @@ var cells = func() *runewidth.Condition {
 // none.  Under a rune count "加算" indents following text by two columns when
 // the terminal has moved four, and "é" written as e + U+0301 indents by two
 // when the terminal has moved one.
+//
+// Per-rune width comes from runeCellWidth in width.go, this package's
+// replacement for the go-runewidth dependency (issue #516).  One consequence
+// is deliberate and pinned by the golden tests: codepoints in the Unicode
+// East Asian "Ambiguous" width class (→, ①, Greek and Cyrillic letters, box
+// drawing) count as ONE cell.  go-runewidth's package-level default decided
+// that from the environment -- its init reads LC_ALL/LC_CTYPE/LANG, and under
+// an East Asian locale ambiguous codepoints become two cells -- so the same
+// diagnostic would have been underlined differently depending on the locale
+// of the shell that ran it.  Ambiguous-as-narrow is the choice essentially
+// every modern terminal makes.
 func displayWidth(s string) int {
 	w := 0
 	for _, ch := range s {
@@ -297,7 +289,7 @@ func displayWidth(s string) int {
 			w += tabWidth
 			continue
 		}
-		w += cells.RuneWidth(ch)
+		w += runeCellWidth(ch)
 	}
 	return w
 }
