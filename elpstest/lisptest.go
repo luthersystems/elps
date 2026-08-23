@@ -41,6 +41,17 @@ type Runner struct {
 	// When LoaderFn is nil lisplib.LoadLibrary is used.
 	LoaderFn func(*lisp.LEnv) *lisp.LVal
 
+	// NewEnvFn, when non-nil, replaces the environment construction NewEnv
+	// performs by default (fresh runtime + InitializeUserEnv + LoaderFn).
+	// It exists so an embedder harness can serve each test a fork of a
+	// preloaded template environment (lisp.LEnv.Fork; see docs/fork.md)
+	// instead of paying a full load per test file.  The returned
+	// environment's Runtime.Stderr must be an *elpstest.Logger for the
+	// test's output to be captured (fork with
+	// lisp.ForkWithStderr(elpstest.NewLogger(t))); NewEnv rejects anything
+	// else with a named error rather than letting it panic later.
+	NewEnvFn func(t testing.TB) (*lisp.LEnv, error)
+
 	// SetupFn runs code to setup a loaded environment after before the test
 	// is run.
 	SetupFn func(*lisp.LEnv) *lisp.LVal
@@ -91,6 +102,28 @@ func (r *Runner) Close() {
 }
 
 func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
+	if r != nil && r.NewEnvFn != nil {
+		env, err := r.NewEnvFn(t)
+		if err != nil {
+			return nil, err
+		}
+		// The runner's callers flush this environment's Stderr as a *Logger
+		// — that is how a test's output gets captured — so a hook returning
+		// anything else dies in an interface-conversion panic several frames
+		// away from the mistake.  The mistake is easy to make and the
+		// default invites it: a plain Fork() SHARES the template's Stderr,
+		// which for a template built outside a test is os.Stderr.  Report
+		// the contract violation here, where the fix can be named.
+		if env == nil || env.Runtime == nil {
+			return nil, errors.New("NewEnvFn returned no environment")
+		}
+		if _, ok := env.Runtime.Stderr.(*Logger); !ok {
+			return nil, fmt.Errorf("NewEnvFn returned an environment whose Runtime.Stderr is %T, not *elpstest.Logger; "+
+				"test output cannot be captured (fork with lisp.ForkWithStderr(elpstest.NewLogger(t)))",
+				env.Runtime.Stderr)
+		}
+		return env, nil
+	}
 	logger := NewLogger(t)
 	runtime := &lisp.Runtime{
 		Registry: lisp.NewRegistry(),
@@ -442,6 +475,35 @@ func RunBenchmark(b *testing.B, source string) {
 	if err != nil {
 		b.Fatalf("parse error: %v", err)
 	}
+	// Each iteration runs in a fresh Runtime evaluating the SAME parsed
+	// program.  The sharing is safe because the parser seals its output
+	// (lisp.SealAST): sealed nodes are frozen storage under copy-on-write
+	// protection, and cross-runtime sharing of sealed trees is sanctioned —
+	// the elpscheck ownership checker exempts sealed nodes for exactly this
+	// reason (lisp/ownership_check_elpscheck.go, Allowlist section).  This
+	// replaces the per-iteration deep copy added for issue #365; the seal
+	// upgraded #365's rule from "no cross-runtime sharing" to "no MUTABLE
+	// cross-runtime sharing", and the VerifySealedASTs call below is the
+	// oracle that the shared tree stayed pristine.
+	//
+	// An unsealed program (a Reader that does not seal) still gets #365's
+	// per-iteration copy, made outside the timed region as before.
+	//
+	// The ROOT-level test is sufficient HERE because the reader is the
+	// parser.NewReader() two lines up: the parser produces only the types
+	// SealAST marks, so a sealed root implies a sealed tree.  That
+	// implication does NOT hold in general -- SealAST stops without
+	// descending at anything it declines to mark, so a caller's Reader can
+	// hand back a sealed root over unsealed storage -- which is one of the
+	// reasons lisp.TextLoader, whose Reader belongs to the caller, keeps its
+	// per-load copy instead of taking this share.  See the comment there.
+	allSealed := true
+	for _, expr := range exprs {
+		if !expr.IsSealed() {
+			allSealed = false
+			break
+		}
+	}
 	for range b.N {
 		env := lisp.NewEnv(nil)
 		err := lisp.GoError(lisp.InitializeUserEnv(env,
@@ -453,16 +515,12 @@ func RunBenchmark(b *testing.B, source string) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		// Each iteration runs in a fresh Runtime, so it must evaluate its
-		// own copy of the parsed AST rather than sharing one tree across
-		// every iteration's runtime.  This is the same rule TextLoader
-		// applies (it Copy()s per load for the same reason), and the
-		// elpscheck ownership checker (lisp/ownership_check_elpscheck.go)
-		// enforces it.  The copies are made outside the timed region so
-		// ns/op remains comparable with historical numbers.
-		iterExprs := make([]*lisp.LVal, len(exprs))
-		for i, expr := range exprs {
-			iterExprs[i] = expr.Copy()
+		iterExprs := exprs
+		if !allSealed {
+			iterExprs = make([]*lisp.LVal, len(exprs))
+			for i, expr := range exprs {
+				iterExprs[i] = expr.Copy()
+			}
 		}
 		b.StartTimer()
 		for i, expr := range iterExprs {
@@ -472,5 +530,12 @@ func RunBenchmark(b *testing.B, source string) {
 			}
 		}
 		b.StopTimer()
+	}
+	// Checked-mode oracle (issue #372 machinery): re-fingerprint every
+	// sealed parse recorded in this process and fail the benchmark if any
+	// iteration mutated the shared program tree in place.  A free nil in
+	// untagged builds.
+	if err := lisp.VerifySealedASTs(); err != nil {
+		b.Fatalf("sealed AST verification failed after benchmark: %v", err)
 	}
 }

@@ -65,13 +65,15 @@ import (
 //  1. The three singletons (Nil()/Bool(true)/Bool(false)).  Shared by
 //     design, immutable by decree, guarded by checkSingleton.
 //
-//  2. SEALED nodes (LVal.sealed) — added for issue #372, and a deliberate
-//     design rather than a bug.  Worth spelling out, because without it
-//     the checker forbade the exact topology the seal exists to make safe.
+//  2. SEALED nodes (LVal.sealed - lisp/seal.go), arrived at independently
+//     three times - for issue #372, for #379 item 2 and for #380 - and a
+//     deliberate design rather than a bug.  Worth spelling out, because
+//     without it the checker forbade the exact topology the seal exists to
+//     make safe.
 //
 //     The seal's contract, stated on the field itself in lisp/lisp.go, is
 //     that a sealed node "may be shared by every environment that evaluates
-//     the same parse — substrate's parse cache shares one tree
+//     the same parse - substrate's parse cache shares one tree
 //     process-wide".  Sharing a parse ACROSS RUNTIMES is not an accident to
 //     be caught; it is the point of sealing, and it is what
 //     substrate#375/#378 does in production.  Before this exemption,
@@ -84,22 +86,47 @@ import (
 //     therefore narrow and stated positively — a node that is sealed, and
 //     only while it stays sealed, may be reached by more than one Runtime.
 //
-//     Found by lisp.FuzzSharedProgramMultiEnv (added on this branch), whose
-//     whole subject is that topology.  The exemption itself lives on
+//     SANCTIONED SHARING TOPOLOGIES, which is what the exemption is sized
+//     to.  Each was arrived at independently, which is itself the argument
+//     that this is a design and not a bug:
+//
+//     - substrate's warm parse cache hands one sealed tree to many runtimes
+//     (substrate#375/#378).
+//     - elpstest.RunBenchmark shares the sealed program across its
+//     per-iteration runtimes (#379 item 2, #387).
+//     - LEnv.Fork shares every sealed node between a template environment
+//     and its forks (#380, this branch).
+//
+//     Found by lisp.FuzzSharedProgramMultiEnv (#389), whose whole subject is
+//     the first of those.  The exemption itself lives on
 //     claude/exp-seal-tooling, where sealing is introduced and where the
-//     contradiction it resolves is created; this branch is where it was
-//     discovered, not where it belongs.
+//     contradiction it resolves is created; the branches named above are
+//     where it was discovered and where the topologies are added, not where
+//     it belongs.
 //
 //     What licenses the exemption is that a sealed node's cross-runtime
 //     safety does not rest on ownership at all: sealed bytes never change
-//     after parse, enforced by copy-on-write at every mutation site
-//     (lisp/seal.go), by the fingerprint oracle (lisp/sealfp.go) and by the
-//     -race seal watchdog.  Ownership is the right question for MUTABLE
-//     runtime storage, and that stays fully checked: a value becomes
-//     unsealed the moment it becomes runtime storage (Copy and detach clear
-//     the flag on fresh storage), so crossing runtimes with one of those
-//     still trips the gate.  TestOwnershipCheck_SealedNodesExempt pins both
-//     directions.
+//     after parse, and three independent mechanisms enforce that.  Every
+//     kernel mutation site copies before writing and the evaluator's
+//     metadata writes (stampMacroExpansion, SetSource) skip sealed nodes
+//     (lisp/seal.go); the fingerprint oracle re-checks every sealed parse
+//     in checked builds (lisp/sealfp.go, VerifySealedASTs), so a hole in
+//     that protection is a test failure rather than a silently-trusted
+//     exemption; and the -race seal watchdog covers the concurrent case.
+//     The layers are laid out together in docs/sealed-ast.md section 3.
+//     Immutability, not per-runtime confinement, is what protects a sealed
+//     node — the same reasoning that exempts the singletons.
+//
+//     Ownership remains the right question for MUTABLE runtime storage,
+//     and that stays fully checked: a value becomes unsealed the moment it
+//     becomes runtime storage (Copy and detach clear the flag on fresh
+//     storage), so crossing runtimes with one of those still trips the
+//     gate.  The rule this checker enforces therefore keeps its spirit -
+//     no MUTABLE value may be used by two Runtimes - and sealing is what
+//     makes "not mutable" provable.  TestOwnershipCheck_SealedNodesExempt
+//     (Put path, plus TestOwnershipCheck_CopyOfSealedIsChecked for the
+//     Copy boundary) and TestOwnershipCheck_SealedASTExempt (eval path)
+//     pin both directions.
 //
 //  3. CLOSURE-FREE BUILTIN FUNCTION VALUES (LFun, Builtin() != nil, no
 //     captured environment) — added for issue #364, and again a deliberate

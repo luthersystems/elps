@@ -78,6 +78,26 @@ jobs:
       - name: Seal contract (elpsvet)
         run: make elpsvet
 
+      # The benchmark harness SHARES one sealed parse across every
+      # iteration's Runtime rather than deep-copying it per iteration
+      # (elpstest.RunBenchmark). What makes that safe is VerifySealedASTs
+      # re-fingerprinting the shared tree afterwards -- but that verifier is
+      # a nil call unless `elpscheck` is set, and the benchmark workflow runs
+      # `go test -bench=.` with NO build tags. Until this step existed, every
+      # benchmarked path in CI ran with its own safety net switched off, and
+      # nothing about that was visible: literal corruption there is
+      # DETERMINISTIC, so it produces neither a value differential between
+      # iterations nor a divergence from a fresh parse. Only the fingerprint
+      # oracle sees it.
+      #
+      # One iteration per benchmark (-benchtime=1x) is all a fingerprint
+      # check needs, and the tagged build cache is already warm from the step
+      # above, so this costs seconds. It does not touch the untagged
+      # measurement run in benchmark.yml -- those numbers must stay untagged
+      # and comparable with the base arm.
+      - name: Sealed-AST oracle over the benchmarks (elpscheck)
+        run: make bench-elpscheck-smoke
+
       - name: Check formatting
         run: |
           go build -o elps .
