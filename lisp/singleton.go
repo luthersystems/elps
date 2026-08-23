@@ -33,10 +33,21 @@ import (
 // shared across every Runtime by design, immutable by decree, snapshotted by
 // checkSingleton in elpscheck builds, and exempt from the runtime ownership
 // checker (lisp/ownership_check_elpscheck.go).  Nothing else earns this.
+//
+// SEALED AT BIRTH (issue #376): the three are constructed with the sealed
+// flag already set, so they carry the same layered protection as parsed
+// program nodes.  IsSealed() communicates the do-not-mutate contract to
+// embedders, the copy-on-write mutation-site guards (lisp/seal.go) copy
+// instead of touching their storage when a container op reaches one
+// (stable-sort of a Nil result, append/slice 'vector over an empty
+// sequence), SetSource on one is a no-op, and in elpscheck builds they are
+// permanent inspector roots re-verified at every load and teardown
+// (lisp/seal_check_elpscheck.go).  Setting the flag in the composite
+// literal means no post-construction write exists to race with anything.
 var (
-	singletonNil   = &LVal{Type: LSExpr}                    //elpsvet:allow guarded singleton
-	singletonTrue  = &LVal{Type: LSymbol, Str: TrueSymbol}  //elpsvet:allow guarded singleton
-	singletonFalse = &LVal{Type: LSymbol, Str: FalseSymbol} //elpsvet:allow guarded singleton
+	singletonNil   = &LVal{Type: LSExpr, sealed: true}                    //elpsvet:allow guarded singleton
+	singletonTrue  = &LVal{Type: LSymbol, Str: TrueSymbol, sealed: true}  //elpsvet:allow guarded singleton
+	singletonFalse = &LVal{Type: LSymbol, Str: FalseSymbol, sealed: true} //elpsvet:allow guarded singleton
 )
 
 // isSingleton reports whether v is one of the three shared, immutable
@@ -129,7 +140,8 @@ func (s SingletonSnapshot) Verify() string {
 // (singletons should always have len == 0). The Native interface field
 // is compared with == (singletons should always be nil).
 func singletonLValEqual(a, b *LVal) bool {
-	return a.source == b.source &&
+	return a.sealed == b.sealed &&
+		a.source == b.source &&
 		a.Type == b.Type &&
 		a.Str == b.Str &&
 		a.Int == b.Int &&

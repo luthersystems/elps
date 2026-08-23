@@ -103,7 +103,7 @@ func newAliasTracker(pass *analysis.Pass, fresh map[types.Object]bool, ann map[i
 
 func (t *aliasTracker) report(pos token.Pos, op string) {
 	line := t.pass.Fset.Position(pos).Line
-	if t.ann[line] || t.ann[line-1] {
+	if t.ann[line] {
 		return
 	}
 	t.pass.Reportf(pos,

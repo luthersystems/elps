@@ -516,6 +516,7 @@ func (p *Parser) locateSynthesized(v *lisp.LVal) *lisp.LVal {
 	// conjunct, the one in tokenLVal, is what elps#430 is about; see the
 	// token-under-the-cursor note above Parser.TokenText.
 	loc.EndLine, loc.EndCol, loc.EndPos = token.TokenEnd(p.src.Token)
+	//elps:aliases the producer-fixup contract, same as tokenLVal's: Parser.Location gives each caller a Location no other caller holds (elps#426), the end-position fixup above is this function's own and completes before the node escapes, and sealing freezes it at the end of the parse
 	v.SetSource(loc)
 	return v
 }
@@ -1074,6 +1075,7 @@ func (p *Parser) tokenLVal(v *lisp.LVal) *lisp.LVal {
 	// (elps#426) its second call for one token returns a COPY, and fixups
 	// applied to that copy would land on an object no node holds.
 	p.lastNodeLoc = loc
+	//elps:aliases the documented producer-fixup contract (see the comment above and SetSource's doc): the parser owns this token's Location and keeps fixing up its end-position fields until the parse completes, after which sealing freezes it
 	v.SetSource(loc)
 	if p.preserveFormat {
 		m := fmtraw.EnsureMeta(v)
@@ -1109,6 +1111,7 @@ func (p *Parser) Accept(typ ...token.Type) bool {
 
 func (p *Parser) errorf(condition string, format string, v ...interface{}) *lisp.LVal {
 	err := lisp.ErrorConditionf(condition, format, v...)
+	//elps:aliases producer-fixup contract (SetSource's documented convention): the parser owns the current token's Location and may still fix up its end-position fields; a parse error's position moving with those fixups is the intended behavior
 	err.SetSource(p.Location())
 	return err
 }
@@ -1121,6 +1124,7 @@ func (p *Parser) errorAtf(source *token.Location, condition, format string, v ..
 
 func (p *Parser) scanError(condition string) *lisp.LVal {
 	err := lisp.ErrorCondition(condition, errors.New(p.TokenText()))
+	//elps:aliases producer-fixup contract (SetSource's documented convention) — see errorf above
 	err.SetSource(p.Location())
 	return err
 }

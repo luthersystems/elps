@@ -87,21 +87,18 @@ jobs:
       # or a single failure costs the whole night's coverage.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9]
     # DERIVED, not remembered. scripts/fuzz-budget-check.sh asserts
     #
     #     ceil(targets / shards) x FUZZTIME + overhead <= timeout-minutes
     #
     # on every PR, so this number cannot silently stop covering the sweep. At
-    # 30 targets over 8 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
+    # 35 targets over 9 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
     # worth of headroom for a target being added before anyone reshards.
     #
-    # This change adds the 30th target, libelpspath.FuzzPathEngine, and so
-    # re-derives: ceil(30/8) = 4, `needed` stays at 50 and the 10 minutes are
-    # untouched. No shard is added, because none is needed -- the eighth shard
-    # left room for two more targets and this is the second of them. The rule
-    # is that a target never lands without this line being recomputed, not
-    # that every target buys a shard.
+    # The rule is that a target never lands without this line being recomputed,
+    # not that every target buys a shard -- the eighth shard absorbed two
+    # targets after it was added, and the seventh three.
     #
     # The line above previously read "23 targets over 6 shards" while the
     # matrix below said 8: the seventh and eighth shards each updated their
@@ -115,12 +112,32 @@ jobs:
     # observed shard durations already vary from 4m25s to 5m42s. Adding the
     # 17th target (lsp.FuzzLSPSession) took 4 shards to ceil(17/4) = 5 x 10m +
     # 10m = 60 min against a 60-minute timeout: zero headroom, reported as
-    # "the sweep fits". A fifth shard puts the largest shard back at 4 targets
-    # and restores the 10 minutes. Prefer adding a shard to raising the
+    # "the sweep fits". A fifth shard put the largest shard back at 4 targets
+    # and restored the 10 minutes; the four corruption targets of #372 (22
+    # total) took 5 shards back to ceil(22/5) = 5 x 10m + 10m = 60 and zero
+    # headroom again, so this is now SIX shards -- ceil(22/6) = 4, and the 10
+    # minutes are back. Prefer adding a shard to raising the
     # timeout: shards are parallel, so it cuts wall clock instead of extending
     # the backstop.
     #
-    # AND IT HAPPENED AGAIN, WHICH IS WHY THE SEVENTH SHARD IS HERE. main
+    # AND IT HAPPENED A THIRD TIME, WHICH IS WHY THE NINTH SHARD IS HERE.
+    # This change adds four targets -- the two-environment shared-parse
+    # differential and the three container-family targets -- taking the sweep
+    # from 31 to 35. At 8 shards that measures "largest shard 5 / required 60 /
+    # timeout 60 / headroom 0", the passing-but-truncated state the paragraphs
+    # below describe, and with the margin rule (one FUZZTIME) it is RED rather
+    # than merely tight: required + margin = 70 against a 60-minute timeout.
+    # Verified by setting the matrix to 8 and running the gate, which exits 1.
+    #
+    # Nine restores ceil(35/9) = 4 x 10m + 10m = 50, and the 10 minutes with
+    # it. WHY NINE AND NOT TEN, derived rather than assumed: the shard count
+    # that matters is the one keeping ceil(targets/shards) at 4, because
+    # 4 x 10m + 10m = 50 is the last value with a shard's worth of headroom
+    # under the 60-minute backstop. Nine holds that up to 36 targets, so 36 is
+    # the number to watch -- and the gate says so itself ("room for 1 more
+    # target"), which is why nobody has to remember it.
+    #
+    # AND IT HAPPENED BEFORE THAT, WHICH IS WHY THE SEVENTH SHARD IS HERE. main
     # arrived at 26 targets over 6 shards: ceil(26/6) = 5 x 10m + 10m = 60
     # against a 60-minute timeout. Zero headroom, gate green, sweep one slow
     # shard away from being cut off mid-target -- exactly the state the
@@ -139,6 +156,19 @@ jobs:
     # was running five ways. Both the run line and the job label now derive n
     # from strategy.job-total, and scripts/ci-gates-test.sh fails the PR if
     # either goes back to a literal.
+    #
+    # AND THE 24-TARGET CEILING WAS REACHED ONE LINK LATER, on schedule. This
+    # branch adds four corruption-fuzz targets (FuzzSharedProgramMultiEnv and
+    # the three container-family targets), taking the sweep from 21 to 25. At
+    # six shards that measured "largest shard 5 / required 60 / headroom 0" --
+    # the passing-but-truncated state again, reached from the other direction:
+    # not by a merge landing three targets at once, but by a branch adding
+    # exactly the targets it exists to add.
+    #
+    # A SEVENTH shard: ceil(25/7) = 4 x 10m + 10m = 50 against 60, headroom
+    # back to 10. Verified against the real partition -- 4+4+4+4+3+3+3 = 25,
+    # every target assigned exactly once, largest shard 4. Seven holds through
+    # 28 targets; the 29th is the next one to watch.
     #
     # Do not raise this by hand to make a red gate green -- run
     # `make fuzz-budget-check`, which prints the arithmetic and the options.
