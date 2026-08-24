@@ -89,8 +89,13 @@ import (
 //     macro-expanded nodes, but stampGuarded returns at the first sealed
 //     node, so the stamp reaches only nodes the macro CREATED, never the
 //     cached ones spliced into the expansion.  Debug mode therefore needs
-//     no private copy of a cached tree; TestLoadCacheDebuggerAliasIntact
-//     pins that rather than assuming it.
+//     no private copy of a cached tree.  Two tests pin that, and the
+//     difference between them matters: TestLoadCacheDebuggerAliasIntact
+//     is the end-to-end property over an ORDINARY parse, where rdparser's
+//     real locations independently keep the stamp away, and
+//     TestLoadCacheDebuggerDoesNotStampSharedNodes removes that second
+//     guard by caching a Reader's location-less node, so the sealed skip
+//     is the only thing left — deleting it makes that one fail.
 //   - VERIFICATION.  A cached tree's roots are recorded at SealAST and
 //     re-verified after every load through (*LEnv).load, so in checked
 //     builds a corrupted cache entry is reported at the load that corrupted
