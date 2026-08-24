@@ -8,6 +8,7 @@ import (
 	"io"
 	mathrand "math/rand"
 	"strings"
+	"sync"
 	"testing"
 	"unsafe"
 
@@ -427,4 +428,84 @@ func TestDumpDoesNotAliasAPooledBuffer(t *testing.T) {
 	}
 	assert.Equal(t, kept, string(first),
 		"a later dump wrote through a slice an earlier caller still holds")
+}
+
+// TestEncoderPoolConcurrent is the guard the -race build needs in order to say
+// anything about the encoder pool.
+//
+// Every other test in this package is sequential, so before this existed
+// `go test -race` exercised the pool with exactly one goroutine -- which
+// cannot observe the failure mode a pool actually has.  That failure mode is
+// two goroutines holding the same encoder, and it shows up as one document's
+// bytes appearing inside another's, not as a crash.
+//
+// Both escape routes are covered because they differ: Dump DONATES its buffer
+// (donateBuffer, so the pooled encoder must be left with none of it) while
+// dumpString COPIES into a string (so the buffer is recycled while the caller
+// keeps a copy).  A bug in either -- putting an encoder back while its array
+// is still reachable by the caller -- lets a later document write over bytes
+// someone else is still reading.
+//
+// Red-proof: deleting the `enc.buf = bytes.Buffer{}` line in donateBuffer
+// fails this with corrupted documents under -race.
+func TestEncoderPoolConcurrent(t *testing.T) {
+	const goroutines = 8
+	const iterations = 200
+
+	// Distinct payload per goroutine, each big enough to grow a buffer past
+	// its initial size, so a shared buffer corrupts a comparison rather than
+	// coincidentally matching.
+	payload := func(g int) (*lisp.LVal, string, string) {
+		m := lisp.SortedMap()
+		var want strings.Builder
+		want.WriteByte('{')
+		for i := range 24 {
+			k := fmt.Sprintf("g%02d-key-%02d", g, i)
+			v := fmt.Sprintf("g%02d-value-%02d-padding-padding", g, i)
+			m.MapSet(k, lisp.String(v))
+			if i > 0 {
+				want.WriteByte(',')
+			}
+			fmt.Fprintf(&want, "%q:%q", k, v)
+		}
+		want.WriteByte('}')
+		return m, want.String(), want.String()
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan string, goroutines*2)
+	for g := range goroutines {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			v, wantBytes, wantString := payload(g)
+			for range iterations {
+				// The donating path.
+				b, err := Dump(v, false)
+				if err != nil {
+					errs <- fmt.Sprintf("goroutine %d: Dump: %v", g, err)
+					return
+				}
+				if string(b) != wantBytes {
+					errs <- fmt.Sprintf("goroutine %d: Dump returned another goroutine's bytes:\n got %s\nwant %s", g, b, wantBytes)
+					return
+				}
+				// The copying path.
+				s, err := DefaultSerializer().dumpString(v, false)
+				if err != nil {
+					errs <- fmt.Sprintf("goroutine %d: dumpString: %v", g, err)
+					return
+				}
+				if s != wantString {
+					errs <- fmt.Sprintf("goroutine %d: dumpString returned another goroutine's bytes:\n got %s\nwant %s", g, s, wantString)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for msg := range errs {
+		t.Error(msg)
+	}
 }
