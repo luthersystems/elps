@@ -28,12 +28,12 @@ import (
 // reaches one through a function value and writes to it corrupts every
 // environment built afterwards, in this process, in any later test — and
 // issue #398 is exactly that, arriving from a fuzz target's own seed corpus
-// with every assertion in the package satisfied.  Note that this is the
-// TEMPLATE, not any environment's own list: since issue #513 each
-// environment carves a private copy (formalsCopier), and since the sealing
-// work the templates are additionally sealed, so a write to one has to get
-// past the copy-on-write guards first.  The snapshot is what says whether it
-// did.  See builtin_formals_test.go.
+// with every assertion in the package satisfied.  The templates are sealed,
+// and since the sharing work (registrationFormals in env.go; issues #379,
+// #514) every environment ALIASES the sealed template rather than carrying a
+// private copy — so a write that gets past the copy-on-write guards corrupts
+// every environment at once, and the snapshot is what says whether one did.
+// See builtin_formals_test.go.
 //
 // The seal write watchdog and the sealed-AST verification extend the same
 // two-guard pattern to sealed program trees (issue #372): the watchdog

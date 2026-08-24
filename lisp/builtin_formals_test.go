@@ -12,9 +12,10 @@ import (
 //
 // WHY IT IS NEEDED.  The builtin tables (langBuiltins, userBuiltins) are
 // package-level vars whose Formals() lists are constructed exactly once, when
-// this package is initialized.  AddBuiltins stores f.Formals() straight into
-// LFun.Cells[0] with no copy, so ONE formals list is shared by every LEnv the
-// process will ever create -- including every environment created after a
+// this package is initialized, and sealed there.  AddBuiltins aliases the
+// sealed f.Formals() straight into LFun.Cells[0] with no copy
+// (registrationFormals, env.go), so ONE formals list is shared by every LEnv
+// the process will ever create -- including every environment created after a
 // write to it.  A test that walks a value, reaches a function through it and
 // appends a cell to the list it finds in Cells[0] has therefore edited the
 // standard library for the remainder of the process, and nothing in that test
