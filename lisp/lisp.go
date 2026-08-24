@@ -387,7 +387,8 @@ type LVal struct {
 	// containers, its Cells backing array) may be shared by every
 	// environment that evaluates the same parse — substrate's parse cache
 	// shares one tree process-wide — so kernel code must never mutate it in
-	// place.  Guarded mutation sites copy first (copy-on-write); see
+	// place.  Guarded mutation sites refuse with the catchable
+	// modify-literal-error condition (empty inputs excepted); see
 	// lisp/seal.go for the design and the full list of guarded sites.
 	//
 	// The field occupies an existing padding byte: LVal is 112 bytes with

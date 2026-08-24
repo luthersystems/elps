@@ -281,6 +281,9 @@ func FuzzSharedTreeEval(f *testing.F) {
 	for _, src := range fuzzseed.EvalTerminating() {
 		f.Add([]byte(src))
 	}
+	for _, src := range fuzzseed.EvalErroring() {
+		f.Add([]byte(src))
+	}
 	for _, src := range fuzzseed.EvalAdversarial() {
 		f.Add([]byte(src))
 	}

@@ -59,7 +59,7 @@ func (fun *builtin) Docstring() string {
 
 // The shared table's formals are sealed at package init (below), so
 // lisp.LEnv.AddBuiltins aliases them into each environment under
-// copy-on-write protection instead of deep-copying per environment (see
+// the seal's write protection instead of deep-copying per environment (see
 // registrationFormals in lisp/env.go).
 //
 //elpsvet:allow package builtin table; formals are sealed at package init and shared via registrationFormals (lisp.LEnv.AddBuiltins)

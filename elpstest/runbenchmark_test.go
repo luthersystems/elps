@@ -17,13 +17,14 @@ import (
 // iteration got a fresh Runtime but the same AST nodes, so iteration k saw
 // whatever iterations 1..k-1 left behind in them.
 //
-// That is not hypothetical in ELPS. A quoted literal in a source expression is
-// an AST node, and `stable-sort` is documented to sort in place and is pinned
-// as doing so through a literal by lisp.TestSliceViewSharesElements. So a
-// benchmark whose source sorts a literal sorts unsorted input on iteration 1
-// and already-sorted input on every iteration after it -- the harness quietly
-// substitutes a different workload for the one the benchmark declares, and the
-// reported number depends on b.N.
+// That is not hypothetical in ELPS. A quoted literal in a source expression
+// is an AST node, and `stable-sort` is documented to sort in place. When
+// #365 was found, sorting a literal really did rewrite the tree; today the
+// parser seals its output and the guarded mutators refuse a sealed input
+// with the catchable modify-literal-error condition (issue #378), so the
+// sort below sits under ignore-errors. The detector keeps its teeth: if the
+// guard ever regresses to an in-place write, iteration 2 opens on the AST
+// iteration 1 sorted, raises stale-ast, and the benchmark fails.
 //
 // The same reasoning is why lisp.TextLoader copies: it calls expr.Copy() on
 // every load precisely so two loads of one file cannot share nodes.
@@ -32,13 +33,16 @@ const staleASTSource = `
   (defun literal () '(3 1 2))
 
   ;; Detector: the literal must be pristine when an iteration begins. On a
-  ;; shared tree it is not, because the sort below already reordered it.
+  ;; shared tree whose guard regressed it is not, because the sort below
+  ;; already reordered it.
   (if (equal? (literal) '(3 1 2))
       ()
       (error 'stale-ast "iteration began with an AST a previous iteration mutated"))
 
-  ;; Ordinary ELPS that mutates the tree: stable-sort sorts in place.
-  (stable-sort < (literal))
+  ;; Ordinary ELPS that ATTEMPTS to mutate the tree: stable-sort sorts in
+  ;; place, and on the sealed literal is refused with modify-literal-error
+  ;; -- swallowed here so the attempt itself is what each iteration repeats.
+  (ignore-errors (stable-sort < (literal)))
 `
 
 // staleASTIterations bounds the benchmark this test drives. Two iterations
@@ -114,19 +118,28 @@ func sharedTreeSecondPass(tb testing.TB, source string) string {
 	return last
 }
 
-// TestQuotedLiteralIsMutatedByEval is a GUARD, not a catch: it passes on main.
-// It pins the premise the test above depends on -- that evaluating a tree can
-// leave state in the tree -- without going through RunBenchmark. If ELPS ever
-// copies quoted literals on evaluation, this guard fails first and says so,
-// rather than leaving the detector above passing for a reason it did not
-// intend.
-func TestQuotedLiteralIsMutatedByEval(t *testing.T) {
+// TestQuotedLiteralMutationIsRefused is a GUARD, not a catch: it pins the
+// premise the test above now depends on, without going through RunBenchmark.
+//
+// The original premise -- that evaluating a tree can leave state in the tree
+// -- is dead by design: the parser seals its output and the guarded mutators
+// refuse a sealed input with the catchable modify-literal-error condition
+// (issue #378), so ordinary ELPS can no longer rewrite a shared parse at
+// all. What staleASTSource's detector detects today is a REGRESSION of that
+// guard, and this test states the two halves of the premise directly: the
+// sort of a literal is refused with the named condition, and two runtimes
+// evaluating the same tree read the identical pristine literal. If either
+// half stops holding -- the guard removed, or replaced by something that
+// leaves state behind -- this fails first and says so, rather than leaving
+// the detector above passing for a reason it did not intend.
+func TestQuotedLiteralMutationIsRefused(t *testing.T) {
 	// concat copies, so `before` records the literal's state on entry rather
-	// than aliasing the node the sort is about to reorder.
+	// than aliasing the node the sort attempt targets.
 	const src = `(defun literal () '(3 1 2))
 	             (set 'before (concat 'list (literal)))
-	             (stable-sort < (literal))
-	             before`
+	             (set 'refusal (handler-bind ([modify-literal-error (lambda (c &rest args) 'refused)])
+	                             (stable-sort < (literal))))
+	             (list before refusal)`
 	p := parser.NewReader()
 	exprs, err := p.Read("guard", strings.NewReader(src))
 	if err != nil {
@@ -149,10 +162,12 @@ func TestQuotedLiteralIsMutatedByEval(t *testing.T) {
 		}
 		return last.String()
 	}
+	const want = `'('(3 1 2) 'refused)`
 	first := eval()
 	second := eval()
-	if first == second {
-		t.Skipf("evaluating a quoted literal no longer mutates it (both runs returned %s); TestRunBenchmarkGivesEachIterationAFreshAST needs a new detector", first)
+	if first != want || second != want {
+		t.Fatalf("the sealed-write premise does not hold: run 1 returned %s, run 2 returned %s, want %s both times"+
+			" (pristine literal + refusal); staleASTSource's detector may be passing for a reason it does not intend",
+			first, second, want)
 	}
-	t.Logf("premise holds: same tree, two runtimes, run 1 returned %s and run 2 returned %s", first, second)
 }

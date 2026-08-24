@@ -428,7 +428,7 @@ func toList(cells []*lisp.LVal) *lisp.LVal {
 //
 // The constraint is the sealed flag (lisp/seal.go). A program literal arrives
 // here sealed, the parse behind it is shared by every environment the host
-// runs, and the kernel's copy-on-write sites — stable-sort, append 'vector,
+// runs, and the kernel's sealed-write guard sites — stable-sort, append 'vector,
 // slice 'vector — are what keep those environments from treading on each
 // other. Every one of them keys off the flag on the value they are handed. A
 // fresh header minted by lisp.SExpr or lisp.Array has sealed == false, so

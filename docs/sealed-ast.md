@@ -1,4 +1,4 @@
-# Sealed ASTs: copy-on-write protection for shared program literals
+# Sealed ASTs: write protection for shared program literals
 
 This document explains the `IsSealed` mechanism end-to-end: what it defends
 against, how it works, what each verification layer catches (and does not),
@@ -35,8 +35,8 @@ shipped instances:
 | Vector | Mechanism | Where fixed / pinned |
 |---|---|---|
 | elpspath `!` ops (substrate#378) | `?set!`/`?del!`/`?nil!` obtained a list's live cell backing via `toCells` and shifted it in place before panicking on the (absent) LArray dims cell; a quoted-literal input meant the shift landed in the shared AST | `errMutateList` in `lisp/lisplib/libelpspath/path.go` rejects list inputs on every mutating entry point; `TestMutateListRejected` (`path_mutate_list_test.go`) parses once, evaluates in two envs, and fingerprints the AST before/after |
-| `stable-sort` on a quoted literal (elps#369, mechanism 1) | `(stable-sort < '(3 1 2))` sorted the literal's `Cells` in place — the "documented in-place effect" on a program literal *was* the corruption | CoW guard in `builtinSortStable` (`lisp/builtins.go`); kill tests in `lisp/cow_seal_test.go` |
-| append through slice capacity (elps#369, mechanism 2) | `(append 'vector (slice 'list '(1 2 3) 0 1) x)` wrote `x` into the spare capacity of the literal's backing array, overwriting its second element — Go-style `append` semantics applied to shared storage | CoW guards in `builtinAppend` and `builtinSlice` (`lisp/builtins.go`) |
+| `stable-sort` on a quoted literal (elps#369, mechanism 1) | `(stable-sort < '(3 1 2))` sorted the literal's `Cells` in place — the "documented in-place effect" on a program literal *was* the corruption | Sealed-write guard in `builtinSortStable` (`lisp/builtins.go`); kill tests in `lisp/cow_seal_test.go` and `lisp/sealed_write_error_test.go` |
+| append through slice capacity (elps#369, mechanism 2) | `(append 'vector (slice 'list '(1 2 3) 0 1) x)` wrote `x` into the spare capacity of the literal's backing array, overwriting its second element — Go-style `append` semantics applied to shared storage | Sealed-write guards in `builtinAppend` and `builtinSlice` (`lisp/builtins.go`) |
 | macro-stamp metadata write (elps#370) | `stampMacroExpansion` re-stamped a shared node's `source` location after expansion — a cross-environment metadata write and a data race under concurrent envs | Sealed-subtree skip in `lisp/macro.go`; caught by the `-race` watchdog class of checks (§3.4) |
 | `macroexpand` `&rest` laundering (commit 8d18071) | `builtinMacroExpand`/`builtinMacroExpand1` sliced `form.Cells[1:]` of a possibly-sealed input and handed it to the macro, so a `&rest` parameter became an **unsealed** header over sealed backing; `stable-sort` or `append!`-through-`slice 'vector` in the macro body then rewrote the literal. The normal call path was safe (`evalSExprCells` copies arguments); this was the one path reaching a macro without copying | `macroExpandArgs` (`lisp/builtins.go`) copies into fresh backing; `TestMacroexpandRestDoesNotLaunderSealedBacking` (`lisp/cow_seal_test.go`) |
 | format-mode `Meta` write (commit 8d18071) | Format-preserving `Parse()` attached a same-line trailing comment to `expr.Meta` *after* `ParseExpression` sealed the node — a write to already-sealed storage and a stale fingerprint in checked builds | Format-preserving parses are no longer sealed (they are tooling-only trees, never evaluated or shared); `parser/rdparser/seal_format_test.go` |
@@ -78,9 +78,10 @@ Nil/true/false singletons are **born sealed** (elps#376): the flag is set in
 their composite literals at package init (`lisp/singleton.go`), so no
 post-construction write exists to race with anything and `SealAST`'s
 already-sealed check stops the walk at one. `IsSealed()` therefore reports
-the do-not-mutate contract on `Nil()`/`Bool()` results too, the CoW guards
-below treat a singleton operand exactly like a shared literal
-(`TestSingletonCoWContainerOps`, `lisp/singleton_seal_cow_test.go`), and
+the do-not-mutate contract on `Nil()`/`Bool()` results too, the guarded
+mutation sites below treat a singleton operand as an empty sealed input —
+accepted under the empty carve-out of §2.4, with fresh storage handed back
+(`TestSingletonCoWContainerOps`, `lisp/singleton_seal_cow_test.go`) — and
 `SetSource` on a singleton is a no-op. Atoms *are* sealed: unlike the
 eager-copy design, where copying atoms measured a +56% geomean regression,
 marking one costs a bit at parse time, and it makes `IsSealed` meaningful on
@@ -121,33 +122,48 @@ The constraint follows the **storage**, not the header:
   storage they create (`lisp/lisp.go`, `lisp/detach.go`). A `Copy` owns fresh top-level
   backing, so the constraint on the original does not apply to it; elements
   shared with the sealed tree remain individually sealed, which is exactly
-  the copy-on-write contract — restructure the copy freely, never the
-  shared nodes inside it.
+  the seal contract — restructure the copy freely, never the shared nodes
+  inside it.
 
-### 2.4 Copy-on-write at kernel mutation sites
+### 2.4 The sealed-write error at kernel mutation sites
 
 The mutating builtins that can legally receive a sealed value check the flag
-and copy first (`lisp/builtins.go`):
+and refuse a non-empty sealed input with the catchable `modify-literal-error`
+condition — message `cannot modify a program literal; take a (copy ...)
+first` (`lisp/builtins.go`, `CondModifyLiteral` in `lisp/conditions.go`):
 
-- `stable-sort`: sorts a fresh header with a fresh backing array and returns
-  it. Element pointers are shared — sorting only permutes them.
-- `append 'vector`: copies a sealed sequence's cells before appending within
-  spare capacity; the returned vector is unsealed, so *chained* appends
-  extend it in place as before.
-- `slice 'vector`: copies instead of wrapping sealed backing in a mutable
-  vector; `slice 'list` returns a sealed intermediate (backing still
-  shared).
+- `stable-sort`: refuses to sort a sealed list — the documented in-place
+  effect on a program literal was never useful; observing it *was* the
+  corruption.
+- `append 'vector`: refuses a sealed sequence — appending within spare
+  capacity would write the shared program's storage, and even a no-value
+  append would wrap the literal's backing in a mutable vector.
+- `slice 'vector`: refuses to wrap sealed backing in a mutable vector;
+  `slice 'list` returns a sealed intermediate (backing still shared).
+
+The **empty carve-out** is deliberate: ordinary builtins (`cdr`, `rest`,
+`keys`, empty `make-sequence`) return the shared *sealed* empty list, so
+erroring on it would make `(stable-sort < (rest xs))` fail only when `xs`
+happens to be short — a data-dependent error in correct runtime code. An
+empty sealed input has no storage to write or alias, so the guarded sites
+accept it and hand back fresh, unsealed storage.
+
+These sites originally resolved a sealed input by *silently copying*
+(copy-on-write), preserving compatibility while the policy question of
+elps#378 was decided on evidence. Two checked-mode censuses answered it:
+every firing across this repository, its benchmarks and examples, the
+production phylum corpus, and the downstream consumer's full suites came
+from test machinery built to exercise the copy paths — zero from real code.
+The silent copy also bifurcated one expression's semantics by its input's
+provenance and could mask code that believed it owned the value, so all
+three sites were flipped together to the hard error and the census
+machinery was retired. The lisp-level remedy is `(copy x)` (§4.4), which
+returns a fully unsealed deep copy, so the mutating builtin takes its
+ordinary in-place path; the error message names it.
 
 `assoc!`/`dissoc!`/`append!`/`append-bytes!` need no guard: they type-error
 on lists, and maps/vectors/bytes cannot be produced by the parser, so a
 sealed value cannot legally reach their mutation path.
-
-Each of those three copy-on-write sites also records the event under
-`-tags elpscheck` (§3.6), because whether they should copy at all is an open
-question (elps#378): the alternative is a catchable `cannot modify a program
-literal` condition, and the census exists to decide it on evidence. The
-lisp-level remedy either way is `(copy x)` (§4.4), which returns a fully
-unsealed deep copy, so the mutating builtin takes its ordinary in-place path.
 
 The evaluator's own metadata writes respect the flag too:
 `stampMacroExpansion` skips sealed subtrees (`lisp/macro.go` — a sealed
@@ -421,21 +437,22 @@ deterministic by the singleton write watchdog
 (`lisp/singleton_watchdog_test.go`; mprotect approaches were evaluated and
 rejected in #334).
 
-### 3.6 Copy-on-write census (dynamic, tagged builds; `lisp/cow_check_elpscheck.go`)
+### 3.6 The retired copy-on-write census
 
-Under `-tags elpscheck`, every copy-on-write-on-sealed site (§2.4) records
-the event and the lisp-level frames that caused it, printing each distinct
-(site, location) pair once to stderr so that suite runs driven by external
-test binaries leave the evidence in their logs. This measures nothing about
-correctness — it answers the policy question of elps#378: if no real program
-reaches those sites, they can raise `cannot modify a program literal` instead
-of silently copying. Untagged builds carry no counter symbol and no site
-string (`go tool nm` assertion in `lisp/cow_counter_test.go`).
-
-*Blind spots:* it sees only executed paths, and it counts the kernel's three
-CoW sites — not libelpspath's list refusal (which already errors) nor the
-metadata no-ops (`SetSource`, `stampMacroExpansion`), which change no
-lisp-visible value.
+Until the elps#378 flip, every then-copy-on-write site carried a tagged
+(`-tags elpscheck`) event counter with lisp-level attribution
+(`lisp/cow_check_elpscheck.go`, deleted with the flip), compiled away
+entirely in untagged builds. It existed to answer one policy question with
+data — does any real program reach these sites? — and two censuses (recorded
+on elps#378) answered *no*: all 1,625 elps-side events were the seal/CoW
+test machinery asserting the behavior, and the downstream consumer's full
+suites fired zero. With the sites now raising a loud, catchable condition,
+an event census has nothing left to measure; the anti-vacuity duty it
+performed for the benchmark smoke run moved into the benchmark program
+itself, which counts its own caught `modify-literal-error` conditions and
+asserts the total (`lisp/seal_error_bench_test.go`). The verification layer
+that *matters more* after the flip — the fingerprint proof that sealed trees
+stay unmutated — is §3.2/§3.3 and is unchanged.
 
 ## 4. Footguns
 
@@ -448,8 +465,8 @@ add copy-on-append: detecting shared backing cheaply is impossible without
 reference counting, and copy-on-every-append turns amortized O(1) vector
 building into O(n²). The one *dangerous* instance of the class — program
 literals shared across environments — is mechanically closed by the seal
-(seal propagates through `slice`; `append`/`slice 'vector` copy on sealed
-input, §2.4). What remains is ordinary within-environment value aliasing,
+(seal propagates through `slice`; `append 'vector`/`slice 'vector` refuse a
+non-empty sealed input, §2.4). What remains is ordinary within-environment value aliasing,
 i.e. language semantics consistent with the language's deliberate mirroring
 of Go slices.
 
@@ -546,6 +563,8 @@ intends to mutate data it did not construct copies unconditionally.
 
 ---
 
-*History: the zero-cost hardening layer, the seal/CoW layer, and the
-verification tooling are stacked in PR luthersystems/elps#374; the eager-copy
-alternative and its measured costs are summarized in `lisp/seal.go`.*
+*History: the zero-cost hardening layer, the seal layer (then copy-on-write),
+and the verification tooling are stacked in PR luthersystems/elps#374; the
+copy-on-write-to-error flip is elps#378, decided on the censuses recorded
+there; the eager-copy alternative and its measured costs are summarized in
+`lisp/seal.go`.*

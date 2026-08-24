@@ -4,6 +4,7 @@ package libelpspath
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -50,9 +51,13 @@ type sealLaunderVariant struct {
 	lit string
 	// mutate is the expression that queries a window and mutates it.
 	mutate string
-	// want is the rendering of the value mutate must evaluate to. Pinned
-	// as a literal string rather than re-derived, so a fix that quietly
-	// changed WHAT ? returns cannot satisfy the test by moving the target.
+	// want is the rendering of the value mutate must evaluate to in the
+	// RUNTIME-LIST control program. Pinned as a literal string rather than
+	// re-derived, so a change that quietly altered WHAT ? returns cannot
+	// satisfy the test by moving the target. On the literal program the
+	// mutate expression is instead refused with modify-literal-error
+	// (issue #378) — the refusal firing is itself the proof that the seal
+	// travelled through the ?-getter's window.
 	want string
 }
 
@@ -165,20 +170,25 @@ func TestGetDoesNotCorruptLiteral(t *testing.T) {
 					tc.mutate, snaps[1], evalLiteral(t, env))
 			}
 
-			// The answer must be the one the unsealed (runtime list) program
-			// gives. Copy-on-write changes whose storage is written, never
-			// what the expression evaluates to.
+			// On the literal program the mutate expression must be REFUSED
+			// with the modify-literal-error condition (issue #378): the
+			// guard firing through the ?-getter's window is the proof that
+			// the seal was not laundered off. Before the flip this asserted
+			// the copy-on-write answer instead.
+			if !strings.Contains(snaps[2], lisp.CondModifyLiteral) {
+				t.Errorf("mutating a window onto the literal was not refused with %s: got %s",
+					lisp.CondModifyLiteral, snaps[2])
+			}
+
+			// The runtime-list control keeps the documented unguarded
+			// behaviour for runtime data, which must not change.
 			ctrl := newMutateTestEnv(t)
 			ctrlSnaps, ctrlPanic := evalSnapshot(ctrl, parseOnce(t, tc.runtimeControl()))
 			if ctrlPanic != nil {
 				t.Fatalf("runtime-list control panicked: %v", ctrlPanic)
 			}
-			if snaps[2] != ctrlSnaps[2] {
-				t.Errorf("query answer diverged from the runtime-list control:\n"+
-					"  literal: %s\n  runtime: %s", snaps[2], ctrlSnaps[2])
-			}
-			if snaps[2] != tc.want {
-				t.Errorf("query answer changed: got %s, want %s", snaps[2], tc.want)
+			if ctrlSnaps[2] != tc.want {
+				t.Errorf("runtime-list control answer changed: got %s, want %s", ctrlSnaps[2], tc.want)
 			}
 		})
 	}

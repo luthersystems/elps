@@ -1450,8 +1450,12 @@ func FuzzElpsutilEmbed(f *testing.F) {
 	for _, seed := range fuzzseed.Adversarial() {
 		add(ordinary, string(seed))
 	}
-	// Terminating and adversarial elps programs, likewise.
+	// Terminating, deterministic-error and adversarial elps programs,
+	// likewise.
 	for _, src := range fuzzseed.EvalTerminating() {
+		add(ordinary, src)
+	}
+	for _, src := range fuzzseed.EvalErroring() {
 		add(ordinary, src)
 	}
 	for _, src := range fuzzseed.EvalAdversarial() {

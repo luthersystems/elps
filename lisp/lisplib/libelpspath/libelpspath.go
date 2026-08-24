@@ -62,7 +62,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 //
 // Two mechanisms hold that, and the annotation below rests on both.  libutil
 // SEALS each formals list at construction, so the shared template is under
-// the kernel's copy-on-write guards; and AddBuiltins gives every environment
+// the kernel's sealed-write guards; and AddBuiltins gives every environment
 // a PRIVATE copy of it (formalsCopier, lisp/defformals.go, issue #513), so no
 // two Runtimes hold one list in the first place.  See the long comment above
 // AddMacros in lisp/env.go for why both exist.

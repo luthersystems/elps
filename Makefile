@@ -58,9 +58,10 @@ test-elpscheck:
 # repeating them would multiply this target's cost for no new coverage.
 #
 # An oracle only reports on the writes it is given, so coverage of the
-# copy-on-write sites by some benchmarked program is what makes this
-# non-vacuous -- see lisp/cow_seal_bench_test.go, which is the benchmark that
-# reaches all three.
+# sealed-write guard sites by some benchmarked program is what makes this
+# non-vacuous -- see lisp/seal_error_bench_test.go, which is the benchmark
+# that reaches all three (and self-asserts that each raised its
+# modify-literal-error condition).
 #
 # Wired into .github/workflows/elps.yml immediately after test-elpscheck, so
 # it inherits that step's warm tagged build cache; scripts/ci-gates-test.sh

@@ -844,7 +844,7 @@ func (env *LEnv) root() *LEnv {
 //   - SEALED templates are ALIASED.  sealDefaultFormals (builtins.go), the
 //     RegisterDefault* entry points and libutil's constructors mark the
 //     tables' own lists sealed at construction, which puts them under the
-//     copy-on-write mutation guards (lisp/seal.go), the -race seal watchdog,
+//     sealed-write mutation guards (lisp/seal.go), the -race seal watchdog,
 //     and, in checked builds, the fingerprint verifier (VerifySealedASTs).
 //     A sealed list is immutable by contract, so handing the same *LVal to
 //     every environment is the same topology lisp-defined functions have

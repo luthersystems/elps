@@ -589,29 +589,51 @@ area:
    v  ; (vector 3 4 5 2 1) -- the source was sorted too
    ```
 
-When you need a value nothing else can write through, copy it with `concat`,
-which always allocates:
+When you need a value nothing else can write through, copy it: `copy` takes
+a deep copy with fresh backing at every level, and `concat` takes a one-level
+copy of a single sequence.
 
 ```lisp
 (set 'snapshot (concat 'vector (slice 'vector v 0 3)))
+(set 'mine (copy some-nested-structure))
 ```
 
 This matters most for **quoted literals**.  A literal is part of the program
-text, not a fresh value made on each evaluation, so passing one to a mutating
-function edits the program — and the edit persists for the life of the
-process:
+text, not a fresh value made on each evaluation, so writing through one would
+edit the program itself — permanently, for every later evaluation.  The
+runtime refuses the write instead: `stable-sort` on a quoted literal (or on a
+view sharing its storage), and the `(slice 'vector ...)` and
+`(append 'vector ...)` forms that would wrap or write a literal's backing
+array, raise the **`modify-literal-error`** condition:
 
 ```lisp
-(defun probe ()
-  (let ([lit '(3 1 2)])
-    (stable-sort < lit)   ; sorts the literal in the function body
-    lit))
-(probe)  ; '(1 2 3)
-(probe)  ; '(1 2 3) -- not '(3 1 2); the literal stayed sorted
+(stable-sort < '(3 1 2))
+; error: cannot modify a program literal; take a (copy ...) first
 ```
 
-Use `(concat 'list lit)` — or build the value with `(list ...)` instead of
-quoting it — whenever a literal is going to be mutated.
+It is an ordinary condition — `handler-bind` can name it, and
+`ignore-errors` swallows it:
+
+```lisp
+(handler-bind ((modify-literal-error (lambda (c &rest args) 'refused)))
+    (stable-sort < '(3 1 2)))  ; evaluates to 'refused
+```
+
+The remedy is the one the message names — take ownership with `copy` (or
+build the value with `(list ...)` instead of quoting it) whenever
+literal-derived data is going to be mutated:
+
+```lisp
+(stable-sort < (copy '(3 1 2)))          ; '(1 2 3)
+(slice 'vector (copy '(1 2 3)) 0 2)      ; (vector 1 2)
+(append 'vector (copy '(1 2 3)) 4)       ; (vector 1 2 3 4)
+```
+
+The empty list is the deliberate exception: functions like `cdr`, `rest` and
+`keys` return the shared empty list, so the guarded functions accept an
+empty literal-derived input — there is nothing in it to modify — and hand
+back fresh storage.  `(stable-sort < (rest xs))` therefore behaves the same
+however short `xs` is.
 
 ### Sorted Maps
 

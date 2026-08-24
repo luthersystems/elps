@@ -241,7 +241,9 @@ string"""`, `"\"\"a raw\nstring"`, ""},
 			{"(slice 'list '(0 1 2 3 4) 1 3)", "'(1 2)", ""},
 			{"(slice 'list (vector 0 1 2 3 4) 0 3)", "'(0 1 2)", ""},
 			{`(slice 'list "abc" 1 3)`, "'(98 99)", ""},
-			{"(slice 'vector '(0 1 2 3 4) 1 3)", "(vector 1 2)", ""},
+			// slice 'vector over a quoted literal raises
+			// modify-literal-error (issue #378); copy takes the mutable path.
+			{"(slice 'vector (copy '(0 1 2 3 4)) 1 3)", "(vector 1 2)", ""},
 			{"(slice 'vector (vector 0 1 2 3 4) 1 3)", "(vector 1 2)", ""},
 			{`(slice 'vector "abc" 0 2)`, "(vector 97 98)", ""},
 			{`(slice 'string "abc" 1 3)`, `"bc"`, ""},

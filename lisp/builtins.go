@@ -225,8 +225,9 @@ var (
 			comparison keys from elements. A mutable list is sorted in
 			place, so sorting a slice view also sorts that region of its
 			source; sort (concat 'list x) when x is a view you do not own.
-			A quoted program literal is never modified -- its elements are
-			sorted into a fresh list -- so always use the return value.`},
+			A quoted program literal is never modified: sorting a non-empty
+			literal (or a view sharing its storage) raises the catchable
+			modify-literal-error condition -- sort (copy lit) instead.`},
 		{"insert-sorted", Formals("type-specifier", "list", "predicate", "item", VarArgSymbol, "key-fun"), builtinInsertSorted,
 			`Returns a new sequence with item inserted at its sorted position
 			according to predicate. An optional key-fun extracts comparison
@@ -265,7 +266,10 @@ var (
 			lists, vectors and bytes the result is a view sharing elements
 			with seq: appending to it cannot disturb seq, but sorting it in
 			place also sorts that region of seq. Use concat to take a copy.
-			String slices are always independent.`},
+			String slices are always independent. A vector is mutable, so
+			(slice 'vector ...) over a non-empty quoted program literal
+			raises the catchable modify-literal-error condition -- slice
+			(copy lit) instead.`},
 		{"list", Formals(VarArgSymbol, "args"), builtinList,
 			`Returns a new list containing all the given arguments.`},
 		{"vector", Formals(VarArgSymbol, "args"), builtinVector,
@@ -280,7 +284,9 @@ var (
 			type. Does not mutate vec and never shares storage with it, so
 			appending to the same source twice yields independent results.
 			This costs a copy, making append O(n); use append! to accumulate
-			in a loop.`},
+			in a loop. (append 'vector ...) over a non-empty quoted program
+			literal raises the catchable modify-literal-error condition --
+			append to (copy lit) instead.`},
 		{"append-bytes!", Formals("bytes", "values"), builtinAppendBytesMutate,
 			`Appends values to bytes, mutating it in place. Values can be a
 			string, bytes, or list of integers. Returns the modified bytes.`},
@@ -421,8 +427,8 @@ var (
 // process; sealing their formals here — package init is single-threaded and
 // runs before any environment can exist — makes that sharing explicit and
 // safe.  Registration (registrationFormals in env.go) aliases a sealed list
-// instead of deep-copying it per environment, and the seal's copy-on-write
-// guards (lisp/seal.go) catch any code path that would mutate the shared
+// instead of deep-copying it per environment, and the seal's write guards
+// (lisp/seal.go) catch any code path that would mutate the shared
 // cells, exactly as they do for the sealed parser output that lisp-defined
 // functions alias as their formals.
 func init() { sealDefaultFormals() }
@@ -715,7 +721,7 @@ func builtinMacroExpand1(env *LEnv, args *LVal) *LVal {
 // typically a SEALED program literal, so the aliased array above was the
 // literal's own backing, handed to a macro's &rest parameter as an UNSEALED
 // header — the one path that laundered a sealed node into mutable-looking
-// storage and so slipped past every copy-on-write guard in lisp/seal.go. The
+// storage and so slipped past every sealed-write guard in lisp/seal.go. The
 // fresh array here is what closes it (commit 8d18071 on the sealing line;
 // TestMacroexpandRestDoesNotLaunderSealedBacking in lisp/cow_seal_test.go).
 func macroArgList(form *LVal) *LVal {
@@ -933,7 +939,7 @@ func builtinCDR(env *LEnv, args *LVal) *LVal {
 	// The clamp stops an append reaching PAST the view; it does not stop a
 	// write WITHIN it, which for a sealed v is still a write to shared
 	// program storage.  So the constraint travels with the backing array the
-	// view still shares (lisp/seal.go), and the copy-on-write sites
+	// view still shares (lisp/seal.go), and the guarded mutation sites
 	// (stable-sort, slice 'vector) see it on the view exactly as they would
 	// on v itself.
 	r.sealed = v.sealed
@@ -1528,21 +1534,29 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 		}
 	}
 	if list.sealed {
-		recordCoWOnSealed(env, cowSiteSortStable)
-		// Copy-on-write: list is (or shares storage with) a parsed program
-		// literal — (stable-sort < '(3 1 2)) — and sorting it in place
-		// would rewrite the program for every environment sharing the
-		// parse (the substrate#378 class; see lisp/seal.go).  Sort a fresh
-		// header with a fresh backing array instead — element pointers are
-		// shared, sorting only permutes them — and return it: the
-		// documented in-place effect is preserved for every mutable input,
-		// and for a literal the only observable in-place effect was the
-		// corruption itself.
+		// list is (or shares storage with) a parsed program literal —
+		// (stable-sort < '(3 1 2)) — and sorting it in place would rewrite
+		// the program for every environment sharing the parse (the
+		// substrate#378 class; see lisp/seal.go).  Raise the catchable
+		// modify-literal-error condition instead of the silent
+		// copy-on-write this site used to perform: a census over this
+		// repository and the production phylum corpus found zero
+		// non-test programs reaching this path (issue #378), and a silent
+		// copy masks code that believed it owned the value.  The remedy is
+		// (stable-sort < (copy lit)).
+		if len(seqCells(list)) > 0 {
+			return errModifyLiteral(env)
+		}
+		// The empty carve-out (see CondModifyLiteral): cdr, rest, keys and
+		// friends return the shared sealed empty list, so erroring here
+		// would make (stable-sort < (rest xs)) fail only for short xs.
+		// There are no cells to sort and no storage to protect; return a
+		// fresh, mutable header so the caller never holds sealed storage
+		// as a sort result (in particular, never the Nil() singleton).
 		cp := &LVal{}
 		*cp = *list
 		cp.sealed = false
-		cp.Cells = make([]*LVal, len(list.Cells))
-		copy(cp.Cells, list.Cells)
+		cp.Cells = nil
 		list = cp
 	}
 	cells := seqCells(list)
@@ -2068,13 +2082,22 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 		// list is now known to be LSExpr
 		cells := list.Cells
 		if list.sealed {
-			recordCoWOnSealed(env, cowSiteSliceVector)
-			// Copy-on-write: vectors are mutable (append! writes their
-			// backing in place) and are never sealed, so wrapping a sealed
-			// list's backing array in a vector would hand the value domain
-			// a mutable window onto the shared program (lisp/seal.go).
-			cells = make([]*LVal, len(list.Cells))
-			copy(cells, list.Cells)
+			// Vectors are mutable (append! writes their backing in place)
+			// and are never sealed, so wrapping a sealed list's backing
+			// array in a vector would hand the value domain a mutable
+			// window onto the shared program (lisp/seal.go).  Raise the
+			// catchable modify-literal-error condition instead of the
+			// silent copy-on-write this site used to perform (issue #378);
+			// the remedy is (slice 'vector (copy lit) ...).
+			if len(cells) > 0 {
+				return errModifyLiteral(env)
+			}
+			// The empty carve-out (see CondModifyLiteral): a zero-width
+			// window over sealed backing — an empty slice of a literal, or
+			// a slice of the shared sealed empty list cdr/rest return —
+			// can neither write nor alias any sealed storage.  Drop the
+			// window entirely so the vector owns (empty) fresh backing.
+			cells = nil
 		}
 		return Array(QExpr([]*LVal{Int(len(cells))}), cells)
 	default:
@@ -2232,16 +2255,18 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		// vector -- a mutable window onto the shared program, which is the
 		// substrate#378 class arriving through the one input the clamp does
 		// not reallocate.  So the seal is answered where the seal is: a
-		// sealed input is copied outright (copy-on-write, lisp/seal.go), and
-		// the result is unsealed storage this call owns, so chaining extends
-		// it as before.  Exactly one allocation on each arm -- the sealed
-		// copy is sized for the append rather than clamped and regrown.
-		if seq.sealed {
-			recordCoWOnSealed(env, cowSiteAppendVector)
-			fresh := make([]*LVal, len(cells), len(cells)+len(vals))
-			copy(fresh, cells)
-			//elps:mutates appends into `fresh`, which this function allocated two lines above with capacity for exactly this append; the sealed input is only read
-			return Array(nil, append(fresh, vals...))
+		// sealed, non-empty input raises the catchable modify-literal-error
+		// condition (issue #378; this site used to copy-on-write silently),
+		// and the remedy is (append 'vector (copy lit) ...).
+		//
+		// The empty case falls through deliberately (see CondModifyLiteral):
+		// cdr, rest and friends return the shared sealed empty list, so
+		// erroring on it would make (append 'vector (rest xs) v) fail only
+		// for short xs.  An empty sealed input is safe on the ordinary path
+		// below: clampCap leaves it zero-capacity, so the append reallocates
+		// and no window onto sealed storage can survive into the result.
+		if seq.sealed && len(cells) > 0 {
+			return errModifyLiteral(env)
 		}
 		// clampCap makes this append PROVABLY non-aliasing: it returns a
 		// three-index reslice whose cap equals its len, so append cannot

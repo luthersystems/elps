@@ -36,7 +36,8 @@ import (
 // `ignore-errors` so a refusal is an ordinary outcome rather than an
 // abandoned traversal.  On an unsealed element the mutation is expected to
 // succeed — that is the language.  On a SEALED element the mutating builtins
-// must copy first, and the sealed oracle is what says whether they did.
+// must refuse (the modify-literal-error condition, issue #378), and the
+// sealed oracle is what says the refusal left no write behind.
 //
 // # Shared structures, deliberately
 //

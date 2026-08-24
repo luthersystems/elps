@@ -94,9 +94,10 @@ import (
 //     a function receives a sealed node whenever its argument was a quoted
 //     literal, because literal evaluation returns the sealed parse node
 //     itself (lisp/seal.go).  The seal contract says NOTHING may write such
-//     a value in place -- guarded mutators copy first -- so any fingerprint
-//     drift across the call is a copy-on-write failure of the
-//     substrate#378 class, whichever of the 240 callables performed it.
+//     a value in place -- guarded mutators refuse with modify-literal-error
+//     -- so any fingerprint drift across the call is a sealed-write failure
+//     of the substrate#378 class, whichever of the 240 callables performed
+//     it.
 //
 //  6. The call terminates.  Bounded by a context deadline, a step limit and,
 //     because neither of those can see a loop that evaluates nothing, an

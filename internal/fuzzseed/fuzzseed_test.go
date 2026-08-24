@@ -47,24 +47,27 @@ func TestAllIncludesBothSources(t *testing.T) {
 }
 
 // TestEvalCorporaAreDisjoint guards the property the eval split rests on: a
-// program cannot both be required to run to completion and required to be
-// stopped by a budget.  The two corpora are asserted in opposite directions by
-// the harness, so an entry appearing in both makes one of those tests fail for
-// a reason that has nothing to do with the interpreter.
+// program cannot be required both to complete without error, to end in a
+// specific catchable error, and to be stopped by a budget.  The corpora are
+// asserted in incompatible directions by the harness, so an entry appearing
+// in two of them makes one of those tests fail for a reason that has nothing
+// to do with the interpreter.
 func TestEvalCorporaAreDisjoint(t *testing.T) {
-	runaway := EvalRunaway()
-	terminating := EvalTerminating()
-
-	bySrc := make(map[string]string, len(runaway))
-	for name, src := range runaway {
-		bySrc[src] = "EvalRunaway/" + name
-	}
-	for name, src := range terminating {
-		if prev, ok := bySrc[src]; ok {
-			t.Errorf("EvalTerminating/%s has the same source as %s;"+
-				" a program cannot be required both to complete and to be stopped", name, prev)
+	bySrc := make(map[string]string)
+	record := func(corpus string, seeds map[string]string) {
+		for name, src := range seeds {
+			entry := corpus + "/" + name
+			if prev, ok := bySrc[src]; ok {
+				t.Errorf("%s has the same source as %s;"+
+					" a program cannot be required to meet two different outcomes", entry, prev)
+				continue
+			}
+			bySrc[src] = entry
 		}
 	}
+	record("EvalRunaway", EvalRunaway())
+	record("EvalTerminating", EvalTerminating())
+	record("EvalErroring", EvalErroring())
 }
 
 // TestEvalSeedsAreNonEmpty catches the silent-corpus failure mode: an entry
@@ -75,6 +78,11 @@ func TestEvalSeedsAreNonEmpty(t *testing.T) {
 	for name, src := range EvalRunaway() {
 		if strings.TrimSpace(src) == "" {
 			t.Errorf("EvalRunaway/%s is blank; a blank program cannot run away", name)
+		}
+	}
+	for name, src := range EvalErroring() {
+		if strings.TrimSpace(src) == "" {
+			t.Errorf("EvalErroring/%s is blank; a blank program cannot error", name)
 		}
 	}
 	for _, src := range EvalAdversarial() {

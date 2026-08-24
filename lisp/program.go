@@ -38,7 +38,7 @@ import (
 // that is not already sealed throughout is privately copied and sealed, and
 // output the seal cannot cover is rejected (see newProgram, issue #394) —
 // so the sharing a parse cache does is always the sanctioned kind: sealed
-// nodes are frozen storage under copy-on-write protection, and evaluating
+// nodes are frozen storage under the seal's write protection, and evaluating
 // one Program from many environments cannot corrupt it for the others.
 // Concurrency is unchanged by any of this: a Runtime serves one goroutine,
 // so concurrent evaluation still means one environment per goroutine, all
@@ -160,7 +160,7 @@ func (env *LEnv) ParseProgram(name, loc string, r io.Reader) (Program, error) {
 //     they are rejected with TextLoader's error.
 //   - Output that is already sealed throughout is admitted as-is.  This is
 //     the standard-parser fast path, and the sharing it takes is the
-//     sanctioned kind: sealed nodes are frozen storage under copy-on-write
+//     sanctioned kind: sealed nodes are frozen storage under the seal's write
 //     protection, shared across runtimes by design (lisp/seal.go;
 //     elpstest.RunBenchmark takes the same share).  The check is a deep
 //     walk, not a root check: SealAST stops without descending at anything

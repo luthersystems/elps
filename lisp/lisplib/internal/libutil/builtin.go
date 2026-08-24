@@ -8,7 +8,7 @@ import "github.com/luthersystems/elps/lisp"
 // (lisp.LVal.SealAST) as part of construction: lisplib definition tables are
 // package-level values shared by every Runtime in the process, and sealing
 // lets lisp.LEnv.AddBuiltins alias the sealed list into each environment
-// under copy-on-write protection instead of deep-copying it per environment
+// under the seal's write protection instead of deep-copying it per environment
 // (see registrationFormals in lisp/env.go).  Callers must therefore pass a
 // freshly constructed formals list (every table in this repository builds
 // one inline with lisp.Formals) and must not mutate it after construction.

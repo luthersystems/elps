@@ -44,7 +44,7 @@ import (
 //     builtinArgs append path and never Puts a formal symbol.  The formals
 //     sharing is documented, filed, and covered by the static rule
 //     (cmd/elpsvet) and by sealing: definition-table formals are sealed at
-//     construction and shared under copy-on-write protection (see
+//     construction and shared under the seal's write protection (see
 //     registrationFormals in env.go); this checker covers the values that
 //     actually flow.
 //   - It only sees the instrumented points.  A value that crosses runtimes
