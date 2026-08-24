@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	mathrand "math/rand"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -411,6 +413,62 @@ func TestPooledEncoderCarriesNoStateBetweenDocuments(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "1", string(b), "the previous document's bytes leaked")
 	})
+}
+
+// TestEncoderFieldsAreAccountedForInGetEncoder pins the encoder's field set,
+// so that adding a field to it cannot be a silent decision.
+//
+// getEncoder is the whole of what stands between a recycled encoder and the
+// document it is about to write: every field that says something about ONE
+// document has to be put back to its start-of-document value there, or the
+// previous document's state carries into the next one.
+// TestPooledEncoderCarriesNoStateBetweenDocuments asserts that property for
+// the fields that exist today, and it is structurally unable to assert it for
+// a field that does not exist yet -- a field added to the struct and forgotten
+// in getEncoder leaks across documents with every test in this package still
+// green.
+//
+// So this test does the one thing a test can do about a field nobody has
+// written yet: it makes the struct's shape something the author has to come
+// here and change, with the reset rule in front of them when they do.
+//
+// "Reset it in getEncoder" is not the only acceptable answer.  scratch is not
+// reset and does not need to be, because every use site writes the bytes it
+// reads before it reads them.  That is an argument rather than an invariant
+// the compiler checks, and the point of this test is that it gets made for a
+// new field instead of assumed.
+func TestEncoderFieldsAreAccountedForInGetEncoder(t *testing.T) {
+	// Every field of encoder, in declaration order, as of the last time
+	// someone checked the struct against getEncoder.  The trailing note on
+	// each is how that field is accounted for.
+	known := []string{
+		"buf",         // Reset() in getEncoder
+		"scratch",     // not reset: written before read at every use site
+		"stringNums",  // reset in getEncoder
+		"nestedDeep",  // reset in getEncoder
+		"wroteNative", // reset in getEncoder
+	}
+
+	typ := reflect.TypeOf(encoder{})
+	got := make([]string, typ.NumField())
+	for i := range got {
+		got[i] = typ.Field(i).Name
+	}
+	if !slices.Equal(got, known) {
+		t.Fatalf("the encoder's fields changed:\n"+
+			"  was: %v\n"+
+			"  now: %v\n"+
+			"Do not just update the list above to match. First check the new field "+
+			"set against getEncoder: every field that means something about a single "+
+			"document must be reset there, or a pooled encoder carries the previous "+
+			"document's state into the next one -- silently, because a stale flag "+
+			"changes a verdict rather than crashing anything. A field left out of "+
+			"getEncoder needs the argument scratch has, that every use site writes "+
+			"what it reads before reading it; buffer-like fields are exactly where "+
+			"that argument is easiest to get wrong. Then extend the list, with a "+
+			"note saying which of the two applies.",
+			known, got)
+	}
 }
 
 // TestDumpDoesNotAliasAPooledBuffer pins the property that makes pooling safe
