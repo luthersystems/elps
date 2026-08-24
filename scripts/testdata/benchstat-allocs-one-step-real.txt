@@ -1,0 +1,49 @@
+# A REAL one-allocation regression. The counterpart of
+# benchstat-allocs-quantised-null.txt, and the half that has to keep failing.
+#
+# Same benchmarks, same machine, same sampling parameters, same 9 allocs/op
+# base. The only difference is that the "pr" arm was built from a tree carrying
+# one extra escaping allocation per encode, added to Serializer.dump for exactly
+# this purpose. So the +11.11% on the Small and Medium rows is ONE ALLOCATION,
+# genuinely added, on a row whose base count is nine -- numerically identical to
+# the false positive in the null fixture.
+#
+# What separates them is not the size of the move. It is that these rows
+# REPRODUCE: every sample of Small and Medium reads 9 on one arm and 10 on the
+# other, so benchstat prints "± 0%" on both, and the quantisation check does not
+# apply. The null fixture's row disagrees with itself.
+#
+# The Large row is the same regression seen through a row that does NOT
+# reproduce (9.000 ± 11% -> 11.000 ± 9%): the extra allocation still moves it
+# two whole counts, which truncation cannot manufacture, so it is adjudicated
+# normally too.
+#
+# Read the B/op table before concluding that allocs/op is redundant: the added
+# allocation is 16 bytes, so B/op moves +0.89% and +0.06% -- an order of
+# magnitude under the 5% allocation gate, and not significant at all on Large.
+# allocs/op is the ONLY column that sees this regression, which is the reason
+# the quantisation check keys on the row reproducing rather than simply
+# discarding every one-count move.
+goos: linux
+goarch: amd64
+pkg: github.com/luthersystems/elps/lisp/lisplib/libjson
+                         │  base.txt   │               pr.txt                │
+                         │   sec/op    │    sec/op     vs base               │
+EncodeOwnMessageSmall-2    5.897µ ± 6%   5.714µ ± 14%       ~ (p=0.529 n=10)
+EncodeOwnMessageMedium-2   94.91µ ± 8%   97.64µ ±  5%       ~ (p=0.684 n=10)
+EncodeOwnMessageLarge-2    1.992m ± 4%   2.053m ±  9%       ~ (p=0.063 n=10)
+geomean                    103.7µ        104.6µ        +0.91%
+
+                         │   base.txt   │               pr.txt                │
+                         │     B/op     │     B/op      vs base               │
+EncodeOwnMessageSmall-2    1.750Ki ± 0%   1.766Ki ± 0%  +0.89% (p=0.000 n=10)
+EncodeOwnMessageMedium-2   17.07Ki ± 0%   17.08Ki ± 0%  +0.06% (p=0.000 n=10)
+EncodeOwnMessageLarge-2    302.4Ki ± 0%   302.6Ki ± 2%       ~ (p=0.138 n=10)
+geomean                    20.83Ki        20.90Ki       +0.34%
+
+                         │  base.txt   │               pr.txt                │
+                         │  allocs/op  │  allocs/op   vs base                │
+EncodeOwnMessageSmall-2    9.000 ±  0%   10.000 ± 0%  +11.11% (p=0.000 n=10)
+EncodeOwnMessageMedium-2   9.000 ±  0%   10.000 ± 0%  +11.11% (p=0.000 n=10)
+EncodeOwnMessageLarge-2    9.000 ± 11%   11.000 ± 9%  +22.22% (p=0.000 n=10)
+geomean                    9.000          10.32       +14.70%

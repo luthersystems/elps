@@ -1,0 +1,50 @@
+# A SPURIOUS allocs/op firing, caught live on a NULL comparison.
+#
+# Not synthetic and not a transcription. Both arms are the SAME BINARY --
+# `go test -c` once, then measured repeatedly -- at the sampling parameters CI
+# uses (GOMAXPROCS=2, -benchtime=100ms, 10 rounds per arm). Nothing whatsoever
+# differs between "base" and "pr": they are two independent measurement runs of
+# one binary on one machine. Every number here is noise by construction, so
+# every REGRESSION verdict on this table is a false one.
+#
+# BenchmarkEncodeOwnMessageLarge encodes a ~295 KB document. Its TRUE cost,
+# measured by reading MemStats around 2000 encodes, is 9.985 allocations per
+# operation -- a fifth of a percent below an integer. `go test` reports
+# allocs/op as int64(mallocs)/int64(b.N), so each SAMPLE prints 9 or 10
+# depending on where GC cadence puts the fraction, and an arm of ten samples is
+# a mix of both. benchstat then summarises the arm as "9.000 ± 5%" -- a spread,
+# on a column this gate used to treat as exact. See the quantisation-check note
+# in scripts/benchstat-gate.sh for where the fraction comes from (sync.Pool's
+# per-P array, reallocated after every GC).
+#
+# 182 arm measurements were taken this way and 800 random pairs of them
+# adjudicated. The gate as it stood before the quantisation check reported a
+# REGRESSION on 3 of the 800 -- a 0.375% false-positive rate per comparison, on
+# ONE row, on code that did not change. With the check: 0 of 800, and those same
+# 3 rows reported as QUANTISED rather than silenced.
+#
+# This file is one of the three, verbatim. Note what the delta cannot be: the
+# smallest move a 9-count row can express is one allocation out of nine, and
+# 1/9 is 11.11%. A 5% gate on such a row has two reachable verdicts, "no change"
+# and a double-digit percentage; the gate is finer than the metric it is
+# reading. (This particular draw lands on a HALF step -- benchstat's median of a
+# five-nines/five-tens arm is 9.500 -- which is smaller still than one
+# allocation and could not possibly be a real change.)
+#
+# The B/op and sec/op tables of the same run are kept for contrast. B/op is an
+# allocation metric too, but its quantum is one byte out of 300000, so it is
+# unmoved -- which is why the quantisation check is applied to counts alone.
+goos: linux
+goarch: amd64
+pkg: github.com/luthersystems/elps/lisp/lisplib/libjson
+                        │  base.txt   │            pr.txt             │
+                        │   sec/op    │   sec/op     vs base          │
+EncodeOwnMessageLarge-2   1.939m ± 3%   1.917m ± 2%  ~ (p=0.353 n=10)
+
+                        │   base.txt   │             pr.txt             │
+                        │     B/op     │     B/op      vs base          │
+EncodeOwnMessageLarge-2   302.0Ki ± 1%   302.6Ki ± 2%  ~ (p=0.061 n=10)
+
+                        │  base.txt  │              pr.txt               │
+                        │ allocs/op  │ allocs/op   vs base               │
+EncodeOwnMessageLarge-2   9.000 ± 0%   9.500 ± 5%  +5.56% (p=0.033 n=10)

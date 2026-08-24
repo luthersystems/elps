@@ -1,0 +1,30 @@
+# The class boundary of the quantisation check, in one table.
+#
+# Synthetic, unlike its two companion fixtures -- the measured evidence lives in
+# benchstat-allocs-quantised-null.txt (the false positive) and
+# benchstat-allocs-one-step-real.txt (the regression that must still fire). This
+# one exists to pin the ARITHMETIC, which no real comparison happens to exercise
+# at every edge at once. Five allocs/op rows, differing only in base count, in
+# spread, and in how many counts the move is worth:
+#
+#   ReproducingNine-2     9 -> 10, ± 0%   +11.11%  REGRESSION  reproduces, so it is real
+#   JitteryNine-2         9 -> 10, ±11%   +11.11%  QUANTISED   one count, does not reproduce
+#   JitteryNineTwoStep-2  9 -> 11, ±11%   +22.22%  REGRESSION  two counts; truncation cannot do that
+#   JitteryTwenty-2      20 -> 21, ± 5%    +5.00%  QUANTISED   the largest base the check can reach
+#   JitteryTwentyOne-2   21 -> 22, ± 5%    +4.76%  below-gate  one count is already under 5% here
+#
+# The last two are the containment argument: one allocation clears the 5%
+# allocation gate only at 20 counts and below, so above that the check cannot
+# change a verdict that was not already "below-gate". It is not a general
+# licence for allocation rows to move.
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Neoverse-N1
+                        │     base     │                 pr                  │
+                        │  allocs/op   │  allocs/op    vs base               │
+ReproducingNine-2         9.000 ±  0%    10.00 ±  0%  +11.11% (p=0.000 n=10)
+JitteryNine-2             9.000 ± 11%    10.00 ± 10%  +11.11% (p=0.023 n=10)
+JitteryNineTwoStep-2      9.000 ± 11%    11.00 ±  9%  +22.22% (p=0.000 n=10)
+JitteryTwenty-2           20.00 ±  5%    21.00 ±  5%   +5.00% (p=0.008 n=10)
+JitteryTwentyOne-2        21.00 ±  5%    22.00 ±  5%   +4.76% (p=0.008 n=10)

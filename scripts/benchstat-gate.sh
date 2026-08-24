@@ -129,9 +129,10 @@
 # --------------------------------------------------------------
 # Both thresholds above are single numbers applied to every row of their metric
 # class, which is exactly as good as the assumption behind it: that the rows in
-# a class have comparable noise.  For the allocation metrics it holds --
-# identical code reproduces them EXACTLY, benchstat prints "± 0%" and routinely
-# annotates the row "all samples are equal".  For timing it does not.
+# a class have comparable noise.  For most allocation rows it holds -- identical
+# code reproduces them EXACTLY, benchstat prints "± 0%" and routinely annotates
+# the row "all samples are equal".  For timing it does not, and for one shape of
+# allocation row it does not either; see the quantisation check below.
 #
 # Issue #443 is the worked example.  BenchmarkPackageGetFunParallel failed the
 # gate on PR #442 -- a parser-only change with no path to a map lookup in the
@@ -169,11 +170,14 @@
 # chose once.  Note what it does NOT do:
 #
 #   * It never applies to B/op or allocs/op.  Those are the metrics that have
-#     caught every real regression this gate has caught; they are exact rather
-#     than sampled, and their spread is "± 0%", so a rule keyed on spread would
-#     be a no-op there anyway.  It is skipped explicitly regardless, so that
-#     stays true even if some future benchmark makes an allocation column
-#     jitter.
+#     caught every real regression this gate has caught, and on the rows where
+#     they are exact their spread is "± 0%", so a rule keyed on spread would be
+#     a no-op there anyway.  It is skipped explicitly regardless -- an
+#     allocation column that DOES jitter must not be able to buy itself the
+#     timing metrics' leniency, because a jittery allocation column is a
+#     benchmark defect and not a noise floor.  Rows where an allocation column
+#     jitters are handled by the quantisation check below instead, which is a
+#     far narrower rule: it can only ever discard a ONE-COUNT move.
 #   * It cannot suppress a large move.  On the row above it would take a >24%
 #     regression to fire -- which is what "this row cannot resolve less than
 #     that" means.  A row whose noise is genuinely that large is not being
@@ -192,6 +196,86 @@
 # longer -benchtime for that benchmark, or keeping a sub-100ns RunParallel body
 # out of the comparison set), and the NOISE-FLOOR line is what tells you which
 # rows need it.
+#
+# A count is not a measurement: the quantisation check
+# ----------------------------------------------------
+# `go test` reports allocs/op as
+#
+#     int64(memstats.Mallocs - before) / int64(b.N)
+#
+# INTEGER DIVISION.  The numerator is not a multiple of b.N, so the printed
+# column is a TRUNCATION of a continuous cost, and a row whose true cost sits
+# near an integer prints either side of it from run to run with no code change
+# at all.
+#
+# libjson's BenchmarkEncodeOwnMessageLarge is the worked example.  Measured
+# directly, by reading MemStats around 2000 encodes of the same ~295 KB document
+# at the DEFAULT GOGC:
+#
+#     true allocs/op = 9.985          reported allocs/op = 9  or  10
+#
+# a fifth of a percent below the boundary.  Ten consecutive samples of that row
+# from ONE binary, at CI's -benchtime=100ms, come back as a mix of 9s and 10s,
+# and benchstat -- correctly -- summarises the arm as "9.000 ± 11%" on a column
+# this file used to describe as exact.  When the mix falls the wrong way across
+# two arms the table reads
+#
+#     EncodeOwnMessageLarge-2   9.000 ± 11%   10.00 ± 10%   +11.11% (p=0.023 n=10)
+#
+# on code that did not change -- which is what reddened a PR touching only the
+# nested tree-sitter module.  Note the delta cannot be small: the SMALLEST move
+# this row can express is one allocation out of nine, and 1/9 is 11.11%.  A 5%
+# gate on a 9-count row has exactly two reachable verdicts, "no change" and
+# "+11.11%".
+#
+# Where the fractional part comes from, on this row, is sync.Pool: runtime
+# poolCleanup drops every pool at every GC, so the next Get goes through
+# pin -> pinSlow and reallocates the per-P array.  An alloc-profile diff over
+# 2000 encodes attributes the difference to sync.(*Pool).pinSlow, NOT to a pool
+# miss -- the encoder itself comes back from the pool essentially every time
+# (0.001 misses/op).  That cost is per-GC, so dividing it by the handful of
+# operations between two collections lands it at "about one allocation per op",
+# and which side of 10.0 it lands on is GC cadence rather than code.  Warming
+# the pool before b.ResetTimer does not touch it: nothing survives poolCleanup.
+#
+# The rule:
+#
+#   A move of ONE COUNT on an integer-count metric (allocs/op) is called a
+#   REGRESSION only when the row reproduces its own count -- that is, only when
+#   benchstat measured NO spread on either arm.  A one-count move on a row that
+#   disagrees with itself is reported as QUANTISED and excluded from the
+#   verdict.
+#
+# It is deliberately the tightest rule that fixes the class:
+#
+#   * It can only ever discard a ONE-COUNT move.  Two counts is not reachable by
+#     truncation -- that needs the true values to differ by more than a whole
+#     allocation -- so it is adjudicated normally.
+#   * One count clears the 5% allocation gate only at 20 allocs/op and below
+#     (1/20 = 5.00%, 1/21 = 4.76%).  From 21 up a single-count move is already
+#     under the gate, so this rule changes no verdict that was not already
+#     "below-gate".
+#   * It does NOT fire on a stable row.  A genuine one-allocation regression on
+#     a 9-count row that reproduces exactly still reds the build at +11.11%,
+#     with "± 0%" on both arms.  That is measured rather than assumed: adding
+#     one escaping allocation to the encode path moves
+#     BenchmarkEncodeOwnMessageSmall from 9.000 ± 0% to 10.000 ± 0%, and the
+#     gate calls it a REGRESSION.  The check keys on a row disagreeing WITH
+#     ITSELF, which a real regression does not do.
+#   * It does nothing when benchstat could not compute an interval ("± ∞ ¹",
+#     below 6 samples) or when the base cell cannot be parsed.  Those rows fall
+#     back to the threshold alone and SAY SO on the regression line, so a check
+#     that did not run is never mistaken for one that ran and passed.
+#
+# The honest cost: on a row that does not reproduce its own allocation count, a
+# real ONE-allocation regression is now reported rather than gated.  It was
+# never distinguishable there -- the same one-count step is what the row
+# produces on identical code -- and the QUANTISED line is what says which rows
+# need fixing.  The fix for such a row is to make the count reproduce: stop the
+# benchmark forcing a collection every few operations, or keep it out of the
+# comparison set.  Raising the allocation threshold is NOT the fix -- 5% is
+# already far below the 11.11% quantum of a 9-count row, so no reachable
+# threshold separates the two cases.
 #
 # Reviewed waivers
 # ---------------
@@ -418,6 +502,37 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 		return s
 	}
 
+	# 1 for a metric that counts WHOLE THINGS, which today means allocs/op
+	# alone.  B/op is an allocation metric too, but it is not a count: its
+	# quantum is one byte out of thousands, so the quantisation rule below is a
+	# no-op there and is not applied to it.
+	function is_count_metric(m) {
+		return (m ~ /^allocs?\/op$/)
+	}
+
+	# The numeric magnitude of a benchstat value cell, or -1 when it is not one
+	# this gate can read.  benchstat SCALES large values and prints the scale as
+	# a suffix -- "128.0k" is 128000 allocations, not 128 -- so the printed
+	# token is not the number, and the quantisation rule below needs the number.
+	# Unreadable is -1 rather than 0 so a cell this gate cannot parse can never
+	# be mistaken for a row with no allocations, which would suppress it.
+	function parse_magnitude(s,   mant, suf, mult) {
+		if (s !~ /^[0-9]+(\.[0-9]+)?[A-Za-z]*$/) return -1
+		if (!match(s, /^[0-9]+(\.[0-9]+)?/)) return -1
+		mant = substr(s, RSTART, RLENGTH) + 0
+		suf = substr(s, RSTART + RLENGTH)
+		if (suf == "") return mant
+		mult = 0
+		if (suf == "k" || suf == "K") mult = 1000
+		else if (suf == "M") mult = 1000000
+		else if (suf == "G") mult = 1000000000
+		else if (suf == "Ki") mult = 1024
+		else if (suf == "Mi") mult = 1048576
+		else if (suf == "Gi") mult = 1073741824
+		if (mult == 0) return -1
+		return mant * mult
+	}
+
 	# `go test` appends -<GOMAXPROCS> to every benchmark name (and omits it
 	# entirely at GOMAXPROCS=1), so the suffix follows the RUNNER, not the code.
 	# Waivers are written without it and rows are stripped down to match; that is
@@ -559,6 +674,11 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 		if (index(line, "│") > 0) next
 
 		name = $1
+		# The median of the base arm, as benchstat printed it.  Both table formats
+		# put it in the first column after the name ("9.000", "128.0k"), and
+		# the quantisation rule below needs its magnitude to know how many
+		# WHOLE allocations a percentage delta stands for.
+		basev = parse_magnitude($2)
 
 		# Bound the delta search: stop before "(p=" so the p-value is never
 		# scanned, and start after the last "±" so an old-format "± 2%" spread
@@ -673,6 +793,40 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 				pkg, metric, name, delta_tok, pval_str, gate, spread, dir
 			next
 		}
+		# QUANTISATION.  `go test` reports allocs/op as
+		# int64(memstats.Mallocs)/int64(b.N) -- INTEGER DIVISION of a quantity
+		# that is not an integer.  A row whose true cost is 9.99 allocations
+		# per operation prints 9 on one sample and 10 on the next, from GC
+		# cadence alone, and benchstat reads that as an 11.11% move.  See the
+		# quantisation-check note in the header for the measurement.
+		#
+		# So a move of ONE COUNT on an integer-count metric is only adjudicated
+		# when the row is reproducing that count exactly.  When either arm
+		# disagrees with itself -- a nonzero spread on a metric that is
+		# supposed to be exact -- one count is the smallest thing it can say
+		# and the change is indistinguishable from the reported integer landing
+		# on the other side of the boundary.
+		#
+		# The bound is deliberately the tightest one that fixes the class: it
+		# can only ever discard a ONE-COUNT move, and one count clears the 5%
+		# allocation gate only on a row under 20 allocs/op.  Above that a
+		# single-count move is already below the gate and this rule changes
+		# nothing.
+		if (is_count_metric(metric) && basev > 0 && spread > 0 &&
+		    basev * regr / 100.0 < 1.5) {
+			quantised++
+			printf "  QUANTISED   %-46s %-9s %-40s delta=%s p=%s (gate %s%%) base %s allocs/op, so this is a ONE-ALLOCATION step -- and the row does not reproduce its own count (spread ±%s%% on a metric that should be exact), so a one-step move cannot be told from `go test` truncating a fractional allocs/op to the other integer; not a regression, and not suppressed either: pin the count (drop the per-op allocation below the GC-cadence noise, or cut b.N variance) if this row needs to be gateable at one allocation %s\n",
+				pkg, metric, name, delta_tok, pval_str, gate, basev, spread, dir
+			next
+		}
+		noquant = ""
+		if (is_count_metric(metric) && regr > 0) {
+			if (basev <= 0) {
+				noquant = " [base cell unreadable, so the quantisation check did not run]"
+			} else if (spread < 0) {
+				noquant = " [no interval: benchstat needs >= 6 samples, so the quantisation check did not run]"
+			}
+		}
 		nospread = (!is_alloc_metric(metric) && spread < 0) ? " [no interval: benchstat needs >= 6 samples, so the resolution check did not run]" : ""
 
 		# At or above the gate. A waiver can turn this into a PASS, but only
@@ -683,14 +837,14 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 			regressions++
 			wexpiredhit[wi] = 1
 			printf "  REGRESSION  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) WAIVER EXPIRED %s (%s), no longer suppressing %s%s\n",
-				pkg, metric, name, delta_tok, pval_str, gate, wexp[wi], wissue[wi], dir, nospread
+				pkg, metric, name, delta_tok, pval_str, gate, wexp[wi], wissue[wi], dir, nospread noquant
 			next
 		}
 		if (wi && regr > wceil[wi]) {
 			regressions++
 			wexceeded[wi] = 1
 			printf "  REGRESSION  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) EXCEEDS its waiver ceiling %s%% (%s) %s%s\n",
-				pkg, metric, name, delta_tok, pval_str, gate, wceilstr[wi], wissue[wi], dir, nospread
+				pkg, metric, name, delta_tok, pval_str, gate, wceilstr[wi], wissue[wi], dir, nospread noquant
 			next
 		}
 		if (wi) {
@@ -703,7 +857,7 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 
 		regressions++
 		printf "  REGRESSION  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) %s%s\n",
-			pkg, metric, name, delta_tok, pval_str, gate, dir, nospread
+			pkg, metric, name, delta_tok, pval_str, gate, dir, nospread noquant
 	}
 
 	END {
@@ -735,10 +889,10 @@ awk -v alpha="$ALPHA" -v threshold="$THRESHOLD" -v alloc_threshold="$ALLOC_THRES
 					wsource, wline[i], wpkg[i], wbench[i], wmetric[i], wexp[i], wissue[i]
 			}
 		}
-		printf "VERDICT %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
+		printf "VERDICT %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
 			regressions + 0, significant + 0, compared + 0, tilde + 0, badp + 0,
 			waived + 0, wbad + 0, wstale + 0, wunused + 0, wexp_n + 0, nw + 0,
-			woutscope + 0, unresolved + 0
+			woutscope + 0, unresolved + 0, quantised + 0
 	}
 ' "$waiver_input" "$input" >"$report"
 
@@ -747,7 +901,7 @@ sed '$d' "$report"
 
 read -r _ n_regressions n_significant n_compared n_tilde n_badp \
 	n_waived n_waiver_bad n_waiver_stale n_waiver_unused n_waiver_expired n_waivers \
-	n_waiver_outscope n_unresolved <<<"$verdict_line"
+	n_waiver_outscope n_unresolved n_quantised <<<"$verdict_line"
 
 if [ "$n_waiver_bad" -gt 0 ]; then
 	cat >&2 <<-EOF
@@ -791,6 +945,14 @@ echo "benchstat-gate: interpreted ${n_compared} delta row(s) + ${n_tilde} no-cha
 # exists to fix.
 if [ "$n_unresolved" -gt 0 ]; then
 	echo "benchstat-gate: ${n_unresolved} timing row(s) moved past the gate but by LESS than their own measured spread, so this comparison cannot resolve them (reported as NOISE-FLOOR above, excluded from the verdict). They are not gateable as sampled; make them quieter or keep them out of the comparison set."
+fi
+
+# Same doctrine as NOISE-FLOOR above, for the integer-count metrics: printed
+# whenever it is nonzero, never folded into the regression count. A QUANTISED
+# row is a benchmark whose allocs/op does not reproduce, which is a standing
+# problem with the benchmark rather than a clean result.
+if [ "$n_quantised" -gt 0 ]; then
+	echo "benchstat-gate: ${n_quantised} allocation-count row(s) moved past the gate by exactly ONE allocation on a row that does not reproduce its own count, so the move cannot be told from \`go test\` truncating a fractional allocs/op (reported as QUANTISED above, excluded from the verdict). They are not gateable at one allocation as sampled."
 fi
 
 # Printed on EVERY run, including clean ones. A waiver is a standing decision,
