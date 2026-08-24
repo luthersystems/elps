@@ -473,6 +473,14 @@ func (s *Serializer) dump(v *lisp.LVal, stringNums bool) (b []byte, loadable boo
 	// than recycling it: the encoder goes back to the pool with an empty one
 	// and the caller keeps the array, exactly as it did before the pool
 	// existed.  Copying instead was measured and is worse -- see donateBuffer.
+	//
+	// The two calls below are order-dependent and the order is the safe one
+	// only by a property of loadableBytes: donateBuffer EMPTIES the buffer, so
+	// anything reading it afterwards reads nothing, and loadableBytes gets
+	// away with running second because it reads the nestedDeep and
+	// wroteNative flags and never the bytes.  Keep it that way -- if
+	// loadableBytes ever needs the document, it has to run BEFORE the buffer
+	// is donated.
 	b, loadable = enc.donateBuffer(), enc.loadableBytes()
 	putEncoder(enc)
 	return b, loadable, nil
