@@ -120,13 +120,28 @@ func (v *LVal) SealAST() {
 	recordSealedRoot(v)
 }
 
-func (v *LVal) sealAST() {
-	if v == nil || v.sealed || isSingleton(v) {
-		return
-	}
-	switch v.Type {
+// sealableNodeType reports whether SealAST marks a node of type t.  The set
+// is exactly the types elps literal syntax can produce; every other type was
+// necessarily constructed at runtime, and sealing it would freeze storage the
+// evaluator legitimately mutates (see SealAST's comment).
+//
+// It is stated once, here, because three places have to agree on it: sealAST,
+// InheritSeal, and the package registry's admission check (lisp/
+// package_admit.go), which decides per value class what AddPackage may do
+// with a caller's binding.  A new parser-producible type that is added to
+// one switch and forgotten in another is a silent hole in whichever check
+// was missed.
+func sealableNodeType(t LType) bool {
+	switch t {
 	case LSExpr, LQuote, LSymbol, LQSymbol, LString, LInt, LFloat:
+		return true
 	default:
+		return false
+	}
+}
+
+func (v *LVal) sealAST() {
+	if v == nil || v.sealed || isSingleton(v) || !sealableNodeType(v.Type) {
 		return
 	}
 	// The write below is the one sanctioned non-fresh LVal write in the
@@ -189,12 +204,7 @@ func errModifyLiteral(env *LEnv) *LVal {
 // Sealing is monotone, so this is idempotent and safe to call on a value
 // that is already sealed.
 func (v *LVal) InheritSeal(src *LVal) {
-	if v == nil || v.sealed || !src.IsSealed() || isSingleton(v) {
-		return
-	}
-	switch v.Type {
-	case LSExpr, LQuote, LSymbol, LQSymbol, LString, LInt, LFloat:
-	default:
+	if v == nil || v.sealed || !src.IsSealed() || isSingleton(v) || !sealableNodeType(v.Type) {
 		return
 	}
 	// Same sanctioned write as sealAST's: v is a header the caller minted a
