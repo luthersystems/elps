@@ -2,9 +2,13 @@
 
 package lisp
 
-// formalsCopier gives every definition registered through LEnv.AddBuiltins,
-// LEnv.AddSpecialOps or LEnv.AddMacros its own formal argument list, carved
-// out of two blocks sized for the whole registration call.
+// formalsCopier gives every UNSEALED definition registered through
+// LEnv.AddBuiltins, LEnv.AddSpecialOps or LEnv.AddMacros its own formal
+// argument list, carved out of two blocks sized for the whole registration
+// call.  It is the fallback half of registrationFormals (env.go): sealed
+// definition-table formals — every table in this repository — are aliased
+// into each environment without any copy, so this copier serves third-party
+// LBuiltinDefs whose Formals() were never sealed.
 //
 // Why a copy at all:
 //
@@ -56,14 +60,15 @@ type formalsCopier struct {
 // newFormalsCopier sizes the blocks for defs.  It returns a value rather than a
 // pointer so that the stdlib loaders, which call the Add* methods once per
 // definition, do not pay a heap allocation for the copier itself.  Definitions
-// whose formals are not block-copyable are skipped here and fall back to
-// LVal.Copy in copy.
+// whose sealed formals will be aliased rather than copied (registrationFormals,
+// env.go) are excluded from the block; definitions whose formals are not
+// block-copyable are skipped here and fall back to LVal.Copy in copy.
 func newFormalsCopier(defs []LBuiltinDef) formalsCopier {
 	var c formalsCopier
 	nval, nptr := 0, 0
 	for _, def := range defs {
 		formals := def.Formals()
-		if !blockCopyableFormals(formals) {
+		if sealedShareableFormals(formals) || !blockCopyableFormals(formals) {
 			continue
 		}
 		nval += 1 + len(formals.Cells)

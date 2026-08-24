@@ -298,12 +298,25 @@ func (env *LEnv) UsePackage(name *LVal) *LVal {
 	if pkg == nil {
 		return env.Errorf("unknown package: %v", name.Str)
 	}
+	dst := env.Runtime.Package
 	for _, sym := range pkg.externals {
-		v := pkg.Get(Symbol(sym))
-		if v.Type == LError {
-			return env.Errorf("package %s: %v", name.Str, v)
+		if sym == TrueSymbol || sym == FalseSymbol {
+			// Exporting a boolean constant was always a no-op: pkg.Get
+			// resolved the constant to itself and Put refused the rebind
+			// (its error was ignored).  Skipping keeps that behavior
+			// without consulting the symbol table.
+			continue
 		}
-		env.Runtime.Package.Put(Symbol(sym), v)
+		v, ok := pkg.Symbol(sym)
+		if !ok {
+			// Cold path: reproduce pkg.Get's unbound-symbol error verbatim.
+			return env.Errorf("package %s: %v", name.Str, pkg.Get(Symbol(sym)))
+		}
+		// putName, not Put: the hot import loop binds hundreds of names per
+		// environment, and the two Symbol header allocations per name (one
+		// for the probe, one for the store) were pure key packaging.  The
+		// constant-rebind check Put performs is the guard above.
+		dst.putName(sym, v)
 	}
 	return Nil()
 }
@@ -818,44 +831,112 @@ func (env *LEnv) root() *LEnv {
 	return env
 }
 
-// The definition tables' formals are SEALED, and every environment still gets
-// its OWN copy of them.  The two are not alternatives, and the reason they
-// coexist is worth writing down because each one closes what the other leaves
-// open.
+// registrationFormals returns the formals list to install into a function
+// value being registered from def-table storage: the SEALED template itself
+// when sealing makes sharing safe, a private copy otherwise.
 //
 // Builtin definitions are commonly stored in package-level tables
 // (var builtins = ...) whose Formals() lists are constructed once at Go
 // program initialization, so one *LVal per definition is reachable from every
-// environment in the process (issue #363).  formalsCopier (lisp/defformals.go,
-// issue #513) severs that: each registration carves a private formals list out
-// of a block sized for the whole call, so no two environments share one, and
-// a write through one environment's formals cannot be seen from another.
+// environment in the process (issue #363).  Two mechanisms make that safe,
+// and this function is where they meet:
 //
-// Sealing the TEMPLATE is the other half.  sealDefaultFormals (builtins.go)
-// and libutil's constructors mark the tables' own lists sealed at
-// construction, which puts the shared originals under the copy-on-write
-// mutation guards (lisp/seal.go) and, in checked builds, under the
-// fingerprint verifier (VerifySealedASTs).  The per-env copy protects each
-// environment from the others; the seal protects the process-wide template
-// from all of them, including from Go code in this repository that never goes
-// near an LEnv.
+//   - SEALED templates are ALIASED.  sealDefaultFormals (builtins.go), the
+//     RegisterDefault* entry points and libutil's constructors mark the
+//     tables' own lists sealed at construction, which puts them under the
+//     copy-on-write mutation guards (lisp/seal.go), the -race seal watchdog,
+//     and, in checked builds, the fingerprint verifier (VerifySealedASTs).
+//     A sealed list is immutable by contract, so handing the same *LVal to
+//     every environment is the same topology lisp-defined functions have
+//     always had — their formals are sealed parser output aliased into every
+//     closure — and the same one substrate's parse cache ships in
+//     production.  The calling convention never writes a formals cell
+//     (bind/bindFormalNext read only; see TestSharedFormalsConcurrentCalls,
+//     which hammers exactly that from concurrent runtimes), and sharing the
+//     sealed list saves ~90KiB and ~220 allocations per LoadLibrary
+//     environment against the per-env block copies (BenchmarkEnvInit:
+//     -21.1% B/op; issues #379, #514) — live, pointer-dense bytes that
+//     every GC cycle otherwise re-scans per environment, which is the
+//     distributed timing drag issue #514 traces.
 //
-// The copies are unsealed, deliberately: formalsCopier.copy clears the flag
-// exactly as (*LVal).Copy does, so a per-env formals list is ordinary mutable
-// storage that its one owner may write.  Sharing the sealed list instead --
-// which the sealing work prototyped, and which measured ~90KiB and >1000
-// allocations saved per LoadLibrary environment -- is a real optimization and
-// is deliberately NOT taken here; it belongs with the rest of the
-// seal-enabled sharing work (issues #379, #514), where the benchmark evidence
-// and the ownership-checker consequences can be weighed together rather than
-// smuggled in as a merge resolution.
+//   - UNSEALED formals still get a private copy (formalsCopier,
+//     lisp/defformals.go, issue #513).  A third-party LBuiltinDef whose
+//     Formals() was never sealed keeps exactly the pre-sharing behavior: each
+//     registration carves a private list out of a block sized for the whole
+//     call, so no two environments share mutable formals, and a write
+//     through one environment's copy cannot be seen from another.  The copy
+//     is unsealed — ordinary mutable storage its one owner may write.
+//
+// The alias condition is sealedShareableFormals, not IsSealed alone: every
+// cell the calling convention will read must itself be sealed, so a
+// hand-built header that only LOOKS sealed at the root falls back to the
+// defensive copy.
+func registrationFormals(c *formalsCopier, formals *LVal) *LVal {
+	if sealedShareableFormals(formals) {
+		return formals
+	}
+	return c.copy(formals)
+}
+
+// sealedShareableFormals reports whether formals is a sealed flat symbol
+// list — the shape lisp.Formals builds and SealAST marks — safe to alias
+// into every environment.  The per-cell seal check matters: bind() reads the
+// cells, so a list whose root inherited a seal over unsealed cells must not
+// be shared.  Anything else (including the nil and non-list shapes the
+// copier also rejects) takes the copy path, whose own fallbacks handle them.
+func sealedShareableFormals(v *LVal) bool {
+	if v == nil || v.Type != LSExpr || !v.IsSealed() {
+		return false
+	}
+	for _, cell := range v.Cells {
+		if cell == nil || cell.Type != LSymbol || len(cell.Cells) != 0 || !cell.IsSealed() {
+			return false
+		}
+	}
+	return true
+}
+
+// registrationBound reports whether name is already bound in pkg, returning
+// the bound value.  It answers the same question the Add* methods used to ask
+// with pkg.Get, at none of Get's per-miss cost: Get constructs an "unbound
+// symbol" LError — message formatting and all — for every miss, and on the
+// registration path that error was built once per definition per environment
+// only to be type-sniffed and dropped (measured at ~26% of env-construction
+// allocation objects).  The boolean constants probe as bound-to-themselves,
+// exactly as Get resolves them, so registering a definition named "true" or
+// "false" still panics as a duplicate rather than silently failing to bind.
+func registrationBound(pkg *Package, name string) (*LVal, bool) {
+	if name == TrueSymbol || name == FalseSymbol {
+		return Symbol(name), true
+	}
+	return pkg.Symbol(name)
+}
+
+// registrationFunValue builds the function value the Add* methods install: a
+// fresh LFun header over the (possibly shared, sealed) formals and the
+// documentation string.  It is FunInPackage/MacroInPackage/SpecialOpInPackage
+// with the docstring placed at construction — the public constructors
+// allocate an empty-string docstring cell the Add* methods immediately
+// replaced, one dropped allocation per definition per environment.
+func registrationFunValue(pkgName, fid string, funType LFunType, formals *LVal, fn LBuiltin, doc string) *LVal {
+	return &LVal{
+		Type:    LFun,
+		FunType: funType,
+		Native: &funData{
+			fid:     fid,
+			builtin: fn,
+			pkg:     pkgName,
+		},
+		Cells: []*LVal{formals, String(doc)},
+	}
+}
 
 // AddMacros binds the given macros to their names in env.  When called with no
 // arguments AddMacros adds the DefaultMacros to env.
 //
-// Each macro's formal argument list is copied into env rather than installed by
-// reference, so environments never share one formals object; see formalsCopier
-// and issue #363.
+// A macro's sealed formal argument list is shared with env by reference; an
+// unsealed one is copied so environments never share mutable formals.  See
+// registrationFormals and issues #363, #379, #514.
 func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 	if len(macs) == 0 {
 		macs = DefaultMacros()
@@ -863,21 +944,21 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 	formals := newFormalsCopier(macs)
 	pkg := env.Runtime.Package
 	for _, mac := range macs {
-		k := Symbol(mac.Name())
-		exist := pkg.Get(k)
-		if !exist.IsNil() && exist.Type != LError { // LError is ubound symbol
+		name := mac.Name()
+		// registrationBound replicates the probe pkg.Get used to answer,
+		// without Get's per-miss error construction; see its comment.
+		if exist, bound := registrationBound(pkg, name); bound && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
 			// NOT LISP-REACHABLE (#367): AddMacros is registration-time Go
 			// API.  No builtin, operator or macro calls it, so the only way to
 			// bind one name twice is an embedder registering it twice.  The
 			// embedder-facing half of that story is #351.
-			panic(fmt.Sprintf("macro already defined: %v (= %v)", k, exist))
+			panic(fmt.Sprintf("macro already defined: %v (= %v)", name, exist))
 		}
-		id := fmt.Sprintf("<builtin-macro ``%s''>", mac.Name())
-		fn := MacroInPackage(pkg.Name, id, formals.copy(mac.Formals()), mac.Eval)
-		fn.Cells[1] = String(builtinDocstring(mac))
-		pkg.Put(k, fn)
+		fn := registrationFunValue(pkg.Name, "<builtin-macro ``"+name+"''>", LFunMacro,
+			registrationFormals(&formals, mac.Formals()), mac.Eval, builtinDocstring(mac))
+		pkg.putName(name, fn)
 		if external {
-			pkg.externals = append(pkg.externals, k.Str)
+			pkg.externals = append(pkg.externals, name)
 		}
 	}
 }
@@ -885,9 +966,9 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 // AddSpecialOps binds the given special operators to their names in env.  When
 // called with no arguments AddSpecialOps adds the DefaultSpecialOps to env.
 //
-// Each operator's formal argument list is copied into env rather than installed
-// by reference, so environments never share one formals object; see
-// formalsCopier and issue #363.
+// An operator's sealed formal argument list is shared with env by reference;
+// an unsealed one is copied so environments never share mutable formals.  See
+// registrationFormals and issues #363, #379, #514.
 func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 	if len(ops) == 0 {
 		ops = DefaultSpecialOps()
@@ -895,19 +976,17 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 	formals := newFormalsCopier(ops)
 	pkg := env.Runtime.Package
 	for _, op := range ops {
-		k := Symbol(op.Name())
-		exist := pkg.Get(k)
-		if !exist.IsNil() && exist.Type != LError { // LError is ubound symbol
+		name := op.Name()
+		if exist, bound := registrationBound(pkg, name); bound && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
 			// NOT LISP-REACHABLE (#367): see AddMacros above -- registration
 			// is Go API an embedder drives, never lisp source.
-			panic(fmt.Sprintf("macro already defined: %v (= %v)", k, exist))
+			panic(fmt.Sprintf("macro already defined: %v (= %v)", name, exist))
 		}
-		id := fmt.Sprintf("<special-op ``%s''>", op.Name())
-		fn := SpecialOpInPackage(pkg.Name, id, formals.copy(op.Formals()), op.Eval)
-		fn.Cells[1] = String(builtinDocstring(op))
-		pkg.Put(k, fn)
+		fn := registrationFunValue(pkg.Name, "<special-op ``"+name+"''>", LFunSpecialOp,
+			registrationFormals(&formals, op.Formals()), op.Eval, builtinDocstring(op))
+		pkg.putName(name, fn)
 		if external {
-			pkg.externals = append(pkg.externals, k.Str)
+			pkg.externals = append(pkg.externals, name)
 		}
 	}
 }
@@ -915,9 +994,9 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 // AddBuiltins binds the given funs to their names in env.  When called with no
 // arguments AddBuiltins adds the DefaultBuiltins to env.
 //
-// Each function's formal argument list is copied into env rather than installed
-// by reference, so environments never share one formals object; see
-// formalsCopier and issue #363.
+// A function's sealed formal argument list is shared with env by reference;
+// an unsealed one is copied so environments never share mutable formals.  See
+// registrationFormals and issues #363, #379, #514.
 func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 	if len(funs) == 0 {
 		funs = DefaultBuiltins()
@@ -925,19 +1004,17 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 	formals := newFormalsCopier(funs)
 	pkg := env.Runtime.Package
 	for _, f := range funs {
-		k := Symbol(f.Name())
-		exist := pkg.Get(k)
-		if exist.Type != LError {
+		name := f.Name()
+		if exist, bound := registrationBound(pkg, name); bound && exist.Type != LError { // a stored LError value is overwritten, as pkg.Get's probe allowed
 			// NOT LISP-REACHABLE (#367): see AddMacros above -- registration
 			// is Go API an embedder drives, never lisp source.
-			panic("symbol already defined: " + f.Name())
+			panic("symbol already defined: " + name)
 		}
-		id := fmt.Sprintf("<builtin-function ``%s''>", f.Name())
-		v := FunInPackage(pkg.Name, id, formals.copy(f.Formals()), f.Eval)
-		v.Cells[1] = String(builtinDocstring(f))
-		pkg.Put(k, v)
+		v := registrationFunValue(pkg.Name, "<builtin-function ``"+name+"''>", LFunNone,
+			registrationFormals(&formals, f.Formals()), f.Eval, builtinDocstring(f))
+		pkg.putName(name, v)
 		if external {
-			pkg.externals = append(pkg.externals, k.Str)
+			pkg.externals = append(pkg.externals, name)
 		}
 	}
 }

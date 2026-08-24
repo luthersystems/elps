@@ -139,14 +139,12 @@ func describeLVal(v *lisp.LVal) string {
 		v, v.Type, v.Str, len(v.Cells), v.IsQuoted(), v.String())
 }
 
-// assertNoMutableSharing asserts that every pointer common to the two sets
-// is either explicitly allowed (the boolean/nil singletons) or sealed.
-// Sealed values are immutable by contract and safe to share; an unsealed
-// shared pointer is exactly the issue-#363 aliasing this test polices.
-func assertNoMutableSharing(t *testing.T, phase string, seen1, seen2, allowed map[*lisp.LVal]bool) {
-	t.Helper()
-	shared := 0
-	sealedShared := 0
+// countSharing partitions the pointers common to the two sets (minus the
+// allowlist) into mutable and sealed shares.  Factored out of
+// assertNoMutableSharing so TestCensusDetectsUnsealedFormalsSharing can run
+// the same census expecting a nonzero mutable count — the red-proof that
+// this walk actually fails when the sharing it polices occurs.
+func countSharing(seen1, seen2, allowed map[*lisp.LVal]bool) (mutableShared []*lisp.LVal, sealedShared int) {
 	for p := range seen1 {
 		if !seen2[p] || allowed[p] {
 			continue
@@ -155,10 +153,27 @@ func assertNoMutableSharing(t *testing.T, phase string, seen1, seen2, allowed ma
 			sealedShared++
 			continue
 		}
-		shared++
-		if shared <= 20 { // don't drown the log; the count is reported below
-			t.Errorf("%s: shared mutable LVal: %s", phase, describeLVal(p))
+		mutableShared = append(mutableShared, p)
+	}
+	return mutableShared, sealedShared
+}
+
+// assertNoMutableSharing asserts that every pointer common to the two sets
+// is either explicitly allowed (the boolean/nil singletons) or sealed.
+// Sealed values are immutable by contract and safe to share — since the
+// sharing work (issues #379, #514) the sealed count includes every builtin
+// formals template aliased by registrationFormals (lisp/env.go); an
+// unsealed shared pointer is exactly the issue-#363 aliasing this test
+// polices.
+func assertNoMutableSharing(t *testing.T, phase string, seen1, seen2, allowed map[*lisp.LVal]bool) {
+	t.Helper()
+	mutableShared, sealedShared := countSharing(seen1, seen2, allowed)
+	shared := len(mutableShared)
+	for i, p := range mutableShared {
+		if i >= 20 { // don't drown the log; the count is reported below
+			break
 		}
+		t.Errorf("%s: shared mutable LVal: %s", phase, describeLVal(p))
 	}
 	if shared > 0 {
 		t.Fatalf("%s: %d mutable LVal pointers shared between independently built environments (of %d and %d reachable; %d sealed pointers legitimately shared)",
@@ -249,13 +264,77 @@ func TestNoCrossEnvironmentLValSharing(t *testing.T) {
 	assertNoMutableSharing(t, "post-load", seen1, seen2, allowed)
 }
 
+// TestCensusDetectsUnsealedFormalsSharing is the red-proof for the census
+// above: with registrationFormals' seal guard disabled — templates aliased
+// into every environment WITHOUT being sealed — the walk must FAIL, not
+// pass vacuously.  The guard cannot be disabled from outside the kernel, so
+// the test replicates the guard-disabled outcome directly (the
+// path_view_alias_test.go replica style): two function values sharing one
+// unsealed formals list, one installed in each registry, exactly what
+// AddBuiltins would produce if registrationFormals aliased without checking
+// IsSealed.  countSharing must report the shared list and its parameter
+// symbol as mutable shares.
+func TestCensusDetectsUnsealedFormalsSharing(t *testing.T) {
+	env1 := newFullEnv(t)
+	env2 := newFullEnv(t)
+	allowed := map[*lisp.LVal]bool{
+		lisp.Nil():                              true,
+		env1.Get(lisp.Symbol(lisp.TrueSymbol)):  true,
+		env1.Get(lisp.Symbol(lisp.FalseSymbol)): true,
+		env2.Get(lisp.Symbol(lisp.TrueSymbol)):  true,
+		env2.Get(lisp.Symbol(lisp.FalseSymbol)): true,
+	}
+
+	// The clean baseline: without the injected sharing the census must pass,
+	// or the nonzero count below proves nothing about the injection.
+	seen1, stats1 := collectRegistry(env1)
+	seen2, stats2 := collectRegistry(env2)
+	requireNonVacuous(t, "red-proof baseline env1", seen1, stats1)
+	requireNonVacuous(t, "red-proof baseline env2", seen2, stats2)
+	if pre, _ := countSharing(seen1, seen2, allowed); len(pre) != 0 {
+		t.Fatalf("red-proof baseline already has %d mutable shares; cannot attribute detection to the injection", len(pre))
+	}
+
+	// The injection: one UNSEALED formals list behind a function value in
+	// each environment — the #363 topology the seal guard prevents.
+	sharedFormals := lisp.Formals("leaked-param")
+	nop := func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal { return lisp.Nil() }
+	fn1 := lisp.FunInPackage(lisp.DefaultUserPackage, "<red-proof-shared-formals>", sharedFormals, nop)
+	fn2 := lisp.FunInPackage(lisp.DefaultUserPackage, "<red-proof-shared-formals>", sharedFormals, nop)
+	if rc := env1.PutGlobal(lisp.Symbol("census-red-proof"), fn1); rc.Type == lisp.LError {
+		t.Fatalf("env1 PutGlobal: %v", rc)
+	}
+	if rc := env2.PutGlobal(lisp.Symbol("census-red-proof"), fn2); rc.Type == lisp.LError {
+		t.Fatalf("env2 PutGlobal: %v", rc)
+	}
+
+	seen1, _ = collectRegistry(env1)
+	seen2, _ = collectRegistry(env2)
+	mutableShared, _ := countSharing(seen1, seen2, allowed)
+	if len(mutableShared) == 0 {
+		t.Fatal("census failed to detect an unsealed formals list shared between two registries; " +
+			"TestNoCrossEnvironmentLValSharing would not catch registrationFormals aliasing without the seal guard")
+	}
+	found := false
+	for _, p := range mutableShared {
+		if p == sharedFormals {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("census flagged %d mutable shares but not the injected formals list itself", len(mutableShared))
+	}
+}
+
 // BenchmarkEnvInit measures full environment construction — NewEnv +
 // InitializeUserEnv + lisplib.LoadLibrary — which is where builtin
-// registration lands.  Registration carves a private formals list per
-// definition out of a per-call block (formalsCopier, issue #513); this
-// benchmark is the regression tripwire for that cost, and for any future
-// change to it — sharing the sealed templates instead would show up here as
-// a drop, which is the shape issues #379/#514 are about.
+// registration lands.  Registration aliases each definition's sealed formals
+// template into the environment and deep-copies only unsealed third-party
+// formals (registrationFormals in env.go; issues #379, #513, #514); this
+// benchmark is the regression tripwire for that cost — it is what measured
+// the per-env copies this design removed, and it is what catches any future
+// change that quietly reintroduces per-definition work.
 func BenchmarkEnvInit(b *testing.B) {
 	b.ReportAllocs()
 	for range b.N {
