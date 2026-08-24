@@ -131,30 +131,70 @@ func (m sortedmap) Set(key, val *LVal) *LVal {
 	}
 }
 
+// Entries materialises the map as sorted two-element pair lists.
+//
+// The three objects a pair needs -- the pair LVal, its two-element Cells
+// slice, and the key LVal -- are carved out of three arrays sized once from
+// Len() rather than allocated per entry.  Nothing observable changes: each
+// pair is still a distinct quoted LVal with its own Cells, and each key is
+// still a distinct LVal, so a caller can hold, mutate or discard them exactly
+// as before.  What changes is that a map of n entries costs three allocations
+// instead of 3n.
+//
+// This is the dominant allocation site on the `json:dump` path (issue #379,
+// item 6): the JSON encoder walks every map through Entries and throws every
+// pair away as soon as it has written the two bytes of key and value it needs,
+// so the per-entry boxing was pure garbage generated in proportion to the
+// document.  Batching does not reduce the BYTES -- an LVal costs the same
+// whether it sits in an array or alone -- it removes the allocator and GC
+// traffic, which is what the profile said was expensive.
+//
+// The arrays are jointly retained: holding one pair keeps all of them alive.
+// That is acceptable here because the caller supplied a buffer sized for the
+// whole map and every in-tree caller (the encoder, Keys, sortedMapString,
+// the sorted-map builtins) drops the entries as a unit.
 func (m sortedmap) Entries(buf []*LVal) *LVal {
-	if len(m.m) == 0 {
+	n := len(m.m)
+	if n == 0 {
 		return Int(0)
 	}
-	if len(buf) < len(m.m) {
+	if len(buf) < n {
 		return Errorf("buffer has insufficient length")
 	}
+	pairs := make([]LVal, n)
+	slots := make([]*LVal, 2*n)
+	// The key array is made on first use rather than up front: a map keyed
+	// entirely by symbols takes the other arm below and would otherwise pay
+	// n LVals of dead storage for keys it never writes.
+	var keys []LVal
 	i := 0
 	for k, v := range m.m {
-		switch k := k.(type) {
-		case string:
-			switch m.keytype(k) {
-			case stringkey:
-				buf[i] = mklist(String(k), v)
-			default:
-				buf[i] = mklist(Quote(Symbol(k)), v)
-			}
-		default:
+		ks, ok := k.(string)
+		if !ok {
 			return Errorf("unexpected map key: %v", k)
 		}
+		cells := slots[2*i : 2*i+2 : 2*i+2]
+		switch m.keytype(ks) {
+		case stringkey:
+			if keys == nil {
+				keys = make([]LVal, n)
+			}
+			keys[i] = LVal{Type: LString, Str: ks}
+			cells[0] = &keys[i]
+		default:
+			// A symbol key is quoted, and Quote wraps rather than
+			// flagging, so this arm needs a second LVal that the string
+			// arm does not.  Symbol keys are the rare case, so they keep
+			// the straightforward construction.
+			cells[0] = Quote(Symbol(ks))
+		}
+		cells[1] = v
+		pairs[i] = LVal{Type: LSExpr, quoted: true, Cells: cells}
+		buf[i] = &pairs[i]
 		i++
 	}
-	sort.Sort(mapEntriesByKey(buf[:len(m.m)]))
-	return Int(len(m.m))
+	sort.Sort(mapEntriesByKey(buf[:n]))
+	return Int(n)
 }
 
 func (m sortedmap) Keys() *LVal {

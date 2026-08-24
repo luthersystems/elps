@@ -224,7 +224,7 @@ func TestCheckLoadableMatchesLoad(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				loadOK := Load([]byte(tc.src), stringNums).Type != lisp.LError
 
-				checkOK := newEncoder(stringNums).checkLoadable([]byte(tc.src)) == nil
+				checkOK := getEncoder(stringNums).checkLoadable([]byte(tc.src)) == nil
 				if loadOK != checkOK {
 					t.Fatalf("checkLoadable and Load disagree\n  input:          %s\n  Load accepts:   %v\n  check accepts:  %v",
 						label(tc.src), loadOK, checkOK)

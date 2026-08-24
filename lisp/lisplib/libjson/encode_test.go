@@ -8,6 +8,7 @@ import (
 	"io"
 	mathrand "math/rand"
 	"strings"
+	"sync"
 	"testing"
 	"unsafe"
 
@@ -93,21 +94,23 @@ var stringNumberEncodeTests = []encodeTest{
 
 func testEncode(t testing.TB) {
 	for i, test := range stdEncodeTests {
-		enc := newEncoder(false)
+		enc := getEncoder(false)
 		if assert.NoError(t, enc.encode(test.v), "test %d: %v", i, test.v) {
 			js := string(enc.bytes())
 			assert.Equal(t, test.js, js, "test %d: %v", i, test.v)
 		}
+		putEncoder(enc)
 	}
 }
 
 func testEncode_stringNumbers(t testing.TB) {
 	for i, test := range stringNumberEncodeTests {
-		enc := newEncoder(true)
+		enc := getEncoder(true)
 		if assert.NoError(t, enc.encode(test.v), "test %d: %v", i, test.v) {
 			js := string(enc.bytes())
 			assert.Equal(t, test.js, js, "test %d: %v", i, test.v)
 		}
+		putEncoder(enc)
 	}
 }
 
@@ -152,7 +155,7 @@ func TestEncoderTypeCoverage(t *testing.T) {
 // TestEncodeUnregisteredTypeErrors proves the refused types fail loudly.
 func TestEncodeUnregisteredTypeErrors(t *testing.T) {
 	for typ, reason := range unencodableTypes {
-		enc := newEncoder(false)
+		enc := getEncoder(false)
 		err := enc.encode(&lisp.LVal{Type: typ})
 		require.Error(t, err, "encoding %v (%s) must fail", typ, reason)
 		assert.Contains(t, err.Error(), "invalid type encountered")
@@ -176,7 +179,7 @@ func TestEncode_largeBytes(t *testing.T) {
 	data := make([]byte, 4096)
 	_, err := io.ReadFull(rand.Reader, data)
 	require.NoError(t, err)
-	enc := newEncoder(false)
+	enc := getEncoder(false)
 	require.NoError(t, enc.encode(lisp.Bytes(data)))
 	var s string
 	err = json.Unmarshal(enc.bytes(), &s)
@@ -194,7 +197,7 @@ func TestEncoded_stringCompat(t *testing.T) {
 		if !assert.NoError(t, err, "canonical encoding of %q", s) {
 			continue
 		}
-		enc := newEncoder(true)
+		enc := getEncoder(true)
 		if assert.NoError(t, enc.encode(lisp.String(s)), "elps encoding of %q", s) {
 			assert.Equal(t, enc.bytes(), canonical)
 		}
@@ -282,7 +285,7 @@ func TestEncodeCyclicValueErrors(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			enc := newEncoder(false)
+			enc := getEncoder(false)
 			err := enc.encode(test.v)
 			require.ErrorIs(t, err, errCyclicValue)
 
@@ -339,4 +342,170 @@ func TestEncodeAcyclicValueIsUnchangedBelowAndAboveTheGuard(t *testing.T) {
 	b, err := Dump(dag, false)
 	require.NoError(t, err)
 	assert.Equal(t, want, string(b))
+}
+
+// TestPooledEncoderCarriesNoStateBetweenDocuments is the guard on the hazard
+// pooling introduced (issue #379, item 6).
+//
+// Before the pool every encode started from a zero encoder, so no field could
+// be stale by construction.  Now an encoder is handed back and reused, and
+// every one of its fields means something about ONE document: stringNums
+// decides how numbers are written, and nestedDeep and wroteNative are the two
+// inputs to loadableBytes, which is what `json:dump-message` records as its
+// loadability verdict.  A field that survived into the next document would
+// either change that document's bytes or attach the previous document's
+// verdict to it -- and the second is silent, because a message wrongly marked
+// unloadable still serializes correctly, just through the check elps#412
+// exists to skip.
+//
+// Red-proof: deleting any one of the four resets in getEncoder fails a case
+// below.
+func TestPooledEncoderCarriesNoStateBetweenDocuments(t *testing.T) {
+	// A recycled encoder must be indistinguishable from a fresh one, so each
+	// case dirties an encoder, returns it, and then asserts the next encode
+	// looks exactly like the same encode on a pool that was never used.
+	dirty := func(prep func(enc *encoder)) {
+		enc := getEncoder(true)
+		prep(enc)
+		putEncoder(enc)
+	}
+
+	t.Run("stringNums", func(t *testing.T) {
+		dirty(func(enc *encoder) {
+			require.NoError(t, enc.encode(lisp.Int(1)))
+			require.Equal(t, `"1"`, string(enc.bytes()), "test setup: not string numbers")
+		})
+		b, err := Dump(lisp.Int(1), false)
+		require.NoError(t, err)
+		assert.Equal(t, "1", string(b), "the previous encode's number format leaked")
+	})
+
+	t.Run("wroteNative", func(t *testing.T) {
+		raw := json.RawMessage(`{"a":1}`)
+		dirty(func(enc *encoder) {
+			require.NoError(t, enc.encode(lisp.Native(&raw)))
+			require.False(t, enc.loadableBytes(), "test setup: native not recorded")
+		})
+		enc := getEncoder(false)
+		defer putEncoder(enc)
+		require.NoError(t, enc.encode(lisp.Int(1)))
+		assert.True(t, enc.loadableBytes(), "the previous encode's native leaked")
+	})
+
+	t.Run("nestedDeep", func(t *testing.T) {
+		dirty(func(enc *encoder) {
+			require.NoError(t, enc.encode(nestMaps(encodeGuardDepth+1, lisp.Int(1))))
+			require.False(t, enc.loadableBytes(), "test setup: depth not recorded")
+		})
+		enc := getEncoder(false)
+		defer putEncoder(enc)
+		require.NoError(t, enc.encode(lisp.Int(1)))
+		assert.True(t, enc.loadableBytes(), "the previous encode's depth leaked")
+	})
+
+	t.Run("buffer", func(t *testing.T) {
+		dirty(func(enc *encoder) {
+			require.NoError(t, enc.encode(lisp.String("a document that came first")))
+		})
+		b, err := Dump(lisp.Int(1), false)
+		require.NoError(t, err)
+		assert.Equal(t, "1", string(b), "the previous document's bytes leaked")
+	})
+}
+
+// TestDumpDoesNotAliasAPooledBuffer pins the property that makes pooling safe
+// on the paths whose bytes escape: two documents dumped in sequence must not
+// hand back slices that share storage, or writing the second would rewrite
+// what the first caller is holding.
+func TestDumpDoesNotAliasAPooledBuffer(t *testing.T) {
+	first, err := Dump(lisp.String("first document"), false)
+	require.NoError(t, err)
+	kept := string(first)
+
+	for range 8 {
+		_, err := Dump(lisp.String("a completely different document"), false)
+		require.NoError(t, err)
+	}
+	assert.Equal(t, kept, string(first),
+		"a later dump wrote through a slice an earlier caller still holds")
+}
+
+// TestEncoderPoolConcurrent is the guard the -race build needs in order to say
+// anything about the encoder pool.
+//
+// Every other test in this package is sequential, so before this existed
+// `go test -race` exercised the pool with exactly one goroutine -- which
+// cannot observe the failure mode a pool actually has.  That failure mode is
+// two goroutines holding the same encoder, and it shows up as one document's
+// bytes appearing inside another's, not as a crash.
+//
+// Both escape routes are covered because they differ: Dump DONATES its buffer
+// (donateBuffer, so the pooled encoder must be left with none of it) while
+// dumpString COPIES into a string (so the buffer is recycled while the caller
+// keeps a copy).  A bug in either -- putting an encoder back while its array
+// is still reachable by the caller -- lets a later document write over bytes
+// someone else is still reading.
+//
+// Red-proof: deleting the `enc.buf = bytes.Buffer{}` line in donateBuffer
+// fails this with corrupted documents under -race.
+func TestEncoderPoolConcurrent(t *testing.T) {
+	const goroutines = 8
+	const iterations = 200
+
+	// Distinct payload per goroutine, each big enough to grow a buffer past
+	// its initial size, so a shared buffer corrupts a comparison rather than
+	// coincidentally matching.
+	payload := func(g int) (*lisp.LVal, string, string) {
+		m := lisp.SortedMap()
+		var want strings.Builder
+		want.WriteByte('{')
+		for i := range 24 {
+			k := fmt.Sprintf("g%02d-key-%02d", g, i)
+			v := fmt.Sprintf("g%02d-value-%02d-padding-padding", g, i)
+			m.MapSet(k, lisp.String(v))
+			if i > 0 {
+				want.WriteByte(',')
+			}
+			fmt.Fprintf(&want, "%q:%q", k, v)
+		}
+		want.WriteByte('}')
+		return m, want.String(), want.String()
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan string, goroutines*2)
+	for g := range goroutines {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			v, wantBytes, wantString := payload(g)
+			for range iterations {
+				// The donating path.
+				b, err := Dump(v, false)
+				if err != nil {
+					errs <- fmt.Sprintf("goroutine %d: Dump: %v", g, err)
+					return
+				}
+				if string(b) != wantBytes {
+					errs <- fmt.Sprintf("goroutine %d: Dump returned another goroutine's bytes:\n got %s\nwant %s", g, b, wantBytes)
+					return
+				}
+				// The copying path.
+				s, err := DefaultSerializer().dumpString(v, false)
+				if err != nil {
+					errs <- fmt.Sprintf("goroutine %d: dumpString: %v", g, err)
+					return
+				}
+				if s != wantString {
+					errs <- fmt.Sprintf("goroutine %d: dumpString returned another goroutine's bytes:\n got %s\nwant %s", g, s, wantString)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errs)
+	for msg := range errs {
+		t.Error(msg)
+	}
 }

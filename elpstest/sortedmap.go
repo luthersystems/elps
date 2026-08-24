@@ -25,6 +25,9 @@ import (
 //	Calling m.Get() with a key from m.Entries() returns a value consistent
 //	with that entry.
 //
+//	Each pair from m.Entries() owns its two cells: appending to one pair
+//	cannot reach into another's storage.
+//
 // AssertSortedMap does not test any of the following properties:
 //
 //	Success/Failure of insertions or deletions -- m must already be
@@ -51,6 +54,46 @@ func AssertSortedMap(t *testing.T, m lisp.Map) bool {
 	}
 	if !testGetEntries(t, m) {
 		return false
+	}
+	if !testEntryPairsAreIndependent(t, m) {
+		return false
+	}
+	return true
+}
+
+// testEntryPairsAreIndependent is the conformance test for an optimisation
+// both in-tree implementations now make (issue #379, item 6): a map of n
+// entries carves its n two-element Cells slices out of ONE backing array
+// rather than allocating n of them.  That is invisible only for as long as
+// every pair's slice is capped to its own two slots.  A slice that carries
+// spare capacity lets an append on one pair overwrite the next pair's key,
+// which is a data-corruption bug no other assertion here would catch --
+// entries would still read back correctly until something appended.
+func testEntryPairsAreIndependent(t *testing.T, m lisp.Map) bool {
+	t.Helper()
+	entries, err := mapEntries(m)
+	if !assert.NoError(t, err) {
+		return false
+	}
+	before := make([]*lisp.LVal, len(entries.Cells))
+	for i, pair := range entries.Cells {
+		if !assert.Equal(t, 2, cap(pair.Cells),
+			"entry %d has spare capacity, so appending to it reaches storage it does not own", i) {
+			return false
+		}
+		before[i] = pair.Cells[0]
+	}
+	// Appending to every pair in turn must leave every other pair's key
+	// exactly where it was.
+	for i := range entries.Cells {
+		//elps:mutates the pairs were built by the m.Entries call above into a buffer this function owns, and appending to them IS the property under test -- it is how a pair that shares storage with its neighbour is detected
+		entries.Cells[i].Cells = append(entries.Cells[i].Cells, lisp.Int(i))
+	}
+	for i, pair := range entries.Cells {
+		if !assert.Same(t, before[i], pair.Cells[0],
+			"entry %d's key was overwritten by an append to another entry", i) {
+			return false
+		}
 	}
 	return true
 }
