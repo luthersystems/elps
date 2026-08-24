@@ -43,19 +43,48 @@ func (m SortedMap) Set(k *lisp.LVal, v *lisp.LVal) *lisp.LVal {
 	return lisp.Nil()
 }
 
+// Entries materialises the map as sorted two-element pair lists.
+//
+// A pair used to cost three allocations -- the two-element Cells slice, the
+// key LVal, and the pair LVal itself -- so a map of n entries cost 3n.  Two of
+// the three are now carved out of arrays sized once from len(m): all the Cells
+// slices share one backing array, and all the key LVals share another.  Only
+// the pair LVal is still allocated per entry, because lisp.QExpr is the only
+// way to set the quoted flag from outside package lisp.  n entries therefore
+// cost n+2 allocations.
+//
+// Nothing observable changes.  Each pair is still a distinct quoted LVal, each
+// Cells slice is capped to its own two slots so an append cannot reach the
+// next pair's, and each key is still a distinct LVal a caller may hold or
+// discard independently.  What changes is allocator and GC traffic, which is
+// what the issue #379 item-6 profile identified: the JSON encoder walks every
+// map through Entries and discards every pair as soon as it has written the
+// key and value, so this boxing was garbage generated in proportion to the
+// document -- 40% of all objects allocated by the libjson benchmark suite.
+//
+// The arrays are jointly retained: holding one pair or one key keeps all of
+// them alive.  Every caller here obtains entries for a whole map and drops
+// them as a unit (the encoder) or keeps all the keys (Keys, below), so there
+// is no case where one survivor pins an otherwise dead map.
 func (m SortedMap) Entries(cells []*lisp.LVal) *lisp.LVal {
-	if len(m) == 0 {
+	n := len(m)
+	if n == 0 {
 		return lisp.Int(0)
 	}
-	if len(cells) < len(m) {
+	if len(cells) < n {
 		return lisp.Errorf("buffer has insufficient length")
 	}
+	slots := make([]*lisp.LVal, 2*n)
+	keys := make([]lisp.LVal, n)
 	i := 0
 	for k, x := range m {
-		cells[i] = lisp.QExpr([]*lisp.LVal{
-			lisp.String(k),
-			mapLVal(x),
-		})
+		// The literal below must stay identical to what lisp.String
+		// builds; TestBatchStringMatchesConstructor pins that.
+		keys[i] = lisp.LVal{Type: lisp.LString, Str: k}
+		pair := slots[2*i : 2*i+2 : 2*i+2]
+		pair[0] = &keys[i]
+		pair[1] = mapLVal(x)
+		cells[i] = lisp.QExpr(pair)
 		i++
 	}
 	sort.Sort(mapEntriesByKey(cells[:i]))

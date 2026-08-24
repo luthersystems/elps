@@ -93,7 +93,7 @@ var stringNumberEncodeTests = []encodeTest{
 
 func testEncode(t testing.TB) {
 	for i, test := range stdEncodeTests {
-		enc := newEncoder(false)
+		enc := getEncoder(false)
 		if assert.NoError(t, enc.encode(test.v), "test %d: %v", i, test.v) {
 			js := string(enc.bytes())
 			assert.Equal(t, test.js, js, "test %d: %v", i, test.v)
@@ -103,7 +103,7 @@ func testEncode(t testing.TB) {
 
 func testEncode_stringNumbers(t testing.TB) {
 	for i, test := range stringNumberEncodeTests {
-		enc := newEncoder(true)
+		enc := getEncoder(true)
 		if assert.NoError(t, enc.encode(test.v), "test %d: %v", i, test.v) {
 			js := string(enc.bytes())
 			assert.Equal(t, test.js, js, "test %d: %v", i, test.v)
@@ -152,7 +152,7 @@ func TestEncoderTypeCoverage(t *testing.T) {
 // TestEncodeUnregisteredTypeErrors proves the refused types fail loudly.
 func TestEncodeUnregisteredTypeErrors(t *testing.T) {
 	for typ, reason := range unencodableTypes {
-		enc := newEncoder(false)
+		enc := getEncoder(false)
 		err := enc.encode(&lisp.LVal{Type: typ})
 		require.Error(t, err, "encoding %v (%s) must fail", typ, reason)
 		assert.Contains(t, err.Error(), "invalid type encountered")
@@ -176,7 +176,7 @@ func TestEncode_largeBytes(t *testing.T) {
 	data := make([]byte, 4096)
 	_, err := io.ReadFull(rand.Reader, data)
 	require.NoError(t, err)
-	enc := newEncoder(false)
+	enc := getEncoder(false)
 	require.NoError(t, enc.encode(lisp.Bytes(data)))
 	var s string
 	err = json.Unmarshal(enc.bytes(), &s)
@@ -194,7 +194,7 @@ func TestEncoded_stringCompat(t *testing.T) {
 		if !assert.NoError(t, err, "canonical encoding of %q", s) {
 			continue
 		}
-		enc := newEncoder(true)
+		enc := getEncoder(true)
 		if assert.NoError(t, enc.encode(lisp.String(s)), "elps encoding of %q", s) {
 			assert.Equal(t, enc.bytes(), canonical)
 		}
@@ -282,7 +282,7 @@ func TestEncodeCyclicValueErrors(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			enc := newEncoder(false)
+			enc := getEncoder(false)
 			err := enc.encode(test.v)
 			require.ErrorIs(t, err, errCyclicValue)
 
@@ -339,4 +339,90 @@ func TestEncodeAcyclicValueIsUnchangedBelowAndAboveTheGuard(t *testing.T) {
 	b, err := Dump(dag, false)
 	require.NoError(t, err)
 	assert.Equal(t, want, string(b))
+}
+
+// TestPooledEncoderCarriesNoStateBetweenDocuments is the guard on the hazard
+// pooling introduced (issue #379, item 6).
+//
+// Before the pool every encode started from a zero encoder, so no field could
+// be stale by construction.  Now an encoder is handed back and reused, and
+// every one of its fields means something about ONE document: stringNums
+// decides how numbers are written, and nestedDeep and wroteNative are the two
+// inputs to loadableBytes, which is what `json:dump-message` records as its
+// loadability verdict.  A field that survived into the next document would
+// either change that document's bytes or attach the previous document's
+// verdict to it -- and the second is silent, because a message wrongly marked
+// unloadable still serializes correctly, just through the check elps#412
+// exists to skip.
+//
+// Red-proof: deleting any one of the four resets in getEncoder fails a case
+// below.
+func TestPooledEncoderCarriesNoStateBetweenDocuments(t *testing.T) {
+	// A recycled encoder must be indistinguishable from a fresh one, so each
+	// case dirties an encoder, returns it, and then asserts the next encode
+	// looks exactly like the same encode on a pool that was never used.
+	dirty := func(prep func(enc *encoder)) {
+		enc := getEncoder(true)
+		prep(enc)
+		putEncoder(enc)
+	}
+
+	t.Run("stringNums", func(t *testing.T) {
+		dirty(func(enc *encoder) {
+			require.NoError(t, enc.encode(lisp.Int(1)))
+			require.Equal(t, `"1"`, string(enc.bytes()), "test setup: not string numbers")
+		})
+		b, err := Dump(lisp.Int(1), false)
+		require.NoError(t, err)
+		assert.Equal(t, "1", string(b), "the previous encode's number format leaked")
+	})
+
+	t.Run("wroteNative", func(t *testing.T) {
+		raw := json.RawMessage(`{"a":1}`)
+		dirty(func(enc *encoder) {
+			require.NoError(t, enc.encode(lisp.Native(&raw)))
+			require.False(t, enc.loadableBytes(), "test setup: native not recorded")
+		})
+		enc := getEncoder(false)
+		defer putEncoder(enc)
+		require.NoError(t, enc.encode(lisp.Int(1)))
+		assert.True(t, enc.loadableBytes(), "the previous encode's native leaked")
+	})
+
+	t.Run("nestedDeep", func(t *testing.T) {
+		dirty(func(enc *encoder) {
+			require.NoError(t, enc.encode(nestMaps(encodeGuardDepth+1, lisp.Int(1))))
+			require.False(t, enc.loadableBytes(), "test setup: depth not recorded")
+		})
+		enc := getEncoder(false)
+		defer putEncoder(enc)
+		require.NoError(t, enc.encode(lisp.Int(1)))
+		assert.True(t, enc.loadableBytes(), "the previous encode's depth leaked")
+	})
+
+	t.Run("buffer", func(t *testing.T) {
+		dirty(func(enc *encoder) {
+			require.NoError(t, enc.encode(lisp.String("a document that came first")))
+		})
+		b, err := Dump(lisp.Int(1), false)
+		require.NoError(t, err)
+		assert.Equal(t, "1", string(b), "the previous document's bytes leaked")
+	})
+}
+
+// TestDumpDoesNotAliasAPooledBuffer pins the property that makes pooling safe
+// on the paths whose bytes escape: two documents dumped in sequence must not
+// hand back slices that share storage, or writing the second would rewrite
+// what the first caller is holding.
+func TestDumpDoesNotAliasAPooledBuffer(t *testing.T) {
+	first, err := Dump(lisp.String("first document"), false)
+	require.NoError(t, err)
+	kept := string(first)
+
+	for range 8 {
+		_, err := Dump(lisp.String("a completely different document"), false)
+		require.NoError(t, err)
+	}
+	assert.Equal(t, kept, string(first),
+		"a later dump wrote through a slice an earlier caller still holds")
 }

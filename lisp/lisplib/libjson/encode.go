@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/luthersystems/elps/lisp"
@@ -35,13 +36,15 @@ func (e encodeInvalidNumberError) Error() string {
 	return fmt.Sprintf("unable to encode number %g", float64(e))
 }
 
-// encoder is heap-allocated once per document, so every byte of it is charged
-// to every encode whether or not that encode ever uses the byte.  It fills the
-// 112-byte size class exactly, which is why the cycle guard below is carried
-// down the walk as an argument instead of being parked in fields here: one
-// more word rounds the encoder up to the next size class, and every document
-// in the process -- almost none of which have anything to do with cycles --
-// pays the 16 bytes.  TestEncoderFitsItsSizeClass pins the size.
+// encoder is pooled (see getEncoder) rather than heap-allocated per document,
+// but it is still sized as though it were not.  A pool is emptied at every GC,
+// so a process that encodes in bursts separated by collections pays the
+// allocation anyway, and the encoder's fields are charged to every encode that
+// misses whether or not that encode uses them.  It fills the 112-byte size
+// class exactly, which is why the cycle guard below is carried down the walk
+// as an argument instead of being parked in fields here: one more word rounds
+// the encoder up to the next size class, and almost no document in the process
+// has anything to do with cycles.  TestEncoderFitsItsSizeClass pins the size.
 //
 // What costs nothing is a bool.  stringNums leaves seven bytes of tail padding
 // before the struct rounds up to 112, so the two flags below sit in padding
@@ -201,12 +204,79 @@ func (g encodeGuard) leave(v *lisp.LVal) {
 	}
 }
 
-func newEncoder(stringNums bool) *encoder {
-	return &encoder{stringNums: stringNums}
+// encoderPool recycles encoders, and with them their output buffers.
+//
+// The buffer is why this exists.  An encoder's bytes.Buffer starts empty and
+// doubles its way up to the size of the document, so writing n bytes of JSON
+// allocated about 2n bytes and log2(n) separate blocks, every time, for a
+// buffer that was then thrown away.  In the issue #379 item-6 profile that was
+// 17.5% of ALL bytes allocated by the libjson benchmark suite -- the single
+// largest byte-consuming site after the LVals themselves.  A recycled buffer
+// is already at the right size after the first document of a given shape, so
+// in steady state the growth is free.
+//
+// No caller can observe the reuse.  A path whose result is a string
+// (Serializer.dumpString) converts the buffer, which copies; a path whose
+// result is a []byte the caller keeps (Serializer.dump) donates the array and
+// puts the encoder back with an empty one.  See donateBuffer for why those two
+// differ.
+var encoderPool = sync.Pool{
+	New: func() interface{} { return &encoder{} },
+}
+
+// encoderBufferRetentionLimit is the largest buffer an encoder may carry back
+// into the pool.
+//
+// sync.Pool already bounds retention in time -- its contents are dropped
+// within two GC cycles -- so this only bounds the worst case in space: one
+// buffer per P between collections.  The limit is set above the ~295 KB
+// response BenchmarkEncodeOwnMessageLarge models, because that row exists to
+// show a saving that SCALES and dropping the buffer at that size would leave
+// it out of the win.  A document larger than this is by definition rare, and
+// re-growing its buffer is a smaller cost than pinning megabytes per P.
+const encoderBufferRetentionLimit = 1 << 20
+
+func getEncoder(stringNums bool) *encoder {
+	enc, _ := encoderPool.Get().(*encoder)
+	enc.buf.Reset()
+	enc.stringNums = stringNums
+	enc.nestedDeep = false
+	enc.wroteNative = false
+	return enc
+}
+
+func putEncoder(enc *encoder) {
+	if enc.buf.Cap() > encoderBufferRetentionLimit {
+		// bytes.Buffer has no way to shrink in place; dropping the whole
+		// value is how the oversized backing array is released.
+		enc.buf = bytes.Buffer{}
+	}
+	encoderPool.Put(enc)
 }
 
 func (enc *encoder) bytes() []byte {
 	return enc.buf.Bytes()
+}
+
+// donateBuffer hands the output array to the caller and leaves the encoder
+// holding an empty buffer, so the encoder can still go back to the pool
+// without the caller's bytes going with it.
+//
+// The alternative -- keep the grown buffer for the next document and give the
+// caller a copy -- is what the string path does, and it is the better trade
+// THERE because the string has to be allocated anyway.  On this path it was
+// measured and is not: a copy is a whole extra document's worth of bytes, and
+// it only pays for itself if the recycled buffer survives to be reused.  For
+// the documents where recycling would save the most -- the large ones -- it
+// does not, because a process allocating hundreds of KB per encode collects
+// often and sync.Pool is emptied at every GC.  Measured on
+// BenchmarkEncodeOwnMessageLarge (a ~295 KB response), copying cost +1.6%
+// B/op against base; donating costs nothing and keeps the pooled encoder
+// struct.
+func (enc *encoder) donateBuffer() []byte {
+	b := enc.buf.Bytes()
+	enc.buf = bytes.Buffer{}
+	return b
 }
 
 // encode serializes v, the root of a document.  It is the entry point for a
@@ -335,12 +405,42 @@ func (enc *encoder) encodeLNative(v *lisp.LVal, _ encodeGuard) error {
 	return enc.encodeNative(v.Native)
 }
 
+// encodeNative writes an embedder's Go value through encoding/json.
+//
+// It goes through json.Encoder rather than json.Marshal, and the difference is
+// one whole document's worth of bytes.  Both funnel into the same pooled
+// encodeState with the same options -- json.NewEncoder defaults escapeHTML to
+// true, which is the setting Marshal hard-codes -- but Marshal ends with
+//
+//	buf := append([]byte(nil), e.Bytes()...)
+//
+// to hand its caller an owned slice, and this package's caller for that slice
+// is enc.buf.Write.  So a native used to be copied twice: once out of the
+// pooled state and once into the document.  Encoder.Write goes straight from
+// the pooled state into enc.buf.
+//
+// It is the largest remaining byte cost on the path substrate runs per
+// response -- json.Marshal was 41% of BenchmarkEncodeOwnMessageMedium's bytes
+// in the issue #379 item-6 profile, second only to the output buffer itself --
+// because every JSON-RPC envelope embeds one `json:dump-message` native whose
+// size IS the response.
+//
+// Two details keep the output identical.  Encode terminates each value with a
+// newline, which a document has no room for, so it is truncated off; and the
+// bytes are now already in enc.buf when checkLoadable runs, so a native that
+// fails the check is rolled back rather than never written.  Both are
+// invisible to a caller: an encode that errors discards its buffer.
 func (enc *encoder) encodeNative(v interface{}) error {
 	enc.wroteNative = true
-	b, err := json.Marshal(v)
-	if err != nil {
+	mark := enc.buf.Len()
+	if err := json.NewEncoder(&enc.buf).Encode(v); err != nil {
+		// Encode returns before writing anything when marshalling fails,
+		// but the document is abandoned on this path either way.
+		enc.buf.Truncate(mark)
 		return err
 	}
+	enc.buf.Truncate(enc.buf.Len() - 1) // drop Encode's trailing newline
+	b := enc.buf.Bytes()[mark:]
 	// elps#412.  The check below asks whether bytes this package did not
 	// produce can be read back.  An ownMessage is the one native for which
 	// this package DID produce them, and the loadable flag says it produced
@@ -358,10 +458,10 @@ func (enc *encoder) encodeNative(v interface{}) error {
 	// own type would be the hole described under checkLoadable.
 	if m, own := v.(*ownMessage); !own || !m.loadable {
 		if err := enc.checkLoadable(b); err != nil {
+			enc.buf.Truncate(mark)
 			return err
 		}
 	}
-	enc.buf.Write(b)
 	return nil
 }
 

@@ -464,11 +464,41 @@ func (s *Serializer) Dump(v *lisp.LVal, stringNums bool) ([]byte, error) {
 // vouch that they load back -- see encoder.loadableBytes.  It is the only
 // producer of that verdict, and DumpMessageBuiltin is its only consumer.
 func (s *Serializer) dump(v *lisp.LVal, stringNums bool) (b []byte, loadable bool, err error) {
-	enc := newEncoder(stringNums)
+	enc := getEncoder(stringNums)
 	if err := enc.encode(v); err != nil {
+		putEncoder(enc)
 		return nil, false, err
 	}
-	return enc.bytes(), enc.loadableBytes(), nil
+	// The bytes escape to the caller, so this path DONATES the buffer rather
+	// than recycling it: the encoder goes back to the pool with an empty one
+	// and the caller keeps the array, exactly as it did before the pool
+	// existed.  Copying instead was measured and is worse -- see donateBuffer.
+	b, loadable = enc.donateBuffer(), enc.loadableBytes()
+	putEncoder(enc)
+	return b, loadable, nil
+}
+
+// dumpString serializes v straight to a string.
+//
+// It exists because `json:dump-string` -- the busiest encode entry point in
+// the language, and the one every dump-* benchmark row goes through -- used to
+// pay for an n-byte document about three times over: the buffer doubled its
+// way up to n (~2n allocated across a chain of blocks), and then
+// DumpStringBuiltin converted the result to a string (another n).  The buffer
+// was then discarded.
+//
+// Here it is not.  The bytes never leave this function, so the encoder keeps
+// its grown buffer for the next document and the only allocation left is the
+// string itself -- exactly n, and irreducible, because the string is what the
+// caller asked for.  Measured on Package/dump-github, which is 1000
+// `json:dump-string` calls: 51.0 MiB/op -> 36.3 MiB/op.
+func (s *Serializer) dumpString(v *lisp.LVal, stringNums bool) (string, error) {
+	enc := getEncoder(stringNums)
+	defer putEncoder(enc)
+	if err := enc.encode(v); err != nil {
+		return "", err
+	}
+	return string(enc.bytes()), nil
 }
 
 // ownMessage is a JSON message this package produced: the value behind
@@ -625,11 +655,11 @@ func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 			return stringNums
 		}
 	}
-	b, err := s.Dump(obj, lisp.True(stringNums))
+	str, err := s.dumpString(obj, lisp.True(stringNums))
 	if err != nil {
 		return env.Error(err)
 	}
-	return lisp.String(string(b))
+	return lisp.String(str)
 }
 
 func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
