@@ -29,6 +29,14 @@ import (
 // at f5d3d9e).  They are equalities, not bounds: this is the assertion that
 // the encoder is walking the same code it always did.
 //
+// They each dropped by exactly one when the encoder was pooled (issue #379,
+// item 6): the encoder struct itself is no longer allocated per document.
+// Nothing else here moved, which is the point of keeping these as equalities
+// -- the map batching that landed in the same change saves 2 allocations per
+// entry, and every map in this test has exactly ONE entry, where batching
+// three objects into three arrays is a wash.  A count that fell further than
+// one would mean the shapes below stopped being the shapes described.
+//
 // Red-proof: replacing encodeGuard{} in encode with a guard whose path set is
 // made up front fails every case here.
 func TestEncodeDoesNotAllocateForCycleTracking(t *testing.T) {
@@ -40,11 +48,11 @@ func TestEncodeDoesNotAllocateForCycleTracking(t *testing.T) {
 		v    *lisp.LVal
 		want int
 	}{
-		{"leaf", lisp.Int(1), 2},
-		{"flat object", shared, 9},
+		{"leaf", lisp.Int(1), 1},
+		{"flat object", shared, 8},
 		// One map short of the depth that abandons the counting pass: the
 		// value at the bottom sits at encodeGuardDepth-1.
-		{"nested to the last depth the counting pass writes", nestMaps(encodeGuardDepth-2, lisp.Int(1)), 439},
+		{"nested to the last depth the counting pass writes", nestMaps(encodeGuardDepth-2, lisp.Int(1)), 438},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

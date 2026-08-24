@@ -84,7 +84,7 @@ func FuzzCheckLoadableMatchesLoad(f *testing.F) {
 
 		// checkLoadable on its own, on arbitrary bytes: it decodes, so it is
 		// total and owes an answer for malformed input too.
-		checkOK := newEncoder(stringNums).checkLoadable(b) == nil
+		checkOK := getEncoder(stringNums).checkLoadable(b) == nil
 		if loadOK != checkOK {
 			t.Fatalf("checkLoadable and Load disagree\n  stringNums: %v\n  input:      %q\n  Load accepts:  %v\n  check accepts: %v",
 				stringNums, b, loadOK, checkOK)

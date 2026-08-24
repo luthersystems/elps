@@ -2,7 +2,10 @@
 
 package lisp
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 // noopBuiltin is an LBuiltin used as a stand-in body for constructor
 // tests — none of the cases below invoke it.
@@ -65,4 +68,41 @@ func TestFunInPackage_SetsPackage(t *testing.T) {
 			t.Errorf("Package() = %q, want empty", got)
 		}
 	})
+}
+
+// TestBatchedEntryValuesMatchTheirConstructors is the guard on sortedmap's
+// entry batching (issue #379, item 6).
+//
+// Entries builds its pair and key LVals as struct literals carved out of
+// arrays instead of calling QExpr and String n times, because the per-entry
+// allocation was the single largest object-count site in the libjson
+// benchmark suite.  Those literals are copies of the constructors' bodies, so
+// they are correct only for as long as the constructors stay what they are
+// today.  A field added to String or QExpr and not added here would produce
+// map entries that differ from every other value of their type in a way
+// nothing else would notice.
+//
+// reflect.DeepEqual reads unexported fields, so the comparisons below cover
+// every field of the struct, not just the ones a literal names.
+//
+// Red-proof: dropping `quoted: true` from the pair literal in
+// sortedmap.Entries, or adding an initialised field to String, fails this.
+func TestBatchedEntryValuesMatchTheirConstructors(t *testing.T) {
+	for _, s := range []string{"", "k", "a key", "\x00<&>"} {
+		batched := LVal{Type: LString, Str: s}
+		if want := String(s); !reflect.DeepEqual(&batched, want) {
+			t.Errorf("a batched LString for %q is not what String builds:\n got %#v\nwant %#v",
+				s, batched, *want)
+		}
+	}
+
+	cells := []*LVal{String("k"), Int(1)}
+	batchedPair := LVal{Type: LSExpr, quoted: true, Cells: cells}
+	// mklist copies its arguments into a slice of its own, so the two pairs
+	// hold different slices with equal contents; DeepEqual compares the
+	// contents, which is what matters.
+	if wantPair := mklist(cells[0], cells[1]); !reflect.DeepEqual(&batchedPair, wantPair) {
+		t.Errorf("a batched entry pair is not what mklist builds:\n got %#v\nwant %#v",
+			batchedPair, *wantPair)
+	}
 }
