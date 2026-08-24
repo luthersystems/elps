@@ -244,6 +244,34 @@ ELPS ships three CLI tools (`lint`, `doc`, `fmt`). The `lint` and `doc` tools
 expose Go APIs so embedders can wire in their own runtime environment, making
 Go-provided bindings visible to static analysis and documentation.
 
+### Sharing packages and registries
+
+Several of the APIs below take a `*lisp.PackageRegistry` from a booted
+environment (`cmd.WithRegistry`, `mcpserver.WithRegistry`,
+`lsp.WithRegistry`). The doc paths merge that registry's packages into the
+environment they build, and those merges — like any embedder that installs a
+hand-built package — go through `PackageRegistry.AddPackage`, which is an
+**admission point** rather than a store (elps#524):
+
+- What gets registered is a private **snapshot** of the package. Binding into
+  your own `*Package` after `AddPackage` does not change what the runtime
+  serves — bind through the environment, or finish the package before
+  registering it.
+- A binding that is a **code-like tree** (a list, symbol, string or number
+  built at runtime rather than produced by the parser) is copied privately
+  and sealed, so the registry cannot rewrite what you still hold and you
+  cannot rewrite what it evaluates.
+- **Functions, natives, sorted-maps, arrays and byte strings are admitted by
+  reference** — no seal covers those classes. `AddPackage` transfers custody
+  of them: stop mutating them once they are registered, and remember that a
+  lisp closure carries its captured environment, so sharing one between
+  runtimes is still sharing mutable state.
+- The snapshot reads the package's maps on the calling goroutine, so no other
+  goroutine may be writing that package while `AddPackage` runs.
+
+[docs/sealed-ast.md §2.8](sealed-ast.md) states the rule per value class and
+the reasoning behind it.
+
 ### Linting
 
 The `lint` package provides `LintConfig` and `LintFiles` for running the linter
