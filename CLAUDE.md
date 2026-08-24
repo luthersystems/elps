@@ -30,6 +30,10 @@ ELPS is an embedded Lisp interpreter implemented in Go. It is a Lisp-1 dialect d
 | `./elps lsp --port 7998` | Start the LSP server (TCP transport) |
 | `./elps lint file.lisp` | Run static analysis on a lisp file |
 | `./elps fmt file.lisp` | Format a lisp file |
+| `./elps minify file.lisp` | Minify sources, emitting a symbol map |
+| `./elps analyze file.lisp` | Run performance analysis on lisp sources |
+| `./elps debug file.lisp` | Run a file under the DAP debugger |
+| `./elps mcp` | Start the ELPS MCP server over stdio |
 | `make release-notes` | Preview release notes (commits, PRs, CI status since last tag) |
 | `make release VERSION=v1.X.0` | Create a tagged GitHub release (must be on main, CI must pass) |
 
@@ -39,8 +43,8 @@ ELPS is an embedded Lisp interpreter implemented in Go. It is a Lisp-1 dialect d
 
 - **`lisp/`** — The interpreter core. Contains `LVal` (lisp values), `LEnv` (environment/evaluator), builtins, special operators, macros, package system, call stack, error handling, and Go interop.
 - **`parser/`** — Lexer (`lexer/`), tokens (`token/`), and the `rdparser/` recursive-descent parser. `parser.NewReader` returns an `rdparser` reader; pass `WithFormatPreserving()` for the tooling (formatter/LSP) variant.
-- **`lisp/lisplib/`** — Standard library packages loaded by `LoadLibrary()`: time, help, golang, math, string, base64, json, regexp, testing, schema.
-- **`cmd/`** — Cobra CLI commands: `run`, `repl`, `doc`, `lint`, `fmt`, `lsp`.
+- **`lisp/lisplib/`** — Standard library packages loaded by `LoadLibrary()`: time, help, golang, math, string, base64, json, regexp, testing, schema, elpspath.
+- **`cmd/`** — Cobra CLI commands: `run`, `repl`, `doc`, `lint`, `fmt`, `lsp`, `minify`, `analyze`, `debug`, `mcp`.
 - **`repl/`** — Interactive REPL using readline.
 - **`elpstest/`** — Test framework (`Runner`) for executing lisp-based test files as Go subtests.
 - **`elpsutil/`** — Helpers for building embedded packages in Go (`Function()`, `PackageLoader()`, etc.).
@@ -71,7 +75,7 @@ rc = env.InPackage(lisp.String(lisp.DefaultUserPackage))
 Tests exist in three forms:
 1. **Go unit tests** — Standard `_test.go` files using `testify/assert`.
 2. **Lisp test files** — `.lisp` files executed via `elpstest.Runner`, which loads them and runs as Go subtests. The `libtesting` stdlib package provides `test`, `test-let`, `assert=`, `assert-equal`, `assert-nil`, etc.
-3. **Fuzz targets** — native `go test -fuzz` targets in `fuzz_test.go` files, covering the parser (strict, fault-tolerant and format-preserving), the lexer and byte scanner, the formatter and minifier round-trips, the JSON decoder, the **evaluator** (`lisp.FuzzEval`), the **debugger's** eval path (`lisp/x/debugger.FuzzDebugEval` — attaching a debugger disables tail-call optimisation globally and stamps `MacroExpansionInfo` onto every macro-expanded node, so it is a materially different path from `FuzzEval`'s), and the **language server** as a whole session (`lsp.FuzzLSPSession` — a fuzzer-chosen sequence of LSP requests against fuzzer-chosen documents and *cursor positions*; it is also the only target that reaches `analysis/` and `lint/`). Seeds come from `internal/fuzzseed` (the repository's real `.lisp` sources plus hand-written adversarial input); each package's `testdata/fuzz/<Target>/` holds the crashers found so far, which plain `go test` replays as regression cases. Run with `make fuzz`; CI runs `.github/workflows/fuzz.yml` (30s/target on PRs, 10m/target nightly).
+3. **Fuzz targets** — native `go test -fuzz` targets in `fuzz_test.go` files. There are over thirty; `make fuzz-list` prints the current set, and that command is the authoritative list rather than any enumeration here. Coverage includes the parser (strict, fault-tolerant and format-preserving), the lexer and byte scanner, the formatter and minifier round-trips, the JSON decoder, `elpspath`, the schema validator, `elpsutil` embedding, sorted-map and higher-order operations, cyclic value walks, shared-program/multi-env evaluation, and the CI gate self-test — plus the three below, whose hazards are load-bearing: the **evaluator** (`lisp.FuzzEval`), the **debugger's** eval path (`lisp/x/debugger.FuzzDebugEval` — attaching a debugger disables tail-call optimisation globally and stamps `MacroExpansionInfo` onto every macro-expanded node, so it is a materially different path from `FuzzEval`'s), and the **language server** as a whole session (`lsp.FuzzLSPSession` — a fuzzer-chosen sequence of LSP requests against fuzzer-chosen documents and *cursor positions*; it is also the only target that reaches `analysis/` and `lint/`). Seeds come from `internal/fuzzseed` (the repository's real `.lisp` sources plus hand-written adversarial input); each package's `testdata/fuzz/<Target>/` holds the crashers found so far, which plain `go test` replays as regression cases. Run with `make fuzz`; CI runs `.github/workflows/fuzz.yml` (30s/target on PRs, 10m/target nightly).
 
    **Evaluator fuzzing is different** and the differences are load-bearing (see the header comment on `lisp/eval_fuzz_test.go`):
    - Evaluation is Turing-complete and `go test -fuzz` has no per-input deadline, so every evaluation runs under an explicit budget (`WithMaxSteps`, `WithMaxTailIterations`, `WithMaximumPhysicalStackHeight`, `WithMaxAlloc`, plus a context deadline) *and* a 30s watchdog goroutine, so "it terminates" is an assertion rather than an assumption.
@@ -101,6 +105,7 @@ Functions return `*LVal`. Errors are LVal values with type `LError`. Check with 
 - **`analysis/`** — Semantic analysis: scope building, symbol resolution, reference counting. `prescan()` uses a two-phase approach (definitions first, exports second) so `(export 'name)` before `(defun name ...)` works correctly.
 - **`lint/`** — Static analysis modeled after `go vet`. Each check is an `Analyzer` with a `Run func(pass *Pass) error`. Uses `Walk()`/`WalkSExprs()` for AST traversal, plus custom walkers for context-sensitive checks.
 - **`diagnostic/`** — Rust-style annotated source snippets for error and lint output. Zero dependencies on `lisp/`.
+- **`cmd/elpsvet/`** — Go static analyzers over elps's *own* Go source, enforcing invariants the compiler cannot: the freshness rule (writes rooted at `lisp.LVal` storage) and the slice-alias tracking that catches writes laundered through a local alias first (issues #369, #371).
 
 ## Development Workflow
 
