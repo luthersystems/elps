@@ -4,6 +4,28 @@ Published extension versions track the `elps` release tag they ship with -- the
 publish workflow sets `package.json` from the tag name -- so the numbering
 jumps from 0.2.0 to 1.50.0.
 
+## 1.52.0
+
+- Language: writing through a program literal -- `stable-sort`, `(slice
+  'vector ...)` and `(append 'vector ...)` on a quoted literal or a view over
+  one -- now raises the catchable `modify-literal-error` condition
+  (`cannot modify a program literal; take a (copy ...) first`) instead of
+  silently sorting or appending to a fresh copy. Runtime-constructed lists and
+  vectors keep their in-place semantics, and empty sealed inputs are exempt, so
+  only code that mutated program text is affected. `handler-bind` and
+  `ignore-errors` catch it like any other condition.
+- Startup: the binary no longer builds a 2.2MB character-width table at init,
+  and interpreter environment construction allocates about half of what it did
+  (-53% bytes, -51% allocations), so the language server, linter and formatter
+  start faster and analysis of large workspaces costs less memory.
+
+## 1.51.0
+
+- Stability: an array with unset elements no longer takes the host process down
+  when the language server evaluates `aref` or `equal?` over it -- every panic
+  site in the interpreter is now classified by reachability from lisp and
+  enforced by a sweep test.
+
 ## 1.50.0
 
 - LSP: negotiate `positionEncoding` with the client and convert columns at the
