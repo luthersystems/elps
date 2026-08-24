@@ -96,6 +96,14 @@ import (
 //     per-iteration runtimes (#379 item 2, #387).
 //     - LEnv.Fork shares every sealed node between a template environment
 //     and its forks (#380, this branch).
+//     - Runtime.LoadCache serves one sealed per-file parse to every
+//     environment that load-files it (#368) — substrate's warm parse cache
+//     again, moved inside the module that owns the AST type so the alias
+//     can be established by construction instead of by convention.  It
+//     needs no exemption of its own: newCachedSource admits through
+//     newProgram, so a cache entry is sealed throughout and is already
+//     inside this one (lisp/loadcache_elpscheck_test.go drives both
+//     directions).
 //
 //     Found by lisp.FuzzSharedProgramMultiEnv (#389), whose whole subject is
 //     the first of those.  The exemption itself lives on

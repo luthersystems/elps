@@ -90,6 +90,68 @@ function values) is rejected with an error (elps#394).  A cached `Program`
 is therefore always safe to load from many environments — see the `Program`
 godoc for details.
 
+### Caching `load-file`: `Runtime.LoadCache`
+
+`Program` covers the parse/load path an embedder drives *directly*.  It does
+not cover `load-file`, which is how a lisp program loads its own sources: that
+path runs through `Runtime.Reader`, and before elps#368 the only place to put
+a cache in front of it was a custom `lisp.Reader` — which means taking custody
+of `[]*lisp.LVal` and handing the same nodes to every environment.
+
+`Runtime.LoadCache` is the elps-owned hook for that.  The embedder supplies
+policy; elps keeps the data:
+
+```go
+type LoadCache interface {
+        Load(key string) (*lisp.CachedSource, bool)
+        Store(key string, src *lisp.CachedSource)
+}
+```
+
+A `*lisp.CachedSource` is opaque in the same way a `Program` is: only elps
+mints one, and no exported member yields a `*lisp.LVal`.  A minimal cache is a
+map behind a mutex; a real one is usually bounded by size or age.  Install it
+before loading anything:
+
+```go
+env.Runtime.LoadCache = myCache // any type implementing lisp.LoadCache
+```
+
+Every `Load*` entry point then consults it — `LoadFile`, `Load`, `LoadString`,
+`LoadLocation` and their `Context` variants, which is to say the `load-file`
+builtin as well.  On a miss elps reads the stream, derives the key, parses,
+**seals** the result through the same admission `Program`'s constructors use,
+stores it, and hands the sealed tree to the load.  On a hit elps hands that
+same sealed tree to the next environment **by reference** — no copy, no walk.
+
+What makes the alias legal is that elps owns the AST type: the cached tree is
+sealed throughout, lisp-level writes through it raise `modify-literal-error`,
+the evaluator's own metadata writes skip sealed nodes (so an attached debugger
+needs no private copy), and checked builds re-verify the tree's fingerprint
+after every load.  See `docs/sealed-ast.md` §2.9.
+
+Notes for implementers:
+
+- **The key is elps's.**  It is derived from the source bytes *and* the
+  stream's name and location.  Keying on content alone — which an embedder
+  cache typically does — makes two files with identical text share an entry,
+  and the served tree carries the first file's parse locations, so errors
+  raised from the second name the wrong file.
+- **`Load` must be honest.**  An entry returned under a key it was not stored
+  under is treated as a miss, not trusted.
+- **`Store` may refuse.**  elps never assumes a stored entry is later
+  loadable, so eviction needs no coordination.
+- **Concurrency.**  A cache shared by `Runtime`s on more than one goroutine
+  must have concurrency-safe `Load`/`Store`.  The entries themselves are
+  immutable, so nothing else needs locking.
+- **A nil `LoadCache` changes nothing.**  With no cache installed the load
+  path is exactly what it was before the hook existed — the reader receives
+  the caller's own `io.Reader`, unbuffered.
+- **Not every parse is cacheable.**  A `Reader` that returns a reference type,
+  or a node the seal cannot cover, produces a parse that is handed to that one
+  load and never stored.  Correctness first: an unsealed tree must not enter a
+  process-wide cache.
+
 ## Writing Functions
 
 Programs embedding elps can write functions in Go which can be loaded into

@@ -181,7 +181,8 @@ unsealed by construction.
 ### 2.5 The embedder boundary
 
 The parse/cache boundary exposes no raw AST: `lisp.Program`
-(`lisp/program.go`) wraps parse output opaquely, and the package registry
+(`lisp/program.go`) wraps parse output opaquely, the per-file load cache hook
+does the same for `load-file` (§2.9), and the package registry
 seals its LVal-bearing surface (§2.8 for what its admission promises per
 value class). Deep-copy machinery for owned expressions
 exists in-kernel (`detach()`, `lisp/detach.go` — whose walker also backs the
@@ -271,14 +272,15 @@ over a production-scale downstream embedder.
 | `LVal.Native`/`Str`/`Cells`/`Type`/`Int`/`Float`/`FunType` | ~3,000 | — | wide | **stay exported** |
 | `LEnv.Scope`/`FunName`/`Parent`/`Loc` | 0 | 0 | 4 / 0 / 5 / 0 reads | unexported, mediated reads |
 | `LEnv.Runtime`/`ID` | 16 / 3 reads | 17 / 0 | 110 reads / 0 | **stay exported** |
-| `Runtime.*` (`Stderr`, `Reader`, `Library`, `Debugger`, `Profiler`, `Registry`, `Package`, `Stack`) | 8 writes, 7 reads | 15 | 20 writes, 89 reads | **stay exported** |
+| `Runtime.*` (`Stderr`, `Reader`, `Library`, `Debugger`, `LoadCache`, `Profiler`, `Registry`, `Package`, `Stack`) | 8 writes, 7 reads | 15 | 20 writes, 89 reads | **stay exported** |
 | `CallStack.Frames`/`GoStack`, `CallFrame.*` | 0 | 1 read | 30 reads, 0 writes | **stay exported** |
 
 `Runtime` is the deliberate non-break, and that reasoning deserves to be as
 explicit as the breaks.  Its exported fields are embedder *configuration* —
-`Stderr`, `Reader`, `Library`, `Debugger` and `Profiler` are set by the host
+`Stderr`, `Reader`, `Library`, `Debugger`, `LoadCache` and `Profiler` are set
+by the host
 before or between evaluations, the documented way to attach a logger, a
-debugger or a source library — and its live fields (`Registry`, `Package`,
+debugger, a source library or a parse cache — and its live fields (`Registry`, `Package`,
 `Stack`) are per-interpreter state, not shared parse-tree bytes: a bad write
 corrupts *that* interpreter, in its own goroutine, where the damage is
 observable.  None of the incidents this design answers (#333/#334, #369,
@@ -361,6 +363,99 @@ out the registry's live `*Package` — which is how the merges enumerate a
 booted registry — and a caller can `Put` through it. Same residual as §2.7's
 exported fields: the boundary stops accidental sharing, not a caller that
 goes looking for interpreter state.
+
+### 2.9 The sealed load-file cache hook (issue #368)
+
+`Program` (§2.5) closes the parse/cache boundary an embedder drives
+*directly*. It leaves one seam open, and it is the seam a phylum actually
+loads through: `load-file` reaches the parser via `Runtime.Reader`, so an
+embedder that wants a per-file parse cache has exactly one place to put it —
+a custom `Reader` — and that place hands it raw `[]*lisp.LVal`.
+substrate's `cacheReader` is that shape, and it is not a misuse of the API;
+it is the only shape the API offered.
+
+`Runtime.LoadCache` (`lisp/loadcache.go`) is the elps-owned hook that closes
+it. The embedder supplies *policy* — key lookup, retention, eviction — and
+never touches data:
+
+```go
+type LoadCache interface {
+        Load(key string) (*CachedSource, bool)
+        Store(key string, src *CachedSource)
+}
+```
+
+`*CachedSource` is opaque exactly as `Program` is: only elps mints one, and
+no exported member yields a `*LVal` (`TestCachedSourceIsOpaque` is the
+reflection guard, `TestProgramSeal`'s sibling). Every `Load*` entry point
+funnels through `(*LEnv).readCached`: on a miss it reads the stream, derives
+a key, parses, admits the parse through **`newProgram`** — the same single
+admission point §2.5 describes — stores the entry, and hands the sealed tree
+to the load; on a hit it hands that same sealed tree to the next environment
+**by reference**.
+
+**What the aliasing rests on** is entirely existing rails; no new admission
+class was added:
+
+- the tree is sealed throughout by construction, because `newCachedSource`
+  routes every parse through `newProgram` (reference types rejected,
+  already-sealed output admitted as-is, anything else privately copied and
+  sealed, the unsealable rejected);
+- a sealed node may be reached by more than one `Runtime` **by design** —
+  §3.3's ownership allowlist entry 2, whose first named topology is
+  substrate's warm parse cache, which is this one;
+- lisp-level writes through the shared tree raise `modify-literal-error` at
+  the guarded kernel sites (§2.4);
+- the evaluator's own metadata writes skip sealed nodes, so a **debugger**
+  needs no private copy of a cached tree (below);
+- checked builds re-verify the tree after every load through `(*LEnv).load`
+  (§3.3), so a corrupted entry is reported at the load that corrupted it.
+
+A parse the admission refuses is **not cached**: it is handed to that one
+load and forgotten, so the load behaves exactly as it would with no cache.
+The alternative — store it and copy on every load — would put an unsealed
+tree in a process-wide cache, which is the topology the hook exists to make
+impossible.
+
+**Keying deviates from substrate's deliberately.** `cacheReader` keys on a
+hash of the source content alone, which is safe for its own topology (a
+file's name and location are stable across loads) but not in general: two
+files with identical text would share an entry and the served tree carries
+the *first* file's parse locations, so every error raised from the second
+names the wrong file. elps digests the content **and** the stream's name and
+location, each length-prefixed.
+
+**The debugger question, answered.** Attaching a debugger disables TCO
+globally and makes `macroCall` build a `macroExpansionContext`, which
+`stampMacroExpansion` turns into per-node metadata. Those are writes, and a
+macro receives its arguments unevaluated, so a caller's parse nodes — here,
+*cached* nodes — are spliced straight into the expansion. The write does not
+land, for two independent reasons: `stampGuarded` returns at the first sealed
+node (skipping the whole subtree, §2.4), and rdparser gives every node it
+emits a real location so the stamp's `source == nil || Pos < 0` condition is
+false in the first place. Only the first of those covers a cached tree that
+came from a *caller-written* `Reader`, which may emit location-less nodes —
+so that is the case
+`TestLoadCacheDebuggerDoesNotStampSharedNodes` drives, and removing the
+sealed skip makes it fail. Debug mode therefore pays no copy on this path.
+
+**What it buys.** The hazard half of this story was already closed: since the
+parser seals and the mutation sites refuse sealed input, an embedder cache
+that aliases is no longer the corruption vector it was. What remained was a
+*cost* — an embedder holds `[]*LVal`, not a promise, so the only way it can
+reach safety on its own terms is to deep-copy every hit. Measured in this
+repository over a 78 KiB source loaded into a fresh environment
+(`lisp/loadcache_bench_test.go`, `-count=8`):
+
+| arm | sec/op | B/op | allocs/op |
+|---|---|---|---|
+| no cache | 16.81 ms | 9169 KiB | 235,036 |
+| embedder-shaped cache, copy per hit | 6.07 ms | 5559 KiB | 64,308 |
+| `LoadCache`, aliased hit | 2.00 ms | 1644 KiB | 18,700 |
+
+Alias against copy: **−67.0% sec/op, −70.4% B/op, −70.9% allocs/op**
+(p=0.000, n=8). A deployment that preheats a pool of environments multiplies
+that by pool size on every refill.
 
 ## 3. Verification layers: what each prevents, and its blind spots
 
@@ -596,7 +691,8 @@ intends to mutate data it did not construct copies unconditionally.
 
 1. **Parse through a sealing path.** `Reader.Read`, `LoadString`,
    `ParseProgram`/`ReadProgram` all seal. Prefer `lisp.Program` at your
-   cache boundary: its constructors *establish* the seal at admission
+   cache boundary, and `Runtime.LoadCache` (§2.9) for the `load-file` path
+   rather than a caching `Reader`: its constructors *establish* the seal at admission
    (elps#394) — reader output that is not already sealed throughout is
    privately copied and sealed, and output the seal cannot protect
    (reference types, function values) is rejected with an error. (Owned
