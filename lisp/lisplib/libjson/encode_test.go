@@ -98,6 +98,7 @@ func testEncode(t testing.TB) {
 			js := string(enc.bytes())
 			assert.Equal(t, test.js, js, "test %d: %v", i, test.v)
 		}
+		putEncoder(enc)
 	}
 }
 
@@ -108,6 +109,7 @@ func testEncode_stringNumbers(t testing.TB) {
 			js := string(enc.bytes())
 			assert.Equal(t, test.js, js, "test %d: %v", i, test.v)
 		}
+		putEncoder(enc)
 	}
 }
 
