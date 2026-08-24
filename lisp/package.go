@@ -44,10 +44,37 @@ func (r *PackageRegistry) PackageNames() []string {
 	return names
 }
 
-// AddPackage registers p under p.Name if no package with that name exists
-// already.  AddPackage returns true when p was added and false when a
-// package named p.Name was already registered (in which case the registry
-// is unchanged).
+// AddPackage registers a private snapshot of p under p.Name if no package
+// with that name exists already.  AddPackage returns true when p was added
+// and false when a package named p.Name was already registered (in which
+// case the registry is unchanged).
+//
+// AddPackage is an ADMISSION point, not a store (issue #524).  A registry is
+// the interpreter state of a Runtime, so a package built outside it — by an
+// embedder, or by another Runtime whose registry is being merged into this
+// one — arrives full of values the caller still holds pointers to.  What
+// gets registered is therefore a snapshot of p rather than p itself, and
+// each bound value is admitted according to what the seal can promise about
+// it (lisp/package_admit.go states the rule per value class):
+//
+//   - a value that is sealed throughout, and a singleton, are shared by
+//     reference — the sanctioned cross-environment share;
+//   - a code-like tree that is NOT sealed (a runtime-built list, symbol,
+//     string or number: fresh mutable storage the caller still aliases) is
+//     copied privately and sealed, so neither side can write what the other
+//     evaluates;
+//   - everything else — functions, natives, sorted-maps, arrays, byte
+//     strings, and trees holding one — is shared by reference, because no
+//     seal covers those classes.  For them AddPackage transfers custody: the
+//     caller must stop mutating them, and evaluating a shared closure under
+//     two Runtimes remains the caller's problem (checked builds report it).
+//
+// Two consequences worth stating for callers.  The registry does not hold p,
+// so binding into p afterwards does not change the registered package —
+// bind through the environment (or add a finished package).  And the
+// snapshot reads p's maps on the calling goroutine, so, like every other
+// read of a *Package, it requires that no other goroutine is writing p
+// (issue #397).
 func (r *PackageRegistry) AddPackage(p *Package) bool {
 	if p == nil {
 		return false
@@ -55,7 +82,7 @@ func (r *PackageRegistry) AddPackage(p *Package) bool {
 	if _, ok := r.packages[p.Name]; ok {
 		return false
 	}
-	r.packages[p.Name] = p
+	r.packages[p.Name] = admitPackage(p)
 	return true
 }
 
@@ -219,6 +246,16 @@ func (pkg *Package) GetFunName(fid string) string {
 }
 
 // Put takes an LSymbol k and binds it to v in pkg.
+//
+// Put stores v as given: it takes no admission walk (see AddPackage and
+// lisp/package_admit.go).  It is the write path every `set` reaches through
+// LEnv.PutGlobal, where the value being bound belongs to the environment
+// that is already evaluating it and LEnv.Put/PutGlobal have already taken
+// the checked-mode ownership sighting — so a per-binding walk here would
+// tax the interpreter's hot path to guard a transfer that is not happening.
+// A Go caller that reaches around the environment to Put into a package
+// another Runtime is serving is doing the cross-Runtime sharing AddPackage's
+// snapshot exists to prevent, and owns the consequences.
 func (pkg *Package) Put(k, v *LVal) *LVal {
 	if k.Type != LSymbol && k.Type != LQSymbol {
 		return Errorf("key is not a symbol: %v", k.Type)

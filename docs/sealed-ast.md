@@ -182,7 +182,8 @@ unsealed by construction.
 
 The parse/cache boundary exposes no raw AST: `lisp.Program`
 (`lisp/program.go`) wraps parse output opaquely, and the package registry
-seals its LVal-bearing surface. Deep-copy machinery for owned expressions
+seals its LVal-bearing surface (§2.8 for what its admission promises per
+value class). Deep-copy machinery for owned expressions
 exists in-kernel (`detach()`, `lisp/detach.go` — whose walker also backs the
 lisp-level `copy` builtin in a within-env mode, elps#378) but is unexported:
 it will be re-exported
@@ -293,6 +294,73 @@ would all need a copying accessor, and the worst an exported `Frames` slice
 buys an attacker is a wrong stack trace in their own interpreter — no shared
 bytes, no other goroutine.  Deferred, with the numbers on the table rather
 than an implicit "nobody asked".
+
+### 2.8 Package registry admission (issue #524)
+
+`PackageRegistry.AddPackage` is the second exported surface with the shape
+§2.5's `Program` constructors had: a caller hands the kernel a container of
+`*LVal`s it still holds pointers to, and a `Runtime` starts serving them. A
+package built by hand in Go, or lifted out of another `Runtime`'s registry
+by the doc/LSP/MCP merges (`cmd/doc.go`, `mcpserver`'s per-request doc env —
+the path a booted downstream registry reaches the tools through), used to be
+stored as-is.
+
+`newProgram`'s rule does not transfer, because a package's contents are not
+parse output. A symbol table legitimately holds Go builtins, lisp closures,
+natives, sorted-maps, arrays and runtime data — values the seal *deliberately*
+declines to mark, because the evaluator mutates them. "Seal everything" would
+freeze storage the evaluator writes, and "reject the unsealable" would reject
+every real package. So the admission is stated per value class
+(`lisp/package_admit.go`); `AddPackage` registers a private **snapshot** of
+the package whose bindings are:
+
+| Value class | Admission |
+|---|---|
+| singletons; values **sealed throughout** | shared by reference — the sanctioned share |
+| **sealable throughout but unsealed**: runtime-built lists, symbols, strings, numbers ("code-like trees") | private `Copy()` + `SealAST()` |
+| everything else: functions, natives, sorted-maps, arrays, bytes, errors, tagged values, and trees holding one | shared by reference; **custody transferred** |
+
+The middle row is the hazard. An unsealed code-like tree is fresh mutable
+storage the caller still aliases: `stable-sort` in the registry's `Runtime`
+rewrites it under the caller and under every other registry the same package
+was added to, and a write through the caller's retained pointer rewrites what
+the `Runtime` evaluates — substrate#378's corruption class with a package for
+a vehicle. `Copy()` severs the alias, `SealAST()` freezes the registry's copy
+and (in checked builds) enrols it in the census, which is why the
+fingerprint verifier covers admitted bindings at all.
+
+The sealed fast path is load-bearing rather than an optimization note: values
+produced by evaluating literals are *already* sealed, so a package built by
+loading lisp source is admitted with its bindings shared, exactly as a
+`Program` of sealed parser output is.
+
+The last row is where this admission is knowingly weaker than
+`newProgram`'s, and the honesty is the point: a closure's captured `*LEnv`
+cannot be copied, and reference types are reference types on purpose. For
+those, `AddPackage` promises custody transfer, not isolation — the caller
+must stop writing them, and evaluating one shared closure under two
+`Runtime`s stays a bug that checked mode reports rather than one the
+admission prevents.
+
+Two consequences for callers: the registry does not hold the caller's
+`*Package`, so binding into it after `AddPackage` no longer reaches the
+`Runtime` (bind through the environment instead); and the snapshot reads the
+package's maps on the calling goroutine, so it needs the same "no concurrent
+writer" discipline every other read of a `*Package` does (#397).
+
+**Sibling mutators.** The audit behind #524 covers every exported member of
+`PackageRegistry`/`Package` that stores a caller-supplied `*LVal`.
+`Package.Put`/`Update` keep storing what they are given: they are the write
+path every `set` reaches through `LEnv.PutGlobal`, where the value belongs to
+the environment already evaluating it and `LEnv.Put`/`PutGlobal` have taken
+the ownership sighting — an admission walk there would tax the interpreter's
+hot path to guard a transfer that is not happening. `Export`/`Exports` store
+names only (`Exports` already copies its slice), and `DefinePackage` builds a
+fresh package. The read side is the residual: `PackageRegistry.Package` hands
+out the registry's live `*Package` — which is how the merges enumerate a
+booted registry — and a caller can `Put` through it. Same residual as §2.7's
+exported fields: the boundary stops accidental sharing, not a caller that
+goes looking for interpreter state.
 
 ## 3. Verification layers: what each prevents, and its blind spots
 
@@ -536,26 +604,32 @@ intends to mutate data it did not construct copies unconditionally.
    today; it will be re-exported when a real embedder consumer
    materializes.) If you build trees by hand and share them across
    environments, call `SealAST()` on each root yourself.
-2. **Never install a format-preserving reader into an evaluating runtime.**
+2. **Hand `AddPackage` a finished package.** The registry stores a snapshot
+   whose code-like bindings are privately sealed copies (§2.8, elps#524), so
+   writes through your `*Package` after registration do not reach the
+   `Runtime` — bind through the environment instead. Values the seal cannot
+   cover (functions, natives, maps, arrays) are admitted by reference: after
+   `AddPackage` they belong to the registry, so stop mutating them.
+3. **Never install a format-preserving reader into an evaluating runtime.**
    `parser.NewReader(parser.WithFormatPreserving())` produces *unsealed*
    trees for tooling (formatter/minifier/lint); it satisfies `lisp.Reader`,
    so nothing but this contract stops you on the `Load*` paths. The
    `Program` constructors are the exception: they detect the unsealed
    parse and admit a private sealed copy instead (elps#394).
-3. **In every builtin or Go helper that mutates a value in place:** check
+4. **In every builtin or Go helper that mutates a value in place:** check
    `v.IsSealed()` first; refuse with an error or operate on `v.Copy()`.
    Remember slices of `Cells` share backing — copy the cells, not just the
    header, before restructuring.
-4. **Use `copy` (lisp) / `Copy()` (Go) as the copy idioms** when you
+5. **Use `copy` (lisp) / `Copy()` (Go) as the copy idioms** when you
    need storage that no one else can write (§4.1). `copy` is deep and
    unconditional -- prefer it to the one-level `(concat 'list x)`. (The
    hermetic cross-runtime deep copy lives in-kernel as `detach()`,
    unexported until a consumer appears; `copy` is its within-env mode.)
-5. **Run the verification stack you can afford:** `go run ./cmd/elpsvet
+6. **Run the verification stack you can afford:** `go run ./cmd/elpsvet
    -test=false ./...` over code living in this module; `go test -tags
    elpscheck` (inspector) and `-race` (watchdog) in CI; call
    `lisp.VerifySealedASTs` at teardown in long-lived checked-build hosts.
-6. **When elpsvet flags you and the mutation is deliberate**, annotate the
+7. **When elpsvet flags you and the mutation is deliberate**, annotate the
    line with `//elps:mutates <justification>` and make the justification
    say *why the storage is owned* — every annotation in this repo is an
    auditable claim (50 `//elps:mutates` and 19 `//elpsvet:allow` live
