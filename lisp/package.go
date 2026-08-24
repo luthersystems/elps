@@ -248,8 +248,19 @@ func (pkg *Package) Update(k, v *LVal) *LVal {
 }
 
 func (pkg *Package) put(k, v *LVal) {
+	pkg.putName(k.Str, v)
+}
+
+// putName binds v to name without requiring the caller to allocate a symbol
+// LVal for the key.  It is the registration fast path used by the LEnv.Add*
+// methods and by UsePackage's import loop, which bind hundreds of names per
+// environment; Put and Update funnel through it too, so the LFun name
+// bookkeeping stays in one place.  Callers are responsible for the
+// constant-rebind check Put performs — the Add* methods and UsePackage guard
+// TrueSymbol/FalseSymbol explicitly before calling.
+func (pkg *Package) putName(name string, v *LVal) {
 	if v.Type == LFun {
-		pkg.funNames[v.FID()] = k.Str
+		pkg.funNames[v.FID()] = name
 	}
-	pkg.symbols[k.Str] = v
+	pkg.symbols[name] = v
 }

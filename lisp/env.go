@@ -298,12 +298,25 @@ func (env *LEnv) UsePackage(name *LVal) *LVal {
 	if pkg == nil {
 		return env.Errorf("unknown package: %v", name.Str)
 	}
+	dst := env.Runtime.Package
 	for _, sym := range pkg.externals {
-		v := pkg.Get(Symbol(sym))
-		if v.Type == LError {
-			return env.Errorf("package %s: %v", name.Str, v)
+		if sym == TrueSymbol || sym == FalseSymbol {
+			// Exporting a boolean constant was always a no-op: pkg.Get
+			// resolved the constant to itself and Put refused the rebind
+			// (its error was ignored).  Skipping keeps that behavior
+			// without consulting the symbol table.
+			continue
 		}
-		env.Runtime.Package.Put(Symbol(sym), v)
+		v, ok := pkg.Symbol(sym)
+		if !ok {
+			// Cold path: reproduce pkg.Get's unbound-symbol error verbatim.
+			return env.Errorf("package %s: %v", name.Str, pkg.Get(Symbol(sym)))
+		}
+		// putName, not Put: the hot import loop binds hundreds of names per
+		// environment, and the two Symbol header allocations per name (one
+		// for the probe, one for the store) were pure key packaging.  The
+		// constant-rebind check Put performs is the guard above.
+		dst.putName(sym, v)
 	}
 	return Nil()
 }
@@ -883,6 +896,41 @@ func sealedShareableFormals(v *LVal) bool {
 	return true
 }
 
+// registrationBound reports whether name is already bound in pkg, returning
+// the bound value.  It answers the same question the Add* methods used to ask
+// with pkg.Get, at none of Get's per-miss cost: Get constructs an "unbound
+// symbol" LError — message formatting and all — for every miss, and on the
+// registration path that error was built once per definition per environment
+// only to be type-sniffed and dropped (measured at ~26% of env-construction
+// allocation objects).  The boolean constants probe as bound-to-themselves,
+// exactly as Get resolves them, so registering a definition named "true" or
+// "false" still panics as a duplicate rather than silently failing to bind.
+func registrationBound(pkg *Package, name string) (*LVal, bool) {
+	if name == TrueSymbol || name == FalseSymbol {
+		return Symbol(name), true
+	}
+	return pkg.Symbol(name)
+}
+
+// registrationFunValue builds the function value the Add* methods install: a
+// fresh LFun header over the (possibly shared, sealed) formals and the
+// documentation string.  It is FunInPackage/MacroInPackage/SpecialOpInPackage
+// with the docstring placed at construction — the public constructors
+// allocate an empty-string docstring cell the Add* methods immediately
+// replaced, one dropped allocation per definition per environment.
+func registrationFunValue(pkgName, fid string, funType LFunType, formals *LVal, fn LBuiltin, doc string) *LVal {
+	return &LVal{
+		Type:    LFun,
+		FunType: funType,
+		Native: &funData{
+			fid:     fid,
+			builtin: fn,
+			pkg:     pkgName,
+		},
+		Cells: []*LVal{formals, String(doc)},
+	}
+}
+
 // AddMacros binds the given macros to their names in env.  When called with no
 // arguments AddMacros adds the DefaultMacros to env.
 //
@@ -896,21 +944,21 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 	formals := newFormalsCopier(macs)
 	pkg := env.Runtime.Package
 	for _, mac := range macs {
-		k := Symbol(mac.Name())
-		exist := pkg.Get(k)
-		if !exist.IsNil() && exist.Type != LError { // LError is ubound symbol
+		name := mac.Name()
+		// registrationBound replicates the probe pkg.Get used to answer,
+		// without Get's per-miss error construction; see its comment.
+		if exist, bound := registrationBound(pkg, name); bound && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
 			// NOT LISP-REACHABLE (#367): AddMacros is registration-time Go
 			// API.  No builtin, operator or macro calls it, so the only way to
 			// bind one name twice is an embedder registering it twice.  The
 			// embedder-facing half of that story is #351.
-			panic(fmt.Sprintf("macro already defined: %v (= %v)", k, exist))
+			panic(fmt.Sprintf("macro already defined: %v (= %v)", name, exist))
 		}
-		id := fmt.Sprintf("<builtin-macro ``%s''>", mac.Name())
-		fn := MacroInPackage(pkg.Name, id, registrationFormals(&formals, mac.Formals()), mac.Eval)
-		fn.Cells[1] = String(builtinDocstring(mac))
-		pkg.Put(k, fn)
+		fn := registrationFunValue(pkg.Name, "<builtin-macro ``"+name+"''>", LFunMacro,
+			registrationFormals(&formals, mac.Formals()), mac.Eval, builtinDocstring(mac))
+		pkg.putName(name, fn)
 		if external {
-			pkg.externals = append(pkg.externals, k.Str)
+			pkg.externals = append(pkg.externals, name)
 		}
 	}
 }
@@ -928,19 +976,17 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 	formals := newFormalsCopier(ops)
 	pkg := env.Runtime.Package
 	for _, op := range ops {
-		k := Symbol(op.Name())
-		exist := pkg.Get(k)
-		if !exist.IsNil() && exist.Type != LError { // LError is ubound symbol
+		name := op.Name()
+		if exist, bound := registrationBound(pkg, name); bound && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
 			// NOT LISP-REACHABLE (#367): see AddMacros above -- registration
 			// is Go API an embedder drives, never lisp source.
-			panic(fmt.Sprintf("macro already defined: %v (= %v)", k, exist))
+			panic(fmt.Sprintf("macro already defined: %v (= %v)", name, exist))
 		}
-		id := fmt.Sprintf("<special-op ``%s''>", op.Name())
-		fn := SpecialOpInPackage(pkg.Name, id, registrationFormals(&formals, op.Formals()), op.Eval)
-		fn.Cells[1] = String(builtinDocstring(op))
-		pkg.Put(k, fn)
+		fn := registrationFunValue(pkg.Name, "<special-op ``"+name+"''>", LFunSpecialOp,
+			registrationFormals(&formals, op.Formals()), op.Eval, builtinDocstring(op))
+		pkg.putName(name, fn)
 		if external {
-			pkg.externals = append(pkg.externals, k.Str)
+			pkg.externals = append(pkg.externals, name)
 		}
 	}
 }
@@ -958,19 +1004,17 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 	formals := newFormalsCopier(funs)
 	pkg := env.Runtime.Package
 	for _, f := range funs {
-		k := Symbol(f.Name())
-		exist := pkg.Get(k)
-		if exist.Type != LError {
+		name := f.Name()
+		if exist, bound := registrationBound(pkg, name); bound && exist.Type != LError { // a stored LError value is overwritten, as pkg.Get's probe allowed
 			// NOT LISP-REACHABLE (#367): see AddMacros above -- registration
 			// is Go API an embedder drives, never lisp source.
-			panic("symbol already defined: " + f.Name())
+			panic("symbol already defined: " + name)
 		}
-		id := fmt.Sprintf("<builtin-function ``%s''>", f.Name())
-		v := FunInPackage(pkg.Name, id, registrationFormals(&formals, f.Formals()), f.Eval)
-		v.Cells[1] = String(builtinDocstring(f))
-		pkg.Put(k, v)
+		v := registrationFunValue(pkg.Name, "<builtin-function ``"+name+"''>", LFunNone,
+			registrationFormals(&formals, f.Formals()), f.Eval, builtinDocstring(f))
+		pkg.putName(name, v)
 		if external {
-			pkg.externals = append(pkg.externals, k.Str)
+			pkg.externals = append(pkg.externals, name)
 		}
 	}
 }
