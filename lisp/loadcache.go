@@ -593,7 +593,7 @@ func (env *LEnv) reportCachePanic(method string, r any) {
 	if env.Runtime == nil || env.Runtime.Stderr == nil {
 		return
 	}
-	fmt.Fprintf(env.Runtime.Stderr,
+	_, _ = fmt.Fprintf(env.Runtime.Stderr,
 		"lisp: LoadCache.%s panicked; continuing without the cache for this load: %v\n",
 		method, r)
 }
