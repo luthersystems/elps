@@ -257,6 +257,18 @@ bench-gate-arms:
 	go run ./cmd/benchgate -waivers-default scripts/benchstat-waivers.txt \
 		-base $(BENCH_BASE) -head $(BENCH_HEAD)
 
+# Is THIS MACHINE fit to measure anything? A fixed, code-independent loop, run
+# seven times, with the samples required to agree to within ±10% (issue #542).
+#
+# Run it BEFORE a local before/after comparison. A laptop with a browser open,
+# or a CI runner with a noisy co-tenant, cannot resolve a 10% gate on anything,
+# and half an hour of benchmarking on one produces numbers that read like
+# findings. Exit 0 = fit, exit 3 = re-measure somewhere else. Takes ~half a
+# second.
+.PHONY: bench-burnin
+bench-burnin:
+	go run ./cmd/benchgate burnin
+
 # --- Release targets ---
 
 LATEST_TAG := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "none")

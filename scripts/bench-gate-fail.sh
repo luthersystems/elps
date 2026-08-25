@@ -9,11 +9,18 @@
 #
 # This script decides nothing. The workflow's `if:` already established that the
 # gate did not pass; all this does is name the reason before exiting 1. The
-# three-way split is deliberate and must be preserved:
+# four-way split is deliberate and must be preserved, because the reader's next
+# action differs in each case:
 #
 #   1  regressions found      -- a real, measured performance problem
 #   2  could not interpret    -- a hard failure BY DESIGN; a gate that cannot
 #                               read its input must never report success
+#   3  runner unfit           -- the machine did not produce a usable
+#                               measurement (issue #542), so nothing was found
+#                               and nothing was certified. Re-run the job. NOT
+#                               a performance problem, and telling the reader to
+#                               go and read the diff would send them after one
+#                               that does not exist.
 #   *  no verdict reached     -- e.g. exit 127, the script not being found.
 #                               This branch used to say "regressions detected",
 #                               which sent the reader hunting a performance
@@ -39,6 +46,9 @@ case "$status" in
     ;;
   2)
     echo "::error::The benchmark comparison could not be interpreted (gate exit 2). This is a hard failure by design — a gate that cannot read its input must never report success. See the job log above."
+    ;;
+  3)
+    echo "::error::The RUNNER was not fit to measure (gate exit 3). One or more rows moved past the gate on a confidence interval too wide to size the move, so this run found no regression AND certified nothing — see the UNMEASURABLE line(s) in the gate report. Re-run the job; if it recurs on a fresh runner, the benchmark itself needs a longer -benchtime or to leave the comparison set."
     ;;
   *)
     # Anything else means the gate did not reach a verdict at all --

@@ -1,0 +1,24 @@
+# The deliberate middle of the exit-code contract: a row the machine could not
+# measure, whose move is BELOW the gate anyway.
+#
+#   * ±45% and ±40% intervals -- well past the ±30% fitness ceiling.
+#   * +4.00% at p=0.030 -- significant, in the bad direction, and nowhere near
+#     the 15% timing gate.
+#
+# This is reported as a warning and changes NO exit code. The argument in both
+# directions is real: a row this noisy could be hiding a genuine regression
+# underneath a small point estimate, but failing every slightly-noisy minor row
+# turns the gate into something that reds on the weather, and a gate that reds
+# on the weather gets switched off -- which is how a repository ends up with no
+# gate at all. The whole-machine version of this question is `benchgate burnin`,
+# which is answered BEFORE the samples are taken and does not need a per-row
+# judgement call.
+#
+# Expected verdict: below-gate, annotated as unmeasured, exit 0.
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Neoverse-N1
+                        │     base     │                 pr                  │
+                        │    sec/op    │    sec/op     vs base               │
+DrowsyThing-2             100.0n ± 45%   104.0n ± 40%   +4.00% (p=0.030 n=10)

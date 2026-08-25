@@ -26,6 +26,11 @@ type waiver struct {
 	used       bool // it suppressed a regression
 	exceeded   bool // the row moved past the recorded ceiling
 	expiredHit bool // the row regressed and the waiver had expired
+	// unmeasured records that the row was at or above its gate but the
+	// comparison could not size the move (issue #542). Without it, the report
+	// would tell the reader the waiver "can be deleted" on the strength of a
+	// measurement it had just declared worthless.
+	unmeasured bool
 }
 
 // waiverSet is a parsed waiver file plus the diagnostics from parsing it. A

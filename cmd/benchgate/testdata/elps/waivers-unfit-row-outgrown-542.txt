@@ -1,0 +1,10 @@
+# Self-test fixture: the same waiver as waivers-unfit-row-542.txt with a ceiling
+# BELOW the measured move (+83.31% against 10%).
+#
+# Normally that is a REGRESSION -- "EXCEEDS its waiver ceiling" -- because a
+# waiver bounds an accepted cost rather than blessing a benchmark. But exceeding
+# the ceiling is a NEW finding, drawn from THIS measurement, and on an
+# unmeasurable row there is no measurement to draw it from. So this must come
+# out as UNMEASURABLE and exit 3, not as a regression: the gate cannot claim the
+# accepted cost was outgrown on evidence it just declared worthless.
+github.com/luthersystems/substrate/internal/substrate/shiro | MockParallel | sec/op | 10 | 2099-01-01 | elps#542 | ceiling deliberately below the measured move

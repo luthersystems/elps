@@ -1,0 +1,26 @@
+# Exit-code PRECEDENCE: one table, two rows, two different problems.
+#
+#   SickRow-2    ±71% base arm, +83.31% -- unmeasurable, exactly the
+#                substrate#424 shape.
+#   SolidRow-2   ±2% / ±3%, +22.00% -- a clean, fit measurement of a real
+#                regression.
+#
+# The run exits 1, not 3. A regression found on a row that COULD be measured is
+# a finding, and an unmeasurable row elsewhere in the same table does not make
+# it less of one; answering "re-measure" over the top of it would postpone a
+# real result and invite a re-run that finds the same thing again.
+#
+# Both rows are still printed, each with its own label. The unmeasurable row is
+# NOT quietly folded into the regression count -- that would claim the gate
+# measured something it did not.
+#
+# Expected verdict: one REGRESSION, one UNMEASURABLE, exit 1.
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Neoverse-N1
+                        │     base     │                 pr                  │
+                        │    sec/op    │    sec/op     vs base               │
+SickRow-2                 45.30m ± 71%   83.04m ±  3%  +83.31% (p=0.008 n=10)
+SolidRow-2                1.000µ ±  2%   1.220µ ±  3%  +22.00% (p=0.000 n=10)
+geomean                   6.729µ         10.07µ        +49.65%

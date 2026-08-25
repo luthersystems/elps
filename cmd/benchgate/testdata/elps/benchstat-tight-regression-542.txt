@@ -1,0 +1,27 @@
+# The control for benchstat-runner-unfit-542.txt, and the half that matters
+# more: a REAL regression, measured on a runner that was working.
+#
+# Same gate (15% timing), a move over it, and intervals a fit machine produces:
+# ±2% and ±3%. Nothing about the fitness ceiling may touch this row. If it ever
+# does, the ceiling has become an off switch for the gate -- which is the same
+# defect in a new costume as the `grep` that could not match, and exactly what
+# the #443 resolution check needed its own control fixture to rule out.
+#
+# Expected verdict: REGRESSION, exit 1.
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Neoverse-N1
+                        │     base     │                 pr                  │
+                        │    sec/op    │    sec/op     vs base               │
+EnvFunCallRecursion-2     1.000µ ± 2%    1.180µ ± 3%  +18.00% (p=0.000 n=10)
+
+                        │     base     │                 pr                  │
+                        │     B/op     │     B/op      vs base               │
+EnvFunCallRecursion-2     512.0 ± 0%     512.0 ± 0%        ~ (p=1.000 n=10) ¹
+¹ all samples are equal
+
+                        │     base     │                 pr                  │
+                        │  allocs/op   │  allocs/op    vs base               │
+EnvFunCallRecursion-2     8.000 ± 0%     8.000 ± 0%        ~ (p=1.000 n=10) ¹
+¹ all samples are equal

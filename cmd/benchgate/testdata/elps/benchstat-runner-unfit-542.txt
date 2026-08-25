@@ -1,0 +1,50 @@
+# The incident this gate's fitness ceiling was written for: luthersystems/elps#542,
+# from substrate#424 (head 850f118ef).
+#
+# The gate failed the same PR twice in a row, and both verdicts were runner
+# pathology rather than code:
+#
+#   run 1   base ±71% (samples ~30-130ms), pr ±3%   ->  +83.31% REGRESSION
+#   run 2   base ±30%,                     pr ±2%   ->  +34.00% REGRESSION
+#
+# The head had ZERO Go-code delta from a tree the same gate had measured at
+# parity ±3% an hour earlier. Every package on that runner ran 1.5-2x slower in
+# absolute terms. Three independent measurements -- a fresh runner, a local
+# interleaved n=12, and a GOMAXPROCS=2 starvation A/B -- all read
+# parity-to-better.
+#
+# Run 1 is reproduced below. The shape is the whole point:
+#
+#   * The BASE arm is the disrupted one (±71%), which is what makes the pr arm
+#     look slow. A rule that only looked at the head arm would see ±3% and
+#     conclude the measurement was excellent.
+#   * The resolution check (#443) does NOT catch this. It asks whether the move
+#     is larger than the row's own spread, and +83% IS larger than ±71%. The
+#     row passes "can this comparison resolve this move?" while being drawn
+#     from an arm that could not resolve anything.
+#   * The allocation columns are flat, as they were in the incident: this was
+#     never a code change, so nothing about the allocation profile moved. That
+#     is also why the fitness ceiling has to be a TIMING rule -- there is no
+#     allocation evidence here to corroborate or contradict it.
+#
+# Expected verdict: UNMEASURABLE on the sec/op row, exit 3 (RUNNER-UNFIT),
+# NOT exit 1. A +83% delta measured through a ±71% interval is not evidence of
+# a regression, and it is not evidence of a pass either.
+goos: linux
+goarch: amd64
+pkg: github.com/luthersystems/substrate/internal/substrate/shiro
+cpu: AMD EPYC 7763 64-Core Processor
+                    │     base     │                  pr                  │
+                    │    sec/op    │    sec/op      vs base               │
+MockParallel-2        45.30m ± 71%    83.04m ±  3%  +83.31% (p=0.008 n=10)
+geomean               45.30m          83.04m        +83.31%
+
+                    │     base     │                 pr                  │
+                    │     B/op     │     B/op      vs base               │
+MockParallel-2        1.412Mi ± 0%   1.412Mi ± 0%       ~ (p=1.000 n=10) ¹
+¹ all samples are equal
+
+                    │     base     │                 pr                  │
+                    │  allocs/op   │  allocs/op    vs base               │
+MockParallel-2        18.30k ± 0%    18.30k ± 0%        ~ (p=1.000 n=10) ¹
+¹ all samples are equal
