@@ -229,9 +229,8 @@ func newProgramAdmitted(exprs []*LVal, w *loaderWalk) (Program, error) {
 		}
 	}
 	allSealed := true
-	seen := make(map[*LVal]struct{})
 	for _, expr := range exprs {
-		if firstUnsealed(expr, seen) != nil {
+		if firstUnsealed(expr) != nil {
 			allSealed = false
 			break
 		}
@@ -258,7 +257,7 @@ func newProgramAdmitted(exprs []*LVal, w *loaderWalk) (Program, error) {
 	for i, expr := range exprs {
 		cp := expr.Copy()
 		cp.SealAST()
-		if u := firstUnsealed(cp, make(map[*LVal]struct{})); u != nil {
+		if u := firstUnsealed(cp); u != nil {
 			lerr := Error(fmt.Errorf("cannot seal expression of type %v into a program", u.Type))
 			// Copied, not aliased, as above — u's location was already
 			// privately copied from the Reader's tree, but the program copy
@@ -288,21 +287,26 @@ func newProgramAdmitted(exprs []*LVal, w *loaderWalk) (Program, error) {
 //
 // The trees it walks have already passed the admission walk in newProgram,
 // which rejects cyclic and over-deep reader output — so firstUnsealed only
-// ever sees a finite, depth-bounded graph.  It may still see a DAG (node
-// sharing is legal off the cache path, issue #368 review blocker 2), so it
-// carries a memo of nodes already found sealed: without it a shared subtree
-// would be re-descended once per path.  The memo records only SEALED nodes,
-// so it can never mask an unsealed one.
-func firstUnsealed(v *LVal, seen map[*LVal]struct{}) *LVal {
+// ever sees a finite, depth-bounded graph.
+//
+// IT CARRIES NO MEMO, deliberately.  A memo would make a shared subtree cost
+// O(distinct nodes) instead of O(paths), but it would allocate a map sized to
+// the whole stream on EVERY parse — including the ReadProgram/TextLoader
+// calls that have no cache installed, which is 27% more heap on the path
+// docs/embed.md promises is unchanged (issue #536 round-three review,
+// blocker 1).  It would also buy almost nothing: the only tree whose walk
+// the memo shortens and whose cost is not immediately re-paid is a SEALED
+// DAG, because an unsealed one goes straight into (*LVal).Copy, which
+// unfolds it anyway.  The cache path, where sharing is deliberately
+// admitted, bounds the unfolded size at admission instead (see admitExpr),
+// so this walk is bounded there by construction; off the cache path a shared
+// tree costs exactly what it cost before the load-cache hook existed.
+func firstUnsealed(v *LVal) *LVal {
 	if !v.IsSealed() || !sealableNodeType(v.Type) {
 		return v
 	}
-	if _, ok := seen[v]; ok {
-		return nil
-	}
-	seen[v] = struct{}{}
 	for _, c := range v.Cells {
-		if u := firstUnsealed(c, seen); u != nil {
+		if u := firstUnsealed(c); u != nil {
 			return u
 		}
 	}

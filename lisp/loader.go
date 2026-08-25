@@ -225,29 +225,65 @@ func admitExpr(v *LVal, w *loaderWalk) error {
 }
 
 // newLoaderWalk builds the admission walk state.  strict selects the cache
-// path's extra rules (no shared composite nodes, node budget); one walk is
-// shared across all the top-level expressions of one stream so the cycle
-// guard spans them and the state costs one map per stream rather than one
-// per expression.
+// path's extra rules (a node budget, and the sharing discriminator); one
+// walk is shared across all the top-level expressions of one stream so the
+// cycle guard spans them and the state costs one map per stream rather than
+// one per expression.
+//
+// THE NON-STRICT WALK ALLOCATES NOTHING for an ordinary parse, and that is a
+// requirement rather than a nicety.  docs/embed.md promises that a nil
+// LoadCache leaves the load path exactly what it was before the hook
+// existed, and ReadProgram/ParseProgram/TextLoader are on that path: they
+// are the Program half of the same admission and they run with no cache
+// installed and no cache benefit.  A memo sized to the whole stream's node
+// count made them 21% slower and 27% heavier per parse (issue #536
+// round-three review, blocker 1), buying only the sealed-DAG case that no
+// reader in this repository produces — and buying it one step short of
+// (*LVal).Copy, which unfolds a DAG regardless.  So the O(nodes) state
+// belongs to the cache path, which needs it for a different question, and
+// cycle detection off that path is carried by the on-path set alone.
 func newLoaderWalk(strict bool) *loaderWalk {
-	w := &loaderWalk{state: make(map[*LVal]uint8), budget: loaderWalkNoBudget}
+	w := &loaderWalk{}
 	if strict {
 		w.strict = true
+		w.state = make(map[*LVal]uint8)
 		w.budget = loaderWalkMaxNodes
+	} else {
+		w.budget = loaderWalkNoBudget
 	}
 	return w
 }
 
-// Node states in loaderWalk.state.
+// Node states in loaderWalk.state (cache path only).
 const (
 	loaderNodeOnPath uint8 = 1 // on the current root->node path: a revisit is a cycle
 	loaderNodeDone   uint8 = 2 // fully validated: a revisit is sharing, not a cycle
 )
 
-// loaderWalk carries the admission walk's cycle guard, its validated-node
-// memo, and (cache path only) its node budget.  See admitExpr.
+// loaderWalkPathRecordDepth is the depth past which the NON-STRICT walk
+// starts recording its on-path set.
+//
+// Cycle detection needs only the nodes on the current root->node path, and a
+// cycle is by construction unbounded in depth: whatever its circumference, a
+// walk that follows it descends forever.  So recording can start late and
+// still be exact — the cycle's own nodes are recorded on the lap that passes
+// this depth and the repeat is caught on the next one.  Real parse trees are
+// nowhere near this deep (rdparser caps parse nesting at 10,000, and phylum
+// sources nest in the tens), so the map is never allocated on the path this
+// walk is actually hot on, and the guarantee is unchanged for the input it
+// exists to catch.
+const loaderWalkPathRecordDepth = 64
+
+// loaderWalk carries the admission walk's cycle guard and, on the cache path,
+// its validated-node memo and node budget.  See admitExpr.
 type loaderWalk struct {
-	state  map[*LVal]uint8
+	// state is the CACHE path's memo: loaderNodeOnPath / loaderNodeDone per
+	// distinct node.  nil off the cache path (see newLoaderWalk).
+	state map[*LVal]uint8
+	// onPath is the NON-STRICT path's cycle guard: only the nodes on the
+	// current root->node path, and only those deeper than
+	// loaderWalkPathRecordDepth, so an ordinary parse never allocates it.
+	onPath map[*LVal]struct{}
 	budget int  // loaderWalkNoBudget for the non-cache paths
 	strict bool // cache path: no repeated composite nodes
 }
@@ -265,17 +301,25 @@ func (w *loaderWalk) check(v *LVal, depth int) error {
 	if depth > loaderWalkMaxDepth {
 		return errReaderTreeUnbounded
 	}
-	switch w.state[v] {
-	case loaderNodeOnPath:
-		// Reached from itself: a cycle, on every path.
-		return errReaderTreeUnbounded
-	case loaderNodeDone:
-		if w.strict && len(v.Cells) > 0 {
-			// An interned SUBTREE.  Cache path only; see admitExpr for
-			// why a repeated leaf is fine and a repeated composite is not.
+	recordPath := false
+	if w.strict {
+		switch w.state[v] {
+		case loaderNodeOnPath:
+			// Reached from itself: a cycle, on every path.
+			return errReaderTreeUnbounded
+		case loaderNodeDone:
+			if len(v.Cells) > 0 {
+				// An interned SUBTREE.  Cache path only; see admitExpr for
+				// why a repeated leaf is fine and a repeated composite is not.
+				return errReaderTreeUnbounded
+			}
+			return nil
+		}
+	} else if depth >= loaderWalkPathRecordDepth {
+		if _, onPath := w.onPath[v]; onPath {
 			return errReaderTreeUnbounded
 		}
-		return nil
+		recordPath = true
 	}
 	if w.budget == 0 {
 		return errReaderTreeTooLarge
@@ -309,12 +353,23 @@ func (w *loaderWalk) check(v *LVal, depth int) error {
 		return fmt.Errorf("cannot cache %v expression carrying a native payload", v.Type)
 	}
 
-	w.state[v] = loaderNodeOnPath
+	if w.strict {
+		w.state[v] = loaderNodeOnPath
+	} else if recordPath {
+		if w.onPath == nil {
+			w.onPath = make(map[*LVal]struct{})
+		}
+		w.onPath[v] = struct{}{}
+	}
 	for _, cell := range v.Cells {
 		if err := w.check(cell, depth+1); err != nil {
 			return err
 		}
 	}
-	w.state[v] = loaderNodeDone
+	if w.strict {
+		w.state[v] = loaderNodeDone
+	} else if recordPath {
+		delete(w.onPath, v)
+	}
 	return nil
 }
