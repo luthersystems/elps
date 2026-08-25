@@ -1,0 +1,5 @@
+# Self-test fixture: right benchmark and metric, WRONG package. A waiver must
+# not reach across packages, so this must leave the shirocore rows failing --
+# and it must not be reported as stale either, because this comparison does not
+# cover that package at all.
+github.com/luthersystems/substrate/internal/substrate/shiro | Utils/$load | B/op | 20 | 2099-01-01 | substrate#392 | wrong package on purpose

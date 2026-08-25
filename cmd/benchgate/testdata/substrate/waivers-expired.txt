@@ -1,0 +1,6 @@
+# Self-test fixture: correctly formed, but past its expiry date. An expired
+# waiver stops suppressing; the row is judged normally again and the report
+# says why, so the decision has to be re-made rather than inherited.
+github.com/luthersystems/substrate/internal/substrate/shirocore | Utils/$load | B/op | 20 | 2020-01-01 | substrate#392 | accepted elps v1.50.0 load-path allocation cost, tracked for removal
+github.com/luthersystems/substrate/internal/substrate/shirocore | Utils/$load | allocs/op | 14 | 2020-01-01 | substrate#392 | the same load-path allocations, counted instead of weighed
+github.com/luthersystems/substrate/internal/substrate/shiro/preheat | PhylumPreheater_initPhylum | B/op | 15 | 2020-01-01 | substrate#392 | preheat pays the same alias tables once per environment

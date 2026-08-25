@@ -26,7 +26,7 @@ env:
   # removes that coupling.
   BENCH_COUNT: "10"
   GO_VERSION: "1.25.13"
-  # Regression gates, applied per metric class by scripts/benchstat-gate.sh.
+  # Regression gates, applied per metric class by cmd/benchgate.
   # elps' allocation metrics are near-deterministic (worst-case noise measured on
   # identical code: 0.18%) while sec/op noise reaches ~1.5%, and far more on a
   # contended machine -- so one threshold cannot serve both. Both are set with
@@ -237,6 +237,16 @@ jobs:
           # Both trees are checked out into subdirectories, so there is no
           # go.sum at the workspace root for setup-go to key its cache on.
           cache-dependency-path: pr/go.sum
+
+      # Built from the PR tree deliberately, and BEFORE anything is measured: a
+      # PR that changes the gate must be adjudicated by its own version of it,
+      # not by main's -- and a gate that does not compile must red the job here
+      # rather than 10 minutes later as a mysterious exit 127. cmd/benchgate is
+      # the Go replacement for the old scripts/benchstat-gate.sh (issue #538);
+      # substrate runs the same binary via `go run`, so a fix lands once.
+      - name: Build the benchmark gate
+        working-directory: pr
+        run: go build -o "${GITHUB_WORKSPACE}/bin/benchgate" ./cmd/benchgate
 
       - name: Install benchstat
         # setup-go pins GOTOOLCHAIN=local, which is what keeps the benchmarks

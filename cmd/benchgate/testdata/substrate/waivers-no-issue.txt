@@ -1,0 +1,4 @@
+# Self-test fixture: no tracking reference. A waiver nobody is obliged to come
+# back to is a threshold increase with better manners, so the gate must refuse
+# to run rather than quietly honour it.
+github.com/luthersystems/substrate/internal/substrate/shirocore | Utils/$load | B/op | 20 | 2099-01-01 | | accepted for now, we will look at it eventually

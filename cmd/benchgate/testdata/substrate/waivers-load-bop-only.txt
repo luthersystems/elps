@@ -1,0 +1,7 @@
+# Self-test fixture: the narrow, well-formed waiver. Covers ONE package, ONE
+# benchmark and ONE metric column of the run in
+# benchstat-waived-regression-392.txt -- deliberately NOT the allocs/op column
+# of the same benchmark, and deliberately not preheat, so the "a waiver does
+# not spill onto the neighbouring metric or package" assertions have something
+# to prove.
+github.com/luthersystems/substrate/internal/substrate/shirocore | Utils/$load | B/op | 20 | 2099-01-01 | substrate#392 | accepted elps v1.50.0 load-path allocation cost, tracked for removal

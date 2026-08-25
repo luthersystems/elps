@@ -1,0 +1,5 @@
+# Self-test fixture: benchmark written WITH the -<GOMAXPROCS> suffix `go test`
+# appends. Accepting it would create a waiver that silently unbinds the day the
+# benchmark job changes runner class -- which this repository has already done
+# once. It is a hard error instead.
+github.com/luthersystems/substrate/internal/substrate/shirocore | Utils/$load-4 | B/op | 20 | 2099-01-01 | substrate#392 | suffix written by hand, which is the trap

@@ -1,0 +1,13 @@
+name                                    old time/op    new time/op    delta
+Chain-4                                    151ns ± 2%     162ns ± 1%   +7.14%  (p=0.008 n=5+5)
+UnitTestsShared/TestFile_main/add-4       5.44ms ± 1%    5.45ms ± 1%     ~     (p=1.000 n=5+5)
+Utils/trim-4                              1.30ms ± 2%    1.30ms ± 2%     ~     (p=0.841 n=5+5)
+Utils/ymd-extract-4                       5.21ms ± 1%    5.28ms ± 1%     ~     (p=0.056 n=5+5)
+
+name                                    old alloc/op   new alloc/op   delta
+Chain-4                                     224B ± 0%      224B ± 0%     ~     (all equal)
+UnitTestsShared/TestFile_main/add-4       5.13MB ± 0%    5.14MB ± 0%   +0.02%  (p=0.008 n=5+5)
+
+name                                    old allocs/op  new allocs/op  delta
+Chain-4                                     2.00 ± 0%      2.00 ± 0%     ~     (all equal)
+UnitTestsShared/TestFile_main/add-4         62.1k ± 0%     62.1k ± 0%     ~     (p=0.079 n=5+5)

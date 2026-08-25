@@ -1,0 +1,58 @@
+# Fixture: the benchmark comparison from PR #392 (the elps v1.48.1 -> v1.50.0
+# bump), reduced to the rows the verdict turns on and to two neighbours that
+# must NOT be waived.  Deltas, p-values and n are the ones the workflow's own
+# PR comment reported.
+#
+# Three rows sit at or above the 10% gate, and all three are covered by
+# scripts/benchstat-waivers.txt:
+#
+#     shirocore  Utils/$load-4                B/op       +17.82% (ceiling 20)
+#     shirocore  Utils/$load-4                allocs/op  +11.50% (ceiling 14)
+#     preheat    PhylumPreheater_initPhylum-4 B/op       +12.85% (ceiling 15)
+#
+# The sec/op rows moved the other way -- the elps aliasing fixes made loading
+# FASTER -- and preheat's allocs/op moved by less than the gate, so neither is
+# waived and both stay gated at full strength.  With BENCH_WAIVERS= (waivers
+# off) this table must fail; with the shipped waivers it must pass, with all
+# three rows reported as WAIVED.
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/substrate/internal/substrate/shirocore
+                │     base     │                 pr                 │
+                │    sec/op    │    sec/op     vs base              │
+Utils/$load-4     13.35m ± ∞ ¹   12.71m ± ∞ ¹  -4.79% (p=0.008 n=5)
+Utils/trim-4      1.301m ± ∞ ¹   1.298m ± ∞ ¹       ~ (p=0.841 n=5)
+geomean           4.169m         4.061m        -2.59%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                │     base      │                 pr                  │
+                │     B/op      │     B/op       vs base              │
+Utils/$load-4     10.81Mi ± ∞ ¹   12.74Mi ± ∞ ¹  +17.82% (p=0.008 n=5)
+Utils/trim-4      1.204Ki ± ∞ ¹   1.204Ki ± ∞ ¹       ~ (p=1.000 n=5) ²
+geomean           113.9Ki         123.7Ki        +8.55%
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+
+                │     base      │                 pr                  │
+                │   allocs/op   │   allocs/op    vs base              │
+Utils/$load-4     223.8k ± ∞ ¹    249.5k ± ∞ ¹   +11.50% (p=0.008 n=5)
+Utils/trim-4       28.00 ± ∞ ¹     28.00 ± ∞ ¹        ~ (p=1.000 n=5) ²
+geomean           2.503k          2.643k          +5.58%
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+
+pkg: github.com/luthersystems/substrate/internal/substrate/shiro/preheat
+                             │     base     │                 pr                 │
+                             │    sec/op    │    sec/op     vs base              │
+PhylumPreheater_initPhylum-4   6.918m ± ∞ ¹   6.612m ± ∞ ¹  -4.42% (p=0.008 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                             │     base      │                 pr                  │
+                             │     B/op      │     B/op       vs base              │
+PhylumPreheater_initPhylum-4   4.912Mi ± ∞ ¹   5.543Mi ± ∞ ¹  +12.85% (p=0.008 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                             │     base      │                 pr                  │
+                             │   allocs/op   │   allocs/op    vs base              │
+PhylumPreheater_initPhylum-4   102.4k ± ∞ ¹    107.3k ± ∞ ¹   +4.79% (p=0.008 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95

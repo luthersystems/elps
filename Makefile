@@ -214,7 +214,7 @@ fuzz-budget-check:
 	bash scripts/fuzz-budget-check.sh
 
 # Self-test for the CI gate logic in scripts/. Run this after touching
-# scripts/benchstat-gate.sh, scripts/fuzz.sh, .github/workflows/benchmark.yml
+# cmd/benchgate, scripts/fuzz.sh, .github/workflows/benchmark.yml
 # or .github/workflows/fuzz.yml — it proves the benchmark regression gate and
 # the fuzz gate can actually FAIL, which is the property that was missing while
 # the benchmark gate sat dead for 473 workflow runs.
@@ -232,15 +232,30 @@ ci-gates-test:
 fuzz-classify-test:
 	bash scripts/fuzz-classify-test.sh
 
-# Adjudicate a benchstat comparison locally, exactly as CI does:
-#   go test -bench=. -benchmem -benchtime=100ms -count=5 -run='^$$' ./... > pr.txt
-#   git stash && go test ... > base.txt && git stash pop
-#   benchstat base=base.txt pr=pr.txt > cmp.txt
-#   make bench-gate BENCHSTAT_OUT=cmp.txt
+# Adjudicate a benchmark comparison locally, exactly as CI does.
+#
+# Two ways in, and they reach the same verdict (cmd/benchgate has one
+# adjudicator behind two front ends):
+#
+#   the benchstat table, as CI adjudicates it --
+#     go test -bench=. -benchmem -benchtime=100ms -count=5 -run='^$$' ./... > pr.txt
+#     git stash && go test ... > base.txt && git stash pop
+#     benchstat base=base.txt pr=pr.txt > cmp.txt
+#     make bench-gate BENCHSTAT_OUT=cmp.txt
+#
+#   the raw arms, with no benchstat binary at all --
+#     make bench-gate-arms BENCH_BASE=base.txt BENCH_HEAD=pr.txt
 BENCHSTAT_OUT ?= benchstat-output.txt
 .PHONY: bench-gate
 bench-gate:
-	bash scripts/benchstat-gate.sh $(BENCHSTAT_OUT)
+	go run ./cmd/benchgate -waivers-default scripts/benchstat-waivers.txt $(BENCHSTAT_OUT)
+
+BENCH_BASE ?= bench-baseline.txt
+BENCH_HEAD ?= bench-current.txt
+.PHONY: bench-gate-arms
+bench-gate-arms:
+	go run ./cmd/benchgate -waivers-default scripts/benchstat-waivers.txt \
+		-base $(BENCH_BASE) -head $(BENCH_HEAD)
 
 # --- Release targets ---
 
