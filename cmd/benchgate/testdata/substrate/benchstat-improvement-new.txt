@@ -1,0 +1,16 @@
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/substrate/internal/substrate/shiro/libelpspath
+        │     base     │                 pr                 │
+        │    sec/op    │    sec/op     vs base              │
+Chain-4   162.1n ± ∞ ¹   151.3n ± ∞ ¹  -6.66% (p=0.008 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+pkg: github.com/luthersystems/substrate/internal/substrate/shirocore
+                                        │     base     │                 pr                 │
+                                        │    sec/op    │    sec/op     vs base              │
+Utils/$load-4                             13.35m ± ∞ ¹    9.02m ± ∞ ¹  -32.43% (p=0.008 n=5)
+Utils/tomulset-no-memoize-benchmark-4      1.556 ± ∞ ¹    0.778 ± ∞ ¹  -50.00% (p=0.008 n=5)
+Utils/trim-4                              1.301m ± ∞ ¹   1.298m ± ∞ ¹       ~ (p=0.841 n=5)
+geomean                                   53.15m         31.44m        -40.85%
+¹ need >= 6 samples for confidence interval at level 0.95

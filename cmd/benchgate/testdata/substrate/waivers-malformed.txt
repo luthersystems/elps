@@ -1,0 +1,10 @@
+# Self-test fixture: assorted malformed entries. Every one of them must be
+# named with its line number and must make the gate exit 2 -- a waiver list
+# that cannot be read must never be treated as an empty one.
+github.com/luthersystems/substrate/internal/substrate/shirocore | Utils/$load | B/op | 20 | 2099-01-01 | substrate#392
+github.com/luthersystems/substrate/internal/substrate/shirocore | Utils/$load | B/op | | 2099-01-01 | substrate#392 | no ceiling at all
+github.com/luthersystems/substrate/internal/substrate/shirocore | Utils/$load | B/op | lots | 2099-01-01 | substrate#392 | ceiling is not a number
+github.com/luthersystems/substrate/internal/substrate/shirocore | Utils/$load | B/op | 20 | soon | substrate#392 | expiry is not a date
+github.com/luthersystems/substrate/internal/substrate/shirocore | Utils/$load | B/op | 20 | 2099-01-01 | see slack | it is tracked somewhere honest
+github.com/luthersystems/substrate/internal/substrate/shirocore | Utils/$load | B/op | 20 | 2099-01-01 | substrate#392 | ok
+ | Utils/$load | B/op | 20 | 2099-01-01 | substrate#392 | no package named at all

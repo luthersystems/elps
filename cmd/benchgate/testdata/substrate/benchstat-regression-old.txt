@@ -1,0 +1,8 @@
+name                                    old time/op    new time/op    delta
+Chain-4                                    151ns ± 2%     162ns ± 1%   +7.14%  (p=0.008 n=5+5)
+UnitTestsShared/TestFile_main/add-4       5.44ms ± 1%    9.98ms ± 1%  +83.31%  (p=0.008 n=5+5)
+Utils/trim-4                              1.30ms ± 2%    1.30ms ± 2%     ~     (p=0.841 n=5+5)
+
+name                                    old alloc/op   new alloc/op   delta
+Chain-4                                     224B ± 0%      224B ± 0%     ~     (all equal)
+UnitTestsShared/TestFile_main/add-4       5.13MB ± 0%    7.70MB ± 0%  +50.10%  (p=0.008 n=5+5)
