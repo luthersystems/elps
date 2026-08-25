@@ -130,9 +130,16 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 // reference type, or a node no seal can cover), such output is not merely
 // un-cacheable: it is unsafe to hand to the evaluator too.  A cycle is
 // stopped only by the eval nesting cap, after doing the work; and sharing
-// that unfolds to 4.3e9 node evaluations does not terminate at all.
+// that unfolds to 4.3e9 node EVALUATIONS does not terminate at all.
 // (*LEnv).readCached fails the load on this sentinel instead of falling back
 // to an uncached eval.
+//
+// "EVALUATIONS" is load-bearing and used to be wrong.  The count taken
+// against this sentinel is loaderWalk.evalUnfolded, which charges one node
+// for a subtree the evaluator never walks -- a quoted datum.  Counting the
+// unfolded size of quoted DATA here hard-failed a load that terminates in
+// O(1) with no cache installed (issue #536 round-four review, blocker); see
+// loaderQuotePayload and loaderWalk.verdict.
 //
 // ORDINARY SHARING IS NOT IN THIS CLASS.  A composite node reached twice used
 // to be, which broke a program a constant-interning Reader had loaded fine
@@ -142,7 +149,9 @@ var errReaderTreeUnbounded = errors.New("reader output is not a finite tree (cyc
 
 // errReaderTreeTooLarge marks reader output that is finite and legal but
 // larger than the cache admission's node budget — in distinct nodes, in
-// unfolded size, or both.
+// UNFOLDED size (loaderWalk.raw, which counts quoted data, because the walks
+// that unfold — Copy, firstUnsealed, SealedASTFingerprint — do not care
+// whether a subtree is quoted), or both.
 //
 // It is deliberately NOT errReaderTreeUnbounded, and the difference is the
 // whole point: a cycle is unsafe to evaluate, but a node COUNT is not — a
@@ -175,9 +184,14 @@ var errReaderNilNode = errors.New("reader output contains a nil expression")
 
 const (
 	// loaderWalkMaxNodes is the CACHE admission's node budget.  It bounds the
-	// UNFOLDED size of an entry — the number of nodes an evaluation walks,
-	// counting a shared subtree once per path — and, separately, the number
-	// of DISTINCT nodes in it.  It mirrors sealFPMaxNodes (lisp/sealfp.go):
+	// UNFOLDED size of an entry — the number of node visits a memo-less walk
+	// makes, counting a shared subtree once per path — and, separately, the
+	// number of DISTINCT nodes in it.  The unfolded number it is taken
+	// against is loaderWalk.unfolded, the QUOTE-BLIND one, because what this
+	// budget protects is the three walks downstream of admission that really
+	// do unfold sharing: (*LVal).Copy on the private-copy path,
+	// firstUnsealed, and SealedASTFingerprint.  None of them stops at a
+	// quote.  It mirrors sealFPMaxNodes (lisp/sealfp.go):
 	// orders of magnitude beyond any top-level expression a parser emits,
 	// present only to bound hand-built or adversarial reader output.
 	// Exceeding it is errReaderTreeTooLarge, which is not a failure — the
@@ -194,10 +208,12 @@ const (
 	loaderWalkHardMaxNodes = 4 * loaderWalkMaxNodes
 	// loaderWalkUnfoldedCap is where unfolded-size arithmetic saturates, and
 	// also the line between "too big to cache" and "not a finite tree at
-	// all".  4.3e9 node evaluations is not a program that finishes: no
+	// all".  4.3e9 node EVALUATIONS is not a program that finishes: no
 	// unshared parse can reach it (the source would not fit in memory), and
 	// a shared one that does is a sharing bomb whose evaluation is
-	// exponential in the sharing depth.  See loaderWalk.verdict.
+	// exponential in the sharing depth.  4.3e9 nodes of shared DATA is a
+	// different thing entirely and does not come near this line; see
+	// loaderQuotePayload and loaderWalk.verdict.
 	loaderWalkUnfoldedCap = int64(1) << 32
 	// loaderWalkMaxDepth bounds admission recursion depth so a very deep tree
 	// cannot exhaust the Go stack before anything else notices.  It mirrors
@@ -252,11 +268,14 @@ const (
 // depth-bounded — and, on the cache path, of bounded unfolded size, which is
 // what bounds those two walks there.
 func admitExpr(v *LVal, w *loaderWalk) error {
-	n, err := w.check(v, 0)
+	info, err := w.check(v, 0)
 	if err != nil {
 		return err
 	}
-	w.unfolded = saturatingAddNodes(w.unfolded, n)
+	if w.strict {
+		w.unfolded = saturatingAddNodes(w.unfolded, info.raw)
+		w.evalUnfolded = saturatingAddNodes(w.evalUnfolded, info.eval)
+	}
 	return nil
 }
 
@@ -284,7 +303,7 @@ func newLoaderWalk(strict bool) *loaderWalk {
 	w := &loaderWalk{}
 	if strict {
 		w.strict = true
-		w.sizes = make(map[*LVal]int64)
+		w.sizes = make(map[*LVal]loaderNodeInfo)
 	}
 	return w
 }
@@ -317,10 +336,110 @@ func newTextLoaderWalk() *loaderWalk {
 	return w
 }
 
-// loaderNodeOnPath marks a node on the current root->node path in
-// loaderWalk.sizes: a revisit is a cycle.  Any other value is the node's
-// unfolded size, recorded once the node is fully validated.
-const loaderNodeOnPath int64 = -1
+// loaderNodeInfo is the strict walk's memo entry for one node: everything a
+// later visit to the same node needs in order to answer without walking it
+// again.  Only the cache path builds these (loaderWalk.sizes).
+type loaderNodeInfo struct {
+	// raw is the node's UNFOLDED size, quote-blind: the number of node visits
+	// a memo-less walk of it would make, counting a shared subtree once per
+	// path and descending into quoted data like everything else.  It is what
+	// the TooLarge budget is taken against, because it is what the three
+	// downstream walks that really do unfold sharing cost — (*LVal).Copy on
+	// the private-copy path, firstUnsealed, and SealedASTFingerprint.
+	raw int64
+	// eval is the same count with every subtree the EVALUATOR never walks
+	// charged as a single node.  It is what the Unbounded hard-fail is taken
+	// against, because that sentinel's claim is "this does not terminate",
+	// and only work the evaluator actually does can support it.  See
+	// loaderQuotePayload.
+	eval int64
+	// onPath marks the node as being on the current root->node path.  A
+	// visit that reaches such an entry has found a cycle.
+	onPath bool
+}
+
+// loaderQuotePayload returns the index of the cell of v that the EVALUATOR
+// will never walk into, or -1 when there is no such cell.
+//
+// This is the round-four blocker (issue #536 round-four review).  The
+// unfolded-size rule that hard-fails a load rests on "nothing that
+// terminates looks like 4.3e9 node evaluations", and for CODE that is true.
+// For DATA it is false, and not marginally: (*LEnv).eval returns a quoted
+// node without touching its interior, and opQuote hands its argument back
+// unwalked, so a quoted 41-node DAG whose unfolded size is 2^41 evaluates in
+// O(1).  With no cache installed such a program loads and runs instantly;
+// counting its unfolded size against the Unbounded cap hard-failed it the
+// moment a cache was installed, which is the exact regression class round
+// three's sharing rewrite existed to remove.
+//
+// Two shapes are recognised, and between them they cover both ways quoting
+// reaches the walk:
+//
+//   - v.quoted, handled by check directly rather than here.  This is what
+//     the PARSER produces: rdparser's ParseQuote calls lisp.Quote, which
+//     sets the flag on a shallow copy (or builds an LQuote node, which is
+//     always quoted).  (*LEnv).eval's first act on such a node is to return
+//     it.
+//   - An explicit (quote X) s-expression, which is what a hand-built Reader
+//     and a macro body produce.  Cell 1 is the datum; opQuote never looks
+//     inside it.
+//
+// QUASIQUOTE IS DELIBERATELY NOT IN THAT SET, and loaderQuasiquotePayload
+// says what happens instead.
+//
+// Getting this wrong in the permissive direction is safe, and that is worth
+// stating because the recognition is heuristic — `quote` is a symbol, and a
+// program is free to shadow it.  Under-counting eval work cannot make elps
+// do unbounded work anywhere: the walks that unfold are bounded by raw, not
+// by eval (see loaderNodeInfo), so an under-counted entry is still refused
+// as TooLarge and never stored, and TooLarge falls back to an uncached load.
+// All an under-count can cost is the fail-fast — the load then behaves
+// exactly as it does with no cache installed, which for a genuinely
+// non-terminating program means the evaluator's own step, stack and
+// deadline budgets stop it instead of admission.
+func loaderQuotePayload(v *LVal) int {
+	return loaderQuotingPayload(v, "quote")
+}
+
+// loaderQuasiquotePayload returns the index of the cell of a (quasiquote X)
+// form, or -1.
+//
+// A quasiquoted subtree gets NO discount: opQuasiquote calls findAndUnquote,
+// which descends through the whole structure — quote levels included —
+// looking for unquote forms, so its cost is the quote-blind unfolded size
+// and a quasiquoted sharing bomb genuinely does not terminate.  The walk
+// therefore charges the payload its RAW size, which also means no discount
+// survives anywhere beneath it: raw is quote-blind all the way down.
+//
+// That is conservative in the direction of the status quo — it is what every
+// subtree was charged before the blocker fix — so it can refuse only what
+// round three already refused.  It over-counts an (unquote e) interior,
+// whose code really is evaluated and really may quote data of its own; that
+// is a hard-fail for a program that could in principle terminate, and it is
+// accepted rather than fixed because the alternative is tracking quoting
+// depth through the memo for a shape no parser in this repository emits.
+func loaderQuasiquotePayload(v *LVal) int {
+	return loaderQuotingPayload(v, "quasiquote")
+}
+
+// loaderQuotingPayload matches (op X) where op is the unqualified or
+// lisp-qualified symbol name, and returns 1.
+func loaderQuotingPayload(v *LVal, name string) int {
+	if v.Type != LSExpr || len(v.Cells) != 2 {
+		return -1
+	}
+	head := v.Cells[0]
+	// head may be nil here: the nil refusal happens when check descends into
+	// the cell, which has not happened yet.
+	if head == nil || head.Type != LSymbol || head.quoted {
+		return -1
+	}
+	// The qualified spelling too, for a source that says lisp:quote.
+	if head.Str == name || head.Str == "lisp:"+name {
+		return 1
+	}
+	return -1
+}
 
 // loaderWalkPathRecordDepth is the depth past which the NON-STRICT walk
 // starts recording its on-path set.
@@ -339,21 +458,25 @@ const loaderWalkPathRecordDepth = 64
 // loaderWalk carries the admission walk's cycle guard and, on the cache path,
 // its unfolded-size memo and node budget.  See admitExpr.
 type loaderWalk struct {
-	// sizes is the CACHE path's memo: loaderNodeOnPath while a node is on the
-	// current path, and afterwards the node's UNFOLDED size — the number of
-	// node visits a memo-less walk of it would make.  Memoising the size is
+	// sizes is the CACHE path's memo: one loaderNodeInfo per distinct node,
+	// marked onPath while the node is on the current root->node path and
+	// carrying its sizes and height once it is fully validated.  Memoising is
 	// what lets the walk answer "how much work is this program" in O(distinct
 	// nodes) instead of O(paths).  nil off the cache path (newLoaderWalk).
-	sizes map[*LVal]int64
+	sizes map[*LVal]loaderNodeInfo
 	// onPath is the NON-STRICT path's cycle guard: only the nodes on the
 	// current root->node path, and only those deeper than
 	// loaderWalkPathRecordDepth, so an ordinary parse never allocates it.
 	onPath map[*LVal]struct{}
-	// unfolded is the stream's total unfolded size, saturating at
+	// unfolded is the stream's total QUOTE-BLIND unfolded size and
+	// evalUnfolded its total EVALUATED size, both saturating at
 	// loaderWalkUnfoldedCap; distinct counts the nodes actually visited.
-	unfolded int64
-	distinct int64
-	strict   bool // cache path: node budget
+	// See loaderNodeInfo for which budget each one answers.  Strict path
+	// only: admitExpr does not accumulate them otherwise.
+	unfolded     int64
+	evalUnfolded int64
+	distinct     int64
+	strict       bool // cache path: node budget
 	// allowNative tolerates a Native payload on a sealable type.  TextLoader
 	// only; see newTextLoaderWalk.
 	allowNative bool
@@ -391,28 +514,47 @@ func saturatingAddNodes(a, b int64) int64 {
 // but HOW MUCH WORK THE SHARING IMPLIES, which the memo computes exactly and
 // cheaply.  So:
 //
-//   - Unfolded size at loaderWalkUnfoldedCap — 4.3e9 node evaluations —
+//   - EVALUATED size at loaderWalkUnfoldedCap — 4.3e9 node evaluations —
 //     is errReaderTreeUnbounded, a hard load failure.  Nothing that
 //     terminates looks like this: an unshared parse that large would not fit
 //     in memory, so reaching it means sharing that multiplies, and the
 //     author's own 2^40-path example lands here in linear time.  Refusing it
 //     cannot break a program that worked, because no such program works.
-//   - Merely over loaderWalkMaxNodes — in unfolded size, in distinct nodes,
-//     or both — is errReaderTreeTooLarge: a legal program that is too big to
-//     be worth aliasing process-wide.  The load runs UNCACHED, which is
-//     round two's fix 3 and is byte-identical to having no cache installed.
+//
+//     "EVALUATED" is the round-four correction (issue #536 round-four
+//     review, blocker).  The count is evalUnfolded, which charges one node
+//     for a quoted datum, because the evaluator does not walk one.  Taken
+//     against the quote-blind count instead, this arm hard-failed a Reader
+//     that shares quoted DATA — 41 distinct nodes, 2^41 unfolded, and a
+//     load that finishes in O(1) with no cache installed.  Such a stream
+//     still fails to be cacheable, but through the arm below, which falls
+//     back instead of failing.
+//
+//   - Merely over loaderWalkMaxNodes — in QUOTE-BLIND unfolded size, in
+//     distinct nodes, or both — is errReaderTreeTooLarge: a legal program
+//     that is too big to be worth aliasing process-wide.  The load runs
+//     UNCACHED, which is round two's fix 3 and is byte-identical to having
+//     no cache installed.
 //     This is where an ordinary interning Reader with a very large source
 //     lands, and it is why the discriminator is not "distinct nodes are
 //     under budget, so sharing is to blame": a lightly interned 1.1M-node
 //     source has few distinct nodes to spare and is still an ordinary
-//     program.
+//     program.  It is ALSO where the quoted-data case above lands, and that
+//     is the load-bearing half of the blocker fix rather than a side effect:
+//     the quote discount applies to this arm's cap NOWHERE, so a program
+//     whose quoted sharing unfolds past the budget is refused for the cache
+//     before newProgramAdmitted reaches (*LVal).Copy, firstUnsealed or the
+//     admission fingerprint — the three walks that unfold sharing and none
+//     of which stops at a quote.  Discounting quotes here as well would have
+//     traded a spurious hard failure for a real hang.
+//
 //   - Anything under budget is admitted, sharing and all.  A repeated leaf
 //     was always admitted; a repeated composite now is too.
 func (w *loaderWalk) verdict() error {
 	if !w.strict {
 		return nil
 	}
-	if w.unfolded >= loaderWalkUnfoldedCap {
+	if w.evalUnfolded >= loaderWalkUnfoldedCap {
 		return errReaderTreeUnbounded
 	}
 	if w.unfolded > loaderWalkMaxNodes || w.distinct > loaderWalkMaxNodes {
@@ -421,36 +563,38 @@ func (w *loaderWalk) verdict() error {
 	return nil
 }
 
-// check validates v and returns its UNFOLDED size — the number of node visits
-// a memo-less walk of v would make, saturating at loaderWalkUnfoldedCap.
-func (w *loaderWalk) check(v *LVal, depth int) (int64, error) {
+// check validates v and returns its loaderNodeInfo — unfolded sizes, height,
+// and, through the memo, the cycle guard.  Off the strict path the numbers
+// are not computed: nothing consults them there (verdict is strict-only), and
+// this is the walk docs/embed.md promises is unchanged by the hook existing.
+func (w *loaderWalk) check(v *LVal, depth int) (loaderNodeInfo, error) {
 	if v == nil {
-		return 0, errReaderNilNode
+		return loaderNodeInfo{}, errReaderNilNode
 	}
 	// Singletons (Nil/true/false) are shared by design and immutable, so a
 	// parse may legitimately reach one from many positions.  They are exempt
 	// from every repeat rule and terminate the walk at once.
 	if isSingleton(v) {
-		return 1, nil
+		return loaderNodeInfo{raw: 1, eval: 1}, nil
 	}
 	if depth > loaderWalkMaxDepth {
-		return 0, errReaderTreeUnbounded
+		return loaderNodeInfo{}, errReaderTreeUnbounded
 	}
 	recordPath := false
 	if w.strict {
-		if n, seen := w.sizes[v]; seen {
-			if n == loaderNodeOnPath {
+		if info, seen := w.sizes[v]; seen {
+			if info.onPath {
 				// Reached from itself: a cycle, on every path.
-				return 0, errReaderTreeUnbounded
+				return loaderNodeInfo{}, errReaderTreeUnbounded
 			}
-			// Shared, not cyclic.  Its size is already known, and counting it
-			// again is the whole point: the unfolded total is what the
-			// evaluator will actually walk.
-			return n, nil
+			// Shared, not cyclic.  Its sizes are already known, and counting
+			// them again is the whole point: the unfolded total is what the
+			// walks downstream will actually walk.
+			return info, nil
 		}
 	} else if depth >= loaderWalkPathRecordDepth {
 		if _, onPath := w.onPath[v]; onPath {
-			return 0, errReaderTreeUnbounded
+			return loaderNodeInfo{}, errReaderTreeUnbounded
 		}
 		recordPath = true
 	}
@@ -460,7 +604,7 @@ func (w *loaderWalk) check(v *LVal, depth int) (int64, error) {
 		// Reference types share mutable state with every copy of the cached
 		// expression, so a cached loader would hand the same backing store to
 		// each caller.
-		return 0, fmt.Errorf("cannot cache reference type expression: %v", v.Type)
+		return loaderNodeInfo{}, fmt.Errorf("cannot cache reference type expression: %v", v.Type)
 	case LInvalid, LInt, LFloat, LError, LSymbol, LQSymbol, LSExpr, LFun,
 		LQuote, LString, LTaggedVal,
 		LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
@@ -478,33 +622,60 @@ func (w *loaderWalk) check(v *LVal, depth int) (int64, error) {
 	// funData, an LError's CallStack and LNative's own payload reach their
 	// own rejections.
 	if v.Native != nil && sealableNodeType(v.Type) && !w.allowNative {
-		return 0, fmt.Errorf("cannot admit %v expression carrying a native payload", v.Type)
+		return loaderNodeInfo{}, fmt.Errorf("cannot admit %v expression carrying a native payload", v.Type)
 	}
 
 	if w.strict {
 		w.distinct++
 		if w.distinct > loaderWalkHardMaxNodes {
-			return 0, errReaderTreeTooLarge
+			return loaderNodeInfo{}, errReaderTreeTooLarge
 		}
-		w.sizes[v] = loaderNodeOnPath
+		w.sizes[v] = loaderNodeInfo{onPath: true}
 	} else if recordPath {
 		if w.onPath == nil {
 			w.onPath = make(map[*LVal]struct{})
 		}
 		w.onPath[v] = struct{}{}
 	}
-	size := int64(1)
-	for _, cell := range v.Cells {
-		n, err := w.check(cell, depth+1)
+	info := loaderNodeInfo{raw: 1, eval: 1}
+	quoted, quasi := -1, -1
+	if w.strict {
+		quoted, quasi = loaderQuotePayload(v), loaderQuasiquotePayload(v)
+	}
+	for i, cell := range v.Cells {
+		ci, err := w.check(cell, depth+1)
 		if err != nil {
-			return 0, err
+			return loaderNodeInfo{}, err
 		}
-		size = saturatingAddNodes(size, n)
+		if !w.strict {
+			continue
+		}
+		info.raw = saturatingAddNodes(info.raw, ci.raw)
+		switch i {
+		case quoted:
+			// The evaluator hands this cell back untouched, so it is one
+			// node of work however big it is.  See loaderQuotePayload.
+			info.eval = saturatingAddNodes(info.eval, 1)
+		case quasi:
+			// findAndUnquote descends the whole payload, and no quote
+			// beneath it stops the descent, so it costs its quote-blind
+			// size.  See loaderQuasiquotePayload.
+			info.eval = saturatingAddNodes(info.eval, ci.raw)
+		default:
+			info.eval = saturatingAddNodes(info.eval, ci.eval)
+		}
 	}
 	if w.strict {
-		w.sizes[v] = size
+		if v.quoted {
+			// (*LEnv).eval returns a quoted node before it looks at anything
+			// else, so nothing under it is ever evaluated — this is the
+			// PARSER's quote form (rdparser.ParseQuote -> lisp.Quote), and
+			// an LQuote node is always quoted too.
+			info.eval = 1
+		}
+		w.sizes[v] = info
 	} else if recordPath {
 		delete(w.onPath, v)
 	}
-	return size, nil
+	return info, nil
 }

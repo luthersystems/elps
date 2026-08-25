@@ -351,3 +351,175 @@ func TestPublicAdmissionRefusesCycle(t *testing.T) {
 		}
 	}
 }
+
+// --- round-four blocker: quoted data is not code, and the size rules know it ---
+
+// streamReader hands back a caller-built expression stream unchanged.  Unlike
+// graphReader it returns more than one top-level expression, which is what the
+// stream-level rules (the budget, the cycle guard, the on-path unwind) are
+// about.
+type streamReader struct{ exprs []*lisp.LVal }
+
+func (r streamReader) Read(_ string, in io.Reader) ([]*lisp.LVal, error) {
+	_, _ = io.ReadAll(in)
+	return r.exprs, nil
+}
+func (r streamReader) ReadLocation(_, _ string, in io.Reader) ([]*lisp.LVal, error) {
+	return r.Read("", in)
+}
+
+// doublingDAG returns a depth-n doubling DAG: n+1 distinct nodes whose
+// unfolded size is 2^(n+1)-1.  Nothing about it is large; everything about it
+// is shared.
+func doublingDAG(n int) *lisp.LVal {
+	node := sealedValue(7)
+	for range n {
+		node = lisp.SExpr([]*lisp.LVal{node, node})
+	}
+	return node
+}
+
+// loadWithin runs one load on its own goroutine so a rule that stops bounding
+// the walk shows up as a test failure rather than as a suite that never ends.
+func loadWithin(t *testing.T, env *lisp.LEnv, name string, d time.Duration) *lisp.LVal {
+	t.Helper()
+	done := make(chan *lisp.LVal, 1)
+	go func() { done <- env.Load(name, strings.NewReader("x")) }()
+	select {
+	case v := <-done:
+		return v
+	case <-time.After(d):
+		t.Fatalf("%s: load did not terminate within %v", name, d)
+		return nil
+	}
+}
+
+// TestLoadCacheAdmitsSharedQuotedData is the round-four blocker.
+//
+// The Unbounded sentinel's justification is "nothing that terminates looks
+// like 4.3e9 node evaluations".  That is a claim about CODE.  (*LEnv).eval
+// returns a quoted node without descending into it and opQuote hands its
+// argument back unwalked, so a quoted 41-node DAG whose unfolded size is 2^41
+// evaluates in O(1) — it loads instantly with no cache installed, and the
+// unfolded-size rule hard-failed it the moment a cache was installed.
+//
+// Both spellings are covered because the walk recognises them by different
+// means: the PARSER's form is a node with the quoted flag set (rdparser's
+// ParseQuote calls lisp.Quote), and a hand-built Reader's is an explicit
+// (quote X) s-expression.
+//
+// The load is not CACHED — the quote discount deliberately does not apply to
+// the TooLarge budget, so this lands there — and that is the point: TooLarge
+// falls back to an uncached load, which is byte-identical to having no cache.
+func TestLoadCacheAdmitsSharedQuotedData(t *testing.T) {
+	t.Parallel()
+	forms := map[string]func() *lisp.LVal{
+		"quote-form": func() *lisp.LVal {
+			root := lisp.SExpr([]*lisp.LVal{lisp.Symbol("quote"), doublingDAG(40)})
+			root.SealAST()
+			return root
+		},
+		"quoted-flag": func() *lisp.LVal {
+			root := lisp.Quote(doublingDAG(40))
+			root.SealAST()
+			return root
+		},
+	}
+	for name, build := range forms {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			exprs := []*lisp.LVal{build(), sealedValue(5)}
+			rd := streamReader{exprs: exprs}
+
+			off := loadWithin(t, readerEnv(t, rd, nil), "dag.lisp", 30*time.Second)
+			require.NotEqual(t, lisp.LError, off.Type,
+				"control: a quoted DAG loads fine with no cache installed")
+			assert.Equal(t, "5", off.String())
+
+			cache := newTestLoadCache()
+			on := loadWithin(t, readerEnv(t, rd, cache), "dag.lisp", 30*time.Second)
+			if on.Type == lisp.LError {
+				t.Fatalf("installing a cache hard-failed a terminating program: %.200v", on)
+			}
+			assert.Equal(t, "5", on.String(), "installing a cache changed the result")
+			assert.Zero(t, cache.stores,
+				"quoted sharing still unfolds for Copy/firstUnsealed/fingerprint, so it must not be STORED")
+		})
+	}
+}
+
+// The discriminator has to be the quoting, not the sharing: the same DAG with
+// the quote taken off is 2^41 node EVALUATIONS and is still refused outright.
+// TestLoadCacheRefusesExponentialSharing pins that from the other side; this
+// pins the two against each other so the discount cannot quietly widen.
+func TestLoadCacheQuoteDiscountIsWhatSeparatesThem(t *testing.T) {
+	t.Parallel()
+	dag := doublingDAG(40)
+
+	quoted := lisp.SExpr([]*lisp.LVal{lisp.Symbol("quote"), dag})
+	quoted.SealAST()
+	cacheQ := newTestLoadCache()
+	vq := loadWithin(t, readerEnv(t, streamReader{exprs: []*lisp.LVal{quoted}}, cacheQ), "q.lisp", 30*time.Second)
+	assert.NotEqual(t, lisp.LError, vq.Type, "quoted: data, admitted uncached")
+
+	bare := lisp.SExpr([]*lisp.LVal{lisp.Symbol("progn"), dag})
+	bare.SealAST()
+	cacheB := newTestLoadCache()
+	vb := loadWithin(t, readerEnv(t, streamReader{exprs: []*lisp.LVal{bare}}, cacheB), "b.lisp", 30*time.Second)
+	require.Equal(t, lisp.LError, vb.Type, "unquoted: 2^41 evaluations, still refused")
+	assert.Contains(t, vb.String(), "not a finite tree")
+
+	assert.Zero(t, cacheQ.stores)
+	assert.Zero(t, cacheB.stores)
+}
+
+// A quoted DAG SMALL enough to be cached is stored and served aliased, and
+// that has to stay bounded: the walks downstream of admission — (*LVal).Copy,
+// firstUnsealed, SealedASTFingerprint and, under -tags elpscheck, the entry
+// re-verification on every hit — all unfold sharing and none of them stops at
+// a quote.  They are bounded because the TooLarge budget is taken against the
+// QUOTE-BLIND count, so anything that reaches the store has an unfolded size
+// under loaderWalkMaxNodes by construction.  This is that case exercised end
+// to end: stored once, served from the cache, still correct.
+func TestLoadCacheServesModestQuotedDAG(t *testing.T) {
+	t.Parallel()
+	// 18 distinct nodes, 2^18 unfolded: shared hard, comfortably under budget.
+	root := lisp.SExpr([]*lisp.LVal{lisp.Symbol("quote"), doublingDAG(17)})
+	root.SealAST()
+	rd := streamReader{exprs: []*lisp.LVal{root, sealedValue(11)}}
+	cache := newTestLoadCache()
+
+	first := loadWithin(t, readerEnv(t, rd, cache), "small.lisp", 30*time.Second)
+	require.NotEqual(t, lisp.LError, first.Type)
+	require.Equal(t, 1, cache.stores, "a modest quoted DAG is cacheable")
+
+	second := loadWithin(t, readerEnv(t, rd, cache), "small.lisp", 30*time.Second)
+	require.NotEqual(t, lisp.LError, second.Type)
+	assert.Equal(t, first.String(), second.String(), "the served entry ran a different program")
+	assert.Equal(t, 1, cache.stores, "the second load must be a hit, not a re-store")
+	assert.Equal(t, 1, cache.hits)
+}
+
+// Quasiquote gets NO discount, and the reason is mechanical rather than
+// cautious: opQuasiquote calls findAndUnquote, which descends the entire
+// payload — through quote levels included — looking for unquote forms.  Its
+// cost is the quote-blind unfolded size, so a quasiquoted sharing bomb really
+// does not terminate and really is refused.
+func TestLoadCacheRefusesQuasiquotedSharing(t *testing.T) {
+	t.Parallel()
+	for _, head := range []string{"quasiquote", "lisp:quasiquote"} {
+		t.Run(head, func(t *testing.T) {
+			t.Parallel()
+			// The payload is itself quoted, which is the shape that would
+			// slip through if the discount were applied by node rather than
+			// by enclosing form.
+			root := lisp.SExpr([]*lisp.LVal{lisp.Symbol(head), lisp.Quote(doublingDAG(40))})
+			root.SealAST()
+			cache := newTestLoadCache()
+			v := loadWithin(t, readerEnv(t, streamReader{exprs: []*lisp.LVal{root}}, cache), "qq.lisp", 30*time.Second)
+			require.Equal(t, lisp.LError, v.Type)
+			assert.Contains(t, v.String(), "not a finite tree")
+			assert.Zero(t, cache.stores)
+		})
+	}
+}
