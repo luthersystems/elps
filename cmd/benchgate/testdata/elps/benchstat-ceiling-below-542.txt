@@ -1,0 +1,17 @@
+# The other side of the fitness ceiling's boundary: benchstat-ceiling-at-542.txt
+# with both arms one percentage point quieter, so the worse arm is ±29% against
+# a ±30% ceiling.
+#
+# Identical in every other respect -- same benchmark, same +40.00% move, same
+# p-value, same sample count. The two fixtures differ by ONE percent of spread
+# and must differ in verdict, which is what makes the boundary a boundary rather
+# than a description.
+#
+# Expected verdict: REGRESSION, exit 1.
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Neoverse-N1
+                        │     base     │                 pr                  │
+                        │    sec/op    │    sec/op     vs base               │
+BoundaryThing-2           100.0n ± 27%   140.0n ± 29%  +40.00% (p=0.000 n=10)

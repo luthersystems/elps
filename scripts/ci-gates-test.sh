@@ -710,6 +710,106 @@ if [ -n "$GATE" ]; then
 		env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
 
 	echo
+	echo "== benchgate: runner fitness (#542) ================================="
+
+	# Every check above judges the CODE. None of them asks whether the MACHINE
+	# was in a state to measure code at all, and substrate#424 is what that
+	# costs: the gate failed the same PR twice, at +83% and then +34%, on a head
+	# with ZERO Go-code delta, drawn from a base arm measuring itself at ±71%
+	# and then ±30%. The pr arm read ±3% both times.
+	#
+	# Note that the resolution check does NOT catch this shape: +83% is LARGER
+	# than ±71%, so the row passes "is this move bigger than what the row can
+	# see?" while being drawn from an arm that could not see anything.
+	#
+	# The exit code is the contract, and it is a THIRD one on purpose: 3 means
+	# "this run found nothing AND certified nothing -- re-measure", which is
+	# neither exit 1 (a finding) nor exit 0 (a pass).
+	UNFIT_FIXTURE="${TESTDATA}/benchstat-runner-unfit-542.txt"
+	TIGHT_FIXTURE="${TESTDATA}/benchstat-tight-regression-542.txt"
+
+	assert_exit 3 "the substrate#424 shape exits 3 (RUNNER-UNFIT), not 1" \
+		env BENCH_WAIVERS= "$GATE" "$UNFIT_FIXTURE"
+	assert_contains "UNMEASURABLE" "the unmeasurable row is REPORTED, not dropped" \
+		env BENCH_WAIVERS= "$GATE" "$UNFIT_FIXTURE"
+	assert_contains "+83.31%" "...carrying the delta it was not allowed to adjudicate" \
+		env BENCH_WAIVERS= "$GATE" "$UNFIT_FIXTURE"
+	assert_not_contains "REGRESSION" "an over-gate delta on an unmeasurable row is NOT called a regression" \
+		env BENCH_WAIVERS= "$GATE" "$UNFIT_FIXTURE"
+
+	# The control, and the half that matters more: the ceiling must not become an
+	# off switch for the gate. Same 15% threshold, a move past it, measured
+	# through the ±2%/±3% intervals a working machine produces.
+	assert_exit 1 "a real regression measured through TIGHT intervals still fires" \
+		env BENCH_WAIVERS= "$GATE" "$TIGHT_FIXTURE"
+	assert_not_contains "UNMEASURABLE" "...and nothing in it is written off as unmeasurable" \
+		env BENCH_WAIVERS= "$GATE" "$TIGHT_FIXTURE"
+
+	# The ceiling is the ONLY thing holding the incident row back: raise it past
+	# ±71% and the identical table reds again, so the row is genuinely parsed and
+	# genuinely over-gate.
+	assert_exit 1 "raising the ceiling past ±71% turns the incident back into a regression" \
+		env BENCH_WAIVERS= BENCH_VARIANCE_CEILING_PCT=80 "$GATE" "$UNFIT_FIXTURE"
+
+	# Both sides of the boundary, one percentage point apart.
+	assert_exit 3 "a spread exactly AT the ±30% ceiling is unmeasurable" \
+		env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-ceiling-at-542.txt"
+	assert_exit 1 "one point below the ceiling is adjudicated normally" \
+		env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-ceiling-below-542.txt"
+
+	# The deliberate middle: unfit interval, sub-gate move. Reported as a
+	# warning, exit unchanged -- failing every slightly-noisy minor row makes a
+	# gate brittle, and a brittle gate gets switched off.
+	assert_exit 0 "an unfit row BELOW its gate changes no exit code" \
+		env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-unfit-below-gate-542.txt"
+	assert_contains "below-gate here means UNMEASURED, not small" \
+		"...and is still reported, rather than reading as reassurance" \
+		env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-unfit-below-gate-542.txt"
+
+	# PRECEDENCE. A finding on a row that COULD be measured outranks
+	# "re-measure": answering 3 over the top of a real regression would postpone
+	# it and invite a re-run that finds the same thing again.
+	assert_exit 1 "a fit regression beside an unfit row exits 1, not 3" \
+		env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-unfit-and-regression-542.txt"
+	assert_contains "UNMEASURABLE" "...and the unfit row is still named in the same report" \
+		env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-unfit-and-regression-542.txt"
+
+	# CLASS BOUNDARY. Timing metrics only, the same boundary the resolution check
+	# draws: a jittery ALLOCATION column is a benchmark defect, not a sick
+	# machine, and must not buy itself the timing metrics' treatment.
+	assert_exit 1 "an ALLOCATION row at the ceiling is still judged on its threshold" \
+		env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-alloc-with-spread.txt"
+
+	echo
+	echo "== benchgate burnin: is the MACHINE fit to measure? ================="
+
+	# The other half of #542, and the half that runs BEFORE anything is sampled:
+	# a fixed, code-independent loop, K times, with the samples required to agree.
+	# A machine that cannot reproduce a fixed loop cannot resolve a percentage
+	# gate on anything else either.
+	#
+	# The ceiling here is deliberately unreachable (±1000%) so this assertion is
+	# about the SUBCOMMAND rather than about how loaded the runner is; the
+	# verdict arithmetic is pinned deterministically with injected durations in
+	# cmd/benchgate/burnin_test.go.
+	assert_exit 0 "burnin runs the reference workload and reports FIT" \
+		"${BENCHGATE_TMP}/benchgate" burnin -runs 4 -warmup 1 -rounds 2000 -spread 10000
+	assert_contains "(warmup, discarded)" "burnin prints every run, warmup included" \
+		"${BENCHGATE_TMP}/benchgate" burnin -runs 4 -warmup 1 -rounds 2000 -spread 10000
+	# A spread ceiling no real machine can meet is how the UNFIT path is proven
+	# to exist at all: a fitness check that cannot fail is the same defect as a
+	# gate that cannot fire.
+	assert_exit 3 "burnin exits 3 when the samples cannot meet the ceiling" \
+		"${BENCHGATE_TMP}/benchgate" burnin -runs 4 -warmup 1 -rounds 2000 -spread 0.0000001
+	assert_contains "UNFIT" "...and says so in one line on stderr" \
+		"${BENCHGATE_TMP}/benchgate" burnin -runs 4 -warmup 1 -rounds 2000 -spread 0.0000001
+	# Keeping fewer than three samples makes the spread arithmetic meaningless
+	# (over one sample it is identically zero), so it is refused rather than
+	# reported as fitness.
+	assert_exit 2 "burnin refuses a configuration that keeps too few samples" \
+		"${BENCHGATE_TMP}/benchgate" burnin -runs 3 -warmup 2
+
+	echo
 	echo "== benchgate: the threshold is the only thing holding it back ======="
 
 	# Proves the parser genuinely SEES the real comparison's significant deltas and
@@ -884,7 +984,7 @@ echo "== extracted workflow bodies: bench-gate-fail ============================
 
 GATE_FAIL="${SCRIPT_DIR}/bench-gate-fail.sh"
 
-# The three-way split is the whole point of this script, and the third branch is
+# The four-way split is the whole point of this script, and the last branch is
 # the subtle one: an exit code the gate never produces means it reached NO
 # verdict, and calling that "regressions detected" (which this branch used to
 # do) sends the reader hunting a performance problem that does not exist.
@@ -896,6 +996,20 @@ assert_contains "::error::Benchmark regressions detected (gate exit 1)" \
 assert_contains "::error::The benchmark comparison could not be interpreted (gate exit 2)" \
 	"bench-gate-fail: exit 2 is reported as uninterpretable, not as a regression" \
 	env GATE_STATUS=2 bash "$GATE_FAIL"
+# Exit 3 (#542) is a verdict the gate DOES produce, and it must not fall into
+# the "no verdict reached" branch -- that branch tells the reader the gate
+# crashed, when what actually happened is that the runner could not measure.
+assert_exit 1 "bench-gate-fail: a RUNNER-UNFIT verdict still fails the build" \
+	env GATE_STATUS=3 bash "$GATE_FAIL"
+assert_contains "::error::The RUNNER was not fit to measure (gate exit 3)" \
+	"bench-gate-fail: exit 3 is reported as an unfit runner" \
+	env GATE_STATUS=3 bash "$GATE_FAIL"
+assert_not_contains "did not run to completion" \
+	"bench-gate-fail: exit 3 is a verdict, not a crash" \
+	env GATE_STATUS=3 bash "$GATE_FAIL"
+assert_not_contains "regressions detected" \
+	"bench-gate-fail: the unfit branch does NOT claim a regression" \
+	env GATE_STATUS=3 bash "$GATE_FAIL"
 assert_exit 1 "bench-gate-fail: an unrecognised code still fails" \
 	env GATE_STATUS=127 bash "$GATE_FAIL"
 assert_contains "did not run to completion (exit 127)" \

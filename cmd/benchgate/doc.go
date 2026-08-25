@@ -165,6 +165,80 @@
 // fire on a stable row, because it keys on a row disagreeing WITH ITSELF,
 // which a real regression does not do.
 //
+// # Was the MACHINE fit to measure? The two fitness checks
+//
+// Everything above judges the CODE. None of it asks whether the runner was in a
+// state to measure code at all, and issue #542 is what that costs. On
+// substrate#424 (head 850f118ef) this gate failed a PR twice:
+//
+//	run 1   base arm ±71% (samples ~30-130ms), pr arm ±3%   -> +83% REGRESSION
+//	run 2   base arm ±30%,                     pr arm ±2%   -> +34% REGRESSION
+//
+// on a head with ZERO Go-code delta from a tree the same gate had measured at
+// parity ±3% an hour earlier. Every package on that runner ran 1.5-2x slower in
+// absolute terms, and three independent measurements (a fresh runner, a local
+// interleaved n=12, a GOMAXPROCS=2 starvation A/B) all read parity-to-better. A
+// ±71% interval is not a measurement -- but the gate compared the two medians
+// and emitted a verdict anyway.
+//
+// Note that the resolution check above did NOT catch it: +83% is LARGER than
+// the ±71% spread, so the row passed "is this move bigger than what the row can
+// see?" while being drawn from an arm that could not see anything. The two
+// checks below close that gap from both ends.
+//
+//	benchgate burnin   before the benchmarks are sampled, run a FIXED,
+//	                   code-independent loop K times and require the samples to
+//	                   agree. A machine that cannot reproduce a fixed loop
+//	                   cannot resolve a percentage gate on anything else. See
+//	                   burnin.go for the workload, the defaults and why the
+//	                   iteration count is fixed and the duration measured.
+//
+//	the per-row        during adjudication, a TIMING row whose own confidence
+//	variance ceiling   interval is at or above -variance-ceiling (default 30%)
+//	                   is UNMEASURABLE: its delta is printed, and it is
+//	                   adjudicated in neither direction.
+//
+// Neither subsumes the other: burn-in catches a machine that is already sick
+// when the job starts, the ceiling catches one that degrades partway through --
+// which is exactly the shape above, where one arm was disrupted and the other
+// was not.
+//
+// The ceiling is a TIMING-metric rule, the same class boundary the resolution
+// check draws and for the same reason: a jittery allocation column is a
+// benchmark defect rather than a sick machine, and the one benign way an
+// allocation count jitters is already handled by the quantisation check. A row
+// with no computable interval ("± ∞ ¹") is not unmeasurable by this rule
+// either -- nothing was measured to compare against the ceiling -- and the
+// report says so on the row.
+//
+// # What UNMEASURABLE does to the verdict
+//
+// The contract is stated here, in `benchgate -h`, and pinned by tests:
+//
+//   - An over-gate delta on an UNMEASURABLE row does NOT produce exit 1. It is
+//     not a regression; it is not evidence of anything.
+//   - It does not produce exit 0 either. Reporting "no regression" from a
+//     comparison that could not size the move is the same defect as the 473
+//     green runs of a grep that could not match: green because it stopped
+//     looking. Those rows exit 3, RUNNER-UNFIT, which means RE-MEASURE.
+//   - An unmeasurable row BELOW its gate is reported as a warning and changes
+//     no exit code. This is the deliberate middle: a noisy row can hide a real
+//     regression, but failing every slightly-noisy minor row makes the gate
+//     brittle, and a brittle gate gets switched off. Whole-machine fitness is
+//     burn-in's job, and that is where this gap is closed.
+//   - Exit 1 beats exit 3. A regression found on a row that COULD be measured
+//     is a finding; an unmeasurable row elsewhere in the same table does not
+//     make it less of one, and "re-measure" over the top of it would only
+//     postpone it.
+//   - A row covered by a LIVE waiver, within its recorded ceiling, is still
+//     WAIVED. There is nothing left to certify on a row whose regression is
+//     already accepted, so there is nothing an unfit measurement invalidates.
+//     The consequence is a property worth stating plainly: the fitness ceiling
+//     can only ever WITHHOLD a regression finding (turning exit 1 into exit 3).
+//     It can never turn a run that would have passed into one that fails. An
+//     EXPIRED waiver, or a move past the recorded ceiling, is a new finding
+//     drawn from this measurement and gets no such treatment.
+//
 // # Reviewed waivers
 //
 // Sometimes a regression is real, understood and deliberately accepted. The
@@ -197,10 +271,12 @@
 // declare them as workflow-level `env:` entries next to the prose explaining
 // how each was measured, and this tool reads those same names
 // (BENCH_REGRESSION_THRESHOLD_PCT, BENCH_ALLOC_THRESHOLD_PCT, BENCH_ALPHA,
-// BENCH_WAIVERS, BENCH_WAIVER_TODAY) so the migration moved no policy. A
-// config file would add a second place for policy to live and a parse surface
-// that itself needs a "what if it does not parse" rule; flags plus those env
-// vars need neither.
+// BENCH_VARIANCE_CEILING_PCT, BENCH_WAIVERS, BENCH_WAIVER_TODAY) so the
+// migration moved no policy. A config file would add a second place for policy
+// to live and a parse surface that itself needs a "what if it does not parse"
+// rule; flags plus those env vars need neither. The burn-in's three knobs
+// follow the same convention (BENCH_BURNIN_RUNS, BENCH_BURNIN_WARMUP,
+// BENCH_BURNIN_SPREAD_PCT, BENCH_BURNIN_ROUNDS).
 //
 // # Exit codes
 //
@@ -208,11 +284,25 @@
 //	1  regression detected
 //	2  the input could not be interpreted (missing/empty file, or NO
 //	   comparison row at all -- which means benchstat's output format changed
-//	   or benchstat crashed), or the waiver file could not be interpreted.
+//	   or benchstat crashed), or the waiver file could not be interpreted, or
+//	   the flags were invalid.
+//	3  RUNNER-UNFIT: the machine did not produce a usable measurement, so
+//	   nothing was certified and nothing was found -- RE-MEASURE. Emitted by
+//	   `benchgate burnin` when the reference workload's samples disagree, and
+//	   by adjudication when a row at or above its gate had an interval at or
+//	   above the fitness ceiling.
 //
 // Exiting 2 rather than 0 is deliberate: an uninterpretable comparison must
 // fail loudly instead of reporting "no regression", which is exactly how the
 // old inline `grep -E '^\S.*\+$'` gate stayed green for 473 runs. The same
 // reasoning covers the waiver file: a malformed waiver list must never be read
-// as an empty one.
+// as an empty one -- and the same reasoning again is why an unmeasurable row
+// exits 3 rather than 0.
+//
+// Three codes became four rather than folding the new case into 1 or 2 because
+// the caller's response differs: exit 1 means read the diff, exit 2 means fix
+// the plumbing, exit 3 means run it again somewhere else. A caller that has not
+// been taught the difference still fails closed -- every consumer keys on
+// non-zero -- which is why 3 is safe to add to a tool two repositories already
+// run.
 package main

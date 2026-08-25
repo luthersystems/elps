@@ -1,0 +1,10 @@
+# Self-test fixture: a LIVE waiver, comfortably above the measured move, on the
+# row of benchstat-runner-unfit-542.txt -- the row the fitness ceiling would
+# otherwise call UNMEASURABLE.
+#
+# It exists to pin the one direction the fitness check must never take: a run
+# that would have PASSED (this row's regression is already reviewed and
+# accepted) must not be turned into a failing one by a measurement being unfit.
+# There is nothing left to certify on a row whose regression is already
+# accepted, so there is nothing for an unfit measurement to invalidate.
+github.com/luthersystems/substrate/internal/substrate/shiro | MockParallel | sec/op | 90 | 2099-01-01 | elps#542 | accepted cost, ceiling deliberately above the measured move

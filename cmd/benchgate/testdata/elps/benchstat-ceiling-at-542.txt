@@ -1,0 +1,21 @@
+# The fitness ceiling AT its boundary: the worse arm measures itself at exactly
+# ±30%, the default ceiling.
+#
+# The rule is AT-or-above, matching the gate's own "at or above the threshold"
+# convention, so this row is UNMEASURABLE and the run exits 3. Its pair,
+# benchstat-ceiling-below-542.txt, is one percentage point quieter and is
+# adjudicated normally -- the two together pin which side of the boundary is
+# which, so a `>` silently becoming a `>=` (or the reverse) cannot pass.
+#
+# The move is +40%, comfortably past both the 15% gate and the row's own spread,
+# so neither the threshold nor the resolution check is what decides this: the
+# ONLY thing standing between this row and a REGRESSION verdict is the ceiling.
+#
+# Expected verdict: UNMEASURABLE, exit 3.
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/elps/lisp
+cpu: Neoverse-N1
+                        │     base     │                 pr                  │
+                        │    sec/op    │    sec/op     vs base               │
+BoundaryThing-2           100.0n ± 28%   140.0n ± 30%  +40.00% (p=0.000 n=10)

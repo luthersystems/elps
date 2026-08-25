@@ -126,6 +126,37 @@ BENCH_WAIVERS= go run ./cmd/benchgate /tmp/benchstat.txt      # with waivers off
 benchgate can also adjudicate the two raw `go test -bench` arms directly, with no
 `benchstat` binary in the loop (`make bench-gate-arms BENCH_BASE=… BENCH_HEAD=…`).
 
+### Before you measure: is the machine fit? (`make bench-burnin`)
+
+```bash
+make bench-burnin      # ~half a second; exit 0 fit, exit 3 re-measure elsewhere
+```
+
+A fixed, code-independent loop run seven times, requiring the samples to agree
+to within ±10%. A machine that cannot reproduce a fixed loop cannot resolve a
+10% gate on anything else either, and half an hour of benchmarking on one
+produces numbers that read like findings. Run it first — on a laptop with a
+browser open as much as on CI.
+
+### `UNMEASURABLE` and exit 3
+
+The gate has a fourth verdict (issue #542). A **timing** row whose own
+confidence interval is at or above the fitness ceiling (`-variance-ceiling`,
+default ±30%) is `UNMEASURABLE`: its delta is printed and adjudicated in
+neither direction. If such a row moved at or above the gate, the run exits **3
+(RUNNER-UNFIT)** — it found no regression *and* certified nothing, so the answer
+is to re-run, not to read the diff. An unmeasurable row *below* its gate is a
+warning only and changes no exit code.
+
+Exit 1 still wins over exit 3: a regression measured on a row that could be
+measured is a finding regardless of what else in the table was unmeasurable. And
+the ceiling can only ever withhold a finding — it never turns a passing run into
+a failing one.
+
+The shape it exists for: an arm measuring itself at ±71% against the other arm's
+±3%, on code that did not change, adjudicated as `+83% REGRESSION`. Preserved as
+`cmd/benchgate/testdata/elps/benchstat-runner-unfit-542.txt`.
+
 ## Checklist
 
 - [ ] Baseline benchmarks captured before changes

@@ -40,8 +40,13 @@ var benchEnvVars = []string{
 	"BENCH_REGRESSION_THRESHOLD_PCT",
 	"BENCH_ALLOC_THRESHOLD_PCT",
 	"BENCH_ALPHA",
+	"BENCH_VARIANCE_CEILING_PCT",
 	"BENCH_WAIVERS",
 	"BENCH_WAIVER_TODAY",
+	"BENCH_BURNIN_RUNS",
+	"BENCH_BURNIN_WARMUP",
+	"BENCH_BURNIN_SPREAD_PCT",
+	"BENCH_BURNIN_ROUNDS",
 }
 
 type gateCase struct {
@@ -485,6 +490,204 @@ func TestQuantisationCheck(t *testing.T) {
 		env:  noWaivers(), args: elpsArgs("benchstat-allocs-quantisation-boundary.txt"),
 		want: 1,
 	}})
+}
+
+// TestVarianceCeiling is elps#542: every check above judges the CODE, and none
+// of them asks whether the MACHINE was in a state to measure code at all. On
+// substrate#424 that cost two consecutive REGRESSION verdicts on a head with no
+// Go-code delta, drawn from an arm measuring itself at ±71%.
+func TestVarianceCeiling(t *testing.T) {
+	check(t, []gateCase{{
+		// THE INCIDENT. +83.31% through a ±71% base arm: unmeasurable, exit 3,
+		// and specifically NOT the regression exit code -- an over-gate delta on
+		// a row nothing could size is not evidence of a regression.
+		name: "the substrate#424 shape is UNMEASURABLE and exits 3, not 1",
+		env:  noWaivers(), args: elpsArgs("benchstat-runner-unfit-542.txt"),
+		want: 3,
+		contains: []string{
+			"UNMEASURABLE", "+83.31%", "spread ±71%",
+			"fitness ceiling", "this run certified nothing about them",
+		},
+		// The verdict line, not the bare word: "REGRESSION" must not appear as
+		// this row's label, and the summary must not count it as one.
+		notContains: []string{"REGRESSION", "1 at or above the gate"},
+	}, {
+		// THE CONTROL. The ceiling must not be an off switch: a real move,
+		// measured on a fit machine, still reds the build.
+		name: "a real regression measured through TIGHT intervals still fires",
+		env:  noWaivers(), args: elpsArgs("benchstat-tight-regression-542.txt"),
+		want: 1, contains: []string{"REGRESSION", "+18.00%"},
+		notContains: []string{"UNMEASURABLE"},
+	}, {
+		// THE BOUNDARY, both sides. ±30% against a ±30% ceiling is at-or-above,
+		// matching the gate's own convention for the threshold.
+		name: "a spread exactly AT the ceiling is unmeasurable",
+		env:  noWaivers(), args: elpsArgs("benchstat-ceiling-at-542.txt"),
+		want: 3, contains: []string{"UNMEASURABLE", "spread ±30%"},
+	}, {
+		name: "one percentage point BELOW the ceiling is adjudicated normally",
+		env:  noWaivers(), args: elpsArgs("benchstat-ceiling-below-542.txt"),
+		want: 1, contains: []string{"REGRESSION", "+40.00%"},
+		notContains: []string{"UNMEASURABLE"},
+	}, {
+		// THE MIDDLE. Unfit interval, sub-gate move: reported, exit unchanged.
+		name: "an unfit row BELOW its gate is a warning and changes no exit code",
+		env:  noWaivers(), args: elpsArgs("benchstat-unfit-below-gate-542.txt"),
+		want: 0, contains: []string{
+			"below-gate", "at or above the ±30% fitness ceiling",
+			"below-gate here means UNMEASURED, not small",
+			"reported as warnings only",
+		},
+		notContains: []string{"UNMEASURABLE "},
+	}, {
+		// PRECEDENCE. A finding on a measurable row outranks "re-measure".
+		name: "a fit regression beside an unfit row exits 1, not 3",
+		env:  noWaivers(), args: elpsArgs("benchstat-unfit-and-regression-542.txt"),
+		want: 1, contains: []string{
+			"REGRESSION", "+22.00%", "UNMEASURABLE", "+83.31%",
+		},
+	}, {
+		// THE CEILING IS THE ONLY THING HOLDING IT BACK -- the same proof the
+		// threshold gets in TestThresholdIsTheOnlyThingHoldingItBack. Raise the
+		// ceiling past the incident's ±71% and the identical table is called a
+		// regression again, so the row is genuinely parsed, genuinely
+		// over-gate, and withheld only by the fitness rule.
+		name: "raising the ceiling past ±71% turns the incident back into a REGRESSION",
+		env:  noWaivers(), args: elpsArgs("benchstat-runner-unfit-542.txt", "-variance-ceiling", "80"),
+		want: 1, contains: []string{"REGRESSION", "+83.31%"},
+	}, {
+		name: "the ceiling is configurable through the environment too",
+		env: map[string]*string{
+			"BENCH_WAIVERS":              s(""),
+			"BENCH_VARIANCE_CEILING_PCT": s("80"),
+		},
+		args: elpsArgs("benchstat-runner-unfit-542.txt"), want: 1,
+		contains: []string{"REGRESSION"},
+	}, {
+		// ...and tightening it reaches rows the default leaves alone. #443's
+		// true-regression control sits at ±25%: under the default 30% ceiling it
+		// is a REGRESSION (asserted below), and under a 20% one it is not
+		// measurable at all. This is the case that decided the default -- see
+		// the derivation on defaultVarianceCeiling.
+		name: "a ceiling below elps' own measured noise floor withholds #443's control",
+		env:  noWaivers(),
+		args: elpsArgs("benchstat-parallel-true-regression.txt", "-variance-ceiling", "20"),
+		want: 3, contains: []string{"UNMEASURABLE", "+48.00%"},
+	}, {
+		name: "at the DEFAULT ceiling #443's control is still a regression",
+		env:  noWaivers(), args: elpsArgs("benchstat-parallel-true-regression.txt"),
+		want: 1, contains: []string{"REGRESSION", "+48.00%"},
+	}, {
+		// CLASS BOUNDARY. Allocation metrics are exempt, exactly as they are
+		// from the resolution check: a jittery allocation column is a benchmark
+		// defect, not a sick machine, and it must not be able to buy itself the
+		// timing metrics' treatment. Same fixture the resolution check uses --
+		// three rows at ±30%, differing only in class -- so if the ceiling ever
+		// leaks into the allocation metrics, this flips.
+		name: "an ALLOCATION row at the ceiling is still judged on its threshold",
+		env:  noWaivers(), args: elpsArgs("benchstat-alloc-with-spread.txt"),
+		want: 1, contains: []string{
+			"REGRESSION  github.com/luthersystems/elps/lisp             B/op",
+			"REGRESSION  github.com/luthersystems/elps/lisp             allocs/op",
+		},
+	}, {
+		// NO INTERVAL. "± ∞ ¹" is not a wide interval, it is the absence of one,
+		// and the ceiling must not be applied to a number that was never
+		// measured. Those rows fall back to the threshold and SAY SO.
+		name: "a row with no computable interval is gated on the threshold and says so",
+		env:  noWaivers(), args: elpsArgs("benchstat-regression-new.txt"),
+		want: 1, contains: []string{"neither did the ±30% fitness ceiling"},
+	}, {
+		// The check must not fire on rows that are not moving in the bad
+		// direction, or not significant, or already NOISE-FLOOR: every clean
+		// fixture in the corpus keeps its verdict.
+		name: "the REAL CI null comparison is untouched by the ceiling",
+		args: elpsArgs("benchstat-clean-ci.txt"), want: 0,
+		notContains: []string{"UNMEASURABLE"},
+	}, {
+		name: "a NOISE-FLOOR row keeps its more specific verdict, not this one",
+		env:  noWaivers(), args: elpsArgs("benchstat-parallel-noise-443.txt"),
+		want: 0, contains: []string{"NOISE-FLOOR"},
+		notContains: []string{"UNMEASURABLE"},
+	}, {
+		// WAIVERS. A live waiver, within its recorded ceiling, still WAIVES an
+		// unfit row: its regression is already reviewed and accepted, so there
+		// is nothing left to certify and nothing for an unfit measurement to
+		// invalidate. This is the case that keeps the fitness ceiling
+		// one-directional -- see TestFitnessCeilingNeverFailsAPassingRun.
+		name: "a live waiver still waives an unfit row, and the run passes",
+		env:  waivers(filepath.Join(elpsFixtures, "waivers-unfit-row-542.txt")),
+		args: elpsArgs("benchstat-runner-unfit-542.txt"),
+		want: 0, contains: []string{"WAIVED", "+83.31%", "elps#542"},
+		notContains: []string{"UNMEASURABLE"},
+	}, {
+		// ...and the other half: a waiver the move has OUTGROWN is normally a
+		// REGRESSION, because a waiver bounds an accepted cost. But "it has been
+		// outgrown" is a NEW finding drawn from THIS measurement, and there is
+		// no measurement here to draw it from. UNMEASURABLE, exit 3 -- the gate
+		// must not claim the ceiling was exceeded on evidence it has just
+		// declared worthless.
+		name: "a waiver the move has outgrown does NOT red an unmeasurable row",
+		env:  waivers(filepath.Join(elpsFixtures, "waivers-unfit-row-outgrown-542.txt")),
+		args: elpsArgs("benchstat-runner-unfit-542.txt"),
+		want: 3, contains: []string{
+			"UNMEASURABLE", "neither applied nor was outgrown here",
+		},
+		// ...and the report must not go on to advise DELETING the waiver on the
+		// strength of a measurement it has just called worthless.
+		notContains: []string{"EXCEEDS its waiver ceiling", "waiver-unused"},
+	}, {
+		// A ceiling of zero would make every row unmeasurable, i.e. a gate that
+		// can never certify anything. Refused rather than honoured, the same way
+		// a malformed waiver file is.
+		name: "a zero variance ceiling is a usage error, not 'no ceiling'",
+		env:  noWaivers(), args: elpsArgs("benchstat-clean-ci.txt", "-variance-ceiling", "0"),
+		want: 2, contains: []string{"must be a positive percentage"},
+	}, {
+		name: "a non-numeric ceiling in the environment is a usage error",
+		env:  map[string]*string{"BENCH_VARIANCE_CEILING_PCT": s("wide")},
+		args: elpsArgs("benchstat-clean-ci.txt"), want: 2,
+	}})
+}
+
+// TestFitnessCeilingNeverFailsAPassingRun is the property the whole design
+// hangs on, asserted over the entire fixture corpus rather than case by case:
+//
+//	the fitness ceiling can only ever WITHHOLD a regression finding.
+//
+// A run that exits 0 without it must still exit 0 with it. If that ever stops
+// holding, switching the ceiling on somewhere becomes a risk rather than a
+// safety measure -- and a safety measure people are afraid to switch on is one
+// that does not get switched on.
+func TestFitnessCeilingNeverFailsAPassingRun(t *testing.T) {
+	fixtures, err := filepath.Glob(filepath.Join(elpsFixtures, "benchstat-*.txt"))
+	if err != nil || len(fixtures) == 0 {
+		t.Fatalf("no fixtures found: %v", err)
+	}
+	subs, err := filepath.Glob(filepath.Join(subFixtures, "benchstat-*.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures = append(fixtures, subs...)
+
+	for _, fx := range fixtures {
+		t.Run(filepath.Base(fx), func(t *testing.T) {
+			// The ceiling raised out of reach: no row can be unmeasurable, so
+			// this is the verdict the gate reached before #542.
+			off, offOut := runGate(t, gateCase{
+				args: []string{"-waivers-default", shippedWaivers, "-variance-ceiling", "100000", fx},
+			})
+			on, onOut := runGate(t, gateCase{
+				args: []string{"-waivers-default", shippedWaivers, fx},
+			})
+			if off == 0 && on != 0 {
+				t.Errorf("exit %d with the ceiling and %d without it -- the fitness ceiling turned a passing run into a failing one\nwith:\n%s\nwithout:\n%s", on, off, onOut, offOut)
+			}
+			if off != on && (off != 1 || on != 3) {
+				t.Errorf("exit %d without the ceiling, %d with it -- the only transition the ceiling may cause is 1 -> 3", off, on)
+			}
+		})
+	}
 }
 
 func TestThresholdIsTheOnlyThingHoldingItBack(t *testing.T) {

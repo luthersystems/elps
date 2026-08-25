@@ -349,6 +349,60 @@ func TestBothFrontEndsAgree(t *testing.T) {
 	}
 }
 
+// TestRawModeRunnerUnfit is elps#542 reaching the structured front end. The
+// shape is substrate#424's: a base arm whose samples are scattered from 30ms to
+// 130ms by something that was not the code, against a head arm that reproduces
+// itself to within a percent.
+//
+// It is not enough to test this through the table front end alone. The two
+// front ends compute the spread by different routes -- one reads the "± 71%"
+// benchstat printed, the other derives it from benchmath.Summary -- and a
+// fitness check present in one and absent in the other would mean `make
+// bench-gate-arms` quietly certifying what CI refuses.
+func TestRawModeRunnerUnfit(t *testing.T) {
+	var baseS, headS []sampleLine
+	for i := range 10 {
+		// Base: 30ms .. 130ms, the incident's own range. Head: a tight cluster
+		// well above all of it, so the comparison is unambiguously significant
+		// and the move is far larger than the base arm's spread -- which is what
+		// keeps the resolution check out of it and leaves the fitness ceiling as
+		// the only thing that can withhold the verdict.
+		baseS = append(baseS, sampleLine{iters: 100, metrics: fmt.Sprintf("%d ns/op", 30000000+i*11111111)})
+		headS = append(headS, sampleLine{iters: 100, metrics: fmt.Sprintf("%d ns/op", 139000000+i*200000)})
+	}
+	base := arm(pkg, map[string][]sampleLine{"MockParallel": baseS})
+	head := arm(pkg, map[string][]sampleLine{"MockParallel": headS})
+
+	rc, out := runRaw(t, base, head, map[string]*string{"BENCH_WAIVERS": s("")})
+	if rc != 3 {
+		t.Fatalf("exit %d, want 3 (RUNNER-UNFIT)\n%s", rc, out)
+	}
+	for _, want := range []string{"UNMEASURABLE", "fitness ceiling", "certified nothing about them"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output does not contain %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "REGRESSION") {
+		t.Errorf("an unmeasurable row was adjudicated as a regression\n%s", out)
+	}
+
+	// The control, through the same front end: hand it a base arm that
+	// reproduces itself and the identical head arm, and the same move IS a
+	// regression. Only the base arm's dispersion differs between the two halves.
+	var tightS []sampleLine
+	for i := range 10 {
+		tightS = append(tightS, sampleLine{iters: 100, metrics: fmt.Sprintf("%d ns/op", 80000000+i*200000)})
+	}
+	base = arm(pkg, map[string][]sampleLine{"MockParallel": tightS})
+	rc, out = runRaw(t, base, head, map[string]*string{"BENCH_WAIVERS": s("")})
+	if rc != 1 {
+		t.Fatalf("exit %d, want 1 -- the same move on a fit base arm is a regression\n%s", rc, out)
+	}
+	if !strings.Contains(out, "REGRESSION") {
+		t.Errorf("the control did not produce a regression\n%s", out)
+	}
+}
+
 // TestPctRangeMatchesBenchstat pins the spread computation against
 // benchmath's own renderer, so a future benchstat change to PctRangeString
 // shows up here rather than as a silently different verdict.

@@ -5,16 +5,59 @@ import (
 	"io"
 )
 
-// policy is the whole adjudication policy: five numbers and a waiver list.
+// defaultVarianceCeiling is the per-row fitness ceiling: a timing row whose own
+// confidence interval is at or above this cannot be adjudicated at all.
+//
+// The number is derived from this repository's own measurements rather than
+// picked, and the two constraints on it are both empirical:
+//
+//	the floor   elps' noisiest LEGITIMATE row, BenchmarkPackageGetFunParallel,
+//	            measures itself at ±24%/±25% on IDENTICAL code (#443, and
+//	            preserved as testdata/elps/benchstat-parallel-noise-443.txt).
+//	            A ceiling at or below that would call this repository's own
+//	            true-regression control (+48.00% on that same ±25% row)
+//	            unmeasurable and turn a real finding into a re-measure loop.
+//	the target  the substrate#424 incident measured ±71% on one arm, and ±30%
+//	            on the re-run. A ceiling above 30 misses half the incident it
+//	            was written for.
+//
+// 30, tested at-or-above, is the only round number that satisfies both. It is a
+// flag because the right number is a property of the runner and the benchmark
+// set: a repository whose rows are quieter than elps' parallel map lookup
+// should tighten it, and BENCH_VARIANCE_CEILING_PCT is how.
+const defaultVarianceCeiling = 30.0
+
+// policy is the whole adjudication policy: six numbers and a waiver list.
 // See the "Why there is no config file" note in the package doc.
 type policy struct {
 	alpha             float64
 	threshold         float64
 	allocThreshold    float64
+	varianceCeiling   float64
 	thresholdStr      string
 	allocThresholdStr string
+	ceilingStr        string
 	waivers           *waiverSet
 	waiverSource      string
+}
+
+// unmeasurable reports whether this row's own confidence interval is too wide
+// for the comparison to say anything about its delta.
+//
+// TIMING ROWS ONLY, and that is the same class boundary the resolution check
+// draws, for the same reason: a jittery ALLOCATION column is a benchmark defect
+// rather than a sick machine, and this repository's doctrine is that it must
+// not be able to buy itself the timing metrics' treatment (see the
+// resolution-check note in the package doc). The one benign way an allocation
+// count jitters -- `go test` truncating a fractional allocs/op -- is handled by
+// the quantisation check, which can only ever discard a ONE-COUNT move.
+//
+// A row with no computable interval (unknownSpread, benchstat's "± ∞ ¹" below 6
+// samples) is NOT unmeasurable by this rule: nothing was measured to compare
+// against the ceiling. Those rows fall back to the threshold alone and the
+// report says so, exactly as they already did for the resolution check.
+func (p *policy) unmeasurable(metric string, spread float64) bool {
+	return !isAllocMetric(metric) && spread >= 0 && spread >= p.varianceCeiling
 }
 
 // verdict is what an adjudication produced: the report lines, the counters,
@@ -30,6 +73,18 @@ type verdict struct {
 	waived      int
 	unresolved  int
 	quantised   int
+
+	// unmeasurable counts rows at or above their gate whose own interval was
+	// too wide to adjudicate. Those are what exit 3 is drawn from: a delta big
+	// enough to matter, measured on a row that could not measure it.
+	unmeasurable int
+	// unmeasurableInfo counts rows whose interval was equally unfit but whose
+	// delta was BELOW the gate. Reported as a warning and deliberately NOT
+	// folded into the exit code: a noisy row can hide a real regression, but
+	// failing every slightly-noisy minor row makes the gate brittle, and a
+	// brittle gate gets switched off. Whole-machine fitness is burn-in's job
+	// (benchgate burnin), which is where that gap is closed.
+	unmeasurableInfo int
 
 	waiverBad        int
 	waiverStale      int
@@ -115,8 +170,18 @@ func adjudicate(c *comparison, p *policy) *verdict {
 
 		v.significant++
 		if regr < gate {
-			v.lines = append(v.lines, fmt.Sprintf("  below-gate  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) %s",
-				r.pkg, r.metric, r.name, r.deltaTok, r.pvalStr, gateStr, dir))
+			// A row below its gate is not adjudicated, so an unfit interval
+			// changes nothing about the verdict -- but it is still worth
+			// saying, because "small move" and "move too noisy to size" are
+			// different statements and only one of them is reassuring.
+			unfit := ""
+			if p.unmeasurable(r.metric, r.spread) {
+				v.unmeasurableInfo++
+				unfit = fmt.Sprintf(" [spread ±%s%% is at or above the ±%s%% fitness ceiling, so this row could not have been sized either way -- below-gate here means UNMEASURED, not small]",
+					awkNum(r.spread), p.ceilingStr)
+			}
+			v.lines = append(v.lines, fmt.Sprintf("  below-gate  %-46s %-9s %-40s delta=%s p=%s (gate %s%%) %s%s",
+				r.pkg, r.metric, r.name, r.deltaTok, r.pvalStr, gateStr, dir, unfit))
 			continue
 		}
 
@@ -169,7 +234,56 @@ func adjudicate(c *comparison, p *policy) *verdict {
 		}
 		noSpread := ""
 		if !isAllocMetric(r.metric) && r.spread < 0 {
-			noSpread = " [no interval: benchstat needs >= 6 samples, so the resolution check did not run]"
+			noSpread = fmt.Sprintf(" [no interval: benchstat needs >= 6 samples, so the resolution check did not run, and neither did the ±%s%% fitness ceiling]", p.ceilingStr)
+		}
+
+		// FITNESS (#542). Everything above asks whether the CODE moved. This
+		// asks whether the MACHINE was in a state to tell -- the question that
+		// went unasked when a runner mid-job produced a base arm at ±71% and a
+		// pr arm at ±3% on a tree with no Go-code delta, and this gate compared
+		// the two medians and called the +83% difference a REGRESSION.
+		//
+		// The order of the three row-level checks is load-bearing:
+		//
+		//	NOISE-FLOOR first  it is the STRONGER statement -- not merely "this
+		//	                   row is noisy" but "this row cannot resolve THIS
+		//	                   move" -- and it is already the verdict on those
+		//	                   rows. Re-labelling them would change no exit code
+		//	                   and lose the more specific reason.
+		//	QUANTISED next     an integer-count row is exempt from this check by
+		//	                   class anyway; the ordering just keeps the reason
+		//	                   printed on such a row the specific one.
+		//	a live WAIVER      a waiver is a standing decision that this row's
+		//	  before this      regression, up to a recorded ceiling, is already
+		//	                   accepted. There is nothing left to certify, so
+		//	                   there is nothing for an unfit measurement to
+		//	                   invalidate -- and this way the fitness check can
+		//	                   only ever WITHHOLD a regression finding (exit 1
+		//	                   -> exit 3). It can never turn a run that would
+		//	                   have passed into one that fails, which is what
+		//	                   makes it safe to switch on everywhere.
+		//
+		// Note what a waiver does NOT buy: an expired one, or a move past the
+		// recorded ceiling, is a NEW finding drawn from this measurement, and a
+		// new finding needs a measurement worth drawing from. Those fall
+		// through to UNMEASURABLE like any other row.
+		waivedNow := w != nil && !w.expired && regr <= w.ceiling
+		if !waivedNow && p.unmeasurable(r.metric, r.spread) {
+			v.unmeasurable++
+			waiverNote := ""
+			if w != nil {
+				// The row HAS a waiver that did not apply -- expired, or the
+				// move is past its ceiling. Recorded so the waiver-reporting
+				// loop below does not go on to advise deleting it, which would
+				// be advice drawn from the measurement this line has just
+				// declared worthless.
+				w.unmeasured = true
+				waiverNote = fmt.Sprintf(" [its waiver (%s, ceiling %s%%, expires %s) neither applied nor was outgrown here: both are claims about a size this comparison could not measure]",
+					w.issue, w.ceilStr, w.expires)
+			}
+			v.lines = append(v.lines, fmt.Sprintf("  UNMEASURABLE %-45s %-9s %-40s delta=%s p=%s (gate %s%%) spread ±%s%% is at or above the ±%s%% fitness ceiling -- an arm this dispersed carries no information about the size of the move, so this delta is NOT adjudicated in either direction: not a regression, and not a pass. Re-measure on a fit runner (`benchgate burnin` before the run says whether it is one) %s%s",
+				r.pkg, r.metric, r.name, r.deltaTok, r.pvalStr, gateStr, awkNum(r.spread), p.ceilingStr, dir, waiverNote))
+			continue
 		}
 
 		// At or above the gate. A waiver can turn this into a PASS, but only a
@@ -216,7 +330,7 @@ func adjudicate(c *comparison, p *policy) *verdict {
 			v.waiverStale++
 			v.lines = append(v.lines, fmt.Sprintf("  WAIVER-STALE  %s:%d waives %s / %s / %s -- that package IS in this comparison and that row is not, so the benchmark was renamed or removed and the waiver is protecting nothing. %s",
 				ws.source, w.line, w.pkg, w.bench, w.metric, w.issue))
-		case !w.used && !w.exceeded && !w.expiredHit:
+		case !w.used && !w.exceeded && !w.expiredHit && !w.unmeasured:
 			v.waiverUnused++
 			v.lines = append(v.lines, fmt.Sprintf("  waiver-unused %s:%d waives %s / %s / %s, and that row is not regressing above its gate -- the waiver can be deleted. %s",
 				ws.source, w.line, w.pkg, w.bench, w.metric, w.issue))
@@ -282,6 +396,15 @@ format has genuinely changed.
 		pf(stdout, "benchgate: %d timing row(s) moved past the gate but by LESS than their own measured spread, so this comparison cannot resolve them (reported as NOISE-FLOOR above, excluded from the verdict). They are not gateable as sampled; make them quieter or keep them out of the comparison set.\n", v.unresolved)
 	}
 
+	// Same doctrine again, for the rows the MACHINE could not measure. This one
+	// carries the exit code with it, so it says which way it went.
+	if v.unmeasurable > 0 {
+		pf(stdout, "benchgate: %d timing row(s) moved at or above the gate on an interval at or above the ±%s%% fitness ceiling, so the comparison cannot size the move at all (reported as UNMEASURABLE above). They are NOT counted as regressions and NOT counted as passes: this run certified nothing about them. Re-measure -- `benchgate burnin` on the runner first will say whether it can measure anything.\n", v.unmeasurable, p.ceilingStr)
+	}
+	if v.unmeasurableInfo > 0 {
+		pf(stdout, "benchgate: %d further row(s) were equally unfit to measure but moved LESS than their gate, so they change no verdict and are reported as warnings only. A noisy row can hide a real regression; whole-machine fitness is what `benchgate burnin` is for.\n", v.unmeasurableInfo)
+	}
+
 	// Same doctrine as NOISE-FLOOR above, for the integer-count metrics.
 	if v.quantised > 0 {
 		pf(stdout, "benchgate: %d allocation-count row(s) moved past the gate by exactly ONE allocation on a row that does not reproduce its own count, so the move cannot be told from `go test` truncating a fractional allocs/op (reported as QUANTISED above, excluded from the verdict). They are not gateable at one allocation as sampled.\n", v.quantised)
@@ -295,8 +418,16 @@ format has genuinely changed.
 			v.waiverCount, p.waiverSource, v.waived, v.waiverStale, v.waiverUnused, v.waiverExpired, v.waiverOutOfScope)
 	}
 
+	// Exit-code precedence, and it only goes this way round: a regression found
+	// on a row that COULD be measured is a finding, and an unmeasurable row
+	// elsewhere in the same table does not make it less of one. Reporting
+	// "re-measure" over the top of it would postpone a real result and invite a
+	// re-run that finds it again.
 	if v.regressions > 0 {
 		return 1
+	}
+	if v.unmeasurable > 0 {
+		return 3
 	}
 	return 0
 }

@@ -165,6 +165,7 @@ case "$gate_status" in
   0) echo "No benchmark regression at or above the configured gates." ;;
   1) echo "::warning::Benchstat detected a significant benchmark regression." ;;
   2) echo "::warning::The benchmark comparison could not be interpreted." ;;
+  3) echo "::warning::The runner was not fit to measure; one or more rows are UNMEASURABLE and this run certified nothing about them." ;;
   *) echo "::warning::${GATE} exited ${gate_status} — it did not run to completion." ;;
 esac
 
@@ -183,10 +184,32 @@ waiver_lines="$(grep -E '^  (WAIVED|WAIVER-|waiver-)' gate-report.txt || true)"
 # above the fold rather than inside a collapsed block nobody expands.
 noise_lines="$(grep -E '^  NOISE-FLOOR' gate-report.txt || true)"
 
+# UNMEASURABLE lines (issue #542) get it too, and they are the most important of
+# the three to keep above the fold: they are the rows where the RUNNER, not the
+# code, is the finding. A row that moved past the gate on an interval too wide
+# to size the move certified nothing — reporting that inside a collapsed block
+# is how "we could not measure it" gets read as "it was fine".
+unfit_lines="$(grep -E '^  UNMEASURABLE' gate-report.txt || true)"
+
 {
   echo 'result<<BENCHSTAT_EOF'
   echo '## Benchmark Comparison (main baseline vs PR)'
   echo ''
+  if [ -n "$unfit_lines" ]; then
+    echo '### Rows the RUNNER could not measure'
+    echo ''
+    echo 'These rows moved at or above the gate, but on a confidence interval at or'
+    echo 'above the fitness ceiling — an arm that dispersed carries no information'
+    echo 'about the size of the move. They are NOT regressions and NOT passes: this'
+    echo 'run certified nothing about them, and the gate exits 3 (RUNNER-UNFIT)'
+    echo 'rather than reporting either. Re-run the job; see the fitness-check note'
+    echo 'in the `cmd/benchgate` package doc.'
+    echo ''
+    echo '```'
+    echo "$unfit_lines"
+    echo '```'
+    echo ''
+  fi
   if [ -n "$noise_lines" ]; then
     echo '### Rows this comparison could not resolve'
     echo ''

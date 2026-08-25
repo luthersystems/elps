@@ -32,18 +32,43 @@ func trimFloat(v float64) string {
 	return strconv.FormatFloat(v, 'g', -1, 64)
 }
 
+// envDefaultInt is envDefaultFloat for the counts the burn-in takes (runs,
+// warmup, workload size). Separate rather than shared because a fractional run
+// count is a typo, not a policy, and parsing it as a float would silently
+// truncate it.
+func envDefaultInt(name string, def int) (int, error) {
+	raw, ok := os.LookupEnv(name)
+	if !ok || raw == "" {
+		return def, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q is not a whole number", name, raw)
+	}
+	return v, nil
+}
+
 var isoDate = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
 
 const usage = `usage: benchgate [flags] <benchstat-output-file>
        benchgate [flags] -base <go-test-output> -head <go-test-output>
+       benchgate burnin [flags]
 
 Adjudicate a benchmark comparison: exit 0 clean, 1 regression, 2 could not be
-interpreted.
+interpreted, 3 the RUNNER was not fit to measure -- re-measure.
 
 The first form reads a benchstat table (what CI already produces for the PR
 comment). The second reads raw ` + "`go test -bench`" + ` output for each arm and
 computes the comparison itself with golang.org/x/perf/benchfmt and benchmath --
-no benchstat binary required.
+no benchstat binary required. The third asks whether this MACHINE can measure
+anything at all, before it is trusted to; run ` + "`benchgate burnin -h`" + ` for its
+flags.
+
+Exit 3 (RUNNER-UNFIT) is a distinct code because it is a distinct thing: not
+"the code regressed" and not "the input was unreadable", but "this machine did
+not produce a usable measurement". It never replaces exit 1 -- a regression
+found on a row that COULD be measured is a finding, and telling the operator to
+re-measure would only postpone it.
 
 flags (each falls back to the matching BENCH_* environment variable, which is
 how both consuming repositories declare their policy):
@@ -52,6 +77,12 @@ how both consuming repositories declare their policy):
   -alloc-threshold N  allocation metrics: B/op, allocs/op
                       (env BENCH_ALLOC_THRESHOLD_PCT, default 5)
   -alpha N            significance level (env BENCH_ALPHA, default 0.05)
+  -variance-ceiling N per-row fitness ceiling, percent. A TIMING row whose own
+                      confidence interval is at or above this is UNMEASURABLE:
+                      its delta is reported but never adjudicated as a
+                      regression, and a delta at or above the gate on such a
+                      row exits 3 instead of 1.
+                      (env BENCH_VARIANCE_CEILING_PCT, default 30)
   -waivers PATH       reviewed waiver list (env BENCH_WAIVERS; empty = none).
                       Named explicitly, so a path that is not there is an
                       error rather than "no waivers configured".
@@ -85,6 +116,14 @@ func pr(w io.Writer, a ...any)                { _, _ = fmt.Fprint(w, a...) }
 // env fallbacks, the exit codes -- is exercised by the tests rather than only
 // the pieces underneath it.
 func run(args []string, stdout, stderr io.Writer) int {
+	// Subcommand dispatch, before flag parsing: `burnin` asks a question about
+	// the MACHINE and takes none of the adjudication policy below. It is
+	// matched as the first argument only, so a benchstat table that happens to
+	// be named "burnin" is still reachable as ./burnin.
+	if len(args) > 0 && args[0] == "burnin" {
+		return runBurnin(args[1:], stdout, stderr, realSampler)
+	}
+
 	fs := flag.NewFlagSet("benchgate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { pr(stderr, usage) }
@@ -92,7 +131,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	thrDef, thrStr, err1 := envDefaultFloat("BENCH_REGRESSION_THRESHOLD_PCT", 15)
 	allocDef, allocStr, err2 := envDefaultFloat("BENCH_ALLOC_THRESHOLD_PCT", 5)
 	alphaDef, _, err3 := envDefaultFloat("BENCH_ALPHA", 0.05)
-	for _, err := range []error{err1, err2, err3} {
+	ceilDef, ceilStr, err4 := envDefaultFloat("BENCH_VARIANCE_CEILING_PCT", defaultVarianceCeiling)
+	for _, err := range []error{err1, err2, err3, err4} {
 		if err != nil {
 			pf(stderr, "benchgate: %v.\n", err)
 			return 2
@@ -102,6 +142,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	threshold := fs.Float64("threshold", thrDef, "timing-metric regression gate, percent")
 	allocThreshold := fs.Float64("alloc-threshold", allocDef, "allocation-metric regression gate, percent")
 	alpha := fs.Float64("alpha", alphaDef, "significance level")
+	varianceCeiling := fs.Float64("variance-ceiling", ceilDef, "per-row fitness ceiling on a timing row's own confidence interval, percent")
 	base := fs.String("base", "", "base arm: raw `go test -bench` output")
 	head := fs.String("head", "", "head arm: raw `go test -bench` output")
 
@@ -145,8 +186,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 			thrStr = f.Value.String()
 		case "alloc-threshold":
 			allocStr = f.Value.String()
+		case "variance-ceiling":
+			ceilStr = f.Value.String()
 		}
 	})
+
+	// A ceiling of zero or less would make EVERY row unmeasurable, which is a
+	// gate that can never certify anything. Switching the check off is spelled
+	// with a ceiling far above any real interval (see the doc comment), not
+	// with a zero that reads like "no ceiling" and means "no verdict".
+	if *varianceCeiling <= 0 {
+		pf(stderr, "benchgate: -variance-ceiling/BENCH_VARIANCE_CEILING_PCT must be a positive percentage (got %s); every row would be unmeasurable and the gate could never certify anything.\n", trimFloat(*varianceCeiling))
+		return 2
+	}
 
 	rawMode := *base != "" || *head != ""
 	rest := fs.Args()
@@ -176,8 +228,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		alpha:             *alpha,
 		threshold:         *threshold,
 		allocThreshold:    *allocThreshold,
+		varianceCeiling:   *varianceCeiling,
 		thresholdStr:      thrStr,
 		allocThresholdStr: allocStr,
+		ceilingStr:        ceilStr,
 		waivers:           ws,
 		waiverSource:      ws.source,
 	}
