@@ -1,10 +1,30 @@
 # /release — Create a GitHub Release
 
-Creates a tagged release on GitHub with auto-generated release notes from merged PRs. Releases also trigger the VS Code extension publish pipeline.
+Cuts a tagged release by dispatching the repository's release pipeline,
+`.github/workflows/release-tag.yml`. The pipeline validates the version,
+generates release notes from the commits since the last stable tag, and
+creates the tag + GitHub Release with the official Claude App token; the
+tag-push event then triggers `vscode-publish.yml` (platform elps binaries +
+VS Code Marketplace extension).
+
+**Use the pipeline. Do not create the tag or release by hand.** Two reasons,
+both documented in the workflow's own header:
+
+- A tag created with the default `GITHUB_TOKEN` (e.g. `gh release create`
+  from a workflow, or an Actions-context push) does NOT trigger
+  `vscode-publish.yml` — GitHub suppresses workflow→workflow events for that
+  token. The release would exist but the binaries and extension would never
+  publish.
+- Direct tag pushes are blocked from agent sandboxes, so `git push origin
+  vX.Y.Z` is not available there anyway.
+
+**A release is externally visible immediately** — the tag publishes the VS
+Code extension to the Marketplace. Treat cutting one as a production action.
 
 ## Trigger
 
-Use when asked to create a release, tag a release, cut a release, or ship a version.
+Use when asked to create a release, tag a release, cut a release, or ship a
+version.
 
 ## Arguments
 
@@ -16,122 +36,89 @@ Optional: version bump type or explicit version.
 
 ## Workflow
 
-### 1. Determine Current Version
+### 1. Determine the version
 
 ```bash
 git fetch --tags origin
-LATEST=$(git tag --sort=-v:refname | head -1)
-echo "Latest tag: $LATEST"
+LATEST=$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+echo "Latest stable tag: $LATEST"
+git log $LATEST..origin/main --oneline
 ```
 
-### 2. Verify Main is Clean
+If there are no unreleased commits, stop and say so. Compute the next
+version from the bump argument (or use the explicit version). The pipeline
+re-validates — exact `vMAJOR.MINOR.PATCH` format, strictly newer than the
+latest stable tag by semver — and refuses anything else, so a wrong guess
+fails safely rather than shipping.
+
+### 2. Verify main is releasable
+
+The pipeline always cuts from **main HEAD** — there is no ref input. So
+before dispatching, confirm main is what you intend to ship and its CI is
+green:
 
 ```bash
-git checkout main
-git pull origin main
+gh run list --branch main --limit 3   # or the Actions API if gh is absent
 ```
 
-Ensure there are unreleased commits:
-```bash
-git log $LATEST..main --oneline
-```
+`make release-notes` previews the same information locally (latest tag, CI
+status, commits since the tag) when `gh` is available.
 
-If no new commits, stop and inform the user.
+### 3. Update the VS Code extension changelog (if applicable)
 
-### 3. Compute Next Version
+If any unreleased change affects the extension (grammar, LSP, DAP,
+formatter, minifier, binary bundling), add a section to
+`editors/vscode/CHANGELOG.md` and land it on main **before** dispatching —
+the pipeline releases main HEAD, so a changelog commit after the dispatch
+misses the release. Skip for internal refactors, test-only changes, and CI
+tweaks.
 
-Parse the latest tag (format: `vMAJOR.MINOR.PATCH`) and bump based on the argument:
+### 4. Dispatch the pipeline
 
-- Default (no arg or `patch`): increment PATCH
-- `minor`: increment MINOR, reset PATCH to 0
-- `major`: increment MAJOR, reset MINOR and PATCH to 0
-- Explicit `vX.Y.Z`: use as-is
-
-Confirm the new version with the user before proceeding.
-
-### 4. Update VS Code Extension Changelog
-
-If any changes affect the VS Code extension (grammar, LSP, DAP, formatter, minifier, binary bundling), update `editors/vscode/CHANGELOG.md`:
-
-```markdown
-## X.Y.Z
-
-- Brief description of extension-relevant changes
-```
-
-Add the new section at the top of the file. Only include changes that affect the extension — skip internal refactors, test-only changes, or CI tweaks that don't change the extension behavior.
-
-Commit the changelog:
-```bash
-git add editors/vscode/CHANGELOG.md
-git commit -m "docs: update vscode changelog for vX.Y.Z"
-git push
-```
-
-### 5. Collect Release Notes
-
-Get merged PRs since the last release:
-```bash
-gh pr list --state merged --base main \
-  --search "merged:>$(gh release view $LATEST --json publishedAt -q '.publishedAt' | cut -dT -f1)" \
-  --json number,title,author \
-  --jq '.[] | "* \(.title) by @\(.author.login) in #\(.number)"'
-```
-
-Format release notes as:
-```
-## What's Changed
-* <PR title> by @<author> in https://github.com/<owner>/<repo>/pull/<N>
-...
-
-**Full Changelog**: https://github.com/<owner>/<repo>/compare/<prev-tag>...<new-tag>
-```
-
-### 6. Create the Release
+Trigger `release-tag.yml` with the version:
 
 ```bash
-gh release create <new-tag> \
-  --title "<new-tag>" \
-  --notes "$(cat <<'EOF'
-<formatted release notes>
-EOF
-)"
+gh workflow run release-tag.yml -f version=vX.Y.Z
+# optional rehearsal first:
+gh workflow run release-tag.yml -f version=vX.Y.Z -f dry_run=true
 ```
 
-This creates both the git tag and the GitHub release in one step.
+Without `gh` (agent sandboxes), use the Actions dispatch API / MCP
+`actions_run_trigger` on `release-tag.yml` with input `version: vX.Y.Z`.
 
-### 7. Monitor Pipelines
+`dry_run: true` prints the validation result and the generated notes
+without creating anything — use it if there is any doubt about the version
+or the notes.
 
-The tag push triggers the VS Code extension publish workflow:
+The pipeline then: validates (format, strictly-newer, checkout == main
+HEAD), summarizes the merged PRs/commits since the last stable tag into the
+release notes, and runs `gh release create` with the App token. On a
+validation failure it STOPS with an explanation and creates nothing; the
+agent transcript is uploaded as the `release-tag-trace-<run id>` artifact
+(14-day retention) so a refusal is explainable after the fact.
+
+### 5. Monitor the publish
+
+The tag push triggers the VS Code extension publish:
 
 ```bash
-# VS Code extension publish
 gh run list --workflow vscode-publish.yml --limit 3
 ```
 
-Verify all 9 jobs pass (4 binary builds + 4 platform publishes + 1 universal).
-
-The extension is published at:
+Verify all 9 jobs pass (4 binary builds + 4 platform publishes + 1
+universal). The extension lands at
 https://marketplace.visualstudio.com/items?itemName=LutherSystems.elps-lang
 
-### 8. Report
+### 6. Report
 
-Return the release URL and a summary of what was included.
+Return the release URL (https://github.com/luthersystems/elps/releases/tag/vX.Y.Z),
+the publish-pipeline status, and a summary of what shipped.
 
-## Version Scheme
+## Fallback (human operator only)
 
-This project uses semantic versioning: `vMAJOR.MINOR.PATCH`
-- **PATCH**: Bug fixes, small improvements, refactoring, doc updates
-- **MINOR**: New features, new public APIs, new CLI commands/flags
-- **MAJOR**: Breaking changes to Go API or Lisp language semantics
-
-## Checklist
-
-- [ ] On main branch with latest pulled
-- [ ] New commits exist since last release
-- [ ] Version number confirmed with user
-- [ ] VS Code changelog updated (if extension-relevant changes)
-- [ ] Release notes include all merged PRs
-- [ ] Release created successfully
-- [ ] VS Code extension publish workflow passed
-- [ ] Release URL returned to user
+`make release VERSION=vX.Y.Z` performs the same validation and `gh release
+create` from a local machine. It requires `gh` authenticated as a real user
+(a personal token's tag DOES trigger the publish workflow — the suppression
+applies to the Actions `GITHUB_TOKEN`, not to user or App tokens). Prefer
+the pipeline even then: it keeps every release on one audited path with one
+identity.
