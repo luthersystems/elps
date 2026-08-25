@@ -49,6 +49,23 @@ env:
   # comparison (identical code on both arms) on this pool.
   BENCH_REGRESSION_THRESHOLD_PCT: "15"
   BENCH_ALLOC_THRESHOLD_PCT: "5"
+  # Runner fitness, not a gate (issue #542). A TIMING row whose own confidence
+  # interval is at or above this cannot size its own move, so benchgate refuses
+  # to adjudicate it in EITHER direction: the row is reported as UNMEASURABLE
+  # and the job exits 3 (RUNNER-UNFIT, "re-measure") rather than 1 or 0.
+  #
+  # It is restated here rather than left to the binary's default because it is
+  # policy, and policy belongs next to the prose explaining it. The number is
+  # derived from measurements, not chosen: elps' noisiest LEGITIMATE row
+  # measures itself at +/-24-25% on IDENTICAL code (#443,
+  # cmd/benchgate/testdata/elps/benchstat-parallel-noise-443.txt), so a tighter
+  # ceiling would call this repository's own +48% true-regression control
+  # unmeasurable; the substrate#424 incident this exists for measured +/-71% on
+  # one arm and +/-30% on the re-run. 30, tested at-or-above, is the only round
+  # number that clears both. LOWER it only after re-measuring the noise floor
+  # on this pool -- and note that lowering it cannot hide a regression, it can
+  # only convert one into "re-measure".
+  BENCH_VARIANCE_CEILING_PCT: "30"
   # Pinned, not inherited from the runner's core count. `go test` appends
   # GOMAXPROCS to every benchmark name (EnvGet-2, EnvGet-4), and benchstat
   # pairs rows by that full name -- so two arms measured at different core
