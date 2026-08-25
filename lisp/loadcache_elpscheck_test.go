@@ -102,7 +102,7 @@ func TestLoadCacheSealedEntryIsExemptFromOwnership(t *testing.T) {
 	// The envs below install refusingReader and reach the funnel through
 	// LoadLocation (byLoc == true); the key must be derived under the same
 	// reader identity and method or every hit turns into a miss.
-	key := loadCacheKey(name, loc, readerIdentity(refusingReader{}), true, []byte(src))
+	key := loadCacheKey(name, loc, mustReaderIdentity(refusingReader{}), true, []byte(src))
 	entry, err := newCachedSource(key, name, loc, loadCacheSharedExprs())
 	if err != nil {
 		t.Fatalf("admission refused an ordinary parse: %v", err)
@@ -127,7 +127,7 @@ func TestLoadCacheSealedEntryIsExemptFromOwnership(t *testing.T) {
 // elpscheck, naming both runtimes.
 func TestLoadCacheUnsealedEntryTripsOwnership(t *testing.T) {
 	const name, loc, src = "smuggled.lisp", "smuggled.lisp", "'(1 2 3)"
-	key := loadCacheKey(name, loc, readerIdentity(refusingReader{}), true, []byte(src))
+	key := loadCacheKey(name, loc, mustReaderIdentity(refusingReader{}), true, []byte(src))
 	// CachedSourceForTest deliberately skips the admission walk, so the
 	// entry carries exactly the unsealed, mutable tree newCachedSource
 	// would have copied and sealed.
@@ -166,7 +166,7 @@ func TestLoadCacheUnsealedEntryTripsOwnership(t *testing.T) {
 // not sealable, so the closure is checked and runtime B's load panics.
 func TestLoadCacheLaunderedClosureTripsOwnership(t *testing.T) {
 	const name, loc, src = "laundered.lisp", "laundered.lisp", "(a closure)"
-	key := loadCacheKey(name, loc, readerIdentity(refusingReader{}), true, []byte(src))
+	key := loadCacheKey(name, loc, mustReaderIdentity(refusingReader{}), true, []byte(src))
 
 	fn := mintClosure(t)
 	forceSealAll(fn) // launder: seal flag on the non-sealable closure node
@@ -186,4 +186,57 @@ func TestLoadCacheLaunderedClosureTripsOwnership(t *testing.T) {
 	expectOwnershipPanic(t, func() {
 		envB.LoadLocation(name, loc, strings.NewReader(src))
 	})
+}
+
+// TestVerifyCachedSourceOnHitCatchesSubstitutedRoots is the second half of
+// round-two blocker 1, and it is the half that matters longest: the defect
+// was real, but what made it dangerous is that the checked build could not
+// SEE it.
+//
+// verifySealedLoadRoots compares each sealed root against ITS OWN seal-time
+// fingerprint.  A Reader that hands back one output slice per call and
+// refills it does not corrupt any root — it substitutes a different file's
+// roots wholesale, and those are perfectly sealed and match their own
+// records.  So the per-root watchdog is not merely quiet here, it is
+// structurally incapable of speaking, and this test asserts that directly
+// before asserting the new check does speak: a guard demonstrated only on
+// the case it cannot fail is not evidence of anything.
+//
+// Red proof: with verifyCachedSourceOnHit stubbed back to a no-op (its state
+// before this fix), the final call returns normally and the test fails with
+// "the entry-level check did not fire".
+func TestVerifyCachedSourceOnHitCatchesSubstitutedRoots(t *testing.T) {
+	const name, loc, src = "a.lisp", "a.lisp", "'(1 2 3)"
+	key := loadCacheKey(name, loc, mustReaderIdentity(refusingReader{}), true, []byte(src))
+	entry, err := newCachedSource(key, name, loc, loadCacheSharedExprs())
+	if err != nil {
+		t.Fatalf("admission refused an ordinary parse: %v", err)
+	}
+
+	// Another file's top-level expression, sealed through SealAST exactly as
+	// a parser seals one — so it is RECORDED in the per-root table, and the
+	// per-root check has every chance to object to it.
+	other := SExpr([]*LVal{Int(9), Int(9)})
+	other.quoted = true
+	other.SealAST()
+
+	// The substitution a refilled output slice performs.  Nothing here is
+	// unsealed and nothing is written through a sealed node.
+	entry.prog.exprs[0] = other
+
+	// The per-root watchdog: silent, and provably so.
+	verifySealedLoadRoots(entry.prog.exprs)
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("the entry-level check did not fire: a cache entry now holding another file's" +
+				" roots was served as if it were the program it was admitted with")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "load-cache entry changed after admission") {
+			t.Fatalf("the panic did not name the violation: %v", r)
+		}
+	}()
+	verifyCachedSourceOnHit(entry)
 }

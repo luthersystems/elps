@@ -329,10 +329,24 @@ func (f *forker) val(v *LVal) *LVal {
 	if isSingleton(v) {
 		return v
 	}
-	if v.sealed {
+	if v.sealed && sealableNodeType(v.Type) {
 		// Immutable by the seal invariant: shared for free.  This branch is
 		// the reason forking beats reloading — at production scale it takes
 		// the overwhelming majority of reachable values (see docs/fork.md).
+		//
+		// The test is the CONJUNCTION, not the flag alone, and it is the same
+		// conjunction the admission gate (firstUnsealed, lisp/program.go) and
+		// the checked-mode ownership gate (lisp/ownership_check_elpscheck.go)
+		// use.  The seal's guarantees only cover the types SealAST actually
+		// marks; a node whose flag is set but whose type is mutable or
+		// reference (an LFun closure laundered in through a Reader, whose
+		// captured *LEnv the seal never freezes) would be SHARED between the
+		// template and every fork instead of remapped, silently reconnecting
+		// the two environments this function exists to separate.  This is the
+		// permissive direction, which is why it matters: the seal's other
+		// consumers (the guarded mutation sites, stampGuarded, SetSource) read
+		// the flag PROTECTIVELY, where a laundered flag only ever buys an
+		// extra refusal.
 		return v
 	}
 	if cp, ok := f.vals[v]; ok {

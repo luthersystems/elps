@@ -299,7 +299,7 @@ type LoadCache interface {
 // reference type, or a node no seal can cover — is not cacheable at all,
 // and the caller falls back to handing the raw parse to this one load.
 func newCachedSource(key, name, loc string, exprs []*LVal) (*CachedSource, error) {
-	prog, err := newProgram(exprs)
+	prog, err := newProgramForCache(exprs)
 	if err != nil {
 		return nil, err
 	}
@@ -335,6 +335,11 @@ type ReaderIdentity interface {
 	// ReaderIdentity returns a stable token that differs between readers whose
 	// parse output differs.  Two readers returning the same token are treated
 	// as interchangeable producers by the cache.
+	//
+	// The EMPTY string is not a valid token: it states nothing, and two
+	// readers returning it would be declared interchangeable.  A reader that
+	// returns it disables the cache for its own loads (they parse every time)
+	// rather than risking a wrong-program serve.
 	ReaderIdentity() string
 }
 
@@ -344,12 +349,23 @@ type ReaderIdentity interface {
 // fully-qualified Go type is used — stable across instances of one type,
 // distinct across types.  The "id:"/"go:" prefixes keep a crafted identity
 // token from colliding with a type path.
-func readerIdentity(r Reader) string {
+func readerIdentity(r Reader) (string, bool) {
 	if r == nil {
-		return "<nil>"
+		return "<nil>", true
 	}
 	if id, ok := r.(ReaderIdentity); ok {
-		return "id:" + id.ReaderIdentity()
+		tok := id.ReaderIdentity()
+		if tok == "" {
+			// An EMPTY token states nothing.  Two readers that both return it
+			// would be declared interchangeable producers and would serve each
+			// other's parses — the very failure ReaderIdentity exists to
+			// prevent, reached by implementing it badly.  Falling back to the
+			// Go type would be no better (a reader multiplexing parse
+			// behaviours behind one type is exactly why it implements this),
+			// so no key is derivable and the load runs uncached.
+			return "", false
+		}
+		return "id:" + tok, true
 	}
 	t := reflect.TypeOf(r)
 	stars := 0
@@ -359,9 +375,9 @@ func readerIdentity(r Reader) string {
 	}
 	star := strings.Repeat("*", stars)
 	if pkg := t.PkgPath(); pkg != "" {
-		return "go:" + star + pkg + "." + t.Name()
+		return "go:" + star + pkg + "." + t.Name(), true
 	}
-	return "go:" + star + t.String()
+	return "go:" + star + t.String(), true
 }
 
 // loadCacheKey derives the cache key for a source stream.  The digest covers
@@ -470,6 +486,13 @@ func (env *LEnv) readCached(name, loc string, byLoc bool, r io.Reader, parse fun
 	if cache == nil || env.Runtime.loadCacheActive {
 		return parse(r)
 	}
+	readerID, ok := readerIdentity(env.Runtime.Reader)
+	if !ok {
+		// The reader declined to state an identity (an empty ReaderIdentity
+		// token), so no key can bind this entry to its producer.  Parse
+		// uncached rather than key on something that could collide.
+		return parse(r)
+	}
 	env.Runtime.loadCacheActive = true
 	defer func() { env.Runtime.loadCacheActive = false }()
 
@@ -477,8 +500,15 @@ func (env *LEnv) readCached(name, loc string, byLoc bool, r io.Reader, parse fun
 	if err != nil {
 		return nil, err
 	}
-	key := loadCacheKey(name, loc, readerIdentity(env.Runtime.Reader), byLoc, src)
+	key := loadCacheKey(name, loc, readerID, byLoc, src)
 	if entry, ok := cache.Load(key); ok && entry != nil && entry.key == key {
+		// Checked builds re-verify the entry against the fingerprint taken at
+		// ADMISSION, not against a per-root seal-time record: the entry
+		// already carries exactly the value that catches a Reader which
+		// rewrote what it handed over, and a per-root check cannot (each root
+		// is compared to its own seal-time fingerprint, and a substituted
+		// root is legitimately sealed).  No-op in production builds.
+		verifyCachedSourceOnHit(entry)
 		return entry.prog.exprs, nil
 	}
 	exprs, err := parse(bytes.NewReader(src))
@@ -491,8 +521,10 @@ func (env *LEnv) readCached(name, loc string, byLoc bool, r io.Reader, parse fun
 			// Not safe to evaluate either — fail the load (see above).
 			return nil, err
 		}
-		// Not an error for THIS load: the parse is fine, it simply cannot
-		// be shared, so it is handed over uncached (see the doc comment).
+		// Not an error for THIS load: the parse is fine (errReaderTreeTooLarge
+		// says so explicitly — it is merely bigger than the cache budget), it
+		// simply cannot be shared, so it is handed over uncached (see the doc
+		// comment).
 		return exprs, nil
 	}
 	cache.Store(key, entry)

@@ -189,6 +189,44 @@ func verifySealedLoadRoots(exprs []*LVal) {
 	}
 }
 
+// verifyCachedSourceOnHit re-verifies a load-cache entry AS IT IS SERVED,
+// against the fingerprint newCachedSource took at admission.
+//
+// It exists because verifySealedLoadRoots cannot see the failure it catches
+// (issue #368 review, blocker 1).  That check compares each sealed root to
+// ITS OWN seal-time record; if a Reader hands back one output slice per call
+// and refills it, the entry's slice header now points at a DIFFERENT file's
+// roots — roots which are themselves legitimately sealed and match their own
+// records perfectly.  Per-root verification is blind to it; the entry-level
+// fingerprint is not, because it summarises the tree the entry was admitted
+// with.  Serving one file's cache entry for another's program is the
+// wrong-program-served class, so this panics like every other checked-build
+// violation rather than degrading to a miss.
+//
+// Cost: one fingerprint walk per cache HIT, in checked builds only.  That
+// removes the hook's zero-work hit under -tags elpscheck, which is the right
+// trade for the mode whose whole job is to make the seal's claims checkable.
+func verifyCachedSourceOnHit(s *CachedSource) {
+	if s == nil {
+		return
+	}
+	if got := SealedASTFingerprint(s.prog.exprs); got != s.fp {
+		root := "<empty>"
+		if len(s.prog.exprs) > 0 && s.prog.exprs[0] != nil {
+			root = s.prog.exprs[0].Type.String()
+		}
+		panic(fmt.Sprintf("sealcheck: load-cache entry changed after admission\n"+
+			"  key:  %s\n  name: %s\n  loc:  %s\n"+
+			"  exprs: %d (first root type %s)\n"+
+			"  fingerprint at admission: %016x\n"+
+			"  fingerprint now:          %016x\n"+
+			"a cache entry is immutable once admitted; the Reader that produced it must not "+
+			"retain and later mutate the nodes OR THE SLICE it returned (see lisp/loadcache.go, "+
+			"\"Reader custody on the fast path\")",
+			s.key, s.name, s.loc, len(s.prog.exprs), root, s.fp, got))
+	}
+}
+
 // VerifySealedASTs re-fingerprints every sealed parse recorded in this
 // process and reports the first mismatch (plus a count of the rest).  A
 // non-nil error means a sealed program tree was mutated in place after

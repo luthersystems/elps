@@ -153,11 +153,16 @@ func (env *LEnv) ParseProgram(name, loc string, r io.Reader) (Program, error) {
 // to the different mechanism (TextLoader hands each load a private copy;
 // Program hands every load the same sealed tree):
 //
-//   - checkLoaderExpr runs first, verbatim.  Reference types (bytes, map,
-//     array, native) share mutable state through every copy AND every
-//     evaluation — SealAST declines to mark them and Copy preserves their
-//     reference semantics — so no admission can make them safe to share and
-//     they are rejected with TextLoader's error.
+//   - The admission walk runs first (checkLoaderExpr for the Program
+//     constructors, checkCacheExpr's stricter form for Runtime.LoadCache).
+//     Reference types (bytes, map, array, native) share mutable state through
+//     every copy AND every evaluation — SealAST declines to mark them and Copy
+//     preserves their reference semantics — so no admission can make them safe
+//     to share and they are rejected with TextLoader's error.  So is a Native
+//     payload riding on a type the seal marks, which nothing downstream covers
+//     (see checkLoaderExpr).  Cycles and over-deep nesting are refused on every
+//     path; node sharing and sheer size are refused only on the cache path,
+//     where an entry is aliased into unboundedly many environments.
 //   - Output that is already sealed throughout is admitted as-is.  This is
 //     the standard-parser fast path, and the sharing it takes is the
 //     sanctioned kind: sealed nodes are frozen storage under the seal's write
@@ -184,16 +189,34 @@ func (env *LEnv) ParseProgram(name, loc string, r io.Reader) (Program, error) {
 //     Program the seal is the only thing standing between environments, so
 //     "cannot seal" has to mean "cannot admit".
 func newProgram(exprs []*LVal) (Program, error) {
+	return newProgramAdmitted(exprs, newLoaderWalk(false))
+}
+
+// newProgramForCache is newProgram with the cache path's stricter walk: no
+// repeated composite node, and a node budget whose overflow is reported as
+// errReaderTreeTooLarge so (*LEnv).readCached can fall back to an uncached
+// load rather than failing it.  See checkCacheExpr for why those two rules
+// are the cache's and not everyone's.
+func newProgramForCache(exprs []*LVal) (Program, error) {
+	return newProgramAdmitted(exprs, newLoaderWalk(true))
+}
+
+// newProgramAdmitted is the shared body.  One walk state covers every
+// top-level expression of the stream (see newLoaderWalk).
+func newProgramAdmitted(exprs []*LVal, w *loaderWalk) (Program, error) {
 	for _, expr := range exprs {
-		if err := checkLoaderExpr(expr); err != nil {
-			if errors.Is(err, errReaderTreeUnbounded) {
-				// A cyclic, interned-shared, or over-deep reader output is not
-				// a strict parser tree.  Return the sentinel UNWRAPPED (not
-				// through GoError) so a caller that admits reader output on the
-				// load path — (*LEnv).readCached — can tell this apart from an
-				// ordinary admission refusal: such output is not safe to hand
-				// to the evaluator either, so that load fails rather than
-				// falling back to an uncached eval of it.
+		if err := checkCacheExpr(expr, w); err != nil {
+			if errors.Is(err, errReaderTreeUnbounded) || errors.Is(err, errReaderTreeTooLarge) {
+				// Return these two sentinels UNWRAPPED (not through GoError) so
+				// the one caller that admits reader output on the LOAD path —
+				// (*LEnv).readCached — can tell each apart from an ordinary
+				// admission refusal and from each other.  They are not
+				// interchangeable: errReaderTreeUnbounded (a cycle, an interned
+				// subtree, over-deep nesting) is output that is unsafe to hand
+				// to the evaluator at all, so that load FAILS; errReaderTree
+				// TooLarge is a legal program that is merely bigger than the
+				// cache budget, so that load falls back to an UNCACHED parse
+				// and behaves exactly as it would with no cache installed.
 				return Program{}, err
 			}
 			lerr := Error(err)
@@ -206,20 +229,36 @@ func newProgram(exprs []*LVal) (Program, error) {
 		}
 	}
 	allSealed := true
+	seen := make(map[*LVal]struct{})
 	for _, expr := range exprs {
-		if firstUnsealed(expr) != nil {
+		if firstUnsealed(expr, seen) != nil {
 			allSealed = false
 			break
 		}
 	}
 	if allSealed {
-		return Program{exprs: exprs}, nil
+		// CLONE THE SLICE HEADER, do not alias it (issue #368 review,
+		// blocker 1).  The nodes are shared deliberately — that is the whole
+		// point of the sealed fast path — but the SLICE is the Reader's, and
+		// a Reader that refills one output slice per call (an ordinary buffer
+		// reuse, and one the "do not retain and later mutate the nodes you
+		// returned" contract does not forbid) would rewrite this Program's
+		// expressions out from under it.  Under a LoadCache that meant one
+		// file's entry serving another file's program, with every root still
+		// legitimately sealed so -tags elpscheck saw nothing wrong.  The
+		// clone is len(exprs) pointer copies on a path that has just parsed a
+		// file; the three-index form additionally clamps capacity so no later
+		// append can write through the Reader's spare capacity (the #373
+		// discipline, applied here too).
+		cp := make([]*LVal, len(exprs))
+		copy(cp, exprs)
+		return Program{exprs: cp[:len(cp):len(cp)]}, nil
 	}
 	sealed := make([]*LVal, len(exprs))
 	for i, expr := range exprs {
 		cp := expr.Copy()
 		cp.SealAST()
-		if u := firstUnsealed(cp); u != nil {
+		if u := firstUnsealed(cp, make(map[*LVal]struct{})); u != nil {
 			lerr := Error(fmt.Errorf("cannot seal expression of type %v into a program", u.Type))
 			// Copied, not aliased, as above — u's location was already
 			// privately copied from the Reader's tree, but the program copy
@@ -247,15 +286,23 @@ func newProgram(exprs []*LVal) (Program, error) {
 // ownership checker keys off the same conjunction (lisp/
 // ownership_check_elpscheck.go) so the two admission gates agree.
 //
-// The trees it walks have already passed checkLoaderExpr in newProgram, whose
-// bounded walk rejects cyclic, interned-shared, and over-deep reader output —
-// so firstUnsealed (and the Copy below it) only ever see a finite strict tree.
-func firstUnsealed(v *LVal) *LVal {
+// The trees it walks have already passed the admission walk in newProgram,
+// which rejects cyclic and over-deep reader output — so firstUnsealed only
+// ever sees a finite, depth-bounded graph.  It may still see a DAG (node
+// sharing is legal off the cache path, issue #368 review blocker 2), so it
+// carries a memo of nodes already found sealed: without it a shared subtree
+// would be re-descended once per path.  The memo records only SEALED nodes,
+// so it can never mask an unsealed one.
+func firstUnsealed(v *LVal, seen map[*LVal]struct{}) *LVal {
 	if !v.IsSealed() || !sealableNodeType(v.Type) {
 		return v
 	}
+	if _, ok := seen[v]; ok {
+		return nil
+	}
+	seen[v] = struct{}{}
 	for _, c := range v.Cells {
-		if u := firstUnsealed(c); u != nil {
+		if u := firstUnsealed(c, seen); u != nil {
 			return u
 		}
 	}

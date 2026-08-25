@@ -123,7 +123,9 @@ func LoadCacheKeyForTest(name, loc, readerID string, byLoc bool, src []byte) str
 }
 
 // ReaderIdentityForTest exposes the reader-identity derivation so a test can
-// build the exact key elps will ask for a given reader.
-func ReaderIdentityForTest(r Reader) string {
+// build the exact key elps will ask for a given reader.  The second result is
+// false when the reader declined to state an identity (an empty
+// ReaderIdentity token), in which case no key is derivable at all.
+func ReaderIdentityForTest(r Reader) (string, bool) {
 	return readerIdentity(r)
 }

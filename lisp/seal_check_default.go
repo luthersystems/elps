@@ -23,3 +23,9 @@ func verifySealedLoadRoots(_ []*LVal) {}
 // cost; under `go test -tags elpscheck` it performs the real check.  See
 // lisp/seal_check_elpscheck.go.
 func VerifySealedASTs() error { return nil }
+
+// verifyCachedSourceOnHit is a zero-cost no-op in production builds.  In the
+// elpscheck build it re-fingerprints a load-cache entry as it is served and
+// panics if the entry's tree no longer matches the fingerprint taken at
+// admission.  See lisp/seal_check_elpscheck.go.
+func verifyCachedSourceOnHit(_ *CachedSource) {}

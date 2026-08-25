@@ -14,6 +14,17 @@ import (
 // (the alias, at the funnel rather than at the cache), and the opacity of
 // CachedSource as a reflected type.
 
+// mustReaderIdentity is readerIdentity for the tests that build the exact key
+// elps will ask for.  A reader that declines to state an identity has no key
+// at all, so a test that reached this with one has itself gone wrong.
+func mustReaderIdentity(r Reader) string {
+	id, ok := readerIdentity(r)
+	if !ok {
+		panic("reader declined to state an identity; no cache key exists for it")
+	}
+	return id
+}
+
 type mapLoadCache struct {
 	entries map[string]*CachedSource
 }
@@ -88,7 +99,7 @@ func TestReadCachedHandsOutTheCachedNodes(t *testing.T) {
 	// And the entry the cache holds is that same storage again — the miss
 	// path must not keep a pristine copy back, or the cache never serves
 	// what it stored (that copy is exactly the cost this hook removes).
-	entry, ok := cache.Load(loadCacheKey("f.lisp", "f.lisp", readerIdentity(env.Runtime.Reader), false, []byte(src)))
+	entry, ok := cache.Load(loadCacheKey("f.lisp", "f.lisp", mustReaderIdentity(env.Runtime.Reader), false, []byte(src)))
 	if !ok {
 		t.Fatal("the miss path did not store an entry under the derived key")
 	}

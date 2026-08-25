@@ -698,7 +698,7 @@ func TestLoadCacheCyclicReaderOutputIsBounded(t *testing.T) {
 	select {
 	case v := <-done:
 		require.Equal(t, lisp.LError, v.Type, "a cyclic reader tree must be refused, not admitted")
-		assert.Contains(t, v.String(), "finite strict tree")
+		assert.Contains(t, v.String(), "not a finite tree")
 	case <-time.After(20 * time.Second):
 		t.Fatal("loading a cyclic reader tree did not terminate; the admission walk is unbounded")
 	}
@@ -727,7 +727,7 @@ func TestLoadCacheInternedSubtreeIsBounded(t *testing.T) {
 	select {
 	case v := <-done:
 		require.Equal(t, lisp.LError, v.Type, "an interned-subtree reader tree must be refused")
-		assert.Contains(t, v.String(), "finite strict tree")
+		assert.Contains(t, v.String(), "not a finite tree")
 	case <-time.After(20 * time.Second):
 		t.Fatal("loading an interned-subtree reader tree did not terminate in bounded time")
 	}
