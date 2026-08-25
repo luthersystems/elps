@@ -210,8 +210,10 @@ func TestLoaderNodeBudgetIsCacheOnly(t *testing.T) {
 // could not build a Program without one.
 //
 // Leaf sharing stays legal on the cache path too — a leaf has no children to
-// re-descend, so nothing can unfold exponentially.  Composite sharing does
-// not, and TestLoadCacheInternedSubtreeIsBounded pins that side.
+// re-descend, so nothing can unfold exponentially.  Composite sharing is
+// legal there as well (TestLoadCacheAdmitsShallowInternedComposite); what the
+// cache refuses is sharing whose UNFOLDED size is astronomical, which
+// TestLoadCacheInternedSubtreeIsBounded pins.
 func TestLoadCacheAcceptsInternedSymbols(t *testing.T) {
 	t.Parallel()
 

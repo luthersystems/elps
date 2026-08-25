@@ -306,3 +306,48 @@ func TestLoadCacheHookPanicDoesNotEscape(t *testing.T) {
 		})
 	}
 }
+
+// --- the on-path cycle guard, on the paths with no cache installed ---
+
+// cycleTree returns one expression that reaches itself after n links, so the
+// same shape can be tested both far inside and far outside the depth at which
+// the non-strict walk starts recording its on-path set.
+func cycleTree(n int) *lisp.LVal {
+	root := lisp.SExpr([]*lisp.LVal{lisp.Symbol("progn")})
+	node := root
+	for range n {
+		next := lisp.SExpr([]*lisp.LVal{lisp.Symbol("progn")})
+		node.Cells = append(node.Cells, next)
+		node = next
+	}
+	node.Cells = append(node.Cells, root)
+	return root
+}
+
+// The non-strict walk allocates no memo, so its cycle guard records only the
+// nodes on the current path and only past loaderWalkPathRecordDepth.  That is
+// exact — a cycle is unbounded in depth by construction, so it always passes
+// the recording depth and repeats afterwards — but it is exact for a reason
+// that is easy to break, so both a cycle far shorter than the recording depth
+// and one far longer are pinned here, on the two public constructors that
+// have no cache installed.
+func TestPublicAdmissionRefusesCycle(t *testing.T) {
+	t.Parallel()
+	for _, links := range []int{1, 3, 200} {
+		done := make(chan [2]error, 1)
+		go func() {
+			_, e1 := lisp.ReadProgram(graphReader{tree: cycleTree(links)}, "c.lisp", strings.NewReader("x"))
+			_, e2 := lisp.TextLoader(graphReader{tree: cycleTree(links)}, "c.lisp", strings.NewReader("x"))
+			done <- [2]error{e1, e2}
+		}()
+		select {
+		case errs := <-done:
+			require.Error(t, errs[0], "ReadProgram admitted a %d-link cycle", links)
+			assert.Contains(t, errs[0].Error(), "not a finite tree")
+			require.Error(t, errs[1], "TextLoader admitted a %d-link cycle", links)
+			assert.Contains(t, errs[1].Error(), "not a finite tree")
+		case <-time.After(30 * time.Second):
+			t.Fatalf("admission of a %d-link cycle did not terminate", links)
+		}
+	}
+}
