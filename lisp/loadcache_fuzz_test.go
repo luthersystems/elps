@@ -150,11 +150,21 @@ func FuzzLoadCacheMultiEnv(f *testing.F) {
 			return
 		}
 
-		baseline, ok := runFileFresh(t, src, 2)
+		// The READER is a dimension too, and it is the one every defect
+		// found in this hook has lived in (see loadcache_reader_fuzz_test.go).
+		// The high bits of the knob choose it, so no signature change and no
+		// lost corpus; the modes here are the ones a cache must be
+		// TRANSPARENT over, which is the property this target asserts.  The
+		// interned-subtree mode is excluded because the cache legitimately
+		// refuses it — FuzzLoadCacheHostileReader covers that case, where a
+		// refusal is a sanctioned outcome rather than a divergence.
+		mode := transparentReaderModes[int(knob>>5)%len(transparentReaderModes)]
+
+		baseline, ok := runFileFresh(t, src, 2, mode)
 		if !ok {
 			return
 		}
-		control, ok := runFileFresh(t, src, 2)
+		control, ok := runFileFresh(t, src, 2, mode)
 		if !ok {
 			return
 		}
@@ -167,7 +177,7 @@ func FuzzLoadCacheMultiEnv(f *testing.F) {
 		var entry *lisp.CachedSource
 		var fp uint64
 		for i := range nenv {
-			got, ok := runFileCached(t, src, cache, &entry, &fp, i, reps)
+			got, ok := runFileCached(t, src, cache, &entry, &fp, i, reps, mode)
 			if !ok {
 				return
 			}
@@ -185,7 +195,7 @@ func FuzzLoadCacheMultiEnv(f *testing.F) {
 			if !sharedDivergenceReportable(deterministic, got, baseline) {
 				continue
 			}
-			if !confirmCachedDivergence(t, src, cache, &entry, &fp, i, reps, baseline) {
+			if !confirmCachedDivergence(t, src, cache, &entry, &fp, i, reps, mode, baseline) {
 				continue
 			}
 			t.Fatalf("environment %d loading a CACHED file diverged from the uncached baseline,"+
@@ -201,23 +211,23 @@ func FuzzLoadCacheMultiEnv(f *testing.F) {
 
 // runFileFresh loads src in a virgin environment with NO cache installed,
 // reps times.  This is what a cached load has to be indistinguishable from.
-func runFileFresh(t *testing.T, src []byte, reps int) (programRun, bool) {
+func runFileFresh(t *testing.T, src []byte, reps int, mode uint8) (programRun, bool) {
 	t.Helper()
-	return runFileIn(t, src, nil, nil, nil, -1, reps)
+	return runFileIn(t, src, nil, nil, nil, -1, reps, mode)
 }
 
 // runFileCached loads src in a virgin environment with the shared cache
 // installed, re-checking the entry's sealed fingerprint after every load.
 // The first call populates entry/fp; later calls assert against them.
-func runFileCached(t *testing.T, src []byte, cache *fuzzLoadCache, entry **lisp.CachedSource, fp *uint64, envIdx, reps int) (programRun, bool) {
+func runFileCached(t *testing.T, src []byte, cache *fuzzLoadCache, entry **lisp.CachedSource, fp *uint64, envIdx, reps int, mode uint8) (programRun, bool) {
 	t.Helper()
-	return runFileIn(t, src, cache, entry, fp, envIdx, reps)
+	return runFileIn(t, src, cache, entry, fp, envIdx, reps, mode)
 }
 
 // runFileIn is the shared body.  A nil cache disables both the hook and the
 // seal oracle, which is correct for the baseline: nothing else can observe
 // its parse.
-func runFileIn(t *testing.T, src []byte, cache *fuzzLoadCache, entry **lisp.CachedSource, fp *uint64, envIdx, reps int) (programRun, bool) {
+func runFileIn(t *testing.T, src []byte, cache *fuzzLoadCache, entry **lisp.CachedSource, fp *uint64, envIdx, reps int, mode uint8) (programRun, bool) {
 	t.Helper()
 
 	env, _, rc := newFuzzEnv()
@@ -225,6 +235,9 @@ func runFileIn(t *testing.T, src []byte, cache *fuzzLoadCache, entry **lisp.Cach
 		t.Fatalf("could not build the fuzz environment: %v", rc)
 		return programRun{}, false
 	}
+	// Installed AFTER initialization: the standard parser boots the library
+	// and only the file under test goes through the chosen reader.
+	env.Runtime.Reader = newLoadCacheHostileReader(mode)
 	if cache != nil {
 		env.Runtime.LoadCache = cache
 	}
@@ -275,13 +288,21 @@ func runFileIn(t *testing.T, src []byte, cache *fuzzLoadCache, entry **lisp.Cach
 // that is not a finding.
 func loadFileBudgeted(t *testing.T, env *lisp.LEnv, src []byte, envIdx, rep int) (*lisp.LVal, bool) {
 	t.Helper()
+	return loadNamedFileBudgeted(t, env, loadCacheFuzzName, src, envIdx, rep)
+}
+
+// loadNamedFileBudgeted is loadFileBudgeted for a caller-chosen file name.
+// The name is part of the cache key, so a target that wants two DISTINCT
+// cache entries in one environment (FuzzLoadCacheHostileReader) needs it.
+func loadNamedFileBudgeted(t *testing.T, env *lisp.LEnv, name string, src []byte, envIdx, rep int) (*lisp.LVal, bool) {
+	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), fuzzDeadline)
 	defer cancel()
 
 	ch := make(chan *lisp.LVal, 1)
 	go func() {
-		ch <- env.LoadLocationContext(ctx, loadCacheFuzzName, loadCacheFuzzName, bytes.NewReader(src))
+		ch <- env.LoadLocationContext(ctx, name, name, bytes.NewReader(src))
 	}()
 
 	budget := fuzzwatch.New(watchdogTimeout)
@@ -326,12 +347,12 @@ func loadFileBudgeted(t *testing.T, env *lisp.LEnv, src []byte, envIdx, rep int)
 // still agrees with the baseline AND the cached run still disagrees.  Same
 // discipline as confirmSharedDivergence: the target refuses to report a
 // crasher it cannot attribute to the cache.
-func confirmCachedDivergence(t *testing.T, src []byte, cache *fuzzLoadCache, entry **lisp.CachedSource, fp *uint64, envIdx, reps int, baseline programRun) bool {
+func confirmCachedDivergence(t *testing.T, src []byte, cache *fuzzLoadCache, entry **lisp.CachedSource, fp *uint64, envIdx, reps int, mode uint8, baseline programRun) bool {
 	t.Helper()
-	fresh, ok := runFileFresh(t, src, reps)
+	fresh, ok := runFileFresh(t, src, reps, mode)
 	if !ok || !fresh.equal(baseline) {
 		return false
 	}
-	again, ok := runFileCached(t, src, cache, entry, fp, envIdx, reps)
+	again, ok := runFileCached(t, src, cache, entry, fp, envIdx, reps, mode)
 	return ok && !again.equal(baseline)
 }
