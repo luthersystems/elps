@@ -91,6 +91,20 @@ const (
 	// empty token states nothing, so the cache must disable itself for this
 	// reader's loads rather than key on it.
 	readerNoIdentity
+	// readerShareQuoted prepends a heavily shared QUOTED datum: 18 distinct
+	// nodes whose unfolded size is 2^18.  Quoted structure is the round-four
+	// blocker's shape -- the evaluator never descends into it, so its
+	// unfolded size is not evaluation work -- and this is the half of that
+	// shape a fuzz target can actually reach: small enough to be ADMITTED
+	// and STORED, so every load in this mode aliases a shared quoted DAG out
+	// of the cache and puts the walks downstream of admission ((*LVal).Copy,
+	// firstUnsealed, SealedASTFingerprint, and under -tags elpscheck the
+	// per-hit re-verification) over one.  The over-budget variant cannot be
+	// reached from here by construction -- it is refused for the cache and
+	// falls back to an uncached load -- so it is pinned by
+	// TestLoadCacheAdmitsSharedQuotedData and TestLoaderWalkQuoteDiscount
+	// instead.
+	readerShareQuoted
 	readerModeCount
 )
 
@@ -145,6 +159,8 @@ func (r *loadCacheHostileReader) shape(exprs []*lisp.LVal) []*lisp.LVal {
 		return internReaderOutput(exprs, false)
 	case readerInternSubtrees:
 		return internReaderOutput(exprs, true)
+	case readerShareQuoted:
+		return prependQuotedDAG(exprs)
 	default:
 		return exprs
 	}
@@ -203,6 +219,32 @@ func internNode(v *lisp.LVal, tab map[string]*lisp.LVal, composites bool) *lisp.
 	}
 	tab[key] = v
 	return v
+}
+
+// prependQuotedDAG puts a shared quoted datum in front of the parse.
+//
+// PREPENDS rather than appends, and only when there is something to prepend
+// to: a load's value is its LAST expression's, so an extra expression in
+// front of a non-empty stream is invisible to the differential while still
+// going through admission, storage and every later serve.
+//
+// The DAG is sealed, as the standard parser seals its output, so this mode
+// exercises the already-sealed admission path rather than the copy-and-seal
+// one.  Sealing is O(distinct nodes): SealAST returns at an already-sealed
+// node, so the sharing does not unfold here either.
+func prependQuotedDAG(exprs []*lisp.LVal) []*lisp.LVal {
+	if len(exprs) == 0 {
+		return exprs
+	}
+	node := lisp.Int(7)
+	for range 17 {
+		node = lisp.SExpr([]*lisp.LVal{node, node})
+	}
+	root := lisp.SExpr([]*lisp.LVal{lisp.Symbol("quote"), node})
+	root.SealAST()
+	out := make([]*lisp.LVal, 0, len(exprs)+1)
+	out = append(out, root)
+	return append(out, exprs...)
 }
 
 const (
@@ -356,4 +398,5 @@ var transparentReaderModes = []uint8{
 	readerInternLeaves,
 	readerInternSubtrees,
 	readerNoIdentity,
+	readerShareQuoted,
 }
