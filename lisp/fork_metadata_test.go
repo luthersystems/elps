@@ -14,10 +14,14 @@ import (
 	"github.com/luthersystems/elps/parser/token"
 )
 
-// forkedEnvs enumerates every environment reachable from a forked (or
-// template) root: the lexical parent chain, plus the environment captured
-// by every function value bound in the registry and that environment's own
-// parents.  This is the same set forker.env visits.
+// forkedEnvs enumerates the lexical parent chain, plus the environment
+// captured by every function value bound directly in the registry and that
+// environment's own parents.  This is a SUBSET of what forker.env visits:
+// the forker also reaches environments captured by closures stored inside
+// container values (vectors, sorted maps, non-package scopes).  For the
+// environments these tests build the two sets coincide, and the len >= 2
+// guard below keeps the assertions non-vacuous; a test that parks a closure
+// inside a container must extend this walk before reusing it.
 func forkedEnvs(root *LEnv) map[*LEnv]bool {
 	seen := map[*LEnv]bool{}
 	walk := func(e *LEnv) {
