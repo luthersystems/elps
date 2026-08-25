@@ -150,11 +150,22 @@ func ForkWithNativeReplacer(fn func(payload interface{}) (interface{}, bool)) Fo
 // environment-ID and gensym counters so identifiers minted after the fork
 // (lambda FIDs, gensyms) can never collide with identifiers the fork
 // inherited.  Profiler and Debugger do not travel: a fork starts with
-// neither, and the embedder attaches its own if wanted.  The Reader and
-// SourceLibrary are shared (a reader cache is deliberately process-wide;
-// the source library is read-only at runtime), as is Stderr unless
+// neither, and the embedder attaches its own if wanted.  The Reader,
+// SourceLibrary and LoadCache are shared (a reader cache is deliberately
+// process-wide; the source library is read-only at runtime; and a load
+// cache's entries are immutable, sealed, and explicitly safe to serve to
+// any number of Runtimes -- see lisp/loadcache.go), as is Stderr unless
 // ForkWithStderr overrides it.  Step accounting (Runtime.TotalSteps) starts
 // at zero.
+//
+// LoadCache travels for the same reason Reader does, and the reason is the
+// topology: "preheat a template, fork per environment" is elps's own
+// recommended shape, and it is the exact shape the load cache exists to
+// serve.  A fork that dropped the cache would reparse every file the
+// template had already parsed -- silently, since nothing fails -- which is
+// the cost this hook was added to remove.  The per-Runtime re-entrancy
+// guard (loadCacheActive) is deliberately NOT copied: it is state about a
+// load in progress, and the template is quiescent.
 func (env *LEnv) Fork(opts ...ForkOption) (*LEnv, error) {
 	if env == nil || env.Runtime == nil {
 		return nil, errors.New("fork: nil environment or runtime")
@@ -180,6 +191,7 @@ func (env *LEnv) Fork(opts ...ForkOption) (*LEnv, error) {
 		},
 		Reader:                 old.Reader,
 		Library:                old.Library,
+		LoadCache:              old.LoadCache,
 		MaxAlloc:               old.MaxAlloc,
 		MaxMacroExpansionDepth: old.MaxMacroExpansionDepth,
 		MaxEvalNesting:         old.MaxEvalNesting,

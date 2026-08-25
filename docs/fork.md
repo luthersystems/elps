@@ -119,11 +119,22 @@ the same reasoning that exempts the nil/true/false singletons).
 | Source locations, format metadata (`Meta`) | shared (read-only after parse) |
 | Macro-expansion debug metadata | dropped (debugger-only; aliases template state) |
 | `Reader`, `SourceLibrary` | shared (process-wide cache / read-only) |
+| `LoadCache` | shared (entries are immutable and sealed; see below) |
 | `Stderr` | shared unless `ForkWithStderr` |
 | Limit configuration (`MaxAlloc`, stack bounds, step budget, ...) | copied |
 | `Profiler`, `Debugger` | do not travel (fork starts with none) |
 | Call stack, condition stack, step accounting | fresh |
 | Env-ID and gensym counters | **continued** past the template's |
+
+`LoadCache` is shared for the same reason `Reader` is, and because
+"preheat a template, fork per environment" is the topology the load cache
+exists to serve: a fork that started with no cache would silently reparse
+every file the template had already parsed. Sharing is safe because a
+`CachedSource` is immutable and sealed throughout — `lisp/loadcache.go`
+states the entry contract, and an implementation must already be safe for
+concurrent use when several `Runtime`s hold it. The per-runtime re-entrancy
+guard behind it is *not* carried: it describes a load in progress, and a
+template must be quiescent to fork at all.
 
 The counter continuation is load-bearing: lambda FIDs are minted as
 `"_fun<envID>"`, so a fork whose counter restarted would eventually mint
