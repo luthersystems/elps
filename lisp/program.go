@@ -223,8 +223,12 @@ func newProgramAdmitted(exprs []*LVal, w *loaderWalk) (Program, error) {
 			// Copied, not aliased: the error escapes to the caller through
 			// GoError while expr remains the Reader's property, so the two
 			// must not share a *token.Location (TextLoader's rule; cold
-			// path, the copy is free in practice).
-			lerr.source = copyLocation(expr.source)
+			// path, the copy is free in practice).  expr may itself be a nil
+			// the walk refused (errReaderNilNode), so it is read only when
+			// there is something to read.
+			if expr != nil {
+				lerr.source = copyLocation(expr.source)
+			}
 			return Program{}, GoError(lerr)
 		}
 	}

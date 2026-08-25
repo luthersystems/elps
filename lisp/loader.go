@@ -70,8 +70,11 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 			// Copied, not aliased: the error escapes to the embedder through
 			// GoError while expr stays part of the loaded program, so the
 			// two must not share a *token.Location (cold path; the copy is
-			// free in practice).
-			lerr.source = copyLocation(expr.source)
+			// free in practice).  expr itself may be the nil the walk just
+			// refused, so the location is read only when there is one.
+			if expr != nil {
+				lerr.source = copyLocation(expr.source)
+			}
 			return nil, GoError(lerr)
 		}
 	}
@@ -142,6 +145,25 @@ var errReaderTreeUnbounded = errors.New("reader output is not a finite tree (cyc
 // load on this sentinel rather than failing the load (see readCached's
 // fall-back list).  Nothing outside the cache path imposes the budget at all.
 var errReaderTreeTooLarge = errors.New("reader output exceeds the cache admission node budget")
+
+// errReaderNilNode marks reader output containing a nil *LVal — a root, or a
+// cell inside an otherwise well-formed s-expression.
+//
+// Before the load-cache hook the admission walk dereferenced v.Type
+// unconditionally, so a nil node panicked loudly at admission, immediately,
+// on the goroutine that produced it.  A nil guard added at the head of the
+// walk turned that into silence: the nil was admitted, firstUnsealed(nil)
+// answered "sealed" (it returns nil, which its caller reads as "nothing
+// unsealed here"), and the fast path put a tree containing a nil node into a
+// PROCESS-WIDE cache, where every later load laundered it into a catchable
+// internal-panic (issue #536 round-three review, suspicious 2).
+//
+// It is an ORDINARY refusal, not one of the two sentinels above: on the
+// cache path it means "not cacheable", so the load falls back to an uncached
+// parse and the nil reaches the evaluator exactly as it does with no cache
+// installed.  That keeps the nil-cache path byte-identical while making sure
+// nothing containing a nil is ever stored.
+var errReaderNilNode = errors.New("reader output contains a nil expression")
 
 const (
 	// loaderWalkMaxNodes bounds the total distinct nodes the CACHE admission
@@ -290,7 +312,7 @@ type loaderWalk struct {
 
 func (w *loaderWalk) check(v *LVal, depth int) error {
 	if v == nil {
-		return nil
+		return errReaderNilNode
 	}
 	// Singletons (Nil/true/false) are shared by design and immutable, so a
 	// parse may legitimately reach one from many positions.  They are exempt
