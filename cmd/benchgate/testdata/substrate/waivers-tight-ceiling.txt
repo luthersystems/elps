@@ -1,0 +1,7 @@
+# Self-test fixture: waivers on the right rows whose CEILINGS are below the
+# measured moves (+17.82% against a 12% ceiling). A waiver that has been
+# outgrown must fail again -- that is the whole difference between bounding a
+# cost and blessing a benchmark.
+github.com/luthersystems/substrate/internal/substrate/shirocore | Utils/$load | B/op | 12 | 2099-01-01 | substrate#392 | ceiling deliberately below the measured move
+github.com/luthersystems/substrate/internal/substrate/shirocore | Utils/$load | allocs/op | 14 | 2099-01-01 | substrate#392 | the same load-path allocations, counted instead of weighed
+github.com/luthersystems/substrate/internal/substrate/shiro/preheat | PhylumPreheater_initPhylum | B/op | 15 | 2099-01-01 | substrate#392 | preheat pays the same alias tables once per environment

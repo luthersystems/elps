@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Adjudicate the two benchmark arms: pre-flight their comparability, run
-# benchstat over them, hand the table to scripts/benchstat-gate.sh, and
+# benchstat over them, hand the table to cmd/benchgate, and
 # assemble the PR comment body.
 #
 # Extracted verbatim from the "Compare with benchstat" step of
@@ -9,7 +9,7 @@
 # and testable by scripts/ci-gates-test.sh. Bash inside a `run: |` block is none
 # of those things, and this repo has already lost 473 runs to a CI gate that
 # could never fire. This script makes no decisions of its own -- the verdict is
-# benchstat-gate.sh's, and the pass/fail is scripts/bench-gate-fail.sh's.
+# cmd/benchgate's, and the pass/fail is scripts/bench-gate-fail.sh's.
 #
 # `set -euo pipefail` reproduces the original step's effective flags exactly:
 # GitHub runs `run:` bodies under `bash -e {0}`, and the step then added
@@ -21,6 +21,9 @@
 #   GITHUB_WORKSPACE  root holding the two checkouts (pr/ and base/)
 #   BENCH_COUNT       samples per arm, for the comment footer
 #   GITHUB_OUTPUT     step-output file; `gate_status` and `result` are written
+#   BENCHGATE         path to the benchgate binary; defaults to
+#                     $GITHUB_WORKSPACE/bin/benchgate, which the workflow's
+#                     "Build the benchmark gate" step produces FROM THE PR TREE
 #
 # Reads bench-baseline.txt / bench-current.txt from $PWD (written by
 # scripts/bench-run-arms.sh) and writes arms-check.txt, benchstat-output.txt and
@@ -37,24 +40,31 @@ set -euo pipefail
 
 # BOTH trees live in subdirectories (pr/ and base/), so nothing from
 # the repository is at the workspace root -- including these scripts.
-# A bare `./scripts/benchstat-gate.sh` here exits 127 "No such file",
+# A bare `./scripts/bench-arms-check.sh` here exits 127 "No such file",
 # which the final step then reported as "Benchmark regressions
 # detected", i.e. a real-looking failure with a fictional cause. The
 # existence check below turns that class into a named error, and the
 # final step no longer attributes unknown exit codes to regressions.
 #
-# The scripts come from the PR arm deliberately: a PR that changes the
-# gate must be adjudicated by its own version of it, not by main's.
+# Both the scripts and the gate BINARY come from the PR arm
+# deliberately: a PR that changes the gate must be adjudicated by its
+# own version of it, not by main's.
 PR_TREE="${GITHUB_WORKSPACE}/pr"
-GATE="${PR_TREE}/scripts/benchstat-gate.sh"
+GATE="${BENCHGATE:-${GITHUB_WORKSPACE}/bin/benchgate}"
 ARMS="${PR_TREE}/scripts/bench-arms-check.sh"
+# The gate's shipped waiver list. The Go binary has no built-in default --
+# elps and substrate keep theirs in different places, and a tool that guessed
+# would silently adjudicate with the wrong list -- so the caller names it.
+# BENCH_WAIVERS still overrides this, and setting it EMPTY switches waivers off
+# entirely, which can only make the gate stricter.
+WAIVERS="${PR_TREE}/scripts/benchstat-waivers.txt"
 
 missing=""
 for s in "$GATE" "$ARMS"; do
   [ -f "$s" ] || missing="${missing} ${s}"
 done
 if [ -n "$missing" ]; then
-  echo "::error::benchmark gate scripts missing from the PR checkout:${missing}. The workflow expects the repository at \$GITHUB_WORKSPACE/pr (see the two-tree checkout above); if the checkout layout changed, these paths must change with it."
+  echo "::error::benchmark gate scripts missing from the PR checkout:${missing}. The workflow expects the repository at \$GITHUB_WORKSPACE/pr and the benchgate binary at \$GITHUB_WORKSPACE/bin/benchgate (see the two-tree checkout and the \"Build the benchmark gate\" step above); if the checkout layout changed, these paths must change with it."
   echo "gate_status=2" >> "$GITHUB_OUTPUT"
   {
     echo 'result<<BENCHSTAT_EOF'
@@ -117,7 +127,7 @@ fi
 
 # benchstat's own exit code is captured rather than discarded with
 # `|| true`: if it crashed, its error text is all that lands in
-# benchstat-output.txt, and benchstat-gate.sh turns that into a hard
+# benchstat-output.txt, and benchgate turns that into a hard
 # exit 2 ("cannot interpret") instead of a silent pass. Swallowing it
 # here is what made a benchstat failure indistinguishable from a clean
 # comparison.
@@ -128,9 +138,12 @@ if [ "$bench_rc" -ne 0 ]; then
   echo "::warning::benchstat exited ${bench_rc}; the gate will adjudicate its output."
 fi
 
-# The gate lives in scripts/benchstat-gate.sh so it can be unit-tested
-# (scripts/ci-gates-test.sh) and run locally (make ci-gates-test).
-# It exits 0 = clean, 1 = regression, 2 = could not interpret.
+# The gate is cmd/benchgate, built from the PR tree by the step above --
+# deliberately, so a PR that changes the gate is adjudicated by its own version
+# of it rather than by main's. It is unit-tested (go test ./cmd/benchgate),
+# fixture-tested (scripts/ci-gates-test.sh) and runnable locally
+# (make bench-gate). It exits 0 = clean, 1 = regression, 2 = could not
+# interpret.
 #
 # Run BEFORE the comment is assembled, and its report captured, so the
 # comment can carry the verdict rather than only the raw table. That
@@ -145,7 +158,7 @@ fi
 # before the PR comment is ever assembled. `|| gate_status=$?` is the
 # idiom the rest of this step already uses for exactly that reason.
 gate_status=0
-"$GATE" benchstat-output.txt > gate-report.txt 2>&1 || gate_status=$?
+"$GATE" -waivers-default "$WAIVERS" benchstat-output.txt > gate-report.txt 2>&1 || gate_status=$?
 cat gate-report.txt
 echo "gate_status=${gate_status}" >> "$GITHUB_OUTPUT"
 case "$gate_status" in
@@ -164,8 +177,8 @@ waiver_lines="$(grep -E '^  (WAIVED|WAIVER-|waiver-)' gate-report.txt || true)"
 
 # NOISE-FLOOR lines get the same treatment, and for the same reason. A row whose
 # own measured spread is larger than the move it just made cannot be adjudicated
-# by this comparison at all (see the resolution-check note in
-# scripts/benchstat-gate.sh). That is a standing problem with the benchmark, not
+# by this comparison at all (see the resolution-check note in the cmd/benchgate
+# package doc). That is a standing problem with the benchmark, not
 # a clean result, and it is only ever fixed by someone who sees it -- so it goes
 # above the fold rather than inside a collapsed block nobody expands.
 noise_lines="$(grep -E '^  NOISE-FLOOR' gate-report.txt || true)"
@@ -182,7 +195,7 @@ noise_lines="$(grep -E '^  NOISE-FLOOR' gate-report.txt || true)"
     echo 'NOT counted as regressions and they are NOT suppressed — they are'
     echo 'unmeasurable as sampled. A row that keeps appearing here needs a longer'
     echo '`-benchtime`, or to be kept out of the comparison set; see the'
-    echo 'resolution-check note in `scripts/benchstat-gate.sh`.'
+    echo 'resolution-check note in the `cmd/benchgate` package doc.'
     echo ''
     echo '```'
     echo "$noise_lines"

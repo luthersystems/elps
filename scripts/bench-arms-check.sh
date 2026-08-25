@@ -10,7 +10,7 @@
 # "configuration" off the `goos:` / `goarch:` / `cpu:` headers that `go test`
 # emits.  When either of those disagrees between the arms, benchstat does not
 # error in a way anyone can read -- it emits a table with no comparison rows, or
-# one row per arm with nothing paired.  Downstream, benchstat-gate.sh correctly
+# one row per arm with nothing paired.  Downstream, cmd/benchgate correctly
 # refuses to report "no regression" and exits 2, so the build does go red; but
 # the log says only "could not be interpreted", which is a true statement about
 # the symptom and says nothing about the cause.  Both of the causes below have
@@ -40,7 +40,7 @@
 # Exit codes:
 #   0  the two arms are comparable
 #   2  they are not, or the input is unusable.  2 (not 1) on purpose: it matches
-#      benchstat-gate.sh's "cannot interpret" code, and the workflow maps both
+#      benchgate's "cannot interpret" code, and the workflow maps both
 #      onto the same hard failure.  There is no exit 1 -- this script never
 #      adjudicates performance, only comparability.
 

@@ -88,9 +88,12 @@ benchstat base=/tmp/bench-before.txt pr=/tmp/bench-after.txt
 
 The repo has a benchmark CI workflow (`.github/workflows/benchmark.yml`) that automatically runs benchstat comparisons on PRs. It posts results as a PR comment.
 
-The comparison is adjudicated by `scripts/benchstat-gate.sh`, which fails the PR
-on a significant bad-direction move at or above the threshold for that metric
-class (15% for timing, 5% for allocations — set in `benchmark.yml`).
+The comparison is adjudicated by `cmd/benchgate` (a Go tool built on
+`golang.org/x/perf/benchfmt` + `benchmath`; it replaced the old
+`scripts/benchstat-gate.sh` in issue #538, and substrate runs the same binary),
+which fails the PR on a significant bad-direction move at or above the threshold
+for that metric class (15% for timing, 5% for allocations — set in
+`benchmark.yml`).
 
 ### When the gate fires on a regression you mean to accept
 
@@ -114,9 +117,14 @@ Run the gate locally against a saved comparison before pushing:
 
 ```bash
 benchstat base=/tmp/bench-before.txt pr=/tmp/bench-after.txt > /tmp/benchstat.txt
-scripts/benchstat-gate.sh /tmp/benchstat.txt              # as CI will judge it
-BENCH_WAIVERS= scripts/benchstat-gate.sh /tmp/benchstat.txt  # with waivers off
+make bench-gate BENCHSTAT_OUT=/tmp/benchstat.txt              # as CI will judge it
+# or drive the binary directly (this is what `make bench-gate` runs):
+go run ./cmd/benchgate -waivers-default scripts/benchstat-waivers.txt /tmp/benchstat.txt
+BENCH_WAIVERS= go run ./cmd/benchgate /tmp/benchstat.txt      # with waivers off
 ```
+
+benchgate can also adjudicate the two raw `go test -bench` arms directly, with no
+`benchstat` binary in the loop (`make bench-gate-arms BENCH_BASE=… BENCH_HEAD=…`).
 
 ## Checklist
 
