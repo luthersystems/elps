@@ -93,4 +93,24 @@ func BenchmarkEncodeOwnMessageMedium(b *testing.B) { benchOwnMessage(b, 172, 146
 // BenchmarkEncodeOwnMessageLarge is roughly 295 KB, the top row: a phylum that
 // has started returning large opaque blobs.  The point of keeping it is that
 // the saving must be shown to SCALE, not merely to exist.
+//
+// Its allocs/op column does not reproduce, and that is a property of the size
+// class rather than a defect to fix here.  The true cost is 9.985 allocations
+// per operation at the default GOGC -- a fifth of a percent below an integer --
+// so the value `go test` prints, int64(mallocs)/int64(b.N), is 9 on one sample
+// and 10 on the next.  The fraction is sync.Pool: encoding ~295 KB per
+// operation forces a collection every few iterations, runtime poolCleanup drops
+// every pool at every GC, and the next Get reallocates the per-P array via
+// pin -> pinSlow.  It is charged to whichever operation runs after the
+// collection, so it tracks GC cadence.  An alloc-profile diff over 2000 encodes
+// puts the whole difference on sync.(*Pool).pinSlow and none of it on a pool
+// MISS -- the encoder comes back from the pool essentially every time (0.001
+// misses/op) -- so warming the pool before b.ResetTimer does not touch it, and
+// nothing survives poolCleanup that could.
+//
+// The consequence is for the CI gate, not for this file: a 9-count row can only
+// express a move of 11.11% or nothing, so scripts/benchstat-gate.sh reports a
+// one-allocation step here as QUANTISED rather than as a regression.  See the
+// quantisation-check note in that script.  The Small and Medium rows above
+// reproduce exactly and stay gateable at one allocation.
 func BenchmarkEncodeOwnMessageLarge(b *testing.B) { benchOwnMessage(b, 3410, 295000) }

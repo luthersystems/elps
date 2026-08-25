@@ -550,6 +550,111 @@ assert_exit 1 "the shipped waivers do NOT rescue the true regression" \
 	"$GATE" "$TRUE_FIXTURE"
 
 echo
+echo "== benchstat-gate: the quantisation check on allocs/op ==================="
+
+# allocs/op is not a measurement, it is a COUNT -- and `go test` prints it as
+# int64(mallocs)/int64(b.N), integer division of a quantity that is not a
+# multiple of b.N. A row whose true cost is 9.985 allocations per operation (the
+# measured figure for libjson's BenchmarkEncodeOwnMessageLarge at the default
+# GOGC) prints 9 on one sample and 10 on the next, from GC cadence alone. On a
+# 9-count row the smallest expressible move is 1/9 = 11.11%, so a 5% gate has
+# only two reachable verdicts there: the gate is finer than the metric.
+#
+# As with the resolution check above, the pair below is what has to hold
+# together: the fix must silence the truncation flip AND still fire on a real
+# one-allocation regression, or it is just the allocation gate switched off.
+QUANT_NULL="${TESTDATA}/benchstat-allocs-quantised-null.txt"
+QUANT_REAL="${TESTDATA}/benchstat-allocs-one-step-real.txt"
+
+# The noise-only half: a measured NULL comparison (one binary, two runs) that
+# the pre-check gate called a regression.
+assert_exit 0 "a one-allocation step on a row that does not reproduce its count is not a regression" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
+assert_contains "QUANTISED" "the unresolvable count row is REPORTED, not dropped" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
+assert_contains "+5.56%" "the quantised row still carries its measured delta" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
+assert_contains "base 9 allocs/op" "the report names the base count the step was measured against" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
+assert_contains "allocation-count row(s) moved past the gate" \
+	"the summary line counts quantised rows" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
+
+# The real half. SAME base count (9), SAME one-allocation move, SAME machine and
+# sampling parameters -- one escaping allocation really added to the encode
+# path. It differs only in that the rows reproduce their count, which is what
+# the check keys on. If this ever stops failing, the quantisation check has
+# become an off switch for the allocation gate.
+assert_exit 1 "a one-allocation move on a row that DOES reproduce its count is still a regression" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
+assert_contains "REGRESSION  github.com/luthersystems/elps/lisp/lisplib/libjson allocs/op EncodeOwnMessageSmall-2" \
+	"the deterministic +11.11% one-allocation row is a regression" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
+assert_contains "REGRESSION  github.com/luthersystems/elps/lisp/lisplib/libjson allocs/op EncodeOwnMessageMedium-2" \
+	"...on both rows that reproduce, not just one" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
+# The jittery row, carrying the SAME real regression: two whole counts is not
+# reachable by truncation, so it is adjudicated normally despite the spread.
+assert_contains "REGRESSION  github.com/luthersystems/elps/lisp/lisplib/libjson allocs/op EncodeOwnMessageLarge-2" \
+	"a TWO-count move is a regression even on a row that does not reproduce" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
+assert_not_contains "QUANTISED" "nothing in the real regression is written off as quantisation" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
+
+# The check is about the METRIC BEING A COUNT, not about size. Lowering the
+# allocation gate to 1% must not make the truncation flip gateable -- one
+# allocation is still the smallest thing a 9-count row can say.
+assert_exit 0 "the quantised row stays unresolvable with the allocation gate at 1%" \
+	env BENCH_WAIVERS= BENCH_ALLOC_THRESHOLD_PCT=1 "$GATE" "$QUANT_NULL"
+assert_contains "QUANTISED" "...and says so, rather than passing silently" \
+	env BENCH_WAIVERS= BENCH_ALLOC_THRESHOLD_PCT=1 "$GATE" "$QUANT_NULL"
+
+# CLASS BOUNDARY, the other way. The check applies to COUNTS only. B/op is an
+# allocation metric whose quantum is one byte, so a large B/op regression must
+# not be able to buy itself this exemption -- the existing alloc fixtures are
+# the guard, re-asserted here against the new code path.
+assert_exit 1 "a large B/op + allocs/op regression is untouched by the quantisation check" \
+	env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
+assert_not_contains "QUANTISED" "...and no row in it is written off as quantisation" \
+	env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
+# 128.0k allocs/op moving +8.00% is 10240 allocations, not one. That the gate
+# reads the SCALE ("k") rather than the printed mantissa is what keeps it from
+# treating that as a 10-allocation step and suppressing it.
+assert_contains "REGRESSION" "a scaled count cell (128.0k) is read at its true magnitude" \
+	env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
+
+# NO INTERVAL. benchstat prints "± ∞ ¹" below 6 samples, so there is no evidence
+# either way about whether the row reproduces. Those rows fall back to the
+# threshold alone and must SAY SO, exactly as the timing resolution check does.
+assert_contains "quantisation check did not run" \
+	"a count row judged without an interval says the check did not run" \
+	env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
+
+# THE ARITHMETIC, at every edge at once. One synthetic table, five allocs/op
+# rows differing only in base count, spread, and how many counts the move is
+# worth. The last two rows are the containment argument: one allocation clears
+# the 5% gate at 20 counts and below, so from 21 up the check cannot change a
+# verdict that was not already "below-gate".
+QUANT_EDGE="${TESTDATA}/benchstat-allocs-quantisation-boundary.txt"
+assert_exit 1 "the boundary table still fails: two of its five rows are real" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
+assert_contains "REGRESSION  github.com/luthersystems/elps/lisp             allocs/op ReproducingNine-2" \
+	"9 -> 10 with no spread is a REGRESSION" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
+assert_contains "QUANTISED   github.com/luthersystems/elps/lisp             allocs/op JitteryNine-2" \
+	"...and the SAME delta on a row that does not reproduce is QUANTISED" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
+assert_contains "REGRESSION  github.com/luthersystems/elps/lisp             allocs/op JitteryNineTwoStep-2" \
+	"a TWO-count move on that same jittery row is still a REGRESSION" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
+assert_contains "QUANTISED   github.com/luthersystems/elps/lisp             allocs/op JitteryTwenty-2" \
+	"20 allocs/op is the largest base the check can reach" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
+assert_contains "below-gate  github.com/luthersystems/elps/lisp             allocs/op JitteryTwentyOne-2" \
+	"...and at 21 a one-count move was already below the gate, untouched" \
+	env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
+
+echo
 echo "== benchstat-gate: the threshold is the only thing holding it back ======="
 
 # Proves the parser genuinely SEES the real comparison's significant deltas and
