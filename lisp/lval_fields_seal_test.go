@@ -132,8 +132,8 @@ func TestLValFieldSeal(t *testing.T) {
 // environment aliasing channel internal/funraw's doc comment says an
 // embedder "cannot reach at all".  Every other privatized field was
 // already immune because it is an unexported FIELD (LVal.source, meta,
-// macroExpansion, quoted, spliced, sealed; LEnv.scope, funName, parent,
-// loc; MapData's backing) — reflect panics on those.  funData's fields
+// macroExpansion, quoted, spliced, sealed; LEnv.scope, parent, loc;
+// MapData's backing) — reflect panics on those.  funData's fields
 // were the asymmetry; they are unexported now.
 //
 // This guard fails if any of them is exported again, which would silently
@@ -208,7 +208,7 @@ func TestLEnvFieldSeal(t *testing.T) {
 		exported[f.Name] = true
 		if !allowed[f.Name] {
 			t.Errorf("LEnv exports field %q outside the sanctioned surface; the "+
-				"binding state (scope, funName), the lexical chain (parent) and the "+
+				"binding state (scope), the lexical chain (parent) and the "+
 				"evaluator location (loc) were unexported in issue #382 — a new "+
 				"exported field on the type every builtin receives needs a review "+
 				"conversation and an entry in this allowlist", f.Name)

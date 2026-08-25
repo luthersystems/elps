@@ -97,7 +97,20 @@ type Package struct {
 	// through Symbol/SymbolNames and write it through Put or Update.  Those
 	// maintain funNames alongside it, and nothing on the read path repairs a
 	// funNames entry a direct assignment would have skipped.
-	symbols    map[string]*LVal
+	symbols map[string]*LVal
+	// symbolDocs maps a bound name to its documentation string.  It is
+	// allocated LAZILY, by setSymbolDoc, and is nil in a package whose
+	// symbols carry no docs — which is most of them: a docstring on a
+	// *symbol* comes only from `(set 'name v "doc")` or the Go-side
+	// SetSymbolDoc, while a function's docstring rides in the LFun's own
+	// cells and never lands here.  Reading a nil map is legal Go and
+	// returns the empty string, which is exactly SymbolDoc's answer for an
+	// undocumented name, so every read path is nil-safe by construction;
+	// only setSymbolDoc may write it, and it allocates first.  Ten of the
+	// thirteen packages a fully loaded environment holds have no symbol
+	// docs at all, and each of those used to cost an empty map in
+	// NewPackage, another in every Fork, and another in every
+	// AddPackage admission.
 	symbolDocs map[string]string
 	// funNames maps a function's FID to the name it was most recently bound
 	// under in this package.  It is populated exclusively by the write path
@@ -110,10 +123,9 @@ type Package struct {
 // NewPackage initializes and returns a package with the given name.
 func NewPackage(name string) *Package {
 	return &Package{
-		Name:       name,
-		symbols:    make(map[string]*LVal),
-		symbolDocs: make(map[string]string),
-		funNames:   make(map[string]string),
+		Name:     name,
+		symbols:  make(map[string]*LVal),
+		funNames: make(map[string]string),
 	}
 }
 
@@ -188,6 +200,17 @@ func (pkg *Package) SymbolNames() []string {
 // empty string when name has no documentation.
 func (pkg *Package) SymbolDoc(name string) string {
 	return pkg.symbolDocs[name]
+}
+
+// setSymbolDoc records doc as the documentation string for name, allocating
+// the package's doc table on first use.  It is the ONLY writer of
+// symbolDocs; the field's doc comment states why that matters (a nil table
+// is the common case, and only a writer may not assume the map exists).
+func (pkg *Package) setSymbolDoc(name, doc string) {
+	if pkg.symbolDocs == nil {
+		pkg.symbolDocs = make(map[string]string, 1)
+	}
+	pkg.symbolDocs[name] = doc
 }
 
 // Externals returns the package's exported symbol names in declaration

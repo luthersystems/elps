@@ -626,7 +626,7 @@ func builtinSet(env *LEnv, v *LVal) *LVal {
 			}
 			parts = append(parts, arg.Str)
 		}
-		env.Runtime.Package.symbolDocs[v.Cells[0].Str] = JoinDocStrings(parts)
+		env.Runtime.Package.setSymbolDoc(v.Cells[0].Str, JoinDocStrings(parts))
 	}
 	return env.GetGlobal(v.Cells[0])
 }

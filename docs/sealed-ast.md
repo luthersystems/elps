@@ -253,7 +253,7 @@ writes — so those fields are unexported (#362 for `source`, #382 for
   environment, in every function value that closed over it — without
   passing `Put`, the seal, or elpsvet; `env.Loc = loc` aliased a caller's
   mutable location into every error and frame stamped afterwards (the #362
-  class).  `scope`, `funName`, `parent` and `loc` are unexported; reads go
+  class).  `scope`, `parent` and `loc` are unexported; reads go
   through `Bindings()` (an `iter.Seq2` over the immediate scope),
   `NumBindings()`, `Parent()` and `Source()` (a location *copy*).
   `Runtime` and `ID` stay exported — neither is a container an embedder can

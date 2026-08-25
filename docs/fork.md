@@ -124,6 +124,7 @@ the same reasoning that exempts the nil/true/false singletons).
 | Limit configuration (`MaxAlloc`, stack bounds, step budget, ...) | copied |
 | `Profiler`, `Debugger` | do not travel (fork starts with none) |
 | Call stack, condition stack, step accounting | fresh |
+| Evaluator location register (`Source()`) | fresh — a fork starts with no position, so an error raised before its first evaluation reports `<native code>`, not the template's last position |
 | Env-ID and gensym counters | **continued** past the template's |
 
 `LoadCache` is shared for the same reason `Reader` is, and because
