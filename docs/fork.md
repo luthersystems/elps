@@ -166,6 +166,18 @@ The template's `context.Context` never travels into a fork. Bind a
 request-scoped context at checkout time with `ForkWithContext`, or use the
 `*Context` evaluation methods per call.
 
+The bound context is also the sanctioned channel for per-fork *values*:
+builtins registered at template-load time are Go closures shared by every
+fork, so the per-fork half of their state (a storage handle, a transaction
+context) cannot live in the closure. Carry it as a `context.WithValue`
+entry on the context bound to the fork and read it inside the builtin via
+`env.Context().Value(key)`, falling back to the closure's load-time state
+when the key is absent. The value follows the same scoping as
+cancellation: it is visible through intervening lisp call frames, a
+per-call `EvalContext` context overrides it for that evaluation only, and
+neither the template nor any other fork can observe it.
+`lisp/fork_context_test.go` pins this contract.
+
 ## Embedder patterns
 
 Pool refill:
