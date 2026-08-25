@@ -15,11 +15,19 @@ require (
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/sdk v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
+	// PINNED, and not by accident. golang.org/x/perf@HEAD declares `go 1.26.0`
+	// (upgraded 2026-08-19); this module and the benchmark workflow's GO_VERSION
+	// are on 1.25, and setup-go pins GOTOOLCHAIN=local, so `go get -u` here would
+	// force this module's go directive to 1.26 and break every CI job. This commit
+	// is the last one before that bump, and its benchfmt/ and benchmath/ trees are
+	// byte-identical to HEAD's. Advance it when this module moves to Go 1.26.
+	golang.org/x/perf v0.0.0-20260813145340-fd4a688df892 // used by cmd/benchgate
 	golang.org/x/tools v0.49.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
+	github.com/aclements/go-moremath v0.0.0-20210112150236-f10218a38794 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
@@ -60,7 +68,7 @@ require (
 	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/mod v0.39.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/oauth2 v0.35.0 // indirect
+	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect

@@ -8,10 +8,10 @@
 # exactly like a gate that works.  Everything here exists so that class of
 # silent death fails a PR instead:
 #
-#   * benchstat-gate  -- fed known-regression AND known-clean fixtures, in both
-#                        benchstat table formats, plus a REAL comparison of elps
-#                        against itself.  It must fire on the first and stay
-#                        quiet on the second.
+#   * benchgate       -- the regression gate (cmd/benchgate) fed known-regression
+#                        AND known-clean fixtures, in both benchstat table
+#                        formats, plus a REAL comparison of elps against itself.
+#                        It must fire on the first and stay quiet on the second.
 #   * metric direction -- elps emits a B/s throughput column (b.SetBytes); the
 #                        gate must not read a throughput GAIN as a regression.
 #   * workflow shape  -- the gate must be invoked from the workflow as a script
@@ -25,7 +25,10 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-TESTDATA="${SCRIPT_DIR}/testdata"
+# The benchstat fixture corpus moved to cmd/benchgate/testdata/elps/ with the
+# gate itself (issue #538): it is now the Go tool's test data as well as this
+# suite's, so there is one copy rather than two that can drift.
+TESTDATA="${REPO_ROOT}/cmd/benchgate/testdata/elps"
 
 pass=0
 fail=0
@@ -119,14 +122,62 @@ assert_helper_verdict() {
 	fi
 }
 
-GATE="${SCRIPT_DIR}/benchstat-gate.sh"
+# The benchmark regression gate is cmd/benchgate, a Go program (issue #538).
+# It replaced scripts/benchstat-gate.sh, whose 800-line awk body adjudicated by
+# scraping benchstat's human-formatted table; substrate now runs the SAME
+# binary, so a fix lands once instead of twice.
+#
+# The fixture corpus below moved with it, and is ALSO a Go test suite
+# (cmd/benchgate/gate_test.go) that `make test` and the elps workflow run. The
+# assertions here are that same corpus driven through the real CLI -- argv,
+# exit codes, environment fallbacks and all -- which a Go test calling run()
+# in-process does not prove on its own.
+#
+# GATE is a generated wrapper rather than the binary itself so every assertion
+# below keeps the `env BENCH_WAIVERS=... "$GATE" fixture` shape the shell gate
+# supported: the wrapper supplies -waivers-default (the repository's shipped
+# list, which the shell gate found next to itself and a binary cannot), and
+# BENCH_WAIVERS still overrides it.
+#
+# Building it needs a Go toolchain. The `gates` job in benchmark.yml
+# deliberately has none -- it must stay fast and must report even when the
+# benchmark job is cancelled -- so, exactly like the Go-needing fuzz-gate
+# checks, these run in the fuzz workflow's gate job, which sets Go up already.
+# The structural assertions further down (does the plumbing invoke the gate?
+# does the waiver file exist?) need no Go and always run.
+BENCHGATE_TMP=""
+GATE=""
+if [ "${CI_GATES_SKIP_GO:-0}" = "1" ]; then
+	echo "SKIP  benchgate fixture assertions -- CI_GATES_SKIP_GO=1 (no Go toolchain in this job)."
+	echo "      They run in the fuzz workflow's gate job, and the same corpus runs as"
+	echo "      'go test ./cmd/benchgate' in the elps workflow."
+elif ! command -v go >/dev/null 2>&1; then
+	bad "no Go toolchain and CI_GATES_SKIP_GO is unset -- the benchgate fixture assertions cannot run, and a gate suite that silently checks nothing is the defect this file exists to prevent"
+else
+	BENCHGATE_TMP="$(mktemp -d)"
+	if (cd "$REPO_ROOT" && go build -o "${BENCHGATE_TMP}/benchgate" ./cmd/benchgate) >"${BENCHGATE_TMP}/build.log" 2>&1; then
+		ok "cmd/benchgate builds"
+		GATE="${BENCHGATE_TMP}/gate"
+		{
+			echo '#!/usr/bin/env bash'
+			printf 'exec %s -waivers-default %s "$@"\n' \
+				"${BENCHGATE_TMP}/benchgate" "${SCRIPT_DIR}/benchstat-waivers.txt"
+		} > "$GATE"
+		chmod +x "$GATE"
+	else
+		bad "cmd/benchgate does not build -- the benchmark regression gate is broken"
+		sed 's/^/        | /' "${BENCHGATE_TMP}/build.log"
+		rm -rf "$BENCHGATE_TMP"
+		BENCHGATE_TMP=""
+	fi
+fi
 
 echo "== the assertion helpers themselves must be able to FAIL =================="
 
 # A path that cannot execute, to stand in for the real thing this suite hit:
 # a copy of the file with a wrong SCRIPT_DIR, where every assertion in a block
 # failed loudly and the one assert_not_contains sat there reporting PASS.
-NOT_A_SCRIPT="${SCRIPT_DIR}/testdata/definitely-not-an-executable-script.sh"
+NOT_A_SCRIPT="${TESTDATA}/definitely-not-an-executable-script.sh"
 
 assert_helper_verdict FAIL "assert_not_contains FAILS when the command does not exist (#502)" \
 	assert_not_contains "REGRESSION" "inner: missing command" "$NOT_A_SCRIPT"
@@ -153,569 +204,574 @@ else
 fi
 
 echo
-echo "== benchstat-gate: fires on regressions =================================="
+# Everything from here to the end of the "uninterpretable input" section drives
+# the real binary, so it runs only when one could be built. The skip is loud
+# (see the SKIP lines above); it is never silent.
+if [ -n "$GATE" ]; then
+	echo "== benchgate: fires on regressions =================================="
 
-assert_exit 1 "new-format table with a +83.31% significant timing regression" \
-	"$GATE" "${TESTDATA}/benchstat-regression-new.txt"
-assert_contains "REGRESSION" "regression report names the offending rows" \
-	"$GATE" "${TESTDATA}/benchstat-regression-new.txt"
-assert_exit 1 "old-format table with a +83.31% significant timing regression" \
-	"$GATE" "${TESTDATA}/benchstat-regression-old.txt"
+	assert_exit 1 "new-format table with a +83.31% significant timing regression" \
+		"$GATE" "${TESTDATA}/benchstat-regression-new.txt"
+	assert_contains "REGRESSION" "regression report names the offending rows" \
+		"$GATE" "${TESTDATA}/benchstat-regression-new.txt"
+	assert_exit 1 "old-format table with a +83.31% significant timing regression" \
+		"$GATE" "${TESTDATA}/benchstat-regression-old.txt"
 
-# The exact sample from the bug report: a 50% regression at p=0.000 that the
-# old inline grep waved through. This is the headline assertion of this suite.
-assert_exit 1 "the reported +50.00% (p=0.000 n=10) sample FIRES the gate" \
-	"$GATE" "${TESTDATA}/benchstat-task-sample.txt"
-assert_contains "+50.00%" "the reported sample is named in the report" \
-	"$GATE" "${TESTDATA}/benchstat-task-sample.txt"
+	# The exact sample from the bug report: a 50% regression at p=0.000 that the
+	# old inline grep waved through. This is the headline assertion of this suite.
+	assert_exit 1 "the reported +50.00% (p=0.000 n=10) sample FIRES the gate" \
+		"$GATE" "${TESTDATA}/benchstat-task-sample.txt"
+	assert_contains "+50.00%" "the reported sample is named in the report" \
+		"$GATE" "${TESTDATA}/benchstat-task-sample.txt"
 
-echo
-echo "== benchstat-gate: stays quiet on clean comparisons ======================"
+	echo
+	echo "== benchgate: stays quiet on clean comparisons ======================"
 
-assert_exit 0 "improvements (negative timing deltas) never fire" \
-	"$GATE" "${TESTDATA}/benchstat-improvement-new.txt"
-assert_exit 0 "large deltas with p above alpha never fire" \
-	"$GATE" "${TESTDATA}/benchstat-insignificant-new.txt"
-assert_exit 0 "old-format table whose deltas are all under the gate" \
-	"$GATE" "${TESTDATA}/benchstat-clean-old.txt"
+	assert_exit 0 "improvements (negative timing deltas) never fire" \
+		"$GATE" "${TESTDATA}/benchstat-improvement-new.txt"
+	assert_exit 0 "large deltas with p above alpha never fire" \
+		"$GATE" "${TESTDATA}/benchstat-insignificant-new.txt"
+	assert_exit 0 "old-format table whose deltas are all under the gate" \
+		"$GATE" "${TESTDATA}/benchstat-clean-old.txt"
 
-# benchstat-clean-ci.txt is the REAL CI comparison from the commit that added
-# this gate. That commit changed no Go code, so it is a genuine null comparison
-# on the real infrastructure -- every delta in it is noise, and the gate must not
-# fire, while still parsing the whole table rather than silently understanding
-# none of it. This is the fixture that keeps the DEFAULT thresholds honest: if a
-# future retune drops them below the real CI noise floor, this assertion flips.
-assert_exit 0 "REAL CI null comparison does not fire at the default gates" \
-	"$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
-assert_contains "interpreted 22 delta row(s) + 148 no-change row(s)" \
-	"the real CI comparison is fully parsed, not silently skipped" \
-	"$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
-assert_contains "3 significant move(s) in the bad direction" \
-	"the real CI noise IS seen; only the threshold holds it back" \
-	"$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
+	# benchstat-clean-ci.txt is the REAL CI comparison from the commit that added
+	# this gate. That commit changed no Go code, so it is a genuine null comparison
+	# on the real infrastructure -- every delta in it is noise, and the gate must not
+	# fire, while still parsing the whole table rather than silently understanding
+	# none of it. This is the fixture that keeps the DEFAULT thresholds honest: if a
+	# future retune drops them below the real CI noise floor, this assertion flips.
+	assert_exit 0 "REAL CI null comparison does not fire at the default gates" \
+		"$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
+	assert_contains "interpreted 22 delta row(s) + 148 no-change row(s)" \
+		"the real CI comparison is fully parsed, not silently skipped" \
+		"$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
+	assert_contains "3 significant move(s) in the bad direction" \
+		"the real CI noise IS seen; only the threshold holds it back" \
+		"$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
 
-# The same command on a CONTENDED machine is an order of magnitude noisier
-# (worst bad-direction move +33.83% sec/op vs +1.52% on CI). Pinned so nobody
-# re-derives the thresholds from a local run and concludes the gate is broken:
-# it fires here, and that is the machine's fault, not the gate's.
-assert_exit 1 "the same comparison on a CONTENDED machine DOES fire (noise, not a bug)" \
-	"$GATE" "${TESTDATA}/benchstat-noisy-sandbox.txt"
+	# The same command on a CONTENDED machine is an order of magnitude noisier
+	# (worst bad-direction move +33.83% sec/op vs +1.52% on CI). Pinned so nobody
+	# re-derives the thresholds from a local run and concludes the gate is broken:
+	# it fires here, and that is the machine's fault, not the gate's.
+	assert_exit 1 "the same comparison on a CONTENDED machine DOES fire (noise, not a bug)" \
+		"$GATE" "${TESTDATA}/benchstat-noisy-sandbox.txt"
 
-echo
-echo "== benchstat-gate: metric DIRECTION (elps emits B/s via b.SetBytes) ======"
+	echo
+	echo "== benchgate: metric DIRECTION (elps emits B/s via b.SetBytes) ======"
 
-# The adaptation elps needs and the upstream reference did not. B/s is
-# higher-is-better: a +178% delta is a 2.8x throughput GAIN. A gate that reads
-# the raw sign fails an improving PR.
-assert_exit 0 "B/s throughput GAINS are not regressions, even at a 0% gate" \
-	env BENCH_REGRESSION_THRESHOLD_PCT=0 BENCH_ALLOC_THRESHOLD_PCT=0 \
-	"$GATE" "${TESTDATA}/benchstat-bps-improvement.txt"
-assert_not_contains "REGRESSION" "no B/s gain is reported as a regression" \
-	env BENCH_REGRESSION_THRESHOLD_PCT=0 BENCH_ALLOC_THRESHOLD_PCT=0 \
-	"$GATE" "${TESTDATA}/benchstat-bps-improvement.txt"
+	# The adaptation elps needs and the upstream reference did not. B/s is
+	# higher-is-better: a +178% delta is a 2.8x throughput GAIN. A gate that reads
+	# the raw sign fails an improving PR.
+	assert_exit 0 "B/s throughput GAINS are not regressions, even at a 0% gate" \
+		env BENCH_REGRESSION_THRESHOLD_PCT=0 BENCH_ALLOC_THRESHOLD_PCT=0 \
+		"$GATE" "${TESTDATA}/benchstat-bps-improvement.txt"
+	assert_not_contains "REGRESSION" "no B/s gain is reported as a regression" \
+		env BENCH_REGRESSION_THRESHOLD_PCT=0 BENCH_ALLOC_THRESHOLD_PCT=0 \
+		"$GATE" "${TESTDATA}/benchstat-bps-improvement.txt"
 
-# ...and the mirror: throughput COLLAPSING is a real regression and must fire.
-assert_exit 1 "B/s throughput COLLAPSE does fire the gate" \
-	"$GATE" "${TESTDATA}/benchstat-bps-regression.txt"
-assert_contains "higher is better" "the report labels the metric direction" \
-	"$GATE" "${TESTDATA}/benchstat-bps-regression.txt"
+	# ...and the mirror: throughput COLLAPSING is a real regression and must fire.
+	assert_exit 1 "B/s throughput COLLAPSE does fire the gate" \
+		"$GATE" "${TESTDATA}/benchstat-bps-regression.txt"
+	assert_contains "higher is better" "the report labels the metric direction" \
+		"$GATE" "${TESTDATA}/benchstat-bps-regression.txt"
 
-# A B/s DIP of a few percent is the case between those two extremes, and the one
-# that got mistaken for a gate bug on PR #310: it is the only column in that run
-# with magnitudes above BENCH_ALLOC_THRESHOLD_PCT, which invites the conclusion
-# that B/s is being judged against the allocation gate. It is not -- B/s has no
-# "/op" suffix, so is_alloc_metric() returns 0 and it falls to the timing gate.
-# These assertions pin that, so the question does not have to be re-litigated
-# from the numbers.
-assert_exit 0 "a several-percent B/s DIP with flat B/op and allocs/op does NOT fire" \
-	"$GATE" "${TESTDATA}/benchstat-bps-dip-only.txt"
-assert_contains "gate 15%" "B/s rows are judged against the TIMING gate, not the allocation gate" \
-	"$GATE" "${TESTDATA}/benchstat-bps-dip-only.txt"
-assert_not_contains "REGRESSION" "no B/s dip below the timing gate is called a regression" \
-	"$GATE" "${TESTDATA}/benchstat-bps-dip-only.txt"
-# Belt and braces: even if the allocation gate were tightened to zero, the B/s
-# rows must be unaffected by it. If this ever fails, B/s has been mis-classified
-# into the allocation bucket -- which is exactly the bug that was suspected.
-assert_exit 0 "B/s dip is untouched by the ALLOCATION gate, even at 0%" \
-	env BENCH_ALLOC_THRESHOLD_PCT=0 "$GATE" "${TESTDATA}/benchstat-bps-dip-only.txt"
+	# A B/s DIP of a few percent is the case between those two extremes, and the one
+	# that got mistaken for a gate bug on PR #310: it is the only column in that run
+	# with magnitudes above BENCH_ALLOC_THRESHOLD_PCT, which invites the conclusion
+	# that B/s is being judged against the allocation gate. It is not -- B/s has no
+	# "/op" suffix, so is_alloc_metric() returns 0 and it falls to the timing gate.
+	# These assertions pin that, so the question does not have to be re-litigated
+	# from the numbers.
+	assert_exit 0 "a several-percent B/s DIP with flat B/op and allocs/op does NOT fire" \
+		"$GATE" "${TESTDATA}/benchstat-bps-dip-only.txt"
+	assert_contains "gate 15%" "B/s rows are judged against the TIMING gate, not the allocation gate" \
+		"$GATE" "${TESTDATA}/benchstat-bps-dip-only.txt"
+	assert_not_contains "REGRESSION" "no B/s dip below the timing gate is called a regression" \
+		"$GATE" "${TESTDATA}/benchstat-bps-dip-only.txt"
+	# Belt and braces: even if the allocation gate were tightened to zero, the B/s
+	# rows must be unaffected by it. If this ever fails, B/s has been mis-classified
+	# into the allocation bucket -- which is exactly the bug that was suspected.
+	assert_exit 0 "B/s dip is untouched by the ALLOCATION gate, even at 0%" \
+		env BENCH_ALLOC_THRESHOLD_PCT=0 "$GATE" "${TESTDATA}/benchstat-bps-dip-only.txt"
 
-echo
-echo "== benchstat-gate: per-metric-class thresholds ==========================="
+	echo
+	echo "== benchgate: per-metric-class thresholds ==========================="
 
-# elps' allocation metrics are deterministic (measured worst-case noise on
-# identical code: 0.19% for B/op, 0.00% for allocs/op) while sec/op noise
-# reaches 33.83%. A single threshold cannot serve both. This fixture holds an
-# +8% allocation regression: below the loose timing gate, above the tight
-# allocation one.
-assert_exit 1 "an +8% ALLOCATION regression fires the tight allocation gate" \
-	"$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
-assert_contains "allocs/op" "the allocation regression is the row reported" \
-	"$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
-# Proof the two thresholds are genuinely independent: raise only the allocation
-# gate and the same table passes.
-assert_exit 0 "the same table passes once the allocation gate is raised to 20%" \
-	env BENCH_ALLOC_THRESHOLD_PCT=20 "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
-# And the timing gate alone would never have caught it.
-assert_exit 0 "a single 50% gate would have missed it entirely" \
-	env BENCH_ALLOC_THRESHOLD_PCT=50 "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
+	# elps' allocation metrics are deterministic (measured worst-case noise on
+	# identical code: 0.19% for B/op, 0.00% for allocs/op) while sec/op noise
+	# reaches 33.83%. A single threshold cannot serve both. This fixture holds an
+	# +8% allocation regression: below the loose timing gate, above the tight
+	# allocation one.
+	assert_exit 1 "an +8% ALLOCATION regression fires the tight allocation gate" \
+		"$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
+	assert_contains "allocs/op" "the allocation regression is the row reported" \
+		"$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
+	# Proof the two thresholds are genuinely independent: raise only the allocation
+	# gate and the same table passes.
+	assert_exit 0 "the same table passes once the allocation gate is raised to 20%" \
+		env BENCH_ALLOC_THRESHOLD_PCT=20 "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
+	# And the timing gate alone would never have caught it.
+	assert_exit 0 "a single 50% gate would have missed it entirely" \
+		env BENCH_ALLOC_THRESHOLD_PCT=50 "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
 
-# The live case: the gate's first real firing, on PR #310. A +8.44% B/op
-# regression with an IDENTICAL allocation count -- the same allocations, made
-# bigger by a field added to CallFrame. This is the signal the allocation gate
-# exists for, and it must keep firing.
-assert_exit 1 "the LIVE PR #310 allocation regression fires" \
-	"$GATE" "${TESTDATA}/benchstat-alloc-regression-live.txt"
-assert_contains "REGRESSION" "the live allocation regression is reported" \
-	"$GATE" "${TESTDATA}/benchstat-alloc-regression-live.txt"
-assert_contains "EnvFunCallRecursion-4" "the offending row is named" \
-	"$GATE" "${TESTDATA}/benchstat-alloc-regression-live.txt"
-# Its timing deltas (worst +13.48%) are all under the 15% timing gate, so the
-# allocation column is genuinely the only thing that fired. Raising just the
-# allocation gate makes the whole table pass -- proof that no timing row was
-# responsible, and the knob a maintainer would reach for to accept the cost.
-assert_exit 0 "with only the ALLOCATION gate raised, the live table passes" \
-	env BENCH_ALLOC_THRESHOLD_PCT=10 "$GATE" "${TESTDATA}/benchstat-alloc-regression-live.txt"
+	# The live case: the gate's first real firing, on PR #310. A +8.44% B/op
+	# regression with an IDENTICAL allocation count -- the same allocations, made
+	# bigger by a field added to CallFrame. This is the signal the allocation gate
+	# exists for, and it must keep firing.
+	assert_exit 1 "the LIVE PR #310 allocation regression fires" \
+		"$GATE" "${TESTDATA}/benchstat-alloc-regression-live.txt"
+	assert_contains "REGRESSION" "the live allocation regression is reported" \
+		"$GATE" "${TESTDATA}/benchstat-alloc-regression-live.txt"
+	assert_contains "EnvFunCallRecursion-4" "the offending row is named" \
+		"$GATE" "${TESTDATA}/benchstat-alloc-regression-live.txt"
+	# Its timing deltas (worst +13.48%) are all under the 15% timing gate, so the
+	# allocation column is genuinely the only thing that fired. Raising just the
+	# allocation gate makes the whole table pass -- proof that no timing row was
+	# responsible, and the knob a maintainer would reach for to accept the cost.
+	assert_exit 0 "with only the ALLOCATION gate raised, the live table passes" \
+		env BENCH_ALLOC_THRESHOLD_PCT=10 "$GATE" "${TESTDATA}/benchstat-alloc-regression-live.txt"
 
-echo
-echo "== benchstat-gate: reviewed waivers ======================================"
+	echo
+	echo "== benchgate: reviewed waivers ======================================"
 
-# A waiver is a per-row exception, declared in scripts/benchstat-waivers.txt and
-# reviewed in the diff that needs it. It is the one construct in this gate whose
-# whole job is to make something PASS, so it is the one that most needs proving
-# it cannot make the wrong thing pass. Everything here is driven against
-# benchstat-libjson-encode-411.txt -- the REAL comparison from PR #411, verbatim
-# from the workflow's own PR comment -- rather than a synthetic table, because a
-# waiver that only works on a fixture written to suit it proves nothing.
-WAIVED_FIXTURE="${TESTDATA}/benchstat-libjson-encode-411.txt"
+	# A waiver is a per-row exception, declared in scripts/benchstat-waivers.txt and
+	# reviewed in the diff that needs it. It is the one construct in this gate whose
+	# whole job is to make something PASS, so it is the one that most needs proving
+	# it cannot make the wrong thing pass. Everything here is driven against
+	# benchstat-libjson-encode-411.txt -- the REAL comparison from PR #411, verbatim
+	# from the workflow's own PR comment -- rather than a synthetic table, because a
+	# waiver that only works on a fixture written to suit it proves nothing.
+	WAIVED_FIXTURE="${TESTDATA}/benchstat-libjson-encode-411.txt"
 
-# The before half of the round trip. With waivers switched off, the real run has
-# TWO rows at or above a gate. Note that this is not the "one failing row" the
-# change was described as: B/op is an ALLOCATION metric, judged against the 5%
-# allocation gate rather than the 15% timing one, and +12.45% is over it.
-assert_exit 1 "PR #411's REAL benchstat output fires the gate with no waivers" \
-	env BENCH_WAIVERS= "$GATE" "$WAIVED_FIXTURE"
-assert_contains "+7.94%" "the allocs/op row is named when unwaived" \
-	env BENCH_WAIVERS= "$GATE" "$WAIVED_FIXTURE"
-assert_contains "+12.45%" "the B/op row is named too — it is over the allocation gate as well" \
-	env BENCH_WAIVERS= "$GATE" "$WAIVED_FIXTURE"
+	# The before half of the round trip. With waivers switched off, the real run has
+	# TWO rows at or above a gate. Note that this is not the "one failing row" the
+	# change was described as: B/op is an ALLOCATION metric, judged against the 5%
+	# allocation gate rather than the 15% timing one, and +12.45% is over it.
+	assert_exit 1 "PR #411's REAL benchstat output fires the gate with no waivers" \
+		env BENCH_WAIVERS= "$GATE" "$WAIVED_FIXTURE"
+	assert_contains "+7.94%" "the allocs/op row is named when unwaived" \
+		env BENCH_WAIVERS= "$GATE" "$WAIVED_FIXTURE"
+	assert_contains "+12.45%" "the B/op row is named too — it is over the allocation gate as well" \
+		env BENCH_WAIVERS= "$GATE" "$WAIVED_FIXTURE"
 
-# The after half: the shipped list no longer carries the two #411 Encode
-# entries -- they were deleted (#413) once elps#412's fix removed the
-# regression they accepted and the gate had reported both waiver-unused.
-# (The elps#363 env-construction entry that later joined the list was
-# deleted the same way once the gate reported it waiver-unused; the shipped
-# list is now empty.)  What the DEFAULT path (no
-# BENCH_WAIVERS override) must prove now is the deletion's other side: with
-# the Encode entries gone, the same real comparison fires the gate again --
-# the rows came back the moment their acceptance was withdrawn, which is the
-# property that makes deleting a stale waiver safe to do.
-assert_exit 1 "with the shipped waiver list empty, PR #411's comparison fires again" \
-	"$GATE" "$WAIVED_FIXTURE"
-assert_contains "+7.94%" "the un-waived allocs/op row is judged again on the default path" \
-	"$GATE" "$WAIVED_FIXTURE"
-assert_contains "+12.45%" "the un-waived B/op row is judged again on the default path" \
-	"$GATE" "$WAIVED_FIXTURE"
+	# The after half: the shipped list no longer carries the two #411 Encode
+	# entries -- they were deleted (#413) once elps#412's fix removed the
+	# regression they accepted and the gate had reported both waiver-unused.
+	# (The elps#363 env-construction entry that later joined the list was
+	# deleted the same way once the gate reported it waiver-unused; the shipped
+	# list is now empty.)  What the DEFAULT path (no
+	# BENCH_WAIVERS override) must prove now is the deletion's other side: with
+	# the Encode entries gone, the same real comparison fires the gate again --
+	# the rows came back the moment their acceptance was withdrawn, which is the
+	# property that makes deleting a stale waiver safe to do.
+	assert_exit 1 "with the shipped waiver list empty, PR #411's comparison fires again" \
+		"$GATE" "$WAIVED_FIXTURE"
+	assert_contains "+7.94%" "the un-waived allocs/op row is judged again on the default path" \
+		"$GATE" "$WAIVED_FIXTURE"
+	assert_contains "+12.45%" "the un-waived B/op row is judged again on the default path" \
+		"$GATE" "$WAIVED_FIXTURE"
 
-# A WAIVED row must still be visible: reported by name, with its delta, its
-# tracking issue, and counted in the summary.  Proven against the testdata
-# waivers now that the shipped list is empty.  Anchored on the per-ROW marker,
-# not the bare word: the summary line already says "row(s) WAIVED", so a
-# substring check for "WAIVED" stays green even after the per-row lines are
-# deleted -- which is exactly the regression that matters.
-assert_contains "WAIVED      github.com/luthersystems/elps/lisp/lisplib/libjson" \
-	"a waived row is still reported by name, not silently dropped" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
-assert_contains "+7.94%" "the waived row still carries its measured delta" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
-assert_contains "elps#412" "the waived row names its tracking issue in the report" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
-assert_contains "row(s) WAIVED" "the summary line counts the waivers" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
+	# A WAIVED row must still be visible: reported by name, with its delta, its
+	# tracking issue, and counted in the summary.  Proven against the testdata
+	# waivers now that the shipped list is empty.  Anchored on the per-ROW marker,
+	# not the bare word: the summary line already says "row(s) WAIVED", so a
+	# substring check for "WAIVED" stays green even after the per-row lines are
+	# deleted -- which is exactly the regression that matters.
+	assert_contains "WAIVED      github.com/luthersystems/elps/lisp/lisplib/libjson" \
+		"a waived row is still reported by name, not silently dropped" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
+	assert_contains "+7.94%" "the waived row still carries its measured delta" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
+	assert_contains "elps#412" "the waived row names its tracking issue in the report" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
+	assert_contains "row(s) WAIVED" "the summary line counts the waivers" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
 
-# NARROWNESS. A waiver covers one package, one benchmark, one metric column.
-# Waiving allocs/op alone must leave B/op of the SAME benchmark failing --
-# otherwise "per-row" is a description rather than a property.
-assert_exit 1 "waiving allocs/op does NOT waive B/op of the same benchmark" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-allocs.txt" "$GATE" "$WAIVED_FIXTURE"
-assert_contains "B/op" "the un-waived neighbouring metric is the row that fails" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-allocs.txt" "$GATE" "$WAIVED_FIXTURE"
-# Right benchmark, right metric, WRONG package: must not reach across packages.
-assert_exit 1 "a waiver for another package does not reach libjson" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-wrong-pkg.txt" "$GATE" "$WAIVED_FIXTURE"
-# And the control for the two above: with both columns waived it does pass, so
-# the failures above are the narrowness and not some unrelated breakage.
-assert_exit 0 "with both allocation columns waived, the same table passes" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
+	# NARROWNESS. A waiver covers one package, one benchmark, one metric column.
+	# Waiving allocs/op alone must leave B/op of the SAME benchmark failing --
+	# otherwise "per-row" is a description rather than a property.
+	assert_exit 1 "waiving allocs/op does NOT waive B/op of the same benchmark" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-allocs.txt" "$GATE" "$WAIVED_FIXTURE"
+	assert_contains "B/op" "the un-waived neighbouring metric is the row that fails" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-allocs.txt" "$GATE" "$WAIVED_FIXTURE"
+	# Right benchmark, right metric, WRONG package: must not reach across packages.
+	assert_exit 1 "a waiver for another package does not reach libjson" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-wrong-pkg.txt" "$GATE" "$WAIVED_FIXTURE"
+	# And the control for the two above: with both columns waived it does pass, so
+	# the failures above are the narrowness and not some unrelated breakage.
+	assert_exit 0 "with both allocation columns waived, the same table passes" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-both.txt" "$GATE" "$WAIVED_FIXTURE"
 
-# BOUNDEDNESS. The ceiling is what makes a waiver an accepted COST rather than a
-# blessed benchmark: the moment the regression grows past what was reviewed, it
-# fails again.
-assert_exit 1 "a regression that EXCEEDS its waiver ceiling fails" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-tight-ceiling.txt" "$GATE" "$WAIVED_FIXTURE"
-assert_contains "EXCEEDS its waiver ceiling" \
-	"outgrowing a waiver says so, rather than reading as a fresh regression" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-tight-ceiling.txt" "$GATE" "$WAIVED_FIXTURE"
+	# BOUNDEDNESS. The ceiling is what makes a waiver an accepted COST rather than a
+	# blessed benchmark: the moment the regression grows past what was reviewed, it
+	# fails again.
+	assert_exit 1 "a regression that EXCEEDS its waiver ceiling fails" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-tight-ceiling.txt" "$GATE" "$WAIVED_FIXTURE"
+	assert_contains "EXCEEDS its waiver ceiling" \
+		"outgrowing a waiver says so, rather than reading as a fresh regression" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-libjson-tight-ceiling.txt" "$GATE" "$WAIVED_FIXTURE"
 
-# EXPIRY. Past its date a waiver stops suppressing and the row is judged
-# normally again, so the decision is re-made rather than inherited.
-assert_exit 1 "an EXPIRED waiver no longer suppresses its row" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-expired.txt" "$GATE" "$WAIVED_FIXTURE"
-assert_contains "WAIVER EXPIRED" "an expired waiver says why the row came back" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-expired.txt" "$GATE" "$WAIVED_FIXTURE"
-# No shipped-waiver expiry proof against this fixture -- its over-gate rows
-# (the Encode columns) are no longer waived, so it reds at ANY clock and the
-# assertion would pass without reading the expiry field at all.  The expiry
-# property is carried by the waivers-expired.txt assertions above.
+	# EXPIRY. Past its date a waiver stops suppressing and the row is judged
+	# normally again, so the decision is re-made rather than inherited.
+	assert_exit 1 "an EXPIRED waiver no longer suppresses its row" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-expired.txt" "$GATE" "$WAIVED_FIXTURE"
+	assert_contains "WAIVER EXPIRED" "an expired waiver says why the row came back" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-expired.txt" "$GATE" "$WAIVED_FIXTURE"
+	# No shipped-waiver expiry proof against this fixture -- its over-gate rows
+	# (the Encode columns) are no longer waived, so it reds at ANY clock and the
+	# assertion would pass without reading the expiry field at all.  The expiry
+	# property is carried by the waivers-expired.txt assertions above.
 
-# JUSTIFICATION. A waiver with no tracking reference is a threshold increase
-# with better manners; the gate must refuse to run rather than honour it. Note
-# the exit code: 2, the same "cannot be interpreted" hard failure as an
-# unreadable benchstat table, because a waiver list that does not parse must
-# never be treated as an empty one.
-assert_exit 2 "a waiver with NO issue reference is rejected" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-no-issue.txt" "$GATE" "$WAIVED_FIXTURE"
-assert_contains "not a tracking reference" "the rejection says what is missing" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-no-issue.txt" "$GATE" "$WAIVED_FIXTURE"
+	# JUSTIFICATION. A waiver with no tracking reference is a threshold increase
+	# with better manners; the gate must refuse to run rather than honour it. Note
+	# the exit code: 2, the same "cannot be interpreted" hard failure as an
+	# unreadable benchstat table, because a waiver list that does not parse must
+	# never be treated as an empty one.
+	assert_exit 2 "a waiver with NO issue reference is rejected" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-no-issue.txt" "$GATE" "$WAIVED_FIXTURE"
+	assert_contains "not a tracking reference" "the rejection says what is missing" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-no-issue.txt" "$GATE" "$WAIVED_FIXTURE"
 
-# Every other malformation is the same hard failure, and each is NAMED with its
-# line number -- a waiver that silently fails to parse is a regression nobody is
-# told about.
-assert_exit 2 "malformed waiver entries are refused, not skipped" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-malformed.txt" "$GATE" "$WAIVED_FIXTURE"
-for want in "expected 7 |-separated fields" "is not a positive percentage" \
-	"is not a YYYY-MM-DD date" "reason is missing or too short" \
-	"empty pkg field"; do
-	assert_contains "$want" "malformed waiver diagnosed: ${want}" \
+	# Every other malformation is the same hard failure, and each is NAMED with its
+	# line number -- a waiver that silently fails to parse is a regression nobody is
+	# told about.
+	assert_exit 2 "malformed waiver entries are refused, not skipped" \
 		env BENCH_WAIVERS="${TESTDATA}/waivers-malformed.txt" "$GATE" "$WAIVED_FIXTURE"
-done
+	for want in "expected 7 |-separated fields" "is not a positive percentage" \
+		"is not a YYYY-MM-DD date" "reason is missing or too short" \
+		"empty pkg field"; do
+		assert_contains "$want" "malformed waiver diagnosed: ${want}" \
+			env BENCH_WAIVERS="${TESTDATA}/waivers-malformed.txt" "$GATE" "$WAIVED_FIXTURE"
+	done
 
-# `go test` appends -<GOMAXPROCS> to every benchmark name, so a waiver written
-# with the suffix would silently unbind the day `runs-on` or the GOMAXPROCS pin
-# changes -- the single failure mode this repository has been bitten by most
-# (see the GOMAXPROCS notes in benchmark.yml and bench-arms-check.sh). Rejected
-# at parse time rather than left to fail open years later.
-assert_exit 2 "a waiver naming Encode-2 (with the GOMAXPROCS suffix) is rejected" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-gomaxprocs-suffix.txt" "$GATE" "$WAIVED_FIXTURE"
-assert_contains "GOMAXPROCS" "the suffix rejection explains the trap" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-gomaxprocs-suffix.txt" "$GATE" "$WAIVED_FIXTURE"
+	# `go test` appends -<GOMAXPROCS> to every benchmark name, so a waiver written
+	# with the suffix would silently unbind the day `runs-on` or the GOMAXPROCS pin
+	# changes -- the single failure mode this repository has been bitten by most
+	# (see the GOMAXPROCS notes in benchmark.yml and bench-arms-check.sh). Rejected
+	# at parse time rather than left to fail open years later.
+	assert_exit 2 "a waiver naming Encode-2 (with the GOMAXPROCS suffix) is rejected" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-gomaxprocs-suffix.txt" "$GATE" "$WAIVED_FIXTURE"
+	assert_contains "GOMAXPROCS" "the suffix rejection explains the trap" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-gomaxprocs-suffix.txt" "$GATE" "$WAIVED_FIXTURE"
 
-# An explicitly-named waiver file that is not there is an error. Silently
-# adjudicating with no waivers would be the strict direction, but it would also
-# mean a typo'd path reads as "no waivers configured".
-assert_exit 2 "BENCH_WAIVERS pointing at a missing file is an error" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-does-not-exist.txt" "$GATE" "$WAIVED_FIXTURE"
+	# An explicitly-named waiver file that is not there is an error. Silently
+	# adjudicating with no waivers would be the strict direction, but it would also
+	# mean a typo'd path reads as "no waivers configured".
+	assert_exit 2 "BENCH_WAIVERS pointing at a missing file is an error" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-does-not-exist.txt" "$GATE" "$WAIVED_FIXTURE"
 
-# STALENESS. A waiver that protects nothing must not rot quietly: the benchmark
-# it names was renamed or removed, so it is dead weight that still looks like
-# coverage.
-assert_contains "WAIVER-STALE" "a waiver whose benchmark no longer exists is REPORTED" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-stale.txt" "$GATE" "$WAIVED_FIXTURE"
-assert_contains "WAIVER-STALE" "a waiver aimed at the wrong package is reported as stale too" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-wrong-pkg.txt" "$GATE" "$WAIVED_FIXTURE"
-# ...and the softer half: the row is there and simply is not regressing, which
-# is the signal to delete the entry rather than carry it forever.
-assert_contains "waiver-unused" "a waiver whose row is no longer regressing is REPORTED" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-unused.txt" "$GATE" "$WAIVED_FIXTURE"
-# Reporting a stale waiver must not, by itself, turn a clean comparison red --
-# otherwise a renamed benchmark reds every PR until someone edits a file, and
-# the pressure is to delete the mechanism rather than the entry.
-assert_exit 0 "a stale waiver is reported but does not fail an otherwise clean run" \
-	env BENCH_WAIVERS="${TESTDATA}/waivers-stale.txt" "$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
+	# STALENESS. A waiver that protects nothing must not rot quietly: the benchmark
+	# it names was renamed or removed, so it is dead weight that still looks like
+	# coverage.
+	assert_contains "WAIVER-STALE" "a waiver whose benchmark no longer exists is REPORTED" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-stale.txt" "$GATE" "$WAIVED_FIXTURE"
+	assert_contains "WAIVER-STALE" "a waiver aimed at the wrong package is reported as stale too" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-wrong-pkg.txt" "$GATE" "$WAIVED_FIXTURE"
+	# ...and the softer half: the row is there and simply is not regressing, which
+	# is the signal to delete the entry rather than carry it forever.
+	assert_contains "waiver-unused" "a waiver whose row is no longer regressing is REPORTED" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-unused.txt" "$GATE" "$WAIVED_FIXTURE"
+	# Reporting a stale waiver must not, by itself, turn a clean comparison red --
+	# otherwise a renamed benchmark reds every PR until someone edits a file, and
+	# the pressure is to delete the mechanism rather than the entry.
+	assert_exit 0 "a stale waiver is reported but does not fail an otherwise clean run" \
+		env BENCH_WAIVERS="${TESTDATA}/waivers-stale.txt" "$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
 
-# THE HOLE THIS COULD HAVE BEEN. The shipped waiver file must not rescue any of
-# the fixtures the gate is supposed to fail on. If a waiver ever widens into
-# something that matches broadly, this is where it shows up.
-for fx in benchstat-regression-new benchstat-regression-old benchstat-task-sample \
-	benchstat-alloc-regression benchstat-alloc-regression-live \
-	benchstat-bps-regression benchstat-noisy-sandbox; do
-	assert_exit 1 "the shipped waivers do NOT rescue ${fx}" \
-		"$GATE" "${TESTDATA}/${fx}.txt"
-done
-assert_exit 2 "the shipped waivers do NOT turn an uninterpretable table green" \
-	"$GATE" "${TESTDATA}/benchstat-crash.txt"
+	# THE HOLE THIS COULD HAVE BEEN. The shipped waiver file must not rescue any of
+	# the fixtures the gate is supposed to fail on. If a waiver ever widens into
+	# something that matches broadly, this is where it shows up.
+	for fx in benchstat-regression-new benchstat-regression-old benchstat-task-sample \
+		benchstat-alloc-regression benchstat-alloc-regression-live \
+		benchstat-bps-regression benchstat-noisy-sandbox; do
+		assert_exit 1 "the shipped waivers do NOT rescue ${fx}" \
+			"$GATE" "${TESTDATA}/${fx}.txt"
+	done
+	assert_exit 2 "the shipped waivers do NOT turn an uninterpretable table green" \
+		"$GATE" "${TESTDATA}/benchstat-crash.txt"
 
+	echo
+	echo "== benchgate: the resolution check (#443) ==========================="
+
+	# A threshold is one number for a whole metric class, and it is only as good as
+	# the assumption that rows in that class have comparable noise. On elps' timing
+	# rows they do not: BenchmarkPackageGetFunParallel is a sub-100ns map lookup
+	# under RunParallel, measured at -benchtime=100ms, and it has a ±24% spread on
+	# IDENTICAL code -- above the 15% gate. It red PR #442, a parser-only change
+	# that cannot reach it, and a re-run with no code change turned it green.
+	#
+	# So a timing row at or above its gate is called a regression only when the move
+	# is bigger than the spread benchstat measured for that row, on those samples.
+	# Everything below is the pair that has to hold together: the fix must silence
+	# the noise AND still fire on a real move, or it is just the gate switched off.
+	NOISE_FIXTURE="${TESTDATA}/benchstat-parallel-noise-443.txt"
+	TRUE_FIXTURE="${TESTDATA}/benchstat-parallel-true-regression.txt"
+
+	# The noise-only half: #443's row, +15.96% p=0.035 over a 15% gate, with the
+	# ±24%/±25% spread the null comparison measured.
+	assert_exit 0 "a timing move INSIDE the row's own measured spread is not a regression" \
+		env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
+	# ...and it is NOT silence. A benchmark that cannot be adjudicated is a standing
+	# problem with the benchmark, and a gate that quietly drops rows is the exact
+	# defect this script exists to prevent.
+	assert_contains "NOISE-FLOOR" "the unresolvable row is REPORTED, not dropped" \
+		env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
+	assert_contains "+15.96%" "the unresolvable row still carries its measured delta" \
+		env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
+	assert_contains "spread ±25%" "the report names the spread it was judged against" \
+		env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
+	assert_contains "cannot resolve them" "the summary line counts unresolvable rows" \
+		env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
+
+	# The true-regression half. Same benchmark, same spread, same flat allocation
+	# columns; only the size of the move differs. If this ever stops failing, the
+	# resolution check has become an off switch.
+	assert_exit 1 "a timing move LARGER than the row's spread is still a regression" \
+		env BENCH_WAIVERS= "$GATE" "$TRUE_FIXTURE"
+	assert_contains "REGRESSION" "the real move is reported as a regression" \
+		env BENCH_WAIVERS= "$GATE" "$TRUE_FIXTURE"
+	assert_contains "+48.00%" "the real move is reported with its delta" \
+		env BENCH_WAIVERS= "$GATE" "$TRUE_FIXTURE"
+
+	# The check is about RESOLUTION, not about size: the same +48% row is a
+	# regression at any threshold below it, and the +15.96% row is suppressed only
+	# because its spread is larger than the move -- not because 16% moves are now
+	# allowed anywhere.
+	assert_exit 0 "the noise row stays unresolvable even with the gate lowered to 1%" \
+		env BENCH_WAIVERS= BENCH_REGRESSION_THRESHOLD_PCT=1 "$GATE" "$NOISE_FIXTURE"
+	assert_contains "NOISE-FLOOR" "...and says so, rather than passing silently" \
+		env BENCH_WAIVERS= BENCH_REGRESSION_THRESHOLD_PCT=1 "$GATE" "$NOISE_FIXTURE"
+
+	# CLASS BOUNDARY. Allocation metrics are exempt, explicitly. They are exact
+	# rather than sampled and they have caught every real regression this gate has
+	# caught; the exemption must not depend on their spread happening to be 0%.
+	# One fixture, three rows, same delta and same spread, differing only in class.
+	ALLOC_SPREAD_FIXTURE="${TESTDATA}/benchstat-alloc-with-spread.txt"
+	assert_exit 1 "an ALLOCATION row is judged on its threshold even with a large spread" \
+		env BENCH_WAIVERS= "$GATE" "$ALLOC_SPREAD_FIXTURE"
+	assert_contains "REGRESSION  github.com/luthersystems/elps/lisp             B/op" \
+		"the B/op row with a ±30% spread is still a regression" \
+		env BENCH_WAIVERS= "$GATE" "$ALLOC_SPREAD_FIXTURE"
+	assert_contains "REGRESSION  github.com/luthersystems/elps/lisp             allocs/op" \
+		"the allocs/op row with a ±30% spread is still a regression" \
+		env BENCH_WAIVERS= "$GATE" "$ALLOC_SPREAD_FIXTURE"
+	assert_contains "NOISE-FLOOR github.com/luthersystems/elps/lisp             sec/op" \
+		"...while the sec/op row with the SAME delta and spread is not" \
+		env BENCH_WAIVERS= "$GATE" "$ALLOC_SPREAD_FIXTURE"
+
+	# WHEN THERE IS NO INTERVAL. benchstat prints "± ∞ ¹" below 6 samples, so there
+	# is no resolution to check against. Those rows fall back to the threshold alone
+	# and must SAY SO -- a check that did not run must never look like one that ran
+	# and passed. (CI uses n=10; this is the n=5 fixtures' case.)
+	assert_exit 1 "a row with no computable interval is still gated on the threshold" \
+		env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-regression-new.txt"
+	assert_contains "resolution check did not run" \
+		"a regression judged without an interval says the check did not run" \
+		env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-regression-new.txt"
+
+	# THE MEASUREMENT ITSELF. A real null comparison -- one tree, two interleaved
+	# runs, CI's sampling parameters -- kept as evidence for the spreads quoted
+	# above. Nothing in it is significant, so it must be clean, which also shows the
+	# NOISE-FLOOR verdicts come from the resolution check rather than from these
+	# benchmarks being odd in some other way.
+	assert_exit 0 "a measured null comparison on identical code is clean" \
+		env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-null-parallel-sandbox.txt"
+
+	# AND THE ONE THAT ACTUALLY FIRED. Same procedure, one tree, both arms; on 2 of
+	# 15 such comparisons the pre-#443 gate reported a REGRESSION. This is trial 8
+	# verbatim: +18.48% p=0.009 over a 15% gate, on code that did not change, with
+	# the offending arm measuring itself at ±19%. It is the live counterpart of the
+	# CI failure in #443, and the reason this check is not a matter of taste.
+	SPURIOUS_FIXTURE="${TESTDATA}/benchstat-null-spurious-firing.txt"
+	assert_exit 0 "a NULL comparison that fired the old gate no longer reds the build" \
+		env BENCH_WAIVERS= "$GATE" "$SPURIOUS_FIXTURE"
+	# NOISE-FLOOR is only ever printed for a row that reached the threshold, so this
+	# is also the proof that the row genuinely WAS over the gate -- i.e. that the
+	# assertion above passes because the row was adjudicated and found unresolvable,
+	# not because it was quietly under the bar all along.
+	assert_contains "NOISE-FLOOR" "...and says so: the row DID cross the gate and could not be resolved" \
+		env BENCH_WAIVERS= "$GATE" "$SPURIOUS_FIXTURE"
+	assert_contains "+18.48%" "the false regression keeps its number in the report" \
+		env BENCH_WAIVERS= "$GATE" "$SPURIOUS_FIXTURE"
+	# The allocation columns of that same run: exact, "all samples are equal". The
+	# contrast is the argument for leaving the 5% allocation gate alone.
+	assert_contains "no-change row" "the allocation rows of the same run are unmoved" \
+		env BENCH_WAIVERS= "$GATE" "$SPURIOUS_FIXTURE"
+
+	# The shipped waivers must not be what makes any of this pass, and must not
+	# rescue the true regression.
+	assert_exit 0 "the noise-floor fixture passes with the SHIPPED waivers too" \
+		"$GATE" "$NOISE_FIXTURE"
+	assert_exit 1 "the shipped waivers do NOT rescue the true regression" \
+		"$GATE" "$TRUE_FIXTURE"
+
+	echo
+	echo "== benchgate: the quantisation check on allocs/op ==================="
+
+	# allocs/op is not a measurement, it is a COUNT -- and `go test` prints it as
+	# int64(mallocs)/int64(b.N), integer division of a quantity that is not a
+	# multiple of b.N. A row whose true cost is 9.985 allocations per operation (the
+	# measured figure for libjson's BenchmarkEncodeOwnMessageLarge at the default
+	# GOGC) prints 9 on one sample and 10 on the next, from GC cadence alone. On a
+	# 9-count row the smallest expressible move is 1/9 = 11.11%, so a 5% gate has
+	# only two reachable verdicts there: the gate is finer than the metric.
+	#
+	# As with the resolution check above, the pair below is what has to hold
+	# together: the fix must silence the truncation flip AND still fire on a real
+	# one-allocation regression, or it is just the allocation gate switched off.
+	QUANT_NULL="${TESTDATA}/benchstat-allocs-quantised-null.txt"
+	QUANT_REAL="${TESTDATA}/benchstat-allocs-one-step-real.txt"
+
+	# The noise-only half: a measured NULL comparison (one binary, two runs) that
+	# the pre-check gate called a regression.
+	assert_exit 0 "a one-allocation step on a row that does not reproduce its count is not a regression" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
+	assert_contains "QUANTISED" "the unresolvable count row is REPORTED, not dropped" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
+	assert_contains "+5.56%" "the quantised row still carries its measured delta" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
+	assert_contains "base 9 allocs/op" "the report names the base count the step was measured against" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
+	assert_contains "allocation-count row(s) moved past the gate" \
+		"the summary line counts quantised rows" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
+
+	# The real half. SAME base count (9), SAME one-allocation move, SAME machine and
+	# sampling parameters -- one escaping allocation really added to the encode
+	# path. It differs only in that the rows reproduce their count, which is what
+	# the check keys on. If this ever stops failing, the quantisation check has
+	# become an off switch for the allocation gate.
+	assert_exit 1 "a one-allocation move on a row that DOES reproduce its count is still a regression" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
+	assert_contains "REGRESSION  github.com/luthersystems/elps/lisp/lisplib/libjson allocs/op EncodeOwnMessageSmall-2" \
+		"the deterministic +11.11% one-allocation row is a regression" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
+	assert_contains "REGRESSION  github.com/luthersystems/elps/lisp/lisplib/libjson allocs/op EncodeOwnMessageMedium-2" \
+		"...on both rows that reproduce, not just one" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
+	# The jittery row, carrying the SAME real regression: two whole counts is not
+	# reachable by truncation, so it is adjudicated normally despite the spread.
+	assert_contains "REGRESSION  github.com/luthersystems/elps/lisp/lisplib/libjson allocs/op EncodeOwnMessageLarge-2" \
+		"a TWO-count move is a regression even on a row that does not reproduce" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
+	assert_not_contains "QUANTISED" "nothing in the real regression is written off as quantisation" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
+
+	# The check is about the METRIC BEING A COUNT, not about size. Lowering the
+	# allocation gate to 1% must not make the truncation flip gateable -- one
+	# allocation is still the smallest thing a 9-count row can say.
+	assert_exit 0 "the quantised row stays unresolvable with the allocation gate at 1%" \
+		env BENCH_WAIVERS= BENCH_ALLOC_THRESHOLD_PCT=1 "$GATE" "$QUANT_NULL"
+	assert_contains "QUANTISED" "...and says so, rather than passing silently" \
+		env BENCH_WAIVERS= BENCH_ALLOC_THRESHOLD_PCT=1 "$GATE" "$QUANT_NULL"
+
+	# CLASS BOUNDARY, the other way. The check applies to COUNTS only. B/op is an
+	# allocation metric whose quantum is one byte, so a large B/op regression must
+	# not be able to buy itself this exemption -- the existing alloc fixtures are
+	# the guard, re-asserted here against the new code path.
+	assert_exit 1 "a large B/op + allocs/op regression is untouched by the quantisation check" \
+		env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
+	assert_not_contains "QUANTISED" "...and no row in it is written off as quantisation" \
+		env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
+	# 128.0k allocs/op moving +8.00% is 10240 allocations, not one. That the gate
+	# reads the SCALE ("k") rather than the printed mantissa is what keeps it from
+	# treating that as a 10-allocation step and suppressing it.
+	assert_contains "REGRESSION" "a scaled count cell (128.0k) is read at its true magnitude" \
+		env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
+
+	# NO INTERVAL. benchstat prints "± ∞ ¹" below 6 samples, so there is no evidence
+	# either way about whether the row reproduces. Those rows fall back to the
+	# threshold alone and must SAY SO, exactly as the timing resolution check does.
+	assert_contains "quantisation check did not run" \
+		"a count row judged without an interval says the check did not run" \
+		env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
+
+	# THE ARITHMETIC, at every edge at once. One synthetic table, five allocs/op
+	# rows differing only in base count, spread, and how many counts the move is
+	# worth. The last two rows are the containment argument: one allocation clears
+	# the 5% gate at 20 counts and below, so from 21 up the check cannot change a
+	# verdict that was not already "below-gate".
+	QUANT_EDGE="${TESTDATA}/benchstat-allocs-quantisation-boundary.txt"
+	assert_exit 1 "the boundary table still fails: two of its five rows are real" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
+	assert_contains "REGRESSION  github.com/luthersystems/elps/lisp             allocs/op ReproducingNine-2" \
+		"9 -> 10 with no spread is a REGRESSION" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
+	assert_contains "QUANTISED   github.com/luthersystems/elps/lisp             allocs/op JitteryNine-2" \
+		"...and the SAME delta on a row that does not reproduce is QUANTISED" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
+	assert_contains "REGRESSION  github.com/luthersystems/elps/lisp             allocs/op JitteryNineTwoStep-2" \
+		"a TWO-count move on that same jittery row is still a REGRESSION" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
+	assert_contains "QUANTISED   github.com/luthersystems/elps/lisp             allocs/op JitteryTwenty-2" \
+		"20 allocs/op is the largest base the check can reach" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
+	assert_contains "below-gate  github.com/luthersystems/elps/lisp             allocs/op JitteryTwentyOne-2" \
+		"...and at 21 a one-count move was already below the gate, untouched" \
+		env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
+
+	echo
+	echo "== benchgate: the threshold is the only thing holding it back ======="
+
+	# Proves the parser genuinely SEES the real comparison's significant deltas and
+	# is silent because of the threshold, not because it failed to parse. If the
+	# table format ever changes out from under the parser, this assertion flips.
+	assert_exit 1 "the REAL clean fixture DOES fire once the gates are lowered to 0%" \
+		env BENCH_REGRESSION_THRESHOLD_PCT=0 BENCH_ALLOC_THRESHOLD_PCT=0 \
+		"$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
+	assert_exit 1 "old-format clean fixture DOES fire at 0%" \
+		env BENCH_REGRESSION_THRESHOLD_PCT=0 BENCH_ALLOC_THRESHOLD_PCT=0 \
+		"$GATE" "${TESTDATA}/benchstat-clean-old.txt"
+	assert_exit 0 "improvements still do not fire at a 0% gate" \
+		env BENCH_REGRESSION_THRESHOLD_PCT=0 BENCH_ALLOC_THRESHOLD_PCT=0 \
+		"$GATE" "${TESTDATA}/benchstat-improvement-new.txt"
+	assert_exit 0 "p-insignificant rows still do not fire at a 0% gate" \
+		env BENCH_REGRESSION_THRESHOLD_PCT=0 BENCH_ALLOC_THRESHOLD_PCT=0 \
+		"$GATE" "${TESTDATA}/benchstat-insignificant-new.txt"
+
+	echo
+	echo "== benchgate: uninterpretable input fails loudly ===================="
+
+	assert_exit 2 "benchstat crash output (no comparison rows) is an error, not 'clean'" \
+		"$GATE" "${TESTDATA}/benchstat-crash.txt"
+
+	# A p-value this parser cannot read must fail closed. Truncating at the first
+	# non-digit turns p=1.5e-05 into 1.5 and drops a +99% regression as
+	# insignificant -- the one parse path that would fail OPEN.
+	assert_exit 1 "scientific-notation p-value is read as significant, not dropped" \
+		"$GATE" "${TESTDATA}/benchstat-sci-pvalue.txt"
+	assert_contains "+99.00%" "the sci-notation row is the one reported" \
+		"$GATE" "${TESTDATA}/benchstat-sci-pvalue.txt"
+	assert_exit 2 "a p-value that is not a number at all fails closed" \
+		"$GATE" "${TESTDATA}/benchstat-badpvalue.txt"
+
+	# A table where nothing moved is a SUCCESSFUL comparison, not an unreadable one.
+	assert_exit 0 "an all-'~' table with no geomean row is clean, not an error" \
+		"$GATE" "${TESTDATA}/benchstat-tilde-only.txt"
+	assert_contains "no-change row" "the all-'~' table reports interpreted rows" \
+		"$GATE" "${TESTDATA}/benchstat-tilde-only.txt"
+
+	# Old-format "(all equal)" rows are DATA, not footnotes, but they contain the
+	# words "all equal"/"samples". A footnote filter written as a substring match
+	# discards them, the table parses to zero rows, and a perfectly clean comparison
+	# reports a spurious exit 2. Anchoring on the leading superscript is the fix;
+	# this fixture is what proves it, since every row in it is an all-equal row.
+	assert_exit 0 "old-format all-'(all equal)' table is clean, not an exit-2 error" \
+		"$GATE" "${TESTDATA}/benchstat-allequal-old.txt"
+	assert_contains "3 no-change row(s)" "every (all equal) row survives the footnote filter" \
+		"$GATE" "${TESTDATA}/benchstat-allequal-old.txt"
+
+	empty_file="$(mktemp)"
+	assert_exit 2 "empty benchstat output is an error, not 'clean'" \
+		"$GATE" "$empty_file"
+	rm -f "$empty_file"
+
+	assert_exit 2 "missing input file is an error, not 'clean'" \
+		"$GATE" "${TESTDATA}/does-not-exist.txt"
+	assert_exit 2 "missing argument is a usage error" "$GATE"
+
+fi
 echo
-echo "== benchstat-gate: the resolution check (#443) ==========================="
-
-# A threshold is one number for a whole metric class, and it is only as good as
-# the assumption that rows in that class have comparable noise. On elps' timing
-# rows they do not: BenchmarkPackageGetFunParallel is a sub-100ns map lookup
-# under RunParallel, measured at -benchtime=100ms, and it has a ±24% spread on
-# IDENTICAL code -- above the 15% gate. It red PR #442, a parser-only change
-# that cannot reach it, and a re-run with no code change turned it green.
-#
-# So a timing row at or above its gate is called a regression only when the move
-# is bigger than the spread benchstat measured for that row, on those samples.
-# Everything below is the pair that has to hold together: the fix must silence
-# the noise AND still fire on a real move, or it is just the gate switched off.
-NOISE_FIXTURE="${TESTDATA}/benchstat-parallel-noise-443.txt"
-TRUE_FIXTURE="${TESTDATA}/benchstat-parallel-true-regression.txt"
-
-# The noise-only half: #443's row, +15.96% p=0.035 over a 15% gate, with the
-# ±24%/±25% spread the null comparison measured.
-assert_exit 0 "a timing move INSIDE the row's own measured spread is not a regression" \
-	env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
-# ...and it is NOT silence. A benchmark that cannot be adjudicated is a standing
-# problem with the benchmark, and a gate that quietly drops rows is the exact
-# defect this script exists to prevent.
-assert_contains "NOISE-FLOOR" "the unresolvable row is REPORTED, not dropped" \
-	env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
-assert_contains "+15.96%" "the unresolvable row still carries its measured delta" \
-	env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
-assert_contains "spread ±25%" "the report names the spread it was judged against" \
-	env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
-assert_contains "cannot resolve them" "the summary line counts unresolvable rows" \
-	env BENCH_WAIVERS= "$GATE" "$NOISE_FIXTURE"
-
-# The true-regression half. Same benchmark, same spread, same flat allocation
-# columns; only the size of the move differs. If this ever stops failing, the
-# resolution check has become an off switch.
-assert_exit 1 "a timing move LARGER than the row's spread is still a regression" \
-	env BENCH_WAIVERS= "$GATE" "$TRUE_FIXTURE"
-assert_contains "REGRESSION" "the real move is reported as a regression" \
-	env BENCH_WAIVERS= "$GATE" "$TRUE_FIXTURE"
-assert_contains "+48.00%" "the real move is reported with its delta" \
-	env BENCH_WAIVERS= "$GATE" "$TRUE_FIXTURE"
-
-# The check is about RESOLUTION, not about size: the same +48% row is a
-# regression at any threshold below it, and the +15.96% row is suppressed only
-# because its spread is larger than the move -- not because 16% moves are now
-# allowed anywhere.
-assert_exit 0 "the noise row stays unresolvable even with the gate lowered to 1%" \
-	env BENCH_WAIVERS= BENCH_REGRESSION_THRESHOLD_PCT=1 "$GATE" "$NOISE_FIXTURE"
-assert_contains "NOISE-FLOOR" "...and says so, rather than passing silently" \
-	env BENCH_WAIVERS= BENCH_REGRESSION_THRESHOLD_PCT=1 "$GATE" "$NOISE_FIXTURE"
-
-# CLASS BOUNDARY. Allocation metrics are exempt, explicitly. They are exact
-# rather than sampled and they have caught every real regression this gate has
-# caught; the exemption must not depend on their spread happening to be 0%.
-# One fixture, three rows, same delta and same spread, differing only in class.
-ALLOC_SPREAD_FIXTURE="${TESTDATA}/benchstat-alloc-with-spread.txt"
-assert_exit 1 "an ALLOCATION row is judged on its threshold even with a large spread" \
-	env BENCH_WAIVERS= "$GATE" "$ALLOC_SPREAD_FIXTURE"
-assert_contains "REGRESSION  github.com/luthersystems/elps/lisp             B/op" \
-	"the B/op row with a ±30% spread is still a regression" \
-	env BENCH_WAIVERS= "$GATE" "$ALLOC_SPREAD_FIXTURE"
-assert_contains "REGRESSION  github.com/luthersystems/elps/lisp             allocs/op" \
-	"the allocs/op row with a ±30% spread is still a regression" \
-	env BENCH_WAIVERS= "$GATE" "$ALLOC_SPREAD_FIXTURE"
-assert_contains "NOISE-FLOOR github.com/luthersystems/elps/lisp             sec/op" \
-	"...while the sec/op row with the SAME delta and spread is not" \
-	env BENCH_WAIVERS= "$GATE" "$ALLOC_SPREAD_FIXTURE"
-
-# WHEN THERE IS NO INTERVAL. benchstat prints "± ∞ ¹" below 6 samples, so there
-# is no resolution to check against. Those rows fall back to the threshold alone
-# and must SAY SO -- a check that did not run must never look like one that ran
-# and passed. (CI uses n=10; this is the n=5 fixtures' case.)
-assert_exit 1 "a row with no computable interval is still gated on the threshold" \
-	env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-regression-new.txt"
-assert_contains "resolution check did not run" \
-	"a regression judged without an interval says the check did not run" \
-	env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-regression-new.txt"
-
-# THE MEASUREMENT ITSELF. A real null comparison -- one tree, two interleaved
-# runs, CI's sampling parameters -- kept as evidence for the spreads quoted
-# above. Nothing in it is significant, so it must be clean, which also shows the
-# NOISE-FLOOR verdicts come from the resolution check rather than from these
-# benchmarks being odd in some other way.
-assert_exit 0 "a measured null comparison on identical code is clean" \
-	env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-null-parallel-sandbox.txt"
-
-# AND THE ONE THAT ACTUALLY FIRED. Same procedure, one tree, both arms; on 2 of
-# 15 such comparisons the pre-#443 gate reported a REGRESSION. This is trial 8
-# verbatim: +18.48% p=0.009 over a 15% gate, on code that did not change, with
-# the offending arm measuring itself at ±19%. It is the live counterpart of the
-# CI failure in #443, and the reason this check is not a matter of taste.
-SPURIOUS_FIXTURE="${TESTDATA}/benchstat-null-spurious-firing.txt"
-assert_exit 0 "a NULL comparison that fired the old gate no longer reds the build" \
-	env BENCH_WAIVERS= "$GATE" "$SPURIOUS_FIXTURE"
-# NOISE-FLOOR is only ever printed for a row that reached the threshold, so this
-# is also the proof that the row genuinely WAS over the gate -- i.e. that the
-# assertion above passes because the row was adjudicated and found unresolvable,
-# not because it was quietly under the bar all along.
-assert_contains "NOISE-FLOOR" "...and says so: the row DID cross the gate and could not be resolved" \
-	env BENCH_WAIVERS= "$GATE" "$SPURIOUS_FIXTURE"
-assert_contains "+18.48%" "the false regression keeps its number in the report" \
-	env BENCH_WAIVERS= "$GATE" "$SPURIOUS_FIXTURE"
-# The allocation columns of that same run: exact, "all samples are equal". The
-# contrast is the argument for leaving the 5% allocation gate alone.
-assert_contains "no-change row" "the allocation rows of the same run are unmoved" \
-	env BENCH_WAIVERS= "$GATE" "$SPURIOUS_FIXTURE"
-
-# The shipped waivers must not be what makes any of this pass, and must not
-# rescue the true regression.
-assert_exit 0 "the noise-floor fixture passes with the SHIPPED waivers too" \
-	"$GATE" "$NOISE_FIXTURE"
-assert_exit 1 "the shipped waivers do NOT rescue the true regression" \
-	"$GATE" "$TRUE_FIXTURE"
-
-echo
-echo "== benchstat-gate: the quantisation check on allocs/op ==================="
-
-# allocs/op is not a measurement, it is a COUNT -- and `go test` prints it as
-# int64(mallocs)/int64(b.N), integer division of a quantity that is not a
-# multiple of b.N. A row whose true cost is 9.985 allocations per operation (the
-# measured figure for libjson's BenchmarkEncodeOwnMessageLarge at the default
-# GOGC) prints 9 on one sample and 10 on the next, from GC cadence alone. On a
-# 9-count row the smallest expressible move is 1/9 = 11.11%, so a 5% gate has
-# only two reachable verdicts there: the gate is finer than the metric.
-#
-# As with the resolution check above, the pair below is what has to hold
-# together: the fix must silence the truncation flip AND still fire on a real
-# one-allocation regression, or it is just the allocation gate switched off.
-QUANT_NULL="${TESTDATA}/benchstat-allocs-quantised-null.txt"
-QUANT_REAL="${TESTDATA}/benchstat-allocs-one-step-real.txt"
-
-# The noise-only half: a measured NULL comparison (one binary, two runs) that
-# the pre-check gate called a regression.
-assert_exit 0 "a one-allocation step on a row that does not reproduce its count is not a regression" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
-assert_contains "QUANTISED" "the unresolvable count row is REPORTED, not dropped" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
-assert_contains "+5.56%" "the quantised row still carries its measured delta" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
-assert_contains "base 9 allocs/op" "the report names the base count the step was measured against" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
-assert_contains "allocation-count row(s) moved past the gate" \
-	"the summary line counts quantised rows" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_NULL"
-
-# The real half. SAME base count (9), SAME one-allocation move, SAME machine and
-# sampling parameters -- one escaping allocation really added to the encode
-# path. It differs only in that the rows reproduce their count, which is what
-# the check keys on. If this ever stops failing, the quantisation check has
-# become an off switch for the allocation gate.
-assert_exit 1 "a one-allocation move on a row that DOES reproduce its count is still a regression" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
-assert_contains "REGRESSION  github.com/luthersystems/elps/lisp/lisplib/libjson allocs/op EncodeOwnMessageSmall-2" \
-	"the deterministic +11.11% one-allocation row is a regression" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
-assert_contains "REGRESSION  github.com/luthersystems/elps/lisp/lisplib/libjson allocs/op EncodeOwnMessageMedium-2" \
-	"...on both rows that reproduce, not just one" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
-# The jittery row, carrying the SAME real regression: two whole counts is not
-# reachable by truncation, so it is adjudicated normally despite the spread.
-assert_contains "REGRESSION  github.com/luthersystems/elps/lisp/lisplib/libjson allocs/op EncodeOwnMessageLarge-2" \
-	"a TWO-count move is a regression even on a row that does not reproduce" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
-assert_not_contains "QUANTISED" "nothing in the real regression is written off as quantisation" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_REAL"
-
-# The check is about the METRIC BEING A COUNT, not about size. Lowering the
-# allocation gate to 1% must not make the truncation flip gateable -- one
-# allocation is still the smallest thing a 9-count row can say.
-assert_exit 0 "the quantised row stays unresolvable with the allocation gate at 1%" \
-	env BENCH_WAIVERS= BENCH_ALLOC_THRESHOLD_PCT=1 "$GATE" "$QUANT_NULL"
-assert_contains "QUANTISED" "...and says so, rather than passing silently" \
-	env BENCH_WAIVERS= BENCH_ALLOC_THRESHOLD_PCT=1 "$GATE" "$QUANT_NULL"
-
-# CLASS BOUNDARY, the other way. The check applies to COUNTS only. B/op is an
-# allocation metric whose quantum is one byte, so a large B/op regression must
-# not be able to buy itself this exemption -- the existing alloc fixtures are
-# the guard, re-asserted here against the new code path.
-assert_exit 1 "a large B/op + allocs/op regression is untouched by the quantisation check" \
-	env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
-assert_not_contains "QUANTISED" "...and no row in it is written off as quantisation" \
-	env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
-# 128.0k allocs/op moving +8.00% is 10240 allocations, not one. That the gate
-# reads the SCALE ("k") rather than the printed mantissa is what keeps it from
-# treating that as a 10-allocation step and suppressing it.
-assert_contains "REGRESSION" "a scaled count cell (128.0k) is read at its true magnitude" \
-	env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
-
-# NO INTERVAL. benchstat prints "± ∞ ¹" below 6 samples, so there is no evidence
-# either way about whether the row reproduces. Those rows fall back to the
-# threshold alone and must SAY SO, exactly as the timing resolution check does.
-assert_contains "quantisation check did not run" \
-	"a count row judged without an interval says the check did not run" \
-	env BENCH_WAIVERS= "$GATE" "${TESTDATA}/benchstat-alloc-regression.txt"
-
-# THE ARITHMETIC, at every edge at once. One synthetic table, five allocs/op
-# rows differing only in base count, spread, and how many counts the move is
-# worth. The last two rows are the containment argument: one allocation clears
-# the 5% gate at 20 counts and below, so from 21 up the check cannot change a
-# verdict that was not already "below-gate".
-QUANT_EDGE="${TESTDATA}/benchstat-allocs-quantisation-boundary.txt"
-assert_exit 1 "the boundary table still fails: two of its five rows are real" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
-assert_contains "REGRESSION  github.com/luthersystems/elps/lisp             allocs/op ReproducingNine-2" \
-	"9 -> 10 with no spread is a REGRESSION" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
-assert_contains "QUANTISED   github.com/luthersystems/elps/lisp             allocs/op JitteryNine-2" \
-	"...and the SAME delta on a row that does not reproduce is QUANTISED" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
-assert_contains "REGRESSION  github.com/luthersystems/elps/lisp             allocs/op JitteryNineTwoStep-2" \
-	"a TWO-count move on that same jittery row is still a REGRESSION" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
-assert_contains "QUANTISED   github.com/luthersystems/elps/lisp             allocs/op JitteryTwenty-2" \
-	"20 allocs/op is the largest base the check can reach" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
-assert_contains "below-gate  github.com/luthersystems/elps/lisp             allocs/op JitteryTwentyOne-2" \
-	"...and at 21 a one-count move was already below the gate, untouched" \
-	env BENCH_WAIVERS= "$GATE" "$QUANT_EDGE"
-
-echo
-echo "== benchstat-gate: the threshold is the only thing holding it back ======="
-
-# Proves the parser genuinely SEES the real comparison's significant deltas and
-# is silent because of the threshold, not because it failed to parse. If the
-# table format ever changes out from under the parser, this assertion flips.
-assert_exit 1 "the REAL clean fixture DOES fire once the gates are lowered to 0%" \
-	env BENCH_REGRESSION_THRESHOLD_PCT=0 BENCH_ALLOC_THRESHOLD_PCT=0 \
-	"$GATE" "${TESTDATA}/benchstat-clean-ci.txt"
-assert_exit 1 "old-format clean fixture DOES fire at 0%" \
-	env BENCH_REGRESSION_THRESHOLD_PCT=0 BENCH_ALLOC_THRESHOLD_PCT=0 \
-	"$GATE" "${TESTDATA}/benchstat-clean-old.txt"
-assert_exit 0 "improvements still do not fire at a 0% gate" \
-	env BENCH_REGRESSION_THRESHOLD_PCT=0 BENCH_ALLOC_THRESHOLD_PCT=0 \
-	"$GATE" "${TESTDATA}/benchstat-improvement-new.txt"
-assert_exit 0 "p-insignificant rows still do not fire at a 0% gate" \
-	env BENCH_REGRESSION_THRESHOLD_PCT=0 BENCH_ALLOC_THRESHOLD_PCT=0 \
-	"$GATE" "${TESTDATA}/benchstat-insignificant-new.txt"
-
-echo
-echo "== benchstat-gate: uninterpretable input fails loudly ===================="
-
-assert_exit 2 "benchstat crash output (no comparison rows) is an error, not 'clean'" \
-	"$GATE" "${TESTDATA}/benchstat-crash.txt"
-
-# A p-value this parser cannot read must fail closed. Truncating at the first
-# non-digit turns p=1.5e-05 into 1.5 and drops a +99% regression as
-# insignificant -- the one parse path that would fail OPEN.
-assert_exit 1 "scientific-notation p-value is read as significant, not dropped" \
-	"$GATE" "${TESTDATA}/benchstat-sci-pvalue.txt"
-assert_contains "+99.00%" "the sci-notation row is the one reported" \
-	"$GATE" "${TESTDATA}/benchstat-sci-pvalue.txt"
-assert_exit 2 "a p-value that is not a number at all fails closed" \
-	"$GATE" "${TESTDATA}/benchstat-badpvalue.txt"
-
-# A table where nothing moved is a SUCCESSFUL comparison, not an unreadable one.
-assert_exit 0 "an all-'~' table with no geomean row is clean, not an error" \
-	"$GATE" "${TESTDATA}/benchstat-tilde-only.txt"
-assert_contains "no-change row" "the all-'~' table reports interpreted rows" \
-	"$GATE" "${TESTDATA}/benchstat-tilde-only.txt"
-
-# Old-format "(all equal)" rows are DATA, not footnotes, but they contain the
-# words "all equal"/"samples". A footnote filter written as a substring match
-# discards them, the table parses to zero rows, and a perfectly clean comparison
-# reports a spurious exit 2. Anchoring on the leading superscript is the fix;
-# this fixture is what proves it, since every row in it is an all-equal row.
-assert_exit 0 "old-format all-'(all equal)' table is clean, not an exit-2 error" \
-	"$GATE" "${TESTDATA}/benchstat-allequal-old.txt"
-assert_contains "3 no-change row(s)" "every (all equal) row survives the footnote filter" \
-	"$GATE" "${TESTDATA}/benchstat-allequal-old.txt"
-
-empty_file="$(mktemp)"
-assert_exit 2 "empty benchstat output is an error, not 'clean'" \
-	"$GATE" "$empty_file"
-rm -f "$empty_file"
-
-assert_exit 2 "missing input file is an error, not 'clean'" \
-	"$GATE" "${TESTDATA}/does-not-exist.txt"
-assert_exit 2 "missing argument is a usage error" "$GATE"
-
-echo
-echo "== benchstat-gate: regression proof for the original broken pattern ======"
+echo "== benchgate: regression proof for the original broken pattern ======"
 
 # The gate this replaced. Documented here so nobody reintroduces it: it does not
 # match ANY real benchstat output, which is the entire bug.
@@ -748,7 +804,7 @@ ARMS_TMP="$(mktemp -d)"
 # package sitting in the tree.
 EMPTY_PKG_DIR=""
 
-trap 'rm -rf "$ARMS_TMP" ${EMPTY_PKG_DIR:+"$EMPTY_PKG_DIR"}' EXIT
+trap 'rm -rf "$ARMS_TMP" ${EMPTY_PKG_DIR:+"$EMPTY_PKG_DIR"} ${BENCHGATE_TMP:+"$BENCHGATE_TMP"}' EXIT
 
 # Six samples so the "need >= 6" advisory does not fire in the clean case.
 arms_fixture() { # <file> <cpu> <suffix> [extra-benchmark-name]
@@ -1221,8 +1277,9 @@ BENCH_COMPARE_SH="${SCRIPT_DIR}/bench-compare.sh"
 # A sandbox mimicking the workflow's two-tree layout: $GITHUB_WORKSPACE/pr
 # holding stub gate scripts, and a working directory holding the two arms.
 # Stubs, not the real gate -- this section tests bench-compare.sh's plumbing
-# (branching, $GITHUB_OUTPUT, annotations), and benchstat-gate.sh's own verdict
-# logic is already covered by the fixture sections above.
+# (branching, $GITHUB_OUTPUT, annotations), and cmd/benchgate's own verdict
+# logic is already covered by the fixture sections above and by
+# `go test ./cmd/benchgate`.
 make_compare_sandbox() {
 	local dir="$1" arms_rc="$2" gate_rc="$3"
 	mkdir -p "${dir}/pr/scripts" "${dir}/work" "${dir}/bin"
@@ -1237,13 +1294,16 @@ make_compare_sandbox() {
 		echo "echo '  WAIVED      pkg B/op Encode-2 delta=+12.45% accepted: ceiling 14%'"
 		echo "echo 'stub gate report'"
 		echo "exit ${gate_rc}"
-	} > "${dir}/pr/scripts/benchstat-gate.sh"
+	} > "${dir}/bin/benchgate"
 	{
 		echo '#!/usr/bin/env bash'
 		echo "echo 'stub benchstat table'"
 	} > "${dir}/bin/benchstat"
+	# The shipped waiver list has to exist in the sandbox's PR tree, because
+	# bench-compare.sh names it on the gate's command line.
+	: > "${dir}/pr/scripts/benchstat-waivers.txt"
 	chmod +x "${dir}/pr/scripts/bench-arms-check.sh" \
-		"${dir}/pr/scripts/benchstat-gate.sh" "${dir}/bin/benchstat"
+		"${dir}/bin/benchgate" "${dir}/bin/benchstat"
 	printf 'baseline rows\n' > "${dir}/work/bench-baseline.txt"
 	printf 'current rows\n' > "${dir}/work/bench-current.txt"
 }
@@ -1257,7 +1317,7 @@ compare_case() {
 	dir="$(mktemp -d)"
 	make_compare_sandbox "$dir" "$arms_rc" "$gate_rc"
 	case "$mode" in
-		missing-scripts) rm -f "${dir}/pr/scripts/benchstat-gate.sh" \
+		missing-scripts) rm -f "${dir}/bin/benchgate" \
 			"${dir}/pr/scripts/bench-arms-check.sh" ;;
 		empty-baseline) : > "${dir}/work/bench-baseline.txt" ;;
 	esac
@@ -1399,10 +1459,39 @@ for s in bench-run-arms.sh bench-compare.sh bench-gate-fail.sh require-jobs-succ
 	fi
 done
 
-if [ -n "$(invoked_in_any 'scripts/benchstat-gate.sh' "${BENCH_PLUMBING[@]}")" ]; then
-	ok "the benchmark plumbing INVOKES scripts/benchstat-gate.sh (not just mentions it)"
+# The gate is cmd/benchgate now (issue #538). Two halves, and both matter: the
+# workflow must BUILD it from the PR tree (so a PR that changes the gate is
+# adjudicated by its own version), and bench-compare.sh must RUN it. Anchored
+# on invocations rather than substrings, because these files name the gate in
+# explanatory comments too.
+if [ -n "$(invoked_in_any './cmd/benchgate' "${BENCH_PLUMBING[@]}")" ]; then
+	ok "the benchmark plumbing BUILDS ./cmd/benchgate from the PR tree"
 else
-	bad "nothing in the benchmark plumbing invokes scripts/benchstat-gate.sh — logic reinlined or removed?"
+	bad "nothing in the benchmark plumbing builds ./cmd/benchgate — the gate binary would be missing at runtime"
+fi
+if [ -n "$(invoked_in_any 'benchgate' "$BENCH_COMPARE")" ]; then
+	ok "bench-compare.sh INVOKES the benchgate binary (not just mentions it)"
+else
+	bad "bench-compare.sh does not invoke benchgate — logic reinlined or removed?"
+fi
+# The Go side of the same gate. `go test ./cmd/benchgate` replays the whole
+# fixture corpus, and it is a REQUIRED check only because the elps workflow runs
+# the test suite; if that stops, the corpus stops being adjudicated anywhere
+# except this file's (Go-toolchain-dependent) section above.
+if [ -d "${REPO_ROOT}/cmd/benchgate" ]; then
+	ok "cmd/benchgate exists"
+else
+	bad "cmd/benchgate is missing — the benchmark regression gate has no implementation"
+fi
+if [ -f "${REPO_ROOT}/cmd/benchgate/gate_test.go" ]; then
+	ok "cmd/benchgate/gate_test.go exists (the fixture corpus is a Go test suite)"
+else
+	bad "cmd/benchgate/gate_test.go is missing — the fixture corpus is no longer a Go test suite"
+fi
+if [ -f "${REPO_ROOT}/scripts/benchstat-gate.sh" ]; then
+	bad "scripts/benchstat-gate.sh is back — two gates means fixes stop porting between them, which is what #538 removed"
+else
+	ok "the retired shell gate is gone (cmd/benchgate is the only adjudicator)"
 fi
 
 # The waiver file the gate reads by default must exist in the repository, or
@@ -1464,7 +1553,7 @@ fi
 # pool is heterogeneous: consecutive runs of IDENTICAL code landed on an EPYC
 # 7763 and an EPYC 9V74, and because benchstat keys its configuration off the
 # goos/goarch/cpu headers `go test` emits, it refused to pair them and emitted
-# zero comparison rows -- which benchstat-gate.sh correctly calls exit 2 and
+# zero comparison rows -- which benchgate correctly calls exit 2 and
 # the workflow turns into a hard failure. A gate that flaps on which machine
 # it drew teaches people to re-run it, which is how a real regression gets
 # waved through.

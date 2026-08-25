@@ -1,0 +1,5 @@
+# Self-test fixture: a waiver whose row IS present in the comparison and is not
+# regressing above the gate (preheat allocs/op moved +4.79%, under the 10%
+# gate). The waiver is doing nothing, which is the signal to delete it -- so it
+# must be reported, not silently carried forever.
+github.com/luthersystems/substrate/internal/substrate/shiro/preheat | PhylumPreheater_initPhylum | allocs/op | 15 | 2099-01-01 | substrate#392 | a waiver that is no longer needed

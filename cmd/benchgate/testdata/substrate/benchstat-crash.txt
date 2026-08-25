@@ -1,0 +1,3 @@
+benchstat: bench-baseline.txt:12: parsing iteration count: invalid syntax
+benchstat: bench-current.txt:3: parsing iteration count: invalid syntax
+benchstat: no data to process

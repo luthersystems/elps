@@ -1,0 +1,14 @@
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/substrate/cmd/shirotester/cmd
+                                    │     base     │              pr               │
+                                    │    sec/op    │    sec/op     vs base         │
+UnitTestsShared/TestFile_main/add-4   5.443m ± ∞ ¹   5.446m ± ∞ ¹  ~ (p=1.000 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+pkg: github.com/luthersystems/substrate/internal/substrate/shiro/libelpspath
+        │    base     │               pr               │
+        │    B/op     │    B/op      vs base           │
+Chain-4   224.0 ± ∞ ¹   224.0 ± ∞ ¹  ~ (p=1.000 n=5) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal

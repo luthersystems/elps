@@ -109,8 +109,8 @@ func BenchmarkEncodeOwnMessageMedium(b *testing.B) { benchOwnMessage(b, 172, 146
 // nothing survives poolCleanup that could.
 //
 // The consequence is for the CI gate, not for this file: a 9-count row can only
-// express a move of 11.11% or nothing, so scripts/benchstat-gate.sh reports a
+// express a move of 11.11% or nothing, so cmd/benchgate reports a
 // one-allocation step here as QUANTISED rather than as a regression.  See the
-// quantisation-check note in that script.  The Small and Medium rows above
+// quantisation-check note in that package's doc.  The Small and Medium rows above
 // reproduce exactly and stay gateable at one allocation.
 func BenchmarkEncodeOwnMessageLarge(b *testing.B) { benchOwnMessage(b, 3410, 295000) }

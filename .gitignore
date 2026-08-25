@@ -4,6 +4,9 @@
 # silently kept new analysistest stub packages out of the repository
 # (they existed locally, so tests passed locally and failed in CI).
 /elps
+# The benchgate binary, when `go build ./cmd/benchgate` is run from the repo
+# root. Anchored like /elps above so it cannot match cmd/benchgate/ itself.
+/benchgate
 .firecrawl/
 .claude/settings.local.json
 .claude/worktrees/

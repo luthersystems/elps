@@ -1,0 +1,34 @@
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/substrate/cmd/shirotester/cmd
+                                    │     base     │              pr               │
+                                    │    sec/op    │    sec/op     vs base         │
+UnitTestsShared/TestFile_main/add-4   5.443m ± ∞ ¹   9.977m ± ∞ ¹  +83.31% (p=0.008 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                                    │     base      │               pr               │
+                                    │     B/op      │     B/op       vs base         │
+UnitTestsShared/TestFile_main/add-4   4.897Mi ± ∞ ¹   4.898Mi ± ∞ ¹  ~ (p=0.087 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+pkg: github.com/luthersystems/substrate/internal/substrate/shiro/libelpspath
+        │     base     │                 pr                 │
+        │    sec/op    │    sec/op     vs base              │
+Chain-4   151.3n ± ∞ ¹   162.1n ± ∞ ¹  +7.14% (p=0.008 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+pkg: github.com/luthersystems/substrate/internal/substrate/shirocore
+                                                  │     base     │                 pr                 │
+                                                  │    sec/op    │    sec/op     vs base              │
+Utils/$load-4                                       13.35m ± ∞ ¹   13.42m ± ∞ ¹       ~ (p=1.000 n=5)
+Utils/tomulset-no-memoize-benchmark-4                1.556 ± ∞ ¹    2.431 ± ∞ ¹  +56.23% (p=0.008 n=5)
+Utils/trim-4                                        1.301m ± ∞ ¹   1.298m ± ∞ ¹       ~ (p=0.841 n=5)
+geomean                                             53.15m         66.72m       +25.53%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                                                  │     base      │                 pr                  │
+                                                  │  allocs/op    │  allocs/op     vs base              │
+Utils/$load-4                                       223.8k ± ∞ ¹    223.8k ± ∞ ¹       ~ (p=0.087 n=5)
+Utils/tomulset-no-memoize-benchmark-4               15.32M ± ∞ ¹    22.98M ± ∞ ¹  +50.00% (p=0.008 n=5)
+geomean                                             620.4k          712.9k        +14.91%
+¹ need >= 6 samples for confidence interval at level 0.95

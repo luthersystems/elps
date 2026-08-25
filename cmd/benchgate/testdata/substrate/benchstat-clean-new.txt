@@ -1,0 +1,62 @@
+goos: linux
+goarch: arm64
+pkg: github.com/luthersystems/substrate/cmd/shirotester/cmd
+                                    │     base     │              pr               │
+                                    │    sec/op    │    sec/op     vs base         │
+UnitTestsShared/TestFile_main/add-4   5.443m ± ∞ ¹   5.446m ± ∞ ¹  ~ (p=1.000 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                                    │     base      │               pr               │
+                                    │     B/op      │     B/op       vs base         │
+UnitTestsShared/TestFile_main/add-4   4.897Mi ± ∞ ¹   4.898Mi ± ∞ ¹  ~ (p=0.087 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+pkg: github.com/luthersystems/substrate/cmd/substratehcp/stresstest
+               │     base     │               pr                │
+               │    sec/op    │    sec/op     vs base           │
+MockParallel-4   105.9m ± ∞ ¹   109.6m ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+               │    base     │               pr               │
+               │    mocks    │    mocks     vs base           │
+MockParallel-4   1.000 ± ∞ ¹   1.000 ± ∞ ¹  ~ (p=1.000 n=1) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+
+pkg: github.com/luthersystems/substrate/internal/substrate/shiro/libelpspath
+        │     base     │                 pr                 │
+        │    sec/op    │    sec/op     vs base              │
+Chain-4   151.3n ± ∞ ¹   162.1n ± ∞ ¹  +7.14% (p=0.008 n=5)
+¹ need >= 6 samples for confidence interval at level 0.95
+
+        │    base     │               pr               │
+        │    B/op     │    B/op      vs base           │
+Chain-4   224.0 ± ∞ ¹   224.0 ± ∞ ¹  ~ (p=1.000 n=5) ²
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+
+pkg: github.com/luthersystems/substrate/internal/substrate/shirocore
+                                                  │     base     │                 pr                 │
+                                                  │    sec/op    │    sec/op     vs base              │
+Utils/$load-4                                       13.35m ± ∞ ¹   13.42m ± ∞ ¹       ~ (p=1.000 n=5)
+Utils/tomulset-no-memoize-benchmark-4                1.556 ± ∞ ¹    1.613 ± ∞ ¹  +3.67% (p=0.008 n=5)
+Utils/tomulset-with-memoize-benchmark-4              1.567 ± ∞ ¹    1.628 ± ∞ ¹  +3.92% (p=0.008 n=5)
+Utils/tomulset-no-memoize-benchmark-no-filter-4      1.399 ± ∞ ¹    1.450 ± ∞ ¹  +3.62% (p=0.008 n=5)
+Utils/tomulset-with-memoize-benchmark-no-filter-4    1.412 ± ∞ ¹    1.472 ± ∞ ¹  +4.23% (p=0.008 n=5)
+Utils/point-oh-oh-4                                 62.23m ± ∞ ¹   63.32m ± ∞ ¹       ~ (p=0.095 n=5)
+Utils/point-oh-oh-oh-4                              79.21m ± ∞ ¹   80.15m ± ∞ ¹  +1.19% (p=0.016 n=5)
+Utils/string-is-guid?-4                             428.6m ± ∞ ¹   435.3m ± ∞ ¹  +1.58% (p=0.008 n=5)
+Utils/trim-4                                        1.301m ± ∞ ¹   1.298m ± ∞ ¹       ~ (p=0.841 n=5)
+Utils/ymd-extract-4                                 5.213m ± ∞ ¹   5.284m ± ∞ ¹       ~ (p=0.056 n=5)
+geomean                                             53.15m         54.11m        +1.80%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                                                  │     base      │                 pr                  │
+                                                  │     B/op      │     B/op       vs base              │
+Utils/$load-4                                       10.81Mi ± ∞ ¹   10.81Mi ± ∞ ¹       ~ (p=0.056 n=5)
+Utils/tomulset-with-memoize-benchmark-4             1.157Gi ± ∞ ¹   1.157Gi ± ∞ ¹  +0.00% (p=0.016 n=5)
+Utils/tomulset-no-memoize-benchmark-no-filter-4     1.032Gi ± ∞ ¹   1.032Gi ± ∞ ¹  +0.00% (p=0.008 n=5)
+Utils/point-oh-oh-4                                 54.94Mi ± ∞ ¹   54.94Mi ± ∞ ¹       ~ (p=0.706 n=5)
+geomean                                             45.69Mi         45.70Mi        +0.01%
+¹ need >= 6 samples for confidence interval at level 0.95
