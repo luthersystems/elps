@@ -30,6 +30,7 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
@@ -445,15 +446,27 @@ func TestLoadCacheKeySeparatesIdentityFromContent(t *testing.T) {
 	// and the length prefixes stop one tuple's concatenation colliding with
 	// another's.
 	src := []byte(same)
+	const rid = "go:reader"
 	assert.NotEqual(t,
-		lisp.LoadCacheKeyForTest("one.lisp", "one.lisp", src),
-		lisp.LoadCacheKeyForTest("two.lisp", "two.lisp", src))
+		lisp.LoadCacheKeyForTest("one.lisp", "one.lisp", rid, false, src),
+		lisp.LoadCacheKeyForTest("two.lisp", "two.lisp", rid, false, src))
 	assert.NotEqual(t,
-		lisp.LoadCacheKeyForTest("ab", "c", src),
-		lisp.LoadCacheKeyForTest("a", "bc", src))
+		lisp.LoadCacheKeyForTest("ab", "c", rid, false, src),
+		lisp.LoadCacheKeyForTest("a", "bc", rid, false, src))
 	assert.Equal(t,
-		lisp.LoadCacheKeyForTest("one.lisp", "one.lisp", src),
-		lisp.LoadCacheKeyForTest("one.lisp", "one.lisp", []byte(same)))
+		lisp.LoadCacheKeyForTest("one.lisp", "one.lisp", rid, false, src),
+		lisp.LoadCacheKeyForTest("one.lisp", "one.lisp", rid, false, []byte(same)))
+
+	// The two new key components — reader identity and the Read/ReadLocation
+	// method — each separate an otherwise-identical tuple.
+	assert.NotEqual(t,
+		lisp.LoadCacheKeyForTest("one.lisp", "one.lisp", "go:readerA", false, src),
+		lisp.LoadCacheKeyForTest("one.lisp", "one.lisp", "go:readerB", false, src),
+		"a different reader identity must give a different key")
+	assert.NotEqual(t,
+		lisp.LoadCacheKeyForTest("one.lisp", "", rid, false, src),
+		lisp.LoadCacheKeyForTest("one.lisp", "", rid, true, src),
+		"Read and ReadLocation must not collide on the same (name, \"\", src) tuple")
 }
 
 // TestLoadCacheLoadFileFromLisp drives the hook through the funnel it was
@@ -475,6 +488,296 @@ func TestLoadCacheLoadFileFromLisp(t *testing.T) {
 	require.NotEqual(t, lisp.LError, res.Type, "(load-file ...) failed: %v", res)
 	assert.Equal(t, 0, readerB.reads, "both the driver and the loaded file must hit")
 	assert.Equal(t, "42", evalString(t, envB, "(answer)"))
+}
+
+// --- finding 2: the key must bind the producing reader, not just the bytes ---
+
+// sealedValue returns a sealed integer literal — the smallest observable a
+// stub reader can hand back, so a wrong-program serve shows up as the wrong
+// number.
+func sealedValue(n int) *lisp.LVal {
+	v := lisp.Int(n)
+	v.SealAST()
+	return v
+}
+
+// intReaderA and intReaderB are DISTINCT reader types that parse any bytes into
+// distinct programs (A -> 1, B -> 2).  They are distinct Go types on purpose:
+// the cache binds an entry to its reader by identity, and two readers that
+// parse the same bytes differently must be told apart.  (Instances of ONE type
+// are treated as interchangeable, which is what lets many Runtimes each hold
+// their own reader of the same type and still share cache entries — the
+// motivating warm-cache topology.  A reader that multiplexes parse behaviour
+// behind one Go type distinguishes itself with lisp.ReaderIdentity; see
+// TestLoadCacheReaderIdentityInterfaceSeparates.)
+type intReaderA struct{ reads int }
+
+func (r *intReaderA) Read(_ string, in io.Reader) ([]*lisp.LVal, error) {
+	_, _ = io.ReadAll(in)
+	r.reads++
+	return []*lisp.LVal{sealedValue(1)}, nil
+}
+func (r *intReaderA) ReadLocation(_, _ string, in io.Reader) ([]*lisp.LVal, error) {
+	return r.Read("", in)
+}
+
+type intReaderB struct{ reads int }
+
+func (r *intReaderB) Read(_ string, in io.Reader) ([]*lisp.LVal, error) {
+	_, _ = io.ReadAll(in)
+	r.reads++
+	return []*lisp.LVal{sealedValue(2)}, nil
+}
+func (r *intReaderB) ReadLocation(_, _ string, in io.Reader) ([]*lisp.LVal, error) {
+	return r.Read("", in)
+}
+
+func readerEnv(t *testing.T, reader lisp.Reader, cache lisp.LoadCache) *lisp.LEnv {
+	t.Helper()
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = reader
+	env.Runtime.LoadCache = cache
+	if rc := lisp.InitializeUserEnv(env); rc.Type == lisp.LError {
+		t.Fatalf("init: %v", rc)
+	}
+	if rc := env.InPackage(lisp.String(lisp.DefaultUserPackage)); rc.Type == lisp.LError {
+		t.Fatalf("in-package: %v", rc)
+	}
+	return env
+}
+
+// TestLoadCacheDifferentReadersDoNotServeEachOther is finding 2, repro 1: two
+// Runtimes with different Readers sharing one cache must not serve each other's
+// parses.  Before the fix the key ignored the reader, so environment B (which
+// parses to 2) hit environment A's entry and ran A's program (1).
+func TestLoadCacheDifferentReadersDoNotServeEachOther(t *testing.T) {
+	t.Parallel()
+	const src = "identical bytes"
+	cache := newTestLoadCache()
+
+	ra := &intReaderA{}
+	envA := readerEnv(t, ra, cache)
+	va := envA.Load("shared.lisp", strings.NewReader(src))
+	require.NotEqual(t, lisp.LError, va.Type, "load A failed: %v", va)
+	assert.Equal(t, 1, va.Int)
+
+	rb := &intReaderB{}
+	envB := readerEnv(t, rb, cache)
+	vb := envB.Load("shared.lisp", strings.NewReader(src))
+	require.NotEqual(t, lisp.LError, vb.Type, "load B failed: %v", vb)
+	assert.Equal(t, 2, vb.Int, "reader B was served reader A's cached parse")
+	assert.Equal(t, 1, rb.reads, "reader B must reparse rather than serve the wrong entry")
+}
+
+// TestLoadCacheSwappedReaderReparses is finding 2, repro 2: swapping
+// Runtime.Reader between two loads of the same bytes must not re-serve the
+// stale parse produced by the previous reader.
+func TestLoadCacheSwappedReaderReparses(t *testing.T) {
+	t.Parallel()
+	const src = "identical bytes"
+	cache := newTestLoadCache()
+
+	env := readerEnv(t, &intReaderA{}, cache)
+	v1 := env.Load("f.lisp", strings.NewReader(src))
+	require.NotEqual(t, lisp.LError, v1.Type)
+	assert.Equal(t, 1, v1.Int)
+
+	env.Runtime.Reader = &intReaderB{}
+	v2 := env.Load("f.lisp", strings.NewReader(src))
+	require.NotEqual(t, lisp.LError, v2.Type)
+	assert.Equal(t, 2, v2.Int, "the swapped reader was served the previous reader's stale parse")
+}
+
+// methodReader parses the same bytes differently through Read (10) and
+// ReadLocation (20), so a Load / LoadLocation collision is observable.
+type methodReader struct{}
+
+func (methodReader) Read(_ string, in io.Reader) ([]*lisp.LVal, error) {
+	_, _ = io.ReadAll(in)
+	return []*lisp.LVal{sealedValue(10)}, nil
+}
+func (methodReader) ReadLocation(_, _ string, in io.Reader) ([]*lisp.LVal, error) {
+	_, _ = io.ReadAll(in)
+	return []*lisp.LVal{sealedValue(20)}, nil
+}
+
+// TestLoadCacheReadVsReadLocationDoNotCollide is finding 2, repro 3: elps's own
+// Load (Read) and LoadLocation (ReadLocation) reach the funnel with loc == ""
+// for the same file, and before the fix collided on the same (name, "", src)
+// key even though ReadLocation parses differently.
+func TestLoadCacheReadVsReadLocationDoNotCollide(t *testing.T) {
+	t.Parallel()
+	const src = "identical bytes"
+	cache := newTestLoadCache()
+	env := readerEnv(t, methodReader{}, cache)
+
+	vRead := env.Load("f.lisp", strings.NewReader(src))
+	require.NotEqual(t, lisp.LError, vRead.Type)
+	assert.Equal(t, 10, vRead.Int)
+
+	vLoc := env.LoadLocation("f.lisp", "", strings.NewReader(src))
+	require.NotEqual(t, lisp.LError, vLoc.Type)
+	assert.Equal(t, 20, vLoc.Int, "LoadLocation (ReadLocation) was served Load's (Read) cached parse")
+}
+
+// identReader multiplexes two parse behaviours behind ONE Go type, selected by
+// a field, and states which through lisp.ReaderIdentity.  It shows the optional
+// hook closes the same-type / different-config gap the type-only default
+// leaves open.
+type identReader struct {
+	tag string
+	val int
+}
+
+func (r identReader) ReaderIdentity() string { return r.tag }
+func (r identReader) Read(_ string, in io.Reader) ([]*lisp.LVal, error) {
+	_, _ = io.ReadAll(in)
+	return []*lisp.LVal{sealedValue(r.val)}, nil
+}
+func (r identReader) ReadLocation(_, _ string, in io.Reader) ([]*lisp.LVal, error) {
+	return r.Read("", in)
+}
+
+// TestLoadCacheReaderIdentityInterfaceSeparates shows the optional escape hatch
+// for readers that share a Go type but parse differently.
+func TestLoadCacheReaderIdentityInterfaceSeparates(t *testing.T) {
+	t.Parallel()
+	const src = "identical bytes"
+	cache := newTestLoadCache()
+
+	envA := readerEnv(t, identReader{tag: "cfg-a", val: 7}, cache)
+	va := envA.Load("f.lisp", strings.NewReader(src))
+	require.NotEqual(t, lisp.LError, va.Type)
+	assert.Equal(t, 7, va.Int)
+
+	envB := readerEnv(t, identReader{tag: "cfg-b", val: 8}, cache)
+	vb := envB.Load("f.lisp", strings.NewReader(src))
+	require.NotEqual(t, lisp.LError, vb.Type)
+	assert.Equal(t, 8, vb.Int, "same-type readers with distinct ReaderIdentity must not share entries")
+
+	// And two readers with the SAME identity DO share (the sharing the topology
+	// depends on): the second must hit without reparsing.
+	same := newTestLoadCache()
+	envC := readerEnv(t, identReader{tag: "cfg-a", val: 7}, same)
+	require.Equal(t, 7, envC.Load("f.lisp", strings.NewReader(src)).Int)
+	envD := readerEnv(t, identReader{tag: "cfg-a", val: 99}, same)
+	// envD claims identity cfg-a, so it is served envC's entry (7), not its own 99.
+	assert.Equal(t, 7, envD.Load("f.lisp", strings.NewReader(src)).Int,
+		"readers with equal ReaderIdentity are interchangeable producers")
+}
+
+// --- finding 3: admission walks must be bounded on the load-file path ---
+
+// graphReader hands back a caller-built tree (a cycle or an interned DAG) as a
+// single top-level expression, with a cache installed so the load runs through
+// the admission walk newProgram performs.
+type graphReader struct{ tree *lisp.LVal }
+
+func (r graphReader) Read(_ string, in io.Reader) ([]*lisp.LVal, error) {
+	_, _ = io.ReadAll(in)
+	return []*lisp.LVal{r.tree}, nil
+}
+func (r graphReader) ReadLocation(_, _ string, in io.Reader) ([]*lisp.LVal, error) {
+	return r.Read("", in)
+}
+
+// TestLoadCacheCyclicReaderOutputIsBounded is finding 3, cyclic case: a Reader
+// returning a cyclic tree must be handled in bounded time — refused with an
+// error — rather than recursing until the Go stack overflows and the process
+// dies.  This runs only because a cache is installed (the admission walk is on
+// the load path); before the fix the walk had no cycle guard.
+func TestLoadCacheCyclicReaderOutputIsBounded(t *testing.T) {
+	t.Parallel()
+	cyc := lisp.SExpr(nil)
+	cyc.Cells = []*lisp.LVal{cyc} // a -> a
+
+	env := readerEnv(t, graphReader{tree: cyc}, newTestLoadCache())
+
+	done := make(chan *lisp.LVal, 1)
+	go func() { done <- env.Load("cyclic.lisp", strings.NewReader("x")) }()
+	select {
+	case v := <-done:
+		require.Equal(t, lisp.LError, v.Type, "a cyclic reader tree must be refused, not admitted")
+		assert.Contains(t, v.String(), "finite strict tree")
+	case <-time.After(20 * time.Second):
+		t.Fatal("loading a cyclic reader tree did not terminate; the admission walk is unbounded")
+	}
+}
+
+// TestLoadCacheInternedSubtreeIsBounded is finding 3, interned-subtree case: a
+// Reader returning a DAG (a subtree reachable by exponentially many paths) must
+// be handled in bounded time.  Before the fix the memo-less walk re-descended
+// the shared subtree once per path — measured at 5.2s at sharing-depth 28 and
+// climbing.  This DAG is depth 40 (~10^12 paths); a memo-less walk would not
+// finish, so completing at all is the proof.
+func TestLoadCacheInternedSubtreeIsBounded(t *testing.T) {
+	t.Parallel()
+	// leaf; each level points twice at the next, so paths double per level.
+	node := sealedValue(0)
+	for range 40 {
+		parent := lisp.SExpr(nil)
+		parent.Cells = []*lisp.LVal{node, node}
+		node = parent
+	}
+
+	env := readerEnv(t, graphReader{tree: node}, newTestLoadCache())
+
+	done := make(chan *lisp.LVal, 1)
+	go func() { done <- env.Load("dag.lisp", strings.NewReader("x")) }()
+	select {
+	case v := <-done:
+		require.Equal(t, lisp.LError, v.Type, "an interned-subtree reader tree must be refused")
+		assert.Contains(t, v.String(), "finite strict tree")
+	case <-time.After(20 * time.Second):
+		t.Fatal("loading an interned-subtree reader tree did not terminate in bounded time")
+	}
+}
+
+// --- finding 7: a re-entrant cache must not kill the process ---
+
+// warmingCache re-enters the load path from inside Load, unconditionally, as a
+// cache that warms itself would.  Loading "warm" calls Load again, which warms
+// "warm" again: without the in-flight guard this recurses until the Go stack
+// overflows.  With the guard the re-entered load bypasses the cache, so Load is
+// invoked exactly once and the warm is a single ordinary parse.  The high
+// safety cap only exists so a regression can never wedge the whole suite; the
+// guard, not the cap, is what makes the green path terminate at warmed == 1.
+type warmingCache struct {
+	env    *lisp.LEnv
+	warmed int
+}
+
+func (c *warmingCache) Load(key string) (*lisp.CachedSource, bool) {
+	if c.warmed < 100000 {
+		c.warmed++
+		// Re-enter the load path while servicing a Load.
+		c.env.LoadString("warm", "(+ 1 2)")
+	}
+	return nil, false
+}
+func (c *warmingCache) Store(string, *lisp.CachedSource) {}
+
+// TestLoadCacheReentrantLoadIsGuarded is finding 7: a Load that re-enters the
+// load path (a warming cache) must be treated as a miss rather than recursing
+// into the cache forever.  It must terminate and produce the right answer.
+func TestLoadCacheReentrantLoadIsGuarded(t *testing.T) {
+	t.Parallel()
+	cache := &warmingCache{}
+	env := readerEnv(t, parser.NewReader(), cache)
+	cache.env = env
+
+	done := make(chan *lisp.LVal, 1)
+	go func() { done <- env.LoadString("main", "(+ 40 2)") }()
+	select {
+	case v := <-done:
+		require.NotEqual(t, lisp.LError, v.Type, "re-entrant load failed: %v", v)
+		assert.Equal(t, 42, v.Int)
+		assert.Equal(t, 1, cache.warmed,
+			"the guard must collapse re-entry to a single warm; more means it recursed, "+
+				"the safety cap (not the guard) stopped it")
+	case <-time.After(20 * time.Second):
+		t.Fatal("a re-entrant cache load did not terminate; the re-entrancy guard is missing")
+	}
 }
 
 // --- helpers ---

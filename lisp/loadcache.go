@@ -7,8 +7,11 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"strings"
 )
 
 // Sealed per-file load cache — an elps-owned parse cache hook (issue #368).
@@ -101,16 +104,32 @@ import (
 //     builds a corrupted cache entry is reported at the load that corrupted
 //     it (lisp/seal_check_elpscheck.go).
 //
+//     What that verification covers, precisely, is one sentence: THE SEALED
+//     BYTES NEVER CHANGE after a tree is admitted (lisp/sealfp.go states the
+//     same).  So -tags elpscheck proves that no load rewrites a cached node,
+//     and — with the ownership checker's admission fix — that a node whose
+//     seal flag is set but whose type is not sealable is NOT exempt and so
+//     still trips the cross-runtime gate.  What it does NOT prove: that the
+//     RIGHT program was served.  Serving one file's parse for another
+//     (wrong-program-served) leaves the served bytes internally stable, so
+//     the fingerprint check is blind to it; that class is closed by the key
+//     (name, location, reader identity, and Read-vs-ReadLocation method) and
+//     by the flag-vs-type admission conjunction, not by the checked build.
+//
 // # Keying
 //
-// The key is derived by elps, from the source bytes AND the stream's name
-// and location.  substrate's cacheReader keys on a hash of the content
-// alone, which is safe for its topology (a file's name and location are
-// stable across loads) but is not safe in general: two files with identical
-// content would share an entry, and the served tree carries the FIRST
-// file's parse locations, so every stack trace and error from the second
-// would name the wrong file.  Including name and location costs nothing on
-// the topology that motivated this and removes a silent misattribution
+// The key is derived by elps, from the source bytes AND the stream's name,
+// location, the identity of the reader that parses them, and which reader
+// method (Read vs ReadLocation) is in use — so the key binds the ENTRY's
+// producer, not merely its input (see loadCacheKey).  substrate's cacheReader
+// keys on a hash of the content alone, which is safe for its topology (a
+// file's name, location and reader are stable across loads) but is not safe
+// in general: two files with identical content would share an entry, and the
+// served tree carries the FIRST file's parse locations, so every stack trace
+// and error from the second would name the wrong file; and two different
+// readers, or the two reader methods, would serve each other's parses.
+// Including all four costs nothing on the topology that motivated this and
+// removes a silent misattribution — and a silent wrong-program serve —
 // everywhere else.
 
 // CachedSource is an opaque, immutable, sealed parse result.  Only elps
@@ -209,13 +228,55 @@ func (s *CachedSource) String() string {
 //     shared by Runtimes on more than one goroutine.  The entries
 //     themselves are immutable, so no locking is needed around the values
 //     — only around the implementation's own bookkeeping.
+//   - Load and Store must NOT re-enter the load path (they must not call
+//     Load*/LoadFile, directly or through a warmer).  A re-entrant load is
+//     defended against — the guard treats it as a miss and parses without
+//     the cache (see (*LEnv).readCached) — but relying on that means giving
+//     up caching for the re-entrant load; do the warming outside the hook.
+//
+// # Reader custody on the fast path
+//
+// When a Reader hands back output already sealed throughout (the standard
+// parser's path), admission stores the Reader's OWN nodes — it does not copy
+// them.  This is deliberate: it is what makes a cache miss zero-copy, and the
+// standard and format-preserving parsers do not retain what they return.  The
+// contract that keeps it safe is therefore on the Reader: a Reader whose
+// output feeds a LoadCache MUST NOT retain and later mutate the nodes it
+// returned.  This is the same residual the seal design already carries for all
+// embedder Go code (seal.go: the flag cannot stop a direct v.Cells[0] = x),
+// and its enforcement is the same — checked builds (-tags elpscheck) record
+// each cached tree's fingerprint and re-verify it after every load, so a
+// Reader that rewrites a stored tree is caught at the load that observed the
+// change; production builds do not check and would be silently corrupted.
+// (Copying on the fast path would close it unconditionally but would add a
+// deep copy to every miss even though no compliant Reader needs it — the cost
+// this hook exists to remove — so the contract is stated instead.)
+//
+// # Behaviour changes a cache can introduce
+//
+//   - Installing a cache can change lisp SEMANTICS for a non-sealing Reader.
+//     Admission's copy path runs SealAST, so a guarded mutation site
+//     ((stable-sort < …), (append 'vector …), (slice 'vector …)) that
+//     succeeded cache-less against a Reader that did not seal begins raising
+//     modify-literal-error once a cache is installed.  This is a migration
+//     hazard, not a doc nit — code that mutated program literals in place
+//     stops doing so.  (The standard parser already seals, so its callers see
+//     no change; format-preserving and hand-written Readers are the ones
+//     affected.)  A wrapping Reader that synthesizes even ONE node forces the
+//     whole file down the copy-and-seal path, so the zero-copy hit is
+//     conditional on the Reader sealing its entire output.
+//   - Installing a cache drains the stream with io.ReadAll before parsing, so
+//     a streaming Reader that delivers a full program then a non-EOF error
+//     succeeds cache-less but fails with a cache (see (*LEnv).readCached).
 //
 // A nil Runtime.LoadCache disables the hook entirely: the load path is then
 // byte-identical to what it was before this hook existed, with no hashing,
 // no buffering and no extra allocation (TestLoadCacheNilPathUnchanged).
 //
 // Note the breadth: the hook sits at the read funnel, so it sees LoadString
-// and Load as well as LoadFile.  A host that evaluates many distinct
+// and Load as well as LoadFile — and, because `load-string`/`load-bytes` are
+// builtins, GUEST lisp source can mint entries too (a phylum that load-strings
+// N distinct programs adds N entries).  A host that evaluates many distinct
 // one-off strings through one unbounded cache will accumulate an entry per
 // distinct string — retention is the implementation's job, and an
 // implementation with no bound has no bound.  (The embedder-side caches
@@ -251,17 +312,81 @@ func newCachedSource(key, name, loc string, exprs []*LVal) (*CachedSource, error
 	}, nil
 }
 
-// loadCacheKey derives the cache key for a source stream.  The digest
-// covers the bytes and both identity strings, each length-prefixed so that
-// no concatenation of one tuple can collide with another (a plain
-// name+loc+src concatenation makes ("ab", "c") and ("a", "bc")
-// indistinguishable).
+// ReaderIdentity is an optional interface a Runtime.Reader may implement to
+// tell the load cache which parses it produces.
+//
+// The cache key binds every entry to the reader that produced it, not just to
+// the source bytes (see loadCacheKey): two readers that parse the same bytes
+// into DIFFERENT trees must never serve each other's entries.  By default that
+// binding is the reader's fully-qualified Go type, which is right for elps's
+// own readers — the standard parser and the format-preserving parser are
+// distinct types — and stable across instances, so many Runtimes each holding
+// their own reader of the same type still share cache entries (the motivating
+// warm-cache topology).
+//
+// A reader whose parse output depends on configuration NOT reflected in its Go
+// type — the same struct in two modes — is indistinguishable by type alone.
+// Such a reader implements ReaderIdentity to return a token that differs
+// whenever its parse would; the cache folds that token into the key instead of
+// the type.  Implementing it is optional: the default is safe without any
+// embedder cooperation, and this is only for readers that multiplex parse
+// behaviours behind one Go type.
+type ReaderIdentity interface {
+	// ReaderIdentity returns a stable token that differs between readers whose
+	// parse output differs.  Two readers returning the same token are treated
+	// as interchangeable producers by the cache.
+	ReaderIdentity() string
+}
+
+// readerIdentity derives the cache-key component that binds an entry to the
+// reader that produced it.  A reader states its own identity through
+// ReaderIdentity when it implements it; otherwise the reader's
+// fully-qualified Go type is used — stable across instances of one type,
+// distinct across types.  The "id:"/"go:" prefixes keep a crafted identity
+// token from colliding with a type path.
+func readerIdentity(r Reader) string {
+	if r == nil {
+		return "<nil>"
+	}
+	if id, ok := r.(ReaderIdentity); ok {
+		return "id:" + id.ReaderIdentity()
+	}
+	t := reflect.TypeOf(r)
+	stars := 0
+	for t.Kind() == reflect.Pointer {
+		stars++
+		t = t.Elem()
+	}
+	star := strings.Repeat("*", stars)
+	if pkg := t.PkgPath(); pkg != "" {
+		return "go:" + star + pkg + "." + t.Name()
+	}
+	return "go:" + star + t.String()
+}
+
+// loadCacheKey derives the cache key for a source stream.  The digest covers
+// the bytes, both identity strings, the identity of the READER that will parse
+// them, and which reader METHOD (Read vs ReadLocation) is in use — each
+// length-prefixed so that no concatenation of one tuple can collide with
+// another (a plain name+loc+src concatenation makes ("ab", "c") and
+// ("a", "bc") indistinguishable).
+//
+// Reader identity and method are in the key because the key binds the ENTRY's
+// producer, not only its input.  Without them: two Runtimes with different
+// Readers sharing one cache served each other's parses; swapping
+// Runtime.Reader between two loads re-served the stale parse; and elps's own
+// Load (Read) and LoadLocation (ReadLocation) collided on the same
+// (name, "", src) tuple even though ReadLocation assigns locations Read does
+// not.  Folding both in makes each of those degrade to a correct reparse
+// instead of a wrong-program serve, and it is derived entirely by elps from
+// the installed reader — no embedder cooperation required (see readerIdentity
+// for the one optional hook).
 //
 // SHA-256 rather than a fast non-cryptographic hash: the key decides WHICH
 // PROGRAM RUNS, and on a collision the wrong program runs silently.  The
 // cost is one pass over a source file per load — nanoseconds per kilobyte,
 // against the milliseconds of parsing it replaces.
-func loadCacheKey(name, loc string, src []byte) string {
+func loadCacheKey(name, loc, readerID string, byLoc bool, src []byte) string {
 	h := sha256.New()
 	var n [8]byte
 	write := func(b []byte) {
@@ -271,6 +396,12 @@ func loadCacheKey(name, loc string, src []byte) string {
 	}
 	write([]byte(name))
 	write([]byte(loc))
+	write([]byte(readerID))
+	if byLoc {
+		_, _ = h.Write([]byte{1})
+	} else {
+		_, _ = h.Write([]byte{0})
+	}
 	write(src)
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -292,28 +423,61 @@ func loadCacheKey(name, loc string, src []byte) string {
 //	      no allocation, no walk.  See this file's header for why that is
 //	      legal.
 //
-// Two defensive falls back to an ordinary parse, both silent because both
-// are "the cache did not help", not "the load failed":
+// One behavioural difference is cache-gated and worth naming: a cache
+// installed makes this drain the whole stream with io.ReadAll up front (the
+// key is a digest of the bytes), whereas the nil-cache path streams straight
+// into the reader.  For an io.Reader that fails partway — one that delivers a
+// complete program and THEN a non-EOF error — the two paths disagree: with no
+// cache the reader may have finished before the error surfaces (the load
+// succeeds); with a cache io.ReadAll surfaces the error first (the load
+// fails).  The divergence is inherent to needing the bytes before parsing;
+// it is documented on the LoadCache interface as well.
+//
+// Fall-backs to an ordinary parse, silent because they are "the cache did
+// not help", not "the load failed":
 //
 //   - An entry whose Key does not match the key elps derived is not
 //     trusted.  A cache that mixes up its own keys then degrades to no
 //     cache instead of running the wrong file's program.
-//   - A parse newProgram refuses to admit — a Reader that returned a
-//     reference type, or a node no seal can cover — is not cacheable, so
-//     it is handed to this one load and never stored.  Correctness first:
-//     the alternative (store it and copy on every load) would put an
-//     unsealed tree in a process-wide cache, which is the topology this
-//     hook exists to make impossible.
-func (env *LEnv) readCached(name, loc string, r io.Reader, parse func(io.Reader) ([]*LVal, error)) ([]*LVal, error) {
+//   - A parse newProgram refuses to admit as cacheable — a Reader that
+//     returned a reference type, or a node no seal can cover — is not
+//     shareable, so it is handed to this one load and never stored.
+//     Correctness first: the alternative (store it and copy on every load)
+//     would put an unsealed tree in a process-wide cache, which is the
+//     topology this hook exists to make impossible.
+//
+// One case is NOT a silent fall-back but a hard load error: reader output
+// that is not a finite strict tree (a cycle, an interned shared subtree, or
+// nesting past the admission budget — errReaderTreeUnbounded).  Such output
+// is not merely un-cacheable; it is unsafe to evaluate (an interned subtree
+// evaluates exponentially, a cycle only stops at the eval nesting cap), so the
+// load fails here rather than falling back to an uncached eval of it.
+//
+// # Re-entrancy
+//
+// A cache whose Load or Store warms itself by loading another file re-enters
+// this funnel.  Left alone that is a stack overflow (endless re-entry) or a
+// deadlock (a non-reentrant embedder mutex re-locked).  Every other embedder
+// mistake here degrades to "no cache"; this one kills the process, so it gets
+// a guard: the OUTERMOST readCached owns the cache for the duration of one
+// load-admission, and any load re-entered from inside it bypasses the cache
+// and parses directly.  Ordinary nested loads do NOT trip it — a load-file
+// whose file load-files another re-enters only AFTER this function has
+// returned and (*LEnv).load begins evaluating, by which point the guard is
+// already cleared — so nested loads still cache normally.
+func (env *LEnv) readCached(name, loc string, byLoc bool, r io.Reader, parse func(io.Reader) ([]*LVal, error)) ([]*LVal, error) {
 	cache := env.Runtime.LoadCache
-	if cache == nil {
+	if cache == nil || env.Runtime.loadCacheActive {
 		return parse(r)
 	}
+	env.Runtime.loadCacheActive = true
+	defer func() { env.Runtime.loadCacheActive = false }()
+
 	src, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
-	key := loadCacheKey(name, loc, src)
+	key := loadCacheKey(name, loc, readerIdentity(env.Runtime.Reader), byLoc, src)
 	if entry, ok := cache.Load(key); ok && entry != nil && entry.key == key {
 		return entry.prog.exprs, nil
 	}
@@ -321,25 +485,16 @@ func (env *LEnv) readCached(name, loc string, r io.Reader, parse func(io.Reader)
 	if err != nil {
 		return nil, err
 	}
-	entry, cacheable := admitCachedSource(key, name, loc, exprs)
-	if !cacheable {
+	entry, err := newCachedSource(key, name, loc, exprs)
+	if err != nil {
+		if errors.Is(err, errReaderTreeUnbounded) {
+			// Not safe to evaluate either — fail the load (see above).
+			return nil, err
+		}
 		// Not an error for THIS load: the parse is fine, it simply cannot
 		// be shared, so it is handed over uncached (see the doc comment).
 		return exprs, nil
 	}
 	cache.Store(key, entry)
 	return entry.prog.exprs, nil
-}
-
-// admitCachedSource is newCachedSource with the admission's refusal folded
-// into a boolean, because at this call site a refusal is not an error to
-// report but a decision not to cache.  Keeping the error-returning
-// constructor as the primitive means the reason stays available to any
-// future caller that wants to surface it.
-func admitCachedSource(key, name, loc string, exprs []*LVal) (*CachedSource, bool) {
-	entry, err := newCachedSource(key, name, loc, exprs)
-	if err != nil {
-		return nil, false
-	}
-	return entry, true
 }

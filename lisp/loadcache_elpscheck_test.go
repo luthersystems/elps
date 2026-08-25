@@ -99,7 +99,10 @@ func (r refusingReader) ReadLocation(string, string, io.Reader) ([]*LVal, error)
 // admitted entry, served to two Runtimes, must not trip the checker.
 func TestLoadCacheSealedEntryIsExemptFromOwnership(t *testing.T) {
 	const name, loc, src = "shared.lisp", "shared.lisp", "'(1 2 3)"
-	key := loadCacheKey(name, loc, []byte(src))
+	// The envs below install refusingReader and reach the funnel through
+	// LoadLocation (byLoc == true); the key must be derived under the same
+	// reader identity and method or every hit turns into a miss.
+	key := loadCacheKey(name, loc, readerIdentity(refusingReader{}), true, []byte(src))
 	entry, err := newCachedSource(key, name, loc, loadCacheSharedExprs())
 	if err != nil {
 		t.Fatalf("admission refused an ordinary parse: %v", err)
@@ -124,7 +127,7 @@ func TestLoadCacheSealedEntryIsExemptFromOwnership(t *testing.T) {
 // elpscheck, naming both runtimes.
 func TestLoadCacheUnsealedEntryTripsOwnership(t *testing.T) {
 	const name, loc, src = "smuggled.lisp", "smuggled.lisp", "'(1 2 3)"
-	key := loadCacheKey(name, loc, []byte(src))
+	key := loadCacheKey(name, loc, readerIdentity(refusingReader{}), true, []byte(src))
 	// CachedSourceForTest deliberately skips the admission walk, so the
 	// entry carries exactly the unsealed, mutable tree newCachedSource
 	// would have copied and sealed.
@@ -139,6 +142,45 @@ func TestLoadCacheUnsealedEntryTripsOwnership(t *testing.T) {
 	envA := loadCacheEnvWith(t, cache)
 	if v := envA.LoadLocation(name, loc, strings.NewReader(src)); v.Type == LError {
 		t.Fatalf("the first load of the smuggled entry failed before the checker could speak: %v", v)
+	}
+	envB := loadCacheEnvWith(t, cache)
+	expectOwnershipPanic(t, func() {
+		envB.LoadLocation(name, loc, strings.NewReader(src))
+	})
+}
+
+// TestLoadCacheLaunderedClosureTripsOwnership is the checked-build red proof
+// for finding 1: the ownership exemption must key off the node TYPE, not the
+// seal FLAG alone.
+//
+// The entry carries a closure — an LFun that captured a mutable *LEnv — with
+// the seal flag laundered onto it (a non-sealable node no admission would
+// produce, so CachedSourceForTest is used to bypass the walk).  Served to two
+// Runtimes, it is the exact cross-runtime sharing the checker exists to stop:
+// the same closure, evaluated in runtime A then runtime B, is one mutable
+// value reached by two runtimes (the reviewer's ticking-counter repro).
+//
+// Before the fix, checkOwnership exempted anything with v.sealed set, so the
+// laundered closure slipped past and both runtimes shared it silently.  After
+// the fix the exemption is (v.sealed && sealableNodeType(v.Type)); an LFun is
+// not sealable, so the closure is checked and runtime B's load panics.
+func TestLoadCacheLaunderedClosureTripsOwnership(t *testing.T) {
+	const name, loc, src = "laundered.lisp", "laundered.lisp", "(a closure)"
+	key := loadCacheKey(name, loc, readerIdentity(refusingReader{}), true, []byte(src))
+
+	fn := mintClosure(t)
+	forceSealAll(fn) // launder: seal flag on the non-sealable closure node
+	if !fn.sealed || sealableNodeType(fn.Type) {
+		t.Fatal("the laundered node must be a sealed non-sealable type, or this proof is vacuous")
+	}
+	// The top-level expression IS the closure, so evaluating the cached program
+	// routes the closure through env.eval, where checkOwnership sees it.
+	entry := CachedSourceForTest(key, name, loc, []*LVal{fn})
+	cache := &fixedLoadCache{entry: entry}
+
+	envA := loadCacheEnvWith(t, cache)
+	if v := envA.LoadLocation(name, loc, strings.NewReader(src)); v.Type == LError {
+		t.Fatalf("the first load of the laundered entry failed before the checker could speak: %v", v)
 	}
 	envB := loadCacheEnvWith(t, cache)
 	expectOwnershipPanic(t, func() {

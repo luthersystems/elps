@@ -118,6 +118,12 @@ func CachedSourceForTest(key, name, loc string, exprs []*LVal) *CachedSource {
 
 // LoadCacheKeyForTest exposes the key derivation so a test can pre-seed a
 // cache, or assert what elps will ask for.
-func LoadCacheKeyForTest(name, loc string, src []byte) string {
-	return loadCacheKey(name, loc, src)
+func LoadCacheKeyForTest(name, loc, readerID string, byLoc bool, src []byte) string {
+	return loadCacheKey(name, loc, readerID, byLoc, src)
+}
+
+// ReaderIdentityForTest exposes the reader-identity derivation so a test can
+// build the exact key elps will ask for a given reader.
+func ReaderIdentityForTest(r Reader) string {
+	return readerIdentity(r)
 }

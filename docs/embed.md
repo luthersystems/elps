@@ -144,13 +144,60 @@ Notes for implementers:
 - **Concurrency.**  A cache shared by `Runtime`s on more than one goroutine
   must have concurrency-safe `Load`/`Store`.  The entries themselves are
   immutable, so nothing else needs locking.
+- **The key binds the producer, not just the input.**  Besides the bytes,
+  name and location, the key folds in the identity of the `Reader` that parses
+  them (its Go type, or `ReaderIdentity()` if the reader implements it) and
+  which method — `Read` vs `ReadLocation` — is in use.  Without this, two
+  Runtimes with different `Reader`s sharing one cache served each other's
+  parses, a swapped `Runtime.Reader` re-served the stale parse, and `Load`
+  (`Read`) and `LoadLocation` (`ReadLocation`) collided on the same
+  `(name, "", src)` tuple.  Reader identity defaults to the Go type, so many
+  Runtimes each holding their own `parser.NewReader()` of the same type still
+  share entries; a reader that varies its parse behind one Go type distinguishes
+  itself by implementing `lisp.ReaderIdentity`.
+- **`Load`/`Store` must not re-enter the load path.**  A cache that warms
+  itself by loading is defended against — the re-entrant load is treated as a
+  miss and parses without the cache — but relying on that gives up caching for
+  the warmed load, so do the warming outside the hook.
+- **A `Reader` must not retain and later mutate the nodes it returned.**  On
+  the zero-copy fast path (a reader whose output is already sealed throughout)
+  admission stores the reader's own nodes, so a reader that keeps a reference
+  and writes through it (in Go — the seal stops lisp-level writes, not
+  `v.Cells[0] = x`) corrupts the shared cached tree.  This is the same residual
+  the seal design carries for all embedder Go code; checked builds
+  (`-tags elpscheck`) re-verify each cached tree's fingerprint after every load
+  and catch it, production builds do not.
 - **A nil `LoadCache` changes nothing.**  With no cache installed the load
   path is exactly what it was before the hook existed — the reader receives
   the caller's own `io.Reader`, unbuffered.
 - **Not every parse is cacheable.**  A `Reader` that returns a reference type,
   or a node the seal cannot cover, produces a parse that is handed to that one
   load and never stored.  Correctness first: an unsealed tree must not enter a
-  process-wide cache.
+  process-wide cache.  Reader output that is not a finite strict tree — a
+  cycle, an interned shared subtree, or nesting past the admission budget — is
+  refused as a hard load error (not evaluated), because such output is unsafe
+  to evaluate as well as impossible to cache.
+- **The guest can mint entries.**  `load-string` and `load-bytes` are builtins,
+  so semi-trusted phylum source populates the cache too — retention bounds must
+  account for guest-driven loads, not only host call sites.
+
+### Migration hazard: installing a cache can change lisp semantics
+
+Installing a `LoadCache` in front of a **non-sealing** `Reader` can change the
+behaviour of previously-working lisp code, so treat it as a migration step, not
+a transparent optimization:
+
+- Admission's copy path runs `SealAST`, so a guarded in-place mutation —
+  `(stable-sort < <literal>)`, `(append 'vector <literal>)`,
+  `(slice 'vector <literal>)` — that succeeded against a reader that did not
+  seal begins raising `modify-literal-error` once the cache is installed.  The
+  standard parser already seals, so its callers see no change; a
+  format-preserving parser or a hand-written `Reader` are the ones affected.
+- The zero-copy hit is **conditional**: a wrapping `Reader` that synthesizes
+  even one node forces the whole file down the copy-and-seal path.
+- With a cache installed the stream is drained with `io.ReadAll` before parsing,
+  so a streaming `Reader` that delivers a full program and then a non-EOF error
+  succeeds cache-less but fails with a cache.
 
 ## Writing Functions
 

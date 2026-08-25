@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"errors"
 	"fmt"
 	"io"
 )
@@ -103,7 +104,89 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 	return fn, nil
 }
 
+// errReaderTreeUnbounded marks reader output that is not a finite, strict,
+// bounded-depth tree: a cycle, an interned (shared) subtree, or nesting past
+// the admission budget.  A real parse is a strict tree well within these
+// bounds — rdparser caps parse depth at 10,000 and shares no non-singleton
+// node — so output that trips them did not come from a parser and is refused.
+//
+// It is a distinct sentinel because, unlike an ordinary admission refusal (a
+// reference type, or a node no seal can cover), such output is not merely
+// un-cacheable: it is unsafe to hand to the evaluator too — evaluating an
+// interned subtree is exponential, and a cycle is stopped only by the eval
+// nesting cap, after doing that work.  (*LEnv).readCached fails the load on
+// this sentinel instead of falling back to an uncached eval.
+var errReaderTreeUnbounded = errors.New("reader output is not a finite strict tree (cycle, shared subtree, or too deep to admit)")
+
+const (
+	// loaderWalkMaxNodes bounds the total distinct nodes the admission walk
+	// visits.  It mirrors sealFPMaxNodes (lisp/sealfp.go): orders of magnitude
+	// beyond any top-level expression a parser emits, present only to bound
+	// hand-built or adversarial reader output.
+	loaderWalkMaxNodes = sealFPMaxNodes
+	// loaderWalkMaxDepth bounds admission recursion depth so a very deep strict
+	// tree cannot exhaust the Go stack before the node budget notices.  It
+	// mirrors sealFPMaxDepth; parse depth caps at 10,000 (rdparser), leaving
+	// wide headroom.
+	loaderWalkMaxDepth = sealFPMaxDepth
+)
+
+// checkLoaderExpr reports whether v is admissible reader output — safe both to
+// cache (share across environments) and, for the load path, to evaluate.
+//
+// It rejects reference types (whose mutable backing every copy of the tree
+// would share) and, since issue #368 put this walk on the `load-file` path via
+// Runtime.LoadCache, it also BOUNDS the walk.  Before that the recursion had no
+// cycle guard, depth cap, or memo: a Reader returning a cyclic graph made it
+// recurse until the Go stack overflowed (unrecoverable), and one returning an
+// interned shared subtree made it re-descend that subtree once per path —
+// exponential.  Both were newly reachable from `load-file` the moment a cache
+// was installed.  The bounded walk (loaderWalk) rejects a node reached twice
+// (cycle or sharing), output past the depth cap, and output past the node
+// budget, all with errReaderTreeUnbounded, and runs in O(distinct nodes)
+// time and space.  Singletons are exempt from the no-repeat rule: they are
+// shared by design and immutable, and a parse may reference them from many
+// positions.
+//
+// Because newProgram runs this pass FIRST, the walks after it (firstUnsealed
+// and (*LVal).Copy, neither of which memoises) only ever see a finite strict
+// tree and inherit its bound.
 func checkLoaderExpr(v *LVal) error {
+	w := loaderWalk{seen: make(map[*LVal]struct{}), budget: loaderWalkMaxNodes}
+	return w.check(v, 0)
+}
+
+// loaderWalk carries the admission walk's cycle/sharing memo and its node
+// budget.  See checkLoaderExpr.
+type loaderWalk struct {
+	seen   map[*LVal]struct{}
+	budget int
+}
+
+func (w *loaderWalk) check(v *LVal, depth int) error {
+	if v == nil {
+		return nil
+	}
+	// Singletons (Nil/true/false) are shared by design and immutable, so a
+	// parse may legitimately reach one from many positions.  They are exempt
+	// from the no-repeat rule and terminate the walk at once.
+	if isSingleton(v) {
+		return nil
+	}
+	if depth > loaderWalkMaxDepth {
+		return errReaderTreeUnbounded
+	}
+	if _, ok := w.seen[v]; ok {
+		// A non-singleton node reached twice is a cycle or an interned shared
+		// subtree — not a strict parser tree.
+		return errReaderTreeUnbounded
+	}
+	if w.budget <= 0 {
+		return errReaderTreeUnbounded
+	}
+	w.budget--
+	w.seen[v] = struct{}{}
+
 	switch v.Type {
 	case LBytes, LSortMap, LArray, LNative:
 		// Reference types share mutable state with every copy of the cached
@@ -119,8 +202,7 @@ func checkLoaderExpr(v *LVal) error {
 		// wraps shared state would otherwise be cached silently.
 	}
 	for _, cell := range v.Cells {
-		err := checkLoaderExpr(cell)
-		if err != nil {
+		if err := w.check(cell, depth+1); err != nil {
 			return err
 		}
 	}

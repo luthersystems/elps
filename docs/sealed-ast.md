@@ -410,6 +410,13 @@ class was added:
   needs no private copy of a cached tree (below);
 - checked builds re-verify the tree after every load through `(*LEnv).load`
   (§3.3), so a corrupted entry is reported at the load that corrupted it.
+  What that verification covers is exactly one claim — *the sealed bytes never
+  change after admission* — so `-tags elpscheck` proves no load rewrites a
+  cached node (and, with the flag-vs-type fix above, that a laundered
+  non-sealable node still trips the cross-runtime gate). It does **not** prove
+  the *right* program was served: a wrong-program serve leaves the served bytes
+  internally stable, so that class is closed by the key and the admission
+  conjunction, not by the checked build.
 
 A parse the admission refuses is **not cached**: it is handed to that one
 load and forgotten, so the load behaves exactly as it would with no cache.
@@ -423,7 +430,41 @@ file's name and location are stable across loads) but not in general: two
 files with identical text would share an entry and the served tree carries
 the *first* file's parse locations, so every error raised from the second
 names the wrong file. elps digests the content **and** the stream's name and
-location, each length-prefixed.
+location — and the identity of the *reader* that parses them and which reader
+*method* (`Read` vs `ReadLocation`) is in use — each length-prefixed. The key
+binds the entry's producer, not merely its input: without the reader and
+method components, two Runtimes with different `Reader`s served each other's
+parses, a swapped `Runtime.Reader` re-served the stale parse, and `Load` and
+`LoadLocation` collided on the same `(name, "", src)` tuple. Reader identity
+defaults to the reader's Go type — stable across instances (so per-Runtime
+readers of the same type still share entries, the warm-cache topology) and
+distinct across types — with `lisp.ReaderIdentity` as an optional hook for a
+reader that varies its parse behind one type.
+
+**Admission trusts the node type, not the seal flag.** The fast-path check
+(`firstUnsealed`) and the checked-mode ownership exemption both require a node
+to be sealed **and** of a sealable type (`sealableNodeType`), not merely to
+carry the flag. The flag is one byte an untrusted `Reader` can set on any node;
+trusting it alone let a mutable/closure node with the flag set launder past
+admission and be aliased across Runtimes. With the conjunction, such a node is
+routed to the copy path (where `SealAST` declines to mark it) and rejected, and
+under `-tags elpscheck` it is no longer exempt from the cross-runtime gate.
+
+**The admission walk is bounded.** Putting `newProgram` on the `load-file`
+path meant `checkLoaderExpr`'s recursion now ran over arbitrary `Reader`
+output. It carries a cycle/sharing memo, a depth cap and a node budget
+(mirroring `sealfp.go`): a cyclic tree, an interned shared subtree, or nesting
+past the budget is refused (`errReaderTreeUnbounded`) in O(distinct nodes)
+rather than overflowing the stack or re-descending a shared subtree
+exponentially. Because that pass runs first, the walks after it
+(`firstUnsealed`, `Copy`) only ever see a finite strict tree.
+
+**Behaviour a cache can change** (see `docs/embed.md` for the migration note):
+installing a cache in front of a non-sealing reader can make guarded mutation
+sites raise `modify-literal-error` on previously-working code (admission runs
+`SealAST`); a re-entrant `Load`/`Store` is defended by an in-flight guard that
+treats re-entry as a miss; and `io.ReadAll` changes the outcome for a streaming
+reader that errors after a complete program.
 
 **The debugger question, answered.** Attaching a debugger disables TCO
 globally and makes `macroCall` build a `macroExpansionContext`, which

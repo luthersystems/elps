@@ -186,6 +186,16 @@ func (env *LEnv) ParseProgram(name, loc string, r io.Reader) (Program, error) {
 func newProgram(exprs []*LVal) (Program, error) {
 	for _, expr := range exprs {
 		if err := checkLoaderExpr(expr); err != nil {
+			if errors.Is(err, errReaderTreeUnbounded) {
+				// A cyclic, interned-shared, or over-deep reader output is not
+				// a strict parser tree.  Return the sentinel UNWRAPPED (not
+				// through GoError) so a caller that admits reader output on the
+				// load path — (*LEnv).readCached — can tell this apart from an
+				// ordinary admission refusal: such output is not safe to hand
+				// to the evaluator either, so that load fails rather than
+				// falling back to an uncached eval of it.
+				return Program{}, err
+			}
 			lerr := Error(err)
 			// Copied, not aliased: the error escapes to the caller through
 			// GoError while expr remains the Reader's property, so the two
@@ -224,12 +234,24 @@ func newProgram(exprs []*LVal) (Program, error) {
 }
 
 // firstUnsealed returns the first node reachable through v's Cells that is
-// not sealed, or nil when the tree is sealed throughout.  The trees it
-// walks were admitted by checkLoaderExpr, whose recursion already assumes
-// finite, non-nil parser-shaped nodes; the same custody assumption applies
-// here.
+// not admissibly sealed, or nil when the tree is sealed throughout.
+//
+// "Admissibly sealed" is a conjunction, not the flag alone: a node counts as
+// sealed here only when it carries the sealed flag AND has a type SealAST
+// would actually mark (sealableNodeType).  The flag is one byte an untrusted
+// Reader can set on any node; trusting it alone let a node whose type is
+// mutable/reference (an LFun closure, say) but whose flag happens to be set
+// launder past admission and be aliased across Runtimes.  Conjoining the type
+// closes that: such a node is reported as unsealed, routed to the copy path,
+// where SealAST declines to mark it and it is rejected as unsealable.  The
+// ownership checker keys off the same conjunction (lisp/
+// ownership_check_elpscheck.go) so the two admission gates agree.
+//
+// The trees it walks have already passed checkLoaderExpr in newProgram, whose
+// bounded walk rejects cyclic, interned-shared, and over-deep reader output —
+// so firstUnsealed (and the Copy below it) only ever see a finite strict tree.
 func firstUnsealed(v *LVal) *LVal {
-	if !v.IsSealed() {
+	if !v.IsSealed() || !sealableNodeType(v.Type) {
 		return v
 	}
 	for _, c := range v.Cells {

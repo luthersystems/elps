@@ -62,11 +62,11 @@ func TestReadCachedHandsOutTheCachedNodes(t *testing.T) {
 		return exprs, nil
 	}
 
-	first, err := env.readCached("f.lisp", "f.lisp", strings.NewReader(src), parse)
+	first, err := env.readCached("f.lisp", "f.lisp", false, strings.NewReader(src), parse)
 	if err != nil {
 		t.Fatalf("first read failed: %v", err)
 	}
-	second, err := env.readCached("f.lisp", "f.lisp", strings.NewReader(src), parse)
+	second, err := env.readCached("f.lisp", "f.lisp", false, strings.NewReader(src), parse)
 	if err != nil {
 		t.Fatalf("second read failed: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestReadCachedHandsOutTheCachedNodes(t *testing.T) {
 	// And the entry the cache holds is that same storage again — the miss
 	// path must not keep a pristine copy back, or the cache never serves
 	// what it stored (that copy is exactly the cost this hook removes).
-	entry, ok := cache.Load(loadCacheKey("f.lisp", "f.lisp", []byte(src)))
+	entry, ok := cache.Load(loadCacheKey("f.lisp", "f.lisp", readerIdentity(env.Runtime.Reader), false, []byte(src)))
 	if !ok {
 		t.Fatal("the miss path did not store an entry under the derived key")
 	}
@@ -102,6 +102,105 @@ func TestReadCachedHandsOutTheCachedNodes(t *testing.T) {
 	}
 }
 
+// mintClosure evaluates a hand-built (let ([n 0]) (lambda () n)) and returns
+// the resulting closure — an LFun that captured a mutable lexical environment.
+// It is built without the parser (package lisp cannot import it) so it is
+// available to the internal and checked-build tests alike.  This is the
+// custody reviewer's repro shape: a closure whose captured *LEnv is mutable
+// per-runtime state, the exact value the admission and ownership gates exist
+// to keep from being shared across runtimes.
+func mintClosure(t *testing.T) *LVal {
+	t.Helper()
+	env := NewEnv(nil)
+	if rc := InitializeUserEnv(env); rc.Type == LError {
+		t.Fatalf("init: %v", rc)
+	}
+	lam := SExpr([]*LVal{Symbol("lambda"), SExpr([]*LVal{}), Symbol("n")})
+	let := SExpr([]*LVal{Symbol("let"),
+		SExpr([]*LVal{SExpr([]*LVal{Symbol("n"), Int(0)})}),
+		lam})
+	fn := env.Eval(let)
+	if fn.Type != LFun {
+		t.Fatalf("expected a closure (LFun), got %v: %v", fn.Type, fn)
+	}
+	if sealableNodeType(fn.Type) {
+		t.Fatal("LFun must not be a sealable type, or this repro is vacuous")
+	}
+	return fn
+}
+
+// forceSealAll sets the sealed flag on v and every node reachable through its
+// Cells, REGARDLESS of type.  It is the laundering a real SealAST refuses to
+// do: SealAST stops at a non-sealable node, so this is how a test builds the
+// node the reviewer's attack needs — a mutable/closure node carrying the seal
+// flag, which no production path can produce.
+func forceSealAll(v *LVal) {
+	if v == nil || v.sealed {
+		return
+	}
+	v.sealed = true
+	for _, c := range v.Cells {
+		forceSealAll(c)
+	}
+}
+
+// TestReadCachedRejectsLaunderedNonSealableNode is the non-checked red proof
+// for finding 1: admission must trust the node TYPE, not the seal FLAG alone.
+//
+// A closure carrying the seal flag on a non-sealable type is exactly the shape
+// a laundering Reader (or a node whose type/Native changed after it was
+// sealed) presents.  Before the fix, firstUnsealed saw sealed==true and
+// admitted the whole tree as-is, so the closure entered a process-wide cache
+// and was aliased to every environment that loaded it.  After the fix
+// firstUnsealed conjoins sealableNodeType, routes the node to the copy path
+// where SealAST declines to mark it, and it is rejected — never stored, the
+// load falling back to an ordinary uncached eval.
+func TestReadCachedRejectsLaunderedNonSealableNode(t *testing.T) {
+	env := NewEnv(nil)
+	if rc := InitializeUserEnv(env); rc.Type == LError {
+		t.Fatalf("init: %v", rc)
+	}
+	cache := &mapLoadCache{}
+	env.Runtime.LoadCache = cache
+
+	fn := mintClosure(t)
+	forceSealAll(fn) // launder: the seal flag now sits on a non-sealable node
+	if !fn.sealed {
+		t.Fatal("laundering did not set the flag; the proof would be vacuous")
+	}
+
+	parses := 0
+	parse := func(r io.Reader) ([]*LVal, error) {
+		if _, err := io.ReadAll(r); err != nil {
+			return nil, err
+		}
+		parses++
+		return []*LVal{fn}, nil
+	}
+
+	exprs, err := env.readCached("laundered.lisp", "laundered.lisp", false, strings.NewReader("x"), parse)
+	if err != nil {
+		t.Fatalf("the load must still succeed uncached, got: %v", err)
+	}
+	if len(exprs) != 1 || exprs[0] != fn {
+		t.Fatalf("the uncached fall-back must hand back the parsed expressions")
+	}
+	if len(cache.entries) != 0 {
+		t.Fatalf("a laundered non-sealable node was admitted into the cache (%d entries); "+
+			"admission trusted the seal flag over the node type", len(cache.entries))
+	}
+	if parses != 1 {
+		t.Fatalf("expected exactly one parse, got %d", parses)
+	}
+
+	// Directly at the admission constructor, for good measure: the reason is a
+	// seal failure, not the pathological-graph sentinel.
+	_, aerr := newCachedSource("k", "n", "l", []*LVal{fn})
+	if aerr == nil {
+		t.Fatal("newCachedSource admitted a sealed-flagged closure; the type check is missing")
+	}
+}
+
 // TestReadCachedNilCacheDoesNotInterpose pins the compatibility promise at
 // the funnel: with no cache installed, readCached must pass the caller's own
 // io.Reader through untouched.
@@ -109,7 +208,7 @@ func TestReadCachedNilCacheDoesNotInterpose(t *testing.T) {
 	env := NewEnv(nil)
 	stream := strings.NewReader("()")
 	var got io.Reader
-	_, err := env.readCached("n.lisp", "n.lisp", stream, func(r io.Reader) ([]*LVal, error) {
+	_, err := env.readCached("n.lisp", "n.lisp", false, stream, func(r io.Reader) ([]*LVal, error) {
 		got = r
 		return nil, nil
 	})
@@ -133,7 +232,7 @@ func TestReadCachedNilCacheAllocatesNothing(t *testing.T) {
 	parse := func(io.Reader) ([]*LVal, error) { return nil, nil }
 	stream := strings.NewReader("")
 	got := testing.AllocsPerRun(200, func() {
-		_, _ = env.readCached("n.lisp", "n.lisp", stream, parse)
+		_, _ = env.readCached("n.lisp", "n.lisp", false, stream, parse)
 	})
 	if got != 0 {
 		t.Errorf("the nil-cache path allocated %v times per load; it must allocate nothing", got)
