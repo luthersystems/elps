@@ -281,7 +281,7 @@ func adjudicate(c *comparison, p *policy) *verdict {
 				waiverNote = fmt.Sprintf(" [its waiver (%s, ceiling %s%%, expires %s) neither applied nor was outgrown here: both are claims about a size this comparison could not measure]",
 					w.issue, w.ceilStr, w.expires)
 			}
-			v.lines = append(v.lines, fmt.Sprintf("  UNMEASURABLE %-45s %-9s %-40s delta=%s p=%s (gate %s%%) spread ±%s%% is at or above the ±%s%% fitness ceiling -- an arm this dispersed carries no information about the size of the move, so this delta is NOT adjudicated in either direction: not a regression, and not a pass. Re-measure on a fit runner (`benchgate burnin` before the run says whether it is one) %s%s",
+			v.lines = append(v.lines, fmt.Sprintf("  UNMEASURABLE %-45s %-9s %-40s delta=%s p=%s (gate %s%%) spread ±%s%% is at or above the ±%s%% fitness ceiling -- an arm this dispersed carries no information about the size of the move, so this delta is NOT adjudicated in either direction: not a regression, and not a pass. Re-measure on a fit runner (`benchgate burnin` before the run says whether it is one); if the row comes back this dispersed on a machine that passes burn-in, the BENCHMARK is what needs fixing -- a longer -benchtime, or keeping it out of the comparison set -- because re-running it will not converge %s%s",
 				r.pkg, r.metric, r.name, r.deltaTok, r.pvalStr, gateStr, awkNum(r.spread), p.ceilingStr, dir, waiverNote))
 			continue
 		}
@@ -399,7 +399,7 @@ format has genuinely changed.
 	// Same doctrine again, for the rows the MACHINE could not measure. This one
 	// carries the exit code with it, so it says which way it went.
 	if v.unmeasurable > 0 {
-		pf(stdout, "benchgate: %d timing row(s) moved at or above the gate on an interval at or above the ±%s%% fitness ceiling, so the comparison cannot size the move at all (reported as UNMEASURABLE above). They are NOT counted as regressions and NOT counted as passes: this run certified nothing about them. Re-measure -- `benchgate burnin` on the runner first will say whether it can measure anything.\n", v.unmeasurable, p.ceilingStr)
+		pf(stdout, "benchgate: %d timing row(s) moved at or above the gate on an interval at or above the ±%s%% fitness ceiling, so the comparison cannot size the move at all (reported as UNMEASURABLE above). They are NOT counted as regressions and NOT counted as passes: this run certified nothing about them. Re-measure -- `benchgate burnin` on the runner first will say whether it can measure anything, and a row that stays this dispersed on a machine that passes burn-in is a benchmark to fix rather than a job to re-run.\n", v.unmeasurable, p.ceilingStr)
 	}
 	if v.unmeasurableInfo > 0 {
 		pf(stdout, "benchgate: %d further row(s) were equally unfit to measure but moved LESS than their gate, so they change no verdict and are reported as warnings only. A noisy row can hide a real regression; whole-machine fitness is what `benchgate burnin` is for.\n", v.unmeasurableInfo)
