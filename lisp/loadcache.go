@@ -523,7 +523,7 @@ func (env *LEnv) readCached(name, loc string, byLoc bool, r io.Reader, parse fun
 		return nil, err
 	}
 	key := loadCacheKey(name, loc, readerID, byLoc, src)
-	if entry, ok := cache.Load(key); ok && entry != nil && entry.key == key {
+	if entry, ok := env.cacheLoad(cache, key); ok && entry != nil && entry.key == key {
 		// Checked builds re-verify the entry against the fingerprint taken at
 		// ADMISSION, not against a per-root seal-time record: the entry
 		// already carries exactly the value that catches a Reader which
@@ -549,6 +549,51 @@ func (env *LEnv) readCached(name, loc string, byLoc bool, r io.Reader, parse fun
 		// comment).
 		return exprs, nil
 	}
-	cache.Store(key, entry)
+	env.cacheStore(cache, key, entry)
 	return entry.prog.exprs, nil
+}
+
+// cacheLoad and cacheStore are the only two calls into embedder code on this
+// path, and they are the only two that can panic in a place (*LEnv).Load*
+// cannot report.  The Load* family is total — it returns an *LVal, an LError
+// at worst — but readCached runs BEFORE the evaluator's recover, so a
+// panicking hook escaped as a raw Go panic through an API that never panics
+// (issue #536 round-three review, minor 2).
+//
+// A panic here is treated as every other cache-implementation mistake on this
+// path is treated: the cache did not help, so the load proceeds without it.
+// Load degrades to a miss (the parse below is the correct program either
+// way); Store degrades to "not stored" (the parse already succeeded, and
+// failing a good load because the cache could not record it would be strictly
+// worse).  The re-entrancy guard is cleared by readCached's own defer, so a
+// panicking hook does not disable the cache for later loads.
+//
+// One line to Stderr, because silently swallowing a panic in embedder code
+// would hide a bug the embedder needs to see.
+func (env *LEnv) cacheLoad(cache LoadCache, key string) (entry *CachedSource, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			entry, ok = nil, false
+			env.reportCachePanic("Load", r)
+		}
+	}()
+	return cache.Load(key)
+}
+
+func (env *LEnv) cacheStore(cache LoadCache, key string, src *CachedSource) {
+	defer func() {
+		if r := recover(); r != nil {
+			env.reportCachePanic("Store", r)
+		}
+	}()
+	cache.Store(key, src)
+}
+
+func (env *LEnv) reportCachePanic(method string, r any) {
+	if env.Runtime == nil || env.Runtime.Stderr == nil {
+		return
+	}
+	fmt.Fprintf(env.Runtime.Stderr,
+		"lisp: LoadCache.%s panicked; continuing without the cache for this load: %v\n",
+		method, r)
 }

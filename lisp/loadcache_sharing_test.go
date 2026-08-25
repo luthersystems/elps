@@ -244,3 +244,65 @@ func TestProgramRefusesNativeAnnotation(t *testing.T) {
 	require.NotEqual(t, lisp.LError, v.Type, "the cache path falls back uncached: %v", v)
 	assert.Zero(t, cache.stores, "a Native payload must never be stored")
 }
+
+// --- round-three minor 2: an embedder hook must not panic out of Load* ---
+
+// panickingCache is an embedder cache with a bug in it.
+type panickingCache struct {
+	entries    map[string]*lisp.CachedSource
+	panicLoad  bool
+	panicStore bool
+	stores     int
+}
+
+func (c *panickingCache) Load(key string) (*lisp.CachedSource, bool) {
+	if c.panicLoad {
+		panic("cache Load blew up")
+	}
+	v, ok := c.entries[key]
+	return v, ok
+}
+
+func (c *panickingCache) Store(key string, src *lisp.CachedSource) {
+	if c.panicStore {
+		panic("cache Store blew up")
+	}
+	c.stores++
+	c.entries[key] = src
+}
+
+// (*LEnv).Load* is total: it returns an *LVal, an LError at worst.  readCached
+// runs before the evaluator's recover, though, so a panicking hook escaped as
+// a raw Go panic through an API that never panics.  A panic in either hook now
+// degrades to "the cache did not help", like every other cache-implementation
+// mistake on this path.
+func TestLoadCacheHookPanicDoesNotEscape(t *testing.T) {
+	t.Parallel()
+	const src = `(in-package 'user)(set 'who "A")`
+	for _, tc := range []struct{ name, which string }{{"Store", "store"}, {"Load", "load"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := &panickingCache{entries: map[string]*lisp.CachedSource{}}
+			cache.panicStore = tc.which == "store"
+			cache.panicLoad = tc.which == "load"
+			env := lisp.NewEnv(nil)
+			env.Runtime.Reader = parser.NewReader()
+			require.NotEqual(t, lisp.LError, lisp.InitializeUserEnv(env).Type)
+			require.NotEqual(t, lisp.LError, env.InPackage(lisp.String(lisp.DefaultUserPackage)).Type)
+			env.Runtime.LoadCache = cache
+
+			var v *lisp.LVal
+			require.NotPanics(t, func() {
+				v = env.LoadLocation("a.lisp", "/a.lisp", strings.NewReader(src))
+			}, "a panicking %s escaped (*LEnv).LoadLocation", tc.name)
+			require.NotEqual(t, lisp.LError, v.Type, "the load must still succeed: %v", v)
+			assert.Equal(t, `"A"`, env.GetGlobal(lisp.Symbol("who")).String())
+
+			// And the cache is not left disabled: with the bug removed the
+			// next load caches normally.
+			cache.panicStore, cache.panicLoad = false, false
+			require.NotEqual(t, lisp.LError,
+				env.LoadLocation("a.lisp", "/a.lisp", strings.NewReader(src)).Type)
+			assert.Equal(t, 1, cache.stores, "the re-entrancy guard was left set")
+		})
+	}
+}

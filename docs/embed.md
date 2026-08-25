@@ -179,25 +179,70 @@ Notes for implementers:
   would serve each other's parses.
 - **A nil `LoadCache` changes nothing.**  With no cache installed the load
   path is exactly what it was before the hook existed — the reader receives
-  the caller's own `io.Reader`, unbuffered.
+  the caller's own `io.Reader`, unbuffered, and admission allocates nothing.
+  (`BenchmarkReadProgramAdmit` and `BenchmarkTextLoaderAdmit` hold that to
+  account; the claim is about the `Load*` family *and* about the
+  `lisp.Program` constructors, which share the same admission walk.  What
+  those constructors newly *reject* is a separate matter — see below.)
 - **Not every parse is cacheable, and un-cacheable is not a load failure.**
-  A `Reader` that returns a reference type, a node the seal cannot cover, a
-  literal carrying a `Native` payload the seal cannot vouch for, or simply
-  more nodes than the cache admission's budget, produces a parse that is
+  A `Reader` that returns a reference type, a `nil` node, a node the seal
+  cannot cover, a literal carrying a `Native` payload the seal cannot vouch
+  for, or simply more nodes than the cache admission's budget (counted both
+  as distinct nodes and as unfolded size), produces a parse that is
   handed to that one load and never stored.  The load itself behaves exactly
   as it would with no cache installed — a cache is an optimization and must
   never turn a working program into a broken one.
+- **Node sharing is admitted.**  A `Reader` that interns symbols, constants or
+  whole subexpressions returns a DAG, which is an ordinary memory
+  optimization; it is cached and aliased normally.  What the cache measures is
+  not whether anything is shared but the **unfolded** size — the number of
+  nodes an evaluation walks, counting a shared subtree once per path — which
+  admission computes exactly, in time linear in the *distinct* nodes.  A
+  heavily interned very large source is simply over budget (above), so it
+  loads uncached.
 - **Two shapes are a hard load error instead**, because they are unsafe to
   *evaluate* rather than merely unshareable: reader output containing a cycle,
-  and output containing an interned shared **subtree** (which the copy path
-  unfolds and the evaluator re-evaluates once per path — exponential in the
-  sharing depth).  Both are refused with "reader output is not a finite tree".
-  A repeated **leaf** is not one of these: symbol interning is an ordinary
-  reader optimization and is admitted, cached and aliased normally.
+  and sharing whose unfolded size is astronomical (4.3e9 node evaluations —
+  reachable only by sharing that multiplies, and never by a program that
+  finishes).  Both are refused with "reader output is not a finite tree".
 - **The node budget is the cache's alone.**  `lisp.ReadProgram`,
   `lisp.ParseProgram` and `lisp.TextLoader` impose no limit on how many nodes
   a `Reader` may return, and never did; only cache admission does, because
   only a cache entry is aliased into unboundedly many environments.
+
+#### What `ReadProgram` / `ParseProgram` / `TextLoader` newly reject
+
+The bullet above says a nil `LoadCache` changes nothing, and for the
+`Load*` family that is exact.  The `lisp.Program` constructors are the other
+half of the same admission, and they are **not** unchanged: they run the same
+walk with no cache installed, so a few `Reader` outputs that used to be
+accepted now return an error.  Every one of them was a latent crash or a
+silently-shared mutable node; none can be produced by a parser in this
+repository.  Migrating an embedder `Reader` means checking this list:
+
+| Reader output | before | `ReadProgram` / `ParseProgram` | `TextLoader` |
+|---|---|---|---|
+| a `nil` node (root or cell) | panic (nil dereference) | error: *reader output contains a nil expression* | same |
+| a cycle | unbounded recursion, Go stack overflow | error: *not a finite tree* | same |
+| nesting past 100,000 | Go stack overflow | error: *not a finite tree* | same |
+| a `Native` payload on a sealable node (`LInt`, `LString`, `LSymbol`, `LSExpr`, …) | accepted | error: *cannot admit … carrying a native payload* | **accepted** |
+| a reference type (bytes, map, array, native) | error | error (unchanged) | error (unchanged) |
+| node sharing (interning), any size | accepted | accepted | accepted |
+| one very large expression | accepted | accepted | accepted |
+
+The `Native` row is the only one where a previously *working* program
+changes, and it is confined to the two constructors that hand every
+environment the **same** tree.  `TextLoader` gives each load `expr.Copy()`, so
+nothing is newly shared there and the payload is tolerated: `Native` is the
+only exported per-node slot an embedder's `Reader` has (`source`, `meta` and
+`macroExpansion` are unexported), so a `Reader` that annotates nodes has
+nowhere else to go.  A `Program` cannot make the same allowance — the seal is
+the only thing standing between environments, and the seal cannot vouch for
+what is on the other end of an `interface{}`.
+
+On the cache path none of these is a load failure except the cycle and the
+unbounded-sharing case: an un-admissible parse is handed to that one load and
+never stored.
 - **The guest can mint entries.**  `load-string` and `load-bytes` are builtins,
   so semi-trusted phylum source populates the cache too — retention bounds must
   account for guest-driven loads, not only host call sites.
