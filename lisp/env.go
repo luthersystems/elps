@@ -360,7 +360,10 @@ func (env *LEnv) Load(name string, r io.Reader) *LVal {
 		return env.Errorf("no reader for environment runtime")
 	}
 
-	exprs, err := env.Runtime.Reader.Read(name, r)
+	reader := env.Runtime.Reader
+	exprs, err := env.readCached(name, "", false, r, func(rd io.Reader) ([]*LVal, error) {
+		return reader.Read(name, rd)
+	})
 	if err != nil {
 		return env.Error(err)
 	}
@@ -389,7 +392,9 @@ func (env *LEnv) LoadLocation(name string, loc string, r io.Reader) *LVal {
 	if !ok {
 		return env.Load(loc, r)
 	}
-	exprs, err := reader.ReadLocation(name, loc, r)
+	exprs, err := env.readCached(name, loc, true, r, func(rd io.Reader) ([]*LVal, error) {
+		return reader.ReadLocation(name, loc, rd)
+	})
 	if err != nil {
 		return env.Error(err)
 	}
@@ -1555,7 +1560,10 @@ func (env *LEnv) LoadContext(ctx context.Context, name string, r io.Reader) *LVa
 	if env.Runtime.Reader == nil {
 		return env.Errorf("no reader for environment runtime")
 	}
-	exprs, err := env.Runtime.Reader.Read(name, r)
+	reader := env.Runtime.Reader
+	exprs, err := env.readCached(name, "", false, r, func(rd io.Reader) ([]*LVal, error) {
+		return reader.Read(name, rd)
+	})
 	if err != nil {
 		return env.Error(err)
 	}
@@ -1590,7 +1598,9 @@ func (env *LEnv) LoadLocationContext(ctx context.Context, name, loc string, r io
 	if !ok {
 		return env.LoadContext(ctx, loc, r)
 	}
-	exprs, err := reader.ReadLocation(name, loc, r)
+	exprs, err := env.readCached(name, loc, true, r, func(rd io.Reader) ([]*LVal, error) {
+		return reader.ReadLocation(name, loc, rd)
+	})
 	if err != nil {
 		return env.Error(err)
 	}

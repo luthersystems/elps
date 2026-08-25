@@ -41,13 +41,15 @@ type Runtime struct {
 	Reader                 Reader
 	Library                SourceLibrary
 	Profiler               Profiler
-	Debugger               Debugger // nil = disabled (zero overhead on hot path)
+	Debugger               Debugger  // nil = disabled (zero overhead on hot path)
+	LoadCache              LoadCache // nil = disabled (the load path is then byte-identical to having no hook); see lisp/loadcache.go
 	conditionStack         []*LVal
 	MaxAlloc               int           // Per-operation allocation size cap (0 = use default). Not cumulative.
 	MaxMacroExpansionDepth int           // Maximum macro expansion iterations (0 = use default).
 	MaxEvalNesting         int           // Evaluator recursion depth cap (0 = use default, negative = disabled).
 	MaxSleep               time.Duration // Hard ceiling on a single time:sleep (0 or negative = none). See MaxSleepCeiling.
 	evalDepth              int           // Re-entrancy depth of top-level evaluation entry points.
+	loadCacheActive        bool          // Guards LoadCache re-entrancy; see (*LEnv).readCached.
 	evalNesting            int           // Current recursion depth of LEnv.eval (the Go-stack guard).
 	maxSteps               int64         // Per-evaluation step limit (0 = unlimited).
 	steps                  int64         // Steps consumed by the current top-level evaluation.

@@ -96,6 +96,14 @@ import (
 //     per-iteration runtimes (#379 item 2, #387).
 //     - LEnv.Fork shares every sealed node between a template environment
 //     and its forks (#380, this branch).
+//     - Runtime.LoadCache serves one sealed per-file parse to every
+//     environment that load-files it (#368) — substrate's warm parse cache
+//     again, moved inside the module that owns the AST type so the alias
+//     can be established by construction instead of by convention.  It
+//     needs no exemption of its own: newCachedSource admits through
+//     newProgram, so a cache entry is sealed throughout and is already
+//     inside this one (lisp/loadcache_elpscheck_test.go drives both
+//     directions).
 //
 //     Found by lisp.FuzzSharedProgramMultiEnv (#389), whose whole subject is
 //     the first of those.  The exemption itself lives on
@@ -221,11 +229,18 @@ func (v ownershipViolation) String() string { return v.msg }
 // LEnv.Put, LEnv.PutGlobal, and env.eval — see the file comment for why
 // those three points and what they miss.
 func checkOwnership(rt *Runtime, v *LVal) {
-	// v.sealed: see allowlist entry 2 in the file comment.  A sealed node is
-	// shared across runtimes BY DESIGN (that is what a parse cache is), and
-	// its safety is carried by the seal's own three checkers rather than by
-	// ownership.
-	if v == nil || rt == nil || isSingleton(v) || v.sealed {
+	// v.sealed && sealableNodeType(v.Type): see allowlist entry 2 in the file
+	// comment.  A sealed node is shared across runtimes BY DESIGN (that is what
+	// a parse cache is), and its safety is carried by the seal's own three
+	// checkers rather than by ownership.  The exemption is the CONJUNCTION, not
+	// the flag alone: the sealed flag is one byte an untrusted Reader can set
+	// on any node, and the seal's immutability guarantees only cover the types
+	// SealAST actually marks.  A node whose flag is set but whose type is
+	// mutable/reference (an LFun closure laundered into a cache entry, whose
+	// captured *LEnv the seal never freezes) is NOT exempt, so it still trips
+	// the gate when it crosses runtimes.  The admission side keys off the same
+	// conjunction (firstUnsealed, lisp/program.go).
+	if v == nil || rt == nil || isSingleton(v) || (v.sealed && sealableNodeType(v.Type)) {
 		return
 	}
 	// See allowlist entry 3.  A builtin that captured no environment holds no

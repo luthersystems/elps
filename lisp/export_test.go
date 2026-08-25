@@ -72,3 +72,60 @@ func SetEnvLocForTest(env *LEnv, loc *token.Location) {
 func EnvLocForTest(env *LEnv) *token.Location {
 	return env.loc
 }
+
+// --- test-only bridges into the sealed load cache (lisp/loadcache.go) ---
+//
+// WHY THESE HAVE TO EXIST.  CachedSource is opaque BY DESIGN: no exported
+// member yields a *LVal, and the only constructor (newCachedSource) routes
+// every parse through newProgram's admission, so a legally-minted entry is
+// sealed throughout.  Both properties are exactly what the tests need to
+// get around:
+//
+//   - The alias proof needs the nodes themselves, to assert that two loads
+//     of one key evaluate the SAME *LVal rather than two equal ones.
+//   - The seal-fingerprint proofs need the roots, to show a cached tree's
+//     bytes are identical before and after another environment evaluated
+//     it.
+//   - The ownership red-proof needs an ILLEGAL entry — one carrying an
+//     unsealed node — which no production path can build.  A guard that has
+//     never been shown to fire is not known to work.
+//
+// Do NOT promote any of these.  CachedSourceForTest in particular
+// constructs precisely the object the admission exists to make
+// unconstructible.
+
+// CachedSourceExprs exposes a cache entry's sealed expressions to the test
+// battery.  Read-only by contract: the nodes ARE the cached program.
+func CachedSourceExprs(s *CachedSource) []*LVal {
+	if s == nil {
+		return nil
+	}
+	return s.prog.exprs
+}
+
+// CachedSourceForTest mints a CachedSource around exprs WITHOUT the
+// admission walk newCachedSource performs.  Test-only, and its only purpose
+// is to build the entry the ownership red-proof needs.
+func CachedSourceForTest(key, name, loc string, exprs []*LVal) *CachedSource {
+	return &CachedSource{
+		key:  key,
+		name: name,
+		loc:  loc,
+		prog: Program{exprs: exprs},
+		fp:   SealedASTFingerprint(exprs),
+	}
+}
+
+// LoadCacheKeyForTest exposes the key derivation so a test can pre-seed a
+// cache, or assert what elps will ask for.
+func LoadCacheKeyForTest(name, loc, readerID string, byLoc bool, src []byte) string {
+	return loadCacheKey(name, loc, readerID, byLoc, src)
+}
+
+// ReaderIdentityForTest exposes the reader-identity derivation so a test can
+// build the exact key elps will ask for a given reader.  The second result is
+// false when the reader declined to state an identity (an empty
+// ReaderIdentity token), in which case no key is derivable at all.
+func ReaderIdentityForTest(r Reader) (string, bool) {
+	return readerIdentity(r)
+}

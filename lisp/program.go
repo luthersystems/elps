@@ -153,11 +153,16 @@ func (env *LEnv) ParseProgram(name, loc string, r io.Reader) (Program, error) {
 // to the different mechanism (TextLoader hands each load a private copy;
 // Program hands every load the same sealed tree):
 //
-//   - checkLoaderExpr runs first, verbatim.  Reference types (bytes, map,
-//     array, native) share mutable state through every copy AND every
-//     evaluation — SealAST declines to mark them and Copy preserves their
-//     reference semantics — so no admission can make them safe to share and
-//     they are rejected with TextLoader's error.
+//   - The admission walk runs first (admitExpr, over a non-strict walk for
+//     the Program constructors and a strict one for Runtime.LoadCache).
+//     Reference types (bytes, map, array, native) share mutable state through
+//     every copy AND every evaluation — SealAST declines to mark them and Copy
+//     preserves their reference semantics — so no admission can make them safe
+//     to share and they are rejected with TextLoader's error.  So is a Native
+//     payload riding on a type the seal marks, which nothing downstream covers
+//     (see admitExpr).  Cycles and over-deep nesting are refused on every
+//     path; node sharing and sheer size are refused only on the cache path,
+//     where an entry is aliased into unboundedly many environments.
 //   - Output that is already sealed throughout is admitted as-is.  This is
 //     the standard-parser fast path, and the sharing it takes is the
 //     sanctioned kind: sealed nodes are frozen storage under the seal's write
@@ -184,16 +189,72 @@ func (env *LEnv) ParseProgram(name, loc string, r io.Reader) (Program, error) {
 //     Program the seal is the only thing standing between environments, so
 //     "cannot seal" has to mean "cannot admit".
 func newProgram(exprs []*LVal) (Program, error) {
+	return newProgramAdmitted(exprs, newLoaderWalk(false))
+}
+
+// newProgramForCache is newProgram with the cache path's stricter walk: a
+// node budget whose overflow is reported as errReaderTreeTooLarge so
+// (*LEnv).readCached can fall back to an uncached load rather than failing
+// it.  See admitExpr for why the budget is the cache's and not everyone's,
+// and loaderWalk.verdict for the one shape that is refused outright.
+func newProgramForCache(exprs []*LVal) (Program, error) {
+	return newProgramAdmitted(exprs, newLoaderWalk(true))
+}
+
+// newProgramAdmitted is the shared body.  One walk state covers every
+// top-level expression of the stream (see newLoaderWalk).
+func newProgramAdmitted(exprs []*LVal, w *loaderWalk) (Program, error) {
 	for _, expr := range exprs {
-		if err := checkLoaderExpr(expr); err != nil {
-			lerr := Error(err)
-			// Copied, not aliased: the error escapes to the caller through
-			// GoError while expr remains the Reader's property, so the two
-			// must not share a *token.Location (TextLoader's rule; cold
-			// path, the copy is free in practice).
-			lerr.source = copyLocation(expr.source)
-			return Program{}, GoError(lerr)
+		err := admitExpr(expr, w)
+		if err == nil {
+			continue
 		}
+		if errors.Is(err, errReaderTreeTooLarge) {
+			// NOT a return.  admitExpr walks each top-level expression in
+			// turn, and the node budget belongs to the whole stream, so an
+			// over-budget FIRST expression used to consume the budget and
+			// make every later expression report "too large" — which
+			// readCached turns into an uncached fall-back, handing a cycle in
+			// a later expression to the evaluator after all (issue #536
+			// round-three review, minor 1).  The walk keeps going instead
+			// (it memoises, so the cost is O(distinct nodes)), and the
+			// stream-level verdict below reports the budget once every
+			// expression has been checked for the things that are NOT
+			// negotiable.
+			continue
+		}
+		if errors.Is(err, errReaderTreeUnbounded) {
+			// Returned UNWRAPPED (not through GoError) so the one caller that
+			// admits reader output on the LOAD path — (*LEnv).readCached —
+			// can tell it apart from an ordinary admission refusal and from
+			// errReaderTreeTooLarge.  They are not interchangeable:
+			// errReaderTreeUnbounded (a cycle, over-deep nesting, or sharing
+			// whose unfolded size is past loaderWalkUnfoldedCap) is output
+			// that is unsafe to hand to the evaluator at all, so that load
+			// FAILS; errReaderTreeTooLarge is a legal program that is merely
+			// bigger than the cache budget, so that load falls back to an
+			// UNCACHED parse and behaves exactly as it would with no cache
+			// installed.
+			return Program{}, err
+		}
+		lerr := Error(err)
+		// Copied, not aliased: the error escapes to the caller through
+		// GoError while expr remains the Reader's property, so the two must
+		// not share a *token.Location (TextLoader's rule; cold path, the copy
+		// is free in practice).  expr may itself be a nil the walk refused
+		// (errReaderNilNode), so it is read only when there is something to
+		// read.
+		if expr != nil {
+			lerr.source = copyLocation(expr.source)
+		}
+		return Program{}, GoError(lerr)
+	}
+	if err := w.verdict(); err != nil {
+		// The stream-level budget verdict (cache path only), reported after
+		// every expression has been walked so a cycle anywhere in the stream
+		// outranks it.  Returned UNWRAPPED for the same reason the per-
+		// expression sentinels are.
+		return Program{}, err
 	}
 	allSealed := true
 	for _, expr := range exprs {
@@ -203,7 +264,22 @@ func newProgram(exprs []*LVal) (Program, error) {
 		}
 	}
 	if allSealed {
-		return Program{exprs: exprs}, nil
+		// CLONE THE SLICE HEADER, do not alias it (issue #368 review,
+		// blocker 1).  The nodes are shared deliberately — that is the whole
+		// point of the sealed fast path — but the SLICE is the Reader's, and
+		// a Reader that refills one output slice per call (an ordinary buffer
+		// reuse, and one the "do not retain and later mutate the nodes you
+		// returned" contract does not forbid) would rewrite this Program's
+		// expressions out from under it.  Under a LoadCache that meant one
+		// file's entry serving another file's program, with every root still
+		// legitimately sealed so -tags elpscheck saw nothing wrong.  The
+		// clone is len(exprs) pointer copies on a path that has just parsed a
+		// file; the three-index form additionally clamps capacity so no later
+		// append can write through the Reader's spare capacity (the #373
+		// discipline, applied here too).
+		cp := make([]*LVal, len(exprs))
+		copy(cp, exprs)
+		return Program{exprs: cp[:len(cp):len(cp)]}, nil
 	}
 	sealed := make([]*LVal, len(exprs))
 	for i, expr := range exprs {
@@ -224,12 +300,38 @@ func newProgram(exprs []*LVal) (Program, error) {
 }
 
 // firstUnsealed returns the first node reachable through v's Cells that is
-// not sealed, or nil when the tree is sealed throughout.  The trees it
-// walks were admitted by checkLoaderExpr, whose recursion already assumes
-// finite, non-nil parser-shaped nodes; the same custody assumption applies
-// here.
+// not admissibly sealed, or nil when the tree is sealed throughout.
+//
+// "Admissibly sealed" is a conjunction, not the flag alone: a node counts as
+// sealed here only when it carries the sealed flag AND has a type SealAST
+// would actually mark (sealableNodeType).  The flag is one byte an untrusted
+// Reader can set on any node; trusting it alone let a node whose type is
+// mutable/reference (an LFun closure, say) but whose flag happens to be set
+// launder past admission and be aliased across Runtimes.  Conjoining the type
+// closes that: such a node is reported as unsealed, routed to the copy path,
+// where SealAST declines to mark it and it is rejected as unsealable.  The
+// ownership checker keys off the same conjunction (lisp/
+// ownership_check_elpscheck.go) so the two admission gates agree.
+//
+// The trees it walks have already passed the admission walk in newProgram,
+// which rejects cyclic and over-deep reader output — so firstUnsealed only
+// ever sees a finite, depth-bounded graph.
+//
+// IT CARRIES NO MEMO, deliberately.  A memo would make a shared subtree cost
+// O(distinct nodes) instead of O(paths), but it would allocate a map sized to
+// the whole stream on EVERY parse — including the ReadProgram/TextLoader
+// calls that have no cache installed, which is 27% more heap on the path
+// docs/embed.md promises is unchanged (issue #536 round-three review,
+// blocker 1).  It would also buy almost nothing: the only tree whose walk
+// the memo shortens and whose cost is not immediately re-paid is a SEALED
+// DAG, because an unsealed one goes straight into (*LVal).Copy, which
+// unfolds it anyway.  The cache path, where sharing is deliberately
+// admitted, bounds the unfolded size at admission instead (see admitExpr) —
+// the QUOTE-BLIND count, because this walk does not stop at a quote either —
+// so this walk is bounded there by construction; off the cache path a shared
+// tree costs exactly what it cost before the load-cache hook existed.
 func firstUnsealed(v *LVal) *LVal {
-	if !v.IsSealed() {
+	if !v.IsSealed() || !sealableNodeType(v.Type) {
 		return v
 	}
 	for _, c := range v.Cells {

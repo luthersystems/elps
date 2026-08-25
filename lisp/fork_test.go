@@ -654,3 +654,51 @@ func TestForkRuntimeConfig(t *testing.T) {
 		t.Errorf("step accounting not fresh: steps=%d total=%d", frt.steps, frt.totalSteps)
 	}
 }
+
+// TestForkRemapsLaunderedSealedClosure closes the last permissive read of the
+// seal flag (issue #368 round-two review, fork.go).
+//
+// (*forker).val shares any value it finds sealed, because a sealed value is
+// immutable and sharing it is the reason forking beats reloading.  The flag
+// alone does not establish that, though: SealAST only marks the types
+// sealableNodeType lists, so a node whose flag is set on a type SealAST would
+// never touch — an LFun laundered in through a Reader, whose captured *LEnv
+// the seal never freezes — is mutable per-runtime state wearing an
+// immutability badge.  Shared, it reconnects the template environment to
+// every fork, which is precisely what Fork exists to prevent.
+//
+// Every other reader of the flag is protective (a laundered flag buys an
+// extra refusal); this one is permissive, so it is the one that needed the
+// same flag-AND-type conjunction the admission gate (firstUnsealed) and the
+// ownership checker already use.
+//
+// Red proof: with the condition back to `if v.sealed {`, the closure is
+// SHARED and this test fails with "the fork shares the template's closure".
+func TestForkRemapsLaunderedSealedClosure(t *testing.T) {
+	env := newForkTestEnv(t)
+
+	fn := mintClosure(t)
+	forceSealAll(fn) // launder: the seal flag on a type SealAST never marks
+	if !fn.sealed || sealableNodeType(fn.Type) {
+		t.Fatal("the laundered node must be a sealed non-sealable type, or this proof is vacuous")
+	}
+	if rc := env.PutGlobal(Symbol("laundered"), fn); rc.Type == LError {
+		t.Fatalf("could not bind the laundered closure: %v", rc)
+	}
+
+	fork, err := env.Fork()
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	got := fork.GetGlobal(Symbol("laundered"))
+	if got.Type != LFun {
+		t.Fatalf("the fork did not carry the binding: %v (%v)", got, got.Type)
+	}
+	if got == fn {
+		t.Fatal("the fork shares the template's closure: a laundered seal flag let a mutable" +
+			" LFun — and the *LEnv it captured — cross the boundary Fork establishes")
+	}
+	if fd, ok := got.Native.(*funData); !ok || fd == nil || fd.env == fn.funData().env {
+		t.Fatal("the forked closure still captures the template's environment")
+	}
+}

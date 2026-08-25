@@ -181,7 +181,8 @@ unsealed by construction.
 ### 2.5 The embedder boundary
 
 The parse/cache boundary exposes no raw AST: `lisp.Program`
-(`lisp/program.go`) wraps parse output opaquely, and the package registry
+(`lisp/program.go`) wraps parse output opaquely, the per-file load cache hook
+does the same for `load-file` (§2.9), and the package registry
 seals its LVal-bearing surface (§2.8 for what its admission promises per
 value class). Deep-copy machinery for owned expressions
 exists in-kernel (`detach()`, `lisp/detach.go` — whose walker also backs the
@@ -271,14 +272,15 @@ over a production-scale downstream embedder.
 | `LVal.Native`/`Str`/`Cells`/`Type`/`Int`/`Float`/`FunType` | ~3,000 | — | wide | **stay exported** |
 | `LEnv.Scope`/`FunName`/`Parent`/`Loc` | 0 | 0 | 4 / 0 / 5 / 0 reads | unexported, mediated reads |
 | `LEnv.Runtime`/`ID` | 16 / 3 reads | 17 / 0 | 110 reads / 0 | **stay exported** |
-| `Runtime.*` (`Stderr`, `Reader`, `Library`, `Debugger`, `Profiler`, `Registry`, `Package`, `Stack`) | 8 writes, 7 reads | 15 | 20 writes, 89 reads | **stay exported** |
+| `Runtime.*` (`Stderr`, `Reader`, `Library`, `Debugger`, `LoadCache`, `Profiler`, `Registry`, `Package`, `Stack`) | 8 writes, 7 reads | 15 | 20 writes, 89 reads | **stay exported** |
 | `CallStack.Frames`/`GoStack`, `CallFrame.*` | 0 | 1 read | 30 reads, 0 writes | **stay exported** |
 
 `Runtime` is the deliberate non-break, and that reasoning deserves to be as
 explicit as the breaks.  Its exported fields are embedder *configuration* —
-`Stderr`, `Reader`, `Library`, `Debugger` and `Profiler` are set by the host
+`Stderr`, `Reader`, `Library`, `Debugger`, `LoadCache` and `Profiler` are set
+by the host
 before or between evaluations, the documented way to attach a logger, a
-debugger or a source library — and its live fields (`Registry`, `Package`,
+debugger, a source library or a parse cache — and its live fields (`Registry`, `Package`,
 `Stack`) are per-interpreter state, not shared parse-tree bytes: a bad write
 corrupts *that* interpreter, in its own goroutine, where the damage is
 observable.  None of the incidents this design answers (#333/#334, #369,
@@ -361,6 +363,204 @@ out the registry's live `*Package` — which is how the merges enumerate a
 booted registry — and a caller can `Put` through it. Same residual as §2.7's
 exported fields: the boundary stops accidental sharing, not a caller that
 goes looking for interpreter state.
+
+### 2.9 The sealed load-file cache hook (issue #368)
+
+`Program` (§2.5) closes the parse/cache boundary an embedder drives
+*directly*. It leaves one seam open, and it is the seam a phylum actually
+loads through: `load-file` reaches the parser via `Runtime.Reader`, so an
+embedder that wants a per-file parse cache has exactly one place to put it —
+a custom `Reader` — and that place hands it raw `[]*lisp.LVal`.
+substrate's `cacheReader` is that shape, and it is not a misuse of the API;
+it is the only shape the API offered.
+
+`Runtime.LoadCache` (`lisp/loadcache.go`) is the elps-owned hook that closes
+it. The embedder supplies *policy* — key lookup, retention, eviction — and
+never touches data:
+
+```go
+type LoadCache interface {
+        Load(key string) (*CachedSource, bool)
+        Store(key string, src *CachedSource)
+}
+```
+
+`*CachedSource` is opaque exactly as `Program` is: only elps mints one, and
+no exported member yields a `*LVal` (`TestCachedSourceIsOpaque` is the
+reflection guard, `TestProgramSeal`'s sibling). Every `Load*` entry point
+funnels through `(*LEnv).readCached`: on a miss it reads the stream, derives
+a key, parses, admits the parse through **`newProgram`** — the same single
+admission point §2.5 describes — stores the entry, and hands the sealed tree
+to the load; on a hit it hands that same sealed tree to the next environment
+**by reference**.
+
+**What the aliasing rests on** is entirely existing rails; no new admission
+class was added:
+
+- the tree is sealed throughout by construction, because `newCachedSource`
+  routes every parse through `newProgram` (reference types rejected,
+  already-sealed output admitted as-is, anything else privately copied and
+  sealed, the unsealable rejected);
+- a sealed node may be reached by more than one `Runtime` **by design** —
+  §3.3's ownership allowlist entry 2, whose first named topology is
+  substrate's warm parse cache, which is this one;
+- lisp-level writes through the shared tree raise `modify-literal-error` at
+  the guarded kernel sites (§2.4);
+- the evaluator's own metadata writes skip sealed nodes, so a **debugger**
+  needs no private copy of a cached tree (below);
+- checked builds re-verify the tree after every load through `(*LEnv).load`
+  (§3.3), so a corrupted entry is reported at the load that corrupted it.
+  What that per-root verification covers is exactly one claim — *the sealed
+  bytes never change after admission* — so `-tags elpscheck` proves no load
+  rewrites a cached node (and, with the flag-vs-type fix above, that a
+  laundered non-sealable node still trips the cross-runtime gate);
+- checked builds also re-verify each entry **as it is served**
+  (`verifyCachedSourceOnHit`), against the fingerprint taken at admission.
+  That is a different claim from the one above, and per-root verification is
+  structurally incapable of making it: a `Reader` that refills one output
+  slice per call substitutes another file's roots wholesale, and those roots
+  are legitimately sealed and match their own seal-time records perfectly. An
+  entry-level fingerprint sees the substitution; a per-root one cannot. It
+  costs one fingerprint walk per hit, in checked builds only — which gives up
+  the hook's zero-work hit under `-tags elpscheck`, the right trade for the
+  mode whose job is to make the seal's claims checkable. What remains
+  unproven by the checked build is a wrong-program serve that goes through the
+  *key* — that class is closed by the key's composition and the admission
+  conjunction instead.
+
+A parse the admission refuses is **not cached**: it is handed to that one
+load and forgotten, so the load behaves exactly as it would with no cache.
+The alternative — store it and copy on every load — would put an unsealed
+tree in a process-wide cache, which is the topology the hook exists to make
+impossible.
+
+**Keying deviates from substrate's deliberately.** `cacheReader` keys on a
+hash of the source content alone, which is safe for its own topology (a
+file's name and location are stable across loads) but not in general: two
+files with identical text would share an entry and the served tree carries
+the *first* file's parse locations, so every error raised from the second
+names the wrong file. elps digests the content **and** the stream's name and
+location — and the identity of the *reader* that parses them and which reader
+*method* (`Read` vs `ReadLocation`) is in use — each length-prefixed. The key
+binds the entry's producer, not merely its input: without the reader and
+method components, two Runtimes with different `Reader`s served each other's
+parses, a swapped `Runtime.Reader` re-served the stale parse, and `Load` and
+`LoadLocation` collided on the same `(name, "", src)` tuple. Reader identity
+defaults to the reader's Go type — stable across instances (so per-Runtime
+readers of the same type still share entries, the warm-cache topology) and
+distinct across types — with `lisp.ReaderIdentity` as an optional hook for a
+reader that varies its parse behind one type.
+
+**Admission trusts the node type, not the seal flag.** The fast-path check
+(`firstUnsealed`) and the checked-mode ownership exemption both require a node
+to be sealed **and** of a sealable type (`sealableNodeType`), not merely to
+carry the flag. The flag is one byte an untrusted `Reader` can set on any node;
+trusting it alone let a mutable/closure node with the flag set launder past
+admission and be aliased across Runtimes. With the conjunction, such a node is
+routed to the copy path (where `SealAST` declines to mark it) and rejected, and
+under `-tags elpscheck` it is no longer exempt from the cross-runtime gate.
+
+**The admission walk is bounded, and the bound is stratified.** Putting
+`newProgram` on the `load-file` path meant the admission walk's recursion now
+ran over arbitrary `Reader` output. It carries an on-path cycle guard, a
+validated-node memo and a depth cap (mirroring `sealfp.go`), so a cyclic or
+very deep tree is refused in O(distinct nodes) rather than overflowing the Go
+stack. Those two rules apply on **every** path, because the alternative to
+refusing is not a worse answer but an unrecoverable crash.
+
+Two further rules are the **cache's alone**, and keeping them there is the
+point. `lisp.ReadProgram`, `lisp.ParseProgram` and `lisp.TextLoader` hand
+their output to one load; a cache entry is aliased into unboundedly many
+environments, so it can afford neither:
+
+- **no repeated composite node.** A shared subtree is unfolded by the copy
+  path and re-evaluated once per path — exponential in the sharing depth (a
+  depth-40 DAG is ~10^12 paths). Refused with `errReaderTreeUnbounded`, which
+  fails the load, because handing it to an uncached eval would not terminate
+  either. A repeated **leaf** is explicitly fine: symbol interning is the
+  common case and a leaf has no children to re-descend.
+- **a node budget.** Overflow yields `errReaderTreeTooLarge`, which
+  `readCached` treats as "do not cache this one": the load proceeds uncached.
+  A node count is not a safety property, so refusing to *share* a large
+  program must not stop it *running*. Applying this bound to the public
+  constructors — which is where it first landed — rejected programs they had
+  always accepted, and that is a regression the cache has no licence to cause.
+
+`firstUnsealed` carries the same memo for the same reason: node sharing is
+legal off the cache path, so without it a shared subtree would be re-descended
+once per path. The memo records only nodes already found *sealed*, so it can
+never mask an unsealed one. `(*LVal).Copy` still has no memo, so a DAG it
+copies is unfolded — pre-existing behaviour of the copy path, and one more
+reason the cache forbids composite sharing.
+
+**A node the seal cannot vouch for is not admitted.** `SealAST` freezes an
+`LVal`'s own fields; it cannot freeze whatever an embedder hung off `Native`,
+the fingerprint oracle skips `Native` by design, `(*LVal).Copy` shallow-copies
+it, and the admission conjunction keys off the node's *type*, which is
+sealable for an `LInt`. A mutable Go box riding on a sealed integer literal
+would therefore cross Runtime boundaries aliased, unfingerprinted and
+unreported. The walk refuses a non-nil `Native` on a type the seal marks: on
+the cache path that means an uncached load, for `Program` an error — which is
+what its contract already promises for output the seal cannot protect. No
+parser produces such a node (the standard parser sets `Native` on none), so
+the rule costs nothing real.
+
+**Reader custody covers the slice, not only the nodes.** The zero-copy fast
+path shares the reader's *nodes* deliberately; it must not retain the reader's
+`[]*LVal` *header*, and before this it did. A reader that refills one output
+buffer per call — an ordinary optimization, and not a violation of "do not
+mutate the nodes you returned" — rewrote the previous file's entry in place.
+Admission clones the header and clamps its capacity (the `clampCap`
+discipline, §2.6), which is `len(exprs)` pointer copies on a path that has
+just parsed a file.
+
+**An empty `ReaderIdentity()` disables the cache** for that reader's loads
+rather than being folded into the key. The empty token states nothing, so two
+readers returning it would be declared interchangeable producers and would
+serve each other's parses — the exact failure the reader component of the key
+exists to prevent, reached by implementing the optional interface badly.
+Falling back to the Go type would be no better, since a reader that
+multiplexes parse behaviour behind one type is precisely why it implements
+`ReaderIdentity` at all.
+
+**Behaviour a cache can change** (see `docs/embed.md` for the migration note):
+installing a cache in front of a non-sealing reader can make guarded mutation
+sites raise `modify-literal-error` on previously-working code (admission runs
+`SealAST`); a re-entrant `Load`/`Store` is defended by an in-flight guard that
+treats re-entry as a miss; and `io.ReadAll` changes the outcome for a streaming
+reader that errors after a complete program.
+
+**The debugger question, answered.** Attaching a debugger disables TCO
+globally and makes `macroCall` build a `macroExpansionContext`, which
+`stampMacroExpansion` turns into per-node metadata. Those are writes, and a
+macro receives its arguments unevaluated, so a caller's parse nodes — here,
+*cached* nodes — are spliced straight into the expansion. The write does not
+land, for two independent reasons: `stampGuarded` returns at the first sealed
+node (skipping the whole subtree, §2.4), and rdparser gives every node it
+emits a real location so the stamp's `source == nil || Pos < 0` condition is
+false in the first place. Only the first of those covers a cached tree that
+came from a *caller-written* `Reader`, which may emit location-less nodes —
+so that is the case
+`TestLoadCacheDebuggerDoesNotStampSharedNodes` drives, and removing the
+sealed skip makes it fail. Debug mode therefore pays no copy on this path.
+
+**What it buys.** The hazard half of this story was already closed: since the
+parser seals and the mutation sites refuse sealed input, an embedder cache
+that aliases is no longer the corruption vector it was. What remained was a
+*cost* — an embedder holds `[]*LVal`, not a promise, so the only way it can
+reach safety on its own terms is to deep-copy every hit. Measured in this
+repository over a 78 KiB source loaded into a fresh environment
+(`lisp/loadcache_bench_test.go`, `-count=8`):
+
+| arm | sec/op | B/op | allocs/op |
+|---|---|---|---|
+| no cache | 16.81 ms | 9169 KiB | 235,036 |
+| embedder-shaped cache, copy per hit | 6.07 ms | 5559 KiB | 64,308 |
+| `LoadCache`, aliased hit | 2.00 ms | 1644 KiB | 18,700 |
+
+Alias against copy: **−67.0% sec/op, −70.4% B/op, −70.9% allocs/op**
+(p=0.000, n=8). A deployment that preheats a pool of environments multiplies
+that by pool size on every refill.
 
 ## 3. Verification layers: what each prevents, and its blind spots
 
@@ -596,7 +796,8 @@ intends to mutate data it did not construct copies unconditionally.
 
 1. **Parse through a sealing path.** `Reader.Read`, `LoadString`,
    `ParseProgram`/`ReadProgram` all seal. Prefer `lisp.Program` at your
-   cache boundary: its constructors *establish* the seal at admission
+   cache boundary, and `Runtime.LoadCache` (§2.9) for the `load-file` path
+   rather than a caching `Reader`: its constructors *establish* the seal at admission
    (elps#394) — reader output that is not already sealed throughout is
    privately copied and sealed, and output the seal cannot protect
    (reference types, function values) is rejected with an error. (Owned

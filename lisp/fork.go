@@ -150,11 +150,22 @@ func ForkWithNativeReplacer(fn func(payload interface{}) (interface{}, bool)) Fo
 // environment-ID and gensym counters so identifiers minted after the fork
 // (lambda FIDs, gensyms) can never collide with identifiers the fork
 // inherited.  Profiler and Debugger do not travel: a fork starts with
-// neither, and the embedder attaches its own if wanted.  The Reader and
-// SourceLibrary are shared (a reader cache is deliberately process-wide;
-// the source library is read-only at runtime), as is Stderr unless
+// neither, and the embedder attaches its own if wanted.  The Reader,
+// SourceLibrary and LoadCache are shared (a reader cache is deliberately
+// process-wide; the source library is read-only at runtime; and a load
+// cache's entries are immutable, sealed, and explicitly safe to serve to
+// any number of Runtimes -- see lisp/loadcache.go), as is Stderr unless
 // ForkWithStderr overrides it.  Step accounting (Runtime.TotalSteps) starts
 // at zero.
+//
+// LoadCache travels for the same reason Reader does, and the reason is the
+// topology: "preheat a template, fork per environment" is elps's own
+// recommended shape, and it is the exact shape the load cache exists to
+// serve.  A fork that dropped the cache would reparse every file the
+// template had already parsed -- silently, since nothing fails -- which is
+// the cost this hook was added to remove.  The per-Runtime re-entrancy
+// guard (loadCacheActive) is deliberately NOT copied: it is state about a
+// load in progress, and the template is quiescent.
 func (env *LEnv) Fork(opts ...ForkOption) (*LEnv, error) {
 	if env == nil || env.Runtime == nil {
 		return nil, errors.New("fork: nil environment or runtime")
@@ -180,6 +191,7 @@ func (env *LEnv) Fork(opts ...ForkOption) (*LEnv, error) {
 		},
 		Reader:                 old.Reader,
 		Library:                old.Library,
+		LoadCache:              old.LoadCache,
 		MaxAlloc:               old.MaxAlloc,
 		MaxMacroExpansionDepth: old.MaxMacroExpansionDepth,
 		MaxEvalNesting:         old.MaxEvalNesting,
@@ -329,10 +341,24 @@ func (f *forker) val(v *LVal) *LVal {
 	if isSingleton(v) {
 		return v
 	}
-	if v.sealed {
+	if v.sealed && sealableNodeType(v.Type) {
 		// Immutable by the seal invariant: shared for free.  This branch is
 		// the reason forking beats reloading — at production scale it takes
 		// the overwhelming majority of reachable values (see docs/fork.md).
+		//
+		// The test is the CONJUNCTION, not the flag alone, and it is the same
+		// conjunction the admission gate (firstUnsealed, lisp/program.go) and
+		// the checked-mode ownership gate (lisp/ownership_check_elpscheck.go)
+		// use.  The seal's guarantees only cover the types SealAST actually
+		// marks; a node whose flag is set but whose type is mutable or
+		// reference (an LFun closure laundered in through a Reader, whose
+		// captured *LEnv the seal never freezes) would be SHARED between the
+		// template and every fork instead of remapped, silently reconnecting
+		// the two environments this function exists to separate.  This is the
+		// permissive direction, which is why it matters: the seal's other
+		// consumers (the guarded mutation sites, stampGuarded, SetSource) read
+		// the flag PROTECTIVELY, where a laundered flag only ever buys an
+		// extra refusal.
 		return v
 	}
 	if cp, ok := f.vals[v]; ok {
