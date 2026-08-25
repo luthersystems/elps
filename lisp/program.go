@@ -192,11 +192,11 @@ func newProgram(exprs []*LVal) (Program, error) {
 	return newProgramAdmitted(exprs, newLoaderWalk(false))
 }
 
-// newProgramForCache is newProgram with the cache path's stricter walk: no
-// repeated composite node, and a node budget whose overflow is reported as
-// errReaderTreeTooLarge so (*LEnv).readCached can fall back to an uncached
-// load rather than failing it.  See admitExpr for why those two rules
-// are the cache's and not everyone's.
+// newProgramForCache is newProgram with the cache path's stricter walk: a
+// node budget whose overflow is reported as errReaderTreeTooLarge so
+// (*LEnv).readCached can fall back to an uncached load rather than failing
+// it.  See admitExpr for why the budget is the cache's and not everyone's,
+// and loaderWalk.verdict for the one shape that is refused outright.
 func newProgramForCache(exprs []*LVal) (Program, error) {
 	return newProgramAdmitted(exprs, newLoaderWalk(true))
 }
@@ -205,32 +205,56 @@ func newProgramForCache(exprs []*LVal) (Program, error) {
 // top-level expression of the stream (see newLoaderWalk).
 func newProgramAdmitted(exprs []*LVal, w *loaderWalk) (Program, error) {
 	for _, expr := range exprs {
-		if err := admitExpr(expr, w); err != nil {
-			if errors.Is(err, errReaderTreeUnbounded) || errors.Is(err, errReaderTreeTooLarge) {
-				// Return these two sentinels UNWRAPPED (not through GoError) so
-				// the one caller that admits reader output on the LOAD path —
-				// (*LEnv).readCached — can tell each apart from an ordinary
-				// admission refusal and from each other.  They are not
-				// interchangeable: errReaderTreeUnbounded (a cycle, an interned
-				// subtree, over-deep nesting) is output that is unsafe to hand
-				// to the evaluator at all, so that load FAILS; errReaderTree
-				// TooLarge is a legal program that is merely bigger than the
-				// cache budget, so that load falls back to an UNCACHED parse
-				// and behaves exactly as it would with no cache installed.
-				return Program{}, err
-			}
-			lerr := Error(err)
-			// Copied, not aliased: the error escapes to the caller through
-			// GoError while expr remains the Reader's property, so the two
-			// must not share a *token.Location (TextLoader's rule; cold
-			// path, the copy is free in practice).  expr may itself be a nil
-			// the walk refused (errReaderNilNode), so it is read only when
-			// there is something to read.
-			if expr != nil {
-				lerr.source = copyLocation(expr.source)
-			}
-			return Program{}, GoError(lerr)
+		err := admitExpr(expr, w)
+		if err == nil {
+			continue
 		}
+		if errors.Is(err, errReaderTreeTooLarge) {
+			// NOT a return.  admitExpr walks each top-level expression in
+			// turn, and the node budget belongs to the whole stream, so an
+			// over-budget FIRST expression used to consume the budget and
+			// make every later expression report "too large" — which
+			// readCached turns into an uncached fall-back, handing a cycle in
+			// a later expression to the evaluator after all (issue #536
+			// round-three review, minor 1).  The walk keeps going instead
+			// (it memoises, so the cost is O(distinct nodes)), and the
+			// stream-level verdict below reports the budget once every
+			// expression has been checked for the things that are NOT
+			// negotiable.
+			continue
+		}
+		if errors.Is(err, errReaderTreeUnbounded) {
+			// Returned UNWRAPPED (not through GoError) so the one caller that
+			// admits reader output on the LOAD path — (*LEnv).readCached —
+			// can tell it apart from an ordinary admission refusal and from
+			// errReaderTreeTooLarge.  They are not interchangeable:
+			// errReaderTreeUnbounded (a cycle, over-deep nesting, or sharing
+			// whose unfolded size is past loaderWalkUnfoldedCap) is output
+			// that is unsafe to hand to the evaluator at all, so that load
+			// FAILS; errReaderTreeTooLarge is a legal program that is merely
+			// bigger than the cache budget, so that load falls back to an
+			// UNCACHED parse and behaves exactly as it would with no cache
+			// installed.
+			return Program{}, err
+		}
+		lerr := Error(err)
+		// Copied, not aliased: the error escapes to the caller through
+		// GoError while expr remains the Reader's property, so the two must
+		// not share a *token.Location (TextLoader's rule; cold path, the copy
+		// is free in practice).  expr may itself be a nil the walk refused
+		// (errReaderNilNode), so it is read only when there is something to
+		// read.
+		if expr != nil {
+			lerr.source = copyLocation(expr.source)
+		}
+		return Program{}, GoError(lerr)
+	}
+	if err := w.verdict(); err != nil {
+		// The stream-level budget verdict (cache path only), reported after
+		// every expression has been walked so a cycle anywhere in the stream
+		// outranks it.  Returned UNWRAPPED for the same reason the per-
+		// expression sentinels are.
+		return Program{}, err
 	}
 	allSealed := true
 	for _, expr := range exprs {

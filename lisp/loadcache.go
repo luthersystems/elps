@@ -460,28 +460,36 @@ func loadCacheKey(name, loc, readerID string, byLoc bool, src []byte) string {
 //     nothing, so the cache disables itself for that reader's loads rather
 //     than key on a token two readers could both return.
 //   - A parse newProgramForCache refuses to admit as cacheable — a Reader
-//     that returned a reference type, a node no seal can cover, or a node
-//     carrying a Native payload the seal cannot vouch for — is not
+//     that returned a reference type, a nil node, a node no seal can cover,
+//     or a node carrying a Native payload the seal cannot vouch for — is not
 //     shareable, so it is handed to this one load and never stored.
 //     Correctness first: the alternative (store it and copy on every load)
 //     would put an unsealed tree in a process-wide cache, which is the
 //     topology this hook exists to make impossible.
 //   - A parse that is legal but larger than the cache admission's node
-//     budget (errReaderTreeTooLarge).  A node COUNT is not a safety
-//     property: the program is fine, it is merely too big to be worth
-//     aliasing process-wide, so the load runs uncached.  The budget belongs
-//     to cache admission alone — ReadProgram, ParseProgram and TextLoader
-//     impose none — precisely so that installing a cache cannot reject a
-//     program that always loaded.
+//     budget (errReaderTreeTooLarge) — in distinct nodes, in unfolded size,
+//     or both.  A node COUNT is not a safety property: the program is fine,
+//     it is merely too big to be worth aliasing process-wide, so the load
+//     runs uncached.  The budget belongs to cache admission alone —
+//     ReadProgram, ParseProgram and TextLoader impose none — precisely so
+//     that installing a cache cannot reject a program that always loaded.
+//     A heavily interned very large source lands here, not in the class
+//     below.
 //
 // One case is NOT a silent fall-back but a hard load error: reader output
-// that is not a finite tree — a cycle, an interned shared SUBTREE, or nesting
-// past the depth cap (errReaderTreeUnbounded).  Such output is not merely
-// un-cacheable; it is unsafe to evaluate (an interned subtree evaluates once
-// per path, exponentially; a cycle only stops at the eval nesting cap), so the
-// load fails here rather than falling back to an uncached eval of it.  A
-// repeated LEAF is not in this class and is cached normally: symbol interning
-// is an ordinary Reader optimization and a leaf has no children to unfold.
+// that is not a finite tree — a cycle, nesting past the depth cap, or sharing
+// whose UNFOLDED size is past loaderWalkUnfoldedCap (errReaderTreeUnbounded).
+// Such output is not merely un-cacheable; it is unsafe to evaluate: a cycle
+// only stops at the eval nesting cap, and 4.3e9 node evaluations do not stop
+// at all.  So the load fails here rather than falling back to an uncached
+// eval of it.
+//
+// ORDINARY SHARING IS NOT IN THAT CLASS.  A repeated leaf never was; a
+// repeated composite used to be, and that rule broke a program that loaded
+// fine without a cache — one small subexpression reached twice is linear, is
+// what a constant-interning Reader produces, and evaluates in microseconds.
+// The discriminator is now the unfolded size the memo computes exactly, not
+// the presence of sharing (see loaderWalk.verdict).
 //
 // # Re-entrancy
 //

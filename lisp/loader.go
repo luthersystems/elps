@@ -46,14 +46,15 @@ func LoaderMust(fn Loader, err error) Loader {
 // the stream's expressions when called.  The reader will be invoked only once.
 //
 // TextLoader returns an error if r produces any reference type (bytes, map,
-// array, native, etc), if any node carries a Native payload on a type the seal
-// would otherwise mark (see admitExpr), or if r's output is not finite:
-// a cycle, or nesting past loaderWalkMaxDepth.  It does NOT reject node
-// SHARING and imposes no node budget — a Reader that interns symbols, or one
-// that returns a single very large expression, loads exactly as it always has.
-// Those two extra rules exist only for Runtime.LoadCache, whose entries are
-// aliased into unboundedly many environments, and they are applied only there
-// (see admitExpr, and the strict walk newLoaderWalk builds for it).
+// array, native, etc), a nil node, or output that is not finite: a cycle, or
+// nesting past loaderWalkMaxDepth.  It does NOT reject node SHARING, imposes
+// no node budget, and — unlike the Program constructors and the cache —
+// tolerates a Native payload on a sealable type (see newTextLoaderWalk).  A
+// Reader that interns symbols or subexpressions, one that returns a single
+// very large expression, and one that annotates nodes through Native all
+// load exactly as they always have.  Those rules exist for trees that are
+// ALIASED between environments; every TextLoader load gets expr.Copy(), so
+// none of them is a TextLoader concern.
 func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 	exprs, err := r.Read(name, stream)
 	if err != nil {
@@ -62,7 +63,7 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 	// One walk state for the whole stream, not one per expression: it costs a
 	// single map for the file instead of len(exprs) of them, and it lets the
 	// cycle guard see a cycle that closes across two top-level expressions.
-	w := newLoaderWalk(false)
+	w := newTextLoaderWalk()
 	for _, expr := range exprs {
 		err := admitExpr(expr, w)
 		if err != nil {
@@ -121,29 +122,36 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 
 // errReaderTreeUnbounded marks reader output that is not a finite tree: a
 // cycle, nesting past the admission depth cap, or — on the cache path only —
-// an interned (shared) subtree.  A real parse is a strict tree well within
-// these bounds — rdparser caps parse depth at 10,000 and shares no
-// non-singleton composite node — so output that trips them did not come from a
-// parser and is refused.
+// sharing whose UNFOLDED size is past loaderWalkUnfoldedCap.  A real parse is
+// well within all three — rdparser caps parse depth at 10,000 — so output
+// that trips them did not come from a parser and is refused.
 //
 // It is a distinct sentinel because, unlike an ordinary admission refusal (a
 // reference type, or a node no seal can cover), such output is not merely
-// un-cacheable: it is unsafe to hand to the evaluator too — evaluating an
-// interned subtree is exponential in the sharing depth, and a cycle is stopped
-// only by the eval nesting cap, after doing that work.  (*LEnv).readCached
-// fails the load on this sentinel instead of falling back to an uncached eval.
-var errReaderTreeUnbounded = errors.New("reader output is not a finite tree (cycle, shared subtree, or too deep to admit)")
+// un-cacheable: it is unsafe to hand to the evaluator too.  A cycle is
+// stopped only by the eval nesting cap, after doing the work; and sharing
+// that unfolds to 4.3e9 node evaluations does not terminate at all.
+// (*LEnv).readCached fails the load on this sentinel instead of falling back
+// to an uncached eval.
+//
+// ORDINARY SHARING IS NOT IN THIS CLASS.  A composite node reached twice used
+// to be, which broke a program a constant-interning Reader had loaded fine
+// for as long as there was no cache; see loaderWalk.verdict for the rewrite
+// and the red proof.
+var errReaderTreeUnbounded = errors.New("reader output is not a finite tree (cycle, unbounded shared subtree, or too deep to admit)")
 
-// errReaderTreeTooLarge marks reader output that is finite, strict and legal
-// but larger than the cache admission's node budget.
+// errReaderTreeTooLarge marks reader output that is finite and legal but
+// larger than the cache admission's node budget — in distinct nodes, in
+// unfolded size, or both.
 //
 // It is deliberately NOT errReaderTreeUnbounded, and the difference is the
-// whole point: a cycle or an interned subtree is unsafe to evaluate, but a
-// node COUNT is not — a single enormous top-level expression is an ordinary
-// program.  Refusing to cache it must therefore behave exactly as it does
-// with no cache installed, so (*LEnv).readCached falls back to an uncached
-// load on this sentinel rather than failing the load (see readCached's
-// fall-back list).  Nothing outside the cache path imposes the budget at all.
+// whole point: a cycle is unsafe to evaluate, but a node COUNT is not — a
+// single enormous top-level expression, or a heavily interned large source,
+// is an ordinary program.  Refusing to cache it must therefore behave exactly
+// as it does with no cache installed, so (*LEnv).readCached falls back to an
+// uncached load on this sentinel rather than failing the load (see
+// readCached's fall-back list).  Nothing outside the cache path imposes the
+// budget at all.
 var errReaderTreeTooLarge = errors.New("reader output exceeds the cache admission node budget")
 
 // errReaderNilNode marks reader output containing a nil *LVal — a root, or a
@@ -166,13 +174,31 @@ var errReaderTreeTooLarge = errors.New("reader output exceeds the cache admissio
 var errReaderNilNode = errors.New("reader output contains a nil expression")
 
 const (
-	// loaderWalkMaxNodes bounds the total distinct nodes the CACHE admission
-	// walk visits.  It mirrors sealFPMaxNodes (lisp/sealfp.go): orders of
-	// magnitude beyond any top-level expression a parser emits, present only
-	// to bound hand-built or adversarial reader output.  It applies to the
-	// cache path alone — ReadProgram, ParseProgram and TextLoader have no node
-	// budget, so a legal 1.2M-node expression still loads through them.
+	// loaderWalkMaxNodes is the CACHE admission's node budget.  It bounds the
+	// UNFOLDED size of an entry — the number of nodes an evaluation walks,
+	// counting a shared subtree once per path — and, separately, the number
+	// of DISTINCT nodes in it.  It mirrors sealFPMaxNodes (lisp/sealfp.go):
+	// orders of magnitude beyond any top-level expression a parser emits,
+	// present only to bound hand-built or adversarial reader output.
+	// Exceeding it is errReaderTreeTooLarge, which is not a failure — the
+	// load proceeds uncached.  It applies to the cache path alone;
+	// ReadProgram, ParseProgram and TextLoader have no node budget, so a
+	// legal 1.2M-node expression still loads through them.
 	loaderWalkMaxNodes = sealFPMaxNodes
+	// loaderWalkHardMaxNodes stops the cache admission walk outright.  The
+	// walk does NOT abandon at loaderWalkMaxNodes, because a budget overflow
+	// in one top-level expression must not hide a cycle in the next one
+	// (issue #536 round-three review, minor 1); it memoises, so continuing
+	// costs O(distinct nodes) and nothing worse.  This is the point past
+	// which even that is more than any reader output deserves.
+	loaderWalkHardMaxNodes = 4 * loaderWalkMaxNodes
+	// loaderWalkUnfoldedCap is where unfolded-size arithmetic saturates, and
+	// also the line between "too big to cache" and "not a finite tree at
+	// all".  4.3e9 node evaluations is not a program that finishes: no
+	// unshared parse can reach it (the source would not fit in memory), and
+	// a shared one that does is a sharing bomb whose evaluation is
+	// exponential in the sharing depth.  See loaderWalk.verdict.
+	loaderWalkUnfoldedCap = int64(1) << 32
 	// loaderWalkMaxDepth bounds admission recursion depth so a very deep tree
 	// cannot exhaust the Go stack before anything else notices.  It mirrors
 	// sealFPMaxDepth; parse depth caps at 10,000 (rdparser), leaving wide
@@ -180,77 +206,66 @@ const (
 	// because the alternative is not a refusal but an unrecoverable Go stack
 	// overflow.
 	loaderWalkMaxDepth = sealFPMaxDepth
-	// loaderWalkNoBudget disables the node budget (the non-cache paths).
-	loaderWalkNoBudget = -1
 )
 
 // admitExpr reports whether v is admissible reader output, under the rules
 // w carries.  It is the single admission walk: TextLoader, ReadProgram,
 // ReadLocationProgram and ParseProgram pass a walk from newLoaderWalk(false),
-// and Runtime.LoadCache passes newLoaderWalk(true), which adds two rules.
+// and Runtime.LoadCache passes newLoaderWalk(true), which adds a node budget.
 //
 // What EVERY path rejects, and why each rule is safe to apply to public API:
 //
+//   - A NIL NODE, root or cell.  It cannot be sealed, cannot be
+//     fingerprinted, and firstUnsealed answers "sealed" for it, so admitting
+//     one puts a tree that panics on evaluation into a process-wide cache.
 //   - REFERENCE TYPES (bytes, map, array, native), whose mutable backing
 //     every copy of the tree would share.  This is TextLoader's historical
 //     rule, unchanged.
-//   - A NATIVE PAYLOAD on a type SealAST marks (issue #368 review, finding
-//     9).  The seal freezes a node's LVal fields; it does not and cannot
-//     freeze whatever an embedder hung off Native, the fingerprint oracle
-//     does not hash Native (lisp/sealfp.go says so explicitly), and
-//     firstUnsealed's flag+type conjunction admits such a node as-is because
-//     its TYPE is sealable.  So a mutable box riding on a sealed-looking
-//     LInt would cross environments aliased, unfingerprinted and unreported.
-//     No parser produces one — the standard parser sets Native on zero nodes
-//     — so the rule costs nothing real and closes the gap at the boundary
-//     rather than one level further in.
 //   - A CYCLE: a node reached from itself.  Detected with an on-path set, so
 //     ordinary node sharing is not mistaken for one.
 //   - Nesting past loaderWalkMaxDepth.
 //
-// What a NON-STRICT walk deliberately does NOT reject, because those paths
-// are not the cache and a rule that is right for an aliased process-wide
-// entry is not automatically right for public API (issue #368 review,
-// blockers 2 and 3):
+// What NO path rejects, because a rule that is right for an aliased
+// process-wide entry is not automatically right for public API (issue #368
+// review, blockers 2 and 3):
 //
-//   - NODE SHARING.  A Reader that interns symbols returns a DAG, which is an
-//     ordinary memory optimization and has always loaded.  The walk memoises
-//     validated nodes so a DAG still costs O(distinct nodes) rather than
-//     O(paths).
-//   - SIZE.  There is no node budget, so one very large legal expression is
-//     admitted.
+//   - NODE SHARING.  A Reader that interns symbols — or constants, or whole
+//     subexpressions — returns a DAG, which is an ordinary memory
+//     optimization.  See verdict for what happens when the sharing is
+//     pathological rather than ordinary.
+//   - SIZE, off the cache path.  There is no node budget there, so one very
+//     large legal expression is admitted.
+//
+// The cache path adds ONE rule, the node budget, because its admitted entry
+// is aliased into unboundedly many environments instead of being handed to
+// one load.  Exceeding it is errReaderTreeTooLarge, and readCached treats
+// that as "do not cache this one" — the load proceeds uncached, exactly as
+// it would with no cache installed.
+//
+// One further rule is the cache path's alone and is NOT about caching:
+// a Native payload on a type SealAST marks is refused for the Program
+// constructors and the cache, but tolerated by TextLoader.  See
+// newLoaderWalk's allowNative.
 //
 // Because newProgram runs this pass FIRST, the walks after it (firstUnsealed
-// and (*LVal).Copy) see output already known to be acyclic and depth-bounded.
-// firstUnsealed memoises for the same reason this does; (*LVal).Copy does not,
-// so a DAG it copies is unfolded — that is the pre-existing behaviour of the
-// copy path and is why the cache, which cannot afford it, forbids sharing.
-//
-// The two rules a STRICT walk adds exist only for Runtime.LoadCache, whose
-// admitted entry is aliased into unboundedly many environments instead of
-// being handed to one load:
-//
-//   - STRICT TREE among composite nodes.  A node WITH CELLS reached twice is
-//     an interned subtree, and the copy path unfolds it and the evaluator
-//     re-evaluates it once per path — exponential in the sharing depth (a
-//     depth-40 DAG is ~10^12 paths).  Refused with errReaderTreeUnbounded,
-//     which readCached turns into a hard load error, because handing it to an
-//     uncached eval instead would not terminate either.  A repeated LEAF is
-//     explicitly allowed: symbol interning is the common case, it cannot
-//     unfold anything (no children to re-descend), and Copy duplicates it in
-//     linear time.
-//   - A NODE BUDGET.  Exceeding it yields errReaderTreeTooLarge, which
-//     readCached treats as "do not cache this one" — the load proceeds
-//     uncached, exactly as it would with no cache installed.
+// and (*LVal).Copy) see output already known to be non-nil, acyclic and
+// depth-bounded — and, on the cache path, of bounded unfolded size, which is
+// what bounds those two walks there.
 func admitExpr(v *LVal, w *loaderWalk) error {
-	return w.check(v, 0)
+	n, err := w.check(v, 0)
+	if err != nil {
+		return err
+	}
+	w.unfolded = saturatingAddNodes(w.unfolded, n)
+	return nil
 }
 
 // newLoaderWalk builds the admission walk state.  strict selects the cache
-// path's extra rules (a node budget, and the sharing discriminator); one
+// path's extra rules (the node budget, and the Native-payload refusal); one
 // walk is shared across all the top-level expressions of one stream so the
-// cycle guard spans them and the state costs one map per stream rather than
-// one per expression.
+// cycle guard spans them, the budget is a property of the FILE rather than of
+// each expression, and the state costs one map per stream rather than one per
+// expression.
 //
 // THE NON-STRICT WALK ALLOCATES NOTHING for an ordinary parse, and that is a
 // requirement rather than a nicety.  docs/embed.md promises that a nil
@@ -262,25 +277,50 @@ func admitExpr(v *LVal, w *loaderWalk) error {
 // round-three review, blocker 1), buying only the sealed-DAG case that no
 // reader in this repository produces — and buying it one step short of
 // (*LVal).Copy, which unfolds a DAG regardless.  So the O(nodes) state
-// belongs to the cache path, which needs it for a different question, and
-// cycle detection off that path is carried by the on-path set alone.
+// belongs to the cache path, which needs it to answer a different question
+// (how big is this program really), and cycle detection off that path is
+// carried by the on-path set alone.
 func newLoaderWalk(strict bool) *loaderWalk {
 	w := &loaderWalk{}
 	if strict {
 		w.strict = true
-		w.state = make(map[*LVal]uint8)
-		w.budget = loaderWalkMaxNodes
-	} else {
-		w.budget = loaderWalkNoBudget
+		w.sizes = make(map[*LVal]int64)
 	}
 	return w
 }
 
-// Node states in loaderWalk.state (cache path only).
-const (
-	loaderNodeOnPath uint8 = 1 // on the current root->node path: a revisit is a cycle
-	loaderNodeDone   uint8 = 2 // fully validated: a revisit is sharing, not a cycle
-)
+// newTextLoaderWalk is the non-strict walk with the Native-payload rule
+// switched off — TextLoader's walk, and only TextLoader's.
+//
+// The rule (issue #368 review, finding 9) refuses a Native payload riding on
+// a type SealAST marks, because nothing downstream covers it: the seal
+// freezes LVal fields only, the fingerprint oracle skips Native by design,
+// and the admission conjunction and ownership exemption both key off the
+// TYPE, which is sealable.  That reasoning is about a tree ALIASED between
+// environments, which is what a Program and a cache entry are — so it holds
+// for ReadProgram, ReadLocationProgram, ParseProgram and Runtime.LoadCache.
+//
+// TextLoader is not that.  Every load it serves gets expr.Copy(), so no two
+// loads share a node; Copy shallow-copying Native was already true before
+// this hook, so nothing about the sharing is NEW.  Refusing there buys
+// nothing a documented caveat would not, and it costs something real: in the
+// LVal struct, source, meta and macroExpansion are all unexported, so Native
+// is the ONLY exported per-node slot an embedder's Reader has for
+// annotation.  elps's own parsers do not need it because they have the
+// unexported meta; an embedder Reader annotating its nodes has exactly one
+// place to go, and turning that into a hard error on a public constructor is
+// a migration break for no safety (issue #536 round-three review,
+// suspicious 3).
+func newTextLoaderWalk() *loaderWalk {
+	w := newLoaderWalk(false)
+	w.allowNative = true
+	return w
+}
+
+// loaderNodeOnPath marks a node on the current root->node path in
+// loaderWalk.sizes: a revisit is a cycle.  Any other value is the node's
+// unfolded size, recorded once the node is fully validated.
+const loaderNodeOnPath int64 = -1
 
 // loaderWalkPathRecordDepth is the depth past which the NON-STRICT walk
 // starts recording its on-path set.
@@ -297,57 +337,122 @@ const (
 const loaderWalkPathRecordDepth = 64
 
 // loaderWalk carries the admission walk's cycle guard and, on the cache path,
-// its validated-node memo and node budget.  See admitExpr.
+// its unfolded-size memo and node budget.  See admitExpr.
 type loaderWalk struct {
-	// state is the CACHE path's memo: loaderNodeOnPath / loaderNodeDone per
-	// distinct node.  nil off the cache path (see newLoaderWalk).
-	state map[*LVal]uint8
+	// sizes is the CACHE path's memo: loaderNodeOnPath while a node is on the
+	// current path, and afterwards the node's UNFOLDED size — the number of
+	// node visits a memo-less walk of it would make.  Memoising the size is
+	// what lets the walk answer "how much work is this program" in O(distinct
+	// nodes) instead of O(paths).  nil off the cache path (newLoaderWalk).
+	sizes map[*LVal]int64
 	// onPath is the NON-STRICT path's cycle guard: only the nodes on the
 	// current root->node path, and only those deeper than
 	// loaderWalkPathRecordDepth, so an ordinary parse never allocates it.
 	onPath map[*LVal]struct{}
-	budget int  // loaderWalkNoBudget for the non-cache paths
-	strict bool // cache path: no repeated composite nodes
+	// unfolded is the stream's total unfolded size, saturating at
+	// loaderWalkUnfoldedCap; distinct counts the nodes actually visited.
+	unfolded int64
+	distinct int64
+	strict   bool // cache path: node budget
+	// allowNative tolerates a Native payload on a sealable type.  TextLoader
+	// only; see newTextLoaderWalk.
+	allowNative bool
 }
 
-func (w *loaderWalk) check(v *LVal, depth int) error {
+// saturatingAddNodes adds two node counts, clamping at loaderWalkUnfoldedCap.
+// Saturation is what makes the count safe to take on adversarial input: an
+// unfolded size doubles per level of sharing, so an unclamped sum overflows
+// int64 at sharing-depth 63 and would wrap to a small, admissible-looking
+// number.
+func saturatingAddNodes(a, b int64) int64 {
+	n := a + b
+	if n < 0 || n > loaderWalkUnfoldedCap {
+		return loaderWalkUnfoldedCap
+	}
+	return n
+}
+
+// verdict reports the stream-level refusal the walk accumulated, or nil.
+// Only the cache path has one.
+//
+// THE SHARING RULE LIVES HERE, and it is the round-three rewrite (issue #536
+// round-three review, blocker 2).  The rule it replaces was "a composite node
+// reached twice is refused, and the load FAILS", justified by "an interned
+// subtree evaluates once per path, exponentially".  That justification is
+// about NESTED sharing.  One small subexpression reached twice is linear, is
+// exactly what a constant-interning Reader produces, and evaluated in
+// microseconds with no cache installed — so the rule turned a working program
+// into a broken one the moment a cache was installed:
+//
+//	(in-package 'user) (set 'a (+ 1 2)) (set 'b (+ 1 2))    ; interned
+//	cache OFF: 3      cache ON: "reader output is not a finite tree"
+//
+// The quantity that actually separates the two is not "is anything shared"
+// but HOW MUCH WORK THE SHARING IMPLIES, which the memo computes exactly and
+// cheaply.  So:
+//
+//   - Unfolded size at loaderWalkUnfoldedCap — 4.3e9 node evaluations —
+//     is errReaderTreeUnbounded, a hard load failure.  Nothing that
+//     terminates looks like this: an unshared parse that large would not fit
+//     in memory, so reaching it means sharing that multiplies, and the
+//     author's own 2^40-path example lands here in linear time.  Refusing it
+//     cannot break a program that worked, because no such program works.
+//   - Merely over loaderWalkMaxNodes — in unfolded size, in distinct nodes,
+//     or both — is errReaderTreeTooLarge: a legal program that is too big to
+//     be worth aliasing process-wide.  The load runs UNCACHED, which is
+//     round two's fix 3 and is byte-identical to having no cache installed.
+//     This is where an ordinary interning Reader with a very large source
+//     lands, and it is why the discriminator is not "distinct nodes are
+//     under budget, so sharing is to blame": a lightly interned 1.1M-node
+//     source has few distinct nodes to spare and is still an ordinary
+//     program.
+//   - Anything under budget is admitted, sharing and all.  A repeated leaf
+//     was always admitted; a repeated composite now is too.
+func (w *loaderWalk) verdict() error {
+	if !w.strict {
+		return nil
+	}
+	if w.unfolded >= loaderWalkUnfoldedCap {
+		return errReaderTreeUnbounded
+	}
+	if w.unfolded > loaderWalkMaxNodes || w.distinct > loaderWalkMaxNodes {
+		return errReaderTreeTooLarge
+	}
+	return nil
+}
+
+// check validates v and returns its UNFOLDED size — the number of node visits
+// a memo-less walk of v would make, saturating at loaderWalkUnfoldedCap.
+func (w *loaderWalk) check(v *LVal, depth int) (int64, error) {
 	if v == nil {
-		return errReaderNilNode
+		return 0, errReaderNilNode
 	}
 	// Singletons (Nil/true/false) are shared by design and immutable, so a
 	// parse may legitimately reach one from many positions.  They are exempt
 	// from every repeat rule and terminate the walk at once.
 	if isSingleton(v) {
-		return nil
+		return 1, nil
 	}
 	if depth > loaderWalkMaxDepth {
-		return errReaderTreeUnbounded
+		return 0, errReaderTreeUnbounded
 	}
 	recordPath := false
 	if w.strict {
-		switch w.state[v] {
-		case loaderNodeOnPath:
-			// Reached from itself: a cycle, on every path.
-			return errReaderTreeUnbounded
-		case loaderNodeDone:
-			if len(v.Cells) > 0 {
-				// An interned SUBTREE.  Cache path only; see admitExpr for
-				// why a repeated leaf is fine and a repeated composite is not.
-				return errReaderTreeUnbounded
+		if n, seen := w.sizes[v]; seen {
+			if n == loaderNodeOnPath {
+				// Reached from itself: a cycle, on every path.
+				return 0, errReaderTreeUnbounded
 			}
-			return nil
+			// Shared, not cyclic.  Its size is already known, and counting it
+			// again is the whole point: the unfolded total is what the
+			// evaluator will actually walk.
+			return n, nil
 		}
 	} else if depth >= loaderWalkPathRecordDepth {
 		if _, onPath := w.onPath[v]; onPath {
-			return errReaderTreeUnbounded
+			return 0, errReaderTreeUnbounded
 		}
 		recordPath = true
-	}
-	if w.budget == 0 {
-		return errReaderTreeTooLarge
-	}
-	if w.budget > 0 {
-		w.budget--
 	}
 
 	switch v.Type {
@@ -355,7 +460,7 @@ func (w *loaderWalk) check(v *LVal, depth int) error {
 		// Reference types share mutable state with every copy of the cached
 		// expression, so a cached loader would hand the same backing store to
 		// each caller.
-		return fmt.Errorf("cannot cache reference type expression: %v", v.Type)
+		return 0, fmt.Errorf("cannot cache reference type expression: %v", v.Type)
 	case LInvalid, LInt, LFloat, LError, LSymbol, LQSymbol, LSExpr, LFun,
 		LQuote, LString, LTaggedVal,
 		LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
@@ -368,30 +473,38 @@ func (w *loaderWalk) check(v *LVal, depth int) error {
 	// downstream: SealAST freezes LVal fields only, the fingerprint oracle
 	// skips Native by design, and both the admission conjunction
 	// (firstUnsealed) and the ownership exemption key off the TYPE, which is
-	// sealable here.  See admitExpr's doc comment.  Types the seal does
-	// not mark are unaffected: an LFun's funData, an LError's CallStack and
-	// LNative's own payload reach their own rejections.
-	if v.Native != nil && sealableNodeType(v.Type) {
-		return fmt.Errorf("cannot cache %v expression carrying a native payload", v.Type)
+	// sealable here.  See newLoaderWalk's allowNative for why TextLoader is
+	// exempt.  Types the seal does not mark are unaffected: an LFun's
+	// funData, an LError's CallStack and LNative's own payload reach their
+	// own rejections.
+	if v.Native != nil && sealableNodeType(v.Type) && !w.allowNative {
+		return 0, fmt.Errorf("cannot admit %v expression carrying a native payload", v.Type)
 	}
 
 	if w.strict {
-		w.state[v] = loaderNodeOnPath
+		w.distinct++
+		if w.distinct > loaderWalkHardMaxNodes {
+			return 0, errReaderTreeTooLarge
+		}
+		w.sizes[v] = loaderNodeOnPath
 	} else if recordPath {
 		if w.onPath == nil {
 			w.onPath = make(map[*LVal]struct{})
 		}
 		w.onPath[v] = struct{}{}
 	}
+	size := int64(1)
 	for _, cell := range v.Cells {
-		if err := w.check(cell, depth+1); err != nil {
-			return err
+		n, err := w.check(cell, depth+1)
+		if err != nil {
+			return 0, err
 		}
+		size = saturatingAddNodes(size, n)
 	}
 	if w.strict {
-		w.state[v] = loaderNodeDone
+		w.sizes[v] = size
 	} else if recordPath {
 		delete(w.onPath, v)
 	}
-	return nil
+	return size, nil
 }

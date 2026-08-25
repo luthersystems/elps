@@ -42,11 +42,17 @@ import (
 // merely eccentric produces an eccentric baseline and no finding — only a
 // difference the CACHE makes is reported.
 //
-// One mode is allowed to differ, explicitly and narrowly: a Reader returning
-// shared composite subtrees is refused admission (an interned subtree
-// evaluates once per path, which is exponential in the sharing depth), and
-// that refusal fails the load.  For that mode alone a load-admission refusal
-// counts as agreement; a WRONG VALUE never does, in any mode.
+// NO MODE IS ALLOWED TO DIFFER.  There used to be one exemption: a Reader
+// returning shared composite subtrees was refused admission outright, so for
+// readerInternSubtrees a load-admission refusal counted as agreement.  That
+// exemption made this target structurally unable to report the very defect it
+// was pointed at — it excused ANY refusal in that mode, not only a refusal of
+// output that would actually have been exponential, so it ratified the rule
+// instead of testing it (issue #536 round-three review, blocker 2).  The rule
+// is gone: ordinary sharing is admitted, and only sharing whose unfolded size
+// is past loaderWalkUnfoldedCap is refused, which no interning of a parse can
+// reach (interning collapses identical subtrees, so the unfolded size is the
+// original source's).  Every mode now demands equality.
 //
 // Also asserted, in every mode: termination under the scheduled-time
 // watchdog, and no recovered Go panic (lisp.IsInternalPanic) — both from the
@@ -78,7 +84,8 @@ const (
 	// a leaf has no children, so nothing can unfold.
 	readerInternLeaves
 	// readerInternSubtrees interns COMPOSITE nodes too, producing a DAG.
-	// This is the one mode the cache is allowed to refuse.
+	// The cache admits it: interning collapses identical subtrees, so the
+	// UNFOLDED size is unchanged and the evaluation is the same evaluation.
 	readerInternSubtrees
 	// readerNoIdentity implements lisp.ReaderIdentity and returns "".  An
 	// empty token states nothing, so the cache must disable itself for this
@@ -259,12 +266,6 @@ func FuzzLoadCacheHostileReader(f *testing.F) {
 		if got.equal(baseline) {
 			return
 		}
-		if mode == readerInternSubtrees && hostileRefusalOnly(got, baseline) {
-			// The one sanctioned difference: an interned-subtree parse is
-			// refused admission rather than evaluated once per path.  A
-			// wrong VALUE still fails below.
-			return
-		}
 		// Confirm before reporting, with a matched pair: the uncached run
 		// must still agree with the baseline and the cached run must still
 		// disagree.  Same discipline as the sibling targets — a crasher this
@@ -335,48 +336,24 @@ func runHostilePair(t *testing.T, mode uint8, a, b []byte, cache *fuzzLoadCache)
 // isAdmissionRefusal reports whether a load failed because the cache
 // admission refused the Reader's output, rather than for any other reason.
 // The sentinel's text is pinned by TestLoadCacheCyclicReaderOutputIsBounded
-// and TestLoadCacheInternedSubtreeIsBounded.
+// and TestLoadCacheInternedSubtreeIsBounded.  A refusal is still TAGGED in
+// the fingerprint (so "refused the load" can never compare equal to
+// "evaluated it to a value"); what changed is that no mode is excused for
+// producing one.
 func isAdmissionRefusal(v *lisp.LVal) bool {
 	return v != nil && v.Type == lisp.LError && strings.Contains(v.String(), "not a finite tree")
 }
 
-func isLoadAdmissionRefusal(fingerprint string) bool {
-	return strings.HasPrefix(fingerprint, "refused:")
-}
-
-// hostileRefusalOnly reports whether every place the cached run differs from
-// the baseline is a load-admission REFUSAL rather than a different value.
-// Only the interned-subtree mode may use it: that output is refused because
-// evaluating it is exponential, so the cache legitimately fails a load the
-// uncached path would have attempted.  Environment state is excluded from the
-// comparison for the same reason — a refused load leaves nothing behind, and
-// that is the point of refusing it.
-func hostileRefusalOnly(got, baseline programRun) bool {
-	if len(got.results) != len(baseline.results) {
-		return false
-	}
-	for i := range got.results {
-		if got.results[i] == baseline.results[i] {
-			continue
-		}
-		if !isLoadAdmissionRefusal(got.results[i]) {
-			return false
-		}
-	}
-	return true
-}
-
 // transparentReaderModes are the Reader behaviours a cache must be entirely
 // transparent over: whatever they do, a cached load and an uncached one
-// produce the same result.  readerInternSubtrees is absent because the cache
-// legitimately refuses that output (evaluating it is exponential in the
-// sharing depth), which is a sanctioned difference rather than a
-// transparency failure; FuzzLoadCacheHostileReader is where that case is
-// asserted, with the refusal spelled out.
+// produce the same result.  ALL of them, including readerInternSubtrees —
+// the cache no longer refuses ordinary sharing, so there is no mode left
+// with a sanctioned difference.
 var transparentReaderModes = []uint8{
 	readerPlain,
 	readerReuseSlice,
 	readerSpareCap,
 	readerInternLeaves,
+	readerInternSubtrees,
 	readerNoIdentity,
 }

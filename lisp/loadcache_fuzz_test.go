@@ -154,10 +154,9 @@ func FuzzLoadCacheMultiEnv(f *testing.F) {
 		// found in this hook has lived in (see loadcache_reader_fuzz_test.go).
 		// The high bits of the knob choose it, so no signature change and no
 		// lost corpus; the modes here are the ones a cache must be
-		// TRANSPARENT over, which is the property this target asserts.  The
-		// interned-subtree mode is excluded because the cache legitimately
-		// refuses it — FuzzLoadCacheHostileReader covers that case, where a
-		// refusal is a sanctioned outcome rather than a divergence.
+		// TRANSPARENT over, which is the property this target asserts — and
+		// that is now every mode, including interned subtrees, since the
+		// cache no longer refuses ordinary sharing.
 		mode := transparentReaderModes[int(knob>>5)%len(transparentReaderModes)]
 
 		baseline, ok := runFileFresh(t, src, 2, mode)
