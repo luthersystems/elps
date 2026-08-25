@@ -650,8 +650,18 @@ func MakeVector(n int) *LVal {
 // internal-panic is deliberately not catchable by handler-bind, so the host
 // had no way to contain it.  See issue #367.
 func Array(dims *LVal, cells []*LVal) *LVal {
+	// stored is the dims list the array keeps.  Caller-supplied dims are
+	// copied because the array writes its cardinality in place later --
+	// builtinSelect and builtinReject resize a vector's dims after filling
+	// it -- so sharing the caller's list would let that write land in a value
+	// the caller still holds.  Dims this function constructs are reachable
+	// from nothing else, so that path stores them directly.  The parameter is
+	// deliberately never assigned to stored: that flow would escape a
+	// caller's dims into the returned value as far as the compiler can tell,
+	// and heap-allocate the literal every builtin call site passes.
+	var stored *LVal
 	if dims == nil {
-		dims = QExpr([]*LVal{Int(len(cells))})
+		stored = QExpr([]*LVal{Int(len(cells))})
 	} else if dims.Type != LSExpr {
 		return Errorf("array dimensions are not a list: %v", dims.Type)
 	} else {
@@ -660,9 +670,10 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 				return Errorf("array dimension is not an integer: %v", n.Type)
 			}
 		}
+		stored = dims.Copy()
 	}
 	totalSize := 1
-	for _, n := range dims.Cells {
+	for _, n := range stored.Cells {
 		totalSize *= n.Int
 		if totalSize < 0 {
 			return Errorf("integer overflow")
@@ -680,7 +691,7 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 	return &LVal{
 		Type: LArray,
 		Cells: []*LVal{
-			dims.Copy(),
+			stored,
 			QExpr(cells),
 		},
 	}
