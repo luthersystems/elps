@@ -60,9 +60,18 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 	if err != nil {
 		return nil, err
 	}
-	// One walk state for the whole stream, not one per expression: it costs a
-	// single map for the file instead of len(exprs) of them, and it lets the
-	// cycle guard see a cycle that closes across two top-level expressions.
+	// One walk state for the whole stream, not one per expression, because
+	// what the walk accumulates is a property of the FILE: the strict path's
+	// node budget is taken against the stream, and the memo that makes it
+	// cheap costs one map for the file instead of len(exprs) of them.
+	//
+	// It is NOT for cross-expression cycle detection.  The on-path set is
+	// emptied as each expression's walk unwinds -- on the error path too, as
+	// of the round-four fix -- so between two top-level expressions there is
+	// nothing in it for a later expression to collide with, and a "cycle
+	// spanning two expressions" is not a thing a shared walk can see.  What
+	// a shared walk does carry across expressions is the strict memo, and a
+	// node with a COMPLETED memo entry has already been proven acyclic.
 	w := newTextLoaderWalk()
 	for _, expr := range exprs {
 		err := admitExpr(expr, w)
@@ -205,6 +214,24 @@ const (
 	// (issue #536 round-three review, minor 1); it memoises, so continuing
 	// costs O(distinct nodes) and nothing worse.  This is the point past
 	// which even that is more than any reader output deserves.
+	//
+	// WHERE "A CYCLE OUTRANKS THE BUDGET" ENDS, precisely, because the two
+	// caps above say it holds and only this one bounds it (issue #536
+	// round-four review, minor 1).  Past 4.19M DISTINCT nodes the walk stops
+	// inspecting: every later node — in this expression and in every
+	// expression after it — is refused as errReaderTreeTooLarge without
+	// being looked at, so a cycle hiding behind an over-hard-cap expression
+	// is not seen and the stream verdict is TooLarge rather than Unbounded.
+	//
+	// That degradation is deliberate and it is bounded by design rather than
+	// by luck: TooLarge is the FALL-BACK sentinel, so such a load runs
+	// uncached, which is precisely what it does with no cache installed —
+	// and with no cache installed nothing inspects reader output for cycles
+	// at all.  The contract the cache keeps is "installing a cache never
+	// makes a load worse than not installing one", and past the hard cap
+	// cycle detection degrades to exactly the no-cache position: the
+	// evaluator's own nesting cap stops it.  Nothing is stored either way.
+	// TestLoadCacheHardCapDegradesToEvalCaps pins it.
 	loaderWalkHardMaxNodes = 4 * loaderWalkMaxNodes
 	// loaderWalkUnfoldedCap is where unfolded-size arithmetic saturates, and
 	// also the line between "too big to cache" and "not a finite tree at
@@ -221,6 +248,14 @@ const (
 	// headroom.  Unlike the node budget this DOES apply on every path,
 	// because the alternative is not a refusal but an unrecoverable Go stack
 	// overflow.
+	//
+	// It applies through the strict path's MEMO too, which it did not used
+	// to: a memo hit returned a subtree's size without its interior depth,
+	// so two 60k-deep chains sharing a tail were admitted and STORED at a
+	// real depth of 120k (issue #536 round-four review, minor 2).  The memo
+	// now carries each node's height and a hit is depth-checked against it,
+	// which is what makes newProgram's "the walks after it see depth-bounded
+	// output" true rather than aspirational.
 	loaderWalkMaxDepth = sealFPMaxDepth
 )
 
@@ -353,8 +388,16 @@ type loaderNodeInfo struct {
 	// and only work the evaluator actually does can support it.  See
 	// loaderQuotePayload.
 	eval int64
+	// height is the node's nesting height, itself included: 1 for a leaf.
+	// A visit at depth d therefore reaches depth d+height-1, which is what
+	// lets a memo HIT enforce loaderWalkMaxDepth without re-walking.
+	height int64
 	// onPath marks the node as being on the current root->node path.  A
-	// visit that reaches such an entry has found a cycle.
+	// visit that reaches such an entry has found a cycle.  It is cleared as
+	// the walk unwinds — including when the walk unwinds because of an
+	// error, which is the round-four fix: an abandoned walk that left its
+	// ancestors marked made a later expression reaching one of them look
+	// like a cycle (issue #536 round-four review, suspicious 1).
 	onPath bool
 }
 
@@ -575,7 +618,7 @@ func (w *loaderWalk) check(v *LVal, depth int) (loaderNodeInfo, error) {
 	// parse may legitimately reach one from many positions.  They are exempt
 	// from every repeat rule and terminate the walk at once.
 	if isSingleton(v) {
-		return loaderNodeInfo{raw: 1, eval: 1}, nil
+		return loaderNodeInfo{raw: 1, eval: 1, height: 1}, nil
 	}
 	if depth > loaderWalkMaxDepth {
 		return loaderNodeInfo{}, errReaderTreeUnbounded
@@ -590,6 +633,16 @@ func (w *loaderWalk) check(v *LVal, depth int) (loaderNodeInfo, error) {
 			// Shared, not cyclic.  Its sizes are already known, and counting
 			// them again is the whole point: the unfolded total is what the
 			// walks downstream will actually walk.
+			//
+			// THE DEPTH CAP IS RE-CHECKED HERE, against the recorded height,
+			// because this is the one place the walk answers for an interior
+			// it is not descending into.  Without it a memo hit smuggled a
+			// subtree past loaderWalkMaxDepth whenever the same subtree had
+			// first been reached from a shallower position (issue #536
+			// round-four review, minor 2).
+			if int64(depth)+info.height-1 > loaderWalkMaxDepth {
+				return loaderNodeInfo{}, errReaderTreeUnbounded
+			}
 			return info, nil
 		}
 	} else if depth >= loaderWalkPathRecordDepth {
@@ -637,7 +690,7 @@ func (w *loaderWalk) check(v *LVal, depth int) (loaderNodeInfo, error) {
 		}
 		w.onPath[v] = struct{}{}
 	}
-	info := loaderNodeInfo{raw: 1, eval: 1}
+	info := loaderNodeInfo{raw: 1, eval: 1, height: 1}
 	quoted, quasi := -1, -1
 	if w.strict {
 		quoted, quasi = loaderQuotePayload(v), loaderQuasiquotePayload(v)
@@ -645,6 +698,16 @@ func (w *loaderWalk) check(v *LVal, depth int) (loaderNodeInfo, error) {
 	for i, cell := range v.Cells {
 		ci, err := w.check(cell, depth+1)
 		if err != nil {
+			// UNWIND BEFORE ABANDONING.  Only one error is survivable —
+			// newProgramAdmitted continues past the hard cap — but that one
+			// is enough: leaving this node marked onPath made every later
+			// expression that reached it report a cycle it does not have,
+			// turning a load that works with no cache into a hard failure
+			// (issue #536 round-four review, suspicious 1).  Dropping the
+			// entry rather than completing it is what keeps the memo honest:
+			// this node's sizes were never computed, so there is nothing
+			// truthful to record.
+			w.unmark(v, recordPath)
 			return loaderNodeInfo{}, err
 		}
 		if !w.strict {
@@ -664,6 +727,9 @@ func (w *loaderWalk) check(v *LVal, depth int) (loaderNodeInfo, error) {
 		default:
 			info.eval = saturatingAddNodes(info.eval, ci.eval)
 		}
+		if ci.height >= info.height {
+			info.height = ci.height + 1
+		}
 	}
 	if w.strict {
 		if v.quoted {
@@ -678,4 +744,15 @@ func (w *loaderWalk) check(v *LVal, depth int) (loaderNodeInfo, error) {
 		delete(w.onPath, v)
 	}
 	return info, nil
+}
+
+// unmark removes v's on-path mark, on whichever of the two guards this walk
+// is using.  Called both when a node's cells are all validated and when the
+// walk abandons partway through them.
+func (w *loaderWalk) unmark(v *LVal, recordPath bool) {
+	if w.strict {
+		delete(w.sizes, v)
+	} else if recordPath {
+		delete(w.onPath, v)
+	}
 }

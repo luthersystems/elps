@@ -523,3 +523,44 @@ func TestLoadCacheRefusesQuasiquotedSharing(t *testing.T) {
 		})
 	}
 }
+
+// --- round-four minor 2: the depth cap must survive a memo hit ---
+
+// TestLoadCacheDepthCapSurvivesMemoHit pins the fix for a memo that answered
+// with a subtree's SIZE and nothing about its interior DEPTH.  Two 60k-deep
+// chains whose second ends at the first's head are 120k deep in total — past
+// loaderWalkMaxDepth — but the second chain's walk reached the shared head at
+// depth 60k and took the memo's word for it, so the stream was admitted and
+// STORED.  newProgram's promise that the walks after admission see
+// depth-bounded output was false for exactly that entry.
+func TestLoadCacheDepthCapSurvivesMemoHit(t *testing.T) {
+	t.Parallel()
+	chain := func(depth int, tail *lisp.LVal) *lisp.LVal {
+		node := tail
+		if node == nil {
+			node = sealedValue(1)
+		}
+		for range depth {
+			node = lisp.SExpr([]*lisp.LVal{node})
+		}
+		return node
+	}
+	chainA := chain(60000, nil)
+	exprA := lisp.SExpr([]*lisp.LVal{lisp.Symbol("quote"), chainA})
+	exprA.SealAST()
+	exprB := lisp.SExpr([]*lisp.LVal{lisp.Symbol("quote"), chain(60000, chainA)})
+	exprB.SealAST()
+
+	cache := newTestLoadCache()
+	env := readerEnv(t, streamReader{exprs: []*lisp.LVal{exprA, exprB, sealedValue(3)}}, cache)
+	v := loadWithin(t, env, "deep.lisp", 30*time.Second)
+
+	assert.Zero(t, cache.stores,
+		"a stream whose real depth is 120k must not be admitted, memo hit or no memo hit")
+	// Depth is the Unbounded class on every path (it is not a budget: the
+	// alternative to refusing is a Go stack overflow), so the load fails
+	// rather than falling back.  Asserted so the classification cannot drift
+	// silently.
+	require.Equal(t, lisp.LError, v.Type)
+	assert.Contains(t, v.String(), "not a finite tree")
+}
