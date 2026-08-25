@@ -300,8 +300,13 @@ const (
 //
 // Because newProgram runs this pass FIRST, the walks after it (firstUnsealed
 // and (*LVal).Copy) see output already known to be non-nil, acyclic and
-// depth-bounded — and, on the cache path, of bounded unfolded size, which is
-// what bounds those two walks there.
+// depth-bounded — depth-bounded through the strict memo as well, since a memo
+// hit is checked against the recorded height — and, on the cache path, of
+// bounded QUOTE-BLIND unfolded size, which is what bounds those two walks
+// there.  Quote-blind is the operative word: neither of them stops at a
+// quote, which is why the discount that keeps quoted data out of the
+// Unbounded refusal is kept out of the budget they are bounded by (see
+// loaderNodeInfo).
 func admitExpr(v *LVal, w *loaderWalk) error {
 	info, err := w.check(v, 0)
 	if err != nil {

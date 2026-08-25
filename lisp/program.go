@@ -326,7 +326,8 @@ func newProgramAdmitted(exprs []*LVal, w *loaderWalk) (Program, error) {
 // the memo shortens and whose cost is not immediately re-paid is a SEALED
 // DAG, because an unsealed one goes straight into (*LVal).Copy, which
 // unfolds it anyway.  The cache path, where sharing is deliberately
-// admitted, bounds the unfolded size at admission instead (see admitExpr),
+// admitted, bounds the unfolded size at admission instead (see admitExpr) —
+// the QUOTE-BLIND count, because this walk does not stop at a quote either —
 // so this walk is bounded there by construction; off the cache path a shared
 // tree costs exactly what it cost before the load-cache hook existed.
 func firstUnsealed(v *LVal) *LVal {
