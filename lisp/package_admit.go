@@ -125,11 +125,10 @@ package lisp
 // goroutine may be writing p at the time (issue #397).
 func admitPackage(p *Package) *Package {
 	adm := &Package{
-		Name:       p.Name,
-		Doc:        p.Doc,
-		symbols:    make(map[string]*LVal, len(p.symbols)),
-		symbolDocs: make(map[string]string, len(p.symbolDocs)),
-		funNames:   make(map[string]string, len(p.funNames)),
+		Name:     p.Name,
+		Doc:      p.Doc,
+		symbols:  make(map[string]*LVal, len(p.symbols)),
+		funNames: make(map[string]string, len(p.funNames)),
 	}
 	if len(p.externals) > 0 {
 		adm.externals = make([]string, len(p.externals))
@@ -138,8 +137,13 @@ func admitPackage(p *Package) *Package {
 	for name, v := range p.symbols {
 		adm.symbols[name] = admitSymbolValue(v)
 	}
-	for name, doc := range p.symbolDocs {
-		adm.symbolDocs[name] = doc
+	// symbolDocs is allocated lazily (see the field comment): an undocumented
+	// package admits with a nil table rather than an empty one.
+	if len(p.symbolDocs) > 0 {
+		adm.symbolDocs = make(map[string]string, len(p.symbolDocs))
+		for name, doc := range p.symbolDocs {
+			adm.symbolDocs[name] = doc
+		}
 	}
 	// funNames is keyed by FID and admission never copies a function value
 	// (functions are not sealable), so every recorded FID still names the

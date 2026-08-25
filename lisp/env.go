@@ -103,27 +103,32 @@ func InitializeTypedef(env *LEnv) *LVal {
 	return Nil()
 }
 
-// TODO(elps2): Remove the field LEnv.funName
-
 // LEnv is a lisp environment.
 //
-// The binding state (scope, funName), the lexical chain (parent) and the
-// evaluator's current location (loc) are unexported — the issue #382 close
-// applied one layer up from LVal.  `env.scope[sym] = v` used to let any
-// holder of an *LEnv rebind a symbol in a live environment — including a
-// closure's captured environment, shared by every function value that
-// closed over it — without going through Put, invisible to the runtime
-// seal and to elpsvet; `env.loc = loc` aliased a caller's mutable location
-// into every error and stack frame the evaluator stamped afterwards (the
-// #362 aliasing class).  Reads are mediated by Bindings, NumBindings,
-// Parent and Source; the writes are kernel-only.
+// The binding state (scope), the lexical chain (parent) and the evaluator's
+// current location (loc) are unexported — the issue #382 close applied one
+// layer up from LVal.  `env.scope[sym] = v` used to let any holder of an
+// *LEnv rebind a symbol in a live environment — including a closure's
+// captured environment, shared by every function value that closed over it
+// — without going through Put, invisible to the runtime seal and to
+// elpsvet; `env.loc = loc` aliased a caller's mutable location into every
+// error and stack frame the evaluator stamped afterwards (the #362 aliasing
+// class).  Reads are mediated by Bindings, NumBindings, Parent and Source;
+// the writes are kernel-only.
+//
+// There used to be a fourth unexported field, `funName map[string]string`,
+// carrying a TODO(elps2) to remove it.  It was dead the whole time: no site
+// in the repository ever wrote or read it, so every environment ever
+// created — one per function call, plus one per let/labels/dotimes scope —
+// allocated an empty map that nothing could observe, and Fork rebuilt one
+// per environment on top of that.  It is gone (issue #440 follow-up); the
+// live name lookup is Package.funNames, reached through GetFunName.
 //
 // Field order is layout-sensitive: the pointer-bearing fields lead so the GC
-// scan extent stops at 56 bytes instead of 64. Keep scalars (ID) trailing.
+// scan extent stops at 48 bytes instead of 56. Keep scalars (ID) trailing.
 type LEnv struct {
 	loc     *token.Location
 	scope   map[string]*LVal
-	funName map[string]string
 	parent  *LEnv
 	Runtime *Runtime
 	evalCtx context.Context // transient: set by call() at builtin boundary
@@ -214,7 +219,6 @@ func NewEnvRuntime(rt *Runtime) *LEnv {
 	env := &LEnv{
 		ID:      rt.GenEnvID(),
 		scope:   make(map[string]*LVal),
-		funName: make(map[string]string),
 		Runtime: rt,
 	}
 	return env
@@ -243,7 +247,6 @@ func newEnvN(parent *LEnv, n int) *LEnv {
 		ID:      runtime.GenEnvID(),
 		loc:     loc,
 		scope:   make(map[string]*LVal, n),
-		funName: make(map[string]string),
 		parent:  parent,
 		Runtime: runtime,
 		evalCtx: evalCtx,
@@ -275,7 +278,7 @@ func (env *LEnv) SetPackageDoc(doc string) {
 
 // SetSymbolDoc sets the documentation string for a symbol in the current package.
 func (env *LEnv) SetSymbolDoc(name, doc string) {
-	env.Runtime.Package.symbolDocs[name] = doc
+	env.Runtime.Package.setSymbolDoc(name, doc)
 }
 
 func (env *LEnv) InPackage(name *LVal) *LVal {

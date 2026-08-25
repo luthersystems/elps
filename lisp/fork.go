@@ -271,19 +271,43 @@ type forker struct {
 }
 
 // pkg clones one package, remapping symbol values through the walker.
+//
+// The three metadata tables beside symbols — symbolDocs, funNames,
+// externals — are REBUILT, not shared, and the reason is the same for all
+// three: the template is a live writer of each of them, and Fork's contract
+// says the template "remains fully usable" after a fork.  Sharing a map
+// with a live writer is not a stale-read hazard, it is the issue #397
+// hazard: a fork reading pkg.funNames while the template's putName writes
+// it is a concurrent map read and map write, which the Go runtime turns
+// into a fatal throw that neither recover() nor handler-bind can intercept.
+// Making a share safe would take a copy-on-write flag that Fork sets on the
+// TEMPLATE's package — a template mutation, and a racing one under the
+// concurrent Fork calls this function is documented to support.  So the
+// per-package tables stay copies.  Measured on
+// BenchmarkEnvConstruction/mode=fork over a fully loaded environment (13
+// packages, 389 funNames entries): sharing funNames instead of copying it
+// is worth -45 allocs/op of 1273, and sharing externals another -14, which
+// is the price of keeping the template writable.  See the same
+// optimization-left-on-the-table note in lisp/loader.go.
+//
+// symbolDocs is the exception, and not by sharing: it is allocated lazily
+// (lisp/package.go), so an undocumented package now forks with a nil table
+// instead of an empty map.
 func (f *forker) pkg(p *Package) *Package {
 	np := &Package{
-		Name:       p.Name,
-		Doc:        p.Doc,
-		symbols:    make(map[string]*LVal, len(p.symbols)),
-		symbolDocs: make(map[string]string, len(p.symbolDocs)),
-		funNames:   make(map[string]string, len(p.funNames)),
+		Name:     p.Name,
+		Doc:      p.Doc,
+		symbols:  make(map[string]*LVal, len(p.symbols)),
+		funNames: make(map[string]string, len(p.funNames)),
 	}
 	for k, v := range p.symbols {
 		np.symbols[k] = f.val(v)
 	}
-	for k, v := range p.symbolDocs {
-		np.symbolDocs[k] = v
+	if len(p.symbolDocs) > 0 {
+		np.symbolDocs = make(map[string]string, len(p.symbolDocs))
+		for k, v := range p.symbolDocs {
+			np.symbolDocs[k] = v
+		}
 	}
 	for k, v := range p.funNames {
 		np.funNames[k] = v
@@ -298,6 +322,11 @@ func (f *forker) pkg(p *Package) *Package {
 // chain.  The template's env IDs are preserved: they were unique within the
 // template's runtime, so they are unique within the fork's, and inherited
 // FIDs ("_fun<envID>") keep referring to the right environments.
+//
+// The scope map is COPIED and always will be: it is the binding table, the
+// most mutable thing an environment owns, and both sides write it.  There
+// is no immutable subset to carve off cheaply — a binding's key is live
+// program state, not sealed structure — so the per-env scope rebuild stands.
 func (f *forker) env(e *LEnv) *LEnv {
 	if e == nil {
 		return nil
@@ -306,15 +335,34 @@ func (f *forker) env(e *LEnv) *LEnv {
 		return ne
 	}
 	ne := &LEnv{
-		// The env location is mutable state: the evaluator rebinds and
-		// mutates its own in place (#382), so a fork that aliased the
-		// template's pointer would let each runtime's evaluation write
-		// through into the other's.  Copy it, exactly as the kernel's
-		// other env-location consumers now do (ErrorCondition,
-		// ErrorConditionf, ErrorAssociate).
-		loc:     copyLocation(e.loc),
+		// loc DOES NOT TRAVEL, and it is not shared either: a fork starts
+		// with no current evaluator location at all.
+		//
+		// e.loc is not state the environment owns, it is the evaluator's
+		// location register — eval rebinds it to v.source on every step
+		// (see the //elps:aliases note on newEnvN, which aliases the
+		// parent's register for the same reason: "both registers are
+		// rebound on every eval step").  What a quiescent template holds
+		// there is the leftover location of the last node it evaluated
+		// before the fork, and a fork is not evaluating that node.  It is
+		// transient per-evaluation state of exactly the kind Fork already
+		// drops: the call stack starts empty, the condition stack starts
+		// empty, TotalSteps starts at zero, and evalCtx — the OTHER
+		// transient register on this struct — is not carried across
+		// either.  Dropping it is strictly more hermetic than the copy it
+		// replaces (nothing of the template's reaches the fork, not even a
+		// duplicated Location's contents), and it costs the walk one
+		// allocation per environment rather than one per distinct
+		// location: 557 of them per fork in the downstream template that
+		// motivated this (issue #440).
+		//
+		// The first eval in the fork sets it, so the only observable
+		// difference is an error raised in a forked environment BEFORE it
+		// evaluates anything: that error now reports "<native code>"
+		// (the nil-location convention) instead of a source position
+		// inherited from the template's last evaluation, which was never
+		// this environment's position to report.
 		scope:   make(map[string]*LVal, len(e.scope)),
-		funName: make(map[string]string, len(e.funName)),
 		Runtime: f.rt,
 		ID:      e.ID,
 	}
@@ -322,9 +370,6 @@ func (f *forker) env(e *LEnv) *LEnv {
 	f.envs[e] = ne
 	for k, v := range e.scope {
 		ne.scope[k] = f.val(v)
-	}
-	for k, v := range e.funName {
-		ne.funName[k] = v
 	}
 	ne.parent = f.env(e.parent)
 	return ne
