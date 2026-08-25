@@ -167,16 +167,37 @@ Notes for implementers:
   the seal design carries for all embedder Go code; checked builds
   (`-tags elpscheck`) re-verify each cached tree's fingerprint after every load
   and catch it, production builds do not.
+- **The `[]*lisp.LVal` a `Reader` returns is not retained**, so reusing one
+  output slice per call is safe.  Admission clones the slice header (and
+  clamps its capacity) before an entry keeps it.  Without that clone a reader
+  that refilled its buffer on the next parse silently rewrote the *previous*
+  file's cache entry — every root in it still sealed and still matching its
+  own fingerprint, so only an entry-level check can see it.
+- **A `Reader` that returns `""` from `ReaderIdentity()` disables the cache**
+  for its own loads: they parse every time.  An empty token states nothing,
+  and two readers returning it would be declared interchangeable producers and
+  would serve each other's parses.
 - **A nil `LoadCache` changes nothing.**  With no cache installed the load
   path is exactly what it was before the hook existed — the reader receives
   the caller's own `io.Reader`, unbuffered.
-- **Not every parse is cacheable.**  A `Reader` that returns a reference type,
-  or a node the seal cannot cover, produces a parse that is handed to that one
-  load and never stored.  Correctness first: an unsealed tree must not enter a
-  process-wide cache.  Reader output that is not a finite strict tree — a
-  cycle, an interned shared subtree, or nesting past the admission budget — is
-  refused as a hard load error (not evaluated), because such output is unsafe
-  to evaluate as well as impossible to cache.
+- **Not every parse is cacheable, and un-cacheable is not a load failure.**
+  A `Reader` that returns a reference type, a node the seal cannot cover, a
+  literal carrying a `Native` payload the seal cannot vouch for, or simply
+  more nodes than the cache admission's budget, produces a parse that is
+  handed to that one load and never stored.  The load itself behaves exactly
+  as it would with no cache installed — a cache is an optimization and must
+  never turn a working program into a broken one.
+- **Two shapes are a hard load error instead**, because they are unsafe to
+  *evaluate* rather than merely unshareable: reader output containing a cycle,
+  and output containing an interned shared **subtree** (which the copy path
+  unfolds and the evaluator re-evaluates once per path — exponential in the
+  sharing depth).  Both are refused with "reader output is not a finite tree".
+  A repeated **leaf** is not one of these: symbol interning is an ordinary
+  reader optimization and is admitted, cached and aliased normally.
+- **The node budget is the cache's alone.**  `lisp.ReadProgram`,
+  `lisp.ParseProgram` and `lisp.TextLoader` impose no limit on how many nodes
+  a `Reader` may return, and never did; only cache admission does, because
+  only a cache entry is aliased into unboundedly many environments.
 - **The guest can mint entries.**  `load-string` and `load-bytes` are builtins,
   so semi-trusted phylum source populates the cache too — retention bounds must
   account for guest-driven loads, not only host call sites.

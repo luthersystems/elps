@@ -455,19 +455,33 @@ func loadCacheKey(name, loc, readerID string, byLoc bool, src []byte) string {
 //   - An entry whose Key does not match the key elps derived is not
 //     trusted.  A cache that mixes up its own keys then degrades to no
 //     cache instead of running the wrong file's program.
-//   - A parse newProgram refuses to admit as cacheable — a Reader that
-//     returned a reference type, or a node no seal can cover — is not
+//   - A Reader that declined to state an identity (an empty ReaderIdentity
+//     token).  No key can bind an entry to a producer that names itself
+//     nothing, so the cache disables itself for that reader's loads rather
+//     than key on a token two readers could both return.
+//   - A parse newProgramForCache refuses to admit as cacheable — a Reader
+//     that returned a reference type, a node no seal can cover, or a node
+//     carrying a Native payload the seal cannot vouch for — is not
 //     shareable, so it is handed to this one load and never stored.
 //     Correctness first: the alternative (store it and copy on every load)
 //     would put an unsealed tree in a process-wide cache, which is the
 //     topology this hook exists to make impossible.
+//   - A parse that is legal but larger than the cache admission's node
+//     budget (errReaderTreeTooLarge).  A node COUNT is not a safety
+//     property: the program is fine, it is merely too big to be worth
+//     aliasing process-wide, so the load runs uncached.  The budget belongs
+//     to cache admission alone — ReadProgram, ParseProgram and TextLoader
+//     impose none — precisely so that installing a cache cannot reject a
+//     program that always loaded.
 //
 // One case is NOT a silent fall-back but a hard load error: reader output
-// that is not a finite strict tree (a cycle, an interned shared subtree, or
-// nesting past the admission budget — errReaderTreeUnbounded).  Such output
-// is not merely un-cacheable; it is unsafe to evaluate (an interned subtree
-// evaluates exponentially, a cycle only stops at the eval nesting cap), so the
-// load fails here rather than falling back to an uncached eval of it.
+// that is not a finite tree — a cycle, an interned shared SUBTREE, or nesting
+// past the depth cap (errReaderTreeUnbounded).  Such output is not merely
+// un-cacheable; it is unsafe to evaluate (an interned subtree evaluates once
+// per path, exponentially; a cycle only stops at the eval nesting cap), so the
+// load fails here rather than falling back to an uncached eval of it.  A
+// repeated LEAF is not in this class and is cached normally: symbol interning
+// is an ordinary Reader optimization and a leaf has no children to unfold.
 //
 // # Re-entrancy
 //

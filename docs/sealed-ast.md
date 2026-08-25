@@ -410,13 +410,23 @@ class was added:
   needs no private copy of a cached tree (below);
 - checked builds re-verify the tree after every load through `(*LEnv).load`
   (§3.3), so a corrupted entry is reported at the load that corrupted it.
-  What that verification covers is exactly one claim — *the sealed bytes never
-  change after admission* — so `-tags elpscheck` proves no load rewrites a
-  cached node (and, with the flag-vs-type fix above, that a laundered
-  non-sealable node still trips the cross-runtime gate). It does **not** prove
-  the *right* program was served: a wrong-program serve leaves the served bytes
-  internally stable, so that class is closed by the key and the admission
-  conjunction, not by the checked build.
+  What that per-root verification covers is exactly one claim — *the sealed
+  bytes never change after admission* — so `-tags elpscheck` proves no load
+  rewrites a cached node (and, with the flag-vs-type fix above, that a
+  laundered non-sealable node still trips the cross-runtime gate);
+- checked builds also re-verify each entry **as it is served**
+  (`verifyCachedSourceOnHit`), against the fingerprint taken at admission.
+  That is a different claim from the one above, and per-root verification is
+  structurally incapable of making it: a `Reader` that refills one output
+  slice per call substitutes another file's roots wholesale, and those roots
+  are legitimately sealed and match their own seal-time records perfectly. An
+  entry-level fingerprint sees the substitution; a per-root one cannot. It
+  costs one fingerprint walk per hit, in checked builds only — which gives up
+  the hook's zero-work hit under `-tags elpscheck`, the right trade for the
+  mode whose job is to make the seal's claims checkable. What remains
+  unproven by the checked build is a wrong-program serve that goes through the
+  *key* — that class is closed by the key's composition and the admission
+  conjunction instead.
 
 A parse the admission refuses is **not cached**: it is handed to that one
 load and forgotten, so the load behaves exactly as it would with no cache.
@@ -450,14 +460,68 @@ admission and be aliased across Runtimes. With the conjunction, such a node is
 routed to the copy path (where `SealAST` declines to mark it) and rejected, and
 under `-tags elpscheck` it is no longer exempt from the cross-runtime gate.
 
-**The admission walk is bounded.** Putting `newProgram` on the `load-file`
-path meant `checkLoaderExpr`'s recursion now ran over arbitrary `Reader`
-output. It carries a cycle/sharing memo, a depth cap and a node budget
-(mirroring `sealfp.go`): a cyclic tree, an interned shared subtree, or nesting
-past the budget is refused (`errReaderTreeUnbounded`) in O(distinct nodes)
-rather than overflowing the stack or re-descending a shared subtree
-exponentially. Because that pass runs first, the walks after it
-(`firstUnsealed`, `Copy`) only ever see a finite strict tree.
+**The admission walk is bounded, and the bound is stratified.** Putting
+`newProgram` on the `load-file` path meant `checkLoaderExpr`'s recursion now
+ran over arbitrary `Reader` output. It carries an on-path cycle guard, a
+validated-node memo and a depth cap (mirroring `sealfp.go`), so a cyclic or
+very deep tree is refused in O(distinct nodes) rather than overflowing the Go
+stack. Those two rules apply on **every** path, because the alternative to
+refusing is not a worse answer but an unrecoverable crash.
+
+Two further rules are the **cache's alone**, and keeping them there is the
+point. `lisp.ReadProgram`, `lisp.ParseProgram` and `lisp.TextLoader` hand
+their output to one load; a cache entry is aliased into unboundedly many
+environments, so it can afford neither:
+
+- **no repeated composite node.** A shared subtree is unfolded by the copy
+  path and re-evaluated once per path — exponential in the sharing depth (a
+  depth-40 DAG is ~10^12 paths). Refused with `errReaderTreeUnbounded`, which
+  fails the load, because handing it to an uncached eval would not terminate
+  either. A repeated **leaf** is explicitly fine: symbol interning is the
+  common case and a leaf has no children to re-descend.
+- **a node budget.** Overflow yields `errReaderTreeTooLarge`, which
+  `readCached` treats as "do not cache this one": the load proceeds uncached.
+  A node count is not a safety property, so refusing to *share* a large
+  program must not stop it *running*. Applying this bound to the public
+  constructors — which is where it first landed — rejected programs they had
+  always accepted, and that is a regression the cache has no licence to cause.
+
+`firstUnsealed` carries the same memo for the same reason: node sharing is
+legal off the cache path, so without it a shared subtree would be re-descended
+once per path. The memo records only nodes already found *sealed*, so it can
+never mask an unsealed one. `(*LVal).Copy` still has no memo, so a DAG it
+copies is unfolded — pre-existing behaviour of the copy path, and one more
+reason the cache forbids composite sharing.
+
+**A node the seal cannot vouch for is not admitted.** `SealAST` freezes an
+`LVal`'s own fields; it cannot freeze whatever an embedder hung off `Native`,
+the fingerprint oracle skips `Native` by design, `(*LVal).Copy` shallow-copies
+it, and the admission conjunction keys off the node's *type*, which is
+sealable for an `LInt`. A mutable Go box riding on a sealed integer literal
+would therefore cross Runtime boundaries aliased, unfingerprinted and
+unreported. The walk refuses a non-nil `Native` on a type the seal marks: on
+the cache path that means an uncached load, for `Program` an error — which is
+what its contract already promises for output the seal cannot protect. No
+parser produces such a node (the standard parser sets `Native` on none), so
+the rule costs nothing real.
+
+**Reader custody covers the slice, not only the nodes.** The zero-copy fast
+path shares the reader's *nodes* deliberately; it must not retain the reader's
+`[]*LVal` *header*, and before this it did. A reader that refills one output
+buffer per call — an ordinary optimization, and not a violation of "do not
+mutate the nodes you returned" — rewrote the previous file's entry in place.
+Admission clones the header and clamps its capacity (the `clampCap`
+discipline, §2.6), which is `len(exprs)` pointer copies on a path that has
+just parsed a file.
+
+**An empty `ReaderIdentity()` disables the cache** for that reader's loads
+rather than being folded into the key. The empty token states nothing, so two
+readers returning it would be declared interchangeable producers and would
+serve each other's parses — the exact failure the reader component of the key
+exists to prevent, reached by implementing the optional interface badly.
+Falling back to the Go type would be no better, since a reader that
+multiplexes parse behaviour behind one type is precisely why it implements
+`ReaderIdentity` at all.
 
 **Behaviour a cache can change** (see `docs/embed.md` for the migration note):
 installing a cache in front of a non-sealing reader can make guarded mutation
