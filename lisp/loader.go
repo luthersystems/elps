@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 type Loader func(*LEnv) *LVal
@@ -470,8 +471,22 @@ func loaderQuasiquotePayload(v *LVal) int {
 	return loaderQuotingPayload(v, "quasiquote")
 }
 
-// loaderQuotingPayload matches (op X) where op is the unqualified or
-// lisp-qualified symbol name, and returns 1.
+// loaderQuotingPayload matches (op X) where op is the unqualified symbol
+// name or ANY package-qualified spelling of it, and returns 1.
+//
+// Any qualifier is accepted, not just lisp:, because every package that
+// use-packages lisp resolves pkg:quote to the quote special form — a
+// whitelist of spellings cannot enumerate them.  Over-matching is safe in
+// both callers' directions, and deliberately so:
+//
+//   - quote: a FALSE discount (a shadowed or keyword "quote" that actually
+//     evaluates its argument) is parity-safe — raw stays quote-blind, so
+//     storage and every unfolding walk stay bounded, and the evaluator
+//     behaves exactly as it does with no cache installed.  A WITHHELD
+//     discount is the direction that broke: it hard-failed a terminating
+//     (user:quote <shared DAG>) load that is O(1) uncached.
+//   - quasiquote: matching more spellings only charges the payload its raw
+//     size, which is the status-quo charge for every subtree.
 func loaderQuotingPayload(v *LVal, name string) int {
 	if v.Type != LSExpr || len(v.Cells) != 2 {
 		return -1
@@ -482,8 +497,7 @@ func loaderQuotingPayload(v *LVal, name string) int {
 	if head == nil || head.Type != LSymbol || head.quoted {
 		return -1
 	}
-	// The qualified spelling too, for a source that says lisp:quote.
-	if head.Str == name || head.Str == "lisp:"+name {
+	if head.Str == name || strings.HasSuffix(head.Str, ":"+name) {
 		return 1
 	}
 	return -1
