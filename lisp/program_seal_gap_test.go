@@ -38,7 +38,7 @@ import (
 //	    sealed parser output is admitted as-is, not copied, so the fix
 //	    cannot silently change the parse cache's cost model.
 //	(4) Rejection tests for output the seal cannot protect, mirroring
-//	    (and one step past) TextLoader's checkLoaderExpr.
+//	    (and one step past) TextLoader's admission walk (admitExpr).
 //
 // The checked-mode half of the red proof lives in
 // program_seal_gap_elpscheck_test.go: pre-fix, the cross-runtime evaluation
@@ -264,7 +264,7 @@ func TestProgramSharesSealedParserOutput(t *testing.T) {
 	}
 }
 
-// TestProgramRejectsReferenceTypes mirrors TextLoader's checkLoaderExpr at
+// TestProgramRejectsReferenceTypes mirrors TextLoader's admission walk (admitExpr) at
 // the Program boundary: reference types share mutable state through every
 // copy and every evaluation, the seal cannot mark them, so a Reader that
 // emits one cannot be cached.  The nested case pins that the check walks

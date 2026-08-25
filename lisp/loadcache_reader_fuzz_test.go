@@ -182,11 +182,13 @@ func internNode(v *lisp.LVal, tab map[string]*lisp.LVal, composites bool) *lisp.
 	if len(v.Cells) > 0 && !composites {
 		return v
 	}
-	// Reference types own mutable backing storage; collapsing two of them
-	// into one would change the program rather than share its shape.
+	// Reference types own mutable backing storage, and an LFun or LError
+	// carries a Go payload; collapsing two of any of them into one would
+	// change the program rather than share its shape.
 	switch v.Type {
 	case lisp.LBytes, lisp.LSortMap, lisp.LArray, lisp.LNative, lisp.LFun, lisp.LError:
 		return v
+	default:
 	}
 	key := v.Type.String() + "\x00" + v.String()
 	if got, ok := tab[key]; ok {

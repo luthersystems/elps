@@ -414,7 +414,7 @@ func TestLoadCacheRefusesUncacheableParse(t *testing.T) {
 	assert.Equal(t, 0, cache.hits)
 }
 
-// bytesReader returns a reference type, which checkLoaderExpr rejects.  No
+// bytesReader returns a reference type, which the admission walk rejects.  No
 // real parser can produce one; the Reader interface cannot promise that.
 type bytesReader struct{}
 

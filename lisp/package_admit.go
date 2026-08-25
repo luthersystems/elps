@@ -10,7 +10,7 @@ package lisp
 // container of *LVals that the caller still holds pointers to, and the
 // registry — which is the interpreter state of a Runtime — starts serving
 // them.  #523 fixed the Program half with a single admission point
-// (newProgram: checkLoaderExpr, sealed-throughout fast path, private
+// (newProgram: the admitExpr walk, sealed-throughout fast path, private
 // Copy()+SealAST, reject the unsealable).  This file is the same idea sized
 // for a different contract.
 //

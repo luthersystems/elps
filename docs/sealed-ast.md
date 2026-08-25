@@ -461,7 +461,7 @@ routed to the copy path (where `SealAST` declines to mark it) and rejected, and
 under `-tags elpscheck` it is no longer exempt from the cross-runtime gate.
 
 **The admission walk is bounded, and the bound is stratified.** Putting
-`newProgram` on the `load-file` path meant `checkLoaderExpr`'s recursion now
+`newProgram` on the `load-file` path meant the admission walk's recursion now
 ran over arbitrary `Reader` output. It carries an on-path cycle guard, a
 validated-node memo and a depth cap (mirroring `sealfp.go`), so a cyclic or
 very deep tree is refused in O(distinct nodes) rather than overflowing the Go

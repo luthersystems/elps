@@ -171,8 +171,8 @@ func bigQuotedList(n int) *lisp.LVal {
 // admission and nowhere else, and overflowing it must cost the caller the
 // cache rather than the load.
 //
-// Before the fix the bound lived in checkLoaderExpr, the admission shared
-// with lisp.ReadProgram, lisp.ParseProgram and lisp.TextLoader, and it
+// Before the fix the bound lived in the one admission walk shared with
+// lisp.ReadProgram, lisp.ParseProgram and lisp.TextLoader, and it
 // FAILED the load with a message blaming "a cycle, shared subtree, or too
 // deep".  All three assertions below failed: the public constructors
 // rejected a program they accepted before this PR, and the cached load

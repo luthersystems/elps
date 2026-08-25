@@ -153,14 +153,14 @@ func (env *LEnv) ParseProgram(name, loc string, r io.Reader) (Program, error) {
 // to the different mechanism (TextLoader hands each load a private copy;
 // Program hands every load the same sealed tree):
 //
-//   - The admission walk runs first (checkLoaderExpr for the Program
-//     constructors, checkCacheExpr's stricter form for Runtime.LoadCache).
+//   - The admission walk runs first (admitExpr, over a non-strict walk for
+//     the Program constructors and a strict one for Runtime.LoadCache).
 //     Reference types (bytes, map, array, native) share mutable state through
 //     every copy AND every evaluation — SealAST declines to mark them and Copy
 //     preserves their reference semantics — so no admission can make them safe
 //     to share and they are rejected with TextLoader's error.  So is a Native
 //     payload riding on a type the seal marks, which nothing downstream covers
-//     (see checkLoaderExpr).  Cycles and over-deep nesting are refused on every
+//     (see admitExpr).  Cycles and over-deep nesting are refused on every
 //     path; node sharing and sheer size are refused only on the cache path,
 //     where an entry is aliased into unboundedly many environments.
 //   - Output that is already sealed throughout is admitted as-is.  This is
@@ -195,7 +195,7 @@ func newProgram(exprs []*LVal) (Program, error) {
 // newProgramForCache is newProgram with the cache path's stricter walk: no
 // repeated composite node, and a node budget whose overflow is reported as
 // errReaderTreeTooLarge so (*LEnv).readCached can fall back to an uncached
-// load rather than failing it.  See checkCacheExpr for why those two rules
+// load rather than failing it.  See admitExpr for why those two rules
 // are the cache's and not everyone's.
 func newProgramForCache(exprs []*LVal) (Program, error) {
 	return newProgramAdmitted(exprs, newLoaderWalk(true))
@@ -205,7 +205,7 @@ func newProgramForCache(exprs []*LVal) (Program, error) {
 // top-level expression of the stream (see newLoaderWalk).
 func newProgramAdmitted(exprs []*LVal, w *loaderWalk) (Program, error) {
 	for _, expr := range exprs {
-		if err := checkCacheExpr(expr, w); err != nil {
+		if err := admitExpr(expr, w); err != nil {
 			if errors.Is(err, errReaderTreeUnbounded) || errors.Is(err, errReaderTreeTooLarge) {
 				// Return these two sentinels UNWRAPPED (not through GoError) so
 				// the one caller that admits reader output on the LOAD path —

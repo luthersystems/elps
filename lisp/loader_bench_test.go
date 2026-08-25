@@ -13,7 +13,7 @@ import (
 
 // synthLoaderSource builds a representative ELPS source of at least n bytes —
 // the shape of a phylum: many function definitions over lists and
-// string/number literals.  Kept to the shapes checkLoaderExpr accepts (no
+// string/number literals.  Kept to the shapes the admission walk accepts (no
 // reference types at toplevel).
 func synthLoaderSource(n int) string {
 	var sb strings.Builder

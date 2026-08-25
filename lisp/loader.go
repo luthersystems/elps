@@ -47,13 +47,13 @@ func LoaderMust(fn Loader, err error) Loader {
 //
 // TextLoader returns an error if r produces any reference type (bytes, map,
 // array, native, etc), if any node carries a Native payload on a type the seal
-// would otherwise mark (see checkLoaderExpr), or if r's output is not finite:
+// would otherwise mark (see admitExpr), or if r's output is not finite:
 // a cycle, or nesting past loaderWalkMaxDepth.  It does NOT reject node
 // SHARING and imposes no node budget — a Reader that interns symbols, or one
 // that returns a single very large expression, loads exactly as it always has.
 // Those two extra rules exist only for Runtime.LoadCache, whose entries are
 // aliased into unboundedly many environments, and they are applied only there
-// (see checkCacheExpr).
+// (see admitExpr, and the strict walk newLoaderWalk builds for it).
 func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 	exprs, err := r.Read(name, stream)
 	if err != nil {
@@ -64,7 +64,7 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 	// cycle guard see a cycle that closes across two top-level expressions.
 	w := newLoaderWalk(false)
 	for _, expr := range exprs {
-		err := w.check(expr, 0)
+		err := admitExpr(expr, w)
 		if err != nil {
 			lerr := Error(err)
 			// Copied, not aliased: the error escapes to the embedder through
@@ -162,11 +162,12 @@ const (
 	loaderWalkNoBudget = -1
 )
 
-// checkLoaderExpr reports whether v is admissible reader output for the
-// GENERAL paths — TextLoader, ReadProgram, ReadLocationProgram, ParseProgram.
-// The cache path adds two further rules; see checkCacheExpr.
+// admitExpr reports whether v is admissible reader output, under the rules
+// w carries.  It is the single admission walk: TextLoader, ReadProgram,
+// ReadLocationProgram and ParseProgram pass a walk from newLoaderWalk(false),
+// and Runtime.LoadCache passes newLoaderWalk(true), which adds two rules.
 //
-// What it rejects, and why each rule is safe to apply to public API:
+// What EVERY path rejects, and why each rule is safe to apply to public API:
 //
 //   - REFERENCE TYPES (bytes, map, array, native), whose mutable backing
 //     every copy of the tree would share.  This is TextLoader's historical
@@ -185,30 +186,27 @@ const (
 //     ordinary node sharing is not mistaken for one.
 //   - Nesting past loaderWalkMaxDepth.
 //
-// What it deliberately does NOT reject, because these paths are not the cache
-// and a rule that is right for an aliased process-wide entry is not
-// automatically right for public API (issue #368 review, blockers 2 and 3):
+// What a NON-STRICT walk deliberately does NOT reject, because those paths
+// are not the cache and a rule that is right for an aliased process-wide
+// entry is not automatically right for public API (issue #368 review,
+// blockers 2 and 3):
 //
 //   - NODE SHARING.  A Reader that interns symbols returns a DAG, which is an
 //     ordinary memory optimization and has always loaded.  The walk memoises
 //     validated nodes so a DAG still costs O(distinct nodes) rather than
 //     O(paths).
-//   - SIZE.  There is no node budget here, so one very large legal expression
-//     is admitted.
+//   - SIZE.  There is no node budget, so one very large legal expression is
+//     admitted.
 //
 // Because newProgram runs this pass FIRST, the walks after it (firstUnsealed
 // and (*LVal).Copy) see output already known to be acyclic and depth-bounded.
 // firstUnsealed memoises for the same reason this does; (*LVal).Copy does not,
 // so a DAG it copies is unfolded — that is the pre-existing behaviour of the
 // copy path and is why the cache, which cannot afford it, forbids sharing.
-func checkLoaderExpr(v *LVal) error {
-	w := newLoaderWalk(false)
-	return w.check(v, 0)
-}
-
-// checkCacheExpr is checkLoaderExpr plus the two rules that exist only for
-// Runtime.LoadCache, whose admitted entry is aliased into unboundedly many
-// environments instead of being handed to one load:
+//
+// The two rules a STRICT walk adds exist only for Runtime.LoadCache, whose
+// admitted entry is aliased into unboundedly many environments instead of
+// being handed to one load:
 //
 //   - STRICT TREE among composite nodes.  A node WITH CELLS reached twice is
 //     an interned subtree, and the copy path unfolds it and the evaluator
@@ -222,7 +220,7 @@ func checkLoaderExpr(v *LVal) error {
 //   - A NODE BUDGET.  Exceeding it yields errReaderTreeTooLarge, which
 //     readCached treats as "do not cache this one" — the load proceeds
 //     uncached, exactly as it would with no cache installed.
-func checkCacheExpr(v *LVal, w *loaderWalk) error {
+func admitExpr(v *LVal, w *loaderWalk) error {
 	return w.check(v, 0)
 }
 
@@ -247,7 +245,7 @@ const (
 )
 
 // loaderWalk carries the admission walk's cycle guard, its validated-node
-// memo, and (cache path only) its node budget.  See checkLoaderExpr.
+// memo, and (cache path only) its node budget.  See admitExpr.
 type loaderWalk struct {
 	state  map[*LVal]uint8
 	budget int  // loaderWalkNoBudget for the non-cache paths
@@ -273,7 +271,7 @@ func (w *loaderWalk) check(v *LVal, depth int) error {
 		return errReaderTreeUnbounded
 	case loaderNodeDone:
 		if w.strict && len(v.Cells) > 0 {
-			// An interned SUBTREE.  Cache path only; see checkCacheExpr for
+			// An interned SUBTREE.  Cache path only; see admitExpr for
 			// why a repeated leaf is fine and a repeated composite is not.
 			return errReaderTreeUnbounded
 		}
@@ -304,7 +302,7 @@ func (w *loaderWalk) check(v *LVal, depth int) error {
 	// downstream: SealAST freezes LVal fields only, the fingerprint oracle
 	// skips Native by design, and both the admission conjunction
 	// (firstUnsealed) and the ownership exemption key off the TYPE, which is
-	// sealable here.  See checkLoaderExpr's doc comment.  Types the seal does
+	// sealable here.  See admitExpr's doc comment.  Types the seal does
 	// not mark are unaffected: an LFun's funData, an LError's CallStack and
 	// LNative's own payload reach their own rejections.
 	if v.Native != nil && sealableNodeType(v.Type) {
