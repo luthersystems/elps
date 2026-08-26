@@ -27,7 +27,13 @@ permissions:
 
 jobs:
   govulncheck:
-    runs-on: ubuntu-latest
+    # ARM for the reason spelled out on elps.yml's lint-and-test job.
+    # govulncheck is installed with `go install`, so it is built from source
+    # for whatever host it lands on -- there is no prebuilt-binary download to
+    # go arch-shaped on. What it reports is a property of this module's call
+    # graph and the pinned toolchain's stdlib, neither of which the host
+    # architecture selects.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -88,7 +94,8 @@ jobs:
   # green rather than red.
   required:
     name: "Required: govulncheck"
-    runs-on: ubuntu-latest
+    # ARM for the reason on elps.yml's lint-and-test job.
+    runs-on: ubuntu-24.04-arm
     # 5 minutes for one bash assertion over `needs` results. The scanning
     # job above already carries timeout-minutes: 15.
     timeout-minutes: 5

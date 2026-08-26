@@ -113,8 +113,10 @@ done
 # the configuration key, so two arms drawn from a heterogeneous pool pair
 # nothing even though goos/goarch agree.
 #
-# NOTE: `go test` emits no `cpu:` header on linux/arm64 -- confirmed on the
-# runner this gate uses, where every measured run logs "header absent ...
+# NOTE: `go test` emits no `cpu:` header on linux/arm64 -- an architecture
+# property (the model string comes from CPUID, which Go only reads on x86),
+# observed directly on the 2vcpu ARM runner this gate used before it moved to
+# `ubuntu-24.04-arm`, where every measured run logged "header absent ...
 # skipping". So on ARM this particular check is INERT, and it is the one-job
 # design (both arms on one runner) that actually prevents the failure; this is
 # a backstop for amd64 and for anyone who reintroduces a cross-machine

@@ -68,7 +68,11 @@ jobs:
     # -- but it is a remembered number in a file whose whole argument is that
     # the shard count must be derived. This one now derives itself.
     name: Fuzz shard ${{ matrix.shard }}/${{ strategy.job-total }}
-    runs-on: ubuntu-latest
+    # ARM for the reason spelled out on elps.yml's lint-and-test job. The
+    # per-target -fuzztime budget is wall clock, not work, so a faster core
+    # buys more executions per target rather than a shorter job -- the budget
+    # arithmetic in scripts/fuzz-budget-check.sh is unaffected either way.
+    runs-on: ubuntu-24.04-arm
     strategy:
       # Sharded so wall clock is set by the LARGEST shard rather than by the
       # total. Serial, the nightly sweep cost (targets x FUZZTIME) grew every
@@ -300,7 +304,8 @@ jobs:
   # required check reads as green.
   required:
     name: "Required: fuzz"
-    runs-on: ubuntu-latest
+    # ARM for the reason on elps.yml's lint-and-test job.
+    runs-on: ubuntu-24.04-arm
     # 5 minutes for one bash assertion over the matrix result. The `fuzz` job
     # above already carries its own derived timeout-minutes; this aggregate had
     # none, and it is the job whose NAME is in branch protection -- so a wedge

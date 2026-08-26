@@ -1868,7 +1868,20 @@ except ImportError:
 # Labels GitHub always provides. Anything else -- a larger-runner label, a
 # self-hosted label, or an expression whose value cannot be read here -- is
 # only as reachable as the repo's runner settings happen to make it.
-STANDARD = re.compile(r"^(ubuntu|windows|macos)-[0-9a-z.]+$")
+#
+# The optional `-arm` tail is the arm64 standard fleet (ubuntu-24.04-arm,
+# ubuntu-22.04-arm, windows-11-arm), which is GitHub-hosted and free on public
+# repositories -- as reachable as ubuntu-latest, and this repository's default
+# fleet. Without it every job here read as "non-standard runner, must be
+# queue-watched", which is the wrong diagnosis: nothing about a standard label
+# can queue for want of a runner group.
+#
+# It stays TIGHT on purpose. `[0-9a-z.]+` cannot match a hyphen, so this
+# admits exactly `<os>-<version>-arm` and still rejects the shapes that really
+# are settings-dependent: `2vcpu-ubuntu-2204-arm` (does not start with an OS
+# name), `ubuntu-arm-4core-150gb` -- the org runner-group label that left this
+# repo's benchmark job queued across five pushes -- and any self-hosted label.
+STANDARD = re.compile(r"^(ubuntu|windows|macos)-[0-9a-z.]+(-arm)?$")
 
 failures, passes = [], []
 for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))):
@@ -1931,6 +1944,232 @@ case "$watch_out" in
 		else
 			bad "runner-reachability guard did not run"
 		fi
+		;;
+esac
+
+# EVERY LINUX JOB IN THIS REPOSITORY RUNS ON ubuntu-24.04-arm.
+#
+# Not a style rule. The fleet is a measurement and caching input, and a
+# repository that is half x64 and half ARM pays for it in ways that do not
+# announce themselves:
+#
+#   * setup-go keys its module/build cache on the architecture, so a job that
+#     drifts back to ubuntu-latest is permanently cold against everything
+#     else's warm cache -- slower, and for no stated reason;
+#   * `go test` bakes GOARCH into the benchmark header block, which is part of
+#     what benchstat treats as a configuration. Two arms on two fleets pair
+#     NOTHING, from a table that looks entirely normal (this is the same trap
+#     the GOMAXPROCS pin exists for; see bench-arms-check.sh);
+#   * govulncheck's binary pass scans the artifact it just built, so the
+#     architecture decides which binary was actually examined;
+#   * and the failure mode of an accidental split is invisible. Nothing goes
+#     red. A workflow added six months from now with a copy-pasted
+#     `runs-on: ubuntu-latest` simply runs, greenly, on the other fleet.
+#
+# So the intent is pinned here rather than left in a comment. The rule is
+# uniform and has exactly one carve-out, which is a PLATFORM carve-out and not
+# a runner one: windows-* and macos-* jobs exist FOR the platform they name
+# (elps.yml's build-windows is the whole Windows coverage this repo has), so
+# they are recognised and reported rather than allowlisted.
+#
+# EXEMPT below is for a Linux job that genuinely cannot be on the ARM fleet.
+# It is empty today -- every Linux job in the tree is on the target label,
+# including the benchmark job, whose move is safe because both of its arms are
+# measured interleaved on whichever single runner the job lands on. A row
+# added here must carry a reason, and the list may only ever shrink.
+arm_probe() { # <root> -- prints PASS/FAIL lines plus __COUNTS__
+	python3 - "$1" <<'PY_INNER'
+import glob, os, re, sys
+
+root = sys.argv[1]
+try:
+    import yaml
+except ImportError:
+    print("__SKIP__ pyyaml unavailable")
+    sys.exit(0)
+
+# The one Linux label this repository uses: 4 vCPU / 16 GB, arm64, standard
+# GitHub-hosted, free on public repos.
+TARGET = "ubuntu-24.04-arm"
+
+# Deliberately-not-ARM LINUX jobs, keyed (workflow file, job name or id) ->
+# reason. Empty on purpose. Delete rows; do not add them without a reason
+# that would survive being read out loud.
+EXEMPT = {
+    # ("some-workflow.yml", "Some Job"): "why this one cannot be on ARM",
+}
+
+# A `runs-on` may be an expression. `${{ vars.BENCH_RUNNER || 'label' }}` is
+# the shape this repo uses to keep an operator override while pinning the
+# DEFAULT, and the quoted literals inside are the part that can be checked
+# from here -- so the rule is that every literal in the expression is TARGET.
+# An expression carrying no literal at all is a `runs-on` nobody reviewing
+# this repository can evaluate, which is reported rather than waved through.
+LITERAL = re.compile(r"'([^']*)'|\"([^\"]*)\"")
+NON_LINUX = ("windows-", "macos-")
+
+failures, passes = [], []
+files = sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml")))
+if not files:
+    print("__SKIP__ no workflow files found under {}".format(root))
+    sys.exit(0)
+
+for f in files:
+    base = os.path.basename(f)
+    try:
+        doc = yaml.safe_load(open(f))
+    except Exception:  # noqa: BLE001 -- the YAML-parse guard above owns this
+        continue
+    if not isinstance(doc, dict):
+        continue
+
+    jobs = {k: v for k, v in (doc.get("jobs") or {}).items() if isinstance(v, dict)}
+    on_target, other_platform = 0, []
+    dirty = False
+
+    for jid, spec in sorted(jobs.items()):
+        name = str(spec.get("name") or jid)
+        ro = spec.get("runs-on")
+        if ro is None:
+            # A reusable-workflow call has no runner of its own; the called
+            # workflow's jobs carry it, and this same guard covers them when
+            # that workflow lives in this repository.
+            continue
+
+        if isinstance(ro, str):
+            labels = [ro]
+        elif isinstance(ro, list):
+            labels = [str(x) for x in ro]
+        elif isinstance(ro, dict):
+            labels = [str(x) for x in (ro.get("labels") or [])]
+        else:
+            labels = [str(ro)]
+
+        # Platform carve-out, recognised rather than allowlisted: a windows-*
+        # or macos-* job is not a Linux job that drifted, it is coverage for
+        # the platform it names.
+        if labels and all(x.startswith(NON_LINUX) for x in labels):
+            other_platform.append(f"{name} ({', '.join(labels)})")
+            continue
+
+        if (base, name) in EXEMPT or (base, jid) in EXEMPT:
+            reason = EXEMPT.get((base, name)) or EXEMPT[(base, jid)]
+            passes.append(f"{base}: job {name!r} is an allowlisted non-ARM Linux job ({reason})")
+            continue
+
+        # Resolve what is actually checkable: literals in an expression,
+        # otherwise the labels themselves.
+        checkable = []
+        for lab in labels:
+            if "${{" in lab:
+                lits = [a or b for a, b in LITERAL.findall(lab)]
+                if not lits:
+                    failures.append(
+                        f"{base}: job {name!r} has runs-on: {lab} -- an expression with no "
+                        f"literal fallback, so neither this gate nor a reviewer can tell which "
+                        f"fleet it lands on. Spell it `${{{{ vars.X || '{TARGET}' }}}}`."
+                    )
+                    dirty = True
+                checkable.extend(lits)
+            else:
+                checkable.append(lab)
+
+        wrong = [x for x in checkable if x != TARGET]
+        if wrong:
+            failures.append(
+                f"{base}: job {name!r} runs on {wrong} -- every Linux job in this repository "
+                f"runs on {TARGET} (4-vCPU arm64). A second fleet splits the setup-go cache, "
+                f"changes the GOARCH benchmarks are recorded under, and announces none of it. "
+                f"Move it, or add a row to EXEMPT in scripts/ci-gates-test.sh with a reason."
+            )
+            dirty = True
+        elif checkable:
+            on_target += 1
+
+    if jobs and not dirty:
+        note = f"{base}: all {on_target} Linux job(s) on {TARGET}"
+        if other_platform:
+            note += f"; {len(other_platform)} non-Linux by design ({'; '.join(other_platform)})"
+        passes.append(note)
+
+for p_ in passes:
+    print(f"PASS  {p_}")
+for f_ in failures:
+    print(f"FAIL  {f_}")
+print(f"__COUNTS__ {len(passes)} {len(failures)}")
+PY_INNER
+}
+
+arm_out="$(arm_probe "$REPO_ROOT")"
+case "$arm_out" in
+	__SKIP__*) echo "SKIP  Linux-fleet uniformity guard ($arm_out)" ;;
+	*)
+		echo "$arm_out" | grep -v '^__COUNTS__' || true
+		arm_counts="$(echo "$arm_out" | sed -n 's/^__COUNTS__ //p')"
+		if [ -n "$arm_counts" ]; then
+			read -r a_pass a_fail <<<"$arm_counts"
+			pass=$((pass + a_pass))
+			fail=$((fail + a_fail))
+		else
+			bad "Linux-fleet uniformity guard did not run"
+		fi
+
+		# NEGATIVE CONTROL. A rule that only ever reports success is
+		# indistinguishable from a rule that is looking at the wrong thing --
+		# which is the failure this whole file exists to prevent, and exactly
+		# how the original benchstat grep stayed dead for 473 runs. So put the
+		# mistake into a throwaway copy of the tree and require the guard to
+		# name it.
+		ARM_SANDBOX="$(mktemp -d)"
+		mkdir -p "${ARM_SANDBOX}/.github/workflows"
+		cp "$REPO_ROOT"/.github/workflows/*.y*ml "${ARM_SANDBOX}/.github/workflows/" 2>/dev/null || true
+		# Keyed on shape, not on a particular job: rewrite the FIRST job-level
+		# ARM label in the main CI workflow back to ubuntu-latest, which is the
+		# drift this guard exists for (a copy-pasted `runs-on` that nobody
+		# notices because nothing goes red).
+		neg_arm="${ARM_SANDBOX}/.github/workflows/elps.yml"
+		if [ -f "$neg_arm" ] && grep -qE '^    runs-on: ubuntu-24\.04-arm$' "$neg_arm" &&
+			sed -i '0,/^    runs-on: ubuntu-24\.04-arm$/s//    runs-on: ubuntu-latest/' "$neg_arm"; then
+			neg_arm_out="$(arm_probe "$ARM_SANDBOX")"
+			neg_arm_counts="$(echo "$neg_arm_out" | sed -n 's/^__COUNTS__ //p')"
+			read -r _ neg_arm_fail <<<"${neg_arm_counts:-0 0}"
+			if [ "${neg_arm_fail:-0}" -ge 1 ]; then
+				ok "negative control: a Linux job moved back to ubuntu-latest IS reported (${neg_arm_fail} finding(s))"
+			else
+				bad "negative control: a Linux job on ubuntu-latest was NOT reported — this guard cannot fail"
+			fi
+			if echo "$neg_arm_out" | grep -q "every Linux job in this repository"; then
+				ok "negative control: the finding names the rule and how to opt out of it"
+			else
+				bad "negative control: the guard fired but not with the split-fleet diagnosis"
+				echo "$neg_arm_out" | sed 's/^/        | /'
+			fi
+		else
+			bad "negative control: could not construct a split-fleet fixture"
+		fi
+		# The other half of the rule: the benchmark job's `vars.BENCH_RUNNER`
+		# indirection must keep pinning its DEFAULT to the target label. An
+		# expression whose fallback drifts is the one shape a plain grep for
+		# `ubuntu-latest` would never catch.
+		#
+		# Restore elps.yml first, so this control is measured against a tree
+		# whose ONLY defect is the one it introduces.
+		cp "$REPO_ROOT/.github/workflows/elps.yml" "$neg_arm" 2>/dev/null || true
+		neg_bench="${ARM_SANDBOX}/.github/workflows/benchmark.yml"
+		if [ -f "$neg_bench" ] &&
+			sed -i "s/|| 'ubuntu-24\.04-arm' }}/|| '2vcpu-ubuntu-2204-arm' }}/" "$neg_bench" &&
+			grep -q "2vcpu-ubuntu-2204-arm' }}" "$neg_bench"; then
+			neg_b_out="$(arm_probe "$ARM_SANDBOX")"
+			if echo "$neg_b_out" | grep -q "^FAIL.*2vcpu-ubuntu-2204-arm"; then
+				ok "negative control: a runs-on EXPRESSION whose default drifts off the fleet IS reported"
+			else
+				bad "negative control: an expression default off the fleet was NOT reported — the vars.BENCH_RUNNER indirection is unguarded"
+				echo "$neg_b_out" | sed 's/^/        | /'
+			fi
+		else
+			bad "negative control: could not construct a drifted-expression fixture"
+		fi
+		rm -rf "$ARM_SANDBOX"
 		;;
 esac
 
@@ -3680,8 +3919,10 @@ if command -v shellcheck >/dev/null 2>&1; then
 		echo "$sc_out" | sed 's/^/        | /'
 	fi
 elif [ -n "${CI_GATES_REQUIRE_SHELLCHECK:-}" ]; then
-	# In CI the tool is expected to be present (it ships in the ubuntu-latest
-	# image), so absence is a broken environment, not a reason to shrug. Left
+	# In CI the tool is expected to be present (the Arm Ubuntu 24.04 image
+	# this repository's jobs run on ships shellcheck 0.9.0-1, the same package
+	# and version as the x64 image), so absence is a broken environment, not a
+	# reason to shrug. Left
 	# as a SKIP this would silently downgrade the shell lint to nothing at all
 	# the day the image drops the package, and the board would stay green --
 	# the same "a gate that cannot fail" shape this whole script exists to

@@ -42,7 +42,21 @@ concurrency:
 jobs:
   release:
     name: Cut release ${{ inputs.version }}
-    runs-on: ubuntu-22.04
+    # ARM for the reason spelled out on elps.yml's lint-and-test job. This job
+    # builds nothing and ships nothing -- it validates a version string and
+    # calls `gh release create` -- so the architecture is about fleet
+    # uniformity, not speed.
+    #
+    # Two variables moved at once here (22.04 -> 24.04 as well as x64 -> ARM),
+    # because there is no 22.04 in this repo's chosen fleet and the 22.04
+    # hosted image is the older of the two anyway. The one dependency worth
+    # naming is claude-code-action, which installs the CLI for the host
+    # platform; linux-arm64 is a supported target. It is also the one job here
+    # that cannot be exercised by a PR, so VALIDATE IT WITH A dry_run=true
+    # DISPATCH before relying on it for a real release -- dry_run stops before
+    # `gh release create`, so the run proves the toolchain came up without
+    # publishing anything.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
