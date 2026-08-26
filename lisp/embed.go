@@ -73,22 +73,37 @@ func (v *LVal) goValueNode(g cycleGuard) interface{} {
 	case LSymbol, LString:
 		return v.Str
 	case LBytes:
-		// v.Bytes is a METHOD, not a field (lisp/lisp.go:1182), so the
-		// obvious `return v.Bytes` handed the embedder a func() []byte
-		// where every other arm of this switch returns plain data.  It
-		// type-checks, because the arm's result is interface{}, and only
-		// fails at use -- which is why it survived (issue #548).
+		// v.Bytes is a METHOD, not a field (lisp/lisp.go), so the obvious
+		// `return v.Bytes` handed the embedder a func() []byte where every
+		// other arm of this switch returns plain data.  It type-checks,
+		// because the arm's result is interface{}, and only fails at use --
+		// which is why it survived (issue #548).
 		//
-		// The result is a COPY, for the reason the neighbouring arms are:
-		// goSlice and goMap build fresh containers rather than handing out
-		// the value's own storage.  An LBytes keeps its bytes in a *[]byte
-		// under Native so append! can grow them in place, and returning
-		// that backing would let an embedder mutate a live lisp value
-		// behind the kernel's back -- past the ownership and seal
-		// invariants that make sharing safe, and past `copy`'s promise
-		// that a copy shares no storage with its original (#378).  It is
-		// the same hazard NativeValue's type gate exists to prevent
-		// (#546), reached through a different door.
+		// The result is a COPY, and the reason is WHOSE DATA IT IS rather
+		// than any blanket no-aliasing rule: GoValue's doc comment promises
+		// none, and the LNative arm below hands its payload straight back
+		// uncopied.  That is right for LNative -- the payload is the
+		// EMBEDDER's, so returning it shares what they already own.  An
+		// LBytes is the other case: its bytes live in a *[]byte under Native
+		// so append! can grow them in place, so the storage is the
+		// INTERPRETER's and lisp code observes writes through it.  Handing it
+		// out would let an embedder mutate a live lisp value behind the
+		// kernel's back, past the ownership and seal invariants that make
+		// sharing safe.
+		//
+		// COST: O(len), unbounded by anything the kernel controls -- the
+		// only arm in this switch of which that is true.  Order of magnitude
+		// on the authoring machine: ~200ns at 16 bytes, but hundreds of
+		// microseconds and a megabyte allocated at a megabyte, against
+		// single-digit nanoseconds and zero allocations for an LNative
+		// carrying the same megabyte.  Deliberately stated as magnitudes:
+		// the absolute figures move by ~2x run to run on a shared box, so
+		// BenchmarkGoValueBytes is where the number lives.  The cost is
+		// affordable because of who calls this: GoValue has no caller inside
+		// elps at all (libjson's GoValue is a different method on
+		// Serializer), so it is purely an embedder API, and the copy is what
+		// an embedder handing the result to something that outlives the call
+		// -- a logger, a queue, a serializer -- actually needs.
 		b := v.Bytes()
 		out := make([]byte, len(b))
 		copy(out, b)
