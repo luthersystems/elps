@@ -652,10 +652,13 @@ func MakeVector(n int) *LVal {
 func Array(dims *LVal, cells []*LVal) *LVal {
 	// stored is the dims list the array keeps.  Caller-supplied dims are
 	// copied because the array writes its cardinality in place later --
-	// builtinSelect and builtinReject resize a vector's dims after filling
-	// it -- so sharing the caller's list would let that write land in a value
-	// the caller still holds.  Dims this function constructs are reachable
-	// from nothing else, so that path stores them directly.  The parameter is
+	// builtinAppendMutate grows a vector's dims as append! adds cells --
+	// so sharing the caller's list would let that write land in a value
+	// the caller still holds.  No in-tree production caller passes dims
+	// any more (the vector-building builtins all derive them; only the
+	// fuzz harness's multi-dimensional constructor remains), so this
+	// branch now chiefly serves embedders.  Dims this function constructs
+	// are reachable from nothing else, so that path stores them directly.  The parameter is
 	// deliberately never assigned to stored: that flow would escape a
 	// caller's dims into the returned value as far as the compiler can tell,
 	// and heap-allocate the literal every builtin call site passes.

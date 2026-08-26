@@ -187,17 +187,18 @@ func TestVectorConstructorDims(t *testing.T) {
 
 // TestArrayDoesNotAliasCallerDims pins the constraint that decides which
 // Array calls copy their dims.  An array rewrites its own cardinality in
-// place -- builtinSelect and builtinReject size a vector's dims to the
-// element count once the predicate has run -- so a caller-supplied dims list
-// must be copied or that write lands in a value the caller still holds.  Dims
-// Array constructs for itself (the dims == nil entry) are reachable from
+// place -- append! (builtinAppendMutate) grows a vector's dims as it adds
+// cells, and select/reject shrink theirs once the predicate has run -- so a
+// caller-supplied dims list must be copied or that write lands in a value
+// the caller still holds.  Dims Array constructs for itself (the dims == nil
+// entry, which every in-tree vector builtin now uses) are reachable from
 // nothing else, so they are stored directly and cost no copy.
 func TestArrayDoesNotAliasCallerDims(t *testing.T) {
 	dims := lisp.QExpr([]*lisp.LVal{lisp.Int(3)})
 	arr := lisp.Array(dims, []*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)})
 	require.NotEqual(t, lisp.LError, arr.Type, "constructing the array: %v", arr)
 	require.NotSame(t, dims, arr.Cells[0], "the array stored the caller's dims list")
-	arr.Cells[0].Cells[0].Int = 2 // the resize select/reject perform
+	arr.Cells[0].Cells[0].Int = 2 // the in-place resize append!/select/reject perform
 	require.Equal(t, 3, dims.Cells[0].Int, "resizing the array rewrote the caller's dims")
 
 	// The vector path reports the dims it derived from the cells it was

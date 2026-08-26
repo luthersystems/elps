@@ -1506,6 +1506,10 @@ func builtinConcatSeq(env *LEnv, args *LVal) *LVal {
 		// of every input and the slice was made with that capacity -- so the
 		// dims Vector derives are the dims this site used to spell out, and
 		// deriving them costs no copy (issue #544's dims == nil path).
+		// Spelling them out carried an implicit dims-vs-cells consistency
+		// check that deriving drops; that divergence is unconstructible
+		// in-tree, because every cardinality writer updates the dims header
+		// and the backing cells together.
 		return Vector(cells)
 	}
 	return QExpr(cells)
@@ -1777,11 +1781,17 @@ func builtinSelect(env *LEnv, args *LVal) *LVal {
 	switch typespec.Str {
 	case "vector":
 		// MakeVector sizes the vector for the whole input and lets Array
-		// derive the dims, which is the case TestArrayDoesNotAliasCallerDims
-		// exists for: the resize below writes the cardinality in place, so
-		// the dims list it lands on must belong to this array alone.  Array
-		// builds that list itself here (dims == nil), so it is reachable
-		// from nothing else and needs no defensive copy.
+		// derive the dims.  The resize below writes the cardinality in
+		// place, so the dims list it lands on must belong to this array
+		// alone; on the derived path Array builds that list itself, so it
+		// is reachable from nothing else and needs no defensive copy (the
+		// caller-dims path keeps its copy for exactly this write -- see
+		// TestArrayDoesNotAliasCallerDims).  MakeVector is load-bearing
+		// here: it is the only constructor that yields an n-CAPACITY
+		// backing through the derived-dims path.  Vector(make([]*LVal, 0,
+		// n)) would lose the capacity -- Array replaces an empty cells
+		// slice with a fresh full-length one -- and the cells[0:0:n]
+		// reslice below depends on it.
 		v = MakeVector(list.Len())
 		cells = seqCells(v)
 		cells = cells[0:0:list.Len()]

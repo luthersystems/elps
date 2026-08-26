@@ -1,12 +1,19 @@
 // Copyright © 2018 The ELPS authors
 
 // The allocation assertions for the vector-constructing builtins live behind
-// !race because the race detector allocates on its own account, and behind
 // !elpscheck because the checked build adds ownership bookkeeping to every
 // eval (lisp/ownership_check_elpscheck.go), which moves the insert-sorted
-// count.  Pinning either configuration would pin the instrumentation rather
-// than the builtins.  Every other build runs them, including the plain
+// count (31 -> 43; the other nine rows are unchanged).  The !race guard is
+// precautionary, following the libjson/encode_alloc_test.go precedent: on
+// the authoring toolchain every row measures identically under -race, but
+// these pins should not be coupled to race-instrumentation behavior across
+// toolchains.  Every other build runs them, including the plain
 // `go test ./...` the CI gate uses.
+//
+// Reading a red row: for map/select/reject roughly 37 of the ~39 pinned
+// allocations are env.FunCall machinery, not vector construction, so a
+// regression there usually points at the evaluator; zip is the row where
+// construction dominates.
 
 //go:build !race && !elpscheck
 
