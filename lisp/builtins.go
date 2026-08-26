@@ -1058,7 +1058,7 @@ func builtinMap(env *LEnv, args *LVal) *LVal {
 	} else {
 		switch typespec.Str {
 		case "vector":
-			v = Array(QExpr([]*LVal{Int(lis.Len())}), nil)
+			v = MakeVector(lis.Len())
 			cells = seqCells(v)
 		case "list":
 			cells = make([]*LVal, lis.Len())
@@ -1477,7 +1477,7 @@ func builtinConcatSeq(env *LEnv, args *LVal) *LVal {
 	if size == 0 {
 		switch typespec.Str {
 		case "vector":
-			return Array(QExpr([]*LVal{Int(0)}), nil)
+			return MakeVector(0)
 		case "list":
 			return Nil()
 		}
@@ -1502,7 +1502,15 @@ func builtinConcatSeq(env *LEnv, args *LVal) *LVal {
 		cells = append(cells, seqCells(v)...)
 	}
 	if typespec.Str == "vector" {
-		return Array(QExpr([]*LVal{Int(size)}), cells)
+		// len(cells) is exactly size -- the appends above copy every element
+		// of every input and the slice was made with that capacity -- so the
+		// dims Vector derives are the dims this site used to spell out, and
+		// deriving them costs no copy (issue #544's dims == nil path).
+		// Spelling them out carried an implicit dims-vs-cells consistency
+		// check that deriving drops; that divergence is unconstructible
+		// in-tree, because every cardinality writer updates the dims header
+		// and the backing cells together.
+		return Vector(cells)
 	}
 	return QExpr(cells)
 }
@@ -1635,7 +1643,7 @@ func builtinInsertIndex(env *LEnv, args *LVal) *LVal {
 	var cells []*LVal
 	switch typespec.Str {
 	case "vector":
-		v = Array(QExpr([]*LVal{Int(1 + list.Len())}), nil)
+		v = MakeVector(1 + list.Len())
 		cells = seqCells(v)
 	case "list":
 		cells = make([]*LVal, 1+list.Len())
@@ -1708,7 +1716,7 @@ func builtinInsertSorted(env *LEnv, args *LVal) *LVal {
 	var cells []*LVal
 	switch typespec.Str {
 	case "vector":
-		v = Array(QExpr([]*LVal{Int(1 + list.Len())}), nil)
+		v = MakeVector(1 + list.Len())
 		cells = seqCells(v)
 	case "list":
 		cells = make([]*LVal, 1+list.Len())
@@ -1772,7 +1780,19 @@ func builtinSelect(env *LEnv, args *LVal) *LVal {
 	var cells []*LVal
 	switch typespec.Str {
 	case "vector":
-		v = Array(QExpr([]*LVal{Int(list.Len())}), nil)
+		// MakeVector sizes the vector for the whole input and lets Array
+		// derive the dims.  The resize below writes the cardinality in
+		// place, so the dims list it lands on must belong to this array
+		// alone; on the derived path Array builds that list itself, so it
+		// is reachable from nothing else and needs no defensive copy (the
+		// caller-dims path keeps its copy for exactly this write -- see
+		// TestArrayDoesNotAliasCallerDims).  MakeVector is load-bearing
+		// here: it is the only constructor that yields an n-CAPACITY
+		// backing through the derived-dims path.  Vector(make([]*LVal, 0,
+		// n)) would lose the capacity -- Array replaces an empty cells
+		// slice with a fresh full-length one -- and the cells[0:0:n]
+		// reslice below depends on it.
+		v = MakeVector(list.Len())
 		cells = seqCells(v)
 		cells = cells[0:0:list.Len()]
 	case "list":
@@ -1821,7 +1841,9 @@ func builtinReject(env *LEnv, args *LVal) *LVal {
 	var cells []*LVal
 	switch typespec.Str {
 	case "vector":
-		v = Array(QExpr([]*LVal{Int(list.Len())}), nil)
+		// Array-derived dims, for the reason spelled out in builtinSelect:
+		// the resize below writes this array's cardinality in place.
+		v = MakeVector(list.Len())
 		cells = seqCells(v)
 		cells = cells[0:0:list.Len()]
 	case "list":
@@ -1870,7 +1892,7 @@ func builtinZip(env *LEnv, args *LVal) *LVal {
 	var cells []*LVal
 	switch typespec.Str {
 	case "vector":
-		v = Array(QExpr([]*LVal{Int(n)}), nil)
+		v = MakeVector(n)
 		cells = seqCells(v)
 	case "list":
 		cells = make([]*LVal, n)
@@ -1883,7 +1905,7 @@ func builtinZip(env *LEnv, args *LVal) *LVal {
 		var elemCells []*LVal
 		switch typespec.Str {
 		case "vector":
-			elem = Array(QExpr([]*LVal{Int(len(lists))}), nil)
+			elem = MakeVector(len(lists))
 			elemCells = seqCells(elem)
 		case "list":
 			elemCells = make([]*LVal, len(lists))
@@ -1951,7 +1973,7 @@ func builtinReverse(env *LEnv, args *LVal) *LVal {
 	var cells []*LVal
 	switch typespec.Str {
 	case "vector":
-		v = Array(QExpr([]*LVal{Int(list.Len())}), nil)
+		v = MakeVector(list.Len())
 		cells = seqCells(v)
 	case "list":
 		cells = make([]*LVal, list.Len())
@@ -2099,7 +2121,11 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 			// window entirely so the vector owns (empty) fresh backing.
 			cells = nil
 		}
-		return Array(QExpr([]*LVal{Int(len(cells))}), cells)
+		// The dims are literally [len(cells)] on both branches above -- the
+		// window's length, or zero for the sealed empty carve-out -- so
+		// Vector derives the identical value without copying a dims list
+		// this site would otherwise build only to have Array duplicate.
+		return Vector(cells)
 	default:
 		return env.Errorf("type specifier is not valid: %v", typespec)
 	}
