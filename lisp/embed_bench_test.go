@@ -25,7 +25,7 @@ func BenchmarkGoValueBytes(b *testing.B) {
 		v := Bytes(make([]byte, n))
 		b.Run(fmt.Sprintf("size=%d", n), func(b *testing.B) {
 			b.ReportAllocs()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				goValueSink = GoValue(v)
 			}
 		})
@@ -47,7 +47,7 @@ func BenchmarkGoValueLeafArms(b *testing.B) {
 	for _, arm := range arms {
 		b.Run(arm.name, func(b *testing.B) {
 			b.ReportAllocs()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				goValueSink = GoValue(arm.v)
 			}
 		})
