@@ -63,19 +63,25 @@ import (
 // pre-hook ordering, pool-refill and test-runner patterns) and measured
 // numbers.
 
-// NativeCloner is the opt-in fork-time duplication protocol for native
+// NativeCloner is the kernel's opt-in duplication protocol for native
 // payloads, shared with the broader native-contract design of issue #383.
 // The kernel cannot copy an LVal's Native payload — it is an opaque
-// interface{} — so Fork shares payloads by reference by default.  A payload
-// type whose identity or state must NOT be shared between a template and
-// its forks (an accumulator, a stateful handle) implements NativeCloner;
-// Fork then stores the value returned by CloneNative in the forked LVal
-// instead of the shared reference.
+// interface{} — so every primitive that duplicates a value shares payloads
+// by reference by default.  A payload type whose identity or state must NOT
+// be shared with the duplicate (an accumulator, a stateful handle)
+// implements NativeCloner, and one implementation settles the question
+// everywhere the kernel copies a value: Fork, the lisp `copy` builtin
+// (deepCopy, lisp/copy.go) and detach (lisp/detach.go), which clones such a
+// payload rather than refusing it (issue #546).
 //
 // CloneNative must return a payload that is independent of the receiver:
-// mutations on either side must be invisible to the other.  It must not
-// retain references into the template's Runtime or LEnv tree — the clone
-// crosses a runtime boundary.
+// mutations on either side must be invisible to the other.  It must also
+// retain no reference into the Runtime or LEnv tree the receiver lives in:
+// Fork and detach both land the clone on a DIFFERENT runtime, where such a
+// reference reconnects the two trees the primitive exists to separate.
+// Under `copy` the duplicate stays inside one environment, so a payload
+// written for that path alone still has to meet the stricter bar to be
+// fork-safe.
 type NativeCloner interface {
 	CloneNative() interface{}
 }
@@ -474,19 +480,34 @@ func (f *forker) val(v *LVal) *LVal {
 // native resolves the fork policy for one native payload: the per-fork
 // replacer hook first, the NativeCloner protocol second, share-by-reference
 // last.
+//
+// Whichever of the three produced it, the RESOLVED payload is then checked
+// against the fork's own runtime (checkNativeAffinity — a no-op in
+// production builds, the established pattern for checkOwnership's
+// unconditional calls from Put and eval).  A payload that declares a
+// binding to another Runtime must not travel into the fork, and this is the
+// deep half of that rule: the walk reaches natives riding inside containers,
+// which the use-time checks are too shallow to see (issue #546,
+// lisp/runtime_bound.go).  A replacer's return value is checked like any
+// other — an embedder's hook handing back a template-bound instance is
+// precisely the bug class, not an exception to it.
 func (f *forker) native(payload interface{}) interface{} {
 	if payload == nil {
 		return nil
 	}
+	resolved, replaced := payload, false
 	if f.nativeReplacer != nil {
 		if replacement, ok := f.nativeReplacer(payload); ok {
-			return replacement
+			resolved, replaced = replacement, true
 		}
 	}
-	if cloner, ok := payload.(NativeCloner); ok {
-		return cloner.CloneNative()
+	if !replaced {
+		if cloner, ok := payload.(NativeCloner); ok {
+			resolved = cloner.CloneNative()
+		}
 	}
-	return payload
+	checkNativeAffinity(f.rt, resolved)
+	return resolved
 }
 
 // mapData rebuilds md as a fresh sorted map whose keys and values are

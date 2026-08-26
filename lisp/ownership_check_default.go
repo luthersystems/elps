@@ -12,6 +12,22 @@ package lisp
 // the honest list of what it does and does not catch.
 func checkOwnership(_ *Runtime, _ *LVal) {}
 
+// checkNativeAffinity is a zero-cost no-op in production builds — a native
+// payload's declared runtime binding is never consulted here, so
+// implementing RuntimeBound costs a production build nothing.  In the
+// elpscheck build it asserts that binding: a payload implementing
+// RuntimeBound (lisp/runtime_bound.go) that names a Runtime other than the
+// one using it panics, at the ownership checker's instrumented points (use
+// time) and at every payload a fork resolves (fork time).
+func checkNativeAffinity(_ *Runtime, _ interface{}) {}
+
+// checkDetachedNativeUnbound is a zero-cost no-op in production builds.  In
+// the elpscheck build it asserts that a clone minted by a strict detach —
+// the sanctioned cross-runtime transfer — is unbound: CloneNative cannot
+// know the destination Runtime, so a detached clone that still reports a
+// binding (RuntimeBound, lisp/runtime_bound.go) panics.
+func checkDetachedNativeUnbound(_ interface{}) {}
+
 // rethrowOwnershipViolation is a no-op in production builds.  In the
 // elpscheck build it re-panics ownership violations inside env.eval's
 // recover() so they stay hard panics instead of becoming catchable LError

@@ -245,6 +245,71 @@ func TestCopySharesFunctionAndNativeLeaves(t *testing.T) {
 	}
 }
 
+// TestCopyClonesNativeCloner is the `copy` end of issue #546: a native leaf
+// is shared because the kernel has no way to duplicate it, not because
+// sharing is what `copy` wants at a native.  A payload implementing
+// NativeCloner (the fixture lives in detach_test.go) has removed that
+// obstacle, so the copy holds a clone — the same one lever Fork and detach
+// honour, so an embedder writes CloneNative once.
+func TestCopyClonesNativeCloner(t *testing.T) {
+	env := copyTestEnv(t)
+	payload := &cloneableNative{state: 5}
+	env.PutGlobal(lisp.Symbol("a-native"), lisp.Native(payload))
+	mustEval(t, env, `(set 'cp (copy a-native))`)
+
+	cp := env.GetGlobal(lisp.Symbol("cp"))
+	if cp.Type != lisp.LNative {
+		t.Fatalf("copy of a native produced a %v: %v", cp.Type, cp)
+	}
+	got, ok := cp.Native.(*cloneableNative)
+	if !ok {
+		t.Fatalf("copied payload has type %T", cp.Native)
+	}
+	if got == payload {
+		t.Errorf("the copy shares the payload with the original")
+	}
+	if got.state != 5 {
+		t.Errorf("clone state = %d; want 5", got.state)
+	}
+	if payload.clones != 1 {
+		t.Errorf("CloneNative called %d times; want 1", payload.clones)
+	}
+	if payload.state != 5 {
+		t.Errorf("`copy` wrote through the original payload: state=%d", payload.state)
+	}
+
+	// A native nested in a container takes the same path.
+	nested := &cloneableNative{state: 9}
+	env.PutGlobal(lisp.Symbol("nested-native"), lisp.Native(nested))
+	mustEval(t, env, `(set 'ncp (copy (sorted-map "n" nested-native)))`)
+	inner := env.GetGlobal(lisp.Symbol("ncp")).MapGet(lisp.String("n"))
+	if inner.Type == lisp.LError {
+		t.Fatalf("map get: %v", inner)
+	}
+	if inner.Native.(*cloneableNative) == nested {
+		t.Errorf("a native nested in a sorted-map was shared, not cloned")
+	}
+}
+
+// TestCopySharesNativeWithoutCloneProtocol pins the unchanged default: a
+// payload that declares no clone protocol is still shared by reference, so
+// adding the protocol is the only thing that moves a native off it.
+func TestCopySharesNativeWithoutCloneProtocol(t *testing.T) {
+	env := copyTestEnv(t)
+	payload := &opaqueNative{state: 5}
+	env.PutGlobal(lisp.Symbol("a-native"), lisp.Native(payload))
+	mustEval(t, env, `(set 'cp (copy (list a-native)))`)
+
+	cp := env.GetGlobal(lisp.Symbol("cp"))
+	got, ok := cp.Cells[0].Native.(*opaqueNative)
+	if !ok {
+		t.Fatalf("copied payload has type %T", cp.Cells[0].Native)
+	}
+	if got != payload {
+		t.Errorf("a payload with no clone protocol was not shared by reference")
+	}
+}
+
 // TestCopySharedClosureKeepsTheOriginalsBindings pins the consequence of
 // sharing LFun leaves that the docstring used to deny ("they hold no
 // lisp-mutable state").  A closure captures BINDINGS, not values, so a

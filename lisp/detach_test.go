@@ -549,6 +549,124 @@ func TestDetachRejectsNativeWithPath(t *testing.T) {
 	}
 }
 
+// cloneableNative is the NativeCloner fixture for the walker's clone path.
+// It is shared with copy_test.go: detach and `copy` are one walker in two
+// modes, and the protocol has to hold in both.  clones counts the clones
+// taken FROM an instance, which is how a test pins that a payload reachable
+// along several paths was consulted exactly once.
+type cloneableNative struct {
+	state  int
+	clones int
+}
+
+func (c *cloneableNative) CloneNative() interface{} {
+	c.clones++
+	return &cloneableNative{state: c.state}
+}
+
+// opaqueNative implements nothing: the payload class the kernel still has
+// no copy strategy for.
+type opaqueNative struct{ state int }
+
+// TestDetachClonesNativeCloner: a payload that publishes its own
+// duplication protocol is no longer a shape detach has to refuse (issue
+// #546).  Only the embedder can say what duplicating an opaque handle
+// means, and NativeCloner is that statement, so the walker takes it.
+func TestDetachClonesNativeCloner(t *testing.T) {
+	payload := &cloneableNative{state: 7}
+	orig := lisp.Native(payload)
+	cp, err := lisp.Detach(orig)
+	if err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if cp == orig {
+		t.Fatalf("detach returned its argument; the LVal header must be copied too")
+	}
+	got, ok := cp.Native.(*cloneableNative)
+	if !ok {
+		t.Fatalf("detached payload has type %T", cp.Native)
+	}
+	if got == payload {
+		t.Errorf("detached value shares the payload with the original")
+	}
+	if got.state != 7 {
+		t.Errorf("clone state = %d; want 7 (CloneNative decides what a clone carries)", got.state)
+	}
+	if payload.clones != 1 {
+		t.Errorf("CloneNative called %d times; want 1", payload.clones)
+	}
+	if payload.state != 7 {
+		t.Errorf("the walker wrote through the original payload: state=%d", payload.state)
+	}
+}
+
+// TestDetachRejectsNativeWithoutCloneProtocol pins the other half: the
+// carve-out is the payload's own doing, so a payload that declares nothing
+// keeps the refusal verbatim.
+func TestDetachRejectsNativeWithoutCloneProtocol(t *testing.T) {
+	_, err := lisp.Detach(lisp.Native(&opaqueNative{state: 1}))
+	if err == nil {
+		t.Fatalf("expected an error detaching a payload with no clone protocol")
+	}
+	const want = "native value (*lisp_test.opaqueNative) cannot be detached"
+	if err.Error() != want {
+		t.Errorf("wrong error:\n got: %s\nwant: %s", err, want)
+	}
+}
+
+// TestDetachClonesNativeClonerInsideList: the clone happens wherever the
+// walk reaches the payload, not only at the root — a native buried in a
+// container used to poison the whole detach.
+func TestDetachClonesNativeClonerInsideList(t *testing.T) {
+	payload := &cloneableNative{state: 3}
+	orig := lisp.QExpr([]*lisp.LVal{
+		lisp.Symbol("head"),
+		lisp.QExpr([]*lisp.LVal{lisp.Native(payload)}),
+	})
+	cp, err := lisp.Detach(orig)
+	if err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	inner := cp.Cells[1].Cells[0]
+	if inner == orig.Cells[1].Cells[0] {
+		t.Fatalf("the nested native LVal was shared with the original")
+	}
+	got, ok := inner.Native.(*cloneableNative)
+	if !ok {
+		t.Fatalf("detached payload has type %T", inner.Native)
+	}
+	if got == payload {
+		t.Errorf("the nested payload was shared with the original")
+	}
+	if payload.clones != 1 {
+		t.Errorf("CloneNative called %d times; want 1", payload.clones)
+	}
+}
+
+// TestDetachNativeClonerPreservesAliasing: a cloneable native now takes the
+// general copy path, which means it is memoized like every other node.  One
+// *LVal reachable through two cells must become ONE new *LVal in the copy,
+// cloned once — a per-occurrence clone would both break the aliasing the
+// detach contract preserves and charge the embedder for duplicates.
+func TestDetachNativeClonerPreservesAliasing(t *testing.T) {
+	payload := &cloneableNative{state: 1}
+	shared := lisp.Native(payload)
+	orig := lisp.QExpr([]*lisp.LVal{shared, shared})
+	cp, err := lisp.Detach(orig)
+	if err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if cp.Cells[0] != cp.Cells[1] {
+		t.Errorf("aliased native copied twice: %p vs %p", cp.Cells[0], cp.Cells[1])
+	}
+	if cp.Cells[0] == shared {
+		t.Errorf("the detached copy points at the original native value")
+	}
+	if payload.clones != 1 {
+		t.Errorf("CloneNative called %d times; want 1", payload.clones)
+	}
+}
+
 // TestDetachRejectsNativeInsideMap: the path must also thread through
 // sorted-map values.
 func TestDetachRejectsNativeInsideMap(t *testing.T) {
