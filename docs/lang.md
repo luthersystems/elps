@@ -1083,15 +1083,25 @@ paragraph tells callers what to use instead. `DEPRECATED:` is accepted too.
 
 ```lisp
 (defun blend-paths (a b)
+  "Combines two paths into one."
+  ""
+  "Deprecated: use join-paths instead."
+  (join-paths a b))
+```
+
+A string literal cannot contain a line break, so the empty string above is what
+opens the second paragraph — the same paragraph break docstrings use everywhere
+else. Writing the whole docstring as one string with a `\n\n` escape works
+identically:
+
+```lisp
+(defun blend-paths (a b)
   "Combines two paths into one.\n\nDeprecated: use join-paths instead."
   (join-paths a b))
 ```
 
-Write the whole docstring as a single string, as above. Strings cannot contain
-line breaks, so `\n\n` opens the second paragraph. Consecutive docstrings are
-joined for `elps doc`, but the tooling reads a definition's documentation from
-the leading string literal, so a marker written as a separate string is not
-seen by the linter or the language server.
+Both forms read the same to `elps doc`, the linter and the language server: a
+definition's documentation is the run of leading strings, joined.
 
 The `deprecated` lint check reports every use of a deprecated symbol and quotes
 the notice. It requires semantic analysis, so run the linter over a workspace:

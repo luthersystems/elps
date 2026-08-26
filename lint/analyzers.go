@@ -1349,9 +1349,10 @@ func collectDeprecatedSpans(v *lisp.LVal, spans byteSpans) byteSpans {
 }
 
 // isDeprecatedDefinition reports whether v is a defun/defmacro whose own
-// docstring is deprecated. The docstring rule matches analysis.prescanDefun:
-// a string in the third argument position is a docstring only when a body
-// follows it, otherwise it is the body.
+// docstring is deprecated. The docstring is read through
+// analysis.DefunDocstring, the same function that fills the DocString this
+// check reads off a reference's symbol -- so the definition a use is
+// suppressed inside is judged by exactly the rule that deprecated it.
 func isDeprecatedDefinition(v *lisp.LVal) bool {
 	if v == nil || v.Type != lisp.LSExpr || v.IsQuoted() {
 		return false
@@ -1361,14 +1362,7 @@ func isDeprecatedDefinition(v *lisp.LVal) bool {
 	default:
 		return false
 	}
-	if astutil.ArgCount(v) < 4 {
-		return false
-	}
-	doc := v.Cells[3]
-	if doc == nil || doc.Type != lisp.LString {
-		return false
-	}
-	_, ok := lisp.DeprecationNotice(doc.Str)
+	_, ok := lisp.DeprecationNotice(analysis.DefunDocstring(v))
 	return ok
 }
 

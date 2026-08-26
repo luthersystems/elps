@@ -2860,6 +2860,58 @@ func TestDeprecated_Positive_LaterParagraph(t *testing.T) {
 	assertHasDiag(t, diags, "use of deprecated function 'old-fn': use join-paths instead.")
 }
 
+// TestDeprecated_Positive_ParagraphStyle is the shape the language guide
+// teaches: ELPS strings hold no raw line break, so a second paragraph is
+// written as its own string literal. The runtime joins the run of leading
+// strings and analysis now does the same, so the marker is seen.
+func TestDeprecated_Positive_ParagraphStyle(t *testing.T) {
+	source := "(defun blend-paths (a b)\n" +
+		"  \"Combines two paths.\"\n" +
+		"  \"\"\n" +
+		"  \"Deprecated: use join-paths instead.\"\n" +
+		"  (join-paths a b))\n" +
+		"(blend-paths 1 2)\n"
+	diags := lintCheckSemantic(t, AnalyzerDeprecated, source)
+	require.Len(t, diags, 1)
+	assertHasDiag(t, diags, "use of deprecated function 'blend-paths': use join-paths instead.")
+	assertDiagOnLine(t, diags, 6, "use of deprecated function 'blend-paths'")
+}
+
+// TestDeprecated_Negative_ParagraphStyleInsideDeprecated exercises the
+// suppression walk against the same shape: isDeprecatedDefinition has to read
+// the whole string run, or a paragraph-style deprecated function would report
+// against its own body.
+func TestDeprecated_Negative_ParagraphStyleInsideDeprecated(t *testing.T) {
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n" +
+		"(defun blend-paths (a b)\n" +
+		"  \"Combines two paths.\"\n" +
+		"  \"\"\n" +
+		"  \"Deprecated: use join-paths instead.\"\n" +
+		"  (old-fn a))\n"
+	assertNoDiags(t, lintCheckSemantic(t, AnalyzerDeprecated, source))
+}
+
+// TestDeprecated_Positive_ParagraphStyleAcrossFiles runs the same definition
+// through the workspace scanner (LintFiles) rather than same-file analysis, so
+// the ExternalSymbol path is covered too.
+func TestDeprecated_Positive_ParagraphStyleAcrossFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeTempLisp(t, dir, "lib.lisp", "(defun blend-paths (a b)\n"+
+		"  \"Combines two paths.\"\n"+
+		"  \"\"\n"+
+		"  \"Deprecated: use join-paths instead.\"\n"+
+		"  (list a b))\n"+
+		"(export 'blend-paths)\n")
+	caller := writeTempLisp(t, dir, "main.lisp", "(blend-paths 1 2)\n")
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDeprecated}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{caller})
+	require.NoError(t, err)
+	require.Len(t, diags, 1)
+	assertDiagOnLine(t, diags, 1,
+		"use of deprecated function 'blend-paths': use join-paths instead.")
+}
+
 func TestDeprecated_Positive_NoticeOmittedWhenEmpty(t *testing.T) {
 	source := "(defun old-fn (x) \"Deprecated:\" x)\n(old-fn 1)\n"
 	diags := lintCheckSemantic(t, AnalyzerDeprecated, source)
@@ -2905,6 +2957,13 @@ func TestDeprecated_Negative_StringBodyIsNotADocstring(t *testing.T) {
 	// A string in the docstring position with no body after it is the body,
 	// exactly as analysis.prescanDefun reads it.
 	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\")\n(old-fn 1)\n"
+	assertNoDiags(t, lintCheckSemantic(t, AnalyzerDeprecated, source))
+}
+
+func TestDeprecated_Negative_AllStringBodyIsNotADocstring(t *testing.T) {
+	// Several strings and no executable form is still a constant function, so
+	// the marker is a return value, not documentation.
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" \"result\")\n(old-fn 1)\n"
 	assertNoDiags(t, lintCheckSemantic(t, AnalyzerDeprecated, source))
 }
 

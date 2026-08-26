@@ -426,12 +426,17 @@ Only *uses* are flagged, never the declaration, and a use inside the body
 of a definition that is itself deprecated is not flagged — deprecated code
 is allowed to call deprecated code, exactly as in Go.
 
+A docstring is the whole run of leading string literals, joined the way
+`elps doc` joins them: an empty string `""` opens a new paragraph. A string
+literal cannot contain a raw line break, so that empty string — or a `\n\n`
+escape inside a single string — is how the marker paragraph is written.
+
 ```lisp
 ;; The declaration itself is never flagged
 (defun blend-paths (a b)
-  "Blend two paths.
-
-  Deprecated: use join-paths instead."
+  "Blend two paths."
+  ""
+  "Deprecated: use join-paths instead."
   (join-paths a b))
 
 ;; WARNING — use of deprecated function 'blend-paths': use join-paths instead.
@@ -447,8 +452,10 @@ is allowed to call deprecated code, exactly as in Go.
 ```
 
 A marker only counts at the start of a paragraph, so prose mentioning the
-word mid-paragraph does not deprecate anything. To keep a call that must
-stay, suppress it with `; nolint:deprecated`.
+word mid-paragraph does not deprecate anything. A body made up entirely of
+strings is a constant function rather than a documented one, so nothing in
+it deprecates anything either. To keep a call that must stay, suppress it
+with `; nolint:deprecated`.
 
 ### `unused-nolint`
 

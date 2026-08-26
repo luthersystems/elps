@@ -18,13 +18,21 @@ import (
 // cover the three surfaces the editor sees it through -- the hover banner, the
 // completion item tag, and the diagnostic tag.
 //
-// Analysis reads a definition's docstring from the leading string literal of
-// the form, so the marker has to live in that one string; the sources below
-// use "\n\n" to open the second paragraph inside it.
+// Analysis reads a definition's docstring the way the runtime does: the whole
+// run of leading string literals, joined by lisp.JoinDocStrings. Either
+// spelling of the paragraph break therefore works -- "\n\n" inside one string,
+// as deprecatedDefun writes it, or an empty string between two literals, as
+// deprecatedParagraphDefun does.
 
 const deprecatedDefun = `(defun old-fn (x)
   "Adds one to x.\n\nDeprecated: use new-fn instead."
   (+ x 1))`
+
+const deprecatedParagraphDefun = `(defun blend-paths (a b)
+  "Combines two paths."
+  ""
+  "Deprecated: use join-paths instead."
+  (join-paths a b))`
 
 func TestHoverOnDeprecatedDefun(t *testing.T) {
 	s := testServer()
@@ -44,6 +52,26 @@ func TestHoverOnDeprecatedDefun(t *testing.T) {
 		"the banner must not replace the docstring")
 	assert.Less(t, strings.Index(mc.Value, "**Deprecated.**"), strings.Index(mc.Value, "Adds one to x."),
 		"the banner belongs above the docstring")
+}
+
+// TestHoverOnParagraphStyleDeprecatedDefun is the guide's own example: the
+// marker lives in a later string literal rather than after a "\n\n" escape.
+func TestHoverOnParagraphStyleDeprecatedDefun(t *testing.T) {
+	s := testServer()
+	openDoc(s, "file:///test.lisp", deprecatedParagraphDefun)
+
+	hover, err := s.textDocumentHover(mockContext(), &protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+			Position:     protocol.Position{Line: 0, Character: 8}, // on "blend-paths"
+		},
+	})
+	require.NoError(t, err)
+	assertHoverContains(t, hover, "blend-paths", "**Deprecated.** use join-paths instead.")
+
+	mc := hover.Contents.(protocol.MarkupContent)
+	assert.Contains(t, mc.Value, "Combines two paths.",
+		"the first paragraph must survive the join")
 }
 
 func TestHoverOnDeprecatedQualifiedSymbol(t *testing.T) {
