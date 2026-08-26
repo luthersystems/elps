@@ -177,6 +177,23 @@ A shared stateful native is the one way to leak state between template and
 forks that no isolation test in this repository can see from the outside —
 audit your template's native census when adopting Fork.
 
+A payload type can also *declare* which runtime it belongs to, by
+implementing `RuntimeBound` (`BoundRuntime() *lisp.Runtime`, returning nil
+while unbound). Declaring costs a production build nothing — nothing there
+ever calls it. Under `-tags elpscheck` the declaration is asserted: at the
+ownership checker's instrumented points (shallow, per that checker's
+documented limits) and, deeply, at fork time, where every reachable native
+payload is checked against the fork's runtime whatever container it rides
+in — and whichever of the three tools above resolved it, a replacer's
+return value included. A fork *is* a different runtime, so a bound payload
+reaching a fork by the default share-by-reference policy fails the fork,
+loudly, rather than sitting in the fork until a request touches it. A
+payload that means to survive forking must therefore clone to something
+*unbound* (or bound to the destination): a clone that copies the template's
+binding trips the same check, which is only `NativeCloner`'s existing
+"retain no reference into the template's runtime" rule made checkable. See
+`lisp/runtime_bound.go`.
+
 ### Context
 
 The template's `context.Context` never travels into a fork. Bind a

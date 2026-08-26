@@ -480,19 +480,34 @@ func (f *forker) val(v *LVal) *LVal {
 // native resolves the fork policy for one native payload: the per-fork
 // replacer hook first, the NativeCloner protocol second, share-by-reference
 // last.
+//
+// Whichever of the three produced it, the RESOLVED payload is then checked
+// against the fork's own runtime (checkNativeAffinity — a no-op in
+// production builds, the established pattern for checkOwnership's
+// unconditional calls from Put and eval).  A payload that declares a
+// binding to another Runtime must not travel into the fork, and this is the
+// deep half of that rule: the walk reaches natives riding inside containers,
+// which the use-time checks are too shallow to see (issue #546,
+// lisp/runtime_bound.go).  A replacer's return value is checked like any
+// other — an embedder's hook handing back a template-bound instance is
+// precisely the bug class, not an exception to it.
 func (f *forker) native(payload interface{}) interface{} {
 	if payload == nil {
 		return nil
 	}
+	resolved, replaced := payload, false
 	if f.nativeReplacer != nil {
 		if replacement, ok := f.nativeReplacer(payload); ok {
-			return replacement
+			resolved, replaced = replacement, true
 		}
 	}
-	if cloner, ok := payload.(NativeCloner); ok {
-		return cloner.CloneNative()
+	if !replaced {
+		if cloner, ok := payload.(NativeCloner); ok {
+			resolved = cloner.CloneNative()
+		}
 	}
-	return payload
+	checkNativeAffinity(f.rt, resolved)
+	return resolved
 }
 
 // mapData rebuilds md as a fresh sorted map whose keys and values are

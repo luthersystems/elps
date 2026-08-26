@@ -178,6 +178,28 @@ import (
 // or file it like #363) or a deliberate design (document it HERE, with
 // the reasoning, so the next reader knows which it was).
 //
+// # Declared affinity
+//
+// A second, narrower rule rides on this file's machinery: a native payload
+// may DECLARE which Runtime it belongs to (RuntimeBound,
+// lisp/runtime_bound.go), and checkNativeAffinity asserts the declaration.
+// No adoption table is involved and no allowlist entry can apply, because
+// there is nothing to infer and nothing to sanction — the payload carries
+// its own truth, and a payload that answers nil is simply unchecked.  It is
+// the type-level replacement for an embedder's load-time probe over the
+// natives a loaded environment happens to hold (issue #546).
+//
+// The rule is enforced at the same instrumented points as ownership, and is
+// therefore shallow in the same way: checkOwnership examines the payload of
+// an LNative value crossing Put/PutGlobal/eval and never the payloads of
+// natives riding inside its Cells.  The deep half is at FORK time, where
+// the fork walker visits every reachable native payload whatever container
+// it rides in, and checks whichever payload its replacer/NativeCloner/share
+// policy resolved (lisp/fork.go, forker.native).  A violation raises the
+// same ownershipViolation panic value as the ownership rule, for the same
+// reason: an affinity bug found in a checked build must stop the test, not
+// become a catchable LError.
+//
 // # Memory
 //
 // The table grows with every distinct LVal the process touches.  Go has no
@@ -243,6 +265,13 @@ func checkOwnership(rt *Runtime, v *LVal) {
 	if v == nil || rt == nil || isSingleton(v) || (v.sealed && sealableNodeType(v.Type)) {
 		return
 	}
+	// Declared affinity (see the section of that name above).  Type-gated on
+	// the LVal so the interface assertion is only ever paid by real native
+	// handles — an LFun's *funData and the kernel's own internal payloads
+	// (*MapData, *CallStack, *[]byte) never reach it.
+	if v.Type == LNative {
+		checkNativeAffinity(rt, v.Native)
+	}
 	// See allowlist entry 3.  A builtin that captured no environment holds no
 	// mutable per-runtime state, and evaluation never writes it.
 	if isClosureFreeBuiltin(v) {
@@ -260,6 +289,30 @@ func checkOwnership(rt *Runtime, v *LVal) {
 		return
 	}
 	panic(ownershipViolation{msg: ownershipViolationMessage(owner.(*Runtime), rt, v)})
+}
+
+// checkNativeAffinity asserts a native payload's DECLARED runtime binding:
+// a payload implementing RuntimeBound (lisp/runtime_bound.go) may only be
+// used by the Runtime it names.  A payload that does not implement the
+// interface, or that reports nil (unbound), is unchecked — declaring is
+// opt-in and nil is the sanctioned "not bound to anything yet" answer.
+//
+// It is called from checkOwnership for LNative values (use time) and from
+// forker.native for every payload a fork resolves (fork time).  The panic
+// value is deliberately ownershipViolation, the same type the ownership
+// rule raises, so rethrowOwnershipViolation keeps it a hard panic through
+// env.eval's recover(): an affinity bug in a checked build must stop the
+// test, not be laundered into an LError that ignore-errors absorbs.
+func checkNativeAffinity(rt *Runtime, payload interface{}) {
+	b, ok := payload.(RuntimeBound)
+	if !ok {
+		return
+	}
+	bound := b.BoundRuntime()
+	if bound == nil || bound == rt {
+		return
+	}
+	panic(ownershipViolation{msg: affinityViolationMessage(bound, rt, payload)})
 }
 
 // rethrowOwnershipViolation re-panics when r is an ownership violation.
@@ -302,6 +355,25 @@ func ownershipViolationMessage(owner, second *Runtime, v *LVal) string {
 		v, v.Type, str, len(v.Cells), loc,
 		owner, runtimePackageName(owner),
 		second, runtimePackageName(second))
+}
+
+// affinityViolationMessage renders the panic message for a declared-affinity
+// violation: the payload's Go type and both runtime identities.  It
+// deliberately renders the payload with %T alone, for the same reason
+// ownershipViolationMessage avoids LVal.String() — rendering an arbitrary
+// embedder value inside a panic path is how one panic becomes two.  Even %p
+// is out: on a value-type payload fmt falls back to %!p(type=value), which
+// formats the value and so calls straight into an embedder String method.
+func affinityViolationMessage(bound, using *Runtime, payload interface{}) string {
+	return fmt.Sprintf("native affinity violation: payload used by a foreign Runtime\n"+
+		"  payload type: %T\n"+
+		"  bound runtime: %p (package %s)\n"+
+		"  using runtime: %p (package %s)\n"+
+		"a RuntimeBound native payload may only be used by the Runtime it declares;"+
+		" see lisp/runtime_bound.go",
+		payload,
+		bound, runtimePackageName(bound),
+		using, runtimePackageName(using))
 }
 
 func runtimePackageName(rt *Runtime) string {
