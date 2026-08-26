@@ -3557,13 +3557,34 @@ open(path, "w").write(new)
 PY_MUT
 		}
 
+		# NOTE ON THE SHAPE OF THE THREE CONTROLS BELOW: each captures the
+		# checker's output and greps the VARIABLE with a herestring, rather
+		# than piping the checker straight into `grep -q`.
+		#
+		# That is not style. This file runs under `set -o pipefail`, and
+		# `producer | grep -q PATTERN` under pipefail is a race whenever the
+		# producer writes anything AFTER the matching line: `grep -q` exits the
+		# instant it matches, the producer's next write hits a closed pipe, and
+		# pipefail then reports the PIPELINE as failed -- even though the match
+		# succeeded. check.py prints its `__COUNTS__` trailer last, so it lost
+		# that race about 7% of the time (measured: 4 failures in 60 runs, on
+		# an unmodified tree). The visible symptom is the worst possible one:
+		# a control that FIRED CORRECTLY is reported as "this guard is dead",
+		# complete with a BrokenPipeError traceback, and the required check
+		# goes red for a reason that is not in the tree at all.
+		#
+		# A herestring is not a pipeline, so pipefail has nothing to observe
+		# and the grep's own verdict is the only verdict.
+
 		# Control 1 -- check (A): re-inline the shared script's loop into a
 		# workflow that now delegates. The guard must object.
 		if mutate elps.yml reinline mut_reinline; then
-			if python3 "${agg_tmp}/check.py" "${agg_tmp}/mut_reinline" | grep -q '^FAIL.*INLINES a job-success check'; then
+			agg_neg1="$(python3 "${agg_tmp}/check.py" "${agg_tmp}/mut_reinline" 2>&1)"
+			if grep -q '^FAIL.*INLINES a job-success check' <<<"$agg_neg1"; then
 				ok "negative control: RE-INLINING the shared loop into elps.yml is caught (#493)"
 			else
 				bad "negative control: an inlined job-success loop was NOT caught — the anti-duplication half of the guard is dead"
+				printf '%s\n' "$agg_neg1" | sed 's/^/        | /'
 			fi
 		else
 			bad "negative control: could not re-inline the loop into elps.yml — has the delegation line been reworded? (#493)"
@@ -3574,10 +3595,12 @@ PY_MUT
 		# this one, so only the behavioural run can catch it. This is what
 		# proves (B) is load-bearing rather than decorative.
 		if mutate fuzz.yml vacuous-scalar mut_scalar; then
-			if python3 "${agg_tmp}/check.py" "${agg_tmp}/mut_scalar" | grep -q '^FAIL.*verified nothing'; then
+			agg_neg2="$(python3 "${agg_tmp}/check.py" "${agg_tmp}/mut_scalar" 2>&1)"
+			if grep -q '^FAIL.*verified nothing' <<<"$agg_neg2"; then
 				ok "negative control: a NON-join vacuous body is caught by running it (#493)"
 			else
 				bad "negative control: a vacuous inline aggregate body went undetected — the behavioural half of the guard is dead"
+				printf '%s\n' "$agg_neg2" | sed 's/^/        | /'
 			fi
 		else
 			bad "negative control: could not construct the vacuous-scalar fixture from fuzz.yml — has the body changed? (#493)"
@@ -3586,10 +3609,12 @@ PY_MUT
 		# Control 3 -- the discovery floor. Point the checker at a tree with no
 		# workflows at all; it must refuse rather than report clean over zero.
 		mkdir -p "${agg_tmp}/empty/.github/workflows"
-		if python3 "${agg_tmp}/check.py" "${agg_tmp}/empty" | grep -q '^FAIL.*floor'; then
+		agg_neg3="$(python3 "${agg_tmp}/check.py" "${agg_tmp}/empty" 2>&1)"
+		if grep -q '^FAIL.*floor' <<<"$agg_neg3"; then
 			ok "negative control: an EMPTY workflow tree fails the floor rather than passing vacuously (#493)"
 		else
 			bad "negative control: the aggregate guard reported clean over ZERO aggregates — it cannot fail"
+			printf '%s\n' "$agg_neg3" | sed 's/^/        | /'
 		fi
 		;;
 esac
