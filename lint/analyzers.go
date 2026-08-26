@@ -1183,13 +1183,17 @@ var AnalyzerDeprecated = &Analyzer{
 		}
 		// Source spans of the definitions that are themselves deprecated. Go's
 		// rule is that deprecated code may use deprecated code, so references
-		// from inside those bodies are exempt.
-		exempt := deprecatedBodySpans(pass.Exprs)
+		// from inside those bodies are exempt. Built lazily: almost every file
+		// has no deprecated reference at all, and the LSP runs this on each
+		// keystroke.
+		var exempt byteSpans
+		exemptBuilt := false
+		passFile := analysis.NormalizePath(pass.Filename)
 
 		// References is a slice, in resolution order. Never iterate a Go map
 		// here: diagnostic order is part of the CLI's output contract and
 		// FuzzLintSource asserts two runs over the same bytes agree.
-		reported := make(map[*lisp.LVal]bool)
+		reported := make(map[int]bool)
 		for _, ref := range pass.Semantics.References {
 			if ref == nil || ref.Symbol == nil || ref.Source == nil {
 				continue
@@ -1198,18 +1202,33 @@ var AnalyzerDeprecated = &Analyzer{
 			if !ok {
 				continue
 			}
+			// A configured MacroExpander analyzes expanded forms whose nodes
+			// come from the macro's defining file, not the file being linted.
+			// Their byte offsets are meaningless against this file -- reporting
+			// them misattributes the diagnostic, and testing them against this
+			// file's exemption spans can silently drop real findings. A
+			// deprecated use inside a macro template is reported when the
+			// template's own file is linted.
+			if analysis.NormalizePath(ref.Source.File) != passFile {
+				continue
+			}
+			if !exemptBuilt {
+				exempt = deprecatedBodySpans(pass.Exprs)
+				exemptBuilt = true
+			}
 			if exempt.contains(ref.Source.Pos) {
 				continue
 			}
 			// One use, one diagnostic. A call to a user macro is resolved
 			// twice -- analyzeCall records the head before trying expansion
-			// and resolveSymbol records it again -- so the same site arrives
-			// here as two References sharing a node.
-			if ref.Node != nil {
-				if reported[ref.Node] {
+			// and resolveSymbol records it again -- and with an expander the
+			// two References need not share a node, so the key is the byte
+			// offset of the use, which they always share.
+			if ref.Source.Pos >= 0 {
+				if reported[ref.Source.Pos] {
 					continue
 				}
-				reported[ref.Node] = true
+				reported[ref.Source.Pos] = true
 			}
 			// Name it as the reference site spells it, so a qualified use
 			// reports 'pkg:name' rather than the bare symbol.
@@ -1229,9 +1248,12 @@ var AnalyzerDeprecated = &Analyzer{
 			if decl != nil && decl.Pos < 0 {
 				decl = nil
 			}
-			notes := []string{"; nolint:deprecated"}
+			// No hand-written nolint note: the CLI appends the suppression
+			// hint to every diagnostic (cmd/diagnostic.go), and no other
+			// analyzer duplicates it.
+			var notes []string
 			if decl != nil {
-				notes = []string{"deprecated at " + sourceString(decl), "; nolint:deprecated"}
+				notes = []string{"deprecated at " + sourceString(decl)}
 			}
 			pass.Report(Diagnostic{
 				Message:    msg,

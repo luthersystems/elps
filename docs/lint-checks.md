@@ -454,8 +454,9 @@ escape inside a single string — is how the marker paragraph is written.
 A marker only counts at the start of a paragraph, so prose mentioning the
 word mid-paragraph does not deprecate anything. A body made up entirely of
 strings is a constant function rather than a documented one, so nothing in
-it deprecates anything either. To keep a call that must stay, suppress it
-with `; nolint:deprecated`.
+it deprecates anything either. A quoted symbol is data, not a reference, so
+`(funcall 'blend-paths a b)` is not flagged — `#'blend-paths` is. To keep a
+call that must stay, suppress it with `; nolint:deprecated`.
 
 ### `unused-nolint`
 

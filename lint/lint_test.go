@@ -3008,9 +3008,10 @@ func TestDeprecated_NotesAndRelated(t *testing.T) {
 	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n(old-fn 1)\n"
 	diags := lintCheckSemantic(t, AnalyzerDeprecated, source)
 	require.Len(t, diags, 1)
-	require.Len(t, diags[0].Notes, 2)
+	// The nolint hint is appended by the CLI renderer for every diagnostic,
+	// so the analyzer itself contributes only the declaration note.
+	require.Len(t, diags[0].Notes, 1)
 	assert.Contains(t, diags[0].Notes[0], "deprecated at test.lisp:1:8")
-	assert.Equal(t, "; nolint:deprecated", diags[0].Notes[1])
 	require.Len(t, diags[0].Related, 1)
 	assert.Equal(t, "deprecated declaration here", diags[0].Related[0].Message)
 	assert.Equal(t, 1, diags[0].Related[0].Location.Line)
@@ -3100,8 +3101,88 @@ func TestDeprecated_RegistryBuiltin(t *testing.T) {
 		assert.NotEqual(t, 4, d.Pos.Line, "join-paths is not deprecated")
 		// A Go builtin has no lisp declaration to point at.
 		assert.Empty(t, d.Related, "a registered builtin has no source location")
-		assert.Equal(t, []string{"; nolint:deprecated"}, d.Notes)
+		assert.Empty(t, d.Notes, "no declaration note, and the CLI adds the nolint hint")
 	}
+}
+
+// TestDeprecated_ExpanderForeignRefsSkipped: with a macro expander configured
+// (LintConfig.Env), analysis records references for expanded forms too, and
+// those nodes come from the macro's defining file. Linting a file that merely
+// calls such a macro must not leak the template's foreign positions into this
+// file's diagnostics — and a foreign byte offset must never be tested against
+// this file's exemption spans, where it could silently cancel a real finding.
+func TestDeprecated_ExpanderForeignRefsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	lib := writeTempLisp(t, dir, "lib.lisp",
+		"(defun old-fn (x) \"Deprecated: gone.\" x)\n"+
+			"(defmacro use-old (y) (quasiquote (old-fn (unquote y))))\n")
+	caller := writeTempLisp(t, dir, "main.lisp", "(use-old 1)\n(use-old 2)\n")
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDeprecated}}
+
+	// The deprecated use lives in lib.lisp's macro template, not in the
+	// calling file: calling a live macro is not itself a deprecated use.
+	env, err := newLintEnv()
+	require.NoError(t, err)
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir, Env: env}, []string{caller})
+	require.NoError(t, err)
+	for _, d := range diags {
+		assert.Equal(t, caller, d.Pos.File, "diagnostic must point at the linted file")
+	}
+	assertNoDiags(t, diags)
+
+	// Linting the template's own file reports the use there, exactly once.
+	env2, err := newLintEnv()
+	require.NoError(t, err)
+	diags, err = l.LintFiles(&LintConfig{Workspace: dir, Env: env2}, []string{lib})
+	require.NoError(t, err)
+	require.Len(t, diags, 1)
+	assertDiagOnLine(t, diags, 2, "use of deprecated function 'old-fn'")
+}
+
+// TestDeprecated_ExpanderDeprecatedMacroCallSites guards the boundary of the
+// foreign-reference filter: when the macro itself is deprecated, the use is
+// the call site, and analysis records that head reference in the linted file
+// before expansion runs. The filter must drop only the expansion's foreign
+// nodes, never the call-site references.
+func TestDeprecated_ExpanderDeprecatedMacroCallSites(t *testing.T) {
+	dir := t.TempDir()
+	writeTempLisp(t, dir, "lib.lisp",
+		"(defmacro old-mac (y) \"Deprecated: use new-mac.\" (quasiquote (list (unquote y))))\n")
+	caller := writeTempLisp(t, dir, "main.lisp", "(old-mac 1)\n(old-mac 2)\n")
+
+	env, err := newLintEnv()
+	require.NoError(t, err)
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDeprecated}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir, Env: env}, []string{caller})
+	require.NoError(t, err)
+	require.Len(t, diags, 2, "every call site of a deprecated macro is a use")
+	assertDiagOnLine(t, diags, 1, "use of deprecated macro 'old-mac'")
+	assertDiagOnLine(t, diags, 2, "use of deprecated macro 'old-mac'")
+	for _, d := range diags {
+		assert.Equal(t, caller, d.Pos.File)
+	}
+}
+
+// TestDeprecated_ExpanderSameFileDedup: when the macro is defined in the file
+// being linted, the template reference and the references the expander
+// re-derives at every call site are distinct nodes that all share the
+// template's byte offset. One use, one diagnostic — keyed by position, since
+// node identity cannot merge nodes from two parses.
+func TestDeprecated_ExpanderSameFileDedup(t *testing.T) {
+	dir := t.TempDir()
+	f := writeTempLisp(t, dir, "main.lisp",
+		"(defun old-fn (x) \"Deprecated: gone.\" x)\n"+
+			"(defmacro use-old (y) (quasiquote (old-fn (unquote y))))\n"+
+			"(use-old 1)\n(use-old 2)\n(use-old 3)\n")
+
+	env, err := newLintEnv()
+	require.NoError(t, err)
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDeprecated}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir, Env: env}, []string{f})
+	require.NoError(t, err)
+	require.Len(t, diags, 1)
+	assertDiagOnLine(t, diags, 2, "use of deprecated function 'old-fn'")
 }
 
 // TestDeprecated_RegistryBuiltin_NoDocstring guards the other half of the
