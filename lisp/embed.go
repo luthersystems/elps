@@ -73,7 +73,26 @@ func (v *LVal) goValueNode(g cycleGuard) interface{} {
 	case LSymbol, LString:
 		return v.Str
 	case LBytes:
-		return v.Bytes
+		// v.Bytes is a METHOD, not a field (lisp/lisp.go:1182), so the
+		// obvious `return v.Bytes` handed the embedder a func() []byte
+		// where every other arm of this switch returns plain data.  It
+		// type-checks, because the arm's result is interface{}, and only
+		// fails at use -- which is why it survived (issue #548).
+		//
+		// The result is a COPY, for the reason the neighbouring arms are:
+		// goSlice and goMap build fresh containers rather than handing out
+		// the value's own storage.  An LBytes keeps its bytes in a *[]byte
+		// under Native so append! can grow them in place, and returning
+		// that backing would let an embedder mutate a live lisp value
+		// behind the kernel's back -- past the ownership and seal
+		// invariants that make sharing safe, and past `copy`'s promise
+		// that a copy shares no storage with its original (#378).  It is
+		// the same hazard NativeValue's type gate exists to prevent
+		// (#546), reached through a different door.
+		b := v.Bytes()
+		out := make([]byte, len(b))
+		copy(out, b)
+		return out
 	case LInt:
 		return v.Int
 	case LFloat:
