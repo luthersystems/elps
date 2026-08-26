@@ -80,6 +80,111 @@ func TestArray(t *testing.T) {
 	elpstest.RunTestSuite(t, tests)
 }
 
+// TestVectorConstructorDims covers the dims of every vector the sequence
+// builtins construct.
+//
+// Those builtins used to spell their own one-element dims list out and hand it
+// to Array as caller-supplied dims; they now let Array derive it (via
+// MakeVector/Vector, the dims == nil path).  The derived list is the reason
+// the copy can be skipped, so it is also the thing that has to be right, and
+// nothing above notices if it is not: an array RENDERS from its backing cells,
+// so `(vector 0 1 2)` prints identically whatever the dims say.  `length` and
+// `aref` are the readers that go through the dims (LVal.Len and
+// LVal.ArrayIndex both read Cells[0].Cells[0].Int), which is why every case
+// below asserts through one of them rather than through the printed form.
+//
+// The select/reject rows are the load-bearing ones: those two size the vector
+// for the whole input and then rewrite its cardinality in place once the
+// predicate has run, so they read a dims list AFTER a write, and the
+// out-of-bounds rows are what distinguishes a shrunk dims list from an unshrunk
+// one.
+func TestVectorConstructorDims(t *testing.T) {
+	tests := elpstest.TestSuite{
+		{"map", elpstest.TestSequence{
+			{`(length (map 'vector (lambda (x) (+ x 1)) '(1 2 3)))`, "3", ""},
+			{`(aref (map 'vector (lambda (x) (+ x 1)) '(1 2 3)) 2)`, "4", ""},
+			{`(ignore-errors (aref (map 'vector (lambda (x) x) '(1 2 3)) 3))`, "()", ""},
+			{`(length (map 'vector (lambda (x) x) '()))`, "0", ""},
+		}},
+		{"concat", elpstest.TestSequence{
+			{`(length (concat 'vector '(1 2) (vector 3)))`, "3", ""},
+			{`(aref (concat 'vector '(1 2) (vector 3)) 2)`, "3", ""},
+			{`(ignore-errors (aref (concat 'vector '(1 2) (vector 3)) 3))`, "()", ""},
+			// The empty arm returns before any storage is built.
+			{`(length (concat 'vector))`, "0", ""},
+			{`(length (concat 'vector '() '()))`, "0", ""},
+			{`(ignore-errors (aref (concat 'vector) 0))`, "()", ""},
+		}},
+		{"insert-index", elpstest.TestSequence{
+			{`(length (insert-index 'vector (vector 1 2) 1 9))`, "3", ""},
+			{`(aref (insert-index 'vector (vector 1 2) 1 9) 1)`, "9", ""},
+			{`(ignore-errors (aref (insert-index 'vector (vector 1 2) 1 9) 3))`, "()", ""},
+			{`(length (insert-index 'vector (vector) 0 1))`, "1", ""},
+		}},
+		{"insert-sorted", elpstest.TestSequence{
+			{`(length (insert-sorted 'vector (vector 1 3) < 2))`, "3", ""},
+			{`(aref (insert-sorted 'vector (vector 1 3) < 2) 1)`, "2", ""},
+			{`(ignore-errors (aref (insert-sorted 'vector (vector 1 3) < 2) 3))`, "()", ""},
+		}},
+		{"select", elpstest.TestSequence{
+			// The vector is sized for six elements and resized to three.
+			{`(length (select 'vector (expr (< % 3)) '(0 1 2 3 4 5)))`, "3", ""},
+			{`(aref (select 'vector (expr (< % 3)) '(0 1 2 3 4 5)) 2)`, "2", ""},
+			{`(ignore-errors (aref (select 'vector (expr (< % 3)) '(0 1 2 3 4 5)) 3))`, "()", ""},
+			// Resized all the way to empty, and not resized at all.
+			{`(length (select 'vector (lambda (x) false) '(0 1 2)))`, "0", ""},
+			{`(ignore-errors (aref (select 'vector (lambda (x) false) '(0 1 2)) 0))`, "()", ""},
+			{`(length (select 'vector (lambda (x) true) '(0 1 2)))`, "3", ""},
+			{`(aref (select 'vector (lambda (x) true) '(0 1 2)) 2)`, "2", ""},
+		}},
+		{"reject", elpstest.TestSequence{
+			{`(length (reject 'vector (expr (< % 3)) '(0 1 2 3 4 5)))`, "3", ""},
+			{`(aref (reject 'vector (expr (< % 3)) '(0 1 2 3 4 5)) 0)`, "3", ""},
+			{`(ignore-errors (aref (reject 'vector (expr (< % 3)) '(0 1 2 3 4 5)) 3))`, "()", ""},
+			{`(length (reject 'vector (lambda (x) true) '(0 1 2)))`, "0", ""},
+			{`(ignore-errors (aref (reject 'vector (lambda (x) true) '(0 1 2)) 0))`, "()", ""},
+		}},
+		{"select does not resize its input", elpstest.TestSequence{
+			// The resize must land on the new vector's own dims list.  The
+			// input is a vector of the same length the result was sized to,
+			// so a shared dims list would show up here as a shrunken input.
+			{`(set 'src (vector 0 1 2 3 4 5))`, "(vector 0 1 2 3 4 5)", ""},
+			{`(length (select 'vector (expr (< % 3)) src))`, "3", ""},
+			{`(length src)`, "6", ""},
+			{`(aref src 5)`, "5", ""},
+			{`(length (reject 'vector (expr (< % 3)) src))`, "3", ""},
+			{`(length src)`, "6", ""},
+		}},
+		{"zip", elpstest.TestSequence{
+			// The outer vector and every inner vector are separate arrays,
+			// so both levels of dims are asserted.
+			{`(length (zip 'vector '(1 2 3) '('a 'b 'c)))`, "3", ""},
+			{`(length (aref (zip 'vector '(1 2 3) '('a 'b 'c)) 0))`, "2", ""},
+			{`(aref (aref (zip 'vector '(1 2 3) '('a 'b 'c)) 2) 1)`, "'c", ""},
+			{`(ignore-errors (aref (aref (zip 'vector '(1 2 3) '('a 'b 'c)) 0) 2))`, "()", ""},
+			// Truncated to the shortest input.
+			{`(length (zip 'vector '(1 2 3) '(1)))`, "1", ""},
+			{`(length (zip 'vector '() '() '(1)))`, "0", ""},
+		}},
+		{"reverse", elpstest.TestSequence{
+			{`(length (reverse 'vector '(1 2 3)))`, "3", ""},
+			{`(aref (reverse 'vector '(1 2 3)) 0)`, "3", ""},
+			{`(ignore-errors (aref (reverse 'vector '(1 2 3)) 3))`, "()", ""},
+			{`(length (reverse 'vector '()))`, "0", ""},
+		}},
+		{"slice", elpstest.TestSequence{
+			{`(length (slice 'vector (vector 0 1 2 3 4) 1 3))`, "2", ""},
+			{`(aref (slice 'vector (vector 0 1 2 3 4) 1 3) 1)`, "2", ""},
+			{`(ignore-errors (aref (slice 'vector (vector 0 1 2 3 4) 1 3) 2))`, "()", ""},
+			{`(length (slice 'vector (vector 0 1 2) 2 2))`, "0", ""},
+			// The sealed empty carve-out: the window is dropped and the
+			// vector owns fresh (empty) backing, so its dims must be zero.
+			{`(length (slice 'vector (rest '(1)) 0 0))`, "0", ""},
+		}},
+	}
+	elpstest.RunTestSuite(t, tests)
+}
+
 // TestArrayDoesNotAliasCallerDims pins the constraint that decides which
 // Array calls copy their dims.  An array rewrites its own cardinality in
 // place -- builtinSelect and builtinReject size a vector's dims to the
