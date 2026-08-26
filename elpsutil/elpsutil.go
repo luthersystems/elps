@@ -13,8 +13,27 @@ import (
 // that takes no arguments is declared with lisp.Formals(), the empty list; a
 // nil formals list is not a valid spelling of that and is rejected by
 // PackageLoader and Validate.
+//
+// A function constructed with Function has no documentation.  Use FunctionDoc
+// to give it a docstring.
 func Function(name string, formals *lisp.LVal, fun lisp.LBuiltin) *Builtin {
-	return &Builtin{formals, fun, name}
+	return &Builtin{formals, fun, name, ""}
+}
+
+// FunctionDoc is a helper to construct documented builtins.  It is Function
+// plus the docstring the function is registered with, which is what `elps doc`
+// prints, what the language server shows on hover, and what the linter reads.
+//
+// The docstring follows the same conventions as the interpreter's own
+// builtins.  In particular a paragraph beginning "Deprecated:" (or
+// "DEPRECATED:") marks the function deprecated, exactly as it does in a Go doc
+// comment: the `deprecated` lint check then reports every use of the function
+// and quotes the rest of that paragraph as the reason.  For example
+//
+//	elpsutil.FunctionDoc("blend-paths", lisp.Formals("a", "b"), blendPaths,
+//		"Blend two paths.\n\nDeprecated: use join-paths instead.")
+func FunctionDoc(name string, formals *lisp.LVal, fun lisp.LBuiltin, docs string) *Builtin {
+	return &Builtin{formals, fun, name, docs}
 }
 
 // Builtin captures Go functions that are callable from elps.
@@ -22,6 +41,7 @@ type Builtin struct {
 	formals *lisp.LVal
 	fun     lisp.LBuiltin
 	name    string
+	docs    string
 }
 
 // Name returns the name of a function.
@@ -37,6 +57,14 @@ func (fun *Builtin) Formals() *lisp.LVal {
 // Eval evaluates a function on an environment.
 func (fun *Builtin) Eval(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return fun.fun(env, args)
+}
+
+// Docstring returns the documentation for a function, which is empty for a
+// function constructed with Function.  It satisfies the interface lisp checks
+// for when registering a definition, so the string reaches the registered
+// value and everything that reads documentation from it.
+func (fun *Builtin) Docstring() string {
+	return fun.docs
 }
 
 // Loader is a generic function to initialize/load an LEnv.  A Loader should

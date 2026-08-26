@@ -1075,6 +1075,54 @@ spaces. An empty string `""` inserts a paragraph break.
 A body consisting entirely of strings (no executable expression after them)
 is treated as a constant function returning a string, not as a docstring.
 
+### Deprecating functions
+
+A docstring paragraph beginning with `Deprecated:` marks a function or macro
+as deprecated, the same convention Go doc comments use. The rest of that
+paragraph tells callers what to use instead. `DEPRECATED:` is accepted too.
+
+```lisp
+(defun blend-paths (a b)
+  "Combines two paths into one."
+  ""
+  "Deprecated: use join-paths instead."
+  (join-paths a b))
+```
+
+A string literal cannot contain a line break, so the empty string above is what
+opens the second paragraph — the same paragraph break docstrings use everywhere
+else. Writing the whole docstring as one string with a `\n\n` escape works
+identically:
+
+```lisp
+(defun blend-paths (a b)
+  "Combines two paths into one.\n\nDeprecated: use join-paths instead."
+  (join-paths a b))
+```
+
+Both forms read the same to `elps doc`, the linter and the language server: a
+definition's documentation is the run of leading strings, joined.
+
+The `deprecated` lint check reports every use of a deprecated symbol and quotes
+the notice. It requires semantic analysis, so run the linter over a workspace:
+
+```
+$ elps lint --workspace . paths.lisp
+warning: use of deprecated function 'blend-paths': use join-paths instead. (deprecated)
+```
+
+The declaration itself is never flagged, and neither is a use inside the body
+of a definition that is itself deprecated — deprecated code may call deprecated
+code. Suppress an individual use with a trailing comment:
+
+```lisp
+(blend-paths a b) ; nolint:deprecated
+```
+
+Editors connected to the language server strike deprecated uses through, show
+a **Deprecated.** banner with the notice on hover, and mark the symbol
+deprecated in completion lists.
+
 ### Variable and constant documentation
 
 The `set` special operator accepts optional trailing strings after the value.

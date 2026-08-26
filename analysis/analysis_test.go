@@ -270,6 +270,65 @@ func TestAnalyze_DefunDocstring(t *testing.T) {
 	assert.Equal(t, "Add two numbers.", sym.DocString)
 }
 
+// TestAnalyze_DefunDocstringParagraphs pins prescan to the runtime's rule: the
+// docstring is the whole run of leading string literals joined by
+// lisp.JoinDocStrings, not just the first one. ELPS strings cannot hold a raw
+// line break, so an empty string is how source spells a paragraph break — and
+// that is the shape a "Deprecated:" paragraph arrives in.
+func TestAnalyze_DefunDocstringParagraphs(t *testing.T) {
+	result := parseAndAnalyze(t, "(defun blend-paths (a b)\n"+
+		"  \"Combines two paths.\"\n"+
+		"  \"\"\n"+
+		"  \"Deprecated: use join-paths instead.\"\n"+
+		"  (join-paths a b))")
+	sym := result.RootScope.LookupLocal("blend-paths")
+	require.NotNil(t, sym)
+	assert.Equal(t, "Combines two paths.\n\nDeprecated: use join-paths instead.", sym.DocString)
+	assert.Equal(t, sym.DocString, docstringViaRuntime(t,
+		"(defun blend-paths (a b)\n"+
+			"  \"Combines two paths.\"\n"+
+			"  \"\"\n"+
+			"  \"Deprecated: use join-paths instead.\"\n"+
+			"  (join-paths a b))"),
+		"analysis and lisp.(*LVal).Docstring must agree")
+}
+
+// TestAnalyze_DefunDocstringJoinsWithSpaces covers the other half of the join
+// rule: adjacent non-empty strings are one paragraph, joined by single spaces.
+func TestAnalyze_DefunDocstringJoinsWithSpaces(t *testing.T) {
+	result := parseAndAnalyze(t, `(defun add (a b) "Add two" "numbers." (+ a b))`)
+	sym := result.RootScope.LookupLocal("add")
+	require.NotNil(t, sym)
+	assert.Equal(t, "Add two numbers.", sym.DocString)
+}
+
+// TestAnalyze_DefunStringOnlyBodyIsNotADocstring: a body that is nothing but
+// strings is a constant function, so it has no docstring however many strings
+// it holds.
+func TestAnalyze_DefunStringOnlyBodyIsNotADocstring(t *testing.T) {
+	result := parseAndAnalyze(t, `(defun version () "1.0.0")`)
+	sym := result.RootScope.LookupLocal("version")
+	require.NotNil(t, sym)
+	assert.Empty(t, sym.DocString)
+
+	result = parseAndAnalyze(t, `(defun version () "Deprecated: gone." "1.0.0")`)
+	sym = result.RootScope.LookupLocal("version")
+	require.NotNil(t, sym)
+	assert.Empty(t, sym.DocString, "an all-string body is a constant function, not documentation")
+}
+
+// docstringViaRuntime evaluates a single defun and returns the docstring the
+// interpreter itself reports, so the analysis tests can assert equality with
+// the authority rather than with a transcription of it.
+func docstringViaRuntime(t *testing.T, source string) string {
+	t.Helper()
+	env := newTestEnv(t)
+	evalSource(t, env, source)
+	fun := env.GetGlobal(lisp.Symbol("blend-paths"))
+	require.Equal(t, lisp.LFun, fun.Type, "expected a function binding")
+	return fun.Docstring()
+}
+
 // --- Analyze: lambda ---
 
 func TestAnalyze_Lambda(t *testing.T) {

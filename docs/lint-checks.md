@@ -410,6 +410,54 @@ Functions with `&rest` are variadic (no maximum). Threading macro children
 (add 1 2 3)    ; too many
 ```
 
+### `deprecated`
+
+**Reports uses of symbols marked deprecated by their docstring.**
+
+Requires semantic analysis (workspace mode). A symbol is deprecated when a
+paragraph of its docstring begins with `Deprecated:` (or `DEPRECATED:`) —
+the same convention Go doc comments use. The rest of that paragraph is
+quoted in the diagnostic, so it is the place to say what to use instead.
+`defun`, `defmacro`, workspace-scanned definitions, the interpreter's own
+builtins and the builtins a Go embedder registers (`elpsutil.FunctionDoc`)
+are all covered.
+
+Only *uses* are flagged, never the declaration, and a use inside the body
+of a definition that is itself deprecated is not flagged — deprecated code
+is allowed to call deprecated code, exactly as in Go.
+
+A docstring is the whole run of leading string literals, joined the way
+`elps doc` joins them: an empty string `""` opens a new paragraph. A string
+literal cannot contain a raw line break, so that empty string — or a `\n\n`
+escape inside a single string — is how the marker paragraph is written.
+
+```lisp
+;; The declaration itself is never flagged
+(defun blend-paths (a b)
+  "Blend two paths."
+  ""
+  "Deprecated: use join-paths instead."
+  (join-paths a b))
+
+;; WARNING — use of deprecated function 'blend-paths': use join-paths instead.
+(blend-paths "a" "b")
+
+;; GOOD — call the replacement
+(join-paths "a" "b")
+
+;; OK — a deprecated function may use deprecated functions
+(defun old-blend (a b)
+  "Deprecated: use join-paths instead."
+  (blend-paths a b))
+```
+
+A marker only counts at the start of a paragraph, so prose mentioning the
+word mid-paragraph does not deprecate anything. A body made up entirely of
+strings is a constant function rather than a documented one, so nothing in
+it deprecates anything either. A quoted symbol is data, not a reference, so
+`(funcall 'blend-paths a b)` is not flagged — `#'blend-paths` is. To keep a
+call that must stay, suppress it with `; nolint:deprecated`.
+
 ### `unused-nolint`
 
 **Warns about `; nolint` directives that do not suppress any diagnostic.**

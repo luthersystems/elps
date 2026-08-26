@@ -244,8 +244,13 @@ func convertLintDiagnostic(d lint.Diagnostic) protocol.Diagnostic {
 			Message: related.Message,
 		})
 	}
+	// A diagnostic could in principle carry both tags, so append rather than
+	// assign: editors fade unnecessary code and strike deprecated uses out.
 	if d.Unnecessary {
-		diag.Tags = []protocol.DiagnosticTag{protocol.DiagnosticTagUnnecessary}
+		diag.Tags = append(diag.Tags, protocol.DiagnosticTagUnnecessary)
+	}
+	if d.Deprecated {
+		diag.Tags = append(diag.Tags, protocol.DiagnosticTagDeprecated)
 	}
 	return diag
 }

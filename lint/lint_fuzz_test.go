@@ -544,15 +544,18 @@ const (
 	lintSeedDefs = `(in-package 'demo)
 (use-package 'lisp)
 (defun add (a b) "add two" (+ a b))
+(defun old-add (a b) "Sum two numbers.\n\nDeprecated: use add instead." (add a b))
 (defmacro twice (x) (quasiquote (+ (unquote x) (unquote x))))
 (defmacro defthing (name args &rest body)
   (quasiquote (defun (unquote name) (unquote args) (unquote-splicing body))))
 (export 'add)
+(export 'old-add)
 (export 'twice)`
 
 	lintSeedUses = `(in-package 'user)
 (use-package 'demo)
 (defun main () (add 1 2))
+(defun legacy () (old-add 1 2))
 (defun unused-arg (x y) x)
 (defthing helper (q) (+ q 1))
 (let ([shadow 1]) (let ([shadow 2]) shadow))
@@ -628,6 +631,18 @@ func FuzzLintSource(f *testing.F) {
 	add("(in-package 'user)\n(defun dup () 1)\n(defun dup () 2)\n(defmacro dup (x) x)",
 		lintSeedDefs, scripts[0])
 	add("(in-package 'demo)\n(defun add (a b) 1)", lintSeedDefs, scripts[0])
+
+	// Deprecation, same-file: the definition, a use, a use from inside another
+	// deprecated definition (suppressed), a use inside a quasiquote template,
+	// and a marker that is prose rather than a marker. The check reads
+	// docstrings and source spans, neither of which any other seed varies.
+	add("(in-package 'user)\n"+
+		"(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n"+
+		"(defun also-old (y) \"Deprecated:\" (old-fn y))\n"+
+		"(defmacro old-mac (z) \"Deprecated: gone.\" (quasiquote (old-fn (unquote z))))\n"+
+		"(defun not-old (w) \"Fine.\\nDeprecated: not at a paragraph start.\" w)\n"+
+		"(old-fn 1)\n(old-mac 2)\n(not-old 3)\n(map 'list old-fn '(1 2))",
+		lintSeedDefs, scripts[0])
 
 	// Shapes chosen for what breaks the analyzers rather than the parser:
 	// arity errors, shadowing, rethrow patterns, dead branches, deep nesting.

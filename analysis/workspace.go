@@ -477,21 +477,12 @@ func scanDefun(expr *lisp.LVal, kind SymbolKind) *ExternalSymbol {
 		return nil
 	}
 
-	// Extract docstring: (defun name (args) "docstring" body...)
-	var docStr string
-	if astutil.ArgCount(expr) >= 3 && expr.Cells[3].Type == lisp.LString {
-		// Only treat as docstring if there's at least one body form after it.
-		if astutil.ArgCount(expr) >= 4 {
-			docStr = expr.Cells[3].Str
-		}
-	}
-
 	return &ExternalSymbol{
 		Name:      nameVal.Str,
 		Kind:      kind,
 		Signature: signatureFromFormals(formalsVal),
 		Source:    astutil.SourceLoc(nameVal),
-		DocString: docStr,
+		DocString: DefunDocstring(expr),
 	}
 }
 

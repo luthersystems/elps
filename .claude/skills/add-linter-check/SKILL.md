@@ -37,7 +37,6 @@ var AnalyzerMyCheck = &Analyzer{
 				pass.Report(Diagnostic{
 					Message: "descriptive error message",
 					Pos:     posFromSource(src.Source),
-					Notes:   []string{"; nolint:my-check"},
 				})
 			}
 		})
@@ -71,7 +70,10 @@ func walkMyCheck(pass *Pass, v *lisp.LVal, insideTarget bool) {
 }
 ```
 
-**Always include `; nolint:analyzer-name`** in the diagnostic Notes — this enables suppression.
+**Do not add a `; nolint:analyzer-name` note yourself** — the CLI renderer
+(`cmd/diagnostic.go`) appends a suppression hint to every diagnostic
+automatically, and a hand-written note renders as a duplicate. Use Notes for
+check-specific context (e.g. "first defined at ...").
 
 ### 3. File 2: `lint/lint.go` — Register in `DefaultAnalyzers()`
 
@@ -142,7 +144,7 @@ Common patterns that cause false positives:
 ## Checklist
 
 - [ ] Analyzer defined in `lint/analyzers.go` with Name, Doc, Run
-- [ ] Diagnostic includes `; nolint:` suppression hint in Notes
+- [ ] No hand-written `; nolint:` note (the CLI appends the hint automatically)
 - [ ] Registered in `DefaultAnalyzers()` in `lint/lint.go`
 - [ ] Positive, negative, and nolint tests in `lint/lint_test.go`
 - [ ] `TestDefaultAnalyzers` count updated

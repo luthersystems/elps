@@ -252,6 +252,31 @@ func TestScanWorkspace_DocStringExtracted(t *testing.T) {
 	assert.Equal(t, "Say hello to someone.", syms[0].DocString)
 }
 
+// TestScanWorkspace_DocStringParagraphs is the workspace-scan counterpart of
+// TestAnalyze_DefunDocstringParagraphs: the scanner reads the same run of
+// leading strings the runtime does, so a "Deprecated:" paragraph written as its
+// own string reaches ExternalSymbol.DocString.
+func TestScanWorkspace_DocStringParagraphs(t *testing.T) {
+	dir := t.TempDir()
+
+	err := os.WriteFile(filepath.Join(dir, "lib.lisp"), []byte(`
+(defun blend-paths (a b)
+  "Combines two paths."
+  ""
+  "Deprecated: use join-paths instead."
+  (join-paths a b))
+(export 'blend-paths)
+`), 0600)
+	require.NoError(t, err)
+
+	syms, err := ScanWorkspace(dir)
+	require.NoError(t, err)
+
+	require.Len(t, syms, 1)
+	assert.Equal(t, "blend-paths", syms[0].Name)
+	assert.Equal(t, "Combines two paths.\n\nDeprecated: use join-paths instead.", syms[0].DocString)
+}
+
 func TestScanWorkspace_NoDocStringWhenNoBody(t *testing.T) {
 	dir := t.TempDir()
 
@@ -268,6 +293,25 @@ func TestScanWorkspace_NoDocStringWhenNoBody(t *testing.T) {
 	require.Len(t, syms, 1)
 	assert.Equal(t, "version", syms[0].Name)
 	assert.Empty(t, syms[0].DocString, "string-only body should not be treated as docstring")
+}
+
+func TestScanWorkspace_NoDocStringWhenBodyIsAllStrings(t *testing.T) {
+	dir := t.TempDir()
+
+	// Several strings and nothing else is still a constant function: the run of
+	// strings has to be shorter than the body for it to be documentation.
+	err := os.WriteFile(filepath.Join(dir, "lib.lisp"), []byte(`
+(defun version () "Deprecated: gone." "1.0.0")
+(export 'version)
+`), 0600)
+	require.NoError(t, err)
+
+	syms, err := ScanWorkspace(dir)
+	require.NoError(t, err)
+
+	require.Len(t, syms, 1)
+	assert.Equal(t, "version", syms[0].Name)
+	assert.Empty(t, syms[0].DocString, "an all-string body is a constant function, not documentation")
 }
 
 func TestScanWorkspaceFull_SkipsHiddenDirs(t *testing.T) {

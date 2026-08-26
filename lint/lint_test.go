@@ -14,7 +14,9 @@ import (
 	"testing"
 
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
@@ -1234,13 +1236,14 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 17)
+	assert.Len(t, analyzers, 18)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
 		"cond-missing-else",
 		"cond-structure",
 		"defun-structure",
+		"deprecated",
 		"duplicate-definition",
 		"if-arity",
 		"in-package-toplevel",
@@ -1592,6 +1595,7 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"shadowing":            SeverityInfo,
 		"user-arity":           SeverityError,
 		"duplicate-definition": SeverityWarning,
+		"deprecated":           SeverityWarning,
 	}
 	for _, a := range DefaultAnalyzers() {
 		want, ok := expected[a.Name]
@@ -2810,6 +2814,463 @@ func TestDuplicateDefinition_HasNotes(t *testing.T) {
 	assert.Contains(t, diags[0].Notes[0], "first defined at")
 }
 
+// --- deprecated ---
+
+func TestDeprecated_Positive_Call(t *testing.T) {
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n(old-fn 1)\n"
+	diags := lintCheckSemantic(t, AnalyzerDeprecated, source)
+	require.Len(t, diags, 1)
+	assertHasDiag(t, diags, "use of deprecated function 'old-fn': use new-fn instead.")
+	// The call, not the definition.
+	assertDiagOnLine(t, diags, 2, "use of deprecated function 'old-fn'")
+	assert.Equal(t, 2, diags[0].Pos.Line, "the definition line must never be flagged")
+	assert.True(t, diags[0].Deprecated,
+		"the diagnostic must carry Deprecated so editors can strike the range through")
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+}
+
+func TestDeprecated_Positive_ValueReference(t *testing.T) {
+	// Passing the function as a value is a use too, not only calling it.
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n(map 'list old-fn '(1 2))\n"
+	diags := lintCheckSemantic(t, AnalyzerDeprecated, source)
+	require.Len(t, diags, 1)
+	assertDiagOnLine(t, diags, 2, "use of deprecated function 'old-fn'")
+}
+
+func TestDeprecated_Positive_Macro(t *testing.T) {
+	source := "(defmacro old-mac (x) \"Deprecated: use new-mac instead.\" x)\n(old-mac 1)\n"
+	diags := lintCheckSemantic(t, AnalyzerDeprecated, source)
+	// A macro call resolves twice inside the analyzer (analyzeCall records the
+	// head, then resolveSymbol records it again); the check reports it once.
+	require.Len(t, diags, 1)
+	assertHasDiag(t, diags, "use of deprecated macro 'old-mac': use new-mac instead.")
+}
+
+func TestDeprecated_Positive_Shouting(t *testing.T) {
+	source := "(defun old-fn (x) \"Blend.\\n\\nDEPRECATED: use new-fn instead.\" x)\n(old-fn 1)\n"
+	diags := lintCheckSemantic(t, AnalyzerDeprecated, source)
+	require.Len(t, diags, 1)
+	assertHasDiag(t, diags, "use of deprecated function 'old-fn': use new-fn instead.")
+}
+
+func TestDeprecated_Positive_LaterParagraph(t *testing.T) {
+	source := "(defun old-fn (x) \"Blend two paths.\\n\\nDeprecated: use join-paths instead.\" x)\n(old-fn 1)\n"
+	diags := lintCheckSemantic(t, AnalyzerDeprecated, source)
+	require.Len(t, diags, 1)
+	assertHasDiag(t, diags, "use of deprecated function 'old-fn': use join-paths instead.")
+}
+
+// TestDeprecated_Positive_ParagraphStyle is the shape the language guide
+// teaches: ELPS strings hold no raw line break, so a second paragraph is
+// written as its own string literal. The runtime joins the run of leading
+// strings and analysis now does the same, so the marker is seen.
+func TestDeprecated_Positive_ParagraphStyle(t *testing.T) {
+	source := "(defun blend-paths (a b)\n" +
+		"  \"Combines two paths.\"\n" +
+		"  \"\"\n" +
+		"  \"Deprecated: use join-paths instead.\"\n" +
+		"  (join-paths a b))\n" +
+		"(blend-paths 1 2)\n"
+	diags := lintCheckSemantic(t, AnalyzerDeprecated, source)
+	require.Len(t, diags, 1)
+	assertHasDiag(t, diags, "use of deprecated function 'blend-paths': use join-paths instead.")
+	assertDiagOnLine(t, diags, 6, "use of deprecated function 'blend-paths'")
+}
+
+// TestDeprecated_Negative_ParagraphStyleInsideDeprecated exercises the
+// suppression walk against the same shape: isDeprecatedDefinition has to read
+// the whole string run, or a paragraph-style deprecated function would report
+// against its own body.
+func TestDeprecated_Negative_ParagraphStyleInsideDeprecated(t *testing.T) {
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n" +
+		"(defun blend-paths (a b)\n" +
+		"  \"Combines two paths.\"\n" +
+		"  \"\"\n" +
+		"  \"Deprecated: use join-paths instead.\"\n" +
+		"  (old-fn a))\n"
+	assertNoDiags(t, lintCheckSemantic(t, AnalyzerDeprecated, source))
+}
+
+// TestDeprecated_Positive_ParagraphStyleAcrossFiles runs the same definition
+// through the workspace scanner (LintFiles) rather than same-file analysis, so
+// the ExternalSymbol path is covered too.
+func TestDeprecated_Positive_ParagraphStyleAcrossFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeTempLisp(t, dir, "lib.lisp", "(defun blend-paths (a b)\n"+
+		"  \"Combines two paths.\"\n"+
+		"  \"\"\n"+
+		"  \"Deprecated: use join-paths instead.\"\n"+
+		"  (list a b))\n"+
+		"(export 'blend-paths)\n")
+	caller := writeTempLisp(t, dir, "main.lisp", "(blend-paths 1 2)\n")
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDeprecated}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{caller})
+	require.NoError(t, err)
+	require.Len(t, diags, 1)
+	assertDiagOnLine(t, diags, 1,
+		"use of deprecated function 'blend-paths': use join-paths instead.")
+}
+
+func TestDeprecated_Positive_NoticeOmittedWhenEmpty(t *testing.T) {
+	source := "(defun old-fn (x) \"Deprecated:\" x)\n(old-fn 1)\n"
+	diags := lintCheckSemantic(t, AnalyzerDeprecated, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, "use of deprecated function 'old-fn'", diags[0].Message,
+		"an empty notice must not leave a dangling colon")
+}
+
+func TestDeprecated_Positive_EveryUseReported(t *testing.T) {
+	source := "(defun old-fn (x) \"Deprecated: use new-fn.\" x)\n" +
+		"(defun caller () (old-fn 1))\n" +
+		"(defun caller2 () (old-fn 2))\n"
+	diags := lintCheckSemantic(t, AnalyzerDeprecated, source)
+	require.Len(t, diags, 2)
+	assertDiagOnLine(t, diags, 2, "use of deprecated function 'old-fn'")
+	assertDiagOnLine(t, diags, 3, "use of deprecated function 'old-fn'")
+}
+
+func TestDeprecated_Negative_NormalDocstring(t *testing.T) {
+	source := "(defun ok-fn (x) \"Return x unchanged.\" x)\n(ok-fn 1)\n"
+	assertNoDiags(t, lintCheckSemantic(t, AnalyzerDeprecated, source))
+}
+
+func TestDeprecated_Negative_MidParagraphMention(t *testing.T) {
+	// "Deprecated:" that does not start a paragraph is prose, not a marker.
+	source := "(defun ok-fn (x) \"Blend two paths.\\nDeprecated: is a word.\" x)\n(ok-fn 1)\n"
+	assertNoDiags(t, lintCheckSemantic(t, AnalyzerDeprecated, source))
+}
+
+func TestDeprecated_Negative_DefinitionOnly(t *testing.T) {
+	// The declaration is not a use. A file that only defines the deprecated
+	// function is clean.
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n"
+	assertNoDiags(t, lintCheckSemantic(t, AnalyzerDeprecated, source))
+}
+
+func TestDeprecated_Negative_ExportIsNotAUse(t *testing.T) {
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n(export 'old-fn)\n"
+	assertNoDiags(t, lintCheckSemantic(t, AnalyzerDeprecated, source))
+}
+
+func TestDeprecated_Negative_StringBodyIsNotADocstring(t *testing.T) {
+	// A string in the docstring position with no body after it is the body,
+	// exactly as analysis.prescanDefun reads it.
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\")\n(old-fn 1)\n"
+	assertNoDiags(t, lintCheckSemantic(t, AnalyzerDeprecated, source))
+}
+
+func TestDeprecated_Negative_AllStringBodyIsNotADocstring(t *testing.T) {
+	// Several strings and no executable form is still a constant function, so
+	// the marker is a return value, not documentation.
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" \"result\")\n(old-fn 1)\n"
+	assertNoDiags(t, lintCheckSemantic(t, AnalyzerDeprecated, source))
+}
+
+func TestDeprecated_Negative_InsideDeprecatedFunction(t *testing.T) {
+	// Go's rule: deprecated code may use deprecated code.
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n" +
+		"(defun also-old (y) \"Deprecated: going away too.\" (old-fn y))\n"
+	assertNoDiags(t, lintCheckSemantic(t, AnalyzerDeprecated, source))
+}
+
+func TestDeprecated_Negative_RecursiveDeprecatedFunction(t *testing.T) {
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" (old-fn x))\n"
+	assertNoDiags(t, lintCheckSemantic(t, AnalyzerDeprecated, source))
+}
+
+func TestDeprecated_Negative_InsideDeprecatedMacroTemplate(t *testing.T) {
+	// A quasiquote template inside a deprecated macro is still that macro's
+	// body. astutil.Walk stops at quasiquote but the analyzer resolves
+	// template symbols, so suppression has to reach in here too.
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n" +
+		"(defmacro old-mac (y) \"Deprecated: going away too.\" (quasiquote (old-fn (unquote y))))\n"
+	assertNoDiags(t, lintCheckSemantic(t, AnalyzerDeprecated, source))
+}
+
+func TestDeprecated_TemplateReferenceIsFlagged(t *testing.T) {
+	// The deliberate counterpart to the test above: a quasiquote template in a
+	// macro that is NOT deprecated expands into real calls at every use site,
+	// so the reference analysis.resolveTemplateSymbol records is reported.
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n" +
+		"(defmacro live-mac (y) (quasiquote (old-fn (unquote y))))\n"
+	diags := lintCheckSemantic(t, AnalyzerDeprecated, source)
+	require.Len(t, diags, 1)
+	assertDiagOnLine(t, diags, 2, "use of deprecated function 'old-fn'")
+}
+
+func TestDeprecated_Nolint(t *testing.T) {
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n(old-fn 1) ; nolint:deprecated\n"
+	assertNoDiags(t, lintCheckSemantic(t, AnalyzerDeprecated, source))
+}
+
+func TestDeprecated_NotesAndRelated(t *testing.T) {
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n(old-fn 1)\n"
+	diags := lintCheckSemantic(t, AnalyzerDeprecated, source)
+	require.Len(t, diags, 1)
+	// The nolint hint is appended by the CLI renderer for every diagnostic,
+	// so the analyzer itself contributes only the declaration note.
+	require.Len(t, diags[0].Notes, 1)
+	assert.Contains(t, diags[0].Notes[0], "deprecated at test.lisp:1:8")
+	require.Len(t, diags[0].Related, 1)
+	assert.Equal(t, "deprecated declaration here", diags[0].Related[0].Message)
+	assert.Equal(t, 1, diags[0].Related[0].Location.Line)
+}
+
+func TestDeprecated_NilSemantics(t *testing.T) {
+	// Without semantic analysis the check reports nothing at all.
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n(old-fn 1)\n"
+	assertNoDiags(t, lintCheck(t, AnalyzerDeprecated, source))
+}
+
+func TestDeprecated_KindWords(t *testing.T) {
+	// The kind word comes from the symbol's Kind. Builtins and special
+	// operators cannot be deprecated from lisp source, so they are injected
+	// the way an embedder's registry would supply them.
+	tests := []struct {
+		name string
+		kind analysis.SymbolKind
+		want string
+	}{
+		{"function", analysis.SymFunction, "use of deprecated function 'ext-sym'"},
+		{"macro", analysis.SymMacro, "use of deprecated macro 'ext-sym'"},
+		{"builtin", analysis.SymBuiltin, "use of deprecated builtin 'ext-sym'"},
+		{"special op", analysis.SymSpecialOp, "use of deprecated special operator 'ext-sym'"},
+		{"variable falls back to symbol", analysis.SymVariable, "use of deprecated symbol 'ext-sym'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := &Linter{Analyzers: []*Analyzer{AnalyzerDeprecated}}
+			cfg := &analysis.Config{
+				ExtraGlobals: []analysis.ExternalSymbol{{
+					Name:      "ext-sym",
+					Kind:      tt.kind,
+					DocString: "Deprecated: use the new one.",
+				}},
+			}
+			diags, err := l.LintFileWithAnalysis([]byte("(ext-sym 1)\n"), "test.lisp", cfg)
+			require.NoError(t, err)
+			require.Len(t, diags, 1)
+			assert.Equal(t, tt.want+": use the new one.", diags[0].Message)
+		})
+	}
+}
+
+func TestDeprecated_MarshalsAsJSON(t *testing.T) {
+	source := "(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n(old-fn 1)\n"
+	diags := lintCheckSemantic(t, AnalyzerDeprecated, source)
+	require.Len(t, diags, 1)
+
+	var buf bytes.Buffer
+	require.NoError(t, FormatJSON(&buf, diags))
+	assert.Contains(t, buf.String(), `"deprecated": true`)
+
+	var round []Diagnostic
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &round))
+	require.Len(t, round, 1)
+	assert.True(t, round[0].Deprecated)
+	assert.Equal(t, "deprecated", round[0].Analyzer)
+}
+
+// TestDeprecated_RegistryBuiltin is the driving use case: an embedder registers
+// a Go builtin through elpsutil, marks it deprecated in its docstring, and runs
+// the linter over its own sources with LintConfig.Registry set. Both spellings
+// of the use -- qualified and imported with use-package -- must be flagged, and
+// the qualified one must be named as it is written.
+func TestDeprecated_RegistryBuiltin(t *testing.T) {
+	reg := deprecatedTestRegistry(t)
+
+	dir := t.TempDir()
+	source := "(use-package 'substrate)\n" +
+		"(substrate:blend-paths 1 2)\n" +
+		"(blend-paths 3 4)\n" +
+		"(substrate:join-paths 5 6)\n"
+	file := writeTempLisp(t, dir, "phylum.lisp", source)
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDeprecated}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir, Registry: reg}, []string{file})
+	require.NoError(t, err)
+	require.Len(t, diags, 2, "both the qualified and the imported use must be flagged")
+
+	assertDiagOnLine(t, diags, 2,
+		"use of deprecated function 'substrate:blend-paths': use join-paths instead.")
+	assertDiagOnLine(t, diags, 3,
+		"use of deprecated function 'blend-paths': use join-paths instead.")
+	for _, d := range diags {
+		assert.True(t, d.Deprecated)
+		assert.NotEqual(t, 4, d.Pos.Line, "join-paths is not deprecated")
+		// A Go builtin has no lisp declaration to point at.
+		assert.Empty(t, d.Related, "a registered builtin has no source location")
+		assert.Empty(t, d.Notes, "no declaration note, and the CLI adds the nolint hint")
+	}
+}
+
+// TestDeprecated_ExpanderForeignRefsSkipped: with a macro expander configured
+// (LintConfig.Env), analysis records references for expanded forms too, and
+// those nodes come from the macro's defining file. Linting a file that merely
+// calls such a macro must not leak the template's foreign positions into this
+// file's diagnostics — and a foreign byte offset must never be tested against
+// this file's exemption spans, where it could silently cancel a real finding.
+func TestDeprecated_ExpanderForeignRefsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	lib := writeTempLisp(t, dir, "lib.lisp",
+		"(defun old-fn (x) \"Deprecated: gone.\" x)\n"+
+			"(defmacro use-old (y) (quasiquote (old-fn (unquote y))))\n")
+	caller := writeTempLisp(t, dir, "main.lisp", "(use-old 1)\n(use-old 2)\n")
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDeprecated}}
+
+	// The deprecated use lives in lib.lisp's macro template, not in the
+	// calling file: calling a live macro is not itself a deprecated use.
+	env, err := newLintEnv()
+	require.NoError(t, err)
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir, Env: env}, []string{caller})
+	require.NoError(t, err)
+	for _, d := range diags {
+		assert.Equal(t, caller, d.Pos.File, "diagnostic must point at the linted file")
+	}
+	assertNoDiags(t, diags)
+
+	// Linting the template's own file reports the use there, exactly once.
+	env2, err := newLintEnv()
+	require.NoError(t, err)
+	diags, err = l.LintFiles(&LintConfig{Workspace: dir, Env: env2}, []string{lib})
+	require.NoError(t, err)
+	require.Len(t, diags, 1)
+	assertDiagOnLine(t, diags, 2, "use of deprecated function 'old-fn'")
+}
+
+// TestDeprecated_ExpanderDeprecatedMacroCallSites guards the boundary of the
+// foreign-reference filter: when the macro itself is deprecated, the use is
+// the call site, and analysis records that head reference in the linted file
+// before expansion runs. The filter must drop only the expansion's foreign
+// nodes, never the call-site references.
+func TestDeprecated_ExpanderDeprecatedMacroCallSites(t *testing.T) {
+	dir := t.TempDir()
+	writeTempLisp(t, dir, "lib.lisp",
+		"(defmacro old-mac (y) \"Deprecated: use new-mac.\" (quasiquote (list (unquote y))))\n")
+	caller := writeTempLisp(t, dir, "main.lisp", "(old-mac 1)\n(old-mac 2)\n")
+
+	env, err := newLintEnv()
+	require.NoError(t, err)
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDeprecated}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir, Env: env}, []string{caller})
+	require.NoError(t, err)
+	require.Len(t, diags, 2, "every call site of a deprecated macro is a use")
+	assertDiagOnLine(t, diags, 1, "use of deprecated macro 'old-mac'")
+	assertDiagOnLine(t, diags, 2, "use of deprecated macro 'old-mac'")
+	for _, d := range diags {
+		assert.Equal(t, caller, d.Pos.File)
+	}
+}
+
+// TestDeprecated_ExpanderSameFileDedup: when the macro is defined in the file
+// being linted, the template reference and the references the expander
+// re-derives at every call site are distinct nodes that all share the
+// template's byte offset. One use, one diagnostic — keyed by position, since
+// node identity cannot merge nodes from two parses.
+func TestDeprecated_ExpanderSameFileDedup(t *testing.T) {
+	dir := t.TempDir()
+	f := writeTempLisp(t, dir, "main.lisp",
+		"(defun old-fn (x) \"Deprecated: gone.\" x)\n"+
+			"(defmacro use-old (y) (quasiquote (old-fn (unquote y))))\n"+
+			"(use-old 1)\n(use-old 2)\n(use-old 3)\n")
+
+	env, err := newLintEnv()
+	require.NoError(t, err)
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDeprecated}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir, Env: env}, []string{f})
+	require.NoError(t, err)
+	require.Len(t, diags, 1)
+	assertDiagOnLine(t, diags, 2, "use of deprecated function 'old-fn'")
+}
+
+// TestDeprecated_RegistryBuiltin_NoDocstring guards the other half of the
+// elpsutil change: a builtin built with Function (no docs) must stay clean.
+func TestDeprecated_RegistryBuiltin_NoDocstring(t *testing.T) {
+	reg := deprecatedTestRegistry(t)
+	dir := t.TempDir()
+	file := writeTempLisp(t, dir, "phylum.lisp", "(substrate:undocumented 1)\n")
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerDeprecated}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir, Registry: reg}, []string{file})
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+}
+
+// deprecatedTestRegistry builds the registry an embedder would pass in
+// LintConfig.Registry: a package of Go builtins, one of them deprecated
+// through its elpsutil docstring.
+func deprecatedTestRegistry(t *testing.T) *lisp.PackageRegistry {
+	t.Helper()
+	nop := func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal { return lisp.Nil() }
+
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = rdparser.NewReader()
+	env.Runtime.Stderr = &bytes.Buffer{}
+	require.NotEqual(t, lisp.LError, lisp.InitializeUserEnv(env).Type)
+	require.NotEqual(t, lisp.LError, lisplib.LoadLibrary(env).Type)
+
+	require.True(t, env.DefinePackage(lisp.Symbol("substrate")).IsNil())
+	require.True(t, env.InPackage(lisp.Symbol("substrate")).IsNil())
+	env.AddBuiltins(true,
+		elpsutil.FunctionDoc("blend-paths", lisp.Formals("a", "b"), nop,
+			"Blend two paths.\n\nDeprecated: use join-paths instead."),
+		elpsutil.FunctionDoc("join-paths", lisp.Formals("a", "b"), nop,
+			"Join two paths."),
+		elpsutil.Function("undocumented", lisp.Formals("a"), nop),
+	)
+	require.True(t, env.InPackage(lisp.String(lisp.DefaultUserPackage)).IsNil())
+	return env.Runtime.Registry
+}
+
+// TestDeprecated_SpanHelpers covers the degenerate shapes the fuzzer reaches
+// but well-formed source does not: a definition whose source offsets were
+// never tracked, a quoted list that only looks like a definition, and a
+// reference with no offset of its own.
+func TestDeprecated_SpanHelpers(t *testing.T) {
+	const doc = "Deprecated: use new-fn instead."
+
+	// A defun assembled without any source location. It is deprecated, but it
+	// contributes no span, so uses inside it are reported rather than
+	// suppressed — the conservative direction.
+	untracked := lisp.SExpr([]*lisp.LVal{
+		lisp.Symbol("defun"), lisp.Symbol("old-fn"),
+		lisp.SExpr([]*lisp.LVal{lisp.Symbol("x")}),
+		lisp.String(doc), lisp.Symbol("x"),
+	})
+	assert.True(t, isDeprecatedDefinition(untracked))
+	assert.Empty(t, deprecatedBodySpans([]*lisp.LVal{untracked}),
+		"a definition with untracked offsets must contribute no span")
+
+	// Shapes that are not definitions at all.
+	quoted := lisp.QExpr([]*lisp.LVal{
+		lisp.Symbol("defun"), lisp.Symbol("old-fn"),
+		lisp.SExpr([]*lisp.LVal{lisp.Symbol("x")}),
+		lisp.String(doc), lisp.Symbol("x"),
+	})
+	assert.False(t, isDeprecatedDefinition(quoted), "quoted data is not a definition")
+	assert.False(t, isDeprecatedDefinition(nil))
+	assert.False(t, isDeprecatedDefinition(lisp.String(doc)))
+	assert.False(t, isDeprecatedDefinition(lisp.SExpr([]*lisp.LVal{lisp.Symbol("defun")})),
+		"a truncated defun must not index past its cells")
+	assert.False(t, isDeprecatedDefinition(lisp.SExpr([]*lisp.LVal{
+		lisp.Symbol("defun"), lisp.Symbol("f"),
+		lisp.SExpr([]*lisp.LVal{}), lisp.Int(1), lisp.Int(2),
+	})), "a non-string in the docstring position is not a docstring")
+
+	spans := byteSpans{{start: 10, end: 20}, {start: 30, end: 40}}
+	assert.False(t, spans.contains(-1), "an untracked offset is inside nothing")
+	assert.False(t, spans.contains(9))
+	assert.True(t, spans.contains(10))
+	assert.True(t, spans.contains(19))
+	assert.False(t, spans.contains(20), "spans are half-open")
+	assert.False(t, spans.contains(25))
+	assert.True(t, spans.contains(39))
+	assert.False(t, spans.contains(100))
+	assert.False(t, byteSpans(nil).contains(5))
+}
+
 // --- unused-nolint ---
 
 func TestUnusedNolint_Unused(t *testing.T) {
@@ -3034,6 +3495,7 @@ func TestDefaultAnalyzers_SemanticField(t *testing.T) {
 		"shadowing":            true,
 		"user-arity":           true,
 		"duplicate-definition": true,
+		"deprecated":           true,
 	}
 	for _, a := range DefaultAnalyzers() {
 		if semanticNames[a.Name] {
