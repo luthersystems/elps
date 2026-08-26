@@ -2,6 +2,8 @@
 
 package lisp
 
+import "reflect"
+
 // NativeValue reads the Go payload of an LNative value as a T, reporting
 // whether the value actually was one.  It replaces the hand-rolled pair
 // every embedder writes at each boundary where lisp hands Go data back —
@@ -49,6 +51,10 @@ package lisp
 // assertion.  A T of `any` succeeds for every non-nil payload of an
 // LNative and is the way to ask "is there anything here" without naming the
 // type.
+//
+// A caller whose false branch only builds an error message wants
+// RequireNative, which runs these same three gates and renders the failure
+// as an LError.
 func NativeValue[T any](v *LVal) (T, bool) {
 	var zero T
 	if v == nil || v.Type != LNative {
@@ -59,6 +65,64 @@ func NativeValue[T any](v *LVal) (T, bool) {
 		return zero, false
 	}
 	return x, true
+}
+
+// RequireNative reads the Go payload of an LNative value as a T, rendering
+// the failure as an LError rather than as a bool.  On success it returns the
+// payload and a nil second value; the second value is nil ON SUCCESS ONLY,
+// so a caller's whole failure branch is
+//
+//	h, lerr := lisp.RequireNative[*Handle](v)
+//	if lerr != nil {
+//		return lerr
+//	}
+//
+// which is the message the accessor pair was introduced to supply once
+// instead of at each boundary (issue #546).  NativeValue's `false` says only
+// that something did not match, so every caller of it that reports a failure
+// writes its own wording, and the substrate accumulated eleven of them —
+// differing in which of the three gates they name, and none naming the type
+// that was expected, which is the one fact the caller has and the value does
+// not.
+//
+// The gate sequence is NativeValue's, because this is a call to it: nil v,
+// then v.Type == LNative, then the assertion, with the LVal type checked
+// before the payload for the reasons documented there.  RequireNative only
+// re-examines v afterwards to say which gate refused it, so there is no
+// second copy of the check to drift.
+//
+// The three messages name the expected type and what was found:
+//
+//	expected native *pkg.Handle value, got nil
+//	expected native *pkg.Handle value, got bytes
+//	expected native *pkg.Handle value, got native *pkg.Other
+//
+// The expected type comes from reflect.TypeFor[T] rather than a %T verb
+// because T is a type parameter, not a value: %T of the zero T renders an
+// interface T as <nil>, which loses precisely the type the message exists to
+// report.  The reflection is confined to the failure path.
+//
+// The error carries no call stack of its own: with no *LEnv parameter
+// there is no environment to capture one from, so it is built with the
+// package-level Errorf (the env.Errorf methods attach a stack eagerly;
+// this accessor cannot).  Nothing is lost — an error returned up through
+// eval acquires the current stack from LEnv.ErrorAssociate, which fills
+// one in for any error still lacking it.
+func RequireNative[T any](v *LVal) (T, *LVal) {
+	x, ok := NativeValue[T](v)
+	if ok {
+		return x, nil
+	}
+	var zero T
+	want := reflect.TypeFor[T]()
+	switch {
+	case v == nil:
+		return zero, Errorf("expected native %v value, got nil", want)
+	case v.Type != LNative:
+		return zero, Errorf("expected native %v value, got %v", want, v.Type)
+	default:
+		return zero, Errorf("expected native %v value, got native %T", want, v.Native)
+	}
 }
 
 // NativeOf is the typed constructor counterpart of Native: it wraps x in an

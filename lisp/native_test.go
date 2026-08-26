@@ -3,6 +3,7 @@
 package lisp_test
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -10,8 +11,9 @@ import (
 )
 
 // These tests cover the checked native accessors of issue #546:
-// NativeValue, which reads an LNative's Go payload as a T, and NativeOf,
-// its typed constructor counterpart.
+// NativeValue, which reads an LNative's Go payload as a T, RequireNative,
+// which is NativeValue with the failure rendered as an LError, and NativeOf,
+// the typed constructor counterpart.
 //
 // Two properties are under test, and they are not equally interesting.
 // The round-trip ones (1-7 below) say the accessor is usable: pointers,
@@ -318,6 +320,214 @@ func TestNativeValueGatesOnLValTypeNotPayloadType(t *testing.T) {
 	md := lisp.NewMapData(nil)
 	if _, ok := lisp.NativeValue[*lisp.MapData](lisp.NativeOf(md)); !ok {
 		t.Error("NativeValue[*lisp.MapData] refused an embedder's own MapData in an LNative")
+	}
+}
+
+// RequireNative shares NativeValue's three gates and adds only the failure
+// message, so the tests below pin the messages in full.  A substring match
+// would pass on a message that named the wrong gate or omitted the expected
+// type, which is the whole content of the addition.
+//
+// Message renderings are reflect's, not fmt's %T: an unexported type in this
+// package renders as *lisp_test.handle, and []byte renders through its
+// element's underlying name as []uint8.
+
+// requireNativeErrorMessage asserts lerr is an LError and returns its bare
+// message, without the source-location prefix Error() adds.
+func requireNativeErrorMessage(t *testing.T, lerr *lisp.LVal) string {
+	t.Helper()
+	if lerr == nil {
+		t.Fatal("RequireNative returned a nil error on a failing call")
+	}
+	if lerr.Type != lisp.LError {
+		t.Fatalf("RequireNative returned type %v, want %v", lerr.Type, lisp.LError)
+	}
+	var ev *lisp.ErrorVal
+	if !errors.As(lisp.GoError(lerr), &ev) {
+		t.Fatalf("RequireNative error does not convert to *ErrorVal: %v", lerr)
+	}
+	return ev.ErrorMessage()
+}
+
+// TestRequireNativeSuccess is the nil-on-success half of the contract: a
+// matching payload comes back with a nil second return, through both
+// constructors.
+func TestRequireNativeSuccess(t *testing.T) {
+	h := &handle{name: "conn", seq: 7}
+	for _, v := range []*lisp.LVal{lisp.Native(h), lisp.NativeOf[*handle](h)} {
+		got, lerr := lisp.RequireNative[*handle](v)
+		if lerr != nil {
+			t.Fatalf("RequireNative[*handle] failed on a *handle payload: %v", lerr)
+		}
+		if got != h {
+			t.Errorf("RequireNative returned %p, want the stored instance %p", got, h)
+		}
+	}
+	// A value type travels by copy, as with NativeValue.
+	p := point{X: 3, Y: 4}
+	gotVal, lerr := lisp.RequireNative[point](lisp.NativeOf(p))
+	if lerr != nil {
+		t.Fatalf("RequireNative[point] failed on a point payload: %v", lerr)
+	}
+	if gotVal != p {
+		t.Errorf("RequireNative returned %+v, want %+v", gotVal, p)
+	}
+}
+
+// TestRequireNativeThroughInterface asserts an interface type parameter
+// reaches a payload stored as a concrete type, since the gate it inherits is
+// an ordinary type assertion.
+func TestRequireNativeThroughInterface(t *testing.T) {
+	h := &handle{name: "iface", seq: 2}
+	s, lerr := lisp.RequireNative[fmt.Stringer](lisp.NativeOf[*handle](h))
+	if lerr != nil {
+		t.Fatalf("RequireNative[fmt.Stringer] failed on a *handle payload: %v", lerr)
+	}
+	if s.String() != h.String() {
+		t.Errorf("Stringer returned %q, want %q", s.String(), h.String())
+	}
+	// The message for an interface T names the interface.  This is what a
+	// %T verb over the zero T cannot do: it renders <nil>.
+	_, lerr = lisp.RequireNative[fmt.Stringer](nil)
+	if msg := requireNativeErrorMessage(t, lerr); msg != "expected native fmt.Stringer value, got nil" {
+		t.Errorf("message = %q, want the interface named", msg)
+	}
+}
+
+// TestRequireNativeNilLVal covers the first gate.  A nil *LVal reaches this
+// accessor whenever a caller forwards an un-checked result.
+func TestRequireNativeNilLVal(t *testing.T) {
+	got, lerr := lisp.RequireNative[*handle](nil)
+	if msg := requireNativeErrorMessage(t, lerr); msg != "expected native *lisp_test.handle value, got nil" {
+		t.Errorf("message = %q", msg)
+	}
+	if got != nil {
+		t.Errorf("RequireNative returned %v on failure, want the zero value", got)
+	}
+	gotVal, lerr := lisp.RequireNative[point](nil)
+	if msg := requireNativeErrorMessage(t, lerr); msg != "expected native lisp_test.point value, got nil" {
+		t.Errorf("message = %q", msg)
+	}
+	if gotVal != (point{}) {
+		t.Errorf("RequireNative returned %+v on failure, want the zero value", gotVal)
+	}
+}
+
+// TestRequireNativeRefusesInternalStorage is the load-bearing case.  Each
+// subject is a real lisp value whose backing the interpreter keeps in
+// LVal.Native, and each is refused by the SECOND gate — so the message names
+// the lisp type found, and the payload never leaves.  An implementation that
+// asserted on v.Native without checking v.Type would return the interpreter's
+// live storage here with a nil error.
+func TestRequireNativeRefusesInternalStorage(t *testing.T) {
+	t.Run("LBytes backing", func(t *testing.T) {
+		for _, v := range []*lisp.LVal{
+			lisp.Bytes([]byte("ABCD")),
+			mustEvalNative(t, `(to-bytes "ABCD")`),
+		} {
+			// Positive control: the *[]byte really is in Native, so the
+			// failure below is the gate and not an empty payload.
+			if got := string(v.Bytes()); got != "ABCD" {
+				t.Fatalf("bytes payload is %q, want %q", got, "ABCD")
+			}
+			b, lerr := lisp.RequireNative[*[]byte](v)
+			if b != nil {
+				t.Errorf("RequireNative[*[]byte] exposed the backing of a lisp bytes value: %q", string(*b))
+			}
+			if msg := requireNativeErrorMessage(t, lerr); msg != "expected native *[]uint8 value, got bytes" {
+				t.Errorf("message = %q", msg)
+			}
+			// The same leak asked for through `any`.
+			x, lerr := lisp.RequireNative[any](v)
+			if x != nil {
+				t.Errorf("RequireNative[any] exposed a bytes value's payload: %T", x)
+			}
+			if msg := requireNativeErrorMessage(t, lerr); msg != "expected native interface {} value, got bytes" {
+				t.Errorf("message = %q", msg)
+			}
+		}
+	})
+
+	t.Run("LSortMap backing", func(t *testing.T) {
+		v := mustEvalNative(t, `(sorted-map "k" 1)`)
+		if v.Map() == nil {
+			t.Fatal("sorted-map has no MapData payload")
+		}
+		md, lerr := lisp.RequireNative[*lisp.MapData](v)
+		if md != nil {
+			t.Error("RequireNative[*lisp.MapData] exposed the backing of a lisp sorted-map")
+		}
+		if msg := requireNativeErrorMessage(t, lerr); msg != "expected native *lisp.MapData value, got sorted-map" {
+			t.Errorf("message = %q", msg)
+		}
+	})
+
+	t.Run("LError call stack", func(t *testing.T) {
+		env := nativeTestEnv(t)
+		v := env.LoadString("native_test.lisp", `(car 1)`)
+		if v.Type != lisp.LError {
+			t.Fatalf("evaluating (car 1) produced %v, want an error", v.Type)
+		}
+		// Positive control: the *CallStack really is in Native.  It is also
+		// what IsInternalPanic keys off.
+		if v.CallStack() == nil {
+			t.Fatal("error value carries no call stack")
+		}
+		stack, lerr := lisp.RequireNative[*lisp.CallStack](v)
+		if stack != nil {
+			t.Error("RequireNative[*lisp.CallStack] exposed a lisp error's call stack")
+		}
+		if msg := requireNativeErrorMessage(t, lerr); msg != "expected native *lisp.CallStack value, got error" {
+			t.Errorf("message = %q", msg)
+		}
+	})
+}
+
+// TestRequireNativeWrongPayloadType covers the third gate: the LVal is an
+// LNative, so the message names both the type asked for and the type stored.
+func TestRequireNativeWrongPayloadType(t *testing.T) {
+	v := lisp.NativeOf[*handle](&handle{name: "conn"})
+	got, lerr := lisp.RequireNative[*other](v)
+	if got != nil {
+		t.Errorf("RequireNative returned %v on failure, want the zero value", got)
+	}
+	if msg := requireNativeErrorMessage(t, lerr); msg != "expected native *lisp_test.other value, got native *lisp_test.handle" {
+		t.Errorf("message = %q", msg)
+	}
+	// The other direction, so the test cannot pass by refusing everything.
+	w := lisp.NativeOf[*other](&other{id: "xyz"})
+	o, lerr := lisp.RequireNative[*other](w)
+	if lerr != nil {
+		t.Fatalf("RequireNative[*other] failed on an *other payload: %v", lerr)
+	}
+	if o.id != "xyz" {
+		t.Errorf("retrieved payload has id %q, want %q", o.id, "xyz")
+	}
+	// An embedder's own *[]byte in an LNative is theirs, and reaching it is
+	// not a wrong-payload failure: the gate is on the LVal's type.
+	b := []byte("mine")
+	if _, lerr := lisp.RequireNative[*[]byte](lisp.Native(&b)); lerr != nil {
+		t.Errorf("RequireNative[*[]byte] refused an embedder's own *[]byte in an LNative: %v", lerr)
+	}
+}
+
+// TestRequireNativeNilPayload covers an LNative carrying nothing.  It passes
+// the first two gates and fails the assertion, including for T = any, so the
+// message is the third one with a <nil> payload type.
+func TestRequireNativeNilPayload(t *testing.T) {
+	v := lisp.Native(nil)
+	if v.Type != lisp.LNative {
+		t.Fatalf("Native(nil) produced type %v, want %v", v.Type, lisp.LNative)
+	}
+	got, lerr := lisp.RequireNative[*handle](v)
+	if got != nil {
+		t.Errorf("RequireNative returned %v for a nil payload, want nil", got)
+	}
+	if msg := requireNativeErrorMessage(t, lerr); msg != "expected native *lisp_test.handle value, got native <nil>" {
+		t.Errorf("message = %q", msg)
+	}
+	if _, lerr := lisp.RequireNative[any](v); lerr == nil {
+		t.Error("RequireNative[any] succeeded on a nil payload")
 	}
 }
 
