@@ -5,6 +5,9 @@ package perf
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/parser/token"
@@ -176,4 +179,91 @@ func TestFormatSARIF_SeverityMapping(t *testing.T) {
 	assert.Equal(t, 1, log.Runs[0].Results[1].RuleIndex) // PERF002 -> index 1
 	assert.Equal(t, 4, log.Runs[0].Results[2].RuleIndex) // UNKNOWN001 -> index 4
 	assert.Equal(t, 2, log.Runs[0].Results[3].RuleIndex) // PERF003 -> index 2
+}
+
+// TestFormatSARIF_RuleHelp guards the fields GitHub renders in an alert's
+// Description panel. A rule added without help text fails here rather than
+// shipping an alert page that reads "No rule help available for this alert".
+func TestFormatSARIF_RuleHelp(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	require.NoError(t, FormatSARIF(&buf, nil, "elps-perf", "0.1.0"))
+
+	var log sarifLog
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &log))
+	rules := log.Runs[0].Tool.Driver.Rules
+	require.NotEmpty(t, rules)
+
+	for _, rule := range rules {
+		t.Run(rule.ID, func(t *testing.T) {
+			assert.NotEmpty(t, rule.ShortDescription.Text, "shortDescription.text")
+			assert.NotEmpty(t, rule.FullDescription.Text, "fullDescription.text")
+			assert.NotEmpty(t, rule.Help.Text, "help.text")
+			assert.NotEmpty(t, rule.Help.Markdown, "help.markdown")
+
+			// The help must be about this rule and must say how to turn it off.
+			assert.Contains(t, rule.Help.Markdown, rule.ID)
+			assert.Contains(t, rule.Help.Markdown, DefaultConfig().SuppressionPrefix)
+			assert.Contains(t, rule.Help.Text, DefaultConfig().SuppressionPrefix)
+			// Boilerplate-length help is not help.
+			assert.Greater(t, len(rule.Help.Markdown), 400, "help.markdown is too short to explain the rule")
+		})
+	}
+}
+
+// TestFormatSARIF_RuleHelpSuppressionExamplesWork feeds every comment printed
+// in the rule help back through the suppression parser. Help text whose
+// copy-pasteable example does not actually suppress the rule is worse than
+// none, and a typo in the prefix is invisible by inspection.
+func TestFormatSARIF_RuleHelpSuppressionExamplesWork(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	require.NoError(t, FormatSARIF(&buf, nil, "elps-perf", "0.1.0"))
+
+	var log sarifLog
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &log))
+
+	for _, rule := range log.Runs[0].Tool.Driver.Rules {
+		t.Run(rule.ID, func(t *testing.T) {
+			comments := helpComments(rule.Help.Markdown)
+			require.NotEmpty(t, comments, "help.markdown shows no suppression comment")
+			assert.True(t, slices.ContainsFunc(comments, func(c string) bool {
+				return strings.Contains(c, rule.ID)
+			}), "help.markdown shows no example naming %s: %q", rule.ID, comments)
+
+			for _, comment := range comments {
+				src := comment + "\n(defun example (x) (identity x))\n"
+				summaries := ScanFile(parseSource(t, src), "test.lisp", DefaultConfig())
+				require.Len(t, summaries, 1, "example source must define one function: %s", src)
+				assert.True(t, suppressesRule(summaries[0], RuleID(rule.ID)),
+					"comment %q does not suppress %s", comment, rule.ID)
+			}
+		})
+	}
+}
+
+// helpComments returns every elps comment written anywhere in the markdown:
+// whole lines inside a fenced example, and inline code spans in prose. Each is
+// returned verbatim, so a misspelled prefix or a malformed tail reaches the
+// suppression parser rather than being filtered out on its way there.
+func helpComments(md string) []string {
+	var candidates []string
+	for _, line := range strings.Split(md, "\n") {
+		candidates = append(candidates, strings.TrimSpace(line))
+	}
+	inline := regexp.MustCompile("`([^`]*)`")
+	for _, m := range inline.FindAllStringSubmatch(md, -1) {
+		candidates = append(candidates, strings.TrimSpace(m[1]))
+	}
+
+	var out []string
+	seen := make(map[string]bool)
+	for _, c := range candidates {
+		if !strings.HasPrefix(c, ";") || seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	return out
 }
