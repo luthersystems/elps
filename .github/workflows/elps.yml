@@ -20,7 +20,34 @@ concurrency:
 jobs:
   lint-and-test:
     name: Lint & Test
-    runs-on: ubuntu-latest
+    # THE RATIONALE FOR ubuntu-24.04-arm, ONCE. Every other Linux job in this
+    # repository carries a one-line pointer back here rather than a copy.
+    #
+    # ARM, and specifically the 4-vCPU GitHub-hosted image rather than the
+    # `2vcpu-ubuntu-2204-arm` box the benchmark job used to name. This job is
+    # dominated by two PARALLEL Go test runs -- `make race` and
+    # `make test-elpscheck` were 2m39s and 1m09s of a 5m27s job on
+    # ubuntu-latest (run 32917687879) -- so halving the core count would cost
+    # more than ARM's per-core advantage returns. `ubuntu-24.04-arm` keeps 4
+    # vCPUs (16 GB RAM, Cobalt 100), is free for public repositories, and is
+    # the same distro release `ubuntu-latest` currently resolves to, so the
+    # only deliberate variable is the architecture.
+    #
+    # It is a STANDARD GitHub-hosted label, not an org runner-group label, so
+    # it cannot reproduce the "queues forever, reports nothing" failure that
+    # `ubuntu-arm-4core-150gb` caused here (see benchmark.yml). Public repos
+    # only: the label is rejected in private ones, which elps is not.
+    #
+    # setup-go's cache key includes the architecture, so the first run after
+    # this lands is cold by construction and the comparison against the 5m27s
+    # baseline is only fair from the second run onward.
+    #
+    # scripts/ci-gates-test.sh pins this: every Linux `runs-on` in this
+    # repository must be `ubuntu-24.04-arm`, so a workflow added later on
+    # ubuntu-latest fails the gate rather than quietly splitting the fleet.
+    # Windows is the deliberate exception -- build-windows below exists FOR
+    # the platform coverage.
+    runs-on: ubuntu-24.04-arm
     # 30 minutes against an observed 3m57s (golangci-lint, make test,
     # make race, elpscheck, elps fmt/lint/doc). `make race` alone is ~2m and is
     # the part most sensitive to a slow runner, so the headroom is deliberate.
@@ -158,7 +185,11 @@ jobs:
   # green rather than red.
   required:
     name: "Required: build & test"
-    runs-on: ubuntu-latest
+    # ARM for the reason spelled out on lint-and-test above. This job is one
+    # checkout and one bash assertion, so the architecture buys it nothing --
+    # it moves so that "every Linux job is on ubuntu-24.04-arm" is a rule with
+    # no exceptions to remember, which is what makes it checkable.
+    runs-on: ubuntu-24.04-arm
     # 5 minutes against an observed 2s. This job's name is the one in
     # branch protection; wedged here means the PR is blocked with no red.
     timeout-minutes: 5

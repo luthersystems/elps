@@ -33,20 +33,33 @@ env:
   # generous headroom over the measured floor; read the threshold note in that
   # script before changing either.
   #
-  # CAVEAT: those noise figures were measured on the amd64 ubuntu-latest fleet,
-  # before the move to ARM. They have NOT been re-measured on the ARM pool. If
-  # the gate starts firing spuriously, re-measure on identical code before
-  # widening a threshold -- widening it to silence real noise you have not
-  # characterised is how a gate stops meaning anything.
+  # CAVEAT, AND IT HAS GROWN A SECOND HALF. Those noise figures were measured
+  # on the amd64 ubuntu-latest fleet. They were never re-measured after the
+  # move to ARM, and they have not been re-measured on the GitHub-hosted
+  # `ubuntu-24.04-arm` pool this job now uses either. Read every number in
+  # this block as HISTORICAL, measured on hardware this workflow no longer
+  # runs on -- not as a description of the pool in use. If the gate starts
+  # firing spuriously, re-measure on identical code before widening a
+  # threshold; widening it to silence real noise you have not characterised is
+  # how a gate stops meaning anything.
   #
-  # One ARM datapoint exists so far (the first run where this gate reached a
-  # verdict): 82 delta rows, ONE significant bad-direction move, libjson
+  # One ARM datapoint exists so far, and it was taken on the PREVIOUS ARM
+  # runner (`2vcpu-ubuntu-2204-arm`, an org runner-group box), not on this
+  # one: 82 delta rows, ONE significant bad-direction move, libjson
   # Package/get-nested-baseline-2 at +1.65% (p=0.043) -- same order as the
-  # +1.52% worst case measured on amd64. It bounds nothing, because that
-  # comparison DOES change Go code and the move may be real rather than noise.
-  # It is recorded only so the next person does not read "not re-measured" as
-  # "possibly catastrophic". A proper characterisation still needs a null
-  # comparison (identical code on both arms) on this pool.
+  # +1.52% worst case measured on amd64. It bounded nothing even then, because
+  # that comparison DOES change Go code and the move may be real rather than
+  # noise; on this pool it is not even the same silicon. It is recorded only
+  # so the next person does not read "not re-measured" as "possibly
+  # catastrophic". A proper characterisation still needs a null comparison
+  # (identical code on both arms) on whichever pool is current.
+  #
+  # What does NOT depend on any of this: the gate's internal validity. Both
+  # arms are measured interleaved, in this one job, on this one runner, so a
+  # noisier or faster pool moves both arms together and the comparison stays
+  # sound. A pool too noisy to adjudicate is caught explicitly rather than
+  # guessed at -- see BENCH_VARIANCE_CEILING_PCT below, which turns exactly
+  # that into "re-measure" (exit 3) instead of a verdict.
   BENCH_REGRESSION_THRESHOLD_PCT: "15"
   BENCH_ALLOC_THRESHOLD_PCT: "5"
   # Runner fitness, not a gate (issue #542). A TIMING row whose own confidence
@@ -75,9 +88,28 @@ env:
   # touched this gate -- cannot move the suffix. scripts/bench-arms-check.sh
   # is the backstop that names the failure if this pin is ever removed.
   #
-  # 2 matches the ARM runner below. These benchmarks are single-goroutine, so
-  # this constrains only the runtime's own parallelism; keeping it fixed also
-  # keeps raw numbers comparable across runs as the runner pool changes.
+  # HELD AT 2 THROUGH THE MOVE TO A 4-vCPU RUNNER, DELIBERATELY. This used to
+  # read "2 matches the ARM runner below", which made it look derived; it is
+  # not, and the whole point of a pin is that it does not follow the hardware.
+  # The runner below is now `ubuntu-24.04-arm` (4 vCPU) and this stays 2, so:
+  #
+  #   * every benchmark keeps the `-2` name suffix it has always had, which is
+  #     what benchstat pairs rows by. Raising this to 4 would rename all 80+
+  #     rows at once -- harmless to THIS job, whose two arms would both be
+  #     renamed together, but it would unpair every historical raw result and
+  #     any future cross-run look at them;
+  #   * the runtime's own parallelism is unchanged, so the only measurement
+  #     variable that actually moved is the microarchitecture (and the machine
+  #     it is sharing), not the Go scheduler's shape.
+  #
+  # These benchmarks are single-goroutine, so this constrains only the
+  # runtime's background work (GC assist/marker Ps), which is exactly the part
+  # that would otherwise silently double.
+  #
+  # Absolute numbers are of course NOT comparable with results recorded on the
+  # old runner -- different silicon is different silicon. Nothing in the gate
+  # depends on that: it compares two arms measured against each other, here,
+  # today.
   GOMAXPROCS: "2"
 
 permissions:
@@ -95,7 +127,11 @@ jobs:
   # build, and must report even when the benchmark job is cancelled or skipped.
   gates:
     name: CI Gate Self-Test
-    runs-on: ubuntu-latest
+    # ARM for the reason spelled out on elps.yml's lint-and-test job. This one
+    # runs no Go and no compiler, so it moves purely so the fleet is uniform;
+    # what had to be checked before moving it is the shellcheck assumption in
+    # the `env:` block below.
+    runs-on: ubuntu-24.04-arm
     # 10 minutes against an observed 17-22s. Not a performance budget -- a
     # liveness bound. This job is aggregated into the REQUIRED check below, and
     # a required check that is stuck `in_progress` never goes red: the PR sits
@@ -118,13 +154,21 @@ jobs:
       # "-fuzz must carry -fuzztime" scan, the workflow-shape guards and
       # shellcheck -- still runs here.
       CI_GATES_SKIP_GO: "1"
-      # shellcheck is PREINSTALLED on the ubuntu-latest image, so the gate
-      # script's `command -v shellcheck` branch is always taken here. Without
-      # this variable the script only prints "SKIP shellcheck not installed"
-      # when it is absent -- a silent downgrade that would turn a shell-lint
-      # gate into nothing at all the day the image drops the package. Setting
-      # it makes absence LOUD (red), which is the whole point of running the
-      # lint in CI. See the shellcheck block in scripts/ci-gates-test.sh.
+      # shellcheck is PREINSTALLED on the runner image, so the gate script's
+      # `command -v shellcheck` branch is always taken here. Without this
+      # variable the script only prints "SKIP shellcheck not installed" when
+      # it is absent -- a silent downgrade that would turn a shell-lint gate
+      # into nothing at all the day the image drops the package. Setting it
+      # makes absence LOUD (red), which is the whole point of running the lint
+      # in CI. See the shellcheck block in scripts/ci-gates-test.sh.
+      #
+      # CHECKED BEFORE MOVING THIS JOB TO ARM, because this variable is
+      # precisely a promise about the image: the Arm Ubuntu 24.04 image's
+      # generated inventory lists `shellcheck | 0.9.0-1`, the same package and
+      # version as the x64 image
+      # (actions/partner-runner-images images/Ubuntu2404-Readme.md, apt
+      # packages table). Had it been absent, the correct move would have been
+      # to leave this job on x64 rather than to drop the variable.
       CI_GATES_REQUIRE_SHELLCHECK: "1"
     steps:
       - name: Check out code
@@ -135,7 +179,7 @@ jobs:
       # It never installed anything. Every run logged
       #     shellcheck is already the newest version (0.9.0-1).
       #     0 upgraded, 0 newly installed, 0 to remove
-      # because shellcheck ships in the ubuntu-latest image. What the step DID
+      # because shellcheck ships in the runner image. What the step DID
       # do was make this job -- part of a required check -- depend on reaching
       # five package repositories (azure.archive.ubuntu.com,
       # packages.microsoft.com, dl.google.com and friends) over the network on
@@ -162,9 +206,19 @@ jobs:
   # polls the run's own job list, turning "silently absent" into "loudly red".
   # Logic lives in scripts/ci-queue-watchdog.cjs so it is reviewable and
   # guarded by scripts/ci-gates-test.sh rather than buried in YAML.
+  #
+  # KEPT even though the job it watches now names a STANDARD GitHub-hosted
+  # label, which cannot be unreachable the way an org runner-group label can.
+  # `vars.BENCH_RUNNER` is still an override, and an override pointed at a
+  # label this repo cannot reach re-creates the exact failure -- so the
+  # watchdog guards the escape hatch, not just the default.
   queue-watchdog:
     name: Runner Reachability Watchdog
-    runs-on: ubuntu-latest
+    # "Always available" is the requirement, and ubuntu-24.04-arm meets it:
+    # standard GitHub-hosted, free on public repositories, no runner-group
+    # membership involved. ARM otherwise for the reason on elps.yml's
+    # lint-and-test job.
+    runs-on: ubuntu-24.04-arm
     # Generous: the budget below is the real bound, and this only backstops a
     # watchdog that itself wedges.
     timeout-minutes: 30
@@ -189,42 +243,65 @@ jobs:
   benchmark:
     name: Benchmark Comparison
     # ARM, deliberately. The consumers that pin this module ship ARM, so
-    # benchmarking elps on amd64 tuned against a machine nobody runs -- and
+    # benchmarking elps on amd64 tunes against a machine nobody runs -- and
     # that matters most for exactly what this gate exists to catch, since
     # struct layout, padding and GC scan extent are not arch-invariant.
     #
-    # `2vcpu-ubuntu-2204-arm` is the ARM runner actually shared with THIS repo
-    # (Settings -> Actions -> Runners). An earlier revision named
-    # ubuntu-arm-4core-150gb, which substrate uses but elps cannot reach, so
-    # the job sat queued across five pushes -- silently, because a job that
-    # never starts reports no status to fail on.
+    # THE DEFAULT MOVED from `2vcpu-ubuntu-2204-arm` (an org runner-group box
+    # shared with this repo, reachable via Settings -> Actions -> Runners) to
+    # the standard GitHub-hosted `ubuntu-24.04-arm`, so the whole repository
+    # sits on one 4-vCPU ARM fleet. What was checked before moving a gate that
+    # adjudicates PRs:
     #
-    # Two vCPUs is enough, and arguably better: these benchmarks are
-    # single-goroutine, so the extra cores only served the runtime, and fewer
-    # cores means less scheduler noise in the timings. It does halve the
-    # GOMAXPROCS suffix benchstat keys on (EnvGet-2, not EnvGet-4) -- harmless
-    # now that both arms are measured in one job, but it would have been fatal
-    # to the old cached-baseline design, which would have compared EnvGet-4
-    # against EnvGet-2 and paired nothing at all.
+    #   * MEASUREMENT CONDITIONS. GOMAXPROCS is pinned at the workflow level
+    #     and STAYS AT 2 -- it is not derived from the runner and did not
+    #     follow it. So every benchmark keeps its `-2` name suffix and the
+    #     runtime keeps 2 Ps; the microarchitecture is the variable, not the
+    #     scheduler. See the long note on GOMAXPROCS above.
+    #   * INTERNAL VALIDITY IS UNAFFECTED, which is the reason this move is
+    #     safe at all. Both arms are checked out, built and measured
+    #     interleaved in THIS job on THIS runner, so base and head see the
+    #     same silicon, the same thermal state and the same neighbours. The
+    #     verdict is a comparison of two arms against each other, never
+    #     against a stored number, so a fleet change cannot leak into it.
+    #   * ABSOLUTE numbers are NOT comparable with anything recorded on the
+    #     old runner. Nothing consumes them that way -- the cached-baseline
+    #     design that did was removed -- but raw ns/op read out of an old log
+    #     is a different machine's number.
+    #   * NOISE was characterised on hardware this job no longer uses, and the
+    #     env block above now says so rather than presenting stale figures as
+    #     current. The backstop for "this pool is too noisy to adjudicate" is
+    #     BENCH_VARIANCE_CEILING_PCT, which reports UNMEASURABLE and exits 3
+    #     ("re-measure") instead of returning a verdict it cannot support.
     #
-    # `vars.BENCH_RUNNER` is an escape hatch: if the ARM pool is unavailable
-    # the runner can be repointed from repo settings without a code change.
-    # It is safe to flip because both arms are measured in this job on
-    # whatever runner it lands on -- a swap changes the absolute numbers but
-    # never compares across architectures. It cannot move the benchmark-name
-    # suffix either, because GOMAXPROCS is pinned at the workflow level; see
-    # the note there for why that matters.
+    # A standard label also retires the reachability hazard this job was
+    # bitten by: an earlier revision named ubuntu-arm-4core-150gb, which
+    # substrate uses but elps cannot reach, and the job sat queued across five
+    # pushes -- silently, because a job that never starts reports no status to
+    # fail on. The queue-watchdog above stays anyway, because the override
+    # below can still name an unreachable label.
+    #
+    # `vars.BENCH_RUNNER` remains the escape hatch: if this pool is
+    # unavailable or too noisy, the runner can be repointed from repo settings
+    # without a code change. NOTE THAT IT WINS OVER THIS DEFAULT -- if the
+    # repo variable is currently set to the old runner, this line changes
+    # nothing until the variable is cleared or updated. It is safe to flip
+    # because both arms are measured in this job on whatever runner it lands
+    # on; a swap changes the absolute numbers but never compares across
+    # architectures. It cannot move the benchmark-name suffix either, because
+    # GOMAXPROCS is pinned at the workflow level.
     #
     # NOTE: `runs-on` cannot read the `env` context, which is why this is a
     # literal plus a `vars` override rather than a workflow-level env var.
-    runs-on: ${{ vars.BENCH_RUNNER || '2vcpu-ubuntu-2204-arm' }}
+    runs-on: ${{ vars.BENCH_RUNNER || 'ubuntu-24.04-arm' }}
     # 45 minutes against an observed 10m25s for BENCH_COUNT=10 interleaved
-    # rounds on the 2vcpu ARM runner. Deliberately loose -- benchmark wall time
-    # legitimately moves with the runner and with how many benchmarks the tree
-    # carries, and this bound exists to stop a hang holding the required check
-    # open, not to police benchmark duration. If it ever fires, read it as "the
-    # job wedged", not "the benchmarks got slower"; the budget to re-derive is
-    # BENCH_COUNT, not this number.
+    # rounds -- measured on the previous 2vcpu ARM runner, so treat it as an
+    # order of magnitude rather than a current figure. Deliberately loose --
+    # benchmark wall time legitimately moves with the runner and with how many
+    # benchmarks the tree carries, and this bound exists to stop a hang holding
+    # the required check open, not to police benchmark duration. If it ever
+    # fires, read it as "the job wedged", not "the benchmarks got slower"; the
+    # budget to re-derive is BENCH_COUNT, not this number.
     timeout-minutes: 45
     steps:
       # Two working trees, measured on the SAME runner in the SAME job. This
@@ -395,7 +472,11 @@ jobs:
   # green rather than red.
   required:
     name: "Required: benchmark"
-    runs-on: ubuntu-latest
+    # ARM for the reason on elps.yml's lint-and-test job. Note this is the
+    # PLAIN label, not `vars.BENCH_RUNNER`: the aggregate must report even
+    # when the override points somewhere unreachable, which is the entire
+    # scenario the watchdog above exists for.
+    runs-on: ubuntu-24.04-arm
     # 5 minutes against an observed 6s (checkout plus one bash assertion).
     # This is the job whose NAME is in branch protection, so it is the one job
     # here for which "stuck in_progress" and "blocks the PR forever" are the
