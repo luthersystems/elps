@@ -26,6 +26,13 @@ func Not(v *LVal) bool {
 // and all lists are turned into slices.  Symbols are converted to strings.
 // The value Nil() is converted to nil.  Functions are returned as is.
 //
+// A bytes value is returned as a []byte that COPIES the lisp value's storage,
+// so writing to it cannot be observed through the original (issue #548).  The
+// cost is proportional to the length; see the LBytes arm of goValueNode for
+// why the copy is not optional.  A native value is the opposite case and is
+// returned BY REFERENCE: the payload is the embedder's own, so GoValue hands
+// back what the caller already owns.
+//
 // NOTE:  These semantics may change.  It's unclear what the exact need is in
 // corner cases.
 func GoValue(v *LVal) interface{} {
@@ -73,7 +80,62 @@ func (v *LVal) goValueNode(g cycleGuard) interface{} {
 	case LSymbol, LString:
 		return v.Str
 	case LBytes:
-		return v.Bytes
+		// v.Bytes is a METHOD, not a field (lisp/lisp.go), so the obvious
+		// `return v.Bytes` handed the embedder a func() []byte where every
+		// other arm of this switch returns plain data.  It type-checks,
+		// because the arm's result is interface{}, and only fails at use --
+		// which is why it survived (issue #548).  libjson's Serializer had
+		// the identical arm and the identical bug; both are fixed.
+		//
+		// The result is a COPY, and the reason is WHOSE DATA IT IS rather
+		// than any blanket no-aliasing rule: GoValue's doc comment does not
+		// promise one, and the LNative arm below hands its payload straight
+		// back uncopied.  That is right for LNative -- the payload is the
+		// EMBEDDER's, so returning it shares what they already own.  An
+		// LBytes is the other case: its bytes live in a *[]byte under Native
+		// so append! can grow them in place, so the storage is the
+		// INTERPRETER's and lisp code observes writes through it.
+		//
+		// Two concrete failures, neither of which needs that framing to bite:
+		//
+		//   - append! REPLACES the slice header (builtinAppendMutate ->
+		//     appendMutateBytes assigns through the *[]byte), so a live slice
+		//     handed out before an append is silently STALE afterwards:
+		//     right contents, wrong length, no error.
+		//   - (slice 'bytes ...) mints a distinct LBytes over the SAME
+		//     backing array, so a write through one live result corrupts its
+		//     siblings.
+		//
+		// Ownership, not seal: sealableNodeType (lisp/seal.go) does not
+		// include LBytes, so a bytes value is never sealed and only the
+		// ownership invariant is in play.
+		//
+		// COST: O(len).  This is the only LEAF arm here that is unbounded --
+		// NOT the only unbounded arm, which an earlier draft of this comment
+		// claimed and which is wrong: LSExpr, LSortMap and LArray all scale
+		// with their input and cost far more (a 65k-entry sorted map runs to
+		// ~150ms and tens of megabytes).  What is unusual here is copying
+		// PAYLOAD rather than building a container spine.
+		//
+		// Magnitudes on the authoring machine: tens of nanoseconds at 16
+		// bytes; hundreds of microseconds and a megabyte allocated at a
+		// megabyte; against single-digit nanoseconds and no allocation for
+		// an LNative carrying the same megabyte.  Magnitudes rather than
+		// figures on purpose -- the absolute numbers move by ~2x run to run
+		// on a shared box -- so BenchmarkGoValueBytes is where they live.
+		//
+		// One amplification worth knowing: N references to ONE LBytes inside
+		// a converted structure produce N copies, since each is converted
+		// where it is reached.  Strings do not do this (v.Str is shared).
+		//
+		// The cost is affordable because of who calls this: GoValue has no
+		// caller inside elps at all, so it is purely an embedder API, and a
+		// copy is what an embedder handing the result to something that
+		// outlives the call -- a logger, a queue, a serializer -- needs.
+		b := v.Bytes()
+		out := make([]byte, len(b))
+		copy(out, b)
+		return out
 	case LInt:
 		return v.Int
 	case LFloat:

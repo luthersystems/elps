@@ -34,3 +34,75 @@ func TestVectorGoValue(t *testing.T) {
 		}
 	}
 }
+
+// TestBytesGoValue pins what GoValue hands an embedder for an LBytes value.
+//
+// The bug this covers (#548) was `return v.Bytes` in goValueNode's LBytes
+// arm: Bytes is a METHOD, not a field, so the arm returned a bound method
+// value -- a func() []byte -- rather than the bytes.  The arm's result type
+// is interface{}, so it compiled, and every caller that only passed the
+// result along kept working; it failed at use, far from the mistake.
+//
+// Hence the assertion on the CONCRETE DYNAMIC TYPE.  A test that only did
+// reflect.DeepEqual against []byte would have caught this one, but a test
+// asserting the type says what the contract is: this arm returns data, like
+// every other arm.
+func TestBytesGoValue(t *testing.T) {
+	src := []byte("here I stand")
+	// Captured as a string BEFORE anything runs, and compared against
+	// throughout.  Bytes(src) stores a slice header over src's OWN backing
+	// array, so an assertion phrased against src after a mutation compares
+	// two values that both changed and passes whatever the code does --
+	// which is how the first draft of this test let a no-copy
+	// implementation through its own red-proof.  A string conversion copies.
+	want := string(src)
+	v := Bytes(src)
+
+	got := GoValue(v)
+	b, ok := got.([]byte)
+	if !ok {
+		t.Fatalf("GoValue of an LBytes returned %T, want []byte", got)
+	}
+	if string(b) != want {
+		t.Errorf("GoValue returned %q, want %q", b, want)
+	}
+
+	// The copy is the other half of the contract, and it is not cosmetic:
+	// an LBytes stores its bytes in a *[]byte under Native so append! can
+	// grow them in place, so handing back that backing would let an
+	// embedder mutate a live lisp value the kernel still owns.  goSlice and
+	// goMap build fresh containers for the same reason.
+	//
+	// Written as a mutation rather than a pointer comparison because that
+	// is the property that matters: whatever the aliasing, a write through
+	// the result must not be observable in the lisp value.
+	b[0] = 'H'
+	if after := string(v.Bytes()); after != want {
+		t.Errorf("writing through GoValue's result changed the lisp value to %q, want %q",
+			after, want)
+	}
+
+	// Empty and nil inputs go through the same path.  Bytes(nil) does NOT
+	// short-circuit in goValue -- IsNil() is (LSExpr && no Cells), and this
+	// value is LBytes -- so the arm really is reached.
+	//
+	// Asserting the type alone was too weak: an implementation returning
+	// some other zero-length or arbitrary slice for len(b)==0 passed it.
+	// Assert the length and emptiness too, and name which input failed, so
+	// a failure distinguishes {} from nil.
+	for _, empty := range []struct {
+		name string
+		in   []byte
+	}{{"empty", []byte{}}, {"nil", nil}} {
+		got := GoValue(Bytes(empty.in))
+		b, ok := got.([]byte)
+		if !ok {
+			t.Errorf("GoValue of %s LBytes returned %T, want []byte", empty.name, got)
+			continue
+		}
+		if len(b) != 0 {
+			t.Errorf("GoValue of %s LBytes returned %q (len %d), want a zero-length slice",
+				empty.name, b, len(b))
+		}
+	}
+}

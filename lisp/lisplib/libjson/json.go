@@ -709,7 +709,20 @@ func (s *Serializer) GoValue(v *lisp.LVal, stringNums bool) interface{} {
 		}
 		return v.Str
 	case lisp.LBytes:
-		return v.Bytes
+		// The same defect lisp.GoValue carried until issue #548: Bytes is a
+		// METHOD, so `return v.Bytes` hands back a func() []byte where every
+		// other arm returns data.  Found by an adversarial review of the fix
+		// to the other one, which had cited this method as "a different
+		// GoValue" without checking it for the same bug.
+		//
+		// Copied, for the reason lisp/embed.go's arm gives: the *[]byte
+		// under Native is the interpreter's storage, which lisp code
+		// observes writes through, and this method is exported and
+		// documented as kept for outside callers.
+		b := v.Bytes()
+		out := make([]byte, len(b))
+		copy(out, b)
+		return out
 	case lisp.LInt:
 		if stringNums {
 			return strconv.Itoa(v.Int)
