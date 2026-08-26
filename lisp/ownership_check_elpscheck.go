@@ -315,6 +315,35 @@ func checkNativeAffinity(rt *Runtime, payload interface{}) {
 	panic(ownershipViolation{msg: affinityViolationMessage(bound, rt, payload)})
 }
 
+// checkDetachedNativeUnbound asserts that a clone minted for a strict
+// detach carries no runtime binding.  detach is the sanctioned way to move
+// a value BETWEEN Runtimes, and CloneNative has no way to know the
+// destination, so unbound is the only answer a detached clone can give:
+// one still bound anywhere — most likely to the source, the exact tether
+// the transfer exists to sever — is the same bug class the fork-time check
+// catches, surfacing at the one other point where the kernel manufactures
+// a cross-runtime clone.  Without this, a binding-retaining clone rides
+// into the destination inside a container, below what the shallow use-time
+// check can see.  The panic value is ownershipViolation for the usual
+// reason: hard panic, never a catchable LError.
+func checkDetachedNativeUnbound(payload interface{}) {
+	b, ok := payload.(RuntimeBound)
+	if !ok {
+		return
+	}
+	bound := b.BoundRuntime()
+	if bound == nil {
+		return
+	}
+	panic(ownershipViolation{msg: fmt.Sprintf(
+		"native affinity violation: detached clone retains a runtime binding\n"+
+			"  payload type: %T\n"+
+			"  bound runtime: %p (package %s)\n"+
+			"a clone produced for detach must be unbound - CloneNative cannot know the"+
+			" destination runtime; see lisp/runtime_bound.go",
+		payload, bound, runtimePackageName(bound))})
+}
+
 // rethrowOwnershipViolation re-panics when r is an ownership violation.
 // env.eval's recover() calls it first so the violation stays a hard panic
 // instead of becoming a CondInternalPanic LError — an ownership bug found

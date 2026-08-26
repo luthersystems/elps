@@ -196,6 +196,100 @@ func TestRuntimeBound_ForkAcceptsRebindingClone(t *testing.T) {
 	}
 }
 
+// stickyNative is the bug class the detach-time check exists to catch: its
+// CloneNative COPIES the receiver's binding, so every clone stays tethered
+// to the runtime it came from.  Fork already rejects such a clone; detach
+// must too.
+type stickyNative struct {
+	rt *Runtime
+}
+
+func (b *stickyNative) BoundRuntime() *Runtime { return b.rt }
+
+func (b *stickyNative) CloneNative() interface{} { return &stickyNative{rt: b.rt} }
+
+// TestRuntimeBound_DetachRejectsBindingRetainingClone: a strict detach is a
+// cross-runtime transfer, and CloneNative cannot know the destination, so a
+// detached clone that retains a binding is a violation however deep the
+// native rides — here inside a list, below what any use-time check sees.
+func TestRuntimeBound_DetachRejectsBindingRetainingClone(t *testing.T) {
+	env := newForkTestEnv(t)
+	payload := &stickyNative{rt: env.Runtime}
+	orig := QExpr([]*LVal{Native(payload)})
+
+	// Not expectAffinityPanic: a detach violation names only the bound
+	// runtime, deliberately — there is no destination runtime to print.
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected a native-affinity panic, got none — the gate cannot fail")
+		}
+		v, ok := r.(ownershipViolation)
+		if !ok {
+			t.Fatalf("expected panic value of type ownershipViolation, got %T: %v", r, r)
+		}
+		if !strings.Contains(v.msg, "detached clone retains a runtime binding") ||
+			!strings.Contains(v.msg, "bound runtime") ||
+			!strings.Contains(v.msg, "stickyNative") {
+			t.Fatalf("panic message should name the retained binding and payload type; got:\n%s", v.msg)
+		}
+	}()
+	if _, err := orig.detach(); err != nil {
+		t.Fatalf("detach returned an error instead of panicking: %v", err)
+	}
+}
+
+// TestRuntimeBound_DetachAcceptsUnbindingClone is the sanctioned shape: a
+// clone that arrives unbound detaches cleanly, carrying no tether for the
+// destination to trip over.
+func TestRuntimeBound_DetachAcceptsUnbindingClone(t *testing.T) {
+	env := newForkTestEnv(t)
+	payload := &rebindingNative{rt: env.Runtime}
+
+	cp, err := Native(payload).detach()
+	if err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	clone, ok := cp.Native.(*rebindingNative)
+	if !ok {
+		t.Fatalf("detached payload has type %T, want *rebindingNative", cp.Native)
+	}
+	if clone == payload {
+		t.Fatal("detach shared the template's payload; CloneNative was not honored")
+	}
+	if clone.BoundRuntime() != nil {
+		t.Fatalf("detached clone carries a binding to %p; it must arrive unbound", clone.BoundRuntime())
+	}
+	if payload.BoundRuntime() != env.Runtime {
+		t.Fatal("detach mutated the original payload's binding")
+	}
+}
+
+// TestRuntimeBound_CopyKeepsBoundCloneUnchecked is the control that scopes
+// the detach-time rule to strict detach: the lisp `copy` builtin runs the
+// same walker WITHIN one runtime, where a clone keeping the copy's own
+// runtime binding is correct, so a binding-copying payload must deep-copy
+// without a panic.
+func TestRuntimeBound_CopyKeepsBoundCloneUnchecked(t *testing.T) {
+	env := newForkTestEnv(t)
+	payload := &stickyNative{rt: env.Runtime}
+
+	cp, err := Native(payload).deepCopy()
+	if err != nil {
+		t.Fatalf("deepCopy: %v", err)
+	}
+	clone, ok := cp.Native.(*stickyNative)
+	if !ok {
+		t.Fatalf("copied payload has type %T, want *stickyNative", cp.Native)
+	}
+	if clone == payload {
+		t.Fatal("deepCopy shared the payload; CloneNative was not honored")
+	}
+	if clone.BoundRuntime() != env.Runtime {
+		t.Fatal("the copy's clone lost its binding; within one runtime it should keep it")
+	}
+}
+
 // TestRuntimeBound_ForkChecksReplacerResult proves the fork-time check
 // applies to the RESOLVED payload whichever policy produced it.  The
 // template holds an unbound payload — a plain fork of it succeeds, which is

@@ -205,10 +205,13 @@ var (
 			`Returns a deep copy of value that shares no storage with it:
 			lists, vectors, sorted-maps and bytes are rebuilt with fresh
 			backing, recursively, so mutating the copy at any depth cannot
-			be observed through the original. Function and native values
-			are shared by reference, not copied: a lambda carried into the
-			copy still reads and writes the bindings it captured, so
-			calling one can be observed through the original. Strings and
+			be observed through the original. Function values are shared by
+			reference, not copied: a lambda carried into the copy still
+			reads and writes the bindings it captured, so calling one can
+			be observed through the original. Native values are also shared
+			by reference, unless the Go payload declares its own clone
+			protocol (lisp.NativeCloner), in which case the copy holds an
+			independent clone of the payload. Strings and
 			numbers are immutable values. Sharing between values inside the
 			input is preserved in the copy, including cycles; sharing of a
 			backing array between distinct values -- what cdr, rest and

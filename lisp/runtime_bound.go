@@ -32,6 +32,14 @@ package lisp
 //     from the template, whatever container it rides in, and checks each
 //     one against the fork's runtime.  That is the deep half, and it is
 //     what covers the natives use-time checking cannot see.
+//   - DETACH TIME — a strict detach is the kernel's other sanctioned
+//     cross-runtime transfer, and it clones a native through the same
+//     NativeCloner protocol.  CloneNative has no way to know the
+//     destination, so the one answer a detached clone can rightly give is
+//     unbound; a clone that retains any binding panics at the detach.
+//     (The lisp `copy` builtin uses the same walker within one runtime and
+//     is exempt: a copy's clone staying bound to the copy's own runtime is
+//     correct.)
 //
 // # Forking
 //

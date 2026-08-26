@@ -99,13 +99,20 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 		// only in its address (lisp/singleton.go).
 		return v, nil
 	}
+	// cloner is non-nil exactly when v is an LNative whose payload declares
+	// its own duplication protocol (lisp/fork.go) — the only authority on
+	// what copying an opaque handle means.  Captured here rather than
+	// re-asserted at the clone site below, so that a future change to the
+	// LNative arm that lets another payload through degrades into the
+	// payload switch's unexpectedNativeError instead of a type-assertion
+	// panic.
+	var cloner NativeCloner
 	switch v.Type {
 	case LNative:
-		if _, ok := v.Native.(NativeCloner); ok {
-			// The payload declares its own duplication protocol
-			// (lisp/fork.go), which is the only authority on what copying an
-			// opaque handle means.  Fall through to the general path; the
-			// payload is replaced with a clone below.
+		if c, ok := v.Native.(NativeCloner); ok {
+			// Fall through to the general path; the payload is replaced
+			// with a clone below.
+			cloner = c
 			break
 		}
 		if d.shareOpaque {
@@ -153,10 +160,17 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	// (lisp/fork.go): an embedder handle is the payload's business, and the
 	// switch below is about elps's OWN storage — the *[]byte behind LBytes,
 	// the *MapData behind LSortMap, the *CallStack behind LError — whose
-	// guards key off the elps type carrying them.  Only cloneable payloads
-	// reach here; the type switch above returned for every other LNative.
-	if v.Type == LNative {
-		cp.Native = v.Native.(NativeCloner).CloneNative()
+	// guards key off the elps type carrying them.
+	if cloner != nil {
+		clone := cloner.CloneNative()
+		if !d.shareOpaque {
+			// A strict detach is the sanctioned cross-runtime transfer, and
+			// CloneNative cannot know the destination, so the only clone
+			// that can be right is an unbound one.  Checked builds assert
+			// it (no-op in production; see lisp/runtime_bound.go).
+			checkDetachedNativeUnbound(clone)
+		}
+		cp.Native = clone
 	} else {
 		switch native := v.Native.(type) {
 		case nil:
