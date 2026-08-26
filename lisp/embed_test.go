@@ -82,12 +82,27 @@ func TestBytesGoValue(t *testing.T) {
 			after, want)
 	}
 
-	// Empty and nil inputs go through the same path; neither should return
-	// a func, and neither should panic.
-	for _, empty := range [][]byte{{}, nil} {
-		got := GoValue(Bytes(empty))
-		if _, ok := got.([]byte); !ok {
-			t.Errorf("GoValue of empty LBytes returned %T, want []byte", got)
+	// Empty and nil inputs go through the same path.  Bytes(nil) does NOT
+	// short-circuit in goValue -- IsNil() is (LSExpr && no Cells), and this
+	// value is LBytes -- so the arm really is reached.
+	//
+	// Asserting the type alone was too weak: an implementation returning
+	// some other zero-length or arbitrary slice for len(b)==0 passed it.
+	// Assert the length and emptiness too, and name which input failed, so
+	// a failure distinguishes {} from nil.
+	for _, empty := range []struct {
+		name string
+		in   []byte
+	}{{"empty", []byte{}}, {"nil", nil}} {
+		got := GoValue(Bytes(empty.in))
+		b, ok := got.([]byte)
+		if !ok {
+			t.Errorf("GoValue of %s LBytes returned %T, want []byte", empty.name, got)
+			continue
+		}
+		if len(b) != 0 {
+			t.Errorf("GoValue of %s LBytes returned %q (len %d), want a zero-length slice",
+				empty.name, b, len(b))
 		}
 	}
 }

@@ -42,7 +42,10 @@ func BenchmarkGoValueLeafArms(b *testing.B) {
 	}{
 		{"native-1MB", Native(make([]byte, 1024*1024))},
 		{"string", String("here I stand")},
-		{"int", Int(42)},
+		// Deliberately NOT a small int: Go boxes 0..255 from a static table,
+		// so Int(42) would measure that cache rather than the arm and read
+		// as 0 allocs where a real int costs one.
+		{"int", Int(1 << 20)},
 	}
 	for _, arm := range arms {
 		b.Run(arm.name, func(b *testing.B) {
