@@ -1160,6 +1160,234 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 	},
 }
 
+// AnalyzerDeprecated reports uses of symbols whose docstring marks them
+// deprecated, following the convention Go doc comments use: a docstring
+// paragraph beginning with "Deprecated:" (or "DEPRECATED:") deprecates the
+// symbol and the rest of the paragraph says what to use instead.
+// lisp.DeprecationNotice is the canonical detector.
+//
+// Every symbol kind semantic analysis records a docstring for is covered:
+// same-file defun/defmacro, workspace-scanned definitions, the compiled-in
+// builtins, special operators and macros, and the builtins an embedder
+// registers through a lisp.PackageRegistry (LintConfig.Registry).
+//
+// Requires semantic analysis (pass.Semantics != nil).
+var AnalyzerDeprecated = &Analyzer{
+	Name:     "deprecated",
+	Severity: SeverityWarning,
+	Semantic: true,
+	Doc:      "Report uses of symbols marked deprecated by their docstring.\n\nRequires semantic analysis (--workspace flag). A symbol is deprecated when a paragraph of its docstring begins with \"Deprecated:\", the same convention Go doc comments use; the rest of that paragraph is reported as the notice. Definitions are never flagged, only uses, and a use inside the body of a definition that is itself deprecated is not reported — deprecated code may call deprecated code.",
+	Run: func(pass *Pass) error {
+		if pass.Semantics == nil {
+			return nil
+		}
+		// Source spans of the definitions that are themselves deprecated. Go's
+		// rule is that deprecated code may use deprecated code, so references
+		// from inside those bodies are exempt. Built lazily: almost every file
+		// has no deprecated reference at all, and the LSP runs this on each
+		// keystroke.
+		var exempt byteSpans
+		exemptBuilt := false
+		passFile := analysis.NormalizePath(pass.Filename)
+
+		// References is a slice, in resolution order. Never iterate a Go map
+		// here: diagnostic order is part of the CLI's output contract and
+		// FuzzLintSource asserts two runs over the same bytes agree.
+		reported := make(map[int]bool)
+		for _, ref := range pass.Semantics.References {
+			if ref == nil || ref.Symbol == nil || ref.Source == nil {
+				continue
+			}
+			notice, ok := lisp.DeprecationNotice(ref.Symbol.DocString)
+			if !ok {
+				continue
+			}
+			// A configured MacroExpander analyzes expanded forms whose nodes
+			// come from the macro's defining file, not the file being linted.
+			// Their byte offsets are meaningless against this file -- reporting
+			// them misattributes the diagnostic, and testing them against this
+			// file's exemption spans can silently drop real findings. A
+			// deprecated use inside a macro template is reported when the
+			// template's own file is linted.
+			if analysis.NormalizePath(ref.Source.File) != passFile {
+				continue
+			}
+			if !exemptBuilt {
+				exempt = deprecatedBodySpans(pass.Exprs)
+				exemptBuilt = true
+			}
+			if exempt.contains(ref.Source.Pos) {
+				continue
+			}
+			// One use, one diagnostic. A call to a user macro is resolved
+			// twice -- analyzeCall records the head before trying expansion
+			// and resolveSymbol records it again -- and with an expander the
+			// two References need not share a node, so the key is the byte
+			// offset of the use, which they always share.
+			if ref.Source.Pos >= 0 {
+				if reported[ref.Source.Pos] {
+					continue
+				}
+				reported[ref.Source.Pos] = true
+			}
+			// Name it as the reference site spells it, so a qualified use
+			// reports 'pkg:name' rather than the bare symbol.
+			name := ref.Symbol.Name
+			if ref.Node != nil && ref.Node.Type == lisp.LSymbol && ref.Node.Str != "" {
+				name = ref.Node.Str
+			}
+			msg := fmt.Sprintf("use of deprecated %s '%s'", deprecatedKind(ref.Symbol.Kind), name)
+			if notice != "" {
+				msg += ": " + notice
+			}
+			// A builtin has no declaration to point at, and neither does a
+			// symbol whose location was synthesised rather than scanned
+			// (Location.Pos < 0 is the "no position" spelling token.Location
+			// itself uses). Both leave the diagnostic with only its message.
+			decl := ref.Symbol.Source
+			if decl != nil && decl.Pos < 0 {
+				decl = nil
+			}
+			// No hand-written nolint note: the CLI appends the suppression
+			// hint to every diagnostic (cmd/diagnostic.go), and no other
+			// analyzer duplicates it.
+			var notes []string
+			if decl != nil {
+				notes = []string{"deprecated at " + sourceString(decl)}
+			}
+			pass.Report(Diagnostic{
+				Message:    msg,
+				Pos:        posFromSource(ref.Source),
+				EndPos:     endPosFromNode(ref.Node),
+				Notes:      notes,
+				Related:    relatedFromSource(decl, "deprecated declaration here"),
+				Deprecated: true,
+			})
+		}
+		return nil
+	},
+}
+
+// deprecatedKind renders a symbol kind for the deprecated diagnostic. It is
+// deliberately not analysis.SymbolKind.String(): that spells SymSpecialOp
+// "special-op", which reads as an identifier rather than prose in a sentence.
+func deprecatedKind(k analysis.SymbolKind) string {
+	switch k {
+	case analysis.SymFunction:
+		return "function"
+	case analysis.SymMacro:
+		return "macro"
+	case analysis.SymBuiltin:
+		return "builtin"
+	case analysis.SymSpecialOp:
+		return "special operator"
+	default:
+		return "symbol"
+	}
+}
+
+// byteSpan is a half-open [start, end) range of byte offsets into the file
+// being linted.
+type byteSpan struct {
+	start int
+	end   int
+}
+
+// byteSpans is a sorted, non-overlapping set of source spans.
+type byteSpans []byteSpan
+
+// contains reports whether the byte offset pos falls inside any span.
+func (s byteSpans) contains(pos int) bool {
+	if pos < 0 || len(s) == 0 {
+		return false
+	}
+	// The first span that could contain pos is the last one starting at or
+	// before it.
+	i := sort.Search(len(s), func(i int) bool { return s[i].start > pos })
+	if i == 0 {
+		return false
+	}
+	return pos < s[i-1].end
+}
+
+// deprecatedBodySpans returns the source spans of the defun/defmacro forms in
+// exprs whose own docstring is deprecated.
+//
+// Suppression is keyed on source position rather than on node identity because
+// the two ASTs an analyzer sees are two separate parses of the same bytes:
+// LintFileWithContext parses pass.Exprs with the format-preserving parser,
+// while pass.Semantics was analyzed over a plain parse (LintFileWithAnalysis).
+// No *lisp.LVal is ever shared between them, so a node-identity set would
+// silently match nothing. Byte offsets are assigned by the shared scanner and
+// do agree.
+//
+// The returned spans are sorted and non-overlapping: the walk stops descending
+// at the first deprecated definition it finds, so a deprecated definition
+// nested inside another contributes no span of its own.
+func deprecatedBodySpans(exprs []*lisp.LVal) byteSpans {
+	var spans byteSpans
+	for _, expr := range exprs {
+		spans = collectDeprecatedSpans(expr, spans)
+	}
+	// The end is part of the ordering only so that two spans sharing a start
+	// -- which disjoint spans cannot produce, but a fault-tolerant parse of
+	// malformed source might -- still sort into one fixed order. sort.Slice is
+	// not stable, and contains() reads the last span starting at or before the
+	// offset, so an ambiguous order would be an ambiguous answer.
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i].start != spans[j].start {
+			return spans[i].start < spans[j].start
+		}
+		return spans[i].end < spans[j].end
+	})
+	return spans
+}
+
+// collectDeprecatedSpans appends the span of every deprecated definition at or
+// below v to spans.
+//
+// The traversal is hand-rolled rather than astutil.Walk because Walk stops at
+// a quasiquote — but analysis.resolveTemplateSymbol resolves symbols inside
+// templates and records References for them, so a macro's template body does
+// produce references. Suppression has to cover the same source a reference can
+// come from, or a deprecated macro whose template calls a deprecated function
+// would report against itself.
+func collectDeprecatedSpans(v *lisp.LVal, spans byteSpans) byteSpans {
+	if v == nil {
+		return spans
+	}
+	if isDeprecatedDefinition(v) {
+		// A definition with untracked offsets yields no span: the check then
+		// reports uses inside it, which is the conservative direction.
+		if loc := astutil.SourceLoc(v); loc != nil && loc.EndPos > loc.Pos {
+			return append(spans, byteSpan{start: loc.Pos, end: loc.EndPos})
+		}
+		return spans
+	}
+	for _, cell := range v.Cells {
+		spans = collectDeprecatedSpans(cell, spans)
+	}
+	return spans
+}
+
+// isDeprecatedDefinition reports whether v is a defun/defmacro whose own
+// docstring is deprecated. The docstring is read through
+// analysis.DefunDocstring, the same function that fills the DocString this
+// check reads off a reference's symbol -- so the definition a use is
+// suppressed inside is judged by exactly the rule that deprecated it.
+func isDeprecatedDefinition(v *lisp.LVal) bool {
+	if v == nil || v.Type != lisp.LSExpr || v.IsQuoted() {
+		return false
+	}
+	switch astutil.HeadSymbol(v) {
+	case "defun", "defmacro":
+	default:
+		return false
+	}
+	_, ok := lisp.DeprecationNotice(analysis.DefunDocstring(v))
+	return ok
+}
+
 // AnalyzerNames returns a sorted list of all default analyzer names.
 func AnalyzerNames() []string {
 	analyzers := DefaultAnalyzers()

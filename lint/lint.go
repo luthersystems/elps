@@ -268,6 +268,10 @@ type Diagnostic struct {
 	// Unnecessary marks the diagnostic as "unnecessary" code (e.g., unused
 	// variables). Editors may render these with faded text.
 	Unnecessary bool `json:"unnecessary,omitempty"`
+
+	// Deprecated marks the diagnostic as a use of deprecated code. Editors
+	// may render the flagged range with strikethrough text.
+	Deprecated bool `json:"deprecated,omitempty"`
 }
 
 // RelatedInformation describes an additional source location associated with a
@@ -828,5 +832,6 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerShadowing,
 		AnalyzerUserArity,
 		AnalyzerDuplicateDefinition,
+		AnalyzerDeprecated,
 	}
 }

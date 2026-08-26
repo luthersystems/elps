@@ -1773,6 +1773,43 @@ func TestHover_UndefinedSymbol(t *testing.T) {
 	assert.False(t, resp.Found, "hover on undefined symbol should return found=false")
 }
 
+// TestHover_DeprecatedBanner covers the deprecation banner the hover markdown
+// carries, mirroring the language server. Analysis reads a definition's
+// docstring from the leading string literal of the form, so the "Deprecated:"
+// paragraph opens with "\n\n" inside that one string.
+func TestHover_DeprecatedBanner(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.lisp")
+	content := `(defun old-fn (x) "Adds one to x.\n\nDeprecated: use new-fn instead." (+ x 1))`
+	writeTestFile(t, path, content)
+
+	srv := New(WithWorkspaceRoot(tmp))
+	_, resp, err := srv.service.hoverTool(context.Background(), nil, FileQueryInput{
+		Path:      path,
+		Line:      0,
+		Character: strings.Index(content, "old-fn") + 1,
+	})
+	require.NoError(t, err)
+	require.True(t, resp.Found)
+	assert.Equal(t, "old-fn", resp.SymbolName)
+	assert.Contains(t, resp.Markdown, "**Deprecated.** use new-fn instead.")
+	assert.Contains(t, resp.Markdown, "Adds one to x.",
+		"the banner must not replace the docstring")
+	assert.Less(t,
+		strings.Index(resp.Markdown, "**Deprecated.**"),
+		strings.Index(resp.Markdown, "Adds one to x."),
+		"the banner belongs above the docstring")
+}
+
+func TestHover_NoDeprecatedBannerForPlainDocString(t *testing.T) {
+	content := buildHoverContent(&analysis.Symbol{
+		Name:      "new-fn",
+		Kind:      analysis.SymFunction,
+		DocString: "Adds one to x.",
+	})
+	assert.NotContains(t, content, "**Deprecated.**")
+}
+
 func TestHotspots_TopZeroErrors(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.lisp")

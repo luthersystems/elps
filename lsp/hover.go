@@ -208,6 +208,16 @@ func buildHoverContent(sym *analysis.Symbol) string {
 		}
 	}
 
+	// Deprecation banner, between the signature and the docstring so it is
+	// the first thing read. lisp.DeprecationNotice is the canonical detector.
+	if notice, ok := lisp.DeprecationNotice(sym.DocString); ok {
+		if notice != "" {
+			fmt.Fprintf(&sb, "\n\n**Deprecated.** %s", notice)
+		} else {
+			sb.WriteString("\n\n**Deprecated.**")
+		}
+	}
+
 	// Docstring.
 	if sym.DocString != "" {
 		fmt.Fprintf(&sb, "\n\n%s", sym.DocString)

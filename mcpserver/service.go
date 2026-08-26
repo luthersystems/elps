@@ -1303,6 +1303,16 @@ func buildHoverContent(sym *analysis.Symbol) string {
 		}
 		b.WriteString(")\n```")
 	}
+	// Deprecation banner, between the signature and the docstring, mirroring
+	// the language server's hover. lisp.DeprecationNotice is the canonical
+	// detector.
+	if notice, ok := lisp.DeprecationNotice(sym.DocString); ok {
+		b.WriteString("\n\n**Deprecated.**")
+		if notice != "" {
+			b.WriteString(" ")
+			b.WriteString(notice)
+		}
+	}
 	if sym.DocString != "" {
 		b.WriteString("\n\n")
 		b.WriteString(sym.DocString)

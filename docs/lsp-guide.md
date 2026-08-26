@@ -7,6 +7,7 @@ ELPS source files. It supports any editor with LSP client capabilities.
 |----------------------|----------------------------------------------------|
 | Diagnostics          | Parse errors and lint warnings as you type          |
 | Hover                | Function signatures, docstrings, source locations   |
+| Deprecation          | Struck-through uses, hover banner, completion tag   |
 | Go to Definition     | Jump to defun/defmacro/set definition sites         |
 | Find References      | Find all uses of a symbol across the file           |
 | Document Symbols     | Outline of top-level definitions (defun, set, etc.) |
@@ -152,12 +153,19 @@ Two kinds of diagnostics are reported:
 Diagnostics can be suppressed with `; nolint:check-name` comments, the same
 syntax used by `elps lint`.
 
+Diagnostics from the `deprecated` check carry the LSP "deprecated" tag, so
+editors strike the use out instead of only underlining it. Unused-code
+diagnostics carry the "unnecessary" tag, which editors render as faded text.
+
 ### Hover
 
 Hovering over a symbol shows:
 
 - **Kind** (function, macro, variable, builtin, special operator, type)
 - **Signature** for callables (with `&optional`, `&rest`, `&key` annotations)
+- **Deprecation banner** — a **Deprecated.** line quoting the notice, shown
+  above the docstring when the symbol's documentation has a `Deprecated:`
+  paragraph
 - **Docstring** if available
 - **Source location** (file:line) for user-defined symbols
 
@@ -187,6 +195,9 @@ Two completion modes:
 
 2. **Package-qualified**: Type `package-name:` to get completions for all
    exported symbols in that package.
+
+Deprecated symbols are still offered, tagged deprecated so the editor renders
+them struck through in the completion list.
 
 Trigger characters: `(` and `:`.
 

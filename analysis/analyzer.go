@@ -151,15 +151,6 @@ func (a *analyzer) prescanDefun(expr *lisp.LVal, scope *Scope, kind SymbolKind, 
 		return
 	}
 
-	// Extract docstring
-	var docStr string
-	if astutil.ArgCount(expr) >= 3 && expr.Cells[3].Type == lisp.LString {
-		// Has body after docstring
-		if astutil.ArgCount(expr) >= 4 {
-			docStr = expr.Cells[3].Str
-		}
-	}
-
 	sym := &Symbol{
 		Name:      nameVal.Str,
 		Package:   pkg,
@@ -167,7 +158,7 @@ func (a *analyzer) prescanDefun(expr *lisp.LVal, scope *Scope, kind SymbolKind, 
 		Source:    astutil.SourceLoc(nameVal),
 		Node:      nameVal,
 		Signature: signatureFromFormals(formalsVal),
-		DocString: docStr,
+		DocString: DefunDocstring(expr),
 	}
 	scope.Define(sym)
 	a.result.Symbols = append(a.result.Symbols, sym)
@@ -475,13 +466,9 @@ func (a *analyzer) analyzeDefun(node *lisp.LVal, scope *Scope, kind SymbolKind, 
 	// Add parameters to body scope
 	a.addParams(formalsVal, bodyScope)
 
-	// Walk body (skip head, name, formals, and optional docstring)
-	bodyStart := 3
-	if astutil.ArgCount(node) >= 3 && node.Cells[3].Type == lisp.LString {
-		if astutil.ArgCount(node) >= 4 {
-			bodyStart = 4
-		}
-	}
+	// Walk body (skip head, name, formals, and the docstring's whole run of
+	// leading strings -- the same run DefunDocstring reads).
+	bodyStart := defunBodyStart + docstringRun(node, defunBodyStart)
 	for i := bodyStart; i < len(node.Cells); i++ {
 		a.analyzeExpr(node.Cells[i], bodyScope, currentPkg)
 	}
@@ -745,13 +732,9 @@ func (a *analyzer) analyzeLambda(node *lisp.LVal, scope *Scope, currentPkg strin
 	bodyScope := NewScope(ScopeLambda, scope, node)
 	a.addParams(formalsVal, bodyScope)
 
-	// Walk body (skip head, formals, optional docstring)
-	bodyStart := 2
-	if astutil.ArgCount(node) >= 2 && node.Cells[2].Type == lisp.LString {
-		if astutil.ArgCount(node) >= 3 {
-			bodyStart = 3
-		}
-	}
+	// Walk body (skip head, formals, and the docstring's run of leading
+	// strings)
+	bodyStart := lambdaBodyStart + docstringRun(node, lambdaBodyStart)
 	for i := bodyStart; i < len(node.Cells); i++ {
 		a.analyzeExpr(node.Cells[i], bodyScope, currentPkg)
 	}
