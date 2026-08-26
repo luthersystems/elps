@@ -35,7 +35,12 @@ concurrency:
 jobs:
   test:
     name: Tree-sitter Tests
-    runs-on: ubuntu-latest
+    # ARM for the reason spelled out on elps.yml's lint-and-test job.
+    # go-tree-sitter is cgo, but it COMPILES the grammar's C sources from the
+    # module rather than downloading a prebuilt object, and the image ships
+    # gcc for aarch64 -- so there is no arch-shaped artifact to be missing.
+    # Nothing here runs the npm/node-gyp side of tree-sitter-elps.
+    runs-on: ubuntu-24.04-arm
     # 20 minutes for a Go module download plus `go test ./...` over the
     # grammar package. A liveness bound, not a performance budget.
     timeout-minutes: 20
@@ -76,7 +81,8 @@ jobs:
   # green rather than red.
   required:
     name: "Required: tree-sitter"
-    runs-on: ubuntu-latest
+    # ARM for the reason on elps.yml's lint-and-test job.
+    runs-on: ubuntu-24.04-arm
     # 5 minutes for one bash assertion over `needs` results.
     timeout-minutes: 5
     needs: [test]

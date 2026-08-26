@@ -8,7 +8,17 @@ on:
 jobs:
   build-binaries:
     name: Build elps (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    # ARM for the reason spelled out on elps.yml's lint-and-test job -- this
+    # is the HOST the cross-compile runs on, and nothing else.
+    #
+    # THE MATRIX BELOW IS THE SHIPPED ARTIFACT SET AND MUST NOT FOLLOW IT.
+    # Every leg sets GOOS/GOARCH explicitly with CGO_ENABLED=0, so the same
+    # four binaries (linux-x64, linux-arm64, darwin-x64, darwin-arm64) come
+    # out of an ARM host exactly as they did out of an x64 one. Go's linker
+    # and the whole toolchain cross-compile natively; there is no
+    # host-architecture ingredient in a CGO_ENABLED=0 build. Changing a
+    # `goarch:` here would drop a platform for real users.
+    runs-on: ubuntu-24.04-arm
     # A cross-compile per matrix leg. 20 minutes is a liveness bound: the
     # `go build` is seconds, but Go module download reaches the network and
     # this workflow gates a release, so a wedged leg stalls the publish with
@@ -57,7 +67,15 @@ jobs:
   publish-platform:
     name: Publish (${{ matrix.target }})
     needs: build-binaries
-    runs-on: ubuntu-latest
+    # ARM for the reason on elps.yml's lint-and-test job. `--target` below is
+    # the VS Code platform package being published, NOT the host: it is a
+    # label vsce writes into the VSIX, so it is unaffected. The npm side is
+    # arch-clean too -- esbuild resolves a per-platform optional dependency,
+    # and editors/vscode/package-lock.json carries @esbuild/linux-arm64 (it
+    # records every platform package regardless of where it was generated), so
+    # `npm ci` installs rather than failing with "installed for another
+    # platform".
+    runs-on: ubuntu-24.04-arm
     # `npm ci` and `npx vsce publish` both talk to third-party registries
     # (npm, the VS Code Marketplace) which can and do hang. 20 minutes turns
     # that into a red leg instead of a release that never finishes.
@@ -110,7 +128,9 @@ jobs:
   publish-universal:
     name: Publish (universal)
     needs: build-binaries
-    runs-on: ubuntu-latest
+    # ARM for the reason on elps.yml's lint-and-test job; same npm/esbuild
+    # note as publish-platform above.
+    runs-on: ubuntu-24.04-arm
     # Same third-party-registry exposure as publish-platform above.
     timeout-minutes: 20
     steps:

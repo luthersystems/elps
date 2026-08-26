@@ -32,7 +32,16 @@ permissions:
 
 jobs:
   govulncheck:
-    runs-on: ubuntu-latest
+    # ARM for the reason spelled out on elps.yml's lint-and-test job -- and
+    # see the note in .github/workflows/govulncheck.yml on why the scan's
+    # verdict does not depend on the host architecture.
+    #
+    # One thing here DOES: the binary-mode pass builds each main package and
+    # scans the artifact, so on this runner it scans a linux/arm64 elps rather
+    # than a linux/amd64 one. That is the right direction -- ARM is what the
+    # consumers pinning this module ship -- and source mode, which is the
+    # broader of the two, is arch-independent regardless.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
       # SHA-pinned, and reusing SHAs already present elsewhere in this tree, so
