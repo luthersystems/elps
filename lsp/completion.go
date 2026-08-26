@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/lisp"
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 )
@@ -97,6 +98,9 @@ func (s *Server) packageCompletions(doc *Document, pkgName, partial string) []pr
 					Value: ext.DocString,
 				}
 			}
+			if _, deprecated := lisp.DeprecationNotice(ext.DocString); deprecated {
+				item.Tags = []protocol.CompletionItemTag{protocol.CompletionItemTagDeprecated}
+			}
 			items = append(items, item)
 		}
 	}
@@ -137,6 +141,9 @@ func (s *Server) scopeCompletions(doc *Document, line, col int, prefix string) [
 				Kind:  protocol.MarkupKindMarkdown,
 				Value: sym.DocString,
 			}
+		}
+		if _, deprecated := lisp.DeprecationNotice(sym.DocString); deprecated {
+			item.Tags = []protocol.CompletionItemTag{protocol.CompletionItemTagDeprecated}
 		}
 		items = append(items, item)
 	}

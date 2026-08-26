@@ -470,6 +470,47 @@ diags, err := l.LintFiles(&lint.LintConfig{
 Without the `Registry` field, the linter only knows about stdlib symbols and
 will report false positives for embedder-provided bindings.
 
+### Deprecating a builtin
+
+An embedder retires a Go builtin the way Go retires an identifier: a docstring
+paragraph beginning `Deprecated:` (or `DEPRECATED:`) marks the function, and
+the rest of that paragraph says what to call instead. Register the builtin with
+`elpsutil.FunctionDoc` so the docstring reaches the runtime — any definition
+type with a `Docstring() string` method carries it the same way.
+
+```go
+import (
+    "github.com/luthersystems/elps/elpsutil"
+    "github.com/luthersystems/elps/lisp"
+)
+
+env.AddBuiltins(true,
+    elpsutil.FunctionDoc("blend-paths", lisp.Formals("a", "b"), blendPaths,
+        "Combines two paths into one.\n\nDeprecated: use join-paths instead."),
+    elpsutil.FunctionDoc("join-paths", lisp.Formals("a", "b"), joinPaths,
+        "Combines two paths into one."),
+)
+```
+
+Lint the embedded lisp sources with that environment's registry — the same
+`LintConfig` as above — and the `deprecated` check reports every call site,
+quoting the notice:
+
+```go
+diags, err := l.LintFiles(&lint.LintConfig{
+    Workspace: workspaceDir,
+    Registry:  env.Runtime.Registry,
+}, files)
+// paths.lisp:1:2: use of deprecated function 'substrate:blend-paths':
+// use join-paths instead.
+```
+
+The check needs the registry: without it the builtin has no docstring to read
+and its call sites go unreported. Passing the same registry to the language
+server (`lsp.WithRegistry`) or the MCP server (`mcpserver.WithRegistry`) gives
+authors the same treatment in the editor — struck-through call sites, a
+**Deprecated.** banner on hover, and a deprecated tag in completion lists.
+
 ### Documentation
 
 The `libhelp` package provides rendering functions that accept any `*lisp.LEnv`.
