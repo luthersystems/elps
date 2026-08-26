@@ -4,6 +4,8 @@ package lint
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -124,4 +126,63 @@ func parseForGuard(t *testing.T, src string) []*lisp.LVal {
 	t.Helper()
 	return rdparser.New(token.NewScanner(lintFileA, bytes.NewReader([]byte(src)))).
 		ParseProgramFaultTolerant().Exprs
+}
+
+// TestLintFuzzSeedsReachDeprecated checks the corpus actually reaches the
+// `deprecated` check's REPORTING half, in both of the ways a docstring gets to
+// it: from the workspace scan of the neighbouring file, and from a definition
+// in the file being linted.
+//
+// It is the same hazard TestLintFuzzSeedsProduceDiagnostics guards in
+// aggregate, sharpened for one analyzer. `deprecated` fires only on a docstring
+// carrying the marker, and a corpus of ordinary docstrings would run its whole
+// reference loop, report nothing, and leave the diagnostic it builds -- the
+// notice text, the kind word, the span suppression -- entirely unreached while
+// the seeds still looked healthy.
+func TestLintFuzzSeedsReachDeprecated(t *testing.T) {
+	deprecatedDiags := func(dir string, files ...string) []Diagnostic {
+		t.Helper()
+		linter := &Linter{Analyzers: DefaultAnalyzers()}
+		diags, err := linter.LintFiles(&LintConfig{Workspace: dir}, files)
+		require.NoError(t, err)
+		var found []Diagnostic
+		for _, d := range diags {
+			if d.Analyzer == AnalyzerDeprecated.Name {
+				found = append(found, d)
+			}
+		}
+		return found
+	}
+	write := func(dir, name, src string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(src), 0o600))
+		return path
+	}
+
+	t.Run("cross file", func(t *testing.T) {
+		dir := t.TempDir()
+		uses := write(dir, lintFileA, lintSeedUses)
+		write(dir, lintFileB, lintSeedDefs)
+		found := deprecatedDiags(dir, uses)
+		require.NotEmpty(t, found,
+			"the primary seed pair produces no deprecated diagnostic, so the check's"+
+				" reporting half is unreached from the corpus")
+		for _, d := range found {
+			assert.True(t, d.Deprecated, "the deprecated check must set Deprecated")
+		}
+	})
+
+	t.Run("same file", func(t *testing.T) {
+		dir := t.TempDir()
+		src := write(dir, lintFileA, "(in-package 'user)\n"+
+			"(defun old-fn (x) \"Deprecated: use new-fn instead.\" x)\n"+
+			"(defun also-old (y) \"Deprecated:\" (old-fn y))\n"+
+			"(old-fn 1)\n")
+		found := deprecatedDiags(dir, src)
+		require.Len(t, found, 1,
+			"expected exactly the top-level use: the declaration is not a use and the"+
+				" call from also-old's body is suppressed")
+		assert.Equal(t, 4, found[0].Pos.Line)
+	})
 }

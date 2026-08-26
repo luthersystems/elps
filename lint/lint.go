@@ -832,5 +832,6 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerShadowing,
 		AnalyzerUserArity,
 		AnalyzerDuplicateDefinition,
+		AnalyzerDeprecated,
 	}
 }

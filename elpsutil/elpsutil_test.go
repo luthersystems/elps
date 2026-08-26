@@ -5,6 +5,7 @@ package elpsutil_test
 import (
 	"testing"
 
+	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
@@ -372,4 +373,63 @@ func TestPackageLoader_SubstrateShape(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFunctionDoc_Docstring checks the constructor and the accessor. Builtin
+// must satisfy the unexported interface lisp checks for when it registers a
+// definition -- a duck-typed `interface{ Docstring() string }` -- which is why
+// the assertion is written against that shape rather than against the concrete
+// type.
+func TestFunctionDoc_Docstring(t *testing.T) {
+	const docs = "Blend two paths.\n\nDeprecated: use join-paths instead."
+
+	documented, ok := interface{}(elpsutil.FunctionDoc(
+		"blend-paths", lisp.Formals("a", "b"), nilFun, docs)).(interface{ Docstring() string })
+	require.True(t, ok, "*Builtin must satisfy the docstring interface lisp duck-types")
+	assert.Equal(t, docs, documented.Docstring())
+
+	// Function keeps working unchanged, with no documentation.
+	plain, ok := interface{}(elpsutil.Function(
+		"blend-paths", lisp.Formals("a", "b"), nilFun)).(interface{ Docstring() string })
+	require.True(t, ok)
+	assert.Empty(t, plain.Docstring())
+}
+
+// TestFunctionDoc_ReachesRegisteredValue follows the docstring all the way
+// along the path an embedder's linter run uses: FunctionDoc -> AddBuiltins ->
+// the registered LVal -> analysis.ExtractPackageExports -> the deprecation
+// detector. Every link is somebody else's code, so the round trip is the
+// assertion rather than the accessor on its own.
+func TestFunctionDoc_ReachesRegisteredValue(t *testing.T) {
+	const docs = "Blend two paths.\n\nDeprecated: use join-paths instead."
+
+	env := newTestEnv(t)
+	require.True(t, env.DefinePackage(lisp.Symbol("substrate")).IsNil())
+	require.True(t, env.InPackage(lisp.Symbol("substrate")).IsNil())
+	env.AddBuiltins(true,
+		elpsutil.FunctionDoc("blend-paths", lisp.Formals("a", "b"), nilFun, docs),
+		elpsutil.Function("join-paths", lisp.Formals("a", "b"), nilFun),
+	)
+	require.True(t, env.InPackage(lisp.String(lisp.DefaultUserPackage)).IsNil())
+
+	pkg := env.Runtime.Registry.Package("substrate")
+	require.NotNil(t, pkg)
+	val, ok := pkg.Symbol("blend-paths")
+	require.True(t, ok, "blend-paths should be registered")
+	assert.Equal(t, docs, val.Docstring(), "the docstring must reach the registered value")
+
+	exports := analysis.ExtractPackageExports(env.Runtime.Registry)
+	byName := make(map[string]analysis.ExternalSymbol)
+	for _, sym := range exports["substrate"] {
+		byName[sym.Name] = sym
+	}
+	require.Contains(t, byName, "blend-paths")
+	require.Contains(t, byName, "join-paths")
+
+	notice, deprecated := lisp.DeprecationNotice(byName["blend-paths"].DocString)
+	assert.True(t, deprecated, "the exported symbol must read as deprecated")
+	assert.Equal(t, "use join-paths instead.", notice)
+
+	_, deprecated = lisp.DeprecationNotice(byName["join-paths"].DocString)
+	assert.False(t, deprecated, "an undocumented builtin must not read as deprecated")
 }
