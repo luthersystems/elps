@@ -46,6 +46,21 @@ import "testing"
 // The fixtures are built once, outside the measured closure, so what is
 // counted is the builtin's own work.  Every builtin here is deterministic, so
 // AllocsPerRun's mean over its runs is the count itself.
+//
+// These counts are the only measurement most of these builtins get: the repo
+// has no benchmark that calls map, select, reject, zip, reverse, insert-index
+// or insert-sorted.  The four that a benchmark does reach agree with them
+// (interleaved n=10 against 63fc6b2, benchgate: 0 rows at threshold, 0
+// allocation regressions anywhere):
+//
+//	AliasSliceVector            allocs -9.07%, B/op -6.45%
+//	AliasConcatCopy             allocs -9.07%, B/op -2.04%
+//	AliasSliceThenAppendMutate  allocs -8.03%, B/op -3.17%
+//	AliasStableSortSliceView    allocs -0.05%, B/op -0.04%
+//
+// AliasSliceVector performs 1000 slices and drops exactly 2000 allocations,
+// which is the same 2-per-vector this test pins, arrived at from the other
+// end.
 func TestVectorBuiltinAllocations(t *testing.T) {
 	env := NewEnv(nil)
 	if rc := InitializeUserEnv(env); rc.Type == LError {
