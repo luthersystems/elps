@@ -63,19 +63,25 @@ import (
 // pre-hook ordering, pool-refill and test-runner patterns) and measured
 // numbers.
 
-// NativeCloner is the opt-in fork-time duplication protocol for native
+// NativeCloner is the kernel's opt-in duplication protocol for native
 // payloads, shared with the broader native-contract design of issue #383.
 // The kernel cannot copy an LVal's Native payload — it is an opaque
-// interface{} — so Fork shares payloads by reference by default.  A payload
-// type whose identity or state must NOT be shared between a template and
-// its forks (an accumulator, a stateful handle) implements NativeCloner;
-// Fork then stores the value returned by CloneNative in the forked LVal
-// instead of the shared reference.
+// interface{} — so every primitive that duplicates a value shares payloads
+// by reference by default.  A payload type whose identity or state must NOT
+// be shared with the duplicate (an accumulator, a stateful handle)
+// implements NativeCloner, and one implementation settles the question
+// everywhere the kernel copies a value: Fork, the lisp `copy` builtin
+// (deepCopy, lisp/copy.go) and detach (lisp/detach.go), which clones such a
+// payload rather than refusing it (issue #546).
 //
 // CloneNative must return a payload that is independent of the receiver:
-// mutations on either side must be invisible to the other.  It must not
-// retain references into the template's Runtime or LEnv tree — the clone
-// crosses a runtime boundary.
+// mutations on either side must be invisible to the other.  It must also
+// retain no reference into the Runtime or LEnv tree the receiver lives in:
+// Fork and detach both land the clone on a DIFFERENT runtime, where such a
+// reference reconnects the two trees the primitive exists to separate.
+// Under `copy` the duplicate stays inside one environment, so a payload
+// written for that path alone still has to meet the stricter bar to be
+// fork-safe.
 type NativeCloner interface {
 	CloneNative() interface{}
 }

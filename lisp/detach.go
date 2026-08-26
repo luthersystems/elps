@@ -40,10 +40,16 @@ import (
 // dropped (nil in the copy): it exists only while a debugger is attached and
 // its context holds unevaluated argument values inside the source runtime.
 //
-// Two shapes cannot be hermetically copied, and detach rejects them rather
-// than silently sharing state while claiming isolation:
+// Two shapes resist hermetic copying, and detach rejects them rather than
+// silently sharing state while claiming isolation:
 //
-//   - LNative values wrap arbitrary Go data that detach cannot clone.
+//   - LNative values wrap arbitrary Go data the kernel has no way to clone.
+//     A payload that implements NativeCloner (lisp/fork.go) is the carve-out:
+//     it has declared what its own duplicate is, and only the embedder can
+//     know that, so detach clones through the protocol and the value
+//     transfers.  The carve-out is strictly more permissive — it converts
+//     refusals into successes and leaves every value that already detached
+//     alone (issue #546).
 //   - LFun values.  A builtin holds a Go function; a lambda captures its
 //     defining LEnv and, through it, the whole source runtime.  Either way a
 //     by-value copy would smuggle the source runtime across the transfer.
@@ -71,11 +77,13 @@ type detacher struct {
 
 	// shareOpaque switches the walk from transfer semantics (detach) to
 	// within-env ownership semantics (deepCopy, lisp/copy.go): the two
-	// shapes that cannot be hermetically cloned — LFun and LNative — plus
-	// the process-wide singletons are returned by reference instead of
-	// rejected.  Every data container is still rebuilt with fresh backing
-	// either way; this flag only decides what happens at a leaf the
-	// kernel cannot clone.
+	// shapes that cannot be hermetically cloned — LFun and an LNative whose
+	// payload supplies no NativeCloner — plus the process-wide singletons
+	// are returned by reference instead of rejected.  A cloneable native is
+	// neither shared nor rejected in either mode: the payload's own protocol
+	// settles it before this flag is consulted.  Every data container is
+	// still rebuilt with fresh backing either way; this flag only decides
+	// what happens at a leaf the kernel cannot clone.
 	shareOpaque bool
 }
 
@@ -93,6 +101,13 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	}
 	switch v.Type {
 	case LNative:
+		if _, ok := v.Native.(NativeCloner); ok {
+			// The payload declares its own duplication protocol
+			// (lisp/fork.go), which is the only authority on what copying an
+			// opaque handle means.  Fall through to the general path; the
+			// payload is replaced with a clone below.
+			break
+		}
 		if d.shareOpaque {
 			return v, nil
 		}
@@ -133,33 +148,44 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	// The struct copy above aliased v.Native.  Every payload a detachable
 	// type is documented to carry is replaced with a hermetic copy; anything
 	// unrecognized is rejected rather than smuggled through.
-	switch native := v.Native.(type) {
-	case nil:
-	case *[]byte:
-		if v.Type != LBytes {
+	//
+	// LNative takes its own arm, mirroring the fork walker's dispatch
+	// (lisp/fork.go): an embedder handle is the payload's business, and the
+	// switch below is about elps's OWN storage — the *[]byte behind LBytes,
+	// the *MapData behind LSortMap, the *CallStack behind LError — whose
+	// guards key off the elps type carrying them.  Only cloneable payloads
+	// reach here; the type switch above returned for every other LNative.
+	if v.Type == LNative {
+		cp.Native = v.Native.(NativeCloner).CloneNative()
+	} else {
+		switch native := v.Native.(type) {
+		case nil:
+		case *[]byte:
+			if v.Type != LBytes {
+				return nil, unexpectedNativeError(v)
+			}
+			if native != nil {
+				b := make([]byte, len(*native))
+				copy(b, *native)
+				cp.Native = &b
+			}
+		case *MapData:
+			if v.Type != LSortMap {
+				return nil, unexpectedNativeError(v)
+			}
+			mdata, err := d.detachMapData(native)
+			if err != nil {
+				return nil, err
+			}
+			cp.Native = mdata
+		case *CallStack:
+			if v.Type != LError {
+				return nil, unexpectedNativeError(v)
+			}
+			cp.Native = detachCallStack(native)
+		default:
 			return nil, unexpectedNativeError(v)
 		}
-		if native != nil {
-			b := make([]byte, len(*native))
-			copy(b, *native)
-			cp.Native = &b
-		}
-	case *MapData:
-		if v.Type != LSortMap {
-			return nil, unexpectedNativeError(v)
-		}
-		mdata, err := d.detachMapData(native)
-		if err != nil {
-			return nil, err
-		}
-		cp.Native = mdata
-	case *CallStack:
-		if v.Type != LError {
-			return nil, unexpectedNativeError(v)
-		}
-		cp.Native = detachCallStack(native)
-	default:
-		return nil, unexpectedNativeError(v)
 	}
 
 	cells, err := d.detachCells(v.Cells)

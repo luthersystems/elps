@@ -38,6 +38,13 @@ package lisp
 //   - LNative: an opaque Go value the kernel cannot clone.  Sharing it is
 //     the same guarantee the rest of the language already gives it.
 //
+//     A payload implementing NativeCloner (lisp/fork.go) is the exception,
+//     and it is the payload's own doing: it has stated what a duplicate of
+//     itself is, so `copy` takes it at its word and the copy holds a clone
+//     rather than the original handle.  A stateful native that must not be
+//     shared with a copy therefore has exactly one lever to pull, and it is
+//     the same lever Fork and detach honour (issue #546).
+//
 //   - The three singletons (Nil(), Bool(true), Bool(false)) are shared,
 //     immutable, and unmutable from lisp; copying them would allocate a
 //     distinct value with no observable difference (see lisp/singleton.go).
