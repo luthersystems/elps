@@ -710,29 +710,27 @@ var implicitPrognForms = map[string]int{
 	"progn":          1, // (progn body...) — nested progn
 }
 
-// AnalyzerUnnecessaryProgn warns when progn is used as the sole body
-// expression in a form that already supports multiple body expressions.
 // AnalyzerUnwindProtectCleanup warns when unwind-protect is given no cleanup
 // forms, which makes it a no-op wrapper around its protected form.
 //
 // The operator's whole purpose is the cleanup, so a call without one is
 // always a mistake rather than a style choice -- and it is a QUIET one: the
 // program still runs and still returns the protected form's value, so
-// nothing at runtime distinguishes it from the bare form.
-//
-// The shape this catches is the natural typo for someone who expects
-// progn-like grouping:
-//
-//	(unwind-protect (acquire) (body) (release))
-//
-// which reads as "do these three, releasing at the end" but actually
-// protects only (acquire) and treats the other two as cleanup.  Its sibling
+// nothing at runtime distinguishes it from the bare form.  The shape it
+// catches is
 //
 //	(unwind-protect (progn (acquire) (body) (release)))
 //
-// protects everything and cleans up nothing.  Both run; neither guarantees
-// anything.  Arity alone cannot catch the second -- builtin-arity is
-// satisfied by one argument -- so it needs a check of its own.
+// which protects everything and cleans up nothing.  builtin-arity cannot see
+// it -- one argument satisfies the formals -- so it needs a check of its own.
+//
+// It deliberately does NOT flag the other misreading of the grouping,
+//
+//	(unwind-protect (acquire) (body) (release))
+//
+// which protects only (acquire).  That call is textually identical to a
+// legitimate one-protected/two-cleanup form, so flagging it would report
+// correct code; only the author knows which was meant.
 var AnalyzerUnwindProtectCleanup = &Analyzer{
 	Name:     "unwind-protect-cleanup",
 	Severity: SeverityWarning,
@@ -763,6 +761,8 @@ var AnalyzerUnwindProtectCleanup = &Analyzer{
 	},
 }
 
+// AnalyzerUnnecessaryProgn warns when progn is used as the sole body
+// expression in a form that already supports multiple body expressions.
 var AnalyzerUnnecessaryProgn = &Analyzer{
 	Name:     "unnecessary-progn",
 	Severity: SeverityInfo,

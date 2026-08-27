@@ -351,3 +351,46 @@ func TestUnwindProtectSuite(t *testing.T) {
 	}
 	elpstest.RunTestSuite(t, tests)
 }
+
+// TestUnwindProtectArity pins the arity contract at RUNTIME.
+//
+// opUnwindProtect indexes args.Cells[0] unguarded, which is safe only
+// because Formals declares the protected form as a required argument --
+// opIgnoreErrors defends itself with an explicit length check, this and
+// opHandlerBind do not.  Without this test a change to Formals would turn
+// (unwind-protect) into an index-out-of-range recovered as an
+// internal-panic, and the lisp suite would stay green: the only existing
+// zero-argument coverage is in lint, which tests the analyzer rather than
+// the evaluator.
+func TestUnwindProtectArity(t *testing.T) {
+	t.Parallel()
+	env := unwindTestEnv(t)
+
+	got := evalUnwind(t, env, `(unwind-protect)`)
+	require.Equal(t, lisp.LError, got.Type, "(unwind-protect) must be an arity error")
+	require.False(t, lisp.IsInternalPanic(got),
+		"the arity check must reject this, not an index-out-of-range recovered"+
+			" as a host panic: %v", got)
+	require.Contains(t, got.String(), "invalid number of arguments")
+}
+
+// TestUnwindProtectPanicThenMixedCleanup covers the row the decision table
+// leaves implicit: a panicked protected form whose cleanup forms SUCCEED
+// before one of them signals.  The successful forms must still run, and the
+// panic must still be what propagates.
+func TestUnwindProtectPanicThenMixedCleanup(t *testing.T) {
+	t.Parallel()
+	env := unwindTestEnv(t)
+	require.NotEqual(t, lisp.LError, evalUnwind(t, env, `(set 'trace (vector))`).Type)
+
+	got := evalUnwind(t, env, `
+		(unwind-protect (host-panic)
+		  (append! trace "a")
+		  (error 'cleanup-error "boom")
+		  (append! trace "c"))`)
+
+	require.True(t, lisp.IsInternalPanic(got),
+		"the panic must survive a cleanup form that signals after another succeeded")
+	require.Equal(t, `(vector "a")`, evalUnwind(t, env, `trace`).String(),
+		"cleanup forms before the signalling one must run, and those after it must not")
+}

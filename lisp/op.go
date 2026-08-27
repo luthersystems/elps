@@ -878,10 +878,30 @@ func opUnwindProtect(env *LEnv, args *LVal) *LVal {
 	// recovered panic.  That is the whole point of the operator -- the
 	// panic path is exactly the one the handler-bind workaround misses.
 	//
-	// Termination is not weakened by running work after an error.  The
-	// step counter is monotonic and the context error is sticky, so once a
-	// budget is spent every Eval below fails immediately; a cleanup form
-	// can no more loop forever than the protected form could.
+	// Running work after an error is not free, and the earlier claim here
+	// -- that a spent budget makes every Eval below fail immediately --
+	// was only true of the two budgets that are OFF by default.  maxSteps
+	// is 0 (unlimited) unless an embedder sets WithMaxSteps, and NewRuntime
+	// installs no context deadline; what IS on by default is
+	// MaxTailIterations and MaxHeightPhysical, and both are PER-FRAME.
+	// TailIterations lives on the top frame and the physical-height check
+	// recovers headroom as the stack unwinds, so each cleanup form starts
+	// with a fresh allowance.
+	//
+	// The consequence, measured at WithMaxTailIterations(1000): a spinning
+	// protected form plus three spinning cleanup forms turns 1001 loop
+	// turns into 2002, and N nested unwind-protects multiply it by N+1.  A
+	// cleanup form that RECURSES is worse than linear -- work grows as
+	// 2^(MaxHeightPhysical/2), which at the 25000 default does not finish.
+	//
+	// Two things keep this in proportion rather than making it a defect
+	// here.  The same amplification already existed through ignore-errors,
+	// which can nest identically and shows the same exponential curve; and
+	// an embedder that wants a hard ceiling has one in WithMaxSteps, which
+	// IS monotonic and does cut every path below.  What is new is only that
+	// the amplification now happens on a path with no catch in the program.
+	// Anyone retuning these budgets should know that, which is why it is
+	// written down instead of asserted away.
 	for _, c := range cleanup {
 		cval := env.Eval(c)
 		if cval.Type != LError {

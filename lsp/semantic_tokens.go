@@ -284,6 +284,8 @@ var specialOps = map[string]bool{
 	"assert-equal": true, "assert-nil": true, "assert-not-nil": true,
 	"test": true, "test-let": true,
 	"thread-first": true, "thread-last": true,
+	"function": true, "expr": true, "qualified-symbol": true,
+	"macrolet": true, "assert": true,
 }
 
 // classifySymbol determines the semantic token type for a symbol based on

@@ -1595,6 +1595,30 @@ runs in constant stack space for an unbounded number of iterations:
 (spin 500000)   ; constant stack space; evaluates to 'done
 ```
 
+**`unwind-protect` opts a loop out of this.** A frame that still owes cleanup
+forms cannot be elided, so a tail call wrapped in one consumes stack per
+iteration:
+
+```lisp
+(defun wrapped (n)
+  (if (= n 0) 'done (unwind-protect (wrapped (- n 1)) (release))))
+(wrapped 5000)     ; fine
+(wrapped 100000)   ; physical stack height exceeded maximum: 25001
+```
+
+This is inherent rather than a limitation of the implementation — the cleanup
+has to run after the recursive call returns, so the frame must survive it —
+and Common Lisp behaves the same way. It matters because the per-iteration
+acquire/release loop is the shape `unwind-protect` most invites. Put the
+bracket *outside* the loop where the resource allows it. Tail calls **inside**
+the protected form are unaffected and still collapse normally.
+
+Note also that the cleanup forms run under their own fresh per-frame budgets:
+`MaxTailIterations` and `MaxHeightPhysical` are counted per frame and recover
+as the stack unwinds, so cleanup work on an error path adds to what the
+protected form already spent rather than drawing from the same allowance. Only
+`WithMaxSteps` bounds the whole evaluation monotonically.
+
 ### Available Context Methods
 
 | Method | Purpose |

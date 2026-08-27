@@ -284,15 +284,17 @@ returns the same value, which is what makes this quiet. The cleanup forms
 come *after* the single protected form.
 
 ```lisp
-;; BAD — protects (acquire) and treats the rest as cleanup
-(unwind-protect (acquire) (body) (release))
-
 ;; BAD — protects everything, cleans up nothing
 (unwind-protect (progn (acquire) (body) (release)))
 
 ;; GOOD
 (unwind-protect (progn (acquire) (body)) (release))
 ```
+
+The other misreading of the grouping — `(unwind-protect (acquire) (body)
+(release))`, which protects only `(acquire)` — is **not** reported. It is
+textually identical to a legitimate call with one protected form and two
+cleanup forms, so flagging it would report correct code.
 
 `(unwind-protect)` with no arguments is left to `builtin-arity`, which
 already reports it.
