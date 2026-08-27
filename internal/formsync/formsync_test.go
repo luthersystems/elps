@@ -20,18 +20,27 @@
 // asserts the query COMPILES, which a stale-but-valid query does.
 //
 // The two grammars get the strictest treatment because they do the identical
-// job and there is no reason for them ever to differ.  Of the Go mirrors only
-// lsp/semantic_tokens.go is gated, in its own package where the table is
-// reachable without parsing source (lsp/semantic_tokens_drift_test.go).
+// job and there is no reason for them ever to differ.  The Go mirrors are
+// gated in their own packages, where the tables are reachable without parsing
+// source: lsp/semantic_tokens_drift_test.go and analysis/perf/local_drift_test.go.
 //
-// analysis/perf/local.go and internal/fuzzgen/fuzzgen.go are NOT gated, and
-// saying otherwise would be the same shape of untrue-comment this package
-// exists to prevent.  perf is already drifted -- isCallable is missing
-// lambda, quote and quasiquote, so the analyzer records a call edge for
-// (lambda ...) -- and closing it needs a judgement about that analyzer's
-// intent rather than a mechanical addition.  fuzzgen's list is a deliberate
-// SAMPLE ("keeps the minifier and formatter on the hot path"), not a mirror,
-// so it needs no gate at all.
+// internal/fuzzgen/fuzzgen.go is NOT gated, and saying otherwise would be the
+// same shape of untrue-comment this package exists to prevent.  Its list is a
+// deliberate SAMPLE ("keeps the minifier and formatter on the hot path"), not
+// a mirror, so it needs no gate at all.
+//
+// One correction worth keeping, since this file is where the claim was made:
+// perf's isCallable was reported as drifted, missing lambda, quote and
+// quasiquote and so recording a call edge for (lambda ...).  That was wrong.
+// scanExpr resolves all three in its own switch and returns ~20 lines before
+// isCallable is consulted, so their isCallable value is unreachable -- and
+// each case does strictly MORE than suppress an edge (quote and quasiquote
+// stop the descent so quoted data is never costed as code; lambda skips the
+// formals and scans the body at the caller's loop depth), none of which
+// isCallable can express, since it only chooses whether to emit an edge and
+// cannot stop the walk.  Adding them there would restate the fact in a second
+// place while the switch stayed load-bearing.  The gate pins the switch with
+// probes instead of restating it.
 //
 // Two limits worth knowing rather than discovering: a keyword shared by both
 // grammars but belonging to neither the op table nor a documented exemption
@@ -40,13 +49,14 @@
 // detected.
 //
 // A NOTE ON THE FAILURE MODE THIS FILE IS BUILT TO AVOID.  formatter's
-// TestRepoFileRoundTrip passes today while testing nothing: its globs resolve
-// outside the repository, and filepath.Glob reports no error for a pattern
-// that matches nothing, so it runs zero subtests and reports success.  Every
-// read below therefore locates the repository from this file's own path
-// (never a relative guess) and fails loudly on an empty or unrecognised
-// extraction, so a restructured grammar breaks this test instead of quietly
-// emptying it.
+// TestRepoFileRoundTrip used to pass while testing nothing: its globs
+// resolved outside the repository, and filepath.Glob reports no error for a
+// pattern that matches nothing, so it ran zero subtests and reported success.
+// (Fixed since -- it now locates the repo the same way this file does and
+// covers 21 files.)  Every read below therefore locates the repository from
+// this file's own path, never a relative guess, and fails loudly on an empty
+// or unrecognised extraction, so a restructured grammar breaks this test
+// instead of quietly emptying it.
 package formsync_test
 
 import (
