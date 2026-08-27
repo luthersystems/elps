@@ -1245,6 +1245,41 @@ In the above code double-not-number is handled by replacing the `(double x)`
 function call with the value 0, while any other error (like integer overflow)
 will be replaced with the string "ERROR DETECTED".
 
+#### A note on the name
+
+elps's `handler-bind` has Common Lisp's name but Common Lisp's `handler-case`
+semantics, and the difference explains a piece of this chapter that otherwise
+looks arbitrary.
+
+In Common Lisp the two forms are a deliberate pair. A `handler-bind` handler
+runs *at the signal point* with the stack still intact, and returning normally
+**declines** — the condition keeps searching for another handler. A
+`handler-case` handler runs *after* unwinding, and its value becomes the value
+of the whole form. (The same pairing exists for `restart-bind` and
+`restart-case`; the `-bind` suffix means the form binds handlers in dynamic
+scope, parallel to `let` binding variables.)
+
+elps has only the second behaviour:
+
+```lisp
+(handler-bind ((condition (lambda (c &rest _) 'handler-returned-this)))
+    (error 'boom "x"))
+; evaluates to 'handler-returned-this
+```
+
+In Common Lisp that would not return `'handler-returned-this` — the handler
+would decline and `'boom` would keep propagating. There is no `handler-case`
+in elps.
+
+**This is why `rethrow` exists.** With Common Lisp's `handler-bind` you never
+need it: a handler that returns normally already declines. Because elps's
+handler captures instead, declining has to be requested explicitly, which is
+what `rethrow` does and what the `rethrow-context` lint check polices. The
+three are one design decision, not three independent features.
+
+The name is kept for compatibility with existing code rather than because it
+is accurate.
+
 ### Rethrowing Errors
 
 Sometimes a handler needs to perform a side effect (such as logging or
