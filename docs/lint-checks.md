@@ -274,12 +274,41 @@ branch matches. While sometimes intentional, this is often an oversight.
   (error 'test "data"))
 ```
 
+### `unwind-protect-cleanup`
+
+**Flags `unwind-protect` with no cleanup forms.** (Severity: warning)
+
+`(unwind-protect form)` runs `form` and guarantees nothing, so it is
+indistinguishable from `form` alone — the program still runs and still
+returns the same value, which is what makes this quiet. The cleanup forms
+come *after* the single protected form.
+
+```lisp
+;; BAD — protects (acquire) and treats the rest as cleanup
+(unwind-protect (acquire) (body) (release))
+
+;; BAD — protects everything, cleans up nothing
+(unwind-protect (progn (acquire) (body) (release)))
+
+;; GOOD
+(unwind-protect (progn (acquire) (body)) (release))
+```
+
+`(unwind-protect)` with no arguments is left to `builtin-arity`, which
+already reports it.
+
 ### `unnecessary-progn`
 
 **Flags redundant `progn` wrappers.** (Severity: info)
 
 Forms like `defun`, `let`, `lambda`, and `handler-bind` already accept
 multiple body expressions, so wrapping them in `progn` is unnecessary.
+
+`unwind-protect` is the one form where this applies to only part of the
+call. Its cleanup forms are an implicit progn and are checked, but its
+**protected form** takes exactly one expression, so a `progn` there is
+load-bearing and is never flagged. Deleting it would silently change which
+forms are protected.
 
 ```lisp
 ;; BAD — progn is redundant

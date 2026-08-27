@@ -1236,7 +1236,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 18)
+	assert.Len(t, analyzers, 19)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -1256,6 +1256,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"unnecessary-progn",
 		"unused-function",
 		"unused-variable",
+		"unwind-protect-cleanup",
 		"user-arity",
 	}, names)
 }
@@ -1596,6 +1597,9 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"user-arity":           SeverityError,
 		"duplicate-definition": SeverityWarning,
 		"deprecated":           SeverityWarning,
+		// Warning, not info: unlike unnecessary-progn this is never a
+		// style preference -- the call guarantees nothing at all.
+		"unwind-protect-cleanup": SeverityWarning,
 	}
 	for _, a := range DefaultAnalyzers() {
 		want, ok := expected[a.Name]
@@ -3846,4 +3850,45 @@ func TestBuildAnalysisConfig_DoesNotMutateStdlibExportsBackingArray(t *testing.T
 			"BuildAnalysisConfig wrote into the caller's spare slice capacity at index %d", i)
 	}
 	assert.Equal(t, "caller-fn", syms[0].Name, "caller's own symbol was overwritten")
+}
+
+// unwind-protect-cleanup catches the quiet misuse of the new operator: a
+// call with no cleanup forms runs and returns normally, so nothing at
+// runtime distinguishes it from the protected form alone.
+
+func TestUnwindProtectCleanup_Positive(t *testing.T) {
+	diags := lintCheck(t, AnalyzerUnwindProtectCleanup, `(unwind-protect (do-work))`)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "no cleanup forms")
+	assertDiagOnLine(t, diags, 1, "no cleanup forms")
+}
+
+// The shape a reader most easily writes by mistake: everything wrapped in a
+// progn, so the operator protects all of it and cleans up nothing.  Arity
+// cannot see this one -- it has a perfectly legal single argument.
+func TestUnwindProtectCleanup_PrognWrapped(t *testing.T) {
+	diags := lintCheck(t, AnalyzerUnwindProtectCleanup,
+		`(unwind-protect (progn (acquire) (body) (release)))`)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "no cleanup forms")
+}
+
+func TestUnwindProtectCleanup_Negative(t *testing.T) {
+	assertNoDiags(t, lintCheck(t, AnalyzerUnwindProtectCleanup,
+		`(unwind-protect (do-work) (cleanup))`))
+	assertNoDiags(t, lintCheck(t, AnalyzerUnwindProtectCleanup,
+		`(unwind-protect (progn (a) (b)) (cleanup) (log))`))
+}
+
+// Zero arguments is an arity error, which builtin-arity already reports.
+// This analyzer stays quiet rather than double-reporting the same line.
+func TestUnwindProtectCleanup_LeavesArityToArityCheck(t *testing.T) {
+	assertNoDiags(t, lintCheck(t, AnalyzerUnwindProtectCleanup, `(unwind-protect)`))
+	assertHasDiag(t, lintCheck(t, AnalyzerBuiltinArity, `(unwind-protect)`),
+		"requires at least 1 argument")
+}
+
+func TestUnwindProtectCleanup_Nolint(t *testing.T) {
+	assertNoDiags(t, lintCheck(t, AnalyzerUnwindProtectCleanup,
+		`(unwind-protect (do-work)) ; nolint:unwind-protect-cleanup`))
 }

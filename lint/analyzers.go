@@ -706,12 +706,63 @@ var implicitPrognForms = map[string]int{
 	// Only the CLEANUP body is implicit-progn.  The protected form at index
 	// 1 takes exactly one expression, so a progn there is load-bearing.
 	"unwind-protect": 2, // (unwind-protect protected cleanup...)
-	"dotimes":       2, // (dotimes (var n) body...)
-	"progn":         1, // (progn body...) — nested progn
+	"dotimes":        2, // (dotimes (var n) body...)
+	"progn":          1, // (progn body...) — nested progn
 }
 
 // AnalyzerUnnecessaryProgn warns when progn is used as the sole body
 // expression in a form that already supports multiple body expressions.
+// AnalyzerUnwindProtectCleanup warns when unwind-protect is given no cleanup
+// forms, which makes it a no-op wrapper around its protected form.
+//
+// The operator's whole purpose is the cleanup, so a call without one is
+// always a mistake rather than a style choice -- and it is a QUIET one: the
+// program still runs and still returns the protected form's value, so
+// nothing at runtime distinguishes it from the bare form.
+//
+// The shape this catches is the natural typo for someone who expects
+// progn-like grouping:
+//
+//	(unwind-protect (acquire) (body) (release))
+//
+// which reads as "do these three, releasing at the end" but actually
+// protects only (acquire) and treats the other two as cleanup.  Its sibling
+//
+//	(unwind-protect (progn (acquire) (body) (release)))
+//
+// protects everything and cleans up nothing.  Both run; neither guarantees
+// anything.  Arity alone cannot catch the second -- builtin-arity is
+// satisfied by one argument -- so it needs a check of its own.
+var AnalyzerUnwindProtectCleanup = &Analyzer{
+	Name:     "unwind-protect-cleanup",
+	Severity: SeverityWarning,
+	Doc:      "Warn when `unwind-protect` is given no cleanup forms.\n\n`(unwind-protect form)` runs `form` and guarantees nothing, so it is indistinguishable from `form` alone. The cleanup forms come after the single protected form; wrap several protected forms in a `progn`.",
+	Run: func(pass *Pass) error {
+		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
+			if HeadSymbol(sexpr) != "unwind-protect" {
+				return
+			}
+			// One argument is the protected form and nothing else.  Zero
+			// arguments is an arity error that builtin-arity already
+			// reports, so leave it alone rather than double-reporting.
+			if ArgCount(sexpr) != 1 {
+				return
+			}
+			src := SourceOf(sexpr)
+			pass.Report(Diagnostic{
+				Message: "unwind-protect has no cleanup forms, so it guarantees nothing",
+				Pos:     posFromSource(astutil.SourceLoc(src)),
+				EndPos:  endPosFromNode(src),
+				Notes: []string{
+					"cleanup forms go after the protected form: (unwind-protect form cleanup...)",
+					"to protect several forms, wrap them in a progn",
+				},
+			})
+		})
+		return nil
+	},
+}
+
 var AnalyzerUnnecessaryProgn = &Analyzer{
 	Name:     "unnecessary-progn",
 	Severity: SeverityInfo,
