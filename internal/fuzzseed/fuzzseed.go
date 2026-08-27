@@ -238,14 +238,14 @@ func Adversarial() [][]byte {
 		"(defun f (x &optional y &rest z) (list x y z))",
 		"(let ([a 1] [b 2]) (+ a b))",
 		"(handler-bind ((condition (lambda (c) c))) (error 'x \"y\"))",
-		// unwind-protect, in the shapes that reach the tools rather than the
-		// evaluator: the formatter's header/body indent rule, the lint
-		// implicit-progn arity entry (which differs per slot -- a progn in
-		// the PROTECTED slot is load-bearing), and the LSP/minifier
-		// special-op branches.
-		"(unwind-protect (f) (g))",
-		"(unwind-protect (progn (a) (b)) (c) (d))",
-		"(unwind-protect (f))",
+		// with-cleanup, in the shapes that reach the tools rather than the
+		// evaluator: the formatter's spec/body indent rule, the lint
+		// implicit-progn arity entry, the with-cleanup-forms analyzer's two
+		// degenerate spellings, and the LSP/minifier special-op branches.
+		"(with-cleanup ((g)) (f))",
+		"(with-cleanup ((c) (d)) (a) (b))",
+		"(with-cleanup () (f))",
+		"(with-cleanup (g) (f))",
 		"(in-package 'foo)\n(export 'bar)\n(defun bar () ())",
 		"(defmacro m (x) (quasiquote (list (unquote x))))",
 		"#^(+ % 1)",

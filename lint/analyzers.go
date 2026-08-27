@@ -703,59 +703,75 @@ var implicitPrognForms = map[string]int{
 	"macrolet":      2, // (macrolet (bindings) body...)
 	"handler-bind":  2, // (handler-bind (bindings) body...)
 	"ignore-errors": 1, // (ignore-errors body...)
-	// Only the CLEANUP body is implicit-progn.  The protected form at index
-	// 1 takes exactly one expression, so a progn there is load-bearing.
-	"unwind-protect": 2, // (unwind-protect protected cleanup...)
-	"dotimes":        2, // (dotimes (var n) body...)
-	"progn":          1, // (progn body...) — nested progn
+	"with-cleanup":  2, // (with-cleanup (cleanup...) body...)
+	"dotimes":       2, // (dotimes (var n) body...)
+	"progn":         1, // (progn body...) — nested progn
 }
 
-// AnalyzerUnwindProtectCleanup warns when unwind-protect is given no cleanup
-// forms, which makes it a no-op wrapper around its protected form.
+// AnalyzerWithCleanupForms warns about two degenerate spellings of the
+// with-cleanup spec list, both of which run without complaint.
 //
-// The operator's whole purpose is the cleanup, so a call without one is
-// always a mistake rather than a style choice -- and it is a QUIET one: the
-// program still runs and still returns the protected form's value, so
-// nothing at runtime distinguishes it from the bare form.  The shape it
-// catches is
+// An EMPTY list makes the form a no-op wrapper around its body: it still
+// runs and still returns the same value, so nothing at runtime
+// distinguishes it from the body alone.
 //
-//	(unwind-protect (progn (acquire) (body) (release)))
+// A BARE SYMBOL in the list is the missing-paren mistake that let-bindings
+// catches for let, and it is the more dangerous of the two:
 //
-// which protects everything and cleans up nothing.  builtin-arity cannot see
-// it -- one argument satisfies the formals -- so it needs a check of its own.
+//	(with-cleanup (release h) (work))
 //
-// It deliberately does NOT flag the other misreading of the grouping,
-//
-//	(unwind-protect (acquire) (body) (release))
-//
-// which protects only (acquire).  That call is textually identical to a
-// legitimate one-protected/two-cleanup form, so flagging it would report
-// correct code; only the author knows which was meant.
-var AnalyzerUnwindProtectCleanup = &Analyzer{
-	Name:     "unwind-protect-cleanup",
+// parses as a spec list of two forms -- the symbol `release` and the symbol
+// `h` -- neither of which does anything.  The release never happens, and
+// the program behaves exactly as if the cleanup had been written correctly
+// right up until the body signals.  A real cleanup form is a call; a bare
+// symbol as one is always either this mistake or dead code.
+var AnalyzerWithCleanupForms = &Analyzer{
+	Name:     "with-cleanup-forms",
 	Severity: SeverityWarning,
-	Doc:      "Warn when `unwind-protect` is given no cleanup forms.\n\n`(unwind-protect form)` runs `form` and guarantees nothing, so it is indistinguishable from `form` alone. The cleanup forms come after the single protected form; wrap several protected forms in a `progn`.",
+	Doc:      "Warn about a with-cleanup spec list that is empty or holds a bare symbol.\n\nAn empty list guarantees nothing, so the form is indistinguishable from its body alone. A bare symbol is the missing-paren mistake -- `(with-cleanup (release h) ...)` runs neither `release` nor `h`, so the cleanup silently never happens.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
-			if HeadSymbol(sexpr) != "unwind-protect" {
+			if HeadSymbol(sexpr) != "with-cleanup" {
 				return
 			}
-			// One argument is the protected form and nothing else.  Zero
-			// arguments is an arity error that builtin-arity already
+			// Zero arguments is an arity error that builtin-arity already
 			// reports, so leave it alone rather than double-reporting.
-			if ArgCount(sexpr) != 1 {
+			if ArgCount(sexpr) < 1 {
 				return
 			}
-			src := SourceOf(sexpr)
-			pass.Report(Diagnostic{
-				Message: "unwind-protect has no cleanup forms, so it guarantees nothing",
-				Pos:     posFromSource(astutil.SourceLoc(src)),
-				EndPos:  endPosFromNode(src),
-				Notes: []string{
-					"cleanup forms go after the protected form: (unwind-protect form cleanup...)",
-					"to protect several forms, wrap them in a progn",
-				},
-			})
+			spec := sexpr.Cells[1]
+			if spec.Type != lisp.LSExpr {
+				// A non-list spec is the operator's own runtime error.
+				return
+			}
+			if len(spec.Cells) == 0 {
+				src := SourceOf(sexpr)
+				pass.Report(Diagnostic{
+					Message: "with-cleanup has no cleanup forms, so it guarantees nothing",
+					Pos:     posFromSource(astutil.SourceLoc(src)),
+					EndPos:  endPosFromNode(src),
+					Notes: []string{
+						"cleanup forms go in the first argument: (with-cleanup ((release h)) body...)",
+					},
+				})
+				return
+			}
+			for _, form := range spec.Cells {
+				if form.Type != lisp.LSymbol {
+					continue
+				}
+				src := SourceOf(form)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("cleanup form %q is a bare symbol and does nothing"+
+						" (missing parentheses?)", form.Str),
+					Pos:    posFromSource(astutil.SourceLoc(src)),
+					EndPos: endPosFromNode(src),
+					Notes: []string{
+						"the spec is a LIST of forms: (with-cleanup ((release h)) body...)",
+						"written as (with-cleanup (release h) ...) the cleanup never runs",
+					},
+				})
+			}
 		})
 		return nil
 	},

@@ -87,7 +87,7 @@
  (#any-of? @keyword
   "if" "cond" "and" "or" "progn"
   "set" "set!" "export" "use-package" "in-package"
-  "handler-bind" "ignore-errors" "unwind-protect"
+  "handler-bind" "ignore-errors" "with-cleanup"
   "dotimes" "assert"
   "thread-first" "thread-last"
   "quasiquote" "unquote" "unquote-splicing"

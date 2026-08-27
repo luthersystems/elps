@@ -6,12 +6,12 @@ jumps from 0.2.0 to 1.50.0.
 
 ## Unreleased
 
-- Language: new `unwind-protect` special operator -- `(unwind-protect form
-  cleanup...)` always runs the cleanup forms, whether the protected form
-  returned normally or signalled, and returns the protected form's value. It
-  does not catch: the error is still live once the cleanup has run. Syntax
-  highlighting, formatter indentation and the language server treat it as a
-  special operator.
+- Language: new `with-cleanup` special operator -- `(with-cleanup (cleanup...)
+  body...)` always runs the cleanup forms, whether the body returned normally
+  or signalled, and returns the last body value. It does not catch: the error
+  is still live once the cleanup has run. Both halves are implicit progns.
+  Syntax highlighting, formatter indentation and the language server treat it
+  as a special operator.
 
 ## 1.52.0
 

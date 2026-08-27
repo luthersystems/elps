@@ -1276,37 +1276,55 @@ error handling:
 ; Evaluates to '('recovered 'my-error)
 ```
 
-### Guaranteed Cleanup (`unwind-protect`)
+### Guaranteed Cleanup (`with-cleanup`)
 
 `handler-bind`, `rethrow` and `ignore-errors` all *catch*.  None of them can
-promise that a form runs on the way out.  `unwind-protect` is that promise:
+promise that a form runs on the way out.  `with-cleanup` is that promise:
 
 ```lisp
-(unwind-protect protected-form cleanup-form ...)
+(with-cleanup (cleanup-form ...) body-form ...)
 ```
 
-It evaluates the protected form, then **always** evaluates the cleanup forms
-— whether the protected form returned normally or signalled.  It returns the
-protected form's value; cleanup values are discarded.
+It evaluates the body forms, then **always** evaluates the cleanup forms —
+whether the body returned normally or signalled.  It returns the last body
+value; cleanup values are discarded.
 
 If you know `try`/`finally` from another language, this is `finally` with no
 `catch` clause.  If you know Go, it is `defer`.
 
 ```lisp
-(set 'in-step false)
-(unwind-protect
-  (progn (set! 'in-step true)
-         (run-the-body))          ; may signal
-  (set! 'in-step false))          ; runs regardless
+(with-cleanup ((release handle))
+  (acquire handle)
+  (do-some-work handle)
+  (do-more-work handle))
 ```
 
-Without it the flag leaks whenever the body signals and something upstream
+Without it the release leaks whenever the body signals and something upstream
 recovers, and the *next* caller sees state left behind by a call that already
 failed.
 
-Note that `unwind-protect` takes exactly **one** protected form.  Wrap several
-in a `progn`, as above.  The cleanup forms are an implicit `progn`, so they
-need no wrapper.
+The argument shape is `handler-bind`'s: a list of cleanup forms first, then the
+body as the remaining arguments.  Both halves are implicit `progn`s, so neither
+a multi-form body nor a multi-form cleanup needs a wrapper.
+
+Common Lisp spells the equivalent operator `unwind-protect`, with the opposite
+split — one protected form followed by the cleanup forms.  elps does not
+provide it under that name, deliberately: the roles are reversed, and a form
+that parses under both spellings while protecting different things is the worst
+kind of incompatibility.
+
+#### Watch the parentheses
+
+The cleanup argument is a **list** of forms.  Dropping its parentheses is legal
+and silent:
+
+```lisp
+(with-cleanup (release handle) (work))   ; WRONG — nothing is released
+```
+
+That parses as a cleanup list of two bare symbols, `release` and `handle`,
+neither of which does anything.  The program behaves correctly right up until
+the body signals.  The `with-cleanup-forms` lint check reports it.
 
 #### It does not catch
 
@@ -1314,10 +1332,13 @@ The error is still live once the cleanup has run:
 
 ```lisp
 (handler-bind ((condition (lambda (c &rest args) (list 'caught c))))
-    (unwind-protect (error 'my-error "data")
-                    (debug-print "cleanup ran")))
+    (with-cleanup ((debug-print "cleanup ran"))
+      (error 'my-error "data")))
 ; prints "cleanup ran", then evaluates to '('caught 'my-error)
 ```
+
+Cleanup runs *before* any enclosing handler, innermost first, so a handler that
+retries or inspects state sees a released resource rather than a half-open one.
 
 This is the difference from the `handler-bind` + `rethrow` workaround, which
 needs the cleanup written twice — once in the handler and once on the success
@@ -1326,20 +1347,21 @@ specifier does not match.
 
 #### When a cleanup form itself signals
 
-| protected form | cleanup form | what propagates |
+| body | cleanup form | what propagates |
 | --- | --- | --- |
-| returns normally | returns normally | the protected form's value |
+| returns normally | returns normally | the last body value |
 | returns normally | signals | the **cleanup's** error |
-| signals | returns normally | the **protected form's** error |
+| signals | returns normally | the **body's** error |
 | signals | signals | the **cleanup's** error; the original is abandoned |
 | signals `internal-panic` | either | the **`internal-panic`**, always |
 
 A signalling cleanup form abandons the cleanup forms after it, the way an
 error abandons the rest of a `progn`.
 
-The first four rows are Common Lisp's behaviour, which Go's `defer` shares — a
-panic raised inside a deferred function replaces the one already in flight.
-The last row is the deliberate exception, and the next section explains it.
+The first four rows are Common Lisp's behaviour for `unwind-protect`, which
+Go's `defer` shares — a panic raised inside a deferred function replaces the
+one already in flight.  The last row is the deliberate exception, and the next
+section explains it.
 
 There is one final form of error handling, though its use is highly
 discouraged.  If one finds themselves handling all errors and inserting a nil
@@ -1377,9 +1399,9 @@ on top of it.  So:
 * `ignore-errors` does **not** suppress `internal-panic`; it propagates.
 * the catch-all `condition` handler specifier does **not** match
   `internal-panic`.
-* an error raised by an `unwind-protect` cleanup form does **not** mask an
-  `internal-panic` from the protected form, even though it would replace any
-  ordinary error there.  The cleanup still runs; the panic still wins.
+* an error raised by a `with-cleanup` cleanup form does **not** mask an
+  `internal-panic` from the body, even though it would replace any ordinary
+  error there.  The cleanup still runs; the panic still wins.
 
 The carve-out keys off a Go stack snapshot the interpreter attaches when it
 recovers the panic — not off the condition name — so `(error 'internal-panic
@@ -1595,23 +1617,31 @@ runs in constant stack space for an unbounded number of iterations:
 (spin 500000)   ; constant stack space; evaluates to 'done
 ```
 
-**`unwind-protect` opts a loop out of this.** A frame that still owes cleanup
-forms cannot be elided, so a tail call wrapped in one consumes stack per
-iteration:
+**A tail call that CROSSES a `with-cleanup` is not optimized.** A frame that
+still owes cleanup forms cannot be elided, so a recursion routed through the
+bracket consumes stack per iteration:
 
 ```lisp
-(defun wrapped (n)
-  (if (= n 0) 'done (unwind-protect (wrapped (- n 1)) (release))))
-(wrapped 5000)     ; fine
-(wrapped 100000)   ; physical stack height exceeded maximum: 25001
+(defun crossing (n)
+  (if (= n 0) 'done (with-cleanup ((release)) (crossing (- n 1)))))
+(crossing 5000)     ; fine
+(crossing 100000)   ; physical stack height exceeded maximum: 25001
 ```
 
 This is inherent rather than a limitation of the implementation — the cleanup
-has to run after the recursive call returns, so the frame must survive it —
-and Common Lisp behaves the same way. It matters because the per-iteration
-acquire/release loop is the shape `unwind-protect` most invites. Put the
-bracket *outside* the loop where the resource allows it. Tail calls **inside**
-the protected form are unaffected and still collapse normally.
+has to run after the recursive call returns, so the frame must survive it — and
+Common Lisp's `unwind-protect` behaves the same way. It matters because the
+per-iteration acquire/release loop is the shape the operator most invites. Put
+the bracket *outside* the loop where the resource allows it.
+
+The block is scoped to that **one frame** and is not inherited by anything the
+body calls. A tail-recursive function invoked from inside the body still runs
+in constant stack:
+
+```lisp
+(defun spin (n) (if (= n 0) 'done (spin (- n 1))))
+(with-cleanup ((release)) (spin 500000))   ; 'done — constant stack
+```
 
 Note also that the cleanup forms run under their own fresh per-frame budgets:
 `MaxTailIterations` and `MaxHeightPhysical` are counted per frame and recover

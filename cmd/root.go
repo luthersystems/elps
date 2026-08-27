@@ -37,7 +37,7 @@ Language overview:
   Functions are defined with (defun name (args) body) and called as (name args).
   Packages provide namespacing: (in-package 'my-pkg), (use-package 'math).
   Error handling uses (handler-bind ...) and (ignore-errors ...); cleanup that
-  must run on every exit path uses (unwind-protect form cleanup...).
+  must run on every exit path uses (with-cleanup (cleanup...) form...).
 
 Standard library packages (use with use-package or qualified names):
   elps doc -l                    List all packages with descriptions

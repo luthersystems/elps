@@ -971,7 +971,7 @@ func markMacExpand(expr *LVal) *LVal {
 // IsInternalPanic reports whether v is an error produced by recovering a Go
 // panic that escaped host code during evaluation.
 //
-// This is the check `ignore-errors`, `handler-bind` and `unwind-protect`
+// This is the check `ignore-errors`, `handler-bind` and `with-cleanup`
 // use -- the last to refuse to let an error raised by a cleanup form mask
 // an in-flight panic, rather than to catch one -- and embedders
 // should use it too, rather than comparing the condition name against

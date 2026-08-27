@@ -274,30 +274,36 @@ branch matches. While sometimes intentional, this is often an oversight.
   (error 'test "data"))
 ```
 
-### `unwind-protect-cleanup`
+### `with-cleanup-forms`
 
-**Flags `unwind-protect` with no cleanup forms.** (Severity: warning)
+**Flags a degenerate `with-cleanup` spec list.** (Severity: warning)
 
-`(unwind-protect form)` runs `form` and guarantees nothing, so it is
-indistinguishable from `form` alone — the program still runs and still
-returns the same value, which is what makes this quiet. The cleanup forms
-come *after* the single protected form.
+Two shapes, both of which run without complaint.
+
+An **empty** list makes the form a no-op wrapper around its body — it still
+runs and returns the same value, which is what makes it quiet:
 
 ```lisp
-;; BAD — protects everything, cleans up nothing
-(unwind-protect (progn (acquire) (body) (release)))
-
-;; GOOD
-(unwind-protect (progn (acquire) (body)) (release))
+;; BAD — guarantees nothing
+(with-cleanup () (acquire) (work))
 ```
 
-The other misreading of the grouping — `(unwind-protect (acquire) (body)
-(release))`, which protects only `(acquire)` — is **not** reported. It is
-textually identical to a legitimate call with one protected form and two
-cleanup forms, so flagging it would report correct code.
+A **bare symbol** in the list is the missing-paren mistake, and the more
+dangerous of the two:
 
-`(unwind-protect)` with no arguments is left to `builtin-arity`, which
-already reports it.
+```lisp
+;; BAD — neither `release` nor `handle` is called; the cleanup never happens
+(with-cleanup (release handle) (work))
+
+;; GOOD
+(with-cleanup ((release handle)) (work))
+```
+
+The bad version behaves identically to the good one until the body signals,
+which is exactly when the cleanup was supposed to matter.
+
+`(with-cleanup)` with no arguments is left to `builtin-arity`, which already
+reports it.
 
 ### `unnecessary-progn`
 
@@ -306,11 +312,9 @@ already reports it.
 Forms like `defun`, `let`, `lambda`, and `handler-bind` already accept
 multiple body expressions, so wrapping them in `progn` is unnecessary.
 
-`unwind-protect` is the one form where this applies to only part of the
-call. Its cleanup forms are an implicit progn and are checked, but its
-**protected form** takes exactly one expression, so a `progn` there is
-load-bearing and is never flagged. Deleting it would silently change which
-forms are protected.
+`with-cleanup` participates too: its body is an implicit progn, so a `progn`
+wrapping the body is redundant. Its cleanup **spec list** is not a body and is
+never flagged.
 
 ```lisp
 ;; BAD — progn is redundant

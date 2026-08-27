@@ -12,7 +12,7 @@
 //	analysis/perf/local.go                        perf analyzer's non-call forms
 //	internal/fuzzgen/fuzzgen.go                   generator vocabulary
 //
-// Nothing tied any of them to the authority, and they drifted: unwind-protect
+// Nothing tied any of them to the authority, and they drifted: with-cleanup
 // (#554) reached the TextMate grammar and not its tree-sitter sibling, so the
 // form highlighted as a keyword in VS Code and as an ordinary function call in
 // every editor built on tree-sitter -- nvim-treesitter, Helix, Zed, Emacs

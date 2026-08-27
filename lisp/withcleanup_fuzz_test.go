@@ -12,30 +12,33 @@ import (
 	"github.com/luthersystems/elps/parser"
 )
 
-// FuzzUnwindProtect is a DIFFERENTIAL target: it evaluates a fuzzer-chosen
+// FuzzWithCleanup is a DIFFERENTIAL target: it evaluates a fuzzer-chosen
 // body three ways and asserts the invariants that relate the results.
 //
-// FuzzEval already runs unwind-protect programs, but its assertions are
+// FuzzEval already runs with-cleanup programs, but its assertions are
 // generic -- it terminates, and it did not recover a Go panic.  Neither says
 // anything about what the operator is FOR.  The properties below do, and they
 // hold for an arbitrary body rather than for the shapes a human thought to
 // write down in a table:
 //
-//		A:  (progn BODY)                                       -- the baseline
-//		B:  (unwind-protect (progn BODY) (fuzz-note-cleanup))  -- benign cleanup
-//		C:  (unwind-protect (progn BODY) (error ...))          -- signalling cleanup
+//	A:  (progn BODY)                                -- the baseline
+//	B:  (with-cleanup ((debug-print MARKER)) BODY)  -- benign cleanup
+//	C:  (with-cleanup ((error ...)) BODY)           -- signalling cleanup
 //
-//	 1. Cleanup ALWAYS runs (B).  This is the defining property of the
-//	    operator, and the one a hand-written table can only spot-check.
-//	 2. It NEVER catches (B).  If A errored, B errored.  Asserted in one
-//	    direction only: the converse is legitimately false, because the
-//	    operator blocks tail-call optimisation and a deep tail loop can
-//	    therefore exhaust the stack in B where A ran in constant space.
-//	 3. The internal-panic carve-out survives BOTH cleanups (B and C).  C is
-//	    the load-bearing one: an error raised by a cleanup form replaces an
-//	    ordinary outcome but must never mask a recovered host panic.
-//	 4. When the body did not panic, C reports the CLEANUP's condition -- the
-//	    "cleanup error wins" rows of the decision table.
+// The body needs no progn in B or C: with-cleanup evaluates its body as an
+// implicit progn, so the arms differ from A only by the bracket itself.
+//
+//  1. Cleanup ALWAYS runs (B).  This is the defining property of the
+//     operator, and the one a hand-written table can only spot-check.
+//  2. It NEVER catches (B).  If A errored, B errored.  Asserted in one
+//     direction only: the converse is legitimately false, because the
+//     operator blocks tail-call optimisation and a deep tail loop can
+//     therefore exhaust the stack in B where A ran in constant space.
+//  3. The internal-panic carve-out survives BOTH cleanups (B and C).  C is
+//     the load-bearing one: an error raised by a cleanup form replaces an
+//     ordinary outcome but must never mask a recovered host panic.
+//  4. When the body did not panic, C reports the CLEANUP's condition -- the
+//     "cleanup error wins" rows of the decision table.
 //
 // WHY THERE IS NO PANICKING BUILTIN HERE, though property 3 would be easier
 // to reach with one.  Installing it means lisp.RegisterDefaultBuiltin, which
@@ -44,7 +47,7 @@ import (
 // IsInternalPanic == false.  A coverage-guided mutator that found it would
 // turn elps's primary evaluator oracle into a false-positive generator, and
 // the corpus entry would persist in testdata.  Not worth it: the panic rows
-// are pinned deterministically in unwindprotect_test.go, against a builtin
+// are pinned deterministically in withcleanup_test.go, against a builtin
 // installed on ONE environment.  Property 3 is still asserted below, just
 // opportunistically -- it costs nothing, and if this target ever does
 // discover a genuine host panic it will also prove the carve-out survived it.
@@ -57,7 +60,7 @@ import (
 // Cross-arm comparison is only sound because each arm gets a FRESH
 // environment (evalBudgeted builds one per call), so a body with side effects
 // cannot leak from one arm into the next.
-func FuzzUnwindProtect(f *testing.F) {
+func FuzzWithCleanup(f *testing.F) {
 	for _, src := range fuzzseed.EvalTerminating() {
 		f.Add(src)
 	}
@@ -75,8 +78,8 @@ func FuzzUnwindProtect(f *testing.F) {
 		`(error 'boom "x")`,
 		`1`,
 		`(defun spin (n) (if (<= n 0) 'done (spin (- n 1)))) (spin 200)`,
-		`(unwind-protect (error 'inner "x") (error 'cleanup "y"))`,
-		`(set 'v 0) (unwind-protect (set! 'v 1) (set! 'v 2)) v`,
+		`(with-cleanup ((error 'cleanup "y")) (error 'inner "x"))`,
+		`(set 'v 0) (with-cleanup ((set! 'v 2)) (set! 'v 1)) v`,
 	} {
 		f.Add(src)
 	}
@@ -101,9 +104,9 @@ func FuzzUnwindProtect(f *testing.F) {
 
 		outA, okA := evalBudgeted(t, []byte(fmt.Sprintf("(progn %s)", body)))
 		outB, okB := evalBudgeted(t, []byte(fmt.Sprintf(
-			"(unwind-protect (progn %s) (debug-print %q))", body, cleanupMarker)))
+			"(with-cleanup ((debug-print %q)) %s)", cleanupMarker, body)))
 		outC, okC := evalBudgeted(t, []byte(fmt.Sprintf(
-			"(unwind-protect (progn %s) (error '%s \"x\"))", body, sentinelCleanupCond)))
+			"(with-cleanup ((error '%s \"x\")) %s)", sentinelCleanupCond, body)))
 		if !okA || !okB || !okC {
 			t.Skip("a wrapped arm does not parse")
 		}
@@ -122,7 +125,7 @@ func FuzzUnwindProtect(f *testing.F) {
 
 		// (2) It never catches.  One direction only -- see the header.
 		if erroredA && outB.Result.Type != lisp.LError {
-			t.Fatalf("unwind-protect swallowed an error\nbody: %q\nbare: %v\nwrapped: %v",
+			t.Fatalf("with-cleanup swallowed an error\nbody: %q\nbare: %v\nwrapped: %v",
 				body, outA.Result, outB.Result)
 		}
 

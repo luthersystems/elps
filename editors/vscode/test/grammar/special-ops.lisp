@@ -37,8 +37,8 @@
 (ignore-errors (risky-operation))
 ;^^^^^^^^^^^^^ keyword.control.elps
 
-(unwind-protect (risky-operation) (cleanup))
-;^^^^^^^^^^^^^^ keyword.control.elps
+(with-cleanup ((cleanup)) (risky-operation))
+;^^^^^^^^^^^^ keyword.control.elps
 
 (dotimes (i 10) (debug-print i))
 ;^^^^^^^ keyword.control.elps
