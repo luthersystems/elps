@@ -826,6 +826,7 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerCondMissingElse,
 		AnalyzerRethrowContext,
 		AnalyzerUnnecessaryProgn,
+		AnalyzerWithCleanupForms,
 		AnalyzerUndefinedSymbol,
 		AnalyzerUnusedVariable,
 		AnalyzerUnusedFunction,

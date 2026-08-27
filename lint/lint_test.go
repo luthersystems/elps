@@ -1236,7 +1236,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 18)
+	assert.Len(t, analyzers, 19)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -1257,6 +1257,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"unused-function",
 		"unused-variable",
 		"user-arity",
+		"with-cleanup-forms",
 	}, names)
 }
 
@@ -1596,6 +1597,10 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"user-arity":           SeverityError,
 		"duplicate-definition": SeverityWarning,
 		"deprecated":           SeverityWarning,
+		// Warning, not info: unlike unnecessary-progn neither shape is a
+		// style preference -- one guarantees nothing, the other silently
+		// drops the cleanup entirely.
+		"with-cleanup-forms": SeverityWarning,
 	}
 	for _, a := range DefaultAnalyzers() {
 		want, ok := expected[a.Name]
@@ -3846,4 +3851,45 @@ func TestBuildAnalysisConfig_DoesNotMutateStdlibExportsBackingArray(t *testing.T
 			"BuildAnalysisConfig wrote into the caller's spare slice capacity at index %d", i)
 	}
 	assert.Equal(t, "caller-fn", syms[0].Name, "caller's own symbol was overwritten")
+}
+
+// with-cleanup-forms catches the two degenerate spec lists.  The bare-symbol
+// case is the more valuable: it is the missing-paren mistake, and unlike the
+// empty list it produces a program that looks correct and behaves correctly
+// right up until the body signals.
+
+func TestWithCleanupForms_EmptySpec(t *testing.T) {
+	diags := lintCheck(t, AnalyzerWithCleanupForms, `(with-cleanup () (do-work))`)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "no cleanup forms")
+	assertDiagOnLine(t, diags, 1, "no cleanup forms")
+}
+
+// (with-cleanup (release h) ...) parses as a spec list of two BARE SYMBOLS,
+// neither of which does anything -- so the release silently never happens.
+func TestWithCleanupForms_MissingParens(t *testing.T) {
+	diags := lintCheck(t, AnalyzerWithCleanupForms, `(with-cleanup (release h) (do-work))`)
+	assert.Len(t, diags, 2, "both bare symbols should be reported")
+	assertHasDiag(t, diags, "bare symbol")
+	assertHasDiag(t, diags, "missing parentheses?")
+}
+
+func TestWithCleanupForms_Negative(t *testing.T) {
+	assertNoDiags(t, lintCheck(t, AnalyzerWithCleanupForms,
+		`(with-cleanup ((release h)) (do-work))`))
+	assertNoDiags(t, lintCheck(t, AnalyzerWithCleanupForms,
+		`(with-cleanup ((release h) (log 'done)) (acquire h) (work) (more))`))
+}
+
+// Zero arguments is an arity error, which builtin-arity already reports.
+// This analyzer stays quiet rather than double-reporting the same line.
+func TestWithCleanupForms_LeavesArityToArityCheck(t *testing.T) {
+	assertNoDiags(t, lintCheck(t, AnalyzerWithCleanupForms, `(with-cleanup)`))
+	assertHasDiag(t, lintCheck(t, AnalyzerBuiltinArity, `(with-cleanup)`),
+		"requires at least 1 argument")
+}
+
+func TestWithCleanupForms_Nolint(t *testing.T) {
+	assertNoDiags(t, lintCheck(t, AnalyzerWithCleanupForms,
+		`(with-cleanup () (do-work)) ; nolint:with-cleanup-forms`))
 }

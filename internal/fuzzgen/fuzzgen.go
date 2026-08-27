@@ -220,6 +220,7 @@ var specials = []string{
 	"quasiquote", "unquote", "unquote-splicing", "quote", "if", "cond",
 	"handler-bind", "in-package", "use-package", "export", "set", "set!",
 	"progn", "and", "or", "not", "error", "ignore-errors",
+	"with-cleanup",
 }
 
 // stringBodies are bodies that survive strconv.Unquote, which is what

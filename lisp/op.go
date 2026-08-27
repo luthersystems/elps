@@ -101,6 +101,16 @@ var langSpecialOps = []*langBuiltin{
 		error. Returns the last value if no error occurs. The
 		internal-panic condition is not suppressed: a Go panic recovered
 		from host code signals a defect in that code, so it propagates.`},
+	{"with-cleanup", Formals("cleanup", VarArgSymbol, "body"), opWithCleanup,
+		`Evaluates the body forms, then always evaluates the cleanup forms
+		-- whether the body returned normally or signalled. The first
+		argument is a list of cleanup forms. Returns the last body value;
+		cleanup values are discarded. Unlike handler-bind and
+		ignore-errors it does not catch: an error keeps propagating after
+		the cleanup has run. If a cleanup form itself signals, that error
+		replaces the outcome already in flight and the remaining cleanup
+		forms are skipped -- except over an internal-panic, which always
+		wins and is never masked.`},
 	{"cond", Formals(VarArgSymbol, "branch"), opCond,
 		`Multi-way conditional. Each branch is a clause (test &rest body).
 		Clauses are evaluated in order: for the first truthy test, the
@@ -826,6 +836,117 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 			}
 			return val
 		}
+	}
+	return val
+}
+
+// (with-cleanup (cleanup-form*) body-form*)
+//
+// The cleanup guarantee elps otherwise lacks (#554).  handler-bind and
+// ignore-errors CATCH an error; neither can promise a form runs on the way
+// out, so an acquire/release bracket written in lisp leaks its release
+// whenever the body signals and something upstream recovers.
+//
+// This does not catch.  The body's outcome -- value or error -- is what
+// propagates once the cleanup forms have run.
+//
+// The argument shape is handler-bind's, deliberately: a spec list first,
+// then the body as &rest.  Common Lisp spells the equivalent operator
+// unwind-protect and takes ONE protected form followed by the cleanup
+// forms, which is the opposite split.  That was the first implementation
+// here, and it put the progn tax on the wrong side -- measured across the
+// real brackets in luthersystems/substrate, bodies are routinely 2-6 forms
+// while cleanups are almost always exactly one.  It also made
+// (unwind-protect (acquire) (body) (release)) silently protect only
+// (acquire): legal, plausible-looking, and impossible to lint, because it
+// is textually identical to a correct one-protected/two-cleanup call.
+// Naming it with-cleanup rather than keeping unwind-protect's name for
+// changed semantics is the same lesson elps already paid for once, with a
+// handler-bind that behaves like Common Lisp's handler-case.
+func opWithCleanup(env *LEnv, args *LVal) *LVal {
+	cleanup, body := args.Cells[0], args.Cells[1:]
+	if cleanup.Type != LSExpr {
+		return env.Errorf("first argument is not a list of cleanup forms: %v",
+			cleanup.Type)
+	}
+	// What actually keeps tail recursion from collapsing the frame that
+	// owes the cleanup is that the body is evaluated EAGERLY here, never
+	// handed back to the trampoline as an env.Terminal expression the way
+	// opIf and opProgn hand back theirs.  TRO only ever fires for an
+	// expression returned that way, so a frame sitting inside this
+	// operator cannot be collapsed out from under the cleanup forms.
+	//
+	// The TROBlock is defence in depth on top of that, and is set for
+	// consistency with opIgnoreErrors and opHandlerBind, which take it in
+	// the same position for the same reason.  Be aware of what it is worth:
+	// deleting it from any of the three leaves the whole suite green, so
+	// nothing in the tree pins it -- it is a guard against a future change
+	// that marks this frame terminal, which TerminalFID would then report
+	// as an inconsistent stack rather than silently skipping cleanup.
+	env.Runtime.Stack.Top().TROBlock = true
+
+	// The body is an implicit progn: forms run in order and the last value
+	// is the result, with the first error abandoning the rest.
+	val := Nil()
+	for _, c := range body {
+		val = env.Eval(c)
+		if val.Type == LError {
+			break
+		}
+	}
+
+	// A recovered Go panic marks a defect in host code, not a program
+	// condition.  ignore-errors and handler-bind's catch-all 'condition
+	// both refuse to swallow one; this must not become the operator that
+	// reopens that hole by way of a cleanup form that happens to signal.
+	// Remembered here because val is overwritten by neither path below.
+	panicked := IsInternalPanic(val)
+
+	// Cleanup runs on every path: normal return, ordinary error, and a
+	// recovered panic.  That is the whole point of the operator -- the
+	// panic path is exactly the one the handler-bind workaround misses.
+	//
+	// Running work after an error is not free, and an earlier draft of this
+	// comment claimed a spent budget makes every Eval below fail
+	// immediately.  That is only true of the two budgets that are OFF by
+	// default.  maxSteps is 0 (unlimited) unless an embedder sets
+	// WithMaxSteps, and NewRuntime installs no context deadline; what IS on
+	// by default is MaxTailIterations and MaxHeightPhysical, and both are
+	// PER-FRAME.  TailIterations lives on the top frame and the
+	// physical-height check recovers headroom as the stack unwinds, so each
+	// cleanup form starts with a fresh allowance.
+	//
+	// Measured at WithMaxTailIterations(1000): a spinning body plus three
+	// spinning cleanup forms turns 1001 loop turns into 2002, and N nested
+	// brackets multiply it by N+1.  A cleanup form that RECURSES is worse
+	// than linear -- work grows as 2^(MaxHeightPhysical/2), which at the
+	// 25000 default does not finish.
+	//
+	// Two things keep this in proportion rather than making it a defect
+	// here.  The same amplification already existed through ignore-errors,
+	// which can nest identically and shows the same exponential curve; and
+	// an embedder that wants a hard ceiling has one in WithMaxSteps, which
+	// IS monotonic and does cut every path below.  What is new is only that
+	// the amplification now happens on a path with no catch in the program.
+	// Anyone retuning these budgets should know that, which is why it is
+	// written down instead of asserted away.
+	for _, c := range cleanup.Cells {
+		cval := env.Eval(c)
+		if cval.Type != LError {
+			continue
+		}
+		if panicked {
+			// Propagate the ORIGINAL value, never a reconstruction:
+			// IsInternalPanic is keyed off the recovered Go-stack
+			// snapshot precisely so the marker cannot be forged, so a
+			// rebuilt error would not satisfy it and the host defect
+			// would stop being visible to FuzzEval's assertion.
+			return val
+		}
+		// Common Lisp's semantics for the equivalent operator, which Go's
+		// defer shares: an error raised by cleanup replaces the outcome
+		// already in flight and abandons the cleanup forms after it.
+		return cval
 	}
 	return val
 }

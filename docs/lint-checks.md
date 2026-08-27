@@ -274,12 +274,47 @@ branch matches. While sometimes intentional, this is often an oversight.
   (error 'test "data"))
 ```
 
+### `with-cleanup-forms`
+
+**Flags a degenerate `with-cleanup` spec list.** (Severity: warning)
+
+Two shapes, both of which run without complaint.
+
+An **empty** list makes the form a no-op wrapper around its body — it still
+runs and returns the same value, which is what makes it quiet:
+
+```lisp
+;; BAD — guarantees nothing
+(with-cleanup () (acquire) (work))
+```
+
+A **bare symbol** in the list is the missing-paren mistake, and the more
+dangerous of the two:
+
+```lisp
+;; BAD — neither `release` nor `handle` is called; the cleanup never happens
+(with-cleanup (release handle) (work))
+
+;; GOOD
+(with-cleanup ((release handle)) (work))
+```
+
+The bad version behaves identically to the good one until the body signals,
+which is exactly when the cleanup was supposed to matter.
+
+`(with-cleanup)` with no arguments is left to `builtin-arity`, which already
+reports it.
+
 ### `unnecessary-progn`
 
 **Flags redundant `progn` wrappers.** (Severity: info)
 
 Forms like `defun`, `let`, `lambda`, and `handler-bind` already accept
 multiple body expressions, so wrapping them in `progn` is unnecessary.
+
+`with-cleanup` participates too: its body is an implicit progn, so a `progn`
+wrapping the body is redundant. Its cleanup **spec list** is not a body and is
+never flagged.
 
 ```lisp
 ;; BAD — progn is redundant

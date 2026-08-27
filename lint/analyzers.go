@@ -703,8 +703,78 @@ var implicitPrognForms = map[string]int{
 	"macrolet":      2, // (macrolet (bindings) body...)
 	"handler-bind":  2, // (handler-bind (bindings) body...)
 	"ignore-errors": 1, // (ignore-errors body...)
+	"with-cleanup":  2, // (with-cleanup (cleanup...) body...)
 	"dotimes":       2, // (dotimes (var n) body...)
 	"progn":         1, // (progn body...) — nested progn
+}
+
+// AnalyzerWithCleanupForms warns about two degenerate spellings of the
+// with-cleanup spec list, both of which run without complaint.
+//
+// An EMPTY list makes the form a no-op wrapper around its body: it still
+// runs and still returns the same value, so nothing at runtime
+// distinguishes it from the body alone.
+//
+// A BARE SYMBOL in the list is the missing-paren mistake that let-bindings
+// catches for let, and it is the more dangerous of the two:
+//
+//	(with-cleanup (release h) (work))
+//
+// parses as a spec list of two forms -- the symbol `release` and the symbol
+// `h` -- neither of which does anything.  The release never happens, and
+// the program behaves exactly as if the cleanup had been written correctly
+// right up until the body signals.  A real cleanup form is a call; a bare
+// symbol as one is always either this mistake or dead code.
+var AnalyzerWithCleanupForms = &Analyzer{
+	Name:     "with-cleanup-forms",
+	Severity: SeverityWarning,
+	Doc:      "Warn about a with-cleanup spec list that is empty or holds a bare symbol.\n\nAn empty list guarantees nothing, so the form is indistinguishable from its body alone. A bare symbol is the missing-paren mistake -- `(with-cleanup (release h) ...)` runs neither `release` nor `h`, so the cleanup silently never happens.",
+	Run: func(pass *Pass) error {
+		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
+			if HeadSymbol(sexpr) != "with-cleanup" {
+				return
+			}
+			// Zero arguments is an arity error that builtin-arity already
+			// reports, so leave it alone rather than double-reporting.
+			if ArgCount(sexpr) < 1 {
+				return
+			}
+			spec := sexpr.Cells[1]
+			if spec.Type != lisp.LSExpr {
+				// A non-list spec is the operator's own runtime error.
+				return
+			}
+			if len(spec.Cells) == 0 {
+				src := SourceOf(sexpr)
+				pass.Report(Diagnostic{
+					Message: "with-cleanup has no cleanup forms, so it guarantees nothing",
+					Pos:     posFromSource(astutil.SourceLoc(src)),
+					EndPos:  endPosFromNode(src),
+					Notes: []string{
+						"cleanup forms go in the first argument: (with-cleanup ((release h)) body...)",
+					},
+				})
+				return
+			}
+			for _, form := range spec.Cells {
+				if form.Type != lisp.LSymbol {
+					continue
+				}
+				src := SourceOf(form)
+				pass.Report(Diagnostic{
+					Message: fmt.Sprintf("cleanup form %q is a bare symbol and does nothing"+
+						" (missing parentheses?)", form.Str),
+					Pos:    posFromSource(astutil.SourceLoc(src)),
+					EndPos: endPosFromNode(src),
+					Notes: []string{
+						"the spec is a LIST of forms: (with-cleanup ((release h)) body...)",
+						"written as (with-cleanup (release h) ...) the cleanup never runs",
+					},
+				})
+			}
+		})
+		return nil
+	},
 }
 
 // AnalyzerUnnecessaryProgn warns when progn is used as the sole body

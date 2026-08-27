@@ -49,7 +49,9 @@ const (
 // running on top of it.
 //
 // Accordingly, `ignore-errors` and the catch-all `condition` handler
-// specifier do not intercept this condition; it propagates to the caller.  A
+// specifier do not intercept this condition; it propagates to the caller.
+// For the same reason an error raised by an `with-cleanup` cleanup form
+// does not mask this condition, though it does replace an ordinary one.  A
 // handler that genuinely wants to intercept host panics must name the
 // condition explicitly:
 //

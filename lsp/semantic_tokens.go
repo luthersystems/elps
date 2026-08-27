@@ -276,13 +276,16 @@ var specialOps = map[string]bool{
 	"set": true, "set!": true,
 	"progn": true, "loop": true, "dotimes": true,
 	"handler-bind": true, "ignore-errors": true, "rethrow": true,
-	"in-package": true, "use-package": true, "export": true,
+	"with-cleanup": true,
+	"in-package":   true, "use-package": true, "export": true,
 	"quote": true, "quasiquote": true, "unquote": true,
 	"funcall": true, "apply": true,
 	"debug-print":  true,
 	"assert-equal": true, "assert-nil": true, "assert-not-nil": true,
 	"test": true, "test-let": true,
 	"thread-first": true, "thread-last": true,
+	"function": true, "expr": true, "qualified-symbol": true,
+	"macrolet": true, "assert": true,
 }
 
 // classifySymbol determines the semantic token type for a symbol based on

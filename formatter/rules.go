@@ -73,6 +73,9 @@ func DefaultRules() map[string]*IndentRule {
 		"thread-first": {Style: IndentAlign},
 		"thread-last":  {Style: IndentAlign},
 
+		// cleanup spec list as header, body as body -- same as handler-bind
+		"with-cleanup": {Style: IndentSpecial, HeaderArgs: 1},
+
 		// all body
 		"progn":         {Style: IndentBody},
 		"ignore-errors": {Style: IndentBody},

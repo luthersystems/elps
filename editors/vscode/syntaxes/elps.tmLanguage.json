@@ -222,7 +222,7 @@
 
     "special-op-form": {
       "name": "meta.special-op.elps",
-      "begin": "(\\()\\s*(if|cond|and|or|progn|set!?|export|use-package|in-package|handler-bind|ignore-errors|dotimes|assert|thread-first|thread-last|quasiquote|unquote|unquote-splicing|function|expr|qualified-symbol|test|test-let)(?=[\\s)])",
+      "begin": "(\\()\\s*(if|cond|and|or|progn|set!?|export|use-package|in-package|handler-bind|ignore-errors|with-cleanup|dotimes|assert|thread-first|thread-last|quasiquote|unquote|unquote-splicing|function|expr|qualified-symbol|test|test-let)(?=[\\s)])",
       "beginCaptures": {
         "1": { "name": "punctuation.definition.list.begin.elps" },
         "2": { "name": "keyword.control.elps" }

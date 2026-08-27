@@ -87,10 +87,12 @@
  (#any-of? @keyword
   "if" "cond" "and" "or" "progn"
   "set" "set!" "export" "use-package" "in-package"
-  "handler-bind" "ignore-errors"
+  "handler-bind" "ignore-errors" "with-cleanup"
   "dotimes" "assert"
   "thread-first" "thread-last"
-  "quasiquote" "unquote" "unquote-splicing"))
+  "quasiquote" "unquote" "unquote-splicing"
+  "function" "expr" "qualified-symbol"
+  "test" "test-let"))
 
 ; --- Built-in function calls ---
 ; First symbol in a list that is a known builtin gets @function.builtin
