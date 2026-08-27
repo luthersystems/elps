@@ -4,7 +4,7 @@ Published extension versions track the `elps` release tag they ship with -- the
 publish workflow sets `package.json` from the tag name -- so the numbering
 jumps from 0.2.0 to 1.50.0.
 
-## Unreleased
+## 1.58.0
 
 - Language: new `with-cleanup` special operator -- `(with-cleanup (cleanup...)
   body...)` always runs the cleanup forms, whether the body returned normally
@@ -12,6 +12,10 @@ jumps from 0.2.0 to 1.50.0.
   is still live once the cleanup has run. Both halves are implicit progns.
   Syntax highlighting, formatter indentation and the language server treat it
   as a special operator.
+- Lint: new `with-cleanup-forms` check (warning) flags a `with-cleanup` whose
+  cleanup list is empty, or holds a bare symbol -- `(with-cleanup (release h)
+  ...)` reads as a list of two bare symbols, so nothing is released, and the
+  code behaves correctly right up until the body signals.
 
 ## 1.52.0
 
