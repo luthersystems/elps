@@ -6,8 +6,11 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -1836,32 +1839,114 @@ func TestInnerTrailingCommentBlankLine(t *testing.T) {
 }
 
 // --- Repository file round-trip tests ---
-// Format every .lisp file in the repo and verify AST preservation.
+// Format every real .lisp source in the repository and verify that formatting
+// preserves the AST and is idempotent.  This is TestASTPreservation's
+// assertion applied to whole real files instead of hand-written snippets.
+//
+// HOW THIS TEST USED TO PASS WHILE COVERING NOTHING.  It discovered files with
+//
+//	filepath.Glob("../../_examples/**/*.lisp")
+//
+// which is wrong twice over.  A test binary runs with its own package
+// directory as the working directory, so "../../" resolves to the PARENT of
+// the repository, not to its root -- both patterns matched outside the source
+// tree.  And filepath.Glob has no ** operator: ** is an ordinary wildcard
+// matching exactly one path element, so even a correctly rooted pattern would
+// only ever have found files exactly one directory deep.  filepath.Glob
+// reports no error for a pattern that matches nothing, so the loop body never
+// ran, zero subtests were registered, and the test reported success.
+//
+// Both halves of the fix matter, and so does the third assertion: paths are
+// derived from this file's own compiled-in location (repoRoot), the walk is a
+// real recursive filepath.WalkDir, and an empty result is a FAILURE rather
+// than a silent pass.  A round-trip test that covers nothing is worse than no
+// round-trip test, because it also reports that the property holds.
+
+// repoRoot returns the root of the elps source tree, located from this file's
+// own compile-time path rather than from the working directory.  Test binaries
+// run with their package directory as the working directory, which is what
+// made the relative paths this test used to use resolve outside the repo.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	_, self, _, ok := runtime.Caller(0)
+	require.True(t, ok, "runtime.Caller could not locate this test file")
+	dir := filepath.Dir(self)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		require.NotEqual(t, parent, dir, "walked to the filesystem root without finding go.mod")
+		dir = parent
+	}
+}
+
+// repoLispDirs are the repository directories holding real ELPS source, walked
+// recursively for round-trip material.  They mirror internal/fuzzseed's
+// lispDirs, which is this repository's existing answer to "where is the real
+// .lisp source", so the two corpora cannot drift apart.
+//
+// The other .lisp files in the tree (analysis/perf/testdata,
+// lisp/x/debugger/dapserver/testdata, editors/vscode/test/grammar,
+// lisp/testfixtures, lisp/x/profiler) are fixtures owned by other packages,
+// free to hold deliberately odd or malformed source; they are deliberately not
+// walked here.  They all round-trip cleanly today, so this is a scope choice,
+// not an exemption hiding a failure.
+var repoLispDirs = []string{
+	"_examples",
+	filepath.Join("lisp", "lisplib"),
+}
+
+// lispFilesUnder returns every .lisp file under dir, recursively.  Unlike the
+// glob it replaces, a missing directory and an empty directory are both errors
+// -- this test's entire failure history is a discovery step that found nothing
+// and said nothing.
+func lispFilesUnder(t *testing.T, dir string) []string {
+	t.Helper()
+	var paths []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(path, ".lisp") {
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	require.NoError(t, err, "walking %s", dir)
+	sort.Strings(paths)
+	return paths
+}
 
 func TestRepoFileRoundTrip(t *testing.T) {
-	patterns := []string{
-		"../../_examples/**/*.lisp",
-		"../../lisp/lisplib/**/*.lisp",
-	}
-	for _, pattern := range patterns {
-		matches, err := filepath.Glob(pattern)
-		if err != nil {
-			t.Fatalf("glob %s: %v", pattern, err)
-		}
-		for _, path := range matches {
-			t.Run(filepath.Base(path), func(t *testing.T) {
-				src, err := os.ReadFile(path) //nolint:gosec // test reads discovered files
-				require.NoError(t, err)
-				formatted, err := Format(src, nil)
-				require.NoError(t, err, "Format failed for %s", path)
-				roundTripEqual(t, string(src), string(formatted))
+	root := repoRoot(t)
 
-				// Also verify idempotency
-				formatted2, err := Format(formatted, nil)
-				require.NoError(t, err, "Idempotent format failed for %s", path)
-				assert.Equal(t, string(formatted), string(formatted2),
-					"not idempotent for %s", path)
-			})
-		}
+	var files []string
+	for _, dir := range repoLispDirs {
+		found := lispFilesUnder(t, filepath.Join(root, dir))
+		// Per-directory, not just in total: if one root is renamed or moved,
+		// a global count would stay non-zero and hide it.
+		require.NotEmpty(t, found, "no .lisp files found under %s -- this test covers nothing", dir)
+		files = append(files, found...)
+	}
+	require.NotEmpty(t, files, "no repository .lisp files discovered")
+	t.Logf("round-tripping %d repository .lisp files", len(files))
+
+	for _, path := range files {
+		rel, err := filepath.Rel(root, path)
+		require.NoError(t, err)
+		t.Run(rel, func(t *testing.T) {
+			src, err := os.ReadFile(path) //nolint:gosec // path derived from runtime.Caller, not input
+			require.NoError(t, err)
+			formatted, err := Format(src, nil)
+			require.NoError(t, err, "Format failed for %s", rel)
+			roundTripEqual(t, string(src), string(formatted))
+
+			// Also verify idempotency
+			formatted2, err := Format(formatted, nil)
+			require.NoError(t, err, "Idempotent format failed for %s", rel)
+			assert.Equal(t, string(formatted), string(formatted2),
+				"not idempotent for %s", rel)
+		})
 	}
 }
