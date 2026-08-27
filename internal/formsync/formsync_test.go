@@ -20,9 +20,24 @@
 // asserts the query COMPILES, which a stale-but-valid query does.
 //
 // The two grammars get the strictest treatment because they do the identical
-// job and there is no reason for them ever to differ.  The Go mirrors are
-// checked in their own packages, where the tables are reachable without
-// parsing source.
+// job and there is no reason for them ever to differ.  Of the Go mirrors only
+// lsp/semantic_tokens.go is gated, in its own package where the table is
+// reachable without parsing source (lsp/semantic_tokens_drift_test.go).
+//
+// analysis/perf/local.go and internal/fuzzgen/fuzzgen.go are NOT gated, and
+// saying otherwise would be the same shape of untrue-comment this package
+// exists to prevent.  perf is already drifted -- isCallable is missing
+// lambda, quote and quasiquote, so the analyzer records a call edge for
+// (lambda ...) -- and closing it needs a judgement about that analyzer's
+// intent rather than a mechanical addition.  fuzzgen's list is a deliberate
+// SAMPLE ("keeps the minifier and formatter on the hot path"), not a mirror,
+// so it needs no gate at all.
+//
+// Two limits worth knowing rather than discovering: a keyword shared by both
+// grammars but belonging to neither the op table nor a documented exemption
+// passes, because coverage is a subset check plus set equality; and a form
+// handled by some rule OTHER than the ones an exemption names is not
+// detected.
 //
 // A NOTE ON THE FAILURE MODE THIS FILE IS BUILT TO AVOID.  formatter's
 // TestRepoFileRoundTrip passes today while testing nothing: its globs resolve
@@ -56,14 +71,27 @@ import (
 // A NEW special operator is not exempt.  Adding one without touching the
 // grammars fails TestGrammarsCoverSpecialOps until someone either adds it or
 // records here why it does not belong -- which is the point.
-var grammarExempt = map[string]string{
-	"quote":    "reader syntax: highlighted as the ' operator, not as a head symbol",
-	"lambda":   "has its own rule (lambda-form / lambda_form) that also scopes its formals",
-	"let":      "let family rule (let-form / let_form), which also highlights the binding list",
-	"let*":     "let family rule",
-	"flet":     "let family rule",
-	"labels":   "let family rule",
-	"macrolet": "let family rule",
+var grammarExempt = map[string]exemption{
+	"quote": {"reader syntax: highlighted as the ' operator, not as a head symbol",
+		"quote.elps", "(quote \"'\")"},
+	"lambda": {"its own rule, which also scopes its formals",
+		"lambda-form", "lambda_form"},
+	"let":      {"let family rule, which also highlights the binding list", "let-form", "let_form"},
+	"let*":     {"let family rule", "let-form", "let_form"},
+	"flet":     {"let family rule", "let-form", "let_form"},
+	"labels":   {"let family rule", "let-form", "let_form"},
+	"macrolet": {"let family rule", "let-form", "let_form"},
+}
+
+// exemption records WHY a special operator is absent from the keyword lists
+// and, crucially, the rule that is supposed to handle it instead.  Asserting
+// only the absence made the reason a promise nothing checked: deleting
+// let-form and lambda_form outright left both gates green while nothing
+// highlighted let, flet, labels, macrolet or lambda in either editor.
+type exemption struct {
+	reason       string
+	textmateRule string
+	treeSitter   string
 }
 
 // repoRoot returns the repository root, located from this source file's own
@@ -101,7 +129,7 @@ func textmateKeywords(t *testing.T) map[string]bool {
 
 	// The rule is the one whose begin pattern matches a head symbol against a
 	// long alternation; find it by a sentinel every version of it contains.
-	var pattern string
+	var patterns []string
 	var walk func(any)
 	walk = func(v any) {
 		switch n := v.(type) {
@@ -115,14 +143,20 @@ func textmateKeywords(t *testing.T) map[string]bool {
 			}
 		case string:
 			if strings.Contains(n, "handler-bind|ignore-errors") {
-				pattern = n
+				patterns = append(patterns, n)
 			}
 		}
 	}
 	walk(doc)
-	require.NotEmpty(t, pattern,
-		"could not find the keyword alternation in %s; if the grammar was"+
-			" restructured, update this extractor rather than deleting the test", path)
+	// Exactly one, not at-least-one.  Keeping the last match over Go's
+	// randomised map iteration made a duplicated or legacy rule a coin
+	// flip: half the runs extracted the stale copy and reported success.
+	require.Len(t, patterns, 1,
+		"expected exactly one keyword alternation in %s, found %d;"+
+			" a duplicated or legacy rule makes the extraction"+
+			" nondeterministic, so fix the grammar or teach this extractor"+
+			" which rule is authoritative", path, len(patterns))
+	pattern := patterns[0]
 
 	group := regexp.MustCompile(`\\s\*\(([^)]*)\)`).FindStringSubmatch(pattern)
 	require.Len(t, group, 2, "could not isolate the alternation group in %q", pattern)
@@ -215,16 +249,23 @@ func TestGrammarsCoverSpecialOps(t *testing.T) {
 
 	ops := lisp.DefaultSpecialOps()
 	require.NotEmpty(t, ops, "lisp.DefaultSpecialOps() returned nothing")
+	textmateSrc, treeSitterSrc := grammarSources(t)
 
 	for _, def := range ops {
 		name := def.Name()
-		if reason, ok := grammarExempt[name]; ok {
-			require.NotEmpty(t, reason, "exemption for %q must carry a reason", name)
+		if ex, ok := grammarExempt[name]; ok {
+			require.NotEmpty(t, ex.reason, "exemption for %q must carry a reason", name)
+			require.Contains(t, textmateSrc, ex.textmateRule,
+				"%q is exempt because %s, but the TextMate rule %q it names is gone",
+				name, ex.reason, ex.textmateRule)
+			require.Contains(t, treeSitterSrc, ex.treeSitter,
+				"%q is exempt because %s, but the tree-sitter rule %q it names is gone",
+				name, ex.reason, ex.treeSitter)
 			// An exempt op must be absent from BOTH, or the exemption is
 			// stale and one grammar is now doing something the other is not.
 			require.False(t, textmate[name] || treesitter[name],
 				"%q is listed in grammarExempt (%s) but appears in a grammar's"+
-					" keyword list; drop the exemption", name, reason)
+					" keyword list; drop the exemption", name, ex.reason)
 			continue
 		}
 		require.True(t, textmate[name],
@@ -236,4 +277,18 @@ func TestGrammarsCoverSpecialOps(t *testing.T) {
 				" (tree-sitter-elps/queries/highlights.scm); add it, or add it to"+
 				" grammarExempt with the rule that handles it instead", name)
 	}
+}
+
+// grammarSources returns the raw text of both grammar files, for assertions
+// about rules rather than about keyword lists.
+func grammarSources(t *testing.T) (textmate, treeSitter string) {
+	t.Helper()
+	root := repoRoot(t)
+	//nolint:gosec // path derived from runtime.Caller, not input
+	tm, err := os.ReadFile(filepath.Join(root, "editors/vscode/syntaxes/elps.tmLanguage.json"))
+	require.NoError(t, err)
+	//nolint:gosec // path derived from runtime.Caller, not input
+	ts, err := os.ReadFile(filepath.Join(root, "tree-sitter-elps/queries/highlights.scm"))
+	require.NoError(t, err)
+	return string(tm), string(ts)
 }

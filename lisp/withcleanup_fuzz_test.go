@@ -3,6 +3,7 @@
 package lisp_test
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"testing"
@@ -52,8 +53,12 @@ import (
 // opportunistically -- it costs nothing, and if this target ever does
 // discover a genuine host panic it will also prove the carve-out survived it.
 //
-// The benign cleanup form is debug-print, which writes to Runtime.Stderr and
-// cannot fail.  A (set! ...) cleanup would have been observable too, but it
+// The benign cleanup form is lisp:debug-print, which writes to Runtime.Stderr
+// and cannot fail.  It is QUALIFIED because the body runs first, in the same
+// environment: an unqualified (debug-print ...) resolves after the body has
+// had a chance to (defun debug-print ...) over it, and seven such bodies were
+// demonstrated turning a correct implementation into permanent testdata
+// crashers.  Same for lisp:error in arm C.  A (set! ...) cleanup would have been observable too, but it
 // can error if the body disturbed the binding -- which would surface as a
 // violation of the very property being measured.
 //
@@ -85,10 +90,12 @@ func FuzzWithCleanup(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, body string) {
-		// A body naming a sentinel could rebind it and turn a genuine
-		// invariant violation into a false report; skip rather than reason
-		// about it.
-		if strings.Contains(body, cleanupMarker) ||
+		// The marker is derived from the body, so a body cannot contain it
+		// and forge a cleanup that never ran.  A literal sentinel could be
+		// reconstructed dynamically -- (concat 'string "<<fc-" "...>>") --
+		// which defeated a containment check on a fixed string.
+		marker := cleanupMarker(body)
+		if strings.Contains(body, marker) ||
 			strings.Contains(body, sentinelCleanupCond) {
 			t.Skip("body names a harness sentinel")
 		}
@@ -104,10 +111,13 @@ func FuzzWithCleanup(f *testing.F) {
 
 		outA, okA := evalBudgeted(t, []byte(fmt.Sprintf("(progn %s)", body)))
 		outB, okB := evalBudgeted(t, []byte(fmt.Sprintf(
-			"(with-cleanup ((debug-print %q)) %s)", cleanupMarker, body)))
+			"(with-cleanup ((lisp:debug-print %q)) %s)", marker, body)))
 		outC, okC := evalBudgeted(t, []byte(fmt.Sprintf(
-			"(with-cleanup ((error '%s \"x\")) %s)", sentinelCleanupCond, body)))
-		if !okA || !okB || !okC {
+			"(with-cleanup ((lisp:error '%s \"x\")) %s)", sentinelCleanupCond, body)))
+		outD, okD := evalBudgeted(t, []byte(fmt.Sprintf(
+			"(with-cleanup ((lisp:debug-print %q) (lisp:debug-print %q)) %s)",
+			marker+"1", marker+"2", body)))
+		if !okA || !okB || !okC || !okD {
 			t.Skip("a wrapped arm does not parse")
 		}
 
@@ -118,9 +128,23 @@ func FuzzWithCleanup(f *testing.F) {
 		// which cuts the cleanup form's own evaluation exactly as it cut the
 		// body's -- the counters are already spent by the time cleanup is
 		// reached.
-		if !cleanupRan(outB) && !isResourceStop(outB.Result) {
+		if !strings.Contains(outB.Stderr, marker) && !isResourceStop(outB.Result) {
 			t.Fatalf("cleanup form did not run and the evaluation was not"+
 				" resource-stopped\nbody: %q\nresult: %v", body, outB.Result)
+		}
+		// (1b) EVERY cleanup form runs, in order.  A single-cleanup arm
+		// cannot see this: reversing the forms, running only the last, or
+		// not abandoning the rest after one signals are all invisible to it.
+		i1 := strings.Index(outD.Stderr, marker+"1")
+		i2 := strings.Index(outD.Stderr, marker+"2")
+		if !isResourceStop(outD.Result) {
+			if i1 < 0 || i2 < 0 {
+				t.Fatalf("a cleanup form was skipped: first=%v second=%v"+
+					"\nbody: %q\nresult: %v", i1 >= 0, i2 >= 0, body, outD.Result)
+			}
+			if i1 > i2 {
+				t.Fatalf("cleanup forms ran out of order\nbody: %q", body)
+			}
 		}
 
 		// (2) It never catches.  One direction only -- see the header.
@@ -147,11 +171,8 @@ func FuzzWithCleanup(f *testing.F) {
 		// (4) The body did not panic, so a signalling cleanup form wins --
 		// over a value and over an ordinary error alike.
 		if outC.Result.Type != lisp.LError {
-			if !isResourceStop(outC.Result) {
-				t.Fatalf("a signalling cleanup form did not produce an error"+
-					"\nbody: %q\nresult: %v", body, outC.Result)
-			}
-			return
+			t.Fatalf("a signalling cleanup form did not produce an error"+
+				"\nbody: %q\nresult: %v", body, outC.Result)
 		}
 		if outC.Result.Str != sentinelCleanupCond && !isResourceStop(outC.Result) {
 			t.Fatalf("expected the cleanup form's condition %q to win, got %q"+
@@ -161,28 +182,46 @@ func FuzzWithCleanup(f *testing.F) {
 	})
 }
 
-const (
-	// sentinelCleanupCond is the condition the signalling cleanup form
-	// raises.  It is deliberately not a name any real code uses.
-	sentinelCleanupCond = "fuzz-cleanup-ran-and-signalled"
-	// cleanupMarker is what the benign cleanup form debug-prints.
-	cleanupMarker = "<<fuzz-cleanup-ran>>"
-)
+// sentinelCleanupCond is the condition the signalling cleanup form raises.
+// It is deliberately not a name any real code uses.
+const sentinelCleanupCond = "fuzz-cleanup-ran-and-signalled"
 
-// cleanupRan reports whether the benign cleanup form executed, read from the
-// captured stderr rather than from lisp state.
-func cleanupRan(out evalOutcome) bool {
-	return strings.Contains(out.Stderr, cleanupMarker)
+// cleanupMarker returns the string the benign cleanup forms debug-print for
+// this body.  It is DERIVED from the body so that the body cannot contain it,
+// which a fixed sentinel could not promise: a containment check on a literal
+// is defeated by building the same string dynamically.
+func cleanupMarker(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return fmt.Sprintf("<<fc-%x>>", sum[:8])
 }
 
 // isResourceStop reports whether v is an evaluation cut short by a budget
 // rather than by the program's own logic.
 //
-// The stack and tail-iteration limits arrive as wrapped Go errors rather than
-// as named conditions, so they are matched on message text.  Being
-// over-broad here only skips an assertion; it cannot manufacture a passing
-// run out of a failing one, which is the safe direction for a heuristic
-// inside an oracle.
+// The stack, tail-iteration, allocation and macro-depth limits arrive as
+// wrapped Go errors rather than as named conditions, so there is no condition
+// to switch on: env.Error stamps them all with the generic "error".  They are
+// therefore matched on message text -- but ONLY when the condition is that
+// generic one.  That qualification is the whole guard.  Without it a body can
+// forge an excuse for its own failure:
+//
+//	(error 'x "stack height exceeded maximum")
+//
+// renders a message carrying the fragment, and a match on the message alone
+// silently excused it.  A defect that skipped cleanup on the error path then
+// went unreported for every body that named a limit in its message -- verified
+// against a real mutation, not imagined.  A user condition is never the
+// generic "error", so requiring it closes that family.
+//
+// THE RESIDUAL, stated rather than waved away: a body that raises the generic
+// condition itself, (error 'error "stack height exceeded maximum"), is still
+// excused.  Closing that needs a discriminator the LVal does not carry.
+//
+// An earlier version of this comment claimed being over-broad "cannot
+// manufacture a passing run out of a failing one, which is the safe direction".
+// That had the direction backwards: excusing an assertion is EXACTLY how a
+// failing run is turned into a passing one.  What over-breadth cannot
+// manufacture is a false FAILURE.
 func isResourceStop(v *lisp.LVal) bool {
 	if v == nil || v.Type != lisp.LError {
 		return false
@@ -191,12 +230,21 @@ func isResourceStop(v *lisp.LVal) bool {
 	case lisp.CondStepLimitExceeded, lisp.CondContextCancelled,
 		lisp.CondEvalNestingExceeded, lisp.CondSleepLimitExceeded:
 		return true
+	case genericErrorCondition:
+		// Fall through to the message match below.
+	default:
+		// A named user condition is never a budget stop.
+		return false
 	}
 	msg := v.String()
 	for _, frag := range []string{
 		"stack height exceeded maximum",
 		"tail-call iteration limit exceeded",
-		"allocation limit",
+		// runtime.go renders "allocation size N exceeds maximum (M)".  An
+		// earlier list said "allocation limit", which matches nothing the
+		// interpreter emits -- so a genuine WithMaxAlloc stop was NOT
+		// recognised while the fragment stayed live as a forgery.
+		"allocation size",
 		"macro expansion depth",
 	} {
 		if strings.Contains(msg, frag) {
@@ -205,6 +253,10 @@ func isResourceStop(v *lisp.LVal) bool {
 	}
 	return false
 }
+
+// genericErrorCondition is what env.Error stamps on an error built from a Go
+// error -- every budget stop that is not one of the named conditions above.
+const genericErrorCondition = "error"
 
 // parses reports whether src is readable, so the target can decline an input
 // that is the parser targets' business rather than this one's.
