@@ -101,6 +101,16 @@ var langSpecialOps = []*langBuiltin{
 		error. Returns the last value if no error occurs. The
 		internal-panic condition is not suppressed: a Go panic recovered
 		from host code signals a defect in that code, so it propagates.`},
+	{"unwind-protect", Formals("protected", VarArgSymbol, "cleanup"), opUnwindProtect,
+		`Evaluates the protected form, then always evaluates the cleanup
+		forms -- whether the protected form returned normally or
+		signalled. Returns the protected form's value; cleanup values are
+		discarded. Unlike handler-bind and ignore-errors it does not
+		catch: an error keeps propagating after the cleanup has run. If a
+		cleanup form itself signals, that error replaces the outcome
+		already in flight and the remaining cleanup forms are skipped --
+		except over an internal-panic, which always wins and is never
+		masked.`},
 	{"cond", Formals(VarArgSymbol, "branch"), opCond,
 		`Multi-way conditional. Each branch is a clause (test &rest body).
 		Clauses are evaluated in order: for the first truthy test, the
@@ -826,6 +836,69 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 			}
 			return val
 		}
+	}
+	return val
+}
+
+// (unwind-protect protected-form cleanup-form*)
+//
+// The cleanup guarantee elps otherwise lacks (#554).  handler-bind and
+// ignore-errors CATCH an error; neither can promise a form runs on the way
+// out, so an acquire/release bracket written in lisp leaks its release
+// whenever the body signals and something upstream recovers.
+//
+// This does not catch.  The protected form's outcome -- value or error --
+// is what propagates once the cleanup forms have run.
+func opUnwindProtect(env *LEnv, args *LVal) *LVal {
+	protected, cleanup := args.Cells[0], args.Cells[1:]
+	// What actually keeps tail recursion from collapsing the frame that
+	// owes the cleanup is the line below it: the protected form is
+	// evaluated EAGERLY here, never handed back to the trampoline as an
+	// env.Terminal expression the way opIf and opProgn hand back theirs.
+	// TRO only ever fires for an expression returned that way, so a frame
+	// sitting inside this operator cannot be collapsed out from under the
+	// cleanup forms.
+	//
+	// The TROBlock is defence in depth on top of that, and is set for
+	// consistency with opIgnoreErrors and opHandlerBind, which take it in
+	// the same position for the same reason.  Be aware of what it is worth:
+	// deleting it from any of the three leaves the whole suite green, so
+	// nothing in the tree pins it -- it is a guard against a future change
+	// that marks this frame terminal, which TerminalFID would then report
+	// as an inconsistent stack rather than silently skipping cleanup.
+	env.Runtime.Stack.Top().TROBlock = true
+	val := env.Eval(protected)
+	// A recovered Go panic marks a defect in host code, not a program
+	// condition.  ignore-errors and handler-bind's catch-all 'condition
+	// both refuse to swallow one; this must not become the operator that
+	// reopens that hole by way of a cleanup form that happens to signal.
+	// Remembered here because val is overwritten by neither path below.
+	panicked := IsInternalPanic(val)
+	// Cleanup runs on every path: normal return, ordinary error, and a
+	// recovered panic.  That is the whole point of the operator -- the
+	// panic path is exactly the one the handler-bind workaround misses.
+	//
+	// Termination is not weakened by running work after an error.  The
+	// step counter is monotonic and the context error is sticky, so once a
+	// budget is spent every Eval below fails immediately; a cleanup form
+	// can no more loop forever than the protected form could.
+	for _, c := range cleanup {
+		cval := env.Eval(c)
+		if cval.Type != LError {
+			continue
+		}
+		if panicked {
+			// Propagate the ORIGINAL value, never a reconstruction:
+			// IsInternalPanic is keyed off the recovered Go-stack
+			// snapshot precisely so the marker cannot be forged, so a
+			// rebuilt error would not satisfy it and the host defect
+			// would stop being visible to FuzzEval's assertion.
+			return val
+		}
+		// Common Lisp's semantics, which Go's defer shares: an error
+		// raised by cleanup replaces the outcome already in flight and
+		// abandons the cleanup forms after it.
+		return cval
 	}
 	return val
 }

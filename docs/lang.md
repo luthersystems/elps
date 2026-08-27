@@ -1276,6 +1276,71 @@ error handling:
 ; Evaluates to '('recovered 'my-error)
 ```
 
+### Guaranteed Cleanup (`unwind-protect`)
+
+`handler-bind`, `rethrow` and `ignore-errors` all *catch*.  None of them can
+promise that a form runs on the way out.  `unwind-protect` is that promise:
+
+```lisp
+(unwind-protect protected-form cleanup-form ...)
+```
+
+It evaluates the protected form, then **always** evaluates the cleanup forms
+— whether the protected form returned normally or signalled.  It returns the
+protected form's value; cleanup values are discarded.
+
+If you know `try`/`finally` from another language, this is `finally` with no
+`catch` clause.  If you know Go, it is `defer`.
+
+```lisp
+(set 'in-step false)
+(unwind-protect
+  (progn (set! 'in-step true)
+         (run-the-body))          ; may signal
+  (set! 'in-step false))          ; runs regardless
+```
+
+Without it the flag leaks whenever the body signals and something upstream
+recovers, and the *next* caller sees state left behind by a call that already
+failed.
+
+Note that `unwind-protect` takes exactly **one** protected form.  Wrap several
+in a `progn`, as above.  The cleanup forms are an implicit `progn`, so they
+need no wrapper.
+
+#### It does not catch
+
+The error is still live once the cleanup has run:
+
+```lisp
+(handler-bind ((condition (lambda (c &rest args) (list 'caught c))))
+    (unwind-protect (error 'my-error "data")
+                    (debug-print "cleanup ran")))
+; prints "cleanup ran", then evaluates to '('caught 'my-error)
+```
+
+This is the difference from the `handler-bind` + `rethrow` workaround, which
+needs the cleanup written twice — once in the handler and once on the success
+path — and still misses `internal-panic`, which the catch-all `condition`
+specifier does not match.
+
+#### When a cleanup form itself signals
+
+| protected form | cleanup form | what propagates |
+| --- | --- | --- |
+| returns normally | returns normally | the protected form's value |
+| returns normally | signals | the **cleanup's** error |
+| signals | returns normally | the **protected form's** error |
+| signals | signals | the **cleanup's** error; the original is abandoned |
+| signals `internal-panic` | either | the **`internal-panic`**, always |
+
+A signalling cleanup form abandons the cleanup forms after it, the way an
+error abandons the rest of a `progn`.
+
+The first four rows are Common Lisp's behaviour, which Go's `defer` shares — a
+panic raised inside a deferred function replaces the one already in flight.
+The last row is the deliberate exception, and the next section explains it.
+
 There is one final form of error handling, though its use is highly
 discouraged.  If one finds themselves handling all errors and inserting a nil
 value with an expression that looks like the following:
@@ -1312,6 +1377,9 @@ on top of it.  So:
 * `ignore-errors` does **not** suppress `internal-panic`; it propagates.
 * the catch-all `condition` handler specifier does **not** match
   `internal-panic`.
+* an error raised by an `unwind-protect` cleanup form does **not** mask an
+  `internal-panic` from the protected form, even though it would replace any
+  ordinary error there.  The cleanup still runs; the panic still wins.
 
 The carve-out keys off a Go stack snapshot the interpreter attaches when it
 recovers the panic — not off the condition name — so `(error 'internal-panic

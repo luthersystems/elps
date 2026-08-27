@@ -193,7 +193,7 @@ func isCallable(name string) bool {
 	case // special operators
 		"if", "cond", "progn", "let", "let*", "flet", "labels", "macrolet",
 		"set", "set!", "and", "or",
-		"handler-bind", "ignore-errors",
+		"handler-bind", "ignore-errors", "unwind-protect",
 		"in-package", "use-package", "export",
 		"dotimes",
 		"thread-first", "thread-last",

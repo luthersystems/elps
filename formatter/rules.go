@@ -73,6 +73,9 @@ func DefaultRules() map[string]*IndentRule {
 		"thread-first": {Style: IndentAlign},
 		"thread-last":  {Style: IndentAlign},
 
+		// protected form as header, cleanup forms as body
+		"unwind-protect": {Style: IndentSpecial, HeaderArgs: 1},
+
 		// all body
 		"progn":         {Style: IndentBody},
 		"ignore-errors": {Style: IndentBody},

@@ -703,6 +703,9 @@ var implicitPrognForms = map[string]int{
 	"macrolet":      2, // (macrolet (bindings) body...)
 	"handler-bind":  2, // (handler-bind (bindings) body...)
 	"ignore-errors": 1, // (ignore-errors body...)
+	// Only the CLEANUP body is implicit-progn.  The protected form at index
+	// 1 takes exactly one expression, so a progn there is load-bearing.
+	"unwind-protect": 2, // (unwind-protect protected cleanup...)
 	"dotimes":       2, // (dotimes (var n) body...)
 	"progn":         1, // (progn body...) — nested progn
 }

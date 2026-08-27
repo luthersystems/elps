@@ -92,7 +92,7 @@ Go test suites typically use `elpstest.TestSuite` with `TestSequence` entries th
 - **Booleans**: `true` and `false` are symbols. `()` (nil) is falsey; everything else is truthy.
 - **Function args**: Support required, optional (`&optional`), variadic (`&rest`), and keyword (`&key`) arguments.
 - **Packages**: Namespaced with `in-package`, `use-package`, `export`. Qualified symbols use `:` (e.g., `lisp:set`). Keywords start with `:`.
-- **Error handling**: Condition-based with stack traces. `handler-bind` and `ignore-errors`.
+- **Error handling**: Condition-based with stack traces. `handler-bind` and `ignore-errors` catch; `unwind-protect` guarantees cleanup on every exit path (it is `finally`, not `catch`) and never masks an `internal-panic`.
 - **Tail recursion**: Optimized via stack frame analysis.
 
 ### Error Propagation Convention

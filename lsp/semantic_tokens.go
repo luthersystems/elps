@@ -276,6 +276,7 @@ var specialOps = map[string]bool{
 	"set": true, "set!": true,
 	"progn": true, "loop": true, "dotimes": true,
 	"handler-bind": true, "ignore-errors": true, "rethrow": true,
+	"unwind-protect": true,
 	"in-package": true, "use-package": true, "export": true,
 	"quote": true, "quasiquote": true, "unquote": true,
 	"funcall": true, "apply": true,

@@ -141,17 +141,26 @@ func EvalTerminating() map[string]string {
 
 		// --- ordinary programs: closures, higher-order functions, maps,
 		// strings, sequences, error handling ---
-		"lambda-apply":       `((lambda (x y) (+ x y)) 1 2)`,
-		"let-binding":        `(let ([a 1] [b 2]) (+ a b))`,
-		"map-over-sequence":  `(map 'list (lambda (x) (* x x)) (make-sequence 0 100))`,
-		"foldl-bounded":      `(foldl + 0 (make-sequence 0 1000))`,
-		"sorted-map":         `(let ([m (sorted-map 'a 1 'b 2)]) (get m 'a))`,
-		"string-ops":         `(string:join (map 'list to-string (make-sequence 0 10)) ",")`,
-		"handler-bind":       `(handler-bind ([condition (lambda (c &rest args) 'caught)]) (error 'boom "x"))`,
-		"ignore-errors":      `(ignore-errors (error 'boom "x"))`,
-		"defmacro-bounded":   `(defmacro twice (x) (quasiquote (progn (unquote x) (unquote x)))) (twice 1)`,
-		"dotimes-bounded":    `(dotimes (i 1000))`,
-		"dotimes-bounded-fn": `(dotimes (i 1000) (+ i 1))`,
+		"lambda-apply":      `((lambda (x y) (+ x y)) 1 2)`,
+		"let-binding":       `(let ([a 1] [b 2]) (+ a b))`,
+		"map-over-sequence": `(map 'list (lambda (x) (* x x)) (make-sequence 0 100))`,
+		"foldl-bounded":     `(foldl + 0 (make-sequence 0 1000))`,
+		"sorted-map":        `(let ([m (sorted-map 'a 1 'b 2)]) (get m 'a))`,
+		"string-ops":        `(string:join (map 'list to-string (make-sequence 0 10)) ",")`,
+		"handler-bind":      `(handler-bind ([condition (lambda (c &rest args) 'caught)]) (error 'boom "x"))`,
+		"ignore-errors":     `(ignore-errors (error 'boom "x"))`,
+		// unwind-protect runs cleanup on both exit paths.  The erroring
+		// shapes are wrapped so they belong here rather than in
+		// EvalErroring: what is under test is that the operator TERMINATES
+		// with the cleanup having run, not the error it lets through.
+		"unwind-protect-normal":        `(unwind-protect 1 2)`,
+		"unwind-protect-error":         `(ignore-errors (unwind-protect (error 'boom "x") 1))`,
+		"unwind-protect-cleanup-error": `(ignore-errors (unwind-protect 1 (error 'boom "x")))`,
+		"unwind-protect-nested":        `(set 'n 0) (ignore-errors (unwind-protect (unwind-protect (error 'boom "x") (set! 'n (+ n 1))) (set! 'n (+ n 1)))) n`,
+		"unwind-protect-in-loop":       `(set 'n 0) (dotimes (i 100) (unwind-protect (set! 'n (+ n 1)) (set! 'n (+ n 1)))) n`,
+		"defmacro-bounded":             `(defmacro twice (x) (quasiquote (progn (unquote x) (unquote x)))) (twice 1)`,
+		"dotimes-bounded":              `(dotimes (i 1000))`,
+		"dotimes-bounded-fn":           `(dotimes (i 1000) (+ i 1))`,
 
 		// --- the expr special operator's legitimate forms.  A1/A2 guard the
 		// placeholder index; these pin that the guard did not also break
@@ -260,6 +269,14 @@ func EvalErroring() map[string]string {
 		"sealed-write-append-vector-cdr":         `(append 'vector (cdr '(1 2 3)) 99)`,
 		"sealed-write-slice-vector-literal":      `(slice 'vector '(1 2 3) 0 2)`,
 		"sealed-write-append-vector-no-values":   `(append 'vector '(1 2 3))`,
+		// unwind-protect does not catch.  Both of these raise the same
+		// modify-literal-error the seeds above pin -- once from the protected
+		// form, once from a cleanup form -- so they satisfy this corpus's
+		// exact-condition contract while pinning the operator's own: a
+		// regression that swallowed either would make the seed COMPLETE,
+		// which is precisely what this corpus reports as a removed guard.
+		"unwind-protect-does-not-catch-protected": `(unwind-protect (stable-sort > '(9 3 7 1 8)) 1)`,
+		"unwind-protect-does-not-catch-cleanup":   `(unwind-protect 1 (stable-sort > '(9 3 7 1 8)))`,
 	}
 }
 
