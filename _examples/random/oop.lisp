@@ -91,7 +91,7 @@
 ;; m.
 (export 'method?)
 (defun method? (obj &rest m)
-  (let* ([m (map 'list method-name m)] ; nolint:shadowing
+  (let* ([m (map 'list method-name m)]
          [type-table (get method-table (type obj))])
     (all? #^(key? type-table %) m)))
 

@@ -3952,3 +3952,42 @@ func TestShadowing_Severity_HidingALocalStaysInfo(t *testing.T) {
 	require.Len(t, diags, 1)
 	assert.Equal(t, SeverityInfo, diags[0].Severity)
 }
+
+// --- shadowing: the carve-out must not reach the hazards (review of #560) ---
+
+func TestShadowing_Positive_RefinementDoesNotSilenceABuiltin(t *testing.T) {
+	// The refinement carve-out is only coherent for a VALUE. Here nothing is
+	// narrowed: the body's (car xs) applies an element as a function. An
+	// earlier revision of #560 ran the carve-out before the severity split
+	// and silenced exactly this.
+	source := `(defun foo (xs) (let ([car (car xs)]) (car xs)))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assertHasDiag(t, diags, "car")
+}
+
+func TestShadowing_Positive_QuotedIsNotARefinement(t *testing.T) {
+	// 'x is data, not a narrowed value -- the binding gives the name a second
+	// meaning and must still be reported.
+	//
+	// The shadowed name here is a PARAMETER on purpose. With a callable the
+	// carve-out is skipped wholesale, so a builtin-shadowing case would pass
+	// this test without the quote logic ever running.
+	source := `(defun foo (x) (let ([x 'x]) x))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, SeverityInfo, diags[0].Severity)
+	assertHasDiag(t, diags, "x")
+}
+
+func TestShadowing_Severity_HidingAUserFunctionIsAWarning(t *testing.T) {
+	// (helper 1) applies the integer 2. Nothing about that is milder because
+	// the callee is user-defined rather than a builtin.
+	source := `(defun helper (x) x)
+(defun foo () (let ([helper 2]) (helper 1)))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, SeverityWarning, diags[0].Severity,
+		"hiding a user-defined function is the same hazard as hiding a builtin")
+}

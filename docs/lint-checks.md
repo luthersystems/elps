@@ -411,23 +411,58 @@ with `_` to silence the warning, or `export` them.
 
 ### `shadowing`
 
-**Reports local bindings that shadow an outer binding.** (Severity: info)
+**Reports local bindings that shadow an outer binding.**
+(Severity: **warning** when the shadowed name is callable, **info** otherwise)
 
 Requires semantic analysis. Flags parameters, `let` bindings, and local
 functions (via `labels`/`flet`) that reuse a name from an enclosing scope
 or the global scope. Top-level `defun` redefinitions are excluded (they
 are intentional overrides, not shadowing).
 
+Severity follows what is hidden. Shadowing a **builtin, special operator,
+macro or function** is a warning: while that binding is in scope, a call to
+the name resolves to the local instead. Shadowing another local — a
+variable or parameter — is info.
+
 ```lisp
-;; INFO — parameter car shadows the builtin
-(defun foo (car) (+ car 1))
+;; WARNING — while this binding is live, (min ...) is an int, not the builtin
+(defun foo () (let ([min (compute-min)]) (bar min)))
 
 ;; INFO — local x shadows the parameter x
 (defun foo (x) (let ((x 2)) (+ x 1)))
 
 ;; OK — top-level defun overriding a builtin is not flagged
 (defun map (f l) (cons (f (car l)) ()))
+
+;; OK — a parameter shadowing a builtin or special-op is idiomatic in
+;; formals; the builtins themselves use names like car, map and expr
+(defun foo (car) (+ car 1))
 ```
+
+#### Refinement is not shadowing
+
+A binding whose initialiser references the name it shadows is **not**
+reported. It narrows one value rather than introducing a second meaning,
+and it is the only way to default an `&optional` argument:
+
+```lisp
+;; OK — one value, progressively narrowed
+(defun handle (&optional ctx)
+  (let* ([ctx (default ctx (sorted-map))])
+    ...))
+```
+
+This carve-out deliberately does **not** apply when the shadowed name is
+callable, because refinement is only coherent for a value:
+
+```lisp
+;; WARNING — reported despite mentioning `car`, because the body's
+;; (car xs) now applies an element as a function
+(defun foo (xs) (let ([car (car xs)]) (car xs)))
+```
+
+Quoted occurrences do not count as a reference — `(let ([keys 'keys]) ...)`
+rebinds `keys` to a symbol, which narrows nothing, so it is still reported.
 
 ### `user-arity`
 

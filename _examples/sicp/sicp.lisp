@@ -48,7 +48,7 @@
   (if (done? a)
     null-value
     (let [(curr    (term a))
-          (match?  (if (nil? match?) (lambda (_) true) match?))] ; nolint:shadowing
+          (match?  (if (nil? match?) (lambda (_) true) match?))]
       (accumulate-iter combiner
                        (if (match? curr)
                          (funcall combiner null-value curr)

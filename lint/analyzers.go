@@ -984,7 +984,13 @@ var AnalyzerShadowing = &Analyzer{
 			// (let* ([ctx (default ctx (sorted-map))]) narrows one value; it
 			// does not give the name a second meaning, and it is the only way
 			// to default an &optional argument. See elps#559.
-			if refinesShadowed(sym) {
+			//
+			// This does NOT apply when the shadowed name is callable. There,
+			// (let ([car (car xs)]) (car xs)) narrows nothing -- the body's
+			// (car xs) applies an element as a function and fails at runtime.
+			// Refinement is only coherent for a value; silencing it here would
+			// suppress exactly the hazard hidesCallable exists to promote.
+			if !hidesCallable(outer.Kind) && refinesShadowed(sym) {
 				continue
 			}
 			// Hiding a builtin, special-op or macro is a different category of
@@ -1010,12 +1016,23 @@ var AnalyzerShadowing = &Analyzer{
 }
 
 // hidesCallable reports whether shadowing a symbol of this kind changes what a
-// CALL means. Hiding a builtin, special operator or macro is a different
-// category of problem from shadowing another local: while the binding is in
-// scope, (min a b) silently denotes the local instead of the builtin, so these
-// are reported at warning severity rather than info (elps#559).
+// CALL means. While the binding is in scope, (min a b) silently denotes the
+// local instead of the builtin, so these are reported at warning severity
+// rather than info (elps#559).
+//
+// SymFunction counts for the same reason a builtin does, and leaving it out was
+// a real gap: after (defun helper (x) x), a (let ([helper 2])) makes the body's
+// (helper 1) apply the integer 2. Nothing about that is milder because the
+// callee happened to be user-defined.
 func hidesCallable(k analysis.SymbolKind) bool {
-	return k == analysis.SymBuiltin || k == analysis.SymSpecialOp || k == analysis.SymMacro
+	switch k {
+	case analysis.SymBuiltin, analysis.SymSpecialOp, analysis.SymMacro, analysis.SymFunction:
+		return true
+	case analysis.SymVariable, analysis.SymParameter, analysis.SymType:
+		return false
+	default:
+		return false
+	}
 }
 
 // refinesShadowed reports whether a binding's initialiser references the very
@@ -1030,16 +1047,35 @@ func refinesShadowed(sym *analysis.Symbol) bool {
 	if sym == nil || sym.Init == nil {
 		return false
 	}
-	found := false
-	Walk([]*lisp.LVal{sym.Init}, func(n *lisp.LVal, _ *lisp.LVal, _ int) {
-		if found || n == nil || n.Type != lisp.LSymbol {
-			return
+	return mentionsUnquoted(sym.Init, sym.Name)
+}
+
+// mentionsUnquoted reports whether name occurs in node as live code, refusing
+// to descend into quoted subtrees.
+//
+// A quoted occurrence is data, not a use: (let ([keys 'keys]) ...) rebinds keys
+// to the SYMBOL keys, which narrows nothing. Skipping the whole quoted subtree
+// rather than only a quoted leaf also covers '(keys foo), whose elements do not
+// individually carry the flag.
+//
+// Known limitation: an occurrence that a nested binding form inside the
+// initialiser rebinds -- (let ([v (lambda (v) ...)]) ...) -- still counts,
+// because this is a syntactic walk with no scope of its own. That can only
+// under-report an info-level shadow of a local; hidesCallable kinds never reach
+// here.
+func mentionsUnquoted(node *lisp.LVal, name string) bool {
+	if node == nil || node.IsQuoted() {
+		return false
+	}
+	if node.Type == lisp.LSymbol {
+		return node.Str == name
+	}
+	for _, c := range node.Cells {
+		if mentionsUnquoted(c, name) {
+			return true
 		}
-		if n.Str == sym.Name {
-			found = true
-		}
-	})
-	return found
+	}
+	return false
 }
 
 // AnalyzerUserArity checks argument counts for calls to user-defined functions
