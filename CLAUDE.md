@@ -17,7 +17,7 @@ ELPS is an embedded Lisp interpreter implemented in Go. It is a Lisp-1 dialect d
 | `make fuzz-list` | List the discovered fuzz targets without running them |
 | `go test ./lisp/...` | Run tests for a specific package |
 | `go test -run TestName ./lisp/` | Run a single test |
-| `make static-checks` | Run golangci-lint with gosec |
+| `make static-checks` | Run golangci-lint with gosec (warns if your version differs from CI's) |
 | `make fieldalign-fix` | Reorder struct fields for the fieldalignment gate (uses betteralign — `fieldalignment -fix` deletes field comments) |
 | `make repl` | Build and launch the REPL |
 | `./elps run file.lisp` | Run a lisp file |
@@ -36,6 +36,23 @@ ELPS is an embedded Lisp interpreter implemented in Go. It is a Lisp-1 dialect d
 | `./elps mcp` | Start the ELPS MCP server over stdio |
 | `make release-notes` | Preview release notes (commits, PRs, CI status since last tag) |
 | `make release VERSION=v1.X.0` | Create a tagged GitHub release (must be on main, CI must pass) |
+
+
+### golangci-lint version skew
+
+`make static-checks` runs whatever `golangci-lint` is on PATH; CI pins a
+version in `.github/workflows/elps.yml`. When the two differ the results
+differ, **in both directions and silently**, so the target now prints a
+warning naming both versions. Trust CI over a local run.
+
+The trap worth knowing, because it invites you to break the build: two
+`//nolint:gosec` directives in `parser/token/token.go` (lines 113 and 115)
+are **load-bearing** under CI's golangci-lint, but an older gosec does not
+flag those array indexes, so `nolintlint` reports the directives as unused
+and a local run reads as "two issues to clean up". Deleting them turns CI
+red. `main` being green in CI is the authority on whether a `//nolint` is
+dead — not a local run on a different version.
+
 
 ## Architecture
 

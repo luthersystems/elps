@@ -104,7 +104,36 @@ tree-sitter-test:
 	cd tree-sitter-elps && go test ./...
 
 .PHONY: static-checks
-static-checks:
+# The golangci-lint version CI actually runs, read from the workflow so there
+# is one source of truth. Kept as a warning rather than a hard gate: a local
+# run on a near-enough version is still useful, and failing the build over a
+# patch bump would just get the target avoided.
+GOLANGCI_CI_VERSION := $(shell sed -n 's/^[[:space:]]*version:[[:space:]]*\(v[0-9][0-9.]*\)[[:space:]]*$$/\1/p' .github/workflows/elps.yml | head -1)
+
+# Warn when the local golangci-lint disagrees with CI's on major.minor.
+#
+# This exists because the failure mode is SILENT and costs real time: a local
+# run on a different version produces findings CI does not have, or misses
+# findings CI does. Both directions have happened here. The sharp one is
+# nolintlint: parser/token/token.go carries two //nolint:gosec directives that
+# are load-bearing under CI's version but report as "unused" under an older
+# gosec -- so an older local golangci-lint invites you to delete the very
+# directives that keep CI green.
+.PHONY: check-golangci-version
+check-golangci-version:
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+		echo "WARNING: golangci-lint not on PATH; CI runs $(GOLANGCI_CI_VERSION)"; exit 0; }
+	@have=$$(golangci-lint --version 2>/dev/null | sed -n 's/.*has version \([0-9][0-9.]*\).*/v\1/p'); \
+	want='$(GOLANGCI_CI_VERSION)'; \
+	hmm=$$(echo "$$have" | cut -d. -f1,2); wmm=$$(echo "$$want" | cut -d. -f1,2); \
+	if [ -n "$$have" ] && [ -n "$$wmm" ] && [ "$$hmm" != "$$wmm" ]; then \
+		echo "WARNING: local golangci-lint $$have, CI runs $$want."; \
+		echo "         Findings below may not match CI in EITHER direction."; \
+		echo "         In particular, do not delete a //nolint directive this"; \
+		echo "         run calls unused without checking CI is green without it."; \
+	fi
+
+static-checks: check-golangci-version
 	golangci-lint run ./...
 	# Second pass under the elpscheck build tag. golangci-lint analyses only
 	# the DEFAULT build, so a file guarded by a build tag is invisible to every
