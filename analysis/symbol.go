@@ -43,11 +43,20 @@ func (k SymbolKind) String() string {
 
 // Symbol represents a defined name in a scope.
 type Symbol struct {
-	Name       string
-	Package    string
-	Kind       SymbolKind
-	Source     *token.Location // nil for builtins
-	Node       *lisp.LVal
+	Name    string
+	Package string
+	Kind    SymbolKind
+	Source  *token.Location // nil for builtins
+	Node    *lisp.LVal
+	// Init is the initialiser expression for a binding that has one --
+	// today the value half of a let/let* binding pair. It is nil for every
+	// other symbol kind (parameters, defun/defmacro names, builtins).
+	//
+	// It exists so a check can tell a binding that REFINES the thing it
+	// shadows -- (let* ([ctx (default ctx (sorted-map))]) -- from one that
+	// gives the name an unrelated meaning. Node is the name symbol alone,
+	// so the initialiser is otherwise unreachable from a Symbol (elps#559).
+	Init       *lisp.LVal
 	Scope      *Scope
 	Signature  *Signature // non-nil for callables
 	DocString  string

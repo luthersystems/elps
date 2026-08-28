@@ -943,7 +943,15 @@ var AnalyzerShadowing = &Analyzer{
 	Name:     "shadowing",
 	Severity: SeverityInfo,
 	Semantic: true,
-	Doc:      "Report when a local binding shadows a name from an enclosing scope.\n\nRequires semantic analysis (--workspace flag). Shadowing is valid but can cause confusion, especially when it hides a builtin or outer variable.",
+	Doc: "Report when a local binding shadows a name from an enclosing scope.\n\n" +
+		"Requires semantic analysis (--workspace flag). Severity follows what is being " +
+		"hidden: shadowing a builtin, special operator or macro is a WARNING, because a " +
+		"later call to that name silently means something else; shadowing another local " +
+		"is INFO.\n\n" +
+		"A binding whose initialiser references the name it shadows is NOT reported \u2014 " +
+		"(let* ([ctx (default ctx (sorted-map))]) refines one value rather than " +
+		"introducing a second meaning, and ELPS offers no other way to default an " +
+		"&optional argument (elps#559).",
 	Run: func(pass *Pass) error {
 		if pass.Semantics == nil {
 			return nil
@@ -972,15 +980,66 @@ var AnalyzerShadowing = &Analyzer{
 				(outer.Kind == analysis.SymSpecialOp || outer.Kind == analysis.SymBuiltin) {
 				continue
 			}
+			// Don't report a binding that REFINES the thing it shadows.
+			// (let* ([ctx (default ctx (sorted-map))]) narrows one value; it
+			// does not give the name a second meaning, and it is the only way
+			// to default an &optional argument. See elps#559.
+			if refinesShadowed(sym) {
+				continue
+			}
+			// Hiding a builtin, special-op or macro is a different category of
+			// problem from shadowing a local: a later (min a b) in that scope
+			// silently denotes the local instead of the builtin.
+			severity := SeverityInfo
+			note := fmt.Sprintf("rename '%s' to avoid confusion with the outer %s", sym.Name, outer.Kind)
+			if hidesCallable(outer.Kind) {
+				severity = SeverityWarning
+				note = fmt.Sprintf("rename '%s': while this binding is in scope, a call to %s "+
+					"resolves to it rather than to the %s", sym.Name, sym.Name, outer.Kind)
+			}
 			pass.Report(Diagnostic{
-				Message: fmt.Sprintf("%s '%s' shadows %s from enclosing scope", sym.Kind, sym.Name, outer.Kind),
-				Pos:     posFromSource(sym.Source),
-				EndPos:  endPosFromNode(sym.Node),
-				Notes:   []string{fmt.Sprintf("rename '%s' to avoid confusion with the outer %s", sym.Name, outer.Kind)},
+				Message:  fmt.Sprintf("%s '%s' shadows %s from enclosing scope", sym.Kind, sym.Name, outer.Kind),
+				Severity: severity,
+				Pos:      posFromSource(sym.Source),
+				EndPos:   endPosFromNode(sym.Node),
+				Notes:    []string{note},
 			})
 		}
 		return nil
 	},
+}
+
+// hidesCallable reports whether shadowing a symbol of this kind changes what a
+// CALL means. Hiding a builtin, special operator or macro is a different
+// category of problem from shadowing another local: while the binding is in
+// scope, (min a b) silently denotes the local instead of the builtin, so these
+// are reported at warning severity rather than info (elps#559).
+func hidesCallable(k analysis.SymbolKind) bool {
+	return k == analysis.SymBuiltin || k == analysis.SymSpecialOp || k == analysis.SymMacro
+}
+
+// refinesShadowed reports whether a binding's initialiser references the very
+// name the binding shadows — (let* ([ctx (default ctx (sorted-map))]).
+//
+// That shape narrows a single value rather than introducing a second meaning
+// for the name, and ELPS gives authors no other way to default an &optional
+// argument, so reporting it is noise that buries the shadows that matter
+// (elps#559). Only let/let* bindings carry an Init, so every other symbol kind
+// falls through to being reported exactly as before.
+func refinesShadowed(sym *analysis.Symbol) bool {
+	if sym == nil || sym.Init == nil {
+		return false
+	}
+	found := false
+	Walk([]*lisp.LVal{sym.Init}, func(n *lisp.LVal, _ *lisp.LVal, _ int) {
+		if found || n == nil || n.Type != lisp.LSymbol {
+			return
+		}
+		if n.Str == sym.Name {
+			found = true
+		}
+	})
+	return found
 }
 
 // AnalyzerUserArity checks argument counts for calls to user-defined functions

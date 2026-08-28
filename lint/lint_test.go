@@ -3893,3 +3893,62 @@ func TestWithCleanupForms_Nolint(t *testing.T) {
 	assertNoDiags(t, lintCheck(t, AnalyzerWithCleanupForms,
 		`(with-cleanup () (do-work)) ; nolint:with-cleanup-forms`))
 }
+
+// --- shadowing: refinement vs. a second meaning (elps#559) ---
+
+func TestShadowing_Negative_RefinesShadowedParam(t *testing.T) {
+	// The defaulting idiom: the local is computed FROM the parameter it
+	// shadows, so the name keeps one meaning, progressively narrowed. ELPS
+	// gives no other way to default an &optional argument.
+	source := `(defun foo (&optional ctx) (let* ([ctx (or ctx 1)]) ctx))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	assertNoDiags(t, diags)
+}
+
+func TestShadowing_Negative_RefinesShadowedNested(t *testing.T) {
+	// Same shape one level deeper, and through a call rather than `or`.
+	source := `(defun foo (xs) (let ([xs (map 'list to-string xs)]) xs))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	assertNoDiags(t, diags)
+}
+
+func TestShadowing_Positive_UnrelatedInitStillReported(t *testing.T) {
+	// The refinement carve-out must NOT swallow a binding that gives the
+	// name an unrelated value -- this is the shape that actually hides
+	// something, and it is what substrate's `[min (determine-min)]` looks
+	// like.
+	source := `(defun foo (&optional ctx) (let* ([ctx (sorted-map)]) ctx))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "ctx")
+}
+
+func TestShadowing_Positive_ParamIsNeverRefinement(t *testing.T) {
+	// Parameters carry no initialiser, so the carve-out cannot reach them:
+	// an inner lambda parameter shadowing an outer one is still reported.
+	source := `(defun foo (x) (lambda (x) x))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "x")
+}
+
+func TestShadowing_Severity_HidingABuiltinIsAWarning(t *testing.T) {
+	// While this binding is in scope a call to (car ...) resolves to the
+	// local, which is a different category of problem from shadowing a
+	// local name -- so it is a warning, not info.
+	source := `(defun foo () (let ([car 1]) car))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, SeverityWarning, diags[0].Severity,
+		"hiding a builtin should outrank shadowing a local")
+	require.NotEmpty(t, diags[0].Notes)
+	assert.Contains(t, diags[0].Notes[0], "resolves to it rather than to the builtin",
+		"the note should say what actually goes wrong, not just 'rename it'")
+}
+
+func TestShadowing_Severity_HidingALocalStaysInfo(t *testing.T) {
+	source := `(defun foo (x) (let ([x 2]) x))`
+	diags := lintCheckSemantic(t, AnalyzerShadowing, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, SeverityInfo, diags[0].Severity)
+}
