@@ -771,6 +771,7 @@ func (a *analyzer) analyzeLet(node *lisp.LVal, scope *Scope, sequential bool, cu
 				Kind:   SymVariable,
 				Source: astutil.SourceLoc(nameVal),
 				Node:   nameVal,
+				Init:   valueVal,
 			}
 			letScope.Define(sym)
 			a.result.Symbols = append(a.result.Symbols, sym)
