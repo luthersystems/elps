@@ -26,7 +26,13 @@ step, no string DSL. Path step types:
 Functions ending in "!" mutate in place; those without "!" return
 a copy and leave the original unchanged. For ?set! and ?set, the
 last argument is the new value; all preceding arguments are path
-steps.`
+steps.
+
+parse-path is the one function that takes a string: it converts a
+jq-style path into a list of the steps above, for a path that
+arrives as a string and is used more than once.
+
+  (apply ? (cons obj (parse-path ".items[0].id")))`
 
 // LoadPackage adds the elpspath package to env.
 //
@@ -82,6 +88,25 @@ var builtins = []*libutil.Builtin{
 		(? scores '(range 1))     => elements [1,end)
 		(? scores '(range -2))    => the last two elements
 		(? obj)                   => obj itself (no path steps)`),
+	libutil.FunctionDoc("parse-path", lisp.Formals("selector"), BuiltinParsePath,
+		`Convert a jq-style path string into a list of positional path steps.
+
+		The steps are what the ? family takes, so the result applies
+		straight into any of them:
+
+		(parse-path ".items[0].id")   => '("items" 0 "id")
+		(parse-path ".items[].id")    => '("items" * "id")
+		(parse-path ".items[1:3]")    => '("items" (range 1 3))
+		(parse-path ".items[1:]")     => '("items" (range 1))
+		(parse-path ".")              => '()
+
+		(apply ? (cons obj (parse-path sel)))
+		(apply ?set (concat 'list (list obj) (parse-path sel) (list v)))
+
+		This is for a path that ARRIVES AS A STRING and is used more than
+		once -- convert it once, keep the steps, and every later operation
+		skips the parse. Converting on each call is slower than a single
+		string-path operation, since it parses AND builds a list.`),
 	libutil.FunctionDoc("?set!", lisp.Formals("val", lisp.VarArgSymbol, "steps-and-value"), BuiltinQuerySetMutate,
 		`Set value at a path specified by positional args, mutating the original.
 

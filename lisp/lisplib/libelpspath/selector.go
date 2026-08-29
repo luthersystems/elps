@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/luthersystems/elps/lisp"
 )
 
 // THE JQ-STRING SELECTOR FRONT END
@@ -223,8 +225,31 @@ var parsers = []func(string) (string, Path, error){parseArray, parseArrayKey, pa
 // brackets every map key. TestParseSelectorTwoQuotedKeys covers the grammar
 // and the round-trip test carries multi-key selectors.
 func ParseSelector(selector string) (Path, error) {
-	// handle special case where first op is of form ".[x]"
-	// we support this notation to be closer to jq.
+	paths, err := selectorPaths(selector)
+	if err != nil {
+		return nil, err
+	}
+	// Root(Chain()), not Chain(): the two are the same path -- rootPath
+	// proxies all seven operations -- but Chain().String() is the empty
+	// string, which is not a selector this parser reads back. Printing
+	// output we cannot parse is the same defect as issue #566 in a
+	// different spot, and this spelling is also what ArgsToPath builds
+	// for an empty step list.
+	return Root(Chain(paths...)), nil
+}
+
+// selectorPaths runs the scan and returns the FLAT leaf steps a selector
+// names, in order, with no Root or Chain around them.
+//
+// It is the whole of the parsing; ParseSelector assembles a Path from what
+// it returns and SelectorSteps renders the same steps as lisp values. One
+// scan behind both, so the two surfaces cannot disagree about a grammar
+// they both claim to implement.
+//
+// The steps are flat by construction: each parser yields a single leaf --
+// Dot, Index, Iter or Range -- and all nesting happens later, in Chain and
+// normalizePaths.
+func selectorPaths(selector string) ([]Path, error) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" {
 		return nil, errors.New("selector missing")
@@ -234,14 +259,10 @@ func ParseSelector(selector string) (Path, error) {
 	}
 	var paths []Path
 	if selector == "." {
-		// Root(Chain()), not Chain(): the two are the same path -- rootPath
-		// proxies all seven operations -- but Chain().String() is the empty
-		// string, which is not a selector this parser reads back. Printing
-		// output we cannot parse is the same defect as issue #566 in a
-		// different spot, and this spelling is also what ArgsToPath builds
-		// for an empty step list.
-		return Root(Chain(paths...)), nil
+		return nil, nil
 	}
+	// handle special case where first op is of form ".[x]"
+	// we support this notation to be closer to jq.
 	match := preprocPath.FindStringSubmatch(selector)
 	if match != nil {
 		selector = match[1]
@@ -273,5 +294,70 @@ func ParseSelector(selector string) (Path, error) {
 		}
 	}
 
-	return Root(Chain(paths...)), nil
+	return paths, nil
+}
+
+// SelectorSteps translates a jq-style selector string into the positional
+// path steps the ? family takes, as ordinary lisp values.
+//
+//	SelectorSteps(`.users[0]["full name"]`)  =>  "users", 0, "full name"
+//	SelectorSteps(".items[].id")             =>  "items", '*, "id"
+//	SelectorSteps(".items[1:3]")             =>  "items", '(range 1 3)
+//	SelectorSteps(".items[1:]")              =>  "items", '(range 1)
+//	SelectorSteps(".")                       =>  no steps
+//
+// It exists so a path that ARRIVES AS A STRING -- from inside a document, a
+// client request, or a persisted envelope -- can be converted once and then
+// applied many times through the positional API, instead of being re-parsed
+// on every operation. The identity selector yielding no steps is what makes
+// that uniform: applying an empty step list is the identity, exactly as
+// (? obj) is.
+//
+// It shares selectorPaths with ParseSelector, so the two agree on the
+// grammar by construction rather than by test. What the steps mean is
+// checked anyway: TestSelectorStepsMatchParseSelector applies both routes to
+// documents and requires the same answer.
+//
+// The open-ended range is why this can be lossless. Before it had a step
+// spelling, "[1:]" had no positional form, so a conversion would have
+// silently dropped or mis-rendered exactly the selectors that persist.
+func SelectorSteps(selector string) ([]*lisp.LVal, error) {
+	paths, err := selectorPaths(selector)
+	if err != nil {
+		return nil, err
+	}
+	steps := make([]*lisp.LVal, 0, len(paths))
+	for _, p := range paths {
+		step, err := pathToStep(p)
+		if err != nil {
+			return nil, err
+		}
+		steps = append(steps, step)
+	}
+	return steps, nil
+}
+
+// pathToStep renders one leaf step as the lisp value argToStep parses back.
+//
+// It is total over what selectorPaths can produce and deliberately has no
+// default that guesses: a leaf type reaching here unhandled is a grammar
+// that grew a step this cannot express, and saying so beats emitting
+// something that round-trips to a different path.
+func pathToStep(p Path) (*lisp.LVal, error) {
+	switch v := p.(type) {
+	case *dotPath:
+		return lisp.String(v.key), nil
+	case *indexPath:
+		return lisp.Int(v.index), nil
+	case *iterPath:
+		return lisp.Symbol("*"), nil
+	case *rangePath:
+		cells := []*lisp.LVal{lisp.Symbol("range"), lisp.Int(v.from)}
+		if !v.implicitTo {
+			cells = append(cells, lisp.Int(v.to))
+		}
+		return lisp.QExpr(cells), nil
+	default:
+		return nil, fmt.Errorf("no path step spelling for %T", p)
+	}
 }

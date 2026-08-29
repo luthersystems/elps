@@ -277,3 +277,38 @@
   (elpspath:?set! view '(range 0 1) (vector 90 91))
   (assert-equal (vector 90 91 2 3) view)
   (assert-equal (vector 1 2 3 4 5) src))
+
+;;; ---- parse-path: a string path converted to positional steps ----
+;;;
+;;; The point of the conversion is that the steps apply straight into the ?
+;;; family, so a path that arrived as a string can be converted once and
+;;; then used many times without re-parsing.
+
+(test "parse-path renders each grammar form as a step"
+  (assert-equal '() (elpspath:parse-path "."))
+  (assert-equal '("a") (elpspath:parse-path ".a"))
+  (assert-equal '("a" "b") (elpspath:parse-path ".a.b"))
+  (assert-equal '("first name") (elpspath:parse-path ".[\"first name\"]"))
+  (assert-equal '("a" 0) (elpspath:parse-path ".a[0]"))
+  (assert-equal '("a" -1) (elpspath:parse-path ".a[-1]"))
+  (assert-equal '("a" '(range 1 3)) (elpspath:parse-path ".a[1:3]"))
+  (assert-equal '("a" '(range 1)) (elpspath:parse-path ".a[1:]")))
+
+(test-let* "parse-path steps apply into the ? family"
+  ((obj (sorted-map "items" (vector (sorted-map "id" 1) (sorted-map "id" 2) (sorted-map "id" 3)))))
+  (assert-equal (vector 1 2 3) (apply elpspath:? (cons obj (elpspath:parse-path ".items[].id"))))
+  (assert-equal 1 (apply elpspath:? (cons obj (elpspath:parse-path ".items[0].id"))))
+  (assert-equal (vector (sorted-map "id" 2) (sorted-map "id" 3))
+                (apply elpspath:? (cons obj (elpspath:parse-path ".items[1:]"))))
+  ; the identity selector yields no steps, and applying none is the identity
+  (assert-equal obj (apply elpspath:? (cons obj (elpspath:parse-path ".")))))
+
+(test-let* "parse-path steps apply into a mutating operation"
+  ((obj (sorted-map "items" (vector (sorted-map "id" 1) (sorted-map "id" 2)))))
+  (apply elpspath:?set! (concat 'list (list obj) (elpspath:parse-path ".items[0].id") (list 99)))
+  (assert-equal 99 (elpspath:? obj "items" 0 "id")))
+
+(test "parse-path rejects what the string operations reject"
+  (assert-nil (ignore-errors (elpspath:parse-path "")))
+  (assert-nil (ignore-errors (elpspath:parse-path "a")))
+  (assert-nil (ignore-errors (elpspath:parse-path ".["))))

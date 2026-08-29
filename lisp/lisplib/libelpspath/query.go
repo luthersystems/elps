@@ -323,3 +323,19 @@ func BuiltinQueryNil(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	return data
 }
+
+// BuiltinParsePath implements (elpspath:parse-path selector).
+//
+// It returns a LIST and not a vector because apply takes a list, and
+// splicing the steps into a ? call is the entire point of the function.
+func BuiltinParsePath(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	sel := args.Cells[0]
+	if sel.Type != lisp.LString {
+		return env.Errorf("selector must be a string, got %v", sel.Type)
+	}
+	steps, err := SelectorSteps(sel.Str)
+	if err != nil {
+		return env.Errorf("%s", err)
+	}
+	return lisp.QExpr(steps)
+}
