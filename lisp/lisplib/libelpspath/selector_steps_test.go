@@ -23,7 +23,9 @@ func TestSelectorStepsRendering(t *testing.T) {
 		// a quote mark. Nothing evaluates it -- apply passes the list's
 		// elements through as they are and argToStep reads the symbol --
 		// so the missing quote is a printing detail, not a lookup waiting
-		// to happen. TestParsePathAppliesIntoQuery covers it end to end.
+		// to happen. TestSelectorStepsMatchParseSelector covers it here,
+		// and the lisp test "parse-path steps apply into the ? family"
+		// covers it end to end through apply.
 		{".a[]", `'("a" *)`},
 		{".a[].b", `'("a" * "b")`},
 		{".a[1:3]", `'("a" '(range 1 3))`},
@@ -109,15 +111,37 @@ func TestSelectorStepsMatchParseSelector(t *testing.T) {
 }
 
 // TestSelectorStepsRejectsWhatParseSelectorRejects keeps the two error
-// surfaces together: a selector that is not a path must not become a step
-// list that silently means something else.
+// surfaces together, in both senses: the same selectors are rejected AND
+// with the same message.
+//
+// The message half is not decoration. BuiltinParsePath re-emits whatever
+// SelectorSteps returns, verbatim, so a divergence would reach users as a
+// different error from the same malformed selector depending on which
+// surface they came through. Comparing only "did both error" leaves that
+// invisible.
+//
+// The rejection half matters more: a selector that is not a path must not
+// become a step list, because an empty step list is the IDENTITY path and
+// would silently address the whole document.
 func TestSelectorStepsRejectsWhatParseSelectorRejects(t *testing.T) {
 	t.Parallel()
-	for _, sel := range []string{"", "a", "..", ".[", ".]", ".[a]", ".[1:2:3]", `.["a`} {
+	for _, sel := range []string{
+		"", "a", "..", ".[", ".]", ".[a]", ".[1:2:3]", `.["a`,
+		".my-key", " ", "[0]", ".café",
+	} {
 		_, perr := ParseSelector(sel)
-		_, serr := SelectorSteps(sel)
-		if (perr == nil) != (serr == nil) {
+		steps, serr := SelectorSteps(sel)
+		switch {
+		case (perr == nil) != (serr == nil):
 			t.Errorf("%q: ParseSelector err=%v but SelectorSteps err=%v", sel, perr, serr)
+		case perr == nil:
+			t.Errorf("%q: expected both to reject, both accepted", sel)
+		case perr.Error() != serr.Error():
+			t.Errorf("%q: messages differ: ParseSelector %q, SelectorSteps %q",
+				sel, perr, serr)
+		case steps != nil:
+			t.Errorf("%q: rejected but still returned %d steps -- an empty step "+
+				"list is the identity path", sel, len(steps))
 		}
 	}
 }

@@ -308,7 +308,52 @@
   (apply elpspath:?set! (concat 'list (list obj) (elpspath:parse-path ".items[0].id") (list 99)))
   (assert-equal 99 (elpspath:? obj "items" 0 "id")))
 
-(test "parse-path rejects what the string operations reject"
-  (assert-nil (ignore-errors (elpspath:parse-path "")))
-  (assert-nil (ignore-errors (elpspath:parse-path "a")))
-  (assert-nil (ignore-errors (elpspath:parse-path ".["))))
+; A raise and a successful empty result are BOTH () under ignore-errors, and
+; () is what the identity selector legitimately returns -- so asserting nil
+; here would pass whether parse-path raised or silently returned no steps.
+; No steps is the IDENTITY path, so that difference is the safety property:
+; a swallowed error would turn a malformed selector into "the whole
+; document" for the ?set idiom the docstring recommends. The sentinel
+; separates the two cases; TestBuiltinParsePathRejectsBadSelector is the
+; same property in Go, where the error type is directly observable.
+(test "parse-path raises on a selector the string operations reject"
+  (let ([tried (lambda (sel) (ignore-errors (elpspath:parse-path sel) 'parsed))])
+    (assert-nil (funcall tried ""))
+    (assert-nil (funcall tried "a"))
+    (assert-nil (funcall tried ".["))
+    (assert-nil (funcall tried ".my-key"))
+    ; and the sentinel really does come back when parsing succeeds, so the
+    ; assertions above cannot pass by the lambda always returning nil
+    (assert-equal 'parsed (funcall tried "."))
+    (assert-equal 'parsed (funcall tried ".a"))))
+
+(test "parse-path requires a string, not a symbol that looks like one"
+  ; LSymbol also carries a string payload and .a is a legal elps symbol, so
+  ; without the type check a quoted symbol parses as though it were the
+  ; selector string.
+  (let ([tried (lambda (sel) (ignore-errors (elpspath:parse-path sel) 'parsed))])
+    (assert-nil (funcall tried '.a))
+    (assert-nil (funcall tried 0))
+    (assert-nil (funcall tried ()))))
+
+; The docstring is the ONLY lisp-facing documentation of this string
+; grammar, so the traps it names are pinned here rather than left to rot.
+; A key syntax rule nobody can see is a key syntax rule nobody follows.
+(test "parse-path key syntax matches what the docstring promises"
+  (let ([tried (lambda (sel) (ignore-errors (elpspath:parse-path sel) 'parsed))])
+    ; a bare .key is [A-Za-z_][A-Za-z_0-9]* only, so kebab-case and
+    ; non-ASCII keys must be bracketed and quoted
+    (assert-nil (funcall tried ".my-key"))
+    (assert-nil (funcall tried ".0abc"))
+    (assert-nil (funcall tried ".$private"))
+    (assert-equal '("my-key") (elpspath:parse-path ".[\"my-key\"]"))
+    (assert-equal '("$private") (elpspath:parse-path ".[\"$private\"]"))
+    (assert-equal '("_ok9") (elpspath:parse-path "._ok9"))
+    ; and the bracketed form really addresses the key
+    (assert-equal 42 (apply elpspath:? (cons (sorted-map "my-key" 42)
+                                             (elpspath:parse-path ".[\"my-key\"]"))))))
+
+(test "parse-path discards the jq optional-selector suffix"
+  ; ".a?" is exactly ".a": nothing in the engine suppresses errors per step
+  (assert-equal (elpspath:parse-path ".a") (elpspath:parse-path ".a?"))
+  (assert-equal '("a" 0) (elpspath:parse-path ".a[0]?")))

@@ -96,8 +96,8 @@ var builtins = []*libutil.Builtin{
 
 		(parse-path ".items[0].id")   => '("items" 0 "id")
 		(parse-path ".items[].id")    => '("items" * "id")
-		(parse-path ".items[1:3]")    => '("items" (range 1 3))
-		(parse-path ".items[1:]")     => '("items" (range 1))
+		(parse-path ".items[1:3]")    => '("items" '(range 1 3))
+		(parse-path ".items[1:]")     => '("items" '(range 1))
 		(parse-path ".")              => '()
 
 		(apply ? (cons obj (parse-path sel)))
@@ -105,8 +105,27 @@ var builtins = []*libutil.Builtin{
 
 		This is for a path that ARRIVES AS A STRING and is used more than
 		once -- convert it once, keep the steps, and every later operation
-		skips the parse. Converting on each call is slower than a single
-		string-path operation, since it parses AND builds a list.`),
+		skips the parse.
+
+		KEY SYNTAX. A bare .key accepts only [A-Za-z_][A-Za-z_0-9]*, so a
+		kebab-case or non-ASCII key MUST be bracketed and quoted:
+
+		(parse-path ".my-key")        => error: failed to parse: -key
+		(parse-path ".[\"my-key\"]")   => '("my-key")
+
+		The jq optional-selector suffix "?" is accepted and DISCARDED --
+		".a?" is exactly ".a" -- because nothing in the engine suppresses
+		errors per step.
+
+		A malformed selector RAISES. It does not return an empty list:
+		no steps is the identity path, so a swallowed error would make a
+		bad selector address the whole document.
+
+		Converting on each call is slower than one string-path operation,
+		since it parses AND builds a list. How much the caching is worth
+		depends on document size -- every operation first walks the whole
+		document to validate it, so on a large document the parse is
+		noise and on a small one it dominates.`),
 	libutil.FunctionDoc("?set!", lisp.Formals("val", lisp.VarArgSymbol, "steps-and-value"), BuiltinQuerySetMutate,
 		`Set value at a path specified by positional args, mutating the original.
 

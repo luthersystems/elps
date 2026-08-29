@@ -16,7 +16,9 @@ import (
 //
 // ParseSelector translates a jq-style selector string -- ".a.b[0][\"x y\"]
 // [1:3]" -- into this package's exported Path constructors. It is a Go-level
-// API only: nothing here is reachable from lisp, and no builtin calls it.
+// API, plus the one builtin that exposes it: parse-path converts a selector
+// string into path steps, which is a conversion rather than an operation on
+// a document. No document-operating builtin parses a string.
 //
 // WHERE IT CAME FROM, AND WHY IT IS HERE NOW (issue #564). This parser spent
 // its life in luthersystems/substrate, alongside the deprecated jq-string

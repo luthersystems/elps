@@ -2,7 +2,9 @@
 //
 // The elpspath API addresses locations inside nested data structures with
 // positional path steps: each step is an ordinary ELPS value — no
-// mini-language to learn and no runtime string parsing. (A legacy jq-string
+// mini-language to learn and no runtime string parsing. (parse-path is the
+// deliberate exception: it converts a string path that arrives as data into
+// those steps, once, so the operations themselves stay parse-free.) (A legacy jq-string
 // path DSL is still spoken by builtins downstream in
 // luthersystems/substrate, over the parser in selector.go; see below.)
 //
@@ -19,6 +21,7 @@
 //	(elpspath:?del   val &rest steps)             ; delete (copy)
 //	(elpspath:?nil!  val &rest steps)             ; nil (mutating)
 //	(elpspath:?nil   val &rest steps)             ; nil (copy)
+//	(elpspath:parse-path selector)                ; string path -> steps
 //
 // For ?set! and ?set the last variadic argument is always the new value;
 // everything before it is treated as path steps.
@@ -89,7 +92,9 @@
 // ParseSelector in selector.go (issue #564): it is pure translation of a
 // selector string into the exported Path constructors, so leaving it
 // downstream meant one repository owning the syntax of a path language whose
-// semantics live in another. Nothing lisp-visible reaches it.
+// semantics live in another. The one lisp-visible way to reach it is
+// parse-path, which converts a selector string into path steps rather than
+// operating on a document with it.
 package libelpspath
 
 import (
