@@ -21,7 +21,7 @@ step, no string DSL. Path step types:
   string    map key         "foo"
   int       array index     0, -1
   symbol    iterate all     '*
-  list      array slice     '(range 1 3)
+  list      array slice     '(range 1 3), '(range 1)
 
 Functions ending in "!" mutate in place; those without "!" return
 a copy and leave the original unchanged. For ?set! and ?set, the
@@ -74,10 +74,13 @@ var builtins = []*libutil.Builtin{
 
 		Each arg is a path step: string for map key, int for array index,
 		'* to iterate all elements, '(range from to) for array slice.
+		The slice end is optional: '(range from) runs to the end.
 
 		(? obj "foo" 0 "bar")     => value at foo[0].bar
 		(? users '* "name")       => list of all user names
 		(? scores '(range 1 3))   => elements [1,3)
+		(? scores '(range 1))     => elements [1,end)
+		(? scores '(range -2))    => the last two elements
 		(? obj)                   => obj itself (no path steps)`),
 	libutil.FunctionDoc("?set!", lisp.Formals("val", lisp.VarArgSymbol, "steps-and-value"), BuiltinQuerySetMutate,
 		`Set value at a path specified by positional args, mutating the original.

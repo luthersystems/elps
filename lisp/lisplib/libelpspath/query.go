@@ -143,13 +143,27 @@ func parseSExprStep(expr *lisp.LVal) (Path, error) {
 	}
 	switch head.Str {
 	case "range":
-		if len(cells) != 3 {
-			return nil, fmt.Errorf("range requires exactly 2 arguments (from to), got %d", len(cells)-1)
+		// One argument is the open-ended slice: (range from) means
+		// [from, len). Two is the explicit half-open [from, to).
+		//
+		// The engine has always been able to express the open end --
+		// rangePath carries an implicitTo flag and validateRange resolves
+		// it against the input length -- but until issue #563 no elps
+		// surface could construct one, so the capability was reachable
+		// only by an embedder building Path values directly.
+		if len(cells) != 2 && len(cells) != 3 {
+			return nil, fmt.Errorf("range requires 1 or 2 arguments (from [to]), got %d", len(cells)-1)
 		}
-		from, to := cells[1], cells[2]
+		from := cells[1]
 		if from.Type != lisp.LInt {
 			return nil, fmt.Errorf("range 'from' must be an integer, got %v", from.Type)
 		}
+		if len(cells) == 2 {
+			// to is ignored when implicitTo is set; validateRange
+			// overwrites it with the input length.
+			return Range(from.Int, 0, true), nil
+		}
+		to := cells[2]
 		if to.Type != lisp.LInt {
 			return nil, fmt.Errorf("range 'to' must be an integer, got %v", to.Type)
 		}

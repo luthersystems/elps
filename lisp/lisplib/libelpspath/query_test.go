@@ -77,6 +77,20 @@ func TestArgsToPath(t *testing.T) {
 			ExpectedPath: ".[1:3]",
 		},
 		{
+			// The open end (issue #563). It renders without a to, which
+			// is both what it means and what parses back to it -- the
+			// stored to is overwritten by validateRange and printing it
+			// used to produce ".[1:0]", an empty slice.
+			Name:         "range expression, implicit end",
+			Args:         []*lisp.LVal{lisp.SExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(1)})},
+			ExpectedPath: ".[1:]",
+		},
+		{
+			Name:         "range expression, negative from and implicit end",
+			Args:         []*lisp.LVal{lisp.SExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(-2)})},
+			ExpectedPath: ".[-2:]",
+		},
+		{
 			Name:         "mixed path",
 			Args:         []*lisp.LVal{lisp.String("foo"), lisp.Int(0), lisp.String("bar")},
 			ExpectedPath: `.["foo"][0]["bar"]`,
@@ -92,8 +106,23 @@ func TestArgsToPath(t *testing.T) {
 			HasError: true,
 		},
 		{
-			Name:     "range wrong arg count",
-			Args:     []*lisp.LVal{lisp.SExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(1)})},
+			// (range 1) used to live here. It is the open-ended slice
+			// now (issue #563), so the arity cases are the ones on
+			// either side of the accepted 1-or-2.
+			Name:     "range with no arguments",
+			Args:     []*lisp.LVal{lisp.SExpr([]*lisp.LVal{lisp.Symbol("range")})},
+			HasError: true,
+		},
+		{
+			Name: "range with three arguments",
+			Args: []*lisp.LVal{lisp.SExpr([]*lisp.LVal{
+				lisp.Symbol("range"), lisp.Int(1), lisp.Int(2), lisp.Int(3),
+			})},
+			HasError: true,
+		},
+		{
+			Name:     "range implicit end, non-int from",
+			Args:     []*lisp.LVal{lisp.SExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.String("a")})},
 			HasError: true,
 		},
 		{
@@ -218,6 +247,62 @@ func TestPathOperations(t *testing.T) {
 			In:       `["a","b","c"]`,
 			Args:     []*lisp.LVal{lisp.SExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(1), lisp.Int(1)})},
 			Expected: `[]`,
+		},
+		// --- Open-ended range, issue #563. The end resolves to the
+		// input length at evaluation time, so one path value gives the
+		// right answer for inputs of different lengths -- which is the
+		// whole reason it cannot be desugared to an explicit to.
+		{
+			Name:     "get open-ended range",
+			Method:   Get,
+			In:       `["a","b","c","d"]`,
+			Args:     []*lisp.LVal{lisp.SExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(1)})},
+			Expected: `["b","c","d"]`,
+		},
+		{
+			Name:     "get open-ended range from zero is the whole array",
+			Method:   Get,
+			In:       `["a","b","c"]`,
+			Args:     []*lisp.LVal{lisp.SExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(0)})},
+			Expected: `["a","b","c"]`,
+		},
+		{
+			Name:     "get open-ended range, negative from",
+			Method:   Get,
+			In:       `["a","b","c","d"]`,
+			Args:     []*lisp.LVal{lisp.SExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(-2)})},
+			Expected: `["c","d"]`,
+		},
+		{
+			Name:     "get open-ended range at the end is empty",
+			Method:   Get,
+			In:       `["a","b","c"]`,
+			Args:     []*lisp.LVal{lisp.SExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(3)})},
+			Expected: `[]`,
+		},
+		{
+			Name:     "get open-ended range past the end errors",
+			Method:   Get,
+			In:       `["a","b","c"]`,
+			Args:     []*lisp.LVal{lisp.SExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(4)})},
+			HasError: true,
+		},
+		{
+			Name:     "get open-ended range on an empty array",
+			Method:   Get,
+			In:       `[]`,
+			Args:     []*lisp.LVal{lisp.SExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(0)})},
+			Expected: `[]`,
+		},
+		{
+			Name:   "get open-ended range nested under a key",
+			Method: Get,
+			In:     `{"items":["a","b","c"]}`,
+			Args: []*lisp.LVal{
+				lisp.String("items"),
+				lisp.SExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(1)}),
+			},
+			Expected: `["b","c"]`,
 		},
 		{
 			Name:     "get root (no path steps)",

@@ -32,8 +32,10 @@ import (
 //   - Structures: nested sorted-maps, vectors, lists and scalars, built to
 //     the depth and breadth the engine actually recurses through.
 //   - Steps: string keys, integer indices (including negatives and the
-//     values that break index arithmetic), the '* iterator and (range a b)
-//     slices.  Steps are drawn PREFERENTIALLY from the keys and indices the
+//     values that break index arithmetic), the '* iterator and both range
+//     spellings -- (range a b) and the open-ended (range a), whose end is
+//     resolved against the document rather than carried in the step.
+//     Steps are drawn PREFERENTIALLY from the keys and indices the
 //     generated structure really has — a fuzzer that mostly misses spends
 //     its budget on the "key absent" branch.  Missing keys and out-of-range
 //     indices still appear; they are the other half of the boundary.
@@ -409,17 +411,29 @@ func namedPositions(n int, step *lisp.LVal) (map[int]bool, bool) {
 		}
 		return out, true
 	case lisp.LSExpr:
-		if len(step.Cells) != 3 {
+		if len(step.Cells) != 2 && len(step.Cells) != 3 {
 			return nil, false
 		}
 		if head := step.Cells[0]; head.Type != lisp.LSymbol || head.Str != "range" {
 			return nil, false
 		}
-		lo, hi := step.Cells[1], step.Cells[2]
-		if lo.Type != lisp.LInt || hi.Type != lisp.LInt {
+		lo := step.Cells[1]
+		if lo.Type != lisp.LInt {
 			return nil, false
 		}
-		from, to, err := validateRange(n, lo.Int, hi.Int, false)
+		// The open-ended form names [from, n).  Modelling it here rather
+		// than returning false is the point: a witness that bails leaves
+		// the step unwatched, and the splice bounds are exactly what
+		// issue #471 got wrong on the two-argument arm.
+		hiInt, implicitTo := 0, true
+		if len(step.Cells) == 3 {
+			hi := step.Cells[2]
+			if hi.Type != lisp.LInt {
+				return nil, false
+			}
+			hiInt, implicitTo = hi.Int, false
+		}
+		from, to, err := validateRange(n, lo.Int, hiInt, implicitTo)
 		if err != nil {
 			// A range the engine refuses names nothing and must write nothing.
 			return out, true
@@ -916,6 +930,18 @@ func (g *pathGen) steps(doc *lisp.LVal) []*lisp.LVal {
 			to := pathIndices[g.intn(len(pathIndices))]
 			if maxLen > 0 && g.next()%2 == 0 {
 				from, to = g.intn(maxLen+1), g.intn(maxLen+1)
+			}
+			if g.next()%4 == 0 {
+				// The open-ended form (issue #563).  It resolves its
+				// end against the document at evaluation time rather
+				// than carrying one, which is a different arm of
+				// validateRange and so a different set of bounds for
+				// the splice to get wrong.  Kept a minority draw so
+				// the two-argument form stays the common case.
+				steps = append(steps, lisp.QExpr([]*lisp.LVal{
+					lisp.Symbol("range"), lisp.Int(from),
+				}))
+				break
 			}
 			steps = append(steps, lisp.QExpr([]*lisp.LVal{
 				lisp.Symbol("range"), lisp.Int(from), lisp.Int(to),

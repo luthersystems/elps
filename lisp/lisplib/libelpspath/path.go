@@ -1255,7 +1255,18 @@ func (s *rangePath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 	return s.nilMutate(cp)
 }
 
+// String renders the slice in the half-open [from:to) notation the jq-style
+// spellings use.
+//
+// An implicit end renders as "[from:]" rather than as the stored to. The
+// stored to is meaningless in that case -- validateRange overwrites it with
+// the input length -- so printing it produced a path that read as something
+// else entirely: Range(1, 0, true) rendered as "[1:0]", an empty slice, and
+// not a path that would parse back to itself (issue #563).
 func (s *rangePath) String() string {
+	if s.implicitTo {
+		return "[" + strconv.Itoa(s.from) + ":]"
+	}
 	return "[" + strconv.Itoa(s.from) + ":" + strconv.Itoa(s.to) + "]"
 }
 

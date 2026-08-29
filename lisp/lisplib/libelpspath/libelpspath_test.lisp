@@ -27,6 +27,53 @@
   ((val (vector "a" "b" "c" "d")))
   (assert-equal (vector "b" "c") (elpspath:? val '(range 1 3))))
 
+; The open-ended slice: (range from) with no end runs to the end of the
+; array (issue #563). The end is resolved against the input at evaluation
+; time, so the same path step gives the right answer for arrays of
+; different lengths -- which the two-argument form cannot express.
+(test-let "? range with an implicit end"
+  ((val (vector "a" "b" "c" "d")))
+  (assert-equal (vector "b" "c" "d") (elpspath:? val '(range 1)))
+  (assert-equal (vector "a" "b" "c" "d") (elpspath:? val '(range 0)))
+  (assert-equal (vector "c" "d") (elpspath:? val '(range -2)))
+  (assert-equal (vector) (elpspath:? val '(range 4))))
+
+; One path value, two inputs of different lengths.
+(test "? range with an implicit end tracks the input length"
+  (let ([short (vector 1 2)]
+        [long (vector 1 2 3 4 5)])
+    (assert-equal (vector 2) (elpspath:? short '(range 1)))
+    (assert-equal (vector 2 3 4 5) (elpspath:? long '(range 1)))))
+
+; Every rangePath operation passes implicitTo through, not just Get, so
+; the mutating ops take the open form as well.
+(test-let "?set! range with an implicit end"
+  ((val (vector 1 2 3 4)))
+  (elpspath:?set! val '(range 2) (vector 90 91))
+  (assert-equal (vector 1 2 90 91) val))
+
+(test-let "?del range with an implicit end"
+  ((val (vector 1 2 3 4)))
+  (assert-equal (vector 1 2) (elpspath:?del val '(range 2)))
+  (assert-equal (vector 1 2 3 4) val))
+
+(test-let "?nil range with an implicit end"
+  ((val (vector 1 2 3 4)))
+  (assert-equal (vector 1 2 () ()) (elpspath:?nil val '(range 2)))
+  (assert-equal (vector 1 2 3 4) val))
+
+; Either side of the accepted 1-or-2 is still an error. ignore-errors
+; yields nil on a raise, and a successful ? with a range step over a
+; non-empty vector always yields a vector, so nil here means the raise
+; happened -- the accepted arities in the same test keep it from passing
+; vacuously.
+(test-let "? range arity is 1 or 2"
+  ((val (vector "a" "b" "c")))
+  (assert-not-nil (ignore-errors (elpspath:? val '(range 1))))
+  (assert-not-nil (ignore-errors (elpspath:? val '(range 1 2))))
+  (assert-nil (ignore-errors (elpspath:? val '(range))))
+  (assert-nil (ignore-errors (elpspath:? val '(range 0 1 2)))))
+
 (test-let "? root"
   ((val (sorted-map "hello" "world")))
   (assert (string= (elpspath:? (elpspath:? val) "hello") "world")))
