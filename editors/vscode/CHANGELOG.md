@@ -4,6 +4,25 @@ Published extension versions track the `elps` release tag they ship with -- the
 publish workflow sets `package.json` from the tag name -- so the numbering
 jumps from 0.2.0 to 1.50.0.
 
+## 1.59.0
+
+- Lint: `shadowing` no longer reports a binding whose initialiser references
+  the name it shadows. `(let* ([ctx (default ctx (sorted-map))])` narrows one
+  value rather than introducing a second meaning for the name, and it is the
+  only way to default an `&optional` argument, so reporting it buried the
+  shadows that matter. Measured on a large downstream codebase, this removed
+  56 of 86 diagnostics.
+- Lint: `shadowing` severity now follows what is hidden. Shadowing a builtin,
+  special operator, macro or function is a **warning** -- while that binding
+  is in scope a call to the name resolves to the local, so `(min a b)` stops
+  meaning `min`. Shadowing another local stays informational. The note says
+  what actually breaks rather than just "rename it". No exit codes change:
+  `elps lint --fail-on` still defaults to `error`.
+- Lint: the refinement exemption above deliberately does NOT apply when the
+  shadowed name is callable. `(let ([car (car xs)]) (car xs))` narrows
+  nothing -- the body applies an element as a function -- so it is still
+  reported, at warning severity.
+
 ## 1.58.0
 
 - Language: new `with-cleanup` special operator -- `(with-cleanup (cleanup...)
