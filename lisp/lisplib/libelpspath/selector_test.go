@@ -856,13 +856,14 @@ func TestParseSelectorRoundTrip(t *testing.T) {
 		".[-2:]", ".[-1:]", ".[-5:]", ".[:-1]", ".[-3:-1]", ".[3:]",
 		".[]", ".[].a", ".[0].a[]", ".a[]", ".def[1]", ".def[1:3]",
 		".fubar[1:]", ".a?", ".[0]?",
+		// Two or more keys -- see the note above (issue #566).
+		".a.b", ".a[].b", ".def[0]", `.["a"]["b"]`, ".a.b.c",
+		`.["$private"].x`, ".hello.there", `.["a\"b"].c`,
 	}
-	// NOT here, and not an oversight: any selector with TWO keys -- ".a.b",
-	// ".a[].b" -- prints as `.["a"]["b"]`, and a printed form with two
-	// bracketed keys does not parse. That is the greedy-key defect (issue
-	// #566), pinned on its own in TestParseSelectorTwoQuotedKeysIsBroken;
-	// fixing it makes those selectors round-trip and they belong in this
-	// list on that day.
+	// The two-key selectors below could not be in this list before issue
+	// #566 was fixed: String() renders every key bracketed, so ".a.b"
+	// prints as `.["a"]["b"]`, and the greedy key body could not read that
+	// back. They are the round-trip cases the defect was hiding.
 	// describe renders a Get outcome so that a value and an error compare
 	// as different things rather than both as "".
 	describe := func(t *testing.T, p Path, doc *lisp.LVal) string {
@@ -954,48 +955,54 @@ func TestParseSelectorRootSpelling(t *testing.T) {
 	}
 }
 
-// TestParseSelectorTwoQuotedKeysIsBroken pins a DEFECT, not a contract.
+// TestParseSelectorTwoQuotedKeys covers the grammar fix for issue #566.
 //
-// reArrayKey's body is `(?:\"|[^"])*` where `\"` is a literal quote, so the
-// alternation matches every character and the group is greedy across the
-// whole remaining selector. Given `.["a"]["b"]` it captures `"a"]["b"` and
-// hands that to strconv.Unquote, which rejects the interior quote. The
-// result is that a selector may contain AT MOST ONE bracketed key:
+// reArrayKey's body used to be `(?:\"|[^"])*`, in which `\"` is a plain
+// escaped quote -- so the alternation was `"` OR `not "`, i.e. every
+// character, and the group ran greedily to the last quote in the selector.
+// Given `.["a"]["b"]` it captured `"a"]["b"` and handed that to
+// strconv.Unquote, which rejected the interior quote. A selector could
+// therefore carry at most ONE bracketed key.
 //
-//	.["first name"]                 works
-//	.["first name"].last            works (the second key is a bare one)
-//	.["first name"]["last name"]    invalid syntax
+// That was not only an input restriction. String() renders every map key
+// bracketed and quoted, so `.a.b` printed as `.["a"]["b"]` -- this parser
+// emitting output it could not itself read. The round-trip test had to
+// exclude every two-key selector; it carries them now.
 //
-// Every case observed fails LOUDLY rather than parsing as some other path,
-// and the reason it should generalise is that a span reaching across two
-// keys necessarily contains the first key's closing quote, which is
-// unescaped in its own literal and which strconv.Unquote refuses. That is
-// an argument, not an exhaustive proof: the cases below are the evidence.
-// Treat it as a rejection defect, and do not rely on it never corrupting.
-//
-// It is preserved by the port (issue #564) so that this move stays a move,
-// and filed as issue #566. The fix is a proper string-literal body,
-// `"(?:\\.|[^"\\])*"`, which turns each of these errors into the obvious
-// parse and cannot change a selector that parses today, because the current
-// behaviour on every one of them is an error. That is a grammar change and
-// belongs in its own change, with this test inverted as its red proof.
-func TestParseSelectorTwoQuotedKeysIsBroken(t *testing.T) {
+// The body is now `(?:\\.|[^"\\])*`: an escape sequence, or a character
+// that is neither a quote nor a backslash. Verified not to change any
+// selector that parsed before -- the previous behaviour on all of these was
+// an error, and the one-key and escape cases below are unchanged.
+func TestParseSelectorTwoQuotedKeys(t *testing.T) {
 	t.Parallel()
-	broken := []string{
+	for _, sel := range []string{
 		`.["a"]["b"]`,
 		`.["first name"]["last name"]`,
 		`.["a"][0]["b"]`,
 		`.["a"][]["b"]`,
-	}
-	for _, sel := range broken {
-		if _, err := ParseSelector(sel); err == nil {
-			t.Errorf("%q now parses -- the greedy-key defect is fixed, so invert this test", sel)
-		}
-	}
-	// The one-quoted-key forms this must not be confused with.
-	for _, sel := range []string{`.["a"]`, `.["a"].b`, `.a["b"]`, `.["a\"b"]`} {
+		`.["a"] ["b"]`,
+		`.["a"]["b"]["c"]`,
+	} {
 		if _, err := ParseSelector(sel); err != nil {
 			t.Errorf("%q must parse: %v", sel, err)
 		}
+	}
+	// Unchanged by the fix: one bracketed key, and the escape forms whose
+	// grammar the new body has to keep getting right.
+	for _, sel := range []string{
+		`.["a"]`, `.["a"].b`, `.a["b"]`, `.["a\"b"]`, `.["\"\n"]`,
+		`.[""]`, `.["]"]`, `.["a\\"]`, `.["a\\"]["b"]`,
+	} {
+		if _, err := ParseSelector(sel); err != nil {
+			t.Errorf("%q must parse: %v", sel, err)
+		}
+	}
+	// The key itself must survive intact, not merely parse.
+	p, err := ParseSelector(`.["first name"]["last name"]`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := p.String(), `.["first name"]["last name"]`; got != want {
+		t.Errorf("String() = %q, want %q", got, want)
 	}
 }

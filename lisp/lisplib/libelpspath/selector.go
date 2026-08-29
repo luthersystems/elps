@@ -50,7 +50,7 @@ var (
 	preprocPath = regexp.MustCompile(`^\.\s*(\[.*)`)
 
 	reArray    = regexp.MustCompile(`^\[\s*(-?\d+)?(\s*:\s*(-?\d+)?)?\s*]\s*(\?)?`)
-	reArrayKey = regexp.MustCompile(`^\[\s*("(?:\"|[^"])*")\s*\]\s*(\?)?`)
+	reArrayKey = regexp.MustCompile(`^\[\s*("(?:\\.|[^"\\])*")\s*\]\s*(\?)?`)
 	reDotKey   = regexp.MustCompile(`^\.\s*([A-Za-z_][A-Za-z_0-9]*)\s*(\?)?`)
 )
 
@@ -208,10 +208,20 @@ var parsers = []func(string) (string, Path, error){parseArray, parseArrayKey, pa
 // Root(Chain()), whose String() is ".". TestParseSelectorRootSpelling pins
 // this so it stays a decision rather than becoming an accident.
 //
-// A selector may contain AT MOST ONE bracketed key: reArrayKey's body is
-// greedy across the whole selector, so `.["a"]["b"]` is a parse error.
-// Filed as issue #566, with the one-line fix; pinned here by
-// TestParseSelectorTwoQuotedKeysIsBroken, which goes red on that fix.
+// reArrayKey's quoted-key body is `(?:\\.|[^"\\])*` -- an escape SEQUENCE,
+// or any character that is neither a quote nor a backslash: the ordinary
+// string-literal grammar. Written `(?:\"|[^"])*`, as it was until issue
+// #566, the regexp engine reads `\"` as a plain escaped quote, so the
+// alternation is `"` OR `not "`, which is every character. The group ran
+// greedily to the last quote in the selector, `.["a"]["b"]` captured
+// `"a"]["b"`, and strconv.Unquote rejected the interior quote -- so a
+// selector could carry at most ONE bracketed key.
+//
+// That was not only an input restriction. String() renders every map key
+// bracketed, so `.a.b` printed as `.["a"]["b"]`: this parser emitting
+// output it could not read back. TestParseSelectorTwoQuotedKeys covers the
+// grammar, and the round-trip test now carries the two-key selectors it
+// previously had to exclude.
 //
 // The jq optional-selector suffix "?" is ACCEPTED AND DISCARDED. In jq,
 // ".a?" suppresses the error a non-object .a would raise; here all three
