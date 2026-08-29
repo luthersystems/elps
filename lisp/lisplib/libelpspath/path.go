@@ -534,13 +534,11 @@ func (s *rootPath) appendString(sb *strings.Builder) {
 
 // stringAppender renders a path into a builder the caller owns.
 //
-// Path.String() returns a string, so a composite path used to render by
-// asking each child for its OWN string and copying that into the parent's --
-// one full-length allocation and copy per level of nesting, which is
-// O(depth^2) in bytes. Nested iterators showed it plainly: rendering
-// ".[][][]..." cost 5.1x going from 200 to 400 iterators and 4.2x again from
-// 400 to 800, reaching 706us. The leaves are O(1) and were never the
-// problem; the three composites -- root, chain and iter -- were.
+// The three composites -- root, chain and iter -- must render through this
+// rather than by asking each child for its own String(). Materialising a
+// child's full string and copying it into the parent's costs one
+// full-length allocation and copy per level of nesting, which is O(depth^2)
+// in bytes. The leaves are O(1) either way.
 //
 // It is unexported and Path does NOT require it, so an embedder's own Path
 // implementation keeps working: appendPathString falls back to String() for
@@ -582,57 +580,39 @@ func expandPaths(paths ...Path) []Path {
 // normalizePaths constructs a normalized chain of paths. This normalization
 // is necessary to properly handle nested iterator paths.
 //
-// IMPORTANT: this had TWO superlinear defects, both filed as issue #565, and
-// the loop below is shaped by both fixes.
+// TWO SHAPES ARE LOAD-BEARING HERE, both for cost. Either one reintroduced
+// makes construction superlinear in an input a caller may not control,
+// before any document is touched.
 //
-// EXPONENTIAL, in the number of iterators. The iterator branch used to call
-// Iter(acc...), which is &iterPath{path: Chain(acc...)}, and Chain calls back
-// into this function. So every iterator re-normalized the entire tail built
-// so far -- and normalizing re-runs expandPaths, which walks into each nested
-// iterator's chain and flattens it, only for the loop to rebuild exactly what
-// it had. One re-entry per iterator, each over a structure the previous one
-// had just rebuilt, is 2^n:
+// The iterator branch builds its iterPath DIRECTLY. Iter(acc...) is
+// &iterPath{path: Chain(acc...)}, and Chain calls back into this function,
+// so every iterator would re-normalize the whole tail built so far -- and
+// normalizing re-runs expandPaths, which flattens each nested iterator's
+// chain only for the loop to rebuild it. One re-entry per iterator, each
+// over what the previous rebuilt, is exponential.
 //
-//	steps    8       12       16       20       24
-//	time    93us    1.2ms    21ms     292ms    4.7s
+// Skipping that re-entry is sound because the accumulator is assembled by
+// this loop out of expandPaths output, so it is already normalized, and
+// normalizePaths is idempotent on it: expandPaths would flatten it back to
+// exactly the sequence the loop consumed. TestNormalizePathsIsIdempotent
+// pins that, because it is what the shape RESTS ON -- if it stops holding,
+// paths change meaning rather than merely cost, and no cost test would
+// notice.
 //
-// That is Path CONSTRUCTION, before any document is touched, and it is
-// reachable from the shipped ? builtin and from a 45-byte selector string.
-// The branch now builds its iterPath directly instead.
-//
-// The re-entry bought nothing, which is why removing it is safe: the
-// accumulator is assembled by this loop out of expandPaths output, so it is
-// already normalized, and normalizePaths is idempotent on it -- expandPaths
-// would flatten it back to exactly the sequence the loop already consumed.
-// TestNormalizePathsIsIdempotent pins that invariant, because it is what the
-// fix RESTS ON: if it stops holding, paths change meaning rather than merely
-// cost, and no cost test would notice.
-//
-// QUADRATIC, in the number of steps, left behind by that first fix and
-// described at the accumulator below.
+// The chain accumulates REVERSED and is flipped once at the end. Prepending
+// -- append([]Path{step}, acc...) -- allocates a fresh slice and copies
+// every element already placed, on every step. That is one slice per step
+// either way, so the allocation COUNT stays linear and a count-based test
+// cannot see it; the BYTES are quadratic.
 //
 // Cost is pinned by TestNormalizePathsIsNotExponential and
-// TestNormalizePathsIsNotQuadratic; equality of meaning by the idempotency
-// test above, TestNormalizePathsAgreesWithIterConstruction, and the corpus,
-// round-trip and iterator-collapse tests.
+// TestNormalizePathsIsNotQuadratic, which assert allocations and bytes
+// respectively rather than wall time. Equality of meaning is pinned by the
+// idempotency test above, TestNormalizePathsAgreesWithIterConstruction, and
+// the corpus, round-trip and iterator-collapse tests.
 func normalizePaths(paths ...Path) []Path {
 	paths = expandPaths(paths...)
-	// The loop runs right to left, so the chain accumulates REVERSED and is
-	// flipped once at the end.
-	//
-	// Prepending instead -- append([]Path{step}, rev...) -- allocated a
-	// fresh slice and copied every element already placed, on every step,
-	// which is O(n^2) in the number of steps:
-	//
-	//	dot steps  100    200     400    800    1600    3200
-	//	time       91us   677us   685us  2.3ms  7.9ms   38.2ms
-	//
-	// One slice per step either way, so the allocation COUNT stayed linear
-	// and a count-based test could not see it; the BYTES were quadratic.
-	// Far milder than the exponential above -- a ~6KB selector to reach
-	// 38ms where the exponential took 45 bytes -- but the same shape of
-	// problem: cost superlinear in the length of an input a caller may not
-	// control.
+	// Right to left, so the chain accumulates reversed; see the doc comment.
 	rev := make([]Path, 0, len(paths))
 	for i := len(paths) - 1; i >= 0; i-- {
 		if _, isIter := paths[i].(*iterPath); !isIter {
@@ -1375,11 +1355,10 @@ func (s *rangePath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 // String renders the slice in the half-open [from:to) notation the jq-style
 // spellings use.
 //
-// An implicit end renders as "[from:]" rather than as the stored to. The
-// stored to is meaningless in that case -- validateRange overwrites it with
-// the input length -- so printing it produced a path that read as something
-// else entirely: Range(1, 0, true) rendered as "[1:0]", an empty slice, and
-// not a path that would parse back to itself (issue #563).
+// An implicit end renders as "[from:]" and NOT as the stored to, which is
+// meaningless in that case -- validateRange overwrites it with the input
+// length. Printing it would render Range(1, 0, true) as "[1:0]", an empty
+// slice, and not a path that parses back to itself.
 func (s *rangePath) String() string {
 	if s.implicitTo {
 		return "[" + strconv.Itoa(s.from) + ":]"

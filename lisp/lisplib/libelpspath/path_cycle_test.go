@@ -43,9 +43,9 @@ func cyclicList() *lisp.LVal {
 }
 
 // TestTypeCheckRefusesCyclicValue pins the gate every builtin runs. A cyclic
-// value has no finite path result, so OKSimpleType must refuse it with an
+// value has no finite path result, so okSimpleType must refuse it with an
 // ordinary error the builtins turn into a catchable condition — not recurse
-// between OKSimpleType and okSimpleContainerType until the stack overflows.
+// between okSimpleType and okSimpleContainerType until the stack overflows.
 // See issue #393.
 func TestTypeCheckRefusesCyclicValue(t *testing.T) {
 	for name, v := range map[string]*lisp.LVal{
@@ -57,7 +57,7 @@ func TestTypeCheckRefusesCyclicValue(t *testing.T) {
 		"map-value": mapHolding("outer", cyclicVector()),
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := OKSimpleType(v)
+			err := okSimpleType(v)
 			require.Error(t, err, "a cyclic value must be refused")
 			assert.ErrorIs(t, err, errCyclicValue)
 		})
@@ -106,7 +106,7 @@ func TestAcyclicValuesAreUnaffectedByTheGuard(t *testing.T) {
 
 	for name, v := range map[string]*lisp.LVal{"deep": deep, "dag": dag, "deep-dag": mapHolding("d", dag)} {
 		t.Run(name, func(t *testing.T) {
-			require.NoError(t, OKSimpleType(v), "an acyclic value must be accepted at any depth")
+			require.NoError(t, okSimpleType(v), "an acyclic value must be accepted at any depth")
 			cp, err := copyLVal(v)
 			require.NoError(t, err)
 			assert.Equal(t, v.String(), cp.String(), "an acyclic value must be copied in full")
@@ -166,7 +166,7 @@ func TestCyclicWalkHelper(t *testing.T) {
 	var refused bool
 	switch walk {
 	case "typecheck":
-		refused = OKSimpleType(cyclicVector()) != nil
+		refused = okSimpleType(cyclicVector()) != nil
 	case "copy":
 		_, err := copyLVal(cyclicMap("a", "b"))
 		refused = err != nil

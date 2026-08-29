@@ -195,42 +195,33 @@ var parsers = []func(string) (string, Path, error){parseArray, parseArrayKey, pa
 // The Path it returns is an ordinary one: nothing distinguishes a parsed
 // path from one assembled by hand or by ArgsToPath, and the same seven
 // operations apply. A caller that is about to hand a document to one of them
-// should run OKSimpleType over the document first, which is what the
+// should run okSimpleType over the document first, which is what the
 // builtins do -- see that function for why it is not optional.
 //
-// THREE WARTS, all preserved deliberately because this is a port of a
-// parser with live downstream callers, not a rewrite.
-//
-// The identity selector "." returns Chain() and NOT Root(Chain()). The two
-// behave identically -- rootPath proxies all seven operations to the path it
-// wraps and adds nothing but a leading "." in String(). ParseSelector used
-// to return the bare Chain() for ".", whose String() is the empty string --
-// output this parser cannot read back, the same defect as issue #566 in a
-// different spot. It now returns Root(Chain()), which prints "." and
-// matches what ArgsToPath builds for an empty step list.
-// TestParseSelectorRootSpelling pins the agreement.
-//
-// reArrayKey's quoted-key body is `(?:\\.|[^"\\])*` -- an escape SEQUENCE,
-// or any character that is neither a quote nor a backslash: the ordinary
-// string-literal grammar. Written `(?:\"|[^"])*`, as it was until issue
-// #566, the regexp engine reads `\"` as a plain escaped quote, so the
-// alternation is `"` OR `not "`, which is every character. The group ran
-// greedily to the last quote in the selector, `.["a"]["b"]` captured
-// `"a"]["b"`, and strconv.Unquote rejected the interior quote -- so a
-// selector could carry at most ONE bracketed key.
-//
-// That was not only an input restriction. String() renders every map key
-// bracketed, so `.a.b` printed as `.["a"]["b"]`: this parser emitting
-// output it could not read back. TestParseSelectorTwoQuotedKeys covers the
-// grammar, and the round-trip test now carries the two-key selectors it
-// previously had to exclude.
-//
-// The jq optional-selector suffix "?" is ACCEPTED AND DISCARDED. In jq,
-// ".a?" suppresses the error a non-object .a would raise; here all three
-// regexps capture the "?" and no caller reads the group, so ".a?" is exactly
-// ".a" and the error is raised. Nothing in the engine implements
+// ONE WART. The jq optional-selector suffix "?" is ACCEPTED AND DISCARDED.
+// In jq, ".a?" suppresses the error a non-object .a would raise; here all
+// three regexps capture the "?" and no caller reads the group, so ".a?" is
+// exactly ".a" and the error is raised. Nothing in the engine implements
 // error-suppressing steps, so honouring the suffix would be a feature, not a
 // fix.
+//
+// Two properties worth stating because they are easy to break:
+//
+// The identity selector "." returns Root(Chain()), which prints "." and
+// matches what ArgsToPath builds for an empty step list. Chain() alone
+// behaves identically -- rootPath proxies all seven operations and adds only
+// a leading "." to String() -- but prints the empty string, which this
+// parser cannot read back. TestParseSelectorRootSpelling pins the agreement.
+//
+// reArrayKey's quoted-key body is `(?:\\.|[^"\\])*`: an escape SEQUENCE, or
+// any character that is neither a quote nor a backslash -- the ordinary
+// string-literal grammar. Spelling it `(?:\"|[^"])*` instead makes the
+// regexp engine read `\"` as a plain escaped quote, so the alternation
+// becomes `"` OR `not "` -- every character -- and the group runs greedily
+// to the last quote in the selector, which limits a selector to ONE
+// bracketed key and makes String()'s own output unreadable, since it
+// brackets every map key. TestParseSelectorTwoQuotedKeys covers the grammar
+// and the round-trip test carries multi-key selectors.
 func ParseSelector(selector string) (Path, error) {
 	// handle special case where first op is of form ".[x]"
 	// we support this notation to be closer to jq.

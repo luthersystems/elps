@@ -19,18 +19,18 @@ func iterSteps(n int) []*lisp.LVal {
 	return steps
 }
 
-// TestNormalizePathsIsIdempotent pins the invariant the #565 fix RESTS ON.
+// TestNormalizePathsIsIdempotent pins the invariant normalizePaths RESTS ON.
 //
-// The fix stopped normalizePaths' iterator branch from calling Iter, which
-// re-entered Chain and re-normalized the tail. Skipping that is only sound
-// if normalizePaths is idempotent -- if a second pass over an
+// Its iterator branch builds directly instead of calling Iter, which would
+// re-enter Chain and re-normalize the tail. Skipping that re-entry is sound
+// only if normalizePaths is idempotent -- if a second pass over an
 // already-normalized chain returns the same chain. It is: expandPaths
 // flattens a normalized chain back to exactly the sequence the loop
-// consumed to build it, and the loop then rebuilds it.
+// consumed to build it, and the loop rebuilds it.
 //
-// If that ever stops holding, the fix silently changes what paths MEAN
-// rather than merely what they cost, and no cost test would notice. This is
-// the test that would.
+// If that stops holding, paths change what they MEAN rather than merely
+// what they cost, and no cost test would notice. This is the test that
+// would.
 func TestNormalizePathsIsIdempotent(t *testing.T) {
 	t.Parallel()
 	cases := [][]Path{
@@ -58,19 +58,17 @@ func TestNormalizePathsIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestNormalizePathsIsNotExponential is the cost regression for issue #565.
-//
-// normalizePaths' iterator branch used to call Iter, which re-entered Chain
-// and re-normalized the whole tail; one re-entry per iterator over a
-// structure the previous one had just rebuilt is 2^n. Measured before the
-// fix, on ArgsToPath alone with no document in sight: 12 steps 1.2ms, 16
-// steps 21ms, 20 steps 292ms, 24 steps 4.7s. Reachable from the shipped ?
-// builtin, and from a 45-byte selector string.
+// TestNormalizePathsIsNotExponential guards normalizePaths against its
+// iterator branch re-entering Chain (issue #565): one re-entry per iterator,
+// each over a structure the previous rebuilt, is 2^n in Path CONSTRUCTION
+// alone, with no document in sight. It is reachable from the shipped ?
+// builtin and from a 45-byte selector string, so both surfaces are bounded
+// below.
 //
 // It asserts ALLOCATIONS rather than wall time deliberately: a timing bound
-// is a flake on a loaded CI runner, and allocation count is exactly as
-// exponential as the work was. Linear construction is ~8 allocs per step
-// (201 at n=24); the old code was in the millions, so the bound below has
+// flakes on a loaded CI runner, while allocation count is exactly as
+// exponential as the work is. Linear construction is ~8 allocs per step
+// (201 at n=24) and the exponential is in the millions, so the bound has
 // several orders of magnitude of headroom and still cannot be passed by a
 // regression.
 func TestNormalizePathsIsNotExponential(t *testing.T) {
@@ -133,21 +131,15 @@ func TestNormalizePathsAgreesWithIterConstruction(t *testing.T) {
 	}
 }
 
-// TestNormalizePathsIsNotQuadratic is the second cost regression, and it
-// measures allocated BYTES where TestNormalizePathsIsNotExponential measures
-// allocation COUNT. The distinction is the whole point: the chain used to be
-// assembled by prepending, append([]Path{path}, curChain...), which allocates
-// one slice per step either way -- the same O(n) count -- while COPYING every
-// element already placed, so the bytes were O(n^2).
+// TestNormalizePathsIsNotQuadratic measures allocated BYTES where
+// TestNormalizePathsIsNotExponential measures allocation COUNT, and the
+// distinction is the whole point: assembling the chain by prepending
+// allocates one slice per step either way -- the same O(n) count, invisible
+// to a count-based bound -- while COPYING every element already placed, so
+// the bytes are O(n^2).
 //
-// Measured at 3200 dot steps before the fix: 38.16ms, against 0.26ms after,
-// and the growth was unmistakably superlinear (800 -> 1600 cost 3.4x, 1600 ->
-// 3200 cost 4.8x). It is far milder than the exponential -- a ~6KB selector
-// to reach 38ms, where the exponential needed 45 bytes -- but it is the same
-// shape: cost superlinear in the length of an input a caller may not control.
-//
-// The bound below sits between the two by orders of magnitude. Quadratic
-// copying at n=2000 moves roughly 2000*2000/2 pointers, some 16MB; linear
+// The bound sits between the two by orders of magnitude: quadratic copying
+// at n=2000 moves roughly 2000*2000/2 pointers, some 16MB, where linear
 // assembly moves a few tens of KB.
 func TestNormalizePathsIsNotQuadratic(t *testing.T) {
 	// Not t.Parallel(): ReadMemStats reports process-wide totals, so a
@@ -178,32 +170,24 @@ func TestNormalizePathsIsNotQuadratic(t *testing.T) {
 
 // TestStringIsLinearInNesting is the cost regression for path RENDERING.
 //
-// Path.String() returns a string, so a composite path rendered by asking each
-// child for its own string and copying that into the parent's: one
-// full-length allocation and copy per level of nesting, O(depth^2) in bytes.
-// Measured on nested iterators before the fix, 200 -> 400 cost 5.1x and 400
-// -> 800 cost 4.2x, reaching 706us; it is 13.6us after, and doubling cleanly.
+// Path.String() returns a string, so a composite that renders by asking each
+// child for its own string and copying that into the parent's costs one
+// full-length allocation and copy per level of nesting -- O(depth^2) in
+// bytes. The three composites write into one builder through the unexported
+// stringAppender interface instead; the leaves keep their existing String()
+// and satisfy the interface by delegating to it, so the two cannot drift.
 //
-// The three composites -- root, chain and iter -- now write into one builder
-// through the unexported stringAppender interface. The leaves keep their
-// existing String() and satisfy the interface by delegating to it, so they
-// cannot drift from it.
-//
-// Bytes again rather than allocation count: the quadratic was in how much was
-// copied, not in how many times.
+// Bytes rather than allocation count: the quadratic is in how much gets
+// copied, not how many times.
 func TestStringIsLinearInNesting(t *testing.T) {
 	// Not t.Parallel(): ReadMemStats reports process-wide totals.
 	const (
 		depth = 600
-		// 64KiB. The quadratic renderer allocates ~782KB at this depth and
-		// the linear one ~3.4KB, so this sits ~19x above what passes and
-		// ~12x below what must fail.
-		//
-		// It was 1MiB on first writing, which is ABOVE the quadratic cost:
-		// the test could not fail against the defect it pins, and the
-		// estimate in the comment ("~350KB") was itself wrong by 2.2x. Do
-		// not raise this bound without re-measuring both arms -- the whole
-		// value of the test is that the gap is real.
+		// 64KiB: linear rendering allocates ~3.4KB at this depth and
+		// quadratic ~782KB, so the bound sits ~19x above what must pass and
+		// ~12x below what must fail. Do NOT raise it without re-measuring
+		// both arms -- a bound above the quadratic cost makes this test
+		// unable to fail, which is a state it has been in before.
 		limit = 64 << 10
 	)
 	steps := make([]*lisp.LVal, depth)

@@ -162,7 +162,7 @@ func BenchmarkCycleGuardCost(b *testing.B) {
 			b.Run("walk=typecheck/arm=guarded", func(b *testing.B) {
 				b.ReportAllocs()
 				for b.Loop() {
-					if err := OKSimpleType(doc); err != nil {
+					if err := okSimpleType(doc); err != nil {
 						b.Fatal(err)
 					}
 				}
@@ -207,7 +207,7 @@ func TestUnguardedReplicasMatchTheShippedWalkers(t *testing.T) {
 	for name, doc := range docs {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, okSimpleTypeUnguarded(doc), OKSimpleType(doc),
+			assert.Equal(t, okSimpleTypeUnguarded(doc), okSimpleType(doc),
 				"the replica gate disagrees with the shipped one")
 			want, wantErr := copyLValUnguarded(doc)
 			got, gotErr := copyLVal(doc)
@@ -246,7 +246,7 @@ func TestCycleGuardAllocationCost(t *testing.T) {
 	for name, doc := range guardCostDocs() {
 		t.Run(name, func(t *testing.T) {
 			guarded := testing.AllocsPerRun(runs, func() {
-				if err := OKSimpleType(doc); err != nil {
+				if err := okSimpleType(doc); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -278,7 +278,7 @@ func TestCycleGuardAllocationDoesNotScale(t *testing.T) {
 	const runs = 100
 	overhead := func(doc *lisp.LVal) float64 {
 		guarded := testing.AllocsPerRun(runs, func() {
-			if err := OKSimpleType(doc); err != nil {
+			if err := okSimpleType(doc); err != nil {
 				t.Fatal(err)
 			}
 		})
