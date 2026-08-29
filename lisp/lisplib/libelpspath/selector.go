@@ -35,16 +35,17 @@ import (
 // round-trip test that catches it (TestParseSelectorRoundTrip) could not be
 // written on either side of the boundary.
 //
-// NO FUZZ TARGET YET, and the reason is not the parser. The obvious target
-// -- generate a selector, assert that ParseSelector terminates -- goes red on
-// its first campaign against code that is already shipped: Chain (path.go,
-// via normalizePaths and its mutual recursion with Iter) is EXPONENTIAL in
-// the number of iterator steps, so a 49-byte selector of 24 "[]"s takes 4.8s
-// to construct and each further "[]" doubles it. That is reachable from the
-// positional API too -- ArgsToPath of 24 '* steps costs the same 4.7s -- so
-// it is an engine defect this parser only makes easier to type, and a
-// watchdog target here would report it as a parser hang. Filed as issue
-// #565; the target belongs with the fix.
+// FUZZED by FuzzParseSelector, whose invariant is that anything this parser
+// accepts must PRINT to something it accepts, meaning the same path.
+//
+// That target could not exist until issue #565 was fixed. Chain (path.go, via
+// normalizePaths and its mutual recursion with Iter) was EXPONENTIAL in the
+// number of iterator steps, so a 45-byte selector of "[]"s took over a second
+// to construct and each further "[]" doubled it -- a watchdog target would
+// have reported an engine defect as a parser hang, with no crasher to
+// minimise. The fix landed alongside this file, so the target ships with it;
+// selectors over 512 bytes are still skipped, and the cost is pinned by
+// TestNormalizePathsIsNotExponential, which names the defect if it returns.
 
 var (
 	preprocPath = regexp.MustCompile(`^\.\s*(\[.*)`)
@@ -177,7 +178,7 @@ var parsers = []func(string) (string, Path, error){parseArray, parseArrayKey, pa
 //
 // The grammar, and how each form lands on a Path:
 //
-//	.          => Chain()            the whole document (see the wart below)
+//	.          => Root(Chain())      the whole document
 //	.foo       => Dot("foo")         bare keys only: [A-Za-z_][A-Za-z_0-9]*
 //	["$foo"]   => Dot("$foo")        any key, as a Go-quoted string literal
 //	[0] [-1]   => Index(n)           negative counts from the end

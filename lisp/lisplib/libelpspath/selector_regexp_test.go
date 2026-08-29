@@ -171,9 +171,12 @@ func TestArrKeyRegexp(t *testing.T) {
 		{
 			// The capture keeps the Go escapes intact for
 			// strconv.Unquote, which is the inverse of the %q
-			// dotPath.String() renders a key with. The greedy body
-			// (?:\"|[^"])* matches the interior quote and backtracks to
-			// the final one.
+			// dotPath.String() renders a key with. The body
+			// (?:\\.|[^"\\])* takes the interior \" as an escape
+			// SEQUENCE and carries on to the real closing quote. It read
+			// (?:\"|[^"])* until issue #566, in which `\"` is a plain
+			// escaped quote -- so the alternation matched every character
+			// and ran greedily to the last quote in the whole selector.
 			Name: "escaped quote and newline",
 			In:   `["\"\n"]`,
 			Key:  `"\"\n"`,

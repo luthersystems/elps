@@ -92,11 +92,21 @@ func TestNormalizePathsIsNotExponential(t *testing.T) {
 		t.Errorf("ArgsToPath with %d iterator steps made %.0f allocations, want <= %d "+
 			"-- normalization is re-entering Chain again (issue #565)", steps, allocs, limit)
 	}
-	// The same path reached through the selector parser, since that is the
-	// other surface a short input arrives on.
+	// The same path reached through the selector parser, since a 45-byte
+	// selector string is the other surface this cost arrives on -- and it
+	// is BOUNDED here, not merely executed. Calling ParseSelector and
+	// checking only that err is nil, which is what this did at first, would
+	// take 4.7 seconds against the exponential and still pass.
 	sel := "." + strings.Repeat("[]", steps)
-	if _, err := ParseSelector(sel); err != nil {
-		t.Fatalf("ParseSelector(%q): %v", sel, err)
+	selAllocs := testing.AllocsPerRun(3, func() {
+		if _, err := ParseSelector(sel); err != nil {
+			t.Fatalf("ParseSelector(%q): %v", sel, err)
+		}
+	})
+	if selAllocs > limit {
+		t.Errorf("ParseSelector over %d iterators made %.0f allocations, want <= %d "+
+			"-- the selector surface reaches the same normalization (issue #565)",
+			steps, selAllocs, limit)
 	}
 }
 
@@ -185,7 +195,16 @@ func TestStringIsLinearInNesting(t *testing.T) {
 	// Not t.Parallel(): ReadMemStats reports process-wide totals.
 	const (
 		depth = 600
-		limit = 1 << 20 // 1MiB, vs ~350KB quadratic and ~10s of KB linear
+		// 64KiB. The quadratic renderer allocates ~782KB at this depth and
+		// the linear one ~3.4KB, so this sits ~19x above what passes and
+		// ~12x below what must fail.
+		//
+		// It was 1MiB on first writing, which is ABOVE the quadratic cost:
+		// the test could not fail against the defect it pins, and the
+		// estimate in the comment ("~350KB") was itself wrong by 2.2x. Do
+		// not raise this bound without re-measuring both arms -- the whole
+		// value of the test is that the gap is real.
+		limit = 64 << 10
 	)
 	steps := make([]*lisp.LVal, depth)
 	for i := range steps {

@@ -107,12 +107,17 @@ func FuzzParseSelector(f *testing.F) {
 
 		// ...and mean the same thing. Compared on documents, because
 		// equal printed forms do not imply equal paths (issue #563).
-		// The three NON-MUTATING operations. Get alone would leave the
-		// delete and nil paths -- which have their own range and iterator
-		// arithmetic -- outside the invariant. The mutating "!" variants
-		// are deliberately not here: they rework their input in place, so
-		// comparing two runs means reasoning about aliasing rather than
-		// about the parser, and that is FuzzPathEngine's axis.
+		// Three of the four NON-MUTATING operations. Get alone would
+		// leave the delete and nil paths -- which have their own range and
+		// iterator arithmetic -- outside the invariant.
+		//
+		// Set is the fourth and is absent for its own reason: it needs a
+		// replacement VALUE, and drawing one from the fuzzer would make
+		// this target a value generator as well as a selector generator,
+		// which is FuzzPathEngine's job. The mutating "!" variants are
+		// absent for a different reason again -- they rework their input
+		// in place, so comparing two runs means reasoning about aliasing
+		// rather than about the parser.
 		ops := []struct {
 			name string
 			run  func(Path, *lisp.LVal) (*lisp.LVal, error)

@@ -105,6 +105,8 @@ import (
 //   - LInt → Index(i)
 //   - LSymbol "*" → Iter()
 //   - LSExpr (range from to) → Range(from, to, false)
+//   - LSExpr (range from) → Range(from, 0, true), the end resolved against
+//     the input length at evaluation time (issue #563)
 func ArgsToPath(args []*lisp.LVal) (Path, error) {
 	if len(args) == 0 {
 		return Root(Chain()), nil
