@@ -547,6 +547,30 @@ func expandPaths(paths ...Path) []Path {
 
 // normalizePaths constructs a normalized chain of paths. This normalization
 // is necessary to properly handle nested iterator paths.
+//
+// IMPORTANT: the iterator branch builds its iterPath DIRECTLY rather than
+// calling Iter, and that is the whole of the fix for issue #565.
+//
+// Iter(curChain...) is &iterPath{path: Chain(curChain...)}, and Chain calls
+// back into this function. So every iterator re-normalized the entire tail
+// built so far -- and normalizing re-runs expandPaths, which walks into each
+// nested iterator's chain and flattens it, only for the loop below to
+// rebuild exactly what it had. One re-entry per iterator, each over a
+// structure the previous one had just rebuilt, is 2^n:
+//
+//	steps    8       12       16       20       24
+//	time    93us    1.2ms    21ms     292ms    4.7s
+//
+// That is Path CONSTRUCTION, before any document is touched, and it is
+// reachable from the shipped ? builtin and from a 45-byte selector string.
+//
+// The re-entry bought nothing. curChain is assembled by this loop out of
+// expandPaths output, so it is already normalized, and normalizePaths is
+// idempotent on it -- expandPaths would flatten it back to exactly the
+// sequence the loop already consumed. Wrapping it directly is the same
+// value for linear cost. The equality is what the corpus, round-trip and
+// iterator-collapse tests check; TestNormalizePathsIsNotExponential pins
+// the cost.
 func normalizePaths(paths ...Path) []Path {
 	paths = expandPaths(paths...)
 	var curChain []Path
@@ -554,8 +578,7 @@ func normalizePaths(paths ...Path) []Path {
 		path := paths[i]
 		switch path.(type) {
 		case *iterPath:
-			// NOTE: there can be mutual recursion here between Iter/Chain.
-			curChain = []Path{Iter(curChain...)}
+			curChain = []Path{&iterPath{path: &chainPath{paths: curChain}}}
 		default:
 			curChain = append([]Path{path}, curChain...)
 		}
