@@ -582,40 +582,57 @@ func expandPaths(paths ...Path) []Path {
 // normalizePaths constructs a normalized chain of paths. This normalization
 // is necessary to properly handle nested iterator paths.
 //
-// IMPORTANT: the iterator branch builds its iterPath DIRECTLY rather than
-// calling Iter, and that is the whole of the fix for issue #565.
+// IMPORTANT: this had TWO superlinear defects, both filed as issue #565, and
+// the loop below is shaped by both fixes.
 //
-// Iter(curChain...) is &iterPath{path: Chain(curChain...)}, and Chain calls
-// back into this function. So every iterator re-normalized the entire tail
-// built so far -- and normalizing re-runs expandPaths, which walks into each
-// nested iterator's chain and flattens it, only for the loop below to
-// rebuild exactly what it had. One re-entry per iterator, each over a
-// structure the previous one had just rebuilt, is 2^n:
+// EXPONENTIAL, in the number of iterators. The iterator branch used to call
+// Iter(acc...), which is &iterPath{path: Chain(acc...)}, and Chain calls back
+// into this function. So every iterator re-normalized the entire tail built
+// so far -- and normalizing re-runs expandPaths, which walks into each nested
+// iterator's chain and flattens it, only for the loop to rebuild exactly what
+// it had. One re-entry per iterator, each over a structure the previous one
+// had just rebuilt, is 2^n:
 //
 //	steps    8       12       16       20       24
 //	time    93us    1.2ms    21ms     292ms    4.7s
 //
 // That is Path CONSTRUCTION, before any document is touched, and it is
 // reachable from the shipped ? builtin and from a 45-byte selector string.
+// The branch now builds its iterPath directly instead.
 //
-// The re-entry bought nothing. curChain is assembled by this loop out of
-// expandPaths output, so it is already normalized, and normalizePaths is
-// idempotent on it -- expandPaths would flatten it back to exactly the
-// sequence the loop already consumed. Wrapping it directly is the same
-// value for linear cost. The equality is what the corpus, round-trip and
-// iterator-collapse tests check; TestNormalizePathsIsNotExponential pins
-// the cost.
+// The re-entry bought nothing, which is why removing it is safe: the
+// accumulator is assembled by this loop out of expandPaths output, so it is
+// already normalized, and normalizePaths is idempotent on it -- expandPaths
+// would flatten it back to exactly the sequence the loop already consumed.
+// TestNormalizePathsIsIdempotent pins that invariant, because it is what the
+// fix RESTS ON: if it stops holding, paths change meaning rather than merely
+// cost, and no cost test would notice.
+//
+// QUADRATIC, in the number of steps, left behind by that first fix and
+// described at the accumulator below.
+//
+// Cost is pinned by TestNormalizePathsIsNotExponential and
+// TestNormalizePathsIsNotQuadratic; equality of meaning by the idempotency
+// test above, TestNormalizePathsAgreesWithIterConstruction, and the corpus,
+// round-trip and iterator-collapse tests.
 func normalizePaths(paths ...Path) []Path {
 	paths = expandPaths(paths...)
 	// The loop runs right to left, so the chain accumulates REVERSED and is
 	// flipped once at the end.
 	//
-	// Prepending instead -- append([]Path{path}, curChain...) -- allocated a
+	// Prepending instead -- append([]Path{step}, rev...) -- allocated a
 	// fresh slice and copied every element already placed, on every step,
-	// which is O(n^2) in the number of steps. That is far milder than the
-	// exponential above (it takes a ~6KB selector to reach 38ms, where the
-	// exponential took 45 bytes) but it is the same shape of problem: cost
-	// superlinear in the length of an input a caller may not control.
+	// which is O(n^2) in the number of steps:
+	//
+	//	dot steps  100    200     400    800    1600    3200
+	//	time       91us   677us   685us  2.3ms  7.9ms   38.2ms
+	//
+	// One slice per step either way, so the allocation COUNT stayed linear
+	// and a count-based test could not see it; the BYTES were quadratic.
+	// Far milder than the exponential above -- a ~6KB selector to reach
+	// 38ms where the exponential took 45 bytes -- but the same shape of
+	// problem: cost superlinear in the length of an input a caller may not
+	// control.
 	rev := make([]Path, 0, len(paths))
 	for i := len(paths) - 1; i >= 0; i-- {
 		if _, isIter := paths[i].(*iterPath); !isIter {
