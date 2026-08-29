@@ -202,11 +202,12 @@ var parsers = []func(string) (string, Path, error){parseArray, parseArrayKey, pa
 //
 // The identity selector "." returns Chain() and NOT Root(Chain()). The two
 // behave identically -- rootPath proxies all seven operations to the path it
-// wraps and adds nothing but a leading "." in String() -- so the only
-// observable difference is that ParseSelector(".").String() is "", which is
-// not a selector that parses back. ArgsToPath spells the same path
-// Root(Chain()), whose String() is ".". TestParseSelectorRootSpelling pins
-// this so it stays a decision rather than becoming an accident.
+// wraps and adds nothing but a leading "." in String(). ParseSelector used
+// to return the bare Chain() for ".", whose String() is the empty string --
+// output this parser cannot read back, the same defect as issue #566 in a
+// different spot. It now returns Root(Chain()), which prints "." and
+// matches what ArgsToPath builds for an empty step list.
+// TestParseSelectorRootSpelling pins the agreement.
 //
 // reArrayKey's quoted-key body is `(?:\\.|[^"\\])*` -- an escape SEQUENCE,
 // or any character that is neither a quote nor a backslash: the ordinary
@@ -241,7 +242,13 @@ func ParseSelector(selector string) (Path, error) {
 	}
 	var paths []Path
 	if selector == "." {
-		return Chain(paths...), nil
+		// Root(Chain()), not Chain(): the two are the same path -- rootPath
+		// proxies all seven operations -- but Chain().String() is the empty
+		// string, which is not a selector this parser reads back. Printing
+		// output we cannot parse is the same defect as issue #566 in a
+		// different spot, and this spelling is also what ArgsToPath builds
+		// for an empty step list.
+		return Root(Chain(paths...)), nil
 	}
 	match := preprocPath.FindStringSubmatch(selector)
 	if match != nil {

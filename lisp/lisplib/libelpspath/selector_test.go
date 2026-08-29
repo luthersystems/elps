@@ -908,34 +908,37 @@ func TestParseSelectorRoundTrip(t *testing.T) {
 	}
 }
 
-// TestParseSelectorRootSpelling pins the identity selector's odd result so
-// that it stays a decision rather than becoming an accident.
+// TestParseSelectorRootSpelling pins the identity selector against the
+// other front door.
 //
-// ParseSelector(".") returns Chain(), not Root(Chain()). The two are the
-// same path -- rootPath proxies all seven operations and adds only a leading
-// "." to String() -- so nothing a caller can DO with them differs, but
-// Chain().String() is the empty string, which is not a selector. ArgsToPath
-// spells the identical path Root(Chain()) and prints ".".
+// ParseSelector(".") used to return the bare Chain(). That is the same path
+// as Root(Chain()) -- rootPath proxies all seven operations and adds only a
+// leading "." to String() -- so nothing a caller could DO with it differed.
+// What differed was that Chain().String() is the empty string, which is not
+// a selector: the parser printed output it could not read back, which is
+// issue #566's defect in a second spot, and FuzzParseSelector reports it on
+// its very first seed.
 //
-// Preserved on the port (issue #564) because substrate's builtins have
-// returned this path since the beginning and a port is not the place to
-// change what they return. It is the one selector TestParseSelectorRoundTrip
-// cannot cover.
+// It now returns Root(Chain()), agreeing with the path ArgsToPath builds for
+// an empty step list. Both print ".", and "." parses back to itself.
 func TestParseSelectorRootSpelling(t *testing.T) {
 	t.Parallel()
 	path, err := ParseSelector(".")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := path.String(); got != "" {
-		t.Fatalf(`ParseSelector(".").String() = %q, want "" (see this test's comment)`, got)
+	if got := path.String(); got != "." {
+		t.Fatalf(`ParseSelector(".").String() = %q, want "."`, got)
 	}
-	if _, err := ParseSelector(path.String()); err == nil {
-		t.Fatal("the empty string is expected NOT to parse; if it now does, this test is stale")
+	again, err := ParseSelector(path.String())
+	if err != nil {
+		t.Fatalf(`ParseSelector(".") printed %q, which must parse: %v`, path.String(), err)
+	}
+	if got := again.String(); got != "." {
+		t.Fatalf("reparse printed %q, want %q", got, ".")
 	}
 
-	// The behavioural half: identical to the path ArgsToPath builds for an
-	// empty step list, which is what makes the difference cosmetic.
+	// The agreement with the other front door, which is the point.
 	args, err := ArgsToPath(nil)
 	if err != nil {
 		t.Fatalf("unexpected ArgsToPath error: %v", err)
@@ -943,14 +946,15 @@ func TestParseSelectorRootSpelling(t *testing.T) {
 	if got := args.String(); got != "." {
 		t.Fatalf("ArgsToPath(nil).String() = %q, want %q", got, ".")
 	}
-	doc := libjson.Load([]byte(`{"hello":"world"}`), false)
-	for _, p := range []Path{path, args} {
-		got, err := p.Get(doc)
+
+	// Behaviour is unchanged by the respelling: still the identity.
+	for _, p := range []Path{path, args, again} {
+		got, err := p.Get(libjson.Load([]byte(`{"hello":"world"}`), false))
 		if err != nil {
 			t.Fatalf("%q: unexpected Get error: %v", p.String(), err)
 		}
-		if got != doc {
-			t.Fatalf("%q: Get must be the identity at the root", p.String())
+		if want := `(sorted-map "hello" "world")`; got.String() != want {
+			t.Errorf("%q: Get = %s, want %s", p.String(), got, want)
 		}
 	}
 }
