@@ -94,10 +94,7 @@ func TestNormalizePathsIsNotExponential(t *testing.T) {
 	}
 	// The same path reached through the selector parser, since that is the
 	// other surface a short input arrives on.
-	sel := "."
-	for range steps {
-		sel += "[]"
-	}
+	sel := "." + strings.Repeat("[]", steps)
 	if _, err := ParseSelector(sel); err != nil {
 		t.Fatalf("ParseSelector(%q): %v", sel, err)
 	}
