@@ -4,6 +4,7 @@ package libelpspath
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -166,4 +167,86 @@ func TestNormalizePathsIsNotQuadratic(t *testing.T) {
 			steps, used, limit)
 	}
 	t.Logf("%d steps allocated %d bytes", steps, used)
+}
+
+// TestStringIsLinearInNesting is the cost regression for path RENDERING.
+//
+// Path.String() returns a string, so a composite path rendered by asking each
+// child for its own string and copying that into the parent's: one
+// full-length allocation and copy per level of nesting, O(depth^2) in bytes.
+// Measured on nested iterators before the fix, 200 -> 400 cost 5.1x and 400
+// -> 800 cost 4.2x, reaching 706us; it is 13.6us after, and doubling cleanly.
+//
+// The three composites -- root, chain and iter -- now write into one builder
+// through the unexported stringAppender interface. The leaves keep their
+// existing String() and satisfy the interface by delegating to it, so they
+// cannot drift from it.
+//
+// Bytes again rather than allocation count: the quadratic was in how much was
+// copied, not in how many times.
+func TestStringIsLinearInNesting(t *testing.T) {
+	// Not t.Parallel(): ReadMemStats reports process-wide totals.
+	const (
+		depth = 600
+		limit = 1 << 20 // 1MiB, vs ~350KB quadratic and ~10s of KB linear
+	)
+	steps := make([]*lisp.LVal, depth)
+	for i := range steps {
+		steps[i] = lisp.Symbol("*")
+	}
+	p, err := ArgsToPath(steps)
+	if err != nil {
+		t.Fatalf("ArgsToPath: %v", err)
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	got := p.String()
+	runtime.ReadMemStats(&after)
+	used := after.TotalAlloc - before.TotalAlloc
+
+	// The rendering itself must still be right: "." then depth * "[]".
+	if want := "." + strings.Repeat("[]", depth); got != want {
+		t.Fatalf("String() = %q (len %d), want %q (len %d)",
+			truncate(got), len(got), truncate(want), len(want))
+	}
+	if used > limit {
+		t.Errorf("String() over %d nested iterators allocated %d bytes, want <= %d "+
+			"-- composition is materialising each child's string again", depth, used, limit)
+	}
+	t.Logf("depth %d rendered %d bytes using %d bytes of allocation", depth, len(got), used)
+}
+
+// TestStringAppenderAgreesWithString guards the one drift the split allows:
+// a type whose appendString says something its String() does not.
+func TestStringAppenderAgreesWithString(t *testing.T) {
+	t.Parallel()
+	paths := []Path{
+		Dot("a"), Dot(`a"b`), Dot(""),
+		Index(0), Index(-1),
+		Range(1, 3, false), Range(1, 0, true),
+		Iter(), Iter(Dot("a")),
+		Chain(), Chain(Dot("a"), Index(0)),
+		Root(Chain(Dot("a"), Iter(), Dot("b"))),
+		Root(Chain(Iter(Chain(Iter(), Dot("x"))))),
+	}
+	for _, p := range paths {
+		a, ok := p.(stringAppender)
+		if !ok {
+			t.Errorf("%T does not implement stringAppender", p)
+			continue
+		}
+		var sb strings.Builder
+		a.appendString(&sb)
+		if got, want := sb.String(), p.String(); got != want {
+			t.Errorf("%T: appendString wrote %q, String() returned %q", p, got, want)
+		}
+	}
+}
+
+func truncate(s string) string {
+	if len(s) <= 60 {
+		return s
+	}
+	return s[:60] + "..."
 }

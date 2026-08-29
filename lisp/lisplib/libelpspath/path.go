@@ -521,8 +521,42 @@ func (s *rootPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 // String is a root level proxy to an underlying path String. It prepends
 // a dot "." since all root paths by convention begin with dot.
 func (s *rootPath) String() string {
+	var sb strings.Builder
+	s.appendString(&sb)
+	return sb.String()
+}
+
+func (s *rootPath) appendString(sb *strings.Builder) {
 	// IMPORTANT: root always starts with "."!
-	return "." + s.path.String()
+	sb.WriteString(".")
+	appendPathString(sb, s.path)
+}
+
+// stringAppender renders a path into a builder the caller owns.
+//
+// Path.String() returns a string, so a composite path used to render by
+// asking each child for its OWN string and copying that into the parent's --
+// one full-length allocation and copy per level of nesting, which is
+// O(depth^2) in bytes. Nested iterators showed it plainly: rendering
+// ".[][][]..." cost 5.1x going from 200 to 400 iterators and 4.2x again from
+// 400 to 800, reaching 706us. The leaves are O(1) and were never the
+// problem; the three composites -- root, chain and iter -- were.
+//
+// It is unexported and Path does NOT require it, so an embedder's own Path
+// implementation keeps working: appendPathString falls back to String() for
+// anything that does not implement this.
+type stringAppender interface {
+	appendString(*strings.Builder)
+}
+
+// appendPathString writes p's rendering into sb, taking the linear route
+// when p is one of this package's own types.
+func appendPathString(sb *strings.Builder, p Path) {
+	if a, ok := p.(stringAppender); ok {
+		a.appendString(sb)
+		return
+	}
+	sb.WriteString(p.String())
 }
 
 // expandPaths removes all nested chains to construct a normalized slice
@@ -787,10 +821,14 @@ func (s *chainPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 
 func (s *chainPath) String() string {
 	var sb strings.Builder
-	for _, path := range s.paths {
-		sb.WriteString(path.String())
-	}
+	s.appendString(&sb)
 	return sb.String()
+}
+
+func (s *chainPath) appendString(sb *strings.Builder) {
+	for _, path := range s.paths {
+		appendPathString(sb, path)
+	}
 }
 
 type dotPath struct {
@@ -896,6 +934,10 @@ func (s *dotPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 
 func (s *dotPath) String() string {
 	return fmt.Sprintf(`[%q]`, s.key)
+}
+
+func (s *dotPath) appendString(sb *strings.Builder) {
+	sb.WriteString(s.String())
 }
 
 type indexPath struct {
@@ -1062,6 +1104,10 @@ func (s *indexPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 
 func (s *indexPath) String() string {
 	return "[" + strconv.Itoa(s.index) + "]"
+}
+
+func (s *indexPath) appendString(sb *strings.Builder) {
+	sb.WriteString(s.String())
 }
 
 type rangePath struct {
@@ -1324,6 +1370,10 @@ func (s *rangePath) String() string {
 	return "[" + strconv.Itoa(s.from) + ":" + strconv.Itoa(s.to) + "]"
 }
 
+func (s *rangePath) appendString(sb *strings.Builder) {
+	sb.WriteString(s.String())
+}
+
 func validateRange(n int, from int, to int, implicitTo bool) (int, int, error) {
 	if from < 0 {
 		from = n + from
@@ -1566,5 +1616,12 @@ func (s *iterPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func (s *iterPath) String() string {
-	return "[]" + s.path.String()
+	var sb strings.Builder
+	s.appendString(&sb)
+	return sb.String()
+}
+
+func (s *iterPath) appendString(sb *strings.Builder) {
+	sb.WriteString("[]")
+	appendPathString(sb, s.path)
 }
