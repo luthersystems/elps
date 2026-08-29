@@ -292,7 +292,7 @@ func selectorPaths(selector string) ([]Path, error) {
 		if len(selector) == origLen {
 			// no progress was made, abort since another round
 			// will result in an infinite loop
-			return nil, fmt.Errorf("failed to parse: %s", selector)
+			return nil, fmt.Errorf("failed to parse: %s%s", selector, keySpellingHint(selector))
 		}
 	}
 
@@ -362,4 +362,44 @@ func pathToStep(p Path) (*lisp.LVal, error) {
 	default:
 		return nil, fmt.Errorf("no path step spelling for %T", p)
 	}
+}
+
+// keySpellingHint explains the bare-key rule when a stalled parse looks like
+// a key that needed bracketing, and says nothing otherwise.
+//
+// It is APPENDED to the existing "failed to parse: %s" message rather than
+// replacing it, so anything matching on that text -- a handler-bind in a
+// phylum, a test -- still matches. The message is the only feedback a caller
+// gets, and paths often arrive as data rather than being typed by hand, so
+// "failed to parse: -type" on a client-supplied .content-type otherwise
+// names neither the rule nor the fix.
+//
+// It stays quiet when the stall is a bracket or separator problem, where a
+// key-spelling explanation would be actively misleading: ".[" is a malformed
+// bracket, not a badly spelled key.
+func keySpellingHint(rest string) string {
+	r := []rune(rest)
+	if len(r) == 0 {
+		return ""
+	}
+	// The offending rune is the first one, except after a leading "." --
+	// ".9lead" stalls whole, where ".my-key" stalls at the "-" alone.
+	bad := r[0]
+	if bad == '.' && len(r) > 1 {
+		bad = r[1]
+	}
+	// Say nothing unless that rune is one a bare key could NOT contain.
+	// A stall on a rune that CAN start a key is a different mistake --
+	// `.["a"]foo` stalls at "foo", which is a perfectly good key name; what
+	// is missing there is the dot. Explaining the key rule would send the
+	// reader after the wrong thing.
+	if bad == '_' || (bad >= 'a' && bad <= 'z') || (bad >= 'A' && bad <= 'Z') {
+		return ""
+	}
+	switch bad {
+	case '[', ']', '.', '"', ':', ' ', '\t', '\n':
+		return ""
+	}
+	return ` (a bare key must match [A-Za-z_][A-Za-z_0-9]*; ` +
+		`bracket and quote anything else, e.g. .["my-key"])`
 }

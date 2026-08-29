@@ -118,6 +118,7 @@ var builtins = []*libutil.Builtin{
 		MUST be bracketed and quoted, as it must in jq:
 
 		(parse-path ".my-key")        => error: failed to parse: -key
+		                                 (the error explains this rule)
 		(parse-path ".[\"my-key\"]")   => '("my-key")
 		(parse-path ".[\"\"]")         => '("")
 

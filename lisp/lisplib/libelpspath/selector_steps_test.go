@@ -3,6 +3,7 @@
 package libelpspath
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -142,6 +143,84 @@ func TestSelectorStepsRejectsWhatParseSelectorRejects(t *testing.T) {
 		case steps != nil:
 			t.Errorf("%q: rejected but still returned %d steps -- an empty step "+
 				"list is the identity path", sel, len(steps))
+		}
+	}
+}
+
+// TestKeySpellingHint pins both halves of the hint: that it explains the
+// bare-key rule where that is the actual problem, and that it stays SILENT
+// where a key explanation would mislead.
+//
+// It also pins that the hint is APPENDED. The existing "failed to parse: %s"
+// text is what a phylum's handler-bind or a downstream test may match on, so
+// the prefix has to survive.
+func TestKeySpellingHint(t *testing.T) {
+	t.Parallel()
+	const rule = "a bare key must match"
+
+	// A key that needed bracketing: explain the rule.
+	for _, tc := range []struct{ sel, stall string }{
+		{".my-key", "-key"},
+		{".content-type", "-type"},
+		{".x-request-id", "-request-id"},
+		{".9lead", ".9lead"},
+		{".$dollar", ".$dollar"},
+		{".café", "é"},
+	} {
+		_, err := ParseSelector(tc.sel)
+		if err == nil {
+			t.Errorf("%q unexpectedly parsed", tc.sel)
+			continue
+		}
+		msg := err.Error()
+		if want := "failed to parse: " + tc.stall; !strings.HasPrefix(msg, want) {
+			t.Errorf("%q: message %q does not start with %q -- the hint must be "+
+				"appended, not replace the existing text", tc.sel, msg, want)
+		}
+		if !strings.Contains(msg, rule) {
+			t.Errorf("%q: message %q does not explain the bare-key rule", tc.sel, msg)
+		}
+		if !strings.Contains(msg, `.["my-key"]`) {
+			t.Errorf("%q: message %q does not show the bracketed form", tc.sel, msg)
+		}
+	}
+
+	// A stall on a rune a bare key COULD contain is a different mistake --
+	// `.["a"]foo` stalls at "foo", a perfectly good key name, and what is
+	// missing is the dot. Explaining the key rule there sends the reader
+	// after the wrong thing, so it stays quiet.
+	//
+	// Bracket and separator problems are the same: ".[" is malformed
+	// brackets, not a badly spelled key.
+	for _, sel := range []string{
+		".[", ".]", ".[1:2:3]", ".[a]", `.["a`,
+		`.["a"]foo`, `.["a"]field_mask`, `.["a"]_p`,
+	} {
+		_, err := ParseSelector(sel)
+		if err == nil {
+			t.Errorf("%q unexpectedly parsed", sel)
+			continue
+		}
+		if strings.Contains(err.Error(), rule) {
+			t.Errorf("%q: message %q explains the bare-key rule, but the stall is "+
+				"a bracket problem", sel, err)
+		}
+	}
+
+	// The bracketed form the hint recommends must actually work.
+	for _, tc := range []struct{ sel, key string }{
+		{`.["my-key"]`, "my-key"},
+		{`.["content-type"]`, "content-type"},
+		{`.["9lead"]`, "9lead"},
+		{`.["café"]`, "café"},
+	} {
+		steps, err := SelectorSteps(tc.sel)
+		if err != nil {
+			t.Errorf("%q: the hint recommends this form but it failed: %v", tc.sel, err)
+			continue
+		}
+		if len(steps) != 1 || steps[0].Str != tc.key {
+			t.Errorf("%q: got %s, want the single key %q", tc.sel, lisp.QExpr(steps), tc.key)
 		}
 	}
 }
