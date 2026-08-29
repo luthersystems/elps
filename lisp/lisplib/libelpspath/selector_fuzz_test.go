@@ -107,26 +107,43 @@ func FuzzParseSelector(f *testing.F) {
 
 		// ...and mean the same thing. Compared on documents, because
 		// equal printed forms do not imply equal paths (issue #563).
+		// The three NON-MUTATING operations. Get alone would leave the
+		// delete and nil paths -- which have their own range and iterator
+		// arithmetic -- outside the invariant. The mutating "!" variants
+		// are deliberately not here: they rework their input in place, so
+		// comparing two runs means reasoning about aliasing rather than
+		// about the parser, and that is FuzzPathEngine's axis.
+		ops := []struct {
+			name string
+			run  func(Path, *lisp.LVal) (*lisp.LVal, error)
+		}{
+			{"get", func(p Path, d *lisp.LVal) (*lisp.LVal, error) { return p.Get(d) }},
+			{"del", func(p Path, d *lisp.LVal) (*lisp.LVal, error) { return p.Delete(d) }},
+			{"nil", func(p Path, d *lisp.LVal) (*lisp.LVal, error) { return p.Nil(d) }},
+		}
 		for _, src := range docSrcs {
-			// A fresh document per side: Get hands back views that alias
-			// their input, so the two must not share one.
-			wantV, wantErr := path.Get(libjson.Load([]byte(src), false))
-			gotV, gotErr := again.Get(libjson.Load([]byte(src), false))
+			for _, op := range ops {
+				// A fresh document per side: these hand back values that
+				// can alias their input, so the two must not share one.
+				wantV, wantErr := op.run(path, libjson.Load([]byte(src), false))
+				gotV, gotErr := op.run(again, libjson.Load([]byte(src), false))
 
-			switch {
-			case (wantErr == nil) != (gotErr == nil):
-				t.Fatalf("selector %q printed %q: on %s one errored and the other did not "+
-					"(orig err=%v, reparsed err=%v)", sel, printed, src, wantErr, gotErr)
-			case wantErr != nil:
-				if wantErr.Error() != gotErr.Error() {
-					t.Fatalf("selector %q printed %q: on %s errors differ: %q vs %q",
-						sel, printed, src, wantErr, gotErr)
-				}
-			default:
-				w, g := render(wantV), render(gotV)
-				if w != g {
-					t.Fatalf("selector %q printed %q: on %s results differ: %s vs %s",
-						sel, printed, src, w, g)
+				switch {
+				case (wantErr == nil) != (gotErr == nil):
+					t.Fatalf("selector %q printed %q: %s on %s -- one errored and the other "+
+						"did not (orig err=%v, reparsed err=%v)",
+						sel, printed, op.name, src, wantErr, gotErr)
+				case wantErr != nil:
+					if wantErr.Error() != gotErr.Error() {
+						t.Fatalf("selector %q printed %q: %s on %s -- errors differ: %q vs %q",
+							sel, printed, op.name, src, wantErr, gotErr)
+					}
+				default:
+					w, g := render(wantV), render(gotV)
+					if w != g {
+						t.Fatalf("selector %q printed %q: %s on %s -- results differ: %s vs %s",
+							sel, printed, op.name, src, w, g)
+					}
 				}
 			}
 		}
