@@ -38,7 +38,7 @@ func BenchmarkTypeCheck(b *testing.B) {
 	doc := benchDoc()
 	b.ReportAllocs()
 	for b.Loop() {
-		if err := okSimpleType(doc); err != nil {
+		if err := OKSimpleType(doc); err != nil {
 			b.Fatal(err)
 		}
 	}

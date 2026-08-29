@@ -239,7 +239,7 @@ func containerChildren(v *lisp.LVal) []*lisp.LVal {
 // when it is walked. Off the path the refusal must still stand, which is the
 // second half of the test.
 //
-// These go through the Path API rather than the builtins because okSimpleType
+// These go through the Path API rather than the builtins because OKSimpleType
 // refuses a cyclic value at the gate before any builtin reaches a copy.
 func TestPathDirectedCopySkipsTheSubtreeItReplaces(t *testing.T) {
 	t.Parallel()

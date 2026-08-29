@@ -149,10 +149,10 @@ var errCyclicValue = errors.New("cannot operate on a value that contains itself"
 //
 // It continues the walk g is already on rather than starting a fresh one.
 // Every nested check must pass g down; starting a new walk per level resets
-// the bound on every lap and it never fires.  okSimpleType is the entry
+// the bound on every lap and it never fires.  OKSimpleType is the entry
 // point that begins a walk.
 //
-// With okSimpleType this is the gate every builtin runs before touching a
+// With OKSimpleType this is the gate every builtin runs before touching a
 // value, and the rest of the package relies on what it rejects: copyLVal's
 // multi-dimensional array branch cannot construct a copy and says so, and
 // stays unreachable only because this refuses such an array first.  A cycle
@@ -226,18 +226,33 @@ func okSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 	}
 }
 
-// okSimpleType ensures that the lval is a valid simple type compatible with
+// OKSimpleType ensures that the lval is a valid simple type compatible with
 // elpspath.
 // It sucks that we have to traverse the entire object checking the type,
 // but better to be safe.
-func okSimpleType(in *lisp.LVal) error {
+//
+// Every builtin in this package runs it before touching a value, and an
+// embedder driving the Path interface from Go must do the same. It is not a
+// nicety: it refuses a value that CONTAINS ITSELF, and every unguarded
+// recursive walk over such an LVal -- Get, a copy, a String() -- grows the
+// goroutine stack until the Go runtime kills the process, an abort recover()
+// cannot intercept and handler-bind never sees (issue #393). It also refuses
+// the multi-dimensional array copyLVal has no answer for, which is what
+// keeps that branch's "cannot construct a copy" unreachable.
+//
+// It is exported for exactly that embedder (issue #564). Before it was,
+// downstream reached the gate through the one exported entry point whose
+// only observable effect is the verdict -- BuiltinQueryGet with no path
+// steps, since ArgsToPath of an empty step list is the identity -- which is
+// a hack that had to be explained at every call site.
+func OKSimpleType(in *lisp.LVal) error {
 	var st cycleState
 	return okSimpleTypeGuarded(in, newCycleGuard(&st))
 }
 
-// okSimpleTypeGuarded is okSimpleType continuing a walk already in progress.
+// okSimpleTypeGuarded is OKSimpleType continuing a walk already in progress.
 // The guard is threaded through rather than re-created because the recursion
-// that overflows the stack is okSimpleType <-> okSimpleContainerType, so a
+// that overflows the stack is OKSimpleType <-> okSimpleContainerType, so a
 // bound either survives the round trip or does nothing.
 func okSimpleTypeGuarded(in *lisp.LVal, g cycleGuard) error {
 	if in.IsNil() {

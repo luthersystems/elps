@@ -3,7 +3,8 @@
 // The elpspath API addresses locations inside nested data structures with
 // positional path steps: each step is an ordinary ELPS value — no
 // mini-language to learn and no runtime string parsing. (A legacy jq-string
-// path DSL exists downstream in luthersystems/substrate; see below.)
+// path DSL is still spoken by builtins downstream in
+// luthersystems/substrate, over the parser in selector.go; see below.)
 //
 // # Builtins
 //
@@ -77,12 +78,18 @@
 //
 // # Legacy jq-string DSL
 //
-// The deprecated legacy operations (get-path, set-path!, etc.), which encode
+// The deprecated legacy BUILTINS (get-path, set-path!, etc.), which encode
 // paths as jq-style strings, did not move here: they remain downstream in
 // luthersystems/substrate, whose loader composes them into this same
 // lisp-visible elpspath package. The positional-arg API is ~3-4x faster
 // because it skips regex-based string parsing — path steps are dispatched
 // by type switch.
+//
+// The PARSER those builtins are built on does live here, as the Go-level
+// ParseSelector in selector.go (issue #564): it is pure translation of a
+// selector string into the exported Path constructors, so leaving it
+// downstream meant one repository owning the syntax of a path language whose
+// semantics live in another. Nothing lisp-visible reaches it.
 package libelpspath
 
 import (
@@ -177,7 +184,7 @@ func parseSExprStep(expr *lisp.LVal) (Path, error) {
 func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	val := args.Cells[0]
 	steps := args.Cells[1:]
-	if err := okSimpleType(val); err != nil {
+	if err := OKSimpleType(val); err != nil {
 		return env.Errorf("%s", err)
 	}
 	path, err := ArgsToPath(steps)
@@ -200,10 +207,10 @@ func BuiltinQuerySetMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Errorf("?set! requires at least a value argument")
 	}
 	steps, newVal := rest[:len(rest)-1], rest[len(rest)-1]
-	if err := okSimpleType(val); err != nil {
+	if err := OKSimpleType(val); err != nil {
 		return env.Errorf("%s", err)
 	}
-	if err := okSimpleType(newVal); err != nil {
+	if err := OKSimpleType(newVal); err != nil {
 		return env.Errorf("%s", err)
 	}
 	path, err := ArgsToPath(steps)
@@ -226,10 +233,10 @@ func BuiltinQuerySet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Errorf("?set requires at least a value argument")
 	}
 	steps, newVal := rest[:len(rest)-1], rest[len(rest)-1]
-	if err := okSimpleType(val); err != nil {
+	if err := OKSimpleType(val); err != nil {
 		return env.Errorf("%s", err)
 	}
-	if err := okSimpleType(newVal); err != nil {
+	if err := OKSimpleType(newVal); err != nil {
 		return env.Errorf("%s", err)
 	}
 	path, err := ArgsToPath(steps)
@@ -247,7 +254,7 @@ func BuiltinQuerySet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 func BuiltinQueryDeleteMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	val := args.Cells[0]
 	steps := args.Cells[1:]
-	if err := okSimpleType(val); err != nil {
+	if err := OKSimpleType(val); err != nil {
 		return env.Errorf("%s", err)
 	}
 	path, err := ArgsToPath(steps)
@@ -265,7 +272,7 @@ func BuiltinQueryDeleteMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 func BuiltinQueryDelete(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	val := args.Cells[0]
 	steps := args.Cells[1:]
-	if err := okSimpleType(val); err != nil {
+	if err := OKSimpleType(val); err != nil {
 		return env.Errorf("%s", err)
 	}
 	path, err := ArgsToPath(steps)
@@ -283,7 +290,7 @@ func BuiltinQueryDelete(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 func BuiltinQueryNilMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	val := args.Cells[0]
 	steps := args.Cells[1:]
-	if err := okSimpleType(val); err != nil {
+	if err := OKSimpleType(val); err != nil {
 		return env.Errorf("%s", err)
 	}
 	path, err := ArgsToPath(steps)
@@ -301,7 +308,7 @@ func BuiltinQueryNilMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 func BuiltinQueryNil(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	val := args.Cells[0]
 	steps := args.Cells[1:]
-	if err := okSimpleType(val); err != nil {
+	if err := OKSimpleType(val); err != nil {
 		return env.Errorf("%s", err)
 	}
 	path, err := ArgsToPath(steps)
