@@ -573,17 +573,48 @@ func expandPaths(paths ...Path) []Path {
 // the cost.
 func normalizePaths(paths ...Path) []Path {
 	paths = expandPaths(paths...)
-	var curChain []Path
+	// The loop runs right to left, so the chain accumulates REVERSED and is
+	// flipped once at the end.
+	//
+	// Prepending instead -- append([]Path{path}, curChain...) -- allocated a
+	// fresh slice and copied every element already placed, on every step,
+	// which is O(n^2) in the number of steps. That is far milder than the
+	// exponential above (it takes a ~6KB selector to reach 38ms, where the
+	// exponential took 45 bytes) but it is the same shape of problem: cost
+	// superlinear in the length of an input a caller may not control.
+	rev := make([]Path, 0, len(paths))
 	for i := len(paths) - 1; i >= 0; i-- {
-		path := paths[i]
-		switch path.(type) {
-		case *iterPath:
-			curChain = []Path{&iterPath{path: &chainPath{paths: curChain}}}
-		default:
-			curChain = append([]Path{path}, curChain...)
+		if _, isIter := paths[i].(*iterPath); !isIter {
+			rev = append(rev, paths[i])
+			continue
 		}
+		// An iterator takes everything to its right as its own chain, so
+		// the accumulated tail is flipped into it and the accumulator
+		// restarts holding just the iterator. inner is a fresh slice, so
+		// reusing rev's storage on the next line cannot write through it.
+		// Each element is flipped at most once per enclosing iterator and
+		// an iterator empties the accumulator, so this stays linear.
+		inner := reversedPaths(rev)
+		rev = append(rev[:0], &iterPath{path: &chainPath{paths: inner}})
 	}
-	return curChain
+	return reversedPaths(rev)
+}
+
+// reversedPaths returns a new slice holding in's elements in reverse order.
+//
+// It returns nil rather than an empty slice for an empty input, so that an
+// empty chain keeps the nil paths field it had when this was built by
+// prepending onto a nil slice. Nothing reads the difference -- every use is
+// len() or a range -- but preserving it keeps the change to cost alone.
+func reversedPaths(in []Path) []Path {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Path, len(in))
+	for i, p := range in {
+		out[len(in)-1-i] = p
+	}
+	return out
 }
 
 type chainPath struct {

@@ -3,6 +3,7 @@
 package libelpspath
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -122,4 +123,47 @@ func TestNormalizePathsAgreesWithIterConstruction(t *testing.T) {
 			t.Errorf("n=%d: ArgsToPath=%q Iter-nested=%q", n, got, want)
 		}
 	}
+}
+
+// TestNormalizePathsIsNotQuadratic is the second cost regression, and it
+// measures allocated BYTES where TestNormalizePathsIsNotExponential measures
+// allocation COUNT. The distinction is the whole point: the chain used to be
+// assembled by prepending, append([]Path{path}, curChain...), which allocates
+// one slice per step either way -- the same O(n) count -- while COPYING every
+// element already placed, so the bytes were O(n^2).
+//
+// Measured at 3200 dot steps before the fix: 38.16ms, against 0.26ms after,
+// and the growth was unmistakably superlinear (800 -> 1600 cost 3.4x, 1600 ->
+// 3200 cost 4.8x). It is far milder than the exponential -- a ~6KB selector
+// to reach 38ms, where the exponential needed 45 bytes -- but it is the same
+// shape: cost superlinear in the length of an input a caller may not control.
+//
+// The bound below sits between the two by orders of magnitude. Quadratic
+// copying at n=2000 moves roughly 2000*2000/2 pointers, some 16MB; linear
+// assembly moves a few tens of KB.
+func TestNormalizePathsIsNotQuadratic(t *testing.T) {
+	// Not t.Parallel(): ReadMemStats reports process-wide totals, so a
+	// concurrent test's allocations would land in this one's delta.
+	const (
+		steps = 2000
+		limit = 4 << 20 // 4MiB, vs ~16MiB quadratic and ~tens of KB linear
+	)
+	args := make([]*lisp.LVal, steps)
+	for i := range args {
+		args[i] = lisp.String("k")
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if _, err := ArgsToPath(args); err != nil {
+		t.Fatalf("ArgsToPath: %v", err)
+	}
+	runtime.ReadMemStats(&after)
+	used := after.TotalAlloc - before.TotalAlloc
+	if used > limit {
+		t.Errorf("ArgsToPath with %d steps allocated %d bytes, want <= %d "+
+			"-- the chain is being assembled by prepending again (issue #565)",
+			steps, used, limit)
+	}
+	t.Logf("%d steps allocated %d bytes", steps, used)
 }
