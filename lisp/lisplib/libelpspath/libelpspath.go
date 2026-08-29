@@ -107,11 +107,19 @@ var builtins = []*libutil.Builtin{
 		once -- convert it once, keep the steps, and every later operation
 		skips the parse.
 
-		KEY SYNTAX. A bare .key accepts only [A-Za-z_][A-Za-z_0-9]*, so a
-		kebab-case or non-ASCII key MUST be bracketed and quoted:
+		KEY SYNTAX. A bare .key is the classic identifier rule,
+		[A-Za-z_][A-Za-z_0-9]*, which is jq's rule too. Underscores and
+		digits are fine, so the snake_case keys these paths usually
+		address need nothing special:
+
+		(parse-path ".field_mask.paths")  => '("field_mask" "paths")
+
+		Anything else -- a hyphen, a leading digit, "$", non-ASCII --
+		MUST be bracketed and quoted, as it must in jq:
 
 		(parse-path ".my-key")        => error: failed to parse: -key
 		(parse-path ".[\"my-key\"]")   => '("my-key")
+		(parse-path ".[\"\"]")         => '("")
 
 		The jq optional-selector suffix "?" is accepted and DISCARDED --
 		".a?" is exactly ".a" -- because nothing in the engine suppresses

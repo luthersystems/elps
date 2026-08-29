@@ -349,6 +349,11 @@
     (assert-equal '("my-key") (elpspath:parse-path ".[\"my-key\"]"))
     (assert-equal '("$private") (elpspath:parse-path ".[\"$private\"]"))
     (assert-equal '("_ok9") (elpspath:parse-path "._ok9"))
+    ; snake_case -- what these paths in practice actually address -- needs
+    ; no bracketing at all
+    (assert-equal '("field_mask" "paths") (elpspath:parse-path ".field_mask.paths"))
+    (assert-equal '("first_name") (elpspath:parse-path ".first_name"))
+    (assert-equal '("") (elpspath:parse-path ".[\"\"]"))
     ; and the bracketed form really addresses the key
     (assert-equal 42 (apply elpspath:? (cons (sorted-map "my-key" 42)
                                              (elpspath:parse-path ".[\"my-key\"]"))))))
