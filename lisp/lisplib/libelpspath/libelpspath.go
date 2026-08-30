@@ -254,8 +254,14 @@ func okSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 		}
 		return nil
 	case lisp.LArray:
-		if in.Cells[0].Len() > 1 {
-			return errors.New("cannot index multi-dimensional array")
+		// Exactly one dimension, matching toCells -- see the reason there.
+		// The gate and the accessor have to agree about what "indexable"
+		// means, or a shape this admits still fails downstream.
+		if n := in.Cells[0].Len(); n != 1 {
+			if n > 1 {
+				return errors.New("cannot index multi-dimensional array")
+			}
+			return errors.New("cannot index zero-dimensional array")
 		}
 		cells := in.Cells[1].Cells
 		for _, v := range cells {

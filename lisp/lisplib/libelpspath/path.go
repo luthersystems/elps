@@ -321,14 +321,33 @@ func sameQuoting(src, cp *lisp.LVal) *lisp.LVal {
 }
 
 // toCells gets a slice of LVal cells from an elps vector.
+//
+// The dimensionality requirement is EXACTLY ONE, and the lower half of that
+// is load-bearing rather than pedantic. This asked only whether the array
+// had MORE than one dimension, so a zero-dimensional array -- dims '(),
+// which lisp.Array builds for an embedder that passes an empty dims list --
+// was accepted as indexable. It has no cardinality slot, and storeCells
+// writes one unconditionally, so every in-place write through it PANICKED
+// on `dims.Cells[0].Int = len(vals)`: ?set!, ?del! and ?nil! over an index
+// or either range spelling, ten combinations in all. That is the same
+// defect storeCells' own comment describes for lists ("lists have no dims
+// cell"), in the one array shape that has the cell but leaves it empty.
+//
+// Rejecting it here closes the whole class at the gate, because every
+// operation reads its cells through this function before it writes any.
+// The existing message is kept verbatim for the multi-dimensional case so
+// that anything matching on that text still matches.
 func toCells(in *lisp.LVal) ([]*lisp.LVal, error) {
 	if in.IsNil() {
 		return nil, errors.New("first argument is nil")
 	}
 	switch in.Type {
 	case lisp.LArray:
-		if in.Cells[0].Len() > 1 {
-			return nil, errors.New("cannot index multi-dimensional array")
+		if n := in.Cells[0].Len(); n != 1 {
+			if n > 1 {
+				return nil, errors.New("cannot index multi-dimensional array")
+			}
+			return nil, errors.New("cannot index zero-dimensional array")
 		}
 		cells := in.Cells[1].Cells
 		return cells, nil
