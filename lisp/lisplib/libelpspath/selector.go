@@ -251,6 +251,16 @@ func ParseSelector(selector string) (Path, error) {
 // The steps are flat by construction: each parser yields a single leaf --
 // Dot, Index, Iter or Range -- and all nesting happens later, in Chain and
 // normalizePaths.
+//
+// The step slice is PRESIZED, and that is not a micro-optimisation looking
+// for a problem. Splitting this scan out of ParseSelector turned the slice
+// into a return value, so escape analysis can no longer keep its growth off
+// the heap: a three-step selector went from one allocation to three (cap
+// 1, 2, 4), which the benchmark gate reported as +11.8% allocs/op and
+// +6.9% B/op on BenchmarkParseSelector/practical/dot. Presizing removes
+// the growth outright rather than restoring the old escape, so the cost no
+// longer depends on where the slice is built. It also improves the long
+// arms, which paid log(n) growth allocations before the split as well.
 func selectorPaths(selector string) ([]Path, error) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" {
@@ -259,16 +269,11 @@ func selectorPaths(selector string) ([]Path, error) {
 	if !strings.HasPrefix(selector, ".") {
 		return nil, errors.New("selector must start with '.'")
 	}
-	var paths []Path
 	if selector == "." {
 		return nil, nil
 	}
-	// handle special case where first op is of form ".[x]"
-	// we support this notation to be closer to jq.
-	match := preprocPath.FindStringSubmatch(selector)
-	if match != nil {
-		selector = match[1]
-	}
+	selector = selectorBody(selector)
+	paths := make([]Path, 0, stepCapHint(selector))
 
 	var path Path
 	var err error
@@ -297,6 +302,48 @@ func selectorPaths(selector string) ([]Path, error) {
 	}
 
 	return paths, nil
+}
+
+// selectorBody applies the ".[x]" special case -- a selector may lead with
+// a bracket, which is closer to jq -- and returns the string the step scan
+// actually consumes: ".[0].a" scans as "[0].a", ".a.b" as itself.
+//
+// It is a function rather than four inline lines because stepCapHint has to
+// size the same string the scan walks, and running preprocPath a second
+// time to find that out would put back an allocation this presizing exists
+// to remove. One call, one definition of the rule.
+func selectorBody(selector string) string {
+	if match := preprocPath.FindStringSubmatch(selector); match != nil {
+		return match[1]
+	}
+	return selector
+}
+
+// stepCapHint is an UPPER BOUND on the number of steps a selectorBody can
+// name, used to size the step slice so the scan never grows it.
+//
+// Two bounds, and it takes the smaller:
+//
+//   - every step begins with "." or "[", so the count of those two bytes
+//     cannot be less than the number of steps. It is EXACT for the shapes
+//     callers actually write (".a.b.c" -> 3, ".items[0].id" -> 3,
+//     "[\"first name\"].address.city" -> 3, ".items[1:3]" -> 2) and
+//     over-counts only when a quoted key CONTAINS one of the two:
+//     ["a.b"] hints 2 for one step.
+//   - every step spends at least two bytes -- ".a" and "[]" are the
+//     shortest -- so (len+1)/2 is a bound too, and it is the one that caps
+//     a pathological quoted key: ["........"] hints 5, not 9.
+//
+// Being an over-estimate costs a little unused capacity on one short-lived
+// slice; being an UNDER-estimate would only cost a growth, so neither
+// direction is a correctness question. The two tests pin the two halves
+// that DO matter -- upper bound, and tight on real selectors.
+func stepCapHint(body string) int {
+	hint := strings.Count(body, ".") + strings.Count(body, "[")
+	if maxSteps := (len(body) + 1) / 2; hint > maxSteps {
+		hint = maxSteps
+	}
+	return hint
 }
 
 // SelectorSteps translates a jq-style selector string into the positional

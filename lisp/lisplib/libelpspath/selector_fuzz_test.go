@@ -95,6 +95,21 @@ func FuzzParseSelector(f *testing.F) {
 			t.Fatalf("ParseSelector(%q) returned a nil path and a nil error", sel)
 		}
 
+		// stepCapHint presizes the scan's step slice, and the whole of
+		// that is an UPPER-BOUND claim over a grammar. Nothing here reads
+		// the difference -- an under-estimate would cost one growth, not a
+		// wrong answer -- but the claim is cheap to check on every input
+		// the fuzzer gets accepted, which is a far wider corpus than the
+		// table in TestStepCapHintBoundsStepCount.
+		steps, stepsErr := selectorPaths(sel)
+		if stepsErr != nil {
+			t.Fatalf("ParseSelector(%q) succeeded but selectorPaths did not: %v", sel, stepsErr)
+		}
+		if hint := stepCapHint(selectorBody(strings.TrimSpace(sel))); hint < len(steps) {
+			t.Fatalf("stepCapHint(%q) = %d, below the %d steps the selector names",
+				sel, hint, len(steps))
+		}
+
 		printed := path.String()
 
 		// THE INVARIANT. Anything this parser accepts must print to
