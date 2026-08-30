@@ -52,6 +52,43 @@
   (elpspath:?set! val '(range 2) (vector 90 91))
   (assert-equal (vector 1 2 90 91) val))
 
+; A range set is a SPLICE, not an element-wise assignment: the replacement
+; may be any length and the sequence grows or shrinks to suit. That is easy
+; to assume otherwise from the equal-length case above, which is the only
+; one this file used to carry, so all three relative lengths are here.
+(test "?set over an implicit end splices rather than matching lengths"
+  (let ([v (vector 1 2 3 4 5)])
+    ; shorter than the window it replaces
+    (assert-equal (vector 1 91) (elpspath:?set v '(range 1) (vector 91)))
+    ; equal
+    (assert-equal (vector 1 2 3 91 92) (elpspath:?set v '(range 3) (vector 91 92)))
+    ; longer
+    (assert-equal (vector 1 2 3 4 91 92 93 94)
+                  (elpspath:?set v '(range 4) (vector 91 92 93 94)))
+    ; empty: the window is removed and nothing takes its place
+    (assert-equal (vector 1 2) (elpspath:?set v '(range 2) (vector)))
+    ; the copying form leaves the source alone through all of it
+    (assert-equal (vector 1 2 3 4 5) v)))
+
+; from == n names an empty window at the very end, so the splice is a pure
+; append -- the one spelling that adds elements without removing any.
+(test "?set at the end of an implicit range appends"
+  (assert-equal (vector 1 2 3 91 92)
+                (elpspath:?set (vector 1 2 3) '(range 3) (vector 91 92))))
+
+; A negative from counts back from the end and is resolved BEFORE the
+; implicit end is filled in, so the two rewrites have to compose.
+(test "?set with a negative from and an implicit end"
+  (assert-equal (vector 1 2 3 91 92 93)
+                (elpspath:?set (vector 1 2 3 4 5) '(range -2) (vector 91 92 93))))
+
+; Past the end is an error rather than an append. ignore-errors yields nil
+; on a raise, and a successful ?set here would yield a vector, so nil means
+; the raise happened.
+(test "?set past the end of an implicit range raises"
+  (assert-nil (ignore-errors
+                (elpspath:?set (vector 1 2 3) '(range 9) (vector 91)))))
+
 (test-let "?del range with an implicit end"
   ((val (vector 1 2 3 4)))
   (assert-equal (vector 1 2) (elpspath:?del val '(range 2)))
