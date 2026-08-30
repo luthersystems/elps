@@ -783,6 +783,22 @@ func (g *pathGen) intn(n int) int {
 
 // Structure kinds, ordered so the low tags are the cheap scalars: a mutator
 // flipping a byte down shrinks the structure, which keeps crashers small.
+//
+// WHAT THIS LIST DOES NOT REACH, stated because a green campaign otherwise
+// reads as coverage it does not have. shapeVector builds every array through
+// lisp.Array(nil, cells), which DERIVES the dims list as [len(cells)]. The
+// degenerate layouts -- zero-dimensional (dims '()) and multi-dimensional --
+// come only from lisp.Array's explicit-dims branch, so no input to this
+// target can produce one, and the zero-dimensional array that panicked every
+// in-place write survived every campaign this corpus has run.
+//
+// Adding a shape here would fix that and cost more than it is worth: the tag
+// count is the modulus of g.intn(numShapes), so a new one re-decodes every
+// saved input and every hand-written seed in this file -- drift that has
+// already silently moved four seeds between arms once (see viewWitnessSeeds).
+// The degenerate layouts are covered exhaustively and deterministically
+// instead, by TestDegenerateArrayShapesDoNotPanic and
+// TestEveryValueTypeNeverPanics, which enumerate them rather than sampling.
 const (
 	shapeNil = iota
 	shapeBool
