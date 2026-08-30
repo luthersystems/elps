@@ -187,8 +187,42 @@ func parseSExprStep(expr *lisp.LVal) (Path, error) {
 	}
 }
 
+// requireDocument rejects a call carrying no arguments at all.
+//
+// Every builtin below starts by reading args.Cells[0] as the document, and
+// through the EVALUATOR that read is safe: the formals name "val" as a
+// required parameter, so a lisp caller writing (?) is refused with "invalid
+// number of arguments: 0" before the builtin ever runs.
+//
+// These functions are EXPORTED, though, and the arity guarantee lives in the
+// REGISTRATION rather than in the function. A Go caller reaching one
+// directly -- an embedder composing this package under its own formals, a
+// test -- indexes an empty slice and panics:
+//
+//	runtime error: index out of range [0] with length 0
+//
+// All eight did. That is the same shape as the zero-dimensional array crash
+// this package fixed alongside it: an exported entry point trusting a
+// precondition only its caller can establish. ?set and ?set! already checked
+// the OTHER end of the argument list for exactly this reason -- the trailing
+// value -- so the document end was the half that was missing.
+//
+// It guards the LENGTH, not args itself. A Go-nil *LVal is not a value the
+// reader or the evaluator can produce, and every LVal-consuming function in
+// the repository dereferences its argument, so checking for one here would
+// buy nothing and imply a contract the rest of the codebase does not keep.
+func requireDocument(env *lisp.LEnv, name string, args *lisp.LVal) *lisp.LVal {
+	if len(args.Cells) < 1 {
+		return env.Errorf("%s requires a document argument", name)
+	}
+	return nil
+}
+
 // BuiltinQueryGet implements (elpspath:? val &rest steps).
 func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if lerr := requireDocument(env, "?", args); lerr != nil {
+		return lerr
+	}
 	val := args.Cells[0]
 	steps := args.Cells[1:]
 	if err := okSimpleType(val); err != nil {
@@ -208,6 +242,9 @@ func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // BuiltinQuerySetMutate implements (elpspath:?set! val &rest steps-and-value).
 // The last vararg is the new value; all preceding varargs are path steps.
 func BuiltinQuerySetMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if lerr := requireDocument(env, "?set!", args); lerr != nil {
+		return lerr
+	}
 	val := args.Cells[0]
 	rest := args.Cells[1:]
 	if len(rest) < 1 {
@@ -234,6 +271,9 @@ func BuiltinQuerySetMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // BuiltinQuerySet implements (elpspath:?set val &rest steps-and-value).
 // The last vararg is the new value; all preceding varargs are path steps.
 func BuiltinQuerySet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if lerr := requireDocument(env, "?set", args); lerr != nil {
+		return lerr
+	}
 	val := args.Cells[0]
 	rest := args.Cells[1:]
 	if len(rest) < 1 {
@@ -259,6 +299,9 @@ func BuiltinQuerySet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 // BuiltinQueryDeleteMutate implements (elpspath:?del! val &rest steps).
 func BuiltinQueryDeleteMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if lerr := requireDocument(env, "?del!", args); lerr != nil {
+		return lerr
+	}
 	val := args.Cells[0]
 	steps := args.Cells[1:]
 	if err := okSimpleType(val); err != nil {
@@ -277,6 +320,9 @@ func BuiltinQueryDeleteMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 // BuiltinQueryDelete implements (elpspath:?del val &rest steps).
 func BuiltinQueryDelete(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if lerr := requireDocument(env, "?del", args); lerr != nil {
+		return lerr
+	}
 	val := args.Cells[0]
 	steps := args.Cells[1:]
 	if err := okSimpleType(val); err != nil {
@@ -295,6 +341,9 @@ func BuiltinQueryDelete(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 // BuiltinQueryNilMutate implements (elpspath:?nil! val &rest steps).
 func BuiltinQueryNilMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if lerr := requireDocument(env, "?nil!", args); lerr != nil {
+		return lerr
+	}
 	val := args.Cells[0]
 	steps := args.Cells[1:]
 	if err := okSimpleType(val); err != nil {
@@ -313,6 +362,9 @@ func BuiltinQueryNilMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 // BuiltinQueryNil implements (elpspath:?nil val &rest steps).
 func BuiltinQueryNil(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if lerr := requireDocument(env, "?nil", args); lerr != nil {
+		return lerr
+	}
 	val := args.Cells[0]
 	steps := args.Cells[1:]
 	if err := okSimpleType(val); err != nil {
@@ -334,6 +386,9 @@ func BuiltinQueryNil(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // It returns a LIST and not a vector because apply takes a list, and
 // splicing the steps into a ? call is the entire point of the function.
 func BuiltinParsePath(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if lerr := requireDocument(env, "parse-path", args); lerr != nil {
+		return lerr
+	}
 	sel := args.Cells[0]
 	if sel.Type != lisp.LString {
 		return env.Errorf("selector must be a string, got %v", sel.Type)

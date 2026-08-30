@@ -316,3 +316,65 @@ func TestBuiltinSurfaceDoesNotPanic(t *testing.T) {
 	}
 	t.Logf("swept %d builtin invocations", cases)
 }
+
+// TestNestedZeroDimensionalArrayIsRefusedByTheCopy covers the third and last
+// site that spelled the dimensionality rule, and the only one whose failure
+// was not a crash.
+//
+// The copying operations rebuild containers through copyContainer, which
+// asked the same "more than one dimension?" question toCells did. A
+// zero-dimensional array NESTED inside the document therefore reached
+// copyVectorGuarded, which rebuilds via lisp.Array(nil, cells) -- and that
+// DERIVES dims as [len]. The copy came back one-dimensional:
+// `#<array dims='()>` became `(vector ())`. No error, no panic, a different
+// value.
+//
+// Only the Go API reached it: the builtins run okSimpleType over the whole
+// document first, and that walk refuses the shape wherever it sits. Both
+// routes are asserted here so the pair cannot drift apart again -- three
+// sites disagreeing about one rule is what let the original crash through.
+func TestNestedZeroDimensionalArrayIsRefusedByTheCopy(t *testing.T) {
+	t.Parallel()
+
+	nested := func() *lisp.LVal {
+		return lisp.Vector([]*lisp.LVal{lisp.Int(1), lisp.Array(lisp.QExpr(nil), nil)})
+	}
+
+	// Only the COPYING operations have to reproduce the nested value, so
+	// only they can be wrong about it. Get and the "!" variants read or
+	// rework index 0 in place and never look at index 1 -- asserting an
+	// error from those would be over-strict, and the first version of this
+	// test made exactly that mistake.
+	copying := map[string]bool{"Set": true, "Delete": true, "Nil": true}
+	for _, op := range goPathOps() {
+		t.Run("goapi/"+op.name, func(t *testing.T) {
+			var err error
+			mustNotPanic(t, "nested zero-dim "+op.name, func() {
+				_, err = op.run(Index(0), nested())
+			})
+			if copying[op.name] {
+				require.Errorf(t, err,
+					"a nested zero-dimensional array was copied rather than refused")
+				return
+			}
+			require.NoErrorf(t, err,
+				"%s does not copy the nested value and must not refuse it", op.name)
+		})
+	}
+
+	// The builtins refuse it for EVERY operation, copying or not, because
+	// okSimpleType is a whole-document precondition: it walks the value
+	// before any path runs and rejects the shape wherever it sits. That
+	// asymmetry with the Go API above is by design, not drift -- the gate
+	// belongs to the builtins.
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = nil
+	got := BuiltinQuerySet(env, lisp.QExpr([]*lisp.LVal{nested(), lisp.Int(0), lisp.Int(9)}))
+	require.Equalf(t, lisp.LError, got.Type, "the builtin accepted it: %v", got)
+
+	// And the near-miss stays legal: a nested ONE-dimensional array copies.
+	ok := lisp.Vector([]*lisp.LVal{lisp.Int(1), lisp.Vector([]*lisp.LVal{lisp.Int(2)})})
+	res, err := Index(0).Set(ok, lisp.Int(9))
+	require.NoErrorf(t, err, "a nested one-dimensional array must still copy")
+	require.Falsef(t, res.IsNil(), "the copy came back nil")
+}

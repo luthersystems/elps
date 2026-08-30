@@ -94,14 +94,34 @@ func copyContainer(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	case lisp.LSortMap:
 		return copyMapGuarded(v, g)
 	case lisp.LArray:
-		if v.Cells[0].Len() > 1 {
-			// IMPORTANT: we cannnot recover from this!
-			//
-			// Unreachable through the builtins, and deliberately still so:
-			// okSimpleContainerType refuses a multi-dimensional array before
-			// any builtin reaches a copy. The cycle guard above adds a
-			// rejection to that gate, it does not remove this one.
-			return lisp.Nil(), nil
+		// Exactly one dimension, the same rule toCells and
+		// okSimpleContainerContents enforce. The three sites spelling it
+		// differently is what produced the zero-dimensional array crash:
+		// each asked only about MORE than one dimension, so the shape with
+		// FEWER slipped past all of them.
+		if n := v.Cells[0].Len(); n != 1 {
+			if n > 1 {
+				// IMPORTANT: we cannnot recover from this!
+				//
+				// Unreachable through the builtins, and deliberately still
+				// so: okSimpleContainerType refuses a multi-dimensional
+				// array before any builtin reaches a copy. The cycle guard
+				// above adds a rejection to that gate, it does not remove
+				// this one. Left returning nil rather than an error because
+				// that was a deliberate choice on an unreachable path, and
+				// changing it is not what the zero case needs.
+				return lisp.Nil(), nil
+			}
+			// ZERO dimensions is a different failure and gets a different
+			// answer. copyVectorGuarded below rebuilds an array through
+			// lisp.Array(nil, cells), which DERIVES dims as [len], so a
+			// zero-dimensional array came back as a one-dimensional vector:
+			// `#<array dims='()>` copied to `(vector ())`. Silent, and a
+			// shape change rather than a lost value, so nothing downstream
+			// could notice. Measured through Index(0).Set on a vector
+			// holding one -- the builtins refuse it at okSimpleType, so
+			// only the Go API reached this.
+			return nil, errors.New("cannot index zero-dimensional array")
 		}
 		return copyVectorGuarded(v, g)
 	case lisp.LSExpr:

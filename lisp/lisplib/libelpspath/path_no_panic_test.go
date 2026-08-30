@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
 )
@@ -462,4 +464,61 @@ func deepNested(depth int, shape string) *lisp.LVal {
 		}
 	}
 	return v
+}
+
+// TestBuiltinsRefuseAnEmptyArgumentList is the second panic class these
+// sweeps turned up, and it is the same shape as the first.
+//
+// Every builtin reads args.Cells[0] as its document. Through the evaluator
+// that is safe -- the formals name "val" as required, so (?) is refused with
+// "invalid number of arguments: 0" before the builtin runs -- but the
+// functions are EXPORTED and the arity guarantee lives in the REGISTRATION,
+// not in the function. Called directly with an empty list, all eight
+// panicked with `index out of range [0] with length 0`.
+//
+// Both surfaces are asserted, because they fail for different reasons and
+// either could regress alone: the Go arm would catch a removed guard, and
+// the lisp arm would catch a formals change that stopped requiring the
+// document.
+func TestBuiltinsRefuseAnEmptyArgumentList(t *testing.T) {
+	t.Parallel()
+
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = nil
+
+	for name, fn := range map[string]func(*lisp.LEnv, *lisp.LVal) *lisp.LVal{
+		"?": BuiltinQueryGet, "?set": BuiltinQuerySet, "?set!": BuiltinQuerySetMutate,
+		"?del": BuiltinQueryDelete, "?del!": BuiltinQueryDeleteMutate,
+		"?nil": BuiltinQueryNil, "?nil!": BuiltinQueryNilMutate,
+		"parse-path": BuiltinParsePath,
+	} {
+		t.Run("go/"+name, func(t *testing.T) {
+			var got *lisp.LVal
+			mustNotPanic(t, "empty args to "+name, func() {
+				got = fn(env, lisp.QExpr(nil))
+			})
+			// An error, not a panic and not a plausible-looking answer:
+			// returning the identity for a call with no document would be
+			// the same silent-success failure the parse-path review found.
+			require.NotNilf(t, got, "%s returned a nil LVal", name)
+			require.Equalf(t, lisp.LError, got.Type,
+				"%s accepted an empty argument list and answered %v", name, got)
+		})
+	}
+
+	// The lisp surface, where the formals are what refuse the call.
+	lenv := noPanicEnv(t)
+	for _, src := range []string{
+		"(elpspath:?)", "(elpspath:?set)", "(elpspath:?set!)", "(elpspath:?del)",
+		"(elpspath:?del!)", "(elpspath:?nil)", "(elpspath:?nil!)",
+		"(elpspath:parse-path)",
+		// One argument reaches the builtin but has no value to store, which
+		// ?set and ?set! already checked before any of this.
+		"(elpspath:?set (vector 1))", "(elpspath:?set! (vector 1))",
+	} {
+		t.Run("elps/"+src, func(t *testing.T) {
+			res := evalNoPanic(t, lenv, "arity", src)
+			require.Equalf(t, lisp.LError, res.Type, "%s was accepted: %v", src, res)
+		})
+	}
 }
