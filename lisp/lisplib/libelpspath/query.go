@@ -3,7 +3,8 @@
 // The elpspath API addresses locations inside nested data structures with
 // positional path steps: each step is an ordinary ELPS value — no
 // mini-language to learn and no runtime string parsing. (A legacy jq-string
-// path DSL exists downstream in luthersystems/substrate; see below.)
+// path DSL is still spoken by builtins downstream in
+// luthersystems/substrate, over the parser in selector.go; see below.)
 //
 // # Builtins
 //
@@ -77,12 +78,18 @@
 //
 // # Legacy jq-string DSL
 //
-// The deprecated legacy operations (get-path, set-path!, etc.), which encode
+// The deprecated legacy BUILTINS (get-path, set-path!, etc.), which encode
 // paths as jq-style strings, did not move here: they remain downstream in
 // luthersystems/substrate, whose loader composes them into this same
 // lisp-visible elpspath package. The positional-arg API is ~3-4x faster
 // because it skips regex-based string parsing — path steps are dispatched
 // by type switch.
+//
+// The PARSER those builtins are built on does live here, as the Go-level
+// ParseSelector in selector.go (issue #564): it is pure translation of a
+// selector string into the exported Path constructors, so leaving it
+// downstream meant one repository owning the syntax of a path language whose
+// semantics live in another. Nothing lisp-visible reaches it.
 package libelpspath
 
 import (
@@ -98,6 +105,8 @@ import (
 //   - LInt → Index(i)
 //   - LSymbol "*" → Iter()
 //   - LSExpr (range from to) → Range(from, to, false)
+//   - LSExpr (range from) → Range(from, 0, true), the end resolved against
+//     the input length at evaluation time (issue #563)
 func ArgsToPath(args []*lisp.LVal) (Path, error) {
 	if len(args) == 0 {
 		return Root(Chain()), nil
@@ -143,13 +152,27 @@ func parseSExprStep(expr *lisp.LVal) (Path, error) {
 	}
 	switch head.Str {
 	case "range":
-		if len(cells) != 3 {
-			return nil, fmt.Errorf("range requires exactly 2 arguments (from to), got %d", len(cells)-1)
+		// One argument is the open-ended slice: (range from) means
+		// [from, len). Two is the explicit half-open [from, to).
+		//
+		// The engine has always been able to express the open end --
+		// rangePath carries an implicitTo flag and validateRange resolves
+		// it against the input length -- but until issue #563 no elps
+		// surface could construct one, so the capability was reachable
+		// only by an embedder building Path values directly.
+		if len(cells) != 2 && len(cells) != 3 {
+			return nil, fmt.Errorf("range requires 1 or 2 arguments (from [to]), got %d", len(cells)-1)
 		}
-		from, to := cells[1], cells[2]
+		from := cells[1]
 		if from.Type != lisp.LInt {
 			return nil, fmt.Errorf("range 'from' must be an integer, got %v", from.Type)
 		}
+		if len(cells) == 2 {
+			// to is ignored when implicitTo is set; validateRange
+			// overwrites it with the input length.
+			return Range(from.Int, 0, true), nil
+		}
+		to := cells[2]
 		if to.Type != lisp.LInt {
 			return nil, fmt.Errorf("range 'to' must be an integer, got %v", to.Type)
 		}

@@ -32,8 +32,10 @@ import (
 //   - Structures: nested sorted-maps, vectors, lists and scalars, built to
 //     the depth and breadth the engine actually recurses through.
 //   - Steps: string keys, integer indices (including negatives and the
-//     values that break index arithmetic), the '* iterator and (range a b)
-//     slices.  Steps are drawn PREFERENTIALLY from the keys and indices the
+//     values that break index arithmetic), the '* iterator and both range
+//     spellings -- (range a b) and the open-ended (range a), whose end is
+//     resolved against the document rather than carried in the step.
+//     Steps are drawn PREFERENTIALLY from the keys and indices the
 //     generated structure really has — a fuzzer that mostly misses spends
 //     its budget on the "key absent" branch.  Missing keys and out-of-range
 //     indices still appear; they are the other half of the boundary.
@@ -409,17 +411,29 @@ func namedPositions(n int, step *lisp.LVal) (map[int]bool, bool) {
 		}
 		return out, true
 	case lisp.LSExpr:
-		if len(step.Cells) != 3 {
+		if len(step.Cells) != 2 && len(step.Cells) != 3 {
 			return nil, false
 		}
 		if head := step.Cells[0]; head.Type != lisp.LSymbol || head.Str != "range" {
 			return nil, false
 		}
-		lo, hi := step.Cells[1], step.Cells[2]
-		if lo.Type != lisp.LInt || hi.Type != lisp.LInt {
+		lo := step.Cells[1]
+		if lo.Type != lisp.LInt {
 			return nil, false
 		}
-		from, to, err := validateRange(n, lo.Int, hi.Int, false)
+		// The open-ended form names [from, n).  Modelling it here rather
+		// than returning false is the point: a witness that bails leaves
+		// the step unwatched, and the splice bounds are exactly what
+		// issue #471 got wrong on the two-argument arm.
+		hiInt, implicitTo := 0, true
+		if len(step.Cells) == 3 {
+			hi := step.Cells[2]
+			if hi.Type != lisp.LInt {
+				return nil, false
+			}
+			hiInt, implicitTo = hi.Int, false
+		}
+		from, to, err := validateRange(n, lo.Int, hiInt, implicitTo)
 		if err != nil {
 			// A range the engine refuses names nothing and must write nothing.
 			return out, true
@@ -473,28 +487,43 @@ type spliceOracle struct {
 }
 
 // newSpliceOracle recognises the isolated-splice shape — the whole path is
-// one (range a b) and the document is a sequence — and snapshots its ends.
+// one range step, in either spelling, and the document is a sequence —
+// and snapshots its ends.
 // Anything else returns false and the invariant simply does not apply.
 func newSpliceOracle(doc *lisp.LVal, steps []*lisp.LVal) (spliceOracle, bool) {
 	if len(steps) != 1 {
 		return spliceOracle{}, false
 	}
 	step := steps[0]
-	if step.Type != lisp.LSExpr || len(step.Cells) != 3 {
+	// BOTH range spellings, for the reason namedPositions gives for
+	// modelling them: an oracle that bails leaves the step unwatched, and
+	// the splice bounds are exactly what issue #471 got wrong. The
+	// open-ended form resolves its end against the document rather than
+	// carrying one, so it exercises a different arm of validateRange and
+	// therefore a different set of bounds for the splice to get wrong.
+	if step.Type != lisp.LSExpr || (len(step.Cells) != 2 && len(step.Cells) != 3) {
 		return spliceOracle{}, false
 	}
 	if head := step.Cells[0]; head.Type != lisp.LSymbol || head.Str != "range" {
 		return spliceOracle{}, false
 	}
-	lo, hi := step.Cells[1], step.Cells[2]
-	if lo.Type != lisp.LInt || hi.Type != lisp.LInt {
+	lo := step.Cells[1]
+	if lo.Type != lisp.LInt {
 		return spliceOracle{}, false
+	}
+	hiInt, implicitTo := 0, true
+	if len(step.Cells) == 3 {
+		hi := step.Cells[2]
+		if hi.Type != lisp.LInt {
+			return spliceOracle{}, false
+		}
+		hiInt, implicitTo = hi.Int, false
 	}
 	cells, err := toCells(doc)
 	if err != nil {
 		return spliceOracle{}, false
 	}
-	from, to, err := validateRange(len(cells), lo.Int, hi.Int, false)
+	from, to, err := validateRange(len(cells), lo.Int, hiInt, implicitTo)
 	if err != nil {
 		// A range the engine refuses is an error answer, not a splice.
 		return spliceOracle{}, false
@@ -917,6 +946,18 @@ func (g *pathGen) steps(doc *lisp.LVal) []*lisp.LVal {
 			if maxLen > 0 && g.next()%2 == 0 {
 				from, to = g.intn(maxLen+1), g.intn(maxLen+1)
 			}
+			if g.next()%4 == 0 {
+				// The open-ended form (issue #563).  It resolves its
+				// end against the document at evaluation time rather
+				// than carrying one, which is a different arm of
+				// validateRange and so a different set of bounds for
+				// the splice to get wrong.  Kept a minority draw so
+				// the two-argument form stays the common case.
+				steps = append(steps, lisp.QExpr([]*lisp.LVal{
+					lisp.Symbol("range"), lisp.Int(from),
+				}))
+				break
+			}
 			steps = append(steps, lisp.QExpr([]*lisp.LVal{
 				lisp.Symbol("range"), lisp.Int(from), lisp.Int(to),
 			}))
@@ -1014,23 +1055,47 @@ func TestPathGenCoverage(t *testing.T) {
 // vector's positions -- the configuration in which a compaction through the
 // source's array is observable.  One per operation per step form.
 //
+// SEEDS DRIFT WHEN THE GENERATOR CHANGES, and the comments below say what
+// each one decodes to TODAY, not what it was found for.  Adding the
+// open-ended range draw to pathGen.steps shifted byte consumption, so four
+// of the original fourteen silently moved from the explicit range arm to the
+// open one -- taking the explicit-range witness for ?set!, ?del! and ?nil!
+// with them, which is exactly where issue #471's in-place splice bug lived.
+// Nothing caught it, because the coverage test classified both arms as
+// "range".  It now distinguishes them, and the seven seeds at the end of the
+// list restore what the drift removed.
+//
+// The same shift means testdata/fuzz/FuzzPathEngine/ae76e6821af9dfd8, a saved
+// crasher, now decodes to (range 0) where it was minimised as (range 0 0).
+// It is still a valid regression input and is kept; the explicit arm it used
+// to cover is covered by the added seeds rather than by it.
+//
 // They are byte strings written in this file, found by searching short random
 // inputs for the shape.  No seed is derived from any downstream corpus.
 var viewWitnessSeeds = [][]byte{
 	{0x62, 0xce, 0xe1, 0x20, 0xb4, 0xdb, 0xe0, 0x47, 0x15},                                     // ? index
-	{0xbd, 0x46, 0x4b, 0x50, 0x58, 0x2b, 0x10, 0xb7, 0x1b, 0x94, 0x4a, 0xbb, 0x16},             // ? range
+	{0xbd, 0x46, 0x4b, 0x50, 0x58, 0x2b, 0x10, 0xb7, 0x1b, 0x94, 0x4a, 0xbb, 0x16},             // ? range-explicit
 	{0xd3, 0xa6, 0xe1, 0x10, 0x94, 0x27, 0x20, 0x78, 0x11},                                     // ?set! index
-	{0x08, 0xbe, 0x6f, 0x83, 0x1a, 0xd0, 0x54, 0x5e, 0xf6, 0xcb, 0x07, 0xc4, 0x84, 0x99, 0xee}, // ?set! range
+	{0x08, 0xbe, 0x6f, 0x83, 0x1a, 0xd0, 0x54, 0x5e, 0xf6, 0xcb, 0x07, 0xc4, 0x84, 0x99, 0xee}, // ?set! range-open
 	{0x3a, 0xa6, 0x4b, 0x40, 0x9a, 0x13, 0x90, 0xe1, 0xdd},                                     // ?set index
-	{0x10, 0xee, 0x15, 0x76, 0x60, 0xca, 0x38, 0x88, 0x5c, 0x9b, 0xdc, 0xae, 0xa3, 0x6b, 0x7a}, // ?set range
+	{0x10, 0xee, 0x15, 0x76, 0x60, 0xca, 0x38, 0x88, 0x5c, 0x9b, 0xdc, 0xae, 0xa3, 0x6b, 0x7a}, // ?set range-explicit
 	{0x0a, 0x3e, 0x81, 0x7c, 0xfb, 0x50, 0xb0, 0x5c, 0xe5, 0x81},                               // ?del! index
-	{0x9d, 0x8e, 0xab, 0x2c, 0xba, 0xe8, 0x20, 0xc5, 0xb7, 0xbd, 0x88, 0x6d, 0xf8, 0xed, 0xb4}, // ?del! range
+	{0x9d, 0x8e, 0xab, 0x2c, 0xba, 0xe8, 0x20, 0xc5, 0xb7, 0xbd, 0x88, 0x6d, 0xf8, 0xed, 0xb4}, // ?del! range-open
 	{0x2e, 0x9e, 0x15, 0xd8, 0xc8, 0x1a, 0x46, 0xa9, 0x99},                                     // ?del index
-	{0xd6, 0xde, 0xc3, 0x8a, 0xf9, 0x13, 0x02, 0x20, 0x0f, 0x7b, 0xeb, 0xad, 0x43, 0x47},       // ?del range
+	{0xd6, 0xde, 0xc3, 0x8a, 0xf9, 0x13, 0x02, 0x20, 0x0f, 0x7b, 0xeb, 0xad, 0x43, 0x47},       // ?del range-explicit
 	{0x67, 0x36, 0x39, 0x25, 0x54, 0x09, 0x77, 0xe8, 0x16, 0xcd},                               // ?nil! index
-	{0x67, 0xce, 0x99, 0x92, 0xd6, 0xd0, 0xdb, 0xc4, 0xb7, 0xbb, 0x51, 0x93, 0x65},             // ?nil! range
+	{0x67, 0xce, 0x99, 0x92, 0xd6, 0xd0, 0xdb, 0xc4, 0xb7, 0xbb, 0x51, 0x93, 0x65},             // ?nil! range-open
 	{0x61, 0xb6, 0x75, 0xa0, 0xb8, 0xf0, 0xb0, 0x99, 0x1f},                                     // ?nil index
-	{0xfb, 0x66, 0xff, 0xa0, 0x94, 0x5c, 0x52, 0x28, 0x01, 0x2b, 0x0d, 0x6e, 0x4f},             // ?nil range
+	{0xfb, 0x66, 0xff, 0xa0, 0x94, 0x5c, 0x52, 0x28, 0x01, 0x2b, 0x0d, 0x6e, 0x4f},             // ?nil range-open
+
+	// Restoring what the open-range generator draw shifted away (see above).
+	{0x5b, 0x2e, 0x51, 0x30, 0x6b, 0x5a, 0xcb, 0x61, 0x01, 0x2b, 0x4c},                               // ? range-open
+	{0xb7, 0x56, 0x3d, 0xd1, 0xbe, 0x1d, 0x57, 0xda, 0xee, 0xd5, 0x87, 0xd0, 0xcb},                   // ?set! range-explicit
+	{0xc6, 0xf6, 0xf9, 0x81, 0xa6, 0x78, 0x00, 0x1d, 0x07, 0x3b, 0x76, 0xd5},                         // ?set range-open
+	{0xdc, 0x86, 0x85, 0x82, 0x49, 0xfd, 0x6f, 0xb1, 0xdb, 0xab, 0x12, 0x52, 0x13, 0xbb},             // ?del! range-explicit
+	{0xf2, 0xde, 0x2c, 0x5b, 0xff, 0x17, 0xc6, 0x47, 0x13, 0x30, 0xc3, 0x12, 0xa5, 0x32, 0xbc, 0x32}, // ?del range-open
+	{0xde, 0x5e, 0x67, 0xb3, 0xc6, 0x32, 0xb7, 0x67, 0x49, 0x59, 0x1a},                               // ?nil! range-explicit
+	{0xa7, 0x76, 0x3d, 0x51, 0x06, 0xef, 0x87, 0x37, 0xf0, 0x21, 0x3e, 0xf4, 0x43},                   // ?nil range-explicit
 }
 
 // TestViewWitnessSeedsAreReached is invariant 7's own gate, in the spirit of
@@ -1063,7 +1128,17 @@ func TestViewWitnessSeedsAreReached(t *testing.T) {
 			case lisp.LInt:
 				form = "index"
 			case lisp.LSExpr:
-				form = "range"
+				// The two range spellings are separate forms, not one.
+				// Classifying both as "range" is what let the generator
+				// change silently move four seeds from the explicit arm
+				// to the open one while this test stayed green -- and
+				// with them went the explicit-range witness for every
+				// mutating operation, which is where issue #471 lived.
+				if len(steps[0].Cells) == 2 {
+					form = "range-open"
+				} else {
+					form = "range-explicit"
+				}
 			}
 		}
 		return opIdx, form, true
@@ -1092,6 +1167,11 @@ func TestViewWitnessSeedsAreReached(t *testing.T) {
 
 	ops := map[string]bool{}
 	forms := map[string]bool{}
+	// Keyed by operation AND form. Per-op and per-form coverage checked
+	// separately would both stay green while a whole cell emptied: that is
+	// how ?set!, ?del! and ?nil! lost their explicit-range witness without
+	// this test noticing.
+	cells := map[string]bool{}
 	for i, seed := range viewWitnessSeeds {
 		opIdx, form, ok := reach(seed)
 		if !ok {
@@ -1101,13 +1181,23 @@ func TestViewWitnessSeedsAreReached(t *testing.T) {
 		}
 		ops[pathOps[opIdx].name] = true
 		forms[form] = true
+		cells[pathOps[opIdx].name+"/"+form] = true
+	}
+	for _, op := range pathOps {
+		for _, form := range []string{"index", "range-explicit", "range-open"} {
+			if !cells[op.name+"/"+form] {
+				t.Errorf("no seed reaches invariant 7 for %s with a %s step -- if a"+
+					" generator change moved a seed, add one back rather than"+
+					" letting the cell empty", op.name, form)
+			}
+		}
 	}
 	for _, op := range pathOps {
 		if !ops[op.name] {
 			t.Errorf("no seed reaches invariant 7 for %s", op.name)
 		}
 	}
-	for _, form := range []string{"index", "range"} {
+	for _, form := range []string{"index", "range-explicit", "range-open"} {
 		if !forms[form] {
 			t.Errorf("no seed reaches invariant 7 with a %s step", form)
 		}

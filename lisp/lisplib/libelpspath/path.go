@@ -521,8 +521,40 @@ func (s *rootPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 // String is a root level proxy to an underlying path String. It prepends
 // a dot "." since all root paths by convention begin with dot.
 func (s *rootPath) String() string {
+	var sb strings.Builder
+	s.appendString(&sb)
+	return sb.String()
+}
+
+func (s *rootPath) appendString(sb *strings.Builder) {
 	// IMPORTANT: root always starts with "."!
-	return "." + s.path.String()
+	sb.WriteString(".")
+	appendPathString(sb, s.path)
+}
+
+// stringAppender renders a path into a builder the caller owns.
+//
+// The three composites -- root, chain and iter -- must render through this
+// rather than by asking each child for its own String(). Materialising a
+// child's full string and copying it into the parent's costs one
+// full-length allocation and copy per level of nesting, which is O(depth^2)
+// in bytes. The leaves are O(1) either way.
+//
+// It is unexported and Path does NOT require it, so an embedder's own Path
+// implementation keeps working: appendPathString falls back to String() for
+// anything that does not implement this.
+type stringAppender interface {
+	appendString(*strings.Builder)
+}
+
+// appendPathString writes p's rendering into sb, taking the linear route
+// when p is one of this package's own types.
+func appendPathString(sb *strings.Builder, p Path) {
+	if a, ok := p.(stringAppender); ok {
+		a.appendString(sb)
+		return
+	}
+	sb.WriteString(p.String())
 }
 
 // expandPaths removes all nested chains to construct a normalized slice
@@ -547,20 +579,73 @@ func expandPaths(paths ...Path) []Path {
 
 // normalizePaths constructs a normalized chain of paths. This normalization
 // is necessary to properly handle nested iterator paths.
+//
+// TWO SHAPES ARE LOAD-BEARING HERE, both for cost. Either one reintroduced
+// makes construction superlinear in an input a caller may not control,
+// before any document is touched.
+//
+// The iterator branch builds its iterPath DIRECTLY. Iter(acc...) is
+// &iterPath{path: Chain(acc...)}, and Chain calls back into this function,
+// so every iterator would re-normalize the whole tail built so far -- and
+// normalizing re-runs expandPaths, which flattens each nested iterator's
+// chain only for the loop to rebuild it. One re-entry per iterator, each
+// over what the previous rebuilt, is exponential.
+//
+// Skipping that re-entry is sound because the accumulator is assembled by
+// this loop out of expandPaths output, so it is already normalized, and
+// normalizePaths is idempotent on it: expandPaths would flatten it back to
+// exactly the sequence the loop consumed. TestNormalizePathsIsIdempotent
+// pins that, because it is what the shape RESTS ON -- if it stops holding,
+// paths change meaning rather than merely cost, and no cost test would
+// notice.
+//
+// The chain accumulates REVERSED and is flipped once at the end. Prepending
+// -- append([]Path{step}, acc...) -- allocates a fresh slice and copies
+// every element already placed, on every step. That is one slice per step
+// either way, so the allocation COUNT stays linear and a count-based test
+// cannot see it; the BYTES are quadratic.
+//
+// Cost is pinned by TestNormalizePathsIsNotExponential and
+// TestNormalizePathsIsNotQuadratic, which assert allocations and bytes
+// respectively rather than wall time. Equality of meaning is pinned by the
+// idempotency test above, TestNormalizePathsAgreesWithIterConstruction, and
+// the corpus, round-trip and iterator-collapse tests.
 func normalizePaths(paths ...Path) []Path {
 	paths = expandPaths(paths...)
-	var curChain []Path
+	// Right to left, so the chain accumulates reversed; see the doc comment.
+	rev := make([]Path, 0, len(paths))
 	for i := len(paths) - 1; i >= 0; i-- {
-		path := paths[i]
-		switch path.(type) {
-		case *iterPath:
-			// NOTE: there can be mutual recursion here between Iter/Chain.
-			curChain = []Path{Iter(curChain...)}
-		default:
-			curChain = append([]Path{path}, curChain...)
+		if _, isIter := paths[i].(*iterPath); !isIter {
+			rev = append(rev, paths[i])
+			continue
 		}
+		// An iterator takes everything to its right as its own chain, so
+		// the accumulated tail is flipped into it and the accumulator
+		// restarts holding just the iterator. inner is a fresh slice, so
+		// reusing rev's storage on the next line cannot write through it.
+		// Each element is flipped at most once per enclosing iterator and
+		// an iterator empties the accumulator, so this stays linear.
+		inner := reversedPaths(rev)
+		rev = append(rev[:0], &iterPath{path: &chainPath{paths: inner}})
 	}
-	return curChain
+	return reversedPaths(rev)
+}
+
+// reversedPaths returns a new slice holding in's elements in reverse order.
+//
+// It returns nil rather than an empty slice for an empty input, so that an
+// empty chain keeps the nil paths field it had when this was built by
+// prepending onto a nil slice. Nothing reads the difference -- every use is
+// len() or a range -- but preserving it keeps the change to cost alone.
+func reversedPaths(in []Path) []Path {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Path, len(in))
+	for i, p := range in {
+		out[len(in)-1-i] = p
+	}
+	return out
 }
 
 type chainPath struct {
@@ -733,10 +818,14 @@ func (s *chainPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 
 func (s *chainPath) String() string {
 	var sb strings.Builder
-	for _, path := range s.paths {
-		sb.WriteString(path.String())
-	}
+	s.appendString(&sb)
 	return sb.String()
+}
+
+func (s *chainPath) appendString(sb *strings.Builder) {
+	for _, path := range s.paths {
+		appendPathString(sb, path)
+	}
 }
 
 type dotPath struct {
@@ -842,6 +931,10 @@ func (s *dotPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 
 func (s *dotPath) String() string {
 	return fmt.Sprintf(`[%q]`, s.key)
+}
+
+func (s *dotPath) appendString(sb *strings.Builder) {
+	sb.WriteString(s.String())
 }
 
 type indexPath struct {
@@ -1008,6 +1101,10 @@ func (s *indexPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 
 func (s *indexPath) String() string {
 	return "[" + strconv.Itoa(s.index) + "]"
+}
+
+func (s *indexPath) appendString(sb *strings.Builder) {
+	sb.WriteString(s.String())
 }
 
 type rangePath struct {
@@ -1255,8 +1352,22 @@ func (s *rangePath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 	return s.nilMutate(cp)
 }
 
+// String renders the slice in the half-open [from:to) notation the jq-style
+// spellings use.
+//
+// An implicit end renders as "[from:]" and NOT as the stored to, which is
+// meaningless in that case -- validateRange overwrites it with the input
+// length. Printing it would render Range(1, 0, true) as "[1:0]", an empty
+// slice, and not a path that parses back to itself.
 func (s *rangePath) String() string {
+	if s.implicitTo {
+		return "[" + strconv.Itoa(s.from) + ":]"
+	}
 	return "[" + strconv.Itoa(s.from) + ":" + strconv.Itoa(s.to) + "]"
+}
+
+func (s *rangePath) appendString(sb *strings.Builder) {
+	sb.WriteString(s.String())
 }
 
 func validateRange(n int, from int, to int, implicitTo bool) (int, int, error) {
@@ -1501,5 +1612,12 @@ func (s *iterPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func (s *iterPath) String() string {
-	return "[]" + s.path.String()
+	var sb strings.Builder
+	s.appendString(&sb)
+	return sb.String()
+}
+
+func (s *iterPath) appendString(sb *strings.Builder) {
+	sb.WriteString("[]")
+	appendPathString(sb, s.path)
 }
