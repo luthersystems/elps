@@ -100,6 +100,7 @@ package libelpspath
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/luthersystems/elps/lisp"
 )
@@ -187,12 +188,17 @@ func parseSExprStep(expr *lisp.LVal) (Path, error) {
 	}
 }
 
-// requireDocument rejects a call carrying no arguments at all.
+// requireFirstArg rejects a call carrying no arguments at all.
 //
-// Every builtin below starts by reading args.Cells[0] as the document, and
-// through the EVALUATOR that read is safe: the formals name "val" as a
-// required parameter, so a lisp caller writing (?) is refused with "invalid
-// number of arguments: 0" before the builtin ever runs.
+// The noun names what the missing argument IS, because the eight builtins do
+// not agree about that: seven take a document first, and parse-path takes a
+// selector string and no document at all. Reporting "parse-path requires a
+// document argument" describes a signature that function does not have.
+//
+// Every document builtin below starts by reading args.Cells[0] as the
+// document, and through the EVALUATOR that read is safe: the formals name
+// "val" as a required parameter, so a lisp caller writing (?) is refused with
+// "invalid number of arguments: 0" before the builtin ever runs.
 //
 // These functions are EXPORTED, though, and the arity guarantee lives in the
 // REGISTRATION rather than in the function. A Go caller reaching one
@@ -211,16 +217,16 @@ func parseSExprStep(expr *lisp.LVal) (Path, error) {
 // reader or the evaluator can produce, and every LVal-consuming function in
 // the repository dereferences its argument, so checking for one here would
 // buy nothing and imply a contract the rest of the codebase does not keep.
-func requireDocument(env *lisp.LEnv, name string, args *lisp.LVal) *lisp.LVal {
+func requireFirstArg(env *lisp.LEnv, name, noun string, args *lisp.LVal) *lisp.LVal {
 	if len(args.Cells) < 1 {
-		return env.Errorf("%s requires a document argument", name)
+		return env.Errorf("%s requires a %s argument", name, noun)
 	}
 	return nil
 }
 
 // BuiltinQueryGet implements (elpspath:? val &rest steps).
 func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	if lerr := requireDocument(env, "?", args); lerr != nil {
+	if lerr := requireFirstArg(env, "?", "document", args); lerr != nil {
 		return lerr
 	}
 	val := args.Cells[0]
@@ -242,7 +248,7 @@ func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // BuiltinQuerySetMutate implements (elpspath:?set! val &rest steps-and-value).
 // The last vararg is the new value; all preceding varargs are path steps.
 func BuiltinQuerySetMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	if lerr := requireDocument(env, "?set!", args); lerr != nil {
+	if lerr := requireFirstArg(env, "?set!", "document", args); lerr != nil {
 		return lerr
 	}
 	val := args.Cells[0]
@@ -271,7 +277,7 @@ func BuiltinQuerySetMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // BuiltinQuerySet implements (elpspath:?set val &rest steps-and-value).
 // The last vararg is the new value; all preceding varargs are path steps.
 func BuiltinQuerySet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	if lerr := requireDocument(env, "?set", args); lerr != nil {
+	if lerr := requireFirstArg(env, "?set", "document", args); lerr != nil {
 		return lerr
 	}
 	val := args.Cells[0]
@@ -299,7 +305,7 @@ func BuiltinQuerySet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 // BuiltinQueryDeleteMutate implements (elpspath:?del! val &rest steps).
 func BuiltinQueryDeleteMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	if lerr := requireDocument(env, "?del!", args); lerr != nil {
+	if lerr := requireFirstArg(env, "?del!", "document", args); lerr != nil {
 		return lerr
 	}
 	val := args.Cells[0]
@@ -320,7 +326,7 @@ func BuiltinQueryDeleteMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 // BuiltinQueryDelete implements (elpspath:?del val &rest steps).
 func BuiltinQueryDelete(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	if lerr := requireDocument(env, "?del", args); lerr != nil {
+	if lerr := requireFirstArg(env, "?del", "document", args); lerr != nil {
 		return lerr
 	}
 	val := args.Cells[0]
@@ -341,7 +347,7 @@ func BuiltinQueryDelete(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 // BuiltinQueryNilMutate implements (elpspath:?nil! val &rest steps).
 func BuiltinQueryNilMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	if lerr := requireDocument(env, "?nil!", args); lerr != nil {
+	if lerr := requireFirstArg(env, "?nil!", "document", args); lerr != nil {
 		return lerr
 	}
 	val := args.Cells[0]
@@ -362,7 +368,7 @@ func BuiltinQueryNilMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 // BuiltinQueryNil implements (elpspath:?nil val &rest steps).
 func BuiltinQueryNil(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	if lerr := requireDocument(env, "?nil", args); lerr != nil {
+	if lerr := requireFirstArg(env, "?nil", "document", args); lerr != nil {
 		return lerr
 	}
 	val := args.Cells[0]
@@ -385,13 +391,42 @@ func BuiltinQueryNil(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 //
 // It returns a LIST and not a vector because apply takes a list, and
 // splicing the steps into a ? call is the entire point of the function.
+//
+// IT IS STRICTER THAN ParseSelector, in exactly one way, and this is the
+// layer that difference belongs at. A bracket-led selector is cut at its
+// first newline and the tail dropped in silence (see ParseSelector's second
+// wart), so `.[0]\n.password` converts to the single step 0 -- a PREFIX of
+// the path that was asked for, with no error anywhere. Through the pattern
+// this function exists for,
+//
+//	(apply ?set (concat 'list (list obj) (parse-path sel) (list v)))
+//
+// that replaces the whole of element 0 instead of its "password" field. It is
+// the same failure mode the empty step list has -- a shorter path is a
+// LIVE path, not a dead one -- which is why a malformed selector already
+// raises here rather than returning no steps.
+//
+// So a selector whose tail would be discarded is REFUSED. This is new surface
+// with no downstream counterpart, so nothing depends on the wart; the two Go
+// functions keep it, agree with each other about it, and stay one grammar
+// that FuzzParseSelector can hold to a single acceptance rule.
+//
+// The check costs one IndexByte over the selector on the happy path, and only
+// for a selector that leads with a bracket at all.
 func BuiltinParsePath(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	if lerr := requireDocument(env, "parse-path", args); lerr != nil {
+	if lerr := requireFirstArg(env, "parse-path", "selector", args); lerr != nil {
 		return lerr
 	}
 	sel := args.Cells[0]
 	if sel.Type != lisp.LString {
 		return env.Errorf("selector must be a string, got %v", sel.Type)
+	}
+	// Before the parse, not after: on a selector that is cut AND malformed
+	// the cut is the root cause, and "failed to parse" would send the reader
+	// after the wrong half.
+	if _, discarded := selectorBodyCut(strings.TrimSpace(sel.Str)); discarded != "" {
+		return env.Errorf("selector may not span lines: %q would be silently discarded",
+			strings.TrimSpace(discarded))
 	}
 	steps, err := SelectorSteps(sel.Str)
 	if err != nil {

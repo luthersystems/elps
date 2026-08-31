@@ -140,24 +140,73 @@ func TestOpenRangeTracksInputLengthForEveryOp(t *testing.T) {
 		}
 	}
 
-	// Nil is separated out because its result contains nils rather than
-	// ints, so it cannot share intCells with the rest.
-	for _, n := range []int{2, 3, 5, 9} {
-		t.Run(fmt.Sprintf("Nil/n=%d", n), func(t *testing.T) {
-			doc := seq(n)
-			got, err := open.Nil(doc)
-			require.NoErrorf(t, err, "n=%d", n)
-			cells, err := toCells(got)
-			require.NoError(t, err)
-			require.Lenf(t, cells, n, "Nil changed the length")
-			for i, c := range cells {
-				if i < from {
-					require.Equalf(t, lisp.LInt, c.Type, "position %d was nilled", i)
-					continue
-				}
-				require.Truef(t, c.IsNil(), "position %d (>= %d) was not nilled", i, from)
+	// Nil and NilMutate are separated out because their result holds nils
+	// rather than ints, so they cannot share intCells with the loop above.
+	//
+	// BOTH are here, over the SAME lengths, and that is the point of the
+	// block rather than an accident of tidiness. NilMutate resolves the open
+	// end against the document it is about to rewrite IN PLACE, which is a
+	// different arithmetic from the copying Nil's and was covered by nothing
+	// -- exactly the gap DeleteMutate has above and Nil alone did not. The
+	// n < from lengths are included too: "the window starts past the end" has
+	// to be an ERROR for the nilling pair as it is for the rest, because a
+	// silent no-op there is indistinguishable from a correct empty window and
+	// would let a regression that ignored implicitTo entirely stay green.
+	nilOps := []struct {
+		name    string
+		run     func(*lisp.LVal) (*lisp.LVal, error)
+		mutates bool
+	}{
+		{
+			name: "Nil",
+			run:  func(d *lisp.LVal) (*lisp.LVal, error) { return open.Nil(d) },
+		},
+		{
+			name:    "NilMutate",
+			run:     func(d *lisp.LVal) (*lisp.LVal, error) { return open.NilMutate(d) },
+			mutates: true,
+		},
+	}
+	// nilled asserts the shape both operations must produce: the length is
+	// unchanged, everything below from is untouched, everything from there on
+	// is nil.
+	nilled := func(t *testing.T, v *lisp.LVal, n int, what string) {
+		t.Helper()
+		cells, err := toCells(v)
+		require.NoError(t, err)
+		require.Lenf(t, cells, n, "%s: the length changed", what)
+		for i, c := range cells {
+			if i < from {
+				require.Equalf(t, lisp.LInt, c.Type, "%s: position %d was nilled", what, i)
+				continue
 			}
-		})
+			require.Truef(t, c.IsNil(), "%s: position %d (>= %d) was not nilled", what, i, from)
+		}
+	}
+	for _, op := range nilOps {
+		for _, n := range lengths {
+			t.Run(fmt.Sprintf("%s/n=%d", op.name, n), func(t *testing.T) {
+				doc := seq(n)
+				got, err := op.run(doc)
+				if n < from {
+					// The window starts past the end: index out of range.
+					require.Errorf(t, err, "n=%d: want an error, got %v", n, got)
+					return
+				}
+				require.NoErrorf(t, err, "n=%d", n)
+				nilled(t, got, n, op.name+" result")
+				if op.mutates {
+					nilled(t, doc, n, op.name+" document")
+					return
+				}
+				// The copying variant must leave the input alone, which is
+				// the other half of what "copying" means and what the
+				// mutating arm above would otherwise be indistinguishable
+				// from.
+				require.Equalf(t, seqInts(n), intCells(t, doc),
+					"Nil rewrote the document it was given")
+			})
+		}
 	}
 }
 

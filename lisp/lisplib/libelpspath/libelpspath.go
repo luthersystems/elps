@@ -130,6 +130,18 @@ var builtins = []*libutil.Builtin{
 		no steps is the identity path, so a swallowed error would make a
 		bad selector address the whole document.
 
+		A selector may not SPAN LINES, and that raises for the same
+		reason:
+
+		(parse-path ".[0]
+		.password")   => error: selector may not span lines
+
+		The jq-string grammar this shares cuts a bracket-led selector at
+		its first newline and DISCARDS the rest, which would convert the
+		selector above to the single step 0 -- a live path to the whole
+		element. (apply ?set ...) through it would overwrite the record
+		instead of its "password" field, silently.
+
 		Converting on each call is slower than one string-path operation,
 		since it parses AND builds a list. How much the caching is worth
 		depends on document size -- every operation first walks the whole

@@ -159,6 +159,12 @@ func TestKeySpellingHint(t *testing.T) {
 	const rule = "a bare key must match"
 
 	// A key that needed bracketing: explain the rule.
+	//
+	// The blank-separated spellings are here because the hint used to read
+	// the byte AFTER the dot rather than the rune the scan actually stalled
+	// on, and scanDotKey skips blanks after a dot -- so ". -key" and
+	// ".\t9lead" are the same mistake as ".my-key" and ".9lead" and got no
+	// explanation at all, which is the case that needs it most.
 	for _, tc := range []struct{ sel, stall string }{
 		{".my-key", "-key"},
 		{".content-type", "-type"},
@@ -166,6 +172,9 @@ func TestKeySpellingHint(t *testing.T) {
 		{".9lead", ".9lead"},
 		{".$dollar", ".$dollar"},
 		{".café", "é"},
+		{". -key", ". -key"},
+		{".\t9lead", ".\t9lead"},
+		{".  $dollar", ".  $dollar"},
 	} {
 		_, err := ParseSelector(tc.sel)
 		if err == nil {
@@ -192,9 +201,17 @@ func TestKeySpellingHint(t *testing.T) {
 	//
 	// Bracket and separator problems are the same: ".[" is malformed
 	// brackets, not a badly spelled key.
+	//
+	// So is a stray option mark. "?" is a step SUFFIX in this grammar, and
+	// ".a??" stalls on the second one; the bare-key rule is a wrong answer to
+	// it, and was being given.
 	for _, sel := range []string{
 		".[", ".]", ".[1:2:3]", ".[a]", `.["a`,
 		`.["a"]foo`, `.["a"]field_mask`, `.["a"]_p`,
+		".a??", ".?", ".??", ".a?.b??", "." + strings.Repeat("?", 10),
+		// Whitespace the readers do not accept inside a step is a
+		// whitespace problem, not a spelling one.
+		".\va", ".\u00a0a", ".\u2003key",
 	} {
 		_, err := ParseSelector(sel)
 		if err == nil {

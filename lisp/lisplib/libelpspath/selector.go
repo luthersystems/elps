@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/luthersystems/elps/lisp"
 )
@@ -365,6 +367,25 @@ func skipOptionMark(s string, i int) int {
 // error-suppressing steps, so honouring the suffix would be a feature, not a
 // fix.
 //
+// A SECOND WART, and this one can lose you data. A selector that leads with a
+// bracket is cut at its first NEWLINE and the rest is discarded in silence:
+//
+//	ParseSelector(".[0]\n.password")  =>  .[0]      -- the tail is dropped
+//	ParseSelector(".items[0]\n.id")   =>  .["items"][0]["id"]
+//
+// The two differ because only the bracket-led form goes through
+// selectorBody's leading-bracket rule; see that function for why the
+// behaviour is kept. It matters because the truncated path is a PREFIX of
+// what was asked for, so a write through it lands on the wrong node rather
+// than failing: `.[0]\n.password` sets the whole element, not its field.
+//
+// This function keeps the wart for parity with the v1 jq-string builtins
+// downstream. Everything else does not: the parse-path builtin REFUSES a
+// selector whose tail would be discarded, and a Go caller converting selector
+// text that came from outside the program should do the same -- rejecting any
+// selector containing a newline is sufficient and is what parse-path amounts
+// to.
+//
 // Two properties worth stating because they are easy to break:
 //
 // The identity selector "." returns Root(Chain()), which prints "." and
@@ -470,19 +491,37 @@ func selectorPaths(selector string) ([]Path, error) {
 // so the behaviour is kept deliberately rather than quietly widened: a
 // selector that means one thing here and another downstream would be worse
 // than a wart that means the same thing in both places.
+//
+// It is a WART and not merely a quirk, which is why selectorBodyCut exists
+// beside it: the discarded tail is silent, and silence is the dangerous part.
+// parse-path -- new surface, with no downstream parity to keep -- refuses
+// such a selector rather than answering with the prefix. See BuiltinParsePath.
 func selectorBody(selector string) string {
+	body, _ := selectorBodyCut(selector)
+	return body
+}
+
+// selectorBodyCut is selectorBody plus the fact selectorBody throws away:
+// the tail the leading-bracket rule DISCARDED, or "" when it discarded
+// nothing.
+//
+// One function so the rule has one definition. A caller that wants to reject
+// a cut selector rather than parse its prefix must TrimSpace first, as
+// selectorPaths does -- otherwise a trailing "\n" reads as a discarded tail
+// when it is only trailing whitespace.
+func selectorBodyCut(selector string) (body, discarded string) {
 	if selector == "" || selector[0] != '.' {
-		return selector
+		return selector, ""
 	}
 	i := skipBlank(selector, 1)
 	if i >= len(selector) || selector[i] != '[' {
-		return selector
+		return selector, ""
 	}
-	body := selector[i:]
-	if nl := strings.IndexByte(body, '\n'); nl >= 0 {
-		return body[:nl]
+	rest := selector[i:]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		return rest[:nl], rest[nl+1:]
 	}
-	return body
+	return rest, ""
 }
 
 // stepCapHint is an UPPER BOUND on the number of steps a selectorBody can
@@ -529,9 +568,17 @@ func stepCapHint(body string) int {
 // (? obj) is.
 //
 // It shares selectorPaths with ParseSelector, so the two agree on the
-// grammar by construction rather than by test. What the steps mean is
-// checked anyway: TestSelectorStepsMatchParseSelector applies both routes to
-// documents and requires the same answer.
+// grammar by construction rather than by test -- including the newline wart
+// described there, which this function therefore also has: a bracket-led
+// selector is CUT at its first newline and the tail is dropped in silence.
+// The agreement is asserted (TestSelectorGrammarPathologies, and
+// FuzzParseSelector on every input it accepts), so the strictness that wart
+// needs lives one layer up, in BuiltinParsePath, rather than being bolted on
+// to one of the two functions. A Go caller wanting it should reject selectors
+// containing a newline before calling.
+//
+// What the steps mean is checked anyway: TestSelectorStepsMatchParseSelector
+// applies both routes to documents and requires the same answer.
 //
 // The open-ended range is why this can be lossless. Before it had a step
 // spelling, "[1:]" had no positional form, so a conversion would have
@@ -590,17 +637,24 @@ func pathToStep(p Path) (*lisp.LVal, error) {
 // It stays quiet when the stall is a bracket or separator problem, where a
 // key-spelling explanation would be actively misleading: ".[" is a malformed
 // bracket, not a badly spelled key.
+//
+// WHICH RUNE IT JUDGES is the whole of the function, and getting it wrong
+// silences the hint on the cases that need it most. The scan stalls at the
+// first rune that could not begin a step, which is the first rune of rest
+// EXCEPT after a leading "." -- ".9lead" stalls whole, where ".my-key" stalls
+// at the "-" alone -- and scanDotKey skips blanks after that dot, so ". -key"
+// and ".\t9lead" stall on the "-" and the "9" as surely as their unspaced
+// spellings do. Reading rest[1] instead of the first non-blank rune left
+// exactly those cases unexplained.
 func keySpellingHint(rest string) string {
-	r := []rune(rest)
-	if len(r) == 0 {
+	at := 0
+	if len(rest) > 0 && rest[0] == '.' {
+		at = skipBlank(rest, 1)
+	}
+	if at >= len(rest) {
 		return ""
 	}
-	// The offending rune is the first one, except after a leading "." --
-	// ".9lead" stalls whole, where ".my-key" stalls at the "-" alone.
-	bad := r[0]
-	if bad == '.' && len(r) > 1 {
-		bad = r[1]
-	}
+	bad, _ := utf8.DecodeRuneInString(rest[at:])
 	// Say nothing unless that rune is one a bare key could NOT contain.
 	// A stall on a rune that CAN start a key is a different mistake --
 	// `.["a"]foo` stalls at "foo", which is a perfectly good key name; what
@@ -609,8 +663,18 @@ func keySpellingHint(rest string) string {
 	if bad == '_' || (bad >= 'a' && bad <= 'z') || (bad >= 'A' && bad <= 'Z') {
 		return ""
 	}
+	// Nor when the stall is punctuation that means something else in this
+	// grammar. "?" is here because it is a STEP SUFFIX: ".a??" stalls on the
+	// second one, which is a stray option mark rather than a key that needed
+	// bracketing, and the key rule would be a wrong answer to it.
 	switch bad {
-	case '[', ']', '.', '"', ':', ' ', '\t', '\n':
+	case '[', ']', '.', '"', ':', '?':
+		return ""
+	}
+	// Whitespace is never a key-spelling problem either. skipBlank leaves
+	// only the exotic kinds here -- a vertical tab, a non-breaking space --
+	// which the scan trims between steps but does not accept inside one.
+	if unicode.IsSpace(bad) {
 		return ""
 	}
 	return ` (a bare key must match [A-Za-z_][A-Za-z_0-9]*; ` +
