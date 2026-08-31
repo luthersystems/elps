@@ -5,7 +5,6 @@ package libelpspath
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -20,12 +19,12 @@ import (
 // string into path steps, which is a conversion rather than an operation on
 // a document. No document-operating builtin parses a string.
 //
-// WHERE IT CAME FROM, AND WHY IT IS HERE NOW (issue #564). This parser spent
-// its life in luthersystems/substrate, alongside the deprecated jq-string
+// WHY THE GRAMMAR LIVES HERE (issue #564). The jq-string surface spent its
+// life in luthersystems/substrate, alongside the deprecated jq-string
 // builtins (get-path, set-path!, ...) that are its only lisp-visible
 // consumer. Those builtins stay downstream -- they are deprecated in favour
 // of the positional-step family in query.go, and taking them would
-// re-introduce retired surface here. The parser is a different thing: every
+// re-introduce retired surface here. The grammar is a different thing: every
 // symbol it names (Root, Chain, Dot, Index, Iter, Range) is exported from
 // this package, so it is pure translation into this package's constructors
 // and it constrains this package's semantics from outside where nobody can
@@ -39,6 +38,26 @@ import (
 // round-trip test that catches it (TestParseSelectorRoundTrip) could not be
 // written on either side of the boundary.
 //
+// HOW IT PARSES. One left-to-right pass, no regexps and no backtracking.
+// selectorPaths trims, applies the leading-bracket rule (selectorBody), and
+// then repeatedly asks scanStep for the single step at the head of what is
+// left. scanStep dispatches on ONE byte -- "[" or "." -- and a bracket
+// dispatches again on the first non-blank byte inside it: a double quote
+// opens a quoted key, anything else is a subscript (an index, a range or the
+// iterator). Every reader returns the number of BYTES it consumed, and zero
+// means "not this form" rather than an error, because the caller is the one
+// that knows a step was expected here. The dispatch bytes are what make a
+// single pass enough: no two readers can claim the same head, which
+// TestSelectorStepFormsAreDisjoint pins over the forms each one owns.
+//
+// TWO WHITESPACE SETS, deliberately. Inside a step -- after the leading dot,
+// around the bounds of a range, before a "?" -- only [\t\n\f\r ] separates
+// tokens. BETWEEN steps the scan loop trims with strings.TrimSpace, which is
+// unicode-aware. A non-breaking space therefore SEPARATES two steps but
+// cannot appear inside one: ".a<nbsp>.b" is two keys, ".<nbsp>a" is a parse
+// error. The narrow set is the one the grammar was specified with, and
+// widening it would accept selectors nothing downstream accepts.
+//
 // FUZZED by FuzzParseSelector, whose invariant is that anything this parser
 // accepts must PRINT to something it accepts, meaning the same path.
 //
@@ -51,126 +70,264 @@ import (
 // selectors over 512 bytes are still skipped, and the cost is pinned by
 // TestNormalizePathsIsNotExponential, which names the defect if it returns.
 
-var (
-	preprocPath = regexp.MustCompile(`^\.\s*(\[.*)`)
-
-	reArray    = regexp.MustCompile(`^\[\s*(-?\d+)?(\s*:\s*(-?\d+)?)?\s*]\s*(\?)?`)
-	reArrayKey = regexp.MustCompile(`^\[\s*("(?:\\.|[^"\\])*")\s*\]\s*(\?)?`)
-	reDotKey   = regexp.MustCompile(`^\.\s*([A-Za-z_][A-Za-z_0-9]*)\s*(\?)?`)
-)
-
-// parseArray parses the bracket forms that are not a quoted key: the index
-// "[n]", the two range spellings, and the iterator "[]".
+// scanStep reads the ONE step at the head of s, which the caller has already
+// trimmed, and returns the number of bytes it consumed.
 //
-// It returns the unconsumed remainder of path and the step it produced, or
-// (path, nil, nil) when the head of path is not one of these forms -- a
-// no-match is not an error, because the caller tries the three parsers in
-// turn.
+// A zero length with a nil error means the head of s is not a step at all.
+// That is not an error here because the message belongs to the caller, which
+// knows the whole remainder and can explain the stall (keySpellingHint);
+// returning an error from each reader would make every non-match look like a
+// diagnosis.
 //
-// IMPORTANT: whether ":" is present is what separates an index from a range,
-// and it is read off match[0] rather than off a capture group. "[0]" and
-// "[0:]" both capture "0" as the from; only the raw match distinguishes
-// them.
-func parseArray(path string) (string, Path, error) {
-	match := reArray.FindStringSubmatch(path)
-	if match == nil {
-		return path, nil, nil
+// The dispatch is on a single byte and there is no fallback: a step begins
+// with "[" or ".", and nothing else can begin one.
+func scanStep(s string) (int, Path, error) {
+	if s == "" {
+		return 0, nil, nil
 	}
-	isRange := strings.Contains(match[0], ":")
-	fromStr := match[1]
-	var err error
-	var from int
-	if fromStr == "" {
-		from = 0
-	} else {
-		from, err = strconv.Atoi(fromStr)
+	switch s[0] {
+	case '[':
+		return scanBracketStep(s)
+	case '.':
+		return scanDotKey(s)
 	}
-	if err != nil {
-		// Reached by an index too large for an int, which the regexp
-		// matches happily: "[99999999999999999999]".
-		return path, nil, fmt.Errorf("fail to parse array index: %s", fromStr)
-	}
-	newPath := path[len(match[0]):]
-	toStr := match[3]
-	if !isRange {
-		if fromStr == "" && toStr == "" {
-			return newPath, Iter(), nil
-		}
-		if toStr == "" {
-			return newPath, Index(from), nil
-		}
-	}
-	implicitTo := toStr == ""
-	var to int
-	if implicitTo {
-		// to is meaningless when implicitTo is set: validateRange
-		// overwrites it with the document length. Zero, not the from, so
-		// that a mis-set flag degrades to an empty slice rather than to a
-		// plausible-looking wrong one.
-		to = 0
-	} else {
-		to, err = strconv.Atoi(toStr)
-	}
-	if err != nil {
-		return path, nil, fmt.Errorf("fail to parse second array index: %s", toStr)
-	}
-
-	return newPath, Range(from, to, implicitTo), nil
+	return 0, nil, nil
 }
 
-// parseArrayKey parses a map key given as a quoted string inside brackets,
+// scanBracketStep reads the step in a bracket: a quoted key or a subscript.
+//
+// The two are told apart by the first non-blank byte after the "[", which is
+// a complete discriminator: a subscript body is digits, "-", ":" or nothing,
+// and a quoted key always opens with a double quote. Neither reader can
+// consume the other's form even when called directly -- the subscript needs
+// its closing "]" where a key has a quote, and the key needs its opening
+// quote -- so the dispatch is an optimisation over trying both, not the thing
+// that keeps them apart.
+func scanBracketStep(s string) (int, Path, error) {
+	if i := skipBlank(s, 1); i < len(s) && s[i] == '"' {
+		return scanQuotedKey(s)
+	}
+	return scanSubscript(s)
+}
+
+// scanSubscript reads the bracket forms that are not a quoted key: the index
+// "[n]", both range spellings, and the iterator "[]".
+//
+//	[n]      => Index(n)          n is -?\d+, so "[-0]" is Index(0)
+//	[a:b]    => Range(a, b, false)
+//	[a:]     => Range(a, 0, true) the end comes from the document
+//	[:b]     => Range(0, b, false) an absent start is a literal 0
+//	[:]      => Range(0, 0, true)
+//	[]       => Iter()
+//
+// WHAT SEPARATES AN INDEX FROM A RANGE is the colon, not the bounds: "[0]"
+// and "[0:]" carry the same start text and mean different things, so the
+// colon is tracked as its own fact rather than inferred from what was read.
+//
+// A bound that will not fit in an int is the one error this returns; the
+// digits are read here and converted only once the whole form has been
+// recognised, so "[99999999999999999999" -- unterminated -- stalls as a
+// parse failure rather than reporting an overflow it never got to.
+func scanSubscript(s string) (int, Path, error) {
+	if s == "" || s[0] != '[' {
+		return 0, nil, nil
+	}
+	i := skipBlank(s, 1)
+	fromText, i := scanIntText(s, i)
+	i = skipBlank(s, i)
+	isRange := false
+	toText := ""
+	if i < len(s) && s[i] == ':' {
+		isRange = true
+		i = skipBlank(s, i+1)
+		toText, i = scanIntText(s, i)
+		i = skipBlank(s, i)
+	}
+	if i >= len(s) || s[i] != ']' {
+		return 0, nil, nil
+	}
+	n := skipOptionMark(s, i+1)
+
+	from := 0
+	if fromText != "" {
+		v, err := strconv.Atoi(fromText)
+		if err != nil {
+			// Reached by an index too large for an int, which the digit
+			// scan takes happily: "[99999999999999999999]".
+			return 0, nil, fmt.Errorf("fail to parse array index: %s", fromText)
+		}
+		from = v
+	}
+	if !isRange {
+		if fromText == "" {
+			return n, Iter(), nil
+		}
+		return n, Index(from), nil
+	}
+	// to is meaningless when implicitTo is set: validateRange overwrites it
+	// with the document length. Zero, not the from, so that a mis-set flag
+	// degrades to an empty slice rather than to a plausible-looking wrong
+	// one.
+	to := 0
+	if toText != "" {
+		v, err := strconv.Atoi(toText)
+		if err != nil {
+			return 0, nil, fmt.Errorf("fail to parse second array index: %s", toText)
+		}
+		to = v
+	}
+	return n, Range(from, to, toText == ""), nil
+}
+
+// scanQuotedKey reads a map key given as a quoted string inside brackets,
 // which is the only spelling for a key that is not a bare identifier:
 // ["$private"], ["x y"], ["\"\n"].
 //
 // The literal is decoded with strconv.Unquote, so the escapes are Go's --
 // and, since dotPath.String() renders a key with %q, the pair round-trips.
-func parseArrayKey(path string) (string, Path, error) {
-	match := reArrayKey.FindStringSubmatch(path)
-	if match == nil {
-		return path, nil, nil
+// Unquote runs only after the closing "]" has been found, so an unterminated
+// bracket stalls with the parser's own message rather than with a decoding
+// error about text that was never a key.
+func scanQuotedKey(s string) (int, Path, error) {
+	if s == "" || s[0] != '[' {
+		return 0, nil, nil
 	}
-	key := match[1]
-	newPath := path[len(match[0]):]
-	key, err := strconv.Unquote(key)
+	open := skipBlank(s, 1)
+	end := scanStringLiteral(s, open)
+	if end < 0 {
+		return 0, nil, nil
+	}
+	i := skipBlank(s, end)
+	if i >= len(s) || s[i] != ']' {
+		return 0, nil, nil
+	}
+	key, err := strconv.Unquote(s[open:end])
 	if err != nil {
-		// The empty remainder is inconsistent with the other two parsers,
-		// which return `path` untouched on error. It is harmless because
-		// ParseSelector returns on a non-nil error before looking at the
-		// remainder, and it is left as it was so that this stays a port.
-		return "", nil, err
+		return 0, nil, err
 	}
-
-	return newPath, Dot(key), nil
+	return skipOptionMark(s, i+1), Dot(key), nil
 }
 
-// parseDotKey parses a bare key: ".foo". The identifier rule is deliberately
+// scanStringLiteral returns the index just past the closing quote of the
+// string literal starting at i, or -1 when there is no literal there.
+//
+// The body is the ordinary string-literal grammar: an escape SEQUENCE, or any
+// byte that is neither a quote nor a backslash. Reading it as "everything up
+// to the last quote" instead is the shape of issue #566 -- see the note on
+// ParseSelector -- and reading it as "everything up to the FIRST quote" would
+// break `.["a\"b"]`, so the two-byte skip after a backslash is the whole
+// point of the loop.
+//
+// A backslash at the very end, or one before a newline, is not an escape
+// sequence and ends the search unmatched. Everything else, invalid UTF-8
+// included, is carried through to strconv.Unquote, which is the one place
+// that judges whether the escapes are actually well formed.
+func scanStringLiteral(s string, i int) int {
+	if i >= len(s) || s[i] != '"' {
+		return -1
+	}
+	for j := i + 1; j < len(s); {
+		switch s[j] {
+		case '"':
+			return j + 1
+		case '\\':
+			if j+1 >= len(s) || s[j+1] == '\n' {
+				return -1
+			}
+			j += 2
+		default:
+			j++
+		}
+	}
+	return -1
+}
+
+// scanDotKey reads a bare key: ".foo". The identifier rule is deliberately
 // narrow -- ".0" and ".$private" are parse errors, not keys -- because a
 // looser rule would swallow the leading dot of a following selector. Such
-// keys are reachable through the quoted form.
-func parseDotKey(path string) (string, Path, error) {
-	match := reDotKey.FindStringSubmatch(path)
-	if match == nil {
-		return path, nil, nil
+// keys are reachable through the quoted form, which is what keySpellingHint
+// tells a caller who tried one.
+func scanDotKey(s string) (int, Path, error) {
+	if s == "" || s[0] != '.' {
+		return 0, nil, nil
 	}
-	key := match[1]
-	newPath := path[len(match[0]):]
-
-	return newPath, Dot(key), nil
+	i := skipBlank(s, 1)
+	if i >= len(s) || !isKeyStartByte(s[i]) {
+		return 0, nil, nil
+	}
+	j := i + 1
+	for j < len(s) && isKeyByte(s[j]) {
+		j++
+	}
+	return skipOptionMark(s, j), Dot(s[i:j]), nil
 }
 
-// parsers define all the individual path parsers.
+// isKeyStartByte and isKeyByte spell [A-Za-z_] and [A-Za-z_0-9].
 //
-// The order is NOT load-bearing, which is worth knowing because the first
-// two both anchor on "[" and look as though it would be. reArray's groups
-// are all optional but its closing "]" is not, so it cannot match the head
-// of a quoted key. TestSelectorRegexpsDoNotOverlap asserts that
-// non-overlap over the forms each regexp is meant to claim -- a finite
-// list, not a proof over all strings -- and, measured, permuting this
-// slice leaves the whole suite green. Anything added here has to keep the
-// three disjoint, because the loop below appends EVERY match in a round
-// rather than stopping at the first: two parsers matching one round would
-// silently emit two steps for one selector.
-var parsers = []func(string) (string, Path, error){parseArray, parseArrayKey, parseDotKey}
+// They are byte tests, not rune tests, and that is the rule rather than an
+// ASCII shortcut: ".café" is a parse error and `.["café"]` is the key. A rune
+// test would silently widen the grammar.
+func isKeyStartByte(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isKeyByte(c byte) bool {
+	return isKeyStartByte(c) || (c >= '0' && c <= '9')
+}
+
+// scanIntText returns the -?\d+ literal at i, as text, and the index past it.
+// It returns "" and i unchanged when there is no literal there, which
+// includes a lone "-": "[-]" is not a subscript.
+//
+// The text is returned rather than a number so the caller can tell an absent
+// bound from a zero one -- "[:2]" and "[0:2]" are the same path, but "[]" and
+// "[0]" are not -- and so that a bound too large for an int can be named in
+// the error.
+func scanIntText(s string, i int) (string, int) {
+	j := i
+	if j < len(s) && s[j] == '-' {
+		j++
+	}
+	digits := j
+	for digits < len(s) && s[digits] >= '0' && s[digits] <= '9' {
+		digits++
+	}
+	if digits == j {
+		return "", i
+	}
+	return s[i:digits], digits
+}
+
+// skipBlank returns the index of the first byte at or after i that is not one
+// of [\t\n\f\r ].
+//
+// That is the set the grammar was specified with, and it is NARROWER than
+// unicode.IsSpace: a vertical tab or a non-breaking space is not blank
+// INSIDE a step. See the note on the two whitespace sets above.
+func skipBlank(s string, i int) int {
+	for i < len(s) {
+		switch s[i] {
+		case ' ', '\t', '\n', '\f', '\r':
+			i++
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+// skipOptionMark consumes the jq optional-selector suffix "?", and the blanks
+// before it, if one is there.
+//
+// It returns i untouched when there is no "?" -- trailing blanks alone need
+// not be consumed, because the scan loop trims the remainder before the next
+// step either way.
+func skipOptionMark(s string, i int) int {
+	if j := skipBlank(s, i); j < len(s) && s[j] == '?' {
+		return j + 1
+	}
+	return i
+}
 
 // ParseSelector translates a jq-style selector string into a Path.
 //
@@ -193,8 +350,7 @@ var parsers = []func(string) (string, Path, error){parseArray, parseArrayKey, pa
 //
 // Whitespace is permitted around and inside brackets, and a selector must
 // start with "." -- ".[0]" is accepted, a bare "[0]" is not. It holds no
-// state and the compiled regexps are safe for concurrent use, so this may
-// be called from any goroutine.
+// state at all, so this may be called from any goroutine.
 //
 // The Path it returns is an ordinary one: nothing distinguishes a parsed
 // path from one assembled by hand or by ArgsToPath, and the same seven
@@ -203,8 +359,8 @@ var parsers = []func(string) (string, Path, error){parseArray, parseArrayKey, pa
 // builtins do -- see that function for why it is not optional.
 //
 // ONE WART. The jq optional-selector suffix "?" is ACCEPTED AND DISCARDED.
-// In jq, ".a?" suppresses the error a non-object .a would raise; here all
-// three regexps capture the "?" and no caller reads the group, so ".a?" is
+// In jq, ".a?" suppresses the error a non-object .a would raise; here every
+// reader consumes a trailing "?" and none of them records it, so ".a?" is
 // exactly ".a" and the error is raised. Nothing in the engine implements
 // error-suppressing steps, so honouring the suffix would be a feature, not a
 // fix.
@@ -217,15 +373,13 @@ var parsers = []func(string) (string, Path, error){parseArray, parseArrayKey, pa
 // a leading "." to String() -- but prints the empty string, which this
 // parser cannot read back. TestParseSelectorRootSpelling pins the agreement.
 //
-// reArrayKey's quoted-key body is `(?:\\.|[^"\\])*`: an escape SEQUENCE, or
-// any character that is neither a quote nor a backslash -- the ordinary
-// string-literal grammar. Spelling it `(?:\"|[^"])*` instead makes the
-// regexp engine read `\"` as a plain escaped quote, so the alternation
-// becomes `"` OR `not "` -- every character -- and the group runs greedily
-// to the last quote in the selector, which limits a selector to ONE
-// bracketed key and makes String()'s own output unreadable, since it
-// brackets every map key. TestParseSelectorTwoQuotedKeys covers the grammar
-// and the round-trip test carries multi-key selectors.
+// A quoted key ends at the first UNESCAPED quote, which is why
+// scanStringLiteral skips two bytes after a backslash. Ending it at the LAST
+// quote in the selector instead -- which is what the regexp this scanner
+// replaced did before issue #566, its body reading as "any character at all"
+// -- limits a selector to ONE bracketed key and makes String()'s own output
+// unreadable, since it brackets every map key. TestParseSelectorTwoQuotedKeys
+// covers the grammar and the round-trip test carries multi-key selectors.
 func ParseSelector(selector string) (Path, error) {
 	paths, err := selectorPaths(selector)
 	if err != nil {
@@ -248,9 +402,14 @@ func ParseSelector(selector string) (Path, error) {
 // scan behind both, so the two surfaces cannot disagree about a grammar
 // they both claim to implement.
 //
-// The steps are flat by construction: each parser yields a single leaf --
+// The steps are flat by construction: each scan yields a single leaf --
 // Dot, Index, Iter or Range -- and all nesting happens later, in Chain and
 // normalizePaths.
+//
+// The remainder is TRIMMED between steps, with strings.TrimSpace rather than
+// with the narrow blank set the readers use; see the note on the two
+// whitespace sets. Trimming is also what ends the loop, so a selector whose
+// tail is whitespace is complete rather than stalled.
 //
 // The step slice is PRESIZED, and that is not a micro-optimisation looking
 // for a problem. Splitting this scan out of ParseSelector turned the slice
@@ -272,36 +431,26 @@ func selectorPaths(selector string) ([]Path, error) {
 	if selector == "." {
 		return nil, nil
 	}
-	selector = selectorBody(selector)
-	paths := make([]Path, 0, stepCapHint(selector))
+	rest := selectorBody(selector)
+	paths := make([]Path, 0, stepCapHint(rest))
 
-	var path Path
-	var err error
-	for len(selector) > 0 {
-		origLen := len(selector)
-		// Every parser runs every round, and a round that matches more
-		// than one appends more than one step. There is no break: a
-		// selector like `.a[0]` is consumed by parseDotKey and then, in
-		// the same round, by parseArray.
-		for _, parser := range parsers {
-			selector, path, err = parser(selector)
-			selector = strings.TrimSpace(selector)
-			if err != nil {
-				return nil, err
-			}
-			if path == nil {
-				continue
-			}
-			paths = append(paths, path)
+	for {
+		rest = strings.TrimSpace(rest)
+		if rest == "" {
+			return paths, nil
 		}
-		if len(selector) == origLen {
-			// no progress was made, abort since another round
-			// will result in an infinite loop
-			return nil, fmt.Errorf("failed to parse: %s%s", selector, keySpellingHint(selector))
+		n, path, err := scanStep(rest)
+		if err != nil {
+			return nil, err
 		}
+		if n == 0 {
+			// Nothing at the head of rest is a step, so another round
+			// would consume nothing and loop forever.
+			return nil, fmt.Errorf("failed to parse: %s%s", rest, keySpellingHint(rest))
+		}
+		paths = append(paths, path)
+		rest = rest[n:]
 	}
-
-	return paths, nil
 }
 
 // selectorBody applies the ".[x]" special case -- a selector may lead with
@@ -309,14 +458,31 @@ func selectorPaths(selector string) ([]Path, error) {
 // actually consumes: ".[0].a" scans as "[0].a", ".a.b" as itself.
 //
 // It is a function rather than four inline lines because stepCapHint has to
-// size the same string the scan walks, and running preprocPath a second
-// time to find that out would put back an allocation this presizing exists
-// to remove. One call, one definition of the rule.
+// size the same string the scan walks, and computing the rule twice would put
+// back an allocation this presizing exists to remove. One call, one
+// definition of the rule.
+//
+// THE NEWLINE IS LOAD-BEARING and is a wart, pinned by
+// TestSelectorBodyStopsAtANewline. A bracket-led selector is cut at its first
+// newline, so ".[0]\n.a" is the path ".[0]" and the rest is DISCARDED rather
+// than parsed or rejected. That is what the regexp this replaced did (its
+// ".*" did not match a newline) and selectors are not written across lines,
+// so the behaviour is kept deliberately rather than quietly widened: a
+// selector that means one thing here and another downstream would be worse
+// than a wart that means the same thing in both places.
 func selectorBody(selector string) string {
-	if match := preprocPath.FindStringSubmatch(selector); match != nil {
-		return match[1]
+	if selector == "" || selector[0] != '.' {
+		return selector
 	}
-	return selector
+	i := skipBlank(selector, 1)
+	if i >= len(selector) || selector[i] != '[' {
+		return selector
+	}
+	body := selector[i:]
+	if nl := strings.IndexByte(body, '\n'); nl >= 0 {
+		return body[:nl]
+	}
+	return body
 }
 
 // stepCapHint is an UPPER BOUND on the number of steps a selectorBody can

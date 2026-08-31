@@ -13,10 +13,9 @@ import (
 // FuzzParseSelector fuzzes the jq-string selector front end (issue #564).
 //
 // WHY IT IS SEPARATE FROM FuzzPathEngine. That target generates STEPS as
-// structured lisp values and never sees a selector string; the grammar --
-// three regexps, a hand-rolled scan loop and strconv.Unquote -- is upstream
-// of everything it exercises. Both defects this target was written for live
-// in that gap.
+// structured lisp values and never sees a selector string; the grammar -- a
+// single-pass byte scanner and strconv.Unquote -- is upstream of everything
+// it exercises. Both defects this target was written for live in that gap.
 //
 // THE INVARIANT WITH TEETH is not "does not panic". It is:
 //
@@ -26,11 +25,11 @@ import (
 // String() is the only thing that turns a Path into a selector, ParseSelector
 // the only thing that reads one, and they are now in the same package, so a
 // disagreement between them is a self-contradiction rather than a
-// cross-repository question. Issue #566 was exactly that: reArrayKey's body
-// matched every character, so a selector could carry at most one bracketed
-// key, while String() brackets EVERY key -- `.a.b` printed as `.["a"]["b"]`,
-// which this parser rejected. A plain no-panic target would have run green
-// over that forever.
+// cross-repository question. Issue #566 was exactly that: the quoted-key
+// grammar matched every character, so a selector could carry at most one
+// bracketed key, while String() brackets EVERY key -- `.a.b` printed as
+// `.["a"]["b"]`, which this parser rejected. A plain no-panic target would
+// have run green over that forever.
 //
 // "The same path" is compared BEHAVIOURALLY, on documents, not by comparing
 // printed forms. Printed forms compare equal in the one case that matters

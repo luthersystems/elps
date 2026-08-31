@@ -46,7 +46,7 @@ func TestSelectorGrammarPathologies(t *testing.T) {
 		`.[`, `.]`, `.[]`, `.[][]`, `.[[]]`, `.[[`, `.]]`, `.[]]`, `.[[]`,
 		`.[ [ ] ]`, `.[0`, `.0]`, strings.Repeat(".[", 60), strings.Repeat(".]", 60),
 
-		// Quoted keys, including the escape-grammar cases reArrayKey's body
+		// Quoted keys, including the escape-grammar cases scanStringLiteral
 		// exists for (see ParseSelector's note on issue #566).
 		`.["a"`, `."a"`, `.[""]`, `.[" "]`, `.["]`, `.[\"]`, `.["\"]`,
 		`.["\\"]`, `.["\\\\"]`, `.["\n"]`, `.["\t"]`, `.["\x41"]`, `.["A"]`,
