@@ -52,6 +52,43 @@
   (elpspath:?set! val '(range 2) (vector 90 91))
   (assert-equal (vector 1 2 90 91) val))
 
+; A range set is a SPLICE, not an element-wise assignment: the replacement
+; may be any length and the sequence grows or shrinks to suit. That is easy
+; to assume otherwise from the equal-length case above, which is the only
+; one this file used to carry, so all three relative lengths are here.
+(test "?set over an implicit end splices rather than matching lengths"
+  (let ([v (vector 1 2 3 4 5)])
+    ; shorter than the window it replaces
+    (assert-equal (vector 1 91) (elpspath:?set v '(range 1) (vector 91)))
+    ; equal
+    (assert-equal (vector 1 2 3 91 92) (elpspath:?set v '(range 3) (vector 91 92)))
+    ; longer
+    (assert-equal (vector 1 2 3 4 91 92 93 94)
+                  (elpspath:?set v '(range 4) (vector 91 92 93 94)))
+    ; empty: the window is removed and nothing takes its place
+    (assert-equal (vector 1 2) (elpspath:?set v '(range 2) (vector)))
+    ; the copying form leaves the source alone through all of it
+    (assert-equal (vector 1 2 3 4 5) v)))
+
+; from == n names an empty window at the very end, so the splice is a pure
+; append -- the one spelling that adds elements without removing any.
+(test "?set at the end of an implicit range appends"
+  (assert-equal (vector 1 2 3 91 92)
+                (elpspath:?set (vector 1 2 3) '(range 3) (vector 91 92))))
+
+; A negative from counts back from the end and is resolved BEFORE the
+; implicit end is filled in, so the two rewrites have to compose.
+(test "?set with a negative from and an implicit end"
+  (assert-equal (vector 1 2 3 91 92 93)
+                (elpspath:?set (vector 1 2 3 4 5) '(range -2) (vector 91 92 93))))
+
+; Past the end is an error rather than an append. ignore-errors yields nil
+; on a raise, and a successful ?set here would yield a vector, so nil means
+; the raise happened.
+(test "?set past the end of an implicit range raises"
+  (assert-nil (ignore-errors
+                (elpspath:?set (vector 1 2 3) '(range 9) (vector 91)))))
+
 (test-let "?del range with an implicit end"
   ((val (vector 1 2 3 4)))
   (assert-equal (vector 1 2) (elpspath:?del val '(range 2)))
@@ -277,3 +314,88 @@
   (elpspath:?set! view '(range 0 1) (vector 90 91))
   (assert-equal (vector 90 91 2 3) view)
   (assert-equal (vector 1 2 3 4 5) src))
+
+;;; ---- parse-path: a string path converted to positional steps ----
+;;;
+;;; The point of the conversion is that the steps apply straight into the ?
+;;; family, so a path that arrived as a string can be converted once and
+;;; then used many times without re-parsing.
+
+(test "parse-path renders each grammar form as a step"
+  (assert-equal '() (elpspath:parse-path "."))
+  (assert-equal '("a") (elpspath:parse-path ".a"))
+  (assert-equal '("a" "b") (elpspath:parse-path ".a.b"))
+  (assert-equal '("first name") (elpspath:parse-path ".[\"first name\"]"))
+  (assert-equal '("a" 0) (elpspath:parse-path ".a[0]"))
+  (assert-equal '("a" -1) (elpspath:parse-path ".a[-1]"))
+  (assert-equal '("a" '(range 1 3)) (elpspath:parse-path ".a[1:3]"))
+  (assert-equal '("a" '(range 1)) (elpspath:parse-path ".a[1:]")))
+
+(test-let* "parse-path steps apply into the ? family"
+  ((obj (sorted-map "items" (vector (sorted-map "id" 1) (sorted-map "id" 2) (sorted-map "id" 3)))))
+  (assert-equal (vector 1 2 3) (apply elpspath:? (cons obj (elpspath:parse-path ".items[].id"))))
+  (assert-equal 1 (apply elpspath:? (cons obj (elpspath:parse-path ".items[0].id"))))
+  (assert-equal (vector (sorted-map "id" 2) (sorted-map "id" 3))
+                (apply elpspath:? (cons obj (elpspath:parse-path ".items[1:]"))))
+  ; the identity selector yields no steps, and applying none is the identity
+  (assert-equal obj (apply elpspath:? (cons obj (elpspath:parse-path ".")))))
+
+(test-let* "parse-path steps apply into a mutating operation"
+  ((obj (sorted-map "items" (vector (sorted-map "id" 1) (sorted-map "id" 2)))))
+  (apply elpspath:?set! (concat 'list (list obj) (elpspath:parse-path ".items[0].id") (list 99)))
+  (assert-equal 99 (elpspath:? obj "items" 0 "id")))
+
+; A raise and a successful empty result are BOTH () under ignore-errors, and
+; () is what the identity selector legitimately returns -- so asserting nil
+; here would pass whether parse-path raised or silently returned no steps.
+; No steps is the IDENTITY path, so that difference is the safety property:
+; a swallowed error would turn a malformed selector into "the whole
+; document" for the ?set idiom the docstring recommends. The sentinel
+; separates the two cases; TestBuiltinParsePathRejectsBadSelector is the
+; same property in Go, where the error type is directly observable.
+(test "parse-path raises on a selector the string operations reject"
+  (let ([tried (lambda (sel) (ignore-errors (elpspath:parse-path sel) 'parsed))])
+    (assert-nil (funcall tried ""))
+    (assert-nil (funcall tried "a"))
+    (assert-nil (funcall tried ".["))
+    (assert-nil (funcall tried ".my-key"))
+    ; and the sentinel really does come back when parsing succeeds, so the
+    ; assertions above cannot pass by the lambda always returning nil
+    (assert-equal 'parsed (funcall tried "."))
+    (assert-equal 'parsed (funcall tried ".a"))))
+
+(test "parse-path requires a string, not a symbol that looks like one"
+  ; LSymbol also carries a string payload and .a is a legal elps symbol, so
+  ; without the type check a quoted symbol parses as though it were the
+  ; selector string.
+  (let ([tried (lambda (sel) (ignore-errors (elpspath:parse-path sel) 'parsed))])
+    (assert-nil (funcall tried '.a))
+    (assert-nil (funcall tried 0))
+    (assert-nil (funcall tried ()))))
+
+; The docstring is the ONLY lisp-facing documentation of this string
+; grammar, so the traps it names are pinned here rather than left to rot.
+; A key syntax rule nobody can see is a key syntax rule nobody follows.
+(test "parse-path key syntax matches what the docstring promises"
+  (let ([tried (lambda (sel) (ignore-errors (elpspath:parse-path sel) 'parsed))])
+    ; a bare .key is [A-Za-z_][A-Za-z_0-9]* only, so kebab-case and
+    ; non-ASCII keys must be bracketed and quoted
+    (assert-nil (funcall tried ".my-key"))
+    (assert-nil (funcall tried ".0abc"))
+    (assert-nil (funcall tried ".$private"))
+    (assert-equal '("my-key") (elpspath:parse-path ".[\"my-key\"]"))
+    (assert-equal '("$private") (elpspath:parse-path ".[\"$private\"]"))
+    (assert-equal '("_ok9") (elpspath:parse-path "._ok9"))
+    ; snake_case -- what these paths in practice actually address -- needs
+    ; no bracketing at all
+    (assert-equal '("field_mask" "paths") (elpspath:parse-path ".field_mask.paths"))
+    (assert-equal '("first_name") (elpspath:parse-path ".first_name"))
+    (assert-equal '("") (elpspath:parse-path ".[\"\"]"))
+    ; and the bracketed form really addresses the key
+    (assert-equal 42 (apply elpspath:? (cons (sorted-map "my-key" 42)
+                                             (elpspath:parse-path ".[\"my-key\"]"))))))
+
+(test "parse-path discards the jq optional-selector suffix"
+  ; ".a?" is exactly ".a": nothing in the engine suppresses errors per step
+  (assert-equal (elpspath:parse-path ".a") (elpspath:parse-path ".a?"))
+  (assert-equal '("a" 0) (elpspath:parse-path ".a[0]?")))

@@ -9,8 +9,8 @@ import (
 	"github.com/luthersystems/elps/lisp/lisplib/libjson"
 )
 
-// TestParseSelector is the jq-selector corpus, ported with the parser from
-// luthersystems/substrate (issue #564).
+// TestParseSelector is the jq-selector corpus, ported from
+// luthersystems/substrate with the grammar it pins (issue #564).
 //
 // It crosses every selector shape with all seven Path operations and checks
 // the result as JSON, which makes roughly a fifth of it a test of the ENGINE
@@ -759,8 +759,8 @@ func TestParseSelectorPathString(t *testing.T) {
 		{Name: "key then iterator then key", In: ".a[].b", Expected: `.["a"][]["b"]`},
 		{Name: "nested iterators", In: ".[].a[].b", Expected: `.[]["a"][]["b"]`},
 		{
-			// The "?" of jq's optional selectors is matched by all three
-			// regexps and read by none of them, so it is accepted and
+			// The "?" of jq's optional selectors is consumed by every step
+			// reader and recorded by none of them, so it is accepted and
 			// discarded: ".a?" is exactly ".a", errors included. See
 			// ParseSelector's doc comment.
 			Name: "optional suffix is discarded", In: ".a?", Expected: `.["a"]`,
@@ -776,7 +776,7 @@ func TestParseSelectorPathString(t *testing.T) {
 		{Name: "bare key may not start with a digit", In: ".0", HasError: true},
 		{Name: "bare key may not contain $", In: ".$private", HasError: true},
 		{
-			// The regexp matches any run of digits; Atoi is what refuses
+			// The scanner takes any run of digits; Atoi is what refuses
 			// this, and the message names the offending text.
 			Name: "index too large for an int", In: ".[99999999999999999999]", HasError: true,
 		},
@@ -961,7 +961,7 @@ func TestParseSelectorRootSpelling(t *testing.T) {
 
 // TestParseSelectorTwoQuotedKeys covers the grammar fix for issue #566.
 //
-// reArrayKey's body used to be `(?:\"|[^"])*`, in which `\"` is a plain
+// The quoted-key body was a regexp, `(?:\"|[^"])*`, in which `\"` is a plain
 // escaped quote -- so the alternation was `"` OR `not "`, i.e. every
 // character, and the group ran greedily to the last quote in the selector.
 // Given `.["a"]["b"]` it captured `"a"]["b"` and handed that to
@@ -973,10 +973,12 @@ func TestParseSelectorRootSpelling(t *testing.T) {
 // emitting output it could not itself read. The round-trip test had to
 // exclude every two-key selector; it carries them now.
 //
-// The body is now `(?:\\.|[^"\\])*`: an escape sequence, or a character
-// that is neither a quote nor a backslash. Verified not to change any
-// selector that parsed before -- the previous behaviour on all of these was
-// an error, and the one-key and escape cases below are unchanged.
+// The rule is now scanStringLiteral's, and it is the same grammar written by
+// hand: an escape sequence (a backslash and one more byte), or a byte that is
+// neither a quote nor a backslash, up to the first UNESCAPED quote. Verified
+// not to change any selector that parsed before -- the previous behaviour on
+// all of these was an error, and the one-key and escape cases below are
+// unchanged.
 func TestParseSelectorTwoQuotedKeys(t *testing.T) {
 	t.Parallel()
 	for _, sel := range []string{

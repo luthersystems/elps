@@ -26,7 +26,13 @@ step, no string DSL. Path step types:
 Functions ending in "!" mutate in place; those without "!" return
 a copy and leave the original unchanged. For ?set! and ?set, the
 last argument is the new value; all preceding arguments are path
-steps.`
+steps.
+
+parse-path is the one function that takes a string: it converts a
+jq-style path into a list of the steps above, for a path that
+arrives as a string and is used more than once.
+
+  (apply ? (cons obj (parse-path ".items[0].id")))`
 
 // LoadPackage adds the elpspath package to env.
 //
@@ -82,6 +88,65 @@ var builtins = []*libutil.Builtin{
 		(? scores '(range 1))     => elements [1,end)
 		(? scores '(range -2))    => the last two elements
 		(? obj)                   => obj itself (no path steps)`),
+	libutil.FunctionDoc("parse-path", lisp.Formals("selector"), BuiltinParsePath,
+		`Convert a jq-style path string into a list of positional path steps.
+
+		The steps are what the ? family takes, so the result applies
+		straight into any of them:
+
+		(parse-path ".items[0].id")   => '("items" 0 "id")
+		(parse-path ".items[].id")    => '("items" * "id")
+		(parse-path ".items[1:3]")    => '("items" '(range 1 3))
+		(parse-path ".items[1:]")     => '("items" '(range 1))
+		(parse-path ".")              => '()
+
+		(apply ? (cons obj (parse-path sel)))
+		(apply ?set (concat 'list (list obj) (parse-path sel) (list v)))
+
+		This is for a path that ARRIVES AS A STRING and is used more than
+		once -- convert it once, keep the steps, and every later operation
+		skips the parse.
+
+		KEY SYNTAX. A bare .key is the classic identifier rule,
+		[A-Za-z_][A-Za-z_0-9]*, which is jq's rule too. Underscores and
+		digits are fine, so the snake_case keys these paths usually
+		address need nothing special:
+
+		(parse-path ".field_mask.paths")  => '("field_mask" "paths")
+
+		Anything else -- a hyphen, a leading digit, "$", non-ASCII --
+		MUST be bracketed and quoted, as it must in jq:
+
+		(parse-path ".my-key")        => error: failed to parse: -key
+		                                 (the error explains this rule)
+		(parse-path ".[\"my-key\"]")   => '("my-key")
+		(parse-path ".[\"\"]")         => '("")
+
+		The jq optional-selector suffix "?" is accepted and DISCARDED --
+		".a?" is exactly ".a" -- because nothing in the engine suppresses
+		errors per step.
+
+		A malformed selector RAISES. It does not return an empty list:
+		no steps is the identity path, so a swallowed error would make a
+		bad selector address the whole document.
+
+		A selector may not SPAN LINES, and that raises for the same
+		reason:
+
+		(parse-path ".[0]
+		.password")   => error: selector may not span lines
+
+		The jq-string grammar this shares cuts a bracket-led selector at
+		its first newline and DISCARDS the rest, which would convert the
+		selector above to the single step 0 -- a live path to the whole
+		element. (apply ?set ...) through it would overwrite the record
+		instead of its "password" field, silently.
+
+		Converting on each call is slower than one string-path operation,
+		since it parses AND builds a list. How much the caching is worth
+		depends on document size -- every operation first walks the whole
+		document to validate it, so on a large document the parse is
+		noise and on a small one it dominates.`),
 	libutil.FunctionDoc("?set!", lisp.Formals("val", lisp.VarArgSymbol, "steps-and-value"), BuiltinQuerySetMutate,
 		`Set value at a path specified by positional args, mutating the original.
 
@@ -201,8 +266,14 @@ func okSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 		}
 		return nil
 	case lisp.LArray:
-		if in.Cells[0].Len() > 1 {
-			return errors.New("cannot index multi-dimensional array")
+		// Exactly one dimension, matching toCells -- see the reason there.
+		// The gate and the accessor have to agree about what "indexable"
+		// means, or a shape this admits still fails downstream.
+		if n := in.Cells[0].Len(); n != 1 {
+			if n > 1 {
+				return errors.New("cannot index multi-dimensional array")
+			}
+			return errors.New("cannot index zero-dimensional array")
 		}
 		cells := in.Cells[1].Cells
 		for _, v := range cells {

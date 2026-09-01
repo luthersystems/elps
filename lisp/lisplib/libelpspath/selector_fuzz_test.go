@@ -13,10 +13,9 @@ import (
 // FuzzParseSelector fuzzes the jq-string selector front end (issue #564).
 //
 // WHY IT IS SEPARATE FROM FuzzPathEngine. That target generates STEPS as
-// structured lisp values and never sees a selector string; the grammar --
-// three regexps, a hand-rolled scan loop and strconv.Unquote -- is upstream
-// of everything it exercises. Both defects this target was written for live
-// in that gap.
+// structured lisp values and never sees a selector string; the grammar -- a
+// single-pass byte scanner and strconv.Unquote -- is upstream of everything
+// it exercises. Both defects this target was written for live in that gap.
 //
 // THE INVARIANT WITH TEETH is not "does not panic". It is:
 //
@@ -26,11 +25,11 @@ import (
 // String() is the only thing that turns a Path into a selector, ParseSelector
 // the only thing that reads one, and they are now in the same package, so a
 // disagreement between them is a self-contradiction rather than a
-// cross-repository question. Issue #566 was exactly that: reArrayKey's body
-// matched every character, so a selector could carry at most one bracketed
-// key, while String() brackets EVERY key -- `.a.b` printed as `.["a"]["b"]`,
-// which this parser rejected. A plain no-panic target would have run green
-// over that forever.
+// cross-repository question. Issue #566 was exactly that: the quoted-key
+// grammar matched every character, so a selector could carry at most one
+// bracketed key, while String() brackets EVERY key -- `.a.b` printed as
+// `.["a"]["b"]`, which this parser rejected. A plain no-panic target would
+// have run green over that forever.
 //
 // "The same path" is compared BEHAVIOURALLY, on documents, not by comparing
 // printed forms. Printed forms compare equal in the one case that matters
@@ -86,6 +85,24 @@ func FuzzParseSelector(f *testing.F) {
 			return
 		}
 		path, err := ParseSelector(sel)
+
+		// THE parse-path ROUTE, which nothing above reaches. SelectorSteps
+		// shares selectorPaths with ParseSelector but renders each leaf as
+		// a lisp value that ArgsToPath parses back, and that pair is where
+		// the builtin's whole grammar surface lives. Before this it was
+		// unfuzzed: a form selectorPaths grew without a matching arm in
+		// pathToStep would have hit that function's deliberate no-default
+		// error, on a selector this target accepts, and no campaign would
+		// have said so.
+		//
+		// Checked on BOTH branches, the rejection included, because
+		// "the two agree about what they accept" is only a property if it
+		// covers the selectors neither takes.
+		lispSteps, stepsErr := SelectorSteps(sel)
+		if (err == nil) != (stepsErr == nil) {
+			t.Fatalf("ParseSelector and SelectorSteps disagree on %q: %v vs %v",
+				sel, err, stepsErr)
+		}
 		if err != nil {
 			// A rejection is a fine outcome; it must just be an error
 			// rather than a nil path with a nil error.
@@ -93,6 +110,31 @@ func FuzzParseSelector(f *testing.F) {
 		}
 		if path == nil {
 			t.Fatalf("ParseSelector(%q) returned a nil path and a nil error", sel)
+		}
+
+		// ...and the steps must rebuild the SAME path. pathToStep renders a
+		// leaf and argToStep reads it back, so a rendering that did not
+		// invert the parse would build a different path from the same
+		// string -- silently, since both routes would succeed.
+		viaSteps, viaErr := ArgsToPath(lispSteps)
+		if viaErr != nil {
+			t.Fatalf("selector %q: SelectorSteps produced %v, which ArgsToPath rejects: %v",
+				sel, lispSteps, viaErr)
+		}
+
+		// stepCapHint presizes the scan's step slice, and the whole of
+		// that is an UPPER-BOUND claim over a grammar. Nothing here reads
+		// the difference -- an under-estimate would cost one growth, not a
+		// wrong answer -- but the claim is cheap to check on every input
+		// the fuzzer gets accepted, which is a far wider corpus than the
+		// table in TestStepCapHintBoundsStepCount.
+		steps, stepsErr := selectorPaths(sel)
+		if stepsErr != nil {
+			t.Fatalf("ParseSelector(%q) succeeded but selectorPaths did not: %v", sel, stepsErr)
+		}
+		if hint := stepCapHint(selectorBody(strings.TrimSpace(sel))); hint < len(steps) {
+			t.Fatalf("stepCapHint(%q) = %d, below the %d steps the selector names",
+				sel, hint, len(steps))
 		}
 
 		printed := path.String()
@@ -132,6 +174,26 @@ func FuzzParseSelector(f *testing.F) {
 				// can alias their input, so the two must not share one.
 				wantV, wantErr := op.run(path, libjson.Load([]byte(src), false))
 				gotV, gotErr := op.run(again, libjson.Load([]byte(src), false))
+
+				// The parse-path route answers on the same document. Its
+				// own fresh copy, for the aliasing reason above.
+				stepV, stepErr := op.run(viaSteps, libjson.Load([]byte(src), false))
+				switch {
+				case (wantErr == nil) != (stepErr == nil):
+					t.Fatalf("selector %q via parse-path steps %v: %s on %s -- one errored "+
+						"and the other did not (orig err=%v, steps err=%v)",
+						sel, lispSteps, op.name, src, wantErr, stepErr)
+				case wantErr != nil:
+					if wantErr.Error() != stepErr.Error() {
+						t.Fatalf("selector %q via parse-path steps %v: %s on %s -- errors "+
+							"differ: %q vs %q", sel, lispSteps, op.name, src, wantErr, stepErr)
+					}
+				default:
+					if w, g := render(wantV), render(stepV); w != g {
+						t.Fatalf("selector %q via parse-path steps %v: %s on %s -- results "+
+							"differ: %s vs %s", sel, lispSteps, op.name, src, w, g)
+					}
+				}
 
 				switch {
 				case (wantErr == nil) != (gotErr == nil):

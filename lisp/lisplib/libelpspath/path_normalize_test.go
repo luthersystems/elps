@@ -244,6 +244,73 @@ func TestStringAppenderAgreesWithString(t *testing.T) {
 	}
 }
 
+// TestExpandPathsFastPathAgreesWithTheLoop guards the one way expandPaths's
+// flat fast path can go wrong.
+//
+// The fast path claims that when no element is a *chainPath or an *iterPath,
+// the copying loop is the identity, so the input can be handed straight
+// back. That is true of the loop as written -- every other type falls to its
+// default arm -- but it is a claim about the loop, not about paths, so a
+// composite type added to the loop without being added to the fast path's
+// type switch would silently stop being expanded. Nothing else would notice:
+// the result is still a valid path, just a nested one, and the only symptom
+// is that normalizePaths quietly stops normalizing.
+//
+// So this reimplements the loop UNCONDITIONALLY and requires the two to
+// agree over every shape the package builds, composites included.
+func TestExpandPathsFastPathAgreesWithTheLoop(t *testing.T) {
+	t.Parallel()
+	// The loop from expandPaths with no fast path in front of it. Kept
+	// verbatim on purpose: it is the reference, so it should read as a
+	// copy rather than as a second implementation.
+	var ref func(paths ...Path) []Path
+	ref = func(paths ...Path) []Path {
+		var newPaths []Path
+		for _, path := range paths {
+			switch chain := path.(type) {
+			case *chainPath:
+				newPaths = append(newPaths, ref(chain.paths...)...)
+			case *iterPath:
+				newPaths = append(newPaths, Iter())
+				newPaths = append(newPaths, ref(chain.path)...)
+			default:
+				newPaths = append(newPaths, path)
+			}
+		}
+		return newPaths
+	}
+
+	cases := [][]Path{
+		nil,
+		{},
+		{Dot("a")},
+		{Dot("a"), Dot("b"), Dot("c")},
+		{Dot("a"), Index(0), Range(1, 3, false), Range(1, 0, true)},
+		{Root(Chain())},
+		{Chain()},
+		{Chain(Dot("a"), Dot("b"))},
+		{Iter()},
+		{Dot("a"), Iter(), Dot("b")},
+		{Iter(), Iter(), Iter()},
+		{Chain(Dot("a"), Chain(Iter(), Dot("b"))), Index(2)},
+		{Root(Chain(Dot("a"), Iter()))},
+	}
+	for i, in := range cases {
+		got := expandPaths(in...)
+		want := ref(in...)
+		if len(got) != len(want) {
+			t.Fatalf("case %d: expandPaths gave %d steps, the loop gives %d",
+				i, len(got), len(want))
+		}
+		for j := range want {
+			if got[j].String() != want[j].String() {
+				t.Fatalf("case %d step %d: expandPaths gave %s, the loop gives %s",
+					i, j, got[j], want[j])
+			}
+		}
+	}
+}
+
 func truncate(s string) string {
 	if len(s) <= 60 {
 		return s
