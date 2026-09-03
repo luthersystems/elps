@@ -382,22 +382,50 @@ func GenSymbol() string {
 	return fmt.Sprintf("_validation_fun_%d", symcounter.Add(1))
 }
 
-// validatorTag is a private zero-size type whose ADDRESS identifies a schema
-// validator.  Nothing outside this package can obtain the pointer, and
-// lisp.Native of an identical struct value is a different pointer, so the
-// marker cannot be forged -- not from ELPS source, and not from a Go caller
-// that has not gone through NewValidator.
+// validatorTag is a private zero-size type whose TYPE identifies a schema
+// validator.  It is unexported and has no exported constructor, so no code
+// outside this package can name it, let alone instantiate one: not ELPS
+// source (which cannot build a native payload at all) and not a Go caller
+// that has not gone through NewValidator.  A lookalike zero-size struct
+// declared elsewhere is a DIFFERENT type and fails the assertion in
+// isValidator, so the marker still cannot be forged.
+//
+// The type assertion is also immune to zero-size address coalescing: Go may
+// give two distinct zero-size allocations the same address, so a credential
+// compared by PAYLOAD address would be a credential a lookalike could match
+// by accident.  That was never the old check -- it compared 112-byte *LVal
+// headers, which are distinct -- so this is a hazard the type assertion
+// forecloses, not a bug it fixes.
+//
+// What the old check did break is forking.  Keying off the type rather than
+// the marker cell's HEADER identity is what makes the credential survive
+// LEnv.Fork (issue #579): Fork shares a native payload by reference but
+// gives every forked value a fresh *LVal header, so a credential compared by
+// header identity is revoked in every fork.  (s:deftype "T" s:int) on the
+// template, (s:validate T 3) in the fork, and the fork raised "Value is not
+// a schema constraint".  The payload pointer travels intact, and so does its
+// type -- unless the embedder installs a ForkWithNativeReplacer (lisp/fork.go)
+// that rewrites this payload, which is the one way to revoke the credential
+// from outside this package.
 type validatorTag struct{}
 
-// validatorMarker is the single marker cell every validator LFun carries in
-// Cells[validatorMarkerIndex].  Its identity is the credential.
-//
-// Deliberately process-wide (hence elpsvet:allow): the marker is an
-// identity-only credential — compared by pointer in isValidator, never
-// evaluated, never bound into a scope, and never written after init.  A
-// per-runtime marker would break nothing but would also credential nothing:
-// its whole value is that every runtime recognizes the same pointer.
-var validatorMarker = lisp.Native(&validatorTag{}) //elpsvet:allow identity-only credential; read-only after init
+// validatorTagPayload is the credential itself: the value whose TYPE
+// isValidator asserts.  It is shared process-wide because it carries no
+// state whatsoever -- a zero-size struct, never read, never written -- so
+// one payload credentials every validator in the process exactly as well as
+// a fresh one per validator would.
+var validatorTagPayload = &validatorTag{}
+
+// validatorMarkerCell mints the marker cell markValidator stamps into
+// Cells[validatorMarkerIndex].  The HEADER is FRESH per validator: nothing
+// compares it by identity any more, so there is no reason to keep a
+// package-level *lisp.LVal reachable from every Runtime in the process --
+// which is exactly what cmd/elpsvet's rule against package-level LVals asks
+// for, and why this no longer carries an //elpsvet:allow.  Only the payload
+// is shared, and that is the credential.
+func validatorMarkerCell() *lisp.LVal {
+	return lisp.Native(validatorTagPayload)
+}
 
 // A validator LFun's cells are [formals, docstring, marker].  The first two
 // come from lisp.FunInPackage; newValidator appends the third.  For a builtin
@@ -428,12 +456,22 @@ const (
 // The Builtin check is not redundant with the marker check: it is what makes
 // the credential unforgeable even if the marker value ever leaked into a
 // user's hands, since a user lambda always has a nil Builtin.
+//
+// The marker is recognized by its payload TYPE, not by the address of the
+// marker cell: see validatorTag above for why (LEnv.Fork gives the marker
+// cell a fresh header in every fork, issue #579).
 func isValidator(v *lisp.LVal) bool {
-	return v != nil &&
-		v.Type == lisp.LFun &&
-		len(v.Cells) == validatorCellCount &&
-		v.Cells[validatorMarkerIndex] == validatorMarker &&
-		v.Builtin() != nil
+	if v == nil || v.Type != lisp.LFun || len(v.Cells) != validatorCellCount {
+		return false
+	}
+	marker := v.Cells[validatorMarkerIndex]
+	if marker == nil || marker.Type != lisp.LNative {
+		return false
+	}
+	if _, ok := marker.Native.(*validatorTag); !ok {
+		return false
+	}
+	return v.Builtin() != nil
 }
 
 // applyConstraint is the ONE place a schema constraint is invoked.
@@ -493,7 +531,7 @@ func newNamedValidator(name string, formals *lisp.LVal, fn lisp.LBuiltin) *lisp.
 func markValidator(fun *lisp.LVal) *lisp.LVal {
 	cells := make([]*lisp.LVal, 0, len(fun.Cells)+1)
 	cells = append(cells, fun.Cells...)
-	cells = append(cells, validatorMarker)
+	cells = append(cells, validatorMarkerCell())
 	fun.Cells = cells //elps:mutates construction-time tagging of a function value, over backing this call just allocated
 	return fun
 }
