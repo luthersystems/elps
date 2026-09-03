@@ -28,13 +28,13 @@ func newForkAliasEnv(t *testing.T) *lisp.LEnv {
 // LVal headers over ONE *MapData must map to one *MapData in the fork, the
 // same way two references to one *LVal map to one copy.
 //
-// The shape is reachable from pure ELPS.  Quote, Splice, shallowUnquote and
-// opQuasiquote all copy the struct (`*cp = *v`) and keep the Native, so
-// `(quasiquote (unquote a))` yields a second header on a's map.  Before the
-// fix Fork memoised per *LVal only, so the two headers were rebuilt as two
-// independent maps and a write through the fork's `a` was invisible through
-// the fork's `b` -- a program that behaved one way on the template and
-// another way in every fork of it.
+// The shape is reachable from pure ELPS.  Quote -- which quasiquote reaches
+// through doUnquoteValue -- copies an unquoted value's struct (`*cp = *v`)
+// and keeps the Native, so `(quasiquote (unquote a))` yields a second header
+// on a's map.  Before the fix Fork memoised per *LVal only, so the two
+// headers were rebuilt as two independent maps and a write through the
+// fork's `a` was invisible through the fork's `b` -- a program that behaved
+// one way on the template and another way in every fork of it.
 func TestForkPreservesMapDataAliasAcrossHeaders(t *testing.T) {
 	env := newForkAliasEnv(t)
 	src := `
@@ -81,12 +81,13 @@ func TestForkPreservesMapDataAliasAcrossHeaders(t *testing.T) {
 	}
 }
 
-// TestForkSelfReferenceThroughAliasedHeaderTerminates pins the sharper edge
-// of the same bug: a map that contains ITSELF through a second header.  The
-// *LVal memo does not see the cycle -- the walk arrives at the map through a
-// header it has not visited -- so only a *MapData memo, seeded before the
-// entries are walked, closes it back onto the one clone.
-func TestForkSelfReferenceThroughAliasedHeaderTerminates(t *testing.T) {
+// TestForkSelfReferenceThroughAliasedHeaderStaysAliased pins the same bug
+// one level down: a map that contains ITSELF through a second header.  The
+// *LVal memo bounds the walk (each header is memoised before its payload is
+// remapped) but not the clones: without a *MapData memo seeded before the
+// entries are walked, the fork's map held a second, distinct clone under
+// "self" instead of closing onto itself.
+func TestForkSelfReferenceThroughAliasedHeaderStaysAliased(t *testing.T) {
 	env := newForkAliasEnv(t)
 	m := lisp.SortedMap()
 	alias := &lisp.LVal{}
@@ -113,5 +114,87 @@ func TestForkSelfReferenceThroughAliasedHeaderTerminates(t *testing.T) {
 	}
 	if self.Native != fm.Native {
 		t.Errorf("forked self entry is a different map (%p) from its container (%p)", self.Native, fm.Native)
+	}
+}
+
+// TestForkPreservesBytesAliasAcrossHeaders is the LBytes face of #576: two
+// headers over one *[]byte were copied once per header.
+func TestForkPreservesBytesAliasAcrossHeaders(t *testing.T) {
+	env := newForkAliasEnv(t)
+	src := `
+(set 'a (to-bytes "ab"))
+(set 'b (quasiquote (unquote a)))
+(append! a 99)
+`
+	if rc := env.LoadString("bytes.lisp", src); rc.Type == lisp.LError {
+		t.Fatalf("fixture: %v", rc)
+	}
+	a := env.Runtime.Package.Get(lisp.Symbol("a"))
+	b := env.Runtime.Package.Get(lisp.Symbol("b"))
+	if a == b || a.Native != b.Native {
+		t.Fatalf("fixture: want two headers over one *[]byte, got a=%p b=%p natives %p %p", a, b, a.Native, b.Native)
+	}
+	if got := env.LoadString("read.lisp", `(length b)`); got.Type != lisp.LInt || got.Int != 3 {
+		t.Fatalf("fixture: template write through a not visible through b: %v", got)
+	}
+
+	fork, err := env.Fork()
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	fa := fork.Runtime.Package.Get(lisp.Symbol("a"))
+	fb := fork.Runtime.Package.Get(lisp.Symbol("b"))
+	if fa.Native == a.Native {
+		t.Fatalf("fork shares the template's bytes")
+	}
+	if fa.Native != fb.Native {
+		t.Errorf("fork de-aliased the shared bytes: a=%p b=%p", fa.Native, fb.Native)
+	}
+	if got := fork.LoadString("write.lisp", `(append! a 7) (length b)`); got.Type != lisp.LInt || got.Int != 4 {
+		t.Errorf("fork write through a not visible through b: got %v, want 4", got)
+	}
+	if got := env.LoadString("read2.lisp", `(length b)`); got.Type != lisp.LInt || got.Int != 3 {
+		t.Errorf("template saw the fork's write: %v", got)
+	}
+}
+
+// countingCloner is a NativeCloner that counts its clones.
+type countingCloner struct {
+	clones *int
+}
+
+func (c *countingCloner) CloneNative() interface{} {
+	*c.clones++
+	return &countingCloner{clones: c.clones}
+}
+
+// TestForkClonesANativePayloadOncePerPayload is the native face of #576:
+// two headers over one NativeCloner accumulator were cloned once per
+// header, so the fork held two independent accumulators where the template
+// held one.
+func TestForkClonesANativePayloadOncePerPayload(t *testing.T) {
+	env := newForkAliasEnv(t)
+	clones := 0
+	payload := &countingCloner{clones: &clones}
+	a := lisp.Native(payload)
+	b := &lisp.LVal{}
+	*b = *a // a second header, same payload, as quasiquote makes
+	env.PutGlobal(lisp.Symbol("a"), a)
+	env.PutGlobal(lisp.Symbol("b"), b)
+
+	fork, err := env.Fork()
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	fa := fork.Runtime.Package.Get(lisp.Symbol("a"))
+	fb := fork.Runtime.Package.Get(lisp.Symbol("b"))
+	if fa.Native == payload {
+		t.Fatalf("fork shares the template's payload")
+	}
+	if fa.Native != fb.Native {
+		t.Errorf("fork de-aliased the shared payload: a=%p b=%p", fa.Native, fb.Native)
+	}
+	if clones != 1 {
+		t.Errorf("payload cloned %d times, want 1", clones)
 	}
 }
