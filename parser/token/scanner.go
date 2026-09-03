@@ -148,7 +148,16 @@ func (s *Scanner) ScanRune() error {
 	}
 	if len(s.peek) > 0 {
 		s.scan(s.peek[0])
-		s.peek = s.peek[1:]
+		// Drop the consumed rune by shifting the tail down one slot and
+		// shortening the slice by one.  This keeps the backing array (and
+		// its capacity), so the next Peek's append does not allocate.
+		// Reslicing with s.peek[1:] instead would leave a one-element
+		// buffer with both length AND capacity zero, and every rune of
+		// source used to allocate a fresh backing array that way.  Unlike
+		// a bare s.peek[:0] this stays correct if the buffer ever holds
+		// more than one rune.
+		kept := copy(s.peek, s.peek[1:])
+		s.peek = s.peek[:kept]
 		return s.checkRuneError()
 	}
 	err = s.checkExtend()
