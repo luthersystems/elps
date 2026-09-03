@@ -418,19 +418,22 @@ func TestSemanticTokensPrefixesEmitNoToken(t *testing.T) {
 // fix has to leave alone, and it is the one thing about part (a) that is not
 // visible in the tokens' spans.
 //
-// A quoted atom now has TWO positions: the node's, which applyPrefixLocation
-// put on the ', and the atom's, one or more bytes to the right.  The token
-// takes the second.  classifySymbol must keep taking the FIRST, because the
-// analysis result is keyed by the node's position -- buildSymbolDefsMap indexes
-// analysis.Symbol.Source, and for "(set 'x 1)" that Source is column 6, the
-// quote, not column 7.  Look the atom's column up instead and the map misses.
+// A quoted atom has TWO positions: the node's, which applyPrefixLocation put on
+// the ', and the atom's, one or more bytes to the right.  The token takes the
+// second, and classifySymbol has to look the analysis result up at the SAME
+// one.  Which position that is has changed: analysis.Symbol.Source used to be
+// the node's -- for "(set 'x 1)" it was column 6, the quote -- and
+// classifySymbol was therefore passed a column its own token did not start at.
+// astutil.SymbolLoc now puts Source on the NAME (elps#577), column 7, so the
+// two agree and classifySymbol is passed the token's own column.  Pass it the
+// other one, in either era, and the map misses.
 //
 // A miss is SILENT.  classifySymbol falls through to its name-based default and
 // returns semTokenVariable, which is also what symbolKindToTokenType returns
 // for the SymVariable it failed to find -- so the token TYPE is unchanged and
 // only the "definition" modifier disappears.  Nothing else in this file would
 // notice: assertTokens compares types, not modifiers.  Verified by running,
-// with classifySymbol switched to the atom's column: the whole lsp package
+// with classifySymbol switched to the other column: the whole lsp package
 // stays green and this one token quietly goes from mods=1 to mods=0.
 //
 // So the modifier is asserted here explicitly.  Editors use it to italicise or
@@ -454,8 +457,8 @@ func TestSemanticTokensQuotedDefinitionKeepsItsModifier(t *testing.T) {
 		}
 		if tok.modifiers&semModDefinition == 0 {
 			t.Errorf("quoted definition token [0:6,+%d) has modifiers=%d, want the definition bit (%d) set: "+
-				"classifySymbol must be given the NODE's column (the quote), which is what the "+
-				"analysis result is keyed by, and not the atom's",
+				"classifySymbol must be given the ATOM's column, which is what the "+
+				"analysis result is keyed by (elps#577), and not the quote's",
 				tok.length, tok.modifiers, semModDefinition)
 		}
 	}
