@@ -265,6 +265,19 @@ func TestSymbolLoc(t *testing.T) {
 		loc:  &token.Location{File: "t.lisp", Pos: 5, Line: 1, Col: 6, EndPos: 9, EndLine: 1, EndCol: 10},
 		want: &token.Location{File: "t.lisp", Pos: 8, Line: 1, Col: 9, EndPos: 9, EndLine: 1, EndCol: 10},
 	}, {
+		// EndPos-Pos == len(name) leaves no room for the quote the span is
+		// supposed to contain, so its two ends do not describe the same text.
+		// The doc comment promises such a span is returned untouched; the
+		// guard said "< loc.Pos", which is false when they are equal, so the
+		// span was half-rewritten instead -- Line and Col moved onto EndLine
+		// and EndCol-n while Pos, already equal to EndPos-n, stayed put.  The
+		// result is a location whose Pos and Col disagree about where it is,
+		// which is worse than either the input or a clean refusal.
+		name: "quoted symbol whose span has no room for the quote is left alone",
+		node: quoted("x"),
+		loc:  &token.Location{File: "t.lisp", Pos: 5, Line: 1, Col: 6, EndPos: 6, EndLine: 2, EndCol: 3},
+		want: &token.Location{File: "t.lisp", Pos: 5, Line: 1, Col: 6, EndPos: 6, EndLine: 2, EndCol: 3},
+	}, {
 		name: "quoted symbol with no recorded end is left alone",
 		node: quoted("x"),
 		loc:  &token.Location{File: "t.lisp", Pos: 5, Line: 1, Col: 6},
