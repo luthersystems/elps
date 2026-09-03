@@ -216,7 +216,13 @@ func quotedSymbolNameLoc(loc *token.Location, n int) *token.Location {
 	if n == 0 || loc.EndLine <= 0 || loc.EndCol <= 0 {
 		return loc
 	}
-	if loc.EndCol-n < 1 || loc.EndPos-n < loc.Pos {
+	// EndPos-n == Pos is refused along with the spans that are outright too
+	// short: it leaves no room for the quote the span is supposed to contain,
+	// so its two ends do not describe the same text.  Written with < it was
+	// not refused, and the span was half-rewritten -- Line and Col moved while
+	// Pos, already equal, stayed -- which the doc comment above never claimed
+	// and no consumer can use.
+	if loc.EndCol-n < 1 || loc.EndPos-n <= loc.Pos {
 		return loc
 	}
 	loc.Line = loc.EndLine
