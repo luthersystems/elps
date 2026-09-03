@@ -7,6 +7,8 @@ package lisp
 import (
 	"strings"
 	"testing"
+
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // newOwnershipTestEnv returns a root LEnv with its own private Runtime.
@@ -339,5 +341,78 @@ func TestOwnershipCheck_SealedASTExempt(t *testing.T) {
 	}
 	expectOwnershipPanic(t, func() {
 		envB.Eval(unsealed)
+	})
+}
+
+// TestOwnershipCheck_StampedValueHeaderKeepsIdentity pins the identity rule
+// ownershipKey establishes: a value the macro stamp gave a PRIVATE HEADER is
+// still the same value, and must still be caught crossing runtimes.
+//
+// stampMacroExpansion no longer writes a macro call site into a value the
+// expansion yielded; it hands back a header copy carrying the stamp and
+// sharing the value's storage.  The checker keys its adoption table on a
+// pointer, so keying it on the *LVal would have made that copy a NEW value:
+// a closure reaching two runtimes through a macro expansion would present a
+// distinct pointer to each, the table would never see one key twice, and the
+// gate would report clean on exactly the flow it exists to catch (it would
+// also grow one entry per expansion).  Keying an LFun on its *funData makes
+// the identity survive the copy.
+//
+// Red-proof: with ownershipKey's LFun arm removed (return v for every type)
+// the cross-runtime half of this test panics with no violation at all.
+//
+// The same hole predates the stamp change and is closed by the same key:
+// LEnv.Get returns a FunRef header copy for EVERY unqualified function
+// lookup, so a function that crossed runtimes by name was already invisible.
+// The second half of this test is that case.
+func TestOwnershipCheck_StampedValueHeaderKeepsIdentity(t *testing.T) {
+	envA := initSafetyTestEnv(t)
+	envB := initSafetyTestEnv(t)
+
+	// A closure -- it captured envA's environment, so it is not exempt as a
+	// closure-free builtin.  Its location is cleared because a value that
+	// already carries one is returned unchanged by the stamp; the header
+	// copy is minted only for a value with none, which is the case under
+	// test.
+	fn := envA.Lambda(Formals("x"), []*LVal{Symbol("x")})
+	if fn.Type != LFun {
+		t.Fatalf("Lambda did not produce a function: %v", fn)
+	}
+	fn.SetSource(nil)
+	if lerr := envA.Put(Symbol("f"), fn); lerr.Type == LError {
+		t.Fatalf("put in runtime A failed: %v", lerr)
+	}
+
+	callSite := &token.Location{File: "ownership.lisp", Line: 3, Col: 1}
+	stamped := stampMacroExpansion(fn, callSite, nil, envA.Runtime)
+	if stamped == fn {
+		t.Fatal("the stamp must hand back a private header for an unlocated value;" +
+			" without a copy this test would be checking the original pointer")
+	}
+	if stamped.Native != fn.Native {
+		t.Fatal("the private header must share the function's storage")
+	}
+
+	// Same runtime: the copy is the same function, so reusing it must not
+	// trip the gate.
+	if res := envA.Eval(stamped); res.Type == LError {
+		t.Fatalf("eval of the stamped header in its own runtime failed: %v", res)
+	}
+	// Second runtime: still the same function, and still a violation.
+	expectOwnershipPanic(t, func() {
+		envB.Eval(stamped)
+	})
+
+	// The FunRef header LEnv.Get mints on every unqualified lookup is the
+	// same shape, and the same key covers it.
+	ref := envA.Get(Symbol("f"))
+	if ref.Type != LFun {
+		t.Fatalf("get did not return the function: %v", ref)
+	}
+	if ref == fn {
+		t.Fatal("Get is expected to return a FunRef header copy")
+	}
+	expectOwnershipPanic(t, func() {
+		envB.Eval(ref)
 	})
 }

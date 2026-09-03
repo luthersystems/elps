@@ -792,6 +792,72 @@ still be aliased by another binding, a container, or a closure. Code that
 intends to mutate data it did not construct copies unconditionally.
 `IsSealed()` stays a Go-side tool, where refuse-or-copy is a real choice.
 
+### 4.5 The macro-expansion stamp writes into storage it may not own
+
+`stampMacroExpansion` (`lisp/macro.go`) is the one place the evaluator
+writes debug metadata (a source location and, under a debugger, expansion
+info) onto nodes it did not construct: whatever a macro body returned.  It
+cannot tell fresh expansion output from storage that also belongs to
+someone else, and it has bitten six times, each found in production or by
+fuzzing rather than review.  The table is the history of the shared storage
+this stamp has written into; *where each was fixed* varies, and only three
+are guarded inside the function:
+
+| Issue | Storage the stamp wrote into | Where it was fixed |
+|---|---|---|
+| #274 | the singletons `Nil`/`true`/`false` (every reader corrupted for the process lifetime) | here: `isSingleton`, in `stampGuarded` |
+| #396 (fixed in #406) | the form being expanded, aliased into the macro's `&rest` list | upstream: `macroArgList` builds that list over a fresh array |
+| #370 | reader nodes emitted with synthetic locations | here: the `v.sealed` check in `stampGuarded` |
+| #517 | sealed parse-tree subtrees (cross-environment write, data race) | here: the same `v.sealed` check |
+| #431 | the caller's `env.loc`, shared by pointer, stored on every node the walk claimed | at the call site: `LEnv.macroCall` passes `env.loc.Copy()` |
+| the value fix | values yielded by the expansion: a builtin reached through `Get`, a global sorted map (`lisp:car` acquired a macro call site as its definition, and the profiler reported it) | here: the ownership rule below |
+
+So the function's own exclusions are three -- `isSingleton`, `sealed`, and
+the nil-`callSite` early return.  The rule below **replaces** adding more of
+them; it is not a fourth:
+
+- The stamp writes **in place only to syntax** -- the node types the reader
+  produces (`sealableNodeType`) that are unsealed and not singletons.
+- **Any other node type is a value.** A value is never written to.  At the
+  root it is returned as a stamped private header copy; inside an
+  expansion-owned list it is replaced by one.  The copy shares the value's
+  storage, so it is the same value to every reader.
+- Pinned by `TestMacroExpansionStampsValuesOnPrivateHeaders` (root and
+  child, for the value types a macro body can hand back: `LFun`, `LNative`,
+  `LSortMap`, `LArray`, `LBytes`, `LTaggedVal` -- `LError` is returned before
+  the stamp runs and the rest are evaluator-internal marks) and
+  `TestMacroExpansionDoesNotStampFunctionValues` (the `lisp:car` case).
+
+**Behaviour change, confined to error-location attribution.** Results are
+unchanged.  What changes is that a value a macro yields keeps its **own**
+location instead of acquiring the macro call site.  Where the value had no
+location of its own, the stack note previously read `at unknown` -- so the
+nodes `compose`, `flip` and the `expr` operator synthesize for the function
+they return are now located at their **construction site**
+(`setSynthesizedSource`, `lisp/lisp.go`) instead of relying on the stamp to
+reach inside a function value and locate its body.  A function built by
+`compose` and never passed through a macro at all previously reported
+`at unknown` in every frame and now names the `compose` call, which is a
+strict improvement.  Pinned by
+`TestSynthesizedFunctionsReportTheirConstructionSite` (`cmd/`), which holds
+the rendered `elps run` output for five shapes.
+
+**Identity across the header copy.** The copy is a new `*LVal`, so anything
+keyed on the header pointer must key on the shared storage instead or it
+will read the copy as a different value.  The runtime ownership checker does
+this (`ownershipKey`, `lisp/ownership_check_elpscheck.go`): an `LFun` is
+keyed on its `*funData` and an `LSortMap` on its `*MapData`, so a closure
+crossing runtimes through a macro expansion is still caught.  The same key
+also closes a hole that predates the stamp change -- `LEnv.Get` returns a
+`FunRef` header copy for **every** unqualified function lookup.
+
+Residual, tracked in #582: an unsealed *syntax* container that is itself a
+binding (a runtime list from `(list ...)` returned by a macro body) is
+indistinguishable from expansion output and is still stamped in place.
+
+When you touch this code: do not add an identity exclusion; extend the
+ownership rule, and add the new shape to the sweep test.
+
 ## 5. Embedder checklist
 
 1. **Parse through a sealing path.** `Reader.Read`, `LoadString`,

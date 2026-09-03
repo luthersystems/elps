@@ -278,7 +278,7 @@ func checkOwnership(rt *Runtime, v *LVal) {
 		return
 	}
 	m := ownershipTable.m.Load()
-	owner, loaded := m.LoadOrStore(v, rt)
+	owner, loaded := m.LoadOrStore(ownershipKey(v), rt)
 	if !loaded {
 		if ownershipTable.count.Add(1) >= ownershipTableMaxEntries {
 			resetOwnershipTable()
@@ -289,6 +289,52 @@ func checkOwnership(rt *Runtime, v *LVal) {
 		return
 	}
 	panic(ownershipViolation{msg: ownershipViolationMessage(owner.(*Runtime), rt, v)})
+}
+
+// ownershipKey returns the identity checkOwnership tracks for v.
+//
+// For most types that is the *LVal itself.  Two are keyed on the pointer to
+// their SHARED STORAGE instead, because for those a distinct header is not a
+// distinct value: an LFun's *funData carries the whole function (the Go
+// builtin or the captured *LEnv), and an LSortMap's *MapData carries the
+// whole map, while the header around either can be duplicated freely.  Two
+// duplicators ship: LEnv.Get returns a FunRef header copy on the
+// unqualified-symbol path, and stampMacroExpansion stamps a value it splices
+// into an expansion by giving it a private header rather than writing the
+// binding's own.
+//
+// Keying on the header would therefore let a closure reach a second Runtime
+// through a copy without the table ever seeing one key twice -- the checker
+// would report clean on exactly the cross-runtime flow it exists to catch --
+// and would additionally add a table entry per copy, one per macro expansion.
+// Keying on the storage makes the identity survive the header copy, which is
+// what "the same function" means.
+//
+// LNative is deliberately NOT keyed on its payload.  A payload is an
+// arbitrary embedder value: it need not be a pointer and need not be
+// comparable, and a sync.Map key that is not comparable panics.  Native
+// payloads carry a stronger rule of their own anyway -- declared affinity
+// (checkNativeAffinity), enforced at use time here and at fork time in
+// forker.native.
+//
+// A malformed value (an LFun or LSortMap whose Native is not the expected
+// payload, or is nil) falls back to the header, for isClosureFreeBuiltin's
+// reason: a value that has not answered what its storage is gets the
+// stricter treatment, not an exemption.
+func ownershipKey(v *LVal) interface{} {
+	switch v.Type {
+	case LFun:
+		if fd, ok := v.Native.(*funData); ok && fd != nil {
+			return fd
+		}
+	case LSortMap:
+		if md, ok := v.Native.(*MapData); ok && md != nil {
+			return md
+		}
+	default:
+		// Every other type: the header is the value's identity.
+	}
+	return v
 }
 
 // checkNativeAffinity asserts a native payload's DECLARED runtime binding:

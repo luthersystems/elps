@@ -137,9 +137,14 @@ func TestGoValueOfCyclicValue(t *testing.T) {
 
 func TestStampMacroExpansionOfCyclicValue(t *testing.T) {
 	env := initSafetyTestEnv(t)
-	v := cyclicVector(1)
-	// Mirror a macro that built its expansion with append!: every node carries
-	// the synthetic source location stampMacroExpansion is there to replace.
+	// A list that contains itself, the shape a macro that built its
+	// expansion with append! hands back: every node carries the synthetic
+	// source location stampMacroExpansion is there to replace.  (A cyclic
+	// VECTOR would no longer exercise the walk: vectors are values, which
+	// the stamp diverts to a header copy without descending -- see the
+	// warning above stampMacroExpansion.)
+	v := SExpr([]*LVal{Int(1)})
+	v.Cells = append(v.Cells, v)
 	//
 	// The call site is built explicitly rather than taken from
 	// Symbol("x").source.  #362 deleted the process-wide native-source
@@ -147,9 +152,11 @@ func TestStampMacroExpansionOfCyclicValue(t *testing.T) {
 	// stampMacroExpansion returns immediately on a nil callSite, which would
 	// leave this test asserting nil == nil and cover nothing.
 	callSite := &token.Location{File: "test.lisp", Line: 5, Col: 1}
-	stampMacroExpansion(v, callSite, nil, env.Runtime)
+	got := stampMacroExpansion(v, callSite, nil, env.Runtime)
+	assert.Same(t, v, got, "a syntax root is stamped in place")
 	assert.Equal(t, callSite, v.source, "the root must be stamped")
-	assert.Equal(t, callSite, v.Cells[1].source, "the storage list must be stamped")
+	assert.Equal(t, callSite, v.Cells[0].source, "the element must be stamped")
+	assert.Same(t, v, v.Cells[1], "the cycle is preserved")
 }
 
 // TestAcyclicRenderingIsUnchangedBelowAndAboveTheGuard pins the property the
@@ -340,7 +347,13 @@ func TestCyclicWalkHelper(t *testing.T) {
 		}
 	case "stamp":
 		env := initSafetyTestEnv(t)
-		v := cyclicVector(1)
+		// A list that contains itself, NOT a cyclic vector.  A vector is a
+		// VALUE: the stamp diverts it to a header copy and never descends,
+		// so a vector fixture would report "stamped" without the walk having
+		// run at all -- the subtest would pass with the cycle guard removed.
+		// The same shape as TestStampMacroExpansionOfCyclicValue.
+		v := SExpr([]*LVal{Int(1)})
+		v.Cells = append(v.Cells, v)
 		// A real call site, for the reason given in
 		// TestStampMacroExpansionOfCyclicValue: a nil one makes the walk
 		// return before it starts, so this subprocess would report "stamped"
