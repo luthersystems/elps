@@ -311,27 +311,31 @@ func (a *analyzer) prescanInPackage(expr *lisp.LVal, scope *Scope) {
 // or in-package.
 var extractPackageName = astutil.PackageNameArg
 
-// extractSetSymbolName extracts the symbol name from the first arg of set.
-// Handles both (set 'name value) and (set name value).
-func extractSetSymbolName(arg *lisp.LVal) string {
-	if arg.Type == lisp.LSymbol {
-		return arg.Str
-	}
-	// Quoted symbol: 'name parses as LSExpr{Quoted: true, Cells: [LSymbol{name}]}
-	if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
-		return arg.Cells[0].Str
-	}
-	return ""
-}
-
+// extractSetSymbolNode returns the node naming the binding in the first arg of
+// set, for both (set 'name value) and (set name value) -- the quote is folded
+// into the symbol's own node, so both spellings are one LSymbol.
+//
+// A first arg that is not a symbol names nothing: set takes a symbol, and
+// (set '(a b) 1) defines neither a nor b.  This used to reach into a quoted
+// LSExpr and return its first cell, a leftover from when a quoted symbol
+// parsed as a one-cell list.  It has not since rdparser started folding the
+// quote into the symbol, so the branch only ever matched a quoted LIST, and
+// the definition it invented carried the LIST's span as the location of the
+// name -- textDocumentRename then replaced '(a b) wholesale, dropping b.
 func extractSetSymbolNode(arg *lisp.LVal) *lisp.LVal {
 	if arg.Type == lisp.LSymbol {
 		return arg
 	}
-	if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
-		return arg.Cells[0]
-	}
 	return nil
+}
+
+// extractSetSymbolName is extractSetSymbolNode's name, or "" when the first
+// arg of set does not name anything.
+func extractSetSymbolName(arg *lisp.LVal) string {
+	if node := extractSetSymbolNode(arg); node != nil {
+		return node.Str
+	}
+	return ""
 }
 
 // analyzeExpr recursively walks an expression, building scopes and

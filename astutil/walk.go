@@ -154,8 +154,10 @@ func SourceLoc(v *lisp.LVal) *token.Location {
 	return nil
 }
 
-// SymbolLoc returns the location of the NAME a symbol node is written with,
-// which is not always the node's own span.
+// SymbolLoc returns the location of the NAME a node is written with, which is
+// not always the node's own span.
+//
+// Two shapes carry a name inside a wider form.  The first is a quoted symbol:
 //
 // rdparser gives the whole 'x form a single node: lisp.Quote copies the symbol
 // and sets its quoted flag rather than wrapping it, so no node stands for the
@@ -181,12 +183,36 @@ func SourceLoc(v *lisp.LVal) *token.Location {
 // counted EndCol one per rune onto a byte-valued Col); this is a start that is
 // one reader-prefix too far left, and it is wrong by the same byte for "'x" as
 // for "'é".
+//
+// The second shape is a STRING LITERAL used as a name, which some def-like
+// forms take: (s:deftype "myint" ...) binds a global called myint, and the
+// node analysis records for it is the literal.  Its span covers the quotes, so
+// a rename built from it replaced them too and produced (s:deftype NEW ...) --
+// a bare symbol where the form requires a string.  Here the name is the
+// literal's INTERIOR, so both ends move in by one delimiter.
+//
+// A string is only handled when its raw span is exactly the decoded value plus
+// two delimiter bytes on one line.  Anything else -- an escape, a raw-string
+// form, a line break inside -- means the interior is not recoverable by
+// arithmetic on the length, and the span is returned untouched rather than
+// guessed at.
 func SymbolLoc(v *lisp.LVal) *token.Location {
 	loc := SourceLoc(v)
-	if loc == nil || v.Type != lisp.LSymbol || !v.IsQuoted() {
+	if loc == nil {
 		return loc
 	}
-	n := len(v.Str)
+	switch {
+	case v.Type == lisp.LSymbol && v.IsQuoted():
+		return quotedSymbolNameLoc(loc, len(v.Str))
+	case v.Type == lisp.LString:
+		return stringLiteralNameLoc(loc, len(v.Str))
+	}
+	return loc
+}
+
+// quotedSymbolNameLoc narrows a quoted symbol's span onto its name by
+// measuring the name back from the end.
+func quotedSymbolNameLoc(loc *token.Location, n int) *token.Location {
 	if n == 0 || loc.EndLine <= 0 || loc.EndCol <= 0 {
 		return loc
 	}
@@ -196,6 +222,25 @@ func SymbolLoc(v *lisp.LVal) *token.Location {
 	loc.Line = loc.EndLine
 	loc.Col = loc.EndCol - n
 	loc.Pos = loc.EndPos - n
+	return loc
+}
+
+// stringLiteralNameLoc narrows a string literal's span onto the text between
+// its delimiters, and only when the arithmetic is exact.
+func stringLiteralNameLoc(loc *token.Location, n int) *token.Location {
+	if loc.EndLine != loc.Line || loc.Col < 1 || loc.Pos < 0 {
+		return loc
+	}
+	// The span covers the raw literal; n counts the DECODED value.  They
+	// differ by exactly the two delimiters only for a plain one-line literal
+	// with nothing escaped, which is the only case this can narrow safely.
+	if loc.EndPos-loc.Pos != n+2 || loc.EndCol-loc.Col != n+2 {
+		return loc
+	}
+	loc.Col++
+	loc.Pos++
+	loc.EndCol--
+	loc.EndPos--
 	return loc
 }
 
