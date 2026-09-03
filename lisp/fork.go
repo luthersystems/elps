@@ -606,6 +606,51 @@ func (f *forker) mapData(md *MapData) *MapData {
 		f.maps[md] = cp
 		return cp
 	}
+	if sm, ok := md.mapBacking.(sortedmap); ok {
+		// The stock sorted map is a Go map plus a key-type map, so it can be
+		// cloned structurally: copy both maps and remap the values through
+		// the fork walk.  This is what Set would store for every entry, so
+		// the contents, key types, aliasing and cycles come out identical to
+		// the enumerate-and-reinsert path below, without the sorted entry
+		// list, the per-entry pair cells, or the incremental map growth.
+		//
+		// make(..., len(sm.m)) right-sizes the clone on purpose.  Go maps
+		// never shrink after deletes and maps.Clone copies the table at its
+		// high-water mark, so a load-time map filled to 100k entries and
+		// pruned to 3 would cost every fork 3.7MB instead of 0.2MB (pinned
+		// by TestForkSortedMapClonePrunedMapIsRightSized); the per-entry
+		// copy costs nothing measurable over maps.Clone.
+		//
+		// The key-type map is copied verbatim rather than rebuilt from the
+		// entries (as detach's mapData still does).  An entry in tm with no
+		// partner in m cannot exist today (Set and Del keep the two in
+		// step), so nothing is laundered here, and a future desync shows
+		// up in the fork instead of being hidden by the rebuild.
+		//
+		// Measured on a 72k-line production phylum whose template holds
+		// large load-time sorted maps (rating tables, templates): this one
+		// branch removed 28% of the bytes and 15% of the allocations of
+		// every fork, and 15% of the wall time of building a retained pool
+		// of forked VMs.  Embedder map implementations keep the generic
+		// path: their entry enumeration is the only contract they offer.
+		nm := sortedmap{
+			m:  make(map[interface{}]*LVal, len(sm.m)),
+			tm: make(typemap, len(sm.tm)),
+		}
+		// Memo before descending, as the generic path does (issue #576):
+		// an entry may reach back to md.  The Go maps inside nm are
+		// references, so filling them after the memo stores the *MapData
+		// is visible through it.
+		cp := NewMapData(nm)
+		f.maps[md] = cp
+		for k, v := range sm.m {
+			nm.m[k] = f.val(v)
+		}
+		for k, t := range sm.tm {
+			nm.tm[k] = t
+		}
+		return cp
+	}
 	entries := sortedMapEntries(md)
 	if entries.Type == LError {
 		// Unreachable for the stock sorted map (its entry enumeration
