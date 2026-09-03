@@ -1205,6 +1205,19 @@ func builtinCompose(env *LEnv, args *LVal) *LVal {
 	} else {
 		gcall.Cells = append(gcall.Cells, Nil())
 	}
+	// The nodes above are synthesized: SExpr/Symbol produce them with no
+	// location, which renders as "unknown" in a stack note.  Give them the
+	// location of the (compose f g) form that built them, one Location
+	// object owned by this function (never env.loc itself -- issue #431).
+	//
+	// f, g and the formals' own head symbols are the only nodes here compose
+	// did not construct; f and g are deliberately absent from the list
+	// because a builtin reached through Get carries no location and writing
+	// one onto it corrupts a live global binding.  formals is a Copy, so its
+	// cells are compose's to locate.
+	loc := env.loc.Copy()
+	setSynthesizedSource(loc, formals, gcall, gcall.Cells[0], body, body.Cells[0])
+	setSynthesizedSource(loc, formals.Cells...)
 	newfun := env.Lambda(formals, []*LVal{body})
 	return newfun
 }
@@ -1230,7 +1243,14 @@ func builtinFlip(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("argument is not a function of two arguments: %s", formals)
 	}
 	call := SExpr([]*LVal{fun, Symbol("y"), Symbol("x")})
-	return env.Lambda(Formals("x", "y"), []*LVal{call})
+	newFormals := Formals("x", "y")
+	// Locate the synthesized nodes at the (flip fun) form -- see the same
+	// step in builtinCompose.  call.Cells[0] is fun, a value flip was handed,
+	// and is deliberately not in the list.
+	loc := env.loc.Copy()
+	setSynthesizedSource(loc, call, call.Cells[1], call.Cells[2], newFormals)
+	setSynthesizedSource(loc, newFormals.Cells...)
+	return env.Lambda(newFormals, []*LVal{call})
 }
 
 func builtinAssoc(env *LEnv, args *LVal) *LVal {
