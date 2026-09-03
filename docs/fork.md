@@ -280,6 +280,10 @@ r := &elpstest.Runner{
   template: sealed values pointer-shared (with an anti-vacuity floor),
   mutable values pointer-distinct with identical content, template
   aliasing and cycles reproduced in the fork.
+- `lisp/fork_mapalias_test.go` pins aliasing one level below the `*LVal`:
+  two headers over one `*MapData` (the shape `(quasiquote (unquote a))`
+  makes) fork to two headers over one clone, and a map that reaches itself
+  through such a header terminates (issue #576).
 - `lisp/lisplib/fork_test.go` proves bidirectional isolation over real
   parsed programs two ways: observable mutations (neither side sees the
   other's writes) and a full-state fingerprint (structure-only hash of
