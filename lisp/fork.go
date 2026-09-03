@@ -481,6 +481,11 @@ func (f *forker) val(v *LVal) *LVal {
 				fid:     fd.fid,
 				pkg:     fd.pkg,
 				env:     f.env(fd.env),
+				// loc is left nil deliberately, exactly as forker.env
+				// drops the location register of every environment it
+				// remaps: a function called in a fork before the fork has
+				// evaluated anything reports "<native code>" rather than a
+				// position inherited from the template.
 			}
 		}
 	case LNative:

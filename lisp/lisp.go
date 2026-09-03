@@ -5,7 +5,6 @@ package lisp
 import (
 	"bytes"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -186,15 +185,22 @@ func (ft LFunType) String() string {
 type funData struct {
 	builtin LBuiltin
 	env     *LEnv
-	fid     string
-	pkg     string
-}
 
-func (fd *funData) Copy() *funData {
-	cp := &funData{}
-	*cp = *fd
-	cp.env = fd.env.Copy()
-	return cp
+	// loc is the captured environment's location register as it stood when
+	// the function was defined.  bind gives the call environment this
+	// snapshot rather than the captured environment's live register,
+	// because eval READS env.loc before it rebinds it: the nesting-depth
+	// guard and checkLimits both raise through env.ErrorConditionf, which
+	// stamps env.loc into the error's rendered text and Source().  A
+	// step-limit, nesting-limit or context cancellation that trips exactly
+	// at a function-body entry therefore reports the definition site, which
+	// is what the per-function child environment reported before functions
+	// captured their defining environment directly.  Builtins leave it nil:
+	// they carry no environment, so bind never reads it.
+	loc *token.Location
+
+	fid string
+	pkg string
 }
 
 // macroExpansionContext is shared by all nodes in a single macro expansion.
@@ -1935,24 +1941,13 @@ func lambdaVars(formals *LVal, bound *LVal) *LVal {
 }
 
 func boundVars(v *LVal) *LVal {
-	env := v.funEnv()
-	if env == nil {
+	// A function's captured environment is its defining scope; the
+	// per-function child scope this used to render from was always empty,
+	// so a lambda renders with its formals only, as before.
+	if v.funEnv() == nil {
 		return Nil()
 	}
-	keys := make([]string, 0, len(env.scope))
-	for k := range env.scope {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	bound := SExpr(nil)
-	for i := range keys {
-		q := SExpr([]*LVal{
-			Symbol(keys[i]),
-			env.Get(Symbol(keys[i])),
-		})
-		bound.Cells = append(bound.Cells, q)
-	}
-	return bound
+	return SExpr(nil)
 }
 
 func exprString(v *LVal, offset int, left string, right string, g cycleGuard) string {

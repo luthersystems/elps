@@ -63,10 +63,16 @@ func forkedEnvs(root *LEnv) map[*LEnv]bool {
 func TestForkDropsEvaluatorLocation(t *testing.T) {
 	env := newForkTestEnv(t)
 
-	// A closure, so the forked tree is deeper than its root: its captured
-	// environment goes through forker.env too, and it is the environment
-	// whose register a template holds a *definition-site* location in.
-	lam := lambdaExpr()
+	// A closure defined inside a let, so the forked tree is deeper than its
+	// root: the captured environment (the let's scope) goes through
+	// forker.env too, and it is the environment whose register a template
+	// holds a *definition-site* location in.  A top-level lambda captures
+	// the root environment itself and would leave the walk with one env.
+	lam := SExpr([]*LVal{
+		Symbol("let"),
+		SExpr([]*LVal{SExpr([]*LVal{Symbol("y"), Int(1)})}),
+		lambdaExpr(),
+	})
 	templateLoc := &token.Location{File: "template.lisp", Path: "template.lisp", Line: 12, Col: 3, Pos: 40}
 	lam.SetSource(templateLoc)
 	fun := env.Eval(lam)

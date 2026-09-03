@@ -246,6 +246,37 @@ per-call `EvalContext` context overrides it for that evaluation only, and
 neither the template nor any other fork can observe it.
 `lisp/fork_context_test.go` pins this contract.
 
+A call frame is a shallow copy of the environment the function captured,
+given a fresh scope. Two of its registers are worth naming, and they
+behave differently.
+
+The *location* register is a snapshot taken when the function was defined,
+carried on the function value itself. It is deliberately not the captured
+environment's live position, because the evaluator reads `env.loc` before
+it rebinds it: the nesting-depth guard and `checkLimits` both raise
+through `ErrorConditionf`, which stamps that register into the error's
+rendered text and `Source()`. An evaluation-budget error that trips
+exactly at a function-body entry -- a step limit, a nesting limit, a
+cancelled or expired context -- therefore reports the function's
+definition site, not its call site. `lisp/funloc_test.go` pins this.
+
+The *context* register is the live one: a call frame reads the captured
+environment's context at the moment of the call rather than a snapshot
+taken when the function was defined. Normal evaluation never sees the
+difference, because `call` bridges the per-call context onto the
+environment at every builtin and special-operator boundary before a body
+form runs. A debugger that evaluates in a paused frame without a context
+(conditional breakpoints, the inspector) observes the live register
+instead: a function defined on the template and called in a fork bound
+with `ForkWithContext` reports the fork's context, and a function defined
+under a since-cancelled `EvalContext` no longer carries that cancelled
+context into a later call.
+
+Neither register crosses a fork. `forker` drops the location register of
+every environment it remaps, and a function value's definition-site
+snapshot does not travel either -- exactly as before, when that snapshot
+lived in a per-function environment the fork remapped and blanked.
+
 ## Embedder patterns
 
 Pool refill:

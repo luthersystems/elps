@@ -255,10 +255,6 @@ func newEnvN(parent *LEnv, n int) *LEnv {
 	return env
 }
 
-func (env *LEnv) getFID() string {
-	return fmt.Sprintf("_fun%d", env.ID)
-}
-
 func (env *LEnv) GenSym() *LVal {
 	return Symbol(env.Runtime.GenSym())
 }
@@ -824,15 +820,23 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	cells := make([]*LVal, 0, len(body)+1)
 	cells = append(cells, formals)
 	cells = append(cells, body...)
-	fenv := NewEnv(env)
 	fun := &LVal{
 		Type: LFun,
 		//elps:aliases deliberate in-runtime alias: a lambda's location is the defining form's parse location, already frozen before evaluation reaches this constructor, and the function value lives inside the same runtime as env.loc
 		source: env.loc,
 		Native: &funData{
-			fid: fenv.getFID(),
+			// The function captures its defining environment directly.  A
+			// call binds the formals in a fresh child of it (see bind), which
+			// is the same scope chain the former per-function child
+			// environment produced, minus one LEnv (and its scope map) per
+			// definition, per call-site Copy, and per fork remap.  The FID
+			// still consumes exactly one environment ID, so generated names
+			// are unchanged.
+			fid: fmt.Sprintf("_fun%d", env.Runtime.GenEnvID()),
 			pkg: env.Runtime.Package.Name,
-			env: fenv,
+			env: env,
+			//elps:aliases deliberate in-runtime alias: the definition-site snapshot of the environment's location register, the same pointer NewEnv(env) froze into the per-function child environment this replaces, and the function value lives inside the same runtime as env.loc
+			loc: env.loc,
 		},
 		Cells: cells,
 	}
@@ -846,7 +850,7 @@ func (env *LEnv) builtin(f LBuiltinDef) *LVal {
 	// The formals are copied for the same reason the Add* methods copy
 	// theirs: an LBuiltinDef's formals typically belong to a process-wide
 	// table.  See formalsCopier and issue #363.
-	return FunInPackage(env.Runtime.Package.Name, NewEnv(env).getFID(), f.Formals().Copy(), f.Eval)
+	return FunInPackage(env.Runtime.Package.Name, fmt.Sprintf("_fun%d", env.Runtime.GenEnvID()), f.Formals().Copy(), f.Eval)
 }
 
 func (env *LEnv) Terminal(expr *LVal) *LVal {
@@ -1935,7 +1939,24 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	formals := argParser{args: fun.Cells[0].Cells}
 	narg := len(args.Cells)
 
-	funenv := fun.funEnv().Copy()
+	// A lambda call gets a fresh scope whose parent is the captured
+	// environment: bindings made here are private to the call, and
+	// everything the closure can see stays live through the parent.
+	//
+	// The call environment starts as a shallow copy of the captured one so
+	// that a register added to LEnv later cannot silently arrive here
+	// zeroed; the three registers a call must not inherit are then
+	// overridden.  The location register is the definition-site snapshot
+	// taken in Lambda rather than the captured environment's live value,
+	// because eval reads env.loc before it rebinds it -- see funData.loc.
+	var funenv *LEnv
+	if fenv := fun.funEnv(); fenv != nil {
+		cp := *fenv
+		cp.parent = fenv
+		cp.loc = fun.funData().loc
+		cp.scope = make(map[string]*LVal, formals.Len())
+		funenv = &cp
+	}
 	putArg := func(k, v *LVal) {
 		funenv.Put(k, v)
 	}
@@ -1985,7 +2006,7 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	if funenv == nil {
 		return env, QExpr(builtinArgs)
 	}
-	return funenv, QExpr(fun.Cells[1:])
+	return funenv, QExpr(fun.Cells[1:]) //elps:aliases the call env's loc register deliberately aliases the function's definition-site location, which was frozen before evaluation reached Lambda, and its evalCtx register aliases the captured env's current context: LEnv is runtime-internal state and no consumer-facing value is built from either pointer
 }
 
 type bindfunc func(k, v *LVal)
