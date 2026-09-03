@@ -446,6 +446,42 @@ func (v *LVal) SetSource(loc *token.Location) {
 	v.source = loc //elps:mutates the audited setter for source metadata; sealed (shared) nodes are skipped above
 }
 
+// setSynthesizedSource gives every node in nodes that carries no location of
+// its own the location loc.
+//
+// It is for the nodes a builtin SYNTHESIZES -- the formals, call and body
+// forms that compose, flip and the `expr` operator build for the function
+// they return.  Those come out of SExpr/Symbol/Formals with source == nil,
+// and a nil source renders as "unknown" in a stack note, so a stack running
+// through a composed function named no location at all.
+//
+// The macro stamp used to hide that for the composed functions a macro
+// returned: stampMacroExpansion walked INTO the returned function value and
+// wrote the macro CALL site onto its body.  That was the wrong location (the
+// function was built where compose ran, not where the macro was called) and
+// a write into storage the expansion did not own; the stamp no longer
+// descends into a value, so the location has to be established here, where
+// the node is constructed.  See the warning above stampMacroExpansion.
+//
+// loc must be a Location the constructed function may own -- env.loc.Copy(),
+// ONE copy shared by the nodes of one constructed function, never env.loc
+// itself (issue #431), whose pointee moves with the evaluator.
+//
+// Nodes that already carry a location are skipped, but that is a
+// convenience, not a safety net: the caller must pass only nodes it
+// constructed.  A function value the caller was HANDED (compose's f and g,
+// flip's fun) has no location when it is a builtin, so passing one would
+// stamp a live global binding -- exactly the corruption the ownership rule
+// above stampMacroExpansion exists to prevent.
+func setSynthesizedSource(loc *token.Location, nodes ...*LVal) {
+	for _, v := range nodes {
+		if v == nil || v.source != nil {
+			continue
+		}
+		v.SetSource(loc)
+	}
+}
+
 // IsQuoted reports whether v carries a single level of quoting — the flag
 // behind the LQuote wrapper and the ['(...)/[...]] display forms.  The
 // underlying field is unexported (issue #382): quoting is established at

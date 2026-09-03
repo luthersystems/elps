@@ -1470,8 +1470,17 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 			Args:     args.Cells,
 		}
 	}
-	stampMacroExpansion(r, callSite, mctx, env.Runtime)
+	r = stampMacroExpansion(r, callSite, mctx, env.Runtime)
 
+	// ORDER: stamp first, unquote second.  shallowUnquote also mints a
+	// private header, so stamping after it would let a VALUE root be stamped
+	// in place and save one allocation on that path -- but only by telling
+	// stampMacroExpansion "this root is yours to write", which is the kind of
+	// per-call-site ownership assertion the ownership rule above it exists to
+	// remove.  The saving applies solely to a root that is an unlocated value
+	// (a rare shape; most expansion roots are syntax), so the order stays as
+	// it is.
+	//
 	// This is a lazy unquote.  Unquoting in this way appears to allow the
 	// upcoming evaluation to produce the correct value for user defined
 	// macros, which are typically using quasiquote.  Builtin macros can be

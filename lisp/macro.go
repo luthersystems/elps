@@ -270,7 +270,77 @@ func macroDeftype(env *LEnv, args *LVal) *LVal {
 // holds.  macroCall takes env.loc.Copy() for exactly this reason; passing
 // env.loc itself put the caller's node and the whole expansion on one mutable
 // object (issue #431).
-func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionContext, rt *Runtime) {
+//
+// ---------------------------------------------------------------------------
+// DANGER: THIS STAMP WRITES INTO STORAGE IT MAY NOT OWN.  READ BEFORE EDITING.
+//
+// stampMacroExpansion is handed whatever the macro body returned, and it has
+// no way to tell fresh expansion output from storage that also belongs to
+// someone else.  The table below is the history of the shared storage this
+// stamp has written into; each was found in production or by fuzzing, not by
+// review.  Where each was FIXED varies -- three are guarded here, the other
+// two were closed at the site that handed the stamp the shared storage:
+//
+//	#274  (May 2026)  the singletons Nil/true/false: one write corrupted
+//	                  every reader for the rest of the process.  Guarded
+//	                  here: isSingleton, in stampGuarded.
+//	#396  (Aug 2026)  the form being expanded, aliased into the macro's
+//	                  &rest list.  NOT guarded here -- fixed upstream in
+//	                  macroArgList (lisp/builtins.go), which builds that
+//	                  list over a fresh array.
+//	#370  (Aug 2026)  reader nodes emitted with synthetic locations.
+//	#517  (Aug 2026)  sealed parse-tree subtrees: a cross-environment write
+//	                  and a data race under concurrent environments.
+//	                  Both guarded here: the v.sealed check in stampGuarded.
+//	#431  (Aug 2026)  the caller's env.loc, shared by pointer and then
+//	                  stored on every node the walk claimed.  NOT guarded
+//	                  here -- fixed at the call site, which passes
+//	                  env.loc.Copy() (LEnv.macroCall).  callSite is still
+//	                  stored BY POINTER, so the caller must keep passing a
+//	                  Location the expansion may own.
+//	(this fix)        VALUES yielded by the expansion -- a builtin reached
+//	                  through Get, a global sorted map -- are live bindings;
+//	                  stamping them in place moved lisp:car's definition
+//	                  site onto a macro call site for the rest of the
+//	                  process, and the profiler reported it as such.
+//
+// This function's own exclusions are therefore three: isSingleton (#274),
+// sealed (#370/#517), and the nil-callSite early return.  The rule below
+// REPLACES adding more of them; it is not a fourth.
+//
+// The rule, enforced by stampGuarded and pinned by
+// TestMacroExpansionStampsValuesOnPrivateHeaders: the stamp writes IN PLACE
+// only to SYNTAX nodes (the node types the reader produces, sealableNodeType)
+// that are unsealed and not singletons.  A node of any other type is a
+// VALUE.  A value is never written to; it is replaced, in its expansion-owned
+// parent (or at the root, by the return value), with a private header copy
+// that carries the stamp and shares the value's storage.  If a new kind of
+// shared storage turns up, extend the ownership rule rather than adding
+// another identity exclusion.
+//
+// BEHAVIOUR CHANGE, confined to error-location attribution -- results are
+// unchanged.  A value a macro yields now keeps its OWN location instead of
+// acquiring the macro call site.  Where that location was previously NONE the
+// stack note reads "unknown", so the nodes compose, flip and the `expr`
+// operator synthesize for the function they return are now located at their
+// construction site (setSynthesizedSource, lisp/lisp.go) rather than relying
+// on this stamp reaching inside a function value to locate its body.
+//
+// Known residual (issue #582): an UNSEALED syntax container that is itself a
+// binding -- a global list built at runtime by (list ...) and returned by a
+// macro body -- is indistinguishable from expansion output and is still
+// stamped in place, on every release since the stamp existed.
+// ---------------------------------------------------------------------------
+//
+// stampMacroExpansion returns the expansion the caller must evaluate: v
+// itself, or, when v is a value, its stamped private header copy.
+func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionContext, rt *Runtime) *LVal {
+	if v == nil || callSite == nil {
+		return v
+	}
+	if isValueNode(v) {
+		return stampValueCopy(v, callSite, ctx, rt)
+	}
 	var st cycleState
 	stampGuarded(v, callSite, ctx, rt, cycleGuard{state: &st})
 	if st.cyclic {
@@ -280,6 +350,64 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionC
 		// the rerun, which visits each node once, finishes the job.
 		stampGuarded(v, callSite, ctx, rt, strictCycleGuard())
 	}
+	return v
+}
+
+// isValueNode reports whether v is a runtime VALUE rather than SYNTAX: a
+// node of a type the reader never produces (a function, a native handle, a
+// sorted map, a vector, bytes).  Such a node inside a macro expansion is a
+// binding the macro body evaluated to or spliced in, not the expansion's
+// own output, so the stamp must not write to it.  See the warning above
+// stampMacroExpansion.
+func isValueNode(v *LVal) bool {
+	return !sealableNodeType(v.Type)
+}
+
+// stampValueCopy returns the node to put in a value's place in an
+// expansion: v itself when it already carries a real location, otherwise a
+// private header copy of v carrying the stamp.
+//
+// WHAT THE COPY SHARES AND WHAT IT PRIVATIZES, precisely.  Everything
+// reached through a POINTER is shared -- the *funData behind an LFun, the
+// *MapData behind an LSortMap, the []byte behind LBytes, and the Cells
+// BACKING ARRAY -- so the copy is the same value to every reader, and a
+// write through either header would be seen through the other.  What is
+// private is the copy's own struct: source and macroExpansion (the point of
+// the exercise), and alongside them the Cells slice HEADER, Str, Int, Float,
+// Type, FunType, quoted, spliced and sealed.  A write to one of those
+// through the copy would silently diverge from the binding rather than
+// corrupting it -- which would be a different bug, not a safe one.  No such
+// write is reachable through this path today: every `.Cells =`, `.Native =`,
+// `.Str =`, `.Int =` and `.Type =` assignment in lisp/ and lisp/lisplib/ was
+// audited, and the ones that land on a VALUE type write either a container
+// the builtin itself constructed (the vector rebuilds in select/reject) or a
+// shared INNER cell (append!'s `vec.Cells[1].Cells`, which is the same
+// storage through either header and so behaves identically).  The
+// checker that keeps the shared half honest across runtimes keys an LFun on
+// its *funData for exactly this reason (ownershipKey,
+// lisp/ownership_check_elpscheck.go): a private header must not read as a
+// different function.
+//
+// The arrangement is not new, but the cover it gave was accidental and
+// partial.  LEnv.Get returns a FunRef HEADER COPY for an LFun, so a function
+// the macro body reached through an UNQUALIFIED symbol arrived here as a
+// copy already and the stamp's write landed harmlessly on it.  A QUALIFIED
+// symbol -- lisp:car -- resolves through pkg.Get instead and returns the raw
+// binding, which is why the bug above exists at all.  Here the copy is
+// deliberate, unconditional, and extended to every value type.
+func stampValueCopy(v *LVal, callSite *token.Location, ctx *macroExpansionContext, rt *Runtime) *LVal {
+	if v.source != nil && v.source.Pos >= 0 {
+		return v
+	}
+	cp := *v
+	cp.source = callSite
+	if ctx != nil {
+		cp.macroExpansion = &macroExpansionInfo{
+			macroExpansionContext: ctx,
+			ID:                    rt.nextMacroExpID(),
+		}
+	}
+	return &cp
 }
 
 func stampGuarded(v *LVal, callSite *token.Location, ctx *macroExpansionContext, rt *Runtime, g cycleGuard) {
@@ -309,6 +437,12 @@ func stampGuarded(v *LVal, callSite *token.Location, ctx *macroExpansionContext,
 	if v.sealed {
 		return
 	}
+	// Values never reach this walk: the root is diverted by
+	// stampMacroExpansion and children by the loop below.  Keep the guard
+	// anyway -- it is the ownership rule's last line of defence.
+	if isValueNode(v) {
+		return
+	}
 	// Only a node with children is entered on the guard's path: a leaf stamps
 	// itself and reaches nothing, and stamping runs on every macro expansion.
 	nested := len(v.Cells) > 0
@@ -332,7 +466,18 @@ func stampGuarded(v *LVal, callSite *token.Location, ctx *macroExpansionContext,
 			}
 		}
 	}
-	for _, child := range v.Cells {
+	for i, child := range v.Cells {
+		if child == nil {
+			continue
+		}
+		if isValueNode(child) {
+			// v is expansion-owned unsealed syntax, so its cells are the
+			// expansion's to rewrite; the value itself is not.
+			if sc := stampValueCopy(child, callSite, ctx, rt); sc != child {
+				v.Cells[i] = sc //elps:mutates debug-metadata stamp on macro-expansion output: replaces a spliced value with its stamped private header copy; the value is never written
+			}
+			continue
+		}
 		stampGuarded(child, callSite, ctx, rt, g)
 	}
 	if nested && g.tracking() {

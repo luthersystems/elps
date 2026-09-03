@@ -323,6 +323,13 @@ func opExpr(env *LEnv, args *LVal) *LVal {
 	if vargs {
 		formals.Cells = append(formals.Cells, Symbol(VarArgSymbol), Symbol("%"+VarArgSymbol))
 	}
+	// The formals are synthesized from the placeholder names, so they carry
+	// no location; locate them at the #^ form -- see the same step in
+	// builtinCompose.  body is the operand the reader parsed and already has
+	// one of its own.
+	loc := env.loc.Copy()
+	setSynthesizedSource(loc, formals)
+	setSynthesizedSource(loc, formals.Cells...)
 	return env.Lambda(formals, []*LVal{body})
 }
 
