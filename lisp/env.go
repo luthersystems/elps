@@ -454,12 +454,37 @@ func (env *LEnv) Copy() *LEnv {
 }
 
 // Get takes an LSymbol k and returns the LVal it is bound to in env.
+//
+// For a function the result MAY BE THE STORED BINDING ITSELF, not a
+// private copy: callers must treat it as read-only.  Only when the binding
+// does not already carry the looked-up name does Get hand back a FunRef
+// header copy stamped with it.
 func (env *LEnv) Get(k *LVal) *LVal {
 	v := env.get(k)
 	if v.Type == LFun {
-		// Set the function's name here in case the same function is
-		// defined with multiple names.  We want to try and use the name
-		// the programmer used.
+		// The FunRef copy exists to stamp the name the programmer used
+		// into LVal.Str.  That name is GetFunName's FALLBACK: a function
+		// defined by defun or bound at top level by set is named through
+		// the package's funNames table (putName overwrites it on every
+		// rebind, so an alias (set 'g f) renames f globally), and Str is
+		// consulted only for functions funNames never saw -- lambdas bound
+		// locally by flet, labels and macrolet, which report the local
+		// name in error messages and stack traces through this stamp.
+		//
+		// When the binding already carries the exact spelling there is
+		// nothing to stamp, and the copy would be a 112-byte allocation
+		// producing a byte-identical header.  Skipping it matters because
+		// this runs once per evaluated s-expression (the head symbol),
+		// which makes it one of the interpreter's highest-frequency
+		// allocations.  Definitions stamp their own name at creation:
+		// defun/defmacro on the lambda they freshly allocate, and
+		// AddBuiltins/AddSpecialOps/AddMacros in registrationFunValue.
+		// Functions built any other way (FunInPackage, env.builtin, a
+		// lambda, an embedder's Put) have Str == "" and keep the copy
+		// path, as does an alias; both still report their local name.
+		if v.Str == k.Str {
+			return v
+		}
 		v = FunRef(k, v)
 	}
 	return v
@@ -926,10 +951,17 @@ func registrationBound(pkg *Package, name string) (*LVal, bool) {
 // with the docstring placed at construction — the public constructors
 // allocate an empty-string docstring cell the Add* methods immediately
 // replaced, one dropped allocation per definition per environment.
-func registrationFunValue(pkgName, fid string, funType LFunType, formals *LVal, fn LBuiltin, doc string) *LVal {
+//
+// The value is born carrying its own registered name in Str.  That is the
+// name LEnv.Get would otherwise stamp onto a per-lookup copy of the value
+// (see Get), so pre-stamping it here lets every unqualified lookup of a
+// builtin return the binding itself instead of a copy.  Str is written at
+// construction, never onto a value a caller already holds.
+func registrationFunValue(pkgName, name, fid string, funType LFunType, formals *LVal, fn LBuiltin, doc string) *LVal {
 	return &LVal{
 		Type:    LFun,
 		FunType: funType,
+		Str:     name,
 		Native: &funData{
 			fid:     fid,
 			builtin: fn,
@@ -977,7 +1009,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 			// embedder-facing half of that story is #351.
 			panic(fmt.Sprintf("macro already defined: %v (= %v)", name, exist))
 		}
-		fn := registrationFunValue(pkg.Name, "<builtin-macro ``"+name+"''>", LFunMacro,
+		fn := registrationFunValue(pkg.Name, name, "<builtin-macro ``"+name+"''>", LFunMacro,
 			registrationFormals(&formals, mac.Formals()), mac.Eval, builtinDocstring(mac))
 		pkg.putName(name, fn)
 		if external {
@@ -1005,7 +1037,7 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 			// is Go API an embedder drives, never lisp source.
 			panic(fmt.Sprintf("macro already defined: %v (= %v)", name, exist))
 		}
-		fn := registrationFunValue(pkg.Name, "<special-op ``"+name+"''>", LFunSpecialOp,
+		fn := registrationFunValue(pkg.Name, name, "<special-op ``"+name+"''>", LFunSpecialOp,
 			registrationFormals(&formals, op.Formals()), op.Eval, builtinDocstring(op))
 		pkg.putName(name, fn)
 		if external {
@@ -1033,7 +1065,7 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 			// is Go API an embedder drives, never lisp source.
 			panic("symbol already defined: " + name)
 		}
-		v := registrationFunValue(pkg.Name, "<builtin-function ``"+name+"''>", LFunNone,
+		v := registrationFunValue(pkg.Name, name, "<builtin-function ``"+name+"''>", LFunNone,
 			registrationFormals(&formals, f.Formals()), f.Eval, builtinDocstring(f))
 		pkg.putName(name, v)
 		if external {
