@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 )
 
 // Template-environment forking (issue #380).
@@ -82,6 +83,10 @@ import (
 // Under `copy` the duplicate stays inside one environment, so a payload
 // written for that path alone still has to meet the stricter bar to be
 // fork-safe.
+//
+// Fork calls it once per payload: a pointer payload reachable through
+// several headers is cloned once and the clone shared by all of them, as
+// the payload was on the template (issue #576).
 type NativeCloner interface {
 	CloneNative() interface{}
 }
@@ -122,9 +127,11 @@ func ForkWithStderr(w io.Writer) ForkOption {
 // This is the escape hatch for payload types the embedder cannot modify to
 // implement NativeCloner (third-party handles), and for rebinding
 // fork-specific instances (a per-fork storage handle, a per-test
-// accumulator).  fn may be called more than once for payloads reachable
-// through multiple values; it must be pure with respect to the template
-// (never mutate the payload it is given).
+// accumulator).  fn is called once per pointer payload, however many values
+// reach it (the replacement is shared by all of them, as the payload was on
+// the template -- issue #576); a non-pointer payload may be seen once per
+// value.  It must be pure with respect to the template (never mutate the
+// payload it is given).
 func ForkWithNativeReplacer(fn func(payload interface{}) (interface{}, bool)) ForkOption {
 	return func(c *forkConfig) { c.nativeReplacer = fn }
 }
@@ -229,6 +236,8 @@ func (env *LEnv) Fork(opts ...ForkOption) (*LEnv, error) {
 		envs:           make(map[*LEnv]*LEnv, 256),
 		vals:           make(map[*LVal]*LVal, 4096),
 		maps:           make(map[*MapData]*MapData, 64),
+		bytes:          make(map[*[]byte]*[]byte),
+		natives:        make(map[interface{}]interface{}),
 		nativeReplacer: config.nativeReplacer,
 	}
 	newRoot := f.env(env)
@@ -271,19 +280,25 @@ func checkQuiescent(rt *Runtime) error {
 // not multiplied) and reference cycles — labels mutual recursion,
 // closure↔environment cycles — terminate instead of recursing forever.
 //
-// maps is keyed on the *MapData, not the *LVal header over it, because the
-// two are not one-to-one: Quote, Splice, shallowUnquote and opQuasiquote copy
-// an LVal's struct and keep its Native, so `(quasiquote (unquote a))` is a
-// second header on a's map.  Memoising per header alone rebuilt such a map
-// once per header, and a write through the fork's `a` was invisible through
-// the fork's `b` (issue #576).  A map reaching itself through a second
-// header is the same bug at its sharpest: the *LVal memo never sees the
-// cycle, because every visit arrives through a header it has not met.
+// The three payload memos -- maps, bytes, natives -- are keyed on the
+// PAYLOAD, not the *LVal header over it, because the two are not
+// one-to-one: Quote (reached from quasiquote through doUnquoteValue),
+// Splice, shallowUnquote and FunRef copy an LVal's struct and keep its
+// Native, so `(quasiquote (unquote a))` is a second header on a's sorted
+// map, bytes or native handle.  Memoising per header alone rebuilt such a
+// payload once per header, and a write through the fork's `a` was invisible
+// through the fork's `b` (issue #576).  A map reaching itself through a
+// second header showed the same thing one level down: the *LVal memo
+// bounded the walk (every header is memoised before its payload is
+// remapped, and there are finitely many headers) but not the number of
+// clones -- one per header, each containing the next.
 type forker struct {
 	rt             *Runtime
 	envs           map[*LEnv]*LEnv
 	vals           map[*LVal]*LVal
 	maps           map[*MapData]*MapData
+	bytes          map[*[]byte]*[]byte
+	natives        map[interface{}]interface{}
 	nativeReplacer func(payload interface{}) (interface{}, bool)
 }
 
@@ -452,8 +467,7 @@ func (f *forker) val(v *LVal) *LVal {
 		case nil:
 		case *[]byte:
 			if native != nil {
-				b := append([]byte(nil), *native...)
-				cp.Native = &b
+				cp.Native = f.byteSlice(native)
 			}
 		case *MapData:
 			cp.Native = f.mapData(native)
@@ -502,9 +516,22 @@ func (f *forker) val(v *LVal) *LVal {
 // lisp/runtime_bound.go).  A replacer's return value is checked like any
 // other — an embedder's hook handing back a template-bound instance is
 // precisely the bug class, not an exception to it.
+//
+// Resolved ONCE per payload: a pointer payload reachable through several
+// headers (issue #576; see the forker doc) maps to one resolution, so two
+// headers over one NativeCloner accumulator do not become two independent
+// clones in the fork, and a replacer sees each such payload once.  Only
+// pointer payloads are memoised -- identity is what aliasing means, and a
+// non-pointer payload (an int, a struct value) has none to preserve.
 func (f *forker) native(payload interface{}) interface{} {
 	if payload == nil {
 		return nil
+	}
+	memo := reflect.TypeOf(payload).Kind() == reflect.Pointer
+	if memo {
+		if resolved, ok := f.natives[payload]; ok {
+			return resolved
+		}
 	}
 	resolved, replaced := payload, false
 	if f.nativeReplacer != nil {
@@ -518,17 +545,32 @@ func (f *forker) native(payload interface{}) interface{} {
 		}
 	}
 	checkNativeAffinity(f.rt, resolved)
+	if memo {
+		f.natives[payload] = resolved
+	}
 	return resolved
+}
+
+// byteSlice copies one LBytes backing array, once per template array however
+// many headers reach it (issue #576).  No cycle is possible through bytes,
+// so the memo is filled after the copy.
+func (f *forker) byteSlice(b *[]byte) *[]byte {
+	if cp, ok := f.bytes[b]; ok {
+		return cp
+	}
+	nb := append([]byte(nil), *b...)
+	f.bytes[b] = &nb
+	return &nb
 }
 
 // mapData rebuilds md as a fresh sorted map whose keys and values are
 // remapped through the walker (unlike detachMapData, entries may legally
 // contain funs and natives — the walker applies fork policy to them).
 //
-// Memoised per *MapData, and seeded BEFORE the entries are walked, for the
-// same two reasons f.vals is: a map reachable through several headers maps
-// to one clone, and a map that reaches itself terminates (issue #576; see
-// the forker doc).
+// Memoised per *MapData, and seeded BEFORE the entries are walked, so that
+// a map reachable through several headers maps to one clone, and a map
+// that reaches itself closes onto that clone instead of nesting a fresh
+// one per header (issue #576; see the forker doc).
 func (f *forker) mapData(md *MapData) *MapData {
 	if md == nil {
 		return nil
