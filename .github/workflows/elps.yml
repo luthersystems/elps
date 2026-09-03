@@ -80,6 +80,26 @@ jobs:
         with:
           version: v2.6
           args: --timeout=5m ./...
+          # `config verify` downloads the JSON schema from golangci-lint.run
+          # on every run and was the one step in this job that needed a host
+          # other than GitHub.  When that fetch timed out the job died here,
+          # before a single test had run, and the rollup went red for a
+          # reason no PR could fix (three PRs in one day: #586 twice, #573).
+          # The check itself is worth keeping: `golangci-lint run` does NOT
+          # reject an unknown key in .golangci.yml (a misspelled section runs
+          # to "0 issues"), only the schema check does.  So it runs in the
+          # next step against the schema vendored in .github/, offline.
+          verify: false
+
+      # The schema check `verify: true` used to run, against the checked-in
+      # copy of the schema so it needs no network.  The Makefile derives the
+      # schema filename from the `version:` above, so bumping golangci-lint
+      # without re-vendoring the schema fails here with a missing file, not
+      # silently validating against the old one.  golangci-lint is on PATH
+      # because the action above adds its install dir (core.addPath in
+      # src/run.ts, before the install-only branch).
+      - name: golangci-lint config schema
+        run: make check-golangci-config
 
       - name: Tests
         run: make test
