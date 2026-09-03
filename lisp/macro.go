@@ -103,6 +103,9 @@ func macroDefmacro(env *LEnv, args *LVal) *LVal {
 		return fun
 	}
 	fun.FunType = LFunMacro //elps:mutates evaluate as a macro: fun is the closure env.Lambda freshly allocated above
+	// Stamp the definition name so LEnv.Get can return the binding itself
+	// rather than a renamed copy on every lookup (see LEnv.Get).
+	fun.Str = sym.Str //elps:mutates records the definition name: fun is the closure env.Lambda freshly allocated above
 	return SExpr([]*LVal{
 		Symbol("lisp:progn"),
 		SExpr([]*LVal{
@@ -124,6 +127,9 @@ func macroDefun(env *LEnv, args *LVal) *LVal {
 		fun.SetCallStack(env.Runtime.Stack.Copy())
 		return fun
 	}
+	// Stamp the definition name so LEnv.Get can return the binding itself
+	// rather than a renamed copy on every lookup (see LEnv.Get).
+	fun.Str = sym.Str //elps:mutates records the definition name: fun is the closure env.Lambda freshly allocated above
 	return SExpr([]*LVal{
 		Symbol("lisp:progn"),
 		SExpr([]*LVal{
