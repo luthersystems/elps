@@ -792,41 +792,95 @@ still be aliased by another binding, a container, or a closure. Code that
 intends to mutate data it did not construct copies unconditionally.
 `IsSealed()` stays a Go-side tool, where refuse-or-copy is a real choice.
 
-### 4.5 The macro-expansion stamp writes into storage it may not own
+### 4.5 The macro-expansion stamp is handed storage it does not own
 
 `stampMacroExpansion` (`lisp/macro.go`) is the one place the evaluator
-writes debug metadata (a source location and, under a debugger, expansion
-info) onto nodes it did not construct: whatever a macro body returned.  It
+attaches debug metadata (a source location and, under a debugger, expansion
+info) to nodes it did not construct: whatever a macro body returned.  It
 cannot tell fresh expansion output from storage that also belongs to
-someone else, and it has bitten six times, each found in production or by
-fuzzing rather than review.  The table is the history of the shared storage
-this stamp has written into; *where each was fixed* varies, and only three
-are guarded inside the function:
+someone else.  For most of its life it wrote the call site **in place**, and
+it bit seven times, each found in production or by fuzzing rather than
+review.  The table is the history of the shared storage this stamp wrote
+into; *where each was fixed* varies:
 
 | Issue | Storage the stamp wrote into | Where it was fixed |
 |---|---|---|
-| #274 | the singletons `Nil`/`true`/`false` (every reader corrupted for the process lifetime) | here: `isSingleton`, in `stampGuarded` |
+| #274 | the singletons `Nil`/`true`/`false` (every reader corrupted for the process lifetime) | here: `isSingleton` |
 | #396 (fixed in #406) | the form being expanded, aliased into the macro's `&rest` list | upstream: `macroArgList` builds that list over a fresh array |
-| #370 | reader nodes emitted with synthetic locations | here: the `v.sealed` check in `stampGuarded` |
+| #370 | reader nodes emitted with synthetic locations | here: the `v.sealed` check |
 | #517 | sealed parse-tree subtrees (cross-environment write, data race) | here: the same `v.sealed` check |
 | #431 | the caller's `env.loc`, shared by pointer, stored on every node the walk claimed | at the call site: `LEnv.macroCall` passes `env.loc.Copy()` |
-| the value fix | values yielded by the expansion: a builtin reached through `Get`, a global sorted map (`lisp:car` acquired a macro call site as its definition, and the profiler reported it) | here: the ownership rule below |
+| the value fix | values yielded by the expansion: a builtin reached through `Get`, a global sorted map (`lisp:car` acquired a macro call site as its definition, and the profiler reported it) | here: stamped a private header copy instead of the value |
+| #582 | unsealed *syntax* that is itself a binding: a runtime list from `(list ...)` returned by a lisp macro body, or a located list holding an unlocated value (the value fix still overwrote its cells with private copies, in place) | here: the whole stamp became copy-on-write |
 
-So the function's own exclusions are three -- `isSingleton`, `sealed`, and
-the nil-`callSite` early return.  The rule below **replaces** adding more of
-them; it is not a fourth:
+**The rule now: the stamp writes only to nodes it allocated.**
 
-- The stamp writes **in place only to syntax** -- the node types the reader
-  produces (`sealableNodeType`) that are unsealed and not singletons.
-- **Any other node type is a value.** A value is never written to.  At the
-  root it is returned as a stamped private header copy; inside an
-  expansion-owned list it is replaced by one.  The copy shares the value's
-  storage, so it is the same value to every reader.
-- Pinned by `TestMacroExpansionStampsValuesOnPrivateHeaders` (root and
-  child, for the value types a macro body can hand back: `LFun`, `LNative`,
-  `LSortMap`, `LArray`, `LBytes`, `LTaggedVal` -- `LError` is returned before
-  the stamp runs and the rest are evaluator-internal marks) and
-  `TestMacroExpansionDoesNotStampFunctionValues` (the `lisp:car` case).
+- The walk over the expansion is **copy-on-write**.  A node that needs a
+  stamp (no real location), or whose cells changed, is replaced *in the
+  returned tree* by a private copy; a node that needs neither is shared, as
+  are sealed subtrees, singletons and located values.  The value the macro
+  body returned, and everything reachable from it, is never written to.
+- The copy shares everything behind a pointer (the `*funData` behind an
+  `LFun`, the `*MapData` behind an `LSortMap`, the `[]byte` behind `LBytes`,
+  an unchanged `Cells` backing array); its own struct -- `source`,
+  `macroExpansion` and, when a cell changed, the cell slice -- is private.
+- There is no identity exclusion left to add.  The remaining guards --
+  `isSingleton`, `sealed`, the nil-`callSite` early return -- are about
+  *sharing*, not about writing: a singleton or a sealed subtree is shared
+  outright rather than walked.
+- Pinned by `TestMacroExpansionStampNeverWritesTheExpansion` (an unlocated
+  runtime list, a located list with an unlocated value cell, an unlocated
+  list nested in a located binding, sealed and located cells shared,
+  debugger metadata only on the copy),
+  `TestMacroReturningARuntimeListBindingLeavesItUnlocated` (the ELPS shape
+  from #582, plus the error from an expansion built with `(list ...)` still
+  naming the macro call site), and, for the value cases,
+  `TestMacroExpansionStampsValuesOnPrivateHeaders` and
+  `TestMacroExpansionDoesNotStampFunctionValues`.
+
+**Cost, and who pays it.** An expansion in which nothing needs a stamp is
+returned as is, with no allocation
+(`TestMacroExpansionStampAllocatesNothingWhenNothingNeedsAStamp`).  A node
+that needs a stamp costs one header, plus a header and a cell slice for each
+ancestor up to the root.  A cyclic expansion (constructible from Go only)
+additionally pays for the walk that discovers the cycle before the memoised
+rerun; the IDs that walk minted are discarded with it, so the kept walk's
+expansion IDs stay contiguous and in pre-order.
+
+Only a **lisp** macro pays.  Its body builds its expansion with quasiquote,
+whose output carries the template's locations, so the usual lisp expansion
+needs no stamp at all -- and an unlocated node it does return may be a
+binding (#582), which is exactly what the copy is for.  A **Go** macro
+synthesizes its expansion from fresh nodes, so the copies would cost it two
+allocations per node on every expansion: the first draft of the
+copy-on-write stamp measured +23% allocs/op and +18% sec/op on
+`BenchmarkPackage/get-nested-baseline` in `libjson`, which expands
+`libtesting`'s `assert-equal` 6000 times per iteration, and substrate's
+`cc:infof` family has the same shape on every phylum log line.  So
+`LEnv.macroCall`, when no debugger is attached, **locates a Go macro's
+expansion in place** before the stamp sees it (`locateExpansionTree`,
+`lisp/macro.go`): every unlocated unsealed syntax node reachable from the
+expansion gets the call site, **stopping at the macro's arguments**, and
+the stamp then shares the fresh nodes.  (An unlocated value or argument in
+the expansion, or a cycle, still costs the copies the stamp's rules give.)
+That is the in-place write the stamp gave up, confined to the one caller
+whose output is fresh *by contract*: a Go macro's expansion consists of
+nodes it constructed and its arguments (`LEnv.AddMacros` states the rule).
+The arguments are the caller's nodes and may be bindings -- a call form
+built at runtime, `(macroexpand-1 (list 'm l))` or a Go-side `Eval` of a
+runtime form, hands the macro the raw binding `l` -- which is why the
+locate stops at them: the stamp copies such an argument, exactly as it
+copies a binding a lisp macro returns.  A Go macro that returned a binding
+it looked up *itself* would have the binding located -- the #582 shape --
+and none in this repository or in substrate does.  Values are never
+written to on either path.  Under a debugger the hand-off is skipped and a
+Go macro's expansion is copied like a lisp macro's, since the copy is
+where the expansion metadata the debugger reads is attached.  Pinned by
+`TestGoMacroExpansionIsLocatedInPlace` (fresh nodes located in place, a
+sealed argument untouched, an unlocated runtime argument left to the
+stamp, nothing located under a debugger).  `BenchmarkMacroDefun` and
+`BenchmarkPackage` are unchanged to the allocation against the parent
+commit.
 
 **Behaviour change, confined to error-location attribution.** Results are
 unchanged.  What changes is that a value a macro yields keeps its **own**
@@ -840,7 +894,10 @@ reach inside a function value and locate its body.  A function built by
 `at unknown` in every frame and now names the `compose` call, which is a
 strict improvement.  Pinned by
 `TestSynthesizedFunctionsReportTheirConstructionSite` (`cmd/`), which holds
-the rendered `elps run` output for five shapes.
+the rendered `elps run` output for five shapes.  A binding a macro body
+returns keeps its own (absent) location too; the stamp lands on the copy
+the caller evaluates, so an error raised while evaluating the expansion
+still reports the macro call site.
 
 **Identity across the header copy.** The copy is a new `*LVal`, so anything
 keyed on the header pointer must key on the shared storage instead or it
@@ -851,12 +908,8 @@ crossing runtimes through a macro expansion is still caught.  The same key
 also closes a hole that predates the stamp change -- `LEnv.Get` returns a
 `FunRef` header copy for **every** unqualified function lookup.
 
-Residual, tracked in #582: an unsealed *syntax* container that is itself a
-binding (a runtime list from `(list ...)` returned by a macro body) is
-indistinguishable from expansion output and is still stamped in place.
-
-When you touch this code: do not add an identity exclusion; extend the
-ownership rule, and add the new shape to the sweep test.
+When you touch this code: do not write to the expansion, and do not add an
+identity exclusion; if a new shape turns up, add it to the sweep test.
 
 ## 5. Embedder checklist
 

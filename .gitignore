@@ -27,3 +27,6 @@ fuzz-crashers/
 # empty-discovery control and deletes it again. Ignored so an interrupted run
 # cannot leave the tree looking dirty.
 internal/citest-emptyfuzz.*/
+
+# `go test -c` / -memprofile leave a compiled test binary beside the package
+*.test

@@ -229,11 +229,12 @@ func (g *Gen) value(depth int) *lisp.LVal {
 // locate gives a generated value a REAL source location about half the time.
 //
 // WHY.  Before this, every generated value carried lisp.nativeSource's shared
-// synthetic Location (Pos < 0), and the only write the interpreter makes to
-// Source -- stampMacroExpansion -- is guarded by `Source == nil || Source.Pos
-// < 0`.  A corpus of exclusively synthetic values therefore never presents the
-// case that a corrupting builtin would have to be caught on, and
-// internal/fuzzfp's Source rule has nothing to bite on.
+// synthetic Location (Pos < 0), and the one place the interpreter attaches a
+// Source -- stampMacroExpansion, which now stamps a private copy rather than
+// the node (issue #582) -- selects nodes by `Source == nil || Source.Pos < 0`.
+// A corpus of exclusively synthetic values therefore never presents the case
+// that a corrupting builtin would have to be caught on, and internal/fuzzfp's
+// Source rule has nothing to bite on.
 //
 // It is also the more faithful model, not merely the more testable one.  Every
 // callable that receives an UNEVALUATED fragment -- every special operator,

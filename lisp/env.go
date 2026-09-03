@@ -945,6 +945,21 @@ func registrationFunValue(pkgName, fid string, funType LFunType, formals *LVal, 
 // A macro's sealed formal argument list is shared with env by reference; an
 // unsealed one is copied so environments never share mutable formals.  See
 // registrationFormals and issues #363, #379, #514.
+//
+// CONTRACT FOR A GO MACRO'S EXPANSION.  The value a Go macro returns must
+// consist of nodes the macro constructed and its arguments (which it may
+// splice in as they are, unevaluated).  It must not embed a lisp value it
+// looked up -- an unlocated runtime list reached through Get -- because,
+// unless a debugger is attached, macroCall locates a Go macro's expansion IN
+// PLACE (locateExpansionTree): every unlocated unsealed syntax node
+// reachable from it, other than the arguments and what is under them, gets
+// the macro call site as its source location, and a binding among them
+// would keep that location for the rest of the process (the issue #582
+// shape, closed for lisp macros and for a Go macro's arguments by the
+// copy-on-write stamp).  Values -- functions, maps, vectors, bytes, natives
+// -- are exempt: they are never written to.  The in-place locate is what
+// keeps a Go macro's expansion free of per-node copies; see the warning
+// above stampMacroExpansion (lisp/macro.go), "who pays".
 func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 	if len(macs) == 0 {
 		macs = DefaultMacros()
@@ -1449,6 +1464,21 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 		return r
 	}
 
+	// A Go macro's expansion is fresh nodes and its arguments, by contract
+	// (LEnv.AddMacros), so its fresh nodes are located IN PLACE here,
+	// stopping at the arguments, and the copy-on-write stamp below shares
+	// them: the copies would otherwise cost two allocations per node on
+	// every expansion, on substrate's logging macros among others.  The
+	// arguments may be bindings (a runtime-built call form), so they are
+	// left to the stamp, which copies them.  Not under a debugger, whose
+	// expansion metadata is attached to the stamp's copies.  Not for a lisp
+	// macro, whose unlocated output may be a binding (issue #582) -- that
+	// is what the copy is for.  See the warning above stampMacroExpansion,
+	// "who pays".
+	if fun.Builtin() != nil && env.Runtime.Debugger == nil {
+		locateExpansionTree(r, callSite, args.Cells)
+	}
+
 	// NOTE:  There should be no need to check for LMarkTailRec objects because
 	// we block all tail-recursion for macro calls.
 
@@ -1472,14 +1502,12 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	}
 	r = stampMacroExpansion(r, callSite, mctx, env.Runtime)
 
-	// ORDER: stamp first, unquote second.  shallowUnquote also mints a
-	// private header, so stamping after it would let a VALUE root be stamped
-	// in place and save one allocation on that path -- but only by telling
-	// stampMacroExpansion "this root is yours to write", which is the kind of
-	// per-call-site ownership assertion the ownership rule above it exists to
-	// remove.  The saving applies solely to a root that is an unlocated value
-	// (a rare shape; most expansion roots are syntax), so the order stays as
-	// it is.
+	// The stamp is copy-on-write (see the warning above it): r is never
+	// written to, and the stamped tree it returns is what is evaluated.
+	// shallowUnquote below mints its own private header when the root is
+	// quoted, copying the stamp along with the rest of the struct, so the
+	// two are order-independent; stamp first so that the metadata is on the
+	// node that shallowUnquote copies from.
 	//
 	// This is a lazy unquote.  Unquoting in this way appears to allow the
 	// upcoming evaluation to produce the correct value for user defined

@@ -19,15 +19,19 @@ func TestStampMacroExpansion_NoContext(t *testing.T) {
 	expr := SExpr([]*LVal{inner, Int(1), Int(2)})
 	expr.source = nil
 
-	stampMacroExpansion(expr, callSite, nil, rt)
+	got := stampMacroExpansion(expr, callSite, nil, rt)
 
-	// Source should be stamped.
-	assert.Equal(t, callSite, expr.source)
-	assert.Equal(t, callSite, inner.source)
+	// The stamp is copy-on-write (issue #582): the returned tree is
+	// stamped, the input is untouched.
+	require.NotSame(t, expr, got)
+	assert.Equal(t, callSite, got.source)
+	assert.Equal(t, callSite, got.Cells[0].source)
+	assert.Nil(t, expr.source)
+	assert.Nil(t, inner.source)
 
 	// MacroExpansion should remain nil.
-	assert.Nil(t, expr.macroExpansion)
-	assert.Nil(t, inner.macroExpansion)
+	assert.Nil(t, got.macroExpansion)
+	assert.Nil(t, got.Cells[0].macroExpansion)
 }
 
 func TestStampMacroExpansion_WithContext(t *testing.T) {
@@ -50,7 +54,15 @@ func TestStampMacroExpansion_WithContext(t *testing.T) {
 	expr := SExpr([]*LVal{inner, arg1, arg2})
 	expr.source = nil
 
-	stampMacroExpansion(expr, callSite, ctx, rt)
+	got := stampMacroExpansion(expr, callSite, ctx, rt)
+
+	// Copy-on-write (issue #582): the metadata lands on the returned tree
+	// and the input is untouched.
+	for _, orig := range []*LVal{expr, inner, arg1, arg2} {
+		assert.Nil(t, orig.macroExpansion, "the input was written to")
+		assert.Nil(t, orig.source, "the input was written to")
+	}
+	expr, inner, arg1, arg2 = got, got.Cells[0], got.Cells[1], got.Cells[2]
 
 	// All nodes should have MacroExpansion set.
 	require.NotNil(t, expr.macroExpansion)
@@ -95,16 +107,23 @@ func TestStampMacroExpansion_PreservesRealSource(t *testing.T) {
 	expr := SExpr([]*LVal{synth, node})
 	expr.source = nil
 
-	stampMacroExpansion(expr, callSite, ctx, rt)
+	got := stampMacroExpansion(expr, callSite, ctx, rt)
 
-	// Real source node should keep its source and have NO MacroExpansion.
+	// Real source node is shared, keeps its source and has NO
+	// MacroExpansion.
+	assert.Same(t, node, got.Cells[1])
 	assert.Equal(t, realSource, node.source)
 	assert.Nil(t, node.macroExpansion)
 
-	// Synthetic nodes should be stamped.
-	assert.Equal(t, callSite, synth.source)
-	require.NotNil(t, synth.macroExpansion)
-	assert.Equal(t, "lisp:defun", synth.macroExpansion.Name)
+	// Synthetic nodes are stamped on the copy; the input is untouched
+	// (issue #582).
+	stamped := got.Cells[0]
+	require.NotSame(t, synth, stamped)
+	assert.Equal(t, callSite, stamped.source)
+	require.NotNil(t, stamped.macroExpansion)
+	assert.Equal(t, "lisp:defun", stamped.macroExpansion.Name)
+	assert.Nil(t, synth.source)
+	assert.Nil(t, synth.macroExpansion)
 }
 
 func TestStampMacroExpansion_SkipsSingletonNil(t *testing.T) {
@@ -202,7 +221,7 @@ func TestMacroExpansionAccessor(t *testing.T) {
 	ctx := &macroExpansionContext{CallSite: callSite, Name: "lisp:defun", Args: args}
 	expr := SExpr([]*LVal{Symbol("+")})
 	expr.source = nil
-	stampMacroExpansion(expr, callSite, ctx, rt)
+	expr = stampMacroExpansion(expr, callSite, ctx, rt)
 
 	m, ok := expr.MacroExpansion()
 	require.True(t, ok)
