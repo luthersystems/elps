@@ -130,7 +130,7 @@ func (a *analyzer) prescanCustomDef(expr *lisp.LVal, scope *Scope, pkg string) {
 		Name:      nameVal.Str,
 		Package:   pkg,
 		Kind:      kind,
-		Source:    astutil.SourceLoc(nameVal),
+		Source:    astutil.SymbolLoc(nameVal),
 		Node:      nameVal,
 		Signature: signatureFromFormals(formalsVal),
 	}
@@ -155,7 +155,7 @@ func (a *analyzer) prescanDefun(expr *lisp.LVal, scope *Scope, kind SymbolKind, 
 		Name:      nameVal.Str,
 		Package:   pkg,
 		Kind:      kind,
-		Source:    astutil.SourceLoc(nameVal),
+		Source:    astutil.SymbolLoc(nameVal),
 		Node:      nameVal,
 		Signature: signatureFromFormals(formalsVal),
 		DocString: DefunDocstring(expr),
@@ -180,7 +180,7 @@ func (a *analyzer) prescanSet(expr *lisp.LVal, scope *Scope, pkg string) {
 		Name:    name,
 		Package: pkg,
 		Kind:    SymVariable,
-		Source:  astutil.SourceLoc(expr.Cells[1]),
+		Source:  astutil.SymbolLoc(expr.Cells[1]),
 		Node:    extractSetSymbolNode(expr.Cells[1]),
 	}
 	scope.Define(sym)
@@ -203,7 +203,7 @@ func (a *analyzer) prescanDeftype(expr *lisp.LVal, scope *Scope, pkg string) {
 		Name:    nameVal.Str,
 		Package: pkg,
 		Kind:    SymType,
-		Source:  astutil.SourceLoc(nameVal),
+		Source:  astutil.SymbolLoc(nameVal),
 		Node:    nameVal,
 	}
 	scope.Define(sym)
@@ -442,7 +442,7 @@ func (a *analyzer) analyzeDefun(node *lisp.LVal, scope *Scope, kind SymbolKind, 
 			Name:    nameVal.Str,
 			Package: defPkg,
 			Kind:    kind,
-			Source:  astutil.SourceLoc(nameVal),
+			Source:  astutil.SymbolLoc(nameVal),
 			Node:    nameVal,
 		}
 		if formalsForSig.Type == lisp.LSExpr {
@@ -488,7 +488,7 @@ func (a *analyzer) analyzeDeftype(node *lisp.LVal, scope *Scope, currentPkg stri
 			Name:    nameVal.Str,
 			Package: defPkg,
 			Kind:    SymType,
-			Source:  astutil.SourceLoc(nameVal),
+			Source:  astutil.SymbolLoc(nameVal),
 			Node:    nameVal,
 		}
 		scope.Define(sym)
@@ -521,7 +521,7 @@ func (a *analyzer) analyzeStringDeftype(node *lisp.LVal, scope *Scope, currentPk
 		Name:    nameVal.Str,
 		Package: defPkg,
 		Kind:    SymVariable,
-		Source:  astutil.SourceLoc(nameVal),
+		Source:  astutil.SymbolLoc(nameVal),
 		Node:    nameVal,
 	}
 	scope.Define(sym)
@@ -573,7 +573,7 @@ func (a *analyzer) analyzeDefLike(node *lisp.LVal, scope *Scope, currentPkg stri
 				Name:    nameVal.Str,
 				Package: defPkg,
 				Kind:    kind,
-				Source:  astutil.SourceLoc(nameVal),
+				Source:  astutil.SymbolLoc(nameVal),
 				Node:    nameVal,
 			}
 			scope.Define(sym)
@@ -769,7 +769,7 @@ func (a *analyzer) analyzeLet(node *lisp.LVal, scope *Scope, sequential bool, cu
 			sym := &Symbol{
 				Name:   nameVal.Str,
 				Kind:   SymVariable,
-				Source: astutil.SourceLoc(nameVal),
+				Source: astutil.SymbolLoc(nameVal),
 				Node:   nameVal,
 				Init:   valueVal,
 			}
@@ -809,7 +809,7 @@ func (a *analyzer) analyzeFlet(node *lisp.LVal, scope *Scope, labels bool, curre
 			sym := &Symbol{
 				Name:      nameVal.Str,
 				Kind:      SymFunction,
-				Source:    astutil.SourceLoc(nameVal),
+				Source:    astutil.SymbolLoc(nameVal),
 				Node:      nameVal,
 				Signature: signatureFromFormals(formalsVal),
 			}
@@ -844,7 +844,7 @@ func (a *analyzer) analyzeFlet(node *lisp.LVal, scope *Scope, labels bool, curre
 			sym := &Symbol{
 				Name:      nameVal.Str,
 				Kind:      SymFunction,
-				Source:    astutil.SourceLoc(nameVal),
+				Source:    astutil.SymbolLoc(nameVal),
 				Node:      nameVal,
 				Signature: signatureFromFormals(formalsVal),
 			}
@@ -885,7 +885,7 @@ func (a *analyzer) analyzeDotimes(node *lisp.LVal, scope *Scope, currentPkg stri
 		sym := &Symbol{
 			Name:   varVal.Str,
 			Kind:   SymVariable,
-			Source: astutil.SourceLoc(varVal),
+			Source: astutil.SymbolLoc(varVal),
 			Node:   varVal,
 		}
 		dotimesScope.Define(sym)
@@ -941,7 +941,7 @@ func (a *analyzer) analyzeTestLet(node *lisp.LVal, scope *Scope, sequential bool
 			sym := &Symbol{
 				Name:   nameVal.Str,
 				Kind:   SymVariable,
-				Source: astutil.SourceLoc(nameVal),
+				Source: astutil.SymbolLoc(nameVal),
 				Node:   nameVal,
 			}
 			letScope.Define(sym)
@@ -981,7 +981,7 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 			existing.References++
 			a.result.References = append(a.result.References, &Reference{
 				Symbol: existing,
-				Source: astutil.SourceLoc(node.Cells[1]),
+				Source: astutil.SymbolLoc(node.Cells[1]),
 				Node:   extractSetSymbolNode(node.Cells[1]),
 			})
 			return
@@ -991,7 +991,7 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 			Name:    name,
 			Package: currentPkg,
 			Kind:    SymVariable,
-			Source:  astutil.SourceLoc(node.Cells[1]),
+			Source:  astutil.SymbolLoc(node.Cells[1]),
 			Node:    extractSetSymbolNode(node.Cells[1]),
 		}
 		a.root.Define(sym)
@@ -1006,7 +1006,7 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 			Name:    name,
 			Package: defPkg,
 			Kind:    SymVariable,
-			Source:  astutil.SourceLoc(node.Cells[1]),
+			Source:  astutil.SymbolLoc(node.Cells[1]),
 			Node:    extractSetSymbolNode(node.Cells[1]),
 		}
 		scope.Define(sym)
@@ -1129,7 +1129,7 @@ func (a *analyzer) analyzeMacrolet(node *lisp.LVal, scope *Scope, currentPkg str
 		sym := &Symbol{
 			Name:   nameVal.Str,
 			Kind:   SymMacro,
-			Source: astutil.SourceLoc(nameVal),
+			Source: astutil.SymbolLoc(nameVal),
 			Node:   nameVal,
 		}
 		macroletScope.Define(sym)
@@ -1268,7 +1268,7 @@ func (a *analyzer) analyzeCall(node *lisp.LVal, scope *Scope, currentPkg string)
 			sym.References++
 			a.result.References = append(a.result.References, &Reference{
 				Symbol: sym,
-				Source: astutil.SourceLoc(node.Cells[0]),
+				Source: astutil.SymbolLoc(node.Cells[0]),
 				Node:   node.Cells[0],
 			})
 		}
@@ -1322,7 +1322,7 @@ func (a *analyzer) addParams(formalsVal *lisp.LVal, scope *Scope) {
 		// Try to find source location from the formals cells
 		for _, cell := range formalsVal.Cells {
 			if cell.Type == lisp.LSymbol && cell.Str == p.Name {
-				sym.Source = astutil.SourceLoc(cell)
+				sym.Source = astutil.SymbolLoc(cell)
 				sym.Node = cell
 				break
 			}
@@ -1357,13 +1357,13 @@ func (a *analyzer) resolveSymbol(node *lisp.LVal, scope *Scope, currentPkg strin
 		sym.References++
 		a.result.References = append(a.result.References, &Reference{
 			Symbol: sym,
-			Source: astutil.SourceLoc(node),
+			Source: astutil.SymbolLoc(node),
 			Node:   node,
 		})
 	} else {
 		a.result.Unresolved = append(a.result.Unresolved, &UnresolvedRef{
 			Name:            name,
-			Source:          astutil.SourceLoc(node),
+			Source:          astutil.SymbolLoc(node),
 			Node:            node,
 			InsideMacroCall: a.insideMacroCall > 0,
 		})
@@ -1416,7 +1416,7 @@ func (a *analyzer) resolveQualifiedSymbol(node *lisp.LVal, scope *Scope, pkgName
 	sym.References++
 	a.result.References = append(a.result.References, &Reference{
 		Symbol: sym,
-		Source: astutil.SourceLoc(node),
+		Source: astutil.SymbolLoc(node),
 		Node:   node,
 	})
 }
@@ -1467,7 +1467,7 @@ func (a *analyzer) resolveTemplateSymbol(node *lisp.LVal, scope *Scope, currentP
 		sym.References++
 		a.result.References = append(a.result.References, &Reference{
 			Symbol: sym,
-			Source: astutil.SourceLoc(node),
+			Source: astutil.SymbolLoc(node),
 			Node:   node,
 		})
 	}

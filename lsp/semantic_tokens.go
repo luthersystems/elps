@@ -120,14 +120,6 @@ func collectSemanticTokens(
 		return
 	}
 
-	// The NODE's position, which is what the analysis result is keyed by --
-	// buildSymbolDefsMap and buildSymbolRefsMap index by the node's line/col
-	// -- and which for a quoted atom is the quote, not the atom.  atomSpan
-	// below gives the position of the TEXT; classifySymbol must keep using
-	// this one or a quoted symbol stops matching its own analysis entry.
-	line := vLoc.Line - 1 // convert to 0-based
-	col := max(vLoc.Col-1, 0)
-
 	switch v.Type {
 	case lisp.LInt, lisp.LFloat:
 		tokLine, tokCol, length := atomSpan(v, src, 1)
@@ -156,7 +148,15 @@ func collectSemanticTokens(
 		}
 		name := v.Str
 		tokLine, tokCol, length := atomSpan(v, src, len(name))
-		tokType, mods := classifySymbol(name, line, col, defs, refs)
+		// The ATOM's position, which is both where this token starts and what
+		// the analysis result is keyed by: buildSymbolDefsMap and
+		// buildSymbolRefsMap index analysis.Symbol.Source, and astutil.SymbolLoc
+		// puts that on the NAME rather than on the reader quote in front of it
+		// (elps#577).  It used to be keyed by the NODE's position -- the quote
+		// -- so this call had to be passed a different position from the token
+		// it classifies; the two agree now, and a quoted symbol matches its own
+		// analysis entry at the column its token occupies.
+		tokType, mods := classifySymbol(name, tokLine, tokCol, defs, refs)
 		*tokens = append(*tokens, rawToken{
 			line: tokLine, startChar: tokCol, length: length,
 			tokenType: tokType, modifiers: mods,

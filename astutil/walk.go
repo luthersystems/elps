@@ -154,6 +154,51 @@ func SourceLoc(v *lisp.LVal) *token.Location {
 	return nil
 }
 
+// SymbolLoc returns the location of the NAME a symbol node is written with,
+// which is not always the node's own span.
+//
+// rdparser gives the whole 'x form a single node: lisp.Quote copies the symbol
+// and sets its quoted flag rather than wrapping it, so no node stands for the
+// quote, and applyPrefixLocation then moves the surviving node's start back
+// onto the ' so that the form reports the position a reader would point at.
+// That start is right for the FORM and wrong for the NAME, and a consumer that
+// wants to point at, highlight, or REPLACE the identifier needs the latter:
+// textDocument/rename built its edit ranges from the form span and so replaced
+// the quote along with the name, turning (set 'x 1) into (set new 1) -- a
+// different program, applied to the user's file unread (elps#577).
+//
+// The end of the span is the name's end already (ParseQuote inherits it from
+// the operand), so the name is recovered by measuring len(v.Str) BACK from it
+// rather than by counting ' characters forward.  That is exact whatever sits
+// in the gap -- "' x", a newline, a preserved comment -- and it is a no-op on
+// an unquoted symbol, whose span is its name.
+//
+// It never widens a span and never moves one it cannot account for: a node
+// whose recorded end is missing, or whose name does not fit inside its own
+// span, is returned untouched.
+//
+// This is NOT elps#463.  That was a WIDTH in the wrong unit (token.TokenEnd
+// counted EndCol one per rune onto a byte-valued Col); this is a start that is
+// one reader-prefix too far left, and it is wrong by the same byte for "'x" as
+// for "'é".
+func SymbolLoc(v *lisp.LVal) *token.Location {
+	loc := SourceLoc(v)
+	if loc == nil || v.Type != lisp.LSymbol || !v.IsQuoted() {
+		return loc
+	}
+	n := len(v.Str)
+	if n == 0 || loc.EndLine <= 0 || loc.EndCol <= 0 {
+		return loc
+	}
+	if loc.EndCol-n < 1 || loc.EndPos-n < loc.Pos {
+		return loc
+	}
+	loc.Line = loc.EndLine
+	loc.Col = loc.EndCol - n
+	loc.Pos = loc.EndPos - n
+	return loc
+}
+
 // SourceOf returns the best source location for a node.
 // Prefers the node's own source, falls back to first child's source.
 // Returns nil for a nil node, so it is safe to call on the nil parent Walk

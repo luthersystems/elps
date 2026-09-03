@@ -481,7 +481,7 @@ func scanDefun(expr *lisp.LVal, kind SymbolKind) *ExternalSymbol {
 		Name:      nameVal.Str,
 		Kind:      kind,
 		Signature: signatureFromFormals(formalsVal),
-		Source:    astutil.SourceLoc(nameVal),
+		Source:    astutil.SymbolLoc(nameVal),
 		DocString: DefunDocstring(expr),
 	}
 }
@@ -498,7 +498,7 @@ func scanDeftype(expr *lisp.LVal) *ExternalSymbol {
 	return &ExternalSymbol{
 		Name:   nameVal.Str,
 		Kind:   SymType,
-		Source: astutil.SourceLoc(nameVal),
+		Source: astutil.SymbolLoc(nameVal),
 	}
 }
 
@@ -519,7 +519,7 @@ func scanSet(expr *lisp.LVal) *ExternalSymbol {
 	return &ExternalSymbol{
 		Name:   name,
 		Kind:   SymVariable,
-		Source: astutil.SourceLoc(arg),
+		Source: astutil.SymbolLoc(arg),
 	}
 }
 
