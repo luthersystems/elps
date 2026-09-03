@@ -2,7 +2,8 @@
 
 // Singleton mutation regression test for issue #333.
 //
-// Pre-fix, lambdaVars (lisp.go) did:
+// Pre-fix, printing a lambda concatenated its formals with its bound
+// variables and then unquoted the result in place:
 //
 //	s := SExpr([]*LVal{Quote(Symbol("list")), formals, bound})
 //	s = builtinConcat(nil, s)
@@ -18,11 +19,16 @@
 // invisible to SingletonSnapshot.Verify() / the elpscheck build, which
 // compare values rather than observing writes. Only -race caught it.
 //
-// Two tests here:
+// The mutation path no longer exists at all. A function's bound-variable
+// list was always empty -- the scope it rendered belonged to a
+// per-function environment nothing ever bound into -- so (*LVal).str
+// prints the formals directly and concatenates, copies and unquotes
+// nothing. These tests now pin that: printing a lambda writes nowhere.
 //
-//   - TestLambdaVarsDoesNotReturnSingleton is deterministic and needs no
-//     -race: it asserts the identity invariant directly.
-//   - TestSingletonRaceLambdaVars drives the real production path
+//   - TestPrintingZeroArgLambdaWritesNothing is deterministic and needs
+//     no -race: it asserts the rendered text and then that every shared
+//     singleton is untouched.
+//   - TestSingletonRacePrintingLambda drives the real production path
 //     ((*LVal).String() on a zero-formal lambda) against concurrent
 //     evaluation. Run with `go test -race` to observe the failure
 //     pre-fix.
@@ -50,34 +56,39 @@ func zeroArgLambda(t *testing.T) (*LEnv, *LVal) {
 	return env, fn
 }
 
-// TestLambdaVarsDoesNotReturnSingleton pins the identity invariant that
-// makes the mutation safe. lambdaVars writes to the value it returns, so
-// that value must never be one of the shared singletons -- regardless of
-// what builtinConcat decides to hand back for the empty case.
-func TestLambdaVarsDoesNotReturnSingleton(t *testing.T) {
+// TestPrintingZeroArgLambdaWritesNothing pins what replaced the identity
+// invariant. The empty-formals case is the one that reached the write, so
+// it is the one worth pinning: printing it renders the same text as ever
+// and leaves every shared singleton pristine.
+func TestPrintingZeroArgLambdaWritesNothing(t *testing.T) {
 	_, fn := zeroArgLambda(t)
 
-	vars := lambdaVars(fn.Cells[0], boundVars(fn))
-	if isSingleton(vars) {
-		t.Fatalf("lambdaVars returned a shared singleton (%v); mutating it races with every concurrent reader", vars.Type)
-	}
-	if vars.Len() != 0 {
-		t.Errorf("lambdaVars returned %d cells, want 0", vars.Len())
-	}
+	snap := TakeSingletonSnapshot()
 	if got, want := fn.String(), "(lambda () 1)"; got != want {
 		t.Errorf("String() = %q, want %q", got, want)
 	}
+	if bad := snap.Verify(); bad != "" {
+		t.Errorf("printing a lambda mutated the shared singleton %s", bad)
+	}
+	// Verify compares values and so cannot see a write that stores the
+	// value already there -- the shape #333 took.  The structural half of
+	// the invariant is that printing reaches no singleton at all: the only
+	// value it could reach is the formals list, and an empty formals list
+	// is a fresh QExpr, never a singleton.
+	if isSingleton(fn.Cells[0]) {
+		t.Error("a lambda's formals list is a shared singleton; printing must not be able to reach one")
+	}
 }
 
-// TestSingletonRaceLambdaVars reproduces issue #333 under `go test
-// -race`: printers stringify a zero-formal lambda (write side, via
-// lambdaVars) while evaluators evaluate Nil() (read side, `if v.quoted`
-// in (*LEnv).eval). Pre-fix both touch singletonNil and the race
-// detector fires.
+// TestSingletonRacePrintingLambda reproduces issue #333 under `go test
+// -race`: printers stringify a zero-formal lambda (the write side, back
+// when printing concatenated and unquoted) while evaluators evaluate
+// Nil() (read side, `if v.quoted` in (*LEnv).eval). Pre-fix both touch
+// singletonNil and the race detector fires.
 //
 // Each goroutine owns its LEnv -- LEnv is not safe for concurrent use.
 // The race is on the process-wide singleton, not on any env.
-func TestSingletonRaceLambdaVars(t *testing.T) {
+func TestSingletonRacePrintingLambda(t *testing.T) {
 	const (
 		printers   = 4
 		evaluators = 4
@@ -102,8 +113,9 @@ func TestSingletonRaceLambdaVars(t *testing.T) {
 			defer wg.Done()
 			<-start
 			for range iterations {
-				// Write side: str() -> lambdaVars -> builtinConcat
-				// returns Nil() for the empty case -> `s.quoted = false`.
+				// The former write side: str() -> lambdaVars ->
+				// builtinConcat returned Nil() for the empty case and
+				// the caller then set `s.quoted = false` on it.
 				_ = fn.String()
 			}
 		}(lambdas[i])
