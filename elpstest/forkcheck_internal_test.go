@@ -3,6 +3,7 @@
 package elpstest
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -38,19 +39,68 @@ func TestAliasSignatureSeesDealiasing(t *testing.T) {
 	}
 }
 
-// Nested aliasing shows too: a map reachable directly and through a list.
+// Nested aliasing shows too: a map reachable directly and through a list
+// carries the same number in both places, and so does the vector inside
+// it.
 func TestAliasSignatureSeesNestedAlias(t *testing.T) {
 	env := mustEnv(t, `(set 'a (sorted-map "k" (vector 1))) (set 'l (list a (get a "k")))`)
 	sig := aliasSignature(env)
-	// The map's storage and the vector's cells each carry one number, and
-	// each number appears twice: once under a, once under l.
+	lines := map[string]string{}
 	for _, line := range strings.Split(sig, "\n") {
-		if strings.HasPrefix(line, "user:l = ") && !strings.Contains(line, "#") {
-			t.Fatalf("list of aliases rendered without payload numbers: %s", line)
+		if name, rest, ok := strings.Cut(line, " = "); ok {
+			lines[name] = rest
 		}
 	}
-	if strings.Count(sig, "user:a = ") != 1 {
-		t.Fatalf("unexpected signature:\n%s", sig)
+	// user:a renders the map's number first and the vector's number
+	// second (the vector's own cells follow, numbered too).
+	nums := regexp.MustCompile(`#\d+`).FindAllString(lines["user:a"], -1)
+	if len(nums) < 2 {
+		t.Fatalf("user:a should carry a map number and a vector number: %q", lines["user:a"])
+	}
+	mapNum, vecNum := nums[0], nums[1]
+	// user:l is a list (its own number) holding the same map and the same
+	// vector, rendered by number only since both were rendered under a.
+	if !strings.HasSuffix(lines["user:l"], "["+mapNum+" "+vecNum+"]") {
+		t.Fatalf("user:l should hold the map and vector numbers seen under a (%s %s): %q", mapNum, vecNum, lines["user:l"])
+	}
+}
+
+// A shared subtree is rendered once: a chain of lists each holding its
+// predecessor twice is walked in linear time, not once per path in.
+func TestAliasSignatureIsLinearOnDiamonds(t *testing.T) {
+	base := mustEnv(t, `(set 'l0 (list 1))`)
+	env := mustEnv(t, `
+(set 'l0 (list 1))
+(dotimes (i 40) (set 'l0 (list l0 l0)))
+`)
+	// Forty levels add forty short lines' worth of rendering, not 2^40.
+	if grew := len(aliasSignature(env)) - len(aliasSignature(base)); grew > 40*40 {
+		t.Fatalf("diamond chain grew the signature by %d bytes; the shared subtree is being re-walked", grew)
+	}
+	if ids := payloadIDs(env); len(ids) < 40 {
+		t.Fatalf("payloadIDs found %d payloads, want at least 40", len(ids))
+	}
+}
+
+// A closure's captured environment is part of every oracle: mutating it
+// moves the state rendering, and the environment itself is a payload.
+func TestOraclesSeeClosureState(t *testing.T) {
+	env := mustEnv(t, `(let ([outer (vector 0)]) (defun bump! () (append! outer 1) ()))`)
+	before := envState(env)
+	if rc := env.LoadString("m.lisp", `(bump!)`); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	if envState(env) == before {
+		t.Fatal("state rendering did not move on a write through a closure")
+	}
+	found := false
+	for _, path := range payloadIDs(env) {
+		if strings.HasPrefix(path, "user:bump!/env") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("payloadIDs did not reach the closure's captured environment")
 	}
 }
 

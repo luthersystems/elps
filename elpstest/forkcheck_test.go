@@ -101,16 +101,39 @@ func TestForkCheck_SchemaValidatorCredential(t *testing.T) {
 
 // Issue #381 (fixed in #581): a fork shared the template's lisp testing
 // suite, a Go accumulator held as a native global, so a test registered
-// on a fork landed in the template.  The standard library loads the
-// testing package into the template here; the suite is a native payload,
-// so the isolation half of the check sees the share and the parity half
-// sees a fork whose suite already holds another fork's tests.
+// on a fork landed in the template.  The suite is an opaque native to the
+// state and isolation oracles (rendered by type; no identity unless it
+// is a NativeCloner, which the fix made it).  Parity sees the share
+// because registering a name the template's suite already holds is an
+// error: both transactions register "one", so on a shared suite the
+// second fork to run it fails where the cold environment does not.
 func TestForkCheck_TestingSuitePerFork(t *testing.T) {
 	elpstest.RunForkCheck(t, elpstest.ForkCheck{
 		Program: `(use-package 'testing)`,
 		Tx: []string{
 			`(test "one" (assert-equal 1 1))`,
-			`(test "two" (assert-equal 2 2))`,
+			`(test "one" (assert-equal 2 2))`,
+		},
+	})
+}
+
+// Closure-captured state: the state a fork must copy and a transaction
+// mutates through the closure, invisible from the package bindings except
+// through the function.  A walker that stopped at the function header
+// would pass a fork that shared the captured environment.
+func TestForkCheck_ClosureState(t *testing.T) {
+	elpstest.RunForkCheck(t, elpstest.ForkCheck{
+		Program: `
+(let ([outer (vector 0)] [box (sorted-map "n" 0)])
+  (defun bump! () (append! outer 1) (assoc! box "n" (+ 1 (get box "n"))) ())
+  (defun peek () (list (length outer) (get box "n"))))
+(set 'shared (sorted-map "k" 1))
+(defun share-through-closure () shared)
+`,
+		Tx: []string{
+			`(bump!)`,
+			`(bump!) (bump!) (peek)`,
+			`(assoc! (share-through-closure) "k" 2) (get shared "k")`,
 		},
 	})
 }
@@ -118,7 +141,7 @@ func TestForkCheck_TestingSuitePerFork(t *testing.T) {
 // The shapes the existing fork tests already pin, run through the
 // harness so a regression in any of them shows up here with the same
 // diagnostics: closures over mutable state, macros, labels mutual
-// recursion, nested maps, spare-capacity vectors.
+// recursion, nested maps, bytes.
 func TestForkCheck_LoadedProgram(t *testing.T) {
 	elpstest.RunForkCheck(t, elpstest.ForkCheck{
 		Program: `
