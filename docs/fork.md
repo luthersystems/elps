@@ -293,6 +293,19 @@ r := &elpstest.Runner{
 - `lisp/fork_ownership_elpscheck_test.go` pins the checker model: sealed
   cross-runtime sharing sanctioned, mutable cross-runtime leaks still
   panic.
+- `elpstest.RunForkCheck` is the embedder-facing harness: give it a program
+  and the transactions a caller would run, and it holds the template/fork
+  model to three properties against a reference that never calls `Fork`.
+  Parity: each transaction's result, and the whole reachable state after
+  it, must match a cold environment that loaded the program itself.
+  Aliasing: "same object" must hold for the same pairs of reachable
+  mutable payloads in template and fork. Isolation: no per-fork payload
+  shared with the template, the template untouched after a fork's
+  transaction, a later fork pristine. Every check also runs one hop
+  deeper, on a fork of the fork. `elpstest/forkcheck_test.go` carries one
+  `ForkCheck` per fork bug that shipped (#576 for sorted maps, bytes and
+  native cloners; #579; #381), each verified to fail on the tree it
+  shipped in. New embedder shapes go there.
 - Correctness at production scale (POC, issue #380): transaction results
   byte-identical between forked and fresh-loaded environments; a full
   phylum unit-test suite fork-served with identical results.
