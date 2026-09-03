@@ -247,6 +247,17 @@ func Adversarial() [][]byte {
 		"(with-cleanup () (f))",
 		"(with-cleanup (g) (f))",
 		"(in-package 'foo)\n(export 'bar)\n(defun bar () ())",
+		// A definition whose NAME carries a reader quote, plus a call to it.
+		// The quote is not a node of its own -- rdparser folds it into the
+		// symbol's own span -- so every consumer that wants to point at the
+		// NAME has to subtract it back off, and the ones that forgot produced
+		// a rename that ate the quote and a minifier that renamed the
+		// definition without its callers (elps#577).  Every def-shaped head
+		// the tools special-case is spelled here.
+		"(defun 'qfn () 1)\n(qfn)",
+		"(defmacro 'qmac () 1)\n(qmac)",
+		"(deftype 'qty () 1)",
+		"(set 'qvar 1)\nqvar",
 		"(defmacro m (x) (quasiquote (list (unquote x))))",
 		"#^(+ % 1)",
 		"'(1 2 3)",
