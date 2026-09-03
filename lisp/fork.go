@@ -292,6 +292,27 @@ func checkQuiescent(rt *Runtime) error {
 // bounded the walk (every header is memoised before its payload is
 // remapped, and there are finitely many headers) but not the number of
 // clones -- one per header, each containing the next.
+//
+// The shape, drawn.  A header is the *LVal a variable points at; the
+// payload is the storage it points at in turn.  Two headers over one
+// payload is the case the header memo alone cannot see:
+//
+//	template:    a ──header 1──┐
+//	                           ├──► [one map]
+//	             b ──header 2──┘
+//
+//	memo per header only (the #576 bug):
+//	             a ──header 1'──► [map copy A]
+//	             b ──header 2'──► [map copy B]   the alias came apart:
+//	                                             (assoc! a k v) is invisible
+//	                                             through b, on the fork only
+//
+//	memo per header AND per payload (this file):
+//	             a ──header 1'──┐
+//	                            ├──► [map copy]  still one map, as in the
+//	             b ──header 2'──┘                template
+//
+// The same picture holds for a bytes value and for a NativeCloner payload.
 type forker struct {
 	rt             *Runtime
 	envs           map[*LEnv]*LEnv
