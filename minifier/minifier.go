@@ -412,22 +412,23 @@ func exportNames(args []*lisp.LVal) []string {
 	return out
 }
 
+// setName is the name (set ...) binds, or "" when its first arg names nothing.
 func setName(arg *lisp.LVal) string {
-	if arg.Type == lisp.LSymbol {
-		return arg.Str
-	}
-	if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
-		return arg.Cells[0].Str
+	if node := setSymbolNode(arg); node != nil {
+		return node.Str
 	}
 	return ""
 }
 
+// setSymbolNode returns the node naming the binding in the first arg of set.
+// Both (set 'name value) and (set name value) give one LSymbol -- the reader
+// quote is folded into the symbol's own node -- and anything else names
+// nothing: (set '(a b) 1) defines neither a nor b.  analysis draws the same
+// line, and the two have to agree or scanProgramSymbols publishes a
+// cross-file definition that no analysis of the defining file will match.
 func setSymbolNode(arg *lisp.LVal) *lisp.LVal {
 	if arg.Type == lisp.LSymbol {
 		return arg
-	}
-	if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
-		return arg.Cells[0]
 	}
 	return nil
 }

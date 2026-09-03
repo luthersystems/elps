@@ -246,7 +246,8 @@ func TestScannerAndAnalysisAgreeOnDefinitionSource(t *testing.T) {
 		"(set var-plain 7)\n" +
 		"(set 'var-quoted 8)\n" +
 		"(custom-def cus-plain (a) 9)\n" +
-		"(custom-def 'cus-quoted (a) 10)\n"
+		"(custom-def 'cus-quoted (a) 10)\n" +
+		"(set '(lst-a lst-b) 11)\n"
 
 	// Names the scanner reports and analysis is expected to record too.  Every
 	// one of these must agree on the span, or its cross-file rename breaks.
@@ -266,6 +267,11 @@ func TestScannerAndAnalysisAgreeOnDefinitionSource(t *testing.T) {
 	// but it is stated here rather than left silent -- this list may shrink,
 	// never grow.
 	wantScannerOnly := []string{"cus-quoted"}
+
+	// Names neither side may record: set takes a symbol, so (set '(a b) 1)
+	// binds nothing.  Both producers used to reach into the quoted list and
+	// invent a definition of its first element carrying the LIST's span.
+	wantNeither := []string{"lst-a", "lst-b"}
 
 	defForms := []analysis.DefFormSpec{{
 		Head:         "custom-def",
@@ -323,6 +329,13 @@ func TestScannerAndAnalysisAgreeOnDefinitionSource(t *testing.T) {
 		_, ok = analysed[name]
 		assert.False(t, ok,
 			"analysis now records %q; move it into wantShared so its span is compared", name)
+	}
+
+	for _, name := range wantNeither {
+		_, ok := scanned[name]
+		assert.False(t, ok, "the scanner invented a definition of %q", name)
+		_, ok = analysed[name]
+		assert.False(t, ok, "analysis invented a definition of %q", name)
 	}
 }
 
