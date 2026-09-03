@@ -155,10 +155,16 @@ embedder's to handle, with three tools, in order of preference:
    the hooks that open stateful handles, and run those hooks on each fork —
    exactly where a per-fresh-environment design already runs them. This is
    the pattern for accumulators whose ops/macros are Go closures over the
-   instance (e.g. the lisp testing suite: `elpstest`'s fork-served runner
-   test builds the template without `libtesting` and loads it per fork,
-   because a closure captured at template-load time can only ever see the
-   template's instance).
+   instance (e.g. `elpstest`'s fork-served runner test builds the template
+   without `libtesting` and loads it per fork). A closure captured at
+   template-load time can only ever see the template's instance, so an
+   accumulator reached that way needs BOTH halves fixed to survive a fork —
+   `libtesting` now has them (`TestSuite.CloneNative`, plus ops that resolve
+   the suite from the calling environment rather than from the captured
+   receiver) — and keeping the suite out of the template is still the
+   simpler answer where you can, and the necessary one if a fork must RUN
+   definitions the template made: an inherited `Test.Fun` is a lambda over
+   the template's environment.
 2. **`NativeCloner`.** A payload type that implements
    `CloneNative() interface{}` is duplicated at fork time; the clone must
    be independent of the original and must not retain references into the
