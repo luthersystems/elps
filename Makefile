@@ -133,7 +133,28 @@ check-golangci-version:
 		echo "         run calls unused without checking CI is green without it."; \
 	fi
 
-static-checks: check-golangci-version
+# Validate .golangci.yml against the JSON schema for CI's golangci-lint
+# version, from the copy vendored in .github/ so it works offline.  This is
+# what golangci-lint-action's `verify: true` did before it was turned off
+# (its schema fetch from golangci-lint.run timed out and redded three PRs in
+# one day).  It is not redundant with `golangci-lint run`: run does NOT reject
+# an unknown key in the config -- a misspelled section or setting is silently
+# ignored and the lint reports "0 issues" -- only the schema check does.
+#
+# The schema filename carries CI's major.minor, derived from the workflow, so
+# bumping `version:` there without re-vendoring fails with a missing file:
+#   curl -sSo .github/golangci.<ver>.jsonschema.json \
+#     https://golangci-lint.run/jsonschema/golangci.<ver>.jsonschema.json
+GOLANGCI_SCHEMA := .github/golangci.$(GOLANGCI_CI_VERSION).jsonschema.json
+
+.PHONY: check-golangci-config
+check-golangci-config:
+	@test -f '$(GOLANGCI_SCHEMA)' || { \
+		echo "ERROR: $(GOLANGCI_SCHEMA) not found; CI runs golangci-lint $(GOLANGCI_CI_VERSION)."; \
+		echo "       Re-vendor the schema for that version (see the Makefile comment)."; exit 1; }
+	golangci-lint config verify --schema '$(GOLANGCI_SCHEMA)'
+
+static-checks: check-golangci-version check-golangci-config
 	golangci-lint run ./...
 	# Second pass under the elpscheck build tag. golangci-lint analyses only
 	# the DEFAULT build, so a file guarded by a build tag is invisible to every
