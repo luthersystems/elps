@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
@@ -32,11 +33,20 @@ import (
 //     holds in the fork exactly when it holds in the template.  Parity
 //     only sees an alias the transaction exercises; this sees all of them.
 //   - ISOLATION: no mutable payload is shared between the template and a
-//     fork, a transaction on a fork leaves the template untouched, and a
-//     later fork is pristine.
+//     fork, or between two forks; a transaction on a fork leaves the
+//     template untouched; a later fork is pristine.
 //
 // Every fork is also checked one level deeper (a fork of the fork), since
 // a fix that survived one hop and not two has happened (issue #579).
+//
+// "Reachable" means everything reachable from the package bindings: list
+// and vector cells, sorted-map entries, bytes, and the environment a
+// closure captured (its bindings and its parents').  What is NOT compared,
+// because the oracles cannot see inside it: a native payload's contents
+// (rendered by Go type only, so a stateful native that is not a
+// NativeCloner is compared by the header that holds it, not by what it
+// holds), and package metadata outside the symbol table (exports,
+// docstrings, the function-name index).
 type ForkCheck struct {
 	// NewEnv builds an environment with whatever library the program needs
 	// loaded and the user package selected.  It is called once for the
@@ -49,6 +59,9 @@ type ForkCheck struct {
 	// It is the per-environment hook an embedder runs at checkout — a
 	// stateful package the template must not carry, such as libtesting.
 	Setup func(*lisp.LEnv) error
+	// ForkOptions are passed to every Fork call: the place to exercise
+	// ForkWithNativeReplacer or ForkWithContext the way the embedder does.
+	ForkOptions []lisp.ForkOption
 	// Tx are the transactions.  Each runs on its own fork, its own fork of
 	// a fork, and its own cold environment.
 	Tx []string
@@ -71,9 +84,11 @@ func NewForkCheckEnv() (*lisp.LEnv, error) {
 	return env, nil
 }
 
-// RunForkCheck runs every check described on ForkCheck and reports each
-// failure through t.  It never calls t.FailNow across a transaction, so one
-// run reports every transaction that diverges.
+// RunForkCheck runs every check described on ForkCheck.  A comparison that
+// fails is reported with t.Errorf, so one run reports every transaction
+// that diverges; a failure to build an environment, load the program, run
+// Setup or take a fork is fatal, since nothing after it would mean
+// anything.
 func RunForkCheck(t testing.TB, c ForkCheck) {
 	t.Helper()
 	newEnv := c.NewEnv
@@ -102,7 +117,7 @@ func RunForkCheck(t testing.TB, c ForkCheck) {
 	}
 	fork := func(what string, env *lisp.LEnv) *lisp.LEnv {
 		t.Helper()
-		f, err := env.Fork()
+		f, err := env.Fork(c.ForkOptions...)
 		if err != nil {
 			t.Fatalf("%s: fork: %v", what, err)
 		}
@@ -116,8 +131,7 @@ func RunForkCheck(t testing.TB, c ForkCheck) {
 
 	// A fresh fork before any transaction: same state, same alias
 	// structure, no shared mutable payload.
-	f0 := fork("fork", tmpl)
-	checkFork := func(what string, f *lisp.LEnv) {
+	checkFork := func(what string, f *lisp.LEnv) map[interface{}]string {
 		t.Helper()
 		if got := envState(f); got != tmplState {
 			t.Errorf("%s: reachable state differs from the template\n%s", what, diffLines(tmplState, got))
@@ -125,12 +139,21 @@ func RunForkCheck(t testing.TB, c ForkCheck) {
 		if got := aliasSignature(f); got != tmplAlias {
 			t.Errorf("%s: alias structure differs from the template (a payload reachable under two names in one is reachable under one, or under different objects, in the other)\n%s", what, diffLines(tmplAlias, got))
 		}
-		if shared := sharedPayloads(tmplIDs, payloadIDs(f)); len(shared) > 0 {
+		ids := payloadIDs(f)
+		if shared := sharedPayloads(tmplIDs, ids); len(shared) > 0 {
 			t.Errorf("%s: %d mutable payload(s) shared with the template: %s", what, len(shared), strings.Join(shared, ", "))
 		}
+		return ids
 	}
-	checkFork("fresh fork", f0)
+	f0 := fork("fork", tmpl)
+	f0IDs := checkFork("fresh fork", f0)
 	checkFork("fresh fork of a fork", fork("fork of fork", f0))
+	// Two forks of one template share nothing with each other either: a
+	// CloneNative that hands every fork the same clone would pass the
+	// template check and fail here.
+	if shared := sharedPayloads(f0IDs, checkFork("second fresh fork", fork("fork", tmpl))); len(shared) > 0 {
+		t.Errorf("two forks of one template share %d mutable payload(s): %s", len(shared), strings.Join(shared, ", "))
+	}
 
 	for i, tx := range c.Tx {
 		name := fmt.Sprintf("tx[%d]", i)
@@ -177,7 +200,7 @@ func renderResult(v *lisp.LVal) string {
 		return "error: " + normalizeFunIDs(v.String())
 	}
 	var b strings.Builder
-	w := &stateWalker{sb: &b, seen: map[*lisp.LVal]int{}}
+	w := newStateWalker(&b)
 	w.value(v)
 	return v.Type.String() + " " + b.String()
 }
@@ -214,18 +237,38 @@ func roots(env *lisp.LEnv, visit func(pkg, name string, v *lisp.LVal)) {
 	}
 }
 
-// envState renders every reachable value from every package binding, one
+// sortedBindings snapshots an environment's own bindings in key order
+// (Bindings' iteration order is unspecified).
+func sortedBindings(e *lisp.LEnv) (keys []string, vals map[string]*lisp.LVal) {
+	vals = make(map[string]*lisp.LVal, e.NumBindings())
+	for k, v := range e.Bindings() {
+		keys = append(keys, k)
+		vals[k] = v
+	}
+	sort.Strings(keys)
+	return keys, vals
+}
+
+// envState renders every value reachable from every package binding, one
 // line per binding, so two environments holding the same program state
-// render the same text.  Identity is not part of the rendering: a value
+// render the same text.  A closure renders with the environment it
+// captured — the bindings of that environment and of its parents — since
+// that is the state a fork must copy and the state a transaction can
+// mutate through the closure.  Identity is not part of the rendering
+// beyond what keeps it finite: within one binding, a header or environment
 // reached twice renders as a back-reference to its first rendering, which
-// is what keeps cyclic structures finite and what makes this an
-// alias-blind comparison (aliasSignature is the alias-aware one).
+// cuts cycles; two headers over one payload, and one header reached from
+// two bindings, render the payload in full each time.  aliasSignature is
+// the alias-aware comparison.
 func envState(env *lisp.LEnv) string {
 	var b strings.Builder
 	roots(env, func(pkg, name string, v *lisp.LVal) {
 		fmt.Fprintf(&b, "%s:%s = ", pkg, name)
-		w := &stateWalker{sb: &b, seen: map[*lisp.LVal]int{}}
-		w.value(v)
+		// One walker per root: back-references cut cycles within a
+		// binding, and a value reachable from two bindings renders in
+		// full under each, so the rendering stays blind to header
+		// identity across bindings.
+		newStateWalker(&b).value(v)
 		b.WriteByte('\n')
 	})
 	return b.String()
@@ -234,6 +277,11 @@ func envState(env *lisp.LEnv) string {
 type stateWalker struct {
 	sb   *strings.Builder
 	seen map[*lisp.LVal]int
+	envs map[*lisp.LEnv]int
+}
+
+func newStateWalker(sb *strings.Builder) *stateWalker {
+	return &stateWalker{sb: sb, seen: map[*lisp.LVal]int{}, envs: map[*lisp.LEnv]int{}}
 }
 
 func (w *stateWalker) value(v *lisp.LVal) {
@@ -269,12 +317,17 @@ func (w *stateWalker) value(v *lisp.LVal) {
 		fmt.Fprintf(w.sb, "native(%T)", v.Native)
 	case lisp.LFun:
 		w.sb.WriteString(normalizeFunIDs(v.String()))
+		w.env(funraw.Env(v))
 	default:
 		if len(v.Cells) == 0 {
 			w.sb.WriteString(normalizeFunIDs(v.String()))
 			return
 		}
-		fmt.Fprintf(w.sb, "%s[", v.Type)
+		fmt.Fprintf(w.sb, "%s", v.Type)
+		if v.Str != "" {
+			fmt.Fprintf(w.sb, "%q", v.Str)
+		}
+		w.sb.WriteString("[")
 		for i, c := range v.Cells {
 			if i > 0 {
 				w.sb.WriteString(" ")
@@ -285,18 +338,48 @@ func (w *stateWalker) value(v *lisp.LVal) {
 	}
 }
 
+// env renders a closure's captured environment chain: each environment's
+// own bindings, then its parent's, up to the root.
+func (w *stateWalker) env(e *lisp.LEnv) {
+	if e == nil {
+		return
+	}
+	if n, ok := w.envs[e]; ok {
+		fmt.Fprintf(w.sb, " env@%d", n)
+		return
+	}
+	w.envs[e] = len(w.envs)
+	keys, vals := sortedBindings(e)
+	w.sb.WriteString(" env{")
+	for i, k := range keys {
+		if i > 0 {
+			w.sb.WriteString(" ")
+		}
+		w.sb.WriteString(k)
+		w.sb.WriteString("=")
+		w.value(vals[k])
+	}
+	w.sb.WriteString("}")
+	w.env(e.Parent())
+}
+
 // aliasSignature renders the alias structure of everything reachable from
 // the package bindings: every payload that can be mutated in place — a
 // list or vector's cells, a sorted-map's storage, a bytes value's storage,
-// a native payload held by pointer — is numbered on first visit and
-// rendered as that number on every visit.  Two environments have the same
-// signature exactly when, walking them in the same order, "same object" is
-// true for the same pairs of positions.  A fork that de-aliases (issue
-// #576) or over-aliases renders differently from its template here even
-// when envState cannot tell them apart.
+// a NativeCloner payload held by pointer, the environment a closure
+// captured — is numbered on first visit and rendered as that number on
+// every visit.  Two environments have the same signature exactly when,
+// walking them in the same order, "same object" is true for the same pairs
+// of positions.  A fork that de-aliases (issue #576) or over-aliases
+// renders differently from its template here even when envState cannot
+// tell them apart.
+//
+// A payload's contents are rendered under its first visit only: the number
+// alone says "same object" on the later ones, and a shared subtree walked
+// once per path in would be exponential on a diamond-shaped graph.
 func aliasSignature(env *lisp.LEnv) string {
 	var b strings.Builder
-	w := &aliasWalker{sb: &b, ids: map[interface{}]int{}, path: map[*lisp.LVal]bool{}}
+	w := &aliasWalker{sb: &b, ids: map[interface{}]int{}, seen: map[interface{}]bool{}}
 	roots(env, func(pkg, name string, v *lisp.LVal) {
 		fmt.Fprintf(&b, "%s:%s = ", pkg, name)
 		w.value(v)
@@ -308,10 +391,10 @@ func aliasSignature(env *lisp.LEnv) string {
 type aliasWalker struct {
 	sb   *strings.Builder
 	ids  map[interface{}]int
-	path map[*lisp.LVal]bool
+	seen map[interface{}]bool
 }
 
-// id numbers a payload identity on first sight.
+// id numbers an identity on first sight.
 func (w *aliasWalker) id(key interface{}) int {
 	n, ok := w.ids[key]
 	if !ok {
@@ -326,20 +409,17 @@ func (w *aliasWalker) value(v *lisp.LVal) {
 		w.sb.WriteString("<nil>")
 		return
 	}
+	var key interface{} = v
 	if p, ok := mutablePayload(v); ok {
+		key = p
 		fmt.Fprintf(w.sb, "#%d", w.id(p))
 	} else {
 		w.sb.WriteString("_")
 	}
-	// Recurse into children.  The walk is guarded by the path, not by
-	// "seen": a payload reached twice must be rendered twice for the
-	// aliasing to show, and only a cycle needs cutting.
-	if w.path[v] {
-		w.sb.WriteString("(cycle)")
+	if w.seen[key] {
 		return
 	}
-	w.path[v] = true
-	defer delete(w.path, v)
+	w.seen[key] = true
 	switch v.Type {
 	case lisp.LSortMap:
 		md := v.Map()
@@ -355,6 +435,8 @@ func (w *aliasWalker) value(v *lisp.LVal) {
 			w.value(val)
 		}
 		w.sb.WriteString("}")
+	case lisp.LFun:
+		w.env(funraw.Env(v))
 	default:
 		if len(v.Cells) == 0 {
 			return
@@ -370,11 +452,37 @@ func (w *aliasWalker) value(v *lisp.LVal) {
 	}
 }
 
+func (w *aliasWalker) env(e *lisp.LEnv) {
+	if e == nil {
+		return
+	}
+	fmt.Fprintf(w.sb, " env#%d", w.id(e))
+	if w.seen[e] {
+		return
+	}
+	w.seen[e] = true
+	keys, vals := sortedBindings(e)
+	w.sb.WriteString("{")
+	for i, k := range keys {
+		if i > 0 {
+			w.sb.WriteString(" ")
+		}
+		w.sb.WriteString(k)
+		w.sb.WriteString("=")
+		w.value(vals[k])
+	}
+	w.sb.WriteString("}")
+	w.env(e.Parent())
+}
+
 // mutablePayload returns the identity of the storage a value can be
 // mutated through, when it has one.  Sealed values are immutable by
-// contract and may legitimately be shared, so they carry no identity; so
-// does a native payload that is not a NativeCloner, which Fork shares by
-// reference by design.
+// contract and may legitimately be shared, so they carry no identity.  So
+// does a native payload unless it is a NativeCloner held by pointer: Fork
+// shares every other native by reference by design (docs/fork.md), and
+// keys its clone memo on pointer payloads only.  Such a native renders as
+// "_" in the alias signature — its header takes part in the state
+// rendering, its contents in neither.
 func mutablePayload(v *lisp.LVal) (interface{}, bool) {
 	if v.IsSealed() {
 		return nil, false
@@ -389,24 +497,14 @@ func mutablePayload(v *lisp.LVal) (interface{}, bool) {
 			return p, true
 		}
 	case lisp.LNative:
-		// A native payload is shared between template and fork by
-		// reference unless it is a NativeCloner (docs/fork.md), so only a
-		// cloner is a per-fork payload with an identity to keep straight.
-		// A plain native still takes part in the alias signature through
-		// the header that holds it.
 		if _, ok := v.Native.(lisp.NativeCloner); !ok {
 			return nil, false
 		}
 		rv := reflect.ValueOf(v.Native)
-		switch rv.Kind() {
-		case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func, reflect.UnsafePointer:
-			if rv.IsNil() {
-				return nil, false
-			}
-			return pointerKey{rv.Type(), rv.Pointer()}, true
-		default:
-			// A cloner held by value has no identity to share.
+		if rv.Kind() != reflect.Pointer || rv.IsNil() {
+			return nil, false
 		}
+		return v.Native, true
 	default:
 		if len(v.Cells) > 0 {
 			return v, true
@@ -415,30 +513,29 @@ func mutablePayload(v *lisp.LVal) (interface{}, bool) {
 	return nil, false
 }
 
-// pointerKey identifies a native payload by its type and address, so two
-// distinct types at one address (a struct and its first field) stay
-// distinct.
-type pointerKey struct {
-	t reflect.Type
-	p uintptr
-}
-
 // payloadIDs collects every mutable payload identity reachable from the
-// package bindings, labelled by the first path it was reached on.
+// package bindings — closures' captured environments included — labelled
+// by the first path it was reached on.
 func payloadIDs(env *lisp.LEnv) map[interface{}]string {
 	out := map[interface{}]string{}
-	var walk func(v *lisp.LVal, path string, onPath map[*lisp.LVal]bool)
-	walk = func(v *lisp.LVal, path string, onPath map[*lisp.LVal]bool) {
-		if v == nil || onPath[v] {
+	seen := map[interface{}]bool{}
+	var walk func(v *lisp.LVal, path string)
+	var walkEnv func(e *lisp.LEnv, path string)
+	walk = func(v *lisp.LVal, path string) {
+		if v == nil {
 			return
 		}
+		var key interface{} = v
 		if p, ok := mutablePayload(v); ok {
-			if _, seen := out[p]; !seen {
+			key = p
+			if _, dup := out[p]; !dup {
 				out[p] = path
 			}
 		}
-		onPath[v] = true
-		defer delete(onPath, v)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
 		switch v.Type {
 		case lisp.LSortMap:
 			md := v.Map()
@@ -447,16 +544,32 @@ func payloadIDs(env *lisp.LEnv) map[interface{}]string {
 			}
 			for _, k := range md.Keys().Cells {
 				val, _ := md.Get(k)
-				walk(val, path+"/"+k.String(), onPath)
+				walk(val, path+"/"+k.String())
 			}
+		case lisp.LFun:
+			walkEnv(funraw.Env(v), path+"/env")
 		default:
 			for i, c := range v.Cells {
-				walk(c, fmt.Sprintf("%s/%d", path, i), onPath)
+				walk(c, fmt.Sprintf("%s/%d", path, i))
 			}
 		}
 	}
+	walkEnv = func(e *lisp.LEnv, path string) {
+		if e == nil || seen[e] {
+			return
+		}
+		seen[e] = true
+		if _, dup := out[e]; !dup {
+			out[e] = path
+		}
+		keys, vals := sortedBindings(e)
+		for _, k := range keys {
+			walk(vals[k], path+"/"+k)
+		}
+		walkEnv(e.Parent(), path+"/parent")
+	}
 	roots(env, func(pkg, name string, v *lisp.LVal) {
-		walk(v, pkg+":"+name, map[*lisp.LVal]bool{})
+		walk(v, pkg+":"+name)
 	})
 	return out
 }
