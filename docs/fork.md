@@ -173,6 +173,34 @@ embedder's to handle, with three tools, in order of preference:
    before `NativeCloner`, for payload types the embedder cannot modify and
    for instance-specific rebinding (a per-fork storage handle).
 
+Note what the sharing policy covers and what it does not: the *payload*
+travels by reference, but the `LVal` header carrying it does not — every
+forked value gets a fresh header. Anything that treats an `LVal`'s ADDRESS as
+meaning (a credential compared by pointer, a value used as a map key, a
+sentinel recognized by identity) is therefore revoked in a fork, silently.
+Key such markers off something the walk preserves — the payload's Go type,
+for instance — as `libschema`'s validator marker now does (issue #579).
+
+Two classes of value are the exception, and they keep their address: the
+three singletons (`isSingleton` — nil, true, false) and a node that is both
+`sealed` and of a sealable type are returned by `forker.val` unchanged rather
+than rebuilt. A sentinel that is one of those *is* stable across a fork —
+but that is a property of the seal, not of the marker, and a marker that is
+neither gets a fresh header.
+
+One channel neither this note nor the tooling can see: a Go closure inside a
+builtin captures `*lisp.LVal`s directly, and the fork walk never looks inside
+a `func`. `libschema`'s `builtinHasKey` / `builtinCheckAny` /
+`builtinAllowedValues` each close over template-side `*lisp.LVal`s — a
+slice of sub-constraints for the first two, the allowed-values list for the
+third — so a forked composite validator still reaches the *template's*
+values. That is benign today — they are read-only at call time, and
+`NewValidator`'s RUNTIME SCOPE contract sanctions a validator being shared
+by any number of runtimes — but neither the ownership checker nor the
+native-affinity check (`RuntimeBound`) can observe it, so a payload that
+became stateful behind such a closure would leak between template and forks
+undetected.
+
 A shared stateful native is the one way to leak state between template and
 forks that no isolation test in this repository can see from the outside —
 audit your template's native census when adopting Fork.

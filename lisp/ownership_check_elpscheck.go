@@ -48,9 +48,9 @@ import (
 //     registrationFormals in env.go); this checker covers the values that
 //     actually flow.
 //   - It only sees the instrumented points.  A value that crosses runtimes
-//     purely through direct field reads (e.g. libschema's validatorMarker,
-//     compared by pointer identity only) never hits Put or eval and is not
-//     checked.  Again: cmd/elpsvet flags the producer pattern statically.
+//     purely through direct field reads (e.g. libschema's validator marker
+//     cell, read straight out of a validator's cells) never hits Put or eval
+//     and is not checked.  Again: cmd/elpsvet flags the producer pattern statically.
 //   - Adoption order is first-touch, so a value CREATED for runtime B but
 //     touched first by runtime A is blamed backwards.  The panic reports
 //     both runtimes; which one is the rightful owner is for the reader to
