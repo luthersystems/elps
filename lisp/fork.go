@@ -34,7 +34,9 @@ import (
 //     environment remapped onto the fork's copies so closures close over
 //     fork state, never template state.  Builtin Go funcs travel by
 //     reference (Go code is immutable).  Formals and lambda bodies are
-//     sealed parser output and therefore shared.
+//     sealed parser output and therefore shared, and when every cell of a
+//     function is shared the cell backing array is shared too, clamped to
+//     its length so neither side can append into the other (see val).
 //   - LNative payloads: SHARED by default.  A native handle cannot be
 //     hermetically copied by the kernel (the same reason detach rejects
 //     it), and most native payloads held by loaded environments are
@@ -504,6 +506,44 @@ func (f *forker) val(v *LVal) *LVal {
 		}
 	}
 	if len(v.Cells) > 0 {
+		if v.Type == LFun {
+			// A function's cells are [formals, body...], written once at
+			// construction over backing that the constructor itself
+			// allocated (env.Lambda, registrationFunValue, FunInPackage and
+			// friends) and not rewritten afterwards by anything in this
+			// repository.  So when every child maps to itself -- all sealed
+			// program nodes, which is the shape of every defun and lambda
+			// parsed from source -- the fork can share the template's
+			// backing array outright instead of allocating a slice per
+			// function only to refill it with the same pointers.
+			//
+			// The share is a three-index reslice, for the reason the
+			// len==0 branch below and libschema's markValidator both spell
+			// out: a slice header carries its spare CAPACITY, and an append
+			// on either side of a shared header writes the other side's
+			// backing array.  Every constructor here allocates exact
+			// capacity, so the clamp is a no-op today; it is what keeps
+			// "nothing appends to a function's cells" from being
+			// load-bearing for embedder Go code, which can reach the
+			// exported Cells field and is not under cmd/elpsvet.
+			//
+			// f.val memoizes, so a child that is NOT sealed (a builtin's
+			// unsealed docstring cell, say) is copied on the first probe
+			// here and the generic copy below reuses that memoized copy:
+			// the fallthrough costs a comparison per cell, not a second
+			// allocation.
+			shared := true
+			for _, c := range v.Cells {
+				if f.val(c) != c {
+					shared = false
+					break
+				}
+			}
+			if shared {
+				cp.Cells = v.Cells[:len(v.Cells):len(v.Cells)]
+				return cp
+			}
+		}
 		cells := make([]*LVal, len(v.Cells))
 		for i, c := range v.Cells {
 			cells[i] = f.val(c)
