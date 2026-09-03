@@ -336,7 +336,7 @@ func topLevelDef(expr *lisp.LVal, kind analysis.SymbolKind, pkg string) *analysi
 		Name:    expr.Cells[1].Str,
 		Kind:    kind,
 		Package: pkg,
-		Source:  astutil.SourceLoc(expr.Cells[1]),
+		Source:  astutil.SymbolLoc(expr.Cells[1]),
 	}
 }
 
@@ -352,7 +352,7 @@ func topLevelSet(expr *lisp.LVal, pkg string) *analysis.ExternalSymbol {
 		Name:    name,
 		Kind:    analysis.SymVariable,
 		Package: pkg,
-		Source:  astutil.SourceLoc(expr.Cells[1]),
+		Source:  astutil.SymbolLoc(expr.Cells[1]),
 	}
 }
 
@@ -379,7 +379,7 @@ func topLevelCustomDef(expr *lisp.LVal, pkg string, cfg *Config) *analysis.Exter
 			Name:    expr.Cells[spec.NameIndex].Str,
 			Kind:    kind,
 			Package: pkg,
-			Source:  astutil.SourceLoc(expr.Cells[spec.NameIndex]),
+			Source:  astutil.SymbolLoc(expr.Cells[spec.NameIndex]),
 		}
 	}
 	return nil
@@ -529,6 +529,24 @@ func applyAssignments(file *parsedFile, assignments map[*analysis.Symbol]string,
 	}
 }
 
+// symbolLookupKey is a byte-POSITION identity for a definition: two *Symbol
+// values that came from different analyses of the same file are the same
+// symbol iff this key matches.  It is what lets applyAssignments resolve a
+// reference in one file to a definition scanned out of another.
+//
+// It therefore has TWO independent producers that have to measure a name's
+// span identically: scanProgramSymbols in this package (topLevelDef /
+// topLevelSet / topLevelCustomDef, which fill ExternalSymbol.Source) and
+// analysis, which fills Symbol.Source while analysing a file.  When they
+// diverge the lookup does not error -- it simply misses, and the minifier
+// renames a definition while leaving every cross-file caller on the old name.
+// That is elps#577's cross-file half, where analysis moved to
+// astutil.SymbolLoc (name only) and this package still used astutil.SourceLoc
+// (which includes a reader quote), so the two differed by one byte for every
+// quoted name.
+//
+// TestScannerAndAnalysisAgreeOnDefinitionSource pins the two producers
+// together; keep it covering any new definition shape either side learns.
 func symbolLookupKey(sym *analysis.Symbol) string {
 	if sym == nil {
 		return ""

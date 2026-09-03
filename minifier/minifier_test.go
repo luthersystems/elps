@@ -3,6 +3,7 @@
 package minifier
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
+	"github.com/luthersystems/elps/parser/rdparser"
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -173,6 +176,154 @@ func TestMinify_MultiFileRewritesCrossFileReferences(t *testing.T) {
 	assert.Equal(t, "(defun x2 () (x1))\n", string(result.Files[1].Output))
 	assert.Equal(t, "helper", result.SymbolMap.MinifiedToOriginal["x1"])
 	assert.Equal(t, "outer", result.SymbolMap.MinifiedToOriginal["x2"])
+}
+
+// TestMinify_QuotedDefNameCrossFileReferenceStillRewrites pins the cross-file
+// half of elps#577.
+//
+// The minifier resolves a reference in b.lisp to a definition in a.lisp by
+// POSITION: buildAssignments keys the winning new name by symbolLookupKey, and
+// applyAssignments looks the reference's symbol up under the same key.  The two
+// sides of that key are produced by different code -- the definition side by
+// this package's scanProgramSymbols, the reference side by analysis, which
+// rebuilds an ExtraGlobals entry into a fresh *Symbol -- so they agree only for
+// as long as both measure a name's span the same way.
+//
+// They stopped agreeing when analysis moved to astutil.SymbolLoc and this
+// package still used astutil.SourceLoc: for a QUOTED name the two differ by
+// exactly the one byte the reader quote occupies, the lookup missed, and the
+// minifier renamed the definition while leaving every other file calling the
+// old name -- a program that no longer loads, emitted with no diagnostic.  An
+// unquoted name was unaffected, which is why the existing
+// TestMinify_MultiFileRewritesCrossFileReferences stayed green throughout.
+func TestMinify_QuotedDefNameCrossFileReferenceStillRewrites(t *testing.T) {
+	inputs := []InputFile{
+		{
+			Path:   "a.lisp",
+			Source: []byte("(in-package 'p)\n(defun 'helper () 42)\n"),
+		},
+		{
+			Path:   "b.lisp",
+			Source: []byte("(in-package 'p)\n(defun outer () (helper))\n"),
+		},
+	}
+
+	result, err := Minify(inputs, &Config{})
+	require.NoError(t, err)
+	require.Len(t, result.Files, 2)
+
+	a := string(result.Files[0].Output)
+	b := string(result.Files[1].Output)
+
+	assert.Contains(t, a, "(defun 'x", "the quoted definition should still be renamed")
+	assert.NotContains(t, b, "(helper)",
+		"a call in another file must follow the definition's new name; got %q", b)
+}
+
+// TestScannerAndAnalysisAgreeOnDefinitionSource is the drift guard for the
+// class of defect elps#577's cross-file half belongs to.
+//
+// symbolLookupKey is a byte-POSITION identity, and it has two independent
+// producers: scanProgramSymbols here, which walks top-level forms to build the
+// ExternalSymbol records other files are analysed against, and analysis, which
+// records Symbol.Source while analysing a file.  Nothing in the type system
+// ties them together; a change to how either one measures a name silently
+// turns every cross-file lookup for the affected shape into a miss, and the
+// minifier then renames a definition while every other file keeps calling the
+// old name.
+//
+// So compare them directly, over every shape the scanner handles -- defun,
+// defmacro, deftype, set and a custom DefForm -- with the name written both
+// quoted and unquoted.
+func TestScannerAndAnalysisAgreeOnDefinitionSource(t *testing.T) {
+	const src = "(in-package 'p)\n" +
+		"(defun fn-plain () 1)\n" +
+		"(defun 'fn-quoted () 2)\n" +
+		"(defmacro mac-plain () 3)\n" +
+		"(defmacro 'mac-quoted () 4)\n" +
+		"(deftype ty-plain () 5)\n" +
+		"(deftype 'ty-quoted () 6)\n" +
+		"(set var-plain 7)\n" +
+		"(set 'var-quoted 8)\n" +
+		"(custom-def cus-plain (a) 9)\n" +
+		"(custom-def 'cus-quoted (a) 10)\n"
+
+	// Names the scanner reports and analysis is expected to record too.  Every
+	// one of these must agree on the span, or its cross-file rename breaks.
+	wantShared := []string{
+		"fn-plain", "fn-quoted",
+		"mac-plain", "mac-quoted",
+		"ty-plain", "ty-quoted",
+		"var-plain", "var-quoted",
+		"cus-plain",
+	}
+
+	// The one shape where the two producers disagree about EXISTENCE rather
+	// than about a span: analysis.validDefFormSpec refuses a quoted name on a
+	// custom DefForm, so no local definition is recorded and the minifier
+	// leaves the name alone.  That is inert (nothing is renamed, so nothing
+	// can be renamed inconsistently) and it is not what elps#577 was about,
+	// but it is stated here rather than left silent -- this list may shrink,
+	// never grow.
+	wantScannerOnly := []string{"cus-quoted"}
+
+	defForms := []analysis.DefFormSpec{{
+		Head:         "custom-def",
+		FormalsIndex: 2,
+		BindsName:    true,
+		NameIndex:    1,
+		NameKind:     analysis.SymFunction,
+	}}
+
+	// Parse exactly as parseFile does, so the tree under test is the one the
+	// real pipeline hands to BOTH producers.
+	exprs, err := rdparser.NewFormatting(
+		token.NewScanner("drift.lisp", bytes.NewReader([]byte(src)))).ParseProgram()
+	require.NoError(t, err)
+
+	globals, _, _ := scanProgramSymbols(exprs, &Config{
+		Analysis: &analysis.Config{DefForms: defForms},
+	})
+	require.NotEmpty(t, globals)
+
+	res := analysis.Analyze(exprs, &analysis.Config{
+		Filename: "drift.lisp",
+		DefForms: defForms,
+	})
+	require.NotNil(t, res)
+
+	scanned := make(map[string]*token.Location, len(globals))
+	for i := range globals {
+		scanned[globals[i].Name] = globals[i].Source
+	}
+	analysed := make(map[string]*token.Location, len(res.Symbols))
+	for _, sym := range res.Symbols {
+		if sym.External {
+			continue
+		}
+		analysed[sym.Name] = sym.Source
+	}
+
+	for _, name := range wantShared {
+		scanLoc, ok := scanned[name]
+		require.True(t, ok, "the scanner did not report %q; the guard is not covering it", name)
+		anaLoc, ok := analysed[name]
+		require.True(t, ok, "analysis did not record %q; the guard is not covering it", name)
+		require.NotNil(t, scanLoc, "scanner recorded no source for %q", name)
+		require.NotNil(t, anaLoc, "analysis recorded no source for %q", name)
+		assert.Equal(t, *anaLoc, *scanLoc,
+			"scanner and analysis disagree on the source span of %q; symbolLookupKey "+
+				"is built from it, so every cross-file reference to %q silently stops "+
+				"being rewritten", name, name)
+	}
+
+	for _, name := range wantScannerOnly {
+		_, ok := scanned[name]
+		assert.True(t, ok, "the scanner no longer reports %q", name)
+		_, ok = analysed[name]
+		assert.False(t, ok,
+			"analysis now records %q; move it into wantShared so its span is compared", name)
+	}
 }
 
 func TestMinifySource_StripsCommentsByDefault(t *testing.T) {
