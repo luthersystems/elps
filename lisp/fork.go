@@ -228,6 +228,7 @@ func (env *LEnv) Fork(opts ...ForkOption) (*LEnv, error) {
 		rt:             newRT,
 		envs:           make(map[*LEnv]*LEnv, 256),
 		vals:           make(map[*LVal]*LVal, 4096),
+		maps:           make(map[*MapData]*MapData, 64),
 		nativeReplacer: config.nativeReplacer,
 	}
 	newRoot := f.env(env)
@@ -263,16 +264,26 @@ func checkQuiescent(rt *Runtime) error {
 	return nil
 }
 
-// forker performs one Fork call's graph walk.  The two memo tables are the
+// forker performs one Fork call's graph walk.  The three memo tables are the
 // heart of the algorithm: each maps a template object to its fork-side copy
 // and is seeded BEFORE descending into the object's children, so values
 // reachable along multiple paths map to one copy (aliasing is reproduced,
 // not multiplied) and reference cycles — labels mutual recursion,
 // closure↔environment cycles — terminate instead of recursing forever.
+//
+// maps is keyed on the *MapData, not the *LVal header over it, because the
+// two are not one-to-one: Quote, Splice, shallowUnquote and opQuasiquote copy
+// an LVal's struct and keep its Native, so `(quasiquote (unquote a))` is a
+// second header on a's map.  Memoising per header alone rebuilt such a map
+// once per header, and a write through the fork's `a` was invisible through
+// the fork's `b` (issue #576).  A map reaching itself through a second
+// header is the same bug at its sharpest: the *LVal memo never sees the
+// cycle, because every visit arrives through a header it has not met.
 type forker struct {
 	rt             *Runtime
 	envs           map[*LEnv]*LEnv
 	vals           map[*LVal]*LVal
+	maps           map[*MapData]*MapData
 	nativeReplacer func(payload interface{}) (interface{}, bool)
 }
 
@@ -513,14 +524,24 @@ func (f *forker) native(payload interface{}) interface{} {
 // mapData rebuilds md as a fresh sorted map whose keys and values are
 // remapped through the walker (unlike detachMapData, entries may legally
 // contain funs and natives — the walker applies fork policy to them).
+//
+// Memoised per *MapData, and seeded BEFORE the entries are walked, for the
+// same two reasons f.vals is: a map reachable through several headers maps
+// to one clone, and a map that reaches itself terminates (issue #576; see
+// the forker doc).
 func (f *forker) mapData(md *MapData) *MapData {
 	if md == nil {
 		return nil
 	}
+	if cp, ok := f.maps[md]; ok {
+		return cp
+	}
 	if md.mapBacking == nil {
 		// Degenerate MapData with no implementation (possible via
 		// SortedMapFromData(NewMapData(nil))): fresh struct, nil backing preserved.
-		return &MapData{}
+		cp := &MapData{}
+		f.maps[md] = cp
+		return cp
 	}
 	entries := sortedMapEntries(md)
 	if entries.Type == LError {
@@ -530,6 +551,7 @@ func (f *forker) mapData(md *MapData) *MapData {
 		panic(fmt.Sprintf("fork: sorted-map entries cannot be enumerated: %v", entries))
 	}
 	m := NewMapData(newmap())
+	f.maps[md] = m // memo before descending, as above
 	for _, pair := range entries.Cells {
 		if lerr := m.Set(f.val(pair.Cells[0]), f.val(pair.Cells[1])); lerr.Type == LError {
 			panic(fmt.Sprintf("fork: sorted-map key %s cannot be stored: %v", pair.Cells[0], lerr))
