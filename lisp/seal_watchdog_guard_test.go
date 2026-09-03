@@ -47,15 +47,16 @@ func TestSealWatchdogStampMacroExpansionGuard(t *testing.T) {
 		t.Fatal("anti-vacuity: constructors must not stamp source; the stamp below would have nothing to write")
 	}
 
-	// Anti-vacuity for the write path itself: the same stamp against an
-	// UNSEALED clone must write, proving the only thing standing between
-	// stampMacroExpansion and the sealed tree is the sealed-skip guard.
+	// Anti-vacuity for the stamp itself: the same stamp against an
+	// UNSEALED clone must stamp (on its copy-on-write result; issue #582),
+	// proving the only thing standing between stampMacroExpansion and the
+	// sealed tree is the sealed-skip guard.
 	callSite := &token.Location{File: "stamp.lisp", Pos: 7, Line: 1, Col: 1}
 	rt := StandardRuntime()
 	unsealed := SExpr([]*LVal{Symbol("guarded"), Int(1)})
-	stampMacroExpansion(unsealed, callSite, nil, rt)
-	if loc, ok := unsealed.Source(); !ok || loc.Pos != callSite.Pos {
-		t.Fatalf("anti-vacuity: stamp did not write the unsealed clone (source=%v ok=%v)", loc, ok)
+	stamped := stampMacroExpansion(unsealed, callSite, nil, rt)
+	if loc, ok := stamped.Source(); !ok || loc.Pos != callSite.Pos {
+		t.Fatalf("anti-vacuity: stamp did not stamp the unsealed clone (source=%v ok=%v)", loc, ok)
 	}
 
 	unregister := registerSealWatch(expr)

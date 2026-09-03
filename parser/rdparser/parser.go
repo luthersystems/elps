@@ -473,9 +473,10 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 // lisp.nativeSource(), the shared "<native code>" location whose Pos is -1,
 // and the head symbols behind #' and #^ were left carrying it.  That put a
 // PARSER-PRODUCED node into the population that lisp.stampMacroExpansion
-// treats as its own to rewrite: the stamp walk replaces any Source that is nil
-// or has Pos < 0 with the macro call site (and, with a debugger attached,
-// attaches a MacroExpansionInfo).
+// treated as its own to rewrite: the stamp walk, then in place (it stamps a
+// private copy since issue #582), replaced any Source that is nil or has
+// Pos < 0 with the macro call site (and, with a debugger attached, attached
+// a MacroExpansionInfo).
 //
 // Macro arguments are not evaluated, so a form containing #' reaches the
 // macro's parameters as the caller's own parse-tree nodes and is spliced into

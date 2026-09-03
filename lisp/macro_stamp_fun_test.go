@@ -65,8 +65,9 @@ func TestMacroExpansionDoesNotStampFunctionValues(t *testing.T) {
 // stamped header copy; placed inside an expansion-owned list it is replaced
 // in that list by one.  In both cases the original keeps a nil source and no
 // macro-expansion metadata, and the copy shares the value's storage.  SYNTAX
-// nodes with no location (the reader's types) keep being stamped in place,
-// which is the stamp's job.
+// nodes with no location (the reader's types) are likewise replaced by
+// stamped copies in the returned tree (issue #582); the stamp writes to
+// nothing it was handed.
 //
 // COVERAGE, stated exactly rather than as "every value type": the fixtures
 // below are the value types a macro body can actually hand back -- LFun,
@@ -124,17 +125,20 @@ func TestMacroExpansionStampsValuesOnPrivateHeaders(t *testing.T) {
 		t.Run(name+"/child", func(t *testing.T) {
 			expansion := SExpr([]*LVal{Symbol("identity"), v})
 			got := stampMacroExpansion(expansion, callSite, nil, env.Runtime)
-			if got != expansion {
-				t.Fatalf("a syntax root must be stamped in place, not replaced")
+			if got == expansion {
+				t.Fatalf("a syntax root that needs a stamp must be replaced by a stamped copy, not written (issue #582)")
 			}
-			if expansion.source != callSite || expansion.Cells[0].source != callSite {
-				t.Errorf("syntax nodes were not stamped in place")
+			if got.source != callSite || got.Cells[0].source != callSite {
+				t.Errorf("syntax nodes of the returned tree were not stamped")
 			}
-			if expansion.Cells[1] == v {
+			if expansion.source != nil || expansion.Cells[0].source != nil || expansion.Cells[1] != v {
+				t.Errorf("the input expansion was written to")
+			}
+			if got.Cells[1] == v {
 				t.Fatalf("the value was left in the expansion instead of a private copy")
 			}
-			if expansion.Cells[1].source != callSite {
-				t.Errorf("the copy in the expansion is not stamped: %v", expansion.Cells[1].source)
+			if got.Cells[1].source != callSite {
+				t.Errorf("the copy in the expansion is not stamped: %v", got.Cells[1].source)
 			}
 			if v.source != nil || v.macroExpansion != nil {
 				t.Errorf("the value itself was written to: source %v, macroExpansion %v", v.source, v.macroExpansion)
