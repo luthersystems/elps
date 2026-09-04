@@ -3,6 +3,7 @@
 package elpstest_test
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -277,5 +278,42 @@ func TestForkParity_DetectsAnAsymmetricLoad(t *testing.T) {
 		Tx:      [][]string{{`a`}},
 	}); err == nil || !strings.Contains(err.Error(), "template: new environment: staged failure") {
 		t.Fatalf("a template that does not build must remain a harness error, got %v", err)
+	}
+}
+
+// errStagedBuild is the failure the load-asymmetry controls stage.
+var errStagedBuild = errors.New("staged failure on environment build")
+
+// TestForkParity_DetectsARaiseAsymmetry: a fork on which `(get b "y")`
+// raises where the cold load returns is reported under ParityPropertyRaises,
+// not ParityPropertyReturns -- the split that lets the #579 revert be
+// pinned by a property no other historical mutation emits.  Deleting the
+// raise branch in CheckParity demotes the witness to the value property and
+// turns this red.
+func TestForkParity_DetectsARaiseAsymmetry(t *testing.T) {
+	t.Parallel()
+	got, err := elpstest.CheckParity(elpstest.ParityCheck{
+		NewEnv:  newFuzzEnv,
+		Program: parityAliasProgram,
+		Tx:      [][]string{{`(get b "k")`}},
+		Fork:    brokenForkRevokes,
+	})
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	for _, w := range got {
+		t.Logf("%s", w)
+	}
+	raises, returns := false, false
+	for _, w := range got {
+		switch w.Property {
+		case elpstest.ParityPropertyRaises:
+			raises = true
+		case elpstest.ParityPropertyReturns:
+			returns = true
+		}
+	}
+	if !raises || returns {
+		t.Fatalf("a fork that raises where the cold load returns: raise witness=%t, value witness=%t; want the raise property alone", raises, returns)
 	}
 }

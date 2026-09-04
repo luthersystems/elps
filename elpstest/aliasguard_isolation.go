@@ -291,6 +291,17 @@ func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 		out = append(out, cellViewWitnesses(c, tmpl, f, fmt.Sprintf("fork %d", i))...)
 	}
 
+	// Parity, the property every direction above is a consequence of, over
+	// the same transactions against COLD environments (aliasguard_parity.go).
+	// It runs before the sweep because a transaction that raises on a fork
+	// and not on a cold load is a parity finding here and a harness error
+	// there; the sweep cannot follow it and is not attempted.
+	parity, raised := transactionParityWitnesses(c)
+	out = append(out, parity...)
+	if raised {
+		return out, nil
+	}
+
 	// Properties 1 and 2, swept: run transaction i on fork i, then assert
 	// that the template and every OTHER fork are where they were.
 	moved := false

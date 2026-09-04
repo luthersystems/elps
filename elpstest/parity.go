@@ -5,6 +5,8 @@ package elpstest
 import (
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/luthersystems/elps/lisp"
 )
@@ -54,7 +56,70 @@ import (
 // with -- so sharing, seal bits and the package metadata tables are all in
 // the comparison.  A cold environment and a fork number their environments
 // on independent counters, and the fingerprint already normalises the one
-// place that number reaches a token (funIDPattern).
+// place that number reaches a token (funIDPattern); libschema's
+// process-wide validator gensym is normalised here for the same reason
+// (parityGensymPattern).
+
+// The parity property strings.  They are constants because the fold into
+// CheckTransactions (aliasguard_parity.go) classifies witnesses by them,
+// and because scripts/mutation-proof.sh pins them as needles: a rename
+// here is a manifest change there.
+const (
+	// ParityPropertyRaises is the RAISE asymmetry: exactly one arm raised.
+	// It is a separate property from ParityPropertyReturns because it is a
+	// different signature -- a de-aliased or over-shared payload gives a
+	// different VALUE (issue #576, the template-share mutation), while a
+	// credential revoked across a fork gives an ERROR where a cold load
+	// gives a value (issue #579, fix 6ef3da5) -- and a needle that both
+	// emit distinguishes neither.
+	ParityPropertyRaises = "a transaction on a fork raises exactly when it raises on a cold load of the same program"
+	// ParityPropertyReturns is a value divergence: neither arm raised, or
+	// both raised with different text.
+	ParityPropertyReturns = "a transaction on a fork returns what it returns on a cold load of the same program"
+	// ParityPropertyState is a post-run reachable-state divergence.
+	ParityPropertyState = "a fork's reachable state after its transactions is the cold load's"
+	// ParityPropertyLoads is a program that loaded on the template and not
+	// on a fresh environment.
+	ParityPropertyLoads = "the program loads on a cold environment exactly when it loads on the template"
+	// ParityPropertyForkable is a template that loaded and could not be
+	// forked.
+	ParityPropertyForkable = "a fork can be taken from any template that loaded"
+)
+
+// parityGensymPattern matches libschema's validator gensyms.  GenSymbol
+// (lisp/lisplib/libschema) mints "_validation_fun_<n>" from a PROCESS-WIDE
+// counter, so a validator defined inside a transaction is numbered by
+// minting order: the cold arm and the fork arm -- and two cold loads --
+// get different numbers for the same definition.  That is the same class
+// the fingerprint already normalises for the per-Runtime "_fun<envID>"
+// (funIDPattern), and no more a parity divergence than an environment ID
+// is.  Normalised here rather than in fingerprint.go because only a
+// comparison ACROSS independently numbered environments needs it: the
+// template-level checks compare a fork against the template it was
+// numbered from.  TestTransactionIsolation_SchemaValidatorCredential is
+// the pin: it defines a validator in a transaction, and without this it
+// reports the counter as a state divergence at user:U.
+var parityGensymPattern = regexp.MustCompile(`_validation_fun_\d+`)
+
+const parityGensymMarker = "_validation_fun_"
+
+func parityNormalize(s string) string {
+	if !strings.Contains(s, parityGensymMarker) {
+		return s
+	}
+	return parityGensymPattern.ReplaceAllString(s, parityGensymMarker+"#")
+}
+
+// parityFingerprint is the post-run state fingerprint the two arms are
+// compared under: FingerprintEnv under the template-level options, with
+// process-wide gensyms normalised (parityGensymPattern).
+func parityFingerprint(env *lisp.LEnv) *Fingerprint {
+	fp := FingerprintEnv(env, templateOpts)
+	for i, tok := range fp.tokens {
+		fp.tokens[i] = parityNormalize(tok)
+	}
+	return fp
+}
 
 // ParityCheck describes one run of the parity oracle.
 type ParityCheck struct {
@@ -206,7 +271,7 @@ func CheckParity(c ParityCheck) ([]Witness, error) {
 			cold[i] = nil
 			out = append(out, Witness{
 				Walker:   "Fork",
-				Property: "the program loads on a cold environment exactly when it loads on the template",
+				Property: ParityPropertyLoads,
 				Detail: fmt.Sprintf("the template loaded this program; cold environment %d did not: %v\n"+
 					"    (the same source loaded differently in two fresh environments; environment %d is not compared further)", i, err, i),
 				Repro: c.Repro,
@@ -225,7 +290,7 @@ func CheckParity(c ParityCheck) ([]Witness, error) {
 				dead[i] = true
 				out = append(out, Witness{
 					Walker:   "Fork",
-					Property: "a fork can be taken from any template that loaded",
+					Property: ParityPropertyForkable,
 					Detail: fmt.Sprintf("fork %d, hop %d of %d: %v\n"+
 						"    (a cold environment runs this program; a fork of the template that loaded it cannot be created; environment %d is not compared further)",
 						i, h+1, hops, err, i),
@@ -258,17 +323,24 @@ func CheckParity(c ParityCheck) ([]Witness, error) {
 		// The same file name on both arms: it reaches the fingerprint as a
 		// source location on every value the transaction creates.
 		name := fmt.Sprintf("env%d-tx%d.lisp", st.i, st.j)
-		want := renderResult(cold[st.i].LoadString(name, tx))
-		got := renderResult(forks[st.i].LoadString(name, tx))
-		if want != got {
-			out = append(out, Witness{
-				Walker:   "Fork",
-				Property: "a transaction on a fork returns what it returns on a cold load of the same program",
-				Detail: fmt.Sprintf("environment %d, transaction %d: %s\n    cold: %s\n    fork: %s",
-					st.i, st.j, tx, clip(want), clip(got)),
-				Repro: c.Repro,
-			})
+		wantRC := cold[st.i].LoadString(name, tx)
+		gotRC := forks[st.i].LoadString(name, tx)
+		want, got := parityNormalize(renderResult(wantRC)), parityNormalize(renderResult(gotRC))
+		if want == got {
+			continue
 		}
+		// Exactly one arm raised is its own property: see ParityPropertyRaises.
+		property := ParityPropertyReturns
+		if (wantRC.Type == lisp.LError) != (gotRC.Type == lisp.LError) {
+			property = ParityPropertyRaises
+		}
+		out = append(out, Witness{
+			Walker:   "Fork",
+			Property: property,
+			Detail: fmt.Sprintf("environment %d, transaction %d: %s\n    cold: %s\n    fork: %s",
+				st.i, st.j, tx, clip(want), clip(got)),
+			Repro: c.Repro,
+		})
 	}
 	for i := range n {
 		if cold[i] == nil || dead[i] {
@@ -281,14 +353,14 @@ func CheckParity(c ParityCheck) ([]Witness, error) {
 				continue
 			}
 		}
-		want := FingerprintEnv(cold[i], templateOpts)
-		got := FingerprintEnv(forks[i], templateOpts)
+		want := parityFingerprint(cold[i])
+		got := parityFingerprint(forks[i])
 		if want.Equal(got) {
 			continue
 		}
 		out = append(out, Witness{
 			Walker:   "Fork",
-			Property: "a fork's reachable state after its transactions is the cold load's",
+			Property: ParityPropertyState,
 			Detail:   fmt.Sprintf("environment %d\n%s", i, want.Diff(got)),
 			Leak:     firstDivergentPath(want, got),
 			Repro:    c.Repro,
