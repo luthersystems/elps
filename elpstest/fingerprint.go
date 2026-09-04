@@ -106,6 +106,17 @@ import (
 //     shrink-only exemption list in lisp/walkers.go), so its identity is not
 //     an alias channel and encoding it would report the exemption as a bug.
 //     Its frame count and frame locations are still in the stream.
+//   - LVal.spliced and LVal.meta.  Both are UNEXPORTED and neither has an
+//     accessor, so encoding them needs new lisp API rather than a line here;
+//     that is a decision for a reviewer, not a side effect of this guard.
+//     `spliced` is a value property like `quoted` (which IS now encoded,
+//     because IsQuoted is exported) and belongs in the stream if an accessor
+//     ever lands.  `meta` is format-preserving metadata, populated only on
+//     that path and shared read-only after parse per docs/fork.md, so it is
+//     the weaker candidate of the two.  Recorded rather than left silent:
+//     until round 9 all three were absent from BOTH the stream and this
+//     list, so the list read as complete and was not.  Relevant to #466 and
+//     #333/#334, and tracked in #600.
 
 // FingerprintOptions selects the optional channels of a fingerprint.  The
 // zero value is what a value-copying walker is compared under: values and
@@ -381,6 +392,15 @@ func (w *fingerprinter) value(v *lisp.LVal) {
 	w.emitf("hdr#%d(%s)", n, v.Type)
 	if w.opts.Seal && v.IsSealed() {
 		w.emit("sealed")
+	}
+	// The quote flag is a VALUE property, not a sharing one, and a walker
+	// that dropped it would produce a value lisp can tell apart from its
+	// source.  It was unencoded until PR #599's round 9: '(1) and (1)
+	// fingerprinted identically, so the whole class was invisible.  Cheap to
+	// encode because IsQuoted is exported; `spliced` and `meta` are not, and
+	// are excluded with reasons in the block above.
+	if v.IsQuoted() {
+		w.emit("quoted")
 	}
 	if loc, ok := v.Source(); ok {
 		// The location's VALUES, not its pointer: detach copies a location

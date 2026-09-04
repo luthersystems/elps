@@ -519,3 +519,32 @@ func TestWalkerMemosCannotBeEditedByACaller(t *testing.T) {
 		}
 	}
 }
+
+// TestCopyAliasesCallStackAcrossHeaders backs the *CallStack exemption's
+// stated reason.
+//
+// That row used to say "no constructor can alias one across two headers:
+// SetCallStack is called once". This test is what falsifies it: (*LVal).Copy
+// is `*cp = *v`, a shallow copy that carries Native, so two headers end up
+// over one *CallStack. The exemption's CONCLUSION is still right -- a captured
+// stack's identity carries no observable state, because CallStack.Copy
+// allocates an exact-length Frames slice at every capture site and the only
+// mutators (PushFID, Pop) run on env.Runtime.Stack rather than on a capture --
+// but it is right for a different reason than the row claimed.
+//
+// If Copy ever stops aliasing (a deep copy, or dropping Native), this fails
+// and the row's history paragraph should be revisited rather than left
+// asserting something that is no longer so.
+func TestCopyAliasesCallStackAcrossHeaders(t *testing.T) {
+	t.Parallel()
+	cs := &CallStack{Frames: []CallFrame{{FID: "f"}}}
+	a := Error(nil)
+	a.SetCallStack(cs)
+	b := a.Copy()
+	if a.CallStack() != b.CallStack() {
+		t.Fatal("(*LVal).Copy no longer aliases the *CallStack across two headers.\n" +
+			"The *CallStack exemption row in walkers.go records that it DOES, as the correction to a\n" +
+			"false reason. If Copy changed, update that row rather than leaving it describing the old\n" +
+			"behaviour -- which is exactly the failure the row's own history paragraph is about.")
+	}
+}

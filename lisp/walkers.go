@@ -182,8 +182,14 @@ var memoExemptions = []MemoExemption{
 	{
 		Subject: "*CallStack",
 		Reason: "an LError's recorded stack, deep-copied per header by detachCallStack rather than memoised per payload. " +
-			"It is per-LError and no constructor can alias one across two headers: SetCallStack is called once, " +
-			"on an error that has none, by the environment that raised it. Established in the review of PR #595.",
+			"Its IDENTITY carries no observable state: CallStack.Copy allocates an exact-length Frames slice " +
+			"(lisp/stack.go), every capture site calls it (op.go, env.go, builtins.go), and the only writers of a " +
+			"CallStack -- PushFID and Pop -- are called on env.Runtime.Stack, the live evaluator stack, never on a " +
+			"captured one. So two headers over one *CallStack cannot observe each other. " +
+			"CORRECTED in PR #599: this row used to claim \"no constructor can alias one across two headers: " +
+			"SetCallStack is called once\", which is FALSE -- (*LVal).Copy does `*cp = *v`, a shallow copy that " +
+			"carries Native, so it aliases one across two headers. Measured by " +
+			"TestCopyAliasesCallStackAcrossHeaders. The conclusion survived; the stated reason did not.",
 	},
 	{
 		Subject: "lisp.cycleState.path",

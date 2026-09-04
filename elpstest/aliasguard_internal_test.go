@@ -255,3 +255,40 @@ func matrixRow(header, key string) string {
 	}
 	return ""
 }
+
+// TestQuotedIsEncoded backs the fingerprint's claim to encode the quote flag.
+//
+// Until round 9 of PR #599 it did not, so a walker that dropped the flag was
+// invisible to the value channel (issue #600).
+//
+// THE PAIR MATTERS. The first version of this test compared QExpr([Int(1)])
+// with Quote(QExpr([Int(1)])) and was VACUOUS: QExpr already sets quoted, so
+// Quote took its wrapping branch and returned a structurally different LQuote.
+// The two fingerprints differed whether or not the flag was encoded, and
+// deleting the emit left this test green. A symbol differs from its quoted
+// self ONLY in the flag, which is what makes the assertion falsifiable.
+func TestQuotedIsEncoded(t *testing.T) {
+	t.Parallel()
+	plain := lisp.Symbol("a")
+	quoted := lisp.Quote(lisp.Symbol("a"))
+	if plain.Type != quoted.Type {
+		t.Fatalf("the pair no longer differs only in the quote flag: %v vs %v.\n"+
+			"Pick a constructor where Quote sets the flag rather than wrapping, or this test is\n"+
+			"vacuous again.", plain.Type, quoted.Type)
+	}
+	if plain.IsQuoted() || !quoted.IsQuoted() {
+		t.Fatalf("the pair no longer straddles the flag: plain=%v quoted=%v",
+			plain.IsQuoted(), quoted.IsQuoted())
+	}
+
+	fp := func(v *lisp.LVal) *Fingerprint { return FingerprintValue(v, FingerprintOptions{}) }
+	if fp(plain).Equal(fp(quoted)) {
+		t.Error("a quoted value and an unquoted one of the same type fingerprint identically.\n" +
+			"The quote flag is a VALUE property: a walker that dropped it would produce a value\n" +
+			"lisp can tell apart from its source, and the value channel could not see it. Restore\n" +
+			"the `quoted` emit in fingerprinter.value.")
+	}
+	if !fp(plain).Equal(fp(plain)) || !fp(quoted).Equal(fp(quoted)) {
+		t.Error("a value does not fingerprint equal to itself; the encoding is nondeterministic")
+	}
+}
