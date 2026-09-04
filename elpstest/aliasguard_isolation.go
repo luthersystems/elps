@@ -25,7 +25,31 @@ import (
 // break; the other files in this guard test the mechanisms, and this one
 // tests the guarantee directly.
 //
-// Four properties, all expressed with the same fingerprint the mechanism
+// THE DIRECTION MATRIX COMES FIRST, because organising this list by
+// MECHANISM is how a hole stayed invisible in it.  With two participants —
+// a template and its forks — writes can travel in exactly four directions,
+// and that is the complete set for two participants:
+//
+//	fork -> another fork             property 2, swept i x j
+//	fork -> its template             property 1, sequential and concurrent
+//	fork -> template -> later fork   property 3
+//	template -> an existing fork     property 5
+//
+// A reader can therefore tell at a glance whether a new property is needed
+// or an existing one has moved.  Before this matrix was written down the
+// list ran 1-4 by mechanism (immutability, independence, successor,
+// natives), and the template -> fork direction was simply absent; nothing
+// in the doc made the direction space explicit, so nobody could see a hole
+// in it.  A reader eventually asked which directions were covered, which
+// is how it was found.
+//
+// The asymmetry that hid it: the sequential loop mutates a fork and
+// re-fingerprints the template on EVERY iteration, so fork -> template was
+// continuously covered almost by accident, while template -> fork had no
+// path to be exercised at all — nothing in the check ever wrote to the
+// template.
+//
+// The properties, all expressed with the same fingerprint the mechanism
 // checks use:
 //
 //  1. TEMPLATE IMMUTABILITY UNDER LOAD.  Take N forks, run a different
@@ -41,10 +65,31 @@ import (
 //     template.  This is the shape that would silently contaminate a LATER
 //     customer transaction: state that leaked back into the template and
 //     then forward.
-//  4. NO SHARED STATEFUL NATIVE.  No native payload that declares neither
-//     NativeCloner nor RuntimeBound may be reachable by pointer from two
-//     forks at once.  See the census below for why this is not the same
-//     check as the runtime-affinity protocol.
+//  4. NO SHARED STATEFUL NATIVE.  Not a direction but a PRECONDITION for
+//     several of them: a payload reachable by pointer from two forks makes
+//     more than one direction leak at once.  No native payload that
+//     declares neither NativeCloner nor RuntimeBound may be so reachable.
+//     See the census below for why this is not the same check as the
+//     runtime-affinity protocol.
+//  5. TEMPLATE -> EXISTING FORK.  Run a mutating transaction ON THE
+//     TEMPLATE and require every live fork to stay where it was.  If a
+//     fork shares a payload with its template — the #576 and #585 defect —
+//     a write through the template lands in the fork; that and property 1
+//     are the two ends of one shared pointer.
+//
+// Two bounds on property 5, so this block does not overclaim:
+//
+//   - Under `-tags elpscheck` the ownership checker refuses this class
+//     first, panicking with "LVal used by two Runtimes" before the
+//     property can report.  Property 5 therefore earns its place in the
+//     ORDINARY build an embedder ships, where ownership checking — like
+//     RuntimeBound — is not compiled in.
+//   - Reverting the #576 map memo does NOT fail property 5.  It fails
+//     properties 1 and 3.  Property 5 catches OVER-sharing; #576 is
+//     DE-aliasing, and a fork that copies too eagerly is more isolated
+//     from its template, not less.  Opposite ends of one axis, caught by
+//     different properties — which is the argument for asserting all four
+//     directions rather than assuming one implies the others.
 
 // TransactionCheck describes one run of the transaction-isolation oracle.
 type TransactionCheck struct {

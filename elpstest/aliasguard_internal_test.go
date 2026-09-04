@@ -17,6 +17,7 @@
 package elpstest
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -109,5 +110,65 @@ func TestTemplateWriteVacuityIsReported(t *testing.T) {
 	}
 	if !strings.Contains(got[0].Detail, "pass for free") {
 		t.Errorf("the vacuity witness does not explain why a green result would be worthless:\n%s", got[0])
+	}
+}
+
+// TestTheDirectionMatrixMatchesTheProperties is a drift guard on the file
+// header of aliasguard_isolation.go.
+//
+// That header used to say "Four properties" and enumerate 1-4, organised by
+// MECHANISM. A fifth property was added and the header was not updated, so
+// the doc asserted something false about the code — the very failure the
+// claims-under-test rule exists to stop. Worse, organising the list by
+// mechanism is why the missing DIRECTION stayed invisible: with no explicit
+// direction space, nobody could see a hole in it.
+//
+// So the header now leads with the direction matrix, and this test holds
+// the matrix and the code together: every direction the header names must
+// correspond to a property string the check can actually emit, and every
+// one of those property strings must still be named in the header. Rename
+// a property, delete one, or add a direction to the doc without a property
+// behind it, and this goes red.
+func TestTheDirectionMatrixMatchesTheProperties(t *testing.T) {
+	t.Parallel()
+	src, err := os.ReadFile("aliasguard_isolation.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+
+	header := text
+	if i := strings.Index(text, "// TransactionCheck describes one run"); i > 0 {
+		header = text[:i]
+	}
+
+	for _, d := range []struct{ direction, property string }{
+		{"fork -> another fork", "a transaction on one fork is invisible to every other fork"},
+		{"fork -> its template", "the template is unchanged by a transaction on a fork"},
+		{"fork -> template -> later fork", "a fork taken after other forks were mutated is pristine"},
+		{"template -> an existing fork", "a transaction on the template is invisible to every existing fork"},
+	} {
+		if !strings.Contains(header, d.direction) {
+			t.Errorf("the file header no longer names the direction %q.\n"+
+				"The direction matrix is what makes a missing direction visible; dropping a row from it\n"+
+				"is how the template -> fork gap stayed hidden.", d.direction)
+		}
+		if !strings.Contains(text, `Property: "`+d.property+`"`) {
+			t.Errorf("no property string %q is emitted any more, but the header still lists the\n"+
+				"direction %q as covered by it. Either the property was renamed and the header must\n"+
+				"follow, or the direction is no longer asserted at all.", d.property, d.direction)
+		}
+		if !strings.Contains(header, "property") {
+			t.Fatal("the header no longer maps directions to properties")
+		}
+	}
+
+	// The header must not claim a count that has drifted from the list.
+	for _, stale := range []string{"Four properties", "Three properties"} {
+		if strings.Contains(header, stale) {
+			t.Errorf("the header says %q; the properties are enumerated below it and there are five.\n"+
+				"A count in prose drifts the moment a property is added — that already happened once.",
+				stale)
+		}
 	}
 }
