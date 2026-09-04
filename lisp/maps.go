@@ -59,16 +59,22 @@ const (
 	symbolkey
 )
 
-type typemap map[interface{}]keytype
+// Every key a sortedmap stores is a Go string: Set keys on LVal.Str for both
+// LString and LSymbol and rejects every other type, so the Go maps are keyed
+// on string rather than interface{}.  Keying on interface{} boxed each
+// string into a heap-allocated interface value on insert (one allocation per
+// entry, on top of the map growth) and had every read wrap the key in an
+// interface before hashing; a string key hashes and compares directly.
+type typemap map[string]keytype
 
 type sortedmap struct {
-	m  map[interface{}]*LVal
+	m  map[string]*LVal
 	tm typemap
 }
 
 func newmap() sortedmap {
 	return sortedmap{
-		m:  make(map[interface{}]*LVal),
+		m:  make(map[string]*LVal),
 		tm: make(typemap),
 	}
 }
@@ -77,15 +83,15 @@ func (m sortedmap) typemap() typemap {
 	return m.tm
 }
 
-func (m sortedmap) keytype(k interface{}) keytype {
+func (m sortedmap) keytype(k string) keytype {
 	return m.typemap()[k]
 }
 
-func (m sortedmap) puttype(k interface{}, t keytype) {
+func (m sortedmap) puttype(k string, t keytype) {
 	m.typemap()[k] = t
 }
 
-func (m sortedmap) deltype(k interface{}) {
+func (m sortedmap) deltype(k string) {
 	delete(m.typemap(), k)
 }
 
@@ -97,7 +103,7 @@ func (m sortedmap) deltype(k interface{}) {
 // (TestForkSortedMapClonePrunedMapIsRightSized).
 func (m sortedmap) emptyLike() sortedmap {
 	return sortedmap{
-		m:  make(map[interface{}]*LVal, len(m.m)),
+		m:  make(map[string]*LVal, len(m.m)),
 		tm: make(typemap, len(m.tm)),
 	}
 }
@@ -170,7 +176,7 @@ type StringKeyRanger interface {
 // zero size, as newmap leaves it.
 func emptyForStringKeys(n int) sortedmap {
 	return sortedmap{
-		m:  make(map[interface{}]*LVal, n),
+		m:  make(map[string]*LVal, n),
 		tm: make(typemap),
 	}
 }
@@ -254,11 +260,7 @@ func (m sortedmap) Entries(buf []*LVal) *LVal {
 	// n LVals of dead storage for keys it never writes.
 	var keys []LVal
 	i := 0
-	for k, v := range m.m {
-		ks, ok := k.(string)
-		if !ok {
-			return Errorf("unexpected map key: %v", k)
-		}
+	for ks, v := range m.m {
 		cells := slots[2*i : 2*i+2 : 2*i+2]
 		switch m.keytype(ks) {
 		case stringkey:
