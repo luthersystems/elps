@@ -17,6 +17,7 @@
 package elpstest
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -66,5 +67,47 @@ func TestQuoteKeyDoesNotDoubleQuote(t *testing.T) {
 	}
 	if got, want := quoteKey(lisp.Int(3)), `"3"`; got != want {
 		t.Errorf("quoteKey(int 3) = %s, want %s", got, want)
+	}
+}
+
+// The template-to-fork property refuses to pass for free.
+//
+// It is driven directly rather than through CheckTransactions because the
+// vacuous case is not reachable from outside: a transaction that moves its
+// own fork does so by mutating state the template holds, and running that
+// same transaction on the template moves the template too. So an
+// end-to-end attempt at this case never gets past the earlier "no
+// transaction changed its own fork" guard. The branch is still worth
+// having — it is what stops a future caller whose transactions only touch
+// fork-local state from getting a green property that asserted nothing —
+// and it is worth testing, so it is tested where it can be reached.
+func TestTemplateWriteVacuityIsReported(t *testing.T) {
+	t.Parallel()
+	env, err := NewForkCheckEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc := env.LoadString("p.lisp", `(set 'shared (sorted-map "k" 1))`); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	fork, err := env.Fork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := []*Fingerprint{FingerprintEnv(fork, templateOpts)}
+
+	// Pure expressions: they evaluate, and they change nothing the
+	// fingerprint can see.
+	c := TransactionCheck{Tx: []string{`(+ 1 2)`, `(* 2 3)`}, Repro: "no-op transactions"}
+	got := templateToForkWitnesses(c, env, []*lisp.LEnv{fork}, before)
+	if len(got) != 1 {
+		t.Fatalf("a transaction set that cannot move the template produced %d witnesses, want 1:\n%v",
+			len(got), got)
+	}
+	if !strings.Contains(got[0].Leak, "no transaction moved the template") {
+		t.Errorf("the vacuity witness does not say the template never moved:\n%s", got[0])
+	}
+	if !strings.Contains(got[0].Detail, "pass for free") {
+		t.Errorf("the vacuity witness does not explain why a green result would be worthless:\n%s", got[0])
 	}
 }

@@ -250,7 +250,98 @@ func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 			Repro:    c.Repro,
 		})
 	}
+
+	// Property 5: THE OTHER END OF THE SHARED POINTER.
+	//
+	// Everything above drives writes FROM a fork: fork -> other fork,
+	// fork -> template, and fork -> template -> later fork.  None of them
+	// writes to the TEMPLATE and re-checks the forks that are already
+	// live, so that direction went unasserted.
+	//
+	// The asymmetry is structural, not incidental.  If a fork shares a
+	// payload with its template -- which is exactly the #576 and #585
+	// defect -- then a write through the template lands in the fork.
+	// Those are the two ends of one shared pointer, and testing only one
+	// end leaves the other to "the embedder is supposed to treat the
+	// template as immutable after load", which is the kind of supposition
+	// this guard exists so that nobody has to make.
+	//
+	// It runs last because it deliberately mutates the template, which
+	// invalidates the baseline every check above compares against.
+	//
+	// WHAT IT CATCHES, and what it does not.  This direction detects
+	// OVER-sharing: a fork still holding a payload the template owns.  It
+	// does NOT detect the DE-aliasing defects at the other extreme --
+	// measured by reverting the #576 map memo, which fails "a fresh fork
+	// is indistinguishable from its template" and the pristine-successor
+	// property while leaving this one green.  That is not a gap: a fork
+	// that de-aliases too eagerly is MORE isolated from its template, not
+	// less, so a template write cannot reach it.  The two defects sit at
+	// opposite ends of the same axis and are caught by different
+	// properties, which is the point of asserting all four directions
+	// rather than assuming one implies the others.
+	out = append(out, templateToForkWitnesses(c, tmpl, forks, before)...)
 	return out, nil
+}
+
+// templateToForkWitnesses runs a transaction ON THE TEMPLATE and requires
+// every live fork to stay where it was.
+//
+// The transaction is drawn from the check's existing Tx set rather than
+// from a new field, so every caller gets the property without changing a
+// call site.  The set is tried in order until one actually moves the
+// template: a transaction that leaves the template alone would make the
+// property pass for free, which is the same non-vacuity discipline the
+// fork sweep applies with its `moved` flag.
+func templateToForkWitnesses(c TransactionCheck, tmpl *lisp.LEnv, forks []*lisp.LEnv, before []*Fingerprint) []Witness {
+	pre := FingerprintEnv(tmpl, templateOpts)
+	moved := -1
+	for i, tx := range c.Tx {
+		if rc := tmpl.LoadString(fmt.Sprintf("tmpl-tx%d.lisp", i), tx); rc.Type == lisp.LError {
+			// A transaction the template rejects tells us nothing; try
+			// the next one.
+			continue
+		}
+		if !FingerprintEnv(tmpl, templateOpts).Equal(pre) {
+			moved = i
+			break
+		}
+	}
+	if moved < 0 {
+		return []Witness{{
+			Walker:   "Fork",
+			Property: "a transaction on the template is invisible to every existing fork",
+			Leak:     "<no transaction moved the template>",
+			Baseline: "at least one transaction changes the template it runs on",
+			Observed: "every transaction left the template's fingerprint unchanged",
+			Detail: "This property would pass for free. It asserts that a write THROUGH THE TEMPLATE " +
+				"does not reach a fork that is already live, so a transaction that does not write to " +
+				"the template proves nothing. Give the check at least one transaction that mutates a " +
+				"binding the template holds.",
+			Repro: c.Repro,
+		}}
+	}
+
+	var out []Witness
+	for j, f := range forks {
+		got := FingerprintEnv(f, templateOpts)
+		if before[j].Equal(got) {
+			continue
+		}
+		out = append(out, Witness{
+			Walker:   "Fork",
+			Property: "a transaction on the template is invisible to every existing fork",
+			Leak:     firstDivergentPath(before[j], got),
+			Baseline: "every live fork holds the value it held before the template was written to",
+			Observed: fmt.Sprintf("fork %d moved", j),
+			Detail: fmt.Sprintf("transaction %d, run on the TEMPLATE, moved fork %d -- so that fork "+
+				"shares a payload with the template it was forked from, and a template write reaches "+
+				"it. This is the other end of the pointer the fork-to-template property covers.\n%s",
+				moved, j, before[j].Diff(got)),
+			Repro: c.Repro,
+		})
+	}
+	return out
 }
 
 // CheckForkTemplate holds one loaded template to the fork contract stated
