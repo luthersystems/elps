@@ -755,10 +755,12 @@ func SortedMap() *LVal {
 
 // SortedMapSized returns an empty sorted-map whose backing is sized to
 // receive n entries, as make(map, n) sizes a Go map.  n is a capacity hint:
-// the map is empty, it grows past n as SortedMap's would, and a negative n
-// is treated as zero rather than panicking the way make(map, n) does.  Use
-// it where the entry count is known before the first Set, such as when
-// copying a map.
+// the map is empty and it grows past n as SortedMap's would.  A negative n
+// is clamped to zero rather than passed to make, because the language
+// requires make's size argument to be non-negative and gc's tolerance of a
+// negative map hint is not something an exported constructor should oblige
+// its callers to rely on.  Use it where the entry count is known before the
+// first Set, such as when copying a map.
 func SortedMapSized(n int) *LVal {
 	if n < 0 {
 		n = 0
