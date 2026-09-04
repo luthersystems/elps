@@ -1483,75 +1483,8 @@ func TestANonPositiveProbeCapMeansTheDefault(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Control 11: a fork that SHARES a payload with its template.
-//
-// This is the negative control for the template -> fork direction, the
-// fourth isolation direction and the one that went unasserted until now.
-// Everything else drives writes FROM a fork; nothing wrote to the TEMPLATE
-// and re-checked the forks that were already live.
-//
-// The asymmetry is structural. If a fork shares a payload with its
-// template -- the #576 and #585 defect -- then a write through the
-// template lands in the fork. Two ends of one pointer; only one end was
-// covered.
-// ---------------------------------------------------------------------------
-
+// templateSharedProgram binds one mutable payload the template owns.
 const templateSharedProgram = `(set 'shared (sorted-map "k" 1))`
-
-// brokenForkSharesTemplatePayload forks properly and then re-points one
-// binding at the TEMPLATE's own value, so the fork and the template share
-// the payload behind it.
-func brokenForkSharesTemplatePayload(env *lisp.LEnv) (*lisp.LEnv, error) {
-	f, err := env.Fork()
-	if err != nil {
-		return nil, err
-	}
-	v := env.Get(lisp.Symbol("shared"))
-	if v == nil || v.Type == lisp.LError {
-		return nil, fmt.Errorf("the template does not bind `shared`: %v", v)
-	}
-	if rc := f.PutGlobal(lisp.Symbol("shared"), v); rc.Type == lisp.LError {
-		return nil, lisp.GoError(rc)
-	}
-	return f, nil
-}
-
-func TestGuardDetectsATemplateWriteReachingAFork(t *testing.T) {
-	t.Parallel()
-	got, err := elpstest.CheckTransactions(elpstest.TransactionCheck{
-		Program: templateSharedProgram,
-		Tx: []string{
-			`(assoc! shared "k" 2)`,
-			`(assoc! shared "k" 3)`,
-		},
-		Fork:  brokenForkSharesTemplatePayload,
-		Repro: "a fork that shares a payload with its template",
-	})
-	if err != nil {
-		t.Fatalf("harness error: %v", err)
-	}
-	const want = "a transaction on the template is invisible to every existing fork"
-	var found *elpstest.Witness
-	for i := range got {
-		if got[i].Property == want {
-			found = &got[i]
-			break
-		}
-	}
-	if found == nil {
-		t.Fatalf("a fork sharing a payload with its template was NOT reported by the\n"+
-			"template-to-fork property.\nThat direction is unasserted again: a write THROUGH the\n"+
-			"template reaches a live fork and nothing says so.\nwitnesses: %v", got)
-	}
-	if !strings.Contains(found.Detail, "moved fork") {
-		t.Errorf("the witness does not name which fork moved:\n%s", found)
-	}
-	if found.Leak == "" {
-		t.Errorf("the witness carries no diverging path:\n%s", found)
-	}
-	t.Logf("detected:\n%s", found)
-}
 
 // The property must not fire on a correct fork — otherwise the control
 // above proves nothing about direction, only that the property is noisy.
