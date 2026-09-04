@@ -528,10 +528,12 @@ type reachedEnv struct {
 //
 // A program that leaves more does not get a quietly shortened sweep.  It
 // gets a partial-coverage witness, because truncation and a clean result
-// are indistinguishable to a reader otherwise: with forty let-bound
-// closures the forty-first environment is never stamped, so a fork
-// carrying a stale location THERE is invisible while the identical bug on
-// the first environment is caught.  That is a coverage cliff at a size real
+// are indistinguishable to a reader otherwise: at any cap N, the N+1'th
+// environment is never stamped, so a fork carrying a stale location THERE
+// is invisible while the identical bug on the first environment is caught.
+// (Generic on purpose.  The concrete numbers for THIS cap are in the next
+// paragraph and are pinned by tests; a worked example with an invented
+// cap reads like a measurement and is not one.)  That is a coverage cliff at a size real
 // programs reach — substrate's router shape is a dispatch table of handlers
 // — and it was silent until the adversarial review of #599 proved it.
 //

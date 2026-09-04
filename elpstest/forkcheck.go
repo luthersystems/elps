@@ -36,17 +36,13 @@ import (
 //     template untouched; a later fork is pristine.
 //
 // Every fork is also checked one level deeper (a fork of the fork), as
-// defence in depth against a class a single hop cannot exhibit.
-//
-// This line used to justify that with "a fix that survived one hop and not
-// two has happened (issue #579)", which is false. #579 fails at the FIRST
-// fork -- measured by reverse-applying its fix, 6ef3da5, which reddens
-// TestForkPreservesValidatorCredential. The claim came from reading that
-// commit's own conditional test comment ("a fix that only survived one hop
-// WOULD fail here") as a historical one. The real instance, cited by
-// commit and test rather than issue number: d26953a records that on a
-// shared libtesting suite the fork-of-fork arm was once the only arm that
-// noticed, and TestForkCheck_TestingSuitePerFork now sees it on hop one.
+// defence in depth against a class a single hop cannot exhibit.  This line
+// used to cite issue #579 for that, which is false: #579 fails at the FIRST
+// fork, measured by reverse-applying its fix 6ef3da5.  The real instance is
+// recorded in d26953a -- on a shared libtesting suite, the fork-of-fork arm
+// was once the only arm that noticed (TestForkCheck_TestingSuitePerFork).
+// Cited by commit and test rather than issue number: the issue numbers in
+// this area have been wrong twice.
 //
 // "Reachable" means everything reachable from the package bindings: list
 // and vector cells, sorted-map entries, bytes, and the environment a
