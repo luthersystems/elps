@@ -2087,7 +2087,15 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 		case LBytes:
 			return String(string(list.Bytes()))
 		default: // LSExpr
+			// One byte per cell, so the slice is sized once.  An empty
+			// window stays nil: libjson encodes a nil []byte as JSON null
+			// and an empty non-nil one as "", a v1.13.0 compatibility
+			// contract (encodeBytes in lisp/lisplib/libjson/encode.go), so
+			// make([]byte, 0, 0) would change what the value serializes to.
 			var b []byte
+			if n := len(list.Cells); n > 0 {
+				b = make([]byte, 0, n)
+			}
 			err := appendBytes(env, list, func(x byte) {
 				b = append(b, x)
 			})
@@ -2103,7 +2111,15 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 		case LBytes:
 			return list
 		default: // LSExpr
+			// One byte per cell, so the slice is sized once.  An empty
+			// window stays nil: libjson encodes a nil []byte as JSON null
+			// and an empty non-nil one as "", a v1.13.0 compatibility
+			// contract (encodeBytes in lisp/lisplib/libjson/encode.go), so
+			// make([]byte, 0, 0) would change what the value serializes to.
 			var b []byte
+			if n := len(list.Cells); n > 0 {
+				b = make([]byte, 0, n)
+			}
 			err := appendBytes(env, list, func(x byte) {
 				b = append(b, x)
 			})
