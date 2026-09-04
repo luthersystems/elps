@@ -513,7 +513,10 @@ sorted-maps and bytes are rebuilt with fresh backing, recursively, so mutating
 the copy at any depth is never observable through the original. Function and
 native values are shared by reference rather than copied, and strings and
 numbers are immutable values. Sharing between values inside the input is
-preserved in the copy, including cycles.
+preserved in the copy, including cycles — and so is a sorted-map, bytes or
+native payload that two values point at (what `(quasiquote (unquote a))`
+produces): the copy rebuilds it once and both copied values point at the one
+rebuilt payload.
 
 `copy` is how lisp code takes ownership of data whose provenance it does not
 control. Its result is always mutable, even when the input is (or is derived

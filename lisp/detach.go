@@ -4,6 +4,7 @@ package lisp
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/luthersystems/elps/internal/fmtmeta"
@@ -59,7 +60,10 @@ import (
 //	Cells[3].Cells[0]: native value (*time.Time) cannot be detached
 //
 // Internal aliasing within v — the same *LVal reachable along two paths,
-// including cycles — is preserved as the same aliasing within the copy.  Only
+// including cycles — is preserved as the same aliasing within the copy, and
+// so is aliasing one level down: two distinct *LVal headers over ONE
+// *MapData, *[]byte or NativeCloner payload (what `(quasiquote (unquote a))`
+// produces, see the detacher doc) share one payload in the copy.  Only
 // sharing between v and the copy is eliminated.
 func (v *LVal) detach() (*LVal, error) {
 	if v == nil {
@@ -72,8 +76,29 @@ func (v *LVal) detach() (*LVal, error) {
 // detacher tracks original→copy correspondences for one detach call so that
 // values reachable along multiple paths (or cyclically) are copied exactly
 // once and the copy reproduces the original's internal aliasing.
+//
+// The three payload memos -- maps, bytes, natives -- are keyed on the
+// PAYLOAD, not the *LVal header over it, for the reason forker keeps the
+// same three (lisp/fork.go, issue #576): the two are not one-to-one.
+// Quote (reached from quasiquote through doUnquoteValue), Splice,
+// shallowUnquote and FunRef copy an LVal's struct and keep its Native, so
+// `(quasiquote (unquote a))` is a second header on a's sorted map, bytes or
+// native handle.  Memoising per header alone rebuilt such a payload once
+// per header, and `(copy (list a b))` came back as two independent maps: a
+// write through the copy's first element was invisible through its second
+// where the original pair showed it (issue #585).  A map reaching itself
+// through a second header showed the same thing one level down: the *LVal
+// memo bounded the walk but not the number of clones -- one per header,
+// each containing the next.
+//
+// The payload memos are allocated on first use, so a walk over a value with
+// no maps, bytes or cloneable natives -- parser output, the detach-on-Get
+// parse-cache case -- pays nothing for them.
 type detacher struct {
-	seen map[*LVal]*LVal
+	seen    map[*LVal]*LVal
+	maps    map[*MapData]*MapData
+	bytes   map[*[]byte]*[]byte
+	natives map[interface{}]interface{}
 
 	// shareOpaque switches the walk from transfer semantics (detach) to
 	// within-env ownership semantics (deepCopy, lisp/copy.go): the two
@@ -162,15 +187,7 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	// the *MapData behind LSortMap, the *CallStack behind LError — whose
 	// guards key off the elps type carrying them.
 	if cloner != nil {
-		clone := cloner.CloneNative()
-		if !d.shareOpaque {
-			// A strict detach is the sanctioned cross-runtime transfer, and
-			// CloneNative cannot know the destination, so the only clone
-			// that can be right is an unbound one.  Checked builds assert
-			// it (no-op in production; see lisp/runtime_bound.go).
-			checkDetachedNativeUnbound(clone)
-		}
-		cp.Native = clone
+		cp.Native = d.cloneNative(v.Native, cloner)
 	} else {
 		switch native := v.Native.(type) {
 		case nil:
@@ -179,9 +196,7 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 				return nil, unexpectedNativeError(v)
 			}
 			if native != nil {
-				b := make([]byte, len(*native))
-				copy(b, *native)
-				cp.Native = &b
+				cp.Native = d.byteSlice(native)
 			}
 		case *MapData:
 			if v.Type != LSortMap {
@@ -225,24 +240,87 @@ func (d *detacher) detachCells(cells []*LVal) ([]*LVal, error) {
 	return out, nil
 }
 
+// cloneNative resolves one NativeCloner payload, once per payload however
+// many headers reach it (issue #585; see the detacher doc), so two headers
+// over one accumulator do not become two independent clones and the
+// embedder is not charged for duplicates.  Only pointer payloads are
+// memoised -- identity is what aliasing means, and a non-pointer payload
+// (an int, a struct value) has none to preserve -- the same rule
+// forker.native applies.
+func (d *detacher) cloneNative(payload interface{}, cloner NativeCloner) interface{} {
+	memo := reflect.TypeOf(payload).Kind() == reflect.Pointer
+	if memo {
+		if clone, ok := d.natives[payload]; ok {
+			return clone
+		}
+	}
+	clone := cloner.CloneNative()
+	if !d.shareOpaque {
+		// A strict detach is the sanctioned cross-runtime transfer, and
+		// CloneNative cannot know the destination, so the only clone
+		// that can be right is an unbound one.  Checked builds assert
+		// it (no-op in production; see lisp/runtime_bound.go).
+		checkDetachedNativeUnbound(clone)
+	}
+	if memo {
+		if d.natives == nil {
+			d.natives = make(map[interface{}]interface{})
+		}
+		d.natives[payload] = clone
+	}
+	return clone
+}
+
+// byteSlice copies one LBytes backing array, once per original array
+// however many headers reach it (issue #585).  No cycle is possible through
+// bytes, so the memo is filled after the copy.
+func (d *detacher) byteSlice(b *[]byte) *[]byte {
+	if cp, ok := d.bytes[b]; ok {
+		return cp
+	}
+	nb := make([]byte, len(*b))
+	copy(nb, *b)
+	if d.bytes == nil {
+		d.bytes = make(map[*[]byte]*[]byte)
+	}
+	d.bytes[b] = &nb
+	return &nb
+}
+
 // detachMapData rebuilds md as a fresh stock sortedmap whose keys and values
 // are both detached.
+//
+// Memoised per *MapData, and seeded BEFORE the entries are walked, so that
+// a map reachable through several headers maps to one copy, and a map that
+// reaches itself through a second header closes onto that copy instead of
+// nesting a fresh one per header (issue #585; see the detacher doc).  An
+// entry that fails to detach abandons the whole walk, so a memo entry
+// published over a half-built map is never observed.
 func (d *detacher) detachMapData(md *MapData) (*MapData, error) {
 	if md == nil {
 		return nil, nil
+	}
+	if cp, ok := d.maps[md]; ok {
+		return cp, nil
+	}
+	if d.maps == nil {
+		d.maps = make(map[*MapData]*MapData)
 	}
 	if md.mapBacking == nil {
 		// Degenerate MapData with no implementation (possible via
 		// SortedMapFromData(NewMapData(nil))).  Return a fresh struct rather
 		// than md itself so the detached value shares no memory with the
 		// original — the detach contract — while preserving the nil Map.
-		return &MapData{}, nil
+		cp := &MapData{}
+		d.maps[md] = cp
+		return cp, nil
 	}
 	entries := sortedMapEntries(md)
 	if entries.Type == LError {
 		return nil, &detachError{msg: fmt.Sprintf("sorted-map entries cannot be enumerated: %v", entries)}
 	}
 	m := &MapData{newmap()}
+	d.maps[md] = m
 	for _, pair := range entries.Cells {
 		key, err := d.detach(pair.Cells[0])
 		if err != nil {

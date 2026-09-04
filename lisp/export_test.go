@@ -13,6 +13,12 @@ import "github.com/luthersystems/elps/parser/token"
 // Detach exposes (*LVal).detach to package lisp_test.
 func Detach(v *LVal) (*LVal, error) { return v.detach() }
 
+// DeepCopy exposes (*LVal).deepCopy -- the within-env walk behind the
+// `copy` builtin (lisp/copy.go) -- to package lisp_test, so the aliasing
+// battery can drive both modes of the shared walker over Go-built shapes
+// (a map holding a second header on itself) that lisp source cannot spell.
+func DeepCopy(v *LVal) (*LVal, error) { return v.deepCopy() }
+
 // ProgramDetach exposes Program.detach to package lisp_test.
 func ProgramDetach(p Program) ([]*LVal, error) { return p.detach() }
 
