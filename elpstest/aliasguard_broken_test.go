@@ -632,6 +632,11 @@ func (d *bytesSharingCopier) copy(v *lisp.LVal) *lisp.LVal {
 		if c, ok := v.Native.(lisp.NativeCloner); ok {
 			cp.Native = c.CloneNative()
 		}
+	default:
+		// Every other type carries its payload in the struct copy above,
+		// or in Cells below.  (Named rather than left implicit so the
+		// exhaustive linter is satisfied without listing every LType; the
+		// naive reference copier above has the same arm.)
 	}
 	if len(v.Cells) > 0 {
 		cells := make([]*lisp.LVal, len(v.Cells))
