@@ -468,16 +468,19 @@ func TestGuardDetectsStamperWritingIntoItsSource(t *testing.T) {
 // truncated run and a clean run indistinguishable: with forty let-bound
 // closures the sweep stamped the first twenty-four environments and never
 // looked at the rest, so a fork carrying a stale location on environment
-// forty-one passed while the identical leak on environment one failed.
+// forty-two passed while the identical leak on environment one failed.
 // That is a coverage cliff at a size real programs reach — a dispatch table
-// of forty handlers leaves forty-one environments — and the adversarial
+// of forty handlers leaves forty-two environments — and the adversarial
 // review of #599 proved it was silent.
 //
 // The cliff is now loud: exceeding the cap is a partial-coverage witness.
 // ---------------------------------------------------------------------------
 
 // manyScopesProgram leaves one environment per let-bound closure, plus the
-// program's own, so n closures leave n+1 reachable environments.
+// program's own and the location fixture's, so n closures leave n+2
+// reachable environments.  Pinned by TestManyScopesProgramLeavesNPlusTwo,
+// because three separate comments have quoted this arithmetic and a stale
+// one sent a previous round of review chasing the wrong number.
 func manyScopesProgram(n int) string {
 	var b strings.Builder
 	b.WriteString(locationProgram)
@@ -550,10 +553,10 @@ func TestGuardIsSilentWhenTheSweepIsComplete(t *testing.T) {
 
 // The realistic shape the guard exists for — a dispatch table of handlers —
 // must be COVERED by the default cap, not truncated by it.  At the original
-// 24 a 22-handler table already reported partial coverage, so the
-// out-of-the-box result on the motivating workload was a failure that is
-// not a bug; that trains an embedder to raise the cap reflexively and
-// devalues the signal. The cap costs nothing when it is not reached.
+// cap of 24 a dispatch table of 23 handlers already reported partial
+// coverage, so the out-of-the-box result on the motivating workload was a
+// failure that is not a bug; that trains an embedder to raise the cap
+// reflexively and devalues the signal. The cap costs nothing unreached.
 func TestDefaultCapCoversARouterShapedProgram(t *testing.T) {
 	t.Parallel()
 	env, err := elpstest.NewForkCheckEnv()
@@ -879,8 +882,17 @@ func TestGuardCatchesADuplicateTailLeakBelowTheCap(t *testing.T) {
 // reported zero witnesses before the cap was made loud.
 func TestGuardAnnouncesATruncatedProbeSweep(t *testing.T) {
 	t.Parallel()
+	// The cap is passed EXPLICITLY. Pinning this to the default made the
+	// control silently vacuous the moment the default was raised from 96
+	// to 256: a 104-site graph stopped truncating and the test failed --
+	// which is the good outcome, but only because the suite ran. A control
+	// should not depend on a tunable it is not testing.
 	got, err := elpstest.CheckWalker(tailSharingWalker(),
-		elpstest.AliasCheck{Program: duplicateTailProgram(104), Repro: "duplicate-tail leak, 104 sites"})
+		elpstest.AliasCheck{
+			Program:       duplicateTailProgram(104),
+			MaxProbeSites: 96,
+			Repro:         "duplicate-tail leak, 104 sites, cap 96",
+		})
 	if err != nil {
 		t.Fatalf("harness error: %v", err)
 	}
@@ -904,14 +916,14 @@ func TestRaisingTheProbeCapFindsTheHiddenLeak(t *testing.T) {
 	t.Parallel()
 	got, err := elpstest.CheckWalker(tailSharingWalker(), elpstest.AliasCheck{
 		Program:       duplicateTailProgram(104),
-		MaxProbeSites: 256,
+		MaxProbeSites: 512,
 		Repro:         "duplicate-tail leak, 104 sites, cap raised",
 	})
 	if err != nil {
 		t.Fatalf("harness error: %v", err)
 	}
 	if tw := probeTruncationWitnesses(got); len(tw) != 0 {
-		t.Errorf("the sweep still reports partial coverage with MaxProbeSites=256:\n%s", tw[0])
+		t.Errorf("the sweep still reports partial coverage with MaxProbeSites=512:\n%s", tw[0])
 	}
 	if len(got) == 0 {
 		t.Fatal("raising MaxProbeSites to 256 did not surface the leak the cap was hiding; the\n" +
@@ -1030,4 +1042,296 @@ func TestGuardDetectsACopyThatInternsEqualBuffers(t *testing.T) {
 	// arm's only end-to-end coverage — make sameIndexSet permissive and
 	// this goes to zero witnesses.
 	assertDetects(t, interningWalker(), c, "shared in the copy, not in the source")
+}
+
+// TestManyScopesProgramLeavesNPlusTwo pins the arithmetic that three doc
+// comments quote.  A stale "n+1" in this file survived two reviews and cost
+// a reviewer time; a claim about a property of the code belongs in a test.
+func TestManyScopesProgramLeavesNPlusTwo(t *testing.T) {
+	t.Parallel()
+	for _, n := range []int{0, 1, 22, 40} {
+		env, err := elpstest.NewForkCheckEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rc := env.LoadString("p.lisp", manyScopesProgram(n)); rc.Type == lisp.LError {
+			t.Fatal(rc)
+		}
+		envs, truncated := elpstest.ReachableEnvironmentsN(env, 4096)
+		if truncated {
+			t.Fatalf("n=%d truncated at 4096", n)
+		}
+		if len(envs) != n+2 {
+			t.Errorf("manyScopesProgram(%d) leaves %d reachable environments, want %d (n+2).\n"+
+				"Update the doc comments that quote this arithmetic in the same commit.",
+				n, len(envs), n+2)
+		}
+	}
+}
+
+// ReachableEnvironmentsN is exported, so a non-positive limit must not
+// panic.  It did: the slice that applies the limit ran unguarded while
+// LocationCheck.maxEnvs() clamped, so the helper the docs point at panicked
+// where the check it mirrors did not.
+func TestReachableEnvironmentsNClampsANonPositiveLimit(t *testing.T) {
+	t.Parallel()
+	env, err := elpstest.NewForkCheckEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc := env.LoadString("p.lisp", manyScopesProgram(2)); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	for _, limit := range []int{0, -1, -1000} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("ReachableEnvironmentsN(env, %d) panicked: %v", limit, r)
+				}
+			}()
+			envs, _ := elpstest.ReachableEnvironmentsN(env, limit)
+			if len(envs) == 0 {
+				t.Errorf("ReachableEnvironmentsN(env, %d) returned nothing; a non-positive limit "+
+					"should mean the default", limit)
+			}
+		}()
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Claims-under-test.
+//
+// Three rounds of review each found a FALSE SENTENCE in newly-added prose,
+// and each time the sentence was load-bearing for a decision: "the
+// fingerprint covers the whole graph" justified leaving a silent cliff, and
+// "every caller asks in order to stop" justified a truncated flag that
+// fired on complete sweeps.  The rule this file now follows: a comment that
+// asserts a PROPERTY of the code (not an intent, not a rationale) is either
+// backed by a test that fails when the assertion is false, or deleted.
+//
+// These are those tests.
+// ---------------------------------------------------------------------------
+
+// DefaultMaxProbeSites's doc cites "a sorted map of 96 int entries is 96
+// probe sites" as evidence that the old cap sat inside ordinary range.
+func TestASortedMapEntryIsAProbeSite(t *testing.T) {
+	t.Parallel()
+	const n = 96
+	var b strings.Builder
+	b.WriteString("(set 'probe (sorted-map")
+	for i := range n {
+		fmt.Fprintf(&b, " \"k%03d\" %d", i, i)
+	}
+	b.WriteString("))")
+	env, err := elpstest.NewForkCheckEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc := env.LoadString("p.lisp", b.String()); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	got, err := elpstest.CheckWalker(bytesSharingWalker(),
+		elpstest.AliasCheck{Program: b.String(), MaxProbeSites: n})
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	// n entries at a cap of exactly n is a COMPLETE sweep: no
+	// partial-coverage witness, which is only true if each entry is one
+	// probe site and the boundary is not off by one.
+	if tw := probeTruncationWitnesses(got); len(tw) != 0 {
+		t.Errorf("a %d-entry sorted map at MaxProbeSites=%d reported partial coverage:\n%s\n"+
+			"Either a map entry is no longer one probe site, or the cap boundary is off by one.",
+			n, n, tw[0])
+	}
+}
+
+// DefaultMaxProbeSites and DefaultMaxEnvironments both rest on "the fuzzer
+// cannot reach this, so the controls must be deterministic".  If the
+// generator ever grows past a cap that stops being true and the caps need
+// fuzz coverage instead.
+func TestTheFuzzGeneratorCannotReachEitherCap(t *testing.T) {
+	t.Parallel()
+	if fuzzMaxVars >= elpstest.DefaultMaxProbeSites {
+		t.Errorf("fuzzMaxVars is %d and DefaultMaxProbeSites is %d: the generator can now reach the\n"+
+			"probe cap, so the deterministic-only justification in its doc comment is stale.",
+			fuzzMaxVars, elpstest.DefaultMaxProbeSites)
+	}
+	if fuzzMaxVars >= elpstest.DefaultMaxEnvironments {
+		t.Errorf("fuzzMaxVars is %d and DefaultMaxEnvironments is %d: same problem for the location cap.",
+			fuzzMaxVars, elpstest.DefaultMaxEnvironments)
+	}
+}
+
+// sameIndexSet's doc says no live elps walker interns equal-content buffers
+// onto one backing array, citing detach.go and fork.go. Asserting the
+// SOURCE would be brittle; assert the behaviour instead, over the real
+// registered walkers.
+func TestNoLiveWalkerOverAliasesEqualBuffers(t *testing.T) {
+	t.Parallel()
+	for _, w := range elpstest.Walkers() {
+		if w.Kind == elpstest.WalkerStamp {
+			continue // not a copier; its contract is checked elsewhere
+		}
+		got, err := elpstest.CheckWalker(w, elpstest.AliasCheck{
+			Program: equalBuffersProgram,
+			Repro:   "two equal-content buffers",
+		})
+		if err != nil {
+			t.Fatalf("walker %s: harness error: %v", w.Name, err)
+		}
+		for _, wit := range got {
+			t.Errorf("walker %s reports a finding on two equal-content buffers:\n%s\n"+
+				"sameIndexSet's doc claims no live walker interns equal contents onto one backing\n"+
+				"array. If a walker started doing that, correct the doc in the same commit.",
+				w.Name, wit)
+		}
+	}
+}
+
+// DefaultMaxEnvironments's doc cites "at 24 a dispatch table of 23 handlers
+// already truncated" as the reason the cap was raised.
+func TestTwentyThreeHandlersTruncatedAtTheOldCap(t *testing.T) {
+	t.Parallel()
+	env, err := elpstest.NewForkCheckEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc := env.LoadString("p.lisp", manyScopesProgram(23)); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	if _, truncated := elpstest.ReachableEnvironmentsN(env, 24); !truncated {
+		t.Error("23 handlers did not truncate at a cap of 24; the motivating example in " +
+			"DefaultMaxEnvironments's doc comment is stale")
+	}
+	if _, truncated := elpstest.ReachableEnvironmentsN(env, 22); !truncated {
+		t.Error("23 handlers did not truncate at a cap of 22")
+	}
+}
+
+// A probe-site count EXACTLY at the cap was swept completely and must not
+// be reported as partial — the same boundary
+// TestACountEqualToTheCapIsNotReportedAsPartial pins for the location
+// sweep, which the probe sweep got wrong in the very commit that fixed it
+// next door.
+//
+// The flag used to be set inside full(), which is asked at the top of the
+// value walk BEFORE the callee is classified, so any value contributing no
+// probe site — an int, an already-seen buffer, an empty list — flipped it
+// merely by being reached after the cap-th site. Each row below was a false
+// positive, and the last one is the shape DefaultMaxProbeSites's own doc
+// calls ordinary.
+func TestAProbeCountEqualToTheCapIsNotReportedAsPartial(t *testing.T) {
+	t.Parallel()
+	const capSites = 96
+	buffers := func(n int) string {
+		var b strings.Builder
+		for i := range n {
+			fmt.Fprintf(&b, "(set 'u%d (to-bytes \"uniq-%d\"))\n", i, i)
+		}
+		b.WriteString("(set 'probe (list")
+		for i := range n {
+			fmt.Fprintf(&b, " u%d", i)
+		}
+		return b.String()
+	}
+	sortedMap := func(n int) string {
+		var b strings.Builder
+		b.WriteString("(set 'probe (sorted-map")
+		for i := range n {
+			fmt.Fprintf(&b, " \"k%03d\" %d", i, i)
+		}
+		b.WriteString("))")
+		return b.String()
+	}
+	cases := []struct {
+		name      string
+		program   string
+		truncated bool
+	}{
+		{"exactly at the cap, nothing after", buffers(capSites) + "))", false},
+		{"at the cap plus a trailing int", buffers(capSites) + " 7))", false},
+		{"at the cap plus a repeated buffer", buffers(capSites) + " u0))", false},
+		{"at the cap plus an empty list", buffers(capSites) + " (list)))", false},
+		{"at the cap plus an empty bytes", buffers(capSites) + " (to-bytes \"\")))", false},
+		{"a bare sorted map at the cap", sortedMap(capSites), false},
+		{"one site over the cap", buffers(capSites+1) + "))", true},
+		{"well over the cap", buffers(capSites+20) + "))", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := elpstest.CheckWalker(bytesSharingWalker(),
+				elpstest.AliasCheck{Program: tc.program, MaxProbeSites: capSites})
+			if err != nil {
+				t.Fatalf("harness error: %v", err)
+			}
+			tw := probeTruncationWitnesses(got)
+			switch {
+			case tc.truncated && len(tw) == 0:
+				t.Errorf("a graph genuinely over the cap reported no partial coverage; the signal has "+
+					"stopped firing.\nwitnesses: %v", got)
+			case !tc.truncated && len(tw) != 0:
+				t.Errorf("a graph swept COMPLETELY was reported as partial:\n%s\n"+
+					"The witness text is untrue for this graph and the remediation it names does not "+
+					"work — raising the cap to the count already swept changes nothing. A guard that "+
+					"is red on correct code is a guard that gets switched off.", tw[0])
+			}
+		})
+	}
+}
+
+// One condition must read as one finding: a fork check compares two pairs
+// over the same graph, so an over-cap graph used to yield the identical
+// partial-coverage witness twice.
+func TestATruncatedForkSweepReportsOneFinding(t *testing.T) {
+	t.Parallel()
+	var b strings.Builder
+	for i := range 30 {
+		fmt.Fprintf(&b, "(set 'u%d (to-bytes \"uniq-%d\"))\n", i, i)
+	}
+	b.WriteString("(set 'probe (list")
+	for i := range 30 {
+		fmt.Fprintf(&b, " u%d", i)
+	}
+	b.WriteString("))")
+	var fork elpstest.Walker
+	for _, w := range elpstest.Walkers() {
+		if w.Kind == elpstest.WalkerFork {
+			fork = w
+		}
+	}
+	if fork.Name == "" {
+		t.Fatal("no fork walker is registered")
+	}
+	got, err := elpstest.CheckWalker(fork,
+		elpstest.AliasCheck{Program: b.String(), MaxProbeSites: 8})
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	if n := len(probeTruncationWitnesses(got)); n != 1 {
+		t.Errorf("a fork check over one truncated graph produced %d partial-coverage witnesses, want 1;"+
+			" a single condition should read as a single finding", n)
+	}
+}
+
+// The raise from 96 to 256 exists so that ordinary graphs are covered out
+// of the box, the same argument as DefaultMaxEnvironments 24 -> 128. Pin
+// it: the 104-site shape that motivated the truncation controls must be
+// swept COMPLETELY at the default.
+func TestTheDefaultProbeCapCoversAnOrdinaryGraph(t *testing.T) {
+	t.Parallel()
+	got, err := elpstest.CheckWalker(tailSharingWalker(),
+		elpstest.AliasCheck{Program: duplicateTailProgram(104), Repro: "104 sites at the default cap"})
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	if tw := probeTruncationWitnesses(got); len(tw) != 0 {
+		t.Errorf("a 104-payload graph truncates at the default cap of %d:\n%s\n"+
+			"An ordinary graph tripping the cap is a failure that is not a bug, which trains an "+
+			"embedder to raise it reflexively.", elpstest.DefaultMaxProbeSites, tw[0])
+	}
+	// And the leak itself is found, because the sweep is complete.
+	if len(got) == 0 {
+		t.Error("the duplicate-tail leak went undetected at the default cap")
+	}
 }

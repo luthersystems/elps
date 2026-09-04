@@ -426,3 +426,60 @@ func TestEveryRegisteredWalkerDeclaresItsMemos(t *testing.T) {
 		}
 	}
 }
+
+// The fingerprint's file comment claims "a Go map is never ranged
+// directly", which is what makes the encoding deterministic: Go randomises
+// map iteration order per range, so one direct range would make the whole
+// oracle flaky — a value would stop matching its own copy at random.
+// Nothing tested it.
+//
+// What this test does and does not demonstrate, measured rather than
+// asserted:
+//
+//   - Introducing a genuine raw `for k := range someGoMap` into the walk
+//     DOES fail it, on the environment arm, within the repeat budget. That
+//     is the risk the claim is about.
+//   - Deleting the existing sort.Strings calls over PackageNames() and
+//     SymbolNames() does NOT fail it: those accessors already return
+//     deterministic order, so the sorts are defensive rather than
+//     load-bearing. Do not read a green run here as proof that a
+//     particular sort is unnecessary.
+func TestFingerprintIsDeterministic(t *testing.T) {
+	t.Parallel()
+	env, err := elpstest.NewForkCheckEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A graph reaching every map-backed structure the walk can visit.
+	prog := `
+(set 'm (sorted-map "b" 2 "a" 1 "c" 3 "d" 4 "e" 5 "f" 6))
+(defun handler (x) (+ x 1))
+(set 'clo (let ([s (vector 1 2 3)]) (lambda () s)))
+(set 'probe (list m clo handler (sorted-map "nested" m "buf" (to-bytes "abc"))))
+`
+	if rc := env.LoadString("p.lisp", prog); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	v := env.Get(lisp.Symbol("probe"))
+	opts := elpstest.FingerprintOptions{PackageMetadata: true}
+
+	first := elpstest.FingerprintValue(v, opts)
+	for i := range 32 {
+		again := elpstest.FingerprintValue(v, opts)
+		if !first.Equal(again) {
+			t.Fatalf("fingerprinting the same value twice disagreed on repeat %d.\n"+
+				"Something in the walk now ranges a Go map directly: iteration order is randomised\n"+
+				"per range, so the oracle would fail at random on correct code.\n%s",
+				i, first.Diff(again))
+		}
+	}
+
+	// The environment walk reaches the package tables too.
+	fe := elpstest.FingerprintEnv(env, opts)
+	for range 16 {
+		if !fe.Equal(elpstest.FingerprintEnv(env, opts)) {
+			t.Fatal("fingerprinting the same ENVIRONMENT twice disagreed; a package or binding table " +
+				"is being ranged directly")
+		}
+	}
+}

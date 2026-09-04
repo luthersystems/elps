@@ -317,28 +317,35 @@ func indentLines(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// DefaultMaxProbeSites bounds the O(n²) site sweep.  A graph with more
-// mutable payloads than this has its sweep truncated rather than its
-// runtime exploding.
+// DefaultMaxProbeSites bounds the O(n²) mutation-probe sweep.  A graph
+// with more mutable payloads than this has its sweep truncated -- loudly,
+// with a partial-coverage witness -- rather than its runtime exploding.
 //
-// Truncation is NOT silent, and the comment here used to say it could be:
-// it claimed the fingerprint still covered the whole graph, so a shortened
-// sweep could not hide a leak.  That is false, and the adversarial
-// re-review of #599 falsified it by running code.  A hundred
-// unique-content buffers followed by four IDENTICAL-content ones is 104
-// probe sites; a copier that shares the source's buffer for just the
-// duplicates puts the defect past the cap, and then the fingerprints agree
-// (equal content, per-walk ordinals), the source looks isolated, the copy
-// leaks, and the oracle reports NOTHING AT ALL -- no witness, no notice.
-// The same defect at 14 sites yields witnesses.
+// Truncation is not silent, and the comment here once claimed it could
+// safely be: it said the fingerprint still covered the whole graph, so a
+// shortened sweep could not hide a leak.  The second review of #599
+// falsified that by running code.  A hundred unique-content buffers
+// followed by four IDENTICAL-content ones is 104 probe sites; a copier
+// that shares the source's buffer for just the duplicates puts the defect
+// past the cap, and then the fingerprints agree (equal content, per-walk
+// ordinals), the source looks isolated, the copy leaks, and the oracle
+// reported nothing at all.  See TestGuardAnnouncesATruncatedProbeSweep.
 //
-// Ninety-six is an ordinary size: a sorted map of 96 int entries is 96
-// probe sites, and so is a list of 96 buffers.  The fuzzer cannot reach it
-// either (fuzzMaxVars is 8), so this had to be a committed deterministic
-// control -- see TestGuardAnnouncesATruncatedProbeSweep.
+// The value is 256 rather than a tighter number for the same reason
+// DefaultMaxEnvironments is 128: a cap an ordinary program trips is a
+// failure that is not a bug, and that trains an embedder to raise the cap
+// reflexively, which is the opposite of what a loud signal is for.  A
+// sorted map of 96 int entries is 96 probe sites (pinned by
+// TestASortedMapEntryIsAProbeSite), so 96 was inside ordinary range.
+// Full-sweep cost over a list of n buffers, measured on a 4-core CI-class
+// box, is superlinear but comfortable at this cap: 24 sites 6ms, 96 26ms,
+// 128 39ms, 256 148ms.
+//
+// The fuzzer cannot reach either constant (fuzzMaxVars is 8), so the
+// controls for this cap are deterministic and committed.
 //
 // Raise it per check with AliasCheck.MaxProbeSites.
-const DefaultMaxProbeSites = 96
+const DefaultMaxProbeSites = 256
 
 // AliasCheck describes one run of the oracle.
 type AliasCheck struct {
@@ -353,7 +360,8 @@ type AliasCheck struct {
 	// Walkers to run.  Nil means Walkers().
 	Walkers []Walker
 	// MaxProbeSites bounds the mutation-probe sweep, which is O(n²) in
-	// the number of mutable payloads.  Zero means DefaultMaxProbeSites.
+	// the number of mutable payloads.  Zero or negative means
+	// DefaultMaxProbeSites.
 	//
 	// Exceeding it does not silently shorten the sweep: the check reports
 	// a partial-coverage witness naming this field, because a probe site
@@ -544,7 +552,28 @@ func checkFork(w Walker, c AliasCheck, env *lisp.LEnv, sym string, src *lisp.LVa
 		wit.Property = "two fork hops: " + wit.Property
 		out = append(out, wit)
 	}
-	return out, nil
+	// A fork check compares two pairs over the same graph, so a graph that
+	// exceeds the probe cap yields the identical partial-coverage witness
+	// from each. One condition, one finding.
+	return dedupeTruncation(out), nil
+}
+
+// dedupeTruncation collapses repeated probe-truncation witnesses, which
+// carry no per-occurrence information: they report a property of the GRAPH
+// (more mutable payloads than the cap), not of a particular comparison.
+func dedupeTruncation(ws []Witness) []Witness {
+	seen := false
+	out := ws[:0]
+	for _, w := range ws {
+		if strings.Contains(w.Property, "covers every mutable payload") {
+			if seen {
+				continue
+			}
+			seen = true
+		}
+		out = append(out, w)
+	}
+	return out
 }
 
 // comparePair is the heart of the oracle: fingerprint equality, then the
@@ -566,23 +595,7 @@ func comparePair(w Walker, c AliasCheck, what string, src, cp *lisp.LVal, scope 
 	sSites, sTrunc := probeSites(src, scope, c.symbol(), c.maxSites())
 	cSites, cTrunc := probeSites(cp, scope, c.symbol(), c.maxSites())
 	if sTrunc || cTrunc {
-		// A probe site past the cap is never written, so a leak there is
-		// invisible -- and a truncated sweep and a clean one look
-		// identical to a reader.  Make the cliff loud.  See
-		// DefaultMaxProbeSites for the shape that proved this necessary.
-		out = append(out, Witness{
-			Walker:   w.Name,
-			Property: "the mutation-probe sweep covers every mutable payload",
-			Leak:     "<payloads past the cap were never probed>",
-			Baseline: "every mutable payload probed",
-			Observed: fmt.Sprintf("the sweep stopped at MaxProbeSites=%d (%s)", c.maxSites(), what),
-			Detail: fmt.Sprintf("This graph holds more than %d mutable payloads, so the sweep is PARTIAL: "+
-				"a payload the copy shares with its source past the cap is never written through, and "+
-				"the fingerprint cannot substitute for the write (equal contents fingerprint equally). "+
-				"Raise AliasCheck.MaxProbeSites -- the sweep is O(n^2) in the site count -- or narrow the graph.",
-				c.maxSites()),
-			Repro: c.Repro,
-		})
+		out = append(out, probeTruncationWitness(w, c, what))
 	}
 	if len(sSites) != len(cSites) {
 		// A payload the copy split in two (or merged into one) shows up
@@ -881,19 +894,28 @@ func leakPath(sSites, cSites []ProbeSite, want, got []int) string {
 // fingerprint's walk order, so that the i'th site of a graph and the i'th
 // site of its copy are the same position.
 func probeSites(v *lisp.LVal, scope ClosureScope, root string, limit int) ([]ProbeSite, bool) {
-	p := &siteWalker{scope: scope, seen: map[any]bool{}, limit: limit}
+	// Collect one site PAST the limit so "truncated" means "more sites
+	// exist than the cap allows" rather than "the walk met something after
+	// reaching the cap".  A graph holding exactly `limit` mutable payloads
+	// was swept completely and must not be reported as partial -- that is
+	// what makes the witness's remediation (raise the cap to the count you
+	// measured) actually work.
+	p := &siteWalker{scope: scope, seen: map[any]bool{}, limit: limit + 1}
 	p.path = []string{root}
 	p.value(v)
-	return p.sites, p.truncated
+	truncated := len(p.sites) > limit
+	if truncated {
+		p.sites = p.sites[:limit]
+	}
+	return p.sites, truncated
 }
 
 type siteWalker struct {
-	scope     ClosureScope
-	seen      map[any]bool
-	path      []string
-	sites     []ProbeSite
-	limit     int
-	truncated bool
+	scope ClosureScope
+	seen  map[any]bool
+	path  []string
+	sites []ProbeSite
+	limit int
 }
 
 func (p *siteWalker) here() string { return strings.Join(p.path, " -> ") }
@@ -901,16 +923,22 @@ func (p *siteWalker) here() string { return strings.Join(p.path, " -> ") }
 func (p *siteWalker) push(seg string) { p.path = append(p.path, seg) }
 func (p *siteWalker) pop()            { p.path = p.path[:len(p.path)-1] }
 
-// full reports whether the cap is reached.  Asking marks the walk
-// truncated, because every caller asks in order to STOP -- so a true answer
-// means at least one payload went unexamined.
-func (p *siteWalker) full() bool {
-	if len(p.sites) >= p.limit {
-		p.truncated = true
-		return true
-	}
-	return false
-}
+// full reports whether the walk has collected all it is going to.
+//
+// It does NOT decide truncation.  An earlier version set a truncated flag
+// here, reasoning that "every caller asks in order to stop, so a true
+// answer means a payload went unexamined" -- which is false, and the third
+// review of #599 measured it: full() is asked at the top of value() BEFORE
+// the callee is classified, so a value contributing no probe site at all
+// (an int, an already-seen buffer, an empty list) flipped the flag merely
+// by being reached after the cap-th site.  A bare 96-entry sorted map --
+// the shape DefaultMaxProbeSites cites as ordinary -- then FAILED the
+// guard with a partial-coverage witness whose text was untrue and whose
+// remediation did not work.
+//
+// Truncation is decided in probeSites, by collecting one site past the
+// limit and comparing counts, exactly as reachableEnvs does.
+func (p *siteWalker) full() bool { return len(p.sites) >= p.limit }
 
 func (p *siteWalker) value(v *lisp.LVal) {
 	if v == nil || p.full() {
@@ -1050,6 +1078,31 @@ func renderProbeValue(v *lisp.LVal) string {
 		return fmt.Sprintf("native:%p", v.Native)
 	default:
 		return fmt.Sprintf("%s:%p", v.Type, v)
+	}
+}
+
+// probeTruncationWitness reports a mutation-probe sweep that stopped at
+// the site cap.  It is a FAILURE, not a note: a partial sweep and a clean
+// sweep are indistinguishable to a reader, and a payload past the cap is
+// never written through, so a leak there is invisible.  Every truncation
+// site routes through here so the wording and the remediation cannot drift
+// apart -- the location channel learned that lesson one commit earlier.
+func probeTruncationWitness(w Walker, c AliasCheck, what string) Witness {
+	return Witness{
+		Walker:   w.Name,
+		Property: "the mutation-probe sweep covers every mutable payload",
+		// Leak renders as "leaked payload reachable at:", so it holds a
+		// path or a region, not a sentence.  There is no leaked payload
+		// here -- the finding is absence of coverage.
+		Leak:     fmt.Sprintf("<probe sites %d..n, never written>", c.maxSites()+1),
+		Baseline: "every mutable payload probed",
+		Observed: fmt.Sprintf("the sweep stopped at MaxProbeSites=%d (%s)", c.maxSites(), what),
+		Detail: fmt.Sprintf("This graph holds more than %d mutable payloads, so the sweep is PARTIAL: "+
+			"a payload the copy shares with its source past the cap is never written through, and the "+
+			"fingerprint cannot substitute for the write (equal contents fingerprint equally). Raise "+
+			"AliasCheck.MaxProbeSites -- the sweep is superlinear in the site count -- or narrow the graph.",
+			c.maxSites()),
+		Repro: c.Repro,
 	}
 }
 

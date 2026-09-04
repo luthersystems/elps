@@ -118,9 +118,10 @@ type LocationCheck struct {
 	// Exceeding it does NOT silently shorten the sweep: the check reports
 	// a partial-coverage witness naming this field, because a truncated
 	// sweep is a sweep that can miss a leak on the environments it never
-	// reached.  Raise it (at a linear cost in environment rebuilds) for a
+	// reached.  Raise it (at a superlinear cost in environment rebuilds; see
+	// DefaultMaxEnvironments for measurements) for a
 	// program that leaves more scopes than the default covers — a
-	// dispatch table of forty handlers leaves forty-one.
+	// dispatch table of forty handlers leaves forty-two.
 	MaxEnvironments int
 	// Repro is attached to every witness.
 	Repro string
@@ -491,6 +492,12 @@ func ReachableEnvironments(env *lisp.LEnv) ([]*lisp.LEnv, bool) {
 // depth.  Without it the helper the docs send an embedder to would keep
 // truncating at the default after they had raised the cap everywhere else.
 func ReachableEnvironmentsN(env *lisp.LEnv, limit int) ([]*lisp.LEnv, bool) {
+	// A non-positive limit means the default, matching
+	// LocationCheck.MaxEnvironments.  Without the clamp the slice that
+	// applies the limit panics, and this is an exported entry point.
+	if limit <= 0 {
+		limit = DefaultMaxEnvironments
+	}
 	reached, truncated := reachableEnvs(env, limit)
 	out := make([]*lisp.LEnv, 0, len(reached))
 	for _, e := range reached {
@@ -529,13 +536,17 @@ type reachedEnv struct {
 // — and it was silent until the adversarial review of #599 proved it.
 //
 // The value is 128 rather than a tighter number because the guard's own
-// motivating workload is substrate's router, a dispatch table of handlers:
-// at 24 a 22-handler table already truncated, so the out-of-the-box result
-// on the workload this exists for was a failure that is not a bug -- which
-// trains an embedder to raise the cap reflexively, the opposite of what a
-// loud signal is for.  The cap costs nothing when it is not reached;
-// measured full-sweep cost is roughly linear (24 envs 34ms, 62 envs 118ms,
-// 128 envs ~0.45s worst case).
+// motivating workload is substrate's router, a dispatch table of handlers,
+// and a cap an ordinary program trips is a failure that is not a bug --
+// which trains an embedder to raise the cap reflexively, the opposite of
+// what a loud signal is for.  At 24 a dispatch table of 23 handlers
+// already truncated (n handlers leave n+2 environments).  The cap costs nothing when it is not reached;
+// the sweep rebuilds the whole environment once per stamped environment,
+// so its cost grows superlinearly in the environment count.  (Figures were
+// quoted here from a review; they are omitted because this author did not
+// reproduce them, and an unverified number in a comment is exactly the
+// habit the claims-under-test rule in aliasguard_broken_test.go exists to
+// break.)
 //
 // Raise it per check with LocationCheck.MaxEnvironments.
 const DefaultMaxEnvironments = 128
@@ -646,8 +657,8 @@ func truncationWitness(c LocationCheck, property string) Witness {
 		Detail: fmt.Sprintf("This program leaves more than %d reachable environments, so the sweep is "+
 			"PARTIAL: a stale location on an environment past the cap is never stamped and so cannot be "+
 			"detected, while the identical leak on an environment before it would be. Raise "+
-			"LocationCheck.MaxEnvironments (the cost is one environment rebuild per environment, about "+
-			"3ms each) or narrow the program.", c.maxEnvs()),
+			"LocationCheck.MaxEnvironments (the cost is one environment rebuild per environment, and "+
+			"grows superlinearly in the count) or narrow the program.", c.maxEnvs()),
 		Repro: c.Repro,
 	}
 }

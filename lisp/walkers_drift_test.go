@@ -456,47 +456,66 @@ func render(fset *token.FileSet, n ast.Node) string {
 //
 // Reverting the deep copy to a shallow one must fail here.
 func TestWalkerMemosCannotBeEditedByACaller(t *testing.T) {
-	before := WalkerMemos()
+	// Snapshot the expected state as IMMUTABLE STRINGS before scribbling.
+	// Holding a []WalkerMemo as the "before" is not good enough: under a
+	// shallow copy that snapshot aliases the same backing arrays as the
+	// scribbled copy, so it is corrupted too and the comparison passes.
+	// That is how the first version of this test stayed green under the
+	// very weakening it exists to catch.
+	type snap struct{ walker, payloads, graph, fields string }
+	take := func() []snap {
+		var out []snap
+		for _, m := range WalkerMemos() {
+			fields := make([]string, 0, len(m.Fields))
+			for k, v := range m.Fields {
+				fields = append(fields, fmt.Sprintf("%s=%s", k, v))
+			}
+			sort.Strings(fields)
+			out = append(out, snap{
+				walker:   m.Walker,
+				payloads: kindSet(m.Payloads),
+				graph:    kindSet(m.Graph),
+				fields:   strings.Join(fields, ","),
+			})
+		}
+		return out
+	}
+	before := take()
 	if len(before) == 0 {
 		t.Fatal("the registry is empty")
 	}
 
-	// Edit every mutable part of the returned copy.
+	// Edit every SHARED part of a returned copy, IN PLACE.  Reassigning a
+	// slice field writes only to the caller's own struct and cannot reach
+	// package state at any copy depth; writing THROUGH the slice is what a
+	// shallow copy shares.
 	scribbled := WalkerMemos()
 	for i := range scribbled {
-		scribbled[i].Rebuilds = !scribbled[i].Rebuilds
-		scribbled[i].Payloads = append(scribbled[i].Payloads[:0:0], PayloadValue)
-		scribbled[i].Graph = nil
+		for j := range scribbled[i].Payloads {
+			scribbled[i].Payloads[j] = PayloadValue
+		}
+		for j := range scribbled[i].Graph {
+			scribbled[i].Graph[j] = PayloadValue
+		}
 		for k := range scribbled[i].Fields {
 			scribbled[i].Fields[k] = "scribbled"
 		}
 	}
 
-	after := WalkerMemos()
+	after := take()
 	if len(after) != len(before) {
 		t.Fatalf("the registry changed length: %d then %d", len(before), len(after))
 	}
 	for i := range after {
-		if after[i].Walker != before[i].Walker {
-			t.Errorf("row %d renamed: %q -> %q", i, before[i].Walker, after[i].Walker)
-		}
-		if after[i].Rebuilds != before[i].Rebuilds {
-			t.Errorf("walker %s: a caller's edit changed Rebuilds in the registry", after[i].Walker)
-		}
-		if kindSet(after[i].Payloads) != kindSet(before[i].Payloads) {
-			t.Errorf("walker %s: a caller's edit changed Payloads in the registry: %s, was %s",
-				after[i].Walker, kindSet(after[i].Payloads), kindSet(before[i].Payloads))
-		}
-		if kindSet(after[i].Graph) != kindSet(before[i].Graph) {
-			t.Errorf("walker %s: a caller's edit changed Graph in the registry", after[i].Walker)
-		}
-		for k, v := range after[i].Fields {
-			if v == "scribbled" {
-				t.Errorf("walker %s: a caller's edit reached the registry's Fields map (%s -> %q).\n"+
-					"WalkerMemos returns a SHALLOW copy again, so its doc comment is false and any\n"+
-					"caller that edits a returned row corrupts what every later caller reads.",
-					after[i].Walker, k, v)
-			}
+		if after[i] != before[i] {
+			t.Errorf("walker %s: a caller's in-place edit reached the registry.\n"+
+				"  payloads: %s, was %s\n  graph:    %s, was %s\n  fields:   %s, was %s\n"+
+				"WalkerMemos returns a SHALLOW copy again, so its doc comment is false and any caller\n"+
+				"that edits a returned row corrupts what every later caller reads.",
+				after[i].walker,
+				after[i].payloads, before[i].payloads,
+				after[i].graph, before[i].graph,
+				after[i].fields, before[i].fields)
 		}
 	}
 }
