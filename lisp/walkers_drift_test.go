@@ -445,3 +445,58 @@ func render(fset *token.FileSet, n ast.Node) string {
 	}
 	return b.String()
 }
+
+// TestWalkerMemosCannotBeEditedByACaller is the control for WalkerMemos's
+// deep copy.  The function's doc promises a caller cannot edit the
+// registry; before the copy was made deep that promise was false — the
+// returned structs shared Fields, Payloads and Graph with the package
+// state, so a caller building a weakened variant (exactly what
+// TestRegistryHalfCannotBeDisabledByDroppingRebuilds does) silently
+// rewrote what every later caller read.
+//
+// Reverting the deep copy to a shallow one must fail here.
+func TestWalkerMemosCannotBeEditedByACaller(t *testing.T) {
+	before := WalkerMemos()
+	if len(before) == 0 {
+		t.Fatal("the registry is empty")
+	}
+
+	// Edit every mutable part of the returned copy.
+	scribbled := WalkerMemos()
+	for i := range scribbled {
+		scribbled[i].Rebuilds = !scribbled[i].Rebuilds
+		scribbled[i].Payloads = append(scribbled[i].Payloads[:0:0], PayloadValue)
+		scribbled[i].Graph = nil
+		for k := range scribbled[i].Fields {
+			scribbled[i].Fields[k] = "scribbled"
+		}
+	}
+
+	after := WalkerMemos()
+	if len(after) != len(before) {
+		t.Fatalf("the registry changed length: %d then %d", len(before), len(after))
+	}
+	for i := range after {
+		if after[i].Walker != before[i].Walker {
+			t.Errorf("row %d renamed: %q -> %q", i, before[i].Walker, after[i].Walker)
+		}
+		if after[i].Rebuilds != before[i].Rebuilds {
+			t.Errorf("walker %s: a caller's edit changed Rebuilds in the registry", after[i].Walker)
+		}
+		if kindSet(after[i].Payloads) != kindSet(before[i].Payloads) {
+			t.Errorf("walker %s: a caller's edit changed Payloads in the registry: %s, was %s",
+				after[i].Walker, kindSet(after[i].Payloads), kindSet(before[i].Payloads))
+		}
+		if kindSet(after[i].Graph) != kindSet(before[i].Graph) {
+			t.Errorf("walker %s: a caller's edit changed Graph in the registry", after[i].Walker)
+		}
+		for k, v := range after[i].Fields {
+			if v == "scribbled" {
+				t.Errorf("walker %s: a caller's edit reached the registry's Fields map (%s -> %q).\n"+
+					"WalkerMemos returns a SHALLOW copy again, so its doc comment is false and any\n"+
+					"caller that edits a returned row corrupts what every later caller reads.",
+					after[i].Walker, k, v)
+			}
+		}
+	}
+}

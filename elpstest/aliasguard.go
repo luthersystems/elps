@@ -317,11 +317,28 @@ func indentLines(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// maxProbeSites bounds the O(n²) site sweep.  A graph with more mutable
-// payloads than this has its sweep truncated rather than its runtime
-// exploding; the fingerprint still covers the whole graph, and the
-// generator is bounded well below the cap.
-const maxProbeSites = 96
+// DefaultMaxProbeSites bounds the O(n²) site sweep.  A graph with more
+// mutable payloads than this has its sweep truncated rather than its
+// runtime exploding.
+//
+// Truncation is NOT silent, and the comment here used to say it could be:
+// it claimed the fingerprint still covered the whole graph, so a shortened
+// sweep could not hide a leak.  That is false, and the adversarial
+// re-review of #599 falsified it by running code.  A hundred
+// unique-content buffers followed by four IDENTICAL-content ones is 104
+// probe sites; a copier that shares the source's buffer for just the
+// duplicates puts the defect past the cap, and then the fingerprints agree
+// (equal content, per-walk ordinals), the source looks isolated, the copy
+// leaks, and the oracle reports NOTHING AT ALL -- no witness, no notice.
+// The same defect at 14 sites yields witnesses.
+//
+// Ninety-six is an ordinary size: a sorted map of 96 int entries is 96
+// probe sites, and so is a list of 96 buffers.  The fuzzer cannot reach it
+// either (fuzzMaxVars is 8), so this had to be a committed deterministic
+// control -- see TestGuardAnnouncesATruncatedProbeSweep.
+//
+// Raise it per check with AliasCheck.MaxProbeSites.
+const DefaultMaxProbeSites = 96
 
 // AliasCheck describes one run of the oracle.
 type AliasCheck struct {
@@ -335,9 +352,24 @@ type AliasCheck struct {
 	Symbol string
 	// Walkers to run.  Nil means Walkers().
 	Walkers []Walker
+	// MaxProbeSites bounds the mutation-probe sweep, which is O(n²) in
+	// the number of mutable payloads.  Zero means DefaultMaxProbeSites.
+	//
+	// Exceeding it does not silently shorten the sweep: the check reports
+	// a partial-coverage witness naming this field, because a probe site
+	// past the cap is never written and a leak there is invisible.
+	MaxProbeSites int
 	// Repro, when set, is attached to every witness: the runnable program
 	// that rebuilds this graph.  The generator sets it.
 	Repro string
+}
+
+// maxSites is the check's probe-site cap, defaulted.
+func (c AliasCheck) maxSites() int {
+	if c.MaxProbeSites > 0 {
+		return c.MaxProbeSites
+	}
+	return DefaultMaxProbeSites
 }
 
 func (c AliasCheck) symbol() string {
@@ -531,8 +563,27 @@ func comparePair(w Walker, c AliasCheck, what string, src, cp *lisp.LVal, scope 
 		})
 	}
 
-	sSites := probeSites(src, scope, c.symbol())
-	cSites := probeSites(cp, scope, c.symbol())
+	sSites, sTrunc := probeSites(src, scope, c.symbol(), c.maxSites())
+	cSites, cTrunc := probeSites(cp, scope, c.symbol(), c.maxSites())
+	if sTrunc || cTrunc {
+		// A probe site past the cap is never written, so a leak there is
+		// invisible -- and a truncated sweep and a clean one look
+		// identical to a reader.  Make the cliff loud.  See
+		// DefaultMaxProbeSites for the shape that proved this necessary.
+		out = append(out, Witness{
+			Walker:   w.Name,
+			Property: "the mutation-probe sweep covers every mutable payload",
+			Leak:     "<payloads past the cap were never probed>",
+			Baseline: "every mutable payload probed",
+			Observed: fmt.Sprintf("the sweep stopped at MaxProbeSites=%d (%s)", c.maxSites(), what),
+			Detail: fmt.Sprintf("This graph holds more than %d mutable payloads, so the sweep is PARTIAL: "+
+				"a payload the copy shares with its source past the cap is never written through, and "+
+				"the fingerprint cannot substitute for the write (equal contents fingerprint equally). "+
+				"Raise AliasCheck.MaxProbeSites -- the sweep is O(n^2) in the site count -- or narrow the graph.",
+				c.maxSites()),
+			Repro: c.Repro,
+		})
+	}
 	if len(sSites) != len(cSites) {
 		// A payload the copy split in two (or merged into one) shows up
 		// here as a different NUMBER of mutable payloads, before any
@@ -723,20 +774,34 @@ func sentinelFor(i int) int { return 0x5E7719 + i }
 // sameIndexSet compares two alias equivalence classes, as sorted index
 // slices.
 //
-// A note on what this arm actually contributes, from the adversarial review
-// of #599: making it permissive (always true) leaves the whole suite green,
-// because every de-aliasing shape the guard can build out of lisp values is
-// ALSO caught by the fingerprint, which runs first and encodes sharing
-// exactly.  That redundancy is deliberate defence in depth rather than dead
-// code — the fingerprint proves two names reach one POINTER, and this arm
-// proves a write through one is seen through the other, which is the
-// property callers actually depend on and which pointer identity only
-// implies for payload types whose sharing is genuine (a hypothetical
-// copy-on-read map would preserve pointers and break the semantics).
+// DO NOT DELETE THIS ARM AS REDUNDANT.  An earlier version of this comment
+// said exactly that — that the fingerprint catches every shape lisp can
+// express, so this was defence in depth with no end-to-end control.  That
+// was wrong, and the adversarial re-review of #599 falsified it by running
+// code.
 //
-// Because no end-to-end shape isolates it, its negative control is the
-// direct one in aliasguard_internal_test.go, which fails if the comparison
-// is ever made permissive.
+// The reasoning only covered DE-aliasing (a copy that splits a shared
+// payload), where the fingerprint is genuinely redundant.  It missed
+// OVER-aliasing at the BACKING-ARRAY level, which the fingerprint cannot
+// see at all: two distinct *[]byte headers over one backing array get two
+// distinct identity ordinals, so the encoding says "not shared" while the
+// memory is shared.  Only writing through one and reading the other can
+// tell.  The shape is ordinary —
+//
+//	(set 'p (to-bytes "abc"))
+//	(set 'q (to-bytes "abc"))
+//	(set 'probe (list p q))
+//
+// — and the walker defect is a plausible copy-path optimisation: intern
+// equal-content buffers onto one array.  Fingerprints agree, the source is
+// isolated, the copy leaks, and THIS ARM IS THE ONLY THING THAT REPORTS IT.
+// Make the comparison permissive and the oracle returns zero witnesses for
+// that program; see TestGuardDetectsACopyThatInternsEqualBuffers.
+//
+// No live elps walker does this: detach.go allocates with
+// make([]byte, len(*b)) and fork.go with append([]byte(nil), *b...), both
+// fresh arrays.  This is guard coverage against a change that has not
+// happened, on a codebase where byte-slice sizing changes do land.
 func sameIndexSet(a, b []int) bool {
 	if len(a) != len(b) {
 		return false
@@ -815,18 +880,20 @@ func leakPath(sSites, cSites []ProbeSite, want, got []int) string {
 // probeSites enumerates the mutable payloads reachable from v, in the
 // fingerprint's walk order, so that the i'th site of a graph and the i'th
 // site of its copy are the same position.
-func probeSites(v *lisp.LVal, scope ClosureScope, root string) []ProbeSite {
-	p := &siteWalker{scope: scope, seen: map[any]bool{}}
+func probeSites(v *lisp.LVal, scope ClosureScope, root string, limit int) ([]ProbeSite, bool) {
+	p := &siteWalker{scope: scope, seen: map[any]bool{}, limit: limit}
 	p.path = []string{root}
 	p.value(v)
-	return p.sites
+	return p.sites, p.truncated
 }
 
 type siteWalker struct {
-	scope ClosureScope
-	seen  map[any]bool
-	path  []string
-	sites []ProbeSite
+	scope     ClosureScope
+	seen      map[any]bool
+	path      []string
+	sites     []ProbeSite
+	limit     int
+	truncated bool
 }
 
 func (p *siteWalker) here() string { return strings.Join(p.path, " -> ") }
@@ -834,7 +901,16 @@ func (p *siteWalker) here() string { return strings.Join(p.path, " -> ") }
 func (p *siteWalker) push(seg string) { p.path = append(p.path, seg) }
 func (p *siteWalker) pop()            { p.path = p.path[:len(p.path)-1] }
 
-func (p *siteWalker) full() bool { return len(p.sites) >= maxProbeSites }
+// full reports whether the cap is reached.  Asking marks the walk
+// truncated, because every caller asks in order to STOP -- so a true answer
+// means at least one payload went unexamined.
+func (p *siteWalker) full() bool {
+	if len(p.sites) >= p.limit {
+		p.truncated = true
+		return true
+	}
+	return false
+}
 
 func (p *siteWalker) value(v *lisp.LVal) {
 	if v == nil || p.full() {

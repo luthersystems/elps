@@ -548,11 +548,13 @@ func TestGuardIsSilentWhenTheSweepIsComplete(t *testing.T) {
 	}
 }
 
-// The realistic shape from the review: forty let-bound closures exceed the
-// DEFAULT cap, so an embedder running the guard over a dispatch table of
-// handlers is told its sweep is partial rather than being handed a green
-// result over a fraction of its environments.
-func TestDefaultCapAnnouncesTruncationOnARouterShapedProgram(t *testing.T) {
+// The realistic shape the guard exists for — a dispatch table of handlers —
+// must be COVERED by the default cap, not truncated by it.  At the original
+// 24 a 22-handler table already reported partial coverage, so the
+// out-of-the-box result on the motivating workload was a failure that is
+// not a bug; that trains an embedder to raise the cap reflexively and
+// devalues the signal. The cap costs nothing when it is not reached.
+func TestDefaultCapCoversARouterShapedProgram(t *testing.T) {
 	t.Parallel()
 	env, err := elpstest.NewForkCheckEnv()
 	if err != nil {
@@ -562,15 +564,51 @@ func TestDefaultCapAnnouncesTruncationOnARouterShapedProgram(t *testing.T) {
 		t.Fatal(rc)
 	}
 	envs, truncated := elpstest.ReachableEnvironments(env)
-	if !truncated {
-		t.Errorf("forty closures did not truncate the enumeration; the exported enumeration no longer\n" +
-			"reports partial coverage, so an embedder auditing its own template would read a short\n" +
-			"list as complete")
+	if truncated {
+		t.Errorf("a 40-handler dispatch table truncates at the default cap of %d (%d enumerated).\n"+
+			"The guard's own motivating workload should not report partial coverage out of the box.",
+			elpstest.DefaultMaxEnvironments, len(envs))
 	}
-	if n := len(envs); n != elpstest.DefaultMaxEnvironments {
-		t.Fatalf("forty closures left %d reachable environments under the default cap of %d; "+
-			"this control is no longer exercising truncation",
-			n, elpstest.DefaultMaxEnvironments)
+	if len(envs) < 40 {
+		t.Errorf("40 let-bound closures left only %d reachable environments; this control is no longer\n"+
+			"exercising the router shape", len(envs))
+	}
+}
+
+// A count that EXACTLY equals the cap was enumerated completely and must
+// not be reported as partial.  It used to be: the flag was set whenever the
+// walk met another value after reaching the limit, not when an environment
+// was actually dropped, so the witness's own remediation failed — raise the
+// cap to the count you just measured and it still said partial.
+func TestACountEqualToTheCapIsNotReportedAsPartial(t *testing.T) {
+	t.Parallel()
+	env, err := elpstest.NewForkCheckEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc := env.LoadString("p.lisp", manyScopesProgram(22)); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	full, truncated := elpstest.ReachableEnvironmentsN(env, elpstest.DefaultMaxEnvironments)
+	if truncated {
+		t.Fatalf("the reference enumeration itself truncated at %d", elpstest.DefaultMaxEnvironments)
+	}
+	n := len(full)
+	// Enumerating with the cap set to exactly the true count is complete.
+	atCap, truncatedAtCap := elpstest.ReachableEnvironmentsN(env, n)
+	if truncatedAtCap {
+		t.Errorf("a cap of %d over a program with exactly %d reachable environments reported PARTIAL "+
+			"coverage.\nRaising the cap to the measured count is the remediation the witness "+
+			"recommends, so it must work.", n, n)
+	}
+	if len(atCap) != n {
+		t.Errorf("enumerating at the exact count returned %d of %d environments", len(atCap), n)
+	}
+	// One below the true count is genuinely partial.
+	_, truncatedBelow := elpstest.ReachableEnvironmentsN(env, n-1)
+	if !truncatedBelow {
+		t.Errorf("a cap of %d over a program with %d reachable environments did not report partial "+
+			"coverage; the signal has stopped firing", n-1, n)
 	}
 }
 
@@ -713,4 +751,283 @@ func TestGuardDetectsACopyThatSharesTheSourceBuffer(t *testing.T) {
 	// Half two: the sweep catches it anyway.  Only a write through one and
 	// a read through the other can.
 	assertDetects(t, bytesSharingWalker(), c, "bytes[0]")
+}
+
+// ---------------------------------------------------------------------------
+// Control 9: a truncated PROBE sweep must announce itself, and must find the
+// leak once the cap is raised.
+//
+// The mutation-probe sweep is O(n²) in the number of mutable payloads, so
+// it is capped.  The cap used to shorten the sweep SILENTLY, justified by a
+// comment claiming the fingerprint still covered the whole graph so a
+// shortened sweep could not hide a leak.  That was false, and the
+// adversarial re-review of #599 falsified it by running code.
+//
+// The shape below is the falsification: unique-content buffers up to the
+// cap, then four IDENTICAL-content buffers past it, and a copier that
+// shares the source's buffer for exactly the duplicates.  Equal contents
+// fingerprint equally (ordinals are per-walk), so the fingerprint sees
+// nothing; the sites that would catch it are past the cap, so the sweep
+// never writes them.  Before this control the oracle reported ZERO
+// witnesses for a live transaction-isolation defect.
+//
+// 96 is an ordinary size — a sorted map of 96 int entries is 96 probe
+// sites — and the fuzzer cannot reach it (fuzzMaxVars is 8), so this has to
+// be deterministic and committed.
+// ---------------------------------------------------------------------------
+
+// duplicateTailProgram builds n buffers: n-4 with unique contents, then 4
+// sharing one content string, so the last four probe sites are the ones a
+// content-interning or buffer-sharing defect shows up at.
+func duplicateTailProgram(n int) string {
+	var b strings.Builder
+	for i := range n - 4 {
+		fmt.Fprintf(&b, "(set 'u%d (to-bytes \"uniq-%d\"))\n", i, i)
+	}
+	for i := range 4 {
+		fmt.Fprintf(&b, "(set 'd%d (to-bytes \"dup\"))\n", i)
+	}
+	b.WriteString("(set 'probe (list")
+	for i := range n - 4 {
+		fmt.Fprintf(&b, " u%d", i)
+	}
+	for i := range 4 {
+		fmt.Fprintf(&b, " d%d", i)
+	}
+	b.WriteString("))\n")
+	return b.String()
+}
+
+// tailSharingCopier rebuilds every buffer faithfully EXCEPT the ones whose
+// contents equal "dup", which come across shared with the source.  The
+// defect therefore sits at the tail of the probe-site list.
+func tailSharingCopy(v *lisp.LVal, seen map[*lisp.LVal]*lisp.LVal) *lisp.LVal {
+	if v == nil {
+		return nil
+	}
+	if c, ok := seen[v]; ok {
+		return c
+	}
+	if v.Type == lisp.LFun {
+		seen[v] = v
+		return v
+	}
+	cp := new(lisp.LVal)
+	*cp = *v
+	seen[v] = cp
+	if v.Type == lisp.LBytes {
+		if b, ok := v.Native.(*[]byte); ok && b != nil && string(*b) != "dup" {
+			nb := append([]byte(nil), *b...)
+			cp.Native = &nb
+		}
+		// "dup" buffers fall through: THE DEFECT, the source's buffer.
+	}
+	if len(v.Cells) > 0 {
+		cells := make([]*lisp.LVal, len(v.Cells))
+		for i, c := range v.Cells {
+			cells[i] = tailSharingCopy(c, seen)
+		}
+		cp.Cells = cells
+	} else {
+		cp.Cells = nil
+	}
+	return cp
+}
+
+func tailSharingWalker() elpstest.Walker {
+	return elpstest.Walker{
+		Name: "broken-copier/shares-the-duplicate-buffers",
+		Kind: elpstest.WalkerCopy,
+		Copy: func(_ *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) {
+			return tailSharingCopy(v, map[*lisp.LVal]*lisp.LVal{}), nil
+		},
+		Closures: elpstest.ClosuresRefused,
+		Backing:  elpstest.BackingRebuilt,
+	}
+}
+
+func probeTruncationWitnesses(ws []elpstest.Witness) []elpstest.Witness {
+	var out []elpstest.Witness
+	for _, w := range ws {
+		if strings.Contains(w.Property, "covers every mutable payload") {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// Below the cap the leak is caught outright, and nothing reports partial
+// coverage — so the truncation signal below is attributable to truncation.
+func TestGuardCatchesADuplicateTailLeakBelowTheCap(t *testing.T) {
+	t.Parallel()
+	got, err := elpstest.CheckWalker(tailSharingWalker(),
+		elpstest.AliasCheck{Program: duplicateTailProgram(14), Repro: "duplicate-tail leak, 14 sites"})
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("a copy sharing the source's duplicate buffers was not detected at 14 probe sites")
+	}
+	if tw := probeTruncationWitnesses(got); len(tw) != 0 {
+		t.Errorf("a 14-site graph reported a truncated probe sweep:\n%s", tw[0])
+	}
+	assertWitnessMentions(t, "duplicate-tail/below-cap", got, "bytes[0]")
+}
+
+// Past the cap the defect is INVISIBLE to the sweep, so the guard must say
+// so rather than return a clean result.  This is the exact shape that
+// reported zero witnesses before the cap was made loud.
+func TestGuardAnnouncesATruncatedProbeSweep(t *testing.T) {
+	t.Parallel()
+	got, err := elpstest.CheckWalker(tailSharingWalker(),
+		elpstest.AliasCheck{Program: duplicateTailProgram(104), Repro: "duplicate-tail leak, 104 sites"})
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	tw := probeTruncationWitnesses(got)
+	if len(tw) == 0 {
+		t.Fatalf("a graph of 104 mutable payloads reported NO partial-coverage witness.\n"+
+			"The probe cap is silent again, so a copy that shares a payload past the cap is\n"+
+			"indistinguishable from a correct copy — the oracle returns a clean result for a live\n"+
+			"transaction-isolation defect.\nwitnesses: %v", got)
+	}
+	for _, w := range tw {
+		if !strings.Contains(w.Detail, "MaxProbeSites") {
+			t.Errorf("the partial-coverage witness does not name the field an operator would raise:\n%s", w)
+		}
+	}
+}
+
+// And raising the cap must actually find it: a loud cliff is only useful if
+// the remediation it names works.
+func TestRaisingTheProbeCapFindsTheHiddenLeak(t *testing.T) {
+	t.Parallel()
+	got, err := elpstest.CheckWalker(tailSharingWalker(), elpstest.AliasCheck{
+		Program:       duplicateTailProgram(104),
+		MaxProbeSites: 256,
+		Repro:         "duplicate-tail leak, 104 sites, cap raised",
+	})
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	if tw := probeTruncationWitnesses(got); len(tw) != 0 {
+		t.Errorf("the sweep still reports partial coverage with MaxProbeSites=256:\n%s", tw[0])
+	}
+	if len(got) == 0 {
+		t.Fatal("raising MaxProbeSites to 256 did not surface the leak the cap was hiding; the\n" +
+			"remediation the truncation witness recommends does not work")
+	}
+	assertWitnessMentions(t, "duplicate-tail/cap-raised", got, "bytes[0]")
+}
+
+// ---------------------------------------------------------------------------
+// Control 10: a copier that INTERNS equal-content buffers onto one backing
+// array — over-aliasing the fingerprint cannot see.
+//
+// This is the end-to-end negative control for the alias-class comparison
+// (sameIndexSet).  An earlier version of this PR asserted no such control
+// could exist, on the reasoning that the fingerprint catches every shape
+// lisp can express.  That reasoning covered DE-aliasing only.  It misses
+// OVER-aliasing at the backing-array level: two distinct *[]byte headers
+// over ONE array get two distinct identity ordinals, so the fingerprint
+// reports "not shared" while the memory is shared.  Only a write through
+// one and a read through the other can tell.
+//
+// The walker defect is a plausible copy-path optimisation — intern equal
+// contents — not a contrived one, and the program is three lines.  With
+// sameIndexSet permissive the oracle reports ZERO witnesses here.
+//
+// No live elps walker interns: detach.go uses make([]byte, len(*b)) and
+// fork.go uses append([]byte(nil), *b...), both fresh arrays.  This guards
+// against a change that has not happened.
+// ---------------------------------------------------------------------------
+
+const equalBuffersProgram = `
+(set 'p (to-bytes "abc"))
+(set 'q (to-bytes "abc"))
+(set 'probe (list p q))
+`
+
+// interningCopy rebuilds faithfully but places every equal-content buffer
+// on ONE backing array: distinct *[]byte headers, shared memory.
+func interningCopy(v *lisp.LVal, seen map[*lisp.LVal]*lisp.LVal, pool map[string][]byte) *lisp.LVal {
+	if v == nil {
+		return nil
+	}
+	if c, ok := seen[v]; ok {
+		return c
+	}
+	if v.Type == lisp.LFun {
+		seen[v] = v
+		return v
+	}
+	cp := new(lisp.LVal)
+	*cp = *v
+	seen[v] = cp
+	if v.Type == lisp.LBytes {
+		if b, ok := v.Native.(*[]byte); ok && b != nil {
+			key := string(*b)
+			arr, ok := pool[key]
+			if !ok {
+				arr = append([]byte(nil), *b...)
+				pool[key] = arr
+			}
+			shared := arr[:] // THE DEFECT: a second header over one array.
+			cp.Native = &shared
+		}
+	}
+	if len(v.Cells) > 0 {
+		cells := make([]*lisp.LVal, len(v.Cells))
+		for i, c := range v.Cells {
+			cells[i] = interningCopy(c, seen, pool)
+		}
+		cp.Cells = cells
+	} else {
+		cp.Cells = nil
+	}
+	return cp
+}
+
+func interningWalker() elpstest.Walker {
+	return elpstest.Walker{
+		Name: "broken-copier/interns-equal-buffers",
+		Kind: elpstest.WalkerCopy,
+		Copy: func(_ *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) {
+			return interningCopy(v, map[*lisp.LVal]*lisp.LVal{}, map[string][]byte{}), nil
+		},
+		Closures: elpstest.ClosuresRefused,
+		Backing:  elpstest.BackingRebuilt,
+	}
+}
+
+func TestGuardDetectsACopyThatInternsEqualBuffers(t *testing.T) {
+	t.Parallel()
+	c := elpstest.AliasCheck{Program: equalBuffersProgram, Repro: "a copy that interns equal buffers"}
+
+	// Half one: the fingerprint cannot see this.  Two distinct *[]byte
+	// headers get two ordinals whether or not they share an array, so if
+	// this premise ever fails the control has stopped isolating the
+	// alias-class arm.
+	env, err := elpstest.NewForkCheckEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc := env.LoadString("p.lisp", equalBuffersProgram); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	src := env.Get(lisp.Symbol("probe"))
+	cp := interningCopy(src, map[*lisp.LVal]*lisp.LVal{}, map[string][]byte{})
+	opts := elpstest.FingerprintOptions{SkipCapturedEnvironments: true}
+	fs := elpstest.FingerprintValue(src, opts)
+	fc := elpstest.FingerprintValue(cp, opts)
+	if !fs.Equal(fc) {
+		t.Fatalf("premise: an interning copy must fingerprint identically to its source, otherwise\n"+
+			"this control is being caught by the fingerprint and proves nothing about the\n"+
+			"alias-class comparison:\n%s", fs.Diff(fc))
+	}
+
+	// Half two: the alias-class comparison catches it anyway.  This is the
+	// arm's only end-to-end coverage — make sameIndexSet permissive and
+	// this goes to zero witnesses.
+	assertDetects(t, interningWalker(), c, "shared in the copy, not in the source")
 }

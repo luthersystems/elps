@@ -287,18 +287,7 @@ func CheckLocations(c LocationCheck) ([]Witness, error) {
 		return nil, err
 	}
 	if truncated {
-		out = append(out, Witness{
-			Walker:   "location",
-			Property: "the location sweep covers every reachable environment",
-			Leak:     "<environments past the cap were never stamped>",
-			Baseline: "all reachable environments stamped and swept",
-			Observed: fmt.Sprintf("the sweep stopped at MaxEnvironments=%d", c.maxEnvs()),
-			Detail: fmt.Sprintf("This program leaves more than %d reachable environments, so the sweep is PARTIAL: "+
-				"a stale location on an environment past the cap would not be detected, while the identical "+
-				"leak on an environment before it would be. Raise LocationCheck.MaxEnvironments (the cost is "+
-				"one environment rebuild per environment) or narrow the program.", c.maxEnvs()),
-			Repro: c.Repro,
-		})
+		out = append(out, truncationWitness(c, "the location sweep covers every reachable environment"))
 	}
 	if nEnv == 0 {
 		return nil, errors.New("the program leaves no reachable environment to stamp; the sweep would be vacuous")
@@ -494,7 +483,15 @@ func crossForkLocationWitnesses(c LocationCheck, build func() (*lisp.LEnv, error
 // "this is everything", which is the same silent cliff the sweep itself
 // used to have.
 func ReachableEnvironments(env *lisp.LEnv) ([]*lisp.LEnv, bool) {
-	reached, truncated := reachableEnvs(env, DefaultMaxEnvironments)
+	return ReachableEnvironmentsN(env, DefaultMaxEnvironments)
+}
+
+// ReachableEnvironmentsN is ReachableEnvironments with an explicit cap, so
+// a caller who raised a check's MaxEnvironments can enumerate to the same
+// depth.  Without it the helper the docs send an embedder to would keep
+// truncating at the default after they had raised the cap everywhere else.
+func ReachableEnvironmentsN(env *lisp.LEnv, limit int) ([]*lisp.LEnv, bool) {
+	reached, truncated := reachableEnvs(env, limit)
 	out := make([]*lisp.LEnv, 0, len(reached))
 	for _, e := range reached {
 		out = append(out, e.env)
@@ -531,8 +528,17 @@ type reachedEnv struct {
 // programs reach — substrate's router shape is a dispatch table of handlers
 // — and it was silent until the adversarial review of #599 proved it.
 //
+// The value is 128 rather than a tighter number because the guard's own
+// motivating workload is substrate's router, a dispatch table of handlers:
+// at 24 a 22-handler table already truncated, so the out-of-the-box result
+// on the workload this exists for was a failure that is not a bug -- which
+// trains an embedder to raise the cap reflexively, the opposite of what a
+// loud signal is for.  The cap costs nothing when it is not reached;
+// measured full-sweep cost is roughly linear (24 envs 34ms, 62 envs 118ms,
+// 128 envs ~0.45s worst case).
+//
 // Raise it per check with LocationCheck.MaxEnvironments.
-const DefaultMaxEnvironments = 24
+const DefaultMaxEnvironments = 128
 
 // reachableEnvs enumerates every environment reachable from the package
 // bindings and from env's own lexical chain, in a deterministic order,
@@ -549,7 +555,14 @@ const DefaultMaxEnvironments = 24
 // PARTIAL and anything past it was never examined.
 func reachableEnvs(env *lisp.LEnv, limit int) ([]reachedEnv, bool) {
 	var out []reachedEnv
-	truncated := false
+	// Enumerate one PAST the limit so "truncated" can mean "more than the
+	// limit exist" rather than "the walk met another value after reaching
+	// the limit".  The distinction matters: a program whose environment
+	// count exactly EQUALS the cap was enumerated completely, and
+	// reporting it as partial made the witness's own remediation fail —
+	// raise the cap to the count you just measured, and it still says
+	// partial.
+	probe := limit + 1
 	seenV := map[*lisp.LVal]bool{}
 	seenE := map[*lisp.LEnv]bool{}
 	var walk func(v *lisp.LVal, path string)
@@ -558,8 +571,7 @@ func reachableEnvs(env *lisp.LEnv, limit int) ([]reachedEnv, bool) {
 		if v == nil || seenV[v] {
 			return
 		}
-		if len(out) >= limit {
-			truncated = true
+		if len(out) >= probe {
 			return
 		}
 		seenV[v] = true
@@ -583,8 +595,7 @@ func reachableEnvs(env *lisp.LEnv, limit int) ([]reachedEnv, bool) {
 		if e == nil || seenE[e] || e.Parent() == nil {
 			return
 		}
-		if len(out) >= limit {
-			truncated = true
+		if len(out) >= probe {
 			return
 		}
 		seenE[e] = true
@@ -600,6 +611,10 @@ func reachableEnvs(env *lisp.LEnv, limit int) ([]reachedEnv, bool) {
 	})
 	walkEnv(env, "<env>")
 	sort.SliceStable(out, func(i, j int) bool { return out[i].path < out[j].path })
+	truncated := len(out) > limit
+	if truncated {
+		out = out[:limit]
+	}
 	return out, truncated
 }
 
@@ -614,17 +629,25 @@ func countReachableEnvs(build func() (*lisp.LEnv, error), limit int) (int, bool,
 
 // truncationWitness reports a sweep that stopped at the environment cap.
 // It is a FAILURE, not a note: a partial sweep and a clean sweep are
-// indistinguishable to a reader, so the cliff is made loud.  See
-// DefaultMaxEnvironments.
+// indistinguishable to a reader, so the cliff is made loud.  Every
+// truncation site routes through here so the wording and the remediation
+// cannot drift apart.  See DefaultMaxEnvironments.
 func truncationWitness(c LocationCheck, property string) Witness {
 	return Witness{
 		Walker:   "location",
 		Property: property,
-		Leak:     "<environments past the cap were never examined>",
-		Baseline: "all reachable environments examined",
+		// Leak renders as "leaked payload reachable at:", so it holds a
+		// path, not a sentence.  There is no leaked payload here -- the
+		// finding is absence of coverage -- so it names the region that
+		// went unexamined instead.
+		Leak:     fmt.Sprintf("<environments %d..n, never examined>", c.maxEnvs()+1),
+		Baseline: "every reachable environment examined",
 		Observed: fmt.Sprintf("the sweep stopped at MaxEnvironments=%d", c.maxEnvs()),
-		Detail: fmt.Sprintf("Raise LocationCheck.MaxEnvironments above %d, or narrow the program: "+
-			"anything past the cap was never examined, so a leak there is undetected.", c.maxEnvs()),
+		Detail: fmt.Sprintf("This program leaves more than %d reachable environments, so the sweep is "+
+			"PARTIAL: a stale location on an environment past the cap is never stamped and so cannot be "+
+			"detected, while the identical leak on an environment before it would be. Raise "+
+			"LocationCheck.MaxEnvironments (the cost is one environment rebuild per environment, about "+
+			"3ms each) or narrow the program.", c.maxEnvs()),
 		Repro: c.Repro,
 	}
 }
