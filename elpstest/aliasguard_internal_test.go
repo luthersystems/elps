@@ -171,4 +171,32 @@ func TestTheDirectionMatrixMatchesTheProperties(t *testing.T) {
 				stale)
 		}
 	}
+
+	// The matrix has four ROWS but asserts three single-hop DIRECTIONS; the
+	// fourth row is a composition of two of the others. An earlier revision
+	// of this header called all four "directions" and said that was "the
+	// complete set for two participants", which is false twice over: there
+	// are n+1 participants occupying two ROLES, and fork -> template ->
+	// later fork is not a hop. Tidying it back into a flat count of four
+	// complete directions is the specific drift this guards.
+	for _, stale := range []string{
+		"exactly four directions",
+		"complete set for two participants",
+		"asserting all four",
+	} {
+		if strings.Contains(text, stale) {
+			t.Errorf("the header contains %q. The matrix has four rows over THREE single-hop\n"+
+				"directions plus one composition; a flat count of four directions overclaims, and\n"+
+				"\"two participants\" miscounts n+1 environments in two roles.", stale)
+		}
+	}
+
+	// ...and it must say which of those two things each row is.
+	for _, required := range []string{"SINGLE-HOP", "COMPOSITION"} {
+		if !strings.Contains(header, required) {
+			t.Errorf("the header no longer distinguishes %q rows from the others.\n"+
+				"Without that distinction the matrix reads as four peer directions, which is the\n"+
+				"overclaim this guard exists to stop.", required)
+		}
+	}
 }

@@ -26,14 +26,34 @@ import (
 // tests the guarantee directly.
 //
 // THE DIRECTION MATRIX COMES FIRST, because organising this list by
-// MECHANISM is how a hole stayed invisible in it.  With two participants —
-// a template and its forks — writes can travel in exactly four directions,
-// and that is the complete set for two participants:
+// MECHANISM is how a hole stayed invisible in it.  The participants are a
+// template and its n forks — n+1 environments, but only TWO ROLES — and a
+// write that leaks between environments must cross from one role to the
+// other or between two occupants of the fork role.  That is exactly three
+// SINGLE-HOP directions, and all three are asserted.  The fourth row is
+// not a fourth direction; it is the one COMPOSITION asserted separately,
+// for the reason given below the matrix:
 //
 //	fork -> another fork             property 2, swept i x j
 //	fork -> its template             property 1, sequential and concurrent
-//	fork -> template -> later fork   property 3
 //	template -> an existing fork     property 5
+//	fork -> template -> later fork   property 3 — composition of the two
+//	                                 rows above it
+//
+// What "complete" does and does not claim.  It is a claim about SINGLE
+// HOPS between two roles, and nothing more.  It says nothing about
+// completeness of the MECHANISMS by which any one direction can leak, and
+// nothing about coverage WITHIN a direction: property 2 sweeps i x j,
+// while property 5 writes a single transaction to the template.
+//
+// Why that one composition and not the others.  T -> F -> T and
+// T -> F -> F' are compositions of the same three single hops and are NOT
+// asserted separately, because if both of their hops hold they hold.
+// Property 3 is different: its first hop can leak WITHOUT BEING OBSERVABLE
+// at the moment property 1 looks.  A fork can contaminate structure the
+// template reaches without moving the template's fingerprint at that
+// instant, and the damage surfaces only in a fork taken afterwards.  So it
+// is asserted directly rather than inferred from the hops.
 //
 // A reader can therefore tell at a glance whether a new property is needed
 // or an existing one has moved.  Before this matrix was written down the
@@ -88,8 +108,8 @@ import (
 //     properties 1 and 3.  Property 5 catches OVER-sharing; #576 is
 //     DE-aliasing, and a fork that copies too eagerly is more isolated
 //     from its template, not less.  Opposite ends of one axis, caught by
-//     different properties — which is the argument for asserting all four
-//     directions rather than assuming one implies the others.
+//     different properties — which is the argument for asserting every
+//     direction rather than assuming one implies the others.
 
 // TransactionCheck describes one run of the transaction-isolation oracle.
 type TransactionCheck struct {
@@ -287,8 +307,8 @@ func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 	// that de-aliases too eagerly is MORE isolated from its template, not
 	// less, so a template write cannot reach it.  The two defects sit at
 	// opposite ends of the same axis and are caught by different
-	// properties, which is the point of asserting all four directions
-	// rather than assuming one implies the others.
+	// properties, which is the point of asserting every direction rather
+	// than assuming one implies the others.
 	out = append(out, templateToForkWitnesses(c, tmpl, forks, before)...)
 
 	// Property 1 again, concurrently.  Same transactions, same template,
