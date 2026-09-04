@@ -89,6 +89,59 @@ func (m sortedmap) deltype(k interface{}) {
 	delete(m.typemap(), k)
 }
 
+// emptyLike returns an empty sortedmap sized to receive a copy of m: both
+// Go maps are made with m's CURRENT lengths.  Sizing to the current length
+// rather than cloning the table matters: Go maps never shrink after
+// deletes, so a map filled to 100k entries and pruned to 3 would otherwise
+// cost every copy the high-water-mark table
+// (TestForkSortedMapClonePrunedMapIsRightSized).
+func (m sortedmap) emptyLike() sortedmap {
+	return sortedmap{
+		m:  make(map[interface{}]*LVal, len(m.m)),
+		tm: make(typemap, len(m.tm)),
+	}
+}
+
+// copyInto copies m's entries and its key-type map into cp, an emptyLike
+// of m, passing each value through val (nil shares the value pointer).  The
+// entries are what Set stores -- the value under its key string -- and the
+// key-type map is copied verbatim, which is what Entries reads when it
+// decides whether a key comes back as a string or a symbol (including a
+// stale symbol flag on a key later re-set as a string: Set does not clear
+// it, and neither path invents or drops one).  The result is therefore
+// indistinguishable from enumerating the entries in sorted order and
+// re-inserting them, minus the sort, the per-entry pair cells and the
+// incremental map growth.
+//
+// It is split from emptyLike so a caller that memoises copies by identity
+// (the fork walker, issue #576) can publish cp before the values are
+// walked: an entry may reach back to the map being copied, and the Go maps
+// inside cp are references, so entries written here are visible through a
+// *MapData built around cp earlier.  val runs in Go map order, which is
+// unspecified; a caller that must see entries in a fixed order (detach,
+// which reports the first failing key) stays on the Entries path.
+func (m sortedmap) copyInto(cp sortedmap, val func(*LVal) *LVal) {
+	if val == nil {
+		for k, v := range m.m {
+			cp.m[k] = v
+		}
+	} else {
+		for k, v := range m.m {
+			cp.m[k] = val(v)
+		}
+	}
+	for k, t := range m.tm {
+		cp.tm[k] = t
+	}
+}
+
+// clone is emptyLike followed by copyInto.
+func (m sortedmap) clone(val func(*LVal) *LVal) sortedmap {
+	cp := m.emptyLike()
+	m.copyInto(cp, val)
+	return cp
+}
+
 func (m sortedmap) Len() int {
 	return len(m.m)
 }
@@ -182,10 +235,10 @@ func (m sortedmap) Entries(buf []*LVal) *LVal {
 			keys[i] = LVal{Type: LString, Str: ks}
 			cells[0] = &keys[i]
 		default:
-			// A symbol key is quoted, and Quote wraps rather than
-			// flagging, so this arm needs a second LVal that the string
-			// arm does not.  Symbol keys are the rare case, so they keep
-			// the straightforward construction.
+			// A symbol key is quoted, and Quote copies a not-yet-quoted
+			// value to flag it, so this arm allocates a second LVal that
+			// the string arm does not.  Symbol keys are the rare case, so
+			// they keep the straightforward construction.
 			cells[0] = Quote(Symbol(ks))
 		}
 		cells[1] = v
