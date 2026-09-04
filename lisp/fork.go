@@ -667,6 +667,24 @@ func (f *forker) mapData(md *MapData) *MapData {
 		sm.copyInto(nm, f.val)
 		return cp
 	}
+	if r, ok := md.mapBacking.(StringKeyRanger); ok {
+		// A string-keyed embedder map (libjson.SortedMap) becomes the same
+		// stock sorted map the entries path below builds for it -- Set with
+		// an LString key stores the value under the string and writes no
+		// key type -- without the sorted pair list in between.  The memo is
+		// published before the values are walked, as above (issue #576).
+		nm := emptyForStringKeys(md.Len())
+		cp := NewMapData(nm)
+		f.maps[md] = cp
+		if err := r.RangeStringKeys(func(k string, v *LVal) {
+			nm.m[k] = f.val(v)
+		}); err != nil {
+			// The entries path panics on an enumeration failure too: loud
+			// beats a silently partial fork.
+			panic(fmt.Sprintf("fork: sorted-map entries cannot be enumerated: %v", err))
+		}
+		return cp
+	}
 	entries := sortedMapEntries(md)
 	if entries.Type == LError {
 		// Unreachable for the stock sorted map (its entry enumeration

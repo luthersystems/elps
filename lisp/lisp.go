@@ -1668,6 +1668,17 @@ func (v *LVal) copyMapData() (*MapData, error) {
 	if sm, ok := m0.mapBacking.(sortedmap); ok {
 		return &MapData{sm.clone(nil)}, nil
 	}
+	if r, ok := m0.mapBacking.(StringKeyRanger); ok {
+		// Same stock map the entries path builds for a string-keyed
+		// embedder map, without boxing the entries first.
+		nm := emptyForStringKeys(m0.Len())
+		if err := r.RangeStringKeys(func(k string, v *LVal) {
+			nm.m[k] = v
+		}); err != nil {
+			return nil, fmt.Errorf("failed to copy map: %w", err)
+		}
+		return &MapData{nm}, nil
+	}
 	m := &MapData{newmap()}
 	for _, pair := range sortedMapEntries(m0).Cells {
 		lerr := m.Set(pair.Cells[0], pair.Cells[1])
