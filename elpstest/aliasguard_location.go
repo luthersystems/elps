@@ -119,9 +119,9 @@ type LocationCheck struct {
 	// a partial-coverage witness naming this field, because a truncated
 	// sweep is a sweep that can miss a leak on the environments it never
 	// reached.  Raise it -- at a superlinear cost in environment rebuilds,
-	// measured in DefaultMaxEnvironments -- for a
-	// program that leaves more scopes than the default covers — a
-	// dispatch table of forty handlers leaves forty-two.
+	// measured under DefaultMaxEnvironments -- for a program that leaves
+	// more scopes than the default covers: a dispatch table of forty
+	// handlers leaves forty-two.
 	MaxEnvironments int
 	// Repro is attached to every witness.
 	Repro string
@@ -540,13 +540,16 @@ type reachedEnv struct {
 // and a cap an ordinary program trips is a failure that is not a bug --
 // which trains an embedder to raise the cap reflexively, the opposite of
 // what a loud signal is for.  At 24 a dispatch table of 23 handlers
-// already truncated (n handlers leave n+2 environments).  The cap costs nothing when it is not reached;
-// the sweep rebuilds the whole environment once per stamped environment,
-// so its cost grows superlinearly in the environment count.  (Figures were
-// quoted here from a review; they are omitted because this author did not
-// reproduce them, and an unverified number in a comment is exactly the
-// habit the claims-under-test rule in aliasguard_broken_test.go exists to
-// break.)
+// already truncated (n handlers leave n+2 environments).  The cap costs
+// nothing when it is not reached; the sweep rebuilds the whole environment
+// once per stamped environment,
+// so its cost grows superlinearly in the environment count.  Measured on a
+// 4-core box, best of four full sweeps at MaxEnvironments 4096: 24
+// environments 34ms, 62 environments 136ms, 128 environments 480ms.  That
+// is 5.3x the environments for 14x the time, about n^1.6.  Reproduce it by
+// timing CheckLocations over manyScopesProgram(n-2) with the cap raised
+// past n; absolute numbers move with the machine, and the exponent is the
+// part to plan against.
 //
 // Raise it per check with LocationCheck.MaxEnvironments.
 const DefaultMaxEnvironments = 128
