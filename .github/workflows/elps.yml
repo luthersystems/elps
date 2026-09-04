@@ -130,9 +130,11 @@ jobs:
       # bugs with hand-written imitations; this reverts the actual fixes, which
       # the guard's PR only ever did by hand in a throwaway worktree.
       #
-      # Measured at 21s for all 8 mutations on a warm build cache -- which is
-      # what this job has by now -- so it earns a place on the PR gate rather
-      # than being deferred to a nightly where a mutation could rot for a day.
+      # Measured here, on this runner, rather than extrapolated from a laptop:
+      # 34s for all 8 mutations plus 5s for the selftest, 39s added to the job.
+      # (Locally it is 20-21s; the gap is recorded rather than left to be
+      # rediscovered.) That earns a place on the PR gate rather than a nightly
+      # where a broken mutation could rot for a day.
       #
       # The selftest runs FIRST and is not ceremony: it proves the harness can
       # still fail correctly (a patch that no longer applies is loud rather

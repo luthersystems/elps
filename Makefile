@@ -207,11 +207,14 @@ static-checks: check-golangci-version check-golangci-config
 # patch that no longer applies fails loudly; a mutation that does not compile
 # is not a catch; the specific property is asserted, not "something failed").
 #
-# ON THE PR GATE, NOT NIGHTLY, because it was measured rather than assumed:
-# 21s wall clock for all 8 mutations on a warm build cache, which is what CI
-# has by the time this step runs (the build and test steps precede it). A
-# nightly-only gate would let a mutation rot for a day; 21s does not justify
-# that.
+# ON THE PR GATE, NOT NIGHTLY, because it was measured rather than assumed.
+# Two numbers, because they differ and only one of them is the cost that
+# matters: 20-21s locally for all 8 mutations on a warm cache (three
+# consecutive runs), and 34s as actually observed in CI on ubuntu-24.04-arm,
+# plus 5s for the selftest -- 39s total added to the job. The CI figure is the
+# real one; the local figure is quoted only so the gap is on the record rather
+# than discovered later. A nightly-only gate would let a mutation rot for a
+# day, and 39s does not justify that.
 .PHONY: mutation-proof
 mutation-proof:
 	./scripts/mutation-proof.sh
