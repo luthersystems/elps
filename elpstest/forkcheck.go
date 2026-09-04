@@ -124,6 +124,17 @@ func RunForkCheck(t testing.TB, c ForkCheck) {
 	}
 
 	tmpl := build("template")
+	// The class-level oracle, over the same template (issue #598).  It
+	// carries the properties this harness used to state for Fork alone:
+	// the sharing-encoding fingerprint (which subsumes the alias signature
+	// below, since sharing is part of the encoding) extended with the
+	// per-package metadata tables, and the two-hop arm.  RunForkCheck keeps
+	// its own COLD-ARM renderings, which the shared oracle has no analogue
+	// for: no other walker has a "same program, loaded from scratch"
+	// reference to compare against.
+	for _, wit := range CheckForkTemplate(tmpl, c.ForkOptions...) {
+		t.Errorf("%s", wit)
+	}
 	tmplState := envState(tmpl)
 	tmplAlias := aliasSignature(tmpl)
 	tmplIDs := payloadIDs(tmpl)
