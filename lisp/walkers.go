@@ -129,10 +129,24 @@ var walkerMemos = []WalkerMemo{
 	},
 }
 
-// WalkerMemos returns the registry, copied so a caller cannot edit it.
+// WalkerMemos returns the registry, DEEP-copied so a caller cannot edit it.
+// A shallow copy would share Fields, Payloads and Graph with the registry
+// itself, and a caller that edited one — a test building a weakened
+// variant, say — would silently rewrite what every later caller reads.
 func WalkerMemos() []WalkerMemo {
 	out := make([]WalkerMemo, len(walkerMemos))
-	copy(out, walkerMemos)
+	for i, m := range walkerMemos {
+		m.Payloads = append([]PayloadKind(nil), m.Payloads...)
+		m.Graph = append([]PayloadKind(nil), m.Graph...)
+		if m.Fields != nil {
+			f := make(map[PayloadKind]string, len(m.Fields))
+			for k, v := range m.Fields {
+				f[k] = v
+			}
+			m.Fields = f
+		}
+		out[i] = m
+	}
 	return out
 }
 

@@ -25,20 +25,25 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
+// detach is the injected accessor.  It is unexported, and reached through
+// the Detach function below, so that no in-module package can swap the
+// walker the alias guard drives — see hook.SetDetach.
+var detach func(v *lisp.LVal) (*lisp.LVal, error)
+
 // Detach returns a hermetic deep copy of v that shares no memory with it,
 // or the error naming the path to the first cell that cannot be copied (an
 // LFun, or an LNative whose payload supplies no CloneNative).  It is
 // (*lisp.LVal).detach, unchanged.  Injected by package lisp's init;
 // importing this package imports lisp, so the accessor is always non-nil by
 // the time user code runs.
-var Detach func(v *lisp.LVal) (*lisp.LVal, error)
+func Detach(v *lisp.LVal) (*lisp.LVal, error) { return detach(v) }
 
 func init() {
-	fn, ok := hook.Detach.(func(*lisp.LVal) (*lisp.LVal, error))
+	fn, ok := hook.Detach().(func(*lisp.LVal) (*lisp.LVal, error))
 	if !ok {
 		// Unreachable: importing walkraw imports lisp, whose init stores
 		// the accessor before this init runs.
 		panic("walkraw: package lisp did not inject the Detach accessor")
 	}
-	Detach = fn
+	detach = fn
 }

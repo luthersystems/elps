@@ -14,7 +14,7 @@ func init() {
 	// internal/walkraw/hook exists only to break the import cycle.  detach
 	// stays unexported on the module's public API, and internal/ visibility
 	// limits this to the module.
-	walkrawhook.Detach = func(v *LVal) (*LVal, error) {
+	walkrawhook.SetDetach(func(v *LVal) (*LVal, error) {
 		return v.detach()
-	}
+	})
 }

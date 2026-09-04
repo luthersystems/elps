@@ -111,8 +111,27 @@ type LocationCheck struct {
 	// anti-vacuity assertion: without it a probe that stopped tripping
 	// where it was aimed would still pass.
 	WantSite string
+	// MaxEnvironments bounds the sweep, which rebuilds the whole
+	// environment once per stamped environment.  Zero means
+	// DefaultMaxEnvironments.
+	//
+	// Exceeding it does NOT silently shorten the sweep: the check reports
+	// a partial-coverage witness naming this field, because a truncated
+	// sweep is a sweep that can miss a leak on the environments it never
+	// reached.  Raise it (at a linear cost in environment rebuilds) for a
+	// program that leaves more scopes than the default covers — a
+	// dispatch table of forty handlers leaves forty-one.
+	MaxEnvironments int
 	// Repro is attached to every witness.
 	Repro string
+}
+
+// maxEnvs is the check's environment cap, defaulted.
+func (c LocationCheck) maxEnvs() int {
+	if c.MaxEnvironments > 0 {
+		return c.MaxEnvironments
+	}
+	return DefaultMaxEnvironments
 }
 
 // fork applies the check's fork walker, defaulting to (*lisp.LEnv).Fork.
@@ -263,9 +282,23 @@ func CheckLocations(c LocationCheck) ([]Witness, error) {
 	// reachable environment changes nothing.  Each sweep step gets a fresh
 	// environment, because a stamped register cannot be restored to "absent"
 	// from outside the kernel.
-	nEnv, err := countReachableEnvs(build)
+	nEnv, truncated, err := countReachableEnvs(build, c.maxEnvs())
 	if err != nil {
 		return nil, err
+	}
+	if truncated {
+		out = append(out, Witness{
+			Walker:   "location",
+			Property: "the location sweep covers every reachable environment",
+			Leak:     "<environments past the cap were never stamped>",
+			Baseline: "all reachable environments stamped and swept",
+			Observed: fmt.Sprintf("the sweep stopped at MaxEnvironments=%d", c.maxEnvs()),
+			Detail: fmt.Sprintf("This program leaves more than %d reachable environments, so the sweep is PARTIAL: "+
+				"a stale location on an environment past the cap would not be detected, while the identical "+
+				"leak on an environment before it would be. Raise LocationCheck.MaxEnvironments (the cost is "+
+				"one environment rebuild per environment) or narrow the program.", c.maxEnvs()),
+			Repro: c.Repro,
+		})
 	}
 	if nEnv == 0 {
 		return nil, errors.New("the program leaves no reachable environment to stamp; the sweep would be vacuous")
@@ -275,7 +308,7 @@ func CheckLocations(c LocationCheck) ([]Witness, error) {
 		if err != nil {
 			return nil, err
 		}
-		envs := reachableEnvs(env)
+		envs, _ := reachableEnvs(env, c.maxEnvs())
 		if i >= len(envs) {
 			break
 		}
@@ -310,7 +343,11 @@ func CheckLocations(c LocationCheck) ([]Witness, error) {
 		return nil, err
 	}
 	stampedTemplate := 0
-	for i, e := range reachableEnvs(fresh) {
+	freshEnvs, freshTruncated := reachableEnvs(fresh, c.maxEnvs())
+	if freshTruncated {
+		out = append(out, truncationWitness(c, "the fork sweep covers every reachable environment"))
+	}
+	for i, e := range freshEnvs {
 		if err := stampLocation(e.env, sentinelLocation(2000+i)); err != nil {
 			return nil, err
 		}
@@ -336,7 +373,8 @@ func CheckLocations(c LocationCheck) ([]Witness, error) {
 			Repro:    c.Repro,
 		})
 	}
-	for _, e := range reachableEnvs(fork) {
+	forkEnvs, _ := reachableEnvs(fork, c.maxEnvs())
+	for _, e := range forkEnvs {
 		if loc := e.env.Source(); loc != nil {
 			out = append(out, Witness{
 				Walker:   "Fork",
@@ -402,7 +440,8 @@ func crossForkLocationWitnesses(c LocationCheck, build func() (*lisp.LEnv, error
 		return nil, err
 	}
 	stamped := 0
-	for i, e := range reachableEnvs(forkA) {
+	forkAEnvs, forkATruncated := reachableEnvs(forkA, c.maxEnvs())
+	for i, e := range forkAEnvs {
 		if err := stampLocation(e.env, sentinelLocation(1000+i)); err != nil {
 			return nil, err
 		}
@@ -412,6 +451,9 @@ func crossForkLocationWitnesses(c LocationCheck, build func() (*lisp.LEnv, error
 		return nil, errors.New("the fork left no environment to stamp; the cross-fork sweep would be vacuous")
 	}
 	var out []Witness
+	if forkATruncated {
+		out = append(out, truncationWitness(c, "the cross-fork sweep covers every reachable environment"))
+	}
 	for _, arm := range []struct {
 		name string
 		env  *lisp.LEnv
@@ -445,13 +487,19 @@ func crossForkLocationWitnesses(c LocationCheck, build func() (*lisp.LEnv, error
 // embedder auditing its own template wants the same enumeration, and
 // because the guard-on-the-guard tests build a deliberately broken fork by
 // stamping the environments a real fork must leave empty.
-func ReachableEnvironments(env *lisp.LEnv) []*lisp.LEnv {
-	reached := reachableEnvs(env)
+//
+// It enumerates at most DefaultMaxEnvironments.  The second return reports
+// whether that limit was reached, i.e. whether the enumeration is PARTIAL —
+// an embedder auditing its own template must not read a short list as
+// "this is everything", which is the same silent cliff the sweep itself
+// used to have.
+func ReachableEnvironments(env *lisp.LEnv) ([]*lisp.LEnv, bool) {
+	reached, truncated := reachableEnvs(env, DefaultMaxEnvironments)
 	out := make([]*lisp.LEnv, 0, len(reached))
 	for _, e := range reached {
 		out = append(out, e.env)
 	}
-	return out
+	return out, truncated
 }
 
 // StampEvaluatorLocation writes loc into env's evaluator location register,
@@ -470,11 +518,21 @@ type reachedEnv struct {
 	path string
 }
 
-// maxReachableEnvs bounds the location sweep, which rebuilds the whole
-// environment once per stamped environment.  A loaded standard library
-// leaves a handful; a program that leaves more than this has its sweep
-// truncated rather than its runtime exploding.
-const maxReachableEnvs = 24
+// DefaultMaxEnvironments bounds the location sweep, which rebuilds the
+// whole environment once per stamped environment.  A loaded standard
+// library leaves a handful.
+//
+// A program that leaves more does not get a quietly shortened sweep.  It
+// gets a partial-coverage witness, because truncation and a clean result
+// are indistinguishable to a reader otherwise: with forty let-bound
+// closures the forty-first environment is never stamped, so a fork
+// carrying a stale location THERE is invisible while the identical bug on
+// the first environment is caught.  That is a coverage cliff at a size real
+// programs reach — substrate's router shape is a dispatch table of handlers
+// — and it was silent until the adversarial review of #599 proved it.
+//
+// Raise it per check with LocationCheck.MaxEnvironments.
+const DefaultMaxEnvironments = 24
 
 // reachableEnvs enumerates every environment reachable from the package
 // bindings and from env's own lexical chain, in a deterministic order,
@@ -486,14 +544,22 @@ const maxReachableEnvs = 24
 // This is the general form of lisp/fork_metadata_test.go's forkedEnvs,
 // which walks the lexical chain and the registry's direct function
 // bindings; this one also reaches a closure parked inside a container.
-func reachableEnvs(env *lisp.LEnv) []reachedEnv {
+// reachableEnvs enumerates up to limit environments.  The second return is
+// true when the walk stopped at the limit, meaning the enumeration is
+// PARTIAL and anything past it was never examined.
+func reachableEnvs(env *lisp.LEnv, limit int) ([]reachedEnv, bool) {
 	var out []reachedEnv
+	truncated := false
 	seenV := map[*lisp.LVal]bool{}
 	seenE := map[*lisp.LEnv]bool{}
 	var walk func(v *lisp.LVal, path string)
 	var walkEnv func(e *lisp.LEnv, path string)
 	walk = func(v *lisp.LVal, path string) {
-		if v == nil || seenV[v] || len(out) >= maxReachableEnvs {
+		if v == nil || seenV[v] {
+			return
+		}
+		if len(out) >= limit {
+			truncated = true
 			return
 		}
 		seenV[v] = true
@@ -514,7 +580,11 @@ func reachableEnvs(env *lisp.LEnv) []reachedEnv {
 		}
 	}
 	walkEnv = func(e *lisp.LEnv, path string) {
-		if e == nil || seenE[e] || e.Parent() == nil || len(out) >= maxReachableEnvs {
+		if e == nil || seenE[e] || e.Parent() == nil {
+			return
+		}
+		if len(out) >= limit {
+			truncated = true
 			return
 		}
 		seenE[e] = true
@@ -530,13 +600,31 @@ func reachableEnvs(env *lisp.LEnv) []reachedEnv {
 	})
 	walkEnv(env, "<env>")
 	sort.SliceStable(out, func(i, j int) bool { return out[i].path < out[j].path })
-	return out
+	return out, truncated
 }
 
-func countReachableEnvs(build func() (*lisp.LEnv, error)) (int, error) {
+func countReachableEnvs(build func() (*lisp.LEnv, error), limit int) (int, bool, error) {
 	env, err := build()
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	return len(reachableEnvs(env)), nil
+	envs, truncated := reachableEnvs(env, limit)
+	return len(envs), truncated, nil
+}
+
+// truncationWitness reports a sweep that stopped at the environment cap.
+// It is a FAILURE, not a note: a partial sweep and a clean sweep are
+// indistinguishable to a reader, so the cliff is made loud.  See
+// DefaultMaxEnvironments.
+func truncationWitness(c LocationCheck, property string) Witness {
+	return Witness{
+		Walker:   "location",
+		Property: property,
+		Leak:     "<environments past the cap were never examined>",
+		Baseline: "all reachable environments examined",
+		Observed: fmt.Sprintf("the sweep stopped at MaxEnvironments=%d", c.maxEnvs()),
+		Detail: fmt.Sprintf("Raise LocationCheck.MaxEnvironments above %d, or narrow the program: "+
+			"anything past the cap was never examined, so a leak there is undetected.", c.maxEnvs()),
+		Repro: c.Repro,
+	}
 }

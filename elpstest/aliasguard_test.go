@@ -248,7 +248,100 @@ func TestFingerprintEncodesSharing(t *testing.T) {
 		t.Errorf("the diff carries no path: %s", d)
 	}
 	t.Logf("diff:\n%s", d)
+
+	// The same distinction must hold for EVERY payload kind the walkers
+	// memoise, not only sorted maps.  Each of these is a negative control
+	// for one identity ordinal in the encoding: drop the bytes ordinal and
+	// the bytes arm goes red, drop the native ordinal and the native arm
+	// goes red.  Before they existed, the adversarial review of #599
+	// removed the bytes ordinal and the whole suite stayed green.
+	t.Run("bytes", func(t *testing.T) {
+		t.Parallel()
+		al := load(`(set 'a (to-bytes "abc")) (set 'b (quasiquote (unquote a))) (set 'probe (list a b))`)
+		de := load(`(set 'a (to-bytes "abc")) (set 'b (to-bytes "abc")) (set 'probe (list a b))`)
+		eq := al.LoadString("q.lisp", `(equal? (first probe) (second probe))`)
+		if eq.Type == lisp.LError || eq.IsNil() {
+			t.Fatalf("premise: the two names must be equal? in the aliased program: %v", eq)
+		}
+		fa := elpstest.FingerprintValue(al.Get(lisp.Symbol("probe")), elpstest.FingerprintOptions{})
+		fd := elpstest.FingerprintValue(de.Get(lisp.Symbol("probe")), elpstest.FingerprintOptions{})
+		if fa.Equal(fd) {
+			t.Fatalf("the fingerprint cannot tell two names over one BYTES payload from two equal ones.\n"+
+				"The bytes identity ordinal has been dropped from the encoding, so a walker that\n"+
+				"de-aliases bytes is now invisible to it:\n%s", fa)
+		}
+		if fa.Hash() == fd.Hash() {
+			t.Errorf("the bytes hashes agree where the streams do not: %s", fa.Hash())
+		}
+	})
+	t.Run("native", func(t *testing.T) {
+		t.Parallel()
+		// lisp cannot express two headers over one native payload, so the
+		// aliased side is built in Go.  The dealiased side is two distinct
+		// payloads of the same Go type — which is exactly what a walker
+		// missing its native memo produces.
+		alEnv, err := nativeAliasEnvForFingerprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		deEnv, err := nativeDistinctEnvForFingerprint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		fa := elpstest.FingerprintValue(alEnv.Get(lisp.Symbol("probe")), elpstest.FingerprintOptions{})
+		fd := elpstest.FingerprintValue(deEnv.Get(lisp.Symbol("probe")), elpstest.FingerprintOptions{})
+		if fa.Equal(fd) {
+			t.Fatalf("the fingerprint cannot tell two names over one NATIVE payload from two distinct\n"+
+				"payloads of the same Go type. The native identity ordinal has been dropped, and it is\n"+
+				"the only channel that can see native sharing — no probe can look inside a native:\n%s", fa)
+		}
+		if fa.Hash() == fd.Hash() {
+			t.Errorf("the native hashes agree where the streams do not: %s", fa.Hash())
+		}
+	})
 }
+
+// nativeAliasEnvForFingerprint puts two headers over ONE native payload
+// into `probe`.
+func nativeAliasEnvForFingerprint() (*lisp.LEnv, error) {
+	env, err := elpstest.NewForkCheckEnv()
+	if err != nil {
+		return nil, err
+	}
+	a := lisp.Native(&fpNative{})
+	b := *a
+	return putProbePair(env, a, &b)
+}
+
+// nativeDistinctEnvForFingerprint puts two headers over TWO payloads of the
+// same Go type into `probe` — the shape a walker with no native memo
+// produces from the aliased one.
+func nativeDistinctEnvForFingerprint() (*lisp.LEnv, error) {
+	env, err := elpstest.NewForkCheckEnv()
+	if err != nil {
+		return nil, err
+	}
+	return putProbePair(env, lisp.Native(&fpNative{}), lisp.Native(&fpNative{}))
+}
+
+func putProbePair(env *lisp.LEnv, a, b *lisp.LVal) (*lisp.LEnv, error) {
+	if rc := env.PutGlobal(lisp.Symbol("na"), a); rc.Type == lisp.LError {
+		return nil, lisp.GoError(rc)
+	}
+	if rc := env.PutGlobal(lisp.Symbol("nb"), b); rc.Type == lisp.LError {
+		return nil, lisp.GoError(rc)
+	}
+	if rc := env.LoadString("n.lisp", `(set 'probe (list na nb))`); rc.Type == lisp.LError {
+		return nil, lisp.GoError(rc)
+	}
+	return env, nil
+}
+
+// fpNative is a stateless native payload used only to give the fingerprint
+// two distinguishable-by-identity values of one Go type.
+type fpNative struct{ n int }
+
+func (f *fpNative) CloneNative() any { return &fpNative{n: f.n} }
 
 // A shared subtree is walked once, so a diamond-shaped graph stays linear
 // instead of costing one walk per path in.

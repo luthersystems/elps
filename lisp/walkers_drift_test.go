@@ -41,31 +41,121 @@ import (
 //     payload the walker rebuilds but does not memoise is a payload two
 //     headers come apart over.
 
-// TestRebuildingWalkersMemoiseTheSamePayloadKinds is the registry half.
-func TestRebuildingWalkersMemoiseTheSamePayloadKinds(t *testing.T) {
+// mustRebuild names the walkers that MUST declare Rebuilds.  Without this
+// pin the registry half is disableable in one edit: set detacher's
+// Rebuilds to false and the cross-walker comparison below has nothing left
+// to compare, so it passes vacuously while the exact drift it exists to
+// catch — issue #585, a payload kind memoised in the forker and not in the
+// detacher — goes unreported.  All three halves of the guard stayed green
+// under that mutation until this pin existed.
+//
+// A walker legitimately leaving this set is a deliberate change to what the
+// guard covers, and should be made deliberately, here.
+var mustRebuild = []string{"forker", "detacher"}
+
+// checkRebuildingWalkers is the registry half, as a pure function over a
+// registry, so a negative control can hand it a weakened one.  It returns
+// one line per problem.
+func checkRebuildingWalkers(memos []WalkerMemo) []string {
+	var problems []string
+	rebuilding := map[string]bool{}
 	var reference *WalkerMemo
-	for i := range walkerMemos {
-		m := &walkerMemos[i]
+	for i := range memos {
+		m := &memos[i]
 		if !m.Rebuilds {
 			continue
 		}
+		rebuilding[m.Walker] = true
 		if reference == nil {
 			reference = m
 			continue
 		}
 		if got, want := kindSet(m.Payloads), kindSet(reference.Payloads); got != want {
-			t.Errorf("walker %s memoises %s; walker %s memoises %s.\n"+
-				"Every walker that rebuilds payload storage must memoise the same payload kinds:\n"+
-				"a kind memoised in one and not the other is the issue #585 defect, where two headers\n"+
-				"over one payload came apart in the copy while the other walker's guard stayed green.",
-				m.Walker, got, reference.Walker, want)
+			problems = append(problems, fmt.Sprintf(
+				"walker %s memoises %s; walker %s memoises %s.\n"+
+					"Every walker that rebuilds payload storage must memoise the same payload kinds:\n"+
+					"a kind memoised in one and not the other is the issue #585 defect, where two headers\n"+
+					"over one payload came apart in the copy while the other walker's guard stayed green.",
+				m.Walker, got, reference.Walker, want))
 		}
 	}
-	if reference == nil {
-		t.Fatal("no walker declares Rebuilds; the registry has lost its subject")
+	for _, name := range mustRebuild {
+		if !rebuilding[name] {
+			problems = append(problems, fmt.Sprintf(
+				"walker %q does not declare Rebuilds, but it is one of the walkers this guard exists to\n"+
+					"compare (mustRebuild). With fewer than two rebuilding walkers the cross-walker\n"+
+					"comparison passes vacuously and the issue #585 class stops being guarded at all.\n"+
+					"If the walker genuinely stopped rebuilding payload storage, remove it from mustRebuild\n"+
+					"in the same commit, and say why.", name))
+		}
 	}
-	if len(reference.Payloads) == 0 {
-		t.Fatal("the rebuilding walkers declare no payload memos at all")
+	if len(rebuilding) < 2 {
+		problems = append(problems, fmt.Sprintf(
+			"only %d walker(s) declare Rebuilds; the cross-walker comparison needs at least two to\n"+
+				"compare anything. A registry with one rebuilding walker is a guard that cannot fail.",
+			len(rebuilding)))
+	}
+	if reference == nil {
+		problems = append(problems, "no walker declares Rebuilds; the registry has lost its subject")
+	} else if len(reference.Payloads) == 0 {
+		problems = append(problems, "the rebuilding walkers declare no payload memos at all")
+	}
+	return problems
+}
+
+// TestRebuildingWalkersMemoiseTheSamePayloadKinds is the registry half.
+func TestRebuildingWalkersMemoiseTheSamePayloadKinds(t *testing.T) {
+	for _, p := range checkRebuildingWalkers(WalkerMemos()) {
+		t.Error(p)
+	}
+}
+
+// TestRegistryHalfCannotBeDisabledByDroppingRebuilds is the negative
+// control for the check above: the precise mutation the adversarial review
+// of #599 found — set detacher's Rebuilds to false and drop a payload kind
+// from it — must now be reported.  Before mustRebuild existed this mutation
+// left all three halves of the drift guard green.
+func TestRegistryHalfCannotBeDisabledByDroppingRebuilds(t *testing.T) {
+	weakened := WalkerMemos()
+	var found bool
+	for i := range weakened {
+		if weakened[i].Walker != "detacher" {
+			continue
+		}
+		found = true
+		weakened[i].Rebuilds = false
+		var kept []PayloadKind
+		for _, k := range weakened[i].Payloads {
+			if k != PayloadBytes {
+				kept = append(kept, k)
+			}
+		}
+		weakened[i].Payloads = kept
+	}
+	if !found {
+		t.Fatal("the registry has no detacher row; this control is no longer modelling anything")
+	}
+	problems := checkRebuildingWalkers(weakened)
+	if len(problems) == 0 {
+		t.Fatal("switching off the detacher's Rebuilds flag and dropping a payload kind from it was\n" +
+			"NOT reported. The registry half of the drift guard can be silently disabled, which is\n" +
+			"exactly what mustRebuild exists to prevent.")
+	}
+	var mentions bool
+	for _, p := range problems {
+		if strings.Contains(p, "detacher") {
+			mentions = true
+		}
+	}
+	if !mentions {
+		t.Errorf("the weakened registry was reported, but no problem named the detacher:\n%s",
+			strings.Join(problems, "\n"))
+	}
+	// And the mutation must be reported ONLY because it was applied: the
+	// real registry stays clean, so a failure here is attributable.
+	if p := checkRebuildingWalkers(WalkerMemos()); len(p) != 0 {
+		t.Errorf("the real registry is not clean, so this control proves nothing: %s",
+			strings.Join(p, "\n"))
 	}
 }
 

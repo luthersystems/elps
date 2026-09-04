@@ -43,8 +43,11 @@ import (
 //	Fork    closures IN SCOPE, backing rebuilt, full isolation required
 //	copy    closures REFUSED (shared, not copied), backing rebuilt
 //	Detach  closures REFUSED (rejected with an error), backing rebuilt
-//	stamp   not a copier: output must not alias unsealed source structure,
-//	        and the walk must not mutate anything reachable
+//	stamp   not a copier: the walk must not mutate anything reachable
+//	        outside the output it allocated.  It deliberately SHARES every
+//	        payload behind a pointer with its source (lisp/macro.go), so
+//	        "must not alias source structure" would be the wrong rule here
+//	        and is not asserted.
 //
 // Adding a fifth walker is a one-line registration in Walkers().
 //
@@ -717,6 +720,23 @@ func fingerprintOf(sites []ProbeSite) string {
 // holds: the generator's integers are small and its bytes are ASCII.
 func sentinelFor(i int) int { return 0x5E7719 + i }
 
+// sameIndexSet compares two alias equivalence classes, as sorted index
+// slices.
+//
+// A note on what this arm actually contributes, from the adversarial review
+// of #599: making it permissive (always true) leaves the whole suite green,
+// because every de-aliasing shape the guard can build out of lisp values is
+// ALSO caught by the fingerprint, which runs first and encodes sharing
+// exactly.  That redundancy is deliberate defence in depth rather than dead
+// code — the fingerprint proves two names reach one POINTER, and this arm
+// proves a write through one is seen through the other, which is the
+// property callers actually depend on and which pointer identity only
+// implies for payload types whose sharing is genuine (a hypothetical
+// copy-on-read map would preserve pointers and break the semantics).
+//
+// Because no end-to-end shape isolates it, its negative control is the
+// direct one in aliasguard_internal_test.go, which fails if the comparison
+// is ever made permissive.
 func sameIndexSet(a, b []int) bool {
 	if len(a) != len(b) {
 		return false
@@ -859,7 +879,7 @@ func (p *siteWalker) sortedMap(v *lisp.LVal) {
 			return
 		}
 		key := k
-		seg := "map entry " + strconv.Quote(key.String())
+		seg := "map entry " + quoteKey(key)
 		p.push(seg)
 		orig, _ := md.Get(key)
 		path := p.here()
@@ -955,4 +975,16 @@ func renderProbeValue(v *lisp.LVal) string {
 	default:
 		return fmt.Sprintf("%s:%p", v.Type, v)
 	}
+}
+
+// quoteKey renders a sorted-map key for a probe path.  A STRING key's
+// String() is already quoted, so passing it through strconv.Quote a second
+// time renders `map entry "\"k\""` where the doc comment, the witnesses and
+// the revert-proof transcripts all say `map entry "k"`.  Every other key
+// type renders unquoted and wants the quoting.
+func quoteKey(key *lisp.LVal) string {
+	if key.Type == lisp.LString {
+		return strconv.Quote(key.Str)
+	}
+	return strconv.Quote(key.String())
 }

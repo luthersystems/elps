@@ -13,6 +13,23 @@
 // package.
 package hook
 
-// Detach holds a func(*lisp.LVal) (*lisp.LVal, error), stored untyped.  It
+// detach holds a func(*lisp.LVal) (*lisp.LVal, error), stored untyped.  It
 // is set by package lisp's init and consumed by package walkraw's init.
-var Detach any
+//
+// The slot is write-once and unexported rather than a plain exported var:
+// an in-module package that swapped it would silently blind the detach arm
+// of the alias guard, which is the one arm that exists because a bug hid
+// there for a week (issue #585).  Nothing legitimate sets it twice.
+var detach any
+
+// SetDetach stores the accessor.  It panics on a second call rather than
+// letting a later writer take over a slot the guard depends on.
+func SetDetach(fn any) {
+	if detach != nil {
+		panic("walkraw/hook: the Detach accessor is already set")
+	}
+	detach = fn
+}
+
+// Detach returns the stored accessor, or nil before lisp's init has run.
+func Detach() any { return detach }
