@@ -14,6 +14,7 @@ import (
 	"hash/fnv"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/internal/funraw"
@@ -394,6 +395,47 @@ func (fp *fingerprinter) env(e *lisp.LEnv) {
 // environment.  The subtest split lets benchstat put them side by side
 // (`benchstat -col /mode`) and interleaves them within one run, so the two
 // arms see the same machine state.
+// BenchmarkForkViews measures Fork on a template that holds VIEWS at load
+// scope -- a few hundred (set 'tN (cdr lN)) bindings over the loaded stdlib
+// -- so the cost of rebuilding a view over its root's copy (cellsView,
+// lisp/lisp.go) is measured on the shape it exists for, not only on
+// templates where it is idle.  The `views` arm holds the lists and their
+// views; the `lists` arm holds the same lists alone, so the difference is
+// the views' own cost.
+func BenchmarkForkViews(b *testing.B) {
+	const n = 300
+	program := func(withViews bool) string {
+		var sb strings.Builder
+		for i := range n {
+			fmt.Fprintf(&sb, "(set 'l%d (list %d %d %d %d))\n", i, i+3, i, i+2, i+1)
+			if withViews {
+				fmt.Fprintf(&sb, "(set 't%d (cdr l%d))\n", i, i)
+			}
+		}
+		return sb.String()
+	}
+	for _, arm := range []struct {
+		name      string
+		withViews bool
+	}{{"lists", false}, {"views", true}} {
+		b.Run("arm="+arm.name, func(b *testing.B) {
+			env := newLoadedForkEnv(b)
+			if res := env.LoadString("views.lisp", program(arm.withViews)); res.Type == lisp.LError {
+				b.Fatalf("program: %v", res)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				fork, err := env.Fork()
+				if err != nil {
+					b.Fatal(err)
+				}
+				runtime.KeepAlive(fork)
+			}
+		})
+	}
+}
+
 func BenchmarkEnvConstruction(b *testing.B) {
 	b.Run("mode=fork", func(b *testing.B) {
 		env := newLoadedForkEnv(b)
