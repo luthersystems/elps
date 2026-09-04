@@ -145,12 +145,28 @@ func RunParityCheck(t TestingTB, c ParityCheck) {
 
 // CheckParity runs the transaction sequences on forks and on cold
 // environments and returns one witness per divergence: a transaction whose
-// result differs, or an environment whose post-run reachable state
-// differs.  A transaction that raises is a result like any other -- the
-// cold arm defines what a fork must do, raising included -- so an error
-// value is compared, not reported.  An error building an environment,
-// loading the program or taking a fork is returned, since nothing after
-// it would mean anything.
+// result differs, an environment whose post-run reachable state differs, a
+// cold environment that did not load the program the template loaded, or
+// a fork that could not be taken.  A transaction that raises is a result
+// like any other -- the cold arm defines what a fork must do, raising
+// included -- so an error value is compared, not reported.
+//
+// THE ONLY HARNESS ERROR IS A TEMPLATE THAT DOES NOT LOAD.  Then there is
+// nothing to compare.  Once the template has loaded, every later failure
+// is on-property and is a witness, not an error: the same source loading
+// on the template and not on a cold environment is nondeterministic
+// loading, and "a fresh VM runs this program but a fork of it cannot even
+// be created" is a parity violation under the definition at the top of
+// this file.  Both used to be returned as errors, and the fuzz target
+// turned every error into a skip, so a run reported "0 failures" over
+// inputs it had silently not compared.  TestForkParity_DetectsAForkRefusal
+// and TestForkParity_DetectsAnAsymmetricLoad are the controls.
+//
+// The run CONTINUES past such a failure: the environment that lost an arm
+// has its transactions and its state comparison skipped -- it was already
+// reported, and there is nothing to compare it against -- and every other
+// environment is compared in full, so one run reports everything that
+// diverges, the way RunForkCheck's t.Errorf loop does.
 func CheckParity(c ParityCheck) ([]Witness, error) {
 	if len(c.Tx) == 0 {
 		return nil, errors.New("no transaction sequences: parity would hold vacuously")
@@ -170,52 +186,72 @@ func CheckParity(c ParityCheck) ([]Witness, error) {
 	build := func() (*lisp.LEnv, error) {
 		env, err := newEnv()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("new environment: %w", err)
 		}
 		if rc := env.LoadString("program.lisp", c.Program); rc.Type == lisp.LError {
-			return nil, lisp.GoError(rc)
+			return nil, fmt.Errorf("load: %w", lisp.GoError(rc))
 		}
 		return env, nil
-	}
-	takeFork := func(tmpl *lisp.LEnv, i int) (*lisp.LEnv, error) {
-		f := tmpl
-		for h := range hops {
-			var err error
-			if f, err = c.fork(f); err != nil {
-				return nil, fmt.Errorf("fork %d hop %d: %w", i, h+1, err)
-			}
-		}
-		return f, nil
 	}
 
 	tmpl, err := build()
 	if err != nil {
 		return nil, fmt.Errorf("template: %w", err)
 	}
+	var out []Witness
 	n := len(c.Tx)
 	cold := make([]*lisp.LEnv, n)
 	for i := range cold {
 		if cold[i], err = build(); err != nil {
-			return nil, fmt.Errorf("cold %d: %w", i, err)
+			cold[i] = nil
+			out = append(out, Witness{
+				Walker:   "Fork",
+				Property: "the program loads on a cold environment exactly when it loads on the template",
+				Detail: fmt.Sprintf("the template loaded this program; cold environment %d did not: %v\n"+
+					"    (the same source loaded differently in two fresh environments; environment %d is not compared further)", i, err, i),
+				Repro: c.Repro,
+			})
 		}
 	}
+	// forks[i] is nil until taken; dead[i] records a fork that could not be
+	// taken, which is a witness and ends that environment's comparison.
 	forks := make([]*lisp.LEnv, n)
+	dead := make([]bool, n)
+	takeFork := func(i int) {
+		f := tmpl
+		for h := range hops {
+			var err error
+			if f, err = c.fork(f); err != nil {
+				dead[i] = true
+				out = append(out, Witness{
+					Walker:   "Fork",
+					Property: "a fork can be taken from any template that loaded",
+					Detail: fmt.Sprintf("fork %d, hop %d of %d: %v\n"+
+						"    (a cold environment runs this program; a fork of the template that loaded it cannot be created; environment %d is not compared further)",
+						i, h+1, hops, err, i),
+					Repro: c.Repro,
+				})
+				return
+			}
+		}
+		forks[i] = f
+	}
 	if c.Interleave {
 		// Every fork live before anything runs.
 		for i := range forks {
-			if forks[i], err = takeFork(tmpl, i); err != nil {
-				return nil, err
-			}
+			takeFork(i)
 		}
 	}
 
-	var out []Witness
 	for _, st := range paritySchedule(c.Tx, c.Interleave) {
+		if cold[st.i] == nil || dead[st.i] {
+			continue
+		}
 		if forks[st.i] == nil {
 			// Sequential: taken when first needed, after every earlier
 			// fork has run its whole sequence.
-			if forks[st.i], err = takeFork(tmpl, st.i); err != nil {
-				return nil, err
+			if takeFork(st.i); dead[st.i] {
+				continue
 			}
 		}
 		tx := c.Tx[st.i][st.j]
@@ -235,11 +271,14 @@ func CheckParity(c ParityCheck) ([]Witness, error) {
 		}
 	}
 	for i := range n {
+		if cold[i] == nil || dead[i] {
+			continue
+		}
 		if forks[i] == nil {
 			// An empty sequence: the fork was never taken.  Take it now, so
 			// the state comparison still covers it.
-			if forks[i], err = takeFork(tmpl, i); err != nil {
-				return nil, err
+			if takeFork(i); dead[i] {
+				continue
 			}
 		}
 		want := FingerprintEnv(cold[i], templateOpts)

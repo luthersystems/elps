@@ -3,6 +3,7 @@
 package elpstest_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -190,5 +191,91 @@ func TestForkParity_HopsCountForkCalls(t *testing.T) {
 		if calls != tc.want {
 			t.Errorf("hops=%d: the fork walker was called %d times, want %d", tc.hops, calls, tc.want)
 		}
+	}
+}
+
+// TestForkParity_DetectsAForkRefusal: the template loaded, a cold
+// environment runs the program, and a fork of that template cannot be
+// created.  Under the definition at the top of parity.go that is a parity
+// violation, and it used to be a returned error the fuzz target turned
+// into a skip.  The refusal is the PRODUCTION Fork's own: the walker here
+// only stages a non-quiescent template (one frame on its call stack) for
+// the second fork and lets checkQuiescent refuse it.  Environment 0 is
+// still compared in full, which is the "continue past the failure" half.
+func TestForkParity_DetectsAForkRefusal(t *testing.T) {
+	t.Parallel()
+	for _, interleave := range []bool{false, true} {
+		calls := 0
+		refusing := func(env *lisp.LEnv) (*lisp.LEnv, error) {
+			calls++
+			if calls != 2 {
+				return env.Fork()
+			}
+			if err := env.Runtime.Stack.PushFID(nil, "_fun0", "user", "staged"); err != nil {
+				return nil, err
+			}
+			defer env.Runtime.Stack.Pop()
+			return env.Fork()
+		}
+		got, err := elpstest.CheckParity(elpstest.ParityCheck{
+			NewEnv:     newFuzzEnv,
+			Program:    parityAliasProgram,
+			Tx:         [][]string{{`(assoc! a "y" 7) (get b "y")`}, {`(get a "k")`}},
+			Interleave: interleave,
+			Fork:       refusing,
+		})
+		if err != nil {
+			t.Fatalf("interleave=%t: a fork refusal must be a witness, not a harness error: %v", interleave, err)
+		}
+		for _, w := range got {
+			t.Logf("interleave=%t: %s", interleave, w)
+		}
+		if len(got) != 1 || !strings.Contains(got[0].Property, "a fork can be taken") || !strings.Contains(got[0].Detail, "not quiescent") {
+			t.Fatalf("interleave=%t: want exactly one fork-refusal witness citing the quiescence check, got %d witness(es)", interleave, len(got))
+		}
+		if !strings.Contains(got[0].Detail, "fork 1,") {
+			t.Errorf("interleave=%t: the witness names the wrong fork: %s", interleave, got[0].Detail)
+		}
+	}
+}
+
+// TestForkParity_DetectsAnAsymmetricLoad: the template loaded and cold
+// environment 0 did not -- the same source loading differently in two
+// fresh environments -- must be a witness carrying the failure, with
+// environment 1 still compared.  A template that does not load stays a
+// returned error: there is nothing to compare.
+func TestForkParity_DetectsAnAsymmetricLoad(t *testing.T) {
+	t.Parallel()
+	failingOn := func(k int) func() (*lisp.LEnv, error) {
+		calls := 0
+		return func() (*lisp.LEnv, error) {
+			calls++
+			if calls == k {
+				return nil, fmt.Errorf("staged failure on environment build %d", k)
+			}
+			return newFuzzEnv()
+		}
+	}
+	got, err := elpstest.CheckParity(elpstest.ParityCheck{
+		NewEnv:  failingOn(2),
+		Program: parityAliasProgram,
+		Tx:      [][]string{{`(assoc! a "y" 7) (get b "y")`}, {`(get a "k")`}},
+	})
+	if err != nil {
+		t.Fatalf("a cold environment that fails to build must be a witness, not a harness error: %v", err)
+	}
+	for _, w := range got {
+		t.Logf("%s", w)
+	}
+	if len(got) != 1 || !strings.Contains(got[0].Property, "loads on a cold environment exactly when") ||
+		!strings.Contains(got[0].Detail, "cold environment 0 did not: new environment: staged failure on environment build 2") {
+		t.Fatalf("want exactly one asymmetric-load witness naming cold environment 0 and carrying the error, got %d witness(es)", len(got))
+	}
+	if _, err := elpstest.CheckParity(elpstest.ParityCheck{
+		NewEnv:  failingOn(1),
+		Program: parityAliasProgram,
+		Tx:      [][]string{{`a`}},
+	}); err == nil || !strings.Contains(err.Error(), "template: new environment: staged failure") {
+		t.Fatalf("a template that does not build must remain a harness error, got %v", err)
 	}
 }

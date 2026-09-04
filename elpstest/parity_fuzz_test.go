@@ -69,7 +69,12 @@ func FuzzForkParity(f *testing.F) {
 		}
 		got, err := elpstest.CheckParity(g.check())
 		if err != nil {
-			// A generated program neither arm can load is not a finding.
+			// The only error CheckParity returns once it has sequences is a
+			// TEMPLATE that does not load, and then there is nothing to
+			// compare.  A cold environment that does not load, or a fork
+			// that cannot be taken, is a witness below, not an error here
+			// (TestForkParity_DetectsAnAsymmetricLoad,
+			// TestForkParity_DetectsAForkRefusal).
 			t.Skipf("parity: %v", err)
 		}
 		for _, wit := range got {
