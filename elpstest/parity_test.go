@@ -165,3 +165,30 @@ func TestForkParity_RefusesAVacuousCheck(t *testing.T) {
 		t.Fatal("CheckParity with Hops=3 returned no error")
 	}
 }
+
+// TestForkParity_HopsCountForkCalls pins ParityCheck.Hops: with n
+// environments the walker is called n times at one hop and 2n at two, so
+// the two-hop arm is actually a fork of a fork and not the same fork
+// counted twice.
+func TestForkParity_HopsCountForkCalls(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ hops, want int }{{0, 3}, {1, 3}, {2, 6}} {
+		calls := 0
+		_, err := elpstest.CheckParity(elpstest.ParityCheck{
+			NewEnv:  newFuzzEnv,
+			Program: parityAliasProgram,
+			Tx:      [][]string{{`a`}, {`b`}, {`(assoc! a "x" 1)`}},
+			Hops:    tc.hops,
+			Fork: func(env *lisp.LEnv) (*lisp.LEnv, error) {
+				calls++
+				return env.Fork()
+			},
+		})
+		if err != nil {
+			t.Fatalf("hops=%d: harness error: %v", tc.hops, err)
+		}
+		if calls != tc.want {
+			t.Errorf("hops=%d: the fork walker was called %d times, want %d", tc.hops, calls, tc.want)
+		}
+	}
+}

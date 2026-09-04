@@ -13,6 +13,7 @@
 package elpstest_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/luthersystems/elps/elpstest"
@@ -66,6 +67,54 @@ func TestForkParity_DetectsASharingFork(t *testing.T) {
 		if !result || !state {
 			t.Fatalf("interleave=%t: a sharing fork produced result witness=%t, state witness=%t; the parity oracle has been weakened",
 				interleave, result, state)
+		}
+	}
+}
+
+// TestForkParity_SequentialForksAreTakenLazily pins the schedule
+// semantics ParityCheck.Interleave documents: off, fork i is taken after
+// forks 0..i-1 ran their whole sequences; on, every fork is taken before
+// any transaction runs.  Observed through a sharing fork: each fork holds
+// the template's `shared` map, every transaction increments its "n", and
+// the fork walker records the count it saw at each fork call.  Two
+// environments of two transactions each therefore see [0 2] lazily and
+// [0 0] eagerly.
+func TestForkParity_SequentialForksAreTakenLazily(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		interleave bool
+		want       string
+	}{{false, "[0 2]"}, {true, "[0 0]"}} {
+		var seen []int
+		fork := func(env *lisp.LEnv) (*lisp.LEnv, error) {
+			f, err := env.Fork()
+			if err != nil {
+				return nil, err
+			}
+			sym := lisp.Symbol("shared")
+			v := env.GetGlobal(sym)
+			n, ok := v.Map().Get(lisp.String("n"))
+			if !ok {
+				return nil, lisp.GoError(env.Errorf("no n"))
+			}
+			seen = append(seen, n.Int)
+			if rc := f.PutGlobal(sym, v); rc.Type == lisp.LError {
+				return nil, lisp.GoError(rc)
+			}
+			return f, nil
+		}
+		tick := `(assoc! shared "n" (+ 1 (get shared "n")))`
+		if _, err := elpstest.CheckParity(elpstest.ParityCheck{
+			NewEnv:     newFuzzEnv,
+			Program:    `(set 'shared (sorted-map "n" 0))`,
+			Tx:         [][]string{{tick, tick}, {tick, tick}},
+			Interleave: tc.interleave,
+			Fork:       fork,
+		}); err != nil {
+			t.Fatalf("interleave=%t: harness error: %v", tc.interleave, err)
+		}
+		if got := fmt.Sprint(seen); got != tc.want {
+			t.Errorf("interleave=%t: forks were taken when the shared count read %s, want %s", tc.interleave, got, tc.want)
 		}
 	}
 }

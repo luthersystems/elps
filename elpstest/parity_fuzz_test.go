@@ -346,6 +346,9 @@ var requiredParityShapes = map[string]string{
 	"the base graph's alias shape":           "(quasiquote (unquote v",
 	"the base graph's captured-scope shape":  "(lambda () c",
 	"a second header taken in a transaction": "(quasiquote (unquote p",
+	// Through generateTx over the base graph's recorded kinds: a generator
+	// that stopped recording them would emit only defuns here.
+	"a base-graph mutation in a transaction": "(assoc! v0 \"tx",
 }
 
 func TestParitySeedsCoverTheShapes(t *testing.T) {
