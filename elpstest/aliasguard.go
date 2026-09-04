@@ -546,8 +546,26 @@ func checkFork(w Walker, c AliasCheck, env *lisp.LEnv, sym string, src *lisp.LVa
 	}
 	out := comparePair(w, c, "value", src, cp, w.Closures)
 
-	// A fork that survived one hop and not two has happened (issue #579),
-	// so every fork is checked one level deeper.
+	// Every fork is checked one level deeper: DEFENCE IN DEPTH against a
+	// class a single hop cannot exhibit -- a walker can rebuild correctly
+	// once and still decay on a value it has already rebuilt.
+	//
+	// This comment used to say "a fork that survived one hop and not two
+	// has happened (issue #579)". That is false, and the falsehood is
+	// traceable: 6ef3da5's own test comment says a fix that only survived
+	// one hop WOULD FAIL there -- conditional, guarding against an
+	// inadequate candidate fix -- and 477ea95 restated it as HAS HAPPENED,
+	// carrying along the issue number of the file it was read in. Measured
+	// here by reverse-applying 6ef3da5: #579 fails at the FIRST fork
+	// (TestForkPreservesValidatorCredential), so it is not that case.
+	//
+	// A real instance does exist, and it is cited by commit and test name
+	// rather than issue number, because issue numbers in this area have
+	// been wrong twice: d26953a records that on a shared libtesting suite
+	// the fork-of-fork arm was ONCE THE ONLY ARM that noticed the bug, and
+	// TestForkCheck_TestingSuitePerFork now catches it on the first hop.
+	// Past tense on purpose -- the second hop is not the unique detector
+	// today, it was.
 	fork2, err := w.Fork(fork)
 	if err != nil {
 		return nil, fmt.Errorf("walker %s: fork of fork: %w", w.Name, err)
