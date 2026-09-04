@@ -332,6 +332,12 @@ func (v *LVal) MacroExpansion() (MacroExpansionMeta, bool) {
 type LVal struct {
 	// Native is generic storage for data which cannot be represented as an
 	// LVal (and thus can't be stored in Cells).
+	//
+	// On an LSExpr it has exactly one use: a cell VIEW's root header (see
+	// "Cell views" at cellsView).  No other producer gives an LSExpr a
+	// payload -- the type switches in detach and Fork reject one -- so the
+	// link needs no field of its own and LVal stays 112 bytes
+	// (TestLValSizeUnchanged, TestCellViewLinkNeedsNoField).
 	Native interface{}
 
 	// source is the value's originating location in source code.  The
@@ -369,7 +375,8 @@ type LVal struct {
 	// Type is the native type for a value in lisp.
 	Type LType
 
-	// Fields used for numeric types.
+	// Fields used for numeric types.  On an LSExpr, Int is a cell view's
+	// element offset into its root's Cells, and nothing else (cellsView).
 	Int   int
 	Float float64
 
@@ -1671,6 +1678,9 @@ func (v *LVal) Copy() *LVal {
 		cp.Native = mdata
 	default:
 		cp.Cells = v.copyCells()
+		// Fresh storage: a view link copied by the struct assignment would
+		// now be stale (lisp.go, "Cell views").
+		cp.clearCellsView()
 	}
 	return cp
 }
@@ -1954,6 +1964,101 @@ func isVec(v *LVal) bool {
 
 func isSeq(v *LVal) bool {
 	return v.Type == LSExpr || isVec(v)
+}
+
+// Cell views.
+//
+// cdr, rest, slice and (append 'vector seq) with no values return a VIEW: a
+// fresh LSExpr header whose Cells is a three-index reslice of another
+// value's backing array, sharing that array's elements AND slots
+// (builtinCDR; the clamp is issue #373).  An in-place write through either
+// header -- stable-sort's lvalByFun.Swap -- is visible through the other,
+// and that is language behaviour: a fresh environment and a fork of a
+// template must answer alike (docs/fork.md, "aliasing and cycles
+// preserved").
+//
+// A slice header carries no handle on the ARRAY it points into, only on
+// its own element 0, so a walker that copies one array per header cannot
+// tell two views of one array from two arrays: forker.val gave every view a
+// private copy, and a template holding (set 'l (list 30 10 20)) and
+// (set 'tail (cdr l)) answered (stable-sort < l) tail as '(20 30) while
+// its fork answered '(10 20) (TestForkPreservesCellSlotAliasing, the
+// permanent control for this).  Recovering the relationship at fork time
+// by sorting header addresses was built and measured first: +34% on
+// BenchmarkForkSortedMap against a 15% gate, on a template with no views
+// at all, because the sort is paid per mutable value whether or not
+// anything aliases.  So the relationship is RECORDED where the view is
+// made, and Fork resolves it in O(1) per header.
+//
+// A view header holds its ROOT -- the first header in its ancestry whose
+// Cells is not itself a view -- in Native, and its element offset into the
+// root's Cells in Int.  The root, not the immediate parent: a view of a
+// view resolves in one hop, offsets compose by addition (linkCellsView),
+// and a chain built by iteration, (set 'x (cdr x)) in a loop, retains one
+// header rather than every intermediate.
+//
+// The link is ADVISORY, and that is what keeps it safe against everything
+// that reassigns a header's Cells.  forker.val re-points a view onto the
+// root's copy only after checking, on the template, that the view's
+// element 0 still IS root.Cells[off] -- slot identity, no unsafe.  A header
+// whose Cells was reassigned since the link was set (append! growing a
+// vector past its capacity, elpspath's in-place set, embedder Go code
+// writing the exported field) has already parted from its root in the
+// template, so the fork copies it privately -- which is exactly what the
+// template holds (TestForkCellViewStaleLinkCopiesPrivately).  Copy and
+// detach allocate fresh storage and drop the link.
+//
+// Not preserved, on purpose: spare-CAPACITY aliasing.  A view is clamped
+// to its length where it is made and the fork clamps its copy the same
+// way, so an append through a view reallocates on both sides rather than
+// writing a neighbouring slot of the root -- isolation wins over fidelity
+// there (issue #373; the len==0 branch of forker.val).
+
+// cellsView returns the root header whose Cells v's Cells views, and v's
+// element offset into that root's Cells, or (nil, 0) when v owns its Cells.
+func (v *LVal) cellsView() (root *LVal, off int) {
+	if v.Type != LSExpr {
+		return nil, 0
+	}
+	root, _ = v.Native.(*LVal)
+	if root == nil {
+		return nil, 0
+	}
+	return root, v.Int
+}
+
+// linkCellsView records that view's Cells is parent's Cells from element
+// off on.  parent may itself be a view; the link always lands on the root.
+// A sealed parent is not linked: Fork shares sealed values outright, so
+// there is nothing to re-point and the link would only retain the parent.
+func linkCellsView(view, parent *LVal, off int) {
+	if len(view.Cells) == 0 || parent.sealed {
+		return
+	}
+	if root, base := parent.cellsView(); root != nil {
+		parent, off = root, base+off
+	}
+	view.Native = parent
+	view.Int = off
+}
+
+// clearCellsView drops v's view link, for the sites that give a header
+// copy storage of its own (Copy, detach).
+func (v *LVal) clearCellsView() {
+	if _, isView := v.Native.(*LVal); isView && v.Type == LSExpr {
+		v.Native = nil
+		v.Int = 0
+	}
+}
+
+// seqHolder returns the LSExpr header whose Cells seqCells(v) returns: v
+// itself for a list, the data holder Cells[1] for a vector.  It is the
+// parent a view of v links to.
+func seqHolder(v *LVal) *LVal {
+	if v.Type == LArray {
+		return v.Cells[1]
+	}
+	return v
 }
 
 func seqCells(v *LVal) []*LVal {

@@ -212,6 +212,17 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 				return nil, unexpectedNativeError(v)
 			}
 			cp.Native = detachCallStack(native)
+		case *LVal:
+			if v.Type != LSExpr {
+				return nil, unexpectedNativeError(v)
+			}
+			// A cell view's root ("Cell views", lisp.go).  detachCells below
+			// gives the copy storage of its own, so the link is dropped:
+			// copy and detach do not preserve backing-array sharing
+			// (TestCopyDoesNotPreserveBackingArraySharing), and a link left
+			// on the copy would misdescribe it to a later Fork.
+			cp.Native = nil
+			cp.Int = 0
 		default:
 			return nil, unexpectedNativeError(v)
 		}
