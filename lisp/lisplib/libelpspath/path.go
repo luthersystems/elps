@@ -1390,7 +1390,7 @@ func (s *rangePath) nilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-	var newCells []*lisp.LVal
+	newCells := make([]*lisp.LVal, 0, to-from)
 	for i := from; i < to; i++ {
 		newCells = append(newCells, lisp.Nil())
 	}
@@ -1508,7 +1508,9 @@ func (s *iterPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 	collapseIter := isChainToIter(s.path)
-	var results []*lisp.LVal
+	// One result per element of the horizon; a collapsed nested iterator
+	// may add more, in which case this is a floor.
+	results := make([]*lisp.LVal, 0, len(horizon))
 	for _, item := range horizon {
 		in, err := s.path.Get(item)
 		if err != nil {
