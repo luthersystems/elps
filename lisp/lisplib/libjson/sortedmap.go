@@ -11,6 +11,21 @@ import (
 type SortedMap map[string]interface{}
 
 var _ lisp.Map = SortedMap(nil)
+var _ lisp.StringKeyRanger = SortedMap(nil)
+
+// RangeStringKeys implements lisp.StringKeyRanger: fn sees each key as the
+// string Entries emits for it and each value exactly as Entries emits it
+// (an error value for a non-LVal, as mapLVal does there).  Enumerating a Go
+// map cannot fail, so it always returns nil.  Fork and the copy behind
+// assoc, dissoc and lisp.LVal.Copy use it to build the stock sorted-map
+// copy of a decoded document without first materialising every entry as a
+// pair list.
+func (m SortedMap) RangeStringKeys(fn func(key string, val *lisp.LVal)) error {
+	for k, x := range m {
+		fn(k, mapLVal(x))
+	}
+	return nil
+}
 
 func (m SortedMap) Len() int {
 	return len(m)

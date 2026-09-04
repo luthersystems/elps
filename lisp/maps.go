@@ -142,6 +142,39 @@ func (m sortedmap) clone(val func(*LVal) *LVal) sortedmap {
 	return cp
 }
 
+// StringKeyRanger is an optional interface a Map implementation can
+// provide when its Entries emits every key as an unquoted LString, never a
+// symbol.  RangeStringKeys calls fn exactly once per entry, in unspecified
+// order, with the key string Entries would emit and the value exactly as
+// Entries would emit it, and must not mutate the map while doing so.  It
+// returns nil, or the failure Entries would have reported; every caller
+// discards a partial walk on error.  Len is used only as a size hint.
+//
+// A map whose Entries can emit a symbol key must not implement this: the
+// callers store every key as a string, which is what Set does with an
+// LString key, so a symbol flag the entries path would have recorded
+// through Set(LSymbol) would be lost.
+//
+// Fork and the copy behind assoc, dissoc and LVal.Copy use it to build the
+// stock sorted-map copy of such a map without first boxing every entry
+// into a pair list: the copy is the same stock map the Entries path
+// produces for it, so nothing observable changes -- only the sort, the
+// pair cells and the incremental growth go.  libjson.SortedMap, what
+// json:load returns, implements it.
+type StringKeyRanger interface {
+	RangeStringKeys(fn func(key string, val *LVal)) error
+}
+
+// emptyForStringKeys returns an empty stock sortedmap sized for n string
+// keys.  Set with an LString key writes no key type, so tm stays at its
+// zero size, as newmap leaves it.
+func emptyForStringKeys(n int) sortedmap {
+	return sortedmap{
+		m:  make(map[interface{}]*LVal, n),
+		tm: make(typemap),
+	}
+}
+
 func (m sortedmap) Len() int {
 	return len(m.m)
 }
