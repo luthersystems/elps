@@ -31,29 +31,49 @@ import (
 // write that leaks between environments must cross from one role to the
 // other or between two occupants of the fork role.  That is exactly three
 // SINGLE-HOP directions, and all three are asserted.  The fourth row is
-// not a fourth direction; it is the one COMPOSITION asserted separately,
-// for the reason given below the matrix:
+// not a fourth direction: it is the SAME hop as the row above it, observed
+// LATER, for the reason given below the matrix:
 //
 //	fork -> another fork             property 2, swept i x j
 //	fork -> its template             property 1, sequential and concurrent
 //	template -> an existing fork     property 5
-//	fork -> template -> later fork   property 3 — composition of the two
-//	                                 rows above it
+//	fork -> template -> later fork   property 3 — the fork -> template hop
+//	                                 again, observed after the fact, and
+//	                                 NOT a composition of the rows above
+//
+// WHAT PROPERTY 3'S ROW IS, precisely, because an earlier revision got
+// this wrong and called it "a composition of the two rows above it".  It
+// is not.  Its second step is template -> a fork taken AFTERWARDS, and
+// that is not a leak direction at all — it is ordinary fork semantics.  It
+// is emphatically not property 5's row either: property 5 exists to sweep
+// forks that are ALREADY LIVE when the template is written.  Property 3 is
+// the single hop fork -> template, observed through a fork that did not
+// exist when property 1 looked.
+//
+// Why it still earns its own property rather than being inferred from
+// property 1.  Its hop can leak WITHOUT BEING OBSERVABLE at the moment
+// property 1 looks: a fork can contaminate structure the template reaches
+// without moving the template's fingerprint at that instant, and the
+// damage surfaces only in a fork taken afterwards.  Property 1's
+// observation point is wrong for it, not its direction.
+//
+// Why T -> F -> T and T -> F -> F' get no property.  NOT because "both
+// their hops hold, so they hold" — that argument does not survive its own
+// escape clause, since observational incompleteness applies to property 5
+// at least as strongly (property 5 writes one transaction and looks once,
+// at the end, with no fork transaction afterwards to surface a delayed
+// effect).  The real reason is that each COLLAPSES ONTO A SINGLE HOP THE
+// CHECK ALREADY SWEEPS.  T -> F -> T requires the payload to cross
+// F -> T, which property 1 sweeps after every transaction.  T -> F -> F'
+// means the template's payload is reachable from F', which is just
+// T -> F', and property 5 sweeps every live fork.  Property 3's does not
+// collapse, because its observation point is after the fact.
 //
 // What "complete" does and does not claim.  It is a claim about SINGLE
 // HOPS between two roles, and nothing more.  It says nothing about
 // completeness of the MECHANISMS by which any one direction can leak, and
 // nothing about coverage WITHIN a direction: property 2 sweeps i x j,
 // while property 5 writes a single transaction to the template.
-//
-// Why that one composition and not the others.  T -> F -> T and
-// T -> F -> F' are compositions of the same three single hops and are NOT
-// asserted separately, because if both of their hops hold they hold.
-// Property 3 is different: its first hop can leak WITHOUT BEING OBSERVABLE
-// at the moment property 1 looks.  A fork can contaminate structure the
-// template reaches without moving the template's fingerprint at that
-// instant, and the damage surfaces only in a fork taken afterwards.  So it
-// is asserted directly rather than inferred from the hops.
 //
 // A reader can therefore tell at a glance whether a new property is needed
 // or an existing one has moved.  Before this matrix was written down the
@@ -104,16 +124,36 @@ import (
 //     property can report.  Property 5 therefore earns its place in the
 //     ORDINARY build an embedder ships, where ownership checking — like
 //     RuntimeBound — is not compiled in.
-//   - Reverting the #576 map memo does NOT fail property 5.  It fails
-//     properties 1 and 3.  Property 5 catches OVER-sharing; #576 is
-//     DE-aliasing, and a fork that copies too eagerly is more isolated
-//     from its template, not less.  Opposite ends of one axis, caught by
-//     different properties — which is the argument for asserting every
-//     direction rather than assuming one implies the others.
+//   - Reverting the #576 map memo does NOT fail property 5.  Measured with
+//     the memo lookup disabled in forker.mapData, it trips exactly two
+//     DISTINCT PROPERTIES: the UNNUMBERED fresh-fork precheck ("a fresh
+//     fork is indistinguishable from its template") and property 3 ("a
+//     fork taken after other forks were mutated is pristine").  Two
+//     properties, not two witnesses -- the precheck reports once per fork,
+//     so the witness count tracks len(Tx) and is not worth quoting.  It
+//     does NOT fail property 1, and cannot: a
+//     de-aliasing fork copies MORE, so a write on a fork can never reach
+//     the template, and property 1 can only redden on OVER-sharing.  An
+//     earlier revision of this bullet said "properties 1 and 3", which
+//     asserted the very thing the next sentence argues is impossible.
+//     Property 5 catches OVER-sharing; #576 is DE-aliasing, and a fork
+//     that copies too eagerly is more isolated from its template, not
+//     less.  Opposite ends of one axis, caught by different properties —
+//     which is the argument for asserting every direction rather than
+//     assuming one implies the others.
 
 // TransactionCheck describes one run of the transaction-isolation oracle.
 type TransactionCheck struct {
 	// NewEnv builds the template.  Nil means NewForkCheckEnv.
+	//
+	// THE RETURNED ENVIRONMENT IS WRITTEN TO.  Property 5 runs a
+	// transaction on the template on purpose -- that is the whole point of
+	// the template -> fork direction -- so the environment does not survive
+	// the check unmodified.  Return a FRESH environment on every call; do
+	// not hand back a cached or shared one.  Every implementation in this
+	// repository builds fresh, so nothing depends on the old behaviour, but
+	// nothing said so either until property 5 made this function the first
+	// exported entry point that mutates its own template.
 	NewEnv func() (*lisp.LEnv, error)
 	// Program is loaded into the template.
 	Program string
@@ -134,7 +174,29 @@ type TransactionCheck struct {
 	// Fork produces each fork.  Nil means (*lisp.LEnv).Fork.  It exists so
 	// a deliberately broken reference fork can be driven through the same
 	// oracle (aliasguard_broken_test.go).
+	//
+	// Substituting it does NOT change which properties run.  An earlier
+	// revision keyed the concurrent arm off `Fork != nil`, so an embedder
+	// substituting a benign walker -- fork options, instrumentation, a
+	// counting wrapper -- silently lost the -race arm with no signal.  Use
+	// SkipConcurrentArm to opt out, deliberately and visibly.
 	Fork func(*lisp.LEnv) (*lisp.LEnv, error)
+	// SkipConcurrentArm omits the concurrent repeat of property 1.
+	//
+	// Set it ONLY for a walker whose defect is that it SHARES a payload
+	// between forks or with its template.  Driving two such forks in
+	// parallel is a data race BY CONSTRUCTION: two goroutines mutate
+	// environments over one *MapData, -race reports it against the guard's
+	// own test rather than against anything in elps, and Go marks every
+	// other in-flight parallel test failed alongside it (five of them, on
+	// commit 9a73d6a, which is how this was found).
+	//
+	// It costs the interleaving hazard and nothing else: the sequential
+	// arm above already checks every isolation property.  Leaving it false
+	// is right for every correct walker, which is why false is the
+	// default -- the -race arm is coverage, and coverage should not be
+	// dropped as a side effect of substituting a fork walker.
+	SkipConcurrentArm bool
 	// Repro is attached to every witness.
 	Repro string
 }
@@ -147,8 +209,8 @@ func (c TransactionCheck) fork(env *lisp.LEnv) (*lisp.LEnv, error) {
 	return env.Fork()
 }
 
-// RunTransactionCheck runs both the sequential and the concurrent arm and
-// reports each witness.
+// RunTransactionCheck runs the sequential arm, and the concurrent arm
+// unless the check sets SkipConcurrentArm, reporting each witness.
 func RunTransactionCheck(t TestingTB, c TransactionCheck) {
 	t.Helper()
 	got, err := CheckTransactions(c)
@@ -161,8 +223,15 @@ func RunTransactionCheck(t TestingTB, c TransactionCheck) {
 	}
 }
 
-// CheckTransactions runs the four properties and returns one witness per
-// failure.
+// CheckTransactions runs every isolation property and returns one witness
+// per failure.
+//
+// It deliberately does NOT name a count.  A count in prose drifts the
+// moment a property is added, and this doc comment proved it: it went on
+// naming a count of 4 for the whole life of the fifth property, in the
+// EXPORTED API doc, past the end of the window the header drift guard was
+// scanning and in a casing its banned-phrase list did not cover.  The
+// guard now scans the whole file, case-insensitively, by pattern.
 func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 	if len(c.Tx) == 0 {
 		return nil, errors.New("no transactions: the properties would pass vacuously")
@@ -309,41 +378,54 @@ func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 	// opposite ends of the same axis and are caught by different
 	// properties, which is the point of asserting every direction rather
 	// than assuming one implies the others.
-	out = append(out, templateToForkWitnesses(c, tmpl, forks, before)...)
+	//
+	// THE LIVE SET INCLUDES THE PRISTINE-SUCCESSOR FORK, and must.  It was
+	// created above and is still live when the template is written to, so a
+	// walker that over-shares only on a fork taken after the others were
+	// mutated is invisible without it -- measured at zero witnesses before
+	// it was added, against a Baseline string that already said "every live
+	// fork".  TestGuardDetectsATemplateWriteReachingTheSuccessorFork keeps
+	// it in the set.
+	live := make([]liveFork, 0, len(forks)+1)
+	for j, f := range forks {
+		live = append(live, liveFork{env: f, before: before[j], name: fmt.Sprintf("fork %d", j)})
+	}
+	live = append(live, liveFork{
+		env:    successor,
+		before: FingerprintEnv(successor, templateOpts),
+		name:   "the pristine-successor fork",
+	})
+	out = append(out, templateToForkWitnesses(c, tmpl, live)...)
 
 	// Property 1 again, concurrently.  Same transactions, same template,
 	// forks driven in parallel: under -race this is also the data-race
 	// gate, and without it it still catches a template mutation that only
 	// happens under interleaving.
 	//
-	// IT IS SKIPPED FOR A SUBSTITUTED FORK WALKER, AND MUST STAY SKIPPED.
+	// IT IS SKIPPED ONLY WHEN THE CALLER ASKS, via SkipConcurrentArm.
 	//
-	// c.Fork exists to drive DELIBERATELY BROKEN reference forks
-	// (aliasguard_broken_test.go), so a non-nil c.Fork means "this walker
-	// may be broken on purpose".  A broken fork's defect is typically that
-	// it SHARES a payload with its template or with its siblings, and
-	// driving two such forks in parallel then has two goroutines mutating
-	// environments over one *MapData: a genuine data race BY
-	// CONSTRUCTION.  The control asks for it, -race duly reports it
-	// against the guard's own test rather than against anything in elps,
-	// and Go marks every other in-flight parallel test failed alongside
-	// it -- five of them, on the run that proved this (commit 9a73d6a).
+	// A sharing walker driven in parallel races BY CONSTRUCTION: two
+	// goroutines mutate environments over one *MapData.  The control asks
+	// for that defect, -race duly reports it against the guard's own test
+	// rather than against anything in elps, and Go marks every other
+	// in-flight parallel test failed alongside it -- five of them, on the
+	// run that proved this (commit 9a73d6a).
 	//
-	// A correct walker never shares, which is why the arm is race-free for
-	// every real walker and why the hazard stayed invisible until the
-	// first template-sharing control was written.  The sequential arm
-	// above already checks every isolation property for a substituted
-	// walker; the concurrent arm would add only the interleaving hazard
-	// that a broken fork is designed to have.
+	// THE AXIS USED TO BE `c.Fork != nil`, AND THAT WAS WRONG.  It
+	// conflated "a walker was substituted" with "a walker shares on
+	// purpose".  The two are not the same: an embedder substituting Fork
+	// for a benign reason -- fork options, instrumentation, a counting
+	// wrapper -- lost the -race arm silently, with nothing at the API
+	// surface saying so.  The guard's own test made the point without
+	// anyone noticing: it passed a FAITHFUL walker and asserted the arm
+	// was skipped, which is precisely the benign case losing coverage.
 	//
-	// Fixing it here rather than in the control is deliberate: giving one
-	// control a single transaction stops that control racing and leaves
-	// the trap armed for the next one.  Two tests hold this in place --
-	// TestTheConcurrentArmIsSkippedForASubstitutedFork, and
-	// TestTheConcurrentArmStillRunsForARealWalker, which exists because
-	// the way this fix could go wrong is by silently swallowing the
+	// Sharing is now declared rather than inferred.  Two tests hold it --
+	// TestTheConcurrentArmIsSkippedOnRequest, and
+	// TestTheConcurrentArmStillRunsForASubstitutedWalker, which exists
+	// because the way this could go wrong is by silently swallowing the
 	// coverage it is meant to protect.
-	if c.Fork != nil {
+	if c.SkipConcurrentArm {
 		return out, nil
 	}
 
@@ -397,7 +479,22 @@ func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 // template: a transaction that leaves the template alone would make the
 // property pass for free, which is the same non-vacuity discipline the
 // fork sweep applies with its `moved` flag.
-func templateToForkWitnesses(c TransactionCheck, tmpl *lisp.LEnv, forks []*lisp.LEnv, before []*Fingerprint) []Witness {
+// liveFork is one environment that is ALIVE when property 5 writes to the
+// template, together with the fingerprint it held just before that write.
+//
+// It carries a NAME because the set is not just forks[i] any more.  The
+// pristine-successor fork property 3 creates is also live at that moment, and
+// leaving it out was a real hole: a walker that over-shares only on a fork
+// taken AFTER the others were mutated wrote through the template into that
+// fork and produced zero witnesses, while the Baseline string claimed "every
+// live fork".  An index into forks could not have named it.
+type liveFork struct {
+	env    *lisp.LEnv
+	before *Fingerprint
+	name   string
+}
+
+func templateToForkWitnesses(c TransactionCheck, tmpl *lisp.LEnv, live []liveFork) []Witness {
 	pre := FingerprintEnv(tmpl, templateOpts)
 	moved := -1
 	for i, tx := range c.Tx {
@@ -427,21 +524,21 @@ func templateToForkWitnesses(c TransactionCheck, tmpl *lisp.LEnv, forks []*lisp.
 	}
 
 	var out []Witness
-	for j, f := range forks {
-		got := FingerprintEnv(f, templateOpts)
-		if before[j].Equal(got) {
+	for _, lf := range live {
+		got := FingerprintEnv(lf.env, templateOpts)
+		if lf.before.Equal(got) {
 			continue
 		}
 		out = append(out, Witness{
 			Walker:   "Fork",
 			Property: "a transaction on the template is invisible to every existing fork",
-			Leak:     firstDivergentPath(before[j], got),
+			Leak:     firstDivergentPath(lf.before, got),
 			Baseline: "every live fork holds the value it held before the template was written to",
-			Observed: fmt.Sprintf("fork %d moved", j),
-			Detail: fmt.Sprintf("transaction %d, run on the TEMPLATE, moved fork %d -- so that fork "+
+			Observed: lf.name + " moved",
+			Detail: fmt.Sprintf("transaction %d, run on the TEMPLATE, moved %s -- so that fork "+
 				"shares a payload with the template it was forked from, and a template write reaches "+
 				"it. This is the other end of the pointer the fork-to-template property covers.\n%s",
-				moved, j, before[j].Diff(got)),
+				moved, lf.name, lf.before.Diff(got)),
 			Repro: c.Repro,
 		})
 	}

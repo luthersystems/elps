@@ -18,6 +18,7 @@ package elpstest
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -95,12 +96,12 @@ func TestTemplateWriteVacuityIsReported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := []*Fingerprint{FingerprintEnv(fork, templateOpts)}
+	live := []liveFork{{env: fork, before: FingerprintEnv(fork, templateOpts), name: "fork 0"}}
 
 	// Pure expressions: they evaluate, and they change nothing the
 	// fingerprint can see.
 	c := TransactionCheck{Tx: []string{`(+ 1 2)`, `(* 2 3)`}, Repro: "no-op transactions"}
-	got := templateToForkWitnesses(c, env, []*lisp.LEnv{fork}, before)
+	got := templateToForkWitnesses(c, env, live)
 	if len(got) != 1 {
 		t.Fatalf("a transaction set that cannot move the template produced %d witnesses, want 1:\n%v",
 			len(got), got)
@@ -163,40 +164,94 @@ func TestTheDirectionMatrixMatchesTheProperties(t *testing.T) {
 		}
 	}
 
-	// The header must not claim a count that has drifted from the list.
-	for _, stale := range []string{"Four properties", "Three properties"} {
-		if strings.Contains(header, stale) {
-			t.Errorf("the header says %q; the properties are enumerated below it and there are five.\n"+
-				"A count in prose drifts the moment a property is added — that already happened once.",
-				stale)
-		}
+	// COUNTS IN PROSE, ANYWHERE IN THE FILE, BY PATTERN.
+	//
+	// This used to scan `header` for two exact capitalised strings,
+	// {"Four properties", "Three properties"}. It was green over a live
+	// instance for two independent reasons, and the instance was in the
+	// EXPORTED API doc: CheckTransactions read "runs the four properties"
+	// long after there were five. The window ended ~50 lines above it, and
+	// the casing did not match. So: whole file, case-insensitive, pattern.
+	countPhrase := regexp.MustCompile(`(?i)(three|four)\s+propert`)
+	if m := countPhrase.FindString(text); m != "" {
+		t.Errorf("the file names a count of properties in prose (%q). There are five, and a\n"+
+			"count in prose drifts the moment one is added — which has now happened twice, once\n"+
+			"in the header and once in CheckTransactions' exported doc comment. Describe them\n"+
+			"without a number.", m)
 	}
 
-	// The matrix has four ROWS but asserts three single-hop DIRECTIONS; the
-	// fourth row is a composition of two of the others. An earlier revision
-	// of this header called all four "directions" and said that was "the
-	// complete set for two participants", which is false twice over: there
-	// are n+1 participants occupying two ROLES, and fork -> template ->
-	// later fork is not a hop. Tidying it back into a flat count of four
-	// complete directions is the specific drift this guards.
-	for _, stale := range []string{
-		"exactly four directions",
-		"complete set for two participants",
-		"asserting all four",
+	// THE OVERCLAIM, BY PATTERN RATHER THAN BY EXACT STRING.
+	//
+	// A reviewer smuggled the overclaim back past the exact-substring
+	// version of this check by rewording it — "The four rows below are the
+	// complete set of directions writes can take" — while leaving the
+	// required vocabulary tokens in place elsewhere in the sentence.
+	for _, bad := range []*regexp.Regexp{
+		regexp.MustCompile(`(?i)four[^.\n]*directions`),
+		regexp.MustCompile(`(?i)complete set of directions`),
+		regexp.MustCompile(`(?i)complete set for two participants`),
+		regexp.MustCompile(`(?i)asserting all four`),
 	} {
-		if strings.Contains(text, stale) {
-			t.Errorf("the header contains %q. The matrix has four rows over THREE single-hop\n"+
-				"directions plus one composition; a flat count of four directions overclaims, and\n"+
-				"\"two participants\" miscounts n+1 environments in two roles.", stale)
+		if m := bad.FindString(text); m != "" {
+			t.Errorf("the file contains %q. The matrix has four ROWS over THREE single-hop\n"+
+				"directions; the fourth row is the fork -> template hop observed after the fact.\n"+
+				"A flat count of four directions overclaims, and \"two participants\" miscounts\n"+
+				"n+1 environments in two roles.", m)
 		}
 	}
 
-	// ...and it must say which of those two things each row is.
-	for _, required := range []string{"SINGLE-HOP", "COMPOSITION"} {
-		if !strings.Contains(header, required) {
-			t.Errorf("the header no longer distinguishes %q rows from the others.\n"+
-				"Without that distinction the matrix reads as four peer directions, which is the\n"+
-				"overclaim this guard exists to stop.", required)
-		}
+	// THE ROW ITSELF, NOT THE VOCABULARY.
+	//
+	// Requiring the words SINGLE-HOP and COMPOSITION to appear somewhere
+	// was defeatable: both occurred exactly once, in the same caption
+	// sentence, with nothing tying either to the property 3 ROW. Deleting
+	// the row's own annotation left the guard green and the matrix reading
+	// as four peer directions. So the assertion is now on the row.
+	if !strings.Contains(header, "SINGLE-HOP") {
+		t.Error("the header no longer says how many SINGLE-HOP directions there are.\n" +
+			"Without that, the matrix reads as four peer directions — the overclaim.")
 	}
+	row := matrixRow(header, "fork -> template -> later fork")
+	if row == "" {
+		t.Fatal("the direction matrix no longer has a `fork -> template -> later fork` row.\n" +
+			"Dropping a row from the matrix is how the template -> fork gap stayed hidden.")
+	}
+	if !strings.Contains(row, "observed after the fact") {
+		t.Errorf("the `fork -> template -> later fork` row no longer says it is the\n"+
+			"fork -> template hop OBSERVED AFTER THE FACT. Without that annotation ON THE ROW,\n"+
+			"the matrix reads as four peer single-hop directions. Annotate the row, not the\n"+
+			"caption — a caption-level marker was already defeated once.\nrow: %s", row)
+	}
+	if strings.Contains(row, "composition of the two rows above") {
+		t.Errorf("the `fork -> template -> later fork` row calls itself a composition of the\n"+
+			"rows above it. It is not: its second step is template -> a fork taken AFTERWARDS,\n"+
+			"which is ordinary fork semantics, and property 5's row is about forks that are\n"+
+			"ALREADY LIVE.\nrow: %s", row)
+	}
+}
+
+// matrixRow returns the direction-matrix row whose first line contains key,
+// joined with its continuation lines.
+//
+// A row is one tab-indented comment line plus any following tab-indented
+// comment lines that do not themselves contain "->", so a wrapped
+// annotation stays part of the row it annotates. Returns "" if no row
+// matches.
+func matrixRow(header, key string) string {
+	lines := strings.Split(header, "\n")
+	for i, ln := range lines {
+		if !strings.Contains(ln, key) {
+			continue
+		}
+		row := []string{ln}
+		for _, next := range lines[i+1:] {
+			trimmed := strings.TrimPrefix(next, "//")
+			if !strings.HasPrefix(trimmed, "\t") || strings.Contains(next, "->") {
+				break
+			}
+			row = append(row, next)
+		}
+		return strings.Join(row, " ")
+	}
+	return ""
 }

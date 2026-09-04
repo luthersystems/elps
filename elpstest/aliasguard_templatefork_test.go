@@ -81,14 +81,14 @@ func TestGuardDetectsATemplateWriteReachingAFork(t *testing.T) {
 	got, err := elpstest.CheckTransactions(elpstest.TransactionCheck{
 		Program: templateSharedProgram,
 		// Two transactions, so the property is checked over more than one
-		// fork. Safe because CheckTransactions skips the concurrent arm
-		// for a substituted fork walker -- see the comment there. Before
-		// that skip existed this had to be a single transaction, because
-		// two forks sharing one map and written in parallel is a race by
-		// construction.
-		Tx:    []string{`(assoc! shared "k" 2)`, `(assoc! shared "k" 3)`},
-		Fork:  brokenForkSharesTemplatePayload,
-		Repro: "a fork that shares a payload with its template",
+		// fork. That is safe only because this check DECLARES that its
+		// walker shares: two forks over one map, written in parallel, is a
+		// data race by construction. Before the declaration existed this
+		// had to be a single transaction.
+		Tx:                []string{`(assoc! shared "k" 2)`, `(assoc! shared "k" 3)`},
+		Fork:              brokenForkSharesTemplatePayload,
+		SkipConcurrentArm: true,
+		Repro:             "a fork that shares a payload with its template",
 	})
 	if err != nil {
 		t.Fatalf("harness error: %v", err)
@@ -111,6 +111,80 @@ func TestGuardDetectsATemplateWriteReachingAFork(t *testing.T) {
 	}
 	if found.Leak == "" {
 		t.Errorf("the witness carries no diverging path:\n%s", found)
+	}
+	t.Logf("detected:\n%s", found)
+}
+
+// ---------------------------------------------------------------------------
+// Control 12: a fork that shares a payload with its template ONLY on the
+// PRISTINE-SUCCESSOR fork.
+//
+// The successor is the fork property 3 takes after every transaction has
+// run. It is still LIVE when property 5 writes to the template, so it
+// belongs in the set property 5 sweeps -- and for one revision it was not
+// in that set, while the property's Baseline string already promised
+// "every live fork holds the value it held before the template was written
+// to". A walker that over-shares only there produced ZERO witnesses.
+//
+// This control pins the successor into the set. It is deliberately
+// narrower than control 11: every ordinary fork is faithful, so the ONLY
+// thing that can report it is property 5 looking at the successor.
+// ---------------------------------------------------------------------------
+
+// brokenForkSharesOnlyWithTheSuccessor is faithful for the first nTx forks
+// and shares the template's payload on every fork after them.
+//
+// CheckTransactions takes exactly len(Tx) forks before running the
+// transactions and then ONE more for the pristine-successor property, so
+// call nTx+1 is that successor.
+//
+// The counter needs no lock: CheckTransactions skips the concurrent arm
+// whenever a fork walker is substituted, so every call here is sequential.
+func brokenForkSharesOnlyWithTheSuccessor(nTx int) func(*lisp.LEnv) (*lisp.LEnv, error) {
+	calls := 0
+	return func(env *lisp.LEnv) (*lisp.LEnv, error) {
+		calls++
+		if calls <= nTx {
+			return env.Fork()
+		}
+		return brokenForkSharesTemplatePayload(env)
+	}
+}
+
+func TestGuardDetectsATemplateWriteReachingTheSuccessorFork(t *testing.T) {
+	t.Parallel()
+	tx := []string{`(assoc! shared "k" 2)`}
+	got, err := elpstest.CheckTransactions(elpstest.TransactionCheck{
+		Program: templateSharedProgram,
+		Tx:      tx,
+		Fork:    brokenForkSharesOnlyWithTheSuccessor(len(tx)),
+		// This walker shares on purpose, so it declares it: the counter it
+		// closes over is unsynchronised, and its successor fork shares the
+		// template's map.
+		SkipConcurrentArm: true,
+		Repro:             "a fork that shares with its template only on the successor",
+	})
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	const want = "a transaction on the template is invisible to every existing fork"
+	var found *elpstest.Witness
+	for i := range got {
+		if got[i].Property == want {
+			found = &got[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("a walker that over-shares ONLY on the pristine-successor fork was NOT\n"+
+			"reported. The successor is live when property 5 writes to the template, so it\n"+
+			"must be in the set that property sweeps -- otherwise the property's own\n"+
+			"Baseline (\"every live fork\") is false. Drop the successor from the live set in\n"+
+			"CheckTransactions and this is the failure you get.\nwitnesses: %v", got)
+	}
+	if !strings.Contains(found.Observed, "successor") {
+		t.Errorf("the witness does not name the successor fork as the one that moved;\n"+
+			"an index into forks[] cannot name it, which is why the live set carries names:\n%s", found)
 	}
 	t.Logf("detected:\n%s", found)
 }

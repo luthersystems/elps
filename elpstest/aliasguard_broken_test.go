@@ -408,6 +408,10 @@ func TestGuardDetectsForkSharingAStatefulNative(t *testing.T) {
 			`(assoc! counter "n" 2)`,
 		},
 		Fork: brokenForkSharesStatefulNative,
+		// This walker hands EVERY fork one stateful native by design, so
+		// driving two forks in parallel mutates one payload from two
+		// goroutines. Declared rather than inferred.
+		SkipConcurrentArm: true,
 	})
 	if err != nil {
 		t.Fatalf("harness error: %v", err)
@@ -1538,30 +1542,25 @@ const concurrencyProbeProgram = `(set 'shared (sorted-map "k" 1))`
 
 var concurrencyProbeTx = []string{`(assoc! shared "k" 2)`, `(assoc! shared "k" 3)`}
 
-func TestTheConcurrentArmIsSkippedForASubstitutedFork(t *testing.T) {
+func TestTheConcurrentArmIsSkippedOnRequest(t *testing.T) {
 	t.Parallel()
 	builds := 0
 	_, err := elpstest.CheckTransactions(elpstest.TransactionCheck{
-		NewEnv:  countingEnvBuilds(&builds),
-		Program: concurrencyProbeProgram,
-		Tx:      concurrencyProbeTx,
-		// A faithful fork, substituted. The point is the SUBSTITUTION, not
-		// the walker: c.Fork being set is what marks a walker as
-		// possibly-broken, so the skip keys on that and not on whether
-		// this particular one misbehaves.
-		Fork:  func(env *lisp.LEnv) (*lisp.LEnv, error) { return env.Fork() },
-		Repro: "a substituted fork walker",
+		NewEnv:            countingEnvBuilds(&builds),
+		Program:           concurrencyProbeProgram,
+		Tx:                concurrencyProbeTx,
+		SkipConcurrentArm: true,
+		Repro:             "a check that declares its walker shares",
 	})
 	if err != nil {
 		t.Fatalf("harness error: %v", err)
 	}
 	if builds != 1 {
-		t.Errorf("a substituted fork walker built %d environments, want 1.\n"+
-			"Two means the CONCURRENT ARM RAN for a walker that may be deliberately broken. A broken\n"+
-			"fork usually shares a payload, so driving two of them in parallel mutates one *MapData\n"+
-			"from two goroutines -- a data race by construction, reported against this guard's own\n"+
-			"tests and taking every other parallel test down with it. See the skip in\n"+
-			"CheckTransactions before restoring concurrency here.", builds)
+		t.Errorf("SkipConcurrentArm built %d environments, want 1.\n"+
+			"Two means the CONCURRENT ARM RAN anyway. A walker that declares this shares a payload,\n"+
+			"so driving two of its forks in parallel mutates one *MapData from two goroutines -- a\n"+
+			"data race by construction, reported against this guard's own tests and taking every\n"+
+			"other parallel test down with it.", builds)
 	}
 }
 
@@ -1584,5 +1583,40 @@ func TestTheConcurrentArmStillRunsForARealWalker(t *testing.T) {
 			"mutation under interleaving, and it is the coverage the substituted-fork skip exists to\n"+
 			"protect -- a skip that also swallows real walkers has removed the property instead of\n"+
 			"narrowing it.", builds)
+	}
+}
+
+// TestTheConcurrentArmStillRunsForASubstitutedWalker pins the axis.
+//
+// The skip used to key on `Fork != nil`, which conflated "substituted"
+// with "shares on purpose". A BENIGN substitution -- fork options,
+// instrumentation, a counting wrapper -- then lost the -race arm with no
+// signal at the API surface. This drives exactly that benign case and
+// requires the arm to run.
+func TestTheConcurrentArmStillRunsForASubstitutedWalker(t *testing.T) {
+	t.Parallel()
+	builds := 0
+	calls := 0
+	_, err := elpstest.CheckTransactions(elpstest.TransactionCheck{
+		NewEnv:  countingEnvBuilds(&builds),
+		Program: concurrencyProbeProgram,
+		Tx:      concurrencyProbeTx,
+		// A faithful walker behind a counting wrapper: the benign
+		// substitution an embedder actually writes.
+		Fork: func(env *lisp.LEnv) (*lisp.LEnv, error) {
+			calls++
+			return env.Fork()
+		},
+		Repro: "a faithful walker behind a counting wrapper",
+	})
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	if builds != 2 {
+		t.Errorf("a BENIGN substituted walker built %d environments, want 2.\n"+
+			"One means the CONCURRENT ARM DID NOT RUN merely because Fork was non-nil. That is the\n"+
+			"old axis: substitution is not a declaration that the walker shares, and an embedder\n"+
+			"wrapping Fork for instrumentation must not silently lose the -race gate. Key the skip\n"+
+			"on SkipConcurrentArm.", builds)
 	}
 }

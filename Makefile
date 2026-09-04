@@ -163,8 +163,14 @@ static-checks: check-golangci-version check-golangci-config
 	# expanded linter set cleared the default build to zero while
 	# lisp/singleton_check_elpscheck_test.go still carried a testifylint
 	# finding nobody could see. Scoped to ./lisp/... because that is where the
-	# only tagged files live (see lisp/singleton_check_*.go and issue #274);
-	# widen it if tagged files appear elsewhere.
+	# only files EXCLUDED FROM the default build live (lisp/singleton_check_*.go,
+	# issue #274) — those are the ones a default-build lint cannot see at all.
+	#
+	# elpstest/aliasguard_templatefork_test.go also carries a build tag, but the
+	# opposite one: `//go:build !elpscheck`. A !elpscheck file IS in the default
+	# build, so `golangci-lint run ./...` above already lints it and this pass
+	# would only drop it. Verified: 0 issues on both passes. Widen this scope if
+	# a file guarded by `//go:build elpscheck` appears outside ./lisp/....
 	golangci-lint run --build-tags elpscheck ./lisp/...
 
 # elpsvet: the seal contract's static half.  golangci-lint checks Go style;
