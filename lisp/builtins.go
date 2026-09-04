@@ -1944,6 +1944,60 @@ func builtinZip(env *LEnv, args *LVal) *LVal {
 	return v
 }
 
+// maxSequencePresize bounds the capacity make-sequence reserves up front,
+// on top of the runtime's own allocation limit.
+//
+// The capacity is only ever a hint: the loop appends into it and grows past
+// it exactly as it did before any of it was sized.  Past roughly a million
+// elements the growth it saves has amortised to nothing -- append doubles,
+// so a list of any size beyond this reaches its length in a handful of
+// regrows -- which is why bounding here costs nothing measurable.
+//
+// What it buys is that the number handed to make is always derived from a
+// real element count and never from MaxAlloc, which an embedder sets and
+// which has no obligation to be a number of elements that can exist.  With
+// the limit raised (WithMaxAlloc(1<<50), say) an unbounded clamp asked for a
+// capacity beyond what any slice can address, and make rejected it: a huge
+// forward range then failed as "internal-panic: makeslice: cap out of range"
+// where it used to grow until it ran out of memory.  Different behaviour,
+// and avoidable.
+const maxSequencePresize = 1 << 20
+
+// makeSequenceCap returns the capacity to reserve for the integer sequence
+// [start, stop) by step, or 0 to reserve nothing.
+//
+// Only a forward range is sized.  The length is (stop-start) rounded up to a
+// multiple of step, and that subtraction wraps NEGATIVE -- the signal an
+// overflow is skipped on -- only when stop really is the larger of the two.
+// Run backwards it wraps POSITIVE: (make-sequence 1 MinInt64) has a
+// difference of MaxInt64, so sizing without checking the direction first
+// would reserve for a sequence that has no elements at all.  Checking
+// start < stop leaves the backwards and equal-endpoint shapes at 0, and
+// makes any genuine overflow wrap negative and be skipped.
+//
+// The result is clamped to the runtime's allocation limit, because a
+// sequence longer than that fails in the loop at the same element it always
+// did, and to maxSequencePresize, because the limit is not a number of
+// elements anyone promised can be allocated.
+func makeSequenceCap(start, stop, step, limit int) int {
+	if start >= stop {
+		return 0
+	}
+	d := stop - start
+	if d <= 0 {
+		// The true difference is positive, so this is an overflow.
+		return 0
+	}
+	n := (d-1)/step + 1
+	if n > limit {
+		n = limit
+	}
+	if n > maxSequencePresize {
+		n = maxSequencePresize
+	}
+	return n
+}
+
 func builtinMakeSequence(env *LEnv, args *LVal) *LVal {
 	start, stop := args.Cells[0], args.Cells[1]
 	if !start.IsNumeric() {
@@ -1972,6 +2026,11 @@ func builtinMakeSequence(env *LEnv, args *LVal) *LVal {
 		}
 	}
 	list := QExpr(nil)
+	if start.Type == LInt && stop.Type == LInt && step.Type == LInt {
+		if n := makeSequenceCap(start.Int, stop.Int, step.Int, env.Runtime.MaxAllocBytes()); n > 0 {
+			list.Cells = make([]*LVal, 0, n)
+		}
+	}
 	for x := start; lessNumeric(x, stop); x = addNumeric(x, step) {
 		if msg := env.Runtime.CheckAlloc(len(list.Cells) + 1); msg != "" {
 			return env.Errorf("%s", msg)
