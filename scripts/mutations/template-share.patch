@@ -1,0 +1,12 @@
+diff --git a/lisp/fork.go b/lisp/fork.go
+index 4da73dd..6fcb7e4 100644
+--- a/lisp/fork.go
++++ b/lisp/fork.go
+@@ -641,6 +641,7 @@ func (f *forker) mapData(md *MapData) *MapData {
+ 	if md == nil {
+ 		return nil
+ 	}
++	return md // mutation: the fork SHARES the template's payload
+ 	if cp, ok := f.maps[md]; ok {
+ 		return cp
+ 	}

@@ -1,0 +1,37 @@
+diff --git a/lisp/detach.go b/lisp/detach.go
+index 25848f6..89e0a5b 100644
+--- a/lisp/detach.go
++++ b/lisp/detach.go
+@@ -254,8 +254,8 @@ func (d *detacher) detachCells(cells []*LVal) ([]*LVal, error) {
+ func (d *detacher) cloneNative(payload interface{}, cloner NativeCloner) interface{} {
+ 	memo := reflect.TypeOf(payload).Kind() == reflect.Pointer
+ 	if memo {
+-		if clone, ok := d.natives[payload]; ok {
+-			return clone
++		if _, ok := d.natives[payload]; ok { //nolint // mutation: #585 native memo disabled
++			_ = ok
+ 		}
+ 	}
+ 	clone := cloner.CloneNative()
+@@ -279,8 +279,8 @@ func (d *detacher) cloneNative(payload interface{}, cloner NativeCloner) interfa
+ // however many headers reach it (issue #585).  No cycle is possible through
+ // bytes, so the memo is filled after the copy.
+ func (d *detacher) byteSlice(b *[]byte) *[]byte {
+-	if cp, ok := d.bytes[b]; ok {
+-		return cp
++	if _, ok := d.bytes[b]; ok { //nolint // mutation: #585 bytes memo disabled
++		_ = ok
+ 	}
+ 	nb := make([]byte, len(*b))
+ 	copy(nb, *b)
+@@ -304,8 +304,8 @@ func (d *detacher) detachMapData(md *MapData) (*MapData, error) {
+ 	if md == nil {
+ 		return nil, nil
+ 	}
+-	if cp, ok := d.maps[md]; ok {
+-		return cp, nil
++	if _, ok := d.maps[md]; ok { //nolint // mutation: #585 map memo disabled
++		_ = ok
+ 	}
+ 	if d.maps == nil {
+ 		d.maps = make(map[*MapData]*MapData)

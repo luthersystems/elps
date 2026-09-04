@@ -1,0 +1,23 @@
+diff --git a/lisp/macro.go b/lisp/macro.go
+index 8552d45..bea505a 100644
+--- a/lisp/macro.go
++++ b/lisp/macro.go
+@@ -544,7 +544,8 @@ func (s *macroStamper) commitIDs() {
+ // stampedCopy returns a private header copy of v carrying the call site
+ // and, under a debugger, the expansion metadata.  v is never written to.
+ func (s *macroStamper) stampedCopy(v *LVal) *LVal {
+-	cp := *v
++	// mutation: #582 stamp the value IN PLACE instead of onto a private copy.
++	cp := v
+ 	cp.source = s.callSite //elps:aliases by design: callSite is the expansion-owned copy macroCall took (env.loc.Copy(), issue #431), shared by every node of one expansion
+ 	if s.ctx != nil {
+ 		s.nextID++
+@@ -553,7 +554,7 @@ func (s *macroStamper) stampedCopy(v *LVal) *LVal {
+ 			ID:                    s.nextID,
+ 		}
+ 	}
+-	return &cp
++	return cp
+ }
+ 
+ // value returns the node to put in a value's place in an expansion: v itself

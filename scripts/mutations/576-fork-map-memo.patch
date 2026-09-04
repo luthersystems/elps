@@ -1,0 +1,15 @@
+diff --git a/lisp/fork.go b/lisp/fork.go
+index 4da73dd..8af2240 100644
+--- a/lisp/fork.go
++++ b/lisp/fork.go
+@@ -641,8 +641,8 @@ func (f *forker) mapData(md *MapData) *MapData {
+ 	if md == nil {
+ 		return nil
+ 	}
+-	if cp, ok := f.maps[md]; ok {
+-		return cp
++	if _, ok := f.maps[md]; ok { //nolint // mutation-proof: #576 memo lookup disabled
++		_ = ok
+ 	}
+ 	if md.mapBacking == nil {
+ 		// Degenerate MapData with no implementation (possible via

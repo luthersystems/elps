@@ -1,0 +1,13 @@
+diff --git a/lisp/fork.go b/lisp/fork.go
+index 4da73dd..f20d648 100644
+--- a/lisp/fork.go
++++ b/lisp/fork.go
+@@ -353,7 +353,7 @@ func (f *forker) pkg(p *Package) *Package {
+ 		Name:     p.Name,
+ 		Doc:      p.Doc,
+ 		symbols:  make(map[string]*LVal, len(p.symbols)),
+-		funNames: make(map[string]string, len(p.funNames)),
++		funNames: p.funNames, // mutation: #397 share funNames instead of copying
+ 	}
+ 	for k, v := range p.symbols {
+ 		np.symbols[k] = f.val(v)

@@ -196,6 +196,31 @@ static-checks: check-golangci-version check-golangci-config
 #
 # Same blindness, same shape, same reason as the second golangci-lint pass in
 # static-checks above.
+# mutation-proof: revert each REAL historical fix in production code and
+# require the guard to catch it, by name.
+#
+# The ten broken reference walkers in elpstest/aliasguard_broken_test.go model
+# those bugs with hand-written imitations. This reverts the actual fixes. The
+# guard's PR did that by hand, once, in a scratch worktree, never committed --
+# proving it worked that afternoon and guarding nothing after. See the header
+# of scripts/mutation-proof.sh for the three rules that keep it honest (a
+# patch that no longer applies fails loudly; a mutation that does not compile
+# is not a catch; the specific property is asserted, not "something failed").
+#
+# ON THE PR GATE, NOT NIGHTLY, because it was measured rather than assumed:
+# 21s wall clock for all 8 mutations on a warm build cache, which is what CI
+# has by the time this step runs (the build and test steps precede it). A
+# nightly-only gate would let a mutation rot for a day; 21s does not justify
+# that.
+.PHONY: mutation-proof
+mutation-proof:
+	./scripts/mutation-proof.sh
+
+# The control on the control: mutation-proof.sh's own three guarantees.
+.PHONY: mutation-proof-selftest
+mutation-proof-selftest:
+	./scripts/mutation-proof-selftest.sh
+
 .PHONY: elpsvet
 elpsvet:
 	go run ./cmd/elpsvet -test=false ./...
