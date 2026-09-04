@@ -12,9 +12,14 @@ import (
 
 // TestSortedMapSizedIsAHintOnly pins the two properties SortedMapSized
 // promises beyond SortedMap: the size is only a hint, and no argument can
-// make it panic.  make(map, n) panics on a negative n, so an exported
-// constructor that forwards its argument would hand a caller computing a
-// size from a subtraction a panic instead of an empty map.
+// make it panic.
+//
+// The negative-n rows pin the DOCUMENTED clamp, not a panic: gc ignores a
+// negative map hint, so deleting the clamp in SortedMapSized would leave
+// this test green.  They are here because the clamp is a contract an
+// exported constructor owes a caller who computes a size from a
+// subtraction, and because the language does not oblige an implementation
+// to be as forgiving as gc is.
 func TestSortedMapSizedIsAHintOnly(t *testing.T) {
 	for _, n := range []int{-1 << 40, -1, 0, 1, 64} {
 		m := lisp.SortedMapSized(n)
