@@ -297,6 +297,117 @@ func IsKnownDefective(walker string) bool {
 	return false
 }
 
+// LValCopyExemption is one row of the shrink-only allowlist for STRUCT
+// COPIES of an LVal that happen outside a registered walker.
+//
+// `*cp = *v` on an LVal is how implicit payload sharing is born: every
+// pointer field -- Native, and the Cells slice header -- rides across, and
+// nothing rebuilds it. Inside a registered walker that is the walker's job
+// and the registry above governs it. Outside one it is unreviewed, so each
+// site is either routed through a walker or recorded here with the reason
+// it is safe.
+//
+// Keyed by ENCLOSING FUNCTION plus a site count rather than by file:line:
+// a line number drifts on any edit above it, but a second copy appearing in
+// an allowlisted function is exactly the change that should be re-reviewed,
+// and the count catches it.
+type LValCopyExemption struct {
+	// Func is the enclosing function, as the scan renders it:
+	// "Quote", "(*formalsCopier).copy".
+	Func string
+	// Reason names the class the copy belongs to, not merely that it is
+	// safe.
+	Reason string
+	// Sites is how many struct copies that function is allowed to contain.
+	// A function that grows one more fails until this is updated, which is
+	// the review the row exists to force.
+	Sites int
+}
+
+// lvalCopyExemptions is SHRINK-ONLY: a row whose function no longer
+// contains a struct copy is dead and must be deleted.
+//
+// Four of these are not hazards that happen to be safe. Quote, Splice,
+// shallowUnquote and FunRef are where the INTENTIONAL aliasing lives -- the
+// aliasing every walker in the registry above exists to PRESERVE. A walker
+// that de-aliased them would be the defect.
+var lvalCopyExemptions = []LValCopyExemption{
+	{
+		Func:  "Quote",
+		Sites: 1,
+		Reason: "the second header over one payload, at its source. `(quasiquote (unquote v))` is this " +
+			"function, and the resulting two-names-one-payload graph is what the walkers must reproduce " +
+			"rather than flatten -- measured by TestForkSelfReferenceThroughAliasedHeaderStaysAliased " +
+			"(fork_mapalias_test.go) and TestCopySelfReferenceThroughAliasedHeaderStaysAliased " +
+			"(detach_alias_test.go), whose fixtures build this shape by hand.",
+	},
+	{
+		Func:   "Splice",
+		Sites:  1,
+		Reason: "the same intentional second header as Quote, flagged spliced rather than quoted.",
+	},
+	{
+		Func:   "shallowUnquote",
+		Sites:  1,
+		Reason: "the same intentional second header as Quote, clearing the flag rather than setting it.",
+	},
+	{
+		Func:  "FunRef",
+		Sites: 1,
+		Reason: "a second name for ONE function: the copy shares *funData deliberately, which is what " +
+			"makes the reference a reference. Rebuilding it would give the alias its own function.",
+	},
+	{
+		Func:  "builtinSortStable",
+		Sites: 1,
+		Reason: "the empty carve-out. The source is the shared sealed EMPTY list, which carries no payload, " +
+			"and Cells is set to nil on the next line -- so nothing is shared onward. The copy exists only " +
+			"to hand back a fresh unsealed header rather than the sealed singleton.",
+	},
+	{
+		Func:  "(*formalsCopier).copy",
+		Sites: 2,
+		Reason: "block storage the call owns. Both copies land in c.vals, allocated by newFormalsCopier for " +
+			"this registration and unreachable by anything else; the source is read-only, the subject is a " +
+			"symbol list with no payload, and both sites already carry //elps:mutates annotations saying so.",
+	},
+	{
+		Func:  "TestCopyDeAliasesMapPayloadAcrossHeaders",
+		Sites: 1,
+		Reason: "the fixture for (*LVal).Copy's own knownDefectiveWalkers row: it builds two headers over " +
+			"one *MapData so the pin can measure that Copy pulls them apart. The scan reported it on the " +
+			"commit that added it, which is the scan working.",
+	},
+	{
+		Func:  "TestCopySelfReferenceThroughAliasedHeaderStaysAliased",
+		Sites: 1,
+		Reason: "a FIXTURE that builds the two-headers-over-one-*MapData shape on purpose, so the test can " +
+			"assert the walker preserves it. The copy is the thing under test.",
+	},
+	{
+		Func:   "TestCopyClonesANativePayloadOncePerPayload",
+		Sites:  1,
+		Reason: "the same fixture for a pointer native payload rather than a map.",
+	},
+	{
+		Func:   "TestForkSelfReferenceThroughAliasedHeaderStaysAliased",
+		Sites:  1,
+		Reason: "the Fork half of the *MapData fixture above.",
+	},
+	{
+		Func:   "TestForkClonesANativePayloadOncePerPayload",
+		Sites:  1,
+		Reason: "the Fork half of the pointer-native fixture above.",
+	},
+}
+
+// LValCopyExemptions returns the struct-copy allowlist, copied.
+func LValCopyExemptions() []LValCopyExemption {
+	out := make([]LValCopyExemption, len(lvalCopyExemptions))
+	copy(out, lvalCopyExemptions)
+	return out
+}
+
 // MemoExemptions returns the exemption list, copied.
 func MemoExemptions() []MemoExemption {
 	out := make([]MemoExemption, len(memoExemptions))
