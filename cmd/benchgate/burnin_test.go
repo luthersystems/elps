@@ -339,16 +339,32 @@ func TestBurninSmoke(t *testing.T) {
 	}
 }
 
+// bestOf returns the fastest of n real samples at the given size. The minimum
+// is the quantity that tracks the fixed iteration count; any single sample also
+// carries whatever the machine did to it.
+func bestOf(n, rounds int) sample {
+	best := sample{d: time.Duration(math.MaxInt64)}
+	for range n {
+		if s := realSampler(rounds); s.d < best.d {
+			best = s
+		}
+	}
+	return best
+}
+
 // TestBurninTakesRealTime is the same claim as the 0ns check above, made
 // directly: a fixed workload four times the size must take measurably longer
 // than the small one. Ratios are not asserted (that would be a benchmark of the
-// test machine); only the ordering, which no amount of load can invert.
+// test machine); only the ordering. One sample per size is not enough for even
+// that: the whole workload is under 10ms, so a single GC pause or scheduler
+// preemption landing in the small run inverts it (#590). The best of several
+// samples is compared instead.
 func TestBurninTakesRealTime(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the real reference workload")
 	}
-	small := realSampler(2000)
-	large := realSampler(8000)
+	small := bestOf(5, 2000)
+	large := bestOf(5, 8000)
 	if small.d <= 0 || large.d <= 0 {
 		t.Fatalf("the reference workload reported no elapsed time (%v, %v)", small.d, large.d)
 	}
