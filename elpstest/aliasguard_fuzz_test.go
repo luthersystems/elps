@@ -225,7 +225,16 @@ func generateAliasGraph(b []byte) aliasGraph {
 	if len(b) == 0 {
 		return aliasGraph{}
 	}
-	s := &script{b: b}
+	return generateAliasGraphFrom(&script{b: b})
+}
+
+// generateAliasGraphFrom is generateAliasGraph over a script the caller
+// keeps: a generator that extends this graph (parity_fuzz_test.go) reads
+// its own choices from the same script AFTER this one has read its own, so
+// the base graph a script produces is byte-identical whether or not it is
+// extended, and every seed here keeps generating the shape its comment
+// claims (TestFuzzSeedsCoverTheHistoricalShapes).
+func generateAliasGraphFrom(s *script) aliasGraph {
 	var (
 		prog  strings.Builder
 		kinds []varKind
