@@ -246,7 +246,11 @@ func (d *detacher) detachCells(cells []*LVal) ([]*LVal, error) {
 // embedder is not charged for duplicates.  Only pointer payloads are
 // memoised -- identity is what aliasing means, and a non-pointer payload
 // (an int, a struct value) has none to preserve -- the same rule
-// forker.native applies.
+// forker.native applies.  No cycle is possible through a payload clone, so
+// the memo is filled after the clone, as byteSlice does.  The memo key is
+// pointer identity per Go ==, so every typed-nil pointer of one type, and
+// every pointer to a zero-size struct, shares one clone; forker.native has
+// the same property.
 func (d *detacher) cloneNative(payload interface{}, cloner NativeCloner) interface{} {
 	memo := reflect.TypeOf(payload).Kind() == reflect.Pointer
 	if memo {
