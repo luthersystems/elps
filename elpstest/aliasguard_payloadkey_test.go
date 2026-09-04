@@ -104,8 +104,9 @@ func TestCensusSeesPayloadsOnNonNativeHeaders(t *testing.T) {
 // so an embedder annotation on one reaches every fork by reference and its
 // NativeCloner is never consulted. Nothing in this package could see that:
 // the annotation sits on an LSExpr, and the census only looked under
-// LNative. It is now visible, which is what makes
-// TestLoadCacheTopology_NativeAnnotationGapStillOpen (#603) able to close.
+// LNative. It is now visible, which is what let #603's pinned-gap test
+// close into TestLoadCacheTopology_NativeAnnotationIsReported, the control
+// that now requires the census to report exactly that annotation.
 func TestCensusSeesAnAnnotationOnASealedNode(t *testing.T) {
 	t.Parallel()
 	env := payloadKeyEnv(t)

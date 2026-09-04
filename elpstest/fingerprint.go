@@ -471,11 +471,11 @@ func isCellViewLink(v *lisp.LVal) bool {
 // shared storage -- LBytes holds a *[]byte there, LSortMap a *MapData, LFun a
 // *funData -- and an EMBEDDER can put a payload on an ordinary node too. A
 // Reader that annotates an LSExpr is the measured case (#603,
-// TestLoadCacheTopology_NativeAnnotationGapStillOpen): the LoadCache refuses
-// to cache such a parse, but Fork still shares the annotation with every fork
-// by reference, because a SEALED node is shared outright before the native
-// policy runs -- so its NativeCloner is never consulted, and nothing here saw
-// it.
+// TestLoadCacheTopology_NativeAnnotationIsReported, which pinned the gap as
+// open until this closed it): the LoadCache refuses to cache such a parse,
+// but Fork still shares the annotation with every fork by reference, because
+// a SEALED node is shared outright before the native policy runs -- so its
+// NativeCloner is never consulted, and nothing here saw it.
 //
 // The types whose arms own Native are excluded because those arms already
 // encode its identity (map#, bytes#, native#) and doing it twice would double
