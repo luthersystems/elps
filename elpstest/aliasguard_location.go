@@ -118,8 +118,8 @@ type LocationCheck struct {
 	// Exceeding it does NOT silently shorten the sweep: the check reports
 	// a partial-coverage witness naming this field, because a truncated
 	// sweep is a sweep that can miss a leak on the environments it never
-	// reached.  Raise it (at a superlinear cost in environment rebuilds; see
-	// DefaultMaxEnvironments for measurements) for a
+	// reached.  Raise it -- at a superlinear cost in environment rebuilds,
+	// measured in DefaultMaxEnvironments -- for a
 	// program that leaves more scopes than the default covers — a
 	// dispatch table of forty handlers leaves forty-two.
 	MaxEnvironments int
@@ -573,7 +573,7 @@ func reachableEnvs(env *lisp.LEnv, limit int) ([]reachedEnv, bool) {
 	// reporting it as partial made the witness's own remediation fail —
 	// raise the cap to the count you just measured, and it still says
 	// partial.
-	probe := limit + 1
+	probe := oneMore(limit) // saturating: see oneMore for the MaxInt trap
 	seenV := map[*lisp.LVal]bool{}
 	seenE := map[*lisp.LEnv]bool{}
 	var walk func(v *lisp.LVal, path string)

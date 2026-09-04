@@ -4,6 +4,7 @@ package elpstest
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -336,10 +337,17 @@ func indentLines(s string) string {
 // failure that is not a bug, and that trains an embedder to raise the cap
 // reflexively, which is the opposite of what a loud signal is for.  A
 // sorted map of 96 int entries is 96 probe sites (pinned by
-// TestASortedMapEntryIsAProbeSite), so 96 was inside ordinary range.
-// Full-sweep cost over a list of n buffers, measured on a 4-core CI-class
-// box, is superlinear but comfortable at this cap: 24 sites 6ms, 96 26ms,
-// 128 39ms, 256 148ms.
+// TestASortedMapEntryIsAProbeSite, in both directions), so 96 was inside
+// ordinary range.
+//
+// Cost, measured on a 4-core box over a list of n buffers, best of three.
+// The sweep is quadratic in the site count, and the figures are PER
+// WALKER — the default check runs all four, so the last column is what an
+// embedder actually pays:
+//
+//	sites    Fork    copy   Detach   stamp    all four
+//	   24   6.4ms    3.0ms   3.3ms   7.0ms      20ms
+//	  256   325ms    160ms   151ms   8.8ms     645ms
 //
 // The fuzzer cannot reach either constant (fuzzMaxVars is 8), so the
 // controls for this cap are deterministic and committed.
@@ -900,7 +908,7 @@ func probeSites(v *lisp.LVal, scope ClosureScope, root string, limit int) ([]Pro
 	// was swept completely and must not be reported as partial -- that is
 	// what makes the witness's remediation (raise the cap to the count you
 	// measured) actually work.
-	p := &siteWalker{scope: scope, seen: map[any]bool{}, limit: limit + 1}
+	p := &siteWalker{scope: scope, seen: map[any]bool{}, limit: oneMore(limit)}
 	p.path = []string{root}
 	p.value(v)
 	truncated := len(p.sites) > limit
@@ -1094,16 +1102,45 @@ func probeTruncationWitness(w Walker, c AliasCheck, what string) Witness {
 		// Leak renders as "leaked payload reachable at:", so it holds a
 		// path or a region, not a sentence.  There is no leaked payload
 		// here -- the finding is absence of coverage.
-		Leak:     fmt.Sprintf("<probe sites %d..n, never written>", c.maxSites()+1),
+		// Site paths elsewhere in this file are 0-based, so the first
+		// site the sweep did not write is index maxSites(), not +1.
+		Leak:     fmt.Sprintf("<probe sites %d..n, never written>", c.maxSites()),
 		Baseline: "every mutable payload probed",
 		Observed: fmt.Sprintf("the sweep stopped at MaxProbeSites=%d (%s)", c.maxSites(), what),
 		Detail: fmt.Sprintf("This graph holds more than %d mutable payloads, so the sweep is PARTIAL: "+
 			"a payload the copy shares with its source past the cap is never written through, and the "+
 			"fingerprint cannot substitute for the write (equal contents fingerprint equally). Raise "+
-			"AliasCheck.MaxProbeSites -- the sweep is superlinear in the site count -- or narrow the graph.",
+			"AliasCheck.MaxProbeSites -- the sweep is O(n^2) in the site count -- or narrow the graph.",
 			c.maxSites()),
 		Repro: c.Repro,
 	}
+}
+
+// oneMore returns limit+1, SATURATING at math.MaxInt.
+//
+// Both capped walks collect one item past their limit so that "truncated"
+// can mean "more exist than the cap allows" rather than "the walk met
+// something after reaching the cap".  Computing that as a bare limit+1
+// overflows to math.MinInt when a caller passes math.MaxInt, and the
+// consequences are the worst kind: the walk then finds itself instantly
+// full, collects NOTHING, and reports truncated=false because zero is not
+// greater than math.MaxInt.  The sweep is disarmed and says nothing.
+//
+// math.MaxInt is the Go idiom for "no cap", and both the doc comments and
+// the truncation witness tell an embedder to RAISE the cap, so this is
+// advice the guard itself hands out.  Measured before the fix, against a
+// walker that genuinely leaks: 512 -> 8 witnesses, MaxInt-1 -> 8
+// witnesses, MaxInt -> 0 witnesses and no truncation notice either.
+//
+// Saturating makes math.MaxInt behave as the unlimited cap a caller
+// intends: nothing is ever full, so nothing is skipped, and the count can
+// never exceed the limit so nothing is reported partial.  Pinned by
+// TestAnUnlimitedCapDoesNotDisarmTheSweep.
+func oneMore(limit int) int {
+	if limit >= math.MaxInt {
+		return math.MaxInt
+	}
+	return limit + 1
 }
 
 // quoteKey renders a sorted-map key for a probe path.  A STRING key's
