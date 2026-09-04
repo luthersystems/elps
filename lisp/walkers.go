@@ -127,6 +127,22 @@ var walkerMemos = []WalkerMemo{
 		},
 		Doc: "lisp/macro.go (issues #582, #583, #586)",
 	},
+	{
+		// (*LVal).Copy REBUILDS payload storage -- it allocates a fresh
+		// *MapData per header (copyMapData) -- and memoises NOTHING.  That
+		// is the #576/#585 defect shape, live today, and registering it
+		// with Rebuilds: true is what makes the registry check say so.
+		//
+		// Declaring Rebuilds: false here would be the comfortable lie: true
+		// of the bytes payload, which Copy shares, and beside the point.  A
+		// registration describes the walker, not the subset of its
+		// behaviour that keeps the guard green.  Its two known defects are
+		// carried by knownDefectiveWalkers below, each with the pin that
+		// measures it, and the row disappears when the defect does.
+		Walker:   "(*LVal).Copy",
+		Rebuilds: true,
+		Doc:      "lisp/lisp.go ((*LVal).Copy)",
+	},
 }
 
 // WalkerMemos returns the registry, DEEP-copied so a caller cannot edit it.
@@ -208,6 +224,77 @@ var memoExemptions = []MemoExemption{
 		Reason: "the checked-build seal watchdog's fingerprint table (lisp/seal_check_elpscheck.go, -tags elpscheck). " +
 			"It maps a sealed root to the digest it carried at seal time; it produces no copy.",
 	},
+}
+
+// WalkerDefect is one row of the shrink-only KNOWN-DEFECT allowlist: a
+// registered walker that fails a registry rule today, recorded so the guard
+// reports it as known rather than either failing the build or passing
+// silently.
+//
+// This is NOT memoExemptions.  An exemption says a payload kind cannot
+// carry the bug.  A defect row says the walker HAS the bug, names it, and
+// names the test that measures it -- so the row is falsifiable from both
+// ends: the pin goes red the day the defect is fixed, and the allowlist is
+// shrink-only, so the row cannot outlive it.
+type WalkerDefect struct {
+	// Walker is the registry row this defect belongs to.
+	Walker string
+	// Payload is the payload type the defect is about ("*MapData").
+	Payload string
+	// Defect states what the walker does wrong, in one line.
+	Defect string
+	// Pin names the test that asserts the defect STILL EXISTS.  When the
+	// defect is fixed that test goes red, which is the signal to delete
+	// this row.
+	Pin string
+}
+
+// knownDefectiveWalkers is SHRINK-ONLY.  A row is deleted when its defect
+// is fixed; a NEW row is an admission that belongs in a review, not a way
+// to make a red guard green.
+//
+// (*LVal).Copy is here rather than fixed because fixing it is a behaviour
+// change to the most-called copy path in the interpreter, which is its own
+// stacked PR.  Until that lands, this is what keeps the guard honest: the
+// registry check REPORTS Copy as known-defective, and a reader of
+// WalkerMemos cannot mistake it for a clean walker.
+var knownDefectiveWalkers = []WalkerDefect{
+	{
+		Walker:  "(*LVal).Copy",
+		Payload: "*MapData",
+		Defect: "rebuilt per HEADER and not memoised: copyMapData allocates a fresh *MapData for every " +
+			"header it visits, so two headers over one sorted map come apart in the copy. This is the " +
+			"issue #576 / #585 defect shape exactly, in a walker neither fix reached.",
+		Pin: "TestCopyDeAliasesMapPayloadAcrossHeaders",
+	},
+	{
+		Walker:  "(*LVal).Copy",
+		Payload: "*[]byte",
+		Defect: "SHARED across headers: `*cp = *v` carries Native and no arm rebuilds it for LBytes, so a " +
+			"copy of a bytes value and its source append into one backing array (issue #551). The opposite " +
+			"failure to the map one, in the same function.",
+		Pin: "TestCopySharesBytesPayloadAcrossHeaders",
+	},
+}
+
+// WalkerDefects returns the known-defect allowlist, copied.
+func WalkerDefects() []WalkerDefect {
+	out := make([]WalkerDefect, len(knownDefectiveWalkers))
+	copy(out, knownDefectiveWalkers)
+	return out
+}
+
+// IsKnownDefective reports whether the named walker has an open defect row.
+// The registry checks consult it so an allowlisted walker is reported as
+// KNOWN-DEFECTIVE rather than passing, and callers reading the registry can
+// tell a clean walker from a tolerated one.
+func IsKnownDefective(walker string) bool {
+	for _, d := range knownDefectiveWalkers {
+		if d.Walker == walker {
+			return true
+		}
+	}
+	return false
 }
 
 // MemoExemptions returns the exemption list, copied.

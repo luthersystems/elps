@@ -56,9 +56,9 @@ var mustRebuild = []string{"forker", "detacher"}
 // checkRebuildingWalkers is the registry half, as a pure function over a
 // registry, so a negative control can hand it a weakened one.  It returns
 // one line per problem.
-func checkRebuildingWalkers(memos []WalkerMemo) []string {
-	var problems []string
+func checkRebuildingWalkers(memos []WalkerMemo) (problems, known []string) {
 	rebuilding := map[string]bool{}
+	clean := 0
 	var reference *WalkerMemo
 	for i := range memos {
 		m := &memos[i]
@@ -66,6 +66,15 @@ func checkRebuildingWalkers(memos []WalkerMemo) []string {
 			continue
 		}
 		rebuilding[m.Walker] = true
+		// A KNOWN-DEFECTIVE walker never becomes the reference: it is the
+		// thing being compared against a correct walker, and letting a
+		// walker with no memos define the standard would report every
+		// correct walker as wrong.
+		if IsKnownDefective(m.Walker) {
+			known = append(known, describeDefects(m.Walker))
+			continue
+		}
+		clean++
 		if reference == nil {
 			reference = m
 			continue
@@ -79,6 +88,24 @@ func checkRebuildingWalkers(memos []WalkerMemo) []string {
 				m.Walker, got, reference.Walker, want))
 		}
 	}
+	// A walker with an allowlist row must still BE defective by the
+	// registry's own rule, or the row is dead and the allowlist has stopped
+	// shrinking. Checked against the reference the same way a clean walker
+	// would be.
+	for i := range memos {
+		m := &memos[i]
+		if !m.Rebuilds || !IsKnownDefective(m.Walker) || reference == nil {
+			continue
+		}
+		if kindSet(m.Payloads) == kindSet(reference.Payloads) {
+			problems = append(problems, fmt.Sprintf(
+				"walker %s has a knownDefectiveWalkers row but now memoises the same payload kinds as\n"+
+					"%s, so the registry no longer considers it defective. If the defect is fixed, DELETE\n"+
+					"its rows from knownDefectiveWalkers -- the allowlist is shrink-only and a row that\n"+
+					"outlives its defect is how a fixed bug gets recorded as still open.",
+				m.Walker, reference.Walker))
+		}
+	}
 	for _, name := range mustRebuild {
 		if !rebuilding[name] {
 			problems = append(problems, fmt.Sprintf(
@@ -89,24 +116,66 @@ func checkRebuildingWalkers(memos []WalkerMemo) []string {
 					"in the same commit, and say why.", name))
 		}
 	}
-	if len(rebuilding) < 2 {
+	// Counted over CLEAN walkers only: a known-defective walker is the
+	// subject of the comparison, not a participant in it, so admitting one
+	// here would let the allowlist restore a vacuous guard.
+	if clean < 2 {
 		problems = append(problems, fmt.Sprintf(
-			"only %d walker(s) declare Rebuilds; the cross-walker comparison needs at least two to\n"+
-				"compare anything. A registry with one rebuilding walker is a guard that cannot fail.",
-			len(rebuilding)))
+			"only %d non-defective walker(s) declare Rebuilds; the cross-walker comparison needs at\n"+
+				"least two to compare anything. A registry with one rebuilding walker is a guard that\n"+
+				"cannot fail.",
+			clean))
 	}
 	if reference == nil {
 		problems = append(problems, "no walker declares Rebuilds; the registry has lost its subject")
 	} else if len(reference.Payloads) == 0 {
 		problems = append(problems, "the rebuilding walkers declare no payload memos at all")
 	}
-	return problems
+	return problems, known
+}
+
+// describeDefects renders a walker's open defect rows for the KNOWN report.
+func describeDefects(walker string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "KNOWN-DEFECTIVE walker %s (knownDefectiveWalkers, lisp/walkers.go):", walker)
+	for _, d := range WalkerDefects() {
+		if d.Walker != walker {
+			continue
+		}
+		fmt.Fprintf(&b, "\n  %s: %s\n    pinned by %s", d.Payload, d.Defect, d.Pin)
+	}
+	return b.String()
 }
 
 // TestRebuildingWalkersMemoiseTheSamePayloadKinds is the registry half.
+//
+// A walker on the known-defect allowlist is REPORTED, not passed over: the
+// log below is the only place a reader learns that a registered walker is
+// tolerated rather than clean.
 func TestRebuildingWalkersMemoiseTheSamePayloadKinds(t *testing.T) {
-	for _, p := range checkRebuildingWalkers(WalkerMemos()) {
+	problems, known := checkRebuildingWalkers(WalkerMemos())
+	for _, p := range problems {
 		t.Error(p)
+	}
+	for _, k := range known {
+		t.Log(k)
+	}
+	// Every allowlist row must name a REGISTERED walker. A row for a walker
+	// nobody registers is a defect record nothing checks.
+	registered := map[string]bool{}
+	for _, m := range WalkerMemos() {
+		registered[m.Walker] = true
+	}
+	for _, d := range WalkerDefects() {
+		if !registered[d.Walker] {
+			t.Errorf("knownDefectiveWalkers has a row for %q (%s), which is not a registered walker.\n"+
+				"Register it or delete the row: an allowlist entry for an unregistered walker exempts\n"+
+				"nothing and records a defect no check can see.", d.Walker, d.Payload)
+		}
+	}
+	if len(known) == 0 && len(WalkerDefects()) != 0 {
+		t.Error("knownDefectiveWalkers is non-empty but no walker was reported as defective, so the\n" +
+			"allowlist is no longer connected to the check it is supposed to soften.")
 	}
 }
 
@@ -135,7 +204,7 @@ func TestRegistryHalfCannotBeDisabledByDroppingRebuilds(t *testing.T) {
 	if !found {
 		t.Fatal("the registry has no detacher row; this control is no longer modelling anything")
 	}
-	problems := checkRebuildingWalkers(weakened)
+	problems, _ := checkRebuildingWalkers(weakened)
 	if len(problems) == 0 {
 		t.Fatal("switching off the detacher's Rebuilds flag and dropping a payload kind from it was\n" +
 			"NOT reported. The registry half of the drift guard can be silently disabled, which is\n" +
@@ -153,7 +222,7 @@ func TestRegistryHalfCannotBeDisabledByDroppingRebuilds(t *testing.T) {
 	}
 	// And the mutation must be reported ONLY because it was applied: the
 	// real registry stays clean, so a failure here is attributable.
-	if p := checkRebuildingWalkers(WalkerMemos()); len(p) != 0 {
+	if p, _ := checkRebuildingWalkers(WalkerMemos()); len(p) != 0 {
 		t.Errorf("the real registry is not clean, so this control proves nothing: %s",
 			strings.Join(p, "\n"))
 	}
@@ -293,6 +362,16 @@ func TestEveryCopiedPayloadTypeIsMemoisedOrExempt(t *testing.T) {
 func memoisedByEveryRebuildingWalker(kind PayloadKind) bool {
 	for _, m := range walkerMemos {
 		if !m.Rebuilds {
+			continue
+		}
+		// A KNOWN-DEFECTIVE walker is excluded here for the same reason it
+		// never becomes the reference above: it is the subject of the
+		// comparison. Including it would report fork.go and detach.go --
+		// which memoise both payload kinds correctly -- as the defective
+		// ones, pointing every reader at the wrong file. Delete the
+		// walker's allowlist row and this exclusion stops applying, which
+		// is the weakening that proves the exclusion is not a hiding place.
+		if IsKnownDefective(m.Walker) {
 			continue
 		}
 		found := false
@@ -546,5 +625,93 @@ func TestCopyAliasesCallStackAcrossHeaders(t *testing.T) {
 			"The *CallStack exemption row in walkers.go records that it DOES, as the correction to a\n" +
 			"false reason. If Copy changed, update that row rather than leaving it describing the old\n" +
 			"behaviour -- which is exactly the failure the row's own history paragraph is about.")
+	}
+}
+
+// TestCopyDeAliasesMapPayloadAcrossHeaders pins the first half of
+// (*LVal).Copy's knownDefectiveWalkers row.
+//
+// Two headers over ONE sorted map -- the shape `(quasiquote (unquote m))`
+// produces, and the shape issues #576 and #585 are about -- must survive a
+// copy as two headers over one map. Copy allocates a fresh *MapData per
+// header instead, because copyMapData runs on every LSortMap it visits and
+// nothing memoises the result. A write through one name in the copy is
+// then invisible through the other, while it stays visible in the source.
+//
+// The assertion is the DEFECT, deliberately. When Copy is fixed to memoise
+// map payloads this test goes red, and that is the signal to delete the
+// *MapData row from knownDefectiveWalkers -- the allowlist is shrink-only
+// and must not outlive what it records.
+func TestCopyDeAliasesMapPayloadAcrossHeaders(t *testing.T) {
+	t.Parallel()
+	m := SortedMap()
+	if rc := m.MapSet(String("k"), Int(1)); rc.Type == LError {
+		t.Fatal(rc)
+	}
+	alias := &LVal{}
+	*alias = *m // a second header over the same *MapData, as quasiquote makes
+	if m.Native != alias.Native {
+		t.Fatal("the fixture did not build two headers over one payload; this test proves nothing")
+	}
+	probe := QExpr([]*LVal{m, alias})
+
+	cp := probe.Copy()
+	if cp.Type == LError {
+		t.Fatal(cp)
+	}
+	if len(cp.Cells) != 2 {
+		t.Fatalf("copy has %d cells, want 2", len(cp.Cells))
+	}
+	if cp.Cells[0].Native == cp.Cells[1].Native {
+		t.Fatal("(*LVal).Copy now PRESERVES sorted-map aliasing across two headers.\n" +
+			"That is the fix, not a regression: memoising *MapData per payload is what issues #576 and\n" +
+			"#585 did for Fork and detach. Delete the *MapData row from knownDefectiveWalkers in\n" +
+			"lisp/walkers.go -- the allowlist is shrink-only, and a row that outlives its defect records\n" +
+			"a fixed bug as still open.")
+	}
+	// And the de-aliasing is OBSERVABLE, not just a pointer difference: a
+	// write through one name in the copy is lost to the other.
+	if rc := cp.Cells[0].MapSet(String("k"), Int(2)); rc.Type == LError {
+		t.Fatal(rc)
+	}
+	got, _ := cp.Cells[1].Map().Get(String("k"))
+	if got == nil || got.Type == LError {
+		t.Fatalf("second header lost the key entirely: %v", got)
+	}
+	if got.Int == 2 {
+		t.Fatal("the two copied headers still share a map after all; the pointer check above is measuring\n" +
+			"something other than what this test claims.")
+	}
+}
+
+// TestCopySharesBytesPayloadAcrossHeaders pins the second half of
+// (*LVal).Copy's knownDefectiveWalkers row: issue #551.
+//
+// The failure is the opposite of the map one, in the same function. LBytes
+// falls to Copy's default arm, which rebuilds Cells and nothing else, so
+// the *[]byte rides across in `*cp = *v` and the copy and its source append
+// into one backing array.
+//
+// Again the assertion is the defect. When Copy clones bytes payloads this
+// goes red, and the *[]byte row gets deleted.
+func TestCopySharesBytesPayloadAcrossHeaders(t *testing.T) {
+	t.Parallel()
+	src := Bytes([]byte("ab"))
+	cp := src.Copy()
+	if cp.Type == LError {
+		t.Fatal(cp)
+	}
+	if cp.Native != src.Native {
+		t.Fatal("(*LVal).Copy no longer shares the *[]byte across headers, so issue #551 is fixed here.\n" +
+			"Delete the *[]byte row from knownDefectiveWalkers in lisp/walkers.go: the allowlist is\n" +
+			"shrink-only and must not outlive the defect it records.")
+	}
+	// Observable, not merely pointer-equal: a write through the copy is
+	// seen through the source.
+	bs := cp.Native.(*[]byte)
+	(*bs)[0] = 'z'
+	if got := string(*src.Native.(*[]byte)); got != "zb" {
+		t.Fatalf("a write through the copy was not seen through the source (%q); the pointer check above\n"+
+			"is measuring something other than shared backing storage.", got)
 	}
 }
