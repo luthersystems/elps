@@ -5,7 +5,6 @@ package elpstest
 import (
 	"fmt"
 	"reflect"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -203,15 +202,6 @@ func renderResult(v *lisp.LVal) string {
 	w := newStateWalker(&b)
 	w.value(v)
 	return v.Type.String() + " " + b.String()
-}
-
-// funIDPattern matches the environment-derived part of a lambda's name.
-// Cold and fork arms allocate environment IDs on independent counters, so
-// the IDs are not comparable; only that two mentions agree.
-var funIDPattern = regexp.MustCompile(`_fun\d+`)
-
-func normalizeFunIDs(s string) string {
-	return funIDPattern.ReplaceAllString(s, "_fun#")
 }
 
 // roots returns every package binding in a deterministic order: package
