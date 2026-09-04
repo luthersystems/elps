@@ -181,7 +181,9 @@ func copyMapExcept(v *lisp.LVal, skip *lisp.LVal, g cycleGuard) (*lisp.LVal, err
 	if err := lisp.GoError(entries); err != nil {
 		return nil, err
 	}
-	sm := lisp.SortedMap()
+	// Sized for every entry: the copy holds all of them, or all but the
+	// one at skip.
+	sm := lisp.SortedMapSized(len(entries.Cells))
 	m := sm.Map()
 	for _, pair := range entries.Cells {
 		if skip != nil && sameMapSlot(pair.Cells[0], skip) {

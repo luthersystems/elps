@@ -753,6 +753,19 @@ func SortedMap() *LVal {
 	return SortedMapFromData(&MapData{newmap()})
 }
 
+// SortedMapSized returns an empty sorted-map whose backing is sized to
+// receive n entries, as make(map, n) sizes a Go map.  n is a capacity hint:
+// the map is empty, it grows past n as SortedMap's would, and a negative n
+// is treated as zero rather than panicking the way make(map, n) does.  Use
+// it where the entry count is known before the first Set, such as when
+// copying a map.
+func SortedMapSized(n int) *LVal {
+	if n < 0 {
+		n = 0
+	}
+	return SortedMapFromData(&MapData{newmapSized(n)})
+}
+
 // SortedMapFromData returns sorted-map with the given backing implementation.
 // Applications calling this function must make ensure the Map implementation
 // provided satisfies the semantics of Map methods.

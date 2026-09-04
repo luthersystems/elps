@@ -79,6 +79,17 @@ func newmap() sortedmap {
 	}
 }
 
+// newmapSized is newmap with the entry table sized for n keys of either
+// type.  The key-type map stays at its zero size, as newmap leaves it: Set
+// writes it only for symbol keys, which are the rare case, and a map that
+// holds none never touches it.
+func newmapSized(n int) sortedmap {
+	return sortedmap{
+		m:  make(map[string]*LVal, n),
+		tm: make(typemap),
+	}
+}
+
 func (m sortedmap) typemap() typemap {
 	return m.tm
 }
@@ -175,10 +186,7 @@ type StringKeyRanger interface {
 // keys.  Set with an LString key writes no key type, so tm stays at its
 // zero size, as newmap leaves it.
 func emptyForStringKeys(n int) sortedmap {
-	return sortedmap{
-		m:  make(map[string]*LVal, n),
-		tm: make(typemap),
-	}
+	return newmapSized(n)
 }
 
 func (m sortedmap) Len() int {
