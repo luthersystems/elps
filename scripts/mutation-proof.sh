@@ -16,6 +16,16 @@
 # code. So the mutations are hand-maintained patches against CURRENT code, and
 # rule 1 below is what keeps them honest as the code keeps moving.
 #
+# THE COST OF HAND-MAINTAINING THEM, learned the hard way: a hand-written
+# patch can revert something OTHER than the fix it is named for, and nothing
+# mechanical catches that. The first 579 row moved a memo seed in forker's
+# stock sorted-map path -- a line whose own production comment cites #576 --
+# so it reverted a second #576-class protection under the wrong issue number,
+# while this header claimed every mutation reverts "the ACTUAL FIXES". Where
+# a real fix commit still reverse-applies, DERIVE THE PATCH FROM IT rather
+# than hand-writing one: 579-libschema-validator-credential.patch is
+# `git show 6ef3da5` reversed, and its provenance is checkable.
+#
 # THREE RULES, each of which this script would be worthless without:
 #
 #  1. A PATCH THAT NO LONGER APPLIES FAILS LOUDLY, NEVER SKIPS. Code moves. A
@@ -49,28 +59,46 @@ PKG=./elpstest/
 # it was read as a must-NOT-trip. The script failed loudly on that rather than
 # passing, which is the behaviour to keep, but the row format was the bug.
 #
-# Every row was MEASURED, not assumed. Notes on the surprising ones:
-#  - 576 does NOT trip property 1 or property 5. It cannot: de-aliasing makes a
-#    fork copy MORE, so a fork write can never reach the template, and both of
-#    those properties can only redden on OVER-sharing.
-#  - 397 trips property 5 as well as 1/2/3, which the original hand-run
-#    revert-proof table did not record.
-#  - 585 reddens copy and Detach but NOT Fork, which is the whole point of #585.
-#  - 579 names a TEST rather than a property because WHICH tests catch it varies
-#    run to run. Measured over 10 runs it was caught 10/10, but by a varying
-#    set: TestAliasGuardOverEveryWalker 10/10, TestAliasGuardSelfReferentialMap
-#    9/10, TestForkFingerprintsIdenticallyToItsTemplate 8/10. An expectation
-#    naming any of the less-than-10/10 signals would be a FLAKY GATE. Pin the
-#    stable signal, and never widen a row without measuring its stability.
+# EVERY NEEDLE HERE IS A PROPERTY STRING OR A UNIQUE TEST, MEASURED FOR BOTH
+# UNIQUENESS AND STABILITY. An earlier revision pinned TEST: names shared by
+# five of the eight mutations, which asserted "a test failed" rather than the
+# property -- the exact thing rule 3 forbids -- and pinned one signal that was
+# only ~84% stable, making this required gate flaky about one run in six. A
+# flaky required gate is worse than no gate: it trains maintainers to re-run
+# it, then to delete it, which destroys the anti-regression value this exists
+# for. Do not add a needle without measuring it across ALL mutations.
+#
+# Notes on the rows that are not obvious:
+#  - 576 does NOT trip property 1 or property 5, asserted here as MUST-NOT. It
+#    cannot: de-aliasing makes a fork copy MORE, so a fork write can never
+#    reach the template, and both of those can only redden on OVER-sharing.
+#  - 585's needle carries the WALKER PREFIX ("Detach: ..."). Without it the
+#    string is shared with 576 and the row distinguishes nothing; with it the
+#    row asserts #585's actual signature -- copy and Detach redden, Fork does
+#    not -- and the must-not on the fresh-fork property pins the "not Fork"
+#    half.
+#  - template-share pins ONLY property 5, which is the direction it models.
+#    It also emits the fresh-fork property, and that needle measured 40/40 in
+#    ISOLATION -- yet failed once in 35 end-to-end runs. Isolated measurement
+#    therefore does NOT certify a needle: witness output varies with test
+#    ordering and parallelism under load, and only the end-to-end run
+#    reproduces that. Measure candidate needles with the full script, many
+#    times, not by driving one mutation in a loop.
+#  - 579 is the libschema validator credential (6ef3da5), NOT a fork memo. An
+#    earlier revision of this file shipped a patch that moved a memo seed in
+#    forker's stock-map path and labelled it #579; that line's own production
+#    comment cites #576, so the mutation reverted a second #576-class
+#    protection under the wrong issue number, and it was the flaky row. The
+#    real #579 revert is deterministic.
 MANIFEST=$(cat <<'EOF'
-576-fork-map-memo;a fresh fork is indistinguishable from its template|a fork taken after other forks were mutated is pristine;the template is unchanged by a transaction on a fork|a transaction on the template is invisible to every existing fork
-579-stock-map-memo-seeded-late;TEST:TestAliasGuardOverEveryWalker;
-585-detach-memos;TEST:TestAliasGuardOverEveryWalker|TEST:TestAliasGuardSelfReferentialMap;
-397-fork-shares-funnames;the template is unchanged by a transaction on a fork|a transaction on one fork is invisible to every other fork|a transaction on the template is invisible to every existing fork;
+576-fork-map-memo;a fresh fork is indistinguishable from its template;the template is unchanged by a transaction on a fork|a transaction on the template is invisible to every existing fork
+579-libschema-validator-credential;TEST:TestForkCheck_SchemaValidatorCredential;
+585-detach-memos;Detach: the copy has the same mutable payloads as the source;a fresh fork is indistinguishable from its template
+397-fork-shares-funnames;the template is unchanged by a transaction on a fork|a transaction on one fork is invisible to every other fork;
 440-fork-carries-loc;a fork starts with an empty evaluator location register;
-578-f1-live-defining-loc;TEST:TestLocationChannelHasNoBleed;
+578-f1-live-defining-loc;a budget error at a function-body entry reports the definition site;
 582-macro-stamp-in-place;expansion mutates nothing reachable outside its own output;
-template-share;a transaction on the template is invisible to every existing fork|a fresh fork is indistinguishable from its template;
+template-share;a transaction on the template is invisible to every existing fork;
 EOF
 )
 
