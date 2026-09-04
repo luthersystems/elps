@@ -35,7 +35,10 @@
 #     `go build ./...` must succeed after applying a mutation, BEFORE any test
 #     runs. A mutation that does not compile is a broken mutation.
 #  3. THE SPECIFIC PROPERTY IS ASSERTED, not "something failed". A mutation
-#     that reddens the suite for an unrelated reason is not proof.
+#     that reddens the suite for an unrelated reason is not proof. ONE ROW
+#     (579) is a measured exception, for the reason recorded in the manifest
+#     notes: reverting that fix emits no property string at all, so a unique
+#     TEST: needle is the only signal there is.
 #
 # And a precondition: the CLEAN TREE MUST BE GREEN first, so a suite that is
 # red for unrelated reasons cannot report every mutation as caught.
@@ -77,6 +80,26 @@ PKG=./elpstest/
 #    row asserts #585's actual signature -- copy and Detach redden, Fork does
 #    not -- and the must-not on the fresh-fork property pins the "not Fork"
 #    half.
+#  - 579 IS THE ONE ROW PINNING A TEST RATHER THAN A PROPERTY, and it is the
+#    one row whose catcher is NOT the guard this PR adds. Measured, 5/5 runs
+#    identical: reverting 6ef3da5 reddens exactly
+#    TestForkCheck_SchemaValidatorCredential and NOTHING else in ./elpstest/ --
+#    zero alias-guard tests, and zero property strings emitted at all. So a
+#    property needle is not merely worse here, it does not exist to be pinned.
+#    That test comes from 477ea95, the earlier forkcheck oracle, and is not in
+#    this PR's diff.
+#
+#    Why the new guard cannot see it: its three channels observe payload
+#    POINTER SHARING (map, bytes and native probe sites), location bleed, and
+#    isolation fingerprints. #579 is a credential revoked by HEADER IDENTITY,
+#    which none of those observe; the forkcheck oracle's cold-vs-fork parity
+#    does.
+#
+#    So read this row as "#579 stays fixed", NOT as "the new guard catches
+#    #579". It is kept because it does pin a real regression and because the
+#    fix commit still reverse-applies, which is the provenance property this
+#    file is built around -- but the rule-3 sentence above does not describe
+#    it, and saying so here is cheaper than letting a reader infer it.
 #  - template-share pins ONLY property 5, which is the direction it models.
 #    It also emits the fresh-fork property, and that needle measured 40/40 in
 #    ISOLATION -- yet failed once in 35 end-to-end runs. Isolated measurement
@@ -185,4 +208,4 @@ done <<<"$MANIFEST"
 
 echo
 [ $fail = 0 ] || die "at least one mutation was not proven -- see above."
-echo "mutation-proof: every mutation caught by its named property."
+echo "mutation-proof: every mutation caught by its named needle (7 property strings, 1 test -- see 579 in the manifest notes)."

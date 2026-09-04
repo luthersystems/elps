@@ -197,12 +197,21 @@ static-checks: check-golangci-version check-golangci-config
 # Same blindness, same shape, same reason as the second golangci-lint pass in
 # static-checks above.
 # mutation-proof: revert each REAL historical fix in production code and
-# require the guard to catch it, by its own property string.
+# require it to be caught, by a needle measured for uniqueness and stability.
 #
-# "By name" means the SPECIFIC property, not "some test failed": needles shared
-# across mutations assert nothing about the bug they are filed under, and a
-# needle that is only ~84% stable makes a required gate flaky, which is worse
-# than no gate. Every needle is measured across all mutations before it lands.
+# For SEVEN of the eight rows that needle is a property string emitted by the
+# guard this PR adds. "By name" means the SPECIFIC property, not "some test
+# failed": needles shared across mutations assert nothing about the bug they
+# are filed under, and a needle that is only ~84% stable makes a required gate
+# flaky, which is worse than no gate.
+#
+# THE EIGHTH ROW (579) IS AN EXCEPTION, AND IT IS MEASURED, NOT CONCEDED.
+# Reverting that fix emits no property string at all -- it reddens exactly one
+# pre-existing test, from the earlier forkcheck oracle (477ea95), which is not
+# in this PR's diff. So that row asserts "#579 stays fixed" rather than "the
+# new guard catches #579". The manifest notes in scripts/mutation-proof.sh
+# record why, and this comment says so here rather than leaving the sentence
+# above to overstate what all eight rows demonstrate.
 #
 # The ten broken reference walkers in elpstest/aliasguard_broken_test.go model
 # those bugs with hand-written imitations. This reverts the actual fixes. The
