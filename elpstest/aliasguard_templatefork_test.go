@@ -80,12 +80,13 @@ func TestGuardDetectsATemplateWriteReachingAFork(t *testing.T) {
 	t.Parallel()
 	got, err := elpstest.CheckTransactions(elpstest.TransactionCheck{
 		Program: templateSharedProgram,
-		// ONE transaction on purpose. Every fork this walker makes shares
-		// one map, so two of them writing it in the concurrent arm is a
-		// real data race -- the control's own doing, not a finding about
-		// elps, and `-race` reports it as such. One fork is all this
-		// property needs.
-		Tx:    []string{`(assoc! shared "k" 2)`},
+		// Two transactions, so the property is checked over more than one
+		// fork. Safe because CheckTransactions skips the concurrent arm
+		// for a substituted fork walker -- see the comment there. Before
+		// that skip existed this had to be a single transaction, because
+		// two forks sharing one map and written in parallel is a race by
+		// construction.
+		Tx:    []string{`(assoc! shared "k" 2)`, `(assoc! shared "k" 3)`},
 		Fork:  brokenForkSharesTemplatePayload,
 		Repro: "a fork that shares a payload with its template",
 	})

@@ -209,10 +209,79 @@ func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 	// Property 4: no stateful native shared between two forks.
 	out = append(out, sharedNativeWitnesses(c, "the template", tmpl, forks)...)
 
+	// Property 5: THE OTHER END OF THE SHARED POINTER.
+	//
+	// Everything above drives writes FROM a fork: fork -> other fork,
+	// fork -> template, and fork -> template -> later fork.  None of them
+	// writes to the TEMPLATE and re-checks the forks that are already
+	// live, so that direction went unasserted.
+	//
+	// The asymmetry is structural, not incidental.  If a fork shares a
+	// payload with its template -- which is exactly the #576 and #585
+	// defect -- then a write through the template lands in the fork.
+	// Those are the two ends of one shared pointer, and testing only one
+	// end leaves the other to "the embedder is supposed to treat the
+	// template as immutable after load", which is the kind of supposition
+	// this guard exists so that nobody has to make.
+	//
+	// It runs after every check that reads the template's baseline,
+	// because it deliberately mutates the template.  It runs BEFORE the
+	// concurrent arm, which is independent of this template -- that arm
+	// builds and forks its own -- and which is skipped entirely for a
+	// substituted fork walker.  Ordering it after that skip put it behind
+	// an early return and silently disabled it for exactly the broken
+	// walkers it exists to catch; TestGuardDetectsATemplateWriteReachingAFork
+	// caught that, and is the control that keeps it fixed.
+	//
+	// WHAT IT CATCHES, and what it does not.  This direction detects
+	// OVER-sharing: a fork still holding a payload the template owns.  It
+	// does NOT detect the DE-aliasing defects at the other extreme --
+	// measured by reverting the #576 map memo, which fails "a fresh fork
+	// is indistinguishable from its template" and the pristine-successor
+	// property while leaving this one green.  That is not a gap: a fork
+	// that de-aliases too eagerly is MORE isolated from its template, not
+	// less, so a template write cannot reach it.  The two defects sit at
+	// opposite ends of the same axis and are caught by different
+	// properties, which is the point of asserting all four directions
+	// rather than assuming one implies the others.
+	out = append(out, templateToForkWitnesses(c, tmpl, forks, before)...)
+
 	// Property 1 again, concurrently.  Same transactions, same template,
 	// forks driven in parallel: under -race this is also the data-race
 	// gate, and without it it still catches a template mutation that only
 	// happens under interleaving.
+	//
+	// IT IS SKIPPED FOR A SUBSTITUTED FORK WALKER, AND MUST STAY SKIPPED.
+	//
+	// c.Fork exists to drive DELIBERATELY BROKEN reference forks
+	// (aliasguard_broken_test.go), so a non-nil c.Fork means "this walker
+	// may be broken on purpose".  A broken fork's defect is typically that
+	// it SHARES a payload with its template or with its siblings, and
+	// driving two such forks in parallel then has two goroutines mutating
+	// environments over one *MapData: a genuine data race BY
+	// CONSTRUCTION.  The control asks for it, -race duly reports it
+	// against the guard's own test rather than against anything in elps,
+	// and Go marks every other in-flight parallel test failed alongside
+	// it -- five of them, on the run that proved this (commit 9a73d6a).
+	//
+	// A correct walker never shares, which is why the arm is race-free for
+	// every real walker and why the hazard stayed invisible until the
+	// first template-sharing control was written.  The sequential arm
+	// above already checks every isolation property for a substituted
+	// walker; the concurrent arm would add only the interleaving hazard
+	// that a broken fork is designed to have.
+	//
+	// Fixing it here rather than in the control is deliberate: giving one
+	// control a single transaction stops that control racing and leaves
+	// the trap armed for the next one.  Two tests hold this in place --
+	// TestTheConcurrentArmIsSkippedForASubstitutedFork, and
+	// TestTheConcurrentArmStillRunsForARealWalker, which exists because
+	// the way this fix could go wrong is by silently swallowing the
+	// coverage it is meant to protect.
+	if c.Fork != nil {
+		return out, nil
+	}
+
 	conc, err := build()
 	if err != nil {
 		return nil, err
@@ -251,36 +320,6 @@ func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 		})
 	}
 
-	// Property 5: THE OTHER END OF THE SHARED POINTER.
-	//
-	// Everything above drives writes FROM a fork: fork -> other fork,
-	// fork -> template, and fork -> template -> later fork.  None of them
-	// writes to the TEMPLATE and re-checks the forks that are already
-	// live, so that direction went unasserted.
-	//
-	// The asymmetry is structural, not incidental.  If a fork shares a
-	// payload with its template -- which is exactly the #576 and #585
-	// defect -- then a write through the template lands in the fork.
-	// Those are the two ends of one shared pointer, and testing only one
-	// end leaves the other to "the embedder is supposed to treat the
-	// template as immutable after load", which is the kind of supposition
-	// this guard exists so that nobody has to make.
-	//
-	// It runs last because it deliberately mutates the template, which
-	// invalidates the baseline every check above compares against.
-	//
-	// WHAT IT CATCHES, and what it does not.  This direction detects
-	// OVER-sharing: a fork still holding a payload the template owns.  It
-	// does NOT detect the DE-aliasing defects at the other extreme --
-	// measured by reverting the #576 map memo, which fails "a fresh fork
-	// is indistinguishable from its template" and the pristine-successor
-	// property while leaving this one green.  That is not a gap: a fork
-	// that de-aliases too eagerly is MORE isolated from its template, not
-	// less, so a template write cannot reach it.  The two defects sit at
-	// opposite ends of the same axis and are caught by different
-	// properties, which is the point of asserting all four directions
-	// rather than assuming one implies the others.
-	out = append(out, templateToForkWitnesses(c, tmpl, forks, before)...)
 	return out, nil
 }
 
