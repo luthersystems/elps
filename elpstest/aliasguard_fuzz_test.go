@@ -136,6 +136,18 @@ type aliasGraph struct {
 	program string
 	tx      []string
 	trip    int
+	// kinds[i] is what the generator BELIEVES v<i> evaluates to, and
+	// quoted[i] whether that value carries the quote flag.  Both are
+	// static predictions about a program that has not run yet, and both
+	// are load-bearing: kinds decides which mutation a transaction may
+	// emit, and quoted decides the kind of a quasiquote OVER the binding.
+	// A wrong prediction does not fail loudly -- it makes the generated
+	// program raise, which the fuzz target reads as "a program the walker
+	// legitimately cannot process" and SKIPS.  Exposed on the graph so
+	// TestTheGeneratorsPredictionsMatchTheRuntime can check them against a
+	// real evaluation.
+	kinds  []varKind
+	quoted []bool
 }
 
 // repro renders the generated graph and its transactions as a runnable
@@ -199,6 +211,12 @@ const (
 	// transaction that rebinds an existing function under a second name,
 	// which the closure case is the natural target for.
 	kindClosure2
+	// kindQuote is a value that quasiquote WRAPPED rather than re-headed:
+	// the doubly-quasiquoted form. It carries no mutation of its own, but
+	// it is still a second path to the payload underneath, so the shape is
+	// generated and fingerprinted -- just never offered to an operation
+	// that needs a map, bytes or a vector. See the case-4 comment.
+	kindQuote
 )
 
 // generateAliasGraph turns a fuzzer script into a template that builds a
@@ -211,6 +229,11 @@ func generateAliasGraph(b []byte) aliasGraph {
 	var (
 		prog  strings.Builder
 		kinds []varKind
+		// quoted[i] records whether v<i>'s VALUE is already quoted, which
+		// is what decides the kind of a quasiquote OF it. Not derivable
+		// from kinds: a level-one (quasiquote (unquote vj)) over a map is
+		// still a map, and is quoted.
+		quoted []bool
 	)
 	nvars := 1 + s.n(fuzzMaxVars)
 	// ref returns an expression naming an earlier binding, or a literal
@@ -225,6 +248,7 @@ func generateAliasGraph(b []byte) aliasGraph {
 	for i := range nvars {
 		var expr string
 		kind := kindInt
+		isQuoted := false
 		switch s.n(8) {
 		case 0:
 			expr = fmt.Sprintf(`(sorted-map "k0" %s "k1" %s)`, ref(i), ref(i))
@@ -235,6 +259,10 @@ func generateAliasGraph(b []byte) aliasGraph {
 		case 2:
 			expr = fmt.Sprintf(`(list %s %s)`, ref(i), ref(i))
 			kind = kindList
+			// `list` returns a QUOTED list, which is why a quasiquote over
+			// one is a wrap rather than a re-head.  Measured, not assumed:
+			// TestTheGeneratorsPredictionsMatchTheRuntime.
+			isQuoted = true
 		case 3:
 			expr = fmt.Sprintf(`(vector %s %s)`, ref(i), ref(i))
 			kind = kindVector
@@ -247,7 +275,30 @@ func generateAliasGraph(b []byte) aliasGraph {
 			} else {
 				j := s.n(i)
 				expr = fmt.Sprintf(`(quasiquote (unquote v%d))`, j)
-				kind = kinds[j]
+				// THE KIND DEPENDS ON WHETHER vj IS ALREADY QUOTED, because
+				// lisp.Quote has two branches.  An UNQUOTED value is copied
+				// with the flag set, so the copy keeps its type: a
+				// quasiquote of a sorted map is still a sorted map, a second
+				// header over the same payload, which is the #576/#585 shape
+				// this case exists for.  An ALREADY-QUOTED value is instead
+				// WRAPPED in an LQuote, whose type is `quote`; no map, bytes
+				// or vector operation accepts one.
+				//
+				// Recording kinds[j] unconditionally was a generator defect.
+				// It labelled the wrapper with the payload's type, the
+				// generator then emitted a mutation for that type -- the
+				// cycle step's (assoc! v<i> ...) on a supposed map is the
+				// loudest -- the program raised, and FuzzAliasGuard read the
+				// raise as "a program the walker legitimately cannot
+				// process" and SKIPPED the input.  Lost coverage, silently,
+				// in the one generator case whose entire purpose is the
+				// alias shape.
+				if quoted[j] {
+					kind = kindQuote
+				} else {
+					kind = kinds[j]
+				}
+				isQuoted = true
 			}
 		case 5:
 			// A closure over a captured scope, which Fork must copy and
@@ -261,11 +312,13 @@ func generateAliasGraph(b []byte) aliasGraph {
 			// closure's binding stops being visible to the second.
 			expr = fmt.Sprintf(`(let ([c%d %s]) (list (lambda () c%d) (lambda (x) (set 'c%d x))))`, i, ref(i), i, i)
 			kind = kindList
+			isQuoted = true
 		default:
 			expr = strconv.Itoa(s.n(97))
 		}
 		fmt.Fprintf(&prog, "(set 'v%d %s)\n", i, expr)
 		kinds = append(kinds, kind)
+		quoted = append(quoted, isQuoted)
 	}
 	// Cycles: a map that reaches itself, directly or through the second
 	// header over it.  The *LVal memo bounds the walk but not the number of
@@ -285,7 +338,7 @@ func generateAliasGraph(b []byte) aliasGraph {
 	}
 	prog.WriteString("))\n")
 
-	g := aliasGraph{program: prog.String(), trip: 1 + s.n(12)}
+	g := aliasGraph{program: prog.String(), trip: 1 + s.n(12), kinds: kinds, quoted: quoted}
 	ntx := s.n(fuzzMaxTx + 1)
 	for i := range ntx {
 		g.tx = append(g.tx, generateTx(s, kinds, i))
@@ -409,4 +462,105 @@ func TestFuzzSeedsCoverTheHistoricalShapes(t *testing.T) {
 				name, pattern)
 		}
 	}
+}
+
+// kindRuntimeType is the elps type each generator kind claims its binding
+// will evaluate to.  kindClosure2 is absent: it names a transaction shape,
+// not a binding, and the generator never records it.
+var kindRuntimeType = map[varKind]string{
+	kindMap:     "sorted-map",
+	kindBytes:   "bytes",
+	kindList:    "list",
+	kindVector:  "array",
+	kindClosure: "function",
+	kindInt:     "int",
+	kindQuote:   "quote",
+}
+
+// TestTheGeneratorsPredictionsMatchTheRuntime is the poka-yoke for the
+// generator's static predictions.
+//
+// generateAliasGraph decides, WITHOUT evaluating anything, what each
+// binding will hold: its kind, and whether its value carries the quote
+// flag.  Both decisions steer later generation — kinds picks the mutation a
+// transaction emits and gates the cycle step, quoted picks the kind of a
+// quasiquote over the binding — so a wrong prediction emits an operation
+// the value does not accept and the program raises.
+//
+// A raise is not a finding: FuzzAliasGuard skips it as "a program the
+// walker legitimately cannot process".  That is the failure mode this test
+// exists for.  A prediction that drifts from evaluation costs coverage and
+// says nothing while it does it, which is exactly the shape of bug the
+// whole PR is about.  Measured here instead: every generated program must
+// LOAD, and every prediction must match what the value turns out to be.
+func TestTheGeneratorsPredictionsMatchTheRuntime(t *testing.T) {
+	t.Parallel()
+	seen := map[varKind]int{}
+	checked, loadFailures := 0, 0
+	for seed := range 600 {
+		b := []byte{byte(seed), byte(seed >> 8), byte(seed * 7), byte(seed*31 + 11), byte(seed*13 + 3)}
+		g := generateAliasGraph(b)
+		if strings.TrimSpace(g.program) == "" {
+			continue
+		}
+		env, err := newFuzzEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rc := env.LoadString("f.lisp", g.program); rc.Type == lisp.LError {
+			loadFailures++
+			t.Errorf("seed %d: the generated TEMPLATE does not load: %v\n"+
+				"Every raise here is an input FuzzAliasGuard skips rather than checks.\n"+
+				"program:\n%s", seed, rc, g.program)
+			continue
+		}
+		checked++
+		for i, kind := range g.kinds {
+			v := env.Get(lisp.Symbol(fmt.Sprintf("v%d", i)))
+			if v == nil || v.Type == lisp.LError {
+				t.Errorf("seed %d: v%d is %v\nprogram:\n%s", seed, i, v, g.program)
+				continue
+			}
+			seen[kind]++
+			if got, want := v.Type.String(), kindRuntimeType[kind]; got != want {
+				t.Errorf("seed %d: v%d is predicted %s (kind %d) but evaluates to %s.\n"+
+					"The generator will emit a %s operation against a %s, the program will raise,\n"+
+					"and the fuzz target will SKIP the input instead of checking it.\nprogram:\n%s",
+					seed, i, want, kind, got, want, got, g.program)
+			}
+			if got, want := v.IsQuoted(), g.quoted[i]; got != want {
+				t.Errorf("seed %d: v%d is predicted quoted=%v but evaluates to quoted=%v.\n"+
+					"quoted decides the kind of a quasiquote OVER this binding: an unquoted value is\n"+
+					"copied and keeps its type, an already-quoted one is wrapped in an LQuote.\n"+
+					"program:\n%s", seed, i, want, got, g.program)
+			}
+		}
+		// The transactions are the other consumer of kinds, and their
+		// raises are skipped by the same rule -- one level further on,
+		// where CheckTransactions loads them onto a fork.
+		for j, tx := range g.tx {
+			if rc := env.LoadString(fmt.Sprintf("tx%d.lisp", j), tx); rc.Type == lisp.LError {
+				t.Errorf("seed %d: transaction %d does not load: %v\n"+
+					"generateTx emitted an operation the binding's kind does not license.\n"+
+					"tx: %s\nprogram:\n%s", seed, j, rc, tx, g.program)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no generated program loaded; this test checked nothing")
+	}
+	if loadFailures != 0 {
+		t.Errorf("%d of %d generated templates failed to load", loadFailures, checked+loadFailures)
+	}
+	// Non-vacuity: every kind the generator can record must actually be
+	// recorded, or this sweep is silently not covering it.  kindQuote is
+	// the one this test was written for -- the nested quasiquote, which
+	// only appears when a quasiquote falls on an already-quoted binding.
+	for kind := range kindRuntimeType {
+		if seen[kind] == 0 {
+			t.Errorf("no generated binding had kind %d (%s) across the sweep, so this test does not\n"+
+				"cover it. Widen the sweep or retune the generator.", kind, kindRuntimeType[kind])
+		}
+	}
+	t.Logf("checked %d templates, %d bindings by kind: %v", checked, len(seen), seen)
 }
