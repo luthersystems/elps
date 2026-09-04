@@ -510,13 +510,16 @@ elps> (concat 'list '("A" "B" "C") '(1 2 3))
 
 Returns a deep copy of a value that shares no storage with it. Lists, vectors,
 sorted-maps and bytes are rebuilt with fresh backing, recursively, so mutating
-the copy at any depth is never observable through the original. Function and
-native values are shared by reference rather than copied, and strings and
-numbers are immutable values. Sharing between values inside the input is
-preserved in the copy, including cycles — and so is a sorted-map, bytes or
-native payload that two values point at (what `(quasiquote (unquote a))`
-produces): the copy rebuilds it once and both copied values point at the one
-rebuilt payload.
+the copy at any depth is never observable through the original. Function
+values are shared by reference rather than copied, and so is a native value
+unless its payload implements `NativeCloner`, in which case the copy holds a
+clone; strings and numbers are immutable values. Sharing between values inside
+the input is preserved in the copy, including cycles — and so is sharing of a
+sorted-map, bytes or cloneable-native payload between two values (what
+`(quasiquote (unquote a))` produces): the copy rebuilds such a payload once
+and both copied values point at the one rebuilt payload. Sharing of a list's
+or vector's backing array (what `cdr`, `rest` and `slice` produce) is NOT
+preserved; those come back with separate storage.
 
 `copy` is how lisp code takes ownership of data whose provenance it does not
 control. Its result is always mutable, even when the input is (or is derived

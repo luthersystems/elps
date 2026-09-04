@@ -222,6 +222,7 @@ func TestCopyClonesANativePayloadOncePerPayload(t *testing.T) {
 // TestCopyClonesDistinctNativePayloadsSeparately guards the memo's key: two
 // headers over two DIFFERENT payloads of one type must still get two clones.
 // A memo keyed on anything coarser than payload identity would merge them.
+// It passes on main too: it guards the memo key, it does not pin a regression.
 func TestCopyClonesDistinctNativePayloadsSeparately(t *testing.T) {
 	p1 := &cloneableNative{state: 1}
 	p2 := &cloneableNative{state: 2}
