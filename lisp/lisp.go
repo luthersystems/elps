@@ -1654,10 +1654,19 @@ func (v *LVal) Copy() *LVal {
 	return cp
 }
 
+// copyMapData returns a fresh *MapData holding v's entries with the value
+// pointers shared: the map structure is private to the copy, the values are
+// not.  This is what assoc and dissoc build on every call, so the stock
+// sorted map is cloned structurally (sortedmap.clone) rather than by
+// enumerating its entries in sorted order and re-inserting them; an
+// embedder map implementation keeps the entries path.
 func (v *LVal) copyMapData() (*MapData, error) {
 	m0 := v.Map()
 	if m0 == nil {
 		return nil, nil
+	}
+	if sm, ok := m0.mapBacking.(sortedmap); ok {
+		return &MapData{sm.clone(nil)}, nil
 	}
 	m := &MapData{newmap()}
 	for _, pair := range sortedMapEntries(m0).Cells {
