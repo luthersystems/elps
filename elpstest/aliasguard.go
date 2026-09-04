@@ -967,6 +967,19 @@ func (p *siteWalker) value(v *lisp.LVal) {
 		// Opaque: the guard cannot write inside it.  Its SHARING is
 		// covered by the fingerprint's identity ordinal and by the
 		// cross-fork native census (aliasguard_isolation.go).
+		//
+		// DELIBERATELY still keyed on the TYPE here, where the census and
+		// the fingerprint were widened to key on the payload.  This arm
+		// decides where the guard can WRITE a sentinel, and a payload it
+		// cannot write into is not a probe site whatever header carries
+		// it.  Widening the key here would do harm rather than good: an
+		// LSExpr carrying an embedder annotation, and every cell view
+		// once PR #602 lands, would enter the opaque arm and the walk
+		// would STOP -- losing the cells below it, which are real probe
+		// sites.  Measured: the probe-site count for a graph holding an
+		// aliased map, aliased bytes, a native and an annotated sealed
+		// node is 2 before and after the widening, and that is the right
+		// answer.
 	case lisp.LFun:
 		if p.scope == ClosuresInScope {
 			p.push("closure env")

@@ -371,6 +371,128 @@ func normalizeFunIDs(s string) string {
 // int, a struct) has none: two copies of it are the same payload in every
 // sense the language can observe, and the kernel's own memos skip it for
 // the same reason (forker.native, detacher.cloneNative).
+// isCellViewLink reports whether v's Native is a KERNEL-INTERNAL cell-view
+// link rather than an embedder payload.
+//
+// A cell view (cdr, rest, slice, `(append 'vector seq)` with no values) is a
+// header whose Cells is a window into another value's backing array, and it
+// records that relationship by holding the root *lisp.LVal in Native and the
+// element offset in Int. Both fields were unused on an LSExpr before, which
+// is what made them available.
+//
+// The distinction matters to every surface that asks "does this header carry
+// a payload":
+//
+//   - the census would report a pointer payload on EVERY view. Within one
+//     environment that pointer is the intended root; across forks the root
+//     differs per fork, so it is noise -- and a fork that FAILED to re-point
+//     would be reported as a shared native rather than as a de-aliased cell,
+//     which is the wrong witness for the wrong bug;
+//   - the fingerprint would emit an identity ordinal for every view, changing
+//     the fingerprint of every program containing one;
+//   - a probe-site walk that treated it as an opaque payload would STOP at
+//     the view and never walk its Cells.
+//
+// So a link is a REFERENCE, never a payload. The root is reachable state and
+// wants walking as such; the link itself gets no ordinal.
+//
+// ON THIS BRANCH the predicate is never true: no constructor in lisp/ writes
+// a *lisp.LVal into Native yet. It becomes live when the cell-view work (PR
+// #602) sits under this one, and is written now so that the surfaces below
+// are correct on both trees rather than needing a second pass.
+//
+// WHEN #602 IS RESTACKED UNDER THIS, this function's body becomes
+// `return v.IsCellView()` -- the cheap unvalidated predicate #602 exports for
+// exactly this use. The VALIDATED resolver is `v.CellView()`, which returns
+// ok only when the link still describes the header (slot identity), and it is
+// the same call forker.val makes. Do NOT re-derive that check here: one rule,
+// one place. Following a view's root as a probe site is the other half of
+// this, and it needs the validated resolver, so it lands with the restack.
+func isCellViewLink(v *lisp.LVal) bool {
+	if v == nil || v.Native == nil {
+		return false
+	}
+	_, ok := v.Native.(*lisp.LVal)
+	return ok
+}
+
+// annotation encodes a pointer payload carried on a header whose TYPE arm
+// does not already encode one.
+//
+// The gap this closes: the fingerprint, the probe walk and the cross-fork
+// census all keyed "has a payload" on `v.Type == LNative`. But Native is
+// shared storage -- LBytes holds a *[]byte there, LSortMap a *MapData, LFun a
+// *funData -- and an EMBEDDER can put a payload on an ordinary node too. A
+// Reader that annotates an LSExpr is the measured case (#603,
+// TestLoadCacheTopology_NativeAnnotationGapStillOpen): the LoadCache refuses
+// to cache such a parse, but Fork still shares the annotation with every fork
+// by reference, because a SEALED node is shared outright before the native
+// policy runs -- so its NativeCloner is never consulted, and nothing here saw
+// it.
+//
+// The types whose arms own Native are excluded because those arms already
+// encode its identity (map#, bytes#, native#) and doing it twice would double
+// every ordinal. LFun and LError are excluded for a different reason, stated
+// rather than assumed: their payloads are the function and the captured
+// stack, which the closure walk and errorValue already govern, and giving
+// them identity ordinals here would make every fingerprint of a program
+// containing a function depend on funData identity -- which a fork
+// legitimately changes.
+func (w *fingerprinter) annotation(v *lisp.LVal) {
+	switch v.Type {
+	case lisp.LSortMap, lisp.LBytes, lisp.LNative, lisp.LFun, lisp.LError:
+		// These arms own this header's Native; see the doc above.
+		return
+	default:
+		// Every other type can carry an embedder annotation.
+	}
+	if !isPointerPayload(v.Native) || isCellViewLink(v) {
+		return
+	}
+	n, first := w.id(v.Native)
+	if !first {
+		w.emitf("annot#%d", n)
+		return
+	}
+	w.emitf("annot#%d(%T)", n, v.Native)
+}
+
+// kernelOwnedPayload reports whether a header's Native belongs to the
+// KERNEL rather than to an embedder, and is therefore governed by something
+// other than the native policy.
+//
+// The cross-fork census asks "is this payload shared between two forks".
+// That question is only meaningful for payloads whose per-fork privacy the
+// native policy is responsible for. Three kinds are not:
+//
+//   - LFun's *funData IS the function. Every builtin in every package is
+//     one, and packages are SHARED between forks by design, so counting them
+//     turns a census of embedder payloads into a census of the standard
+//     library -- measured at 142 entries for a graph with three real
+//     payloads in it. The part a fork must copy is the closure ENVIRONMENT,
+//     which the LFun arm walks separately.
+//   - LError's *CallStack is a captured stack. Its identity carries no
+//     observable state -- CallStack.Copy allocates an exact-length Frames
+//     slice at every capture site and the only mutators run on the live
+//     evaluator stack -- which is the same reason walkers.go exempts it from
+//     the memo registry, measured there by
+//     TestCopyAliasesCallStackAcrossHeaders.
+//   - a cell-view link is a reference to a root, not a payload at all.
+//
+// Note what is NOT here: LBytes's *[]byte and LSortMap's *MapData. Those are
+// embedder-visible mutable storage whose per-fork privacy is exactly the
+// native policy's job, and keying the census on `v.Type == LNative` was
+// hiding both.
+func kernelOwnedPayload(v *lisp.LVal) bool {
+	switch v.Type {
+	case lisp.LFun, lisp.LError:
+		return true
+	default:
+		// Fall through to the link check.
+	}
+	return isCellViewLink(v)
+}
+
 func isPointerPayload(payload any) bool {
 	if payload == nil {
 		return false
@@ -411,6 +533,7 @@ func (w *fingerprinter) value(v *lisp.LVal) {
 	} else {
 		w.emit("at(-)")
 	}
+	w.annotation(v)
 	switch v.Type {
 	case lisp.LSortMap:
 		w.sortedMap(v)
