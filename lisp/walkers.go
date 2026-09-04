@@ -221,11 +221,10 @@ var memoExemptions = []MemoExemption{
 	},
 	{
 		Subject: "*LVal",
-		Reason: "a cell view's link to its root header, carried in an LSExpr's Native (lisp.go, \"Cell views\"). " +
-			"It is not rebuilt storage: it names another header, which both rebuilding walkers already memoise " +
-			"as PayloadValue. detach drops it, because copy/detach do not preserve backing-array sharing " +
-			"(TestCopyAndDetachDropCellViewLink); Fork remaps it through the header memo, so two views of one " +
-			"root land on one fork-side root (TestForkCellViewSharesRootCopy). Established in this change.",
+		Reason: "a cell view's link to its root header (the convention on lisp.cellsView). A reference, not rebuilt " +
+			"storage: it names another header, which both rebuilding walkers already memoise as PayloadValue. " +
+			"Fork remaps it through that memo (TestForkCellViewSharesRootCopy); detach drops it " +
+			"(TestCopyAndDetachDropCellViewLink).",
 	},
 	{
 		Subject: "lisp.sealCheckState.roots",

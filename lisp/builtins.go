@@ -938,18 +938,14 @@ func builtinCDR(env *LEnv, args *LVal) *LVal {
 	//
 	// NOTE:  The elements are still shared, so this is not a copy.  See the
 	// note on builtinSlice.
-	r := QExpr(clampCap(v.Cells[1:]))
-	// Record the view so Fork can rebuild it over ITS copy of v -- see
-	// "Cell views" in lisp.go.
-	linkCellsView(r, v, 1)
 	// The clamp stops an append reaching PAST the view; it does not stop a
 	// write WITHIN it, which for a sealed v is still a write to shared
 	// program storage.  So the constraint travels with the backing array the
 	// view still shares (lisp/seal.go), and the guarded mutation sites
 	// (stable-sort, slice 'vector) see it on the view exactly as they would
-	// on v itself.
-	r.sealed = v.sealed
-	return r
+	// on v itself -- newCellsView carries it, and records the view so Fork
+	// can rebuild it over ITS copy of v (the convention on cellsView).
+	return newCellsView(v, 1, clampCap(v.Cells[1:]))
 }
 
 // clampCap returns cells with its capacity cut down to its length, so that a
@@ -982,12 +978,9 @@ func builtinRest(env *LEnv, args *LVal) *LVal {
 	if len(cells) < 2 {
 		return Nil()
 	}
-	// Three-index reslice -- see builtinCDR (issue #373).
-	r := QExpr(clampCap(cells[1:]))
-	linkCellsView(r, seqHolder(v), 1) // "Cell views", lisp.go
-	// The sealed constraint travels with the shared backing -- see builtinCDR.
-	r.sealed = v.sealed
-	return r
+	// Three-index reslice, seal and view link as in builtinCDR (issue #373;
+	// the convention on cellsView).
+	return newCellsView(seqHolder(v), 1, clampCap(cells[1:]))
 }
 
 func builtinFirst(env *LEnv, args *LVal) *LVal {
@@ -1592,7 +1585,6 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 		*cp = *list
 		cp.sealed = false
 		cp.Cells = nil
-		cp.clearCellsView()
 		list = cp
 	}
 	cells := seqCells(list)
@@ -2133,18 +2125,13 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 	case LBytes:
 		list = Bytes(clampCapBytes(list.Bytes()[i:j]))
 	default: // isSeq(list)
-		sealed := list.sealed
-		src := list
-		list = QExpr(clampCap(seqCells(src)[i:j]))
-		// Recorded as a view of src's storage so Fork rebuilds it over its
-		// copy of src ("Cell views", lisp.go).  The 'vector arm below wraps
-		// this same header's Cells, so the link travels with it.
-		linkCellsView(list, seqHolder(src), i)
 		// The clamp stops an append growing past the view (issue #373); the
 		// view still shares the original backing WITHIN its own bounds, so a
 		// sealed input's constraint travels with the intermediate value
-		// (lisp/seal.go) and the 'vector arm below copies on it.
-		list.sealed = sealed
+		// (lisp/seal.go) and the 'vector arm below refuses on it.  The view
+		// is recorded as a window onto the input's storage (the convention
+		// on cellsView); the 'vector arm links its holder through it.
+		list = newCellsView(seqHolder(list), i, clampCap(seqCells(list)[i:j]))
 	}
 
 	// Convert the intermediate sliced value into the desired type
@@ -2233,13 +2220,12 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 		// window's length, or zero for the sealed empty carve-out -- so
 		// Vector derives the identical value without copying a dims list
 		// this site would otherwise build only to have Array duplicate.
-		vec := Vector(cells)
+		//
 		// The vector's data holder shares the window's slots with the
-		// source (stable-sort through either is visible through the
-		// other): link it as the window is linked ("Cell views", lisp.go).
-		// list is the intermediate view, so the link resolves to its root.
-		linkCellsView(vec.Cells[1], list, 0)
-		return vec
+		// source, so it is built as a view of the intermediate (and so of
+		// its root) and wrapped -- the convention on cellsView.  On the
+		// sealed empty carve-out cells is nil and no link is recorded.
+		return vectorFromHolder(newCellsView(list, 0, cells))
 	default:
 		return env.Errorf("type specifier is not valid: %v", typespec)
 	}
@@ -2414,16 +2400,14 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		// content of the issue #373 fix.  elpsvet's alias rule does not
 		// follow the capacity through the helper call, so the proof is
 		// recorded here rather than the rule weakened.
-		//elps:mutates appends into a cap==len reslice (clampCap), which forces a reallocation; seq's backing is unreachable from the result
-		vec := Array(nil, append(clampCap(cells), vals...))
 		if len(vals) == 0 {
 			// The one input the clamp does not reallocate (see above): the
-			// new vector's data holder is a view of seq's storage, and is
-			// recorded as one so a fork keeps the two on one array ("Cell
-			// views", lisp.go).
-			linkCellsView(vec.Cells[1], seqHolder(seq), 0)
+			// new vector's data holder is a window onto seq's storage and
+			// is built as one (the convention on cellsView).
+			return vectorFromHolder(newCellsView(seqHolder(seq), 0, clampCap(cells)))
 		}
-		return vec
+		//elps:mutates appends into a cap==len reslice (clampCap), which forces a reallocation; seq's backing is unreachable from the result
+		return Array(nil, append(clampCap(cells), vals...))
 	default:
 		return env.Errorf("type specifier is invalid: %v", typespec)
 	}

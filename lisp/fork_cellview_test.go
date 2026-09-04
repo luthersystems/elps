@@ -491,3 +491,65 @@ func TestForkManyViewsResolveInConstantWork(t *testing.T) {
 		t.Errorf("%d views added %.0f allocations per fork (want at most %d): a view is costing more than a header", n, extra, 3*n)
 	}
 }
+
+// TestCellViewExportedAccessors pins the surface a walker outside this
+// package reads the convention through: IsCellView reports the link AS
+// RECORDED (a stale link is still a link, so its Native is never a
+// payload), CellView is the validated resolver and applies forker.val's
+// own rule -- a reassigned view, or a view whose root was reassigned, is
+// ok=false, and Fork copies it privately by the same call
+// (TestForkCellViewStaleLinkCopiesPrivately).
+func TestCellViewExportedAccessors(t *testing.T) {
+	env := newForkTestEnv(t)
+	l := setGlobal(t, env, "l", "list", ints(30, 10, 20)...)
+	tail := setGlobal(t, env, "tail", "cdr", Symbol("l"))
+
+	if l.IsCellView() {
+		t.Errorf("a list that owns its Cells reports IsCellView")
+	}
+	if _, _, ok := l.CellView(); ok {
+		t.Errorf("CellView ok on a non-view")
+	}
+	if !tail.IsCellView() {
+		t.Fatalf("cdr's result does not report IsCellView")
+	}
+	if root, off, ok := tail.CellView(); !ok || root != l || off != 1 {
+		t.Fatalf("CellView = (%p, %d, %v), want (%p, 1, true)", root, off, ok, l)
+	}
+
+	// The append!-reallocated shape, on the view: its Cells reassigned.
+	tail.Cells = ints(7, 8) //elps:mutates the template on purpose, to arm the stale link
+	if !tail.IsCellView() {
+		t.Errorf("a stale link stopped reporting IsCellView; a walker would take its Native for a payload")
+	}
+	if _, _, ok := tail.CellView(); ok {
+		t.Errorf("CellView resolves a link that no longer describes the view")
+	}
+	// Fork agrees, through the same call: a private copy with the
+	// reassigned contents, and no link.
+	fork, err := env.Fork()
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	ftail := packageSymbol(t, fork, "tail")
+	if got := intsOf(t, ftail); !eqInts(got, []int{7, 8}) {
+		t.Errorf("fork copied the stale view as %v, want [7 8]", got)
+	}
+	if ftail.IsCellView() {
+		t.Errorf("stale link survived the fork")
+	}
+
+	// The same shape on the root: a fresh view, then the root's Cells
+	// reassigned.
+	tail2 := setGlobal(t, env, "tail2", "cdr", Symbol("l"))
+	if _, _, ok := tail2.CellView(); !ok {
+		t.Fatalf("fresh view does not resolve")
+	}
+	l.Cells = ints(1, 2, 3) //elps:mutates the template on purpose, to arm the stale link
+	if !tail2.IsCellView() {
+		t.Errorf("IsCellView changed when the root was reassigned")
+	}
+	if _, _, ok := tail2.CellView(); ok {
+		t.Errorf("CellView resolves a link whose root was reassigned")
+	}
+}

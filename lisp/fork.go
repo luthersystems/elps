@@ -473,32 +473,36 @@ func (f *forker) val(v *LVal) *LVal {
 	// Macro-expansion debug metadata does not travel; it is only populated
 	// under an attached debugger and its contexts alias template values.
 	cp.macroExpansion = nil
-	if root, off := v.cellsView(); root != nil {
-		// v's Cells is a VIEW of root's ("Cell views", lisp.go): the
-		// template holds both over one backing array, so the fork must
-		// too, or an in-place write through one stops reaching the other
-		// (TestForkPreservesCellSlotAliasing).  Copy the root -- which
-		// walks its elements, so the view's are memoised as well -- and
-		// hand the view the matching window of the copy, clamped to its
-		// length as every copied slice here is.
+	if v.IsCellView() {
+		// v's Cells is a VIEW of another header's (the convention on
+		// cellsView): the template holds both over one backing array, so
+		// the fork must too, or an in-place write through one stops
+		// reaching the other (TestForkPreservesCellSlotAliasing).
 		//
 		// The struct copy above aliased the view's header AND its link;
 		// neither may survive as template memory.  The link is remapped to
 		// the fork's root, the header is replaced below or dropped.
 		cp.Cells = nil
-		rcp := f.val(root)
-		cp.Native = rcp
 		n := len(v.Cells)
-		if rcp != root && n > 0 && off >= 0 && off+n <= len(root.Cells) && off+n <= len(rcp.Cells) &&
-			&root.Cells[off] == &v.Cells[0] && &rcp.Cells[0] != &root.Cells[0] {
-			cp.Cells = rcp.Cells[off : off+n : off+n]
-			return cp
+		if root, off, ok := v.CellView(); ok {
+			// CellView is the template-side rule (the link still describes
+			// v).  Copy the root -- which walks its elements, so the view's
+			// are memoised as well -- and, provided the root was copied
+			// rather than shared onto an array of its own that the window
+			// fits, hand the view the matching window of the copy, clamped
+			// to its length as every copied slice here is.
+			rcp := f.val(root)
+			if rcp != root && off+n <= len(rcp.Cells) && &rcp.Cells[0] != &root.Cells[0] {
+				cp.Native = rcp
+				cp.Cells = rcp.Cells[off : off+n : off+n]
+				return cp
+			}
 		}
-		// The link no longer describes the template -- the view's or the
-		// root's Cells was reassigned since it was set, or the root was
-		// shared rather than copied -- so the two are not on one array in
-		// the template either.  Copy privately, exactly as before the link
-		// existed, and drop it (TestForkCellViewStaleLinkCopiesPrivately).
+		// The link no longer describes the template (it is advisory; see
+		// cellsView), or the root was shared, so the two are not on one
+		// array in the template either.  Copy privately, exactly as before
+		// the link existed, and drop it
+		// (TestForkCellViewStaleLinkCopiesPrivately).
 		cp.Native = nil
 		cp.Int = 0
 		cells := make([]*LVal, n)

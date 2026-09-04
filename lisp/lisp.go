@@ -331,13 +331,8 @@ func (v *LVal) MacroExpansion() (MacroExpansionMeta, bool) {
 // fieldalignment check (see .golangci.yml) enforces this.
 type LVal struct {
 	// Native is generic storage for data which cannot be represented as an
-	// LVal (and thus can't be stored in Cells).
-	//
-	// On an LSExpr it has exactly one use: a cell VIEW's root header (see
-	// "Cell views" at cellsView).  No other producer gives an LSExpr a
-	// payload -- the type switches in detach and Fork reject one -- so the
-	// link needs no field of its own and LVal stays 112 bytes
-	// (TestLValSizeUnchanged, TestCellViewLinkNeedsNoField).
+	// LVal (and thus can't be stored in Cells).  On an LSExpr it carries a
+	// cell view's root; the convention is stated once, on cellsView.
 	Native interface{}
 
 	// source is the value's originating location in source code.  The
@@ -376,7 +371,7 @@ type LVal struct {
 	Type LType
 
 	// Fields used for numeric types.  On an LSExpr, Int is a cell view's
-	// element offset into its root's Cells, and nothing else (cellsView).
+	// offset; the convention is stated once, on cellsView.
 	Int   int
 	Float float64
 
@@ -664,6 +659,23 @@ func QExpr(cells []*LVal) *LVal {
 // not copied.
 func Vector(cells []*LVal) *LVal {
 	return Array(nil, cells)
+}
+
+// vectorFromHolder wraps an already-built data holder as a one-dimensional
+// vector: the shape Vector produces, with the holder supplied rather than
+// minted.  The two vector-producing view sites (slice 'vector, and
+// append 'vector with no values) build their holder with newCellsView and
+// wrap it here, so the header that carries a view link is one the site
+// itself constructed (cmd/elpsvet's freshness rule; the convention on
+// cellsView).
+func vectorFromHolder(holder *LVal) *LVal {
+	return &LVal{
+		Type: LArray,
+		Cells: []*LVal{
+			QExpr([]*LVal{Int(len(holder.Cells))}),
+			holder,
+		},
+	}
 }
 
 // MakeVector returns a vector with n cells initialized to Nil.
@@ -1678,9 +1690,12 @@ func (v *LVal) Copy() *LVal {
 		cp.Native = mdata
 	default:
 		cp.Cells = v.copyCells()
-		// Fresh storage: a view link copied by the struct assignment would
-		// now be stale (lisp.go, "Cell views").
-		cp.clearCellsView()
+		if _, isView := v.Native.(*LVal); isView {
+			// Fresh storage, so the struct copy's cell-view link is stale
+			// (the convention on cellsView; TestCopyAndDetachDropCellViewLink).
+			cp.Native = nil
+			cp.Int = 0
+		}
 	}
 	return cp
 }
@@ -1966,56 +1981,96 @@ func isSeq(v *LVal) bool {
 	return v.Type == LSExpr || isVec(v)
 }
 
-// Cell views.
+// Cell views -- THE convention, stated here and nowhere else.  Every
+// other mention (the Native and Int field docs, forker.val, detach, the
+// walker registry's exemption row, docs/fork.md, the alias guard in
+// elpstest) points here rather than restating it.
 //
-// cdr, rest, slice and (append 'vector seq) with no values return a VIEW: a
-// fresh LSExpr header whose Cells is a three-index reslice of another
-// value's backing array, sharing that array's elements AND slots
+// WHAT.  cdr, rest, slice and (append 'vector seq) with no values return a
+// VIEW: a fresh LSExpr header whose Cells is a three-index reslice of
+// another value's backing array, sharing that array's elements AND slots
 // (builtinCDR; the clamp is issue #373).  An in-place write through either
 // header -- stable-sort's lvalByFun.Swap -- is visible through the other,
 // and that is language behaviour: a fresh environment and a fork of a
-// template must answer alike (docs/fork.md, "aliasing and cycles
-// preserved").
+// template must answer alike (docs/fork.md).
 //
-// A slice header carries no handle on the ARRAY it points into, only on
-// its own element 0, so a walker that copies one array per header cannot
-// tell two views of one array from two arrays: forker.val gave every view a
-// private copy, and a template holding (set 'l (list 30 10 20)) and
-// (set 'tail (cdr l)) answered (stable-sort < l) tail as '(20 30) while
-// its fork answered '(10 20) (TestForkPreservesCellSlotAliasing, the
-// permanent control for this).  Recovering the relationship at fork time
-// by sorting header addresses was built and measured first: +34% on
-// BenchmarkForkSortedMap against a 15% gate, on a template with no views
-// at all, because the sort is paid per mutable value whether or not
-// anything aliases.  So the relationship is RECORDED where the view is
-// made, and Fork resolves it in O(1) per header.
+// WHY RECORDED.  A slice header carries no handle on the ARRAY it points
+// into, only on its own element 0, so a walker that copies one array per
+// header cannot tell two views of one array from two arrays: forker.val
+// gave every view a private copy, and a template holding
+// (set 'l (list 30 10 20)) and (set 'tail (cdr l)) answered
+// (stable-sort < l) tail as '(20 30) while its fork answered '(10 20)
+// (TestForkPreservesCellSlotAliasing, the permanent control).  Recovering
+// the relationship at fork time by sorting header addresses was built and
+// measured first: +34% on BenchmarkForkSortedMap against a 15% gate, on a
+// template with no views at all, because the sort is paid per mutable
+// value whether or not anything aliases.  So the relationship is RECORDED
+// where the view is made, and Fork resolves it in O(1) per header.
 //
-// A view header holds its ROOT -- the first header in its ancestry whose
-// Cells is not itself a view -- in Native, and its element offset into the
-// root's Cells in Int.  The root, not the immediate parent: a view of a
-// view resolves in one hop, offsets compose by addition (linkCellsView),
-// and a chain built by iteration, (set 'x (cdr x)) in a loop, retains one
-// header rather than every intermediate.
+// WHERE.  Only an LSExpr header carries a link, in two fields that were
+// provably unused on an LSExpr before this: Native holds the ROOT header
+// (Native otherwise carries an LSortMap's *MapData, an LBytes' *[]byte, an
+// LError's *CallStack, an LFun's *funData; detach's type switch rejected
+// any LSExpr payload), and Int holds the view's element offset into
+// root.Cells (Int is otherwise numeric).  So LVal does not grow:
+// TestLValSizeUnchanged and TestCellViewLinkNeedsNoField pin 112 bytes.
+// The root is the first header in the view's ancestry whose Cells is not
+// itself a view, never the immediate parent: a view of a view resolves in
+// one hop, offsets compose by addition (newCellsView), and a chain built
+// by iteration, (set 'x (cdr x)) in a loop, retains one header rather than
+// every intermediate.  A view of a sealed list is not linked: Fork shares
+// sealed values outright.
 //
-// The link is ADVISORY, and that is what keeps it safe against everything
-// that reassigns a header's Cells.  forker.val re-points a view onto the
-// root's copy only after checking, on the template, that the view's
-// element 0 still IS root.Cells[off] -- slot identity, no unsafe.  A header
-// whose Cells was reassigned since the link was set (append! growing a
-// vector past its capacity, elpspath's in-place set, embedder Go code
-// writing the exported field) has already parted from its root in the
-// template, so the fork copies it privately -- which is exactly what the
-// template holds (TestForkCellViewStaleLinkCopiesPrivately).  Copy and
-// detach allocate fresh storage and drop the link.
+// ADVISORY.  The link is a hint, checked before it is used: forker.val
+// re-points a view onto the root's copy only after confirming, on the
+// template, that the view's element 0 still IS root.Cells[off] -- slot
+// identity, no unsafe.  A header whose Cells was reassigned since the link
+// was set (append! growing a vector past its capacity, elpspath's in-place
+// set, embedder Go code writing the exported field) has already parted
+// from its root in the template, so the fork copies it privately, which is
+// exactly what the template holds (TestForkCellViewStaleLinkCopiesPrivately).
+// A stale link is therefore never a correctness hazard, only a lost
+// optimisation.
 //
-// Not preserved, on purpose: spare-CAPACITY aliasing.  A view is clamped
-// to its length where it is made and the fork clamps its copy the same
-// way, so an append through a view reallocates on both sides rather than
+// WHO WRITES IT.  Only a constructor: newCellsView builds the view header
+// field by field and sets the link on the value it is building, and the
+// two sites that give a copy fresh storage (Copy, detach) clear it on the
+// copy they are building.  No function writes the link on a value it did
+// not construct, and cmd/elpsvet's freshness rule enforces that -- which
+// is why the link can be trusted to describe a header's own Cells at the
+// moment it is set.
+//
+// LIFETIME.  Header copies (Quote, Splice, shallowUnquote, `*cp = *v`)
+// carry the link along, which is right: they share the same array.  Copy
+// and detach allocate fresh storage and clear it
+// (TestCopyAndDetachDropCellViewLink), so backing-array sharing is still
+// not preserved by copy (TestCopyDoesNotPreserveBackingArraySharing).
+// Fork remaps it onto the fork's root, so a fork-side view never names
+// template memory (TestForkCellViewMadeInTransaction).
+//
+// A REFERENCE, NOT A PAYLOAD.  To every walker the link is an edge to
+// another header, not embedder data: the fork and detach walkers memoise
+// the root as an ordinary *LVal (walkers.go exempts "*LVal" on that
+// ground), and the alias guard walks the root as reachable state and keeps
+// walking the view's own Cells.  Readers outside this package use exactly
+// two accessors and re-derive nothing from the fields: IsCellView, cheap
+// and unvalidated, answers "does this header CARRY a link" -- the question
+// a walker's type-switch arm asks to keep a view's Native out of the
+// payload arm, stale or not; CellView is the VALIDATED resolver, returning
+// the root and offset only when the link still describes the header
+// (slot identity, above), so a stale link reads as no view.  Fork and the
+// guard both go through CellView, so what counts as a live link is one
+// rule in one place (TestCellViewExportedAccessors).
+//
+// NOT PRESERVED, on purpose: spare-CAPACITY aliasing.  A view is clamped to
+// its length where it is made and the fork clamps its copy the same way,
+// so an append through a view reallocates on both sides rather than
 // writing a neighbouring slot of the root -- isolation wins over fidelity
 // there (issue #373; the len==0 branch of forker.val).
 
 // cellsView returns the root header whose Cells v's Cells views, and v's
 // element offset into that root's Cells, or (nil, 0) when v owns its Cells.
+// The in-package reader of the convention above.
 func (v *LVal) cellsView() (root *LVal, off int) {
 	if v.Type != LSExpr {
 		return nil, 0
@@ -2027,28 +2082,61 @@ func (v *LVal) cellsView() (root *LVal, off int) {
 	return root, v.Int
 }
 
-// linkCellsView records that view's Cells is parent's Cells from element
-// off on.  parent may itself be a view; the link always lands on the root.
-// A sealed parent is not linked: Fork shares sealed values outright, so
-// there is nothing to re-point and the link would only retain the parent.
-func linkCellsView(view, parent *LVal, off int) {
-	if len(view.Cells) == 0 || parent.sealed {
-		return
+// IsCellView reports whether v CARRIES a cell-view link -- an LSExpr whose
+// Native names another header (see the convention on cellsView).  Cheap
+// and unvalidated: it is the question a value walker's type switch asks so
+// that a view's Native is treated as a reference, never as a payload, even
+// when the link has gone stale.  CellView answers whether the link is live.
+func (v *LVal) IsCellView() bool {
+	root, _ := v.cellsView()
+	return root != nil
+}
+
+// CellView resolves v's cell-view link: the root header whose Cells v's
+// Cells is a window onto, and v's element offset into root.Cells, with ok
+// true only when the link still DESCRIBES v -- v's element 0 is
+// root.Cells[off] and the window fits (slot identity, no unsafe).  A view
+// whose Cells, or whose root's Cells, was reassigned since the link was
+// set gets ok false and is, to every consumer, not a view.  This is THE
+// rule: forker.val calls it before re-pointing a view, and a walker calls
+// it before treating a link as anything but a reference, so what counts as
+// a live link is defined once (TestCellViewExportedAccessors,
+// TestForkCellViewStaleLinkCopiesPrivately).  The returned root is the
+// value's own; callers must treat it as read-only.
+func (v *LVal) CellView() (root *LVal, off int, ok bool) {
+	root, off = v.cellsView()
+	n := len(v.Cells)
+	if root == nil || n == 0 || off < 0 || off+n > len(root.Cells) || &root.Cells[off] != &v.Cells[0] {
+		return nil, 0, false
+	}
+	return root, off, true
+}
+
+// newCellsView constructs the view header cdr, rest, slice and
+// (append 'vector seq) return: a quoted list over cells, which the caller
+// has already clamped to its length (clampCap, issue #373) and which is a
+// window onto parent's Cells starting at element off.  The link is set
+// here, on the value this function is building -- the only place a link
+// is ever written (see the convention on cellsView) -- and lands on
+// parent's root when parent is itself a view.  The seal travels with the
+// shared backing exactly as before (builtinCDR); a sealed parent's view is
+// sealed and not linked, since Fork shares sealed values outright.
+func newCellsView(parent *LVal, off int, cells []*LVal) *LVal {
+	view := &LVal{
+		Type:   LSExpr,
+		quoted: true,
+		Cells:  cells,
+		sealed: parent.sealed,
+	}
+	if len(cells) == 0 || parent.sealed {
+		return view
 	}
 	if root, base := parent.cellsView(); root != nil {
 		parent, off = root, base+off
 	}
 	view.Native = parent
 	view.Int = off
-}
-
-// clearCellsView drops v's view link, for the sites that give a header
-// copy storage of its own (Copy, detach).
-func (v *LVal) clearCellsView() {
-	if _, isView := v.Native.(*LVal); isView && v.Type == LSExpr {
-		v.Native = nil
-		v.Int = 0
-	}
+	return view
 }
 
 // seqHolder returns the LSExpr header whose Cells seqCells(v) returns: v
