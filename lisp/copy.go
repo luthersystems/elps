@@ -54,9 +54,14 @@ package lisp
 //
 // Internal aliasing is preserved exactly as detach preserves it: a value
 // reachable along two paths is copied once, and a cycle becomes the same
-// cycle in the copy rather than infinite recursion.
+// cycle in the copy rather than infinite recursion.  The same holds one
+// level down for the payloads a header points at: two DISTINCT *LVals over
+// one *MapData, one *[]byte or one NativeCloner handle — what
+// `(quasiquote (unquote a))` produces — share one rebuilt payload in the
+// copy, so a write through either is still visible through the other
+// (issue #585; the walker's payload memos, lisp/detach.go).
 //
-// That preservation is at the *LVal level and no lower.  Two DISTINCT
+// That preservation stops at the Cells backing array.  Two DISTINCT
 // *LVals that share a Cells backing array — what cdr, rest and (slice
 // 'list …) produce, and what lets `append 'vector` write a sibling's spare
 // capacity — land in the copy with separate backing arrays, so an in-place
