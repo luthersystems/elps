@@ -3,7 +3,6 @@
 package libstring
 
 import (
-	"bytes"
 	"strings"
 
 	"github.com/luthersystems/elps/lisp"
@@ -108,11 +107,22 @@ func builtinJoin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if sep.Type != lisp.LString {
 		return env.Errorf("second argument is not a string: %v", sep.Type)
 	}
-	var buf bytes.Buffer
-	for i, cell := range list.Cells {
+	// Type-check and measure in one pass, so the buffer is sized once.
+	// The first non-string is reported exactly where the write loop would
+	// have found it: nothing was written before it either way.
+	size := 0
+	for _, cell := range list.Cells {
 		if cell.Type != lisp.LString {
 			return env.Errorf("first argument is not a list of strings: %v", cell.Type)
 		}
+		size += len(cell.Str)
+	}
+	if len(list.Cells) > 1 {
+		size += len(sep.Str) * (len(list.Cells) - 1)
+	}
+	var buf strings.Builder
+	buf.Grow(size)
+	for i, cell := range list.Cells {
 		buf.WriteString(cell.Str)
 		if i < len(list.Cells)-1 {
 			buf.WriteString(sep.Str)
