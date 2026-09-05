@@ -92,6 +92,12 @@ import (
 // for exactly that reason).  A leaf therefore costs its header and nothing
 // else.  TestCopyLeafAllocatesLikeAStructCopy and
 // TestCopyMemoSpillsPastTheInlineArray pin both ends.
+//
+// A caller that knows the walk is large can say so: copyWithHint reserves
+// the map at the tree's size before the walk starts, which spares the load
+// path (lisp.TextLoader copies a cached tree on every load, and counts it
+// once at admission) the map's growth through every doubling.  The walk is
+// the same either way; only where the memo lives differs.
 type copier struct {
 	// small and n are the header memo until the walk outgrows them.
 	small [copierSmallMemo]copyPair
@@ -109,6 +115,16 @@ type copier struct {
 // amortised over a copy that already allocates per node.
 const copierSmallMemo = 16
 
+// copierMemoHintCap bounds the memo a hint may reserve up front.  A hint is
+// advisory: it is taken on trust from a caller inside the package, but it
+// reserves memory before a single node has been copied, so a wrong one -- an
+// interning Reader whose unfolded visit count is far above its distinct
+// node count -- must not become an unbounded reservation.  Past the cap the
+// memo grows from the cap exactly as an unhinted walk grows from empty.  It
+// mirrors the cache admission's node budget, sealFPMaxNodes: orders of
+// magnitude beyond any top-level expression a parser emits.
+const copierMemoHintCap = sealFPMaxNodes
+
 type copyPair struct{ src, dst *LVal }
 
 func (c *copier) lookup(v *LVal) (*LVal, bool) {
@@ -125,15 +141,54 @@ func (c *copier) lookup(v *LVal) (*LVal, bool) {
 }
 
 func (c *copier) remember(v, cp *LVal) {
-	if c.n < len(c.small) {
-		c.small[c.n] = copyPair{v, cp}
-		c.n++
-		return
-	}
 	if c.seen == nil {
+		if c.n < len(c.small) {
+			c.small[c.n] = copyPair{v, cp}
+			c.n++
+			return
+		}
 		c.seen = make(map[*LVal]*LVal, 2*copierSmallMemo)
 	}
 	c.seen[v] = cp
+}
+
+// presize reserves the header memo for a walk of about n headers, so a
+// large tree is memoised into a map built once at its final size instead of
+// one grown from empty through every doubling.  A hint that fits the inline
+// array is ignored -- the walk then costs exactly what an unhinted one
+// costs -- and a hint past copierMemoHintCap is clamped to it.  Once the map
+// exists remember skips the inline array, so the lookup path is the map
+// alone (c.n stays 0).  A hint smaller than the tree is harmless: the map
+// grows from the hint as it would from empty.
+func (c *copier) presize(n int) {
+	if n <= copierSmallMemo {
+		return
+	}
+	if n > copierMemoHintCap {
+		n = copierMemoHintCap
+	}
+	c.seen = make(map[*LVal]*LVal, n)
+}
+
+// copyWithHint is Copy for a caller that knows about how many headers the
+// walk will memoise: the same walk, the same memos, the same output -- one
+// header per source header, the same aliasing, a cycle closing onto the copy
+// -- with the header memo reserved at n up front (see presize).  It exists
+// for lisp.TextLoader, which copies a cached parse tree on EVERY load and
+// has already counted the tree's nodes at admission: on a library-sized
+// source the map the unhinted walk grows from empty is thousands of entries
+// through every doubling, and that growth's garbage and rehashing is a
+// measurable share of the per-load cost (#604's benchmark gate,
+// BenchmarkTextLoaderLoad: sec/op +15.5 %, B/op +8.9 %, allocs/op +2.5 % --
+// the signature of map growth, not of per-node allocation).  Copy itself is
+// unchanged for every other caller, and a hint of 0 IS Copy.
+func (v *LVal) copyWithHint(n int) *LVal {
+	if v == nil {
+		return nil
+	}
+	var c copier
+	c.presize(n)
+	return c.copy(v)
 }
 
 func (c *copier) copy(v *LVal) *LVal {

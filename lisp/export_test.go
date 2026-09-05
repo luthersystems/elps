@@ -135,3 +135,16 @@ func LoadCacheKeyForTest(name, loc, readerID string, byLoc bool, src []byte) str
 func ReaderIdentityForTest(r Reader) (string, bool) {
 	return readerIdentity(r)
 }
+
+// CopyWithHint exposes (*LVal).copyWithHint (lisp/copier.go) to package
+// lisp_test, so the hinted walk can be driven through the alias guard's
+// CheckWalker and compared node for node against Copy.
+func CopyWithHint(v *LVal, n int) *LVal { return v.copyWithHint(n) }
+
+// CopierSmallMemo exposes the inline header-memo size so the hinted-copy
+// tests can pick hints on either side of it.
+const CopierSmallMemo = copierSmallMemo
+
+// TextLoaderCopyHints runs TextLoader's admission walk over exprs and
+// returns the per-expression memo hints it records for the per-load copy.
+func TextLoaderCopyHints(exprs []*LVal) ([]int, error) { return admitTextLoaderStream(exprs) }
