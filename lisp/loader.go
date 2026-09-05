@@ -61,33 +61,9 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 	if err != nil {
 		return nil, err
 	}
-	// One walk state for the whole stream, not one per expression, because
-	// what the walk accumulates is a property of the FILE: the strict path's
-	// node budget is taken against the stream, and the memo that makes it
-	// cheap costs one map for the file instead of len(exprs) of them.
-	//
-	// It is NOT for cross-expression cycle detection.  The on-path set is
-	// emptied as each expression's walk unwinds -- on the error path too, as
-	// of the round-four fix -- so between two top-level expressions there is
-	// nothing in it for a later expression to collide with, and a "cycle
-	// spanning two expressions" is not a thing a shared walk can see.  What
-	// a shared walk does carry across expressions is the strict memo, and a
-	// node with a COMPLETED memo entry has already been proven acyclic.
-	w := newTextLoaderWalk()
-	for _, expr := range exprs {
-		err := admitExpr(expr, w)
-		if err != nil {
-			lerr := Error(err)
-			// Copied, not aliased: the error escapes to the embedder through
-			// GoError while expr stays part of the loaded program, so the
-			// two must not share a *token.Location (cold path; the copy is
-			// free in practice).  expr itself may be the nil the walk just
-			// refused, so the location is read only when there is one.
-			if expr != nil {
-				lerr.source = copyLocation(expr.source)
-			}
-			return nil, GoError(lerr)
-		}
+	hints, err := admitTextLoaderStream(exprs)
+	if err != nil {
+		return nil, err
 	}
 
 	// THE PER-LOAD COPY STAYS, and the sealing work is why it is worth
@@ -113,10 +89,16 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 	// speculative consumer, so the optimization is left on the table with
 	// its measurements recorded (#379 item 4: -72.3% sec/op, -61.9%
 	// allocs/op on a 50 KB source) for whoever has a caller to justify it.
+	//
+	// The copy is Copy with a size hint, and nothing else: the admission walk
+	// above counted every expression's nodes, and handing that count to the
+	// copier lets it build its header memo once at the tree's size instead of
+	// growing it from empty on every load (see copyWithHint).  The tree each
+	// load receives is the one Copy would have produced.
 	fn := func(env *LEnv) *LVal {
 		var lval *LVal
-		for _, expr := range exprs {
-			lval = env.Eval(expr.Copy())
+		for i, expr := range exprs {
+			lval = env.Eval(expr.copyWithHint(hints[i]))
 			if lval.Type == LError {
 				return lval
 			}
@@ -128,6 +110,53 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 	}
 
 	return fn, nil
+}
+
+// admitTextLoaderStream runs TextLoader's admission walk over one stream and
+// returns, per top-level expression, the memo hint its per-load copy is
+// made with: the number of nodes the walk visited under that expression.
+// For a parser's tree -- no sharing -- that is exactly the number of headers
+// (*LVal).copyWithHint will memoise; for an interning Reader's DAG it is an
+// over-count (one visit per path), which presize clamps, and which costs a
+// larger reservation and nothing else.
+//
+// The count is taken here, during the walk admission already makes, so a
+// load pays no walk of its own for it; and it is written once, before the
+// Loader exists, so concurrent loads through one Loader only ever read it.
+//
+// One walk state for the whole stream, not one per expression, because what
+// the walk accumulates is a property of the FILE: the strict path's node
+// budget is taken against the stream, and the memo that makes it cheap
+// costs one map for the file instead of len(exprs) of them.
+//
+// It is NOT for cross-expression cycle detection.  The on-path set is
+// emptied as each expression's walk unwinds -- on the error path too, as of
+// the round-four fix -- so between two top-level expressions there is
+// nothing in it for a later expression to collide with, and a "cycle
+// spanning two expressions" is not a thing a shared walk can see.  What a
+// shared walk does carry across expressions is the strict memo, and a node
+// with a COMPLETED memo entry has already been proven acyclic.
+func admitTextLoaderStream(exprs []*LVal) ([]int, error) {
+	w := newTextLoaderWalk()
+	hints := make([]int, len(exprs))
+	for i, expr := range exprs {
+		before := w.visited
+		err := admitExpr(expr, w)
+		if err != nil {
+			lerr := Error(err)
+			// Copied, not aliased: the error escapes to the embedder through
+			// GoError while expr stays part of the loaded program, so the
+			// two must not share a *token.Location (cold path; the copy is
+			// free in practice).  expr itself may be the nil the walk just
+			// refused, so the location is read only when there is one.
+			if expr != nil {
+				lerr.source = copyLocation(expr.source)
+			}
+			return nil, GoError(lerr)
+		}
+		hints[i] = int(min(w.visited-before, int64(copierMemoHintCap)))
+	}
+	return hints, nil
 }
 
 // errReaderTreeUnbounded marks reader output that is not a finite tree: a
@@ -532,13 +561,18 @@ type loaderWalk struct {
 	onPath map[*LVal]struct{}
 	// unfolded is the stream's total QUOTE-BLIND unfolded size and
 	// evalUnfolded its total EVALUATED size, both saturating at
-	// loaderWalkUnfoldedCap; distinct counts the nodes actually visited.
-	// See loaderNodeInfo for which budget each one answers.  Strict path
-	// only: admitExpr does not accumulate them otherwise.
+	// loaderWalkUnfoldedCap; distinct counts the DISTINCT nodes the memo
+	// admitted.  See loaderNodeInfo for which budget each one answers.
+	// Strict path only: admitExpr does not accumulate them otherwise.
 	unfolded     int64
 	evalUnfolded int64
 	distinct     int64
-	strict       bool // cache path: node budget
+	// visited counts every node the walk was asked about, on every path:
+	// an integer increment per visit and no more, so the non-strict walk's
+	// allocate-nothing promise holds.  TextLoader reads it per expression
+	// (admitTextLoaderStream) to size the memo of each load's copy.
+	visited int64
+	strict  bool // cache path: node budget
 	// allowNative tolerates a Native payload on a sealable type.  TextLoader
 	// only; see newTextLoaderWalk.
 	allowNative bool
@@ -633,6 +667,9 @@ func (w *loaderWalk) check(v *LVal, depth int) (loaderNodeInfo, error) {
 	if v == nil {
 		return loaderNodeInfo{}, errReaderNilNode
 	}
+	// Counted before the singleton exit: the copier memoises a singleton's
+	// header like any other, so it is part of the memo a hint sizes.
+	w.visited++
 	// Singletons (Nil/true/false) are shared by design and immutable, so a
 	// parse may legitimately reach one from many positions.  They are exempt
 	// from every repeat rule and terminate the walk at once.

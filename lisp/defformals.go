@@ -111,7 +111,7 @@ func (c *formalsCopier) copy(formals *LVal) *LVal {
 	*cp = *formals
 	c.vals = c.vals[1:]
 	if n == 0 {
-		// LVal.copyCells returns nil for an empty list; match it.
+		// copier.cells returns nil for an empty list; match it.
 		//elps:mutates initialises the block-allocated copy above, not the caller's list
 		cp.Cells = nil
 		return cp

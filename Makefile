@@ -199,8 +199,9 @@ static-checks: check-golangci-version check-golangci-config
 # mutation-proof: revert each REAL historical fix in production code and
 # require it to be caught, by a needle measured for uniqueness and stability.
 #
-# For EIGHT of the nine rows that needle is a property string emitted by the
-# guard this PR adds. "By name" means the SPECIFIC property, not "some test
+# For ELEVEN of the twelve rows that needle is a property string emitted by the
+# guard this PR adds (one of them, the 604 array row, pairs it with the crasher's
+# committed fuzz seed, because the string alone is shared with the map-memo row). "By name" means the SPECIFIC property, not "some test
 # failed": needles shared across mutations assert nothing about the bug they
 # are filed under, and a needle that is only ~84% stable makes a required gate
 # flaky, which is worse than no gate.
@@ -211,7 +212,7 @@ static-checks: check-golangci-version check-golangci-config
 # in this PR's diff. So that row asserts "#579 stays fixed" rather than "the
 # new guard catches #579". The manifest notes in scripts/mutation-proof.sh
 # record why, and this comment says so here rather than leaving the sentence
-# above to overstate what all nine rows demonstrate. (It closes at the top of
+# above to overstate what all twelve rows demonstrate. (It closes at the top of
 # the stack: #601 folds cold-vs-fork parity into this same harness, and the
 # property row for #579 lands there, where the property exists.)
 #
@@ -229,8 +230,8 @@ static-checks: check-golangci-version check-golangci-config
 # runs), and 34s as actually observed in CI on ubuntu-24.04-arm, plus 5s for
 # the selftest -- 39s total added to the job. The CI figure is the real one;
 # the local figure is quoted only so the gap is on the record rather than
-# discovered later. Both predate the ninth row, so expect roughly an eighth
-# more; CI's own timing is the number to trust and it is reported per run. A nightly-only gate would let a mutation rot for a
+# discovered later. Both predate the ninth through twelfth rows (600 and the
+# three 604 copier rows), so expect roughly half again; CI's own timing is the number to trust and it is reported per run. A nightly-only gate would let a mutation rot for a
 # day, and 39s does not justify that.
 .PHONY: mutation-proof
 mutation-proof:

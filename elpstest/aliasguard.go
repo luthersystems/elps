@@ -35,22 +35,27 @@ import (
 //
 // # Per-walker contracts
 //
-// The four walkers do NOT promise the same thing, so one uniform oracle
+// The five walkers do NOT promise the same thing, so one uniform oracle
 // would be wrong in two directions at once — too strict for `copy`, which
 // refuses closures, and too loose for the macro stamper, which does not
 // produce a copy at all.  Each walker therefore declares its contract, and
 // the oracle reads it:
 //
-//	Fork    closures IN SCOPE, backing rebuilt, full isolation required
-//	copy    closures REFUSED (shared, not copied), backing rebuilt
-//	Detach  closures REFUSED (rejected with an error), backing rebuilt
-//	stamp   not a copier: the walk must not mutate anything reachable
-//	        outside the output it allocated.  It deliberately SHARES every
-//	        payload behind a pointer with its source (lisp/macro.go), so
-//	        "must not alias source structure" would be the wrong rule here
-//	        and is not asserted.
+//	Fork       closures IN SCOPE, backing rebuilt, full isolation required
+//	copy       closures REFUSED (shared, not copied), backing rebuilt
+//	Detach     closures REFUSED (rejected with an error), backing rebuilt
+//	LVal.Copy  closures REFUSED (shared, not copied), backing rebuilt --
+//	           the Go entry point (*LVal).Copy, lisp/copier.go, which was
+//	           in no registry while the #576/#585 de-aliasing defect sat
+//	           live in it (#604); registered so the fuzzer and every
+//	           registry-driven check drive it, not one fixed fixture
+//	stamp      not a copier: the walk must not mutate anything reachable
+//	           outside the output it allocated.  It deliberately SHARES
+//	           every payload behind a pointer with its source
+//	           (lisp/macro.go), so "must not alias source structure" would
+//	           be the wrong rule here and is not asserted.
 //
-// Adding a fifth walker is a one-line registration in Walkers().
+// Adding a sixth walker is a one-line registration in Walkers().
 //
 // # The witness
 //
@@ -184,6 +189,24 @@ func Walkers() []Walker {
 			Backing:  BackingRebuilt,
 			Memoises: lisp.WalkerMemoKinds("detacher"),
 			Doc:      "lisp/detach.go",
+		},
+		{
+			// (*LVal).Copy is exported, so the row calls it directly; an
+			// LError result is a harness failure, not a finding, exactly
+			// as the `copy` row treats an evaluation error.
+			Name: "LVal.Copy",
+			Kind: WalkerCopy,
+			Copy: func(_ *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) {
+				cp := v.Copy()
+				if cp != nil && cp.Type == lisp.LError {
+					return nil, lisp.GoError(cp)
+				}
+				return cp, nil
+			},
+			Closures: ClosuresRefused,
+			Backing:  BackingRebuilt,
+			Memoises: lisp.WalkerMemoKinds("copier"),
+			Doc:      "lisp/copier.go",
 		},
 		{
 			Name:     "macro-stamp",
@@ -342,8 +365,10 @@ func indentLines(s string) string {
 //
 // Cost, measured on a 4-core box over a list of n buffers, best of three.
 // The sweep is quadratic in the site count, and the figures are PER
-// WALKER — the default check runs all four, so the last column is what an
-// embedder actually pays:
+// WALKER — the default check runs every registered walker, so the last
+// column is what an embedder actually pays.  Measured before LVal.Copy was
+// registered; that row's walk is the detacher's shape (lisp/copier.go), so
+// expect its column, and the total, to sit near Detach's:
 //
 //	sites    Fork    copy   Detach   stamp    all four
 //	   24   6.4ms    3.0ms   3.3ms   7.0ms      20ms

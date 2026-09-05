@@ -157,11 +157,13 @@ type FingerprintOptions struct {
 	//
 	//	Fork          DROPS it (lisp/fork.go, cp.macroExpansion = nil)
 	//	detach        DROPS it (lisp/detach.go)
-	//	(*LVal).Copy  COPIES it (the per-node struct is copied, the
-	//	              context shared, and the ID rides across unchanged)
+	//	(*LVal).Copy  DROPS it (#604, lisp/copier.go; it used to copy the
+	//	              per-node struct and share the context, so a copy
+	//	              recorded the source tree's nodes)
 	//
 	// So a token in the default fingerprint would fail property 2 on a
-	// correct Fork and the copy-vs-source comparison on a correct detach.
+	// correct Fork and the copy-vs-source comparison on a correct detach
+	// or Copy.
 	// The behaviours are encoded as three assertions instead --
 	// TestMacroExpansionBehaviourPerWalker -- and this option is what lets
 	// that test see the field at all.

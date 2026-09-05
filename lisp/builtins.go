@@ -1628,16 +1628,29 @@ func (s *lvalByFun) Less(i, j int) bool {
 		return false
 	}
 	a, b := s.cells[i], s.cells[j]
-	// Functions are always copied when being invoked. But the arguments
-	// are not copied in general.
+	// The predicate and the key function receive the list's own elements,
+	// as map, foldl, select and every other higher-order builtin hand
+	// theirs over.  This site used to Copy a and b on every comparison
+	// (since the initial import, with no contract behind it), which became
+	// a deep walk of each element once Copy rebuilt map values (#604).  The
+	// copy was never a complete isolation either: it gave the predicate a
+	// private list or map structure, but map values and bytes were shared,
+	// so a predicate writing through a map-valued element reached the
+	// source.  A predicate or key function that mutates or retains its
+	// argument now sees the element itself -- and a write to an element
+	// that is a sealed program literal raises modify-literal-error where
+	// the copy used to absorb it silently (the #378 policy);
+	// TestSortComparatorArgumentsAreTheElements pins both.  The call is
+	// still an evaluated S-expression rather than a FunCall so an element
+	// that is an unquoted symbol is evaluated exactly as before.
 	var expr *LVal
 	if s.keyfun == nil {
-		expr = SExpr([]*LVal{s.fun, a.Copy(), b.Copy()})
+		expr = SExpr([]*LVal{s.fun, a, b})
 	} else {
 		expr = SExpr([]*LVal{
 			s.fun,
-			SExpr([]*LVal{s.keyfun, a.Copy()}),
-			SExpr([]*LVal{s.keyfun, b.Copy()}),
+			SExpr([]*LVal{s.keyfun, a}),
+			SExpr([]*LVal{s.keyfun, b}),
 		})
 	}
 	ok := s.env.Eval(expr)
@@ -1709,20 +1722,17 @@ func builtinInsertSorted(env *LEnv, args *LVal) *LVal {
 	sortErr := Nil()
 	inCells := seqCells(list)
 	i := sort.Search(len(inCells), func(i int) bool {
+		// item and the probed element are passed by reference, exactly as
+		// lvalByFun.Less passes the elements it compares (see the comment
+		// there); this probe used to Copy both on every step of the search.
 		var expr *LVal
 		if keyFun == nil {
-			expr = SExpr([]*LVal{p, item.Copy(), inCells[i].Copy()})
+			expr = SExpr([]*LVal{p, item, inCells[i]})
 		} else {
 			expr = SExpr([]*LVal{
 				p,
-				SExpr([]*LVal{
-					keyFun,
-					item.Copy(),
-				}),
-				SExpr([]*LVal{
-					keyFun,
-					inCells[i].Copy(),
-				}),
+				SExpr([]*LVal{keyFun, item}),
+				SExpr([]*LVal{keyFun, inCells[i]}),
 			})
 		}
 		ok := env.Eval(expr)

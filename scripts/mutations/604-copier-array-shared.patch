@@ -1,0 +1,13 @@
+diff --git a/lisp/copier.go b/lisp/copier.go
+index 64c2622..9035097 100644
+--- a/lisp/copier.go
++++ b/lisp/copier.go
+@@ -286,6 +286,8 @@ func (c *copier) copy(v *LVal) *LVal {
+ 	// the copy.
+ 	c.remember(v, cp)
+ 	switch v.Type {
++	case LArray:
++		return cp // mutation: #604 the array's Cells are the source's
+ 	case LSortMap:
+ 		// Sorted-maps store data in Native (*MapData) which contains Go
+ 		// maps.  A shallow struct copy would alias the underlying maps,

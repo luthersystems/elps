@@ -222,7 +222,9 @@ type macroExpansionContext struct {
 //
 // The embedded *macroExpansionContext describes the macro CALL and is shared
 // by every node of one expansion, by design.  This struct is the per-node
-// half, so LVal.Copy gives a copy its own -- see macroExpansionInfo.Copy.
+// half.  (*LVal).Copy does not carry either half across: the context's
+// Args point at the tree the copy was made from, so a copy drops the
+// record exactly as Fork and detach do (lisp/copier.go).
 type macroExpansionInfo struct {
 	*macroExpansionContext // shared across all nodes in one expansion
 
@@ -230,41 +232,15 @@ type macroExpansionInfo struct {
 	// assigns it from Runtime.nextMacroExpID, monotonically increasing, so no
 	// two nodes an expansion stamps share a value.
 	//
-	// It is NOT unique per *LVal* in the wider sense, and this comment used
-	// to claim it was.  LVal.Copy duplicates it, and cannot do otherwise:
-	// Copy takes no *Runtime, so it has no counter to draw a fresh value
-	// from, and there is no framing in which it could -- the value's whole
-	// purpose is to come from the runtime that did the expanding.  A copy of
-	// an expansion node therefore carries the ID of the node it came from.
-	//
-	// The consumer to know about is lisp/x/debugger: exprStepLocation reads
-	// this into StepLocation.MacroID and stepper.go steps on `loc.MacroID !=
-	// s.start.MacroID`, so two distinct nodes carrying one ID read to the
-	// stepper as one node and it does not pause between them.  Copying an
-	// expansion node under an attached debugger is what that would take; no
-	// in-tree path does it today (issue #466).
+	// It is unique per stamped node.  (*LVal).Copy used to duplicate it
+	// -- Copy takes no *Runtime and had no counter to draw a fresh value
+	// from -- so two distinct nodes could carry one ID, which the debugger's
+	// stepper (exprStepLocation reads this into StepLocation.MacroID and
+	// stepper.go steps on `loc.MacroID != s.start.MacroID`) would read as
+	// one node and not pause between.  Copy now drops the whole record
+	// (lisp/copier.go), as Fork and detach do, so a copy carries no ID and
+	// that hazard (issue #466) has no path.
 	ID int64
-}
-
-// Copy returns a pointer to an independent copy of i, or nil if i is nil.
-//
-// The embedded *macroExpansionContext is deliberately NOT copied.  A copy
-// separates two OWNERS, and the context has one owner -- the macro call --
-// which both nodes genuinely belong to.  It is documented shared across every
-// node of an expansion, and #456 already made CallSite an object the
-// expansion owns rather than one borrowed from a live parse tree, so there is
-// no third party to separate it from.  Copying it would separate nothing and
-// would make the "shared across all nodes in one expansion" comment above
-// false for copied nodes.
-//
-// What IS separated is this struct, which is per node.  ID rides across
-// unchanged -- see the field comment for why it cannot do otherwise.
-func (i *macroExpansionInfo) Copy() *macroExpansionInfo {
-	if i == nil {
-		return nil
-	}
-	cp := *i
-	return &cp
 }
 
 // MacroExpansionMeta is a read-only snapshot of the debug metadata attached
@@ -1575,8 +1551,9 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 
 // Copy creates a deep copy of the receiver.
 //
-// Copy has within-runtime semantics — an LArray's backing storage is shared
-// with the receiver, so it is not a tool for transferring values between
+// Copy has within-runtime semantics — a closure's environment, an LError's
+// call stack and a native payload that is not a NativeCloner are shared with
+// the receiver — so it is not a tool for transferring values between
 // Runtimes; the in-kernel detach (lisp/detach.go, unexported until a real
 // consumer appears) covers that.
 //
@@ -1593,86 +1570,24 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 // thing deliberately still shared is macroExpansionInfo's embedded
 // *macroExpansionContext, which describes the macro CALL rather than the node
 // -- see macroExpansionInfo.Copy.
+//
+// The copy owns its payloads, once each.  A sorted map, a bytes buffer or a
+// NativeCloner payload reachable through several headers is rebuilt ONCE
+// and shared by those headers in the copy exactly as it was in the source;
+// a value reachable twice is copied once and a cycle closes onto the copy.
+// A map's values, and an array's dims and data-list headers, are walked
+// like a list's cells.  What stays shared: a closure's environment, an
+// LError's call stack, and a native payload that is not a NativeCloner.  See
+// copier in lisp/copier.go.
 func (v *LVal) Copy() *LVal {
 	if v == nil {
 		return nil
 	}
-	cp := &LVal{}
-	*cp = *v // shallow copy of all fields including Map and Bytes
-	// The copy owns fresh storage, so the sealed constraint on v does not
-	// apply to it.  In the default case copyCells recurses through Copy,
-	// which clears the flag on every fresh node it creates, so copying a
-	// sealed tree yields a fully unsealed, fully private tree — the
-	// sanctioned way to obtain a mutable version of a program literal
-	// (lisp/seal.go).  (Values that share storage with v — an LArray's
-	// backing — are never sealed: SealAST marks parser-producible types
-	// only.)
-	cp.sealed = false
-	// source rides along in the struct assignment above, so without this the
-	// copy and the original hold ONE mutable *token.Location, at every depth
-	// -- Cells are deep-copied just below, positions were not.  That is issue
-	// #446, and lisp.TextLoader is what it defeats: TextLoader's entire
-	// purpose is to hand each evaluation a PRIVATE tree (it is the entry
-	// point an embedder is pointed at for a reusable parse cache; the Load*
-	// entry points do not copy), and every one of those "private" trees
-	// reported its positions through the retained cache's own objects.
-	//
-	// Sealing makes this MORE load-bearing, not less.  Copy is the sanctioned
-	// way to obtain a mutable version of a sealed program literal, and it
-	// clears the flag just above -- so SetSource, which is a no-op on the
-	// sealed original, is live on the copy.  Sharing the pointer here would
-	// let a write through the unsealed copy move a position in the sealed
-	// tree every environment in the process is evaluating.
-	//
-	// One Location per NODE here, where issue #431 needed only one per macro
-	// CALL, because what has to be separated is different.  There the N
-	// stamped nodes genuinely sit at one position, so a single object owned
-	// by the expansion separated the two owners.  Here each node has a
-	// position of its own, so N nodes need N objects.
-	//
-	// The exception main carried for nativeSource's process-wide singleton is
-	// gone with the singleton: values Go constructs now leave source nil and
-	// synthesize the "<native code>" location by value in the accessor (issue
-	// #362), so the nil check below is also the fast path this used to buy --
-	// no allocation on the interpreter's hot path, where most values are ones
-	// Go built.
-	if v.source != nil {
-		cp.source = v.source.Copy()
-	}
-	// meta and macroExpansion ride along in the struct assignment above for
-	// the same reason source did, and issue #466 is that they still do.  Both
-	// are PER-NODE mutable state -- fmtmeta.Meta is what the parser writes and
-	// hoistOperandComments moves between nodes; macroExpansionInfo is the
-	// per-node half of an expansion record whose shared half is the context
-	// it embeds.  Sharing them makes a "deep copy" a second writer on one
-	// object, and in meta's case it also reopens #446 one level down: the
-	// *token.Location on every comment token is reachable from both trees.
-	//
-	// The cost argument is the opposite of source's.  meta is nil outside
-	// format-preserving parsing and macroExpansion is nil unless a debugger
-	// is attached, so on the interpreter's hot path this is two nil checks
-	// and no allocation, and it allocates only on paths already doing
-	// per-node formatting or debug work.
-	cp.meta = detachMeta(v.meta)
-	cp.macroExpansion = v.macroExpansion.Copy()
-	switch v.Type {
-	case LArray:
-		// Arrays are memory references but use Cells as backing storage.
-		// We preserve the shared backing array (reference semantics).
-	case LSortMap:
-		// Sorted-maps store data in Native (*MapData) which contains Go
-		// maps. A shallow struct copy would alias the underlying maps,
-		// causing assoc!/dissoc! on the copy to mutate the original.
-		// Copy the map structure while sharing value pointers.
-		mdata, err := v.copyMapData()
-		if err != nil {
-			return Errorf("copy sorted-map: %v", err)
-		}
-		cp.Native = mdata
-	default:
-		cp.Cells = v.copyCells()
-	}
-	return cp
+	// One walk, one set of memos: see copier in lisp/copier.go for what is
+	// memoised and why.  Stack-resident; nothing captures it, and a leaf
+	// costs its header alone.
+	var c copier
+	return c.copy(v)
 }
 
 // copyMapData returns a fresh *MapData holding v's entries with the value
@@ -1708,17 +1623,6 @@ func (v *LVal) copyMapData() (*MapData, error) {
 		}
 	}
 	return m, nil
-}
-
-func (v *LVal) copyCells() []*LVal {
-	if len(v.Cells) == 0 {
-		return nil
-	}
-	cells := make([]*LVal, len(v.Cells))
-	for i := range cells {
-		cells[i] = v.Cells[i].Copy()
-	}
-	return cells
 }
 
 // String renders v as lisp source.

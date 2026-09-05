@@ -1,0 +1,13 @@
+diff --git a/lisp/copier.go b/lisp/copier.go
+index 78789f2..b0b7beb 100644
+--- a/lisp/copier.go
++++ b/lisp/copier.go
+@@ -290,7 +290,7 @@ func (c *copier) copy(v *LVal) *LVal {
+ 		return cp
+ 	case LBytes:
+ 		if b, ok := v.Native.(*[]byte); ok && b != nil {
+-			cp.Native = c.byteSlice(b)
++			cp.Native = b // mutation: #604 the copy keeps the source's buffer
+ 		}
+ 	case LNative:
+ 		if cl, ok := v.Native.(NativeCloner); ok {

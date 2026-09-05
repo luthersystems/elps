@@ -413,6 +413,17 @@ var aliasGuardSeeds = [][]byte{
 	// A wide vector diamond: the same payload reached from many places,
 	// which is what keeps the walk honest about being linear.
 	{255, 255, 255, 255},
+	// A vector holding one map twice, with the map reaching the vector
+	// back: CI fuzz shard 3 found it in 6 seconds on the first run after
+	// (*LVal).Copy became a registered walker (run 33939856295,
+	// FuzzAliasGuard/f2a71578e30741e2).  Copy's LArray arm shared the
+	// source's Cells outright, so the copy's vector held the SOURCE's
+	// element headers and reached the source's map through it -- not
+	// hermetic, and a header the copy's walk never memoised.  Fork, `copy`
+	// and Detach passed the same input.  Reconstructed from the printed
+	// repro (nvars 2: map, vector of v0 v0; cycle v0 -> v1; no
+	// transactions).
+	{1, 0, 3, 0, 0, 0, 1, 0, 0},
 	// Degenerate inputs.
 	{},
 	{0},

@@ -119,6 +119,19 @@ var walkerMemos = []WalkerMemo{
 		Doc: "lisp/detach.go, lisp/copy.go (issue #585)",
 	},
 	{
+		Walker:   "copier",
+		Rebuilds: true,
+		Payloads: []PayloadKind{PayloadSortedMap, PayloadBytes, PayloadNative},
+		Graph:    []PayloadKind{PayloadValue},
+		Fields: map[PayloadKind]string{
+			PayloadSortedMap: "maps",
+			PayloadBytes:     "bytes",
+			PayloadNative:    "natives",
+			PayloadValue:     "seen",
+		},
+		Doc: "lisp/copier.go, (*LVal).Copy (the fifth walker; see copier's type comment)",
+	},
+	{
 		Walker:   "macroStamper",
 		Rebuilds: false,
 		Graph:    []PayloadKind{PayloadValue},
@@ -126,22 +139,6 @@ var walkerMemos = []WalkerMemo{
 			PayloadValue: "copies",
 		},
 		Doc: "lisp/macro.go (issues #582, #583, #586)",
-	},
-	{
-		// (*LVal).Copy REBUILDS payload storage -- it allocates a fresh
-		// *MapData per header (copyMapData) -- and memoises NOTHING.  That
-		// is the #576/#585 defect shape, live today, and registering it
-		// with Rebuilds: true is what makes the registry check say so.
-		//
-		// Declaring Rebuilds: false here would be the comfortable lie: true
-		// of the bytes payload, which Copy shares, and beside the point.  A
-		// registration describes the walker, not the subset of its
-		// behaviour that keeps the guard green.  Its two known defects are
-		// carried by knownDefectiveWalkers below, each with the pin that
-		// measures it, and the row disappears when the defect does.
-		Walker:   "(*LVal).Copy",
-		Rebuilds: true,
-		Doc:      "lisp/lisp.go ((*LVal).Copy)",
 	},
 }
 
@@ -203,7 +200,7 @@ var memoExemptions = []MemoExemption{
 			"CallStack -- PushFID and Pop -- are called on env.Runtime.Stack, the live evaluator stack, never on a " +
 			"captured one. So two headers over one *CallStack cannot observe each other. " +
 			"CORRECTED in PR #599: this row used to claim \"no constructor can alias one across two headers: " +
-			"SetCallStack is called once\", which is FALSE -- (*LVal).Copy does `*cp = *v`, a shallow copy that " +
+			"SetCallStack is called once\", which is FALSE -- (*LVal).Copy (the copier) does `*cp = *v`, a shallow copy that " +
 			"carries Native, so it aliases one across two headers. Measured by " +
 			"TestCopyAliasesCallStackAcrossHeaders. The conclusion survived; the stated reason did not.",
 	},
@@ -253,29 +250,14 @@ type WalkerDefect struct {
 // is fixed; a NEW row is an admission that belongs in a review, not a way
 // to make a red guard green.
 //
-// (*LVal).Copy is here rather than fixed because fixing it is a behaviour
-// change to the most-called copy path in the interpreter, which is its own
-// stacked PR.  Until that lands, this is what keeps the guard honest: the
-// registry check REPORTS Copy as known-defective, and a reader of
-// WalkerMemos cannot mistake it for a clean walker.
-var knownDefectiveWalkers = []WalkerDefect{
-	{
-		Walker:  "(*LVal).Copy",
-		Payload: "*MapData",
-		Defect: "rebuilt per HEADER and not memoised: copyMapData allocates a fresh *MapData for every " +
-			"header it visits, so two headers over one sorted map come apart in the copy. This is the " +
-			"issue #576 / #585 defect shape exactly, in a walker neither fix reached.",
-		Pin: "TestCopyDeAliasesMapPayloadAcrossHeaders",
-	},
-	{
-		Walker:  "(*LVal).Copy",
-		Payload: "*[]byte",
-		Defect: "SHARED across headers: `*cp = *v` carries Native and no arm rebuilds it for LBytes, so a " +
-			"copy of a bytes value and its source append into one backing array (issue #551). The opposite " +
-			"failure to the map one, in the same function.",
-		Pin: "TestCopySharesBytesPayloadAcrossHeaders",
-	},
-}
+// It is empty.  Its first and so far only occupant was (*LVal).Copy, which
+// rebuilt a *MapData per header and shared a *[]byte across headers; both
+// rows left with lisp/copier.go, and the two pins that measured the
+// defects -- TestCopyDeAliasesMapPayloadAcrossHeaders and
+// TestCopySharesBytesPayloadAcrossHeaders -- now assert the fix.  That is
+// the lifecycle a row is meant to have: pinned while live, deleted the day
+// the pin goes red, the pin kept as the negative control.
+var knownDefectiveWalkers = []WalkerDefect{}
 
 // WalkerDefects returns the known-defect allowlist, copied.
 func WalkerDefects() []WalkerDefect {
@@ -374,9 +356,17 @@ var lvalCopyExemptions = []LValCopyExemption{
 	{
 		Func:  "TestCopyDeAliasesMapPayloadAcrossHeaders",
 		Sites: 1,
-		Reason: "the fixture for (*LVal).Copy's own knownDefectiveWalkers row: it builds two headers over " +
-			"one *MapData so the pin can measure that Copy pulls them apart. The scan reported it on the " +
-			"commit that added it, which is the scan working.",
+		Reason: "the fixture for the copier's *MapData memo control: it builds two headers over one " +
+			"*MapData so the test can measure that Copy keeps them together (it once measured the opposite, " +
+			"as the pin of a knownDefectiveWalkers row). The scan reported it on the commit that added it, " +
+			"which is the scan working.",
+	},
+	{
+		Func:  "TestCopySharesBytesPayloadAcrossHeaders",
+		Sites: 1,
+		Reason: "the fixture for the copier's *[]byte memo control: it builds two headers over one *[]byte " +
+			"so the test can measure that Copy rebuilds them as two headers over ONE copied buffer, the " +
+			"same class as the *MapData fixture above.",
 	},
 	{
 		Func:  "TestCopySelfReferenceThroughAliasedHeaderStaysAliased",

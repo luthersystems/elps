@@ -46,6 +46,11 @@ import "testing"
 //	insert-index 'vector    9 -> 7
 //	insert-sorted 'vector  33 -> 31
 //
+// insert-sorted has since moved again, 31 -> 25: its binary search over this
+// eight-element vector makes three probes and used to Copy the item and the
+// probed element on each (two leaf headers per probe); the probe now passes
+// both by reference (#604, TestSortComparatorArgumentsAreTheElements).
+//
 // zip moves by 18 rather than 2 because it builds nine vectors for this input
 // -- one per element plus the outer one -- which is what makes it the row that
 // shows the saving is per-vector and not per-call.
@@ -111,7 +116,7 @@ func TestVectorBuiltinAllocations(t *testing.T) {
 		{"zip", func() *LVal { return builtinZip(env, zipArgs) }, 63},
 		{"slice", func() *LVal { return builtinSlice(env, sliceArgs) }, 7},
 		{"insert-index", func() *LVal { return builtinInsertIndex(env, insertArgs) }, 7},
-		{"insert-sorted", func() *LVal { return builtinInsertSorted(env, insertSortedArgs) }, 31},
+		{"insert-sorted", func() *LVal { return builtinInsertSorted(env, insertSortedArgs) }, 25},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
