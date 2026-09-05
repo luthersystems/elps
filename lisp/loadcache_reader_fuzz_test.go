@@ -57,6 +57,23 @@ import (
 // Also asserted, in every mode: termination under the scheduled-time
 // watchdog, and no recovered Go panic (lisp.IsInternalPanic) — both from the
 // shared budgeted harness.
+//
+// "Indistinguishable" means BY WHAT A PROGRAM CAN OBSERVE: every load's
+// value, and every binding's content, sealed-ness, mutable-storage aliasing
+// and sealed-node PROVENANCE (the frozen parse location every error and
+// stack note through that node prints -- see envStateFingerprintProv, which
+// this target uses and its siblings do not).  It does not mean the same
+// storage: a cache hit serves the
+// sealed nodes the miss served (that is the contract, pinned by
+// TestLoadCacheServesTheSameNodes), so a file loaded twice through the cache
+// rebinds its literals to nodes an earlier load already captured, where two
+// fresh parses give two equal nodes.  The environment digest used to record
+// that identity and reported the contract as a divergence (issue #613, seed
+// bfe6dc31a652ced0: A binds a literal, B captures it, A is loaded again);
+// valueFingerprint now digests sealed nodes by content alone (memoised by
+// pointer, so a sealed DAG or cycle stays cheap), and
+// TestLoadCacheRebindAcrossLoadsMatchesFreshParse pins the shape
+// deterministically in every mode.
 
 // loadCacheHostileReader wraps the real parser and then does one plausible,
 // contract-legal thing to what it returns.
@@ -361,7 +378,29 @@ func runHostilePair(t *testing.T, mode uint8, a, b []byte, cache *fuzzLoadCache)
 		if !ok {
 			return programRun{}, false
 		}
-		fp := valueFingerprint([]*lisp.LVal{result})
+		// PROVENANCE variant, scoped to this function.  A cached load must
+		// serve the parse of the file that was ASKED FOR, and a sealed
+		// node's frozen source location is the lisp-observable witness of
+		// which file that was: it is printed by every error and stack note
+		// raised through the node.  A content-only digest cannot see a cache
+		// that serves one file's parse for another's -- mutate loadCacheKey
+		// to drop name and loc, load two byte-identical files, and the
+		// second file's errors name the first file's path while the
+		// content-only digest reports nothing.
+		//
+		// The per-load RESULT is where that shows up, not the env state: for
+		// two byte-identical files the A,B,A sequence rebinds the same
+		// symbols from the same content, so the final environment converges
+		// whichever parse was served.  Load B's own value does not.
+		// (TestLoadCacheRebindAcrossLoadsMatchesFreshParse's identical-bytes
+		// case is the deterministic form; under that mutation it fails on
+		// `eval 2` in every transparent mode.)
+		//
+		// Scoped because FuzzSharedProgramMultiEnv deliberately evaluates one
+		// parse under several stream names; see valueFingerprintProv
+		// (valuefp_test.go) for the three tests a global provenance rule
+		// turns red.
+		fp := valueFingerprintProv([]*lisp.LVal{result})
 		if isAdmissionRefusal(result) {
 			// Tagged rather than merely digested so hostileRefusalOnly can
 			// tell "the cache refused this load" from "the cache answered
@@ -371,7 +410,10 @@ func runHostilePair(t *testing.T, mode uint8, a, b []byte, cache *fuzzLoadCache)
 		}
 		run.results = append(run.results, fp)
 	}
-	run.state = envStateFingerprint(env)
+	// Provenance here too, for the same reason as the per-load digests above
+	// -- a binding that survives to the end of the sequence must hold the
+	// parse of the file it came from.
+	run.state = envStateFingerprintProv(env)
 	return run, true
 }
 
