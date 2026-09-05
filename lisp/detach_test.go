@@ -404,14 +404,18 @@ func TestDetachArrayBackingDisjoint(t *testing.T) {
 	}
 }
 
-// TestCopyAliasesBytesAndMapValues pins the two other within-runtime sharing
-// behaviors of Copy so the corresponding detach assertions have controls.
-func TestCopyAliasesBytesAndMapValues(t *testing.T) {
+// TestCopyRebuildsBytesAndMapValues: Copy's bytes buffers and sorted-map
+// values are the copy's own.  This test used to pin the OPPOSITE -- Copy
+// sharing the *[]byte and the map's value pointers -- as the control for
+// the detach tests; both were the within-runtime half of the defect
+// lisp/copier.go describes, and the control the detach tests still have is
+// TestCopyAliasesArrayBacking, the one sharing Copy keeps.
+func TestCopyRebuildsBytesAndMapValues(t *testing.T) {
 	b := lisp.Bytes([]byte("abc"))
 	cp := b.Copy()
 	cp.Bytes()[0] = 'X'
-	if b.Bytes()[0] != 'X' {
-		t.Fatalf("expected Copy to share LBytes backing; it did not")
+	if b.Bytes()[0] != 'a' {
+		t.Fatalf("a write through the copied bytes reached the original: %q", b.Bytes())
 	}
 
 	m := lisp.SortedMap()
@@ -421,9 +425,12 @@ func TestCopyAliasesBytesAndMapValues(t *testing.T) {
 	}
 	mcp := m.Copy()
 	mval, _ := mcp.Map().Get(lisp.String("k"))
+	if mval == val {
+		t.Fatalf("the copy's map holds the source's value header")
+	}
 	mval.Cells[0] = lisp.Int(999)
-	if val.Cells[0].Int != 999 {
-		t.Fatalf("expected Copy to share sorted-map value pointers; it did not")
+	if val.Cells[0].Int != 1 {
+		t.Fatalf("a write through the copied map's value reached the original")
 	}
 }
 

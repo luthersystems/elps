@@ -119,6 +119,19 @@ var walkerMemos = []WalkerMemo{
 		Doc: "lisp/detach.go, lisp/copy.go (issue #585)",
 	},
 	{
+		Walker:   "copier",
+		Rebuilds: true,
+		Payloads: []PayloadKind{PayloadSortedMap, PayloadBytes, PayloadNative},
+		Graph:    []PayloadKind{PayloadValue},
+		Fields: map[PayloadKind]string{
+			PayloadSortedMap: "maps",
+			PayloadBytes:     "bytes",
+			PayloadNative:    "natives",
+			PayloadValue:     "seen",
+		},
+		Doc: "lisp/copier.go, (*LVal).Copy (the fifth walker; see copier's type comment)",
+	},
+	{
 		Walker:   "macroStamper",
 		Rebuilds: false,
 		Graph:    []PayloadKind{PayloadValue},
