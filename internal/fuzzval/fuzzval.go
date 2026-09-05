@@ -590,6 +590,9 @@ var fuzzPatterns = []string{
 // seed corpus and the switch cannot drift apart silently.
 const nativeNumKinds = 10
 
+// native builds one of the nativeNumKinds payload shapes described above.
+//
+//elpsvet:allow fuzz corpus generator, not a payload contract: every native here is minted fresh per iteration to exercise the builtins' type switches, and the deliberately mutable shapes (a map, a byte slice, a json.RawMessage) are the point -- a builtin writing through one is caught by the harness rather than hidden; nothing here reaches a production template
 func (g *Gen) native() *lisp.LVal {
 	switch g.Intn(nativeNumKinds) {
 	case 0:

@@ -183,7 +183,7 @@ func BuiltinStructField(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if !x.CanInterface() {
 		return env.Errorf("cannot return struct field: %v", field.Str)
 	}
-	return lisp.Native(x.Interface())
+	return lisp.Native(x.Interface()) //elpsvet:allow a reflected projection of an existing native payload (s.Native): a field value aliases at most the storage its parent payload already shares, so the sharing decision was made where that payload was constructed and this site opens no new channel
 }
 
 func nameIsExported(name string) bool {

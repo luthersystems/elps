@@ -530,7 +530,7 @@ func Value(v interface{}) *LVal {
 	case []*LVal:
 		return QExpr(v)
 	default:
-		return Native(v)
+		return Native(v) //elpsvet:allow Value's fallthrough: the payload type is the caller's, and every Value call is checked at its own call site
 	}
 }
 
@@ -627,7 +627,7 @@ func Nil() *LVal {
 func Native(v interface{}) *LVal {
 	return &LVal{
 		Type:   LNative,
-		Native: v,
+		Native: v, //elpsvet:allow the constructor itself: the payload type is the caller's, and every Native call is checked at its own call site
 	}
 }
 
