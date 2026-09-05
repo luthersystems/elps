@@ -590,6 +590,11 @@ func CheckForkTemplate(env *lisp.LEnv, opts ...lisp.ForkOption) []Witness {
 			})
 		}
 	}
+	// Macro-expansion metadata is dropped by Fork, so it is invisible to
+	// the fingerprint comparison above -- see macroExpansionLeaks.
+	for _, arm := range arms {
+		out = append(out, macroExpansionLeaks(env, arm.env, arm.name)...)
+	}
 	// A payload that declared a duplication protocol or a runtime affinity
 	// and reached two environments anyway contradicts its own declaration.
 	for _, arm := range arms {
@@ -721,15 +726,7 @@ func sharedNativeWitnesses(c TransactionCheck, aName string, a *lisp.LEnv, forks
 // identity to share, so it is not collected.
 func reachableNatives(env *lisp.LEnv) map[any]string {
 	out := map[any]string{}
-	seenV := map[*lisp.LVal]bool{}
-	seenE := map[*lisp.LEnv]bool{}
-	var walk func(v *lisp.LVal, path string)
-	var walkEnv func(e *lisp.LEnv, path string)
-	walk = func(v *lisp.LVal, path string) {
-		if v == nil || seenV[v] {
-			return
-		}
-		seenV[v] = true
+	walkReachable(env, func(v *lisp.LVal, path string) {
 		// Keyed on the PAYLOAD, not on the type. Native is shared storage:
 		// LBytes holds a *[]byte there, LSortMap a *MapData, and an embedder
 		// can annotate an ordinary node. Keying on `v.Type == LNative` missed
@@ -747,6 +744,43 @@ func reachableNatives(env *lisp.LEnv) map[any]string {
 				out[v.Native] = path
 			}
 		}
+	})
+	return out
+}
+
+// reachableValues maps every *LVal reachable from env to the first path
+// that reached it.  It is the identity question the census asks of
+// payloads, asked of headers -- which is what the macro-expansion leak
+// check needs, since the leak is a fork holding a pointer to a TEMPLATE
+// node rather than a shared payload.
+func reachableValues(env *lisp.LEnv) map[*lisp.LVal]string {
+	out := map[*lisp.LVal]string{}
+	walkReachable(env, func(v *lisp.LVal, path string) {
+		if _, dup := out[v]; !dup {
+			out[v] = path
+		}
+	})
+	return out
+}
+
+// walkReachable visits every value reachable from env exactly once, with
+// the first path that reached it.
+//
+// ONE walk definition with two consumers, deliberately: the census
+// (reachableNatives) and the value map (reachableValues) must agree about
+// what "reachable" means, or a leak visible to one is invisible to the
+// other for no reason a reader could discover.
+func walkReachable(env *lisp.LEnv, visit func(v *lisp.LVal, path string)) {
+	seenV := map[*lisp.LVal]bool{}
+	seenE := map[*lisp.LEnv]bool{}
+	var walk func(v *lisp.LVal, path string)
+	var walkEnv func(e *lisp.LEnv, path string)
+	walk = func(v *lisp.LVal, path string) {
+		if v == nil || seenV[v] {
+			return
+		}
+		seenV[v] = true
+		visit(v, path)
 		switch v.Type {
 		case lisp.LFun:
 			walkEnv(funraw.Env(v), path+"/env")
@@ -758,7 +792,7 @@ func reachableNatives(env *lisp.LEnv) map[any]string {
 				}
 			}
 		default:
-			// Every other type reaches a native only through its cells,
+			// Every other type reaches its children only through cells,
 			// which the loop below walks for every type.
 		}
 		for i, c := range v.Cells {
@@ -780,7 +814,6 @@ func reachableNatives(env *lisp.LEnv) map[any]string {
 		walk(v, pkg+":"+name)
 	})
 	walkEnv(env, "<env>")
-	return out
 }
 
 // NativeDeclaration is one native payload TYPE reachable from an
@@ -876,4 +909,76 @@ func isStatelessPayload(payload any) bool {
 	default:
 		return false
 	}
+}
+
+// macroExpansionLeaks reports macro-expansion debug metadata on a fork
+// whose recorded call-site arguments point at MUTABLE values owned by the
+// template.
+//
+// WHY THIS CANNOT BE A FINGERPRINT COMPARISON, which is the reason the
+// channel had no coverage at all. Fork DELIBERATELY drops the metadata
+// (lisp/fork.go, `cp.macroExpansion = nil`), so a fork and its template are
+// SUPPOSED to differ here. Property 2 asks the opposite question -- "a
+// fresh fork is indistinguishable from its template" -- so a token for this
+// field in the default fingerprint would fail on correct code, and leaving
+// it out makes the field invisible. A field a walker is supposed to drop is
+// invisible to a same-vs-same comparison by construction. It needs a
+// direct property, which is this one.
+//
+// WHAT THE LEAK IS. macroExpansionContext.Args holds the unevaluated
+// call-site arguments as []*LVal -- the ORIGINAL nodes, not copies -- and
+// (*LVal).MacroExpansion hands them out to any embedder with a debugger
+// attached. A fork that kept its template's metadata therefore hands a
+// consumer pointers into the template's own tree.
+//
+// SEALED ARGS ARE NOT A LEAK, and the distinction is measured rather than
+// assumed. Args are usually sealed parse-tree nodes: immutable, and shared
+// with every fork outright by the same kernel policy, so a pointer to one
+// conveys nothing a fork does not already have. But they are not always
+// sealed -- a macro call built at runtime (`(macroexpand-1 (list 'defun
+// 'f (list 'x) 'x))`) records the runtime-built list nodes, which are
+// mutable and template-owned. Measured on that shape: 15 recorded Args, 10
+// sealed, 5 not. So the property is about the unsealed ones, and
+// TestForkDoesNotLeakMacroExpansionMetadata builds exactly that fixture.
+//
+// The witness names both ends -- where the metadata sits on the fork, and
+// which template value it reaches -- because a boolean would leave the
+// reader to rediscover the aliasing.
+func macroExpansionLeaks(tmpl, fork *lisp.LEnv, arm string) []Witness {
+	tmplVals := reachableValues(tmpl)
+	var lines []string
+	var leak string
+	for v, path := range reachableValues(fork) {
+		m, ok := v.MacroExpansion()
+		if !ok {
+			continue
+		}
+		for i, arg := range m.Args {
+			if arg == nil || arg.IsSealed() {
+				continue
+			}
+			tpath, shared := tmplVals[arg]
+			if !shared {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf(
+				"%s carries expansion metadata for %s whose arg %d is the template's %s",
+				path, m.Name, i, tpath))
+			if leak == "" {
+				leak = path
+			}
+		}
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	sort.Strings(lines)
+	return []Witness{{
+		Walker:   "Fork",
+		Property: "no macro-expansion metadata on " + arm + " reaches a template value",
+		Detail: "macroExpansionContext.Args holds the ORIGINAL call-site nodes and " +
+			"(*LVal).MacroExpansion hands them out, so these are template values a fork " +
+			"consumer can reach and write:\n    " + strings.Join(lines, "\n    "),
+		Leak: leak,
+	}}
 }

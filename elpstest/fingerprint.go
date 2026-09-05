@@ -147,6 +147,29 @@ type FingerprintOptions struct {
 	// behaviour as a de-aliasing defect — which is exactly what the fuzz
 	// target reported on its first run, before this option existed.
 	SkipCapturedEnvironments bool
+	// MacroExpansion records each node's macro-expansion debug metadata:
+	// whether it carries any, the qualified macro name, the per-node ID,
+	// and the IDENTITY of each recorded call-site argument.
+	//
+	// OPT-IN, AND NOT SET BY ANY WALKER'S DEFAULT OPTIONS -- deliberately,
+	// because the three walkers disagree and averaging them would make the
+	// token wrong for two of the three:
+	//
+	//	Fork          DROPS it (lisp/fork.go, cp.macroExpansion = nil)
+	//	detach        DROPS it (lisp/detach.go)
+	//	(*LVal).Copy  COPIES it (the per-node struct is copied, the
+	//	              context shared, and the ID rides across unchanged)
+	//
+	// So a token in the default fingerprint would fail property 2 on a
+	// correct Fork and the copy-vs-source comparison on a correct detach.
+	// The behaviours are encoded as three assertions instead --
+	// TestMacroExpansionBehaviourPerWalker -- and this option is what lets
+	// that test see the field at all.
+	//
+	// The ARGUMENT IDENTITIES are in the token, not just presence, because
+	// the harm this channel carries is a pointer: a copy that kept the
+	// metadata hands out the SOURCE's nodes. See macroExpansionLeaks.
+	MacroExpansion bool
 	// PackageMetadata records the per-package tables that live beside the
 	// symbol table: exports, symbol docs and the FID→name index.  Fork
 	// copies all three rather than sharing them (lisp/fork.go, issue #397),
@@ -588,6 +611,17 @@ func (w *fingerprinter) value(v *lisp.LVal) {
 		w.emit("at(-)")
 	}
 	w.annotation(v)
+	if w.opts.MacroExpansion {
+		if m, ok := v.MacroExpansion(); ok {
+			w.emitf("mexp(%s,%d)", m.Name, m.ID)
+			for i, a := range m.Args {
+				n, _ := w.id(a)
+				w.emitf("mexparg%d#%d", i, n)
+			}
+		} else {
+			w.emit("mexp(-)")
+		}
+	}
 	switch v.Type {
 	case lisp.LSortMap:
 		w.sortedMap(v)

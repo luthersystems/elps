@@ -199,19 +199,21 @@ static-checks: check-golangci-version check-golangci-config
 # mutation-proof: revert each REAL historical fix in production code and
 # require it to be caught, by a needle measured for uniqueness and stability.
 #
-# For SEVEN of the eight rows that needle is a property string emitted by the
+# For EIGHT of the nine rows that needle is a property string emitted by the
 # guard this PR adds. "By name" means the SPECIFIC property, not "some test
 # failed": needles shared across mutations assert nothing about the bug they
 # are filed under, and a needle that is only ~84% stable makes a required gate
 # flaky, which is worse than no gate.
 #
-# THE EIGHTH ROW (579) IS AN EXCEPTION, AND IT IS MEASURED, NOT CONCEDED.
+# THE 579 ROW IS AN EXCEPTION, AND IT IS MEASURED, NOT CONCEDED.
 # Reverting that fix emits no property string at all -- it reddens exactly one
 # pre-existing test, from the earlier forkcheck oracle (477ea95), which is not
 # in this PR's diff. So that row asserts "#579 stays fixed" rather than "the
 # new guard catches #579". The manifest notes in scripts/mutation-proof.sh
 # record why, and this comment says so here rather than leaving the sentence
-# above to overstate what all eight rows demonstrate.
+# above to overstate what all nine rows demonstrate. (It closes at the top of
+# the stack: #601 folds cold-vs-fork parity into this same harness, and the
+# property row for #579 lands there, where the property exists.)
 #
 # The ten broken reference walkers in elpstest/aliasguard_broken_test.go model
 # those bugs with hand-written imitations. This reverts the actual fixes. The
@@ -223,11 +225,12 @@ static-checks: check-golangci-version check-golangci-config
 #
 # ON THE PR GATE, NOT NIGHTLY, because it was measured rather than assumed.
 # Two numbers, because they differ and only one of them is the cost that
-# matters: 20-21s locally for all 8 mutations on a warm cache (three
-# consecutive runs), and 34s as actually observed in CI on ubuntu-24.04-arm,
-# plus 5s for the selftest -- 39s total added to the job. The CI figure is the
-# real one; the local figure is quoted only so the gap is on the record rather
-# than discovered later. A nightly-only gate would let a mutation rot for a
+# matters: 20-21s locally for 8 mutations on a warm cache (three consecutive
+# runs), and 34s as actually observed in CI on ubuntu-24.04-arm, plus 5s for
+# the selftest -- 39s total added to the job. The CI figure is the real one;
+# the local figure is quoted only so the gap is on the record rather than
+# discovered later. Both predate the ninth row, so expect roughly an eighth
+# more; CI's own timing is the number to trust and it is reported per run. A nightly-only gate would let a mutation rot for a
 # day, and 39s does not justify that.
 .PHONY: mutation-proof
 mutation-proof:

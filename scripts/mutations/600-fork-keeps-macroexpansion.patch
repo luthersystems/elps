@@ -1,0 +1,14 @@
+diff --git a/lisp/fork.go b/lisp/fork.go
+index 4da73dd..eb43938 100644
+--- a/lisp/fork.go
++++ b/lisp/fork.go
+@@ -470,9 +470,6 @@ func (f *forker) val(v *LVal) *LVal {
+ 	*cp = *v
+ 	// Memo before descending: v's children may reach back to v.
+ 	f.vals[v] = cp
+-	// Macro-expansion debug metadata does not travel; it is only populated
+-	// under an attached debugger and its contexts alias template values.
+-	cp.macroExpansion = nil
+ 	switch v.Type {
+ 	case LFun:
+ 		if fd, ok := v.Native.(*funData); ok && fd != nil {

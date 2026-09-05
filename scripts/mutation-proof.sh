@@ -100,6 +100,17 @@ PKG=./elpstest/
 #    fix commit still reverse-applies, which is the provenance property this
 #    file is built around -- but the rule-3 sentence above does not describe
 #    it, and saying so here is cheaper than letting a reader infer it.
+#  - 600-fork-keeps-macroexpansion is the macro-expansion channel (issue #600
+#    gap 2), and its needle is carried as a MUST-NOT on every other row, so a
+#    single run measures both halves: the row trips by its own needle, and no
+#    other mutation emits it. That is how the needle's uniqueness is
+#    established here -- by CI, in one gate run, rather than by driving eight
+#    mutations locally.
+#
+#    Its must-NOT is property 1. Deleting `cp.macroExpansion = nil` does not
+#    change any value the fingerprint encodes, which is the whole reason the
+#    channel had no coverage: Fork is SUPPOSED to differ from its template in
+#    this field, so no fork-vs-template comparison can see it.
 #  - template-share pins ONLY property 5, which is the direction it models.
 #    It also emits the fresh-fork property, and that needle measured 40/40 in
 #    ISOLATION -- yet failed once in 35 end-to-end runs. Isolated measurement
@@ -114,14 +125,15 @@ PKG=./elpstest/
 #    protection under the wrong issue number, and it was the flaky row. The
 #    real #579 revert is deterministic.
 MANIFEST=$(cat <<'EOF'
-576-fork-map-memo;a fresh fork is indistinguishable from its template;the template is unchanged by a transaction on a fork|a transaction on the template is invisible to every existing fork
-579-libschema-validator-credential;TEST:TestForkCheck_SchemaValidatorCredential;
-585-detach-memos;Detach: the copy has the same mutable payloads as the source;a fresh fork is indistinguishable from its template
-397-fork-shares-funnames;the template is unchanged by a transaction on a fork|a transaction on one fork is invisible to every other fork;
-440-fork-carries-loc;a fork starts with an empty evaluator location register;
-578-f1-live-defining-loc;a budget error at a function-body entry reports the definition site;
-582-macro-stamp-in-place;expansion mutates nothing reachable outside its own output;
-template-share;a transaction on the template is invisible to every existing fork;
+576-fork-map-memo;a fresh fork is indistinguishable from its template;the template is unchanged by a transaction on a fork|a transaction on the template is invisible to every existing fork|no macro-expansion metadata on a fresh fork reaches a template value
+579-libschema-validator-credential;TEST:TestForkCheck_SchemaValidatorCredential;no macro-expansion metadata on a fresh fork reaches a template value
+585-detach-memos;Detach: the copy has the same mutable payloads as the source;a fresh fork is indistinguishable from its template|no macro-expansion metadata on a fresh fork reaches a template value
+397-fork-shares-funnames;the template is unchanged by a transaction on a fork|a transaction on one fork is invisible to every other fork;no macro-expansion metadata on a fresh fork reaches a template value
+440-fork-carries-loc;a fork starts with an empty evaluator location register;no macro-expansion metadata on a fresh fork reaches a template value
+578-f1-live-defining-loc;a budget error at a function-body entry reports the definition site;no macro-expansion metadata on a fresh fork reaches a template value
+582-macro-stamp-in-place;expansion mutates nothing reachable outside its own output;no macro-expansion metadata on a fresh fork reaches a template value
+template-share;a transaction on the template is invisible to every existing fork;no macro-expansion metadata on a fresh fork reaches a template value
+600-fork-keeps-macroexpansion;no macro-expansion metadata on a fresh fork reaches a template value;a fresh fork is indistinguishable from its template
 EOF
 )
 
@@ -208,4 +220,4 @@ done <<<"$MANIFEST"
 
 echo
 [ $fail = 0 ] || die "at least one mutation was not proven -- see above."
-echo "mutation-proof: every mutation caught by its named needle (7 property strings, 1 test -- see 579 in the manifest notes)."
+echo "mutation-proof: every mutation caught by its named needle (8 property strings, 1 test -- see 579 in the manifest notes)."
