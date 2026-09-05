@@ -214,10 +214,13 @@ audit your template's native census when adopting Fork.
 Inside this repository that census is mechanical: the `elpsnativepayload`
 rule in `cmd/elpsvet` (run by `make elpsvet` in CI) reports every native
 construction — `lisp.Native`, `lisp.NativeOf`, a `lisp.Value` falling through
-to a native, an `LVal{Native: x}` literal, a `.Native` write — whose payload
-type is not of basic underlying type, does not declare `NativeCloner`, is not
-on the audited allowlist in `cmd/elpsvet/nativepayload.go`, and is not
-covered by a justified `//elpsvet:allow`. It audits elps's own sources only;
+to a native, a keyed literal or a write setting the `LVal.Native` field by
+any path (`ErrorVal`, a conversion, a promoted field), the field's address —
+whose payload type is not of basic underlying type, does not declare
+`NativeCloner`, is not on the audited allowlist in
+`cmd/elpsvet/nativepayload.go`, and is not covered by a
+`//elpsvet:allow-native` carrying a justification of at least three words.
+It audits elps's own sources only;
 an embedder's payloads are the embedder's census to take (substrate runs the
 same rule over its tree). See CLAUDE.md, "Go static analysis over elps's own
 sources".

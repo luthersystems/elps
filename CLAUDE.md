@@ -127,8 +127,8 @@ Functions return `*LVal`. Errors are LVal values with type `LError`. Check with 
 ## Go static analysis over elps's own sources
 
 `cmd/elpsvet` is a `golang.org/x/tools/go/analysis` harness over elps's own
-Go code: focused analyzers, an audited `//elpsvet:allow` suppression carrying
-a justification, and testdata-driven `analysistest` fixtures under
+Go code: focused analyzers, audited suppression markers, and testdata-driven
+`analysistest` fixtures under
 `cmd/elpsvet/testdata/src`. CI runs it as `make elpsvet`, which is two passes
 of `go run ./cmd/elpsvet -test=false ./...` (the second under
 `GOFLAGS=-tags=elpscheck`, because elpsvet silently ignores `-tags`; see the
@@ -151,10 +151,19 @@ typed `lisp.NativeOf[T](x)` (inferred or explicitly instantiated — the latter
 wraps the callee in an `*ast.IndexExpr`, which `calleeFunc` unwraps), a
 `lisp.Value(x)` the compiler can see falling through to Native (a defined
 type over `[]byte` DOES fall through; the type switch matches the unnamed
-type only), a `lisp.LVal{Native: x}` literal, and a write to a `.Native`
-field. `NativeOf` needs its own arm even though it is *implemented* as a call
-to `Native`: a generic instantiation resolves to the generic `*types.Func`,
-whose name is never `Native`.
+type only), a keyed literal setting the `lisp.LVal.Native` field, and a write
+to that field. The field is matched by its **object**, not by the receiver's
+spelled type, so `lisp.ErrorVal{Native: x}` (`type ErrorVal LVal` shares the
+struct), `(*lisp.ErrorVal)(v).Native = x`, and a promoted `w.Native` through
+an embedding struct are all seen. Taking the field's address (`&v.Native`)
+is reported unconditionally — whatever is later stored through the pointer
+has no type at that site. `NativeOf` needs its own arm even though it is
+*implemented* as a call to `Native`: a generic instantiation resolves to the
+generic `*types.Func`, whose name is never `Native`. Invisible, and
+documented in the analyzer's header: an indirect call through a function
+value, a multi-value assignment (`v.Native, ok = g()`), a positional
+`LVal{...}` literal (only spellable inside package lisp), and anything done
+through `reflect`.
 
 A construction is reported unless the payload's static type has a basic
 underlying type (a value of which is immutable inside an interface —
@@ -164,9 +173,17 @@ audited allowlist in `cmd/elpsvet/nativepayload.go` — the kernel's own
 representation slots (`*funData`, `*[]byte`, `*MapData`, `*CallStack`, each
 with an explicit fork/detach arm), `*regexp.Regexp`, `time.Time`, `error`,
 libschema's `*validatorTag`, libjson's `*ownMessage`, each row carrying its
-reason — or a `//elpsvet:allow <justification>` comment covers the line (or
-the enclosing function's doc). **A bare `//elpsvet:allow` with no
-justification does not suppress.** An interface-typed payload (or a type
+reason — or a `//elpsvet:allow-native <justification>` comment covers the
+site: trailing on the reported line, standalone on the line above, or for a
+multi-line literal on either the opening line or the `Native:` line; or the
+enclosing function's doc carries one. **The justification must be at least
+three words; a bare or shorter marker does not suppress.** One justification
+covers every construction on its line. The marker is this rule's own:
+`elpsownership`'s `//elpsvet:allow` is a bare prefix match that enforces no
+justification, so sharing it would let one sentence about sealed formals
+silence both rules — and the ownership matcher stops at the marker's word
+boundary so `allow-native` does not satisfy it either. An interface-typed
+payload (or a type
 parameter) is REPORTED, not skipped: this module is where `interface{}`
 enters the system, so the constructors themselves (`Native`, `NativeOf`,
 `Value`'s fallthrough), the fork and detach walkers' policy application, the

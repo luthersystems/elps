@@ -577,7 +577,10 @@ Four `go/analysis` rules, run as `go run ./cmd/elpsvet -test=false ./...`:
 
 - **elpsownership** (`main.go`): no package-level var may keep a
   `*lisp.LVal` reachable — the process-wide-shared-table producer pattern
-  behind #363. Suppression: `//elpsvet:allow` with a justification.
+  behind #363. Suppression: `//elpsvet:allow`. What is enforced: the bare
+  marker suppresses — a justification is asked for by convention and is
+  not checked (`allowed()` is a prefix match stopping at the marker's word
+  boundary, so `//elpsvet:allow-native` does not satisfy it).
 - **elpsfreshness** (`freshness.go` + `alias.go`): no function may write a
   `lisp.LVal` field on a value it did not construct (#333/#334's pattern),
   including writes laundered through local slice aliases of LVal backing —
@@ -615,13 +618,17 @@ Four `go/analysis` rules, run as `go run ./cmd/elpsvet -test=false ./...`:
   by reference, and the isolation oracle only recognises a payload as
   stateful when its type declares `NativeCloner`, so a mutable payload type
   without one is a leak the dynamic checks cannot see. Every construction
-  spelling (`Native`, `NativeOf`, `Value`'s fallthrough, an `LVal{Native:}`
-  literal, a `.Native` write) is reported unless the payload has a basic
-  underlying type, declares `NativeCloner`, is on the audited allowlist, or
-  a justified `//elpsvet:allow` covers it; interface-typed payloads are
-  reported too, so the constructors themselves carry the contract. Ported
-  from the substrate repository's nativepayload analyzer. Suppression:
-  `//elpsvet:allow` with a justification — a bare marker does not suppress.
+  spelling (`Native`, `NativeOf`, `Value`'s fallthrough, a keyed literal or
+  a write setting the `LVal.Native` field — matched by field object, so
+  `ErrorVal`, conversions and promoted fields count — and the field's
+  address) is reported unless the payload has a basic underlying type,
+  declares `NativeCloner`, is on the audited allowlist, or a justified
+  `//elpsvet:allow-native` covers it; interface-typed payloads are reported
+  too, so the constructors themselves carry the contract. Ported from the
+  substrate repository's nativepayload analyzer. Suppression:
+  `//elpsvet:allow-native` with a justification of at least three words —
+  what is enforced: a bare or shorter marker does not suppress, and one
+  justification covers every construction on its line.
 
 *Blind spots (documented in the analyzers' own headers):* intraprocedural
 within a function body — the escape rule's location-freshness fact is the
