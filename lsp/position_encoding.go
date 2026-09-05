@@ -4,7 +4,6 @@ package lsp
 
 import (
 	"encoding/json"
-	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -336,7 +335,8 @@ func (s *Server) newDocumentTexts() *documentTexts {
 // index derived the range from, so the conversion is self-consistent with the
 // column it is converting.
 //
-// A file that cannot be read yields false. The caller leaves the range in byte
+// A file that cannot be read, or is over the workspace file size limit,
+// yields false. The caller leaves the range in byte
 // columns in that case: unconverted is what every range on main is, so it
 // cannot be a regression, and dropping the edit instead would silently do half
 // a rename.
@@ -351,8 +351,10 @@ func (d *documentTexts) get(uri string) (string, bool) {
 		d.texts[uri] = text
 		return text, true
 	}
-	source, err := os.ReadFile(uriToPath(uri))
-	if err != nil {
+	// Bounded like every other workspace disk read (elps#611): an over-limit
+	// file yields false, and the caller leaves the range in byte columns.
+	source, ok := d.srv.readWorkspaceFile(uriToPath(uri))
+	if !ok {
 		d.texts[uri] = ""
 		return "", false
 	}
