@@ -4,6 +4,7 @@ package lisp_test
 
 import (
 	"fmt"
+	"hash"
 	"hash/fnv"
 	"io"
 	"math"
@@ -58,10 +59,48 @@ import (
 //
 // # What it deliberately does NOT cover
 //
-//   - Pointer identity and sharing topology.  Two structurally equal values
-//     digest equally.  Detecting that a builtin swapped one child for a
-//     different-but-equal child is the -race seal watchdog's job, not a
+//   - Pointer identity of SEALED nodes.  Two structurally equal sealed
+//     values digest equally whether they are one node or two.  A sealed
+//     node is frozen storage (lisp/seal.go): no lisp-reachable write can go
+//     through it, and the language has no identity primitive (`equal?` is
+//     structural), so no program can ask WHICH of two equal sealed nodes it
+//     holds -- and which one it holds is a thing the load cache changes BY
+//     CONTRACT.  A cache hit serves the same sealed nodes the miss served
+//     (TestLoadCacheServesTheSameNodes is the alias proof), so a file loaded
+//     twice through a cache rebinds its literals to the nodes an earlier
+//     load already captured, where two fresh parses yield two equal nodes.
+//     Digesting that identity turned the cache's contract into a divergence:
+//     issue #613, found by FuzzLoadCacheHostileReader with `(set 'lit '(0))`
+//     loaded, `(set 'A (list lit))` loaded, and the first loaded again --
+//     every evaluation result equal, and the environment digest differing in
+//     `lit` being a back-reference to A's element under the cache and a full
+//     walk without it.  Detecting that a builtin swapped one sealed child
+//     for a different-but-equal one is the -race seal watchdog's job, not a
 //     content digest's.
+//
+//     That rule is narrower than "sealed identity is unobservable", which is
+//     what this comment used to claim and is FALSE in general.  A sealed node
+//     carries its parse-time source location and carries it forever --
+//     SetSource is a no-op once sealed (lisp/lisp.go) -- and that location is
+//     printed by every stack note and error the node raises, so two equal
+//     sealed nodes minted from two different files ARE distinguishable from
+//     lisp.  That is precisely why the load cache keys on the stream's name
+//     and location and not on its bytes alone; the "# Keying" paragraph in
+//     lisp/loadcache.go spells out the misattribution a content-only key
+//     produces (the second file's errors naming the first file's lines).
+//     Content-only digesting is therefore right for the IDENTITY question and
+//     blind to the PROVENANCE one.  valueFingerprintProv below restores
+//     provenance for the callers whose property is provenance -- today just
+//     the load-cache hostile-reader pair -- and is deliberately not the
+//     default: FuzzSharedProgramMultiEnv reparses one source under different
+//     stream names on purpose, so a global provenance rule would make that
+//     target report its own premise as a divergence.
+//   - Pointer identity of UNSEALED nodes IS recorded, through the
+//     back-reference marker below.  Mutable storage is where identity is
+//     observable -- a write through one alias is visible through the other
+//     -- so two bindings sharing one vector and two bindings holding two
+//     equal vectors are different environments, and a cache (or a builtin)
+//     that turned one into the other would be a real semantic change.
 //   - Native payloads other than LBytes.  An arbitrary Go value has no
 //     order-stable rendering (`%v` of a map is randomised), so it
 //     contributes its dynamic TYPE only.  Nothing in the container families
@@ -78,6 +117,21 @@ import (
 // depth cap and a node budget.  Traversal order is fixed, so a truncated
 // digest is still deterministic: an equal-before/equal-after comparison
 // stays meaningful and corruption past the horizon is simply out of scope.
+//
+// Back-references are for UNSEALED nodes only (above), which on its own
+// makes a sealed DAG exponential and a sealed cycle a budget hog -- and the
+// budget is shared across every value in one envStateFingerprint, so a hog
+// blinds the digest to every value walked after it.  Measured, before the
+// memo below and after it: a 26-node sealed DAG (2^25 unfolded) 25.9ms ->
+// 79us (13us is what the aliasing walk costs on the same graph unsealed), a
+// two-cell branching sealed cycle 31.4ms -> 0.70ms, and -- the part that is
+// a correctness bug and not a slow test -- `[hog, Vector(1)]` digested EQUAL
+// to `[hog, Vector(2)]` before and distinct after.  The fix is memoisation,
+// not bookkeeping: a sealed
+// subtree's CONTENT hash is cached by pointer, so the second reach costs a
+// map lookup and the digest is still the content digest.  That is a
+// different claim from a back-reference -- "the same content again", not
+// "the node you saw at position N" -- so it does not reintroduce identity.
 
 const (
 	// valueFPMaxNodes bounds the nodes one digest visits.  Far above
@@ -92,9 +146,23 @@ const (
 
 // valueFP is the running digest state plus the walk's termination budget.
 type valueFP struct {
-	h      io.Writer
-	seen   map[*lisp.LVal]int
+	// h is the accumulator the walk currently writes to: root, or the
+	// private accumulator of a sealed subtree being memoised.
+	h io.Writer
+	// root is the digest the whole walk sums to.
+	root hash.Hash64
+	seen map[*lisp.LVal]int
+	// memo caches a SEALED node's content hash by pointer, so a sealed DAG
+	// or cycle is walked once rather than unfolded.  See walk.
+	memo   map[*lisp.LVal]uint64
 	budget int
+	// prov mixes a sealed node's frozen source location into its digest.
+	// Off by default; see valueFingerprintProv.
+	prov bool
+	// touchedUnsealed records whether the walk currently in progress reached
+	// an unsealed node, which is what makes its digest unmemoisable.  See
+	// walk.
+	touchedUnsealed bool
 }
 
 // valueFingerprint returns a content digest of the runtime values reachable
@@ -103,12 +171,60 @@ type valueFP struct {
 // The digest is a string rather than a uint64 so a failure message can print
 // it next to a sealed fingerprint without the two being confusable.
 func valueFingerprint(vs []*lisp.LVal) string {
-	h := fnv.New64a()
-	s := &valueFP{h: h, seen: make(map[*lisp.LVal]int), budget: valueFPMaxNodes}
+	return newValueFP(false).run(vs)
+}
+
+// valueFingerprintProv is valueFingerprint plus sealed-node PROVENANCE: a
+// sealed node additionally mixes the source location it froze at.
+//
+// It exists because the content-only rule is blind to a real, observable
+// difference.  A sealed node's location is frozen (SetSource is a no-op once
+// sealed) and is printed by every stack note and error raised through it, so
+// serving one file's nodes for another file's load is a lisp-observable
+// misattribution -- which is exactly the failure a content-only cache key
+// produces, described in loadcache.go's "# Keying" paragraph.  Mutating
+// loadCacheKey to drop name and loc and then loading two byte-identical files
+// makes the second file's errors name the first file's path; plain
+// valueFingerprint cannot see that, and this variant can.
+//
+// It is NOT the default, and must not become it.  FuzzSharedProgramMultiEnv
+// deliberately evaluates ONE parse under several stream names, and
+// TestSharedProgramSeedsAgreeWithSharedParse and
+// TestValueFingerprintSealedIdentityIsNotState compare nodes minted by
+// different loads on purpose; a global provenance rule turns all three red on
+// their own premise.  The one caller today is runHostilePair
+// (loadcache_reader_fuzz_test.go), where "the cache served the right file's
+// parse" is the property under test.
+func valueFingerprintProv(vs []*lisp.LVal) string {
+	return newValueFP(true).run(vs)
+}
+
+func newValueFP(prov bool) *valueFP {
+	root := fnv.New64a()
+	return &valueFP{
+		h:      root,
+		root:   root,
+		seen:   make(map[*lisp.LVal]int),
+		memo:   make(map[*lisp.LVal]uint64),
+		budget: valueFPMaxNodes,
+		prov:   prov,
+	}
+}
+
+// valueFingerprintNodes is valueFingerprint plus the number of nodes the
+// walk actually charged against its budget.  The count is what the sealed
+// memo exists to bound, and it is exactly deterministic, so a test can pin
+// "this sealed graph does not unfold" without pinning a wall-clock time.
+func valueFingerprintNodes(vs []*lisp.LVal) (string, int) {
+	s := newValueFP(false)
+	return s.run(vs), valueFPMaxNodes - s.budget
+}
+
+func (s *valueFP) run(vs []*lisp.LVal) string {
 	for _, v := range vs {
 		s.walk(v, 0)
 	}
-	return fmt.Sprintf("%016x", h.Sum64())
+	return fmt.Sprintf("%016x", s.root.Sum64())
 }
 
 func (s *valueFP) mix(format string, args ...interface{}) {
@@ -120,20 +236,96 @@ func (s *valueFP) walk(v *lisp.LVal, depth int) {
 		s.mix("<nil>;")
 		return
 	}
-	if id, ok := s.seen[v]; ok {
-		// A back-reference, not a re-walk: this is what makes a cyclic or
-		// heavily-aliased value terminate, and it also records the SHAPE of
-		// the aliasing, so collapsing two aliases into one copy changes the
-		// digest.
-		s.mix("back:%d;", id)
-		return
+	// Only UNSEALED nodes take part in the back-reference bookkeeping.  A
+	// sealed node is digested by content every time it is reached: its
+	// identity is not lisp-observable and the load cache legitimately
+	// shares one sealed node between loads that a fresh parse would give two
+	// equal nodes (issue #613; see the file comment).
+	sealed := v.IsSealed()
+	if !sealed {
+		// Recorded BEFORE the back-reference return, because emitting
+		// `back:N` is itself the visit-order-dependent thing that makes an
+		// enclosing sealed digest unmemoisable.
+		s.touchedUnsealed = true
+		if id, ok := s.seen[v]; ok {
+			// A back-reference, not a re-walk: this is what makes a cyclic
+			// or heavily-aliased mutable value terminate, and it also records
+			// the SHAPE of the aliasing, so collapsing two aliases of mutable
+			// storage into one copy changes the digest.
+			s.mix("back:%d;", id)
+			return
+		}
 	}
 	if s.budget <= 0 || depth > valueFPMaxDepth {
 		s.mix("trunc;")
 		return
 	}
+	if !sealed {
+		s.walkContent(v, depth)
+		return
+	}
+
+	// A sealed node is memoised by pointer.  Without this, "digest sealed
+	// nodes by content every time" is exponential on a sealed DAG and burns
+	// the whole node budget on a sealed cycle -- and because the budget is
+	// shared across every value in one envStateFingerprint, a single hog
+	// blinds the digest to every value after it.  A memo hit emits the same
+	// bytes a full walk would have emitted, so nothing about the digest's
+	// MEANING changes: it still says "this content", never "the node you saw
+	// at position N".  Termination for sealed subgraphs rests on this memo
+	// plus the depth cap and the node budget.
+	if sum, ok := s.memo[v]; ok {
+		s.mix("sealed:%016x;", sum)
+		return
+	}
+	// The subtree is hashed into its own accumulator so its content hash can
+	// be cached, but it SHARES seen, budget and memo with the parent: the
+	// budget must still bound the whole walk, and an unsealed node reached
+	// from here must take part in the parent's aliasing bookkeeping.
+	sub := fnv.New64a()
+	outerH, outerTouched := s.h, s.touchedUnsealed
+	s.h, s.touchedUnsealed = sub, false
+	s.walkContent(v, depth)
+	sum, touched := sub.Sum64(), s.touchedUnsealed
+	s.h, s.touchedUnsealed = outerH, outerTouched || touched
+	if !touched {
+		// Cached only when the subtree stayed inside sealed storage.  A
+		// sealed subtree that REACHES an unsealed node must not be memoised:
+		// its digest embeds `back:N` markers and `seen` ids that are valid
+		// only at the visit where they were minted, so replaying them at a
+		// later reach would assert an aliasing shape that was never
+		// observed.  The parser cannot produce that shape -- sealAST stops
+		// at the first non-sealable type, so nothing below a sealed node is
+		// unsealed -- but an embedder that calls SealAST on a hand-built
+		// tree can, and the memo must be correct for the tree it is handed
+		// rather than for the tree the parser happens to build.
+		//
+		// A sum that embeds a `trunc` (the walk hit the depth cap or ran the
+		// budget out inside the subtree) IS still cached, deliberately.  It
+		// makes the digest of a truncated subtree depend on where it was
+		// first reached rather than on where it is reused, which costs a
+		// little fidelity past the horizon that is already out of scope --
+		// and it is what keeps a branching sealed cycle linear: refusing to
+		// cache truncated sums turns that shape back into O(depth^2), which
+		// for valueFPMaxDepth=512 is over the node budget again.
+		s.memo[v] = sum
+	}
+	s.mix("sealed:%016x;", sum)
+}
+
+// walkContent digests v itself and its children.  The caller has already
+// settled the back-reference, budget, depth and memo questions.
+func (s *valueFP) walkContent(v *lisp.LVal, depth int) {
 	s.budget--
-	s.seen[v] = len(s.seen)
+	if !v.IsSealed() {
+		s.seen[v] = len(s.seen)
+	} else if s.prov {
+		// Provenance, for the callers that asked for it: a sealed node's
+		// location is frozen and lisp-observable through errors and stack
+		// notes.  See valueFingerprintProv.
+		loc, ok := v.Source()
+		s.mix("src:%s:%d:%d/%v;", loc.File, loc.Line, loc.Col, ok)
+	}
 
 	// The float mixes its BIT PATTERN rather than its value, so NaN payloads
 	// and the two zeros digest distinctly and deterministically — `==` on
