@@ -1839,6 +1839,23 @@ func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
 			quote = QUOTE
 		}
 		return quote + v.Str
+	case LQSymbol:
+		// A qsymbol carries a level of quoting in its type rather than in
+		// v.quoted, so it always renders with at least one quote -- the
+		// text a quoted symbol renders, and the text the debugger's
+		// inspector has always shown for one.  A further level (v.quoted,
+		// which Quote sets, or an enclosing LQuote, which passes
+		// onTheRecord) adds a second quote exactly as it does for LSymbol.
+		//
+		// Without this arm the value fell through to strNested's default,
+		// which printed %#v of the LVal and so leaked the address of
+		// v.source into the rendering: the same value rendered
+		// differently in two processes, and a copy rendered differently
+		// from its source in one.  See issue #606.
+		if v.quoted {
+			quote = QUOTE
+		}
+		return quote + QUOTE + v.Str
 	case LNative:
 		return fmt.Sprintf("#<native value: %T>", v.Native)
 	default:
@@ -1919,7 +1936,15 @@ func (v *LVal) strNested(onTheRecord bool, g cycleGuard) string {
 	case LMarkMacExpand:
 		return quote + fmt.Sprintf("#<macro-expansion %s)>", v.Cells[0].str(false, g))
 	default:
-		return quote + fmt.Sprintf("#<%s %#v>", v.Type, v)
+		// Nothing reaches this arm today: every LType is rendered either
+		// here or by str above, and TestStringNoAddressForEveryLType
+		// fails if a newly added type stops being covered.  It renders
+		// the type name ALONE -- never %#v of the LVal, which printed
+		// the LVal's pointer fields and made the rendering depend on the
+		// allocator (issue #606).  ELPS output has to be byte-identical
+		// across processes; a fallback that can embed a heap address is
+		// not an acceptable one, however unreachable it looks.
+		return quote + fmt.Sprintf("#<%s>", v.Type)
 	}
 }
 

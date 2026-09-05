@@ -245,11 +245,14 @@ func (g *Gen) value(depth int) *lisp.LVal {
 // Locations come from a fixed process-wide pool rather than being allocated
 // per node, for two reasons.
 //
-//   - Reproducibility.  LVal.String() renders an LQSymbol with %#v, which
-//     prints the Source POINTER.  A freshly allocated Location per node would
-//     therefore make the rendering of a generated value depend on the
-//     allocator, and TestGeneratorIsDeterministic -- the property every saved
-//     crasher rests on -- would fail.
+//   - Reproducibility.  LVal.String() used to render an LQSymbol with %#v,
+//     which prints the Source POINTER, so a freshly allocated Location per
+//     node made the rendering of a generated value depend on the allocator and
+//     TestGeneratorIsDeterministic -- the property every saved crasher rests
+//     on -- failed.  Issue #606 gave LQSymbol a rendering arm and took the
+//     %#v out of the fallback, and lisp.TestStringNoAddressForEveryLType now
+//     holds every LType to that, so no rendering prints an address today.  The
+//     pool is kept for the reason below, which is the durable one.
 //   - Fidelity.  LVal.Source documents itself as shared: "the reference may be
 //     shared by multiple LVals".  A pool models that, and it is the sharing
 //     that gives an in-place edit of a Location its real blast radius.
