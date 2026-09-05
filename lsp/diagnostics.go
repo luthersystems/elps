@@ -116,33 +116,23 @@ func (s *Server) textDocumentDidClose(_ *glsp.Context, params *protocol.DidClose
 	return nil
 }
 
+// overLimitMessage is the diagnostic an over-limit document receives instead
+// of analysis. Tests match on "size limit".
+const overLimitMessage = "File exceeds size limit: parsing, semantic analysis, formatting" +
+	" and AST-based features are disabled for this document"
+
 // analyzeAndPublish runs analysis and lint on a document and publishes
 // the resulting diagnostics to the client.
 func (s *Server) analyzeAndPublish(doc *Document) {
-	// Check document size before running analysis. Use a cheap lock-and-read
-	// rather than a full Snapshot() to avoid unnecessary slice cloning.
-	if s.maxDocumentBytes > 0 {
-		doc.mu.Lock()
-		contentLen := len(doc.Content)
-		uri := doc.URI
-		doc.mu.Unlock()
+	// Use a cheap lock-and-read rather than a full Snapshot() to avoid
+	// unnecessary slice cloning.
+	doc.mu.Lock()
+	overLimit := doc.overLimit
+	doc.mu.Unlock()
 
-		if contentLen > s.maxDocumentBytes {
-			sev := protocol.DiagnosticSeverityInformation
-			s.sendNotification(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
-				URI: uri,
-				Diagnostics: []protocol.Diagnostic{{
-					Range:    protocol.Range{},
-					Severity: &sev,
-					Source:   strPtr("elps"),
-					Message:  "File exceeds size limit for semantic analysis",
-				}},
-			})
-			return
-		}
+	if !overLimit {
+		s.ensureAnalysis(doc)
 	}
-
-	s.ensureAnalysis(doc)
 
 	// Re-snapshot after analysis to capture the result and the current
 	// version atomically. We use doc.Version (not snap.Version) so the
@@ -150,6 +140,14 @@ func (s *Server) analyzeAndPublish(doc *Document) {
 	// we actually read here — avoiding a TOCTOU window where the doc
 	// could have been updated between the initial snapshot and now.
 	doc.mu.Lock()
+	if doc.overLimit != overLimit {
+		// The document crossed the limit in either direction while we were
+		// working; whatever we hold describes a version that no longer
+		// exists. The edit that moved it armed a new debounce, which will
+		// publish for the current version.
+		doc.mu.Unlock()
+		return
+	}
 	parseErrors := doc.parseErrors
 	content := doc.Content
 	docAnalysis := doc.analysis
@@ -159,25 +157,41 @@ func (s *Server) analyzeAndPublish(doc *Document) {
 
 	var diags []protocol.Diagnostic
 
-	// Report parse errors as diagnostics.
-	for _, parseErr := range parseErrors {
-		diags = append(diags, protocol.Diagnostic{
-			Range:    parseErrorRange(parseErr),
-			Severity: severity(protocol.DiagnosticSeverityError),
+	if overLimit {
+		// Stored without being parsed (see Document.parse): report that
+		// instead of analysing. This deliberately falls through to the same
+		// version guard and publication as the analysed path, so a stale
+		// debounced result for an over-limit version cannot overwrite a newer
+		// publication, and publishedVersion / publishedDiagnostics stay
+		// current for code actions.
+		sev := protocol.DiagnosticSeverityInformation
+		diags = []protocol.Diagnostic{{
+			Range:    protocol.Range{},
+			Severity: &sev,
 			Source:   strPtr("elps"),
-			Message:  parseErr.Error(),
-		})
-	}
+			Message:  overLimitMessage,
+		}}
+	} else {
+		// Report parse errors as diagnostics.
+		for _, parseErr := range parseErrors {
+			diags = append(diags, protocol.Diagnostic{
+				Range:    parseErrorRange(parseErr),
+				Severity: severity(protocol.DiagnosticSeverityError),
+				Source:   strPtr("elps"),
+				Message:  parseErr.Error(),
+			})
+		}
 
-	// Run linter with cached analysis.
-	lintDiags, err := s.linter.LintFileWithContext(
-		[]byte(content),
-		uriToPath(uri),
-		docAnalysis,
-	)
-	if err == nil {
-		for _, d := range lintDiags {
-			diags = append(diags, convertLintDiagnostic(d))
+		// Run linter with cached analysis.
+		lintDiags, err := s.linter.LintFileWithContext(
+			[]byte(content),
+			uriToPath(uri),
+			docAnalysis,
+		)
+		if err == nil {
+			for _, d := range lintDiags {
+				diags = append(diags, convertLintDiagnostic(d))
+			}
 		}
 	}
 

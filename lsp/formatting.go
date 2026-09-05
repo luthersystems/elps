@@ -20,9 +20,17 @@ func (s *Server) textDocumentFormatting(_ *glsp.Context, params *protocol.Docume
 	doc.mu.Lock()
 	content := doc.Content
 	uri := doc.URI
+	overLimit := doc.overLimit
 	doc.mu.Unlock()
 
 	if content == "" {
+		return nil, nil
+	}
+	// formatter.FormatFile parses the whole document itself, so it is the
+	// one request that would still cost a full parse of an over-limit
+	// document after Document.parse started honouring the limit. Same
+	// answer as for incomplete code: no edits, no error dialog.
+	if overLimit {
 		return nil, nil
 	}
 

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -25,6 +27,11 @@ import (
 
 // testServer creates a server with a standard library registry for testing.
 func testServer() *Server {
+	return testServerWith()
+}
+
+// testServerWith is testServer with extra options applied after the env.
+func testServerWith(opts ...Option) *Server {
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
 	rc := lisp.InitializeUserEnv(env)
@@ -40,7 +47,28 @@ func testServer() *Server {
 		panic("failed to set package: " + rc.Str)
 	}
 
-	return New(WithEnv(env))
+	return New(append([]Option{WithEnv(env)}, opts...)...)
+}
+
+// runDebouncedNow cancels the debounce timer a didChange armed on uri and
+// runs its body inline, so the publication is observable synchronously
+// instead of 300ms later on a timer goroutine under a blanket recover. The
+// fuzz harness routes its runDebounced through this for the same reason.
+// Returns false if the document is not open (nothing to analyse).
+func runDebouncedNow(s *Server, uri string) bool {
+	s.debounceMu.Lock()
+	if t, ok := s.debounce[uri]; ok {
+		t.Stop()
+		delete(s.debounce, uri)
+	}
+	s.debounceMu.Unlock()
+
+	d := s.docs.Get(uri)
+	if d == nil {
+		return false
+	}
+	s.analyzeAndPublish(d)
+	return true
 }
 
 // openDoc opens a document in the test server and returns it.
@@ -4135,6 +4163,297 @@ func TestDocumentSizeGuard_OversizedDoc(t *testing.T) {
 	doc.mu.Unlock()
 }
 
+// TestDocumentSizeGuard_OversizedDocIsNotParsed pins the half of the size
+// limit that FuzzLSPSession/36ec6d2dd72dfd1f found missing: analyzeAndPublish
+// skipped ANALYSIS of an over-limit document, but DocumentStore.Open and
+// Change had already parsed it in full. The parse is the expensive part -- the
+// AST is ~100x the source -- and it ran on every didChange regardless of the
+// limit, so a client could drive the server through documents of any size.
+func TestDocumentSizeGuard_OversizedDocIsNotParsed(t *testing.T) {
+	const limit = 16
+	s := New(WithMaxDocumentBytes(limit))
+	assert.Equal(t, limit, s.docs.maxBytes, "the store must carry the server's limit")
+
+	const atoms = 16
+	over := strings.Repeat("0\n", atoms) // len(over) == 2*atoms == 32 > limit
+	require.Greater(t, len(over), limit)
+	under := "(+ 1 1)"
+	const uri = "file:///big.lisp"
+
+	astOf := func(doc *Document) ([]*lisp.LVal, []error, bool) {
+		doc.mu.Lock()
+		defer doc.mu.Unlock()
+		return doc.ast, doc.parseErrors, doc.overLimit
+	}
+
+	// Open over the limit: stored, marked, but not parsed.
+	doc := s.docs.Open(uri, 1, over)
+	ast, errs, marked := astOf(doc)
+	assert.Nil(t, ast, "an over-limit document must not be parsed on open")
+	assert.Nil(t, errs)
+	assert.True(t, marked, "an over-limit document is marked so diagnostics can report it")
+	assert.Equal(t, over, doc.Content, "the content is still stored")
+
+	// Change to under the limit: parsed again, so the limit is per version
+	// rather than sticky.
+	doc = s.docs.Change(uri, 2, under)
+	ast, _, marked = astOf(doc)
+	assert.Len(t, ast, 1, "a document back under the limit is parsed")
+	assert.False(t, marked, "the mark is cleared once the document fits again")
+
+	// Change back over the limit: the stale AST is dropped, not kept.
+	doc = s.docs.Change(uri, 3, over)
+	ast, errs, marked = astOf(doc)
+	assert.Nil(t, ast, "an over-limit document must not be parsed on change")
+	assert.Nil(t, errs)
+	assert.True(t, marked)
+
+	// The existing analysis-side guard still publishes its diagnostic for
+	// the unparsed document, and nothing downstream needs the AST to do so.
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+	s.analyzeAndPublish(doc)
+	require.Len(t, *captured, 1)
+	require.Len(t, (*captured)[0].Diagnostics, 1)
+	assert.Contains(t, (*captured)[0].Diagnostics[0].Message, "size limit")
+
+	// No limit: the same content is parsed, as before.
+	unlimited := New()
+	doc = unlimited.docs.Open(uri, 1, over)
+	ast, _, marked = astOf(doc)
+	assert.Len(t, ast, atoms, "with no limit every atom is parsed")
+	assert.False(t, marked)
+}
+
+// TestDidChange_OverLimitDocumentIsCheap is the harness-free repro from
+// elps#607: with a 16 KiB limit, a didChange carrying a 32 MiB document used
+// to cost a full parse (about 17 s and 16.7 M AST nodes) before the limit was
+// ever looked at. It has to hold no AST, be marked so the size diagnostic is
+// still reported, and allocate next to nothing.
+//
+// The bound is on ALLOCATION rather than wall clock: the parse allocates on
+// the order of gigabytes for this document and not parsing allocates a few
+// hundred bytes, which no scheduler stall can blur, whereas a 2s wall-clock
+// bound cannot separate busy from hung on a loaded box (internal/fuzzwatch).
+func TestDidChange_OverLimitDocumentIsCheap(t *testing.T) {
+	s := New(WithMaxDocumentBytes(16384))
+	ctx, captured := capturingContext()
+	setTestAnalysisCfg(s, &analysis.Config{})
+	const uri = "file:///huge.lisp"
+
+	require.NoError(t, s.textDocumentDidOpen(ctx, &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: uri, LanguageID: "lisp", Version: 1, Text: "0"},
+	}))
+
+	huge := strings.Repeat("0\n", 16<<20) // 32 MiB, 16 M atoms
+	params := &protocol.DidChangeTextDocumentParams{
+		TextDocument:   protocol.VersionedTextDocumentIdentifier{TextDocumentIdentifier: protocol.TextDocumentIdentifier{URI: uri}, Version: 2},
+		ContentChanges: []any{protocol.TextDocumentContentChangeEventWhole{Text: huge}},
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	require.NoError(t, s.textDocumentDidChange(ctx, params))
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+
+	doc := s.docs.Get(uri)
+	require.NotNil(t, doc)
+	doc.mu.Lock()
+	ast, marked, content := doc.ast, doc.overLimit, doc.Content
+	doc.mu.Unlock()
+	assert.Nil(t, ast, "an over-limit didChange must not build an AST")
+	assert.True(t, marked, "the document is marked over-limit")
+	assert.Len(t, content, len(huge), "the text is kept")
+	assert.Less(t, allocated, uint64(1<<20),
+		"didChange on an over-limit document must not parse it (the parse allocates gigabytes)")
+
+	// didOpen already published once for "0"; the debounced publish for the
+	// over-limit version is the second.
+	published := len(*captured)
+	require.True(t, runDebouncedNow(s, uri))
+	require.Len(t, *captured, published+1)
+	last := (*captured)[published]
+	require.Len(t, last.Diagnostics, 1)
+	assert.Contains(t, last.Diagnostics[0].Message, "size limit")
+}
+
+// emptyResult reports whether a feature handler's result carries nothing:
+// nil, a nil pointer, an empty slice, or a list type with no items.
+func emptyResult(v any) bool {
+	switch r := v.(type) {
+	case nil:
+		return true
+	case *protocol.SemanticTokens:
+		return r == nil || len(r.Data) == 0
+	case protocol.CompletionList:
+		return len(r.Items) == 0
+	case *protocol.CompletionList:
+		return r == nil || len(r.Items) == 0
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Interface:
+		if rv.IsNil() {
+			return true
+		}
+	default:
+	}
+	if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Map {
+		return rv.Len() == 0
+	}
+	return false
+}
+
+// TestDocumentSizeGuard_OverLimitDocumentHasNoASTFeatures pins what the
+// WithMaxDocumentBytes godoc promises: every AST-backed request degrades to an
+// empty, error-free answer on an over-limit document (there is no AST to
+// serve it from), while the same requests on the same source under the limit
+// return something. The over-limit row is also the no-panic assertion for
+// every handler reading a nil AST and nil analysis.
+func TestDocumentSizeGuard_OverLimitDocumentHasNoASTFeatures(t *testing.T) {
+	const src = "(defun add (x y)\n  (+ x y))\n(add 1 2)\n"
+	const uri = "file:///features.lisp"
+	// The limit sits between one copy of src and three, so the same text
+	// (repeated) is over the limit without changing what any request resolves.
+	limit := len(src) + 1
+	over := strings.Repeat(src, 3)
+	require.Greater(t, len(over), limit)
+
+	pos := func(line, char int) protocol.TextDocumentPositionParams {
+		return protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: uri},
+			Position:     protocol.Position{Line: safeUint(line), Character: safeUint(char)},
+		}
+	}
+	features := []struct {
+		name string
+		call func(s *Server) (any, error)
+	}{
+		{"hover", func(s *Server) (any, error) {
+			return s.textDocumentHover(mockContext(), &protocol.HoverParams{TextDocumentPositionParams: pos(1, 3)}) // on +
+		}},
+		{"definition", func(s *Server) (any, error) {
+			return s.textDocumentDefinition(mockContext(), &protocol.DefinitionParams{TextDocumentPositionParams: pos(2, 1)}) // on add
+		}},
+		{"completion", func(s *Server) (any, error) {
+			return s.textDocumentCompletion(mockContext(), &protocol.CompletionParams{TextDocumentPositionParams: pos(2, 3)})
+		}},
+		{"documentSymbol", func(s *Server) (any, error) {
+			return s.textDocumentDocumentSymbol(mockContext(), &protocol.DocumentSymbolParams{TextDocument: protocol.TextDocumentIdentifier{URI: uri}})
+		}},
+		{"foldingRange", func(s *Server) (any, error) {
+			return s.textDocumentFoldingRange(mockContext(), &protocol.FoldingRangeParams{TextDocument: protocol.TextDocumentIdentifier{URI: uri}})
+		}},
+		{"semanticTokensFull", func(s *Server) (any, error) {
+			return s.textDocumentSemanticTokensFull(mockContext(), &protocol.SemanticTokensParams{TextDocument: protocol.TextDocumentIdentifier{URI: uri}})
+		}},
+		{"selectionRange", func(s *Server) (any, error) {
+			return s.textDocumentSelectionRange(mockContext(), &protocol.SelectionRangeParams{
+				TextDocument: protocol.TextDocumentIdentifier{URI: uri},
+				Positions:    []protocol.Position{{Line: 1, Character: 3}},
+			})
+		}},
+		{"documentHighlight", func(s *Server) (any, error) {
+			return s.textDocumentDocumentHighlight(mockContext(), &protocol.DocumentHighlightParams{TextDocumentPositionParams: pos(2, 1)})
+		}},
+		{"prepareCallHierarchy", func(s *Server) (any, error) {
+			return s.textDocumentPrepareCallHierarchy(mockContext(), &protocol.CallHierarchyPrepareParams{TextDocumentPositionParams: pos(0, 7)}) // on add in defun
+		}},
+	}
+
+	for _, row := range []struct {
+		name      string
+		content   string
+		wantEmpty bool
+	}{
+		{"under-limit", src, false},
+		{"over-limit", over, true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			s := testServerWith(WithMaxDocumentBytes(limit))
+			doc := openDoc(s, uri, row.content)
+			doc.mu.Lock()
+			marked := doc.overLimit
+			doc.mu.Unlock()
+			require.Equal(t, row.wantEmpty, marked, "over-limit mark")
+
+			for _, f := range features {
+				t.Run(f.name, func(t *testing.T) {
+					res, err := f.call(s)
+					require.NoError(t, err)
+					if row.wantEmpty {
+						assert.True(t, emptyResult(res), "%s on an over-limit document should return nothing, got %#v", f.name, res)
+					} else {
+						assert.False(t, emptyResult(res), "%s on an under-limit document should return something", f.name)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestFormatting_OverLimitDocumentIsCheap: formatter.FormatFile parses the
+// document itself, so textDocument/formatting was the one request that still
+// cost a full parse of an over-limit document. It now answers "no edits"
+// without reading the text -- pinned by allocation, as above.
+func TestFormatting_OverLimitDocumentIsCheap(t *testing.T) {
+	s := New(WithMaxDocumentBytes(16384))
+	const uri = "file:///fmt.lisp"
+
+	// Under the limit, something that needs reformatting produces an edit.
+	openDoc(s, uri, "(+ 1   1)")
+	edits, err := s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: uri},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, edits, "an under-limit document is still formatted")
+
+	// Over the limit: 1 MiB of well-formed but badly spaced code.
+	big := strings.Repeat("(+ 1   1)\n", 1<<17)
+	s.docs.Change(uri, 2, big)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	edits, err = s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: uri},
+	})
+	runtime.ReadMemStats(&after)
+	require.NoError(t, err)
+	assert.Nil(t, edits, "an over-limit document is not formatted")
+	assert.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(1<<20),
+		"formatting an over-limit document must not parse it")
+}
+
+// TestDocumentSizeGuard_OverLimitPublishIsVersionGuarded pins that the
+// over-limit publication goes through the same version guard as the analysed
+// one: publishedVersion and publishedDiagnostics track it (code actions read
+// them), and a stale over-limit result does not overwrite a newer publication.
+func TestDocumentSizeGuard_OverLimitPublishIsVersionGuarded(t *testing.T) {
+	s := New(WithMaxDocumentBytes(16))
+	ctx, captured := capturingContext()
+	s.captureNotify(ctx)
+	setTestAnalysisCfg(s, &analysis.Config{})
+	const uri = "file:///guard.lisp"
+	over := strings.Repeat("0\n", 16)
+
+	doc := s.docs.Open(uri, 1, over)
+	s.analyzeAndPublish(doc)
+	require.Len(t, *captured, 1)
+	doc.mu.Lock()
+	assert.EqualValues(t, 1, doc.publishedVersion, "the over-limit publication records its version")
+	require.Len(t, doc.publishedDiagnostics, 1)
+	assert.Contains(t, doc.publishedDiagnostics[0].Message, "size limit")
+	doc.mu.Unlock()
+
+	// A newer version already published: the stale over-limit result is
+	// dropped rather than re-sent.
+	doc.mu.Lock()
+	doc.publishedVersion = 5
+	doc.mu.Unlock()
+	s.analyzeAndPublish(doc)
+	assert.Len(t, *captured, 1, "a stale over-limit result must not be published over a newer version")
+}
+
 func TestDocumentSizeGuard_ExactBoundary(t *testing.T) {
 	// A document exactly at the limit should pass through to analysis
 	// (strict > semantics). One byte over should be skipped.
@@ -4338,7 +4657,7 @@ func TestDocumentSnapshot_IsolatedFromMutation(t *testing.T) {
 	// Mutate the document (simulates concurrent parse with different content).
 	doc.mu.Lock()
 	doc.Content = "(+ 1 1)"
-	doc.parse()
+	doc.parse(0)
 	doc.mu.Unlock()
 
 	// Snapshot's AST should be unchanged despite the document being re-parsed.
@@ -4359,7 +4678,7 @@ func TestDocumentSnapshot_ParseErrorsIsolated(t *testing.T) {
 	// Re-parse with valid content (no errors).
 	doc.mu.Lock()
 	doc.Content = "(+ 1 1)"
-	doc.parse()
+	doc.parse(0)
 	doc.mu.Unlock()
 
 	// Snapshot's parse errors should be unchanged.
