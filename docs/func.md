@@ -613,6 +613,12 @@ Performs a stable sort on a list using a predicate. The last argument can
 optionally be a function that takes the key and returns the comparison value.
 Mutates the list in-place.
 
+The predicate and the key function receive the list's own elements, as the
+function passed to `map`, `foldl` or `select` does: a predicate that writes
+through its argument (`assoc!`, `append!`, `aset`) writes to the element in
+the list, and one that retains its argument retains the element.  The same
+holds for `insert-sorted`.
+
 Two consequences of "in-place" are worth stating outright, because neither is
 visible at the call site:
 

@@ -78,12 +78,14 @@ import (
 //
 // # Cost, and why the memo is not simply a map
 //
-// Copy is a per-call primitive on small values: insert-sorted copies leaf
-// integers inside a binary search, `cond` copies its test expression on
-// every evaluation, lambda creation copies its formals, and
-// TestVectorBuiltinAllocations pins those allocation counts as equalities.
-// A heap-allocated map per walk would be several allocations on every one
-// of those calls.  So the header memo is an inline array of
+// Copy is a per-call primitive on small values: `assert` copies its test
+// expression on every evaluation, lambda creation copies its formals,
+// make-sequence copies each number it emits, and
+// TestCopyLeafAllocatesLikeAStructCopy pins the leaf cost as an equality.
+// (The sort comparators, once the heaviest per-call callers, no longer copy
+// at all -- stable-sort and insert-sorted pass their elements by reference,
+// #604.)  A heap-allocated map per walk would be several allocations on
+// every one of those calls.  So the header memo is an inline array of
 // copierSmallMemo pairs that spills to the `seen` map only when a walk
 // outgrows it, the copier lives on Copy's stack (no closure captures it --
 // map entries are walked by loop, not through sortedmap.clone's callback,

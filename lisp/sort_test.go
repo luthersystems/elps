@@ -53,3 +53,63 @@ func TestSort(t *testing.T) {
 	}
 	elpstest.RunTestSuite(t, tests)
 }
+
+// TestSortComparatorArgumentsAreTheElements pins that stable-sort's
+// predicate and key function, and insert-sorted's predicate, receive the
+// list's own elements -- the contract map, foldl and select already have.
+// A write through an argument lands on the element in the list.
+//
+// Before #604 removed it, both builtins deep-copied their arguments on every
+// comparison, so these writes landed on ephemeral copies and the elements
+// came out untouched; every assertion below failed on that code.  Both
+// arguments are marked in each predicate because which element sort.Stable
+// and sort.Search pass first is an implementation detail.
+func TestSortComparatorArgumentsAreTheElements(t *testing.T) {
+	tests := elpstest.TestSuite{
+		{"stable-sort predicate", elpstest.TestSequence{
+			{`(set 'm1 (sorted-map 'key 1))`, `(sorted-map 'key 1)`, ""},
+			{`(set 'm2 (sorted-map 'key 2))`, `(sorted-map 'key 2)`, ""},
+			{`(set 'm3 (sorted-map 'key 3))`, `(sorted-map 'key 3)`, ""},
+			{`(stable-sort
+				(lambda (a b)
+					(assoc! a 'seen true)
+					(assoc! b 'seen true)
+					(< (get a 'key) (get b 'key)))
+				(list m3 m1 m2))`,
+				`'((sorted-map 'key 1 'seen true) (sorted-map 'key 2 'seen true) (sorted-map 'key 3 'seen true))`, ""},
+			{`(map 'list (lambda (m) (key? m 'seen)) (list m1 m2 m3))`, `'(true true true)`, ""},
+		}},
+		{"stable-sort key function", elpstest.TestSequence{
+			{`(set 'm1 (sorted-map 'key 1))`, `(sorted-map 'key 1)`, ""},
+			{`(set 'm2 (sorted-map 'key 2))`, `(sorted-map 'key 2)`, ""},
+			// The key function sees every element it is asked to key.
+			{`(stable-sort < (list m2 m1) (lambda (m) (assoc! m 'keyed true) (get m 'key)))`,
+				`'((sorted-map 'key 1 'keyed true) (sorted-map 'key 2 'keyed true))`, ""},
+			{`(map 'list (lambda (m) (key? m 'keyed)) (list m1 m2))`, `'(true true)`, ""},
+		}},
+		{"insert-sorted predicate", elpstest.TestSequence{
+			{`(set 'm1 (sorted-map 'key 1))`, `(sorted-map 'key 1)`, ""},
+			{`(set 'm2 (sorted-map 'key 2))`, `(sorted-map 'key 2)`, ""},
+			// A one-element list is probed exactly once, so both the item
+			// and the element are seen by the predicate.
+			{`(insert-sorted 'list (list m1)
+				(lambda (a b)
+					(assoc! a 'seen true)
+					(assoc! b 'seen true)
+					(< (get a 'key) (get b 'key)))
+				m2)`,
+				`'((sorted-map 'key 1 'seen true) (sorted-map 'key 2 'seen true))`, ""},
+			{`(key? m1 'seen)`, `true`, ""},
+			{`(key? m2 'seen)`, `true`, ""},
+		}},
+		{"insert-sorted key function", elpstest.TestSequence{
+			{`(set 'm1 (sorted-map 'key 1))`, `(sorted-map 'key 1)`, ""},
+			{`(set 'm2 (sorted-map 'key 2))`, `(sorted-map 'key 2)`, ""},
+			{`(insert-sorted 'vector (vector m1) < m2 (lambda (m) (assoc! m 'keyed true) (get m 'key)))`,
+				`(vector (sorted-map 'key 1 'keyed true) (sorted-map 'key 2 'keyed true))`, ""},
+			{`(key? m1 'keyed)`, `true`, ""},
+			{`(key? m2 'keyed)`, `true`, ""},
+		}},
+	}
+	elpstest.RunTestSuite(t, tests)
+}
