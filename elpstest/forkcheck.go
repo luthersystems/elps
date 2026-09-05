@@ -5,7 +5,6 @@ package elpstest
 import (
 	"fmt"
 	"reflect"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -36,8 +35,14 @@ import (
 //     fork, or between two forks; a transaction on a fork leaves the
 //     template untouched; a later fork is pristine.
 //
-// Every fork is also checked one level deeper (a fork of the fork), since
-// a fix that survived one hop and not two has happened (issue #579).
+// Every fork is also checked one level deeper (a fork of the fork), as
+// defence in depth against a class a single hop cannot exhibit.  This line
+// used to cite issue #579 for that, which is false: #579 fails at the FIRST
+// fork, measured by reverse-applying its fix 6ef3da5.  The real instance is
+// recorded in d26953a -- on a shared libtesting suite, the fork-of-fork arm
+// was once the only arm that noticed (TestForkCheck_TestingSuitePerFork).
+// Cited by commit and test rather than issue number: the issue numbers in
+// this area have been wrong twice.
 //
 // "Reachable" means everything reachable from the package bindings: list
 // and vector cells, sorted-map entries, bytes, and the environment a
@@ -125,6 +130,17 @@ func RunForkCheck(t testing.TB, c ForkCheck) {
 	}
 
 	tmpl := build("template")
+	// The class-level oracle, over the same template (issue #598).  It
+	// carries the properties this harness used to state for Fork alone:
+	// the sharing-encoding fingerprint (which subsumes the alias signature
+	// below, since sharing is part of the encoding) extended with the
+	// per-package metadata tables, and the two-hop arm.  RunForkCheck keeps
+	// its own COLD-ARM renderings, which the shared oracle has no analogue
+	// for: no other walker has a "same program, loaded from scratch"
+	// reference to compare against.
+	for _, wit := range CheckForkTemplate(tmpl, c.ForkOptions...) {
+		t.Errorf("%s", wit)
+	}
 	tmplState := envState(tmpl)
 	tmplAlias := aliasSignature(tmpl)
 	tmplIDs := payloadIDs(tmpl)
@@ -203,15 +219,6 @@ func renderResult(v *lisp.LVal) string {
 	w := newStateWalker(&b)
 	w.value(v)
 	return v.Type.String() + " " + b.String()
-}
-
-// funIDPattern matches the environment-derived part of a lambda's name.
-// Cold and fork arms allocate environment IDs on independent counters, so
-// the IDs are not comparable; only that two mentions agree.
-var funIDPattern = regexp.MustCompile(`_fun\d+`)
-
-func normalizeFunIDs(s string) string {
-	return funIDPattern.ReplaceAllString(s, "_fun#")
 }
 
 // roots returns every package binding in a deterministic order: package

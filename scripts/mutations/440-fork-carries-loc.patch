@@ -1,0 +1,12 @@
+diff --git a/lisp/fork.go b/lisp/fork.go
+index 4da73dd..ea0a512 100644
+--- a/lisp/fork.go
++++ b/lisp/fork.go
+@@ -390,6 +390,7 @@ func (f *forker) env(e *LEnv) *LEnv {
+ 		return ne
+ 	}
+ 	ne := &LEnv{
++		loc: e.loc, // mutation: #440 fork carries the template's location register
+ 		// loc DOES NOT TRAVEL, and it is not shared either: a fork starts
+ 		// with no current evaluator location at all.
+ 		//

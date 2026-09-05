@@ -163,8 +163,14 @@ static-checks: check-golangci-version check-golangci-config
 	# expanded linter set cleared the default build to zero while
 	# lisp/singleton_check_elpscheck_test.go still carried a testifylint
 	# finding nobody could see. Scoped to ./lisp/... because that is where the
-	# only tagged files live (see lisp/singleton_check_*.go and issue #274);
-	# widen it if tagged files appear elsewhere.
+	# only files EXCLUDED FROM the default build live (lisp/singleton_check_*.go,
+	# issue #274) — those are the ones a default-build lint cannot see at all.
+	#
+	# elpstest/aliasguard_templatefork_test.go also carries a build tag, but the
+	# opposite one: `//go:build !elpscheck`. A !elpscheck file IS in the default
+	# build, so `golangci-lint run ./...` above already lints it and this pass
+	# would only drop it. Verified: 0 issues on both passes. Widen this scope if
+	# a file guarded by `//go:build elpscheck` appears outside ./lisp/....
 	golangci-lint run --build-tags elpscheck ./lisp/...
 
 # elpsvet: the seal contract's static half.  golangci-lint checks Go style;
@@ -190,6 +196,51 @@ static-checks: check-golangci-version check-golangci-config
 #
 # Same blindness, same shape, same reason as the second golangci-lint pass in
 # static-checks above.
+# mutation-proof: revert each REAL historical fix in production code and
+# require it to be caught, by a needle measured for uniqueness and stability.
+#
+# For EIGHT of the nine rows that needle is a property string emitted by the
+# guard this PR adds. "By name" means the SPECIFIC property, not "some test
+# failed": needles shared across mutations assert nothing about the bug they
+# are filed under, and a needle that is only ~84% stable makes a required gate
+# flaky, which is worse than no gate.
+#
+# THE 579 ROW IS AN EXCEPTION, AND IT IS MEASURED, NOT CONCEDED.
+# Reverting that fix emits no property string at all -- it reddens exactly one
+# pre-existing test, from the earlier forkcheck oracle (477ea95), which is not
+# in this PR's diff. So that row asserts "#579 stays fixed" rather than "the
+# new guard catches #579". The manifest notes in scripts/mutation-proof.sh
+# record why, and this comment says so here rather than leaving the sentence
+# above to overstate what all nine rows demonstrate. (It closes at the top of
+# the stack: #601 folds cold-vs-fork parity into this same harness, and the
+# property row for #579 lands there, where the property exists.)
+#
+# The ten broken reference walkers in elpstest/aliasguard_broken_test.go model
+# those bugs with hand-written imitations. This reverts the actual fixes. The
+# guard's PR did that by hand, once, in a scratch worktree, never committed --
+# proving it worked that afternoon and guarding nothing after. See the header
+# of scripts/mutation-proof.sh for the three rules that keep it honest (a
+# patch that no longer applies fails loudly; a mutation that does not compile
+# is not a catch; the specific property is asserted, not "something failed").
+#
+# ON THE PR GATE, NOT NIGHTLY, because it was measured rather than assumed.
+# Two numbers, because they differ and only one of them is the cost that
+# matters: 20-21s locally for 8 mutations on a warm cache (three consecutive
+# runs), and 34s as actually observed in CI on ubuntu-24.04-arm, plus 5s for
+# the selftest -- 39s total added to the job. The CI figure is the real one;
+# the local figure is quoted only so the gap is on the record rather than
+# discovered later. Both predate the ninth row, so expect roughly an eighth
+# more; CI's own timing is the number to trust and it is reported per run. A nightly-only gate would let a mutation rot for a
+# day, and 39s does not justify that.
+.PHONY: mutation-proof
+mutation-proof:
+	./scripts/mutation-proof.sh
+
+# The control on the control: mutation-proof.sh's own three guarantees.
+.PHONY: mutation-proof-selftest
+mutation-proof-selftest:
+	./scripts/mutation-proof-selftest.sh
+
 .PHONY: elpsvet
 elpsvet:
 	go run ./cmd/elpsvet -test=false ./...

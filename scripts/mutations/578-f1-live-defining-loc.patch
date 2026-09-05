@@ -1,0 +1,13 @@
+diff --git a/lisp/env.go b/lisp/env.go
+index 71627f4..9ea6659 100644
+--- a/lisp/env.go
++++ b/lisp/env.go
+@@ -1953,7 +1953,7 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
+ 	if fenv := fun.funEnv(); fenv != nil {
+ 		cp := *fenv
+ 		cp.parent = fenv
+-		cp.loc = fun.funData().loc
++		cp.loc = fenv.loc // mutation: #578 F1 read the defining env's LIVE register
+ 		cp.scope = make(map[string]*LVal, formals.Len())
+ 		funenv = &cp
+ 	}
