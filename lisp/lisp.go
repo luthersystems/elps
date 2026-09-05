@@ -1551,8 +1551,9 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 
 // Copy creates a deep copy of the receiver.
 //
-// Copy has within-runtime semantics — an LArray's backing storage is shared
-// with the receiver, so it is not a tool for transferring values between
+// Copy has within-runtime semantics — a closure's environment, an LError's
+// call stack and a native payload that is not a NativeCloner are shared with
+// the receiver — so it is not a tool for transferring values between
 // Runtimes; the in-kernel detach (lisp/detach.go, unexported until a real
 // consumer appears) covers that.
 //
@@ -1574,9 +1575,10 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 // NativeCloner payload reachable through several headers is rebuilt ONCE
 // and shared by those headers in the copy exactly as it was in the source;
 // a value reachable twice is copied once and a cycle closes onto the copy.
-// A map's values are walked like a list's cells.  What stays shared: an
-// LArray's backing, a closure's environment, an LError's call stack, and a
-// native payload that is not a NativeCloner.  See copier in lisp/copier.go.
+// A map's values, and an array's dims and data-list headers, are walked
+// like a list's cells.  What stays shared: a closure's environment, an
+// LError's call stack, and a native payload that is not a NativeCloner.  See
+// copier in lisp/copier.go.
 func (v *LVal) Copy() *LVal {
 	if v == nil {
 		return nil

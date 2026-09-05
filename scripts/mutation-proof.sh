@@ -138,6 +138,25 @@ PKG=./elpstest/
 #    TestNoLiveWalkerOverAliasesEqualBuffers): map-memo 4/0, bytes 10/0,
 #    zero of every other row's needle -- a targeted measurement, so CI's
 #    end-to-end run is the one that certifies it (see template-share).
+#  - 604-copier-array-shared restores Copy's old LArray arm (the copy keeps
+#    the source's Cells, so its vector holds the SOURCE's element headers).
+#    It is the row for the crasher CI's fuzzer found within seconds of Copy
+#    joining the registry, and its needle is the property that fires FIRST
+#    on it: the fingerprint one, because the copy's walk never memoised a
+#    header it reaches through the shared vector.  That string is NOT
+#    unique -- the map-memo mutation emits it too (measured 4 there, 1
+#    here), and so does the second string this mutation emits -- so, as
+#    585 did with the walker prefix, the row pins what distinguishes its
+#    signature: the committed seed for the crasher (FuzzAliasGuard/seed#6,
+#    the `(vector v0 v0)` graph with the map reaching the vector back) is
+#    the ONLY test this mutation reddens in ./elpstest, and neither of the
+#    other copier mutations touches it (0/0).  Both needles are required.
+#    seed#6 is positional (aliasGuardSeeds' order): inserting a seed before
+#    it renumbers it and this row goes NOT PROVEN loudly, which is the
+#    rule-1 failure mode and the right one.  Its must-NOTs are the bytes
+#    row's needle (the mutation keeps the site count where the vector
+#    holds ints, and where it holds a map the count DIFFERS, so the
+#    over-sharing property never runs), 585's, 576's and 600's.
 #  - 579 is the libschema validator credential (6ef3da5), NOT a fork memo. An
 #    earlier revision of this file shipped a patch that moved a memo seed in
 #    forker's stock-map path and labelled it #579; that line's own production
@@ -153,9 +172,10 @@ MANIFEST=$(cat <<'EOF'
 578-f1-live-defining-loc;a budget error at a function-body entry reports the definition site;no macro-expansion metadata on a fresh fork reaches a template value
 582-macro-stamp-in-place;expansion mutates nothing reachable outside its own output;no macro-expansion metadata on a fresh fork reaches a template value
 template-share;a transaction on the template is invisible to every existing fork;no macro-expansion metadata on a fresh fork reaches a template value
-600-fork-keeps-macroexpansion;no macro-expansion metadata on a fresh fork reaches a template value;a fresh fork is indistinguishable from its template|LVal.Copy: the copy has the same mutable payloads as the source|LVal.Copy: a write on one side is invisible on the other
+600-fork-keeps-macroexpansion;no macro-expansion metadata on a fresh fork reaches a template value;a fresh fork is indistinguishable from its template|LVal.Copy: the copy has the same mutable payloads as the source|LVal.Copy: a write on one side is invisible on the other|LVal.Copy: the copy has the same values and the same sharing as the source
 604-copier-map-memo;LVal.Copy: the copy has the same mutable payloads as the source;LVal.Copy: a write on one side is invisible on the other|Detach: the copy has the same mutable payloads as the source|a fresh fork is indistinguishable from its template|no macro-expansion metadata on a fresh fork reaches a template value
-604-copier-bytes-shared;LVal.Copy: a write on one side is invisible on the other;LVal.Copy: the copy has the same mutable payloads as the source|a fresh fork is indistinguishable from its template|no macro-expansion metadata on a fresh fork reaches a template value
+604-copier-bytes-shared;LVal.Copy: a write on one side is invisible on the other;LVal.Copy: the copy has the same mutable payloads as the source|LVal.Copy: the copy has the same values and the same sharing as the source|a fresh fork is indistinguishable from its template|no macro-expansion metadata on a fresh fork reaches a template value
+604-copier-array-shared;LVal.Copy: the copy has the same values and the same sharing as the source|TEST:FuzzAliasGuard/seed#6;LVal.Copy: a write on one side is invisible on the other|Detach: the copy has the same mutable payloads as the source|a fresh fork is indistinguishable from its template|no macro-expansion metadata on a fresh fork reaches a template value
 EOF
 )
 
@@ -242,4 +262,4 @@ done <<<"$MANIFEST"
 
 echo
 [ $fail = 0 ] || die "at least one mutation was not proven -- see above."
-echo "mutation-proof: every mutation caught by its named needle (10 property strings, 1 test -- see 579 in the manifest notes)."
+echo "mutation-proof: every mutation caught by its named needle (11 property strings, 1 test alone (579) and 1 property+test pair (604 array) -- see the manifest notes)."

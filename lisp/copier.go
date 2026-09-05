@@ -63,9 +63,8 @@ import (
 //     comment at the assignment).
 //   - A function value keeps its environment by reference: Copy shares
 //     closures, as `copy` does.
-//   - An LArray's Cells backing is shared (reference semantics;
-//     TestCopyAliasesArrayBacking), and a list's cells backing array is
-//     NOT preserved across the copy (TestCopyDoesNotPreserveBackingArraySharing).
+//   - A list's cells backing array is NOT preserved across the copy
+//     (TestCopyDoesNotPreserveBackingArraySharing).
 //   - An LError's *CallStack is shared.  It is immutable by construction:
 //     CallStack.Copy allocates exact-length Frames at every capture site
 //     and nothing writes a captured stack, so sharing it shares nothing a
@@ -75,6 +74,22 @@ import (
 //     exactly as the detacher clones it in copy mode -- once per pointer
 //     payload, no runtime-affinity check, since the copy stays in the
 //     runtime it was made in.
+//
+// # What changed once the walker was in the registry
+//
+// An LArray is walked like a list.  Copy used to keep the struct-copied
+// Cells for an array outright ("reference semantics"), so the copy's vector
+// held the SOURCE's dims and data-list headers -- and through them every
+// element header, so a copy reached the source's map through a vector and a
+// write through the copy landed in the source.  CI's fuzzer found that
+// within seconds of (*LVal).Copy becoming a registered walker
+// (FuzzAliasGuard, #604; the seed is committed).  The dims header and the
+// data-list header now go through the header memo, exactly as they do in
+// Fork (lisp/fork.go has no LArray arm): two vector headers over one data
+// list -- `(quasiquote (unquote v))` -- copy to two headers over ONE copied
+// list, and the copy reaches no source header.  TestCopyRebuildsArrayBacking
+// is the control; it was TestCopyAliasesArrayBacking, pinning the sharing,
+// until then.
 //
 // # Cost, and why the memo is not simply a map
 //
@@ -209,9 +224,7 @@ func (c *copier) copy(v *LVal) *LVal {
 	// apply to it.  Every fresh node the walk creates has the flag cleared,
 	// so copying a sealed tree yields a fully unsealed, fully private tree
 	// — the sanctioned way to obtain a mutable version of a program literal
-	// (lisp/seal.go).  (Values that share storage with v — an LArray's
-	// backing — are never sealed: SealAST marks parser-producible types
-	// only.)
+	// (lisp/seal.go).
 	cp.sealed = false
 	// source rides along in the struct assignment above, so without this the
 	// copy and the original hold ONE mutable *token.Location, at every depth
@@ -273,10 +286,6 @@ func (c *copier) copy(v *LVal) *LVal {
 	// the copy.
 	c.remember(v, cp)
 	switch v.Type {
-	case LArray:
-		// Arrays are memory references but use Cells as backing storage.
-		// We preserve the shared backing array (reference semantics).
-		return cp
 	case LSortMap:
 		// Sorted-maps store data in Native (*MapData) which contains Go
 		// maps.  A shallow struct copy would alias the underlying maps,
@@ -299,7 +308,9 @@ func (c *copier) copy(v *LVal) *LVal {
 	default:
 		// Every other type carries its payload in the struct copy above —
 		// an LError's *CallStack included, shared by design (see the type
-		// comment) — and its children in Cells, walked below.
+		// comment) — and its children in Cells, walked below.  An LArray
+		// is one of them: its dims and data-list headers are children,
+		// memoised like any other (see "What changed" in the type comment).
 	}
 	cp.Cells = c.cells(v)
 	return cp

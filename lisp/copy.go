@@ -3,10 +3,10 @@
 package lisp
 
 // deepCopy returns a copy of v whose data containers share no storage with
-// v: lists, vectors (including the LArray backing storage that Copy
-// deliberately shares), sorted-maps and bytes are rebuilt with fresh
-// backing, recursively, and the seal (lisp/seal.go) is cleared on every
-// node of the result.  It is the engine behind the lisp `copy` builtin
+// v: lists, vectors (the LArray backing storage included -- which Copy used
+// to share and, since #604, rebuilds too), sorted-maps and bytes are rebuilt
+// with fresh backing, recursively, and the seal (lisp/seal.go) is cleared on
+// every node of the result.  It is the engine behind the lisp `copy` builtin
 // (issue #378).
 //
 // deepCopy is NOT detach with a friendlier name.  detach exists to move a
