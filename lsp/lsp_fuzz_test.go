@@ -170,6 +170,24 @@ const (
 	// path.
 	fuzzMaxDocBytes = 16384
 
+	// fuzzMaxContentBytes bounds how large editedContent's duplicating shape
+	// will grow a document. It is an absolute constant, not a multiple of
+	// fuzzMaxDocBytes, so that setting the analysis limit to 0 cannot turn
+	// every duplicate into a halve.
+	//
+	// It has to sit FAR above fuzzMaxDocBytes to keep the committed crasher
+	// discriminating. An unfixed server parses every over-limit didChange in
+	// full at roughly 100-160 ns/byte, so what decides whether a duplicating
+	// script trips the 30s watchdog is the total bytes parsed over maxOps
+	// ops, i.e. about 2*cap for the ramp plus (maxOps - log2(cap)) legs
+	// averaging 3/4 of the cap. Measured: at a 4 MiB cap the unfixed tree
+	// finished the seed in 15.9s and PASSED; at 16 MiB (~550 MiB parsed) it
+	// cannot finish inside the budget on any box, while the fixed tree stores
+	// each edit in microseconds. Memory is bounded by construction: two
+	// documents of at most 16 MiB, and decode's per-op line scan allocates
+	// nothing (see lineStats).
+	fuzzMaxContentBytes = 16 << 20
+
 	// Budgets for the injected LEnv. An env is injected on purpose: it is what
 	// sets cfg.MacroExpander, and analysis-time macro expansion CALLS
 	// env.MacroCall, i.e. it evaluates macro bodies while merely analysing a
@@ -529,13 +547,7 @@ func (s *session) decode(chunk []byte) (lspOp, opArgs) {
 		uri = fuzzURIB
 	}
 
-	lines := strings.Split(s.content[uri], "\n")
-	width := 1
-	for _, ln := range lines {
-		if len(ln) > width {
-			width = len(ln)
-		}
-	}
+	nlines, width := lineStats(s.content[uri])
 
 	var line, col int
 	switch {
@@ -549,11 +561,30 @@ func (s *session) decode(chunk []byte) (lspOp, opArgs) {
 		col = int(chunk[2])
 	default:
 		// +2 so just-past-the-end is reachable without being the common case.
-		line = int(chunk[1]) % (len(lines) + 2)
+		line = int(chunk[1]) % (nlines + 2)
 		col = int(chunk[2]) % (width + 2)
 	}
 
 	return op, opArgs{uri: uri, line: line, col: col, flags: flags, a: chunk[1], b: chunk[2]}
+}
+
+// lineStats is len(strings.Split(content, "\n")) and the longest piece,
+// computed without materialising the split. decode runs it on every op, and
+// a duplicating script holds documents of fuzzMaxContentBytes: splitting
+// 16 MiB of "0\n" allocates 8M string headers (128 MiB) per op, which was
+// the harness's own dominant cost once the server stopped parsing.
+func lineStats(content string) (nlines, width int) {
+	nlines, width = 1, 1
+	start := 0
+	for i := range len(content) {
+		if content[i] != '\n' {
+			continue
+		}
+		nlines++
+		width = max(width, i-start)
+		start = i + 1
+	}
+	return nlines, max(width, len(content)-start)
 }
 
 func (a opArgs) pos() protocol.Position {
@@ -608,6 +639,26 @@ func (s *session) opDidOpen(a opArgs) {
 // truncate, or duplicate. Truncation matters most for positions -- a request
 // aimed at line 40 of a document that just shrank to 3 lines is the classic
 // editor race, and it is what the server has to survive.
+//
+// Duplication is BOUNDED, because it is exponential: a script of nothing but
+// duplicating didChanges doubles the document on every op, and maxOps of them
+// turn one byte into 2^48. No server can hold that, and neither can this
+// harness -- the concatenation here and decode's strings.Split are O(n) on
+// their own -- so the fuzzer's bounded input was being amplified into an
+// input nothing could survive. That was FuzzLSPSession/36ec6d2dd72dfd1f,
+// which also exposed a real server defect (parsing ran before the size limit;
+// see Document.parse), but even with that fixed the harness would have OOMed
+// on its own doubling.
+//
+// The bound is checked on the RESULT: a duplicate that would exceed
+// fuzzMaxContentBytes halves the document instead, which undoes the previous
+// duplication exactly. Starting from one byte the sizes are 2^k-1, so the
+// largest reached is the biggest 2^k-1 that fits (16777215 bytes for a 16 MiB
+// cap) and the steady state alternates between that and the size below it.
+// Both legs are far over fuzzMaxDocBytes: this shape never produces the
+// over-to-under transition -- the truncating and swapping shapes do that --
+// it keeps hammering the over-limit path with a fresh version each time.
+// TestLSPFuzzDuplicateEditIsBounded pins both halves of this.
 func (s *session) editedContent(a opArgs) string {
 	cur := s.content[a.uri]
 	switch a.b % 3 {
@@ -622,6 +673,9 @@ func (s *session) editedContent(a opArgs) string {
 		}
 		return cur[:int(a.a)%len(cur)]
 	default:
+		if 2*len(cur)+1 > fuzzMaxContentBytes {
+			return cur[:len(cur)/2]
+		}
 		return cur + "\n" + cur
 	}
 }
@@ -646,16 +700,7 @@ func (s *session) opDidChange(a opArgs) {
 // the whole analyse+lint pass 300ms later on a timer goroutine underneath a
 // blanket recover, so any panic in it is both unattributable and invisible.
 func (s *session) runDebounced(uri string) {
-	s.srv.debounceMu.Lock()
-	if t, ok := s.srv.debounce[uri]; ok {
-		t.Stop()
-		delete(s.srv.debounce, uri)
-	}
-	s.srv.debounceMu.Unlock()
-
-	if d := s.srv.docs.Get(uri); d != nil {
-		s.srv.analyzeAndPublish(d)
-	}
+	runDebouncedNow(s.srv, uri)
 }
 
 func (s *session) opDidSave(a opArgs) {
@@ -1421,6 +1466,71 @@ func FuzzLSPSession(f *testing.F) {
 // ---------------------------------------------------------------------------
 // guards
 // ---------------------------------------------------------------------------
+
+// TestLSPFuzzDuplicateEditIsBounded pins editedContent's duplicating shape
+// from both sides. It must never grow a document past fuzzMaxContentBytes
+// (or a duplicating script is 2^maxOps bytes, which is what
+// FuzzLSPSession/36ec6d2dd72dfd1f was), and it must get well past
+// fuzzMaxDocBytes (or the committed seed stops discriminating a fixed server
+// from an unfixed one, because a document that never exceeds the analysis
+// limit by much parses in milliseconds either way).
+func TestLSPFuzzDuplicateEditIsBounded(t *testing.T) {
+	t.Parallel()
+
+	if fuzzMaxContentBytes <= 4*fuzzMaxDocBytes {
+		t.Fatalf("fuzzMaxContentBytes (%d) must sit well above fuzzMaxDocBytes (%d)"+
+			" or the duplicating shape cannot make an unfixed server do measurable work",
+			fuzzMaxContentBytes, fuzzMaxDocBytes)
+	}
+
+	s := &session{content: map[string]string{fuzzURIA: "0", fuzzURIB: ""}}
+	a := opArgs{uri: fuzzURIA, b: 2} // b%3 == 2 selects the duplicating shape
+
+	// Largest 2^k-1 that fits under the cap: where the doubling has to stop.
+	peak := 1
+	for 2*peak+1 <= fuzzMaxContentBytes {
+		peak = 2*peak + 1
+	}
+
+	var sizes []int
+	for range 2 * maxOps {
+		prev := s.content[fuzzURIA]
+		next := s.editedContent(a)
+		if len(next) > fuzzMaxContentBytes {
+			t.Fatalf("duplicating edit grew the document to %d bytes, over the %d cap", len(next), fuzzMaxContentBytes)
+		}
+		if next == prev {
+			t.Fatalf("duplicating edit at %d bytes was a no-op; every edit must be a real edit", len(prev))
+		}
+		if len(next) < len(prev) && len(sizes) >= 2 && len(next) != sizes[len(sizes)-2] {
+			t.Fatalf("a halving edit must undo the previous duplication exactly: got %d, want %d", len(next), sizes[len(sizes)-2])
+		}
+		sizes = append(sizes, len(next))
+		s.content[fuzzURIA] = next
+	}
+
+	maxSeen := 0
+	for _, n := range sizes {
+		maxSeen = max(maxSeen, n)
+	}
+	if maxSeen != peak {
+		t.Fatalf("duplicating edits peaked at %d bytes; expected to reach %d (the largest 2^k-1 under the cap)", maxSeen, peak)
+	}
+	if maxSeen <= fuzzMaxDocBytes {
+		t.Fatalf("duplicating edits never crossed fuzzMaxDocBytes (%d); peak was %d", fuzzMaxDocBytes, maxSeen)
+	}
+	// Steady state: the last two sizes are the peak and the size below it,
+	// and BOTH are over the analysis limit -- this shape does not produce the
+	// over-to-under transition, and the comment on editedContent says so.
+	last, prev := sizes[len(sizes)-1], sizes[len(sizes)-2]
+	alternating := (last == peak && prev == peak/2) || (last == peak/2 && prev == peak)
+	if !alternating {
+		t.Fatalf("steady state should alternate %d/%d, got %d then %d", peak/2, peak, prev, last)
+	}
+	if prev <= fuzzMaxDocBytes || last <= fuzzMaxDocBytes {
+		t.Fatalf("both steady-state legs should be over fuzzMaxDocBytes (%d): %d, %d", fuzzMaxDocBytes, prev, last)
+	}
+}
 
 // TestLSPFuzzDrivesEveryWiredHandler is the guard that keeps this target
 // honest, and the analogue of TestDebuggerChangesTheEvalPath.
