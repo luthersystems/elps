@@ -15,43 +15,16 @@ import (
 //
 // Before #604 the comparator copied both elements on every comparison, so
 // the wide list cost a nine-entry map walk per element per comparison more
-// than the narrow one; the two counts differed by hundreds.  The count is
-// also pinned as an equality, in the style of TestVectorBuiltinAllocations
-// (same Go-implemented predicate discipline, same warm-up: AllocsPerRun's
-// first call sorts the list, and the measured calls sort an already sorted
-// list, which insertion-sorts with a fixed number of comparisons).
+// than the narrow one; the two counts differed by hundreds.  This property
+// holds in every build (the elpscheck build's per-eval ownership
+// bookkeeping adds the same allocations to both widths), so it carries no
+// build constraint; the exact count is pinned separately in
+// TestStableSortAllocationCount under the constraint
+// TestVectorBuiltinAllocations uses.
 func TestStableSortAllocationsDoNotDependOnMapWidth(t *testing.T) {
-	env := NewEnv(nil)
-	if rc := InitializeUserEnv(env); rc.Type == LError {
-		t.Fatalf("initialize-user-env: %v", rc)
-	}
-	key := String("k")
-	// A Go-implemented predicate keeps the evaluator's own allocations,
-	// which this test does not measure, out of the count; it reads the
-	// sort key from each map exactly as (lambda (a b) (< (get a "k") (get b "k")))
-	// would.
-	lessK := FunInPackage(DefaultUserPackage, "less-k?", Formals("a", "b"), func(env *LEnv, args *LVal) *LVal {
-		x, _ := args.Cells[0].Map().Get(key)
-		y, _ := args.Cells[1].Map().Get(key)
-		return Bool(x.Int < y.Int)
-	})
-	const n = 8
-	// mapList builds n maps keyed "k" = n..1 (reverse order, so the
-	// warm-up sort moves every element) with width-1 further entries each.
-	mapList := func(width int) *LVal {
-		cells := make([]*LVal, 0, n)
-		for i := n; i > 0; i-- {
-			m := SortedMap()
-			m.Map().Set(key, Int(i))
-			for f := 1; f < width; f++ {
-				m.Map().Set(String(fmt.Sprintf("f%d", f)), Int(f))
-			}
-			cells = append(cells, m)
-		}
-		return QExpr(cells)
-	}
-	narrow := mapList(1)
-	wide := mapList(9)
+	env, lessK, key := stableSortAllocFixture(t)
+	narrow := stableSortAllocMaps(key, 1)
+	wide := stableSortAllocMaps(key, 9)
 	sortNarrow := QExpr([]*LVal{lessK, narrow})
 	sortWide := QExpr([]*LVal{lessK, wide})
 
@@ -77,11 +50,40 @@ func TestStableSortAllocationsDoNotDependOnMapWidth(t *testing.T) {
 	if allocsNarrow != allocsWide {
 		t.Errorf("stable-sort allocated %v times per call over one-entry maps and %v over nine-entry maps; the count must not depend on element size", allocsNarrow, allocsWide)
 	}
-	// Measured on the commit that removed the per-comparison copy: the
-	// seven insertion-sort comparisons of an already sorted eight-element
-	// list, each an evaluated (less-k? a b) form.
-	const want = 43
-	if int(allocsNarrow) != want {
-		t.Errorf("stable-sort allocated %v times per call, want %d", allocsNarrow, want)
+}
+
+// stableSortAllocFixture is the environment and the Go-implemented
+// predicate the stable-sort allocation tests share.  A Go predicate keeps
+// the evaluator's own allocations, which these tests do not measure, out
+// of the count; it reads the sort key from each map exactly as
+// (lambda (a b) (< (get a "k") (get b "k"))) would.
+func stableSortAllocFixture(t *testing.T) (*LEnv, *LVal, *LVal) {
+	t.Helper()
+	env := NewEnv(nil)
+	if rc := InitializeUserEnv(env); rc.Type == LError {
+		t.Fatalf("initialize-user-env: %v", rc)
 	}
+	key := String("k")
+	lessK := FunInPackage(DefaultUserPackage, "less-k?", Formals("a", "b"), func(env *LEnv, args *LVal) *LVal {
+		x, _ := args.Cells[0].Map().Get(key)
+		y, _ := args.Cells[1].Map().Get(key)
+		return Bool(x.Int < y.Int)
+	})
+	return env, lessK, key
+}
+
+// stableSortAllocMaps builds eight maps keyed key = 8..1 (reverse order, so
+// the warm-up sort moves every element) with width-1 further entries each.
+func stableSortAllocMaps(key *LVal, width int) *LVal {
+	const n = 8
+	cells := make([]*LVal, 0, n)
+	for i := n; i > 0; i-- {
+		m := SortedMap()
+		m.Map().Set(key, Int(i))
+		for f := 1; f < width; f++ {
+			m.Map().Set(String(fmt.Sprintf("f%d", f)), Int(f))
+		}
+		cells = append(cells, m)
+	}
+	return QExpr(cells)
 }
