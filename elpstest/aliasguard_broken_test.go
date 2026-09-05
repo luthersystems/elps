@@ -1555,12 +1555,12 @@ func TestTheConcurrentArmIsSkippedOnRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("harness error: %v", err)
 	}
-	if builds != 1 {
-		t.Errorf("SkipConcurrentArm built %d environments, want 1.\n"+
+	if want := 1 + parityEnvBuilds(concurrencyProbeTx); builds != want {
+		t.Errorf("SkipConcurrentArm built %d environments, want %d.\n"+
 			"Two means the CONCURRENT ARM RAN anyway. A walker that declares this shares a payload,\n"+
 			"so driving two of its forks in parallel mutates one *MapData from two goroutines -- a\n"+
 			"data race by construction, reported against this guard's own tests and taking every\n"+
-			"other parallel test down with it.", builds)
+			"other parallel test down with it.", builds, want)
 	}
 }
 
@@ -1577,12 +1577,12 @@ func TestTheConcurrentArmStillRunsForARealWalker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("harness error: %v", err)
 	}
-	if builds != 2 {
-		t.Errorf("the real Fork walker built %d environments, want 2.\n"+
+	if want := 2 + parityEnvBuilds(concurrencyProbeTx); builds != want {
+		t.Errorf("the real Fork walker built %d environments, want %d.\n"+
 			"One means the CONCURRENT ARM DID NOT RUN. That arm is the -race gate for template\n"+
 			"mutation under interleaving, and it is the coverage the substituted-fork skip exists to\n"+
 			"protect -- a skip that also swallows real walkers has removed the property instead of\n"+
-			"narrowing it.", builds)
+			"narrowing it.", builds, want)
 	}
 }
 
@@ -1612,11 +1612,11 @@ func TestTheConcurrentArmStillRunsForASubstitutedWalker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("harness error: %v", err)
 	}
-	if builds != 2 {
-		t.Errorf("a BENIGN substituted walker built %d environments, want 2.\n"+
+	if want := 2 + parityEnvBuilds(concurrencyProbeTx); builds != want {
+		t.Errorf("a BENIGN substituted walker built %d environments, want %d.\n"+
 			"One means the CONCURRENT ARM DID NOT RUN merely because Fork was non-nil. That is the\n"+
 			"old axis: substitution is not a declaration that the walker shares, and an embedder\n"+
 			"wrapping Fork for instrumentation must not silently lose the -race gate. Key the skip\n"+
-			"on SkipConcurrentArm.", builds)
+			"on SkipConcurrentArm.", builds, want)
 	}
 }

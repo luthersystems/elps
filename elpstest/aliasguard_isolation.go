@@ -199,7 +199,37 @@ type TransactionCheck struct {
 	SkipConcurrentArm bool
 	// Repro is attached to every witness.
 	Repro string
+	// onFork, when set, is told the ROLE of the fork about to be taken --
+	// which property it serves -- immediately before Fork is called for
+	// it.  In-package only: it exists so a control that models a walker
+	// broken on one role (the pristine successor, say) can key on the
+	// role rather than on the fork's ordinal.  The ordinal is not stable:
+	// the parity channel (aliasguard_parity.go) takes len(Tx) forks of
+	// its own between the sweep's fresh forks and the successor, so a
+	// control that counted calls named a parity fork as "the successor"
+	// the moment parity was folded in (TestGuardDetectsDealiasingOnTheSuccessorOnly,
+	// red on the first restack).  Roles are what the harness knows and
+	// what a control means.
+	onFork func(role forkRole)
 }
+
+// forkRole names the property a fork is taken for.
+type forkRole string
+
+const (
+	// forkRoleFresh is one of the len(Tx) forks the sweep runs a
+	// transaction on, taken before any transaction runs.
+	forkRoleFresh forkRole = "a fresh fork"
+	// forkRoleSuccessor is the pristine-successor fork, taken after every
+	// transaction has run (property 3).
+	forkRoleSuccessor forkRole = "the pristine-successor fork"
+	// forkRoleConcurrent is one of the concurrent arm's forks, over a
+	// template of its own.
+	forkRoleConcurrent forkRole = "a concurrent-arm fork"
+	// forkRoleParity is one of the parity channel's forks
+	// (aliasguard_parity.go), each compared against a cold load.
+	forkRoleParity forkRole = "a parity-channel fork"
+)
 
 // fork applies the check's fork walker, defaulting to (*lisp.LEnv).Fork.
 func (c TransactionCheck) fork(env *lisp.LEnv) (*lisp.LEnv, error) {
@@ -207,6 +237,14 @@ func (c TransactionCheck) fork(env *lisp.LEnv) (*lisp.LEnv, error) {
 		return c.Fork(env)
 	}
 	return env.Fork()
+}
+
+// forkAs is fork, announcing the role first (see onFork).
+func (c TransactionCheck) forkAs(role forkRole, env *lisp.LEnv) (*lisp.LEnv, error) {
+	if c.onFork != nil {
+		c.onFork(role)
+	}
+	return c.fork(env)
 }
 
 // RunTransactionCheck runs the sequential arm, and the concurrent arm
@@ -258,7 +296,7 @@ func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 
 	forks := make([]*lisp.LEnv, len(c.Tx))
 	for i := range forks {
-		f, err := c.fork(tmpl)
+		f, err := c.forkAs(forkRoleFresh, tmpl)
 		if err != nil {
 			return nil, fmt.Errorf("fork %d: %w", i, err)
 		}
@@ -289,6 +327,17 @@ func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 		// array share no pointer it keys on -- which is why it is its
 		// own channel.
 		out = append(out, cellViewWitnesses(c, tmpl, f, fmt.Sprintf("fork %d", i))...)
+	}
+
+	// Parity, the property every direction above is a consequence of, over
+	// the same transactions against COLD environments (aliasguard_parity.go).
+	// It runs before the sweep because a transaction that raises on a fork
+	// and not on a cold load is a parity finding here and a harness error
+	// there; the sweep cannot follow it and is not attempted.
+	parity, raised := transactionParityWitnesses(c)
+	out = append(out, parity...)
+	if raised {
+		return out, nil
 	}
 
 	// Properties 1 and 2, swept: run transaction i on fork i, then assert
@@ -333,7 +382,7 @@ func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 	}
 
 	// Property 3: a fork taken after all that must be pristine.
-	successor, err := c.fork(tmpl)
+	successor, err := c.forkAs(forkRoleSuccessor, tmpl)
 	if err != nil {
 		return nil, err
 	}
@@ -444,7 +493,7 @@ func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 	concBase := FingerprintEnv(conc, templateOpts)
 	cforks := make([]*lisp.LEnv, len(c.Tx))
 	for i := range cforks {
-		f, err := c.fork(conc)
+		f, err := c.forkAs(forkRoleConcurrent, conc)
 		if err != nil {
 			return nil, err
 		}

@@ -35,10 +35,10 @@
 #     `go build ./...` must succeed after applying a mutation, BEFORE any test
 #     runs. A mutation that does not compile is a broken mutation.
 #  3. THE SPECIFIC PROPERTY IS ASSERTED, not "something failed". A mutation
-#     that reddens the suite for an unrelated reason is not proof. ONE ROW
-#     (579) is a measured exception, for the reason recorded in the manifest
-#     notes: reverting that fix emits no property string at all, so a unique
-#     TEST: needle is the only signal there is.
+#     that reddens the suite for an unrelated reason is not proof. Every row
+#     pins a property string; 579 was the one measured exception until the
+#     parity channel landed, and the manifest notes carry that history and
+#     the reason the row lives at the top of the stack.
 #
 # And a precondition: the CLEAN TREE MUST BE GREEN first, so a suite that is
 # red for unrelated reasons cannot report every mutation as caught.
@@ -80,26 +80,40 @@ PKG=./elpstest/
 #    row asserts #585's actual signature -- copy and Detach redden, Fork does
 #    not -- and the must-not on the fresh-fork property pins the "not Fork"
 #    half.
-#  - 579 IS THE ONE ROW PINNING A TEST RATHER THAN A PROPERTY, and it is the
-#    one row whose catcher is NOT the guard this PR adds. Measured, 5/5 runs
-#    identical: reverting 6ef3da5 reddens exactly
-#    TestForkCheck_SchemaValidatorCredential and NOTHING else in ./elpstest/ --
-#    zero alias-guard tests, and zero property strings emitted at all. So a
-#    property needle is not merely worse here, it does not exist to be pinned.
-#    That test comes from 477ea95, the earlier forkcheck oracle, and is not in
-#    this PR's diff.
+#  - 579 USED TO BE THE ONE ROW PINNING A TEST RATHER THAN A PROPERTY, and
+#    the caveat that went with it is now CLOSED rather than reworded. The
+#    history is worth keeping because the fix is the interesting part.
 #
-#    Why the new guard cannot see it: its three channels observe payload
+#    It was a real gap. The guard's three original channels observe payload
 #    POINTER SHARING (map, bytes and native probe sites), location bleed, and
 #    isolation fingerprints. #579 is a credential revoked by HEADER IDENTITY,
-#    which none of those observe; the forkcheck oracle's cold-vs-fork parity
-#    does.
+#    which none of those observe. Measured, 5/5 runs identical: reverting
+#    6ef3da5 reddened exactly TestForkCheck_SchemaValidatorCredential and
+#    NOTHING else in ./elpstest/ -- zero property strings emitted at all. So a
+#    property needle was not merely worse, it did not exist to be pinned.
 #
-#    So read this row as "#579 stays fixed", NOT as "the new guard catches
-#    #579". It is kept because it does pin a real regression and because the
-#    fix commit still reverse-applies, which is the provenance property this
-#    file is built around -- but the rule-3 sentence above does not describe
-#    it, and saying so here is cheaper than letting a reader infer it.
+#    What closed it: cold-vs-fork PARITY became a channel of this same
+#    harness (PR #601), so the oracle that always could see #579 now emits a
+#    property string like every other channel --
+#
+#        a transaction on a fork raises exactly when it raises on a cold load
+#        of the same program
+#
+#    -- and that needle was measured unique across all eight mutations of
+#    the time (absent under 397/440/576/578/582/585/template-share, present
+#    under 579), and is carried as a MUST-NOT on every other row, the way
+#    600's needle is, so the gate re-measures that uniqueness on every run.
+#    The row pins the property FIRST and retains TEST: as a second signal,
+#    because two independent catchers for one mutation is strictly better
+#    provenance than one.
+#
+#    WHERE THE ROW LIVES, AND WHY. The property string is emitted by the
+#    parity channel, which exists from #601 upward and nowhere below it. A
+#    row on #599 would be red by construction on #599's own tree -- rule 3,
+#    correctly -- until final merge, which is what happened when it was
+#    first placed there (f3d0cd2, reverted). So the row lands at the top of
+#    the chain, in #601, where the property exists on the tree the gate
+#    runs against.
 #  - 600-fork-keeps-macroexpansion is the macro-expansion channel (issue #600
 #    gap 2), and its needle is carried as a MUST-NOT on every other row, so a
 #    single run measures both halves: the row trips by its own needle, and no
@@ -140,16 +154,16 @@ PKG=./elpstest/
 #    protection under the wrong issue number, and it was the flaky row. The
 #    real #579 revert is deterministic.
 MANIFEST=$(cat <<'EOF'
-576-fork-map-memo;a fresh fork is indistinguishable from its template;the template is unchanged by a transaction on a fork|a transaction on the template is invisible to every existing fork|no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
-579-libschema-validator-credential;TEST:TestForkCheck_SchemaValidatorCredential;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
-585-detach-memos;Detach: the copy has the same mutable payloads as the source;a fresh fork is indistinguishable from its template|no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
-397-fork-shares-funnames;the template is unchanged by a transaction on a fork|a transaction on one fork is invisible to every other fork;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
-440-fork-carries-loc;a fork starts with an empty evaluator location register;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
-578-f1-live-defining-loc;a budget error at a function-body entry reports the definition site;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
-582-macro-stamp-in-place;expansion mutates nothing reachable outside its own output;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
-template-share;a transaction on the template is invisible to every existing fork;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
-600-fork-keeps-macroexpansion;no macro-expansion metadata on a fresh fork reaches a template value;a fresh fork is indistinguishable from its template|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
-602-fork-dealiases-cell-views;a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root;a fresh fork is indistinguishable from its template|no macro-expansion metadata on a fresh fork reaches a template value
+576-fork-map-memo;a fresh fork is indistinguishable from its template;the template is unchanged by a transaction on a fork|a transaction on the template is invisible to every existing fork|no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root|a transaction on a fork raises exactly when it raises on a cold load of the same program
+579-libschema-validator-credential;a transaction on a fork raises exactly when it raises on a cold load of the same program|TEST:TestForkCheck_SchemaValidatorCredential;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
+585-detach-memos;Detach: the copy has the same mutable payloads as the source;a fresh fork is indistinguishable from its template|no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root|a transaction on a fork raises exactly when it raises on a cold load of the same program
+397-fork-shares-funnames;the template is unchanged by a transaction on a fork|a transaction on one fork is invisible to every other fork;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root|a transaction on a fork raises exactly when it raises on a cold load of the same program
+440-fork-carries-loc;a fork starts with an empty evaluator location register;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root|a transaction on a fork raises exactly when it raises on a cold load of the same program
+578-f1-live-defining-loc;a budget error at a function-body entry reports the definition site;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root|a transaction on a fork raises exactly when it raises on a cold load of the same program
+582-macro-stamp-in-place;expansion mutates nothing reachable outside its own output;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root|a transaction on a fork raises exactly when it raises on a cold load of the same program
+template-share;a transaction on the template is invisible to every existing fork;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root|a transaction on a fork raises exactly when it raises on a cold load of the same program
+600-fork-keeps-macroexpansion;no macro-expansion metadata on a fresh fork reaches a template value;a fresh fork is indistinguishable from its template|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root|a transaction on a fork raises exactly when it raises on a cold load of the same program
+602-fork-dealiases-cell-views;a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root;a fresh fork is indistinguishable from its template|no macro-expansion metadata on a fresh fork reaches a template value|a transaction on a fork raises exactly when it raises on a cold load of the same program
 EOF
 )
 
@@ -236,4 +250,4 @@ done <<<"$MANIFEST"
 
 echo
 [ $fail = 0 ] || die "at least one mutation was not proven -- see above."
-echo "mutation-proof: every mutation caught by its named needle (9 property strings, 1 test -- see 579 in the manifest notes)."
+echo "mutation-proof: every mutation caught by its named needle (10 property strings; 579 additionally retains a TEST: needle as a second signal -- see the manifest notes)."
