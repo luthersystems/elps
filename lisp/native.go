@@ -142,5 +142,5 @@ func RequireNative[T any](v *LVal) (T, *LVal) {
 // implement NativeCloner; NativeOf stores the value as-is and takes no
 // position on that.
 func NativeOf[T any](x T) *LVal {
-	return Native(x)
+	return Native(x) //elpsvet:allow-native the typed constructor: T is the caller's, and every NativeOf call is checked at its own call site
 }

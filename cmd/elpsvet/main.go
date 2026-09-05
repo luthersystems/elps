@@ -1,11 +1,12 @@
 // Copyright © 2026 The ELPS authors
 
-// Command elpsvet is a go/analysis prototype with three rules: no
+// Command elpsvet is a go/analysis prototype with four rules: no
 // package-level variable may keep a *lisp.LVal reachable (elpsownership,
 // below), no function may write a lisp.LVal field on a value it did not
-// construct (elpsfreshness, freshness.go), and no function may store a
+// construct (elpsfreshness, freshness.go), no function may store a
 // runtime-owned *token.Location uncopied into a field of an escaping value
-// (elpsescape, escape.go).
+// (elpsescape, escape.go), and no native payload type may be minted without
+// being classified as fork-safe (elpsnativepayload, nativepayload.go).
 //
 // A package-level var whose type transitively contains *lisp.LVal is the
 // producer pattern behind issue #363 — `var builtins = []*libutil.Builtin{...}`
@@ -59,7 +60,7 @@ var analyzer = &analysis.Analyzer{
 	Run:  run,
 }
 
-func main() { multichecker.Main(analyzer, freshnessAnalyzer, escapeAnalyzer) }
+func main() { multichecker.Main(analyzer, freshnessAnalyzer, escapeAnalyzer, nativePayloadAnalyzer) }
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	for _, file := range pass.Files {
@@ -99,12 +100,20 @@ func run(pass *analysis.Pass) (interface{}, error) {
 }
 
 // allowed reports whether a comment group carries an //elpsvet:allow marker.
+//
+// A bare marker suppresses: this rule asks for a justification by convention
+// and does not enforce one.  The match stops at the marker's word boundary
+// so that the native-payload rule's own //elpsvet:allow-native (which does
+// enforce a justification, nativepayload.go) is not mistaken for it -- a
+// shared marker would let one sentence written for either rule silence
+// both.
 func allowed(cg *ast.CommentGroup) bool {
 	if cg == nil {
 		return false
 	}
 	for _, c := range cg.List {
-		if strings.HasPrefix(strings.TrimPrefix(c.Text, "//"), "elpsvet:allow") {
+		rest, ok := strings.CutPrefix(strings.TrimPrefix(c.Text, "//"), "elpsvet:allow")
+		if ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t') {
 			return true
 		}
 	}

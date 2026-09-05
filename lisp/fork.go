@@ -489,7 +489,7 @@ func (f *forker) val(v *LVal) *LVal {
 			}
 		}
 	case LNative:
-		cp.Native = f.native(v.Native)
+		cp.Native = f.native(v.Native) //elpsvet:allow-native the fork walker applying the native policy (replacer, then NativeCloner, then share by reference) to a payload minted, and checked, at its own construction site
 	default:
 		switch native := v.Native.(type) {
 		case nil:
@@ -507,7 +507,7 @@ func (f *forker) val(v *LVal) *LVal {
 			// A payload the kernel has no copy strategy for, riding on a
 			// non-LNative type.  Apply the native policy: the embedder put
 			// it there, the embedder's protocol decides.
-			cp.Native = f.native(v.Native)
+			cp.Native = f.native(v.Native) //elpsvet:allow-native the fork walker applying the native policy to a payload minted, and checked, at its own construction site
 		}
 	}
 	if len(v.Cells) > 0 {

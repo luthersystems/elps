@@ -139,6 +139,40 @@ func Bytes(b []byte) *LVal   { return &LVal{Native: &b} }
 
 func Native(v interface{}) *LVal { return &LVal{Native: v} }
 
+// NativeOf mirrors the real typed constructor: implemented as a call to
+// Native, so the elpsnativepayload fixtures can pin that the rule sees the
+// generic spelling (inferred and explicitly instantiated) as a construction.
+func NativeOf[T any](x T) *LVal { return Native(x) }
+
+// Value mirrors the real conversion's fallthrough shape: the directly
+// representable types are handled without a Native, everything else becomes
+// one.
+func Value(v interface{}) *LVal {
+	switch v := v.(type) {
+	case bool:
+		return Bool(v)
+	case string:
+		return String(v)
+	case []byte:
+		return Bytes(v)
+	case int:
+		return Int(v)
+	case float64:
+		return Float(v)
+	case []*LVal:
+		return QExpr(v)
+	default:
+		return Native(v)
+	}
+}
+
+// NativeCloner mirrors the real clone protocol.  The elpsnativepayload rule
+// checks for the method structurally, as an interface assertion would; the
+// interface is here so a fixture can say what it is satisfying.
+type NativeCloner interface {
+	CloneNative() interface{}
+}
+
 func SExpr(cells []*LVal) *LVal { return &LVal{Cells: cells} }
 func QExpr(cells []*LVal) *LVal { return &LVal{Cells: cells, Quoted: true} }
 

@@ -856,7 +856,7 @@ func (env *LEnv) builtin(f LBuiltinDef) *LVal {
 func (env *LEnv) Terminal(expr *LVal) *LVal {
 	return &LVal{
 		Type:   LMarkTerminal,
-		Native: env,
+		Native: env, //elpsvet:allow-native evaluator-internal trampoline marker: an LMarkTerminal is consumed by the eval loop that produced it and never bound into a scope, so it cannot reach a template, and detach refuses it
 		Cells:  []*LVal{expr},
 	}
 }
@@ -1127,7 +1127,7 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 		case string:
 			cells = append(cells, String(v))
 		default:
-			cells = append(cells, Native(v))
+			cells = append(cells, Native(v)) //elpsvet:allow-native error-data cell holding a caller's arbitrary condition argument: read-only by the same contract as the `error` allowlist row (the kernel only formats condition data), and the value stays the caller's to keep fork-safe
 		}
 	}
 	lerr := &LVal{
