@@ -168,5 +168,77 @@ func TestSealedWriteEmptyCarveOut(t *testing.T) {
 		if v.IsSealed() {
 			t.Errorf("%s returned sealed storage; the carve-out must hand back fresh results", tc.src)
 		}
+		// A vector's header is never sealed, so the line above cannot see
+		// the storage append! actually writes: the data holder.  Ask it
+		// directly (the class TestSealedEmptyCarveOutVectorIsMutable
+		// reproduces from lisp).
+		if v.Type == lisp.LArray && v.Cells[1].IsSealed() {
+			t.Errorf("%s returned a vector whose data holder is sealed; a vector's holder is never sealed", tc.src)
+		}
+	}
+}
+
+// TestSealedEmptyCarveOutVectorIsMutable pins that a vector built over the
+// sealed empty carve-out is an ordinary runtime vector afterwards: its data
+// holder is not sealed, and nothing derived from it inherits a seal.
+//
+// The shape is the fuzz crasher seeded as
+// testdata/fuzz/FuzzSequenceOps/7192dc3ce712e22c -- (append! (append
+// 'vector '()) ()) -- and its user-visible consequence.  When the vector
+// sites built the carve-out's holder as a cell view of the SEALED input
+// (the convention on cellsView), the holder was born sealed.  append! does
+// not consult the flag (lisp/seal.go relies on a vector never carrying it),
+// so it grew sealed storage in place -- the seal oracle's report -- and,
+// worse for a program, every view of the vector taken later (slice, cdr,
+// rest, append 'vector with no values) carried the stale flag, so the
+// guarded sites refused plain runtime data with modify-literal-error.
+// Each row is one carve-out form; each column a mutation or a guarded
+// read that must succeed on a vector the program owns.  The literal each
+// form was built from is re-read at the end and must be unchanged.
+func TestSealedEmptyCarveOutVectorIsMutable(t *testing.T) {
+	for _, build := range []string{
+		`(append 'vector lit)`,
+		`(append 'vector (rest '(1)))`,
+		`(append 'vector (cdr '(1)))`,
+		`(slice 'vector lit 0 0)`,
+		`(slice 'vector '(1 2 3) 1 1)`,
+		`(slice 'vector (rest '(1)) 0 0)`,
+		// The chain: a carve-out vector viewed by the no-values append.
+		`(append 'vector (append 'vector lit))`,
+	} {
+		t.Run(build, func(t *testing.T) {
+			env := newCowTestEnv(t)
+			steps := []struct{ src, want string }{
+				{`(set 'lit '())`, `'()`},
+				{`(set 'v ` + build + `)`, `(vector)`},
+				{`(append! v 3 1 2)`, `(vector 3 1 2)`},
+				{`(slice 'vector v 0 2)`, `(vector 3 1)`},
+				// Sorting through a list view writes v's slots in place:
+				// the documented slot aliasing, which a runtime vector
+				// keeps (docs/fork.md) -- so v reads sorted afterwards.
+				{`(stable-sort < (slice 'list v 0 3))`, `'(1 2 3)`},
+				{`v`, `(vector 1 2 3)`},
+				{`(append 'vector v 5)`, `(vector 1 2 3 5)`},
+				{`(append 'vector (append 'vector v) 6)`, `(vector 1 2 3 6)`},
+				{`(stable-sort > (cdr (append 'list v)))`, `'(3 2)`},
+				{`lit`, `'()`},
+			}
+			for _, st := range steps {
+				got := env.LoadString("carveout-vector.lisp", st.src)
+				if got.Type == lisp.LError {
+					t.Fatalf("%s: %v", st.src, got)
+				}
+				if got.String() != st.want {
+					t.Fatalf("%s = %s, want %s", st.src, got, st.want)
+				}
+			}
+			v := env.GetGlobal(lisp.Symbol("v"))
+			if v.Type != lisp.LArray {
+				t.Fatalf("v is %v, want a vector", v.Type)
+			}
+			if v.Cells[1].IsSealed() {
+				t.Errorf("%s: the vector's data holder is sealed; a vector's holder is never sealed", build)
+			}
+		})
 	}
 }

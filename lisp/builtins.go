@@ -2224,8 +2224,10 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 		// The vector's data holder shares the window's slots with the
 		// source, so it is built as a view of the intermediate (and so of
 		// its root) and wrapped -- the convention on cellsView.  On the
-		// sealed empty carve-out cells is nil and no link is recorded.
-		return vectorFromHolder(newCellsView(list, 0, cells))
+		// empty carve-out there is no window, and vectorView builds the
+		// holder fresh rather than as a view of the SEALED intermediate:
+		// a vector's holder is never sealed (see vectorView).
+		return vectorView(list, 0, cells)
 	default:
 		return env.Errorf("type specifier is not valid: %v", typespec)
 	}
@@ -2403,8 +2405,12 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		if len(vals) == 0 {
 			// The one input the clamp does not reallocate (see above): the
 			// new vector's data holder is a window onto seq's storage and
-			// is built as one (the convention on cellsView).
-			return vectorFromHolder(newCellsView(seqHolder(seq), 0, clampCap(cells)))
+			// is built as one (the convention on cellsView).  When seq is
+			// empty -- the sealed empty carve-out included -- there is no
+			// window, and vectorView builds the holder fresh rather than
+			// as a view carrying seq's seal: a vector's holder is never
+			// sealed (see vectorView).
+			return vectorView(seqHolder(seq), 0, clampCap(cells))
 		}
 		//elps:mutates appends into a cap==len reslice (clampCap), which forces a reallocation; seq's backing is unreachable from the result
 		return Array(nil, append(clampCap(cells), vals...))

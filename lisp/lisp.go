@@ -663,11 +663,16 @@ func Vector(cells []*LVal) *LVal {
 
 // vectorFromHolder wraps an already-built data holder as a one-dimensional
 // vector: the shape Vector produces, with the holder supplied rather than
-// minted.  The two vector-producing view sites (slice 'vector, and
-// append 'vector with no values) build their holder with newCellsView and
-// wrap it here, so the header that carries a view link is one the site
-// itself constructed (cmd/elpsvet's freshness rule; the convention on
+// minted.  Its one caller, vectorView, builds the holder with newCellsView
+// and wraps it here, so the header that carries a view link is one the
+// site itself constructed (cmd/elpsvet's freshness rule; the convention on
 // cellsView).
+//
+// The holder must not be sealed.  A vector's data holder is never sealed
+// (lisp/seal.go: append! and assoc! write it without consulting the flag,
+// and InheritSeal refuses to mark an array for that reason), and every
+// site that could hand a sealed window here refuses first -- except the
+// empty carve-out, which vectorView keeps away from newCellsView.
 func vectorFromHolder(holder *LVal) *LVal {
 	return &LVal{
 		Type: LArray,
@@ -676,6 +681,37 @@ func vectorFromHolder(holder *LVal) *LVal {
 			holder,
 		},
 	}
+}
+
+// vectorView returns the vector slice 'vector and (append 'vector seq)
+// with no values hand back: a one-dimensional vector whose data holder is
+// a view of parent's cells -- cells, already clamped by the caller
+// (clampCap, issue #373), a window onto parent's Cells starting at
+// element off -- so the vector shares the window's slots with its source
+// (the convention on cellsView).
+//
+// An EMPTY window is not a view.  There is no slot to share and no link
+// to record, so the vector is built over fresh storage exactly as before
+// views existed.  This is not only an economy: it is where the seal's
+// empty carve-out (CondModifyLiteral) and the vector invariant meet.  The
+// two callers refuse a sealed, non-empty window before reaching here, and
+// accept a sealed EMPTY one -- (append 'vector '()), (slice 'vector lit 0
+// 0), (append 'vector (rest '(1))) -- because it has no storage to write
+// or alias.  Routing that carve-out through newCellsView, which carries a
+// sealed parent's flag onto the view it builds, minted a vector whose
+// data holder was SEALED: a lie that reads as protection.  append! grew
+// the holder without consulting the flag (the fuzz crasher seeded as
+// FuzzSequenceOps/7192dc3ce712e22c), and every later view of the vector
+// -- (slice 'vector v ...), (stable-sort < (slice 'list v ...)) --
+// inherited the stale flag and refused plain runtime data with
+// modify-literal-error (TestSealedEmptyCarveOutVectorIsMutable).  The
+// clamp already guaranteed a zero-capacity window could not reach sealed
+// storage; the fresh holder guarantees the flag does not travel either.
+func vectorView(parent *LVal, off int, cells []*LVal) *LVal {
+	if len(cells) == 0 {
+		return Vector(nil)
+	}
+	return vectorFromHolder(newCellsView(parent, off, cells))
 }
 
 // MakeVector returns a vector with n cells initialized to Nil.
@@ -2120,7 +2156,10 @@ func (v *LVal) CellView() (root *LVal, off int, ok bool) {
 // is ever written (see the convention on cellsView) -- and lands on
 // parent's root when parent is itself a view.  The seal travels with the
 // shared backing exactly as before (builtinCDR); a sealed parent's view is
-// sealed and not linked, since Fork shares sealed values outright.
+// sealed and not linked, since Fork shares sealed values outright.  That
+// makes a view of a sealed parent unfit to be a vector's data holder, so
+// the vector sites go through vectorView, which never asks for a view of
+// the one sealed window they accept -- the empty carve-out.
 func newCellsView(parent *LVal, off int, cells []*LVal) *LVal {
 	view := &LVal{
 		Type:   LSExpr,
