@@ -69,9 +69,10 @@ type Server struct {
 	// Overridable for testing.
 	exitFn func(int)
 
-	// maxDocumentBytes is the maximum document size (in bytes) for semantic
-	// analysis. Documents exceeding this limit receive an informational
-	// diagnostic instead of full analysis. 0 means no limit.
+	// maxDocumentBytes is the maximum document size (in bytes) the server
+	// will parse, analyze or format. Documents exceeding this limit are
+	// stored unparsed and receive an informational diagnostic instead of
+	// full analysis. 0 means no limit.
 	maxDocumentBytes int
 
 	// maxWorkspaceFiles is the maximum number of .lisp files to scan during
@@ -101,8 +102,19 @@ func WithEnv(env *lisp.LEnv) Option {
 	return func(s *Server) { s.env = env }
 }
 
-// WithMaxDocumentBytes sets the maximum document size for semantic analysis.
-// Documents exceeding this limit receive an informational diagnostic instead.
+// WithMaxDocumentBytes sets the maximum document size the server will parse,
+// analyze or format. Documents exceeding this limit are not parsed at all --
+// so AST-based features (hover, definition, completion, symbols, folding,
+// semantic tokens, selection ranges, highlights, call hierarchy) return
+// nothing for them and formatting is a no-op -- and receive an informational
+// diagnostic instead of analysis. The limit has to cover parsing to bound
+// anything: the AST costs far more than the source text and is rebuilt on
+// every edit (see Document.parse).
+//
+// The limit applies to document text the client sends. It does not cover
+// the didSave path, which re-reads the saved file from disk in
+// updateFileDefinitions and updateFileRefs without a size check; workspace
+// scanning is bounded separately by analysis.ScanConfig.MaxFileBytes.
 // A value <= 0 disables the limit (default).
 func WithMaxDocumentBytes(n int) Option {
 	return func(s *Server) { s.maxDocumentBytes = max(n, 0) }
@@ -139,6 +151,10 @@ func New(opts ...Option) *Server {
 	for _, o := range opts {
 		o(s)
 	}
+	// The store parses on Open and Change, so it needs the limit too; an
+	// over-limit document must be cheap from the moment it arrives, not only
+	// once analyzeAndPublish looks at it.
+	s.docs.maxBytes = s.maxDocumentBytes
 
 	s.handler = protocol.Handler{
 		Initialize:  s.initialize,
