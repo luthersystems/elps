@@ -2,6 +2,8 @@
 
 package elpstest
 
+import "github.com/luthersystems/elps/lisp"
+
 // Parity inside the alias guard.
 //
 // The owner's definition of the fork contract -- "for two VMs that get
@@ -71,8 +73,11 @@ func transactionParityWitnesses(c TransactionCheck) (out []Witness, raised bool)
 		NewEnv:  c.NewEnv,
 		Program: c.Program,
 		Tx:      seqs,
-		Fork:    c.Fork,
-		Repro:   c.Repro,
+		// Through forkAs, so a control keyed on fork ROLE sees these as
+		// parity forks rather than as whatever ordinal they happen to
+		// land on (TransactionCheck.onFork).
+		Fork:  func(env *lisp.LEnv) (*lisp.LEnv, error) { return c.forkAs(forkRoleParity, env) },
+		Repro: c.Repro,
 	})
 	if err != nil {
 		return []Witness{{

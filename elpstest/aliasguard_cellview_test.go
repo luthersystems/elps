@@ -205,31 +205,37 @@ func TestReachableWalkFollowsALiveRoot(t *testing.T) {
 }
 
 // dealiasingOn returns a Fork substitute that de-aliases the views on
-// exactly the calls `when` selects (1-based call number), and is the real
-// Fork otherwise.  CheckTransactions takes len(Tx) forks before running the
-// transactions and then ONE more for the pristine successor, so calls
-// 1..len(Tx) are the fresh forks and call len(Tx)+1 is the successor.
-func dealiasingOn(when func(call int) bool) func(*lisp.LEnv) (*lisp.LEnv, error) {
-	call := 0
-	return func(env *lisp.LEnv) (*lisp.LEnv, error) {
-		call++
-		if when(call) {
+// exactly the forks taken for the roles `when` selects, and is the real
+// Fork otherwise, together with the onFork hook that tells it the role.
+// Keyed on the ROLE the harness announces, not on the fork's ordinal: the
+// parity channel takes len(Tx) forks of its own between the sweep's fresh
+// forks and the pristine successor, so "call len(Tx)+1" named a parity
+// fork once parity was folded in, and the successor control went red for
+// the wrong reason.
+func dealiasingOn(when func(role forkRole) bool) (fork func(*lisp.LEnv) (*lisp.LEnv, error), onFork func(forkRole)) {
+	var current forkRole
+	onFork = func(role forkRole) { current = role }
+	fork = func(env *lisp.LEnv) (*lisp.LEnv, error) {
+		if when(current) {
 			return brokenForkDealiasesViews(env)
 		}
 		return env.Fork()
 	}
+	return fork, onFork
 }
 
 // TestGuardDetectsDealiasingOnFreshForksOnly pins the fresh-fork hook: a
-// walker faithful on the pristine successor and de-aliasing on every
-// earlier fork is visible ONLY to the check on fresh forks.
+// walker faithful on the pristine successor (and on every parity fork)
+// and de-aliasing on every fresh fork is visible ONLY to the check on
+// fresh forks.
 func TestGuardDetectsDealiasingOnFreshForksOnly(t *testing.T) {
 	t.Parallel()
-	nTx := len(cellViewTx)
+	fork, onFork := dealiasingOn(func(role forkRole) bool { return role == forkRoleFresh })
 	got, err := CheckTransactions(TransactionCheck{
 		Program:           cellViewProgram,
 		Tx:                cellViewTx,
-		Fork:              dealiasingOn(func(call int) bool { return call <= nTx }),
+		Fork:              fork,
+		onFork:            onFork,
 		SkipConcurrentArm: true,
 		Repro:             "a fork walker that de-aliases views on the fresh forks only",
 	})
@@ -246,18 +252,26 @@ func TestGuardDetectsDealiasingOnFreshForksOnly(t *testing.T) {
 			t.Errorf("the faithful successor was reported:\n%s", w)
 		}
 	}
+	for _, w := range got {
+		if w.Property != CellViewProperty {
+			t.Errorf("a faithful fork was reported by another channel:\n%s", w)
+		}
+	}
 }
 
 // TestGuardDetectsDealiasingOnTheSuccessorOnly pins the successor hook: a
-// walker faithful on every fresh fork and de-aliasing on the pristine
-// successor is visible ONLY to the check on the successor.
+// walker faithful on every fresh fork (and on every parity fork) and
+// de-aliasing on the pristine successor is visible ONLY to the check on
+// the successor -- and, since the parity forks are faithful, to no parity
+// property.
 func TestGuardDetectsDealiasingOnTheSuccessorOnly(t *testing.T) {
 	t.Parallel()
-	nTx := len(cellViewTx)
+	fork, onFork := dealiasingOn(func(role forkRole) bool { return role == forkRoleSuccessor })
 	got, err := CheckTransactions(TransactionCheck{
 		Program:           cellViewProgram,
 		Tx:                cellViewTx,
-		Fork:              dealiasingOn(func(call int) bool { return call == nTx+1 }),
+		Fork:              fork,
+		onFork:            onFork,
 		SkipConcurrentArm: true,
 		Repro:             "a fork walker that de-aliases views on the pristine successor only",
 	})
@@ -272,6 +286,46 @@ func TestGuardDetectsDealiasingOnTheSuccessorOnly(t *testing.T) {
 	for _, w := range ws {
 		if !strings.Contains(w.Detail, "successor") {
 			t.Errorf("a faithful fresh fork was reported:\n%s", w)
+		}
+	}
+	for _, w := range got {
+		if w.Property != CellViewProperty {
+			t.Errorf("a faithful fork was reported by another channel:\n%s", w)
+		}
+	}
+}
+
+// TestGuardDetectsDealiasingOnParityForksOnly pins the parity channel's
+// role announcement: a walker faithful on every sweep fork and de-aliasing
+// on the parity channel's forks is visible to the PARITY properties (the
+// fork's transaction result and state diverge from the cold load's) and
+// to no cell-view check, since every fork the cell-view checks look at is
+// faithful.  Without the announcement the walker never sees the role, the
+// parity forks stay faithful, and nothing is reported.
+func TestGuardDetectsDealiasingOnParityForksOnly(t *testing.T) {
+	t.Parallel()
+	fork, onFork := dealiasingOn(func(role forkRole) bool { return role == forkRoleParity })
+	got, err := CheckTransactions(TransactionCheck{
+		Program:           cellViewProgram,
+		Tx:                cellViewTx,
+		Fork:              fork,
+		onFork:            onFork,
+		SkipConcurrentArm: true,
+		Repro:             "a fork walker that de-aliases views on the parity channel's forks only",
+	})
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatalf("de-aliased views on the PARITY forks (every sweep fork faithful) were not reported.\n" +
+			"Either the parity channel is not announcing its forks' role, or it cannot see a\n" +
+			"de-aliased view any more.")
+	}
+	for _, w := range got {
+		switch w.Property {
+		case ParityPropertyReturns, ParityPropertyState:
+		default:
+			t.Errorf("a faithful sweep fork was reported, or the parity channel reported under the wrong property:\n%s", w)
 		}
 	}
 }
