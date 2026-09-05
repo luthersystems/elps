@@ -115,7 +115,7 @@ the same reasoning that exempts the nil/true/false singletons).
 | Singletons (`()`, `true`, `false`) | shared |
 | Functions (`LFun`) | header copied; captured environment remapped onto fork copies; builtin Go code travels by reference |
 | Native payloads | shared by reference, unless `NativeCloner` / `ForkWithNativeReplacer` (below). `NativeCloner` is not fork-specific: `copy` and `detach` honour it too |
-| Mutable data (vectors, sorted maps, bytes, error stacks, tagged values) | hermetically copied, aliasing and cycles preserved |
+| Mutable data (vectors, sorted maps, bytes, error stacks, tagged values) | hermetically copied, aliasing and cycles preserved — including the slot-sharing between a list and the views `cdr`, `rest` and `slice` return (the cell-view convention on `cellsView` in `lisp/lisp.go`). The one exception is spare-capacity aliasing, which is deliberately not preserved: isolation wins there (issue #373; stated with the convention). |
 | Source locations, format metadata (`Meta`) | shared (read-only after parse) |
 | Macro-expansion debug metadata | dropped (debugger-only; aliases template state) |
 | `Reader`, `SourceLibrary` | shared (process-wide cache / read-only) |

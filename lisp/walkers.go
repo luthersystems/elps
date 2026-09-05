@@ -220,6 +220,13 @@ var memoExemptions = []MemoExemption{
 		Reason:  "the loader's cycle guard (lisp/loader.go). Same as cycleState.path: it bounds a walk.",
 	},
 	{
+		Subject: "*LVal",
+		Reason: "a cell view's link to its root header (the convention on lisp.cellsView). A reference, not rebuilt " +
+			"storage: it names another header, which both rebuilding walkers already memoise as PayloadValue. " +
+			"Fork remaps it through that memo (TestForkCellViewSharesRootCopy); detach drops it " +
+			"(TestCopyAndDetachDropCellViewLink).",
+	},
+	{
 		Subject: "lisp.sealCheckState.roots",
 		Reason: "the checked-build seal watchdog's fingerprint table (lisp/seal_check_elpscheck.go, -tags elpscheck). " +
 			"It maps a sealed root to the digest it carried at seal time; it produces no copy.",

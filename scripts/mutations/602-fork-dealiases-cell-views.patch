@@ -1,0 +1,13 @@
+diff --git a/lisp/fork.go b/lisp/fork.go
+index e509d5c..a30caaa 100644
+--- a/lisp/fork.go
++++ b/lisp/fork.go
+@@ -484,7 +484,7 @@ func (f *forker) val(v *LVal) *LVal {
+ 		// the fork's root, the header is replaced below or dropped.
+ 		cp.Cells = nil
+ 		n := len(v.Cells)
+-		if root, off, ok := v.CellView(); ok {
++		if root, off, ok := v.CellView(); ok && false {
+ 			// CellView is the template-side rule (the link still describes
+ 			// v).  Copy the root -- which walks its elements, so the view's
+ 			// are memoised as well -- and, provided the root was copied

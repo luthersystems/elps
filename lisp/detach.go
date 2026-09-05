@@ -212,6 +212,15 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 				return nil, unexpectedNativeError(v)
 			}
 			cp.Native = detachCallStack(native)
+		case *LVal:
+			if v.Type != LSExpr {
+				return nil, unexpectedNativeError(v)
+			}
+			// A cell view's root (the convention on lisp.cellsView).
+			// detachCells below gives the copy storage of its own, so the
+			// link is dropped (TestCopyAndDetachDropCellViewLink).
+			cp.Native = nil
+			cp.Int = 0
 		default:
 			return nil, unexpectedNativeError(v)
 		}

@@ -282,6 +282,13 @@ func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 				Repro:    c.Repro,
 			})
 		}
+		// The Cells row of the contract table, asserted for Fork: a
+		// fresh fork's views window the fork's own roots exactly as the
+		// template's window the template's (aliasguard_cellview.go).
+		// The fingerprint above cannot see this -- two headers over one
+		// array share no pointer it keys on -- which is why it is its
+		// own channel.
+		out = append(out, cellViewWitnesses(c, tmpl, f, fmt.Sprintf("fork %d", i))...)
 	}
 
 	// Properties 1 and 2, swept: run transaction i on fork i, then assert
@@ -339,6 +346,7 @@ func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 			Repro:    c.Repro,
 		})
 	}
+	out = append(out, cellViewWitnesses(c, tmpl, successor, "the pristine-successor fork")...)
 
 	// Property 4: no stateful native shared between two forks.
 	out = append(out, sharedNativeWitnesses(c, "the template", tmpl, forks)...)
@@ -797,6 +805,16 @@ func walkReachable(env *lisp.LEnv, visit func(v *lisp.LVal, path string)) {
 		}
 		for i, c := range v.Cells {
 			walk(c, fmt.Sprintf("%s/%d", path, i))
+		}
+		// A cell view's root is reachable state: the view's Cells are a
+		// window onto it, so a payload the root holds beyond the window is
+		// reachable through the view.  Followed through the VALIDATED
+		// resolver, as a reference with no identity of its own (the
+		// convention on lisp.cellsView; isCellViewLink, fingerprint.go);
+		// a stale link is walked as ordinary structure and not followed,
+		// which is what Fork does with it too.
+		if root, _, ok := v.CellView(); ok {
+			walk(root, path+"/root")
 		}
 	}
 	walkEnv = func(e *lisp.LEnv, path string) {

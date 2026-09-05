@@ -111,6 +111,21 @@ PKG=./elpstest/
 #    change any value the fingerprint encodes, which is the whole reason the
 #    channel had no coverage: Fork is SUPPOSED to differ from its template in
 #    this field, so no fork-vs-template comparison can see it.
+#  - 602-fork-dealiases-cell-views is the cell-view contract (PR #602; issue
+#    #600 gap 3): a list or vector view -- cdr, rest, slice, (append 'vector
+#    seq) -- shares its slots with its root, and Fork must keep it so. The
+#    patch makes forker.val take its fallback for every view: the pre-#602
+#    per-header `cells := make([]*LVal, len(v.Cells))` copy, no link, which
+#    is the exact defect (cold '(20 30), fork '(10 20) from pure ELPS). Its
+#    needle is the cell-view channel's property (aliasguard_cellview.go),
+#    carried as a must-NOT on every other row as 600's is. Its own must-NOTs
+#    are property 1 and 600's needle: the de-aliased copy has identical
+#    CONTENTS, so no fingerprint comparison moves -- which is why the
+#    contract is its own channel -- and it touches no macro metadata.
+#    Measured on one targeted run of the mutated tree (the guard's and
+#    #602's own tests, FuzzAliasGuard seeds): needle emitted 6 times, every
+#    other row's needle 0 times -- a targeted measurement, so CI's
+#    end-to-end run is the one that certifies it (see template-share).
 #  - template-share pins ONLY property 5, which is the direction it models.
 #    It also emits the fresh-fork property, and that needle measured 40/40 in
 #    ISOLATION -- yet failed once in 35 end-to-end runs. Isolated measurement
@@ -125,15 +140,16 @@ PKG=./elpstest/
 #    protection under the wrong issue number, and it was the flaky row. The
 #    real #579 revert is deterministic.
 MANIFEST=$(cat <<'EOF'
-576-fork-map-memo;a fresh fork is indistinguishable from its template;the template is unchanged by a transaction on a fork|a transaction on the template is invisible to every existing fork|no macro-expansion metadata on a fresh fork reaches a template value
-579-libschema-validator-credential;TEST:TestForkCheck_SchemaValidatorCredential;no macro-expansion metadata on a fresh fork reaches a template value
-585-detach-memos;Detach: the copy has the same mutable payloads as the source;a fresh fork is indistinguishable from its template|no macro-expansion metadata on a fresh fork reaches a template value
-397-fork-shares-funnames;the template is unchanged by a transaction on a fork|a transaction on one fork is invisible to every other fork;no macro-expansion metadata on a fresh fork reaches a template value
-440-fork-carries-loc;a fork starts with an empty evaluator location register;no macro-expansion metadata on a fresh fork reaches a template value
-578-f1-live-defining-loc;a budget error at a function-body entry reports the definition site;no macro-expansion metadata on a fresh fork reaches a template value
-582-macro-stamp-in-place;expansion mutates nothing reachable outside its own output;no macro-expansion metadata on a fresh fork reaches a template value
-template-share;a transaction on the template is invisible to every existing fork;no macro-expansion metadata on a fresh fork reaches a template value
-600-fork-keeps-macroexpansion;no macro-expansion metadata on a fresh fork reaches a template value;a fresh fork is indistinguishable from its template
+576-fork-map-memo;a fresh fork is indistinguishable from its template;the template is unchanged by a transaction on a fork|a transaction on the template is invisible to every existing fork|no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
+579-libschema-validator-credential;TEST:TestForkCheck_SchemaValidatorCredential;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
+585-detach-memos;Detach: the copy has the same mutable payloads as the source;a fresh fork is indistinguishable from its template|no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
+397-fork-shares-funnames;the template is unchanged by a transaction on a fork|a transaction on one fork is invisible to every other fork;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
+440-fork-carries-loc;a fork starts with an empty evaluator location register;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
+578-f1-live-defining-loc;a budget error at a function-body entry reports the definition site;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
+582-macro-stamp-in-place;expansion mutates nothing reachable outside its own output;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
+template-share;a transaction on the template is invisible to every existing fork;no macro-expansion metadata on a fresh fork reaches a template value|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
+600-fork-keeps-macroexpansion;no macro-expansion metadata on a fresh fork reaches a template value;a fresh fork is indistinguishable from its template|a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root
+602-fork-dealiases-cell-views;a fork's view shares its slots with the fork's own root exactly as the template's view shares them with the template's root;a fresh fork is indistinguishable from its template|no macro-expansion metadata on a fresh fork reaches a template value
 EOF
 )
 
@@ -220,4 +236,4 @@ done <<<"$MANIFEST"
 
 echo
 [ $fail = 0 ] || die "at least one mutation was not proven -- see above."
-echo "mutation-proof: every mutation caught by its named needle (8 property strings, 1 test -- see 579 in the manifest notes)."
+echo "mutation-proof: every mutation caught by its named needle (9 property strings, 1 test -- see 579 in the manifest notes)."

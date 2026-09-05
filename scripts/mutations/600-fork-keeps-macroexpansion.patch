@@ -1,5 +1,5 @@
 diff --git a/lisp/fork.go b/lisp/fork.go
-index 4da73dd..eb43938 100644
+index e509d5c..c046eb9 100644
 --- a/lisp/fork.go
 +++ b/lisp/fork.go
 @@ -470,9 +470,6 @@ func (f *forker) val(v *LVal) *LVal {
@@ -9,6 +9,6 @@ index 4da73dd..eb43938 100644
 -	// Macro-expansion debug metadata does not travel; it is only populated
 -	// under an attached debugger and its contexts alias template values.
 -	cp.macroExpansion = nil
- 	switch v.Type {
- 	case LFun:
- 		if fd, ok := v.Native.(*funData); ok && fd != nil {
+ 	if v.IsCellView() {
+ 		// v's Cells is a VIEW of another header's (the convention on
+ 		// cellsView): the template holds both over one backing array, so

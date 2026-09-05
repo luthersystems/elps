@@ -938,15 +938,14 @@ func builtinCDR(env *LEnv, args *LVal) *LVal {
 	//
 	// NOTE:  The elements are still shared, so this is not a copy.  See the
 	// note on builtinSlice.
-	r := QExpr(clampCap(v.Cells[1:]))
 	// The clamp stops an append reaching PAST the view; it does not stop a
 	// write WITHIN it, which for a sealed v is still a write to shared
 	// program storage.  So the constraint travels with the backing array the
 	// view still shares (lisp/seal.go), and the guarded mutation sites
 	// (stable-sort, slice 'vector) see it on the view exactly as they would
-	// on v itself.
-	r.sealed = v.sealed
-	return r
+	// on v itself -- newCellsView carries it, and records the view so Fork
+	// can rebuild it over ITS copy of v (the convention on cellsView).
+	return newCellsView(v, 1, clampCap(v.Cells[1:]))
 }
 
 // clampCap returns cells with its capacity cut down to its length, so that a
@@ -979,11 +978,9 @@ func builtinRest(env *LEnv, args *LVal) *LVal {
 	if len(cells) < 2 {
 		return Nil()
 	}
-	// Three-index reslice -- see builtinCDR (issue #373).
-	r := QExpr(clampCap(cells[1:]))
-	// The sealed constraint travels with the shared backing -- see builtinCDR.
-	r.sealed = v.sealed
-	return r
+	// Three-index reslice, seal and view link as in builtinCDR (issue #373;
+	// the convention on cellsView).
+	return newCellsView(seqHolder(v), 1, clampCap(cells[1:]))
 }
 
 func builtinFirst(env *LEnv, args *LVal) *LVal {
@@ -2128,13 +2125,13 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 	case LBytes:
 		list = Bytes(clampCapBytes(list.Bytes()[i:j]))
 	default: // isSeq(list)
-		sealed := list.sealed
-		list = QExpr(clampCap(seqCells(list)[i:j]))
 		// The clamp stops an append growing past the view (issue #373); the
 		// view still shares the original backing WITHIN its own bounds, so a
 		// sealed input's constraint travels with the intermediate value
-		// (lisp/seal.go) and the 'vector arm below copies on it.
-		list.sealed = sealed
+		// (lisp/seal.go) and the 'vector arm below refuses on it.  The view
+		// is recorded as a window onto the input's storage (the convention
+		// on cellsView); the 'vector arm links its holder through it.
+		list = newCellsView(seqHolder(list), i, clampCap(seqCells(list)[i:j]))
 	}
 
 	// Convert the intermediate sliced value into the desired type
@@ -2223,7 +2220,14 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 		// window's length, or zero for the sealed empty carve-out -- so
 		// Vector derives the identical value without copying a dims list
 		// this site would otherwise build only to have Array duplicate.
-		return Vector(cells)
+		//
+		// The vector's data holder shares the window's slots with the
+		// source, so it is built as a view of the intermediate (and so of
+		// its root) and wrapped -- the convention on cellsView.  On the
+		// empty carve-out there is no window, and vectorView builds the
+		// holder fresh rather than as a view of the SEALED intermediate:
+		// a vector's holder is never sealed (see vectorView).
+		return vectorView(list, 0, cells)
 	default:
 		return env.Errorf("type specifier is not valid: %v", typespec)
 	}
@@ -2398,6 +2402,16 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		// content of the issue #373 fix.  elpsvet's alias rule does not
 		// follow the capacity through the helper call, so the proof is
 		// recorded here rather than the rule weakened.
+		if len(vals) == 0 {
+			// The one input the clamp does not reallocate (see above): the
+			// new vector's data holder is a window onto seq's storage and
+			// is built as one (the convention on cellsView).  When seq is
+			// empty -- the sealed empty carve-out included -- there is no
+			// window, and vectorView builds the holder fresh rather than
+			// as a view carrying seq's seal: a vector's holder is never
+			// sealed (see vectorView).
+			return vectorView(seqHolder(seq), 0, clampCap(cells))
+		}
 		//elps:mutates appends into a cap==len reslice (clampCap), which forces a reallocation; seq's backing is unreachable from the result
 		return Array(nil, append(clampCap(cells), vals...))
 	default:

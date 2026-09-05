@@ -473,6 +473,47 @@ func (f *forker) val(v *LVal) *LVal {
 	// Macro-expansion debug metadata does not travel; it is only populated
 	// under an attached debugger and its contexts alias template values.
 	cp.macroExpansion = nil
+	if v.IsCellView() {
+		// v's Cells is a VIEW of another header's (the convention on
+		// cellsView): the template holds both over one backing array, so
+		// the fork must too, or an in-place write through one stops
+		// reaching the other (TestForkPreservesCellSlotAliasing).
+		//
+		// The struct copy above aliased the view's header AND its link;
+		// neither may survive as template memory.  The link is remapped to
+		// the fork's root, the header is replaced below or dropped.
+		cp.Cells = nil
+		n := len(v.Cells)
+		if root, off, ok := v.CellView(); ok {
+			// CellView is the template-side rule (the link still describes
+			// v).  Copy the root -- which walks its elements, so the view's
+			// are memoised as well -- and, provided the root was copied
+			// rather than shared onto an array of its own that the window
+			// fits, hand the view the matching window of the copy, clamped
+			// to its length as every copied slice here is.
+			rcp := f.val(root)
+			if rcp != root && off+n <= len(rcp.Cells) && &rcp.Cells[0] != &root.Cells[0] {
+				cp.Native = rcp
+				cp.Cells = rcp.Cells[off : off+n : off+n]
+				return cp
+			}
+		}
+		// The link no longer describes the template (it is advisory; see
+		// cellsView), or the root was shared, so the two are not on one
+		// array in the template either.  Copy privately, exactly as before
+		// the link existed, and drop it
+		// (TestForkCellViewStaleLinkCopiesPrivately).
+		cp.Native = nil
+		cp.Int = 0
+		cells := make([]*LVal, n)
+		for i, c := range v.Cells {
+			cells[i] = f.val(c)
+		}
+		if n > 0 {
+			cp.Cells = cells
+		}
+		return cp
+	}
 	switch v.Type {
 	case LFun:
 		if fd, ok := v.Native.(*funData); ok && fd != nil {
@@ -550,10 +591,16 @@ func (f *forker) val(v *LVal) *LVal {
 			}
 		}
 		cells := make([]*LVal, len(v.Cells))
+		// Published BEFORE it is filled: a view of v reached through v's own
+		// cells (a vector holding a slice of itself, appended in place)
+		// re-points onto this array while the walk is still inside it, and
+		// finds a full-length slice to window rather than nil
+		// (TestForkCellViewInsideItsOwnRoot).  Nothing reads the elements
+		// until the walk returns.
+		cp.Cells = cells
 		for i, c := range v.Cells {
 			cells[i] = f.val(c)
 		}
-		cp.Cells = cells
 	} else {
 		// The struct copy above aliased v.Cells' slice HEADER, and a
 		// zero-length slice can still carry spare capacity pointing into the
