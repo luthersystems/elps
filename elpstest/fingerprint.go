@@ -419,78 +419,48 @@ func normalizeFunIDs(s string) string {
 // So a link is a REFERENCE, never a payload. The root is reachable state and
 // wants walking as such; the link itself gets no ordinal.
 //
-// ON THIS BRANCH the predicate is never true: no constructor in lisp/ writes
-// a *lisp.LVal into Native yet. It becomes live when the cell-view work (PR
-// #602) sits under this one, and is written now so that the surfaces below
-// are correct on both trees rather than needing a second pass.
+// This was written on #599 as a local check over the exported fields, with
+// the two swaps below specified for the commit on #602 that would sit on
+// top. Both have now been made, on #602's tree, where the API exists:
 //
-// THE HAND-OFF. This PR is #602's BASE, so it cannot call #602's API: the
-// dependency runs the other way. What follows is therefore a specification
-// for a commit ON #602, to be written once #602 rebases onto the final
-// version of this branch. It is a fill-in, not a design.
+// SWAP 1 -- this function's body is `return v.IsCellView()`. #602 exports
+// IsCellView as the cheap, UNVALIDATED predicate ("does this header carry a
+// link") for exactly this use: the type-switch arms keep a view's Native
+// out of the payload arm whether the link is current or stale, and do not
+// pay for validation to decide that. Every control in
+// aliasguard_payloadkey_test.go is unchanged across the swap: it asked the
+// same question of the same fields.
 //
-// SWAP 1 -- this function. Its whole body becomes:
+// SWAP 2 -- the reference walk. A view's root is reachable state and the
+// guard walks it as such, through the VALIDATED resolver
+// (`root, off, ok := v.CellView()`): walkReachable (aliasguard_isolation.go)
+// follows a live root as an ordinary reachable value under path ".../root",
+// with no identity ordinal, and keeps walking the view's own Cells; a stale
+// link (ok false) is walked as ordinary structure, its root not followed,
+// no witness -- Fork copies such a header privately by the same call, so the
+// guard and Fork agree by construction. Slot identity is NOT re-derived
+// anywhere in this package: CellView is the one rule (the convention on
+// lisp.cellsView).
 //
-//	return v.IsCellView()
-//
-// #602 exports IsCellView as the cheap, UNVALIDATED predicate ("does this
-// header carry a link") for exactly this use: the type-switch arms need to
-// keep a view's Native out of the payload arm whether the link is current or
-// stale, and they must not pay for validation to decide that. The local
-// implementation below is the same question asked of the same exported
-// fields, which is why the two are interchangeable and why every control in
-// aliasguard_payloadkey_test.go stays meaningful across the swap.
-//
-// SWAP 2 -- the reference walk, which does NOT exist here and is the reason
-// this comment is a specification rather than a note. A view's root is
-// reachable state and the guard should walk it as such, using the VALIDATED
-// resolver:
-//
-//	root, off, ok := v.CellView()
-//
-// ok is true only when the link still describes the header -- element 0 is
-// root.Cells[off] and the window fits -- which is the identical call
-// forker.val makes rather than inlining the check. Do NOT re-derive slot
-// identity in elpstest: one rule, one place. If you find yourself writing
-// `&root.Cells[off] ==` anywhere in this package, stop.
-//
-// Semantics for the walk, so the #602 commit does not have to invent them:
-//
-//   - ok == true: follow root as a REFERENCE. Walk it as ordinary reachable
-//     state and keep walking the view's own Cells. The link itself gets no
-//     identity ordinal -- the ordinal table is keyed on payload pointers and
-//     a root is not a payload.
-//   - ok == false: a STALE link. Walk the header as ordinary structure, do
-//     not follow the root, and emit NO witness. Fork copies such a header
-//     privately by the same call, so the guard and Fork agree by
-//     construction rather than by two rules that have to be kept in step.
-//
-// THE PROPERTY THAT WALK SHOULD ASSERT, stated so it can be measured:
+// THE PROPERTY, asserted by cellViewWitnesses (aliasguard_cellview.go) on
+// every fresh fork and on the pristine successor:
 //
 //	a fork's view shares its slots with the fork's own root exactly as
-//	the template's view shared them with the template's root
+//	the template's view shares them with the template's root
 //
-// i.e. for every view V reachable from a fork with V.CellView() ok, the slot
-// V.Cells[0] is the same slot as ROOT.Cells[off] of that FORK's root -- and
-// the template's corresponding view stands in the same relation to the
-// template's root. Both halves are needed: the first alone passes on a fork
-// that re-pointed a view at the TEMPLATE's root, and the second alone passes
-// on a fork whose views were all rebuilt privately. Stated as a witness, the
-// failure reads "a fork's view no longer shares slots with its own root",
-// which is the de-aliasing #600 gap 3 measured from pure ELPS
-// (`(set 'tail (cdr l))` then `(stable-sort < tail)` diverging between
-// template and fork).
-//
-// When that lands, the Cells row of this PR's walker-contract table stops
-// being an exception for Fork and becomes an asserted contract. It remains
-// an exception for copy and detach, which do not preserve slot aliasing and
-// are not being changed.
+// i.e. for every binding that is a live view in the template, the fork's
+// binding at the same path is a live view whose root is a fork-side value
+// (not a template value), and vice versa. Both halves are needed: the
+// first alone passes on a fork that re-pointed a view at the TEMPLATE's
+// root, the second alone on a fork whose views were all rebuilt privately.
+// The failure reads "a fork's view no longer shares slots with its own
+// root", the de-aliasing #600 gap 3 measured from pure ELPS (`(set 'tail
+// (cdr l))` then `(stable-sort < l)` diverging between template and fork).
+// With that, the Cells row of the walker-contract table (aliasguard.go,
+// BackingRebuilt) is an asserted contract for Fork; it remains an exception
+// for copy and detach, which do not preserve slot aliasing.
 func isCellViewLink(v *lisp.LVal) bool {
-	if v == nil || v.Native == nil {
-		return false
-	}
-	_, ok := v.Native.(*lisp.LVal)
-	return ok
+	return v.IsCellView()
 }
 
 // annotation encodes a pointer payload carried on a header whose TYPE arm

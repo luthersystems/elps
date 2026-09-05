@@ -84,15 +84,19 @@ const (
 	// BackingRebuilt means every container in the output is fresh storage,
 	// so no mutable payload is shared between input and output.
 	//
-	// This is where a documented exception lives rather than a failure: a
-	// list or vector's Cells BACKING ARRAY is deliberately not preserved
-	// across `copy` and detach — two headers that shared a backing array
+	// Cells BACKING ARRAYS are the one place the walkers differ, and the
+	// guard now says which is which.  For `copy` and detach the backing
+	// array is deliberately not preserved: two headers that shared one
 	// (what cdr, rest and (slice 'list …) produce) land in the copy with
-	// separate arrays.  It is stated in lisp/copy.go's doc comment and in
+	// separate arrays -- stated in lisp/copy.go's doc comment and in
 	// docs/func.md, pinned by TestCopyDoesNotPreserveBackingArraySharing,
-	// and is the safe direction (strictly fewer accidental aliases).  The
-	// guard therefore does not probe backing-array sharing at all; it
-	// probes the payloads the walkers DO promise to preserve.
+	// and the safe direction (strictly fewer accidental aliases).  The
+	// mutation probe does not test it for them.  For FORK it is a
+	// contract, asserted by cellViewWitnesses (aliasguard_cellview.go): a
+	// view records its root where it is made (PR #602; the convention on
+	// lisp.cellsView) and a fork's view must share its slots with the
+	// fork's own root exactly as the template's view shares them with the
+	// template's root.
 	BackingRebuilt BackingPolicy = iota
 	// BackingPreserved means an unchanged node is shared with the input
 	// rather than copied.  The macro stamper: it replaces only the nodes it
