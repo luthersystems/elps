@@ -6,6 +6,7 @@
 package lsp
 
 import (
+	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -343,14 +344,7 @@ func (s *Server) buildWorkspaceIndex() {
 	var packageImports map[string][]string
 	var defaultPackage string
 
-	// Build scan config from server options. MaxFileBytes uses its own
-	// default (not maxDocumentBytes) since document analysis limits and
-	// workspace scan limits serve different purposes.
-	scanCfg := &analysis.ScanConfig{
-		MaxFiles:    s.maxWorkspaceFiles,
-		Excludes:    s.excludePatterns,
-		IncludeDirs: s.includeDirs,
-	}
+	scanCfg := s.scanConfig()
 
 	// Two-phase workspace scan: prescan extracts definitions AND
 	// macro-derived DefFormSpecs for cross-file def-like form recognition.
@@ -542,11 +536,52 @@ func symbolToKey(sym *analysis.Symbol) string {
 	return analysis.SymbolToKey(sym).String()
 }
 
+// scanConfig is the workspace scan configuration built from the server
+// options. MaxFileBytes uses the scan's own default (not maxDocumentBytes):
+// document analysis limits bound text the client sends, workspace scan limits
+// bound files read from disk, and they serve different purposes. Everything
+// that reads a workspace file from disk -- the index build and the didSave
+// refresh of the same tables -- goes through this one config so they agree.
+func (s *Server) scanConfig() *analysis.ScanConfig {
+	return &analysis.ScanConfig{
+		MaxFiles:    s.maxWorkspaceFiles,
+		Excludes:    s.excludePatterns,
+		IncludeDirs: s.includeDirs,
+	}
+}
+
+// readWorkspaceFile reads a .lisp file from disk for the workspace index,
+// under the same per-file size limit the workspace scan applies
+// (ScanConfig.MaxFileBytes, default analysis.DefaultMaxFileBytes). The scan
+// skips an over-limit file by its Stat size before ever opening it; this does
+// the same, then reads through a limit one byte past the bound so a file that
+// grows between the Stat and the read is still rejected rather than parsed.
+// Returns ok=false for a missing, unreadable or over-limit file: the caller
+// leaves its tables as they were, exactly as if the scan had skipped the
+// file, which for an over-limit file it would have (elps#611).
+func (s *Server) readWorkspaceFile(path string) (source []byte, ok bool) {
+	maxBytes := s.scanConfig().EffectiveMaxFileBytes()
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Size() > maxBytes {
+		return nil, false
+	}
+	f, err := os.Open(path) //nolint:gosec // LSP server reads user files
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = f.Close() }()
+	source, err = io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil || int64(len(source)) > maxBytes {
+		return nil, false
+	}
+	return source, true
+}
+
 // updateFileRefs re-analyzes a single file and updates the workspace ref index.
 func (s *Server) updateFileRefs(uri string) {
 	filePath := uriToPath(uri)
-	source, err := os.ReadFile(filePath) //nolint:gosec // LSP server reads user files
-	if err != nil {
+	source, ok := s.readWorkspaceFile(filePath)
+	if !ok {
 		return
 	}
 
@@ -601,8 +636,8 @@ func (s *Server) updateFileRefs(uri string) {
 // are removed and replaced with the new definitions.
 func (s *Server) updateFileDefinitions(uri string) {
 	filePath := analysis.NormalizePath(uriToPath(uri))
-	source, err := os.ReadFile(filePath) //nolint:gosec // LSP server reads user files
-	if err != nil {
+	source, ok := s.readWorkspaceFile(filePath)
+	if !ok {
 		return
 	}
 
