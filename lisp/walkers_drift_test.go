@@ -628,20 +628,17 @@ func TestCopyAliasesCallStackAcrossHeaders(t *testing.T) {
 	}
 }
 
-// TestCopyDeAliasesMapPayloadAcrossHeaders pins the first half of
-// (*LVal).Copy's knownDefectiveWalkers row.
-//
-// Two headers over ONE sorted map -- the shape `(quasiquote (unquote m))`
-// produces, and the shape issues #576 and #585 are about -- must survive a
-// copy as two headers over one map. Copy allocates a fresh *MapData per
-// header instead, because copyMapData runs on every LSortMap it visits and
-// nothing memoises the result. A write through one name in the copy is
-// then invisible through the other, while it stays visible in the source.
-//
-// The assertion is the DEFECT, deliberately. When Copy is fixed to memoise
-// map payloads this test goes red, and that is the signal to delete the
-// *MapData row from knownDefectiveWalkers -- the allowlist is shrink-only
-// and must not outlive what it records.
+// TestCopyDeAliasesMapPayloadAcrossHeaders is the negative control for the
+// copier's *MapData memo (lisp/copier.go).  Its name is the one it had as
+// the pin of (*LVal).Copy's knownDefectiveWalkers row, when it asserted
+// the DEFECT: two headers over one sorted map -- the shape
+// `(quasiquote (unquote m))` produces, and the shape issues #576 and #585
+// are about -- came out of Copy as two maps, because copyMapData ran once
+// per header and nothing memoised it.  The copier memoises the *MapData
+// per payload, the row was deleted, and this test now asserts the fix: the
+// two copied headers share one map, and a write through one is seen
+// through the other, exactly as in the source.  Going red here means the
+// memo has been lost and the #576/#585 defect is back in Copy.
 func TestCopyDeAliasesMapPayloadAcrossHeaders(t *testing.T) {
 	t.Parallel()
 	m := SortedMap()
@@ -662,15 +659,19 @@ func TestCopyDeAliasesMapPayloadAcrossHeaders(t *testing.T) {
 	if len(cp.Cells) != 2 {
 		t.Fatalf("copy has %d cells, want 2", len(cp.Cells))
 	}
-	if cp.Cells[0].Native == cp.Cells[1].Native {
-		t.Fatal("(*LVal).Copy now PRESERVES sorted-map aliasing across two headers.\n" +
-			"That is the fix, not a regression: memoising *MapData per payload is what issues #576 and\n" +
-			"#585 did for Fork and detach. Delete the *MapData row from knownDefectiveWalkers in\n" +
-			"lisp/walkers.go -- the allowlist is shrink-only, and a row that outlives its defect records\n" +
-			"a fixed bug as still open.")
+	if cp.Cells[0].Native != cp.Cells[1].Native {
+		t.Fatal("(*LVal).Copy rebuilt ONE sorted map as TWO across its two headers.\n" +
+			"That is the issue #576 / #585 defect back in Copy: the copier's *MapData memo\n" +
+			"(lisp/copier.go, copier.mapData) is no longer keeping two headers over one payload\n" +
+			"together. This test was the pin of Copy's knownDefectiveWalkers row and became its\n" +
+			"negative control when the memo landed; do not re-add the row, restore the memo.")
 	}
-	// And the de-aliasing is OBSERVABLE, not just a pointer difference: a
-	// write through one name in the copy is lost to the other.
+	if cp.Cells[0].Native == m.Native {
+		t.Fatal("the copy shares the source's *MapData; the memo is returning the original instead of a copy")
+	}
+	// And the aliasing is OBSERVABLE, not just a pointer equality: a write
+	// through one name in the copy is seen through the other, as in the
+	// source, and not in the source.
 	if rc := cp.Cells[0].MapSet(String("k"), Int(2)); rc.Type == LError {
 		t.Fatal(rc)
 	}
@@ -678,22 +679,24 @@ func TestCopyDeAliasesMapPayloadAcrossHeaders(t *testing.T) {
 	if got == nil || got.Type == LError {
 		t.Fatalf("second header lost the key entirely: %v", got)
 	}
-	if got.Int == 2 {
-		t.Fatal("the two copied headers still share a map after all; the pointer check above is measuring\n" +
-			"something other than what this test claims.")
+	if got.Int != 2 {
+		t.Fatal("a write through one copied header is not seen through the other; the pointer check above\n" +
+			"is measuring something other than one shared map.")
+	}
+	if orig, _ := m.Map().Get(String("k")); orig == nil || orig.Int != 1 {
+		t.Fatalf("the write through the copy reached the source (%v)", orig)
 	}
 }
 
-// TestCopySharesBytesPayloadAcrossHeaders pins the second half of
-// (*LVal).Copy's knownDefectiveWalkers row: issue #551.
-//
-// The failure is the opposite of the map one, in the same function. LBytes
-// falls to Copy's default arm, which rebuilds Cells and nothing else, so
-// the *[]byte rides across in `*cp = *v` and the copy and its source append
-// into one backing array.
-//
-// Again the assertion is the defect. When Copy clones bytes payloads this
-// goes red, and the *[]byte row gets deleted.
+// TestCopySharesBytesPayloadAcrossHeaders is the negative control for the
+// copier's *[]byte memo, under the name it had as the pin of (*LVal).Copy's
+// second knownDefectiveWalkers row (issue #551).  Then it asserted the
+// DEFECT: LBytes fell to Copy's default arm, which rebuilt Cells and
+// nothing else, so the *[]byte rode across in `*cp = *v` and copy and
+// source appended into one backing array.  The copier rebuilds the buffer
+// once per payload; this test now asserts that a copy owns its bytes, and
+// that two headers over one buffer come out as two headers over ONE copied
+// buffer.  Going red here means the copy shares or splits the buffer again.
 func TestCopySharesBytesPayloadAcrossHeaders(t *testing.T) {
 	t.Parallel()
 	src := Bytes([]byte("ab"))
@@ -701,17 +704,26 @@ func TestCopySharesBytesPayloadAcrossHeaders(t *testing.T) {
 	if cp.Type == LError {
 		t.Fatal(cp)
 	}
-	if cp.Native != src.Native {
-		t.Fatal("(*LVal).Copy no longer shares the *[]byte across headers, so issue #551 is fixed here.\n" +
-			"Delete the *[]byte row from knownDefectiveWalkers in lisp/walkers.go: the allowlist is\n" +
-			"shrink-only and must not outlive the defect it records.")
+	if cp.Native == src.Native {
+		t.Fatal("(*LVal).Copy shares the *[]byte with its source again: issue #551 is back.\n" +
+			"The copier's *[]byte memo (lisp/copier.go, copier.byteSlice) rebuilds the buffer once per\n" +
+			"payload; this test was the pin of Copy's knownDefectiveWalkers row and became its negative\n" +
+			"control when the memo landed. Do not re-add the row, restore the copy.")
 	}
-	// Observable, not merely pointer-equal: a write through the copy is
-	// seen through the source.
+	// Observable, not merely pointer-inequal: a write through the copy is
+	// NOT seen through the source.
 	bs := cp.Native.(*[]byte)
 	(*bs)[0] = 'z'
-	if got := string(*src.Native.(*[]byte)); got != "zb" {
-		t.Fatalf("a write through the copy was not seen through the source (%q); the pointer check above\n"+
-			"is measuring something other than shared backing storage.", got)
+	if got := string(*src.Native.(*[]byte)); got != "ab" {
+		t.Fatalf("a write through the copy reached the source (%q); the buffer is still shared.", got)
+	}
+	// Two headers over one buffer are two headers over ONE copied buffer:
+	// the memo, not merely a copy per header.
+	alias := &LVal{}
+	*alias = *src // a second header over the same *[]byte, as quasiquote makes
+	pair := QExpr([]*LVal{src, alias}).Copy()
+	if pair.Cells[0].Native != pair.Cells[1].Native {
+		t.Fatal("two headers over one *[]byte were copied into two buffers; the memo is gone and a\n" +
+			"write through one copied name is invisible through the other.")
 	}
 }
