@@ -3,6 +3,7 @@
 package main
 
 import (
+	"go/ast"
 	"go/types"
 	"testing"
 
@@ -12,14 +13,16 @@ import (
 // TestNativePayloadAnalyzer runs the rule over testdata/src/nativepayload,
 // which carries every construction spelling (Native, NativeOf inferred and
 // explicitly instantiated, an aliased import, a parenthesised callee, the
-// Value fallthrough, the LVal literal, the field write), the basic tier,
+// Value fallthrough, the field literal, the field write), the basic tier,
 // the NativeCloner rule on both receiver kinds, the audited allowlist keyed
 // on exact type, the interface-typed report, and the allow marker in every
-// placement -- with and without a justification.
+// placement -- with and without a justification.  review.go adds the field
+// reached through lisp.ErrorVal, a conversion, and embedding; the field's
+// address; and multi-line literals with the marker on each candidate line.
 //
 // analysistest checks absence as strictly as presence: a construction with
-// no `// want` comment asserts NO diagnostic there, so the exemptions are
-// pinned by this run as firmly as the reports.
+// no want-expectation comment asserts NO diagnostic there, so the exemptions
+// are pinned by this run as firmly as the reports.
 func TestNativePayloadAnalyzer(t *testing.T) {
 	analysistest.Run(t, analysistest.TestData(), nativePayloadAnalyzer, "nativepayload")
 }
@@ -81,24 +84,51 @@ func TestClassifyPayloadUniverseError(t *testing.T) {
 	}
 }
 
-// TestJustifiedAllow pins the justification requirement on the marker text
-// itself, independent of placement.
-func TestJustifiedAllow(t *testing.T) {
+// TestJustifiedNativeAllow pins the justification requirement on the marker
+// text itself, independent of placement: the rule's own marker, at least
+// three words after it, and nothing that merely shares the prefix.
+func TestJustifiedNativeAllow(t *testing.T) {
 	cases := map[string]bool{
-		"//elpsvet:allow the handle is immutable":   true,
-		"// elpsvet:allow\tthe handle is immutable": true,
-		"/*elpsvet:allow the handle is immutable*/": true,
-		"//elpsvet:allow":                           false,
-		"//elpsvet:allow   ":                        false,
-		"/*elpsvet:allow*/":                         false,
-		"//elpsvet:allowed by nobody":               false,
-		"//elpsvet:allow-ish":                       false,
-		"//elps:mutates a different marker":         false,
-		"// plain comment":                          false,
+		"//elpsvet:allow-native the handle is immutable":   true,
+		"// elpsvet:allow-native\tthe handle is immutable": true,
+		"/*elpsvet:allow-native the handle is immutable*/": true,
+		"//elpsvet:allow-native one two three":             true,
+		"//elpsvet:allow-native":                           false,
+		"//elpsvet:allow-native   ":                        false,
+		"/*elpsvet:allow-native*/":                         false,
+		"//elpsvet:allow-native .":                         false,
+		"//elpsvet:allow-native one two":                   false,
+		"//elpsvet:allow-natives by nobody at all":         false,
+		"//elpsvet:allow-native-ish reason given here":     false,
+		"//elpsvet:allow the ownership rule's own marker":  false,
+		"//elps:mutates a different marker entirely":       false,
+		"// plain comment with several words":              false,
 	}
 	for text, want := range cases {
-		if got := justifiedAllow(text); got != want {
-			t.Errorf("justifiedAllow(%q) = %v, want %v", text, got, want)
+		if got := justifiedNativeAllow(text); got != want {
+			t.Errorf("justifiedNativeAllow(%q) = %v, want %v", text, got, want)
+		}
+	}
+}
+
+// TestOwnershipAllowStopsAtWordBoundary pins the other half of the marker
+// separation: the ownership rule's bare //elpsvet:allow still suppresses,
+// with or without a justification (that rule enforces none), but the native
+// rule's //elpsvet:allow-native does not satisfy it -- otherwise one native
+// justification on a package-level var would silence both rules.
+func TestOwnershipAllowStopsAtWordBoundary(t *testing.T) {
+	cases := map[string]bool{
+		"//elpsvet:allow":                             true,
+		"//elpsvet:allow guarded singleton":           true,
+		"//elpsvet:allow\tsealed formals":             true,
+		"//elpsvet:allow-native a native reason":      false,
+		"//elpsvet:allowed by nobody":                 false,
+		"// a plain comment mentioning elpsvet:allow": false,
+	}
+	for text, want := range cases {
+		cg := &ast.CommentGroup{List: []*ast.Comment{{Text: text}}}
+		if got := allowed(cg); got != want {
+			t.Errorf("allowed(%q) = %v, want %v", text, got, want)
 		}
 	}
 }

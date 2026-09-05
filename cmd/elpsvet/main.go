@@ -100,12 +100,20 @@ func run(pass *analysis.Pass) (interface{}, error) {
 }
 
 // allowed reports whether a comment group carries an //elpsvet:allow marker.
+//
+// A bare marker suppresses: this rule asks for a justification by convention
+// and does not enforce one.  The match stops at the marker's word boundary
+// so that the native-payload rule's own //elpsvet:allow-native (which does
+// enforce a justification, nativepayload.go) is not mistaken for it -- a
+// shared marker would let one sentence written for either rule silence
+// both.
 func allowed(cg *ast.CommentGroup) bool {
 	if cg == nil {
 		return false
 	}
 	for _, c := range cg.List {
-		if strings.HasPrefix(strings.TrimPrefix(c.Text, "//"), "elpsvet:allow") {
+		rest, ok := strings.CutPrefix(strings.TrimPrefix(c.Text, "//"), "elpsvet:allow")
+		if ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t') {
 			return true
 		}
 	}

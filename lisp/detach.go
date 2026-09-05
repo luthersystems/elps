@@ -187,7 +187,7 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	// the *MapData behind LSortMap, the *CallStack behind LError — whose
 	// guards key off the elps type carrying them.
 	if cloner != nil {
-		cp.Native = d.cloneNative(v.Native, cloner) //elpsvet:allow a NativeCloner clone -- the protocol this rule accepts at construction sites -- stored by the walker that invoked it
+		cp.Native = d.cloneNative(v.Native, cloner) //elpsvet:allow-native a NativeCloner clone -- the protocol this rule accepts at construction sites -- stored by the walker that invoked it
 	} else {
 		switch native := v.Native.(type) {
 		case nil:

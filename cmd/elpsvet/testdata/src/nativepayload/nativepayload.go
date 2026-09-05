@@ -93,11 +93,11 @@ func valueDirect(s string, b []byte, i int, f float64, ok bool, cells []*lisp.LV
 }
 
 func literalPointer(h *handle) *lisp.LVal {
-	return &lisp.LVal{Type: lisp.LError, Native: h} // want `lisp\.LVal literal payload type \*nativepayload\.handle is not a known-safe value type`
+	return &lisp.LVal{Type: lisp.LError, Native: h} // want `LVal\.Native literal payload type \*nativepayload\.handle is not a known-safe value type`
 }
 
 func literalValue(h *handle) lisp.LVal {
-	return lisp.LVal{Native: h} // want `lisp\.LVal literal payload type \*nativepayload\.handle is not a known-safe value type`
+	return lisp.LVal{Native: h} // want `LVal\.Native literal payload type \*nativepayload\.handle is not a known-safe value type`
 }
 
 func literalOtherFields(cells []*lisp.LVal) *lisp.LVal {
@@ -214,57 +214,71 @@ func dynamicFieldWrite(v *lisp.LVal, payload interface{}) {
 }
 
 func dynamicAllowed(v interface{}) *lisp.LVal {
-	return lisp.Native(v) //elpsvet:allow fixture: a pass-through constructor whose callers are checked at their own sites
+	return lisp.Native(v) //elpsvet:allow-native fixture: a pass-through constructor whose callers are checked at their own sites
 }
 
 // --- the allow marker --------------------------------------------------------
 
 func allowTrailing(h *handle) *lisp.LVal {
-	return lisp.Native(h) //elpsvet:allow fixture: the handle is immutable after construction
+	return lisp.Native(h) //elpsvet:allow-native fixture: the handle is immutable after construction
 }
 
 func allowStandalone(h *handle) *lisp.LVal {
-	//elpsvet:allow fixture: the handle is immutable after construction
+	//elpsvet:allow-native fixture: the handle is immutable after construction
 	return lisp.Native(h)
 }
 
 func allowStandaloneReachesOneLine(h *handle) {
-	//elpsvet:allow fixture: covers only the statement below
+	//elpsvet:allow-native fixture: covers only the statement below
 	_ = lisp.Native(h)
 	_ = lisp.Native(h) // want `lisp\.Native payload type \*nativepayload\.handle is not a known-safe value type`
 }
 
 func allowTrailingReachesItsLineOnly(h *handle) {
-	_ = lisp.Native(h) //elpsvet:allow fixture: covers this line
+	_ = lisp.Native(h) //elpsvet:allow-native fixture: covers this line
 	_ = lisp.Native(h) // want `lisp\.Native payload type \*nativepayload\.handle is not a known-safe value type`
 }
 
 func allowEmptyStandalone(h *handle) *lisp.LVal {
-	//elpsvet:allow
+	//elpsvet:allow-native
 	return lisp.Native(h) // want `lisp\.Native payload type \*nativepayload\.handle is not a known-safe value type`
 }
 
 func allowEmptyWithTrailingSpace(h *handle) *lisp.LVal {
-	//elpsvet:allow
+	//elpsvet:allow-native
 	return lisp.Native(h) // want `lisp\.Native payload type \*nativepayload\.handle is not a known-safe value type`
 }
 
+func allowTooShort(h *handle) *lisp.LVal {
+	//elpsvet:allow-native two words
+	return lisp.Native(h) // want `lisp\.Native payload type \*nativepayload\.handle is not a known-safe value type`
+}
+
+func allowOwnershipMarkerIsNotThisRules(h *handle) *lisp.LVal {
+	//elpsvet:allow the ownership rule's marker, however justified, is a different rule's
+	return lisp.Native(h) // want `lisp\.Native payload type \*nativepayload\.handle is not a known-safe value type`
+}
+
+func allowOneLineCoversEveryConstructionOnIt(h *handle) {
+	_, _ = lisp.Native(h), lisp.NativeOf(h) //elpsvet:allow-native fixture: one justification covers the whole line
+}
+
 func allowMarkerPrefixOnly(h *handle) *lisp.LVal {
-	//elpsvet:allowed by nobody -- a different marker sharing the prefix
+	//elpsvet:allow-natives by nobody -- a different marker sharing the prefix
 	return lisp.Native(h) // want `lisp\.Native payload type \*nativepayload\.handle is not a known-safe value type`
 }
 
 // allowDoc has its whole body exempted by a justified marker in its doc
 // comment.
 //
-//elpsvet:allow fixture: every native this function mints is a fresh, unshared handle
+//elpsvet:allow-native fixture: every native this function mints is a fresh, unshared handle
 func allowDoc(h *handle) *lisp.LVal {
 	return lisp.Native(h)
 }
 
 // allowDocEmpty carries a bare marker in its doc, which is not an audit.
 //
-//elpsvet:allow
+//elpsvet:allow-native
 func allowDocEmpty(h *handle) *lisp.LVal {
 	return lisp.Native(h) // want `lisp\.Native payload type \*nativepayload\.handle is not a known-safe value type`
 }
@@ -273,7 +287,7 @@ func allowDocEmpty(h *handle) *lisp.LVal {
 
 var marker = lisp.Native(&handle{}) // want `lisp\.Native payload type \*nativepayload\.handle is not a known-safe value type`
 
-var markerAllowed = lisp.Native(&handle{}) //elpsvet:allow fixture: identity-only credential, never written
+var markerAllowed = lisp.Native(&handle{}) //elpsvet:allow-native fixture: identity-only credential, never written
 
 var makeNative = func(h *handle) *lisp.LVal {
 	return lisp.Native(h) // want `lisp\.Native payload type \*nativepayload\.handle is not a known-safe value type`

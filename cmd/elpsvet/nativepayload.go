@@ -20,8 +20,12 @@
 //
 // A native construction -- `lisp.Native(x)`, the typed `lisp.NativeOf[T](x)`
 // (inferred or explicitly instantiated), a `lisp.Value(x)` the compiler can
-// see falling through to Native, a `lisp.LVal{Native: x}` literal, or a
-// write to a `.Native` field -- is REPORTED unless one of:
+// see falling through to Native, a keyed literal setting the lisp.LVal.Native
+// FIELD (`lisp.LVal{Native: x}`, or `lisp.ErrorVal{Native: x}` -- ErrorVal is
+// `type ErrorVal LVal`, the same struct and the same field object), or a
+// write to that field however it is reached (`v.Native`, `e.Native` on an
+// ErrorVal, `(*lisp.ErrorVal)(v).Native`, a promoted `w.Native` through an
+// embedding struct) -- is REPORTED unless one of:
 //
 //  1. the payload's static type has a BASIC underlying type (string, int,
 //     bool, a float, a defined type over one of those, ...).  A non-pointer
@@ -40,11 +44,29 @@
 //  3. the payload's type is on allowedPayloadTypes below -- the AUDITED
 //     inventory, each row carrying the reason a human checked;
 //
-//  4. an audited `//elpsvet:allow <justification>` comment covers the line
-//     (trailing, or standalone on the line above), or the enclosing
-//     function's doc comment carries one.  A bare marker with no
-//     justification does NOT suppress: an allow that says nothing is a
-//     classification nobody made.
+//  4. an audited `//elpsvet:allow-native <justification>` comment covers the
+//     site: trailing on the reported line, standalone on the line above it,
+//     or -- for a multi-line literal -- on either the opening line or the
+//     `Native:` line; or the enclosing function's doc comment carries one.
+//     The justification must be at least three words.  A bare or one-word
+//     marker does NOT suppress: an allow that says nothing is a
+//     classification nobody made.  One justification covers every
+//     construction on its line, which is deliberate -- the line is the unit
+//     an author annotates and a reader audits.
+//
+// Taking the field's ADDRESS (`&v.Native`) is reported unconditionally: what
+// is later stored through the pointer has no type at this site, so the only
+// honest verdict is that the rule cannot see it.
+//
+// # The marker is this rule's own
+//
+// elpsownership's `//elpsvet:allow` is a bare prefix match with no
+// justification enforced.  Had this rule shared it, one sentence written for
+// the ownership rule ("guarded singleton", "sealed formals") on a
+// package-level native would have silenced both rules with a reason that
+// addresses neither.  `//elpsvet:allow-native` is therefore separate, and
+// the ownership rule's matcher stops at the marker's word boundary so the
+// native marker does not satisfy it either (main.go, allowed).
 //
 // # Interface-typed payloads
 //
@@ -55,8 +77,8 @@
 // system -- Native, NativeOf and Value are defined here, the fork and detach
 // walkers apply the policy here, and the error-condition constructors accept
 // arbitrary data here.  Each of those sites is a contract, and the contract
-// has to be written down at the site as an `//elpsvet:allow`, never silently
-// passed through as "unknowable".
+// has to be written down at the site as an `//elpsvet:allow-native`, never
+// silently passed through as "unknowable".
 //
 // # Why it is deliberately dumb
 //
@@ -71,12 +93,20 @@
 //
 // # What it does not see
 //
-// The payload type must be visible AT THE CONSTRUCTION SITE.  An indirect
-// call (`f := lisp.Native; f(x)`) is not a call the callee resolver can see;
-// a multi-value assignment (`v.Native, ok = g()`) has no expression type for
-// its right-hand side and is skipped.  A payload constructed in ANOTHER
-// module is that module's to audit -- substrate runs the same rule over its
-// own tree for exactly that reason.
+// The payload type must be visible AT THE CONSTRUCTION SITE, and the site
+// must be one of the spellings above.  Invisible:
+//
+//   - an indirect call (`f := lisp.Native; f(x)`): the callee resolver sees
+//     objects, not function values;
+//   - a multi-value assignment (`v.Native, ok = g()`): the right-hand side
+//     is a tuple, with no expression type per element;
+//   - a positional (unkeyed) `LVal{...}` literal: only possible inside
+//     package lisp, where the struct's unexported fields are nameable, and
+//     not written anywhere;
+//   - anything done through reflect (`reflect.ValueOf(v).Elem().FieldByName
+//     ("Native").Set(...)`): a runtime property, not a source one;
+//   - a payload constructed in ANOTHER module: that module's to audit --
+//     substrate runs the same rule over its own tree for exactly that reason.
 package main
 
 import (
@@ -89,19 +119,31 @@ import (
 )
 
 const (
-	// nativeAllowMarker is the audited suppression: the ownership rule's
-	// marker, held to a stricter standard here (see justifiedAllow).
-	nativeAllowMarker = "elpsvet:allow"
+	// nativeAllowMarker is this rule's audited suppression.  It is NOT the
+	// ownership rule's //elpsvet:allow (see the file comment) and is held to
+	// a stricter standard: see justifiedNativeAllow.
+	nativeAllowMarker = "elpsvet:allow-native"
+
+	// nativeAllowMinWords is the least a justification may be.  Three words
+	// is not an audit standard; it is the line below which a marker is
+	// punctuation ("//elpsvet:allow-native .") rather than a sentence.
+	nativeAllowMinWords = 3
 
 	// nativeClonerMethod is the one method of lisp.NativeCloner.
 	nativeClonerMethod = "CloneNative"
+
+	// nativeFieldName is the lisp.LVal field this rule tracks.  The field
+	// OBJECT is what is matched (isNativeField), never the receiver's
+	// spelled type, so ErrorVal, conversions and embedding all resolve to
+	// the same field.
+	nativeFieldName = "Native"
 )
 
 var nativePayloadAnalyzer = &analysis.Analyzer{
 	Name: "elpsnativepayload",
 	Doc: "flag lisp.LVal native payloads whose type is not provably safe to SHARE across forks" +
 		" (Fork shares LVal.Native by reference) unless the type declares lisp.NativeCloner," +
-		" is on the audited allowlist, or //elpsvet:allow <justification> covers the site",
+		" is on the audited allowlist, or //elpsvet:allow-native <justification> covers the site",
 	Run: runNativePayload,
 }
 
@@ -122,12 +164,16 @@ var nativePayloadAnalyzer = &analysis.Analyzer{
 var allowedPayloadTypes = map[string]string{
 	// Kernel-owned representation slots.  LVal.Native doubles as the backing
 	// store for several non-LNative types, and the fork and detach walkers
-	// carry an explicit arm for each, so none of them travels by reference.
+	// carry an explicit arm for each, so none of them travels by reference
+	// into a fork.
 
-	"*github.com/luthersystems/elps/lisp.funData": "the LFun payload. The fork walker's LFun arm " +
-		"(fork.go) re-mints the funData per fork with the captured env remapped into the fork, so " +
-		"a fork never shares the template's; detach refuses LFun values rather than copy them. A " +
-		"builtin's Go function pointer travels by reference, which is code, not state",
+	"*github.com/luthersystems/elps/lisp.funData": "the LFun payload. Fork re-mints it per fork " +
+		"with the captured env remapped into the fork (fork.go's LFun arm), so a fork never shares " +
+		"the template's. The detach walker either refuses an LFun (Detach, shareOpaque false) or " +
+		"shares the LFun VALUE whole (the lisp copy builtin runs the same walker with shareOpaque " +
+		"true, detach.go's LFun arm) -- a copy stays inside one runtime, where sharing a closure is " +
+		"the existing semantics, not a fork leak. A builtin's Go function pointer travels by " +
+		"reference, which is code, not state",
 
 	"*[]byte": "LBytes backing storage. The *[]byte arms in the fork walker (fork.go) and the " +
 		"detach walker (detach.go) each allocate a fresh slice and copy the bytes, so no fork can " +
@@ -170,16 +216,19 @@ var allowedPayloadTypes = map[string]string{
 		"construction: an unexported type with unexported fields, minted on one line " +
 		"(DumpMessageBuiltin) from bytes the serializer just wrote, and every method and reader " +
 		"(MarshalJSON, jsonMessage) only reads msg and loadable -- nothing assigns to either " +
-		"afterwards, and no other package can name the type to try",
+		"afterwards, and no other package can name the type to try. One aliasing to know about: " +
+		"MessageBytesBuiltin hands msg to lisp.Bytes([]byte(msg)), a conversion rather than a copy, " +
+		"so that LBytes shares the message's backing array WITHIN one runtime -- fine for this row, " +
+		"because a fork copies bytes (the *[]byte arm above) and so never shares it across runtimes",
 }
 
 func runNativePayload(pass *analysis.Pass) (interface{}, error) {
 	for _, file := range pass.Files {
-		allow := markerLinesMatching(pass.Fset, file, justifiedAllow)
+		allow := markerLinesMatching(pass.Fset, file, justifiedNativeAllow)
 		for _, decl := range file.Decls {
 			switch d := decl.(type) {
 			case *ast.FuncDecl:
-				if d.Body == nil || hasJustifiedAllow(d.Doc) {
+				if d.Body == nil || hasJustifiedNativeAllow(d.Doc) {
 					continue
 				}
 				checkNativeConstructions(pass, d.Body, allow)
@@ -206,6 +255,8 @@ func checkNativeConstructions(pass *analysis.Pass, n ast.Node, allow map[int]boo
 			checkNativeLiteral(pass, x, allow)
 		case *ast.AssignStmt:
 			checkNativeAssign(pass, x, allow)
+		case *ast.UnaryExpr:
+			checkNativeAddress(pass, x, allow)
 		}
 		return true
 	})
@@ -242,28 +293,33 @@ func checkNativeCall(pass *analysis.Pass, call *ast.CallExpr, allow map[int]bool
 	reportNativePayload(pass, call.Pos(), pass.TypesInfo.TypeOf(arg), "lisp."+fn.Name(), allow)
 }
 
-// checkNativeLiteral handles `lisp.LVal{Native: x}` -- the constructor
-// bypass the kernel itself uses for every non-LNative payload slot.
+// checkNativeLiteral handles a keyed literal setting the lisp.LVal.Native
+// field -- `lisp.LVal{Native: x}`, and equally `lisp.ErrorVal{Native: x}`,
+// since ErrorVal is a defined type over LVal and its keys resolve to the
+// same field objects.  The literal's TYPE is not consulted; the key's
+// object is.
+//
+// The report sits on the literal's opening line, where a call would be
+// reported, so a trailing marker on `&lisp.LVal{` covers a payload two
+// lines down; a marker on the `Native:` line itself is honoured as well.
 func checkNativeLiteral(pass *analysis.Pass, lit *ast.CompositeLit, allow map[int]bool) {
-	if !isLValType(pass.TypesInfo.TypeOf(lit)) {
-		return
-	}
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
 		if !ok {
 			continue
 		}
 		key, ok := kv.Key.(*ast.Ident)
-		if !ok || key.Name != "Native" {
+		if !ok || !isNativeField(pass.TypesInfo.Uses[key]) {
 			continue
 		}
-		reportNativePayload(pass, kv.Value.Pos(), pass.TypesInfo.TypeOf(kv.Value), "lisp.LVal literal", allow)
+		reportNativePayload(pass, lit.Pos(), pass.TypesInfo.TypeOf(kv.Value), "LVal.Native literal", allow,
+			kv.Key.Pos(), kv.Value.Pos())
 	}
 }
 
-// checkNativeAssign handles `v.Native = x` on an existing LVal -- the other
-// bypass, and the one that can put a payload into a value the assigning
-// function does not own.
+// checkNativeAssign handles a write to the lisp.LVal.Native field on an
+// existing value -- the bypass that can put a payload into a value the
+// assigning function does not own -- however the field is reached.
 func checkNativeAssign(pass *analysis.Pass, stmt *ast.AssignStmt, allow map[int]bool) {
 	if len(stmt.Lhs) != len(stmt.Rhs) {
 		// Multi-value RHS: the payload type is a tuple element, not an
@@ -271,20 +327,45 @@ func checkNativeAssign(pass *analysis.Pass, stmt *ast.AssignStmt, allow map[int]
 		return
 	}
 	for i, lhs := range stmt.Lhs {
-		sel, ok := lhs.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "Native" {
-			continue
-		}
-		if !isLValType(pass.TypesInfo.TypeOf(sel.X)) {
+		sel, ok := ast.Unparen(lhs).(*ast.SelectorExpr)
+		if !ok || !selectsNativeField(pass, sel) {
 			continue
 		}
 		reportNativePayload(pass, stmt.Pos(), pass.TypesInfo.TypeOf(stmt.Rhs[i]), "LVal.Native assignment", allow)
 	}
 }
 
-func reportNativePayload(pass *analysis.Pass, pos token.Pos, payload types.Type, what string, allow map[int]bool) {
+// checkNativeAddress handles `&v.Native`: a pointer through which any
+// payload can later be stored, with no type at this site to classify.
+func checkNativeAddress(pass *analysis.Pass, expr *ast.UnaryExpr, allow map[int]bool) {
+	if expr.Op != token.AND {
+		return
+	}
+	sel, ok := ast.Unparen(expr.X).(*ast.SelectorExpr)
+	if !ok || !selectsNativeField(pass, sel) {
+		return
+	}
+	if allow[pass.Fset.Position(expr.Pos()).Line] {
+		return
+	}
+	pass.Reportf(expr.Pos(),
+		"address of LVal.Native taken: whatever is later stored through the pointer is a native payload"+
+			" this rule cannot see the type of; store through the field directly so the payload is"+
+			" checked at the store, or annotate //%s with a justification",
+		nativeAllowMarker)
+}
+
+// reportNativePayload classifies payload and reports at pos unless a
+// justified marker covers pos's line or any of the also lines (a literal's
+// key and value positions).
+func reportNativePayload(pass *analysis.Pass, pos token.Pos, payload types.Type, what string, allow map[int]bool, also ...token.Pos) {
 	if allow[pass.Fset.Position(pos).Line] {
 		return
+	}
+	for _, p := range also {
+		if allow[pass.Fset.Position(p).Line] {
+			return
+		}
 	}
 	switch classifyPayload(payload) {
 	case payloadSafe:
@@ -404,7 +485,9 @@ func directlyRepresentable(t types.Type) bool {
 	return false
 }
 
-// isLValType reports whether t is lisp.LVal or *lisp.LVal.
+// isLValType reports whether t is lisp.LVal or *lisp.LVal.  Used only to
+// recognise Value's `[]*LVal` arm; field access is matched on the field
+// object (isNativeField), never on the receiver's spelled type.
 func isLValType(t types.Type) bool {
 	if t == nil {
 		return false
@@ -419,6 +502,24 @@ func isLValType(t types.Type) bool {
 	}
 	obj := named.Obj()
 	return obj != nil && obj.Name() == "LVal" && obj.Pkg() != nil && obj.Pkg().Path() == lispPkgPath
+}
+
+// isNativeField reports whether obj is the lisp.LVal.Native field object --
+// the one field of that name declared in package lisp (lisp/lisp.go).  A
+// defined type over LVal (ErrorVal) shares the struct and therefore the
+// object; a promoted selection through an embedding struct resolves to it;
+// a struct in another package that happens to have a field called Native
+// does not.
+func isNativeField(obj types.Object) bool {
+	v, ok := obj.(*types.Var)
+	return ok && v.IsField() && v.Name() == nativeFieldName && v.Pkg() != nil && v.Pkg().Path() == lispPkgPath
+}
+
+// selectsNativeField reports whether sel is a field selection of
+// lisp.LVal.Native, by whatever receiver expression and embedding path.
+func selectsNativeField(pass *analysis.Pass, sel *ast.SelectorExpr) bool {
+	s, ok := pass.TypesInfo.Selections[sel]
+	return ok && s.Kind() == types.FieldVal && isNativeField(s.Obj())
 }
 
 // calleeFunc resolves a call's callee to its *types.Func, so package aliases
@@ -449,12 +550,12 @@ func calleeFunc(pass *analysis.Pass, call *ast.CallExpr) *types.Func {
 	return fn
 }
 
-// justifiedAllow reports whether a comment's text is an //elpsvet:allow
-// marker THAT CARRIES A JUSTIFICATION: the marker followed by whitespace and
-// at least one non-blank character.  A bare marker is not an audit and does
-// not suppress.  The rule cannot check that the words are true, only that
-// somebody wrote them down where the next reader will see them.
-func justifiedAllow(text string) bool {
+// justifiedNativeAllow reports whether a comment's text is an
+// //elpsvet:allow-native marker THAT CARRIES A JUSTIFICATION: the marker,
+// whitespace, and at least nativeAllowMinWords words.  The rule cannot check
+// that the words are true, only that somebody wrote a sentence down where
+// the next reader will see it.
+func justifiedNativeAllow(text string) bool {
 	text = strings.TrimPrefix(text, "//")
 	text = strings.TrimPrefix(text, "/*")
 	text = strings.TrimSuffix(text, "*/")
@@ -466,15 +567,15 @@ func justifiedAllow(text string) bool {
 	if rest[0] != ' ' && rest[0] != '\t' {
 		return false // a different marker sharing the prefix
 	}
-	return strings.TrimSpace(rest) != ""
+	return len(strings.Fields(rest)) >= nativeAllowMinWords
 }
 
-func hasJustifiedAllow(cg *ast.CommentGroup) bool {
+func hasJustifiedNativeAllow(cg *ast.CommentGroup) bool {
 	if cg == nil {
 		return false
 	}
 	for _, c := range cg.List {
-		if justifiedAllow(c.Text) {
+		if justifiedNativeAllow(c.Text) {
 			return true
 		}
 	}
