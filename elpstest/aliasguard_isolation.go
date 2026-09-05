@@ -788,11 +788,12 @@ func reachableNatives(env *lisp.LEnv) map[any]string {
 		// LBytes holds a *[]byte there, LSortMap a *MapData, and an embedder
 		// can annotate an ordinary node. Keying on `v.Type == LNative` missed
 		// all of it -- including the case measured in #603
-		// (TestLoadCacheTopology_NativeAnnotationGapStillOpen), where a
-		// Reader's annotation on a SEALED node reaches every fork by
-		// reference because a sealed value is shared outright, before the
-		// native policy runs, so its NativeCloner is never consulted. Nothing
-		// here saw that, and this census is the surface that should have.
+		// (TestLoadCacheTopology_NativeAnnotationIsReported, which pinned
+		// the gap as open until this change closed it), where a Reader's
+		// annotation on a SEALED node reaches every fork by reference
+		// because a sealed value is shared outright, before the native
+		// policy runs, so its NativeCloner is never consulted. Nothing here
+		// saw that, and this census is the surface that should have.
 		//
 		// A cell-view link is excluded: it is a reference to a root, not a
 		// payload (isCellViewLink, elpstest/fingerprint.go).
