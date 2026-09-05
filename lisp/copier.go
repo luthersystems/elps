@@ -58,6 +58,9 @@ import (
 //
 //   - The seal is cleared on every copied node (the sanctioned way to get a
 //     mutable version of a program literal; lisp/seal.go).
+//   - Macro-expansion debug metadata is dropped, as Fork and detach drop
+//     it: its shared context points at the source tree's nodes (see the
+//     comment at the assignment).
 //   - A function value keeps its environment by reference: Copy shares
 //     closures, as `copy` does.
 //   - An LArray's Cells backing is shared (reference semantics;
@@ -184,22 +187,30 @@ func (c *copier) copy(v *LVal) *LVal {
 	if v.source != nil {
 		cp.source = v.source.Copy()
 	}
-	// meta and macroExpansion ride along in the struct assignment above for
-	// the same reason source did, and issue #466 is that they still do.  Both
-	// are PER-NODE mutable state -- fmtmeta.Meta is what the parser writes and
-	// hoistOperandComments moves between nodes; macroExpansionInfo is the
-	// per-node half of an expansion record whose shared half is the context
-	// it embeds.  Sharing them makes a "deep copy" a second writer on one
-	// object, and in meta's case it also reopens #446 one level down: the
-	// *token.Location on every comment token is reachable from both trees.
-	//
-	// The cost argument is the opposite of source's.  meta is nil outside
-	// format-preserving parsing and macroExpansion is nil unless a debugger
-	// is attached, so on the interpreter's hot path this is two nil checks
-	// and no allocation, and it allocates only on paths already doing
-	// per-node formatting or debug work.
+	// meta rides along in the struct assignment above for the same reason
+	// source did (issue #466).  It is PER-NODE mutable state -- fmtmeta.Meta
+	// is what the parser writes and hoistOperandComments moves between
+	// nodes -- so sharing it makes a "deep copy" a second writer on one
+	// object, and reopens #446 one level down: the *token.Location on every
+	// comment token is reachable from both trees.  It is nil outside
+	// format-preserving parsing, so on the hot path this is a nil check.
 	cp.meta = detachMeta(v.meta)
-	cp.macroExpansion = v.macroExpansion.Copy()
+	// macroExpansion is DROPPED, as Fork (lisp/fork.go) and detach
+	// (lisp/detach.go) drop it.  Its shared half, the per-expansion
+	// context, records the macro call's unevaluated arguments as pointers to
+	// the SOURCE tree's nodes, and on this fixture some of those are
+	// unsealed -- so a copy that kept the record was a private tree with a
+	// back-pointer into the tree it was copied from, the exact aliasing
+	// hole this walker exists to close, on the one path (TextLoader) whose
+	// purpose is a private tree.  Remapping the record to the copied nodes
+	// would need a per-walk memo of contexts and a pass after the walk;
+	// dropping it is what the other two walkers already do.  What is lost:
+	// the metadata is stamped during evaluation, and the load paths copy a
+	// tree BEFORE evaluating it, so nothing is lost there; a tree that was
+	// expanded, retained and then copied loses the debugger's macro
+	// attribution on the copy, as it already does on every fork.
+	// TestCopyDropsMacroExpansionMetadata is the control.
+	cp.macroExpansion = nil
 	// Seeded before anything below descends: a child that reaches v again
 	// gets cp, so a shared subtree is copied once and a cycle closes onto
 	// the copy.

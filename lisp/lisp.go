@@ -222,7 +222,9 @@ type macroExpansionContext struct {
 //
 // The embedded *macroExpansionContext describes the macro CALL and is shared
 // by every node of one expansion, by design.  This struct is the per-node
-// half, so LVal.Copy gives a copy its own -- see macroExpansionInfo.Copy.
+// half.  (*LVal).Copy does not carry either half across: the context's
+// Args point at the tree the copy was made from, so a copy drops the
+// record exactly as Fork and detach do (lisp/copier.go).
 type macroExpansionInfo struct {
 	*macroExpansionContext // shared across all nodes in one expansion
 
@@ -230,41 +232,15 @@ type macroExpansionInfo struct {
 	// assigns it from Runtime.nextMacroExpID, monotonically increasing, so no
 	// two nodes an expansion stamps share a value.
 	//
-	// It is NOT unique per *LVal* in the wider sense, and this comment used
-	// to claim it was.  LVal.Copy duplicates it, and cannot do otherwise:
-	// Copy takes no *Runtime, so it has no counter to draw a fresh value
-	// from, and there is no framing in which it could -- the value's whole
-	// purpose is to come from the runtime that did the expanding.  A copy of
-	// an expansion node therefore carries the ID of the node it came from.
-	//
-	// The consumer to know about is lisp/x/debugger: exprStepLocation reads
-	// this into StepLocation.MacroID and stepper.go steps on `loc.MacroID !=
-	// s.start.MacroID`, so two distinct nodes carrying one ID read to the
-	// stepper as one node and it does not pause between them.  Copying an
-	// expansion node under an attached debugger is what that would take; no
-	// in-tree path does it today (issue #466).
+	// It is unique per stamped node.  (*LVal).Copy used to duplicate it
+	// -- Copy takes no *Runtime and had no counter to draw a fresh value
+	// from -- so two distinct nodes could carry one ID, which the debugger's
+	// stepper (exprStepLocation reads this into StepLocation.MacroID and
+	// stepper.go steps on `loc.MacroID != s.start.MacroID`) would read as
+	// one node and not pause between.  Copy now drops the whole record
+	// (lisp/copier.go), as Fork and detach do, so a copy carries no ID and
+	// that hazard (issue #466) has no path.
 	ID int64
-}
-
-// Copy returns a pointer to an independent copy of i, or nil if i is nil.
-//
-// The embedded *macroExpansionContext is deliberately NOT copied.  A copy
-// separates two OWNERS, and the context has one owner -- the macro call --
-// which both nodes genuinely belong to.  It is documented shared across every
-// node of an expansion, and #456 already made CallSite an object the
-// expansion owns rather than one borrowed from a live parse tree, so there is
-// no third party to separate it from.  Copying it would separate nothing and
-// would make the "shared across all nodes in one expansion" comment above
-// false for copied nodes.
-//
-// What IS separated is this struct, which is per node.  ID rides across
-// unchanged -- see the field comment for why it cannot do otherwise.
-func (i *macroExpansionInfo) Copy() *macroExpansionInfo {
-	if i == nil {
-		return nil
-	}
-	cp := *i
-	return &cp
 }
 
 // MacroExpansionMeta is a read-only snapshot of the debug metadata attached

@@ -30,39 +30,40 @@ func newExpansionNode(id int64, ctx *macroExpansionContext) *LVal {
 	return v
 }
 
-// TestCopyDoesNotAliasMacroExpansionInfo is the second half of issue #466.
-// The struct is per node -- its ID is the thing that tells one expansion node
-// from another -- so a copy, which is a second node, must not write through
-// the original's.
-// CATCH: failed on 95e2e1a.
+// TestCopyDoesNotAliasMacroExpansionInfo is the second half of issue #466,
+// under the contract lisp/copier.go settled on.  The struct is per node --
+// its ID is the thing that tells one expansion node from another -- so a
+// copy, which is a second node, must not write through the original's.  It
+// was pinned as "the copy gets its own record"; Copy now DROPS the record
+// outright, as Fork and detach do, because the record's shared context
+// points at the tree the copy was made from
+// (TestCopyDropsMacroExpansionMetadata in copier_test.go is the control
+// for that).  The property this test pins is unchanged: nothing about the
+// original's record moves when the copy is written to.
+// CATCH: failed on 95e2e1a (the copy shared the original's struct).
 func TestCopyDoesNotAliasMacroExpansionInfo(t *testing.T) {
 	loc := &token.Location{File: "m.lisp", Line: 3, Col: 5}
 	ctx := &macroExpansionContext{CallSite: loc, Name: "lisp:defun"}
 	orig := newExpansionNode(7, ctx)
 
 	cp := orig.Copy()
-	require.NotNil(t, cp.macroExpansion, "the copy lost its expansion info")
-	assert.NotSame(t, orig.macroExpansion, cp.macroExpansion,
-		"a copy shares the original's *MacroExpansionInfo (#466)")
-
-	cp.macroExpansion.ID = 99
-	assert.Equal(t, int64(7), orig.macroExpansion.ID,
-		"a write through the copy moved the original's expansion ID (#466)")
+	assert.Nil(t, cp.macroExpansion,
+		"a copy carries an expansion record; Copy drops it (lisp/copier.go), as Fork and detach do")
+	require.NotNil(t, orig.macroExpansion, "copying moved the original's expansion info")
+	assert.Equal(t, int64(7), orig.macroExpansion.ID, "copying changed the original's expansion ID")
 }
 
-// TestCopyKeepsSharingTheMacroExpansionContext pins the pointer that is
-// deliberately NOT separated, and is the reason this issue is not simply
-// "copy everything".
+// TestCopyKeepsSharingTheMacroExpansionContext pins that the shared half
+// stays the ORIGINAL'S, untouched.  MacroExpansionContext describes the
+// macro CALL, not the node; it is documented shared across every node of
+// one expansion, and #456 made its CallSite an object the expansion owns.
+// A copy has no record at all now, so the only thing left to hold is that
+// copying neither replaces nor edits the context the original's nodes
+// share.
 //
-// MacroExpansionContext describes the macro CALL, not the node.  It is
-// documented shared across every node of one expansion; #456 already made its
-// CallSite an object the expansion owns rather than one borrowed from a live
-// parse tree, so there is no third party to separate it from.  Copying it
-// would separate nothing and would make that documented sharing false for
-// copied nodes.
-//
-// GUARD: passes before the fix (everything was shared then) and pins that the
-// fix did not over-correct.
+// GUARD: passed before #466's fix (everything was shared then), pinned that
+// the fix did not over-correct into a private context, and now pins that
+// dropping the record on the copy leaves the original's sharing intact.
 func TestCopyKeepsSharingTheMacroExpansionContext(t *testing.T) {
 	loc := &token.Location{File: "m.lisp", Line: 3, Col: 5}
 	ctx := &macroExpansionContext{CallSite: loc, Name: "lisp:defun"}
@@ -71,36 +72,40 @@ func TestCopyKeepsSharingTheMacroExpansionContext(t *testing.T) {
 		"premise: one expansion's nodes share one context")
 
 	cp := a.Copy()
-	assert.Same(t, ctx, cp.macroExpansion.macroExpansionContext,
-		"copying an expansion node allocated a private MacroExpansionContext; the context"+
-			" is documented shared across an expansion and has only one owner")
-	assert.Same(t, loc, cp.macroExpansion.CallSite,
-		"the call site moved; it belongs to the expansion (#456), not to the node")
+	assert.Nil(t, cp.macroExpansion, "a copy carries an expansion record; Copy drops it")
+	assert.Same(t, ctx, a.macroExpansion.macroExpansionContext,
+		"copying replaced the original's MacroExpansionContext")
+	assert.Same(t, ctx, b.macroExpansion.macroExpansionContext,
+		"copying one node moved the context its sibling shares")
+	assert.Same(t, loc, ctx.CallSite, "copying moved the call site; it belongs to the expansion (#456)")
 }
 
-// TestCopyDuplicatesTheMacroExpansionID is the half of #466 where the DOC
-// COMMENT was what was wrong rather than the code.
+// TestCopyCarriesNoMacroExpansionID is the half of #466 where the DOC
+// COMMENT was what was wrong rather than the code, under the decision
+// lisp/copier.go settled on.
 //
-// ID was documented "unique per node".  LVal.Copy cannot honour that under
-// any implementation: it takes no *Runtime, so it has no counter to draw a
-// fresh value from, and drawing one from anywhere else would defeat the
-// point -- the value exists to come from the runtime that did the expanding.
-// So the behaviour stands and the comment now says what is true, and names
-// the consumer that has to know: lisp/x/debugger's stepper steps on
-// `loc.MacroID != s.start.MacroID`, so two nodes carrying one ID read to it
-// as one node.
+// ID was documented "unique per node".  (*LVal).Copy could not honour that
+// while it carried the record across: it takes no *Runtime, so it had no
+// counter to draw a fresh value from, and two nodes carrying one ID read to
+// lisp/x/debugger's stepper (which steps on `loc.MacroID != s.start.MacroID`)
+// as one node.  The decision then was to keep duplicating and say so
+// (this test was TestCopyDuplicatesTheMacroExpansionID).  The decision now
+// is that a copy carries NO record -- the record's shared context points at
+// the tree the copy came from, and Fork and detach already drop it -- so the
+// field comment's "unique per stamped node" is true again and the stepper
+// hazard has no path.
 //
-// GUARD: passes before the fix.  It is here so that a later change which
-// starts renumbering copies fails against a stated decision instead of
-// quietly contradicting the field comment.
-func TestCopyDuplicatesTheMacroExpansionID(t *testing.T) {
+// GUARD: a later change that starts carrying the record across, renumbered
+// or not, fails here against a stated decision instead of quietly
+// contradicting the field comment.
+func TestCopyCarriesNoMacroExpansionID(t *testing.T) {
 	ctx := &macroExpansionContext{Name: "lisp:defun"}
 	orig := newExpansionNode(7, ctx)
 	cp := orig.Copy()
-	require.NotNil(t, cp.macroExpansion)
-	assert.Equal(t, int64(7), cp.macroExpansion.ID,
-		"a copy no longer carries the expansion ID of the node it came from;"+
-			" if that is intended, MacroExpansionInfo.ID's comment needs updating with it")
+	assert.Nil(t, cp.macroExpansion,
+		"a copy carries an expansion record (and so an ID); Copy drops it (lisp/copier.go)."+
+			" If that is intended to change, MacroExpansionInfo.ID's comment and this decision go with it")
+	assert.Equal(t, int64(7), orig.macroExpansion.ID, "copying changed the original's expansion ID")
 }
 
 // TestCopyPreservesNilMacroExpansion pins the nil case, which is every node in

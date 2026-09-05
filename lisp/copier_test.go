@@ -300,3 +300,93 @@ func TestCopyMemoSpillsPastTheInlineArray(t *testing.T) {
 		t.Errorf("the cycle closes onto %p, want the copy %p", cp.Cells[62], cp)
 	}
 }
+
+// The dormant debugger the fixture needs is lisp_test's existing one
+// (macro_stamp_shared_ast_test.go): attached but never enabled, which is
+// what gates macro-expansion metadata (lisp/env.go keys on
+// Runtime.Debugger != nil, not on IsEnabled).
+
+// copierReachable walks everything reachable from v through cells and
+// sorted-map values, once per header.
+func copierReachable(v *lisp.LVal, seen map[*lisp.LVal]bool) {
+	if v == nil || seen[v] {
+		return
+	}
+	seen[v] = true
+	for _, c := range v.Cells {
+		copierReachable(c, seen)
+	}
+	if v.Type == lisp.LSortMap && v.Map() != nil {
+		for _, k := range v.Map().Keys().Cells {
+			val, _ := v.Map().Get(k)
+			copierReachable(val, seen)
+		}
+	}
+}
+
+// TestCopyDropsMacroExpansionMetadata: a copied tree carries no
+// macro-expansion metadata, and therefore no pointer through that
+// metadata into the tree it was copied from.  The fixture is
+// elpstest/aliasguard_macroexpansion_test.go's: a call form built at
+// RUNTIME (so its nodes are unsealed), expanded by a BUILTIN macro (only
+// synthetic nodes are stamped) under an attached debugger, and RETAINED by
+// macroexpand-1.  Anti-vacuity first: the source must carry metadata whose
+// recorded args include an unsealed source node, or the property has
+// nothing to look at.  Then two assertions, the second walker-independent:
+// no node reachable from the copy reports MacroExpansion(), and no *LVal
+// reachable from the copy's metadata args is in the source's reachable
+// set.  Before lisp/copier.go, Copy carried the record across and the
+// second assertion failed on the unsealed args.
+func TestCopyDropsMacroExpansionMetadata(t *testing.T) {
+	t.Parallel()
+	env := copierEnv(t)
+	env.Runtime.Debugger = dormantDebugger{}
+	copierEval(t, env, `
+(set 'form (list 'defun 'leaky (list 'x) 'x))
+(set 'expansion (macroexpand-1 form))
+`)
+	src := env.GetGlobal(lisp.Symbol("expansion"))
+	if src.Type == lisp.LError {
+		t.Fatal(src)
+	}
+	srcSet := map[*lisp.LVal]bool{}
+	copierReachable(src, srcSet)
+	copierReachable(env.GetGlobal(lisp.Symbol("form")), srcSet)
+	meta, unsealed := 0, 0
+	for v := range srcSet {
+		m, ok := v.MacroExpansion()
+		if !ok {
+			continue
+		}
+		meta++
+		for _, a := range m.Args {
+			if a != nil && !a.IsSealed() && srcSet[a] {
+				unsealed++
+			}
+		}
+	}
+	if meta == 0 || unsealed == 0 {
+		t.Fatalf("the source carries %d node(s) with metadata and %d unsealed recorded arg(s) in its own tree;\n"+
+			"the fixture no longer builds what this test is about (see the comment)", meta, unsealed)
+	}
+
+	cp := src.Copy()
+	if cp.Type == lisp.LError {
+		t.Fatal(cp)
+	}
+	cpSet := map[*lisp.LVal]bool{}
+	copierReachable(cp, cpSet)
+	for v := range cpSet {
+		m, ok := v.MacroExpansion()
+		if !ok {
+			continue
+		}
+		t.Errorf("a copied node carries macro-expansion metadata (%s); Copy drops it as Fork and detach do", m.Name)
+		for _, a := range m.Args {
+			if srcSet[a] {
+				t.Errorf("the copy's metadata records a node of the SOURCE tree (sealed=%t): a private tree with a\n"+
+					"back-pointer into the tree it was copied from", a.IsSealed())
+			}
+		}
+	}
+}
