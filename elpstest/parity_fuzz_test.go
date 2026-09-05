@@ -54,19 +54,6 @@ func FuzzForkParity(f *testing.F) {
 		if g.program == "" {
 			return
 		}
-		if viewSortGapShape(g) {
-			// THE PINNED KNOWN FAILURE.  A view over a sequence (cdr, rest,
-			// slice) shares its backing array with its source; Fork copies
-			// each header's cells separately, so an in-place sort of the
-			// source reorders the view on a cold environment and not on a
-			// fork.  Red on commit 74e4ac8, and the fix has not landed, so
-			// every generated input that sorts is skipped here -- NARROWLY:
-			// TestForkParity_SkipIsNarrow pins that no other seed matches
-			// this predicate, and TestForkParity_ViewSortGapStillOpen runs
-			// the seed WITHOUT the skip and fails the day the gap closes,
-			// which is the signal to delete this branch and the predicate.
-			t.Skipf("known parity gap (view + in-place sort), pinned by TestForkParity_ViewSortGapStillOpen; delete this skip when that test fails")
-		}
 		got, err := elpstest.CheckParity(g.check())
 		if err != nil {
 			// The only error CheckParity returns once it has sequences is a
@@ -270,37 +257,22 @@ func generateObservation(s *script, kinds []varKind, seqs []paritySeq) string {
 	}
 }
 
-// viewSortGapShape reports whether a generated schedule sorts a sequence
-// in place: the shape of the pinned known failure
-// (TestForkParity_ViewSortGapStillOpen).  It is deliberately no narrower
-// than "sorts": a view can also be taken INSIDE a transaction, or exist as
-// a quasiquote header, so gating on the template alone would still let the
-// fuzzer rediscover the pinned gap on every run.
-func viewSortGapShape(g parityGraph) bool {
-	for _, seq := range g.tx {
-		for _, tx := range seq {
-			if strings.Contains(tx, "stable-sort") {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // paritySeeds are the committed corpus.  The corpus cannot grow from a
 // branch (see aliasGuardSeeds), so the shapes that matter are seeded, and
 // TestParitySeedsCoverTheShapes asserts they still generate what their
 // comments claim.
 var paritySeeds = [][]byte{
-	// THE PINNED KNOWN FAILURE (viewSortGapSeed below): one list, one cdr
-	// view, one environment whose only transaction sorts the source in
-	// place and observes the view.  Cold: '(20 30).  Fork: '(10 20).
+	// THE CLOSED GAP, kept as a permanent negative control (viewSortGapSeed
+	// below): one list, one cdr view, one environment whose only
+	// transaction sorts the source in place and observes the view.
 	viewSortGapSeed,
 	// FuzzAliasGuard's seeds, so its historical shapes run under parity
 	// too: the base graph a script produces is the same here, because the
 	// base generator reads its bytes first.  The second is padded with
-	// zeros because, unpadded, this generator's wrapped reads land on a
-	// sort and the seed would fall under the pinned skip.
+	// zeros -- unpadded, this generator's wrapped reads land on a sort,
+	// which while the view+sort gap was open fell under a skip; the
+	// padding is kept so the seed still generates the shape its row in
+	// TestParitySeedsCoverTheShapes was written for.
 	{1, 0, 4, 0, 0, 1},
 	{1, 1, 0, 4, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 	{0, 6, 0, 1, 0, 0},
@@ -319,7 +291,22 @@ var paritySeeds = [][]byte{
 	{0},
 }
 
-// viewSortGapSeed generates, byte by byte (the base graph reads first):
+// viewSortGapSeed is the permanent negative control, living here, for
+// PR #602's fix (lisp commit b9153c3, "Preserve cell-view slot aliasing
+// across Fork"): a template holding a list and a cdr view of it, forked,
+// then the list sorted in place through the fork and the view observed.
+// Before #602, Fork gave each header its own cells array, so the view did
+// not follow the sort: cold '(20 30), fork '(10 20) -- measured red on
+// commit 74e4ac8 and pinned then as a known failure
+// (TestForkParity_ViewSortGapStillOpen, since deleted).  #602 records the
+// view where it is made and Fork rebuilds it over its copy of the root
+// (the convention on cellsView in lisp/lisp.go), so the seed now PASSES
+// under TestForkParity_KnownShapes and FuzzForkParity, with no skip: if
+// the per-header array ever comes back, this seed is the first thing to
+// go red on this branch.  Closed by the restack of this branch onto #602
+// ("Close the view+sort parity gap: #602 landed").
+//
+// It generates, byte by byte (the base graph reads first):
 //
 //	0       one base binding
 //	7 5     of the default kind: (set 'v0 5)
@@ -401,68 +388,15 @@ func TestParityGapSeedIsWhatItsCommentSays(t *testing.T) {
 	}
 }
 
-// TestForkParity_ViewSortGapStillOpen is the positive control and the
-// reminder.  It runs the pinned seed through CheckParity WITHOUT the skip
-// FuzzForkParity applies, and requires BOTH witnesses the gap produces: the
-// transaction's result ('(20 30) cold, '(10 20) fork) and the post-run
-// state of w0.  Measured red on commit 74e4ac8.
-//
-// When Fork learns to preserve backing-array sharing this test FAILS -- on
-// purpose.  That is the signal to delete it, the viewSortGapShape skip in
-// FuzzForkParity, and TestForkParity_SkipIsNarrow, and to move
-// viewSortGapSeed into the ordinary green corpus.
-func TestForkParity_ViewSortGapStillOpen(t *testing.T) {
-	t.Parallel()
-	g := generateParity(viewSortGapSeed)
-	got, err := elpstest.CheckParity(g.check())
-	if err != nil {
-		t.Fatalf("harness error: %v", err)
-	}
-	resultWitness, stateWitness := false, false
-	for _, w := range got {
-		t.Logf("%s", w)
-		switch {
-		case strings.Contains(w.Property, "returns what it returns"):
-			resultWitness = resultWitness || strings.Contains(w.Detail, "cold: list list[20 30]") && strings.Contains(w.Detail, "fork: list list[10 20]")
-		case strings.Contains(w.Property, "reachable state"):
-			stateWitness = stateWitness || strings.Contains(w.Leak, "user:w0")
-		}
-	}
-	if resultWitness && stateWitness {
-		return
-	}
-	t.Fatalf("the pinned view+sort parity gap no longer reproduces (result witness: %t, state witness at user:w0: %t).\n"+
-		"If Fork now preserves backing-array sharing, that is the fix landing: delete this test, the\n"+
-		"viewSortGapShape skip in FuzzForkParity and TestForkParity_SkipIsNarrow, and keep viewSortGapSeed\n"+
-		"as an ordinary seed.  If Fork did not change, the parity oracle has been weakened.",
-		resultWitness, stateWitness)
-}
-
-// TestForkParity_SkipIsNarrow pins the skip to the one seed it is for: the
-// pinned gap matches the predicate and NO other committed seed does, so
-// the fuzz target's skip cannot quietly widen into "skip everything".
-func TestForkParity_SkipIsNarrow(t *testing.T) {
-	t.Parallel()
-	for i, seed := range paritySeeds {
-		g := generateParity(seed)
-		if g.program == "" {
-			continue
-		}
-		isGap := string(seed) == string(viewSortGapSeed)
-		if got := viewSortGapShape(g); got != isGap {
-			t.Errorf("seed %d %v: viewSortGapShape=%t, want %t\n%s", i, seed, got, isGap, g.repro())
-		}
-	}
-}
-
-// TestForkParity_KnownShapes runs every committed seed except the pinned
-// gap as a plain test, so parity over the corpus is checked on every PR
-// rather than only when the fuzz sweep runs.
+// TestForkParity_KnownShapes runs every committed seed -- viewSortGapSeed
+// included, as the control it now is -- as a plain test, so parity over
+// the corpus is checked on every PR rather than only when the fuzz sweep
+// runs.
 func TestForkParity_KnownShapes(t *testing.T) {
 	t.Parallel()
 	for i, seed := range paritySeeds {
 		g := generateParity(seed)
-		if g.program == "" || viewSortGapShape(g) {
+		if g.program == "" {
 			continue
 		}
 		t.Run(fmt.Sprintf("seed%d", i), func(t *testing.T) {

@@ -41,13 +41,15 @@ import (
 // whose identity is not a payload pointer.  Two list headers over ONE
 // backing array -- `(set 'tail (cdr l))` is a view that shares its elements
 // with l (docs/func.md, "Slices are views, not copies") -- have no shared
-// pointer the fingerprint can key on: it memoises on the *LVal, and each
-// header gets its own cells copy in the fork.  Sorting l in place then
-// reorders tail's elements on a cold environment and not on a fork.  That
-// is TestForkParity_ViewSortGapStillOpen, measured red on commit 74e4ac8,
-// and it is invisible to every fingerprint comparison because the
-// fingerprints of the cold and forked graphs are equal BEFORE the sort.
-// Only running the program tells them apart.
+// pointer the fingerprint can key on: it memoises on the *LVal.  Until PR
+// #602 each header got its own cells copy in the fork, so sorting l in
+// place reordered tail's elements on a cold environment and not on a fork
+// -- measured red on commit 74e4ac8, and invisible to every fingerprint
+// comparison because the fingerprints of the cold and forked graphs are
+// equal BEFORE the sort.  Only running the program tells them apart, and
+// only this oracle runs it.  #602 (lisp commit b9153c3) closed the gap by
+// recording the view where it is made; viewSortGapSeed in
+// parity_fuzz_test.go is the control that keeps it closed.
 //
 // What is compared, and how.  A result is rendered by renderResult (type,
 // value and captured environment, error text normalised of environment
