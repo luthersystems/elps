@@ -1,0 +1,15 @@
+diff --git a/lisp/copier.go b/lisp/copier.go
+index 78789f2..a77ed14 100644
+--- a/lisp/copier.go
++++ b/lisp/copier.go
+@@ -324,8 +324,8 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
+ 	if md == nil {
+ 		return nil, nil
+ 	}
+-	if cp, ok := c.maps[md]; ok {
+-		return cp, nil
++	if _, ok := c.maps[md]; ok { //nolint // mutation: #604 map memo disabled
++		_ = ok
+ 	}
+ 	if c.maps == nil {
+ 		c.maps = make(map[*MapData]*MapData)

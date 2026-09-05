@@ -118,6 +118,26 @@ PKG=./elpstest/
 #    ordering and parallelism under load, and only the end-to-end run
 #    reproduces that. Measure candidate needles with the full script, many
 #    times, not by driving one mutation in a loop.
+#  - 604-copier-map-memo and 604-copier-bytes-shared are the (*LVal).Copy
+#    walker (lisp/copier.go), which the guard could not see at all until it
+#    became the fifth row of elpstest.Walkers() -- these rows exist BECAUSE
+#    it is registered, and they go NOT PROVEN the day it is deregistered,
+#    which is the point. Both needles carry the WALKER PREFIX, as 585's does:
+#    "the copy has the same mutable payloads as the source" is 585's needle
+#    too, so the map-memo row asserts the copier's OWN emission and carries
+#    Detach's as a must-NOT (the copier's memo cannot touch the detacher).
+#    The bytes row pins a property no other row pins: sharing the source's
+#    *[]byte changes neither the fingerprint (per-graph ordinals) nor the
+#    site count, so the only channel that sees it is the probe write moving
+#    the OTHER side -- "a write on one side is invisible on the other".
+#    Each row carries the other's needle as a must-NOT: a de-aliased map
+#    over-copies and cannot trip the over-sharing property, and a shared
+#    buffer keeps the site count and cannot trip the payload-count one.
+#    Measured on one targeted run each (FuzzAliasGuard seeds +
+#    TestAliasGuardOverEveryWalker + TestAliasGuardSelfReferentialMap +
+#    TestNoLiveWalkerOverAliasesEqualBuffers): map-memo 4/0, bytes 10/0,
+#    zero of every other row's needle -- a targeted measurement, so CI's
+#    end-to-end run is the one that certifies it (see template-share).
 #  - 579 is the libschema validator credential (6ef3da5), NOT a fork memo. An
 #    earlier revision of this file shipped a patch that moved a memo seed in
 #    forker's stock-map path and labelled it #579; that line's own production
@@ -133,7 +153,9 @@ MANIFEST=$(cat <<'EOF'
 578-f1-live-defining-loc;a budget error at a function-body entry reports the definition site;no macro-expansion metadata on a fresh fork reaches a template value
 582-macro-stamp-in-place;expansion mutates nothing reachable outside its own output;no macro-expansion metadata on a fresh fork reaches a template value
 template-share;a transaction on the template is invisible to every existing fork;no macro-expansion metadata on a fresh fork reaches a template value
-600-fork-keeps-macroexpansion;no macro-expansion metadata on a fresh fork reaches a template value;a fresh fork is indistinguishable from its template
+600-fork-keeps-macroexpansion;no macro-expansion metadata on a fresh fork reaches a template value;a fresh fork is indistinguishable from its template|LVal.Copy: the copy has the same mutable payloads as the source|LVal.Copy: a write on one side is invisible on the other
+604-copier-map-memo;LVal.Copy: the copy has the same mutable payloads as the source;LVal.Copy: a write on one side is invisible on the other|Detach: the copy has the same mutable payloads as the source|a fresh fork is indistinguishable from its template|no macro-expansion metadata on a fresh fork reaches a template value
+604-copier-bytes-shared;LVal.Copy: a write on one side is invisible on the other;LVal.Copy: the copy has the same mutable payloads as the source|a fresh fork is indistinguishable from its template|no macro-expansion metadata on a fresh fork reaches a template value
 EOF
 )
 
@@ -220,4 +242,4 @@ done <<<"$MANIFEST"
 
 echo
 [ $fail = 0 ] || die "at least one mutation was not proven -- see above."
-echo "mutation-proof: every mutation caught by its named needle (8 property strings, 1 test -- see 579 in the manifest notes)."
+echo "mutation-proof: every mutation caught by its named needle (10 property strings, 1 test -- see 579 in the manifest notes)."
