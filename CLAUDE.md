@@ -122,7 +122,62 @@ Functions return `*LVal`. Errors are LVal values with type `LError`. Check with 
 - **`analysis/`** — Semantic analysis: scope building, symbol resolution, reference counting. `prescan()` uses a two-phase approach (definitions first, exports second) so `(export 'name)` before `(defun name ...)` works correctly.
 - **`lint/`** — Static analysis modeled after `go vet`. Each check is an `Analyzer` with a `Run func(pass *Pass) error`. Uses `Walk()`/`WalkSExprs()` for AST traversal, plus custom walkers for context-sensitive checks.
 - **`diagnostic/`** — Rust-style annotated source snippets for error and lint output. Zero dependencies on `lisp/`.
-- **`cmd/elpsvet/`** — Go static analyzers over elps's *own* Go source, enforcing invariants the compiler cannot: the freshness rule (writes rooted at `lisp.LVal` storage) and the slice-alias tracking that catches writes laundered through a local alias first (issues #369, #371).
+- **`cmd/elpsvet/`** — Go static analyzers over elps's *own* Go source, enforcing invariants the compiler cannot: the freshness rule (writes rooted at `lisp.LVal` storage), the slice-alias tracking that catches writes laundered through a local alias first (issues #369, #371), and the native-payload audit (see "Go static analysis over elps's own sources" below).
+
+## Go static analysis over elps's own sources
+
+`cmd/elpsvet` is a `golang.org/x/tools/go/analysis` harness over elps's own
+Go code: focused analyzers, an audited `//elpsvet:allow` suppression carrying
+a justification, and testdata-driven `analysistest` fixtures under
+`cmd/elpsvet/testdata/src`. CI runs it as `make elpsvet`, which is two passes
+of `go run ./cmd/elpsvet -test=false ./...` (the second under
+`GOFLAGS=-tags=elpscheck`, because elpsvet silently ignores `-tags`; see the
+Makefile comment). The package list is `./...`, so there is no hand-scoped
+list to drift away from where the code lives and no scope-drift check to
+maintain.
+
+Its fourth rule, `elpsnativepayload` (`cmd/elpsvet/nativepayload.go`), closes
+a class of bug the fork/isolation tests cannot see from the outside: `Fork`
+shares `lisp.LVal.Native` **by reference**, so a mutable native payload that
+reaches a template is state shared by every fork in the process, and the
+isolation oracle in `elpstest` only recognises a payload as stateful when its
+type declares `lisp.NativeCloner`. The rule is ported from the substrate
+repository's nativepayload analyzer and adapted to the module that defines
+the constructors.
+
+A native construction is any of these SPELLINGS, and the list is the first
+thing to check when the gate looks suspiciously quiet: `lisp.Native(x)`, the
+typed `lisp.NativeOf[T](x)` (inferred or explicitly instantiated — the latter
+wraps the callee in an `*ast.IndexExpr`, which `calleeFunc` unwraps), a
+`lisp.Value(x)` the compiler can see falling through to Native (a defined
+type over `[]byte` DOES fall through; the type switch matches the unnamed
+type only), a `lisp.LVal{Native: x}` literal, and a write to a `.Native`
+field. `NativeOf` needs its own arm even though it is *implemented* as a call
+to `Native`: a generic instantiation resolves to the generic `*types.Func`,
+whose name is never `Native`.
+
+A construction is reported unless the payload's static type has a basic
+underlying type (a value of which is immutable inside an interface —
+`unsafe.Pointer` excluded), declares `lisp.NativeCloner` (the kernel's clone
+protocol, checked structurally as an interface assertion would), is on the
+audited allowlist in `cmd/elpsvet/nativepayload.go` — the kernel's own
+representation slots (`*funData`, `*[]byte`, `*MapData`, `*CallStack`, each
+with an explicit fork/detach arm), `*regexp.Regexp`, `time.Time`, `error`,
+libschema's `*validatorTag`, libjson's `*ownMessage`, each row carrying its
+reason — or a `//elpsvet:allow <justification>` comment covers the line (or
+the enclosing function's doc). **A bare `//elpsvet:allow` with no
+justification does not suppress.** An interface-typed payload (or a type
+parameter) is REPORTED, not skipped: this module is where `interface{}`
+enters the system, so the constructors themselves (`Native`, `NativeOf`,
+`Value`'s fallthrough), the fork and detach walkers' policy application, the
+error-condition data arm and libgolang's reflected field projection each
+carry an allow naming the contract. A NEW payload type fails until a human
+classifies it; that is the point, not an oversight.
+
+`cmd/elpsvet/nativepayload_test.go` pins the allowlist's shape: every row in
+`allowedPayloadTypes` must appear in the test's audited inventory with a
+justification long enough to read, so adding a row is a two-file change a
+reviewer sees.
 
 ## Development Workflow
 

@@ -573,7 +573,7 @@ tool and silently missed by another.
 
 ### 3.1 elpsvet (static; `cmd/elpsvet`)
 
-Three `go/analysis` rules, run as `go run ./cmd/elpsvet -test=false ./...`:
+Four `go/analysis` rules, run as `go run ./cmd/elpsvet -test=false ./...`:
 
 - **elpsownership** (`main.go`): no package-level var may keep a
   `*lisp.LVal` reachable — the process-wide-shared-table producer pattern
@@ -610,6 +610,18 @@ Three `go/analysis` rules, run as `go run ./cmd/elpsvet -test=false ./...`:
   keeps the conservative treatment, so the fact can only ever retire a
   proven false positive. Suppression: `//elps:aliases` with a
   justification.
+- **elpsnativepayload** (`nativepayload.go`): no native payload type may be
+  minted without being classified as fork-safe. `Fork` shares `LVal.Native`
+  by reference, and the isolation oracle only recognises a payload as
+  stateful when its type declares `NativeCloner`, so a mutable payload type
+  without one is a leak the dynamic checks cannot see. Every construction
+  spelling (`Native`, `NativeOf`, `Value`'s fallthrough, an `LVal{Native:}`
+  literal, a `.Native` write) is reported unless the payload has a basic
+  underlying type, declares `NativeCloner`, is on the audited allowlist, or
+  a justified `//elpsvet:allow` covers it; interface-typed payloads are
+  reported too, so the constructors themselves carry the contract. Ported
+  from the substrate repository's nativepayload analyzer. Suppression:
+  `//elpsvet:allow` with a justification — a bare marker does not suppress.
 
 *Blind spots (documented in the analyzers' own headers):* intraprocedural
 within a function body — the escape rule's location-freshness fact is the
