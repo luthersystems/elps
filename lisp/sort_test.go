@@ -110,6 +110,36 @@ func TestSortComparatorArgumentsAreTheElements(t *testing.T) {
 			{`(key? m1 'keyed)`, `true`, ""},
 			{`(key? m2 'keyed)`, `true`, ""},
 		}},
+		// The corollary: an element that is a sealed program literal is
+		// handed over sealed, so a predicate or key function that writes
+		// to it raises modify-literal-error and the sort aborts -- the
+		// #378 policy (an error, not a silent write, and not a silent
+		// copy).  The per-comparison copy cleared the seal, so on the
+		// previous code each of these sorted silently, the write landing
+		// on a throwaway copy.  handler-bind names the condition without
+		// depending on the error's column.
+		{"stable-sort predicate writing to a literal element", elpstest.TestSequence{
+			{`(set 'xs (list '(2 1) '(1 0)))`, `'('(2 1) '(1 0))`, ""},
+			{`(handler-bind ([modify-literal-error (lambda (c &rest args) 'caught)])
+				(stable-sort (lambda (a b) (stable-sort < a) (< (first a) (first b))) xs))`, `'caught`, ""},
+			// The literals are as written and the list is unsorted: the
+			// call aborted at the first comparison.
+			{`xs`, `'('(2 1) '(1 0))`, ""},
+			// A predicate that only reads the literal elements sorts them.
+			{`(stable-sort (lambda (a b) (< (first a) (first b))) xs)`, `'('(1 0) '(2 1))`, ""},
+		}},
+		{"stable-sort key function writing to a literal element", elpstest.TestSequence{
+			{`(set 'xs (list '(2 1) '(1 0)))`, `'('(2 1) '(1 0))`, ""},
+			{`(handler-bind ([modify-literal-error (lambda (c &rest args) 'caught)])
+				(stable-sort < xs (lambda (a) (stable-sort < a) (first a))))`, `'caught`, ""},
+			{`xs`, `'('(2 1) '(1 0))`, ""},
+		}},
+		{"insert-sorted predicate writing to a literal item", elpstest.TestSequence{
+			{`(set 'xs (list (list 1 0)))`, `'('(1 0))`, ""},
+			{`(handler-bind ([modify-literal-error (lambda (c &rest args) 'caught)])
+				(insert-sorted 'list xs (lambda (a b) (stable-sort < a) (stable-sort < b) (< (first a) (first b))) '(2 1)))`, `'caught`, ""},
+			{`xs`, `'('(1 0))`, ""},
+		}},
 	}
 	elpstest.RunTestSuite(t, tests)
 }

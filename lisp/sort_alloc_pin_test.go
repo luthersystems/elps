@@ -16,9 +16,10 @@ import "testing"
 
 // TestStableSortAllocationCount pins stable-sort's per-call allocation
 // count on an already sorted eight-element list of maps, in the style of
-// TestVectorBuiltinAllocations: AllocsPerRun's first call sorts the list,
-// and the measured calls insertion-sort a sorted list with a fixed seven
-// comparisons, each an evaluated (less-k? a b) form.
+// TestVectorBuiltinAllocations: the list is sorted once, explicitly, before
+// the measurement (the anti-vacuity below), so every measured call
+// insertion-sorts a sorted list with a fixed seven comparisons, each an
+// evaluated (less-k? a b) form.
 func TestStableSortAllocationCount(t *testing.T) {
 	env, lessK, key := stableSortAllocFixture(t)
 	list := stableSortAllocMaps(key, 1)

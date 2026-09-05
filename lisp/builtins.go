@@ -1632,13 +1632,17 @@ func (s *lvalByFun) Less(i, j int) bool {
 	// as map, foldl, select and every other higher-order builtin hand
 	// theirs over.  This site used to Copy a and b on every comparison
 	// (since the initial import, with no contract behind it), which became
-	// a deep walk of each element once Copy rebuilt map values (#604) --
-	// and the copy never isolated the list anyway: a predicate writing
-	// through a map-valued element reached the source.  A predicate or key
-	// function that mutates or retains its argument now sees the element
-	// itself; TestSortComparatorArgumentsAreTheElements pins that.  The
-	// call is still an evaluated S-expression rather than a FunCall so an
-	// element that is an unquoted symbol is evaluated exactly as before.
+	// a deep walk of each element once Copy rebuilt map values (#604).  The
+	// copy was never a complete isolation either: it gave the predicate a
+	// private list or map structure, but map values and bytes were shared,
+	// so a predicate writing through a map-valued element reached the
+	// source.  A predicate or key function that mutates or retains its
+	// argument now sees the element itself -- and a write to an element
+	// that is a sealed program literal raises modify-literal-error where
+	// the copy used to absorb it silently (the #378 policy);
+	// TestSortComparatorArgumentsAreTheElements pins both.  The call is
+	// still an evaluated S-expression rather than a FunCall so an element
+	// that is an unquoted symbol is evaluated exactly as before.
 	var expr *LVal
 	if s.keyfun == nil {
 		expr = SExpr([]*LVal{s.fun, a, b})

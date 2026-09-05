@@ -616,8 +616,12 @@ Mutates the list in-place.
 The predicate and the key function receive the list's own elements, as the
 function passed to `map`, `foldl` or `select` does: a predicate that writes
 through its argument (`assoc!`, `append!`, `aset`) writes to the element in
-the list, and one that retains its argument retains the element.  The same
-holds for `insert-sorted`.
+the list — or raises `modify-literal-error` if that element is a program
+literal (`(list '(2 1) '(1 0))` holds two literals), for the same reason
+sorting a literal raises rather than silently sorting a copy (issue #378: a
+silent copy masks code that believed it owned the value) — and one that
+retains its argument retains the element.  The same holds for
+`insert-sorted`.
 
 Two consequences of "in-place" are worth stating outright, because neither is
 visible at the call site:
@@ -625,27 +629,26 @@ visible at the call site:
 - Sorting a **slice, `cdr` or `rest` view** sorts that region of the source
   too, since a view shares its elements — see
   [Slices are views, not copies](#slices-are-views-not-copies).
-- Sorting a **quoted literal** rewrites the program's own text, and it stays
-  rewritten for the life of the process:
+- Sorting a **quoted literal** is refused with the catchable
+  `modify-literal-error` condition, because sorting it in place would rewrite
+  the program's own text for the life of the process (issue #378):
 
   ```Lisp
   elps> (defun probe () (let ([lit '(3 1 2)]) (stable-sort < lit) lit))
   ()
   elps> (probe)
-  '(1 2 3)
-  elps> (probe)  ; the literal in the function body is now sorted
-  '(1 2 3)
+  stdin:1:39: modify-literal-error: cannot modify a program literal; take a (copy ...) first
   ```
 
-Sort a copy — `(stable-sort < (concat 'list lit))` — whenever the argument is a
-literal or a view you do not own.
+Sort a copy — `(stable-sort < (copy lit))` or `(stable-sort < (concat 'list
+lit))` — whenever the argument is a literal or a view you do not own.
 
 ```
-elps> (set 'test '(1 2 3))
+elps> (set 'test (list 1 2 3))
 '(1 2 3)
 elps> (stable-sort > test)
 '(3 2 1)
-elps> (set 'test '("C" "B" "A"))
+elps> (set 'test (list "C" "B" "A"))
 '("C" "B" "A")
 elps> (set 'lookup (sorted-map "A" 9 "B" 7 "C" 8))
 (sorted-map "A" 9 "B" 7 "C" 8)
