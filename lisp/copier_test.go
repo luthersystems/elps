@@ -110,19 +110,23 @@ const copierProgram = `
 (set 'probe (list a b buf buf2 (sorted-map "inner" a "raw" buf)))
 `
 
-// copierWalker is (*LVal).Copy as the alias guard sees a walker: a value
-// copier that shares closures (no Refusal), rebuilds every container, and
-// memoises what lisp/walkers.go says the copier memoises.
+// copierWalkerName is the registry name of (*LVal).Copy in
+// elpstest.Walkers().
+const copierWalkerName = "LVal.Copy"
+
+// copierWalker is (*LVal).Copy as the alias guard sees a walker: the
+// registered row, selected by name, so there is exactly one description of
+// the walker's contract (elpstest/aliasguard.go) and the fixed-fixture pin
+// below cannot drift from what the fuzzer and the registry-driven checks
+// drive.  A missing row is a hard failure: an empty Walker would make every
+// check on it vacuous.
 func copierWalker() elpstest.Walker {
-	return elpstest.Walker{
-		Name:     "LVal.Copy",
-		Kind:     elpstest.WalkerCopy,
-		Copy:     func(_ *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) { return v.Copy(), nil },
-		Closures: elpstest.ClosuresRefused,
-		Backing:  elpstest.BackingRebuilt,
-		Memoises: lisp.WalkerMemoKinds("copier"),
-		Doc:      "lisp/copier.go",
+	for _, w := range elpstest.Walkers() {
+		if w.Name == copierWalkerName {
+			return w
+		}
 	}
+	panic("elpstest.Walkers() has no " + copierWalkerName + " row: (*LVal).Copy is no longer a registered walker")
 }
 
 // TestCopyMeetsTheAliasGuard drives (*LVal).Copy through CheckWalker: same
