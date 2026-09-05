@@ -206,17 +206,22 @@ func renderWitnesses(w []Witness) string {
 //
 //	Fork          DROPS the metadata (lisp/fork.go, cp.macroExpansion = nil)
 //	detach        DROPS it (lisp/detach.go)
-//	(*LVal).Copy  COPIES it -- a private tree whose metadata still records
-//	              the SOURCE tree's nodes
+//	(*LVal).Copy  DROPS it (#604, lisp/copier.go) -- it used to COPY it, a
+//	              private tree whose metadata still recorded the SOURCE
+//	              tree's nodes
 //
-// Copy's behaviour is the same shape as the Fork leak this file's first
-// test is about, and it matters most on the TextLoader path, whose whole
-// purpose is to hand each evaluation a PRIVATE tree. Whether it is a
-// HARM there depends on whether the recorded args are sealed: sealed
-// nodes are immutable and shared by design, unsealed ones are not. This
-// test asserts the behaviour and reports the seal state rather than
-// asserting a verdict, because the verdict belongs to whoever changes
-// Copy -- and the numbers are in the log either way.
+// Copy's old behaviour was the same shape as the Fork leak this file's
+// first test is about, and it mattered most on the TextLoader path, whose
+// whole purpose is to hand each evaluation a PRIVATE tree.  This test was
+// written to assert that behaviour and REPORT the seal state of the
+// recorded args rather than give a verdict, because the verdict belonged
+// to whoever changed Copy.  The measurement it made -- 1 of 3 recorded
+// args NOT sealed, a pointer into a mutable source node -- is the verdict:
+// #604 makes Copy drop the record like the other two walkers, and
+// TestCopyDropsMacroExpansionMetadata (lisp/copier_test.go) is the
+// control on Copy's side.  The Copy arm here now asserts the drop, and
+// the anti-vacuity moves onto the SOURCE: the fixture must still record
+// an unsealed arg, or the drop is asserted over nothing.
 func TestMacroExpansionBehaviourPerWalker(t *testing.T) {
 	t.Parallel()
 	env, err := debuggedEnv()
@@ -235,10 +240,13 @@ func TestMacroExpansionBehaviourPerWalker(t *testing.T) {
 			"is testing anything. See runtimeBuiltExpansion for what the fixture needs.")
 	}
 
-	if _, ok := src.Copy().MacroExpansion(); !ok {
-		t.Error("(*LVal).Copy no longer carries macro-expansion metadata across.\n" +
-			"If that is the intended change, the walker-contract table's macroExpansion row for Copy\n" +
-			"says COPIES and is now wrong.")
+	if m, ok := src.Copy().MacroExpansion(); ok {
+		t.Errorf("(*LVal).Copy carries macro-expansion metadata across again (%s, %d recorded args).\n"+
+			"#604 made Copy drop it, as Fork and detach do: the record's shared context points at the\n"+
+			"SOURCE tree's nodes, so a copy that keeps it is a private tree with a back-pointer into\n"+
+			"the tree it was copied from. TestCopyDropsMacroExpansionMetadata (lisp/copier_test.go) is\n"+
+			"the control; if this is intended, the walker-contract table's macroExpansion row for Copy\n"+
+			"(FingerprintOptions.MacroExpansion) says DROPS and is now wrong.", m.Name, len(m.Args))
 	}
 	// detach REFUSES a tree containing a function value, and the expansion
 	// of a `defun` contains one -- so the detach arm uses the smallest
@@ -274,10 +282,12 @@ func TestMacroExpansionBehaviourPerWalker(t *testing.T) {
 		}
 	}
 
-	// The seal state of what Copy carries across, reported rather than
-	// asserted: it is the input to the question of whether Copy's
-	// behaviour is a harm on the TextLoader path.
-	m, _ := src.Copy().MacroExpansion()
+	// The seal state of what the SOURCE records: the input to the question
+	// this test used to leave open (whether Copy carrying the record was a
+	// harm on the TextLoader path).  It stays as the anti-vacuity for the
+	// Copy arm above: a fixture recording only sealed args would make the
+	// drop an assertion over nothing worth dropping.
+	m, _ := src.MacroExpansion()
 	sealed, unsealed := 0, 0
 	for _, a := range m.Args {
 		if a == nil {
@@ -289,7 +299,12 @@ func TestMacroExpansionBehaviourPerWalker(t *testing.T) {
 			unsealed++
 		}
 	}
-	t.Logf("(*LVal).Copy carries %d recorded args across: %d sealed, %d NOT sealed", len(m.Args), sealed, unsealed)
+	t.Logf("the source records %d args: %d sealed, %d NOT sealed; (*LVal).Copy carries none across (#604)", len(m.Args), sealed, unsealed)
+	if unsealed == 0 {
+		t.Fatal("the source's recorded args are all sealed, which are immutable and shared by design;\n" +
+			"the fixture no longer records a mutable node, so the Copy arm asserts a drop of nothing\n" +
+			"that could leak. See runtimeBuiltExpansion.")
+	}
 
 	// And the fingerprint option exists so the difference is visible at
 	// all: with it off, a copy that dropped the metadata is
