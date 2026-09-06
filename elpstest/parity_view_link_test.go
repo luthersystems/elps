@@ -84,7 +84,7 @@ func TestForkParity_ViewLinkIsInvisibleToTheOracle(t *testing.T) {
 	}
 
 	// The comparator: byte-identical post-load state.
-	cfp, ffp := parityFingerprint(cold), parityFingerprint(fork)
+	cfp, ffp := parityFingerprint(ParityCheck{}, cold), parityFingerprint(ParityCheck{}, fork)
 	if !cfp.Equal(ffp) {
 		t.Fatalf("a view at load scope fingerprints differently cold vs forked:\n%s", cfp.Diff(ffp))
 	}

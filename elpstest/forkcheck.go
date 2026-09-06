@@ -50,8 +50,9 @@ import (
 // because the oracles cannot see inside it: a native payload's contents
 // (rendered by Go type only, so a stateful native that is not a
 // NativeCloner is compared by the header that holds it, not by what it
-// holds), and package metadata outside the symbol table (exports,
-// docstrings, the function-name index).
+// holds -- ParityCheck.RenderNative is the opt-in that changes that), and
+// package metadata outside the symbol table (exports, docstrings, the
+// function-name index).
 type ForkCheck struct {
 	// NewEnv builds an environment with whatever library the program needs
 	// loaded and the user package selected.  It is called once for the
@@ -210,13 +211,26 @@ func RunForkCheck(t testing.TB, c ForkCheck) {
 }
 
 // renderResult renders a transaction result for comparison: the value's
-// type and rendering, or the error text for an error.
+// type and rendering, or the error text for an error.  A native renders as
+// its Go type alone; renderResultWith is the form that can look inside one.
 func renderResult(v *lisp.LVal) string {
+	return renderResultWith(v, nil)
+}
+
+// renderResultWith is renderResult with a native renderer, which is nil
+// everywhere in this package.  A caller that supplies one
+// (ParityCheck.RenderNative) makes a native's CONTENTS part of the
+// comparison; without one, two results that differ only inside a native
+// compare EQUAL -- see FingerprintOptions.RenderNative for what that costs
+// and why the hook is opt-in rather than a default rendering nobody can
+// write correctly.
+func renderResultWith(v *lisp.LVal, renderNative func(any) string) string {
 	if v.Type == lisp.LError {
 		return "error: " + normalizeFunIDs(v.String())
 	}
 	var b strings.Builder
 	w := newStateWalker(&b)
+	w.renderNative = renderNative
 	w.value(v)
 	return v.Type.String() + " " + b.String()
 }
@@ -285,6 +299,9 @@ type stateWalker struct {
 	sb   *strings.Builder
 	seen map[*lisp.LVal]int
 	envs map[*lisp.LEnv]int
+	// renderNative renders a native payload's contents.  Nil means the
+	// historical behaviour: the Go type name and nothing else.
+	renderNative func(any) string
 }
 
 func newStateWalker(sb *strings.Builder) *stateWalker {
@@ -322,6 +339,9 @@ func (w *stateWalker) value(v *lisp.LVal) {
 		fmt.Fprintf(w.sb, "bytes(%q)", v.Bytes())
 	case lisp.LNative:
 		fmt.Fprintf(w.sb, "native(%T)", v.Native)
+		if w.renderNative != nil {
+			fmt.Fprintf(w.sb, "(%q)", w.renderNative(v.Native))
+		}
 	case lisp.LFun:
 		w.sb.WriteString(normalizeFunIDs(v.String()))
 		w.env(funraw.Env(v))

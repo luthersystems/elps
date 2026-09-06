@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/luthersystems/elps/elpstest"
+	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -315,5 +316,192 @@ func TestForkParity_DetectsARaiseAsymmetry(t *testing.T) {
 	}
 	if !raises || returns {
 		t.Fatalf("a fork that raises where the cold load returns: raise witness=%t, value witness=%t; want the raise property alone", raises, returns)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A transaction whose observation is a NATIVE.
+//
+// Parity is the backstop: it runs the program, so it sees divergences no
+// structural channel can.  It has one blind spot of its own, and it is the
+// shape an embedder meets first -- substrate reaches its own state through
+// native handles.  A native is rendered by its Go TYPE in the result
+// comparison (renderResult, forkcheck.go) and by type plus an identity
+// ordinal in the state fingerprint, so a transaction returning a handle
+// that holds 41 on the fork arm and 0 on the cold arm renders identically
+// on both and NOTHING fires.
+//
+// ParityCheck.RenderNative is the opt-in that closes it.  Both halves are
+// asserted below, because the first alone would pass on an oracle that had
+// simply become permissive and the second alone would not say what the
+// default costs.
+// ---------------------------------------------------------------------------
+
+// nativeLedger is an embedder payload two forks share, in the ordinary way:
+// it declares nothing, so Fork hands every fork the same one (docs/fork.md).
+type nativeLedger map[string]int
+
+// nativeHandle is what a transaction OBSERVES: a by-value snapshot of the
+// ledger, which is exactly the shape whose contents no channel compares.
+type nativeHandle struct{ n int }
+
+func nativeObservationEnv() (*lisp.LEnv, error) {
+	env, err := elpstest.NewForkCheckEnv()
+	if err != nil {
+		return nil, err
+	}
+	ledger := nativeLedger{"n": 0}
+	if rc := env.PutGlobal(lisp.Symbol("led"), lisp.Native(ledger)); rc.Type == lisp.LError {
+		return nil, lisp.GoError(rc)
+	}
+	env.AddBuiltins(true,
+		elpsutil.Function("ledger-set", lisp.Formals("l", "v"),
+			func(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+				if l, ok := args.Cells[0].Native.(nativeLedger); ok {
+					l["n"] = args.Cells[1].Int
+				}
+				return lisp.Nil()
+			}),
+		elpsutil.Function("ledger-peek", lisp.Formals("l"),
+			func(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+				l, _ := args.Cells[0].Native.(nativeLedger)
+				return lisp.Native(nativeHandle{n: l["n"]})
+			}))
+	return env, nil
+}
+
+// nativeObservationCheck is the shared shape: environment 0 writes 41
+// through the shared ledger and observes it, environment 1 only observes.
+// On a cold load environment 1 reads 0; on a fork of a template whose
+// ledger is shared it reads 41.
+func nativeObservationCheck() elpstest.ParityCheck {
+	return elpstest.ParityCheck{
+		NewEnv:  nativeObservationEnv,
+		Program: `(set 'probe (list led))`,
+		Tx: [][]string{
+			{`(ledger-set led 41)`, `(ledger-peek led)`},
+			{`(ledger-peek led)`},
+		},
+		Repro: "an observation that is a native",
+	}
+}
+
+func TestForkParity_ANativeObservationNeedsARenderer(t *testing.T) {
+	t.Parallel()
+	// Ground truth, so neither half of this control can pass vacuously:
+	// the two arms really do observe different numbers.
+	c := nativeObservationCheck()
+	cold, err := c.NewEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc := cold.LoadString("p.lisp", c.Program); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	fork, err := cold.Fork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc := cold.LoadString("w.lisp", `(ledger-set led 41)`); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	seen := fork.LoadString("o.lisp", `(ledger-peek led)`)
+	if h, ok := seen.Native.(nativeHandle); !ok || h.n != 41 {
+		t.Fatalf("premise: the fork does not observe the template's write through the shared "+
+			"ledger (%v); this control is not exercising the shape it describes", seen)
+	}
+
+	// Half one: with no renderer the divergence is invisible.  This is a
+	// STATEMENT OF THE DEFAULT, not an aspiration -- if it ever starts
+	// firing, delete this half and say so, do not weaken the other one.
+	got, err := elpstest.CheckParity(nativeObservationCheck())
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("parity reported %d witness(es) for a native-only divergence with no "+
+			"RenderNative set. The default has changed: either a canonical rendering was given to "+
+			"every payload (which only its owner can write) or the comparison has become noisy.\n%v",
+			len(got), got)
+	}
+
+	// Half two: the hook catches it, in the result channel.
+	withRenderer := nativeObservationCheck()
+	withRenderer.RenderNative = func(payload any) string {
+		if h, ok := payload.(nativeHandle); ok {
+			return fmt.Sprintf("handle(n=%d)", h.n)
+		}
+		return fmt.Sprintf("%T", payload)
+	}
+	got, err = elpstest.CheckParity(withRenderer)
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("with RenderNative set, parity STILL reports nothing for a transaction that " +
+			"observes 41 on the fork arm and 0 on the cold arm. The hook is not reaching the " +
+			"comparison it exists for.")
+	}
+	var sawResult bool
+	for _, w := range got {
+		if w.Property == elpstest.ParityPropertyReturns {
+			sawResult = true
+		}
+	}
+	if !sawResult {
+		t.Errorf("the witnesses do not include a RESULT divergence, which is where the transaction's "+
+			"observation lives:\n%v", got)
+	}
+}
+
+// The state channel takes the renderer too, which is the half a
+// result-only threading would silently drop: a payload the transaction
+// mutated but did not return is post-run STATE.
+func TestForkParity_TheRendererReachesTheStateChannel(t *testing.T) {
+	t.Parallel()
+	// A fork that writes through the shared ledger without any transaction
+	// returning it: the divergence is confined to reachable state.
+	forkWrites := func(env *lisp.LEnv) (*lisp.LEnv, error) {
+		f, err := env.Fork()
+		if err != nil {
+			return nil, err
+		}
+		if l, ok := f.GetGlobal(lisp.Symbol("led")).Native.(nativeLedger); ok {
+			l["n"] = 41
+		}
+		return f, nil
+	}
+	c := elpstest.ParityCheck{
+		NewEnv:  nativeObservationEnv,
+		Program: `(set 'probe (list led))`,
+		Tx:      [][]string{{`(length probe)`}},
+		Fork:    forkWrites,
+		Repro:   "a divergence confined to a native's contents",
+	}
+	if got, err := elpstest.CheckParity(c); err != nil {
+		t.Fatalf("harness error: %v", err)
+	} else if len(got) != 0 {
+		t.Errorf("with no renderer, a divergence confined to a native's contents produced %d "+
+			"witness(es); the default is supposed to compare the header only:\n%v", len(got), got)
+	}
+	c.RenderNative = func(payload any) string {
+		if l, ok := payload.(nativeLedger); ok {
+			return fmt.Sprintf("ledger(n=%d)", l["n"])
+		}
+		return fmt.Sprintf("%T", payload)
+	}
+	got, err := elpstest.CheckParity(c)
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	var sawState bool
+	for _, w := range got {
+		if w.Property == elpstest.ParityPropertyState {
+			sawState = true
+		}
+	}
+	if !sawState {
+		t.Errorf("RenderNative did not reach the post-run STATE fingerprint: a fork whose shared "+
+			"payload holds 41 where the cold arm's holds 0 produced no state witness.\n%v", got)
 	}
 }

@@ -114,9 +114,12 @@ func parityNormalize(s string) string {
 
 // parityFingerprint is the post-run state fingerprint the two arms are
 // compared under: FingerprintEnv under the template-level options, with
-// process-wide gensyms normalised (parityGensymPattern).
-func parityFingerprint(env *lisp.LEnv) *Fingerprint {
-	fp := FingerprintEnv(env, templateOpts)
+// process-wide gensyms normalised (parityGensymPattern) and the check's
+// native renderer, if it supplied one, threaded in.
+func parityFingerprint(c ParityCheck, env *lisp.LEnv) *Fingerprint {
+	opts := templateOpts
+	opts.RenderNative = c.RenderNative
+	fp := FingerprintEnv(env, opts)
 	for i, tok := range fp.tokens {
 		fp.tokens[i] = parityNormalize(tok)
 	}
@@ -154,6 +157,24 @@ type ParityCheck struct {
 	// through this oracle to prove it is not vacuous
 	// (TestForkParity_DetectsASharingFork, TestForkParity_DetectsADealiasingFork).
 	Fork func(*lisp.LEnv) (*lisp.LEnv, error)
+	// RenderNative renders a native payload's CONTENTS, for both channels:
+	// the per-transaction result comparison and the post-run state
+	// fingerprint.  Nil, the default, keeps the historical behaviour.
+	//
+	// WITHOUT IT A NATIVE IS COMPARED BY ITS HEADER ONLY.  The result
+	// rendering emits `native(<GoType>)` and the fingerprint emits the type
+	// plus an identity ordinal, so a divergence whose only observable is a
+	// native -- a transaction that returns a handle holding 41 on the fork
+	// arm and 0 on the cold arm -- produces NO witness from either channel.
+	// Parity is the backstop for everything the structural channels cannot
+	// see, and this is the one thing it cannot see either.  Measured at
+	// zero witnesses (TestForkParity_ANativeObservationNeedsARenderer).
+	//
+	// It is opt-in because only the payload's owner can render it
+	// canonically: see FingerprintOptions.RenderNative for the rules a
+	// renderer must obey (pure in the payload's observable state, and no
+	// identity -- identity is the ordinal's job).
+	RenderNative func(payload any) string
 	// Repro is attached to every witness.
 	Repro string
 }
@@ -217,6 +238,15 @@ func RunParityCheck(t TestingTB, c ParityCheck) {
 // a fork that could not be taken.  A transaction that raises is a result
 // like any other -- the cold arm defines what a fork must do, raising
 // included -- so an error value is compared, not reported.
+//
+// A NATIVE IS COMPARED BY ITS HEADER, NOT BY WHAT IT HOLDS, unless the
+// check supplies RenderNative.  Both channels are affected: the result
+// rendering emits `native(<GoType>)` and the state fingerprint emits the
+// type plus an identity ordinal.  So for an embedder whose transactions
+// observe state through a native handle -- which is how substrate reaches
+// its own values -- this oracle compares the handle and not the state, and
+// a fork that diverges only inside one is invisible to the backstop as
+// well as to the structural channels.  Supply RenderNative to close that.
 //
 // THE ONLY HARNESS ERROR IS A TEMPLATE THAT DOES NOT LOAD.  Then there is
 // nothing to compare.  Once the template has loaded, every later failure
@@ -327,7 +357,8 @@ func CheckParity(c ParityCheck) ([]Witness, error) {
 		name := fmt.Sprintf("env%d-tx%d.lisp", st.i, st.j)
 		wantRC := cold[st.i].LoadString(name, tx)
 		gotRC := forks[st.i].LoadString(name, tx)
-		want, got := parityNormalize(renderResult(wantRC)), parityNormalize(renderResult(gotRC))
+		want := parityNormalize(renderResultWith(wantRC, c.RenderNative))
+		got := parityNormalize(renderResultWith(gotRC, c.RenderNative))
 		if want == got {
 			continue
 		}
@@ -355,8 +386,8 @@ func CheckParity(c ParityCheck) ([]Witness, error) {
 				continue
 			}
 		}
-		want := parityFingerprint(cold[i])
-		got := parityFingerprint(forks[i])
+		want := parityFingerprint(c, cold[i])
+		got := parityFingerprint(c, forks[i])
 		if want.Equal(got) {
 			continue
 		}

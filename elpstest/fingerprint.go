@@ -67,12 +67,14 @@ import (
 //     identified by its FID and package name (the substitution
 //     elpstest/forkcheck.go already made).
 //   - A native payload is an opaque interface{}, so it renders as its Go
-//     type name plus an identity ordinal.  The ordinal is the load-bearing
-//     half: it says whether two headers hold ONE payload, which is
-//     observable even when the payload's contents are not.  It is emitted
-//     for every payload held by REFERENCE -- pointer, map, slice, chan,
-//     func, unsafe pointer -- because Fork's default policy shares all six
-//     with every fork by reference; see payloadIdentity.
+//     type name plus an identity ordinal.  Its CONTENTS are compared only
+//     when the caller supplies FingerprintOptions.RenderNative, because
+//     only the payload's owner can render it canonically.  The ordinal is
+//     the load-bearing half: it says whether two headers hold ONE payload,
+//     which is observable even when the payload's contents are not.  It is
+//     emitted for every payload held by REFERENCE -- pointer, map, slice,
+//     chan, func, unsafe pointer -- because Fork's default policy shares
+//     all six with every fork by reference; see payloadIdentity.
 //
 // # Bounds
 //
@@ -173,6 +175,31 @@ type FingerprintOptions struct {
 	// the harm this channel carries is a pointer: a copy that kept the
 	// metadata hands out the SOURCE's nodes. See macroExpansionLeaks.
 	MacroExpansion bool
+	// RenderNative, when set, renders a native payload's CONTENTS into the
+	// stream, beside the type name and identity ordinal the encoding
+	// already carries.
+	//
+	// OPT-IN, AND NIL EVERYWHERE IN THIS PACKAGE, so no existing stream
+	// moves.  It is opt-in because a payload is an opaque interface{} and
+	// only its owner knows how to render it canonically: a rendering that
+	// includes a Go pointer, a map's range order or a wall clock would
+	// report a divergence on every comparison and the guard would be
+	// switched off within the day.
+	//
+	// WHAT IT BUYS.  Without it, NO CHANNEL OF THIS GUARD COMPARES A
+	// NATIVE'S CONTENTS.  The fingerprint emits type plus ordinal, and
+	// renderResult -- parity's per-transaction comparison, the backstop for
+	// everything the structural channels cannot see -- emits
+	// `native(<GoType>)`.  So a divergence whose only observable is a
+	// native is invisible to the whole oracle: measured, on a transaction
+	// that returns a native holding 41 on the fork arm and 0 on the cold
+	// arm, at zero witnesses (TestForkParity_ANativeObservationNeedsARenderer).
+	//
+	// The function must be a PURE function of the payload's observable
+	// state, and must not include identity: identity is the ordinal's job,
+	// and putting it here would report a fork that correctly cloned a
+	// payload as a divergence.
+	RenderNative func(payload any) string
 	// PackageMetadata records the per-package tables that live beside the
 	// symbol table: exports, symbol docs and the FID→name index.  Fork
 	// copies all three rather than sharing them (lisp/fork.go, issue #397),
@@ -501,6 +528,7 @@ func (w *fingerprinter) annotation(v *lisp.LVal) {
 		return
 	}
 	w.emitf("annot#%d(%T)", n, v.Native)
+	w.nativeContents(v.Native)
 }
 
 // kernelOwnedPayload reports whether a header's Native belongs to the
@@ -751,14 +779,27 @@ func (w *fingerprinter) native(payload any) {
 	key, ok := payloadIdentity(payload)
 	if !ok {
 		w.emitf("native(%T,by-value)", payload)
+		w.nativeContents(payload)
 		return
 	}
 	n, first := w.id(key)
 	if !first {
+		// The contents were written under the first arrival, with the
+		// ordinal that says this is the same payload.
 		w.emitf("native#%d", n)
 		return
 	}
 	w.emitf("native#%d(%T)", n, payload)
+	w.nativeContents(payload)
+}
+
+// nativeContents emits the payload's rendered contents, when the caller
+// supplied a renderer.  See FingerprintOptions.RenderNative.
+func (w *fingerprinter) nativeContents(payload any) {
+	if w.opts.RenderNative == nil {
+		return
+	}
+	w.emitf("nativev(%q)", w.opts.RenderNative(payload))
 }
 
 func (w *fingerprinter) fun(v *lisp.LVal) {
