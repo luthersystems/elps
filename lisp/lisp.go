@@ -1726,9 +1726,24 @@ func (v *LVal) Copy() *LVal {
 		cp.Native = mdata
 	default:
 		cp.Cells = v.copyCells()
-		if _, isView := v.Native.(*LVal); isView {
+		if v.IsCellView() {
 			// Fresh storage, so the struct copy's cell-view link is stale
 			// (the convention on cellsView; TestCopyAndDetachDropCellViewLink).
+			//
+			// The gate is IsCellView, not a bare `v.Native.(*LVal)`, because
+			// a *LVal payload is only a LINK when the header carrying it is
+			// an LSExpr -- which is the one thing cellsView checks before it
+			// reads the field.  On an LNative the same payload is embedder
+			// DATA, the shape lisp.NativeOf[*lisp.LVal] writes and
+			// NativeValue[*lisp.LVal] reads back (native.go, issue #546),
+			// and clearing it here destroyed it on every copy: ordinary
+			// lisp `(stable-sort < boxes key)` handed the key function
+			// arguments whose payload was gone, because lvalByFun.Less
+			// copies both elements it compares
+			// (TestCopyKeepsNativeLValPayloadUnderStableSort).  detach's
+			// twin arm has keyed on the header type all along
+			// (detach.go's `if v.Type != LSExpr`), and the *[]byte,
+			// *MapData and *CallStack arms beside it all do the same.
 			cp.Native = nil
 			cp.Int = 0
 		}
