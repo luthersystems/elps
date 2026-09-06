@@ -226,7 +226,16 @@ func renderResult(v *lisp.LVal) string {
 // write correctly.
 func renderResultWith(v *lisp.LVal, renderNative func(any) string) string {
 	if v.Type == lisp.LError {
-		return "error: " + normalizeFunIDs(v.String())
+		// THE ONE PLACE AN ID IS STILL NORMALISED IN FREE TEXT, and it is
+		// not an oversight.  An error's rendering is a message, not a
+		// structure: a lambda's FID and a libschema gensym both reach it
+		// through frame and function names, with nothing to key on that
+		// separates them from the message text.  So a fork/cold divergence
+		// confined to an ERROR MESSAGE that matches one of the ID patterns
+		// is still erased here.  Everywhere else the rewrite now happens
+		// at the ID itself (normalizeFunctionText below, and
+		// parityNormalizeToken in parity.go).
+		return "error: " + normalizeFunctionText(v.String())
 	}
 	var b strings.Builder
 	w := newStateWalker(&b)
@@ -343,11 +352,22 @@ func (w *stateWalker) value(v *lisp.LVal) {
 			fmt.Fprintf(w.sb, "(%q)", w.renderNative(v.Native))
 		}
 	case lisp.LFun:
-		w.sb.WriteString(normalizeFunIDs(v.String()))
+		// A FUNCTION's rendering embeds its ID, which a cold environment
+		// and a fork mint on independent counters; that is what is
+		// normalised, and only here, where the text IS an ID-bearing
+		// rendering.
+		w.sb.WriteString(normalizeFunctionText(v.String()))
 		w.env(funraw.Env(v))
 	default:
 		if len(v.Cells) == 0 {
-			w.sb.WriteString(normalizeFunIDs(v.String()))
+			// NOT NORMALISED.  This arm renders an int, a string, a
+			// symbol -- USER DATA.  Rewriting `_fun<n>` in it erased a
+			// fork/cold divergence between the strings "_fun1" and
+			// "_fun2": measured, the result channel went silent on a
+			// value the transaction returned.  An ID is normalised where
+			// it is an ID (the LFun arm above), not wherever its pattern
+			// happens to match.
+			w.sb.WriteString(v.String())
 			return
 		}
 		fmt.Fprintf(w.sb, "%s", v.Type)

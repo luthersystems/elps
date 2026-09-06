@@ -100,16 +100,67 @@ const (
 // template-level checks compare a fork against the template it was
 // numbered from.  TestTransactionIsolation_SchemaValidatorCredential is
 // the pin: it defines a validator in a transaction, and without this it
-// reports the counter as a state divergence at user:U.
+// reports the counter as a state divergence at user:U -- in the fid field
+// of a `fun(...)` token and in the fid field of a `funname(...)` token,
+// which are the only two places it reaches and the only two
+// parityNormalizeToken rewrites.
 var parityGensymPattern = regexp.MustCompile(`_validation_fun_\d+`)
 
 const parityGensymMarker = "_validation_fun_"
 
-func parityNormalize(s string) string {
+// normalizeGensymIDs rewrites the gensym's counter.  Like normalizeFunIDs
+// it is for an ID, never for free text: "_validation_fun_1" is a string a
+// program may hold, and rewriting it wherever it appears erases a real
+// divergence.  The one caller that does apply it to text is named at its
+// call site, with the reason.
+func normalizeGensymIDs(s string) string {
 	if !strings.Contains(s, parityGensymMarker) {
 		return s
 	}
 	return parityGensymPattern.ReplaceAllString(s, parityGensymMarker+"#")
+}
+
+// normalizeFunctionText normalises both ID counters in a FUNCTION's
+// rendering: the per-Runtime environment number in a FID, and libschema's
+// process-wide validator gensym.  It is applied where the text is an
+// ID-bearing rendering of a function, not to a value a program produced.
+func normalizeFunctionText(s string) string {
+	return normalizeGensymIDs(normalizeFunIDs(s))
+}
+
+// parityNormalizeToken rewrites the gensym inside a fingerprint token, and
+// ONLY where that token carries an ID FIELD.
+//
+// IT USED TO REWRITE EVERY TOKEN, string literals included, so a fork/cold
+// divergence confined to a value like "_validation_fun_1" against
+// "_validation_fun_2" was erased from the state channel as well as from
+// the result channel -- total silence from parity, measured, on a
+// divergence a program can produce with `set`.
+//
+// The two token shapes the counter actually reaches are `fun(fid=...)` and
+// `funname(<fid>,<name>)`, measured across the four transactions of
+// TestTransactionIsolation_SchemaValidatorCredential: two divergent tokens,
+// both an FID.  Only the FID field of each is rewritten, so a `str(%q)`
+// literal -- and a NAME that happens to look like a gensym -- is compared
+// as written.  TestParityNormalisesOnlyTheIDFieldOfARealToken pins this
+// against tokens the fingerprinter really emits, so a change to the token
+// format fails there rather than silently disarming the normalisation.
+func parityNormalizeToken(tok string) string {
+	if !strings.Contains(tok, parityGensymMarker) {
+		return tok
+	}
+	for _, prefix := range []string{"fun(fid=", "funname("} {
+		if !strings.HasPrefix(tok, prefix) {
+			continue
+		}
+		rest := tok[len(prefix):]
+		end := strings.IndexByte(rest, ',')
+		if end < 0 {
+			return tok
+		}
+		return prefix + normalizeGensymIDs(rest[:end]) + rest[end:]
+	}
+	return tok
 }
 
 // parityFingerprint is the post-run state fingerprint the two arms are
@@ -121,7 +172,7 @@ func parityFingerprint(c ParityCheck, env *lisp.LEnv) *Fingerprint {
 	opts.RenderNative = c.RenderNative
 	fp := FingerprintEnv(env, opts)
 	for i, tok := range fp.tokens {
-		fp.tokens[i] = parityNormalize(tok)
+		fp.tokens[i] = parityNormalizeToken(tok)
 	}
 	return fp
 }
@@ -357,8 +408,12 @@ func CheckParity(c ParityCheck) ([]Witness, error) {
 		name := fmt.Sprintf("env%d-tx%d.lisp", st.i, st.j)
 		wantRC := cold[st.i].LoadString(name, tx)
 		gotRC := forks[st.i].LoadString(name, tx)
-		want := parityNormalize(renderResultWith(wantRC, c.RenderNative))
-		got := parityNormalize(renderResultWith(gotRC, c.RenderNative))
+		// No post-pass over the rendered text: renderResultWith
+		// normalises the IDs it can identify AS IDs (a function's
+		// rendering, an error's message) and leaves everything else --
+		// the values the transaction produced -- as written.
+		want := renderResultWith(wantRC, c.RenderNative)
+		got := renderResultWith(gotRC, c.RenderNative)
 		if want == got {
 			continue
 		}

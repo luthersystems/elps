@@ -413,6 +413,13 @@ func (w *fingerprinter) id(key any) (int, bool) {
 // Function identity within one walk is carried by the header ordinal and by
 // the captured environment, so normalising the number costs the stream
 // nothing and lets a cold arm be compared against a fork.
+//
+// APPLY IT TO AN ID, NOT TO RENDERED TEXT.  The pattern is ordinary
+// characters a program can put in a string, so rewriting it wherever it
+// appears erases user data: a fork/cold divergence between the strings
+// "_fun1" and "_fun2" was silent in the transaction-result channel until
+// this rule was written down (see the two call sites in fingerprint.go,
+// which pass v.FID(), and stateWalker's arms in forkcheck.go).
 var funIDPattern = regexp.MustCompile(`_fun\d+`)
 
 func normalizeFunIDs(s string) string {

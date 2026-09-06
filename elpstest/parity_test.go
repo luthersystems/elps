@@ -505,3 +505,105 @@ func TestForkParity_TheRendererReachesTheStateChannel(t *testing.T) {
 			"payload holds 41 where the cold arm's holds 0 produced no state witness.\n%v", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The ID normalisations must not erase USER DATA.
+//
+// Two counters are normalised so a cold arm can be compared against a fork
+// that numbered its environments independently: a lambda's FID
+// ("_fun<envID>", funIDPattern) and libschema's process-wide validator
+// gensym ("_validation_fun_<n>", parityGensymPattern).  Both used to be
+// applied to RENDERED TEXT -- normalizeFunIDs to a transaction's result,
+// parityNormalize to every fingerprint token, string literals included --
+// and both patterns are ordinary characters a program can put in a string.
+//
+// Measured: a fork whose value diverged from the cold arm only inside the
+// string "_validation_fun_1" against "_validation_fun_2" produced TOTAL
+// SILENCE from parity, from BOTH channels.  The `_fun1`/`_fun2` pair went
+// silent in the result channel and survived in the state channel, which is
+// how narrow the difference between the two rewrites was.
+//
+// The ordinary-strings row is the control on the control: it must keep
+// firing, or this table would pass on an oracle that had stopped comparing
+// results at all.
+// ---------------------------------------------------------------------------
+
+// forkRewritingAString returns a fork walker that overwrites the binding
+// `s` in place, so the ONLY difference from the cold arm is character data
+// -- no seal bit, no sharing, nothing else to give the game away.
+func forkRewritingAString(to string) func(*lisp.LEnv) (*lisp.LEnv, error) {
+	return func(env *lisp.LEnv) (*lisp.LEnv, error) {
+		f, err := env.Fork()
+		if err != nil {
+			return nil, err
+		}
+		f.GetGlobal(lisp.Symbol("s")).Str = to
+		return f, nil
+	}
+}
+
+func TestForkParity_NormalisationDoesNotEraseUserData(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		from, to string
+	}{
+		{"ordinary strings", "alpha", "beta"},
+		{"strings matching the fun-ID pattern", "_fun1", "_fun2"},
+		{"strings matching the gensym pattern", "_validation_fun_1", "_validation_fun_2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := elpstest.CheckParity(elpstest.ParityCheck{
+				Program: `(set 's "` + tc.from + `") (set 'probe (list 1))`,
+				Tx:      [][]string{{`s`}},
+				Fork:    forkRewritingAString(tc.to),
+				Repro:   "a divergence confined to a string value",
+			})
+			if err != nil {
+				t.Fatalf("harness error: %v", err)
+			}
+			var sawResult, sawState bool
+			for _, w := range got {
+				switch w.Property {
+				case elpstest.ParityPropertyReturns:
+					sawResult = true
+				case elpstest.ParityPropertyState:
+					sawState = true
+				}
+			}
+			if !sawResult {
+				t.Errorf("the RESULT channel is silent: the transaction returns %q on the cold arm "+
+					"and %q on the fork, and the comparison rewrote the difference away. An ID is "+
+					"normalised where it is an ID, not wherever its pattern matches.", tc.from, tc.to)
+			}
+			if !sawState {
+				t.Errorf("the STATE channel is silent: the binding holds %q on the cold arm and %q "+
+					"on the fork. parityNormalizeToken is rewriting `str(...)` tokens, which carry "+
+					"user data, and not just the ID fields it is for.", tc.from, tc.to)
+			}
+		})
+	}
+}
+
+// The other half: the normalisation still does its job.  A validator
+// defined inside a transaction is numbered from a PROCESS-WIDE counter, so
+// the cold arm and the fork mint different numbers for the same
+// definition, and reporting that as a divergence would make the oracle red
+// on correct code.
+//
+// TestTransactionIsolation_SchemaValidatorCredential is the end-to-end pin;
+// this is the token-level one, built from tokens the fingerprinter really
+// emits rather than from literals, so a change to the token format fails
+// here instead of quietly disarming the rewrite.
+func TestParityNormalisesOnlyTheIDFieldOfARealToken(t *testing.T) {
+	t.Parallel()
+	elpstest.RunParityCheck(t, elpstest.ParityCheck{
+		Program: `(s:deftype "T" s:int)`,
+		Tx: [][]string{
+			{`(s:deftype "U" s:string) (s:validate U "x")`},
+			{`(s:deftype "V" s:string) (s:validate V "x")`},
+		},
+		Repro: "a validator defined inside a transaction",
+	})
+}
