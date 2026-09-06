@@ -24,6 +24,7 @@ package elpstest_test
 import (
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -2090,5 +2091,261 @@ func TestTheConcurrentArmStillRunsForASubstitutedWalker(t *testing.T) {
 			"old axis: substitution is not a declaration that the walker shares, and an embedder\n"+
 			"wrapping Fork for instrumentation must not silently lose the -race gate. Key the skip\n"+
 			"on SkipConcurrentArm.", builds, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Control 16: an ARRAY header is not a probe site, and why that is not a
+// weakening.
+//
+// FuzzAliasGuard found crasher cbfd49dfda179e65 the day ProbeCellSlot
+// landed:
+//
+//	(set 'v0 7)
+//	(set 'v1 (vector v0 v0))
+//	(set 'v2 (quasiquote (unquote v1)))
+//	(set 'v3 (quasiquote (unquote v1)))
+//	(set 'probe (list v0 v1 v2 v3))
+//
+// The sweep reported a Fork leak: a slot-0 write through v1 was seen at v2
+// and v3 in the template and nowhere but v1 in the fork.  Both halves are
+// TRUE of the memory — lisp.Quote's `*cp = *v` gives v2 and v3 a second and
+// a third LArray header over v1's two-slot Cells array, and Fork, which
+// memoises per *LVal and per registered payload kind, gives each of the
+// three its own — and the conclusion drawn from them was false.  An
+// LArray's own Cells is [dims, holder]; nothing writes those slots, so no
+// program can tell the two shapes apart.  ProbeCellSlot now skips an array
+// header for that reason and these three tests are the reason, stated as
+// measurements: one for the site count, one for the behaviour, and one for
+// the premise that makes the skip sound.
+// ---------------------------------------------------------------------------
+
+// quasiquotedVectorProgram is the crasher's template, reduced to the part
+// that matters and given distinguishable elements so an in-place sort is
+// visible.
+const quasiquotedVectorProgram = `
+(set 'v1 (vector 3 1 2))
+(set 'v2 (quasiquote (unquote v1)))
+(set 'v3 (quasiquote (unquote v1)))
+(set 'probe (list v1 v2 v3))
+`
+
+// TestAnArrayHeaderIsNotAProbeSite pins the site count in BOTH directions,
+// the way TestASortedMapEntryIsAProbeSite does, because one direction is
+// not enough.  `(vector 1 2 3)` is two probe sites — its dims list and its
+// data holder — and not three: the array header itself contributes none.
+//
+// Upward: a cap of 2 must sweep COMPLETELY, so the array header costs
+// nothing.  Downward: a cap of 1 must TRUNCATE, so the vector's own storage
+// still costs two sites and the skip did not swallow the holder along with
+// the header.  Without the second, deleting the cell-slot site for every
+// sequence would leave this green.
+func TestAnArrayHeaderIsNotAProbeSite(t *testing.T) {
+	t.Parallel()
+	const prog = `(set 'probe (vector 1 2 3))`
+	at := func(capSites int) []elpstest.Witness {
+		t.Helper()
+		got, err := elpstest.CheckWalker(bytesSharingWalker(),
+			elpstest.AliasCheck{Program: prog, MaxProbeSites: capSites})
+		if err != nil {
+			t.Fatalf("MaxProbeSites=%d: harness error: %v", capSites, err)
+		}
+		return probeTruncationWitnesses(got)
+	}
+	if tw := at(2); len(tw) != 0 {
+		t.Errorf("a one-dimensional 3-element vector at MaxProbeSites=2 reported partial\n"+
+			"coverage:\n%s\nIt costs more than two probe sites, which means the ARRAY HEADER is\n"+
+			"being probed again. Its Cells is [dims, holder] and nothing writes those slots, so a\n"+
+			"site there measures an alias no writer can exploit -- and reintroduces the\n"+
+			"cbfd49dfda179e65 false positive on `(quasiquote (unquote vec))`. See ProbeCellSlot.",
+			tw[0])
+	}
+	if tw := at(1); len(tw) == 0 {
+		t.Errorf("a one-dimensional 3-element vector at MaxProbeSites=1 did NOT report partial\n" +
+			"coverage. It now costs at most one probe site, so the array-header skip has grown\n" +
+			"into 'a vector is barely probed': its dims list and its data holder must each be a\n" +
+			"site, and the holder's is what catches a copier that returns its own input over a\n" +
+			"graph of vectors (TestGuardDetectsACopierThatReturnsItsInput).")
+	}
+}
+
+// TestAQuasiquotedVectorForksLikeAColdLoad is the behavioural half: the
+// justification for skipping the array header is that NO PROGRAM can tell
+// the template's shape from the fork's, so that is what is measured rather
+// than argued.
+//
+// The premise is asserted first.  If lisp.Quote stops handing a second
+// header the same array — or if Fork starts preserving it — the shape this
+// control is named for is gone, and the right response is to re-read
+// ProbeCellSlot's array paragraph, not to edit the assertion that noticed.
+func TestAQuasiquotedVectorForksLikeAColdLoad(t *testing.T) {
+	t.Parallel()
+	build := func() *lisp.LEnv {
+		t.Helper()
+		env, err := elpstest.NewForkCheckEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rc := env.LoadString("p.lisp", quasiquotedVectorProgram); rc.Type == lisp.LError {
+			t.Fatal(rc)
+		}
+		return env
+	}
+	// cellsArray is the address of a header's backing array, which is what
+	// two headers do or do not have in common.  reflect, not unsafe:
+	// Pointer on a slice Value is its data pointer.
+	cellsArray := func(v *lisp.LVal) uintptr { return reflect.ValueOf(v.Cells).Pointer() }
+	names := []string{"v1", "v2", "v3"}
+	get := func(env *lisp.LEnv) []*lisp.LVal {
+		t.Helper()
+		out := make([]*lisp.LVal, len(names))
+		for i, n := range names {
+			out[i] = env.Get(lisp.Symbol(n))
+			if out[i] == nil || out[i].Type != lisp.LArray {
+				t.Fatalf("premise: %s is not an array (%v)", n, out[i])
+			}
+		}
+		return out
+	}
+
+	// Premise 1: the template really is three headers over ONE array.
+	tmpl := build()
+	tv := get(tmpl)
+	if tv[0] == tv[1] || tv[0] == tv[2] || tv[1] == tv[2] {
+		t.Fatalf("premise: quasiquote returned the same header, not a second one; this control is "+
+			"not exercising the shape it describes (%p %p %p)", tv[0], tv[1], tv[2])
+	}
+	if cellsArray(tv[0]) != cellsArray(tv[1]) || cellsArray(tv[0]) != cellsArray(tv[2]) {
+		t.Fatalf("premise: the three headers no longer share one Cells backing array (%#x %#x %#x). "+
+			"lisp.Quote has stopped struct-copying, so the false positive ProbeCellSlot's array "+
+			"paragraph describes can no longer arise -- re-read it before trusting the skip.",
+			cellsArray(tv[0]), cellsArray(tv[1]), cellsArray(tv[2]))
+	}
+	// Premise 2: and the fork really does give each of them its own.  This
+	// is the structural difference the sweep used to report; it is skipped
+	// because it is unobservable, not because it stopped happening.
+	forked, err := tmpl.Fork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fv := get(forked)
+	if cellsArray(fv[0]) == cellsArray(fv[1]) || cellsArray(fv[0]) == cellsArray(fv[2]) {
+		t.Logf("Fork now preserves the array-header sharing; the skip in ProbeCellSlot has become " +
+			"a no-op rather than a correction. Nothing is wrong, but the paragraph explaining it " +
+			"is stale.")
+	}
+
+	// The measurement: every mutation the language can perform through any
+	// of the three names reads back the same in a fork as in a cold load,
+	// through all three names.
+	const readback = `(list v1 v2 v3 (nth probe 0) (nth probe 1) (nth probe 2))`
+	for _, mut := range []string{
+		`(stable-sort < v1)`,
+		`(stable-sort < v2)`,
+		`(append! v1 99)`,
+		`(append! v2 99)`,
+		// Past capacity, so the holder's Cells slice is REALLOCATED and
+		// the dims cardinality rewritten: the two writes an array header's
+		// own slots would have to carry if they carried any.
+		`(append! v1 4 5 6 7 8 9 10 11 12)`,
+		`(stable-sort < (append 'vector v1))`,
+	} {
+		cold := build()
+		coldRes := cold.LoadString("m.lisp", mut)
+		if coldRes.Type == lisp.LError {
+			t.Fatalf("%s: cold load raised: %v", mut, coldRes)
+		}
+		coldAfter := cold.LoadString("r.lisp", readback).String()
+
+		tmpl := build()
+		fork, err := tmpl.Fork()
+		if err != nil {
+			t.Fatal(err)
+		}
+		forkRes := fork.LoadString("m.lisp", mut)
+		if forkRes.Type == lisp.LError {
+			t.Fatalf("%s: fork raised: %v", mut, forkRes)
+		}
+		forkAfter := fork.LoadString("r.lisp", readback).String()
+
+		if coldRes.String() != forkRes.String() || coldAfter != forkAfter {
+			t.Errorf("%s diverges between a cold load and a fork:\n  cold: %s -> %s\n  fork: %s -> %s\n"+
+				"The array-header sharing IS observable after all, so ProbeCellSlot must probe an\n"+
+				"array header again and the finding it reported on cbfd49dfda179e65 is a real bug\n"+
+				"in Fork. Do not weaken anything here: fix the walker.",
+				mut, coldRes, coldAfter, forkRes, forkAfter)
+		}
+		// And the fork's mutation must not have reached the template.
+		got := tmpl.LoadString("r.lisp", readback).String()
+		want := build().LoadString("r.lisp", readback).String()
+		if got != want {
+			t.Errorf("%s: the fork's mutation reached the template:\n  got:  %s\n  want: %s", mut, got, want)
+		}
+	}
+
+	// And with all of that true, no live walker may report anything.
+	for _, w := range elpstest.Walkers() {
+		got, err := elpstest.CheckWalker(w, elpstest.AliasCheck{Program: quasiquotedVectorProgram})
+		if err != nil {
+			t.Fatalf("%s: harness error: %v", w.Name, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("%s reports %d witness(es) on `(quasiquote (unquote vector))`:\n%s\n"+
+				"Every mutation above agrees between a cold load and a fork, so this is the\n"+
+				"cbfd49dfda179e65 false positive again: a guard red on behaviour no program can\n"+
+				"distinguish is a guard that gets switched off.", w.Name, len(got), got[0])
+		}
+	}
+}
+
+// TestAnArrayHeadersOwnSlotsAreNeverReassigned is the premise the skip
+// rests on, as a drift guard rather than as prose.
+//
+// ProbeCellSlot skips an array header because [dims, holder] is a
+// structural record no writer assigns into: every writer of a vector's
+// ELEMENTS goes through seqCells/seqHolder onto the HOLDER's array, and
+// cmd/elpsvet's alias rule forbids `v.Cells[i] = x` on a header a function
+// did not construct.  The day a vector operation replaces its own dims or
+// holder header in place, that stops being true, the array header becomes
+// storage a program can write, and the skip has to go.  This fails on that
+// day.
+func TestAnArrayHeadersOwnSlotsAreNeverReassigned(t *testing.T) {
+	t.Parallel()
+	for _, mut := range []string{
+		`(stable-sort < v)`,
+		`(append! v 99)`,
+		`(append! v 4 5 6 7 8 9 10 11 12 13 14 15 16)`,
+		`(append 'vector v 7)`,
+		`(slice 'vector v 1 3)`,
+		`(nth v 0)`,
+	} {
+		env, err := elpstest.NewForkCheckEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rc := env.LoadString("p.lisp", `(set 'v (vector 3 1 2))`); rc.Type == lisp.LError {
+			t.Fatal(rc)
+		}
+		v := env.Get(lisp.Symbol("v"))
+		if v.Type != lisp.LArray || len(v.Cells) != 2 {
+			t.Fatalf("premise: a vector is no longer a two-slot array header (%v, %d cells).\n"+
+				"ProbeCellSlot's array paragraph describes [dims, holder]; re-read it.",
+				v.Type, len(v.Cells))
+		}
+		dims, holder := v.Cells[0], v.Cells[1]
+		if rc := env.LoadString("m.lisp", mut); rc.Type == lisp.LError {
+			t.Fatalf("%s: %v", mut, rc)
+		}
+		if v.Cells[0] != dims {
+			t.Errorf("%s replaced the array header's dims SLOT (%p -> %p).\n"+
+				"An array header's own Cells is now storage a program writes, so it must be a probe\n"+
+				"site again: drop the `v.Type == lisp.LArray` skip in siteWalker.cellSlot and\n"+
+				"re-examine the Fork finding in ProbeCellSlot's array paragraph.", mut, dims, v.Cells[0])
+		}
+		if v.Cells[1] != holder {
+			t.Errorf("%s replaced the array header's data-holder SLOT (%p -> %p).\n"+
+				"Same conclusion as for the dims slot above: the skip in siteWalker.cellSlot is no\n"+
+				"longer sound.", mut, holder, v.Cells[1])
+		}
 	}
 }

@@ -265,6 +265,49 @@ const (
 	// one would report a documented behaviour as a leak -- and would be a
 	// write into storage the guard does not own, which is the very defect
 	// class checkStamp exists for.
+	//
+	// ARRAY HEADERS ARE SKIPPED TOO, for a different reason: an LArray's
+	// own Cells is not the storage a vector is mutated through.  It is a
+	// fixed two-slot structural record -- [0] the dims list, [1] the data
+	// holder (lisp/lisp.go's LArray doc) -- and every writer of a
+	// vector's ELEMENTS goes through seqCells/seqHolder, which for an
+	// LArray hand back Cells[1].Cells, the HOLDER's array.  Nothing in this
+	// repository assigns an array header's own slot: cmd/elpsvet's alias
+	// rule forbids `v.Cells[i] = x` on a header the function did not
+	// construct, and the only such assignment reachable from a vector
+	// operation is the probe write below.  So a site here measures an alias
+	// no writer can exploit -- and it COSTS a false positive.
+	//
+	// lisp.Quote's struct copy gives `(quasiquote (unquote vec))` a second
+	// LArray header over the SAME two-slot array (lisp/walkers.go's
+	// lvalCopyExemptions: the intentional aliasing).  Fork memoises per
+	// *LVal and per registered payload kind, and a Cells backing array is
+	// neither, so the fork lands three private two-slot arrays whose SLOTS
+	// hold the same dims header and the same holder header.  Measured on
+	//
+	//	(set 'v1 (vector 3 1 2))
+	//	(set 'v2 (quasiquote (unquote v1)))
+	//	(set 'v3 (quasiquote (unquote v1)))
+	//	(set 'probe (list v1 v2 v3))
+	//
+	// which FuzzAliasGuard found (crasher cbfd49dfda179e65): the sweep
+	// called Fork's rebuild a leak, and EVERY mutation the language can
+	// perform through any of the three names -- stable-sort, append!,
+	// append! past capacity -- agrees between a cold load and a fork.
+	// TestAnArrayHeaderIsNotAProbeSite and
+	// TestAQuasiquotedVectorForksLikeAColdLoad pin the two halves.
+	//
+	// Fork's ONE cells-sharing contract is the cell VIEW, and a view is an
+	// LSExpr: lisp.cellsView returns nothing for any other type, so no view
+	// is lost here.  It is asserted by cellViewWitnesses
+	// (aliasguard_cellview.go) as well as by the sweep.
+	//
+	// NOTHING IS LOST BY SKIPPING IT.  Both slots are walked as ordinary
+	// cells, so the dims list and the data holder each contribute their own
+	// cell-slot site over storage that IS written, and *LVal-level sharing
+	// of either is already in the fingerprint.  The vector rows of
+	// TestGuardDetectsACopierThatReturnsItsInput still fail on a copier
+	// that returns its input, through the holder's site.
 	ProbeCellSlot ProbeKind = "cell-slot"
 )
 
@@ -379,7 +422,9 @@ func indentLines(s string) string {
 // site per payload: a sorted-map entry is 1, a captured binding is 1, a
 // BYTES buffer is 2 (its first byte and its last, or 1 when it holds a
 // single byte), and a cells-carrying header is 1 (slot 0), sealed headers
-// excepted.  The last two kinds are newer than the figures below, so a
+// and ARRAY headers excepted (ProbeCellSlot states why for each; a vector
+// costs 2 -- its dims list and its data holder -- not 3).  The last two
+// kinds are newer than the figures below, so a
 // graph an embedder measured against this cap before them counts higher
 // now -- a list of n multi-byte buffers went from n sites to 2n+1.  The
 // cap is a site count, not a payload count, and the truncation witness
@@ -1085,9 +1130,9 @@ func (p *siteWalker) value(v *lisp.LVal) {
 
 // cellSlot records slot 0 of a header's backing array as a probe site.  See
 // ProbeCellSlot for why it is one site rather than one per slot, and why a
-// sealed header contributes none.
+// sealed header and an ARRAY header each contribute none.
 func (p *siteWalker) cellSlot(v *lisp.LVal) {
-	if len(v.Cells) == 0 || v.IsSealed() {
+	if len(v.Cells) == 0 || v.IsSealed() || v.Type == lisp.LArray {
 		return
 	}
 	hdr := v

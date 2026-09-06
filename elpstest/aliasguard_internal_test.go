@@ -358,13 +358,16 @@ func TestTheProbeSiteCensus(t *testing.T) {
 		why     string
 	}{
 		// One site per cells-carrying HEADER, at its slot 0.  A list is
-		// one header.  A vector is THREE -- the array header, its
-		// dimensions and its data are all cells-carrying headers (lisp's
-		// LArray representation), which is worth knowing here because it
-		// is what the numbers below are made of.
+		// one header.  A vector is TWO: its LArray representation is three
+		// cells-carrying headers -- the array header, its dimensions and
+		// its data -- but the ARRAY HEADER contributes nothing, because
+		// its Cells is the structural pair [dims, holder] that no writer
+		// assigns into.  ProbeCellSlot states why, and control 16 in
+		// aliasguard_broken_test.go pins both halves of it; this is where
+		// the number that follows from it is written down.
 		{`(set 'probe (list 1 2 3))`, 1, "a list's backing array"},
-		{`(set 'probe (vector 1 2 3))`, 3, "the array header, its dims and its data"},
-		{`(set 'probe (list (vector 1 2) (vector 1 2)))`, 7, "the outer list plus three per vector"},
+		{`(set 'probe (vector 1 2 3))`, 2, "a vector's dims and its data, not its array header"},
+		{`(set 'probe (list (vector 1 2) (vector 1 2)))`, 5, "the outer list plus two per vector"},
 		// A sorted map is its entries; LSortMap carries no Cells.
 		{`(set 'probe (sorted-map "k" 1))`, 1, "one map entry"},
 		// A buffer is bounded at both ends, and a one-byte buffer must
