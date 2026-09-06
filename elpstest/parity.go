@@ -168,8 +168,19 @@ func parityNormalizeToken(tok string) string {
 // process-wide gensyms normalised (parityGensymPattern) and the check's
 // native renderer, if it supplied one, threaded in.
 func parityFingerprint(c ParityCheck, env *lisp.LEnv) *Fingerprint {
+	return crossEnvFingerprint(env, c.RenderNative)
+}
+
+// crossEnvFingerprint is the template-level fingerprint of an environment,
+// with the process-wide gensym counter normalised: the comparator for two
+// environments that numbered their own gensyms independently.  Every
+// comparison ACROSS independent loads needs it -- parity's arms, and the
+// concurrent arm's solo replay (aliasguard_isolation.go) -- and no
+// comparison WITHIN one template does, which is why FingerprintEnv itself
+// does not do it.
+func crossEnvFingerprint(env *lisp.LEnv, renderNative func(any) string) *Fingerprint {
 	opts := templateOpts
-	opts.RenderNative = c.RenderNative
+	opts.RenderNative = renderNative
 	fp := FingerprintEnv(env, opts)
 	for i, tok := range fp.tokens {
 		fp.tokens[i] = parityNormalizeToken(tok)

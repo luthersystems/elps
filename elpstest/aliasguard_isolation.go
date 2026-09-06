@@ -226,6 +226,12 @@ const (
 	// forkRoleConcurrent is one of the concurrent arm's forks, over a
 	// template of its own.
 	forkRoleConcurrent forkRole = "a concurrent-arm fork"
+	// forkRoleConcurrentSolo is one of the forks the concurrent arm takes
+	// AFTERWARDS, to re-run each transaction with nothing else in flight.
+	// It is the reference the concurrent forks are compared against, so a
+	// control that models a walker broken on the concurrent arm can share
+	// between the concurrent forks without also poisoning the reference.
+	forkRoleConcurrentSolo forkRole = "a concurrent-arm solo-replay fork"
 	// forkRoleParity is one of the parity channel's forks
 	// (aliasguard_parity.go), each compared against a cold load.
 	forkRoleParity forkRole = "a parity-channel fork"
@@ -523,8 +529,71 @@ func CheckTransactions(c TransactionCheck) ([]Witness, error) {
 			Repro:    c.Repro,
 		})
 	}
+	out = append(out, concurrentForkIndependenceWitnesses(c, conc, cforks)...)
 
 	return out, nil
+}
+
+// concurrentForkIndependenceWitnesses is PROPERTY 2 ON THE CONCURRENT ARM:
+// a transaction that ran while every other transaction was in flight must
+// leave its fork exactly where the same transaction leaves a fork of the
+// same template with nothing else running.
+//
+// THE ARM USED TO RE-CHECK PROPERTY 1 AND NOTHING ELSE -- the template's
+// fingerprint -- so a defect confined to the concurrent forks was
+// unobserved.  Measured, with a walker that hands two concurrent-arm forks
+// ONE *MapData and is faithful for every other role: zero witnesses.  The
+// sequential sweep never sees those forks, the cell-view channel, the
+// native census and parity all run on the SEQUENTIAL forks, and outside
+// -race nothing looked at a concurrent fork at all.  -race does catch the
+// shape, but only when two goroutines actually write in one window; a fork
+// that merely READS another's state races with nothing.
+//
+// THE REFERENCE IS A SOLO REPLAY, taken after the concurrent run: a fresh
+// fork of the same template, running the same transaction alone.  A
+// snapshot taken BEFORE the transactions cannot serve on its own, because
+// every fork legitimately moves -- the question is not whether a fork
+// moved but whether it moved to where its own transaction takes it.
+//
+// Both sides are compared under crossEnvFingerprint: the two forks mint
+// any transaction-scoped gensym from a process-wide counter, so the
+// numbers differ by construction and are normalised exactly as parity's
+// arms are.
+//
+// The replay forks are announced under their OWN role
+// (forkRoleConcurrentSolo).  A control that models a walker broken on the
+// concurrent arm keys on the role, and if the reference forks arrived
+// under the same one, the walker would break the reference in the same way
+// and the comparison would agree -- a control that cannot fail.
+func concurrentForkIndependenceWitnesses(c TransactionCheck, conc *lisp.LEnv, cforks []*lisp.LEnv) []Witness {
+	var out []Witness
+	for i, tx := range c.Tx {
+		solo, err := c.forkAs(forkRoleConcurrentSolo, conc)
+		if err != nil {
+			// A fork walker that refuses here has already been reported
+			// by every arm above; there is nothing to compare against.
+			return out
+		}
+		if rc := solo.LoadString(fmt.Sprintf("tx%d.lisp", i), tx); rc.Type == lisp.LError {
+			// The same transaction ran on the concurrent arm without
+			// raising; a raise on the replay is a divergence parity owns.
+			continue
+		}
+		want := crossEnvFingerprint(solo, nil)
+		got := crossEnvFingerprint(cforks[i], nil)
+		if want.Equal(got) {
+			continue
+		}
+		out = append(out, Witness{
+			Walker:   "Fork",
+			Property: "a fork that ran its transaction concurrently holds what it holds when it runs alone",
+			Detail: fmt.Sprintf("concurrent fork %d ended somewhere else than a fork running transaction %d "+
+				"alone: it saw another transaction that was in flight at the same time\n%s", i, i, want.Diff(got)),
+			Leak:  firstDivergentPath(want, got),
+			Repro: c.Repro,
+		})
+	}
+	return out
 }
 
 // templateToForkWitnesses runs a transaction ON THE TEMPLATE and requires
