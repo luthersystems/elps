@@ -913,8 +913,9 @@ type NativeDeclaration struct {
 	// Bound reports whether the type implements lisp.RuntimeBound: it has
 	// declared a runtime affinity, which checked builds enforce.
 	Bound bool
-	// Stateless reports whether the payload's underlying type is a basic Go
-	// type, which has no state to share.
+	// Stateless reports whether the payload's OWN type is a basic Go type,
+	// which is held by value and so has no state to share.  A POINTER to a
+	// basic type is not stateless: it is a shared mutable cell.
 	Stateless bool
 }
 
@@ -967,19 +968,27 @@ func NativeDeclarations(env *lisp.LEnv) []NativeDeclaration {
 	return out
 }
 
-// isStatelessPayload reports whether a payload's underlying type is a basic
-// Go type — a bool, an integer, a float, a complex or a string, possibly
-// behind one pointer.  Such a payload holds no reference to anything else,
-// so sharing it between two transactions shares nothing they can both
-// write.  Anything else (a struct, a slice, a map, a channel, a func) may
-// reach mutable state and has to declare.
+// isStatelessPayload reports whether a payload's OWN type is a basic Go
+// type — a bool, an integer, a float, a complex or a string.  Such a
+// payload is held by value, so two transactions that hold it hold two
+// copies and sharing it shares nothing either can write.  Anything else (a
+// struct, a slice, a map, a channel, a func, and a POINTER to any of them
+// including a pointer to a basic type) may reach mutable state and has to
+// declare.
+//
+// IT USED TO UNWRAP ONE POINTER, which made the claim above false for the
+// payload it mattered most for.  A *int is a shared mutable cell: two forks
+// holding one write through it and read each other's writes (measured,
+// TestAPointerToABasicTypeIsNotStateless).  The census reported
+// Declared()==true for it, so an embedder running the exported pre-ship
+// census over its loaded environment got a clean bill of health for a
+// payload that is one transaction's state and another's.  The doc comment
+// asserted the false half in so many words — "such a payload holds no
+// reference to anything else" — of a type that is nothing but a reference.
 func isStatelessPayload(payload any) bool {
 	t := reflect.TypeOf(payload)
 	if t == nil {
 		return false
-	}
-	if t.Kind() == reflect.Pointer {
-		t = t.Elem()
 	}
 	switch t.Kind() {
 	case reflect.Bool,

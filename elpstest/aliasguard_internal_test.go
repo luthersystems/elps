@@ -292,3 +292,46 @@ func TestQuotedIsEncoded(t *testing.T) {
 		t.Error("a value does not fingerprint equal to itself; the encoding is nondeterministic")
 	}
 }
+
+// TestIsStatelessPayloadClassifiesByTheOwnType is the negative half of
+// control 12 (aliasguard_broken_test.go), which cannot state it: a payload
+// held BY VALUE is never censused -- it has no identity to share -- so no
+// bare int reaches NativeDeclarations and the "still stateless" rows have
+// nowhere else to live.
+//
+// The rule is that the payload's OWN type decides.  Unwrapping one pointer
+// first, which this function used to do, reported a *int -- a shared
+// mutable cell -- as having no state to share.
+func TestIsStatelessPayloadClassifiesByTheOwnType(t *testing.T) {
+	t.Parallel()
+	n := 0
+	s := "s"
+	type box struct{ n int }
+	cases := []struct {
+		name    string
+		payload any
+		want    bool
+	}{
+		{"an int", 7, true},
+		{"a bool", true, true},
+		{"a float", 1.5, true},
+		{"a string", "abc", true},
+		{"a pointer to an int", &n, false},
+		{"a pointer to a string", &s, false},
+		{"a struct", box{n: 1}, false},
+		{"a pointer to a struct", &box{n: 1}, false},
+		{"a map", map[string]int{}, false},
+		{"a slice", []int{1}, false},
+		{"a func", func() {}, false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		if got := isStatelessPayload(tc.payload); got != tc.want {
+			t.Errorf("isStatelessPayload(%s) = %t, want %t.\n"+
+				"Declared() reads this: a payload it calls stateless is reported to an embedder as\n"+
+				"having said what happens when every transaction shares it. That is only true when\n"+
+				"the payload is held BY VALUE, so the two transactions hold two copies.",
+				tc.name, got, tc.want)
+		}
+	}
+}

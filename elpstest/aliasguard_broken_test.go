@@ -1284,6 +1284,93 @@ func TestFingerprintEncodesANonPointerNativeIdentity(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Control 12: a *int is not stateless.
+//
+// NativeDeclaration.Declared() is what an embedder's pre-ship census reads:
+// a type that declares neither NativeCloner nor RuntimeBound is reported as
+// clean only if it is "provably stateless".  isStatelessPayload unwrapped
+// ONE pointer before asking whether the type was basic, so a *int -- which
+// is nothing but a shared mutable cell -- came back stateless=true and
+// Declared()=true, with the doc comment asserting in so many words that
+// "such a payload holds no reference to anything else".
+//
+// Ground truth first, then the classification: fork 0 writes 41 through the
+// cell and fork 1 reads it back, so the census is being asked about a
+// payload that demonstrably carries one transaction's state into another.
+//
+// The negative half cannot live here, because a payload held BY VALUE is
+// not censused at all -- it has no identity to share -- so no bare int ever
+// reaches NativeDeclarations.  It lives beside the function instead:
+// TestIsStatelessPayloadClassifiesByTheOwnType, which pins that a bool, an
+// int and a string are still stateless.
+// ---------------------------------------------------------------------------
+
+func pointerCellEnv() (*lisp.LEnv, error) {
+	env, err := elpstest.NewForkCheckEnv()
+	if err != nil {
+		return nil, err
+	}
+	n := 0
+	if rc := env.PutGlobal(lisp.Symbol("cell"), lisp.Native(&n)); rc.Type == lisp.LError {
+		return nil, lisp.GoError(rc)
+	}
+	return env, nil
+}
+
+func TestAPointerToABasicTypeIsNotStateless(t *testing.T) {
+	t.Parallel()
+	tmpl, err := pointerCellEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f0, err := tmpl.Fork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f1, err := tmpl.Fork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cellOf := func(env *lisp.LEnv) *int {
+		t.Helper()
+		p, ok := env.GetGlobal(lisp.Symbol("cell")).Native.(*int)
+		if !ok {
+			t.Fatal("the fork does not hold a *int under `cell`")
+		}
+		return p
+	}
+	*cellOf(f0) = 41
+	if got := *cellOf(f1); got != 41 {
+		t.Fatalf("premise: the two forks do not share the cell (read %d, want 41); this control "+
+			"is not exercising the shape it describes", got)
+	}
+
+	byType := map[string]elpstest.NativeDeclaration{}
+	for _, d := range elpstest.NativeDeclarations(tmpl) {
+		byType[d.Type] = d
+	}
+	cell, ok := byType["*int"]
+	if !ok {
+		t.Fatalf("the census does not reach the *int at all, so this control checks nothing: %v", byType)
+	}
+	if cell.Declared() {
+		t.Errorf("the census reports %s as having declared its sharing semantics.\n"+
+			"It has not: it is neither a NativeCloner nor a RuntimeBound, and a POINTER to a basic\n"+
+			"type is a shared mutable cell, not a value with no state to share -- fork 0 wrote 41\n"+
+			"through this one and fork 1 read it back. An embedder running the exported pre-ship\n"+
+			"census gets a clean bill of health for a payload every transaction shares.", cell)
+	}
+	// The census must not have gone permissive the other way either: the
+	// standard library's own payload declares NativeCloner and is still
+	// reported as having declared.
+	if suite, ok := byType["*libtesting.TestSuite"]; ok && !suite.Declared() {
+		t.Errorf("a NativeCloner payload is no longer reported as declared: %s\n"+
+			"Declared() has become `nothing is ever declared`, which reddens the census for every "+
+			"payload that did the right thing.", suite)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Claims-under-test.
 //
 // Three rounds of review each found a FALSE SENTENCE in newly-added prose,
