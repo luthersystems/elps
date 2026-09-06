@@ -35,9 +35,13 @@ import (
 //     walker nobody told it about, and cannot catch a memo DELETED from a
 //     registered one; the scan catches both, deterministically, without any
 //     test having to generate the value shape the memo protects.
-//   - The PAYLOAD SCAN half reads the two walkers' `v.Native` type switches
-//     and asserts that every payload type they copy is either a registered
-//     memo kind or an exempted one.  That is issue #585 stated exactly: a
+//   - The PAYLOAD SCAN half reads every function in this package that WRITES
+//     a header's Native field and asserts that every payload type it names —
+//     by a type switch, by a type assertion, or through a cell-view accessor —
+//     is either a registered memo kind or an exempted one.  It used to read
+//     `case` arms in a hardcoded fork.go/detach.go pair, which is why
+//     (*LVal).Copy's cell-view arm shipped unexamined; see
+//     lisp/walkers_payload_scan_test.go.  That is issue #585 stated exactly: a
 //     payload the walker rebuilds but does not memoise is a payload two
 //     headers come apart over.
 
@@ -316,6 +320,9 @@ func TestEveryCopiedPayloadTypeIsMemoisedOrExempt(t *testing.T) {
 	kindOf := map[string]PayloadKind{
 		"*[]byte":  PayloadBytes,
 		"*MapData": PayloadSortedMap,
+		// The protocol type PayloadNative names: detach and fork both route
+		// a payload implementing it through their per-payload natives memo.
+		"NativeCloner": PayloadNative,
 	}
 	exempt := map[string]bool{}
 	for _, e := range memoExemptions {
@@ -323,34 +330,37 @@ func TestEveryCopiedPayloadTypeIsMemoisedOrExempt(t *testing.T) {
 	}
 	used := map[string]bool{}
 
-	for _, file := range []string{"fork.go", "detach.go"} {
-		types, err := nativeSwitchCaseTypes(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(types) == 0 {
-			t.Errorf("%s: no v.Native type switch found; the scan has stopped looking", file)
+	// The scan is nativePayloadSites (lisp/walkers_payload_scan_test.go),
+	// which starts from every function that WRITES a Native field and
+	// collects the payload types it names in any form.  It replaced a
+	// hardcoded two-file list of `case` arms that could not see
+	// (*LVal).Copy's site at all -- see that file's header for the
+	// triggering example.
+	sites, _, err := nativePayloadSites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sites) == 0 {
+		t.Fatal("the payload scan found no site in package lisp; it has stopped looking")
+	}
+	for _, s := range sites {
+		if kind, ok := kindOf[s.Typ]; ok {
+			if !memoisedByEveryRebuildingWalker(kind) {
+				t.Errorf("%s: payload type %s is rebuilt but is not memoised by every rebuilding walker",
+					s.Pos, s.Typ)
+			}
 			continue
 		}
-		for _, typ := range types {
-			if kind, ok := kindOf[typ]; ok {
-				if !memoisedByEveryRebuildingWalker(kind) {
-					t.Errorf("%s: payload type %s is rebuilt but is not memoised by every rebuilding walker",
-						file, typ)
-				}
-				continue
-			}
-			if exempt[typ] {
-				used[typ] = true
-				continue
-			}
-			t.Errorf("%s: the walker copies payload type %s, which is neither a registered memo kind\n"+
-				"nor an exempted one.  A rebuilt payload that is not memoised per payload is rebuilt\n"+
-				"once per HEADER, so two names for it come apart in the copy — issues #576 and #585.\n"+
-				"Memoise it in both rebuilding walkers, or add a row to memoExemptions in\n"+
-				"lisp/walkers.go stating why it cannot be aliased across two headers.",
-				file, typ)
+		if exempt[s.Typ] {
+			used[s.Typ] = true
+			continue
 		}
+		t.Errorf("%s: %s handles payload type %s, which is neither a registered memo kind\n"+
+			"nor an exempted one.  A rebuilt payload that is not memoised per payload is rebuilt\n"+
+			"once per HEADER, so two names for it come apart in the copy \u2014 issues #576 and #585.\n"+
+			"Memoise it in both rebuilding walkers, or add a row to memoExemptions in\n"+
+			"lisp/walkers.go stating why it cannot be aliased across two headers.",
+			s.Pos, s.Func, s.Typ)
 	}
 	for _, e := range memoExemptions {
 		if !strings.HasPrefix(e.Subject, "lisp.") && !used[e.Subject] {
@@ -474,47 +484,6 @@ func isMemoKey(e ast.Expr) bool {
 		return k.Name == "any"
 	}
 	return false
-}
-
-// nativeSwitchCaseTypes returns the concrete case types of every
-// `switch x := v.Native.(type)` in the named file: the payload types the
-// walker knows how to rebuild.
-func nativeSwitchCaseTypes(name string) ([]string, error) {
-	fset := token.NewFileSet()
-	src, err := os.ReadFile(name) //nolint:gosec // a fixed file name in this package's own directory
-	if err != nil {
-		return nil, err
-	}
-	f, err := parser.ParseFile(fset, name, src, parser.SkipObjectResolution)
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	ast.Inspect(f, func(n ast.Node) bool {
-		sw, ok := n.(*ast.TypeSwitchStmt)
-		if !ok || !isNativeTypeSwitch(fset, sw) {
-			return true
-		}
-		for _, stmt := range sw.Body.List {
-			cc, ok := stmt.(*ast.CaseClause)
-			if !ok {
-				continue
-			}
-			for _, e := range cc.List {
-				if id, ok := e.(*ast.Ident); ok && id.Name == "nil" {
-					continue
-				}
-				out = append(out, render(fset, e))
-			}
-		}
-		return true
-	})
-	sort.Strings(out)
-	return out, nil
-}
-
-func isNativeTypeSwitch(fset *token.FileSet, sw *ast.TypeSwitchStmt) bool {
-	return strings.Contains(render(fset, sw.Assign), ".Native.(type)")
 }
 
 func render(fset *token.FileSet, n ast.Node) string {

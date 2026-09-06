@@ -227,6 +227,20 @@ var memoExemptions = []MemoExemption{
 			"(TestCopyAndDetachDropCellViewLink).",
 	},
 	{
+		Subject: "*funData",
+		Reason: "an LFun's function data, REBUILT per header by the fork walker (`cp.Native = &funData{...}`) " +
+			"and not memoised, so FunRef's two headers over one *funData -- the deliberate aliasing " +
+			"lvalCopyExemptions' FunRef row describes -- get one copy each in the fork. That split cannot " +
+			"be observed, because a funData is write-once: every one in this package is built by a " +
+			"composite literal and no field of one is assigned afterwards, so the copies are " +
+			"field-identical, and the only field that could have differed -- env -- travels through the " +
+			"forker's own envs memo, so both copies name the SAME copied environment. Measured by " +
+			"TestForkRebuildsFunDataPerHeaderIndistinguishably, which is what goes red if a funData " +
+			"field ever becomes mutable. NEW in the commit that widened the payload scan: this site was " +
+			"always there, expressed as a type assertion inside a `switch v.Type` arm, and the old scan " +
+			"read only `case` arms of `switch v.Native.(type)` in two named files.",
+	},
+	{
 		Subject: "lisp.sealCheckState.roots",
 		Reason: "the checked-build seal watchdog's fingerprint table (lisp/seal_check_elpscheck.go, -tags elpscheck). " +
 			"It maps a sealed root to the digest it carried at seal time; it produces no copy.",
