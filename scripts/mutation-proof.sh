@@ -177,10 +177,18 @@ $MP_EXTRA_ROW"
 die() { echo "mutation-proof: $*" >&2; exit 1; }
 
 restore() { git -C "$ROOT" checkout -- lisp/ 2>/dev/null; }
-trap restore EXIT
 
+# The dirty check runs BEFORE the trap is armed, and the order is the whole
+# point. `trap restore EXIT` fires on the `die` below too, so arming it first
+# made this script DESTROY the very changes it was refusing to run over: it
+# printed "commit or stash first" and then checked lisp/ out from under the
+# author, discarding their uncommitted edit. Measured the hard way, on an
+# edit to lisp/lisp.go. Nothing may run between here and the check that can
+# leave lisp/ modified.
 [ -z "$(git -C "$ROOT" status --porcelain -- lisp/)" ] ||
   die "lisp/ has uncommitted changes; this script rewrites it. Commit or stash first."
+
+trap restore EXIT
 
 echo "== precondition: the clean tree must be green =="
 if ! go test "$PKG" -count=1 >/tmp/mp-clean.log 2>&1; then
