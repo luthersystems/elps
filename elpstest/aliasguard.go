@@ -235,6 +235,37 @@ const (
 	// ProbeCapturedBinding rebinds one symbol in an environment a closure
 	// captured.  Only walkers whose Closures is ClosuresInScope have these.
 	ProbeCapturedBinding ProbeKind = "captured-binding"
+	// ProbeCellSlot writes a sentinel over slot 0 of a header's Cells --
+	// the backing array a list, a vector, a quote or any other
+	// cells-carrying header is mutated through.
+	//
+	// IT WAS MISSING, and its absence made the whole mutation-probe layer
+	// VACUOUS for a graph whose only mutable storage is cells.  Measured:
+	// `(vector 1 2 3)` and `(list 1 2 3)` yielded ZERO probe sites, so
+	// comparePair returned early on len(sSites)==0 and the only surviving
+	// channel was fingerprint equality -- whose ordinals are per-walk, so
+	// it cannot tell a copier that RETURNS ITS OWN INPUT from a real copy.
+	// CheckWalker is the only oracle `copy` and Detach ever run under (no
+	// transaction runs "on" their output, so CheckTransactions does not
+	// cover them), which made it their blind spot rather than a gap
+	// somebody else's channel covered.
+	//
+	// SLOT 0 ONLY, not every slot: one site per header keeps the O(n²)
+	// sweep affordable on ordinary graphs, and slot 0 is enough to answer
+	// the question the sweep asks -- "is this header's backing array the
+	// same array as that one's".  Two headers over one array (a cdr view,
+	// or a copier that shared the slice) both see the write; two headers
+	// over two arrays do not.  A copier that shared only the TAIL of a
+	// cells slice would be missed, which is the same bounded claim
+	// ProbeBytesElement makes and the reason that one now probes its last
+	// byte as well as its first.
+	//
+	// SEALED HEADERS ARE SKIPPED.  A sealed value is immutable by contract
+	// and Fork shares it outright (docs/sealed-ast.md), so writing through
+	// one would report a documented behaviour as a leak -- and would be a
+	// write into storage the guard does not own, which is the very defect
+	// class checkStamp exists for.
+	ProbeCellSlot ProbeKind = "cell-slot"
 )
 
 // ProbeSite is one place the oracle can write a sentinel and undo it.
@@ -343,6 +374,16 @@ func indentLines(s string) string {
 // sorted map of 96 int entries is 96 probe sites (pinned by
 // TestASortedMapEntryIsAProbeSite, in both directions), so 96 was inside
 // ordinary range.
+//
+// WHAT A GRAPH COSTS IN SITES, since two of the four kinds are not one
+// site per payload: a sorted-map entry is 1, a captured binding is 1, a
+// BYTES buffer is 2 (its first byte and its last, or 1 when it holds a
+// single byte), and a cells-carrying header is 1 (slot 0), sealed headers
+// excepted.  The last two kinds are newer than the figures below, so a
+// graph an embedder measured against this cap before them counts higher
+// now -- a list of n multi-byte buffers went from n sites to 2n+1.  The
+// cap is a site count, not a payload count, and the truncation witness
+// reports the measured number to raise it to.
 //
 // Cost, measured on a 4-core box over a list of n buffers, best of three.
 // The sweep is quadratic in the site count, and the figures are PER
@@ -650,17 +691,59 @@ func comparePair(w Walker, c AliasCheck, what string, src, cp *lisp.LVal, scope 
 		out = append(out, wit...)
 		gotAff, wit := affectedSet(w, c, opts, cSites, cBase, i, fpSrc, src, "the source")
 		out = append(out, wit...)
-		if !sameIndexSet(wantAff, gotAff) {
+		wantCmp := aliasClass(w, sSites, wantAff)
+		gotCmp := aliasClass(w, cSites, gotAff)
+		if !sameIndexSet(wantCmp, gotCmp) {
 			out = append(out, Witness{
 				Walker:       w.Name,
 				Property:     "a write through the copy is seen exactly where it is seen through the source",
 				Site:         sSites[i],
-				WantAffected: paths(sSites, wantAff),
-				GotAffected:  paths(cSites, gotAff),
-				Leak:         leakPath(sSites, cSites, wantAff, gotAff),
+				WantAffected: paths(sSites, wantCmp),
+				GotAffected:  paths(cSites, gotCmp),
+				Leak:         leakPath(sSites, cSites, wantCmp, gotCmp),
 				Repro:        c.Repro,
 			})
 		}
+	}
+	return out
+}
+
+// cellSlotAliasingIsContractual reports whether a walker promises that two
+// headers sharing ONE cells backing array in its input still share one in
+// its output.
+//
+// It is a contract for FORK -- a view records its root where it is made (PR
+// #602) and cellViewWitnesses asserts the fork's view windows the fork's own
+// root -- and for the macro stamp, which shares an unchanged node outright.
+// It is DELIBERATELY NOT PRESERVED by `copy` and detach: two headers that
+// shared one array land in the copy with separate arrays, stated in
+// lisp/copy.go's doc comment and in docs/func.md and pinned by
+// TestCopyDoesNotPreserveBackingArraySharing.  BackingRebuilt's doc has
+// always said the mutation probe does not test it for them; ProbeCellSlot
+// is the first site kind that COULD, so this is where that sentence stops
+// being a description of an absence and becomes a rule with a name.
+//
+// It bounds the ALIAS-CLASS comparison only.  The leak check in
+// affectedSet -- "a write on one side is invisible on the other" -- is
+// untouched and applies to every site of every walker, because a copy
+// holding the SOURCE's array is a leak under every contract here.  That is
+// also the property that catches a `copy` which simply returns its input
+// (TestGuardDetectsACopierThatReturnsItsInput), so the exemption costs that
+// control nothing.
+func cellSlotAliasingIsContractual(w Walker) bool { return w.Kind != WalkerCopy }
+
+// aliasClass drops from an alias equivalence class the sites whose sharing
+// the walker's contract does not cover.  See cellSlotAliasingIsContractual.
+func aliasClass(w Walker, sites []ProbeSite, idx []int) []int {
+	if cellSlotAliasingIsContractual(w) {
+		return idx
+	}
+	out := make([]int, 0, len(idx))
+	for _, i := range idx {
+		if sites[i].Kind == ProbeCellSlot {
+			continue
+		}
+		out = append(out, i)
 	}
 	return out
 }
@@ -991,12 +1074,52 @@ func (p *siteWalker) value(v *lisp.LVal) {
 			p.pop()
 		}
 	default:
+		p.cellSlot(v)
 		for i, c := range v.Cells {
 			p.push("cell " + strconv.Itoa(i))
 			p.value(c)
 			p.pop()
 		}
 	}
+}
+
+// cellSlot records slot 0 of a header's backing array as a probe site.  See
+// ProbeCellSlot for why it is one site rather than one per slot, and why a
+// sealed header contributes none.
+func (p *siteWalker) cellSlot(v *lisp.LVal) {
+	if len(v.Cells) == 0 || v.IsSealed() {
+		return
+	}
+	hdr := v
+	orig := hdr.Cells[0]
+	p.push("cell[0]")
+	p.sites = append(p.sites, ProbeSite{
+		Kind: ProbeCellSlot,
+		Path: p.here(),
+		// The length guards are for a graph a TRANSACTION shortened
+		// between enumeration and the write.  Nothing in the sweep itself
+		// resizes a Cells slice; a probe that found its slot gone reports
+		// so rather than panicking inside the oracle.
+		write: func(s int) {
+			if len(hdr.Cells) > 0 {
+				//elps:mutates writing a value the guard does not own IS the probe -- the whole sweep exists to write a sentinel into reachable storage and observe where it appears -- and reset below undoes it exactly, which affectedSet re-measures on every write
+				hdr.Cells[0] = lisp.Int(s)
+			}
+		},
+		read: func() string {
+			if len(hdr.Cells) == 0 {
+				return "<no cells>"
+			}
+			return renderProbeValue(hdr.Cells[0])
+		},
+		reset: func() {
+			if len(hdr.Cells) > 0 {
+				//elps:mutates the undo half of the write above; restoring the original *LVal is what keeps the sweep non-destructive
+				hdr.Cells[0] = orig
+			}
+		},
+	})
+	p.pop()
 }
 
 func (p *siteWalker) sortedMap(v *lisp.LVal) {
@@ -1035,17 +1158,39 @@ func (p *siteWalker) bytes(v *lisp.LVal) {
 		return
 	}
 	p.seen[buf] = true
-	p.push("bytes[0]")
-	orig := (*buf)[0]
 	b := buf
-	p.sites = append(p.sites, ProbeSite{
-		Kind:  ProbeBytesElement,
-		Path:  p.here(),
-		write: func(s int) { (*b)[0] = byte(s) },
-		read:  func() string { return strconv.Itoa(int((*b)[0])) },
-		reset: func() { (*b)[0] = orig },
-	})
-	p.pop()
+	// The FIRST and the LAST byte.  One site was not enough: a six-byte
+	// buffer yielded exactly one site, bytes[0] (measured), so a copier
+	// that privately copied a buffer's head while sharing its tail wrote
+	// through storage no probe ever read.  Two sites bound the array at
+	// both ends for one extra write per buffer; a copier that shared only
+	// the MIDDLE is still outside the claim, which is why the claim is
+	// stated here rather than left as "bytes are covered".
+	for _, i := range bytesProbeIndices(len(*b)) {
+		idx := i
+		orig := (*b)[idx]
+		p.push("bytes[" + strconv.Itoa(idx) + "]")
+		p.sites = append(p.sites, ProbeSite{
+			Kind:  ProbeBytesElement,
+			Path:  p.here(),
+			write: func(s int) { (*b)[idx] = byte(s) },
+			read:  func() string { return strconv.Itoa(int((*b)[idx])) },
+			reset: func() { (*b)[idx] = orig },
+		})
+		p.pop()
+	}
+}
+
+// bytesProbeIndices is the set of byte offsets the sweep writes: the first
+// and, when the buffer has more than one byte, the last.  A one-byte buffer
+// must yield ONE site, not two identical ones -- a duplicate site would
+// make the two probes read each other's write and every affected-set
+// comparison meaningless.
+func bytesProbeIndices(n int) []int {
+	if n <= 1 {
+		return []int{0}
+	}
+	return []int{0, n - 1}
 }
 
 func (p *siteWalker) env(e *lisp.LEnv) {

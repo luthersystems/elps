@@ -335,3 +335,95 @@ func TestIsStatelessPayloadClassifiesByTheOwnType(t *testing.T) {
 		}
 	}
 }
+
+// TestTheProbeSiteCensus is the site-count half of controls 13 and 15
+// (aliasguard_broken_test.go), stated as exact numbers because the failure
+// it guards against is a SILENT ZERO: comparePair returns early on
+// len(sSites)==0, so a graph the walk contributes no site for is a graph
+// the mutation channel does not check at all, with no witness saying so.
+//
+// Measured before ProbeCellSlot and the last-byte probe existed, and the
+// reason both were added: `(vector 1 2 3)` -> 0 sites, `(list 1 2 3)` -> 0,
+// a six-byte buffer -> 1.
+//
+// Both directions are pinned, as in TestASortedMapEntryIsAProbeSite: a
+// header with no cells must contribute NOTHING, or "everything is a site"
+// passes the first half while destroying the boundary the cap controls
+// rest on.
+func TestTheProbeSiteCensus(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		program string
+		want    int
+		why     string
+	}{
+		// One site per cells-carrying HEADER, at its slot 0.  A list is
+		// one header.  A vector is THREE -- the array header, its
+		// dimensions and its data are all cells-carrying headers (lisp's
+		// LArray representation), which is worth knowing here because it
+		// is what the numbers below are made of.
+		{`(set 'probe (list 1 2 3))`, 1, "a list's backing array"},
+		{`(set 'probe (vector 1 2 3))`, 3, "the array header, its dims and its data"},
+		{`(set 'probe (list (vector 1 2) (vector 1 2)))`, 7, "the outer list plus three per vector"},
+		// A sorted map is its entries; LSortMap carries no Cells.
+		{`(set 'probe (sorted-map "k" 1))`, 1, "one map entry"},
+		// A buffer is bounded at both ends, and a one-byte buffer must
+		// not yield two sites over one index -- two probes on one byte
+		// would read each other's write.
+		{`(set 'probe (to-bytes "abcdef"))`, 2, "the first and last byte"},
+		{`(set 'probe (to-bytes "ab"))`, 2, "the first and last byte"},
+		{`(set 'probe (to-bytes "a"))`, 1, "one byte is one site"},
+		// The negative half: nothing mutable, no sites.
+		{`(set 'probe (to-bytes ""))`, 0, "an empty buffer"},
+		{`(set 'probe (list))`, 0, "an empty list"},
+		{`(set 'probe 7)`, 0, "an int"},
+		{`(set 'probe "abc")`, 0, "a string, whose bytes are not mutable storage"},
+	}
+	for _, tc := range cases {
+		env, err := NewForkCheckEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rc := env.LoadString("p.lisp", tc.program); rc.Type == lisp.LError {
+			t.Fatalf("%s: %v", tc.program, rc)
+		}
+		sites, truncated := probeSites(env.Get(lisp.Symbol("probe")), ClosuresInScope, "probe", DefaultMaxProbeSites)
+		if truncated {
+			t.Fatalf("%s: the sweep truncated at the default cap, which none of these graphs can reach", tc.program)
+		}
+		if len(sites) != tc.want {
+			var paths []string
+			for _, s := range sites {
+				paths = append(paths, s.String())
+			}
+			t.Errorf("%s has %d probe site(s), want %d (%s).\n"+
+				"A graph with no site is a graph comparePair returns EARLY on, leaving only the\n"+
+				"fingerprint -- whose ordinals are per walk, so it cannot tell a copier that returns\n"+
+				"its own input from a real copy.\nsites: %v",
+				tc.program, len(sites), tc.want, tc.why, paths)
+		}
+	}
+}
+
+// A sealed header contributes no cell slot: a sealed value is immutable by
+// contract and Fork shares it outright (docs/sealed-ast.md), so writing
+// through one would report documented behaviour as a leak -- and would be
+// the guard itself writing into storage it does not own, the defect class
+// checkStamp exists for.
+func TestASealedHeaderIsNotACellSlotProbeSite(t *testing.T) {
+	t.Parallel()
+	v := lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2)})
+	sites, _ := probeSites(v, ClosuresInScope, "probe", DefaultMaxProbeSites)
+	if len(sites) != 1 {
+		t.Fatalf("premise: an unsealed two-cell header is one probe site, got %d", len(sites))
+	}
+	v.SealAST()
+	if !v.IsSealed() {
+		t.Fatal("the fixture did not seal")
+	}
+	if sites, _ := probeSites(v, ClosuresInScope, "probe", DefaultMaxProbeSites); len(sites) != 0 {
+		t.Errorf("a SEALED header contributed %d probe site(s): %v\n"+
+			"The sweep would write into storage that is immutable by contract and shared with every "+
+			"fork, reporting a documented behaviour as a leak.", len(sites), sites)
+	}
+}

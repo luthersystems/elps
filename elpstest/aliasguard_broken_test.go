@@ -1371,6 +1371,201 @@ func TestAPointerToABasicTypeIsNotStateless(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Control 13: a "copier" that returns its own input.
+//
+// A rebuild that rebuilds nothing, and the mutation-probe layer is the only
+// channel that can see it.  The fingerprint cannot: its identity ordinals
+// are PER WALK, so a value and itself produce byte-identical streams.  Only
+// writing through one side and reading the other tells them apart.
+//
+// It went undetected on a graph whose only mutable storage is CELLS.
+// Measured before ProbeCellSlot existed: `(vector 1 2 3)` and
+// `(list 1 2 3)` yielded ZERO probe sites, so comparePair returned early on
+// len(sSites)==0 and the identity-blind fingerprint was all that was left.
+// That is `copy` and Detach's blind spot in particular -- no transaction
+// runs "on" their output, so CheckTransactions never covers them and
+// CheckWalker is the only oracle they have.
+//
+// The sorted-map row is the control on the control: the SAME walker is
+// caught there, which pins the miss on the missing probe kind rather than
+// on the walker being benign.
+// ---------------------------------------------------------------------------
+
+// identityWalker returns its argument unchanged, so every payload of the
+// "copy" is the source's payload.
+func identityWalker() elpstest.Walker {
+	return elpstest.Walker{
+		Name:     "broken-copier/returns-its-input",
+		Kind:     elpstest.WalkerCopy,
+		Copy:     func(_ *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) { return v, nil },
+		Closures: elpstest.ClosuresInScope,
+		Backing:  elpstest.BackingRebuilt,
+	}
+}
+
+func TestGuardDetectsACopierThatReturnsItsInput(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, program string }{
+		{"a vector", `(set 'probe (vector 1 2 3))`},
+		{"a list", `(set 'probe (list 1 2 3))`},
+		{"a list of vectors", `(set 'probe (list (vector 1 2) (vector 1 2)))`},
+		// The control on the control: a payload kind the sweep already
+		// covered before ProbeCellSlot existed.
+		{"a sorted map", `(set 'probe (sorted-map "k" 1))`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := elpstest.CheckWalker(identityWalker(), elpstest.AliasCheck{
+				Program: tc.program,
+				Repro:   "a copier that returns its own input, over " + tc.name,
+			})
+			if err != nil {
+				t.Fatalf("harness error: %v", err)
+			}
+			if len(got) == 0 {
+				t.Fatalf("the oracle reported NOTHING for a copier that returns its own input, on\n"+
+					"%s.\nThe fingerprint cannot see this -- its ordinals are per walk, so a value and\n"+
+					"itself fingerprint identically -- so the mutation sweep is the only channel there\n"+
+					"is, and a graph with no probe site in it is a graph the oracle does not check at\n"+
+					"all.", tc.program)
+			}
+			assertWitnessMentions(t, "identity-copier/"+tc.name, got,
+				"a write on one side is invisible on the other")
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Control 14: the cells-aliasing exemption `copy` and detach declare.
+//
+// ProbeCellSlot is the first site kind that can observe WHICH HEADERS SHARE
+// ONE CELLS BACKING ARRAY, and two of the four walkers deliberately do not
+// preserve that: `copy` and detach give two headers over one array separate
+// arrays (lisp/copy.go, docs/func.md, TestCopyDoesNotPreserveBackingArraySharing),
+// which BackingRebuilt's doc has always covered with "the mutation probe
+// does not test it for them".
+//
+// Measured while writing that probe: without the exemption, `copy` and
+// Detach both produced two alias-class witnesses on the graph below -- a
+// guard red on documented, intended behaviour, which is the failure mode
+// DefaultMaxProbeSites's own doc calls "a failure that is not a bug, and
+// that trains an embedder to raise the cap reflexively".
+//
+// The exemption is bounded to the alias-class comparison.  The leak check
+// -- "a write on one side is invisible on the other" -- still covers every
+// cell-slot site of every walker, which is why control 13's identity copier
+// is caught anyway; the last row here pins that, so the exemption cannot
+// quietly grow into "cell slots are not probed for copiers".
+// ---------------------------------------------------------------------------
+
+// offsetZeroViewProgram binds a view whose slot 0 IS its root's slot 0, the
+// one shape in which de-aliasing a cells backing array is observable from a
+// slot-0 probe.
+const offsetZeroViewProgram = `
+(set 'l (list 1 2 3))
+(set 'w (slice 'list l 0 3))
+(set 'probe (list l w))
+`
+
+func TestTheCellsAliasingExemptionHoldsForEveryLiveWalker(t *testing.T) {
+	t.Parallel()
+	for _, w := range elpstest.Walkers() {
+		got, err := elpstest.CheckWalker(w, elpstest.AliasCheck{Program: offsetZeroViewProgram})
+		if err != nil {
+			t.Fatalf("%s: harness error: %v", w.Name, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("%s reports %d witness(es) on a graph holding a view over its root's own\n"+
+				"slot 0:\n%s\n`copy` and detach do not preserve cells backing-array sharing BY\n"+
+				"CONTRACT, and Fork preserves it (PR #602), so no live walker may be red here. A\n"+
+				"guard that reddens on documented behaviour is a guard that gets switched off.",
+				w.Name, len(got), got[0])
+		}
+	}
+	// And the exemption has not swallowed the leak check: the identity
+	// copier, whose cells ARE the source's, is still caught on the same
+	// graph.
+	got, err := elpstest.CheckWalker(identityWalker(), elpstest.AliasCheck{Program: offsetZeroViewProgram})
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("the identity copier went undetected on the exemption's own graph. The exemption " +
+			"has grown from 'the alias class of cell slots is not compared for a copier' into 'cell " +
+			"slots are not probed for a copier', which is the whole channel.")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Control 15: a bytes buffer is bounded at BOTH ends.
+//
+// ProbeBytesElement wrote byte 0 and nothing else, so a six-byte buffer
+// yielded exactly ONE site (measured) and the sweep bounded a buffer at one
+// end only.  Two headers whose arrays OVERLAP -- `(slice 'bytes b 3 6)` is
+// a view, not a copy -- share b's last byte with the view's last byte, and
+// nothing but a last-byte probe can see that they do.
+//
+// PINNED GAP, and the reason this test asserts a witness from the LIVE
+// walkers rather than from a broken reference one: all three copiers
+// rebuild each *[]byte independently, so an overlapping bytes view comes
+// out of Fork, `copy` and detach de-aliased.  For cells that is a contract
+// for Fork (PR #602) and a documented exemption for the other two; for
+// BYTES nothing states either, and a cold load DOES share the overlap --
+// so a fork diverges from a cold load on `(set 'tail (slice 'bytes b 3 6))`
+// followed by a write through b.  That is the bytes analogue of issue #600
+// gap 3, it is out of scope here, and this test is what stops it going
+// quiet again: it will fail the day somebody fixes it, and the fix is to
+// replace it with the contract, not to delete it.
+// ---------------------------------------------------------------------------
+
+const overlappingBytesProgram = `
+(set 'b (to-bytes "abcdef"))
+(set 'tail (slice 'bytes b 3 6))
+(set 'probe (list b tail))
+`
+
+func TestTheBytesProbeSeesAnOverlappingView(t *testing.T) {
+	t.Parallel()
+	// Ground truth: the two headers really do share storage on a cold
+	// load, so the witnesses below are about a rebuild losing it.
+	env, err := elpstest.NewForkCheckEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc := env.LoadString("p.lisp", overlappingBytesProgram); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	b := env.Get(lisp.Symbol("b"))
+	tail := env.Get(lisp.Symbol("tail"))
+	bp, ok1 := b.Native.(*[]byte)
+	tp, ok2 := tail.Native.(*[]byte)
+	if !ok1 || !ok2 {
+		t.Fatalf("the fixture is not two bytes headers: %v %v", b, tail)
+	}
+	(*bp)[5] = 'Z'
+	if got := (*tp)[2]; got != 'Z' {
+		t.Fatalf("premise: `slice` did not return a view sharing b's array (read %q); this control "+
+			"is not exercising the shape it describes", got)
+	}
+
+	for _, w := range elpstest.Walkers() {
+		if w.Kind == elpstest.WalkerStamp {
+			continue // not a copier; it shares its input by contract
+		}
+		got, err := elpstest.CheckWalker(w, elpstest.AliasCheck{Program: overlappingBytesProgram})
+		if err != nil {
+			t.Fatalf("%s: harness error: %v", w.Name, err)
+		}
+		if len(got) == 0 {
+			t.Errorf("%s: the sweep reports nothing for a rebuild that de-aliases an overlapping\n"+
+				"bytes view. Either the last-byte probe has gone (the overlap is at b's LAST byte,\n"+
+				"which byte 0 cannot reach) or the walker now preserves the overlap -- in which case\n"+
+				"delete this pinned gap and state the contract, do not weaken the probe.", w.Name)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Claims-under-test.
 //
 // Three rounds of review each found a FALSE SENTENCE in newly-added prose,
@@ -1565,25 +1760,35 @@ func TestAProbeCountEqualToTheCapIsNotReportedAsPartial(t *testing.T) {
 		b.WriteString("))")
 		return b.String()
 	}
+	// THE SITE COUNT OF EACH SHAPE, stated rather than left implicit, so a
+	// change in what counts as a probe site fails this control loudly
+	// instead of quietly sliding the boundary it pins.  A buffer of more
+	// than one byte is TWO sites -- its first byte and its last
+	// (ProbeBytesElement) -- and the list holding them is ONE, slot 0 of
+	// its Cells (ProbeCellSlot).  A sorted map of int entries is one site
+	// per entry and nothing else: LSortMap carries no Cells.
+	const listSites = 2*capSites + 1
+	const mapSites = capSites
 	cases := []struct {
 		name      string
 		program   string
+		cap       int
 		truncated bool
 	}{
-		{"exactly at the cap, nothing after", buffers(capSites) + "))", false},
-		{"at the cap plus a trailing int", buffers(capSites) + " 7))", false},
-		{"at the cap plus a repeated buffer", buffers(capSites) + " u0))", false},
-		{"at the cap plus an empty list", buffers(capSites) + " (list)))", false},
-		{"at the cap plus an empty bytes", buffers(capSites) + " (to-bytes \"\")))", false},
-		{"a bare sorted map at the cap", sortedMap(capSites), false},
-		{"one site over the cap", buffers(capSites+1) + "))", true},
-		{"well over the cap", buffers(capSites+20) + "))", true},
+		{"exactly at the cap, nothing after", buffers(capSites) + "))", listSites, false},
+		{"at the cap plus a trailing int", buffers(capSites) + " 7))", listSites, false},
+		{"at the cap plus a repeated buffer", buffers(capSites) + " u0))", listSites, false},
+		{"at the cap plus an empty list", buffers(capSites) + " (list)))", listSites, false},
+		{"at the cap plus an empty bytes", buffers(capSites) + " (to-bytes \"\")))", listSites, false},
+		{"a bare sorted map at the cap", sortedMap(capSites), mapSites, false},
+		{"one site over the cap", buffers(capSites) + "))", listSites - 1, true},
+		{"well over the cap", buffers(capSites+20) + "))", listSites, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got, err := elpstest.CheckWalker(bytesSharingWalker(),
-				elpstest.AliasCheck{Program: tc.program, MaxProbeSites: capSites})
+				elpstest.AliasCheck{Program: tc.program, MaxProbeSites: tc.cap})
 			if err != nil {
 				t.Fatalf("harness error: %v", err)
 			}
