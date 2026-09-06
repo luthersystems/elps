@@ -536,7 +536,7 @@ func TestABuiltinIsNotIdentifiedByItsGoPointer(t *testing.T) {
 	}
 }
 
-// PINNED SCOPE, not an aspiration:// PINNED SCOPE, not an aspiration: two environments whose `policy` returns
+// PINNED SCOPE, not an aspiration: two environments whose `policy` returns
 // 1 and 2 fingerprint IDENTICALLY.  Function identity in the encoding is
 // FID, package, builtin-ness and FunType, and none of those moves when the
 // Go implementation behind the name does.
