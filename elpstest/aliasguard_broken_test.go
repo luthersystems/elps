@@ -1104,6 +1104,186 @@ func TestReachableEnvironmentsNClampsANonPositiveLimit(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Control 11: a stateful native payload whose Go kind is NOT a pointer.
+//
+// Control 5 above covers the pointer case.  Fork's default policy shares an
+// undeclared payload with every fork BY REFERENCE (docs/fork.md), and Go
+// has six kinds for which that means both forks write through to one
+// object: pointer, map, slice, chan, func and unsafe pointer.  Every
+// surface that asks "is this payload shared" keyed on reflect.Pointer, so
+// the other five were invisible: reachableNatives never collected one (so
+// property 4 could not fire), NativeDeclarations never listed its type (so
+// an embedder running the exported pre-ship census got a clean bill of
+// health for a payload every transaction shares), and the fingerprint
+// emitted `native(T,by-value)` -- no identity, no contents.
+//
+// Measured before the widening, on the map-kind row below: fork 0 wrote 41
+// through the payload, fork 1 read 41 back, and SharedNativePayloads
+// returned an empty slice.
+//
+// The FUNC row is the one substrate cares about -- a closure over mutable
+// Go state, which is how an embedder hands lisp a handle to something it
+// keeps -- and it is also the row whose identity is subtlest, so it gets a
+// ground-truth write of its own below.
+//
+// The negative half is a payload held BY VALUE.  Without it this control
+// would pass on a census that reported everything, and "held by reference"
+// would have stopped meaning anything.
+// ---------------------------------------------------------------------------
+
+// refKindPayloads are the payload shapes the census must see, one per Go
+// kind that Fork shares by reference.  A chan is included because it is a
+// reference kind Fork shares like the others, not because a program can do
+// much with one.
+func refKindPayloads() map[string]any {
+	counter := new(int)
+	return map[string]any{
+		"map":   map[string]int{"n": 0},
+		"slice": []int{0, 0},
+		"chan":  make(chan int, 1),
+		// A closure over mutable Go state: the substrate-relevant shape.
+		"func": func() int { *counter++; return *counter },
+	}
+}
+
+// refKindEnv binds one payload per reference kind, plus a struct held BY
+// VALUE, which must NOT be censused.
+func refKindEnv() (*lisp.LEnv, error) {
+	env, err := elpstest.NewForkCheckEnv()
+	if err != nil {
+		return nil, err
+	}
+	for name, payload := range refKindPayloads() {
+		if rc := env.PutGlobal(lisp.Symbol("p-"+name), lisp.Native(payload)); rc.Type == lisp.LError {
+			return nil, lisp.GoError(rc)
+		}
+	}
+	if rc := env.PutGlobal(lisp.Symbol("p-byvalue"), lisp.Native(sharedCloner{n: 1})); rc.Type == lisp.LError {
+		return nil, lisp.GoError(rc)
+	}
+	return env, nil
+}
+
+func TestGuardDetectsForkSharingANonPointerNative(t *testing.T) {
+	t.Parallel()
+	tmpl, err := refKindEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f0, err := tmpl.Fork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f1, err := tmpl.Fork()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// GROUND TRUTH, so this control cannot pass on a census that reports
+	// sharing that is not there: one Go map and one Go closure, each
+	// written through fork 0 and read back through fork 1.
+	payloadOf := func(env *lisp.LEnv, name string) any {
+		t.Helper()
+		v := env.GetGlobal(lisp.Symbol("p-" + name))
+		if v == nil || v.Type != lisp.LNative {
+			t.Fatalf("p-%s is %v, not a native", name, v)
+		}
+		return v.Native
+	}
+	payloadOf(f0, "map").(map[string]int)["n"] = 41
+	if got := payloadOf(f1, "map").(map[string]int)["n"]; got != 41 {
+		t.Fatalf("premise: the two forks do not share the map payload (read %d, want 41); "+
+			"this control is not exercising the shape it describes", got)
+	}
+	payloadOf(f0, "func").(func() int)()
+	if got := payloadOf(f1, "func").(func() int)(); got != 2 {
+		t.Fatalf("premise: the two forks do not share the closure's captured counter "+
+			"(read %d, want 2)", got)
+	}
+
+	// The cross-fork census must name every reference kind.
+	shared := map[string]bool{}
+	for _, sh := range elpstest.SharedNativePayloads(f0, f1) {
+		shared[sh.PathB] = true
+	}
+	for name := range refKindPayloads() {
+		if !shared["user:p-"+name] {
+			t.Errorf("SharedNativePayloads did not report the %s-kind payload both forks write "+
+				"through.\nFork shares an undeclared payload of EVERY reference kind, not just a "+
+				"pointer, so a census keyed on reflect.Pointer reports a clean result for a payload "+
+				"that is one transaction's state and another's.\nreported: %v", name, shared)
+		}
+	}
+	if shared["user:p-byvalue"] {
+		t.Error("SharedNativePayloads reported a payload held BY VALUE. Two copies of such a payload " +
+			"are the same payload in every sense the language can observe, so the census has become " +
+			"`everything reachable` and every witness it produces from now on is noise.")
+	}
+
+	// And the exported pre-ship census must list the types, or an embedder
+	// running it over its loaded environment is told they are not there.
+	declared := map[string]bool{}
+	for _, d := range elpstest.NativeDeclarations(tmpl) {
+		declared[d.Type] = true
+	}
+	for _, typ := range []string{"map[string]int", "[]int", "chan int", "func() int"} {
+		if !declared[typ] {
+			t.Errorf("NativeDeclarations does not list %s, so the pre-ship census an embedder is "+
+				"told to run reports a clean bill of health for it.\ndeclared: %v", typ, declared)
+		}
+	}
+}
+
+// The same shape through the whole transaction-isolation oracle, which is
+// where an embedder meets it: property 4 with ExpectNoSharedNatives set.
+// Measured at ZERO witnesses before the widening.
+func TestTransactionIsolationSeesANonPointerNative(t *testing.T) {
+	t.Parallel()
+	got, err := elpstest.CheckTransactions(elpstest.TransactionCheck{
+		NewEnv:  refKindEnv,
+		Program: `(set 'm (sorted-map "n" 0))`,
+		Tx: []string{
+			`(assoc! m "n" 1)`,
+			`(assoc! m "n" 2)`,
+		},
+		ExpectNoSharedNatives: true,
+	})
+	if err != nil {
+		t.Fatalf("harness error: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("the oracle reported nothing for a template whose every fork shares a map-kind, " +
+			"slice-kind, chan-kind and func-kind native payload; the census has narrowed back to " +
+			"pointers and property 4 cannot fire for the other five reference kinds")
+	}
+	assertWitnessMentions(t, "non-pointer-native", got, "no stateful native payload is reachable from two transactions at once")
+	assertWitnessMentions(t, "non-pointer-native", got, "func() int")
+}
+
+// The fingerprint half: a payload held by reference gets an identity
+// ordinal, so two headers over ONE payload are distinguishable from two
+// headers over two equal ones.  Without it a walker that de-aliased a
+// map-kind payload -- or interned two into one -- fingerprints identically
+// either way, since `native(T,by-value)` carries neither identity nor
+// contents.
+func TestFingerprintEncodesANonPointerNativeIdentity(t *testing.T) {
+	t.Parallel()
+	one := func(a, b any) string {
+		return elpstest.FingerprintValue(lisp.QExpr([]*lisp.LVal{
+			lisp.Native(a), lisp.Native(b),
+		}), elpstest.FingerprintOptions{}).String()
+	}
+	shared := map[string]int{"n": 1}
+	aliased := one(shared, shared)
+	distinct := one(map[string]int{"n": 1}, map[string]int{"n": 1})
+	if aliased == distinct {
+		t.Errorf("two headers over ONE map-kind payload fingerprint the same as two headers over "+
+			"two equal ones:\n  %s\nThe fingerprint cannot see sharing for any reference kind but "+
+			"a pointer, so every fingerprint-expressed property is blind to it.", aliased)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Claims-under-test.
 //
 // Three rounds of review each found a FALSE SENTENCE in newly-added prose,

@@ -43,8 +43,8 @@ func payloadKeyEnv(t *testing.T) *lisp.LEnv {
 
 func censusPaths(env *lisp.LEnv) map[string]string {
 	out := map[string]string{}
-	for p, path := range reachableNatives(env) {
-		out[path] = fmt.Sprintf("%T", p)
+	for _, rn := range reachableNatives(env) {
+		out[rn.path] = fmt.Sprintf("%T", rn.payload)
 	}
 	return out
 }

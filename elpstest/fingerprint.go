@@ -69,7 +69,10 @@ import (
 //   - A native payload is an opaque interface{}, so it renders as its Go
 //     type name plus an identity ordinal.  The ordinal is the load-bearing
 //     half: it says whether two headers hold ONE payload, which is
-//     observable even when the payload's contents are not.
+//     observable even when the payload's contents are not.  It is emitted
+//     for every payload held by REFERENCE -- pointer, map, slice, chan,
+//     func, unsafe pointer -- because Fork's default policy shares all six
+//     with every fork by reference; see payloadIdentity.
 //
 // # Bounds
 //
@@ -389,11 +392,6 @@ func normalizeFunIDs(s string) string {
 	return funIDPattern.ReplaceAllString(s, "_fun#")
 }
 
-// isPointerPayload reports whether a native payload is held by pointer, and
-// therefore has an identity worth recording.  A payload held by value (an
-// int, a struct) has none: two copies of it are the same payload in every
-// sense the language can observe, and the kernel's own memos skip it for
-// the same reason (forker.native, detacher.cloneNative).
 // isCellViewLink reports whether v's Native is a KERNEL-INTERNAL cell-view
 // link rather than an embedder payload.
 //
@@ -493,10 +491,11 @@ func (w *fingerprinter) annotation(v *lisp.LVal) {
 	default:
 		// Every other type can carry an embedder annotation.
 	}
-	if !isPointerPayload(v.Native) || isCellViewLink(v) {
+	key, ok := payloadIdentity(v.Native)
+	if !ok || isCellViewLink(v) {
 		return
 	}
-	n, first := w.id(v.Native)
+	n, first := w.id(key)
 	if !first {
 		w.emitf("annot#%d", n)
 		return
@@ -540,12 +539,83 @@ func kernelOwnedPayload(v *lisp.LVal) bool {
 	return isCellViewLink(v)
 }
 
-func isPointerPayload(payload any) bool {
+// nativeIdentity is what "the same payload" means for a native held by
+// reference: the Go type plus the address the reference points at.
+//
+// It is a KEY, and the reason it exists rather than the payload itself is
+// that the payload may not be a legal map key at all.  The ordinal table
+// (fingerprinter.ord) and the cross-fork census are Go maps, and a
+// map-typed or slice-typed payload used as a key PANICS with "hash of
+// unhashable type" -- which is what the widening below would have done on
+// its first embedder payload of either kind.  The type is carried
+// alongside the address because two payloads of different Go types are
+// never the same payload, and addresses can coincide across types (a *T
+// pointing at the first element of a []T is the classic pair).
+type nativeIdentity struct {
+	typ reflect.Type
+	ptr uintptr
+}
+
+// payloadIdentity reports the identity of a native payload held by
+// REFERENCE, and whether it has one.
+//
+// WHAT COUNTS AS "BY REFERENCE", and why the earlier `Kind() == Pointer`
+// test was not it.  Fork's default policy shares an undeclared payload with
+// every fork by REFERENCE (docs/fork.md), and Go has six kinds for which
+// that means the two forks write through to one object: Pointer, Map,
+// Slice, Chan, Func and UnsafePointer.  Keying on Pointer alone made the
+// other five invisible to everything downstream -- reachableNatives (so
+// property 4 could not fire), NativeDeclarations (so an embedder's pre-ship
+// census reported them clean) and the fingerprint (which emitted
+// `native(T,by-value)`: no identity, and no contents either).  Measured, on
+// a payload of type `map[string]int` reached from two forks: zero census
+// entries, no declaration row, and a write of 999 through one fork moved no
+// fingerprint token.  A payload held by VALUE (an int, a struct) genuinely
+// has no identity: two copies of it are the same payload in every sense the
+// language can observe, and the kernel's own memos skip it for the same
+// reason (forker.native, detacher.cloneNative).
+//
+// TWO MEASURED IMPRECISIONS, stated rather than assumed, because both are
+// places this can report sharing that is not there:
+//
+//   - A FUNC's identity is reflect's func pointer.  For a closure that is
+//     the funcval the closure allocated, so two closures over different
+//     captured state compare UNEQUAL and one closure copied compares EQUAL
+//     -- measured, both directions.  For a func literal that captures
+//     NOTHING, Go may emit a single static funcval, so two such payloads
+//     can share an ordinal.  A payload with no captured state has no
+//     mutable state to share, so the report is harmless where it is wrong.
+//   - A SLICE of zero length AND zero capacity has no identity: every
+//     zero-size allocation in Go lives at one address (measured: two
+//     distinct `[]int{}` values compare equal by pointer).  Such a payload
+//     is reported by value rather than given an ordinal it would share with
+//     an unrelated one.  A zero-LENGTH slice with capacity, `s[:0]`, does
+//     alias its backing array and keeps its identity.
+func payloadIdentity(payload any) (nativeIdentity, bool) {
 	if payload == nil {
-		return false
+		return nativeIdentity{}, false
 	}
 	rv := reflect.ValueOf(payload)
-	return rv.Kind() == reflect.Pointer && !rv.IsNil()
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Chan, reflect.Func:
+		if rv.IsNil() {
+			return nativeIdentity{}, false
+		}
+	case reflect.Slice:
+		// IsNil is not enough: see the zero-size note above.
+		if rv.IsNil() || (rv.Len() == 0 && rv.Cap() == 0) {
+			return nativeIdentity{}, false
+		}
+	case reflect.UnsafePointer:
+		// IsNil PANICS on this kind, so nil-ness is read off the address.
+		if rv.Pointer() == 0 {
+			return nativeIdentity{}, false
+		}
+	default:
+		// Held by value: no identity to record.
+		return nativeIdentity{}, false
+	}
+	return nativeIdentity{typ: rv.Type(), ptr: rv.Pointer()}, true
 }
 
 func (w *fingerprinter) value(v *lisp.LVal) {
@@ -670,18 +740,20 @@ func (w *fingerprinter) bytes(v *lisp.LVal) {
 }
 
 // native renders an opaque payload: its Go type, plus an identity ordinal
-// when it is held by pointer.  The ordinal is what makes payload sharing
-// observable through a value the walker cannot look inside.
+// when it is held by reference -- a pointer, map, slice, chan, func or
+// unsafe pointer (payloadIdentity).  The ordinal is what makes payload
+// sharing observable through a value the walker cannot look inside.
 func (w *fingerprinter) native(payload any) {
 	if payload == nil {
 		w.emit("native(nil)")
 		return
 	}
-	if !isPointerPayload(payload) {
+	key, ok := payloadIdentity(payload)
+	if !ok {
 		w.emitf("native(%T,by-value)", payload)
 		return
 	}
-	n, first := w.id(payload)
+	n, first := w.id(key)
 	if !first {
 		w.emitf("native#%d", n)
 		return

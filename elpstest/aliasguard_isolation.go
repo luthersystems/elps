@@ -687,8 +687,9 @@ func (s SharedNative) String() string {
 		s.Type, s.PathA, s.PathB, s.Cloner, s.Bound)
 }
 
-// SharedNativePayloads reports every native payload held by pointer that is
-// reachable from BOTH a and b.
+// SharedNativePayloads reports every native payload held by reference --
+// pointer, map, slice, chan, func or unsafe pointer (payloadIdentity) --
+// that is reachable from BOTH a and b.
 //
 // This is deliberately not the runtime-affinity check (lisp/runtime_bound.go).
 // That protocol is OPT-IN — a payload that never implements RuntimeBound is
@@ -707,17 +708,17 @@ func SharedNativePayloads(a, b *lisp.LEnv) []SharedNative {
 	na := reachableNatives(a)
 	nb := reachableNatives(b)
 	var out []SharedNative
-	for payload, pa := range na {
-		pb, ok := nb[payload]
+	for id, ra := range na {
+		rb, ok := nb[id]
 		if !ok {
 			continue
 		}
-		_, cloner := payload.(lisp.NativeCloner)
-		_, bound := payload.(lisp.RuntimeBound)
+		_, cloner := ra.payload.(lisp.NativeCloner)
+		_, bound := ra.payload.(lisp.RuntimeBound)
 		out = append(out, SharedNative{
-			Type:   fmt.Sprintf("%T", payload),
-			PathA:  pa,
-			PathB:  pb,
+			Type:   fmt.Sprintf("%T", ra.payload),
+			PathA:  ra.path,
+			PathB:  rb.path,
 			Cloner: cloner,
 			Bound:  bound,
 		})
@@ -778,11 +779,23 @@ func sharedNativeWitnesses(c TransactionCheck, aName string, a *lisp.LEnv, forks
 	return out
 }
 
-// reachableNatives maps every pointer-held native payload reachable from
-// env to the first path that reached it.  A payload held by value has no
-// identity to share, so it is not collected.
-func reachableNatives(env *lisp.LEnv) map[any]string {
-	out := map[any]string{}
+// reachableNative is one payload and the first path that reached it.  The
+// payload is carried beside the path because the map is keyed on the
+// payload's IDENTITY rather than on the payload -- a map- or slice-typed
+// payload is not a legal Go map key (nativeIdentity, elpstest/fingerprint.go)
+// -- and the callers still need the value itself to ask what it declares.
+type reachableNative struct {
+	payload any
+	path    string
+}
+
+// reachableNatives maps every native payload held by REFERENCE reachable
+// from env to the first path that reached it.  A payload held by value has
+// no identity to share, so it is not collected; see payloadIdentity for
+// which Go kinds are held by reference and why all six of them are, rather
+// than pointers alone.
+func reachableNatives(env *lisp.LEnv) map[nativeIdentity]reachableNative {
+	out := map[nativeIdentity]reachableNative{}
 	walkReachable(env, func(v *lisp.LVal, path string) {
 		// Keyed on the PAYLOAD, not on the type. Native is shared storage:
 		// LBytes holds a *[]byte there, LSortMap a *MapData, and an embedder
@@ -797,10 +810,12 @@ func reachableNatives(env *lisp.LEnv) map[any]string {
 		//
 		// A cell-view link is excluded: it is a reference to a root, not a
 		// payload (isCellViewLink, elpstest/fingerprint.go).
-		if isPointerPayload(v.Native) && !kernelOwnedPayload(v) {
-			if _, dup := out[v.Native]; !dup {
-				out[v.Native] = path
-			}
+		id, ok := payloadIdentity(v.Native)
+		if !ok || kernelOwnedPayload(v) {
+			return
+		}
+		if _, dup := out[id]; !dup {
+			out[id] = reachableNative{payload: v.Native, path: path}
 		}
 	})
 	return out
@@ -929,19 +944,19 @@ func (d NativeDeclaration) String() string {
 // environment before shipping a phylum.
 func NativeDeclarations(env *lisp.LEnv) []NativeDeclaration {
 	byType := map[string]NativeDeclaration{}
-	for payload, path := range reachableNatives(env) {
-		key := fmt.Sprintf("%T", payload)
+	for _, rn := range reachableNatives(env) {
+		key := fmt.Sprintf("%T", rn.payload)
 		if _, ok := byType[key]; ok {
 			continue
 		}
-		_, cloner := payload.(lisp.NativeCloner)
-		_, bound := payload.(lisp.RuntimeBound)
+		_, cloner := rn.payload.(lisp.NativeCloner)
+		_, bound := rn.payload.(lisp.RuntimeBound)
 		byType[key] = NativeDeclaration{
 			Type:      key,
-			Path:      path,
+			Path:      rn.path,
 			Cloner:    cloner,
 			Bound:     bound,
-			Stateless: isStatelessPayload(payload),
+			Stateless: isStatelessPayload(rn.payload),
 		}
 	}
 	out := make([]NativeDeclaration, 0, len(byType))
