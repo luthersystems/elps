@@ -5,6 +5,7 @@ package lisp_test
 import (
 	"bytes"
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -262,7 +263,7 @@ func sharedTreeProperty(t *testing.T, src []byte) {
 			return
 		}
 		for j := range want {
-			if got[i][j] != want[j] {
+			if got[i][j] != want[j] && !bothHitAResourceBackstop(want[j], got[i][j]) {
 				t.Fatalf("evaluating a SHARED parse tree changed the program's meaning"+
 					"\n  expression %d, shared run %d"+
 					"\n  private tree: %s"+
@@ -333,4 +334,38 @@ func TestSharedTreeSeedsAgree(t *testing.T) {
 			sharedTreeProperty(t, []byte(src))
 		})
 	}
+}
+
+// bothHitAResourceBackstop reports whether two rendered results are each a
+// runaway-loop backstop tripping, and so are the same outcome reported by
+// whichever limit happened to trip first.
+//
+// A non-terminating program is stopped by one of two independent budgets: the
+// tail-call iteration counter, which is denominated in TURNS, and the context
+// deadline, which is denominated in TIME.  Which one fires is a property of
+// how fast the process was running, not of what the program means -- and the
+// shared and private arms run at different speeds, the shared arm having
+// skipped a parse.  On a loaded machine the two arms therefore disagree about
+// which limit stopped the same infinite loop, and the comparison below reads
+// that as "evaluating a SHARED parse tree changed the program's meaning".
+//
+// Measured on b076a2f, which predates this branch: `(defun s()(let()(s)))(s)(s)(s)`
+// passes 5/5 run sequentially and fails 8/8 run concurrently, on the chain head
+// itself.  CI runs eleven fuzz shards at once, which is the load that surfaced it
+// (crasher 423b7dd9e421bd27).
+//
+// Only the case where BOTH arms hit a backstop is collapsed.  One arm
+// terminating while the other is stopped by a budget remains a divergence and
+// is still reported: that asymmetry is not explained by scheduling.
+func bothHitAResourceBackstop(a, b string) bool {
+	return isResourceBackstop(a) && isResourceBackstop(b)
+}
+
+// isResourceBackstop reports whether a rendered result is one of the two
+// budgets that stop a runaway loop.  It matches those two and nothing else --
+// an ordinary error, including one raised BY the program, is not a backstop
+// and must still be compared verbatim.
+func isResourceBackstop(s string) bool {
+	return strings.Contains(s, "tail-call iteration limit exceeded") ||
+		strings.Contains(s, "context deadline exceeded")
 }
