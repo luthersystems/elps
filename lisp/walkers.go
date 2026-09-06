@@ -343,15 +343,32 @@ type LValCopyExemption struct {
 	// A function that grows one more fails until this is updated, which is
 	// the review the row exists to force.
 	Sites int
+	// Test marks a row that covers a site in a _test.go file, i.e. a
+	// FIXTURE that builds an aliased shape on purpose. Set by
+	// LValCopyExemptions from which list the row came from, and checked
+	// against the site's own file: a row from the test list can never
+	// silence a copy in production code, whatever the enclosing function
+	// happens to be called.
+	Test bool
 }
 
-// lvalCopyExemptions is SHRINK-ONLY: a row whose function no longer
-// contains a struct copy is dead and must be deleted.
+// lvalCopyExemptions is the PRODUCTION list, and it is SHRINK-ONLY: a row
+// whose function no longer contains a struct copy is dead and must be
+// deleted.
 //
 // Four of these are not hazards that happen to be safe. Quote, Splice,
 // shallowUnquote and FunRef are where the INTENTIONAL aliasing lives -- the
 // aliasing every walker in the registry above exists to PRESERVE. A walker
 // that de-aliased them would be the defect.
+//
+// FIXTURE ROWS LIVE IN lvalCopyTestExemptions, BELOW, and the split is not
+// cosmetic. Five of the eleven rows this list used to hold named test
+// functions, so "shrink-only in practice" was not true of it: nearly half
+// its rows were about code that does not ship, and a REAL `*cp = *v` added
+// to production code inside a function with a test-shaped name would have
+// found a plausible-looking row waiting for it. The drift guard now matches
+// a site against a row only when the row's list matches the site's file, so
+// a production copy can only ever be answered by a production row.
 var lvalCopyExemptions = []LValCopyExemption{
 	{
 		Func:  "Quote",
@@ -392,6 +409,14 @@ var lvalCopyExemptions = []LValCopyExemption{
 			"this registration and unreachable by anything else; the source is read-only, the subject is a " +
 			"symbol list with no payload, and both sites already carry //elps:mutates annotations saying so.",
 	},
+}
+
+// lvalCopyTestExemptions holds the rows for FIXTURES: struct copies inside
+// _test.go files that build a two-headers-over-one-payload shape on purpose,
+// so a test can assert a walker preserves or flattens it. Shrink-only on the
+// same terms as the production list, and kept apart from it so that list is
+// about shipping code only.
+var lvalCopyTestExemptions = []LValCopyExemption{
 	{
 		Func:  "TestCopyDeAliasesMapPayloadAcrossHeaders",
 		Sites: 1,
@@ -422,10 +447,19 @@ var lvalCopyExemptions = []LValCopyExemption{
 	},
 }
 
-// LValCopyExemptions returns the struct-copy allowlist, copied.
+// LValCopyExemptions returns the struct-copy allowlist -- the production
+// rows followed by the fixture rows -- copied, with each row's Test field
+// stamped from the list it came from.
 func LValCopyExemptions() []LValCopyExemption {
-	out := make([]LValCopyExemption, len(lvalCopyExemptions))
-	copy(out, lvalCopyExemptions)
+	out := make([]LValCopyExemption, 0, len(lvalCopyExemptions)+len(lvalCopyTestExemptions))
+	for _, e := range lvalCopyExemptions {
+		e.Test = false
+		out = append(out, e)
+	}
+	for _, e := range lvalCopyTestExemptions {
+		e.Test = true
+		out = append(out, e)
+	}
 	return out
 }
 

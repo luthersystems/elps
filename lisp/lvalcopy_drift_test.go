@@ -57,6 +57,7 @@ type lvalCopySite struct {
 	Func string // enclosing function as the allowlist names it
 	Form string // "*x = *y" or "x = *y"
 	Src  string // the source line, trimmed
+	Test bool   // the site is in a _test.go file
 }
 
 func (s lvalCopySite) String() string {
@@ -95,18 +96,40 @@ func TestEveryLValStructCopyIsInAWalkerOrAllowlisted(t *testing.T) {
 		return false
 	}
 
-	allowed := map[string]LValCopyExemption{}
+	// Keyed by function AND by which list the row belongs to. A production
+	// copy can only be answered by a production row: five of the eleven
+	// rows are fixtures, so a single flat map let any `*cp = *v` added to
+	// shipping code inside a test-shaped function name find a row waiting
+	// for it.
+	type rowKey struct {
+		fn   string
+		test bool
+	}
+	allowed := map[rowKey]LValCopyExemption{}
 	for _, e := range LValCopyExemptions() {
-		allowed[e.Func] = e
+		allowed[rowKey{e.Func, e.Test}] = e
 	}
 
-	counts := map[string]int{}
+	counts := map[rowKey]int{}
 	for _, s := range sites {
 		if inWalker(s.Func) {
 			continue
 		}
-		counts[s.Func]++
-		if _, ok := allowed[s.Func]; ok {
+		key := rowKey{s.Func, s.Test}
+		counts[key]++
+		if _, ok := allowed[key]; ok {
+			continue
+		}
+		if _, wrongList := allowed[rowKey{s.Func, !s.Test}]; wrongList {
+			list, want := "lvalCopyTestExemptions", "lvalCopyExemptions"
+			if s.Test {
+				list, want = "lvalCopyExemptions", "lvalCopyTestExemptions"
+			}
+			t.Errorf("%s\n"+
+				"A row for %q exists, but in %s -- the wrong list for this site's file.\n"+
+				"The lists are matched against the site's file on purpose: a fixture row must never be\n"+
+				"able to silence a struct copy in shipping code. Move or add the row in %s.",
+				s, s.Func, list, want)
 			continue
 		}
 		t.Errorf("%s\n"+
@@ -127,7 +150,7 @@ func TestEveryLValStructCopyIsInAWalkerOrAllowlisted(t *testing.T) {
 	// Shrink-only, both directions: a row whose function no longer copies
 	// anything is dead, and a function that grew a copy needs re-review.
 	for _, e := range LValCopyExemptions() {
-		got, ok := counts[e.Func]
+		got, ok := counts[rowKey{e.Func, e.Test}]
 		if !ok {
 			t.Errorf("lvalCopyExemptions has a row for %q, which no longer contains an LVal struct copy\n"+
 				"outside a walker. Delete the row: this allowlist is shrink-only, and a row that outlives\n"+
@@ -237,6 +260,7 @@ func funcLabel(pkg *packages.Package, fd *ast.FuncDecl) string {
 
 func record(pkg *packages.Package, pos token.Pos, fn, form string, seen map[string]bool, out *[]lvalCopySite) {
 	p := pkg.Fset.Position(pos)
+	isTest := strings.HasSuffix(p.Filename, "_test.go")
 	short := p.Filename
 	if i := strings.LastIndex(short, "/"); i >= 0 {
 		short = short[i+1:]
@@ -246,7 +270,7 @@ func record(pkg *packages.Package, pos token.Pos, fn, form string, seen map[stri
 		return
 	}
 	seen[key] = true
-	*out = append(*out, lvalCopySite{Pos: key, Func: fn, Form: form, Src: srcLine(p)})
+	*out = append(*out, lvalCopySite{Pos: key, Func: fn, Form: form, Src: srcLine(p), Test: isTest})
 }
 
 // srcLine returns the trimmed source line at a position, for the report.
