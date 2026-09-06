@@ -219,6 +219,30 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 			// A cell view's root (the convention on lisp.cellsView).
 			// detachCells below gives the copy storage of its own, so the
 			// link is dropped (TestCopyAndDetachDropCellViewLink).
+			//
+			// SILENTLY, and not because nobody thought about it.  Before
+			// cell views existed this whole shape -- any payload on an
+			// LSExpr -- fell to the default arm and was refused, so it is
+			// fair to ask for the refusal back for everything that is not
+			// a live view: an embedder can reach the exported Native field
+			// and set a *LVal there, and that value would now be nil'd
+			// without a word.
+			//
+			// It cannot be done, because a STALE link is the same bytes.
+			// The convention above makes staleness legitimate and
+			// expected -- "never a correctness hazard, only a lost
+			// optimisation" -- and pure lisp reaches it: (rest v) takes a
+			// view and (append! v x) past the root's exact capacity
+			// reallocates the root, after which the view's link describes
+			// memory neither header holds.  CellView, the one validated
+			// resolver, answers false for the stale link and for the
+			// embedder's scribble alike; there is no third signal to
+			// separate them.  A loud arm here would therefore refuse that
+			// ordinary program, which is worse than silently dropping a
+			// link that is already meaningless.
+			// TestDetachDropsAStaleCellViewLinkSilently is the measurement:
+			// it builds the stale shape from lisp, and reinstating the
+			// refusal fails it.
 			cp.Native = nil
 			cp.Int = 0
 		default:
