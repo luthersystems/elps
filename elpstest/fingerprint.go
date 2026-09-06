@@ -63,9 +63,31 @@ import (
 // Two things cannot be compared by content, so they are compared by identity
 // and by a stable description instead:
 //
-//   - A builtin's Go function pointer is not comparable, so a function is
-//     identified by its FID and package name (the substitution
-//     elpstest/forkcheck.go already made).
+//   - A function is identified by its FID and package name (the
+//     substitution elpstest/forkcheck.go already made).  Its Go
+//     IMPLEMENTATION is not encoded, and the reason this list used to give
+//     -- "the Go function pointer is not comparable" -- is the wrong one:
+//     that is a fact about `==`, which reflect.Value.Pointer sidesteps.
+//     The real reasons are two, both measured:
+//
+//     EVERY BUILTIN HERE IS A METHOD VALUE.  Registration goes through
+//     LBuiltinDef.Eval (lisp.(*LEnv).AddBuiltins), and reflect.Value.Pointer
+//     on a method value returns the compiler's shared wrapper, the same
+//     address for every receiver -- so `car` and `cdr` compare EQUAL by
+//     pointer (TestABuiltinIsNotIdentifiedByItsGoPointer).  An ordinal
+//     built from it would state that every builtin in the standard library
+//     shares one implementation, which is worse than saying nothing.
+//
+//     AN ABSOLUTE POINTER WOULD BREAK THE ORACLE.  A builtin closing over
+//     Go state gets a fresh address in every environment, so every
+//     cold-vs-fork comparison over an embedder that registers such
+//     builtins -- the ordinary way to give lisp a handle on Go state --
+//     would report a divergence on correct code.
+//
+//     What that leaves: two environments whose `policy` returns 1 and 2
+//     fingerprint identically, and the divergence is a VALUE-channel
+//     question, which parity answers by running the program
+//     (TestABuiltinsBehaviourIsAValueChannelQuestion).
 //   - A native payload is an opaque interface{}, so it renders as its Go
 //     type name plus an identity ordinal.  Its CONTENTS are compared only
 //     when the caller supplies FingerprintOptions.RenderNative, because
@@ -810,9 +832,11 @@ func (w *fingerprinter) nativeContents(payload any) {
 }
 
 func (w *fingerprinter) fun(v *lisp.LVal) {
-	// FID and package name rather than the Go function pointer, which is
-	// not comparable.  The FID's environment number is normalised so a cold
-	// environment can be compared against a fork.
+	// FID and package name; the FID's environment number is normalised so
+	// a cold environment can be compared against a fork.  The Go
+	// IMPLEMENTATION is not here, for the two measured reasons in the file
+	// comment's substitution list -- not for the "not comparable" one that
+	// used to be given.
 	w.emitf("fun(fid=%s,pkg=%s,builtin=%t,type=%d)",
 		normalizeFunIDs(v.FID()), v.Package(), v.Builtin() != nil, v.FunType)
 	if w.opts.SkipCapturedEnvironments {

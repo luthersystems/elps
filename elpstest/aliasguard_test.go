@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"reflect"
+
 	"github.com/luthersystems/elps/elpstest"
+	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -482,4 +485,100 @@ func TestFingerprintIsDeterministic(t *testing.T) {
 				"is being ranged directly")
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// A builtin's Go implementation, and why it is NOT in the encoding.
+//
+// The fingerprint identifies a function by FID, package, builtin-ness and
+// FunType, and its own doc used to justify leaving the implementation out
+// with "the Go function pointer is not comparable".  That is a fact about
+// `==`, which reflect.Value.Pointer sidesteps, so the justification was
+// wrong even though the decision was right.  The two tests below are the
+// measurements that replace it: the pointer identifies nothing here, and
+// what it would identify elsewhere is a value-channel question.
+// ---------------------------------------------------------------------------
+
+// TestABuiltinIsNotIdentifiedByItsGoPointer measures the first reason.
+//
+// Registration goes through LBuiltinDef.Eval (lisp.(*LEnv).AddBuiltins), so
+// every builtin value in every package holds a METHOD VALUE, and
+// reflect.Value.Pointer on a method value returns the compiler's shared
+// wrapper -- one address for every receiver.  An identity ordinal built
+// from it would say that `car` and `cdr` run the same Go code, which is
+// worse than saying nothing.
+//
+// If this test ever fails, the pointer HAS become an identity and the
+// decision is worth revisiting -- against the second reason, which the next
+// test states.
+func TestABuiltinIsNotIdentifiedByItsGoPointer(t *testing.T) {
+	t.Parallel()
+	env, err := elpstest.NewForkCheckEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	car, cdr := env.Get(lisp.Symbol("car")), env.Get(lisp.Symbol("cdr"))
+	if car.Type != lisp.LFun || cdr.Type != lisp.LFun {
+		t.Fatalf("premise: car and cdr are not function values (%v, %v)", car.Type, cdr.Type)
+	}
+	bc, bd := car.Builtin(), cdr.Builtin()
+	if bc == nil || bd == nil {
+		t.Fatal("premise: car and cdr carry no builtin implementation")
+	}
+	if pc, pd := reflect.ValueOf(bc).Pointer(), reflect.ValueOf(bd).Pointer(); pc != pd {
+		t.Errorf("car and cdr now have DIFFERENT reflect pointers (%#x, %#x).\n"+
+			"The measurement behind fingerprint.go's decision not to encode a builtin's Go\n"+
+			"implementation has changed: it held because registration wraps every implementation in\n"+
+			"a method value, whose reflect pointer is one shared wrapper. Re-read that note before\n"+
+			"encoding the pointer -- the other half of the argument (a closure gets a fresh address\n"+
+			"per environment, so a cold arm and a fork would diverge on correct code) still stands.",
+			pc, pd)
+	}
+}
+
+// PINNED SCOPE, not an aspiration:// PINNED SCOPE, not an aspiration: two environments whose `policy` returns
+// 1 and 2 fingerprint IDENTICALLY.  Function identity in the encoding is
+// FID, package, builtin-ness and FunType, and none of those moves when the
+// Go implementation behind the name does.
+//
+// An absolute pointer would not fix it, it would break the oracle: a
+// builtin registered as a CLOSURE gets a fresh address in every
+// environment, so every cold-vs-fork comparison over an embedder that
+// registers closures -- the ordinary way to give lisp a handle on Go state
+// -- would report a divergence on correct code.  What sees this divergence
+// is the channel that RUNS the program, which is why the second half here
+// measures the call.
+func TestABuiltinsBehaviourIsAValueChannelQuestion(t *testing.T) {
+	t.Parallel()
+	build := func(n int) *lisp.LEnv {
+		t.Helper()
+		env, err := elpstest.NewForkCheckEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.AddBuiltins(true, elpsutil.Function("policy", lisp.Formals(),
+			func(*lisp.LEnv, *lisp.LVal) *lisp.LVal { return lisp.Int(n) }))
+		if rc := env.LoadString("p.lisp", `(set 'probe policy)`); rc.Type == lisp.LError {
+			t.Fatal(rc)
+		}
+		return env
+	}
+	a, b := build(1), build(2)
+	opts := elpstest.FingerprintOptions{Seal: true, PackageMetadata: true}
+	fa, fb := elpstest.FingerprintEnv(a, opts), elpstest.FingerprintEnv(b, opts)
+	if !fa.Equal(fb) {
+		t.Errorf("two environments whose `policy` differs only in what it RETURNS now fingerprint\n"+
+			"differently:\n%s\nIf that is deliberate, check what it costs: a builtin registered as a\n"+
+			"closure has a fresh address in every environment, so a cold arm and a fork would\n"+
+			"diverge here on correct code. Delete this pin only with that measured.", fa.Diff(fb))
+	}
+	// And the channel that does see it: the call.
+	ra := a.LoadString("c.lisp", "(policy)").String()
+	rb := b.LoadString("c.lisp", "(policy)").String()
+	if ra == rb {
+		t.Fatalf("premise: the two implementations return the same value (%s), so this test is not "+
+			"about what it says", ra)
+	}
+	t.Logf("identical fingerprints; (policy) returns %s here and %s there -- a parity question, "+
+		"not a fingerprint one", ra, rb)
 }
