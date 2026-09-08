@@ -94,7 +94,7 @@ import (
 //     (substrate#375/#378).
 //     - elpstest.RunBenchmark shares the sealed program across its
 //     per-iteration runtimes (#379 item 2, #387).
-//     - LEnv.Fork shares every sealed node between a template environment
+//     - Template.NewVM shares every sealed node between a template environment
 //     and its forks (#380, this branch).
 //     - Runtime.LoadCache serves one sealed per-file parse to every
 //     environment that load-files it (#368) — substrate's warm parse cache
@@ -168,7 +168,8 @@ import (
 //     that CAPTURED an environment is not exempt.  A closure's *LEnv is
 //     mutable per-runtime state and is the deepest aliasing channel there is,
 //     so an ELPS lambda crossing runtimes still trips the gate, and so does
-//     a Go-built function value that closed over one.
+//     a Go-built function value that closed over one. Explicit builtin capture
+//     graphs are also mutable VM state, so newCapturedBuiltin is not exempt.
 //     TestOwnershipCheck_ClosureFreeBuiltinExempt pins both directions.
 //
 // Values whose Source is the shared native location need NO exemption —
@@ -192,10 +193,9 @@ import (
 // The rule is enforced at the same instrumented points as ownership, and is
 // therefore shallow in the same way: checkOwnership examines the payload of
 // an LNative value crossing Put/PutGlobal/eval and never the payloads of
-// natives riding inside its Cells.  The deep half is at FORK time, where
-// the fork walker visits every reachable native payload whatever container
-// it rides in, and checks whichever payload its replacer/NativeCloner/share
-// policy resolved (lisp/fork.go, forker.native).  A violation raises the
+// natives riding inside its Cells. Template publication admits only immutable
+// native payloads. At instantiation, every admitted native is checked against
+// the fresh Runtime, including natives nested in containers. A violation raises the
 // same ownershipViolation panic value as the ownership rule, for the same
 // reason: an affinity bug found in a checked build must stop the test, not
 // become a catchable LError.
@@ -315,7 +315,7 @@ func checkOwnership(rt *Runtime, v *LVal) {
 // comparable, and a sync.Map key that is not comparable panics.  Native
 // payloads carry a stronger rule of their own anyway -- declared affinity
 // (checkNativeAffinity), enforced at use time here and at fork time in
-// forker.native.
+// templatePlan.instantiate.
 //
 // A malformed value (an LFun or LSortMap whose Native is not the expected
 // payload, or is nil) falls back to the header, for isClosureFreeBuiltin's
@@ -344,7 +344,7 @@ func ownershipKey(v *LVal) interface{} {
 // opt-in and nil is the sanctioned "not bound to anything yet" answer.
 //
 // It is called from checkOwnership for LNative values (use time) and from
-// forker.native for every payload a fork resolves (fork time).  The panic
+// templatePlan.instantiate for every payload a fork resolves (fork time).  The panic
 // value is deliberately ownershipViolation, the same type the ownership
 // rule raises, so rethrowOwnershipViolation keeps it a hard panic through
 // env.eval's recover(): an affinity bug in a checked build must stop the
@@ -459,8 +459,9 @@ func runtimePackageName(rt *Runtime) string {
 }
 
 // isClosureFreeBuiltin reports whether v is a function value backed by a Go
-// builtin that captured no lexical environment — see allowlist entry 3 in the
-// file comment for why such a value is exempt from ownership checking, and for
+// builtin that captured no lexical environment or explicit value graph — see
+// allowlist entry 3 in the file comment for why such a value is exempt from
+// ownership checking, and for
 // why the captured-environment half of the test is the load-bearing one.
 func isClosureFreeBuiltin(v *LVal) bool {
 	if v.Type != LFun {
@@ -470,5 +471,5 @@ func isClosureFreeBuiltin(v *LVal) bool {
 	// A malformed or payload-less LFun is NOT exempted: the question is
 	// whether this value provably has no mutable state, and an LFun whose
 	// Native is not a *funData has not answered it.
-	return ok && fd != nil && fd.builtin != nil && fd.env == nil
+	return ok && fd != nil && fd.builtin != nil && fd.env == nil && fd.captures == nil
 }

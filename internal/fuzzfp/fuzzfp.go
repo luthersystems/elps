@@ -51,7 +51,8 @@
 // that sorts map entries by their own fingerprint is deterministic over
 // exactly the same inputs. [fingerprintGo] is that walk. It reads unexported
 // fields through reflect without ever calling Value.Interface (which would
-// panic on them), so it sees inside time.Time and *regexp.Regexp, and it
+// panic on them), so it sees inside time.Time, raw host *regexp.Regexp, and
+// the private owned-time and compiled-regexp wrappers without an exemption. It
 // breaks cycles on pointer identity so a self-referential native terminates.
 //
 // Deterministic here means "twice in one process gives the same answer", which

@@ -14,15 +14,16 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/luthersystems/elps/internal/jsonraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// this function is internal because users are not supposed to construct
-// literal SortedMap values in their applications =\
-func literalSortedMap(m SortedMap) *lisp.LVal {
-	return lisp.SortedMapFromData(lisp.NewMapData(m))
+// Construct decoder storage through the repository-only bridge, including
+// the nil backing whose encoding behavior is part of these tests.
+func literalSortedMap(m map[string]any) *lisp.LVal {
+	return jsonraw.Wrap(m)
 }
 
 type encodeTest struct {
@@ -69,14 +70,14 @@ var stdEncodeTests = []encodeTest{
 		lisp.Value(map[string]interface{}{"a": "1", "b": "2"}),
 		`{"a":"1","b":"2"}`,
 	},
-	{literalSortedMap(SortedMap{}), `{}`},
+	{literalSortedMap(map[string]any{}), `{}`},
 	{literalSortedMap(nil), `{}`},
 	{
-		literalSortedMap(SortedMap{"a": lisp.String("1")}),
+		literalSortedMap(map[string]any{"a": lisp.String("1")}),
 		`{"a":"1"}`,
 	},
 	{
-		literalSortedMap(SortedMap{"a": lisp.String("1"), "b": lisp.String("2")}),
+		literalSortedMap(map[string]any{"a": lisp.String("1"), "b": lisp.String("2")}),
 		`{"a":"1","b":"2"}`,
 	},
 	{lisp.Vector(nil), `[]`},

@@ -308,10 +308,23 @@ func TestCachedSourceIsOpaque(t *testing.T) {
 	}
 
 	typ := reflect.TypeOf((*CachedSource)(nil))
+	// Issue #628: elpsownership stops traversing this exact opaque boundary.
+	// Pin all methods, including their inputs, so a scalar-returning mutator
+	// cannot silently acquire the cache's process-wide sharing exemption.
+	wantMethods := map[string]reflect.Type{
+		"Key": reflect.TypeOf(""), "Name": reflect.TypeOf(""), "Location": reflect.TypeOf(""),
+		"Len": reflect.TypeOf(int(0)), "Fingerprint": reflect.TypeOf(uint64(0)), "String": reflect.TypeOf(""),
+	}
+	if typ.NumMethod() != len(wantMethods) {
+		t.Errorf("CachedSource method set changed: got %d, want %d; review elpsownership's immutable boundary", typ.NumMethod(), len(wantMethods))
+	}
 	found := map[string]bool{}
 	for i := range typ.NumMethod() {
 		m := typ.Method(i)
 		found[m.Name] = true
+		if m.Type.NumIn() != 1 || m.Type.NumOut() != 1 || m.Type.IsVariadic() || m.Type.Out(0) != wantMethods[m.Name] {
+			t.Errorf("CachedSource.%s signature %s is outside the audited scalar-accessor contract", m.Name, m.Type)
+		}
 		for j := range m.Type.NumOut() {
 			if exposes(m.Type.Out(j)) {
 				t.Errorf("CachedSource.%s result %d (%s) can expose *LVal — the cache boundary is broken",
@@ -326,6 +339,28 @@ func TestCachedSourceIsOpaque(t *testing.T) {
 	}
 
 	st := reflect.TypeOf(CachedSource{})
+	wantFields := []struct {
+		name string
+		typ  reflect.Type
+	}{
+		{"key", reflect.TypeOf("")}, {"name", reflect.TypeOf("")}, {"loc", reflect.TypeOf("")},
+		{"prog", reflect.TypeOf(Program{})}, {"fp", reflect.TypeOf(uint64(0))},
+	}
+	if st.NumField() != len(wantFields) {
+		t.Errorf("CachedSource fields changed: got %d, want %d; review elpsownership's immutable boundary", st.NumField(), len(wantFields))
+	}
+	for i, want := range wantFields {
+		if i >= st.NumField() {
+			break
+		}
+		if field := st.Field(i); field.Name != want.name || field.Type != want.typ || field.Anonymous {
+			t.Errorf("CachedSource field %d changed: got %v, want %s %s", i, field, want.name, want.typ)
+		}
+	}
+	program := reflect.TypeOf(Program{})
+	if program.NumField() != 1 || program.Field(0).Name != "exprs" || program.Field(0).Type != reflect.TypeOf([]*LVal(nil)) || program.Field(0).Anonymous {
+		t.Error("Program storage changed; review CachedSource's elpsownership exemption")
+	}
 	if st.NumField() == 0 {
 		t.Error("CachedSource has no fields; expected the unexported parse it wraps")
 	}

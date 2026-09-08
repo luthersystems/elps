@@ -1,0 +1,4 @@
+go test fuzz v1
+byte('5')
+[]byte("(set'lit'(0))(and'1(slice'list lit 0 0))")
+[]byte("(set'A(list lit))")

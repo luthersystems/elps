@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// forkRuntimeFieldPolicy records, for every field of Runtime, what (*LEnv).Fork
-// is supposed to do with it.  The table exists because Fork builds the new
+// forkRuntimeFieldPolicy records, for every field of Runtime, what Template.NewVM
+// is supposed to do with it. The table exists because construction builds the new
 // Runtime FIELD BY FIELD from a literal, which is a construction that fails
 // silently: a field nobody lists is simply left at its zero value, and no
 // compiler, vet check or existing test notices.  Runtime.LoadCache was dropped
@@ -70,8 +70,8 @@ func TestForkRuntimeFieldCoverage(t *testing.T) {
 		seen[name] = true
 		if _, ok := forkRuntimeFieldPolicy[name]; !ok {
 			t.Errorf("Runtime.%s has no fork policy: add it to forkRuntimeFieldPolicy "+
-				"and make (*LEnv).Fork carry, rebuild or deliberately drop it "+
-				"(a field left out of Fork's literal is silently zeroed)", name)
+				"and make Template.NewVM carry, rebuild or deliberately drop it "+
+				"(a field left out of the runtime literal is silently zeroed)", name)
 		}
 	}
 	for name := range forkRuntimeFieldPolicy {
@@ -94,7 +94,7 @@ func TestForkCarriesSharedRuntimeFields(t *testing.T) {
 	env.Runtime.LoadCache = cache
 	env.Runtime.MaxSleep = 5 * time.Nanosecond
 
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}

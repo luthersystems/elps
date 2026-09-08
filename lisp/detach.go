@@ -45,7 +45,7 @@ import (
 // silently sharing state while claiming isolation:
 //
 //   - LNative values wrap arbitrary Go data the kernel has no way to clone.
-//     A payload that implements NativeCloner (lisp/fork.go) is the carve-out:
+//     A payload that implements NativeCloner (lisp/native.go) is the carve-out:
 //     it has declared what its own duplicate is, and only the embedder can
 //     know that, so detach clones through the protocol and the value
 //     transfers.  The carve-out is strictly more permissive — it converts
@@ -78,8 +78,7 @@ func (v *LVal) detach() (*LVal, error) {
 // once and the copy reproduces the original's internal aliasing.
 //
 // The three payload memos -- maps, bytes, natives -- are keyed on the
-// PAYLOAD, not the *LVal header over it, for the reason forker keeps the
-// same three (lisp/fork.go, issue #576): the two are not one-to-one.
+// PAYLOAD, not the *LVal header over it: the two are not one-to-one.
 // Quote (reached from quasiquote through doUnquoteValue), Splice,
 // shallowUnquote and FunRef copy an LVal's struct and keep its Native, so
 // `(quasiquote (unquote a))` is a second header on a's sorted map, bytes or
@@ -245,12 +244,11 @@ func (d *detacher) detachCells(cells []*LVal) ([]*LVal, error) {
 // over one accumulator do not become two independent clones and the
 // embedder is not charged for duplicates.  Only pointer payloads are
 // memoised -- identity is what aliasing means, and a non-pointer payload
-// (an int, a struct value) has none to preserve -- the same rule
-// forker.native applies.  No cycle is possible through a payload clone, so
+// (an int, a struct value) has none to preserve. No cycle is possible
+// through a payload clone, so
 // the memo is filled after the clone, as byteSlice does.  The memo key is
 // pointer identity per Go ==, so every typed-nil pointer of one type, and
-// every pointer to a zero-size struct, shares one clone; forker.native has
-// the same property.
+// every pointer to a zero-size struct, shares one clone.
 func (d *detacher) cloneNative(payload interface{}, cloner NativeCloner) interface{} {
 	memo := reflect.TypeOf(payload).Kind() == reflect.Pointer
 	if memo {

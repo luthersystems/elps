@@ -49,7 +49,7 @@ func decodedMapEnv(t testing.TB, n int) (*lisp.LEnv, *lisp.LVal) {
 	// its contract is: it rejects any key that is not a string.  That is
 	// what tells a decoded map apart from the stock map its copies become.
 	if lerr := m.Map().Set(lisp.Symbol("probe"), lisp.Int(0)); lerr.Type != lisp.LError {
-		t.Fatalf("decoded map accepted a symbol key; json:load-string no longer returns libjson.SortedMap")
+		t.Fatalf("decoded map accepted a symbol key; json:load-string lost its string-only key policy")
 	}
 	return env, m
 }
@@ -78,14 +78,22 @@ func keysAndValues(t testing.TB, m *lisp.LVal) ([]string, []*lisp.LVal) {
 	return ks, vs
 }
 
-// TestForkOfDecodedMapMatchesEntriesPath pins that Fork turns a decoded
-// JSON map into what the entries path always produced for it -- a stock
-// sorted map with the same string keys, mutable values copied, storage
-// private to the fork -- now built through libjson.SortedMap's
-// RangeStringKeys instead of a sorted pair list.
+func decodedMapTemplate(t testing.TB, env *lisp.LEnv) *lisp.Template {
+	t.Helper()
+	// Only stateless core and JSON builtins are loaded in these fixed fixtures.
+	template, err := lisp.NewTemplate(env, lisp.TemplateWithBuiltinPolicy(func(v *lisp.LVal) bool { return v.Builtin() != nil }))
+	if err != nil {
+		t.Fatalf("template: %v", err)
+	}
+	return template
+}
+
+// TestForkOfDecodedMapMatchesEntriesPath preserves entries, mutable-value
+// isolation, and the original JSON map's string-only key semantics. The old
+// entries path silently widened the key policy; accepting symbols was a bug.
 func TestForkOfDecodedMapMatchesEntriesPath(t *testing.T) {
 	env, m := decodedMapEnv(t, 5)
-	fork, err := env.Fork()
+	fork, err := decodedMapTemplate(t, env).NewVM()
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -96,13 +104,18 @@ func TestForkOfDecodedMapMatchesEntriesPath(t *testing.T) {
 	if fm.Native == m.Native {
 		t.Fatalf("forked map shares MapData with the template")
 	}
-	// The fork's copy is the stock map, as before: unlike the decoded
-	// original (see decodedMapEnv) it accepts a symbol key.
-	if lerr := fm.Map().Set(lisp.Symbol("sym"), lisp.Int(0)); lerr.Type == lisp.LError {
-		t.Errorf("forked copy rejected a symbol key: it is not the stock sorted map the entries path produced: %v", lerr)
-	}
-	if lerr := fm.Map().Del(lisp.Symbol("sym")); lerr.Type == lisp.LError {
-		t.Fatalf("del: %v", lerr)
+	for _, operation := range []struct {
+		name string
+		call func(lisp.Map) *lisp.LVal
+	}{
+		{"get", func(m lisp.Map) *lisp.LVal { value, _ := m.Get(lisp.Symbol("sym")); return value }},
+		{"set", func(m lisp.Map) *lisp.LVal { return m.Set(lisp.Symbol("sym"), lisp.Int(0)) }},
+		{"del", func(m lisp.Map) *lisp.LVal { return m.Del(lisp.Symbol("sym")) }},
+	} {
+		cold, got := operation.call(m.Map()), operation.call(fm.Map())
+		if cold.Type != lisp.LError || got.Type != lisp.LError || got.String() != cold.String() {
+			t.Errorf("%s symbol-key rejection: cold=%v fork=%v", operation.name, cold, got)
+		}
 	}
 
 	ok, ov := keysAndValues(t, m)
@@ -201,9 +214,10 @@ func BenchmarkForkDecodedMaps(b *testing.B) {
 			b.Fatalf("copy: %v", v)
 		}
 	}
+	template := decodedMapTemplate(b, env)
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := env.Fork(); err != nil {
+		if _, err := template.NewVM(); err != nil {
 			b.Fatalf("fork: %v", err)
 		}
 	}

@@ -72,7 +72,9 @@ jobs:
           cache: true
       - name: Run govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          # v1.8.0 requires Go 1.26. Keep installation on the audited build
+          # toolchain; the scanner still queries the live advisory DB (#634).
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
           govulncheck ./...
 
   # THE ONE CHECK TO REQUIRE FOR THIS WORKFLOW.

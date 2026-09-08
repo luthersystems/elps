@@ -1,0 +1,44 @@
+revision: c0372d1356b689ceff8bc2f2fb7b27656b4034c1
+samples: 6
+benchtime: 500ms
+goos: darwin
+goarch: arm64
+pkg: github.com/luthersystems/elps/lisp/lisplib
+cpu: Apple M3
+BenchmarkTemplateConstruction/functions=0/NewTemplate-8         	    2251	    252274 ns/op	  552375 B/op	    1195 allocs/op
+BenchmarkTemplateConstruction/functions=0/NewTemplate-8         	    2378	    256548 ns/op	  552366 B/op	    1195 allocs/op
+BenchmarkTemplateConstruction/functions=0/NewTemplate-8         	    2370	    255318 ns/op	  552365 B/op	    1195 allocs/op
+BenchmarkTemplateConstruction/functions=0/NewTemplate-8         	    2353	    253517 ns/op	  552364 B/op	    1195 allocs/op
+BenchmarkTemplateConstruction/functions=0/NewTemplate-8         	    2374	    254156 ns/op	  552365 B/op	    1195 allocs/op
+BenchmarkTemplateConstruction/functions=0/NewTemplate-8         	    2360	    263778 ns/op	  552366 B/op	    1195 allocs/op
+BenchmarkTemplateConstruction/functions=0/TemplateFork-8        	   16070	     37182 ns/op	  140969 B/op	    1109 allocs/op
+BenchmarkTemplateConstruction/functions=0/TemplateFork-8        	   16158	     37147 ns/op	  140969 B/op	    1109 allocs/op
+BenchmarkTemplateConstruction/functions=0/TemplateFork-8        	   13484	     43335 ns/op	  140968 B/op	    1109 allocs/op
+BenchmarkTemplateConstruction/functions=0/TemplateFork-8        	   15840	     37799 ns/op	  140968 B/op	    1109 allocs/op
+BenchmarkTemplateConstruction/functions=0/TemplateFork-8        	   16028	     37261 ns/op	  140968 B/op	    1109 allocs/op
+BenchmarkTemplateConstruction/functions=0/TemplateFork-8        	   16084	     37320 ns/op	  140968 B/op	    1109 allocs/op
+BenchmarkTemplateConstruction/functions=0/ColdLoadCachedProgram-8         	    6541	     79169 ns/op	  201175 B/op	    1856 allocs/op
+BenchmarkTemplateConstruction/functions=0/ColdLoadCachedProgram-8         	    7812	     78950 ns/op	  201175 B/op	    1856 allocs/op
+BenchmarkTemplateConstruction/functions=0/ColdLoadCachedProgram-8         	    7708	     78634 ns/op	  201173 B/op	    1856 allocs/op
+BenchmarkTemplateConstruction/functions=0/ColdLoadCachedProgram-8         	    7747	     79993 ns/op	  201174 B/op	    1856 allocs/op
+BenchmarkTemplateConstruction/functions=0/ColdLoadCachedProgram-8         	    7686	     78978 ns/op	  201173 B/op	    1856 allocs/op
+BenchmarkTemplateConstruction/functions=0/ColdLoadCachedProgram-8         	    7534	     78959 ns/op	  201174 B/op	    1856 allocs/op
+BenchmarkTemplateConstruction/functions=250/NewTemplate-8                 	     397	   1515558 ns/op	 3169415 B/op	    6902 allocs/op
+BenchmarkTemplateConstruction/functions=250/NewTemplate-8                 	     396	   1513962 ns/op	 3169790 B/op	    6902 allocs/op
+BenchmarkTemplateConstruction/functions=250/NewTemplate-8                 	     396	   1516914 ns/op	 3169992 B/op	    6902 allocs/op
+BenchmarkTemplateConstruction/functions=250/NewTemplate-8                 	     393	   1565050 ns/op	 3169878 B/op	    6902 allocs/op
+BenchmarkTemplateConstruction/functions=250/NewTemplate-8                 	     379	   1538340 ns/op	 3169964 B/op	    6902 allocs/op
+BenchmarkTemplateConstruction/functions=250/NewTemplate-8                 	     397	   1527895 ns/op	 3169883 B/op	    6902 allocs/op
+BenchmarkTemplateConstruction/functions=250/TemplateFork-8                	    3518	    165740 ns/op	  521577 B/op	    4863 allocs/op
+BenchmarkTemplateConstruction/functions=250/TemplateFork-8                	    3631	    175076 ns/op	  521577 B/op	    4863 allocs/op
+BenchmarkTemplateConstruction/functions=250/TemplateFork-8                	    3650	    166422 ns/op	  521577 B/op	    4863 allocs/op
+BenchmarkTemplateConstruction/functions=250/TemplateFork-8                	    3672	    165566 ns/op	  521577 B/op	    4863 allocs/op
+BenchmarkTemplateConstruction/functions=250/TemplateFork-8                	    3561	    167498 ns/op	  521577 B/op	    4863 allocs/op
+BenchmarkTemplateConstruction/functions=250/TemplateFork-8                	    3631	    166616 ns/op	  521576 B/op	    4863 allocs/op
+BenchmarkTemplateConstruction/functions=250/ColdLoadCachedProgram-8       	     607	    979621 ns/op	 1756088 B/op	   22863 allocs/op
+BenchmarkTemplateConstruction/functions=250/ColdLoadCachedProgram-8       	     618	    993490 ns/op	 1756069 B/op	   22863 allocs/op
+BenchmarkTemplateConstruction/functions=250/ColdLoadCachedProgram-8       	     610	    981739 ns/op	 1756111 B/op	   22863 allocs/op
+BenchmarkTemplateConstruction/functions=250/ColdLoadCachedProgram-8       	     614	    986085 ns/op	 1756091 B/op	   22863 allocs/op
+BenchmarkTemplateConstruction/functions=250/ColdLoadCachedProgram-8       	     610	   1018882 ns/op	 1756115 B/op	   22863 allocs/op
+BenchmarkTemplateConstruction/functions=250/ColdLoadCachedProgram-8       	     610	    982243 ns/op	 1756116 B/op	   22863 allocs/op
+PASS

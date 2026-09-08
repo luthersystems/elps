@@ -3,10 +3,17 @@
 package elpstest_test
 
 import (
+	"context"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/luthersystems/elps/elpstest"
+	"github.com/luthersystems/elps/internal/templatepolicy"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib/libtesting"
 )
 
 // Each test here is a fork bug that shipped, written as the ForkCheck
@@ -49,34 +56,176 @@ func TestForkCheck_BytesAliasAcrossHeaders(t *testing.T) {
 	})
 }
 
-// countingCloner is a NativeCloner accumulator: the kind of Go payload an
-// embedder binds at load time and mutates per transaction.
-type countingCloner struct{ clones int }
+// Per-VM host state needs no copying protocol: it is created after Fork.
+type setupCounter struct{ n int }
 
-func (c *countingCloner) CloneNative() interface{} {
-	return &countingCloner{clones: c.clones + 1}
+// Native handles are bound per VM, not cloned from a template. Two Lisp
+// headers must still address one accumulator, and mutations must stay local.
+func TestForkCheck_NativeAliasAcrossHeaders(t *testing.T) {
+	elpstest.RunForkCheck(t, elpstest.ForkCheck{
+		Setup: func(env *lisp.LEnv) error {
+			a := lisp.Native(&setupCounter{})
+			b := *a // a second header over the same payload
+			if rc := env.PutGlobal(lisp.Symbol("a"), a); rc.Type == lisp.LError {
+				return lisp.GoError(rc)
+			}
+			if rc := env.PutGlobal(lisp.Symbol("b"), &b); rc.Type == lisp.LError {
+				return lisp.GoError(rc)
+			}
+			bump := lisp.FunInPackage(lisp.DefaultUserPackage, "counter-bump", lisp.Formals("value"), func(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+				counter := args.Cells[0].Native.(*setupCounter)
+				counter.n++
+				return lisp.Int(counter.n)
+			})
+			if rc := env.PutGlobal(lisp.Symbol("counter-bump"), bump); rc.Type == lisp.LError {
+				return lisp.GoError(rc)
+			}
+			return nil
+		},
+		Tx: []string{`(list (counter-bump a) (counter-bump b))`, `(list (counter-bump b) (counter-bump a))`},
+	})
 }
 
-// Issue #576, third payload kind: two headers over one native payload
-// were cloned once per header, so an accumulator the template held once
-// became two independent accumulators in the fork.  Fixed in #587.  The
-// program cannot express this shape (natives are bound from Go), so
-// NewEnv binds it.
-func TestForkCheck_NativeAliasAcrossHeaders(t *testing.T) {
+// These subprocesses intentionally misuse Setup or expose a shared host
+// result. Opaque contents and results match, so only cross-VM identity checks
+// can detect the violation. Neither payload implements NativeCloner.
+func TestForkCheckRejectsSharedRequestNative(t *testing.T) {
+	const childFlag = "ELPS_FORKCHECK_SHARED_NATIVE_CHILD"
+	if mode := os.Getenv(childFlag); mode != "" {
+		shared := &setupCounter{}
+		// Dropping the setup handle during execution makes the pre-transaction
+		// check necessary; the transaction case conversely needs the post-check.
+		check := elpstest.ForkCheck{Tx: []string{`(set 'a ())`}}
+		check.Setup = func(env *lisp.LEnv) error {
+			if mode == "setup" {
+				return lisp.GoError(env.PutGlobal(lisp.Symbol("a"), lisp.Native(shared)))
+			}
+			if mode == "annotation" || mode == "nested-annotation" {
+				value := lisp.String("same result")
+				value.Native = shared
+				if mode == "nested-annotation" {
+					value = lisp.QExpr([]*lisp.LVal{value})
+					value.SealAST()
+				}
+				return lisp.GoError(env.PutGlobal(lisp.Symbol("a"), value))
+			}
+			fn := lisp.FunInPackage(lisp.DefaultUserPackage, "host-result", lisp.Formals(), func(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal { return lisp.Native(shared) })
+			return lisp.GoError(env.PutGlobal(lisp.Symbol("host-result"), fn))
+		}
+		if mode == "transaction" {
+			check.Tx = []string{`(set 'a (host-result))`}
+		}
+		elpstest.RunForkCheck(t, check)
+		return
+	}
+	for _, mode := range []string{"setup", "transaction", "annotation", "nested-annotation"} {
+		t.Run(mode, func(t *testing.T) {
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			// #nosec G204 -- os.Executable returns this test binary and the selector is fixed, not user-controlled.
+			command := exec.CommandContext(ctx, executable, "-test.run=^TestForkCheckRejectsSharedRequestNative$")
+			command.Env = append(os.Environ(), childFlag+"="+mode)
+			output, err := command.CombinedOutput()
+			if err == nil || !strings.Contains(string(output), "mutable payload(s) shared with tx[0] cold") {
+				t.Fatalf("oracle did not identify cross-VM native sharing: error=%v\n%s", err, output)
+			}
+		})
+	}
+}
+
+type immutableSetupValue struct{ n int }
+
+func TestForkCheckAllowsDeclaredSharedSetupNative(t *testing.T) {
+	shared := &immutableSetupValue{n: 7}
+	elpstest.RunForkCheck(t, elpstest.ForkCheck{
+		SharedSetupNative: func(value any) bool { return value == shared },
+		Setup: func(env *lisp.LEnv) error {
+			return lisp.GoError(env.PutGlobal(lisp.Symbol("constant"), lisp.Native(shared)))
+		},
+		Tx: []string{`constant`, `constant`},
+	})
+	if shared.n != 7 {
+		t.Fatal("shared immutable setup value changed")
+	}
+}
+
+type immutableCloningValue struct {
+	templatepolicy.Marker
+	n int
+}
+
+func (immutableCloningValue) CloneNative() any { panic("immutable values must not be cloned") }
+
+type foreignImmutableCloningValue struct{ n int }
+
+func (*foreignImmutableCloningValue) CloneNative() any {
+	panic("policy-approved immutable must not be cloned")
+}
+
+func TestForkCheckAllowsImmutableNativeWithCloneMethod(t *testing.T) {
+	for _, payload := range []any{immutableCloningValue{n: 7}, &immutableCloningValue{n: 7}, &foreignImmutableCloningValue{n: 7}} {
+		elpstest.RunForkCheck(t, elpstest.ForkCheck{
+			NewEnv: func() (*lisp.LEnv, error) {
+				env, err := elpstest.NewForkCheckEnv()
+				if err != nil {
+					return nil, err
+				}
+				if rc := env.PutGlobal(lisp.Symbol("constant"), lisp.Native(payload)); rc.Type == lisp.LError {
+					return nil, lisp.GoError(rc)
+				}
+				return env, nil
+			},
+			TemplateOptions: []lisp.TemplateOption{
+				lisp.TemplateWithBuiltinPolicy(func(v *lisp.LVal) bool { return v.Builtin() != nil }),
+				lisp.TemplateWithNativePolicy(func(value any) bool {
+					switch value.(type) {
+					case *immutableCloningValue, *foreignImmutableCloningValue:
+						return value == payload
+					default:
+						return false
+					}
+				}),
+			},
+			Tx: []string{`constant`},
+		})
+	}
+}
+
+// Re-publication would hide mutations of plan-owned storage between requests.
+// Count admission of an actual source builtin, not construction of child plans.
+func TestForkCheckPublishesBaseTemplateOnce(t *testing.T) {
+	var sourceBuiltin *lisp.LVal
+	baseApprovals := 0
 	elpstest.RunForkCheck(t, elpstest.ForkCheck{
 		NewEnv: func() (*lisp.LEnv, error) {
 			env, err := elpstest.NewForkCheckEnv()
 			if err != nil {
 				return nil, err
 			}
-			a := lisp.Native(&countingCloner{})
-			b := *a // a second header over the same payload
-			env.PutGlobal(lisp.Symbol("a"), a)
-			env.PutGlobal(lisp.Symbol("b"), &b)
+			if sourceBuiltin == nil {
+				sourceBuiltin = env.Get(lisp.Symbol("+"))
+				if sourceBuiltin.Type != lisp.LFun {
+					t.Fatalf("fixture builtin: %v", sourceBuiltin)
+				}
+			}
 			return env, nil
 		},
-		Tx: []string{`(list a b)`},
+		TemplateOptions: []lisp.TemplateOption{lisp.TemplateWithBuiltinPolicy(func(v *lisp.LVal) bool {
+			if v == sourceBuiltin {
+				baseApprovals++
+			}
+			return v.Builtin() != nil
+		})},
+		Program: `(set 'state (sorted-map "n" 0))`,
+		Tx:      []string{`(assoc! state "n" 1)`, `(assoc! state "n" 2)`},
 	})
+	if baseApprovals != 1 {
+		t.Fatalf("base source admitted %d times, want one reusable template", baseApprovals)
+	}
 }
 
 // Issue #579: a libschema validator minted on the template stopped being
@@ -109,7 +258,12 @@ func TestForkCheck_SchemaValidatorCredential(t *testing.T) {
 // second fork to run it fails where the cold environment does not.
 func TestForkCheck_TestingSuitePerFork(t *testing.T) {
 	elpstest.RunForkCheck(t, elpstest.ForkCheck{
-		Program: `(use-package 'testing)`,
+		Setup: func(env *lisp.LEnv) error {
+			if rc := libtesting.LoadPackage(env); rc.Type == lisp.LError {
+				return lisp.GoError(rc)
+			}
+			return lisp.GoError(env.LoadString("setup.lisp", `(use-package 'testing)`))
+		},
 		Tx: []string{
 			`(test "one" (assert-equal 1 1))`,
 			`(test "one" (assert-equal 2 2))`,

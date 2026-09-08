@@ -10,8 +10,8 @@ Audience: reviewers of the sealing work, and authors of Go code that embeds
 elps or extends it with builtins.
 
 The invariant this document establishes also pays a construction dividend:
-`LEnv.Fork` clones a loaded environment by *sharing* every sealed value and
-copying only the mutable remainder. See [docs/fork.md](fork.md) for that
+`Template.NewVM` instantiates a validated construction plan, sharing only
+transitively sealed code and rebuilding mutable data. See [docs/fork.md](fork.md) for that
 API and its embedder contract.
 
 ---
@@ -573,11 +573,17 @@ tool and silently missed by another.
 
 ### 3.1 elpsvet (static; `cmd/elpsvet`)
 
-Three `go/analysis` rules, run as `go run ./cmd/elpsvet -test=false ./...`:
+Three `go/analysis` rules, run in CI by `make elpsvet` for both normal and
+`elpscheck` builds:
 
 - **elpsownership** (`main.go`): no package-level var may keep a
   `*lisp.LVal` reachable — the process-wide-shared-table producer pattern
-  behind #363. Suppression: `//elpsvet:allow` with a justification.
+  behind #363. The exact `lisp.CachedSource` type is an audited exception:
+  its immutable, opaque handle exposes only scalar accessors. The analyzer
+  checks its field and method shape before stopping traversal; any change
+  requires a renewed ownership review. Mutable fields beside a cache handle
+  still produce diagnostics. `Program` and other opaque-looking types do not
+  inherit this exception. Suppression: `//elpsvet:allow` with a justification.
 - **elpsfreshness** (`freshness.go` + `alias.go`): no function may write a
   `lisp.LVal` field on a value it did not construct (#333/#334's pattern),
   including writes laundered through local slice aliases of LVal backing —

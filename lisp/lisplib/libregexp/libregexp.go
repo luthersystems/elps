@@ -1,16 +1,45 @@
 // Copyright © 2018 The ELPS authors
 
+// Package libregexp provides regular expression compilation and matching.
+// Lisp-compiled native values privately own their compiled program and expose
+// no Go pointer or mutator. They are immutable and may be shared by templates.
+// Host-supplied *regexp.Regexp values are still accepted by the Lisp operations,
+// but require an explicit TemplateWithNativePolicy to share: a Go owner can
+// mutate them through Longest or UnmarshalText.
 package libregexp
 
 import (
+	"errors"
 	"regexp"
 
+	"github.com/luthersystems/elps/internal/templatepolicy"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
 )
 
 // DefaultPackageName is the package name used by LoadPackage.
 const DefaultPackageName = "regexp"
+
+// compiledRegexp exclusively owns a fresh compilation. Keep the regexp in a
+// private named field: embedding it would expose its mutation methods. Store
+// this wrapper by value in LNative, and never return the underlying pointer to
+// callers. Only this package's read-only operations access the program.
+type compiledRegexp struct {
+	templatepolicy.Marker
+	re *regexp.Regexp
+}
+
+var _ templatepolicy.Immutable = compiledRegexp{}
+
+// MarshalText preserves regexp's JSON/text representation without exposing
+// storage owned by the compiled program. In particular, callers may mutate the
+// returned bytes without changing this value or any template instance.
+func (re compiledRegexp) MarshalText() ([]byte, error) {
+	if re.re == nil {
+		return nil, errors.New("invalid compiled regexp")
+	}
+	return []byte(re.re.String()), nil
+}
 
 // LoadPackage adds the regexp package to env
 func LoadPackage(env *lisp.LEnv) *lisp.LVal {
@@ -56,8 +85,14 @@ func BuiltinIsRegexp(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if v.Type != lisp.LNative {
 		return lisp.Bool(false)
 	}
-	_, ok := v.Native.(*regexp.Regexp)
-	return lisp.Bool(ok)
+	switch re := v.Native.(type) {
+	case compiledRegexp:
+		return lisp.Bool(re.re != nil)
+	case *regexp.Regexp:
+		return lisp.Bool(re != nil)
+	default:
+		return lisp.Bool(false)
+	}
 }
 
 func BuiltinCompile(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -69,7 +104,7 @@ func BuiltinCompile(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err != nil {
 		return invalidPatternError(env, err)
 	}
-	return lisp.Native(re)
+	return lisp.Native(compiledRegexp{re: re})
 }
 
 func BuiltinPattern(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -97,10 +132,9 @@ func BuiltinIsMatch(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 }
 
-// getRegexp returns a regexp corresponding to v.  If v is a compiled regexp,
-// the underlying regexp.Regexp is returned.  If v is a string it will be
-// compiled to a regexp and the returned is returned.  Any error encountered is
-// returned as an LVal.
+// getRegexp borrows a compiled program for this package's read-only operations.
+// Strings compile on demand; owned wrappers and host regexps reuse their program.
+// The returned pointer must never escape through a public API or be mutated.
 func getRegexp(env *lisp.LEnv, v *lisp.LVal) (re *regexp.Regexp, lerr *lisp.LVal) {
 	if v.Type == lisp.LString {
 		re, err := regexp.Compile(v.Str)
@@ -112,8 +146,13 @@ func getRegexp(env *lisp.LEnv, v *lisp.LVal) (re *regexp.Regexp, lerr *lisp.LVal
 	if v.Type != lisp.LNative {
 		return nil, env.Errorf("argument is not a regexp: %v", v.Type)
 	}
-	re, ok := v.Native.(*regexp.Regexp)
-	if !ok {
+	switch native := v.Native.(type) {
+	case compiledRegexp:
+		re = native.re
+	case *regexp.Regexp:
+		re = native
+	}
+	if re == nil {
 		return nil, env.Errorf("argument is not a regexp: %v", v)
 	}
 	return re, nil

@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/internal/funraw"
+	"github.com/luthersystems/elps/internal/stdlib"
+	"github.com/luthersystems/elps/internal/templatepolicy"
 	"github.com/luthersystems/elps/lisp"
-	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
 )
 
@@ -41,11 +43,11 @@ import (
 //
 // "Reachable" means everything reachable from the package bindings: list
 // and vector cells, sorted-map entries, bytes, and the environment a
-// closure captured (its bindings and its parents').  What is NOT compared,
-// because the oracles cannot see inside it: a native payload's contents
-// (rendered by Go type only, so a stateful native that is not a
-// NativeCloner is compared by the header that holds it, not by what it
-// holds), and package metadata outside the symbol table (exports,
+// closure captured (its bindings and its parents') and explicit builtin
+// captures. Direct native pointer/map/channel/slice storage is compared;
+// contents require RenderNative or meaningful transaction observations.
+// Go function captures and references hidden inside structs remain opaque.
+// Also not compared: package metadata outside the symbol table (exports,
 // docstrings, the function-name index).
 type ForkCheck struct {
 	// NewEnv builds an environment with whatever library the program needs
@@ -59,9 +61,24 @@ type ForkCheck struct {
 	// It is the per-environment hook an embedder runs at checkout — a
 	// stateful package the template must not carry, such as libtesting.
 	Setup func(*lisp.LEnv) error
-	// ForkOptions are passed to every Fork call: the place to exercise
-	// ForkWithNativeReplacer or ForkWithContext the way the embedder does.
-	ForkOptions []lisp.ForkOption
+	// SharedSetupNative declares intentionally shared immutable native pointers
+	// introduced by Setup or transactions. Template-phase native references and
+	// Internally declared immutable struct values are already known shared; every other native
+	// reference is private by default. This asserts immutability, not permission
+	// to ignore mutable handles. Use RenderNative to observe native contents.
+	SharedSetupNative func(any) bool
+	// RenderNative provides a deterministic, side-effect-free observation of
+	// native contents, used in BOTH result and reachable-state comparisons.
+	// Function closures and references hidden inside structs have no general
+	// Go identity oracle: callers must observe their meaningful state here or
+	// in transaction effects. A Go function code address is not closure identity.
+	RenderNative func(any) string
+	// TemplateOptions declare the host-code and immutable-native contracts.
+	// Required for a custom NewEnv; the default factory audits its fixed core
+	// and standard-library registrations. Mutable natives belong in Setup.
+	TemplateOptions []lisp.TemplateOption
+	// ForkOptions bind per-instance context or diagnostic output.
+	ForkOptions []lisp.VMOption
 	// Tx are the transactions.  Each runs on its own fork, its own fork of
 	// a fork, and its own cold environment.
 	Tx []string
@@ -75,7 +92,7 @@ func NewForkCheckEnv() (*lisp.LEnv, error) {
 	if rc := lisp.InitializeUserEnv(env); rc.Type == lisp.LError {
 		return nil, lisp.GoError(rc)
 	}
-	if rc := lisplib.LoadLibrary(env); rc.Type == lisp.LError {
+	if rc := stdlib.Load(env, false); rc.Type == lisp.LError {
 		return nil, lisp.GoError(rc)
 	}
 	if rc := env.InPackage(lisp.String(lisp.DefaultUserPackage)); rc.Type == lisp.LError {
@@ -91,9 +108,22 @@ func NewForkCheckEnv() (*lisp.LEnv, error) {
 // anything.
 func RunForkCheck(t testing.TB, c ForkCheck) {
 	t.Helper()
+	state := func(env *lisp.LEnv) string { return envStateWithNative(env, c.RenderNative) }
+	result := func(value *lisp.LVal) string {
+		if lisp.IsInternalPanic(value) {
+			t.Errorf("transaction recovered an internal Go panic: %s", value)
+		}
+		return renderResultWithNative(value, c.RenderNative)
+	}
 	newEnv := c.NewEnv
+	templateOptions := c.TemplateOptions
 	if newEnv == nil {
 		newEnv = NewForkCheckEnv
+		if templateOptions == nil {
+			// This factory installs only the audited stateless core/stdlib.
+			// Program-created schema callbacks declare explicit captures.
+			templateOptions = []lisp.TemplateOption{lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true })}
+		}
 	}
 	build := func(what string) *lisp.LEnv {
 		t.Helper()
@@ -115,9 +145,21 @@ func RunForkCheck(t testing.TB, c ForkCheck) {
 			t.Fatalf("%s: setup: %v", what, err)
 		}
 	}
+	// Reuse one published plan for each source. Recompiling on every call
+	// would hide a Fork that corrupts plan-owned storage between instances.
+	published := make(map[*lisp.LEnv]*lisp.Template)
 	fork := func(what string, env *lisp.LEnv) *lisp.LEnv {
 		t.Helper()
-		f, err := env.Fork(c.ForkOptions...)
+		tmpl := published[env]
+		if tmpl == nil {
+			var err error
+			tmpl, err = lisp.NewTemplate(env, templateOptions...)
+			if err != nil {
+				t.Fatalf("%s: publish template: %v", what, err)
+			}
+			published[env] = tmpl
+		}
+		f, err := tmpl.NewVM(c.ForkOptions...)
 		if err != nil {
 			t.Fatalf("%s: fork: %v", what, err)
 		}
@@ -125,22 +167,40 @@ func RunForkCheck(t testing.TB, c ForkCheck) {
 	}
 
 	tmpl := build("template")
-	tmplState := envState(tmpl)
+	// NativeCloner has no bearing on the Template contract. All native values
+	// admitted before Setup are immutable, even if they also implement it.
+	// Keep the approved payload itself, not only its address: Setup may remove
+	// a cold arm's original binding, but its exemption remains in use (#625).
+	immutableNatives := make(map[nativePayloadIdentity]any)
+	defer runtime.KeepAlive(immutableNatives)
+	recordImmutableNatives := func(env *lisp.LEnv) {
+		for id, value := range newOracleCensus(env).natives {
+			immutableNatives[id] = value
+		}
+	}
+	sharedPrivate := func(a, b oracleCensus) []string {
+		return sharedOracleCensuses(a, b, func(id nativePayloadIdentity, value any) bool {
+			_, recorded := immutableNatives[id]
+			return recorded || oracleDeclaredImmutable(value) || (c.SharedSetupNative != nil && c.SharedSetupNative(value))
+		})
+	}
+	recordImmutableNatives(tmpl)
+	tmplState := state(tmpl)
 	tmplAlias := aliasSignature(tmpl)
-	tmplIDs := payloadIDs(tmpl)
+	tmplIDs := newOracleCensus(tmpl)
 
 	// A fresh fork before any transaction: same state, same alias
 	// structure, no shared mutable payload.
-	checkFork := func(what string, f *lisp.LEnv) map[interface{}]string {
+	checkFork := func(what string, f *lisp.LEnv) oracleCensus {
 		t.Helper()
-		if got := envState(f); got != tmplState {
+		if got := state(f); got != tmplState {
 			t.Errorf("%s: reachable state differs from the template\n%s", what, diffLines(tmplState, got))
 		}
 		if got := aliasSignature(f); got != tmplAlias {
 			t.Errorf("%s: alias structure differs from the template (a payload reachable under two names in one is reachable under one, or under different objects, in the other)\n%s", what, diffLines(tmplAlias, got))
 		}
-		ids := payloadIDs(f)
-		if shared := sharedPayloads(tmplIDs, ids); len(shared) > 0 {
+		ids := newOracleCensus(f)
+		if shared := sharedPrivate(tmplIDs, ids); len(shared) > 0 {
 			t.Errorf("%s: %d mutable payload(s) shared with the template: %s", what, len(shared), strings.Join(shared, ", "))
 		}
 		return ids
@@ -148,22 +208,50 @@ func RunForkCheck(t testing.TB, c ForkCheck) {
 	f0 := fork("fork", tmpl)
 	f0IDs := checkFork("fresh fork", f0)
 	checkFork("fresh fork of a fork", fork("fork of fork", f0))
-	// Two forks of one template share nothing with each other either: a
-	// CloneNative that hands every fork the same clone would pass the
-	// template check and fail here.
-	if shared := sharedPayloads(f0IDs, checkFork("second fresh fork", fork("fork", tmpl))); len(shared) > 0 {
+	// Two forks of one plan must not share instance-owned mutable storage.
+	if shared := sharedPrivate(f0IDs, checkFork("second fresh fork", fork("fork", tmpl))); len(shared) > 0 {
 		t.Errorf("two forks of one template share %d mutable payload(s): %s", len(shared), strings.Join(shared, ", "))
+	}
+	// Retain observed VMs and their physical-identity snapshots through all
+	// transactions, with sharing exemptions checked on both sides. A
+	// Setup hook that hands every request one mutable native would otherwise
+	// pass the pre-Setup checks above. Check again after execution in case a
+	// transaction introduces a new reference to shared mutable state.
+	type observedVM struct {
+		name string
+		env  *lisp.LEnv
+		ids  oracleCensus
+	}
+	var observed []observedVM
+	observePrivateState := func(what string, env *lisp.LEnv) {
+		t.Helper()
+		ids := newOracleCensus(env)
+		if shared := sharedPrivate(tmplIDs, ids); len(shared) > 0 {
+			t.Errorf("%s: %d mutable payload(s) shared with the template: %s", what, len(shared), strings.Join(shared, ", "))
+		}
+		own := -1
+		for i, previous := range observed {
+			if previous.env == env {
+				own = i
+				continue
+			}
+			if shared := sharedPrivate(previous.ids, ids); len(shared) > 0 {
+				t.Errorf("%s: %d mutable payload(s) shared with %s: %s", what, len(shared), previous.name, strings.Join(shared, ", "))
+			}
+		}
+		entry := observedVM{what, env, ids}
+		if own < 0 {
+			observed = append(observed, entry)
+		} else {
+			observed[own] = entry
+		}
 	}
 
 	for i, tx := range c.Tx {
 		name := fmt.Sprintf("tx[%d]", i)
 
 		cold := build(name + " cold")
-		setup(name+" cold", cold)
-		wantRes := renderResult(cold.LoadString("tx.lisp", tx))
-		wantState := envState(cold)
-		wantAlias := aliasSignature(cold)
-
+		recordImmutableNatives(cold)
 		arms := []struct {
 			what string
 			env  *lisp.LEnv
@@ -171,36 +259,61 @@ func RunForkCheck(t testing.TB, c ForkCheck) {
 			{name + " fork", fork(name, tmpl)},
 			{name + " fork of fork", fork(name, fork(name, tmpl))},
 		}
+		// Keep all freshly set-up VMs live before any transaction can remove
+		// a leaked binding and conceal that they originally shared storage.
+		setup(name+" cold", cold)
+		observePrivateState(name+" cold", cold)
 		for _, arm := range arms {
 			setup(arm.what, arm.env)
-			if got := renderResult(arm.env.LoadString("tx.lisp", tx)); got != wantRes {
+			observePrivateState(arm.what, arm.env)
+		}
+		wantRes := result(cold.LoadString("tx.lisp", tx))
+		observePrivateState(name+" cold", cold)
+		wantState := state(cold)
+		wantAlias := aliasSignature(cold)
+		for _, arm := range arms {
+			if got := result(arm.env.LoadString("tx.lisp", tx)); got != wantRes {
 				t.Errorf("%s: result differs from the cold run\n  cold: %s\n  fork: %s", arm.what, wantRes, got)
 			}
-			if got := envState(arm.env); got != wantState {
+			if got := state(arm.env); got != wantState {
 				t.Errorf("%s: reachable state after the transaction differs from the cold run\n%s", arm.what, diffLines(wantState, got))
 			}
 			if got := aliasSignature(arm.env); got != wantAlias {
 				t.Errorf("%s: alias structure after the transaction differs from the cold run\n%s", arm.what, diffLines(wantAlias, got))
 			}
+			observePrivateState(arm.what, arm.env)
 		}
 
 		// The template is untouched by anything the forks did, and the
 		// next fork starts from the same place as the first.
-		if got := envState(tmpl); got != tmplState {
+		if got := state(tmpl); got != tmplState {
 			t.Errorf("%s: the template's reachable state changed\n%s", name, diffLines(tmplState, got))
 		}
 		checkFork(name+" fork taken afterwards", fork(name, tmpl))
 	}
 }
 
+// oracleDeclaredImmutable independently mirrors the automatic admission
+// boundary: a pointer inherits marker methods, but can expose writable storage
+// through ordinary reflection (#635). Pointer sharing needs explicit approval.
+func oracleDeclaredImmutable(value any) bool {
+	_, declared := value.(templatepolicy.Immutable)
+	return declared && reflect.TypeOf(value).Kind() == reflect.Struct
+}
+
 // renderResult renders a transaction result for comparison: the value's
 // type and rendering, or the error text for an error.
 func renderResult(v *lisp.LVal) string {
-	if v.Type == lisp.LError {
-		return "error: " + normalizeFunIDs(v.String())
+	return renderResultWithNative(v, nil)
+}
+
+func renderResultWithNative(v *lisp.LVal, renderNative func(any) string) string {
+	if v == nil {
+		return "<nil>"
 	}
 	var b strings.Builder
 	w := newStateWalker(&b)
+	w.renderNative = renderNative
 	w.value(v)
 	return v.Type.String() + " " + b.String()
 }
@@ -208,10 +321,11 @@ func renderResult(v *lisp.LVal) string {
 // funIDPattern matches the environment-derived part of a lambda's name.
 // Cold and fork arms allocate environment IDs on independent counters, so
 // the IDs are not comparable; only that two mentions agree.
-var funIDPattern = regexp.MustCompile(`_fun\d+`)
+var funIDPattern = regexp.MustCompile(`^_fun\d+$`)
+var validationFunIDPattern = regexp.MustCompile(`^_validation_fun_\d+$`)
 
 func normalizeFunIDs(s string) string {
-	return funIDPattern.ReplaceAllString(s, "_fun#")
+	return validationFunIDPattern.ReplaceAllString(funIDPattern.ReplaceAllString(s, "_fun#"), "_validation_fun_#")
 }
 
 // roots returns every package binding in a deterministic order: package
@@ -261,6 +375,10 @@ func sortedBindings(e *lisp.LEnv) (keys []string, vals map[string]*lisp.LVal) {
 // two bindings, render the payload in full each time.  aliasSignature is
 // the alias-aware comparison.
 func envState(env *lisp.LEnv) string {
+	return envStateWithNative(env, nil)
+}
+
+func envStateWithNative(env *lisp.LEnv, renderNative func(any) string) string {
 	var b strings.Builder
 	roots(env, func(pkg, name string, v *lisp.LVal) {
 		fmt.Fprintf(&b, "%s:%s = ", pkg, name)
@@ -268,16 +386,20 @@ func envState(env *lisp.LEnv) string {
 		// binding, and a value reachable from two bindings renders in
 		// full under each, so the rendering stays blind to header
 		// identity across bindings.
-		newStateWalker(&b).value(v)
+		w := newStateWalker(&b)
+		w.renderNative = renderNative
+		w.value(v)
 		b.WriteByte('\n')
 	})
 	return b.String()
 }
 
 type stateWalker struct {
-	sb   *strings.Builder
-	seen map[*lisp.LVal]int
-	envs map[*lisp.LEnv]int
+	sb           *strings.Builder
+	seen         map[*lisp.LVal]int
+	envs         map[*lisp.LEnv]int
+	renderNative func(any) string
+	sealed       sealedOracleState
 }
 
 func newStateWalker(sb *strings.Builder) *stateWalker {
@@ -289,11 +411,23 @@ func (w *stateWalker) value(v *lisp.LVal) {
 		w.sb.WriteString("<nil>")
 		return
 	}
+	if v.IsSealed() {
+		w.sealed.renderNative = w.renderNative
+		fmt.Fprintf(w.sb, "sealed:%x", w.sealed.digest(v))
+		return
+	}
 	if n, ok := w.seen[v]; ok {
 		fmt.Fprintf(w.sb, "@%d", n)
 		return
 	}
 	w.seen[v] = len(w.seen)
+	fmt.Fprintf(w.sb, "%s:q%t:cells-nil%t:", v.Type, v.IsQuoted(), v.Cells == nil)
+	if annotation := oracleNativeAnnotation(v); annotation != nil {
+		fmt.Fprintf(w.sb, "annotation(%T)", annotation)
+		if w.renderNative != nil {
+			fmt.Fprintf(w.sb, "%q", w.renderNative(annotation))
+		}
+	}
 	switch v.Type {
 	case lisp.LSortMap:
 		md := v.Map()
@@ -312,30 +446,60 @@ func (w *stateWalker) value(v *lisp.LVal) {
 		}
 		w.sb.WriteString("}")
 	case lisp.LBytes:
-		fmt.Fprintf(w.sb, "bytes(%q)", v.Bytes())
+		data := v.Bytes()
+		fmt.Fprintf(w.sb, "bytes[nil%t:%d/%d](%q)", data == nil, len(data), cap(data), data[:cap(data)])
 	case lisp.LNative:
 		fmt.Fprintf(w.sb, "native(%T)", v.Native)
+		if w.renderNative != nil {
+			fmt.Fprintf(w.sb, "%q", w.renderNative(v.Native))
+		}
+	case lisp.LError:
+		errorValue := (*lisp.ErrorVal)(v)
+		loc, located := v.Source()
+		fmt.Fprintf(w.sb, "error[%q/%q/%t/%#v]", errorValue.Condition(), errorValue.ErrorMessage(), located, loc)
+		if stack := v.CallStack(); stack != nil {
+			fmt.Fprintf(w.sb, "stack[%d/%d/%d/panic%t]", stack.MaxHeightLogical, stack.MaxHeightPhysical, stack.MaxTailIterations, len(stack.GoStack) != 0)
+			for _, frame := range stack.Frames {
+				name := frame.Name
+				if name == frame.FID {
+					name = normalizeFunIDs(name)
+				}
+				fmt.Fprintf(w.sb, "frame[%#v/%q/%q/%q/%d/%t/%t/%d]", frame.Source, frame.Package, name,
+					normalizeFunIDs(frame.FID), frame.HeightLogical, frame.Terminal, frame.TROBlock, frame.TailIterations)
+			}
+		}
+		w.cells(v.Cells)
 	case lisp.LFun:
-		w.sb.WriteString(normalizeFunIDs(v.String()))
+		fmt.Fprintf(w.sb, "function(%s:%s:%v)", v.Package(), normalizeFunIDs(v.FID()), v.FunType)
+		w.cells(v.Cells)
 		w.env(funraw.Env(v))
+		if captures := funraw.Captures(v); captures != nil {
+			w.sb.WriteString(" captures{")
+			w.value(captures)
+			w.sb.WriteString("}")
+		}
 	default:
-		if len(v.Cells) == 0 {
-			w.sb.WriteString(normalizeFunIDs(v.String()))
+		if cap(v.Cells) == 0 {
+			w.sb.WriteString(v.String())
 			return
 		}
 		fmt.Fprintf(w.sb, "%s", v.Type)
 		if v.Str != "" {
 			fmt.Fprintf(w.sb, "%q", v.Str)
 		}
-		w.sb.WriteString("[")
-		for i, c := range v.Cells {
-			if i > 0 {
-				w.sb.WriteString(" ")
-			}
-			w.value(c)
-		}
-		w.sb.WriteString("]")
+		w.cells(v.Cells)
 	}
+}
+
+func (w *stateWalker) cells(cells []*lisp.LVal) {
+	fmt.Fprintf(w.sb, "[%d/%d:", len(cells), cap(cells))
+	for i, child := range cells[:cap(cells)] {
+		if i > 0 {
+			w.sb.WriteString(" ")
+		}
+		w.value(child)
+	}
+	w.sb.WriteString("]")
 }
 
 // env renders a closure's captured environment chain: each environment's
@@ -366,7 +530,7 @@ func (w *stateWalker) env(e *lisp.LEnv) {
 // aliasSignature renders the alias structure of everything reachable from
 // the package bindings: every payload that can be mutated in place — a
 // list or vector's cells, a sorted-map's storage, a bytes value's storage,
-// a NativeCloner payload held by pointer, the environment a closure
+// an opaque native payload held by pointer, the environment a closure
 // captured — is numbered on first visit and rendered as that number on
 // every visit.  Two environments have the same signature exactly when,
 // walking them in the same order, "same object" is true for the same pairs
@@ -385,6 +549,9 @@ func aliasSignature(env *lisp.LEnv) string {
 		w.value(v)
 		b.WriteByte('\n')
 	})
+	// The legacy payload signature describes content aliases. Independent
+	// physical-slot/header identities also see overlapping undeclared Go views.
+	b.WriteString(oracleStorageSignature(env))
 	return b.String()
 }
 
@@ -409,8 +576,12 @@ func (w *aliasWalker) value(v *lisp.LVal) {
 		w.sb.WriteString("<nil>")
 		return
 	}
+	if v.IsSealed() {
+		w.sb.WriteString("_")
+		return
+	}
 	var key interface{} = v
-	if p, ok := mutablePayload(v); ok {
+	if p, ok := payloadIdentity(v); ok {
 		key = p
 		fmt.Fprintf(w.sb, "#%d", w.id(p))
 	} else {
@@ -437,6 +608,11 @@ func (w *aliasWalker) value(v *lisp.LVal) {
 		w.sb.WriteString("}")
 	case lisp.LFun:
 		w.env(funraw.Env(v))
+		if captures := funraw.Captures(v); captures != nil {
+			w.sb.WriteString(" captures{")
+			w.value(captures)
+			w.sb.WriteString("}")
+		}
 	default:
 		if len(v.Cells) == 0 {
 			return
@@ -475,15 +651,12 @@ func (w *aliasWalker) env(e *lisp.LEnv) {
 	w.env(e.Parent())
 }
 
-// mutablePayload returns the identity of the storage a value can be
-// mutated through, when it has one.  Sealed values are immutable by
-// contract and may legitimately be shared, so they carry no identity.  So
-// does a native payload unless it is a NativeCloner held by pointer: Fork
-// shares every other native by reference by design (docs/fork.md), and
-// keys its clone memo on pointer payloads only.  Such a native renders as
-// "_" in the alias signature — its header takes part in the state
-// rendering, its contents in neither.
-func mutablePayload(v *lisp.LVal) (interface{}, bool) {
+// Native reference identity matters for alias parity whether the value is
+// immutable or mutable. Isolation filters known immutable identities separately;
+// a copying interface must never be used as a mutability classifier.
+// payloadIdentity returns the primary payload identity; oracleValueIDs also
+// includes all physical slots. Sealed Lisp values have no mutable identity.
+func payloadIdentity(v *lisp.LVal) (interface{}, bool) {
 	if v.IsSealed() {
 		return nil, false
 	}
@@ -497,94 +670,15 @@ func mutablePayload(v *lisp.LVal) (interface{}, bool) {
 			return p, true
 		}
 	case lisp.LNative:
-		if _, ok := v.Native.(lisp.NativeCloner); !ok {
-			return nil, false
+		if ids := nativeReferenceIDs(v.Native); len(ids) > 0 {
+			return ids[0], true
 		}
-		rv := reflect.ValueOf(v.Native)
-		if rv.Kind() != reflect.Pointer || rv.IsNil() {
-			return nil, false
-		}
-		return v.Native, true
 	default:
 		if len(v.Cells) > 0 {
 			return v, true
 		}
 	}
 	return nil, false
-}
-
-// payloadIDs collects every mutable payload identity reachable from the
-// package bindings — closures' captured environments included — labelled
-// by the first path it was reached on.
-func payloadIDs(env *lisp.LEnv) map[interface{}]string {
-	out := map[interface{}]string{}
-	seen := map[interface{}]bool{}
-	var walk func(v *lisp.LVal, path string)
-	var walkEnv func(e *lisp.LEnv, path string)
-	walk = func(v *lisp.LVal, path string) {
-		if v == nil {
-			return
-		}
-		var key interface{} = v
-		if p, ok := mutablePayload(v); ok {
-			key = p
-			if _, dup := out[p]; !dup {
-				out[p] = path
-			}
-		}
-		if seen[key] {
-			return
-		}
-		seen[key] = true
-		switch v.Type {
-		case lisp.LSortMap:
-			md := v.Map()
-			if md == nil {
-				return
-			}
-			for _, k := range md.Keys().Cells {
-				val, _ := md.Get(k)
-				walk(val, path+"/"+k.String())
-			}
-		case lisp.LFun:
-			walkEnv(funraw.Env(v), path+"/env")
-		default:
-			for i, c := range v.Cells {
-				walk(c, fmt.Sprintf("%s/%d", path, i))
-			}
-		}
-	}
-	walkEnv = func(e *lisp.LEnv, path string) {
-		if e == nil || seen[e] {
-			return
-		}
-		seen[e] = true
-		if _, dup := out[e]; !dup {
-			out[e] = path
-		}
-		keys, vals := sortedBindings(e)
-		for _, k := range keys {
-			walk(vals[k], path+"/"+k)
-		}
-		walkEnv(e.Parent(), path+"/parent")
-	}
-	roots(env, func(pkg, name string, v *lisp.LVal) {
-		walk(v, pkg+":"+name)
-	})
-	return out
-}
-
-// sharedPayloads lists the payload identities present in both maps, by the
-// path each was first reached on in a.
-func sharedPayloads(a, b map[interface{}]string) []string {
-	var out []string
-	for id, path := range a {
-		if _, ok := b[id]; ok {
-			out = append(out, path)
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 // diffLines renders the first differing line of two multi-line renderings,

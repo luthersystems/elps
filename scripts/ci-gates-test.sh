@@ -1128,6 +1128,9 @@ else
 fi
 rm -rf "$reqjobs_tmp"
 
+assert_exit 0 "govulncheck installs a pinned Go-compatible scanner (#634)" \
+	python3 "${SCRIPT_DIR}/govulncheck-toolchain-test.py"
+
 echo "== govulncheck fail-summary: the gate must not un-fail its own caller ===="
 
 # scripts/govulncheck-fail-summary.sh is the final step of
@@ -3646,6 +3649,40 @@ elif ! command -v git >/dev/null 2>&1; then
 	echo "SKIP  git unavailable — confidentiality guard assertions not run"
 else
 	guard_tmp="$(mktemp -d)"
+	guard_term="$(printf '\141\143\162\145')"
+
+	# Generic assertions print captured output on failure. Interpose this
+	# guard-specific check so a regression exposing the fixture cannot leak
+	# it through the test harness. Exit 3 cannot be mistaken for any of the
+	# guard's documented 0/1/2 verdicts, including fail-closed negative tests.
+	guard_capture() {
+		local guard_output guard_rc=0 guard_match_rc=0
+		guard_output="$("$@" 2>&1)" || guard_rc=$?
+		# No producer pipe: grep -q can exit early and make printf SIGPIPE
+		# under pipefail, incorrectly selecting the raw-output branch.
+		grep -qiF -- "$guard_term" <<<"$guard_output" 2>/dev/null || guard_match_rc=$?
+		if [ "$guard_match_rc" -ne 1 ]; then
+			echo "guard output check failed: output withheld"
+			return 3
+		fi
+		printf '%s\n' "$guard_output"
+		return "$guard_rc"
+	}
+	guard_probe_rc=0
+	guard_probe_output="$(guard_capture printf '%s\n' "$guard_term")" || guard_probe_rc=$?
+	if [ "$guard_probe_rc" -eq 3 ] && [ "$guard_probe_output" = "guard output check failed: output withheld" ]; then
+		ok "confidentiality harness withholds forbidden output (#626)"
+	else
+		bad "confidentiality harness failed its output-withholding control (#626)"
+	fi
+	guard_long_output() { printf '%s\n%262144s\n' "$guard_term" ""; }
+	guard_probe_rc=0
+	guard_probe_output="$(guard_capture guard_long_output)" || guard_probe_rc=$?
+	if [ "$guard_probe_rc" -eq 3 ] && [ "$guard_probe_output" = "guard output check failed: output withheld" ]; then
+		ok "confidentiality harness withholds long output under pipefail (#626)"
+	else
+		bad "confidentiality harness failed its long-output control (#626)"
+	fi
 
 	# new_repo <dir> -- a throwaway git repo with one ordinary tracked file, so
 	# the guard has something real to scan.
@@ -3664,33 +3701,47 @@ else
 	# fails on everything, which nobody could keep green.
 	new_repo "${guard_tmp}/clean"
 	assert_exit 0 "confidentiality guard: a clean tree passes (#486)" \
-		env -C "${guard_tmp}/clean" bash "$GUARD_SH"
+		guard_capture env -C "${guard_tmp}/clean" bash "$GUARD_SH"
 
 	# (2) NEGATIVE CONTROL -- the guard must still CATCH a real violation.
 	# This is the assertion that proves the exit-2 paths added for #486 did not
 	# turn the guard into something that merely never says "found". The term is
 	# assembled at runtime, exactly as the guard assembles it.
 	new_repo "${guard_tmp}/dirty"
-	guard_term="$(printf '\141\143\162\145')"
 	printf '// see the %s-handler for details\n' "$guard_term" \
 		>"${guard_tmp}/dirty/violation.go"
 	git -C "${guard_tmp}/dirty" add -A
 	git -C "${guard_tmp}/dirty" -c commit.gpgsign=false commit -qm violation
 	assert_exit 1 "confidentiality guard: a real bounded occurrence is still CAUGHT (#486)" \
-		env -C "${guard_tmp}/dirty" bash "$GUARD_SH"
+		guard_capture env -C "${guard_tmp}/dirty" bash "$GUARD_SH"
 	assert_contains "violation.go" \
 		"confidentiality guard: the hit names the offending file (#486)" \
-		env -C "${guard_tmp}/dirty" bash "$GUARD_SH"
+		guard_capture env -C "${guard_tmp}/dirty" bash "$GUARD_SH"
+
+	# #626: exercise the actual git-grep engine, not just the shell grep used
+	# by the guard's pattern self-test. No confidential literal is stored here.
+	guard_upper="$(printf '%s' "$guard_term" | tr '[:lower:]' '[:upper:]')"
+	guard_case=0
+	for guard_fixture in "$guard_term" "$guard_upper" "${guard_term}:helper" "(${guard_term})"; do
+		guard_case=$((guard_case + 1))
+		new_repo "${guard_tmp}/boundary-${guard_case}"
+		printf '// %s\n' "$guard_fixture" >"${guard_tmp}/boundary-${guard_case}/boundary.go"
+		git -C "${guard_tmp}/boundary-${guard_case}" add -A
+		assert_exit 1 "confidentiality guard: actual scan catches bounded case ${guard_case} (#626)" \
+			guard_capture env -C "${guard_tmp}/boundary-${guard_case}" bash "$GUARD_SH"
+	done
 
 	# (3) A substring word must still NOT trip it -- the boundary behaviour the
 	# guard's own self-test asserts, pinned end-to-end over a real tree so a
 	# future widening of the pattern fails here rather than in someone's PR.
 	new_repo "${guard_tmp}/substr"
 	printf 'const w = "massacre wiseacre acreage"\n' >"${guard_tmp}/substr/words.go"
+	printf '// _%s %s_ 1%s %s1\n' "$guard_term" "$guard_term" "$guard_term" "$guard_term" \
+		>>"${guard_tmp}/substr/words.go"
 	git -C "${guard_tmp}/substr" add -A
 	git -C "${guard_tmp}/substr" -c commit.gpgsign=false commit -qm words
 	assert_exit 0 "confidentiality guard: substring words do not false-positive (#486)" \
-		env -C "${guard_tmp}/substr" bash "$GUARD_SH"
+		guard_capture env -C "${guard_tmp}/substr" bash "$GUARD_SH"
 
 	# (4) THE #486 PATHS. Each of these made the guard print "clean" and exit 0.
 	# Exit 2 (not 1) is asserted deliberately: "could not run" is a different
@@ -3700,20 +3751,20 @@ else
 	# 4a. Not a repository at all.
 	mkdir -p "${guard_tmp}/norepo"
 	assert_exit 2 "confidentiality guard: OUTSIDE a repository refuses to report clean (#486)" \
-		env -C "${guard_tmp}/norepo" bash "$GUARD_SH"
+		guard_capture env -C "${guard_tmp}/norepo" bash "$GUARD_SH"
 
 	# 4b. Corrupt index -- git grep exits 128.
 	new_repo "${guard_tmp}/badindex"
 	printf 'GARBAGE' >"${guard_tmp}/badindex/.git/index"
 	assert_exit 2 "confidentiality guard: a CORRUPT INDEX refuses to report clean (#486)" \
-		env -C "${guard_tmp}/badindex" bash "$GUARD_SH"
+		guard_capture env -C "${guard_tmp}/badindex" bash "$GUARD_SH"
 
 	# 4c. Dangling gitdir pointer -- the shape a broken worktree/submodule has.
 	new_repo "${guard_tmp}/badgitdir"
 	rm -rf "${guard_tmp}/badgitdir/.git"
 	printf 'gitdir: /nonexistent/gitdir\n' >"${guard_tmp}/badgitdir/.git"
 	assert_exit 2 "confidentiality guard: a DANGLING gitdir refuses to report clean (#486)" \
-		env -C "${guard_tmp}/badgitdir" bash "$GUARD_SH"
+		guard_capture env -C "${guard_tmp}/badgitdir" bash "$GUARD_SH"
 
 	# 4d. Tracked files absent from the working tree. git grep reads the WORKING
 	# TREE and skips missing files silently, so this returns exit 1 -- byte-for-
@@ -3722,17 +3773,17 @@ else
 	new_repo "${guard_tmp}/nocheckout"
 	rm -f "${guard_tmp}/nocheckout/main.go"
 	assert_exit 2 "confidentiality guard: an UNPOPULATED working tree refuses to report clean (#486)" \
-		env -C "${guard_tmp}/nocheckout" bash "$GUARD_SH"
+		guard_capture env -C "${guard_tmp}/nocheckout" bash "$GUARD_SH"
 	assert_contains "ZERO readable files" \
 		"confidentiality guard: the empty scan SAYS nothing was looked at (#486)" \
-		env -C "${guard_tmp}/nocheckout" bash "$GUARD_SH"
+		guard_capture env -C "${guard_tmp}/nocheckout" bash "$GUARD_SH"
 
 	# (5) The clean message must state the scan's extent. "clean" on its own is
 	# the string that was printed over zero files; a count makes an empty scan
 	# visible in the log even if some future path slips past the checks above.
 	assert_contains "files scanned" \
 		"confidentiality guard: a clean result reports HOW MUCH was scanned (#486)" \
-		env -C "${guard_tmp}/clean" bash "$GUARD_SH"
+		guard_capture env -C "${guard_tmp}/clean" bash "$GUARD_SH"
 
 	rm -rf "$guard_tmp"
 fi

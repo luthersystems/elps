@@ -4,12 +4,17 @@ package fuzzval_test
 
 import (
 	"fmt"
+	"reflect"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luthersystems/elps/internal/fuzzval"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
+	"github.com/luthersystems/elps/lisp/lisplib/libregexp"
+	"github.com/luthersystems/elps/lisp/lisplib/libtime"
 	"github.com/luthersystems/elps/parser"
 )
 
@@ -232,6 +237,10 @@ func TestGeneratorNeverRelocatesSharedValues(t *testing.T) {
 // only in its rejection path.
 func TestGeneratorProducesStdlibNativeTypes(t *testing.T) {
 	env := genEnv(t)
+	compiled := libregexp.BuiltinCompile(env, lisp.SExpr([]*lisp.LVal{lisp.String("a")}))
+	if compiled.Type != lisp.LNative {
+		t.Fatalf("compile the actual Lisp-produced regexp: %v", compiled)
+	}
 	seen := map[string]bool{}
 	for _, seed := range fuzzval.Seeds() {
 		g := fuzzval.New(seed, env)
@@ -243,10 +252,66 @@ func TestGeneratorProducesStdlibNativeTypes(t *testing.T) {
 	}
 	for _, want := range []string{
 		"time.Time", "time.Duration", "*regexp.Regexp", "json.RawMessage",
+		fmt.Sprintf("%T", compiled.Native),
+		fmt.Sprintf("%T", libtime.Time(time.Unix(1, 42).UTC()).Native),
 		"string", "int", "[]uint8", "map[string]int", "struct {}", "<nil>",
 	} {
 		if !seen[want] {
 			t.Errorf("the corpus never produced an LNative wrapping %s (saw %v)", want, seen)
+		}
+	}
+}
+
+// #632: raw host regexps still exercise the mutable host-native path; the
+// actual Lisp-produced representation must independently reach stdlib calls.
+func TestGeneratorRegexpPopulations(t *testing.T) {
+	env := genEnv(t)
+	compiled := libregexp.BuiltinCompile(env, lisp.SExpr([]*lisp.LVal{lisp.String("a")}))
+	if compiled.Type != lisp.LNative {
+		t.Fatalf("compile Lisp regexp: %v", compiled)
+	}
+	if _, raw := compiled.Native.(*regexp.Regexp); raw {
+		t.Fatal("premise: Lisp compile must not expose a mutable host regexp")
+	}
+	wrapperType := reflect.TypeOf(compiled.Native)
+	seen := map[string]map[string]bool{"raw": {}, "lisp": {}}
+	for _, seed := range fuzzval.Seeds() {
+		v := fuzzval.New(seed, env).Value()
+		if v.Type != lisp.LNative {
+			continue
+		}
+		var population string
+		if _, raw := v.Native.(*regexp.Regexp); raw {
+			population = "raw"
+		} else if reflect.TypeOf(v.Native) == wrapperType {
+			population = "lisp"
+		} else {
+			continue
+		}
+		pattern := libregexp.BuiltinPattern(env, lisp.SExpr([]*lisp.LVal{v}))
+		if pattern.Type != lisp.LString {
+			t.Fatalf("%s seed %x rejected by regexp-pattern: %v", population, seed, pattern)
+		}
+		seen[population][pattern.Str] = true
+		reference, err := regexp.Compile(pattern.Str)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, input := range []string{"", "a", "ab", "xYz", "é"} {
+			got := libregexp.BuiltinIsMatch(env, lisp.SExpr([]*lisp.LVal{v, lisp.String(input)}))
+			if got != lisp.Bool(reference.MatchString(input)) {
+				t.Fatalf("%s seed %x pattern %q input %q: %v", population, seed, pattern.Str, input, got)
+			}
+		}
+		other := fuzzval.New(seed, nil).Value()
+		if reflect.TypeOf(other.Native) != reflect.TypeOf(v.Native) || other.Native == v.Native {
+			t.Fatalf("%s seed %x must also produce a fresh regexp without an env", population, seed)
+		}
+	}
+	want := map[string]bool{"": true, "a": true, "(a|b)+": true, "^$": true, `\p{L}{2,3}`: true, "(?i)x(y)?z": true, ".*": true, `[^\x00-\x7f]`: true}
+	for population, patterns := range seen {
+		if !reflect.DeepEqual(patterns, want) {
+			t.Errorf("%s regexp seed patterns = %v, want %v", population, patterns, want)
 		}
 	}
 }

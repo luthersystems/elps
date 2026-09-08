@@ -93,3 +93,67 @@ func TestNewDocEnv_CanLookupSymbols(t *testing.T) {
 	v2 := env.Get(lisp.Symbol("map"))
 	assert.Equal(t, lisp.LFun, v2.Type, "should resolve 'map' as a function")
 }
+
+func TestLoadRuntimeLibraryKeepsTestingPerVM(t *testing.T) {
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	require.True(t, lisp.InitializeUserEnv(env).IsNil())
+	require.True(t, lisplib.LoadRuntimeLibrary(env).IsNil())
+	for _, name := range []string{"lisp", "user", "time", "help", "golang", "math", "string", "base64", "json", "regexp", "elpspath", "s"} {
+		require.NotNil(t, env.Runtime.Registry.Package(name), name)
+	}
+	require.Nil(t, env.Runtime.Registry.Package("testing"))
+	require.Equal(t, lisp.DefaultUserPackage, env.Runtime.Package.Name)
+	tmpl, err := lisp.NewTemplate(env, lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true }))
+	require.NoError(t, err)
+	first, err := tmpl.NewVM()
+	require.NoError(t, err)
+	second, err := tmpl.NewVM()
+	require.NoError(t, err)
+	for _, vm := range []*lisp.LEnv{first, second} {
+		require.True(t, libtesting.LoadPackage(vm).IsNil())
+		require.True(t, vm.LoadString("tests.lisp", `(testing:test "private" (testing:assert-equal 42 (+ 40 2)))`).IsNil())
+		suite := libtesting.EnvTestSuite(vm)
+		require.Equal(t, []string{"private"}, suite.Tests())
+		require.NotEqual(t, lisp.LError, vm.FunCall(suite.Test(0).Fun, lisp.SExpr(nil)).Type)
+	}
+	require.NotSame(t, libtesting.EnvTestSuite(first), libtesting.EnvTestSuite(second))
+	require.Nil(t, env.Runtime.Registry.Package("testing"))
+}
+
+func TestLoadLibraryTestingRegistryRejectsTemplate(t *testing.T) {
+	env := lisp.NewEnv(nil)
+	require.True(t, lisp.InitializeUserEnv(env).IsNil())
+	require.True(t, lisplib.LoadLibrary(env).IsNil())
+	suite := libtesting.EnvTestSuite(env)
+	require.NotNil(t, suite)
+	plan, err := lisp.NewTemplate(env, lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true }))
+	require.Nil(t, plan)
+	require.ErrorContains(t, err, "native *libtesting.TestSuite has no template immutability declaration")
+	require.Same(t, suite, libtesting.EnvTestSuite(env))
+	require.Empty(t, suite.Tests())
+	require.Empty(t, suite.Benchmarks())
+}
+
+// #627: moving shared assembly under internal must preserve the public loader's
+// final package selection as well as the runtime-only fixture path.
+func TestLoadLibrarySelectsDefaultUserPackage(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		load func(*lisp.LEnv) *lisp.LVal
+	}{
+		{"public", lisplib.LoadLibrary},
+		{"runtime", lisplib.LoadRuntimeLibrary},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := lisp.NewEnv(nil)
+			env.Runtime.Reader = parser.NewReader()
+			require.True(t, lisp.InitializeUserEnv(env).IsNil())
+			require.True(t, env.DefinePackage(lisp.Symbol("initial")).IsNil())
+			require.True(t, env.InPackage(lisp.Symbol("initial")).IsNil())
+			require.Equal(t, "initial", env.Runtime.Package.Name)
+			require.True(t, tc.load(env).IsNil())
+			require.Equal(t, lisp.DefaultUserPackage, env.Runtime.Package.Name)
+		})
+	}
+}

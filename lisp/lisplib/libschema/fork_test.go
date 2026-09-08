@@ -6,14 +6,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/internal/stdlib"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser"
 )
 
 // This file covers issue #579: a schema validator lost its credential when
 // the environment holding it was forked.
 //
 // libschema recognizes a constraint by a marker cell every validator LFun
-// carries (isValidator, libschema.go).  LEnv.Fork shares a native payload by
+// carries (isValidator, libschema.go).  Template.NewVM shares an immutable payload by
 // reference but gives every forked value a FRESH *LVal header, so a
 // credential compared by HEADER identity is revoked in every fork: the
 // template validates, the fork raises "Value is not a schema constraint".
@@ -26,6 +28,19 @@ import (
 // Go type, and the "the value must be a Go builtin" half of isValidator is
 // untouched.
 
+func newSchemaForkEnv(t *testing.T) *lisp.LEnv {
+	t.Helper()
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	if rc := lisp.InitializeUserEnv(env); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	if rc := stdlib.Load(env, false); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	return env
+}
+
 func mustLoad(t *testing.T, env *lisp.LEnv, name, src string) {
 	t.Helper()
 	if res := env.LoadString(name, src); res.Type == lisp.LError {
@@ -33,9 +48,34 @@ func mustLoad(t *testing.T, env *lisp.LEnv, name, src string) {
 	}
 }
 
+func schemaTemplate(t *testing.T, env *lisp.LEnv) *lisp.Template {
+	t.Helper()
+	// These fixed fixtures contain only audited stateless runtime-library code.
+	// Empty forged credential markers below are immutable data, not authority.
+	template, err := lisp.NewTemplate(env,
+		lisp.TemplateWithBuiltinPolicy(func(v *lisp.LVal) bool { return v.Builtin() != nil }),
+		lisp.TemplateWithNativePolicy(func(value any) bool {
+			switch value.(type) {
+			case *lookalikeValidatorTag, *struct{}:
+				return true
+			default:
+				return false
+			}
+		}))
+	if err != nil {
+		t.Fatalf("template: %v", err)
+	}
+	return template
+}
+
 func mustForkEnv(t *testing.T, env *lisp.LEnv) *lisp.LEnv {
 	t.Helper()
-	fork, err := env.Fork()
+	return forkSchemaTemplate(t, schemaTemplate(t, env))
+}
+
+func forkSchemaTemplate(t *testing.T, template *lisp.Template) *lisp.LEnv {
+	t.Helper()
+	fork, err := template.NewVM()
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -61,7 +101,7 @@ func assertValidates(t *testing.T, env *lisp.LEnv, name, src string) {
 // s:make-validator wrapping an s: constructor -- must still be a validator in
 // a fork of that template, and a fork must still be able to mint its own.
 func TestForkPreservesValidatorCredential(t *testing.T) {
-	env := newSchemaEnv(t)
+	env := newSchemaForkEnv(t)
 	mustLoad(t, env, "template.lisp", `(s:deftype "T" s:int)
 (set 'anon (s:make-validator "Anon" s:int (s:gt 1)))`)
 	// The template itself validates: this is the non-fork behaviour, and it
@@ -98,10 +138,10 @@ func TestForkPreservesValidatorCredential(t *testing.T) {
 }
 
 // TestForkOfForkPreservesValidatorCredential checks that the credential does
-// not decay along a chain of forks (each fork re-walks the values it
-// inherited, so a fix that only survived one hop would fail here).
+// not decay when child state is republished as another template; a fix that
+// only survived one construction would fail here.
 func TestForkOfForkPreservesValidatorCredential(t *testing.T) {
-	env := newSchemaEnv(t)
+	env := newSchemaForkEnv(t)
 	mustLoad(t, env, "template.lisp", `(s:deftype "T" s:int)
 (set 'anon (s:make-validator "Anon" s:int))`)
 
@@ -119,7 +159,7 @@ func TestForkOfForkPreservesValidatorCredential(t *testing.T) {
 // a fork must not appear in the template, and the two environments must not
 // share the binding.
 func TestForkValidatorIsolation(t *testing.T) {
-	env := newSchemaEnv(t)
+	env := newSchemaForkEnv(t)
 	fork := mustForkEnv(t, env)
 
 	mustLoad(t, fork, "fork-only.lisp", `(s:deftype "ForkOnly" s:int)`)
@@ -162,7 +202,7 @@ func TestForkValidatorIsolation(t *testing.T) {
 // reason of copy's own: the value copy hands back by reference is the fork's
 // re-headered validator, so it inherited the revoked credential.
 func TestCopyOfForkedValidatorKeepsCredential(t *testing.T) {
-	env := newSchemaEnv(t)
+	env := newSchemaForkEnv(t)
 	mustLoad(t, env, "template.lisp", `(s:deftype "T" s:int)`)
 	// Control: unchanged behaviour on the template, passed before the fix.
 	assertValidates(t, env, "copy.lisp", `(s:validate (copy T) 3)`)
@@ -195,7 +235,7 @@ func TestForgedValidatorCellIsRejected(t *testing.T) {
 	}
 	for name, marker := range forgeries {
 		t.Run(name, func(t *testing.T) {
-			env := newSchemaEnv(t)
+			env := newSchemaForkEnv(t)
 			forged := lisp.FunInPackage("user", "forged", lisp.Formals("input"),
 				func(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal { return lisp.Nil() })
 			if forged.Type == lisp.LError {

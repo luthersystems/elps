@@ -91,14 +91,16 @@ jobs:
       # or a single failure costs the whole night's coverage.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     # DERIVED, not remembered. scripts/fuzz-budget-check.sh asserts
     #
-    #     ceil(targets / shards) x FUZZTIME + overhead <= timeout-minutes
+    #     ceil(targets / shards) x FUZZTIME + overhead + FUZZTIME <= timeout-minutes
     #
     # on every PR, so this number cannot silently stop covering the sweep. At
-    # 35 targets over 9 shards that is 4 x 10m + 10m = 50; 60 leaves a shard's
-    # worth of headroom for a target being added before anyone reshards.
+    # 41 targets over 11 shards that is 4 x 10m + 10m + 10m = 60. The two
+    # template differential targets (#625) would put five targets on a
+    # ten-shard worker and consume the required margin. Eleven preserves
+    # every target's full budget without raising the 60-minute timeout.
     #
     # The rule is that a target never lands without this line being recomputed,
     # not that every target buys a shard -- the eighth shard absorbed two

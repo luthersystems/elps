@@ -176,8 +176,8 @@ func (m sortedmap) clone(val func(*LVal) *LVal) sortedmap {
 // stock sorted-map copy of such a map without first boxing every entry
 // into a pair list: the copy is the same stock map the Entries path
 // produces for it, so nothing observable changes -- only the sort, the
-// pair cells and the incremental growth go.  libjson.SortedMap, what
-// json:load returns, implements it.
+// pair cells and the incremental growth go. Decoded JSON maps, which
+// json:load returns, implement it.
 type StringKeyRanger interface {
 	RangeStringKeys(fn func(key string, val *LVal)) error
 }

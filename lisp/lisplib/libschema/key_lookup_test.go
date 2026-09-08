@@ -27,8 +27,8 @@ import (
 //     which is why the literal (sorted-map "a" 1) named in #325 was in fact
 //     never affected -- worth recording, because it is the case a reader
 //     reaches for first when checking the report.
-//   - libjson.SortedMap -- what json:load-string returns -- rejects any key
-//     whose Type is not LString and answers (LError, false).
+//   - decoded JSON maps -- what json:load-string returns -- reject any key
+//     whose Type is not LString and answer (LError, false).
 //
 // may-have-key read that false as "the key is absent" and passed. So against
 // a JSON-decoded map -- the case the constraint is most often written for --
@@ -272,7 +272,7 @@ func TestMayHaveKeyInversionSites(t *testing.T) {
 }
 
 // strictKeyMap is a lisp.Map that refuses EVERY key, the way
-// libjson.SortedMap refuses non-string keys: it answers (LError, false).
+// decoded JSON maps refuse non-string keys: they answer (LError, false).
 //
 // It stands in for a future Map implementation stricter than anything in the
 // tree today. The point is the shape of the answer, not the strictness: it
@@ -382,8 +382,8 @@ func TestSchemaKeysAreLookedUpAsStrings(t *testing.T) {
 	if len(offenders) != 0 {
 		t.Fatalf("sorted-map lookups that do not go through schemaKey:\n  %s\n\n"+
 			"lisp.Map implementations disagree about key types: the built-in "+
-			"sortedmap accepts LString and LSymbol interchangeably, libjson.SortedMap "+
-			"accepts only LString and answers (LError, false) for anything else. A "+
+			"sortedmap accepts LString and LSymbol interchangeably, decoded JSON maps "+
+			"accept only LString and answer (LError, false) for anything else. A "+
 			"lookup with the wrong key type therefore reports 'not found' instead of "+
 			"failing, and in s:may-have-key that read as 'absent, so pass' -- a "+
 			"validator that silently approved everything. See issue #325.",

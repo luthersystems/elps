@@ -74,20 +74,28 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 //
 // See LEnv.TaggedValue for more information about creating tagged-values.
 func InitializeTypedef(env *LEnv) *LVal {
-	ctor := env.builtin(&langBuiltin{"typedef-ctor", Formals("name", "ctor"), func(env *LEnv, args *LVal) *LVal {
-		sym := args.Cells[0]
-		ctor := args.Cells[1]
-		if sym.Type != LSymbol {
-			return env.Errorf("first argument is not a symbol: %v", GetType(sym))
-		}
-		if ctor.Type != LFun {
-			return env.Errorf("second argument is not a function: %v", GetType(ctor))
-		}
-		if ctor.IsSpecialFun() {
-			return env.Errorf("second argument is not a regular function")
-		}
-		return QExpr([]*LVal{sym, ctor})
-	}, ""})
+	// This callback lives inside the metatype, not a package registration.
+	// Declare its empty capture graph so hosts need not approve arbitrary
+	// nested callbacks merely to admit the core type system (#622).
+	ctor := newCapturedBuiltin(capturedBuiltin{
+		Package: env.Runtime.Package.Name,
+		FID:     fmt.Sprintf("_fun%d", env.Runtime.GenEnvID()),
+		Formals: Formals("name", "ctor"),
+		Eval: func(env *LEnv, args, _ *LVal) *LVal {
+			sym := args.Cells[0]
+			ctor := args.Cells[1]
+			if sym.Type != LSymbol {
+				return env.Errorf("first argument is not a symbol: %v", GetType(sym))
+			}
+			if ctor.Type != LFun {
+				return env.Errorf("second argument is not a function: %v", GetType(ctor))
+			}
+			if ctor.IsSpecialFun() {
+				return env.Errorf("second argument is not a regular function")
+			}
+			return QExpr([]*LVal{sym, ctor})
+		},
+	})
 	if ctor.Type == LError {
 		return ctor
 	}
@@ -432,21 +440,6 @@ func (env *LEnv) load(ctx context.Context, exprs []*LVal) *LVal {
 	// builds; see lisp/seal_check_elpscheck.go.
 	verifySealedLoadRoots(exprs)
 	return ret
-}
-
-// Copy returns a new LEnv with a copy of env.scope but a shared parent and
-// stack (not quite a deep copy).
-func (env *LEnv) Copy() *LEnv {
-	if env == nil {
-		return nil
-	}
-	cp := &LEnv{}
-	*cp = *env
-	cp.scope = make(map[string]*LVal, len(env.scope))
-	for k, v := range env.scope {
-		cp.scope[k] = v
-	}
-	return cp
 }
 
 // Get takes an LSymbol k and returns the LVal it is bound to in env.
@@ -841,16 +834,6 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 		Cells: cells,
 	}
 	return fun
-}
-
-// BUG:  Because Go-defined functions don't have a lexical enivroment this
-// method doesn't produce the expected behavior and can't be exported publicly
-// because of that.
-func (env *LEnv) builtin(f LBuiltinDef) *LVal {
-	// The formals are copied for the same reason the Add* methods copy
-	// theirs: an LBuiltinDef's formals typically belong to a process-wide
-	// table.  See formalsCopier and issue #363.
-	return FunInPackage(env.Runtime.Package.Name, fmt.Sprintf("_fun%d", env.Runtime.GenEnvID()), f.Formals().Copy(), f.Eval)
 }
 
 func (env *LEnv) Terminal(expr *LVal) *LVal {

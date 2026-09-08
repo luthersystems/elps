@@ -67,7 +67,9 @@ jobs:
       # dropped it and the scripts below then ran against a govulncheck binary
       # that was never installed.
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        # Match the PR scanner; v1.8.0 requires Go 1.26 (#634).
+        # This pins the executable, not the live vulnerability database.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
 
       - name: Run govulncheck
         id: scan

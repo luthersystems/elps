@@ -11,7 +11,7 @@
 #     guard, and this file never needs to be excluded from the scan -- an
 #     exclusion would be a hole a future violation could hide in.
 #
-#  2. The scan uses a case-insensitive WORD-BOUNDARY pattern (\b...\b), so
+#  2. The scan uses case-insensitive POSIX word boundaries, so
 #     ordinary English words that merely contain the term as a substring
 #     (e.g. "massacre", "acreage", "wiseacre") never false-positive.  The
 #     self-test below proves both directions on every run: those substring
@@ -55,14 +55,17 @@ cd "$REPO_TOP"
 
 # Forbidden term, assembled from octal codes so it never appears literally.
 TERM_="$(printf '\141\143\162\145')"
-PATTERN="\\b${TERM_}\\b"
+# Git's regex engine and the shell's grep need not implement the non-POSIX
+# \b extension identically (notably on macOS). Alphanumeric characters and
+# underscore are word constituents in both the scan and these controls (#626).
+PATTERN="(^|[^[:alnum:]_])${TERM_}([^[:alnum:]_]|$)"
 
 # --- self-test: boundary handling -------------------------------------------
 
 # Substring-containing words must NOT match (word boundaries do the work).
-for fixture in "massacre" "acreage" "wiseacre" "LambdaCreatesGlobal"; do
+for fixture in "massacre" "acreage" "wiseacre" "LambdaCreatesGlobal" "_${TERM_}" "${TERM_}_" "1${TERM_}" "${TERM_}1"; do
 	if printf '%s\n' "$fixture" | grep -qiE "$PATTERN"; then
-		echo "guard self-test failed: false positive on substring word '$fixture'" >&2
+		echo "guard self-test failed: false positive on a substring fixture" >&2
 		exit 2
 	fi
 done

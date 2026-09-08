@@ -1,6 +1,6 @@
 // Copyright © 2026 The ELPS authors
 
-// Behavioral tests and benchmarks for LEnv.Fork (issue #380) over real
+// Behavioral tests and benchmarks for Template.NewVM (issue #380) over real
 // parsed programs — closures, macros, labels mutual recursion, mutable
 // globals.  The structural sharing contract is audited node-by-node in
 // lisp/fork_test.go (package lisp); this file exercises the exported
@@ -17,8 +17,8 @@ import (
 	"testing"
 
 	"github.com/luthersystems/elps/internal/funraw"
+	"github.com/luthersystems/elps/internal/stdlib"
 	"github.com/luthersystems/elps/lisp"
-	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
 )
 
@@ -29,7 +29,7 @@ func newLoadedForkEnv(tb testing.TB) *lisp.LEnv {
 	if rc := lisp.InitializeUserEnv(env); !rc.IsNil() {
 		tb.Fatalf("init: %v", rc)
 	}
-	if rc := lisplib.LoadLibrary(env); !rc.IsNil() {
+	if rc := stdlib.Load(env, false); !rc.IsNil() {
 		tb.Fatalf("lisplib: %v", rc)
 	}
 	if rc := env.InPackage(lisp.String(lisp.DefaultUserPackage)); !rc.IsNil() {
@@ -61,9 +61,10 @@ func loadForkTestProgram(tb testing.TB, env *lisp.LEnv) {
 	}
 }
 
-func mustFork(tb testing.TB, env *lisp.LEnv, opts ...lisp.ForkOption) *lisp.LEnv {
+func mustFork(tb testing.TB, env *lisp.LEnv, opts ...lisp.VMOption) *lisp.LEnv {
 	tb.Helper()
-	fork, err := env.Fork(opts...)
+	template := snapshotFixture(tb, env)
+	fork, err := template.NewVM(opts...)
 	if err != nil {
 		tb.Fatalf("fork: %v", err)
 	}
@@ -398,10 +399,11 @@ func BenchmarkEnvConstruction(b *testing.B) {
 	b.Run("mode=fork", func(b *testing.B) {
 		env := newLoadedForkEnv(b)
 		loadForkTestProgram(b, env)
+		template := snapshotFixture(b, env)
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			fork, err := env.Fork()
+			fork, err := template.NewVM()
 			if err != nil {
 				b.Fatal(err)
 			}

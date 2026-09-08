@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -30,7 +31,22 @@ func mustEnv(t *testing.T, program string) *lisp.LEnv {
 // same state and a different alias structure.
 func TestAliasSignatureSeesDealiasing(t *testing.T) {
 	aliased := mustEnv(t, `(set 'a (sorted-map "k" 1)) (set 'b (quasiquote (unquote a)))`)
-	dealiased := mustEnv(t, `(set 'a (sorted-map "k" 1)) (set 'b (sorted-map "k" 1))`)
+	dealiased := mustEnv(t, `(set 'a (sorted-map "k" 1)) (set 'b (quasiquote (unquote a)))`)
+	// Preserve quotation and literal source positions too: changing the
+	// program text would now legitimately change the stronger state digest.
+	original, _ := dealiased.Runtime.Package.Symbol("b")
+	private := lisp.SortedMap()
+	for _, key := range original.MapKeys().Cells {
+		value, _ := original.Map().Get(key)
+		if rc := private.Map().Set(key, value); rc.Type == lisp.LError {
+			t.Fatal(rc)
+		}
+	}
+	header := *original
+	header.Native = private.Native
+	if rc := dealiased.PutGlobal(lisp.Symbol("b"), &header); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
 	if envState(aliased) != envState(dealiased) {
 		t.Fatalf("premise: the two programs must render the same state\n%s", diffLines(envState(aliased), envState(dealiased)))
 	}
@@ -74,11 +90,20 @@ func TestAliasSignatureIsLinearOnDiamonds(t *testing.T) {
 (dotimes (i 40) (set 'l0 (list l0 l0)))
 `)
 	// Forty levels add forty short lines' worth of rendering, not 2^40.
-	if grew := len(aliasSignature(env)) - len(aliasSignature(base)); grew > 40*40 {
+	// Keep the original payload-rendering bound; physical storage contributes
+	// another independently bounded traversal rather than weakening this one.
+	legacy := func(e *lisp.LEnv) string {
+		prefix, _, _ := strings.Cut(aliasSignature(e), "storage:")
+		return prefix
+	}
+	if grew := len(legacy(env)) - len(legacy(base)); grew > 40*40 {
 		t.Fatalf("diamond chain grew the signature by %d bytes; the shared subtree is being re-walked", grew)
 	}
-	if ids := payloadIDs(env); len(ids) < 40 {
-		t.Fatalf("payloadIDs found %d payloads, want at least 40", len(ids))
+	if grew := strings.Count(oracleStorageSignature(env), "storage:") - strings.Count(oracleStorageSignature(base), "storage:"); grew > 3*40 {
+		t.Fatalf("40 diamond levels added %d storage visits, want at most 3 per level", grew)
+	}
+	if ids := newOracleCensus(env).ids; len(ids) < 40 {
+		t.Fatalf("census found %d payloads, want at least 40", len(ids))
 	}
 }
 
@@ -94,13 +119,13 @@ func TestOraclesSeeClosureState(t *testing.T) {
 		t.Fatal("state rendering did not move on a write through a closure")
 	}
 	found := false
-	for _, path := range payloadIDs(env) {
+	for _, path := range newOracleCensus(env).ids {
 		if strings.HasPrefix(path, "user:bump!/env") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatal("payloadIDs did not reach the closure's captured environment")
+		t.Fatal("census did not reach the closure's captured environment")
 	}
 }
 
@@ -108,11 +133,11 @@ func TestOraclesSeeClosureState(t *testing.T) {
 // same program shares none.
 func TestSharedPayloadsSeesSharing(t *testing.T) {
 	env := mustEnv(t, `(set 'a (sorted-map "k" 1)) (set 'v (vector 1 2)) (set 'b (to-bytes "x"))`)
-	if got := sharedPayloads(payloadIDs(env), payloadIDs(env)); len(got) == 0 {
+	if got := sharedOracleCensuses(newOracleCensus(env), newOracleCensus(env), nil); len(got) == 0 {
 		t.Fatal("an environment shares nothing with itself")
 	}
 	other := mustEnv(t, `(set 'a (sorted-map "k" 1)) (set 'v (vector 1 2)) (set 'b (to-bytes "x"))`)
-	if got := sharedPayloads(payloadIDs(env), payloadIDs(other)); len(got) != 0 {
+	if got := sharedOracleCensuses(newOracleCensus(env), newOracleCensus(other), nil); len(got) != 0 {
 		t.Fatalf("two cold environments share payloads: %v", got)
 	}
 }
@@ -128,4 +153,83 @@ func TestEnvStateSeesMutation(t *testing.T) {
 	if envState(env) == before {
 		t.Fatal("state rendering did not move on a sorted-map write")
 	}
+}
+
+func capturedOracleEnv(t *testing.T, first, second *lisp.LVal) *lisp.LEnv {
+	t.Helper()
+	env := mustEnv(t, "")
+	for _, binding := range []struct {
+		name     string
+		captures *lisp.LVal
+	}{{"first", first}, {"second", second}} {
+		fn := funraw.NewCapturedBuiltin(funraw.CapturedBuiltin{
+			Package: lisp.DefaultUserPackage, FID: binding.name, Formals: lisp.Formals(), Captures: binding.captures,
+			Eval: func(_ *lisp.LEnv, _ *lisp.LVal, captures *lisp.LVal) *lisp.LVal {
+				if rc := captures.MapSet("n", lisp.Int(2)); rc.Type == lisp.LError {
+					return rc
+				}
+				return lisp.Int(0) // the result intentionally reveals no capture state
+			},
+		})
+		if rc := env.PutGlobal(lisp.Symbol(binding.name), fn); rc.Type == lisp.LError {
+			t.Fatal(rc)
+		}
+	}
+	return env
+}
+
+func capturedOracleMap(t *testing.T) *lisp.LVal {
+	t.Helper()
+	value := lisp.SortedMap()
+	if rc := value.MapSet("n", lisp.Int(1)); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	if rc := value.MapSet("self", value); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	return value
+}
+
+func TestOraclesSeeExplicitBuiltinCaptureGraphs(t *testing.T) {
+	t.Run("state", func(t *testing.T) {
+		state := capturedOracleMap(t)
+		env := capturedOracleEnv(t, state, state)
+		before := envState(env)
+		if got := env.LoadString("tx.lisp", "(first)"); got.Type != lisp.LInt || got.Int != 0 {
+			t.Fatalf("callback result: %v, want 0", got)
+		}
+		if got := state.MapGet("n"); got.Type != lisp.LInt || got.Int != 2 {
+			t.Fatalf("fixture did not mutate captures: %v", got)
+		}
+		if envState(env) == before {
+			t.Fatal("state oracle is blind to captured-only mutable state")
+		}
+	})
+	t.Run("alias", func(t *testing.T) {
+		shared := capturedOracleMap(t)
+		aliased := capturedOracleEnv(t, shared, shared)
+		dealiased := capturedOracleEnv(t, capturedOracleMap(t), capturedOracleMap(t))
+		if envState(aliased) != envState(dealiased) {
+			t.Fatal("premise: equal contents must have equal state rendering")
+		}
+		if aliasSignature(aliased) == aliasSignature(dealiased) {
+			t.Fatal("alias oracle misses shared builtin capture storage")
+		}
+	})
+	t.Run("isolation", func(t *testing.T) {
+		shared := capturedOracleMap(t)
+		first, leaking := capturedOracleEnv(t, shared, shared), capturedOracleEnv(t, shared, shared)
+		independent := capturedOracleEnv(t, capturedOracleMap(t), capturedOracleMap(t))
+		ids := newOracleCensus(first)
+		if path := ids.ids[oraclePointerID(shared.Map())]; path != "user:first/captures" {
+			t.Fatalf("capture path: got %q want user:first/captures", path)
+		}
+		// Wrapper, header, both backing maps and writable scalar header leak.
+		if shared := sharedOracleCensuses(ids, newOracleCensus(leaking), nil); len(shared) != 5 || shared[0] != "user:first/captures" || shared[1] != "user:first/captures" || shared[2] != "user:first/captures" || shared[3] != "user:first/captures" || shared[4] != `user:first/captures/"n"` {
+			t.Fatalf("missed capture leak: %v", shared)
+		}
+		if shared := sharedOracleCensuses(ids, newOracleCensus(independent), nil); len(shared) != 0 {
+			t.Fatalf("independent capture graphs share state: %v", shared)
+		}
+	})
 }

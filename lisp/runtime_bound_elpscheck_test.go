@@ -150,49 +150,22 @@ func TestRuntimeBound_ForkRejectsSharedBoundNative(t *testing.T) {
 		t.Fatalf("put state map: %v", lerr)
 	}
 
-	expectAffinityPanic(t, "boundNative", func() {
-		if _, err := env.Fork(); err != nil {
-			t.Fatalf("fork returned an error instead of panicking: %v", err)
-		}
-	})
+	if tmpl, err := NewTemplate(env, TemplateWithBuiltinPolicy(func(*LVal) bool { return true })); tmpl != nil || err == nil {
+		t.Fatalf("nested runtime-bound native admitted: template=%v error=%v", tmpl, err)
+	}
 }
 
-// TestRuntimeBound_ForkAcceptsRebindingClone is the sanctioned way to carry
-// a bound payload across a fork: implement NativeCloner and return an
-// UNBOUND clone.  The fork must succeed, the fork's payload must be that
-// clone (not the template's instance, and carrying no binding), and the
-// template's payload must be untouched — Fork never mutates the template.
-func TestRuntimeBound_ForkAcceptsRebindingClone(t *testing.T) {
+// Even a cloner that returns unbound data is not admitted into a Template.
+// Create runtime-affine services only after VM instantiation.
+func TestRuntimeBound_TemplateRejectsRebindingClone(t *testing.T) {
 	env := newForkTestEnv(t)
 	payload := &rebindingNative{rt: env.Runtime}
-	if lerr := env.PutGlobal(Symbol("handle"), Native(payload)); lerr.Type == LError {
-		t.Fatalf("put bound native: %v", lerr)
-	}
-
-	fork, err := env.Fork()
-	if err != nil {
-		t.Fatalf("fork: %v", err)
-	}
-	got := fork.GetGlobal(Symbol("handle"))
-	if got.Type != LNative {
-		t.Fatalf("fork lost the native binding: %v", got)
-	}
-	clone, ok := got.Native.(*rebindingNative)
-	if !ok {
-		t.Fatalf("fork payload has type %T, want *rebindingNative", got.Native)
-	}
-	if clone == payload {
-		t.Fatal("fork shares the template's payload; CloneNative was not honored")
-	}
-	if clone.BoundRuntime() != nil {
-		t.Fatalf("clone carried a binding to %p; it must arrive unbound", clone.BoundRuntime())
+	env.PutGlobal(Symbol("handle"), Native(payload))
+	if tmpl, err := NewTemplate(env, TemplateWithBuiltinPolicy(func(*LVal) bool { return true })); tmpl != nil || err == nil {
+		t.Fatalf("cloning runtime-bound native admitted: template=%v error=%v", tmpl, err)
 	}
 	if payload.BoundRuntime() != env.Runtime {
-		t.Fatal("fork mutated the template's payload binding")
-	}
-	// The clone is now free to be claimed by the fork's runtime.
-	if lerr := fork.PutGlobal(Symbol("handle2"), Native(clone)); lerr.Type == LError {
-		t.Fatalf("bind clone in the fork: %v", lerr)
+		t.Fatal("rejection changed source affinity")
 	}
 }
 
@@ -290,33 +263,20 @@ func TestRuntimeBound_CopyKeepsBoundCloneUnchecked(t *testing.T) {
 	}
 }
 
-// TestRuntimeBound_ForkChecksReplacerResult proves the fork-time check
-// applies to the RESOLVED payload whichever policy produced it.  The
-// template holds an unbound payload — a plain fork of it succeeds, which is
-// the control — and a ForkWithNativeReplacer hook swaps in an instance
-// bound to the TEMPLATE's runtime.  Nothing but the replacer's return value
-// can trip the gate here, and it must.
-func TestRuntimeBound_ForkChecksReplacerResult(t *testing.T) {
+// An immutable approval is a trusted assertion, not an affinity override.
+// Checked builds still reject a falsely approved runtime-bound payload.
+func TestRuntimeBound_TemplateChecksApprovedNativeAffinity(t *testing.T) {
 	env := newForkTestEnv(t)
-	if lerr := env.PutGlobal(Symbol("handle"), Native(&boundNative{})); lerr.Type == LError {
-		t.Fatalf("put unbound native: %v", lerr)
+	payload := &boundNative{}
+	env.PutGlobal(Symbol("handle"), Native(payload))
+	tmpl, err := NewTemplate(env, TemplateWithBuiltinPolicy(func(*LVal) bool { return true }),
+		TemplateWithNativePolicy(func(value any) bool { return value == payload }))
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// Control: without the replacer the same template forks cleanly, so the
-	// panic below is attributable to the replacement and nothing else.
-	if _, err := env.Fork(); err != nil {
-		t.Fatalf("control fork: %v", err)
+	if _, err := tmpl.NewVM(); err != nil {
+		t.Fatalf("unbound control: %v", err)
 	}
-
-	replacer := ForkWithNativeReplacer(func(payload interface{}) (interface{}, bool) {
-		if _, ok := payload.(*boundNative); ok {
-			return &boundNative{rt: env.Runtime}, true
-		}
-		return nil, false
-	})
-	expectAffinityPanic(t, "boundNative", func() {
-		if _, err := env.Fork(replacer); err != nil {
-			t.Fatalf("fork returned an error instead of panicking: %v", err)
-		}
-	})
+	payload.rt = env.Runtime // deliberately break the host's immutability assertion
+	expectAffinityPanic(t, "boundNative", func() { _, _ = tmpl.NewVM() })
 }

@@ -92,8 +92,8 @@ package lisp
 // leave atoms out: the flag makes IsSealed meaningful on every node a
 // program literal can produce.
 
-// SealAST marks v and every node reachable through its Cells as sealed
-// program-literal nodes.  The parser calls it on each completed top-level
+// SealAST marks parser-producible nodes reachable through v.Cells as sealed
+// program-literal nodes. The parser calls it on each completed top-level
 // expression; embedders that build expression trees by hand and share them
 // across environments may call it for the same protection.
 //
@@ -107,9 +107,11 @@ package lisp
 // belt-and-braces statement of intent — writing even a flag to a shared
 // singleton would race.
 //
-// Sealing is idempotent, and an already-sealed node terminates the walk —
-// a sealed node's descendants are always sealed, so revisiting them is
-// pointless and the check doubles as cycle protection.
+// Sealing is idempotent, and an already-sealed node terminates the walk;
+// the check also protects against cycles. A host-built mixed tree can contain
+// a sealed parent above a mutable runtime value. A seal bit alone therefore
+// does NOT prove transitive immutability. Program and Template admission
+// validate the graph before sharing it; NewTemplate rejects mixed trees.
 func (v *LVal) SealAST() {
 	v.sealAST()
 	// Checked builds record the tree's fingerprint here — SealAST is the

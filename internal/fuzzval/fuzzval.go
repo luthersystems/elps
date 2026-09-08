@@ -36,6 +36,8 @@ import (
 	"time"
 
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib/libregexp"
+	"github.com/luthersystems/elps/lisp/lisplib/libtime"
 	"github.com/luthersystems/elps/parser/token"
 )
 
@@ -71,11 +73,12 @@ type Gen struct {
 
 // New returns a Gen driven by data.
 //
-// env is used only to construct tagged-values (LEnv.TaggedValue is the only
+// env is used to construct tagged-values (LEnv.TaggedValue is the only
 // supported constructor, and it stamps a source location; hand-rolling the
 // struct literal would leave Source nil, which no real tagged-value ever has
 // and which would make a nil-deref in the harness look like a builtin bug).
-// A nil env is allowed and simply removes tagged-values from the corpus.
+// It also supplies regexp compilation diagnostics; the fixed patterns are
+// valid, so a nil env is allowed and only removes tagged-values from the corpus.
 func New(data []byte, env *lisp.LEnv) *Gen {
 	return &Gen{b: data, env: env, budget: Budget}
 }
@@ -561,8 +564,8 @@ var fuzzDurations = []time.Duration{
 	math.MinInt64,
 }
 
-// fuzzPatterns are compiled to *regexp.Regexp, which is what libregexp hands
-// back to lisp and therefore what a later builtin can receive.
+// fuzzPatterns cover both raw host *regexp.Regexp values and the private,
+// immutable native values produced by libregexp's public compile builtin.
 var fuzzPatterns = []string{
 	``, `a`, `(a|b)+`, `^$`, `\p{L}{2,3}`, `(?i)x(y)?z`, `.*`, `[^\x00-\x7f]`,
 }
@@ -572,12 +575,12 @@ var fuzzPatterns = []string{
 // TWO POPULATIONS, for two different reasons.
 //
 // The first is the embedder's: nil, an empty struct, a string, an int, a byte
-// slice, a map.  Host applications embed ELPS and hand natives across the
-// boundary, so a builtin that type switches on Native without a default is
+// slice, a map, a raw time.Time and a raw *regexp.Regexp. Host applications
+// hand natives across the boundary, so a builtin that type switches on Native without a default is
 // reachable from real code even though no lisp source can spell these.
 //
-// The second is the standard library's own: time.Time, time.Duration,
-// *regexp.Regexp and json.RawMessage are all produced by libtime, libregexp
+// The second is the standard library's own: owned timestamps, time.Duration,
+// compiled regexps and json.RawMessage are all produced by libtime, libregexp
 // and libjson and handed straight back to lisp, so a phylum can obtain one
 // from one builtin and pass it to any other.  Before these were here, the only
 // natives in the corpus were shapes no stdlib function had a branch for, so
@@ -586,12 +589,19 @@ var fuzzPatterns = []string{
 // compiled program a few hundred nodes deep and a time.Time carries a pointer
 // to a shared *time.Location, so "a builtin mutated a native's internals" is a
 // reachable defect rather than a hypothetical one.
-// nativeNumKinds is the number of shapes native() can build. Named so the
-// seed corpus and the switch cannot drift apart silently.
+// nativeNumKinds preserves the existing native-kind modulus. Lisp-produced
+// time/regexp subpopulations reserve selectors 16/18, formerly spellings of
+// kinds 6/8. Selector 26 adds zoned host times. Original raw selectors 6/8
+// and all unrelated kind/pattern bytes retain their existing decoding.
 const nativeNumKinds = 10
 
+const nativeLispTime = 16
+const nativeLispRegexp = 18
+const nativeZonedTime = 26
+
 func (g *Gen) native() *lisp.LVal {
-	switch g.Intn(nativeNumKinds) {
+	selector := g.Byte()
+	switch int(selector) % nativeNumKinds {
 	case 0:
 		return lisp.Native(nil)
 	case 1:
@@ -609,7 +619,25 @@ func (g *Gen) native() *lisp.LVal {
 		// irreproducible, which is the one property a regression corpus has to
 		// have.  UTC for the same reason -- the process's local zone is not an
 		// input to the fuzzer.
-		return lisp.Native(time.Unix(int64(g.pickInt()), int64(g.Intn(1000))).UTC())
+		stamp := time.Unix(int64(g.pickInt()), int64(g.Intn(1000))).UTC()
+		if selector == nativeLispTime || selector == nativeZonedTime {
+			// Small deterministic locations keep the fingerprint within its
+			// graph budget. Named IANA/DST rules have dedicated libtime tests;
+			// this generator must not depend on host timezone databases.
+			// Allocate fresh non-UTC headers so a mutated raw input cannot
+			// poison later inputs. The unnamed half-hour offset avoids Go's
+			// cache of shared whole-hour FixedZone locations.
+			switch g.Intn(3) {
+			case 1:
+				stamp = stamp.In(time.FixedZone("", 19800))
+			case 2:
+				stamp = stamp.In(time.FixedZone("Fuzz/Fixed", -12600))
+			}
+		}
+		if selector == nativeLispTime {
+			return libtime.Time(stamp)
+		}
+		return lisp.Native(stamp)
 	case 7:
 		return lisp.Native(fuzzDurations[g.Intn(len(fuzzDurations))])
 	case 8:
@@ -618,7 +646,13 @@ func (g *Gen) native() *lisp.LVal {
 		// LATER iteration instead of failing the one that did it, and a
 		// crasher that only reproduces after its predecessors is not a
 		// crasher.
-		re, err := regexp.Compile(fuzzPatterns[g.Intn(len(fuzzPatterns))])
+		pattern := fuzzPatterns[g.Intn(len(fuzzPatterns))]
+		if selector == nativeLispRegexp {
+			// Exercise the real Lisp constructor without exposing or
+			// duplicating its private immutable representation (#632).
+			return libregexp.BuiltinCompile(g.env, lisp.SExpr([]*lisp.LVal{lisp.String(pattern)}))
+		}
+		re, err := regexp.Compile(pattern)
 		if err != nil {
 			return lisp.Native(nil)
 		}
@@ -731,6 +765,23 @@ func Seeds() [][]byte {
 			[]byte{kindNative, k, 1, 2, 3, 4},
 			[]byte{stamped(kindNative), k, 1, 2, 3, 4},
 		)
+	}
+	// Preserve all raw-host seeds and explicitly cross each regexp pattern
+	// with the Lisp-produced representation as well. Both must be exercised
+	// during ordinary seed replay, not merely discoverable by mutation.
+	for pattern := range byte(len(fuzzPatterns)) {
+		for _, selector := range []byte{8, nativeLispRegexp} {
+			seeds = append(seeds, []byte{kindNative, selector, pattern}, []byte{stamped(kindNative), selector, pattern})
+		}
+	}
+	// #633: exercise both representations in UTC, an unnamed fixed offset,
+	// and a named fixed zone, with real and synthetic Lisp source locations.
+	for zone := range byte(3) {
+		for _, selector := range []byte{nativeZonedTime, nativeLispTime} {
+			seeds = append(seeds,
+				[]byte{kindNative, selector, 0, 1, 42, zone},
+				[]byte{stamped(kindNative), selector, 0, 1, 42, zone})
+		}
 	}
 	return seeds
 }

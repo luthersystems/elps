@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// Ownership-checker behavior for LEnv.Fork (issue #380).  The fork
+// Ownership-checker behavior for Template.NewVM (issue #380).  The fork
 // concurrency model is one Runtime per fork; what crosses the runtime
 // boundary is exactly the checker's allowlist: singletons and sealed
 // values.  These tests pin both directions — the sanctioned sharing does
@@ -44,7 +44,7 @@ func TestForkOwnership_SealedSharedAcrossRuntimes(t *testing.T) {
 		t.Fatalf("template call: %v", res)
 	}
 
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestForkOwnership_MutableStillChecked(t *testing.T) {
 	if lerr := env.Put(Symbol("owned"), v); lerr.Type == LError {
 		t.Fatalf("template put: %v", lerr)
 	}
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -89,11 +89,15 @@ func TestForkOwnership_ForkServesIndependently(t *testing.T) {
 	env := newForkTestEnv(t)
 	env.PutGlobal(Symbol("box"), Array(nil, []*LVal{Int(0)}))
 
-	fork1, err := env.Fork()
+	template, err := NewTemplate(env, TemplateWithBuiltinPolicy(func(*LVal) bool { return true }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork1, err := template.NewVM()
 	if err != nil {
 		t.Fatalf("fork1: %v", err)
 	}
-	fork2, err := env.Fork()
+	fork2, err := template.NewVM()
 	if err != nil {
 		t.Fatalf("fork2: %v", err)
 	}

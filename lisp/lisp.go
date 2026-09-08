@@ -183,8 +183,9 @@ func (ft LFunType) String() string {
 // (LVal.source/meta/macroExpansion, LEnv.scope/parent/loc, MapData's
 // backing) was already unreachable; these are now too.
 type funData struct {
-	builtin LBuiltin
-	env     *LEnv
+	builtin  LBuiltin
+	env      *LEnv
+	captures *builtinCaptures
 
 	// loc is the captured environment's location register as it stood when
 	// the function was defined.  bind gives the call environment this
@@ -361,6 +362,9 @@ type LVal struct {
 	Str string
 
 	// Cells used by many values as a storage space for lisp objects.
+	// Function formals/body vectors are read-only after construction; a
+	// template may share their backing when all entries are sealed code,
+	// even though the function header and lexical scope remain per VM.
 	//
 	// TODO: Consider making Cells' type []LVal instead of []*LVal to reduce
 	// the burden on the allocator/gc.
@@ -806,6 +810,63 @@ func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 		},
 		Cells: []*LVal{formals, String("")},
 	}
+}
+
+// capturedBuiltin describes a Go function whose VM state is explicit. Eval
+// receives the ordinary arguments followed by the capture graph for the VM
+// invoking it. All mutable VM state used by Eval must be reachable through
+// Captures; Eval may otherwise retain only immutable, concurrency-safe Go data.
+//
+// Captures is retained by reference at construction so aliases to other values
+// in the same VM remain intact. Fork remaps the whole graph, including aliases
+// and cycles, together with the VM's other state. Sharing the returned function
+// directly between independent runtimes does not clone its captures.
+type capturedBuiltin struct {
+	Formals  *LVal
+	Captures *LVal
+	Eval     func(env *LEnv, args, captures *LVal) *LVal
+	Package  string
+	FID      string
+}
+
+// newCapturedBuiltin constructs an LFun whose explicit capture graph can be
+// remapped by Fork. A nil Captures graph explicitly declares no VM captures.
+// FunInPackage uses the legacy callback contract and needs template approval.
+func newCapturedBuiltin(spec capturedBuiltin) *LVal {
+	if spec.Eval == nil {
+		return Errorf("captured builtin requires Eval")
+	}
+	// These three objects always travel together. Coallocation keeps explicit
+	// ownership from adding an allocation for each edge in the capture graph.
+	data := &capturedFunction{}
+	data.captures = builtinCaptures{values: spec.Captures, code: spec.Eval}
+	data.function = funData{
+		fid: spec.FID, pkg: spec.Package,
+		captures: &data.captures, builtin: data.captures.call,
+	}
+	data.value = LVal{
+		Type:   LFun,
+		Native: &data.function, //elps:aliases the fresh coallocation owns this payload; its env and location are nil, with no borrowed runtime location
+		Cells:  []*LVal{spec.Formals, String("")},
+	}
+	return &data.value
+}
+
+type capturedFunction struct {
+	captures builtinCaptures
+	function funData
+	value    LVal
+}
+
+// builtinCaptures keeps state separate from code while preserving LBuiltin's
+// public calling convention. Only functions with explicit captures allocate it.
+type builtinCaptures struct {
+	values *LVal
+	code   func(env *LEnv, args, captures *LVal) *LVal
+}
+
+func (c *builtinCaptures) call(env *LEnv, args *LVal) *LVal {
+	return c.code(env, args, c.values)
 }
 
 // Fun returns an LVal representing a function. Package is left empty;

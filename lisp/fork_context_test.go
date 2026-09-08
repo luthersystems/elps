@@ -9,7 +9,7 @@ import (
 
 // Tests pinning the fork/context contract that pooled embedders depend on
 // (issue #380, "Context" in docs/fork.md): a request-scoped value carried by
-// the context.Context bound to a fork — at fork time via ForkWithContext, or
+// the context.Context bound to a fork — at fork time via VMWithContext, or
 // after the fact via WithContext — is observable from inside a builtin
 // running on that fork through env.Context().Value, including through
 // intervening lisp call frames.  This is how an embedder rebinds per-request
@@ -58,9 +58,13 @@ func evalProbe(t *testing.T, env *LEnv, label string) string {
 func TestForkContextValueReachesBuiltins(t *testing.T) {
 	tmpl := newForkTestEnv(t)
 	bindProbe(t, tmpl)
+	snapshot, err := NewTemplate(tmpl, TemplateWithBuiltinPolicy(func(*LVal) bool { return true }))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Fork-time binding: the pool-checkout pattern.
-	fork1, err := tmpl.Fork(ForkWithContext(
+	fork1, err := snapshot.NewVM(VMWithContext(
 		context.WithValue(context.Background(), forkCtxKey{}, "fork-1")))
 	if err != nil {
 		t.Fatalf("fork1: %v", err)
@@ -69,7 +73,7 @@ func TestForkContextValueReachesBuiltins(t *testing.T) {
 	// Post-fork binding: the fork-ahead / finalize-later pattern.  The fork
 	// is taken with no context and a request context is bound to it later,
 	// before its first evaluation, with the WithContext config.
-	fork2, err := tmpl.Fork()
+	fork2, err := snapshot.NewVM()
 	if err != nil {
 		t.Fatalf("fork2: %v", err)
 	}
@@ -118,7 +122,11 @@ func TestForkContextValueReachesBuiltins(t *testing.T) {
 func TestForkContextValueThreadsThroughEvalContext(t *testing.T) {
 	tmpl := newForkTestEnv(t)
 	bindProbe(t, tmpl)
-	fork, err := tmpl.Fork(ForkWithContext(
+	snapshot, err := NewTemplate(tmpl, TemplateWithBuiltinPolicy(func(*LVal) bool { return true }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork, err := snapshot.NewVM(VMWithContext(
 		context.WithValue(context.Background(), forkCtxKey{}, "bound")))
 	if err != nil {
 		t.Fatalf("fork: %v", err)
