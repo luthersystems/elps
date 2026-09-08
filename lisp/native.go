@@ -4,6 +4,18 @@ package lisp
 
 import "reflect"
 
+// NativeCloner supplies an independent payload for Lisp copy and strict detach.
+// CloneNative must not mutate its receiver. A detached clone must retain no
+// reference into the source Runtime or LEnv tree; a within-VM copy may retain
+// immutable references belonging to that same VM.
+//
+// This is not a VM construction protocol. NewTemplate rejects mutable native
+// payloads, including NativeCloner implementations. Approved immutable payloads
+// are shared without invoking CloneNative. Create mutable services per VM.
+type NativeCloner interface {
+	CloneNative() interface{}
+}
+
 // NativeValue reads the Go payload of an LNative value as a T, reporting
 // whether the value actually was one.  It replaces the hand-rolled pair
 // every embedder writes at each boundary where lisp hands Go data back —
@@ -138,9 +150,9 @@ func RequireNative[T any](v *LVal) (T, *LVal) {
 // worth doing wherever the payload type is spelled out again in the
 // NativeValue[Handle] that reads it back (issue #546).
 //
-// A payload whose state must not be shared across a Fork should also
-// implement NativeCloner; NativeOf stores the value as-is and takes no
-// position on that.
+// Mutable native payloads must be created per VM, after Template
+// instantiation. NativeOf stores the value as-is; it does not declare that
+// the payload is immutable or suitable for a Template.
 func NativeOf[T any](x T) *LVal {
 	return Native(x)
 }
