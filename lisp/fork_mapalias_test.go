@@ -57,7 +57,7 @@ func TestForkPreservesMapDataAliasAcrossHeaders(t *testing.T) {
 		t.Fatalf("fixture: template write through a not visible through b: %v", got)
 	}
 
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestForkSelfReferenceThroughAliasedHeaderStaysAliased(t *testing.T) {
 	}
 	env.PutGlobal(lisp.Symbol("m"), m)
 
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestForkPreservesBytesAliasAcrossHeaders(t *testing.T) {
 		t.Fatalf("fixture: template write through a not visible through b: %v", got)
 	}
 
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -168,33 +168,24 @@ func (c *countingCloner) CloneNative() interface{} {
 	return &countingCloner{clones: c.clones}
 }
 
-// TestForkClonesANativePayloadOncePerPayload is the native face of #576:
-// two headers over one NativeCloner accumulator were cloned once per
-// header, so the fork held two independent accumulators where the template
-// held one.
-func TestForkClonesANativePayloadOncePerPayload(t *testing.T) {
+// A shared opaque payload is rejected before cloning or inspecting its state,
+// regardless of how many LVal headers reach it.
+func TestForkRejectsAliasedNativeWithoutCloning(t *testing.T) {
 	env := newForkAliasEnv(t)
 	clones := 0
 	payload := &countingCloner{clones: &clones}
 	a := lisp.Native(payload)
-	b := &lisp.LVal{}
-	*b = *a // a second header, same payload, as quasiquote makes
+	b := lisp.Quote(a)
 	env.PutGlobal(lisp.Symbol("a"), a)
 	env.PutGlobal(lisp.Symbol("b"), b)
-
-	fork, err := env.Fork()
-	if err != nil {
-		t.Fatalf("fork: %v", err)
+	vm, err := forkTestSnapshot(env)
+	if vm != nil || err == nil {
+		t.Fatalf("opaque aliased native accepted: vm=%v error=%v", vm, err)
 	}
-	fa := fork.Runtime.Package.Get(lisp.Symbol("a"))
-	fb := fork.Runtime.Package.Get(lisp.Symbol("b"))
-	if fa.Native == payload {
-		t.Fatalf("fork shares the template's payload")
+	if clones != 0 {
+		t.Fatalf("clone hook called %d times during rejection", clones)
 	}
-	if fa.Native != fb.Native {
-		t.Errorf("fork de-aliased the shared payload: a=%p b=%p", fa.Native, fb.Native)
-	}
-	if clones != 1 {
-		t.Errorf("payload cloned %d times, want 1", clones)
+	if a == b || a.Native != b.Native || a.Native != payload {
+		t.Fatal("source header/payload aliases changed")
 	}
 }

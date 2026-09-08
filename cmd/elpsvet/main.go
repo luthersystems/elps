@@ -1,6 +1,6 @@
 // Copyright © 2026 The ELPS authors
 
-// Command elpsvet is a go/analysis prototype with three rules: no
+// Command elpsvet runs three go/analysis rules: no
 // package-level variable may keep a *lisp.LVal reachable (elpsownership,
 // below), no function may write a lisp.LVal field on a value it did not
 // construct (elpsfreshness, freshness.go), and no function may store a
@@ -25,8 +25,9 @@
 //
 //	go run ./cmd/elpsvet -test=false ./...
 //
-// NOT wired into CI: no job in .github/workflows and no Makefile target runs
-// it, so it is a costed prototype invoked by hand.
+// CI runs make elpsvet, which checks both normal and elpscheck builds.
+// CachedSource's audited opaque, immutable boundary is the only implicit
+// exemption; mutable siblings still require per-load ownership or justification.
 //
 // The boundary-copy experiment this rule was sized against — every
 // definition's formals deep-copied per registration — did land and was then
@@ -127,6 +128,9 @@ func containsLVal(t types.Type, seen map[types.Type]bool) bool {
 		if obj.Name() == "LVal" && obj.Pkg() != nil && obj.Pkg().Path() == lispPkgPath {
 			return true
 		}
+		if opaqueCachedSource(named) {
+			return false
+		}
 	}
 	switch u := t.Underlying().(type) {
 	case *types.Pointer:
@@ -147,4 +151,56 @@ func containsLVal(t types.Type, seen map[types.Type]bool) bool {
 		}
 	}
 	return false
+}
+
+// opaqueCachedSource recognizes one audited ownership boundary, not a marker
+// that another package can implement. CachedSource owns sealed Program syntax,
+// is immutable after construction, and exposes only scalar accessors. Keep this
+// fail-closed shape check in sync with TestCachedSourceIsOpaque: additions need
+// a fresh ownership review, not an automatic exemption based on a type name.
+// Program and other opaque-looking types are deliberately NOT exempted.
+func opaqueCachedSource(named *types.Named) bool {
+	obj := named.Obj()
+	if obj.Name() != "CachedSource" || obj.Pkg() == nil || obj.Pkg().Path() != lispPkgPath {
+		return false
+	}
+	st, ok := named.Underlying().(*types.Struct)
+	if !ok || st.NumFields() != 5 {
+		return false
+	}
+	wantFields := [...]struct{ name, typ string }{
+		{"key", "string"}, {"name", "string"}, {"loc", "string"},
+		{"prog", lispPkgPath + ".Program"}, {"fp", "uint64"},
+	}
+	for i, want := range wantFields {
+		field := st.Field(i)
+		if field.Name() != want.name || field.Embedded() || types.TypeString(field.Type(), nil) != want.typ {
+			return false
+		}
+	}
+	program, ok := st.Field(3).Type().Underlying().(*types.Struct)
+	if !ok || program.NumFields() != 1 {
+		return false
+	}
+	exprs := program.Field(0)
+	if exprs.Name() != "exprs" || exprs.Embedded() || types.TypeString(exprs.Type(), nil) != "[]*"+lispPkgPath+".LVal" {
+		return false
+	}
+	wantMethods := map[string]string{
+		"Key": "string", "Name": "string", "Location": "string",
+		"Len": "int", "Fingerprint": "uint64", "String": "string",
+	}
+	methods := types.NewMethodSet(types.NewPointer(named))
+	if methods.Len() != len(wantMethods) {
+		return false
+	}
+	for i := range methods.Len() {
+		method := methods.At(i).Obj()
+		sig, ok := method.Type().(*types.Signature)
+		if !ok || sig.Params().Len() != 0 || sig.Results().Len() != 1 || sig.Variadic() ||
+			types.TypeString(sig.Results().At(0).Type(), nil) != wantMethods[method.Name()] {
+			return false
+		}
+	}
+	return true
 }

@@ -8,73 +8,26 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/luthersystems/elps/internal/stdlib"
 	"github.com/luthersystems/elps/lisp"
-	"github.com/luthersystems/elps/lisp/lisplib/libbase64"
-	"github.com/luthersystems/elps/lisp/lisplib/libelpspath"
-	"github.com/luthersystems/elps/lisp/lisplib/libgolang"
-	"github.com/luthersystems/elps/lisp/lisplib/libhelp"
-	"github.com/luthersystems/elps/lisp/lisplib/libjson"
-	"github.com/luthersystems/elps/lisp/lisplib/libmath"
-	"github.com/luthersystems/elps/lisp/lisplib/libregexp"
-	"github.com/luthersystems/elps/lisp/lisplib/libschema"
-	"github.com/luthersystems/elps/lisp/lisplib/libstring"
-	"github.com/luthersystems/elps/lisp/lisplib/libtesting"
-	"github.com/luthersystems/elps/lisp/lisplib/libtime"
 	"github.com/luthersystems/elps/parser"
 )
 
 // LoadLibrary loads the standard library into env and returns env to the
-// default user package.
+// default user package. It includes the mutable testing registry, so an env
+// loaded this way cannot be published as a template. Use LoadRuntimeLibrary
+// before publication and load libtesting separately in each VM if needed.
 func LoadLibrary(env *lisp.LEnv) *lisp.LVal {
-	e := libtime.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libhelp.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libgolang.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libmath.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libstring.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libbase64.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libjson.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libregexp.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libelpspath.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libtesting.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = libschema.LoadPackage(env)
-	if !e.IsNil() {
-		return e
-	}
-	e = env.InPackage(lisp.Symbol(lisp.DefaultUserPackage))
-	if !e.IsNil() {
-		return e
-	}
-	return lisp.Nil()
+	return stdlib.Load(env, true)
+}
+
+// LoadRuntimeLibrary loads the standard library except the mutable testing
+// registry, then selects the default user package. It is the library set for
+// template-based embedders. NewTemplate still requires an explicit builtin
+// sharing policy; this loader does not audit host callbacks or native values
+// created later by application initialization.
+func LoadRuntimeLibrary(env *lisp.LEnv) *lisp.LVal {
+	return stdlib.Load(env, false)
 }
 
 // NewDocEnv creates a standard ELPS environment with the stdlib loaded,

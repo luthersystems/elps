@@ -83,7 +83,7 @@ func TestForkSharesSealedFunctionCells(t *testing.T) {
 		}
 	}
 
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestForkCopiesUnsealedFunctionCells(t *testing.T) {
 		}
 	}
 
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -222,55 +222,47 @@ func BenchmarkForkManyFunctions(b *testing.B) {
 	for i := range 500 {
 		sealedDefun(b, env, fmt.Sprintf("fn-%03d", i))
 	}
+	tmpl, err := NewTemplate(env, TemplateWithBuiltinPolicy(func(*LVal) bool { return true }))
+	if err != nil {
+		b.Fatal(err)
+	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := env.Fork(); err != nil {
+		if _, err := tmpl.NewVM(); err != nil {
 			b.Fatalf("fork: %v", err)
 		}
 	}
 }
 
-// TestForkSharedFunctionCellsClampCapacity pins the three-index reslice in
-// the sharing branch.  A template function whose cell slice carries spare
-// capacity (an embedder that appended a sealed marker cell, say) must not
-// hand that capacity to the fork: with a bare header copy, an append on the
-// fork and an append on the template both land in the same spare slot, and
-// the second overwrites the first.  This is the hazard the len==0 branch of
-// forker.val and libschema's markValidator already guard against.
-func TestForkSharedFunctionCellsClampCapacity(t *testing.T) {
+// Spare capacity is observable mutable storage, even on a function whose
+// visible children are sealed. Its exact view survives, but its backing is
+// private; appends on either VM cannot overwrite the other's slots.
+func TestForkFunctionCellsPreservePrivateCapacity(t *testing.T) {
 	env := newForkTestEnv(t)
-	tmpl := sealedDefun(t, env, "f")
-	// Grow the template's cells with a sealed node (its own body form, so
-	// every cell still maps to itself and the sharing branch fires) and
-	// leave the spare capacity append produces.
-	marker := tmpl.Cells[1]
-	tmpl.Cells = append(tmpl.Cells, marker) //elps:mutates the template on purpose, to arm the spare-capacity hazard
-	if cap(tmpl.Cells) <= len(tmpl.Cells) {
-		t.Skipf("append produced no spare capacity (len %d, cap %d); nothing to pin", len(tmpl.Cells), cap(tmpl.Cells))
+	source := sealedDefun(t, env, "f")
+	source.Cells = append(make([]*LVal, 0, 5), source.Cells...)
+	if cap(source.Cells) != 5 {
+		t.Fatal("fixture lost explicit capacity")
 	}
-
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
-		t.Fatalf("fork: %v", err)
+		t.Fatal(err)
 	}
-	ffun := packageSymbol(t, fork, "f")
-	if &ffun.Cells[0] != &tmpl.Cells[0] {
-		t.Fatalf("sharing branch did not fire; the clamp is untested")
+	fun := packageSymbol(t, fork, "f")
+	if &fun.Cells[0] == &source.Cells[0] || cap(fun.Cells) != cap(source.Cells) || len(fun.Cells) != len(source.Cells) {
+		t.Fatal("function storage was shared or its view changed")
 	}
-	if cap(ffun.Cells) != len(ffun.Cells) {
-		t.Fatalf("fork's cells have cap %d, len %d: the template's spare capacity leaked into the fork", cap(ffun.Cells), len(ffun.Cells))
+	for i := range source.Cells {
+		if fun.Cells[i] != source.Cells[i] {
+			t.Fatal("sealed function code was copied")
+		}
 	}
-
-	forkTag := Symbol("fork-tag")
-	tmplTag := Symbol("template-tag")
-	ffun.Cells = append(ffun.Cells, forkTag) //elps:mutates the fork's function, to prove the append reallocates
-	tmpl.Cells = append(tmpl.Cells, tmplTag) //elps:mutates the template's function, to prove it cannot reach the fork
-	if got := ffun.Cells[len(ffun.Cells)-1]; got != forkTag {
-		t.Errorf("the template's append overwrote the fork's cell: got %v, want fork-tag", got)
-	}
-	if got := tmpl.Cells[len(tmpl.Cells)-1]; got != tmplTag {
-		t.Errorf("the fork's append overwrote the template's cell: got %v, want template-tag", got)
+	first, second := Symbol("fork-tag"), Symbol("source-tag")
+	fun.Cells = append(fun.Cells, first)
+	source.Cells = append(source.Cells, second)
+	if fun.Cells[len(fun.Cells)-1] != first || source.Cells[len(source.Cells)-1] != second {
+		t.Fatal("independent appends crossed VM boundary")
 	}
 }
 
@@ -308,13 +300,17 @@ func TestForkSharedFunctionCellsConcurrentCalls(t *testing.T) {
 	}
 
 	const forks, iters = 8, 25
+	template, err := NewTemplate(env, TemplateWithBuiltinPolicy(func(*LVal) bool { return true }))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var wg sync.WaitGroup
 	errs := make(chan string, forks)
 	for range forks {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			fork, err := env.Fork()
+			fork, err := template.NewVM()
 			if err != nil {
 				errs <- fmt.Sprintf("fork: %v", err)
 				return

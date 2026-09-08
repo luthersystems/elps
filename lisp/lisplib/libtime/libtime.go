@@ -1,5 +1,8 @@
 // Copyright © 2018 The ELPS authors
 
+// Package libtime provides immutable wall-clock timestamps and duration
+// operations. Owned timestamps preserve timezone/calendar rules without
+// exposing shared mutable Go timezone objects; use Time and Get at Go boundaries.
 package libtime
 
 import (
@@ -34,15 +37,28 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	return lisp.Nil()
 }
 
-// Time creates an LVal representing the time t.
+// Time creates an immutable native wall-clock value representing t. It takes
+// an independent snapshot of t's timezone object, preserving named-zone and
+// daylight-saving rules but dropping Go monotonic clock metadata. The native
+// payload is private; use Get to obtain an independent Go time.Time value.
+// Callers must not mutate t's timezone concurrently with this call.
+// This does not make capturing wall-clock time during template initialization
+// equivalent to reading the clock independently during each cold load.
 func Time(t time.Time) *lisp.LVal {
-	return lisp.Native(t)
+	return lisp.Native(ownedTime{t: detachTime(t)})
 }
 
-// GetTime gets a time.Time value from v and returns it.
+// Get returns a Go time.Time with an independent timezone object. Mutating its
+// Location cannot change v or another export. The timezone's value is preserved,
+// not its pointer identity. Nil and non-native values return the zero time and
+// false. Raw host time.Time natives remain supported, but are not automatically
+// approved for template sharing.
 func Get(v *lisp.LVal) (time.Time, bool) {
-	t, ok := v.Native.(time.Time)
-	return t, ok
+	t, ok := borrowTime(v)
+	if !ok {
+		return time.Time{}, false
+	}
+	return detachTime(t), true
 }
 
 // Duration returns an LVal representing duration d.
@@ -171,7 +187,7 @@ func BuiltinFormatRFC3339(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if lt.Type != lisp.LNative {
 		return env.Errorf("argument is not a time: %v", lt.Type)
 	}
-	t, ok := lt.Native.(time.Time)
+	t, ok := borrowTime(lt)
 	if !ok {
 		return env.Errorf("argument is not a time: %v", lt)
 	}
@@ -183,7 +199,7 @@ func BuiltinFormatRFC3339Nano(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if lt.Type != lisp.LNative {
 		return env.Errorf("argument is not a time: %v", lt.Type)
 	}
-	t, ok := lt.Native.(time.Time)
+	t, ok := borrowTime(lt)
 	if !ok {
 		return env.Errorf("argument is not a time: %v", lt)
 	}
@@ -195,11 +211,11 @@ func BuiltinTimeEq(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if a.Type != lisp.LNative {
 		return env.Errorf("argument is not a time: %v", a.Type)
 	}
-	t1, ok := a.Native.(time.Time)
+	t1, ok := borrowTime(a)
 	if !ok {
 		return env.Errorf("argument is not a time: %v", a)
 	}
-	t2, ok := b.Native.(time.Time)
+	t2, ok := borrowTime(b)
 	if !ok {
 		return env.Errorf("argument is not a time: %v", b)
 	}
@@ -211,11 +227,11 @@ func BuiltinTimeLT(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if a.Type != lisp.LNative {
 		return env.Errorf("argument is not a time: %v", a.Type)
 	}
-	t1, ok := a.Native.(time.Time)
+	t1, ok := borrowTime(a)
 	if !ok {
 		return env.Errorf("argument is not a time: %v", a)
 	}
-	t2, ok := b.Native.(time.Time)
+	t2, ok := borrowTime(b)
 	if !ok {
 		return env.Errorf("argument is not a time: %v", b)
 	}
@@ -227,11 +243,11 @@ func BuiltinTimeGT(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if a.Type != lisp.LNative {
 		return env.Errorf("argument is not a time: %v", a.Type)
 	}
-	t1, ok := a.Native.(time.Time)
+	t1, ok := borrowTime(a)
 	if !ok {
 		return env.Errorf("argument is not a time: %v", a)
 	}
-	t2, ok := b.Native.(time.Time)
+	t2, ok := borrowTime(b)
 	if !ok {
 		return env.Errorf("argument is not a time: %v", b)
 	}
@@ -246,7 +262,7 @@ func BuiltinTimeAdd(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if ld.Type != lisp.LNative {
 		return env.Errorf("argument is not a duration: %v", ld.Type)
 	}
-	t, ok := lt.Native.(time.Time)
+	t, ok := borrowTime(lt)
 	if !ok {
 		return env.Errorf("argument is not a time: %v", lt)
 	}
@@ -265,11 +281,11 @@ func BuiltinDurationBetween(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if lt2.Type != lisp.LNative {
 		return env.Errorf("argument is not a time: %v", lt2.Type)
 	}
-	t1, ok := lt1.Native.(time.Time)
+	t1, ok := borrowTime(lt1)
 	if !ok {
 		return env.Errorf("argument is not a time: %v", lt1)
 	}
-	t2, ok := lt2.Native.(time.Time)
+	t2, ok := borrowTime(lt2)
 	if !ok {
 		return env.Errorf("argument is not a time: %v", lt2)
 	}
@@ -281,7 +297,7 @@ func BuiltinElapsed(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if lt1.Type != lisp.LNative {
 		return env.Errorf("argument is not a time: %v", lt1.Type)
 	}
-	t1, ok := lt1.Native.(time.Time)
+	t1, ok := borrowTime(lt1)
 	if !ok {
 		return env.Errorf("argument is not a time: %v", lt1)
 	}

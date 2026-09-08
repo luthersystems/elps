@@ -92,7 +92,7 @@ func TestForkDropsEvaluatorLocation(t *testing.T) {
 		t.Fatalf("template Source() = %v, want the lambda's line 12", got)
 	}
 
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestForkSymbolDocs(t *testing.T) {
 		t.Fatalf("template has %d documented and %d undocumented packages; need both for this test", documented, undocumented)
 	}
 
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}

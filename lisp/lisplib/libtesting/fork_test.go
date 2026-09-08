@@ -3,6 +3,7 @@
 package libtesting_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -10,49 +11,45 @@ import (
 	"github.com/luthersystems/elps/parser"
 )
 
-// This file covers the fork half of the suite-sharing question issue #420
-// opened. That issue asked whether one suite reached from several runtimes is
-// SAFE (it is now: the suite's own bookkeeping is locked). This one asks
-// whether a fork should be reaching the template's suite at all. It should
-// not: a `(test ...)` evaluated in a fork used to land in the TEMPLATE's
-// registry, carrying a lambda closed over the FORK's environment -- so the
-// template ended up owning a definition it never made and could not correctly
-// run, and a fork-served test runner accumulated every fork's definitions in
-// one place.
-//
-// Two mechanisms had to meet for that:
-//
-//   - The suite is an LVal.Native payload, and the fork walk's default policy
-//     for a native payload is share-by-reference (docs/fork.md). TestSuite now
-//     implements lisp.NativeCloner, so the fork gets its own.
-//
-//   - OpTest and OpBenchmark are METHODS, and the receiver is captured in the
-//     op closure registered with AddSpecialOps. A fork copies that function
-//     value without being able to rewrite the *TestSuite inside it, so the
-//     clone alone changes nothing: the ops keep writing to the template's
-//     suite. They now resolve the suite from the calling environment first.
-//
-// Neither elpsvet nor the checked-mode ownership gate sees this: the suite
-// crosses runtimes by a direct field read out of a Go closure, never through
-// Put or eval, and a *TestSuite is not an *LVal so the static rule about
-// package-level LVals does not apply either.
-
-// forkTestEnv builds a template environment with the testing package loaded,
-// which is the configuration under test: docs/fork.md's standing advice is to
-// keep the suite OUT of the template and load it per fork, and that advice
-// exists precisely because of the defect below.
-func forkTestEnv(t *testing.T) *lisp.LEnv {
+// Mutable test registries and their captured Go receivers are request-local.
+// Templates reject loaded suites; each VM loads its own testing package and
+// definitions after construction. This preserves issue #420's isolation and
+// runnable-registration controls without sharing inherited closures.
+func forkRuntimeEnv(t *testing.T) *lisp.LEnv {
 	t.Helper()
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
 	if rc := lisp.InitializeUserEnv(env); !rc.IsNil() {
 		t.Fatalf("initialize-user-env: %v", rc)
 	}
+	return env
+}
+
+func loadForkTestingPackage(t *testing.T, env *lisp.LEnv) {
+	t.Helper()
 	if rc := libtesting.LoadPackage(env); !rc.IsNil() {
 		t.Fatalf("load-package: %v", rc)
 	}
-	if rc := env.InPackage(lisp.String(lisp.DefaultUserPackage)); !rc.IsNil() {
-		t.Fatalf("in-package: %v", rc)
+}
+
+func testingTemplate(t *testing.T, env *lisp.LEnv) *lisp.Template {
+	t.Helper()
+	// These fixed fixtures publish only audited, stateless core builtins.
+	template, err := lisp.NewTemplate(env, lisp.TemplateWithBuiltinPolicy(func(v *lisp.LVal) bool { return v.Builtin() != nil }))
+	if err != nil {
+		t.Fatalf("template: %v", err)
+	}
+	return template
+}
+
+func testingFork(t *testing.T, template *lisp.Template) *lisp.LEnv {
+	t.Helper()
+	env, err := template.NewVM()
+	if err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	if suite := libtesting.EnvTestSuite(env); suite != nil {
+		t.Fatal("fresh VM inherited a test registry")
 	}
 	return env
 }
@@ -64,134 +61,128 @@ func mustLoadTesting(t *testing.T, env *lisp.LEnv, name, src string) {
 	}
 }
 
-// TestForkGetsItsOwnSuite is the catch.
-//
-// On the pre-fix tree the two environments report the SAME *TestSuite pointer
-// and the template holds the fork's test.
 func TestForkGetsItsOwnSuite(t *testing.T) {
-	env := forkTestEnv(t)
-	templateSuite := libtesting.EnvTestSuite(env)
-	if templateSuite == nil {
-		t.Fatal("premise: template has no suite")
+	source := forkRuntimeEnv(t)
+	template := testingTemplate(t, source)
+	first, sibling := testingFork(t, template), testingFork(t, template)
+	for _, env := range []*lisp.LEnv{source, first, sibling} {
+		loadForkTestingPackage(t, env)
+	}
+	sourceSuite, firstSuite, siblingSuite := libtesting.EnvTestSuite(source), libtesting.EnvTestSuite(first), libtesting.EnvTestSuite(sibling)
+	if sourceSuite == nil || firstSuite == nil || siblingSuite == nil {
+		t.Fatal("per-VM registration did not install suites")
+	}
+	if sourceSuite == firstSuite || sourceSuite == siblingSuite || firstSuite == siblingSuite {
+		t.Fatal("per-VM suites share mutable storage")
 	}
 
-	fork, err := env.Fork()
-	if err != nil {
-		t.Fatalf("fork: %v", err)
+	mustLoadTesting(t, first, "fork-only.lisp", `(use-package 'testing) (test "fork-only" (assert-equal 1 1))`)
+	if names := sourceSuite.Tests(); len(names) != 0 {
+		t.Errorf("source holds fork test: %v", names)
 	}
-	forkSuite := libtesting.EnvTestSuite(fork)
-	if forkSuite == nil {
-		t.Fatal("fork has no suite")
+	if names := siblingSuite.Tests(); len(names) != 0 {
+		t.Errorf("sibling holds fork test: %v", names)
 	}
-	// Errorf, not Fatalf: on the pre-fix tree this is the first symptom, and
-	// letting the test continue past it is what shows the second one -- the
-	// fork's definition landing in the template's registry below.
-	if forkSuite == templateSuite {
-		t.Errorf("shared=true: fork and template hold the same suite %p", forkSuite)
+	if names := firstSuite.Tests(); len(names) != 1 || names[0] != "fork-only" {
+		t.Errorf("fork holds %v, want [fork-only]", names)
 	}
 
-	mustLoadTesting(t, fork, "fork-only.lisp",
-		`(use-package 'testing) (test "fork-only" (assert-equal 1 1))`)
-
-	if names := templateSuite.Tests(); len(names) != 0 {
-		t.Errorf("template suite holds the fork's test: %v", names)
+	mustLoadTesting(t, source, "source-later.lisp", `(use-package 'testing) (test "source-later" (assert-equal 1 1))`)
+	if names := firstSuite.Tests(); len(names) != 1 || names[0] != "fork-only" {
+		t.Errorf("fork saw source registration: %v", names)
 	}
-	if names := forkSuite.Tests(); len(names) != 1 || names[0] != "fork-only" {
-		t.Errorf("fork suite holds %v, want [fork-only]", names)
-	}
-
-	// The reverse direction: a definition made on the template AFTER the
-	// fork must not appear in the fork.
-	mustLoadTesting(t, env, "template-later.lisp",
-		`(use-package 'testing) (test "template-later" (assert-equal 1 1))`)
-	if names := forkSuite.Tests(); len(names) != 1 {
-		t.Errorf("fork suite saw a later template definition: %v", names)
+	if names := siblingSuite.Tests(); len(names) != 0 {
+		t.Errorf("sibling saw source registration: %v", names)
 	}
 }
 
-// TestForkInheritsTemplateDefinitions is the other half of the clone's
-// contract: separating the registries must not LOSE the definitions the
-// template had already made. A fork-served runner that loads its test file
-// into the template and then forks per case depends on this.
-//
-// This one PASSES on the pre-fix tree, trivially -- sharing one suite gives
-// inheritance for free. It is the control: it fails a "fix" that hands the
-// fork an empty suite instead of a seeded clone.
-func TestForkInheritsTemplateDefinitions(t *testing.T) {
-	env := forkTestEnv(t)
-	mustLoadTesting(t, env, "template.lisp", `(use-package 'testing)
+func TestTemplateRejectsInheritedSuiteDefinitions(t *testing.T) {
+	const definitions = `(use-package 'testing)
 (test "first" (assert-equal 1 1))
 (test "second" (assert-equal 2 2))
-(benchmark "bench" (n) (dotimes (_ n) ()))`)
-
-	fork, err := env.Fork()
-	if err != nil {
-		t.Fatalf("fork: %v", err)
-	}
-	forkSuite := libtesting.EnvTestSuite(fork)
-	if forkSuite == nil {
-		t.Fatal("fork has no suite")
-	}
-
-	names := forkSuite.Tests()
-	if len(names) != 2 || names[0] != "first" || names[1] != "second" {
-		t.Errorf("fork suite holds %v, want [first second] in template order", names)
-	}
-	if got := forkSuite.Len(); got != 2 {
-		t.Errorf("fork suite Len = %d, want 2", got)
-	}
-	if benches := forkSuite.Benchmarks(); len(benches) != 1 || benches[0] != "bench" {
-		t.Errorf("fork suite benchmarks = %v, want [bench]", benches)
-	}
-	if bench := forkSuite.Benchmark(0); bench == nil || bench.Name != "bench" {
-		t.Errorf("fork suite Benchmark(0) = %v, want the inherited benchmark", bench)
+(benchmark "bench" (n) (dotimes (_ n) ()))`
+	source := forkRuntimeEnv(t)
+	loadForkTestingPackage(t, source)
+	for _, state := range []string{"empty", "populated"} {
+		t.Run("reject-"+state, func(t *testing.T) {
+			if state == "populated" {
+				mustLoadTesting(t, source, "source.lisp", definitions)
+			}
+			template, err := lisp.NewTemplate(source, lisp.TemplateWithBuiltinPolicy(func(v *lisp.LVal) bool { return v.Builtin() != nil }))
+			if template != nil || err == nil || !strings.Contains(err.Error(), "*libtesting.TestSuite") {
+				t.Fatalf("mutable suite admitted or wrong rejection: template=%v error=%v", template, err)
+			}
+		})
 	}
 
-	// Inherited names are real registrations, so redefining one in the fork
-	// must still be the duplicate-name error -- the clone copied the
-	// bookkeeping, not just the name list.
-	if res := fork.LoadString("dup.lisp", `(use-package 'testing) (test "first" ())`); res.Type != lisp.LError {
-		t.Errorf("redefining an inherited test in the fork was accepted: %v", res)
+	template := testingTemplate(t, forkRuntimeEnv(t))
+	first, sibling := testingFork(t, template), testingFork(t, template)
+	// A new template can be published from a still-clean child; testing state
+	// is introduced only afterwards, independently in every runtime.
+	grandchild := testingFork(t, testingTemplate(t, first))
+	for _, env := range []*lisp.LEnv{first, sibling, grandchild} {
+		loadForkTestingPackage(t, env)
+		mustLoadTesting(t, env, "per-vm.lisp", definitions)
 	}
-
-	// And a fork of the fork keeps them.
-	grandchild, err := fork.Fork()
-	if err != nil {
-		t.Fatalf("fork of fork: %v", err)
-	}
-	if names := libtesting.EnvTestSuite(grandchild).Tests(); len(names) != 2 {
-		t.Errorf("grandchild suite holds %v, want the two inherited tests", names)
+	sourceSuite := libtesting.EnvTestSuite(source)
+	for _, env := range []*lisp.LEnv{source, first, sibling, grandchild} {
+		suite := libtesting.EnvTestSuite(env)
+		if names := suite.Tests(); len(names) != 2 || names[0] != "first" || names[1] != "second" {
+			t.Fatalf("test order: %v, want [first second]", names)
+		}
+		if got := suite.Len(); got != 2 {
+			t.Errorf("suite Len=%d, want 2", got)
+		}
+		if names := suite.Benchmarks(); len(names) != 1 || names[0] != "bench" {
+			t.Fatalf("benchmarks: %v, want [bench]", names)
+		}
+		bench := suite.Benchmark(0)
+		if bench == nil || bench.Name != "bench" {
+			t.Fatalf("Benchmark(0)=%v, want bench", bench)
+		}
+		for i := range suite.Len() {
+			test := suite.Test(i)
+			if env != source && (test == sourceSuite.Test(i) || test.Fun == sourceSuite.Test(i).Fun) {
+				t.Fatal("per-VM test inherited a source closure")
+			}
+			if got := env.FunCall(test.Fun, lisp.SExpr(nil)); got.Type == lisp.LError {
+				t.Errorf("execute %s: %v", test.Name, got)
+			}
+		}
+		if got := env.FunCall(bench.Fun, lisp.SExpr([]*lisp.LVal{lisp.Int(2)})); got.Type == lisp.LError {
+			t.Errorf("execute benchmark: %v", got)
+		}
+		if got := env.LoadString("duplicate.lisp", `(test "first" ())`); got.Type != lisp.LError || !strings.Contains(got.String(), "test with the same name already defined: first") {
+			t.Errorf("duplicate registration: %v", got)
+		}
+		if suite.Len() != 2 {
+			t.Error("duplicate registration changed suite length")
+		}
 	}
 }
 
-// TestForkedSuiteRunsItsOwnTest checks that the test a fork registers is
-// runnable through the fork's suite -- separating the registries would be a
-// poor trade if the entry it files were unusable. Another control: it passes
-// on the pre-fix tree too, because there the lambda is equally runnable; it
-// was just filed in the wrong registry.
 func TestForkedSuiteRunsItsOwnTest(t *testing.T) {
-	env := forkTestEnv(t)
-	mustLoadTesting(t, env, "template.lisp", `(use-package 'testing)
-(set 'shared-value 41)`)
-
-	fork, err := env.Fork()
-	if err != nil {
-		t.Fatalf("fork: %v", err)
-	}
-	mustLoadTesting(t, fork, "fork.lisp", `(use-package 'testing)
+	source := forkRuntimeEnv(t)
+	mustLoadTesting(t, source, "source.lisp", `(set 'shared-value 41)`)
+	template := testingTemplate(t, source)
+	first, sibling := testingFork(t, template), testingFork(t, template)
+	loadForkTestingPackage(t, first)
+	mustLoadTesting(t, first, "fork.lisp", `(use-package 'testing)
 (set 'shared-value 42)
 (test "reads-fork-state" (assert-equal 42 shared-value))`)
-
-	suite := libtesting.EnvTestSuite(fork)
-	if suite.Len() != 1 {
-		t.Fatalf("fork suite holds %d tests, want 1", suite.Len())
+	suite := libtesting.EnvTestSuite(first)
+	if suite.Len() != 1 || suite.Test(0).Name != "reads-fork-state" {
+		t.Fatalf("fork registry: %v", suite.Tests())
 	}
-	test := suite.Test(0)
-	if res := fork.FunCall(test.Fun, lisp.SExpr(nil)); res.Type == lisp.LError {
-		t.Errorf("running the fork's own test failed: %v", res)
+	if got := first.FunCall(suite.Test(0).Fun, lisp.SExpr(nil)); got.Type == lisp.LError {
+		t.Errorf("running fork test: %v", got)
 	}
-	// The template's binding is untouched, which is the point of forking.
-	if res := env.LoadString("check.lisp", `shared-value`); res.Type == lisp.LError || res.Int != 41 {
-		t.Errorf("template state changed: %v", res)
+	for _, env := range []*lisp.LEnv{source, sibling} {
+		if got := env.LoadString("check.lisp", `shared-value`); got.Type != lisp.LInt || got.Int != 41 {
+			t.Errorf("untouched VM changed: %v", got)
+		}
+		if libtesting.EnvTestSuite(env) != nil {
+			t.Error("test registration escaped into another VM")
+		}
 	}
 }

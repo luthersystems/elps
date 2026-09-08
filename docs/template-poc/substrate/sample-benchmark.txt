@@ -1,0 +1,54 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/luthersystems/substrate/internal/substrate/shiro/preheat
+cpu: Apple M3
+BenchmarkTemplatePOCSampleConstruction/template_publication-8         	      85	   7153857 ns/op	 7665704 B/op	   32113 allocs/op
+BenchmarkTemplatePOCSampleConstruction/legacy_fork-8                  	     987	    662375 ns/op	 1078801 B/op	    6283 allocs/op
+BenchmarkTemplatePOCSampleConstruction/validated_template-8           	     892	    711850 ns/op	 1106241 B/op	    6285 allocs/op
+BenchmarkTemplatePOCSampleConstruction/cold_cached_load-8             	     177	   3371390 ns/op	 5104388 B/op	   49555 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/luthersystems/substrate/internal/substrate/shiro/preheat
+cpu: Apple M3
+BenchmarkTemplatePOCSampleConstruction/template_publication-8         	      92	   7240175 ns/op	 7673688 B/op	   32114 allocs/op
+BenchmarkTemplatePOCSampleConstruction/legacy_fork-8                  	    1111	    539414 ns/op	 1078800 B/op	    6283 allocs/op
+BenchmarkTemplatePOCSampleConstruction/validated_template-8           	    1030	    583703 ns/op	 1106240 B/op	    6285 allocs/op
+BenchmarkTemplatePOCSampleConstruction/cold_cached_load-8             	     183	   3265505 ns/op	 5104323 B/op	   49555 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/luthersystems/substrate/internal/substrate/shiro/preheat
+cpu: Apple M3
+BenchmarkTemplatePOCSampleConstruction/template_publication-8         	      87	   7129893 ns/op	 7668552 B/op	   32114 allocs/op
+BenchmarkTemplatePOCSampleConstruction/legacy_fork-8                  	    1084	    634635 ns/op	 1078801 B/op	    6283 allocs/op
+BenchmarkTemplatePOCSampleConstruction/validated_template-8           	    1041	    606903 ns/op	 1106246 B/op	    6285 allocs/op
+BenchmarkTemplatePOCSampleConstruction/cold_cached_load-8             	     181	   3321348 ns/op	 5104327 B/op	   49555 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/luthersystems/substrate/internal/substrate/shiro/preheat
+cpu: Apple M3
+BenchmarkTemplatePOCSampleConstruction/template_publication-8         	      87	   7273972 ns/op	 7668489 B/op	   32114 allocs/op
+BenchmarkTemplatePOCSampleConstruction/legacy_fork-8                  	    1101	    544399 ns/op	 1078801 B/op	    6283 allocs/op
+BenchmarkTemplatePOCSampleConstruction/validated_template-8           	     898	    616345 ns/op	 1106241 B/op	    6285 allocs/op
+BenchmarkTemplatePOCSampleConstruction/cold_cached_load-8             	     182	   3258179 ns/op	 5104384 B/op	   49556 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/luthersystems/substrate/internal/substrate/shiro/preheat
+cpu: Apple M3
+BenchmarkTemplatePOCSampleConstruction/template_publication-8         	      92	   7261911 ns/op	 7666808 B/op	   32114 allocs/op
+BenchmarkTemplatePOCSampleConstruction/legacy_fork-8                  	     964	    606218 ns/op	 1078802 B/op	    6283 allocs/op
+BenchmarkTemplatePOCSampleConstruction/validated_template-8           	     913	    649465 ns/op	 1106240 B/op	    6285 allocs/op
+BenchmarkTemplatePOCSampleConstruction/cold_cached_load-8             	     158	   3724830 ns/op	 5104411 B/op	   49555 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/luthersystems/substrate/internal/substrate/shiro/preheat
+cpu: Apple M3
+BenchmarkTemplatePOCSampleConstruction/template_publication-8         	      85	   7071727 ns/op	 7658215 B/op	   32112 allocs/op
+BenchmarkTemplatePOCSampleConstruction/legacy_fork-8                  	    1132	    537875 ns/op	 1078801 B/op	    6283 allocs/op
+BenchmarkTemplatePOCSampleConstruction/validated_template-8           	    1030	    594268 ns/op	 1106241 B/op	    6285 allocs/op
+BenchmarkTemplatePOCSampleConstruction/cold_cached_load-8             	     183	   3251777 ns/op	 5104345 B/op	   49555 allocs/op
+PASS

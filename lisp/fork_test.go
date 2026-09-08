@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// Tests for LEnv.Fork (issue #380).  Package lisp cannot import the parser
+// Tests for Template.NewVM (issue #380).  Package lisp cannot import the parser
 // (import cycle), so tests here build expressions with constructors and
 // exercise the structural fork contract directly; behavioral tests over
 // real parsed programs (closures, macros, labels) live in
@@ -40,10 +40,10 @@ func lambdaExpr() *LVal {
 
 func TestForkNilAndQuiescence(t *testing.T) {
 	var nilEnv *LEnv
-	if _, err := nilEnv.Fork(); err == nil {
+	if _, err := forkTestSnapshot(nilEnv); err == nil {
 		t.Errorf("fork of nil env did not error")
 	}
-	if _, err := (&LEnv{}).Fork(); err == nil {
+	if _, err := forkTestSnapshot(&LEnv{}); err == nil {
 		t.Errorf("fork of env with nil runtime did not error")
 	}
 
@@ -51,27 +51,27 @@ func TestForkNilAndQuiescence(t *testing.T) {
 
 	// Non-empty call stack: rejected.
 	env.Runtime.Stack.Frames = append(env.Runtime.Stack.Frames, CallFrame{FID: "_fun1", Name: "in-flight"})
-	if _, err := env.Fork(); err == nil {
+	if _, err := forkTestSnapshot(env); err == nil {
 		t.Errorf("fork with non-empty call stack did not error")
 	}
 	env.Runtime.Stack.Frames = env.Runtime.Stack.Frames[:0]
 
 	// Active eval entry: rejected.
 	env.Runtime.evalDepth = 1
-	if _, err := env.Fork(); err == nil {
+	if _, err := forkTestSnapshot(env); err == nil {
 		t.Errorf("fork with non-zero eval depth did not error")
 	}
 	env.Runtime.evalDepth = 0
 
 	// Pending condition handlers: rejected.
 	env.Runtime.conditionStack = append(env.Runtime.conditionStack, Nil())
-	if _, err := env.Fork(); err == nil {
+	if _, err := forkTestSnapshot(env); err == nil {
 		t.Errorf("fork with pending condition handlers did not error")
 	}
 	env.Runtime.conditionStack = env.Runtime.conditionStack[:0]
 
 	// Quiescent again: accepted.
-	if _, err := env.Fork(); err != nil {
+	if _, err := forkTestSnapshot(env); err != nil {
 		t.Errorf("fork of quiescent template errored: %v", err)
 	}
 }
@@ -87,7 +87,7 @@ func TestForkQuiescenceInFlight(t *testing.T) {
 		name:    "fork-now",
 		formals: Formals(),
 		fun: func(env *LEnv, args *LVal) *LVal {
-			_, forkErr = env.Fork()
+			_, forkErr = forkTestSnapshot(env)
 			forked = forkErr == nil
 			return Nil()
 		},
@@ -115,7 +115,7 @@ func TestForkCounterContinuity(t *testing.T) {
 		minted[env.Runtime.GenSym()] = true
 	}
 
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -266,6 +266,15 @@ func (a *forkAuditor) val(path string, o, n *LVal) {
 		if nfd.fid != ofd.fid || nfd.pkg != ofd.pkg {
 			a.t.Errorf("%s: fun header differs: %s/%s vs %s/%s", path, nfd.fid, nfd.pkg, ofd.fid, ofd.pkg)
 		}
+		if ofd.captures == nil || nfd.captures == nil {
+			if ofd.captures != nfd.captures {
+				a.t.Errorf("%s: builtin captures nil mismatch", path)
+			}
+		} else if ofd.captures == nfd.captures {
+			a.t.Errorf("%s: builtin capture storage shared with template", path)
+		} else {
+			a.val(path+".Captures", ofd.captures.values, nfd.captures.values)
+		}
 		a.env(path+".Env", ofd.env, nfd.env)
 	default:
 		if omd, ok := o.Native.(*MapData); ok && omd != nil && omd.mapBacking != nil {
@@ -362,7 +371,7 @@ func TestForkEmptyCellsSpareCapacity(t *testing.T) {
 	empty := QExpr(make([]*LVal, 0, 4))
 	env.PutGlobal(Symbol("emptycap"), empty)
 
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -410,7 +419,7 @@ func TestForkSharingContract(t *testing.T) {
 	// so the auditor's backing-array assertion has a live case to fail on.
 	env.PutGlobal(Symbol("empty-cap"), QExpr(make([]*LVal, 0, 4)))
 
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -479,72 +488,49 @@ func (s *statefulNative) CloneNative() interface{} {
 // plainNative implements nothing: the share-by-default class.
 type plainNative struct{ n int }
 
-func TestForkNativeCloner(t *testing.T) {
-	env := newForkTestEnv(t)
-	stateful := &statefulNative{calls: 7}
-	plain := &plainNative{n: 3}
-	env.PutGlobal(Symbol("stateful"), Native(stateful))
-	env.PutGlobal(Symbol("plain"), Native(plain))
-
-	fork, err := env.Fork()
-	if err != nil {
-		t.Fatalf("fork: %v", err)
-	}
-	userPkg := env.Runtime.Package.Name
-	fstateful := fork.Runtime.Registry.packages[userPkg].symbols["stateful"]
-	fplain := fork.Runtime.Registry.packages[userPkg].symbols["plain"]
-
-	// The NativeCloner payload was duplicated: fresh instance, template
-	// instance untouched (its state is not inherited — CloneNative decides
-	// what a clone starts with).
-	got, ok := fstateful.Native.(*statefulNative)
-	if !ok {
-		t.Fatalf("fork stateful payload has type %T", fstateful.Native)
-	}
-	if got == stateful {
-		t.Errorf("NativeCloner payload shared with template")
-	}
-	if stateful.clones != 1 {
-		t.Errorf("CloneNative called %d times; want 1", stateful.clones)
-	}
-	if stateful.calls != 7 {
-		t.Errorf("template payload mutated by fork: calls=%d", stateful.calls)
-	}
-
-	// The plain payload was shared by reference: the default policy.
-	if fplain.Native.(*plainNative) != plain {
-		t.Errorf("plain native payload not shared by reference")
-	}
-	// But the LVal header carrying it was still copied.
-	if fplain == env.Runtime.Registry.packages[userPkg].symbols["plain"] {
-		t.Errorf("native LVal header shared with template")
+func TestForkRejectsNativeClonerBeforeInvocation(t *testing.T) {
+	for _, native := range []any{&statefulNative{calls: 7}, &plainNative{n: 3}} {
+		env := newForkTestEnv(t)
+		value := Native(native)
+		env.PutGlobal(Symbol("handle"), value)
+		tmpl, err := NewTemplate(env, TemplateWithBuiltinPolicy(func(*LVal) bool { return true }))
+		if tmpl != nil || err == nil {
+			t.Fatalf("mutable native admitted: %T template=%v error=%v", native, tmpl, err)
+		}
+		if env.GetGlobal(Symbol("handle")) != value {
+			t.Fatal("rejection replaced source binding")
+		}
+		if stateful, ok := native.(*statefulNative); ok && (stateful.clones != 0 || stateful.calls != 7) {
+			t.Fatalf("admission ran a native clone hook: %+v", stateful)
+		}
 	}
 }
 
-func TestForkNativeReplacer(t *testing.T) {
+// Runtime handles are created after instantiation and never sent through a
+// clone/replacement callback. This replaces the removed replacer contract.
+func TestForkNativeStateIsCreatedPerVM(t *testing.T) {
 	env := newForkTestEnv(t)
-	stateful := &statefulNative{}
-	plain := &plainNative{n: 3}
-	env.PutGlobal(Symbol("stateful"), Native(stateful))
-	env.PutGlobal(Symbol("plain"), Native(plain))
-
-	replacement := &plainNative{n: 99}
-	fork, err := env.Fork(ForkWithNativeReplacer(func(payload interface{}) (interface{}, bool) {
-		if payload == plain {
-			return replacement, true
-		}
-		return nil, false // fall through to NativeCloner / share
-	}))
+	tmpl, err := NewTemplate(env, TemplateWithBuiltinPolicy(func(*LVal) bool { return true }))
 	if err != nil {
-		t.Fatalf("fork: %v", err)
+		t.Fatal(err)
 	}
-	userPkg := env.Runtime.Package.Name
-	if got := fork.Runtime.Registry.packages[userPkg].symbols["plain"].Native; got != replacement {
-		t.Errorf("replacer substitution not applied: got %T %v", got, got)
+	first, err := tmpl.NewVM()
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Fall-through must still consult the NativeCloner protocol.
-	if stateful.clones != 1 {
-		t.Errorf("replacer fall-through skipped NativeCloner: clones=%d", stateful.clones)
+	second, err := tmpl.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := &plainNative{n: 3}, &plainNative{n: 3}
+	first.PutGlobal(Symbol("handle"), Native(a))
+	second.PutGlobal(Symbol("handle"), Native(b))
+	a.n = 99
+	if first.GetGlobal(Symbol("handle")).Native.(*plainNative).n != 99 || second.GetGlobal(Symbol("handle")).Native.(*plainNative).n != 3 {
+		t.Fatal("per-VM handles share state")
+	}
+	if env.GetGlobal(Symbol("handle")).Type != LError {
+		t.Fatal("source acquired a handle")
 	}
 }
 
@@ -552,7 +538,7 @@ func TestForkWithContext(t *testing.T) {
 	env := newForkTestEnv(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	fork, err := env.Fork(ForkWithContext(ctx))
+	fork, err := forkTestSnapshot(env, VMWithContext(ctx))
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -573,7 +559,7 @@ func TestForkWithContext(t *testing.T) {
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	env2.evalCtx = ctx2
 	cancel2()
-	fork2, err := env2.Fork()
+	fork2, err := forkTestSnapshot(env2)
 	if err != nil {
 		t.Fatalf("fork2: %v", err)
 	}
@@ -585,18 +571,18 @@ func TestForkWithContext(t *testing.T) {
 func TestForkWithStderr(t *testing.T) {
 	env := newForkTestEnv(t)
 	var buf bytes.Buffer
-	fork, err := env.Fork(ForkWithStderr(&buf))
+	fork, err := forkTestSnapshot(env, VMWithStderr(&buf))
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
 	if fork.Runtime.Stderr != &buf {
-		t.Errorf("ForkWithStderr not applied")
+		t.Errorf("VMWithStderr not applied")
 	}
 	if env.Runtime.Stderr == &buf {
 		t.Errorf("template Stderr mutated by fork option")
 	}
 	// Default: shared.
-	fork2, err := env.Fork()
+	fork2, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork2: %v", err)
 	}
@@ -618,7 +604,7 @@ func TestForkRuntimeConfig(t *testing.T) {
 	rt.Stack.MaxHeightPhysical = 22
 	rt.Stack.MaxTailIterations = 33
 	rt.Profiler = nil
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -658,47 +644,23 @@ func TestForkRuntimeConfig(t *testing.T) {
 // TestForkRemapsLaunderedSealedClosure closes the last permissive read of the
 // seal flag (issue #368 round-two review, fork.go).
 //
-// (*forker).val shares any value it finds sealed, because a sealed value is
-// immutable and sharing it is the reason forking beats reloading.  The flag
-// alone does not establish that, though: SealAST only marks the types
-// sealableNodeType lists, so a node whose flag is set on a type SealAST would
-// never touch — an LFun laundered in through a Reader, whose captured *LEnv
-// the seal never freezes — is mutable per-runtime state wearing an
-// immutability badge.  Shared, it reconnects the template environment to
-// every fork, which is precisely what Fork exists to prevent.
-//
-// Every other reader of the flag is protective (a laundered flag buys an
-// extra refusal); this one is permissive, so it is the one that needed the
-// same flag-AND-type conjunction the admission gate (firstUnsealed) and the
-// ownership checker already use.
-//
-// Red proof: with the condition back to `if v.sealed {`, the closure is
-// SHARED and this test fails with "the fork shares the template's closure".
-func TestForkRemapsLaunderedSealedClosure(t *testing.T) {
+// Admission rejects a forged seal flag on a function. Sharing or remapping a
+// value whose ownership declaration is false must not produce a published VM.
+func TestTemplateRejectsLaunderedSealedClosure(t *testing.T) {
 	env := newForkTestEnv(t)
-
 	fn := mintClosure(t)
-	forceSealAll(fn) // launder: the seal flag on a type SealAST never marks
+	forceSealAll(fn)
 	if !fn.sealed || sealableNodeType(fn.Type) {
-		t.Fatal("the laundered node must be a sealed non-sealable type, or this proof is vacuous")
+		t.Fatal("fixture is not a forged function seal")
 	}
 	if rc := env.PutGlobal(Symbol("laundered"), fn); rc.Type == LError {
-		t.Fatalf("could not bind the laundered closure: %v", rc)
+		t.Fatal(rc)
 	}
-
-	fork, err := env.Fork()
-	if err != nil {
-		t.Fatalf("fork: %v", err)
+	tmpl, err := NewTemplate(env, TemplateWithBuiltinPolicy(func(*LVal) bool { return true }))
+	if tmpl != nil || err == nil {
+		t.Fatalf("forged seal accepted: template=%v error=%v", tmpl, err)
 	}
-	got := fork.GetGlobal(Symbol("laundered"))
-	if got.Type != LFun {
-		t.Fatalf("the fork did not carry the binding: %v (%v)", got, got.Type)
-	}
-	if got == fn {
-		t.Fatal("the fork shares the template's closure: a laundered seal flag let a mutable" +
-			" LFun — and the *LEnv it captured — cross the boundary Fork establishes")
-	}
-	if fd, ok := got.Native.(*funData); !ok || fd == nil || fd.env == fn.funData().env {
-		t.Fatal("the forked closure still captures the template's environment")
+	if env.GetGlobal(Symbol("laundered")) != fn {
+		t.Fatal("rejection changed source function")
 	}
 }

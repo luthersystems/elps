@@ -51,7 +51,7 @@ func requirePanics(t *testing.T, what string, fn func()) (recovered any) {
 
 // TestInitializeTypedefRequiresRuntimePackage is a GUARD: it passes on main.
 // It pins the first of the two unguarded dereferences #433 records -- the
-// env.Runtime.Package.Name read in LEnv.builtin -- which is what a bare
+// env.Runtime.Package.Name read in InitializeTypedef -- which is what a bare
 // lisp.InitializeTypedef(lisp.NewEnv(nil)) hits.  StandardRuntime leaves
 // Runtime.Package nil.
 func TestInitializeTypedefRequiresRuntimePackage(t *testing.T) {
@@ -72,8 +72,8 @@ func TestInitializeTypedefRequiresRuntimePackage(t *testing.T) {
 // It pins the SECOND unguarded dereference #433 records, the one the first
 // hides.  Registry.Lang is "" until InitializeUserEnv sets it, and
 // Packages[""] is a nil *Package -- the same shape as issue #425.  Giving the
-// runtime a package (so LEnv.builtin succeeds) but no Lang exposes it: the
-// panic then comes from (*Package).Put, not from LEnv.builtin.
+// runtime a package (so constructor creation succeeds) but no Lang exposes
+// it: the panic then comes from (*Package).Put, not from constructor creation.
 func TestInitializeTypedefRequiresRegistryLang(t *testing.T) {
 	env := lisp.NewEnv(nil)
 	env.Runtime.Registry.DefinePackage(lisp.DefaultLangPackage)

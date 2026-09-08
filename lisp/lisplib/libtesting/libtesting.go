@@ -59,9 +59,8 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 // evaluating it from a different runtime is environment sharing, which is a
 // separate question from whether the suite is a safe container.
 //
-// Forking an environment that holds a suite gives the fork its OWN suite,
-// seeded from the template's: see CloneNative, and suiteFor for the half of
-// that which CloneNative cannot do by itself.
+// Template publication rejects suites, even empty ones. Template-based runners
+// load this package and register their tests separately in each VM.
 type TestSuite struct {
 	tests      map[string]*Test
 	benchmarks map[string]*Test
@@ -77,10 +76,8 @@ type TestSuite struct {
 	mu sync.RWMutex
 }
 
-// A suite duplicates rather than shares when the value holding it is forked,
-// copied or detached.  Stated as a compile-time assertion because the whole
-// mechanism is a satisfied interface: drop the method and every one of those
-// silently reverts to sharing the template's registry.
+// A within-VM copy receives independent registry bookkeeping. Template
+// publication rejects this mutable native; load testing separately in each VM.
 var _ lisp.NativeCloner = (*TestSuite)(nil)
 
 // NewTestSuite returns an empty suite. The result may be installed into any
@@ -92,24 +89,10 @@ func NewTestSuite() *TestSuite {
 	}
 }
 
-// CloneNative implements lisp.NativeCloner, the kernel's opt-in duplication
-// protocol for native payloads (lisp/fork.go, docs/fork.md).
-//
-// Without it a fork SHARES this suite with its template — the default policy
-// for a native payload is share-by-reference — and the suite is an
-// accumulator, so a `(test ...)` evaluated in the fork lands in the
-// template's registry. The clone gives every fork (and every `copy` /
-// `detach` of the suite value, which route through the same protocol) its own
-// registry, seeded with whatever the template had already defined.
-//
-// The seeding is a shallow copy of the bookkeeping: an inherited *Test is
-// carried by pointer, so its Fun is still the lambda the TEMPLATE built, over
-// the template's environment. That is the same reference the fork would have
-// held before this method existed and is not something CloneNative can fix —
-// it sees a payload, not the forker — so a fork that means to RUN inherited
-// tests still wants the template built without them (docs/fork.md, "Keep
-// state out of the template"). What the clone does fix is the write side:
-// definitions made in the fork stay in the fork.
+// CloneNative copies registry bookkeeping for within-VM value copies. Test
+// functions are retained by pointer and still belong to their original VM.
+// This does not transfer a populated suite across runtimes: Template rejects
+// suites, and each VM must register and execute its own tests.
 func (s *TestSuite) CloneNative() interface{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -125,29 +108,6 @@ func (s *TestSuite) CloneNative() interface{} {
 		cp.benchmarks[name] = b
 	}
 	return cp
-}
-
-// suiteFor resolves the suite a definition form must register into.
-//
-// CloneNative alone does not fix forking, because the op is a METHOD: the
-// receiver is baked into the closure libutil.FunctionDoc registers, and a
-// fork copies that function value without being able to see, let alone
-// rewrite, the *TestSuite captured inside it. So every op in a fork would
-// still write through to the template's suite even though the fork holds a
-// clone of its own. Resolving from the calling environment first is what
-// makes the two halves meet: the env's `testing:test-suite` binding is a
-// value the fork walk DOES rewrite, so it names the fork's clone.
-//
-// The receiver is the fallback, for an embedder that registered a suite's ops
-// into an environment without also binding the suite there (EnvTestSuite
-// returns nil for that shape). Where both exist they are the same suite --
-// LoadPackage and the documented embedder shape both install one suite as
-// both -- so this changes nothing outside a fork.
-func suiteFor(env *lisp.LEnv, receiver *TestSuite) *TestSuite {
-	if es := EnvTestSuite(env); es != nil {
-		return es
-	}
-	return receiver
 }
 
 func (s *TestSuite) Add(t *Test) error {
@@ -244,6 +204,9 @@ func (s *TestSuite) Macros() []*libutil.Builtin {
 	}
 }
 
+// Ops returns registration operations that resolve testing:test-suite in the
+// calling environment. Embedders must install that binding as well as the ops;
+// the receiver is never used as a fallback registry.
 func (s *TestSuite) Ops() []*libutil.Builtin {
 	return []*libutil.Builtin{
 		libutil.FunctionDoc("test", lisp.Formals("name", lisp.VarArgSymbol, "exprs"), s.OpTest,
@@ -464,10 +427,13 @@ func (s *TestSuite) OpTest(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Errorf("first argument is not a string: %v", name.Type)
 	}
 	// Register into the suite the CALLING environment holds, not the one
-	// captured in this method value: see suiteFor.  The lambda below closes
+	// captured in this method value. The lambda below closes
 	// over env, so the two have to agree or the fork files its own test,
 	// closed over its own environment, in the template's registry.
-	suite := suiteFor(env, s)
+	suite := EnvTestSuite(env)
+	if suite == nil {
+		return env.Errorf("testing:test-suite is not installed in the calling VM")
+	}
 	fun := env.Lambda(lisp.Nil(), exprs)
 	test := &Test{
 		Name: name.Str,
@@ -499,7 +465,10 @@ func (s *TestSuite) OpBenchmark(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Errorf("benchmark doesn't take one argument: %v", bargs.Len())
 	}
 	// See OpTest: the benchmark belongs to the calling environment's suite.
-	suite := suiteFor(env, s)
+	suite := EnvTestSuite(env)
+	if suite == nil {
+		return env.Errorf("testing:test-suite is not installed in the calling VM")
+	}
 	fun := env.Lambda(bargs, exprs)
 	test := &Test{
 		Name: name.Str,

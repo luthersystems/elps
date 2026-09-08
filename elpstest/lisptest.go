@@ -44,11 +44,11 @@ type Runner struct {
 	// NewEnvFn, when non-nil, replaces the environment construction NewEnv
 	// performs by default (fresh runtime + InitializeUserEnv + LoaderFn).
 	// It exists so an embedder harness can serve each test a fork of a
-	// preloaded template environment (lisp.LEnv.Fork; see docs/fork.md)
+	// preloaded template environment (lisp.Template.NewVM; see docs/fork.md)
 	// instead of paying a full load per test file.  The returned
 	// environment's Runtime.Stderr must be an *elpstest.Logger for the
 	// test's output to be captured (fork with
-	// lisp.ForkWithStderr(elpstest.NewLogger(t))); NewEnv rejects anything
+	// lisp.VMWithStderr(elpstest.NewLogger(t))); NewEnv rejects anything
 	// else with a named error rather than letting it panic later.
 	NewEnvFn func(t testing.TB) (*lisp.LEnv, error)
 
@@ -119,7 +119,7 @@ func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
 		}
 		if _, ok := env.Runtime.Stderr.(*Logger); !ok {
 			return nil, fmt.Errorf("NewEnvFn returned an environment whose Runtime.Stderr is %T, not *elpstest.Logger; "+
-				"test output cannot be captured (fork with lisp.ForkWithStderr(elpstest.NewLogger(t)))",
+				"test output cannot be captured (fork with lisp.VMWithStderr(elpstest.NewLogger(t)))",
 				env.Runtime.Stderr)
 		}
 		return env, nil

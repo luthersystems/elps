@@ -15,6 +15,7 @@ import (
 	"github.com/luthersystems/elps/internal/fuzzval"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
+	"github.com/luthersystems/elps/lisp/lisplib/libregexp"
 	"github.com/luthersystems/elps/parser"
 )
 
@@ -125,8 +126,8 @@ func TestFingerprintIsDeterministic(t *testing.T) {
 //
 // "Deterministic" is trivially satisfied by a fingerprint that records
 // nothing, and a walk that gave up at the first unexported field would do
-// exactly that for time.Time and *regexp.Regexp -- the two native types the
-// stdlib actually produces. So the fingerprint must also be SENSITIVE: two
+// exactly that for time.Time and a host's *regexp.Regexp (also nested inside
+// the stdlib's private compiled-regexp value). It must also be SENSITIVE: two
 // values that differ only in unexported state must fingerprint differently.
 func TestFingerprintSeesInsideUnexportedFields(t *testing.T) {
 	t.Parallel()
@@ -188,6 +189,8 @@ func TestGuardDetectsNativeMutation(t *testing.T) {
 	m := map[string]int{"a": 1, "b": 2, "c": 3}
 	buf := []byte("abc")
 	tm := time.Unix(0, 0).UTC()
+	longestRE := regexp.MustCompile(`a|ab`)
+	reparsedRE := regexp.MustCompile(`a`)
 
 	cases := []struct {
 		name  string
@@ -198,6 +201,12 @@ func TestGuardDetectsNativeMutation(t *testing.T) {
 		{"map-grow", lisp.Native(m), func() { m["z"] = 1 }},
 		{"slice-element", lisp.Native(buf), func() { buf[0] = 'z' }},
 		{"pointer-target", lisp.Native(&tm), func() { tm = tm.Add(time.Second) }},
+		{"regexp-longest", lisp.Native(longestRE), longestRE.Longest},
+		{"regexp-unmarshal", lisp.Native(reparsedRE), func() {
+			if err := reparsedRE.UnmarshalText([]byte(`b`)); err != nil {
+				t.Fatal(err)
+			}
+		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -214,6 +223,50 @@ func TestGuardDetectsNativeMutation(t *testing.T) {
 					" the LNative half of the guard is blind (%s)", c.name)
 			}
 		})
+	}
+}
+
+// #632: the wrapper is intentionally private. Obtain it through the actual
+// Lisp builtin, and prove the fingerprint still sees its nested regexp state
+// without depending on its private type name or exposing a mutation API.
+func TestFingerprintLispCompiledRegexp(t *testing.T) {
+	env := lisp.NewEnv(nil)
+	compile := func(pattern string) *lisp.LVal {
+		t.Helper()
+		v := libregexp.BuiltinCompile(env, lisp.SExpr([]*lisp.LVal{lisp.String(pattern)}))
+		if v.Type != lisp.LNative {
+			t.Fatalf("compile %q: %v", pattern, v)
+		}
+		if _, raw := v.Native.(*regexp.Regexp); raw {
+			t.Fatal("Lisp compile exposed mutable host regexp instead of private wrapper")
+		}
+		return v
+	}
+	a, equal, different := compile(`a|ab`), compile(`a|ab`), compile(`b`)
+	before := fuzzfp.Fingerprint(a.Native)
+	if before != fuzzfp.Fingerprint(equal.Native) {
+		t.Fatal("equal independently compiled wrappers have different fingerprints")
+	}
+	if before == fuzzfp.Fingerprint(different.Native) {
+		t.Fatal("fingerprint cannot distinguish patterns behind the private regexp wrapper")
+	}
+	guard := fuzzfp.Watch(a)
+	for _, input := range []string{"", "a", "ab", "z"} {
+		got := libregexp.BuiltinIsMatch(env, lisp.SExpr([]*lisp.LVal{a, lisp.String(input)}))
+		if got != lisp.Bool(regexp.MustCompile(`a|ab`).MatchString(input)) {
+			t.Fatalf("match %q: %v", input, got)
+		}
+		pattern := libregexp.BuiltinPattern(env, lisp.SExpr([]*lisp.LVal{a}))
+		if pattern.Type != lisp.LString || pattern.Str != `a|ab` {
+			t.Fatalf("pattern changed after matching %q: %v", input, pattern)
+		}
+	}
+	if violation := guard.Check(); violation != "" {
+		t.Fatalf("read-only regexp builtins changed the private native: %s", violation)
+	}
+	a.Native = different.Native //elps:mutates intentional wrapper replacement for the independent fingerprint's negative control
+	if violation := guard.Check(); !strings.Contains(violation, "Go value inside an LNative was mutated") {
+		t.Fatalf("replacement with a different compiled pattern escaped its intended guard: %s", violation)
 	}
 }
 

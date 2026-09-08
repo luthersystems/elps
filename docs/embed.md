@@ -368,12 +368,16 @@ To pass a native Go value to lisp code wrap it in a call to `lisp.Native()` so
 the value can be put into an S-expression.
 
 ```go
-    lisptime := lisp.Native(time.Now())
-    expr := SExpr([]*lisp.LVal{"my-function", lisptime})
+    lisptime := libtime.Time(time.Now())
+    expr := lisp.SExpr([]*lisp.LVal{lisp.Symbol("my-function"), lisptime})
 ```
 
-You can then write functions which operate on the value by unboxing the
-`Native` field of the corresponding argument LVal.
+For the standard time library, use `libtime.Time` and `libtime.Get` rather
+than asserting the native payload to `time.Time`. The payload is private;
+both boundaries isolate timezone objects while preserving their calendar
+rules. `Get` returns an independent Go time that the caller can freely use.
+Other host-native types can use `lisp.NativeValue[T]` to check the value header
+and unbox their own payloads.
 
 ```go
 func builtinPrintTime(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -381,7 +385,7 @@ func builtinPrintTime(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
     if lisptime.Type != lisp.LNative {
         return env.Errorf("argument is not a time: %v", lisptime.Type)
     }
-    t, ok := lisptime.Native.(time.Time)
+    t, ok := libtime.Get(lisptime)
     if !ok {
         return env.Errorf("argument is not a time: %v", lisptime)
     }

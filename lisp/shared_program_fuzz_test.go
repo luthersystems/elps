@@ -425,7 +425,34 @@ func confirmSharedDivergence(t *testing.T, src []byte, shared lisp.Program, seal
 // type and formals: the stdlib's ~250 function bindings are identical in
 // every environment and contribute a constant prefix, while a `defun` the
 // program performed shows up as a new symbol name.
+//
+// The digest is by CONTENT for sealed nodes and by content-plus-aliasing for
+// unsealed ones (see valuefp_test.go).  That split is what makes this a
+// statement about what a program can observe rather than about storage: a
+// cached load serves the same sealed nodes a fresh parse would mint anew,
+// so two bindings that hold one sealed node under a cache and two equal
+// nodes without it are the same environment (issue #613), while two
+// bindings sharing one mutable vector are not.
+//
+// That content-only rule is blind to sealed PROVENANCE, which is observable
+// (a sealed node's frozen location is printed by every error raised through
+// it).  envStateFingerprintProv is the variant that sees it; it is scoped to
+// the one caller whose property is provenance, because THIS target reparses
+// one source under several stream names on purpose and a global provenance
+// rule would make it report its own premise as a divergence.  See
+// valueFingerprintProv in valuefp_test.go.
 func envStateFingerprint(env *lisp.LEnv) string {
+	return envStateFingerprintWith(env, valueFingerprint)
+}
+
+// envStateFingerprintProv is envStateFingerprint with sealed-node provenance
+// mixed in.  Used only by runHostilePair (loadcache_reader_fuzz_test.go);
+// see valueFingerprintProv for why it must not become the default.
+func envStateFingerprintProv(env *lisp.LEnv) string {
+	return envStateFingerprintWith(env, valueFingerprintProv)
+}
+
+func envStateFingerprintWith(env *lisp.LEnv, fp func([]*lisp.LVal) string) string {
 	names := fnv.New64a()
 	var vals []*lisp.LVal
 	for _, pkgName := range env.Runtime.Registry.PackageNames() {
@@ -443,7 +470,7 @@ func envStateFingerprint(env *lisp.LEnv) string {
 	// The current package is state too: `in-package` is one of the few ways
 	// a program changes an environment without binding anything.
 	_, _ = fmt.Fprintf(names, "cur:%s;", env.Runtime.Package.Name)
-	return fmt.Sprintf("%016x/%s", names.Sum64(), valueFingerprint(vals))
+	return fmt.Sprintf("%016x/%s", names.Sum64(), fp(vals))
 }
 
 // TestSharedProgramSeedsAreDeterministic is the harness's own gate.

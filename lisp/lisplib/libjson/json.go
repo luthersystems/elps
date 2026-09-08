@@ -10,6 +10,7 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/luthersystems/elps/internal/jsonraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
 )
@@ -369,15 +370,14 @@ func (s *Serializer) loadInterfaceOpts(x interface{}, opts LoadOpts) *lisp.LVal 
 		if maxAlloc > 0 && len(x) > maxAlloc {
 			return lisp.Errorf("allocation size %d exceeds maximum (%d)", len(x), maxAlloc)
 		}
-		m := SortedMap(x)
-		for k, v := range m {
+		for k, v := range x {
 			lval := s.loadInterfaceOpts(v, opts)
 			if lval.Type == lisp.LError {
 				return lval
 			}
-			m[k] = lval
+			x[k] = lval
 		}
-		return lisp.SortedMapFromData(lisp.NewMapData(m))
+		return jsonraw.Wrap(x)
 	case []interface{}:
 		if maxAlloc > 0 && len(x) > maxAlloc {
 			return lisp.Errorf("allocation size %d exceeds maximum (%d)", len(x), maxAlloc)
@@ -862,11 +862,11 @@ func (s *Serializer) GoSlice(v *lisp.LVal, stringNums bool) ([]interface{}, bool
 //
 // Deprecated:  GoMap is no longer used internally for serialization and should
 // be avoided.
-func (s *Serializer) GoMap(v *lisp.LVal, stringNums bool) (SortedMap, bool) {
+func (s *Serializer) GoMap(v *lisp.LVal, stringNums bool) (map[string]any, bool) {
 	if v.Type != lisp.LSortMap {
 		return nil, false
 	}
-	m := make(SortedMap, v.Len())
+	m := make(map[string]any, v.Len())
 	for _, pair := range v.MapEntries().Cells {
 		if pair.Type != lisp.LSExpr || len(pair.Cells) != 2 {
 			// invalid map

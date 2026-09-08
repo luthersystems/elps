@@ -44,9 +44,13 @@ func TestForkServedRunner(t *testing.T) {
 	}
 
 	forks := 0
+	snapshot, err := lisp.NewTemplate(template, lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true }))
+	if err != nil {
+		t.Fatal(err)
+	}
 	r := &elpstest.Runner{
 		NewEnvFn: func(tb testing.TB) (*lisp.LEnv, error) {
-			fork, err := template.Fork(lisp.ForkWithStderr(elpstest.NewLogger(tb)))
+			fork, err := snapshot.NewVM(lisp.VMWithStderr(elpstest.NewLogger(tb)))
 			if err != nil {
 				return nil, err
 			}
@@ -88,7 +92,7 @@ func TestForkServedRunner(t *testing.T) {
 }
 
 // TestForkServedRunnerStderrContract: a fork-served runner that forgets
-// ForkWithStderr is the easy mistake — a plain Fork shares the TEMPLATE's
+// VMWithStderr is the easy mistake — a plain Fork shares the TEMPLATE's
 // Stderr, which for a template built outside a test is os.Stderr, not an
 // *elpstest.Logger.  The runner must name the contract violation instead of
 // dying in an interface-conversion panic inside a deferred flush.
@@ -101,16 +105,20 @@ func TestForkServedRunnerStderrContract(t *testing.T) {
 	if rc := template.InPackage(lisp.String(lisp.DefaultUserPackage)); !rc.IsNil() {
 		t.Fatalf("in-package: %v", rc)
 	}
+	snapshot, err := lisp.NewTemplate(template, lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true }))
+	if err != nil {
+		t.Fatal(err)
+	}
 	r := &elpstest.Runner{
 		NewEnvFn: func(testing.TB) (*lisp.LEnv, error) {
-			return template.Fork() // no ForkWithStderr: the mistake
+			return snapshot.NewVM() // no VMWithStderr: the mistake
 		},
 	}
-	_, err := r.NewEnv(t)
+	_, err = r.NewEnv(t)
 	if err == nil {
 		t.Fatalf("NewEnv accepted an environment with a non-Logger Stderr")
 	}
-	if !strings.Contains(err.Error(), "ForkWithStderr") {
+	if !strings.Contains(err.Error(), "VMWithStderr") {
 		t.Errorf("error does not name the fix: %v", err)
 	}
 }

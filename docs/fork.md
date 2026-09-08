@@ -1,349 +1,330 @@
-# Environment forking: cloning loaded templates by sharing sealed structure
+# Immutable VM templates
 
-`LEnv.Fork` (issue #380) clones a fully loaded, quiescent environment — the
-*template* — into an independent environment on a fresh `Runtime`, sharing
-every sealed value with the template and hermetically copying only the
-mutable fraction.
+Load a program once, publish an immutable construction plan with
+`lisp.NewTemplate`, and instantiate independent VMs with `Template.NewVM`.
+A template is not an environment: it cannot evaluate, expose bindings, or
+accumulate request state. The source environment may resume evaluation after
+publication without changing the plan.
 
-This is a dividend of the sealed-AST design and lives directly on its
-invariant: [docs/sealed-ast.md](sealed-ast.md) establishes that a sealed
-node's bytes never change after parsing completes, and machine-verifies the
-claim (fingerprint oracle, checked-mode inspector, `-race` watchdog). A
-value that can never change is safe to hand to any number of runtimes, so a
-fork can *share* it instead of rebuilding it — and at production scale
-sealed program structure is the overwhelming majority of a loaded
-environment. This document is separate from sealed-ast.md because its
-audience is different: sealed-ast.md explains a protection mechanism to
-kernel maintainers; this page specifies a construction API and its embedder
-contract.
+For standard-library initialization, use public `lisplib.LoadRuntimeLibrary`
+before publication. `lisplib.LoadLibrary` intentionally also installs the
+mutable testing registry; load that registry separately in each VM if needed.
+The runtime loader does not approve arbitrary host callbacks or natives produced
+by application initialization: explicit admission policies still apply.
 
-## What it is for
+`regexp:regexp-compile` is an audited exception: its native payload privately
+owns a freshly compiled regexp, exposes no pointer or mutation methods, and is
+safe to share without a native policy. Compilation occurs once, not per VM.
+Lisp regexp predicates, pattern access, string/byte matching, and JSON encoding
+are unchanged. Text marshaling returns fresh pattern bytes, never owned storage.
+The Go payload type (also shown in native-value diagnostics) is now private;
+Go embedders must not assert Lisp-produced payloads to `*regexp.Regexp`.
+Host-supplied raw regexps remain accepted by the Lisp operations but require
+explicit policy for template sharing. Wrapping a borrowed pointer would not
+make it immutable, so no such constructor is provided.
 
-Fork removes the *reload* cost, not the *resident memory* cost, of
-environment construction:
+`libtime.Time` likewise creates a private immutable wall-clock payload. It
+copies the initialized Go timezone object on input; `libtime.Get` returns a
+fresh timezone object on output. The private transition tables are read-only
+after initialization and may be shared, preserving timezone names, offsets,
+DST and calendar rules without copying them per VM. Tests pin the audited Go
+time/zone layouts and public methods, and exercise aliases, lazy local-zone
+initialization and calendar behavior. A future Go implementation still requires
+review: shape checks alone cannot prove that its methods remain read-only.
 
-- **Pool refill.** An embedder serving requests from a pool of warm
-  environments pays a full load (parse cache hit + evaluate every top-level
-  form) per new environment. Forking one prepared template replaces that:
-  measured on a production-scale phylum (~72k lines of lisp), fork cost
-  **15.2 ms / 88.8k allocs / 9.5 MiB churn** against **71.4 ms / 631.5k
-  allocs / 43 MiB churn** for a full load — 4.7× wall, 7.1× fewer
-  allocations. The win grows with program size because the sealed fraction
-  grows (59.3% of reachable values at stdlib scale, 82.5% at
-  production-phylum scale).
-- **Fork-served test runners.** A lisp test suite that pays a full load per
-  test case can instead load a template once and serve every case a fresh
-  fork (`elpstest.Runner.NewEnvFn`); the production-scale POC ran a full
-  phylum suite 9.5× faster end-to-end (20.1 s vs 191.4 s), with identical
-  case results.
-- **NOT a memory feature.** Resident memory per fork was measured ~24%
-  below a fully loaded environment (6.09 vs 7.96 MiB) — sealed-AST sharing
-  through the process-wide parse cache already collapsed per-environment
-  residency before Fork existed. Do not adopt Fork to save memory; adopt it
-  to save CPU, GC pressure, and refill latency.
+`Time` and `Get` keep their Go signatures, but no longer expose a raw native
+`time.Time` payload or preserve timezone pointer identity. Values have wall-clock
+semantics: Go monotonic clock metadata is discarded, as it already is by Lisp's
+UTC clock and RFC3339 parsers. JSON/text encoding is preserved. A caller must
+not mutate the input timezone concurrently with capture; unsafe access to
+private fields or rebinding Go's process-global timezone objects is outside
+this ownership contract. Raw host `time.Time` natives remain usable by time
+operations but still need explicit policy for template sharing. This does not
+make request-dependent clock reads safe to snapshot during initialization.
 
-Fork is O(mutable + closure fraction) — milliseconds at production scale.
-Run it at pool-refill time, in the background; never on the request path.
+## The invariant
 
-## Measured numbers
+For replayable initialization, two cold-loaded VMs and two template instances,
+given identical requests, external initial state and per-request context, must
+produce the same values, errors and external effects. Mutation in one VM must
+not affect another VM or a later instance. Aliases *inside* a VM retain their
+meaning, including aliases between different headers and overlapping slices.
 
-Fork beats a full load at every scale measured, and the margin widens with
-program size — a full load re-evaluates every top-level form, while a fork
-walks only the mutable and closure fraction, which shrinks proportionally
-as programs grow (program AST is sealed parser output).
+This is an observational guarantee, not pointer identity across runtimes.
+Independent VMs have distinct runtime identities. Request accounting, active
+stacks, observers and evaluation context start fresh. Bind context and host
+services per VM. A load that reads transaction time, randomness or ledger state
+cannot simply be snapshotted and reused: run that initialization per instance.
 
-**Stdlib scale** — `BenchmarkEnvConstruction` in `lisp/lisplib/fork_test.go`,
-the in-repo pair CI can track. Template: `InitializeUserEnv` + `LoadLibrary`
-+ a small program with closures, macros, `labels` mutual recursion and
-mutable globals. `benchstat -col /mode`, n=20:
+## Construction model
 
-```
-          │     fork     │               fullload                │
-          │    sec/op    │    sec/op     vs base                 │
-EnvConst    366.8µ ± 17%   844.6µ ± 17%  +130.28% (p=0.000 n=20)
-          │     B/op     │     B/op      vs base                 │
-EnvConst    284.4Ki ± 0%   525.9Ki ± 0%   +84.94% (p=0.000 n=20)
-          │  allocs/op   │  allocs/op    vs base                 │
-EnvConst    1.257k ± 0%    5.354k ± 0%   +325.93% (p=0.000 n=20)
-```
+The source is **quiescent** when no evaluation is running, its active call and
+condition-handler stacks are empty, and no goroutine or host callback is
+mutating its reachable state. That must remain true for the entire `NewTemplate`
+call. The caller supplies this exclusion; checking evaluation depth and stacks
+is an admission guard, not a lock or synchronization with another goroutine.
 
-2.3× wall, 4.3× fewer allocations. The in-package implementation also beats
-the exported-API prototype the feasibility pass measured (471 µs / 1,367
-allocs) by cloning symbol maps directly instead of replaying `Package.Put`.
+Publication validates a quiescent source and compiles its graph into private
+descriptors. Mutable object references become indices. Slice views name an
+indexed backing object plus offset, length and capacity. The plan owns copies
+of mutable data and package metadata; source environments and runtime state
+become descriptors. Immutable program code and approved host values may be shared.
 
-**Embedder-runtime scale** — an embedder's own lisp runtime library
-(~11k lines) plus a loaded program, measured out-of-tree against this
-implementation: fork **8.7 ms / 36.8k allocs / 4.3 MiB churn** vs full load
-**50.9 ms / 440.9k allocs / 106 MiB churn** — 5.9× wall, 12.0× fewer
-allocations (n=20, p=0.000). The full-load arm includes the embedder's
-per-environment fixture setup, so read the ratio as indicative rather than
-as a pure interpreter measurement.
+This is a mutable-graph ownership guarantee, not an absolute garbage-collection
+guarantee. A shared Go pointer or slice retains its enclosing allocation,
+including inaccessible backing elements beyond a slice's capacity. Host-provided
+code backing, frozen metadata, or shared services can consequently keep the source
+VM alive indirectly. No accessible cross-VM mutation was demonstrated by the
+synthetic retention cases in issue #630; eliminating this retention would require
+owning shared syntax and metadata backing as well, not a zero-capacity special case.
 
-**Production scale** — the POC numbers quoted above (15.2 ms vs 71.4 ms,
-4.7× wall / 7.1× allocs on a ~72k-line phylum), measured with the same
-algorithm against a proprietary corpus. Those remain the production-scale
-evidence; the corpus is not reproducible in-repo, which is why the two
-smaller scales are reported alongside.
+Admission assigns the private object and environment indices. Compilation
+consumes that same closed index, not a second discovery of the source graph.
+A missing admitted identity, shared-code record or mutable-storage record is
+an error; compilation cannot silently authorize a new edge or share its storage.
 
-## The contract
+Instantiation allocates each mutable object once, then fills its indexed
+references. There is no recursive graph discovery, per-instance object-identity
+lookup table, native clone callback, or foreign map factory.
 
-### Quiescence (asserted, no bypass)
+| State | Treatment |
+| --- | --- |
+| Transitively sealed code, read-only function formals/body vectors containing only sealed code, and the three singletons | Shared |
+| Mutable value headers, lexical scopes and explicit builtin captures | Fresh objects; indexed references preserve aliases and cycles |
+| List/array cells and byte storage | Fresh per backing group; exact overlapping views and capacity preserved |
+| Stock and JSON maps | Interpreter-owned storage; key policies, backing aliases and cycles preserved |
+| Mutable package metadata | Owned at publication, independently copied per instance |
+| Retained diagnostic call-stack payloads, including empty stacks | Rejected at publication; the consumer cold-loads instead |
+| Nonnil live `Runtime.Stack.GoStack`, or a retained pointer to its byte-slice header even while nil | Rejected before sharing policies; these can affect Lisp error handling |
+| Function definition locations | Preserved as program metadata |
+| Native scalars and explicitly immutable payloads | Shared, never cloned |
+| Other natives and foreign map implementations | Rejected at publication |
+| Limits and identifier counters | Copied; counters continue past published definitions |
+| Reader, source library, sealed load cache, source metadata | Shared under their read-only/concurrency contracts |
+| Context, current evaluation location, active stacks, step accounting, debugger and profiler | Not inherited |
+| Stderr | Shared unless replaced with `VMWithStderr` |
 
-The template must be *quiescent*: fully loaded, no evaluation in flight.
-`Fork` errors if the call stack is non-empty, an evaluation entry is
-active, or condition handlers are pending. There is deliberately no option
-to skip the check — a mid-evaluation environment contains torn state, and a
-fork of it would too. Fork never mutates the template, so concurrent forks
-of the same quiescent template are safe; forking concurrently *with
-evaluation on the template* is not (the check asserts, it does not
-synchronize).
+Saved diagnostic stacks are not debugger-only state. Ordinary Lisp errors
+capture call frames, and recovered Go panics additionally capture a Go trace.
+The rejection applies only when a stack remains reachable from the state being
+published (issue #629), not merely because an error occurred earlier. Errors
+without stack payloads remain admissible; errors created after `NewVM` work
+normally and do not modify or disable the template. Native approval policies
+cannot override this known mutable diagnostic category.
 
-### Distinct runtimes
+The live runtime's `GoStack` must remain nil at publication. Recovered panics
+populate an error's stack copy, not this live field. Host-created byte values
+retaining the live field's slice header are rejected even when it is nil:
+`append-bytes!` through that alias can otherwise change whether `ignore-errors`
+catches an `internal-panic` condition. This is a Lisp-visible parity failure,
+not merely debugger presentation. The rejection leaves the source unchanged;
+ordinary unretained request errors do not prevent later publication.
 
-Each fork is a separate `Runtime`, in exactly the sense the `Runtime` doc
-comment requires for concurrent evaluation: one runtime (and `LEnv` tree)
-per goroutine. Template and forks may evaluate concurrently with each
-other. Under `-tags elpscheck` the ownership checker enforces the model;
-sealed values are its sanctioned cross-runtime class (they are immutable —
-the same reasoning that exempts the nil/true/false singletons).
+Objects are allocated individually. A single escaped scalar must not keep
+unrelated functions, scopes or byte buffers alive. Whole-VM allocation blocks
+were tested and rejected because they violated this lifetime expectation.
 
-### What is shared, what is copied
+Sealing remains an internal protection for shared program code. It is not
+another VM construction mode. A sealed parent reaching a mutable child, a
+forged seal on an unsupported type, or mutable storage overlapping shared
+program storage is rejected. Slice overlap discovery uses numeric address
+arithmetic only at publication and assumes the current Go runtime's non-moving
+heap. Source slices retain their allocations throughout discovery. Numeric
+addresses are never converted back into pointers or dereferenced; memory access
+uses ordinary Go slices, and the plan retains only slices and integer offsets.
 
-| Value class | Policy |
-|---|---|
-| Sealed values (program AST, formals, quoted literals) | shared |
-| Singletons (`()`, `true`, `false`) | shared |
-| Functions (`LFun`) | header copied; captured environment remapped onto fork copies; builtin Go code travels by reference |
-| Native payloads | shared by reference, unless `NativeCloner` / `ForkWithNativeReplacer` (below). `NativeCloner` is not fork-specific: `copy` and `detach` honour it too |
-| Mutable data (vectors, sorted maps, bytes, error stacks, tagged values) | hermetically copied, aliasing and cycles preserved |
-| Source locations, format metadata (`Meta`) | shared (read-only after parse) |
-| Macro-expansion debug metadata | dropped (debugger-only; aliases template state) |
-| `Reader`, `SourceLibrary` | shared (process-wide cache / read-only) |
-| `LoadCache` | shared (entries are immutable and sealed; see below) |
-| `Stderr` | shared unless `ForkWithStderr` |
-| Limit configuration (`MaxAlloc`, stack bounds, step budget, ...) | copied |
-| `Profiler`, `Debugger` | do not travel (fork starts with none) |
-| Call stack, condition stack, step accounting | fresh |
-| Evaluator location register (`Source()`) | fresh — a fork starts with no position, so an error raised before its first evaluation reports `<native code>`, not the template's last position |
-| Env-ID and gensym counters | **continued** past the template's |
+## Why this preserves the invariant
 
-`LoadCache` is shared for the same reason `Reader` is, and because
-"preheat a template, fork per environment" is the topology the load cache
-exists to serve: a fork that started with no cache would silently reparse
-every file the template had already parsed. Sharing is safe because a
-`CachedSource` is immutable and sealed throughout — `lisp/loadcache.go`
-states the entry contract, and an implementation must already be safe for
-concurrent use when several `Runtime`s hold it. The per-runtime re-entrancy
-guard behind it is *not* carried: it describes a load in progress, and a
-template must be quiescent to fork at all.
+The argument is a graph reconstruction argument, not a formal verification of
+the interpreter or arbitrary Go host code.
 
-The counter continuation is load-bearing: lambda FIDs are minted as
-`"_fun<envID>"`, so a fork whose counter restarted would eventually mint
-FIDs colliding with the ones it inherited (corrupting function-name tables
-and tail-call FID matching), and a restarted gensym counter would re-mint
-load-time gensym names at runtime.
+1. Admission establishes a closed graph: each edge points to an indexed mutable
+   object, transitively immutable code, or explicitly approved immutable host
+   state. Opaque mutable host graphs are not admitted.
+2. Each mutable identity gets exactly one fresh destination per instance.
+   Different value headers and shared underlying storage are indexed separately.
+3. Every edge and view is reconstructed from the same descriptor. This preserves
+   sharing, non-sharing, cycles, map behavior and slice bounds within each VM.
+4. No mutable destination is shared with the source, plan or another instance.
+   Consequently an interpreter mutation cannot cross the instance boundary.
+5. With equivalent initial state and the same per-call host behavior, evaluation
+   follows the same operations and observations as the corresponding cold VM.
 
-### Stateful natives: the one policy decision an embedder owns
+The tests exercise both sides: independent cold loads plus literal expected
+results, and direct identity/alias checks with adversarial cycles, overlapping
+views, source mutations and concurrent instances. Neither a matching checksum
+nor absence of races alone proves behavioral equivalence.
 
-The kernel cannot copy an `LVal.Native` payload — it is an opaque
-`interface{}`. The default is to share payloads by reference, which is
-correct for the immutable handles that dominate real templates (compiled
-regexps, timestamps). Payloads that carry per-environment *state* are the
-embedder's to handle, with three tools, in order of preference:
+## Go embedding
 
-1. **Keep state out of the template.** Build the template *stopping before*
-   the hooks that open stateful handles, and run those hooks on each fork —
-   exactly where a per-fresh-environment design already runs them. This is
-   the pattern for accumulators whose ops/macros are Go closures over the
-   instance (e.g. `elpstest`'s fork-served runner test builds the template
-   without `libtesting` and loads it per fork). A closure captured at
-   template-load time can only ever see the template's instance, so an
-   accumulator reached that way needs BOTH halves fixed to survive a fork —
-   `libtesting` now has them (`TestSuite.CloneNative`, plus ops that resolve
-   the suite from the calling environment rather than from the captured
-   receiver) — and keeping the suite out of the template is still the
-   simpler answer where you can, and the necessary one if a fork must RUN
-   definitions the template made: an inherited `Test.Fun` is a lambda over
-   the template's environment.
-2. **`NativeCloner`.** A payload type that implements
-   `CloneNative() interface{}` is duplicated at fork time; the clone must
-   be independent of the original and must not retain references into the
-   template's runtime. It is the kernel's one clone protocol for native
-   payloads rather than a fork-only hook: the lisp `copy` builtin clones
-   through it too, and `detach` clones such a payload instead of refusing
-   the value outright. One `CloneNative` implementation therefore covers
-   all three paths — and adding one to a payload that is shared under
-   `copy` today starts cloning it there as well. This is the native half
-   of the contract protocols sketched in issue #383.
-3. **`ForkWithNativeReplacer`.** A per-fork substitution hook consulted
-   before `NativeCloner`, for payload types the embedder cannot modify and
-   for instance-specific rebinding (a per-fork storage handle).
-
-Note what the sharing policy covers and what it does not: the *payload*
-travels by reference, but the `LVal` header carrying it does not — every
-forked value gets a fresh header. Anything that treats an `LVal`'s ADDRESS as
-meaning (a credential compared by pointer, a value used as a map key, a
-sentinel recognized by identity) is therefore revoked in a fork, silently.
-Key such markers off something the walk preserves — the payload's Go type,
-for instance — as `libschema`'s validator marker now does (issue #579).
-
-Two classes of value are the exception, and they keep their address: the
-three singletons (`isSingleton` — nil, true, false) and a node that is both
-`sealed` and of a sealable type are returned by `forker.val` unchanged rather
-than rebuilt. A sentinel that is one of those *is* stable across a fork —
-but that is a property of the seal, not of the marker, and a marker that is
-neither gets a fresh header.
-
-One channel neither this note nor the tooling can see: a Go closure inside a
-builtin captures `*lisp.LVal`s directly, and the fork walk never looks inside
-a `func`. `libschema`'s `builtinHasKey` / `builtinCheckAny` /
-`builtinAllowedValues` each close over template-side `*lisp.LVal`s — a
-slice of sub-constraints for the first two, the allowed-values list for the
-third — so a forked composite validator still reaches the *template's*
-values. That is benign today — they are read-only at call time, and
-`NewValidator`'s RUNTIME SCOPE contract sanctions a validator being shared
-by any number of runtimes — but neither the ownership checker nor the
-native-affinity check (`RuntimeBound`) can observe it, so a payload that
-became stateful behind such a closure would leak between template and forks
-undetected.
-
-A shared stateful native is the one way to leak state between template and
-forks that no isolation test in this repository can see from the outside —
-audit your template's native census when adopting Fork.
-
-A payload type can also *declare* which runtime it belongs to, by
-implementing `RuntimeBound` (`BoundRuntime() *lisp.Runtime`, returning nil
-while unbound). Declaring costs a production build nothing — nothing there
-ever calls it. Under `-tags elpscheck` the declaration is asserted: at the
-ownership checker's instrumented points (shallow, per that checker's
-documented limits) and, deeply, at fork time, where every reachable native
-payload is checked against the fork's runtime whatever container it rides
-in — and whichever of the three tools above resolved it, a replacer's
-return value included. A fork *is* a different runtime, so a bound payload
-reaching a fork by the default share-by-reference policy fails the fork,
-loudly, rather than sitting in the fork until a request touches it. A
-payload that means to survive forking must therefore clone to something
-*unbound* (or bound to the destination): a clone that copies the template's
-binding trips the same check, which is only `NativeCloner`'s existing
-"retain no reference into the template's runtime" rule made checkable. See
-`lisp/runtime_bound.go`.
-
-### Context
-
-The template's `context.Context` never travels into a fork. Bind a
-request-scoped context at checkout time with `ForkWithContext`, or use the
-`*Context` evaluation methods per call.
-
-The bound context is also the sanctioned channel for per-fork *values*:
-builtins registered at template-load time are Go closures shared by every
-fork, so the per-fork half of their state (a storage handle, a transaction
-context) cannot live in the closure. Carry it as a `context.WithValue`
-entry on the context bound to the fork and read it inside the builtin via
-`env.Context().Value(key)`, falling back to the closure's load-time state
-when the key is absent. The value follows the same scoping as
-cancellation: it is visible through intervening lisp call frames, a
-per-call `EvalContext` context overrides it for that evaluation only, and
-neither the template nor any other fork can observe it.
-`lisp/fork_context_test.go` pins this contract.
-
-A call frame is a shallow copy of the environment the function captured,
-given a fresh scope. Two of its registers are worth naming, and they
-behave differently.
-
-The *location* register is a snapshot taken when the function was defined,
-carried on the function value itself. It is deliberately not the captured
-environment's live position, because the evaluator reads `env.loc` before
-it rebinds it: the nesting-depth guard and `checkLimits` both raise
-through `ErrorConditionf`, which stamps that register into the error's
-rendered text and `Source()`. An evaluation-budget error that trips
-exactly at a function-body entry -- a step limit, a nesting limit, a
-cancelled or expired context -- therefore reports the function's
-definition site, not its call site. `lisp/funloc_test.go` pins this.
-
-The *context* register is the live one: a call frame reads the captured
-environment's context at the moment of the call rather than a snapshot
-taken when the function was defined. Normal evaluation never sees the
-difference, because `call` bridges the per-call context onto the
-environment at every builtin and special-operator boundary before a body
-form runs. A debugger that evaluates in a paused frame without a context
-(conditional breakpoints, the inspector) observes the live register
-instead: a function defined on the template and called in a fork bound
-with `ForkWithContext` reports the fork's context, and a function defined
-under a since-cancelled `EvalContext` no longer carries that cancelled
-context into a later call.
-
-Neither register crosses a fork. `forker` drops the location register of
-every environment it remaps, and a function value's definition-site
-snapshot does not travel either -- exactly as before, when that snapshot
-lived in a per-function environment the fork remapped and blanked.
-
-## Embedder patterns
-
-Pool refill:
+The public lifecycle and sharing contract also live in the `lisp` package docs
+(`lisp/doc.go`), with an executable `ExampleTemplate` checked by the Go test suite.
+This document contains the fuller design argument and coverage matrix.
 
 ```go
-template := buildTemplate()          // load once, at startup or upgrade
-...
-fork, err := template.Fork(lisp.ForkWithContext(reqCtx))
-if err != nil { ... }
-pool.Put(fork)                       // background refill, off the request path
-```
-
-Fork-served test runner (see `elpstest/fork_runner_test.go` for the
-complete reference, including the stateful testing-suite rebind):
-
-```go
-r := &elpstest.Runner{
-    NewEnvFn: func(t testing.TB) (*lisp.LEnv, error) {
-        fork, err := template.Fork(lisp.ForkWithStderr(elpstest.NewLogger(t)))
-        if err != nil {
-            return nil, err
-        }
-        // per-fork stateful hooks here (testing package, storage handles...)
-        return fork, nil
-    },
+// Source loading has finished and no goroutine is evaluating source.
+tmpl, err := lisp.NewTemplate(source,
+    lisp.TemplateWithBuiltinPolicy(approveAuditedBuiltin),
+    lisp.TemplateWithNativePolicy(approveForeignImmutableValue),
+)
+if err != nil {
+    return err // or use a safe per-VM initialization path
 }
+
+vm, err := tmpl.NewVM(lisp.VMWithContext(requestContext))
+if err != nil {
+    return err
+}
+// Install runtime-affine services here, then execute the request.
 ```
 
-## Verification
+Do not approve callbacks by package name or Go function code address: neither
+identifies what a closure captures. Approve registrations whose Go state you
+have audited. Embedders attach mutable host state to each instance's context;
+callbacks obtain it from the environment passed to them.
 
-- `lisp/fork_test.go` audits the entire forked graph pairwise against the
-  template: sealed values pointer-shared (with an anti-vacuity floor),
-  mutable values pointer-distinct with identical content, template
-  aliasing and cycles reproduced in the fork.
-- `lisp/fork_mapalias_test.go` pins aliasing one level below the `*LVal`:
-  two headers over one `*MapData`, one `*[]byte` or one native payload (the
-  shape `(quasiquote (unquote a))` makes) fork to two headers over ONE clone,
-  and a map that reaches itself through such a header closes onto its own
-  clone rather than nesting a fresh one per header (issue #576).
-- `lisp/lisplib/fork_test.go` proves bidirectional isolation over real
-  parsed programs two ways: observable mutations (neither side sees the
-  other's writes) and a full-state fingerprint (structure-only hash of
-  everything reachable; fork-side activity leaves the template's hash
-  bit-identical, and a fresh fork reproduces it exactly).
-- `lisp/fork_ownership_elpscheck_test.go` pins the checker model: sealed
-  cross-runtime sharing sanctioned, mutable cross-runtime leaks still
-  panic.
-- `elpstest.RunForkCheck` is the embedder-facing harness: give it a program
-  and the transactions a caller would run, and it holds the template/fork
-  model to three properties against a reference that never calls `Fork`.
-  Parity: each transaction's result, and the state reachable from the
-  package bindings after it (cells, sorted-map entries, bytes, and the
-  environments closures captured), must match a cold environment that
-  loaded the program itself. Aliasing: "same object" must hold for the
-  same pairs of reachable mutable payloads — cells, map storage, bytes
-  storage, pointer `NativeCloner`s, captured environments — in template
-  and fork. Isolation: no such payload shared with the template or with
-  another fork, the template untouched after a fork's transaction, a
-  later fork pristine. Every check also runs one hop deeper, on a fork of
-  the fork. Outside its sight, by the sharing policy above: a native's
-  contents (compared by Go type only; a non-cloner native is shared by
-  design and has no identity) and package metadata beside the symbol
-  table. `elpstest/forkcheck_test.go` carries one `ForkCheck` per fork bug
-  that shipped (#576 for sorted maps, bytes and native cloners; #579;
-  #381, which only parity sees, through a duplicate registration on the
-  shared suite), each verified to fail on the tree it shipped in. New
-  embedder shapes go there.
-- Correctness at production scale (POC, issue #380): transaction results
-  byte-identical between forked and fresh-loaded environments; a full
-  phylum unit-test suite fork-served with identical results.
+ELPS cannot inspect hidden Go closure or method-receiver state. An approve-all
+predicate or census of every registration is an attestation about trusted host
+code, not an automated audit. A registration's identity stops an unapproved
+replacement from being admitted but does not prove that the approved callback
+has no mutable captures. Ownership analyzers and review of every changed host
+registration remain necessary; neither amounts to a whole-program proof.
+
+ELPS's own libraries use an internal construction API for explicit Lisp captures:
+
+```go
+// Available only inside the ELPS repository (internal/funraw).
+fn := funraw.NewCapturedBuiltin(funraw.CapturedBuiltin{
+    Formals: lisp.Formals(),
+    Captures: state,
+    Eval: func(env *lisp.LEnv, args, captures *lisp.LVal) *lisp.LVal {
+        return captures
+    },
+    Package: "example",
+    FID: "state",
+})
+```
+
+The callback must not also hide mutable VM state in its Go closure.
+ELPS's internal native marker and the public `TemplateWithNativePolicy` assert transitive
+immutability, including aliases retained by host code. They do not authorize
+cloning mutable payloads. An approved immutable payload is shared unchanged
+even if its type happens to implement `NativeCloner`.
+
+The marker interface lives in `internal/templatepolicy`; downstream callers
+approve their native payloads through `TemplateWithNativePolicy` instead.
+Automatic marker admission is restricted to audited struct values. A pointer
+inherits its value's marker methods, but Go can replace the whole pointee even
+when every field is private. Pointer forms therefore require explicit policy;
+they are not automatically admitted. The library's schema credential is a
+zero-state value, and owned time/regexp payloads also use this value-only path.
+
+Go host code remains trusted: a false immutability assertion or direct writes
+to exported fields of shared sealed values or read-only function code vectors
+can violate the contract. Function headers and lexical scopes remain private;
+their formals/body vectors are immutable after construction. This is
+not a sandbox for hostile Go plugins. Checked builds provide additional
+ownership and runtime-affinity assertions, not a proof of arbitrary host code.
+
+This warning is backed by several distinct CI checks, not one proof-producing
+analyzer. `elpsvet` diagnoses direct LVal/whole-value writes and local aliases of
+formals/body backing storage; `cmd/elpsvet/testdata/src/a/template_contract.go`
+requires those diagnostics. Its documented intraprocedural blind spots include
+slice parameters, aliases stored in existing structs, and shallow-copied headers.
+Checked builds verify sealed-content fingerprints at guarded boundaries, while
+isolation/parity tests and fuzzing exercise actual VM behavior. A clean static
+pass does not establish that arbitrary host callbacks obey the sharing contract.
+Consumers must run the tool over their own sources as well as run behavior tests.
+
+A callback obtains request state from `env.Context()`; it must not fall back
+to a captured load-time context. Shared caches, readers, writers and other
+host services must obey their declared concurrency contracts and must not
+smuggle source-VM state into future calls.
+
+ELPS's template-based test runners use `internal/stdlib.Load(env, false)` during
+bootstrap and load `libtesting` separately into each instance before loading
+test definitions. A mutable test suite, including an empty one, is not
+template state. `lisplib.LoadLibrary` still includes testing for ordinary
+cold-loaded test/documentation environments.
+
+## Breaking changes
+
+- `LEnv.Fork` is removed. Publish once with `NewTemplate`, then reuse
+  `Template.NewVM`. Recompiling the plan for each request defeats amortization.
+- `ForkWithNativeReplacer` is removed. Create mutable native services per VM.
+- `NativeCloner` no longer grants template admission and is never called by
+  template construction or instantiation. Its within-value-copy contract is
+  separate from VM construction.
+- Foreign `Map` implementations cannot be published. JSON maps retain their
+  existing string-only behavior through private interpreter-owned storage.
+  The `libjson.SortedMap` alias is removed; `Serializer.GoMap` now returns an
+  ordinary `map[string]any`. Decoder construction is repository-internal.
+- The PoC's `TemplateMap` extension/factory protocol is removed.
+- `LEnv.Copy`, an unused shallow environment-copy API, is removed. Lisp
+  `copy` and `LVal.Copy` are value operations, not VM construction APIs.
+
+Unsupported initialization is an explicit error, not silently changed
+semantics. A preheater can instantiate a context-free base template and load
+the remaining program per VM. If even bootstrap cannot meet admission, it
+must use an ordinary independent cold load.
+
+## Verification and performance
+
+```sh
+go test -tags elpscheck -race ./lisp ./lisp/lisplib ./elpstest \
+  ./lisp/lisplib/libschema ./lisp/lisplib/libjson ./lisp/lisplib/libtesting \
+  -run 'Test(Template|Fork|CapturedBuiltin|SchemaMutableCapture|JSONTemplate)' -count=1
+go test ./lisp/lisplib -run '^$' -bench '^BenchmarkTemplateConstruction$' \
+  -benchmem -benchtime=500ms -count=6
+```
+
+Publication is intentionally separate from steady-state construction in
+benchmarks. Compare identical program/library sets, include publication
+amortization, and measure escaped-value retention as well as allocation churn.
+The full repository suite, race/checked configurations, fuzzing and benchmark
+regression gates run in CI. Historical experiments and the public Substrate
+sample harness are recorded in [the experiment archive](template-poc/README.md).
+
+### Differential coverage and its limits
+
+`elpstest.FuzzForkParity` compares multiple independent cold loads with instances
+of one published plan, across lazy, interleaved and concurrent schedules. Each
+instance executes multiple transactions. A bounded independent model checks
+results, deliberate errors, state observations and host effects; the cold arm is
+not the sole source of expected behavior. Generated graph edges vary aliasing
+and cycles, with write-through and rewiring operations. Fixed controls verify
+that these inputs change real graph structure rather than just scalar values.
+
+`FuzzTemplateCancellationParity` varies nested definitions and cancellation
+points, preserving exact diagnostic provenance as well as successful results.
+Neither target skips a generated supported case when cold loading, publication,
+instantiation or evaluation fails. Deliberately broken construction and state
+comparison controls exercise the same runner used by fuzzing.
+
+The independent isolation oracle observes mutable headers, actual full-capacity
+cell/byte storage, map backing, lexical scopes and explicit builtin captures.
+Sealed code is compared by content, with bounded DAG traversal, not parse-cache
+interning identity. User strings and error messages are never normalized as
+generated function identifiers. Native contents require a host-supplied
+`RenderNative` observation in both result and reachable-state channels; direct
+reference identity cannot reveal mutable references hidden inside arbitrary Go
+structs or closures.
+
+| Earlier PR | Relevant retained or equivalent controls |
+| --- | --- |
+| [#599](https://github.com/luthersystems/elps/pull/599), [#601](https://github.com/luthersystems/elps/pull/601) | Alias/isolation parity, bounded graph variation, multiple VMs and transactions, creation schedules and definition-location cancellation |
+| [#602](https://github.com/luthersystems/elps/pull/602), [#616](https://github.com/luthersystems/elps/pull/616) | Empty-vector/view behavior, native sort/insert behavior and original minimized regressions |
+| [#603](https://github.com/luthersystems/elps/pull/603) | Real shared/private/mixed load caches, late loads, exact hit controls and one/two publication hops |
+| [#614](https://github.com/luthersystems/elps/pull/614), [#617](https://github.com/luthersystems/elps/pull/617) | Sealed-content/provenance fingerprints, DAG/cycle budgets, mutable descendants and independent oracle visibility controls |
+
+Private cell-view layout assertions are replaced by their surviving behavioral
+properties. An old expectation that function-definition locations disappear is
+intentionally not retained: independent cold-run cancellation demonstrates that
+those locations must be preserved. This work does **not** wholly subsume
+[#604](https://github.com/luthersystems/elps/pull/604)'s proposed within-value Go
+`LVal.Copy` semantics or [#605](https://github.com/luthersystems/elps/pull/605)'s
+repository-wide native-constructor auditor. Those are distinct contracts.
+
+Tracking: [#622](https://github.com/luthersystems/elps/issues/622),
+[error-location parity](https://github.com/luthersystems/elps/issues/624),
+[equivalent regression and fuzz coverage](https://github.com/luthersystems/elps/issues/625).

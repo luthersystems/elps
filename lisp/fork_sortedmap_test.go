@@ -38,7 +38,7 @@ func TestForkSortedMapClone(t *testing.T) {
 	env.PutGlobal(Symbol("cfg"), m)
 	env.PutGlobal(Symbol("cfg-alias"), m)
 
-	fork, err := env.Fork()
+	fork, err := forkTestSnapshot(env)
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -137,10 +137,14 @@ func TestForkSortedMapClonePrunedMapIsRightSized(t *testing.T) {
 	}
 	env.PutGlobal(Symbol("staging"), m)
 
+	tmpl, err := NewTemplate(env, TemplateWithBuiltinPolicy(func(*LVal) bool { return true }))
+	if err != nil {
+		t.Fatal(err)
+	}
 	res := testing.Benchmark(func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			if _, err := env.Fork(); err != nil {
+			if _, err := tmpl.NewVM(); err != nil {
 				b.Fatalf("fork: %v", err)
 			}
 		}
@@ -175,9 +179,13 @@ func BenchmarkForkSortedMap(b *testing.B) {
 		}
 		env.PutGlobal(Symbol(fmt.Sprintf("table-%d", i)), m)
 	}
+	tmpl, err := NewTemplate(env, TemplateWithBuiltinPolicy(func(*LVal) bool { return true }))
+	if err != nil {
+		b.Fatal(err)
+	}
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := env.Fork(); err != nil {
+		if _, err := tmpl.NewVM(); err != nil {
 			b.Fatalf("fork: %v", err)
 		}
 	}
