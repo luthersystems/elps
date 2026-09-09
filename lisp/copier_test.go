@@ -178,13 +178,22 @@ func (p *copierProbe) walk(v *lisp.LVal) {
 // sharing/payload properties are asserted here directly.
 func TestCopyMeetsTheAliasGuard(t *testing.T) {
 	t.Parallel()
+	assertCopierMeetsTheAliasGuard(t, func(v *lisp.LVal) *lisp.LVal { return v.Copy() })
+}
+
+// assertCopierMeetsTheAliasGuard is the guard itself, over any walk that
+// claims to be Copy: build the historical aliasing shape on a cold
+// environment, copy the probe value through the walk under test, and compare
+// the two values' sharing and payloads.
+func assertCopierMeetsTheAliasGuard(t *testing.T, walk func(*lisp.LVal) *lisp.LVal) {
+	t.Helper()
 	env := copierEnv(t)
 	copierEval(t, env, copierProgram)
 	src := env.GetGlobal(lisp.Symbol("probe"))
 	if src.Type == lisp.LError {
 		t.Fatalf("probe: %v", src)
 	}
-	cp := src.Copy()
+	cp := walk(src)
 	if cp.Type == lisp.LError {
 		t.Fatalf("copy: %v", cp)
 	}
