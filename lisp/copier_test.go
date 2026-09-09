@@ -583,6 +583,15 @@ func (m *copierFailingRanger) RangeStringKeys(fn func(key string, val *lisp.LVal
 // it AFTER a value has already been copied and stored: the first pair is
 // well formed, the second carries an unhashable key, so MapData.Set rejects
 // it.  Partial traversal, on the arm that has no ranger.
+//
+// The unhashable key is an LQSymbol spelling the second key's name, not (as
+// it once was) an LInt.  The arm sorts its entries by (Str, Type) before
+// copying any of them, and every key kind but LString and LSymbol carries an
+// empty Str -- so an LInt key sorts to the FRONT and the copy fails before a
+// single value has been copied, quietly turning this fixture into a
+// duplicate of the ranger's.  An LQSymbol carries its name in Str, so it
+// sorts where its name puts it and the failure stays where the fixture wants
+// it: after the first entry has been copied and stored.
 type copierFailingEntries struct{ *copierStringMap }
 
 func (m *copierFailingEntries) Entries(buf []*lisp.LVal) *lisp.LVal {
@@ -594,7 +603,7 @@ func (m *copierFailingEntries) Entries(buf []*lisp.LVal) *lisp.LVal {
 		return lisp.Errorf("buffer has insufficient length")
 	}
 	buf[0] = lisp.QExpr([]*lisp.LVal{lisp.String(keys[0]), m.m[keys[0]]})
-	buf[1] = lisp.QExpr([]*lisp.LVal{lisp.Int(2), m.m[keys[1]]})
+	buf[1] = lisp.QExpr([]*lisp.LVal{lisp.QSymbol(keys[1]), m.m[keys[1]]})
 	for i := 2; i < len(keys); i++ {
 		buf[i] = lisp.QExpr([]*lisp.LVal{lisp.String(keys[i]), m.m[keys[i]]})
 	}
@@ -999,5 +1008,222 @@ func TestCopyMapWithANestedNativeStillCopiesInKeyOrder(t *testing.T) {
 	})
 	t.Run("custom entries order", func(t *testing.T) {
 		assertStable(t, lisp.SortedMapFromData(lisp.NewMapData(&copierOrderEntries{copierStringMap: newCopierStringMap(kv())})))
+	})
+}
+
+// copierPairMap is a custom Map backed by a SLICE of key/value pairs rather
+// than a Go map, so it can hold what a Go map keyed by string cannot: an
+// LString and an LSymbol that spell the same name, or the same key twice.
+// Both are legal for a host implementation -- the Map interface (lisp/maps.go)
+// says nothing about key uniqueness, let alone about uniqueness under the
+// STOCK map's notion of key identity -- and neither can be represented in the
+// destination the copier builds, whose Set keys on Str for LString and
+// LSymbol alike.
+//
+// Entries yields a different permutation on every other call, for the reason
+// copierOrderEntries does: only Keys is documented as sorted, so a conforming
+// host map may hand its entries over in any order it likes, and the copier
+// may not depend on the one it happens to get.
+//
+// A ROTATION rather than copierOrderEntries's reversal, because reversing
+// keeps two adjacent entries adjacent: a fixture whose colliding pair stayed
+// side by side would be detected in either permutation even with the
+// ordering removed, and the negative control -- remove the sort and the
+// collision cases must break -- would prove nothing.  Rotating a
+// three-entry map separates the pair.
+type copierPairMap struct {
+	keys  []*lisp.LVal
+	vals  []*lisp.LVal
+	calls int
+}
+
+// newCopierPairMap takes key, value, key, value ... and stores them in
+// exactly that order, without deduplication: the point of the fixture is the
+// pairs a stock map would have collapsed.
+func newCopierPairMap(kv ...*lisp.LVal) *copierPairMap {
+	m := &copierPairMap{}
+	for i := 0; i+1 < len(kv); i += 2 {
+		m.keys = append(m.keys, kv[i])
+		m.vals = append(m.vals, kv[i+1])
+	}
+	return m
+}
+
+func (m *copierPairMap) find(k *lisp.LVal) int {
+	for i, kk := range m.keys {
+		if kk.Type == k.Type && kk.Str == k.Str {
+			return i
+		}
+	}
+	return -1
+}
+
+func (m *copierPairMap) Len() int { return len(m.keys) }
+
+func (m *copierPairMap) Get(k *lisp.LVal) (*lisp.LVal, bool) {
+	if i := m.find(k); i >= 0 {
+		return m.vals[i], true
+	}
+	return lisp.Nil(), false
+}
+
+func (m *copierPairMap) Set(k, v *lisp.LVal) *lisp.LVal {
+	if i := m.find(k); i >= 0 {
+		m.vals[i] = v
+		return lisp.Nil()
+	}
+	m.keys = append(m.keys, k)
+	m.vals = append(m.vals, v)
+	return lisp.Nil()
+}
+
+func (m *copierPairMap) Del(k *lisp.LVal) *lisp.LVal {
+	if i := m.find(k); i >= 0 {
+		m.keys = append(m.keys[:i], m.keys[i+1:]...)
+		m.vals = append(m.vals[:i], m.vals[i+1:]...)
+	}
+	return lisp.Nil()
+}
+
+func (m *copierPairMap) Keys() *lisp.LVal {
+	keys := make([]*lisp.LVal, len(m.keys))
+	copy(keys, m.keys)
+	slices.SortStableFunc(keys, func(a, b *lisp.LVal) int { return strings.Compare(a.Str, b.Str) })
+	return lisp.QExpr(keys)
+}
+
+func (m *copierPairMap) Entries(buf []*lisp.LVal) *lisp.LVal {
+	if len(buf) < len(m.keys) {
+		return lisp.Errorf("buffer has insufficient length")
+	}
+	order := make([]int, len(m.keys))
+	for i := range order {
+		order[i] = i
+	}
+	m.calls++
+	if m.calls%2 == 0 && len(order) > 1 {
+		order = append(order[1:], order[0])
+	}
+	for i, j := range order {
+		buf[i] = lisp.QExpr([]*lisp.LVal{m.keys[j], m.vals[j]})
+	}
+	return lisp.Int(len(m.keys))
+}
+
+// TestCopyHostMapEntriesOrderIsIrrelevant: on the generic Entries arm, what
+// a copy CONTAINS may not depend on the order the host handed its entries
+// over -- and not only what host code the copy ran, which is all the leaf
+// fast path reasoned about.
+//
+// cfdff7d ordered this arm's walk so a host CloneNative hook could not see
+// two orders on two copies, then skipped the ordering whenever no value in
+// the map could reach such a hook: "no host hook can run, so the order is
+// unobservable".  That is true of the two arms whose keys are Go strings by
+// construction (the stock sortedmap's and the ranger's), and false here.
+// This arm's keys come from the host as whole LVals, and the destination is
+// the stock map, whose Set (lisp/maps.go) keys on Str for LString and
+// LSymbol alike: two entries that share a Str collapse into one, and WHICH
+// one survives is whichever the host yielded last.  With all-scalar values
+// the fast path left that order host-controlled, so two copies of one map
+// differed in their CONTENTS with no hook in sight.
+//
+// The two halves of the fix own one assertion each.  Always sorting owns the
+// determinism: colliding entries are adjacent on every copy, so both copies
+// reach the same verdict.  Validating owns the verdict itself: a collision
+// is refused through failMap rather than silently resolved, because there is
+// no answer -- the destination cannot hold the entries apart, and picking
+// one is picking the host's order by another name.  Remove the sort and the
+// unique-key case below still passes (permutation really is unobservable
+// there, which is what makes it the anti-vacuity control); the collision
+// cases fail on determinism, since the two copies land on different verdicts.
+func TestCopyHostMapEntriesOrderIsIrrelevant(t *testing.T) {
+	t.Parallel()
+	// copyTwice copies one host map twice, so the fixture's Entries runs in
+	// both permutations, and refuses to report on a fixture that never
+	// permuted.
+	copyTwice := func(t *testing.T, m *copierPairMap) (*lisp.LVal, *lisp.LVal) {
+		t.Helper()
+		v := lisp.SortedMapFromData(lisp.NewMapData(m))
+		first, second := v.Copy(), v.Copy()
+		if m.calls < 2 {
+			t.Fatalf("anti-vacuity: the fixture's Entries ran %d time(s), so the two copies never saw"+
+				" different permutations", m.calls)
+		}
+		return first, second
+	}
+	// assertCollides: a host map holding two entries the stock map cannot
+	// tell apart must fail the copy, identically both times.
+	assertCollides := func(t *testing.T, m *copierPairMap, key string) {
+		t.Helper()
+		first, second := copyTwice(t, m)
+		if first.Type != lisp.LError || second.Type != lisp.LError {
+			t.Fatalf("a host map whose entries collide on one key copied successfully:\n first: %v\n"+
+				"second: %v\n equal? %v\nThe destination's Set keys on Str for LString and LSymbol"+
+				" alike, so one entry overwrote\nthe other and WHICH one survived was the order the host"+
+				" yielded them in.",
+				first, second, lisp.True(first.Equal(second)))
+		}
+		if first.String() != second.String() {
+			t.Errorf("the two copies failed differently:\n first: %v\nsecond: %v", first, second)
+		}
+		if !strings.Contains(first.String(), key) {
+			t.Errorf("the failure does not name the colliding key %q: %v", key, first)
+		}
+	}
+
+	// The control: unique keys the stock map CAN hold apart, all-scalar
+	// values, permuted entries.  Nothing about this copy may depend on the
+	// permutation, and nothing does -- with or without the fix.  It is here
+	// so that "always sort" is pinned as a property of the RESULT rather
+	// than only as the shape of the code.
+	t.Run("unique keys, scalar values", func(t *testing.T) {
+		m := newCopierPairMap(
+			lisp.String("a"), lisp.Int(1),
+			lisp.Symbol("b"), lisp.Int(2),
+			lisp.String("c"), lisp.Int(3),
+		)
+		first, second := copyTwice(t, m)
+		if first.Type == lisp.LError || second.Type == lisp.LError {
+			t.Fatalf("copy failed on a map whose keys are distinct:\n first: %v\nsecond: %v", first, second)
+		}
+		if first.String() != second.String() {
+			t.Errorf("two copies of one host map rendered differently:\n first: %v\nsecond: %v", first, second)
+		}
+		if !lisp.True(first.Equal(second)) {
+			t.Errorf("two copies of one host map are not equal:\n first: %v\nsecond: %v", first, second)
+		}
+		if got, want := first.String(), `(sorted-map "a" 1 'b 2 "c" 3)`; got != want {
+			t.Errorf("copy rendered %s, want %s", got, want)
+		}
+	})
+
+	// A string key and a symbol key spelling the same name, with DIFFERENT
+	// scalar values.  Legal for the host; unrepresentable in the copy.
+	t.Run("string and symbol keys of one name", func(t *testing.T) {
+		assertCollides(t, newCopierPairMap(
+			lisp.String("a"), lisp.Int(1),
+			lisp.Symbol("a"), lisp.Int(2),
+			lisp.String("z"), lisp.Int(3),
+		), "a")
+	})
+
+	// The same key twice, with different scalar values.
+	t.Run("duplicate key", func(t *testing.T) {
+		assertCollides(t, newCopierPairMap(
+			lisp.String("dup"), lisp.Int(1),
+			lisp.String("dup"), lisp.Int(2),
+			lisp.String("z"), lisp.Int(3),
+		), "dup")
+	})
+
+	// The same shape with a value that CAN run host code, so the fast path
+	// is not what is being exercised: the collision has to be refused on the
+	// ordered path too, not only on the one the fast path took.
+	t.Run("collision with a non-leaf value", func(t *testing.T) {
+		assertCollides(t, newCopierPairMap(
+			lisp.String("a"), lisp.QExpr([]*lisp.LVal{lisp.Native(copierSeqCloner{})}),
+			lisp.Symbol("a"), lisp.QExpr([]*lisp.LVal{lisp.Native(copierSeqCloner{})}),
+			lisp.String("z"), lisp.Int(3),
+		), "a")
 	})
 }

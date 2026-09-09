@@ -564,26 +564,60 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 	// key kinds Str does not separate: an LString and an LSymbol that spell
 	// the same thing sort the same way on every copy.  Stable, so any pair
 	// the comparison still cannot separate keeps the order Entries gave it
-	// rather than moving under the sort.  Skipped, as above, when no value
-	// can reach a host hook.
-	order := false
-	for _, pair := range entries.Cells {
-		if !copierLeafValue(pair.Cells[1]) {
-			order = true
-			break
+	// rather than moving under the sort.
+	//
+	// ALWAYS, unlike the two arms above, which skip the ordering when no
+	// value in the map can reach a host hook.  Their fast path rests on "no
+	// host hook can run, so the walk order is unobservable", and that is
+	// sound for them because their keys are unique Go strings by
+	// construction: whatever order they walk in, the destination ends up
+	// holding the same entries.  Here the keys arrive from the host as whole
+	// LVals, and the destination is the stock map, whose Set (lisp/maps.go)
+	// keys on Str for LString and LSymbol alike.  Two entries sharing a Str
+	// -- "a" and 'a, or one key twice -- therefore collapse into one, and
+	// with the ordering skipped WHICH of them survived was whichever the
+	// host happened to yield last: two copies of one map with nothing but
+	// scalar values, and no hook anywhere, came out with different
+	// CONTENTS.  Order is observable on this arm through the destination
+	// itself, not only through a hook, so the scan that decides whether to
+	// sort cannot answer the question.  The sort costs little here in any
+	// case, next to the per-entry boxing Entries has already done to hand
+	// these pairs over.
+	//elps:mutates reorders backing this call owns outright: sortedMapEntries allocates the cells slice for this call and wraps it in a QExpr held only by the local `entries`, so nothing outside this function can observe the permutation
+	slices.SortStableFunc(entries.Cells, func(a, b *LVal) int {
+		if r := cmp.Compare(a.Cells[0].Str, b.Cells[0].Str); r != 0 {
+			return r
 		}
-	}
-	if order {
-		//elps:mutates reorders backing this call owns outright: sortedMapEntries allocates the cells slice for this call and wraps it in a QExpr held only by the local `entries`, so nothing outside this function can observe the permutation
-		slices.SortStableFunc(entries.Cells, func(a, b *LVal) int {
-			if r := cmp.Compare(a.Cells[0].Str, b.Cells[0].Str); r != 0 {
-				return r
-			}
-			return cmp.Compare(a.Cells[0].Type, b.Cells[0].Type)
-		})
-	}
+		return cmp.Compare(a.Cells[0].Type, b.Cells[0].Type)
+	})
+	// Ordering makes the copy deterministic; it does not make it right.  Two
+	// entries the destination cannot hold apart are now ADJACENT, so they can
+	// be found -- and they are refused rather than silently resolved, because
+	// there is no answer to pick: keeping one is picking the host's order by
+	// another name, and the copy would claim to be a copy of a map whose
+	// entries it does not hold.  Through failMap, so the walk fail-stops and
+	// Copy returns the error at the top rather than parking a map that
+	// quietly lost an entry in a cell (c79cec5).
+	//
+	// Checked against the previous key inside the copy loop rather than in a
+	// pass of its own: the loop has that key in hand for Set either way, so
+	// the guarantee costs a comparison per entry instead of a second walk of
+	// the same pointer chain.
+	//
+	// Only a pair of string-like keys is judged.  Any other key kind is
+	// unrepresentable outright, whatever it sits next to, and Set rejects it
+	// with its own message ("unhashable type"); an LInt and an LFloat both
+	// carry Str "" and would otherwise be reported as sharing a key that
+	// neither of them has.
+	var prev *LVal
 	for _, pair := range entries.Cells {
-		if lerr := m.Set(pair.Cells[0], c.copy(pair.Cells[1])); lerr.Type == LError {
+		key := pair.Cells[0]
+		if prev != nil && prev.Str == key.Str && isStringLike(prev) && isStringLike(key) {
+			return c.failMap(md, fmt.Errorf("failed to copy map: entries collide on key %q (%s and %s):"+
+				" the destination map cannot hold them apart", key.Str, prev.Type, key.Type))
+		}
+		prev = key
+		if lerr := m.Set(key, c.copy(pair.Cells[1])); lerr.Type == LError {
 			return c.failMap(md, fmt.Errorf("failed to copy map: %v", lerr))
 		}
 	}
