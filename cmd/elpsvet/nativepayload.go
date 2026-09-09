@@ -57,16 +57,33 @@
 //     approval from the embedder instead;
 //
 //  3. the payload's type is on allowedPayloadTypes below -- the AUDITED
-//     inventory, each row carrying the reason a human checked -- AND the
-//     site is one of the kernel's own representation spellings, a `.Native`
-//     field write or a keyed `LVal{Native: ...}` literal.  Every row is a
-//     kernel storage slot that templateInventory.val handles by an explicit
-//     arm on a non-LNative header, so it never reaches
-//     templateInventory.native.  A CONSTRUCTOR -- Native, NativeOf, a
-//     falling-through Value -- always builds an LNative, whose payload val
-//     hands straight to native(), where a `*[]byte`, a `*MapData` and a
-//     `*funData` are refused like any other pointer; so the rows do not
-//     exempt a constructor and it is reported (payloadKernelSlotMisuse);
+//     inventory, each row carrying the reason a human checked and the
+//     HEADER TYPE whose storage it is -- AND the site shows that header.
+//     Every row is a kernel storage slot that templateInventory.val handles
+//     by an explicit arm keyed off the header's Type, so it never reaches
+//     templateInventory.native; a row is therefore a claim about a HEADER,
+//     not about a type in the abstract, and it is only true where the site
+//     is building that header.  Three conditions, all required
+//     (payloadSite.exemptsRow): (a) the site is IN package
+//     github.com/luthersystems/elps/lisp, since the rows describe the
+//     kernel's own representation slots and a package outside the kernel has
+//     no business building one; (b) the site is not a CONSTRUCTOR, since
+//     Native, NativeOf and a falling-through Value always build an LNative
+//     whose payload val hands straight to native(), where `*[]byte`,
+//     `*MapData` and `*funData` are refused like any other pointer; and (c)
+//     for a keyed LITERAL, the same literal's `Type:` key names the row's
+//     LType constant -- LBytes for `*[]byte`, LSortMap for `*MapData`, LFun
+//     for `*funData` -- resolved through the type checker rather than by
+//     source text.  A literal with no Type key shows no header; a literal
+//     naming another Type shows the wrong one; and `LVal{Type: LNative,
+//     Native: &b}` names exactly the header val routes to native(), which
+//     refuses the payload.  All three are reported, with
+//     payloadKernelSlotMisuse naming the header the row belongs to.
+//
+//     A `.Native` FIELD WRITE has no header to show, so (c) cannot apply to
+//     it and (a) carries the whole weight: `v.Native = &b` is exempt in
+//     package lisp and reported everywhere else.  See "What it does not see"
+//     for why that residual is where it is;
 //
 //  4. an audited `//elpsvet:allow-native <justification>` comment covers the
 //     site: trailing on the reported line, standalone on the line above it,
@@ -153,16 +170,24 @@
 //     ("Native").Set(...)`): a runtime property, not a source one;
 //   - a payload constructed in ANOTHER module: that module's to audit --
 //     substrate runs the same rule over its own tree for exactly that reason;
-//   - which HEADER TYPE a kernel-slot spelling is building.  The allowlist
-//     tier trusts a `.Native` write and a keyed `LVal{Native: ...}` literal
-//     because those are how the kernel writes LBytes, LSortMap and LFun
-//     storage, and templateInventory.val routes each by the header's Type.
-//     An `LVal{Type: LNative, Native: someRowType}` literal would therefore
-//     be exempt here and refused at publication.  Nothing in the tree writes
-//     one -- the LNative header has exactly one constructor, lisp.Native --
-//     and reading the sibling Type key to narrow it further would trade a
-//     shape nobody writes for a rule that only works when the Type is a
-//     literal in the same expression.
+//   - which HEADER TYPE a `.Native` FIELD WRITE inside package lisp is
+//     writing onto.  A literal shows its header in the same expression, so
+//     the allowlist tier reads it (condition 3c above); a field write shows
+//     nothing -- `v.Native = payload` says only that SOME header gets some
+//     payload.  Seven such writes exist in the kernel today (lisp/copier.go
+//     339 and 343, lisp/detach.go 199 and 209, lisp/template_plan.go 501,
+//     503 and 505), and each is guarded a few lines up by a check of the
+//     header's own Type that this rule does not model -- detach's
+//     `if v.Type != LBytes { return ... }`, the copier's `switch v.Type`,
+//     the planner's replay of a plan whose kinds publication already fixed.
+//     So the tier still trusts a row payload written through the field
+//     INSIDE package lisp, and ONLY there: the same write in any other
+//     package is reported, which is where the bypass mattered -- an
+//     embedder holding an `*LVal` could store a `*[]byte` onto an LNative
+//     header and be exempt.  Narrowing the residual further means teaching
+//     the rule those guards, not tightening the site test; tightening it
+//     alone would report all seven kernel writes and force seven
+//     annotations onto code publication already routes correctly.
 package main
 
 import (
@@ -196,6 +221,13 @@ const (
 	// spelled type, so ErrorVal, conversions and embedding all resolve to
 	// the same field.
 	nativeFieldName = "Native"
+
+	// lTypeFieldName is the lisp.LVal field naming the HEADER a value is,
+	// and the discriminant (*templateInventory).val switches on.  A keyed
+	// literal that sets Native alongside it says which of val's arms the
+	// payload will take, which is what makes the allowlist tier checkable
+	// (payloadSite.exemptsRow).  Matched by object, like Native.
+	lTypeFieldName = "Type"
 )
 
 // templatePolicyPkgPath is the internal package declaring the Immutable
@@ -216,65 +248,141 @@ var nativePayloadAnalyzer = &analysis.Analyzer{
 	Run: runNativePayload,
 }
 
-// allowedPayloadTypes is the AUDITED inventory of native payload types that
-// need no marker and no policy, keyed by the type as types.TypeString spells
-// it with full import paths (so a pointer type is keyed with its `*`), with
-// WHY as the value.  The reasons print nowhere; they are here so the next
-// author adding a row can see what a real justification looks like, and so a
-// reviewer can check the claim.
-//
-// Every row today is a KERNEL REPRESENTATION SLOT: LVal.Native doubles as the
-// backing store for several non-LNative types, and (*templateInventory).val
-// (lisp/template.go) carries an explicit arm for each, so none of them is
-// ever handed to templateInventory.native, and the planner rebuilds the
-// storage per VM instead of sharing it.  A row is therefore a claim about a
-// type the RUNTIME already handles by name, not a second admission channel
-// beside the marker and the host policy -- an embedder-visible payload
-// belongs in tier 1 or 2, or carries a site annotation.
-//
-// This map may only SHRINK.
-var allowedPayloadTypes = map[string]string{
-	"*github.com/luthersystems/elps/lisp.funData": "the LFun payload. templateInventory.val's LFun " +
-		"arm (lisp/template.go) walks it as function data rather than as a native -- it never reaches " +
-		"templateInventory.native -- and the planner mints a fresh funData per VM (template_plan.go's " +
-		"instantiate stores instance.functions[...], not a shared payload). A builtin's Go function " +
-		"pointer travels by reference, which is code, not state",
-
-	"*[]byte": "LBytes backing storage. templateInventory.val's *[]byte arm records a byte span " +
-		"instead of calling native (lisp/template.go), and instantiate gives each VM its own header " +
-		"over its own copied buffer (template_plan.go), so no VM can reach another's bytes. The one " +
-		"header that is NOT admissible -- an alias of the live Runtime.GoStack -- is rejected by " +
-		"checkDiagnosticPayload rather than by this row (#629)",
-
-	"*github.com/luthersystems/elps/lisp.MapData": "LSortMap backing storage. templateInventory.val " +
-		"routes it to mapData, which walks the map's values and records the backing (lisp/template.go), " +
-		"and instantiate rebuilds every map and its backing per VM (template_plan.go), so a VM's " +
-		"assoc!/dissoc! cannot reach the published maps",
+// payloadRow is one audited allowlist entry.  A row is a claim about a
+// HEADER, not about a type in the abstract: LVal.Native doubles as the
+// backing store for several non-LNative kernel types, and
+// (*templateInventory).val (lisp/template.go) routes each of them by the
+// header's Type to an arm that is not native().  So a row carries the LType
+// constant whose storage it is, and the tier is true only where the site
+// shows that header (payloadSite.exemptsRow).
+type payloadRow struct {
+	// reason is why a human decided sharing this payload is safe.  It
+	// prints nowhere; it is here so the next author adding a row can see
+	// what a real justification looks like, and so a reviewer can check the
+	// claim.
+	reason string
+	// headerType is the lisp.LType constant this storage belongs to, by
+	// NAME, resolved through the type checker at the site (headerTypeNamed)
+	// rather than by source text.  It is the arm templateInventory.val takes
+	// for such a header, which is what keeps the payload away from
+	// templateInventory.native.
+	headerType string
 }
 
-// payloadSite says WHICH SPELLING built the payload, because the allowlist
-// tier is only true for some of them.
+// allowedPayloadTypes is the AUDITED inventory of native payload types that
+// need no marker and no policy, keyed by the type as types.TypeString spells
+// it with full import paths (so a pointer type is keyed with its `*`).
+//
+// Every row today is a KERNEL REPRESENTATION SLOT, and the planner rebuilds
+// the storage per VM instead of sharing it.  A row is therefore a claim
+// about a type the RUNTIME already handles by name, not a second admission
+// channel beside the marker and the host policy -- an embedder-visible
+// payload belongs in tier 1 or 2, or carries a site annotation.
+//
+// This map may only SHRINK.
+var allowedPayloadTypes = map[string]payloadRow{
+	"*github.com/luthersystems/elps/lisp.funData": {headerType: "LFun", reason: "the LFun payload. " +
+		"templateInventory.val's LFun arm (lisp/template.go) walks it as function data rather than as " +
+		"a native -- it never reaches templateInventory.native -- and the planner mints a fresh " +
+		"funData per VM (template_plan.go's instantiate stores instance.functions[...], not a shared " +
+		"payload). A builtin's Go function pointer travels by reference, which is code, not state"},
+
+	"*[]byte": {headerType: "LBytes", reason: "LBytes backing storage. templateInventory.val's " +
+		"*[]byte arm records a byte span instead of calling native (lisp/template.go), and instantiate " +
+		"gives each VM its own header over its own copied buffer (template_plan.go), so no VM can " +
+		"reach another's bytes. The one header that is NOT admissible -- an alias of the live " +
+		"Runtime.GoStack -- is rejected by checkDiagnosticPayload rather than by this row (#629)"},
+
+	"*github.com/luthersystems/elps/lisp.MapData": {headerType: "LSortMap", reason: "LSortMap backing " +
+		"storage. templateInventory.val routes it to mapData, which walks the map's values and records " +
+		"the backing (lisp/template.go), and instantiate rebuilds every map and its backing per VM " +
+		"(template_plan.go), so a VM's assoc!/dissoc! cannot reach the published maps"},
+}
+
+// lTypeName is the lisp type whose constants a row's headerType names.  It
+// is checked alongside the constant's name and package so that a same-named
+// constant of some other type cannot satisfy a row.
+const lTypeName = "LType"
+
+// siteKind says WHICH SPELLING built the payload, because the allowlist tier
+// is only true for some of them.
 //
 // lisp.Native, lisp.NativeOf and a lisp.Value that falls through all build an
 // LNative header (lisp/lisp.go, lisp/native.go), and templateInventory.val's
 // LNative arm hands that payload straight to native() -- which knows nothing
 // about the kernel's representation slots and refuses a *[]byte, a *MapData
-// and a *funData like any other pointer.  The allowlist rows are true only
-// where the kernel writes its own storage: a .Native field write or a keyed
-// LVal{Native: ...} literal on an LBytes/LSortMap/LFun header, which val
-// routes to its explicit *[]byte, mapData and LFun arms instead.
-type payloadSite int
+// and a *funData like any other pointer.  The rows are true only where the
+// kernel writes its own storage onto the header val routes to one of its
+// explicit *[]byte, mapData and LFun arms instead -- which is a property of
+// the SITE, not of the payload type, and is why the site is carried this far.
+type siteKind int
 
 const (
 	// siteConstructor: lisp.Native(x), lisp.NativeOf[T](x), or a
 	// lisp.Value(x) the compiler can see falling through.  Always an
 	// LNative header, so the allowlist does not apply.
-	siteConstructor payloadSite = iota
-	// siteKernelSlot: `v.Native = x` or `lisp.LVal{Native: x}` -- the
-	// spellings the kernel uses for its own representation storage, and the
-	// only ones templateInventory.val can route away from native().
-	siteKernelSlot
+	siteConstructor siteKind = iota
+	// siteHeaderLiteral: a keyed `LVal{Type: ..., Native: x}` literal.  The
+	// header is spelled in the SAME expression, so the allowlist tier can
+	// read it and require that it matches the row.
+	siteHeaderLiteral
+	// siteFieldWrite: `v.Native = x`.  The header is whatever v already is,
+	// which this rule cannot see.
+	siteFieldWrite
 )
+
+// payloadSite is everything about a construction site the allowlist tier
+// needs: the spelling, whether the site is inside the kernel package whose
+// representation slots the rows describe, and -- for a literal -- the LType
+// constant the same literal names in its `Type:` key.
+type payloadSite struct {
+	// headerType is the NAME of the LType constant the literal's `Type:`
+	// key resolves to ("LBytes", "LFun", ...), empty when the site is not a
+	// literal, when the literal names no Type, or when what it names is not
+	// a constant of lisp.LType declared in package lisp.  It comes from the
+	// type checker, so `lisp.LBytes`, a dot-imported `LBytes` and an
+	// aliased-import `l.LBytes` are one object and resolve alike, while a
+	// same-named constant from some other package does not resolve at all.
+	headerType string
+	kind       siteKind
+	// inKernel is pass.Pkg.Path() == lispPkgPath.  The rows are the
+	// kernel's own storage slots; a package outside the kernel that builds
+	// one is doing something the rows say nothing about.
+	inKernel bool
+}
+
+// exemptsRow reports whether an allowlist row is true AT THIS SITE.  Three
+// conditions, and the file comment says why each one is load-bearing:
+//
+//  1. inKernel -- the rows describe package lisp's own representation slots;
+//  2. not a constructor -- Native, NativeOf and a falling-through Value all
+//     build an LNative, and val hands an LNative's payload to native(),
+//     which refuses every row type;
+//  3. for a LITERAL, the same literal's `Type:` key names the row's header.
+//     `LVal{Type: LNative, Native: &b}` is precisely the header val routes
+//     to native(), so it is reported; so is a literal with no Type key,
+//     which shows no header at all.
+//
+// A FIELD WRITE shows no header either, and cannot: `v.Native = payload`
+// says nothing about what v is.  Inside the kernel the tier still trusts
+// one, because every such write in package lisp is guarded a few lines up by
+// a check of the header's own Type (lisp/detach.go, lisp/copier.go) or
+// replays a plan whose kinds publication already fixed
+// (lisp/template_plan.go) -- guards this rule does not model.  Outside the
+// kernel a field write is reported, which is where the bypass mattered.
+func (s payloadSite) exemptsRow(row payloadRow) bool {
+	if !s.inKernel {
+		return false
+	}
+	switch s.kind {
+	case siteHeaderLiteral:
+		return s.headerType == row.headerType
+	case siteFieldWrite:
+		return true
+	default:
+		return false
+	}
+}
 
 func runNativePayload(pass *analysis.Pass) (interface{}, error) {
 	for _, file := range pass.Files {
@@ -344,7 +452,8 @@ func checkNativeCall(pass *analysis.Pass, call *ast.CallExpr, allow map[int]bool
 	default:
 		return
 	}
-	reportNativePayload(pass, call.Pos(), pass.TypesInfo.TypeOf(arg), "lisp."+fn.Name(), siteConstructor, allow)
+	reportNativePayload(pass, call.Pos(), pass.TypesInfo.TypeOf(arg), "lisp."+fn.Name(),
+		payloadSite{kind: siteConstructor, inKernel: inKernelPkg(pass)}, allow)
 }
 
 // checkNativeLiteral handles a keyed literal setting the lisp.LVal.Native
@@ -353,10 +462,39 @@ func checkNativeCall(pass *analysis.Pass, call *ast.CallExpr, allow map[int]bool
 // same field objects.  The literal's TYPE is not consulted; the key's
 // object is.
 //
+// The SIBLING `Type:` key of the same literal IS consulted, because it is
+// the header the kernel is building and the allowlist rows are claims about
+// headers (payloadSite.exemptsRow).  The whole element list is read before
+// anything is reported, so a literal that spells Native first is treated the
+// same as one that spells Type first.
+//
 // The report sits on the literal's opening line, where a call would be
 // reported, so a trailing marker on `&lisp.LVal{` covers a payload two
 // lines down; a marker on the `Native:` line itself is honoured as well.
 func checkNativeLiteral(pass *analysis.Pass, lit *ast.CompositeLit, allow map[int]bool) {
+	native := nativeKeyValues(pass, lit)
+	if len(native) == 0 {
+		// Much the commonest case, and the reason the header type is
+		// resolved only after it: every composite literal in the tree
+		// reaches this function.
+		return
+	}
+	site := payloadSite{
+		kind:       siteHeaderLiteral,
+		inKernel:   inKernelPkg(pass),
+		headerType: literalHeaderType(pass, lit),
+	}
+	for _, kv := range native {
+		reportNativePayload(pass, lit.Pos(), pass.TypesInfo.TypeOf(kv.Value), "LVal.Native literal", site, allow,
+			kv.Key.Pos(), kv.Value.Pos())
+	}
+}
+
+// nativeKeyValues collects the literal's elements that set the
+// lisp.LVal.Native FIELD, matched by the key's object rather than by the
+// literal's spelled type.
+func nativeKeyValues(pass *analysis.Pass, lit *ast.CompositeLit) []*ast.KeyValueExpr {
+	var out []*ast.KeyValueExpr
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
 		if !ok {
@@ -366,9 +504,88 @@ func checkNativeLiteral(pass *analysis.Pass, lit *ast.CompositeLit, allow map[in
 		if !ok || !isNativeField(pass.TypesInfo.Uses[key]) {
 			continue
 		}
-		reportNativePayload(pass, lit.Pos(), pass.TypesInfo.TypeOf(kv.Value), "LVal.Native literal", siteKernelSlot, allow,
-			kv.Key.Pos(), kv.Value.Pos())
+		out = append(out, kv)
 	}
+	return out
+}
+
+// literalHeaderType returns the NAME of the lisp.LType constant the
+// literal's `Type:` key names, or "" when the literal has no Type key, when
+// its value is not a constant of lisp.LType, or when it is a computed
+// expression rather than a named constant.
+//
+// The key is matched by its field OBJECT, like the Native key, so ErrorVal
+// and any conversion of LVal resolve to the same field.  The VALUE is
+// resolved through the type checker rather than read as source text, so
+// `lisp.LBytes`, a dot-imported `LBytes` and an aliased-import
+// `l.LBytes` are all the same object and all resolve, while a same-named
+// constant declared in some other package is a different object and does
+// not.
+func literalHeaderType(pass *analysis.Pass, lit *ast.CompositeLit) string {
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok || !isLValTypeField(pass.TypesInfo.Uses[key]) {
+			continue
+		}
+		return headerTypeNamed(pass, kv.Value)
+	}
+	return ""
+}
+
+// headerTypeNamed resolves expr to the name of a lisp.LType constant
+// DECLARED IN package lisp, or "" if it is anything else.  Both halves
+// matter: the declaring package, so no other package's constant can claim a
+// row, and the constant's TYPE, so a same-named constant of another type in
+// package lisp could not either.
+//
+// A re-declared alias -- `const h = lisp.LBytes`, whether in another package
+// or as a local inside lisp -- is a different constant object with a
+// different name, and resolves to "".  That is a false POSITIVE, which is
+// the direction this rule fails in everywhere else: the author writes the
+// header constant the kernel writes, or annotates.
+func headerTypeNamed(pass *analysis.Pass, expr ast.Expr) string {
+	var id *ast.Ident
+	switch e := ast.Unparen(expr).(type) {
+	case *ast.Ident:
+		id = e
+	case *ast.SelectorExpr:
+		id = e.Sel
+	default:
+		return ""
+	}
+	konst, ok := pass.TypesInfo.Uses[id].(*types.Const)
+	if !ok || konst.Pkg() == nil || konst.Pkg().Path() != lispPkgPath {
+		return ""
+	}
+	named, ok := types.Unalias(konst.Type()).(*types.Named)
+	if !ok {
+		return ""
+	}
+	obj := named.Obj()
+	if obj == nil || obj.Name() != lTypeName || obj.Pkg() == nil || obj.Pkg().Path() != lispPkgPath {
+		return ""
+	}
+	return konst.Name()
+}
+
+// isLValTypeField reports whether obj is the lisp.LVal.Type field object --
+// the header discriminant templateInventory.val switches on.  Matched the
+// same way as the Native field, by object rather than by the receiver's
+// spelled type.
+func isLValTypeField(obj types.Object) bool {
+	v, ok := obj.(*types.Var)
+	return ok && v.IsField() && v.Name() == lTypeFieldName && v.Pkg() != nil && v.Pkg().Path() == lispPkgPath
+}
+
+// inKernelPkg reports whether the package under analysis IS package lisp.
+// The allowlist rows describe the kernel's own representation slots, so a
+// row is only true of a site the kernel wrote.
+func inKernelPkg(pass *analysis.Pass) bool {
+	return pass.Pkg != nil && pass.Pkg.Path() == lispPkgPath
 }
 
 // checkNativeAssign handles a write to the lisp.LVal.Native field on an
@@ -385,7 +602,8 @@ func checkNativeAssign(pass *analysis.Pass, stmt *ast.AssignStmt, allow map[int]
 		if !ok || !selectsNativeField(pass, sel) {
 			continue
 		}
-		reportNativePayload(pass, stmt.Pos(), pass.TypesInfo.TypeOf(stmt.Rhs[i]), "LVal.Native assignment", siteKernelSlot, allow)
+		reportNativePayload(pass, stmt.Pos(), pass.TypesInfo.TypeOf(stmt.Rhs[i]), "LVal.Native assignment",
+			payloadSite{kind: siteFieldWrite, inKernel: inKernelPkg(pass)}, allow)
 	}
 }
 
@@ -439,15 +657,15 @@ func reportNativePayload(pass *analysis.Pass, pos token.Pos, payload types.Type,
 				" that the value never reaches a template",
 			what, payloadTypeString(payload), nativeAllowMarker)
 	case payloadKernelSlotMisuse:
+		row := allowedPayloadTypes[types.TypeString(types.Unalias(payload), nil)]
 		pass.Reportf(pos,
-			"%s payload type %s is a kernel representation slot, and the allowlist row for it is true"+
-				" only where the kernel writes its own storage -- a .Native field write or an"+
-				" LVal{Native: ...} literal on an LBytes/LSortMap/LFun header, which"+
-				" (*templateInventory).val routes to its own arm (lisp/template.go). A constructor"+
-				" always builds an LNative header, whose payload val hands to native(), and native()"+
+			"%s payload type %s is a kernel representation slot, and the allowlist row for it is a claim"+
+				" about a HEADER, not about the type: it is true only of package lisp building an %s"+
+				" header, which (*templateInventory).val routes to its own arm (lisp/template.go)."+
+				" %s Every other header is an LNative, whose payload val hands to native(), and native()"+
 				" refuses this type; build the header the kernel builds, or annotate //%s with a"+
 				" justification that the value provably never reaches a template",
-			what, payloadTypeString(payload), nativeAllowMarker)
+			what, payloadTypeString(payload), row.headerType, site.misuseReason(row), nativeAllowMarker)
 	case payloadReport:
 		pass.Reportf(pos,
 			"%s payload type %s is not a known-safe value type: a template publishes one value graph and"+
@@ -457,6 +675,26 @@ func reportNativePayload(pass *analysis.Pass, pos token.Pos, payload types.Type,
 				" annotate //%s with a justification that the payload provably never reaches a template",
 			what, payloadTypeString(payload), nativeAllowMarker)
 	}
+}
+
+// misuseReason says which of exemptsRow's conditions this site failed, so
+// the diagnostic names the actual problem rather than reciting the rule.
+// It is only called on a site the row did NOT exempt, so at least one arm
+// applies; the fallthrough covers a future site kind added without a
+// verdict.
+func (s payloadSite) misuseReason(row payloadRow) string {
+	if !s.inKernel {
+		return "This site is outside package lisp, whose own storage the row describes."
+	}
+	switch {
+	case s.kind == siteConstructor:
+		return "A constructor always builds an LNative."
+	case s.kind == siteHeaderLiteral && s.headerType == "":
+		return "This literal sets no Type key, so it shows no header at all."
+	case s.kind == siteHeaderLiteral:
+		return "This literal's Type key is " + s.headerType + ", not " + row.headerType + "."
+	}
+	return "This site does not show the header the row belongs to."
 }
 
 type payloadVerdict int
@@ -473,11 +711,14 @@ const (
 	// payloadDiagnostic: a retained call stack, which publication refuses
 	// outright -- no marker, row or policy can make it admissible.
 	payloadDiagnostic
-	// payloadKernelSlotMisuse: an allowedPayloadTypes row reached through a
-	// CONSTRUCTOR spelling.  The row is real, but it describes the kernel's
-	// own representation storage on a non-LNative header; a constructor
-	// makes an LNative, which templateInventory.val hands to native(), and
-	// native() refuses the type.
+	// payloadKernelSlotMisuse: an allowedPayloadTypes row reached at a site
+	// that does not show the row's header.  The row is real, but it
+	// describes the kernel's own representation storage on a specific
+	// non-LNative header: a constructor makes an LNative, a literal naming
+	// another Type (or naming none) shows no such header, and a site
+	// outside package lisp is not the kernel writing its own storage.
+	// templateInventory.val hands an LNative's payload to native(), and
+	// native() refuses every row type.
 	payloadKernelSlotMisuse
 )
 
@@ -499,14 +740,16 @@ func classifyPayload(t types.Type, site payloadSite) payloadVerdict {
 	if isRetainedCallStack(t) {
 		return payloadDiagnostic
 	}
-	if _, ok := allowedPayloadTypes[types.TypeString(t, nil)]; ok {
-		// A row is a claim about a header templateInventory.val handles by
+	if row, ok := allowedPayloadTypes[types.TypeString(t, nil)]; ok {
+		// A row is a claim about a HEADER templateInventory.val handles by
 		// an explicit arm, never about a payload it routes to native().  A
 		// constructor builds an LNative and so always routes to native(),
-		// where every row type is refused -- so the row does not exempt
-		// such a site, and saying that precisely beats reporting it as an
+		// where every row type is refused; a literal that names some other
+		// header -- LNative above all -- routes there too; and a site
+		// outside package lisp is not building the kernel's storage at all.
+		// Saying that precisely beats reporting the type as an
 		// unclassified pointer.
-		if site == siteKernelSlot {
+		if site.exemptsRow(row) {
 			return payloadSafe
 		}
 		return payloadKernelSlotMisuse

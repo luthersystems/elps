@@ -5,6 +5,8 @@ package main
 import (
 	"go/ast"
 	"go/types"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/analysis/analysistest"
@@ -45,6 +47,31 @@ func TestNativePayloadAnalyzer(t *testing.T) {
 		"nativepayload", "github.com/luthersystems/elps/nativemarker")
 }
 
+// TestNativePayloadAnalyzerInKernelPackage runs the rule over a fixture whose
+// IMPORT PATH is github.com/luthersystems/elps/lisp, which is the only way to
+// exercise the exempt side of the allowlist tier: a row describes the
+// kernel's own representation storage, so the tier's first condition is that
+// the package under analysis is the kernel itself.
+//
+// It needs a private testdata root because the kernel-path stub in
+// testdata/src carries `// want` comments for the ESCAPE rule, and
+// analysistest checks every expectation in a package against the one analyzer
+// it is running -- sharing the package would fail both tests.  The ownership
+// fixture already uses a private root for its own reason.
+//
+// The fixture pins both halves: the kernel's own literals (an LBytes header
+// over a *[]byte, an LSortMap over a *MapData, an LFun over a *funData) are
+// exempt, and the same rows on any other header -- LNative above all, and a
+// literal that names no Type at all -- are reported. The reported half is
+// the defect the narrowing closed: `LVal{Type: LNative, Native: &b}` was a
+// kernel-slot SPELLING, so it was exempt statically, while
+// (*templateInventory).val routes an LNative header's payload to native(),
+// which refuses a *[]byte.
+func TestNativePayloadAnalyzerInKernelPackage(t *testing.T) {
+	analysistest.Run(t, filepath.Join(analysistest.TestData(), "nativelisp"),
+		nativePayloadAnalyzer, lispPkgPath)
+}
+
 // TestAllowedPayloadTypesJustified guards the allowlist's shape: every row
 // must carry a justification a reviewer can read, and every row's key must
 // be spelled the way classifyPayload will look it up.  The rule cannot check
@@ -58,31 +85,48 @@ func TestAllowedPayloadTypesJustified(t *testing.T) {
 	// a site annotation.  A row added without a justification, or a key that
 	// drifts from the type it names, fails here; a row deleted fails here
 	// too, so that shrinking the map is a deliberate act.
-	want := []string{
-		"*github.com/luthersystems/elps/lisp.funData",
-		"*[]byte",
-		"*github.com/luthersystems/elps/lisp.MapData",
+	//
+	// Each row is a claim about a HEADER, so the inventory pins the LType
+	// constant alongside the payload type: a row whose headerType drifted
+	// would exempt the kernel's literal for some other arm of
+	// (*templateInventory).val, which is the failure the narrowing exists to
+	// prevent.
+	want := map[string]string{
+		"*github.com/luthersystems/elps/lisp.funData": "LFun",
+		"*[]byte": "LBytes",
+		"*github.com/luthersystems/elps/lisp.MapData": "LSortMap",
 	}
-	for _, key := range want {
-		why, ok := allowedPayloadTypes[key]
+	for key, header := range want {
+		row, ok := allowedPayloadTypes[key]
 		if !ok {
 			t.Errorf("allowedPayloadTypes lost the audited row for %s;"+
 				" this map may only shrink deliberately, and shrinking it means the type"+
 				" is no longer used as a native payload", key)
 			continue
 		}
-		if len(why) < 60 {
-			t.Errorf("allowedPayloadTypes[%s] justification is too thin to audit: %q", key, why)
+		if len(row.reason) < 60 {
+			t.Errorf("allowedPayloadTypes[%s] justification is too thin to audit: %q", key, row.reason)
+		}
+		if row.headerType != header {
+			t.Errorf("allowedPayloadTypes[%s].headerType = %q, the audited inventory says %q;"+
+				" the row exempts a kernel literal only when its Type key names this header,"+
+				" so a drift here silently moves which literal is exempt",
+				key, row.headerType, header)
 		}
 	}
 	if len(allowedPayloadTypes) != len(want) {
 		t.Errorf("allowedPayloadTypes has %d rows, the audited inventory lists %d;"+
-			" add the new row to this test with its justification reviewed",
+			" add the new row to this test with its justification and its header type reviewed",
 			len(allowedPayloadTypes), len(want))
 	}
-	for key, why := range allowedPayloadTypes {
-		if why == "" {
+	for key, row := range allowedPayloadTypes {
+		if row.reason == "" {
 			t.Errorf("allowedPayloadTypes[%s] has no justification", key)
+		}
+		if row.headerType == "" {
+			t.Errorf("allowedPayloadTypes[%s] names no header type, so the row would exempt"+
+				" only a literal that sets no Type key -- which is exactly the shape the"+
+				" narrowing reports", key)
 		}
 	}
 }
@@ -103,9 +147,9 @@ func TestAllowedPayloadTypesDroppedRows(t *testing.T) {
 		"*github.com/luthersystems/elps/lisp/lisplib/libschema.validatorTag",
 		"*github.com/luthersystems/elps/lisp/lisplib/libjson.ownMessage",
 	} {
-		if why, ok := allowedPayloadTypes[key]; ok {
+		if row, ok := allowedPayloadTypes[key]; ok {
 			t.Errorf("allowedPayloadTypes re-admitted %s (%q); publication does not, so"+
-				" the row would exempt a construction the runtime still refuses", key, why)
+				" the row would exempt a construction the runtime still refuses", key, row.reason)
 		}
 	}
 }
@@ -115,7 +159,7 @@ func TestAllowedPayloadTypesDroppedRows(t *testing.T) {
 // unclassifiable rather than safe -- publication reads a native's DYNAMIC
 // type, which is why the port's `error` allowlist row was dropped.
 func TestClassifyPayloadUniverse(t *testing.T) {
-	for _, site := range []payloadSite{siteConstructor, siteKernelSlot} {
+	for _, site := range everySite() {
 		if got := classifyPayload(types.Universe.Lookup("error").Type(), site); got != payloadDynamic {
 			t.Errorf("classifyPayload(error, %v) = %v, want payloadDynamic", site, got)
 		}
@@ -167,15 +211,29 @@ func TestRuntimeScalarKindsMatchesTheRuntimesList(t *testing.T) {
 	}
 }
 
-// TestKernelSlotRowsOnlyExemptKernelSpellings pins the third narrowing: an
-// allowlist row is a claim about storage on a header
-// (*templateInventory).val handles by its own arm, so it exempts a .Native
-// field write and a keyed LVal{Native: ...} literal -- and nothing else.
-// lisp.Native, lisp.NativeOf and a falling-through lisp.Value all build an
-// LNative, whose payload val hands to native(), where every row type is
-// refused (see TestNativePayloadAnalyzerMirrorsTemplateAdmission for the
-// runtime half).
-func TestKernelSlotRowsOnlyExemptKernelSpellings(t *testing.T) {
+// everySite enumerates the site shapes classifyPayload is asked about, so a
+// test that means "at any site" cannot silently stop covering one.
+func everySite() []payloadSite {
+	var out []payloadSite
+	for _, kind := range []siteKind{siteConstructor, siteHeaderLiteral, siteFieldWrite} {
+		for _, inKernel := range []bool{false, true} {
+			for _, header := range []string{"", "LBytes", "LNative"} {
+				out = append(out, payloadSite{kind: kind, inKernel: inKernel, headerType: header})
+			}
+		}
+	}
+	return out
+}
+
+// TestKernelSlotRowsOnlyExemptTheKernelsOwnHeader pins the narrowing that
+// closed the second review's remaining gap.  An allowlist row is a claim
+// about storage on a header (*templateInventory).val handles by its own arm,
+// so it exempts a keyed LVal literal INSIDE package lisp whose Type key
+// names that header -- and nothing else.  Before the narrowing every
+// kernel-slot SPELLING was exempt, so `LVal{Type: LNative, Native: &b}` and
+// `v.Native = &b` in any package passed a gate the runtime then failed (see
+// TestNativePayloadAnalyzerMirrorsTemplateAdmission for the runtime half).
+func TestKernelSlotRowsOnlyExemptTheKernelsOwnHeader(t *testing.T) {
 	// Universe's `byte` rather than Typ[Uint8]: go/types keeps them as
 	// separate *types.Basic objects with separate names, source that says
 	// []byte yields the former, and the allowlist is keyed on how
@@ -184,13 +242,75 @@ func TestKernelSlotRowsOnlyExemptKernelSpellings(t *testing.T) {
 	if key := types.TypeString(bytePtr, nil); key != "*[]byte" {
 		t.Fatalf("constructed key %q, want the allowlist's spelling *[]byte", key)
 	}
-	if got := classifyPayload(bytePtr, siteKernelSlot); got != payloadSafe {
-		t.Errorf("classifyPayload(*[]byte, siteKernelSlot) = %v, want payloadSafe:"+
-			" lisp.Bytes writes exactly this payload into an LBytes literal", got)
+
+	kernelLiteral := func(header string) payloadSite {
+		return payloadSite{kind: siteHeaderLiteral, inKernel: true, headerType: header}
 	}
-	if got := classifyPayload(bytePtr, siteConstructor); got != payloadKernelSlotMisuse {
-		t.Errorf("classifyPayload(*[]byte, siteConstructor) = %v, want payloadKernelSlotMisuse:"+
-			" a constructor builds an LNative, and native() refuses a *[]byte", got)
+	cases := []struct {
+		name string
+		site payloadSite
+		want payloadVerdict
+	}{{
+		name: "the kernel's own LBytes literal, which is what lisp.Bytes writes",
+		site: kernelLiteral("LBytes"),
+		want: payloadSafe,
+	}, {
+		name: "an LNative literal in the kernel: exactly the header val hands to native()",
+		site: kernelLiteral("LNative"),
+		want: payloadKernelSlotMisuse,
+	}, {
+		name: "a literal with no Type key shows no header at all",
+		site: kernelLiteral(""),
+		want: payloadKernelSlotMisuse,
+	}, {
+		name: "a literal naming another real header is still the wrong arm",
+		site: kernelLiteral("LSortMap"),
+		want: payloadKernelSlotMisuse,
+	}, {
+		name: "the same LBytes literal outside package lisp",
+		site: payloadSite{kind: siteHeaderLiteral, headerType: "LBytes"},
+		want: payloadKernelSlotMisuse,
+	}, {
+		name: "a constructor builds an LNative, in the kernel as anywhere",
+		site: payloadSite{kind: siteConstructor, inKernel: true},
+		want: payloadKernelSlotMisuse,
+	}, {
+		name: "a field write inside the kernel: the documented residual",
+		site: payloadSite{kind: siteFieldWrite, inKernel: true},
+		want: payloadSafe,
+	}, {
+		name: "the same field write outside the kernel, which is where the bypass mattered",
+		site: payloadSite{kind: siteFieldWrite},
+		want: payloadKernelSlotMisuse,
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyPayload(bytePtr, tc.site); got != tc.want {
+				t.Errorf("classifyPayload(*[]byte, %+v) = %v, want %v", tc.site, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMisuseReasonNamesTheFailedCondition pins that the diagnostic says which
+// of exemptsRow's conditions the site failed rather than reciting the rule --
+// the difference between a message an author can act on and one they have to
+// decode.
+func TestMisuseReasonNamesTheFailedCondition(t *testing.T) {
+	row := allowedPayloadTypes["*[]byte"]
+	cases := []struct {
+		site payloadSite
+		want string
+	}{
+		{payloadSite{kind: siteHeaderLiteral, headerType: "LBytes"}, "outside package lisp"},
+		{payloadSite{kind: siteConstructor, inKernel: true}, "constructor always builds an LNative"},
+		{payloadSite{kind: siteHeaderLiteral, inKernel: true}, "sets no Type key"},
+		{payloadSite{kind: siteHeaderLiteral, inKernel: true, headerType: "LNative"}, "is LNative, not LBytes"},
+	}
+	for _, tc := range cases {
+		if got := tc.site.misuseReason(row); !strings.Contains(got, tc.want) {
+			t.Errorf("misuseReason(%+v) = %q, want it to mention %q", tc.site, got, tc.want)
+		}
 	}
 }
 

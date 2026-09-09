@@ -229,17 +229,32 @@ func clonerWrongShape(w *wrongCloner) *lisp.LVal {
 
 // --- the audited allowlist ---------------------------------------------------
 
-// kernelSlots covers the rows that survive the template re-audit AT THE
-// SPELLINGS THE ROWS ARE TRUE FOR: a keyed literal and a field write, where
-// the header being built is the LBytes/LSortMap/LFun the kernel means and
-// templateInventory.val handles the payload by an explicit arm, never
-// handing it to native().  These are the shapes lisp.Bytes, SortedMap and
-// the funData constructors actually use (lisp/lisp.go, lisp/env.go).
-func kernelSlots(v *lisp.LVal, b *[]byte, m *lisp.MapData) {
-	_ = &lisp.LVal{Native: b}
-	_ = &lisp.LVal{Native: m}
-	v.Native = b
-	v.Native = m
+// kernelSlotsOutsideTheKernel is the whole point of the narrowing: this
+// package is NOT github.com/luthersystems/elps/lisp, and the allowlist rows
+// describe the kernel's own representation storage.  Every spelling here is
+// reported, the right Type key included -- an embedder holding an *LVal has
+// no business building an LBytes header by hand, and if it does, it is
+// building a header the kernel's own constructors already build correctly.
+//
+// The in-kernel positive controls -- the same literals with the same Type
+// keys, exempt because the package under analysis IS lisp -- live in
+// testdata/nativelisp and are run by TestNativePayloadAnalyzerInKernelPackage.
+func kernelSlotsOutsideTheKernel(v *lisp.LVal, b *[]byte, m *lisp.MapData) {
+	_ = &lisp.LVal{Native: b}                      // want `LVal\.Native literal payload type \*\[\]byte is a kernel representation slot`
+	_ = &lisp.LVal{Type: lisp.LBytes, Native: b}   // want `LVal\.Native literal payload type \*\[\]byte is a kernel representation slot`
+	_ = &lisp.LVal{Type: lisp.LSortMap, Native: m} // want `LVal\.Native literal payload type \*lisp\.MapData is a kernel representation slot`
+	v.Native = b                                   // want `LVal\.Native assignment payload type \*\[\]byte is a kernel representation slot`
+	v.Native = m                                   // want `LVal\.Native assignment payload type \*lisp\.MapData is a kernel representation slot`
+}
+
+// nativeHeaderLiteral is the shape the second adversarial review named: a
+// keyed literal is a kernel-slot SPELLING, but the header it builds is
+// LNative, which is exactly the arm templateInventory.val hands to native().
+// Before the narrowing this was exempt statically and refused at
+// publication; the paired fixture spells it again beside a real
+// lisp.NewTemplate (nativepaired.PairNativeHeaderLiteral).
+func nativeHeaderLiteral(b *[]byte) *lisp.LVal {
+	return &lisp.LVal{Type: lisp.LNative, Native: b} // want `LVal\.Native literal payload type \*\[\]byte is a kernel representation slot`
 }
 
 // kernelSlotsThroughAConstructor is the SAME payload types through the

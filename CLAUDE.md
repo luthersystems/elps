@@ -195,17 +195,31 @@ exempted less would make authors annotate what the runtime already admits:
   `lisp.TemplateWithNativePolicy` approval instead, which is invisible here
   and so needs a site annotation;
 - the type is on the audited allowlist — which after the re-audit holds only
-  the kernel's own representation slots, `*funData`, `*[]byte`, `*MapData` —
-  **and the site is one of the kernel's own spellings**, a `.Native` field
-  write or a keyed `LVal{Native: …}` literal. Each row has an explicit arm in
-  `templateInventory.val` on a non-`LNative` header, never reaches
-  `templateInventory.native`, and is rebuilt per VM by the planner. A
-  constructor is different in kind: `Native`, `NativeOf` and a
-  falling-through `Value` always build an `LNative`, whose payload `val`
-  hands to `native()`, where all three row types are refused — so
+  the kernel's own representation slots, `*funData`, `*[]byte`, `*MapData`,
+  each row carrying **the `LType` header its storage belongs to** (`LFun`,
+  `LBytes`, `LSortMap`) — **and the site shows that header**. Each row has an
+  explicit arm in `templateInventory.val` keyed off the header's `Type`, never
+  reaches `templateInventory.native`, and is rebuilt per VM by the planner, so
+  a row is a claim about a HEADER rather than about a type. Three conditions,
+  all required: **(1)** the site is IN package
+  `github.com/luthersystems/elps/lisp`, since the rows describe the kernel's
+  own slots; **(2)** the site is not a constructor — `Native`, `NativeOf` and
+  a falling-through `Value` always build an `LNative`, whose payload `val`
+  hands to `native()`, where all three row types are refused, so
   `b := []byte{1}; lisp.Native(&b)` is REPORTED even though `*[]byte` is a
-  row. A row is a claim about a header the runtime already handles by name,
-  not a second admission channel;
+  row; **(3)** for a keyed literal, the SAME literal's `Type:` key names the
+  row's header, resolved through the type checker rather than by source text.
+  A literal with no `Type:` key shows no header, one naming another header
+  shows the wrong one, and `LVal{Type: LNative, Native: &b}` names precisely
+  the header `val` routes to `native()` — all three are reported. A `.Native`
+  FIELD WRITE shows no header at all and cannot, so condition 3 does not apply
+  to it and condition 1 carries the whole weight: exempt in package lisp,
+  reported everywhere else. That residual is deliberate and named in the
+  analyzer header — the seven such writes in the kernel (`lisp/copier.go`,
+  `lisp/detach.go`, `lisp/template_plan.go`) are each guarded a few lines up
+  by a check of the header's own `Type` that the rule does not model, and
+  reporting them would force seven annotations onto code publication already
+  routes correctly;
 - a `//elpsvet:allow-native <justification>` comment covers the site:
   trailing on the reported line, standalone on the line above, or for a
   multi-line literal on either the opening line or the `Native:` line; or
@@ -240,30 +254,45 @@ that is the point, not an oversight.
 
 `cmd/elpsvet/nativepayload_test.go` pins the rule's shape three ways: every
 row in `allowedPayloadTypes` must appear in the test's audited inventory with
-a justification long enough to read (so adding a row is a two-file change a
+a justification long enough to read AND with the `LType` header it belongs to
+(so adding a row, or moving one to another header, is a two-file change a
 reviewer sees), the rows the re-audit dropped must stay dropped, and
 `TestRegisteredAnalyzers` pins the four-rule set `make elpsvet` actually
-runs. The `analysistest` fixtures live in three packages: `nativepayload` for
-the spellings, the allowlist and the marker placements,
-`github.com/luthersystems/elps/nativemarker` for the marker tier — under the
-module path because Go's internal rule lets only packages there import
-`internal/templatepolicy`, which is the same reason the tier is closed to
-downstream embedders — and `github.com/luthersystems/elps/nativepaired`.
+runs. The `analysistest` fixtures live in five packages across three testdata
+roots. Under `testdata/src`: `nativepayload` for the spellings, the allowlist
+and the marker placements, `github.com/luthersystems/elps/nativemarker` for
+the marker tier — under the module path because Go's internal rule lets only
+packages there import `internal/templatepolicy`, which is the same reason the
+tier is closed to downstream embedders — and
+`github.com/luthersystems/elps/nativepaired`. The other two roots,
+`testdata/nativelisp` and `testdata/nativepairedkernel`, each hold one package
+whose import path IS `github.com/luthersystems/elps/lisp`, because the
+allowlist tier's first condition is that the site is inside the kernel and no
+fixture at another path can exercise the exempt side of it. They are private
+roots rather than files in `testdata/src`'s kernel-path stub because that stub
+carries expectations for the ESCAPE rule, and `analysistest` checks every
+expectation in a package against the one analyzer it is running.
 
-That last one exists because `analysistest` can only ask whether the rule
+The paired fixtures exist because `analysistest` can only ask whether the rule
 still says what its own fixtures expect, so a rule and its fixtures can drift
 away from publication together and stay green — which is how a `uintptr`
-payload, a `lisp.Value([]**LVal)` and a `*[]byte` through a constructor came
-to be silently exempt from a gate that claims to mirror admission.
+payload, a `lisp.Value([]**LVal)`, a `*[]byte` through a constructor, and the
+same `*[]byte` stored onto an `LNative` header came to be silently exempt from
+a gate that claims to mirror admission.
 `TestNativePayloadAnalyzerMirrorsTemplateAdmission`
 (`cmd/elpsvet/nativepayload_runtime_test.go`) is the negative control: each
-case is one construction spelled twice — once in the `nativepaired` fixture,
-which the real analyzer runs over, and once as a value a real
-`lisp.NewTemplate` is asked to publish in-process — and both verdicts must
-agree. Two positive controls (`lisp.Native(int64(1))` and a marked struct
-value) are what stop "tighten until nothing passes" from looking like a fix.
-**Change a tier and this test is where the claim is checked**, not the
-fixtures.
+case is one construction spelled twice — once in a paired fixture, which the
+real analyzer runs over, and once as a value a real `lisp.NewTemplate` is
+asked to publish in-process — and both verdicts must agree. It runs over TWO
+paired fixtures kept apart, since each one's diagnostic count is itself an
+assertion: `nativepaired` for constructions outside the kernel, and
+`testdata/nativepairedkernel`, a package at the kernel's own import path, for
+the pair that makes the header condition checkable — two literals in package
+lisp differing only in the `LType` constant they name, one exempt and one
+reported. Three positive controls (`lisp.Native(int64(1))`, a marked struct
+value, and the kernel's own `LSortMap` literal) are what stop "tighten until
+nothing passes" from looking like a fix. **Change a tier and this test is
+where the claim is checked**, not the fixtures.
 
 ## Development Workflow
 

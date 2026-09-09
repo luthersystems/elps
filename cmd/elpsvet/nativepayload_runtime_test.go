@@ -3,6 +3,7 @@
 package main
 
 import (
+	"path/filepath"
 	"regexp"
 	"testing"
 	"time"
@@ -23,10 +24,11 @@ import (
 // rule's own tests could check that claim: analysistest only asks whether
 // the analyzer said what the fixture's `// want` comments say it would, so a
 // rule and its fixtures can drift away from publication together and stay
-// green forever.  Three constructions had done exactly that -- a uintptr
-// payload, a lisp.Value([]**LVal), and a *[]byte through a constructor --
-// each silently exempt here and each rejected by NewTemplate at the first
-// publication.
+// green forever.  Five constructions had done exactly that -- a uintptr
+// payload, a lisp.Value([]**LVal), a *[]byte through a constructor, and the
+// same *[]byte put onto an LNative header through the .Native field or
+// through a literal that names Type: LNative -- each silently exempt here
+// and each rejected by NewTemplate at the first publication.
 //
 // So each case below carries both halves: a function in the nativepaired
 // fixture (testdata/src/github.com/luthersystems/elps/nativepaired, whose
@@ -58,6 +60,14 @@ type pairedCase struct {
 	// contain -- asserting the analyzer's silence by what it would have had
 	// to say, rather than by counting.
 	payloadSpelling string
+	// inKernel says the fixture function lives in the IN-KERNEL paired
+	// package (testdata/nativepairedkernel, whose import path is the
+	// kernel's) rather than in nativepaired.  The allowlist tier's first
+	// condition is that the site is inside package lisp, so a case about
+	// WHICH HEADER a kernel literal names can only be spelled there: from
+	// any other path the tier stops at the package test and the header
+	// condition is never reached.
+	inKernel bool
 }
 
 func pairedCases() []pairedCase {
@@ -92,6 +102,59 @@ func pairedCases() []pairedCase {
 		wantDiagnostic: `lisp\.Native payload type \*\[\]byte is a kernel representation slot`,
 		wantPublishErr: `native \*\[\]uint8 has no template immutability declaration`,
 	}, {
+		name:    "*[]byte written onto an LNative header through the field",
+		fixture: "PairByteFieldWrite",
+		build: func() *lisp.LVal {
+			b := []byte{1}
+			v := lisp.Native(int64(0))
+			v.Native = &b //elpsvet:allow-native the negative control's own payload: this value is published only to assert that publication REFUSES it
+			return v
+		},
+		// A field write shows no header, so the row exempts one only inside
+		// package lisp, where every such write is guarded by a check of the
+		// header's own Type.  Here the header is an LNative, and val hands
+		// an LNative's payload to native().
+		wantDiagnostic: `LVal\.Native assignment payload type \*\[\]byte is a kernel representation slot`,
+		wantPublishErr: `native \*\[\]uint8 has no template immutability declaration`,
+	}, {
+		name:    "*[]byte in a literal that names Type: LNative",
+		fixture: "PairNativeHeaderLiteral",
+		build: func() *lisp.LVal {
+			b := []byte{1}
+			return &lisp.LVal{Type: lisp.LNative, Native: &b} //elpsvet:allow-native the negative control's own payload: this value is published only to assert that publication REFUSES it
+		},
+		// The kernel's own literal SHAPE with the one Type key the row is
+		// not about.  Exempting the shape rather than the header is what
+		// this narrowing fixed.
+		wantDiagnostic: `LVal\.Native literal payload type \*\[\]byte is a kernel representation slot`,
+		wantPublishErr: `native \*\[\]uint8 has no template immutability declaration`,
+	}, {
+		name:     "in the kernel: a literal naming Type: LNative over a row payload",
+		fixture:  "PairKernelNativeHeaderLiteral",
+		inKernel: true,
+		build: func() *lisp.LVal {
+			b := []byte{1}
+			return &lisp.LVal{Type: lisp.LNative, Native: &b} //elpsvet:allow-native the negative control's own payload: this value is published only to assert that publication REFUSES it
+		},
+		// The pair that makes the header condition checkable: this case and
+		// the control below are the same literal in the same package over
+		// the same payload, differing only in the LType constant the Type
+		// key names.  Drop that condition and this case goes quiet while
+		// publication keeps refusing the value.
+		wantDiagnostic: `LVal\.Native literal payload type \*\[\]byte is a kernel representation slot`,
+		wantPublishErr: `native \*\[\]uint8 has no template immutability declaration`,
+	}, {
+		name:     "control: the kernel's own LSortMap literal still publishes",
+		fixture:  "PairKernelSortMapLiteral",
+		inKernel: true,
+		// Exactly what lisp.SortedMapFromData writes.  templateInventory.val
+		// takes its mapData arm on an LSortMap header and the planner
+		// rebuilds the backing per VM.  The payload type differs from the
+		// reported case's because this control asserts silence by the
+		// string a diagnostic about it would have had to contain.
+		build:           func() *lisp.LVal { return lisp.SortedMap() },
+		payloadSpelling: "*lisp.MapData",
+	}, {
 		name:            "control: a scalar payload still publishes",
 		fixture:         "PairScalarControl",
 		build:           func() *lisp.LVal { return lisp.Native(int64(1)) },
@@ -113,44 +176,49 @@ func pairedCases() []pairedCase {
 func TestNativePayloadAnalyzerMirrorsTemplateAdmission(t *testing.T) {
 	cases := pairedCases()
 
-	// The analyzer half.  analysistest.Run also verifies the fixture's own
-	// `// want` comments, so a diagnostic that moves or disappears fails
-	// twice: once against the fixture, once against the table below.
-	results := analysistest.Run(t, analysistest.TestData(), nativePayloadAnalyzer,
-		"github.com/luthersystems/elps/nativepaired")
-	if len(results) != 1 {
-		t.Fatalf("analysistest returned %d results for the paired fixture, want 1", len(results))
-	}
-	messages := make([]string, 0, len(results[0].Diagnostics))
-	for _, d := range results[0].Diagnostics {
-		messages = append(messages, d.Message)
+	// The analyzer half, over both paired fixtures.  analysistest.Run also
+	// verifies each fixture's own `// want` comments, so a diagnostic that
+	// moves or disappears fails twice: once against the fixture, once
+	// against the table below.
+	//
+	// The two roots are kept apart rather than merged because each one's
+	// diagnostic COUNT is an assertion: every report in a paired fixture
+	// must belong to a case in the table, which is what catches a
+	// construction that starts reporting for a reason nobody wrote down.
+	messages := map[bool][]string{
+		false: pairedDiagnostics(t, analysistest.TestData(), "github.com/luthersystems/elps/nativepaired"),
+		true:  pairedDiagnostics(t, filepath.Join(analysistest.TestData(), "nativepairedkernel"), lispPkgPath),
 	}
 
-	wantReports := 0
+	wantReports := map[bool]int{}
 	for _, tc := range cases {
 		if tc.wantDiagnostic != "" {
-			wantReports++
+			wantReports[tc.inKernel]++
 		}
 	}
-	if len(messages) != wantReports {
-		t.Errorf("the paired fixture produced %d diagnostics, want %d (one per reported case): %q",
-			len(messages), wantReports, messages)
+	for _, inKernel := range []bool{false, true} {
+		if len(messages[inKernel]) != wantReports[inKernel] {
+			t.Errorf("the paired fixture (inKernel=%v) produced %d diagnostics, want %d"+
+				" (one per reported case): %q",
+				inKernel, len(messages[inKernel]), wantReports[inKernel], messages[inKernel])
+		}
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			said := messages[tc.inKernel]
 			// --- what the analyzer said about the source ---
 			if tc.wantDiagnostic == "" {
-				if matchesAny(t, regexp.QuoteMeta(tc.payloadSpelling), messages) {
+				if matchesAny(t, regexp.QuoteMeta(tc.payloadSpelling), said) {
 					t.Errorf("analyzer named %s in %q, and %s is a control the runtime ADMITS;"+
 						" a rule tightened until it reports everything mirrors nothing",
-						tc.payloadSpelling, messages, tc.fixture)
+						tc.payloadSpelling, said, tc.fixture)
 				}
-			} else if !matchesAny(t, tc.wantDiagnostic, messages) {
+			} else if !matchesAny(t, tc.wantDiagnostic, said) {
 				t.Errorf("analyzer said nothing matching %q for %s; it reported %q."+
 					" The runtime refuses this construction, so a static gate that stays quiet"+
 					" hands the failure to whatever request first publishes the value",
-					tc.wantDiagnostic, tc.fixture, messages)
+					tc.wantDiagnostic, tc.fixture, said)
 			}
 
 			// --- what publication said about the value ---
@@ -185,6 +253,21 @@ func TestNativePayloadAnalyzerMirrorsTemplateAdmission(t *testing.T) {
 			}
 		})
 	}
+}
+
+// pairedDiagnostics runs the analyzer over one paired fixture package and
+// returns what it said, so the two roots are read the same way.
+func pairedDiagnostics(t *testing.T, dir, pkg string) []string {
+	t.Helper()
+	results := analysistest.Run(t, dir, nativePayloadAnalyzer, pkg)
+	if len(results) != 1 {
+		t.Fatalf("analysistest returned %d results for %s, want 1", len(results), pkg)
+	}
+	out := make([]string, 0, len(results[0].Diagnostics))
+	for _, d := range results[0].Diagnostics {
+		out = append(out, d.Message)
+	}
+	return out
 }
 
 // pairedEpoch is a fixed timestamp: libtime.Time detaches the host's

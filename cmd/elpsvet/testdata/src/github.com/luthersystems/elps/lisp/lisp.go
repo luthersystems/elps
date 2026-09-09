@@ -16,7 +16,18 @@ import "github.com/luthersystems/elps/parser/token"
 
 type LType int
 
-const LError LType = 1
+// The header discriminants the elpsnativepayload rule reads off a keyed
+// literal's `Type:` key.  Only the names and the declaring package matter to
+// the rule (an allowlist row names the LType constant whose storage it is),
+// so the values are arbitrary here; what has to mirror the real package is
+// that they are constants OF LType declared IN package lisp.
+const (
+	LError   LType = 1
+	LBytes   LType = 2
+	LSortMap LType = 3
+	LFun     LType = 4
+	LNative  LType = 5
+)
 
 type LFunType int
 

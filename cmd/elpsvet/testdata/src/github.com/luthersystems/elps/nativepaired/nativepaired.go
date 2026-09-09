@@ -21,6 +21,13 @@
 //     every spelling, but a constructor always builds an LNative header,
 //     whose payload templateInventory.val hands to native(), which refuses
 //     it.  The row is true only where the KERNEL writes its own storage.
+//   - PairByteFieldWrite and PairNativeHeaderLiteral: the same row still
+//     exempted the two KERNEL-SLOT spellings by shape alone, so a *[]byte
+//     stored onto an LNative header -- through the field, or in a literal
+//     that names Type: LNative outright -- was silently exempt while val
+//     routed it to native() all the same.  A row is a claim about a HEADER:
+//     it exempts a keyed literal in package lisp whose Type key names the
+//     row's own header, and nothing else.
 //
 // The last two are the positive controls, without which a rule tightened
 // until it reported everything would look identical to a rule that mirrors
@@ -74,6 +81,26 @@ func PairNestedLValSlice() *lisp.LVal {
 func PairByteHeader() *lisp.LVal {
 	b := []byte{1}
 	return lisp.Native(&b) // want `lisp\.Native payload type \*\[\]byte is a kernel representation slot`
+}
+
+// PairByteFieldWrite stores an allowlisted row payload onto a header that is
+// already an LNative.  The field write shows no header at all, which is why
+// the tier trusts one only inside package lisp -- and this package is not
+// package lisp.
+func PairByteFieldWrite() *lisp.LVal {
+	b := []byte{1}
+	v := lisp.Native(int64(0))
+	v.Native = &b // want `LVal\.Native assignment payload type \*\[\]byte is a kernel representation slot`
+	return v
+}
+
+// PairNativeHeaderLiteral is the same payload in the kernel's own literal
+// shape, with the Type key spelling out the one header the row is NOT about.
+// It was exempt before the narrowing because the spelling was a kernel slot;
+// publication refused it because val hands an LNative's payload to native().
+func PairNativeHeaderLiteral() *lisp.LVal {
+	b := []byte{1}
+	return &lisp.LVal{Type: lisp.LNative, Native: &b} // want `LVal\.Native literal payload type \*\[\]byte is a kernel representation slot`
 }
 
 // PairScalarControl is the runtime's scalar arm: reflect.Int64.
