@@ -824,6 +824,33 @@ func (m *copierOrderRanger) RangeStringKeys(fn func(key string, val *lisp.LVal))
 	return nil
 }
 
+// copierOrderEntries is the same alternating implementation on the GENERIC
+// arm: a custom Map with no StringKeyRanger, so the copier reaches it
+// through Entries.  The Map interface (lisp/maps.go) documents Keys as
+// returning "a sorted list" and says NOTHING about the order of Entries, so
+// yielding a different permutation per call is conforming -- an embedder's
+// map over a Go map would do it without trying -- and the copier may not
+// depend on the order it happens to get.
+type copierOrderEntries struct {
+	*copierStringMap
+	calls int
+}
+
+func (m *copierOrderEntries) Entries(buf []*lisp.LVal) *lisp.LVal {
+	keys := m.sortedKeys()
+	if len(buf) < len(keys) {
+		return lisp.Errorf("buffer has insufficient length")
+	}
+	m.calls++
+	if m.calls%2 == 0 {
+		slices.Reverse(keys)
+	}
+	for i, k := range keys {
+		buf[i] = lisp.QExpr([]*lisp.LVal{lisp.String(k), m.m[k]})
+	}
+	return lisp.Int(len(keys))
+}
+
 // TestCopyMapValueCloneOrderIsDeterministic: two copies of one sorted map
 // assign the same clone to the same key.
 //
@@ -872,5 +899,105 @@ func TestCopyMapValueCloneOrderIsDeterministic(t *testing.T) {
 			kv[fmt.Sprintf("k%02d", i)] = lisp.Native(copierSeqCloner{})
 		}
 		assertStable(t, lisp.SortedMapFromData(lisp.NewMapData(&copierOrderRanger{copierStringMap: newCopierStringMap(kv)})))
+	})
+	// The generic Entries arm.  0d3ece9 left it alone on the claim that
+	// "Entries is sorted by contract"; the Map interface makes no such
+	// promise -- only Keys does -- so a conforming embedder map reached
+	// through this arm called the host's clone hook in whatever order it
+	// yielded, and two copies of one map disagreed.
+	t.Run("custom entries order", func(t *testing.T) {
+		kv := make(map[string]*lisp.LVal, n)
+		for i := range n {
+			kv[fmt.Sprintf("k%02d", i)] = lisp.Native(copierSeqCloner{})
+		}
+		assertStable(t, lisp.SortedMapFromData(lisp.NewMapData(&copierOrderEntries{copierStringMap: newCopierStringMap(kv)})))
+	})
+}
+
+// copierNestedCloneAssignment is copierCloneAssignment for a map whose
+// values are one-element LISTS holding the cloner rather than the cloner
+// itself: the shape the leaf fast path must NOT take, since the hook still
+// runs, one level down.
+func copierNestedCloneAssignment(t *testing.T, m *lisp.LVal) map[string]int {
+	t.Helper()
+	copierCloneSeq = 0
+	cp := m.Copy()
+	if cp.Type == lisp.LError {
+		t.Fatalf("copy: %v", cp)
+	}
+	got := make(map[string]int)
+	for _, k := range cp.MapKeys().Cells {
+		v := cp.MapGet(k)
+		if len(v.Cells) == 0 {
+			continue // one of the scalar values
+		}
+		c, ok := v.Cells[0].Native.(copierSeqCloner)
+		if !ok {
+			t.Fatalf("key %v: nested value is %T, want a copierSeqCloner clone", k, v.Cells[0].Native)
+		}
+		got[k.Str] = c.seq
+	}
+	if len(got) < 2 {
+		t.Fatalf("anti-vacuity: the copy reached %d nested cloners; with fewer than two the assignment"+
+			" is ordered by construction and this control proves nothing", len(got))
+	}
+	return got
+}
+
+// TestCopyMapWithANestedNativeStillCopiesInKeyOrder is the negative control
+// for the leaf fast path.
+//
+// The sort exists only because c.copy may call a host hook, so a map whose
+// values can run no host code may skip it -- and the predicate for that is
+// exactly the one copyNode uses to decide what to memoise: no cell storage
+// and no payload.  The hazard is weakening it to something cheaper-looking,
+// "the value is not itself a native", which is wrong: a LIST value carries
+// a whole subtree, and a NativeCloner several levels down is reached by the
+// same walk in the same order.
+//
+// So: a map of scalars with two nested one-element lists, each holding a
+// cloner, over all three arms.  The scalars make the fast path's scan look
+// satisfied right up to the two values that are not leaves, and the two
+// cloners make the order observable -- with one of them the assignment
+// would be the same however the map was walked, which is why
+// copierNestedCloneAssignment refuses to run on fewer.
+func TestCopyMapWithANestedNativeStillCopiesInKeyOrder(t *testing.T) {
+	const n = 64
+	nested := func() *lisp.LVal {
+		return lisp.QExpr([]*lisp.LVal{lisp.Native(copierSeqCloner{})})
+	}
+	assertStable := func(t *testing.T, m *lisp.LVal) {
+		t.Helper()
+		want := copierNestedCloneAssignment(t, m)
+		for i := range 2 {
+			got := copierNestedCloneAssignment(t, m)
+			if !maps.Equal(want, got) {
+				t.Errorf("copy %d assigned different clones to the same keys than copy 0:\n first: %v\n  this: %v",
+					i+1, want, got)
+			}
+		}
+	}
+	kv := func() map[string]*lisp.LVal {
+		out := make(map[string]*lisp.LVal, n+2)
+		for i := range n {
+			out[fmt.Sprintf("k%02d", i)] = lisp.String(fmt.Sprintf("v%02d", i))
+		}
+		out["n0"], out["n1"] = nested(), nested()
+		return out
+	}
+	t.Run("stock sorted map", func(t *testing.T) {
+		m := lisp.SortedMap()
+		for k, v := range kv() {
+			if rc := m.MapSet(k, v); rc.Type == lisp.LError {
+				t.Fatalf("set: %v", rc)
+			}
+		}
+		assertStable(t, m)
+	})
+	t.Run("string-key ranger", func(t *testing.T) {
+		assertStable(t, lisp.SortedMapFromData(lisp.NewMapData(&copierOrderRanger{copierStringMap: newCopierStringMap(kv())})))
+	})
+	t.Run("custom entries order", func(t *testing.T) {
+		assertStable(t, lisp.SortedMapFromData(lisp.NewMapData(&copierOrderEntries{copierStringMap: newCopierStringMap(kv())})))
 	})
 }

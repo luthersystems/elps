@@ -475,12 +475,14 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		// on a map's internal layout (the same reason ArrayIndex's error
 		// message is %v rather than %#v, #427).
 		//
-		// The order is not free, and what it costs is on the map copy
-		// itself: one []string and the sort per map, measured at +52 % on
-		// a 64-entry copy and +73 % at 512, one allocation either way.
-		// None of the benchmarks the CI gate watches moves (their
-		// allocation counts stay identical to the byte), because none of
-		// them copies a sorted map through this walker.
+		// The order is not free -- one []string and the sort per map,
+		// measured at +52 % on a 64-entry copy and +73 % at 512 -- so it
+		// is paid only where it can be observed: when no value in the map
+		// can run host code, the walk order is unobservable and the sort
+		// is skipped (copierValueOrderMatters, an O(n) scan that allocates
+		// nothing, against a sort that allocates a []string).  A map of
+		// scalars, which is the common shape, therefore copies for less
+		// than it did before the order existed.
 		//
 		// The keys are collected and sorted alone, and the values read
 		// back by lookup: a []string sorted by slices.Sort measured
@@ -489,7 +491,7 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		// (+74 % against +52 % on the 64-entry copy).  A map of fewer
 		// than two entries is already ordered and collects nothing.
 		sm := m0.emptyLike()
-		if len(m0.m) < 2 {
+		if len(m0.m) < 2 || !copierValueOrderMatters(m0.m) {
 			for k, v := range m0.m {
 				sm.m[k] = c.copy(v)
 			}
@@ -520,8 +522,19 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		// Sorted before a single value is copied, for the reason the
 		// sortedmap arm sorts: RangeStringKeys yields "in unspecified
 		// order" by contract, and the host clone hook c.copy may call must
-		// not see one order on one copy and another on the next.
-		slices.SortFunc(pairs, func(a, b stringKV) int { return cmp.Compare(a.k, b.k) })
+		// not see one order on one copy and another on the next -- and
+		// skipped when no value can reach that hook, for the reason the
+		// sortedmap arm skips it.
+		order := false
+		for _, p := range pairs {
+			if !copierLeafValue(p.v) {
+				order = true
+				break
+			}
+		}
+		if order {
+			slices.SortFunc(pairs, func(a, b stringKV) int { return cmp.Compare(a.k, b.k) })
+		}
 		sm := emptyForStringKeys(len(pairs))
 		for _, p := range pairs {
 			sm.m[p.k] = c.copy(p.v)
@@ -536,6 +549,39 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		// pairs, so this has to be checked before they are indexed.
 		return c.failMap(md, fmt.Errorf("failed to copy map: %v", entries))
 	}
+	// Sorted before a single value is copied, for the reason the two arms
+	// above sort, and NOT because Entries arrives ordered.  The Map
+	// interface (lisp/maps.go) documents Keys as returning a sorted list
+	// and says nothing whatever about the order of Entries, so an
+	// embedder's implementation over a Go map yields whatever permutation
+	// it gets -- and this arm calls the host's CloneNative once per value
+	// in exactly that order.  The claim that "the generic Entries arm needs
+	// nothing, sorted by contract" was a claim about the STOCK map's
+	// Entries, which does sort; this arm is the one the stock map never
+	// reaches.
+	//
+	// By (Str, Type) rather than Str alone, so the order is total over the
+	// key kinds Str does not separate: an LString and an LSymbol that spell
+	// the same thing sort the same way on every copy.  Stable, so any pair
+	// the comparison still cannot separate keeps the order Entries gave it
+	// rather than moving under the sort.  Skipped, as above, when no value
+	// can reach a host hook.
+	order := false
+	for _, pair := range entries.Cells {
+		if !copierLeafValue(pair.Cells[1]) {
+			order = true
+			break
+		}
+	}
+	if order {
+		//elps:mutates reorders backing this call owns outright: sortedMapEntries allocates the cells slice for this call and wraps it in a QExpr held only by the local `entries`, so nothing outside this function can observe the permutation
+		slices.SortStableFunc(entries.Cells, func(a, b *LVal) int {
+			if r := cmp.Compare(a.Cells[0].Str, b.Cells[0].Str); r != 0 {
+				return r
+			}
+			return cmp.Compare(a.Cells[0].Type, b.Cells[0].Type)
+		})
+	}
 	for _, pair := range entries.Cells {
 		if lerr := m.Set(pair.Cells[0], c.copy(pair.Cells[1])); lerr.Type == LError {
 			return c.failMap(md, fmt.Errorf("failed to copy map: %v", lerr))
@@ -545,11 +591,41 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 	return nm, nil
 }
 
+// copierLeafValue reports whether copying v can run no host code.  A value
+// with no cell storage and no payload has nothing to descend into and no
+// NativeCloner to invoke, so WHERE it sits in the walk order is
+// unobservable: the copy is the same value whenever it is made.
+//
+// Deliberately the same predicate copyNode uses to decide what to memoise,
+// and deliberately no weaker.  "Not itself a native" would be cheaper to
+// state and wrong: a value with cell capacity is a subtree, and a
+// NativeCloner several levels down it is reached by the same walk in the
+// same order.  A nil value copies to nil and is a leaf.
+// TestCopyMapWithANestedNativeStillCopiesInKeyOrder is the control.
+func copierLeafValue(v *LVal) bool {
+	return v == nil || (cap(v.Cells) == 0 && v.Native == nil)
+}
+
+// copierValueOrderMatters reports whether the order m's values are copied
+// in is observable -- whether any of them can reach a host hook.  It is one
+// O(n) scan that allocates nothing, standing in front of a sort that
+// allocates; for the common map of numbers and strings it is the whole cost
+// of the ordering guarantee.
+func copierValueOrderMatters(m map[string]*LVal) bool {
+	for _, v := range m {
+		if !copierLeafValue(v) {
+			return true
+		}
+	}
+	return false
+}
+
 // copierSortedKeys returns m's keys in sorted order, so the walk over a
 // map's values -- and with it every host CloneNative call the walk makes --
-// runs in an order that depends only on the map's contents.  The generic
-// Entries path needs no equivalent: Entries is sorted by contract, and
-// sortedmap.Entries sorts.
+// runs in an order that depends only on the map's contents.  The other two
+// arms order their own way: the ranger arm sorts the pairs it collected,
+// and the generic Entries arm sorts the entry list in place (by key Str
+// then key Type, since its keys need not be strings).
 func copierSortedKeys(m map[string]*LVal) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
