@@ -605,14 +605,20 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 	// the same pointer chain.
 	//
 	// Only a pair of string-like keys is judged.  Any other key kind is
-	// unrepresentable outright, whatever it sits next to, and Set rejects it
-	// with its own message ("unhashable type"); an LInt and an LFloat both
+	// unrepresentable outright, whatever it sits next to, and is rejected
+	// with Set's message ("unhashable type"); an LInt and an LFloat both
 	// carry Str "" and would otherwise be reported as sharing a key that
 	// neither of them has.
 	var prev *LVal
 	for _, pair := range entries.Cells {
 		key := pair.Cells[0]
-		if prev != nil && prev.Str == key.Str && isStringLike(prev) && isStringLike(key) {
+		// Validate before copying the value: Go evaluates c.copy before Set
+		// can reject its key. Unsupported keys may tie under (Str, Type),
+		// so invoking their hooks would expose the host's Entries order (#643).
+		if !isStringLike(key) {
+			return c.failMap(md, fmt.Errorf("failed to copy map: %v", Errorf("unhashable type: %s", key.Type)))
+		}
+		if prev != nil && prev.Str == key.Str {
 			return c.failMap(md, fmt.Errorf("failed to copy map: entries collide on key %q (%s and %s):"+
 				" the destination map cannot hold them apart", key.Str, prev.Type, key.Type))
 		}
