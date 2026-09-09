@@ -361,24 +361,54 @@ func TestDetachParserOutput(t *testing.T) {
 	}
 }
 
-// TestCopyAliasesArrayBacking is the CONTROL: it pins the exact behavior of
-// Copy that makes it unusable as a transfer tool, so the detach tests above
-// are demonstrably testing a real difference and not a property Copy already
-// had.
-func TestCopyAliasesArrayBacking(t *testing.T) {
+// TestCopyRebuildsArrayBacking is the negative control for the copier's
+// array walk (lisp/copier.go), under the lifecycle the map and bytes pins in
+// #604 had.  Its predecessor, TestCopyAliasesArrayBacking, pinned the
+// DEFECT: Copy kept the struct-copied Cells for an LArray, so the copy's
+// vector held the source's dims and data-list headers and a write through
+// the copy reached the original -- "reference semantics", and the control
+// for the detach tests above.  CI's fuzzer found the consequence within
+// seconds of Copy becoming a registered walker (FuzzAliasGuard, #604): a
+// copy reached the SOURCE's map through a vector, so the copy was not
+// hermetic and its fingerprint carried a header its walk never memoised.
+// Copy now walks an array like a list, as Fork does; this test asserts the
+// fix in the two directions the alias guard measures.  Going red here means
+// the sharing arm is back.
+func TestCopyRebuildsArrayBacking(t *testing.T) {
 	arr := lisp.Array(nil, []*lisp.LVal{lisp.Int(10), lisp.Int(20), lisp.Int(30)})
 	if arr.Type == lisp.LError {
 		t.Fatalf("array: %v", arr)
 	}
 	cp := arr.Copy()
-	if sliceDataOf(cp.Cells) != sliceDataOf(arr.Cells) {
-		t.Fatalf("expected Copy to share the array's Cells backing (reference semantics); it did not")
+	if sliceDataOf(cp.Cells) == sliceDataOf(arr.Cells) {
+		t.Fatal("(*LVal).Copy shares the array's Cells with its source again: the copy's vector holds\n" +
+			"the SOURCE's dims and data-list headers, so it is not hermetic (FuzzAliasGuard, #604).\n" +
+			"The copier walks an array like a list, as Fork does; restore that, do not re-pin the sharing.")
 	}
-	// Writing an element through the copy is visible through the original:
-	// Cells[1] is the shared row-major storage list.
+	if cp.Cells[1] == arr.Cells[1] || sliceDataOf(cp.Cells[1].Cells) == sliceDataOf(arr.Cells[1].Cells) {
+		t.Fatal("the copy's data list is the source's; a write through the copy reaches the original")
+	}
+	// Hermetic, observably: a write through the copy is NOT seen through
+	// the original.
 	cp.Cells[1].Cells[0] = lisp.Int(999)
-	if arr.Cells[1].Cells[0].Int != 999 {
-		t.Fatalf("expected the write through Copy's backing to reach the original")
+	if arr.Cells[1].Cells[0].Int != 10 {
+		t.Fatalf("a write through the copy reached the original (%v)", arr.Cells[1])
+	}
+	// And aliasing is preserved, not flattened: two vector headers over
+	// one data list -- what (quasiquote (unquote v)) makes -- copy to two
+	// headers over ONE copied list, through the header memo.
+	pair := lisp.QExpr([]*lisp.LVal{arr, lisp.Quote(arr)}).Copy()
+	a, b := pair.Cells[0], pair.Cells[1]
+	if a.Type != lisp.LArray || b.Type != lisp.LArray {
+		t.Fatalf("fixture: copied headers are %v and %v, want two arrays", a.Type, b.Type)
+	}
+	if a.Cells[1] != b.Cells[1] {
+		t.Fatal("two vector headers over one data list were copied into two lists; the header memo is\n" +
+			"not covering the array's data-list header, and a write through one copied name is\n" +
+			"invisible through the other")
+	}
+	if a.Cells[1] == arr.Cells[1] {
+		t.Fatal("the copied pair shares the source's data list")
 	}
 }
 
@@ -409,7 +439,7 @@ func TestDetachArrayBackingDisjoint(t *testing.T) {
 // sharing the *[]byte and the map's value pointers -- as the control for
 // the detach tests; both were the within-runtime half of the defect
 // lisp/copier.go describes, and the control the detach tests still have is
-// TestCopyAliasesArrayBacking, the one sharing Copy keeps.
+// TestCopyRebuildsArrayBacking, which since #604 asserts an array is rebuilt too.
 func TestCopyRebuildsBytesAndMapValues(t *testing.T) {
 	b := lisp.Bytes([]byte("abc"))
 	cp := b.Copy()
