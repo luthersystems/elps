@@ -286,9 +286,12 @@ func TestAddPackageSnapshotPreservesPackageMetadata(t *testing.T) {
 }
 
 // TestAddPackageAdmitsCyclicValueByReference covers the walk's termination
-// guarantee.  A value can contain itself (issue #390), and Copy() on such a
-// value does not terminate — so the classification reports "neither sealed
-// nor sealable" for a cycle and the value takes the by-reference row.  The
+// guarantee.  A value can contain itself (issue #390); the classification
+// reports "neither sealed nor sealable" for a cycle -- it cannot be sealed
+// throughout -- and the value takes the by-reference row.  (Copy() used not
+// to terminate on a cycle either; since lisp/copier.go it does, and
+// TestCopyTerminatesOnACycle pins that, but the by-reference row does not
+// depend on it.)  The
 // assertion that matters is that AddPackage returns at all.
 func TestAddPackageAdmitsCyclicValueByReference(t *testing.T) {
 	cyclic := lisp.QExpr([]*lisp.LVal{lisp.Int(1)})
