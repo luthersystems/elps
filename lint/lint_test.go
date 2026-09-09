@@ -902,6 +902,142 @@ func TestRethrowContext_Nolint(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+// --- comparator-mutation ---
+
+func TestComparatorMutation_Positive_InlineLambda(t *testing.T) {
+	source := `(stable-sort (lambda (a b) (assoc! m 'k 1) (< a b)) xs)`
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t,
+		"stable-sort predicate mutates state: assoc! is called inside a comparator",
+		diags[0].Message)
+	assert.Equal(t, SeverityError, diags[0].Severity)
+	assertDiagOnLine(t, diags, 1, "assoc!")
+}
+
+// TestComparatorMutation_Positive_EveryMutatingBuiltin walks the whole
+// mutation vocabulary through the check, stable-sort included: it carries no
+// `!` but sorts in place, so a comparator that sorts is as nondeterministic
+// as one that assoc!s.
+func TestComparatorMutation_Positive_EveryMutatingBuiltin(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		call string
+	}{
+		{"assoc", "(assoc! m 'k 1)"},
+		{"dissoc", "(dissoc! m 'k)"},
+		{"append", "(append! acc a)"},
+		{"append-bytes", "(append-bytes! buf a)"},
+		{"set", "(set! seen true)"},
+		{"stable-sort", "(stable-sort < inner)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := fmt.Sprintf("(stable-sort (lambda (a b) %s (< a b)) xs)", tt.call)
+			diags := lintCheck(t, AnalyzerComparatorMutation, source)
+			require.Len(t, diags, 1)
+			assert.Contains(t, diags[0].Message,
+				"stable-sort predicate mutates state:")
+			assert.Equal(t, SeverityError, diags[0].Severity)
+		})
+	}
+}
+
+// TestComparatorMutation_Positive_InsertSorted pins the predicate position:
+// insert-sorted takes it THIRD, after the type specifier and the list, so a
+// check that assumed stable-sort's layout would read the list instead.
+func TestComparatorMutation_Positive_InsertSorted(t *testing.T) {
+	source := `(insert-sorted 'list xs (lambda (a b) (append! log a) (< a b)) item)`
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t,
+		"insert-sorted predicate mutates state: append! is called inside a comparator",
+		diags[0].Message)
+}
+
+func TestComparatorMutation_Positive_NestedLambda(t *testing.T) {
+	source := "(stable-sort\n" +
+		"  (lambda (a b)\n" +
+		"    (map 'list (lambda (x) (assoc! m x 1)) '(1 2))\n" +
+		"    (< a b))\n" +
+		"  xs)"
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	require.Len(t, diags, 1)
+	assertDiagOnLine(t, diags, 3, "assoc! is called inside a comparator")
+}
+
+func TestComparatorMutation_Positive_SameFileDefun(t *testing.T) {
+	source := "(defun bad-less (a b)\n" +
+		"  (append! acc a)\n" +
+		"  (< a b))\n" +
+		"(stable-sort bad-less xs)"
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	require.Len(t, diags, 1)
+	assertDiagOnLine(t, diags, 2, "append! is called inside a comparator")
+}
+
+func TestComparatorMutation_Positive_HasNotes(t *testing.T) {
+	diags := lintCheck(t, AnalyzerComparatorMutation,
+		`(stable-sort (lambda (a b) (assoc! m 'k 1)) xs)`)
+	require.Len(t, diags, 1)
+	require.NotEmpty(t, diags[0].Notes)
+	assert.Contains(t, diags[0].Notes[0], "unspecified order")
+	assert.Contains(t, diags[0].Notes[0], "list's own elements")
+}
+
+func TestComparatorMutation_Negative_PurePredicate(t *testing.T) {
+	diags := lintCheck(t, AnalyzerComparatorMutation,
+		`(stable-sort (lambda (a b) (< a b)) xs)`)
+	assertNoDiags(t, diags)
+}
+
+func TestComparatorMutation_Negative_BuiltinPredicate(t *testing.T) {
+	diags := lintCheck(t, AnalyzerComparatorMutation, `(stable-sort < xs)`)
+	assertNoDiags(t, diags)
+}
+
+func TestComparatorMutation_Negative_LetWithoutMutation(t *testing.T) {
+	source := `(stable-sort (lambda (a b) (let ([x a] [y b]) (< x y))) xs)`
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	assertNoDiags(t, diags)
+}
+
+// TestComparatorMutation_Negative_MutationOutsideComparator is the boundary
+// the check has to hold: a mutating function in the same file is only a
+// finding when the sort actually passes it as its predicate.
+func TestComparatorMutation_Negative_MutationOutsideComparator(t *testing.T) {
+	source := "(defun helper (m k)\n" +
+		"  (assoc! m k 1))\n" +
+		"(stable-sort (lambda (a b) (< a b)) xs)\n" +
+		"(append! xs 4)"
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	assertNoDiags(t, diags)
+}
+
+// TestComparatorMutation_Negative_QuotedData checks a quoted subtree is
+// skipped whole: '(assoc! a b) is a list of three symbols, not a call.
+func TestComparatorMutation_Negative_QuotedData(t *testing.T) {
+	source := `(stable-sort (lambda (a b) (nil? '(assoc! a b)) (< a b)) xs)`
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	assertNoDiags(t, diags)
+}
+
+// TestComparatorMutation_Negative_TwoHops documents the blind spot the Doc
+// names: the symbol hop is one level deep, so a comparator whose mutation
+// lives in a function it calls is not reported.
+func TestComparatorMutation_Negative_TwoHops(t *testing.T) {
+	source := "(defun inner (m) (assoc! m 'k 1))\n" +
+		"(defun outer-less (a b) (inner m) (< a b))\n" +
+		"(stable-sort outer-less xs)"
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	assertNoDiags(t, diags)
+}
+
+func TestComparatorMutation_Nolint(t *testing.T) {
+	source := "(stable-sort (lambda (a b) (assoc! m 'k 1)) xs) ; nolint:comparator-mutation\n"
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	assertNoDiags(t, diags)
+}
+
 // --- unnecessary-progn ---
 
 func TestUnnecessaryProgn_Positive_Lambda(t *testing.T) {
@@ -1236,10 +1372,11 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 19)
+	assert.Len(t, analyzers, 20)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
+		"comparator-mutation",
 		"cond-missing-else",
 		"cond-structure",
 		"defun-structure",
@@ -1579,17 +1716,21 @@ func TestSeverity_UnsetRendersTheSameEverywhere(t *testing.T) {
 func TestSeverity_AnalyzerDefaults(t *testing.T) {
 	// Table-driven: verify each analyzer has the expected severity.
 	expected := map[string]Severity{
-		"set-usage":            SeverityWarning,
-		"in-package-toplevel":  SeverityWarning,
-		"if-arity":             SeverityError,
-		"let-bindings":         SeverityError,
-		"defun-structure":      SeverityError,
-		"cond-structure":       SeverityError,
-		"builtin-arity":        SeverityError,
-		"quote-call":           SeverityWarning,
-		"cond-missing-else":    SeverityInfo,
-		"rethrow-context":      SeverityError,
-		"unnecessary-progn":    SeverityInfo,
+		"set-usage":           SeverityWarning,
+		"in-package-toplevel": SeverityWarning,
+		"if-arity":            SeverityError,
+		"let-bindings":        SeverityError,
+		"defun-structure":     SeverityError,
+		"cond-structure":      SeverityError,
+		"builtin-arity":       SeverityError,
+		"quote-call":          SeverityWarning,
+		"cond-missing-else":   SeverityInfo,
+		"rethrow-context":     SeverityError,
+		"unnecessary-progn":   SeverityInfo,
+		// Error: a comparator with a side effect does not merely read
+		// oddly, it makes the sort's result depend on how many times the
+		// runtime happened to call the predicate.
+		"comparator-mutation":  SeverityError,
 		"undefined-symbol":     SeverityError,
 		"unused-variable":      SeverityWarning,
 		"unused-function":      SeverityWarning,

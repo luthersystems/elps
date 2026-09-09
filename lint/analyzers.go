@@ -1553,6 +1553,175 @@ func isDeprecatedDefinition(v *lisp.LVal) bool {
 	return ok
 }
 
+// mutatingBuiltins maps a destructive builtin to the index, within an
+// s-expression's Cells, of the argument it writes through. Index 1 is the
+// first argument.
+//
+// Every entry but one is spelled with the trailing `!` docs/lang.md describes
+// as the naming rule for mutation. `stable-sort` is the documented exception:
+// it carries no `!`, yet it sorts its list in place and returns the sequence
+// it sorted -- and the value it writes through is its SECOND argument, the
+// first being the predicate.
+var mutatingBuiltins = map[string]int{
+	"assoc!":        1,
+	"dissoc!":       1,
+	"append!":       1,
+	"append-bytes!": 1,
+	"set!":          1,
+	"stable-sort":   2,
+}
+
+// comparatorPredicateArg maps a sorting form to the index, within its Cells,
+// of the comparator it calls. Read off the builtins rather than guessed --
+// the predicate is not in the same place in the two forms:
+//
+//	(stable-sort   less-predicate list      &optional key-fun)            ; builtinSortStable
+//	(insert-sorted type-specifier list predicate item &optional key-fun)  ; builtinInsertSorted
+var comparatorPredicateArg = map[string]int{
+	"stable-sort":   1,
+	"insert-sorted": 3,
+}
+
+// AnalyzerComparatorMutation reports a call to a mutating builtin inside a
+// sort comparator.
+//
+// A comparator is called an unspecified number of times, in an unspecified
+// order, on elements the caller still owns, so ANY side effect inside one is
+// nondeterministic -- the target of the mutation does not matter and the
+// check does not look at it.
+var AnalyzerComparatorMutation = &Analyzer{
+	Name:     "comparator-mutation",
+	Severity: SeverityError,
+	Doc: "Report a mutating call inside a stable-sort or insert-sorted predicate.\n\n" +
+		"A comparator runs an unspecified number of times in an unspecified order, " +
+		"and it is handed the list's own elements, so any side effect inside one is " +
+		"nondeterministic. Every mutating builtin is reported whatever it writes to: " +
+		"assoc!, dissoc!, append!, append-bytes!, set! and stable-sort itself, which " +
+		"sorts in place despite carrying no `!`.\n\n" +
+		"Two spellings of the predicate are followed: an inline lambda, and a plain " +
+		"symbol naming a defun in the same file. The symbol hop is ONE level deep -- " +
+		"the named defun's own body is scanned, but a call it makes to a third " +
+		"function is not followed, so a comparator that mutates two hops away is not " +
+		"reported. Quoted subtrees are data and are skipped whole.",
+	Run: func(pass *Pass) error {
+		defuns := sameFileDefuns(pass.Exprs)
+		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, _ int) {
+			form := HeadSymbol(sexpr)
+			idx, ok := comparatorPredicateArg[form]
+			if !ok || idx >= len(sexpr.Cells) {
+				return
+			}
+			cb := resolveCallback(sexpr.Cells[idx], defuns)
+			if cb == nil {
+				return
+			}
+			for _, node := range cb.body {
+				walkUnquotedSExprs(node, func(call *lisp.LVal) {
+					name := HeadSymbol(call)
+					if _, ok := mutatingBuiltins[name]; !ok {
+						return
+					}
+					src := SourceOf(call)
+					pass.Report(Diagnostic{
+						Message: fmt.Sprintf(
+							"%s predicate mutates state: %s is called inside a comparator",
+							form, name),
+						Pos:    posFromSource(astutil.SourceLoc(src)),
+						EndPos: endPosFromNode(src),
+						Notes: []string{
+							"a comparator runs an unspecified number of times in an unspecified order, and it receives the list's own elements, so any side effect in it is nondeterministic",
+						},
+					})
+				})
+			}
+		})
+		return nil
+	},
+}
+
+// callback is a function argument a higher-order form was handed: the names
+// it binds its parameters to, and the body forms that run.
+type callback struct {
+	params map[string]bool
+	body   []*lisp.LVal
+}
+
+// resolveCallback returns the parameters and body of a function argument.
+//
+// Two spellings resolve. An inline lambda is read directly. A symbol is
+// looked up among the file's own defuns -- ONE hop: the named function's body
+// is scanned, but a call it in turn makes is not followed. Quoting is ignored
+// in this position because a callback slot holds a function reference either
+// way: (stable-sort 'less xs) and (stable-sort less xs) both call less.
+//
+// Anything else -- a builtin such as `<`, a symbol defined in another file, a
+// call returning a function -- yields nil, and the caller reports nothing.
+func resolveCallback(node *lisp.LVal, defuns map[string]*lisp.LVal) *callback {
+	if node == nil {
+		return nil
+	}
+	if node.Type == lisp.LSymbol {
+		def := defuns[node.Str]
+		if def == nil {
+			return nil
+		}
+		// (defun name (formals) body...) -- sameFileDefuns guarantees the
+		// formals cell exists.
+		return &callback{params: formalNames(def.Cells[2]), body: def.Cells[3:]}
+	}
+	if node.Type == lisp.LSExpr && !node.IsQuoted() && HeadSymbol(node) == "lambda" && len(node.Cells) >= 2 {
+		// (lambda (formals) body...)
+		return &callback{params: formalNames(node.Cells[1]), body: node.Cells[2:]}
+	}
+	return nil
+}
+
+// sameFileDefuns indexes the file's defuns, nested ones included, by name. A
+// duplicate name keeps the first definition, which is the one the
+// duplicate-definition check reports against.
+func sameFileDefuns(exprs []*lisp.LVal) map[string]*lisp.LVal {
+	defs := make(map[string]*lisp.LVal)
+	WalkSExprs(exprs, func(sexpr *lisp.LVal, _ int) {
+		// A malformed defun with no formals list is skipped outright, so
+		// resolveCallback can index Cells[2] and Cells[3:] unconditionally.
+		if HeadSymbol(sexpr) != "defun" || len(sexpr.Cells) < 3 {
+			return
+		}
+		name := sexpr.Cells[1]
+		if name.Type != lisp.LSymbol {
+			return
+		}
+		if _, ok := defs[name.Str]; !ok {
+			defs[name.Str] = sexpr
+		}
+	})
+	return defs
+}
+
+// formalNames collects the parameter names of a formals list, dropping the
+// &rest, &optional and &key markers.
+func formalNames(formals *lisp.LVal) map[string]bool {
+	names := make(map[string]bool)
+	CollectFormals(formals, names)
+	return names
+}
+
+// walkUnquotedSExprs calls fn for every unquoted s-expression at or below
+// node, skipping a quoted subtree whole rather than descending into it:
+// '(assoc! m k v) is data the program never calls, and its elements do not
+// individually carry the quote flag.
+func walkUnquotedSExprs(node *lisp.LVal, fn func(sexpr *lisp.LVal)) {
+	if node == nil || node.IsQuoted() {
+		return
+	}
+	if node.Type == lisp.LSExpr && len(node.Cells) > 0 {
+		fn(node)
+	}
+	for _, cell := range node.Cells {
+		walkUnquotedSExprs(cell, fn)
+	}
+}
+
 // AnalyzerNames returns a sorted list of all default analyzer names.
 func AnalyzerNames() []string {
 	analyzers := DefaultAnalyzers()

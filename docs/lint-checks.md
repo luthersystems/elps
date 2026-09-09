@@ -274,6 +274,32 @@ branch matches. While sometimes intentional, this is often an oversight.
   (error 'test "data"))
 ```
 
+### `comparator-mutation`
+
+**Flags a mutating call inside a `stable-sort` or `insert-sorted` predicate.**
+(Severity: error)
+
+A comparator runs an unspecified number of times, in an unspecified order, and
+it is handed the list's own elements — so any side effect inside one is
+nondeterministic, whatever it writes to. Every mutating builtin is reported:
+`assoc!`, `dissoc!`, `append!`, `append-bytes!`, `set!`, and `stable-sort`
+itself, which sorts in place despite carrying no `!`.
+
+```lisp
+;; BAD — the predicate mutates
+(stable-sort (lambda (a b) (assoc! a 'visited true) (< a b)) xs)
+(insert-sorted 'list xs (lambda (a b) (append! log a) (< a b)) item)
+
+;; GOOD — the predicate only compares
+(stable-sort (lambda (a b) (< a b)) xs)
+```
+
+Two spellings of the predicate are followed: an inline `lambda`, and a plain
+symbol naming a `defun` **in the same file**. That hop is one level deep — the
+named function's own body is scanned, but a call it in turn makes is not
+followed, so a comparator that mutates two hops away is not reported. Quoted
+subtrees are data and are skipped whole.
+
 ### `with-cleanup-forms`
 
 **Flags a degenerate `with-cleanup` spec list.** (Severity: warning)
