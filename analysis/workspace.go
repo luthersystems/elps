@@ -51,6 +51,14 @@ func (c *ScanConfig) effectiveMaxFiles() int {
 	return c.MaxFiles
 }
 
+// EffectiveMaxFileBytes returns the per-file size limit the scan applies,
+// with the default filled in when MaxFileBytes is unset. Exported so that
+// callers refreshing the scan's tables one file at a time (the LSP's didSave
+// path) skip exactly the files the scan would have skipped.
+func (c *ScanConfig) EffectiveMaxFileBytes() int64 {
+	return c.effectiveMaxFileBytes()
+}
+
 // effectiveMaxFileBytes returns the file size limit, applying the default if zero.
 func (c *ScanConfig) effectiveMaxFileBytes() int64 {
 	if c == nil || c.MaxFileBytes <= 0 {
