@@ -602,6 +602,9 @@ const nativeLispTime = 16
 const nativeLispRegexp = 18
 const nativeZonedTime = 26
 
+// native builds one of the nativeNumKinds payload shapes described above.
+//
+//elpsvet:allow-native fuzz corpus generator, not a payload contract: every native here is minted fresh per iteration to exercise the builtins' type switches, and the deliberately mutable shapes (a map, a byte slice, a json.RawMessage) are the point -- a builtin writing through one is caught by the harness rather than hidden; nothing here reaches a production template
 func (g *Gen) native() *lisp.LVal {
 	selector := g.Byte()
 	switch int(selector) % nativeNumKinds {

@@ -145,11 +145,21 @@ func hasMutates(cg *ast.CommentGroup) bool {
 // violation, which is the opposite of an audited annotation: the flag
 // vanishes and nothing in the source says it was ever considered.
 func markerLines(fset *token.FileSet, file *ast.File, marker string) map[int]bool {
+	return markerLinesMatching(fset, file, func(text string) bool {
+		return commentHasMarker(text, marker)
+	})
+}
+
+// markerLinesMatching is markerLines with the marker test abstracted, so a
+// rule that holds its marker to a stricter standard (the native-payload
+// rule's //elpsvet:allow must carry a justification) shares the placement
+// convention rather than re-deriving it.
+func markerLinesMatching(fset *token.FileSet, file *ast.File, match func(text string) bool) map[int]bool {
 	code := codeLines(fset, file)
 	lines := make(map[int]bool)
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
-			if !commentHasMarker(c.Text, marker) {
+			if !match(c.Text) {
 				continue
 			}
 			line := fset.Position(c.Pos()).Line
