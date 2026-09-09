@@ -4,6 +4,8 @@ package lisp_test
 
 import (
 	"errors"
+	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -709,4 +711,118 @@ func TestCopyFailedMapCopyLeavesNoSourceBackedHeader(t *testing.T) {
 			})
 		})
 	}
+}
+
+// copierCloneSeq is the external state a host clone hook draws on.  Only
+// TestCopyMapValueCloneOrderIsDeterministic touches it, and that test does
+// not run in parallel.
+var copierCloneSeq int
+
+// copierSeqCloner is a NativeCloner held BY VALUE, so the copier's native
+// memo (pointer payloads only) is out of the picture and every clone is a
+// fresh call into the hook.  The hook takes the next number from a counter
+// -- an id allocator, a sequence, an rng: the ordinary shape of a host's
+// CloneNative -- so the number a key's clone ends up with records the
+// ORDER the copier walked the map's values in.
+type copierSeqCloner struct{ seq int }
+
+func (c copierSeqCloner) CloneNative() interface{} {
+	copierCloneSeq++
+	return copierSeqCloner{seq: copierCloneSeq}
+}
+
+// copierCloneAssignment copies m with the sequence counter reset and reads
+// back which number each key's value was cloned with.
+func copierCloneAssignment(t *testing.T, m *lisp.LVal) map[string]int {
+	t.Helper()
+	copierCloneSeq = 0
+	cp := m.Copy()
+	if cp.Type == lisp.LError {
+		t.Fatalf("copy: %v", cp)
+	}
+	got := make(map[string]int)
+	for _, k := range cp.MapKeys().Cells {
+		c, ok := cp.MapGet(k).Native.(copierSeqCloner)
+		if !ok {
+			t.Fatalf("key %v: value is %T, want a copierSeqCloner clone", k, cp.MapGet(k).Native)
+		}
+		got[k.Str] = c.seq
+	}
+	if len(got) == 0 {
+		t.Fatal("anti-vacuity: the copy reached no map values")
+	}
+	return got
+}
+
+// copierOrderRanger is a StringKeyRanger that yields its entries in a
+// DIFFERENT order on every other call -- the interface's contract is
+// "exactly once per entry, in unspecified order", so this is a conforming
+// implementation, and the copier may not depend on the order it happens to
+// get.
+type copierOrderRanger struct {
+	*copierStringMap
+	calls int
+}
+
+func (m *copierOrderRanger) RangeStringKeys(fn func(key string, val *lisp.LVal)) error {
+	keys := m.sortedKeys()
+	m.calls++
+	if m.calls%2 == 0 {
+		slices.Reverse(keys)
+	}
+	for _, k := range keys {
+		fn(k, m.m[k])
+	}
+	return nil
+}
+
+// TestCopyMapValueCloneOrderIsDeterministic: two copies of one sorted map
+// assign the same clone to the same key.
+//
+// The copier walks a map's values to copy them, and c.copy can call a host
+// hook per value -- NativeCloner.CloneNative, which the embedder writes and
+// which may draw on state outside the value (a counter, an id allocator, an
+// rng).  It walked a `sortedmap` with `for k, v := range m0.m`, Go map
+// order, which is randomised per iteration, and the custom-ranger path in
+// whatever order the ranger happened to yield.  So two copies of IDENTICAL
+// input called the hook in different orders and the same key came back with
+// different clones -- a determinism break on a value-copy primitive, which
+// on a replicated execution model (a phylum runs on every endorsing peer)
+// is a consensus hazard, not just a surprise.
+//
+// 64 keys and THREE copies, not two: Go randomises a map walk by picking a
+// start position, so two walks of a small map coincide often enough to see
+// (about one run in twenty at 32 keys and two copies -- measured, on the
+// unfixed walker).  Three walks of a 64-key map agreeing by chance is rare
+// enough that the unfixed code fails every run.  The ranger case needs
+// neither: it yields in opposite orders by construction.
+func TestCopyMapValueCloneOrderIsDeterministic(t *testing.T) {
+	const n = 64
+	assertStable := func(t *testing.T, m *lisp.LVal) {
+		t.Helper()
+		want := copierCloneAssignment(t, m)
+		for i := range 2 {
+			got := copierCloneAssignment(t, m)
+			if !maps.Equal(want, got) {
+				t.Errorf("copy %d assigned different clones to the same keys than copy 0:\n first: %v\n  this: %v",
+					i+1, want, got)
+			}
+		}
+	}
+	t.Run("stock sorted map", func(t *testing.T) {
+		m := lisp.SortedMap()
+		for i := range n {
+			if rc := m.MapSet(fmt.Sprintf("k%02d", i), lisp.Native(copierSeqCloner{})); rc.Type == lisp.LError {
+				t.Fatalf("set: %v", rc)
+			}
+		}
+		assertStable(t, m)
+	})
+	t.Run("string-key ranger", func(t *testing.T) {
+		kv := make(map[string]*lisp.LVal, n)
+		for i := range n {
+			kv[fmt.Sprintf("k%02d", i)] = lisp.Native(copierSeqCloner{})
+		}
+		assertStable(t, lisp.SortedMapFromData(lisp.NewMapData(&copierOrderRanger{copierStringMap: newCopierStringMap(kv)})))
+	})
 }

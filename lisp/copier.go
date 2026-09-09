@@ -3,9 +3,11 @@
 package lisp
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 )
 
 // copier is the walk behind (*LVal).Copy: the fifth value-rebuilding walker
@@ -399,9 +401,39 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 	case sortedmap:
 		// By loop rather than m0.clone(c.copy): a method value capturing c
 		// would send the copier to the heap on every Copy call.
+		//
+		// In sorted KEY order, not Go map order: c.copy can call a host
+		// hook per value -- NativeCloner.CloneNative, written by the
+		// embedder, which may draw on state outside the value (an id
+		// allocator, a sequence, an rng) -- so walking the entries in the
+		// randomised order Go's map iteration hands out made two copies of
+		// IDENTICAL input assign different clones to the same key.  Copy
+		// is a value primitive on a runtime whose output must not depend
+		// on a map's internal layout (the same reason ArrayIndex's error
+		// message is %v rather than %#v, #427).
+		//
+		// The order is not free, and what it costs is on the map copy
+		// itself: one []string and the sort per map, measured at +52 % on
+		// a 64-entry copy and +73 % at 512, one allocation either way.
+		// None of the benchmarks the CI gate watches moves (their
+		// allocation counts stay identical to the byte), because none of
+		// them copies a sorted map through this walker.
+		//
+		// The keys are collected and sorted alone, and the values read
+		// back by lookup: a []string sorted by slices.Sort measured
+		// cheaper than a []{key,value} sorted by slices.SortFunc, whose
+		// comparison closure costs more than the hash lookups it saves
+		// (+74 % against +52 % on the 64-entry copy).  A map of fewer
+		// than two entries is already ordered and collects nothing.
 		sm := m0.emptyLike()
-		for k, v := range m0.m {
-			sm.m[k] = c.copy(v)
+		if len(m0.m) < 2 {
+			for k, v := range m0.m {
+				sm.m[k] = c.copy(v)
+			}
+		} else {
+			for _, k := range copierSortedKeys(m0.m) {
+				sm.m[k] = c.copy(m0.m[k])
+			}
 		}
 		for k, t := range m0.tm {
 			sm.tm[k] = t
@@ -422,6 +454,11 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		}); err != nil {
 			return c.failMap(md, fmt.Errorf("failed to copy map: %w", err))
 		}
+		// Sorted before a single value is copied, for the reason the
+		// sortedmap arm sorts: RangeStringKeys yields "in unspecified
+		// order" by contract, and the host clone hook c.copy may call must
+		// not see one order on one copy and another on the next.
+		slices.SortFunc(pairs, func(a, b stringKV) int { return cmp.Compare(a.k, b.k) })
 		sm := emptyForStringKeys(len(pairs))
 		for _, p := range pairs {
 			sm.m[p.k] = c.copy(p.v)
@@ -443,6 +480,20 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 	}
 	nm.mapBacking = m.mapBacking
 	return nm, nil
+}
+
+// copierSortedKeys returns m's keys in sorted order, so the walk over a
+// map's values -- and with it every host CloneNative call the walk makes --
+// runs in an order that depends only on the map's contents.  The generic
+// Entries path needs no equivalent: Entries is sorted by contract, and
+// sortedmap.Entries sorts.
+func copierSortedKeys(m map[string]*LVal) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // errCopyMapFailed is what a SECOND encounter of a map whose copy already
