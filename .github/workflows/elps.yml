@@ -114,8 +114,8 @@ jobs:
       # this checks the four rules that exist because a raw Go write can
       # launder around the seal bit -- package-level LVal tables, writes to
       # LVal fields on values the function did not construct, escaping
-      # uncopied *token.Location pointers, and native payloads minted
-      # without a fork-safety classification.  ~3s.
+      # uncopied *token.Location pointers, and native payloads whose type a
+      # template could not publish safely.  ~3s.
       #
       # Runs TWO passes.  The second is the whole reason this is a make target
       # rather than one line here: elpsvet accepts -tags and silently ignores

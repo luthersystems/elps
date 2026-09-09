@@ -1098,8 +1098,8 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 			lerr := &LVal{
 				Type:   LError,
 				Str:    condition,
-				Native: env.Runtime.Stack.Copy(),
-				Cells:  []*LVal{Native(v)},
+				Native: env.Runtime.Stack.Copy(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
+				Cells:  []*LVal{Native(v)},       //elpsvet:allow-native the error-data cell holding the caller's Go error: publication classifies a native by its DYNAMIC type and admits only scalars or marked struct values, and every env-built error additionally carries the banned call stack, so this cell cannot be published
 			}
 			if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
 				if d.OnError(env, lerr) {
@@ -1110,7 +1110,7 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 		case string:
 			cells = append(cells, String(v))
 		default:
-			cells = append(cells, Native(v)) //elpsvet:allow-native error-data cell holding a caller's arbitrary condition argument: read-only by the same contract as the `error` allowlist row (the kernel only formats condition data), and the value stays the caller's to keep fork-safe
+			cells = append(cells, Native(v)) //elpsvet:allow-native error-data cell holding a caller's arbitrary condition argument: the kernel only formats condition data, never writes through it, and publication still classifies the value by its dynamic type before any template could share it
 		}
 	}
 	lerr := &LVal{
@@ -1122,7 +1122,7 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 		// Copy preserves nil, which is the "<native code>" convention.
 		source: env.loc.Copy(),
 		Str:    condition,
-		Native: env.Runtime.Stack.Copy(),
+		Native: env.Runtime.Stack.Copy(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
 		Cells:  cells,
 	}
 	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
@@ -1153,7 +1153,7 @@ func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface
 		source: env.loc.Copy(),
 		Type:   LError,
 		Str:    condition,
-		Native: env.Runtime.Stack.Copy(),
+		Native: env.Runtime.Stack.Copy(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
 		Cells:  []*LVal{String(fmt.Sprintf(format, v...))},
 	}
 	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {

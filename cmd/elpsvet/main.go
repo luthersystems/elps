@@ -5,8 +5,8 @@
 // below), no function may write a lisp.LVal field on a value it did not
 // construct (elpsfreshness, freshness.go), no function may store a
 // runtime-owned *token.Location uncopied into a field of an escaping value
-// (elpsescape, escape.go), and no native payload type may be minted without
-// being classified as fork-safe (elpsnativepayload, nativepayload.go).
+// (elpsescape, escape.go), and no native payload may be minted with a type a
+// template could not publish safely (elpsnativepayload, nativepayload.go).
 //
 // A package-level var whose type transitively contains *lisp.LVal is the
 // producer pattern behind issue #363 — `var builtins = []*libutil.Builtin{...}`
@@ -61,7 +61,18 @@ var analyzer = &analysis.Analyzer{
 	Run:  run,
 }
 
-func main() { multichecker.Main(analyzer, freshnessAnalyzer, escapeAnalyzer, nativePayloadAnalyzer) }
+// analyzers is the gate's rule set, in one place so a test can pin it.  A
+// rule dropped from this slice leaves `make elpsvet` green while checking
+// less than it says it does, which is the failure mode the elpsvet gate's
+// own self-test (scripts/ci-gates-test.sh) exists to make loud.
+var analyzers = []*analysis.Analyzer{
+	analyzer,
+	freshnessAnalyzer,
+	escapeAnalyzer,
+	nativePayloadAnalyzer,
+}
+
+func main() { multichecker.Main(analyzers...) }
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	for _, file := range pass.Files {

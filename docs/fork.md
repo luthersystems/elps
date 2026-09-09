@@ -236,6 +236,20 @@ isolation/parity tests and fuzzing exercise actual VM behavior. A clean static
 pass does not establish that arbitrary host callbacks obey the sharing contract.
 Consumers must run the tool over their own sources as well as run behavior tests.
 
+Inside this repository the native census is mechanical: `elpsvet`'s
+`elpsnativepayload` rule reports every native construction — `lisp.Native`,
+`lisp.NativeOf`, a `lisp.Value` falling through, an `LVal{Native: x}` literal,
+a `.Native` write — whose payload type publication would not admit. It mirrors
+`(*templateInventory).native`: a struct VALUE carrying the internal marker
+passes, an actual scalar passes, and everything else is reported until a human
+either marks it, has the embedder approve it with `TemplateWithNativePolicy`,
+or writes a justified `//elpsvet:allow-native` at the site saying why the
+payload never reaches a template. A `NativeCloner` method is not an exemption,
+for the reason above: an approved payload is shared unchanged and the clone
+hook is never called. The rule audits elps's own sources only; an embedder's
+payloads are the embedder's census to take (substrate runs the same rule over
+its tree). See CLAUDE.md, "Go static analysis over elps's own sources".
+
 A callback obtains request state from `env.Context()`; it must not fall back
 to a captured load-time context. Shared caches, readers, writers and other
 host services must obey their declared concurrency contracts and must not

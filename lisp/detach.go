@@ -187,7 +187,7 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	// the *MapData behind LSortMap, the *CallStack behind LError — whose
 	// guards key off the elps type carrying them.
 	if cloner != nil {
-		cp.Native = d.cloneNative(v.Native, cloner) //elpsvet:allow-native a NativeCloner clone -- the protocol this rule accepts at construction sites -- stored by the walker that invoked it
+		cp.Native = d.cloneNative(v.Native, cloner) //elpsvet:allow-native a NativeCloner clone stored by the walker that invoked it: detach is a within-runtime value copy, not template admission, and publication classifies the clone on its own dynamic type if the copy is ever published
 	} else {
 		switch native := v.Native.(type) {
 		case nil:
@@ -211,7 +211,7 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 			if v.Type != LError {
 				return nil, unexpectedNativeError(v)
 			}
-			cp.Native = detachCallStack(native)
+			cp.Native = detachCallStack(native) //elpsvet:allow-native a deep copy of a detached error's stack: publication refuses any value carrying a CallStack (checkDiagnosticPayload, lisp/template.go), so a detached error cannot carry this into a template
 		default:
 			return nil, unexpectedNativeError(v)
 		}

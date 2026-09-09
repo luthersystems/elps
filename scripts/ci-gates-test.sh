@@ -4067,6 +4067,28 @@ else
 	bad "elpsvet target lost its untagged pass"
 fi
 
+# The rule SET, not just the invocation. Both passes run whatever
+# multichecker.Main is handed, so a rule silently dropped from cmd/elpsvet's
+# analyzers slice leaves this gate green while checking less than the Makefile
+# comment says it does. cmd/elpsvet's TestRegisteredAnalyzers pins the slice;
+# this asserts the slice is what main() actually runs, which no Go test can
+# see from the inside.
+ELPSVET_MAIN="${REPO_ROOT}/cmd/elpsvet/main.go"
+
+if grep -qE '^func main\(\) \{ multichecker\.Main\(analyzers\.\.\.\) \}' "$ELPSVET_MAIN"; then
+	ok "elpsvet main() runs the pinned analyzers slice"
+else
+	bad "elpsvet main() no longer runs the analyzers slice — TestRegisteredAnalyzers pins a set nothing executes"
+fi
+
+for _rule in analyzer freshnessAnalyzer escapeAnalyzer nativePayloadAnalyzer; do
+	if grep -qE "^\s+${_rule},\s*$" "$ELPSVET_MAIN"; then
+		ok "elpsvet registers ${_rule}"
+	else
+		bad "elpsvet no longer registers ${_rule} — that rule is not enforced by 'make elpsvet'"
+	fi
+done
+
 # The mechanism itself. If GOFLAGS ever stops reaching `go list`, both passes
 # analyse the same files and the second one is decoration.
 #

@@ -303,7 +303,7 @@ func (c *copier) copy(v *LVal) *LVal {
 		}
 	case LNative:
 		if cl, ok := v.Native.(NativeCloner); ok {
-			cp.Native = c.cloneNative(v.Native, cl)
+			cp.Native = c.cloneNative(v.Native, cl) //elpsvet:allow-native a NativeCloner clone stored by the walker that invoked it: Copy is a within-runtime value copy, not template admission, and publication classifies the clone on its own dynamic type if the copy is ever published
 		}
 	default:
 		// Every other type carries its payload in the struct copy above —

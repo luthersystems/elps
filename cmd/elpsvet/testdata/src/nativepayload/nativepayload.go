@@ -1,7 +1,9 @@
 // Package nativepayload exercises the elpsnativepayload analyzer: every
-// construction spelling, the basic-type tier, the NativeCloner rule, the
-// audited allowlist, the interface-typed report, and the allow marker with
-// and without a justification.
+// construction spelling, the basic-type tier, the kernel-slot allowlist, the
+// diagnostic-stack ban, the interface-typed report, and the allow marker with
+// and without a justification.  The templatepolicy.Marker tier and the
+// NativeCloner-only reports live in the nativemarker fixture, which is under
+// github.com/luthersystems/elps/ so it can import the internal package.
 //
 // analysistest checks absence as strictly as presence: a construction with
 // no want-expectation comment asserts NO diagnostic there.
@@ -27,7 +29,10 @@ type counter int
 // match it, so it falls through to Native.
 type blob []byte
 
-// suite declares lisp.NativeCloner on its POINTER receiver.
+// suite declares lisp.NativeCloner on its POINTER receiver.  Under the
+// template contract that is not an exemption: NewTemplate rejects mutable
+// payloads including NativeCloner implementations (lisp/native.go), so every
+// construction below is reported.
 type suite struct{ tests []string }
 
 func (s *suite) CloneNative() interface{} { return &suite{tests: append([]string(nil), s.tests...)} }
@@ -35,13 +40,14 @@ func (s *suite) CloneNative() interface{} { return &suite{tests: append([]string
 var _ lisp.NativeCloner = (*suite)(nil)
 
 // valueCloner declares it on the VALUE receiver, so both a value and a
-// pointer satisfy the protocol.
+// pointer satisfy the protocol -- and neither is exempt.
 type valueCloner struct{ n int }
 
 func (valueCloner) CloneNative() interface{} { return valueCloner{} }
 
-// wrongCloner has a method of the right name and the wrong shape; a
-// type assertion to lisp.NativeCloner would fail, and so must the rule.
+// wrongCloner has a method of the right name and the wrong shape.  It is
+// reported like every other unmarked pointer; it is kept as a fixture so the
+// rule never grows a CloneNative tier back by accident.
 type wrongCloner struct{ n int }
 
 func (*wrongCloner) CloneNative(deep bool) interface{} { return nil }
@@ -145,24 +151,21 @@ func composites(m map[string]int, sl []int, ch chan int, fn func(), arr [2]int, 
 	_ = lisp.Native(st)  // want `lisp\.Native payload type struct\{n int\} is not a known-safe value type`
 }
 
-// --- the NativeCloner rule -------------------------------------------------
+// --- NativeCloner is no longer a tier ---------------------------------------
 
 func cloner(s *suite) {
-	_ = lisp.Native(s)
-	_ = lisp.NativeOf[*suite](s)
-	_ = &lisp.LVal{Native: s}
+	_ = lisp.Native(s)           // want `lisp\.Native payload type \*nativepayload\.suite is not a known-safe value type`
+	_ = lisp.NativeOf[*suite](s) // want `lisp\.NativeOf payload type \*nativepayload\.suite is not a known-safe value type`
+	_ = &lisp.LVal{Native: s}    // want `LVal\.Native literal payload type \*nativepayload\.suite is not a known-safe value type`
 }
 
 func clonerValueOfPointerReceiver(s suite) *lisp.LVal {
-	// A suite VALUE does not satisfy lisp.NativeCloner (the method has a
-	// pointer receiver), so an assertion on the payload would fail at fork
-	// time; the rule must not accept it either.
 	return lisp.Native(s) // want `lisp\.Native payload type nativepayload\.suite is not a known-safe value type`
 }
 
 func clonerValueReceiver(v valueCloner) {
-	_ = lisp.Native(v)
-	_ = lisp.Native(&v)
+	_ = lisp.Native(v)  // want `lisp\.Native payload type nativepayload\.valueCloner is not a known-safe value type`
+	_ = lisp.Native(&v) // want `lisp\.Native payload type \*nativepayload\.valueCloner is not a known-safe value type`
 }
 
 func clonerWrongShape(w *wrongCloner) *lisp.LVal {
@@ -171,20 +174,45 @@ func clonerWrongShape(w *wrongCloner) *lisp.LVal {
 
 // --- the audited allowlist ---------------------------------------------------
 
-func allowlisted(re *regexp.Regexp, t time.Time, d time.Duration, err error, s *lisp.CallStack) {
-	_ = lisp.Native(re)
-	_ = lisp.Native(t)
-	_ = lisp.Native(d) // a defined type over int64: the basic tier, not a row
-	_ = lisp.Native(err)
-	_ = lisp.Native(s)
-	_ = &lisp.LVal{Native: s}
-	_ = lisp.Value(re)
+// kernelSlots covers the rows that survive the template re-audit: the
+// kernel's own representation storage, which templateInventory.val handles
+// by an explicit arm and the planner rebuilds per VM.
+func kernelSlots(b *[]byte, m *lisp.MapData) {
+	_ = lisp.Native(b)
+	_ = lisp.Native(m)
+	_ = &lisp.LVal{Native: b}
 }
 
-func allowlistedByValueNotPointer(re regexp.Regexp, t *time.Time) {
-	// The rows are keyed on the exact type, pointer-ness included.
-	_ = lisp.Native(re) // want `lisp\.Native payload type regexp\.Regexp is not a known-safe value type`
-	_ = lisp.Native(t)  // want `lisp\.Native payload type \*time\.Time is not a known-safe value type`
+// notRows covers the types the port allowlisted and the re-audit dropped:
+// time.Time and *regexp.Regexp are refused by publication itself (the marker
+// tier and lisp/lisplib/template_natives_test.go), and a *lisp.CallStack is
+// banned outright by checkDiagnosticPayload.
+func notRows(re *regexp.Regexp, t time.Time, d time.Duration, s *lisp.CallStack) {
+	_ = lisp.Native(re)       // want `lisp\.Native payload type \*regexp\.Regexp is not a known-safe value type`
+	_ = lisp.Native(t)        // want `lisp\.Native payload type time\.Time is not a known-safe value type`
+	_ = lisp.Native(d)        // a defined type over int64: the basic tier, not a row
+	_ = lisp.Value(re)        // want `lisp\.Value payload type \*regexp\.Regexp is not a known-safe value type`
+	_ = lisp.Native(s)        // want `lisp\.Native payload type \*lisp\.CallStack is a retained diagnostic stack`
+	_ = lisp.Native(*s)       // want `lisp\.Native payload type lisp\.CallStack is a retained diagnostic stack`
+	_ = &lisp.LVal{Native: s} // want `LVal\.Native literal payload type \*lisp\.CallStack is a retained diagnostic stack`
+}
+
+func callStackFieldWrite(v *lisp.LVal, s *lisp.CallStack) {
+	v.Native = s // want `LVal\.Native assignment payload type \*lisp\.CallStack is a retained diagnostic stack`
+}
+
+// errorPayload is an interface, so the rule reports it as unclassifiable
+// rather than allowlisting it: publication reads a native's DYNAMIC type,
+// and the kernel's own error cells carry site annotations instead.
+func errorPayload(err error) *lisp.LVal {
+	return lisp.Native(err) // want `lisp\.Native payload type error is not statically known`
+}
+
+func kernelSlotsByValueNotPointer(b []byte, m lisp.MapData) {
+	// The rows are keyed on the exact type, pointer-ness included.  A []byte
+	// is lisp.Value's own arm, but a native construction of one is not a row.
+	_ = lisp.Native(b) // want `lisp\.Native payload type \[\]byte is not a known-safe value type`
+	_ = lisp.Native(m) // want `lisp\.Native payload type lisp\.MapData is not a known-safe value type`
 }
 
 // --- interface-typed payloads ----------------------------------------------

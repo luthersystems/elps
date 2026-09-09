@@ -938,7 +938,7 @@ func ErrorCondition(condition string, err error) *LVal {
 	return &LVal{
 		Type:  LError,
 		Str:   condition,
-		Cells: []*LVal{Native(err)},
+		Cells: []*LVal{Native(err)}, //elpsvet:allow-native the error-data cell holding the caller's Go error: publication classifies a native by its DYNAMIC type and admits only scalars or marked struct values, and every env-built error additionally carries the banned call stack, so this cell cannot be published
 	}
 }
 
@@ -1119,7 +1119,8 @@ func (v *LVal) SetCallStack(stack *CallStack) {
 	if v.Type != LError {
 		panic("not an error: " + v.Type.String())
 	}
-	v.Native = stack.Copy() //elps:mutates the audited setter stamping a copied stack onto an in-flight error at its capture point
+	//elps:mutates the audited setter stamping a copied stack onto an in-flight error at its capture point
+	v.Native = stack.Copy() //elpsvet:allow-native a copied stack stamped onto an in-flight error: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so this payload never becomes shared template state
 }
 
 // funData returns the function payload of an LFun value.  It panics on

@@ -171,3 +171,27 @@ func TestRuntimeLibraryCompiledRegexpTemplateParity(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestRuntimeLibraryJSONMessageIsRejectedByPublication backs the site
+// annotation on libjson's DumpMessageBuiltin (the //elpsvet:allow-native
+// there): the payload is a POINTER, which the marker tier deliberately does
+// not admit, so the only way one could become shared template state is if
+// publication let it through. It does not -- a value holding a
+// `json:dump-message` result fails NewTemplate by name, which is what makes
+// "a per-call result that never reaches a template" a true claim rather than
+// a hopeful one.
+func TestRuntimeLibraryJSONMessageIsRejectedByPublication(t *testing.T) {
+	env := templateNativeEnv(t, `(set 'value (json:dump-message (sorted-map "a" 1)))`)
+	plan, err := lisp.NewTemplate(env, lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true }))
+	require.Nil(t, plan)
+	require.ErrorContains(t, err, "native *libjson.ownMessage has no template immutability declaration")
+	// The rejection is the payload's, not the builtin's: the same program
+	// dumping to bytes instead publishes, because LBytes storage is rebuilt
+	// per VM rather than shared.
+	bytesEnv := templateNativeEnv(t, `(set 'value (json:dump-bytes (sorted-map "a" 1)))`)
+	bytesPlan, err := lisp.NewTemplate(bytesEnv, lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true }))
+	require.NoError(t, err)
+	vm, err := bytesPlan.NewVM()
+	require.NoError(t, err)
+	require.Equal(t, `"{\"a\":1}"`, vm.LoadString("bytes.lisp", `(to-string value)`).String())
+}

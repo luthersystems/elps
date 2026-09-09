@@ -137,13 +137,19 @@ list to drift away from where the code lives and no scope-drift check to
 maintain.
 
 Its fourth rule, `elpsnativepayload` (`cmd/elpsvet/nativepayload.go`), closes
-a class of bug the fork/isolation tests cannot see from the outside: `Fork`
-shares `lisp.LVal.Native` **by reference**, so a mutable native payload that
-reaches a template is state shared by every fork in the process, and the
-isolation oracle in `elpstest` only recognises a payload as stateful when its
-type declares `lisp.NativeCloner`. The rule is ported from the substrate
-repository's nativepayload analyzer and adapted to the module that defines
-the constructors.
+a class of bug no isolation test can see from the outside. A template
+PUBLISHES one value graph and instantiates a VM per request; instantiation
+rebuilds every LVal header, cell span, byte buffer and map backing, but an
+admitted native payload is **not** rebuilt — `instantiate` stores
+`p.natives[value.payload]` straight into the fresh header
+(`lisp/template_plan.go`) — so one Go value is shared by every VM the
+template mints, for the life of the process. Publication is where that is
+decided, and `(*templateInventory).native` (`lisp/template.go`) is the
+runtime half of the audit. This rule is the static half: it runs at the
+construction sites, where the payload still has a Go type a reader can see,
+and it fails a NEW payload type in review rather than in whatever request
+first publishes the value. Ported from the substrate repository's
+nativepayload analyzer and re-audited against template admission.
 
 A native construction is any of these SPELLINGS, and the list is the first
 thing to check when the gate looks suspiciously quiet: `lisp.Native(x)`, the
@@ -165,36 +171,74 @@ value, a multi-value assignment (`v.Native, ok = g()`), a positional
 `LVal{...}` literal (only spellable inside package lisp), and anything done
 through `reflect`.
 
-A construction is reported unless the payload's static type has a basic
-underlying type (a value of which is immutable inside an interface —
-`unsafe.Pointer` excluded), declares `lisp.NativeCloner` (the kernel's clone
-protocol, checked structurally as an interface assertion would), is on the
-audited allowlist in `cmd/elpsvet/nativepayload.go` — the kernel's own
-representation slots (`*funData`, `*[]byte`, `*MapData`, `*CallStack`, each
-with an explicit fork/detach arm), `*regexp.Regexp`, `time.Time`, `error`,
-libschema's `*validatorTag`, libjson's `*ownMessage`, each row carrying its
-reason — or a `//elpsvet:allow-native <justification>` comment covers the
-site: trailing on the reported line, standalone on the line above, or for a
-multi-line literal on either the opening line or the `Native:` line; or the
-enclosing function's doc carries one. **The justification must be at least
-three words; a bare or shorter marker does not suppress.** One justification
-covers every construction on its line. The marker is this rule's own:
-`elpsownership`'s `//elpsvet:allow` is a bare prefix match that enforces no
-justification, so sharing it would let one sentence about sealed formals
-silence both rules — and the ownership matcher stops at the marker's word
-boundary so `allow-native` does not satisfy it either. An interface-typed
-payload (or a type
-parameter) is REPORTED, not skipped: this module is where `interface{}`
-enters the system, so the constructors themselves (`Native`, `NativeOf`,
-`Value`'s fallthrough), the fork and detach walkers' policy application, the
-error-condition data arm and libgolang's reflected field projection each
-carry an allow naming the contract. A NEW payload type fails until a human
-classifies it; that is the point, not an oversight.
+The exemption tiers MIRROR `templateInventory.native`, which is the point —
+a rule that exempted more than publication does would let a payload through
+review that the runtime then refuses at the first request, and one that
+exempted less would make authors annotate what the runtime already admits:
 
-`cmd/elpsvet/nativepayload_test.go` pins the allowlist's shape: every row in
-`allowedPayloadTypes` must appear in the test's audited inventory with a
-justification long enough to read, so adding a row is a two-file change a
-reviewer sees.
+- the payload's static type has a **basic underlying type** (a value of
+  which is immutable inside an interface — `unsafe.Pointer` excluded); the
+  runtime's scalar `reflect.Kind` arm;
+- the payload's static type is a **struct VALUE** whose method set carries
+  `internal/templatepolicy.Immutable`'s unexported `templateImmutable()`,
+  which only embedding `templatepolicy.Marker` can supply. The struct-value
+  half is load-bearing and is the runtime's own condition: a pointer's
+  method set inherits the marker, but a caller can replace the whole pointee
+  however private its fields are, so `*T` is REPORTED even when `T` is
+  marked. The three marked types in the tree — `libtime.ownedTime`,
+  `libregexp.compiledRegexp`, `libschema.validatorTag` — pass through this
+  tier and hold no allowlist row. A pointer form needs the embedder's
+  `lisp.TemplateWithNativePolicy` approval instead, which is invisible here
+  and so needs a site annotation;
+- the type is on the audited allowlist, which after the re-audit holds only
+  the kernel's own representation slots — `*funData`, `*[]byte`, `*MapData`.
+  Each has an explicit arm in `templateInventory.val`, never reaches
+  `templateInventory.native`, and is rebuilt per VM by the planner. A row is
+  a claim about a type the runtime already handles by name, not a second
+  admission channel;
+- a `//elpsvet:allow-native <justification>` comment covers the site:
+  trailing on the reported line, standalone on the line above, or for a
+  multi-line literal on either the opening line or the `Native:` line; or
+  the enclosing function's doc carries one. **The justification must be at
+  least three words; a bare or shorter marker does not suppress.** One
+  justification covers every construction on its line.
+
+`lisp.NativeCloner` is deliberately **not** a tier, though the ported rule
+had it as one. `NewTemplate` rejects mutable payloads *including*
+NativeCloner implementations, and an approved immutable payload is shared
+without `CloneNative` ever being called (`lisp/native.go`,
+`lisp/template_plan.go`) — so the method is evidence a payload needs cloning,
+which is the opposite of a reason to share it. `time.Time` and
+`*regexp.Regexp` are not rows either: `lisp/lisplib/template_natives_test.go`
+demonstrates a host mutating both after admission, which is why libtime and
+libregexp wrap them in marked owned struct values. A `*lisp.CallStack` gets
+its own diagnostic naming `(*templateInventory).checkDiagnosticPayload`,
+because publication bans the category outright (#629) and no row, marker or
+policy could make one publishable.
+
+The marker is this rule's own: `elpsownership`'s `//elpsvet:allow` is a bare
+prefix match that enforces no justification, so sharing it would let one
+sentence about sealed formals silence both rules — and the ownership matcher
+stops at the marker's word boundary so `allow-native` does not satisfy it
+either. An interface-typed payload (or a type parameter) is REPORTED, not
+skipped: this module is where `interface{}` enters the system, so the
+constructors themselves (`Native`, `NativeOf`, `Value`'s fallthrough), the
+detach walker's clone arm, the planner's payload replay, the error-condition
+data arm and libgolang's reflected field projection each carry an allow
+naming the contract. A NEW payload type fails until a human classifies it;
+that is the point, not an oversight.
+
+`cmd/elpsvet/nativepayload_test.go` pins the rule's shape three ways: every
+row in `allowedPayloadTypes` must appear in the test's audited inventory with
+a justification long enough to read (so adding a row is a two-file change a
+reviewer sees), the rows the re-audit dropped must stay dropped, and
+`TestRegisteredAnalyzers` pins the four-rule set `make elpsvet` actually
+runs. The `analysistest` fixtures live in two packages: `nativepayload` for
+the spellings, the allowlist and the marker placements, and
+`github.com/luthersystems/elps/nativemarker` for the marker tier — under the
+module path because Go's internal rule lets only packages there import
+`internal/templatepolicy`, which is the same reason the tier is closed to
+downstream embedders.
 
 ## Development Workflow
 

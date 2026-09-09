@@ -59,6 +59,11 @@ func (e *ErrorVal) Source() (token.Location, bool) { return (*LVal)(e).Source() 
 
 type CallStack struct{}
 
+// MapData mirrors the LSortMap backing-store payload: one of the kernel
+// representation slots on the elpsnativepayload rule's allowlist, so a
+// fixture can exercise the row by name.
+type MapData struct{}
+
 func (s *CallStack) Copy() *CallStack { return &CallStack{} }
 
 type Runtime struct {
