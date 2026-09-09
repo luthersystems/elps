@@ -5,7 +5,7 @@ package lisp_test
 import (
 	"bytes"
 	"context"
-	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -65,6 +65,53 @@ import (
 // tail-iteration, physical-height, nesting and allocation limits plus a
 // context deadline.  The per-input cost is a small multiple of FuzzEval's
 // because the same source is evaluated sharedRuns+1 times.
+//
+// # Why there is no exception for a result that looks like a budget
+//
+// A comparison oracle that agrees to ignore some results is the one way this
+// target can fail silently: every exception it carries is a class of
+// divergence it has promised not to report.  So there is none.  A rendered
+// result is compared EXACTLY, always.
+//
+// This target used to carry one, for the case where the two arms disagreed
+// about which runaway-loop backstop stopped the same infinite loop (crasher
+// 423b7dd9e421bd27).  Both spellings of it were forgeable by the program
+// under test.  The first matched the budget's MESSAGE, which is just text a
+// program is free to return or to raise.  The second read PROVENANCE -- the
+// unforgeable *lisp.TailIterationLimitError the evaluator stores in the
+// error's data cell -- and was forgeable anyway, by CAPTURED-BUDGET REPLAY:
+// handler-bind catches every condition but internal-panic (opHandlerBind), so
+// a program can catch the tail-iteration error, keep the Go error it carries,
+// run arbitrary code that DIVERGES between the two arms, and finally raise a
+// new error carrying the captured cell.  Both arms then classify as the same
+// budget, and everything the program did in between is hidden.  See
+// TestOracleReportsCapturedBudgetReplay.
+//
+// The exception was never needed for that budget in the first place.  The
+// tail-iteration counter -- and max steps, max alloc and physical height with
+// it -- is DETERMINISTIC: the same program under the same fresh environment
+// and the same limit trips at the same point in both arms and renders the same
+// message, so exact comparison already agrees.
+// TestOracleTailBudgetArmsCompareEqual pins that.
+//
+// # The deadline is inconclusiveness, not a classification
+//
+// The context deadline is the one budget that is not deterministic, because it
+// is denominated in WALL CLOCK: the two arms run at different speeds (the
+// shared arm has skipped a parse) and on a loaded machine one can be stopped
+// by the clock where the other was not.  That is not a fact about the value,
+// so no amount of looking at the value can decide it -- which is exactly why
+// every value-based attempt was forgeable.
+//
+// It is decided by HARNESS STATE instead.  Each arm records, per expression,
+// whether its OWN context had expired when that expression's evaluation
+// returned (`ctx.Err() != nil`), which no program can influence.  If either
+// arm's context had expired at expression j, this input is INCONCLUSIVE from j
+// onwards: expressions before j are still compared exactly, and j and
+// everything after it are not compared at all.  A run the clock interrupted
+// carries no information about whether the tree changed meaning, so the
+// correct answer is to decline to answer -- not to declare two differing
+// results equal.
 
 // sharedRuns is how many goroutines evaluate the shared tree at once.  Two is
 // enough for the race detector to see a conflicting pair, and keeping it small
@@ -72,16 +119,24 @@ import (
 const sharedRuns = 2
 
 // treeEval is one evaluation of a whole tree: what each expression rendered
-// to, and -- alongside the rendering, never derived from it -- the structured
-// verdict for that same result.  The two are kept in step by index: rendered[j]
-// and budget[j] describe expression j.
+// to, and -- alongside the rendering, never derived from it -- whether this
+// arm's own context had already expired when that expression's evaluation
+// returned.  The two are kept in step by index: rendered[j] and expired[j]
+// describe expression j.
+//
+// expired is HARNESS state, not a property of the value.  It is the only
+// thing the oracle consults besides the rendered text, and it is the only
+// thing it can consult that the program under test has no say in: a program
+// can return, raise, or replay any value it likes, but it cannot make this
+// process's context deadline pass.
 type treeEval struct {
 	rendered []string
-	budget   []budgetKind
+	expired  []bool
 }
 
 // evalTreeOnce evaluates every expression of exprs under a fresh environment
-// and returns the rendered results together with their structured verdicts.
+// and returns the rendered results together with the per-expression record of
+// whether this run's context had expired.
 // exprs may be shared with other goroutines; nothing here may write to it.
 func evalTreeOnce(exprs []*lisp.LVal) (treeEval, error) {
 	env, _, rc := newFuzzEnv()
@@ -92,7 +147,7 @@ func evalTreeOnce(exprs []*lisp.LVal) (treeEval, error) {
 	defer cancel()
 	out := treeEval{
 		rendered: make([]string, 0, len(exprs)),
-		budget:   make([]budgetKind, 0, len(exprs)),
+		expired:  make([]bool, 0, len(exprs)),
 	}
 	for _, e := range exprs {
 		v := env.EvalContext(ctx, e)
@@ -102,87 +157,71 @@ func evalTreeOnce(exprs []*lisp.LVal) (treeEval, error) {
 		if lisp.IsInternalPanic(v) {
 			return treeEval{}, errInternalPanic
 		}
-		// Classified HERE, where the evaluator's own value is still in hand
-		// and this run's context can be asked whether it expired.  Once the
-		// value has been rendered to a string both facts are gone.
-		out.budget = append(out.budget, classifyBudget(v, ctx.Err() != nil))
+		// Sampled HERE, where this run's context can still be asked whether
+		// it expired.  Once the value has been rendered to a string that fact
+		// is gone, and the string itself cannot supply it.
+		out.expired = append(out.expired, ctx.Err() != nil)
 		out.rendered = append(out.rendered, v.String())
 	}
 	return out, nil
 }
 
-// budgetKind is the structured verdict on one evaluation result: which of the
-// evaluator's two runaway-loop backstops, if any, produced it.
-type budgetKind uint8
-
-const (
-	// notABudget covers everything else: a successful value, and an error
-	// the program itself raised -- whatever either of them happens to say.
-	notABudget budgetKind = iota
-	budgetTailIterations
-	budgetContextDeadline
-)
-
-func (k budgetKind) String() string {
-	switch k {
-	case budgetTailIterations:
-		return "tail-iteration budget"
-	case budgetContextDeadline:
-		return "context-deadline budget"
-	default:
-		return "not a budget"
-	}
+// treeComparison is the verdict of comparing one shared arm against the
+// private baseline.  Exactly one of the three states holds:
+//
+//   - divergedAt >= 0: expression divergedAt rendered differently in the two
+//     arms, with both arms' contexts still live.  That is the finding this
+//     target exists to report.
+//   - inconclusive != "": an arm's context had expired at expression
+//     firstExpired, so that expression and every one after it were not
+//     compared.  Everything before it did compare equal.
+//   - neither: every expression compared equal.
+type treeComparison struct {
+	inconclusive string
+	divergedAt   int
+	firstExpired int
 }
 
-// classifyBudget reports which runaway-loop backstop, if any, produced v.  It
-// reads PROVENANCE -- the LVal's type, the Go error the evaluator stored in
-// it, the condition symbol it raised under, and whether this run's own
-// context expired -- and never the rendered message.
+// compareTreeEvals is the whole comparison oracle, factored out so that the
+// tests in sharedtree_oracle_test.go assert exactly what the fuzz target
+// asserts.
 //
-// The message cannot answer the question.  A rendered result is just text the
-// program under test has a say in: `"context deadline exceeded: original"` is
-// a perfectly ordinary string VALUE, `(error 'x "context deadline exceeded")`
-// is an ordinary error, and a substring test reads both as backstops.  That
-// is the whole failure this classifier exists to avoid, because a collapse is
-// FuzzSharedTreeEval agreeing not to look: two arms that differ get reported
-// as equal, which is precisely the divergence the target is for.
+// There is no exception and no classification: renderings are compared with
+// ==.  The only thing that stops a comparison is an EXPIRED CONTEXT, which is
+// read from the harness's own record and never from the values.  See this
+// file's header for why every value-based exception this target has carried
+// was forgeable by the program under test.
 //
-// ctxExpired must be the caller's own `ctx.Err() != nil`, sampled at the
-// result.  It is what makes the deadline arm unforgeable from lisp: the
-// program can raise the reserved condition symbol itself, but it cannot make
-// the harness's context expire, so a run that finished inside its deadline is
-// never admitted no matter what it raised.
-func classifyBudget(v *lisp.LVal, ctxExpired bool) budgetKind {
-	if v == nil || v.Type != lisp.LError {
-		return notABudget
-	}
-	// The tail-iteration budget.  CheckTailIterations returns a
-	// *lisp.TailIterationLimitError and the evaluator raises it with
-	// env.Error(err), which stores that Go error itself as the error's single
-	// data cell (lisp/env.go's ErrorCondition error arm).  No lisp program
-	// can construct a value of that Go type, so this marker is not forgeable
-	// by the source under test.
-	for _, c := range v.Cells {
-		if c == nil {
-			continue
+// want and got must describe the same number of expressions; the caller
+// checks that and reports a mismatch as a finding of its own.
+func compareTreeEvals(want, got treeEval) treeComparison {
+	out := treeComparison{divergedAt: -1, firstExpired: -1}
+	for j := range want.rendered {
+		// Checked BEFORE the comparison for expression j: an evaluation the
+		// clock interrupted says nothing about whether the tree changed
+		// meaning, and neither does anything evaluated after it in the same
+		// environment.
+		if want.expired[j] || got.expired[j] {
+			which := "the private arm"
+			switch {
+			case want.expired[j] && got.expired[j]:
+				which = "both arms"
+			case got.expired[j]:
+				which = "the shared arm"
+			}
+			out.firstExpired = j
+			out.inconclusive = fmt.Sprintf(
+				"%s ran out of context deadline at expression %d;"+
+					" expressions 0..%d compared equal and %d.. were not compared",
+				which, j, j-1, j)
+			return out
 		}
-		err, ok := c.Native.(error)
-		if !ok {
-			continue
-		}
-		var tail *lisp.TailIterationLimitError
-		if errors.As(err, &tail) {
-			return budgetTailIterations
+		if got.rendered[j] != want.rendered[j] {
+			out.divergedAt = j
+			return out
 		}
 	}
-	// The context deadline.  checkLimitsSlow renders ctx.Err() into the
-	// message and keeps no Go error to match on (lisp/env.go), so the
-	// structured evidence is the condition SYMBOL it raises under, admitted
-	// only for a run whose context really did expire.
-	if ctxExpired && v.Str == lisp.CondContextCancelled {
-		return budgetContextDeadline
-	}
-	return notABudget
+	return out
 }
 
 type constErr string
@@ -353,20 +392,25 @@ func sharedTreeProperty(t *testing.T, src []byte) {
 				len(got[i].rendered), len(want.rendered), len(src), src)
 			return
 		}
-		for j := range want.rendered {
-			if got[i].rendered[j] == want.rendered[j] {
-				continue
-			}
-			if bothHitAResourceBackstop(want.budget[j], got[i].budget[j]) {
-				continue
-			}
+		cmp := compareTreeEvals(want, got[i])
+		if cmp.inconclusive != "" {
+			// Not a pass and not a failure: a wall-clock deadline fired, so
+			// this ARM carries no verdict from that expression on.  Logged
+			// rather than silently dropped, in the style of copyWalkCap's
+			// truncated walk, so an input that goes quiet says why.  The
+			// remaining arms are still compared: an arm whose own context
+			// stayed live can still produce a conclusive finding.
+			t.Logf("shared run %d inconclusive: %s", i, cmp.inconclusive)
+			continue
+		}
+		if cmp.divergedAt >= 0 {
+			j := cmp.divergedAt
 			t.Fatalf("evaluating a SHARED parse tree changed the program's meaning"+
 				"\n  expression %d, shared run %d"+
-				"\n  private tree: %s  [%v]"+
-				"\n  shared tree:  %s  [%v]"+
+				"\n  private tree: %s"+
+				"\n  shared tree:  %s"+
 				"\n--- source (%d bytes) ---\n%q",
-				j, i, want.rendered[j], want.budget[j],
-				got[i].rendered[j], got[i].budget[j], len(src), src)
+				j, i, want.rendered[j], got[i].rendered[j], len(src), src)
 			return
 		}
 	}
@@ -430,30 +474,4 @@ func TestSharedTreeSeedsAgree(t *testing.T) {
 			sharedTreeProperty(t, []byte(src))
 		})
 	}
-}
-
-// bothHitAResourceBackstop reports whether two results are each a runaway-loop
-// backstop tripping, and so are the same outcome reported by whichever limit
-// happened to trip first.  It takes the structured verdicts, not the rendered
-// text: see classifyBudget for why the text cannot decide this.
-//
-// A non-terminating program is stopped by one of two independent budgets: the
-// tail-call iteration counter, which is denominated in TURNS, and the context
-// deadline, which is denominated in TIME.  Which one fires is a property of
-// how fast the process was running, not of what the program means -- and the
-// shared and private arms run at different speeds, the shared arm having
-// skipped a parse.  On a loaded machine the two arms therefore disagree about
-// which limit stopped the same infinite loop, and the comparison below reads
-// that as "evaluating a SHARED parse tree changed the program's meaning".
-//
-// Measured on b076a2f, which predates this branch: `(defun s()(let()(s)))(s)(s)(s)`
-// passes 5/5 run sequentially and fails 8/8 run concurrently, on the chain head
-// itself.  CI runs eleven fuzz shards at once, which is the load that surfaced it
-// (crasher 423b7dd9e421bd27).
-//
-// Only the case where BOTH arms hit a backstop is collapsed.  One arm
-// terminating while the other is stopped by a budget remains a divergence and
-// is still reported: that asymmetry is not explained by scheduling.
-func bothHitAResourceBackstop(a, b budgetKind) bool {
-	return a != notABudget && b != notABudget
 }
