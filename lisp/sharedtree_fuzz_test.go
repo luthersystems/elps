@@ -5,7 +5,7 @@ package lisp_test
 import (
 	"bytes"
 	"context"
-	"strings"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -71,28 +71,118 @@ import (
 // keeps the per-input cost near FuzzEval's.
 const sharedRuns = 2
 
+// treeEval is one evaluation of a whole tree: what each expression rendered
+// to, and -- alongside the rendering, never derived from it -- the structured
+// verdict for that same result.  The two are kept in step by index: rendered[j]
+// and budget[j] describe expression j.
+type treeEval struct {
+	rendered []string
+	budget   []budgetKind
+}
+
 // evalTreeOnce evaluates every expression of exprs under a fresh environment
-// and returns the rendered results.  exprs may be shared with other
-// goroutines; nothing here may write to it.
-func evalTreeOnce(exprs []*lisp.LVal) ([]string, error) {
+// and returns the rendered results together with their structured verdicts.
+// exprs may be shared with other goroutines; nothing here may write to it.
+func evalTreeOnce(exprs []*lisp.LVal) (treeEval, error) {
 	env, _, rc := newFuzzEnv()
 	if rc != nil {
-		return nil, errFromLVal(rc)
+		return treeEval{}, errFromLVal(rc)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), fuzzDeadline)
 	defer cancel()
-	out := make([]string, 0, len(exprs))
+	out := treeEval{
+		rendered: make([]string, 0, len(exprs)),
+		budget:   make([]budgetKind, 0, len(exprs)),
+	}
 	for _, e := range exprs {
 		v := env.EvalContext(ctx, e)
 		if v == nil {
-			return nil, errNilResult
+			return treeEval{}, errNilResult
 		}
 		if lisp.IsInternalPanic(v) {
-			return nil, errInternalPanic
+			return treeEval{}, errInternalPanic
 		}
-		out = append(out, v.String())
+		// Classified HERE, where the evaluator's own value is still in hand
+		// and this run's context can be asked whether it expired.  Once the
+		// value has been rendered to a string both facts are gone.
+		out.budget = append(out.budget, classifyBudget(v, ctx.Err() != nil))
+		out.rendered = append(out.rendered, v.String())
 	}
 	return out, nil
+}
+
+// budgetKind is the structured verdict on one evaluation result: which of the
+// evaluator's two runaway-loop backstops, if any, produced it.
+type budgetKind uint8
+
+const (
+	// notABudget covers everything else: a successful value, and an error
+	// the program itself raised -- whatever either of them happens to say.
+	notABudget budgetKind = iota
+	budgetTailIterations
+	budgetContextDeadline
+)
+
+func (k budgetKind) String() string {
+	switch k {
+	case budgetTailIterations:
+		return "tail-iteration budget"
+	case budgetContextDeadline:
+		return "context-deadline budget"
+	default:
+		return "not a budget"
+	}
+}
+
+// classifyBudget reports which runaway-loop backstop, if any, produced v.  It
+// reads PROVENANCE -- the LVal's type, the Go error the evaluator stored in
+// it, the condition symbol it raised under, and whether this run's own
+// context expired -- and never the rendered message.
+//
+// The message cannot answer the question.  A rendered result is just text the
+// program under test has a say in: `"context deadline exceeded: original"` is
+// a perfectly ordinary string VALUE, `(error 'x "context deadline exceeded")`
+// is an ordinary error, and a substring test reads both as backstops.  That
+// is the whole failure this classifier exists to avoid, because a collapse is
+// FuzzSharedTreeEval agreeing not to look: two arms that differ get reported
+// as equal, which is precisely the divergence the target is for.
+//
+// ctxExpired must be the caller's own `ctx.Err() != nil`, sampled at the
+// result.  It is what makes the deadline arm unforgeable from lisp: the
+// program can raise the reserved condition symbol itself, but it cannot make
+// the harness's context expire, so a run that finished inside its deadline is
+// never admitted no matter what it raised.
+func classifyBudget(v *lisp.LVal, ctxExpired bool) budgetKind {
+	if v == nil || v.Type != lisp.LError {
+		return notABudget
+	}
+	// The tail-iteration budget.  CheckTailIterations returns a
+	// *lisp.TailIterationLimitError and the evaluator raises it with
+	// env.Error(err), which stores that Go error itself as the error's single
+	// data cell (lisp/env.go's ErrorCondition error arm).  No lisp program
+	// can construct a value of that Go type, so this marker is not forgeable
+	// by the source under test.
+	for _, c := range v.Cells {
+		if c == nil {
+			continue
+		}
+		err, ok := c.Native.(error)
+		if !ok {
+			continue
+		}
+		var tail *lisp.TailIterationLimitError
+		if errors.As(err, &tail) {
+			return budgetTailIterations
+		}
+	}
+	// The context deadline.  checkLimitsSlow renders ctx.Err() into the
+	// message and keeps no Go error to match on (lisp/env.go), so the
+	// structured evidence is the condition SYMBOL it raises under, admitted
+	// only for a run whose context really did expire.
+	if ctxExpired && v.Str == lisp.CondContextCancelled {
+		return budgetContextDeadline
+	}
+	return notABudget
 }
 
 type constErr string
@@ -212,9 +302,9 @@ func sharedTreeProperty(t *testing.T, src []byte) {
 	copyOwnsItsPositions(t, shared, src)
 
 	done := make(chan struct{})
-	var want []string
+	var want treeEval
 	var wantErr error
-	var got [sharedRuns][]string
+	var got [sharedRuns]treeEval
 	var gotErr [sharedRuns]error
 
 	go func() {
@@ -257,21 +347,27 @@ func sharedTreeProperty(t *testing.T, src []byte) {
 				"\n--- source (%d bytes) ---\n%q", gotErr[i], len(src), src)
 			return
 		}
-		if len(got[i]) != len(want) {
+		if len(got[i].rendered) != len(want.rendered) {
 			t.Fatalf("shared tree produced %d results, private tree produced %d"+
-				"\n--- source (%d bytes) ---\n%q", len(got[i]), len(want), len(src), src)
+				"\n--- source (%d bytes) ---\n%q",
+				len(got[i].rendered), len(want.rendered), len(src), src)
 			return
 		}
-		for j := range want {
-			if got[i][j] != want[j] && !bothHitAResourceBackstop(want[j], got[i][j]) {
-				t.Fatalf("evaluating a SHARED parse tree changed the program's meaning"+
-					"\n  expression %d, shared run %d"+
-					"\n  private tree: %s"+
-					"\n  shared tree:  %s"+
-					"\n--- source (%d bytes) ---\n%q",
-					j, i, want[j], got[i][j], len(src), src)
-				return
+		for j := range want.rendered {
+			if got[i].rendered[j] == want.rendered[j] {
+				continue
 			}
+			if bothHitAResourceBackstop(want.budget[j], got[i].budget[j]) {
+				continue
+			}
+			t.Fatalf("evaluating a SHARED parse tree changed the program's meaning"+
+				"\n  expression %d, shared run %d"+
+				"\n  private tree: %s  [%v]"+
+				"\n  shared tree:  %s  [%v]"+
+				"\n--- source (%d bytes) ---\n%q",
+				j, i, want.rendered[j], want.budget[j],
+				got[i].rendered[j], got[i].budget[j], len(src), src)
+			return
 		}
 	}
 }
@@ -336,9 +432,10 @@ func TestSharedTreeSeedsAgree(t *testing.T) {
 	}
 }
 
-// bothHitAResourceBackstop reports whether two rendered results are each a
-// runaway-loop backstop tripping, and so are the same outcome reported by
-// whichever limit happened to trip first.
+// bothHitAResourceBackstop reports whether two results are each a runaway-loop
+// backstop tripping, and so are the same outcome reported by whichever limit
+// happened to trip first.  It takes the structured verdicts, not the rendered
+// text: see classifyBudget for why the text cannot decide this.
 //
 // A non-terminating program is stopped by one of two independent budgets: the
 // tail-call iteration counter, which is denominated in TURNS, and the context
@@ -357,15 +454,6 @@ func TestSharedTreeSeedsAgree(t *testing.T) {
 // Only the case where BOTH arms hit a backstop is collapsed.  One arm
 // terminating while the other is stopped by a budget remains a divergence and
 // is still reported: that asymmetry is not explained by scheduling.
-func bothHitAResourceBackstop(a, b string) bool {
-	return isResourceBackstop(a) && isResourceBackstop(b)
-}
-
-// isResourceBackstop reports whether a rendered result is one of the two
-// budgets that stop a runaway loop.  It matches those two and nothing else --
-// an ordinary error, including one raised BY the program, is not a backstop
-// and must still be compared verbatim.
-func isResourceBackstop(s string) bool {
-	return strings.Contains(s, "tail-call iteration limit exceeded") ||
-		strings.Contains(s, "context deadline exceeded")
+func bothHitAResourceBackstop(a, b budgetKind) bool {
+	return a != notABudget && b != notABudget
 }
