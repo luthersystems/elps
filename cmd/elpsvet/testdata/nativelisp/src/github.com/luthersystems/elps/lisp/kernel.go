@@ -163,6 +163,33 @@ func aliasedTypeKey(b *[]byte) *LVal {
 	return &LVal{Type: bytesHeader, Native: b} // want `LVal\.Native literal payload type \*\[\]byte is a kernel representation slot`
 }
 
+// shadowedTypeKey is the defect the IDENTITY check closes, and it is
+// spelled where nothing else could reach: a function-local constant inside
+// package lisp, of type LType, named exactly like a row's header.  Every
+// property a NAME comparison can see agrees with the kernel's own LBytes --
+// declaring package lisp, type lisp.LType, name "LBytes" -- while the header
+// the literal actually builds is an LNative, which val hands to native(),
+// where a *[]byte is refused like any other pointer.  Looking the name back
+// up in the PACKAGE scope finds the real constant, not this one, so the
+// header does not resolve and the site is reported.
+func shadowedTypeKey(b *[]byte) *LVal {
+	const LBytes LType = LNative
+	return &LVal{Type: LBytes, Native: b} // want `LVal\.Native literal payload type \*\[\]byte is a kernel representation slot`
+}
+
+// shadowedTypeKeySameValue documents that the criterion is IDENTITY, not
+// value.  A local ConstSpec's own name is not in scope until the end of the
+// spec, so the right-hand side here is the package-level LBytes and the
+// shadow carries the kernel constant's exact value -- and it is still
+// reported, because it is still not the object package lisp declares.  That
+// is why headerTypeNamed compares objects and does not compare konst.Val():
+// once identity holds the value follows, and where identity fails the value
+// proves nothing about which constant the author actually named.
+func shadowedTypeKeySameValue(b *[]byte) *LVal {
+	const LBytes LType = LBytes
+	return &LVal{Type: LBytes, Native: b} // want `LVal\.Native literal payload type \*\[\]byte is a kernel representation slot`
+}
+
 // constructorInsideTheKernel is reported here too.  The kernel is not
 // exempt from what its own constructor builds: Native makes an LNative, and
 // native() refuses a *[]byte like any other pointer.

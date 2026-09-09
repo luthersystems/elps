@@ -208,10 +208,16 @@ exempted less would make authors annotate what the runtime already admits:
   hands to `native()`, where all three row types are refused, so
   `b := []byte{1}; lisp.Native(&b)` is REPORTED even though `*[]byte` is a
   row; **(3)** for a keyed literal, the SAME literal's `Type:` key names the
-  row's header, resolved through the type checker rather than by source text.
+  row's header, resolved through the type checker rather than by source text
+  and checked by the constant's **identity** — the object it resolves to must
+  be the one package `lisp` declares at package scope under that name, so a
+  function-local `const LBytes LType = LNative` inside the kernel (same
+  package, same `lisp.LType`, same spelling, different object, and an
+  `LNative` header) does not satisfy the row.
   A literal with no `Type:` key shows no header, one naming another header
-  shows the wrong one, and `LVal{Type: LNative, Native: &b}` names precisely
-  the header `val` routes to `native()` — all three are reported. A `.Native`
+  shows the wrong one, one whose key is a shadowing local or an alias names
+  no header the rule can read, and `LVal{Type: LNative, Native: &b}` names
+  precisely the header `val` routes to `native()` — all four are reported. A `.Native`
   FIELD WRITE shows no header at all and cannot, so condition 3 does not apply
   to it and condition 1 carries the whole weight: exempt in package lisp,
   reported everywhere else. That residual is deliberate and named in the

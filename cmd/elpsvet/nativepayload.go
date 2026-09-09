@@ -74,11 +74,17 @@
 //     for a keyed LITERAL, the same literal's `Type:` key names the row's
 //     LType constant -- LBytes for `*[]byte`, LSortMap for `*MapData`, LFun
 //     for `*funData` -- resolved through the type checker rather than by
-//     source text.  A literal with no Type key shows no header; a literal
-//     naming another Type shows the wrong one; and `LVal{Type: LNative,
-//     Native: &b}` names exactly the header val routes to native(), which
-//     refuses the payload.  All three are reported, with
-//     payloadKernelSlotMisuse naming the header the row belongs to.
+//     source text, and resolved to the CONSTANT'S IDENTITY rather than to
+//     its name: the object the key resolves to must be the one package lisp
+//     declares at PACKAGE SCOPE under that name (headerTypeNamed).  A
+//     literal with no Type key shows no header; a literal naming another
+//     Type shows the wrong one; a literal whose Type key names a shadowing
+//     function-local `const LBytes LType = LNative` -- same package, same
+//     lisp.LType, same spelling, different object and a different header --
+//     shows none the row is about; and `LVal{Type: LNative, Native: &b}`
+//     names exactly the header val routes to native(), which refuses the
+//     payload.  All four are reported, with payloadKernelSlotMisuse naming
+//     the header the row belongs to.
 //
 //     A `.Native` FIELD WRITE has no header to show, so (c) cannot apply to
 //     it and (a) carries the whole weight: `v.Native = &b` is exempt in
@@ -339,16 +345,25 @@ type payloadSite struct {
 	// headerType is the NAME of the LType constant the literal's `Type:`
 	// key resolves to ("LBytes", "LFun", ...), empty when the site is not a
 	// literal, when the literal names no Type, or when what it names is not
-	// a constant of lisp.LType declared in package lisp.  It comes from the
-	// type checker, so `lisp.LBytes`, a dot-imported `LBytes` and an
-	// aliased-import `l.LBytes` are one object and resolve alike, while a
-	// same-named constant from some other package does not resolve at all.
+	// package lisp's own package-scope constant of type lisp.LType.  It
+	// comes from the type checker, so `lisp.LBytes`, a dot-imported
+	// `LBytes` and an aliased-import `l.LBytes` are one object and resolve
+	// alike, while a same-named constant from some other package -- or a
+	// function-local shadow inside package lisp -- does not resolve at all
+	// (headerTypeNamed).
 	headerType string
 	kind       siteKind
 	// inKernel is pass.Pkg.Path() == lispPkgPath.  The rows are the
 	// kernel's own storage slots; a package outside the kernel that builds
 	// one is doing something the rows say nothing about.
 	inKernel bool
+	// hasTypeKey says the literal spelled a `Type:` key, whether or not it
+	// resolved.  It changes no verdict -- an unresolved header is exempt
+	// from no row -- and only sorts the diagnostic: a literal with no Type
+	// key shows no header, while one whose Type key resolves to nothing
+	// names something that is not the kernel's header constant, and those
+	// are different things for the author to go and look at.
+	hasTypeKey bool
 }
 
 // exemptsRow reports whether an allowlist row is true AT THIS SITE.  Three
@@ -479,10 +494,12 @@ func checkNativeLiteral(pass *analysis.Pass, lit *ast.CompositeLit, allow map[in
 		// reaches this function.
 		return
 	}
+	header, hasTypeKey := literalHeader(pass, lit)
 	site := payloadSite{
 		kind:       siteHeaderLiteral,
 		inKernel:   inKernelPkg(pass),
-		headerType: literalHeaderType(pass, lit),
+		headerType: header,
+		hasTypeKey: hasTypeKey,
 	}
 	for _, kv := range native {
 		reportNativePayload(pass, lit.Pos(), pass.TypesInfo.TypeOf(kv.Value), "LVal.Native literal", site, allow,
@@ -509,10 +526,13 @@ func nativeKeyValues(pass *analysis.Pass, lit *ast.CompositeLit) []*ast.KeyValue
 	return out
 }
 
-// literalHeaderType returns the NAME of the lisp.LType constant the
-// literal's `Type:` key names, or "" when the literal has no Type key, when
-// its value is not a constant of lisp.LType, or when it is a computed
-// expression rather than a named constant.
+// literalHeader returns the NAME of the lisp.LType constant the literal's
+// `Type:` key names, together with whether the literal spelled a Type key at
+// all.  The two are distinct verdicts and the diagnostic tells them apart: a
+// literal with NO Type key shows no header, while a literal whose Type key
+// resolves to nothing shows a header the rule could not read (a shadowing
+// local, an alias, a computed expression).  Both are reported; only the
+// second is worth telling an author to go look at the constant.
 //
 // The key is matched by its field OBJECT, like the Native key, so ErrorVal
 // and any conversion of LVal resolve to the same field.  The VALUE is
@@ -521,7 +541,7 @@ func nativeKeyValues(pass *analysis.Pass, lit *ast.CompositeLit) []*ast.KeyValue
 // `l.LBytes` are all the same object and all resolve, while a same-named
 // constant declared in some other package is a different object and does
 // not.
-func literalHeaderType(pass *analysis.Pass, lit *ast.CompositeLit) string {
+func literalHeader(pass *analysis.Pass, lit *ast.CompositeLit) (name string, hasTypeKey bool) {
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
 		if !ok {
@@ -531,22 +551,43 @@ func literalHeaderType(pass *analysis.Pass, lit *ast.CompositeLit) string {
 		if !ok || !isLValTypeField(pass.TypesInfo.Uses[key]) {
 			continue
 		}
-		return headerTypeNamed(pass, kv.Value)
+		return headerTypeNamed(pass, kv.Value), true
 	}
-	return ""
+	return "", false
 }
 
-// headerTypeNamed resolves expr to the name of a lisp.LType constant
-// DECLARED IN package lisp, or "" if it is anything else.  Both halves
-// matter: the declaring package, so no other package's constant can claim a
-// row, and the constant's TYPE, so a same-named constant of another type in
-// package lisp could not either.
+// headerTypeNamed resolves expr to the name of a lisp.LType constant that IS
+// one of package lisp's own package-scope constants, or "" if it is anything
+// else.  Three halves matter, and the third is the one a name comparison
+// misses:
 //
-// A re-declared alias -- `const h = lisp.LBytes`, whether in another package
-// or as a local inside lisp -- is a different constant object with a
-// different name, and resolves to "".  That is a false POSITIVE, which is
-// the direction this rule fails in everywhere else: the author writes the
-// header constant the kernel writes, or annotates.
+//   - the declaring package, so no other package's constant can claim a row;
+//   - the constant's TYPE, so a same-named constant of another type in
+//     package lisp could not either;
+//   - the constant's IDENTITY.  A row is a claim about the header
+//     (*templateInventory).val routes by, so the Type key has to name the
+//     kernel's own constant -- not merely something SPELLED like it.  A
+//     function-local `const LBytes LType = LNative` inside package lisp has
+//     package lisp as its Pkg, has type lisp.LType, and is named "LBytes":
+//     it satisfies every property a name comparison can see, while the
+//     header it actually builds is an LNative, which val hands to native().
+//     Looking the name back up in the PACKAGE scope and requiring the same
+//     object settles it: a shadowing local is declared in a function scope
+//     and the lookup finds either the real constant or nothing, never the
+//     local, so the identity fails and the site is reported.
+//
+// Identity subsumes the constant's VALUE, which is why the value is not
+// compared as well: within package lisp only one object can hold a given
+// name at package scope, so an object that IS the package-scope LBytes has
+// the kernel's LBytes value by construction, and one that is not is reported
+// whatever value it carries -- `const LBytes LType = LBytes`, a local shadow
+// holding the real constant's own value, resolves to "" like any other.
+//
+// A re-declared alias resolves to "" for the same reason when it is local,
+// and to its OWN name -- which matches no row -- when it is a package-scope
+// constant of some other name.  Either way the site is reported: a false
+// POSITIVE, which is the direction this rule fails in everywhere else.  The
+// author writes the header constant the kernel writes, or annotates.
 func headerTypeNamed(pass *analysis.Pass, expr ast.Expr) string {
 	var id *ast.Ident
 	switch e := ast.Unparen(expr).(type) {
@@ -567,6 +608,12 @@ func headerTypeNamed(pass *analysis.Pass, expr ast.Expr) string {
 	}
 	obj := named.Obj()
 	if obj == nil || obj.Name() != lTypeName || obj.Pkg() == nil || obj.Pkg().Path() != lispPkgPath {
+		return ""
+	}
+	if konst.Pkg().Scope().Lookup(konst.Name()) != konst {
+		// Spelled like a header constant, but not the object package lisp
+		// declares under that name: a function-local shadow, or a constant
+		// declared in some scope the kernel's header set does not live in.
 		return ""
 	}
 	return konst.Name()
@@ -689,8 +736,13 @@ func (s payloadSite) misuseReason(row payloadRow) string {
 	switch {
 	case s.kind == siteConstructor:
 		return "A constructor always builds an LNative."
-	case s.kind == siteHeaderLiteral && s.headerType == "":
+	case s.kind == siteHeaderLiteral && s.headerType == "" && !s.hasTypeKey:
 		return "This literal sets no Type key, so it shows no header at all."
+	case s.kind == siteHeaderLiteral && s.headerType == "":
+		return "This literal's Type key does not name the kernel's own header constant" +
+			" -- package lisp's package-scope " + lTypeName + " constant of that name -- so it shows" +
+			" no header the row can be true of. A shadowing local constant, a re-declared alias and a" +
+			" computed expression each name something else, whatever they are spelled."
 	case s.kind == siteHeaderLiteral:
 		return "This literal's Type key is " + s.headerType + ", not " + row.headerType + "."
 	}

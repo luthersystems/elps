@@ -62,3 +62,17 @@ func PairKernelNativeHeaderLiteral() *LVal {
 	b := []byte{1}
 	return &LVal{Type: LNative, Native: &b} // want `LVal\.Native literal payload type \*\[\]byte is a kernel representation slot`
 }
+
+// PairShadowedHeaderConst is the same literal again, wearing the control's
+// spelling.  A function-local constant inside package lisp, of type LType
+// and named LBytes, satisfies every property a NAME comparison can check --
+// which is what the rule used to check -- while the header it builds is the
+// LNative the case above builds.  So the value published for this case is
+// the same value, and publication refuses it for the same reason: the
+// analyzer must not go quiet just because the Type key is SPELLED like the
+// row's header.
+func PairShadowedHeaderConst() *LVal {
+	const LBytes LType = LNative
+	b := []byte{1}
+	return &LVal{Type: LBytes, Native: &b} // want `LVal\.Native literal payload type \*\[\]byte is a kernel representation slot`
+}

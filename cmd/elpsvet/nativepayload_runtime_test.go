@@ -24,11 +24,13 @@ import (
 // rule's own tests could check that claim: analysistest only asks whether
 // the analyzer said what the fixture's `// want` comments say it would, so a
 // rule and its fixtures can drift away from publication together and stay
-// green forever.  Five constructions had done exactly that -- a uintptr
-// payload, a lisp.Value([]**LVal), a *[]byte through a constructor, and the
+// green forever.  Six constructions had done exactly that -- a uintptr
+// payload, a lisp.Value([]**LVal), a *[]byte through a constructor, the
 // same *[]byte put onto an LNative header through the .Native field or
-// through a literal that names Type: LNative -- each silently exempt here
-// and each rejected by NewTemplate at the first publication.
+// through a literal that names Type: LNative, and a kernel literal whose
+// Type key is a function-local constant SPELLED like a row's header
+// (`const LBytes LType = LNative`) -- each silently exempt here and each
+// rejected by NewTemplate at the first publication.
 //
 // So each case below carries both halves: a function in the nativepaired
 // fixture (testdata/src/github.com/luthersystems/elps/nativepaired, whose
@@ -141,6 +143,24 @@ func pairedCases() []pairedCase {
 		// the same payload, differing only in the LType constant the Type
 		// key names.  Drop that condition and this case goes quiet while
 		// publication keeps refusing the value.
+		wantDiagnostic: `LVal\.Native literal payload type \*\[\]byte is a kernel representation slot`,
+		wantPublishErr: `native \*\[\]uint8 has no template immutability declaration`,
+	}, {
+		name:     "in the kernel: a literal whose Type key is a shadowing local named LBytes",
+		fixture:  "PairShadowedHeaderConst",
+		inKernel: true,
+		build: func() *lisp.LVal {
+			b := []byte{1}
+			// The value the shadowed literal builds: its local
+			// `const LBytes LType = LNative` makes an LNative header, which
+			// is what publication sees and refuses.
+			return &lisp.LVal{Type: lisp.LNative, Native: &b} //elpsvet:allow-native the negative control's own payload: this value is published only to assert that publication REFUSES it
+		},
+		// The header condition has to compare the constant's IDENTITY, not
+		// its name: a function-local `const LBytes LType = LNative` inside
+		// package lisp has package lisp as its Pkg, has type lisp.LType and
+		// is named LBytes, so a name comparison exempts it while the header
+		// it builds is an LNative and publication refuses the value.
 		wantDiagnostic: `LVal\.Native literal payload type \*\[\]byte is a kernel representation slot`,
 		wantPublishErr: `native \*\[\]uint8 has no template immutability declaration`,
 	}, {

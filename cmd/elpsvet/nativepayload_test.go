@@ -306,6 +306,12 @@ func TestMisuseReasonNamesTheFailedCondition(t *testing.T) {
 		{payloadSite{kind: siteConstructor, inKernel: true}, "constructor always builds an LNative"},
 		{payloadSite{kind: siteHeaderLiteral, inKernel: true}, "sets no Type key"},
 		{payloadSite{kind: siteHeaderLiteral, inKernel: true, headerType: "LNative"}, "is LNative, not LBytes"},
+		// A Type key that resolved to nothing is a different thing to say
+		// than no Type key at all: the author wrote a header and the rule
+		// could not read it, which is what a shadowing local, an alias or a
+		// computed expression looks like from here.
+		{payloadSite{kind: siteHeaderLiteral, inKernel: true, hasTypeKey: true},
+			"does not name the kernel's own header constant"},
 	}
 	for _, tc := range cases {
 		if got := tc.site.misuseReason(row); !strings.Contains(got, tc.want) {
