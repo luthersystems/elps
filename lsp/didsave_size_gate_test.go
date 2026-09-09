@@ -205,8 +205,9 @@ func TestDidSave_OverLimitSavePurgesTheFilesStaleIndexEntries(t *testing.T) {
 
 // The rename fallback in position_encoding.go reads a closed file from disk to
 // convert edit columns; it is the third bare read the issue names. Over the
-// limit it must answer "no text" without reading, and the caller then leaves
-// the range in byte columns as it already does for an unreadable file.
+// limit it must answer "no text" without reading, and it must say WHICH
+// failure that was, so the rename's error can name it (see rangeFor, and
+// TestRenameOverLimitClosedFileFailsRatherThanEmittingByteColumns).
 func TestDocumentTexts_OverLimitFileIsNotRead(t *testing.T) {
 	s := testServer()
 	dir := t.TempDir()
@@ -216,19 +217,23 @@ func TestDocumentTexts_OverLimitFileIsNotRead(t *testing.T) {
 	bigPath := filepath.Join(dir, "big.lisp")
 	require.NoError(t, os.WriteFile(bigPath, overLimitProgram(t), 0o600))
 
-	d := &documentTexts{srv: s, texts: map[string]string{}}
+	d := &documentTexts{srv: s, texts: map[string]documentText{}}
 
-	text, ok := d.get(pathToURI(smallPath))
-	require.True(t, ok, "an under-limit closed file is read from disk")
+	text, status := d.get(pathToURI(smallPath))
+	require.Equal(t, documentTextFound, status, "an under-limit closed file is read from disk")
 	assert.Equal(t, "(defun f () 1)\n", text)
 
 	var text2 string
-	var ok2 bool
-	alloc := allocatedBy(func() { text2, ok2 = d.get(pathToURI(bigPath)) })
-	assert.False(t, ok2, "an over-limit closed file yields no text")
+	var status2 documentTextStatus
+	alloc := allocatedBy(func() { text2, status2 = d.get(pathToURI(bigPath)) })
+	assert.Equal(t, documentTextOverLimit, status2, "an over-limit closed file yields no text")
 	assert.Empty(t, text2)
 	assert.Less(t, alloc, uint64(didSaveAllocCeiling),
 		"documentTexts.get on an over-limit file must not read it (allocated %d bytes)", alloc)
+
+	missing, status3 := d.get(pathToURI(filepath.Join(dir, "gone.lisp")))
+	assert.Equal(t, documentTextUnavailable, status3, "a missing file is not an over-limit file")
+	assert.Empty(t, missing)
 }
 
 func cloneRefs(m map[string][]analysis.FileReference) map[string][]analysis.FileReference {

@@ -2387,7 +2387,13 @@ func TestCrossFileReferences_NoDuplicates(t *testing.T) {
 }
 
 func TestCrossFileRename(t *testing.T) {
-	s := testServer()
+	// The cross-file reference below is injected for a path that is not on
+	// disk. Under utf-16 the server would need that file's text to convert
+	// the edit's columns and, unable to get it, refuses the rename (see
+	// documentTexts.rangeFor); utf-8 needs no conversion, so this test keeps
+	// exercising what it is about -- merging refs across files -- without
+	// forging a file.
+	s := renameTestServer(encodingUTF8)
 	setTestAnalysisCfg(s, &analysis.Config{})
 
 	// File A defines "helper" and calls it.
@@ -2882,7 +2888,9 @@ func TestCrossFileReferences_ExternalCursor(t *testing.T) {
 }
 
 func TestCrossFileRename_ExternalCursor(t *testing.T) {
-	s := testServer()
+	// utf-8 for the same reason as TestCrossFileRename: the injected refs
+	// name files that are not on disk.
+	s := renameTestServer(encodingUTF8)
 	setTestAnalysisCfg(s, &analysis.Config{
 		ExtraGlobals: []analysis.ExternalSymbol{
 			{
