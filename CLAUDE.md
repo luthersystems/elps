@@ -176,9 +176,13 @@ a rule that exempted more than publication does would let a payload through
 review that the runtime then refuses at the first request, and one that
 exempted less would make authors annotate what the runtime already admits:
 
-- the payload's static type has a **basic underlying type** (a value of
-  which is immutable inside an interface — `unsafe.Pointer` excluded); the
-  runtime's scalar `reflect.Kind` arm;
+- the payload's static type has a basic underlying type **whose kind is on
+  `runtimeScalarKinds`** — the kind-for-kind mirror of the runtime's scalar
+  `reflect.Kind` arm. A non-pointer value of scalar type is immutable inside
+  an interface. `uintptr` and `unsafe.Pointer` are **not** in the tier
+  because they are not in the runtime's either: both are addresses wearing a
+  basic type's clothes, and `templateInventory.native` names
+  `reflect.Uintptr` and `reflect.UnsafePointer` in the arm it refuses;
 - the payload's static type is a **struct VALUE** whose method set carries
   `internal/templatepolicy.Immutable`'s unexported `templateImmutable()`,
   which only embedding `templatepolicy.Marker` can supply. The struct-value
@@ -190,12 +194,18 @@ exempted less would make authors annotate what the runtime already admits:
   tier and hold no allowlist row. A pointer form needs the embedder's
   `lisp.TemplateWithNativePolicy` approval instead, which is invisible here
   and so needs a site annotation;
-- the type is on the audited allowlist, which after the re-audit holds only
-  the kernel's own representation slots — `*funData`, `*[]byte`, `*MapData`.
-  Each has an explicit arm in `templateInventory.val`, never reaches
-  `templateInventory.native`, and is rebuilt per VM by the planner. A row is
-  a claim about a type the runtime already handles by name, not a second
-  admission channel;
+- the type is on the audited allowlist — which after the re-audit holds only
+  the kernel's own representation slots, `*funData`, `*[]byte`, `*MapData` —
+  **and the site is one of the kernel's own spellings**, a `.Native` field
+  write or a keyed `LVal{Native: …}` literal. Each row has an explicit arm in
+  `templateInventory.val` on a non-`LNative` header, never reaches
+  `templateInventory.native`, and is rebuilt per VM by the planner. A
+  constructor is different in kind: `Native`, `NativeOf` and a
+  falling-through `Value` always build an `LNative`, whose payload `val`
+  hands to `native()`, where all three row types are refused — so
+  `b := []byte{1}; lisp.Native(&b)` is REPORTED even though `*[]byte` is a
+  row. A row is a claim about a header the runtime already handles by name,
+  not a second admission channel;
 - a `//elpsvet:allow-native <justification>` comment covers the site:
   trailing on the reported line, standalone on the line above, or for a
   multi-line literal on either the opening line or the `Native:` line; or
@@ -233,12 +243,27 @@ row in `allowedPayloadTypes` must appear in the test's audited inventory with
 a justification long enough to read (so adding a row is a two-file change a
 reviewer sees), the rows the re-audit dropped must stay dropped, and
 `TestRegisteredAnalyzers` pins the four-rule set `make elpsvet` actually
-runs. The `analysistest` fixtures live in two packages: `nativepayload` for
-the spellings, the allowlist and the marker placements, and
+runs. The `analysistest` fixtures live in three packages: `nativepayload` for
+the spellings, the allowlist and the marker placements,
 `github.com/luthersystems/elps/nativemarker` for the marker tier — under the
 module path because Go's internal rule lets only packages there import
 `internal/templatepolicy`, which is the same reason the tier is closed to
-downstream embedders.
+downstream embedders — and `github.com/luthersystems/elps/nativepaired`.
+
+That last one exists because `analysistest` can only ask whether the rule
+still says what its own fixtures expect, so a rule and its fixtures can drift
+away from publication together and stay green — which is how a `uintptr`
+payload, a `lisp.Value([]**LVal)` and a `*[]byte` through a constructor came
+to be silently exempt from a gate that claims to mirror admission.
+`TestNativePayloadAnalyzerMirrorsTemplateAdmission`
+(`cmd/elpsvet/nativepayload_runtime_test.go`) is the negative control: each
+case is one construction spelled twice — once in the `nativepaired` fixture,
+which the real analyzer runs over, and once as a value a real
+`lisp.NewTemplate` is asked to publish in-process — and both verdicts must
+agree. Two positive controls (`lisp.Native(int64(1))` and a marked struct
+value) are what stop "tighten until nothing passes" from looking like a fix.
+**Change a tier and this test is where the claim is checked**, not the
+fixtures.
 
 ## Development Workflow
 

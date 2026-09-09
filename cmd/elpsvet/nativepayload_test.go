@@ -10,7 +10,7 @@ import (
 	"golang.org/x/tools/go/analysis/analysistest"
 )
 
-// TestNativePayloadAnalyzer runs the rule over two fixture packages.
+// TestNativePayloadAnalyzer runs the rule over three fixture packages.
 //
 // testdata/src/nativepayload carries every construction spelling (Native,
 // NativeOf inferred and explicitly instantiated, an aliased import, a
@@ -28,6 +28,14 @@ import (
 // lives under the module path because Go's internal rule lets only packages
 // there import internal/templatepolicy -- which is the same reason the tier
 // is closed to downstream embedders.
+//
+// testdata/src/github.com/luthersystems/elps/nativepaired is run by
+// TestNativePayloadAnalyzerMirrorsTemplateAdmission
+// (nativepayload_runtime_test.go) rather than from here, because each of its
+// constructions is paired with the same value put through a real
+// lisp.NewTemplate.  That test is the only thing in this package that can
+// check the rule's actual claim -- that it mirrors template admission -- as
+// opposed to checking that it still says what its own fixtures expect.
 //
 // analysistest checks absence as strictly as presence: a construction with
 // no want-expectation comment asserts NO diagnostic there, so the exemptions
@@ -107,11 +115,82 @@ func TestAllowedPayloadTypesDroppedRows(t *testing.T) {
 // unclassifiable rather than safe -- publication reads a native's DYNAMIC
 // type, which is why the port's `error` allowlist row was dropped.
 func TestClassifyPayloadUniverse(t *testing.T) {
-	if got := classifyPayload(types.Universe.Lookup("error").Type()); got != payloadDynamic {
-		t.Errorf("classifyPayload(error) = %v, want payloadDynamic", got)
+	for _, site := range []payloadSite{siteConstructor, siteKernelSlot} {
+		if got := classifyPayload(types.Universe.Lookup("error").Type(), site); got != payloadDynamic {
+			t.Errorf("classifyPayload(error, %v) = %v, want payloadDynamic", site, got)
+		}
+		if got := classifyPayload(types.Universe.Lookup("any").Type(), site); got != payloadDynamic {
+			t.Errorf("classifyPayload(any, %v) = %v, want payloadDynamic", site, got)
+		}
 	}
-	if got := classifyPayload(types.Universe.Lookup("any").Type()); got != payloadDynamic {
-		t.Errorf("classifyPayload(any) = %v, want payloadDynamic", got)
+}
+
+// TestRuntimeScalarKindsMatchesTheRuntimesList pins the basic tier against
+// the reflect.Kind list (*templateInventory).native admits, in BOTH
+// directions.  The runtime's switch names its refused kinds explicitly too,
+// which is what makes the comparison checkable at all: of the kinds that can
+// reach the tier -- those with a *types.Basic underlying type -- uintptr and
+// unsafe.Pointer are refused there, and every other one is admitted.  The
+// mirror was wrong on uintptr, and the analyzer exempted a payload that
+// publication rejects with "native uintptr has no template immutability
+// declaration" (see TestNativePayloadAnalyzerMirrorsTemplateAdmission).
+func TestRuntimeScalarKindsMatchesTheRuntimesList(t *testing.T) {
+	refused := map[types.BasicKind]string{
+		types.Uintptr:       "reflect.Uintptr is in templateInventory.native's refused arm",
+		types.UnsafePointer: "reflect.UnsafePointer is in templateInventory.native's refused arm",
+	}
+	// Every basic kind go/types can produce, so a new one cannot be
+	// forgotten into the tier by omission.
+	all := []types.BasicKind{
+		types.Bool, types.Int, types.Int8, types.Int16, types.Int32, types.Int64,
+		types.Uint, types.Uint8, types.Uint16, types.Uint32, types.Uint64,
+		types.Uintptr, types.Float32, types.Float64, types.Complex64, types.Complex128,
+		types.String, types.UnsafePointer,
+		types.UntypedBool, types.UntypedInt, types.UntypedRune, types.UntypedFloat,
+		types.UntypedComplex, types.UntypedString, types.UntypedNil,
+	}
+	for _, kind := range all {
+		why, isRefused := refused[kind]
+		if got := runtimeScalarKinds[kind]; got == isRefused {
+			if isRefused {
+				t.Errorf("runtimeScalarKinds admits kind %d, but %s", kind, why)
+			} else {
+				t.Errorf("runtimeScalarKinds does not admit kind %d, which the runtime's scalar"+
+					" arm does; an author would have to annotate what publication already admits", kind)
+			}
+		}
+	}
+	if len(runtimeScalarKinds) != len(all)-len(refused) {
+		t.Errorf("runtimeScalarKinds has %d entries, want %d: a kind outside the enumerated"+
+			" universe was added without deciding what the runtime does with it",
+			len(runtimeScalarKinds), len(all)-len(refused))
+	}
+}
+
+// TestKernelSlotRowsOnlyExemptKernelSpellings pins the third narrowing: an
+// allowlist row is a claim about storage on a header
+// (*templateInventory).val handles by its own arm, so it exempts a .Native
+// field write and a keyed LVal{Native: ...} literal -- and nothing else.
+// lisp.Native, lisp.NativeOf and a falling-through lisp.Value all build an
+// LNative, whose payload val hands to native(), where every row type is
+// refused (see TestNativePayloadAnalyzerMirrorsTemplateAdmission for the
+// runtime half).
+func TestKernelSlotRowsOnlyExemptKernelSpellings(t *testing.T) {
+	// Universe's `byte` rather than Typ[Uint8]: go/types keeps them as
+	// separate *types.Basic objects with separate names, source that says
+	// []byte yields the former, and the allowlist is keyed on how
+	// types.TypeString spells what the source said.
+	bytePtr := types.NewPointer(types.NewSlice(types.Universe.Lookup("byte").Type()))
+	if key := types.TypeString(bytePtr, nil); key != "*[]byte" {
+		t.Fatalf("constructed key %q, want the allowlist's spelling *[]byte", key)
+	}
+	if got := classifyPayload(bytePtr, siteKernelSlot); got != payloadSafe {
+		t.Errorf("classifyPayload(*[]byte, siteKernelSlot) = %v, want payloadSafe:"+
+			" lisp.Bytes writes exactly this payload into an LBytes literal", got)
+	}
+	if got := classifyPayload(bytePtr, siteConstructor); got != payloadKernelSlotMisuse {
+		t.Errorf("classifyPayload(*[]byte, siteConstructor) = %v, want payloadKernelSlotMisuse:"+
+			" a constructor builds an LNative, and native() refuses a *[]byte", got)
 	}
 }
 

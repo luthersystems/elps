@@ -29,6 +29,10 @@ type counter int
 // match it, so it falls through to Native.
 type blob []byte
 
+// address is a defined type over uintptr, whose reflect.Kind is Uintptr --
+// the kind the runtime's scalar arm names in the half it REFUSES.
+type address uintptr
+
 // suite declares lisp.NativeCloner on its POINTER receiver.  Under the
 // template contract that is not an exemption: NewTemplate rejects mutable
 // payloads including NativeCloner implementations (lisp/native.go), so every
@@ -85,6 +89,22 @@ func valueNamedBytes(b blob) *lisp.LVal {
 	return lisp.Value(b) // want `lisp\.Value payload type nativepayload\.blob is not a known-safe value type`
 }
 
+// valueNotQuiteAnArm holds the shapes that LOOK like one of lisp.Value's
+// arms and are not, so Value falls through to Native and publication then
+// sees an opaque payload.  `[]**LVal` is the one that used to slip through:
+// the old isLValType looked through a pointer, so it read the extra layer as
+// Value's `[]*LVal` arm and exempted a construction the runtime rejects
+// (paired with TestNativePayloadAnalyzerMirrorsTemplateAdmission).
+func valueNotQuiteAnArm(deep []**lisp.LVal, errs []*lisp.ErrorVal, vals []lisp.LVal, nested [][]*lisp.LVal) {
+	_ = lisp.Value(deep)   // want `lisp\.Value payload type \[\]\*\*lisp\.LVal is not a known-safe value type`
+	_ = lisp.Value(errs)   // want `lisp\.Value payload type \[\]\*lisp\.ErrorVal is not a known-safe value type`
+	_ = lisp.Value(vals)   // want `lisp\.Value payload type \[\]lisp\.LVal is not a known-safe value type`
+	_ = lisp.Value(nested) // want `lisp\.Value payload type \[\]\[\]\*lisp\.LVal is not a known-safe value type`
+	// Native never had a Value arm to be confused by: the same slice is
+	// reported through the plain constructor too.
+	_ = lisp.Native(deep) // want `lisp\.Native payload type \[\]\*\*lisp\.LVal is not a known-safe value type`
+}
+
 // valueDirect covers every arm of lisp.Value's type switch: none of these
 // falls through to Native, so none is a construction.
 func valueDirect(s string, b []byte, i int, f float64, ok bool, cells []*lisp.LVal) {
@@ -138,8 +158,43 @@ func basics(s string, i int, f float64, ok bool, c counter, r rune) {
 	_ = &lisp.LVal{Native: c}
 }
 
-func unsafePointer(p unsafe.Pointer) *lisp.LVal {
-	return lisp.Native(p) // want `lisp\.Native payload type unsafe\.Pointer is not a known-safe value type`
+// widerScalars pins the rest of runtimeScalarKinds against the runtime's
+// own reflect.Kind list: every kind the runtime names in its admitting arm
+// is exempt here, so an author never annotates what publication admits.
+func widerScalars(i8 int8, i16 int16, i32 int32, i64 int64,
+	u uint, u8 uint8, u16 uint16, u32 uint32, u64 uint64,
+	f32 float32, c64 complex64, c128 complex128) {
+	_ = lisp.Native(i8)
+	_ = lisp.Native(i16)
+	_ = lisp.Native(i32)
+	_ = lisp.Native(i64)
+	_ = lisp.Native(u)
+	_ = lisp.Native(u8)
+	_ = lisp.Native(u16)
+	_ = lisp.Native(u32)
+	_ = lisp.Native(u64)
+	_ = lisp.Native(f32)
+	_ = lisp.Native(c64)
+	_ = lisp.Native(c128)
+}
+
+// addressesWearingBasicClothes is the pair of basic KINDS the runtime's
+// scalar arm refuses by name (reflect.Uintptr, reflect.UnsafePointer).  Both
+// have a *types.Basic underlying type, so a tier that merely asked "is the
+// underlying type basic" exempted a payload publication rejects -- which is
+// exactly what uintptr did before runtimeScalarKinds spelled the runtime's
+// list out.  Each is an address a VM can convert back through unsafe and
+// follow to whatever the publisher was pointing at.
+func addressesWearingBasicClothes(p unsafe.Pointer, u uintptr, a address) {
+	_ = lisp.Native(p) // want `lisp\.Native payload type unsafe\.Pointer is not a known-safe value type`
+	_ = lisp.Native(u) // want `lisp\.Native payload type uintptr is not a known-safe value type`
+	// A DEFINED type over uintptr is the same kind and the same hazard: the
+	// tier reads the underlying type, and reflect.Kind does too.
+	_ = lisp.Native(a)                   // want `lisp\.Native payload type nativepayload\.address is not a known-safe value type`
+	_ = lisp.NativeOf(u)                 // want `lisp\.NativeOf payload type uintptr is not a known-safe value type`
+	_ = lisp.Value(u)                    // want `lisp\.Value payload type uintptr is not a known-safe value type`
+	_ = &lisp.LVal{Native: u}            // want `LVal\.Native literal payload type uintptr is not a known-safe value type`
+	_ = &lisp.LVal{Native: uintptr(0x1)} // want `LVal\.Native literal payload type uintptr is not a known-safe value type`
 }
 
 func composites(m map[string]int, sl []int, ch chan int, fn func(), arr [2]int, st struct{ n int }) {
@@ -174,13 +229,51 @@ func clonerWrongShape(w *wrongCloner) *lisp.LVal {
 
 // --- the audited allowlist ---------------------------------------------------
 
-// kernelSlots covers the rows that survive the template re-audit: the
-// kernel's own representation storage, which templateInventory.val handles
-// by an explicit arm and the planner rebuilds per VM.
-func kernelSlots(b *[]byte, m *lisp.MapData) {
-	_ = lisp.Native(b)
-	_ = lisp.Native(m)
+// kernelSlots covers the rows that survive the template re-audit AT THE
+// SPELLINGS THE ROWS ARE TRUE FOR: a keyed literal and a field write, where
+// the header being built is the LBytes/LSortMap/LFun the kernel means and
+// templateInventory.val handles the payload by an explicit arm, never
+// handing it to native().  These are the shapes lisp.Bytes, SortedMap and
+// the funData constructors actually use (lisp/lisp.go, lisp/env.go).
+func kernelSlots(v *lisp.LVal, b *[]byte, m *lisp.MapData) {
 	_ = &lisp.LVal{Native: b}
+	_ = &lisp.LVal{Native: m}
+	v.Native = b
+	v.Native = m
+}
+
+// kernelSlotsThroughAConstructor is the SAME payload types through the
+// constructor spellings, and they are reported.  lisp.Native, lisp.NativeOf
+// and a falling-through lisp.Value all build an LNative header, and
+// templateInventory.val's LNative arm hands the payload straight to
+// native(), which knows nothing about kernel storage and refuses a *[]byte
+// or a *MapData like any other pointer.  Exempting these by TYPE is what let
+// `b := []byte{1}; lisp.Native(&b)` pass a static gate the runtime fails
+// (paired with TestNativePayloadAnalyzerMirrorsTemplateAdmission).
+//
+// *lisp.funData, the third row, cannot appear here: it is unexported, so no
+// package but lisp can spell a construction of one, and inside lisp the only
+// spellings are keyed literals.
+func kernelSlotsThroughAConstructor(b *[]byte, m *lisp.MapData) {
+	_ = lisp.Native(b)   // want `lisp\.Native payload type \*\[\]byte is a kernel representation slot`
+	_ = lisp.Native(m)   // want `lisp\.Native payload type \*lisp\.MapData is a kernel representation slot`
+	_ = lisp.NativeOf(b) // want `lisp\.NativeOf payload type \*\[\]byte is a kernel representation slot`
+	_ = lisp.Value(b)    // want `lisp\.Value payload type \*\[\]byte is a kernel representation slot`
+}
+
+// bytesAddressLocal is the reviewer's exact reproduction, spelled as a
+// caller would write it rather than as a parameter type.
+func bytesAddressLocal() *lisp.LVal {
+	b := []byte{1}
+	return lisp.Native(&b) // want `lisp\.Native payload type \*\[\]byte is a kernel representation slot`
+}
+
+// kernelSlotConstructorAnnotated pins that the site annotation is still the
+// way out when an author can say why the value never reaches a template --
+// the rows narrowing does not remove the escape hatch, it removes the
+// SILENT exemption.
+func kernelSlotConstructorAnnotated(b *[]byte) *lisp.LVal {
+	return lisp.Native(b) //elpsvet:allow-native fixture: a scratch header the caller discards before any template could publish it
 }
 
 // notRows covers the types the port allowlisted and the re-audit dropped:
@@ -213,6 +306,22 @@ func kernelSlotsByValueNotPointer(b []byte, m lisp.MapData) {
 	// is lisp.Value's own arm, but a native construction of one is not a row.
 	_ = lisp.Native(b) // want `lisp\.Native payload type \[\]byte is not a known-safe value type`
 	_ = lisp.Native(m) // want `lisp\.Native payload type lisp\.MapData is not a known-safe value type`
+}
+
+// --- the positive control ----------------------------------------------------
+
+// stillPasses is the negative-control test's other half: the constructions
+// publication ADMITS must keep passing, or a rule tightened until it reports
+// everything would look identical to a rule that mirrors the runtime.
+// lisp.Native(int64(1)) is the runtime's scalar arm; the marker tier's
+// positive control is markedValue in the nativemarker fixture, which has to
+// live under the module path to import internal/templatepolicy.  Both are
+// asserted against a real lisp.NewTemplate in
+// TestNativePayloadAnalyzerMirrorsTemplateAdmission.
+func stillPasses() {
+	_ = lisp.Native(int64(1))
+	_ = lisp.Value([]*lisp.LVal{})
+	_ = lisp.Value([]byte{1})
 }
 
 // --- interface-typed payloads ----------------------------------------------

@@ -35,13 +35,16 @@
 // ErrorVal, `(*lisp.ErrorVal)(v).Native`, a promoted `w.Native` through an
 // embedding struct) -- is REPORTED unless one of:
 //
-//  1. the payload's static type has a BASIC underlying type (string, int,
-//     bool, a float, a defined type over one of those, ...).  A non-pointer
-//     value of basic underlying type inside an interface is immutable by
+//  1. the payload's static type has a basic underlying type that is on
+//     runtimeScalarKinds -- the kind-for-kind mirror of the scalar
+//     reflect.Kind arm of templateInventory.native.  A non-pointer value of
+//     scalar underlying type inside an interface is immutable by
 //     construction: it is not addressable, so every type assertion yields a
-//     copy and no VM can reach the shared value.  This mirrors the scalar
-//     reflect.Kind arm of templateInventory.native.  unsafe.Pointer is
-//     excluded -- a pointer wearing a basic type's clothes;
+//     copy and no VM can reach the shared value.  `uintptr` and
+//     `unsafe.Pointer` are NOT in the tier, because they are not in the
+//     runtime's either -- both are addresses wearing a basic type's clothes,
+//     and the runtime names reflect.Uintptr and reflect.UnsafePointer in the
+//     arm it refuses;
 //
 //  2. the payload's static type is a STRUCT VALUE whose method set carries
 //     internal/templatepolicy.Immutable's unexported templateImmutable()
@@ -54,10 +57,16 @@
 //     approval from the embedder instead;
 //
 //  3. the payload's type is on allowedPayloadTypes below -- the AUDITED
-//     inventory, each row carrying the reason a human checked.  It holds
-//     only the kernel's own representation slots, which never reach
-//     templateInventory.native at all because templateInventory.val carries
-//     an explicit arm for each;
+//     inventory, each row carrying the reason a human checked -- AND the
+//     site is one of the kernel's own representation spellings, a `.Native`
+//     field write or a keyed `LVal{Native: ...}` literal.  Every row is a
+//     kernel storage slot that templateInventory.val handles by an explicit
+//     arm on a non-LNative header, so it never reaches
+//     templateInventory.native.  A CONSTRUCTOR -- Native, NativeOf, a
+//     falling-through Value -- always builds an LNative, whose payload val
+//     hands straight to native(), where a `*[]byte`, a `*MapData` and a
+//     `*funData` are refused like any other pointer; so the rows do not
+//     exempt a constructor and it is reported (payloadKernelSlotMisuse);
 //
 //  4. an audited `//elpsvet:allow-native <justification>` comment covers the
 //     site: trailing on the reported line, standalone on the line above it,
@@ -143,7 +152,17 @@
 //   - anything done through reflect (`reflect.ValueOf(v).Elem().FieldByName
 //     ("Native").Set(...)`): a runtime property, not a source one;
 //   - a payload constructed in ANOTHER module: that module's to audit --
-//     substrate runs the same rule over its own tree for exactly that reason.
+//     substrate runs the same rule over its own tree for exactly that reason;
+//   - which HEADER TYPE a kernel-slot spelling is building.  The allowlist
+//     tier trusts a `.Native` write and a keyed `LVal{Native: ...}` literal
+//     because those are how the kernel writes LBytes, LSortMap and LFun
+//     storage, and templateInventory.val routes each by the header's Type.
+//     An `LVal{Type: LNative, Native: someRowType}` literal would therefore
+//     be exempt here and refused at publication.  Nothing in the tree writes
+//     one -- the LNative header has exactly one constructor, lisp.Native --
+//     and reading the sibling Type key to narrow it further would trade a
+//     shape nobody writes for a rule that only works when the Type is a
+//     literal in the same expression.
 package main
 
 import (
@@ -233,6 +252,30 @@ var allowedPayloadTypes = map[string]string{
 		"assoc!/dissoc! cannot reach the published maps",
 }
 
+// payloadSite says WHICH SPELLING built the payload, because the allowlist
+// tier is only true for some of them.
+//
+// lisp.Native, lisp.NativeOf and a lisp.Value that falls through all build an
+// LNative header (lisp/lisp.go, lisp/native.go), and templateInventory.val's
+// LNative arm hands that payload straight to native() -- which knows nothing
+// about the kernel's representation slots and refuses a *[]byte, a *MapData
+// and a *funData like any other pointer.  The allowlist rows are true only
+// where the kernel writes its own storage: a .Native field write or a keyed
+// LVal{Native: ...} literal on an LBytes/LSortMap/LFun header, which val
+// routes to its explicit *[]byte, mapData and LFun arms instead.
+type payloadSite int
+
+const (
+	// siteConstructor: lisp.Native(x), lisp.NativeOf[T](x), or a
+	// lisp.Value(x) the compiler can see falling through.  Always an
+	// LNative header, so the allowlist does not apply.
+	siteConstructor payloadSite = iota
+	// siteKernelSlot: `v.Native = x` or `lisp.LVal{Native: x}` -- the
+	// spellings the kernel uses for its own representation storage, and the
+	// only ones templateInventory.val can route away from native().
+	siteKernelSlot
+)
+
 func runNativePayload(pass *analysis.Pass) (interface{}, error) {
 	for _, file := range pass.Files {
 		allow := markerLinesMatching(pass.Fset, file, justifiedNativeAllow)
@@ -301,7 +344,7 @@ func checkNativeCall(pass *analysis.Pass, call *ast.CallExpr, allow map[int]bool
 	default:
 		return
 	}
-	reportNativePayload(pass, call.Pos(), pass.TypesInfo.TypeOf(arg), "lisp."+fn.Name(), allow)
+	reportNativePayload(pass, call.Pos(), pass.TypesInfo.TypeOf(arg), "lisp."+fn.Name(), siteConstructor, allow)
 }
 
 // checkNativeLiteral handles a keyed literal setting the lisp.LVal.Native
@@ -323,7 +366,7 @@ func checkNativeLiteral(pass *analysis.Pass, lit *ast.CompositeLit, allow map[in
 		if !ok || !isNativeField(pass.TypesInfo.Uses[key]) {
 			continue
 		}
-		reportNativePayload(pass, lit.Pos(), pass.TypesInfo.TypeOf(kv.Value), "LVal.Native literal", allow,
+		reportNativePayload(pass, lit.Pos(), pass.TypesInfo.TypeOf(kv.Value), "LVal.Native literal", siteKernelSlot, allow,
 			kv.Key.Pos(), kv.Value.Pos())
 	}
 }
@@ -342,7 +385,7 @@ func checkNativeAssign(pass *analysis.Pass, stmt *ast.AssignStmt, allow map[int]
 		if !ok || !selectsNativeField(pass, sel) {
 			continue
 		}
-		reportNativePayload(pass, stmt.Pos(), pass.TypesInfo.TypeOf(stmt.Rhs[i]), "LVal.Native assignment", allow)
+		reportNativePayload(pass, stmt.Pos(), pass.TypesInfo.TypeOf(stmt.Rhs[i]), "LVal.Native assignment", siteKernelSlot, allow)
 	}
 }
 
@@ -369,7 +412,7 @@ func checkNativeAddress(pass *analysis.Pass, expr *ast.UnaryExpr, allow map[int]
 // reportNativePayload classifies payload and reports at pos unless a
 // justified marker covers pos's line or any of the also lines (a literal's
 // key and value positions).
-func reportNativePayload(pass *analysis.Pass, pos token.Pos, payload types.Type, what string, allow map[int]bool, also ...token.Pos) {
+func reportNativePayload(pass *analysis.Pass, pos token.Pos, payload types.Type, what string, site payloadSite, allow map[int]bool, also ...token.Pos) {
 	if allow[pass.Fset.Position(pos).Line] {
 		return
 	}
@@ -378,7 +421,7 @@ func reportNativePayload(pass *analysis.Pass, pos token.Pos, payload types.Type,
 			return
 		}
 	}
-	switch classifyPayload(payload) {
+	switch classifyPayload(payload, site) {
 	case payloadSafe:
 		return
 	case payloadDynamic:
@@ -394,6 +437,16 @@ func reportNativePayload(pass *analysis.Pass, pos token.Pos, payload types.Type,
 				" before any sharing policy runs, so no marker, allowlist row or native policy can make it"+
 				" publishable; keep the stack out of the payload, or annotate //%s with a justification"+
 				" that the value never reaches a template",
+			what, payloadTypeString(payload), nativeAllowMarker)
+	case payloadKernelSlotMisuse:
+		pass.Reportf(pos,
+			"%s payload type %s is a kernel representation slot, and the allowlist row for it is true"+
+				" only where the kernel writes its own storage -- a .Native field write or an"+
+				" LVal{Native: ...} literal on an LBytes/LSortMap/LFun header, which"+
+				" (*templateInventory).val routes to its own arm (lisp/template.go). A constructor"+
+				" always builds an LNative header, whose payload val hands to native(), and native()"+
+				" refuses this type; build the header the kernel builds, or annotate //%s with a"+
+				" justification that the value provably never reaches a template",
 			what, payloadTypeString(payload), nativeAllowMarker)
 	case payloadReport:
 		pass.Reportf(pos,
@@ -420,6 +473,12 @@ const (
 	// payloadDiagnostic: a retained call stack, which publication refuses
 	// outright -- no marker, row or policy can make it admissible.
 	payloadDiagnostic
+	// payloadKernelSlotMisuse: an allowedPayloadTypes row reached through a
+	// CONSTRUCTOR spelling.  The row is real, but it describes the kernel's
+	// own representation storage on a non-LNative header; a constructor
+	// makes an LNative, which templateInventory.val hands to native(), and
+	// native() refuses the type.
+	payloadKernelSlotMisuse
 )
 
 // classifyPayload decides a payload type's verdict, mirroring
@@ -429,7 +488,7 @@ const (
 // consulted on the type ITSELF, before the underlying type is looked at --
 // an audited kernel slot is a pointer and a marked payload is a struct, both
 // of which would otherwise be reported.
-func classifyPayload(t types.Type) payloadVerdict {
+func classifyPayload(t types.Type, site payloadSite) payloadVerdict {
 	if t == nil {
 		return payloadDynamic
 	}
@@ -441,21 +500,79 @@ func classifyPayload(t types.Type) payloadVerdict {
 		return payloadDiagnostic
 	}
 	if _, ok := allowedPayloadTypes[types.TypeString(t, nil)]; ok {
-		return payloadSafe
+		// A row is a claim about a header templateInventory.val handles by
+		// an explicit arm, never about a payload it routes to native().  A
+		// constructor builds an LNative and so always routes to native(),
+		// where every row type is refused -- so the row does not exempt
+		// such a site, and saying that precisely beats reporting it as an
+		// unclassified pointer.
+		if site == siteKernelSlot {
+			return payloadSafe
+		}
+		return payloadKernelSlotMisuse
 	}
 	if declaresTemplateImmutable(t) {
 		return payloadSafe
 	}
 	switch u := t.Underlying().(type) {
 	case *types.Basic:
-		if u.Kind() == types.UnsafePointer {
-			return payloadReport
+		if runtimeScalarKinds[u.Kind()] {
+			return payloadSafe
 		}
-		return payloadSafe
+		// Uintptr and UnsafePointer: an address wearing a basic type's
+		// clothes, and named in the runtime's REJECTED arm.
+		return payloadReport
 	case *types.Interface:
 		return payloadDynamic
 	}
 	return payloadReport
+}
+
+// runtimeScalarKinds mirrors, kind for kind, the scalar arm of
+// (*templateInventory).native (lisp/template.go).  That switch also spells
+// out the kinds it refuses, so the two lists can be read against each other:
+// of the kinds that can reach here at all -- the ones with a *types.Basic
+// underlying type -- reflect.Uintptr and reflect.UnsafePointer are on the
+// runtime's refused arm and are therefore absent here.  Both are addresses
+// with a scalar's manners: immutable inside the interface, but a VM that
+// converts one back through unsafe reaches whatever the publisher was
+// pointing at.  Every composite kind the runtime refuses has no basic
+// underlying type and so never reaches this map at all.
+//
+// The untyped kinds are defensive rather than load-bearing: an untyped
+// constant argument is converted to its DEFAULT type before it lands in an
+// interface parameter, so what the type checker records is int, float64,
+// bool, string or rune (= int32), each of which is scalar at runtime too.
+// An untyped nil argument makes a nil payload, which native() admits on its
+// first line.
+var runtimeScalarKinds = map[types.BasicKind]bool{
+	types.Bool:   true,
+	types.String: true,
+
+	types.Int:   true,
+	types.Int8:  true,
+	types.Int16: true,
+	types.Int32: true,
+	types.Int64: true,
+
+	types.Uint:   true,
+	types.Uint8:  true,
+	types.Uint16: true,
+	types.Uint32: true,
+	types.Uint64: true,
+
+	types.Float32:    true,
+	types.Float64:    true,
+	types.Complex64:  true,
+	types.Complex128: true,
+
+	types.UntypedBool:    true,
+	types.UntypedInt:     true,
+	types.UntypedRune:    true,
+	types.UntypedFloat:   true,
+	types.UntypedComplex: true,
+	types.UntypedString:  true,
+	types.UntypedNil:     true,
 }
 
 // declaresTemplateImmutable reports whether t is admitted by the marker tier
@@ -518,10 +635,18 @@ func payloadTypeString(t types.Type) string {
 }
 
 // directlyRepresentable reports whether lisp.Value's type switch converts t
-// without falling through to Native.  Mirrors the switch in lisp/lisp.go:
-// bool, string, []byte, int, float64, []*LVal.  Identity is the right
-// comparison -- a Go type switch matches `case []byte` only for the unnamed
-// type, so `type Blob []byte` DOES become a native.
+// without falling through to Native.  It mirrors the switch in lisp/lisp.go
+// arm for arm -- bool, string, []byte, int, float64, []*LVal -- and the
+// mirror has to be EXACT IN BOTH DIRECTIONS.  Matching too little reports a
+// call that constructs no native; matching too MUCH silently exempts one
+// that does, which is the failure this shape had: an isLValType that
+// accepted LVal *or* *LVal stripped one pointer layer too many, so a
+// `[]**LVal` -- which Value has no arm for, and which therefore becomes an
+// opaque native that publication refuses -- read as Value's `[]*LVal` arm.
+//
+// Identity is the right comparison throughout: a Go type switch matches
+// `case []byte` only for the unnamed type, so `type Blob []byte` DOES become
+// a native, and `[]*ErrorVal` is not `[]*LVal` however alike the two look.
 func directlyRepresentable(t types.Type) bool {
 	if t == nil {
 		return false
@@ -530,32 +655,36 @@ func directlyRepresentable(t types.Type) bool {
 	case *types.Basic:
 		switch u.Kind() {
 		case types.Bool, types.String, types.Int, types.Float64,
+			// An untyped constant argument is recorded with its default
+			// type, so these are defensive.  The defaults for an untyped
+			// rune and an untyped complex are deliberately absent: Value
+			// has no int32 or complex128 arm either.
 			types.UntypedBool, types.UntypedString, types.UntypedInt, types.UntypedFloat:
 			return true
 		default:
 			return false
 		}
 	case *types.Slice:
-		if b, ok := types.Unalias(u.Elem()).(*types.Basic); ok && b.Kind() == types.Uint8 {
-			return true // []byte
+		elem := types.Unalias(u.Elem())
+		if b, ok := elem.(*types.Basic); ok && b.Kind() == types.Uint8 {
+			return true // []byte -- the unnamed element type only
 		}
-		ptr, ok := types.Unalias(u.Elem()).(*types.Pointer)
-		return ok && isLValType(ptr.Elem()) // []*lisp.LVal
+		ptr, ok := elem.(*types.Pointer)
+		if !ok {
+			return false
+		}
+		return isLValNamed(types.Unalias(ptr.Elem())) // []*lisp.LVal, and nothing deeper
 	}
 	return false
 }
 
-// isLValType reports whether t is lisp.LVal or *lisp.LVal.  Used only to
-// recognise Value's `[]*LVal` arm; field access is matched on the field
-// object (isNativeField), never on the receiver's spelled type.
-func isLValType(t types.Type) bool {
-	if t == nil {
-		return false
-	}
-	t = types.Unalias(t)
-	if ptr, ok := t.(*types.Pointer); ok {
-		t = types.Unalias(ptr.Elem())
-	}
+// isLValNamed reports whether t is EXACTLY the named type lisp.LVal.  It
+// does NOT look through a pointer: its one caller has already accounted for
+// the single layer Value's `[]*LVal` arm spells, and looking through a
+// second is what let `[]**LVal` pass.  Field access is matched on the field
+// object (isNativeField), never on a receiver's spelled type, so nothing
+// else needs this.
+func isLValNamed(t types.Type) bool {
 	named, ok := t.(*types.Named)
 	if !ok {
 		return false
