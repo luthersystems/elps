@@ -4415,6 +4415,14 @@ func TestDocumentSizeGuard_OverLimitDocumentHasNoASTFeatures(t *testing.T) {
 // split) and formatting reaches formatter.FormatFile (a full parse). Each is
 // linear in a document the limit exists to keep off the hot path.
 //
+// codeAction is the same shape reached by a different route: it needs a
+// diagnostic to act on, and a client that received one while the document was
+// small keeps sending it -- the debounce republishes 300ms later, and nothing
+// invalidates what the client already holds. So the sequence below is the real
+// one: lint the small document, keep what it published, grow the document past
+// the limit, then ask for the quick fix. suppressLintAction splits the whole
+// content to find the end of the diagnostic's line.
+//
 // So measure allocation instead: an 8 MiB document under a 16 KiB limit, and a
 // ceiling far below one copy of the content. Reverting any one guard puts that
 // handler in the megabytes.
@@ -4427,13 +4435,27 @@ func TestDocumentSizeGuard_OverLimitHandlersAreCheap(t *testing.T) {
 	const uri = "file:///cheap.lisp"
 
 	// Well-formed source with a comment block, so every handler below would
-	// have something to find if it looked.
-	const unit = ";; fold me\n;; fold me too\n(defun add (x y)\n  (+ x y))\n(add 1 2)\n"
+	// have something to find if it looked. The unused parameter y is what
+	// makes one copy of it lint-dirty, which the codeAction row needs.
+	const unit = ";; fold me\n;; fold me too\n(defun add (x y)\n  (+ x 1))\n(add 1 2)\n"
 	big := strings.Repeat(unit, (8<<20)/len(unit)+1)
 	require.Greater(t, len(big), 8<<20)
 
 	s := testServerWith(WithMaxDocumentBytes(limit))
-	doc := s.docs.Open(uri, 1, big)
+
+	// A GENUINE stale diagnostic, not a forged one: the server lints the small
+	// document and publishes "unused parameter: y", the client keeps it, and
+	// only then does the document grow past the limit.
+	doc := s.docs.Open(uri, 1, unit)
+	s.analyzeAndPublish(doc)
+	doc.mu.Lock()
+	stale := append([]protocol.Diagnostic(nil), doc.publishedDiagnostics...)
+	doc.mu.Unlock()
+	require.Len(t, stale, 1, "the small document must produce exactly one lint diagnostic")
+	require.NotNil(t, stale[0].Source)
+	require.Equal(t, "elps-lint", *stale[0].Source, "the stale diagnostic must be one codeAction acts on")
+
+	doc = s.docs.Change(uri, 2, big)
 	require.True(t, doc.OverLimit(), "the fixture must be over the limit")
 
 	pos := func(line, char int) protocol.TextDocumentPositionParams {
@@ -4465,6 +4487,13 @@ func TestDocumentSizeGuard_OverLimitHandlersAreCheap(t *testing.T) {
 		}},
 		{"foldingRange", func() (any, error) {
 			return s.textDocumentFoldingRange(mockContext(), &protocol.FoldingRangeParams{TextDocument: ident})
+		}},
+		{"codeAction", func() (any, error) {
+			return s.textDocumentCodeAction(mockContext(), &protocol.CodeActionParams{
+				TextDocument: ident,
+				Range:        stale[0].Range,
+				Context:      protocol.CodeActionContext{Diagnostics: stale},
+			})
 		}},
 	}
 
