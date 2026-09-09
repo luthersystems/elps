@@ -79,7 +79,7 @@ func TestEveryLValStructCopyIsInAWalkerOrAllowlisted(t *testing.T) {
 	// Splice, shallowUnquote and FunRef, which are not part of any walk, and
 	// a file-level rule would exempt all four along with it.
 	walkers := map[string]bool{}
-	for _, m := range WalkerMemos() {
+	for _, m := range registeredWalkerMemos() {
 		walkers[m.Walker] = true
 	}
 	inWalker := func(fn string) bool {
@@ -96,8 +96,8 @@ func TestEveryLValStructCopyIsInAWalkerOrAllowlisted(t *testing.T) {
 		return false
 	}
 
-	allowed := map[string]LValCopyExemption{}
-	for _, e := range LValCopyExemptions() {
+	allowed := map[string]lvalCopyExemption{}
+	for _, e := range registeredLValCopyExemptions() {
 		allowed[e.Func] = e
 	}
 
@@ -134,7 +134,7 @@ func TestEveryLValStructCopyIsInAWalkerOrAllowlisted(t *testing.T) {
 
 	// Shrink-only, both directions: a row whose function no longer copies
 	// anything is dead, and a function that grew a copy needs re-review.
-	for _, e := range LValCopyExemptions() {
+	for _, e := range registeredLValCopyExemptions() {
 		got, ok := counts[e.Func]
 		if !ok {
 			t.Errorf("lvalCopyExemptions has a row for %q, which no longer contains an LVal struct copy\n"+

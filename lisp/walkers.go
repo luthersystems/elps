@@ -45,38 +45,38 @@ import "sort"
 //     stated exactly — a payload the walker rebuilds without memoising is a
 //     payload two headers come apart over.
 
-// PayloadKind names a class of storage a value-rebuilding walker must
+// payloadKind names a class of storage a value-rebuilding walker must
 // memoise per payload rather than per *LVal header.
-type PayloadKind string
+type payloadKind string
 
 const (
-	// PayloadSortedMap is the *MapData behind an LSortMap.
-	PayloadSortedMap PayloadKind = "*MapData"
-	// PayloadBytes is the *[]byte behind an LBytes.
-	PayloadBytes PayloadKind = "*[]byte"
-	// PayloadNative is a native payload held by pointer — the NativeCloner
+	// payloadSortedMap is the *MapData behind an LSortMap.
+	payloadSortedMap payloadKind = "*MapData"
+	// payloadBytes is the *[]byte behind an LBytes.
+	payloadBytes payloadKind = "*[]byte"
+	// payloadNative is a native payload held by pointer — the NativeCloner
 	// protocol's subject.  A non-pointer payload has no identity to
 	// preserve and is deliberately not memoised.
-	PayloadNative PayloadKind = "native pointer payload"
-	// PayloadFunction is the *funData behind an LFun.
-	PayloadFunction PayloadKind = "*funData"
-	// PayloadValue is the *LVal header itself.  Every walker memoises it;
+	payloadNative payloadKind = "native pointer payload"
+	// payloadFunction is the *funData behind an LFun.
+	payloadFunction payloadKind = "*funData"
+	// payloadValue is the *LVal header itself.  Every walker memoises it;
 	// it is what bounds the walk and reproduces header-level aliasing.
-	PayloadValue PayloadKind = "*LVal"
-	// PayloadSealed is a set of sealed *LVal roots: the template path's
+	payloadValue payloadKind = "*LVal"
+	// payloadSealed is a set of sealed *LVal roots: the template path's
 	// record of which admitted values are published by reference rather
 	// than rebuilt.
-	PayloadSealed PayloadKind = "sealed *LVal set"
-	// PayloadEnv is an *LEnv.  Only the template path copies environments.
-	PayloadEnv PayloadKind = "*LEnv"
+	payloadSealed payloadKind = "sealed *LVal set"
+	// payloadEnv is an *LEnv.  Only the template path copies environments.
+	payloadEnv payloadKind = "*LEnv"
 )
 
-// WalkerMemo records one walker's memo tables.
-type WalkerMemo struct {
+// walkerMemo records one walker's memo tables.
+type walkerMemo struct {
 	// Fields maps each memoised kind to the struct field holding its memo,
 	// so the source scan can tie a field to a kind and a deleted field
 	// fails the guard even when no test generates the shape it protects.
-	Fields map[PayloadKind]string
+	Fields map[payloadKind]string
 	// Walker is the Go type that performs the walk.
 	Walker string
 	// Doc points at the prose governing the walker.
@@ -85,16 +85,16 @@ type WalkerMemo struct {
 	// payload.  Identical across every walker whose Rebuilds is true: this
 	// is the set the registry check compares, and issue #585 is a kind
 	// present in one walker's set and absent from another's.
-	Payloads []PayloadKind
+	Payloads []payloadKind
 	// Local are payload memos this walker keeps that no other rebuilding
 	// walker has an equivalent for, because no other walker rebuilds that
 	// storage at all.  They are NOT compared across walkers — extra
 	// memoisation is never the #585 bug — but they are still named here so
 	// the source scan can tie the field to a kind.
-	Local []PayloadKind
+	Local []payloadKind
 	// Graph are the memos that bound the walk itself, or record admitted
 	// identity, rather than reproducing payload sharing.
-	Graph []PayloadKind
+	Graph []payloadKind
 	// Rebuilds reports whether the walker rebuilds payload storage.  A
 	// walker that shares payloads by design — the macro stamper, which
 	// replaces headers and never their contents, and the template admission
@@ -105,8 +105,8 @@ type WalkerMemo struct {
 
 // Kinds returns every kind the walker memoises, payloads first, in a
 // canonical order.
-func (m WalkerMemo) Kinds() []PayloadKind {
-	out := append(append([]PayloadKind(nil), m.Payloads...), m.Local...)
+func (m walkerMemo) Kinds() []payloadKind {
+	out := append(append([]payloadKind(nil), m.Payloads...), m.Local...)
 	out = append(out, m.Graph...)
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
@@ -114,17 +114,17 @@ func (m WalkerMemo) Kinds() []PayloadKind {
 
 // walkerMemos is the registry.  Adding a walker is one row; a walker with a
 // memo-shaped field and no row fails the source scan.
-var walkerMemos = []WalkerMemo{
+var walkerMemos = []walkerMemo{
 	{
 		Walker:   "detacher",
 		Rebuilds: true,
-		Payloads: []PayloadKind{PayloadSortedMap, PayloadBytes, PayloadNative},
-		Graph:    []PayloadKind{PayloadValue},
-		Fields: map[PayloadKind]string{
-			PayloadSortedMap: "maps",
-			PayloadBytes:     "bytes",
-			PayloadNative:    "natives",
-			PayloadValue:     "seen",
+		Payloads: []payloadKind{payloadSortedMap, payloadBytes, payloadNative},
+		Graph:    []payloadKind{payloadValue},
+		Fields: map[payloadKind]string{
+			payloadSortedMap: "maps",
+			payloadBytes:     "bytes",
+			payloadNative:    "natives",
+			payloadValue:     "seen",
 		},
 		Doc: "lisp/detach.go, lisp/copy.go (issue #585)",
 	},
@@ -136,17 +136,17 @@ var walkerMemos = []WalkerMemo{
 		// every VM the template mints.
 		Walker:   "templateCompiler",
 		Rebuilds: true,
-		Payloads: []PayloadKind{PayloadSortedMap, PayloadBytes, PayloadNative},
-		Local:    []PayloadKind{PayloadFunction},
-		Graph:    []PayloadKind{PayloadValue, PayloadEnv, PayloadSealed},
-		Fields: map[PayloadKind]string{
-			PayloadSortedMap: "maps",
-			PayloadBytes:     "bytes",
-			PayloadNative:    "natives",
-			PayloadFunction:  "functions",
-			PayloadValue:     "values",
-			PayloadEnv:       "envs",
-			PayloadSealed:    "sealed",
+		Payloads: []payloadKind{payloadSortedMap, payloadBytes, payloadNative},
+		Local:    []payloadKind{payloadFunction},
+		Graph:    []payloadKind{payloadValue, payloadEnv, payloadSealed},
+		Fields: map[payloadKind]string{
+			payloadSortedMap: "maps",
+			payloadBytes:     "bytes",
+			payloadNative:    "natives",
+			payloadFunction:  "functions",
+			payloadValue:     "values",
+			payloadEnv:       "envs",
+			payloadSealed:    "sealed",
 		},
 		Doc: "lisp/template_plan.go (Template.NewVM)",
 	},
@@ -159,22 +159,22 @@ var walkerMemos = []WalkerMemo{
 		// those two rows name the same kinds.
 		Walker:   "templateInventory",
 		Rebuilds: false,
-		Graph:    []PayloadKind{PayloadValue, PayloadEnv, PayloadSealed, PayloadSortedMap, PayloadBytes},
-		Fields: map[PayloadKind]string{
-			PayloadValue:     "values",
-			PayloadEnv:       "envs",
-			PayloadSealed:    "sealed",
-			PayloadSortedMap: "maps",
-			PayloadBytes:     "byteSeen",
+		Graph:    []payloadKind{payloadValue, payloadEnv, payloadSealed, payloadSortedMap, payloadBytes},
+		Fields: map[payloadKind]string{
+			payloadValue:     "values",
+			payloadEnv:       "envs",
+			payloadSealed:    "sealed",
+			payloadSortedMap: "maps",
+			payloadBytes:     "byteSeen",
 		},
 		Doc: "lisp/template.go (lisp.NewTemplate admission)",
 	},
 	{
 		Walker:   "macroStamper",
 		Rebuilds: false,
-		Graph:    []PayloadKind{PayloadValue},
-		Fields: map[PayloadKind]string{
-			PayloadValue: "copies",
+		Graph:    []payloadKind{payloadValue},
+		Fields: map[payloadKind]string{
+			payloadValue: "copies",
 		},
 		Doc: "lisp/macro.go (issues #582, #583, #586)",
 	},
@@ -187,30 +187,31 @@ var walkerMemos = []WalkerMemo{
 		// walk (the array is not memo-shaped, so only the map is named here).
 		Walker:   "copier",
 		Rebuilds: true,
-		Payloads: []PayloadKind{PayloadSortedMap, PayloadBytes, PayloadNative},
-		Graph:    []PayloadKind{PayloadValue},
-		Fields: map[PayloadKind]string{
-			PayloadSortedMap: "maps",
-			PayloadBytes:     "bytes",
-			PayloadNative:    "natives",
-			PayloadValue:     "seen",
+		Payloads: []payloadKind{payloadSortedMap, payloadBytes, payloadNative},
+		Graph:    []payloadKind{payloadValue},
+		Fields: map[payloadKind]string{
+			payloadSortedMap: "maps",
+			payloadBytes:     "bytes",
+			payloadNative:    "natives",
+			payloadValue:     "seen",
 		},
 		Doc: "lisp/copier.go ((*LVal).Copy, issue #604)",
 	},
 }
 
-// WalkerMemos returns the registry, DEEP-copied so a caller cannot edit it.
-// A shallow copy would share Fields, Payloads, Local and Graph with the
-// registry itself, and a caller that edited one — a test building a weakened
-// variant, say — would silently rewrite what every later caller reads.
-func WalkerMemos() []WalkerMemo {
-	out := make([]WalkerMemo, len(walkerMemos))
+// registeredWalkerMemos returns the registry, DEEP-copied so a caller
+// cannot edit it.  A shallow copy would share Fields, Payloads, Local and
+// Graph with the registry itself, and a caller that edited one — a test
+// building a weakened variant, say — would silently rewrite what every later
+// caller reads.
+func registeredWalkerMemos() []walkerMemo {
+	out := make([]walkerMemo, len(walkerMemos))
 	for i, m := range walkerMemos {
-		m.Payloads = append([]PayloadKind(nil), m.Payloads...)
-		m.Local = append([]PayloadKind(nil), m.Local...)
-		m.Graph = append([]PayloadKind(nil), m.Graph...)
+		m.Payloads = append([]payloadKind(nil), m.Payloads...)
+		m.Local = append([]payloadKind(nil), m.Local...)
+		m.Graph = append([]payloadKind(nil), m.Graph...)
 		if m.Fields != nil {
-			f := make(map[PayloadKind]string, len(m.Fields))
+			f := make(map[payloadKind]string, len(m.Fields))
 			for k, v := range m.Fields {
 				f[k] = v
 			}
@@ -221,21 +222,10 @@ func WalkerMemos() []WalkerMemo {
 	return out
 }
 
-// WalkerMemoKinds returns the payload kinds the named walker memoises, or
-// nil when the name is not registered.
-func WalkerMemoKinds(walker string) []PayloadKind {
-	for _, m := range walkerMemos {
-		if m.Walker == walker {
-			return m.Kinds()
-		}
-	}
-	return nil
-}
-
-// MemoExemption is one row of the shrink-only exemption list: a memo-shaped
+// memoExemption is one row of the shrink-only exemption list: a memo-shaped
 // field, or a payload type a rebuilding walker copies without memoising,
 // that is deliberately outside the registry.
-type MemoExemption struct {
+type memoExemption struct {
 	// Subject is the struct field ("lisp.cycleState.path") or payload type
 	// ("*CallStack") the row exempts.
 	Subject string
@@ -247,7 +237,7 @@ type MemoExemption struct {
 // stops being needed, and a new row is a design decision that belongs in a
 // review, not a way to make a red guard green.  Every row states why the
 // subject cannot carry the aliasing bug the registry exists to prevent.
-var memoExemptions = []MemoExemption{
+var memoExemptions = []memoExemption{
 	{
 		Subject: "*CallStack",
 		Reason: "an LError's recorded stack, deep-copied per header by detachCallStack rather than memoised per payload. " +
@@ -288,15 +278,15 @@ var memoExemptions = []MemoExemption{
 	},
 }
 
-// WalkerNote is one row of the shrink-only list of registered walkers that
+// walkerNote is one row of the shrink-only list of registered walkers that
 // keep NO payload memo tables at all.
 //
 // It is not an exemption and not a verdict.  An exemption says a payload
 // kind cannot carry the aliasing bug; this row says the walker declares no
 // memos, so the registry check has nothing to compare it against, and
-// records what the walker does today so a reader of WalkerMemos cannot
+// records what the walker does today so a reader of registeredWalkerMemos cannot
 // mistake it for a walker that was compared and passed.
-type WalkerNote struct {
+type walkerNote struct {
 	// Walker is the registry row this note belongs to.
 	Walker string
 	// Note describes the walker's memo behaviour as it is TODAY, in terms
@@ -307,19 +297,19 @@ type WalkerNote struct {
 // unmemoisedWalkers is SHRINK-ONLY.  A row is deleted when its walker
 // declares memo Fields; a NEW row is a design decision that belongs in a
 // review, not a way to make a red guard green.
-var unmemoisedWalkers = []WalkerNote{}
+var unmemoisedWalkers = []walkerNote{}
 
-// WalkerNotes returns the unmemoised-walker list, copied.
-func WalkerNotes() []WalkerNote {
-	out := make([]WalkerNote, len(unmemoisedWalkers))
+// registeredWalkerNotes returns the unmemoised-walker list, copied.
+func registeredWalkerNotes() []walkerNote {
+	out := make([]walkerNote, len(unmemoisedWalkers))
 	copy(out, unmemoisedWalkers)
 	return out
 }
 
-// IsUnmemoisedWalker reports whether the named walker has an open row in
+// isUnmemoisedWalker reports whether the named walker has an open row in
 // unmemoisedWalkers.  The registry checks consult it so such a walker is
 // REPORTED rather than silently compared against walkers that do memoise.
-func IsUnmemoisedWalker(walker string) bool {
+func isUnmemoisedWalker(walker string) bool {
 	for _, n := range unmemoisedWalkers {
 		if n.Walker == walker {
 			return true
@@ -328,14 +318,7 @@ func IsUnmemoisedWalker(walker string) bool {
 	return false
 }
 
-// MemoExemptions returns the exemption list, copied.
-func MemoExemptions() []MemoExemption {
-	out := make([]MemoExemption, len(memoExemptions))
-	copy(out, memoExemptions)
-	return out
-}
-
-// LValCopyExemption is one row of the shrink-only allowlist for STRUCT
+// lvalCopyExemption is one row of the shrink-only allowlist for STRUCT
 // COPIES of an LVal that happen outside a registered walker.
 //
 // `*cp = *v` on an LVal is how implicit payload sharing is born: every
@@ -349,7 +332,7 @@ func MemoExemptions() []MemoExemption {
 // a line number drifts on any edit above it, but a second copy appearing in
 // an allowlisted function is exactly the change that should be re-reviewed,
 // and the count catches it.
-type LValCopyExemption struct {
+type lvalCopyExemption struct {
 	// Func is the enclosing function, as the scan renders it:
 	// "Quote", "(*templateCompiler).value".
 	Func string
@@ -373,7 +356,7 @@ type LValCopyExemption struct {
 // A row also wins over walker membership: the template walker's own copies
 // are audited here individually rather than left to the blanket exemption
 // its registry row would otherwise give them.
-var lvalCopyExemptions = []LValCopyExemption{
+var lvalCopyExemptions = []lvalCopyExemption{
 	{
 		Func:  "Quote",
 		Sites: 1,
@@ -454,9 +437,9 @@ var lvalCopyExemptions = []LValCopyExemption{
 	},
 }
 
-// LValCopyExemptions returns the struct-copy allowlist, copied.
-func LValCopyExemptions() []LValCopyExemption {
-	out := make([]LValCopyExemption, len(lvalCopyExemptions))
+// registeredLValCopyExemptions returns the struct-copy allowlist, copied.
+func registeredLValCopyExemptions() []lvalCopyExemption {
+	out := make([]lvalCopyExemption, len(lvalCopyExemptions))
 	copy(out, lvalCopyExemptions)
 	return out
 }

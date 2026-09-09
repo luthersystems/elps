@@ -74,10 +74,10 @@ var mustRebuild = []string{"detacher", "templateCompiler", "copier"}
 // checkRebuildingWalkers is the registry half, as a pure function over a
 // registry, so a negative control can hand it a weakened one.  It returns
 // one line per problem.
-func checkRebuildingWalkers(memos []WalkerMemo) (problems, notes []string) {
+func checkRebuildingWalkers(memos []walkerMemo) (problems, notes []string) {
 	rebuilding := map[string]bool{}
 	clean := 0
-	var reference *WalkerMemo
+	var reference *walkerMemo
 	for i := range memos {
 		m := &memos[i]
 		if !m.Rebuilds {
@@ -87,7 +87,7 @@ func checkRebuildingWalkers(memos []WalkerMemo) (problems, notes []string) {
 		// A walker that declares no memos at all never becomes the
 		// reference: it is the thing being described, and letting it define
 		// the standard would report every memoising walker as wrong.
-		if IsUnmemoisedWalker(m.Walker) {
+		if isUnmemoisedWalker(m.Walker) {
 			notes = append(notes, describeNote(m.Walker))
 			continue
 		}
@@ -110,7 +110,7 @@ func checkRebuildingWalkers(memos []WalkerMemo) (problems, notes []string) {
 	// fields, or the row is dead and the list has stopped shrinking.
 	for i := range memos {
 		m := &memos[i]
-		if !IsUnmemoisedWalker(m.Walker) {
+		if !isUnmemoisedWalker(m.Walker) {
 			continue
 		}
 		if len(m.Fields) != 0 || len(m.Payloads) != 0 {
@@ -154,7 +154,7 @@ func checkRebuildingWalkers(memos []WalkerMemo) (problems, notes []string) {
 func describeNote(walker string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "UNMEMOISED walker %s (unmemoisedWalkers, lisp/walkers.go):", walker)
-	for _, n := range WalkerNotes() {
+	for _, n := range registeredWalkerNotes() {
 		if n.Walker != walker {
 			continue
 		}
@@ -169,7 +169,7 @@ func describeNote(walker string) string {
 // below is the only place a reader learns that a registered walker was
 // described rather than compared.
 func TestRebuildingWalkersMemoiseTheSamePayloadKinds(t *testing.T) {
-	problems, notes := checkRebuildingWalkers(WalkerMemos())
+	problems, notes := checkRebuildingWalkers(registeredWalkerMemos())
 	for _, p := range problems {
 		t.Error(p)
 	}
@@ -179,17 +179,17 @@ func TestRebuildingWalkersMemoiseTheSamePayloadKinds(t *testing.T) {
 	// Every note must name a REGISTERED walker. A row for a walker nobody
 	// registers describes nothing any check can see.
 	registered := map[string]bool{}
-	for _, m := range WalkerMemos() {
+	for _, m := range registeredWalkerMemos() {
 		registered[m.Walker] = true
 	}
-	for _, n := range WalkerNotes() {
+	for _, n := range registeredWalkerNotes() {
 		if !registered[n.Walker] {
 			t.Errorf("unmemoisedWalkers has a row for %q, which is not a registered walker.\n"+
 				"Register it or delete the row: a row for an unregistered walker exempts nothing and\n"+
 				"describes a walker no check can see.", n.Walker)
 		}
 	}
-	if len(notes) == 0 && len(WalkerNotes()) != 0 {
+	if len(notes) == 0 && len(registeredWalkerNotes()) != 0 {
 		t.Error("unmemoisedWalkers is non-empty but no walker was reported, so the list is no longer\n" +
 			"connected to the check it is supposed to soften.")
 	}
@@ -201,7 +201,7 @@ func TestRebuildingWalkersMemoiseTheSamePayloadKinds(t *testing.T) {
 // from it — must now be reported.  Before mustRebuild existed this mutation
 // left all three halves of the drift guard green.
 func TestRegistryHalfCannotBeDisabledByDroppingRebuilds(t *testing.T) {
-	weakened := WalkerMemos()
+	weakened := registeredWalkerMemos()
 	var found bool
 	for i := range weakened {
 		if weakened[i].Walker != "detacher" {
@@ -209,9 +209,9 @@ func TestRegistryHalfCannotBeDisabledByDroppingRebuilds(t *testing.T) {
 		}
 		found = true
 		weakened[i].Rebuilds = false
-		var kept []PayloadKind
+		var kept []payloadKind
 		for _, k := range weakened[i].Payloads {
-			if k != PayloadBytes {
+			if k != payloadBytes {
 				kept = append(kept, k)
 			}
 		}
@@ -238,7 +238,7 @@ func TestRegistryHalfCannotBeDisabledByDroppingRebuilds(t *testing.T) {
 	}
 	// And the mutation must be reported ONLY because it was applied: the
 	// real registry stays clean, so a failure here is attributable.
-	if p, _ := checkRebuildingWalkers(WalkerMemos()); len(p) != 0 {
+	if p, _ := checkRebuildingWalkers(registeredWalkerMemos()); len(p) != 0 {
 		t.Errorf("the real registry is not clean, so this control proves nothing: %s",
 			strings.Join(p, "\n"))
 	}
@@ -254,9 +254,9 @@ func TestWalkerRegistryMatchesTheSource(t *testing.T) {
 		t.Fatal("the scan found no memo-shaped field in package lisp; it has stopped looking")
 	}
 
-	registered := map[string]map[string]PayloadKind{} // struct -> field -> kind
+	registered := map[string]map[string]payloadKind{} // struct -> field -> kind
 	for _, m := range walkerMemos {
-		byField := map[string]PayloadKind{}
+		byField := map[string]payloadKind{}
 		for kind, field := range m.Fields {
 			byField[field] = kind
 		}
@@ -329,9 +329,9 @@ func TestEveryCopiedPayloadTypeIsMemoisedOrExempt(t *testing.T) {
 	// switch corresponds to.  A new arm that is in neither table fails
 	// below, which is the point: a payload the walker rebuilds is a payload
 	// two headers can come apart over.
-	kindOf := map[string]PayloadKind{
-		"*[]byte":  PayloadBytes,
-		"*MapData": PayloadSortedMap,
+	kindOf := map[string]payloadKind{
+		"*[]byte":  payloadBytes,
+		"*MapData": payloadSortedMap,
 	}
 	exempt := map[string]bool{}
 	for _, e := range memoExemptions {
@@ -461,7 +461,7 @@ func TestThePayloadScanReachesEveryRebuildingWalker(t *testing.T) {
 	t.Logf("payload scan reads %d Native-writing files: %s", len(files), strings.Join(files, ", "))
 }
 
-func memoisedByEveryRebuildingWalker(kind PayloadKind) bool {
+func memoisedByEveryRebuildingWalker(kind payloadKind) bool {
 	for _, m := range walkerMemos {
 		if !m.Rebuilds {
 			continue
@@ -474,7 +474,7 @@ func memoisedByEveryRebuildingWalker(kind PayloadKind) bool {
 		// the walker's unmemoisedWalkers row and this exclusion stops
 		// applying, which is the weakening that proves the exclusion is not
 		// a hiding place.
-		if IsUnmemoisedWalker(m.Walker) {
+		if isUnmemoisedWalker(m.Walker) {
 			continue
 		}
 		found := false
@@ -490,7 +490,7 @@ func memoisedByEveryRebuildingWalker(kind PayloadKind) bool {
 	return true
 }
 
-func kindSet(kinds []PayloadKind) string {
+func kindSet(kinds []payloadKind) string {
 	out := make([]string, len(kinds))
 	for i, k := range kinds {
 		out[i] = string(k)
@@ -628,7 +628,7 @@ func render(fset *token.FileSet, n ast.Node) string {
 	return b.String()
 }
 
-// TestWalkerMemosCannotBeEditedByACaller is the control for WalkerMemos's
+// TestWalkerMemosCannotBeEditedByACaller is the control for registeredWalkerMemos's
 // deep copy.  The function's doc promises a caller cannot edit the
 // registry; before the copy was made deep that promise was false — the
 // returned structs shared Fields, Payloads, Local and Graph with the
@@ -639,7 +639,7 @@ func render(fset *token.FileSet, n ast.Node) string {
 // Reverting the deep copy to a shallow one must fail here.
 func TestWalkerMemosCannotBeEditedByACaller(t *testing.T) {
 	// Snapshot the expected state as IMMUTABLE STRINGS before scribbling.
-	// Holding a []WalkerMemo as the "before" is not good enough: under a
+	// Holding a []walkerMemo as the "before" is not good enough: under a
 	// shallow copy that snapshot aliases the same backing arrays as the
 	// scribbled copy, so it is corrupted too and the comparison passes.
 	// That is how the first version of this test stayed green under the
@@ -647,7 +647,7 @@ func TestWalkerMemosCannotBeEditedByACaller(t *testing.T) {
 	type snap struct{ walker, payloads, local, graph, fields string }
 	take := func() []snap {
 		var out []snap
-		for _, m := range WalkerMemos() {
+		for _, m := range registeredWalkerMemos() {
 			fields := make([]string, 0, len(m.Fields))
 			for k, v := range m.Fields {
 				fields = append(fields, fmt.Sprintf("%s=%s", k, v))
@@ -672,16 +672,16 @@ func TestWalkerMemosCannotBeEditedByACaller(t *testing.T) {
 	// slice field writes only to the caller's own struct and cannot reach
 	// package state at any copy depth; writing THROUGH the slice is what a
 	// shallow copy shares.
-	scribbled := WalkerMemos()
+	scribbled := registeredWalkerMemos()
 	for i := range scribbled {
 		for j := range scribbled[i].Payloads {
-			scribbled[i].Payloads[j] = PayloadValue
+			scribbled[i].Payloads[j] = payloadValue
 		}
 		for j := range scribbled[i].Local {
-			scribbled[i].Local[j] = PayloadValue
+			scribbled[i].Local[j] = payloadValue
 		}
 		for j := range scribbled[i].Graph {
-			scribbled[i].Graph[j] = PayloadValue
+			scribbled[i].Graph[j] = payloadValue
 		}
 		for k := range scribbled[i].Fields {
 			scribbled[i].Fields[k] = "scribbled"
@@ -696,7 +696,7 @@ func TestWalkerMemosCannotBeEditedByACaller(t *testing.T) {
 		if after[i] != before[i] {
 			t.Errorf("walker %s: a caller's in-place edit reached the registry.\n"+
 				"  payloads: %s, was %s\n  local:    %s, was %s\n  graph:    %s, was %s\n  fields:   %s, was %s\n"+
-				"WalkerMemos returns a SHALLOW copy again, so its doc comment is false and any caller\n"+
+				"registeredWalkerMemos returns a SHALLOW copy again, so its doc comment is false and any caller\n"+
 				"that edits a returned row corrupts what every later caller reads.",
 				after[i].walker,
 				after[i].payloads, before[i].payloads,
