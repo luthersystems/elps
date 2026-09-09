@@ -181,27 +181,36 @@ func TestSortedMapEqual(t *testing.T) {
 		"map should not be equal to an integer")
 }
 
-// TestSortedMapCopyViaSort verifies that Copy() produces an independent map
-// when used internally by stable-sort. The comparison function mutates its
-// Copy()'d argument via assoc!, which must NOT bleed through to the original.
-func TestSortedMapCopyViaSort(t *testing.T) {
+// TestSortedMapMutationViaSortReachesTheElements pins that a stable-sort
+// predicate receives the list's own elements: a write through its argument
+// lands on the map in the list, as it does for map, foldl and select.
+//
+// This test was TestSortedMapCopyViaSort and asserted the opposite -- that
+// the predicate saw a Copy()'d element and the write stayed on the copy.
+// The per-comparison copy was removed (#604: it became a deep walk of every
+// element on every comparison once Copy rebuilt map values, and it never
+// isolated the list, since map values were shared by pointer); this is the
+// behaviour that changed, so the test asserts the new contract under a
+// name that says so.  Both arguments are marked because sort.Stable's
+// argument order is an implementation detail.
+func TestSortedMapMutationViaSortReachesTheElements(t *testing.T) {
 	tests := elpstest.TestSuite{
-		{"sort copy isolation", elpstest.TestSequence{
+		{"sort predicate writes reach the elements", elpstest.TestSequence{
 			{`(set 'm1 (sorted-map 'key 1))`, `(sorted-map 'key 1)`, ""},
 			{`(set 'm2 (sorted-map 'key 2))`, `(sorted-map 'key 2)`, ""},
 
-			// The comparison function mutates its first argument (a
-			// Copy()'d element). This mutation must stay on the ephemeral
-			// copy and not affect the originals.
+			// The predicate mutates both of its arguments.  They are the
+			// maps in the list, so the writes land on the originals.
 			{`(stable-sort
 				(lambda (a b)
-					(assoc! a 'poisoned true)
+					(assoc! a 'seen true)
+					(assoc! b 'seen true)
 					(< (get a 'key) (get b 'key)))
-				(list m1 m2))`, `'((sorted-map 'key 1) (sorted-map 'key 2))`, ""},
+				(list m1 m2))`, `'((sorted-map 'key 1 'seen true) (sorted-map 'key 2 'seen true))`, ""},
 
-			// Originals must be unmodified.
-			{`(key? m1 'poisoned)`, `false`, ""},
-			{`(key? m2 'poisoned)`, `false`, ""},
+			// The originals carry the write.
+			{`(key? m1 'seen)`, `true`, ""},
+			{`(key? m2 'seen)`, `true`, ""},
 		}},
 	}
 	elpstest.RunTestSuite(t, tests)
