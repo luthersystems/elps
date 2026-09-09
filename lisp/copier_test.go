@@ -3,6 +3,8 @@
 package lisp_test
 
 import (
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -478,5 +480,233 @@ func TestCopyDropsMacroExpansionMetadata(t *testing.T) {
 					"back-pointer into the tree it was copied from", a.IsSealed())
 			}
 		}
+	}
+}
+
+// copierStringMap is a minimal custom Map implementation over string keys:
+// the extension point NewMapData/SortedMapFromData exposes to embedders,
+// which is what the copier's non-sortedmap arms exist for.  It is NOT a
+// StringKeyRanger; the fixtures below opt into that interface, or into a
+// failing Entries, one at a time.
+type copierStringMap struct{ m map[string]*lisp.LVal }
+
+func newCopierStringMap(kv map[string]*lisp.LVal) *copierStringMap {
+	m := &copierStringMap{m: make(map[string]*lisp.LVal, len(kv))}
+	for k, v := range kv {
+		m.m[k] = v
+	}
+	return m
+}
+
+func (m *copierStringMap) sortedKeys() []string {
+	keys := make([]string, 0, len(m.m))
+	for k := range m.m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+func (m *copierStringMap) Len() int { return len(m.m) }
+
+func (m *copierStringMap) Get(k *lisp.LVal) (*lisp.LVal, bool) {
+	switch k.Type {
+	case lisp.LString, lisp.LSymbol:
+		if v, ok := m.m[k.Str]; ok {
+			return v, true
+		}
+		return lisp.Nil(), false
+	default:
+		return lisp.Errorf("unhashable type: %s", k.Type), false
+	}
+}
+
+func (m *copierStringMap) Set(k, v *lisp.LVal) *lisp.LVal {
+	switch k.Type {
+	case lisp.LString, lisp.LSymbol:
+		m.m[k.Str] = v
+		return lisp.Nil()
+	default:
+		return lisp.Errorf("unhashable type: %s", k.Type)
+	}
+}
+
+func (m *copierStringMap) Del(k *lisp.LVal) *lisp.LVal {
+	switch k.Type {
+	case lisp.LString, lisp.LSymbol:
+		delete(m.m, k.Str)
+		return lisp.Nil()
+	default:
+		return lisp.Errorf("unhashable type: %s", k.Type)
+	}
+}
+
+func (m *copierStringMap) Entries(buf []*lisp.LVal) *lisp.LVal {
+	keys := m.sortedKeys()
+	if len(buf) < len(keys) {
+		return lisp.Errorf("buffer has insufficient length")
+	}
+	for i, k := range keys {
+		buf[i] = lisp.QExpr([]*lisp.LVal{lisp.String(k), m.m[k]})
+	}
+	return lisp.Int(len(keys))
+}
+
+func (m *copierStringMap) Keys() *lisp.LVal {
+	keys := m.sortedKeys()
+	cells := make([]*lisp.LVal, len(keys))
+	for i, k := range keys {
+		cells[i] = lisp.String(k)
+	}
+	return lisp.QExpr(cells)
+}
+
+// copierFailingRanger is a StringKeyRanger that emits one entry and then
+// reports the failure Entries would have reported -- the documented shape
+// of a partial walk (lisp/maps.go: "every caller discards a partial walk on
+// error").
+type copierFailingRanger struct{ *copierStringMap }
+
+func (m *copierFailingRanger) RangeStringKeys(fn func(key string, val *lisp.LVal)) error {
+	for i, k := range m.sortedKeys() {
+		if i >= 1 {
+			break
+		}
+		fn(k, m.m[k])
+	}
+	return errors.New("ranger failed part-way")
+}
+
+// copierFailingEntries fails on the copier's generic Entries path, and does
+// it AFTER a value has already been copied and stored: the first pair is
+// well formed, the second carries an unhashable key, so MapData.Set rejects
+// it.  Partial traversal, on the arm that has no ranger.
+type copierFailingEntries struct{ *copierStringMap }
+
+func (m *copierFailingEntries) Entries(buf []*lisp.LVal) *lisp.LVal {
+	keys := m.sortedKeys()
+	if len(keys) < 2 {
+		return lisp.Errorf("fixture needs at least two entries")
+	}
+	if len(buf) < len(keys) {
+		return lisp.Errorf("buffer has insufficient length")
+	}
+	buf[0] = lisp.QExpr([]*lisp.LVal{lisp.String(keys[0]), m.m[keys[0]]})
+	buf[1] = lisp.QExpr([]*lisp.LVal{lisp.Int(2), m.m[keys[1]]})
+	for i := 2; i < len(keys); i++ {
+		buf[i] = lisp.QExpr([]*lisp.LVal{lisp.String(keys[i]), m.m[keys[i]]})
+	}
+	return lisp.Int(len(keys))
+}
+
+// copierSafeWalk collects every header reachable from v.  A sorted-map's
+// values are walked under a recover because this helper is pointed at the
+// output of a FAILED copy: before the fix that output could hold a
+// half-built *MapData whose backing is nil, and reading it panics.  A panic
+// there is itself a defect, but it is not the one being asserted, and the
+// assertions below say more about the failure than a stack trace does.
+func copierSafeWalk(v *lisp.LVal, seen map[*lisp.LVal]bool) {
+	if v == nil || seen[v] {
+		return
+	}
+	seen[v] = true
+	for _, c := range v.Cells {
+		copierSafeWalk(c, seen)
+	}
+	if v.Type == lisp.LSortMap {
+		func() {
+			defer func() { _ = recover() }()
+			for _, k := range v.MapKeys().Cells {
+				copierSafeWalk(v.MapGet(k), seen)
+			}
+		}()
+	}
+}
+
+// assertNoSourceBackedCopy copies v, which reaches a sorted-map whose copy
+// MUST fail, and pins the invariant a failed copy has to keep: nothing the
+// copy holds is backed by the source.  The write probe is the property in
+// its observable form -- a write through anything the copy still calls a
+// sorted-map must not reach srcMD.
+func assertNoSourceBackedCopy(t *testing.T, v *lisp.LVal, srcMD *lisp.MapData, srcHeaders ...*lisp.LVal) {
+	t.Helper()
+	cp := v.Copy()
+	seen := map[*lisp.LVal]bool{}
+	copierSafeWalk(cp, seen)
+	for h := range seen {
+		if slices.Contains(srcHeaders, h) {
+			t.Errorf("the copy holds one of the source's headers (%v)", h.Type)
+		}
+		if h.Type == lisp.LSortMap && h.Map() == srcMD {
+			t.Errorf("a failed map copy left a memoised header carrying the SOURCE's *MapData")
+		}
+	}
+	for h := range seen {
+		if h.Type != lisp.LSortMap {
+			continue
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("writing through a sorted-map the failed copy produced panicked (%v):"+
+						" the copy holds a half-built map payload", r)
+				}
+			}()
+			h.MapSet("mutation-probe", lisp.Int(99))
+		}()
+	}
+	if _, ok := srcMD.Get(lisp.String("mutation-probe")); ok {
+		t.Errorf("a write through the copy reached the SOURCE's map")
+	}
+	for i, c := range cp.Cells {
+		if c.Type != lisp.LError {
+			t.Errorf("cell %d of the copy is %v, want an error: every encounter of a header whose map"+
+				" could not be copied must yield the error, not a half-built value", i, c.Type)
+		}
+	}
+}
+
+// TestCopyFailedMapCopyLeavesNoSourceBackedHeader: when copying a
+// sorted-map's payload FAILS, the destination header memoised before the
+// payload was walked must not be left carrying the source's *MapData.
+//
+// The header memo is seeded with `c.remember(v, cp)` right after
+// `*cp = *v` -- a struct copy that still holds the SOURCE's Native -- and
+// the LSortMap arm only then replaces it.  When the arm errored out it
+// returned a fresh error value and left that seeded cp in the memo, so a
+// SECOND encounter of the same header returned the unfinished copy: a
+// sorted-map sharing the source's map, through which a write landed in the
+// source.  Two shapes reach it -- one header reached twice, and two
+// distinct headers over one payload -- on both failing arms, the custom
+// StringKeyRanger and the generic Entries path.
+func TestCopyFailedMapCopyLeavesNoSourceBackedHeader(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		newMap func() lisp.Map
+		name   string
+	}{
+		{name: "string-key ranger fails part-way", newMap: func() lisp.Map {
+			return &copierFailingRanger{newCopierStringMap(map[string]*lisp.LVal{
+				"a": lisp.Int(1), "b": lisp.Int(2), "c": lisp.Int(3),
+			})}
+		}},
+		{name: "entries path fails after a partial copy", newMap: func() lisp.Map {
+			return &copierFailingEntries{newCopierStringMap(map[string]*lisp.LVal{
+				"a": lisp.Int(1), "b": lisp.Int(2), "c": lisp.Int(3),
+			})}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Run("one header reached twice", func(t *testing.T) {
+				md := lisp.NewMapData(tt.newMap())
+				src := lisp.SortedMapFromData(md)
+				assertNoSourceBackedCopy(t, lisp.QExpr([]*lisp.LVal{src, src}), md, src)
+			})
+			t.Run("two headers over one payload", func(t *testing.T) {
+				md := lisp.NewMapData(tt.newMap())
+				h1, h2 := lisp.SortedMapFromData(md), lisp.SortedMapFromData(md)
+				assertNoSourceBackedCopy(t, lisp.QExpr([]*lisp.LVal{h1, h2}), md, h1, h2)
+			})
+		})
 	}
 }

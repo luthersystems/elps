@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 )
@@ -312,7 +313,26 @@ func (c *copier) copy(v *LVal) *LVal {
 		// copied map per source map, however many headers reach it.
 		md, err := c.mapData(v.Map())
 		if err != nil {
-			return Errorf("copy sorted-map: %v", err)
+			// cp is ALREADY in the header memo (seeded above so a cycle
+			// closes onto it), and `*cp = *v` left it carrying the
+			// SOURCE's *MapData: returning a fresh error value here and
+			// walking away left that unfinished cp memoised, so a second
+			// encounter of v -- `(list a a)`, a quasiquoted second header,
+			// anything that reaches one header twice -- got a sorted-map
+			// sharing the source's map, and a write through the copy
+			// landed in the source.  A failed copy must never leave a
+			// source-backed destination behind.
+			//
+			// Overwritten in place rather than deleted from the memo: cp
+			// may already be referenced by a cell copied during the failed
+			// traversal (the map reaching itself is the shape this walker
+			// exists for), so the entry has to stay and its VALUE has to
+			// stop being source-backed.  Every encounter of v then yields
+			// this same error header.  cp is a value this function
+			// constructed, which is what cmd/elpsvet's write rule requires.
+			e := Errorf("copy sorted-map: %v", err)
+			*cp = *e
+			return cp
 		}
 		cp.Native = md
 		return cp
@@ -355,6 +375,14 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		return nil, nil
 	}
 	if cp, ok := c.maps[md]; ok {
+		if cp == nil {
+			// The nil sentinel failMap leaves behind: an earlier encounter
+			// of md failed part-way, so the seeded nm it published is
+			// half-built (its backing may never have been set at all).  A
+			// later header must fail too rather than pick that up as a
+			// finished copy.
+			return nil, errCopyMapFailed
+		}
 		return cp, nil
 	}
 	if c.maps == nil {
@@ -392,7 +420,7 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		if err := r.RangeStringKeys(func(k string, v *LVal) {
 			pairs = append(pairs, stringKV{v: v, k: k})
 		}); err != nil {
-			return nil, fmt.Errorf("failed to copy map: %w", err)
+			return c.failMap(md, fmt.Errorf("failed to copy map: %w", err))
 		}
 		sm := emptyForStringKeys(len(pairs))
 		for _, p := range pairs {
@@ -402,13 +430,37 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		return nm, nil
 	}
 	m := &MapData{newmap()}
-	for _, pair := range sortedMapEntries(md).Cells {
+	entries := sortedMapEntries(md)
+	if entries.Type == LError {
+		// Entries reported a failure; its Cells hold the message, not
+		// pairs, so this has to be checked before they are indexed.
+		return c.failMap(md, fmt.Errorf("failed to copy map: %v", entries))
+	}
+	for _, pair := range entries.Cells {
 		if lerr := m.Set(pair.Cells[0], c.copy(pair.Cells[1])); lerr.Type == LError {
-			return nil, fmt.Errorf("failed to copy map: %v", lerr)
+			return c.failMap(md, fmt.Errorf("failed to copy map: %v", lerr))
 		}
 	}
 	nm.mapBacking = m.mapBacking
 	return nm, nil
+}
+
+// errCopyMapFailed is what a SECOND encounter of a map whose copy already
+// failed gets: the first encounter's error is long returned, and the only
+// thing this one has to be is a failure rather than the half-built copy the
+// first encounter published.
+var errCopyMapFailed = errors.New("failed to copy map: an earlier copy of this map failed")
+
+// failMap poisons md's payload memo and returns err unchanged, for the
+// caller to return.  The entry seeded before the entries were walked (nm,
+// which lets a map reaching itself close onto its own copy) is half-built
+// once the walk fails -- on two of the three arms its backing was never
+// assigned at all -- so leaving it in c.maps would hand a later header over
+// md a "finished" copy that is empty.  The nil sentinel keeps the failure
+// on the payload where a second lookup finds it, without a second map.
+func (c *copier) failMap(md *MapData, err error) (*MapData, error) {
+	c.maps[md] = nil
+	return nil, err
 }
 
 // byteSlice copies a bytes payload once per source buffer.
