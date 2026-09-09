@@ -57,12 +57,14 @@ func newTemplateByteSpan(v *[]byte) templateByteSpan {
 	return templateByteSpan{value: v, start: start, end: start + uintptr(cap(*v))}
 }
 
+// storage consumes a successfully scanned inventory. The shared-storage check
+// already sorted mutable cell spans; no graph discovery occurs after that check.
 func (s *templateInventory) storage() *templateStorage {
+	checkTemplateStorageOrder(s.cells)
 	p := &templateStorage{
 		cellViews: make(map[*LVal]templateView, len(s.cells)),
 		byteViews: make(map[*[]byte]templateView, len(s.bytes)),
 	}
-	slices.SortFunc(s.cells, compareTemplateCellSpans)
 	width := reflect.TypeFor[*LVal]().Size()
 	for first := 0; first < len(s.cells); {
 		start, end := s.cells[first].start, s.cells[first].end
@@ -73,11 +75,22 @@ func (s *templateInventory) storage() *templateStorage {
 			}
 			last++
 		}
-		data := make([]*LVal, int((end-start)/width))
+		// The compiler immediately converts these slots into owned indexed
+		// references. A disjoint span can be borrowed read-only for that step;
+		// it never becomes VM storage or escapes into the published plan.
+		var data []*LVal
+		if last == first+1 {
+			v := s.cells[first].value
+			data = v.Cells[:cap(v.Cells)]
+		} else {
+			data = make([]*LVal, int((end-start)/width))
+		}
 		index := len(p.cells)
 		for _, span := range s.cells[first:last] {
 			offset := int((span.start - start) / width)
-			copy(data[offset:], span.value.Cells[:cap(span.value.Cells)])
+			if last != first+1 {
+				copy(data[offset:], span.value.Cells[:cap(span.value.Cells)])
+			}
 			p.cellViews[span.value] = templateView{storage: index, offset: offset,
 				length: len(span.value.Cells), capacity: cap(span.value.Cells)}
 		}

@@ -3,9 +3,11 @@
 package lisp
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 )
 
 // A template plan represents mutable VM state with immutable descriptors.
@@ -153,9 +155,10 @@ func templateStringPairs(values map[string]string) []templateStringPair {
 		return nil
 	}
 	out := make([]templateStringPair, 0, len(values))
-	for _, key := range sortedTemplateKeys(values) {
-		out = append(out, templateStringPair{key: key, value: values[key]})
+	for key, value := range values {
+		out = append(out, templateStringPair{key: key, value: value})
 	}
+	slices.SortFunc(out, func(a, b templateStringPair) int { return cmp.Compare(a.key, b.key) })
 	return out
 }
 
@@ -188,11 +191,19 @@ func (c *templateCompiler) env(env *LEnv) int {
 	return 0
 }
 func (c *templateCompiler) bindings(values map[string]*LVal) []templateBinding {
+	// Sort the final descriptors, avoiding temporary keys and a second map
+	// lookup per entry. Preserve the existing lexicographic descriptor order,
+	// and therefore the order in which each instance populates its maps.
 	out := make([]templateBinding, 0, len(values))
-	for _, name := range sortedTemplateKeys(values) {
-		out = append(out, templateBinding{name: name, value: c.ref(values[name])})
+	for name, value := range values {
+		out = append(out, templateBinding{name: name, value: c.ref(value)})
 	}
+	sortTemplateBindings(out)
 	return out
+}
+
+func sortTemplateBindings(bindings []templateBinding) {
+	slices.SortFunc(bindings, func(a, b templateBinding) int { return cmp.Compare(a.name, b.name) })
 }
 func (c *templateCompiler) function(fd *funData) int {
 	if index, ok := c.functions[fd]; ok {
@@ -336,9 +347,10 @@ func (c *templateCompiler) mapData(source *MapData) (int, error) {
 		}
 		backing.entries = c.bindings(sourceMap.m)
 		backing.types = make([]templateKeyType, 0, len(sourceMap.tm))
-		for _, key := range sortedTemplateKeys(sourceMap.tm) {
-			backing.types = append(backing.types, templateKeyType{key: key, kind: sourceMap.tm[key]})
+		for key, kind := range sourceMap.tm {
+			backing.types = append(backing.types, templateKeyType{key: key, kind: kind})
 		}
+		slices.SortFunc(backing.types, func(a, b templateKeyType) int { return cmp.Compare(a.key, b.key) })
 	case jsonMap:
 		id = templateMapIdentity{values: reflect.ValueOf(sourceMap).Pointer(), json: true}
 		if existing := c.mapBackings[id]; existing != 0 {
@@ -347,9 +359,10 @@ func (c *templateCompiler) mapData(source *MapData) (int, error) {
 		}
 		backing.json = true
 		backing.entries = make([]templateBinding, 0, len(sourceMap))
-		for _, key := range sortedTemplateKeys(sourceMap) {
-			backing.entries = append(backing.entries, templateBinding{name: key, value: c.ref(jsonMapLVal(sourceMap[key]))})
+		for key, value := range sourceMap {
+			backing.entries = append(backing.entries, templateBinding{name: key, value: c.ref(jsonMapLVal(value))})
 		}
+		sortTemplateBindings(backing.entries)
 	default:
 		return index, fmt.Errorf("template: map backing %T is not interpreter-owned", source.mapBacking)
 	}

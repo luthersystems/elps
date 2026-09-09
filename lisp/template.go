@@ -359,9 +359,12 @@ func (s *templateInventory) val(v *LVal) error {
 	// Function bodies whose cells are all shared have immutable backing under
 	// the existing function construction contract. Keep that fast path.
 	sharedCells := v.Type == LFun && cap(v.Cells) == len(v.Cells)
-	for _, child := range v.Cells {
-		if child != nil && !child.sealed {
-			sharedCells = false
+	if sharedCells {
+		for _, child := range v.Cells {
+			if child != nil && !child.sealed {
+				sharedCells = false
+				break
+			}
 		}
 	}
 	if cap(v.Cells) > 0 && !sharedCells {
@@ -391,16 +394,23 @@ func (s *templateInventory) val(v *LVal) error {
 // at admission, including wrappers over a function's shared body/formals.
 func (s *templateInventory) checkSharedStorage() error {
 	slices.SortFunc(s.cells, compareTemplateCellSpans)
-	slices.SortFunc(s.sharedCells, compareTemplateCellSpans)
-	i, j := 0, 0
-	for i < len(s.cells) && j < len(s.sharedCells) {
-		mutable, shared := s.cells[i], s.sharedCells[j]
-		switch {
-		case mutable.end <= shared.start:
-			i++
-		case shared.end <= mutable.start:
-			j++
-		default:
+	if len(s.cells) == 0 || len(s.sharedCells) == 0 {
+		return nil
+	}
+	// Shared program spans usually greatly outnumber mutable spans. Index
+	// the mutable side instead of sorting the whole shared program again.
+	// Prefix maxima retain earlier containing spans when views are nested.
+	maxEnds := make([]uintptr, len(s.cells))
+	var end uintptr
+	for i, span := range s.cells {
+		end = max(end, span.end)
+		maxEnds[i] = end
+	}
+	for _, shared := range s.sharedCells {
+		// Half-open spans overlap iff a mutable start is before shared.end
+		// and that prefix contains an end strictly after shared.start.
+		i := sort.Search(len(s.cells), func(i int) bool { return s.cells[i].start >= shared.end })
+		if i > 0 && maxEnds[i-1] > shared.start {
 			return errors.New("template: mutable cells backing overlaps shared program storage")
 		}
 	}
