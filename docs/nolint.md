@@ -80,6 +80,7 @@ Run `elps lint --list` to see all available check names:
 
 ```
 builtin-arity
+comparator-mutation
 cond-missing-else
 cond-structure
 defun-structure

@@ -825,6 +825,7 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerQuoteCall,
 		AnalyzerCondMissingElse,
 		AnalyzerRethrowContext,
+		AnalyzerComparatorMutation,
 		AnalyzerUnnecessaryProgn,
 		AnalyzerWithCleanupForms,
 		AnalyzerUndefinedSymbol,
