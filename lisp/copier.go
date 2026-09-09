@@ -117,6 +117,29 @@ import (
 // path (lisp.TextLoader copies a cached tree on every load, and counts it
 // once at admission) the map's growth through every doubling.  The walk is
 // the same either way; only where the memo lives differs.
+//
+// # Failure is whole-walk, not per-node
+//
+// Every memo in this walker is SEEDED before the thing it describes is
+// finished: the header memo takes cp right after `*cp = *v`, and the
+// payload memo takes an empty *MapData before the map's entries are walked,
+// both so a value that reaches itself closes onto its own copy rather than
+// recursing without bound.  A failure part-way through therefore does not
+// have one damaged node; it has however many nodes the walk had already
+// published over unfinished storage.  A map whose copy fails after it has
+// been reached through a SECOND header leaves that header memoised over a
+// *MapData whose backing was never assigned -- a sorted-map that panics on
+// the first write -- and repairing only the header the arm failed on left
+// that one parked in the enclosing container's cell, in a list Copy
+// returned as a success.
+//
+// So the walk is fail-stop: the first arm to fail records the error in
+// c.failed, every subsequent `copy` returns it without descending, the cell
+// loop stops as soon as a child sets it, and Copy hands back c.failed
+// rather than the container it was building.  Nothing the abandoned walk
+// built is reachable from what the caller gets, which is the only statement
+// that stays true whatever a walk had published before it failed.
+// TestCopyFailedMapCopyLeavesNoSourceBackedHeader drives the shapes.
 type copier struct {
 	// small and n are the header memo until the walk outgrows them.
 	small [copierSmallMemo]copyPair
@@ -125,7 +148,11 @@ type copier struct {
 	maps    map[*MapData]*MapData
 	bytes   map[*[]byte]*[]byte
 	natives map[interface{}]interface{}
-	n       int
+	// failed is the error the walk stopped on, and is NOT a memo: it holds
+	// one value for the whole walk, it is never looked up by a source
+	// pointer, and it is what Copy returns once it is set.
+	failed *LVal
+	n      int
 }
 
 // copierSmallMemo is how many headers a walk memoises before it allocates.
@@ -210,10 +237,32 @@ func (v *LVal) copyWithHint(n int) *LVal {
 	return c.copy(v)
 }
 
+// copy is the walk's only entry point, and the fail-stop's.  Once an arm
+// has recorded a failure in c.failed every level returns it without
+// descending -- the OUTERMOST level included, which is what makes
+// (*LVal).Copy and copyWithHint hand the caller the error rather than the
+// container the abandoned walk was building, with whatever it had already
+// published over unfinished storage still hanging off it.  See the type
+// comment for why repairing the failing node alone is not enough.
 func (c *copier) copy(v *LVal) *LVal {
 	if v == nil {
 		return nil
 	}
+	if c.failed != nil {
+		return c.failed
+	}
+	cp := c.copyNode(v)
+	if c.failed != nil {
+		return c.failed
+	}
+	return cp
+}
+
+// copyNode copies one node and its children.  Callers go through copy,
+// which is where the fail-stop lives; nothing here has to check c.failed
+// except the cell loop, which stops early rather than copying the error
+// into every remaining cell of a container that is about to be discarded.
+func (c *copier) copyNode(v *LVal) *LVal {
 	// Only a node that can be reached twice in a way the copy could observe
 	// is memoised: one with cell storage (a container, or a header over
 	// hidden capacity) or a payload.  A leaf -- a number, string, symbol, an
@@ -332,8 +381,16 @@ func (c *copier) copy(v *LVal) *LVal {
 			// stop being source-backed.  Every encounter of v then yields
 			// this same error header.  cp is a value this function
 			// constructed, which is what cmd/elpsvet's write rule requires.
+			//
+			// The overwrite alone is not the fix, only its local half: a
+			// DIFFERENT header over the same *MapData, copied earlier in
+			// this same failing walk, is memoised over the half-built
+			// payload and is not reachable from here.  c.failed is what
+			// stops the walk and keeps every such header off the result
+			// (see the type comment).
 			e := Errorf("copy sorted-map: %v", err)
 			*cp = *e
+			c.failed = cp
 			return cp
 		}
 		cp.Native = md
@@ -364,6 +421,12 @@ func (c *copier) cells(v *LVal) []*LVal {
 	cells := make([]*LVal, len(v.Cells))
 	for i := range cells {
 		cells[i] = c.copy(v.Cells[i])
+		if c.failed != nil {
+			// Fail-stop: the container being built is discarded by Copy,
+			// so there is nothing to finish and every further cell would
+			// only be another copy of the error.
+			return nil
+		}
 	}
 	return cells
 }

@@ -625,33 +625,43 @@ func copierSafeWalk(v *lisp.LVal, seen map[*lisp.LVal]bool) {
 	}
 }
 
-// assertNoSourceBackedCopy copies v, which reaches a sorted-map whose copy
-// MUST fail, and pins the invariant a failed copy has to keep: nothing the
-// copy holds is backed by the source.  The write probe is the property in
-// its observable form -- a write through anything the copy still calls a
-// sorted-map must not reach srcMD.
-func assertNoSourceBackedCopy(t *testing.T, v *lisp.LVal, srcMD *lisp.MapData, srcHeaders ...*lisp.LVal) {
+// assertFailedCopyFailsAsAWhole copies v, whose walk reaches a sorted-map
+// that CANNOT be copied, and pins the contract a failed copy has to keep:
+// the copy fails AS A WHOLE, and nothing the abandoned walk built escapes.
+//
+// Handing back a container with the failure parked in one cell is not a
+// failed copy -- it is a SUCCESSFUL copy of a broken value.  The caller
+// sees a list rather than an error, and the list's other cells hold
+// whatever the abandoned walk had managed to build: a header over the
+// SOURCE's map, or a header over the half-built payload the walk seeded
+// before it failed, which panics on the first write.  So the assertions
+// are, in order: the top-level result is an error; no sorted-map header is
+// reachable from it at all; and, as the property in its observable form, a
+// write through any map that IS reachable neither panics nor lands in the
+// source.
+func assertFailedCopyFailsAsAWhole(t *testing.T, v *lisp.LVal, srcMD *lisp.MapData, srcHeaders ...*lisp.LVal) {
 	t.Helper()
 	cp := v.Copy()
+	if cp.Type != lisp.LError {
+		t.Errorf("Copy returned a %v, want an error: a copy whose sorted-map arm failed must fail as a\n"+
+			"whole rather than hand back a container with the failure parked in one cell.", cp.Type)
+	}
 	seen := map[*lisp.LVal]bool{}
 	copierSafeWalk(cp, seen)
 	for h := range seen {
 		if slices.Contains(srcHeaders, h) {
 			t.Errorf("the copy holds one of the source's headers (%v)", h.Type)
 		}
-		if h.Type == lisp.LSortMap && h.Map() == srcMD {
-			t.Errorf("a failed map copy left a memoised header carrying the SOURCE's *MapData")
-		}
-	}
-	for h := range seen {
 		if h.Type != lisp.LSortMap {
 			continue
 		}
+		t.Errorf("a sorted-map is reachable from the result of a FAILED copy (it carries the SOURCE's\n"+
+			"*MapData: %t). A failed copy must publish no map header at all.", h.Map() == srcMD)
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					t.Errorf("writing through a sorted-map the failed copy produced panicked (%v):"+
-						" the copy holds a half-built map payload", r)
+					t.Errorf("writing through that escaped sorted-map panicked (%v): it is a header over a\n"+
+						"HALF-BUILT payload, seeded so a self-reference could close onto it and never finished.", r)
 				}
 			}()
 			h.MapSet("mutation-probe", lisp.Int(99))
@@ -660,54 +670,92 @@ func assertNoSourceBackedCopy(t *testing.T, v *lisp.LVal, srcMD *lisp.MapData, s
 	if _, ok := srcMD.Get(lisp.String("mutation-probe")); ok {
 		t.Errorf("a write through the copy reached the SOURCE's map")
 	}
-	for i, c := range cp.Cells {
-		if c.Type != lisp.LError {
-			t.Errorf("cell %d of the copy is %v, want an error: every encounter of a header whose map"+
-				" could not be copied must yield the error, not a half-built value", i, c.Type)
-		}
-	}
 }
 
 // TestCopyFailedMapCopyLeavesNoSourceBackedHeader: when copying a
-// sorted-map's payload FAILS, the destination header memoised before the
-// payload was walked must not be left carrying the source's *MapData.
+// sorted-map's payload FAILS, the whole Copy fails and nothing the failed
+// walk built is reachable from what it returns.
 //
-// The header memo is seeded with `c.remember(v, cp)` right after
-// `*cp = *v` -- a struct copy that still holds the SOURCE's Native -- and
-// the LSortMap arm only then replaces it.  When the arm errored out it
-// returned a fresh error value and left that seeded cp in the memo, so a
-// SECOND encounter of the same header returned the unfinished copy: a
-// sorted-map sharing the source's map, through which a write landed in the
-// source.  Two shapes reach it -- one header reached twice, and two
-// distinct headers over one payload -- on both failing arms, the custom
-// StringKeyRanger and the generic Entries path.
+// The original defect was one header deep.  The header memo is seeded with
+// `c.remember(v, cp)` right after `*cp = *v` -- a struct copy that still
+// holds the SOURCE's Native -- and the LSortMap arm only then replaces it,
+// so an arm that errored out and walked away left that seeded cp memoised:
+// a SECOND encounter of the same header yielded a sorted-map sharing the
+// source's map, through which a write landed in the source.  Overwriting cp
+// in place with the error closed that.
+//
+// It is not enough, and the shapes below say why.  The PAYLOAD memo is
+// seeded too -- an empty *MapData published into c.maps before the entries
+// are walked, so a map that reaches itself closes onto its own copy -- and
+// a header the failing walk copies while holding that seed is memoised over
+// the half-built payload.  Overwriting the FAILING header repairs that one
+// header; the other one is already parked in the enclosing container's
+// cell, over a *MapData whose backing was never assigned, and a write
+// through it panics.  Copy's answer was a list whose first cell was an
+// error and whose second was a live grenade, and Copy itself reported
+// success.  Nothing short of failing the whole walk fixes that, because the
+// half-built header exists by the time the failure is known.
+//
+// The shapes: one header reached twice, two headers over one payload, and
+// the three self-referential ones where the map's own entry is a header
+// over it -- through the other header in both cell orders, and through the
+// same header.  All of them on both failing arms, the custom
+// StringKeyRanger and the generic Entries path.  (Only the Entries arm
+// copies a value before it fails, so only it builds the half-built header;
+// the ranger arm collects its entries before copying any of them, and fails
+// with the container's cells simply holding two errors.  Both are covered
+// by the same contract.)
 func TestCopyFailedMapCopyLeavesNoSourceBackedHeader(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		newMap func() lisp.Map
-		name   string
+		wrap func(*copierStringMap) lisp.Map
+		name string
 	}{
-		{name: "string-key ranger fails part-way", newMap: func() lisp.Map {
-			return &copierFailingRanger{newCopierStringMap(map[string]*lisp.LVal{
-				"a": lisp.Int(1), "b": lisp.Int(2), "c": lisp.Int(3),
-			})}
+		{name: "string-key ranger fails part-way", wrap: func(m *copierStringMap) lisp.Map {
+			return &copierFailingRanger{m}
 		}},
-		{name: "entries path fails after a partial copy", newMap: func() lisp.Map {
-			return &copierFailingEntries{newCopierStringMap(map[string]*lisp.LVal{
-				"a": lisp.Int(1), "b": lisp.Int(2), "c": lisp.Int(3),
-			})}
+		{name: "entries path fails after a partial copy", wrap: func(m *copierStringMap) lisp.Map {
+			return &copierFailingEntries{m}
 		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			// newFixture builds the failing payload and two DISTINCT
+			// headers over it.  When self is non-nil, the header it picks
+			// is parked in the map's first entry -- key "a", which is the
+			// entry both failing arms reach before they fail -- so the map
+			// reaches itself, and the copier meets that header while the
+			// half-built payload is seeded in c.maps.
+			newFixture := func(self func(m1, m2 *lisp.LVal) *lisp.LVal) (*lisp.MapData, *lisp.LVal, *lisp.LVal) {
+				base := newCopierStringMap(map[string]*lisp.LVal{
+					"a": lisp.Int(1), "b": lisp.Int(2), "c": lisp.Int(3),
+				})
+				md := lisp.NewMapData(tt.wrap(base))
+				m1, m2 := lisp.SortedMapFromData(md), lisp.SortedMapFromData(md)
+				if self != nil {
+					base.m["a"] = self(m1, m2)
+				}
+				return md, m1, m2
+			}
+			throughM1 := func(m1, _ *lisp.LVal) *lisp.LVal { return m1 }
 			t.Run("one header reached twice", func(t *testing.T) {
-				md := lisp.NewMapData(tt.newMap())
-				src := lisp.SortedMapFromData(md)
-				assertNoSourceBackedCopy(t, lisp.QExpr([]*lisp.LVal{src, src}), md, src)
+				md, m1, _ := newFixture(nil)
+				assertFailedCopyFailsAsAWhole(t, lisp.QExpr([]*lisp.LVal{m1, m1}), md, m1)
 			})
 			t.Run("two headers over one payload", func(t *testing.T) {
-				md := lisp.NewMapData(tt.newMap())
-				h1, h2 := lisp.SortedMapFromData(md), lisp.SortedMapFromData(md)
-				assertNoSourceBackedCopy(t, lisp.QExpr([]*lisp.LVal{h1, h2}), md, h1, h2)
+				md, m1, m2 := newFixture(nil)
+				assertFailedCopyFailsAsAWhole(t, lisp.QExpr([]*lisp.LVal{m1, m2}), md, m1, m2)
+			})
+			t.Run("self through the other header, that header second", func(t *testing.T) {
+				md, m1, m2 := newFixture(throughM1)
+				assertFailedCopyFailsAsAWhole(t, lisp.QExpr([]*lisp.LVal{m2, m1}), md, m1, m2)
+			})
+			t.Run("self through the other header, that header first", func(t *testing.T) {
+				md, m1, m2 := newFixture(throughM1)
+				assertFailedCopyFailsAsAWhole(t, lisp.QExpr([]*lisp.LVal{m1, m2}), md, m1, m2)
+			})
+			t.Run("self through the same header", func(t *testing.T) {
+				md, m1, _ := newFixture(throughM1)
+				assertFailedCopyFailsAsAWhole(t, lisp.QExpr([]*lisp.LVal{m1, m1}), md, m1)
 			})
 		})
 	}
