@@ -51,6 +51,26 @@ import (
 // in both arms and render the same text, so exact comparison already agrees.
 // Only the wall-clock deadline is non-deterministic, and it is handled as
 // INCONCLUSIVENESS rather than as a verdict about the value.
+//
+// # The second vacuity hazard: an oracle that is never reached
+//
+// Every case above drives compareTreeEvals directly, from treeEvals this file
+// built with its own evalArm helper.  That is deliberate -- it is the only way
+// to put an arm's context into a chosen state -- and it leaves a gap of
+// exactly the shape this file was written to close.  The REAL harness path is
+// sharedTreeProperty -> evalTreeOnce, under the real fuzzDeadline, the real
+// newFuzzEnv and real shared arms; nothing here ran it.  So a regression that
+// made every real run INCONCLUSIVE from expression 0 -- a mis-set deadline, a
+// context created already cancelled, `expired` read from the wrong context or
+// pinned to true, a `continue` that skips the comparison -- would leave every
+// test in this file passing, FuzzSharedTreeEval finding nothing, and the
+// target comparing nothing.  "No failure" is worth as little here as "no
+// crash" is under a blanket recover().
+//
+// TestSharedTreeLiveResultIsConclusive is the direct control: it runs the real
+// path on a small terminating program and asserts the verdict came back
+// CONCLUSIVE with every expression compared.  Each of the three mutations
+// above fails it.
 
 // oracleDeadline is the deadline the live-context cases run under.  Long
 // enough that nothing here reaches it, so an expired context in those cases
@@ -286,6 +306,12 @@ func assertDiverged(t *testing.T, want, got treeEval, at int) {
 			"\n  private: %q\n  shared:  %q",
 			cmp.divergedAt, at, want.rendered, got.rendered)
 	}
+	// The count the live control reads: everything up to the divergence was
+	// compared, and the diverging expression itself was not counted.
+	if cmp.compared != at {
+		t.Fatalf("the oracle compared %d expressions before diverging at %d",
+			cmp.compared, at)
+	}
 }
 
 // assertAgreed is the oracle finding nothing, with no exception invoked.
@@ -299,6 +325,11 @@ func assertAgreed(t *testing.T, want, got treeEval) {
 		t.Fatalf("the oracle reported a divergence at expression %d"+
 			"\n  private: %s\n  shared:  %s",
 			cmp.divergedAt, want.rendered[cmp.divergedAt], got.rendered[cmp.divergedAt])
+	}
+	// Agreement over zero expressions is not agreement.
+	if cmp.compared != len(want.rendered) {
+		t.Fatalf("the oracle agreed after comparing %d of %d expressions",
+			cmp.compared, len(want.rendered))
 	}
 }
 
@@ -383,6 +414,9 @@ func TestOracleExpiredContextIsInconclusive(t *testing.T) {
 		if cmp.firstExpired != 0 {
 			t.Fatalf("firstExpired=%d, want 0", cmp.firstExpired)
 		}
+		if cmp.compared != 0 {
+			t.Fatalf("the oracle compared %d expressions of an arm expired from 0", cmp.compared)
+		}
 		if cmp.divergedAt >= 0 {
 			t.Fatalf("an inconclusive comparison also reported a divergence at %d", cmp.divergedAt)
 		}
@@ -417,6 +451,10 @@ func TestOracleExpiredContextIsInconclusive(t *testing.T) {
 		if cmp.firstExpired != 1 {
 			t.Fatalf("firstExpired=%d, want 1", cmp.firstExpired)
 		}
+		if cmp.compared != 1 {
+			t.Fatalf("the oracle compared %d expressions, want the one before the expiry",
+				cmp.compared)
+		}
 	})
 }
 
@@ -443,4 +481,84 @@ func TestOracleComparesRaisedContextCancelled(t *testing.T) {
 	// condition is not by itself a divergence either.
 	same := liveArm(t, raisedCancelledSrc("original"))
 	assertAgreed(t, private.eval, same.eval)
+}
+
+// liveConclusiveSrc is the program TestSharedTreeLiveResultIsConclusive runs.
+// Several top-level forms, and deliberately mixed in kind: a plain value, a
+// definition, a call through that definition, a caught error, and finally an
+// UNCAUGHT one.  A conclusive verdict over this tree therefore says the
+// harness compared both ordinary values and an error result -- an oracle that
+// silently stopped comparing errors would not reach the end of it.
+//
+// Everything here completes in microseconds, orders of magnitude inside
+// fuzzDeadline, so an inconclusive verdict is a harness defect and not a slow
+// machine.
+const liveConclusiveSrc = `(+ 1 1)
+(defun double (x) (* x 2))
+(double 21)
+(handler-bind ([error (lambda (c &rest r) 'handled)]) (error 'caught "handled here"))
+(error 'deliberate "raised on purpose")`
+
+// TestSharedTreeLiveResultIsConclusive is the live control on the REAL fuzz
+// harness path: real newFuzzEnv, real fuzzDeadline, real evalTreeOnce, real
+// shared arms, driven through sharedTreeProperty exactly as FuzzSharedTreeEval
+// drives it.
+//
+// The assertion is not "it did not fail" -- sharedTreeProperty passes silently
+// when it compares nothing -- but that every shared arm came back CONCLUSIVE
+// having compared every expression of the tree.  That is the property the
+// inconclusiveness rule can destroy without any test noticing, so it is
+// asserted directly rather than inferred from a green run.
+func TestSharedTreeLiveResultIsConclusive(t *testing.T) {
+	t.Parallel()
+
+	// The expected expression count comes from the reader, not from a
+	// hand-counted constant that could drift away from the source above.
+	exprs, ok := readTree([]byte(liveConclusiveSrc))
+	if !ok {
+		t.Fatalf("the fixture does not parse:\n%s", liveConclusiveSrc)
+	}
+	if len(exprs) < 2 {
+		t.Fatalf("the fixture parsed to %d expressions; it is meant to have several", len(exprs))
+	}
+
+	res := sharedTreeProperty(t, []byte(liveConclusiveSrc))
+
+	if res.skipped != "" {
+		t.Fatalf("the live path skipped the fixture: %s", res.skipped)
+	}
+	if res.exprs != len(exprs) {
+		t.Fatalf("the harness saw %d expressions, the reader read %d", res.exprs, len(exprs))
+	}
+	if len(res.runs) != sharedRuns {
+		t.Fatalf("%d shared arms reported a verdict, want %d", len(res.runs), sharedRuns)
+	}
+	for i, v := range res.runs {
+		if !v.conclusive() {
+			t.Fatalf("shared run %d was inconclusive on a program that finishes"+
+				" in microseconds under a %v deadline: %s"+
+				"\n  the real harness path compared nothing from expression %d on",
+				i, fuzzDeadline, v.inconclusive, v.compared)
+		}
+		if v.compared == 0 {
+			t.Fatalf("shared run %d compared no expressions at all", i)
+		}
+		if v.compared != len(exprs) {
+			t.Fatalf("shared run %d compared %d of %d expressions", i, v.compared, len(exprs))
+		}
+	}
+	if !res.conclusive() {
+		t.Fatal("the result is not conclusive as a whole")
+	}
+
+	// And the fixture really did put both kinds of result through the
+	// comparison: without this, a tree of five successful values would pass
+	// the assertions above just as well.
+	final := liveArm(t, liveConclusiveSrc).last()
+	if final.Type != lisp.LError {
+		t.Fatalf("the fixture no longer ends in an error result: %v", final)
+	}
+	if final.Str != "deliberate" {
+		t.Fatalf("the fixture raised %q, not its own condition", final.Str)
+	}
 }
