@@ -114,8 +114,9 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 
 // admitTextLoaderStream runs TextLoader's admission walk over one stream and
 // returns, per top-level expression, the memo hint its per-load copy is
-// made with: the number of nodes the walk visited under that expression.
-// For a parser's tree -- no sharing -- that is exactly the number of headers
+// made with: the number of memoisable nodes -- containers and payload
+// headers, not leaves -- the walk visited under that expression.  For a
+// parser's tree -- no sharing -- that is exactly the number of headers
 // (*LVal).copyWithHint will memoise; for an interning Reader's DAG it is an
 // over-count (one visit per path), which presize clamps, and which costs a
 // larger reservation and nothing else.
@@ -140,7 +141,7 @@ func admitTextLoaderStream(exprs []*LVal) ([]int, error) {
 	w := newTextLoaderWalk()
 	hints := make([]int, len(exprs))
 	for i, expr := range exprs {
-		before := w.visited
+		before := w.memoised
 		err := admitExpr(expr, w)
 		if err != nil {
 			lerr := Error(err)
@@ -154,7 +155,7 @@ func admitTextLoaderStream(exprs []*LVal) ([]int, error) {
 			}
 			return nil, GoError(lerr)
 		}
-		hints[i] = int(min(w.visited-before, int64(copierMemoHintCap)))
+		hints[i] = int(min(w.memoised-before, int64(copierMemoHintCap)))
 	}
 	return hints, nil
 }
@@ -572,7 +573,13 @@ type loaderWalk struct {
 	// allocate-nothing promise holds.  TextLoader reads it per expression
 	// (admitTextLoaderStream) to size the memo of each load's copy.
 	visited int64
-	strict  bool // cache path: node budget
+	// memoised counts, of those visits, the nodes the copier's header memo
+	// records: containers and payload headers, not leaves (lisp/copier.go,
+	// the memoise gate).  It is the count TextLoader hands each load's copy
+	// as its memo hint, so the map is reserved at the size it will reach and
+	// not at the size of the tree.
+	memoised int64
+	strict   bool // cache path: node budget
 	// allowNative tolerates a Native payload on a sealable type.  TextLoader
 	// only; see newTextLoaderWalk.
 	allowNative bool
@@ -667,9 +674,13 @@ func (w *loaderWalk) check(v *LVal, depth int) (loaderNodeInfo, error) {
 	if v == nil {
 		return loaderNodeInfo{}, errReaderNilNode
 	}
-	// Counted before the singleton exit: the copier memoises a singleton's
-	// header like any other, so it is part of the memo a hint sizes.
+	// Counted before the singleton exit.  A singleton has no cells and no
+	// payload, so like every leaf it is a visit the copier does not
+	// memoise; the memoised count below is the one that sizes a hint.
 	w.visited++
+	if cap(v.Cells) > 0 || v.Native != nil {
+		w.memoised++
+	}
 	// Singletons (Nil/true/false) are shared by design and immutable, so a
 	// parse may legitimately reach one from many positions.  They are exempt
 	// from every repeat rule and terminate the walk at once.

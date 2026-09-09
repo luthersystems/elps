@@ -159,9 +159,13 @@ func TestCopyWithHintSmallerThanTheTreeIsHarmless(t *testing.T) {
 // than grown through every doubling.  The two trees are the same (the test
 // above), so the difference is the memo's growth and nothing else.
 func TestCopyWithHintReservesTheMemoOnce(t *testing.T) {
+	// Containers, not leaves: the memo records the headers a copy could
+	// share or cycle through, and a leaf is neither, so a list of leaves
+	// memoises one header however long it is.  512 one-element lists are
+	// 512 memoised headers, plus the list that holds them.
 	cells := make([]*lisp.LVal, 0, 512)
 	for i := range 512 {
-		cells = append(cells, lisp.Int(i))
+		cells = append(cells, lisp.QExpr([]*lisp.LVal{lisp.Int(i)}))
 	}
 	list := lisp.QExpr(cells)
 	nodes := len(cells) + 1
@@ -182,9 +186,29 @@ func TestCopyWithHintReservesTheMemoOnce(t *testing.T) {
 // per-load copy will memoise -- for a parser's tree (no sharing) exactly
 // the headers reachable from the expression -- and records it once, at
 // admission, so the Loader carries it into every load.
+// synthHintSource is synthLoaderSource with a container-heavy tail on every
+// handler.  The copier memoises containers and payload headers, not leaves,
+// so a handler of synthLoaderSource's shape memoises exactly as many headers
+// as the inline memo holds; this shape memoises more, so the hint reserves
+// the map and the test below exercises that path rather than the array.
+func synthHintSource(n int) string {
+	var sb strings.Builder
+	for i := 0; sb.Len() < n; i++ {
+		fmt.Fprintf(&sb, `
+(defun loader-bench-handler-%d (arg-one arg-two)
+  (let ((m (list "id" arg-one "n" %d))
+        (v (map 'list (lambda (x) (+ x %d)) '(1 2 3 4 5))))
+    (if (equal? arg-one "case-%d")
+        (list 1 2 3 %d)
+        (list m v "tail-%d" (list 0.125) (list (list 1) (list 2) (list 3) (list 4) (list 5) (list 6) (list 7) (list 8))))))
+`, i, i, i, i, i, i)
+	}
+	return sb.String()
+}
+
 func TestTextLoaderRecordsAMemoHintPerExpression(t *testing.T) {
 	t.Parallel()
-	exprs, err := parser.NewReader().Read("hint.lisp", strings.NewReader(synthLoaderSource(8*1024)))
+	exprs, err := parser.NewReader().Read("hint.lisp", strings.NewReader(synthHintSource(8*1024)))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -208,7 +232,7 @@ func TestTextLoaderRecordsAMemoHintPerExpression(t *testing.T) {
 	// A Loader built over the same source still evaluates it: the hinted
 	// copy is the tree the environment sees.
 	env := copierEnv(t)
-	loader, err := lisp.TextLoader(parser.NewReader(), "hint.lisp", strings.NewReader(synthLoaderSource(8*1024)))
+	loader, err := lisp.TextLoader(parser.NewReader(), "hint.lisp", strings.NewReader(synthHintSource(8*1024)))
 	if err != nil {
 		t.Fatalf("TextLoader: %v", err)
 	}

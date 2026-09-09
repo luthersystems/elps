@@ -109,7 +109,8 @@ import (
 // TestCopyMemoSpillsPastTheInlineArray pin both ends.
 //
 // A caller that knows the walk is large can say so: copyWithHint reserves
-// the map at the tree's size before the walk starts, which spares the load
+// the map at the count of headers the walk will memoise -- the containers
+// and payload headers, not the leaves -- before the walk starts, which spares the load
 // path (lisp.TextLoader copies a cached tree on every load, and counts it
 // once at admission) the map's growth through every doubling.  The walk is
 // the same either way; only where the memo lives differs.
@@ -210,8 +211,24 @@ func (c *copier) copy(v *LVal) *LVal {
 	if v == nil {
 		return nil
 	}
-	if cp, ok := c.lookup(v); ok {
-		return cp
+	// Only a node that can be reached twice in a way the copy could observe
+	// is memoised: one with cell storage (a container, or a header over
+	// hidden capacity) or a payload.  A leaf -- a number, string, symbol, an
+	// empty list with no capacity -- has neither: it cannot close a cycle,
+	// it carries no storage two copied headers could share, and Lisp cannot
+	// observe whether two slots hold one leaf header or two (values compare
+	// by value; leaves are immutable), which is also exactly what Copy
+	// produced before it memoised at all.  Skipping leaves keeps the memo
+	// proportional to the containers in a tree rather than to its size,
+	// which on a parse tree -- mostly symbols and literals -- is the
+	// difference between a memo the size of the tree and one a third of
+	// it (the load-path benchmarks, TextLoaderLoad and the reader-cache-copy
+	// arm of LoadIntoEnv, measure the bytes).
+	memoise := cap(v.Cells) > 0 || v.Native != nil
+	if memoise {
+		if cp, ok := c.lookup(v); ok {
+			return cp
+		}
 	}
 	// Constructed here and written here, in one function: cmd/elpsvet's
 	// rule (issues #333 and #334) is that a field write lands on a value
@@ -283,8 +300,10 @@ func (c *copier) copy(v *LVal) *LVal {
 	cp.macroExpansion = nil
 	// Seeded before anything below descends: a child that reaches v again
 	// gets cp, so a shared subtree is copied once and a cycle closes onto
-	// the copy.
-	c.remember(v, cp)
+	// the copy.  A leaf is not seeded (see memoise above).
+	if memoise {
+		c.remember(v, cp)
+	}
 	switch v.Type {
 	case LSortMap:
 		// Sorted-maps store data in Native (*MapData) which contains Go

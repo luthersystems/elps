@@ -137,13 +137,23 @@ func (p *copierProbe) walk(v *lisp.LVal) {
 		p.ids = append(p.ids, -1)
 		return
 	}
-	if id, ok := p.first[v]; ok {
-		p.ids = append(p.ids, id)
-		return
+	// Sharing is a property of containers and payload headers: a leaf has
+	// no storage two slots could share and no cycle to close, so the copier
+	// does not memoise it and this probe does not record its identity (a
+	// leaf reached twice reads as two leaves, on the source and on the copy
+	// alike).
+	memoised := cap(v.Cells) > 0 || v.Native != nil
+	if memoised {
+		if id, ok := p.first[v]; ok {
+			p.ids = append(p.ids, id)
+			return
+		}
 	}
 	id := len(p.ids)
 	p.ids = append(p.ids, id)
-	p.first[v] = id
+	if memoised {
+		p.first[v] = id
+	}
 	p.headers[v] = true
 	switch v.Type {
 	case lisp.LSortMap:
@@ -356,8 +366,10 @@ func TestCopyMemoSpillsPastTheInlineArray(t *testing.T) {
 	shared := lisp.QExpr([]*lisp.LVal{lisp.Int(0)})
 	cells := make([]*lisp.LVal, 0, 64)
 	cells = append(cells, shared)
+	// Containers, not leaves: only a memoised header counts towards the
+	// spill, and a leaf is not memoised.
 	for i := range 60 {
-		cells = append(cells, lisp.Int(i))
+		cells = append(cells, lisp.QExpr([]*lisp.LVal{lisp.Int(i)}))
 	}
 	cells = append(cells, shared)
 	big := lisp.QExpr(cells)
@@ -381,11 +393,16 @@ func TestCopyMemoSpillsPastTheInlineArray(t *testing.T) {
 
 // copierReachable walks everything reachable from v through cells and
 // sorted-map values, once per header.
+// copierReachable collects the headers the copier memoises under v: the
+// containers and payload headers, not the leaves (lisp/copier.go's memoise
+// gate).  A leaf is still descended through -- it has nothing under it.
 func copierReachable(v *lisp.LVal, seen map[*lisp.LVal]bool) {
 	if v == nil || seen[v] {
 		return
 	}
-	seen[v] = true
+	if cap(v.Cells) > 0 || v.Native != nil {
+		seen[v] = true
+	}
 	for _, c := range v.Cells {
 		copierReachable(c, seen)
 	}
