@@ -1639,10 +1639,174 @@ var AnalyzerComparatorMutation = &Analyzer{
 	},
 }
 
+// iterationForm locates the callback and the collection arguments of a
+// higher-order builtin. Indices are into the s-expression's Cells, so 1 is
+// the first argument.
+type iterationForm struct {
+	// collections holds the indices of the arguments that are iterated.
+	collections []int
+	// callback is the index of the user function applied to the elements.
+	callback int
+	// accumulator is the position, among the callback's own parameters, of
+	// the value the form threads rather than an element of the collection.
+	// -1 for a form that threads nothing.
+	accumulator int
+}
+
+// iterationForms is read off the builtins in lisp/builtins.go, not guessed --
+// the callback is first in some of these and second in others, and one
+// argument that looks like a collection is not one:
+//
+//	(map    type-specifier fn        seq)  ; builtinMap: exactly one seq
+//	(foldl  fn             z         seq)  ; builtinFoldLeft:  z is the accumulator
+//	(foldr  fn             z         seq)  ; builtinFoldRight: z is the accumulator
+//	(select type-specifier predicate seq)  ; builtinSelect
+//	(reject type-specifier predicate seq)  ; builtinReject
+//	(all?   predicate      seq)            ; builtinAllP
+//	(any?   predicate      seq)            ; builtinAnyP
+//
+// The fold accumulator is deliberately NOT a collection, and it is not an
+// element either: the standard idiom
+// (foldl (lambda (acc x) (assoc! acc k v)) (sorted-map) xs) mutates a map the
+// fold itself threads, which is correct code. Which PARAMETER holds it
+// differs between the two folds -- builtinFoldLeft calls (fn acc elem) and
+// builtinFoldRight calls (fn elem acc) -- so each names its own position.
+//
+// `zip` is absent on purpose. It does read several collections --
+// (zip type-specifier list &rest lists) -- but builtinZip takes NO user
+// callback, so there is no callback body for this check to look inside.
+var iterationForms = map[string]iterationForm{
+	"map":    {callback: 2, collections: []int{3}, accumulator: -1},
+	"foldl":  {callback: 1, collections: []int{3}, accumulator: 0},
+	"foldr":  {callback: 1, collections: []int{3}, accumulator: 1},
+	"select": {callback: 2, collections: []int{3}, accumulator: -1},
+	"reject": {callback: 2, collections: []int{3}, accumulator: -1},
+	"all?":   {callback: 1, collections: []int{2}, accumulator: -1},
+	"any?":   {callback: 1, collections: []int{2}, accumulator: -1},
+}
+
+// iterationMutatingTargets is mutatingBuiltins MINUS set!, and the omission is
+// the point rather than an oversight.
+//
+// set! rebinds a NAME; it does not write through the value the name held. A
+// callback's (set! x 1) gives the local parameter a new value and leaves the
+// element the traversal handed it untouched, and a (set! xs ...) rebinds the
+// caller's variable while the builtin goes on walking the sequence it was
+// already given. Neither changes anything underneath the traversal, so
+// reporting either would be a false positive -- the comparator check still
+// counts set!, because there ANY side effect is a finding whatever it writes
+// to.
+//
+// It is derived rather than spelled out a second time so the target index of
+// each builtin -- the reason stable-sort's is 2 -- has one definition.
+var iterationMutatingTargets = func() map[string]int {
+	targets := make(map[string]int, len(mutatingBuiltins))
+	for name, target := range mutatingBuiltins {
+		if name == "set!" {
+			continue
+		}
+		targets[name] = target
+	}
+	return targets
+}()
+
+// AnalyzerIterationMutation reports a callback that mutates the very
+// collection it is iterating, or an element that collection handed it.
+var AnalyzerIterationMutation = &Analyzer{
+	Name:     "iteration-mutation",
+	Severity: SeverityWarning,
+	Doc: "Report a callback that mutates the collection a higher-order builtin is iterating.\n\n" +
+		"Covers map, foldl, foldr, select, reject, all? and any?. A mutating call " +
+		"(assoc!, dissoc!, append!, append-bytes! or stable-sort) is reported when " +
+		"the value it writes through is the collection argument itself -- which " +
+		"must be a plain symbol for the check to see it -- or one of the callback's " +
+		"own parameters, which holds an element of that collection.\n\n" +
+		"set! is NOT on that list, unlike in comparator-mutation: it rebinds a name " +
+		"rather than writing through the value the name held, so a callback's " +
+		"(set! x 1) leaves the element alone and a (set! xs ...) leaves the sequence " +
+		"the builtin is already walking alone.\n\n" +
+		"A fold's accumulator is neither: not the collection, and not an element, " +
+		"even though the callback receives it as a parameter -- so the usual " +
+		"(foldl (lambda (acc x) (assoc! acc k v)) (sorted-map) xs) idiom is clean, and " +
+		"so is a mutation of any unrelated binding. Both an inline lambda and a plain " +
+		"symbol naming a same-file defun are followed, one hop deep.\n\n" +
+		"Known blind spots: the check is syntactic and keeps no scope of its own, so a " +
+		"callback parameter that an inner let rebinds is still treated as the element; " +
+		"a collection passed as an expression rather than a symbol is invisible; and " +
+		"zip is not covered because it takes no callback at all.",
+	Run: func(pass *Pass) error {
+		defuns := sameFileDefuns(pass.Exprs)
+		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, _ int) {
+			form := HeadSymbol(sexpr)
+			spec, ok := iterationForms[form]
+			if !ok || spec.callback >= len(sexpr.Cells) {
+				return
+			}
+			cb := resolveCallback(sexpr.Cells[spec.callback], defuns)
+			if cb == nil {
+				return
+			}
+			collections := make(map[string]bool)
+			for _, idx := range spec.collections {
+				if idx < len(sexpr.Cells) && sexpr.Cells[idx].Type == lisp.LSymbol {
+					collections[sexpr.Cells[idx].Str] = true
+				}
+			}
+			// Everything the callback is handed EXCEPT a threaded
+			// accumulator holds an element of the collection.
+			elements := make(map[string]bool, len(cb.params))
+			for i, name := range cb.params {
+				if i == spec.accumulator {
+					continue
+				}
+				elements[name] = true
+			}
+			for _, node := range cb.body {
+				walkUnquotedSExprs(node, func(call *lisp.LVal) {
+					name := HeadSymbol(call)
+					target, ok := iterationMutatingTargets[name]
+					if !ok || target >= len(call.Cells) {
+						return
+					}
+					arg := call.Cells[target]
+					if arg.Type != lisp.LSymbol {
+						return
+					}
+					var msg string
+					switch {
+					case collections[arg.Str]:
+						msg = fmt.Sprintf("%s mutates %s while %s iterates over it",
+							name, arg.Str, form)
+					case elements[arg.Str]:
+						msg = fmt.Sprintf("%s mutates the element %s of %s",
+							name, arg.Str, form)
+					default:
+						return
+					}
+					src := SourceOf(call)
+					pass.Report(Diagnostic{
+						Message: msg,
+						Pos:     posFromSource(astutil.SourceLoc(src)),
+						EndPos:  endPosFromNode(src),
+						Notes: []string{
+							"iterate a copy (copy or concat) or build a new collection and return it, rather than writing through the one being traversed",
+						},
+					})
+				})
+			}
+		})
+		return nil
+	},
+}
+
 // callback is a function argument a higher-order form was handed: the names
-// it binds its parameters to, and the body forms that run.
+// it binds its parameters to, in order, and the body forms that run.
+//
+// The order matters: a fold hands one parameter the accumulator it threads
+// rather than an element of the collection, and which one differs between
+// foldl and foldr.
 type callback struct {
-	params map[string]bool
+	params []string
 	body   []*lisp.LVal
 }
 
@@ -1698,11 +1862,30 @@ func sameFileDefuns(exprs []*lisp.LVal) map[string]*lisp.LVal {
 	return defs
 }
 
-// formalNames collects the parameter names of a formals list, dropping the
-// &rest, &optional and &key markers.
-func formalNames(formals *lisp.LVal) map[string]bool {
-	names := make(map[string]bool)
-	CollectFormals(formals, names)
+// formalNames collects the parameter names of a formals list in order,
+// dropping the &rest, &optional and &key markers.
+//
+// It keeps the order that lint.CollectFormals discards, because a caller has
+// to be able to say which POSITION a parameter occupies. Dropping the markers
+// does shift the positions of what follows them, so a fold whose callback
+// declares &optional or &rest parameters before its accumulator is read
+// wrongly -- a shape neither fold can actually call.
+func formalNames(formals *lisp.LVal) []string {
+	if formals == nil || formals.Type != lisp.LSExpr {
+		return nil
+	}
+	var names []string
+	for _, sym := range formals.Cells {
+		if sym.Type != lisp.LSymbol {
+			continue
+		}
+		switch sym.Str {
+		case "&rest", "&optional", "&key":
+			// markers, not parameters
+		default:
+			names = append(names, sym.Str)
+		}
+	}
 	return names
 }
 

@@ -300,6 +300,46 @@ named function's own body is scanned, but a call it in turn makes is not
 followed, so a comparator that mutates two hops away is not reported. Quoted
 subtrees are data and are skipped whole.
 
+### `iteration-mutation`
+
+**Flags a callback that mutates the collection it is iterating.** (Severity:
+warning)
+
+Covers `map`, `foldl`, `foldr`, `select`, `reject`, `all?` and `any?`. A
+mutating call — `assoc!`, `dissoc!`, `append!`, `append-bytes!` or
+`stable-sort` — is reported when the value it writes through is the collection
+argument itself, or one of the callback's own parameters, which holds an
+element of that collection.
+
+`set!` is deliberately **not** on that list, unlike in `comparator-mutation`.
+It rebinds a name rather than writing through the value the name held, so
+`(set! x 1)` gives the callback's own parameter a new value and leaves the
+element alone, and `(set! xs ...)` rebinds the caller's variable while the
+builtin goes on walking the sequence it was already handed.
+
+```lisp
+;; BAD — writes through the sequence being walked
+(map 'list (lambda (x) (append! xs x)) xs)
+
+;; BAD — writes through an element the traversal handed over
+(map 'list (lambda (x) (assoc! x 'seen true)) xs)
+
+;; GOOD — the fold's own accumulator is neither the collection nor an element
+(foldl (lambda (acc x) (assoc! acc x 1)) (sorted-map) xs)
+
+;; GOOD — an unrelated binding
+(map 'list (lambda (x) (assoc! out x 1)) xs)
+```
+
+Both an inline `lambda` and a plain symbol naming a `defun` **in the same
+file** are followed, one hop deep.
+
+Blind spots worth knowing: the check is syntactic and keeps no scope of its
+own, so a callback parameter that an inner `let` rebinds is still treated as
+the element; a collection passed as an expression rather than a symbol has no
+name to match against and is invisible; and `zip` is not covered, because it
+takes no callback at all.
+
 ### `with-cleanup-forms`
 
 **Flags a degenerate `with-cleanup` spec list.** (Severity: warning)
