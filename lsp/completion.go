@@ -17,6 +17,13 @@ func (s *Server) textDocumentCompletion(_ *glsp.Context, params *protocol.Comple
 	if doc == nil {
 		return nil, nil
 	}
+	// An over-limit document has no AST or analysis (see Document.parse), and
+	// wordAtPosition below splits the whole content to find the prefix under
+	// the cursor -- linear allocation over a document the size limit exists to
+	// keep off the hot path. No completions.
+	if doc.OverLimit() {
+		return nil, nil
+	}
 	s.ensureAnalysis(doc)
 
 	// elps#464: the client counts Character in the negotiated encoding

@@ -16,6 +16,13 @@ func (s *Server) textDocumentDefinition(_ *glsp.Context, params *protocol.Defini
 	if doc == nil {
 		return nil, nil
 	}
+	// An over-limit document has no AST or analysis (see Document.parse), and
+	// wordAtPosition below splits the whole content to find the word under the
+	// cursor -- linear allocation over a document the size limit exists to keep
+	// off the hot path. No definition to report.
+	if doc.OverLimit() {
+		return nil, nil
+	}
 	s.ensureAnalysis(doc)
 
 	// elps#464: the client counts Character in the negotiated encoding

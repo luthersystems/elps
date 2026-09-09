@@ -18,6 +18,13 @@ func (s *Server) textDocumentFoldingRange(_ *glsp.Context, params *protocol.Fold
 	if doc == nil {
 		return nil, nil
 	}
+	// An over-limit document has no AST (see Document.parse), so the walker
+	// below folds nothing, but commentFoldingRanges runs unconditionally and
+	// splits the whole content -- linear allocation over a document the size
+	// limit exists to keep off the hot path. No folding ranges.
+	if doc.OverLimit() {
+		return nil, nil
+	}
 
 	doc.mu.Lock()
 	ast := doc.ast

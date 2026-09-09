@@ -27,6 +27,13 @@ func (s *Server) textDocumentSignatureHelp(_ *glsp.Context, params *protocol.Sig
 	if doc == nil {
 		return nil, nil
 	}
+	// An over-limit document has no AST or analysis (see Document.parse), so
+	// strategy 1 finds nothing and strategy 2's enclosingCallText splits the
+	// whole content and copies it into a Builder -- linear allocation over a
+	// document the size limit exists to keep off the hot path. No signature.
+	if doc.OverLimit() {
+		return nil, nil
+	}
 	s.ensureAnalysis(doc)
 
 	doc.mu.Lock()
