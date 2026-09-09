@@ -1038,6 +1038,214 @@ func TestComparatorMutation_Nolint(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+// --- iteration-mutation ---
+
+func TestIterationMutation_Positive_MutatesCollection(t *testing.T) {
+	source := `(map 'list (lambda (x) (append! xs x)) xs)`
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, "append! mutates xs while map iterates over it", diags[0].Message)
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assertDiagOnLine(t, diags, 1, "append!")
+}
+
+func TestIterationMutation_Positive_MutatesElement(t *testing.T) {
+	source := `(map 'list (lambda (x) (assoc! x 'seen true)) xs)`
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, "assoc! mutates the element x of map", diags[0].Message)
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+}
+
+// TestIterationMutation_Positive_EveryForm pins the argument layout of each
+// covered builtin: the callback comes first in foldl, foldr, all? and any?,
+// and second in map, select and reject, so a single assumed position would
+// silently check the wrong cell for half of them.
+func TestIterationMutation_Positive_EveryForm(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name:   "map",
+			source: `(map 'list (lambda (x) (append! xs x)) xs)`,
+			want:   "append! mutates xs while map iterates over it",
+		},
+		{
+			name:   "select",
+			source: `(select 'list (lambda (x) (dissoc! xs 'k)) xs)`,
+			want:   "dissoc! mutates xs while select iterates over it",
+		},
+		{
+			name:   "reject",
+			source: `(reject 'list (lambda (x) (dissoc! x 'k)) xs)`,
+			want:   "dissoc! mutates the element x of reject",
+		},
+		{
+			name:   "foldl",
+			source: `(foldl (lambda (acc x) (append! xs x)) (list) xs)`,
+			want:   "append! mutates xs while foldl iterates over it",
+		},
+		{
+			name:   "foldr",
+			source: `(foldr (lambda (x acc) (append! xs x)) (list) xs)`,
+			want:   "append! mutates xs while foldr iterates over it",
+		},
+		{
+			name:   "all?",
+			source: `(all? (lambda (x) (append! xs x)) xs)`,
+			want:   "append! mutates xs while all? iterates over it",
+		},
+		{
+			name:   "any?",
+			source: `(any? (lambda (x) (append-bytes! xs x)) xs)`,
+			want:   "append-bytes! mutates xs while any? iterates over it",
+		},
+		{
+			// stable-sort mutates its SECOND argument, not its first --
+			// the first is the comparator.
+			name:   "stable-sort-as-mutator",
+			source: `(map 'list (lambda (x) (stable-sort < xs)) xs)`,
+			want:   "stable-sort mutates xs while map iterates over it",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			diags := lintCheck(t, AnalyzerIterationMutation, tt.source)
+			require.Len(t, diags, 1)
+			assert.Equal(t, tt.want, diags[0].Message)
+		})
+	}
+}
+
+func TestIterationMutation_Positive_NestedLambda(t *testing.T) {
+	source := "(map 'list\n" +
+		"  (lambda (x)\n" +
+		"    (map 'list (lambda (y) (append! xs y)) '(1 2)))\n" +
+		"  xs)"
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	require.Len(t, diags, 1)
+	assertDiagOnLine(t, diags, 3, "append! mutates xs while map iterates over it")
+}
+
+func TestIterationMutation_Positive_SameFileDefun(t *testing.T) {
+	source := "(defun visit (x)\n" +
+		"  (assoc! x 'seen true))\n" +
+		"(map 'list visit xs)"
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	require.Len(t, diags, 1)
+	assertDiagOnLine(t, diags, 2, "assoc! mutates the element x of map")
+}
+
+func TestIterationMutation_Positive_HasNotes(t *testing.T) {
+	diags := lintCheck(t, AnalyzerIterationMutation,
+		`(map 'list (lambda (x) (append! xs x)) xs)`)
+	require.Len(t, diags, 1)
+	require.NotEmpty(t, diags[0].Notes)
+	assert.Contains(t, diags[0].Notes[0], "copy")
+	assert.Contains(t, diags[0].Notes[0], "new collection")
+}
+
+// TestIterationMutation_Negative_AccumulatorIdiom is the shape the check
+// exists to leave alone: the fold's accumulator is threaded by the fold
+// itself, so mutating it is correct code and is not a collection write.
+func TestIterationMutation_Negative_AccumulatorIdiom(t *testing.T) {
+	source := `(foldl (lambda (acc x) (assoc! acc x 1)) (sorted-map) xs)`
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	assertNoDiags(t, diags)
+}
+
+// TestIterationMutation_Negative_SetRebindsNotMutates keeps set! off this
+// check's list. It rebinds a NAME rather than writing through the value the
+// name held: (set! x 1) gives the callback's own parameter a new value and
+// leaves the element alone, and (set! xs ...) rebinds the caller's variable
+// while the builtin goes on walking the sequence it was already handed.
+// Neither changes anything underneath the traversal.
+//
+// comparator-mutation still reports set!, because there any side effect is a
+// finding whatever it writes to.
+func TestIterationMutation_Negative_SetRebindsNotMutates(t *testing.T) {
+	t.Run("element", func(t *testing.T) {
+		diags := lintCheck(t, AnalyzerIterationMutation,
+			`(map 'list (lambda (x) (set! x 1)) xs)`)
+		assertNoDiags(t, diags)
+	})
+	t.Run("collection", func(t *testing.T) {
+		diags := lintCheck(t, AnalyzerIterationMutation,
+			`(map 'list (lambda (x) (set! xs ())) xs)`)
+		assertNoDiags(t, diags)
+	})
+	t.Run("comparator-check-still-reports-it", func(t *testing.T) {
+		diags := lintCheck(t, AnalyzerComparatorMutation,
+			`(stable-sort (lambda (a b) (set! seen true) (< a b)) xs)`)
+		require.Len(t, diags, 1)
+		assert.Equal(t,
+			"stable-sort predicate mutates state: set! is called inside a comparator",
+			diags[0].Message)
+	})
+}
+
+func TestIterationMutation_Negative_UnrelatedSymbol(t *testing.T) {
+	source := `(map 'list (lambda (x) (assoc! out x 1)) xs)`
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	assertNoDiags(t, diags)
+}
+
+func TestIterationMutation_Negative_PureCallback(t *testing.T) {
+	source := `(map 'list (lambda (x) (+ x 1)) xs)`
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	assertNoDiags(t, diags)
+}
+
+func TestIterationMutation_Negative_LetWithoutMutation(t *testing.T) {
+	source := `(map 'list (lambda (x) (let ([y x]) (+ y 1))) xs)`
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	assertNoDiags(t, diags)
+}
+
+// TestIterationMutation_Negative_MutationOutsideCallback keeps the check
+// inside the callback body: the same file mutating the same collection before
+// or after the traversal is ordinary code.
+func TestIterationMutation_Negative_MutationOutsideCallback(t *testing.T) {
+	source := "(map 'list (lambda (x) (+ x 1)) xs)\n" +
+		"(append! xs 4)\n" +
+		"(assoc! m 'k 1)"
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	assertNoDiags(t, diags)
+}
+
+// TestIterationMutation_Negative_QuotedData checks a quoted subtree is
+// skipped whole: '(assoc! xs k) is data, not a call.
+func TestIterationMutation_Negative_QuotedData(t *testing.T) {
+	source := `(map 'list (lambda (x) (nil? '(assoc! xs x))) xs)`
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	assertNoDiags(t, diags)
+}
+
+// TestIterationMutation_Negative_CollectionNotASymbol documents the blind
+// spot the Doc names: a collection built inline has no name to match against.
+func TestIterationMutation_Negative_CollectionNotASymbol(t *testing.T) {
+	source := `(map 'list (lambda (x) (append! xs x)) (list 1 2))`
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	assertNoDiags(t, diags)
+}
+
+// TestIterationMutation_ShadowedParameterIsStillReported documents the other
+// blind spot: the walk keeps no scope of its own, so a parameter rebound by
+// an inner let is still treated as the element.
+func TestIterationMutation_ShadowedParameterIsStillReported(t *testing.T) {
+	source := `(map 'list (lambda (x) (let ([x m]) (assoc! x 'k 1))) xs)`
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	require.Len(t, diags, 1)
+	assert.Equal(t, "assoc! mutates the element x of map", diags[0].Message)
+}
+
+func TestIterationMutation_Nolint(t *testing.T) {
+	source := "(map 'list (lambda (x) (append! xs x)) xs) ; nolint:iteration-mutation\n"
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	assertNoDiags(t, diags)
+}
+
 // --- unnecessary-progn ---
 
 func TestUnnecessaryProgn_Positive_Lambda(t *testing.T) {
@@ -1372,7 +1580,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 20)
+	assert.Len(t, analyzers, 21)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -1384,6 +1592,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"duplicate-definition",
 		"if-arity",
 		"in-package-toplevel",
+		"iteration-mutation",
 		"let-bindings",
 		"quote-call",
 		"rethrow-context",
@@ -1730,7 +1939,11 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		// Error: a comparator with a side effect does not merely read
 		// oddly, it makes the sort's result depend on how many times the
 		// runtime happened to call the predicate.
-		"comparator-mutation":  SeverityError,
+		"comparator-mutation": SeverityError,
+		// Warning, not error: a callback that writes to the collection it is
+		// walking is sometimes deliberate, and unlike a comparator it runs a
+		// defined number of times in a defined order.
+		"iteration-mutation":   SeverityWarning,
 		"undefined-symbol":     SeverityError,
 		"unused-variable":      SeverityWarning,
 		"unused-function":      SeverityWarning,
