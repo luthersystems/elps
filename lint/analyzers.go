@@ -1585,17 +1585,17 @@ var comparatorPredicateArg = map[string]int{
 // AnalyzerComparatorMutation reports a call to a mutating builtin inside a
 // sort comparator.
 //
-// A comparator is called an unspecified number of times, in an unspecified
-// order, on elements the caller still owns, so ANY side effect inside one is
-// nondeterministic -- the target of the mutation does not matter and the
-// check does not look at it.
+// A comparator is called an unspecified number of times and in an unspecified
+// order. This conservative policy rejects every mutating builtin, including
+// writes to callback-local scratch values; it does not prove impurity.
 var AnalyzerComparatorMutation = &Analyzer{
 	Name:     "comparator-mutation",
 	Severity: SeverityError,
 	Doc: "Report a mutating call inside a stable-sort or insert-sorted predicate.\n\n" +
 		"A comparator runs an unspecified number of times in an unspecified order, " +
-		"and it is handed the list's own elements, so any side effect inside one is " +
-		"nondeterministic. Every mutating builtin is reported whatever it writes to: " +
+		"so writes to shared state or input elements are unsafe. This conservative " +
+		"check also reports writes to callback-local scratch values. Every mutating " +
+		"builtin is reported whatever it writes to: " +
 		"assoc!, dissoc!, append!, append-bytes!, set! and stable-sort itself, which " +
 		"sorts in place despite carrying no `!`.\n\n" +
 		"Two spellings of the predicate are followed: an inline lambda, and a plain " +
@@ -1617,28 +1617,13 @@ var AnalyzerComparatorMutation = &Analyzer{
 			if !ok || idx >= len(sexpr.Cells) {
 				return
 			}
-			cb := resolveCallback(sexpr.Cells[idx], run.defuns)
+			cb := run.resolveCallback(sexpr.Cells[idx])
 			if cb == nil {
 				return
 			}
-			if !run.enterScope(mutationScopeKey{form: form, node: cb.node}) {
-				return
-			}
-			for _, call := range run.mutationSites(cb) {
-				name := HeadSymbol(call)
-				src := SourceOf(call)
-				run.report(Diagnostic{
-					Message: fmt.Sprintf(
-						"%s predicate mutates state: %s is called inside a comparator",
-						form, name),
-					Pos:    posFromSource(astutil.SourceLoc(src)),
-					EndPos: endPosFromNode(src),
-					Notes: []string{
-						"a comparator runs an unspecified number of times in an unspecified order, and it receives the list's own elements, so any side effect in it is nondeterministic",
-					},
-				})
-			}
+			run.query(mutationQuery{form: form}, cb.sites)
 		})
+		run.reportQueries()
 		return nil
 	},
 }
@@ -1750,68 +1735,22 @@ var AnalyzerIterationMutation = &Analyzer{
 			if !ok || spec.callback >= len(sexpr.Cells) {
 				return
 			}
-			cb := resolveCallback(sexpr.Cells[spec.callback], run.defuns)
+			cb := run.resolveCallback(sexpr.Cells[spec.callback])
 			if cb == nil {
 				return
 			}
 			collections := make(map[string]bool)
-			var names []string
 			for _, idx := range spec.collections {
 				if idx < len(sexpr.Cells) && sexpr.Cells[idx].Type == lisp.LSymbol {
-					collections[sexpr.Cells[idx].Str] = true
-					names = append(names, sexpr.Cells[idx].Str)
+					name := sexpr.Cells[idx].Str
+					collections[name] = true
+					run.query(mutationQuery{form: form, target: name}, cb.sites)
 				}
 			}
-			sort.Strings(names)
-			key := mutationScopeKey{
-				form:        form,
-				node:        cb.node,
-				collections: strings.Join(names, " "),
-			}
-			if !run.enterScope(key) {
-				return
-			}
-			// Everything the callback is handed EXCEPT a threaded
-			// accumulator holds an element of the collection.
-			elements := make(map[string]bool, len(cb.params))
-			for i, name := range cb.params {
-				if i == spec.accumulator {
-					continue
-				}
-				elements[name] = true
-			}
-			for _, call := range run.mutationSites(cb) {
-				name := HeadSymbol(call)
-				target, ok := iterationMutatingTargets[name]
-				if !ok || target >= len(call.Cells) {
-					continue
-				}
-				arg := call.Cells[target]
-				if arg.Type != lisp.LSymbol {
-					continue
-				}
-				var msg string
-				switch {
-				case collections[arg.Str]:
-					msg = fmt.Sprintf("%s mutates %s while %s iterates over it",
-						name, arg.Str, form)
-				case elements[arg.Str]:
-					msg = fmt.Sprintf("%s mutates the element %s of %s",
-						name, arg.Str, form)
-				default:
-					continue
-				}
-				src := SourceOf(call)
-				run.report(Diagnostic{
-					Message: msg,
-					Pos:     posFromSource(astutil.SourceLoc(src)),
-					EndPos:  endPosFromNode(src),
-					Notes: []string{
-						"iterate a copy (copy or concat) or build a new collection and return it, rather than writing through the one being traversed",
-					},
-				})
-			}
+			run.iterationScope(form, cb, collections)
 		})
+		run.elementQueries()
+		run.reportQueries()
 		return nil
 	},
 }
@@ -1823,12 +1762,12 @@ var AnalyzerIterationMutation = &Analyzer{
 // rather than an element of the collection, and which one differs between
 // foldl and foldr.
 type callback struct {
-	// node is the lambda or defun the body was read off. It is the memo key
-	// mutationRun uses, so the 300 references that name one defun share a
-	// single scan of it.
+	// node is the lambda or defun the body was read off.
 	node   *lisp.LVal
 	params []string
 	body   []*lisp.LVal
+	// sites indexes a shared DFS array, not a copy of descendant sites.
+	sites mutationSpan
 }
 
 // resolveCallback returns the parameters and body of a function argument.
@@ -1841,20 +1780,18 @@ type callback struct {
 //
 // Anything else -- a builtin such as `<`, a symbol defined in another file, a
 // call returning a function -- yields nil, and the caller reports nothing.
-func resolveCallback(node *lisp.LVal, defuns map[string]*lisp.LVal) *callback {
+func (r *mutationRun) resolveCallback(node *lisp.LVal) *callback {
 	if node == nil {
 		return nil
 	}
 	if node.Type == lisp.LSymbol {
-		def := defuns[node.Str]
-		if def == nil {
-			return nil
-		}
-		// (defun name (formals) body...) -- sameFileDefuns guarantees the
-		// formals cell exists.
-		return &callback{node: def, params: formalNames(def.Cells[2]), body: def.Cells[3:]}
+		node = r.defuns[node.Str]
 	}
-	return lambdaCallback(node)
+	if node == nil {
+		return nil
+	}
+	r.index()
+	return r.callbacks[node]
 }
 
 // lambdaCallback reads (lambda (formals) body...) off node, or returns nil
@@ -1929,89 +1866,200 @@ type mutationDiagKey struct {
 	msg string
 }
 
-// mutationScopeKey identifies everything a reference to a callback can
-// contribute: the form that names it, the body it names, and -- for the
-// iteration check, whose message depends on which collection is being walked
-// -- the collection names read off that call site. Two references agreeing
-// on all three produce character-for-character the same diagnostics, so the
-// second one has no work to do.
-type mutationScopeKey struct {
-	form        string
-	node        *lisp.LVal
-	collections string
+// mutationSpan is a half-open range in mutationRun.sites. Every callback
+// body is contiguous in DFS order, including its nested callback bodies.
+// Keeping just the range avoids copying descendants once per ancestor.
+type mutationSpan struct {
+	start, end int
 }
 
-// mutationRun is the state comparator-mutation and iteration-mutation each
-// build once per pass. It exists to keep both checks LINEAR in the size of
-// the file, which the first cut of them was not.
-//
-// The shape that broke them is ordinary: one helper defun that mutates,
-// named as the callback of many traversals. Resolving the callback at every
-// reference and rescanning the named body there made the work -- and the
-// output -- the product of the two counts. A 24.7 KB file of that shape
-// produced roughly 360,000 diagnostics, every one of them a duplicate of one
-// of the ~400 real findings, and allocated about 713 MB doing it. Nested
-// lambdas compounded it from the other side: an inner body was rewalked once
-// per enclosing form.
-//
-// Three pieces fix it, and each covers something the others do not.
-//
-//   - sites memoizes the scan of a callback body on the node the body hangs
-//     off, so a body is walked exactly ONCE per pass however many routes
-//     reach it -- 300 references to one defun, and an inner lambda that is
-//     both nested inside an outer callback and handed to a traversal of its
-//     own.
-//   - scopes skips a reference whose (form, callback, collections) triple has
-//     already been examined, because those three fix the diagnostics word for
-//     word. Without it the memo is consulted 300 times and 300 sets of
-//     identical messages are formatted for the dedup to discard, which is
-//     where most of the allocation went.
-//   - reported deduplicates the OUTPUT by position and message. The two memos
-//     alone do not: a body reached from genuinely different scopes -- five
-//     comparators nested one inside the next -- reports its inner sites once
-//     per enclosing form. Position and message together are the right key
-//     rather than position alone, because the message names the form: one
-//     predicate used by both stable-sort and insert-sorted is genuinely two
-//     findings at one position, and each wants saying once.
-//
-// Pass offers none of the three: Report appends unconditionally (a check that
-// reports each node once has no use for a memo), so the state lives here,
-// scoped to the run, rather than being pushed into every analyzer's way.
+// An empty target denotes a comparator query (every mutator). Iteration
+// queries select only calls writing through target; element distinguishes
+// the two diagnostic messages possible at the same site.
+type mutationQuery struct {
+	form, target string
+	element      bool
+}
+
+type iterationScopeKey struct {
+	callback *callback
+	form     string
+}
+
+// mutationRun builds one site array and an index by mutation target. A
+// callback contributes ranges to queries rather than walking its sites.
+// Merging overlapping ranges before reporting bounds work by input size
+// (plus sorting and actual findings), even for deeply nested callbacks or
+// one large callback used with many distinct collections. No diagnostic is
+// formatted merely to discard it because another scope already covered it.
 type mutationRun struct {
-	pass   *Pass
-	defuns map[string]*lisp.LVal
-	// sites memoizes mutationSites, keyed by callback.node.
-	sites map[*lisp.LVal][]*lisp.LVal
-	// reported is the set of diagnostics already emitted this pass.
+	pass      *Pass
+	defuns    map[string]*lisp.LVal
+	callbacks map[*lisp.LVal]*callback
+	sites     []*lisp.LVal
+	targets   map[string][]int
+	queries   map[mutationQuery][]mutationSpan
+	// scopes records collection names common to EVERY use of a callback
+	// with this form. Only those names always override element findings.
+	scopes   map[iterationScopeKey]map[string]bool
 	reported map[mutationDiagKey]bool
-	// scopes is the set of (form, callback, collections) triples already
-	// examined this pass.
-	scopes map[mutationScopeKey]bool
 }
 
 func newMutationRun(pass *Pass) *mutationRun {
 	return &mutationRun{
 		pass:     pass,
 		defuns:   sameFileDefuns(pass.Exprs),
-		sites:    make(map[*lisp.LVal][]*lisp.LVal),
+		queries:  make(map[mutationQuery][]mutationSpan),
+		scopes:   make(map[iterationScopeKey]map[string]bool),
 		reported: make(map[mutationDiagKey]bool),
-		scopes:   make(map[mutationScopeKey]bool),
 	}
 }
 
-// enterScope reports whether key is being examined for the first time this
-// pass, recording it either way.
-//
-// The report dedup below is what makes the OUTPUT right; this is what makes
-// the WORK proportional to the file. Without it the 300 references to a
-// 400-mutation defun still each formatted 400 messages for report to throw
-// away, which is most of the allocation the explosion cost.
-func (r *mutationRun) enterScope(key mutationScopeKey) bool {
-	if r.scopes[key] {
-		return false
+// index is lazy: files with no resolvable callback need no site index.
+func (r *mutationRun) index() {
+	if r.callbacks != nil {
+		return
 	}
-	r.scopes[key] = true
-	return true
+	r.callbacks = make(map[*lisp.LVal]*callback)
+	r.targets = make(map[string][]int)
+	for _, expr := range r.pass.Exprs {
+		r.indexNode(expr)
+	}
+}
+
+func (r *mutationRun) indexNode(node *lisp.LVal) {
+	walkEvaluated(node, func(sexpr *lisp.LVal) bool {
+		cb := lambdaCallback(sexpr)
+		if cb == nil && HeadSymbol(sexpr) == "defun" && len(sexpr.Cells) >= 3 {
+			cb = &callback{node: sexpr, params: formalNames(sexpr.Cells[2]), body: sexpr.Cells[3:]}
+		}
+		if cb != nil {
+			r.callbacks[sexpr] = cb
+			cb.sites.start = len(r.sites)
+			for _, body := range cb.body {
+				r.indexNode(body)
+			}
+			cb.sites.end = len(r.sites)
+			return false
+		}
+		name := HeadSymbol(sexpr)
+		if _, ok := mutatingBuiltins[name]; ok {
+			index := len(r.sites)
+			r.sites = append(r.sites, sexpr)
+			if target, ok := iterationMutatingTargets[name]; ok && target < len(sexpr.Cells) {
+				if arg := sexpr.Cells[target]; arg.Type == lisp.LSymbol {
+					r.targets[arg.Str] = append(r.targets[arg.Str], index)
+				}
+			}
+		}
+		return true
+	})
+}
+
+func (r *mutationRun) query(key mutationQuery, span mutationSpan) {
+	if span.start < span.end {
+		r.queries[key] = append(r.queries[key], span)
+	}
+}
+
+func (r *mutationRun) iterationScope(form string, cb *callback, collections map[string]bool) {
+	key := iterationScopeKey{callback: cb, form: form}
+	common, exists := r.scopes[key]
+	if !exists {
+		r.scopes[key] = collections
+		return
+	}
+	for name := range common {
+		if !collections[name] {
+			delete(common, name)
+		}
+	}
+}
+
+func (r *mutationRun) elementQueries() {
+	for scope, collections := range r.scopes {
+		for i, name := range scope.callback.params {
+			if i != iterationForms[scope.form].accumulator && !collections[name] {
+				r.query(mutationQuery{form: scope.form, target: name, element: true}, scope.callback.sites)
+			}
+		}
+	}
+}
+
+// visitMutationSpans visits each site in the union exactly once. Sorting
+// works for references in any source order, including named callbacks whose
+// definitions are in the opposite order. Adjacent half-open spans merge too.
+func visitMutationSpans(spans []mutationSpan, visit func(mutationSpan)) {
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+	for i := 0; i < len(spans); {
+		span := spans[i]
+		i++
+		for i < len(spans) && spans[i].start <= span.end {
+			span.end = max(span.end, spans[i].end)
+			i++
+		}
+		visit(span)
+	}
+}
+
+func (r *mutationRun) reportQueries() {
+	// Query maps group identical work, but must not choose diagnostic order.
+	// Linter's final source sort leaves same-line ties in reporting order.
+	keys := make([]mutationQuery, 0, len(r.queries))
+	for key := range r.queries {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].form != keys[j].form {
+			return keys[i].form < keys[j].form
+		}
+		if keys[i].target != keys[j].target {
+			return keys[i].target < keys[j].target
+		}
+		return !keys[i].element && keys[j].element
+	})
+	for _, query := range keys {
+		visitMutationSpans(r.queries[query], func(span mutationSpan) {
+			if query.target == "" {
+				for _, call := range r.sites[span.start:span.end] {
+					r.reportSite(query, call)
+				}
+				return
+			}
+			sites := r.targets[query.target]
+			first := sort.SearchInts(sites, span.start)
+			for _, index := range sites[first:] {
+				if index >= span.end {
+					break
+				}
+				r.reportSite(query, r.sites[index])
+			}
+		})
+	}
+}
+
+func (r *mutationRun) reportSite(query mutationQuery, call *lisp.LVal) {
+	name := HeadSymbol(call)
+	var msg, note string
+	switch {
+	case query.target == "":
+		msg = fmt.Sprintf("%s predicate mutates state: %s is called inside a comparator", query.form, name)
+		note = "comparators run in unspecified order and may receive the list's own elements; this conservative check also reports writes to callback-local scratch values"
+	case query.element:
+		msg = fmt.Sprintf("%s mutates the element %s of %s", name, query.target, query.form)
+	default:
+		msg = fmt.Sprintf("%s mutates %s while %s iterates over it", name, query.target, query.form)
+	}
+	if note == "" {
+		note = "iterate a copy (copy or concat) or build a new collection and return it, rather than writing through the one being traversed"
+	}
+	src := SourceOf(call)
+	r.report(Diagnostic{
+		Message: msg,
+		Pos:     posFromSource(astutil.SourceLoc(src)),
+		EndPos:  endPosFromNode(src),
+		Notes:   []string{note},
+	})
 }
 
 // report emits d unless a diagnostic with the same position and message has
@@ -2023,52 +2071,6 @@ func (r *mutationRun) report(d Diagnostic) {
 	}
 	r.reported[key] = true
 	r.pass.Report(d)
-}
-
-// mutationSites returns every call to a mutating builtin that runs when cb
-// runs: the ones written directly in its body, plus those in the bodies of
-// the lambdas nested inside it, which run when the enclosing callback calls
-// them.
-//
-// The result is memoized on cb.node, and a nested lambda is scanned through
-// mutationSites rather than inline, so every body in the file is walked once
-// per pass no matter how many callers or enclosing forms reach it.
-func (r *mutationRun) mutationSites(cb *callback) []*lisp.LVal {
-	if sites, ok := r.sites[cb.node]; ok {
-		return sites
-	}
-	// Seed the memo before recursing. The parser yields a tree, so a body
-	// cannot contain itself, but a cycle would otherwise recurse forever
-	// rather than terminate with an empty answer.
-	r.sites[cb.node] = nil
-	var sites []*lisp.LVal
-	for _, node := range cb.body {
-		sites = r.collectMutationSites(node, sites)
-	}
-	r.sites[cb.node] = sites
-	return sites
-}
-
-// collectMutationSites appends to sites every call to a mutating builtin at
-// or below node that the program actually evaluates. Quoted data is skipped
-// by walkEvaluated, so the three data spellings its comment lists are lists
-// rather than calls.
-//
-// A nested lambda is not walked here. It is handed back to mutationSites,
-// which caches it under its own node -- that is what keeps a body reached
-// through two routes from being scanned twice.
-func (r *mutationRun) collectMutationSites(node *lisp.LVal, sites []*lisp.LVal) []*lisp.LVal {
-	walkEvaluated(node, func(sexpr *lisp.LVal) bool {
-		if inner := lambdaCallback(sexpr); inner != nil {
-			sites = append(sites, r.mutationSites(inner)...)
-			return false
-		}
-		if _, ok := mutatingBuiltins[HeadSymbol(sexpr)]; ok {
-			sites = append(sites, sexpr)
-		}
-		return true
-	})
-	return sites
 }
 
 // walkEvaluatedSExprs calls fn for every s-expression in exprs that the
