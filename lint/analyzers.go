@@ -2096,21 +2096,22 @@ func walkEvaluatedSExprs(exprs []*lisp.LVal, fn func(sexpr *lisp.LVal)) {
 //     subtree is skipped whole.
 //   - a (quote ...) FORM, which the reader leaves entirely unflagged -- the
 //     operand is an ordinary s-expression and only the head says otherwise.
-//   - a (quasiquote ...) template, which is data too, with the standard
-//     exception: an (unquote ...) or (unquote-splicing ...) subtree at the
-//     template own level is evaluated where it stands, so those subtrees are
-//     walked and the rest of the template is not.
+//   - a (quasiquote ...) template, which is data except for its unquote and
+//     unquote-splicing operands. ELPS finds these even under nested quotes or
+//     quasiquotes; see findAndUnquote in lisp/macro.go.
+//
+// The canonical lisp:quote and lisp:quasiquote spellings have the same effect.
 func walkEvaluated(node *lisp.LVal, fn func(sexpr *lisp.LVal) bool) {
 	if node == nil || node.IsQuoted() {
 		return
 	}
 	if node.Type == lisp.LSExpr && len(node.Cells) > 0 {
 		switch HeadSymbol(node) {
-		case "quote":
+		case "quote", "lisp:quote":
 			return
-		case "quasiquote":
+		case "quasiquote", "lisp:quasiquote":
 			for _, cell := range node.Cells[1:] {
-				walkTemplate(cell, 1, fn)
+				walkTemplate(cell, fn)
 			}
 			return
 		}
@@ -2126,36 +2127,24 @@ func walkEvaluated(node *lisp.LVal, fn func(sexpr *lisp.LVal) bool) {
 // walkTemplate walks the inside of a quasiquote template looking only for the
 // subtrees that escape it, and hands each of those back to walkEvaluated.
 //
-// level counts the templates in force. A nested quasiquote raises it and an
-// unquote lowers it, so an unquote only escapes to running code at level 1:
-// two quasiquotes deep, one unquote still leaves the form inside the inner
-// template. Nothing else about the template matters here -- a quote form or a
-// reader-quoted list within it is still just data that may hold an unquote,
-// so the walk descends through both rather than stopping at them.
-func walkTemplate(node *lisp.LVal, level int, fn func(sexpr *lisp.LVal) bool) {
+// Match findAndUnquote: nested quasiquotes, quote forms and reader quotes
+// do not hide unquote operands. Only the bare unquote/unquote-splicing markers
+// are recognized by getUnquoteType; lisp:unquote is ordinary template data.
+func walkTemplate(node *lisp.LVal, fn func(sexpr *lisp.LVal) bool) {
 	if node == nil {
 		return
 	}
 	if node.Type == lisp.LSExpr && len(node.Cells) > 0 {
 		switch HeadSymbol(node) {
-		case "quasiquote":
-			for _, cell := range node.Cells[1:] {
-				walkTemplate(cell, level+1, fn)
-			}
-			return
 		case "unquote", "unquote-splicing":
 			for _, cell := range node.Cells[1:] {
-				if level <= 1 {
-					walkEvaluated(cell, fn)
-				} else {
-					walkTemplate(cell, level-1, fn)
-				}
+				walkEvaluated(cell, fn)
 			}
 			return
 		}
 	}
 	for _, cell := range node.Cells {
-		walkTemplate(cell, level, fn)
+		walkTemplate(cell, fn)
 	}
 }
 
