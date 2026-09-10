@@ -21,7 +21,9 @@ def validate(doc):
     for name in ("build-binaries", "publish-platform", "publish-universal"):
         assert jobs[name]["if"] == TAG_ONLY
         assert jobs[name]["runs-on"] == "ubuntu-24.04-arm"
+        assert "concurrency" not in jobs[name]
     assert "env" not in doc
+    assert "concurrency" not in doc
     validate_diagnostic(jobs["diagnose-marketplace"])
 
 
@@ -29,6 +31,7 @@ def validate_diagnostic(job):
     assert job["if"] == MANUAL_ONLY
     assert job["permissions"] == {"contents": "read"}
     assert job["timeout-minutes"] == 3
+    assert job["concurrency"] == {"group": "elps-marketplace-readonly-diagnostics", "cancel-in-progress": True}
     assert "strategy" not in job
     assert job["runs-on"] == "ubuntu-24.04-arm"
     assert "env" not in job and "needs" not in job
@@ -76,6 +79,24 @@ class PublicationIsolation(unittest.TestCase):
             with self.subTest(runner_drift=name):
                 changed = copy.deepcopy(doc)
                 changed["jobs"][name]["runs-on"] = "ubuntu-latest"
+                with self.assertRaises(AssertionError):
+                    validate(changed)
+
+    def test_concurrency_cancels_only_duplicate_manual_diagnostics(self):
+        doc = yaml.safe_load((ROOT / ".github/workflows/vscode-publish.yml").read_text())
+        validate(doc)
+        for concurrency in (None, {"group": "${{ github.ref }}", "cancel-in-progress": True},
+                            {"group": "elps-marketplace-readonly-diagnostics", "cancel-in-progress": False}):
+            with self.subTest(concurrency=concurrency):
+                changed = copy.deepcopy(doc)
+                changed["jobs"]["diagnose-marketplace"]["concurrency"] = concurrency
+                with self.assertRaises(AssertionError):
+                    validate(changed)
+        for location in ("workflow", "build-binaries", "publish-platform", "publish-universal"):
+            with self.subTest(cancellation_leak=location):
+                changed = copy.deepcopy(doc)
+                destination = changed if location == "workflow" else changed["jobs"][location]
+                destination["concurrency"] = doc["jobs"]["diagnose-marketplace"]["concurrency"]
                 with self.assertRaises(AssertionError):
                     validate(changed)
 
