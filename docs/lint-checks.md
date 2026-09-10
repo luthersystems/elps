@@ -274,6 +274,107 @@ branch matches. While sometimes intentional, this is often an oversight.
   (error 'test "data"))
 ```
 
+### `comparator-mutation`
+
+**Flags a mutating call inside a `stable-sort` or `insert-sorted` predicate.**
+(Severity: error)
+
+A comparator runs an unspecified number of times, in an unspecified order.
+Writes to shared state or input elements can therefore make sorting unreliable.
+This is a conservative syntactic rule: it also reports writes to callback-local
+scratch values, even when those writes cannot escape the callback. Every known
+mutating builtin is reported:
+`assoc!`, `dissoc!`, `append!`, `append-bytes!`, `set!`, and `stable-sort`
+itself, which sorts in place despite carrying no `!`.
+
+```lisp
+;; BAD — the predicate mutates
+(stable-sort (lambda (a b) (assoc! a 'visited true) (< a b)) xs)
+(insert-sorted 'list xs (lambda (a b) (append! log a) (< a b)) item)
+
+;; GOOD — the predicate only compares
+(stable-sort (lambda (a b) (< a b)) xs)
+```
+
+Two spellings of the predicate are followed: an inline `lambda`, and a plain
+symbol naming a `defun` **in the same file**. That hop is one level deep — the
+named function's own body is scanned, but a call it in turn makes is not
+followed, so a comparator that mutates two hops away is not reported. When a
+file defines the same name twice, the **last** definition is the one followed,
+because `defun` overwrites and that is the body the interpreter runs.
+
+Data is skipped whole, and in all three spellings: a reader-quoted form
+(`'(assoc! a b)`), an explicit `(quote ...)` form, and a `quasiquote`
+template. An `(unquote ...)` or
+`(unquote-splicing ...)` subtree inside a template is evaluated where it
+stands, so a mutation in one is still reported. This applies to the sort form
+itself as much as to the predicate's body, and a `defun` written inside data
+defines nothing, so a symbol naming one resolves to no callback at all.
+The evaluated forms `lisp:quote` and `lisp:quasiquote` are handled too.
+ELPS searches through nested quasiquote templates for unquotes; nesting another
+quasiquote does not protect an unquoted mutation from evaluation or this check.
+
+Limits worth knowing. The package-qualified spelling of every operator this
+check matches on is recognised — `lisp:stable-sort`, `lisp:insert-sorted`,
+`lisp:lambda`, `lisp:defun` and `lisp:assoc!` and the other mutating builtins
+read exactly as their bare names, since `lisp` is the only package exporting
+them and the interpreter resolves both spellings to one function (the
+diagnostic always names the canonical spelling). A same-file **rebinding** is
+not tracked, however: the check keeps no scope of its own, so after
+`(defun quote (x) x)` — or a shadowing definition of `quasiquote` or of a
+mutating builtin — it goes on reading the shadowed builtin meaning rather than
+the new one. `lisp:unquote` is the one qualified spelling deliberately left as
+data, because ELPS itself recognises only the bare `unquote` marker inside a
+template.
+
+### `iteration-mutation`
+
+**Flags a callback that mutates the collection it is iterating.** (Severity:
+warning)
+
+Covers `map`, `foldl`, `foldr`, `select`, `reject`, `all?` and `any?`. A
+mutating call — `assoc!`, `dissoc!`, `append!`, `append-bytes!` or
+`stable-sort` — is reported when the value it writes through is the collection
+argument itself, or one of the callback's own parameters, which holds an
+element of that collection.
+
+`set!` is deliberately **not** on that list, unlike in `comparator-mutation`.
+It rebinds a name rather than writing through the value the name held, so
+`(set! x 1)` gives the callback's own parameter a new value and leaves the
+element alone, and `(set! xs ...)` rebinds the caller's variable while the
+builtin goes on walking the sequence it was already handed.
+
+```lisp
+;; BAD — writes through the sequence being walked
+(map 'list (lambda (x) (append! xs x)) xs)
+
+;; BAD — writes through an element the traversal handed over
+(map 'list (lambda (x) (assoc! x 'seen true)) xs)
+
+;; GOOD — the fold's own accumulator is neither the collection nor an element
+(foldl (lambda (acc x) (assoc! acc x 1)) (sorted-map) xs)
+
+;; GOOD — an unrelated binding
+(map 'list (lambda (x) (assoc! out x 1)) xs)
+```
+
+Both an inline `lambda` and a plain symbol naming a `defun` **in the same
+file** are followed, one hop deep. Quoting is honoured exactly as it is for
+`comparator-mutation` above.
+
+Blind spots worth knowing: the check is syntactic and keeps no scope of its
+own, so a callback parameter that an inner `let` rebinds is still treated as
+the element; a collection passed as an expression rather than a symbol has no
+name to match against and is invisible; and `zip` is not covered, because it
+takes no callback at all.
+
+Qualified spellings are recognised here too — `lisp:map`, `lisp:foldl`,
+`lisp:lambda`, `lisp:defun`, `lisp:assoc!` and the rest read exactly as their
+bare names, and the diagnostic names the canonical one. And as with
+`comparator-mutation`, a same-file rebinding of `quote`, `quasiquote` or a
+builtin name (for example `(defun quote (x) x)`) is not tracked, so the check
+then reads the shadowed meaning.
+
 ### `with-cleanup-forms`
 
 **Flags a degenerate `with-cleanup` spec list.** (Severity: warning)

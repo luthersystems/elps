@@ -635,6 +635,47 @@ empty literal-derived input — there is nothing in it to modify — and hand
 back fresh storage.  `(stable-sort < (rest xs))` therefore behaves the same
 however short `xs` is.
 
+#### The predicate must be pure
+
+`stable-sort` and `insert-sorted` call their predicate an unspecified number
+of times, in an unspecified order, and hand it the list's **own** elements —
+not copies.  A side effect inside a comparator therefore has no defined
+schedule, and writing through an element it was handed writes through to the
+list being sorted, while it is being sorted.
+
+```lisp
+;; BAD -- runs an unknown number of times, in an unknown order
+(stable-sort
+  (lambda (a b) (assoc! a 'visited true) (< (get a 'n) (get b 'n)))
+  records)
+
+;; GOOD -- compares, and does nothing else
+(stable-sort (lambda (a b) (< (get a 'n) (get b 'n))) records)
+```
+
+The `comparator-mutation` lint check reports a mutating call anywhere inside a
+comparator, whatever that call writes to:
+
+```
+$ elps lint sort.lisp
+error: stable-sort predicate mutates state: assoc! is called inside a comparator (comparator-mutation)
+```
+
+The higher-order functions carry a milder version of the same hazard: a `map`,
+`foldl`, `foldr`, `select`, `reject`, `all?` or `any?` callback that writes
+through the sequence it is walking — or through an element that sequence handed
+it — is traversing a value that changes underneath it.  The
+`iteration-mutation` check reports that shape, leaving a fold's own accumulator
+alone, since threading it is the point of the fold.  `set!` is not a write of
+this kind and is not reported: it rebinds a name rather than the value the name
+held, so the traversal goes on walking exactly the sequence it was handed.
+
+```lisp
+(map 'list (lambda (x) (append! xs x)) xs)
+; lint: append! mutates xs while map iterates over it
+(foldl (lambda (acc x) (assoc! acc x 1)) (sorted-map) xs)  ; fine
+```
+
 ### Sorted Maps
 
 A sorted map is a mapping between keys and values which ensures that key

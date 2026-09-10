@@ -1553,6 +1553,651 @@ func isDeprecatedDefinition(v *lisp.LVal) bool {
 	return ok
 }
 
+// mutationOperatorPackage is the package qualifier the mutation checks
+// canonicalise away. Every operator they match on -- the sorting and
+// higher-order builtins, the mutating builtins, and the lambda, defun, quote
+// and quasiquote special operators -- is exported by `lisp` and by no other
+// package, so `lisp:stable-sort` names the same function as `stable-sort` and
+// nothing else can. A qualifier naming any OTHER package is somebody else's
+// function and is left alone.
+const mutationOperatorPackage = "lisp:"
+
+// unqualifiedLispName strips a leading `lisp:` from sym and returns it
+// unchanged otherwise. It rewrites nothing else: no other qualifier is
+// removed, and an unqualified name passes through.
+//
+// The mutation checks compare head symbols against fixed spellings, and the
+// interpreter resolves both spellings to one function, so matching only the
+// bare name left `(lisp:stable-sort (lisp:lambda (a b) (lisp:assoc! ...)) xs)`
+// -- which runs and mutates -- with no diagnostic at all.
+//
+// It is deliberately NOT applied to the unquote markers inside a quasiquote
+// template. lisp/macro.go's getUnquoteType compares the head symbol's Str to
+// the bare "unquote" and "unquote-splicing" literally, so `(lisp:unquote x)`
+// stays template data at runtime; canonicalising it here would report a
+// mutation the interpreter never performs.
+func unqualifiedLispName(sym string) string {
+	if name, ok := strings.CutPrefix(sym, mutationOperatorPackage); ok {
+		return name
+	}
+	return sym
+}
+
+// mutationHead returns the head symbol of sexpr with the `lisp:` qualifier
+// canonicalised away. Every head-symbol comparison in the two mutation checks
+// goes through it, so the qualified and bare spellings of one hazard are one
+// finding rather than one finding and one blind spot.
+func mutationHead(sexpr *lisp.LVal) string {
+	return unqualifiedLispName(HeadSymbol(sexpr))
+}
+
+// mutatingBuiltins maps a destructive builtin to the index, within an
+// s-expression's Cells, of the argument it writes through. Index 1 is the
+// first argument.
+//
+// Every entry but one is spelled with the trailing `!` docs/lang.md describes
+// as the naming rule for mutation. `stable-sort` is the documented exception:
+// it carries no `!`, yet it sorts its list in place and returns the sequence
+// it sorted -- and the value it writes through is its SECOND argument, the
+// first being the predicate.
+var mutatingBuiltins = map[string]int{
+	"assoc!":        1,
+	"dissoc!":       1,
+	"append!":       1,
+	"append-bytes!": 1,
+	"set!":          1,
+	"stable-sort":   2,
+}
+
+// comparatorPredicateArg maps a sorting form to the index, within its Cells,
+// of the comparator it calls. Read off the builtins rather than guessed --
+// the predicate is not in the same place in the two forms:
+//
+//	(stable-sort   less-predicate list      &optional key-fun)            ; builtinSortStable
+//	(insert-sorted type-specifier list predicate item &optional key-fun)  ; builtinInsertSorted
+var comparatorPredicateArg = map[string]int{
+	"stable-sort":   1,
+	"insert-sorted": 3,
+}
+
+// AnalyzerComparatorMutation reports a call to a mutating builtin inside a
+// sort comparator.
+//
+// A comparator is called an unspecified number of times and in an unspecified
+// order. This conservative policy rejects every mutating builtin, including
+// writes to callback-local scratch values; it does not prove impurity.
+var AnalyzerComparatorMutation = &Analyzer{
+	Name:     "comparator-mutation",
+	Severity: SeverityError,
+	Doc: "Report a mutating call inside a stable-sort or insert-sorted predicate.\n\n" +
+		"A comparator runs an unspecified number of times in an unspecified order, " +
+		"so writes to shared state or input elements are unsafe. This conservative " +
+		"check also reports writes to callback-local scratch values. Every mutating " +
+		"builtin is reported whatever it writes to: " +
+		"assoc!, dissoc!, append!, append-bytes!, set! and stable-sort itself, which " +
+		"sorts in place despite carrying no `!`.\n\n" +
+		"Two spellings of the predicate are followed: an inline lambda, and a plain " +
+		"symbol naming a defun in the same file. The symbol hop is ONE level deep -- " +
+		"the named defun's own body is scanned, but a call it makes to a third " +
+		"function is not followed, so a comparator that mutates two hops away is not " +
+		"reported.\n\n" +
+		"Data is skipped whole, in all three spellings: a reader-quoted form, an " +
+		"explicit (quote ...) form, and a quasiquote template -- except for the " +
+		"(unquote ...) and (unquote-splicing ...) subtrees inside a template, which " +
+		"are evaluated where they stand and so are still checked. That applies to the " +
+		"sort form itself as much as to its predicate's body, and a defun written " +
+		"inside data defines nothing, so a symbol naming one resolves to no callback.",
+	Run: func(pass *Pass) error {
+		run := newMutationRun(pass)
+		walkEvaluatedSExprs(pass.Exprs, func(sexpr *lisp.LVal) {
+			form := mutationHead(sexpr)
+			idx, ok := comparatorPredicateArg[form]
+			if !ok || idx >= len(sexpr.Cells) {
+				return
+			}
+			cb := run.resolveCallback(sexpr.Cells[idx])
+			if cb == nil {
+				return
+			}
+			run.query(mutationQuery{form: form}, cb.sites)
+		})
+		run.reportQueries()
+		return nil
+	},
+}
+
+// iterationForm locates the callback and the collection arguments of a
+// higher-order builtin. Indices are into the s-expression's Cells, so 1 is
+// the first argument.
+type iterationForm struct {
+	// collections holds the indices of the arguments that are iterated.
+	collections []int
+	// callback is the index of the user function applied to the elements.
+	callback int
+	// accumulator is the position, among the callback's own parameters, of
+	// the value the form threads rather than an element of the collection.
+	// -1 for a form that threads nothing.
+	accumulator int
+}
+
+// iterationForms is read off the builtins in lisp/builtins.go, not guessed --
+// the callback is first in some of these and second in others, and one
+// argument that looks like a collection is not one:
+//
+//	(map    type-specifier fn        seq)  ; builtinMap: exactly one seq
+//	(foldl  fn             z         seq)  ; builtinFoldLeft:  z is the accumulator
+//	(foldr  fn             z         seq)  ; builtinFoldRight: z is the accumulator
+//	(select type-specifier predicate seq)  ; builtinSelect
+//	(reject type-specifier predicate seq)  ; builtinReject
+//	(all?   predicate      seq)            ; builtinAllP
+//	(any?   predicate      seq)            ; builtinAnyP
+//
+// The fold accumulator is deliberately NOT a collection, and it is not an
+// element either: the standard idiom
+// (foldl (lambda (acc x) (assoc! acc k v)) (sorted-map) xs) mutates a map the
+// fold itself threads, which is correct code. Which PARAMETER holds it
+// differs between the two folds -- builtinFoldLeft calls (fn acc elem) and
+// builtinFoldRight calls (fn elem acc) -- so each names its own position.
+//
+// `zip` is absent on purpose. It does read several collections --
+// (zip type-specifier list &rest lists) -- but builtinZip takes NO user
+// callback, so there is no callback body for this check to look inside.
+var iterationForms = map[string]iterationForm{
+	"map":    {callback: 2, collections: []int{3}, accumulator: -1},
+	"foldl":  {callback: 1, collections: []int{3}, accumulator: 0},
+	"foldr":  {callback: 1, collections: []int{3}, accumulator: 1},
+	"select": {callback: 2, collections: []int{3}, accumulator: -1},
+	"reject": {callback: 2, collections: []int{3}, accumulator: -1},
+	"all?":   {callback: 1, collections: []int{2}, accumulator: -1},
+	"any?":   {callback: 1, collections: []int{2}, accumulator: -1},
+}
+
+// iterationMutatingTargets is mutatingBuiltins MINUS set!, and the omission is
+// the point rather than an oversight.
+//
+// set! rebinds a NAME; it does not write through the value the name held. A
+// callback's (set! x 1) gives the local parameter a new value and leaves the
+// element the traversal handed it untouched, and a (set! xs ...) rebinds the
+// caller's variable while the builtin goes on walking the sequence it was
+// already given. Neither changes anything underneath the traversal, so
+// reporting either would be a false positive -- the comparator check still
+// counts set!, because there ANY side effect is a finding whatever it writes
+// to.
+//
+// It is derived rather than spelled out a second time so the target index of
+// each builtin -- the reason stable-sort's is 2 -- has one definition.
+var iterationMutatingTargets = func() map[string]int {
+	targets := make(map[string]int, len(mutatingBuiltins))
+	for name, target := range mutatingBuiltins {
+		if name == "set!" {
+			continue
+		}
+		targets[name] = target
+	}
+	return targets
+}()
+
+// AnalyzerIterationMutation reports a callback that mutates the very
+// collection it is iterating, or an element that collection handed it.
+var AnalyzerIterationMutation = &Analyzer{
+	Name:     "iteration-mutation",
+	Severity: SeverityWarning,
+	Doc: "Report a callback that mutates the collection a higher-order builtin is iterating.\n\n" +
+		"Covers map, foldl, foldr, select, reject, all? and any?. A mutating call " +
+		"(assoc!, dissoc!, append!, append-bytes! or stable-sort) is reported when " +
+		"the value it writes through is the collection argument itself -- which " +
+		"must be a plain symbol for the check to see it -- or one of the callback's " +
+		"own parameters, which holds an element of that collection.\n\n" +
+		"set! is NOT on that list, unlike in comparator-mutation: it rebinds a name " +
+		"rather than writing through the value the name held, so a callback's " +
+		"(set! x 1) leaves the element alone and a (set! xs ...) leaves the sequence " +
+		"the builtin is already walking alone.\n\n" +
+		"A fold's accumulator is neither: not the collection, and not an element, " +
+		"even though the callback receives it as a parameter -- so the usual " +
+		"(foldl (lambda (acc x) (assoc! acc k v)) (sorted-map) xs) idiom is clean, and " +
+		"so is a mutation of any unrelated binding. Both an inline lambda and a plain " +
+		"symbol naming a same-file defun are followed, one hop deep.\n\n" +
+		"Known blind spots: the check is syntactic and keeps no scope of its own, so a " +
+		"callback parameter that an inner let rebinds is still treated as the element; " +
+		"a collection passed as an expression rather than a symbol is invisible; and " +
+		"zip is not covered because it takes no callback at all.\n\n" +
+		"Data is skipped whole, in all three spellings: a reader-quoted form, an " +
+		"explicit (quote ...) form, and a quasiquote template -- except for the " +
+		"(unquote ...) and (unquote-splicing ...) subtrees inside a template, which " +
+		"are evaluated where they stand and so are still checked.",
+	Run: func(pass *Pass) error {
+		run := newMutationRun(pass)
+		walkEvaluatedSExprs(pass.Exprs, func(sexpr *lisp.LVal) {
+			form := mutationHead(sexpr)
+			spec, ok := iterationForms[form]
+			if !ok || spec.callback >= len(sexpr.Cells) {
+				return
+			}
+			cb := run.resolveCallback(sexpr.Cells[spec.callback])
+			if cb == nil {
+				return
+			}
+			collections := make(map[string]bool)
+			for _, idx := range spec.collections {
+				if idx < len(sexpr.Cells) && sexpr.Cells[idx].Type == lisp.LSymbol {
+					name := sexpr.Cells[idx].Str
+					collections[name] = true
+					run.query(mutationQuery{form: form, target: name}, cb.sites)
+				}
+			}
+			run.iterationScope(form, cb, collections)
+		})
+		run.elementQueries()
+		run.reportQueries()
+		return nil
+	},
+}
+
+// callback is a function argument a higher-order form was handed: the names
+// it binds its parameters to, in order, and the body forms that run.
+//
+// The order matters: a fold hands one parameter the accumulator it threads
+// rather than an element of the collection, and which one differs between
+// foldl and foldr.
+type callback struct {
+	// node is the lambda or defun the body was read off.
+	node   *lisp.LVal
+	params []string
+	body   []*lisp.LVal
+	// sites indexes a shared DFS array, not a copy of descendant sites.
+	sites mutationSpan
+}
+
+// resolveCallback returns the parameters and body of a function argument.
+//
+// Two spellings resolve. An inline lambda is read directly. A symbol is
+// looked up among the file's own defuns -- ONE hop: the named function's body
+// is scanned, but a call it in turn makes is not followed. Quoting is ignored
+// in this position because a callback slot holds a function reference either
+// way: (stable-sort 'less xs) and (stable-sort less xs) both call less.
+//
+// Anything else -- a builtin such as `<`, a symbol defined in another file, a
+// call returning a function -- yields nil, and the caller reports nothing.
+func (r *mutationRun) resolveCallback(node *lisp.LVal) *callback {
+	if node == nil {
+		return nil
+	}
+	if node.Type == lisp.LSymbol {
+		node = r.defuns[node.Str]
+	}
+	if node == nil {
+		return nil
+	}
+	r.index()
+	return r.callbacks[node]
+}
+
+// lambdaCallback reads (lambda (formals) body...) off node, or returns nil
+// when node is anything else.
+func lambdaCallback(node *lisp.LVal) *callback {
+	if node == nil || node.Type != lisp.LSExpr || node.IsQuoted() {
+		return nil
+	}
+	if mutationHead(node) != "lambda" || len(node.Cells) < 2 {
+		return nil
+	}
+	return &callback{node: node, params: formalNames(node.Cells[1]), body: node.Cells[2:]}
+}
+
+// sameFileDefuns indexes the file's defuns, nested ones included, by name. A
+// duplicate name keeps the LAST definition, because that is the one the
+// interpreter runs: ELPS defun overwrites, so a second definition of a name
+// replaces the first and every later call reaches the second body.
+//
+// Keeping the first instead -- which is what the duplicate-definition check
+// reports against, a different question -- made a clean-first/dirty-second
+// duplicate a silent false negative, and a dirty-first/clean-second duplicate
+// a finding against a body no call reaches.
+//
+// Last in TRAVERSAL order, which for the top-level definitions this resolves
+// in practice is source order. A nested defun does not take effect until its
+// enclosing form runs, so the shape it wins against is one this ordering does
+// not model; that is the same syntactic approximation the rest of the check
+// makes.
+//
+// A defun spelled inside quoted data or a macro template is not indexed: it
+// defines nothing, so a symbol naming it resolves to no callback at all
+// rather than to a body whose mutations get attributed to a live sort.
+func sameFileDefuns(exprs []*lisp.LVal) map[string]*lisp.LVal {
+	defs := make(map[string]*lisp.LVal)
+	walkEvaluatedSExprs(exprs, func(sexpr *lisp.LVal) {
+		// A malformed defun with no formals list is skipped outright, so
+		// resolveCallback can index Cells[2] and Cells[3:] unconditionally.
+		if mutationHead(sexpr) != "defun" || len(sexpr.Cells) < 3 {
+			return
+		}
+		name := sexpr.Cells[1]
+		if name.Type != lisp.LSymbol {
+			return
+		}
+		defs[name.Str] = sexpr
+	})
+	return defs
+}
+
+// formalNames collects the parameter names of a formals list in order,
+// dropping the &rest, &optional and &key markers.
+//
+// It keeps the order that lint.CollectFormals discards, because a caller has
+// to be able to say which POSITION a parameter occupies. Dropping the markers
+// does shift the positions of what follows them, so a fold whose callback
+// declares &optional or &rest parameters before its accumulator is read
+// wrongly -- a shape neither fold can actually call.
+func formalNames(formals *lisp.LVal) []string {
+	if formals == nil || formals.Type != lisp.LSExpr {
+		return nil
+	}
+	var names []string
+	for _, sym := range formals.Cells {
+		if sym.Type != lisp.LSymbol {
+			continue
+		}
+		switch sym.Str {
+		case "&rest", "&optional", "&key":
+			// markers, not parameters
+		default:
+			names = append(names, sym.Str)
+		}
+	}
+	return names
+}
+
+// mutationDiagKey identifies a diagnostic by where it points and what it
+// says. Two findings that agree on both are the same finding reported twice.
+type mutationDiagKey struct {
+	pos Position
+	msg string
+}
+
+// mutationSpan is a half-open range in mutationRun.sites. Every callback
+// body is contiguous in DFS order, including its nested callback bodies.
+// Keeping just the range avoids copying descendants once per ancestor.
+type mutationSpan struct {
+	start, end int
+}
+
+// An empty target denotes a comparator query (every mutator). Iteration
+// queries select only calls writing through target; element distinguishes
+// the two diagnostic messages possible at the same site.
+type mutationQuery struct {
+	form, target string
+	element      bool
+}
+
+type iterationScopeKey struct {
+	callback *callback
+	form     string
+}
+
+// mutationRun builds one site array and an index by mutation target. A
+// callback contributes ranges to queries rather than walking its sites.
+// Merging overlapping ranges before reporting bounds work by input size
+// (plus sorting and actual findings), even for deeply nested callbacks or
+// one large callback used with many distinct collections. No diagnostic is
+// formatted merely to discard it because another scope already covered it.
+type mutationRun struct {
+	pass      *Pass
+	defuns    map[string]*lisp.LVal
+	callbacks map[*lisp.LVal]*callback
+	sites     []*lisp.LVal
+	targets   map[string][]int
+	queries   map[mutationQuery][]mutationSpan
+	// scopes records collection names common to EVERY use of a callback
+	// with this form. Only those names always override element findings.
+	scopes   map[iterationScopeKey]map[string]bool
+	reported map[mutationDiagKey]bool
+}
+
+func newMutationRun(pass *Pass) *mutationRun {
+	return &mutationRun{
+		pass:     pass,
+		defuns:   sameFileDefuns(pass.Exprs),
+		queries:  make(map[mutationQuery][]mutationSpan),
+		scopes:   make(map[iterationScopeKey]map[string]bool),
+		reported: make(map[mutationDiagKey]bool),
+	}
+}
+
+// index is lazy: files with no resolvable callback need no site index.
+func (r *mutationRun) index() {
+	if r.callbacks != nil {
+		return
+	}
+	r.callbacks = make(map[*lisp.LVal]*callback)
+	r.targets = make(map[string][]int)
+	for _, expr := range r.pass.Exprs {
+		r.indexNode(expr)
+	}
+}
+
+func (r *mutationRun) indexNode(node *lisp.LVal) {
+	walkEvaluated(node, func(sexpr *lisp.LVal) bool {
+		cb := lambdaCallback(sexpr)
+		if cb == nil && mutationHead(sexpr) == "defun" && len(sexpr.Cells) >= 3 {
+			cb = &callback{node: sexpr, params: formalNames(sexpr.Cells[2]), body: sexpr.Cells[3:]}
+		}
+		if cb != nil {
+			r.callbacks[sexpr] = cb
+			cb.sites.start = len(r.sites)
+			for _, body := range cb.body {
+				r.indexNode(body)
+			}
+			cb.sites.end = len(r.sites)
+			return false
+		}
+		name := mutationHead(sexpr)
+		if _, ok := mutatingBuiltins[name]; ok {
+			index := len(r.sites)
+			r.sites = append(r.sites, sexpr)
+			if target, ok := iterationMutatingTargets[name]; ok && target < len(sexpr.Cells) {
+				if arg := sexpr.Cells[target]; arg.Type == lisp.LSymbol {
+					r.targets[arg.Str] = append(r.targets[arg.Str], index)
+				}
+			}
+		}
+		return true
+	})
+}
+
+func (r *mutationRun) query(key mutationQuery, span mutationSpan) {
+	if span.start < span.end {
+		r.queries[key] = append(r.queries[key], span)
+	}
+}
+
+func (r *mutationRun) iterationScope(form string, cb *callback, collections map[string]bool) {
+	key := iterationScopeKey{callback: cb, form: form}
+	common, exists := r.scopes[key]
+	if !exists {
+		r.scopes[key] = collections
+		return
+	}
+	for name := range common {
+		if !collections[name] {
+			delete(common, name)
+		}
+	}
+}
+
+func (r *mutationRun) elementQueries() {
+	for scope, collections := range r.scopes {
+		for i, name := range scope.callback.params {
+			if i != iterationForms[scope.form].accumulator && !collections[name] {
+				r.query(mutationQuery{form: scope.form, target: name, element: true}, scope.callback.sites)
+			}
+		}
+	}
+}
+
+// visitMutationSpans visits each site in the union exactly once. Sorting
+// works for references in any source order, including named callbacks whose
+// definitions are in the opposite order. Adjacent half-open spans merge too.
+func visitMutationSpans(spans []mutationSpan, visit func(mutationSpan)) {
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+	for i := 0; i < len(spans); {
+		span := spans[i]
+		i++
+		for i < len(spans) && spans[i].start <= span.end {
+			span.end = max(span.end, spans[i].end)
+			i++
+		}
+		visit(span)
+	}
+}
+
+func (r *mutationRun) reportQueries() {
+	// Query maps group identical work, but must not choose diagnostic order.
+	// Linter's final source sort leaves same-line ties in reporting order.
+	keys := make([]mutationQuery, 0, len(r.queries))
+	for key := range r.queries {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].form != keys[j].form {
+			return keys[i].form < keys[j].form
+		}
+		if keys[i].target != keys[j].target {
+			return keys[i].target < keys[j].target
+		}
+		return !keys[i].element && keys[j].element
+	})
+	for _, query := range keys {
+		visitMutationSpans(r.queries[query], func(span mutationSpan) {
+			if query.target == "" {
+				for _, call := range r.sites[span.start:span.end] {
+					r.reportSite(query, call)
+				}
+				return
+			}
+			sites := r.targets[query.target]
+			first := sort.SearchInts(sites, span.start)
+			for _, index := range sites[first:] {
+				if index >= span.end {
+					break
+				}
+				r.reportSite(query, r.sites[index])
+			}
+		})
+	}
+}
+
+func (r *mutationRun) reportSite(query mutationQuery, call *lisp.LVal) {
+	// The canonical spelling, so one hazard written two ways reads as one
+	// finding: query.form is canonical because it keyed the query.
+	name := mutationHead(call)
+	var msg, note string
+	switch {
+	case query.target == "":
+		msg = fmt.Sprintf("%s predicate mutates state: %s is called inside a comparator", query.form, name)
+		note = "comparators run in unspecified order and may receive the list's own elements; this conservative check also reports writes to callback-local scratch values"
+	case query.element:
+		msg = fmt.Sprintf("%s mutates the element %s of %s", name, query.target, query.form)
+	default:
+		msg = fmt.Sprintf("%s mutates %s while %s iterates over it", name, query.target, query.form)
+	}
+	if note == "" {
+		note = "iterate a copy (copy or concat) or build a new collection and return it, rather than writing through the one being traversed"
+	}
+	src := SourceOf(call)
+	r.report(Diagnostic{
+		Message: msg,
+		Pos:     posFromSource(astutil.SourceLoc(src)),
+		EndPos:  endPosFromNode(src),
+		Notes:   []string{note},
+	})
+}
+
+// report emits d unless a diagnostic with the same position and message has
+// already been emitted this pass.
+func (r *mutationRun) report(d Diagnostic) {
+	key := mutationDiagKey{pos: d.Pos, msg: d.Message}
+	if r.reported[key] {
+		return
+	}
+	r.reported[key] = true
+	r.pass.Report(d)
+}
+
+// walkEvaluatedSExprs calls fn for every s-expression in exprs that the
+// program evaluates, skipping the ones that are data.
+func walkEvaluatedSExprs(exprs []*lisp.LVal, fn func(sexpr *lisp.LVal)) {
+	for _, expr := range exprs {
+		walkEvaluated(expr, func(sexpr *lisp.LVal) bool {
+			fn(sexpr)
+			return true
+		})
+	}
+}
+
+// walkEvaluated calls fn for every s-expression at or below node that the
+// program evaluates, descending into a node's children only when fn returns
+// true for it.
+//
+// Three spellings put a form beyond evaluation, and honouring only the first
+// of them was what left ONE of them clean and reported the other two:
+//
+//   - the reader's quote flag, which a leading apostrophe sets on the node
+//     itself. The elements of a quoted list do not each carry it, so the
+//     subtree is skipped whole.
+//   - a (quote ...) FORM, which the reader leaves entirely unflagged -- the
+//     operand is an ordinary s-expression and only the head says otherwise.
+//   - a (quasiquote ...) template, which is data except for its unquote and
+//     unquote-splicing operands. ELPS finds these even under nested quotes or
+//     quasiquotes; see findAndUnquote in lisp/macro.go.
+//
+// The canonical lisp:quote and lisp:quasiquote spellings have the same effect.
+func walkEvaluated(node *lisp.LVal, fn func(sexpr *lisp.LVal) bool) {
+	if node == nil || node.IsQuoted() {
+		return
+	}
+	if node.Type == lisp.LSExpr && len(node.Cells) > 0 {
+		switch mutationHead(node) {
+		case "quote":
+			return
+		case "quasiquote":
+			for _, cell := range node.Cells[1:] {
+				walkTemplate(cell, fn)
+			}
+			return
+		}
+		if !fn(node) {
+			return
+		}
+	}
+	for _, cell := range node.Cells {
+		walkEvaluated(cell, fn)
+	}
+}
+
+// walkTemplate walks the inside of a quasiquote template looking only for the
+// subtrees that escape it, and hands each of those back to walkEvaluated.
+//
+// Match findAndUnquote: nested quasiquotes, quote forms and reader quotes
+// do not hide unquote operands. Only the bare unquote/unquote-splicing markers
+// are recognized by getUnquoteType; lisp:unquote is ordinary template data.
+func walkTemplate(node *lisp.LVal, fn func(sexpr *lisp.LVal) bool) {
+	if node == nil {
+		return
+	}
+	if node.Type == lisp.LSExpr && len(node.Cells) > 0 {
+		switch HeadSymbol(node) {
+		case "unquote", "unquote-splicing":
+			for _, cell := range node.Cells[1:] {
+				walkEvaluated(cell, fn)
+			}
+			return
+		}
+	}
+	for _, cell := range node.Cells {
+		walkTemplate(cell, fn)
+	}
+}
+
 // AnalyzerNames returns a sorted list of all default analyzer names.
 func AnalyzerNames() []string {
 	analyzers := DefaultAnalyzers()

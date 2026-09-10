@@ -80,11 +80,15 @@ Run `elps lint --list` to see all available check names:
 
 ```
 builtin-arity
+comparator-mutation
 cond-missing-else
 cond-structure
 defun-structure
+deprecated
+duplicate-definition
 if-arity
 in-package-toplevel
+iteration-mutation
 let-bindings
 quote-call
 rethrow-context
@@ -93,10 +97,14 @@ shadowing
 undefined-symbol
 unnecessary-progn
 unused-function
-unused-nolint
 unused-variable
 user-arity
+with-cleanup-forms
 ```
+
+`unused-nolint` is not in that list: it is synthetic, reported by the
+linter itself rather than by a registered analyzer, but it is a valid name in
+a directive (see above).
 
 Checks marked with `*` below require semantic analysis (`--workspace` flag):
 
@@ -107,6 +115,8 @@ Checks marked with `*` below require semantic analysis (`--workspace` flag):
 | `unused-function` | yes |
 | `shadowing` | yes |
 | `user-arity` | yes |
+| `duplicate-definition` | yes |
+| `deprecated` | yes |
 | all others | no |
 
 ## When to use nolint
