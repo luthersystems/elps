@@ -1602,10 +1602,16 @@ var AnalyzerComparatorMutation = &Analyzer{
 		"symbol naming a defun in the same file. The symbol hop is ONE level deep -- " +
 		"the named defun's own body is scanned, but a call it makes to a third " +
 		"function is not followed, so a comparator that mutates two hops away is not " +
-		"reported. Quoted subtrees are data and are skipped whole.",
+		"reported.\n\n" +
+		"Data is skipped whole, in all three spellings: a reader-quoted form, an " +
+		"explicit (quote ...) form, and a quasiquote template -- except for the " +
+		"(unquote ...) and (unquote-splicing ...) subtrees inside a template, which " +
+		"are evaluated where they stand and so are still checked. That applies to the " +
+		"sort form itself as much as to its predicate's body, and a defun written " +
+		"inside data defines nothing, so a symbol naming one resolves to no callback.",
 	Run: func(pass *Pass) error {
 		run := newMutationRun(pass)
-		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, _ int) {
+		walkEvaluatedSExprs(pass.Exprs, func(sexpr *lisp.LVal) {
 			form := HeadSymbol(sexpr)
 			idx, ok := comparatorPredicateArg[form]
 			if !ok || idx >= len(sexpr.Cells) {
@@ -1731,10 +1737,14 @@ var AnalyzerIterationMutation = &Analyzer{
 		"Known blind spots: the check is syntactic and keeps no scope of its own, so a " +
 		"callback parameter that an inner let rebinds is still treated as the element; " +
 		"a collection passed as an expression rather than a symbol is invisible; and " +
-		"zip is not covered because it takes no callback at all.",
+		"zip is not covered because it takes no callback at all.\n\n" +
+		"Data is skipped whole, in all three spellings: a reader-quoted form, an " +
+		"explicit (quote ...) form, and a quasiquote template -- except for the " +
+		"(unquote ...) and (unquote-splicing ...) subtrees inside a template, which " +
+		"are evaluated where they stand and so are still checked.",
 	Run: func(pass *Pass) error {
 		run := newMutationRun(pass)
-		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, _ int) {
+		walkEvaluatedSExprs(pass.Exprs, func(sexpr *lisp.LVal) {
 			form := HeadSymbol(sexpr)
 			spec, ok := iterationForms[form]
 			if !ok || spec.callback >= len(sexpr.Cells) {
@@ -1862,9 +1872,13 @@ func lambdaCallback(node *lisp.LVal) *callback {
 // sameFileDefuns indexes the file's defuns, nested ones included, by name. A
 // duplicate name keeps the first definition, which is the one the
 // duplicate-definition check reports against.
+//
+// A defun spelled inside quoted data or a macro template is not indexed: it
+// defines nothing, so a symbol naming it resolves to no callback at all
+// rather than to a body whose mutations get attributed to a live sort.
 func sameFileDefuns(exprs []*lisp.LVal) map[string]*lisp.LVal {
 	defs := make(map[string]*lisp.LVal)
-	WalkSExprs(exprs, func(sexpr *lisp.LVal, _ int) {
+	walkEvaluatedSExprs(exprs, func(sexpr *lisp.LVal) {
 		// A malformed defun with no formals list is skipped outright, so
 		// resolveCallback can index Cells[2] and Cells[3:] unconditionally.
 		if HeadSymbol(sexpr) != "defun" || len(sexpr.Cells) < 3 {
@@ -2035,30 +2049,112 @@ func (r *mutationRun) mutationSites(cb *callback) []*lisp.LVal {
 	return sites
 }
 
-// collectMutationSites appends to sites every unquoted call to a mutating
-// builtin at or below node, skipping a quoted subtree whole rather than
-// descending into it: '(assoc! m k v) is data the program never calls, and
-// its elements do not individually carry the quote flag.
+// collectMutationSites appends to sites every call to a mutating builtin at
+// or below node that the program actually evaluates. Quoted data is skipped
+// by walkEvaluated, so the three data spellings its comment lists are lists
+// rather than calls.
 //
 // A nested lambda is not walked here. It is handed back to mutationSites,
 // which caches it under its own node -- that is what keeps a body reached
 // through two routes from being scanned twice.
 func (r *mutationRun) collectMutationSites(node *lisp.LVal, sites []*lisp.LVal) []*lisp.LVal {
+	walkEvaluated(node, func(sexpr *lisp.LVal) bool {
+		if inner := lambdaCallback(sexpr); inner != nil {
+			sites = append(sites, r.mutationSites(inner)...)
+			return false
+		}
+		if _, ok := mutatingBuiltins[HeadSymbol(sexpr)]; ok {
+			sites = append(sites, sexpr)
+		}
+		return true
+	})
+	return sites
+}
+
+// walkEvaluatedSExprs calls fn for every s-expression in exprs that the
+// program evaluates, skipping the ones that are data.
+func walkEvaluatedSExprs(exprs []*lisp.LVal, fn func(sexpr *lisp.LVal)) {
+	for _, expr := range exprs {
+		walkEvaluated(expr, func(sexpr *lisp.LVal) bool {
+			fn(sexpr)
+			return true
+		})
+	}
+}
+
+// walkEvaluated calls fn for every s-expression at or below node that the
+// program evaluates, descending into a node's children only when fn returns
+// true for it.
+//
+// Three spellings put a form beyond evaluation, and honouring only the first
+// of them was what left ONE of them clean and reported the other two:
+//
+//   - the reader's quote flag, which a leading apostrophe sets on the node
+//     itself. The elements of a quoted list do not each carry it, so the
+//     subtree is skipped whole.
+//   - a (quote ...) FORM, which the reader leaves entirely unflagged -- the
+//     operand is an ordinary s-expression and only the head says otherwise.
+//   - a (quasiquote ...) template, which is data too, with the standard
+//     exception: an (unquote ...) or (unquote-splicing ...) subtree at the
+//     template own level is evaluated where it stands, so those subtrees are
+//     walked and the rest of the template is not.
+func walkEvaluated(node *lisp.LVal, fn func(sexpr *lisp.LVal) bool) {
 	if node == nil || node.IsQuoted() {
-		return sites
+		return
 	}
 	if node.Type == lisp.LSExpr && len(node.Cells) > 0 {
-		if inner := lambdaCallback(node); inner != nil {
-			return append(sites, r.mutationSites(inner)...)
+		switch HeadSymbol(node) {
+		case "quote":
+			return
+		case "quasiquote":
+			for _, cell := range node.Cells[1:] {
+				walkTemplate(cell, 1, fn)
+			}
+			return
 		}
-		if _, ok := mutatingBuiltins[HeadSymbol(node)]; ok {
-			sites = append(sites, node)
+		if !fn(node) {
+			return
 		}
 	}
 	for _, cell := range node.Cells {
-		sites = r.collectMutationSites(cell, sites)
+		walkEvaluated(cell, fn)
 	}
-	return sites
+}
+
+// walkTemplate walks the inside of a quasiquote template looking only for the
+// subtrees that escape it, and hands each of those back to walkEvaluated.
+//
+// level counts the templates in force. A nested quasiquote raises it and an
+// unquote lowers it, so an unquote only escapes to running code at level 1:
+// two quasiquotes deep, one unquote still leaves the form inside the inner
+// template. Nothing else about the template matters here -- a quote form or a
+// reader-quoted list within it is still just data that may hold an unquote,
+// so the walk descends through both rather than stopping at them.
+func walkTemplate(node *lisp.LVal, level int, fn func(sexpr *lisp.LVal) bool) {
+	if node == nil {
+		return
+	}
+	if node.Type == lisp.LSExpr && len(node.Cells) > 0 {
+		switch HeadSymbol(node) {
+		case "quasiquote":
+			for _, cell := range node.Cells[1:] {
+				walkTemplate(cell, level+1, fn)
+			}
+			return
+		case "unquote", "unquote-splicing":
+			for _, cell := range node.Cells[1:] {
+				if level <= 1 {
+					walkEvaluated(cell, fn)
+				} else {
+					walkTemplate(cell, level-1, fn)
+				}
+			}
+			return
+		}
+	}
+	for _, cell := range node.Cells {
+		walkTemplate(cell, level, fn)
+	}
 }
 
 // AnalyzerNames returns a sorted list of all default analyzer names.
