@@ -279,9 +279,11 @@ branch matches. While sometimes intentional, this is often an oversight.
 **Flags a mutating call inside a `stable-sort` or `insert-sorted` predicate.**
 (Severity: error)
 
-A comparator runs an unspecified number of times, in an unspecified order, and
-it is handed the list's own elements — so any side effect inside one is
-nondeterministic, whatever it writes to. Every mutating builtin is reported:
+A comparator runs an unspecified number of times, in an unspecified order.
+Writes to shared state or input elements can therefore make sorting unreliable.
+This is a conservative syntactic rule: it also reports writes to callback-local
+scratch values, even when those writes cannot escape the callback. Every known
+mutating builtin is reported:
 `assoc!`, `dissoc!`, `append!`, `append-bytes!`, `set!`, and `stable-sort`
 itself, which sorts in place despite carrying no `!`.
 
@@ -301,11 +303,14 @@ followed, so a comparator that mutates two hops away is not reported.
 
 Data is skipped whole, and in all three spellings: a reader-quoted form
 (`'(assoc! a b)`), an explicit `(quote ...)` form, and a `quasiquote`
-template. The one exception is the standard one — an `(unquote ...)` or
+template. An `(unquote ...)` or
 `(unquote-splicing ...)` subtree inside a template is evaluated where it
 stands, so a mutation in one is still reported. This applies to the sort form
 itself as much as to the predicate's body, and a `defun` written inside data
 defines nothing, so a symbol naming one resolves to no callback at all.
+The evaluated forms `lisp:quote` and `lisp:quasiquote` are handled too.
+ELPS searches through nested quasiquote templates for unquotes; nesting another
+quasiquote does not protect an unquoted mutation from evaluation or this check.
 
 ### `iteration-mutation`
 
