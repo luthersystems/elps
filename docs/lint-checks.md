@@ -297,8 +297,15 @@ itself, which sorts in place despite carrying no `!`.
 Two spellings of the predicate are followed: an inline `lambda`, and a plain
 symbol naming a `defun` **in the same file**. That hop is one level deep — the
 named function's own body is scanned, but a call it in turn makes is not
-followed, so a comparator that mutates two hops away is not reported. Quoted
-subtrees are data and are skipped whole.
+followed, so a comparator that mutates two hops away is not reported.
+
+Data is skipped whole, and in all three spellings: a reader-quoted form
+(`'(assoc! a b)`), an explicit `(quote ...)` form, and a `quasiquote`
+template. The one exception is the standard one — an `(unquote ...)` or
+`(unquote-splicing ...)` subtree inside a template is evaluated where it
+stands, so a mutation in one is still reported. This applies to the sort form
+itself as much as to the predicate's body, and a `defun` written inside data
+defines nothing, so a symbol naming one resolves to no callback at all.
 
 ### `iteration-mutation`
 
@@ -332,7 +339,8 @@ builtin goes on walking the sequence it was already handed.
 ```
 
 Both an inline `lambda` and a plain symbol naming a `defun` **in the same
-file** are followed, one hop deep.
+file** are followed, one hop deep. Quoting is honoured exactly as it is for
+`comparator-mutation` above.
 
 Blind spots worth knowing: the check is syntactic and keeps no scope of its
 own, so a callback parameter that an inner `let` rebinds is still treated as

@@ -1422,6 +1422,115 @@ func TestMutationChecks_FanoutAllocationBound(t *testing.T) {
 	}
 }
 
+// --- mutation checks: quoting ---
+
+// TestComparatorMutation_Negative_ExplicitQuoteForm covers the spelling the
+// reader's quote flag does not: (quote (assoc! ...)) is the same data as
+// '(assoc! ...), but the flag sits on nothing, so the list has to be
+// recognised by its head.
+func TestComparatorMutation_Negative_ExplicitQuoteForm(t *testing.T) {
+	source := `(stable-sort (lambda (a b) (quote (assoc! a 1 2)) (< a b)) xs)`
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	assertNoDiags(t, diags)
+}
+
+func TestIterationMutation_Negative_ExplicitQuoteForm(t *testing.T) {
+	source := `(map 'list (lambda (x) (quote (append! xs x))) xs)`
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	assertNoDiags(t, diags)
+}
+
+// TestComparatorMutation_Negative_FormInsideQuotedData is the other half:
+// the sort form itself is data. Both spellings are checked, because only the
+// second one used to reach the check -- the reader's flag lands on the outer
+// list of '(stable-sort ...), while a (quote (stable-sort ...)) form leaves
+// its operand unflagged.
+func TestComparatorMutation_Negative_FormInsideQuotedData(t *testing.T) {
+	t.Run("reader quote", func(t *testing.T) {
+		source := `'(stable-sort (lambda (a b) (assoc! a 1 2)) xs)`
+		assertNoDiags(t, lintCheck(t, AnalyzerComparatorMutation, source))
+	})
+	t.Run("quote form", func(t *testing.T) {
+		source := `(quote (stable-sort (lambda (a b) (assoc! a 1 2)) xs))`
+		assertNoDiags(t, lintCheck(t, AnalyzerComparatorMutation, source))
+	})
+}
+
+func TestIterationMutation_Negative_FormInsideQuotedData(t *testing.T) {
+	t.Run("reader quote", func(t *testing.T) {
+		source := `'(map 'list (lambda (x) (append! xs x)) xs)`
+		assertNoDiags(t, lintCheck(t, AnalyzerIterationMutation, source))
+	})
+	t.Run("quote form", func(t *testing.T) {
+		source := `(quote (map 'list (lambda (x) (append! xs x)) xs))`
+		assertNoDiags(t, lintCheck(t, AnalyzerIterationMutation, source))
+	})
+}
+
+// TestMutationChecks_DefunInsideQuotedDataIsNotACallback keeps the callback
+// index off data: a defun spelled inside a quote never runs, so a symbol
+// naming it resolves to nothing and the sort is clean.
+func TestMutationChecks_DefunInsideQuotedDataIsNotACallback(t *testing.T) {
+	source := "(quote (defun cb (a b) (assoc! a 1 2)))\n" +
+		"(stable-sort cb xs)\n" +
+		"(map 'list cb xs)"
+	assertNoDiags(t, lintCheck(t, AnalyzerComparatorMutation, source))
+	assertNoDiags(t, lintCheck(t, AnalyzerIterationMutation, source))
+}
+
+// TestComparatorMutation_Negative_QuasiquoteTemplate treats a quasiquote
+// template as the data it is: the mutation is spelled into a list the macro
+// returns, and whether it ever runs is the expansion site's business.
+func TestComparatorMutation_Negative_QuasiquoteTemplate(t *testing.T) {
+	source := `(stable-sort (lambda (a b) (quasiquote ((assoc! a 1 2))) (< a b)) xs)`
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	assertNoDiags(t, diags)
+}
+
+func TestIterationMutation_Negative_QuasiquoteTemplate(t *testing.T) {
+	source := `(map 'list (lambda (x) (quasiquote ((append! xs x)))) xs)`
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	assertNoDiags(t, diags)
+}
+
+// TestComparatorMutation_Positive_QuasiquoteUnquote is the exception that
+// keeps the template rule honest: an unquote subtree is evaluated where it
+// stands, so a mutation inside one runs every time the comparator does.
+func TestComparatorMutation_Positive_QuasiquoteUnquote(t *testing.T) {
+	source := `(stable-sort (lambda (a b) (quasiquote ((unquote (assoc! a 1 2)))) (< a b)) xs)`
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	require.Len(t, diags, 1)
+	assertHasDiag(t, diags, "assoc! is called inside a comparator")
+}
+
+func TestIterationMutation_Positive_QuasiquoteUnquote(t *testing.T) {
+	source := `(map 'list (lambda (x) (quasiquote ((unquote-splicing (append! xs x))))) xs)`
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	require.Len(t, diags, 1)
+	assertHasDiag(t, diags, "append! mutates xs while map iterates over it")
+}
+
+// TestComparatorMutation_Positive_UnquotedFormInTemplate is the same rule
+// applied to the OUTER traversal rather than to a callback body: the sort
+// form itself sits in an unquote, so it is a call the macro definition makes,
+// not a shape the macro emits.
+func TestComparatorMutation_Positive_UnquotedFormInTemplate(t *testing.T) {
+	source := "(defmacro m ()\n" +
+		"  (quasiquote (list (unquote (stable-sort (lambda (a b) (assoc! a 1 2)) xs)))))"
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	require.Len(t, diags, 1)
+	assertDiagOnLine(t, diags, 2, "assoc! is called inside a comparator")
+}
+
+// TestComparatorMutation_Negative_NestedQuasiquoteLevel pins the level
+// counting: an unquote one level down from a nested quasiquote belongs to the
+// inner template and is still data at this one.
+func TestComparatorMutation_Negative_NestedQuasiquoteLevel(t *testing.T) {
+	source := `(stable-sort (lambda (a b) (quasiquote (quasiquote ((unquote (assoc! a 1 2))))) (< a b)) xs)`
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	assertNoDiags(t, diags)
+}
+
 // --- unnecessary-progn ---
 
 func TestUnnecessaryProgn_Positive_Lambda(t *testing.T) {
