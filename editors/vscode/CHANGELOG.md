@@ -4,6 +4,19 @@ Published extension versions track the `elps` release tag they ship with -- the
 publish workflow sets `package.json` from the tag name -- so the numbering
 jumps from 0.2.0 to 1.50.0.
 
+## 1.61.2
+
+- LSP: bound parsing and disk reads for oversized documents, avoid expensive
+  handlers on those documents, and remove stale workspace definitions on save.
+- Lint: add `comparator-mutation` and `iteration-mutation` checks, with bounded
+  callback analysis and quote handling that matches ELPS evaluation. These are
+  conservative checks, not a proof that callbacks are free of side effects.
+- MCP: generate the help prompt's analyzer table from the registered checks.
+- Runtime: repair value-copy aliasing, cycles and failed-copy handling. Sort
+  comparators and key functions now receive the actual elements, not per-call
+  copies; mutating a sealed literal raises `modify-literal-error`.
+- Update the language client and the `js-yaml` development dependency.
+
 ## 1.59.0
 
 - Lint: `shadowing` no longer reports a binding whose initialiser references
