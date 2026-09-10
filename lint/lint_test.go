@@ -1522,13 +1522,13 @@ func TestComparatorMutation_Positive_UnquotedFormInTemplate(t *testing.T) {
 	assertDiagOnLine(t, diags, 2, "assoc! is called inside a comparator")
 }
 
-// TestComparatorMutation_Negative_NestedQuasiquoteLevel pins the level
-// counting: an unquote one level down from a nested quasiquote belongs to the
-// inner template and is still data at this one.
-func TestComparatorMutation_Negative_NestedQuasiquoteLevel(t *testing.T) {
+// ELPS evaluates unquote even under a nested quasiquote. Unlike some Lisps,
+// nesting quasiquotes does not add a barrier to unquote evaluation.
+func TestComparatorMutation_Positive_NestedQuasiquote(t *testing.T) {
 	source := `(stable-sort (lambda (a b) (quasiquote (quasiquote ((unquote (assoc! a 1 2))))) (< a b)) xs)`
 	diags := lintCheck(t, AnalyzerComparatorMutation, source)
-	assertNoDiags(t, diags)
+	require.Len(t, diags, 1)
+	assertHasDiag(t, diags, "assoc! is called inside a comparator")
 }
 
 // --- unnecessary-progn ---
