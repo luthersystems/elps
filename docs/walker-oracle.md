@@ -61,8 +61,11 @@ lost flags/locations/comments, retained debugger state, input-only metadata
 writes, a no-op stamper and missing descendant stamps.
 
 The following production mutations were also applied individually during
-development. Each made **only the common behavioral test** fail; all were
-restored afterwards. To reproduce, change the named lookup's `ok` condition to
+development. For each mutation, we ran the common behavioral test alone
+(`TestWalkerBehaviorOracle`, command below), and it detected the defect. This
+demonstrates coverage by the common oracle, not that it is the first or only
+detector; existing targeted regressions also cover some of these defects. All
+mutations were restored afterwards. To reproduce, change the named lookup's `ok` condition to
 `ok && false`, except for the two explicitly stated assignment mutations:
 
 | Function / mutation | Common oracle witness |
@@ -86,9 +89,10 @@ go test ./lisp -run '^$' -fuzz '^FuzzWalkerBehaviorOracle$' -fuzztime=30s
 `FuzzWalkerBehaviorOracle` runs one adapter and at most eight graph-building
 instructions per input, varying payload groups, header aliases, list/array
 nesting, flags and cyclic syntax. It never evaluates unbounded Lisp code and
-has no inconclusive-success path. On the development machine the initial
-10-second run executed 6,897 inputs; this is a bounded structural oracle, not
-a replacement for the existing cold-load/template transaction parity fuzzers.
+has no inconclusive-success path. Use the command above to measure throughput
+at the current revision; counts from different revisions or machines are not
+directly comparable. This is a bounded structural oracle, not a replacement
+for the existing cold-load/template transaction parity fuzzers.
 
 Not every memo has an independently observable identity effect. In particular,
 the template native descriptor memo deduplicates already-approved immutable
