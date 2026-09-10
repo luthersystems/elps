@@ -142,9 +142,12 @@ func TestWalkerBehaviorOracleStampLiveControl(t *testing.T) {
 	w.makeCopies = func(v *LVal) (*LVal, *LVal, error) {
 		a, b, err := clean(v)
 		if err == nil {
-			truncated := *a
+			// Use the audited header-view constructor, retaining every flag
+			// and metadata field so only the cycle edge's arity is corrupted.
+			truncated := shallowUnquote(a)
+			truncated.quoted = a.quoted
 			truncated.Cells = nil
-			a.Cells[len(a.Cells)-1] = &truncated
+			a.Cells[len(a.Cells)-1] = truncated
 		}
 		return a, b, err
 	}
