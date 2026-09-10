@@ -312,6 +312,19 @@ The evaluated forms `lisp:quote` and `lisp:quasiquote` are handled too.
 ELPS searches through nested quasiquote templates for unquotes; nesting another
 quasiquote does not protect an unquoted mutation from evaluation or this check.
 
+Limits worth knowing. The package-qualified spelling of every operator this
+check matches on is recognised — `lisp:stable-sort`, `lisp:insert-sorted`,
+`lisp:lambda`, `lisp:defun` and `lisp:assoc!` and the other mutating builtins
+read exactly as their bare names, since `lisp` is the only package exporting
+them and the interpreter resolves both spellings to one function (the
+diagnostic always names the canonical spelling). A same-file **rebinding** is
+not tracked, however: the check keeps no scope of its own, so after
+`(defun quote (x) x)` — or a shadowing definition of `quasiquote` or of a
+mutating builtin — it goes on reading the shadowed builtin meaning rather than
+the new one. `lisp:unquote` is the one qualified spelling deliberately left as
+data, because ELPS itself recognises only the bare `unquote` marker inside a
+template.
+
 ### `iteration-mutation`
 
 **Flags a callback that mutates the collection it is iterating.** (Severity:
@@ -352,6 +365,13 @@ own, so a callback parameter that an inner `let` rebinds is still treated as
 the element; a collection passed as an expression rather than a symbol has no
 name to match against and is invisible; and `zip` is not covered, because it
 takes no callback at all.
+
+Qualified spellings are recognised here too — `lisp:map`, `lisp:foldl`,
+`lisp:lambda`, `lisp:defun`, `lisp:assoc!` and the rest read exactly as their
+bare names, and the diagnostic names the canonical one. And as with
+`comparator-mutation`, a same-file rebinding of `quote`, `quasiquote` or a
+builtin name (for example `(defun quote (x) x)`) is not tracked, so the check
+then reads the shadowed meaning.
 
 ### `with-cleanup-forms`
 

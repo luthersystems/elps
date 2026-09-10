@@ -1553,6 +1553,44 @@ func isDeprecatedDefinition(v *lisp.LVal) bool {
 	return ok
 }
 
+// mutationOperatorPackage is the package qualifier the mutation checks
+// canonicalise away. Every operator they match on -- the sorting and
+// higher-order builtins, the mutating builtins, and the lambda, defun, quote
+// and quasiquote special operators -- is exported by `lisp` and by no other
+// package, so `lisp:stable-sort` names the same function as `stable-sort` and
+// nothing else can. A qualifier naming any OTHER package is somebody else's
+// function and is left alone.
+const mutationOperatorPackage = "lisp:"
+
+// unqualifiedLispName strips a leading `lisp:` from sym and returns it
+// unchanged otherwise. It rewrites nothing else: no other qualifier is
+// removed, and an unqualified name passes through.
+//
+// The mutation checks compare head symbols against fixed spellings, and the
+// interpreter resolves both spellings to one function, so matching only the
+// bare name left `(lisp:stable-sort (lisp:lambda (a b) (lisp:assoc! ...)) xs)`
+// -- which runs and mutates -- with no diagnostic at all.
+//
+// It is deliberately NOT applied to the unquote markers inside a quasiquote
+// template. lisp/macro.go's getUnquoteType compares the head symbol's Str to
+// the bare "unquote" and "unquote-splicing" literally, so `(lisp:unquote x)`
+// stays template data at runtime; canonicalising it here would report a
+// mutation the interpreter never performs.
+func unqualifiedLispName(sym string) string {
+	if name, ok := strings.CutPrefix(sym, mutationOperatorPackage); ok {
+		return name
+	}
+	return sym
+}
+
+// mutationHead returns the head symbol of sexpr with the `lisp:` qualifier
+// canonicalised away. Every head-symbol comparison in the two mutation checks
+// goes through it, so the qualified and bare spellings of one hazard are one
+// finding rather than one finding and one blind spot.
+func mutationHead(sexpr *lisp.LVal) string {
+	return unqualifiedLispName(HeadSymbol(sexpr))
+}
+
 // mutatingBuiltins maps a destructive builtin to the index, within an
 // s-expression's Cells, of the argument it writes through. Index 1 is the
 // first argument.
@@ -1612,7 +1650,7 @@ var AnalyzerComparatorMutation = &Analyzer{
 	Run: func(pass *Pass) error {
 		run := newMutationRun(pass)
 		walkEvaluatedSExprs(pass.Exprs, func(sexpr *lisp.LVal) {
-			form := HeadSymbol(sexpr)
+			form := mutationHead(sexpr)
 			idx, ok := comparatorPredicateArg[form]
 			if !ok || idx >= len(sexpr.Cells) {
 				return
@@ -1730,7 +1768,7 @@ var AnalyzerIterationMutation = &Analyzer{
 	Run: func(pass *Pass) error {
 		run := newMutationRun(pass)
 		walkEvaluatedSExprs(pass.Exprs, func(sexpr *lisp.LVal) {
-			form := HeadSymbol(sexpr)
+			form := mutationHead(sexpr)
 			spec, ok := iterationForms[form]
 			if !ok || spec.callback >= len(sexpr.Cells) {
 				return
@@ -1800,7 +1838,7 @@ func lambdaCallback(node *lisp.LVal) *callback {
 	if node == nil || node.Type != lisp.LSExpr || node.IsQuoted() {
 		return nil
 	}
-	if HeadSymbol(node) != "lambda" || len(node.Cells) < 2 {
+	if mutationHead(node) != "lambda" || len(node.Cells) < 2 {
 		return nil
 	}
 	return &callback{node: node, params: formalNames(node.Cells[1]), body: node.Cells[2:]}
@@ -1818,7 +1856,7 @@ func sameFileDefuns(exprs []*lisp.LVal) map[string]*lisp.LVal {
 	walkEvaluatedSExprs(exprs, func(sexpr *lisp.LVal) {
 		// A malformed defun with no formals list is skipped outright, so
 		// resolveCallback can index Cells[2] and Cells[3:] unconditionally.
-		if HeadSymbol(sexpr) != "defun" || len(sexpr.Cells) < 3 {
+		if mutationHead(sexpr) != "defun" || len(sexpr.Cells) < 3 {
 			return
 		}
 		name := sexpr.Cells[1]
@@ -1930,7 +1968,7 @@ func (r *mutationRun) index() {
 func (r *mutationRun) indexNode(node *lisp.LVal) {
 	walkEvaluated(node, func(sexpr *lisp.LVal) bool {
 		cb := lambdaCallback(sexpr)
-		if cb == nil && HeadSymbol(sexpr) == "defun" && len(sexpr.Cells) >= 3 {
+		if cb == nil && mutationHead(sexpr) == "defun" && len(sexpr.Cells) >= 3 {
 			cb = &callback{node: sexpr, params: formalNames(sexpr.Cells[2]), body: sexpr.Cells[3:]}
 		}
 		if cb != nil {
@@ -1942,7 +1980,7 @@ func (r *mutationRun) indexNode(node *lisp.LVal) {
 			cb.sites.end = len(r.sites)
 			return false
 		}
-		name := HeadSymbol(sexpr)
+		name := mutationHead(sexpr)
 		if _, ok := mutatingBuiltins[name]; ok {
 			index := len(r.sites)
 			r.sites = append(r.sites, sexpr)
@@ -2039,7 +2077,9 @@ func (r *mutationRun) reportQueries() {
 }
 
 func (r *mutationRun) reportSite(query mutationQuery, call *lisp.LVal) {
-	name := HeadSymbol(call)
+	// The canonical spelling, so one hazard written two ways reads as one
+	// finding: query.form is canonical because it keyed the query.
+	name := mutationHead(call)
 	var msg, note string
 	switch {
 	case query.target == "":
@@ -2106,10 +2146,10 @@ func walkEvaluated(node *lisp.LVal, fn func(sexpr *lisp.LVal) bool) {
 		return
 	}
 	if node.Type == lisp.LSExpr && len(node.Cells) > 0 {
-		switch HeadSymbol(node) {
-		case "quote", "lisp:quote":
+		switch mutationHead(node) {
+		case "quote":
 			return
-		case "quasiquote", "lisp:quasiquote":
+		case "quasiquote":
 			for _, cell := range node.Cells[1:] {
 				walkTemplate(cell, fn)
 			}
