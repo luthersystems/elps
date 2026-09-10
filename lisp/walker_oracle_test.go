@@ -345,12 +345,12 @@ func oracleCheck(w oracleWalker, source *LVal) error {
 		for j, other := range arms {
 			old[j], err = oracleSnapshot(other)
 			if err != nil {
-				return err
+				return fmt.Errorf("snapshot arm %d before writes to arm %d: %w", j, i, err)
 			}
 		}
 		nodes, err := oracleNodes(arm)
 		if err != nil {
-			return err
+			return fmt.Errorf("probe census for arm %d before writes: %w", i, err)
 		}
 		dimensions := make(map[*LVal]bool)
 		for _, n := range nodes {
@@ -403,7 +403,10 @@ func oracleCheck(w oracleWalker, source *LVal) error {
 		}
 		for j, other := range arms {
 			now, err := oracleSnapshot(other)
-			if err != nil || (j != i && now != old[j]) {
+			if err != nil {
+				return fmt.Errorf("snapshot arm %d after writes to arm %d: %w", j, i, err)
+			}
+			if j != i && now != old[j] {
 				return fmt.Errorf("isolation: arm %d changed arm %d", i, j)
 			}
 			if j == i && now == old[j] {

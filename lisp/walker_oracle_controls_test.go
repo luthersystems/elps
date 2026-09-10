@@ -3,9 +3,40 @@
 package lisp
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
+
+func TestWalkerBehaviorOracleReportsPostWriteTraversalFailure(t *testing.T) {
+	for _, w := range oracleWalkers() {
+		if w.stamps {
+			continue // Stamping intentionally performs no payload mutation probes.
+		}
+		t.Run(w.name, func(t *testing.T) {
+			cells := make([]*LVal, 200)
+			for i := range cells {
+				cells[i] = SortedMap()
+				cells[i].Map().Set(String("n"), Int(i))
+			}
+			root := SExpr(cells)
+			nodes, err := oracleNodes(root)
+			if err != nil || len(nodes) != 401 {
+				t.Fatalf("fixture must fit before probing: nodes=%d error=%v", len(nodes), err)
+			}
+			// Adding a probe entry to each map exceeds the census bound on
+			// the mutated arm itself. That is not evidence of a sibling leak.
+			err = oracleCheck(w, root)
+			if err == nil || !strings.Contains(err.Error(), "snapshot arm 0 after writes to arm 0") || strings.Contains(err.Error(), "isolation:") {
+				t.Fatalf("want a contextual traversal error, not an isolation claim: %v", err)
+			}
+			cause := errors.Unwrap(err)
+			if cause == nil || !strings.Contains(cause.Error(), "graph traversal exceeded bound") {
+				t.Fatalf("underlying traversal failure was lost: %v", err)
+			}
+		})
+	}
+}
 
 type oracleImmutable struct{ n int }
 
