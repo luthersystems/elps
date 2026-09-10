@@ -63,6 +63,32 @@ func oracleWalkers() []oracleWalker {
 	}
 }
 
+func oracleWalkerByName(walkers []oracleWalker, name string) (oracleWalker, error) {
+	var result oracleWalker
+	for _, w := range walkers {
+		if w.name != name {
+			continue
+		}
+		if result.name != "" {
+			return oracleWalker{}, fmt.Errorf("duplicate oracle walker %q", name)
+		}
+		result = w
+	}
+	if result.name == "" {
+		return oracleWalker{}, fmt.Errorf("missing oracle walker %q", name)
+	}
+	return result, nil
+}
+
+func mustOracleWalker(t *testing.T, walkers []oracleWalker, name string) oracleWalker {
+	t.Helper()
+	w, err := oracleWalkerByName(walkers, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
 func oracleTemplateCopies(v *LVal) (*LVal, *LVal, error) {
 	return oracleTemplateCopiesWithOptions(v)
 }

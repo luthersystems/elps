@@ -4,9 +4,63 @@ package lisp
 
 import (
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestWalkerBehaviorOracleSelectionSurvivesReordering(t *testing.T) {
+	walkers := oracleWalkers()
+	// Every adapter occupies every index in these rotations. Check actual
+	// operation behavior too, not just a name copied onto the wrong callback.
+	for shift := range walkers {
+		reordered := append(slices.Clone(walkers[shift:]), walkers[:shift]...)
+		for _, tc := range []struct {
+			name, owners                      string
+			shares, refuses, stamps, template bool
+		}{
+			{name: "copy", owners: "detacher", shares: true},
+			{name: "detach", owners: "detacher", refuses: true},
+			{name: "LVal.Copy", owners: "copier"},
+			{name: "macro stamp", owners: "macroStamper", stamps: true},
+			{name: "Template.NewVM", owners: "templateInventory templateCompiler", template: true},
+		} {
+			t.Run(fmt.Sprintf("rotation%d/%s", shift, tc.name), func(t *testing.T) {
+				w, err := oracleWalkerByName(reordered, tc.name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if w.name != tc.name || w.owners != tc.owners || w.stamps != tc.stamps || w.template != tc.template {
+					t.Fatalf("wrong adapter for %q: name=%q owners=%q stamps=%t template=%t", tc.name, w.name, w.owners, w.stamps, w.template)
+				}
+				v := Native(int64(7))
+				a, b, err := w.makeCopies(v)
+				if tc.refuses {
+					if err == nil || a != nil || b != nil || !strings.Contains(err.Error(), "cannot be detached") {
+						t.Fatalf("strict detach selected the wrong operation: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, result := range []*LVal{a, b} {
+					if result == nil || result.Type != LNative || result.Native != int64(7) || (result == v) != tc.shares || (result.macroExpansion != nil) != tc.stamps {
+						t.Fatalf("%s selected the wrong behavior: %v", tc.name, result)
+					}
+				}
+			})
+		}
+	}
+	if _, err := oracleWalkerByName(walkers, "removed operation"); err == nil || !strings.Contains(err.Error(), "missing oracle walker") {
+		t.Fatalf("a missing adapter must not fall back to another operation: %v", err)
+	}
+	duplicate := append(slices.Clone(walkers), mustOracleWalker(t, walkers, "copy"))
+	if _, err := oracleWalkerByName(duplicate, "copy"); err == nil || !strings.Contains(err.Error(), "duplicate oracle walker") {
+		t.Fatalf("ambiguous names must not pick whichever adapter came first: %v", err)
+	}
+}
 
 func TestWalkerBehaviorOracleReportsPostWriteTraversalFailure(t *testing.T) {
 	for _, w := range oracleWalkers() {
@@ -94,6 +148,20 @@ func TestWalkerBehaviorOracleImmutableNative(t *testing.T) {
 // These mutations wrap REAL successful walks. Checking the clean arm first
 // prevents an unrelated fixture failure from masquerading as a killed mutant.
 func TestWalkerBehaviorOracleNegativeControls(t *testing.T) {
+	runOracleControlOrders(t, checkOracleNegativeControls)
+}
+
+func runOracleControlOrders(t *testing.T, check func(*testing.T, []oracleWalker)) {
+	t.Helper()
+	walkers := oracleWalkers()
+	for shift := range walkers {
+		reordered := append(slices.Clone(walkers[shift:]), walkers[:shift]...)
+		t.Run(fmt.Sprintf("rotation%d", shift), func(t *testing.T) { check(t, reordered) })
+	}
+}
+
+func checkOracleNegativeControls(t *testing.T, walkers []oracleWalker) {
+	t.Helper()
 	for _, tc := range []struct {
 		name, channel string
 		mutate        func(source, a, b *LVal)
@@ -127,7 +195,7 @@ func TestWalkerBehaviorOracleNegativeControls(t *testing.T) {
 		{"lost format metadata", "source/format", func(_, a, _ *LVal) { a.meta = nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w := oracleWalkers()[2]
+			w := mustOracleWalker(t, walkers, "LVal.Copy")
 			if err := oracleCheck(w, oracleGraph(8, true)); err != nil {
 				t.Fatalf("clean control: %v", err)
 			}
@@ -148,7 +216,12 @@ func TestWalkerBehaviorOracleNegativeControls(t *testing.T) {
 }
 
 func TestWalkerBehaviorOracleStampLiveControl(t *testing.T) {
-	w := oracleWalkers()[3]
+	runOracleControlOrders(t, checkOracleStampLiveControl)
+}
+
+func checkOracleStampLiveControl(t *testing.T, walkers []oracleWalker) {
+	t.Helper()
+	w := mustOracleWalker(t, walkers, "macro stamp")
 	if err := oracleCheck(w, oracleGraph(4, true)); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +229,7 @@ func TestWalkerBehaviorOracleStampLiveControl(t *testing.T) {
 	if err := oracleCheck(w, oracleGraph(4, true)); err == nil || !strings.Contains(err.Error(), "debug stamp path did not execute") {
 		t.Fatalf("a no-op stamp must fail its live-path assertion, got %v", err)
 	}
-	w = oracleWalkers()[3]
+	w = mustOracleWalker(t, walkers, "macro stamp")
 	clean := w.makeCopies
 	w.makeCopies = func(v *LVal) (*LVal, *LVal, error) {
 		a, b, err := clean(v)
@@ -168,7 +241,7 @@ func TestWalkerBehaviorOracleStampLiveControl(t *testing.T) {
 	if err := oracleCheck(w, oracleGraph(4, true)); err == nil || !strings.Contains(err.Error(), "missing descendant debug stamp") {
 		t.Fatalf("child-only missing metadata must fail: %v", err)
 	}
-	w = oracleWalkers()[3]
+	w = mustOracleWalker(t, walkers, "macro stamp")
 	clean = w.makeCopies
 	w.makeCopies = func(v *LVal) (*LVal, *LVal, error) {
 		a, b, err := clean(v)
