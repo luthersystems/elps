@@ -1131,6 +1131,15 @@ rm -rf "$reqjobs_tmp"
 assert_exit 0 "govulncheck installs a pinned Go-compatible scanner (#634)" \
 	python3 "${SCRIPT_DIR}/govulncheck-toolchain-test.py"
 
+assert_exit 0 "manual Marketplace diagnostics cannot publish or receive secrets (#638)" \
+	python3 "${SCRIPT_DIR}/marketplace-workflow-test.py"
+if command -v node >/dev/null 2>&1; then
+	assert_exit 0 "Marketplace diagnostics enforce time, response, and output bounds (#638)" \
+		node --test "${SCRIPT_DIR}/marketplace-diagnostics.test.cjs"
+else
+	echo "SKIP  node not installed; cannot test Marketplace diagnostics"
+fi
+
 echo "== govulncheck fail-summary: the gate must not un-fail its own caller ===="
 
 # scripts/govulncheck-fail-summary.sh is the final step of

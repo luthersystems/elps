@@ -130,14 +130,15 @@ func locContainsCol(loc *token.Location, name string, col int) bool {
 
 // wordAtPosition extracts the symbol-like word at the given 0-based LSP
 // position from the document content. The cursor can be inside or at the
-// end of a word; in both cases the full word is returned.
+// end of a word; in both cases the full word is returned. Columns are bytes,
+// after the handler converts the wire position with Server.cursorAt.
 func wordAtPosition(content string, line, col int) string {
-	start, end, ok := wordBoundsAtPosition(content, line, col)
+	ln := lineOf(content, line)
+	start, end, ok := wordBoundsInLine(ln, col)
 	if !ok {
 		return ""
 	}
-	lines := strings.Split(content, "\n")
-	return lines[line][start:end]
+	return ln[start:end]
 }
 
 // wordRangeAtPosition returns the LSP range for the symbol-like word at the
@@ -155,11 +156,13 @@ func wordRangeAtPosition(content string, line, col int) *protocol.Range {
 }
 
 func wordBoundsAtPosition(content string, line, col int) (int, int, bool) {
-	lines := strings.Split(content, "\n")
-	if line < 0 || line >= len(lines) {
-		return 0, 0, false
-	}
-	ln := lines[line]
+	return wordBoundsInLine(lineOf(content, line), col)
+}
+
+// A missing line and an empty line both contain no word. Work only on the
+// selected line: splitting the document here allocated a line slice on every
+// completion/definition/hover request (#641).
+func wordBoundsInLine(ln string, col int) (int, int, bool) {
 	if col < 0 || col > len(ln) {
 		return 0, 0, false
 	}

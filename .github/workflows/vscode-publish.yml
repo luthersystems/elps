@@ -1,12 +1,45 @@
 name: Publish VS Code Extension
 
 on:
+  # Manual runs are read-only diagnostics; only tag pushes can publish.
+  workflow_dispatch:
   push:
     tags:
       - "v*"
 
 jobs:
+  diagnose-marketplace:
+    name: Diagnose Marketplace (ARM)
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 3
+    # One read-only probe at a time, including dispatches from other branches.
+    # Job scope is deliberate: tag publication must never share cancellation.
+    concurrency:
+      group: elps-marketplace-readonly-diagnostics
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
+        with:
+          node-version: "20"
+      - name: Install the locked publishing client without lifecycle scripts
+        working-directory: editors/vscode
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify the locked SDK probe against local HTTP servers
+        run: node --test scripts/marketplace-sdk.test.cjs
+      - name: Report unauthenticated discovery and published version inventory
+        run: node scripts/marketplace-diagnostics.cjs
+
+  # TODO(marketplace-638): authenticated discovery and missing-target publication
+  # recovery remain unverified; diagnostics above intentionally cannot use a PAT
+  # or publish. Track recovery at https://github.com/luthersystems/elps/issues/638.
   build-binaries:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     name: Build elps (${{ matrix.target }})
     # ARM for the reason spelled out on elps.yml's lint-and-test job -- this
     # is the HOST the cross-compile runs on, and nothing else.
@@ -65,6 +98,7 @@ jobs:
           path: editors/vscode/bin/
 
   publish-platform:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     name: Publish (${{ matrix.target }})
     needs: build-binaries
     # ARM for the reason on elps.yml's lint-and-test job. `--target` below is
@@ -126,6 +160,7 @@ jobs:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
   publish-universal:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     name: Publish (universal)
     needs: build-binaries
     # ARM for the reason on elps.yml's lint-and-test job; same npm/esbuild

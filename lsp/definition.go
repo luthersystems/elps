@@ -16,10 +16,9 @@ func (s *Server) textDocumentDefinition(_ *glsp.Context, params *protocol.Defini
 	if doc == nil {
 		return nil, nil
 	}
-	// An over-limit document has no AST or analysis (see Document.parse), and
-	// wordAtPosition below splits the whole content to find the word under the
-	// cursor -- linear allocation over a document the size limit exists to keep
-	// off the hot path. No definition to report.
+	// An over-limit document has no AST or analysis (see Document.parse).
+	// Skip textual fallbacks too: locating a late line still scans the content
+	// even though word lookup no longer allocates a document-sized line slice.
 	if doc.OverLimit() {
 		return nil, nil
 	}
