@@ -299,7 +299,9 @@ itself, which sorts in place despite carrying no `!`.
 Two spellings of the predicate are followed: an inline `lambda`, and a plain
 symbol naming a `defun` **in the same file**. That hop is one level deep — the
 named function's own body is scanned, but a call it in turn makes is not
-followed, so a comparator that mutates two hops away is not reported.
+followed, so a comparator that mutates two hops away is not reported. When a
+file defines the same name twice, the **last** definition is the one followed,
+because `defun` overwrites and that is the body the interpreter runs.
 
 Data is skipped whole, and in all three spellings: a reader-quoted form
 (`'(assoc! a b)`), an explicit `(quote ...)` form, and a `quasiquote`
