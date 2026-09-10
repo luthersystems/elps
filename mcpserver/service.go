@@ -2188,8 +2188,10 @@ Use ` + "`doc`" + ` with ` + "`package=true`" + ` to list symbols in any package
 Embedders may register additional packages via ` + "`WithRegistry`" + `.
 
 ## Lint Analyzers
-Semantic checks need workspace analysis (pass ` + "`include_workspace`" + ` or a
-workspace root); without it they report nothing.
+Semantic checks always run: they resolve symbols against the file's own
+definitions and the standard library. Pass ` + "`include_workspace`" + ` (and
+optionally ` + "`workspace_root`" + `) so they also see definitions in the other
+files of the workspace; without it a symbol defined elsewhere reads as undefined.
 `
 
 const helpContentSuffix = `
